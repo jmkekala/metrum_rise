@@ -33,8 +33,18 @@ use std::sync::PoisonError;
 pub(crate) const ROAD_US_PER_BYTE: f64 = 0.0005;
 /// Predicted fixed cost of a surface part, microseconds.
 pub(crate) const ROAD_SURFACE_US: f64 = 20.0;
-/// Predicted cost of a chunk's swap (its node, lights and signs), microseconds.
+/// Predicted cost of a chunk's street lights, microseconds a lamp (`street_lights.gd`'s batch
+/// nodes; 7.5-9.8 us measured on the 30k city's load).
+pub(crate) const ROAD_US_PER_LIGHT: f64 = 9.0;
+/// The slice a street lights part runs for, microseconds (`road_chunk_hydration.gd`'s
+/// `LIGHTS_SLICE_US`): a chunk's lamps make their nodes over as many parts as it takes.
+pub(crate) const ROAD_LIGHTS_SLICE_US: f64 = 1000.0;
+/// Predicted cost of a chunk's swap (its node and signs), microseconds.
 pub(crate) const ROAD_SWAP_US: f64 = 150.0;
+/// [`SimulationNode::run_road_mesh_hydration_part`]'s answers.
+const PART_SWAP: i64 = 0;
+const PART_SURFACE: i64 = 1;
+const PART_LIGHTS: i64 = 2;
 // Encode jobs out at once.
 const MAX_IN_FLIGHT: usize = 4;
 // The lining's shadow caster's material, after the chunk layers' (`set_road_hydration_materials`).
@@ -45,18 +55,23 @@ const PRIMITIVE_TRIANGLES: i64 = 3;
 // Encoded chunks landed from the pool: key, request serial, surfaces.
 type Landed = Arc<Mutex<Vec<(RoadKey, u64, RoadChunkSurfaces)>>>;
 
-// A chunk being built: its encoded surfaces, its hidden meshes and the surfaces added so far
-// (the layers', then the lining caster's).
+// A chunk being built: its encoded surfaces, its hidden meshes, the surfaces added so far (the
+// layers', then the lining caster's) and whether its lights were handed out.
 struct Build {
     surfaces: RoadChunkSurfaces,
     mesh: Gd<ArrayMesh>,
     shadow: Option<Gd<ArrayMesh>>,
     added: usize,
+    lights: bool,
 }
 
 impl Build {
     fn parts(&self) -> usize {
         self.surfaces.layers.len() + usize::from(self.surfaces.lining_shadow.is_some())
+    }
+
+    fn finished(&self) -> bool {
+        self.added == self.parts() && self.lights
     }
 
     fn next_surface(&self) -> Option<&RoadSurface> {
@@ -105,6 +120,7 @@ impl RoadHydrationSource {
                         mesh: ArrayMesh::new_gd(),
                         shadow: None,
                         added: 0,
+                        lights: false,
                     },
                 );
             }
@@ -253,39 +269,72 @@ impl SimulationNode {
         }
     }
 
-    /// Chunk `(x, z)`'s next part's predicted cost in microseconds: a surface by its bytes, or
-    /// the swap; -1 while its surfaces are not encoded, -2 when the hydration has no such chunk
-    /// (none began, it ended, or a newer revision took the chunk). `O(1)`.
+    /// Chunk `(x, z)`'s next part's predicted cost in microseconds: a surface by its bytes, its
+    /// street lights by their count, or the swap; -1 while its surfaces are not encoded, -2 when
+    /// the hydration has no such chunk (none began, it ended, or a newer revision took the
+    /// chunk). `O(1)`.
     #[func]
     pub fn get_road_mesh_hydration_part_us(&self, x: i32, z: i32) -> f64 {
         let Some(source) = self.road_hydration.as_ref() else {
             return -2.0;
         };
-        if source.chunk([x, z]).is_none() {
+        let Some(chunk) = source.chunk([x, z]) else {
             return -2.0;
-        }
+        };
         match source.builds.get(&[x, z]) {
             None => -1.0,
-            Some(build) => build.next_surface().map_or(ROAD_SWAP_US, |surface| {
-                ROAD_SURFACE_US + surface.bytes() as f64 * ROAD_US_PER_BYTE
-            }),
+            Some(build) => match build.next_surface() {
+                Some(surface) => ROAD_SURFACE_US + surface.bytes() as f64 * ROAD_US_PER_BYTE,
+                None if !build.lights => {
+                    (chunk.street_lights.len() as f64 * ROAD_US_PER_LIGHT).min(ROAD_LIGHTS_SLICE_US)
+                }
+                None => ROAD_SWAP_US,
+            },
         }
     }
 
-    /// Adds chunk `(x, z)`'s next encoded surface to its hidden mesh. False when it has none
-    /// left (the swap is next) or no build. `O(the surface's bytes)`.
+    /// Runs chunk `(x, z)`'s next part that is Rust's: adds its next encoded surface to its
+    /// hidden mesh (answers 1); else says its street lights are due (2: take them with
+    /// `take_road_mesh_hydration_lights`); else the swap is next (0, also without a build).
+    /// `O(the surface's bytes)`.
     #[func]
-    pub fn add_road_mesh_hydration_surface(&mut self, x: i32, z: i32) -> bool {
-        self.road_hydration
-            .as_mut()
-            .is_some_and(|source| source.add_surface([x, z]))
+    pub fn run_road_mesh_hydration_part(&mut self, x: i32, z: i32) -> i64 {
+        let Some(source) = self.road_hydration.as_mut() else {
+            return PART_SWAP;
+        };
+        if source.add_surface([x, z]) {
+            return PART_SURFACE;
+        }
+        match source.builds.get(&[x, z]) {
+            Some(build) if !build.lights => PART_LIGHTS,
+            _ => PART_SWAP,
+        }
+    }
+
+    /// Chunk `(x, z)`'s street lights (five floats each, chunk-local base x, y, z, yaw, kind),
+    /// installed by the chunk renderer as their own part ahead of the swap; the part is then done.
+    /// Empty when the hydration has no such build. `O(lights)`.
+    #[func]
+    pub fn take_road_mesh_hydration_lights(&mut self, x: i32, z: i32) -> PackedFloat32Array {
+        let Some(source) = self.road_hydration.as_mut() else {
+            return PackedFloat32Array::new();
+        };
+        let Some(chunk) = source.chunk([x, z]).cloned() else {
+            return PackedFloat32Array::new();
+        };
+        let Some(build) = source.builds.get_mut(&[x, z]) else {
+            return PackedFloat32Array::new();
+        };
+        build.lights = true;
+        SimCore::road_mesh_lights(&chunk)
     }
 
     /// Takes chunk `(x, z)`'s finished build for its swap: `mesh` (the layers' surfaces),
     /// `lining_mesh` (the lining's shadow caster, or null), per layer in payload order
     /// `layer_surfaces` (its surface, -1 when empty), `layer_counts` and `layer_formats`, and the
-    /// payload's `chunk_x`, `chunk_z`, `removed` (false), `street_lights` and `road_signs`. An
-    /// empty dictionary when the hydration has no such chunk or its build is not finished.
+    /// payload's `chunk_x`, `chunk_z`, `removed` (false) and `road_signs` (its street lights
+    /// were their own part). An empty dictionary when the hydration has no such chunk or its
+    /// build is not finished.
     #[func]
     pub fn take_road_mesh_hydration_chunk(&mut self, x: i32, z: i32) -> VarDictionary {
         let Some(source) = self.road_hydration.as_mut() else {
@@ -297,7 +346,7 @@ impl SimulationNode {
         if source
             .builds
             .get(&[x, z])
-            .is_none_or(|build| build.added < build.parts())
+            .is_none_or(|build| !build.finished())
         {
             return VarDictionary::new();
         }
@@ -324,7 +373,7 @@ impl SimulationNode {
         dict.set("chunk_x", x);
         dict.set("chunk_z", z);
         dict.set("removed", false);
-        SimCore::set_road_mesh_props(&mut dict, &chunk);
+        dict.set("road_signs", SimCore::road_mesh_signs(&chunk));
         dict
     }
 

@@ -5,8 +5,9 @@
 ## are replaced by none at the network's generation and the streaming core (`StreamNode`) runs
 ## them nearest first with the view and the near ring first, under a budget a frame. Rust encodes
 ## a chunk's surfaces in Godot's layout on the background pool and adds one a part to the chunk's
-## hidden mesh; the chunk's last part swaps the finished mesh in through the renderer's own
-## install, so a chunk draws whole, with its lights and signs, as the full snapshot drew it.
+## hidden mesh, then its street lights install as their own part and its last part swaps the
+## finished mesh in with its signs through the renderer's own install, so a chunk's road draws
+## whole, as the full snapshot drew it.
 ## NetworkRenderer starts a hydration wherever the chunk renderer needed its full snapshot.
 extends Node
 
@@ -16,6 +17,11 @@ const GONE := 1
 const BUSY := 2
 const CANCELLED := 3
 const PART := 4
+# `run_road_mesh_hydration_part`'s answers: a surface added, the lights due (else the swap).
+const SURFACE_PART := 1
+const LIGHTS_PART := 2
+# A street lights part's slice, microseconds (Rust's `ROAD_LIGHTS_SLICE_US` predicts it).
+const LIGHTS_SLICE_US := 1000.0
 
 var simulation_node: Node
 # The road tool's chunk renderer (`road_chunk_renderer.gd`, `RENDER-52`).
@@ -93,9 +99,12 @@ func stream_road_prepare(keys: PackedInt32Array) -> void:
 ## Chunk `key`'s next part's predicted microseconds; -1 while its surfaces are not encoded, -2
 ## gone.
 func stream_road_next_part(key: Vector2i) -> float:
+	if chunks.lights_building(key):
+		return LIGHTS_SLICE_US
 	return simulation_node.get_road_mesh_hydration_part_us(key.x, key.y)
 
-## One part (the streaming core calls it): a surface onto chunk `key`'s hidden mesh, or its swap.
+## One part (the streaming core calls it): a surface onto chunk `key`'s hidden mesh, its street
+## lights, or its swap.
 func stream_road_part(key: Vector2i) -> int:
 	# The renderer's chunks were reset (a world replaced): this hydration is over.
 	if chunks.needs_hydration():
@@ -105,12 +114,22 @@ func stream_road_part(key: Vector2i) -> int:
 	return _part(key, int(simulation_node.get_network_render_generation()))
 
 func _part(key: Vector2i, generation: int) -> int:
+	# The chunk's street lights draw once all their nodes are made, before its swap.
+	if chunks.lights_building(key):
+		_lights_part(func() -> bool: return chunks.build_lights_part(key, LIGHTS_SLICE_US))
+		return PART
 	# Surfaces go onto a mesh nothing draws yet: no revision waits for them.
-	if simulation_node.add_road_mesh_hydration_surface(key.x, key.y):
+	var part: int = simulation_node.run_road_mesh_hydration_part(key.x, key.y)
+	if part == SURFACE_PART:
 		return PART
 	# A newer revision waits for NetworkRenderer: its terrain is not drawn yet, nor its chunks.
 	if simulation_node.is_network_dirty():
 		return BUSY
+	if part == LIGHTS_PART:
+		# The chunk's street lights, their own parts (their nodes cost as much as its surfaces).
+		var lights := simulation_node.take_road_mesh_hydration_lights(key.x, key.y) as PackedFloat32Array
+		_lights_part(func() -> bool: return chunks.install_lights(key, lights, LIGHTS_SLICE_US))
+		return PART
 	var start_us := Time.get_ticks_usec()
 	var data: Dictionary = simulation_node.take_road_mesh_hydration_chunk(key.x, key.y)
 	if data.is_empty():
@@ -123,6 +142,11 @@ func _part(key: Vector2i, generation: int) -> int:
 		"commit_ms": float(Time.get_ticks_usec() - taken_us) / 1000.0,
 	})
 	return INSTALLED
+
+func _lights_part(part: Callable) -> void:
+	var start_us := Time.get_ticks_usec()
+	part.call()
+	PerfDebug.record("road_units", 0.0, {"lights_ms": float(Time.get_ticks_usec() - start_us) / 1000.0})
 
 ## The streaming core has no chunk left: the source is let go.
 func stream_road_hydration_done() -> void:

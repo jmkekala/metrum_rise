@@ -42,6 +42,9 @@ static var _material: ShaderMaterial
 static var _glow_mesh: QuadMesh
 
 var _chunks: Dictionary = {}
+# Chunks whose batch nodes are being made in parts (`begin_chunk`): key -> {root (outside the
+# tree), kinds, transforms, glow, next batch}.
+var _building: Dictionary = {}
 var _book := StreetLightBook.new()
 var _kinds_set := false
 var _pool: Array[SpotLight3D] = []
@@ -171,6 +174,13 @@ func _place_pool() -> void:
 		light.visible = true
 
 func set_chunk(key: Vector2i, origin: Vector3, lights: PackedFloat32Array) -> void:
+	begin_chunk(key, origin, lights)
+	build_chunk_part(key, INF)
+
+## `set_chunk` in parts (a road chunk's hydration, `RENDER-52` part 2: a lamp's batch nodes cost
+## about 9 us): the book takes the chunk's lights now, `build_chunk_part` makes its batch nodes,
+## and the chunk draws once they are all made.
+func begin_chunk(key: Vector2i, origin: Vector3, lights: PackedFloat32Array) -> void:
 	_set_kinds()
 	_free_chunk(key)
 	var batches := _book.set_chunk(key, origin, lights)
@@ -179,15 +189,36 @@ func set_chunk(key: Vector2i, origin: Vector3, lights: PackedFloat32Array) -> vo
 	var root := Node3D.new()
 	root.name = "StreetLights_%d_%d" % [key.x, key.y]
 	root.position = origin
-	var kinds: PackedByteArray = batches["kinds"]
-	var transforms: Array = batches["transforms"]
-	for batch in kinds.size():
+	_building[key] = {"root": root, "kinds": batches["kinds"], "transforms": batches["transforms"],
+		"glow": batches["glow"], "next": 0}
+
+## Makes chunk `key`'s next batch nodes until `budget_us` has passed (one batch at least); true
+## when none is left to make, the chunk then drawn.
+func build_chunk_part(key: Vector2i, budget_us: float) -> bool:
+	if not _building.has(key):
+		return true
+	var start := Time.get_ticks_usec()
+	var building: Dictionary = _building[key]
+	var root: Node3D = building["root"]
+	var kinds: PackedByteArray = building["kinds"]
+	var transforms: Array = building["transforms"]
+	while building["next"] < kinds.size():
+		var batch: int = building["next"]
 		var lods: Array = _meshes[kinds[batch]]
 		for lod in lods.size():
 			root.add_child(_batch(lods[lod], transforms[batch], lod))
-	root.add_child(_glow_batch(batches["glow"]))
+		building["next"] = batch + 1
+		if float(Time.get_ticks_usec() - start) >= budget_us and building["next"] < kinds.size():
+			return false
+	root.add_child(_glow_batch(building["glow"]))
+	_building.erase(key)
 	add_child(root)
 	_chunks[key] = root
+	return true
+
+## Whether chunk `key`'s batch nodes are still being made.
+func is_building(key: Vector2i) -> bool:
+	return _building.has(key)
 
 func remove_chunk(key: Vector2i) -> void:
 	_book.remove_chunk(key)
@@ -197,11 +228,22 @@ func _free_chunk(key: Vector2i) -> void:
 	if _chunks.has(key):
 		(_chunks[key] as Node3D).queue_free()
 		_chunks.erase(key)
+	if _building.has(key):
+		(_building[key]["root"] as Node3D).free()
+		_building.erase(key)
 
 func clear() -> void:
 	_book.clear()
 	for key in _chunks.keys():
 		_free_chunk(key)
+	for key in _building.keys():
+		_free_chunk(key)
+
+func _notification(what: int) -> void:
+	# Roots still being built are outside the tree: free them with this node.
+	if what == NOTIFICATION_PREDELETE:
+		for building: Dictionary in _building.values():
+			(building["root"] as Node3D).free()
 
 # Every lamp head of the chunk as one glow quad, at every distance: what keeps a town visible
 # from afar at night once the poles' last LOD has ended. 16 floats an instance (transform, colour).

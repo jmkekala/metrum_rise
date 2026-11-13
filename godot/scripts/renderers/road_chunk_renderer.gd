@@ -287,10 +287,12 @@ func install(
 		if not props:
 			continue
 		var origin := chunk_frame_centre(key, chunk_span_m, chunk_origin_x_m, chunk_origin_z_m)
-		var lights = chunk_data.get("street_lights")
-		street_lights.set_chunk(
-			key, origin, lights if typeof(lights) == TYPE_PACKED_FLOAT32_ARRAY else PackedFloat32Array()
-		)
+		# A hydrated chunk's lights were their own part (`install_lights`): its payload has none.
+		if chunk_data.has("street_lights"):
+			var lights = chunk_data["street_lights"]
+			street_lights.set_chunk(
+				key, origin, lights if typeof(lights) == TYPE_PACKED_FLOAT32_ARRAY else PackedFloat32Array()
+			)
 		var signs = chunk_data.get("road_signs")
 		road_signs.set_chunk(
 			key, origin, signs if typeof(signs) == TYPE_PACKED_FLOAT32_ARRAY else PackedFloat32Array()
@@ -429,8 +431,8 @@ func build_chunk(
 
 ## Installs a chunk a hydration built in Rust (`RENDER-52` part 2): `data` holds its finished
 ## meshes (`mesh`, `lining_mesh` or null; their surfaces added through the RenderingServer), the
-## per-layer `layer_surfaces`, `layer_counts` and `layer_formats`, and the chunk payload's key,
-## lights and signs. Installed at `surface_generation` on the installed grid through `install`
+## per-layer `layer_surfaces`, `layer_counts` and `layer_formats`, and the chunk payload's key
+## and signs (its lights were `install_lights`). Installed at `surface_generation` on the installed grid through `install`
 ## (its holds included). Returns the generation.
 func install_built(surface_generation: int, key: Vector2i, data: Dictionary) -> int:
 	var instance := new_chunk_node()
@@ -445,6 +447,23 @@ func install_built(surface_generation: int, key: Vector2i, data: Dictionary) -> 
 		instance.add_child(_lining_caster(lining))
 	place_chunk(instance, key, span_m, origin_x_m, origin_z_m)
 	return install(surface_generation, false, span_m, origin_x_m, origin_z_m, [data], {key: instance}, false)
+
+## Starts chunk `key`'s street lights on the installed grid ahead of its mesh and makes their
+## nodes for `budget_us` (a hydration's parts, `RENDER-52` part 2: a lamp's nodes cost about
+## 9 us); `build_lights_part` makes the rest. True when they are all made.
+func install_lights(key: Vector2i, lights: PackedFloat32Array, budget_us: float) -> bool:
+	if street_lights == null or road_signs == null:
+		return true
+	street_lights.begin_chunk(key, chunk_frame_centre(key, span_m, origin_x_m, origin_z_m), lights)
+	return street_lights.build_chunk_part(key, budget_us)
+
+## Makes chunk `key`'s street light nodes for `budget_us`; true when none is left.
+func build_lights_part(key: Vector2i, budget_us: float) -> bool:
+	return street_lights == null or street_lights.build_chunk_part(key, budget_us)
+
+## Whether chunk `key`'s street light nodes are still being made (`install_lights`).
+func lights_building(key: Vector2i) -> bool:
+	return street_lights != null and street_lights.is_building(key)
 
 ## The materials a hydration's surfaces draw with: each chunk layer's in payload order, then the
 ## lining's shadow caster's.

@@ -63,7 +63,7 @@ class MockSimulation:
 			"keys": keys}
 
 	# A hydration's parts as Rust's source runs them (`RENDER-52` part 2): one surface part a
-	# chunk, then the swap of a mesh the chunk renderer builds from the payload.
+	# chunk, then the swap of a mesh the chunk renderer builds from the payload (its lights in it).
 	func set_road_hydration_materials(materials: Array) -> bool:
 		return materials.size() == 10
 
@@ -73,12 +73,12 @@ class MockSimulation:
 	func get_road_mesh_hydration_part_us(x: int, z: int) -> float:
 		return 1.0 if hydration.has(Vector2i(x, z)) else -2.0
 
-	func add_road_mesh_hydration_surface(x: int, z: int) -> bool:
+	func run_road_mesh_hydration_part(x: int, z: int) -> int:
 		var key := Vector2i(x, z)
 		if not hydration.has(key) or surfaces_added.has(key):
-			return false
+			return 0
 		surfaces_added[key] = true
-		return true
+		return 1
 
 	func take_road_mesh_hydration_chunk(x: int, z: int) -> Dictionary:
 		var chunk: Dictionary = hydration.get(Vector2i(x, z), {})
