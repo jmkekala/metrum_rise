@@ -119,6 +119,11 @@ func _run():
 		sim.set_road_hydration_mesh_ledger(true)
 		check(sim.load_game(path), "fixture reloads")
 		sim.set_simulation_speed(0)
+		# As the game's load does (input_manager): the renderer drops its chunks and hydrates the
+		# loaded network, so the audit below reads hydrated chunks.
+		tool.active = false
+		tool.reset_main_mesh_chunks()
+		check(await settle("reload"), "the reload hydrates")
 		await audit(strokes.size())
 		DirAccess.remove_absolute(path)
 		await _audit_ledger()
@@ -154,8 +159,9 @@ func _audit_bytes(stroke: int, key: Vector2i, instance: MeshInstance3D, held: Ar
 	if instance.get_node_or_null("LiningShadow") != null:
 		check(encoded.any(func(rust: Dictionary) -> bool: return rust.layer < 0), "lining caster not encoded %s" % key)
 
-# The ledger after the load's hydration: its meshes alive are the chunks' (layers and lining
-# casters), then none once the renderer drops its chunks (the next frame frees the nodes).
+# The ledger after the load's hydration: it made meshes, those still alive are the chunks' (layers
+# and lining casters), then none is alive once the renderer drops its chunks (the next frame
+# frees the nodes).
 func _audit_ledger() -> void:
 	var drawn := {}
 	for instance: MeshInstance3D in tool.chunks.chunks.values():
@@ -164,7 +170,8 @@ func _audit_ledger() -> void:
 		if caster != null:
 			drawn[caster.mesh.get_instance_id()] = true
 	var alive: PackedInt64Array = sim.get_road_hydration_meshes_alive()
-	check(not alive.is_empty(), "the load's hydration made no mesh")
+	var made: int = sim.get_road_hydration_meshes_made()
+	check(made > 0, "the load's hydration made no mesh")
 	for id in alive:
 		check(drawn.has(id), "hydration mesh %d alive but drawn by no chunk" % id)
 	tool.chunks.reset()
@@ -172,7 +179,7 @@ func _audit_ledger() -> void:
 	await process_frame
 	alive = sim.get_road_hydration_meshes_alive()
 	check(alive.is_empty(), "hydration meshes alive after the chunks were dropped: %d" % alive.size())
-	print("Road render publication: hydration ledger drawn=%d freed after reset" % drawn.size())
+	print("Road render publication: hydration ledger made=%d drawn=%d freed after reset" % [made, drawn.size()])
 	sim.set_road_hydration_mesh_ledger(false)
 
 func settle(label: String) -> bool:

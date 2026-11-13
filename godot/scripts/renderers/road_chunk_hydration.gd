@@ -70,7 +70,7 @@ func commit(invalidate_nodes: bool) -> int:
 			while simulation_node.get_road_mesh_hydration_part_us(key.x, key.y) == -1.0:
 				OS.delay_usec(100)
 				simulation_node.prepare_road_mesh_hydration(PackedInt32Array([key.x, key.y]))
-			while _part(key, generation) == PART:
+			while _part(key, generation, true) == PART:
 				pass
 		stream_road_hydration_done()
 		return generation
@@ -113,7 +113,9 @@ func stream_road_part(key: Vector2i) -> int:
 	# chunk is current at it (that revision's own chunks left the hydration's source).
 	return _part(key, int(simulation_node.get_network_render_generation()))
 
-func _part(key: Vector2i, generation: int) -> int:
+# `now`: the scene has no streaming core and installs every chunk inside NetworkRenderer's own
+# commit (the network still dirty then, as for the full snapshot's commit): no part is busy.
+func _part(key: Vector2i, generation: int, now: bool = false) -> int:
 	# The chunk's street lights draw once all their nodes are made, before its swap.
 	if chunks.lights_building(key):
 		_lights_part(func() -> bool: return chunks.build_lights_part(key, LIGHTS_SLICE_US))
@@ -123,7 +125,7 @@ func _part(key: Vector2i, generation: int) -> int:
 	if part == SURFACE_PART:
 		return PART
 	# A newer revision waits for NetworkRenderer: its terrain is not drawn yet, nor its chunks.
-	if simulation_node.is_network_dirty():
+	if not now and simulation_node.is_network_dirty():
 		return BUSY
 	if part == LIGHTS_PART:
 		# The chunk's street lights, their own parts (their nodes cost as much as its surfaces).
