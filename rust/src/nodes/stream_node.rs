@@ -1464,6 +1464,9 @@ fn plain_view(eye: [f32; 3]) -> CameraSample {
         yaw: 0.0,
         pitch: 0.0,
         distance: 0.0,
+        min_distance: 0.0,
+        max_distance: 0.0,
+        zoom_rate: 1.0,
     }
 }
 

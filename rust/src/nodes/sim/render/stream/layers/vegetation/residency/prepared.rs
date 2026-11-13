@@ -5,8 +5,8 @@
 //! and held here, never installed, so a patch that enters the wanted set takes a finished product
 //! at its request instead of waiting for a job.
 //!
-//! - **What.** The camera's reach ([`reach_samples`]: the orbit circle, the eye-to-pivot
-//!   segment, the pan disc), sample eye by sample eye in travel order: each sample's wanted patches by the
+//! - **What.** The camera's reach ([`reach_samples`]: the orbit circle, the zoom line in and out,
+//!   the pan disc), sample eye by sample eye in travel order: each sample's wanted patches by the
 //!   residency's own tier rule (`block_state`), less those wanted and waiting for a request now.
 //! - **Variants.** A patch is held by its key and bands. Its variants at a sample are the bands
 //!   a request can ask for from a camera within the sample's spacing (a camera on the shape

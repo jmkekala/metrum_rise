@@ -605,6 +605,9 @@ impl CameraNode {
             yaw: self.yaw,
             pitch: self.pitch,
             distance: self.motion.distance(),
+            min_distance: self.min_distance,
+            max_distance: self.max_distance,
+            zoom_rate: self.zoom_speed,
         });
     }
 

@@ -719,6 +719,9 @@ fn orbit(angle: f32) -> CameraSample {
         yaw: angle,
         pitch: -0.1,
         distance: 800.0,
+        min_distance: 10.0,
+        max_distance: 40_000.0,
+        zoom_rate: 1.2,
     }
 }
 

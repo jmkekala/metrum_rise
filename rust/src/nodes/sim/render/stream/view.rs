@@ -24,6 +24,12 @@ pub(crate) struct CameraSample {
     pub(crate) pitch: f32,
     /// Distance from the pivot, metres.
     pub(crate) distance: f32,
+    /// The camera's least and greatest distance from the pivot, metres (its zoom range).
+    pub(crate) min_distance: f32,
+    /// See `min_distance`.
+    pub(crate) max_distance: f32,
+    /// The factor one zoom step changes the distance by (`CameraNode`'s `zoom_speed`).
+    pub(crate) zoom_rate: f32,
 }
 
 /// A camera and the distance it travelled since it was first set.
