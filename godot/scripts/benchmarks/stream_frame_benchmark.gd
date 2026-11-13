@@ -557,7 +557,8 @@ func _record_digest(label: String) -> void:
 		lines.append(line)
 		by_tile["%d,%d" % [tile.x, tile.y]] = line
 	var camera: Vector3 = _terrain.get_viewport().get_camera_3d().global_position
-	var level_camera: Vector3 = tiles.get("_camera")
+	# Since `RENDER-32-K` part 7 the frame and its camera are the book's.
+	var level_camera: Vector3 = tiles._book.level_camera() if tiles._book.has_method("level_camera") else tiles.get("_camera")
 	_report.graded_digests.append({"point": _settle_points, "label": label,
 		"sample": (_report.samples.back() as Dictionary).get("label", "") if not _report.samples.is_empty() else "",
 		"camera": [camera.x, camera.y, camera.z], "tiles": lines.size(),

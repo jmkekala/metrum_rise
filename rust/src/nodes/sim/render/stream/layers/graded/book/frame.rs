@@ -433,6 +433,13 @@ impl GradedTileBook {
         self.counters.frame_parts.clone().unwrap_or_default()
     }
 
+    /// The camera the tiles' levels last took (XZ, its height above the ground as `y`; zero
+    /// before a frame). For the stream benchmark's digests.
+    #[func]
+    pub fn level_camera(&self) -> Vector3 {
+        self.frame.camera.unwrap_or(Vector3::ZERO)
+    }
+
     /// The cell sets' prewarm at setup took `us` microseconds (T25's load cost).
     #[func]
     pub fn note_prewarm(&mut self, us: i64) {
