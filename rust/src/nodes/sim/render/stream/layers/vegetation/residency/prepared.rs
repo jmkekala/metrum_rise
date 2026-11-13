@@ -18,10 +18,14 @@
 //!   retained product). The jobs keep one live request a patch, so one prepare of a patch is out at
 //!   a time and its other variants follow when it lands.
 //! - **When.** Only while nothing wanted waits (the request queue empty and no request in flight)
-//!   and the view held still since the last frame, one sample a frame, at most
-//!   [`PREPARE_IN_FLIGHT`] jobs out, through the same jobs and the same background pool as the
-//!   requests; never on the shared pool. A new view (eye or pivot moved) starts the samples over;
-//!   products held stay.
+//!   and the view held still since the last frame: one sample at the frame's first prepare and
+//!   one more after the pull frees the prepares that landed, at most [`PREPARE_IN_FLIGHT`] jobs
+//!   out, through the same jobs and the same background pool as the requests; never on the shared
+//!   pool. The samples are taken twice: first for the patches without a record (one entering
+//!   there would wait for a job, a hole), then for the band changes of those with one (they stay
+//!   drawn meanwhile). A variant waiting for its patch's other prepare is deferred and asked for
+//!   first once that lands. A new view (eye or pivot moved) starts the samples over; products
+//!   held stay.
 //! - **Use.** A request whose patch has a product held or being prepared with exactly the
 //!   generations and bands it would ask for takes it: a held product is delivered at once (it
 //!   installs under the frame's budget like any other), a job in flight is adopted (its product is
@@ -154,6 +158,16 @@ fn every_bands() -> impl Iterator<Item = Bands> {
     })
 }
 
+// What asking for one variant came to.
+enum Step {
+    // Asked for, or not needed.
+    Done,
+    // Another variant of the patch is out.
+    Wait,
+    // The in-flight bound or the jobs refused: ask again next time.
+    Full,
+}
+
 // A product held with the request it answered.
 pub(super) struct Ahead {
     delivery: Delivery,
@@ -164,12 +178,20 @@ pub(super) struct Ahead {
 pub(crate) struct Prepared {
     samples: Vec<ReachSample>,
     next: usize,
+    // The samples are taken twice: first for the patches without a record (a patch entering
+    // there would wait for a job), then for the band changes of those with one (they stay drawn
+    // meanwhile).
+    records: bool,
     // The eye and pivot the samples are for.
     view: Option<([f32; 3], [f32; 3])>,
     // Variants already prepared for this view's samples.
     considered: Set<Variant>,
     // At most one prepare of a patch is out (the jobs keep one live request a patch).
     preparing: Map<PatchKey, Request>,
+    // Variants waiting for another variant of their patch to land, in sample order.
+    deferred: Vec<Variant>,
+    // The view held still at this frame's first prepare (a later one may continue).
+    still: bool,
     held: HeldProducts<Variant, Ahead>,
     spent: Vec<VegetationProduct>,
     evicted: Vec<Ahead>,
@@ -187,9 +209,12 @@ impl Default for Prepared {
         Self {
             samples: Vec::new(),
             next: 0,
+            records: false,
             view: None,
             considered: Set::default(),
             preparing: Map::default(),
+            deferred: Vec::new(),
+            still: false,
             held: HeldProducts::new(PREPARED_CAP_BYTES),
             spent: Vec::new(),
             evicted: Vec::new(),
@@ -211,6 +236,8 @@ impl Prepared {
             .extend(self.evicted.drain(..).map(|ahead| ahead.delivery.product));
         self.preparing.clear();
         self.considered.clear();
+        self.deferred.clear();
+        self.still = false;
         self.view = None;
         self.next = 0;
     }
@@ -219,16 +246,13 @@ impl Prepared {
 impl VegetationResidency {
     /// Prepares the next sample of the view's reach while nothing wanted waits and the view holds
     /// still (the frame's first pass, after [`Self::frame`]). `O(1)` unless it prepares: then
-    /// the samples once a view, and one sample's blocks.
+    /// the samples once a view, the deferred variants and one sample's blocks.
     pub(crate) fn prepare(&mut self, view: Option<CameraSample>, jobs: &mut impl PatchJobs) {
+        self.prepared.still = false;
         let (Some(settings), true, Some(view)) = (self.settings, self.enabled, view) else {
             return;
         };
-        if self.terrain_span <= 0.0
-            || !self.evaluated
-            || !self.queue.is_empty()
-            || !self.requested.is_empty()
-        {
+        if !self.may_prepare() {
             return;
         }
         let prepared = &mut self.prepared;
@@ -242,14 +266,68 @@ impl VegetationResidency {
         if prepared.next == usize::MAX {
             reach_samples(&view, &mut prepared.samples);
             prepared.next = 0;
+            prepared.records = false;
             prepared.considered.clear();
+            prepared.deferred.clear();
         }
-        if prepared.next >= prepared.samples.len() || prepared.preparing.len() >= PREPARE_IN_FLIGHT
+        prepared.still = true;
+        self.prepare_step(&settings, jobs);
+    }
+
+    /// Prepares once more in the frame's first pass, after the pull freed the prepares that
+    /// landed, when the frame's [`Self::prepare`] found the view still and nothing wanted waits
+    /// yet: the same work as one `prepare`, so a still frame takes at most two samples.
+    pub(crate) fn prepare_after_pull(&mut self, jobs: &mut impl PatchJobs) {
+        let Some(settings) = self.settings.filter(|_| self.prepared.still) else {
+            return;
+        };
+        self.prepared.still = false;
+        if self.may_prepare() {
+            self.prepare_step(&settings, jobs);
+        }
+    }
+
+    // Nothing wanted waits: the request queue is empty and no request is out.
+    fn may_prepare(&self) -> bool {
+        self.enabled
+            && self.terrain_span > 0.0
+            && self.evaluated
+            && self.queue.is_empty()
+            && self.requested.is_empty()
+    }
+
+    // The deferred variants whose patch has no prepare out, then the next sample while the
+    // in-flight bound allows.
+    fn prepare_step(&mut self, settings: &ResidencySettings, jobs: &mut impl PatchJobs) {
+        let mut deferred = std::mem::take(&mut self.prepared.deferred);
+        let mut full = false;
+        deferred.retain(|&(key, bands)| {
+            if full {
+                return true;
+            }
+            match self.prepare_variant(settings, key, bands, jobs) {
+                Step::Done => false,
+                Step::Wait => true,
+                Step::Full => {
+                    full = true;
+                    true
+                }
+            }
+        });
+        self.prepared.deferred = deferred;
+        let prepared = &mut self.prepared;
+        if prepared.next >= prepared.samples.len() && !prepared.records {
+            prepared.next = 0;
+            prepared.records = true;
+        }
+        if full
+            || prepared.next >= prepared.samples.len()
+            || prepared.preparing.len() >= PREPARE_IN_FLIGHT
         {
             return;
         }
         let sample = prepared.samples[prepared.next];
-        if self.prepare_sample(&settings, sample, jobs) {
+        if self.prepare_sample(settings, sample, jobs) {
             self.prepared.next += 1;
         }
     }
@@ -301,75 +379,37 @@ impl VegetationResidency {
         let mut finished = true;
         let mut variants = [Bands::default(); 4];
         'keys: for &key in &entering {
-            let record = self
-                .patches
-                .get(&key)
-                .or_else(|| self.standins.get(&key))
-                .or_else(|| self.cache.get(&key))
-                .copied();
+            let record = self.record(key);
             // A wanted patch without a record waits for its request (none while preparing).
-            if record.is_none() && self.wanted.contains(&key) {
+            if record.is_some() != self.prepared.records
+                || record.is_none() && self.wanted.contains(&key)
+            {
                 continue;
             }
-            let (surface, vegetation) = self.owner_generations(key);
-            let current = record.filter(|record| !self.stale(key, record));
             let distance = key_distance(key, span, world, eye);
-            let patch_span = key_span(key, span);
             let count = settings.band_variants(
                 distance,
                 sample.spacing,
-                patch_span,
+                key_span(key, span),
                 record.map(|record| record.bands),
                 &mut variants,
             );
             for &bands in &variants[..count] {
-                let prepared = &self.prepared;
-                let built = |request: &Request| {
-                    request.surface == surface
-                        && request.vegetation == vegetation
-                        && request.bands == bands
-                };
-                if current.is_some_and(|record| record.bands == bands)
-                    || prepared.considered.contains(&(key, bands))
-                    || prepared
-                        .held
-                        .get((key, bands))
-                        .is_some_and(|held| built(&held.product.request))
-                {
-                    continue;
-                }
-                if let Some(request) = prepared.preparing.get(&key) {
-                    if built(request) {
-                        continue;
-                    }
+                match self.prepare_variant(settings, key, bands, jobs) {
+                    Step::Done => {}
                     // One prepare of a patch at a time: this variant follows when it lands.
-                    finished = false;
-                    continue 'keys;
+                    // Bounded: only patches with a prepare out wait (at most
+                    // `PREPARE_IN_FLIGHT` patches x 7 other bands), so the check is short.
+                    Step::Wait => {
+                        if !self.prepared.deferred.contains(&(key, bands)) {
+                            self.prepared.deferred.push((key, bands));
+                        }
+                    }
+                    Step::Full => {
+                        finished = false;
+                        break 'keys;
+                    }
                 }
-                if prepared.preparing.len() >= PREPARE_IN_FLIGHT {
-                    finished = false;
-                    break 'keys;
-                }
-                let order = PatchOrder {
-                    key,
-                    origin: key_origin(key, span, world),
-                    span: patch_span as f32,
-                    bands,
-                };
-                let Some(serial) = jobs.request(&order, settings) else {
-                    finished = false;
-                    break 'keys;
-                };
-                self.prepared.considered.insert((key, bands));
-                self.prepared.preparing.insert(
-                    key,
-                    Request {
-                        serial,
-                        surface,
-                        vegetation,
-                        bands,
-                    },
-                );
             }
         }
         entering.clear();
@@ -377,6 +417,72 @@ impl VegetationResidency {
         self.prepared.entering = entering;
         self.prepared.leaving = leaving;
         finished
+    }
+
+    // The record of `key`: drawn, standing in or cached.
+    fn record(&self, key: PatchKey) -> Option<Record> {
+        self.patches
+            .get(&key)
+            .or_else(|| self.standins.get(&key))
+            .or_else(|| self.cache.get(&key))
+            .copied()
+    }
+
+    // Asks for `key`'s product with `bands` unless it is not needed (its record's own bands with
+    // its generations, already asked for this view, or held for its generations): done; waits
+    // while another variant of the patch is out; full while the in-flight bound or the jobs
+    // refuse.
+    fn prepare_variant(
+        &mut self,
+        settings: &ResidencySettings,
+        key: PatchKey,
+        bands: Bands,
+        jobs: &mut impl PatchJobs,
+    ) -> Step {
+        let (surface, vegetation) = self.owner_generations(key);
+        let built = |request: &Request| {
+            request.surface == surface && request.vegetation == vegetation && request.bands == bands
+        };
+        let own = self
+            .record(key)
+            .is_some_and(|record| record.bands == bands && !self.stale(key, &record));
+        let prepared = &self.prepared;
+        if own
+            || prepared.considered.contains(&(key, bands))
+            || prepared
+                .held
+                .get((key, bands))
+                .is_some_and(|held| built(&held.product.request))
+        {
+            return Step::Done;
+        }
+        if let Some(request) = prepared.preparing.get(&key) {
+            return if built(request) { Step::Done } else { Step::Wait };
+        }
+        if prepared.preparing.len() >= PREPARE_IN_FLIGHT {
+            return Step::Full;
+        }
+        let span = key_span(key, self.terrain_span);
+        let order = PatchOrder {
+            key,
+            origin: key_origin(key, self.terrain_span, settings.world),
+            span: span as f32,
+            bands,
+        };
+        let Some(serial) = jobs.request(&order, settings) else {
+            return Step::Full;
+        };
+        self.prepared.considered.insert((key, bands));
+        self.prepared.preparing.insert(
+            key,
+            Request {
+                serial,
+                surface,
+                vegetation,
+                bands,
+            },
+        );
+        Step::Done
     }
 
     /// A product that landed: a prepare's is held (`None`), anything else goes on to the install

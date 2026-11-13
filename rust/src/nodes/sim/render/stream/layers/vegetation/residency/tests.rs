@@ -239,6 +239,7 @@ impl World {
                 }
             }
         }
+        self.residency.prepare_after_pull(&mut self.jobs);
         self.layer.refresh(&mut self.backend);
         let mut budget = FrameBudget::new(STREAM_BUDGET_US);
         self.layer

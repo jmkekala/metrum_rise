@@ -1232,6 +1232,11 @@ impl StreamNode {
             self.frame_residency_us = start.elapsed().as_secs_f64() * 1e6;
         }
         self.pull();
+        if residency {
+            // The prepares that landed freed their places: the still view prepares once more.
+            self.residency
+                .prepare_after_pull(&mut Jobs(self.spawner.as_mut()));
+        }
         let in_view = self.frustum();
         let Some(backend) = self.backend.as_mut() else {
             return;
