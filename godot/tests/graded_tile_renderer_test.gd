@@ -811,8 +811,11 @@ func _acknowledge_network(simulation: SimulationNode) -> void:
 
 # The terrain renderer settled (its patches and graded tiles), the graded edits up to
 # `edit_serial` (the simulation's after an edit) taken and installed by the renderer (TERRAIN-24:
-# an edit whose selection still runs on a worker leaves the renderer idle without its tiles), and
-# the simulation clean, for three frames in a row.
+# an edit whose selection still runs on a worker leaves the renderer idle without its tiles),
+# every queued cell set build done (TERRAIN-24: the settle does not count the builds of sets whose
+# list names no tile, which change nothing drawn but advance their set's mask revision as they
+# begin and end, so the idle checks below would see them), and the simulation clean, for three
+# frames in a row.
 func _settle_production(terrain, simulation: SimulationNode, edit_serial := 0) -> bool:
 	var stable := 0
 	for frame in TIMEOUT_FRAMES:
@@ -822,6 +825,7 @@ func _settle_production(terrain, simulation: SimulationNode, edit_serial := 0) -
 		var idle: bool = (
 			terrain.is_render_settled()
 			and terrain.graded_tiles.installed_edit_serial() >= edit_serial
+			and terrain.graded_tiles.cell_builds_pending() == 0
 			and not simulation.is_network_dirty()
 			and not simulation.is_terrain_dirty()
 		)

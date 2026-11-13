@@ -1226,6 +1226,22 @@ mod tests {
         assert_eq!((custom[2] as u32 >> 6) & 7, 1, "the +x side is the border of a patch not resident");
     }
 
+    // `TERRAIN-24`: the settle (`cells_pending`, `has_pending_work`'s part) does not wait for the
+    // build of a set whose list names no tile, as it draws nothing once built, yet the build
+    // advances the set's mask revision; a test of a settled view waits for every queued build.
+    #[test]
+    fn a_build_of_a_set_listing_no_tile_is_not_pending_but_moves_its_mask() {
+        let mut graded = world();
+        graded.take_list((0, 0), 0, Vec::new());
+        graded.list_arrived((0, 0));
+        assert!(!graded.cells_pending(), "a set listing no tile changes nothing drawn");
+        assert_eq!(graded.cells.builds.len(), 1, "its build is queued");
+        let bumps = graded.cells.mask_bumps;
+        let set = graded.begin_build((0, 0));
+        assert!(graded.build_tiles(set, None));
+        assert!(graded.cells.mask_bumps > bumps, "the build advances the set's mask revision");
+    }
+
     #[test]
     fn a_finished_build_renders_the_grass_mask_again() {
         let mut graded = world();
