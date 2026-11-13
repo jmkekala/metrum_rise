@@ -238,17 +238,42 @@ impl SimulationNode {
             candidate_radius_m: candidate_radius_m(range),
             watch: self.watched_car.get(),
         };
+        // A view with no agent to draw prepares in microseconds and without the pool: it runs
+        // here and lands as a job would, for the next frame, rather than wake a pool worker every
+        // frame (an empty world, a view beyond every agent's draw distance). `O(buckets)` to see.
+        let snapshot = self.snapshot.read().unwrap();
+        if holds_no_agents(&snapshot) {
+            let started = Instant::now();
+            frame.take_snapshot(&snapshot);
+            drop(snapshot);
+            finish_agent_frame(&mut frame, &self.core, started);
+            self.agent_lane.land(frame);
+            return;
+        }
+        drop(snapshot);
         let (snapshot, core) = (Arc::clone(&self.snapshot), Arc::clone(&self.core));
         let job = self.agent_lane.job(frame, move |frame| {
             let started = Instant::now();
             frame.take_snapshot(&snapshot.read().unwrap());
-            frame.smooth_cars();
-            solve_off_lane(frame, &core);
-            frame.finish();
-            frame.job_us = started.elapsed().as_micros() as i64;
+            finish_agent_frame(frame, &core, started);
         });
         self.async_jobs.spawn(job);
     }
+}
+
+// Whether a snapshot draws no walker and no moving car. `O(buckets)`.
+fn holds_no_agents(snapshot: &RenderSnapshot) -> bool {
+    snapshot.car_transforms.values().all(Vec::is_empty)
+        && snapshot.pedestrian_transforms.values().all(Vec::is_empty)
+}
+
+// The frame's work after it took its snapshot: the smoothing, the solve and the recording, and
+// the time since `started`.
+fn finish_agent_frame(frame: &mut AgentFrame, core: &Mutex<SimCore>, started: Instant) {
+    frame.smooth_cars();
+    solve_off_lane(frame, core);
+    frame.finish();
+    frame.job_us = started.elapsed().as_micros() as i64;
 }
 
 // Grounds the frame's off-lane cars not at rest in one pass under one non-blocking core

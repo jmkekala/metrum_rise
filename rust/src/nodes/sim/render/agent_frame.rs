@@ -15,7 +15,9 @@
 //! A job still running when the next frame asks is late: that frame draws what it drew, starts
 //! nothing and carries its delta to the next job (one smoothing step over both deltas). The
 //! parked chunks of the job's snapshot install with its cars, so a car crossing a bay's edge is
-//! drawn exactly once.
+//! drawn exactly once. A snapshot with no agent to draw is prepared on the main thread instead
+//! (microseconds, no pool: an empty world, a view past every draw distance) and lands the same
+//! way, for the next frame.
 //!
 //! **Caster candidates.** For the shadow-only twins the stream node draws (`stream/layers/
 //! agent_casters.rs`), the job keeps, per bucket, the drawn agents within
@@ -404,10 +406,14 @@ impl AgentFrameLane {
         let shared = Arc::clone(&self.shared);
         move || {
             prepare(&mut frame);
-            let (lock, landed) = &*shared;
-            *lock.lock().unwrap_or_else(PoisonError::into_inner) = LaneState::Landed(frame);
-            landed.notify_all();
+            land(&shared, frame);
         }
+    }
+
+    /// Lands `frame`, prepared on the calling thread, for the next [`Self::take`]. The frame
+    /// must have come from `take`.
+    pub(crate) fn land(&mut self, frame: Box<AgentFrame>) {
+        land(&self.shared, frame);
     }
 
     /// The frame kept on the main thread by the synchronous path, if it is there.
@@ -435,6 +441,13 @@ impl AgentFrameLane {
     pub(crate) fn late_frames(&self) -> u64 {
         self.late_frames
     }
+}
+
+// Puts a prepared frame where the next `take` finds it and wakes a waiter.
+fn land(shared: &Shared, frame: Box<AgentFrame>) {
+    let (lock, landed) = &**shared;
+    *lock.lock().unwrap_or_else(PoisonError::into_inner) = LaneState::Landed(frame);
+    landed.notify_all();
 }
 
 /// The candidates handed from the agents' frame to the shadow-caster twins, and the shadow
