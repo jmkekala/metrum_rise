@@ -768,3 +768,128 @@ fn a_turn_draws_products_prepared_along_the_orbit_and_settles_to_the_same_set() 
     };
     assert_eq!(records(&ahead), records(&plain));
 }
+
+#[test]
+fn band_variants_are_every_bands_within_the_reach() {
+    let settings = settings();
+    let span = TERRAIN_SPAN / 4.0;
+    // Boundaries (centre distance, no record): near canopy 290.2 m, caster 490.2, understory 510.2.
+    let near = 200.0 + span * HALF_DIAGONAL;
+    let mut out = [Bands::default(); 4];
+    let count = settings.band_variants(100.0, 20.0, span, None, &mut out);
+    assert_eq!(out[..count], [settings.bands(100.0, span, None)], "no boundary inside: one");
+    let count = settings.band_variants(near, 20.0, span, None, &mut out);
+    assert_eq!(
+        out[..count],
+        [settings.bands(near - 20.0, span, None), settings.bands(near + 20.0, span, None)],
+        "across the near canopy's boundary: both sides"
+    );
+    // Across all three: four, and every distance within the reach takes one of them.
+    let count = settings.band_variants(400.0, 200.0, span, None, &mut out);
+    assert_eq!(count, 4);
+    for step in 0..=4000 {
+        let distance = 200.0 + f64::from(step) * 0.1;
+        assert!(out[..count].contains(&settings.bands(distance, span, None)), "{distance}");
+    }
+    // Never below zero.
+    let count = settings.band_variants(10.0, 50.0, span, None, &mut out);
+    assert_eq!(out[..count], [settings.bands(0.0, span, None)]);
+    // A record's hysteresis moves its bands' boundaries out by 64 m.
+    let held = settings.bands(250.0, span, None);
+    assert!(held.near_band && held.caster && held.understory);
+    let count = settings.band_variants(near + 40.0, 20.0, span, Some(held), &mut out);
+    assert_eq!(out[..count], [held], "inside the hysteresis: the record's bands");
+    let count = settings.band_variants(near + 64.0, 5.0, span, Some(held), &mut out);
+    assert_eq!(count, 2, "across the near canopy's retreat");
+}
+
+#[test]
+fn variants_are_held_by_patch_and_bands_and_a_request_takes_only_its_own() {
+    let mut world = World::new(all_blocks());
+    let start = orbit(0.0);
+    world.settle(start.eye);
+    for _ in 0..1200 {
+        world.frame_prepared(start, true);
+    }
+    let [held, ..] = world.residency.prepared_counts();
+    let patches = world.residency.prepared_patches();
+    assert!(held as usize > patches.len(), "some patches hold more than one variant");
+    // A patch not drawn with two variants held.
+    let key = patches
+        .iter()
+        .copied()
+        .find(|&key| {
+            !world.residency.patches.contains_key(&key)
+                && world.residency.prepared_variants(key).len() >= 2
+        })
+        .expect("a patch with two variants");
+    let variants = world.residency.prepared_variants(key);
+    let (surface, vegetation) = world.residency.owner_generations(key);
+    let World {
+        residency,
+        layer,
+        jobs,
+        ..
+    } = &mut world;
+    let counts = |residency: &VegetationResidency| {
+        let [_, _, _, _, used, dropped, _] = residency.prepared_counts();
+        (used, dropped)
+    };
+    let (used, dropped) = counts(residency);
+    // The second variant's request takes it; the first stays held.
+    assert!(residency
+        .take_ahead(key, surface, vegetation, variants[1], layer, jobs)
+        .is_some());
+    assert_eq!(counts(residency), (used + 1, dropped));
+    let others: Vec<Bands> = variants.iter().copied().filter(|&b| b != variants[1]).collect();
+    assert_eq!(residency.prepared_variants(key), others);
+    // Bands nothing was built for: no product, a drop (another variant is held), nothing spent.
+    let missing = (0..8u8)
+        .map(|bits| Bands {
+            understory: bits & 1 != 0,
+            near_band: bits & 2 != 0,
+            caster: bits & 4 != 0,
+        })
+        .find(|bands| !variants.contains(bands))
+        .unwrap();
+    assert!(residency
+        .take_ahead(key, surface, vegetation, missing, layer, jobs)
+        .is_none());
+    assert_eq!(counts(residency), (used + 1, dropped + 1));
+    assert_eq!(residency.prepared_variants(key), others);
+    // The first variant asked for from other generations: spent, not delivered.
+    let before = counts(residency).1;
+    assert!(residency
+        .take_ahead(key, surface, vegetation + 1, variants[0], layer, jobs)
+        .is_none());
+    assert_eq!(counts(residency), (used + 1, before + 1));
+    assert_eq!(residency.prepared_variants(key), others[1..]);
+}
+
+#[test]
+fn a_turn_between_the_samples_finds_its_variants_prepared() {
+    let mut ahead = World::new(all_blocks());
+    let mut plain = World::new(all_blocks());
+    let start = orbit(0.0);
+    ahead.settle(start.eye);
+    plain.settle(start.eye);
+    for _ in 0..1200 {
+        ahead.frame_prepared(start, true);
+    }
+    // A half turn whose cameras fall between the orbit samples (7.5 degrees apart), no job
+    // finishing: every request finds the variant of its bands among those prepared.
+    for step in 0..24 {
+        let view = orbit(std::f32::consts::PI * (step as f32 + 0.37) / 24.0);
+        ahead.frame_prepared(view, false);
+        plain.frame(view.eye, |_| false);
+    }
+    let [_, _, _, over_cap, used, dropped, _] = ahead.residency.prepared_counts();
+    assert!(used > 0 && over_cap == 0);
+    assert_eq!(dropped, 0, "no patch entered with a product for other bands only");
+    let end = orbit(std::f32::consts::PI * 23.37 / 24.0);
+    for _ in 0..64 {
+        ahead.frame_prepared(end, true);
+    }
+    plain.settle(end.eye);
+    assert_eq!(ahead.drawn(), plain.drawn());
+}

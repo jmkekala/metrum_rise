@@ -5,30 +5,42 @@
 //! and held here, never installed, so a patch that enters the wanted set takes a finished product
 //! at its request instead of waiting for a job.
 //!
-//! - **What.** The camera's reach ([`reach_samples`]: the orbit circle, the eye-to-pivot segment,
-//!   the pan disc), sample eye by sample eye in travel order: each sample's wanted patches by the
-//!   residency's own tier rule (`block_state`), less those wanted, drawn, cached or standing in
-//!   now, already held or asked for. A patch's bands are the rule's at that sample eye for a
-//!   patch without a record, which is what its request computes when it enters there.
+//! - **What.** The camera's reach ([`reach_samples`]: the orbit circle, the eye-to-pivot
+//!   segment, the pan disc), sample eye by sample eye in travel order: each sample's wanted patches by the
+//!   residency's own tier rule (`block_state`), less those wanted and waiting for a request now.
+//! - **Variants.** A patch is held by its key and bands. Its variants at a sample are the bands
+//!   a request can ask for from a camera within the sample's spacing (a camera on the shape
+//!   between two samples is within the spacing of both; the bands are thresholds on the distance,
+//!   which moves no faster than the camera): one set of bands, or two to four where band
+//!   boundaries fall inside (`band_variants`). A patch without a record takes the rule's bands
+//!   from no record, as its request computes them when it enters; a drawn, standing-in or cached
+//!   patch through its record's hysteresis, less its own bands while its generations hold (its
+//!   retained product). The jobs keep one live request a patch, so one prepare of a patch is out at
+//!   a time and its other variants follow when it lands.
 //! - **When.** Only while nothing wanted waits (the request queue empty and no request in flight)
-//!   and the view held still since the last frame, one sample a frame, at most [`PREPARE_IN_FLIGHT`] jobs out, through the same jobs and the same
-//!   background pool as the requests; never on the shared pool. A new view (eye or pivot moved)
-//!   starts the samples over; products held stay.
-//! - **Use.** A request whose patch has a product held or being prepared with the generations and
-//!   bands it would ask for takes it: a held product is delivered at once (it installs under the
-//!   frame's budget like any other), a job in flight is adopted (its product is delivered when it
-//!   lands). Anything else is dropped and the patch is asked for as before, so every product
-//!   installed is the one its request would have built: the settled view does not change.
+//!   and the view held still since the last frame, one sample a frame, at most
+//!   [`PREPARE_IN_FLIGHT`] jobs out, through the same jobs and the same background pool as the
+//!   requests; never on the shared pool. A new view (eye or pivot moved) starts the samples over;
+//!   products held stay.
+//! - **Use.** A request whose patch has a product held or being prepared with exactly the
+//!   generations and bands it would ask for takes it: a held product is delivered at once (it
+//!   installs under the frame's budget like any other), a job in flight is adopted (its product is
+//!   delivered when it lands). A prepare in flight that does not fit is cancelled, a held product
+//!   of the request's bands from other generations spent, and the patch is asked for as before, so
+//!   every product installed is the one its request would have built: the settled view does not
+//!   change. Products held for other bands stay for a later request.
 //! - **Retained.** An installed product stays here with its record (5.3 item 3), so a patch
 //!   that leaves the drawn set and is asked for again with the same generations and bands (a turn
 //!   back) installs without a job.
 //! - **Memory.** [`PREPARED_CAP_BYTES`] of products, prepared and retained together; over it the
-//!   products farthest from the camera are evicted (ties by key) and counted (`over_cap`).
+//!   products farthest from the camera are evicted (ties by key and bands) and counted
+//!   (`over_cap`).
 //!
 //! Costs: a frame that prepares `O(blocks within the far range of one sample eye x
-//! subdivision²)`; a moving frame, a still frame with the samples done or a request waiting
-//! `O(1)`; a request
-//! `O(1)` more; an eviction `O(held)`. Storage grows to the cap and the samples, then is reused.
+//! subdivision²)`, each patch's variants `O(1)` (at most four); a moving frame, a still frame
+//! with the samples done or a request waiting `O(1)`; a request `O(1)` more (eight probes for a
+//! patch's other variants); an eviction `O(held)`. Storage grows to the cap and the samples, then
+//! is reused. Jobs out: at most [`PREPARE_IN_FLIGHT`] prepares.
 
 use super::super::Delivery;
 use super::*;
@@ -53,14 +65,14 @@ pub(crate) struct Held<P> {
 }
 
 /// Products held by key within a byte cap; over the cap the farthest from the camera leave.
-pub(crate) struct HeldProducts<P> {
-    held: Map<PatchKey, Held<P>>,
+pub(crate) struct HeldProducts<K, P> {
+    held: Map<K, Held<P>>,
     bytes: usize,
     cap: usize,
     over_cap: u64,
 }
 
-impl<P> HeldProducts<P> {
+impl<K: Copy + Ord + std::hash::Hash, P> HeldProducts<K, P> {
     /// An empty store of at most `cap` bytes.
     pub(crate) fn new(cap: usize) -> Self {
         Self {
@@ -76,7 +88,7 @@ impl<P> HeldProducts<P> {
     /// `O(1)`, an eviction `O(held)`.
     pub(crate) fn hold(
         &mut self,
-        key: PatchKey,
+        key: K,
         held: Held<P>,
         camera: [f32; 2],
         out: &mut Vec<P>,
@@ -102,15 +114,20 @@ impl<P> HeldProducts<P> {
     }
 
     /// Takes `key`'s product.
-    pub(crate) fn take(&mut self, key: PatchKey) -> Option<Held<P>> {
+    pub(crate) fn take(&mut self, key: K) -> Option<Held<P>> {
         let held = self.held.remove(&key)?;
         self.bytes -= held.bytes;
         Some(held)
     }
 
     /// Whether `key` has a product held.
-    pub(crate) fn contains(&self, key: PatchKey) -> bool {
+    pub(crate) fn contains(&self, key: K) -> bool {
         self.held.contains_key(&key)
+    }
+
+    /// `key`'s product, if held.
+    pub(crate) fn get(&self, key: K) -> Option<&Held<P>> {
+        self.held.get(&key)
     }
 
     /// Every product into `out`.
@@ -125,6 +142,18 @@ impl<P> HeldProducts<P> {
     }
 }
 
+// A patch's product for one set of bands: what a prepared or retained product is held by.
+type Variant = (PatchKey, Bands);
+
+// Every set of bands, for a patch's variants.
+fn every_bands() -> impl Iterator<Item = Bands> {
+    (0..8u8).map(|bits| Bands {
+        understory: bits & 1 != 0,
+        near_band: bits & 2 != 0,
+        caster: bits & 4 != 0,
+    })
+}
+
 // A product held with the request it answered.
 pub(super) struct Ahead {
     delivery: Delivery,
@@ -137,10 +166,11 @@ pub(crate) struct Prepared {
     next: usize,
     // The eye and pivot the samples are for.
     view: Option<([f32; 3], [f32; 3])>,
-    // Patches already prepared (or found held, wanted or drawn) for this view's samples.
-    considered: Set<PatchKey>,
+    // Variants already prepared for this view's samples.
+    considered: Set<Variant>,
+    // At most one prepare of a patch is out (the jobs keep one live request a patch).
     preparing: Map<PatchKey, Request>,
-    held: HeldProducts<Ahead>,
+    held: HeldProducts<Variant, Ahead>,
     spent: Vec<VegetationProduct>,
     evicted: Vec<Ahead>,
     entering: Vec<PatchKey>,
@@ -218,21 +248,25 @@ impl VegetationResidency {
         {
             return;
         }
-        let eye = prepared.samples[prepared.next].eye;
-        if self.prepare_sample(&settings, eye, jobs) {
+        let sample = prepared.samples[prepared.next];
+        if self.prepare_sample(&settings, sample, jobs) {
             self.prepared.next += 1;
         }
     }
 
-    // Asks for the patches sample eye `eye` wants that nothing holds; false when the jobs or the
-    // in-flight bound stopped it (the same sample is taken again next frame).
+    // Asks for the variants of the patches sample eye `sample` wants that nothing holds: for
+    // each, the bands a request can ask for from a camera within the sample's spacing (a patch
+    // not drawn without a record; a drawn, standing-in or cached one through its record's
+    // hysteresis, its own bands excluded while its generations hold). False when the jobs, the
+    // in-flight bound or another variant of a patch still out stopped it (the same sample is
+    // taken again next frame).
     fn prepare_sample(
         &mut self,
         settings: &ResidencySettings,
-        eye: [f32; 2],
+        sample: ReachSample,
         jobs: &mut impl PatchJobs,
     ) -> bool {
-        let (span, world) = (self.terrain_span, settings.world);
+        let (span, world, eye) = (self.terrain_span, settings.world, sample.eye);
         let reach = settings.product.far_m + span + span * HALF_DIAGONAL;
         let origin = [-f64::from(world[0]) * 0.5, -f64::from(world[1]) * 0.5];
         let cell = |value: f64, axis: usize| ((value - origin[axis]) / span).floor() as i32;
@@ -265,45 +299,78 @@ impl VegetationResidency {
             }
         }
         let mut finished = true;
-        for &key in &entering {
-            let prepared = &self.prepared;
-            if prepared.considered.contains(&key)
-                || prepared.held.contains(key)
-                || prepared.preparing.contains_key(&key)
-                || self.wanted.contains(&key)
-                || self.patches.contains_key(&key)
-                || self.cache.contains_key(&key)
-                || self.standins.contains_key(&key)
-            {
+        let mut variants = [Bands::default(); 4];
+        'keys: for &key in &entering {
+            let record = self
+                .patches
+                .get(&key)
+                .or_else(|| self.standins.get(&key))
+                .or_else(|| self.cache.get(&key))
+                .copied();
+            // A wanted patch without a record waits for its request (none while preparing).
+            if record.is_none() && self.wanted.contains(&key) {
                 continue;
             }
-            if prepared.preparing.len() >= PREPARE_IN_FLIGHT {
-                finished = false;
-                break;
-            }
-            let distance = key_distance(key, span, world, eye);
-            let bands = settings.bands(distance, key_span(key, span), None);
             let (surface, vegetation) = self.owner_generations(key);
-            let order = PatchOrder {
-                key,
-                origin: key_origin(key, span, world),
-                span: key_span(key, span) as f32,
-                bands,
-            };
-            let Some(serial) = jobs.request(&order, settings) else {
-                finished = false;
-                break;
-            };
-            self.prepared.considered.insert(key);
-            self.prepared.preparing.insert(
-                key,
-                Request {
-                    serial,
-                    surface,
-                    vegetation,
-                    bands,
-                },
+            let current = record.filter(|record| !self.stale(key, record));
+            let distance = key_distance(key, span, world, eye);
+            let patch_span = key_span(key, span);
+            let count = settings.band_variants(
+                distance,
+                sample.spacing,
+                patch_span,
+                record.map(|record| record.bands),
+                &mut variants,
             );
+            for &bands in &variants[..count] {
+                let prepared = &self.prepared;
+                let built = |request: &Request| {
+                    request.surface == surface
+                        && request.vegetation == vegetation
+                        && request.bands == bands
+                };
+                if current.is_some_and(|record| record.bands == bands)
+                    || prepared.considered.contains(&(key, bands))
+                    || prepared
+                        .held
+                        .get((key, bands))
+                        .is_some_and(|held| built(&held.product.request))
+                {
+                    continue;
+                }
+                if let Some(request) = prepared.preparing.get(&key) {
+                    if built(request) {
+                        continue;
+                    }
+                    // One prepare of a patch at a time: this variant follows when it lands.
+                    finished = false;
+                    continue 'keys;
+                }
+                if prepared.preparing.len() >= PREPARE_IN_FLIGHT {
+                    finished = false;
+                    break 'keys;
+                }
+                let order = PatchOrder {
+                    key,
+                    origin: key_origin(key, span, world),
+                    span: patch_span as f32,
+                    bands,
+                };
+                let Some(serial) = jobs.request(&order, settings) else {
+                    finished = false;
+                    break 'keys;
+                };
+                self.prepared.considered.insert((key, bands));
+                self.prepared.preparing.insert(
+                    key,
+                    Request {
+                        serial,
+                        surface,
+                        vegetation,
+                        bands,
+                    },
+                );
+            }
         }
         entering.clear();
         leaving.clear();
@@ -335,7 +402,9 @@ impl VegetationResidency {
             product: Ahead { delivery, request },
         };
         let prepared = &mut self.prepared;
-        prepared.held.hold(key, held, camera, &mut prepared.evicted);
+        prepared
+            .held
+            .hold((key, request.bands), held, camera, &mut prepared.evicted);
         prepared.spent.extend(
             prepared
                 .evicted
@@ -380,7 +449,9 @@ impl VegetationResidency {
                 product: Ahead { delivery, request },
             };
             let prepared = &mut self.prepared;
-            prepared.held.hold(key, held, camera, &mut prepared.evicted);
+            prepared
+                .held
+                .hold((key, record.bands), held, camera, &mut prepared.evicted);
             prepared.spent.extend(
                 prepared
                     .evicted
@@ -405,8 +476,10 @@ impl VegetationResidency {
     }
 
     // At a request: the product held or in flight for `key` if it was built for `request`'s
-    // generations and bands (a held one delivered now); its serial, else `None` with any other
-    // dropped (an in-flight one cancelled, so it is never delivered).
+    // generations and bands (a held one delivered now); its serial, else `None`. A prepare of
+    // the patch still out that does not fit is cancelled (the request's job would supersede it;
+    // so no prepare is out for a requested patch), a held product of these bands built from
+    // other generations is spent; held products of other bands stay for a later request.
     pub(super) fn take_ahead(
         &mut self,
         key: PatchKey,
@@ -419,34 +492,43 @@ impl VegetationResidency {
         let fits = |request: &Request| {
             request.surface == surface && request.vegetation == vegetation && request.bands == bands
         };
-        // A drawn patch asked for again (new bands, an edit) replaces its own retained product;
-        // any other mismatch is a product prepared for other bands or generations.
+        // A drawn patch asked for again (new bands, an edit) whose own products do not fit is a
+        // replacement; any other patch's is a drop (built for other bands or generations).
         let drawn = self.patches.contains_key(&key);
-        if let Some(request) = self.prepared.preparing.remove(&key) {
+        // A request of the patch still out (other bands or generations) is cancelled before a
+        // held product stands in for it, as a new job would supersede it.
+        let asked = self.requested.contains_key(&key);
+        let prepared = &mut self.prepared;
+        let mut other = false;
+        if let Some(request) = prepared.preparing.remove(&key) {
             if fits(&request) {
-                self.prepared.used += 1;
+                prepared.used += 1;
                 return Some(request.serial);
             }
             jobs.cancel(key);
+            other = true;
+        }
+        if let Some(held) = prepared.held.take((key, bands)) {
+            if fits(&held.product.request) {
+                if asked {
+                    jobs.cancel(key);
+                }
+                prepared.used += 1;
+                let serial = held.product.request.serial;
+                layer.deliver(held.product.delivery);
+                return Some(serial);
+            }
+            prepared.spent.push(held.product.delivery.product);
+            other = true;
+        }
+        other |= every_bands().any(|other| prepared.held.contains((key, other)));
+        if other {
             if drawn {
-                self.prepared.replaced += 1;
+                prepared.replaced += 1;
             } else {
-                self.prepared.dropped += 1;
+                prepared.dropped += 1;
             }
         }
-        let held = self.prepared.held.take(key)?;
-        if fits(&held.product.request) {
-            self.prepared.used += 1;
-            let serial = held.product.request.serial;
-            layer.deliver(held.product.delivery);
-            return Some(serial);
-        }
-        if drawn {
-            self.prepared.replaced += 1;
-        } else {
-            self.prepared.dropped += 1;
-        }
-        self.prepared.spent.push(held.product.delivery.product);
         None
     }
 
@@ -455,9 +537,24 @@ impl VegetationResidency {
         self.prepared.spent.drain(..)
     }
 
+    /// The bands of `key`'s held products (tests).
+    #[cfg(test)]
+    pub(crate) fn prepared_variants(&self, key: PatchKey) -> Vec<Bands> {
+        every_bands()
+            .filter(|&bands| self.prepared.held.contains((key, bands)))
+            .collect()
+    }
+
+    /// The patches with a product held (tests).
+    #[cfg(test)]
+    pub(crate) fn prepared_patches(&self) -> std::collections::BTreeSet<PatchKey> {
+        self.prepared.held.held.keys().map(|(key, _)| *key).collect()
+    }
+
     /// The prepared set's counts: products held, their bytes, prepares in flight, evictions over
-    /// the cap, products used by a request, dropped (an entering patch's, built for other
-    /// generations or bands) and replaced (a drawn patch's own, asked for again).
+    /// the cap, products used by a request, dropped (an entering patch's request whose bands and
+    /// generations no product held or in flight was built for, while one for other bands or
+    /// generations was) and replaced (the same for a drawn patch asked for again).
     pub(crate) fn prepared_counts(&self) -> [i64; 7] {
         let (held, bytes, over_cap) = self.prepared.held.counts();
         [

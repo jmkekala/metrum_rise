@@ -18,6 +18,9 @@ pub(crate) const HALF_DIAGONAL: f64 = std::f64::consts::FRAC_1_SQRT_2;
 pub(crate) const BAND_HYSTERESIS_M: f64 = 64.0;
 /// What a margin to a band boundary gives up for single precision distances over kilometres.
 pub(crate) const MARGIN_SLACK_M: f64 = 0.01;
+/// Past a band boundary by this much, a distance takes the bands beyond it
+/// ([`ResidencySettings::band_variants`]).
+const PAST_BOUNDARY_M: f64 = 0.001;
 
 /// The residency's settings, from `vegetation.gd` (its overrides included).
 #[derive(Clone, Copy, Debug)]
@@ -68,7 +71,7 @@ impl ResidencySettings {
 }
 
 /// The three bands of a patch: understory, near canopy, shadow caster.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub(crate) struct Bands {
     /// The understory grid is scattered.
     pub(crate) understory: bool,
@@ -185,6 +188,42 @@ impl ResidencySettings {
             near_band: self.near_band(distance, span, previous.near_band),
             caster: self.caster(distance, span, previous.caster),
         }
+    }
+
+    /// The distinct bands `bands(_, span, previous)` takes at the distances within `reach` of
+    /// `distance` (none below 0), in `out`; their count, at most four. Each band holds up to its
+    /// boundary, so the bands are constant between boundaries: the low end and a point just past
+    /// each boundary inside give every value (`RENDER-32-N`: the variants a request can ask for
+    /// from a camera within `reach` of a sample eye). `O(1)`.
+    pub(crate) fn band_variants(
+        &self,
+        distance: f64,
+        reach: f64,
+        span: f64,
+        previous: Option<Bands>,
+        out: &mut [Bands; 4],
+    ) -> usize {
+        let held = previous.unwrap_or_default();
+        let (low, high) = ((distance - reach).max(0.0), distance + reach);
+        let ends = [
+            self.understory_end(span) + hysteresis(held.understory),
+            self.product.near_m + span * HALF_DIAGONAL + hysteresis(held.near_band),
+            self.shadow_max_m + span * HALF_DIAGONAL + hysteresis(held.caster),
+        ];
+        out[0] = self.bands(low, span, previous);
+        let mut count = 1;
+        for end in ends {
+            let past = end + PAST_BOUNDARY_M;
+            if end < low || past > high {
+                continue;
+            }
+            let bands = self.bands(past, span, previous);
+            if !out[..count].contains(&bands) {
+                out[count] = bands;
+                count += 1;
+            }
+        }
+        count
     }
 
     /// The distance the camera must travel before `bands(_, span, Some(held))` can differ from
