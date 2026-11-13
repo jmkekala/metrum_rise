@@ -292,9 +292,10 @@ impl SimulationNode {
         self.changed_walker_buckets.clone()
     }
 
-    /// The walkers' and moving cars' draw distances (`RENDER-28`), metres from the camera: walker
-    /// fade start, walker draw distance, car fade start, car draw distance. The agents' shaders
-    /// fade over each band; the snapshot stops posing past its end.
+    /// The walkers' and cars' draw distances (`RENDER-28`; parked cars too, `RENDER-48`), metres
+    /// from the camera: walker fade start, walker draw distance, car fade start, car draw
+    /// distance. The agents' and parked cars' shaders fade over each band; the snapshot stops
+    /// posing moving agents past its end.
     #[func]
     pub fn get_agent_draw_distances() -> PackedFloat32Array {
         use crate::config::{

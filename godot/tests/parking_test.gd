@@ -4,6 +4,8 @@
 ## `ROAD-109`: a door keeps its sidewalk and a side without one takes no building, with the reason.
 ## `RENDER-32-P`: the parked renderer draws every car once through the stream node's pooled slots,
 ## makes no node per chunk, and frees every slot when it leaves. `RENDER-46`: a car body is one surface.
+## `RENDER-48`: parked cars fade with the moving cars' material and band, and every drawn bucket's
+## visibility range reaches past the draw distance.
 ## METRUM_PARKING_AGENT_CONTROL optionally points to the pre-extraction agents.gd source.
 extends SceneTree
 
@@ -156,11 +158,38 @@ func _parked_renderer(sim: SimulationNode, full: Dictionary, filled: int) -> voi
 	_expect(rows.size() == expected.size(), "every parked bucket drawn once")
 	_expect(drawn == filled, "every parked car drawn once: %d of %d" % [drawn, filled])
 	_expect(parked.get_child_count() == 0, "no node per parked chunk")
+	_parked_draw_distance(parked, stream)
 	parked.free()
 	var slots: Dictionary = stream.get_parked_slots()
 	_expect(int(slots.slots_live) == 0 and int(slots.slots_spare) == 0 and int(slots.slots_created) == int(slots.slots_freed),
 		"the renderer leaving frees every parked slot: %s" % slots)
 	stream.free()
+
+# `RENDER-48`: a parked car is drawn with the moving cars' fade at the same distances (the same
+# shader, the band from Rust), and a bucket's batch is cut only beyond them (its range in Rust's
+# layer tests; here it reaches past the draw distance for every drawn bucket).
+func _parked_draw_distance(parked: Node3D, stream: Node) -> void:
+	var draw: PackedFloat32Array = SimulationNode.get_agent_draw_distances()
+	var band := Vector2(draw[2], draw[3])
+	var moving := VehicleResources.new()
+	moving.draw_fade_m = band
+	for bucket: int in parked._meshes:
+		var mesh: Mesh = parked._meshes[bucket]
+		var body := mesh.surface_get_material(0) as ShaderMaterial
+		var reference := moving.mesh_for_bucket(bucket).surface_get_material(0) as ShaderMaterial
+		_expect(body != null and reference != null, "car bodies draw through the window shader")
+		if body == null or reference == null:
+			continue
+		_expect(body.shader == reference.shader, "parked bucket %d shares the moving cars' shader" % bucket)
+		_expect(body.get_shader_parameter("draw_fade_m") == band,
+			"parked bucket %d fades over the cars' band %s" % [bucket, band])
+	var census: Dictionary = stream.get_draw_census("parked")
+	var ranges: PackedVector2Array = census.get("range", PackedVector2Array())
+	_expect(ranges.size() == (census.get("count", PackedInt32Array()) as PackedInt32Array).size(), "a range per slot")
+	for i in range(ranges.size()):
+		var visible: bool = (census["visible"] as PackedByteArray)[i] == 1
+		_expect(not visible or (ranges[i].x == 0.0 and ranges[i].y >= band.y),
+			"a drawn parked bucket's range reaches past the draw distance: %s" % ranges[i])
 
 func _run() -> void:
 	_resources()

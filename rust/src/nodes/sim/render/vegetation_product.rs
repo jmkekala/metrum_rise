@@ -770,12 +770,10 @@ impl VegetationProduct {
     ) {
         let mut shared: Option<Aabb> = None;
         for batch in &self.batches[first..] {
+            // A near level's are the engine's own.
             let bounds = if batch.mesh_bounds.is_zero_size() {
-                near_bounds(
-                    self.buffer(batch.buffer),
-                    batch.count as usize,
-                    &catalogue.near_bounds[species][batch.variant as usize],
-                )
+                catalogue.near_bounds[species][batch.variant as usize]
+                    .through_instances(self.buffer(batch.buffer), batch.count as usize)
             } else {
                 batch.mesh_bounds
             };
@@ -862,18 +860,6 @@ impl VegetationProduct {
             batch.range = [0.0, end as f32];
         }
     }
-}
-
-// The engine's bounds of a near MultiMesh: the full mesh's bounds through each instance's
-// transform, merged in instance order.
-fn near_bounds(buffer: &[f32], count: usize, mesh: &Aabb) -> Aabb {
-    let stride = buffer.len() / count.max(1);
-    let mut bounds = Aabb::default();
-    for (i, rows) in buffer.chunks_exact(stride).enumerate() {
-        let one = mesh.transformed(rows);
-        bounds = if i == 0 { one } else { bounds.merge(&one) };
-    }
-    bounds
 }
 
 // A canopy batch's range (`lod_range`): the caster lives as long as the patch; the near level

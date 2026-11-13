@@ -1,7 +1,8 @@
 // The agents' draw distance fade (`RENDER-28`, terrain.md "Agent draw distances"): a walker or a
-// moving car is drawn whole within `fade_m.x` metres of the main camera, loses pixels over the
-// band to `fade_m.y` and draws nothing beyond, where the render snapshot stops posing it a little
-// further out (config.rs `WALKER_DRAW_DISTANCE_M`, `CAR_DRAW_DISTANCE_M`). The distance is the
+// car (moving or parked, `RENDER-48`) is drawn whole within `fade_m.x` metres of the main camera,
+// loses pixels over the band to `fade_m.y` and draws nothing beyond, where the render snapshot
+// stops posing a moving agent a little further out and a parked bucket's batch ends its
+// visibility range (config.rs `WALKER_DRAW_DISTANCE_M`, `CAR_DRAW_DISTANCE_M`). The distance is the
 // instance origin's from the main camera, so the shadow passes fade an agent with its body. No
 // alpha blending: a fading agent discards a share of its pixels by a screen-space dither.
 

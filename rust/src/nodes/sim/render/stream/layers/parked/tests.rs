@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
 //! The parked layer against the recorder: a chunk drawn as its bucket nodes drew it, a chunk
-//! updated whole, a full pool refusing a chunk without sending anything, and the teardown that
-//! frees every object the layer made.
+//! updated whole, a full pool refusing a chunk without sending anything, the teardown that
+//! frees every object the layer made, and the cars' draw distance (`RENDER-48`) as the engine
+//! applies a bucket's visibility range.
 
 use super::super::super::backend::Scenario;
-use super::super::super::backend::recorder::Recorder;
+use super::super::super::backend::recorder::{RecordedInstance, Recorder};
 use super::*;
 
 fn poses(count: usize, x: f32) -> Vec<f32> {
@@ -14,10 +15,16 @@ fn poses(count: usize, x: f32) -> Vec<f32> {
         .collect()
 }
 
+// A car's bounds: 2 m wide, 1.5 m high, 4.5 m long, standing on its origin.
+const CAR: Aabb = Aabb {
+    position: [-1.0, 0.0, -2.25],
+    size: [2.0, 1.5, 4.5],
+};
+
 fn layer() -> ParkedLayer {
     let mut layer = ParkedLayer::new(64, 16);
-    layer.register(10, 1);
-    layer.register(21, 2);
+    layer.register(10, 1, CAR);
+    layer.register(21, 2, CAR);
     layer
 }
 
@@ -50,7 +57,8 @@ fn a_chunk_draws_each_bucket_as_its_node_did() {
         assert!(!instance.dynamic_gi);
         let multimesh = &backend.multimeshes[&instance.base];
         assert!(!multimesh.colors && !multimesh.custom);
-        assert_eq!(multimesh.aabb, Aabb::default(), "the engine bounds the poses");
+        let rows = &multimesh.rows[..multimesh.visible_count.unwrap() as usize * STRIDE];
+        assert_eq!(multimesh.aabb, CAR.through_instances(rows, rows.len() / STRIDE), "the engine's bounds of the poses");
     }
     assert_eq!(backend.visible(Scenario::Reflection).count(), 0);
 }
@@ -78,8 +86,8 @@ fn a_chunk_update_hides_the_buckets_that_left_and_reuses_its_objects() {
 fn a_chunk_the_full_pool_cannot_take_is_refused_whole_until_room_frees() {
     let mut backend = Recorder::new();
     let mut layer = ParkedLayer::new(2, 2);
-    layer.register(10, 1);
-    layer.register(21, 2);
+    layer.register(10, 1, CAR);
+    layer.register(21, 2, CAR);
     let (a, b, c) = (poses(3, 0.0), poses(5, 100.0), poses(2, 7.0));
     layer.install(&mut backend, (0, 0), [(10, &a[..]), (21, &b[..])].into_iter());
     let before = (backend.commands.len(), drawn(&backend));
@@ -125,4 +133,67 @@ fn the_cast_toggle_reaches_drawn_and_later_chunks() {
     assert!(backend.visible(Scenario::Main).all(|(_, car)| car.shadow == Shadow::Off));
     layer.set_cast_shadows(&mut backend, true);
     assert!(backend.visible(Scenario::Main).all(|(_, car)| car.shadow == Shadow::On));
+}
+
+// Whether the engine draws a batch for a camera at `camera`, in the main and the shadow passes
+// alike: `RendererSceneCull::_visibility_range_check` (Godot 4.7) with no margins, measured from
+// the centre of the batch's bounds (its instance stands at the origin).
+fn engine_draws(backend: &Recorder, instance: &RecordedInstance, camera: [f32; 3]) -> bool {
+    let centre = backend.multimeshes[&instance.base].aabb.center();
+    let [begin, end] = instance.range;
+    let distance = length3(sub3(camera, centre));
+    !(end > 0.0 && distance > end) && !(begin > 0.0 && distance < begin)
+}
+
+#[test]
+fn a_bucket_draws_while_any_of_its_cars_is_within_the_draw_distance() {
+    // The cars stand from x = 0 to 300 on a row and from z = 0 to 30 across it.
+    let rows: Vec<f32> = (0..40)
+        .flat_map(|i| {
+            let (x, z) = ((i % 10) as f32 * 33.3, (i / 10) as f32 * 10.0);
+            [0.0, 0.0, 1.0, x, 0.0, 1.0, 0.0, 0.0, -1.0, 0.0, 0.0, z]
+        })
+        .collect();
+    let mut backend = Recorder::new();
+    let mut layer = layer();
+    assert!(layer.install(&mut backend, (0, 0), [(10, &rows[..])].into_iter()));
+    let (_, car) = backend.visible(Scenario::Main).next().expect("drawn");
+    let car = car.clone();
+    let origins: Vec<[f32; 3]> = rows.chunks_exact(STRIDE).map(|p| [p[3], p[7], p[11]]).collect();
+    let nearest = |camera: [f32; 3]| {
+        origins.iter().map(|&o| length3(sub3(camera, o))).fold(f32::INFINITY, f32::min)
+    };
+    // Cameras on rings about the bucket, from inside it to far beyond the draw distance.
+    let mut cut = 0;
+    let mut straddling = 0;
+    for ring in 0..60 {
+        let radius = 50.0 + 60.0 * ring as f32;
+        for step in 0..64 {
+            let angle = step as f32 * std::f32::consts::TAU / 64.0;
+            let height = [2.0, 80.0, 900.0][step % 3];
+            let camera = [150.0 + radius * angle.cos(), height, 15.0 + radius * angle.sin()];
+            let drawn = engine_draws(&backend, &car, camera);
+            let near = nearest(camera);
+            if near < CAR_DRAW_DISTANCE_M {
+                // A car not yet faded out whole: the batch must draw.
+                assert!(drawn, "a car {near} m away is cut at {camera:?}");
+            }
+            if !drawn {
+                cut += 1;
+            }
+            let far = origins.iter().map(|&o| length3(sub3(camera, o))).fold(0.0, f32::max);
+            straddling += usize::from(drawn && near < CAR_DRAW_DISTANCE_M && far > CAR_DRAW_DISTANCE_M);
+        }
+    }
+    assert!(cut > 0, "a bucket beyond the draw distance draws nothing");
+    assert!(straddling > 0, "some poses straddle the draw distance (the material fades those cars)");
+    // The range ends no farther out than the bucket's own extent requires.
+    let centre = backend.multimeshes[&car.base].aabb.center();
+    let reach = origins.iter().map(|&o| length3(sub3(centre, o))).fold(0.0, f32::max);
+    assert!(car.range[1] >= CAR_DRAW_DISTANCE_M + reach);
+    assert!(car.range[1] <= CAR_DRAW_DISTANCE_M + reach + 20.0, "{:?}", car.range);
+    // A camera 1 m past the range from the centre, straight up: the batch is skipped.
+    let above = [centre[0], centre[1] + car.range[1] + 1.0, centre[2]];
+    assert!(!engine_draws(&backend, &car, above));
+    assert!(nearest(above) > CAR_DRAW_DISTANCE_M);
 }

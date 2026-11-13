@@ -6,6 +6,16 @@
 //! mesh with its own materials, the engine's bounds of the poses, shadows on with the dynamic
 //! casters' 12 m extra visibility margin. No node is created or freed per chunk.
 //!
+//! The cars' draw distance (`RENDER-48`, the moving cars' `CAR_DRAW_DISTANCE_M` and fade): the
+//! cars' materials fade each car out by its own distance from the main camera (`parked_cars.gd`
+//! builds them with the moving cars' band), and each bucket's batch carries a visibility range
+//! that ends where no car of it can be within the draw distance, so the engine skips a bucket
+//! beyond the range in the main and the shadow passes alike, before anything of it is drawn. The
+//! range is measured, as the engine measures it, from the centre of the batch's bounds: this
+//! layer computes those bounds the engine's way and sends them as the `MultiMesh`'s own, so the
+//! centre is known exactly. Nothing runs a frame for it: the engine checks the range of a batch
+//! only as it culls, `O(buckets in view)`, and no slot is shown or hidden for it.
+//!
 //! A chunk installs whole or not at all: its buckets that left are hidden and its new ones drawn
 //! in the same call, and a chunk the pool cannot take (every slot of the limit live) sends
 //! nothing and is refused, so its publication is not acknowledged and the snapshot offers it
@@ -17,7 +27,8 @@
 use super::super::backend::{
     Drawn, RenderBackend, Role, Shadow, SlotId, SlotKind, SlotPool, capacity_class,
 };
-use crate::nodes::sim::render::vegetation_product::godot_math::Aabb;
+use crate::config::CAR_DRAW_DISTANCE_M;
+use crate::nodes::sim::render::vegetation_product::godot_math::{Aabb, length3, max3, min3, sub3};
 use std::collections::HashMap;
 
 type Map<K, V> = HashMap<K, V, foldhash::fast::FixedState>;
@@ -37,7 +48,8 @@ const STRIDE: usize = 12;
 /// The parked chunks' slots.
 pub(crate) struct ParkedLayer {
     pool: SlotPool,
-    meshes: Map<u32, u32>,
+    // Each bucket's catalogue mesh and the mesh's bounds.
+    meshes: Map<u32, (u32, Aabb)>,
     drawn: Map<(ChunkKey, u32), SlotId>,
     // Each drawn chunk's buckets, so a chunk's update finds the buckets that left.
     buckets: Map<ChunkKey, Vec<u32>>,
@@ -78,9 +90,10 @@ impl ParkedLayer {
         }
     }
 
-    /// Registers a vehicle bucket's mesh (a catalogue index).
-    pub(crate) fn register(&mut self, bucket: u32, mesh: u32) {
-        self.meshes.insert(bucket, mesh);
+    /// Registers a vehicle bucket's mesh (a catalogue index) and the mesh's bounds
+    /// (`Mesh.get_aabb`, what the engine bounds a `MultiMesh` of it with).
+    pub(crate) fn register(&mut self, bucket: u32, mesh: u32, bounds: Aabb) {
+        self.meshes.insert(bucket, (mesh, bounds));
     }
 
     /// Whether a bucket has its mesh.
@@ -127,11 +140,12 @@ impl ParkedLayer {
                 continue;
             }
             let count = (rows.len() / STRIDE) as u32;
+            let (mesh, mesh_bounds) = self.meshes[&bucket];
             let slot = match self.drawn.get(&(chunk, bucket)) {
                 Some(&slot) => slot,
                 None => {
                     let kind = SlotKind {
-                        mesh: self.meshes[&bucket],
+                        mesh,
                         class: capacity_class(count).0,
                         colors: false,
                         custom: false,
@@ -146,8 +160,9 @@ impl ParkedLayer {
                     slot
                 }
             };
-            self.pool.fill(backend, slot, rows, count, Aabb::default());
-            self.draw(backend, slot);
+            let (bounds, range_end) = drawn_bounds(&mesh_bounds, rows);
+            self.pool.fill(backend, slot, rows, count, bounds);
+            self.draw(backend, slot, range_end);
         }
         if !kept.is_empty() {
             self.buckets.insert(chunk, kept);
@@ -189,16 +204,16 @@ impl ParkedLayer {
     // Whether a drawn bucket keeps its slot: its mesh and a size class that holds the poses.
     fn keeps(&self, slot: SlotId, bucket: u32, floats: usize) -> bool {
         let kind = self.pool.slot(slot).kind();
-        kind.mesh == self.meshes[&bucket]
+        kind.mesh == self.meshes[&bucket].0
             && kind.class >= capacity_class((floats / STRIDE) as u32).0
     }
 
-    fn draw(&mut self, backend: &mut impl RenderBackend, slot: SlotId) {
+    fn draw(&mut self, backend: &mut impl RenderBackend, slot: SlotId, range_end: f32) {
         let fresh = self.pool.slot(slot).drawn(Role::Main).is_none();
         let main = Drawn {
             origin: [0.0; 3],
             aabb: Aabb::default(),
-            range: [0.0; 2],
+            range: [0.0, range_end],
             material: None,
             shadow: if self.cast_shadows {
                 Shadow::On
@@ -217,6 +232,28 @@ impl ParkedLayer {
     pub(crate) fn drawn(&self) -> impl Iterator<Item = (ChunkKey, u32, SlotId)> + '_ {
         self.drawn.iter().map(|(&(chunk, bucket), &slot)| (chunk, bucket, slot))
     }
+}
+
+// A bucket's bounds as the engine computes a `MultiMesh`'s (the mesh's bounds through each pose,
+// merged in pose order) and its visibility range's end: the draw distance plus the farthest a car
+// origin stands from the bounds' centre (the farthest corner of the origins' box). The engine
+// skips the batch when the camera is farther than that from the centre (the range has no
+// margins, so no state), and then every origin is beyond the draw distance, where the material
+// has faded its car out whole. `O(poses)`.
+fn drawn_bounds(mesh: &Aabb, rows: &[f32]) -> (Aabb, f32) {
+    let bounds = mesh.through_instances(rows, rows.len() / STRIDE);
+    let (mut low, mut high) = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]);
+    for pose in rows.chunks_exact(STRIDE) {
+        let origin = [pose[3], pose[7], pose[11]];
+        low = min3(low, origin);
+        high = max3(high, origin);
+    }
+    let centre = bounds.center();
+    let reach = Aabb::new(low, sub3(high, low))
+        .corners()
+        .into_iter()
+        .fold(0.0f32, |reach, corner| reach.max(length3(sub3(centre, corner))));
+    (bounds, CAR_DRAW_DISTANCE_M + reach)
 }
 
 #[cfg(test)]

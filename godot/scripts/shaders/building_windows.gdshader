@@ -41,8 +41,8 @@ varying vec3 window_radiance;
 // and previews share the material unchanged.
 instance uniform bool water_reflection_proxy = false;
 #ifdef AGENT_DRAW_FADE
-// Moving cars only (window_materials.gd `create`'s `draw_fade_m`): their draw distance fade band
-// from the camera, metres.
+// Cars only, moving and parked (window_materials.gd `create`'s `draw_fade_m`): their draw
+// distance fade band from the camera, metres.
 #include "res://scripts/shaders/agent_draw_fade.gdshaderinc"
 uniform vec2 draw_fade_m = vec2(1.0e9, 2.0e9);
 varying flat float draw_fade;

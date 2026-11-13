@@ -912,15 +912,18 @@ impl StreamNode {
         }
     }
 
-    /// Registers vehicle bucket `bucket`'s mesh (built by `parked_cars.gd` as the bucket is first
-    /// met). A bucket registered again keeps its first mesh.
+    /// Registers vehicle bucket `bucket`'s mesh and its bounds (`Mesh.get_aabb`; built by
+    /// `parked_cars.gd` as the bucket is first met). The bounds give each drawn bucket the bounds
+    /// its draw distance is measured from (`RENDER-48`). A bucket registered again keeps its
+    /// first mesh.
     #[func]
-    pub fn register_parked_mesh(&mut self, bucket: i64, mesh: Rid) {
+    pub fn register_parked_mesh(&mut self, bucket: i64, mesh: Rid, bounds: godot::builtin::Aabb) {
         if let Some(draw) = self.parked.as_mut()
             && !draw.layer.has_mesh(bucket as u32)
         {
             let index = draw.backend.push_mesh(mesh);
-            draw.layer.register(bucket as u32, index);
+            let bounds = Aabb::new(bounds.position.to_array(), bounds.size.to_array());
+            draw.layer.register(bucket as u32, index, bounds);
         }
     }
 

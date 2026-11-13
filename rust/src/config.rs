@@ -72,11 +72,14 @@ pub const WALKER_FADE_START_M: f32 = 800.0;
 /// [`AGENT_CULL_PADDING_M`] further out, for the camera's movement in the snapshot's latency.
 pub const WALKER_DRAW_DISTANCE_M: f32 = 1000.0;
 
-/// Distance (metres) from the camera at which moving cars start to fade out (`RENDER-28`).
+/// Distance (metres) from the camera at which cars, moving and parked, start to fade out
+/// (`RENDER-28`, `RENDER-48`).
 pub const CAR_FADE_START_M: f32 = 2000.0;
 
-/// Moving cars' draw distance (metres) from the camera, as [`WALKER_DRAW_DISTANCE_M`] for
-/// walkers. Parked cars are drawn by their own renderer and are not cut (`RENDER-32-P`).
+/// Cars' draw distance (metres) from the camera, as [`WALKER_DRAW_DISTANCE_M`] for walkers.
+/// Moving cars are cut by the render snapshot; parked cars fade with the same band and each
+/// parked bucket's batch ends its visibility range where none of its cars is within this
+/// distance (`RENDER-48`, `stream/layers/parked.rs`).
 pub const CAR_DRAW_DISTANCE_M: f32 = 2500.0;
 
 // IDM (Intelligent Driver Model) — Car Physics

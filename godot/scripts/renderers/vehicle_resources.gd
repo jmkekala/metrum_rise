@@ -27,8 +27,8 @@ var _vehicle_glb_cache: Dictionary = {}
 var texture_cache: Dictionary = {}
 var _lamp_materials: Dictionary = {}
 var lamps_enabled := true
-# Moving cars' draw distance fade band from the camera, metres (agents.gd sets it from Rust,
-# `RENDER-28`); zero draws at every distance (parked cars, `RENDER-32-P`).
+# The cars' draw distance fade band from the camera, metres (agents.gd and parked_cars.gd set it
+# from Rust, `RENDER-28`, `RENDER-48`); zero draws at every distance.
 var draw_fade_m := Vector2.ZERO
 
 func _load_source_texture(path: String) -> Texture2D:

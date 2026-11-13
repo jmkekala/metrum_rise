@@ -235,6 +235,19 @@ impl Aabb {
         Aabb::new(tmin, sub3(tmax, tmin))
     }
 
+    /// A `MultiMesh`'s bounds as the engine computes them (`_multimesh_re_create_aabb`): these
+    /// mesh bounds through each of the `count` instances of `buffer` (rows of one stride, the
+    /// transform first), merged in instance order. `O(count)`.
+    pub(crate) fn through_instances(&self, buffer: &[f32], count: usize) -> Aabb {
+        let stride = buffer.len() / count.max(1);
+        let mut bounds = Aabb::default();
+        for (i, rows) in buffer.chunks_exact(stride).enumerate() {
+            let one = self.transformed(rows);
+            bounds = if i == 0 { one } else { bounds.merge(&one) };
+        }
+        bounds
+    }
+
     /// The six lanes as the bridge packs them: position, then size.
     pub(crate) fn lanes(&self) -> [f32; 6] {
         let (p, s) = (self.position, self.size);

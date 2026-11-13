@@ -6,6 +6,9 @@
 ## no node per chunk. Payloads arrive with the moving cars of the same snapshot (agents.gd); one
 ## acknowledgement answers each, once every chunk of it is drawn (a chunk the pool refused is
 ## offered again). Unchanged chunks perform no upload. Parked resources omit all lamps and lights.
+## The cars draw to the moving cars' distance and fade out over the same band (`RENDER-48`):
+## their materials take the band from Rust, and each bucket's batch ends its visibility range in
+## Rust from the mesh bounds registered here.
 extends Node3D
 
 const VehicleResources := preload("res://scripts/renderers/vehicle_resources.gd")
@@ -20,6 +23,8 @@ var _fresh := false
 
 func _ready() -> void:
 	_resources.lamps_enabled = false
+	var draw: PackedFloat32Array = SimulationNode.get_agent_draw_distances()
+	_resources.draw_fade_m = Vector2(draw[2], draw[3])
 	if _stream != null:
 		_stream.set_parked_scenario(get_world_3d().scenario)
 
@@ -56,7 +61,8 @@ func apply_publication(payload: Dictionary) -> void:
 		for bucket: int in buckets:
 			if not _meshes.has(bucket):
 				_meshes[bucket] = _resources.mesh_for_bucket(bucket)
-				_stream.register_parked_mesh(bucket, _meshes[bucket].get_rid())
+				var mesh: Mesh = _meshes[bucket]
+				_stream.register_parked_mesh(bucket, mesh.get_rid(), mesh.get_aabb())
 		if _stream.set_parked_chunk(key, buckets):
 			_versions[key] = version
 		else:

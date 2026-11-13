@@ -19,8 +19,8 @@ static func channel(index: int) -> Vector4:
 	result[clampi(index, 0, 3)] = 1.0
 	return result
 
-# `draw_fade_m`, when set, is a moving car's draw distance fade band from the camera in metres
-# (agents.gd, `RENDER-28`): the material dithers the car out over it.
+# `draw_fade_m`, when set, is a car's draw distance fade band from the camera in metres
+# (agents.gd, parked_cars.gd; `RENDER-28`, `RENDER-48`): the material dithers the car out over it.
 static func create(source: BaseMaterial3D, preview: bool = false, brightness: float = DEFAULT_BRIGHTNESS,
 		draw_fade_m := Vector2.ZERO) -> ShaderMaterial:
 	var flags := ""
