@@ -87,6 +87,29 @@ fn refuse_tests_in_the_players_profile() {
     };
     if let Some(reason) = refusal(&facts) {
         godot_error!("{reason}");
-        std::process::exit(3);
+        exit_without_teardown(3);
     }
+}
+
+// The C runtime's `_exit` (POSIX; Windows' UCRT and msvcrt export it too): ends the process at
+// once, without atexit handlers or C++ static destructors.
+unsafe extern "C" {
+    fn _exit(status: std::ffi::c_int) -> !;
+}
+
+// `TOOLS-22`: `std::process::exit` runs the C runtime's `exit`, whose atexit handlers and C++
+// static destructors tear Godot down while its own threads still run; under load one met a live
+// thread (`pure virtual method called`, exit 134 instead of 3).
+fn exit_without_teardown(status: i32) -> ! {
+    use std::io::Write;
+    // Rust's own buffered output first; Godot printed the error to the C runtime's stderr, which
+    // is unbuffered, and its file logger flushes on every error.
+    let _ = std::io::stdout().flush();
+    let _ = std::io::stderr().flush();
+    // SAFETY: `_exit` is the C runtime's, declared with its C signature. The refusal runs at the
+    // extension's Scene init stage, before Godot creates a main loop, runs any script or writes
+    // to user://: nothing of ours holds state that needs flushing or dropping, and the error line
+    // is written and flushed above. Skipping Godot's teardown (its static destructors and
+    // threads) is the point: the process ends with the status and nothing else runs.
+    unsafe { _exit(status) }
 }

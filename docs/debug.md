@@ -664,8 +664,12 @@ the player's profile: at its Scene initialisation stage (before Godot creates a 
 `--benchmark`, `--generate-benchmark`), the project keeps its own name and Godot's data directory
 is the platform's default one (`OS.get_data_dir()` against `$HOME/.local/share`, `$HOME/Library/Application
 Support` or `%APPDATA%`; no home directory counts as the player's), it logs the reason and exits
-with status 3 before anything writes to user:// (`rust/src/debug/profile_guard.rs`). Godot's own
-log opens before extensions load, and an import runs no test: the launcher covers those. The gate's
+with status 3 before anything writes to user:// (`rust/src/debug/profile_guard.rs`). The exit is
+the C runtime's `_exit` (`TOOLS-22`, an `unsafe` call the owner approved): `std::process::exit`
+calls the C runtime's `exit`, whose atexit handlers and C++ static destructors tore Godot down
+while its threads still ran and under load crashed (`pure virtual method called`, exit 134
+instead of 3). Nothing of the extension needs flushing or dropping that early, and the error line
+is written before it. Godot's own log opens before extensions load, and an import runs no test: the launcher covers those. The gate's
 `profile_guard_test` runs the same script in its isolated profile (it writes its marker) and in a
 copy of that project keeping the player's name, under a throwaway `HOME` with the XDG homes unset
 (refused, exit 3, no marker).
