@@ -2600,6 +2600,13 @@ luxury SUV; `freight/` delivery van) with their colormap atlas variants. Generic
 were tried on this branch and withdrawn as not good enough to ship; they are kept off-tree. The
 Kenney meshes carry no lamp data, so `vehicle_lamps.gd` holds a measured table of front and rear
 lamp anchors per model (left lamps mirror X); procedural cars derive theirs from the AABB.
+`vehicle_resources.gd` builds a car's body as one surface (`RENDER-46`): the loader gives every
+glTF primitive of a model (the body panels and four wheels) the model's one atlas material, so it
+concatenates them in node order with their indices offset; their vertices, triangles and winding
+stay the model's own, and a MultiMesh of moving or parked cars draws the body once. The lamp
+surfaces keep their own materials. Any model the game loads goes through the same build, so
+replacement models need no merged assets; a loader that reads several materials from a model
+would merge per material.
 
 At night (sun below 4 to -2 degrees, as the street lights):
 

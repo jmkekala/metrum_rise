@@ -16215,6 +16215,114 @@ the base's recorded set); missing docs 0; debug `cargo test --lib` 2,535 passed,
 ignored; `./run.sh --test` PASS (nextest 2,539 passed, 225 skipped; godot-main and godot-vehicle PASS, no script skipped, 0 SCRIPT ERROR); the stream benchmark's tool tests (two new census cases)
 pass.
 
+### One body surface per car mesh; street lights left in their cells (`RENDER-46`, 2026-11-13)
+
+Round CS1, the owner's decision of 2026-11-13: lever 1 (one body surface per car mesh) built when
+the mesh is built, on whatever models the game loads, with no visible change; lever 5 (street
+lights in chunk batches) folded in under the same bar. Branch `stream-cs1` on `dev` `0fffb6a2`.
+The branch changes no Rust: its library is the control's (`dev` `0fffb6a2`, release, SHA-256
+`e9160f7c`), so every comparison below is the same library with `dev`'s scripts (control) and the
+branch's (branch). Godot 4.7.2 Forward+, RADV on the RX 7900 XTX, gamescope headless at 1920x1080,
+P-cores, eight workers, isolated profile; the 30k city, the 100k commit city, Kuopio.
+
+**Lever 1, built.** `vehicle_resources.gd` read every glTF primitive of a car (the body panels and
+the four wheels) into a surface of its own, all with the model's one atlas material, then added
+the two lamp surfaces (moving cars only). It now concatenates the primitives into one surface in
+node order, each primitive's indices offset by the vertices before it: the vertices, normals,
+UVs, triangles, winding and bounds are the primitives' own (`parking_test.gd` compares the merged
+body with its primitives as Godot stores them: arrays, index buffer and bounds equal, one body
+surface, a surface per material). A parked car's MultiMesh draws once instead of 5-6 times, a
+moving car's three times (body, glow, beam) instead of 7-8. R44's estimate (30k still 6,009 to
+about 4,100 main-pass draws) counted three surfaces for every car; parked cars carry no lamp
+surfaces, so they fall to one.
+
+**Lever 5, stopped (no build kept on the branch).** The street lights draw one MultiMesh per 64 m
+cell, kind and level of detail (R44 read the batching right: 604 drawn of 11,677 at the 30k still,
+a median 2 poles), and the cells are what keeps the look: each level's batch shows by Godot's
+visibility range measured from the centre of its own bounds, with 10 m margins as hysteresis.
+A chunk batch per kind and level, with the cells chosen outside the engine by the engine's own
+rule, was built and tested (`stream-cs1-lights` `1a4e730b`: `street_lights/poles.rs` keeps each
+cell's centre as the engine computes its batch bounds, bit for bit against Godot's AABB math in
+`street_lights_test.gd`, and applies the range rule with its hysteresis from the main camera just
+before each frame draws). Its night `saved` still differed from the control by 605 px (far lamp
+lenses near the 1.4 km band edge; `city` identical; the same 605 px in both branch runs, the
+control's two runs identical); the car change alone gave identical bytes on both night poses. The
+cause is in Godot: an instance with no visibility dependencies sits in bin 0 of
+`RendererSceneCull::_visibility_cull`, which that pass skips, and its range and hysteresis are
+checked only in the cull loop after the layer and frustum tests (`VIS_CHECK` after
+`IN_FRUSTUM`), for the main view and each shadow split. A cell's level inside the margins
+therefore depends on when its batch was last inside a frustum; reproducing that would mean
+reproducing Godot's view and shadow-split culling. What it would save (census, the withdrawn
+build over this branch): 30k still 2,736 to 2,210 main-pass draws and 860 to 757 shadow, 100k
+5,242 to 4,695 and 863 to 741; primitives +0.01 M (off-screen poles inside chunk batches). The
+choice goes to the user (see the roadmap row).
+
+**Draws and primitives** (Godot's counters at the census poses, main pass / shadow pass; the
+primitives are equal to the digit at every pose on both inputs):
+
+| Input, pose | Control draws | Branch draws | Main-pass primitives (M) | GPU ms (census frame) |
+|---|---:|---:|---:|---:|
+| 30k still | 6,009 / 2,631 | 2,736 / 860 | 48.25 | 7.59 / 7.55 |
+| 30k mid-turn | 5,997 / 2,866 | 2,727 / 1,005 | 47.22 | 7.52 / 7.44 |
+| 30k street level (3 views) | 4,286-4,503 / 3,001-3,114 | 2,010-2,169 / 995-1,095 | 33.84-37.12 | 5.84-5.95 / 5.77-5.99 |
+| 30k mid height | 4,592 / 2,682 | 2,227 / 887 | 39.24 | 7.10 / 7.05 |
+| 100k still | 12,676 / 2,478 | 5,242 / 863 | 98.79 | 14.43 / 12.20 |
+| 100k mid-turn | 12,774 / 2,663 | 5,258 / 968 | 101.3 | 16.27 / 11.86 |
+| 100k street level (3 views) | 9,597-10,387 / 2,736-2,850 | 4,113-4,375 / 968-995 | 72.99-84.36 | 10.85-12.09 / 9.14-10.37 |
+
+By layer (30k still / 100k still, main pass): parked cars 3,860 to 702 and 8,946 to 1,627 draws,
+moving cars 190 to 75; nothing else moved. The `RenderingDevice` draws follow (R44's relation,
+twice the main pass plus the shadow pass: 30k still about 14,600 to 6,300). Kuopio's 25 empty
+moving-car batches still count draws: 1,515 to 1,400 at its still, primitives equal.
+
+**Render CPU and the command replay** (PL1's method: `perf record` of Godot's main thread,
+cpu-clock every 250 us with frame pointers, joined to the rows by `t_unix`; the chain under
+`RenderingServerDefault::_draw`; paused 30k, a 6 s still and the 1 s turns, one run a side):
+
+| ms a frame | Control still | Branch still | Control 1 s turns | Branch 1 s turns |
+|---|---:|---:|---:|---:|
+| Under `_draw` | 4.82 | 3.42 | 8.51 | 5.41 |
+| viewport draw (`_draw_3d`) | 3.04 | 2.13 | 4.99 | 3.20 |
+| command replay (`_end_frame`) | 1.47 | 0.96 | 2.71 | 1.54 |
+| `render_cpu_ms` p50 (series rows) | 3.58-3.66 | 2.33-2.47 | 5.50-5.73 | 3.50-3.79 |
+
+```bash
+tools/stream_benchmark.py series --input-label 30k --save <populated_city_30000.sqlite> \
+    --ctl-library <dev .so> --ctl-scripts <dev godot/scripts> --library <dev .so> --out "$ARTIFACTS"
+tools/stream_benchmark.py run --label c30-br --save <...30000...> --phases census,still,turns --turns 1 --still-s 6 ...
+perf record -k realtime -e cpu-clock/period=250000/ --call-graph fp -t <godot main thread>   # from LOAD_END
+```
+
+**Rows** (C B B C, `compare`): 30k every moving phase better at p50, the 1 s turns by 3.7-4.2 ms
+(12.2-13.4 to 8.3-9.1 ms, now within 1.5 ms of the GPU's 7.3-7.5), the 0.5 s turns by 2.1-3.4, the
+far zoom-out by 3.3, the night turns by 3.0-3.5; still level (GPU-bound at 7.5). One flag:
+`pan_back` max +3.6 against a spread of 2.4. Instrumented (`--detail`, one run a side): the
+worst `pan_back` frame is a draw-stage wait on both sides (branch 21.3 ms with 13.5 ms between
+`frame_pre_draw` and `frame_post_draw` at 2.9 ms render CPU and 6.9 ms GPU; control 17.8 ms with
+14.7 ms there), not the scripts (under 1 ms) nor Godot's render CPU. The one rerun (30k pan, C B
+B C): all three pans better at p50 by 0.2, `pan_back` max +0.2 against 1.5: level. Kuopio (no
+cars; its 25 empty moving-car batches draw 115 fewer times, nothing the branch changed runs a
+frame there): first series level or within 0.1 ms at p50 on 1.7-2.2 ms frames, flags on
+`turn_out`, `pan_out`, `far_zoom_out`, `far_to_ground`, the night turn and pan; instrumented, the
+worst `far_to_ground` and `night_pan_out` frames are draw-stage waits (12.2 ms at 3.6 ms render
+CPU and 0.9 ms GPU) and the street lights' night pass (0.9 ms, unchanged code); the rerun of
+Kuopio's flagged phases: those rows level, the flags moved to `turn_repeat` 0.5 s and `pan_back`
+(p50 +0.1 at a spread of 0.1) and the night still and turn back (max +1.3 and +2.1): rows that
+were level in the first series. Kuopio's flags follow the run, not the rows.
+
+**Stills and digests.** Kuopio close, mid, forest_low identical bytes (control and branch; the
+first branch capture carried the withdrawn lights, a later one without them: identical). 30k
+saved, city, city_low three runs a side: city and city_low identical but for one 1 px residue
+(delta 1) that the branch's own two runs show too; saved 1-2 px against control's own 2 px
+(`RENDER-45`); `systematic`: none on all three. Night (hour 23) city and saved, the car change
+alone: identical bytes. Digests 30k (still, 1 s turns) graded 4/4, buildings 4/4, roads 4/4,
+parked 4/4, water 1/1 equal; Kuopio buildings, roads, parked 8/8, water 1/1 equal.
+
+Gates (fresh, on the branch's code commit): no Rust change, so clippy was not re-run (the
+withdrawn lights build added none to the base set); debug `cargo test --lib` 2,552 passed, 0 failed, 224 ignored; `./run.sh --test` PASS
+(nextest 2,556 passed, 225 skipped; godot-main, godot-vehicle PASS, 0 SCRIPT ERROR). `PERF-07` at
+level F not rerun: the branch's Rust tree and so its test binary equal the control's.
+
 ### Entered-to-drawn, and the vegetation's prepared set (`RENDER-32-N`, `CODE-12`, 2026-11-13)
 
 Round C1: first the go/no-go measurement, then (it said no-go) plan 5.3's prepared set for the

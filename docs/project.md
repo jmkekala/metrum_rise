@@ -134,6 +134,12 @@ of the draws. A turn draws and binds what a still does: its dearer draws are cac
 install churn, not state changes. Ranked levers: one body surface per car mesh, the parked cars'
 draw distance and far meshes (`RENDER-48`), a far building tier (`RENDER-49`), occlusion later
 (`RENDER-50`) ([record](terrain.md#where-the-gpu-goes-render-44-render-46-2026-11-13)).
+A car mesh's body is one surface since `RENDER-46` (round CS1, 2026-11-13, for review; no
+visible change): the 30k still draws 2,736 instead of 6,009 times in the main pass and 860 instead
+of 2,631 in the shadow pass, Godot's draw costs 1.4 ms less a still frame and 3.1 ms less a turn
+frame, and the 30k 1 s turns run 3.7-4.2 ms faster. Street lights in chunk batches stopped at the
+no-visible-change bar (Godot's level-of-detail hysteresis follows each batch's frustum history); the
+choice is the user's ([record](terrain.md#one-body-surface-per-car-mesh-street-lights-left-in-their-cells-render-46-2026-11-13)).
 `RENDER-32-N` (2026-11-13, for review) measured how many frames a chunk that comes into view
 waits before it draws, per layer, on 0.5 s turns, a far zoom-out to 40 km and a zoom from there to
 the street: terrain, water, graded ground and buildings draw within three frames; the vegetation
