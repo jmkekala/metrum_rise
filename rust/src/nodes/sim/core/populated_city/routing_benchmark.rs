@@ -1150,7 +1150,7 @@ fn commit_tiers() -> Vec<u32> {
 // populated tier loads this binary's snapshot from `METRUM_PERF_CACHE` (the perf contract's
 // cache), generating and checking it first when there is none (`generated`, else `loaded`);
 // `METRUM_COMMIT_CITIES=built` builds every city in the run instead, as before `ROAD-68-K22`.
-fn commit_city(residents: u32) -> (crate::nodes::sim::core::state::SimCore, serde_json::Value) {
+pub(super) fn commit_city(residents: u32) -> (crate::nodes::sim::core::state::SimCore, serde_json::Value) {
     let built = || serde_json::json!({"residents": residents, "source": "built"});
     if residents == 0 {
         return (super::street_grid(super::side_m_for(1_300)).0, built());
@@ -1613,6 +1613,15 @@ fn graded_tiles(
 pub(super) fn trunk_branch_starts(
     core: &crate::nodes::sim::core::state::SimCore,
 ) -> Vec<godot::prelude::Vector3> {
+    trunk_branch_starts_at(core, &[100.0, 250.0, 400.0])
+}
+
+/// The starts of branches off the border trunk west of the grid, `offsets` metres west of its
+/// westmost node, on the ground.
+pub(super) fn trunk_branch_starts_at(
+    core: &crate::nodes::sim::core::state::SimCore,
+    offsets: &[f32],
+) -> Vec<godot::prelude::Vector3> {
     use godot::prelude::Vector3;
     let graph = &core.region_graph;
     let (half_world, _) = core.heightmap.half_world_extents();
@@ -1640,7 +1649,7 @@ pub(super) fn trunk_branch_starts(
         .collect();
     trunk_z.sort_by(|a, b| a.abs().total_cmp(&b.abs()));
     let z = trunk_z[0];
-    [100.0, 250.0, 400.0]
+    offsets
         .iter()
         .map(|offset| {
             let x = west_x - offset;

@@ -14,6 +14,9 @@ use godot::prelude::Vector3;
 use rayon::prelude::*;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
+// The undo history keeps this many groups: actions, a batch commit counting once.
+const UNDO_GROUP_CAP: usize = 30;
+
 impl SimCore {
     /// Adds one local paint inverse after a completed cell gesture; cancellation adds no entry.
     pub(crate) fn push_cell_zoning_undo(
@@ -32,6 +35,8 @@ impl SimCore {
             zoning: None,
             cells: None,
             runtime: Some(SimulationRuntimeSnapshot::CellZoningEdit(edit)),
+            group: 0,
+            charged: 0.0,
         });
     }
 
@@ -92,6 +97,8 @@ impl SimCore {
             } else {
                 None
             },
+            group: 0,
+            charged: 0.0,
         });
     }
 
@@ -146,6 +153,8 @@ impl SimCore {
             zoning,
             cells,
             runtime: None,
+            group: 0,
+            charged: 0.0,
         });
     }
 
@@ -178,17 +187,71 @@ impl SimCore {
             zoning: None,
             cells: None,
             runtime: Some(SimulationRuntimeSnapshot::VegetationEdit(journal)),
+            group: 0,
+            charged: 0.0,
         });
     }
 
-    pub(super) fn push_undo_snapshot(&mut self, snapshot: SimulationSnapshot) {
+    pub(super) fn push_undo_snapshot(&mut self, mut snapshot: SimulationSnapshot) {
         // Every edit adopts a commit's deferred lots before it records its undo (`ROAD-68-G`
         // part 7), so the record holds them.
         debug_assert!(!self.cell_lots_pending());
-        if self.undo_stack.len() >= 30 && !self.transit_network.road_edit_is_staged() {
-            self.undo_stack.pop_front();
+        snapshot.group = match self.undo_batch_group {
+            Some(group) => group,
+            None => self.next_undo_group(),
+        };
+        let opens_group = self
+            .undo_stack
+            .back()
+            .is_none_or(|back| back.group != snapshot.group);
+        if opens_group
+            && self.undo_group_count() >= UNDO_GROUP_CAP
+            && !self.transit_network.road_edit_is_staged()
+        {
+            self.pop_oldest_undo_group();
         }
         self.undo_stack.push_back(snapshot);
+    }
+
+    /// A fresh undo group id (`ROAD-112` round F). O(1).
+    pub(crate) fn next_undo_group(&mut self) -> u64 {
+        self.undo_group_counter = self.undo_group_counter.wrapping_add(1);
+        self.undo_group_counter
+    }
+
+    // The groups in the history: records of one group are adjacent. O(records), at most the cap
+    // times a batch's strokes.
+    fn undo_group_count(&self) -> usize {
+        let mut previous = None;
+        self.undo_stack
+            .iter()
+            .filter(|record| previous.replace(record.group) != Some(record.group))
+            .count()
+    }
+
+    // Drops the oldest group's records. O(its records).
+    fn pop_oldest_undo_group(&mut self) {
+        if let Some(group) = self.undo_stack.front().map(|record| record.group) {
+            while self
+                .undo_stack
+                .front()
+                .is_some_and(|record| record.group == group)
+            {
+                self.undo_stack.pop_front();
+            }
+        }
+    }
+
+    /// Charges an edit's build cost and keeps it on the edit's undo record, the newest, which
+    /// undo refunds (decision U5). Benchmark mode charges nothing. O(1).
+    pub(crate) fn charge_undoable_build_cost(&mut self, amount: f64) {
+        if self.benchmark_mode {
+            return;
+        }
+        self.treasury.deduct_build_cost(amount);
+        if let Some(record) = self.undo_stack.back_mut() {
+            record.charged += amount;
+        }
     }
 
     /// Rejects a staged road before lane, routing, entrance, or parcel maintenance runs. With
@@ -224,8 +287,8 @@ impl SimCore {
         self.transit_network.accept_road_edit();
         if self.benchmark_mode {
             self.undo_stack.pop_back();
-        } else if self.undo_stack.len() > 30 {
-            self.undo_stack.pop_front();
+        } else if self.undo_group_count() > UNDO_GROUP_CAP {
+            self.pop_oldest_undo_group();
         }
     }
 
@@ -245,6 +308,8 @@ impl SimCore {
             runtime: Some(SimulationRuntimeSnapshot::BuildingRemoval(Box::new(
                 runtime,
             ))),
+            group: 0,
+            charged: 0.0,
         });
         true
     }
@@ -409,171 +474,220 @@ impl SimCore {
     }
 
     pub(super) fn undo_action_in_pool(&mut self) -> bool {
-        if let Some(state) = self.undo_stack.pop_back() {
-            if let Some(SimulationRuntimeSnapshot::CellZoningEdit(edit)) = &state.runtime {
-                if !self.restore_cell_gesture_internal(edit) {
-                    self.undo_stack.push_back(state);
-                    return false;
-                }
-                return true;
+        // The newest group, oldest record first (`ROAD-112` round F): one record unless a batch
+        // commit pushed several.
+        let Some(group) = self.undo_stack.back().map(|record| record.group) else {
+            return false;
+        };
+        let count = self
+            .undo_stack
+            .iter()
+            .rev()
+            .take_while(|record| record.group == group)
+            .count();
+        let records: Vec<SimulationSnapshot> = self
+            .undo_stack
+            .drain(self.undo_stack.len() - count..)
+            .collect();
+        if let [record] = records.as_slice()
+            && let Some(SimulationRuntimeSnapshot::CellZoningEdit(edit)) = &record.runtime
+        {
+            let restored = self.restore_cell_gesture_internal(edit);
+            if !restored {
+                self.undo_stack.extend(records);
             }
-            if let Some(SimulationRuntimeSnapshot::BuildingRemoval(removal)) = &state.runtime
-                && !self.can_restore_building_removal_undo(removal)
-            {
-                self.undo_stack.push_back(state);
-                return false;
-            }
-            if let Some(zoning) = &state.zoning
-                && !self.zoning.can_restore_parcel_removal_undo(zoning)
-            {
-                self.undo_stack.push_back(state);
-                return false;
-            }
-            // The paint a road stroke erased comes back only onto free land (`ZONE-09`, D5).
-            if let Some(cells) = &state.cells
-                && !self.can_restore_road_cell_paint(cells)
-            {
-                self.undo_stack.push_back(state);
-                return false;
-            }
-            // A building placed since may stand on the sidewalk this would take back (`ROAD-109`).
-            if let Some(graph) = &state.trans_graph
-                && graph.restored_sidewalks().any(|(edge, sidewalks)| {
-                    edge < self.region_graph.edge_count()
-                        && !self.region_graph.edge(edge).deleted
-                        && self.door_on_lost_sidewalk(edge, sidewalks).is_some()
-                })
-            {
-                self.undo_stack.push_back(state);
-                return false;
-            }
-            let SimulationSnapshot {
-                terrain,
-                water,
-                trans_graph,
-                roadbed,
-                graded,
-                zoning,
-                cells,
-                runtime,
-            } = state;
-            let restored_dense_terrain = terrain.is_some();
-            let mut sync_trans_graph = false;
-            let mut restored_topology_scope = None;
-            let mut fronting = Vec::new();
-
-            if let Some(t_data) = terrain {
-                self.heightmap
-                    .replace_source_from_dense(&t_data)
-                    .expect("undo terrain snapshot must match the live terrain dimensions");
-                sync_trans_graph = true;
-            }
-            if let Some(w_data) = water {
-                self.watermap
-                    .replace_baseline_depth_from_dense(&w_data.baseline_depth)
-                    .expect("undo baseline water snapshot must match the live water dimensions");
-                self.water_dirty = true;
-                self.bump_road_tool_query_generation();
-            }
-            if let Some(tr_graph) = trans_graph {
-                restored_topology_scope = Some(tr_graph.affected_topology_ids(
-                    self.region_graph.node_count(),
-                    self.region_graph.edge_count(),
-                ));
-                if let Some((edge_ids, _)) = &restored_topology_scope {
-                    self.zoning
-                        .mark_cell_lots_for_roads(&self.region_graph, edge_ids.iter().copied());
-                    // Read while the edges the restore takes away still have their geometry.
-                    fronting = self
-                        .allocator
-                        .attachment_repair_candidates(
-                            &self.region_graph,
-                            edge_ids,
-                            [],
-                            self.config.zone_cell_m,
-                        )
-                        .unwrap_or_default();
-                }
-                // `O(delta records * log edges)`; the same records as the full restore.
-                self.region_graph.restore_undo_delta_local(&tr_graph);
-                if let Some((edge_ids, _)) = &restored_topology_scope {
-                    self.zoning
-                        .mark_cell_lots_for_roads(&self.region_graph, edge_ids.iter().copied());
-                }
-                sync_trans_graph = true;
-            }
-            if let Some(zoning) = zoning {
-                self.zoning.restore_parcel_removal_undo(zoning);
-            }
-            // The paint the new cells inherited goes, with its empty lots; lots re-derive from the
-            // restored paint (D6); the demolished buildings stay gone.
-            if let Some(cells) = cells
-                && self.zoning.restore_cell_paint_undo(cells) > 0
-            {
-                // Pending spawns resolve their parcel when they start; ids are never reused.
-                self.allocator.dirty = true;
-            }
-            if let Some(runtime) = runtime {
-                match runtime {
-                    SimulationRuntimeSnapshot::CellZoningEdit(_) => {
-                        unreachable!("handled before restoring snapshot fields")
-                    }
-                    SimulationRuntimeSnapshot::PendingDemandSpawns(pending) => {
-                        self.pending_demand_spawns = pending;
-                        self.reschedule_construction_events();
-                    }
-                    SimulationRuntimeSnapshot::BuildingRemoval(removal) => {
-                        self.restore_building_removal_undo(*removal);
-                    }
-                    // The graph is restored above; the entrances follow in the local lane
-                    // rebuild below, which covers the restored roads.
-                    SimulationRuntimeSnapshot::RoadDependents(dependents) => {
-                        dependents.restore(&mut self.allocator);
-                    }
-                    SimulationRuntimeSnapshot::VegetationEdit(journal) => {
-                        // Every cell restores independently and every patch revision only has
-                        // to change, so the hashed iteration order below cannot alter the
-                        // resulting state.
-                        let (cells, patch_keys) = journal.into_parts();
-                        for (cell, prior) in cells {
-                            self.vegetation_edits.restore_cell(cell, prior);
-                        }
-                        for key in patch_keys {
-                            self.vegetation_edits.bump_patch(key);
-                        }
-                    }
-                }
-            }
-
-            if sync_trans_graph {
-                match &restored_topology_scope {
-                    Some((edge_ids, node_ids)) if !restored_dense_terrain => {
-                        self.restore_lanes_locally(edge_ids, node_ids);
-                    }
-                    _ => self.rebuild_all_lanes_keeping_agents(restored_topology_scope.as_ref()),
-                }
-                // Deferred like a commit's (D7, `ROAD-68-G`); it supersedes a pending one. The
-                // road tool's view shares its graph copy (`ROAD-68-E`).
-                let routing_graph = self.schedule_cch_rebuild_of_live_graph();
-                self.road_tool_publisher.offer_graph(routing_graph);
-                self.transit_network.flow_fields.mark_all_dirty();
-                if restored_dense_terrain {
-                    self.zoning.invalidate_cell_lot_assets();
-                    self.reset_network_render_state();
-                } else if let Some((edge_ids, node_ids)) = restored_topology_scope {
-                    self.debug_assert_closure_compiles(&edge_ids, &node_ids);
-                    self.reset_local_network_render_state(
-                        &edge_ids,
-                        &node_ids,
-                        roadbed.as_ref(),
-                        graded,
-                        Some(&fronting),
-                    );
-                }
-            }
-            return true;
+            return restored;
         }
-        false
+        // Every record's checks before anything is restored: a group restores whole or not at
+        // all. A batch's strokes place no site, building or door, so no record's check depends
+        // on another's restore.
+        if !records
+            .iter()
+            .all(|record| self.can_restore_undo_record(record))
+        {
+            self.undo_stack.extend(records);
+            return false;
+        }
+        // Newest first; the oldest restores last and schedules the group's routing rebuild.
+        let mut group_synced = false;
+        for (index, record) in records.into_iter().enumerate().rev() {
+            group_synced |= self.restore_undo_record(record, index == 0, group_synced);
+        }
+        true
+    }
+
+    // The checks a record's restore must pass now: a building removal's journal, the parcels a
+    // bulldoze removed, the paint a stroke erased (only onto free land, `ZONE-09` D5), and no
+    // building placed since on a sidewalk the restore takes back (`ROAD-109`).
+    fn can_restore_undo_record(&mut self, state: &SimulationSnapshot) -> bool {
+        if let Some(SimulationRuntimeSnapshot::BuildingRemoval(removal)) = &state.runtime
+            && !self.can_restore_building_removal_undo(removal)
+        {
+            return false;
+        }
+        if let Some(zoning) = &state.zoning
+            && !self.zoning.can_restore_parcel_removal_undo(zoning)
+        {
+            return false;
+        }
+        if let Some(cells) = &state.cells
+            && !self.can_restore_road_cell_paint(cells)
+        {
+            return false;
+        }
+        !state.trans_graph.as_ref().is_some_and(|graph| {
+            graph.restored_sidewalks().any(|(edge, sidewalks)| {
+                edge < self.region_graph.edge_count()
+                    && !self.region_graph.edge(edge).deleted
+                    && self.door_on_lost_sidewalk(edge, sidewalks).is_some()
+            })
+        })
+    }
+
+    // Restores one checked record and refunds what its edit charged (U5). `last` is the group's
+    // final restore, which schedules the routing rebuild when this record or an earlier one of
+    // its group (`group_synced`) restored the graph. True when this record restored the graph.
+    fn restore_undo_record(
+        &mut self,
+        state: SimulationSnapshot,
+        last: bool,
+        group_synced: bool,
+    ) -> bool {
+        let SimulationSnapshot {
+            terrain,
+            water,
+            trans_graph,
+            roadbed,
+            graded,
+            zoning,
+            cells,
+            runtime,
+            group: _,
+            charged,
+        } = state;
+        let restored_dense_terrain = terrain.is_some();
+        let mut sync_trans_graph = false;
+        let mut restored_topology_scope = None;
+        let mut fronting = Vec::new();
+
+        if let Some(t_data) = terrain {
+            self.heightmap
+                .replace_source_from_dense(&t_data)
+                .expect("undo terrain snapshot must match the live terrain dimensions");
+            sync_trans_graph = true;
+        }
+        if let Some(w_data) = water {
+            self.watermap
+                .replace_baseline_depth_from_dense(&w_data.baseline_depth)
+                .expect("undo baseline water snapshot must match the live water dimensions");
+            self.water_dirty = true;
+            self.bump_road_tool_query_generation();
+        }
+        if let Some(tr_graph) = trans_graph {
+            restored_topology_scope = Some(tr_graph.affected_topology_ids(
+                self.region_graph.node_count(),
+                self.region_graph.edge_count(),
+            ));
+            if let Some((edge_ids, _)) = &restored_topology_scope {
+                self.zoning
+                    .mark_cell_lots_for_roads(&self.region_graph, edge_ids.iter().copied());
+                // Read while the edges the restore takes away still have their geometry.
+                fronting = self
+                    .allocator
+                    .attachment_repair_candidates(
+                        &self.region_graph,
+                        edge_ids,
+                        [],
+                        self.config.zone_cell_m,
+                    )
+                    .unwrap_or_default();
+            }
+            // `O(delta records * log edges)`; the same records as the full restore.
+            self.region_graph.restore_undo_delta_local(&tr_graph);
+            if let Some((edge_ids, _)) = &restored_topology_scope {
+                self.zoning
+                    .mark_cell_lots_for_roads(&self.region_graph, edge_ids.iter().copied());
+            }
+            sync_trans_graph = true;
+        }
+        if let Some(zoning) = zoning {
+            self.zoning.restore_parcel_removal_undo(zoning);
+        }
+        // The paint the new cells inherited goes, with its empty lots; lots re-derive from the
+        // restored paint (D6); the demolished buildings stay gone.
+        if let Some(cells) = cells
+            && self.zoning.restore_cell_paint_undo(cells) > 0
+        {
+            // Pending spawns resolve their parcel when they start; ids are never reused.
+            self.allocator.dirty = true;
+        }
+        if let Some(runtime) = runtime {
+            match runtime {
+                SimulationRuntimeSnapshot::CellZoningEdit(_) => {
+                    unreachable!("handled before restoring snapshot fields")
+                }
+                SimulationRuntimeSnapshot::PendingDemandSpawns(pending) => {
+                    self.pending_demand_spawns = pending;
+                    self.reschedule_construction_events();
+                }
+                SimulationRuntimeSnapshot::BuildingRemoval(removal) => {
+                    self.restore_building_removal_undo(*removal);
+                }
+                // The graph is restored above; the entrances follow in the local lane
+                // rebuild below, which covers the restored roads.
+                SimulationRuntimeSnapshot::RoadDependents(dependents) => {
+                    dependents.restore(&mut self.allocator);
+                }
+                SimulationRuntimeSnapshot::VegetationEdit(journal) => {
+                    // Every cell restores independently and every patch revision only has
+                    // to change, so the hashed iteration order below cannot alter the
+                    // resulting state.
+                    let (cells, patch_keys) = journal.into_parts();
+                    for (cell, prior) in cells {
+                        self.vegetation_edits.restore_cell(cell, prior);
+                    }
+                    for key in patch_keys {
+                        self.vegetation_edits.bump_patch(key);
+                    }
+                }
+            }
+        }
+
+        if sync_trans_graph {
+            match &restored_topology_scope {
+                Some((edge_ids, node_ids)) if !restored_dense_terrain => {
+                    self.restore_lanes_locally(edge_ids, node_ids);
+                }
+                _ => self.rebuild_all_lanes_keeping_agents(restored_topology_scope.as_ref()),
+            }
+        }
+        // Deferred like a commit's (D7, `ROAD-68-G`); it supersedes a pending one. The road
+        // tool's view shares its graph copy (`ROAD-68-E`). A group schedules it once, with its
+        // last restore (`ROAD-112` round F).
+        if last && (sync_trans_graph || group_synced) {
+            let routing_graph = self.schedule_cch_rebuild_of_live_graph();
+            self.road_tool_publisher.offer_graph(routing_graph);
+            self.transit_network.flow_fields.mark_all_dirty();
+        }
+        if sync_trans_graph {
+            if restored_dense_terrain {
+                self.zoning.invalidate_cell_lot_assets();
+                self.reset_network_render_state();
+            } else if let Some((edge_ids, node_ids)) = restored_topology_scope {
+                self.debug_assert_closure_compiles(&edge_ids, &node_ids);
+                self.reset_local_network_render_state(
+                    &edge_ids,
+                    &node_ids,
+                    roadbed.as_ref(),
+                    graded,
+                    Some(&fronting),
+                );
+            }
+        }
+        if charged > 0.0 {
+            self.treasury.refund_build_cost(charged);
+        }
+        sync_trans_graph
     }
 
     // Lanes after a topology undo, as a commit rebuilds them (`ROAD-68-E`), or after an in-place

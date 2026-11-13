@@ -74,6 +74,15 @@ pub(crate) enum SimCommand {
         /// The road tool's synchronous preview of this stroke (`ROAD-68-E`).
         preview: Option<Arc<RoadPreview>>,
     },
+    /// Place several road strokes as one transaction and one undo step (`ROAD-112` round F).
+    AddRoadBatch {
+        /// The strokes in commit order.
+        request: super::road_batch::RoadBatchRequest,
+        /// Dispatch timestamp for queue latency, independent of core mutex contention.
+        enqueued_at: Instant,
+        /// Single nonblocking acknowledgment after acceptance/refusal and query publication.
+        completion: std::sync::mpsc::SyncSender<super::road_commit::RoadCommitAck>,
+    },
     /// Undo the latest authoring operation entirely on the simulation thread.
     Undo,
     /// Delete one previously resolved building or road target on the simulation thread.
@@ -340,6 +349,60 @@ pub(crate) fn run_sim_thread(
                         reason: outcome.rejection_reason,
                         detail: outcome.rejection,
                         generation: outcome.generation,
+                        refused_stroke: None,
+                    });
+                }
+                Ok(SimCommand::AddRoadBatch {
+                    request,
+                    enqueued_at,
+                    completion,
+                }) => {
+                    commands_processed += 1;
+                    add_road_commands += 1;
+                    let road_total = Instant::now();
+                    let mut edit_metrics =
+                        crate::nodes::sim::benchmark::road_edit::RoadEditMetrics {
+                            queue_wait_ms: enqueued_at.elapsed().as_secs_f64() * 1000.0,
+                            ..Default::default()
+                        };
+                    let points: Vec<_> = request
+                        .strokes
+                        .iter()
+                        .flat_map(|stroke| stroke.points.iter().copied())
+                        .collect();
+                    let lock_wait_start = Instant::now();
+                    let batch = {
+                        let mut c = turnstile
+                            .take(&core)
+                            .expect("simulation core lock poisoned");
+                        edit_metrics.lock_wait_ms =
+                            lock_wait_start.elapsed().as_secs_f64() * 1000.0;
+                        let first = request.strokes.first();
+                        record_crash_command_for_core(
+                            &c,
+                            CrashCommand::AddRoad {
+                                point_count: points.len(),
+                                fwd_lanes: first.map_or(0, |stroke| stroke.fwd_lanes),
+                                bkw_lanes: first.map_or(0, |stroke| stroke.bkw_lanes),
+                                snap_to_existing_roads: first
+                                    .is_some_and(|stroke| stroke.snap_to_existing_roads),
+                                geometry: crate::debug::CrashRoadGeometry::from_points(&points),
+                            },
+                        );
+                        let batch = c.commit_road_batch(request, road_total, edit_metrics);
+                        lots_completion = c.cell_lot_completion();
+                        batch
+                    };
+                    let outcome = batch.outcome;
+                    if let Some(query_snapshot) = outcome.road_snapshot {
+                        road_tool.publish(query_snapshot);
+                    }
+                    let _ = completion.try_send(super::road_commit::RoadCommitAck {
+                        committed: outcome.committed,
+                        reason: outcome.rejection_reason,
+                        detail: outcome.rejection,
+                        generation: outcome.generation,
+                        refused_stroke: batch.refused_stroke,
                     });
                 }
                 Ok(SimCommand::Stop) | Err(std::sync::mpsc::TryRecvError::Disconnected) => {

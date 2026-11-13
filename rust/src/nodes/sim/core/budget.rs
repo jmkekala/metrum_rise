@@ -306,7 +306,8 @@ impl CityTreasury {
         self.lifetime_build_cost += amount;
     }
 
-    /// Reverses an infrastructure build cost for a placement cancelled before final commitment.
+    /// Reverses an infrastructure build cost: a placement cancelled before final commitment, or
+    /// an undone road edit's charge (decision U5, `ROAD-112` round F).
     pub(crate) fn refund_build_cost(&mut self, amount: f64) {
         self.balance += amount;
         crate::debug::money::record(crate::debug::money::MoneyFlow::Construction, amount);

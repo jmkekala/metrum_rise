@@ -120,6 +120,51 @@ impl SimulationNode {
         self.road_commit_request_id
     }
 
+    /// Queues `strokes` (each a `PackedVector3Array` polyline, in commit order) as one road
+    /// transaction with the road tool's current lanes and options (`ROAD-112` round F): all
+    /// strokes commit or none does, no land is taken before every stroke's verdict, and one undo
+    /// takes back the whole batch. Returns the completion identity, polled with
+    /// `get_road_commit_result` like a single stroke's, whose `stroke` names the refusing
+    /// stroke's index (-1 when none). An element that is not a polyline is an empty stroke,
+    /// which refuses the batch.
+    #[func]
+    pub fn add_road_batch(
+        &mut self,
+        strokes: VarArray,
+        fwd_lanes: i32,
+        bkw_lanes: i32,
+        snap_to_existing_roads: bool,
+    ) -> i64 {
+        let strokes = strokes
+            .iter_shared()
+            .map(|stroke| crate::nodes::sim::core::RoadCommitRequest {
+                points: stroke
+                    .try_to::<PackedVector3Array>()
+                    .map(|points| points.to_vec())
+                    .unwrap_or_default(),
+                fwd_lanes,
+                bkw_lanes,
+                snap_to_existing_roads,
+                tunnel: self.road_tool_tunnel,
+                median: self.road_tool_median,
+                parking: self.road_tool_parking,
+                attributes: self.road_tool_attributes,
+                preview: None,
+            })
+            .collect();
+        let (completion, result) = std::sync::mpsc::sync_channel(1);
+        self.road_commit_request_id = self.road_commit_request_id.wrapping_add(1).max(1);
+        self.road_commit_result = Some(result);
+        let _ = self
+            .cmd_tx
+            .send(crate::nodes::sim::core::SimCommand::AddRoadBatch {
+                request: crate::nodes::sim::core::RoadBatchRequest { strokes },
+                enqueued_at: Instant::now(),
+                completion,
+            });
+        self.road_commit_request_id
+    }
+
     /// Consumes the latest placement's acceptance or rejection without locking the simulation:
     /// `committed`, `reason` (the stable key the `events` report uses) and `detail`. Nil means
     /// pending/already consumed; a superseded id or disconnected worker is rejected.
@@ -142,6 +187,7 @@ impl SimulationNode {
                 "reason": ack.reason,
                 "detail": ack.detail,
                 "generation": i64::try_from(ack.generation).unwrap_or(i64::MAX),
+                "stroke": ack.refused_stroke.map_or(-1, |stroke| stroke as i64),
             },
             Err(std::sync::mpsc::TryRecvError::Empty) => return Variant::nil(),
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {

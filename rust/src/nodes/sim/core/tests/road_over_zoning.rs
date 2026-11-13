@@ -864,6 +864,7 @@ fn a_bridge_deck_over_a_field_is_no_field_overlap() {
     assert_eq!(commit(&mut core, &bridge_at(100.0)), "");
 }
 
+mod batch;
 mod edits;
 mod placements;
 mod preview;

@@ -258,6 +258,11 @@ pub struct SimCore {
     pub(crate) debug_household_admissions_since_daily: u32,
     /// Undo history stack — kept in SimCore so all mutations are co-located.
     pub(crate) undo_stack: VecDeque<SimulationSnapshot>,
+    /// The last undo group id handed out (`ROAD-112` round F): every pushed record takes a fresh
+    /// one unless a batch holds `undo_batch_group` open.
+    pub(crate) undo_group_counter: u64,
+    /// The group a batch commit's records share while it runs; `None` outside a batch.
+    pub(crate) undo_batch_group: Option<u64>,
     /// Authored-world lake fill records when editing or playing from a `WorldDefinition`.
     pub(crate) world_lake_fills: Vec<AuthoredLakeFill>,
     /// Authored-world edge-connected open-water fills when editing or playing from a `WorldDefinition`.
@@ -451,6 +456,8 @@ impl SimCore {
             budget_last_lifetime_build_cost: 0.0,
             debug_household_admissions_since_daily: 0,
             undo_stack: VecDeque::new(),
+            undo_group_counter: 0,
+            undo_batch_group: None,
             world_lake_fills: Vec::new(),
             world_open_water_fills: Vec::new(),
             resource_deposits: ResourceDepositSystem::from_world_config(&config),

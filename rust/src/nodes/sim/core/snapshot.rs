@@ -271,6 +271,13 @@ pub(crate) struct SimulationSnapshot {
     pub(crate) cells: Option<crate::simulation::zoning::CellPaintUndo>,
     /// Building/economy runtime state.
     pub(crate) runtime: Option<SimulationRuntimeSnapshot>,
+    /// The undo group (`ROAD-112` round F): one undo restores every record of the newest group,
+    /// newest first, and the history's cap counts groups. Assigned by `push_undo_snapshot`; a
+    /// batch commit's strokes share one.
+    pub(crate) group: u64,
+    /// The build cost the edit charged the treasury, which undo refunds (decision U5); zero when
+    /// it charged nothing.
+    pub(crate) charged: f64,
 }
 
 impl SimCore {

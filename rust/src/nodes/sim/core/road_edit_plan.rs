@@ -534,6 +534,14 @@ impl RoadEditPlan {
         )
     }
 
+    /// This plan stamped with a later road-tool surface generation, for a batch stroke whose
+    /// dry run planned it on exactly the graph, roadbed and terrain the commit now has
+    /// (`ROAD-112` round F, [`super::road_batch::DryRunStroke::rebased`]). O(1).
+    pub(crate) fn rebased_to(mut self, surface_generation: u64) -> Self {
+        self.request.surface_generation = surface_generation;
+        self
+    }
+
     /// The stroke this plan was compiled for.
     pub(crate) fn request(&self) -> &RoadPreviewRequest {
         &self.request

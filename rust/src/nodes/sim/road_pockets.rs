@@ -200,8 +200,9 @@ impl SimCore {
         // parallel: shared pool (CODE-17).
         crate::thread_pools::install(|| self.restore_lanes_locally(&affected, &nodes));
         self.push_pocket_undo(checkpoint, dependents, erased);
-        if !self.benchmark_mode && verdict.cost_delta > 0.0 {
-            self.treasury.deduct_build_cost(verdict.cost_delta);
+        // The record keeps the charge, which undo refunds (U5).
+        if verdict.cost_delta > 0.0 {
+            self.charge_undoable_build_cost(verdict.cost_delta);
         }
         // Deferred like a commit's (D7, `ROAD-68-G`).
         self.schedule_cch_rebuild_of_live_graph();
@@ -312,6 +313,8 @@ impl SimCore {
             zoning: None,
             cells,
             runtime: Some(SimulationRuntimeSnapshot::RoadDependents(dependents)),
+            group: 0,
+            charged: 0.0,
         });
     }
 }

@@ -17,6 +17,8 @@
 #[cfg(test)]
 pub(super) mod census_churn;
 #[cfg(test)]
+mod batch_commit;
+#[cfg(test)]
 mod commit_locality;
 #[cfg(test)]
 mod contract;

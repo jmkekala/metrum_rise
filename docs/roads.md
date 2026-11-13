@@ -1907,6 +1907,43 @@ their inputs equal the restored ones ([`terrain.md`](terrain.md#preview-commit-u
 A terrain record keeps the source terrain, and undo restores the source and the visual buffer
 from it (`TERRAIN-07-E`, authoritative terrain undo).
 
+**Batch commit** (`ROAD-112` round F, `core/road_batch.rs`). `SimCommand::AddRoadBatch` (bridge
+`add_road_batch`) commits an ordered list of strokes (`RoadBatchRequest`) as one transaction.
+Order is the determinism rule: the strokes commit in the listed order, each later one meeting the
+earlier through the same topology pass as a stroke drawn after them, so a batch leaves the graph,
+roadbed, cells and parcels bitwise as the same strokes committed one by one (tested). The single
+commit is split into a per-stroke core (plan, add, finalize, install pieces, take land, local
+lanes and agents, entrances, charge) and the once-per-command tail (mesh precompute, the road tool
+view's publication with its `O(city)` graph copy, the routing schedule, the deferred lot plan's
+spawn and the kept graded tiles' jobs); a batch runs the core per stroke and the tail once, its
+earlier strokes planning their lots in the core (the deferred plan's adoption equals that bitwise,
+`ROAD-68-G` part 7) and its last stroke deferring them as a single commit does. A single stroke
+takes the single commit's path unchanged.
+
+- **All or nothing, no land before the verdict.** Before any stroke commits, the batch is dry-run
+  on the live graph as the preview runs a stroke: each stroke planned on the graph and an `O(1)`
+  roadbed copy the earlier strokes left, judged with the commit's checks in the commit's order
+  (plan readiness, stroke and water checks, plotted land, failed node pieces), applied and
+  compiled into the copy; then the graph is put back from the strokes' checkpoints. A refused
+  stroke anywhere ends the command with nothing changed, demolished, charged or recorded; the ack
+  names it (`stroke`, its index). Otherwise each stroke's core installs its dry run's plan and
+  pieces while the batch's chain holds (`DryRunStroke::rebased`: the live roadbed generation and
+  terrain are the dry run's for that stroke and its plan's sources are live; the plan is
+  restamped with the live surface generation), so the dry run replaces the cores' own plan and
+  compile; a stroke that recompiled breaks the chain and the later strokes plan afresh. A stroke
+  the dry run accepted cannot refuse in the commit (debug builds assert it; release builds undo
+  the batch's strokes so far and refuse).
+- **One undo step.** `SimulationSnapshot` carries `group`: every record takes a fresh group
+  except a batch's strokes, which share one. `undo_action` restores the newest group: every
+  record's restore checks (`can_restore_*`, a door on a lost sidewalk) run first, then the
+  records restore newest first through the existing per-record code, and the routing schedule
+  and its graph copy run once, with the group's last restore. The 30-entry cap counts groups.
+- **Undo refunds the build cost** (decision U5). The record keeps what its edit charged
+  (`charged`, set by `charge_undoable_build_cost` for road strokes, widenings and other
+  cross-section changes, turn pockets and roundabouts, the callers of `push_network_undo_delta`
+  and `push_pocket_undo` that charge); undo refunds it (`refund_build_cost`). An edit that
+  charged nothing refunds nothing; benchmark mode keeps no record and charges nothing.
+
 **Load.** Load first checks every saved profile against the 1:3 maximum grade, with the check an
 edit meets: a road steeper fails the load with `road_too_steep` ([open question
 37](#road-68-open-questions)). It then compiles every piece from the graph in parallel. A junction

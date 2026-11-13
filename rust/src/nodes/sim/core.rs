@@ -19,6 +19,7 @@ mod household_requests;
 mod lot_adoption;
 mod parking;
 mod populated_city;
+mod road_batch;
 mod road_commit;
 mod road_edit_plan;
 mod road_edit_site;
@@ -76,7 +77,7 @@ pub(crate) use water_preview::{
     WorldWaterFillKind,
 };
 
-#[cfg(test)]
+pub(crate) use road_batch::RoadBatchRequest;
 pub(crate) use road_commit::RoadCommitRequest;
 #[cfg(test)]
 pub(crate) use road_preview::road_tool_snapshot_from_core;

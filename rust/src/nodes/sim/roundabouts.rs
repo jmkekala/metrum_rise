@@ -189,8 +189,9 @@ impl SimCore {
             }
         });
         self.push_pocket_undo(checkpoint, dependents, erased);
-        if !self.benchmark_mode && verdict.cost > 0.0 {
-            self.treasury.deduct_build_cost(verdict.cost);
+        // The record keeps the charge, which undo refunds (U5).
+        if verdict.cost > 0.0 {
+            self.charge_undoable_build_cost(verdict.cost);
         }
         // Deferred like a commit's (D7, `ROAD-68-G`).
         self.schedule_cch_rebuild_of_live_graph();
