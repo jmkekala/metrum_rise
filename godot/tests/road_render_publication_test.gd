@@ -2,7 +2,9 @@
 
 ## Seed 6807 reproduces the full-page migration deadlock at stroke attempt 52.
 ## Drives the production road tool and renderers; checks meshes, materials, cell references and
-## GPU bytes against fresh native bakes, then repeats the comparison after save/load.
+## GPU bytes against fresh native bakes, then repeats the comparison after save/load. Every road
+## chunk's surfaces as the RenderingServer holds them must equal the bytes Rust encodes for the
+## hydration (`RENDER-52` part 2), whichever path built the chunk.
 ## Use -- --extended for 100 attempts (Metal); the 64-attempt gate fits headless
 ## device limits. No authored assets or player saves are needed.
 extends SceneTree
@@ -10,6 +12,7 @@ extends SceneTree
 const RoadTool := preload("res://scripts/tools/road_tool.gd")
 const Terrain := preload("res://scripts/renderers/terrain.gd")
 const Network := preload("res://scripts/renderers/network_renderer.gd")
+const RoadChunkRenderer := preload("res://scripts/renderers/road_chunk_renderer.gd")
 const LAYERS := ["skirt", "curb", "raised_step", "sidewalk", "road", "marking", "concrete", "lining", "median_grass"]
 var sim: SimulationNode
 var terrain
@@ -121,6 +124,32 @@ func _run():
 	host.free()
 	quit(0 if failures == 0 else 1)
 
+# The chunk's surfaces as the server holds them against the bytes Rust encodes for a hydration:
+# format, count, both byte streams and the AABB of every layer, and the lining's shadow caster.
+func _audit_bytes(stroke: int, key: Vector2i, instance: MeshInstance3D, held: Array[Dictionary]) -> void:
+	var encoded: Array = sim.get_road_chunk_surfaces(key.x, key.y)
+	var layers := 0
+	for rust: Dictionary in encoded:
+		var godot: Dictionary
+		if rust.layer < 0:
+			var caster := instance.get_node_or_null("LiningShadow") as MeshInstance3D
+			check(caster != null, "lining caster missing stroke=%d chunk=%s" % [stroke, key])
+			if caster == null:
+				continue
+			godot = RoadChunkRenderer.server_surfaces(caster.mesh)[0]
+		else:
+			var surfaces: PackedInt32Array = instance.mesh.get_meta("road_layer_surfaces")
+			check(surfaces[rust.layer] == layers, "layer order stroke=%d chunk=%s" % [stroke, key])
+			godot = held[layers]
+			layers += 1
+		for field in ["format", "vertex_count", "vertex_data", "aabb"]:
+			check(godot[field] == rust[field], "bytes %s stroke=%d chunk=%s layer=%d" % [field, stroke, key, rust.layer])
+		check(godot.get("attribute_data", PackedByteArray()) == rust.attribute_data,
+			"bytes attribute_data stroke=%d chunk=%s layer=%d" % [stroke, key, rust.layer])
+	check(layers == held.size(), "surface count stroke=%d chunk=%s" % [stroke, key])
+	if instance.get_node_or_null("LiningShadow") != null:
+		check(encoded.any(func(rust: Dictionary) -> bool: return rust.layer < 0), "lining caster not encoded %s" % key)
+
 func settle(label: String) -> bool:
 	var deadline := Time.get_ticks_msec() + 20000
 	var stable := 0
@@ -148,12 +177,14 @@ func audit(stroke: int):
 		var instance: MeshInstance3D = tool.chunks.chunks[key]
 		check(instance.visible, "hidden %s" % key)
 		var surfaces: PackedInt32Array = instance.mesh.get_meta("road_layer_surfaces")
+		var held := RoadChunkRenderer.server_surfaces(instance.mesh)
 		for layer in LAYERS.size():
 			if surfaces[layer] < 0:
 				continue
-			var arrays: Array = instance.mesh.surface_get_arrays(surfaces[layer])
-			check(arrays[Mesh.ARRAY_VERTEX] == chunk[LAYERS[layer] + "_vertices"], "mesh mismatch stroke=%d chunk=%s layer=%s" % [stroke, key, LAYERS[layer]])
-			check(instance.mesh.surface_get_material(surfaces[layer]) != null, "missing material")
+			var vertices := RoadChunkRenderer.surface_positions(held[surfaces[layer]])
+			check(vertices == chunk[LAYERS[layer] + "_vertices"], "mesh mismatch stroke=%d chunk=%s layer=%s" % [stroke, key, LAYERS[layer]])
+			check(RenderingServer.mesh_surface_get_material(instance.mesh.get_rid(), surfaces[layer]).is_valid(), "missing material")
+		_audit_bytes(stroke, key, instance, held)
 	var g = terrain.graded_tiles
 	# Every set's every tile is one instance holding what it would be written as now.
 	var stale: int = g._book.stale_cells()

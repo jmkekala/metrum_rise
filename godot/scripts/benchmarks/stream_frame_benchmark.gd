@@ -679,7 +679,8 @@ func _road_chunks() -> Variant:
 	return renderer.chunks if renderer != null else _road_tool.get("_road_chunk_instances")
 
 # The road chunks drawn at a settle point (`RENDER-32-P`): per chunk its key, place, surface
-# layout and every surface's arrays, from the chunks' own index on either side.
+# layout and every surface as the RenderingServer holds it (`RENDER-52` part 2: a hydrated
+# chunk's surfaces are only there), from the chunks' own index on either side.
 func _record_road_digest() -> void:
 	var chunks: Variant = _road_chunks()
 	if chunks == null:
@@ -691,8 +692,9 @@ func _record_road_digest() -> void:
 			continue
 		var mesh: ArrayMesh = node.mesh
 		var surfaces := PackedStringArray()
-		for surface in mesh.get_surface_count():
-			surfaces.append(_sha(var_to_bytes(mesh.surface_get_arrays(surface))))
+		var rid := mesh.get_rid()
+		for surface in RenderingServer.mesh_get_surface_count(rid):
+			surfaces.append(_sha(var_to_bytes(RenderingServer.mesh_get_surface(rid, surface))))
 		lines.append("%d,%d|%s|%s|%s|%d" % [key.x, key.y, node.position, mesh.get_meta("road_layer_surfaces", []),
 			",".join(surfaces), node.get_child_count()])
 	lines.sort()

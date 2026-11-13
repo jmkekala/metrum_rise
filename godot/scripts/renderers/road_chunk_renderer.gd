@@ -7,8 +7,8 @@
 ## `host` (`mark_network_nodes_dirty`, `road_chunks_installed`, `road_chunks_released`).
 ##
 ## Callers: NetworkRenderer (`update`, `commit_staged`, `discard_staged`, `release_held`,
-## `needs_hydration`), `road_chunk_hydration.gd` (`build_chunk`, `install`, `street_lights`,
-## `road_signs`), the road tool's preview display (`chunks`, `new_chunk_node`, `fill_chunk_mesh`,
+## `needs_hydration`), `road_chunk_hydration.gd` (`install`, `install_built`,
+## `hydration_materials`, `street_lights`, `road_signs`), the road tool's preview display (`chunks`, `new_chunk_node`, `fill_chunk_mesh`,
 ## `place_chunk`, `chunk_root`), tools that change the network outside a stroke (`update`).
 ##
 ## Rust methods called: get_road_mesh_data(full_snapshot), is_network_dirty(),
@@ -427,6 +427,32 @@ func build_chunk(
 	place_chunk(instance, key, chunk_span_m, chunk_origin_x_m, chunk_origin_z_m)
 	return instance
 
+## Installs a chunk a hydration built in Rust (`RENDER-52` part 2): `data` holds its finished
+## meshes (`mesh`, `lining_mesh` or null; their surfaces added through the RenderingServer), the
+## per-layer `layer_surfaces`, `layer_counts` and `layer_formats`, and the chunk payload's key,
+## lights and signs. Installed at `surface_generation` on the installed grid through `install`
+## (its holds included). Returns the generation.
+func install_built(surface_generation: int, key: Vector2i, data: Dictionary) -> int:
+	var instance := new_chunk_node()
+	var mesh: ArrayMesh = data["mesh"]
+	instance.mesh = mesh
+	mesh.set_meta("road_layer_surfaces", data["layer_surfaces"])
+	mesh.set_meta("road_layer_counts", data["layer_counts"])
+	mesh.set_meta("road_layer_formats", data["layer_formats"])
+	instance.name = "RoadChunk_%d_%d" % [key.x, key.y]
+	var lining: Variant = data.get("lining_mesh")
+	if lining is ArrayMesh:
+		instance.add_child(_lining_caster(lining))
+	place_chunk(instance, key, span_m, origin_x_m, origin_z_m)
+	return install(surface_generation, false, span_m, origin_x_m, origin_z_m, [data], {key: instance}, false)
+
+## The materials a hydration's surfaces draw with: each chunk layer's in payload order, then the
+## lining's shadow caster's.
+func hydration_materials() -> Array[Material]:
+	var materials := _layer_materials()
+	materials.append(WorldMaterials.tunnel_lining_shadow_material())
+	return materials
+
 # A tunnel's lining casts the sun's shadow into its bore (ROAD-61): road chunks only receive
 # shadows, so a chunk with a lining layer (only a chunk with a tunnel has one) gets a shadow-only
 # child holding that layer again. Bridges' concrete is never copied.
@@ -441,11 +467,14 @@ func _add_lining_shadow(instance: MeshInstance3D, chunk_data: Dictionary) -> voi
 	var mesh := ArrayMesh.new()
 	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
 	mesh.surface_set_material(0, WorldMaterials.tunnel_lining_shadow_material())
+	instance.add_child(_lining_caster(mesh))
+
+func _lining_caster(mesh: ArrayMesh) -> MeshInstance3D:
 	var caster := MeshInstance3D.new()
 	caster.name = "LiningShadow"
 	caster.mesh = mesh
 	caster.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_SHADOWS_ONLY
-	instance.add_child(caster)
+	return caster
 
 ## A detached chunk node with an empty ArrayMesh; callers own it until it enters the tree.
 static func new_chunk_node() -> MeshInstance3D:
@@ -482,6 +511,28 @@ static func chunk_frame_centre(
 		chunk_origin_z_m + float(key.y) * chunk_span_m + chunk_span_m * 0.5
 	)
 
+## A chunk mesh's surfaces as the RenderingServer holds them (`mesh_get_surface`: format,
+## vertex_data, attribute_data, vertex_count, aabb): a chunk a hydration built in Rust has its
+## surfaces only there (`RENDER-52` part 2), so readers of either kind of chunk read these.
+static func server_surfaces(mesh: Mesh) -> Array[Dictionary]:
+	var out: Array[Dictionary] = []
+	if mesh == null:
+		return out
+	var rid := mesh.get_rid()
+	for surface in RenderingServer.mesh_get_surface_count(rid):
+		out.append(RenderingServer.mesh_get_surface(rid, surface))
+	return out
+
+## A server surface's positions (its vertex data's first `12 * vertex_count` bytes).
+static func surface_positions(surface: Dictionary) -> PackedVector3Array:
+	var count: int = surface["vertex_count"]
+	var floats := (surface["vertex_data"] as PackedByteArray).slice(0, 12 * count).to_float32_array()
+	var out := PackedVector3Array()
+	out.resize(count)
+	for at in count:
+		out[at] = Vector3(floats[3 * at], floats[3 * at + 1], floats[3 * at + 2])
+	return out
+
 ## A road chunk's layers in payload order, as `NetworkMeshData` lists them (its owner runs index
 ## these layers). A chunk without a kerbed grass median sends no `median_grass` arrays (ROAD-80),
 ## which reads as an empty layer.
@@ -490,15 +541,36 @@ const OPTIONAL_ROAD_CHUNK_LAYER := "median_grass"
 
 ## Appends every chunk layer to an empty mesh. Callers discard or clear the mesh on failure. The
 ## mesh's `road_layer_surfaces` meta maps each layer to its surface (-1 when the layer is empty),
-## which the road tool's preview uses to collapse runs of a resident chunk (`ROAD-68-H` round 3).
+## `road_layer_counts` and `road_layer_formats` give each layer's vertices and format, which the
+## road tool's preview uses to collapse runs of a resident chunk (`ROAD-68-H` round 3) through the
+## RenderingServer, the same on a chunk a hydration built in Rust.
 func fill_chunk_mesh(arr_mesh: ArrayMesh, chunk_data: Dictionary) -> bool:
-	_ensure_road_mesh_materials()
 	# Rust certifies the exact immutable chunk buffers off the main thread. A missing
 	# certificate falls back to the full scan; a malformed one rejects the chunk.
 	var certificate = chunk_data.get("road_mesh_payload_validated", false)
 	if typeof(certificate) != TYPE_BOOL:
 		return false
 	var rust_validated: bool = certificate
+	var materials := _layer_materials()
+	var surfaces := PackedInt32Array()
+	var counts := PackedInt32Array()
+	var formats := PackedInt64Array()
+	for index in ROAD_CHUNK_LAYERS.size():
+		var count := arr_mesh.get_surface_count()
+		if not _append_road_surface(arr_mesh, chunk_data, ROAD_CHUNK_LAYERS[index], materials[index], rust_validated):
+			return false
+		var added := arr_mesh.get_surface_count() > count
+		surfaces.append(count if added else -1)
+		counts.append(arr_mesh.surface_get_array_len(count) if added else 0)
+		formats.append(arr_mesh.surface_get_format(count) if added else 0)
+	arr_mesh.set_meta("road_layer_surfaces", surfaces)
+	arr_mesh.set_meta("road_layer_counts", counts)
+	arr_mesh.set_meta("road_layer_formats", formats)
+	return arr_mesh.get_surface_count() > 0
+
+# Each chunk layer's material in payload order.
+func _layer_materials() -> Array[Material]:
+	_ensure_road_mesh_materials()
 	# Road skirts (TERRAIN-07-B): the curb's stone, bottoms deepened with distance by the shader.
 	var materials: Array[Material] = [
 		WorldMaterials.road_skirt_material(),
@@ -513,14 +585,7 @@ func fill_chunk_mesh(arr_mesh: ArrayMesh, chunk_data: Dictionary) -> bool:
 		# A kerbed grass median's top (ROAD-80): the building sites' lawn, clouds' shade included.
 		WorldMaterials.site_ground_material(),
 	]
-	var surfaces := PackedInt32Array()
-	for index in ROAD_CHUNK_LAYERS.size():
-		var count := arr_mesh.get_surface_count()
-		if not _append_road_surface(arr_mesh, chunk_data, ROAD_CHUNK_LAYERS[index], materials[index], rust_validated):
-			return false
-		surfaces.append(count if arr_mesh.get_surface_count() > count else -1)
-	arr_mesh.set_meta("road_layer_surfaces", surfaces)
-	return arr_mesh.get_surface_count() > 0
+	return materials
 
 func _append_road_surface(
 	arr_mesh: ArrayMesh,

@@ -1,22 +1,183 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
-//! The road chunk hydration's source (`RENDER-36`, `RENDER-32-P`): a load's whole network taken
-//! once, as the full road snapshot took it, and packed one chunk at a time as the streaming
-//! core's units reach it (`road_chunk_hydration.gd`), instead of every chunk in one call.
+//! The road chunk hydration's source (`RENDER-36`, `RENDER-32-P`, `RENDER-52` part 2): a load's
+//! whole network taken once, as the full road snapshot took it, and installed a part at a time
+//! as the streaming core's parts reach it (`road_chunk_hydration.gd`), instead of every chunk in
+//! one call.
+//!
+//! The chunks at the head of the stream's order are encoded in the `RenderingServer`'s own
+//! layout on the background pool ([`RoadChunkSurfaces`], at most the stream's `PREPARE_AHEAD`
+//! waiting or in flight); each part on the main thread hands one finished surface to
+//! `RenderingServer.mesh_add_surface` on the chunk's hidden mesh, and the chunk's swap takes the
+//! finished meshes with its lights and signs to the road tool's commit. The meshes are
+//! `ArrayMesh` resources used as the server's mesh handles (their surfaces are added here, not
+//! through the resource), so a dropped build or an installed chunk's node frees its mesh with the
+//! resource.
 //!
 //! A chunk a later network revision changed is installed by that revision's own update: its
 //! acknowledgement takes the revision's chunks out of the source, so the hydration never draws
 //! an older version over a newer one.
 
 use super::*;
-use crate::simulation::network::render::RoadChunkMap;
+use crate::nodes::sim::render::stream::layers::roads::surfaces::{
+    LAYER_COUNT, RoadChunkSurfaces, RoadSurface,
+};
+use crate::nodes::sim::render::stream::layers::roads::RoadKey;
+use crate::nodes::sim::render::stream::prepare::PrepareQueue;
+use crate::simulation::network::render::{NetworkMeshData, RoadChunkMap};
+use godot::classes::{ArrayMesh, Material, RenderingServer};
+use std::sync::PoisonError;
 
-/// The network a hydration installs from: the published chunks at one road mesh generation.
+/// Predicted cost of one byte handed to `RenderingServer.mesh_add_surface`, microseconds
+/// (`RENDER-52` part 2's measurement; the copy into a `PackedByteArray` included).
+pub(crate) const ROAD_US_PER_BYTE: f64 = 0.0005;
+/// Predicted fixed cost of a surface part, microseconds.
+pub(crate) const ROAD_SURFACE_US: f64 = 20.0;
+/// Predicted cost of a chunk's swap (its node, lights and signs), microseconds.
+pub(crate) const ROAD_SWAP_US: f64 = 150.0;
+// Encode jobs out at once.
+const MAX_IN_FLIGHT: usize = 4;
+// The lining's shadow caster's material, after the chunk layers' (`set_road_hydration_materials`).
+const SHADOW_MATERIAL: usize = LAYER_COUNT;
+// `RenderingServer.PRIMITIVE_TRIANGLES`.
+const PRIMITIVE_TRIANGLES: i64 = 3;
+
+// Encoded chunks landed from the pool: key, request serial, surfaces.
+type Landed = Arc<Mutex<Vec<(RoadKey, u64, RoadChunkSurfaces)>>>;
+
+// A chunk being built: its encoded surfaces, its hidden meshes and the surfaces added so far
+// (the layers', then the lining caster's).
+struct Build {
+    surfaces: RoadChunkSurfaces,
+    mesh: Gd<ArrayMesh>,
+    shadow: Option<Gd<ArrayMesh>>,
+    added: usize,
+}
+
+impl Build {
+    fn parts(&self) -> usize {
+        self.surfaces.layers.len() + usize::from(self.surfaces.lining_shadow.is_some())
+    }
+
+    fn next_surface(&self) -> Option<&RoadSurface> {
+        self.surfaces
+            .layers
+            .get(self.added)
+            .map(|(_, surface)| surface)
+            .or_else(|| {
+                (self.added == self.surfaces.layers.len())
+                    .then_some(self.surfaces.lining_shadow.as_ref())
+                    .flatten()
+            })
+    }
+}
+
+/// The network a hydration installs from: the published chunks at one road mesh generation, and
+/// the chunks being encoded and built.
 pub(crate) struct RoadHydrationSource {
     generation: u64,
     chunks: RoadChunkMap,
     span: f32,
     origin: [f32; 2],
+    jobs: PrepareQueue<RoadKey>,
+    requested: HashMap<RoadKey, u64>,
+    landed: Landed,
+    builds: HashMap<RoadKey, Build>,
+    // The chunk layers' materials, then the lining caster's.
+    materials: Vec<Gd<Material>>,
+}
+
+impl RoadHydrationSource {
+    fn chunk(&self, key: RoadKey) -> Option<&Arc<NetworkMeshData>> {
+        self.chunks.get(&(key[0], key[1]))
+    }
+
+    // Takes the landed encodings, drops the builds and requests outside `head`, and starts
+    // encodings for `head`'s chunks that have neither, nearest first. `O(landed + head)`.
+    fn prepare(&mut self, head: &[RoadKey]) {
+        let landed = std::mem::take(&mut *self.landed.lock().unwrap_or_else(PoisonError::into_inner));
+        for (key, serial, surfaces) in landed {
+            if self.jobs.finish(key, serial) && self.requested.remove(&key).is_some() {
+                self.builds.insert(
+                    key,
+                    Build {
+                        surfaces,
+                        mesh: ArrayMesh::new_gd(),
+                        shadow: None,
+                        added: 0,
+                    },
+                );
+            }
+        }
+        self.builds.retain(|key, _| head.contains(key));
+        let jobs = &mut self.jobs;
+        self.requested.retain(|key, _| {
+            let keep = head.contains(key);
+            if !keep {
+                jobs.cancel(*key);
+            }
+            keep
+        });
+        for &key in head {
+            if self.builds.contains_key(&key) || self.requested.contains_key(&key) {
+                continue;
+            }
+            let Some(mesh) = self.chunk(key).cloned() else {
+                continue;
+            };
+            let Some(serial) = self.jobs.start(key) else {
+                break;
+            };
+            self.requested.insert(key, serial);
+            let landed = Arc::clone(&self.landed);
+            crate::thread_pools::spawn(move || {
+                let surfaces = RoadChunkSurfaces::encode(&mesh);
+                landed
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .push((key, serial, surfaces));
+            });
+        }
+    }
+
+    // Adds `key`'s next surface to its hidden mesh: false when none is left (or no build).
+    fn add_surface(&mut self, key: RoadKey) -> bool {
+        let Some(build) = self.builds.get_mut(&key) else {
+            return false;
+        };
+        let Some(surface) = build.next_surface() else {
+            return false;
+        };
+        let layer = build.surfaces.layers.get(build.added).map(|&(layer, _)| layer);
+        let material = self.materials.get(layer.unwrap_or(SHADOW_MATERIAL)).map(|m| m.get_rid());
+        let mut dict = VarDictionary::new();
+        dict.set("primitive", PRIMITIVE_TRIANGLES);
+        dict.set("format", surface.format as i64);
+        dict.set("vertex_data", PackedByteArray::from(surface.vertex_data.as_slice()));
+        if !surface.attribute_data.is_empty() {
+            dict.set("attribute_data", PackedByteArray::from(surface.attribute_data.as_slice()));
+        }
+        dict.set("vertex_count", i64::from(surface.vertex_count));
+        dict.set("aabb", aabb(surface));
+        dict.set("uv_scale", Vector4::ZERO);
+        let mesh = match layer {
+            Some(_) => build.mesh.get_rid(),
+            None => build.shadow.get_or_insert_with(ArrayMesh::new_gd).get_rid(),
+        };
+        let mut server = RenderingServer::singleton();
+        let index = server.mesh_get_surface_count(mesh);
+        server.mesh_add_surface(mesh, &dict);
+        if let Some(material) = material {
+            server.mesh_surface_set_material(mesh, index, material);
+        }
+        build.added += 1;
+        true
+    }
+}
+
+fn aabb(surface: &RoadSurface) -> Aabb {
+    let [x, y, z, w, h, d] = surface.aabb;
+    Aabb::new(Vector3::new(x, y, z), Vector3::new(w, h, d))
 }
 
 #[godot_api(secondary)]
@@ -24,8 +185,9 @@ impl SimulationNode {
     /// Takes the whole road network for a hydration when its road mesh generation is
     /// `expected_generation` (else returns an empty dictionary and takes nothing): the
     /// `surface_generation`, `chunk_span_m`, `chunk_origin_x_m`, `chunk_origin_z_m` of the full
-    /// road snapshot, `keys` (x, z pairs) and `vertices` per chunk. Waits for the core once, as
-    /// the full snapshot did; the chunk map is shared, `O(chunks)` to list.
+    /// road snapshot and `keys` (x, z pairs). Waits for the core once, as the full snapshot did;
+    /// the chunk map is shared, `O(chunks)` to list. Any hydration taken before is dropped with
+    /// its builds.
     #[func]
     pub fn begin_road_mesh_hydration(&mut self, expected_generation: i64) -> VarDictionary {
         let source = {
@@ -39,14 +201,17 @@ impl SimulationNode {
                 chunks: core.cached_road_mesh_chunks.clone(),
                 span: core.transit_network.roadbed.chunk_span_m(),
                 origin: [x, z],
+                jobs: PrepareQueue::new(MAX_IN_FLIGHT),
+                requested: HashMap::new(),
+                landed: Landed::default(),
+                builds: HashMap::new(),
+                materials: Vec::new(),
             }
         };
         let mut keys = PackedInt32Array::new();
-        let mut vertices = PackedInt64Array::new();
-        for (&(x, z), mesh) in source.chunks.iter() {
+        for &(x, z) in source.chunks.keys() {
             keys.push(x);
             keys.push(z);
-            vertices.push(mesh.vertex_count() as i64);
         }
         let mut out = VarDictionary::new();
         out.set("surface_generation", expected_generation);
@@ -54,32 +219,149 @@ impl SimulationNode {
         out.set("chunk_origin_x_m", source.origin[0]);
         out.set("chunk_origin_z_m", source.origin[1]);
         out.set("keys", keys);
-        out.set("vertices", vertices);
         self.road_hydration = Some(source);
         out
     }
 
-    /// One chunk of the hydration in the full road snapshot's chunk format, or an empty
-    /// dictionary when the hydration has no such chunk (none began, it ended, or a newer
-    /// revision took the chunk). `O(the chunk's vertices)`, no lock.
+    /// The materials the hydration's surfaces draw with: one per chunk layer in payload order,
+    /// then the lining's shadow caster's. False, keeping none, when the count is not that or no
+    /// hydration was taken.
     #[func]
-    pub fn get_road_mesh_hydration_chunk(&self, x: i32, z: i32) -> VarDictionary {
-        self.road_hydration
-            .as_ref()
-            .and_then(|source| source.chunks.get(&(x, z)))
-            .map_or_else(VarDictionary::new, |mesh| {
-                let mut dict = SimCore::network_mesh_data_dict(mesh);
-                dict.set("chunk_x", x);
-                dict.set("chunk_z", z);
-                dict.set("removed", false);
-                dict
-            })
+    pub fn set_road_hydration_materials(&mut self, materials: Array<Gd<Material>>) -> bool {
+        let Some(source) = self.road_hydration.as_mut() else {
+            return false;
+        };
+        if materials.len() != LAYER_COUNT + 1 {
+            return false;
+        }
+        source.materials = materials.iter_shared().collect();
+        true
     }
 
-    /// Ends the hydration: its network is let go.
+    /// Asks for the surfaces of the chunks `keys` (x, z pairs, the head of the stream's order,
+    /// nearest first) to be encoded on the background pool; builds of chunks not listed are
+    /// dropped. `O(keys)`.
+    #[func]
+    pub fn prepare_road_mesh_hydration(&mut self, keys: PackedInt32Array) {
+        if let Some(source) = self.road_hydration.as_mut() {
+            let head: Vec<RoadKey> = keys
+                .as_slice()
+                .chunks_exact(2)
+                .map(|key| [key[0], key[1]])
+                .collect();
+            source.prepare(&head);
+        }
+    }
+
+    /// Chunk `(x, z)`'s next part's predicted cost in microseconds: a surface by its bytes, or
+    /// the swap; -1 while its surfaces are not encoded, -2 when the hydration has no such chunk
+    /// (none began, it ended, or a newer revision took the chunk). `O(1)`.
+    #[func]
+    pub fn get_road_mesh_hydration_part_us(&self, x: i32, z: i32) -> f64 {
+        let Some(source) = self.road_hydration.as_ref() else {
+            return -2.0;
+        };
+        if source.chunk([x, z]).is_none() {
+            return -2.0;
+        }
+        match source.builds.get(&[x, z]) {
+            None => -1.0,
+            Some(build) => build.next_surface().map_or(ROAD_SWAP_US, |surface| {
+                ROAD_SURFACE_US + surface.bytes() as f64 * ROAD_US_PER_BYTE
+            }),
+        }
+    }
+
+    /// Adds chunk `(x, z)`'s next encoded surface to its hidden mesh. False when it has none
+    /// left (the swap is next) or no build. `O(the surface's bytes)`.
+    #[func]
+    pub fn add_road_mesh_hydration_surface(&mut self, x: i32, z: i32) -> bool {
+        self.road_hydration
+            .as_mut()
+            .is_some_and(|source| source.add_surface([x, z]))
+    }
+
+    /// Takes chunk `(x, z)`'s finished build for its swap: `mesh` (the layers' surfaces),
+    /// `lining_mesh` (the lining's shadow caster, or null), per layer in payload order
+    /// `layer_surfaces` (its surface, -1 when empty), `layer_counts` and `layer_formats`, and the
+    /// payload's `chunk_x`, `chunk_z`, `removed` (false), `street_lights` and `road_signs`. An
+    /// empty dictionary when the hydration has no such chunk or its build is not finished.
+    #[func]
+    pub fn take_road_mesh_hydration_chunk(&mut self, x: i32, z: i32) -> VarDictionary {
+        let Some(source) = self.road_hydration.as_mut() else {
+            return VarDictionary::new();
+        };
+        let Some(chunk) = source.chunk([x, z]).cloned() else {
+            return VarDictionary::new();
+        };
+        if source
+            .builds
+            .get(&[x, z])
+            .is_none_or(|build| build.added < build.parts())
+        {
+            return VarDictionary::new();
+        }
+        let Some(build) = source.builds.remove(&[x, z]) else {
+            return VarDictionary::new();
+        };
+        let mut surfaces = PackedInt32Array::from(&[-1; LAYER_COUNT][..]);
+        let mut counts = PackedInt32Array::from(&[0; LAYER_COUNT][..]);
+        let mut formats = PackedInt64Array::from(&[0; LAYER_COUNT][..]);
+        for (index, (layer, surface)) in build.surfaces.layers.iter().enumerate() {
+            surfaces.as_mut_slice()[*layer] = index as i32;
+            counts.as_mut_slice()[*layer] = surface.vertex_count as i32;
+            formats.as_mut_slice()[*layer] = surface.format as i64;
+        }
+        let mut dict = VarDictionary::new();
+        dict.set("mesh", build.mesh.to_variant());
+        dict.set(
+            "lining_mesh",
+            build.shadow.as_ref().map_or_else(Variant::nil, ToGodot::to_variant),
+        );
+        dict.set("layer_surfaces", surfaces);
+        dict.set("layer_counts", counts);
+        dict.set("layer_formats", formats);
+        dict.set("chunk_x", x);
+        dict.set("chunk_z", z);
+        dict.set("removed", false);
+        SimCore::set_road_mesh_props(&mut dict, &chunk);
+        dict
+    }
+
+    /// Ends the hydration: its network and unfinished builds are let go.
     #[func]
     pub fn end_road_mesh_hydration(&mut self) {
         self.road_hydration = None;
+    }
+
+    /// The published road chunk `(x, z)`'s surfaces as the hydration encodes them, for tests
+    /// against `RenderingServer.mesh_get_surface`: per non-empty layer `layer`, `format`,
+    /// `vertex_count`, `vertex_data`, `attribute_data` and `aabb`, then the lining's shadow
+    /// caster with `layer` -1. Empty for no such chunk. Waits for the core once.
+    #[func]
+    pub fn get_road_chunk_surfaces(&self, x: i32, z: i32) -> VarArray {
+        let chunk = self.lock_core().cached_road_mesh_chunks.get(&(x, z)).cloned();
+        let mut out = VarArray::new();
+        let Some(chunk) = chunk else {
+            return out;
+        };
+        let surfaces = RoadChunkSurfaces::encode(&chunk);
+        let entries = surfaces
+            .layers
+            .iter()
+            .map(|(layer, surface)| (*layer as i64, surface))
+            .chain(surfaces.lining_shadow.iter().map(|surface| (-1, surface)));
+        for (layer, surface) in entries {
+            let mut dict = VarDictionary::new();
+            dict.set("layer", layer);
+            dict.set("format", surface.format as i64);
+            dict.set("vertex_count", i64::from(surface.vertex_count));
+            dict.set("vertex_data", PackedByteArray::from(surface.vertex_data.as_slice()));
+            dict.set("attribute_data", PackedByteArray::from(surface.attribute_data.as_slice()));
+            dict.set("aabb", aabb(surface));
+            out.push(&dict.to_variant());
+        }
+        out
     }
 }
 
@@ -96,6 +378,7 @@ impl SimulationNode {
         {
             for key in chunks {
                 source.chunks.remove(key);
+                source.builds.remove(&[key.0, key.1]);
             }
         }
     }

@@ -40,6 +40,7 @@ extends RefCounted
 
 const MANIFEST := "res://../benchmarks/fixtures/kuopio-terrain/placements.json"
 const Vegetation := preload("res://scripts/renderers/vegetation.gd")
+const RoadChunkRenderer := preload("res://scripts/renderers/road_chunk_renderer.gd")
 const POSES := 8
 # The Godot terrain install share of a pose, commit or undo frame (`terrain.md` budgets).
 const SHARE_MS := 1.0
@@ -676,13 +677,13 @@ func _on_road(trunks: PackedVector2Array, preview: bool) -> int:
 # vertical faces cover no ground and are left out. Once per chunk node.
 func _road_cells(chunk: MeshInstance3D) -> Dictionary:
 	var out := {}
-	var mesh: Mesh = chunk.mesh
-	var box := mesh.get_aabb()
 	var shift := chunk.position
-	if not Rect2(Vector2(box.position.x + shift.x, box.position.z + shift.z), Vector2(box.size.x, box.size.z)).intersects(_veg_region):
-		return out
-	for surface in mesh.get_surface_count():
-		var vertices: PackedVector3Array = mesh.surface_get_arrays(surface)[Mesh.ARRAY_VERTEX]
+	# The server's surfaces: a hydrated chunk's are only there (`RENDER-52` part 2).
+	for surface in RoadChunkRenderer.server_surfaces(chunk.mesh):
+		var box: AABB = surface["aabb"]
+		if not Rect2(Vector2(box.position.x + shift.x, box.position.z + shift.z), Vector2(box.size.x, box.size.z)).intersects(_veg_region):
+			continue
+		var vertices := RoadChunkRenderer.surface_positions(surface)
 		for v in range(0, vertices.size(), 3):
 			var a := Vector2(vertices[v].x + shift.x, vertices[v].z + shift.z)
 			var b := Vector2(vertices[v + 1].x + shift.x, vertices[v + 1].z + shift.z)

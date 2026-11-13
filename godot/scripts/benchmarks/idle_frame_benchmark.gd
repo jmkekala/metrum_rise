@@ -171,10 +171,10 @@ func run(bench: Node) -> void:
 			var mesh: Mesh = (instance as MeshInstance3D).mesh if instance is MeshInstance3D else null
 			if mesh == null:
 				continue
-			for surface in mesh.get_surface_count():
+			# The server's surfaces: a hydrated chunk's are only there (`RENDER-52` part 2).
+			for surface in RenderingServer.mesh_get_surface_count(mesh.get_rid()):
 				surfaces += 1
-				var indices: int = mesh.surface_get_array_index_len(surface)
-				triangles += (indices if indices > 0 else int(mesh.surface_get_array_len(surface))) / 3
+				triangles += RenderingServer.mesh_get_surface(mesh.get_rid(), surface)["vertex_count"] / 3
 		print("[IDLE_BENCH] ROADS chunks=%d surfaces=%d triangles=%d" % [chunks.size(), surfaces, triangles])
 	var load_wait: Dictionary = await bench._wait_for_idle(bench.settle_timeout_sec)
 	_report.phases.append({"phase": "world_load", "load_call_ms": load_call_ms,

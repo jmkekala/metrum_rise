@@ -6,7 +6,9 @@
 ## replace. The resident chunk stays drawn with those runs collapsed in its vertex buffer (three
 ## equal positions draw nothing), the overlays draw the rebuilt pieces, and a run shown again gets
 ## its published positions back. Everything is staged before anything visible changes. Replaced
-## overlay nodes and their ArrayMeshes are recycled as detached spares.
+## overlay nodes and their ArrayMeshes are recycled as detached spares. A resident chunk's runs
+## are read from its mesh's layer metas and written through the RenderingServer on the mesh's
+## RID, so a chunk a hydration built in Rust (`RENDER-52` part 2) collapses as one built here.
 extends RefCounted
 
 # A surface's positions are their own f32 stream ahead of its normals (Godot 4.7, checked on the
@@ -151,7 +153,9 @@ func _resident_target(renderer: Node3D, key: Vector2i, chunk: Dictionary) -> Var
 	var instance: MeshInstance3D = renderer.chunks[key]
 	var mesh := instance.mesh as ArrayMesh
 	var surfaces: Variant = mesh.get_meta("road_layer_surfaces", null) if mesh != null else null
-	if not surfaces is PackedInt32Array:
+	var counts: Variant = mesh.get_meta("road_layer_counts", null) if mesh != null else null
+	var formats: Variant = mesh.get_meta("road_layer_formats", null) if mesh != null else null
+	if not surfaces is PackedInt32Array or not counts is PackedInt32Array or not formats is PackedInt64Array:
 		return null
 	var runs := {}
 	var first := 0
@@ -161,9 +165,8 @@ func _resident_target(renderer: Node3D, key: Vector2i, chunk: Dictionary) -> Var
 		var end: int = hidden[index + 2]
 		if layer < 0 or layer >= surfaces.size() or surfaces[layer] < 0 or start < 0 or end <= start:
 			return null
-		var surface: int = surfaces[layer]
-		var count := mesh.surface_get_array_len(surface)
-		if end > count or RenderingServer.mesh_surface_get_format_vertex_stride(mesh.surface_get_format(surface), count) != POSITION_BYTES:
+		var count: int = counts[layer]
+		if end > count or RenderingServer.mesh_surface_get_format_vertex_stride(formats[layer], count) != POSITION_BYTES:
 			return null
 		runs[Vector3i(layer, start, end)] = Vector2i(first, end - start)
 		first += end - start
@@ -208,7 +211,7 @@ func _apply_runs(targets: Dictionary) -> void:
 
 func _write_positions(mesh: ArrayMesh, run: Vector3i, bytes: PackedByteArray) -> void:
 	var surfaces: PackedInt32Array = mesh.get_meta("road_layer_surfaces")
-	mesh.surface_update_vertex_region(surfaces[run.x], run.y * POSITION_BYTES, bytes)
+	RenderingServer.mesh_surface_update_vertex_region(mesh.get_rid(), surfaces[run.x], run.y * POSITION_BYTES, bytes)
 
 # True when a chunk payload carries any overlay triangle.
 static func _has_overlay(chunk: Dictionary) -> bool:

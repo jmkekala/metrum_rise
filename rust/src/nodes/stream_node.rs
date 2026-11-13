@@ -20,9 +20,10 @@
 //! vegetation's tiers in the same pass, and its resident entries (residency, mesh steps, surface
 //! generations) the graded tile renderer's book (`RENDER-32-K` part 6).
 //!
-//! A load's road chunks (`RENDER-32-P`) hydrate after the patches in the first pass: one chunk a
-//! unit, nearest first with the view and the near ring first ([`RoadHydration`]), executed by
-//! `road_chunk_hydration.gd` through the road tool's commit, under a hydration budget a frame.
+//! A load's road chunks (`RENDER-32-P`) hydrate after the patches in the first pass: a surface a
+//! part onto a chunk's hidden mesh, then its swap (`RENDER-52` part 2), nearest first with the view
+//! and the near ring first ([`RoadHydration`]), executed by `road_chunk_hydration.gd` through the
+//! road tool's commit, under a hydration budget a frame.
 //! The parked cars' chunks (`RENDER-32-P`) draw through pooled slots of their own backend
 //! ([`ParkedLayer`]): `parked_cars.gd` hands each changed chunk's poses over and creates no node.
 //! While the zoning overlay shows, its ground masks' resident chunks are a 2 km ring about the
@@ -40,7 +41,8 @@ use crate::nodes::sim::render::stream::layers::parked::{
     ParkedLayer, SLOT_LIMIT as PARKED_SLOT_LIMIT, SPARE_LIMIT as PARKED_SPARE_LIMIT,
 };
 use crate::nodes::sim::render::stream::layers::roads::{
-    ROAD_HYDRATION_BUDGET_US, RoadExecutor, RoadHydration, RoadInstall, RoadKey, RoadWork,
+    ROAD_HYDRATION_BUDGET_US, RoadExecutor, RoadHydration, RoadInstall, RoadKey, RoadPart,
+    RoadWork,
 };
 use crate::nodes::sim::render::stream::layers::terrain::{
     Activation, PatchExecutor, PatchGrid, PatchKey as TerrainKey, PatchStream, PatchWork, Payload,
@@ -862,11 +864,14 @@ impl StreamNode {
         out
     }
 
-    /// Starts a load's road chunk hydration (`RENDER-32-P`): the chunks `keys` (x, z pairs) with
-    /// their `vertices`, on a grid of `span`-metre chunks whose chunk (0, 0) starts at `origin`,
-    /// installed nearest first by `executor`'s `stream_road_chunk(key) -> int` (0 installed, 1
-    /// gone, 2 busy, 3 cancelled), which hears `stream_road_hydration_done()` when none is left.
-    /// Replaces any hydration running. `O(chunks)`.
+    /// Starts a load's road chunk hydration (`RENDER-32-P`): the chunks `keys` (x, z pairs) on a
+    /// grid of `span`-metre chunks whose chunk (0, 0) starts at `origin`, installed nearest first
+    /// in parts (`RENDER-52` part 2) by `executor`: `stream_road_prepare(keys)` (the head of the
+    /// order, x, z pairs, to encode), `stream_road_next_part(key) -> float` (the next part's
+    /// predicted microseconds; -1 its surfaces not encoded yet, -2 gone) and
+    /// `stream_road_part(key) -> int` (0 installed, 1 gone, 2 busy, 3 cancelled, 4 a part done);
+    /// it hears `stream_road_hydration_done()` when none is left. Replaces any hydration running.
+    /// `O(chunks)`.
     #[func]
     pub fn begin_road_hydration(
         &mut self,
@@ -874,18 +879,12 @@ impl StreamNode {
         span: f64,
         origin: Vector2,
         keys: PackedInt32Array,
-        vertices: PackedInt64Array,
     ) {
         let keys = keys.as_slice();
-        let vertices = vertices.as_slice();
-        let count = (keys.len() / 2).min(vertices.len());
         self.roads.begin(
             span as f32,
             [origin.x, origin.y],
-            (0..count).map(|at| {
-                let key = [keys[2 * at], keys[2 * at + 1]];
-                (key, u32::try_from(vertices[at]).unwrap_or(u32::MAX))
-            }),
+            keys.chunks_exact(2).map(|key| [key[0], key[1]]),
         );
         self.road_scripts = Some(executor);
         if self.roads.pending() == 0 {
@@ -1692,6 +1691,7 @@ impl StreamNode {
         if self.road_work != RoadWork::default() || self.roads.pending() > 0 {
             let mut roads = VarDictionary::new();
             roads.set("installed", self.road_work.installed as i64);
+            roads.set("parts", self.road_work.parts as i64);
             roads.set("gone", self.road_work.gone as i64);
             roads.set("busy", self.road_work.busy);
             roads.set("pending", self.roads.pending() as i64);
@@ -1857,20 +1857,41 @@ const PATCH_HIGH_M: f32 = 2500.0;
 
 // Runs a patch layer's units on `terrain.gd` / `water.gd`: their `stream_request`,
 // `stream_activate`, `stream_deactivate`, `stream_build` and `stream_set_lod`, one call a unit.
-// `road_chunk_hydration.gd`'s units.
+// `road_chunk_hydration.gd`'s parts.
 struct RoadScriptExecutor<'a>(&'a mut Gd<Node>);
 
 impl RoadExecutor for RoadScriptExecutor<'_> {
-    fn install(&mut self, key: RoadKey) -> RoadInstall {
+    fn prepare(&mut self, keys: &[RoadKey]) {
+        let keys = PackedInt32Array::from_iter(keys.iter().flatten().copied());
+        self.0.call("stream_road_prepare", &[keys.to_variant()]);
+    }
+
+    fn next_part(&mut self, key: RoadKey) -> RoadPart {
+        let predicted = self
+            .0
+            .call("stream_road_next_part", &[Vector2i::new(key[0], key[1]).to_variant()])
+            .try_to::<f64>()
+            .unwrap_or(-2.0);
+        if predicted >= 0.0 {
+            RoadPart::Ready(predicted)
+        } else if predicted == -1.0 {
+            RoadPart::Waiting
+        } else {
+            RoadPart::Gone
+        }
+    }
+
+    fn run_part(&mut self, key: RoadKey) -> RoadInstall {
         let answer = self
             .0
-            .call("stream_road_chunk", &[Vector2i::new(key[0], key[1]).to_variant()])
+            .call("stream_road_part", &[Vector2i::new(key[0], key[1]).to_variant()])
             .try_to::<i64>()
             .unwrap_or(3);
         match answer {
             0 => RoadInstall::Installed,
             1 => RoadInstall::Gone,
             2 => RoadInstall::Busy,
+            4 => RoadInstall::Part,
             _ => RoadInstall::Cancelled,
         }
     }

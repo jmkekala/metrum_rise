@@ -28,6 +28,9 @@ class MockSimulation:
 	# The road hydrations taken (`RENDER-32-P`): their generations, and whether one is held.
 	var hydration_requests: Array[int] = []
 	var hydration: Dictionary = {}
+	var surfaces_added: Dictionary = {}
+	# The chunk renderer that builds a hydrated chunk's mesh (the streamed hydration's test).
+	var chunk_renderer: Node
 	var acknowledged_generations: Array[int] = []
 	var acknowledged_terrain_states: Array[PackedInt64Array] = []
 	var reject_acknowledgement: bool = false
@@ -50,18 +53,46 @@ class MockSimulation:
 		if not response.get("full_replace", false) or int(response["surface_generation"]) != expected:
 			return {}
 		hydration = {}
+		surfaces_added = {}
 		var keys := PackedInt32Array()
-		var vertices := PackedInt64Array()
 		for chunk: Dictionary in response["chunks"]:
 			hydration[Vector2i(chunk["chunk_x"], chunk["chunk_z"])] = chunk
 			keys.append_array([chunk["chunk_x"], chunk["chunk_z"]])
-			vertices.append((chunk["road_vertices"] as PackedVector3Array).size())
 		return {"surface_generation": expected, "chunk_span_m": response["chunk_span_m"],
 			"chunk_origin_x_m": response["chunk_origin_x_m"], "chunk_origin_z_m": response["chunk_origin_z_m"],
-			"keys": keys, "vertices": vertices}
+			"keys": keys}
 
-	func get_road_mesh_hydration_chunk(x: int, z: int) -> Dictionary:
-		return hydration.get(Vector2i(x, z), {})
+	# A hydration's parts as Rust's source runs them (`RENDER-52` part 2): one surface part a
+	# chunk, then the swap of a mesh the chunk renderer builds from the payload.
+	func set_road_hydration_materials(materials: Array) -> bool:
+		return materials.size() == 10
+
+	func prepare_road_mesh_hydration(_keys: PackedInt32Array) -> void:
+		pass
+
+	func get_road_mesh_hydration_part_us(x: int, z: int) -> float:
+		return 1.0 if hydration.has(Vector2i(x, z)) else -2.0
+
+	func add_road_mesh_hydration_surface(x: int, z: int) -> bool:
+		var key := Vector2i(x, z)
+		if not hydration.has(key) or surfaces_added.has(key):
+			return false
+		surfaces_added[key] = true
+		return true
+
+	func take_road_mesh_hydration_chunk(x: int, z: int) -> Dictionary:
+		var chunk: Dictionary = hydration.get(Vector2i(x, z), {})
+		if chunk.is_empty():
+			return {}
+		var mesh := ArrayMesh.new()
+		if not chunk_renderer.fill_chunk_mesh(mesh, chunk):
+			return {}
+		var data := chunk.duplicate()
+		data["mesh"] = mesh
+		data["lining_mesh"] = null
+		for meta in ["layer_surfaces", "layer_counts", "layer_formats"]:
+			data[meta] = mesh.get_meta("road_" + meta)
+		return data
 
 	func end_road_mesh_hydration() -> void:
 		hydration = {}
@@ -625,6 +656,7 @@ func _test_streamed_hydration() -> void:
 	var network_renderer: Node = NetworkRendererScript.new()
 	network_renderer.name = "NetworkRenderer"
 	host.add_child(network_renderer)
+	simulation.chunk_renderer = road_tool.chunks
 	simulation.generation = 1
 	simulation.response = _batch(1, true, CHUNK_SPAN_M,
 		[_triangle_chunk(3, 0), _triangle_chunk(0, 0), _triangle_chunk(1, 0)], CHUNK_ORIGIN_X_M, CHUNK_ORIGIN_Z_M)

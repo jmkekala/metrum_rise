@@ -338,6 +338,13 @@ impl SimCore {
                 PackedColorArray::from_iter(mesh_data.median_grass_colors.iter().copied()),
             );
         }
+        Self::set_road_mesh_props(&mut dict, mesh_data);
+        dict
+    }
+
+    /// Sets a chunk's street lights and road signs on its payload `dict` (`street_lights`,
+    /// `road_signs`): five floats each, chunk-local base x, y, z, yaw and kind.
+    pub(crate) fn set_road_mesh_props(dict: &mut VarDictionary, mesh_data: &NetworkMeshData) {
         // Five floats per light: chunk-local pole base x, y, z, yaw, model kind.
         dict.set(
             "street_lights",
@@ -364,7 +371,6 @@ impl SimCore {
                 ]
             })),
         );
-        dict
     }
 
     /// Returns road-surface debug line data for editor visualization. `ROAD-68-A` has no pieces,

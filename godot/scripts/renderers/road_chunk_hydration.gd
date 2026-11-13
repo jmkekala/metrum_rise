@@ -1,13 +1,13 @@
 # SPDX-License-Identifier: GPL-2.0-only
 
-## A load's road chunks, installed one at a time (`RENDER-32-P`, `RENDER-36`): instead of the
-## whole network's meshes in the load's first frame, the chunk renderer's chunks are replaced by
-## none at the network's generation and the streaming core (`StreamNode`) runs one unit a chunk,
-## nearest first with the view and the near ring first, under a budget a frame. Each unit packs
-## its chunk from the hydration's source in Rust, builds it with the chunk renderer's builder and
-## installs it through the renderer's own install, so a chunk draws whole, with its lights and
-## signs, as the full snapshot drew it. NetworkRenderer starts a hydration wherever the chunk
-## renderer needed its full snapshot.
+## A load's road chunks, installed in parts (`RENDER-32-P`, `RENDER-36`, `RENDER-52` part 2):
+## instead of the whole network's meshes in the load's first frame, the chunk renderer's chunks
+## are replaced by none at the network's generation and the streaming core (`StreamNode`) runs
+## them nearest first with the view and the near ring first, under a budget a frame. Rust encodes
+## a chunk's surfaces in Godot's layout on the background pool and adds one a part to the chunk's
+## hidden mesh; the chunk's last part swaps the finished mesh in through the renderer's own
+## install, so a chunk draws whole, with its lights and signs, as the full snapshot drew it.
+## NetworkRenderer starts a hydration wherever the chunk renderer needed its full snapshot.
 extends Node
 
 const PerfDebug := preload("res://scripts/core/perf_debug.gd")
@@ -15,6 +15,7 @@ const INSTALLED := 0
 const GONE := 1
 const BUSY := 2
 const CANCELLED := 3
+const PART := 4
 
 var simulation_node: Node
 # The road tool's chunk renderer (`road_chunk_renderer.gd`, `RENDER-52`).
@@ -27,10 +28,9 @@ var _origin := Vector2.ZERO
 
 ## Makes the road chunks' one-time resources (the sign models and the lamp meshes and kinds) in the
 ## load call, which waits anyway, instead of in the first chunk's unit (0.3 s at 100k). A world
-## without roads needs neither.
+## without roads makes them too: else its first commit with a lamp or a sign paid them in one
+## frame (Kuopio's first commits' 207-222 ms frames, `RENDER-52` part 2).
 func prewarm() -> void:
-	if simulation_node.get_network_nodes().is_empty():
-		return
 	if chunks.road_signs != null:
 		chunks.road_signs._ensure_meshes()
 	if chunks.street_lights != null:
@@ -53,14 +53,22 @@ func commit(invalidate_nodes: bool) -> int:
 	_span = float(plan["chunk_span_m"])
 	_origin = Vector2(float(plan["chunk_origin_x_m"]), float(plan["chunk_origin_z_m"]))
 	chunks.install(generation, true, _span, _origin.x, _origin.y, [], {}, invalidate_nodes)
+	var keys: PackedInt32Array = plan["keys"]
+	if not keys.is_empty():
+		simulation_node.set_road_hydration_materials(chunks.hydration_materials())
 	if stream_node == null:
 		# No streaming core (a scene without one): every chunk now, as the full snapshot did.
-		var keys: PackedInt32Array = plan["keys"]
 		for at in range(0, keys.size(), 2):
-			_install(Vector2i(keys[at], keys[at + 1]), generation)
+			var key := Vector2i(keys[at], keys[at + 1])
+			simulation_node.prepare_road_mesh_hydration(PackedInt32Array([key.x, key.y]))
+			while simulation_node.get_road_mesh_hydration_part_us(key.x, key.y) == -1.0:
+				OS.delay_usec(100)
+				simulation_node.prepare_road_mesh_hydration(PackedInt32Array([key.x, key.y]))
+			while _part(key, generation) == PART:
+				pass
 		stream_road_hydration_done()
 		return generation
-	stream_node.begin_road_hydration(self, _span, _origin, plan["keys"], plan["vertices"])
+	stream_node.begin_road_hydration(self, _span, _origin, keys)
 	return generation
 
 ## Whether the renderer still waits for its network, or a hydration still installs chunks.
@@ -77,35 +85,42 @@ func holes_near(radius_m: float) -> int:
 		return 1
 	return stream_node.get_road_holes_near(radius_m) if stream_node != null else 0
 
-## One unit (the streaming core calls it): chunk `key` packed, built and installed.
-func stream_road_chunk(key: Vector2i) -> int:
+## The head of the streaming core's order (x, z pairs, nearest first): their surfaces are encoded
+## on the background pool.
+func stream_road_prepare(keys: PackedInt32Array) -> void:
+	simulation_node.prepare_road_mesh_hydration(keys)
+
+## Chunk `key`'s next part's predicted microseconds; -1 while its surfaces are not encoded, -2
+## gone.
+func stream_road_next_part(key: Vector2i) -> float:
+	return simulation_node.get_road_mesh_hydration_part_us(key.x, key.y)
+
+## One part (the streaming core calls it): a surface onto chunk `key`'s hidden mesh, or its swap.
+func stream_road_part(key: Vector2i) -> int:
 	# The renderer's chunks were reset (a world replaced): this hydration is over.
 	if chunks.needs_hydration():
 		return CANCELLED
+	# The installed generation: a newer acknowledged revision is the renderer's now, and this
+	# chunk is current at it (that revision's own chunks left the hydration's source).
+	return _part(key, int(simulation_node.get_network_render_generation()))
+
+func _part(key: Vector2i, generation: int) -> int:
+	# Surfaces go onto a mesh nothing draws yet: no revision waits for them.
+	if simulation_node.add_road_mesh_hydration_surface(key.x, key.y):
+		return PART
 	# A newer revision waits for NetworkRenderer: its terrain is not drawn yet, nor its chunks.
 	if simulation_node.is_network_dirty():
 		return BUSY
-	# The installed generation: a newer acknowledged revision is the renderer's now, and this
-	# chunk is current at it (that revision's own chunks left the hydration's source).
-	return _install(key, int(simulation_node.get_network_render_generation()))
-
-func _install(key: Vector2i, generation: int) -> int:
 	var start_us := Time.get_ticks_usec()
-	var data: Dictionary = simulation_node.get_road_mesh_hydration_chunk(key.x, key.y)
+	var data: Dictionary = simulation_node.take_road_mesh_hydration_chunk(key.x, key.y)
 	if data.is_empty():
 		return GONE
-	var packed_us := Time.get_ticks_usec()
-	var instance: MeshInstance3D = chunks.build_chunk(data, key, _span, _origin.x, _origin.y)
-	if instance == null:
-		push_error("Road chunk %s failed validation during hydration" % key)
-		return GONE
-	var built_us := Time.get_ticks_usec()
-	chunks.install(generation, false, _span, _origin.x, _origin.y, [data], {key: instance}, false)
-	# The unit's split (the stream node records the unit's whole time as `road_hydration`).
+	var taken_us := Time.get_ticks_usec()
+	chunks.install_built(generation, key, data)
+	# The swap's split (the stream node records the parts' whole time as `road_hydration`).
 	PerfDebug.record("road_units", 0.0, {
-		"pack_ms": float(packed_us - start_us) / 1000.0,
-		"build_ms": float(built_us - packed_us) / 1000.0,
-		"commit_ms": float(Time.get_ticks_usec() - built_us) / 1000.0,
+		"take_ms": float(taken_us - start_us) / 1000.0,
+		"commit_ms": float(Time.get_ticks_usec() - taken_us) / 1000.0,
 	})
 	return INSTALLED
 
