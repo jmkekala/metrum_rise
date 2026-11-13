@@ -27,6 +27,9 @@ const MAX_IN_FLIGHT: usize = 32;
 /// Bytes of finished products the cache may hold before no job starts (`docs/terrain.md`
 /// "Streaming core": 64 MB a layer).
 const CACHE_CAP_BYTES: usize = 64 << 20;
+/// Spare product storage kept for the next jobs: one per job in flight, which is all a burst of
+/// starts can take before products come back (AUDIT-stream-2 finding 2).
+const SPARE_PRODUCTS: usize = MAX_IN_FLIGHT;
 
 /// Vegetation jobs running at once on the background pool. Each runs its queries sequentially,
 /// so this many of the pool's threads at most work for the vegetation while the frame runs beside
@@ -96,7 +99,7 @@ impl Default for VegetationJobs {
     fn default() -> Self {
         Self {
             queue: PrepareQueue::new(MAX_IN_FLIGHT),
-            cache: ProductCache::new(CACHE_CAP_BYTES),
+            cache: ProductCache::new(CACHE_CAP_BYTES, SPARE_PRODUCTS),
             catalogue: None,
             waiting: VecDeque::new(),
             ahead: VecDeque::new(),
@@ -164,16 +167,20 @@ impl VegetationJobs {
                     product: landed.product,
                 });
             }
+            // Past the spare limit a stale product's storage is dropped here (rare: a request
+            // superseded while its job ran).
             if let Some(product) = landed.product {
-                self.cache.recycle(product);
+                drop(self.cache.recycle(product));
             }
         }
         None
     }
 
-    /// Returns a delivered product's storage.
-    pub(crate) fn recycle(&mut self, product: VegetationProduct) {
-        self.cache.recycle(product);
+    /// Returns a delivered product's storage; past the spare limit it comes back, for the
+    /// caller to drop outside the jobs' lock.
+    #[must_use]
+    pub(crate) fn recycle(&mut self, product: VegetationProduct) -> Option<VegetationProduct> {
+        self.cache.recycle(product)
     }
 
     /// Drops `key`'s live request: its result will not be delivered.

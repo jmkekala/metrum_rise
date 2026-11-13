@@ -613,12 +613,17 @@ impl VegetationProduct {
         self.buffer_count
     }
 
-    /// Bytes of the batches and buffers in use, for a cache's byte cap.
+    /// Bytes of storage the product holds, for a cache's byte cap: the capacities of its
+    /// batches and of every buffer, spare buffers past [`Self::buffer_count`] included, since
+    /// recycled storage keeps them (AUDIT-stream-2 finding 2: lengths undercounted what a held
+    /// product occupies). `O(buffers)`.
     pub(crate) fn bytes(&self) -> usize {
-        self.batches.len() * std::mem::size_of::<Batch>()
-            + self.buffers[..self.buffer_count]
+        self.batches.capacity() * std::mem::size_of::<Batch>()
+            + self.buffers.capacity() * std::mem::size_of::<Vec<f32>>()
+            + self
+                .buffers
                 .iter()
-                .map(|buffer| buffer.len() * std::mem::size_of::<f32>())
+                .map(|buffer| buffer.capacity() * std::mem::size_of::<f32>())
                 .sum::<usize>()
     }
 

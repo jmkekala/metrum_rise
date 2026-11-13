@@ -262,7 +262,7 @@ fn delivered(
     while let Some(result) = jobs.poll() {
         let product = result.product.unwrap();
         assert!(out.insert(result.key, fingerprint(&product)).is_none());
-        jobs.recycle(product);
+        drop(jobs.recycle(product));
     }
     assert_eq!(jobs.in_flight(), 0);
     out

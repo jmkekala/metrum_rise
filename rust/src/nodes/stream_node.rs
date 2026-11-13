@@ -73,6 +73,8 @@ pub struct StreamNode {
     spawner: Option<Spawner>,
     // The pull's landed products, taken under the jobs' lock (reused storage).
     landed: Vec<jobs::Delivered>,
+    // Product storage the jobs' spare limit refused, dropped outside their lock (reused).
+    refused: Vec<VegetationProduct>,
     view: Option<CameraSample>,
     // This pass's account inside the frame's ledger (`RENDER-32-Q`): what every owner of the
     // frame spent, the node's own units; the node's own spend of the frame apart.
@@ -146,6 +148,7 @@ impl INode for StreamNode {
             residency: VegetationResidency::default(),
             spawner: None,
             landed: Vec::new(),
+            refused: Vec::new(),
             view: None,
             budget: FrameBudget::new(STREAM_BUDGET_US),
             ledger_frame: 0,
@@ -1394,17 +1397,22 @@ impl StreamNode {
         self.landed = landed;
     }
 
-    // Returns installed and dropped products' storage to the jobs.
+    // Returns installed and dropped products' storage to the jobs; what their spare limit
+    // refuses is dropped after the lock (at most the products of one eviction pass, a sixteenth
+    // of the held cap, and a frame's spent installs).
     fn recycle_spent(&mut self) {
         match self.spawner.as_ref() {
             Some(spawner) => {
-                let mut jobs = spawner.jobs.lock().unwrap();
-                for product in self.vegetation.take_spent() {
-                    jobs.recycle(product);
+                let mut refused = std::mem::take(&mut self.refused);
+                {
+                    let mut jobs = spawner.jobs.lock().unwrap();
+                    let spent = self.vegetation.take_spent();
+                    refused.extend(spent.filter_map(|product| jobs.recycle(product)));
+                    let spent = self.residency.take_prepared_spent();
+                    refused.extend(spent.filter_map(|product| jobs.recycle(product)));
                 }
-                for product in self.residency.take_prepared_spent() {
-                    jobs.recycle(product);
-                }
+                refused.clear();
+                self.refused = refused;
             }
             None => {
                 self.vegetation.take_spent().for_each(drop);

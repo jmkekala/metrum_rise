@@ -157,6 +157,23 @@ fn a_dense_patch_builds_every_level_and_reuses_its_storage() {
 }
 
 #[test]
+fn a_product_counts_the_storage_it_holds_not_the_rows_in_use() {
+    // AUDIT-stream-2 finding 2: storage of a dense patch reused for a sparse one still holds
+    // the dense patch's capacity; a cap counting lengths held a multiple of what it said.
+    let dense = dense_patch();
+    let sparse = &dense[..8 * PLACEMENT_STRIDE];
+    let catalogue = catalogue();
+    let mut product = VegetationProduct::default();
+    build_product(&inputs(&dense, true), &catalogue, &mut product);
+    let held = product.bytes();
+    let rows: usize = (0..product.buffer_count()).map(|i| product.buffer(i).len() * 4).sum();
+    assert!(held >= rows, "at least the rows in use");
+    build_product(&inputs(sparse, true), &catalogue, &mut product);
+    assert!(product.tree_count < 16);
+    assert_eq!(product.bytes(), held, "the reused storage is what it holds");
+}
+
+#[test]
 #[ignore = "timing: cargo test --release --lib dense_patch_product_cost -- --ignored --nocapture"]
 fn dense_patch_product_cost() {
     let data = dense_patch();
