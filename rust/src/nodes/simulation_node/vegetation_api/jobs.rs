@@ -67,8 +67,11 @@ pub(crate) struct VegetationJobs {
     queue: PrepareQueue<PatchKey>,
     cache: ProductCache<PatchKey, VegetationProduct>,
     catalogue: Option<Arc<ProductCatalogue>>,
-    // Started requests not yet running, oldest first, and the jobs running.
+    // Started requests not yet running, oldest first, and the jobs running. Products prepared
+    // ahead of need (`RENDER-32-N`) wait in their own queue, taken only when no request waits, so
+    // a request waits behind the prepares running, never behind those still waiting.
     waiting: VecDeque<Waiting>,
+    ahead: VecDeque<Waiting>,
     running: usize,
     // The snapshot taker is out.
     taking: bool,
@@ -77,6 +80,8 @@ pub(crate) struct VegetationJobs {
 // A started request waiting for a running place: what its job needs.
 struct Waiting {
     request: PatchRequest,
+    // Prepared ahead of need: waits behind the requests.
+    ahead: bool,
     serial: u64,
     product: VegetationProduct,
     catalogue: Arc<ProductCatalogue>,
@@ -89,6 +94,7 @@ impl Default for VegetationJobs {
             cache: ProductCache::new(CACHE_CAP_BYTES),
             catalogue: None,
             waiting: VecDeque::new(),
+            ahead: VecDeque::new(),
             running: 0,
             taking: false,
         }
@@ -184,19 +190,26 @@ pub(crate) struct Spawner {
 }
 
 /// Starts `request`, or returns `None` when the jobs refuse it for now. It runs on the
-/// background pool once fewer than [`MAX_RUNNING`] jobs run. The worker takes the snapshot under
-/// `try_lock` and never waits: a busy core puts the request back at the front of the queue,
-/// and the next request, build or poll tries again. `O(1)` on the calling thread.
-pub(crate) fn spawn_request(spawner: &Spawner, request: PatchRequest) -> Option<u64> {
+/// background pool once fewer than [`MAX_RUNNING`] jobs run, after every request waiting when
+/// `ahead` (a product prepared ahead of need) is set. The worker takes the snapshot under
+/// `try_lock` and never waits: a busy core puts the request back at the front of its queue, and
+/// the next request, build or poll tries again. `O(1)` on the calling thread.
+pub(crate) fn spawn_request(spawner: &Spawner, request: PatchRequest, ahead: bool) -> Option<u64> {
     let serial = {
         let mut jobs = spawner.jobs.lock().unwrap();
         let (serial, product, catalogue) = jobs.start(request.key)?;
-        jobs.waiting.push_back(Waiting {
+        let waiting = Waiting {
             request,
+            ahead,
             serial,
             product,
             catalogue,
-        });
+        };
+        if ahead {
+            jobs.ahead.push_back(waiting);
+        } else {
+            jobs.waiting.push_back(waiting);
+        }
         serial
     };
     pump(spawner);
@@ -217,7 +230,7 @@ pub(crate) fn pump(spawner: &Spawner) {
         }
         let mut batch = Vec::new();
         while jobs.running + batch.len() < MAX_RUNNING
-            && let Some(waiting) = jobs.waiting.pop_front()
+            && let Some(waiting) = jobs.waiting.pop_front().or_else(|| jobs.ahead.pop_front())
         {
             if jobs.queue.is_live(waiting.request.key, waiting.serial) {
                 batch.push(waiting);
@@ -261,7 +274,11 @@ pub(crate) fn pump(spawner: &Spawner) {
             // the core again. It does not pump itself, so a held core is not spun on.
             jobs.running -= busy.len();
             for waiting in busy.into_iter().rev() {
-                jobs.waiting.push_front(waiting);
+                if waiting.ahead {
+                    jobs.ahead.push_front(waiting);
+                } else {
+                    jobs.waiting.push_front(waiting);
+                }
             }
             jobs.taking = false;
         }
@@ -280,6 +297,7 @@ fn build(spawner: &Spawner, waiting: Waiting, inputs: VegetationPatchInputs) {
             serial,
             mut product,
             catalogue,
+            ..
         } = waiting;
         prepare_patch(&inputs, &request, &catalogue, &mut product);
         product.origin = [request.origin.x, request.origin.y];
@@ -373,7 +391,7 @@ impl PatchJobs for Spawner {
             caster: order.bands.caster,
             settings: settings.product,
         };
-        spawn_request(self, request)
+        spawn_request(self, request, order.ahead)
     }
 
     fn cancel(&mut self, key: PatchKey) {

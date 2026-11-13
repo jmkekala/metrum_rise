@@ -63,6 +63,8 @@ pub(crate) struct PatchOrder {
     pub(crate) span: f32,
     /// The bands it is built with.
     pub(crate) bands: Bands,
+    /// Prepared ahead of need (`RENDER-32-N`): its job waits behind every request's.
+    pub(crate) ahead: bool,
 }
 
 /// The background jobs and the core's vegetation revisions, as the residency uses them.
@@ -961,6 +963,7 @@ impl VegetationResidency {
                 origin: key_origin(key, self.terrain_span, settings.world),
                 span: span as f32,
                 bands,
+                ahead: false,
             };
             let Some(serial) = jobs.request(&order, settings) else {
                 self.queue_patch(key);

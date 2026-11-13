@@ -56,9 +56,10 @@ use crate::nodes::sim::render::vegetation_product::VegetationProduct;
 /// Bytes of prepared vegetation products held (the plan's default, a setting later).
 pub(crate) const PREPARED_CAP_BYTES: usize = 64 << 20;
 /// Prepare jobs out at once: twice what the vegetation's running jobs take (`MAX_RUNNING`), so
-/// the pool runs a full round while the last round's products wait for the pull; a request that
-/// arrives waits behind at most two rounds of them (measured `RENDER-32-N` part 2: at one round
-/// the 30k city's first turn started before its reach was prepared).
+/// the pool runs a full round while the last round's products wait for the pull (measured
+/// `RENDER-32-N` part 2: at one round the 30k city's first turn started before its reach was
+/// prepared). Their jobs wait behind every request's, so a request that arrives waits behind at
+/// most the one round running.
 pub(crate) const PREPARE_IN_FLIGHT: usize = 8;
 
 /// One product held: what it was built from and where its patch is.
@@ -482,6 +483,7 @@ impl VegetationResidency {
             origin: key_origin(key, self.terrain_span, settings.world),
             span: span as f32,
             bands,
+            ahead: true,
         };
         let Some(serial) = jobs.request(&order, settings) else {
             return Step::Full;
