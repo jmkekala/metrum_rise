@@ -264,8 +264,8 @@ func run(bench: Node) -> void:
 		var unready_before := 0
 		if graded != null and graded.counters.has("unready_in_view"):
 			unready_before = int(graded.counters["unready_in_view"])
-			for name in ["unready_in_view_max", "ready_ms_max", "ready_frames_max"]:
-				graded.counters[name] = 0
+			# The book's counters since `RENDER-32-K` part 7 (`counters` is a copy on each read).
+			graded._book.reset_maxima(PackedStringArray(["unready_in_view_max", "ready_ms_max", "ready_frames_max"]))
 		var sample := await _capture(bench, viewport_rid, path_frames,
 			func(frame: int): _focus_path(bench, centre, definition, float(frame + 1) / path_frames))
 		if graded != null and graded.counters.has("unready_in_view"):

@@ -1032,8 +1032,10 @@ func _streams() -> Dictionary:
 	var graded := {}
 	var tiles: Variant = _terrain.graded_tiles
 	if tiles != null:
+		# One read: since `RENDER-32-K` part 7 `counters` is built by the book on each read.
+		var counters: Dictionary = tiles.counters
 		for key: String in ["uploads", "same_level_uploads", "unready_in_view", "pool_exhausted"]:
-			graded[key] = tiles.counters.get(key, 0)
+			graded[key] = counters.get(key, 0)
 		# A control build before RENDER-32-B keeps its levels and wanted tiles in GDScript.
 		# A control before RENDER-32-I keeps its requests in GDScript.
 		var rust_levels: bool = tiles.has_method("wanted_count")

@@ -110,7 +110,8 @@ var last_edit_batch: Array:
 var patch_cells: Dictionary:
 	get:
 		return _book.patch_cells_view() if _book != null else {}
-## The renderer's counters and the pools' (get_pool_counters), the book's, built on each read.
+## The renderer's counters (GradedTileBook.counters: no walk, a benchmark reads them each frame),
+## built on each read; get_pool_counters() adds the pools' sizes.
 var counters: Dictionary:
 	get:
 		return _book.counters()
@@ -571,10 +572,10 @@ func hole_patches() -> int:
 func patches_with_cells() -> int:
 	return _book.patches_with_cells()
 
-## The page sizes, use and every counter (GradedTileBook.counters), for tests, the probe and the
-## memory record. O(levels).
+## The page sizes, use and every counter (GradedTileBook.pool_report), for tests, the probe and
+## the memory record. O(levels' pages + resident patches).
 func get_pool_counters() -> Dictionary:
-	return _book.counters()
+	return _book.pool_report()
 
 ## The perf channel's parts of the last frame (terrain.gd reports them while the channel is on).
 func frame_parts() -> Dictionary:

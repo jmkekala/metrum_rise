@@ -110,7 +110,7 @@ func _run() -> void:
 	for key: Vector2i in resident.keys():
 		resident[key]["generation"] = int(resident[key]["generation"]) + 1
 	_mark_changed(resident)
-	graded._book.reset_install_ms_max()
+	graded._book.reset_maxima(PackedStringArray(["install_ms_max"]))
 	_expect(await _settle_edit(graded, camera, resident), "the edit's tiles must install again")
 	counters = graded.get_pool_counters()
 	_expect(int(counters["uploads"]) > uploads_before, "the edit must upload its tiles again")

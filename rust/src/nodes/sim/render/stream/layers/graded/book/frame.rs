@@ -339,15 +339,15 @@ impl GradedTileBook {
         self.wanted_count() + self.tiles_pending()
     }
 
-    /// The renderer's counters and the pools' (`get_pool_counters`): creations, uploads, the
-    /// result and edit paths' counts, the install and preview times, the last preview, edit
-    /// batch and perf frame's parts (`preview_parts`, `edit_frame_parts`, `frame_parts`), the
-    /// cell sets, the readiness latency, and [`Self::pool_counters`]' sizes. For tests, the probe
-    /// and the benchmarks; O(levels).
+    /// The renderer's counters (`counters`): creations, uploads, the result and edit paths'
+    /// counts, the install and preview times, the last preview, edit batch and perf frame's
+    /// parts (`preview_parts`, `edit_frame_parts`, `frame_parts`), the cell sets' counts, the
+    /// mask revisions given and the readiness latency. For tests, the probe and the benchmarks,
+    /// which may read it every frame: O(1), no walk.
     #[func]
     pub fn counters(&mut self) -> VarDictionary {
         self.collect_counts();
-        let mut out = self.pool_counters();
+        let mut out = VarDictionary::new();
         let cell = self.cell_counters();
         let counters = &self.counters;
         macro_rules! put {
@@ -406,6 +406,20 @@ impl GradedTileBook {
             counters.materials_made + cell.get(6).unwrap_or(0),
         );
         out.set("cell_builds", cell.get(7).unwrap_or(0));
+        out.set("mask_revision_bumps", self.state.cells.mask_bumps as i64);
+        out
+    }
+
+    /// [`Self::counters`] with the pools' sizes and use ([`Self::pool_counters`]), the refusals,
+    /// the layer limit and block side, and the cell sets held, queued and free
+    /// (`get_pool_counters`, for tests and the memory record). O(levels' bound pages + resident
+    /// patches).
+    #[func]
+    pub fn pool_report(&mut self) -> VarDictionary {
+        let mut out = self.counters();
+        for (name, value) in self.pool_counters().iter_shared() {
+            out.set(name, value);
+        }
         out.set(
             "refused",
             self.state.requests.refused.len() as i64 + self.lists_refused_count(),
@@ -415,7 +429,10 @@ impl GradedTileBook {
         let with_cells = self.patches_with_cells();
         out.set("patches_with_cells", with_cells);
         out.set("cell_builds_queued", self.builds_queued());
-        out.set("cell_sets_free", counters.cell_sets_prewarmed - with_cells);
+        out.set(
+            "cell_sets_free",
+            self.counters.cell_sets_prewarmed - with_cells,
+        );
         let by_code: VarArray = self
             .state
             .levels
@@ -446,10 +463,20 @@ impl GradedTileBook {
         self.counters.cell_prewarm_ms = us as f64 / 1000.0;
     }
 
-    /// Restarts the slowest install's record (tests time an edit's frames alone).
+    /// Restarts the named maxima (`install_ms_max`, `unready_in_view_max`, `ready_ms_max`,
+    /// `ready_frames_max`): a test or benchmark measures a span of frames alone.
     #[func]
-    pub fn reset_install_ms_max(&mut self) {
-        self.counters.install_ms_max = 0.0;
+    pub fn reset_maxima(&mut self, names: PackedStringArray) {
+        let counters = &mut self.counters;
+        for name in names.as_slice() {
+            match name.to_string().as_str() {
+                "install_ms_max" => counters.install_ms_max = 0.0,
+                "unready_in_view_max" => counters.unready_in_view_max = 0,
+                "ready_ms_max" => counters.ready_ms_max = 0,
+                "ready_frames_max" => counters.ready_frames_max = 0,
+                other => godot_error!("graded counters: no maximum named {other}"),
+            }
+        }
     }
 }
 
