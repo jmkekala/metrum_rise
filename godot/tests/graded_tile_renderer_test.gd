@@ -634,6 +634,7 @@ func _check_production_renderer(host: Node3D, simulation: SimulationNode) -> voi
 	_expect(grass.mask_mirror_syncs == mask_syncs_before,
 		"a settled view rewrites no grass-mask mirror over 120 frames")
 	await _check_material_sync(graded, terrain)
+	await _check_staged_commit(host, simulation, terrain, junction_patch)
 
 	var edge: int = simulation.get_hovered_edge(0.0, 100.0)
 	_expect(edge >= 0, "the side road has an edge at (0, 100)")
@@ -681,6 +682,43 @@ func _check_production_renderer(host: Node3D, simulation: SimulationNode) -> voi
 	terrain.free()
 	camera.free()
 	water.free()
+
+# `RENDER-40`, `RENDER-32-Q`: a sculpt over a patch corner (away from the roads) dirties several
+# patches; with the frame's install ledger spent before the terrain's frame every frame, the
+# standalone commit stages at most one patch a frame (its first unit), keeps the staged ones, and
+# commits them together once all are staged.
+func _check_staged_commit(host: Node3D, simulation: SimulationNode, terrain, junction_patch: Vector2i) -> void:
+	var stream: Node = host.get_node("StreamNode")
+	var world_size: Vector2 = simulation.get_terrain_world_size()
+	var span: float = terrain.patch_span_m
+	var corner_patch := junction_patch + Vector2i(2, 2)
+	if corner_patch.x >= terrain.patch_cols or corner_patch.y >= terrain.patch_rows:
+		corner_patch = junction_patch - Vector2i(2, 2)
+	var corner := Vector2(corner_patch) * span - world_size * 0.5
+	var spend := func() -> void: stream.charge_install(0, 1000000.0)
+	process_frame.connect(spend)
+	simulation.sculpt_terrain(corner, 24.0, 0.05)
+	var dirty := 0
+	var staged := 0
+	var largest_step := 0
+	var committed := false
+	for frame in TIMEOUT_FRAMES:
+		await process_frame
+		if simulation.is_network_dirty():
+			simulation.acknowledge_network_render(simulation.get_network_render_generation())
+		var keys: int = simulation.get_dirty_terrain_patches().size() / 2
+		dirty = maxi(dirty, keys)
+		var now: int = terrain._dirty_stages.size()
+		largest_step = maxi(largest_step, now - staged)
+		staged = now
+		if dirty > 0 and not simulation.is_terrain_dirty():
+			committed = true
+			break
+	process_frame.disconnect(spend)
+	_expect(dirty >= 2, "the corner's sculpt dirties several patches: %d" % dirty)
+	_expect(committed, "the staged commit completes with the ledger spent")
+	_expect(largest_step <= 1, "at most one patch stages a frame with the ledger spent: %d" % largest_step)
+	_expect(await _settle_production(terrain, simulation), "the sculpt's terrain must settle: %s" % terrain.get_pending_render_work_counts())
 
 # Review finding 6 (`TERRAIN-13`): the book copies each drawing set's patch material parameters into
 # the set's materials through the RenderingServer, whose headless dummy answers nil, so only a
