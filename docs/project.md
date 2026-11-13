@@ -90,6 +90,10 @@ streaming core (the book follows the terrain layer's activations, step changes, 
 commits directly), puts the graded result path and edit batch under Rust tests without Godot
 (`CODE-30`), and moves the patch lists' bookkeeping and the cell set builds into the book;
 `terrain_graded_tiles.gd` is 1,347 lines (from 1,425), the rest of its deletion still to come.
+`RENDER-32-K` part 7 moves the graded renderer's frame, its counters and perf parts, the readiness
+latency and the test and probe readers into the book, and the Godot tests and older traces onto the
+streaming core's entries; `terrain_graded_tiles.gd` is an executor of 611 lines (the Godot objects
+it makes, the effects that need them and the traced simulation calls).
 `RENDER-32-F` (landed)
 moves the vegetation's residency, bands and staleness to Rust, decision for decision equal to the
 GDScript on the benchmark's recorded paths: its frame time on a turn falls to 0.1-0.3 ms, and an
