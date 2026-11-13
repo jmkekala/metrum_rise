@@ -17550,6 +17550,82 @@ SH2's prototype measured 1.00 / 1.55 ms; the twins keep the same agents. The 30k
   `parking_test` PASS alone on the release library; the new unit tests (pose trace, late rule,
   candidates, twins against the recorder) pass.
 
+### The road chunk renderer out of the road tool (`RENDER-52`, round CB part 1, 2026-11-13)
+
+Round CB (`ROAD-112` lane Y), part 1 of `RENDER-52`. The committed network's road chunks (the
+resident set, staged updates, T61 (2)'s holds, payload validation, the chunk build and each
+chunk's street lights and road signs) were drawn by `network_tool.gd`, the road tool's base class,
+and R1's hydration (`road_chunk_hydration.gd`) called its private builder and commit. They now
+live in `godot/scripts/renderers/road_chunk_renderer.gd`, the road tool's child `chunks`
+(first among its children, so chunks, lights and signs keep their tree order); `network_tool.gd`
+keeps tool code only (847 to 275 lines). `NetworkRenderer`, the hydration, the preview display,
+the select tool and the terrain's sculpt refresh call its public functions (call points in
+[`roads.md`](roads.md#road-tools-road-112-road-113)); the road tool hears it through
+`road_chunks_installed` and `road_chunks_released`, and the hold's serial check moved with it
+from `road_tool.gd`. The code is moved, not changed: chunks are still `MeshInstance3D` nodes
+built by GDScript, one hydration unit a chunk, and no Rust changed.
+
+**Measured first (control `dev` `9488992a`'s release library and scripts; 1080p, gamescope
+headless, P-cores, eight workers, paused, instrumented `--detail` runs, `$ARTIFACTS`
+art-cb/stream; the drag probe with the perf channel on, art-cb/drag).** Road work a frame is the
+network refresh's road share plus the hydration's units:
+
+| Input | Frames with road work | Max a frame | Median | Over 4.0 ms | Chunks | Largest unit |
+|---|---:|---:|---:|---:|---:|---:|
+| 30k load (`post_load`) | 59 | 11.9 ms | 5.4 ms | 49 | 66 | 9.1 ms |
+| 100k load (`post_load`, diagnosis) | 185 | 26.4 ms | 5.7 ms | 154 | 197 | 26.4 ms |
+| 30k and 100k pans | 0-1 | 0.3 ms | - | 0 | 0 | - |
+
+A unit costs about 52 ns a vertex on both cities (medians over chunks above 20k vertices: pack
+8, build 28, commit 17), and chunks reach 148k vertices, so a whole-chunk unit is 6-8 ms (one
+26 ms outlier at 100k) against the 4.0 ms hydration budget; the budget's prediction (0.1 us a
+vertex) is twice too high, which only makes every large chunk run alone as its frame's first
+unit. Edit frames on Kuopio (39 strokes: a fast commit, its undo, the converged commit): road
+work at most 3.6 ms on a commit frame and 1.4 ms on an undo, except kuopio_01's first two fast
+commits, one frame each of 207-222 ms of road work (the network refresh's road staging and
+commit; not attributed further here). So the bar (no road install frame above the budget) is a
+whole-chunk unit's to miss, and part 2 must split chunks.
+
+**Part 1's results (2026-11-13, one boot; the branch runs the control's library, since no Rust
+changed, with its own scripts; `$ARTIFACTS` art-cb).** Settled products by digest (`--digests`, one
+run a side): the 30k city's road chunks 5 of 5 settle points equal (66 chunks, every surface's
+arrays, place and layout), graded, buildings, parked cars, vegetation and water equal too; Kuopio 8
+of 8 in every family. Stills (10:00): Kuopio's `close`, `mid` and `forest_low` after 4,000 warm-up
+frames byte-identical; the 30k city's `saved`, `city` and `city_low` three runs a side: the third
+pair byte-identical in all three, `systematic` none on the second set (control 2-3 against branch
+2-3) and one pixel (delta at most 2) on `saved` in the first set, where control against control
+differs by 3 pixels (the `RENDER-45` residue). The load's road work is the control's (30k: at most
+12.0 ms a frame, 49 of 59 frames over 4.0 ms; 100k: 23.5 ms, 149 of 185), as the code is. Kuopio's
+drag probe passes on both sides with the holds drawn (17-22 held frames a run), its edit frames'
+road work at most 2.7-3.5 ms on a commit, 2.6-5.3 on a fast commit and 2.0-2.9 on an undo against
+the control's 2.8-3.6, 2.8-3.7 and 1.4-1.8 (two runs a side, untimed, the second pair beside other
+rounds' builds: noise of the shared machine on the same code), and kuopio_01's two 207-268 ms frames
+on both. Stream rows (C B B C, 30k and Kuopio, level F's stream half): every p50 level or better
+after the one rerun (the first series flagged 30k `turn_repeat 0.5s`, `pan_out` and `zoom_in` p50 by
++0.0-0.1 ms on spreads of 0.0-0.1, level in the rerun, and Kuopio's `jump` p50 +0.2, level in the
+rerun); single-frame maxima flagged on 5-13 ms frames (30k `pan_out` +1.4 and `zoom_in_repeat` +3.8
+ms in the rerun, level or better in the first series; Kuopio `turn_repeat 1s` +2.7, `pan_out` +2.2,
+`zoom_in_repeat` +1.6), for review: Kuopio has no road, the frames run the same code but for one
+renamed call a frame, and other rounds' builds ran beside parts of both series. Teardown (BX1's
+probe, a new game on Kuopio with roads, the 30k city loaded once, quit): no mesh-null, leaked-RID,
+leaked-dependency or error line at any step or at exit on either side. `./run.sh --test` passes
+(nextest 2,577 of 2,577, 225 skipped; Godot main and vehicle chains, no script error, no Godot test
+skipped, the graded replays of every recorded trace included); debug `cargo test --lib` 2,573
+passed, 0 failed, 224 ignored. No simulation code changed, so the level F session's `./run.sh
+--timing` half has nothing to time (the test binary is the control's).
+
+**Part 2 (next).** Chunk surfaces encoded in Rust off the main thread in Godot's own layout,
+installed by the stream `roads` layer through `RenderingServer` in budgeted parts (a surface a
+unit onto a hidden mesh, then one swap, so no frame shows two versions or a hole), the preview
+display's run collapse on the mesh RID, teardown through the pools. Godot 4.7.2's layout for a
+road layer, read back from `RenderingServer.mesh_get_surface` (format `0x8_0000_001f`, with the
+road layer's `CUSTOM0` RGBA float `0x8_0000_e05f`): `vertex_data` holds the positions (f32 x 3,
+stride 12) then, at 12 n, a normal and tangent stream of stride 8 (the normal octahedral-encoded
+as two u16 truncated from x 65535, then a tangent the engine generates from the normal, since the
+format gains its tangent bit); `attribute_data` holds per vertex the colour as RGBA8 (truncated
+from x 255.0), the UV as f32 x 2 and, on the road layer, `CUSTOM0` as f32 x 4 (stride 12 or 28);
+the AABB is the engine's running `expand_to`; `uv_scale` is zero.
+
 ## Implemented Runtime Contract
 
 ### 1. `WorldConfig` Is The Authoritative World Metadata

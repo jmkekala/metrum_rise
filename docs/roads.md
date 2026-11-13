@@ -12340,7 +12340,10 @@ Order revised by the user (2026-11-13): basic drawing and visuals first, then he
 bridges (also basic), then the advanced tools; moving and reshaping built roads (`ROAD-113`)
 last. Round G is split: G2 joins phase 1; G1 stays before H, because an automatic bridge or
 tunnel splits one draft into several strokes that preview and commit as one batch. Round CB is
-`RENDER-52`, done in phase 1 after round D, the last round to edit `network_tool.gd`.
+`RENDER-52`. The user approved a two-lane order (2026-11-13): CB runs first, beside A and
+before rounds B-D, so `network_tool.gd` loses its chunk renderer before the tool rounds touch it;
+round D rebases on CB and edits only tool code there (CB's first part landed the split, see
+"The road chunk renderer" below; its Rust half is a later CB part).
 
 | Round | Scope | Hours | Timing level |
 | --- | --- | --- | --- |
@@ -12353,7 +12356,7 @@ tunnel splits one draft into several strokes that preview and commit as one batc
 | | **Landing 1** | | L |
 | N | Complex curve and freeform handles | 4 | R |
 | G2 | T65 option (c): the terrain cut-out follows the drawn road | 4 | F + preview rows |
-| CB | Road chunk renderer out of `network_tool.gd` into the stream `roads` layer (`RENDER-52`) | 5 | F + stream rows |
+| CB | Road chunk renderer out of `network_tool.gd` into the stream `roads` layer (`RENDER-52`; runs first, see above) | 5 | F + stream rows |
 | | **Landing 2** | | L |
 | | *Phase 2: heights and bridges* | | |
 | F | Batch commit, grouped undo, undo refund | 5 | F + K22 |
@@ -12386,6 +12389,21 @@ tunnel splits one draft into several strokes that preview and commit as one batc
 About 76.5 h for `ROAD-112` and 38 h for `ROAD-113`. Rounds A and B add new files only. Round C
 and later start after `RENDER-32`'s G2c-5, R1 and BX1 have landed and re-read `road_tool.gd`,
 `network_tool.gd` and the hold rule at their base.
+
+**The road chunk renderer** (`RENDER-52`, round CB part 1, 2026-11-13). The committed network's
+chunks (resident set, staged updates, the T61 (2) holds, payload validation, the chunk build,
+each chunk's street lights and road signs) are drawn by `godot/scripts/renderers/road_chunk_renderer.gd`,
+the road tool's child `chunks` (made by `road_tool.gd` `make_chunks`, first among its children
+so the tree order of chunks, lights and signs is the old one); `network_tool.gd` keeps tool code
+only. Its calls: `update(expected_generation, stage_only)`, `commit_staged`, `discard_staged`,
+`release_held`, `needs_hydration`, `reset`, `install` and `build_chunk` (the hydration's
+units), `is_holding`, and for the preview display `chunks`, `new_chunk_node`,
+`fill_chunk_mesh`, `place_chunk`, `chunk_root`; read-only state `generation`, `span_m`,
+`origin_x_m`, `origin_z_m`, `held_serial`, `street_lights`, `road_signs`. It tells its host (the
+road tool) `mark_network_nodes_dirty`, `road_chunks_installed(generation)` and
+`road_chunks_released()`. Chunks are still `MeshInstance3D` nodes built by GDScript; the Rust
+half (prepared buffers and budgeted installs through the streaming core's `roads` layer) is the
+next CB part (docs/terrain.md "The road chunk renderer out of the road tool").
 
 **Parallel mode** (user, 2026-11-13) works as in CS2: a toggle on every drawing mode, not a
 separate tool. Each drawn road gets one copy beside it at a set centre-to-centre spacing, an
@@ -12988,7 +13006,7 @@ in `network/roadbed/lining.rs` and the graded bake.
   the concrete material, which takes the cloud shadow (`standard_light.gdshaderinc`). Their colour
   alpha is 0, which marks them: the lining takes no sun, no sky reflection and 60% of the ambient
   light. Road chunks only receive shadows, so a chunk with a lining gets a shadow-only child
-  holding that layer again (`network_tool.gd::_add_lining_shadow`, `tunnel_lining_shadow.gdshader`);
+  holding that layer again (`road_chunk_renderer.gd::_add_lining_shadow`, `tunnel_lining_shadow.gdshader`);
   a chunk without a tunnel gets none, and a bridge's concrete is never uploaded twice (R8 copied
   every chunk's whole concrete layer and discarded the bridges' faces in the shader). So the
   ceiling shades the deck inside and the collar the approach.

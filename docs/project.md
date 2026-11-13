@@ -163,6 +163,13 @@ one snapshot are prepared while the frame before is drawn, and the main thread o
 only those within reach of the shadow range (`RENDER-15`'s `agents_near`, the owner's pick): the
 30k city's shadow pass draws 23 M instead of 53 M primitives and takes 1.24 instead of 2.16 ms (the
 100k city's 1.22 instead of 2.99 ms), 0.9 and 1.7 ms of GPU a frame by day, with stills identical ([record](terrain.md#car-smoothing-a-frame-ahead-and-near-only-agent-shadow-casters-render-47-render-15-round-r47-2026-11-13)).
+The road tool's base class no longer draws the committed road chunks: `RENDER-52`'s first part
+(round CB, 2026-11-13, for review) moved the chunk renderer (resident set, staging, holds,
+validation, build, lights and signs) into `road_chunk_renderer.gd`, the road tool's child, with
+no behaviour change, so the road tool rounds B-D build on a `network_tool.gd` that holds tool
+code only. Measured first: a load installs a road chunk in one unit of 6-8 ms (most 30k and 100k
+load frames with road work exceed the 4 ms hydration budget); the Rust half, chunks encoded off
+the main thread and installed in parts by the stream `roads` layer, is the next part ([record](terrain.md#the-road-chunk-renderer-out-of-the-road-tool-render-52-round-cb-part-1-2026-11-13)).
 `RENDER-32-N` (2026-11-13, for review) measured how many frames a chunk that comes into view
 waits before it draws, per layer, on 0.5 s turns, a far zoom-out to 40 km and a zoom from there to
 the street: terrain, water, graded ground and buildings draw within three frames; the vegetation
