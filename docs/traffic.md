@@ -705,7 +705,10 @@ crossings).
     stood single file behind 5 homeless families on the district's only sidewalk from the border.
     Tests: `a_walker_waiting_for_a_home_at_its_lane_end_lets_the_walkers_behind_it_pass` and
     `a_moving_in_walker_whose_home_a_road_takes_becomes_an_unhoused_household_and_frees_its_sidewalk`
-    (each fails without the rule: the walker behind never gets home).
+    (each fails without the rule: the walker behind never gets home). Timing (level F, one session
+    against `dev` `7ecb1320`): 30k 1x level, acceptance passing; 30k 32x mean level, its worst
+    unpreempted frame flagged +9.9% on spawn-minute frames of a differently prepared city, open for
+    review (`TRAFFIC-37` in the roadmap).
   - *Off the network* (round T19b, 2026-11-02, the user's decision; `walk_home::walk_to_sidewalk`).
     A walker off every sidewalk, its road removed under it and no sidewalk end into its node
     within 30 m, looks for the nearest sidewalk point within `OFF_NETWORK_WALK_MAX_M` (200 m,
