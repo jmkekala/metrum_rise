@@ -474,7 +474,9 @@ impl GradedTileBook {
                 "unready_in_view_max" => counters.unready_in_view_max = 0,
                 "ready_ms_max" => counters.ready_ms_max = 0,
                 "ready_frames_max" => counters.ready_frames_max = 0,
-                other => godot_error!("graded counters: no maximum named {other}"),
+                other => {
+                    godot_error!("graded counters: no maximum named {other}");
+                }
             }
         }
     }
