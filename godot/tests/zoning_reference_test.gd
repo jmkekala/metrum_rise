@@ -148,7 +148,7 @@ func _reference(fixture: Dictionary) -> void:
 	_expect(road.chunks.update(generation) == generation, "Reference uses the committed road chunks")
 	road.chunks.remove_child(road.chunks.chunk_root)
 	scene.add_child(road.chunks.chunk_root)
-	var road_chunks := road.chunks.chunks.size()
+	var road_chunks: int = road.chunks.chunks.size()
 	var water := Node3D.new()
 	water.name = "Water"
 	scene.add_child(water)

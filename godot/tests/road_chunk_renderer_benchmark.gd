@@ -257,7 +257,7 @@ func _run_update(
 
 	RenderingServer.force_sync()
 	var started_usec := Time.get_ticks_usec()
-	var committed_generation := road_tool.chunks.update(simulation.generation)
+	var committed_generation: int = road_tool.chunks.update(simulation.generation)
 	var stage_usec := Time.get_ticks_usec() - started_usec
 	RenderingServer.force_sync()
 	var complete_usec := Time.get_ticks_usec() - started_usec
