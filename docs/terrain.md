@@ -17701,7 +17701,16 @@ loaded, quit): no mesh-null, leaked-RID, leaked-dependency or error line at any 
 Stills (10:00): Kuopio's `close`, `mid` and `forest_low` after 4,000 warm-up frames
 byte-identical; the 30k city two runs a side: `city` and `city_low` byte-identical in both pairs,
 `saved` 2-3 pixels (delta at most 3) where control against control differs by 2, `systematic`
-none on all three (the `RENDER-45` residue).
+none on all three (the `RENDER-45` residue). Stream rows (level F's stream half, C B B C, 30k
+and Kuopio, two series, `$ARTIFACTS` art-cb2/series and series2): every flag is a single-frame
+maximum of a 5-60 ms frame or a p50 of +0.1-0.4 ms on a spread of 0.0-0.3, and none repeats in
+the second series (first: 30k `zoom_in`, `zoom_in_repeat` and `jump` maxima, Kuopio `turn_out
+0.5s`, `pan_back`, `zoom_in_repeat` and `far_to_ground` maxima; second: 30k `turn_repeat 0.5s` and
+`turn_out 1s` maxima, `pan_out` and `far_to_ground` p50, Kuopio `post_load` p50 +0.3 and max
++65 ms, `turn_back 1s`, `far_zoom_out` and `jump_back` p50), for review: no phase after the load
+runs road code, and Kuopio's load call now makes the lamp and sign models (decided above), which
+its first `post_load` frames may carry. No simulation-thread code changed, so the session's
+`./run.sh --timing` half has nothing to time.
 
 ## Implemented Runtime Contract
 
