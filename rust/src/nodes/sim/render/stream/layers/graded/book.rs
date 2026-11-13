@@ -115,10 +115,17 @@ pub struct GradedTileBook {
     patch_news: OrderedMap<super::state::PatchKey, ()>,
     // The patch lists' requests ([`lists`]).
     list_requests: lists::Lists,
+    // The renderer's counters and its frame's own state ([`frame`]), and the resident patches'
+    // Godot objects, draw states and readiness ([`patches`], `RENDER-32-K` part 7).
+    counters: frame::Counters,
+    frame: frame::FrameState,
+    patch_nodes: patches::PatchNodes,
 }
 
 mod edits;
+mod frame;
 mod lists;
+mod patches;
 mod probe;
 mod residency;
 mod results;
@@ -151,6 +158,30 @@ const WALLS_US: usize = 1;
 const FLIP_US: usize = 2;
 const TRUNCATED: usize = 3;
 const BUILDS: usize = 7;
+
+// The counters an effect moves, counted as it is taken (whichever applies it): the renderer's,
+// and the result path's evictions and same-level uploads.
+fn count_effect(counters: &mut frame::Counters, taken: &mut [i64], effect: &Effect) {
+        match *effect {
+            Effect::Exhausted { tile, code } => {
+                counters.pool_exhausted += 1;
+                crate::debug_log!("terrain", "graded pool {code} exhausted at tile ({}, {})", tile.x, tile.z);
+            }
+            Effect::Evicted { .. } => taken[results::EVICTIONS] += 1,
+            Effect::SameLevel => taken[results::SAME_LEVEL] += 1,
+            Effect::Grew { code, block, slots, layers } => {
+                counters.page_growths += 1;
+                crate::debug_log!(
+                    "terrain",
+                    "graded level {code} block ({}, {}) grows to {slots} slots, {layers} layers",
+                    block.0,
+                    block.1
+                );
+            }
+            Effect::Moved => counters.page_moves += 1,
+            _ => {}
+        }
+}
 
 // The patch material parameters whose change means a drawing set's materials must sync: the
 // textures and per-patch values `terrain.gd` swaps on commits, masks, water and overlays.
@@ -303,6 +334,8 @@ impl GradedTileBook {
             .as_chunks::<3>().0.iter()
             .map(|level| (level[0] as u64, level[1] as u32, level[2] as u64))
             .collect();
+        // The renderer's two zero layers a level (`terrain_graded_pages.gd`'s `add_level`).
+        self.counters.images_created += 2 * levels.len() as i64;
         self.state.setup(shape, &levels);
     }
 
@@ -320,6 +353,7 @@ impl GradedTileBook {
     #[func]
     pub fn clear(&mut self) {
         self.state.clear();
+        self.frame.camera = None;
         self.list_requests.clear();
         self.edits.clear(&mut self.taken);
         self.taken.clear();
@@ -622,7 +656,10 @@ impl GradedTileBook {
     #[func]
     pub fn request_tiles(&mut self) -> i64 {
         self.considered = self.state.request_tiles(&mut self.flat, &mut self.scratch);
-        (self.flat.len() / 5) as i64
+        let handed = (self.flat.len() / 5) as i64;
+        self.frame.considered += self.considered as i64;
+        self.frame.handed += handed;
+        handed
     }
 
     /// The last hand-over's stale cancels, flat `(x, z)` in order (for a trace).
@@ -852,6 +889,7 @@ impl GradedTileBook {
     #[func]
     pub fn cells_setup(&mut self, per_patch: i64, count: i64) {
         self.state.cells_setup(per_patch as usize, count as usize);
+        self.counters.cell_sets_prewarmed = count;
     }
 
     /// `clear`'s cell part, after every set was released: every queue and mark dropped.
@@ -1262,10 +1300,16 @@ impl GradedTileBook {
                 self.edits.dropped(tile, &mut self.taken);
                 continue;
             }
-            if let Effect::PageMade { id, code, slots, layers, .. } = effect {
+            if let Effect::PageMade { id, code, slots, layers, reused, .. } = effect {
                 let side = self.state.pages.level(code).side as u32;
                 self.page_shapes.insert(id, [side, slots, layers]);
+                if !reused {
+                    // The renderer makes the page's two arrays.
+                    self.counters.textures_created += 2;
+                    self.counters.pages_created += 1;
+                }
             }
+            count_effect(&mut self.counters, &mut self.taken.counts, &effect);
             let fields: [i64; EFFECT_FIELDS] = match effect {
                 Effect::PageMade { id, reused, code, block, slots, layers } => [
                     i64::from(reused),
@@ -1378,6 +1422,9 @@ impl GradedTileBook {
         };
         self.objects = Some(objects);
         self.backend = Some(backend);
+        // The renderer made the meshes and the wall material it hands here.
+        self.counters.meshes_created += meshes.len() as i64;
+        self.counters.materials_made = 1;
     }
 
     /// Whether the cells draw at all (the terrain node's visibility). O(sets) on a change.

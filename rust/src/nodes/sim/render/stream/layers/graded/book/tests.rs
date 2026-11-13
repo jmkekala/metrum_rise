@@ -127,6 +127,9 @@ fn plain_book() -> GradedTileBook {
         walls_scratch: Vec::new(),
         patch_news: Default::default(),
         list_requests: Default::default(),
+        counters: Default::default(),
+        frame: Default::default(),
+        patch_nodes: Default::default(),
     }
 }
 

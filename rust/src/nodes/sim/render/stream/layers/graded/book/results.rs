@@ -51,8 +51,8 @@ const CELL_CHARGE_US: i64 = 8;
 // are drained by the read.
 const DEFERRED: usize = 0;
 pub(super) const VARIANT_WAITS: usize = 1;
-const EVICTIONS: usize = 2;
-const SAME_LEVEL: usize = 3;
+pub(super) const EVICTIONS: usize = 2;
+pub(super) const SAME_LEVEL: usize = 3;
 const POLL_US_MAX: usize = 4;
 const POLL_NS: usize = 5;
 const PLACE_NS: usize = 6;
@@ -269,7 +269,7 @@ impl GradedTileBook {
     // Takes the effects of the last calls and applies them where every one is the book's own
     // (as `_apply_effects` applies them, in order). Returns whether the renderer must apply them
     // instead (they stay queued for its `take_effects`).
-    fn apply_own_effects(&mut self) -> bool {
+    pub(super) fn apply_own_effects(&mut self) -> bool {
         self.state.settle();
         let attached = self.objects.is_some();
         if !self.state.out.iter().all(|effect| own_effect(effect, attached)) {
@@ -282,8 +282,8 @@ impl GradedTileBook {
             match kind {
                 47 => self.apply_cells(first, end),
                 48 => self.apply_writes(first, end),
-                14 => self.taken.counts[EVICTIONS] += 1,
-                16 => self.taken.counts[SAME_LEVEL] += 1,
+                // Counted as taken (`count_effect`).
+                14 | 16 => {}
                 _ => debug_assert!(false, "effect {kind} is the renderer's"),
             }
             at += EFFECT_FIELDS;
@@ -345,7 +345,7 @@ pub(crate) struct ScriptHost {
 
 impl ScriptHost {
     // A host whose clock starts at the engine's (the frame's result path).
-    fn timed(book: Gd<GradedTileBook>, renderer: Gd<RefCounted>, simulation: Option<Gd<SimulationNode>>) -> Self {
+    pub(super) fn timed(book: Gd<GradedTileBook>, renderer: Gd<RefCounted>, simulation: Option<Gd<SimulationNode>>) -> Self {
         let engine = godot::classes::Time::singleton().get_ticks_usec() as i64;
         Self { book, renderer, simulation, clock: (engine, std::time::Instant::now()) }
     }
