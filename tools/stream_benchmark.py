@@ -506,7 +506,8 @@ def simple_point(a, b, fields):
 
 
 def compare_digests(a, b, levels=None):
-    """Per family (graded, buildings, lamps, roads, parked cars, water) a list of `(point, sample, verdict, note)`.
+    """Per family (graded, buildings, lamps, roads, parked cars, vegetation, water) a list of
+    `(point, sample, verdict, note)`.
     `levels`: graded level ends for reports that predate their record (another report's)."""
     levels = a.get("graded_levels") or levels
     if a.get("graded_levels") and b.get("graded_levels") and a["graded_levels"] != b["graded_levels"]:
@@ -516,7 +517,9 @@ def compare_digests(a, b, levels=None):
                                ("buildings", "building_digests", lambda p, q: simple_point(p, q, ("digest", "batches"))),
                                ("lamps", "lamp_digests", lambda p, q: simple_point(p, q, ("cells", "far"))),
                                ("roads", "road_digests", lambda p, q: simple_point(p, q, ("digest", "chunks"))),
-                               ("parked", "parked_digests", lambda p, q: simple_point(p, q, ("digest", "batches")))):
+                               ("parked", "parked_digests", lambda p, q: simple_point(p, q, ("digest", "batches"))),
+                               ("vegetation", "vegetation_digests",
+                                lambda p, q: simple_point(p, q, ("digest", "patches")))):
         x, y = a.get(key, []), b.get(key, [])
         rows = [(p.get("point"), p.get("sample", ""), *judge(p, q)) for p, q in zip(x, y)]
         if len(x) != len(y):

@@ -48,7 +48,9 @@
 ## chunk, group, count and rows), whichever side draws them (`RENDER-32-L`), and the terrain's and
 ## water's resident patches with their mesh steps in `patch_digests` (`RENDER-32-M`), and the road
 ## chunks drawn (per chunk its key, place and every surface's arrays) in `road_digests` and the
-## parked cars drawn (per chunk and bucket its rows) in `parked_digests` (`RENDER-32-P`). Settled
+## parked cars drawn (per chunk and bucket its rows) in `parked_digests` (`RENDER-32-P`), and the
+## vegetation patches drawn (per visible installed patch its key, bands, detail and every batch's
+## identity and rows) in `vegetation_digests` (AUDIT-stream-2 finding 7). Settled
 ## also waits for a load's road chunks to stream in (`RENDER-32-P`; a control draws them at once).
 ##
 ## The `water` phase (`RENDER-32-L`) looks at a shore across water, so the water reflection
@@ -213,6 +215,7 @@ func run(bench: Node) -> void:
 		"pitch_radians": PITCH_RAD, "distance_m": DISTANCE_M, "phases": phases, "turn_durations_s": turns,
 		"perf_records": _scripts, "load": {}, "samples": [], "graded_digests": [], "lamp_digests": [],
 		"building_digests": [], "patch_digests": [], "road_digests": [], "parked_digests": [],
+		"vegetation_digests": [],
 		"water_pose": [], "shadows": shadows, "drawn_probe": {},
 		"timing_contract": "frame_ms is the wall time from one process_frame to the next; scripts are the perf channel's records of that same frame (instrumented runs give shares, not times)",
 	}
@@ -525,6 +528,7 @@ func _record_digest(label: String) -> void:
 	_record_patch_digest()
 	_record_road_digest()
 	_record_parked_digest()
+	_record_vegetation_digest()
 	var tiles: Variant = _terrain.graded_tiles
 	if tiles == null:
 		return
@@ -713,6 +717,39 @@ func _record_parked_digest() -> void:
 	_report.parked_digests.append({"point": _settle_points,
 		"sample": (_report.samples.back() as Dictionary).get("label", "") if not _report.samples.is_empty() else "",
 		"batches": lines.size(), "digest": _sha("\n".join(lines).to_utf8_buffer()), "lines": lines})
+
+# The vegetation patches drawn at a settle point (AUDIT-stream-2 finding 7): per visible installed
+# patch its key, its record's bands, its detail and shadow state, and per batch its identity, count,
+# main instance's material and shadow, and the digest of its first `count` rows read back. Hidden
+# patches (cached ones) are left out: which are kept hidden depends on the path, not the view.
+func _record_vegetation_digest() -> void:
+	var stream: Node = _vegetation.get("stream")
+	if stream == null:
+		return
+	var lines := PackedStringArray()
+	var records: Dictionary = stream.get_vegetation_records()
+	for key: Vector3i in records:
+		var patch: Dictionary = stream.get_vegetation_patch(key)
+		if patch.is_empty() or not bool(patch.visible):
+			continue
+		var record: Dictionary = records[key]
+		var batches := PackedStringArray()
+		for batch: Dictionary in patch.batches:
+			var count := int(batch.count)
+			# The slot's row layout: 12 transform floats, then colour and custom data when used.
+			var stride := 12 + (4 if bool(batch.colors) else 0) + (4 if bool(batch.custom) else 0)
+			var rows := RenderingServer.multimesh_get_buffer(batch.multimesh).slice(0, count * stride)
+			var main: Dictionary = batch.get("main", {})
+			batches.append("%d,%d,%d,%d,%d,%d,%d|%s" % [int(batch.species), int(batch.lod), int(batch.variant),
+				int(batch.mesh), count, int(main.get("material", -2)), int(main.get("shadow", -1)),
+				_sha(rows.to_byte_array())])
+		lines.append("%d,%d,%d|%d%d%d|%d,%d,%d|%s" % [key.x, key.y, key.z, int(bool(record.understory)),
+			int(bool(record.near_band)), int(record.shadow_caster), int(patch.detail), int(bool(patch.branched)),
+			int(bool(patch.has_caster)), ";".join(batches)])
+	lines.sort()
+	_report.vegetation_digests.append({"point": _settle_points,
+		"sample": (_report.samples.back() as Dictionary).get("label", "") if not _report.samples.is_empty() else "",
+		"patches": lines.size(), "digest": _sha("\n".join(lines).to_utf8_buffer())})
 
 # The building LOD batches at a settle point, whichever side draws them: Rust's stream backend
 # (`drawn_batches`) or the control's batch nodes (`batches`). Rows read back from the engine.
