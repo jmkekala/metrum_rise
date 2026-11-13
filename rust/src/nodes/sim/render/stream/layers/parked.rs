@@ -243,7 +243,7 @@ impl ParkedLayer {
 fn drawn_bounds(mesh: &Aabb, rows: &[f32]) -> (Aabb, f32) {
     let bounds = mesh.through_instances(rows, rows.len() / STRIDE);
     let (mut low, mut high) = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]);
-    for pose in rows.chunks_exact(STRIDE) {
+    for pose in rows.as_chunks::<STRIDE>().0 {
         let origin = [pose[3], pose[7], pose[11]];
         low = min3(low, origin);
         high = max3(high, origin);

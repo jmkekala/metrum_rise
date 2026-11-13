@@ -159,7 +159,7 @@ fn a_bucket_draws_while_any_of_its_cars_is_within_the_draw_distance() {
     assert!(layer.install(&mut backend, (0, 0), [(10, &rows[..])].into_iter()));
     let (_, car) = backend.visible(Scenario::Main).next().expect("drawn");
     let car = car.clone();
-    let origins: Vec<[f32; 3]> = rows.chunks_exact(STRIDE).map(|p| [p[3], p[7], p[11]]).collect();
+    let origins: Vec<[f32; 3]> = rows.as_chunks::<STRIDE>().0.iter().map(|p| [p[3], p[7], p[11]]).collect();
     let nearest = |camera: [f32; 3]| {
         origins.iter().map(|&o| length3(sub3(camera, o))).fold(f32::INFINITY, f32::min)
     };
