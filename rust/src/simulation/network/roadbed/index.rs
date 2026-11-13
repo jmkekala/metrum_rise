@@ -150,6 +150,11 @@ pub(super) struct PieceIndex {
     chunk_refs: imbl::OrdMap<SurfaceChunkKey, u32>,
     // Grows with every insert and resets on clear: bounds rays and region scans.
     extent_xz: Option<[f64; 4]>,
+    // The lowest and highest vertex height of every piece inserted since the last clear, grown
+    // like `extent_xz`: a ray meets a piece only between them, so it walks only the cells it
+    // crosses there (`ROAD-112` round B: the road tool's pick walked every 32 m cell across the
+    // whole city's extent after passing the roads' heights).
+    extent_y: Option<[f64; 2]>,
 }
 
 impl PieceIndex {
@@ -178,6 +183,17 @@ impl PieceIndex {
         }
         for &chunk in footprint.render_chunks.iter() {
             *self.chunk_refs.entry(chunk).or_insert(0) += 1;
+        }
+        let heights = mesh
+            .positions()
+            .iter()
+            .fold([f64::INFINITY, f64::NEG_INFINITY], |[low, high], p| {
+                [low.min(p.y), high.max(p.y)]
+            });
+        if heights[0] <= heights[1] {
+            self.extent_y = Some(self.extent_y.map_or(heights, |[low, high]| {
+                [low.min(heights[0]), high.max(heights[1])]
+            }));
         }
         let bounds = mesh.bounds_xz();
         self.extent_xz = Some(self.extent_xz.map_or(bounds, |extent| {
@@ -222,5 +238,10 @@ impl PieceIndex {
 
     pub(super) fn extent_xz(&self) -> Option<[f64; 4]> {
         self.extent_xz
+    }
+
+    // The `[lowest, highest]` vertex height of the pieces inserted since the last clear.
+    pub(super) fn extent_y(&self) -> Option<[f64; 2]> {
+        self.extent_y
     }
 }

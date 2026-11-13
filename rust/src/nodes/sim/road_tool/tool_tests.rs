@@ -29,7 +29,7 @@ use std::sync::OnceLock;
 // One small world shared by the scripted tests: the bench neighbourhood, no background.
 fn view() -> &'static RoadToolQuerySnapshot {
     static VIEW: OnceLock<RoadToolQuerySnapshot> = OnceLock::new();
-    VIEW.get_or_init(|| neighbourhood_view(0, 2_048.0))
+    VIEW.get_or_init(|| neighbourhood_view(false, 0, 2_048.0))
 }
 
 fn d(x: f64, y: f64) -> DVec2 {

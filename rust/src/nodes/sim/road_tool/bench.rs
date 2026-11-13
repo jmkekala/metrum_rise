@@ -5,12 +5,16 @@
 //! origin and a background of block streets far east of it, the road tool's published view of
 //! that city, and a scripted pointer trail of camera rays over the neighbourhood.
 //!
-//! The neighbourhood: a 4-arm junction at the origin (two 300 m roads), a parallel street 60 m
-//! north, a 120 m dead-end spur south-west and a diagonal street, so the trail meets nodes,
-//! edges, dead ends and open ground. The background: `background / 10` straight 480 m two-lane
-//! streets from x = 800 m, nine to a row, rows 24 m apart from z = -5,000 m (3,000 streets at
-//! 30k, more edges than the 30k populated city's grid), beyond every fixed radius the trail's
-//! queries use. Built with the bulk road path, outside timing.
+//! The neighbourhood: an 800 m street grid of 100 m blocks centred on the origin (a junction at
+//! the origin), with a dead-end spur and a free diagonal street inside two blocks, so the trail
+//! meets nodes, edges, dead ends and open ground in a neighbourhood as dense as a city's (the
+//! commit locality's neighbourhood is an 800 m street grid too). A tiny neighbourhood makes the
+//! empty-city tier unrepresentative: the roadbed's region gathers walk the owner map instead of
+//! their query cells while a city has fewer pieces than the query covers cells. The background:
+//! `background / 10` straight 480 m two-lane streets from x = 800 m, nine to a row, rows 24 m
+//! apart from z = -5,000 m (3,000 streets at 30k, more edges than the 30k populated city's
+//! grid), beyond every fixed radius the trail's queries use. Built with the bulk road path,
+//! outside timing. The scripted tests use the smaller [`NEIGHBOURHOOD`] instead.
 
 use super::modes::DrawMode;
 use super::pick::{CursorQuery, road_tool_cursor};
@@ -46,7 +50,7 @@ impl RoadToolBench {
     /// ten) and starts a straight stroke at the junction with every snap on (network, guide
     /// lines, zoning grid, a 15 degree angle lock and a 4 m length step), the worst case per move.
     pub fn build(background: usize) -> Self {
-        let view = neighbourhood_view(background, WORLD_M);
+        let view = neighbourhood_view(true, background, WORLD_M);
         let edges = view.region_graph.edge_count();
         let mut bench = Self {
             view,
@@ -187,9 +191,14 @@ impl RoadToolBench {
     }
 }
 
-/// The fixture's city as the road tool's published view: the neighbourhood and `background`
-/// (one street per ten) in a square world `world_m` wide (at least 11 km for a background).
-pub(crate) fn neighbourhood_view(background: usize, world_m: f32) -> RoadToolQuerySnapshot {
+/// The fixture's city as the road tool's published view: the neighbourhood (the bench's street
+/// grid when `grid`, else the tests' [`NEIGHBOURHOOD`]) and `background` (one street per ten) in
+/// a square world `world_m` wide (at least 11 km for a background).
+pub(crate) fn neighbourhood_view(
+    grid: bool,
+    background: usize,
+    world_m: f32,
+) -> RoadToolQuerySnapshot {
     let mut core = SimCore {
         treasury: CityTreasury::new(1.0e12),
         benchmark_mode: true,
@@ -212,8 +221,22 @@ pub(crate) fn neighbourhood_view(background: usize, world_m: f32) -> RoadToolQue
             .roadbed
             .compile_dirty(&core.region_graph);
     };
-    for (a, b) in NEIGHBOURHOOD {
-        road(&mut core, a, b);
+    if grid {
+        // Block by block, so each street meets the junctions already there.
+        for line in -4..=4 {
+            for block in -4..4 {
+                let (along, next) = (block as f32 * 100.0, (block + 1) as f32 * 100.0);
+                let across = line as f32 * 100.0;
+                road(&mut core, (across, along), (across, next));
+                road(&mut core, (along, across), (next, across));
+            }
+        }
+        road(&mut core, (-150.0, 200.0), (-150.0, 260.0));
+        road(&mut core, (120.0, 120.0), (180.0, 180.0));
+    } else {
+        for (a, b) in NEIGHBOURHOOD {
+            road(&mut core, a, b);
+        }
     }
     for street in 0..background / 10 {
         let z = -5_000.0 + (street / 9) as f32 * 24.0;
@@ -245,8 +268,8 @@ pub(crate) const NEIGHBOURHOOD: [((f32, f32), (f32, f32)); 7] = [
     ((60.0, 60.0), (220.0, 180.0)),
 ];
 
-// A loop of camera rays aimed at points circling the junction at 40-260 m: over the junction's
-// arms, the parallel street, the spur's dead end and open ground.
+// A loop of camera rays aimed at points circling the origin at 40-260 m: over the grid's
+// streets and junctions, the spur's dead end, the diagonal and the open block interiors.
 fn trail() -> Vec<(Vector3, Vector3)> {
     (0..TRAIL_MOVES)
         .map(|index| {

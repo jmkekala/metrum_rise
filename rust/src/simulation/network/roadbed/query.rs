@@ -165,6 +165,33 @@ fn for_each_segment_in_bounds(
     }
 }
 
+// Height margin of a ray's walk around the pieces' vertex heights (`ray_height_interval`).
+const RAY_HEIGHT_MARGIN_M: f64 = 0.01;
+
+// The part of the ray interval `(entry_t, exit_t)` where the ray's height lies within
+// `[low, high]` widened by `RAY_HEIGHT_MARGIN_M`; `None` when it never does. A level ray keeps
+// the interval when it runs inside the band. `O(1)`.
+fn ray_height_interval(
+    origin_y: f64,
+    direction_y: f64,
+    [low, high]: [f64; 2],
+    (entry_t, exit_t): (f64, f64),
+) -> Option<(f64, f64)> {
+    let (low, high) = (low - RAY_HEIGHT_MARGIN_M, high + RAY_HEIGHT_MARGIN_M);
+    if direction_y.abs() <= f64::EPSILON {
+        return (low..=high)
+            .contains(&origin_y)
+            .then_some((entry_t, exit_t));
+    }
+    let (t_low, t_high) = (
+        (low - origin_y) / direction_y,
+        (high - origin_y) / direction_y,
+    );
+    let entry = entry_t.max(t_low.min(t_high));
+    let exit = exit_t.min(t_low.max(t_high));
+    (exit >= entry && exit >= 0.0).then_some((entry, exit))
+}
+
 fn bounds_intersect(a: [f64; 4], b: [f64; 4]) -> bool {
     a[0] <= b[2] && b[0] <= a[2] && a[1] <= b[3] && b[1] <= a[3]
 }
@@ -480,6 +507,16 @@ impl RoadbedSystem {
             extent[1] - BOUNDS_EPSILON_M,
             extent[2] + BOUNDS_EPSILON_M,
             extent[3] + BOUNDS_EPSILON_M,
+        )?;
+        // Every hit lies on a triangle, so between the pieces' lowest and highest vertex: the
+        // walk visits only the cells the ray crosses at those heights, `O(cells of that run)`
+        // instead of every cell across the city's extent. The margin keeps a hit whose computed
+        // height rounds outside the vertices' range inside the interval, so the hit is the same.
+        let (entry_t, exit_t) = ray_height_interval(
+            origin.y,
+            direction.y,
+            self.index.extent_y()?,
+            (entry_t, exit_t),
         )?;
         let mut best: Option<(f64, RoadVec3, PieceId)> = None;
         // A vertical ray visits its one cell over an unbounded parameter.
