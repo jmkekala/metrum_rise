@@ -666,25 +666,14 @@ impl SimulationNode {
     }
 
     /// Samples the drawn water level under a camera, including the 5 cm surface lift; NaN on
-    /// dry land. Uses the same bounded wet-neighbour reconstruction as the reflection vote.
+    /// dry land (and before the first publication). Uses the same bounded wet-neighbour
+    /// reconstruction as the reflection vote, on the published surface (`CODE-26`): never the
+    /// core lock.
     #[func]
     pub fn get_camera_water_surface_at(&self, pos: Vector2) -> f32 {
-        let core = self.lock_core();
-        let level = crate::nodes::sim::render::water_reflection::display_water_surface(
-            &core.watermap,
-            &core.heightmap,
-            pos.x,
-            pos.y,
-        );
-        // The camera clears the drawn ground, which is graded; the water is drawn over the base.
-        let ground = core.with_graded_surface(|surface, scratch| {
-            surface.ground_height_at(f64::from(pos.x), f64::from(pos.y), scratch) as f32
-        });
-        if level > ground {
-            level + 0.05
-        } else {
-            f32::NAN
-        }
+        self.frame_queries()
+            .surface
+            .map_or(f32::NAN, |surface| surface.camera_water_surface_at(pos))
     }
 
     /// Selects the two planar reflection levels from weighted screen rays, keeping previous

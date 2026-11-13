@@ -2,8 +2,8 @@
 
 //! The values Godot's per-frame queries read, published with the render snapshot (`CODE-26`):
 //! the land cover's revisions, the coal pit overlay revision, the growth summary and the
-//! visible surface (terrain and world-surface heights). A query reads the latest publication
-//! and never takes the core lock.
+//! visible surface (terrain and world-surface heights, the water level under the camera). A
+//! query reads the latest publication and never takes the core lock.
 //!
 //! Freshness: a publication carries the core's state when it was built. The simulation thread
 //! publishes with the render snapshot after every frame and edit; a bridge call that took the
@@ -15,8 +15,8 @@
 //! Cost: a key compare, `O(1)` with no allocation, while nothing changed. A change republishes
 //! only what moved: the growth strings (the hourly assessment), the vegetation revisions
 //! (`O(edited patches)`), the terrain payload revisions (`O(revised patches)`) and the surface:
-//! the road tool's terrain inputs of the noted patches, an `O(1)` roadbed copy and a terrain
-//! copy shared with the road tool's view (storage chunk handles, no sample copied).
+//! the road tool's terrain inputs of the noted patches, an `O(1)` roadbed copy and terrain and
+//! water copies shared with the road tool's view (storage chunk handles, no sample copied).
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -33,14 +33,16 @@ use crate::simulation::network::roadbed::RoadbedSystem;
 use crate::simulation::terrain::TerrainSystem;
 use crate::simulation::terrain::graded::{GradedSurface, QueryScratch};
 use crate::simulation::vegetation::edits::pack_patch_key;
+use crate::simulation::water::WaterSystem;
 
-/// The visible surface as one publication saw it: the heightmap, the roadbed, and the building
-/// sites the road tool's terrain inputs captured per render patch, all shared, none copied by
-/// a query. Its answers equal the core's while the publication is current.
+/// The visible surface as one publication saw it: the heightmap, the roadbed, the building
+/// sites the road tool's terrain inputs captured per render patch, and the water, all shared,
+/// none copied by a query. Its answers equal the core's while the publication is current.
 pub(crate) struct SurfaceView {
     terrain: Arc<TerrainSystem>,
     roadbed: Arc<RoadbedSystem>,
     inputs: RoadTerrainInputs,
+    water: Arc<WaterSystem>,
 }
 
 impl SurfaceView {
@@ -55,6 +57,37 @@ impl SurfaceView {
     /// bound over the captured roadbed and sites (the index-free gather, as the road tool's
     /// view queries); allocation-free once this thread's scratch is warm.
     pub(crate) fn surface_height_at(&self, pos: Vector2) -> f32 {
+        self.with_graded_surface(|surface, scratch| {
+            surface.surface_height_at(f64::from(pos.x), f64::from(pos.y), scratch) as f32
+        })
+    }
+
+    /// The drawn water level under a camera with its 5 cm lift, NaN on dry land, as
+    /// `SimulationNode::get_camera_water_surface_at` answered from the core: the water's
+    /// bounded wet-neighbour reconstruction against the graded ground.
+    pub(crate) fn camera_water_surface_at(&self, pos: Vector2) -> f32 {
+        let level = crate::nodes::sim::render::water_reflection::display_water_surface(
+            &self.water,
+            &self.terrain,
+            pos.x,
+            pos.y,
+        );
+        // The camera clears the drawn ground, which is graded; the water is drawn over the base.
+        let ground = self.with_graded_surface(|surface, scratch| {
+            surface.ground_height_at(f64::from(pos.x), f64::from(pos.y), scratch) as f32
+        });
+        if level > ground {
+            level + 0.05
+        } else {
+            f32::NAN
+        }
+    }
+
+    // Runs `query` on the view's graded surface with this thread's reused scratch.
+    fn with_graded_surface<T>(
+        &self,
+        query: impl FnOnce(&GradedSurface<'_>, &mut QueryScratch) -> T,
+    ) -> T {
         thread_local! {
             static SCRATCH: RefCell<QueryScratch> = RefCell::default();
         }
@@ -65,9 +98,7 @@ impl SurfaceView {
             sites: &sites,
             query_index: None,
         };
-        SCRATCH.with_borrow_mut(|scratch| {
-            surface.surface_height_at(f64::from(pos.x), f64::from(pos.y), scratch) as f32
-        })
+        SCRATCH.with_borrow_mut(|scratch| query(&surface, scratch))
     }
 }
 
@@ -135,6 +166,10 @@ struct PublishedKey {
     terrain_source_generation: u64,
     roadbed_generation: u64,
     terrain_inputs_site_revision: u64,
+    water_generation: u64,
+    // A water edit replaces the water whole, restarting its render generation: the surface
+    // stamp every water edit bumps tells the replacements apart.
+    surface_generation: u64,
 }
 
 /// The latest publication and what it was built from; derived, never saved.
@@ -142,9 +177,10 @@ struct PublishedKey {
 pub(crate) struct FrameQueriesPublisher {
     published: FrameQueries,
     key: Option<PublishedKey>,
-    // The terrain copy the published surface and the road tool's view share, with the world
-    // epoch and terrain source generation it was copied at.
+    // The terrain and water copies the published surface and the road tool's view share, with
+    // the world epoch and the terrain source or water render generation they were copied at.
     terrain: Option<((u64, u64), Arc<TerrainSystem>)>,
+    water: Option<((u64, u64, u64), Arc<WaterSystem>)>,
 }
 
 impl SimCore {
@@ -159,6 +195,8 @@ impl SimCore {
             terrain_source_generation: self.heightmap.source_generation(),
             roadbed_generation: self.transit_network.roadbed.generation(),
             terrain_inputs_site_revision: self.road_terrain_inputs.site_revision(),
+            water_generation: self.watermap.render_generation(),
+            surface_generation: self.road_tool_surface_generation,
         }
     }
 
@@ -179,6 +217,25 @@ impl SimCore {
                 let terrain = Arc::new(self.heightmap.clone());
                 self.frame_queries.terrain = Some((key, Arc::clone(&terrain)));
                 terrain
+            }
+        }
+    }
+
+    /// [`Self::shared_terrain_copy`] for the water. A water edit replaces the water whole and
+    /// restarts its render generation, so the copy is keyed by the surface stamp every water
+    /// edit bumps too.
+    pub(crate) fn shared_water_copy(&mut self) -> Arc<WaterSystem> {
+        let key = (
+            self.world_epoch,
+            self.watermap.render_generation(),
+            self.road_tool_surface_generation,
+        );
+        match &self.frame_queries.water {
+            Some((copied, water)) if *copied == key => Arc::clone(water),
+            _ => {
+                let water = Arc::new(self.watermap.clone());
+                self.frame_queries.water = Some((key, Arc::clone(&water)));
+                water
             }
         }
     }
@@ -204,7 +261,9 @@ impl SimCore {
         let surface = world
             || moved(|k| k.terrain_inputs_site_revision)
             || moved(|k| k.terrain_source_generation)
-            || moved(|k| k.roadbed_generation);
+            || moved(|k| k.roadbed_generation)
+            || moved(|k| k.water_generation)
+            || moved(|k| k.surface_generation);
         let mut queries = self.frame_queries.published.clone();
         if world || moved(|k| k.terrain_payload_counter) || moved(|k| k.terrain_payload_global_generation)
         {
@@ -228,6 +287,7 @@ impl SimCore {
                 terrain: self.shared_terrain_copy(),
                 roadbed: Arc::new(self.transit_network.roadbed.snapshot()),
                 inputs: self.road_terrain_inputs.current(),
+                water: self.shared_water_copy(),
             }));
         }
         queries.sequence = self.frame_queries.published.sequence + 1;

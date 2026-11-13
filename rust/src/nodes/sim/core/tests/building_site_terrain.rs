@@ -228,6 +228,22 @@ fn assert_frame_queries_current(core: &mut SimCore, stage: &str) {
                 core.get_height_at_internal(pos).to_bits(),
                 "{stage}: terrain at {pos:?}"
             );
+            // `get_camera_water_surface_at` as it read the core.
+            let level = crate::nodes::sim::render::water_reflection::display_water_surface(
+                &core.watermap,
+                &core.heightmap,
+                pos.x,
+                pos.y,
+            );
+            let ground = core.with_graded_surface(|surface, scratch| {
+                surface.ground_height_at(f64::from(pos.x), f64::from(pos.y), scratch) as f32
+            });
+            let water = if level > ground { level + 0.05 } else { f32::NAN };
+            assert_eq!(
+                surface.camera_water_surface_at(pos).to_bits(),
+                water.to_bits(),
+                "{stage}: camera water at {pos:?}"
+            );
         }
     }
     let epoch = core
@@ -308,6 +324,16 @@ fn published_frame_queries_follow_every_kind_of_edit() {
     assert_frame_queries_current(&mut core, "vegetation");
     core.apply_money_and_max_demand_cheat(1.0);
     assert_frame_queries_current(&mut core, "growth cheat");
+    // A pond: the camera's water level follows a water edit.
+    let pond = Vector2::new(150.0, 150.0);
+    core.level_terrain_internal(pond, 30.0, -3.0, 1.0);
+    core.begin_world_lake_fill_preview_internal(pond, -1.0)
+        .expect("lake fill preview");
+    core.commit_world_lake_fill_preview_internal()
+        .expect("lake fill commit");
+    assert_frame_queries_current(&mut core, "pond");
+    let surface = core.frame_queries().surface.clone().expect("published surface");
+    assert!(!surface.camera_water_surface_at(pond).is_nan(), "the pond is wet");
 }
 
 #[test]

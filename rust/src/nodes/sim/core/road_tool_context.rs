@@ -143,14 +143,16 @@ impl SimCore {
             self.region_graph.edge_count(),
         );
         let role_revision = self.region_graph.node_role_revision();
-        // The terrain copy the per-frame queries' surface shares (`CODE-26`), made only when
-        // a kept view's terrain is out of date.
-        let terrain_copy = self
-            .road_tool_publisher
-            .published
-            .as_ref()
+        // The terrain and water copies the per-frame queries' surface shares (`CODE-26`), made
+        // only when a kept view's are out of date.
+        let published = self.road_tool_publisher.published.as_ref();
+        let terrain_copy = published
             .is_some_and(|previous| previous.terrain_generations != terrain_generations)
             .then(|| self.shared_terrain_copy());
+        let published = self.road_tool_publisher.published.as_ref();
+        let water_copy = published
+            .is_some_and(|previous| previous.water_generation != water_generation)
+            .then(|| self.shared_water_copy());
         let previous = self.road_tool_publisher.published.take();
         let (view, replica) = match &previous {
             Some(previous) if !rebuilt.all && previous.role_revision == role_revision => {
@@ -163,7 +165,6 @@ impl SimCore {
                     .cells
                     .road_grid_snap(f64::from(self.config.zone_cell_m));
                 let (graph, roadbed) = (&self.region_graph, &self.transit_network.roadbed);
-                let watermap = &self.watermap;
                 let shared = || {
                     let replica = if graph_changed {
                         let nodes = rebuilt.nodes.iter().copied().collect();
@@ -183,10 +184,9 @@ impl SimCore {
                         Some(terrain) if terrain_changed => terrain,
                         _ => Arc::clone(&previous.view.terrain),
                     };
-                    let water = if water_changed {
-                        Arc::new(watermap.clone())
-                    } else {
-                        Arc::clone(&previous.view.water)
+                    let water = match water_copy {
+                        Some(water) if water_changed => water,
+                        _ => Arc::clone(&previous.view.water),
                     };
                     (replica, region_graph, Arc::new(roadbed.snapshot()), terrain, water)
                 };
