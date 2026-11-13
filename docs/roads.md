@@ -1745,7 +1745,9 @@ the core lock, which also resolves the hover core-lock bug `ROAD-70` in
 render snapshot publishes the revision and the getter reads it lock-free).
 
 As built (`ROAD-68-E` part 1): the context is the published view plus the preview's private
-graph replica. The view shares terrain and water until their own generations change, the
+graph replica. The view shares terrain and water until their own keys change (the published
+surface's: world epoch with the terrain's source generation, `ROAD-115`, or with the water's render
+generation and surface stamp, `ROAD-114`), the
 roadbed in `O(1)` and the published road chunks in `O(1)`, and shares one graph copy with the
 command's routing rebuild (undo and road bulldoze offer theirs; a commit's publication makes it);
 the replica follows by the records

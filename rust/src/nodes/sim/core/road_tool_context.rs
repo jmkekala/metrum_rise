@@ -41,8 +41,9 @@ impl RoadToolPublisher {
 
 struct PublishedView {
     view: RoadToolQuerySnapshot,
-    terrain_generations: (u64, u64),
-    // The water copy's key, as the published surface keys its copy (`ROAD-114`).
+    // The terrain and water copies' keys, as the published surface keys its copies (`ROAD-115`,
+    // `ROAD-114`).
+    terrain_key: (u64, u64),
     water_key: (u64, u64, u64),
     graph_counts: (usize, usize),
     role_revision: u64,
@@ -92,8 +93,8 @@ impl SimCore {
     ///
     /// The view keeps its graph when nothing changed, shares the copy an editor offered for its
     /// routing rebuild ([`RoadToolPublisher::offer_graph`]) and copies the live graph otherwise.
-    /// Terrain and water are copied only when their keys changed (the water's as the published
-    /// surface keys it, `ROAD-114`), shared with that surface's copies. Cost:
+    /// Terrain and water are copied only when their keys changed (as the published surface keys
+    /// them, `ROAD-115`, `ROAD-114`), shared with that surface's copies. Cost:
     /// `O(rebuilt owners' records + journaled cell entries * log entries)` plus those copies.
     pub(crate) fn publish_road_tool_view(&mut self) -> Option<RoadToolPublication> {
         self.publish_road_tool_view_with(false)
@@ -135,10 +136,7 @@ impl SimCore {
         } else {
             self.reconcile_parking_frontages(&parking_edges);
         }
-        let terrain_generations = (
-            self.heightmap.source_generation(),
-            self.heightmap.source_generation(),
-        );
+        let terrain_key = self.terrain_copy_key();
         let water_key = self.water_copy_key();
         let graph_counts = (
             self.region_graph.node_count(),
@@ -149,7 +147,7 @@ impl SimCore {
         // only when a kept view's are out of date.
         let published = self.road_tool_publisher.published.as_ref();
         let terrain_copy = published
-            .is_some_and(|previous| previous.terrain_generations != terrain_generations)
+            .is_some_and(|previous| previous.terrain_key != terrain_key)
             .then(|| self.shared_terrain_copy());
         let published = self.road_tool_publisher.published.as_ref();
         let water_copy = published
@@ -159,7 +157,7 @@ impl SimCore {
         let (view, replica) = match &previous {
             Some(previous) if !rebuilt.all && previous.role_revision == role_revision => {
                 let graph_changed = !rebuilt.is_empty() || previous.graph_counts != graph_counts;
-                let terrain_changed = previous.terrain_generations != terrain_generations;
+                let terrain_changed = previous.terrain_key != terrain_key;
                 let water_changed = previous.water_key != water_key;
                 let copy_graph = copy_graph || (offered.is_none() && graph_changed);
                 let zoning_grid = self
@@ -238,7 +236,7 @@ impl SimCore {
         self.road_tool_publisher.sequence += 1;
         self.road_tool_publisher.published = Some(PublishedView {
             view: view.clone(),
-            terrain_generations,
+            terrain_key,
             water_key,
             graph_counts,
             role_revision,
@@ -516,5 +514,53 @@ fn assert_replica_matches(replica: &RegionGraph, published: &RegionGraph) {
                 && a.deleted == b.deleted,
             "replica edge {edge} differs from the published graph"
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::nodes::sim::core::{CityTreasury, SimCore};
+    use crate::simulation::core::config::WorldConfig;
+
+    // `ROAD-115`: a replaced world may hold a heightmap at the same source generation as the old
+    // one. The view keys its terrain copy as the published surface does (world epoch and source
+    // generation), so a publication after the replacement carries the new world's terrain. The
+    // shipped loads also rebuild the roadbed whole, which sends their first publication down the
+    // full copy; this replacement keeps the roadbed, so only the key can tell the worlds apart.
+    #[test]
+    fn the_road_tool_view_follows_a_replaced_world_at_an_equal_terrain_generation() {
+        let config = WorldConfig::new(40.0, 40.0, 40.0, 10.0)
+            .with_terrain_resolution(10.0)
+            .with_chunking(512.0, 0.0);
+        let mut core = SimCore {
+            treasury: CityTreasury::new(0.0),
+            terrain_dirty: false,
+            water_dirty: false,
+            benchmark_mode: true,
+            ..SimCore::new(config)
+        };
+        let blank = core.heightmap.clone();
+        core.heightmap.set_height(2, 2, 3.0);
+        core.transit_network.rebuild_roadbed(&core.region_graph);
+        core.publish_road_tool_view().expect("current roadbed");
+        let publication = core.publish_road_tool_view().expect("current roadbed");
+        assert_eq!(publication.view.terrain.get_height(2, 2), 3.0);
+
+        // The new world: the same edit count, another height.
+        let mut replaced = blank;
+        replaced.set_height(2, 2, 7.0);
+        assert_eq!(
+            replaced.source_generation(),
+            core.heightmap.source_generation(),
+            "the source generation alone cannot tell the worlds apart"
+        );
+        core.heightmap = replaced;
+        core.world_epoch = core.world_epoch.wrapping_add(1);
+        let publication = core.publish_road_tool_view().expect("current roadbed");
+        assert_eq!(publication.view.terrain.get_height(2, 2), 7.0);
+        assert!(std::sync::Arc::ptr_eq(
+            &publication.view.terrain,
+            &core.shared_terrain_copy()
+        ));
     }
 }

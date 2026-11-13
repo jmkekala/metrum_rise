@@ -210,7 +210,7 @@ impl SimCore {
     /// shares the sample chunks: `O(storage chunks)` handles when the generation moved, else
     /// `O(1)`.
     pub(crate) fn shared_terrain_copy(&mut self) -> Arc<TerrainSystem> {
-        let key = (self.world_epoch, self.heightmap.source_generation());
+        let key = self.terrain_copy_key();
         match &self.frame_queries.terrain {
             Some((copied, terrain)) if *copied == key => Arc::clone(terrain),
             _ => {
@@ -219,6 +219,13 @@ impl SimCore {
                 terrain
             }
         }
+    }
+
+    /// The key a terrain copy is current for: the world epoch and the heightmap's source
+    /// generation. A replaced world may restart at an equal generation, so the key holds the
+    /// epoch too (`ROAD-115`).
+    pub(crate) fn terrain_copy_key(&self) -> (u64, u64) {
+        (self.world_epoch, self.heightmap.source_generation())
     }
 
     /// The key a water copy is current for: the world epoch, the water's render generation and
