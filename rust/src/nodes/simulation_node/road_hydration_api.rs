@@ -260,14 +260,7 @@ impl SimulationNode {
     #[func]
     pub fn prepare_road_mesh_hydration(&mut self, keys: PackedInt32Array) {
         if let Some(source) = self.road_hydration.as_mut() {
-            let head: Vec<RoadKey> = keys
-                .as_slice()
-                .as_chunks::<2>()
-                .0
-                .iter()
-                .copied()
-                .collect();
-            source.prepare(&head);
+            source.prepare(keys.as_slice().as_chunks::<2>().0);
         }
     }
 

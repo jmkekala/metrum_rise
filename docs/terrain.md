@@ -17624,7 +17624,67 @@ stride 12) then, at 12 n, a normal and tangent stream of stride 8 (the normal oc
 as two u16 truncated from x 65535, then a tangent the engine generates from the normal, since the
 format gains its tangent bit); `attribute_data` holds per vertex the colour as RGBA8 (truncated
 from x 255.0), the UV as f32 x 2 and, on the road layer, `CUSTOM0` as f32 x 4 (stride 12 or 28);
-the AABB is the engine's running `expand_to`; `uv_scale` is zero.
+the AABB is the positions' exact bounds with each extent raised to at least `1e-5` (part 2's
+probe; not a running `expand_to`); `uv_scale` is zero.
+
+
+### The road chunk renderer's Rust half (`RENDER-52`, round CB part 2, 2026-11-13)
+
+Round CB2 (`ROAD-112` lane Y), on `dev` `5b790031`, for review. A load's road chunks no longer
+build in GDScript one whole chunk a unit:
+
+- **Encoder** (`rust/src/nodes/sim/render/stream/layers/roads/surfaces.rs`): a chunk's layers in
+  the `RenderingServer`'s own surface layout (above), bitwise equal to
+  `ArrayMesh.add_surface_from_arrays`: positions, the octahedral normal and the engine's generated
+  tangent (`Vector3(n.z, -n.x, n.y).cross(n.normalized()).normalized()`, sign folded into `y`),
+  RGBA8 colours, UVs and the road layer's `CUSTOM0`, the AABB as above; a tunnel lining's
+  shadow caster as a vertex-only surface. Pinned by Rust tests on bytes Godot stored for the
+  same arrays (CB's format probe, CB2's AABB and edge-normal probe: axis normals, negative z, a
+  zero normal) and by `road_render_publication_test`, which compares every chunk's
+  `RenderingServer.mesh_get_surface` with Rust's bytes (format, count, both streams, AABB, the
+  lining caster) at each of its 64 strokes and after its save and load. `O(vertices)` a chunk.
+- **Parts** (`stream/layers/roads.rs`, `simulation_node/road_hydration_api.rs`,
+  `road_chunk_hydration.gd`): the stream node orders the pending chunks as before (view, near
+  ring, nearest, key) and asks for the head of the order (`PREPARE_AHEAD` 8) to be encoded on the
+  background pool (at most 4 jobs out; builds outside the head dropped). A prepared chunk runs in
+  parts: each surface onto its hidden `ArrayMesh` through `RenderingServer.mesh_add_surface`
+  (predicted 20 us + 0.5 ns a byte), then its street lights, whose batch nodes cost about 9 us a
+  lamp, as much as its surfaces: `street_lights.gd` `begin_chunk` gives the book the lamps and
+  `build_chunk_part` makes the nodes in 1.0 ms slices, the chunk's lamps drawn once all are made;
+  then the swap (`install_built`: the chunk node on the finished mesh, its signs, through the
+  renderer's own `install`, so T61 (2)'s holds are unchanged). A chunk whose surfaces are not
+  encoded yet is passed over until they are. The chunk meshes are `ArrayMesh` resources used as
+  the server's mesh handles: their surfaces exist only in the server, so every reader reads the
+  server's surfaces (`server_surfaces`), the preview display collapses runs through
+  `RenderingServer.mesh_surface_update_vertex_region` on the mesh RID with the layer metas
+  `road_layer_counts` and `road_layer_formats`, and a dropped build or a freed chunk node frees
+  its mesh with the resource.
+- **Edits** still build their changed chunks in GDScript (`update`, `commit_staged`), unchanged.
+- **Kuopio's first fast commits' 207-222 ms frames** (CB part 1): the lamp and sign models and
+  kinds, made at the first chunk with a lamp or a sign; the load call made them only for a world
+  with roads, so a new game's first commits paid them. The load call now makes them for every
+  world (`road_chunk_hydration.gd` `prewarm`).
+
+**Measured (fresh, 2026-11-13; the branch's release library, instrumented `stream_benchmark.py
+run --detail --phases post_load,pan`, 1080p, gamescope headless, P-cores, eight workers; road
+work a frame = the network refresh's `road_mesh` share plus the hydration's parts, `$ARTIFACTS`
+art-cb2/stream and `roads.py`):**
+
+| Input | Frames with road work | Max a frame | Median | Over 4.0 ms | Largest part |
+|---|---:|---:|---:|---:|---:|
+| 30k load, branch | 61 | 3.48 ms | 2.44 ms | 0 | 1.76 ms |
+| 30k load, control (CB part 1's, `9488992a`) | 59 | 9.09 ms | 5.35 ms | 49 | 9.09 ms |
+| 100k load, branch (diagnosis) | 205 | 22.0 ms | 2.52 ms | 4 | 20.7 ms |
+| 100k load, control (CB part 1's) | 185 | 26.4 ms | 5.73 ms | 154 | 26.4 ms |
+| 30k and 100k pans | 0 | - | - | 0 | - |
+
+The 30k load meets the bar: no frame of road work above the 4.0 ms hydration budget. At 100k
+four frames are over: two single surface parts of 15.6 and 20.7 ms (a multi-megabyte surface
+handed to `mesh_add_surface` in a load frame heavy with other uploads, read as the engine's
+staging buffer stalling; not split further: a surface is one buffer) and two lamp or swap parts
+of 4.7 ms with one 2-3 ms engine spike inside a single batch node (seen at 30k too before the
+1.0 ms slice). The analysis counts the network refresh's road share only: CB part 1's tables
+counted its whole time, whose first frame is the terrain's visuals (5 ms), not road work.
 
 ## Implemented Runtime Contract
 

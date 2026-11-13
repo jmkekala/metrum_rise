@@ -168,8 +168,12 @@ The road tool's base class no longer draws the committed road chunks: `RENDER-52
 validation, build, lights and signs) into `road_chunk_renderer.gd`, the road tool's child, with
 no behaviour change, so the road tool rounds B-D build on a `network_tool.gd` that holds tool
 code only. Measured first: a load installs a road chunk in one unit of 6-8 ms (most 30k and 100k
-load frames with road work exceed the 4 ms hydration budget); the Rust half, chunks encoded off
-the main thread and installed in parts by the stream `roads` layer, is the next part ([record](terrain.md#the-road-chunk-renderer-out-of-the-road-tool-render-52-round-cb-part-1-2026-11-13)).
+load frames with road work exceed the 4 ms hydration budget). Its second part (round CB2,
+2026-11-13, for review) encodes a load's chunks in Godot's surface layout on the background pool,
+bitwise equal to the GDScript build, and installs them a surface a part, the street lights in
+1.0 ms slices, then one swap: no 30k load frame has more than 3.5 ms of road work (control 9.1 ms,
+49 frames over), and Kuopio's first commits no longer make the lamp and sign models in one frame;
+edits still build in GDScript ([record](terrain.md#the-road-chunk-renderers-rust-half-render-52-round-cb-part-2-2026-11-13)).
 `RENDER-32-N` (2026-11-13, for review) measured how many frames a chunk that comes into view
 waits before it draws, per layer, on 0.5 s turns, a far zoom-out to 40 km and a zoom from there to
 the street: terrain, water, graded ground and buildings draw within three frames; the vegetation

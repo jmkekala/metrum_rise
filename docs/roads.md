@@ -12398,14 +12398,25 @@ each chunk's street lights and road signs) are drawn by `godot/scripts/renderers
 the road tool's child `chunks` (made by `road_tool.gd` `make_chunks`, first among its children
 so the tree order of chunks, lights and signs is the old one); `network_tool.gd` keeps tool code
 only. Its calls: `update(expected_generation, stage_only)`, `commit_staged`, `discard_staged`,
-`release_held`, `needs_hydration`, `reset`, `install` and `build_chunk` (the hydration's
-units), `is_holding`, and for the preview display `chunks`, `new_chunk_node`,
+`release_held`, `needs_hydration`, `reset`, `install`, `build_chunk`, and for the
+hydration's parts `install_built`, `install_lights`, `build_lights_part`, `lights_building` and
+`hydration_materials`, `is_holding`, and for the preview display `chunks`, `new_chunk_node`,
 `fill_chunk_mesh`, `place_chunk`, `chunk_root`; read-only state `generation`, `span_m`,
 `origin_x_m`, `origin_z_m`, `held_serial`, `street_lights`, `road_signs`. It tells its host (the
 road tool) `mark_network_nodes_dirty`, `road_chunks_installed(generation)` and
-`road_chunks_released()`. Chunks are still `MeshInstance3D` nodes built by GDScript; the Rust
-half (prepared buffers and budgeted installs through the streaming core's `roads` layer) is the
-next CB part (docs/terrain.md "The road chunk renderer out of the road tool").
+`road_chunks_released()`. Chunks are `MeshInstance3D` nodes. Since CB part 2 (2026-11-13) a
+load's hydration builds them in Rust: each chunk's surfaces are encoded in Godot's own layout on
+the background pool (`stream/layers/roads/surfaces.rs`, bitwise equal to
+`add_surface_from_arrays`), added a surface a part to a hidden `ArrayMesh` through
+`RenderingServer.mesh_add_surface`, the chunk's street lights make their nodes in 1.0 ms slices
+(`street_lights.gd` `begin_chunk`/`build_chunk_part`), and the swap installs the finished mesh
+through `install_built` (holds unchanged). Edits (`update`, `commit_staged`) and the preview's
+overlays still build in GDScript (`build_chunk`, `fill_chunk_mesh`). Every chunk mesh carries the
+`road_layer_surfaces`, `road_layer_counts` and `road_layer_formats` metas; the preview display
+collapses runs through `RenderingServer.mesh_surface_update_vertex_region` on the mesh RID, and
+readers of a chunk's surfaces read the server's (`server_surfaces`, `surface_positions`), since a
+hydrated chunk's `ArrayMesh` holds its surfaces only there (docs/terrain.md "The road chunk
+renderer's Rust half").
 
 **Parallel mode** (user, 2026-11-13) works as in CS2: a toggle on every drawing mode, not a
 separate tool. Each drawn road gets one copy beside it at a set centre-to-centre spacing, an
