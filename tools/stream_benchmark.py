@@ -17,6 +17,8 @@ the systematic-pixel test, a capture's variants against its `full`). `--shadows`
 variant sequence (`RENDER-15`, METRUM_STREAM_SHADOWS) of a run or a series' branch rows, and
 `split` turns a run's `full,X,X,full` blocks into per-variant quartets for `compare`.
 `--gpu-profile` adds Godot's render timestamps (`gpu_passes` per sample, shown by `summary`).
+`--phases census` (untimed) writes the draw census of a few poses into `<out>/<label>.census`, and
+`census` prints its tables (`RENDER-44`, `tools/draw_census.py`).
 
     ./run.sh --benchmark-stream                     # builds release, then `run` on Kuopio
     tools/stream_benchmark.py run --label c30k-br1 --save <populated_city_30000.sqlite> --out <dir>
@@ -49,7 +51,7 @@ import timing_session  # noqa: E402  (shares the machine settings and window che
 ROOT = Path(__file__).resolve().parent.parent
 # The benchmark's own scripts: copied over another build's scripts so both sides measure alike.
 BENCH_SCRIPTS = ["benchmarks/stream_frame_benchmark.gd", "benchmarks/gameplay_road_benchmark.gd",
-                 "core/perf_debug.gd", "benchmarks/shadow_variants.gd"]
+                 "core/perf_debug.gd", "benchmarks/shadow_variants.gd", "benchmarks/draw_census.gd"]
 WORKERS = "8"
 # Set in the child a run or series starts under the timed locks.
 LOCKED_ENV = "METRUM_STREAM_LOCKED"
@@ -169,6 +171,8 @@ def run_row(args, settings, out, label, library, scripts, shadows):
             "METRUM_STREAM_STILL_S": str(args.still_s), "METRUM_STREAM_SETTLE_CAP_S": str(args.settle_cap_s),
             "METRUM_STREAM_DIGESTS": "1" if args.digests else "0", "METRUM_STREAM_SHADOWS": shadows,
             "METRUM_STREAM_GPU_PASSES": "1" if args.gpu_profile else "0",
+            "METRUM_STREAM_CENSUS_DIR": str(out / f"{label}.census"),
+            "METRUM_STREAM_CENSUS_HOLD": os.environ.get("METRUM_STREAM_CENSUS_HOLD", "0"),
         })
         command = ["timeout", "--kill-after=10s", str(args.timeout)]
         if settings.get("cpus"):
@@ -768,6 +772,8 @@ def main(argv=None):
     for name in ("ctl1", "ctl2", "br1", "br2"):
         test.add_argument(name)
     test.add_argument("--masks", help="write each still's systematic pixels as a mask PNG here")
+    census = commands.add_parser("census", help="a run's draw census (`--phases census`, RENDER-44)")
+    census.add_argument("dir", help="the run's <label>.census directory")
     args = parser.parse_args(argv)
     args.argv = argv
     if args.command in ("run", "series"):
@@ -780,6 +786,9 @@ def main(argv=None):
         return split(args)
     if args.command == "stills":
         return stills(args)
+    if args.command == "census":
+        import draw_census
+        return draw_census.report(args.dir)
     print_summary(json.loads(Path(args.metrics).read_text()), args.scripts)
     return 0
 

@@ -14,6 +14,9 @@
 ## seconds of wall time instead of its frames (a still with the simulation running, `PL1`). Each row
 ## also records the wall clock at its frame's end (`t_unix`), to join a profile's samples to frames.
 ## METRUM_STREAM_SETTLE_CAP_S caps every settle wait (`unsettled_starts` counts those it ended).
+## The `census` phase (`RENDER-44`, untimed) writes `draw_census.gd`'s census of the settled base
+## pose, three street-level views, a mid-height view and the middle of a turn into
+## METRUM_STREAM_CENSUS_DIR. Every sample starts with a `[STREAM] BEGIN <label>` line.
 ##
 ## A row is one frame: its time from one `process_frame` to the next (the frame's scripts and its
 ## draw), the renderer's CPU and GPU measures, draw counts, the streaming counters of every chunked
@@ -85,6 +88,11 @@ const WATER_SCAN_REACH_M := 8500.0
 const WATER_PITCH_RAD := -0.3
 const WATER_DISTANCE_M := 400.0
 const WATER_FRAMES := 90
+# The census phase's street-level and mid-height views (`RENDER-44`): orbit distance and pitch.
+const CENSUS_STREET_M := 30.0
+const CENSUS_STREET_PITCH := -0.06
+const CENSUS_MID_M := 300.0
+const CENSUS_MID_PITCH := -0.35
 ## The keys every frame row carries (`scripts` is empty without the perf channel).
 const ROW_KEYS: Array[String] = ["frame", "frame_ms", "process_ms", "render_cpu_ms", "render_gpu_ms",
 	"draw_calls", "objects", "primitives", "video_mem", "shadow_pass", "streams", "stream_delta",
@@ -237,6 +245,8 @@ func run(bench: Node) -> void:
 	}
 	print("[STREAM] LOAD_END agents=%d total_ms=%.1f load_call_ms=%.1f" % [
 		_report.load.agent_count, _report.load.elapsed_ms, load_call_ms])
+	if phases.has("census") and not await _census(bench, base):
+		return
 	var pan_m: float = float(bench.camera.speed) * DISTANCE_M / PAN_REFERENCE_DISTANCE_M * PAN_S
 	for block in maxi(1, shadows.size()):
 		var first_sample: int = _report.samples.size()
@@ -365,6 +375,42 @@ static func report_errors(report: Dictionary) -> PackedStringArray:
 					errors.append("%s frame %s lacks %s" % [label, str(row.get("frame", "?")), key])
 					return errors
 	return errors
+
+# The `census` phase (`RENDER-44`, untimed; METRUM_STREAM_CENSUS_DIR): `draw_census.gd` at the
+# settled base pose, three street-level views (CENSUS_STREET_M from the base pivot, pitch
+# CENSUS_STREET_PITCH, a third of a turn apart), a mid-height view, all with the depth image, and
+# half a 1 s turn into the base pose's quarter turn (`turn_mid`, unsettled). False when a pose did
+# not settle.
+func _census(bench: Node, base: PackedFloat32Array) -> bool:
+	var census: RefCounted = load("res://scripts/benchmarks/draw_census.gd").new(bench,
+		OS.get_environment("METRUM_STREAM_CENSUS_DIR"))
+	await census.capture("still", true)
+	var poses: Array = []
+	for index in 3:
+		poses.append(["street_%d" % index, base[3] + TAU * index / 3.0, CENSUS_STREET_PITCH, CENSUS_STREET_M])
+	poses.append(["mid", base[3], CENSUS_MID_PITCH, CENSUS_MID_M])
+	for pose: Array in poses:
+		var view := base.duplicate()
+		view[3] = pose[1]
+		view[4] = pose[2]
+		view[5] = pose[3]
+		if not await _start_from(bench, view):
+			bench._fail("the census pose %s did not settle" % pose[0])
+			return false
+		await census.capture(pose[0], true)
+	if not await _start_from(bench, base):
+		bench._fail("the census turn's start did not settle")
+		return false
+	# Half of the 1 s turn's 180 degrees, at its pace, then the census of the frame it left.
+	var start_us := Time.get_ticks_usec()
+	var done := 0.0
+	while done < 0.5:
+		var target := minf(0.5, float(Time.get_ticks_usec() - start_us) / 1000000.0)
+		bench.camera.orbit(Vector2(-TURN_RADIANS * (target - done) / bench.camera.sensitivity, 0.0))
+		done = target
+		await bench.get_tree().process_frame
+	await census.capture("turn_mid", false)
+	return await _start_from(bench, base)
 
 # The still and turns phases, if selected; false (the run failed) when a turn's start did not settle.
 func _still_and_turns(bench: Node, phases: Array, turns: Array, base: PackedFloat32Array) -> bool:
@@ -670,8 +716,10 @@ static func _sha(bytes: PackedByteArray) -> String:
 	context.update(bytes)
 	return context.finish().hex_encode()
 
-# Starts a sample: drops the perf records and the counters' history from before it.
-func _begin() -> Array:
+# Starts a sample: drops the perf records and the counters' history from before it. Prints
+# `[STREAM] BEGIN <label>`, so an outside tracer (`RENDER-46`'s Intel PT captures) can start on it.
+func _begin(label: String) -> Array:
+	print("[STREAM] BEGIN %s" % label)
 	if _scripts:
 		PerfDebug.take_frame()
 	if _core_locks != null:
@@ -682,7 +730,7 @@ func _begin() -> Array:
 	return []
 
 func _capture_frames(bench: Node, label: String, frames: int) -> Dictionary:
-	var rows := _begin()
+	var rows := _begin(label)
 	for _frame in frames:
 		await bench.get_tree().process_frame
 		rows.append(_row(rows.size()))
@@ -691,7 +739,7 @@ func _capture_frames(bench: Node, label: String, frames: int) -> Dictionary:
 # Records frames for `duration_s` of wall time (METRUM_STREAM_STILL_S: a still with the simulation
 # running, `PL1`).
 func _capture_for(bench: Node, label: String, duration_s: float) -> Dictionary:
-	var rows := _begin()
+	var rows := _begin(label)
 	var start_us := _last_us
 	while float(Time.get_ticks_usec() - start_us) < duration_s * 1000000.0:
 		await bench.get_tree().process_frame
@@ -701,7 +749,7 @@ func _capture_for(bench: Node, label: String, duration_s: float) -> Dictionary:
 # Orbits by TURN_RADIANS over `duration_s` of wall time, each frame by the share of the turn its
 # time asks for, so a slow frame turns further (as the player's drag does).
 func _capture_turn(bench: Node, label: String, duration_s: float, direction: float) -> Dictionary:
-	var rows := _begin()
+	var rows := _begin(label)
 	var start_us := _last_us
 	var done := 0.0
 	while done < 1.0:
@@ -719,7 +767,7 @@ func _capture_turn(bench: Node, label: String, duration_s: float, direction: flo
 # `duration_s` of wall time, linearly or geometrically.
 func _capture_view(bench: Node, label: String, duration_s: float, base: PackedFloat32Array,
 		component: int, from: float, to: float, geometric: bool) -> Dictionary:
-	var rows := _begin()
+	var rows := _begin(label)
 	var start_us := _last_us
 	var fraction := 0.0
 	while fraction < 1.0:
@@ -736,7 +784,7 @@ func _capture_view(bench: Node, label: String, duration_s: float, base: PackedFl
 # Runs `start` (if valid) and records frames until settled for SETTLED_FRAMES in a row. The
 # sample's settle_ms and settle_frames end at the first frame of that run.
 func _capture_until_settled(bench: Node, label: String, max_frames: int, start: Callable) -> Dictionary:
-	var rows := _begin()
+	var rows := _begin(label)
 	var start_us := _last_us
 	if start.is_valid():
 		start.call()

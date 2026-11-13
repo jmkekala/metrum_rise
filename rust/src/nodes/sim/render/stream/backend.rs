@@ -383,6 +383,12 @@ impl SlotPool {
         out
     }
 
+    /// The live slots, those in use and not spare, in slot order (the benchmark's draw census,
+    /// `RENDER-44`). `O(slots)`; nothing calls it on a frame path.
+    pub(crate) fn live_slots(&self) -> impl Iterator<Item = &Slot> + '_ {
+        self.slots.iter().flatten().filter(|slot| !slot.spare)
+    }
+
     /// A live slot.
     pub(crate) fn slot(&self, id: SlotId) -> &Slot {
         self.slots[id as usize].as_ref().expect("live slot")
@@ -757,7 +763,7 @@ pub(crate) fn pad_rows(out: &mut [f32], rows: &[f32], stride: usize) {
     }
 }
 
-pub(crate) use godot_backend::GodotBackend;
+pub(crate) use godot_backend::{GodotBackend, slot_census};
 
 mod godot_backend {
     use super::*;
@@ -769,8 +775,9 @@ mod godot_backend {
     };
     use godot::obj::{EngineBitfield, Singleton};
     use godot::prelude::{
-        Basis, Gd, PackedByteArray, PackedFloat32Array, Rid, StringName, ToGodot, Transform3D,
-        Variant, Vector2i, Vector3, Vector4i,
+        Basis, Gd, PackedByteArray, PackedFloat32Array, PackedInt32Array, PackedInt64Array,
+        PackedVector2Array, PackedVector3Array, Rid, StringName, ToGodot, Transform3D,
+        VarDictionary, Variant, Vector2, Vector2i, Vector3, Vector4i,
     };
 
     /// The `RenderingServer` backend. Holds the meshes, materials and parameter names the layers
@@ -914,6 +921,54 @@ mod godot_backend {
         pub(crate) fn take_copy_us(&mut self) -> f64 {
             std::mem::take(&mut self.copy_us)
         }
+    }
+
+    /// The draw census of `pool`'s live slots (`RENDER-44`, benchmark-only: nothing calls it on
+    /// a frame path), parallel arrays by slot: `multimesh`, `instance` (main), `caster` and
+    /// `reflection` (0: not made), the main instance's `visible`, `shadow` (0 off, 1 on, 2
+    /// shadows only), `origin` and visibility `range`, the caster's `caster_visible` and
+    /// `caster_shadow`, and `count`, the visible instances as last sent (-1: unknown). `O(slots)`.
+    pub(crate) fn slot_census(pool: &SlotPool) -> VarDictionary {
+        let mut handles: [PackedInt64Array; 4] = Default::default();
+        let mut flags: [PackedByteArray; 4] = Default::default();
+        let mut count = PackedInt32Array::new();
+        let mut origin = PackedVector3Array::new();
+        let mut range = PackedVector2Array::new();
+        let shadow_code = |shadow: Shadow| match shadow {
+            Shadow::Off => 0u8,
+            Shadow::On => 1,
+            Shadow::ShadowsOnly => 2,
+        };
+        for slot in pool.live_slots() {
+            handles[0].push(slot.multimesh as i64);
+            for (at, role) in [Role::Main, Role::Caster, Role::Reflection].into_iter().enumerate() {
+                handles[at + 1].push(slot.instance(role).unwrap_or(0) as i64);
+            }
+            let main = slot.drawn(Role::Main);
+            let caster = slot.drawn(Role::Caster);
+            flags[0].push(u8::from(main.is_some_and(|drawn| drawn.visible)));
+            flags[1].push(main.map_or(0, |drawn| shadow_code(drawn.shadow)));
+            flags[2].push(u8::from(caster.is_some_and(|drawn| drawn.visible)));
+            flags[3].push(caster.map_or(0, |drawn| shadow_code(drawn.shadow)));
+            count.push(slot.visible_count().map_or(-1, |value| value as i32));
+            let (at, reach) =
+                main.map_or(([0.0; 3], [0.0; 2]), |drawn| (drawn.origin, drawn.range));
+            origin.push(Vector3::from_array(at));
+            range.push(Vector2::new(reach[0], reach[1]));
+        }
+        let mut out = VarDictionary::new();
+        let handle_names = ["multimesh", "instance", "caster", "reflection"];
+        for (name, value) in handle_names.into_iter().zip(handles) {
+            out.set(name, value);
+        }
+        let flag_names = ["visible", "shadow", "caster_visible", "caster_shadow"];
+        for (name, value) in flag_names.into_iter().zip(flags) {
+            out.set(name, value);
+        }
+        out.set("count", count);
+        out.set("origin", origin);
+        out.set("range", range);
+        out
     }
 
     impl RenderBackend for GodotBackend {

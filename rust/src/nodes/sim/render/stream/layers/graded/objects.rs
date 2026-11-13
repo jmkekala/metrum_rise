@@ -720,6 +720,28 @@ impl CellObjects {
         }
     }
 
+    /// Every set's cell meshes and walls for the benchmark's draw census (`RENDER-44`; nothing
+    /// calls it on a frame path): `(MultiMesh, instance, instances as sent, whether the instance
+    /// draws, whether it is a wall, the patch node, whether the set draws)`. `O(sets' meshes)`.
+    pub(crate) fn census(
+        &self,
+    ) -> impl Iterator<Item = (Handle, Handle, u32, bool, bool, i64, bool)> + '_ {
+        self.sets.iter().flat_map(|objects| {
+            let walls = std::iter::once((&objects.walls, true));
+            objects.parts.iter().map(|part| (part, false)).chain(walls).map(|(part, wall)| {
+                (
+                    part.multimesh,
+                    part.instance,
+                    part.count.unwrap_or(0),
+                    part.drawn,
+                    wall,
+                    objects.parent,
+                    objects.shown,
+                )
+            })
+        })
+    }
+
     /// Set `set`'s walls: instances drawn (as sent), and whether they draw.
     pub(crate) fn walls(&self, set: u32) -> (u32, bool) {
         let walls = &self.sets[set as usize].walls;

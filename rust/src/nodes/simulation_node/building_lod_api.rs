@@ -6,7 +6,7 @@ use super::*;
 use crate::nodes::lod_policy::quality_from_id;
 use crate::nodes::sim::render::building_lod::spatial::{Pose, query_bounds};
 use crate::nodes::sim::render::building_lod::{BatchKey, Part, View};
-use crate::nodes::sim::render::stream::backend::GodotBackend;
+use crate::nodes::sim::render::stream::backend::{GodotBackend, slot_census};
 use crate::nodes::sim::render::stream::layers::buildings::{
     Applied, BuildingLayer, Look, SLOT_LIMIT, SPARE_LIMIT,
 };
@@ -141,6 +141,15 @@ impl SimulationNode {
         if let Some(draw) = self.building_draw.as_mut() {
             draw.layer.set_cast_shadows(&mut draw.backend, cast);
         }
+    }
+
+    /// The draw census of the building batches' live slots (`RENDER-44`, the stream benchmark's
+    /// census only; see `backend::slot_census`). Empty before the batches draw. `O(slots)`.
+    #[func]
+    pub fn get_building_draw_census(&self) -> VarDictionary {
+        self.building_draw
+            .as_ref()
+            .map_or_else(VarDictionary::new, |draw| slot_census(draw.layer.pool()))
     }
 
     /// Registers the mesh and material override (an invalid RID: none) a group draws with,

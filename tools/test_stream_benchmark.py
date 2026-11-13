@@ -352,3 +352,54 @@ class StillsTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CensusTests(unittest.TestCase):
+    """`census` (`RENDER-44`, tools/draw_census.py): Godot's culling and counting mirrored."""
+
+    def write(self, temp, rows, count, lods=()):
+        import base64
+        import struct
+        census = {
+            "label": "t",
+            # A camera at the origin looking down -Z, 90 degrees high, 2:1, planes 0.1 and 1000 m.
+            "camera": {"transform": [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0], "fov": 90.0, "keep_aspect": 1,
+                       "near": 0.1, "far": 1000.0, "size": [200, 100], "lod_threshold": 1.0},
+            "godot": {"visible": [1, 1, 3 * count], "shadow": [0, 0, 0], "gpu_ms": 1.0},
+            "meshes": {"7": [{"aabb": [-0.5, -0.5, -0.5, 1, 1, 1], "primitive": 3, "vertices": 8,
+                              "indices": 36, "lods": list(lods), "material": 0}]},
+            "items": [{"layer": "rs:cars", "kind": "multimesh", "mesh": 7, "count": count, "instance": 1,
+                       "transform": [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0], "aabb": [-1, -1, -400, 2, 2, 400],
+                       "cast": 1, "range": [0, 0],
+                       "rows": base64.b64encode(struct.pack(f"<{12 * count}f", *rows)).decode()}],
+            "layers": {},
+        }
+        path = Path(temp) / "t.census.json"
+        path.write_text(json.dumps(census))
+        return path
+
+    def test_a_drawn_batch_counts_every_instance_and_its_off_screen_ones(self):
+        import draw_census
+        on = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, -60]
+        # Behind the camera: off-screen, but drawn with its batch.
+        behind = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 30]
+        far = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, -350]
+        with tempfile.TemporaryDirectory() as temp:
+            _, layers = draw_census.analyse(self.write(temp, on + behind + far, 3))
+        stats = layers["rs:cars"]
+        self.assertEqual((stats["batches_drawn"], stats["drawn"], stats["offscreen"]), (1, 3, 1))
+        self.assertEqual(stats["prims"].sum(), 36)
+        # Bands: 50-100 m, 0-50 m (behind), 300-500 m.
+        self.assertEqual(list(stats["prims"][:5]), [12, 12, 0, 0, 12])
+
+    def test_a_batch_takes_the_level_of_detail_of_its_nearest_point(self):
+        import draw_census
+        near = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, -2]
+        far = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, -350]
+        # One level of 6 indices (2 triangles) for edges up to 0.1 m: a pixel at about 100 m here.
+        with tempfile.TemporaryDirectory() as temp:
+            _, layers = draw_census.analyse(self.write(temp, near + far, 2, [[0.1, 6]]))
+        stats = layers["rs:cars"]
+        # The batch's box holds the camera: the full mesh for both; the far one alone would draw 2.
+        self.assertEqual(stats["prims"].sum(), 24)
+        self.assertEqual(stats["own_prims"].sum(), 14)

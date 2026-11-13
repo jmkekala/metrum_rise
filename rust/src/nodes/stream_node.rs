@@ -29,7 +29,7 @@
 //! eye ([`ZoningRing`]), which the overlay moves to its camera as it asks for them.
 
 use crate::nodes::camera_node::CameraNode;
-use crate::nodes::sim::render::stream::backend::{GodotBackend, Role, Shadow};
+use crate::nodes::sim::render::stream::backend::{GodotBackend, Role, Shadow, slot_census};
 use crate::nodes::sim::render::stream::layers::graded::book::GradedTileBook;
 use crate::nodes::sim::render::stream::layers::parked::{
     ParkedLayer, SLOT_LIMIT as PARKED_SLOT_LIMIT, SPARE_LIMIT as PARKED_SPARE_LIMIT,
@@ -846,6 +846,21 @@ impl StreamNode {
     pub fn set_parked_cast_shadows(&mut self, cast: bool) {
         if let Some(draw) = self.parked.as_mut() {
             draw.layer.set_cast_shadows(&mut draw.backend, cast);
+        }
+    }
+
+    /// The draw census of a pooled layer's live slots, `"vegetation"` or `"parked"` (`RENDER-44`,
+    /// the stream benchmark's census only; see `backend::slot_census`). Empty for another name
+    /// or a layer not drawing. `O(slots)`.
+    #[func]
+    pub fn get_draw_census(&self, layer: GString) -> VarDictionary {
+        match layer.to_string().as_str() {
+            "vegetation" => slot_census(self.vegetation.pool()),
+            "parked" => self
+                .parked
+                .as_ref()
+                .map_or_else(VarDictionary::new, |draw| slot_census(draw.layer.pool())),
+            _ => VarDictionary::new(),
         }
     }
 

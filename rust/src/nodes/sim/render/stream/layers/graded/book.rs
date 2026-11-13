@@ -1770,6 +1770,43 @@ impl GradedTileBook {
         out
     }
 
+    /// The draw census of every set's cell meshes and walls (`RENDER-44`, the stream benchmark's
+    /// census only): parallel arrays `multimesh`, `instance`, `count` (instances as sent),
+    /// `drawn` (the instance draws), `wall`, `parent` (the patch node's instance id) and
+    /// `shown` (its set draws). Empty without cells. `O(sets' meshes)`.
+    #[func]
+    pub fn draw_census(&self) -> VarDictionary {
+        let mut out = VarDictionary::new();
+        let Some(objects) = self.objects.as_ref() else {
+            return out;
+        };
+        let (mut multimesh, mut instance, mut parent) =
+            (PackedInt64Array::new(), PackedInt64Array::new(), PackedInt64Array::new());
+        let (mut count, mut drawn, mut wall, mut shown) = (
+            PackedInt32Array::new(),
+            PackedByteArray::new(),
+            PackedByteArray::new(),
+            PackedByteArray::new(),
+        );
+        for (mesh, at, sent, draws, walls, node, set_shown) in objects.census() {
+            multimesh.push(mesh as i64);
+            instance.push(at as i64);
+            count.push(sent as i32);
+            drawn.push(u8::from(draws));
+            wall.push(u8::from(walls));
+            parent.push(node);
+            shown.push(u8::from(set_shown));
+        }
+        out.set("multimesh", multimesh);
+        out.set("instance", instance);
+        out.set("count", count);
+        out.set("drawn", drawn);
+        out.set("wall", wall);
+        out.set("parent", parent);
+        out.set("shown", shown);
+        out
+    }
+
     /// Patch `key`'s cell meshes for grass's mask mirrors, flat per mesh `(multimesh RID id,
     /// has instances, page its material binds or -1)`; empty without a set. O(the set's meshes).
     #[func]
