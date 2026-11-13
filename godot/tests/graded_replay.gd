@@ -12,7 +12,8 @@
 ## frame). The
 ## trace is METRUM_GRADED_REPLAY or the first user argument; a list of traces separated by `;`
 ## replays each; METRUM_GRADED_REPLAY_POOL=unbounded replays traces recorded before `TERRAIN-09`'s
-## bound on the pooled pages. Exit 0 when every trace replays to its end.
+## bound on the pooled pages; METRUM_GRADED_TRACE_REWRITE writes each trace back with the line kinds
+## a build adds (terrain_graded_trace.gd). Exit 0 when every trace replays to its end.
 extends SceneTree
 
 const Tiles := preload("res://scripts/renderers/terrain_graded_tiles.gd")
@@ -175,6 +176,7 @@ func _replay(path: String) -> bool:
 	renderer.page_store.trace = null
 	renderer._book.set_trace(null)
 	renderer.dispose()
+	trace.close()
 	var seconds := float(Time.get_ticks_msec() - started) / 1000.0
 	if not trace.failure.is_empty():
 		print("graded_replay: FAIL %s: %s" % [path, trace.failure])

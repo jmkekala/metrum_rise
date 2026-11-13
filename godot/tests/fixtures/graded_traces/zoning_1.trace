@@ -18,6 +18,10 @@
 > poll 4
 < poll 0 0
 < budget 0
+> bind 15 0 0
+> bind 15 1 1
+> park 15 2 2
+> count 15 all 0
 < budget 0
 < budget 0
 < budget 0
@@ -136,6 +140,7 @@
 > request_lists 2,1,3
 < request_lists 1
 > page_new 2 2 2,2 32 96
+> bind 15 2 2
 > request_tiles 0,0,2,0,0,0,1,2,0,0,1,0,2,0,0,1,1,2,0,0,2,1,2,0,0,3,0,2,0,0,3,1,2,0,0,4,0,2,0,0,4,1,2,0,0,5,0,2,0,0
 < request_tiles 1,1,1,1,1,1,1,1,1,1
 > draw 2 2 2
@@ -366,6 +371,7 @@
 > draw 1 0 2
 < clear
 > page_release 2 1
+> bind 15 2 -1
 > page_release 4 1
 > page_release 3 1
 > page_release 5 1

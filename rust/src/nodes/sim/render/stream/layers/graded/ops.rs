@@ -205,10 +205,18 @@ impl Graded {
         scratch: &mut Vec<(PageRef, Block)>,
     ) -> Result<(), PlaceFailure> {
         let (code, step, token, behind) = level;
-        let current = self.preview.get(&tile).map(|entry| (entry.level, entry.copies.clone()));
-        let same_level = current.as_ref().is_some_and(|(held, _)| *held == code);
-        let held = if same_level { current.as_ref().map(|(_, copies)| copies.clone()).unwrap_or_default() } else { Vec::new() };
-        let copies = match self.place_copies(tile, code, layers, &held, false, true, scratch) {
+        // The shown entry's level, and its copies at the same level in the reused scratch: the
+        // entry's copies are not cloned (the first streaming audit's finding 11, the preview path).
+        let current = self.preview.get(&tile).map(|entry| entry.level);
+        let same_level = current == Some(code);
+        let mut held = std::mem::take(&mut self.old_copies);
+        held.clear();
+        if same_level && let Some(entry) = self.preview.get(&tile) {
+            held.extend_from_slice(&entry.copies);
+        }
+        let placed = self.place_copies(tile, code, layers, &held, false, true, scratch);
+        self.old_copies = held;
+        let copies = match placed {
             Ok(copies) => copies,
             Err(failure) => {
                 if let Some(entry) = self.preview.get_mut(&tile) {

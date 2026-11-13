@@ -10,8 +10,14 @@
 ## proven by reproducing every output bit for bit (godot/tests/graded_replay.gd). The tile bakes'
 ## bytes are recorded by size only (replay uploads zeros of that size): their content is Rust's
 ## bake, which the port does not touch. Off (no trace object) unless METRUM_GRADED_TRACE names the
-## file to record.
+## file to record. A replay with METRUM_GRADED_TRACE_REWRITE set (a suffix) also writes the trace
+## back to `<path><suffix>` with the output lines of the kinds in REWRITE_KINDS inserted where they
+## now occur, every recorded line still matched: how the tracked goldens take a line kind a build
+## adds, as a reviewed step (the cells' counts, show, hide, park, binds and variant, which the
+## first streaming audit's finding 4 found unpinned).
 extends RefCounted
+
+const REWRITE_KINDS: Array[String] = ["count ", "show ", "hide ", "park ", "bind ", "variant "]
 
 var replaying := false
 # The first mismatch (replay) or write error (record), with the line number; empty while none.
@@ -23,6 +29,8 @@ var recorded_ids := {}
 var _file: FileAccess = null
 var _lines := PackedStringArray()
 var _at := 0
+# A rewrite's output (notes kept in `_lines` and copied through).
+var _rewrite: FileAccess = null
 
 ## A recorder writing to `path` (null if it cannot be opened).
 static func record(path: String) -> RefCounted:
@@ -37,9 +45,15 @@ static func replay(path: String) -> RefCounted:
 		return null
 	var trace = load("res://scripts/renderers/terrain_graded_trace.gd").new()
 	trace.replaying = true
-	# Notes are for Rust's replays of a ported part (its own operations), not the renderer's.
+	var suffix := OS.get_environment("METRUM_GRADED_TRACE_REWRITE")
+	if not suffix.is_empty():
+		trace._rewrite = FileAccess.open(path + suffix, FileAccess.WRITE)
+		if trace._rewrite == null:
+			return null
+	# Notes are for Rust's replays of a ported part (its own operations), not the renderer's; a
+	# rewrite keeps them in place.
 	for line in text.split("\n", false):
-		if not line.begins_with("= "):
+		if trace._rewrite != null or not line.begins_with("= "):
 			trace._lines.append(line)
 	return trace
 
@@ -47,19 +61,36 @@ func close() -> void:
 	if _file != null:
 		_file.close()
 		_file = null
+	if _rewrite != null:
+		_skip_notes()
+		_rewrite.close()
+		_rewrite = null
 
 ## Whether a replay has lines left.
 func has_next() -> bool:
+	_skip_notes()
 	return _at < _lines.size() and failure.is_empty()
 
 ## The next line of a replay without taking it.
 func peek() -> String:
+	_skip_notes()
 	return _lines[_at] if _at < _lines.size() else ""
 
 ## Takes the next line of a replay.
 func take() -> String:
+	_skip_notes()
 	_at += 1
-	return _lines[_at - 1] if _at <= _lines.size() else ""
+	if _at > _lines.size():
+		return ""
+	if _rewrite != null:
+		_rewrite.store_line(_lines[_at - 1])
+	return _lines[_at - 1]
+
+# A rewrite copies the notes before the next line through (a plain replay has none).
+func _skip_notes() -> void:
+	while _rewrite != null and _at < _lines.size() and _lines[_at].begins_with("= "):
+		_rewrite.store_line(_lines[_at])
+		_at += 1
 
 func _fail(message: String) -> void:
 	if failure.is_empty():
@@ -79,9 +110,19 @@ func out(text: String) -> void:
 		return
 	if not failure.is_empty():
 		return
+	if _rewrite != null and peek() != "> " + text and _rewrite_kind(text):
+		_rewrite.store_line("> " + text)
+		return
 	var recorded := take()
 	if recorded != "> " + text:
 		_fail("output differs\n  recorded: %s\n  replayed: > %s" % [recorded, text])
+
+# Whether a rewrite inserts an output line the recording lacks.
+func _rewrite_kind(text: String) -> bool:
+	for kind in REWRITE_KINDS:
+		if text.begins_with(kind):
+			return true
+	return false
 
 ## An input under `tag`: `value` written and returned, or the recorded value returned.
 func value(tag: String, recorded_value: String) -> String:

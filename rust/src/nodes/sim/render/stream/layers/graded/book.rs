@@ -1600,6 +1600,11 @@ impl GradedTileBook {
         };
         let mut server = godot::classes::RenderingServer::singleton();
         for &effect in &cell_effects[first as usize..end as usize] {
+            if let Some(trace) = trace.as_mut()
+                && let Some(line) = cell_state_line(&effect)
+            {
+                trace_out(trace, line);
+            }
             let start = std::time::Instant::now();
             let applied = objects.apply(
                 backend,
@@ -1905,6 +1910,27 @@ fn push_run(out: &mut Vec<i64>, kind: i64, index: i64) {
     } else {
         out.extend([kind, index, index + 1, 0, 0, 0, 0]);
     }
+}
+
+// A trace's line for a cell effect that changes what a set draws without a publication or wall
+// line of its own: instance counts, show, hide, park, page binds and the variant (the first
+// streaming audit's finding 4: the replay did not pin them). Trace only.
+fn cell_state_line(effect: &Effect) -> Option<String> {
+    Some(match *effect {
+        Effect::CellCount { set, mesh, count } => format!("count {set} {mesh} {count}"),
+        Effect::CellCountsCleared { set } => format!("count {set} all 0"),
+        Effect::CellShow { set, key } => format!("show {set} {} {}", key.0, key.1),
+        Effect::CellHide { set } => format!("hide {set}"),
+        Effect::CellPark { set, key } => match key {
+            Some(key) => format!("park {set} {} {}", key.0, key.1),
+            None => format!("park {set} -"),
+        },
+        Effect::CellPages { set, code, page } => format!("bind {set} {code} {page}"),
+        Effect::CellVariant { set, pages, shown } => {
+            format!("variant {set} {} {} {} {} {}", pages[0], pages[1], pages[2], pages[3], u8::from(shown))
+        }
+        _ => return None,
+    })
 }
 
 fn trace_out(trace: &mut Gd<RefCounted>, line: String) {

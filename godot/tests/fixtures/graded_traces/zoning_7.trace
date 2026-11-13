@@ -107,6 +107,10 @@
 > poll 4
 < poll 0 0
 < budget 0
+> bind 15 0 0
+> bind 15 1 1
+> park 15 2 2
+> count 15 all 0
 < budget 0
 < budget 0
 < budget 0
@@ -328,11 +332,17 @@
 < budget 0
 < budget 0
 > cells 2 2 4 1378815785
+> count 15 0 0
+> count 15 1 0
+> count 15 2 0
+> count 15 3 0
+> count 15 4 64
 > walls 2 2 0 256 0 546098158
 < budget 1
 > request_lists 1,2,22
 < request_lists 1
 > page_new 2 2 2,2 32 96
+> bind 15 2 2
 > page_new 3 2 2,1 32 96
 > request_tiles 0,0,2,0,0,1,0,2,0,0,2,0,2,0,0,3,0,2,0,0,4,0,2,0,0,0,-1,2,0,0,1,-1,2,0,0,2,-1,2,0,0,3,-1,2,0,0,4,-1,2,0,0
 < request_tiles 1,1,1,1,1,1,1,1,1,1
@@ -414,6 +424,11 @@
 < budget 1
 < budget 1
 < budget 1
+> bind 14 0 0
+> bind 14 1 1
+> bind 14 2 3
+> park 14 2 1
+> count 14 all 0
 < budget 1
 > request_lists 3,2,21
 < request_lists 1
@@ -676,16 +691,29 @@
 < budget 1
 > request_lists 1,0,21,3,0,21
 < request_lists 1,1
+> count 15 4 63
+> count 15 2 1
+> count 15 4 62
+> count 15 2 2
+> count 15 4 61
+> count 15 2 3
+> count 15 4 60
+> count 15 2 4
+> count 15 4 59
+> count 15 2 5
 > cells 2 2 2 935937936
 > cells 2 2 4 2638261481
 > draw 2 2 1
+> show 15 2 2
 > draw 1 0 2
 > draw 3 0 2
 < clear
 > page_release 5 1
 > page_release 4 1
 > page_release 3 1
+> bind 14 2 -1
 > page_release 2 1
+> bind 15 2 -1
 < release_patch 2 2 0
 < release_patch 2 1 0
 > cancel_all
