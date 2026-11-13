@@ -6,8 +6,10 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
 mod agents;
+mod frame_queries;
 
 pub(crate) use agents::AgentPoseScratch;
+pub(crate) use frame_queries::{FrameQueries, FrameQueriesPublisher};
 
 use super::state::{PendingDemandSpawnAction, SimCore};
 use crate::nodes::sim::render::mist::MistMap;
@@ -418,6 +420,9 @@ pub struct RenderSnapshot {
     /// Revision of committed agricultural field visuals, read lock-free by the road tool's hover
     /// checks (`ROAD-55`).
     pub agriculture_field_revision: u64,
+    /// What Godot's per-frame queries read (`CODE-26`): land cover revisions, the coal pit
+    /// revision, the growth summary and the visible surface, never older than this snapshot.
+    pub(crate) queries: FrameQueries,
     /// World-space positions of all live canonical network nodes.
     /// Pre-computed here so `get_network_nodes()` reads the snapshot (RwLock)
     /// instead of locking SimCore — avoids main-thread stalls during road placement.
@@ -478,6 +483,7 @@ impl Default for RenderSnapshot {
             zoning_overlay_revision: 0,
             zoning_overlay_occupancy_revision: 0,
             agriculture_field_revision: 0,
+            queries: FrameQueries::default(),
             node_positions: Arc::new(Vec::new()),
             heightmap_height: 0,
         }
@@ -485,6 +491,17 @@ impl Default for RenderSnapshot {
 }
 
 impl RenderSnapshot {
+    /// Installs this snapshot as the published one and returns the snapshot it replaces. A
+    /// newer publication of the per-frame queries already installed (by a main-thread edit
+    /// after this snapshot was built) is kept, so readers never step back (`CODE-26`).
+    pub(crate) fn install(mut self, slot: &std::sync::RwLock<RenderSnapshot>) -> RenderSnapshot {
+        let mut current = slot.write().expect("render snapshot lock poisoned");
+        if current.queries.newer(&self.queries) {
+            self.queries = current.queries.clone();
+        }
+        std::mem::replace(&mut *current, self)
+    }
+
     pub(crate) fn terrain_payload_generation_for_patch(
         &self,
         patch_x: usize,
@@ -593,9 +610,14 @@ impl SimCore {
                         || patch_z + 1 == patch_rows
                 });
         snapshot.terrain_dirty_patch_states = Arc::new(terrain_dirty_patch_states);
-        snapshot.terrain_payload_global_generation = self.terrain_payload_global_generation;
+        // The per-frame queries' publication (`CODE-26`); its terrain payload revisions are
+        // the snapshot's, shared instead of copied every frame.
+        self.refresh_frame_queries();
+        snapshot.queries = self.frame_queries().clone();
+        snapshot.terrain_payload_global_generation =
+            snapshot.queries.terrain_payload_global_generation;
         snapshot.terrain_payload_patch_generations =
-            Arc::new(self.terrain_payload_patch_generations.clone());
+            Arc::clone(&snapshot.queries.terrain_payload_patch_generations);
         snapshot.water_dirty = self.water_dirty;
         snapshot.water_dirty_patch_states = Arc::new(self.watermap.dirty_render_patch_states());
         let water_payload_generation = self.watermap.render_generation();

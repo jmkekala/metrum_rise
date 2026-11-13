@@ -289,8 +289,11 @@ impl SimulationNode {
     /// potentially partial state after a failed phase.
     #[inline]
     #[track_caller]
-    fn lock_core(&self) -> std::sync::MutexGuard<'_, crate::nodes::sim::core::SimCore> {
-        Self::wait_for_shared_core(&self.core_turnstile, &self.core)
+    fn lock_core(&self) -> CoreGuard<'_> {
+        CoreGuard::new(
+            Self::wait_for_shared_core(&self.core_turnstile, &self.core),
+            &self.snapshot,
+        )
     }
 
     /// [`Self::lock_core`] for a caller that holds its own reference to the core.
@@ -316,8 +319,8 @@ impl SimulationNode {
     /// waiting for an in-progress road placement.
     #[inline]
     #[track_caller]
-    fn try_lock_core(&self) -> Option<std::sync::MutexGuard<'_, crate::nodes::sim::core::SimCore>> {
-        Self::try_lock_shared_core(&self.core)
+    fn try_lock_core(&self) -> Option<CoreGuard<'_>> {
+        Self::try_lock_shared_core(&self.core).map(|guard| CoreGuard::new(guard, &self.snapshot))
     }
 
     /// [`Self::lock_core`] when `wait`, else [`Self::try_lock_core`]: a per-frame query that
@@ -325,10 +328,7 @@ impl SimulationNode {
     /// (`CODE-20`). Under load the simulation thread can hold the core for long runs of frames.
     #[inline]
     #[track_caller]
-    fn lock_core_if(
-        &self,
-        wait: bool,
-    ) -> Option<std::sync::MutexGuard<'_, crate::nodes::sim::core::SimCore>> {
+    fn lock_core_if(&self, wait: bool) -> Option<CoreGuard<'_>> {
         if wait {
             Some(self.lock_core())
         } else {
@@ -398,6 +398,12 @@ impl SimulationNode {
         }
     }
 
+    /// The latest publication of the values per-frame queries read (`CODE-26`): never the
+    /// core lock, O(1).
+    fn frame_queries(&self) -> crate::nodes::sim::core::FrameQueries {
+        self.snapshot.read().unwrap().queries.clone()
+    }
+
     /// Rebuilds the render snapshot immediately from the current core state.
     fn refresh_snapshot_from_core(&self) {
         let (snapshot, road_tool_publication, road_tool_land) = {
@@ -406,12 +412,74 @@ impl SimulationNode {
             let road_tool_publication = core.publish_road_tool_view();
             (snapshot, road_tool_publication, core.refresh_road_tool_land())
         };
-        *self.snapshot.write().unwrap() = snapshot;
+        snapshot.install(&self.snapshot);
         if let Some(publication) = road_tool_publication {
             self.road_tool.publish(publication);
         }
         if let Some(land) = road_tool_land {
             self.road_tool.publish_land(land);
+        }
+    }
+}
+
+/// The core, held by a bridge call on Godot's thread. Releasing it republishes the values the
+/// per-frame queries read when the call changed them (`CODE-26`), so an edit is visible to the
+/// frame that made it: the key compare is `O(1)` and allocation-free while nothing changed.
+/// The core is released before the snapshot is written.
+pub(crate) struct CoreGuard<'a> {
+    // Fields drop in order: the core first, then the publication.
+    core: std::sync::MutexGuard<'a, SimCore>,
+    publication: FrameQueriesPublication<'a>,
+}
+
+// The publication a released core guard leaves for the render snapshot.
+struct FrameQueriesPublication<'a> {
+    snapshot: &'a RwLock<RenderSnapshot>,
+    pending: Option<crate::nodes::sim::core::FrameQueries>,
+}
+
+impl<'a> CoreGuard<'a> {
+    fn new(core: std::sync::MutexGuard<'a, SimCore>, snapshot: &'a RwLock<RenderSnapshot>) -> Self {
+        Self {
+            core,
+            publication: FrameQueriesPublication {
+                snapshot,
+                pending: None,
+            },
+        }
+    }
+}
+
+impl std::ops::Deref for CoreGuard<'_> {
+    type Target = SimCore;
+
+    fn deref(&self) -> &SimCore {
+        &self.core
+    }
+}
+
+impl std::ops::DerefMut for CoreGuard<'_> {
+    fn deref_mut(&mut self) -> &mut SimCore {
+        &mut self.core
+    }
+}
+
+impl Drop for CoreGuard<'_> {
+    fn drop(&mut self) {
+        // A failed authoritative phase poisoned the core: publish nothing from it.
+        if !std::thread::panicking() {
+            self.publication.pending = self.core.refresh_frame_queries();
+        }
+    }
+}
+
+impl Drop for FrameQueriesPublication<'_> {
+    fn drop(&mut self) {
+        if let Some(queries) = self.pending.take() {
+            let mut snapshot = self.snapshot.write().expect("render snapshot lock poisoned");
+            if queries.newer(&snapshot.queries) {
+                snapshot.queries = queries;
+            }
         }
     }
 }

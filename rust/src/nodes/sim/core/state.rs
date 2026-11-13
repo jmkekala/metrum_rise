@@ -369,6 +369,8 @@ pub struct SimCore {
     /// The road tool's terrain inputs and the patches noted since their last rebuild
     /// (`ROAD-68-E`); derived, never saved.
     pub(crate) road_terrain_inputs: super::RoadTerrainInputsLog,
+    /// What Godot's per-frame queries last read (`CODE-26`); derived, never saved.
+    pub(crate) frame_queries: super::snapshot::FrameQueriesPublisher,
     /// World-space AABB for frustum culling: (x_min, x_max, z_min, z_max).
     /// Agents outside this rect are excluded from `RenderSnapshot` transforms.
     /// Updated each frame via `SimCommand::SetCameraAabb`. Defaults to "show all".
@@ -496,6 +498,7 @@ impl SimCore {
             #[cfg(test)]
             cell_lot_hooks: Default::default(),
             road_terrain_inputs: Default::default(),
+            frame_queries: Default::default(),
             camera_aabb: (0.0, 0.0, 0.0, 0.0), // 0.0 == 0.0 → cull disabled by default
             render_camera_position: None,
             agent_draw_eye: None,

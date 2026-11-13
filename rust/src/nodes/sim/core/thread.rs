@@ -485,10 +485,7 @@ pub(crate) fn run_sim_thread(
 
         // Write snapshot — outside the sim lock so render reads are non-blocking.
         let snapshot_write_start = Instant::now();
-        let previous_snapshot = {
-            let mut current = snapshot.write().expect("render snapshot lock poisoned");
-            std::mem::replace(&mut *current, new_snapshot)
-        };
+        let previous_snapshot = new_snapshot.install(&snapshot);
         recycled_snapshot = Some(previous_snapshot);
         let snapshot_write_ms = snapshot_write_start.elapsed().as_secs_f64() * 1000.0;
         let active_ms = frame_start.elapsed().as_secs_f64() * 1000.0;

@@ -421,7 +421,7 @@ impl SimulationNode {
             let publication = core.finalize_network_render_products();
             (core.build_snapshot(), publication)
         };
-        *self.snapshot.write().unwrap() = snapshot;
+        snapshot.install(&self.snapshot);
         if let Some(publication) = publication {
             self.road_tool.publish(publication);
         }
@@ -609,7 +609,7 @@ impl SimulationNode {
             let publication = core.finalize_network_render_products();
             (core.build_snapshot(), publication)
         };
-        *self.snapshot.write().unwrap() = snapshot;
+        snapshot.install(&self.snapshot);
         if let Some(publication) = publication {
             self.road_tool.publish(publication);
         }
@@ -753,7 +753,7 @@ impl SimulationNode {
             let publication = core.finalize_network_render_products();
             (core.build_snapshot(), publication)
         };
-        *self.snapshot.write().unwrap() = snapshot;
+        snapshot.install(&self.snapshot);
         if let Some(publication) = publication {
             self.road_tool.publish(publication);
         }

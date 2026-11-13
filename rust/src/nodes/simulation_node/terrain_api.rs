@@ -675,20 +675,23 @@ impl SimulationNode {
 
     // ── Terrain Queries ──
 
-    /// Returns the terrain heightmap elevation at a world X/Z position.
+    /// Returns the terrain heightmap elevation at a world X/Z position, from the published
+    /// surface (`CODE-26`): never the core lock, O(1). Zero before the first publication.
     #[func]
     pub fn get_height_at(&self, pos: Vector2) -> f32 {
-        self.lock_core().get_height_at_internal(pos)
+        self.frame_queries()
+            .surface
+            .map_or(0.0, |surface| surface.height_at(pos))
     }
 
     /// Returns the visible world-surface height at a position: the compiled roadbed where a
-    /// road covers it, else the graded surface (`TERRAIN-07-F`).
+    /// road covers it, else the graded surface (`TERRAIN-07-F`). Read from the published
+    /// surface (`CODE-26`), never the core lock; zero before the first publication.
     #[func]
     pub fn get_world_surface_height(&self, pos: Vector2) -> f32 {
-        // The graded surface reads the site index.
-        let mut core = self.lock_core();
-        core.prepare_site_queries();
-        core.get_world_surface_height_internal(pos)
+        self.frame_queries()
+            .surface
+            .map_or(0.0, |surface| surface.surface_height_at(pos))
     }
 
     /// Raycasts against the terrain heightmap: the hit, or `null` for none.

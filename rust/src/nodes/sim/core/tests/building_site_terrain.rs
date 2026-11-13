@@ -203,6 +203,111 @@ fn terrain_query_index_stays_fresh_across_road_load_site_and_base_mutations() {
     );
 }
 
+// The published per-frame values (`CODE-26`) after an edit equal the core's: the surface and
+// terrain heights on a grid over roads, sites and graded ground, the land cover revisions of
+// every patch, the coal pit revision and the growth summary. A refresh with nothing changed
+// publishes nothing.
+fn assert_frame_queries_current(core: &mut SimCore, stage: &str) {
+    let before = core.frame_queries().sequence;
+    assert!(core.refresh_frame_queries().is_some(), "{stage}: the edit republishes");
+    assert!(core.frame_queries().sequence > before, "{stage}: sequence");
+    assert!(core.refresh_frame_queries().is_none(), "{stage}: a second refresh publishes");
+    let queries = core.frame_queries().clone();
+    let surface = queries.surface.as_ref().expect("a publication has a surface");
+    core.prepare_site_queries();
+    for z in (-220..=220).step_by(11) {
+        for x in (-220..=220).step_by(13) {
+            let pos = Vector2::new(x as f32 + 0.37, z as f32 + 0.19);
+            assert_eq!(
+                surface.surface_height_at(pos).to_bits(),
+                core.get_world_surface_height_internal(pos).to_bits(),
+                "{stage}: surface at {pos:?}"
+            );
+            assert_eq!(
+                surface.height_at(pos).to_bits(),
+                core.get_height_at_internal(pos).to_bits(),
+                "{stage}: terrain at {pos:?}"
+            );
+        }
+    }
+    let epoch = core
+        .terrain_payload_generation_counter
+        .wrapping_add(core.vegetation_edits.epoch());
+    assert_eq!(queries.land_cover_epoch, epoch, "{stage}: land cover epoch");
+    for pz in 0..core.heightmap.render_patch_rows() as i32 {
+        for px in 0..core.heightmap.render_patch_cols() as i32 {
+            let mut expected = [0i64; 18];
+            for (i, pair) in expected.as_chunks_mut::<2>().0.iter_mut().enumerate() {
+                let (x, z) = (px + i as i32 % 3 - 1, pz + i as i32 / 3 - 1);
+                if x >= 0 && z >= 0 {
+                    pair[0] = core.terrain_payload_generation_for_patch(x as usize, z as usize) as i64;
+                    pair[1] = core.vegetation_edits.patch_generation(
+                        crate::simulation::vegetation::edits::pack_patch_key(x, z),
+                    ) as i64;
+                }
+            }
+            let key = godot::prelude::Vector2i::new(px, pz);
+            assert_eq!(queries.land_cover_generations(key), expected, "{stage}: patch {key:?}");
+        }
+    }
+    assert_eq!(
+        queries.coal_pit_overlay_revision,
+        core.get_coal_pit_overlay_revision_internal(),
+        "{stage}: coal pit revision"
+    );
+    assert_eq!(*queries.growth, core.demand.growth_display(), "{stage}: growth summary");
+}
+
+#[test]
+fn published_frame_queries_follow_every_kind_of_edit() {
+    let (_, strokes, _) = road_reference_probe::reference_fixtures().swap_remove(0);
+    let mut core = road_edit_order::committed(&strokes, &[0], true);
+    assert_frame_queries_current(&mut core, "initial road");
+    core.benchmark_mode = false;
+    graded_edits::commit_stroke(&mut core, strokes[1]);
+    assert_frame_queries_current(&mut core, "road commit");
+    assert!(core.undo_action_internal());
+    assert_frame_queries_current(&mut core, "road undo");
+
+    let path = temp_save_path("frame_queries_mutations");
+    core.save_game_settled(path.to_str().unwrap(), None).unwrap();
+    core.load_game_internal(path.to_str().unwrap()).unwrap();
+    let _ = std::fs::remove_file(&path);
+    core.precompute_road_mesh_data();
+    assert_frame_queries_current(&mut core, "load");
+
+    let asset = register_yard(&mut core);
+    let first = place_yard_at(&mut core, 0, 1.0, 0.25, &asset).expect("first site placement");
+    assert_frame_queries_current(&mut core, "site");
+    place_yard_at(&mut core, 0, -1.0, 0.75, &asset).expect("second site placement");
+    assert_frame_queries_current(&mut core, "second site");
+    assert!(core.bulldoze_building(first));
+    assert_frame_queries_current(&mut core, "site swap-remove");
+
+    core.slope_terrain_internal(
+        Vector2::new(48.0, 48.0), 24.0, Vector2::new(24.0, 48.0), 1.0,
+        Vector2::new(72.0, 48.0), 8.0, 1.0,
+    );
+    assert_frame_queries_current(&mut core, "slope");
+    let centre = Vector2::new(-40.0, 30.0);
+    let published = core.frame_queries().surface.clone().expect("published surface");
+    core.sculpt_terrain_internal(centre, 18.0, 2.0);
+    // The check is not vacuous: the publication before the sculpt no longer matches the core.
+    assert_ne!(published.height_at(centre), core.get_height_at_internal(centre));
+    assert_frame_queries_current(&mut core, "sculpt");
+    let epoch = core.vegetation_edits.epoch();
+    let removed = crate::nodes::simulation_node::vegetation_api::remove_at(
+        &mut core,
+        Vector2::new(100.0, -100.0),
+        30.0,
+        0,
+    );
+    assert!(removed > 0 && core.vegetation_edits.epoch() != epoch, "the edit removed plants");
+    assert_frame_queries_current(&mut core, "vegetation");
+    core.apply_money_and_max_demand_cheat(1.0);
+    assert_frame_queries_current(&mut core, "growth cheat");
+}
+
 #[test]
 #[ignore = "manual release query-index Kuopio memory and rebuild benchmark"]
 fn benchmark_kuopio_terrain_query_index() {

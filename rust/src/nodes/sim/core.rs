@@ -65,7 +65,7 @@ pub(crate) use road_preview::{
 pub(crate) use road_terrain_inputs::RoadTerrainInputsLog;
 pub(crate) use road_tool_context::{RoadPreviewContext, RoadToolPublisher, RoadToolShared};
 pub(crate) use snapshot::{
-    BuildingRemovalUndo, SimulationRuntimeSnapshot, SimulationSnapshot, VegetationEditUndo,
+    BuildingRemovalUndo, FrameQueries, SimulationRuntimeSnapshot, SimulationSnapshot, VegetationEditUndo,
     WaterRuntimeSnapshot, access_phase_target,
 };
 pub(crate) use state::PendingDemandSpawnAction;

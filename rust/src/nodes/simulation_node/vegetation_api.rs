@@ -137,24 +137,24 @@ impl SimulationNode {
     }
 
     /// Advances whenever any terrain payload generation or vegetation patch generation does, so
-    /// a renderer can skip its per-patch currency checks while it is unchanged. O(1). Only
-    /// comparable within one loaded world: a load restarts both counters.
+    /// a renderer can skip its per-patch currency checks while it is unchanged. O(1), from the
+    /// published per-frame values (`CODE-26`): never the core lock. Only comparable within one
+    /// loaded world: a load restarts both counters.
     #[func]
     pub fn get_land_cover_epoch(&self) -> i64 {
-        let core = self.lock_core();
-        core.terrain_payload_generation_counter
-            .wrapping_add(core.vegetation_edits.epoch()) as i64
+        self.frame_queries().land_cover_epoch as i64
     }
 
-    /// Compares the two existing revision streams, including neighboring crown contributors.
-    /// Performs nine bounded revision lookups without allocating or evaluating any plants.
+    /// Compares the two existing revision streams, including neighboring crown contributors,
+    /// with the published per-frame values (`CODE-26`): never the core lock. Nine bounded
+    /// revision lookups without allocating or evaluating any plants.
     #[func]
     pub fn is_vegetation_land_cover_current(
         &self,
         key: Vector2i,
         generations: PackedInt64Array,
     ) -> bool {
-        generations.as_slice() == land_cover::generations(&self.lock_core(), key)
+        generations.as_slice() == self.frame_queries().land_cover_generations(key)
     }
 
     /// Returns scatter records `[x, height, z, yaw, scale, species]` for a patch, in world

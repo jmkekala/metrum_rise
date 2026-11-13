@@ -49,6 +49,10 @@ pub(crate) struct RoadTerrainInputsLog {
     // The noted patches whose sites may have changed too; a subset of `changed`.
     sites_changed: BTreeSet<(usize, usize)>,
     all: bool,
+    // A rebuild for Godot's readers took noted patches (`CODE-26`): the next rebuild for the
+    // simulation readies the building index as if it had found them, so whether and when the
+    // readers rebuilt never moves when the index is readied (`ALLOC-05`).
+    index_prepare_owed: bool,
 }
 
 impl Default for RoadTerrainInputsLog {
@@ -58,6 +62,7 @@ impl Default for RoadTerrainInputsLog {
             changed: BTreeSet::new(),
             sites_changed: BTreeSet::new(),
             all: true,
+            index_prepare_owed: false,
         }
     }
 }
@@ -96,6 +101,12 @@ impl RoadTerrainInputsLog {
     pub(crate) fn has_changes(&self) -> bool {
         self.all || !self.changed.is_empty()
     }
+
+    /// True when a rebuild would query sites again: a patch noted for a site change, or every
+    /// patch. Any other noted patch keeps its sites, so its rebuilt inputs equal the current.
+    pub(crate) fn has_site_changes(&self) -> bool {
+        self.all || !self.sites_changed.is_empty()
+    }
 }
 
 impl SimCore {
@@ -103,6 +114,17 @@ impl SimCore {
     /// patches * log patches + site-noted patches * sites near each)`; every patch after a
     /// reset.
     pub(crate) fn refresh_road_terrain_inputs(&mut self) -> RoadTerrainInputs {
+        self.refresh_road_terrain_inputs_for(Reader::Simulation)
+    }
+
+    /// [`Self::refresh_road_terrain_inputs`] for Godot's readers (the published surface,
+    /// `CODE-26`): readies only the site part of a stale building index (`ALLOC-05`) and leaves
+    /// the full readying to the simulation's next rebuild. Same bound.
+    pub(crate) fn refresh_road_terrain_inputs_for_readers(&mut self) -> RoadTerrainInputs {
+        self.refresh_road_terrain_inputs_for(Reader::Godot)
+    }
+
+    fn refresh_road_terrain_inputs_for(&mut self, reader: Reader) -> RoadTerrainInputs {
         let log = &mut self.road_terrain_inputs;
         let keys: Vec<(usize, usize)> = if log.all {
             let (cols, rows) = (
@@ -119,9 +141,19 @@ impl SimCore {
         let sites_changed = std::mem::take(&mut log.sites_changed);
         let all = std::mem::replace(&mut log.all, false);
         let changed = all || !keys.is_empty();
-        if !keys.is_empty() {
-            self.allocator
-                .prepare_building_site_query_index(self.config.zone_cell_m);
+        match reader {
+            Reader::Simulation => {
+                let owed = std::mem::take(&mut self.road_terrain_inputs.index_prepare_owed);
+                if !keys.is_empty() || owed {
+                    self.allocator
+                        .prepare_building_site_query_index(self.config.zone_cell_m);
+                }
+            }
+            Reader::Godot if !keys.is_empty() => {
+                self.road_terrain_inputs.index_prepare_owed = true;
+                self.prepare_site_queries();
+            }
+            Reader::Godot => {}
         }
         for key in keys {
             let kept = self
@@ -170,6 +202,13 @@ impl SimCore {
             sites: Arc::new(sites),
         }
     }
+}
+
+// Who a rebuild of the inputs serves, which decides how much of the building index it readies.
+#[derive(Clone, Copy)]
+enum Reader {
+    Simulation,
+    Godot,
 }
 
 /// The widest site query margin a road-touched source can use around its patch: the road query

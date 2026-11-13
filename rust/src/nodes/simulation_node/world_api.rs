@@ -389,10 +389,11 @@ impl SimulationNode {
             .get_agriculture_field_overlay_world_bounds_internal()
     }
 
-    /// Returns a monotonic revision for committed coal extraction polygon visuals.
+    /// Returns a monotonic revision for committed coal extraction polygon visuals, from the
+    /// published per-frame values (`CODE-26`): never the core lock.
     #[func]
     pub fn get_coal_pit_overlay_revision(&self) -> i64 {
-        self.lock_core().get_coal_pit_overlay_revision_internal() as i64
+        self.frame_queries().coal_pit_overlay_revision as i64
     }
 
     /// Returns a monotonic revision for committed agricultural field visuals, from the latest

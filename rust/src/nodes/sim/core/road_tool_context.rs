@@ -143,6 +143,14 @@ impl SimCore {
             self.region_graph.edge_count(),
         );
         let role_revision = self.region_graph.node_role_revision();
+        // The terrain copy the per-frame queries' surface shares (`CODE-26`), made only when
+        // a kept view's terrain is out of date.
+        let terrain_copy = self
+            .road_tool_publisher
+            .published
+            .as_ref()
+            .is_some_and(|previous| previous.terrain_generations != terrain_generations)
+            .then(|| self.shared_terrain_copy());
         let previous = self.road_tool_publisher.published.take();
         let (view, replica) = match &previous {
             Some(previous) if !rebuilt.all && previous.role_revision == role_revision => {
@@ -155,7 +163,7 @@ impl SimCore {
                     .cells
                     .road_grid_snap(f64::from(self.config.zone_cell_m));
                 let (graph, roadbed) = (&self.region_graph, &self.transit_network.roadbed);
-                let (heightmap, watermap) = (&self.heightmap, &self.watermap);
+                let watermap = &self.watermap;
                 let shared = || {
                     let replica = if graph_changed {
                         let nodes = rebuilt.nodes.iter().copied().collect();
@@ -171,10 +179,9 @@ impl SimCore {
                         None if copy_graph => Arc::new(graph.clone_on_pool()),
                         None => Arc::clone(&previous.view.region_graph),
                     };
-                    let terrain = if terrain_changed {
-                        Arc::new(heightmap.clone())
-                    } else {
-                        Arc::clone(&previous.view.terrain)
+                    let terrain = match terrain_copy {
+                        Some(terrain) if terrain_changed => terrain,
+                        _ => Arc::clone(&previous.view.terrain),
                     };
                     let water = if water_changed {
                         Arc::new(watermap.clone())

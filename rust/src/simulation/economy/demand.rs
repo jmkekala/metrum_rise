@@ -38,6 +38,7 @@ pub(crate) use execution::{
 };
 #[cfg(test)]
 pub(crate) use execution::{door_digest, level_change_permit};
+pub(crate) use display::GrowthDisplayKey;
 pub(crate) use snapshot::SavedDemandSnapshot;
 #[cfg(test)]
 pub(crate) use supply::ProjectProof;
