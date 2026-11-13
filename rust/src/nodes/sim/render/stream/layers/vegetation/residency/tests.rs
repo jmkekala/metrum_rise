@@ -225,7 +225,7 @@ impl World {
             .frame(Some(view.eye), &mut self.layer, &mut self.backend, &mut self.jobs);
         self.residency.prepare(Some(view), &mut self.jobs);
         if complete {
-            let finished: Vec<_> = self.jobs.out.drain(..).collect();
+            let finished = std::mem::take(&mut self.jobs.out);
             for (serial, order) in finished {
                 let delivery = Delivery {
                     key: order.key,

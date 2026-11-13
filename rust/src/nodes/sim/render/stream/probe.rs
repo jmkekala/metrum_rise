@@ -112,7 +112,7 @@ impl LayerTracker {
         let baseline = !self.started;
         self.started = true;
         let mut in_view_holes = 0;
-        for record in data.chunks_exact(LANES) {
+        for record in data.as_chunks::<LANES>().0 {
             let key = [record[0] as i32, record[1] as i32, record[2] as i32];
             let flags = record[3] as u32;
             let drawn = flags & DRAWN != 0;
