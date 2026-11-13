@@ -55,6 +55,23 @@ const PRIMITIVE_TRIANGLES: i64 = 3;
 // Encoded chunks landed from the pool: key, request serial, surfaces.
 type Landed = Arc<Mutex<Vec<(RoadKey, u64, RoadChunkSurfaces)>>>;
 
+thread_local! {
+    // The mesh ledger (`RENDER-52` part 2's teardown count; off unless a test or probe turns it
+    // on): the instance ids of the meshes the hydrations made on this (the main) thread.
+    static MESH_LEDGER: std::cell::RefCell<Option<Vec<InstanceId>>> = const { std::cell::RefCell::new(None) };
+}
+
+// A hydration mesh, recorded in the ledger while it is on. `O(1)`.
+fn new_mesh() -> Gd<ArrayMesh> {
+    let mesh = ArrayMesh::new_gd();
+    MESH_LEDGER.with_borrow_mut(|ledger| {
+        if let Some(ids) = ledger {
+            ids.push(mesh.instance_id());
+        }
+    });
+    mesh
+}
+
 // A chunk being built: its encoded surfaces, its hidden meshes, the surfaces added so far (the
 // layers', then the lining caster's) and whether its lights were handed out.
 struct Build {
@@ -117,7 +134,7 @@ impl RoadHydrationSource {
                     key,
                     Build {
                         surfaces,
-                        mesh: ArrayMesh::new_gd(),
+                        mesh: new_mesh(),
                         shadow: None,
                         added: 0,
                         lights: false,
@@ -178,7 +195,7 @@ impl RoadHydrationSource {
         dict.set("uv_scale", Vector4::ZERO);
         let mesh = match layer {
             Some(_) => build.mesh.get_rid(),
-            None => build.shadow.get_or_insert_with(ArrayMesh::new_gd).get_rid(),
+            None => build.shadow.get_or_insert_with(new_mesh).get_rid(),
         };
         let mut server = RenderingServer::singleton();
         let index = server.mesh_get_surface_count(mesh);
@@ -376,6 +393,41 @@ impl SimulationNode {
     #[func]
     pub fn end_road_mesh_hydration(&mut self) {
         self.road_hydration = None;
+    }
+
+    /// Turns the mesh ledger on (`on`, empty) or off: while on, every mesh a hydration makes on
+    /// this thread is recorded (the teardown count, `RENDER-52` part 2; tests and the teardown
+    /// probe). `O(1)`.
+    #[func]
+    pub fn set_road_hydration_mesh_ledger(&mut self, on: bool) {
+        MESH_LEDGER.set(on.then(Vec::new));
+    }
+
+    /// The ledger's meshes still alive (instance ids, in the order made; the freed ones leave
+    /// the ledger): those an installed chunk draws, those of builds not swapped in yet, and any
+    /// leaked. A freed mesh frees its `RenderingServer` mesh with it, and the hydration makes no
+    /// other server handle. Empty while the ledger is off. `O(meshes recorded)`.
+    #[func]
+    pub fn get_road_hydration_meshes_alive(&self) -> PackedInt64Array {
+        MESH_LEDGER.with_borrow_mut(|ledger| {
+            let Some(ids) = ledger else {
+                return PackedInt64Array::new();
+            };
+            ids.retain(|id| godot::global::is_instance_id_valid(id.to_i64()));
+            ids.iter().map(|id| id.to_i64()).collect()
+        })
+    }
+
+    /// The meshes the hydration's builds hold (not swapped in yet). `O(builds)`.
+    #[func]
+    pub fn get_road_hydration_build_meshes(&self) -> i64 {
+        self.road_hydration.as_ref().map_or(0, |source| {
+            source
+                .builds
+                .values()
+                .map(|build| 1 + i64::from(build.shadow.is_some()))
+                .sum()
+        })
     }
 
     /// The published road chunk `(x, z)`'s surfaces as the hydration encodes them, for tests

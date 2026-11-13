@@ -4,7 +4,9 @@
 ## Drives the production road tool and renderers; checks meshes, materials, cell references and
 ## GPU bytes against fresh native bakes, then repeats the comparison after save/load. Every road
 ## chunk's surfaces as the RenderingServer holds them must equal the bytes Rust encodes for the
-## hydration (`RENDER-52` part 2), whichever path built the chunk.
+## hydration (`RENDER-52` part 2), whichever path built the chunk. The hydration's mesh ledger
+## counts its meshes after the load: each alive one drawn by a chunk, none left once the chunks
+## are dropped (every server mesh it made is freed).
 ## Use -- --extended for 100 attempts (Metal); the 64-attempt gate fits headless
 ## device limits. No authored assets or player saves are needed.
 extends SceneTree
@@ -114,10 +116,12 @@ func _run():
 		check(await settle("cancel"), "final preview releases")
 		var path := OS.get_user_data_dir().path_join("road_render_publication.sqlite")
 		check(sim.save_game(path), "fixture saves")
+		sim.set_road_hydration_mesh_ledger(true)
 		check(sim.load_game(path), "fixture reloads")
 		sim.set_simulation_speed(0)
 		await audit(strokes.size())
 		DirAccess.remove_absolute(path)
+		await _audit_ledger()
 	print("Road render publication: seed=6807 attempts=%d generation=%d failures=%d" % [strokes.size(), tool.chunks.generation, failures])
 	tool.free()
 	network.free()
@@ -149,6 +153,27 @@ func _audit_bytes(stroke: int, key: Vector2i, instance: MeshInstance3D, held: Ar
 	check(layers == held.size(), "surface count stroke=%d chunk=%s" % [stroke, key])
 	if instance.get_node_or_null("LiningShadow") != null:
 		check(encoded.any(func(rust: Dictionary) -> bool: return rust.layer < 0), "lining caster not encoded %s" % key)
+
+# The ledger after the load's hydration: its meshes alive are the chunks' (layers and lining
+# casters), then none once the renderer drops its chunks (the next frame frees the nodes).
+func _audit_ledger() -> void:
+	var drawn := {}
+	for instance: MeshInstance3D in tool.chunks.chunks.values():
+		drawn[instance.mesh.get_instance_id()] = true
+		var caster := instance.get_node_or_null("LiningShadow") as MeshInstance3D
+		if caster != null:
+			drawn[caster.mesh.get_instance_id()] = true
+	var alive: PackedInt64Array = sim.get_road_hydration_meshes_alive()
+	check(not alive.is_empty(), "the load's hydration made no mesh")
+	for id in alive:
+		check(drawn.has(id), "hydration mesh %d alive but drawn by no chunk" % id)
+	tool.chunks.reset()
+	await process_frame
+	await process_frame
+	alive = sim.get_road_hydration_meshes_alive()
+	check(alive.is_empty(), "hydration meshes alive after the chunks were dropped: %d" % alive.size())
+	print("Road render publication: hydration ledger drawn=%d freed after reset" % drawn.size())
+	sim.set_road_hydration_mesh_ledger(false)
 
 func settle(label: String) -> bool:
 	var deadline := Time.get_ticks_msec() + 20000
