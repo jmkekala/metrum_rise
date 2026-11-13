@@ -11897,10 +11897,11 @@ line goes; per-instance calls and object churn do.
 - **The sets.** The installed set keeps each layer's rule and constants (what is drawn once
   settled does not change); yaw never enters it, the frustum only orders work. A prepared set
   (`RENDER-32-N`, only if measured necessary) holds products along the camera's reach: the orbit
-  circle, the eye-to-pivot zoom ray and a pan disc of 0.5 s at keyboard speed. The retained set
+  circle, the zoom line through the eye and the pivot (in and out at the camera's zoom rate, part
+  2) and a pan disc of 0.5 s at keyboard speed. The retained set
   keeps today's hysteresis margins; a leaving chunk hides at once and frees under the budget.
   Built for the vegetation in `RENDER-32-N` (2026-11-13: prepared and retained products under a
-  64 MB cap; the graded bands' prepared bakes not built).
+  64 MB cap, held by patch and bands; the graded bands' prepared bakes not built).
 - **The scheduler.** One streaming budget a frame for all layers (2.0 ms, a setting) on a
   monotonic clock; a unit starts only if its predicted cost (fixed constants, no adaptive
   estimate) fits, the first unit of a frame always runs. Edits are atomic batches outside the
@@ -11938,7 +11939,7 @@ line goes; per-instance calls and object churn do.
 | `RENDER-32-I`, `-J`, `-K` | G2a-c | Pages and slots; cells, walls and draw states; edits, previews and T65, by record and replay | `-B`'s three missed bars, carried by the user's decision (2026-11-11): `-I` the page checks (met, landed 2026-11-12), `-J` the cell rewrites (the 30k 1 s turn p50 at least 5 ms below `-B`'s control: `-I` recovered none measurable; the cell rewrites are 3.2-3.6 ms a frame at 30k, 6.1-6.9 at 100k; `-J` step 1, built 2026-11-12: cells 0.5 ms, the 1 s turns 19.6-20.7 ms p50 against the rows of record's 28.6-32.1, Kuopio's build time and the backend move carried). From `-H` (coordinator, night delegation, for review): `night_pan_out` within 1 ms of the day's pan in the frame mean, with a settle before the night pans (met in `-I`). Graded 0.5 ms on the turn, 1.0 ms at 100k; no background frames on the drag probe `-J` step 1 landed 2026-11-12 (coordinator, night delegation, for review): the 5 ms turn bar met; carried to `-K`: the cells through the backend (step 2, with Kuopio's 0.85 ms of set material sync a frame), graded total 0.5 / 1.0 ms (page uploads). `-K` part 1 (G2c-1) landed 2026-11-12 (coordinator, night delegation, for review): the cells, walls and their materials through the backend, no node; Kuopio's build time on frames gone; graded total 1.36-1.40 ms on the 30k 1 s turn and 1.52-1.65 at 100k, the page uploads carried to part 2. `-K` part 2 (G2c-2) landed 2026-11-12 (coordinator, delegation, for review; graded total carried to part 3): the page uploads and copies in Rust through the backend, 20-23 % more copies a frame in the same install budget; the graded total level (1.36-1.41 ms, 1.55-1.63 at 100k) and its bars missed: every frame of the turns spends the install budget with finished bakes waiting, so the total is the budget's, not the uploads' (record); carried to part 3. `-K` part 3 (G2c-3) landed 2026-11-12 (coordinator, delegation, for review; the graded totals carried to `-Q`, the drag probe on the charge to part 4; the coordinator's split, for review: edits, previews, T65 option (3), the tool holds and `TERRAIN-23` are part 4's): the tile result path in Rust, 7.6 us a copy against 32; graded total 0.80-0.84 ms on the 30k 1 s turn (the queue keeps up; the rest is the cell rewrites the installs cause) and 1.67-1.84 at 100k (budget-bound, twice the copies a frame); after the review fix (the install budget charges each placed tile its cell rewrites, 8 us) 0.83-0.88 and 1.39-1.48 against the control's 1.54-1.58: both bars missed, 100k not above control; carried to `-Q` (record). `-K` part 4 (G2c-4) landed 2026-11-12 (coordinator, delegation, for review; handed back at the round's limit, the rest is part 5): the edit batch and preview tiles in Rust, replayed bit for bit, every product and timing level with control; T65 option (3) with the tools' holds, the resident-patch hand-off, `TERRAIN-23`'s cause, the deletions and `ROAD-68-H`'s preview rows carried to part 5 ([record](#the-graded-edit-batch-and-preview-tiles-in-rust-render-32-k-part-4-2026-11-12)). `-K` part 5 (G2c-5) landed 2026-11-12 (coordinator, delegation, for review): `TERRAIN-23` fixed (a fast click installs in one batch frame), the audit's graded findings 3, 4 (goldens), 11, 12, 13 and 15, the preview rows re-measured (all missed); T65's last junction frames wait for the user's rule, the hand-off for T1, the executor deletion and `CODE-30` for a later round ([record](#terrain-23s-cause-and-the-streaming-audits-graded-findings-render-32-k-part-5-2026-11-12)). `-K` part 6 (G2c-6) landed 2026-11-13 (coordinator, delegation, for review): the graded book reads its resident patches from the streaming core, `CODE-30` done (the book's runs under Rust tests), the executor deletion partial (`terrain_graded_tiles.gd` 1,347 lines); the rest of the deletion is part 7 (G2c-7), after `-N`. `-K` part 7 (G2c-7) landed 2026-11-13 (coordinator, delegation, for review): the frame, counters, perf parts, readiness and readers in the book, the dictionary-fed frame gone, `terrain_graded_tiles.gd` an executor of 611 lines ([record](#the-graded-frame-counters-and-readers-in-the-book-the-renderer-an-executor-render-32-k-part-7-2026-11-13)). |
 | `RENDER-32-L` | B1 | Buildings by travel bucket, batches through the pools (`RENDER-34`); the detail swap without read-back (`RENDER-37`) | 0.3 ms on the turn, 1.5 ms at 100k; reflection hook 0.1 ms without water in view. Landed 2026-11-12 (coordinator, delegation, for review): every bar met (0.09-0.21 ms, 0.26-0.53 ms, 0.02-0.04 ms) |
 | `RENDER-32-M` | T1 | Terrain and water residency, LOD and prewarm on the rings (`TERRAIN-05`, `WATER-01`); step 0: a water input of record, a pond made on the prepared 30k city by a recorded deterministic recipe through the lake-fill mutators (planned 2026-11-12) | 0.3 ms a frame on Kuopio's turn and pan, the water half measured on the pond input too. Landed 2026-11-12 (branch `stream-t1`, rebased onto `8493e60a`, coordinator under delegation, for review; fix round the same day; the 100k settle carried to `-Q`): the control's decisions replayed exactly, settled patches equal by digest, stills identical; terrain and water 0.14-0.17 ms a frame on Kuopio's turns and 0.13-0.14 on its pans (control 0.20-0.28), 0.16-0.26 on the pond (0.21-0.56), the 100k load's patch residency 0.009 ms (2.1); a terrain build 0.41 to 0.16 ms (its land cover from the payload worker, constant material parameters once per pooled material) and the post-load window (5.2 ms a frame until first settled, the control's measured cost): Kuopio hands over 0.6 s and settles 0.6 s earlier than control, every bar met ([record](#terrain-and-water-patches-on-the-core-render-32-m-2026-11-12)) |
-| `RENDER-32-N` | C1 | Prepared reach set (`CODE-12`), after a go/no-go measurement. Seen in play by the user (2026-11-12, `dev` `8493e60a`, release): chunks visibly pop in when zoomed far out, and trees load visibly while zooming from far out down to the ground. The go/no-go measurement covers both: a far zoom-out and a far-to-ground zoom (`stream_frame_benchmark.gd` zoom phase extended to them), entered-to-drawn per layer | Entered-to-drawn p95 at most three frames, on the far zoom-out and the far-to-ground zoom included. Round C1 (2026-11-13, branch `stream-c1`, for review): measured no-go (terrain, water, graded patches and buildings pass; the vegetation misses on both inputs, the 30k graded tiles as level upgrades); the vegetation's prepared and retained set built under a 64 MB cap; the bar not met: Kuopio's remaining waits are the install budget's (`-Q`), the 30k fine tier's are preparation (products prepared for other bands), the zoom-out ray and the graded GL0/GL1 bakes not built ([record](#entered-to-drawn-and-the-vegetations-prepared-set-render-32-n-code-12-2026-11-13)) |
+| `RENDER-32-N` | C1 | Prepared reach set (`CODE-12`), after a go/no-go measurement. Seen in play by the user (2026-11-12, `dev` `8493e60a`, release): chunks visibly pop in when zoomed far out, and trees load visibly while zooming from far out down to the ground. The go/no-go measurement covers both: a far zoom-out and a far-to-ground zoom (`stream_frame_benchmark.gd` zoom phase extended to them), entered-to-drawn per layer | Entered-to-drawn p95 at most three frames, on the far zoom-out and the far-to-ground zoom included. Round C1 (2026-11-13, branch `stream-c1`, for review): measured no-go (terrain, water, graded patches and buildings pass; the vegetation misses on both inputs, the 30k graded tiles as level upgrades); the vegetation's prepared and retained set built under a 64 MB cap; the bar not met: Kuopio's remaining waits are the install budget's (`-Q`), the 30k fine tier's are preparation (products prepared for other bands), the zoom-out ray and the graded GL0/GL1 bakes not built ([record](#entered-to-drawn-and-the-vegetations-prepared-set-render-32-n-code-12-2026-11-13)). Round C2 (2026-11-13, branch `stream-c2`, for review): the fine tier's band variants (held by patch and bands), the reach's zoom line in and out at the camera's zoom rate, holes prepared first, prepares behind every request; the 30k city passes on every motion; Kuopio's turns wait for the install budget only (`-Q`); Kuopio's far zooms still miss with 22-45 % of their waiting frames preparation's; with the simulation at 1x the 30k still is 1.9 ms worse at p50 (the prepares' snapshots against the main thread's blocking core locks), not met ([record](#the-vegetations-band-variants-and-the-zoom-line-render-32-n-part-2-code-12-2026-11-13)) |
 | `RENDER-32-O` | A2 | Agent draw distances (`RENDER-28` part 2), from stills | The user's choice (2026-11-12): walkers to 1.0 km with a fade from 0.8 km, cars to 2.5 km with a fade from 2.0 km; stills identical inside the fade starts. Landed 2026-11-12 (coordinator, delegation, for review; the 100k 1x still p99 in the post-load graded frames carried to `-K` part 3, which timed it level with control, three runs a side; [record](#agent-draw-distances-render-32-o-2026-11-12)) |
 | `RENDER-32-P` | R1 | Road hydration at load, parked cars, zoning masks (`RENDER-36`) | The 100k load's frame at most 33 ms. Landed 2026-11-12 (branch `stream-r1`, coordinator under night delegation, for review): the road work at most 31.3 ms in any frame of the 100k load (control one 1,412 ms frame), all in the held load, the hand-over 1.5 s earlier; parked cars through the pools; zoning masks on a 2 km ring; `RENDER-42` fixed; digests and stills equal; the 30k zooms' `zoom_out` p50 (+0.1 ms) and `zoom_in` maximum flagged after the one rerun ([record](#road-hydration-at-a-load-parked-cars-and-zoning-masks-on-the-core-render-32-p-2026-11-12)) |
 | `RENDER-32-Q` | Close-out | The frame's streaming budgets: graded, buildings and the stream node each run their own `GodotBackend` and budget against the plan's one 2.0 ms (planned 2026-11-12, review of the rounds). Opens with a measurement of all layers' install work a frame on the 30k and 100k turns: inside 2.0 ms in every frame, the per-layer budgets are recorded as the design and the plan's sentence revised; over it, the graded poll and the building publication charge the stream node's budget. Carried from `-M`: the 100k load's settle (13.1 s against 11.6 on a control without `-K` parts 3-4; the graded tail, 38 installs a frame against 50), checked against a matched control with the post-load patch window. Carried from `-K` part 3: the graded totals (0.5 ms on the 30k 1 s turn, 1.0 ms at 100k; 0.83-0.88 and 1.39-1.48 at landing, below control), decided with the budget sum | The sum of the layers' install work at most 2.0 ms in every frame; the carried graded totals met or decided with it |
@@ -16376,6 +16377,182 @@ on both inputs, the graded bakes left; a prepared or retained product takes none
 request budget (it needs no job); the retained set (5.3 item 3) built with the prepared one, after
 the first build's turn back used none of the held products; finding 14 made true in the docs (the
 bound stated), not the code.
+
+### The vegetation's band variants and the zoom line (`RENDER-32-N` part 2, `CODE-12`, 2026-11-13)
+
+Round C2, after C1 above: what C1 left to the prepared set's preparation. Branch `stream-c2` on
+`dev` `970f9119`; control `970f9119`'s release library with its own scripts; the same machine,
+inputs and settings as C1.
+
+**What was built** (`stream/reach.rs`, `layers/vegetation/residency/prepared.rs` and `rules.rs`,
+`CameraNode`'s published view, one call in the stream node):
+
+- **Band variants.** A held product is keyed by its patch and its bands. At each reach sample a
+  patch is prepared for every set of bands a request can ask for from a camera within the
+  sample's spacing (`ReachSample::spacing`: the ground distance to the farthest of its shape's
+  neighbouring samples; a camera on a shape between two samples is within it of both, and every
+  band is a threshold on a distance that moves no faster than the camera), so one set, or two to
+  four where band boundaries fall inside (`ResidencySettings::band_variants`, `O(1)`). A patch
+  without a record takes the rule's bands from no record (what its request computes); a drawn,
+  standing-in or cached patch through its record's hysteresis, less its own bands while its
+  generations hold (its retained product), so a drawn patch's band change finds a product too. The
+  jobs keep one live request a patch, so one prepare of a patch is out at a time; its other
+  variants are deferred and asked for first once it lands. Chosen over sampling the request's
+  bands at the entry point: the request's camera is a frame's step past the entry (84 m a frame on
+  the 0.5 s turn at 800 m) and later when the request budget defers it, so one product from the
+  entry point still misses at a boundary, while the variants bound the jobs at four a patch a
+  sample and the bytes by the same 64 MB cap. Use is unchanged: a request takes a product only
+  when built for exactly its generations and bands; a prepare in flight that does not fit is
+  cancelled, a held product of its bands from other generations spent, products of other bands
+  stay. A request still out for the patch is cancelled before a held product stands in for it (a
+  new job would have superseded it; found by the shuffled-completion test once products of other
+  bands stayed held).
+- **The zoom line** replaces the uniform eye-to-pivot segment: the eye at the distances the
+  camera's zoom steps reach, the current distance divided (in, to the camera's minimum distance) or
+  multiplied (out, away from the pivot, to its maximum) by its zoom rate once a step (1.2, the
+  `CameraNode` `zoom_speed`), each end exact; travel the change of distance. At most 64 samples on
+  the line (a range needing more takes a faster rate): the gameplay camera's 10 m to 40 km is 46.
+  `CameraSample` carries the camera's distance range and zoom rate.
+- **Order and pace** (the first measurement of the two above, `30k-b1`, `kuopio-b1`: 30k
+  `turn_out` coarse 8 frames, fine 12; Kuopio's turns 37-57 % ready: the reach unprepared when the
+  first turn started). The samples are taken twice, first for the patches without a record (one
+  entering there waits for a job: a hole), then for the band changes of those with one (drawn
+  meanwhile); the stream node prepares once more after the pull in the frame's first pass when the
+  frame's prepare found the view still (at most two samples a still frame); 8 prepares out (two
+  rounds of the four running jobs; at four the pool idled while a landed round waited for the
+  next pull, and 30k's first turn still started unprepared: `30k-b2` `turn_out` fine 8 frames, 3 %
+  ready). The prepares' jobs wait in their own queue behind every request's
+  (`vegetation_api/jobs.rs`: `PatchOrder::ahead`), so a request that arrives waits behind the
+  prepares running (one round), never behind those waiting; the jobs' own bound (32) leaves the
+  frame's 16 requests room.
+- **Eviction** by the nearer of the eye and the pivot on the ground (was the eye): Kuopio's held
+  products now reach the cap, and at the 40 km start the products farthest from the eye are the
+  ones near the pivot the zoom down needs (`kuopio-b3`: 1,120 evicted before `far_to_ground`,
+  whose coarse waits fell to 66 % ready against the control's 97; `kuopio-b4`: 583, 80 %).
+- **Costs.** A still frame that prepares: two samples' blocks within the far range (`O(blocks x
+  subdivision²)` each), each patch's variants `O(1)`; the deferred variants at most 8 patches x 7
+  bands; a moving frame and a still frame with the samples done `O(1)`; a request `O(1)` more
+  (eight probes for a patch's other variants); an eviction `O(held)` (Kuopio at the cap: about
+  4,000 products). Storage grows to the cap and the samples, then is reused; nothing allocates on a
+  moving frame. Unit tests: the variants (`band_variants` against a sweep of the rule; held by patch
+  and bands, a request takes only its own, the others stay, other generations spent), a half turn
+  whose cameras fall between the orbit samples with no job finishing (no entering patch finds only
+  other bands' products; settles to the plain set), the zoom-out ray (steps at the zoom rate, the
+  maximum exact, travel, spacing, the 64-sample bound, no line without a range), the eviction by
+  eye and pivot, and C1's tests.
+
+**Entered-to-drawn** (`run --drawn` + `drawn`, the commands above; control `970f9119` `c1`, branch
+final `3502f040` `b5`; the intermediate builds `b1`-`b4` in the same artefacts). Drawn p95 / max frames,
+ready share of the waiting frames (the install budget's), longest hole (bare in brackets):
+
+| Layer | Motion | 30k control | 30k branch | Kuopio control | Kuopio branch |
+|---|---|---|---|---|---|
+| Coarse | `turn_out` | 0 / 0 | 0 / 0 | 7 / 7, 100 %, hole 6 (bare 6) | 5 / 5, 100 %, hole 4 (bare 4) |
+| Coarse | `turn_back` | 0 / 0 | 0 / 0 | 1 / 6, 100 %, hole 1 (bare 1) | 3 / 3, 100 %, hole 3 (bare 3) |
+| Coarse | `turn_repeat` | 0 / 0 | 0 / 0 | 2 / 6, 100 %, hole 6 (bare 6) | 1 / 5, 100 %, hole 5 (bare 5) |
+| Coarse | far zoom-out | 0 / 0 | 0 / 0 | 7 / 19, 34 % | 5 / 11, 86 % |
+| Coarse | far-to-ground | 2 / 3, 77 %, hole 3 (bare 3) | 2 / 2, 100 %, hole 2 (bare 2) | 10 / 19, 97 %, hole 19 (bare 19) | 10 / 16, 78 %, hole 16 (bare 16) |
+| Fine | `turn_out` | 6 / 6, 0 %, hole 6 | 1 / 1, 69 % | 6 / 6, 80 %, hole 4 | 4 / 4, 99 %, hole 1 |
+| Fine | `turn_back` | 8 / 8, 1 %, hole 9 | 2 / 2, 0 %, hole 1 | 6 / 6, 51 %, hole 1 | 3 / 3, 100 % |
+| Fine | `turn_repeat` | 6 / 6, 0 %, hole 11 | 0 / 0 | 6 / 6, 92 %, hole 1 | 0 / 0 |
+| Fine | far zoom-out | 12 / 12, 0 %, hole 10 | 1 / 1, 92 % | 14 / 15, 44 % | 9 / 12, 55 % |
+| Fine | far-to-ground | 5 / 5, 2 %, hole 5 | 2 / 2, 85 %, hole 2 | 10 / 20, 75 %, hole 8 | 10 / 17, 78 %, hole 11 |
+
+Held at most 5.1 MiB on 30k (0 over the cap) and the 64 MB cap on Kuopio (776 evicted, all on the
+far zooms); used 4,077 (30k) and 8,467 (Kuopio) products against 870 and 2,639, dropped (an entering patch with products for other bands or generations
+only) 17 and 138 against the control's 282 and 238; replaced (a drawn patch's band change without its
+product) 229 and 1,153 against 1,634 and 6,019.
+
+**What is left, by owner:**
+
+- **30k: none.** Every vegetation row passes on every motion (p95 at most 2 frames, no hole
+  longer than 2): the bar is met there (C1: fine p95 6-13, far zoom-out 9).
+- **Kuopio's 0.5 s turns: the install budget (`RENDER-32-Q`).** p95 0-5 frames, holes up to 5
+  (coarse, bare), 99-100 % of the waiting frames ready: ready and waiting for the 2.0 ms streaming
+  budget 70 + 143 frames (coarse + fine) on `turn_out`, 21 + 48 on `turn_back`, 22 on
+  `turn_repeat`; 1 frame of preparation in all three.
+- **Kuopio's far zoom-out: preparation (this round's), not met.** Coarse 5 / 11 frames, 173 frames
+  ready and waiting (`-Q`), 27 preparing (control 480); fine 9 / 12, 990 ready, 802 preparing
+  (control 1,471). The still before the motion (120 + 30 frames, about 0.3 s at Kuopio's 2 ms
+  frames) is shorter than the reach takes at four running jobs, and the zoom line's far end comes
+  last in travel order. Levers for a next round: an order by time to need (the zoom's rate against
+  the orbit's), or more running jobs while the view is still (`RENDER-32-D` measured eight running
+  as 4-13 ms worse turn frames, so only while still).
+- **Kuopio's far-to-ground: preparation, not met, and not attributed.** Coarse 10 / 16, 699 ready
+  (`-Q`), 195 preparing against the control's 21 (p95 and the longest bare hole level with or
+  below the control's 10 / 19); fine 10 / 17, 2,014 ready, 578 preparing (control 563). Not job
+  order (the request lane left it at 195 against 210 without it, `b4`), not the eviction alone
+  (`b3` 1,120 evicted: 34 % preparing; `b4`, `b5` 583 and 776: 20-22 %). Next: an instrumented
+  run of that phase (which coarse patches wait, and for which request).
+
+**Products.** Digests (`--digests`, one run a side, every settle point of `post_load`, the still,
+the 1 s turns and the zoom phase with the far zooms): Kuopio's 8 settle points equal in every
+family; 30k's buildings, roads and parked cars 8 / 8 equal, water 1 / 1, graded 5 equal, 1 band (2
+tiles 2,013-2,015 m, the 2 km boundary's hysteresis) and 2 different at the far zooms' settle
+points, one tile each at equal level and token: `TERRAIN-27`'s class as C1 left it. Stills:
+Kuopio's three poses byte-identical; 30k `city` and `city_low` byte-identical in 3 / 3 pairs,
+`saved` 2, 1 and 1 pixels (delta 1), `RENDER-45`'s residue. Nothing prepared or retained is drawn
+until a request takes it, so a settled view draws what it drew.
+
+**Frame time** (uninstrumented, `series` C B B C, control `970f9119`'s library and scripts, branch
+`3502f040`; still, 0.5 and 1 s turns, pans, the zooms with the far zooms, jump; `compare`): 30k
+level or better in every phase but `far_to_ground` (p50 +0.2 ms against a 0.0 spread; max -6.4);
+the turns' p50 -1.1 to -1.4 ms on the 1 s turns. Kuopio (frames of 1.7-2.1 ms): flags on
+`turn_repeat` 0.5 s (p50 +0.1 against 0.0), `turn_out` 1 s (max +4.4 against 0.3), `pan_out` (p50
++0.1 against 0.0), `pan_repeat` (max +1.2 against 0.8), `zoom_in` (max +5.4 against 3.0) and
+`far_to_ground` (p50 +0.1 against 0.1).
+Attributed first, one instrumented run a side (`--detail`: 30k zoom phase, Kuopio turns, pans and
+zooms): the vegetation's mean a frame is the control's within 0.02 ms in every flagged phase (30k
+`far_to_ground` 0.028 both; Kuopio turns 0.068-0.118 against 0.070-0.122, pans 0.020-0.026
+against 0.022-0.024, `far_to_ground` 0.095 against 0.076); the worst frames' owners are the same
+on both sides (Godot's draw, 4-6 ms main and 3.5-6 ms render on Kuopio's 8-11 ms frames, then the
+terrain), the vegetation at most 0.52 ms on the branch's worst frames (installs of prepared
+products now land in the turn's first frames) against 1.08 on the control's. The one rerun of the
+flagged groups (`30kr` zoom phase, `kuopior` turns, pans, zooms; `rerun/compare.txt`): 30k
+`far_to_ground` level (p50 +0.3 against a 0.3 spread), new flags `zoom_in_repeat` (p50 +0.1
+against 0.0) and `far_zoom_out` (max +1.3 against 0.9); Kuopio's first flags level but `pan_repeat`
+(max +2.8 against 0.4, flagged in both runs) and `turn_repeat` 1 s (max +3.9, p50 +0.2), with new
+max-only flags on `pan_out` (+5.2) and `zoom_out` (+3.3) and two +0.0 p50 flags against 0.0
+spreads. For review: by the attribution not the vegetation's (same owners, vegetation means
+level); no second rerun (the brief's limit).
+- `PERF-07` at level F (`./run.sh --timing --level F`, the round's release lib test binaries; the
+  runner fails closed to F on the round's paths): 30k 1x PASS both (mean 2.19 / 2.20 ms, every
+  metric level), 30k 32x level (the `PERF-17` exception on three of four runs, one branch run
+  PASS). The headless runner draws nothing, so the prepared jobs' snapshot `try_lock`s beside a
+  running simulation are measured by the stream rows at 1x below.
+- **The 30k rows with the simulation at 1x** (`series --speed 1`, still and turns, C B B C): the
+  still is **worse**, p50 +1.9 ms (11.4-11.9 against 9.5-10.1, spread 0.6), max +14.7 (spread
+  19.6); `turn_repeat` 1 s p50 +1.4 (spread 0.3); the other turns level or better. Attributed (one
+  instrumented 1x run a side, still and turns): in the still the branch prepares about 700
+  products against the control's 130 (the reach is not done when the still starts), and each
+  batch of snapshots holds the core; the main thread's blocking core locks (`CODE-26`'s class)
+  then wait longer: `terrain_api.rs:689` 0.37 ms a frame against 0.05, `world_api.rs:395` 0.32
+  against 0.13, the terrain script 2.6 against 1.7 ms; the vegetation itself 0.05 ms. Paused,
+  the same still is level (7.5-7.6 both). **Not met** (the brief's "with the simulation running at
+  1x"): levers for the next round, pacing the prepares while the simulation runs (fewer in
+  flight, or a snapshot batch only when the core was free last frame) or `CODE-26`'s non-blocking
+  reads on the main thread.
+
+**Gates** (fresh, code `3502f040`): `cargo clippy --all-targets` warning set equal to the base's
+(`asset_document.rs` only); debug `cargo test --lib` 2,548 passed, 0 failed, 224 ignored;
+`./run.sh --test` PASS (nextest 2,552 passed, 225 skipped; godot-main and godot-vehicle PASS, no
+Godot script skipped, 0 SCRIPT ERROR); the isolated-profile grep finds nothing.
+
+**Decisions taken for review** (the user asleep):
+
+1. Band variants over sampling the request's bands at entry (bytes and jobs above): the
+   request's camera is not the entry point, so only the variants hit at a boundary.
+2. Drawn, standing-in and cached patches prepared for their band changes too (after the holes):
+   their replacement jobs fell from 1,634 to 229 (30k) and 6,019 to 1,153 (Kuopio), jobs that
+   compete with entering patches during a motion.
+3. The zoom line replaces the uniform eye-to-pivot segment (both directions at the zoom rate;
+   at 40 km the old segment's samples were 2.5 km apart).
+4. 8 prepares out, their jobs behind every request (a request waits behind one running round at
+   most); prepares on the background pool only, as before.
+5. Eviction by the nearer of eye and pivot instead of the plan's travel-to-need (a product's
+   travel is not kept across views; the pivot stands for the zooms' and turns' centre).
+6. The jobs lane's own unit test not written (the queue order is inside `pump`, which needs the
+   background pool and a core; covered by the drawn probe and the 30k rows).
 
 ## Implemented Runtime Contract
 

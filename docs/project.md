@@ -144,6 +144,12 @@ installed patches' products for a turn back (64 MB at most): the 30k coarse tree
 now limited by the per-frame install budget
 (`RENDER-32-Q`). `CODE-12` stays open for the rest (record in
 [terrain.md](terrain.md#entered-to-drawn-and-the-vegetations-prepared-set-render-32-n-code-12-2026-11-13)).
+Part 2 (2026-11-13, for review) prepares each tree patch for every detail level the camera can
+ask for next, reaches along a zoom in or out, and prepares gaps before detail changes: on the 30k
+city trees now draw within two frames on every measured motion; Kuopio's turns wait only for the
+install budget, its far zooms still partly for preparation; with the simulation running the
+extra preparation costs the 30k still view 1.9 ms a frame, left open
+([record](terrain.md#the-vegetations-band-variants-and-the-zoom-line-render-32-n-part-2-code-12-2026-11-13)).
 The graded ground's material edges and road seams no longer flicker from frame to frame
 (`RENDER-38`, fixed 2026-11-12): their shading is defined at the edges, which keeps the 30k
 city's stills byte-identical run to run again, at the control's GPU and frame time.
