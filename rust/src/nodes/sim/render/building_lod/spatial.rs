@@ -648,9 +648,17 @@ impl SpatialBatches {
 
     /// Acknowledge only after a complete coherent frame has been copied to the Godot bridge.
     pub fn acknowledge(&mut self) {
+        self.acknowledge_except(|_| false);
+    }
+
+    /// Acknowledge the frame's removals and every chunk the bridge drew; a chunk that `waits`
+    /// keeps its changes for the next offer (`RENDER-42`). O(resident chunks).
+    pub fn acknowledge_except(&mut self, waits: impl Fn((i32, i32)) -> bool) {
         self.removed.clear();
-        for chunk in self.chunks.values_mut() {
-            chunk.batches.acknowledge();
+        for (&key, chunk) in self.chunks.iter_mut() {
+            if !waits(key) {
+                chunk.batches.acknowledge();
+            }
         }
     }
 }

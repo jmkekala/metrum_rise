@@ -112,6 +112,7 @@ impl SimulationNode {
                 backend,
                 layer: BuildingLayer::new(SLOT_LIMIT, SPARE_LIMIT),
                 applied: Applied::default(),
+                waited: 0,
             });
         }
     }
@@ -325,9 +326,18 @@ impl SimulationNode {
         let us = start.elapsed().as_secs_f64() * 1e6;
         let frame = godot::classes::Engine::singleton().get_process_frames();
         with_ledger(frame, |ledger| ledger.charge(Owner::BuildingPublication, us, us));
-        // A frame the pool could not take whole keeps its changes for the next offer.
-        if !draw.layer.waiting() {
-            lods.acknowledge();
+        // A chunk the pool could not take keeps its changes for the next offer; the removals
+        // and every drawn chunk are done.
+        let layer = &draw.layer;
+        lods.acknowledge_except(|chunk| layer.waits(chunk));
+        draw.waited = if layer.waiting() { draw.waited + 1 } else { 0 };
+        if draw.waited == WAIT_NOTICE_FRAMES {
+            crate::debug_log!(
+                "buildings",
+                "building LOD: {} slots short for {} frames; chunks wait undrawn (RENDER-42)",
+                applied.blocked,
+                WAIT_NOTICE_FRAMES
+            );
         }
         applied.bytes as i64
     }
@@ -415,7 +425,12 @@ pub(crate) struct BuildingDraw {
     backend: GodotBackend,
     layer: BuildingLayer,
     applied: Applied,
+    // Consecutive published frames with chunks waiting for slots.
+    waited: u32,
 }
+
+// Published frames a chunk may wait for slots before the debug channel says so, once per wait.
+const WAIT_NOTICE_FRAMES: u32 = 60;
 
 impl SimulationNode {
     // The groups of the waiting frame without a look, four lanes each.
@@ -445,6 +460,7 @@ impl SimulationNode {
             draw.layer.reset(&mut draw.backend);
             draw.backend
                 .set_catalogue(Vec::new(), Vec::new(), reflection_parameters());
+            draw.waited = 0;
         }
     }
 }

@@ -11,14 +11,18 @@
 //! created or freed per batch, and the reflection's proxies change with their batches instead of
 //! being polled every frame.
 //!
-//! A frame is applied whole or not at all, as the bridge published it: a building changes tier
-//! in one frame, never drawn twice or not at all. A group's mesh and material are Godot resources
-//! `building_lods.gd` builds as a group is first needed; while a changed batch's group has none,
-//! [`BuildingLayer::missing`] names it and the frame waits for the registration. A frame the pool
-//! cannot take whole (every slot of the limit live: new batches, or batches that outgrew their
-//! slot's size class) sends nothing and waits too (`RENDER-42`): the bridge keeps its changes
-//! unacknowledged and offers it again every frame, with whatever later frames added, until it
-//! fits, as the vegetation keeps a refused product pending.
+//! A chunk's changes are applied whole or not at all, as the bridge published them: a building
+//! changes tier inside its chunk in one frame, never drawn twice or not at all. A group's mesh and
+//! material are Godot resources `building_lods.gd` builds as a group is first needed; while a
+//! changed batch's group has none, [`BuildingLayer::missing`] names it and the frame waits for the
+//! registration. The removals of chunks that left are always applied. A chunk whose changes need
+//! more slots than the pool can give (every slot of the limit live: new batches, or batches that
+//! outgrew their slot's size class) sends nothing and waits (`RENDER-42`, AUDIT-stream-2 finding
+//! 6): the bridge keeps that chunk's changes unacknowledged and offers them again every frame,
+//! with whatever later frames added, until they fit, as the vegetation keeps a refused product
+//! pending. Chunks are admitted in the frame's publication order after every chunk that gives up
+//! at least the slots it takes, so a view needing more than the limit draws what fits and keeps
+//! updating it instead of freezing every building.
 //!
 //! Residency follows the building LOD's chunk query (its rule decides the tiers, history and all);
 //! a batch whose chunk leaves returns its slot to the pool hidden, and a chunk that comes back
@@ -82,8 +86,16 @@ pub(crate) struct Applied {
     pub(crate) hidden: usize,
     /// Bytes of rows written.
     pub(crate) bytes: usize,
-    /// Slots a waiting frame is short of: nothing of it was drawn (`RENDER-42`).
+    /// Slots the waiting chunks are short of: nothing of them was drawn (`RENDER-42`).
     pub(crate) blocked: usize,
+}
+
+// A changed chunk of a frame: the slots it takes and gives up, and whether it is drawn.
+#[derive(Clone, Copy, Default)]
+struct Admission {
+    takes: usize,
+    gives: usize,
+    drawn: Option<bool>,
 }
 
 /// The building batches' slots.
@@ -92,9 +104,10 @@ pub(crate) struct BuildingLayer {
     looks: Map<BatchKey, Look>,
     drawn: Map<(ChunkKey, BatchKey), SlotId>,
     missing: Vec<BatchKey>,
-    // The drawn batches a frame's removals take away (its check, reused storage).
-    leaving: Map<(ChunkKey, BatchKey), ()>,
-    // The last frame offered could not be drawn whole and waits (`RENDER-42`).
+    // The frame's changed chunks: the slots each takes and gives up, and whether it is drawn
+    // (`None` until decided). Reused storage; after a frame, the chunks that wait.
+    chunks: Map<ChunkKey, Admission>,
+    // Some chunk of the last frame offered could not be drawn and waits (`RENDER-42`).
     waiting: bool,
     // Whether the batches cast the sun's shadow (the shadow benchmark's caster classes,
     // `RENDER-15`); the game never clears it.
@@ -109,16 +122,22 @@ impl BuildingLayer {
             looks: Map::default(),
             drawn: Map::default(),
             missing: Vec::new(),
-            leaving: Map::default(),
+            chunks: Map::default(),
             waiting: false,
             cast_shadows: true,
         }
     }
 
-    /// Whether the last frame offered waits for slots: the bridge offers it again, unchanged
-    /// or grown by later frames, until it is drawn whole.
+    /// Whether some chunk of the last frame offered waits for slots: the bridge offers its
+    /// changes again, unchanged or grown by later frames, until they are drawn whole.
     pub(crate) fn waiting(&self) -> bool {
         self.waiting
+    }
+
+    /// Whether `chunk`'s changes of the last frame offered wait for slots: the bridge keeps them
+    /// unacknowledged. `O(1)`.
+    pub(crate) fn waits(&self, chunk: ChunkKey) -> bool {
+        self.waiting && self.chunks.get(&chunk).is_some_and(|chunk| chunk.drawn == Some(false))
     }
 
     /// The pool (tests and status).
@@ -152,6 +171,7 @@ impl BuildingLayer {
         self.looks.clear();
         self.drawn.clear();
         self.missing.clear();
+        self.chunks.clear();
         self.waiting = false;
     }
 
@@ -169,12 +189,14 @@ impl BuildingLayer {
         &self.missing
     }
 
-    /// Applies a frame, whole or not at all: when it needs more slots than the pool can give
-    /// (every slot of the limit live), nothing is sent, [`Applied::blocked`] counts the slots it
-    /// is short of and [`BuildingLayer::waiting`] holds until a frame fits (`RENDER-42`).
-    /// Otherwise the removed batches' slots return to the pool hidden, every changed batch is
-    /// written and drawn, or hidden when empty. Every non-empty group must have its look
-    /// ([`BuildingLayer::missing`] empty). `O(removed + changed batches + their instances)`.
+    /// Applies a frame chunk by chunk, each whole or not at all: the removed batches' slots return
+    /// to the pool hidden; a changed chunk is drawn when the pool can give the slots it needs once
+    /// the frame's own releases are counted, its batches written and drawn, or hidden when empty;
+    /// a chunk that does not fit sends nothing, [`BuildingLayer::waits`] names it,
+    /// [`Applied::blocked`] counts the slots the waiting chunks are short of, and
+    /// [`BuildingLayer::waiting`] holds until a frame fits whole (`RENDER-42`). Every non-empty
+    /// group must have its look ([`BuildingLayer::missing`] empty).
+    /// `O(removed + changed batches + their instances)`.
     pub(crate) fn apply<'a>(
         &mut self,
         backend: &mut impl RenderBackend,
@@ -182,25 +204,26 @@ impl BuildingLayer {
         changes: impl Iterator<Item = Change<'a>> + Clone,
     ) -> Applied {
         let mut applied = Applied::default();
-        let needed = self.slots_short(removed, changes.clone());
-        self.waiting = needed > 0;
-        if self.waiting {
-            applied.blocked = needed;
-            return applied;
-        }
-        // Every slot the frame gives up first, so a batch moving to a larger size class can take
-        // the room its old slot leaves; a frame draws at its end, so the order is not seen.
+        // The chunks that left first: their slots are room for the changed ones.
         for at in removed {
             if let Some(slot) = self.drawn.remove(at) {
                 self.pool.release(backend, slot);
                 applied.hidden += 1;
             }
         }
+        applied.blocked = self.admit(changes.clone());
+        self.waiting = applied.blocked > 0;
+        // Every slot the admitted chunks give up first, so a batch moving to a larger size class
+        // can take the room its old slot leaves; a frame draws at its end, so the order is not
+        // seen.
         for change in changes.clone() {
             let at = (change.chunk, change.key);
             let Some(&slot) = self.drawn.get(&at) else {
                 continue;
             };
+            if self.chunks[&change.chunk].drawn != Some(true) {
+                continue;
+            }
             if change.rows.is_empty() {
                 applied.hidden += 1;
             } else if self.keeps(slot, self.looks[&change.key], change.rows.len() as u32) {
@@ -210,7 +233,7 @@ impl BuildingLayer {
             self.pool.release(backend, slot);
         }
         for change in changes {
-            if change.rows.is_empty() {
+            if change.rows.is_empty() || self.chunks[&change.chunk].drawn != Some(true) {
                 continue;
             }
             let at = (change.chunk, change.key);
@@ -229,7 +252,7 @@ impl BuildingLayer {
                     let slot = self
                         .pool
                         .acquire(backend, kind)
-                        .expect("the frame was checked to fit the pool");
+                        .expect("the chunk was checked to fit the pool");
                     self.drawn.insert(at, slot);
                     slot
                 }
@@ -243,43 +266,52 @@ impl BuildingLayer {
         applied
     }
 
-    // How many more slots the frame needs than the pool can give once the frame's own releases
-    // are counted (0: it fits). A batch needs a slot when it is not drawn after the removals or
-    // its slot no longer fits it; the pool can give every slot of the limit not live.
-    // `O(removed + changed batches)`, nothing sent.
-    fn slots_short<'a>(
-        &mut self,
-        removed: &[(ChunkKey, BatchKey)],
-        changes: impl Iterator<Item = Change<'a>>,
-    ) -> usize {
-        self.leaving.clear();
+    // Decides which changed chunks are drawn (after the removals): a chunk needs a slot for a
+    // non-empty batch not drawn or whose slot no longer fits it, and gives up the slot of an
+    // emptied batch or of one that moves. Chunks that give up at least what they take are drawn
+    // first, then the rest in the frame's order while the pool has room. Returns the slots the
+    // waiting chunks are short of together (0: the frame is drawn whole).
+    // `O(changed batches)`, nothing sent.
+    fn admit<'a>(&mut self, changes: impl Iterator<Item = Change<'a>> + Clone) -> usize {
+        self.chunks.clear();
+        for change in changes.clone() {
+            let slot = self.drawn.get(&(change.chunk, change.key)).copied();
+            let (takes, gives) = match slot {
+                _ if change.rows.is_empty() => (0, usize::from(slot.is_some())),
+                Some(slot) if self.keeps(slot, self.looks[&change.key], change.rows.len() as u32) => {
+                    (0, 0)
+                }
+                Some(_) => (1, 1),
+                None => (1, 0),
+            };
+            let admission = self.chunks.entry(change.chunk).or_default();
+            admission.takes += takes;
+            admission.gives += gives;
+        }
         let mut room = self.pool.available();
-        for at in removed {
-            if self.drawn.contains_key(at) && self.leaving.insert(*at, ()).is_none() {
-                room += 1;
+        for admission in self.chunks.values_mut() {
+            if admission.takes <= admission.gives {
+                admission.drawn = Some(true);
+                room += admission.gives - admission.takes;
             }
         }
-        let mut needed = 0usize;
+        let mut short = 0;
         for change in changes {
-            let at = (change.chunk, change.key);
-            let drawn = (!self.leaving.contains_key(&at))
-                .then(|| self.drawn.get(&at).copied())
-                .flatten();
-            if change.rows.is_empty() {
-                room += usize::from(drawn.is_some());
+            let admission = self.chunks.get_mut(&change.chunk).expect("counted above");
+            if admission.drawn.is_some() {
                 continue;
             }
-            let look = self.looks[&change.key];
-            match drawn {
-                Some(slot) if self.keeps(slot, look, change.rows.len() as u32) => {}
-                Some(_) => {
-                    needed += 1;
-                    room += 1;
-                }
-                None => needed += 1,
+            let need = admission.takes - admission.gives;
+            admission.drawn = Some(need <= room);
+            if need <= room {
+                room -= need;
+            } else {
+                short += need;
             }
         }
-        needed.saturating_sub(room)
+        // Each waiting chunk needed more than the room left when it was considered, and the room
+        // only shrank, so a waiting frame is short of at least one slot.
+        short.saturating_sub(room)
     }
 
     // Whether a drawn batch keeps its slot: the same mesh and a size class that holds `count`

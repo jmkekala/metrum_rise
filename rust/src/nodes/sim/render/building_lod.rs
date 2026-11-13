@@ -228,15 +228,20 @@ impl Chunk {
                     scheme,
                     lod,
                 };
-                let count = self
+                let (count, changed) = self
                     .batches
                     .binary_search_by_key(&key, |batch| batch.key)
-                    .map_or(0, |index| self.batches[index].count);
+                    .map_or((0, false), |index| {
+                        let old = &self.batches[index];
+                        (old.count, old.changed)
+                    });
                 batches.push(Batch {
                     key,
                     // Existing nonempty groups need replacement even if their newly
-                    // scattered bytes happen to match the reset scratch buffer.
-                    changed: count != 0,
+                    // scattered bytes happen to match the reset scratch buffer. A change not yet
+                    // acknowledged stays one: a frame waiting for slots (`RENDER-42`) still has
+                    // to hide a batch that emptied before this resync (AUDIT-stream-2 finding 1).
+                    changed: changed || count != 0,
                     offset: 0,
                     count,
                     next_count: 0,
