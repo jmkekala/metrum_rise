@@ -56,12 +56,17 @@ use crate::nodes::sim::render::stream::reach::{ReachSample, reach_samples};
 use crate::nodes::sim::render::stream::view::CameraSample;
 use crate::nodes::sim::render::vegetation_product::VegetationProduct;
 
-/// Bytes of prepared vegetation products held, prepared and retained together (a setting later).
-/// The plan's default was 64 MB; `RENDER-32-N` part 2 measured Kuopio's whole benchmark session
-/// (turns, near zooms, the far zoom-out and back to the ground) at 79 MiB uncapped, where 64
-/// evicted what the zoom back down needed (198 frames waiting for jobs against the control's 21,
-/// 9 uncapped), and the 30k city at 5 MiB: the measured peak with a fifth to spare.
-pub(crate) const PREPARED_CAP_BYTES: usize = 96 << 20;
+/// Bytes of prepared vegetation products held, prepared and retained together (a setting later),
+/// counted as the storage they hold ([`VegetationProduct::bytes`]: capacities). The plan's default
+/// was 64 MB; `RENDER-32-N` part 2 measured Kuopio's whole benchmark session (turns, near zooms,
+/// the far zoom-out and back to the ground) at 79 MiB uncapped, where 64 evicted what the zoom
+/// back down needed (198 frames waiting for jobs against the control's 21, 9 uncapped), and the
+/// 30k city at 5 MiB, and set 96 MiB, the measured peak with a fifth to spare, on lengths. Counted
+/// as storage (AUDIT-stream-2 finding 2) the same Kuopio turns and zooms reach 95.8 MiB at the far
+/// zoom back to the ground (lengths 93.7 on the control, which never evicted), where 96 MiB evicted
+/// 134 products the zoom down needed (coarse ready share 100 % to 42 %): 120 MiB, that peak with
+/// a fifth to spare again, now a bound on the memory the store really holds.
+pub(crate) const PREPARED_CAP_BYTES: usize = 120 << 20;
 /// Prepare jobs out at once: twice what the vegetation's running jobs take (`MAX_RUNNING`), so
 /// the pool runs a full round while the last round's products wait for the pull (measured
 /// `RENDER-32-N` part 2: at one round the 30k city's first turn started before its reach was
