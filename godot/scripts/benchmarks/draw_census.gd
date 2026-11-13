@@ -199,6 +199,8 @@ func _slot_items(items: Array) -> void:
 	var sources := {
 		"rs:vegetation": _main.get_node("StreamNode").get_draw_census("vegetation"),
 		"rs:parked": _main.get_node("StreamNode").get_draw_census("parked"),
+		# The moving agents' shadow-only twins (`RENDER-15`, R47); empty on a tree without them.
+		"rs:agents": _main.get_node("StreamNode").get_draw_census("agents"),
 		"rs:buildings": _main.get_node("SimulationNode").get_building_draw_census(),
 	}
 	for layer: String in sources:

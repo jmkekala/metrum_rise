@@ -2,15 +2,19 @@
 
 ## Agent renderer — streams agent positions from Rust into a MultiMeshInstance3D each frame.
 ##
-## Rust methods called: update_walker_buffers(), get_changed_walker_buckets(), get_vehicle_frame(),
-##   smooth_car_render_data(), get_changed_car_buckets(), get_car_frame_parts(),
+## Rust methods called: advance_agent_frame(), get_car_frame_parts(), get_agent_frame_parts(),
 ##   set_vehicle_ground_support(), get_agent_paths_debug(), update_agent_view(),
-##   get_agent_draw_distances(), get_agent_snapshot_parts()
+##   get_agent_draw_distances(), get_agent_snapshot_parts(); on the StreamNode
+##   attach_agent_casters(), register_agent_caster()
 ## The agents' view (the ground rectangle the snapshot culls to, and the eye their draw distances
 ## measure from) comes from the camera in Rust. Walkers and moving cars fade out by a dither over
 ## a band before their draw distance (`RENDER-28`); the snapshot does not pose them beyond it.
 ## Only the buckets whose drawn buffer changed are uploaded: a car at rest is drawn as it was, and
-## walkers upload only when the snapshot moved them.
+## walkers upload only when the snapshot moved them. The walkers, the cars' smoothing and ground
+## solve are prepared by a background job a frame ahead (`RENDER-47`): each frame installs what the
+## job prepared in the frame before and starts the next. The bucket nodes cast no shadow: the
+## StreamNode's shadow-only twins cast for the agents within reach of the sun's shadow range
+## (`RENDER-15`); without a StreamNode the bucket nodes cast as before.
 ## Agent transforms arrive as a flat PackedFloat32Array of 12 floats per agent:
 ##   [xx, yx, zx, ox, xy, yy, zy, oy, xz, yz, zz, oz] — MultiMesh row-major 3×4 layout.
 ## Path debug lines (toggled with P key) arrive as a PackedVector3Array of point pairs.
@@ -28,8 +32,7 @@ const VehicleHeadlights := preload("res://scripts/renderers/vehicle_headlights.g
 var walker_mmis: Dictionary = {}
 # Key: vehicle_type (int), Value: MultiMeshInstance3D
 var car_mmis: Dictionary = {}
-## The last frame's buffers per bucket as Rust returned them (walker type, car type key): the
-## shadow benchmark's caster twins read them instead of reading the GPU buffers back (`RENDER-15`).
+## The drawn buffers per bucket as Rust installed them (walker type, car type key).
 var walker_buffers: Dictionary = {}
 var car_buffers: Dictionary = {}
 var texture_cache: Dictionary = {}
@@ -37,8 +40,13 @@ const WALKER_VAT_FRAMES := 30.0
 # Quaternius walk clips are baked in the opposite temporal direction from our distance phase.
 const WALKER_VAT_REVERSE_PHASE := true
 const CAR_TRANSFORM_STRIDE := 12
+# A walker's transform, then its custom data (the walk phase).
+const WALKER_STRIDE := 16
 const DEBUG_LABEL_LIMIT := 96
-const SWARM_PARTS: Array[String] = ["walker_fetch", "walker_assign", "vehicle_frame", "car_smooth", "car_assign", "headlights"]
+const SWARM_PARTS: Array[String] = ["agent_frame", "walker_assign", "car_assign", "headlights"]
+# The installed frame's job on the background pool, the main thread's install, whether it
+# installed one, late jobs so far (`RENDER-47`).
+const FRAME_PARTS: Array[String] = ["agent_job", "agent_install", "agent_installed", "agent_late"]
 const CAR_PARTS: Array[String] = ["car_interpolate", "car_ground", "car_record", "cars_smoothed", "cars_off_lane", "off_lane_solved", "cars_at_rest", "off_lane_at_rest", "car_buckets_uploaded", "car_buckets_kept"]
 var _vehicles := preload("res://scripts/renderers/vehicle_resources.gd").new()
 var _headlights := VehicleHeadlights.new()
@@ -48,10 +56,10 @@ var debug_mesh: ImmediateMesh
 var debug_labels: Array = []
 var show_paths = false
 var _debug_overlay_visible := false
-# The last swarm update's parts in microseconds, for the perf channel (`RENDER-28`): walker fetch,
-# walker buffers, vehicle frame, car smoothing with the off-lane ground solve, car buffers,
-# headlights. Written in place every update.
-var _swarm_us := PackedInt64Array([0, 0, 0, 0, 0, 0])
+# The last swarm update's parts in microseconds, for the perf channel (`RENDER-28`): the agents'
+# frame (install and the next job's start), walker buffers, car buffers, headlights. Written in
+# place every update.
+var _swarm_us := PackedInt64Array([0, 0, 0, 0])
 var _walker_buckets_uploaded := 0
 
 func _ready():
@@ -178,6 +186,8 @@ func _ready():
 		if not loaded_model:
 			_add_procedural_car_variants(v_type, car_colors)
 
+	_attach_shadow_casters()
+
 	debug_mesh_instance = MeshInstance3D.new()
 	debug_mesh = ImmediateMesh.new()
 	var debug_mat = StandardMaterial3D.new()
@@ -225,8 +235,11 @@ func _process(delta):
 	var details := {"camera_aabb": aabb_elapsed_ms, "swarm": swarm_elapsed_ms}
 	for index in SWARM_PARTS.size():
 		details[SWARM_PARTS[index]] = float(_swarm_us[index]) / 1000.0
-	# Inside car_smooth, from Rust: smoothing, the off-lane ground solve, recording (ms), then
-	# counts (`RENDER-28`).
+	var frame_parts: PackedInt64Array = simulation_node.get_agent_frame_parts()
+	for index in FRAME_PARTS.size():
+		details[FRAME_PARTS[index]] = float(frame_parts[index]) / 1000.0 if index < 2 else frame_parts[index]
+	# The installed frame's car parts, from Rust on the job's thread: smoothing, the off-lane
+	# ground solve, recording (ms), then counts (`RENDER-28`).
 	var car_parts: PackedInt64Array = simulation_node.get_car_frame_parts()
 	for index in CAR_PARTS.size():
 		details[CAR_PARTS[index]] = float(car_parts[index]) / 1000.0 if index < 3 else car_parts[index]
@@ -253,58 +266,32 @@ func _update_view() -> void:
 		simulation_node.update_agent_view(camera)
 
 func update_swarm(delta: float = 0.0):
-	# Walkers (Grouped by variant)
 	var start_us := Time.get_ticks_usec()
-	var walker_data: Dictionary = simulation_node.update_walker_buffers()
-	walker_buffers = walker_data
-	var fetched_us := Time.get_ticks_usec()
-	# Only the buckets the snapshot changed; a bucket absent from walker_data left: it draws none.
-	var changed_walkers: PackedInt64Array = simulation_node.get_changed_walker_buckets()
-	_walker_buckets_uploaded = changed_walkers.size()
-	for p_type in changed_walkers:
-		var mmi = walker_mmis.get(p_type)
-		if mmi == null:
-			continue
-		var buffer: PackedFloat32Array = walker_data.get(p_type, PackedFloat32Array())
-		var count := int(buffer.size() / 16) # Transform (12) + Custom (4)
-		if count != mmi.multimesh.instance_count:
-			mmi.multimesh.instance_count = count
-		if count > 0:
-			mmi.multimesh.buffer = buffer
-
-	var walkers_us := Time.get_ticks_usec()
-	# Cars (grouped by vehicle type and color variant). Rust moves each drawn pose toward its
-	# snapshot pose and grounds off-lane cars, so they do not step at the simulation tick rate.
 	var parked_renderer: Node = get_node_or_null("../ParkedCars")
 	var full: bool = parked_renderer.needs_full_publication() if parked_renderer != null else false
-	# One snapshot for both, so a car crossing a bay's edge is drawn exactly once. "parked" is
-	# there only when a chunk changed.
-	var vehicle_frame: Dictionary = simulation_node.get_vehicle_frame(full)
-	if parked_renderer != null and vehicle_frame.has("parked"):
-		parked_renderer.apply_publication(vehicle_frame["parked"])
+	# The frame a background job prepared from one snapshot: walkers, smoothed and grounded cars,
+	# and that snapshot's parked chunks, so a car crossing a bay's edge is drawn exactly once.
+	var frame: Dictionary = simulation_node.advance_agent_frame(delta, full)
+	if parked_renderer != null and frame.has("parked"):
+		parked_renderer.apply_publication(frame["parked"])
 	var frame_us := Time.get_ticks_usec()
-	car_buffers = simulation_node.smooth_car_render_data(vehicle_frame["cars"], delta)
-	var smoothed_us := Time.get_ticks_usec()
-	# A bucket absent from car_buffers left the view: it draws none.
-	for type_key in simulation_node.get_changed_car_buckets():
-		var mmi = car_mmis.get(type_key)
-		if mmi == null:
-			continue
-		var buffer: PackedFloat32Array = car_buffers.get(type_key, PackedFloat32Array())
-		var count := int(buffer.size() / CAR_TRANSFORM_STRIDE)
-		if count != mmi.multimesh.instance_count:
-			mmi.multimesh.instance_count = count
-		if count > 0:
-			mmi.multimesh.buffer = buffer
+	walker_buffers = frame["walkers"]
+	# A bucket absent from the buffers left the view: it draws none.
+	var changed_walkers: PackedInt64Array = frame["changed_walkers"]
+	_walker_buckets_uploaded = changed_walkers.size()
+	for p_type in changed_walkers:
+		_upload(walker_mmis.get(p_type), walker_buffers.get(p_type, PackedFloat32Array()), WALKER_STRIDE)
+	var walkers_us := Time.get_ticks_usec()
+	car_buffers = frame["cars"]
+	for type_key in frame["changed_cars"]:
+		_upload(car_mmis.get(type_key), car_buffers.get(type_key, PackedFloat32Array()), CAR_TRANSFORM_STRIDE)
 	var assigned_us := Time.get_ticks_usec()
 	_headlights.update(simulation_node, car_buffers)
 	var lit_us := Time.get_ticks_usec()
-	_swarm_us[0] = fetched_us - start_us
-	_swarm_us[1] = walkers_us - fetched_us
-	_swarm_us[2] = frame_us - walkers_us
-	_swarm_us[3] = smoothed_us - frame_us
-	_swarm_us[4] = assigned_us - smoothed_us
-	_swarm_us[5] = lit_us - assigned_us
+	_swarm_us[0] = frame_us - start_us
+	_swarm_us[1] = walkers_us - frame_us
+	_swarm_us[2] = assigned_us - walkers_us
+	_swarm_us[3] = lit_us - assigned_us
 
 	if show_paths:
 		var data = simulation_node.get_agent_paths_debug()
@@ -326,6 +313,34 @@ func update_swarm(delta: float = 0.0):
 	else:
 		if _debug_overlay_visible:
 			clear_debug_overlay()
+
+# Writes `buffer` (`stride` floats an instance) into a bucket node's MultiMesh.
+func _upload(mmi: MultiMeshInstance3D, buffer: PackedFloat32Array, stride: int) -> void:
+	if mmi == null:
+		return
+	var count := int(buffer.size() / stride)
+	if count != mmi.multimesh.instance_count:
+		mmi.multimesh.instance_count = count
+	if count > 0:
+		mmi.multimesh.buffer = buffer
+
+# Hands every bucket's mesh, material and margin to the StreamNode's shadow-only twins, which cast
+# the agents within reach of the sun's shadow range; the bucket nodes then cast nothing
+# (`RENDER-15`). Without a StreamNode (tests) they cast as before.
+func _attach_shadow_casters() -> void:
+	var stream := get_node_or_null("../StreamNode")
+	var sun := get_node_or_null("../DirectionalLight3D") as DirectionalLight3D
+	if stream == null or sun == null or not stream.has_method("attach_agent_casters"):
+		return
+	stream.attach_agent_casters(simulation_node, sun, get_world_3d().scenario)
+	for kind in [0, 1]:
+		var buckets: Dictionary = walker_mmis if kind == 0 else car_mmis
+		for key in buckets:
+			var mmi: MultiMeshInstance3D = buckets[key]
+			var material: Material = mmi.material_override
+			if stream.register_agent_caster(kind, key, mmi.multimesh.mesh.get_rid(),
+					material.get_rid() if material != null else RID(), mmi.extra_cull_margin):
+				mmi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 
 func clear_debug_overlay() -> void:
 	if debug_mesh:

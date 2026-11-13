@@ -103,12 +103,12 @@
 //! | | `get_zoning_overlay_occupancy_revision` | `zoning_overlay.gd` |
 //! | | `get_zoning_parcels_overlay` | `zoning_overlay.gd` |
 //! | | `try_get_zoning_parcels_overlay_packed` | `zoning_overlay.gd` |
-//! | **Agents** | `update_walker_buffers` | `agents.gd` (`get_changed_walker_buckets`: the walker buckets to upload) |
+//! | **Agents** | `advance_agent_frame` | `agents.gd` (installs the frame a background job prepared, starts the next; `RENDER-47`) |
 //! | | `get_agent_draw_distances` | `agents.gd` (the fade bands of the agents' shaders) |
 //! | | `get_car_render_data` | `agents.gd` |
-//! | | `smooth_car_render_data` | `agents.gd` |
+//! | | `smooth_car_render_data` | `vehicle_ground_support_test.gd`, `agent_inspector_test.gd` (the same frame, synchronous) |
 //! | | `ground_car_transforms` | `vehicle_ground_support_test.gd` |
-//! | | `get_changed_car_buckets` | `agents.gd` (the car buckets to upload) |
+//! | | `get_changed_car_buckets` | `vehicle_ground_support_test.gd` (the car buckets to upload) |
 //! | | `update_agent_view` | `agents.gd` (culling rectangle from the camera) |
 //! | | `set_camera_aabb` | tests (culling update) |
 
@@ -143,6 +143,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Instant;
 
+mod agent_frame_api;
 mod agent_inspection_api;
 mod asset_api;
 mod async_jobs;
@@ -235,19 +236,27 @@ pub struct SimulationNode {
     /// The network a load's road chunks hydrate from (`RENDER-32-P`), until the hydration ends;
     /// presentation state like `building_lods`.
     pub(crate) road_hydration: Option<road_hydration_api::RoadHydrationSource>,
-    /// Main-thread drawn car poses between snapshots; never serialized or read by simulation.
-    pub(crate) car_visuals: crate::nodes::sim::render::car_visual::CarVisualSmoother,
-    /// The drawn car buffers by bucket, as `smooth_car_render_data` returns them, and the
-    /// buckets its last call changed (`RENDER-28`); presentation state like `car_visuals`.
+    /// The agents' frame (walkers, smoothed cars, parked publication, caster candidates)
+    /// between the main thread and its background job (`RENDER-47`); presentation state, never
+    /// serialized or read by the simulation.
+    agent_lane: crate::nodes::sim::render::agent_frame::AgentFrameLane,
+    /// The installed frame's outputs: the drawn car buffers by bucket and the buckets it
+    /// changed, the drawn walker buffers by type and the types it changed (`RENDER-28`), its
+    /// split, and where the watched car was drawn.
     car_buffers: VarDictionary,
     changed_car_buckets: PackedInt64Array,
-    /// The drawn walker buffers (`RENDER-28`): Rust's copy, the bucket dictionary
-    /// `update_walker_buffers` returns and the buckets its last call changed.
-    walker_visuals: crate::nodes::sim::render::walker_visual::DrawnWalkers,
     walker_buffers: VarDictionary,
     changed_walker_buckets: PackedInt64Array,
+    agent_parts: agent_frame_api::AgentParts,
+    watched_origin: Option<(i64, glam::Vec3)>,
+    /// The render ID whose drawn origin the next frame reports (the agent inspector's).
+    watched_car: std::cell::Cell<i64>,
+    /// The caster candidates handed to the stream node's shadow-only twins (`RENDER-15`).
+    agent_caster_feed: crate::nodes::sim::render::agent_frame::SharedCasterFeed,
     /// Last camera origin reported with agent culling, shared by interpolated vehicle grounding.
     pub(crate) render_camera_position: Option<Vector2>,
+    /// The camera's position with it, the eye the caster candidates are kept about.
+    render_eye: Option<Vector3>,
     /// Stuck-at-junction detector; exists only while the `junction_connectors` view is on.
     junction_stalls:
         Option<crate::simulation::economy::agents::junction_stalls::JunctionStallDetector>,
@@ -592,13 +601,17 @@ impl INode3D for SimulationNode {
             building_lods: Default::default(),
             building_draw: None,
             road_hydration: None,
-            car_visuals: Default::default(),
+            agent_lane: Default::default(),
             car_buffers: VarDictionary::new(),
             changed_car_buckets: PackedInt64Array::new(),
-            walker_visuals: Default::default(),
             walker_buffers: VarDictionary::new(),
             changed_walker_buckets: PackedInt64Array::new(),
+            agent_parts: Default::default(),
+            watched_origin: None,
+            watched_car: std::cell::Cell::new(-1),
+            agent_caster_feed: Default::default(),
             render_camera_position: None,
+            render_eye: None,
             junction_stalls: None,
             terrain_patch_payload_jobs,
             graded_jobs: Default::default(),

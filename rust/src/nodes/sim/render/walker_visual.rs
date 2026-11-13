@@ -2,8 +2,8 @@
 
 //! The walkers' drawn buffers between snapshots (`RENDER-28`): a bucket uploads only when its
 //! snapshot buffer differs bit for bit from the one drawn, so a paused city, and every frame
-//! between two snapshots, uploads no walker. Presentation state on the main thread; the
-//! simulation never reads it.
+//! between two snapshots, uploads no walker. Presentation state, kept by the agents' frame job
+//! (`RENDER-47`); the simulation never reads it.
 
 use std::collections::HashMap;
 
@@ -51,6 +51,14 @@ impl DrawnWalkers {
     /// The drawn buffer of `key`, empty when it draws none.
     pub(crate) fn drawn(&self, key: u8) -> &[f32] {
         self.drawn.get(&key).map_or(&[], Vec::as_slice)
+    }
+
+    /// Every bucket drawing walkers, with its buffer. `O(buckets)`.
+    pub(crate) fn buckets(&self) -> impl Iterator<Item = (u8, &[f32])> {
+        self.drawn
+            .iter()
+            .filter(|(_, drawn)| !drawn.is_empty())
+            .map(|(&key, drawn)| (key, drawn.as_slice()))
     }
 }
 

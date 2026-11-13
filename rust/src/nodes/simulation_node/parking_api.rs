@@ -118,7 +118,7 @@ impl SimulationNode {
     pub fn get_parked_car_chunks(&self, full: bool) -> VarDictionary {
         let snapshot = self.snapshot.read().unwrap();
         snapshot.parked.offer(full);
-        pack_parked(&snapshot)
+        pack_parked(&snapshot.parked, snapshot.vehicle_world_epoch)
     }
 
     /// Moving cars and, when something changed, the parked chunks of the same snapshot, so no
@@ -133,7 +133,10 @@ impl SimulationNode {
             crate::nodes::sim::bridge::agents::get_car_render_data(&snapshot),
         );
         if snapshot.parked.offer(full) {
-            result.set("parked", pack_parked(&snapshot));
+            result.set(
+                "parked",
+                pack_parked(&snapshot.parked, snapshot.vehicle_world_epoch),
+            );
         }
         result
     }
@@ -149,13 +152,18 @@ impl SimulationNode {
     }
 }
 
-fn pack_parked(snapshot: &crate::nodes::sim::core::RenderSnapshot) -> VarDictionary {
+// The parked payload `parked_cars.gd` installs: a snapshot's parked chunks not yet installed,
+// with its vehicle world `epoch`. O(unseen chunks + their cars).
+pub(super) fn pack_parked(
+    parked: &crate::simulation::parking::ParkedPublication,
+    epoch: u64,
+) -> VarDictionary {
     let mut result = VarDictionary::new();
-    result.set("epoch", snapshot.vehicle_world_epoch as i64);
-    result.set("serial", snapshot.parked.serial as i64);
-    result.set("full", snapshot.parked.holds_full());
+    result.set("epoch", epoch as i64);
+    result.set("serial", parked.serial as i64);
+    result.set("full", parked.holds_full());
     let mut updates = VarArray::new();
-    for parked in snapshot.parked.unseen() {
+    for parked in parked.unseen() {
         let (key, chunk) = (parked.key, &parked.chunk);
         let mut update = VarDictionary::new();
         update.set("chunk", Vector2i::new(key.0, key.1));

@@ -56,7 +56,7 @@ impl SimulationNode {
     pub fn get_agent_inspection(&self, render_id: i64) -> VarDictionary {
         let Some(mut core) = self.try_lock_core() else {
             let mut drawn = VarDictionary::new();
-            if let Some(origin) = self.car_visuals.drawn_origin(render_id) {
+            if let Some(origin) = self.drawn_car_origin(render_id) {
                 drawn.set("drawn_position", Vector3::new(origin.x, origin.y, origin.z));
             }
             return drawn;
@@ -77,7 +77,7 @@ impl SimulationNode {
             core.agents.inspected_agent_failure(id).unwrap_or_default(),
         );
         drop(core);
-        if let Some(origin) = self.car_visuals.drawn_origin(render_id) {
+        if let Some(origin) = self.drawn_car_origin(render_id) {
             details.set("drawn_position", Vector3::new(origin.x, origin.y, origin.z));
         }
         details

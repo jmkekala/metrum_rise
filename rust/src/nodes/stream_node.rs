@@ -29,7 +29,12 @@
 //! eye ([`ZoningRing`]), which the overlay moves to its camera as it asks for them.
 
 use crate::nodes::camera_node::CameraNode;
+use crate::nodes::sim::render::agent_frame::SharedCasterFeed;
 use crate::nodes::sim::render::stream::backend::{GodotBackend, Role, Shadow, slot_census};
+use crate::nodes::sim::render::stream::layers::agent_casters::{
+    AgentCasterLayer, AgentKind, CasterView, SLOT_LIMIT as AGENT_SLOT_LIMIT,
+    SPARE_LIMIT as AGENT_SPARE_LIMIT,
+};
 use crate::nodes::sim::render::stream::layers::graded::book::GradedTileBook;
 use crate::nodes::sim::render::stream::layers::parked::{
     ParkedLayer, SLOT_LIMIT as PARKED_SLOT_LIMIT, SPARE_LIMIT as PARKED_SPARE_LIMIT,
@@ -58,7 +63,9 @@ use crate::nodes::sim::render::vegetation_product::godot_math::Aabb;
 use crate::nodes::sim::render::vegetation_product::{Batch, VegetationProduct};
 use crate::nodes::simulation_node::SimulationNode;
 use crate::nodes::simulation_node::vegetation_api::jobs::{self, Spawner};
-use godot::classes::{Engine, INode, Node, RenderingServer, ResourceLoader, Script};
+use godot::classes::{
+    DirectionalLight3D, Engine, INode, Node, RenderingServer, ResourceLoader, Script,
+};
 use godot::prelude::*;
 
 /// Runs the streaming core's frame: pulls prepared products, follows the camera and installs
@@ -124,10 +131,23 @@ pub struct StreamNode {
     frame_road_us: f64,
     // The parked cars' slots (`RENDER-32-P`), once `parked_cars.gd` gave the scenario.
     parked: Option<ParkedDraw>,
+    // The moving agents' shadow-only twins (`RENDER-15`, R47), once `agents.gd` attached them.
+    agents: Option<AgentDraw>,
     // The zoning masks' ring (`RENDER-32-P`) with the chunk span and world size it is for.
     zoning: Option<(ZoningRing, f64, [f64; 2])>,
     // The graded tile renderer's book, which follows the terrain's resident entries.
     graded: Option<Gd<GradedTileBook>>,
+}
+
+// The agents' twins with their own backend (their own mesh and material catalogue), the feed
+// of candidates from the agents' frame, the sun whose shadow range they follow, and the frame's
+// time keeping them (the perf channel).
+struct AgentDraw {
+    backend: GodotBackend,
+    layer: AgentCasterLayer,
+    feed: SharedCasterFeed,
+    sun: Gd<DirectionalLight3D>,
+    frame_us: f64,
 }
 
 // The parked layer with its own backend (its own mesh catalogue, appended as buckets appear)
@@ -186,6 +206,7 @@ impl INode for StreamNode {
             road_work: RoadWork::default(),
             frame_road_us: 0.0,
             parked: None,
+            agents: None,
             zoning: None,
             graded: None,
         }
@@ -205,6 +226,9 @@ impl INode for StreamNode {
         self.clear_vegetation();
         self.clear_road_hydration();
         self.clear_parked_chunks();
+        if let Some(draw) = self.agents.as_mut() {
+            draw.layer.reset(&mut draw.backend);
+        }
     }
 
     fn process(&mut self, delta: f64) {
@@ -228,6 +252,7 @@ impl StreamNode {
     /// The second pass of the frame, just before it draws; then the frame's perf record.
     #[func]
     fn pre_draw(&mut self) {
+        self.keep_agent_casters();
         self.run_pass(false);
         if self.perf {
             self.record_perf();
@@ -912,6 +937,89 @@ impl StreamNode {
         }
     }
 
+    /// Draws the moving agents' shadows from shadow-only twins in `scenario` from now on
+    /// (`agents.gd`, once; `RENDER-15`, R47): they hold the agents `simulation`'s frames keep
+    /// as candidates that can shade ground `sun`'s shadow reaches. A second call keeps them.
+    #[func]
+    pub fn attach_agent_casters(
+        &mut self,
+        simulation: Gd<SimulationNode>,
+        sun: Gd<DirectionalLight3D>,
+        scenario: Rid,
+    ) {
+        if self.agents.is_none() && scenario.is_valid() {
+            let mut backend = GodotBackend::new(scenario);
+            backend.set_catalogue(Vec::new(), Vec::new(), Vec::new());
+            self.agents = Some(AgentDraw {
+                backend,
+                layer: AgentCasterLayer::new(AGENT_SLOT_LIMIT, AGENT_SPARE_LIMIT),
+                feed: simulation.bind().agent_caster_feed(),
+                sun,
+                frame_us: 0.0,
+            });
+        }
+    }
+
+    /// Registers an agent bucket's twin: `kind` 0 walkers (by type), 1 moving cars (by bucket
+    /// key), the bucket node's mesh, its material override (an invalid RID: the mesh's own) and
+    /// its extra cull margin. Returns whether the twin will cast for the bucket; the bucket's
+    /// node then casts nothing. A bucket registered again keeps its first registration.
+    #[func]
+    pub fn register_agent_caster(
+        &mut self,
+        kind: i64,
+        key: i64,
+        mesh: Rid,
+        material: Rid,
+        margin: f64,
+    ) -> bool {
+        let (Some(draw), Some(kind), Ok(key)) =
+            (self.agents.as_mut(), agent_kind(kind), u8::try_from(key))
+        else {
+            return false;
+        };
+        let mesh = draw.backend.push_mesh(mesh);
+        let material = material
+            .is_valid()
+            .then(|| draw.backend.push_material(material));
+        draw.layer.register(kind, key, mesh, material, margin as f32);
+        true
+    }
+
+    /// Whether an agent kind's twins cast (`kind` 0 walkers, 1 cars; the shadow benchmark's
+    /// caster classes, `RENDER-15`); the game never clears it.
+    #[func]
+    pub fn set_agent_cast_shadows(&mut self, kind: i64, cast: bool) {
+        if let (Some(draw), Some(kind)) = (self.agents.as_mut(), agent_kind(kind)) {
+            draw.layer.set_cast(&mut draw.backend, kind, cast);
+        }
+    }
+
+    /// Whether the twins draw (the shadow benchmark's `agents_all` clears it while the bucket
+    /// nodes cast instead); the game never clears it.
+    #[func]
+    pub fn set_agent_casters_enabled(&mut self, enabled: bool) {
+        if let Some(draw) = self.agents.as_mut() {
+            draw.layer.set_enabled(&mut draw.backend, enabled);
+        }
+    }
+
+    /// The drawn twins (tests and the stream benchmark's census): `kind`, `key` and `count`
+    /// (the agents each casts). `O(twins)`.
+    #[func]
+    pub fn get_agent_casters(&self) -> VarArray {
+        let mut out = VarArray::new();
+        for (kind, key, rows) in self.agents.iter().flat_map(|draw| draw.layer.drawn()) {
+            let stride = if kind == AgentKind::Walkers { 16 } else { 12 };
+            let mut item = VarDictionary::new();
+            item.set("kind", kind as i64);
+            item.set("key", i64::from(key));
+            item.set("count", (rows.len() / stride) as i64);
+            out.push(&item.to_variant());
+        }
+        out
+    }
+
     /// Registers vehicle bucket `bucket`'s mesh and its bounds (`Mesh.get_aabb`; built by
     /// `parked_cars.gd` as the bucket is first met). The bounds give each drawn bucket the bounds
     /// its draw distance is measured from (`RENDER-48`). A bucket registered again keeps its
@@ -945,6 +1053,10 @@ impl StreamNode {
             "vegetation" => slot_census(self.vegetation.pool()),
             "parked" => self
                 .parked
+                .as_ref()
+                .map_or_else(VarDictionary::new, |draw| slot_census(draw.layer.pool())),
+            "agents" => self
+                .agents
                 .as_ref()
                 .map_or_else(VarDictionary::new, |draw| slot_census(draw.layer.pool())),
             _ => VarDictionary::new(),
@@ -1455,6 +1567,45 @@ impl StreamNode {
         Some(out)
     }
 
+    // Keeps the agents' twins for the drawing camera and the sun's shadow range, charged to the
+    // frame's ledger, and tells the agents' next frame the range its candidates are kept for.
+    // `O(candidates)` a frame in which they, the camera or the range changed (`RENDER-15`, R47).
+    fn keep_agent_casters(&mut self) {
+        let camera = self
+            .base()
+            .get_viewport()
+            .and_then(|viewport| viewport.get_camera_3d());
+        let Some(draw) = self.agents.as_mut() else {
+            return;
+        };
+        draw.frame_us = 0.0;
+        let Some(camera) = camera else {
+            return;
+        };
+        let start = std::time::Instant::now();
+        let transform = camera.get_global_transform();
+        let sun = &draw.sun;
+        let range = if sun.is_visible_in_tree() && sun.has_shadow() {
+            sun.get_param(godot::classes::light_3d::Param::SHADOW_MAX_DISTANCE)
+        } else {
+            0.0
+        };
+        let view = CasterView {
+            eye: transform.origin.to_array(),
+            forward: (-transform.basis.col_c()).normalized().to_array(),
+            range,
+        };
+        let mut feed = draw.feed.lock().unwrap();
+        feed.range_m = if draw.layer.is_active() { range } else { 0.0 };
+        draw.layer.update(&mut draw.backend, &feed, view);
+        drop(feed);
+        let us = start.elapsed().as_secs_f64() * 1e6;
+        draw.frame_us = us;
+        with_ledger(Engine::singleton().get_process_frames(), |ledger| {
+            ledger.charge(Owner::AgentCasters, us, us)
+        });
+    }
+
     fn record_perf(&mut self) {
         let script = self.perf_script.get_or_insert_with(|| {
             ResourceLoader::singleton()
@@ -1484,6 +1635,10 @@ impl StreamNode {
         details.set("slots_live", status.slots_live as i64);
         details.set("slots_spare", status.slots_spare as i64);
         details.set("stream_ms", self.frame_us / 1000.0);
+        details.set(
+            "agent_casters_ms",
+            self.agents.as_ref().map_or(0.0, |draw| draw.frame_us / 1000.0),
+        );
         let work = self.residency.work();
         details.set("residency_ms", self.frame_residency_us / 1000.0);
         details.set("residency_changed", i64::from(work.evaluated));
@@ -1769,5 +1924,14 @@ impl PatchExecutor for ScriptExecutor<'_> {
             "stream_set_lod",
             &[Vector2i::new(key[0], key[1]).to_variant(), i64::from(step).to_variant()],
         );
+    }
+}
+
+// An agent kind by its bridge number: 0 walkers, 1 moving cars.
+fn agent_kind(kind: i64) -> Option<AgentKind> {
+    match kind {
+        0 => Some(AgentKind::Walkers),
+        1 => Some(AgentKind::Cars),
+        _ => None,
     }
 }

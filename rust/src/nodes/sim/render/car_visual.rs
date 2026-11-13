@@ -249,7 +249,9 @@ impl CarVisualSmoother {
             return;
         }
         let started = Instant::now();
-        // Godot's main thread solves every frame: shared pool (CODE-17).
+        // The agents' frame job runs on the background pool, where `install` runs inline and the
+        // pass shares that pool; a caller outside every pool (tests) enters the shared pool
+        // (CODE-17, `RENDER-47`).
         crate::thread_pools::install(|| {
             self.buckets
                 .par_iter_mut()
@@ -346,6 +348,12 @@ impl CarVisualSmoother {
     /// Bucket `key`'s drawn buffer.
     pub(crate) fn drawn_bucket(&self, key: u8) -> &[f32] {
         &self.buckets[usize::from(key)].drawn
+    }
+
+    /// One more than the largest bucket key met: every key below it has a drawn buffer (empty
+    /// when it draws none).
+    pub(crate) fn bucket_count(&self) -> usize {
+        self.buckets.len()
     }
 
     /// The last frame's split ([`CarFrameParts`]).
@@ -469,7 +477,7 @@ impl CarVisualSmoother {
                 .for_each(step);
             return;
         }
-        // Godot's main thread calls this every frame: shared pool (CODE-17).
+        // As in `solve_pending`: inline on the frame job's background worker (`RENDER-47`).
         crate::thread_pools::install(|| {
             poses
                 .par_chunks_exact_mut(STRIDE)

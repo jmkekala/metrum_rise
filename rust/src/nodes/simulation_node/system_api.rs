@@ -92,6 +92,7 @@ impl SimulationNode {
         let eye = camera_position.is_finite().then_some(camera_position);
         let camera = eye.map(|eye| Vector2::new(eye.x, eye.z));
         self.render_camera_position = camera;
+        self.render_eye = eye;
         let _ = self.cmd_tx.send(SimCommand::SetCameraAabb {
             bounds: (x_min, x_max, z_min, z_max),
             camera,
@@ -262,36 +263,6 @@ impl SimulationNode {
             .is_ok()
     }
 
-    /// Returns pedestrian_type → MultiMesh buffer (transform and walk phase, 16 floats a walker)
-    /// of the walkers the latest snapshot draws, the node's own dictionary, valid until the next
-    /// call. [`Self::get_changed_walker_buckets`] lists the buckets whose buffer changed since
-    /// the last call, the only ones to upload; a bucket that left is absent (draw none)
-    /// (`RENDER-28`). O(drawn walkers) bitwise compares, a copy of the changed buckets only.
-    #[func]
-    pub fn update_walker_buffers(&mut self) -> VarDictionary {
-        self.walker_visuals
-            .update(&self.snapshot.read().unwrap().pedestrian_transforms);
-        self.changed_walker_buckets.clear();
-        for &key in self.walker_visuals.changed() {
-            let drawn = self.walker_visuals.drawn(key);
-            if drawn.is_empty() {
-                self.walker_buffers.remove(i64::from(key));
-            } else {
-                self.walker_buffers
-                    .set(i64::from(key), PackedFloat32Array::from(drawn));
-            }
-            self.changed_walker_buckets.push(i64::from(key));
-        }
-        self.walker_buffers.clone()
-    }
-
-    /// The buckets whose walker buffer the last `update_walker_buffers` call changed, including
-    /// those that left. O(changed buckets).
-    #[func]
-    pub fn get_changed_walker_buckets(&self) -> PackedInt64Array {
-        self.changed_walker_buckets.clone()
-    }
-
     /// The walkers' and cars' draw distances (`RENDER-28`; parked cars too, `RENDER-48`), metres
     /// from the camera: walker fade start, walker draw distance, car fade start, car draw
     /// distance. The agents' and parked cars' shaders fade over each band; the snapshot stops
@@ -387,7 +358,7 @@ impl SimulationNode {
     }
 
     /// Up to `max_count` drawn cars nearest `eye` within `radius_m`, nearest first, from the
-    /// bucket → transform buffers `smooth_car_render_data` returns: 13 floats per car, its
+    /// bucket → transform buffers `advance_agent_frame` returns as `cars`: 13 floats per car, its
     /// 12-float MultiMesh transform then its bucket key. Feeds the headlight spot lights.
     /// O(cars · log max_count).
     #[func]
@@ -425,97 +396,6 @@ impl SimulationNode {
             out_slice[i * 13 + 12] = keys[buffer];
         }
         out
-    }
-
-    /// Returns bucket → MultiMesh transform buffer of this frame's drawn cars, from buckets shaped
-    /// like `get_car_render_data`. Poses move toward their snapshot poses and off-lane cars are
-    /// grounded; if the support solve is busy they show their validated snapshot pose. A bucket
-    /// with mismatched identity or flag counts is drawn unsmoothed. Cars at rest are drawn as
-    /// they were, with no solve (`RENDER-28`); [`Self::get_changed_car_buckets`] lists the
-    /// buckets whose buffer changed, the only ones to upload. The dictionary is the node's own,
-    /// valid until the next call. O(cars) per frame for the buckets with a moving car, one
-    /// non-blocking core attempt and one parallel solve pass a frame for the off-lane cars not
-    /// at rest; O(1) plus a compare of its inputs for an untouched bucket.
-    #[func]
-    pub fn smooth_car_render_data(&mut self, car_data: VarDictionary, delta: f64) -> VarDictionary {
-        use crate::nodes::sim::render::car_visual::{CarVisualSmoother, GroundView};
-        let alpha = CarVisualSmoother::alpha(delta);
-        let camera = self.render_camera_position;
-        self.car_visuals.begin_frame(GroundView {
-            key: self.snapshot.read().unwrap().vehicle_ground_key,
-            camera: camera.map(|camera| [camera.x, camera.y]),
-        });
-        self.changed_car_buckets.clear();
-        for (key, bucket) in car_data.iter_shared() {
-            let (Ok(bucket), Some(slot)) = (
-                bucket.try_to::<VarDictionary>(),
-                key.try_to::<i64>()
-                    .ok()
-                    .and_then(|key| u8::try_from(key).ok()),
-            ) else {
-                continue;
-            };
-            let field = |name: &str| bucket.get(name).unwrap_or_default();
-            let targets = field("transforms")
-                .try_to::<PackedFloat32Array>()
-                .unwrap_or_default();
-            let ids = field("ids")
-                .try_to::<PackedInt64Array>()
-                .unwrap_or_default();
-            let flags = field("ground_flags")
-                .try_to::<PackedByteArray>()
-                .unwrap_or_default();
-            let count = targets.len() / 12;
-            if targets.len() % 12 != 0 || ids.len() != count || flags.len() != count {
-                self.car_visuals.pass_through(slot, targets.as_slice());
-            } else {
-                self.car_visuals.smooth_bucket(
-                    slot,
-                    targets.as_slice(),
-                    ids.as_slice(),
-                    flags.as_slice(),
-                    alpha,
-                );
-            }
-        }
-        if self.car_visuals.needs_solve() {
-            // One non-blocking core attempt a frame, held for the one solve pass.
-            let core = Self::try_lock_shared_core(&self.core);
-            self.car_visuals.solve_pending(|slot, poses, solve| {
-                core.as_ref().is_some_and(|core| {
-                    core.ground_vehicle_transforms(slot / 10, poses, solve, camera)
-                })
-            });
-        }
-        self.car_visuals.finish_frame();
-        for &slot in self.car_visuals.changed() {
-            self.car_buffers.set(
-                i64::from(slot),
-                PackedFloat32Array::from(self.car_visuals.drawn_bucket(slot)),
-            );
-            self.changed_car_buckets.push(i64::from(slot));
-        }
-        for &slot in self.car_visuals.left() {
-            self.car_buffers.remove(i64::from(slot));
-            self.changed_car_buckets.push(i64::from(slot));
-        }
-        self.car_buffers.clone()
-    }
-
-    /// The buckets whose drawn buffer the last `smooth_car_render_data` call changed, including
-    /// those that left (now absent from its dictionary: draw none). O(changed buckets).
-    #[func]
-    pub fn get_changed_car_buckets(&self) -> PackedInt64Array {
-        self.changed_car_buckets.clone()
-    }
-
-    /// The last `smooth_car_render_data` call's split (`RENDER-28`), for the perf channel:
-    /// microseconds smoothing (with the copy of the snapshot poses), in the off-lane ground solve
-    /// (with its core attempt) and recording; then cars, off-lane cars, off-lane cars solved,
-    /// cars at rest, such off-lane cars, buckets uploaded and buckets left untouched. O(1).
-    #[func]
-    pub fn get_car_frame_parts(&self) -> PackedInt64Array {
-        PackedInt64Array::from(self.car_visuals.parts().as_slice())
     }
 
     /// Returns debug path geometry for active agents.

@@ -16,15 +16,17 @@
 ## `furniture`: road signs and street lights). `far<m>` ends the sun's shadow at that many metres
 ## instead of SceneLighting's 420, its four splits at the same shares of it: the casters and the
 ## receivers beyond it go. Parts join with `+` into one variant, at most one quality among them
-## (`far200+no_trees`): what a class costs inside a shorter range. `agents_near` casts the moving
-## cars and the walkers from shadow-only twins holding only those that can shade the visible
-## ground (`CasterTwins`), instead of the whole city's agents in every split: the same shadows
-## for less drawing. Benchmark-only: nothing in the game calls it.
+## (`far200+no_trees`): what a class costs inside a shorter range. The game casts the moving cars
+## and the walkers from the StreamNode's shadow-only twins holding only those that can shade the
+## shadowed ground (`RENDER-15`, round R47); `agents_all` casts them from their whole bucket nodes
+## instead, every agent in every split as before R47 (SH2's `full`): the twins' saving against
+## it. On a tree without the twins `agents_all` is `full`. Benchmark-only: nothing in the game
+## calls it.
 extends RefCounted
 
 const NAMES: Array[String] = ["full", "none", "filter2", "filter3", "no_pcss", "no_blend", "low",
 	"medium", "medium_blend", "no_cloud_shadows", "no_casters", "no_buildings", "no_trees",
-	"no_cars", "no_walkers", "no_parked", "no_furniture", "agents_near"]
+	"no_cars", "no_walkers", "no_parked", "no_furniture", "agents_all"]
 const CLASSES: Array[String] = ["buildings", "trees", "cars", "walkers", "parked", "furniture"]
 # The node renderers' shadow policy categories (`SceneLighting.apply_shadow_policy`) per class;
 # the building batches, the parked cars and the vegetation draw through Rust and have toggles.
@@ -45,8 +47,8 @@ const SAVED_CAST_META := &"shadow_variant_cast"
 
 # The classes off as the last variant left them, so a variant changes only what differs.
 static var _classes_off: Array[String] = []
-# `agents_near`'s twins while it applies.
-static var _twins: CasterTwins = null
+# Whether `agents_all` applies.
+static var _agents_all := false
 
 ## Whether `variant` names a variant: parts of NAMES or `far<metres>` joined by `+`.
 static func is_known(variant: String) -> bool:
@@ -60,8 +62,8 @@ static func is_known(variant: String) -> bool:
 			return false
 		qualities += int(part in ["low", "medium", "medium_blend"])
 	var parts := variant.split("+")
-	# The twins take the agents' casters over; a class switch on them would fight it.
-	return qualities <= 1 and not (parts.has("agents_near") and (parts.has("no_cars") or parts.has("no_walkers")))
+	# The bucket nodes take the agents' casters over; a class switch on them would fight it.
+	return qualities <= 1 and not (parts.has("agents_all") and (parts.has("no_cars") or parts.has("no_walkers")))
 
 ## Applies `variant` (see `is_known`; unknown parts are ignored, so a name that is no variant is
 ## `full`). `lighting` is the SceneLighting node, untyped so a benchmark copied over an older tree's
@@ -109,14 +111,9 @@ static func apply(lighting: Variant, sun: DirectionalLight3D, variant: String) -
 			if off.has(name) != _classes_off.has(name):
 				_set_class_casts(main, name, not off.has(name))
 		_classes_off = off
-	if parts.has("agents_near") != (_twins != null):
-		if _twins == null:
-			_twins = CasterTwins.new(sun)
-			main.add_child(_twins)
-		else:
-			_twins.restore()
-			_twins.free()
-			_twins = null
+	if parts.has("agents_all") != _agents_all:
+		_agents_all = parts.has("agents_all")
+		_set_agents_all(main, _agents_all)
 
 ## The node casters still casting, by shadow policy category: `[nodes, instances, instances
 ## within `range_m` of `eye`]`, a MultiMesh's drawn instances counted from its buffer (the
@@ -148,6 +145,18 @@ static func node_casters(root: Node, eye: Vector3, range_m: float) -> Dictionary
 		out[category] = counts
 	return out
 
+# `agents_all` on or off: the twins stop or start drawing and the agents' bucket nodes cast or not
+# (`agents.gd` turned them off when the twins took over). Nothing on a tree without the twins.
+static func _set_agents_all(main: Node, on: bool) -> void:
+	var stream := main.get_node("StreamNode")
+	if not stream.has_method("set_agent_casters_enabled"):
+		return
+	stream.set_agent_casters_enabled(not on)
+	var agents := main.get_node("Agents")
+	for buckets: Dictionary in [agents.walker_mmis, agents.car_mmis]:
+		for mmi: MultiMeshInstance3D in buckets.values():
+			mmi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON if on else GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+
 # Turns one class's casting off or back on: the Rust layers through their toggles, the node
 # renderers' casters through their own setting, kept on the node while off.
 static func _set_class_casts(main: Node, name: String, cast: bool) -> void:
@@ -158,6 +167,11 @@ static func _set_class_casts(main: Node, name: String, cast: bool) -> void:
 			main.get_node("Vegetation").set_cast_shadows(cast)
 		"parked":
 			main.get_node("StreamNode").set_parked_cast_shadows(cast)
+		"cars", "walkers":
+			# The agents' twins (`RENDER-15`, R47); their bucket nodes cast nothing.
+			var stream := main.get_node("StreamNode")
+			if stream.has_method("set_agent_cast_shadows"):
+				stream.set_agent_cast_shadows(0 if name == "walkers" else 1, cast)
 	var categories: Array = NODE_CATEGORIES.get(name, [])
 	if categories.is_empty():
 		return
@@ -171,97 +185,3 @@ static func _set_class_casts(main: Node, name: String, cast: bool) -> void:
 		elif cast and instance.has_meta(SAVED_CAST_META):
 			instance.cast_shadow = instance.get_meta(SAVED_CAST_META)
 			instance.remove_meta(SAVED_CAST_META)
-
-## `agents_near`: every moving car and walker caster (`agents.gd`'s buckets) casts nothing itself
-## and gets a shadow-only twin sharing its mesh and material, refilled each frame from the
-## frame's buffers `agents.gd` keeps (this node is the last child of Main, so it runs after them;
-## reading a MultiMesh's buffer back stalls the GPU), with only the agents that can shade ground
-## inside the sun's shadow range: view depth within the range plus TWIN_MARGIN_M either way, and
-## distance within TWIN_RADIAL_FACTOR times the range plus the margin (a split's corners lie up to
-## 1.86 times its depth away at 75 degrees of vertical field and 16:9). The margin covers the
-## longest shadow a 2 m agent throws with the sun above 4 degrees. `O(agents)` a frame in
-## GDScript: the frame time carries it, the GPU time does not.
-class CasterTwins extends Node:
-	const TWIN_MARGIN_M := 30.0
-	const TWIN_RADIAL_FACTOR := 1.9
-	var _sun: DirectionalLight3D
-	var _agents: Node
-	# [source MultiMeshInstance3D, its twin, "walker_buffers" or "car_buffers", bucket key, the
-	# bucket's last rows] per bucket.
-	var _pairs: Array = []
-
-	func _init(sun: DirectionalLight3D) -> void:
-		_sun = sun
-		name = "ShadowCasterTwins"
-
-	func _ready() -> void:
-		_agents = get_parent().get_node("Agents")
-		for maps: Array in [["walker_buffers", _agents.walker_mmis], ["car_buffers", _agents.car_mmis]]:
-			for key in maps[1]:
-				var source: MultiMeshInstance3D = maps[1][key]
-				var multimesh := MultiMesh.new()
-				multimesh.transform_format = source.multimesh.transform_format
-				multimesh.use_colors = source.multimesh.use_colors
-				multimesh.use_custom_data = source.multimesh.use_custom_data
-				multimesh.mesh = source.multimesh.mesh
-				var twin := MultiMeshInstance3D.new()
-				twin.multimesh = multimesh
-				twin.material_override = source.material_override
-				twin.extra_cull_margin = source.extra_cull_margin
-				twin.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_SHADOWS_ONLY
-				source.add_sibling(twin)
-				twin.global_transform = source.global_transform
-				source.set_meta(SAVED_CAST_META, source.cast_shadow)
-				source.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-				_pairs.append([source, twin, maps[0], key, PackedFloat32Array()])
-
-	func _process(_delta: float) -> void:
-		var camera := get_viewport().get_camera_3d()
-		if camera == null:
-			return
-		var eye := camera.global_position
-		var forward := -camera.global_basis.z
-		var reach := _sun.directional_shadow_max_distance
-		for pair: Array in _pairs:
-			var buffers: Dictionary = _agents.get(pair[2])
-			# A bucket the frame did not send keeps its rows; one its node draws none of is empty.
-			if buffers.has(pair[3]):
-				pair[4] = buffers[pair[3]]
-			if (pair[0] as MultiMeshInstance3D).multimesh.instance_count == 0:
-				pair[4] = PackedFloat32Array()
-			_refill(pair[1], pair[4], eye, forward, reach)
-
-	## Gives the casters back their own shadow and frees the twins.
-	func restore() -> void:
-		for pair: Array in _pairs:
-			var source: MultiMeshInstance3D = pair[0]
-			source.cast_shadow = source.get_meta(SAVED_CAST_META)
-			source.remove_meta(SAVED_CAST_META)
-			pair[1].free()
-		_pairs.clear()
-
-	func _refill(twin: MultiMeshInstance3D, rows: PackedFloat32Array, eye: Vector3, forward: Vector3,
-			reach: float) -> void:
-		var to := twin.multimesh
-		var stride := 12 + 4 * int(to.use_colors) + 4 * int(to.use_custom_data)
-		var count := rows.size() / stride
-		if to.instance_count < count:
-			to.instance_count = count
-		var out := PackedFloat32Array()
-		out.resize(to.instance_count * stride)
-		var to_world := twin.global_transform
-		var kept := 0
-		for i in count:
-			var at := i * stride
-			var offset := to_world * Vector3(rows[at + 3], rows[at + 7], rows[at + 11]) - eye
-			var depth := offset.dot(forward)
-			if depth < -TWIN_MARGIN_M or depth > reach + TWIN_MARGIN_M:
-				continue
-			if offset.length() > reach * TWIN_RADIAL_FACTOR + TWIN_MARGIN_M:
-				continue
-			for k in stride:
-				out[kept * stride + k] = rows[at + k]
-			kept += 1
-		if to.instance_count > 0:
-			to.buffer = out
-		to.visible_instance_count = kept

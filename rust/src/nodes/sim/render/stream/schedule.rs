@@ -138,7 +138,8 @@ pub(crate) const HOLE_RESERVE_US: f64 = 1000.0;
 /// The frame's install owners (`RENDER-32-Q`), each charging the one ledger. The process order
 /// of a frame is theirs too: the terrain's dirty-patch commit and the graded tiles
 /// (`terrain.gd`), the water's mesh pipeline (`water.gd`), the building batches and sites
-/// (`buildings.gd`), then the streaming node (patch units, vegetation) and its frees.
+/// (`buildings.gd`), then the streaming node (patch units, vegetation) and its frees, and just
+/// before the draw the agents' shadow casters.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Owner {
     /// The terrain's dirty patches, staged a patch a unit (`RENDER-40`).
@@ -155,10 +156,13 @@ pub(crate) enum Owner {
     Stream,
     /// The streaming node's frees (the plan's `free` class, AUDIT-stream finding 6).
     Free,
+    /// The moving agents' shadow-only twins, kept just before the frame draws (`RENDER-15`,
+    /// R47): charged, never deferred, since the shadows must follow the agents drawn.
+    AgentCasters,
 }
 
 /// Owners in [`Owner`] order.
-pub(crate) const OWNERS: usize = 7;
+pub(crate) const OWNERS: usize = 8;
 
 /// The frame's one install ledger (`RENDER-32-Q`, `PLAN-STREAM` decision 6): every owner of
 /// main-thread install work charges the frame's [`STREAM_BUDGET_US`] here, in the frame's process

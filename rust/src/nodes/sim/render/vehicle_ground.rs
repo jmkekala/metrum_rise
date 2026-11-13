@@ -196,7 +196,8 @@ impl SimCore {
         flags: &[u8],
         camera_position: Option<Vector2>,
     ) {
-        // Godot's main thread grounds cars every frame: shared pool (CODE-17).
+        // The agents' frame job grounds cars on a background worker (inline there), the
+        // simulation thread's snapshot in the shared pool (CODE-17, `RENDER-47`).
         crate::thread_pools::install(|| {
             transforms
                 .par_chunks_exact_mut(12)
