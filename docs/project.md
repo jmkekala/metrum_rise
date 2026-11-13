@@ -126,6 +126,14 @@ commit on growth edits (`RENDER-40`: 8-23 ms frames at 30k, up to 442 ms at 100k
 draw (`RENDER-46`); the paused 30k turn's 6 ms over its GPU time is the draw's command replay, the
 core waits, Rayon joins and X11 round trips
 ([record](terrain.md#where-the-frame-goes-with-the-simulation-running-pl1-2026-11-12)).
+The renderers, the camera and the HUD no longer wait for the simulation core (`CODE-26`,
+2026-11-13, for review): their per-frame queries (land cover revisions, coal pit revision, growth
+summary, terrain, surface and camera-water heights) read values published with the render
+snapshot, fresh in the frame of an edit. With the simulation running, the main thread's blocking
+core waits fall from 0.6-39 ms a frame to at most 0.2 (the terrain's stale land cover query,
+`RENDER-40`), and the 100k city's frame p50 at 32x from 43 to 18 ms; the non-road tools' hovers
+still wait while their tool is active
+([record](terrain.md#per-frame-queries-read-published-values-code-26-round-c26-2026-11-13)).
 Where the GPU goes (`RENDER-44`, `RENDER-46`, measured 2026-11-13, no behaviour change): the
 100k still's 99 M main-pass primitives are mostly building batches and parked cars beyond 1 km
 (parked cars are drawn to the horizon; cars and walkers have no far mesh), and 73 % of them draw no

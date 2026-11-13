@@ -17044,6 +17044,132 @@ infinite distance never ended); `take_installs` without settings spends what the
   `./run.sh --test` PASS (nextest 2,565 passed, 225 skipped; `godot-main` and `godot-vehicle`
   PASS, 18 graded replays, 0 SCRIPT ERROR). The digests tool's unit tests 25 passed.
 
+### Per-frame queries read published values (`CODE-26`, round C26, 2026-11-13)
+
+Round C26 (`CODE-26`, raised to `P1` by the owner on 2026-11-13 from PL1's numbers): the
+per-frame queries of the renderers, the camera and the HUD no longer take the core. The
+inventory (PL1's counts and this round's): every frame `terrain.gd` waited in
+`get_land_cover_epoch`, `is_vegetation_land_cover_current` (up to 28 a frame at 100k),
+`get_coal_pit_overlay_revision` and `get_world_surface_height` (the graded tiles' eye height),
+`grass.gd` in `get_world_surface_height`, `main_ui.gd` in `get_growth_overview` (every game
+minute, so every frame at 32x), and the camera, while it moves, in `get_height_at` and
+`get_camera_water_surface_at` (the last found by this round's paused turn). Left: the non-road
+tools' hovers (zoning previews and dependencies, the select tool's edge and crosswalk hovers)
+wait while their tool is active (`CODE-26`'s remainder), and the terrain's stale land cover query
+(`get_vegetation_land_cover` on the main thread, `RENDER-40`'s rest). The roundabout hover reads
+the road tool's land (`ZONE-09`) and takes no core.
+
+**What is published.** The render snapshot carries a per-frame publication (`FrameQueries`,
+`nodes/sim/core/snapshot/frame_queries.rs`; the snapshot's own mechanism, no third one): the land
+cover epoch, the terrain payload and vegetation patch revisions (the currency check's nine
+pairs), the coal pit revision, the growth summary's three strings, and the visible surface: the
+heightmap, the roadbed, the water and the building sites the road tool's terrain inputs capture
+per render patch, each shared by `Arc`. A height query evaluates the graded surface over them
+(the index-free gather the road tool's view queries, bitwise the core's answer); the camera's
+water level the same reconstruction. Every query is `O(1)` apart from the surface's own sampling,
+allocation-free once the thread's scratch is warm, and never touches the core lock.
+
+**Publish cost.** A key compare (world epoch, terrain payload counter and global revision,
+vegetation epoch, coal pit revision, the growth summary's inputs, terrain source generation,
+roadbed generation, the terrain inputs' site revision, water render generation, surface stamp):
+`O(1)` and allocation-free while nothing changed. A change republishes only what moved: the
+growth strings on the hourly assessment, the vegetation revisions (`O(edited patches)`), the
+terrain payload revisions (`O(revised patches)`; the snapshot now shares this map instead of
+copying it every frame), and the surface: the noted patches' terrain inputs (the road tool's
+rebuild, `O(noted patches × sites near each)`), the roadbed in `O(1)`, and heightmap and water
+copies made once per edit and shared with the road tool's view (sample-chunk handles: no sample
+copied, and no second copy where the road tool copied before). The readers' rebuild of the
+terrain inputs readies only the site part of a stale building index (`ALLOC-05`) and owes the
+full readying to the simulation's next rebuild, so whether and when the readers rebuilt never
+moves the simulation's order.
+
+**Freshness rule.** A published value is at most one publication old, and an edit is visible to
+the frame that made it: the simulation thread publishes with the snapshot after every frame and
+edit; a bridge call that held the core on Godot's thread republishes as it releases it (the core
+guard: the key compare under the core, the snapshot written after the core is released), before
+the frame's readers run, so the camera and the hover heights follow a sculpt in the same frame.
+Publications are ordered by a sequence taken under the core lock, and an older one never replaces
+a newer one (a snapshot built before a main-thread edit keeps the edit's publication). Test
+(`published_frame_queries_follow_every_kind_of_edit`): after a road commit, an undo, a load, two
+site placements (one rebuilt first by the road tool's path), a bulldoze, a slope, a sculpt, a
+vegetation edit, the growth cheat and a pond, every published value equals the core's: the
+surface, terrain and camera-water heights bit for bit on a 41 × 35 grid over roads, pads, graded
+ground and water, every patch's land cover revisions, the coal pit revision and the growth
+summary; an unchanged core publishes nothing.
+
+**Measured** (fresh, 2026-11-13; release libraries, control `dev` `2a5f2220` with its scripts
+against the branch `b17ac153`; Godot 4.7.2 Forward+, gamescope headless at 1000 Hz,
+1920x1080, P-cores, eight workers, isolated profile; PL1's play rows, instrumented (`--detail`):
+a 60 s still and three 1 s turns with the simulation running from the hand-over, the 30k
+timing-cache city and the 100k commit city):
+
+```bash
+tools/stream_benchmark.py run --label <row>-<side> --out "$ARTIFACTS/play" --library <.so> \
+    [--scripts <control scripts>] --save <city> --speed 1|32 --phases still,turns --turns 1 \
+    --still-s 60 --detail --timeout 900 --settle-timeout 300 [--settle-cap-s 20]
+```
+
+The control's 30k 1x, 30k 32x and 100k 1x rows never settled (growth keeps the terrain dirty:
+the turn's start or the base pose timed out after 300 s; the branch settled every row) and were
+rerun with PL1's settle cap of 20 s, as the 100k 32x rows run on both sides. "Core waits" sums
+every blocking core lock a frame from the main thread (`core_locks`, perf channel); "tries busy"
+is the share of the frame's `try_lock`s that found the core held.
+
+| Configuration | side | still p50 / p99 | still > 33.3 | still core waits | tries busy | turns p50 / p99 | turns > 33.3 | turns core waits | simulation |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| Paused 30k | control | 7.6 / 10.5 | 0 of 7813 | 0.14 | 3 % | 9.6 / 14.1 | 0 of 306 | 0.79 | 0.0x |
+| Paused 30k | branch | 7.6 / 9.6 | 0 of 7820 | 0.00 | 9 % | 8.9 / 13.1 | 0 of 335 | 0.00 | 0.0x |
+| 30k 1x | control | 8.4 / 19.5 | 0 of 6695 | 0.59 | 7 % | 16.8 / 35.3 | 2 of 168 | 1.93 | 1.0x |
+| 30k 1x | branch | 7.8 / 16.9 | 0 of 7211 | 0.04 | 19 % | 11.6 / 24.9 | 1 of 241 | 0.16 | 1.0x |
+| 30k 32x | control | 9.2 / 44.6 | 87 of 5053 | 2.08 | 12 % | 23.1 / 57.4 | 12 of 125 | 7.13 | 31.3x |
+| 30k 32x | branch | 8.8 / 19.9 | 6 of 6116 | 0.19 | 46 % | 13.9 / 26.7 | 0 of 214 | 0.08 | 31.2x |
+| 100k 1x | control | 17.2 / 46.7 | 145 of 3034 | 4.01 | 17 % | 28.5 / 55.7 | 28 of 102 | 7.70 | 1.0x |
+| 100k 1x | branch | 14.7 / 28.8 | 10 of 3782 | 0.16 | 54 % | 18.1 / 31.6 | 0 of 157 | 0.00 | 1.0x |
+| 100k 32x | control | 43.1 / 284.6 | 761 of 987 | 38.80 | 72 % | 49.5 / 146.9 | 54 of 57 | 30.52 | 22.9x |
+| 100k 32x | branch | 17.8 / 33.5 | 32 of 3169 | 0.00 | 97 % | 16.9 / 26.5 | 1 of 175 | 0.00 | 18.2x |
+
+- The paused 30k turn's core wait (PL1's split: 1.7 ms of the profiled turn) is gone: no blocking
+  core lock on the paused still or turns (0.14 and 0.79 ms a frame on the control); the turn's
+  frame p50 9.6 to 8.9 ms.
+- Running, the only blocking site left on a frame path is `get_vegetation_land_cover`, the
+  terrain's stale land cover query (`RENDER-40`'s rest): 0.04-0.19 ms a frame on average, at most
+  8-20 ms at 30k 1x and 100k 1x and 61 ms at 30k 32x, where it is the largest owner of five of the
+  six frames over 33.3 ms. The 30k 32x frames over 33.3 ms at the hourly pass: 87 to 6 in the
+  60 s still (turns 12 to 0).
+- The try sites find the core busy more often now that no blocking wait lines the main thread up
+  behind the simulation's frame: 30k 1x 7 to 19 %, 30k 32x 12 to 46 %, 100k 1x 17 to 54 %, 100k
+  32x 72 to 97 % (graded results, building LOD batches, asset and water polls, vegetation jobs,
+  the terrain payload drain). A busy try answers at once and asks again next frame, so their
+  products land later while the simulation's frames overrun (`CODE-26`'s remainder).
+- At 100k 32x the simulation reached 18.2x against the control's 22.9x while Godot drew 53
+  frames a second against 16: the simulation frame's phases are each slower (instrumented
+  `sim_frame` lines: agents +4 %, minute +11 %, snapshot +32 %), consistent with the shared pool
+  serving 3.3 times the frames; at 30k 32x both reach 31x. Not an acceptance timing (the owner's
+  100k policy); recorded for `PERF-09`.
+- Rows (the stream benchmark's series, C B B C in one lock, paused): 30k level or better in
+  every phase, turns 0.9-2.8 ms better at p50 (the paused turn's core waits); one flag,
+  `far_to_ground` p50 +0.04 ms (5.37 against 5.42 ms, a same-binary spread of 0.01) with its mean
+  0.44 ms and its max 4.6 ms better and 7 % more frames in the fixed-length move: recorded, not
+  rerun. Kuopio level or better; `turn_repeat 0.5s` p50 +0.0 ms (spread 0.0) and
+  `night_turn_back 1s` max +3.1 ms (one 10.5 ms frame in one run; spread 2.7). The instrumented
+  night run puts that phase's worst frame in Godot's draw after the scripts on both sides (branch
+  10.1 ms with 8.1 ms of draw, control 11.4 ms with 10.1), no core lock in it: not this change.
+- Level F (`./run.sh --timing --level F`, the publish runs in the snapshot of every simulation
+  frame): `PERF-07` 30k 1x PASS on both sides and level in every metric (mean 2.193 against 2.214
+  ms, snapshot 0.996 against 1.017 ms: the publication's key compare and its republications cost
+  0.02 ms a frame); 30k 32x level (mean 4.345 against 4.446, snapshot 1.366 against 1.418 ms, one
+  branch row noisy, `PERF-17`'s known exception on both sides); K22 click-to-ack 6.57 against 6.81
+  ms (reported).
+- Untimed: stills byte-identical (Kuopio `close`, `mid`, `forest_low` one a side; 30k `city` and
+  `city_low` three a side; 30k `saved` 2 px of max delta 1 on every pair, as control against
+  control: `RENDER-45`'s residue; systematic none); digests equal (30k graded, buildings, roads,
+  parked 4 of 4, water 1 of 1; Kuopio 8 of 8 and 1 of 1); the graded replay passes all 21 traces
+  of record bit for bit.
+- Gates (code `b17ac153`): clippy `--all-targets` warning set equal to the base's
+  (`asset_document.rs`); debug `cargo test --lib` 2,553 passed, 0 failed, 224 ignored;
+  `./run.sh --test` PASS (nextest 2,557 passed, 225 skipped; `godot-main` and `godot-vehicle`
+  PASS, 0 SCRIPT ERROR); missing docs 0.
+
 ## Implemented Runtime Contract
 
 ### 1. `WorldConfig` Is The Authoritative World Metadata
