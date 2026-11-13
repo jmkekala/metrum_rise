@@ -148,12 +148,12 @@ of 2,631 in the shadow pass, Godot's draw costs 1.4 ms less a still frame and 3.
 frame, and the 30k 1 s turns run 3.7-4.2 ms faster. Street lights in chunk batches stopped at the
 no-visible-change bar (Godot's level-of-detail hysteresis follows each batch's frustum history); the
 choice is the user's ([record](terrain.md#one-body-surface-per-car-mesh-street-lights-left-in-their-cells-render-46-2026-11-13)).
-Parked cars have the moving cars' draw distance since `RENDER-48` (round R48, 2026-11-13, pending
-the owner's stills): they fade out between 2.0 and 2.5 km like the moving cars, and Godot skips a
+Parked cars have the moving cars' draw distance since `RENDER-48` (round R48, 2026-11-13, stills
+approved by the owner): they fade out between 2.0 and 2.5 km like the moving cars, and Godot skips a
 parked batch with no car within 2.5 km. The 100k still draws 22 M fewer primitives (99 to 76 M) and
 1,000 fewer batches, about 1.6 ms of GPU; the 30k city, mostly within 2.5 km, changes little
 (far zooms 1.2-2.8 ms faster on the GPU, near views 0.02-0.07 ms slower: the fade's dither on the
-near parked cars, open for the owner). The
+near parked cars, kept by the owner). The
 far car meshes wait for the replacement models (`RENDER-26`)
 ([record](terrain.md#parked-cars-draw-distance-render-48-2026-11-13)).
 `RENDER-32-N` (2026-11-13, for review) measured how many frames a chunk that comes into view
