@@ -3,13 +3,14 @@
 ## PARK-01 bridge regression: shared mesh equivalence, lot supply, immutable chunks and towing;
 ## `ROAD-109`: a door keeps its sidewalk and a side without one takes no building, with the reason.
 ## `RENDER-32-P`: the parked renderer draws every car once through the stream node's pooled slots,
-## makes no node per chunk, and frees every slot when it leaves.
+## makes no node per chunk, and frees every slot when it leaves. `RENDER-46`: a car body is one surface.
 ## METRUM_PARKING_AGENT_CONTROL optionally points to the pre-extraction agents.gd source.
 extends SceneTree
 
 const AgentRenderer := preload("res://scripts/renderers/agents.gd")
 const VehicleResources := preload("res://scripts/renderers/vehicle_resources.gd")
 const ParkedRenderer := preload("res://scripts/renderers/parked_cars.gd")
+const VehicleLamps := preload("res://scripts/renderers/vehicle_lamps.gd")
 var _failures := 0
 
 func _initialize() -> void:
@@ -58,6 +59,66 @@ func _resources() -> void:
 	control.free()
 	current.free()
 
+# `RENDER-46`: a car's body primitives share one material, so they are one surface; its triangles,
+# vertices, normals and UVs are the glTF primitives' own in order, and the lamps keep theirs.
+func _merged_bodies() -> void:
+	var lit := VehicleResources.new()
+	var unlit := VehicleResources.new()
+	unlit.lamps_enabled = false
+	for model: int in VehicleResources.MODELS:
+		var path: String = VehicleResources.MODELS[model]
+		var source := lit._load_vehicle_glb_source(path)
+		var doc: Dictionary = source["json"]
+		# The builder's frame for base rotation (0, PI, 0) and no target height.
+		var frame := Transform3D().rotated(Vector3.RIGHT, 0.0).rotated(Vector3.UP, PI).rotated(Vector3.FORWARD, 0.0)
+		var primitives: Array = []
+		var bounds := {"has": false, "aabb": AABB()}
+		for node in doc["scenes"][int(doc.get("scene", 0))]["nodes"]:
+			lit._collect_glb_node_surfaces(doc, source["bin"], int(node), frame, 0.0, primitives, bounds)
+		var y_offset: float = -(bounds["aabb"] as AABB).position.y
+		# The source: a surface a primitive, as the builder made them before the merge. Compared
+		# as Godot stores them (normals are kept octahedral-encoded, so read back, not as given).
+		var source_mesh := ArrayMesh.new()
+		for primitive: Dictionary in primitives:
+			var surface_verts := PackedVector3Array()
+			for v: Vector3 in primitive["vertices"]:
+				v.y += y_offset
+				surface_verts.append(v)
+			var arrays := []
+			arrays.resize(Mesh.ARRAY_MAX)
+			arrays[Mesh.ARRAY_VERTEX] = surface_verts
+			arrays[Mesh.ARRAY_NORMAL] = primitive["normals"]
+			arrays[Mesh.ARRAY_TEX_UV] = primitive["uvs"]
+			arrays[Mesh.ARRAY_INDEX] = primitive["indices"]
+			source_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+		var verts := PackedVector3Array()
+		var normals := PackedVector3Array()
+		var uvs := PackedVector2Array()
+		var indices := PackedInt32Array()
+		for surface in source_mesh.get_surface_count():
+			var stored := source_mesh.surface_get_arrays(surface)
+			for index: int in stored[Mesh.ARRAY_INDEX]:
+				indices.append(verts.size() + index)
+			verts.append_array(stored[Mesh.ARRAY_VERTEX])
+			normals.append_array(stored[Mesh.ARRAY_NORMAL])
+			uvs.append_array(stored[Mesh.ARRAY_TEX_UV])
+		_expect(primitives.size() > 1, "%s has several body primitives" % path)
+		var meshes: Array[ArrayMesh] = [lit.mesh_for_bucket(model * 10), unlit.mesh_for_bucket(model * 10)]
+		for mesh in meshes:
+			var arrays := mesh.surface_get_arrays(0)
+			_expect(mesh.get_meta(VehicleLamps.BODY_SURFACES_META, 1) == 1, "one body surface")
+			_expect(arrays[Mesh.ARRAY_INDEX] == indices, "%s keeps its triangles and their winding" % path)
+			_expect(arrays[Mesh.ARRAY_VERTEX] == verts and arrays[Mesh.ARRAY_NORMAL] == normals
+				and arrays[Mesh.ARRAY_TEX_UV] == uvs, "%s keeps its vertex data" % path)
+			_expect(mesh.get_meta(VehicleLamps.BODY_AABB_META, mesh.get_aabb()) == source_mesh.get_aabb(), "%s keeps its bounds" % path)
+		# By material: the body's one, then the lamps' glow and beam on the lit car only.
+		_expect(meshes[1].get_surface_count() == 1, "the parked car is its body")
+		_expect(meshes[0].get_surface_count() == 3, "the moving car adds its two lamp surfaces")
+		var materials := {}
+		for surface in meshes[0].get_surface_count():
+			materials[meshes[0].surface_get_material(surface)] = true
+		_expect(materials.size() == 3, "one surface per material")
+
 # The lot's placement preview at (0, z). A hover answers `pending` while the simulation thread holds
 # the core (`CODE-25`, since `ZONE-11` round RZ11b), as it may just after an edit: ask again.
 func _placement_preview(sim: SimulationNode, z: float) -> Dictionary:
@@ -103,6 +164,7 @@ func _parked_renderer(sim: SimulationNode, full: Dictionary, filled: int) -> voi
 
 func _run() -> void:
 	_resources()
+	_merged_bodies()
 	var sim := SimulationNode.new()
 	root.add_child(sim)
 	_expect(sim.create_blank_world(256.0, 256.0, 2.0, 128.0, 0.0), "isolated world")

@@ -124,26 +124,40 @@ func _build_vehicle_mesh_from_glb(
 	var y_offset := -aabb.position.y * scale
 
 	var final_mesh := ArrayMesh.new()
-	var material := _vehicle_glb_material(model_path)
-	for surface in surfaces:
-		var verts: PackedVector3Array = surface["vertices"]
-		for i in range(verts.size()):
-			var v := verts[i] * scale
-			v.y += y_offset
-			verts[i] = v
-
-		var arrays := []
-		arrays.resize(Mesh.ARRAY_MAX)
-		arrays[Mesh.ARRAY_VERTEX] = verts
-		arrays[Mesh.ARRAY_NORMAL] = surface["normals"]
-		arrays[Mesh.ARRAY_TEX_UV] = surface["uvs"]
-		arrays[Mesh.ARRAY_INDEX] = surface["indices"]
-		final_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
-		final_mesh.surface_set_material(final_mesh.get_surface_count() - 1, material)
+	final_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, _merged_body_arrays(surfaces, scale, y_offset))
+	final_mesh.surface_set_material(0, _vehicle_glb_material(model_path))
 
 	if lamps_enabled:
 		VehicleLamps.add_surfaces(final_mesh, model_path, _lamp_materials, draw_fade_m)
 	return final_mesh
+
+# Every glTF primitive of the body (body panels, the four wheels) as one surface: they share one
+# material, so a MultiMesh of the car draws its body once instead of once a primitive
+# (`RENDER-46`). Vertices, normals and UVs keep their order; each primitive's indices are offset
+# by the vertices before it, so the triangles and their winding are the primitives' own.
+func _merged_body_arrays(surfaces: Array, scale: float, y_offset: float) -> Array:
+	var verts := PackedVector3Array()
+	var normals := PackedVector3Array()
+	var uvs := PackedVector2Array()
+	var indices := PackedInt32Array()
+	for surface in surfaces:
+		var base := verts.size()
+		var surface_verts: PackedVector3Array = surface["vertices"]
+		for i in range(surface_verts.size()):
+			var v := surface_verts[i] * scale
+			v.y += y_offset
+			verts.append(v)
+		normals.append_array(surface["normals"])
+		uvs.append_array(surface["uvs"])
+		for index in surface["indices"] as PackedInt32Array:
+			indices.append(base + index)
+	var arrays := []
+	arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = verts
+	arrays[Mesh.ARRAY_NORMAL] = normals
+	arrays[Mesh.ARRAY_TEX_UV] = uvs
+	arrays[Mesh.ARRAY_INDEX] = indices
+	return arrays
 
 func _vehicle_glb_material(model_path: String) -> Material:
 	var mat := StandardMaterial3D.new()
