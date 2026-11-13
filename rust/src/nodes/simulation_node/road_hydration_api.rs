@@ -57,16 +57,24 @@ type Landed = Arc<Mutex<Vec<(RoadKey, u64, RoadChunkSurfaces)>>>;
 
 thread_local! {
     // The mesh ledger (`RENDER-52` part 2's teardown count; off unless a test or probe turns it
-    // on): the instance ids of the meshes the hydrations made on this (the main) thread.
-    static MESH_LEDGER: std::cell::RefCell<Option<Vec<InstanceId>>> = const { std::cell::RefCell::new(None) };
+    // on) of the meshes the hydrations made on this (the main) thread.
+    static MESH_LEDGER: std::cell::RefCell<Option<MeshLedger>> = const { std::cell::RefCell::new(None) };
+}
+
+// The meshes made since the ledger was turned on and the instance ids of those not seen freed.
+#[derive(Default)]
+struct MeshLedger {
+    made: i64,
+    alive: Vec<InstanceId>,
 }
 
 // A hydration mesh, recorded in the ledger while it is on. `O(1)`.
 fn new_mesh() -> Gd<ArrayMesh> {
     let mesh = ArrayMesh::new_gd();
     MESH_LEDGER.with_borrow_mut(|ledger| {
-        if let Some(ids) = ledger {
-            ids.push(mesh.instance_id());
+        if let Some(ledger) = ledger {
+            ledger.made += 1;
+            ledger.alive.push(mesh.instance_id());
         }
     });
     mesh
@@ -400,7 +408,7 @@ impl SimulationNode {
     /// probe). `O(1)`.
     #[func]
     pub fn set_road_hydration_mesh_ledger(&mut self, on: bool) {
-        MESH_LEDGER.set(on.then(Vec::new));
+        MESH_LEDGER.set(on.then(MeshLedger::default));
     }
 
     /// The ledger's meshes still alive (instance ids, in the order made; the freed ones leave
@@ -410,12 +418,19 @@ impl SimulationNode {
     #[func]
     pub fn get_road_hydration_meshes_alive(&self) -> PackedInt64Array {
         MESH_LEDGER.with_borrow_mut(|ledger| {
-            let Some(ids) = ledger else {
+            let Some(ledger) = ledger else {
                 return PackedInt64Array::new();
             };
-            ids.retain(|id| godot::global::is_instance_id_valid(id.to_i64()));
-            ids.iter().map(|id| id.to_i64()).collect()
+            ledger.alive.retain(|id| id.lookup_validity());
+            ledger.alive.iter().map(|id| id.to_i64()).collect()
         })
+    }
+
+    /// The meshes the hydrations made since the ledger was turned on (alive or freed); 0 while
+    /// it is off. `O(1)`.
+    #[func]
+    pub fn get_road_hydration_meshes_made(&self) -> i64 {
+        MESH_LEDGER.with_borrow(|ledger| ledger.as_ref().map_or(0, |ledger| ledger.made))
     }
 
     /// The meshes the hydration's builds hold (not swapped in yet). `O(builds)`.

@@ -85,6 +85,12 @@ func _set_kinds() -> void:
 		linear.append(LAMP_COLORS[kind].srgb_to_linear())
 		loaded.append(0 if (_meshes[kind] as Array).is_empty() else 1)
 	_book.set_kinds(PackedColorArray(LAMP_COLORS), linear, loaded)
+	# The first batch node made pays the engine's first-use costs (2-4 ms in the 30k load's first
+	# lights part, `RENDER-52` part 2): one is made and freed here, in the load call's prewarm.
+	for lods: Array in _meshes:
+		if not lods.is_empty():
+			_batch(lods[0], PackedFloat32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0]), 0).free()
+			break
 
 func _upload(texture: ImageTexture, width: int, height: int, data: PackedByteArray, parameter: String) -> ImageTexture:
 	var image := Image.create_from_data(width, height, false, Image.FORMAT_RGBAF, data)

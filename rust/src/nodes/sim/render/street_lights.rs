@@ -992,7 +992,9 @@ impl StreetLightBook {
     }
 
     /// Sets the lamp colours per kind (sRGB, the glow's), their linear values (the far map's
-    /// light) and which kinds have meshes (1 a byte), before any chunk.
+    /// light) and which kinds have meshes (1 a byte), before any chunk. Makes the lamp grid's
+    /// and far map's buffers too (zeroed megabytes, about 3 ms): the load call's prewarm pays
+    /// them, not the first chunk's lights part (`RENDER-52` part 2).
     #[func]
     pub fn set_kinds(
         &mut self,
@@ -1000,6 +1002,7 @@ impl StreetLightBook {
         linear: PackedColorArray,
         loaded: PackedByteArray,
     ) {
+        self.buffers();
         let loaded: Vec<bool> = loaded.as_slice().iter().map(|&b| b != 0).collect();
         self.book
             .set_kinds(&color_array(&colors), &color_array(&linear), &loaded);
