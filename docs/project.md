@@ -165,6 +165,11 @@ frames to 1). With the simulation running, a growing city's terrain commits spre
 (the 30k city's worst commit frame 25 ms to 12, the 100k city's 71 ms to 18); what remains waits
 for `CODE-26` (the core published to the renderers) and `RENDER-30` (construction sites off the
 main thread) ([record](terrain.md#the-frames-install-ledger-and-the-tracks-close-out-render-32-q-2026-11-13)).
+The second streaming audit's fixes (AX, 2026-11-13, for review) change nothing on screen: a view
+needing more building slots than the pool has keeps updating the parts that fit instead of
+freezing every building, the trees' prepared store is bounded by the memory it really holds
+(120 MiB), and the settle-point digests now cover the vegetation
+([record](terrain.md#the-second-streaming-audits-fixes-ax-2026-11-13)).
 The graded ground's material edges and road seams no longer flicker from frame to frame
 (`RENDER-38`, fixed 2026-11-12): their shading is defined at the edges, which keeps the 30k
 city's stills byte-identical run to run again, at the control's GPU and frame time.

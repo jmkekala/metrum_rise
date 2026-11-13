@@ -11907,7 +11907,8 @@ line goes; per-instance calls and object churn do.
   measured and charged to the frame's install ledger (the `free` class, `RENDER-32-Q`), which
   narrows what the frame's installs may spend; a spare limit absorbs most releases.
   Built for the vegetation in `RENDER-32-N` (2026-11-13: prepared and retained products under a
-  96 MiB cap since its fix round, held by patch and bands; the graded bands' prepared bakes not built).
+  cap counted as the storage they hold, 120 MiB since AX (96 on lengths from its fix round), held by
+  patch and bands; the graded bands' prepared bakes not built).
 - **The scheduler.** One install ledger a frame for every owner of main-thread install work
   (2.0 ms, `RENDER-32-Q`; built as the plan's one budget, revised to what is built): the
   terrain's dirty-patch stages and commit and the graded tiles (`terrain.gd`), the water's mesh
@@ -11921,7 +11922,7 @@ line goes; per-instance calls and object churn do.
   by key. Named exceptions with budgets of their own: an edit's atomic batch (`ROAD-68`'s 2.0 ms
   stage, T65 option (3)), the post-load window (5.2 ms, until the patches first settle, at most
   30 s) and a load's road hydration (4.0 ms); the building publication and the sites are charged,
-  not split (one atomic frame each, `RENDER-42`, `RENDER-30`).
+  not split (each building chunk's changes atomic, `RENDER-42`; the sites' frame, `RENDER-30`).
 - **Main-thread rule.** No blocking core lock on a frame path: only `try_lock` snapshots and the
   published render snapshot.
 - **Invariants tested in Rust without Godot**, against the recording backend on scripted view
@@ -16934,6 +16935,114 @@ the gap is the CPU gap above (`RENDER-46`, `CODE-26`, `RENDER-47`, X11), streami
   `cargo test --lib` 2,552 passed, 0 failed, 224 ignored; `./run.sh --test` PASS (nextest 2,556
   passed, 225 skipped; `godot-main` and `godot-vehicle` PASS, 0 SCRIPT ERROR). An earlier gate
   run was killed by the kernel (the test's sculpt outside its world, `TERRAIN-28`, above).
+
+### The second streaming audit's fixes (AX, 2026-11-13)
+
+Round AX (branch `stream-ax` on `dev` `0fffb6a2`, for review): the findings of AUDIT-stream-2
+routed to it (1-4, 6, 7, 9-13) and the first audit's 4 and 11. Findings 5, 8 and 15 were `-Q`'s;
+14 was not routed. No visual change was the bar; none was made.
+
+**The building layer** (`RENDER-42`). A chunk's changes are applied whole or not at all, no longer
+the frame's: the removals of chunks that left go first, then the chunks that give up at least the
+slots they take, then the rest in the frame's publication order while the pool has room. A chunk
+that does not fit sends nothing, the bridge keeps its changes unacknowledged and offers them again
+with what later frames add; every drawn chunk and the removals are acknowledged, so `removed` is
+cleared at every publication (finding 6: it grew without bound while a frame waited). A view
+needing more than the 16,384 slots keeps drawing and updating the chunks that fit instead of
+freezing every building; a wait of 60 published frames is logged once on the `buildings` channel.
+A building changes tier inside its chunk, so "drawn once" still holds. `Chunk::synchronize`
+carries an unacknowledged change across a layout rebuild (finding 1: a batch emptied while its
+chunk waited lost its change at a resync and kept drawing its old rows beside the new tier). Cost:
+`O(removed + changed batches + their instances)` a frame, as before; one map entry a changed chunk,
+reused. Tests: a real LOD chunk through a full pool, an emptied batch, a resync and a freed slot
+(fails without the carry-over); a view over the limit draws the chunks that fit; the outgrow test
+follows the per-chunk rule. Teardown (finding 10): `reset_building_draw` (the node leaving the
+tree, a new catalogue) invalidates the LOD state with the slots, so a node entering a tree again
+publishes every batch.
+
+**The vegetation's held store** (`CODE-12`). The cap counts the storage a product holds
+(capacities of its batches and of every buffer, the spare buffers kept past its buffer count
+included; finding 2), and the product cache keeps at most 32 spare products (the jobs in flight),
+storage returned past that dropped after the jobs' lock (an eviction pass's or a reset's products
+stayed for the process's life). An adopted prepare leaves the prepare lane for the front of the
+requests' queue (finding 3). A product taken into the install backlog whose request is superseded
+or whose patch leaves before it installs is held again when it is the live request's product with
+the patch's current generations (finding 4: Kuopio's turns dropped them). Over the store's
+low-water mark a prepare farther than the last eviction pass kept is not started for the view
+(finding 9: it was evicted as it landed and prepared again at the next still view). Tests for each.
+
+Counted as storage, the 96 MiB cap was too tight: Kuopio's turns and zooms reach 95.8 MiB at the
+far zoom back to the ground, where the control's length count (93.7 MiB) never evicts; at 96 MiB
+the branch evicted 134 products the zoom down needed (drawn probe, `far_to_ground` coarse: ready
+share 100 % to 42 %, hole frames 123 to 221). **Decision (for review): 120 MiB**, the cap's own
+rule (the measured peak with a fifth to spare) on the honest count; now a bound on what the store
+holds. Heaptrack (`--record-only`, Kuopio's zoom phase, release libraries; the peak of the
+allocation sites building products): control 105.7 MiB of product storage with 88.0 MiB counted
+held (lengths, nothing evicted); branch at 96 MiB 102.0 MiB with 95.8 counted (561 evicted);
+branch at 120 MiB 118.4 MiB with 110.6 counted (nothing evicted, 4,853 products held against the
+control's 3,813: the products held again). Whole-process peak 1.68 GB on each side (the load's).
+
+**The drawn probe on Kuopio's turns and far zooms** (instrumented, `--drawn`; vegetation p95 of
+entered-to-drawn frames, coarse / fine, and hole frames): every turn passes on both sides.
+`far_to_ground`: control 1 / 1 (123 / 149 holes) and 1 / 2 (127 / 99); branch at 120 MiB 3 / 4
+(105 / 77), 1 / 1 (74 / 65); zoom phase alone, control 1 / 1 (70 / 87), branch 1 / 1 (81 / 71).
+The 3 / 4 run had the largest install backlog of any (146 waiting, all ready: the install
+budget), its holes fewer than either control; three more branch runs and the zoom-alone pair are
+level, and a diagnostic build with the promotion at the back of the queue or without the re-hold
+was level too, so it is read as one run's spread, not a regression. `far_zoom_out` level on every
+run (coarse 1, fine 2-3).
+
+**Digests** gain the vegetation family (finding 7): per visible installed patch its key, record
+bands, detail and shadow state, and per batch its identity, count, main material and shadow and
+the digest of its rows read back (lines kept, so a differing point names its patch); `digests`
+compares it with the others. 30k: every family 4 of 4 equal, water 1 of 1. Kuopio: every family
+8 of 8 equal on two pairs (and against the 120 MiB build); the first pair read `different` at
+`far_to_ground` in the vegetation only (409 visible patches against 408), and the first control
+run differs from two later control runs at that point the same way: run-to-run on the control,
+added to `TERRAIN-27`.
+
+**The graded trace** (the first audit's 4). `apply_cells` writes a line for each cell effect
+that changes what a set draws without a publication or wall line of its own: `count`, `show`,
+`hide`, `park`, `bind` (a level's page) and `variant`. `terrain_graded_trace.gd` replays a trace
+with `METRUM_GRADED_TRACE_REWRITE` set and writes it back with those kinds inserted where they now
+occur, every recorded line still matched: the nine tracked goldens were rewritten so (no line
+removed or changed; 43 `bind`, 99 `count`, 17 `park`, 4 `show`, 2 `variant` added) and replay in
+the gate. The preview placement (the first audit's 11) reads the shown entry's copies into the
+reused scratch instead of cloning them twice.
+
+**Smaller.** The zoom line starts at the camera's distance clamped into its range (finding 11: an
+infinite distance never ended); `take_installs` without settings spends what the layer installed
+(finding 12); a landed vegetation job always has its product, so the busy event, `deliver_busy`,
+`ResidencyWork::busy` (and its perf detail) and `prepared_busy` are gone (finding 13).
+
+**Session and gates** (fresh, this round; release libraries: control `dev` `0fffb6a2`, branch
+`139539a9`; release test binaries of the same; one boot, P-cores, eight workers):
+
+- Rows (`stream_benchmark.py series`, C B B C, every phase): 30k level or better but
+  `turn_back` 0.5 s max +5.9 (spread 4.1) and `night_pan_back` max +3.0 (spread 2.6); Kuopio
+  level or better but `turn_out` 1 s p50 +0.2 and max +5.8, `turn_back` 1 s p50 +0.1 and max
+  +6.3, `night_turn_out` 1 s max +4.0. Attributed before the rerun (instrumented, a side): the
+  30k flagged phases' worst frames are agents, terrain and Godot's draw on both sides, the
+  branch's maxima lower (0.5 s `turn_back` 20.0 against 21.1 ms, `night_pan_back` 11.1 against
+  11.4); Kuopio's worst turn frames are Godot's draw (a 47-49 ms first-use frame on both sides,
+  `RENDER-43`) and the terrain and street lights' scripts, the vegetation 0.6-0.7 ms in them on
+  both sides, its mean a frame 0.06-0.09 ms against 0.06-0.07. The one rerun of the flagged
+  groups (30k 0.5 s turns and night, Kuopio 1 s turns and night): every flagged row level; two
+  rows level in the first series flag in it alone (30k `turn_repeat` 0.5 s p50 +1.1 and max
+  +7.1 on a 33-frame phase, its instrumented branch run lower: 3.66 against 3.99 ms timed;
+  Kuopio `night_pan_back` max +4.2 against a spread of 4.1). Not rerun again.
+- Timing level F (`./run.sh --timing --level F`): `PERF-07` 30k 1x PASS on both sides, every
+  metric level (mean 2.289 against 2.253 ms, +1.6 % within 1.7 %); 30k 32x level (`PERF-17`'s
+  known exception on both sides).
+- Digests: as above (30k 4 of 4 in every family, water 1 of 1; Kuopio 8 of 8 on two pairs and
+  against the final build).
+- Stills: Kuopio three poses byte-identical (both branch builds); 30k `city` and `city_low`
+  identical in three runs a side, `saved` 1, 3 and 4 px (delta at most 2; control against control
+  2-4 px, `RENDER-45`'s residue; `systematic`: none).
+- Gates (code `139539a9`): clippy `--all-targets` warning set equal to the base's
+  (`asset_document.rs`); debug `cargo test --lib` 2,561 passed, 0 failed, 224 ignored;
+  `./run.sh --test` PASS (nextest 2,565 passed, 225 skipped; `godot-main` and `godot-vehicle`
+  PASS, 18 graded replays, 0 SCRIPT ERROR). The digests tool's unit tests 25 passed.
 
 ## Implemented Runtime Contract
 

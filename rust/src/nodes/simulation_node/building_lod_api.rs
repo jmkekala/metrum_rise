@@ -364,7 +364,7 @@ impl SimulationNode {
 
     /// The stream benchmark's drawn probe (`RENDER-32-N`): every chunk of the building LOD's
     /// current query with live batches, as `stream::probe` records; drawn when each live batch
-    /// is, covered when some is (a frame waiting whole keeps the chunk's last batches). Benchmark
+    /// is, covered when some is (a chunk waiting for slots keeps its last batches). Benchmark
     /// only, `O(resident batches)`.
     #[func]
     pub fn probe_building_chunks(&self) -> PackedFloat32Array {
