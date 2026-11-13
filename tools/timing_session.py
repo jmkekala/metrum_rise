@@ -77,7 +77,7 @@ EDIT_PATHS = (
     *_modules("rust/src/nodes/sim", ("editing", "undo", "road_tool", "road_pockets", "roundabouts",
                                     "zoning")),
     "rust/src/nodes/sim/core/road_*", "rust/src/nodes/sim/core/graded_*",
-    "rust/src/simulation/network/roadbed/*",
+    "rust/src/simulation/network/roadbed/*", *_module("rust/src/simulation/network/guide"),
 )
 SAVE_PATHS = ("rust/src/simulation/save/*",)
 NEUTRAL = ("docs/*", "tools/*", "godot/*", "rust/tests/*", "rust/benches/*", "*.md", "run.sh", ".gitignore",

@@ -12,6 +12,8 @@
 use godot::prelude::*;
 pub(crate) mod grade;
 pub mod graph;
+/// Road tool guide geometry: exact lines, arcs and Bezier spans and their flattening (`ROAD-112`).
+pub mod guide;
 pub mod render;
 pub mod roadbed;
 pub mod types;

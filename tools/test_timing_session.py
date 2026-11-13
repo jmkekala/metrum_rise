@@ -32,6 +32,8 @@ class PathRuleTests(unittest.TestCase):
         level, _, edit, _ = ts.classify(["rust/src/simulation/network/roadbed/compile.rs"])
         self.assertEqual((level, edit), ("R", True))
         self.assertTrue(ts.classify(["rust/src/nodes/sim/core/road_commit.rs"])[2])
+        for path in ("rust/src/simulation/network/guide.rs", "rust/src/simulation/network/guide/arc.rs"):
+            self.assertEqual(ts.classify([path])[:3:2], ("R", True), path)
         self.assertTrue(ts.classify(["rust/src/simulation/save/schema.rs"])[3])
 
     def test_per_frame_and_unlisted_paths_fail_closed_to_f(self):

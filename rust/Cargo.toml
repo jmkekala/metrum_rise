@@ -74,3 +74,7 @@ harness = false
 [[bench]]
 name = "roadbed_layout_benchmark"
 harness = false
+
+[[bench]]
+name = "road_tool_guide_benchmark"
+harness = false

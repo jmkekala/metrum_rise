@@ -1303,7 +1303,7 @@ brief's and warns on a mismatch). R suffices when every changed source path is s
 work: `simulation/economy/{demand,households,logistics,hiring,customers,fiscal}`,
 `simulation/zoning`, `nodes/sim/core/{schedule,entity_phases,entity_days,demand_requests,household_requests}`,
 the edit paths `nodes/sim/{editing,undo,road_tool,road_pockets,roundabouts,zoning}`,
-`nodes/sim/core/{road_*,graded_*}` and `simulation/network/roadbed` (these add the K22 rows), and
+`nodes/sim/core/{road_*,graded_*}`, `simulation/network/roadbed` and the guide kernel `simulation/network/guide` (these add the K22 rows), and
 `simulation/save` (compare `load_s`; a `SAVE_VERSION` bump re-keys every snapshot). Per-frame
 paths are F: `nodes/sim/core/{frame,thread,snapshot,parking,lot_adoption,turnstile,trips,budget}`,
 `nodes/sim/render`, `simulation/economy/agents`, `simulation/network`, `simulation/pathing`,
