@@ -2099,9 +2099,11 @@ core lock for them:
 
 - The sim thread rebuilds dirty chunks while it builds the snapshot, in the same lock as the
   agent poses (`SimCore::publish_parked_chunks`), and the snapshot lists every chunk Godot has not
-  acknowledged as shared `Arc` buffers. `get_vehicle_frame` reads cars and chunks under one read
-  of that snapshot, so a car crossing a bay's edge is in exactly one of them on every frame Godot
-  draws, including when it skips snapshots: a skipped chunk stays listed. There is no `busy`
+  acknowledged as shared `Arc` buffers. The agents' frame job reads cars and chunks under one
+  read of that snapshot and Godot installs both in the same frame (`advance_agent_frame`,
+  `RENDER-47`; `get_vehicle_frame` reads them the same way for tests), so a car crossing a bay's
+  edge is in exactly one of them on every frame Godot draws, including when it skips snapshots: a
+  skipped chunk stays listed. There is no `busy`
   answer and no epoch to compare. Model and colour persist across the switch.
 - Godot answers through atomics, never the lock. `acknowledge_parked_cars(epoch, serial)` says it
   installed everything up to a publication serial; an answer from a replaced world is dropped and
@@ -2130,9 +2132,9 @@ core lock for them:
   one it replaced is free as soon as its last holder lets go, acknowledged or not. Headless, where
   nothing answers, a chunk is listed once and keeps one spare: list and pool stay bounded by the
   chunks ever touched, and each dirty frame copies that many pointers.
-- One off-lane path still try-locks the core: `smooth_car_render_data` re-grounds interpolated
-  off-lane cars. It is `dev`'s, and failing it draws the snapshot's own validated pose, so the car
-  still updates.
+- One off-lane path still try-locks the core: the agents' frame job re-grounds interpolated
+  off-lane cars (on the background pool since `RENDER-47`). It is `dev`'s, and failing it draws
+  the snapshot's own validated pose, so the car still updates.
 
 **A parked car stands on its own street or lot.** `SimCore::parked_ground_pose` reads its own
 surface, not `dev`'s visible one: a bay on the ground takes the road on the ground
@@ -2517,12 +2519,21 @@ Lane pose sampling in `nodes/sim/render/lane_pose.rs`:
 - derives S-curve tangent from blended lane tangents plus the lateral blend derivative
 
 Render-side car interpolation runs in Rust (`nodes/sim/render/car_visual.rs`, `RENDER-14`).
-Each frame `godot/scripts/renderers/agents.gd` passes `get_car_render_data()` to
-`smooth_car_render_data(car_data, delta)` and uploads the returned per-bucket buffers:
+Each frame `godot/scripts/renderers/agents.gd` calls `advance_agent_frame(delta, full)`, which
+installs the frame a background-pool job prepared from the snapshot in the frame before (walkers,
+smoothed and grounded cars, the snapshot's parked chunks) and starts the next job; the script
+uploads the changed per-bucket buffers (`RENDER-47`, `nodes/sim/render/agent_frame.rs`; record
+[Car smoothing a frame ahead](terrain.md#car-smoothing-a-frame-ahead-and-near-only-agent-shadow-casters-render-47-render-15-round-r47-2026-11-13)).
+Frame N+1 draws the poses the main thread drew in frame N before: one frame of added latency,
+the drawn sequence unchanged; a job still running when the next frame asks leaves that frame
+drawing what it drew and carries its delta into the next job. `smooth_car_render_data(car_data,
+delta)` runs the same frame synchronously for tests that feed their own poses:
 
-- cars have stable render IDs from Rust; drawn poses are main-thread presentation state on
-  `SimulationNode`, never saved or read by the simulation
-- pedestrian and vehicle MultiMeshes use the shared dynamic shadow-caster policy
+- cars have stable render IDs from Rust; drawn poses are presentation state the frame job keeps,
+  never saved or read by the simulation
+- pedestrian and vehicle MultiMeshes draw every agent in the main pass and cast no shadow: the
+  stream node's shadow-only twins cast for the agents within reach of the sun's shadow range
+  (`RENDER-15`, round R47)
 - origin interpolation smooths per-tick position updates
 - basis interpolation smooths rotation (Godot's `Basis.slerp` formula, reimplemented on `glam`;
   godot-rust's `Quaternion::slerp` is an engine call per car)

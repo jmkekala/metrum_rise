@@ -12070,8 +12070,9 @@ tools/stream_benchmark.py census "$ARTIFACTS/c30-census.census"
   only) applies the sun-shadow variants of `godot/scripts/benchmarks/shadow_variants.gd` (`full`,
   `none`, `filter2`, `filter3`, `no_pcss`, `no_blend`, `low`, `medium`, `medium_blend`,
   `no_cloud_shadows`, `no_casters`, the caster classes `no_buildings`, `no_trees`, `no_cars`,
-  `no_walkers`, `no_parked`, `no_furniture`, the range `far<m>`, `agents_near`, and parts joined
-  by `+` (`RENDER-15` SH2); the idle matrix shares them as `no_shadows`,
+  `no_walkers`, `no_parked`, `no_furniture`, the range `far<m>`, `agents_all` (the agents cast from their whole
+  bucket nodes, as before R47's twins; SH2's `agents_near` prototype is the game's default now),
+  and parts joined by `+` (`RENDER-15` SH2); the idle matrix shares them as `no_shadows`,
   `no_blend_splits` and the same other names, and its stills take any of them). Rows record the
   shadow passes' draws, objects and primitives (`shadow_pass`) and `compare --gpu` the GPU p50
   delta beside them. One
@@ -17370,6 +17371,184 @@ test passes on both, as it must.
 (`asset_document.rs`); debug `cargo test --lib` 2,568 passed, 0 failed, 224 ignored;
 `./run.sh --test` PASS (nextest 2,572 passed, 225 skipped; `godot-main` and `godot-vehicle` PASS,
 0 SCRIPT ERROR); missing docs 0.
+
+### Car smoothing a frame ahead, and near-only agent shadow casters (`RENDER-47`, `RENDER-15`, round R47, 2026-11-13)
+
+The owner's decisions (2026-11-13): one round for both; `agents_near` built in Rust (the moving
+cars and walkers cast the sun's shadow only within reach of the shadow range, the main pass
+unchanged); the other caster cuts of SH2 not taken; no visual change.
+
+**The agents' frame a frame ahead** (`nodes/sim/render/agent_frame.rs`,
+`simulation_node/agent_frame_api.rs`). Everything that turns a snapshot into the agents' drawn
+buffers is one frame (`AgentFrame`): the walkers' compare-and-copy, the cars' smoothing with the
+off-lane ground solve (`car_visual.rs`, unchanged), the snapshot's parked publication and the
+shadow casters' candidates. `agents.gd` calls `advance_agent_frame(delta, full)` once a frame: it
+installs the frame a background-pool job prepared (the changed buckets copied into Godot arrays,
+the parked chunks packed) and hands the frame to the next job through `AsyncJobs` (the pool's
+`spawn`, the vegetation jobs' mechanism: no new thread mechanism). The job reads the newest
+snapshot under one read of its lock (cars, walkers and parked chunks together, so a car crossing a
+bay's edge is still drawn exactly once), smooths, takes the core once with `try_lock` for the
+solve (a busy core leaves those cars on their snapshot poses, as before), and lands the frame.
+On the background worker the smoothing's and the solve's `thread_pools::install` run inline and
+their parallel passes share that pool: the main thread runs no Rayon pass and joins none for the
+agents. The synchronous `smooth_car_render_data` remains for the tests that feed their own poses
+(`vehicle_ground_support_test`, `agent_inspector_test`); the inspector's camera follow reads the
+watched car's drawn origin from the installed frame.
+
+**Latency rule.** The job started in frame N takes frame N's delta and the snapshot newest when
+it runs, and computes what the main thread computed in frame N before; frame N+1 draws it. The
+drawn poses are the control's sequence one frame later. A job still running when frame N+1 asks
+is late: N+1 draws what N drew, starts nothing, and the next job smooths over both deltas (one
+step of `alpha(delta_N+1 + delta_N+2)`, the motion's time kept, its shape one step coarser).
+A snapshot with no agent to draw (an empty world, a view past every draw distance) is prepared on
+the main thread instead, `O(buckets)` and no pool, and lands the same way (`595b1625`, from
+Kuopio's flag below).
+Proof: `pipelined_frames_draw_the_control_sequence_one_frame_later` drives the old synchronous
+path and the lane through the real background pool over 60 frames of moving cars at fixed,
+varying frame times (three buckets, off-lane cars with a deterministic solve that is busy every
+seventh frame, a car leaving and a bucket emptying) and asserts every installed frame equal bit
+for bit to the control's frame before; `a_late_job_carries_its_delta_to_the_next` the late rule.
+The simulation is untouched (the job reads the snapshot and tries the core read-only).
+
+**Near-only casters** (`stream/layers/agent_casters.rs`, `StreamNode`). `agents.gd`'s bucket
+nodes (one MultiMesh per walker type and per car model and colour, the whole view out to the draw
+distances) draw every agent in the main pass and cast nothing. Each bucket has a shadow-only twin
+in the stream node's pools (its mesh, the bucket node's material override, the dynamic casters'
+12 m margin) holding only the agents that can shade ground the sun's shadow reaches: view depth
+within the range plus 30 m either way and distance within 1.9 times the range plus 30 m (SH2's
+prototype's test, `within_reach`). The job keeps, per bucket, the drawn agents within that reach
+plus 200 m of the job's eye (`candidate_radius_m`: the camera's travel before the frame draws,
+the snapshot cull's padding); just before the frame draws (`frame_pre_draw`) the stream node runs
+the exact test over the candidates with the drawing camera and the sun's
+`directional_shadow_max_distance`, writes the twins whose kept rows changed bit for bit, and
+charges its time to the frame's install ledger (`Owner::AgentCasters`, never deferred). Costs: the
+job `O(drawn agents)` for the candidates when an agent, its eye or the range moved (nothing on a
+still frame); the main thread `O(candidates)` when the candidates, the camera or the range
+changed, `O(1)` otherwise, and a write `O(kept agents)`; no node is made, slots grow a capacity
+class when outgrown and shrink at a quarter, the pool's spares serve the swaps, and steady frames
+allocate nothing but the pool's spawn of the job. The shadow benchmark's `agents_all` variant
+casts from the bucket nodes again (the twins off), the saving's control on one binary;
+`no_cars` / `no_walkers` reach the twins.
+
+**Measured** (fresh, 2026-11-13; release libraries: control `dev` `a2d9da92` with its own scripts
+(SHA-256 `2e7a7c47`), branch `a3b542a7` (`d36982e7`) for every row unless named, and the final
+`595b1625` (`0c11ad1c`: the agent-free frame on the main thread) for Kuopio's rerun; Godot 4.7.2
+Forward+, gamescope headless at 1000 Hz, 1920x1080, P-cores, eight workers, isolated profile; the
+30k timing-cache city and the 100k commit city):
+
+```bash
+tools/stream_benchmark.py series --input-label 30k --save <populated_city_30000.sqlite> \
+    --ctl-library <ctl.so> --ctl-scripts <dev scripts> --library <br.so> ...   # and kuopio
+tools/stream_benchmark.py run --label c30-1x-<side> --save <30k> --speed 1 --phases still,turns \
+    --turns 1 --still-s 60 --detail --timeout 900 --settle-timeout 300   # PL1's rows: p30, c30-32x, c100-1x
+tools/stream_benchmark.py run --label g30 --save <30k> --phases still,turns --turns 1 \
+    --shadows full,agents_all,agents_all,full; tools/stream_benchmark.py split ...; compare --gpu
+./run.sh --timing --level F --control $TEST_BINARY --branch $TEST_BINARY --base a2d9da92
+```
+
+PL1's play rows (instrumented: `--detail`, shares, not acceptance times; a 60 s still then three
+1 s turns, the turns' mean), control against branch. "Agents" is the agents' record on the main
+thread (`agents.gd`'s update with Rust's install and the next job's start); the twins' keep runs in
+the stream node's pre-draw pass, beside it:
+
+| Row | Frame p50 still / turns, ms | Agents mean still / turns, ms (p99 still) | Twins' keep, ms | Blocking core waits, ms a frame (still) | Shadow-pass primitives (still) |
+|---|---|---|---|---|---|
+| 30k paused | 7.82 to 6.90 / 9.11 to 8.91 | 0.19 to 0.03 / 0.57 to 0.16 (0.32 to 0.05) | 0.00 / 0.04 | 0 / 0 | 53.5 to 23.3 M |
+| 30k 1x | 7.95 to 6.82 / 11.64 to 9.71 | **1.29 to 0.25** / 1.60 to 0.30 (1.94 to 0.41) | 0.05 / 0.06 | 0.05 / 0.03 | 52.1 to 23.5 M |
+| 30k 32x | 8.55 to 8.02 / 12.08 to 10.26 | 1.70 to 0.56 / 2.57 to 0.66 (3.36 to 1.65) | 0.06 / 0.08 | 0.03 / 0.21 | 60.8 to 23.2 M |
+| 100k 1x | 12.73 to 11.14 / 16.72 to 15.05 | 1.62 to 0.34 / 2.22 to 0.44 (3.77 to 0.71) | 0.06 / 0.07 | 0.24 / 0.39 | 67.8 to 22.7 M |
+
+The job itself takes 0.99 ms a frame on the pool at 30k 1x and 32x and 1.17 ms at 100k 1x (the
+smoothing and solve the main thread did before: 0.98-1.22 ms); late jobs (frames that drew
+what they drew before and carried their delta on): none in the paused and 30k 1x rows, 12 of
+7,161 measured frames at 30k 32x (20 counting the load), 5 of 4,951 at 100k 1x. 100k at 32x was
+not measured (the brief's rows: 30k paused, 1x and 32x, 100k 1x). The 30k 1x row's agents and
+twins together are 0.30 ms a frame (bar 0.6). The blocking core waits are all in the terrain's
+stale land cover query (`get_vegetation_land_cover`, `RENDER-40`'s remaining blocking site): at
+30k 32x the control's worst still frames (25-29 ms) were the agents' Rayon join waiting 16-21 ms
+for the pool during the simulation's hourly pass; the branch's main thread no longer waits there,
+reaches the land cover query instead and waits for the simulation to release the core.
+
+**The 30k 32x tail, attributed** (the coordinator's flag; a second instrumented row a side and one
+experiment). Over each whole row (60 s still and three 1 s turns), control / branch:
+
+| 30k 32x row | Frames | Over 16.7 / 33.3 ms | Main-thread core waits over 5 ms | Agents over 5 ms (the pool join) | Simulation speed |
+|---|---|---|---|---|---|
+| control, run 1 / 2 | 6,877 / 6,752 | 83 / 1, 69 / 0 | 8 (206 ms), 4 (205 ms) | 63 (660 ms), 51 (641 ms) | 31.6x / 31.7x |
+| branch, run 1 / 2 | 7,161 / 7,377 | 133 / 8, 108 / 4 | 86 (1,462 ms), 71 (1,161 ms) | 0, 0 | 30.9x / 31.1x |
+| branch, the job never taking the core (experiment) | 7,442 | 96 / 1 | 64 (1,067 ms) | 0 | 31.0x |
+
+Every branch frame over 33.3 ms (35-77 ms) is a blocking wait of 22-67 ms in
+`get_vegetation_land_cover` (`vegetation_api.rs`, `terrain.gd`'s land cover staging), most of them
+at the hourly pass; the control's worst frames (24-35 ms) are the agents' Rayon join waiting
+16-26 ms for the pool the simulation's frame occupies. With the job forbidden the core (an
+attribution build only: off-lane cars stay on their snapshot poses), the waits stay (64 of them,
+1,067 ms): the job's own core holds are not their cause. The branch uncovers them: its main thread
+no longer stalls in the agents' join while the simulation works, draws 4-10 % more frames, and
+meets the busy core in the one blocking query left on a frame path. That wait is `RENDER-40`'s
+rest (the land cover query to the payload worker), not this round's scope; the simulation runs
+2 % slower beside the extra frames (30.9-31.1x against 31.6-31.7x).
+
+The shadow pass by SH2's method, on the branch library alone: one load a city, the chain `full,
+agents_all, agents_all, full` (`agents_all`: every agent cast from its bucket node, as before),
+`split`, `compare --gpu`; the pass from `--gpu-profile` runs of the same chain:
+
+| Still | Shadow pass, `agents_all` to twins | Shadow-pass primitives | GPU p50 saved (spread) | Frame p50 |
+|---|---|---|---|---|
+| 30k | 2.16 to 1.24 ms | 53.5 to 23.3 M | 0.91 ms (0.05) | 7.8 to 6.9 ms |
+| 100k | 2.99 to 1.22 ms | 69.0 to 22.8 M | 1.66 ms (0.02) | 11.0 to 9.4 ms |
+
+SH2's prototype measured 1.00 / 1.55 ms; the twins keep the same agents. The 30k 1 s turns save
+0.89-0.91 ms of GPU each (21.2-21.4 M primitives against 49.7-50.3 M).
+
+- **Series C B B C, 30k** (default phases): every phase's p50 level or better, 0.6-1.0 ms better
+  wherever the sun casts (still 7.5 to 6.7 ms, 1 s turns 8.0 to 7.0-7.2, pans 6.6 to 5.8, zooms
+  6.5 to 5.6); GPU p50 0.80-1.02 ms better on every daylight phase (still 7.49 to 6.59 ms), the
+  shadow pass's primitives 53.5 M to 23.3 M (still) and 48-52 M to 21-24 M on the motions, its
+  draws level (860 to 847). Night: frame p50 level or 0.3-0.4 ms better; the night turns' GPU
+  p50 +0.09 ms (spread 0.03-0.07) with the same draws and primitives and no shadow pass (the sun
+  is hidden at night, the twins empty): the `--gpu-profile` pair puts it in the depth pre-pass
+  and the opaque pass, +0.02 to +0.17 ms by phase and level on the night pan back, no pass the
+  change draws in. Flags: maxima on `pan_back` (+6.9 ms), `zoom_out` (+1.9), `zoom_in_repeat`
+  (+4.2), attributed before any rerun by an instrumented run of the pans and zooms a side: the
+  branch's worst frames there are Godot's draw (3.7-5.8 ms of render CPU) and the terrain script
+  (0.4-0.8 ms) with the agents under 0.3 ms, while the control's carry 0.4-5.0 ms of agents; not
+  rerun. `night_still` and `night_pan_out` read "worse p50" at +0.0 (under 0.05 ms, spread 0.0).
+- **Series, Kuopio** (no agents): first `still` p50 +0.1 ms (1.7 to 1.8), every main-thread owner
+  slower alike in an instrumented pair and the render CPU +0.06-0.2 ms: a pool worker woken every
+  frame for a job with nothing to do. Fixed (`595b1625`: a snapshot with no agent to draw is
+  prepared on the main thread, `O(buckets)`); the one rerun of the row, with that library, reads
+  every phase level or better (still p50 +0.0, max -0.4). The first run's maxima (`zoom_in_repeat`
+  +7.3, `night_pan_out` +4.9, `zoom_in` +2.1, `far_zoom_out` +2.4) do not recur in the rerun.
+- **Level F**: `PERF-07` 30k 32x level on every metric (mean 4.338 against 4.345 ms; `PERF-17`'s
+  known exception both sides). 30k 1x PASS on every row, but flagged against the one control row:
+  mean +2.8 % (2.176 against 2.237 ms, tolerance 1.7 %), p99, p99.9 and snapshot; the one rerun of
+  the branch rows read mean +3.8 %, agent phase +4.7 %. The headless runner executes no changed
+  code (no file under `simulation/`, `nodes/sim/core/`, `thread_pools.rs` or `config.rs` changed;
+  the agents' frame and twins run only under Godot), but the two test binaries differ: 2,391 of
+  16,390 simulation functions compiled to different sizes (inlining moved across codegen units
+  as the crate grew), so the difference is the build's layout, not this change. Reported, for
+  the coordinator. **Settled at landing** (coordinator, owner's choice, same binaries, a fresh
+  30k 1x session `ctl, br, br, ctl`, every row PASS): branch mean 2.232 against 2.268 ms (-1.6 %,
+  better), agent phase -2.9 % (better), p99, p99.9, snapshot and load level; the first session's
+  single control row was the outlier.
+- **Untimed** (branch `a3b542a7`; Kuopio again with `595b1625`): stills byte-identical (Kuopio
+  `close`, `mid`, `overview` with both branch libraries; 30k `city`, `city_low` three runs a side;
+  `saved` 1-3 px of max delta 1-2, as control against control: `RENDER-45`'s residue; systematic
+  none); in clear weather (scenario 0, hard sun shadows) `city` identical on two pairs, the two
+  shadow-edge views (eye 25-36 m up, looking along the streets through the 420 m of shadowed view depth) differ only in the sky
+  by as much as control against control (systematic none), `saved` 1-4 px of residue; the night
+  views and the far views of the save's weather differ only in the sky, run to run alike
+  (systematic none). Digests equal (30k graded, buildings, roads, parked, vegetation 4 of 4, water
+  1 of 1; Kuopio 8 of 8 and 1 of 1). Graded replay of the 21 traces of record (release libraries): the same result on both sides,
+  trace for trace: the 9 goldens in the tree and both `kuopio-swing.1` pass; the 10 traces recorded
+  before AX's trace lines (`56619860`, `bind` and `count` lines) stop at the same line on both.
+- **Gates** (code `595b1625`): clippy `--all-targets` warning set equal to the base's
+  (`asset_document.rs`); debug `cargo test --lib` 2,568 passed, 0 failed, 224 ignored;
+  `./run.sh --test` PASS (nextest 2,572 passed, 225 skipped; `godot-main` and `godot-vehicle`
+  PASS, 0 SCRIPT ERROR); `vehicle_ground_support_test` (4,840 poses), `agent_inspector_test` and
+  `parking_test` PASS alone on the release library; the new unit tests (pose trace, late rule,
+  candidates, twins against the recorder) pass.
 
 ## Implemented Runtime Contract
 

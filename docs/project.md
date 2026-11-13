@@ -156,6 +156,13 @@ parked batch with no car within 2.5 km. The 100k still draws 22 M fewer primitiv
 near parked cars, kept by the owner). The
 far car meshes wait for the replacement models (`RENDER-26`)
 ([record](terrain.md#parked-cars-draw-distance-render-48-2026-11-13)).
+The agents' frame is prepared a frame ahead on the background pool since `RENDER-47` (round R47,
+2026-11-13, for review): the walkers, the cars' smoothing and ground solve and the parked chunks of
+one snapshot are prepared while the frame before is drawn, and the main thread only installs them
+(the agents' main-thread time at 30k 1x from 1.3 to 0.3 ms a frame, at 100k 1x from 1.6 to 0.3). The moving cars and walkers cast the sun's shadow from shadow-only copies holding
+only those within reach of the shadow range (`RENDER-15`'s `agents_near`, the owner's pick): the
+30k city's shadow pass draws 23 M instead of 53 M primitives and takes 1.24 instead of 2.16 ms (the
+100k city's 1.22 instead of 2.99 ms), 0.9 and 1.7 ms of GPU a frame by day, with stills identical ([record](terrain.md#car-smoothing-a-frame-ahead-and-near-only-agent-shadow-casters-render-47-render-15-round-r47-2026-11-13)).
 `RENDER-32-N` (2026-11-13, for review) measured how many frames a chunk that comes into view
 waits before it draws, per layer, on 0.5 s turns, a far zoom-out to 40 km and a zoom from there to
 the street: terrain, water, graded ground and buildings draw within three frames; the vegetation
