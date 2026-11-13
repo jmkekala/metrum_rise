@@ -2087,6 +2087,13 @@ Dirty chunks publish immutable versioned model and colour buffers, stable car ID
 MultiMesh transforms. Unchanged chunks send nothing. Shared `vehicle_resources.gd` keeps moving
 meshes and materials identical; parked meshes omit lamps and beams.
 
+Parked cars have the moving cars' draw distance (`RENDER-48`, 2026-11-13): their materials fade a
+car out by its own distance from the camera over the same band (`CAR_FADE_START_M` 2,000 m to
+`CAR_DRAW_DISTANCE_M` 2,500 m, the one setting both read), and each parked bucket's batch ends its
+visibility range where none of its cars can be within the draw distance, so the engine skips it
+in the main and shadow passes. Every parked car is still published and installed; only what Godot
+draws changes ([record](terrain.md#parked-cars-draw-distance-render-48-2026-11-13)).
+
 Moving cars and parked chunks reach Godot from one `RenderSnapshot`, and the render path takes no
 core lock for them:
 

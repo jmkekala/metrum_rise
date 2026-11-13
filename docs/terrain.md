@@ -16324,6 +16324,151 @@ withdrawn lights build added none to the base set); debug `cargo test --lib` 2,5
 (nextest 2,556 passed, 225 skipped; godot-main, godot-vehicle PASS, 0 SCRIPT ERROR). `PERF-07` at
 level F not rerun: the branch's Rust tree and so its test binary equal the control's.
 
+### Parked cars' draw distance (`RENDER-48`, 2026-11-13)
+
+Round R48, the owner's decision of 2026-11-13: the parked cars get the moving cars' draw distance
+(2.5 km) and fade, with no far mesh or level of detail (those come with the replacement car models,
+`RENDER-26`); stills to the owner before it lands. Branch `stream-r48` on `dev` `c5f15f29`; control
+`c5f15f29`'s release library with its own scripts. Godot 4.7.2 Forward+, RADV on the RX 7900 XTX,
+gamescope headless at 1920x1080, P-cores, eight workers, isolated profile, simulation paused; the
+timing cache's 30k city, the 100k commit city and Kuopio.
+
+**What changed.** One setting for both kinds of car: `CAR_FADE_START_M` 2,000 m and
+`CAR_DRAW_DISTANCE_M` 2,500 m (`config.rs`), read by the moving cars and now by the parked cars too.
+
+- *Per instance, the moving cars' mechanism.* `parked_cars.gd` builds the parked meshes with the
+  band from `get_agent_draw_distances()`, so their body material is the moving cars' own
+  `AGENT_DRAW_FADE` variant of `building_windows.gdshader` (one shader for both, `parking_test`
+  checks it): a car fades by its own origin's distance from the main camera, dithered out over the
+  band and collapsed to nothing beyond it, in the main pass and the shadow pass alike (the shadow
+  pass measures from the main camera too). It fits as it is: the parked cars draw through the same
+  window material builder, and a bucket that straddles the range needs nothing else.
+- *Per bucket, the engine's visibility range.* Each parked bucket's batch carries a range
+  `[0, CAR_DRAW_DISTANCE_M + reach]`, where reach is the farthest car origin's distance from the
+  centre of the batch's bounds (the farthest corner of the origins' box, as the vegetation's canopy
+  ranges do). Godot measures a range from that centre (`_visibility_range_check`, no margins, so no
+  state), so a batch it skips holds no car within the draw distance, where every car would have
+  faded out whole anyway. To know the centre exactly the layer computes the batch's bounds the
+  engine's way (the mesh's bounds through each pose, merged in pose order: `Aabb::through_instances`,
+  moved from the vegetation product into `godot_math` and shared) and sends them as the
+  `MultiMesh`'s own; `parked_cars.gd` registers each bucket's mesh with `Mesh.get_aabb()`. The
+  engine checks a range only as it culls, in the main view and every shadow split from the main
+  camera's position: nothing runs a frame on our side, no slot is shown or hidden for it (no
+  install churn, `RENDER-46`), and the engine's cost is `O(buckets in view)`. An install computes
+  the bounds and reach in `O(poses)`, the order it already copied the poses in; nothing allocates.
+- Why not hide the slots from the stream core's view sample: a show or hide per bucket as the
+  camera moves is the install churn R44 measured (Godot rebuilds the slot's surfaces), and a CPU
+  test per bucket a frame would cost `O(drawn buckets)` where the range costs nothing.
+- Every parked car is still published and installed: the digests (the drawn buckets' uploaded
+  poses) cannot see the range, and only what Godot draws changes.
+- The sun's shadows end at 420 m (`SHADOW_MAX_DISTANCE_M`), so no parked car near the range casts
+  into the shadow pass: its primitives and draws are equal at every census pose.
+
+Tests: `parked::tests::a_bucket_draws_while_any_of_its_cars_is_within_the_draw_distance` (cameras
+on 60 rings of 64 around a 40-car bucket, the engine's range rule mirrored: never cut while a car
+is within 2.5 km, cut beyond, buckets straddling the range drawn; the range ends within its
+extent), the existing layer tests with the engine's bounds sent; `parking_test.gd` (every parked
+bucket's body shares the moving cars' shader and band; every drawn bucket's range reaches past the
+draw distance).
+
+**Primitives, draws and GPU** (census poses, Godot's counters; main pass, shadow pass; GPU at the
+census frame). Build identities: control library SHA-256 `a1ebd175`, branch `6208879b` (code
+`ab8bd0e9`).
+
+| Input, pose | Main primitives (M) ctl / br | Main draws ctl / br | Parked draws ctl / br | Shadow (M, draws) | GPU ms ctl / br |
+|---|---:|---:|---:|---|---:|
+| 100k still | 98.79 / 76.33 | 5,242 / 4,256 | 1,610 / 633 | 68.99, 863 both | 12.33 / 10.73 |
+| 100k mid-turn | 101.20 / 78.28 | 5,252 / 4,239 | 1,630 / 625 | 69.85, 968 / 967 | 12.09 / 11.67 |
+| 100k mid height | 85.68 / 70.74 | 4,519 / 3,830 | 1,318 / 633 | 62.64, 884 both | 11.32 / 10.34 |
+| 100k street level (3 views) | 72.99-84.36 / 64.52-71.50 | 4,113-4,375 / 3,559-3,726 | 1,190-1,307 / 636-650 | equal | 9.11-10.54 / 8.53-9.51 |
+| 30k still | 48.25 / 47.37 | 2,736 / 2,673 | 697 / 634 | 53.49, 860 both | 7.70 / 7.66 |
+| 30k mid-turn | 47.22 / 46.27 | 2,728 / 2,662 | 695 / 630 | 50.74, 1,005 both | 7.49 / 7.37 |
+| 30k mid height | 39.24 / 39.14 | 2,227 / 2,211 | 500 / 484 | equal | 7.07 / 7.06 |
+| 30k street level (3 views) | 33.84-37.12, equal | equal | equal | equal | 5.82-6.02 / 5.81-6.16 |
+
+- **100k: 22.5 M fewer main-pass primitives at the still** (R44 estimated 24.2 M beyond 2.5 km):
+  a bucket straddling the range still submits its whole mesh count, its cars beyond 2.5 km
+  collapsed in the vertex shader (5.7 M of the parked layer's 13.4 M lie at 2-4 km by instance
+  centre, against 22.8 M before). Sub-pixel parked instances 21.3 M to 3.5 M. Draws -986 (the
+  parked layer's 1,610 batches to 633).
+- **GPU: 1.6 ms at the 100k still's census frame** (12.33 to 10.73), 0.4-1.0 ms at the other
+  100k poses; the timed still's GPU p50 12.06 to 11.38 ms and frame p50 12.18 to 11.53 (one run a
+  side). R44's 2.5-3 ms used the parked layer's cost before `RENDER-46` (4.48 ms hidden at 100k);
+  after CS1's one body surface the whole parked layer costs 2.83 ms hidden, and this round's branch
+  leaves 1.26 of it: the 1.6 ms saved is the 22.5 M primitives at that layer's own 0.07 ms a
+  million.
+- **30k: the city lies mostly within 2.5 km of the benchmark's poses**: 0.9 M fewer at the still,
+  nothing at street level (every bucket straddles or lies inside the range). GPU level at the
+  census frames.
+- Shadow pass: equal everywhere (no parked car within the sun's 420 m shadow reach is near the
+  range).
+
+**Rows** (series C B B C, `compare --gpu`; the 30k city and Kuopio, default phases). 30k: still
+and 1 s turns level (GPU p50 7.45 against 7.47, 7.29-7.31 against 7.30-7.34); the far zoom-out
+1.9 ms better at p50 (GPU 8.83 to 6.01) and the zoom to the ground 1.1 ms (GPU 5.05 to 3.94);
+night rows level or better. Flags: `pan_repeat` and `zoom_out` p50 +0.1 ms (spreads 0.1 and 0.0)
+and GPU +0.04-0.13 ms on `turn_back` 0.5 s, `pan_out` and the three near zooms. The one rerun of
+the flagged rows (30k pan and zoom): `pan_repeat`, `zoom_out` level; `zoom_in` p50 +0.1 (spread
+0.0); GPU +0.02-0.07 on the pans and near zooms, again 2.7 and 1.2 ms better on the far zooms.
+**Attributed** (Godot's pass timestamps, `--gpu-profile`, one run a side on the same phases): the
+near views' extra GPU is in the depth pre-pass (+0.05-0.26 ms), the opaque pass (+0.07-0.36) and
+the shadow pass (+0.03): the parked cars within 2 km now draw with the fade material, whose
+fragment `discard` (the dither) costs the depth and opaque passes their early depth test on those
+cars, as it does the moving cars'. This is the cost of the moving cars' fade on the 4,000-8,000
+parked cars the 30k poses draw; it is a miss against "rows level" on near views, kept for the owner (options
+below). Kuopio (no parked cars; nothing the branch changed runs a frame there): level or better at
+p50 but `pan_out` max +3.5 and `pan_repeat` max +1.1. Instrumented (`--detail`, one run a side):
+the worst pan frames on both sides are script-process spikes (control 6-11 ms of process time at
+11-17 ms frames, branch 5-15 at 9-16; GPU 1.5 ms). The rerun of the Kuopio pan: those rows level,
+the flag moved to `pan_back` (p50 +0.1 at a spread of 0.0, max +3.2), a row level in the first
+series: as CS1 found, Kuopio's flags follow the run, not the rows.
+
+```bash
+tools/stream_benchmark.py series --input-label 30k --save <populated_city_30000.sqlite> --ctl-library <dev .so> \
+    --ctl-scripts <dev godot/scripts> --library <branch .so> --scripts <branch godot/scripts> --out "$ARTIFACTS"
+tools/stream_benchmark.py compare --gpu "$ARTIFACTS" 30k
+tools/stream_benchmark.py run --label g30-br --save <...30000...> --gpu-profile --phases pan,zoom ...
+tools/stream_benchmark.py run --label c100-br --save <commit_city_100000_...> --phases census,still --still-s 6 ...
+```
+
+**Options for the near-view cost** (the owner's): (a) keep it (recommended: it is the fade the
+owner chose, the moving cars pay it already, and the far views and the 100k gain 0.7-2.8 ms);
+(b) parked cars collapse at 2.5 km without the dither (no `discard`, so no cost, but each car
+vanishes at once instead of dissolving: stills first); (c) the range alone with no per-car fade
+(straddling buckets keep their far cars; not the moving cars' rule).
+
+**`PERF-07` at level F** (`./run.sh --timing --level F`, test binaries control `1d41c7c4`, branch
+`07aa4beb`, boot `978f0c18`, P-cores, eight workers): 30k 1x acceptance PASS both (mean 2.287
+against 2.294 ms, every metric level, `max_unpreempted` better); 30k 32x every metric level (one
+noisy control row, tolerances doubled), the `PERF-17` known exception on both sides. The branch's
+Rust change runs only when a parked chunk installs.
+
+**Digests** (30k post-load, still and 1 s turns; Kuopio still, turns, pan and zoom; one run a
+side): every family equal, parked 4/4 and 8/8. That is the expected result everywhere, not only
+where no distance applies: the parked digests hash the drawn buckets' uploaded poses, and the
+branch uploads every car as before; the distance lives in Godot's cull (the range) and in the
+material (the fade), which the census and the stills measure.
+
+**Stills** (`stills capture`, `compare`, `systematic`). Identity bar: Kuopio close, mid and far
+(overview) identical bytes; 30k `city` and `city_low` identical bytes in both pairs, `saved` 1-4
+px (the `RENDER-45` residue, control against control 3 px); `systematic` none on all three. The
+owner's set (index `$ARTIFACTS/stills-owner/index.html`: side by side, 1:1 crops of the densest
+change and the difference x8, a 30k pull-out from 1.0 to 4.0 km as a 2 fps clip): the 30k high
+and horizon views, night (hour 23) high, horizon and saved, the 100k high, horizon and saved.
+Differences beyond any two runs' are specks where far parked cars were (pixels over a delta of 8:
+30k high 2,586 against a control pair's 1,419, horizon 401 against 0; 100k high 8,268 against
+4,204, horizon 2,007 against 668, saved 59 against 2, `systematic` 149 px at the far horizon of
+the 100k's saved view); the sky and the far streamed city vary between any two runs, so
+`systematic` finds nothing beyond that spread on the high and horizon views. No pose shows an edge
+at full frame, so no longer (3.5 km) variant was made.
+
+Gates (fresh, on `ab8bd0e9`): `cargo clippy --all-targets` warning set equal to the base's (one
+warning, `asset_document.rs`; the first build's two `chunks_exact` warnings fixed); debug
+`cargo test --lib` 2,562 passed, 0 failed, 224 ignored; `./run.sh --test` PASS on the rerun
+(nextest 2,566 passed, 225 skipped; godot-main, godot-vehicle PASS, 0 SCRIPT ERROR) after the first
+run's `profile_guard_test` exit 134 once its refusal was logged (`TOOLS-22`); `parking_test` alone
+PASS.
+
 ### Entered-to-drawn, and the vegetation's prepared set (`RENDER-32-N`, `CODE-12`, 2026-11-13)
 
 Round C1: first the go/no-go measurement, then (it said no-go) plan 5.3's prepared set for the
