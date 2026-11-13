@@ -198,6 +198,14 @@ class DigestTests(unittest.TestCase):
         self.assertEqual(verdicts["lamps"], ["equal"] * 4)
         self.assertEqual(verdicts["water"], ["equal"])
 
+    def test_the_vegetation_family_compares_its_settle_points(self):
+        # AUDIT-stream-2 finding 7: the vegetation has a digest family of its own.
+        a = {"vegetation_digests": [{"point": 1, "sample": "still", "patches": 2, "digest": "x"}]}
+        b = copy.deepcopy(a)
+        self.assertEqual(self.counts(sb.compare_digests(a, b))["vegetation"], ["equal"])
+        b["vegetation_digests"][0]["digest"] = "y"
+        self.assertEqual(self.counts(sb.compare_digests(a, b))["vegetation"], ["different"])
+
     def test_without_level_ends_a_differing_point_is_different(self):
         verdicts = self.counts(sb.compare_digests(self.ctl, self.br))
         self.assertEqual(verdicts["graded"].count("different"), 3)
