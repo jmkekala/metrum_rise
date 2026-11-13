@@ -11,6 +11,7 @@ mod catchments;
 mod kerb;
 mod poses;
 mod published;
+mod strand;
 mod taken_trips;
 
 fn core() -> SimCore {

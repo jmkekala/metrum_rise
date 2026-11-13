@@ -24,6 +24,8 @@ mod graded_cases;
 mod query_cases;
 #[cfg(test)]
 mod save_cases;
+#[cfg(test)]
+mod strand_dump;
 mod diagnostics;
 pub use diagnostics::{GrowthBusinessCashFlow, GrowthBusinessOutcome, GrowthReport};
 

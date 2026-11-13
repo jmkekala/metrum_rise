@@ -1001,3 +1001,136 @@ fn a_walker_with_no_home_whose_job_ends_on_the_way_waits_at_its_lane_end() {
     agents.refresh_stranded_report(&block.network, &block.graph);
     assert_eq!(agents.stranded_report().waiting_for_home, 1);
 }
+
+// STRAND (diagnosis, 2026-11-13; the owner's dump, agents 350/352/353/355): a household moving in
+// walks from the border to the home admission claimed for it, and a road takes that home on the
+// way (`ZONE-09`: `demolish_for_road` evacuates the batch, then removes each building). Another
+// home across the block has a vacancy, but the evacuation rehouses only households that already
+// exist (`evacuate_referencing` skips an agent with no household record), so the carrier keeps
+// its household (`pending_household_size`) with no home and no destination. At the end of its
+// sidewalk it fails with no plan, gives up and, with no home, is stranded there for good: its
+// backoff plans again for a destination it does not have. A resident walking home behind it on
+// the same sidewalk keeps the car spacing behind it and never reaches its door.
+#[test]
+fn strand_a_moving_in_walker_whose_home_a_road_takes_is_never_rehoused_and_holds_its_sidewalk() {
+    let mut block = Block::new(false, false);
+    let asset = register_test_asset(
+        &mut block.allocator,
+        "test",
+        "strand_home",
+        ZoneClass::Residential,
+    );
+    for building in &mut block.allocator.buildings {
+        building.asset_id = asset.clone();
+    }
+    block.allocator.rebuild_zone_index();
+    let mut agents = AgentSystem::new();
+    // The carrier, 30 m from the end of road 1's outer sidewalk, its home claimed at admission.
+    let carrier = block.walker(&mut agents, 0, 30.0);
+    agents.pending_household_size[carrier] = 2;
+    block.allocator.claim_vacancy(0);
+    // A resident of building 1 walking home 4 m behind it.
+    let resident = block.walker(&mut agents, 1, 34.0);
+    agents.home_building[resident] = 1;
+    let lane = agents.current_lane_id[carrier];
+    let length = block.network.lane_system.lanes[lane].length;
+    block.tick(&mut agents);
+    assert!(
+        [carrier, resident]
+            .iter()
+            .all(|&idx| agents.access_flags[idx] & ACCESS_PLAN_VALID != 0),
+        "both plan their walks"
+    );
+
+    // The road takes building 0, as `SimCore::demolish_for_road` does: one scan for the batch
+    // and the building its swap-remove moves, every building evacuated, then removed.
+    let named = [0usize, 1];
+    let candidates = agents.agents_referencing_any_building(&named);
+    let mut households = crate::simulation::economy::households::HouseholdSystem::new();
+    let households_among = households.households_referencing_any_building(&named);
+    agents.evacuate_buildings_among(
+        &[0],
+        &candidates,
+        &mut households,
+        &mut block.allocator,
+        &block.network,
+        &block.graph,
+    );
+    let mut zoning = ZoningSystem::new(&WorldConfig::default());
+    let mut logistics = crate::simulation::economy::logistics::ShipmentSystem::new();
+    assert!(block.allocator.remove_building_for_road(
+        0,
+        &mut zoning,
+        &mut agents,
+        &mut households,
+        &mut logistics,
+        &mut 0.0,
+        &candidates,
+        &households_among,
+    ));
+    // The other home is building 0 now; it still has every place free.
+    assert_eq!(agents.target_building[resident], 0);
+    assert_eq!(block.allocator.buildings[0].occupancy, 0);
+    let slot = crate::simulation::buildings::allocator::baseline_private_zone_slot(
+        ZoneType::Residential,
+    )
+    .unwrap();
+    assert_eq!(block.allocator.vacancy_index[slot], vec![0], "a vacancy stands");
+    // Not rehoused: still a household on its way in, with nowhere to go.
+    assert_eq!(agents.pending_household_size[carrier], 2);
+    assert_eq!(agents.household_id[carrier], usize::MAX);
+    assert_eq!(agents.home_building[carrier], usize::MAX);
+    assert_eq!(agents.target_building[carrier], usize::MAX);
+
+    // It walks to the end of its sidewalk and is stranded there: the dump's record.
+    assert!(
+        walk_until(&mut block, &mut agents, carrier, 60.0, |a| stranded(a, carrier)),
+        "it is stranded"
+    );
+    let line = agents
+        .trip_failures
+        .lines
+        .iter()
+        .find(|line| line.contains(&format!("agent {carrier} ")))
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        line.contains("household moving in, on foot")
+            && line.contains(
+                "with no destination: travelling with no plan to reach its destination; \
+                 stranded with no way home: waits at the end of its lane, plans again in 5 s"
+            ),
+        "{:#?}",
+        agents.trip_failures.lines
+    );
+    // Ten game minutes on it still stands there, its backoff planning for no destination, and
+    // the resident behind it keeps the car spacing and never gets home.
+    for _ in 0..6_000 {
+        block.tick(&mut agents);
+    }
+    assert_eq!(
+        (agents.current_lane_id[carrier], agents.lane_distance[carrier]),
+        (lane, length),
+        "it waits at the end of its lane, on it"
+    );
+    assert!(stranded(&agents, carrier));
+    assert_eq!(agents.target_building[carrier], usize::MAX);
+    assert_eq!(agents.pending_household_size[carrier], 2);
+    assert!(agents.network_replan_failures[carrier] >= 3, "its backoff runs on");
+    assert_eq!(block.allocator.buildings[0].occupancy, 0, "the vacancy is never taken");
+    assert_eq!(agents.current_lane_id[resident], lane);
+    assert!(
+        agents.lane_distance[resident] <= length - 2.0,
+        "the resident queues behind it: {} of {length}",
+        agents.lane_distance[resident]
+    );
+    assert_ne!(agents.transit[resident], TRANSIT_IN_BUILDING, "it never gets home");
+    eprintln!(
+        "STRAND carrier lane {lane} d {:.1}/{length:.1} failures {} next {:.1}; resident d {:.2}; lines {:#?}",
+        agents.lane_distance[carrier],
+        agents.network_replan_failures[carrier],
+        agents.next_replan_time[carrier],
+        agents.lane_distance[resident],
+        agents.trip_failures.lines
+    );
+}
