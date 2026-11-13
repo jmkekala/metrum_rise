@@ -73,6 +73,11 @@ pub(crate) struct VegetationJobs {
     waiting: VecDeque<Waiting>,
     ahead: VecDeque<Waiting>,
     running: usize,
+    // Of them, prepares (`RENDER-32-N`).
+    running_ahead: usize,
+    // The simulation ran (its speed above zero) when a snapshot was last taken: the observed
+    // core state that paces the prepares.
+    simulating: bool,
     // The snapshot taker is out.
     taking: bool,
 }
@@ -96,9 +101,19 @@ impl Default for VegetationJobs {
             waiting: VecDeque::new(),
             ahead: VecDeque::new(),
             running: 0,
+            running_ahead: 0,
+            simulating: false,
             taking: false,
         }
     }
+}
+
+// Prepares running at once: every running place while the simulation is paused; one while it
+// runs (observed under the core's lock by the last snapshot), so their snapshots and builds beside
+// the simulation's frames keep the main thread's core waits at the control's (`RENDER-32-N` part
+// 2: four at once lengthened them by a third on the 30k city at 1x).
+fn ahead_running_limit(simulating: bool) -> usize {
+    if simulating { 1 } else { MAX_RUNNING }
 }
 
 /// A finished poll: the request's key and serial, and its product (`None`: the inputs were
@@ -183,6 +198,9 @@ impl VegetationJobs {
 pub(crate) struct Spawner {
     /// The simulation core the snapshots are taken from.
     pub(crate) core: Arc<Mutex<SimCore>>,
+    /// The core's turnstile (`CODE-25`): a thread waiting for the core holds it, so a prepare
+    /// never takes or keeps the core while one waits.
+    pub(crate) turnstile: Arc<crate::nodes::sim::core::CoreTurnstile>,
     /// The vegetation jobs.
     pub(crate) jobs: Arc<Mutex<VegetationJobs>>,
     /// The background pool's job tracker.
@@ -229,8 +247,15 @@ pub(crate) fn pump(spawner: &Spawner) {
             return;
         }
         let mut batch = Vec::new();
+        // Prepares are taken only into the running places their limit leaves.
+        let ahead_limit = ahead_running_limit(jobs.simulating);
         while jobs.running + batch.len() < MAX_RUNNING
-            && let Some(waiting) = jobs.waiting.pop_front().or_else(|| jobs.ahead.pop_front())
+            && let Some(waiting) = jobs.waiting.pop_front().or_else(|| {
+                let ahead = batch.iter().filter(|w: &&Waiting| w.ahead).count();
+                (jobs.running_ahead + ahead < ahead_limit)
+                    .then(|| jobs.ahead.pop_front())
+                    .flatten()
+            })
         {
             if jobs.queue.is_live(waiting.request.key, waiting.serial) {
                 batch.push(waiting);
@@ -243,13 +268,32 @@ pub(crate) fn pump(spawner: &Spawner) {
         }
         jobs.taking = true;
         jobs.running += batch.len();
+        jobs.running_ahead += batch.iter().filter(|w| w.ahead).count();
         batch
     };
     let next = spawner.clone();
     spawner.async_jobs.spawn(move || {
         let mut inputs: Vec<Option<VegetationPatchInputs>> = Vec::with_capacity(batch.len());
-        if let Some(mut core) = SimulationNode::try_lock_shared_core(&next.core) {
+        // A product prepared ahead of need (`RENDER-32-N`) is snapshotted only while no thread
+        // waits for the core (the main thread's blocking queries and the simulation thread both
+        // wait through the turnstile): the observed lock state, checked before the core is taken
+        // and before each prepare's snapshot, so a prepare holds a contended core for at most one
+        // snapshot and the rest of the batch goes back as busy. Requests are taken as before.
+        let waited = |waiting: &Waiting| waiting.ahead && next.turnstile.has_waiter();
+        let core = if batch.iter().all(waited) {
+            None
+        } else {
+            SimulationNode::try_lock_shared_core(&next.core)
+        };
+        // The simulation's speed as the core shows it (paces the prepares; set below, with the
+        // jobs' lock, after the core is freed).
+        let mut simulating = None;
+        if let Some(mut core) = core {
+            simulating = Some(core.time.speed_multiplier > 0.0);
             for waiting in &batch {
+                if waited(waiting) {
+                    break;
+                }
                 let request = &waiting.request;
                 inputs.push(VegetationPatchInputs::take(
                     &mut core,
@@ -273,6 +317,10 @@ pub(crate) fn pump(spawner: &Spawner) {
             // next event that pumps (a build job ending, a request or the renderer's poll) tries
             // the core again. It does not pump itself, so a held core is not spun on.
             jobs.running -= busy.len();
+            jobs.running_ahead -= busy.iter().filter(|w| w.ahead).count();
+            if let Some(simulating) = simulating {
+                jobs.simulating = simulating;
+            }
             for waiting in busy.into_iter().rev() {
                 if waiting.ahead {
                     jobs.ahead.push_front(waiting);
@@ -294,10 +342,10 @@ fn build(spawner: &Spawner, waiting: Waiting, inputs: VegetationPatchInputs) {
     spawner.async_jobs.spawn(move || {
         let Waiting {
             request,
+            ahead,
             serial,
             mut product,
             catalogue,
-            ..
         } = waiting;
         prepare_patch(&inputs, &request, &catalogue, &mut product);
         product.origin = [request.origin.x, request.origin.y];
@@ -306,6 +354,9 @@ fn build(spawner: &Spawner, waiting: Waiting, inputs: VegetationPatchInputs) {
             let mut jobs = next.jobs.lock().unwrap();
             jobs.land(request.key, serial, Some(product));
             jobs.running -= 1;
+            if ahead {
+                jobs.running_ahead -= 1;
+            }
         }
         pump(&next);
     });

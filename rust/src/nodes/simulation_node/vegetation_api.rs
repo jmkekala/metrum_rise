@@ -371,6 +371,7 @@ impl SimulationNode {
     pub(crate) fn vegetation_spawner(&self) -> jobs::Spawner {
         jobs::Spawner {
             core: Arc::clone(&self.core),
+            turnstile: Arc::clone(&self.core_turnstile),
             jobs: Arc::clone(&self.vegetation_jobs),
             async_jobs: Arc::clone(&self.async_jobs),
         }

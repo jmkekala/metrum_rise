@@ -38,14 +38,17 @@
 //!   back) installs without a job.
 //! - **Memory.** [`PREPARED_CAP_BYTES`] of products, prepared and retained together; over it the
 //!   products farthest from the view (the nearer of the eye and the pivot on the ground, so a far
-//!   camera keeps what its zoom down needs) are evicted (ties by key and bands) and counted
+//!   camera keeps what its zoom down needs) are evicted, down to the cap less a sixteenth in one
+//!   pass (ties by key and bands), and counted
 //!   (`over_cap`).
 //!
 //! Costs: a frame that prepares `O(blocks within the far range of one sample eye x
 //! subdivision²)`, each patch's variants `O(1)` (at most four); a moving frame, a still frame
 //! with the samples done or a request waiting `O(1)`; a request `O(1)` more (eight probes for a
-//! patch's other variants); an eviction `O(held)`. Storage grows to the cap and the samples, then
-//! is reused. Jobs out: at most [`PREPARE_IN_FLIGHT`] prepares.
+//! patch's other variants); an eviction pass `O(held log held)`, once for a sixteenth of the cap.
+//! Storage grows to the cap and the samples, then is reused. Jobs out: at most
+//! [`PREPARE_IN_FLIGHT`] prepares; their snapshots yield the core to any thread waiting for it,
+//! and while the simulation runs one prepare runs at a time (`vegetation_api/jobs.rs`).
 
 use super::super::Delivery;
 use super::*;
@@ -53,14 +56,25 @@ use crate::nodes::sim::render::stream::reach::{ReachSample, reach_samples};
 use crate::nodes::sim::render::stream::view::CameraSample;
 use crate::nodes::sim::render::vegetation_product::VegetationProduct;
 
-/// Bytes of prepared vegetation products held (the plan's default, a setting later).
-pub(crate) const PREPARED_CAP_BYTES: usize = 64 << 20;
+/// Bytes of prepared vegetation products held, prepared and retained together (a setting later).
+/// The plan's default was 64 MB; `RENDER-32-N` part 2 measured Kuopio's whole benchmark session
+/// (turns, near zooms, the far zoom-out and back to the ground) at 79 MiB uncapped, where 64
+/// evicted what the zoom back down needed (198 frames waiting for jobs against the control's 21,
+/// 9 uncapped), and the 30k city at 5 MiB: the measured peak with a fifth to spare.
+pub(crate) const PREPARED_CAP_BYTES: usize = 96 << 20;
 /// Prepare jobs out at once: twice what the vegetation's running jobs take (`MAX_RUNNING`), so
 /// the pool runs a full round while the last round's products wait for the pull (measured
 /// `RENDER-32-N` part 2: at one round the 30k city's first turn started before its reach was
 /// prepared). Their jobs wait behind every request's, so a request that arrives waits behind at
 /// most the one round running.
 pub(crate) const PREPARE_IN_FLIGHT: usize = 8;
+
+// The squared ground distance from `point` to the nearer of the eye and the pivot (`view` is
+// `[eye, pivot]`): a far camera keeps what its zoom to the pivot needs.
+fn view_distance_squared(point: [f32; 2], view: [[f32; 2]; 2]) -> f32 {
+    let [eye, pivot] = view;
+    distance_squared(point, eye).min(distance_squared(point, pivot))
+}
 
 /// One product held: what it was built from and where its patch is.
 pub(crate) struct Held<P> {
@@ -78,7 +92,13 @@ pub(crate) struct HeldProducts<K, P> {
     bytes: usize,
     cap: usize,
     over_cap: u64,
+    // Eviction scratch: (distance², key), reused.
+    order: Vec<(f32, K)>,
 }
+
+/// Over the cap the products are evicted down to the cap less this share of it, so an eviction's
+/// pass over the held products is paid once for many evictions.
+const EVICT_LOW_WATER_SHARE: usize = 16;
 
 impl<K: Copy + Ord + std::hash::Hash, P> HeldProducts<K, P> {
     /// An empty store of at most `cap` bytes.
@@ -88,35 +108,45 @@ impl<K: Copy + Ord + std::hash::Hash, P> HeldProducts<K, P> {
             bytes: 0,
             cap,
             over_cap: 0,
+            order: Vec::new(),
         }
     }
 
-    /// Holds `held` for `key` (replacing an older product, returned in `out`), then evicts the
-    /// products farthest from the view into `out` while over the cap, each counted: by the
-    /// nearer of the two `view` points (the eye and the pivot on the ground), so a far camera
-    /// keeps what its zoom to the pivot needs. `O(1)`, an eviction `O(held)`.
+    /// Holds `held` for `key` (replacing an older product, returned in `out`). Over the cap,
+    /// evicts into `out` down to the cap less a sixteenth, each counted: the farthest from the
+    /// view first, by the nearer of the two `view` points (the eye and the pivot on the ground, so
+    /// a far camera keeps what its zoom to the pivot needs), ties by the larger key. `O(1)`; an
+    /// eviction pass `O(held log held)`, paid once for a sixteenth of the cap.
     pub(crate) fn hold(&mut self, key: K, held: Held<P>, view: [[f32; 2]; 2], out: &mut Vec<P>) {
         self.bytes += held.bytes;
         if let Some(old) = self.held.insert(key, held) {
             self.bytes -= old.bytes;
             out.push(old.product);
         }
-        while self.bytes > self.cap {
-            let farthest = self
-                .held
-                .iter()
-                .map(|(key, held)| {
-                    let [eye, pivot] = view.map(|point| distance_squared(held.centre, point));
-                    (eye.min(pivot), *key)
-                })
-                .max_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)))
-                .map(|(_, key)| key);
-            let Some(evicted) = farthest.and_then(|key| self.take(key)) else {
-                break;
-            };
-            self.over_cap += 1;
-            out.push(evicted.product);
+        if self.bytes <= self.cap {
+            return;
         }
+        let mut order = std::mem::take(&mut self.order);
+        order.clear();
+        order.extend(
+            self.held
+                .iter()
+                .map(|(key, held)| (view_distance_squared(held.centre, view), *key)),
+        );
+        // Evicted first: farther, then the larger key.
+        order.sort_unstable_by(|a, b| b.0.total_cmp(&a.0).then(b.1.cmp(&a.1)));
+        let low_water = self.cap - self.cap / EVICT_LOW_WATER_SHARE;
+        for &(_, key) in &order {
+            if self.bytes <= low_water {
+                break;
+            }
+            if let Some(evicted) = self.take(key) {
+                self.over_cap += 1;
+                out.push(evicted.product);
+            }
+        }
+        order.clear();
+        self.order = order;
     }
 
     /// Takes `key`'s product.
@@ -724,16 +754,31 @@ mod tests {
         ties.hold([0, 0, 1], held(5, [10.0, 0.0], 40), [[0.0, 0.0]; 2], &mut gone);
         ties.hold([0, 1, 1], held(6, [0.0, 10.0], 40), [[0.0, 0.0]; 2], &mut gone);
         assert_eq!(gone, vec![6]);
-        // Measured from the nearer of eye and pivot: a camera far out keeps the pivot's.
-        let mut far = HeldProducts::new(100);
-        let mut left = Vec::new();
-        far.hold([0, 0, 1], held(8, [0.0, 0.0], 40), [[5000.0, 0.0], [0.0, 0.0]], &mut left);
-        far.hold([1, 0, 1], held(9, [2500.0, 0.0], 40), [[5000.0, 0.0], [0.0, 0.0]], &mut left);
-        far.hold([2, 0, 1], held(10, [4900.0, 0.0], 40), [[5000.0, 0.0], [0.0, 0.0]], &mut left);
-        assert_eq!(left, vec![9], "the one far from both leaves");
         // A product too large for the cap alone is held by nothing.
         ties.hold([9, 9, 1], held(7, [0.0, 0.0], 60), [[0.0, 0.0]; 2], &mut gone);
         assert_eq!(ties.counts().0, 0);
+    }
+
+    #[test]
+    fn one_pass_evicts_down_to_the_low_water_and_keeps_the_eye_and_the_pivot() {
+        let at = [[0.0, 0.0]; 2];
+        let mut many = HeldProducts::new(160);
+        let mut gone = Vec::new();
+        for i in 0..10 {
+            many.hold([i, 0, 1], held(i as u32, [i as f32 * 10.0, 0.0], 16), at, &mut gone);
+        }
+        assert!(gone.is_empty());
+        many.hold([10, 0, 1], held(10, [0.0, 5.0], 16), at, &mut gone);
+        assert_eq!(gone, vec![9, 8], "the two farthest, to 144 bytes of 150");
+        assert_eq!(many.counts(), (9, 144, 2));
+        // Measured from the nearer of eye and pivot: a camera far out keeps the pivot's.
+        let view = [[5000.0, 0.0], [0.0, 0.0]];
+        let mut far = HeldProducts::new(100);
+        let mut left = Vec::new();
+        far.hold([0, 0, 1], held(8, [0.0, 0.0], 40), view, &mut left);
+        far.hold([1, 0, 1], held(9, [2500.0, 0.0], 40), view, &mut left);
+        far.hold([2, 0, 1], held(10, [4900.0, 0.0], 40), view, &mut left);
+        assert_eq!(left, vec![9], "the one far from both leaves");
     }
 
     #[test]
