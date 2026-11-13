@@ -12264,7 +12264,7 @@ grade.
 
 ## Road tools (`ROAD-112`, `ROAD-113`)
 
-**Status: in progress.** Planned 2026-11-12; round A (the guide kernel) and round B (the session core, not wired) built 2026-11-13, round B landed 2026-11-14. The user asked for a complete refactor of the
+**Status: in progress.** Planned 2026-11-12; round A (the guide kernel) and round B (the session core, not wired) built 2026-11-13, round B landed 2026-11-14; round F (batch commit, grouped undo, undo refund) built 2026-11-13, held for its batch bar until fix round F2. The user asked for a complete refactor of the
 road tool, Rust-first: the current straight mode and the GDScript `Curve3D` "curve" (a cubic
 Bezier whose handles are the raw vectors to the control point, so its curvature, radius and
 length are not exact) are replaced. Mechanics follow the genre (city builders' straight, curve,
@@ -12474,6 +12474,63 @@ Criterion at 30k (mean, 95% interval): control 122.52 us (122.22-122.82), sessio
   the control's spread). Before the rebase (`dev` `dafea968`, session only): `PERF-07` every
   metric `level` (mean 4.470 -> 4.472 ms), K22 6.88 / 6.68 ms. The path rule says F (the
   `[[bench]]` entry in `Cargo.toml`); timed at R as briefed.
+
+### Batch commit, grouped undo and undo refund (round F)
+
+Built 2026-11-13 on branch `roadtools-f` (`dev` `d10c2404` plus the round), for review; the
+contract is in ["Preview, commit, undo and load"](#preview-commit-undo-and-load) ("Batch commit").
+New `core/road_batch.rs`; `road_commit.rs` split into `commit_stroke_core` and `commit_tail`;
+`undo.rs` restores groups and refunds; bridge `add_road_batch`, no tool UI.
+
+Tests (Rust, `core/tests/road_over_zoning/batch.rs`): a draft of three strokes (two consecutive
+segments into the street, demolishing houses, and a cross street at their joint) leaves the
+graph, every piece, the cells, parcels, buildings, agents, households and the treasury bitwise as
+the same strokes committed one by one, with every stroke installing its dry run (the chain held);
+one undo restores the graph, pieces, paint and treasury; a batch whose last stroke covers a field
+is refused (`field_overlap`, stroke 2) with nothing demolished, erased, charged or recorded; the
+cap counts groups; a widening's undo refunds its charge. A single stroke's products are the
+control's: the K22 `COMMIT_PRODUCTS` of both binaries are identical.
+
+Measured fresh, 2026-11-13, release test binaries (`$TEST_BINARY`), eight workers pinned to the
+performance cores, under the run and exclusive timing locks, against a same-session control
+built from `d10c2404`:
+
+```bash
+./run.sh --timing --level F --control <the control's $TEST_BINARY> --branch "$TEST_BINARY" \
+    --base d10c2404 --k22 --artifacts "$ARTIFACTS"
+METRUM_COMMIT_TIERS=30000 METRUM_BATCH_ROUNDS=3 RAYON_NUM_THREADS=8 METRUM_DEBUG=0 \
+    taskset -c 0,2,4,6,8,10,12,14 "$TEST_BINARY" \
+    nodes::sim::core::populated_city::batch_commit::benchmark_populated_batch_commit --ignored --nocapture
+METRUM_LOCALITY_TIERS=0,1000,10000,30000 ... benchmark_batch_locality --ignored --nocapture
+```
+
+- **Single commit (K22 30k, C B):** commit 12.95 / 6.88 / 5.41 ms on the control, 13.23 / 6.93 /
+  4.72 ms on the branch (means 8.42 and 8.30): not slower; products identical.
+- **Batch of eight at 30k** (eight 120 m branches off the border trunk, 50 m apart; three rounds,
+  each on fresh loads of the K22 city): eight single commits 46.8-48.7 ms of commit wall time,
+  their eight cores plus one mean tail 34.5-35.4 ms; the batch 77.1-82.4 ms, **2.2-2.4 times the
+  bound: the "eight cores plus one tail within 10 %" bar is not met.** The batch's graph, new
+  pieces, cells and parcels equal the one-by-one run's in every round, and all eight strokes
+  installed their dry run. Where the time goes: the dry run 6.1-6.7 ms; the cores 29.5-30.7,
+  9.9-10.3, 8.1-8.5, then 2.4-4.6 ms; the tail 5.2-6.1 ms. The first three cores carry the lot
+  plans of the strokes before the last, about 21, 6 and 4.5 ms, which a single commit runs as a
+  deferred pure job off its wall time and adopts at the next frame (the K22 commits' lot jobs take
+  23.6, 8.7 and 2.5 ms); they must run inside the batch for the next stroke to read them, or the
+  batch's lots would differ from the strokes committed one by one. The tail's mesh precompute
+  grows with the eight strokes' changed chunks (5.2-6.1 ms against a single's 1.0-4.6), and the
+  dry run costs more than the plan and compile it saves the cores (about 0.8 against 0.3-0.5 ms a
+  stroke). Decision for the user (round F report): keep the exact one-by-one lots and change the
+  bar to "eight cores, the intermediate lot plans and one tail", or plan every stroke's lot
+  regions once in the tail (as the plan's "lots queued" reads), accepting lots that differ from
+  one-by-one commits.
+- **Locality** (`benchmark_batch_locality`, the commit locality neighbourhood with 0 / 1k / 10k /
+  30k background sites): the batch's local products are bitwise equal at every tier
+  (`894d70ae6e856f9c`); batch 165.9 / 175.5 / 174.9 / 172.8 ms, dry run 17.8 / 18.8 / 17.2 /
+  18.9 ms, tail 11.0 / 11.2 / 10.3 / 10.6 ms: flat.
+- **Frames (timing level F):** 30k 1x day level on mean, p99 and p99.9 (2.293 / 2.269 ms mean);
+  30k 32x level on mean, p99 and p99.9 after one rerun of the four rows (the first set read +1.4 %
+  on a 1.4 % tolerance); the worst unpreempted frame read +9 to +22 % on single frames, for review:
+  no frame path runs changed code.
 
 ### Decisions (user, 2026-11-12, all as recommended)
 
