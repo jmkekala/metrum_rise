@@ -1,0 +1,696 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
+//! Round B (`ROAD-112`) tests: the snapping precedence of plan section 3 (one test per row and
+//! per tie, on the pure resolver), the allocation-free network snap against today's, scripted
+//! event sequences against the road tool's published view (straight parity with today's
+//! two-point request, the curve modes, chain rules) and determinism.
+
+use super::bench::{NEIGHBOURHOOD, neighbourhood_view};
+use super::frame::{DraftRefusal, Phase};
+use super::measure::{bearing_deg, design_speed_kmh};
+use super::modes::DrawMode;
+use super::pick::{CursorQuery, road_tool_cursor};
+use super::session::{
+    BORDER_SNAP_M, Pointer, PointerButton, RoadToolAction, RoadToolEvent, RoadToolOption,
+    RoadToolSession, SNAP_RELEASE_M,
+};
+use super::snap::{
+    GuideLine, SnapInput, SnapKind, SnapOptions, SnapScratch, Snapped, apply_length_step,
+    collect_guides, network_snap, resolve,
+};
+use crate::nodes::sim::core::RoadToolQuerySnapshot;
+use crate::simulation::network::guide::{DVec2, GuidePath};
+use crate::simulation::network::interaction::{
+    NetworkSnap, NetworkSnapTarget, StructureHit, get_closest_network_snap_at_hit,
+};
+use godot::prelude::Vector3;
+use std::sync::OnceLock;
+
+// One small world shared by the scripted tests: the bench neighbourhood, no background.
+fn view() -> &'static RoadToolQuerySnapshot {
+    static VIEW: OnceLock<RoadToolQuerySnapshot> = OnceLock::new();
+    VIEW.get_or_init(|| neighbourhood_view(0, 2_048.0))
+}
+
+fn d(x: f64, y: f64) -> DVec2 {
+    DVec2::new(x, y)
+}
+
+fn input(raw: DVec2) -> SnapInput {
+    SnapInput {
+        raw,
+        anchor: Some(DVec2::ZERO),
+        reference: None,
+        free: false,
+        network: None,
+        grid: None,
+    }
+}
+
+fn node_snap(at: DVec2, id: u32) -> (NetworkSnap, Option<DVec2>) {
+    let snap = NetworkSnap {
+        position: Vector3::new(at.x as f32, 0.0, at.y as f32),
+        target: NetworkSnapTarget::Node(id),
+    };
+    (snap, None)
+}
+
+fn edge_snap(at: DVec2, dir: DVec2) -> (NetworkSnap, Option<DVec2>) {
+    let snap = NetworkSnap {
+        position: Vector3::new(at.x as f32, 0.0, at.y as f32),
+        target: NetworkSnapTarget::Edge(3),
+    };
+    (snap, Some(dir))
+}
+
+fn locked(step: f64) -> SnapOptions {
+    SnapOptions {
+        angle_step_deg: Some(step),
+        ..SnapOptions::default()
+    }
+}
+
+fn close(a: DVec2, b: DVec2) -> bool {
+    a.distance(b) < 1e-9
+}
+
+// Row 1: a node wins outright over an edge, a guide line and the angle lock; the lock reports
+// itself broken.
+#[test]
+fn precedence_row_1_node_wins_and_breaks_the_lock() {
+    let guide = [GuideLine {
+        origin: d(0.0, 10.0),
+        dir: DVec2::X,
+    }];
+    let mut pose = input(d(50.0, 10.5));
+    pose.network = Some(node_snap(d(51.0, 9.0), 7));
+    let snapped = resolve(&pose, &locked(15.0), &guide);
+    assert_eq!(snapped.kind, SnapKind::Node);
+    assert_eq!(snapped.target, Some(NetworkSnapTarget::Node(7)));
+    assert!(snapped.angle_broken);
+    assert!(close(snapped.xz, d(51.0, 9.0)));
+    // Without the lock nothing is broken.
+    assert!(!resolve(&pose, &SnapOptions::default(), &guide).angle_broken);
+}
+
+// Rows 2-3: the angle ray meets an edge within the edge's reach: the intersection, on the edge.
+#[test]
+fn precedence_row_3_angle_meets_edge_within_reach() {
+    // A road along x = 40; the cursor 2 m off the 0 degree ray, 1 m off the road.
+    let mut pose = input(d(41.0, 2.0));
+    pose.network = Some(edge_snap(d(40.0, 2.0), DVec2::Y));
+    let snapped = resolve(&pose, &locked(15.0), &[]);
+    assert_eq!(snapped.kind, SnapKind::AngleEdge);
+    assert_eq!(snapped.target, Some(NetworkSnapTarget::Edge(3)));
+    assert!(close(snapped.xz, d(40.0, 0.0)));
+}
+
+// Row 3, otherwise: the intersection out of the edge's reach, so the edge wins over the angle.
+#[test]
+fn precedence_row_3_edge_wins_over_angle_out_of_reach() {
+    let mut pose = input(d(41.0, 9.0));
+    pose.network = Some(edge_snap(d(40.0, 9.0), DVec2::Y));
+    let snapped = resolve(&pose, &locked(90.0), &[]);
+    assert_eq!(snapped.kind, SnapKind::Edge);
+    assert!(close(snapped.xz, d(40.0, 9.0)));
+}
+
+// Row 3 with a guide line: the intersection within the guide's reach; out of it the angle wins.
+#[test]
+fn precedence_row_3_angle_and_guide() {
+    // A guide line x = 30 (a perpendicular at some node); the 0 degree ray meets it at (30, 0).
+    let guide = [GuideLine {
+        origin: d(30.0, 50.0),
+        dir: DVec2::Y,
+    }];
+    let near = resolve(&input(d(31.5, 0.5)), &locked(45.0), &guide);
+    assert_eq!(near.kind, SnapKind::AngleGuide);
+    assert!(close(near.xz, d(30.0, 0.0)));
+    // 1.5 m from the guide (in its reach) but the intersection 2.2 m away: the angle wins.
+    let far = resolve(&input(d(31.5, 1.6)), &locked(45.0), &guide);
+    assert_eq!(far.kind, SnapKind::Angle);
+    assert!(close(far.xz, d(31.5, 0.0)));
+}
+
+// Row 3 with the zoning grid: the grid's axis through the anchor meets the ray only at the
+// anchor; off its direction the angle wins over the grid line, along it they agree.
+#[test]
+fn precedence_row_3_angle_wins_over_grid() {
+    let mut pose = input(d(40.0, 3.0));
+    pose.grid = Some((d(40.0, 10.0), Some(d(4.0, 1.0).normalize())));
+    let options = SnapOptions {
+        grid: true,
+        ..locked(15.0)
+    };
+    let snapped = resolve(&pose, &options, &[]);
+    assert_eq!(snapped.kind, SnapKind::Angle);
+    assert!(close(snapped.xz, d(40.0, 0.0)));
+}
+
+// Row 4: two guide lines in reach and no lock: their corner.
+#[test]
+fn precedence_row_4_guide_corner() {
+    let guides = [
+        GuideLine {
+            origin: d(0.0, 20.0),
+            dir: DVec2::X,
+        },
+        GuideLine {
+            origin: d(35.0, 0.0),
+            dir: DVec2::Y,
+        },
+    ];
+    let snapped = resolve(&input(d(34.0, 21.0)), &SnapOptions::default(), &guides);
+    assert_eq!(snapped.kind, SnapKind::GuideCorner);
+    assert!(close(snapped.xz, d(35.0, 20.0)));
+}
+
+// Row 5: one constraint alone projects: a guide, the angle ray, an edge, the grid's point.
+#[test]
+fn precedence_row_5_single_constraints() {
+    let guide = [GuideLine {
+        origin: d(0.0, 20.0),
+        dir: DVec2::X,
+    }];
+    let on_guide = resolve(&input(d(12.0, 21.5)), &SnapOptions::default(), &guide);
+    assert_eq!(on_guide.kind, SnapKind::Guide);
+    assert!(close(on_guide.xz, d(12.0, 20.0)));
+
+    let on_ray = resolve(&input(d(20.0, 19.0)), &locked(45.0), &[]);
+    assert_eq!(on_ray.kind, SnapKind::Angle);
+    assert!(close(on_ray.xz, d(19.5, 19.5)));
+
+    let mut pose = input(d(41.0, 9.0));
+    pose.network = Some(edge_snap(d(40.0, 9.0), DVec2::Y));
+    assert_eq!(
+        resolve(&pose, &SnapOptions::default(), &[]).kind,
+        SnapKind::Edge
+    );
+
+    let mut pose = input(d(41.0, 9.0));
+    pose.grid = Some((d(40.0, 8.0), None));
+    let grid = SnapOptions {
+        grid: true,
+        ..SnapOptions::default()
+    };
+    let snapped = resolve(&pose, &grid, &[]);
+    assert_eq!(snapped.kind, SnapKind::Grid);
+    assert!(close(snapped.xz, d(40.0, 8.0)));
+    // Off, the grid is no constraint.
+    assert_eq!(
+        resolve(&pose, &SnapOptions::default(), &[]).kind,
+        SnapKind::Free
+    );
+}
+
+// Row 2's order: an edge in reach is the line constraint before a guide, a guide before the grid.
+#[test]
+fn precedence_row_2_line_order() {
+    let guide = [GuideLine {
+        origin: d(0.0, 10.0),
+        dir: DVec2::X,
+    }];
+    let options = SnapOptions {
+        grid: true,
+        ..SnapOptions::default()
+    };
+    let mut pose = input(d(20.0, 10.5));
+    pose.network = Some(edge_snap(d(20.0, 11.0), DVec2::X));
+    pose.grid = Some((d(24.0, 12.0), None));
+    assert_eq!(resolve(&pose, &options, &guide).kind, SnapKind::Edge);
+    pose.network = None;
+    assert_eq!(resolve(&pose, &options, &guide).kind, SnapKind::Guide);
+    assert_eq!(resolve(&pose, &options, &[]).kind, SnapKind::Grid);
+}
+
+// Row 6: the length step rounds a free, angle or guide result from the anchor; a node, an edge
+// or an intersection keeps its point.
+#[test]
+fn precedence_row_6_length_step() {
+    let mut free = Snapped {
+        xz: d(0.0, 10.7),
+        kind: SnapKind::Free,
+        target: None,
+        stepped: false,
+        angle_broken: false,
+    };
+    apply_length_step(&mut free, Some(DVec2::ZERO), Some(4.0), None);
+    assert!(free.stepped && close(free.xz, d(0.0, 12.0)));
+
+    let guide = GuideLine {
+        origin: d(-100.0, 5.0),
+        dir: DVec2::X,
+    };
+    let mut on_guide = Snapped {
+        xz: d(9.1, 5.0),
+        kind: SnapKind::Guide,
+        ..free
+    };
+    apply_length_step(&mut on_guide, Some(DVec2::ZERO), Some(4.0), Some(guide));
+    assert!(close(on_guide.xz, d(8.0, 5.0)));
+
+    for kind in [
+        SnapKind::Node,
+        SnapKind::Edge,
+        SnapKind::AngleGuide,
+        SnapKind::GuideCorner,
+    ] {
+        let mut kept = Snapped {
+            xz: d(9.1, 5.0),
+            kind,
+            stepped: false,
+            ..free
+        };
+        apply_length_step(&mut kept, Some(DVec2::ZERO), Some(4.0), Some(guide));
+        assert!(!kept.stepped && close(kept.xz, d(9.1, 5.0)), "{kind:?}");
+    }
+}
+
+// Shift frees the cursor of the angle lock, guide lines and grid; network snaps stay.
+#[test]
+fn shift_frees_all_but_the_network() {
+    let guide = [GuideLine {
+        origin: d(0.0, 20.0),
+        dir: DVec2::X,
+    }];
+    let mut pose = input(d(12.0, 21.0));
+    pose.free = true;
+    assert_eq!(resolve(&pose, &locked(15.0), &guide).kind, SnapKind::Free);
+    pose.network = Some(edge_snap(d(12.0, 22.0), DVec2::X));
+    assert_eq!(resolve(&pose, &locked(15.0), &guide).kind, SnapKind::Edge);
+}
+
+// Tie: two guide lines at exactly the same distance: the earlier candidate wins.
+#[test]
+fn tie_equal_guides_take_the_earlier_candidate() {
+    let guides = [
+        GuideLine {
+            origin: d(0.0, 1.0),
+            dir: DVec2::X,
+        },
+        GuideLine {
+            origin: d(0.0, -1.0),
+            dir: DVec2::X,
+        },
+    ];
+    let snapped = resolve(&input(d(10.0, 0.0)), &SnapOptions::default(), &guides);
+    assert_eq!(snapped.kind, SnapKind::Guide);
+    assert!(close(snapped.xz, d(10.0, 1.0)));
+}
+
+// Tie: an angle lock exactly between two steps rounds half away from zero, the same every time.
+#[test]
+fn tie_angle_half_step_is_fixed() {
+    let a = resolve(&input(d(10.0, 10.0)), &locked(90.0), &[]);
+    let b = resolve(&input(d(10.0, 10.0)), &locked(90.0), &[]);
+    assert_eq!(a, b);
+    assert_eq!(a.kind, SnapKind::Angle);
+    assert!(close(a.xz, d(0.0, 10.0)));
+}
+
+// The session's network snap equals today's acquisition bitwise (including the lowest-id tie
+// rule and node priority), over a lattice of probe points around the neighbourhood.
+#[test]
+fn network_snap_matches_todays_acquisition() {
+    let graph = &view().region_graph;
+    let mut scratch = SnapScratch::default();
+    let mut snapped = 0;
+    for ix in -40..=40 {
+        for iz in -40..=40 {
+            let at = Vector3::new(ix as f32 * 7.7, 0.0, iz as f32 * 7.7);
+            let ours = network_snap(
+                graph,
+                at,
+                StructureHit::Ground,
+                None,
+                0,
+                8.0,
+                5.0,
+                &mut scratch,
+            );
+            let today = get_closest_network_snap_at_hit(graph, at, 5.0, StructureHit::Ground);
+            assert_eq!(ours.map(bits), today.map(bits), "at {at:?}");
+            snapped += usize::from(today.is_some());
+        }
+    }
+    assert!(snapped > 100, "the lattice must meet the roads ({snapped})");
+}
+
+fn bits(snap: NetworkSnap) -> ([u32; 3], NetworkSnapTarget) {
+    let p = snap.position;
+    ([p.x.to_bits(), p.y.to_bits(), p.z.to_bits()], snap.target)
+}
+
+// The guide lines of the spur's dead end: its extension and the perpendicular there.
+#[test]
+fn guides_include_dead_end_extension_and_perpendicular() {
+    let mut scratch = SnapScratch::default();
+    let end = d(-40.0, 200.0);
+    collect_guides(
+        &view().region_graph,
+        end + d(10.0, 10.0),
+        None,
+        None,
+        None,
+        &mut scratch,
+    );
+    let diagonal = d(1.0, 1.0).normalize();
+    let through = |dir: DVec2| {
+        scratch
+            .guides
+            .iter()
+            .any(|guide| guide.origin.distance(end) < 1e-3 && guide.dir.perp_dot(dir).abs() < 1e-6)
+    };
+    assert!(through(diagonal), "extension");
+    assert!(through(diagonal.perp()), "perpendicular");
+}
+
+// --- Scripted sessions -------------------------------------------------------------------------
+
+fn session() -> RoadToolSession {
+    RoadToolSession::new()
+}
+
+// A vertical camera ray onto `(x, z)`.
+fn ray(x: f32, z: f32) -> Pointer {
+    Pointer::Ray {
+        origin: Vector3::new(x, 300.0, z),
+        dir: Vector3::new(0.0, -1.0, 0.0),
+    }
+}
+
+fn move_to(session: &mut RoadToolSession, pointer: Pointer) {
+    session.handle_event(
+        view(),
+        RoadToolEvent::Pointer {
+            pointer,
+            shift: false,
+        },
+    );
+}
+
+fn click(session: &mut RoadToolSession, pointer: Pointer) {
+    move_to(session, pointer);
+    session.handle_event(view(), RoadToolEvent::Press(PointerButton::Left));
+}
+
+fn ack(session: &mut RoadToolSession, committed: bool) {
+    session.handle_event(view(), RoadToolEvent::CommitAck { committed });
+}
+
+// Today's cursor for the same ray: idle (start) or placing a straight end from `start`, no
+// zoning snap, the magnet's reference `angle` (zero: off), no retained snap.
+fn today(pointer: Pointer, start: Option<Vector3>, angle: Vector3) -> Vector3 {
+    let Pointer::Ray { origin, dir } = pointer else {
+        unreachable!()
+    };
+    let start_pos = start.unwrap_or(Vector3::ZERO);
+    road_tool_cursor(
+        view(),
+        &CursorQuery {
+            ray_origin: origin,
+            ray_dir: dir,
+            altitude_offset_m: 0.0,
+            active: start.is_some(),
+            current_state: if start.is_some() { 2 } else { 0 },
+            start_pos,
+            control_pos: start_pos,
+            zoning_snap_enabled: false,
+            fwd_lanes: 1,
+            bkw_lanes: 1,
+            border_snap_dist_m: BORDER_SNAP_M,
+            previous_snap: None,
+            sticky_release_dist_m: SNAP_RELEASE_M,
+            angle_snap: angle,
+        },
+    )
+    .expect("the ray meets the ground")
+    .position
+}
+
+// Straight parity: for clicks where no snap differs (open ground, a junction node, an edge
+// mid-span, a dead end) the session sends exactly today's two points, bit for bit.
+#[test]
+fn straight_mode_sends_todays_two_point_request() {
+    let cases = [
+        (ray(-200.0, 150.0), ray(-150.0, 260.0)), // free -> free
+        (ray(0.5, 0.5), ray(-80.0, 90.0)),        // junction node -> free
+        (ray(-210.0, 120.0), ray(150.4, 1.0)),    // free -> edge mid-span
+        (ray(-200.0, 250.0), ray(-41.0, 199.0)),  // free -> the spur's dead end
+    ];
+    for (a, b) in cases {
+        let mut tool = session();
+        click(&mut tool, a);
+        click(&mut tool, b);
+        let commit = tool.take_commit().expect("a stroke");
+        let start = today(a, None, Vector3::ZERO);
+        let end = today(b, Some(start), Vector3::ZERO);
+        let as_bits = |p: &[Vector3]| {
+            p.iter()
+                .map(|v| [v.x, v.y, v.z].map(f32::to_bits))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            as_bits(&commit.points),
+            as_bits(&[start, end]),
+            "{a:?} -> {b:?}"
+        );
+        assert_eq!(tool.frame().state.phase, Phase::AwaitingAck);
+    }
+}
+
+// Today's soft 45 degree magnet goes under U2: a stroke 3 degrees off a dead end's direction
+// stays where the pointer is with the lock off (today snaps it), and the 45 degree lock gives
+// today's magnet direction.
+#[test]
+fn straight_mode_magnet_cases_under_u2() {
+    let start_ray = ray(-41.0, 199.0); // the spur's dead end, continuing north-east
+    let aim = |degrees: f32| {
+        let angle = (45.0_f32 + degrees).to_radians();
+        ray(-40.0 + 80.0 * angle.cos(), 200.0 + 80.0 * angle.sin())
+    };
+    let off = aim(3.0);
+    let mut tool = session();
+    click(&mut tool, start_ray);
+    move_to(&mut tool, off);
+    let start = tool.frame().stroke.points[0];
+    let free = tool.frame().cursor.position;
+    let raw = today(off, Some(start), Vector3::ZERO);
+    assert_eq!(free, raw, "lock off: the raw cursor");
+    let magnet = today(off, Some(start), Vector3::new(1.0, 0.0, 1.0).normalized());
+    assert_ne!(magnet, raw, "today's magnet moves it");
+    tool.set_option(RoadToolOption::AngleStepDeg(Some(45.0)));
+    move_to(&mut tool, off);
+    let locked = tool.frame().cursor.position;
+    let direction =
+        |p: Vector3| DVec2::new(f64::from(p.x - start.x), f64::from(p.z - start.z)).normalize();
+    assert!(direction(locked).distance(direction(magnet)) < 1e-5);
+    assert_eq!(tool.frame().cursor.snap, SnapKind::Angle);
+}
+
+// Chain rules: an accepted stroke ending on open ground starts the next at its end with its
+// end tangent; one ending on the network ends the chain; so does the map edge; a cancel while
+// waiting ends it; a refusal keeps the stroke editable.
+#[test]
+fn chain_rules() {
+    // Open ground: chains.
+    let mut tool = session();
+    click(&mut tool, ray(-200.0, 150.0));
+    click(&mut tool, ray(-150.0, 260.0));
+    let end = tool.take_commit().unwrap().points[1];
+    ack(&mut tool, true);
+    assert_eq!(tool.frame().state.phase, Phase::Placing { placed: 1 });
+    move_to(&mut tool, ray(-100.0, 300.0));
+    assert_eq!(tool.frame().stroke.points[0], end);
+    // The carried tangent is the angle reference: a 90 degree lock along it gives straight on.
+    tool.set_option(RoadToolOption::AngleStepDeg(Some(90.0)));
+    move_to(&mut tool, ray(-120.0, 330.0));
+    let next = tool.frame().stroke.points[1];
+    let carried = DVec2::new(50.0, 110.0).normalize();
+    let along = DVec2::new(f64::from(next.x - end.x), f64::from(next.z - end.z)).normalize();
+    assert!(along.distance(carried) < 1e-4);
+
+    // Ending on an edge: no chain.
+    let mut tool = session();
+    click(&mut tool, ray(-210.0, 120.0));
+    click(&mut tool, ray(150.4, 1.0));
+    ack(&mut tool, true);
+    assert_eq!(tool.frame().state.phase, Phase::Idle);
+
+    // Ending on the map edge (the 2,048 m world's east edge): no chain.
+    let mut tool = session();
+    click(&mut tool, ray(900.0, 500.0));
+    click(&mut tool, ray(1_015.0, 500.0));
+    assert_eq!(tool.frame().cursor.snap, SnapKind::Border);
+    ack(&mut tool, true);
+    assert_eq!(tool.frame().state.phase, Phase::Idle);
+
+    // Cancel while waiting: the stroke lands, the chain ends.
+    let mut tool = session();
+    click(&mut tool, ray(-200.0, 150.0));
+    click(&mut tool, ray(-150.0, 260.0));
+    tool.handle_event(view(), RoadToolEvent::Press(PointerButton::Right));
+    assert_eq!(tool.frame().state.phase, Phase::AwaitingAck);
+    ack(&mut tool, true);
+    assert_eq!(tool.frame().state.phase, Phase::Idle);
+
+    // A refusal keeps the stroke editable at its last point; clicks wait for the ack.
+    let mut tool = session();
+    click(&mut tool, ray(-200.0, 150.0));
+    click(&mut tool, ray(-150.0, 260.0));
+    let sent = tool.take_commit().unwrap();
+    click(&mut tool, ray(-100.0, 250.0));
+    assert_eq!(tool.take_commit(), None, "no second stroke while waiting");
+    ack(&mut tool, false);
+    assert_eq!(tool.frame().state.phase, Phase::Placing { placed: 1 });
+    assert_eq!(tool.frame().stroke.points[0], sent.points[0]);
+    tool.handle_event(view(), RoadToolEvent::Action(RoadToolAction::Cancel));
+    assert_eq!(tool.frame().state.phase, Phase::Idle);
+}
+
+// Simple curve (U1): three clicks; the request is the fillet's flattening, ends bit for bit, and
+// the HUD radius is T / tan(delta / 2).
+#[test]
+fn simple_curve_three_clicks() {
+    let mut tool = session();
+    tool.handle_event(
+        view(),
+        RoadToolEvent::Action(RoadToolAction::ModeSimpleCurve),
+    );
+    click(&mut tool, ray(-250.0, 100.0));
+    click(&mut tool, ray(-150.0, 100.0));
+    move_to(&mut tool, ray(-150.0, 160.0));
+    let frame = tool.frame();
+    assert_eq!(frame.state.mode, DrawMode::SimpleCurve);
+    let points = &frame.stroke.points;
+    assert!(points.len() > 10);
+    // Tangent length 60 m, a quarter turn: R = 60 / tan(45 degrees).
+    let radius = frame.hud.radius_m.unwrap();
+    assert!((radius - 60.0).abs() < 1e-6, "{radius}");
+    assert_eq!(frame.hud.design_speed_kmh, Some(design_speed_kmh(radius)));
+    let mut path = GuidePath::new();
+    path.set_fillet(d(-250.0, 100.0), d(-150.0, 100.0), d(-150.0, 160.0))
+        .unwrap();
+    let mut flat = Vec::new();
+    path.flatten_into(&mut flat);
+    assert_eq!(points.len(), flat.len());
+    for (point, expected) in points.iter().zip(&flat).skip(1).take(flat.len() - 2) {
+        assert_eq!((point.x, point.z), (expected.x as f32, expected.y as f32));
+    }
+    let start = points[0];
+    click(&mut tool, ray(-150.0, 160.0));
+    let commit = tool.take_commit().unwrap();
+    assert_eq!(commit.points[0], start);
+    assert_eq!(commit.points.last(), tool.frame().stroke.points.last());
+}
+
+// Complex curve: four clicks make the biarc; parallel tangents pointing apart are refused.
+#[test]
+fn complex_curve_biarc_and_refusal() {
+    let mut tool = session();
+    tool.handle_event(
+        view(),
+        RoadToolEvent::Action(RoadToolAction::ModeComplexCurve),
+    );
+    click(&mut tool, ray(-250.0, 100.0));
+    click(&mut tool, ray(-220.0, 100.0));
+    click(&mut tool, ray(-150.0, 160.0));
+    move_to(&mut tool, ray(-120.0, 160.0));
+    let frame = tool.frame();
+    assert_eq!(frame.state.refusal, None);
+    assert_eq!(frame.hud.end_angle_deg, None);
+    assert!(frame.stroke.points.len() > 10);
+    // The S-curve leaves east and arrives east.
+    assert!((frame.hud.bearing_deg - 90.0).abs() < 1e-6);
+    click(&mut tool, ray(-120.0, 160.0));
+    assert!(tool.take_commit().is_some());
+
+    let mut tool = session();
+    tool.handle_event(
+        view(),
+        RoadToolEvent::Action(RoadToolAction::ModeComplexCurve),
+    );
+    click(&mut tool, ray(-250.0, 100.0));
+    click(&mut tool, ray(-270.0, 100.0));
+    click(&mut tool, ray(-110.0, 100.0));
+    move_to(&mut tool, ray(-130.0, 100.0));
+    assert_eq!(tool.frame().state.refusal, Some(DraftRefusal::NoBiarc));
+    click(&mut tool, ray(-130.0, 100.0));
+    assert!(tool.take_commit().is_none());
+}
+
+// Continuous: the next stroke of a chain leaves along the carried tangent as an arc through the
+// cursor, so its start tangent is the previous stroke's end tangent.
+#[test]
+fn continuous_chain_carries_the_tangent() {
+    let mut tool = session();
+    tool.set_option(RoadToolOption::Continuous(true));
+    click(&mut tool, ray(-250.0, 100.0));
+    click(&mut tool, ray(-200.0, 100.0));
+    ack(&mut tool, true);
+    move_to(&mut tool, ray(-150.0, 150.0));
+    let frame = tool.frame();
+    let points = &frame.stroke.points;
+    let first = DVec2::new(
+        f64::from(points[1].x - points[0].x),
+        f64::from(points[1].z - points[0].z),
+    );
+    assert!(
+        first.normalize().perp_dot(DVec2::X).abs() < 0.05,
+        "leaves east"
+    );
+    assert!((frame.hud.radius_m.unwrap() - 50.0).abs() < 1e-3);
+    assert_eq!(frame.hud.start_angle_deg, Some(0.0));
+}
+
+// Determinism: the same events twice give equal frames, bitwise.
+#[test]
+fn same_events_give_bitwise_equal_frames() {
+    let run = || {
+        let mut tool = session();
+        tool.set_option(RoadToolOption::AngleStepDeg(Some(15.0)));
+        tool.set_option(RoadToolOption::LengthStepM(Some(4.0)));
+        tool.handle_event(
+            view(),
+            RoadToolEvent::Action(RoadToolAction::ModeSimpleCurve),
+        );
+        let mut frames = Vec::new();
+        for step in 0..60 {
+            let t = step as f32 * 0.21;
+            let pointer = ray(-150.0 + 120.0 * t.cos(), 40.0 + 120.0 * t.sin());
+            if step % 20 == 0 {
+                click(&mut tool, pointer);
+            } else {
+                move_to(&mut tool, pointer);
+            }
+            frames.push(format!("{:?}", tool.frame()));
+        }
+        frames
+    };
+    assert_eq!(run(), run());
+}
+
+#[test]
+fn hud_closed_forms() {
+    assert_eq!(design_speed_kmh(60.0), 35.0);
+    assert_eq!(bearing_deg(d(0.0, -1.0)), 0.0);
+    assert_eq!(bearing_deg(d(1.0, 0.0)), 90.0);
+    assert_eq!(bearing_deg(d(0.0, 1.0)), 180.0);
+    assert_eq!(bearing_deg(d(-1.0, 0.0)), 270.0);
+    // A 1 + 1 standard road's cost and upkeep for a 100 m straight.
+    let mut tool = session();
+    click(&mut tool, ray(-250.0, 100.0));
+    move_to(&mut tool, ray(-150.0, 100.0));
+    let hud = tool.frame().hud;
+    assert!((hud.length_m - 100.0).abs() < 1e-3);
+    let weight = crate::simulation::network::road_types::cost::stroke_weight(
+        (1, 1),
+        None,
+        Default::default(),
+        crate::simulation::network::road_types::RoadAttributes::DEFAULT,
+        crate::simulation::network::types::EdgeClass::Standard,
+    );
+    let per_m = crate::simulation::network::road_types::cost::build_per_m(weight);
+    assert!((hud.build_cost - hud.length_m * per_m).abs() < 1e-9);
+    assert_eq!(NEIGHBOURHOOD.len(), 7);
+}

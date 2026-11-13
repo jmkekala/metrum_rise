@@ -78,3 +78,7 @@ harness = false
 [[bench]]
 name = "road_tool_guide_benchmark"
 harness = false
+
+[[bench]]
+name = "road_tool_session_benchmark"
+harness = false

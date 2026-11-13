@@ -1,0 +1,260 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
+//! The road tool session's benchmark fixture (`ROAD-112` round B), public so the Criterion bench
+//! (`benches/road_tool_session_benchmark.rs`) can drive it: a fixed neighbourhood around the
+//! origin and a background of block streets far east of it, the road tool's published view of
+//! that city, and a scripted pointer trail of camera rays over the neighbourhood.
+//!
+//! The neighbourhood: a 4-arm junction at the origin (two 300 m roads), a parallel street 60 m
+//! north, a 120 m dead-end spur south-west and a diagonal street, so the trail meets nodes,
+//! edges, dead ends and open ground. The background: `background / 10` straight 480 m two-lane
+//! streets from x = 800 m, nine to a row, rows 24 m apart from z = -5,000 m (3,000 streets at
+//! 30k, more edges than the 30k populated city's grid), beyond every fixed radius the trail's
+//! queries use. Built with the bulk road path, outside timing.
+
+use super::modes::DrawMode;
+use super::pick::{CursorQuery, road_tool_cursor};
+use super::session::{
+    BORDER_SNAP_M, Pointer, PointerButton, RoadToolEvent, RoadToolOption, RoadToolSession,
+    SNAP_RELEASE_M,
+};
+use crate::nodes::sim::core::{CityTreasury, RoadToolQuerySnapshot, SimCore};
+use crate::simulation::core::config::WorldConfig;
+use crate::simulation::network::interaction::NetworkSnapTarget;
+use godot::prelude::Vector3;
+
+const WORLD_M: f32 = 12_288.0;
+const TRAIL_MOVES: usize = 512;
+// The stroke's start: the junction at the origin.
+const START: Vector3 = Vector3::new(0.0, 0.0, 0.0);
+// Camera height and its offset south of the aim point.
+const CAMERA_HEIGHT_M: f32 = 400.0;
+const CAMERA_BACK_M: f32 = 250.0;
+
+/// The fixture: the view, a session with a stroke started at the junction, the control cursor's
+/// retained snap and the pointer trail.
+pub struct RoadToolBench {
+    view: RoadToolQuerySnapshot,
+    session: RoadToolSession,
+    previous: Option<(NetworkSnapTarget, u64)>,
+    rays: Vec<(Vector3, Vector3)>,
+    edges: usize,
+}
+
+impl RoadToolBench {
+    /// Builds the neighbourhood and `background` (in the locality tiers' units: one street per
+    /// ten) and starts a straight stroke at the junction with every snap on (network, guide
+    /// lines, zoning grid, a 15 degree angle lock and a 4 m length step), the worst case per move.
+    pub fn build(background: usize) -> Self {
+        let view = neighbourhood_view(background, WORLD_M);
+        let edges = view.region_graph.edge_count();
+        let mut bench = Self {
+            view,
+            session: RoadToolSession::new(),
+            previous: None,
+            rays: trail(),
+            edges,
+        };
+        for option in [
+            RoadToolOption::ZoningGrid(true),
+            RoadToolOption::AngleStepDeg(Some(15.0)),
+            RoadToolOption::LengthStepM(Some(4.0)),
+        ] {
+            bench.session.set_option(option);
+        }
+        bench.start_stroke(DrawMode::Straight);
+        bench
+    }
+
+    /// Edges in the view's graph.
+    pub fn edges(&self) -> usize {
+        self.edges
+    }
+
+    /// Moves in the pointer trail.
+    pub fn moves(&self) -> usize {
+        self.rays.len()
+    }
+
+    /// Restarts the session's stroke in `straight` (`true`) or simple curve mode; the curve gets
+    /// its control point 150 m east of the start, so each move shapes a fillet arc.
+    pub fn restart(&mut self, straight: bool) {
+        self.start_stroke(if straight {
+            DrawMode::Straight
+        } else {
+            DrawMode::SimpleCurve
+        });
+        if !straight {
+            self.event(RoadToolEvent::Pointer {
+                pointer: Pointer::World(Vector3::new(150.0, 0.0, 30.0)),
+                shift: false,
+            });
+            self.event(RoadToolEvent::Press(PointerButton::Left));
+        }
+    }
+
+    /// One session pointer move along the trail (pick, snap, shape, measure). Returns the
+    /// cursor's x for `black_box`.
+    pub fn session_move(&mut self, index: usize) -> f32 {
+        let (origin, dir) = self.rays[index % self.rays.len()];
+        self.event(RoadToolEvent::Pointer {
+            pointer: Pointer::Ray { origin, dir },
+            shift: false,
+        });
+        self.session.frame().cursor.position.x
+    }
+
+    /// One control move: today's `get_road_tool_cursor_pos` logic (copied in `pick.rs`) for the
+    /// same ray, placing the end of a straight stroke from the junction with the 45 degree
+    /// magnet referenced east, the retained snap carried. Returns the cursor's x.
+    pub fn cursor_move(&mut self, index: usize) -> f32 {
+        let (ray_origin, ray_dir) = self.rays[index % self.rays.len()];
+        let result = road_tool_cursor(
+            &self.view,
+            &CursorQuery {
+                ray_origin,
+                ray_dir,
+                altitude_offset_m: 0.0,
+                active: true,
+                current_state: 2,
+                start_pos: START,
+                control_pos: START,
+                zoning_snap_enabled: false,
+                fwd_lanes: 1,
+                bkw_lanes: 1,
+                border_snap_dist_m: BORDER_SNAP_M,
+                previous_snap: self.previous,
+                sticky_release_dist_m: SNAP_RELEASE_M,
+                angle_snap: Vector3::new(1.0, 0.0, 0.0),
+            },
+        );
+        self.previous = result.and_then(|r| r.target.map(|t| (t, r.surface_generation)));
+        result.map_or(0.0, |r| r.position.x)
+    }
+
+    /// A digest of the frame's bits (cursor, snap kind, stroke points, HUD), FNV-1a, for the
+    /// locality products and determinism.
+    pub fn frame_digest(&self) -> u64 {
+        let frame = self.session.frame();
+        let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+        let mut eat = |bits: u64| {
+            for byte in bits.to_le_bytes() {
+                hash = (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3);
+            }
+        };
+        let cursor = frame.cursor.position;
+        for value in [cursor.x, cursor.y, cursor.z] {
+            eat(u64::from(value.to_bits()));
+        }
+        eat(frame.cursor.snap as u64);
+        for point in &frame.stroke.points {
+            for value in [point.x, point.y, point.z] {
+                eat(u64::from(value.to_bits()));
+            }
+        }
+        let hud = frame.hud;
+        for value in [
+            hud.length_m,
+            hud.bearing_deg,
+            hud.build_cost,
+            hud.upkeep_per_day,
+        ] {
+            eat(value.to_bits());
+        }
+        for value in [hud.start_angle_deg, hud.end_angle_deg, hud.radius_m] {
+            eat(value.map_or(u64::MAX, f64::to_bits));
+        }
+        hash
+    }
+
+    fn start_stroke(&mut self, mode: DrawMode) {
+        use super::session::RoadToolAction;
+        let action = match mode {
+            DrawMode::Straight => RoadToolAction::ModeStraight,
+            DrawMode::SimpleCurve => RoadToolAction::ModeSimpleCurve,
+            DrawMode::ComplexCurve => RoadToolAction::ModeComplexCurve,
+        };
+        self.event(RoadToolEvent::Action(action));
+        self.event(RoadToolEvent::Pointer {
+            pointer: Pointer::World(START),
+            shift: false,
+        });
+        self.event(RoadToolEvent::Press(PointerButton::Left));
+    }
+
+    fn event(&mut self, event: RoadToolEvent) {
+        self.session.handle_event(&self.view, event);
+    }
+}
+
+/// The fixture's city as the road tool's published view: the neighbourhood and `background`
+/// (one street per ten) in a square world `world_m` wide (at least 11 km for a background).
+pub(crate) fn neighbourhood_view(background: usize, world_m: f32) -> RoadToolQuerySnapshot {
+    let mut core = SimCore {
+        treasury: CityTreasury::new(1.0e12),
+        benchmark_mode: true,
+        ..SimCore::new(WorldConfig::new(world_m, world_m, 40.0, 10.0))
+    };
+    core.precompute_road_mesh_data();
+    core.transit_network.bulk_load = true;
+    let road = |core: &mut SimCore, a: (f32, f32), b: (f32, f32)| {
+        let outcome = core.add_road_internal(
+            vec![Vector3::new(a.0, 0.0, a.1), Vector3::new(b.0, 0.0, b.1)],
+            1,
+            1,
+        );
+        assert!(
+            outcome.committed,
+            "fixture road {a:?} -> {b:?}: {}",
+            core.last_road_timing
+        );
+        core.transit_network
+            .roadbed
+            .compile_dirty(&core.region_graph);
+    };
+    for (a, b) in NEIGHBOURHOOD {
+        road(&mut core, a, b);
+    }
+    for street in 0..background / 10 {
+        let z = -5_000.0 + (street / 9) as f32 * 24.0;
+        let west = 800.0 + (street % 9) as f32 * 504.0;
+        road(&mut core, (west, z), (west + 480.0, z));
+    }
+    {
+        let core = &mut core;
+        core.transit_network
+            .finalize_bulk_load(&mut core.region_graph, &mut core.allocator);
+        core.transit_network
+            .roadbed
+            .compile_dirty(&core.region_graph);
+    }
+    // The view as the simulation publishes it to the road tool.
+    core.publish_road_tool_view()
+        .expect("a current roadbed")
+        .view
+}
+
+/// The neighbourhood's roads, in build order (their edge ids follow it, split pieces after).
+pub(crate) const NEIGHBOURHOOD: [((f32, f32), (f32, f32)); 7] = [
+    ((-300.0, 0.0), (0.0, 0.0)),
+    ((0.0, 0.0), (300.0, 0.0)),
+    ((0.0, -300.0), (0.0, 0.0)),
+    ((0.0, 0.0), (0.0, 300.0)),
+    ((-300.0, -60.0), (300.0, -60.0)),
+    ((-120.0, 120.0), (-40.0, 200.0)),
+    ((60.0, 60.0), (220.0, 180.0)),
+];
+
+// A loop of camera rays aimed at points circling the junction at 40-260 m: over the junction's
+// arms, the parallel street, the spur's dead end and open ground.
+fn trail() -> Vec<(Vector3, Vector3)> {
+    (0..TRAIL_MOVES)
+        .map(|index| {
+            let turn = index as f32 / TRAIL_MOVES as f32 * std::f32::consts::TAU;
+            let radius = 150.0 + 110.0 * (3.0 * turn).sin();
+            let aim = Vector3::new(radius * turn.cos(), 0.0, radius * turn.sin());
+            let origin = Vector3::new(aim.x, CAMERA_HEIGHT_M, aim.z + CAMERA_BACK_M);
+            (origin, (aim - origin).normalized())
+        })
+        .collect()
+}

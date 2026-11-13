@@ -1,6 +1,18 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
-//! Road-tool query helpers shared by Godot-facing bridge methods.
+//! Road-tool query helpers shared by Godot-facing bridge methods, and the road tool core
+//! (`ROAD-112`): picking, snapping, the drawing modes, the HUD numbers and the session that owns
+//! the tool's state and builds its frame.
+
+pub mod bench;
+pub mod frame;
+pub mod measure;
+pub mod modes;
+pub mod pick;
+pub mod session;
+pub mod snap;
+#[cfg(test)]
+mod tool_tests;
 
 use crate::simulation::network::road_edit::{PreparedRoadInput, RoadPreviewValidation};
 use crate::simulation::network::roadbed::preview_candidate_roadbed_half_width_m;

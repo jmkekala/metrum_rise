@@ -12227,7 +12227,7 @@ grade.
 
 ## Road tools (`ROAD-112`, `ROAD-113`)
 
-**Status: in progress.** Planned 2026-11-12; round A (the guide kernel) built 2026-11-13. The user asked for a complete refactor of the
+**Status: in progress.** Planned 2026-11-12; round A (the guide kernel) and round B (the session core, not wired) built 2026-11-13. The user asked for a complete refactor of the
 road tool, Rust-first: the current straight mode and the GDScript `Curve3D` "curve" (a cubic
 Bezier whose handles are the raw vectors to the control point, so its curvature, radius and
 length are not exact) are replaced. Mechanics follow the genre (city builders' straight, curve,
@@ -12274,9 +12274,58 @@ continuous, grid, parallel, replace and freeform tools); no names, art or look a
   unchanged, plus gizmo arrays, HUD numbers, cursor and state. `preview_road` and
   `add_road_with_snap` stay as low-level entries for replays and the drag probe. GDScript keeps
   input forwarding and drawing; preview holds come from `RENDER-32`'s single Rust hold rule.
-- **Snapping precedence**: node; then the angle lock intersected with an edge, a guide line or a
-  zoning-grid line; then that line alone; then the angle alone; then length steps. Fixed
-  world-metre tolerances, `O(log E + K)` per pointer move, no allocation.
+- **Snapping precedence** (round B, `road_tool/snap.rs`, pure `resolve` over one pose's
+  candidates): a network **node** wins outright (an angle lock that was on is reported broken);
+  else the direction constraint `D` (the angle lock: the step multiple of the reference nearest
+  the cursor, as a ray from the last placed point; the reference is the stroke's start tangent,
+  the last placed leg, else world east) and the line constraint `L` (a network **edge** in
+  reach, its centreline's local segment; else the nearest **guide line** within 2 m; else the
+  **zoning grid**, `RoadGridSnap::snap_road_cursor`, whose line is its axis through the stroke's
+  start). `D` and `L`: their intersection ahead of the anchor when it lies within `L`'s reach of
+  the raw cursor (an edge 5 m, a guide 2 m, the grid any), otherwise an edge wins over the angle
+  and the angle over a guide or grid line. Two crossing guide lines in reach and no `D`: their
+  corner. One alone: its projection (the grid's own point). Map-edge snap (25 m) and self snap
+  (2.5 m to a placed point) only when nothing above took the cursor. The **length step** last
+  rounds the distance from the anchor of a free or angle result, and of a guide result along the
+  guide from the anchor's foot; a node, edge, intersection or grid point keeps its place. Shift
+  frees the cursor of the lock, guides, grid and length step; network snaps stay. Ties: the
+  candidate first in the fixed order (edges ascending by id); an angle exactly between two steps
+  rounds half away from zero. **Guide lines** (within a fixed 64 m of the cursor, from the edge
+  R-tree): at the anchor the line along the reference and its perpendicular; the stroke's own
+  first axis; at each end node of each nearby edge the perpendicular to the edge's end direction
+  and, at a dead end, the edge's extension. The network snap is today's acquisition (node grid,
+  edge R-tree, node priority, `ROAD-99` levels, retained target released at 8 m) with a reused
+  candidate buffer, bitwise equal to `get_closest_network_snap_at_hit` (tested). Defaults (U2):
+  network and guides on, grid, lock and length step off; steps 15 / 30 / 45 / 90. Fixed
+  world-metre tolerances, `O(log E + K * segments)` per pointer move, no allocation after
+  warm-up.
+- **Session** (round B, `nodes/sim/road_tool/`, not wired until round C): `RoadToolSession`
+  consumes plan 2.3's events as Rust types (`RoadToolEvent`: pointer as a ray or a scripted
+  world point with Shift, button press/release, actions `cancel`, `confirm`, the three modes,
+  the commit acknowledgement; `RoadToolOption`: road type, the snapping toggles and steps,
+  continuous) against the published road-tool view only, and keeps one `RoadToolFrame` current
+  in reused buffers: the pose's stroke request (points, lanes, median, parking, attributes, the
+  network-snap flag), the commit request set by the confirming click, packed gizmos (the draft,
+  tangent legs, the guide line or angle ray that took the cursor, handles), HUD numbers, the
+  cursor with its snap kind, and mode, phase (idle, placing with a count, awaiting the ack) and
+  the draft's refusal. Per move: pick (`pick.rs`, today's ray pick and `StructureHit`, copied
+  from the bridge's cursor), snap, shape, measure; no preview. **Modes**: straight (two clicks;
+  the request is exactly the two ends today's tool sends); simple curve (U1: start, free control
+  point, end; the fillet arc plus a straight lead; refused when the legs fold back); complex
+  curve (start, a start-tangent point, an end-tangent point, end; the biarc; `NoBiarc` refused).
+  Curve requests are the kernel's flattening with heights interpolated by arc length between the
+  start's and the cursor's (round I brings handles); the ends are the clicked points bit for bit.
+  **Continuous** adds the tangent constraint: a straight stroke from a start tangent (a carried
+  one, or a dead end or road it starts on) becomes the line or arc leaving along it through the
+  cursor, and a simple curve's control point is held on the tangent's forward ray. **Chain**: an
+  accepted stroke starts the next at its end carrying its end tangent, unless it ended on a node
+  or edge, either end lies on the map edge, or the player cancelled while it was pending;
+  right-click or `cancel` ends the chain; a refused commit keeps the stroke editable at its last
+  point. **HUD** (`measure.rs`): length (3D, of the request), bearing of the end tangent
+  (clockwise from north, `-Z`), angle to the road met at each end (deflection out of a dead end,
+  acute to a road through the point), smallest radius, design speed `sqrt(127 * 0.20 * R)`
+  rounded down to 5 km/h with a warning under the type's limit, build cost and upkeep from
+  `road_types::cost` as a standard road; height fields stay empty until round I.
 - **Height**: handles at the stroke ends. Both ends at 0 with straight grade off is today's
   follow-ground solve, bit for bit; a moved handle or straight grade switched on gives a grade
   line between the ends. A span leaving the ground becomes a bridge or tunnel automatically
