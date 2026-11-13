@@ -37,7 +37,8 @@
 //!   that leaves the drawn set and is asked for again with the same generations and bands (a turn
 //!   back) installs without a job.
 //! - **Memory.** [`PREPARED_CAP_BYTES`] of products, prepared and retained together; over it the
-//!   products farthest from the camera are evicted (ties by key and bands) and counted
+//!   products farthest from the view (the nearer of the eye and the pivot on the ground, so a far
+//!   camera keeps what its zoom down needs) are evicted (ties by key and bands) and counted
 //!   (`over_cap`).
 //!
 //! Costs: a frame that prepares `O(blocks within the far range of one sample eye x
@@ -70,7 +71,7 @@ pub(crate) struct Held<P> {
     pub(crate) bytes: usize,
 }
 
-/// Products held by key within a byte cap; over the cap the farthest from the camera leave.
+/// Products held by key within a byte cap; over the cap the farthest from the view leave.
 pub(crate) struct HeldProducts<K, P> {
     held: Map<K, Held<P>>,
     bytes: usize,
@@ -90,15 +91,10 @@ impl<K: Copy + Ord + std::hash::Hash, P> HeldProducts<K, P> {
     }
 
     /// Holds `held` for `key` (replacing an older product, returned in `out`), then evicts the
-    /// products farthest from `camera` into `out` while over the cap, each counted.
-    /// `O(1)`, an eviction `O(held)`.
-    pub(crate) fn hold(
-        &mut self,
-        key: K,
-        held: Held<P>,
-        camera: [f32; 2],
-        out: &mut Vec<P>,
-    ) {
+    /// products farthest from the view into `out` while over the cap, each counted: by the
+    /// nearer of the two `view` points (the eye and the pivot on the ground), so a far camera
+    /// keeps what its zoom to the pivot needs. `O(1)`, an eviction `O(held)`.
+    pub(crate) fn hold(&mut self, key: K, held: Held<P>, view: [[f32; 2]; 2], out: &mut Vec<P>) {
         self.bytes += held.bytes;
         if let Some(old) = self.held.insert(key, held) {
             self.bytes -= old.bytes;
@@ -108,7 +104,10 @@ impl<K: Copy + Ord + std::hash::Hash, P> HeldProducts<K, P> {
             let farthest = self
                 .held
                 .iter()
-                .map(|(key, held)| (distance_squared(held.centre, camera), *key))
+                .map(|(key, held)| {
+                    let [eye, pivot] = view.map(|point| distance_squared(held.centre, point));
+                    (eye.min(pivot), *key)
+                })
                 .max_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)))
                 .map(|(_, key)| key);
             let Some(evicted) = farthest.and_then(|key| self.take(key)) else {
@@ -194,6 +193,8 @@ pub(crate) struct Prepared {
     deferred: Vec<Variant>,
     // The view held still at this frame's first prepare (a later one may continue).
     still: bool,
+    // The latest view's pivot on the ground, for the held products' distances.
+    pivot: Option<[f32; 2]>,
     held: HeldProducts<Variant, Ahead>,
     spent: Vec<VegetationProduct>,
     evicted: Vec<Ahead>,
@@ -217,6 +218,7 @@ impl Default for Prepared {
             preparing: Map::default(),
             deferred: Vec::new(),
             still: false,
+            pivot: None,
             held: HeldProducts::new(PREPARED_CAP_BYTES),
             spent: Vec::new(),
             evicted: Vec::new(),
@@ -251,6 +253,9 @@ impl VegetationResidency {
     /// the samples once a view, the deferred variants and one sample's blocks.
     pub(crate) fn prepare(&mut self, view: Option<CameraSample>, jobs: &mut impl PatchJobs) {
         self.prepared.still = false;
+        if let Some(view) = view {
+            self.prepared.pivot = Some([view.pivot[0], view.pivot[2]]);
+        }
         let (Some(settings), true, Some(view)) = (self.settings, self.enabled, view) else {
             return;
         };
@@ -421,6 +426,13 @@ impl VegetationResidency {
         finished
     }
 
+    // The eye and the pivot on the ground the held products' distances are measured from (the
+    // eye twice before a view).
+    fn held_view(&self) -> Option<[[f32; 2]; 2]> {
+        let camera = self.camera?;
+        Some([camera, self.prepared.pivot.unwrap_or(camera)])
+    }
+
     // The record of `key`: drawn, standing in or cached.
     fn record(&self, key: PatchKey) -> Option<Record> {
         self.patches
@@ -500,7 +512,7 @@ impl VegetationResidency {
             return Some(delivery);
         };
         self.prepared.preparing.remove(&key);
-        let (Some(settings), Some(camera)) = (self.settings, self.camera) else {
+        let (Some(settings), Some(view)) = (self.settings, self.held_view()) else {
             self.prepared.spent.push(delivery.product);
             return None;
         };
@@ -512,7 +524,7 @@ impl VegetationResidency {
         let prepared = &mut self.prepared;
         prepared
             .held
-            .hold((key, request.bands), held, camera, &mut prepared.evicted);
+            .hold((key, request.bands), held, view, &mut prepared.evicted);
         prepared.spent.extend(
             prepared
                 .evicted
@@ -530,7 +542,7 @@ impl VegetationResidency {
         accepted: &[(PatchKey, u64)],
         layer: &mut VegetationLayer,
     ) {
-        let (Some(settings), Some(camera)) = (self.settings, self.camera) else {
+        let (Some(settings), Some(view)) = (self.settings, self.held_view()) else {
             self.prepared
                 .spent
                 .extend(layer.take_retained().map(|delivery| delivery.product));
@@ -559,7 +571,7 @@ impl VegetationResidency {
             let prepared = &mut self.prepared;
             prepared
                 .held
-                .hold((key, record.bands), held, camera, &mut prepared.evicted);
+                .hold((key, record.bands), held, view, &mut prepared.evicted);
             prepared.spent.extend(
                 prepared
                     .evicted
@@ -693,25 +705,32 @@ mod tests {
     fn the_cap_keeps_the_nearest_and_counts_what_it_evicts() {
         let mut store = HeldProducts::new(100);
         let mut out = Vec::new();
-        store.hold([0, 0, 1], held(1, [10.0, 0.0], 40), [0.0, 0.0], &mut out);
-        store.hold([1, 0, 1], held(2, [500.0, 0.0], 40), [0.0, 0.0], &mut out);
+        store.hold([0, 0, 1], held(1, [10.0, 0.0], 40), [[0.0, 0.0]; 2], &mut out);
+        store.hold([1, 0, 1], held(2, [500.0, 0.0], 40), [[0.0, 0.0]; 2], &mut out);
         assert!(out.is_empty());
         // A third over the cap: the farthest from the camera leaves, whichever was held last.
-        store.hold([2, 0, 1], held(3, [50.0, 0.0], 40), [0.0, 0.0], &mut out);
+        store.hold([2, 0, 1], held(3, [50.0, 0.0], 40), [[0.0, 0.0]; 2], &mut out);
         assert_eq!(out, vec![2]);
         assert_eq!(store.counts(), (2, 80, 1));
         // The camera moved: now the first is the farthest.
-        store.hold([3, 0, 1], held(4, [900.0, 0.0], 40), [900.0, 0.0], &mut out);
+        store.hold([3, 0, 1], held(4, [900.0, 0.0], 40), [[900.0, 0.0]; 2], &mut out);
         assert_eq!(out, vec![2, 1]);
         assert!(store.contains([3, 0, 1]) && store.contains([2, 0, 1]));
         // Equal distances leave the larger key first.
         let mut ties = HeldProducts::new(50);
         let mut gone = Vec::new();
-        ties.hold([0, 0, 1], held(5, [10.0, 0.0], 40), [0.0, 0.0], &mut gone);
-        ties.hold([0, 1, 1], held(6, [0.0, 10.0], 40), [0.0, 0.0], &mut gone);
+        ties.hold([0, 0, 1], held(5, [10.0, 0.0], 40), [[0.0, 0.0]; 2], &mut gone);
+        ties.hold([0, 1, 1], held(6, [0.0, 10.0], 40), [[0.0, 0.0]; 2], &mut gone);
         assert_eq!(gone, vec![6]);
+        // Measured from the nearer of eye and pivot: a camera far out keeps the pivot's.
+        let mut far = HeldProducts::new(100);
+        let mut left = Vec::new();
+        far.hold([0, 0, 1], held(8, [0.0, 0.0], 40), [[5000.0, 0.0], [0.0, 0.0]], &mut left);
+        far.hold([1, 0, 1], held(9, [2500.0, 0.0], 40), [[5000.0, 0.0], [0.0, 0.0]], &mut left);
+        far.hold([2, 0, 1], held(10, [4900.0, 0.0], 40), [[5000.0, 0.0], [0.0, 0.0]], &mut left);
+        assert_eq!(left, vec![9], "the one far from both leaves");
         // A product too large for the cap alone is held by nothing.
-        ties.hold([9, 9, 1], held(7, [0.0, 0.0], 60), [0.0, 0.0], &mut gone);
+        ties.hold([9, 9, 1], held(7, [0.0, 0.0], 60), [[0.0, 0.0]; 2], &mut gone);
         assert_eq!(ties.counts().0, 0);
     }
 
@@ -719,8 +738,8 @@ mod tests {
     fn a_replaced_product_comes_back_and_take_releases_its_bytes() {
         let mut store = HeldProducts::new(100);
         let mut out = Vec::new();
-        store.hold([0, 0, 1], held(1, [0.0, 0.0], 30), [0.0, 0.0], &mut out);
-        store.hold([0, 0, 1], held(2, [0.0, 0.0], 20), [0.0, 0.0], &mut out);
+        store.hold([0, 0, 1], held(1, [0.0, 0.0], 30), [[0.0, 0.0]; 2], &mut out);
+        store.hold([0, 0, 1], held(2, [0.0, 0.0], 20), [[0.0, 0.0]; 2], &mut out);
         assert_eq!(out, vec![1]);
         assert_eq!(store.counts(), (1, 20, 0));
         assert_eq!(store.take([0, 0, 1]).map(|held| held.product), Some(2));
