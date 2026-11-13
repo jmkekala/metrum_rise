@@ -1094,6 +1094,61 @@ mod tests {
         }
     }
 
+    // `ROAD-114`: a water edit replaces the water whole and restarts its render generation, so
+    // two edits in a row leave equal generations; the road tool's view keys its water copy as
+    // the published surface does and sees the second edit's water.
+    #[test]
+    fn the_road_tool_view_follows_two_water_edits_in_a_row() {
+        let mut core = test_core_with_small_world();
+        carve_closed_basin(&mut core);
+        // A loaded world publishes a current empty road surface.
+        let loaded = LoadedWorldDefinition {
+            name: "water-test".to_owned(),
+            config: core.config,
+            terrain: core.heightmap.clone(),
+            lake_fills: Vec::new(),
+            open_water_fills: Vec::new(),
+            resource_deposits: ResourceDepositSystem::from_world_config(&core.config),
+        };
+        core.apply_loaded_world_definition(
+            loaded,
+            crate::simulation::vegetation::VegetationConfig::default(),
+        );
+        let lake = |surface_elevation_m| AuthoredLakeFill {
+            world_x: 0.0,
+            world_z: 0.0,
+            surface_elevation_m,
+        };
+        core.publish_road_tool_view().expect("current roadbed");
+
+        core.world_lake_fills = vec![lake(60.0)];
+        core.rebuild_authored_water_preview_internal()
+            .expect("first water edit");
+        let first_depths = core.watermap.clone_baseline_depth_dense();
+        let first_generation = core.watermap.render_generation();
+        let publication = core.publish_road_tool_view().expect("current roadbed");
+        assert_eq!(
+            publication.view.water.clone_baseline_depth_dense(),
+            first_depths
+        );
+
+        core.world_lake_fills = vec![lake(150.0)];
+        core.rebuild_authored_water_preview_internal()
+            .expect("second water edit");
+        let second_depths = core.watermap.clone_baseline_depth_dense();
+        assert_ne!(second_depths, first_depths, "the edits fill differently");
+        assert_eq!(
+            core.watermap.render_generation(),
+            first_generation,
+            "the render generation alone cannot tell the edits apart"
+        );
+        let publication = core.publish_road_tool_view().expect("current roadbed");
+        assert_eq!(
+            publication.view.water.clone_baseline_depth_dense(),
+            second_depths
+        );
+    }
+
     #[test]
     fn loaded_authored_water_publishes_matching_empty_road_generation() {
         let mut core = test_core_with_small_world();

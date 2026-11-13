@@ -17315,6 +17315,62 @@ is the share of the frame's `try_lock`s that found the core held.
   `./run.sh --test` PASS (nextest 2,557 passed, 225 skipped; `godot-main` and `godot-vehicle`
   PASS, 0 SCRIPT ERROR); missing docs 0.
 
+### Terrain edits outside the world; the road tool's water copy (`TERRAIN-28`, `ROAD-114`, round T28, 2026-11-13)
+
+**Cause (`TERRAIN-28`).** `TerrainSystem::brush_grid_bounds` clamped a brush's sample rectangle
+as `i32` and cast it to `usize`. A footprint wholly before the grid (the `RENDER-32-Q` sculpt:
+510 m beyond a 1,020 m world's corner, radius 24 m, grid centre -51) gave a negative upper bound,
+which wrapped to about 2^64. The brush's own loops skipped every sample, but
+`mark_render_patches_for_grid_rect` passed the wrapped bound to `record_height_grid_rect`, which
+maps it to world metres (about 10^20) and loops over the 512 m draping regions up to `i32::MAX`
+on both axes, inserting one `height_region_revisions` entry per region. Attributed on `dev`
+6e312470 under a 4 GB scope cap: the kernel killed the call after 17 s; with a 3 GB address
+limit, heaptrack (`--record-only`) showed the whole 214.8 MB peak in that map's rehash before
+the next 1.14 GB rehash failed. A radius larger than the world was a second unbounded case: the
+brushes looped over the unclamped square (about `(2r)^2` samples) and the edit's graded base
+rectangle and cell-lot bounds were not clamped (`O(r^2)` tiles and chunks).
+
+**Fix.** Every terrain brush edit (sculpt, level, smooth, slope; single edits and stroke steps)
+goes through one `SimCore` entry, `terrain_brush_edit`: `TerrainSystem::brush_world_bounds`
+clamps the footprint to the world grown by the render patches' border margin and refuses an edit
+that can write no sample (wholly outside the world, or a position or radius that is not finite
+or not above zero) before it pushes an undo record or marks anything (a `world-editor`
+`terrain_edit_refused` debug line). The edit's graded base rectangle, cell-lot bounds and render
+patches come from the clamped bounds. In `TerrainSystem`, `brush_grid_bounds` saturates and
+returns `None` for an empty rectangle, every brush loops over that rectangle alone (`O(clamped
+samples)`), and `mark_render_patches_for_grid_rect` clamps whatever bounds it is passed, so the
+region marks are bounded by the world for every caller. An edit whose footprint reaches the world
+writes what it wrote before: a digest of the samples' bits, the dirty patches with their payload
+generations, the draped regions' revisions and the undo count after thirteen edits (every entry,
+at the interior, edges, corners, partly outside and with a radius twice the world) equals the one
+recorded on `dev` 6e312470. One deliberate change: a radius of zero is refused (it wrote `NaN` to a
+sample exactly at the centre). No frame or tick path changed (terrain edits are editor actions),
+so no timing level.
+
+**`ROAD-114`.** The road tool's view kept its water copy by the water's render generation alone;
+a water edit replaces `WaterSystem` whole and restarts that generation, so two edits in a row
+left equal generations and the view kept the first edit's water. The view now keys the copy by
+`SimCore::water_copy_key` (world epoch, render generation, surface stamp), the key the published
+surface's `shared_water_copy` uses, and shares that copy. The key moves with every road edit's
+surface stamp too, so a road edit's publication may now take the shared copy (`O(storage
+chunks)` handles, made once per key for both readers).
+
+**Tests.** `brushes_reaching_past_the_world_are_clamped_and_outside_it_refused` (terrain: each
+brush at the corners and edges, 510 m out, 1.5 samples out, non-finite inputs, a radius 10^6
+samples; the marks' counts against the world's patches and 16 regions; the wrapped bound passed
+straight to the marks), `edits_wholly_outside_the_world_are_refused`,
+`edits_partly_outside_or_larger_than_the_world_are_clamped_to_it` and
+`edits_reaching_the_world_write_what_they_wrote_before_the_clamp` (`SimCore`, the `-Q` fixture
+world), `the_road_tool_view_follows_two_water_edits_in_a_row`. Against a build with the fixes
+taken out, the outside tests were killed at the 4 GB cap (15-16 s), the partly-outside test
+found a graded rectangle past the world and the water test the first edit's depths; the digest
+test passes on both, as it must.
+
+**Gates** (code at `stream-t28`): clippy `--all-targets` warning set equal to the base's
+(`asset_document.rs`); debug `cargo test --lib` 2,568 passed, 0 failed, 224 ignored;
+`./run.sh --test` PASS (nextest 2,572 passed, 225 skipped; `godot-main` and `godot-vehicle` PASS,
+0 SCRIPT ERROR); missing docs 0.
+
 ## Implemented Runtime Contract
 
 ### 1. `WorldConfig` Is The Authoritative World Metadata
@@ -18860,6 +18916,9 @@ Current deterministic rules:
 - terrain brush picking uses `intersect_terrain()` and therefore targets authored source terrain,
   not the visible graded surface
 - `Raise`, `Lower`, `Level`, `Smooth`, and `Slope` write authoritative source terrain only
+- every terrain brush edit clamps its footprint to the world; one that can write no sample
+  (wholly outside the world, a position or radius that is not finite or not above zero) is
+  refused before it pushes an undo record or marks anything (`TERRAIN-28`)
 - completing a terrain brush stroke re-grades the touched graded tiles and rebuilds the derived
   terrain outputs from the updated source terrain
 - terrain brushes must not directly deform road top surfaces, placed flat pads, or future local

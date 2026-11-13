@@ -30,6 +30,7 @@ use crate::simulation::network::roadbed::{
     RoadbedDelta, RoadbedRestore, crossing_arm_eligible, visual_roadbed_half_width_m,
 };
 use crate::simulation::network::roundabouts::ring_near_stroke;
+use crate::simulation::terrain::TerrainSystem;
 use crate::simulation::vegetation::edits::pack_patch_key;
 use crate::traffic_log;
 use godot::prelude::*;
@@ -452,6 +453,42 @@ fn point_segment_distance_sq_xz(pos: Vector2, a: Vector3, b: Vector3) -> (f32, V
     (off_x * off_x + off_z * off_z, closest)
 }
 
+// How a terrain brush edit ends: a single edit pushes its undo record and runs the rebuilds
+// at once; a stroke step joins the stroke's one undo record and leaves the rebuilds to its end.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TerrainBrushEdit {
+    Single,
+    StrokeStep,
+}
+
+// The slope brush's two world-space anchors and their rendered heights.
+struct SlopeAnchors {
+    start_world: Vector2,
+    start_height_m: f32,
+    end_world: Vector2,
+    end_height_m: f32,
+}
+
+impl SlopeAnchors {
+    fn apply(&self, terrain: &mut TerrainSystem, x: f32, y: f32, radius: f32, strength: f32) {
+        let (start_x, start_y) =
+            terrain.world_to_grid_coords(self.start_world.x, self.start_world.y);
+        let (end_x, end_y) = terrain.world_to_grid_coords(self.end_world.x, self.end_world.y);
+        terrain.slope_to_segment(
+            x,
+            y,
+            radius,
+            start_x,
+            start_y,
+            self.start_height_m / config::HEIGHT_SCALE,
+            end_x,
+            end_y,
+            self.end_height_m / config::HEIGHT_SCALE,
+            strength,
+        );
+    }
+}
+
 impl SimCore {
     fn road_commit_full_validation_debug_enabled() -> bool {
         std::env::var("METRUM_DEBUG_ROAD_COMMIT_FULL_VALIDATION")
@@ -478,22 +515,61 @@ impl SimCore {
         }
     }
 
-    fn mark_terrain_authoring_payload_bounds(&mut self, pos: Vector2, radius: f32) {
-        let radius = radius.max(0.0) + self.heightmap.render_patch_border_margin_m();
-        self.record_graded_base_edit(
-            [pos.x - radius, pos.y - radius, pos.x + radius, pos.y + radius].map(f64::from),
-        );
+    // The one entry of every terrain brush edit (`TERRAIN-28`): the footprint is clamped to
+    // the world, and an edit whose footprint holds no sample of it (wholly outside, or a
+    // position or radius that is not finite or not above zero) is refused before it pushes an
+    // undo record or marks anything. `brush` writes the heightmap from the grid centre and the
+    // radius in cells. A single edit finishes at once; a stroke step leaves the rebuilds to the
+    // stroke's end. Cost: the brush's clamped samples plus the marks over the clamped bounds.
+    fn terrain_brush_edit(
+        &mut self,
+        pos: Vector2,
+        radius: f32,
+        edit: TerrainBrushEdit,
+        brush: impl FnOnce(&mut TerrainSystem, f32, f32, f32),
+    ) {
+        let margin_m = self.heightmap.render_patch_border_margin_m();
+        let Some(bounds) = self
+            .heightmap
+            .brush_world_bounds(pos.x, pos.y, radius, margin_m)
+        else {
+            debug_log!(
+                "world-editor",
+                "terrain_edit_refused x={} z={} radius={} reason=outside_world",
+                pos.x,
+                pos.y,
+                radius
+            );
+            return;
+        };
+        // A commit's deferred lots first: this edit reads or writes them (`ROAD-68-G` part 7).
+        self.adopt_pending_cell_lots();
+        match edit {
+            TerrainBrushEdit::Single => self.push_undo_state(true, false, true),
+            TerrainBrushEdit::StrokeStep => self.prepare_batched_terrain_edit_internal(),
+        }
+        let (center_x, center_y) = self.heightmap.world_to_grid_coords(pos.x, pos.y);
+        let radius_cells = radius / self.config.terrain_cell_m;
+        brush(&mut self.heightmap, center_x, center_y, radius_cells);
+        self.mark_terrain_authoring_payload_bounds(bounds);
+        if edit == TerrainBrushEdit::Single {
+            self.finish_terrain_authoring_edit_internal();
+        }
+    }
+
+    // Marks what a brush that wrote inside `[min_x, min_z, max_x, max_z]` (world metres, the
+    // render patches' border margin included) changes: graded tiles, cell lots, render patches
+    // and their payload generations.
+    fn mark_terrain_authoring_payload_bounds(&mut self, [min_x, min_z, max_x, max_z]: [f32; 4]) {
+        self.record_graded_base_edit([min_x, min_z, max_x, max_z].map(f64::from));
         self.zoning
             .mark_cell_lots_dirty(crate::simulation::zoning::cells::CellBounds {
-                min: glam::DVec2::new(f64::from(pos.x - radius), f64::from(pos.y - radius)),
-                max: glam::DVec2::new(f64::from(pos.x + radius), f64::from(pos.y + radius)),
+                min: glam::DVec2::new(f64::from(min_x), f64::from(min_z)),
+                max: glam::DVec2::new(f64::from(max_x), f64::from(max_z)),
             });
-        let patch_keys = self.heightmap.render_patch_keys_for_world_bounds(
-            pos.x - radius,
-            pos.y - radius,
-            pos.x + radius,
-            pos.y + radius,
-        );
+        let patch_keys = self
+            .heightmap
+            .render_patch_keys_for_world_bounds(min_x, min_z, max_x, max_z);
         for &(patch_x, patch_z) in &patch_keys {
             self.heightmap.mark_render_patch_dirty(patch_x, patch_z);
         }
@@ -1142,15 +1218,9 @@ impl SimCore {
 
     /// Sculpts the terrain with a given radius and strength.
     pub fn sculpt_terrain_internal(&mut self, pos: Vector2, radius: f32, strength: f32) {
-        // A commit's deferred lots first: this edit reads or writes them (`ROAD-68-G` part 7).
-        self.adopt_pending_cell_lots();
-        self.push_undo_state(true, false, true);
-        let (center_x, center_y) = self.heightmap.world_to_grid_coords(pos.x, pos.y);
-        let radius_cells = radius / self.config.terrain_cell_m;
-        self.heightmap
-            .sculpt(center_x, center_y, radius_cells, strength);
-        self.mark_terrain_authoring_payload_bounds(pos, radius);
-        self.finish_terrain_authoring_edit_internal();
+        self.terrain_brush_edit(pos, radius, TerrainBrushEdit::Single, |terrain, x, y, r| {
+            terrain.sculpt(x, y, r, strength);
+        });
     }
 
     /// Applies one batched terrain sculpt step without running deferred rebuild work yet.
@@ -1160,14 +1230,14 @@ impl SimCore {
         radius: f32,
         strength: f32,
     ) {
-        // A commit's deferred lots first: this edit reads or writes them (`ROAD-68-G` part 7).
-        self.adopt_pending_cell_lots();
-        self.prepare_batched_terrain_edit_internal();
-        let (center_x, center_y) = self.heightmap.world_to_grid_coords(pos.x, pos.y);
-        let radius_cells = radius / self.config.terrain_cell_m;
-        self.heightmap
-            .sculpt(center_x, center_y, radius_cells, strength);
-        self.mark_terrain_authoring_payload_bounds(pos, radius);
+        self.terrain_brush_edit(
+            pos,
+            radius,
+            TerrainBrushEdit::StrokeStep,
+            |terrain, x, y, r| {
+                terrain.sculpt(x, y, r, strength);
+            },
+        );
     }
 
     /// Moves terrain toward one target rendered height in a circular area.
@@ -1178,33 +1248,16 @@ impl SimCore {
         target_height_m: f32,
         strength: f32,
     ) {
-        // A commit's deferred lots first: this edit reads or writes them (`ROAD-68-G` part 7).
-        self.adopt_pending_cell_lots();
-        self.push_undo_state(true, false, true);
-        let (center_x, center_y) = self.heightmap.world_to_grid_coords(pos.x, pos.y);
-        let radius_cells = radius / self.config.terrain_cell_m;
-        self.heightmap.level_to_height(
-            center_x,
-            center_y,
-            radius_cells,
-            target_height_m / config::HEIGHT_SCALE,
-            strength,
-        );
-        self.mark_terrain_authoring_payload_bounds(pos, radius);
-        self.finish_terrain_authoring_edit_internal();
+        self.terrain_brush_edit(pos, radius, TerrainBrushEdit::Single, |terrain, x, y, r| {
+            terrain.level_to_height(x, y, r, target_height_m / config::HEIGHT_SCALE, strength);
+        });
     }
 
     /// Smooths terrain toward the local neighborhood average in a circular area.
     pub fn smooth_terrain_internal(&mut self, pos: Vector2, radius: f32, strength: f32) {
-        // A commit's deferred lots first: this edit reads or writes them (`ROAD-68-G` part 7).
-        self.adopt_pending_cell_lots();
-        self.push_undo_state(true, false, true);
-        let (center_x, center_y) = self.heightmap.world_to_grid_coords(pos.x, pos.y);
-        let radius_cells = radius / self.config.terrain_cell_m;
-        self.heightmap
-            .smooth(center_x, center_y, radius_cells, strength);
-        self.mark_terrain_authoring_payload_bounds(pos, radius);
-        self.finish_terrain_authoring_edit_internal();
+        self.terrain_brush_edit(pos, radius, TerrainBrushEdit::Single, |terrain, x, y, r| {
+            terrain.smooth(x, y, r, strength);
+        });
     }
 
     /// Moves terrain toward a slope defined by two clicked world-space anchor points.
@@ -1219,31 +1272,15 @@ impl SimCore {
         end_height_m: f32,
         strength: f32,
     ) {
-        // A commit's deferred lots first: this edit reads or writes them (`ROAD-68-G` part 7).
-        self.adopt_pending_cell_lots();
-        self.push_undo_state(true, false, true);
-        let (center_x, center_y) = self.heightmap.world_to_grid_coords(pos.x, pos.y);
-        let (start_x, start_y) = self
-            .heightmap
-            .world_to_grid_coords(start_world.x, start_world.y);
-        let (end_x, end_y) = self
-            .heightmap
-            .world_to_grid_coords(end_world.x, end_world.y);
-        let radius_cells = radius / self.config.terrain_cell_m;
-        self.heightmap.slope_to_segment(
-            center_x,
-            center_y,
-            radius_cells,
-            start_x,
-            start_y,
-            start_height_m / config::HEIGHT_SCALE,
-            end_x,
-            end_y,
-            end_height_m / config::HEIGHT_SCALE,
-            strength,
-        );
-        self.mark_terrain_authoring_payload_bounds(pos, radius);
-        self.finish_terrain_authoring_edit_internal();
+        let slope = SlopeAnchors {
+            start_world,
+            start_height_m,
+            end_world,
+            end_height_m,
+        };
+        self.terrain_brush_edit(pos, radius, TerrainBrushEdit::Single, |terrain, x, y, r| {
+            slope.apply(terrain, x, y, r, strength);
+        });
     }
 
     /// Applies one batched terrain-level step without running deferred rebuild work yet.
@@ -1254,19 +1291,14 @@ impl SimCore {
         target_height_m: f32,
         strength: f32,
     ) {
-        // A commit's deferred lots first: this edit reads or writes them (`ROAD-68-G` part 7).
-        self.adopt_pending_cell_lots();
-        self.prepare_batched_terrain_edit_internal();
-        let (center_x, center_y) = self.heightmap.world_to_grid_coords(pos.x, pos.y);
-        let radius_cells = radius / self.config.terrain_cell_m;
-        self.heightmap.level_to_height(
-            center_x,
-            center_y,
-            radius_cells,
-            target_height_m / config::HEIGHT_SCALE,
-            strength,
+        self.terrain_brush_edit(
+            pos,
+            radius,
+            TerrainBrushEdit::StrokeStep,
+            |terrain, x, y, r| {
+                terrain.level_to_height(x, y, r, target_height_m / config::HEIGHT_SCALE, strength);
+            },
         );
-        self.mark_terrain_authoring_payload_bounds(pos, radius);
     }
 
     /// Applies one batched terrain-smooth step without running deferred rebuild work yet.
@@ -1276,14 +1308,14 @@ impl SimCore {
         radius: f32,
         strength: f32,
     ) {
-        // A commit's deferred lots first: this edit reads or writes them (`ROAD-68-G` part 7).
-        self.adopt_pending_cell_lots();
-        self.prepare_batched_terrain_edit_internal();
-        let (center_x, center_y) = self.heightmap.world_to_grid_coords(pos.x, pos.y);
-        let radius_cells = radius / self.config.terrain_cell_m;
-        self.heightmap
-            .smooth(center_x, center_y, radius_cells, strength);
-        self.mark_terrain_authoring_payload_bounds(pos, radius);
+        self.terrain_brush_edit(
+            pos,
+            radius,
+            TerrainBrushEdit::StrokeStep,
+            |terrain, x, y, r| {
+                terrain.smooth(x, y, r, strength);
+            },
+        );
     }
 
     /// Applies one batched terrain-slope step without running deferred rebuild work yet.
@@ -1298,30 +1330,20 @@ impl SimCore {
         end_height_m: f32,
         strength: f32,
     ) {
-        // A commit's deferred lots first: this edit reads or writes them (`ROAD-68-G` part 7).
-        self.adopt_pending_cell_lots();
-        self.prepare_batched_terrain_edit_internal();
-        let (center_x, center_y) = self.heightmap.world_to_grid_coords(pos.x, pos.y);
-        let (start_x, start_y) = self
-            .heightmap
-            .world_to_grid_coords(start_world.x, start_world.y);
-        let (end_x, end_y) = self
-            .heightmap
-            .world_to_grid_coords(end_world.x, end_world.y);
-        let radius_cells = radius / self.config.terrain_cell_m;
-        self.heightmap.slope_to_segment(
-            center_x,
-            center_y,
-            radius_cells,
-            start_x,
-            start_y,
-            start_height_m / config::HEIGHT_SCALE,
-            end_x,
-            end_y,
-            end_height_m / config::HEIGHT_SCALE,
-            strength,
+        let slope = SlopeAnchors {
+            start_world,
+            start_height_m,
+            end_world,
+            end_height_m,
+        };
+        self.terrain_brush_edit(
+            pos,
+            radius,
+            TerrainBrushEdit::StrokeStep,
+            |terrain, x, y, r| {
+                slope.apply(terrain, x, y, r, strength);
+            },
         );
-        self.mark_terrain_authoring_payload_bounds(pos, radius);
     }
 
     /// Sets or clears the no-building-spawn flag on an edge.

@@ -221,15 +221,20 @@ impl SimCore {
         }
     }
 
-    /// [`Self::shared_terrain_copy`] for the water. A water edit replaces the water whole and
-    /// restarts its render generation, so the copy is keyed by the surface stamp every water
-    /// edit bumps too.
-    pub(crate) fn shared_water_copy(&mut self) -> Arc<WaterSystem> {
-        let key = (
+    /// The key a water copy is current for: the world epoch, the water's render generation and
+    /// the surface stamp. A water edit replaces the water whole and restarts its render
+    /// generation, so the key holds the surface stamp every water edit bumps too (`ROAD-114`).
+    pub(crate) fn water_copy_key(&self) -> (u64, u64, u64) {
+        (
             self.world_epoch,
             self.watermap.render_generation(),
             self.road_tool_surface_generation,
-        );
+        )
+    }
+
+    /// [`Self::shared_terrain_copy`] for the water, keyed by [`Self::water_copy_key`].
+    pub(crate) fn shared_water_copy(&mut self) -> Arc<WaterSystem> {
+        let key = self.water_copy_key();
         match &self.frame_queries.water {
             Some((copied, water)) if *copied == key => Arc::clone(water),
             _ => {

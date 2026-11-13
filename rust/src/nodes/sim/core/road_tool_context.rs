@@ -4,7 +4,7 @@
 //! after each edit without copying the city, and the preview's private graph replica, kept equal
 //! to the live graph by copying only the records whose pieces the roadbed rebuilt.
 //!
-//! The view shares the terrain and water copies until their own generations change, shares the
+//! The view shares the terrain and water copies until their own keys change, shares the
 //! roadbed in `O(1)`, and takes its graph from the routing rebuild's immutable copy after a
 //! commit (the one graph copy a commit makes, for the CCH job). The replica follows by
 //! [`RegionGraph::restore_undo_delta_local`] of the rebuilt owners' records, in publication
@@ -42,7 +42,8 @@ impl RoadToolPublisher {
 struct PublishedView {
     view: RoadToolQuerySnapshot,
     terrain_generations: (u64, u64),
-    water_generation: u64,
+    // The water copy's key, as the published surface keys its copy (`ROAD-114`).
+    water_key: (u64, u64, u64),
     graph_counts: (usize, usize),
     role_revision: u64,
 }
@@ -91,7 +92,8 @@ impl SimCore {
     ///
     /// The view keeps its graph when nothing changed, shares the copy an editor offered for its
     /// routing rebuild ([`RoadToolPublisher::offer_graph`]) and copies the live graph otherwise.
-    /// Terrain and water are copied only when their generations changed. Cost:
+    /// Terrain and water are copied only when their keys changed (the water's as the published
+    /// surface keys it, `ROAD-114`), shared with that surface's copies. Cost:
     /// `O(rebuilt owners' records + journaled cell entries * log entries)` plus those copies.
     pub(crate) fn publish_road_tool_view(&mut self) -> Option<RoadToolPublication> {
         self.publish_road_tool_view_with(false)
@@ -137,7 +139,7 @@ impl SimCore {
             self.heightmap.source_generation(),
             self.heightmap.source_generation(),
         );
-        let water_generation = self.watermap.render_generation();
+        let water_key = self.water_copy_key();
         let graph_counts = (
             self.region_graph.node_count(),
             self.region_graph.edge_count(),
@@ -151,14 +153,14 @@ impl SimCore {
             .then(|| self.shared_terrain_copy());
         let published = self.road_tool_publisher.published.as_ref();
         let water_copy = published
-            .is_some_and(|previous| previous.water_generation != water_generation)
+            .is_some_and(|previous| previous.water_key != water_key)
             .then(|| self.shared_water_copy());
         let previous = self.road_tool_publisher.published.take();
         let (view, replica) = match &previous {
             Some(previous) if !rebuilt.all && previous.role_revision == role_revision => {
                 let graph_changed = !rebuilt.is_empty() || previous.graph_counts != graph_counts;
                 let terrain_changed = previous.terrain_generations != terrain_generations;
-                let water_changed = previous.water_generation != water_generation;
+                let water_changed = previous.water_key != water_key;
                 let copy_graph = copy_graph || (offered.is_none() && graph_changed);
                 let zoning_grid = self
                     .zoning
@@ -237,7 +239,7 @@ impl SimCore {
         self.road_tool_publisher.published = Some(PublishedView {
             view: view.clone(),
             terrain_generations,
-            water_generation,
+            water_key,
             graph_counts,
             role_revision,
         });

@@ -393,16 +393,8 @@ impl TerrainSystem {
         };
         self.source_generation = self.source_generation.wrapping_add(1);
         self.mark_render_patches_for_grid_rect(min_x, max_x, min_y, max_y);
-        let r_int = radius.ceil() as i32;
-        let cx_int = center_x as i32;
-        let cy_int = center_y as i32;
-
-        for y in (cy_int - r_int)..=(cy_int + r_int) {
-            for x in (cx_int - r_int)..=(cx_int + r_int) {
-                if x < 0 || y < 0 || x >= self.width as i32 || y >= self.height as i32 {
-                    continue;
-                }
-
+        for y in min_y..=max_y {
+            for x in min_x..=max_x {
                 let dx = x as f32 - center_x;
                 let dy = y as f32 - center_y;
                 let dist_sq = dx * dx + dy * dy;
@@ -412,12 +404,10 @@ impl TerrainSystem {
                     let normalized_dist = dist / radius;
                     let falloff = (1.0 + (normalized_dist * std::f32::consts::PI).cos()) * 0.5;
 
-                    let ux = x as usize;
-                    let uy = y as usize;
-                    let current_h = self.source_data.get(ux, uy);
+                    let current_h = self.source_data.get(x, y);
                     let next_h = current_h + strength * falloff;
 
-                    self.source_data.set(ux, uy, next_h);
+                    self.source_data.set(x, y, next_h);
                 }
             }
         }
@@ -438,16 +428,8 @@ impl TerrainSystem {
         };
         self.source_generation = self.source_generation.wrapping_add(1);
         self.mark_render_patches_for_grid_rect(min_x, max_x, min_y, max_y);
-        let r_int = radius.ceil() as i32;
-        let cx_int = center_x as i32;
-        let cy_int = center_y as i32;
-
-        for y in (cy_int - r_int)..=(cy_int + r_int) {
-            for x in (cx_int - r_int)..=(cx_int + r_int) {
-                if x < 0 || y < 0 || x >= self.width as i32 || y >= self.height as i32 {
-                    continue;
-                }
-
+        for y in min_y..=max_y {
+            for x in min_x..=max_x {
                 let dx = x as f32 - center_x;
                 let dy = y as f32 - center_y;
                 let dist_sq = dx * dx + dy * dy;
@@ -457,9 +439,7 @@ impl TerrainSystem {
                     let normalized_dist = dist / radius;
                     let falloff = (1.0 + (normalized_dist * std::f32::consts::PI).cos()) * 0.5;
 
-                    let ux = x as usize;
-                    let uy = y as usize;
-                    let current_h = self.source_data.get(ux, uy);
+                    let current_h = self.source_data.get(x, y);
                     let delta = target_height - current_h;
                     let max_step = strength * falloff;
                     let next_h = if delta.abs() <= max_step {
@@ -468,7 +448,7 @@ impl TerrainSystem {
                         current_h + delta.signum() * max_step
                     };
 
-                    self.source_data.set(ux, uy, next_h);
+                    self.source_data.set(x, y, next_h);
                 }
             }
         }
@@ -485,31 +465,26 @@ impl TerrainSystem {
         };
         self.source_generation = self.source_generation.wrapping_add(1);
         self.mark_render_patches_for_grid_rect(min_x, max_x, min_y, max_y);
-        let r_int = radius.ceil() as i32;
-        let cx_int = center_x as i32;
-        let cy_int = center_y as i32;
 
-        let min_x = (cx_int - r_int - 1).max(0) as usize;
-        let max_x = (cx_int + r_int + 1).min(self.width as i32 - 1) as usize;
-        let min_y = (cy_int - r_int - 1).max(0) as usize;
-        let max_y = (cy_int + r_int + 1).min(self.height as i32 - 1) as usize;
+        // The snapshot reaches one sample past the brush on each side, inside the grid.
+        let patch_min_x = min_x.saturating_sub(1);
+        let patch_max_x = (max_x + 1).min(self.width - 1);
+        let patch_min_y = min_y.saturating_sub(1);
+        let patch_max_y = (max_y + 1).min(self.height - 1);
 
-        let patch_w = max_x - min_x + 1;
-        let patch_h = max_y - min_y + 1;
+        let patch_w = patch_max_x - patch_min_x + 1;
+        let patch_h = patch_max_y - patch_min_y + 1;
         let mut patch = vec![0.0_f32; patch_w * patch_h];
         for local_y in 0..patch_h {
             for local_x in 0..patch_w {
-                patch[local_y * patch_w + local_x] =
-                    self.source_data.get(min_x + local_x, min_y + local_y);
+                patch[local_y * patch_w + local_x] = self
+                    .source_data
+                    .get(patch_min_x + local_x, patch_min_y + local_y);
             }
         }
 
-        for y in (cy_int - r_int)..=(cy_int + r_int) {
-            for x in (cx_int - r_int)..=(cx_int + r_int) {
-                if x < 0 || y < 0 || x >= self.width as i32 || y >= self.height as i32 {
-                    continue;
-                }
-
+        for y in min_y..=max_y {
+            for x in min_x..=max_x {
                 let dx = x as f32 - center_x;
                 let dy = y as f32 - center_y;
                 let dist_sq = dx * dx + dy * dy;
@@ -522,10 +497,8 @@ impl TerrainSystem {
                 let falloff = (1.0 + (normalized_dist * std::f32::consts::PI).cos()) * 0.5;
                 let max_step = strength * falloff;
 
-                let ux = x as usize;
-                let uy = y as usize;
-                let local_x = ux - min_x;
-                let local_y = uy - min_y;
+                let local_x = x - patch_min_x;
+                let local_y = y - patch_min_y;
                 let mut sum = 0.0_f32;
                 let mut samples = 0.0_f32;
 
@@ -549,7 +522,7 @@ impl TerrainSystem {
                     current_h + delta.signum() * max_step
                 };
 
-                self.source_data.set(ux, uy, next_h);
+                self.source_data.set(x, y, next_h);
             }
         }
     }
@@ -586,16 +559,8 @@ impl TerrainSystem {
         }
         self.source_generation = self.source_generation.wrapping_add(1);
 
-        let r_int = radius.ceil() as i32;
-        let cx_int = center_x as i32;
-        let cy_int = center_y as i32;
-
-        for y in (cy_int - r_int)..=(cy_int + r_int) {
-            for x in (cx_int - r_int)..=(cx_int + r_int) {
-                if x < 0 || y < 0 || x >= self.width as i32 || y >= self.height as i32 {
-                    continue;
-                }
-
+        for y in min_y..=max_y {
+            for x in min_x..=max_x {
                 let dx = x as f32 - center_x;
                 let dy = y as f32 - center_y;
                 let dist_sq = dx * dx + dy * dy;
@@ -615,9 +580,7 @@ impl TerrainSystem {
                     .clamp(0.0, 1.0);
                 let target_height = start_height + (end_height - start_height) * along_t;
 
-                let ux = x as usize;
-                let uy = y as usize;
-                let current_h = self.source_data.get(ux, uy);
+                let current_h = self.source_data.get(x, y);
                 let delta = target_height - current_h;
                 let next_h = if delta.abs() <= max_step {
                     target_height
@@ -625,7 +588,7 @@ impl TerrainSystem {
                     current_h + delta.signum() * max_step
                 };
 
-                self.source_data.set(ux, uy, next_h);
+                self.source_data.set(x, y, next_h);
             }
         }
     }
@@ -945,6 +908,8 @@ impl TerrainSystem {
     }
 
     // Samples in this rectangle were written: refresh render patches and draped overlays.
+    // Clamped to the grid first, so the marks are bounded by the world whatever the caller
+    // passes (`TERRAIN-28`: a wrapped bound once made the region loop below run without end).
     fn mark_render_patches_for_grid_rect(
         &mut self,
         min_x: usize,
@@ -953,6 +918,10 @@ impl TerrainSystem {
         max_z: usize,
     ) {
         if self.width == 0 || self.height == 0 {
+            return;
+        }
+        let (max_x, max_z) = (max_x.min(self.width - 1), max_z.min(self.height - 1));
+        if min_x > max_x || min_z > max_z {
             return;
         }
         self.record_height_grid_rect(min_x, max_x, min_z, max_z);
@@ -1017,24 +986,73 @@ impl TerrainSystem {
         Some((start_x, end_x, start_z, end_z))
     }
 
+    // The inclusive sample rectangle `(min_x, max_x, min_y, max_y)` a brush of `radius` cells
+    // at grid (`center_x`, `center_y`) may write, clamped to the grid; `None` when it holds no
+    // sample (`TERRAIN-28`): a centre or radius that is not finite, a radius not above zero, or
+    // a footprint wholly outside the world. Every brush writes only inside it, so a brush costs
+    // O(clamped samples) whatever its inputs. Inside the grid the rectangle is the one the
+    // brushes always used: the centre truncated, the radius rounded up.
     fn brush_grid_bounds(
         &self,
         center_x: f32,
         center_y: f32,
         radius: f32,
     ) -> Option<(usize, usize, usize, usize)> {
-        if self.width == 0 || self.height == 0 {
+        if self.width == 0
+            || self.height == 0
+            || !(center_x.is_finite() && center_y.is_finite() && radius.is_finite())
+            || radius <= 0.0
+        {
             return None;
         }
-        let r_int = radius.ceil() as i32;
-        let cx_int = center_x as i32;
-        let cy_int = center_y as i32;
-        Some((
-            (cx_int - r_int).max(0) as usize,
-            (cx_int + r_int).min(self.width as i32 - 1) as usize,
-            (cy_int - r_int).max(0) as usize,
-            (cy_int + r_int).min(self.height as i32 - 1) as usize,
-        ))
+        // Saturating: a far centre or a huge radius clamps instead of wrapping.
+        let r_int = radius.ceil() as i64;
+        let axis = |center: f32, samples: usize| {
+            let center = center as i64;
+            let min = center.saturating_sub(r_int).max(0);
+            let max = center.saturating_add(r_int).min(samples as i64 - 1);
+            (min <= max).then_some((min as usize, max as usize))
+        };
+        let (min_x, max_x) = axis(center_x, self.width)?;
+        let (min_y, max_y) = axis(center_y, self.height)?;
+        Some((min_x, max_x, min_y, max_y))
+    }
+
+    /// The world rectangle `[min_x, min_z, max_x, max_z]` a terrain brush of `radius_m` at
+    /// world (`world_x`, `world_z`) reaches, grown by `margin_m` and clamped to the world grown
+    /// by the same margin (`TERRAIN-28`). `None` when the brush can write no sample: a position
+    /// or radius that is not finite, a radius not above zero, or a footprint wholly outside the
+    /// world. Inside the world the rectangle is the footprint grown by the margin. O(1).
+    pub(crate) fn brush_world_bounds(
+        &self,
+        world_x: f32,
+        world_z: f32,
+        radius_m: f32,
+        margin_m: f32,
+    ) -> Option<[f32; 4]> {
+        if self.width == 0
+            || self.height == 0
+            || !(world_x.is_finite() && world_z.is_finite() && radius_m.is_finite())
+            || radius_m <= 0.0
+        {
+            return None;
+        }
+        let (half_w, half_h) = self.half_world_extents();
+        if world_x + radius_m < -half_w
+            || world_x - radius_m > half_w
+            || world_z + radius_m < -half_h
+            || world_z - radius_m > half_h
+        {
+            return None;
+        }
+        let reach = radius_m + margin_m;
+        let (limit_x, limit_z) = (half_w + margin_m, half_h + margin_m);
+        Some([
+            (world_x - reach).max(-limit_x),
+            (world_z - reach).max(-limit_z),
+            (world_x + reach).min(limit_x),
+            (world_z + reach).min(limit_z),
+        ])
     }
 
     fn border_position(&self, grid_x: usize, grid_z: usize) -> Vector3 {
@@ -1174,6 +1192,97 @@ mod tests {
         assert!((terrain.get_height(5, 4) - 0.5).abs() < 0.0001);
         assert!((terrain.get_height(4, 5) - 0.5).abs() < 0.0001);
         assert!((terrain.get_height(0, 0) - 0.0).abs() < 0.0001);
+    }
+
+    // `TERRAIN-28`: a brush at the world's corners and edges, partly or wholly outside it, or
+    // with a radius larger than the world writes only samples of the grid and marks only its
+    // patches and 512 m regions; one wholly outside (or with a centre or radius that is not
+    // finite) writes and marks nothing. The marks' counts are bounded by the world.
+    #[test]
+    fn brushes_reaching_past_the_world_are_clamped_and_outside_it_refused() {
+        // 1,020 m centred on zero, 10 m samples: with the draping margin, regions -2..=1.
+        // Uneven, so that every brush (smooth too) moves the samples it reaches.
+        let fresh = || {
+            let mut terrain = TerrainSystem::with_chunking(103, 103, 10.0, 52, 0.0);
+            let dense: Vec<f32> = (0..103 * 103).map(|i| (i % 7) as f32 * 0.25).collect();
+            terrain
+                .replace_source_from_dense(&dense)
+                .expect("103 x 103 samples");
+            terrain
+        };
+        let max_regions = 16;
+        let max_patches = fresh().render_patch_cols() * fresh().render_patch_rows();
+        type Brush = fn(&mut TerrainSystem, f32, f32, f32);
+        let brushes: [Brush; 4] = [
+            |t, x, y, r| t.sculpt(x, y, r, 0.5),
+            |t, x, y, r| t.level_to_height(x, y, r, 2.0, 0.5),
+            |t, x, y, r| t.smooth(x, y, r, 0.5),
+            |t, x, y, r| t.slope_to_segment(x, y, r, x - 1.0, y, 4.0, x + 1.0, y, 6.0, 0.5),
+        ];
+        let heights = |t: &TerrainSystem| -> Vec<u32> {
+            (0..t.height)
+                .flat_map(|z| (0..t.width).map(move |x| (x, z)))
+                .map(|(x, z)| t.get_height(x, z).to_bits())
+                .collect()
+        };
+        // Grid centres 510 m (51 samples) out from each corner and edge, the `RENDER-32-Q`
+        // sculpt's point among them; the same directions 1.5 samples out, which a 2.4-sample
+        // radius still reaches.
+        let around = |out: f32| {
+            let (lo, mid, hi) = (-out, 51.0, 102.0 + out);
+            [
+                (lo, lo),
+                (mid, lo),
+                (hi, lo),
+                (hi, mid),
+                (hi, hi),
+                (mid, hi),
+                (lo, hi),
+                (lo, mid),
+            ]
+        };
+        for (index, brush) in brushes.into_iter().enumerate() {
+            let outside = around(51.0).map(|(x, y)| (x, y, 2.4));
+            let invalid = [
+                (f32::NAN, 51.0, 2.4),
+                (51.0, 51.0, f32::INFINITY),
+                (51.0, 51.0, 0.0),
+                (-1.0e30, 51.0, 2.4),
+            ];
+            for (x, y, radius) in outside.into_iter().chain(invalid) {
+                let mut terrain = fresh();
+                let (before, dirty) = (heights(&terrain), terrain.dirty_render_patches().clone());
+                brush(&mut terrain, x, y, radius);
+                assert_eq!(
+                    heights(&terrain),
+                    before,
+                    "brush {index} ({x}, {y}) r {radius}: refused"
+                );
+                assert_eq!(terrain.dirty_render_patches(), &dirty);
+                assert!(terrain.height_region_revisions.is_empty());
+            }
+            let reaching = around(1.5).map(|(x, y)| (x, y, 2.4));
+            let larger = [(51.0, 51.0, 1.0e6), (-1.0e6, 51.0, 2.0e6)];
+            for (x, y, radius) in reaching.into_iter().chain(larger) {
+                let mut terrain = fresh();
+                let before = heights(&terrain);
+                brush(&mut terrain, x, y, radius);
+                assert_ne!(
+                    heights(&terrain),
+                    before,
+                    "brush {index} ({x}, {y}) r {radius}: writes"
+                );
+                assert!(terrain.dirty_render_patches().len() <= max_patches);
+                assert!(terrain.height_region_revisions.len() <= max_regions);
+            }
+        }
+
+        // The marks clamp whatever bounds a caller passes: here the wrapped bound the outside
+        // sculpt derived before the clamp.
+        let mut terrain = fresh();
+        terrain.mark_render_patches_for_grid_rect(0, usize::MAX - 47, 0, usize::MAX - 47);
+        assert_eq!(terrain.dirty_render_patches().len(), max_patches);
+        assert!(terrain.height_region_revisions.len() <= max_regions);
     }
 
     #[test]
