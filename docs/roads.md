@@ -12362,18 +12362,21 @@ process's own), so 200,000 warmed flattens allocated nothing.
 
 ### Session benchmark (round B)
 
-Fresh, 2026-11-13, branch `roadtools-b` (`dev` `dafea968` plus the session; bench binary of
-commit `7b0cc232`), release bench profile, pinned by `taskset -c 0,2,4,6,8,10,12,14`, under the
-run and exclusive timing locks, nothing else timed. Fixture `nodes::sim::road_tool::bench`: a
-fixed neighbourhood around the origin (a four-arm junction, a parallel street, a dead-end spur, a
-diagonal street; 9 edges) in a 12.3 km world, plus `background / 10` straight 480 m streets from
-x = 800 m (beyond every fixed radius the trail queries), built with the bulk road path and read
-through the road tool's published view; a trail of 512 camera rays circling the junction at
-40-260 m. A straight stroke is started at the junction with every snap on (network, guides, zoning
-grid, a 15 degree lock, a 4 m length step). **Control:** today's `get_road_tool_cursor_pos` logic
-(`pick::road_tool_cursor`, the bridge method copied operation for operation without the
-dictionary) for the same rays, placing a straight end from the junction with the 45 degree
-magnet; the bridge method itself cannot run outside Godot.
+Fresh, 2026-11-13, branch `roadtools-b` rebased on `dev` `289293a3`, bench binary of commit
+`0d5e25dd` (`535cb413` only reformats one helper), release bench profile, pinned by `taskset -c
+0,2,4,6,8,10,12,14`, under the run and exclusive timing locks, nothing else timed. Fixture
+`nodes::sim::road_tool::bench`: a fixed neighbourhood, an 800 m street grid of 100 m blocks
+around the origin with a dead-end spur and a free diagonal street (147 edges), in a 12.3 km
+world, plus `background / 10` straight 480 m streets from x = 800 m (beyond every fixed radius
+the trail queries), built with the bulk road path and read through the road tool's published
+view; a trail of 512 camera rays circling the origin at 40-260 m. A straight stroke is started at
+the origin junction with every snap on (network, guides, zoning grid, a 15 degree lock, a 4 m
+length step). **Control:** today's `get_road_tool_cursor_pos` logic (`pick::road_tool_cursor`,
+the bridge method copied operation for operation without the dictionary) for the same rays,
+placing a straight end from the junction with the 45 degree magnet; the bridge method itself
+cannot run outside Godot. The first fixture's seven-road neighbourhood made the empty tier
+unrepresentative: the roadbed's region gathers take the owner map instead of their query cells
+while a city has fewer pieces than a query covers cells, which no real city does.
 
 ```bash
 cd rust && cargo bench --bench road_tool_session_benchmark --no-run
@@ -12387,40 +12390,51 @@ the range of three runs:
 
 | Background | Edges | Control | Session, straight | Session, simple curve |
 | --- | --- | --- | --- | --- |
-| 0 | 9 | 34.1-35.0 / 94.0-96.3 | 36.3-36.5 / 96.8-97.2 | 36.9-37.2 / 97.6-98.3 |
-| 1,000 | 109 | 42.3-43.7 / 105.1-109.4 | 45.9-46.5 / 109.4-110.1 | 46.6-46.9 / 110.0-111.1 |
-| 10,000 | 1,009 | 44.8-46.6 / 108.6-112.1 | 48.5-49.6 / 112.3-114.4 | 49.3-49.5 / 112.8-113.0 |
-| 30,000 | 3,009 | 47.8-48.6 / 112.8-116.4 | 51.3-51.6 / 115.6-117.8 | 51.7-51.9 / 116.0-117.3 |
+| 0 | 147 | 111.2-114.5 / 172.2-179.4 | 116.6-118.1 / 177.4-183.1 | 117.9 / 177.6-179.8 |
+| 1,000 | 247 | 113.9-116.5 / 174.2-177.8 | 120.4-121.9 / 182.4-192.1 | 121.0-122.3 / 182.4-184.6 |
+| 10,000 | 1,147 | 117.8-119.9 / 183.2-186.8 | 123.7-124.6 / 185.4-194.1 | 124.5-125.1 / 187.5-191.6 |
+| 30,000 | 3,147 | 120.8-122.5 / 185.6-187.5 | 126.6-127.1 / 189.6-192.2 | 127.7-129.6 / 192.9-198.8 |
 
-Criterion at 30k (mean, 95% interval): control 52.19 us (51.84-52.54), session straight
-55.41 us (55.01-55.82), session simple curve 55.80 us (55.49-56.11).
+Criterion at 30k (mean, 95% interval): control 122.52 us (122.22-122.82), session straight
+131.93 us (131.53-132.33), session simple curve 133.87 us (133.28-134.59).
 
-- **p99 bar** (control + 0.05 ms): met. The session's p99 lies within 5 us of the control's at
-  every tier (30k: 115.6-117.8 against 112.8-116.4).
+- **p99 bar** (control + 0.05 ms): met. The session's p99 lies within 15 us of the control's
+  in every run and tier (worst 14.3 us, 1k; at 30k 189.6-198.8 against 185.6-187.5).
 - **Local products**: the trail's frame digests (cursor, snap kind, stroke points, HUD) are
   bitwise equal at every tier and run.
-- **Flat within 5 % from 0 to 30k: missed**, by the pick both sides share: the control grows
-  +40 % at p50 from 0 to 30k (+12 % from 1k), the session +41-42 % (+11-12 % from 1k). The
-  session's own cost above the control is 2.2 us at 0 and 2.7-3.7 us from 1k to 30k. A profile
-  of the 30k moves (perf, not acceptance) puts the growth in the existing roadbed piece index
-  (`PieceIndex::cell`, its persistent hash-trie cells, 17 % of the samples) and the grounded
-  piece gathers the graded surface's ray and height queries make (`gather_grounded_indexed`,
-  `grounded_pieces_in_bounds`); the background is kilometres away, so this is the index's own
-  depth and cache footprint, `O(log)` in the city, not a scan. Open for review.
-- **No allocation per move**: the bench's `METRUM_ROAD_TOOL_ALLOC_PROBE=<n>` builds the 30k
-  fixture, warms both modes over one trail, runs `n` more trails of each and exits; under
-  `heaptrack --record-only` three `n = 0` runs record 3,108,870-3,109,366 allocation calls (the
-  fixture build's thread-pool noise), `n = 20`, `40` and `200` (up to 204,800 warmed moves)
-  3,108,898, 3,108,920 and 3,108,938 (204,800 moves would add at least as many), and every
-  recorded allocation stack under the probe is the fixture build's.
-- **Timing session, level R** (`./run.sh --timing --level R`, control: the release test binary
-  of `dev` `dafea968`, SHA-256 `0f8fe470285ff4ae`; branch `dcbe00c27c420743`; one boot, eight
-  workers on the performance cores): `PERF-07` 30k 32x C B B C every compared metric `level`
-  (mean 4.470 -> 4.472 ms, p99 7.196 -> 7.191, p99.9 8.788 -> 8.193, worst unpreempted 8.391 ->
-  8.021); the acceptance misses on both sides are the known exception `PERF-17`; K22 30k
-  click-to-ack 6.88 ms (control) and 6.68 ms (branch), one run each. The path rule says F (the
-  `[[bench]]` entry in `Cargo.toml`); timed at R as briefed, since nothing in the game calls the
-  session yet.
+- **The ray walk** (fixed): `RoadbedSystem::raycast_piece` walked every 32 m query cell the ray
+  crossed inside the city's XZ extent, so a cursor ray that missed the roads went on under the
+  ground to the far side of the city: `O(city span / 32 m)` cell lookups a ray, twice a pick
+  (the road ray and the graded surface's). The piece index keeps the pieces' vertex height range
+  beside its XZ extent (grown on insert in `O(vertices)`, reset on clear), and the walk is
+  clipped to the part of the ray inside it with a 1 cm margin: `O(cells the ray crosses between
+  the lowest and highest road)`. Same hits: on the first fixture the frame digests were bitwise
+  the unclipped build's at every tier.
+- **Flat within 5 % from 0 to 30k: still missed**, p50 +7.0-9.9 % (control +7.0-9.2 %,
+  session +7.2-9.9 %), p99 +3.5-8.3 %. The work is flat: per move (`perf stat`, one pinned
+  thread, the difference of 24 and 4 trails) instructions 1,942,839 / 1,961,756 / 1,981,198 /
+  1,997,821 at 0 / 1k / 10k / 30k (+2.8 %, the `log` depth of the piece index's hash trie, the
+  edge R-tree and the piece map), while cycles grow +8.4 % (580,539 to 629,434) and L1 data
+  misses +31 % (11,208 to 14,686): about two thirds of the growth is the larger city's working
+  set in the cache, with the same work. Open for the user (`ROAD-112` B10).
+- **No allocation per move** (on the first fixture, before the rebase): the bench's
+  `METRUM_ROAD_TOOL_ALLOC_PROBE=<n>` builds the 30k fixture, warms both modes over one trail, runs
+  `n` more trails of each and exits; under `heaptrack --record-only` three `n = 0` runs record
+  3,108,870-3,109,366 allocation calls (the fixture build's thread-pool noise), `n = 20`, `40`
+  and `200` (up to 204,800 warmed moves) 3,108,898, 3,108,920 and 3,108,938 (204,800 moves
+  would add at least as many), and every recorded allocation stack under the probe is the
+  fixture build's.
+- **Timing session, level R** (`./run.sh --timing --level R`; control the release test binary
+  of `dev` `289293a3`, SHA-256 `74946913933bd3cf`; branch `d6d822822343bed2`; one boot, eight
+  workers on the performance cores; the index insert is on the commit path). `PERF-07` 30k 32x
+  C B B C with the runner's reruns of noisy rows: control rows mean 4.469 / 4.427 ms, p99 7.32 /
+  7.04; branch rows mean 4.533 / 4.418 ms, p99 7.60 / 7.18; every compared metric `level`
+  (mean +0.6 %, p99 +2.9 %, the group marked noisy, tolerances doubled); the acceptance misses
+  on both sides are the known exception `PERF-17`. K22 30k click-to-ack, alternated single
+  runs: control 6.64, 7.01, 7.06 ms; branch 7.19, 9.38, 6.72, 7.30 ms (the 9.38 alone outside
+  the control's spread). Before the rebase (`dev` `dafea968`, session only): `PERF-07` every
+  metric `level` (mean 4.470 -> 4.472 ms), K22 6.88 / 6.68 ms. The path rule says F (the
+  `[[bench]]` entry in `Cargo.toml`); timed at R as briefed.
 
 ### Decisions (user, 2026-11-12, all as recommended)
 
