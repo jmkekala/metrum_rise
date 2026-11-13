@@ -9,12 +9,16 @@
 //! `METRUM_STRAND_SAVE` (a copy of the dump), `METRUM_STRAND_MODS` (a copy of the packs) and
 //! `METRUM_STRAND_FRAMES` (default 120,000 at the saved 4x: about two game hours).
 
-use super::*;
+use super::super::frame::FRAME_DT_S;
+use super::super::state::SimCore;
+use crate::assets::scan_pack_dir;
 use crate::simulation::buildings::allocator::baseline_private_zone_slot;
+use crate::simulation::core::config::WorldConfig;
 use crate::simulation::economy::agents::{ACCESS_WALK_STRANDED, AgentHandle, TRANSIT_IN_BUILDING};
+use std::path::Path;
 
 fn load(source: &str, mods: &str) -> SimCore {
-    let mut core = SimCore::new(WorldConfig::new(WORLD_SIZE_M, WORLD_SIZE_M, 40.0, 10.0));
+    let mut core = SimCore::new(WorldConfig::new(2048.0, 2048.0, 40.0, 10.0));
     let scan = scan_pack_dir(Path::new(mods));
     assert!(!scan.packs.is_empty(), "{:?}", scan.warnings);
     core.replace_asset_registry(scan.packs.into_iter().flat_map(|pack| {

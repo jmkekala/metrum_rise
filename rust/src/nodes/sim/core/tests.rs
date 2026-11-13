@@ -30,6 +30,7 @@ mod road_over_tunnels;
 mod road_over_zoning;
 mod surface_over_tunnels;
 mod road_tunnels;
+mod strand_dump;
 mod stranded_fixture;
 mod terrain_edit_bounds;
 mod routing_adoption;
