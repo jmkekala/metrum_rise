@@ -12360,6 +12360,68 @@ Bezier yet (round N's freeform tool will). **No allocation beyond the output:** 
 under `heaptrack --record-only`, `n = 0` and `n = 100000` both record 496 allocation calls (the
 process's own), so 200,000 warmed flattens allocated nothing.
 
+### Session benchmark (round B)
+
+Fresh, 2026-11-13, branch `roadtools-b` (`dev` `dafea968` plus the session; bench binary of
+commit `7b0cc232`), release bench profile, pinned by `taskset -c 0,2,4,6,8,10,12,14`, under the
+run and exclusive timing locks, nothing else timed. Fixture `nodes::sim::road_tool::bench`: a
+fixed neighbourhood around the origin (a four-arm junction, a parallel street, a dead-end spur, a
+diagonal street; 9 edges) in a 12.3 km world, plus `background / 10` straight 480 m streets from
+x = 800 m (beyond every fixed radius the trail queries), built with the bulk road path and read
+through the road tool's published view; a trail of 512 camera rays circling the junction at
+40-260 m. A straight stroke is started at the junction with every snap on (network, guides, zoning
+grid, a 15 degree lock, a 4 m length step). **Control:** today's `get_road_tool_cursor_pos` logic
+(`pick::road_tool_cursor`, the bridge method copied operation for operation without the
+dictionary) for the same rays, placing a straight end from the junction with the 45 degree
+magnet; the bridge method itself cannot run outside Godot.
+
+```bash
+cd rust && cargo bench --bench road_tool_session_benchmark --no-run
+METRUM_ROAD_TOOL_LOCALITY=0,1000,10000,30000 METRUM_ROAD_TOOL_ROUNDS=20 \
+  taskset -c 0,2,4,6,8,10,12,14 "$BENCH_BINARY" --bench      # three runs
+taskset -c 0,2,4,6,8,10,12,14 "$BENCH_BINARY" --bench        # Criterion, 30k
+```
+
+Per move, every move of 20 trails timed alone (10,240 moves a row), microseconds, p50 / p99,
+the range of three runs:
+
+| Background | Edges | Control | Session, straight | Session, simple curve |
+| --- | --- | --- | --- | --- |
+| 0 | 9 | 34.1-35.0 / 94.0-96.3 | 36.3-36.5 / 96.8-97.2 | 36.9-37.2 / 97.6-98.3 |
+| 1,000 | 109 | 42.3-43.7 / 105.1-109.4 | 45.9-46.5 / 109.4-110.1 | 46.6-46.9 / 110.0-111.1 |
+| 10,000 | 1,009 | 44.8-46.6 / 108.6-112.1 | 48.5-49.6 / 112.3-114.4 | 49.3-49.5 / 112.8-113.0 |
+| 30,000 | 3,009 | 47.8-48.6 / 112.8-116.4 | 51.3-51.6 / 115.6-117.8 | 51.7-51.9 / 116.0-117.3 |
+
+Criterion at 30k (mean, 95% interval): control 52.19 us (51.84-52.54), session straight
+55.41 us (55.01-55.82), session simple curve 55.80 us (55.49-56.11).
+
+- **p99 bar** (control + 0.05 ms): met. The session's p99 lies within 5 us of the control's at
+  every tier (30k: 115.6-117.8 against 112.8-116.4).
+- **Local products**: the trail's frame digests (cursor, snap kind, stroke points, HUD) are
+  bitwise equal at every tier and run.
+- **Flat within 5 % from 0 to 30k: missed**, by the pick both sides share: the control grows
+  +40 % at p50 from 0 to 30k (+12 % from 1k), the session +41-42 % (+11-12 % from 1k). The
+  session's own cost above the control is 2.2 us at 0 and 2.7-3.7 us from 1k to 30k. A profile
+  of the 30k moves (perf, not acceptance) puts the growth in the existing roadbed piece index
+  (`PieceIndex::cell`, its persistent hash-trie cells, 17 % of the samples) and the grounded
+  piece gathers the graded surface's ray and height queries make (`gather_grounded_indexed`,
+  `grounded_pieces_in_bounds`); the background is kilometres away, so this is the index's own
+  depth and cache footprint, `O(log)` in the city, not a scan. Open for review.
+- **No allocation per move**: the bench's `METRUM_ROAD_TOOL_ALLOC_PROBE=<n>` builds the 30k
+  fixture, warms both modes over one trail, runs `n` more trails of each and exits; under
+  `heaptrack --record-only` three `n = 0` runs record 3,108,870-3,109,366 allocation calls (the
+  fixture build's thread-pool noise), `n = 20`, `40` and `200` (up to 204,800 warmed moves)
+  3,108,898, 3,108,920 and 3,108,938 (204,800 moves would add at least as many), and every
+  recorded allocation stack under the probe is the fixture build's.
+- **Timing session, level R** (`./run.sh --timing --level R`, control: the release test binary
+  of `dev` `dafea968`, SHA-256 `0f8fe470285ff4ae`; branch `dcbe00c27c420743`; one boot, eight
+  workers on the performance cores): `PERF-07` 30k 32x C B B C every compared metric `level`
+  (mean 4.470 -> 4.472 ms, p99 7.196 -> 7.191, p99.9 8.788 -> 8.193, worst unpreempted 8.391 ->
+  8.021); the acceptance misses on both sides are the known exception `PERF-17`; K22 30k
+  click-to-ack 6.88 ms (control) and 6.68 ms (branch), one run each. The path rule says F (the
+  `[[bench]]` entry in `Cargo.toml`); timed at R as briefed, since nothing in the game calls the
+  session yet.
+
 ### Decisions (user, 2026-11-12, all as recommended)
 
 - U1 simple curve = three clicks, free control point, exact arc plus a straight lead.
