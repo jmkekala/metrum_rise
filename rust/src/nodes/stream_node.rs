@@ -1594,6 +1594,12 @@ impl PatchJobs for Jobs<'_> {
         self.0.as_mut()?.request(order, settings)
     }
 
+    fn promote(&mut self, key: PatchKey, serial: u64) {
+        if let Some(spawner) = self.0.as_mut() {
+            spawner.promote(key, serial);
+        }
+    }
+
     fn cancel(&mut self, key: PatchKey) {
         if let Some(spawner) = self.0.as_mut() {
             spawner.cancel(key);

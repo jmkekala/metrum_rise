@@ -183,6 +183,23 @@ impl VegetationJobs {
         self.cache.recycle(product)
     }
 
+    /// A prepare a request adopted (AUDIT-stream-2 finding 3): waiting in the prepare lane, it
+    /// moves to the front of the requests' queue, no longer paced as a prepare; running (or being
+    /// snapshotted) it needs nothing. `O(prepares waiting)`, at most `PREPARE_IN_FLIGHT`.
+    pub(crate) fn promote(&mut self, key: PatchKey, serial: u64) {
+        let Some(at) = self
+            .ahead
+            .iter()
+            .position(|waiting| waiting.request.key == key && waiting.serial == serial)
+        else {
+            return;
+        };
+        if let Some(mut waiting) = self.ahead.remove(at) {
+            waiting.ahead = false;
+            self.waiting.push_front(waiting);
+        }
+    }
+
     /// Drops `key`'s live request: its result will not be delivered.
     pub(crate) fn cancel(&mut self, key: PatchKey) {
         self.queue.cancel(key);
@@ -450,6 +467,11 @@ impl PatchJobs for Spawner {
             settings: settings.product,
         };
         spawn_request(self, request, order.ahead)
+    }
+
+    fn promote(&mut self, key: PatchKey, serial: u64) {
+        self.jobs.lock().unwrap().promote(key, serial);
+        pump(self);
     }
 
     fn cancel(&mut self, key: PatchKey) {

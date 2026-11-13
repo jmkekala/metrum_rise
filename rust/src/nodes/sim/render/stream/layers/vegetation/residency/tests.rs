@@ -97,6 +97,7 @@ struct Jobs {
     revisions: BTreeMap<Cell, i64>,
     busy_core: bool,
     full: bool,
+    promoted: Vec<(PatchKey, u64)>,
 }
 
 impl PatchJobs for Jobs {
@@ -110,6 +111,10 @@ impl PatchJobs for Jobs {
         self.cancelled.remove(&order.key);
         self.requests.push(order.key);
         Some(self.serial)
+    }
+
+    fn promote(&mut self, key: PatchKey, serial: u64) {
+        self.promoted.push((key, serial));
     }
 
     fn cancel(&mut self, key: PatchKey) {
@@ -896,4 +901,75 @@ fn a_turn_between_the_samples_finds_its_variants_prepared() {
     }
     plain.settle(end.eye);
     assert_eq!(ahead.drawn(), plain.drawn());
+}
+
+#[test]
+fn an_adopted_prepare_leaves_the_prepare_lane() {
+    // AUDIT-stream-2 finding 3: a request that adopts a prepare in flight promotes its job, so it
+    // no longer waits behind the prepare lane's pace.
+    let mut world = World::new(all_blocks());
+    let start = orbit(0.0);
+    world.settle(start.eye);
+    for _ in 0..4 {
+        world.frame_prepared(start, false);
+    }
+    let (serial, order) = *world
+        .jobs
+        .out
+        .iter()
+        .find(|(_, order)| order.ahead && !world.residency.patches.contains_key(&order.key))
+        .expect("a prepare out for a patch not drawn");
+    let (surface, vegetation) = world.residency.owner_generations(order.key);
+    let World {
+        residency,
+        layer,
+        jobs,
+        ..
+    } = &mut world;
+    let adopted = residency.take_ahead(order.key, surface, vegetation, order.bands, layer, jobs);
+    assert_eq!(adopted, Some(serial));
+    assert_eq!(jobs.promoted, [(order.key, serial)]);
+}
+
+#[test]
+fn a_held_product_superseded_before_its_install_is_held_again() {
+    // AUDIT-stream-2 finding 4: a turn takes held products into the install backlog; turning
+    // back before they install holds them again instead of recycling them.
+    let mut world = World::new(all_blocks());
+    let start = orbit(0.0);
+    world.settle(start.eye);
+    for _ in 0..1200 {
+        world.frame_prepared(start, true);
+    }
+    let turned = orbit(std::f32::consts::FRAC_PI_2);
+    let World {
+        residency,
+        layer,
+        backend,
+        jobs,
+        ..
+    } = &mut world;
+    // The turn's requests, no install: their held products wait in the layer.
+    layer.set_camera(Some(turned.eye));
+    residency.frame(Some(turned.eye), layer, backend, jobs);
+    let waiting: Vec<(PatchKey, Bands)> = layer
+        .pending
+        .iter()
+        .map(|pending| (pending.delivery.key, residency.requested[&pending.delivery.key].bands))
+        .collect();
+    assert!(!waiting.is_empty(), "held products delivered at the turn");
+    for &(key, bands) in &waiting {
+        assert!(!residency.prepared_variants(key).contains(&bands), "taken out of the store");
+    }
+    // Back before any install: the patches that left hold their products again.
+    layer.set_camera(Some(start.eye));
+    residency.frame(Some(start.eye), layer, backend, jobs);
+    let left: Vec<_> = waiting
+        .iter()
+        .filter(|(key, _)| !residency.wanted.contains(key))
+        .collect();
+    assert!(!left.is_empty(), "some delivered patches left again");
+    for &&(key, bands) in &left {
+        assert!(residency.prepared_variants(key).contains(&bands), "{key:?} held again");
+    }
 }

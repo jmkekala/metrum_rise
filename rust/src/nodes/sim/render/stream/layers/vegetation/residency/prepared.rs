@@ -264,6 +264,13 @@ impl Default for Prepared {
 }
 
 impl Prepared {
+    // Holds `held` as `key`'s product for `bands`; what it replaces or evicts is spent.
+    fn hold(&mut self, key: PatchKey, bands: Bands, held: Held<Ahead>, view: [[f32; 2]; 2]) {
+        self.held.hold((key, bands), held, view, &mut self.evicted);
+        self.spent
+            .extend(self.evicted.drain(..).map(|ahead| ahead.delivery.product));
+    }
+
     // Drops every product and request (a reset; the jobs' requests were cleared with it).
     pub(super) fn clear(&mut self) {
         self.held.clear(&mut self.evicted);
@@ -553,16 +560,7 @@ impl VegetationResidency {
             bytes: delivery.product.bytes(),
             product: Ahead { delivery, request },
         };
-        let prepared = &mut self.prepared;
-        prepared
-            .held
-            .hold((key, request.bands), held, view, &mut prepared.evicted);
-        prepared.spent.extend(
-            prepared
-                .evicted
-                .drain(..)
-                .map(|ahead| ahead.delivery.product),
-        );
+        self.prepared.hold(key, request.bands, held, view);
         None
     }
 
@@ -600,17 +598,35 @@ impl VegetationResidency {
                 bytes: delivery.product.bytes(),
                 product: Ahead { delivery, request },
             };
-            let prepared = &mut self.prepared;
-            prepared
-                .held
-                .hold((key, record.bands), held, view, &mut prepared.evicted);
-            prepared.spent.extend(
-                prepared
-                    .evicted
-                    .drain(..)
-                    .map(|ahead| ahead.delivery.product),
-            );
+            self.prepared.hold(key, record.bands, held, view);
         }
+    }
+
+    // A product of `key` waiting for its install whose request is superseded or left (new bands
+    // or generations, or the patch leaving the wanted set): held again when it is the live
+    // request's, exactly the product of its key, bands and generations, and those generations
+    // are still the patch's (AUDIT-stream-2 finding 4: a turn out and back inside the install
+    // backlog needed jobs again); else spent. `O(pending)`, a hold's eviction `O(held log held)`.
+    pub(super) fn forget_pending(&mut self, key: PatchKey, layer: &mut VegetationLayer) {
+        let Some(delivery) = layer.forget(key) else {
+            return;
+        };
+        let current = self.owner_generations(key);
+        let request = self.requested.get(&key).copied().filter(|request| {
+            request.serial == delivery.serial && (request.surface, request.vegetation) == current
+        });
+        let (Some(request), Some(settings), Some(view)) =
+            (request, self.settings, self.held_view())
+        else {
+            self.prepared.spent.push(delivery.product);
+            return;
+        };
+        let held = Held {
+            centre: key_centre(key, self.terrain_span, settings.world),
+            bytes: delivery.product.bytes(),
+            product: Ahead { delivery, request },
+        };
+        self.prepared.hold(key, request.bands, held, view);
     }
 
     /// A prepare whose core was busy: it is dropped (true), not asked again for this view.
@@ -655,6 +671,8 @@ impl VegetationResidency {
         if let Some(request) = prepared.preparing.remove(&key) {
             if fits(&request) {
                 prepared.used += 1;
+                // Adopted: from now on it is the patch's request, not a prepare.
+                jobs.promote(key, request.serial);
                 return Some(request.serial);
             }
             jobs.cancel(key);

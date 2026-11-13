@@ -71,6 +71,9 @@ pub(crate) trait PatchJobs {
     /// Starts `order` with `settings`' draw distances; its serial, or `None` while the jobs are
     /// full (ask again next frame).
     fn request(&mut self, order: &PatchOrder, settings: &ResidencySettings) -> Option<u64>;
+    /// A request adopted the prepare `serial` of `key` (`RENDER-32-N`): it leaves the prepare
+    /// lane and runs as a request would (AUDIT-stream-2 finding 3).
+    fn promote(&mut self, key: PatchKey, serial: u64);
     /// Makes the live request of `key` stale.
     fn cancel(&mut self, key: PatchKey);
     /// Makes every live request stale.
@@ -802,9 +805,10 @@ impl VegetationResidency {
             self.queue.retain(|key| queued.contains(key));
         }
         for &key in &leaving {
-            if self.requested.remove(&key).is_some() {
+            if self.requested.contains_key(&key) {
                 jobs.cancel(key);
-                layer.forget(key);
+                self.forget_pending(key, layer);
+                self.requested.remove(&key);
             }
         }
         #[cfg(test)]
@@ -951,8 +955,8 @@ impl VegetationResidency {
             {
                 continue;
             }
-            // A product of an older request still waiting for its install is dropped first.
-            layer.forget(key);
+            // A product of an older request still waiting for its install is held again first.
+            self.forget_pending(key, layer);
             // A product prepared ahead for these generations and bands is taken instead of a
             // job (`RENDER-32-N`): it needs no job, so it takes none of the frame's requests.
             if let Some(serial) = self.take_ahead(key, surface, vegetation, bands, layer, jobs) {

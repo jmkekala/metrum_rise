@@ -232,7 +232,7 @@ fn scripted_sequence() -> (u64, usize) {
     layer.deliver(delivery(keys[1], 11, product(90, 3, true, false)));
     // A superseded product never installs.
     layer.deliver(delivery(keys[2], 12, product(20, 1, true, true)));
-    layer.forget(keys[2]);
+    assert_eq!(layer.forget(keys[2]).map(|delivery| delivery.serial), Some(12));
     while layer.pending() > 0 {
         frame(&mut layer, &mut backend, &clock, &nowhere);
         frames += 1;

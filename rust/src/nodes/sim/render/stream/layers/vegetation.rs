@@ -249,7 +249,9 @@ impl VegetationLayer {
 
     /// Takes a prepared product: it waits for its install, replacing a waiting one of its patch.
     pub(crate) fn deliver(&mut self, delivery: Delivery) {
-        self.forget(delivery.key);
+        if let Some(old) = self.forget(delivery.key) {
+            self.spent.push(old.product);
+        }
         let heights = product_heights(&delivery.product);
         self.pending.push(Pending {
             delivery,
@@ -273,16 +275,15 @@ impl VegetationLayer {
         self.events.extend_from_slice(&event);
     }
 
-    /// Drops a waiting product of `key` (its request was superseded or cancelled). `O(pending)`.
-    pub(crate) fn forget(&mut self, key: PatchKey) {
-        if let Some(at) = self
+    /// Takes back a waiting product of `key` (its request was superseded or cancelled), for the
+    /// residency to hold again or spend. `O(pending)`.
+    #[must_use]
+    pub(crate) fn forget(&mut self, key: PatchKey) -> Option<Delivery> {
+        let at = self
             .pending
             .iter()
-            .position(|pending| pending.delivery.key == key)
-        {
-            let pending = self.pending.swap_remove(at);
-            self.spent.push(pending.delivery.product);
-        }
+            .position(|pending| pending.delivery.key == key)?;
+        Some(self.pending.swap_remove(at).delivery)
     }
 
     /// Products whose storage can go back to the jobs.
