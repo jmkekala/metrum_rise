@@ -150,6 +150,15 @@ city trees now draw within two frames on every measured motion; Kuopio's turns w
 install budget, its far zooms still partly for preparation (less than before); with the
 simulation running the preparation now yields to the game and costs a still view nothing measurable
 ([record](terrain.md#the-vegetations-band-variants-and-the-zoom-line-render-32-n-part-2-code-12-2026-11-13)).
+`RENDER-32-Q` (2026-11-13, for review) closes the streaming track: every renderer's per-frame
+install work (vegetation, terrain and water patches, graded ground, building batches and
+construction sites, the terrain's edit commits, the water's meshes) now shares one 2.0 ms ledger a
+frame, with gaps in view served before upgrades. Paused, every turn frame of the 30k city and
+Kuopio stays inside it; Kuopio's trees no longer wait for the budget on turns (worst waits 7
+frames to 1). With the simulation running, a growing city's terrain commits spread over frames
+(the 30k city's worst commit frame 25 ms to 12, the 100k city's 71 ms to 18); what remains waits
+for `CODE-26` (the core published to the renderers) and `RENDER-30` (construction sites off the
+main thread) ([record](terrain.md#the-frames-install-ledger-and-the-tracks-close-out-render-32-q-2026-11-13)).
 The graded ground's material edges and road seams no longer flicker from frame to frame
 (`RENDER-38`, fixed 2026-11-12): their shading is defined at the edges, which keeps the 30k
 city's stills byte-identical run to run again, at the control's GPU and frame time.

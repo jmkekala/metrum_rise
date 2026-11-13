@@ -11887,7 +11887,11 @@ line goes; per-instance calls and object churn do.
   owns these objects and the engine neither frees them nor lets go of a freed mesh:
   `RENDER-39`, `RENDER-41`); `StreamStatus` per layer (wanted, prepared,
   installed, holes in view, holes in the near ring) for `TERRAIN-15`'s hand-over, `UI-08` and
-  every test's "settled" wait.
+  every test's "settled" wait. *Target, not built* (`RENDER-32-Q`, AUDIT-stream finding 16):
+  `LayerStatus` exists for the vegetation only, without those fields, and each layer still takes
+  its own camera (the stream node the viewport's, the graded book `terrain.gd`'s with its height
+  over the ground, the buildings the camera transform and projection, the street lights position
+  and forward); the hand-over and the settle waits read per-layer functions.
 - **The line.** Rust owns and calls `RenderingServer` directly for every instance layer it keeps
   the books for (vegetation, graded cells and walls, street lights, parked cars, building
   batches, agents). GDScript keeps what is a Godot resource or a scene object with other users
@@ -11899,15 +11903,25 @@ line goes; per-instance calls and object churn do.
   (`RENDER-32-N`, only if measured necessary) holds products along the camera's reach: the orbit
   circle, the zoom line through the eye and the pivot (in and out at the camera's zoom rate, part
   2) and a pan disc of 0.5 s at keyboard speed. The retained set
-  keeps today's hysteresis margins; a leaving chunk hides at once and frees under the budget.
+  keeps today's hysteresis margins; a leaving chunk hides at once and frees at once, its frees
+  measured and charged to the frame's install ledger (the `free` class, `RENDER-32-Q`), which
+  narrows what the frame's installs may spend; a spare limit absorbs most releases.
   Built for the vegetation in `RENDER-32-N` (2026-11-13: prepared and retained products under a
-  64 MB cap, held by patch and bands; the graded bands' prepared bakes not built).
-- **The scheduler.** One streaming budget a frame for all layers (2.0 ms, a setting) on a
-  monotonic clock; a unit starts only if its predicted cost (fixed constants, no adaptive
-  estimate) fits, the first unit of a frame always runs. Edits are atomic batches outside the
-  budget with `ROAD-68`'s 2.0 ms stage as their bar (T65 option (3), in `RENDER-32-K`). Order:
-  edit batch, hole in view, hole in the near ring, hole elsewhere, upgrade in view, upgrade
-  elsewhere, free; nearest first inside a class, ties by key.
+  96 MiB cap since its fix round, held by patch and bands; the graded bands' prepared bakes not built).
+- **The scheduler.** One install ledger a frame for every owner of main-thread install work
+  (2.0 ms, `RENDER-32-Q`; built as the plan's one budget, revised to what is built): the
+  terrain's dirty-patch stages and commit and the graded tiles (`terrain.gd`), the water's mesh
+  pipeline (`water.gd`), the building batches' publication and the sites (`buildings.gd`), then
+  the streaming node's patch units, vegetation installs, prepared-set walks and frees charge it in
+  the frame's process order, on a monotonic clock; a unit starts only if its predicted cost (fixed
+  constants, no adaptive estimate) fits what is left, each owner's first unit of a frame always
+  runs. Order across owners: holes before upgrades, by a reserve (1.0 ms) that the upgrade owners
+  ahead of the node (the dirty commit, the graded tiles, the patches' level changes) leave while
+  the node's last frame left holes waiting; inside an owner, its classes and nearest first, ties
+  by key. Named exceptions with budgets of their own: an edit's atomic batch (`ROAD-68`'s 2.0 ms
+  stage, T65 option (3)), the post-load window (5.2 ms, until the patches first settle, at most
+  30 s) and a load's road hydration (4.0 ms); the building publication and the sites are charged,
+  not split (one atomic frame each, `RENDER-42`, `RENDER-30`).
 - **Main-thread rule.** No blocking core lock on a frame path: only `try_lock` snapshots and the
   published render snapshot.
 - **Invariants tested in Rust without Godot**, against the recording backend on scripted view
@@ -11942,7 +11956,7 @@ line goes; per-instance calls and object churn do.
 | `RENDER-32-N` | C1 | Prepared reach set (`CODE-12`), after a go/no-go measurement. Seen in play by the user (2026-11-12, `dev` `8493e60a`, release): chunks visibly pop in when zoomed far out, and trees load visibly while zooming from far out down to the ground. The go/no-go measurement covers both: a far zoom-out and a far-to-ground zoom (`stream_frame_benchmark.gd` zoom phase extended to them), entered-to-drawn per layer | Entered-to-drawn p95 at most three frames, on the far zoom-out and the far-to-ground zoom included. Round C1 (2026-11-13, branch `stream-c1`, for review): measured no-go (terrain, water, graded patches and buildings pass; the vegetation misses on both inputs, the 30k graded tiles as level upgrades); the vegetation's prepared and retained set built under a 64 MB cap; the bar not met: Kuopio's remaining waits are the install budget's (`-Q`), the 30k fine tier's are preparation (products prepared for other bands), the zoom-out ray and the graded GL0/GL1 bakes not built ([record](#entered-to-drawn-and-the-vegetations-prepared-set-render-32-n-code-12-2026-11-13)). Round C2 (2026-11-13, branch `stream-c2`, for review): the fine tier's band variants (held by patch and bands), the reach's zoom line in and out at the camera's zoom rate, holes prepared first, prepares behind every request; the 30k city passes on every motion; Kuopio's turns wait for the install budget only (`-Q`); Kuopio's far zooms still miss, their preparation frames below the control's; after the review's fix round (prepares yield the core and pace with the simulation, the held cap 96 MiB from Kuopio's measured 79) the 30k 1x still is level ([record](#the-vegetations-band-variants-and-the-zoom-line-render-32-n-part-2-code-12-2026-11-13)) |
 | `RENDER-32-O` | A2 | Agent draw distances (`RENDER-28` part 2), from stills | The user's choice (2026-11-12): walkers to 1.0 km with a fade from 0.8 km, cars to 2.5 km with a fade from 2.0 km; stills identical inside the fade starts. Landed 2026-11-12 (coordinator, delegation, for review; the 100k 1x still p99 in the post-load graded frames carried to `-K` part 3, which timed it level with control, three runs a side; [record](#agent-draw-distances-render-32-o-2026-11-12)) |
 | `RENDER-32-P` | R1 | Road hydration at load, parked cars, zoning masks (`RENDER-36`) | The 100k load's frame at most 33 ms. Landed 2026-11-12 (branch `stream-r1`, coordinator under night delegation, for review): the road work at most 31.3 ms in any frame of the 100k load (control one 1,412 ms frame), all in the held load, the hand-over 1.5 s earlier; parked cars through the pools; zoning masks on a 2 km ring; `RENDER-42` fixed; digests and stills equal; the 30k zooms' `zoom_out` p50 (+0.1 ms) and `zoom_in` maximum flagged after the one rerun ([record](#road-hydration-at-a-load-parked-cars-and-zoning-masks-on-the-core-render-32-p-2026-11-12)) |
-| `RENDER-32-Q` | Close-out | The frame's streaming budgets: graded, buildings and the stream node each run their own `GodotBackend` and budget against the plan's one 2.0 ms (planned 2026-11-12, review of the rounds). Opens with a measurement of all layers' install work a frame on the 30k and 100k turns: inside 2.0 ms in every frame, the per-layer budgets are recorded as the design and the plan's sentence revised; over it, the graded poll and the building publication charge the stream node's budget. Carried from `-M`: the 100k load's settle (13.1 s against 11.6 on a control without `-K` parts 3-4; the graded tail, 38 installs a frame against 50), checked against a matched control with the post-load patch window. Carried from `-K` part 3: the graded totals (0.5 ms on the 30k 1 s turn, 1.0 ms at 100k; 0.83-0.88 and 1.39-1.48 at landing, below control), decided with the budget sum | The sum of the layers' install work at most 2.0 ms in every frame; the carried graded totals met or decided with it |
+| `RENDER-32-Q` | Close-out | The frame's streaming budgets: graded, buildings and the stream node each run their own `GodotBackend` and budget against the plan's one 2.0 ms (planned 2026-11-12, review of the rounds). Opens with a measurement of all layers' install work a frame on the 30k and 100k turns: inside 2.0 ms in every frame, the per-layer budgets are recorded as the design and the plan's sentence revised; over it, the graded poll and the building publication charge the stream node's budget. Carried from `-M`: the 100k load's settle (13.1 s against 11.6 on a control without `-K` parts 3-4; the graded tail, 38 installs a frame against 50), checked against a matched control with the post-load patch window. Carried from `-K` part 3: the graded totals (0.5 ms on the 30k 1 s turn, 1.0 ms at 100k; 0.83-0.88 and 1.39-1.48 at landing, below control), decided with the budget sum | The sum of the layers' install work at most 2.0 ms in every frame; the carried graded totals met or decided with it. Round Q (2026-11-13, branch `stream-q`, for review): over 2.0 ms measured, so one install ledger a frame for every owner, holes before upgrades by a reserve; paused, every 30k and Kuopio turn frame inside it and one 100k frame of 132 at 2.24 ms; with the simulation running the frames over are `RENDER-40`'s remainder (needs `CODE-26`) and `RENDER-30`'s sites; the graded totals decided with the sum; the track's acceptance re-measured: timed scripts and night against day met, a frame over 33.3 ms (Godot's draw, `RENDER-43`/`RENDER-46`) and the 1 s turn's CPU gap (`RENDER-46`, `CODE-26`, `RENDER-47`) not, carried by those rows ([record](#the-frames-install-ledger-and-the-tracks-close-out-render-32-q-2026-11-13)) |
 
 Track acceptance, on the stream benchmark at 30k, 1080p, paused, after `-A` to `-H` and `-L`:
 timed scripts at most 4 ms mean in every moving phase, no frame over 33.3 ms, the 1 s turn's p50
@@ -13177,8 +13191,10 @@ hand-over, which touches no simulation path). Carried to `-J`: the cell set buil
 V2a. The streaming core gets its install side, and the vegetation is its first layer to draw
 through it: `vegetation.gd` creates no node per patch any more.
 
-**The backend** (`stream/backend.rs`). The only code of the core that calls `RenderingServer`,
-behind the `RenderBackend` trait: `MultiMesh` create, re-allocate, mesh, buffer, visible count and
+**The backend** (`stream/backend.rs`). The core's `RenderingServer` calls, behind the
+`RenderBackend` trait (one exception since `RENDER-32-K` part 1: the graded book's material sync
+reads and writes the terrain patches' material parameters directly, unrecorded; `RENDER-32-Q`
+corrected this sentence): `MultiMesh` create, re-allocate, mesh, buffer, visible count and
 custom bounds; instance create (main or reflection scenario), origin, visibility, shadow casting,
 visibility range (no fade, no margins), custom bounds, material override and a float instance
 parameter; free. Meshes, materials and parameter names are indices into what the layer registered
@@ -16633,6 +16649,183 @@ Gates (fresh, code `121b4e2b`): `cargo clippy --all-targets` warning set equal t
 Godot script skipped, 0 SCRIPT ERROR); the isolated-profile grep finds nothing. Digests and stills
 not rerun in this round: the pacing only delays prepares and the cap changes only what is held;
 what a request takes, installs and a settled view draws is unchanged.
+
+### The frame's install ledger, and the track's close-out (`RENDER-32-Q`, 2026-11-13)
+
+Round Q (branch `stream-q` on `dev` `2f4f87c8`, for review). The rounds had left the frame's
+install work under budgets nobody summed (the review's finding 11): the stream node's 2.0 ms
+(vegetation, terrain and water patch units), the graded poll's own 1.0 ms, building batches,
+sites and the terrain's dirty-patch commit with none, the water's mesh pipeline with its own,
+and the load windows (post-load 5.2 ms, road hydration 4.0 ms). The round measured their sum,
+built one ledger for it, and re-measured the track's acceptance.
+
+**Method.** The stream benchmark, instrumented (`--detail`; shares, not times), Godot 4.7.2
+Forward+, gamescope headless, 1920x1080, P-cores, eight workers, isolated profiles. Inputs: the
+30k city of record, the 100k commit city, Kuopio. Configurations: paused still and turns (0.5 s
+and 1 s; 100k 1 s and the load's `post_load`), 1x (30 s still, 1 s turns). Owners a frame, from
+the perf records: the stream node's install budget spent (vegetation installs and patch units),
+the patch units in the post-load window, the node's frees (backend `free_rid`s, new timer), the
+road hydration's units, the graded poll with its edit batch and the cell and wall rewrites they
+cause, the building batches' publication, `water.gd`'s frame with `terrain.gd`'s water sync, the
+terrain's dirty-patch commit (`RENDER-40`) and the plots' and construction sites' frame
+(`RENDER-30`, new `sites_ms`). Analysis script `$ARTIFACTS/sum.py` (per phase group: the sum's
+p50, p99, max, frames over 2.0 ms and the largest owner of each such frame). Base: `dev` with the
+two timers (`83554c30`); branch: the final code.
+
+**The sum, base against branch** (frames over 2.0 ms of the group's, and who carries them):
+
+| Group | Base p50 / p99 / max | over 2.0 | carried by | Branch p50 / p99 / max | over 2.0 | carried by |
+|---|---|---:|---|---|---:|---|
+| 30k paused still | 0.07 / 0.10 / 0.10 | 0 | - | 0.10 / 0.14 / 0.17 | 0 | - |
+| 30k paused 0.5 s turns | 1.11 / 2.16 / 2.16 | 1 | graded | 1.11 / 1.53 / 1.53 | 0 | - |
+| 30k paused 1 s turns | 0.79 / 1.39 / 1.95 | 0 | - | 0.84 / 1.38 / 1.74 | 0 | - |
+| 30k 1x still (30 s) | 0.10 / 8.29 / 24.9 | 48 | terrain commit 48 | 0.11 / 5.92 / 12.3 | 33 | terrain commit 33 |
+| 30k 1x 1 s turns | 0.97 / 7.77 / 8.62 | 6 | sites 3, commit 3 | 0.97 / 7.24 / 7.31 | 6 | sites 3, commit 3 |
+| 100k paused still | 0.07 / 0.10 / 0.10 | 0 | - | 0.11 / 0.16 / 0.21 | 0 | - |
+| 100k paused 1 s turns | 1.25 / 2.59 / 3.14 | 13 | graded 11, publication 2 | 1.24 / 1.92 / 2.24 | 1 | graded 1 |
+| 100k 1x still (30 s) | 0.13 / 14.4 / 71.3 | 71 | sites 42, commit 29 | 0.14 / 11.3 / 18.1 | 67 | sites 43, commit 24 |
+| 100k 1x 1 s turns | 1.38 / 18.4 / 18.4 | 21 | graded 14, sites 3, commit 3 | 1.46 / 10.0 / 10.0 | 10 | sites 3, commit 3, publication 2, graded 2 |
+| 100k load (`post_load`, a load window) | 5.49 / 16.4 / 34.3 | 176 | road hydration 166 | 6.27 / 14.9 / 37.6 | 176 | road hydration 166 |
+| Kuopio paused 0.5 s turns | 0.14 / 1.25 / 1.65 | 0 | - | 0.16 / 1.15 / 1.19 | 0 | - |
+| Kuopio paused 1 s turns | 0.08 / 0.54 / 2.31 | 1 | stream node | 0.10 / 0.81 / 1.31 | 0 | - |
+
+Every branch row is of the final code (the 1x rows from the release library the session timed).
+A 1x row is one 30 s run: its maxima move with the size of the growth edits that fell in it. Every frame of the paused 30k turns and Kuopio's turns is inside 2.0 ms;
+the 100k paused turns keep one frame at 2.24 ms (the graded cell rewrites of 20 patches whose
+level changed, after its poll). With the simulation running the frames over 2.0 ms are the
+terrain commit's remainder (below) and the sites' frame (`RENDER-30`, charged, not bounded: its
+fix is that row's, off the main thread); the load's frames are the road hydration's (its own
+4.0 ms window; single chunks of 28-31 ms build in `network_tool.gd`, `RENDER-36`/R1's note).
+
+**Decision: over 2.0 ms, so one ledger** (for review; the plan's sentence revised in the Design
+above). `schedule.rs` `FrameLedger`: one account a process frame on the main thread, 2.0 ms,
+charged by every owner in the frame's process order (`terrain.gd`'s dirty commit and graded
+tiles, `water.gd`, `buildings.gd`, then the stream node). An owner's unit starts if its
+predicted cost fits what the ledger has left; each owner's first unit of a frame always runs,
+so the worst frame overruns by one unit an owner. Holes before upgrades across owners: while the
+node's last frame left holes waiting (vegetation hole classes, terrain or water patches
+missing), the upgrade owners ahead of it (the dirty commit, the graded tiles, the patches' level
+changes) leave a 1.0 ms reserve. The building publication (one atomic frame, `RENDER-42`) and
+the sites are charged, not split; the frees and the prepared set's reach walks (AUDIT-stream-2
+finding 8: 0.02-0.03 ms a still frame) are charged as measured time. Named exceptions keep their
+budgets: an edit's atomic batch, the post-load window (now closing after 30 s at most:
+AUDIT-stream-2 finding 5, and a refused terrain payload no longer holds it open), and a load's
+road hydration. Cost: `O(1)` a charge, one `Engine.get_process_frames()` a pass, no
+allocation; `O(pending)` once a frame for the vegetation's hole check.
+
+Built with it:
+
+- **The graded tiles** keep to `min(1.0 ms, the ledger's room)` in every check (results, cell set
+  builds, material syncs), and charge, as `CELL_CHARGE_US` charges a placed tile, 80 us for each
+  patch queued for a whole cell rewrite and each resident patch whose level changed since the
+  last frame (measured: 50-90 us a patch on the 30k and 100k turns; the rewrites run after the
+  poll in the replayed step order, so they are charged ahead). Patches that became resident (a
+  load) rewrite none and are not charged.
+- **Kuopio's ready-and-waiting** (C1, C2: 99-100 % of the vegetation's waits ready, for the
+  install budget) was the patches' level changes: predicted 60 us (terrain) and 40 us (water),
+  measured 11 us at the median (25-36 us at p95, frames of level changes only, every input), so
+  a turn's level changes filled the frame's predicted budget at 0.2-0.4 ms of real time and the
+  vegetation's holes waited a frame or several. Now 20 us each, behind the holes' reserve. The
+  drawn probe on Kuopio's turns: vegetation p95 7 / 5 frames (turn out, turn repeat; MISS) to
+  1 / 1 (pass), the longest coarse hole 6 frames to 1; every motion passes.
+- **`RENDER-40`**: the dirty stage uses the payload's land cover (built on the payload worker,
+  `RENDER-32-M`) while it is current, and the dirty patches stage a patch a unit while the
+  ledger has room, the staged ones kept across frames while their payload and spare resources
+  hold, the commit atomic. 30k 1x: the commit's frames 8-25 ms to 6-12 ms (mean a frame 0.16 to
+  0.08 ms, frames over 2.0 ms 48 to 33); 100k 1x: worst 71 to 18 ms. What remains in one stage is
+  a land cover gone stale since its payload (the live query: 1.8-2.8 ms with its Rayon join) and
+  the blocking currency checks (24-66 `lock_core` a commit frame, 1-2 ms waiting for the
+  simulation's tick). Both need `CODE-26`'s published values first (the land cover's generations
+  published, so a stage can tell a stale payload without the core and ask the payload worker
+  again): the round stops at that line.
+
+**Carried.** The graded totals (bars 0.5 ms on the 30k 1 s turn, 1.0 ms at 100k): 0.75-0.78 ms
+and 1.26-1.36 ms, base and branch alike; decided with the sum (for review): their install part
+is inside the frame's one ledger and the turns' sum within 2.0 ms; the rest is the cell
+rewrites of the patches whose level the camera changes (charged now) and the re-level, which
+are the graded book's own work (`TERRAIN-13`), not install work. The 100k load's settle
+(13.1 s against 11.6 at `-M`): the control now settles in 11.1-12.1 s and the branch in
+10.9-12.1 s over this round's instrumented loads (two and four; the spread is in the load's first
+30 frames, `RENDER-43`'s stalls; graded installs a frame after them are level): met.
+
+**The paused 30k 1 s turn's CPU gap** (PL1: frame 15.0-15.7 ms against GPU 8.7-8.9). Streaming
+work in it, fresh (instrumented, branch): the install ledger 0.84 ms a frame (graded 0.65, the
+stream node 0.07, the publication 0.03, water 0.06), the graded book's other work 0.13 ms (the
+re-level and requests), the stream node's residency under 0.1 ms. The rest is attributed to its
+rows by PL1's profile (not re-profiled): Godot's draw and its command replay (`RENDER-46`, 8.7 ms
+on the CPU, 2.7 of it the replay outside `render_cpu_ms`), the blocking core waits (`CODE-26`,
+1.7 ms), the car smoothing's Rayon join (`RENDER-47`, 0.9 ms), X11 round trips through
+gamescope (0.9 ms) and the culling workers (0.35 ms).
+
+**The streaming audits' findings routed here.** AUDIT-stream: 6 (frees: measured and charged,
+not deferred; the design sentence revised), 8 (a product whose count does not match its buffer,
+or a lane out of `u8`, is refused), 9 (the backend's and this document's sentences corrected; the
+material sync stays beside the backend, unrecorded), 10 (the building frame's timing lanes only
+with the perf channel, in Rust and in `building_lods.gd`; the graded effect arrays were closed by
+`-K` part 7, whose `apply_own_effects` calls the renderer only for its own effects), 12 (the
+three `StreamNode` test functions deleted, the residency's retire path test-only;
+`GradedTileLevels` was gone already), 14 (stand-ins checked only after an evaluation or an
+install, the only changes that can build their area: a still frame `O(1)` with stand-ins
+waiting), 16 (`StreamStatus` and one view sample marked as target, not built, in the Design).
+The staged commit's Godot check (`graded_tile_renderer_test`, the production renderer: a sculpt
+dirties four patches; with the ledger spent before the terrain's frame every frame, at most one
+patch stages a frame and the commit completes) first sculpted at a point outside its 1,020 m
+world, where `sculpt_terrain` grows the process without bound on the control build as well (a
+gate's Godot reached 35.7 GB before the kernel killed it): `TERRAIN-28`. The check sculpts
+inside the world (357 MB peak).
+AUDIT-stream-2: 5 (above, with a test), 8 (above: the pull takes landed products under the
+jobs' lock and handles them, the eviction's sort included, after it), 15 (the 96 MiB cap, the
+jobs' in-flight comment, the eviction's cost line).
+
+**The track's acceptance, re-measured** (plan section 7; the session below, 30k unless named).
+Timed scripts a moving phase (one instrumented run of every phase, branch): 0.7-3.6 ms a frame,
+the highest the 0.5 s turns (3.3-3.6, agents 1-2.5 of it), 1.9-2.3 on the 1 s and night turns,
+2.2 on the far zoom-out: **met** (at most 4 ms; control 16-32 at the plan). Frames over 33.3 ms:
+one on the 30k `zoom_in` and one on Kuopio's 0.5 s `turn_out`, on both sides in every run, each
+a single frame whose Godot draw segment alone takes 45-56 ms (first-use pipeline class,
+`RENDER-43`; the draw is `RENDER-46`'s); the rerun added one 34 ms branch frame on
+`far_zoom_out` and one control frame on `turn_repeat`: **not met**, owners outside install work.
+The 1 s turn's p50 against its GPU time: 12.4-14.3 ms against 7.8 (4.6-6.5 over): **not met**,
+the gap is the CPU gap above (`RENDER-46`, `CODE-26`, `RENDER-47`, X11), streaming under
+1.1 ms of it; Kuopio 1.9-2.0 against 1.1-1.2, met. Night within 1 ms of day: night turns
+11.6-13.3 against the day's 12.4-14.3, night pans 6.4 against 6.8, Kuopio 2.0-2.6 against
+1.8-2.1: **met**. `RENDER-32`'s own bars are met; the two that are not are carried by
+`RENDER-43`, `RENDER-46`, `CODE-26` and `RENDER-47`.
+
+**Session and gates** (fresh, this round; release libraries: control `dev` `2f4f87c8`, branch
+`020126b7`; release test binaries of the same; one boot, P-cores, eight workers):
+
+- Rows (`stream_benchmark.py series`, C B B C, every phase): 30k level or better but `still`
+  p50 +0.1 (spread 0.1), `turn_out` 1 s max +3.0, `far_zoom_out` max +1.9, `jump_back` max
+  +4.7; Kuopio level or better but `jump` p50 +1.3, the night turns p50 +0.3-0.4, `turn_out`
+  1 s p50 +0.1, `zoom_in_repeat` +0.2, `turn_back` 0.5 s and `night_pan_back` maxima. Attributed
+  before the rerun (instrumented, a side): the 30k maxima's worst frames are Godot's draw, agents
+  and the terrain script on both sides, the branch's instrumented maxima equal or lower; Kuopio's
+  jump does the same work in fewer frames (46 against 57 frames, 15.2 level changes a frame
+  against 13.5, settled in 67-69 ms against 105-110), its night turns instrumented level. The one
+  rerun of the flagged groups: 30k level or better everywhere but `far_to_ground` p50 +0.1
+  (spread 0.1; level in the first series); Kuopio level but `jump` p50 +1.2 (the same
+  attribution: the ledger spends its real 2.0 ms where the old predictions spent about 0.6 ms of
+  it, and the jump settles 37 % sooner; for review), `turn_repeat` 1 s and `night_still` p50
+  +0.1 on 2 ms frames, `zoom_in` and `far_to_ground` maxima on 8-13 ms frames. Not rerun again.
+- The 100k load, one instrumented run a side: settled 11.3 s (branch) against 12.1 (control);
+  over this round's six instrumented loads the branch 10.9-12.1 s, the control 11.1-12.1, the
+  spread in the first 30 frames.
+- Digests: 30k graded, buildings, roads, parked 4 of 4 equal, water 1 of 1; Kuopio 8 of 8 equal
+  in every family. Stills: Kuopio three poses byte-identical; 30k `city` and `city_low`
+  identical in three runs a side, `saved` 2, 2 and 3 px (delta 2, `RENDER-45`'s residue; control
+  against control 2 px). The drag probe: populated 282 frames, 0 with the background; Kuopio 16
+  of 6,036 (control 16 of 6,039, T65's known frames).
+- Timing level L (`./run.sh --timing --level L`): `PERF-07` 30k 1x PASS on both sides, every
+  metric level (mean 2.225-2.239 ms against 2.218); 32x level (`PERF-17`'s known exception on
+  both sides); K22 at 30k 6.49 ms click-to-ack. The economy contract fails the same five parked
+  work-scaling limits on the control (run on its test binary for this check: `buyer_sites_built`,
+  `staffing_trials`, `supplier_searches`, `supplier_routes`, `job_search_keys`, identical counts)
+  and every time limit holds on both (day hourly 0.95 / 3.47 ms against 0.94 / 3.50): unaffected.
+- Gates: clippy `--all-targets` warning set equal to the base's (`asset_document.rs`); debug
+  `cargo test --lib` 2,552 passed, 0 failed, 224 ignored; `./run.sh --test` PASS (nextest 2,556
+  passed, 225 skipped; `godot-main` and `godot-vehicle` PASS, 0 SCRIPT ERROR). An earlier gate
+  run was killed by the kernel (the test's sculpt outside its world, `TERRAIN-28`, above).
 
 ## Implemented Runtime Contract
 
