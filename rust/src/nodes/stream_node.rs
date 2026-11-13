@@ -534,7 +534,7 @@ impl StreamNode {
     }
 
     /// The stream benchmark's drawn probe (`RENDER-32-N`): layer `name`'s installed set this
-    /// frame as [`probe`] records (`terrain`, `water`, `vegetation_coarse`, `vegetation_fine`,
+    /// frame as `stream::probe` records (`terrain`, `water`, `vegetation_coarse`, `vegetation_fine`,
     /// and through the attached book `graded` and `graded_tiles`); empty for another name.
     /// Benchmark only, `O(the layer's set)` (the terrain's and water's `O(grid)`).
     #[func]

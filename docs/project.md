@@ -130,6 +130,16 @@ of the draws. A turn draws and binds what a still does: its dearer draws are cac
 install churn, not state changes. Ranked levers: one body surface per car mesh, the parked cars'
 draw distance and far meshes (`RENDER-48`), a far building tier (`RENDER-49`), occlusion later
 (`RENDER-50`) ([record](terrain.md#where-the-gpu-goes-render-44-render-46-2026-11-13)).
+`RENDER-32-N` (2026-11-13, for review) measured how many frames a chunk that comes into view
+waits before it draws, per layer, on 0.5 s turns, a far zoom-out to 40 km and a zoom from there to
+the street: terrain, water, graded ground and buildings draw within three frames; the vegetation
+did not (trees up to 32 frames late on the 30k city, gaps of up to 23 frames on Kuopio). The
+vegetation now prepares the patches the camera can reach next while the view is still, and keeps
+installed patches' products for a turn back (64 MB at most): the 30k coarse trees draw at once
+(was up to 32 frames late) and the fine ones' worst waits are 6-13 frames (was 18); Kuopio's are
+now limited by the per-frame install budget
+(`RENDER-32-Q`). `CODE-12` stays open for the rest (record in
+[terrain.md](terrain.md#entered-to-drawn-and-the-vegetations-prepared-set-render-32-n-code-12-2026-11-13)).
 The graded ground's material edges and road seams no longer flicker from frame to frame
 (`RENDER-38`, fixed 2026-11-12): their shading is defined at the edges, which keeps the 30k
 city's stills byte-identical run to run again, at the control's GPU and frame time.
