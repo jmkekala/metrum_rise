@@ -12011,6 +12011,9 @@ tools/stream_benchmark.py split "$ARTIFACTS/30k-sh.metrics.json"   # writes 30k-
 tools/stream_benchmark.py compare "$ARTIFACTS" 30k-sh.none 30k-sh.low
 tools/stream_benchmark.py stills capture --label s30-var ... --variants full,filter2,low
 tools/stream_benchmark.py stills variants "$ARTIFACTS/stills/s30-var" --crops "$ARTIFACTS/crops"
+# Draw census (`RENDER-44`, untimed): primitives by layer and band, off-screen, sub-pixel, occluded.
+tools/stream_benchmark.py run --label c30-census --out "$ARTIFACTS" --save <...> --phases census
+tools/stream_benchmark.py census "$ARTIFACTS/c30-census.census"
 ```
 
 - `series` writes `<input>-ctl1`, `-br1`, `-br2`, `-ctl2`; `run` stays for single rows. Both run
@@ -12053,6 +12056,15 @@ tools/stream_benchmark.py stills variants "$ARTIFACTS/stills/s30-var" --crops "$
   `summary`); it is a separate run, not a timed row. `stills capture --variants` captures
   `<pose>-<variant>.png` per variant, and `stills variants` counts each against its pose's `full`,
   with `--crops` the most-changed 480 x 270 window side by side (full, variant, difference x8).
+- `--phases census` (`METRUM_STREAM_CENSUS_DIR`, `RENDER-44`; untimed, it reads buffers and meshes
+  back) runs `draw_census.gd` at the settled base pose, three street-level views, a mid-height view
+  and the middle of a 1 s turn: every drawn geometry instance (scene nodes and the stream core's
+  slots, through their census functions), Godot's main- and shadow-pass counters, each layer's
+  counters with it hidden from the camera, and a linear depth image; `census` prints per pose the
+  primitives by layer and band, the off-screen instances inside drawn batches, triangles a pixel,
+  sub-pixel and occluded instances ([record](#where-the-gpu-goes-render-44-render-46-2026-11-13)).
+  Every sample prints `[STREAM] BEGIN <label>` as it starts, and `METRUM_STREAM_CENSUS_HOLD` holds
+  each census layer state that many frames after its own line, for an outside tracer.
 - `stills capture` runs the idle-frame matrix's screenshots in gamescope through the isolated
   launcher (`tools/godot_isolated.py`, `TOOLS-19`) under the shared timing lock. `stills compare`
   is byte identity (else pixels, largest delta, worst 16 x 16 block; exit 1 unless identical).
@@ -15781,6 +15793,257 @@ Gates (fresh): `cargo clippy --all-targets` warning set one warning
 --lib` 2,520 passed, 0 failed, 224 ignored (the counters' unit test included); `./run.sh --test`
 PASS (nextest 2,524 passed, 225 skipped; godot-main and godot-vehicle PASS, no script skipped, 0
 SCRIPT ERROR).
+
+### Where the GPU goes (`RENDER-44`, `RENDER-46`, 2026-11-13)
+
+Round R44, measurement only (the user's request, 2026-11-12: which layers and distance bands carry
+the 100k city's ~167 M primitives a frame before choosing a lever; the coordinator folded
+`RENDER-46`'s draw and state-change measurement into the same runs, for review). Nothing in the
+game's behaviour or look changed. Build: `dev` `97b1d262` plus this round's census functions
+(release, SHA-256 `f83e6cac` for `dev`'s library, the branch's `6ae7f503`), Godot 4.7.2 Forward+,
+RADV on the RX 7900 XTX, gamescope headless at 1920x1080, P-cores, eight workers, isolated
+profile, simulation paused, 10:00. Inputs: the timing cache's 30k city, the 100k commit city and
+Kuopio (no save).
+
+**Method.** A benchmark-only `census` phase (`draw_census.gd`, untimed: it reads every drawn
+MultiMesh's buffer and every mesh back from the GPU) records at a pose every geometry instance the
+main viewport can draw: the scene's nodes (named by the child of Main they stand under and their
+shadow category) and the stream core's `RenderingServer` slots (vegetation, building batches,
+parked cars, graded cells, from new census functions on their owners), with the mesh's surfaces,
+the instance and batch transforms, bounds, visibility ranges and the camera. `tools/draw_census.py`
+then mirrors what Godot does with them: a batch is culled whole by its world bounds (a MultiMesh's
+bounds hold all its instances), its primitives are its surfaces' index counts times its visible
+instances, at the level of detail picked once for the batch from the distance to its bounds'
+nearest point. The prediction matches Godot's own counter of the main pass within 1-2 % at every
+pose of the cities (the rest is the grass's instances, made in GDScript outside the census; on
+Kuopio's street-level views the grass is 0.6-0.7 M of 1.1-1.2 M), and each layer's within 3 % on
+a settled pose of Godot's counter with that layer moved to a render layer of its own and hidden from
+the camera (which also removes it from the sun's shadows; the GPU time saved that way is the
+layer's whole cost). A band is the camera's distance to an instance's bounds' centre (SH2's
+bands, extended to the horizon); off-screen means an instance's own bounds miss the frustum while
+its batch draws; triangles a pixel divide by the instance's projected bounding rectangle (a lower
+bound); occluded means every depth pixel of that rectangle is nearer than the instance's nearest
+point. **Occlusion: a depth-buffer readback**, not Godot's occlusion culling with baked occluders:
+Godot culls an instance whole on the CPU, so baked occluders would only measure batches, while a
+readback measures every instance and gives the batch-level number too (a batch whose every instance
+is hidden or off-screen, what Godot's culling could at best remove). A full-screen quad reads the
+depth texture and writes linear depth in 16 bits (tone mapping, anti-aliasing and the interface off
+for that frame); the water is transparent and occludes nothing here. Poses: the stream benchmark's
+base still (800 m orbit, pitch -0.1, the camera about 80 m up), the middle of a 1 s turn
+(`turn_mid`, unsettled, as a turn frame sees it), three street-level views (30 m orbit, pitch -0.06,
+a third of a turn apart) and a mid-height view (300 m, pitch -0.35). `RENDER-46`: Intel PT traces
+of Godot's main thread (user space, exact call counts per frame) and sampled cycles, instructions
+and last-level cache misses by symbol, the 30k paused still against its 1 s turns.
+
+```bash
+tools/stream_benchmark.py run --label c30-a --out "$ARTIFACTS" --library <.so> --save <populated_city_30000.sqlite> \
+    --phases census,still,turns --turns 1 --still-s 6        # METRUM_STREAM_CENSUS_HOLD=60 for the traces
+tools/stream_benchmark.py run --label c100-a ... --save <commit_city_100000_...> --phases census
+tools/stream_benchmark.py census "$ARTIFACTS/c30-a.census"  # the tables below
+perf record -e intel_pt//u -t <godot main thread> -- sleep 0.12      # on `[STREAM] BEGIN <phase>`
+perf record -e cpu_core/cycles,period=100003/u -e cpu_core/instructions,period=100003/u \
+    -e cpu_core/LLC-load-misses,period=1009/u -t <godot main thread> -- sleep 2
+```
+
+**The 100k still: 98.8 M primitives in the main pass and 69.0 M in the shadow pass** (167.8 M, 81
+a screen pixel at 1080p; the main pass alone 48). Main-pass primitives (M) by layer and band, the
+census's (Godot's own in brackets), Godot's draws, batches and instances drawn, and what each
+layer wastes: primitives off-screen inside drawn batches, of sub-pixel instances, of occluded
+instances, of whole hidden batches; GPU ms saved with the layer hidden (both passes):
+
+| Layer | 0-300 m | 300-1000 | 1-2 km | 2-4 km | 4 km+ | Total | Draws | Batches, instances | Off-screen | Sub-pixel | Occluded | Batches hidden | GPU ms |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| Buildings (batches) | 0.3 | 3.1 | 7.2 | 25.5 | 4.5 | 40.7 (41.8) | 1,712 | 1,047, 34,675 | 4.6 | 0.3 | 24.2 | 4.9 | 4.00 |
+| Parked cars | 0.2 | 2.1 | 5.2 | 22.8 | 5.1 | 35.5 (35.9) | 8,946 | 1,610, 16,341 | 3.6 | 21.3 | 8.9 | 3.3 | 4.48 |
+| Moving cars | 0.3 | 1.7 | 3.9 | 5.0 | 0 | 10.9 (10.9) | 190 | 25, 4,972 | 2.7 | 0 | 0.6 | 0 | 2.26 |
+| Graded cells | 0.2 | 1.5 | 2.5 | 0.5 | 0.1 | 4.7 (4.7) | 217 | 217, 8,235 | 2.0 | 0 | 1.2 | 1.2 | 1.48 |
+| Roads | 0 | 0.2 | 0.5 | 1.7 | 0.4 | 2.7 (2.7) | 528 | 88 chunks | 0 | 0 | 0.2 | 0.2 | 1.02 |
+| Walkers | 0.1 | 1.1 | 0.4 | 0 | 0 | 1.6 (1.6) | 4 | 2, 874 | 0.8 | 0 | 0.4 | 0 | 0.38 |
+| Road signs | 0 | 0.1 | 0.2 | 0.6 | 0.1 | 0.9 (0.9) | 166 | 166, 9,195 | 0.1 | 0.6 | 0.2 | 0 | 0.20 |
+| Street lights | 0 | 0 | 0 | 0 | 0 | 0.1 (0.1) | 654 | 656, 16,564 | 0 | 0 | 0 | 0 | 0.42 |
+| Vegetation, terrain patches | 0 | 0 | 0 | 0 | 0 | 0.05 | 254 | | | | | | 0.27 |
+| **All** | 1.2 | 9.8 | 20.0 | 56.0 | 10.3 | 98.8 (97.3) | 12,676 | | 13.8 | 22.2 | 35.7 | 9.6 | GPU 14.3 |
+
+The 30k still (48.2 M main, 53.5 M shadow, 6,009 / 2,631 draws, GPU 7.6 ms) and its turn's middle
+(47.3 M, 5,953 draws: a turn draws what a still draws):
+
+| Layer | 0-300 m | 300-1000 | 1-2 km | 2-4 km | Total | Draws | Off-screen | Sub-pixel | Occluded | Batches hidden | GPU ms |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| Parked cars | 0.3 | 2.9 | 6.8 | 6.9 | 16.9 (17.0) | 3,860 | 2.5 | 4.5 | 8.1 | 2.2 | 1.48 |
+| Buildings (batches) | 0.4 | 3.2 | 7.2 | 5.8 | 16.6 (17.1) | 761 | 2.7 | 0.1 | 6.8 | 0.1 | 1.95 |
+| Moving cars | 0.1 | 1.2 | 2.5 | 3.1 | 7.0 (7.0) | 190 | 1.4 | 0 | 0.7 | 0 | 1.34 |
+| Graded cells | 0.2 | 1.3 | 2.4 | 0.4 | 4.3 (4.3) | 98 | 1.6 | 0 | 0.8 | 0.8 | 1.23 |
+| Roads | 0 | 0.1 | 0.5 | 0.5 | 1.1 (1.1) | 222 | 0 | 0 | 0 | 0 | 0.45 |
+| Walkers | 0.1 | 0.8 | 0.3 | 0 | 1.2 (1.2) | 4 | 0.6 | 0 | 0.3 | 0 | 0.17 |
+| Street lights, signs, vegetation | | | | | 0.5 | 850 | | | | | 0.19 |
+| **All** | 1.2 | 9.6 | 19.9 | 16.9 | 48.2 (47.6) | 6,009 | 8.9 | 4.7 | 16.9 | 3.2 | |
+
+Across the poses (main pass, M; occluded and hidden batches from the depth image):
+
+| Input, pose | Main (census) | Shadow | Draws main / shadow | 0-1 km / 1-2 km / 2 km+ | Off-screen | Sub-pixel | Occluded | Batches hidden | GPU ms |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 30k still | 48.2 (47.6) | 53.5 | 6,009 / 2,631 | 10.8 / 19.9 / 16.9 | 8.9 | 4.7 | 16.9 | 3.2 | 7.6 |
+| 30k street level (3 views) | 33.8-37.1 | 50.2-54.0 | 4,286-4,503 / 3,001-3,114 | 10.5-12.4 / 19.4-21.5 / 2.6-3.7 | 9.6-12.0 | 0.4-0.8 | 20.1-23.9 | 19.6-21.9 | 5.8-6.0 |
+| 30k mid height | 39.2 (39.0) | 47.0 | 4,592 / 2,682 | 10.8 / 21.6 / 6.6 | 9.6 | 1.3 | 10.7 | 1.4 | 7.1 |
+| 100k still | 98.8 (97.3) | 69.0 | 12,676 / 2,478 | 11.0 / 20.0 / 66.3 | 13.8 | 22.2 | 35.7 | 9.6 | 14.3 |
+| 100k street level (3 views) | 73.0-84.4 | 57.1-77.0 | 9,597-10,387 / 2,736-2,850 | 10.8-12.3 / 19.4-21.7 / 41.7-50.2 | 11.2-17.3 | 7.8-14.4 | 46.8-53.9 | 34.4-50.6 | 10.6-12.2 |
+| 100k mid height | 85.7 (84.7) | 62.6 | 10,628 / 2,593 | 10.6 / 21.2 / 52.9 | 13.4 | 15.1 | 25.7 | 4.9 | 13.3 |
+| Kuopio (all poses) | 0.7-1.2 | 0-0.2 | 802-1,330 / 153-293 | | 0-0.1 | 0.1 | 0.2-0.3 | | 0.8-1.6 |
+
+- **Where the primitives are.** Two layers carry most of the main pass: the building batches and
+  the parked cars (70 % of the 30k still, 77 % of the 100k). Nearly all of it is far:
+  beyond 1 km 76 % at 30k and 87 % at 100k, beyond 2 km 35 % / 67 %; inside 300 m about 1.2 M at
+  every input. The near bands SH2 split for the shadows hold almost nothing of the main pass.
+- **No drawn mesh has a level of detail of Godot's**: every mesh in the census has one level, so
+  nothing draws above a Godot level's intent; the layers simply have no far level. Cars, moving
+  and parked, are 2,050-2,500 triangles each and walkers 1,800, drawn as such to 2.5 km (moving),
+  1 km (walkers) and the horizon (parked: no draw distance). Buildings have the project's own
+  tiers, yet 30 M of the 100k's 41 M lie beyond 2 km.
+- **Triangles a pixel** (main pass over the instances' screen rectangles, a lower bound): within
+  300 m at most 1.2; 300 m-1 km 0.2-9; 1-2 km 10-33; 2-4 km 17-72; beyond 4 km 110-660. By layer:
+  parked cars 200-690 (30k) and 1,200-1,700 (100k), walkers 220-1,140, road signs 40-85, buildings
+  3-24, moving cars 0.3-1.8. Sub-pixel instances (a rectangle under one pixel): 4.7 M at 30k and 22.2 M
+  at 100k, 96 % of them parked cars.
+- **Off-screen instances inside drawn batches**: 8.9 M of the 30k still (18 %) and 13.8 M of the
+  100k (14 %). The batches that cause it: the moving cars (one MultiMesh per model and colour for
+  the whole city: 25 batches of 95-300, every one drawn from every pose, 20-25 % of their
+  instances off-screen, at street level up to 63 %), the walkers (two batches of 650-1,100, half
+  off-screen), the graded cells (28-81 per patch, a third off-screen, at mid height three fifths), the
+  building batches (median 9-11, up to 210 per 512 m chunk and group) and the parked cars (median
+  10-11, up to 36 per chunk and bucket).
+- **Occlusion.** At the benchmark's base pose (80 m up) 35 % of the main pass's primitives belong
+  to instances hidden behind nearer opaque geometry (16.9 / 35.7 M); at street level 59-66 %
+  (20-24 / 47-54 M), at mid height 27-30 %. Whole batches hidden, what Godot's occlusion culling
+  could remove at best (it culls a batch whole): 3.2 / 9.6 M at the base pose, 20-22 / 34-51 M at
+  street level (mostly building batches and parked cars behind the nearest buildings).
+- Off-screen, sub-pixel and occluded together (disjoint by construction): 30.5 of the 30k still's
+  48.2 M (63 %), 71.7 of the 100k's 98.8 M (73 %), and at the 100k's street level 70-83 of 73-84 M
+  (94-98 %) draw no visible pixel.
+- **Kuopio** draws under 1.2 M primitives at every pose (trees from impostors, terrain patches);
+  its GPU time is shading, not geometry.
+- **GPU time per primitive.** Hiding a layer saves about 0.08-0.12 ms of GPU per million main-pass
+  primitives (buildings 4.0 ms for 41 M, parked cars 4.5 ms for 36 M at 100k, each with its shadow
+  casting): the vertex work of the depth prepass and the opaque pass, both at full mesh detail.
+
+**`RENDER-46`: draws, state changes and uniform sets.** Godot's main-pass draws by layer (each
+batch draws once per surface): on the 30k still the parked cars draw 3,860 of 6,009 (64 %; a car
+mesh has 5-8 surfaces, so 697 batches make 3,834 draws), the building batches 761, street lights
+596 (604 batches of a median 2 lights: 0.07 M primitives), roads 222 (6 surfaces a chunk),
+vegetation 191, moving cars 190 (25 batches), graded cells 98; on the 100k still the parked cars
+8,946 of 12,676 (71 %), buildings 1,712, street lights 654, roads 528. The `RenderingDevice` draws
+a frame are twice the main pass's (depth prepass and colour) plus the shadow pass's, which the
+traces confirm per layer within their 5 % sampling loss (the parked cars alone: about 8,500 of
+the 30k's 13,900).
+
+Calls a frame on Godot's main thread (Intel PT, 30k paused; `still` 15 frames, the turns 9-10
+each):
+
+| A frame | still | turn out | turn back |
+|---|---:|---:|---:|
+| `RenderingDevice` draws | 13,911 | 13,646 | 15,213 |
+| uniform set binds | 13,489 | 13,197 | 14,806 |
+| pipeline binds | 252 | 231 | 242 |
+| vertex array / index array binds | 2,188 / 1,788 | 2,056 / 1,652 | 2,276 / 1,857 |
+| uniform sets created | 0 | 24 | 22 |
+| geometry surfaces rebuilt (`_geometry_instance_add_surface`) | 0 | 414 | 515 |
+| instance visibility changes / multimesh reallocations | 0 / 0 | 111 / 35 | 73 / 16 |
+| multimesh buffer uploads / visible-count changes | 0 / 0 | 98 / 123 | 127 / 184 |
+| texture updates (graded pages) / buffer updates | 16 / 32 | 339 / 84 | 538 / 104 |
+
+So the turn draws as much as the still and binds as much: a uniform set per draw (each batch's own
+transform buffer), 230-250 pipelines and about 2,200 vertex buffers a frame on both. What the turn
+adds is install churn (the pools showing and hiding slots and rewriting buffers make Godot rebuild
+400-500 geometry surfaces a frame, each a vertex-format, framebuffer-format and shader-version
+lookup) and the graded page uploads. Cycles, instructions and last-level cache misses a frame on
+the same functions (sampled; 249 still frames, 55 and 52 turn frames):
+
+| A frame | still | turn out | turn back |
+|---|---|---|---|
+| whole main thread | 22.0 Mcyc, IPC 0.92, 46k misses | 39.2 Mcyc, IPC 0.88, 125k | 40.1 Mcyc, IPC 0.88, 132k |
+| `_render_list` | 2.02 Mcyc, IPC 1.21, 2.2k | 2.43, 1.28, 5.0k | 2.67, 1.21, 5.2k |
+| `_fill_render_list` | 1.11, 0.93, 4.7k | 1.67, 0.53, 11.9k | 1.74, 0.50, 12.3k |
+| `draw_list_draw` | 1.54, 1.31, 2.9k | 2.14, 1.23, 8.1k | 2.16, 1.27, 8.7k |
+| uniform set binds (recording) | 0.62, 0.66, 1.0k | 0.94, 0.68, 2.3k | 1.11, 0.58, 2.2k |
+| render graph recording | 1.42, 0.85, 5.5k | 2.20, 0.74, 11.7k | 2.09, 0.78, 12.7k |
+| replay: driver uniform set binds | 0.50, 0.68, 0.1k | 0.99, 0.42, 0.4k | 1.04, 0.40, 0.5k |
+| replay: `_run_render_commands` itself | 0.59, 1.28, 0.3k | 0.70, 1.48, 0.7k | 0.69, 1.51, 0.6k |
+| geometry surface rebuilds | 0 | 0.29, 1.34, 0.3k | 0.30, 1.45, 0.3k |
+| RADV (the driver's own code) | 4.07, 1.05, 6.4k | 6.89, 1.14, 12.5k | 6.89, 1.16, 12.4k |
+
+The same calls cost 20-100 % more cycles on the turn and miss the last-level cache 2-3 times as
+often: the turn's other per-frame work (the stream core, the agents, the scripts, the Rayon joins
+PL1 found) evicts the draw path's working set between frames, which the still leaves warm. The draw
+path a frame (render lists, recording, replay, RADV) is about 11.9 M cycles on the still and 18.0 M
+on the turn (about 4.2 against 6.4 ms at the main thread's 2.8-2.9 GHz); PL1's time-based profile
+of an older build read 2.4-2.8 times on the render list and the driver's binds, the same direction.
+**The 3.4 times a draw is not state changes**: it is cache misses on unchanged calls, the surface
+rebuilds (0.1 ms plus their misses) and the graded page copies (0.44 ms of PL1's replay). Fewer
+draws remains the lever for both: every draw saved is saved on the still and more on the turn.
+
+**Ranked levers** (estimates from the tables: 0.08-0.12 ms of GPU per million main-pass primitives,
+the draw path's CPU in proportion to its draws; look changes go to the user with side-by-side
+stills before anything is built):
+
+1. **One body surface per car mesh** (`RENDER-46`): a car mesh is 5-6 body surfaces sharing one
+   material (four 332-triangle wheels and the body, from the glTF's nodes) plus two lamp surfaces
+   with their own; merging the body surfaces when the mesh is built leaves its look and its
+   primitives unchanged and draws each batch 3 times instead of 5.5-7.6: 30k still 6,009 to about
+   4,100 main-pass draws, 100k 12,676 to about 8,400, the shadow pass's parked draws likewise
+   (`RenderingDevice` draws about -31 %). CPU: about 1.3 ms of the 30k still's draw path and 2 ms of
+   its turn's, about 5 ms at 100k. No visible change. Low complexity (`vehicle_resources.gd`).
+   Next round of `RENDER-46`.
+2. **The parked cars' draw distance** (`RENDER-48`, proposed): parked cars are drawn to the horizon
+   while moving cars end at 2.5 km; with the same distance and fade the 100k still sheds 24.2 M
+   main-pass primitives (21.3 M of them sub-pixel) and about 6,000 of its draws (3,300 after lever
+   1), the 30k 2.2 M. GPU about 2.5-3 ms at 100k, 0.2 ms at 30k; the render CPU in proportion. Visible: cars beyond 2.5 km,
+   one or two pixels each: stills for the user. Low complexity (the moving cars' fade exists).
+3. **Far meshes for cars and walkers** (`RENDER-48`): cars of 2,050-2,500 triangles (1,330 of them
+   wheels) and walkers of 1,800 as 100-200-triangle meshes beyond 300 m (walkers 100 m): moving
+   cars 6-10 M main-pass primitives beyond 300 m, parked cars 11-17 M within 2.5 km, walkers 1-2 M,
+   so about 20 M at both sizes, about 2 ms GPU (30k and 100k), more with the shadow pass's cars
+   (SH2: 52-63 % of it). The moving cars' city-wide batches need their own far buckets: Godot picks
+   a level per batch, and the camera stands inside every one. Visible at the silhouette: stills.
+   Medium complexity (assets and buckets).
+4. **A coarser building tier beyond 2 km** (`RENDER-49`, proposed): 30 M of the 100k still's
+   building primitives (5.8 M at 30k) lie beyond 2 km at 24 triangles a pixel. About 2-2.5 ms GPU at
+   100k. Visible: the far skyline coarsens: stills. Medium complexity (the tier exists per part;
+   the 100k fixture's assets would need a far mesh).
+5. **Street lights in larger batches** (`RENDER-46`): 600-660 draws for 0.1 M primitives (median 2
+   lights a batch); one batch per chunk and model removes about 550 draws a frame. No visible
+   change. Low complexity (`RENDER-33`'s pool).
+6. **Install churn on turns** (`RENDER-46`): 73-111 slot shows and hides and 16-35 reallocations a
+   frame rebuild 400-500 Godot surfaces; hiding a pooled slot by its visible count instead of its
+   instance's visibility would keep its surfaces (to measure: whether Godot skips a zero-instance
+   batch without a draw). At most 0.3 ms of the turn's CPU directly. No visible change. Low
+   complexity.
+7. **Occlusion and per-instance GPU culling** (`RENDER-50`, proposed, later): at street level 59-66
+   % of the main pass is occluded and 53-65 % of the 30k's (43-60 % of the 100k's) in wholly hidden
+   batches; at the base pose 35 % and 7-10 %. Godot's own occlusion culling (unmodified: baked
+   `OccluderInstance3D`s, culled whole on the CPU) would reach only the hidden batches: 3-5 ms GPU
+   at the 100k's street level, 0.3-1 ms at the base pose, for occluders kept per building chunk and
+   their CPU raster. GPU per-instance culling is feasible with unmodified Godot 4.7: a MultiMesh
+   allocated with `use_indirect`, its draw arguments (`multimesh_get_command_buffer_rd_rid`) and
+   buffer (`multimesh_get_buffer_rd_rid`) written by a compute pass on the main `RenderingDevice`
+   before the frame draws; it would cull the off-screen instances inside drawn batches (8.9 / 13.8
+   M, about 1 ms at 100k) and, with last frame's depth, the occluded ones. Caveats: the shadow
+   splits draw from the same buffer (casters outside the view must stay: separate caster buffers,
+   as SH2's `agents_near`), motion vectors under TAA or FSR 2 need the previous transforms, a
+   compaction moves per-instance data, and Godot's CPU culling and level choice stay per batch.
+   High complexity; after levers 1-4.
+
+Levers 1, 2 and 5 together take the 100k still from about 12,700 to about 4,600 main-pass draws
+and from 99 to about 75 M primitives; with 3 and 4 to about 35 M.
+
+**Zero cost** (series `z30`, the 30k still, C B B C: control `dev` `97b1d262`'s library and
+scripts, branch this round's, no census): level (p50 7.5-7.6 against 7.5-7.6 ms, max -3.0 against a
+spread of 5.5; GPU p50 7.42 against 7.42, the same 53.5 M shadow primitives and 2,631 draws). With
+the phase off nothing on a frame path changed: each sample prints one `[STREAM] BEGIN` line, and the
+census functions are called only by the phase.
+
+Gates (fresh): `cargo clippy --all-targets` warning set one warning (`asset_document.rs`, untouched,
+the base's recorded set); missing docs 0; debug `cargo test --lib` 2,535 passed, 0 failed, 224
+ignored; `./run.sh --test` PASS (nextest 2,539 passed, 225 skipped; godot-main and godot-vehicle PASS, no script skipped, 0 SCRIPT ERROR); the stream benchmark's tool tests (two new census cases)
+pass.
 
 ## Implemented Runtime Contract
 

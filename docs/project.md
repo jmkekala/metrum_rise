@@ -122,6 +122,14 @@ commit on growth edits (`RENDER-40`: 8-23 ms frames at 30k, up to 442 ms at 100k
 draw (`RENDER-46`); the paused 30k turn's 6 ms over its GPU time is the draw's command replay, the
 core waits, Rayon joins and X11 round trips
 ([record](terrain.md#where-the-frame-goes-with-the-simulation-running-pl1-2026-11-12)).
+Where the GPU goes (`RENDER-44`, `RENDER-46`, measured 2026-11-13, no behaviour change): the
+100k still's 99 M main-pass primitives are mostly building batches and parked cars beyond 1 km
+(parked cars are drawn to the horizon; cars and walkers have no far mesh), and 73 % of them draw no
+visible pixel (off-screen inside drawn batches, sub-pixel or occluded); the parked cars make 64-71 %
+of the draws. A turn draws and binds what a still does: its dearer draws are cache misses and
+install churn, not state changes. Ranked levers: one body surface per car mesh, the parked cars'
+draw distance and far meshes (`RENDER-48`), a far building tier (`RENDER-49`), occlusion later
+(`RENDER-50`) ([record](terrain.md#where-the-gpu-goes-render-44-render-46-2026-11-13)).
 The graded ground's material edges and road seams no longer flicker from frame to frame
 (`RENDER-38`, fixed 2026-11-12): their shading is defined at the edges, which keeps the 30k
 city's stills byte-identical run to run again, at the control's GPU and frame time.
