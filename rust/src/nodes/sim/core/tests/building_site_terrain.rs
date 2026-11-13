@@ -280,6 +280,8 @@ fn published_frame_queries_follow_every_kind_of_edit() {
     let first = place_yard_at(&mut core, 0, 1.0, 0.25, &asset).expect("first site placement");
     assert_frame_queries_current(&mut core, "site");
     place_yard_at(&mut core, 0, -1.0, 0.75, &asset).expect("second site placement");
+    // Another rebuild (the road tool's, a payload drain's) takes the noted patches first.
+    core.refresh_road_terrain_inputs();
     assert_frame_queries_current(&mut core, "second site");
     assert!(core.bulldoze_building(first));
     assert_frame_queries_current(&mut core, "site swap-remove");

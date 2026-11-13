@@ -53,6 +53,9 @@ pub(crate) struct RoadTerrainInputsLog {
     // simulation readies the building index as if it had found them, so whether and when the
     // readers rebuilt never moves when the index is readied (`ALLOC-05`).
     index_prepare_owed: bool,
+    // Advances with every rebuild that queried sites again (a site-noted patch or every patch):
+    // the published surface follows the inputs' content by it (`CODE-26`).
+    site_revision: u64,
 }
 
 impl Default for RoadTerrainInputsLog {
@@ -63,6 +66,7 @@ impl Default for RoadTerrainInputsLog {
             sites_changed: BTreeSet::new(),
             all: true,
             index_prepare_owed: false,
+            site_revision: 0,
         }
     }
 }
@@ -102,10 +106,10 @@ impl RoadTerrainInputsLog {
         self.all || !self.changed.is_empty()
     }
 
-    /// True when a rebuild would query sites again: a patch noted for a site change, or every
-    /// patch. Any other noted patch keeps its sites, so its rebuilt inputs equal the current.
-    pub(crate) fn has_site_changes(&self) -> bool {
-        self.all || !self.sites_changed.is_empty()
+    /// Advances with every rebuild that queried sites again; a rebuild of other noted patches
+    /// keeps their sites, so the inputs' content is unchanged while this is.
+    pub(crate) fn site_revision(&self) -> u64 {
+        self.site_revision
     }
 }
 
@@ -141,6 +145,9 @@ impl SimCore {
         let sites_changed = std::mem::take(&mut log.sites_changed);
         let all = std::mem::replace(&mut log.all, false);
         let changed = all || !keys.is_empty();
+        if all || !sites_changed.is_empty() {
+            self.road_terrain_inputs.site_revision += 1;
+        }
         match reader {
             Reader::Simulation => {
                 let owed = std::mem::take(&mut self.road_terrain_inputs.index_prepare_owed);

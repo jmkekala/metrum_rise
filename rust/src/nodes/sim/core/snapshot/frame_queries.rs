@@ -134,6 +134,7 @@ struct PublishedKey {
     growth: GrowthDisplayKey,
     terrain_source_generation: u64,
     roadbed_generation: u64,
+    terrain_inputs_site_revision: u64,
 }
 
 /// The latest publication and what it was built from; derived, never saved.
@@ -157,6 +158,7 @@ impl SimCore {
             growth: self.demand.growth_display_key(),
             terrain_source_generation: self.heightmap.source_generation(),
             roadbed_generation: self.transit_network.roadbed.generation(),
+            terrain_inputs_site_revision: self.road_terrain_inputs.site_revision(),
         }
     }
 
@@ -185,24 +187,24 @@ impl SimCore {
     /// anything a reader sees moved, else `None`. `O(1)` while nothing changed (see the module
     /// docs for a change). Readies only the site part of a stale building index (`ALLOC-05`).
     pub(crate) fn refresh_frame_queries(&mut self) -> Option<FrameQueries> {
+        // The noted patches' inputs first: a rebuild that queried sites moves the key. Any
+        // rebuild (this one, the road tool's, a payload drain's) advances the site revision when
+        // the inputs' content changed.
+        if self.road_terrain_inputs.has_changes() {
+            self.refresh_road_terrain_inputs_for_readers();
+        }
         let key = self.frame_queries_key();
-        let inputs_noted = self.road_terrain_inputs.has_changes();
         let previous = self.frame_queries.key;
-        if previous == Some(key) && !inputs_noted {
+        if previous == Some(key) {
             return None;
         }
-        // Only a site change, or a rebuild of every patch, changes the inputs' content.
-        let sites_moved = self.road_terrain_inputs.has_site_changes();
-        let inputs = inputs_noted.then(|| self.refresh_road_terrain_inputs_for_readers());
-        let moved = |field: fn(&PublishedKey) -> u64| previous.is_none_or(|p| field(&p) != field(&key));
+        let moved =
+            |field: fn(&PublishedKey) -> u64| previous.is_none_or(|p| field(&p) != field(&key));
         let world = moved(|k| k.world_epoch);
         let surface = world
-            || sites_moved
+            || moved(|k| k.terrain_inputs_site_revision)
             || moved(|k| k.terrain_source_generation)
             || moved(|k| k.roadbed_generation);
-        if previous == Some(key) && !surface {
-            return None;
-        }
         let mut queries = self.frame_queries.published.clone();
         if world || moved(|k| k.terrain_payload_counter) || moved(|k| k.terrain_payload_global_generation)
         {
@@ -222,11 +224,10 @@ impl SimCore {
             .wrapping_add(self.vegetation_edits.epoch());
         queries.coal_pit_overlay_revision = key.coal_pit_overlay_revision;
         if surface {
-            let inputs = inputs.unwrap_or_else(|| self.road_terrain_inputs.current());
             queries.surface = Some(Arc::new(SurfaceView {
                 terrain: self.shared_terrain_copy(),
                 roadbed: Arc::new(self.transit_network.roadbed.snapshot()),
-                inputs,
+                inputs: self.road_terrain_inputs.current(),
             }));
         }
         queries.sequence = self.frame_queries.published.sequence + 1;
