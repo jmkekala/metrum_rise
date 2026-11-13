@@ -532,7 +532,7 @@ impl VegetationResidency {
     }
 
     /// A product that landed: a prepare's is held (`None`), anything else goes on to the install
-    /// layer (`Some`). `O(1)`, an eviction `O(held)`.
+    /// layer (`Some`). `O(1)`, an eviction `O(held log held)` (its sort).
     pub(crate) fn take_prepared(&mut self, delivery: Delivery) -> Option<Delivery> {
         let key = delivery.key;
         let Some(&request) = self

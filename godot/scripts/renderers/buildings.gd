@@ -12,6 +12,7 @@ const SceneLightingConfig := preload("res://scripts/core/scene_lighting.gd")
 const PerfDebug := preload("res://scripts/core/perf_debug.gd")
 
 @onready var simulation_node = $"../SimulationNode"
+@onready var _stream: Node = get_node_or_null("../StreamNode")
 
 var lod_renderer: Node3D
 var building_visual_revision: int = -1
@@ -38,6 +39,8 @@ var building_site_debug_materials: Dictionary = {}
 var show_foundations := false
 
 var _zone_ids := PackedInt32Array([1, 2, 3, 4, 5])
+# Whether this frame's site frame set transforms (the install ledger's charge).
+var _sites_worked := false
 
 func reload_asset_packs() -> void:
 	_load_enabled_packs()
@@ -243,10 +246,14 @@ func _process(_delta: float) -> void:
 	var frame_start_us := Time.get_ticks_usec() if PerfDebug.is_enabled() else 0
 	if lod_renderer != null:
 		lod_renderer.update(get_viewport().get_camera_3d())
-	var sites_start_us := Time.get_ticks_usec() if PerfDebug.is_enabled() else 0
+	var sites_start_us := Time.get_ticks_usec()
+	_sites_worked = false
 	_update_building_render_frame()
+	var end_us := Time.get_ticks_usec()
+	# A frame that set the sites' transforms charges the install ledger (`RENDER-30`, `RENDER-32-Q`).
+	if _sites_worked and is_instance_valid(_stream):
+		_stream.charge_install(4, float(end_us - sites_start_us))
 	if PerfDebug.is_enabled():
-		var end_us := Time.get_ticks_usec()
 		var elapsed_ms := float(end_us - frame_start_us) / 1000.0
 		var details := {
 			# The plots' and construction sites' frame (`RENDER-30`), apart from the LOD batches.
@@ -278,6 +285,7 @@ func _update_building_render_frame(force_site_mesh: bool = false) -> bool:
 	building_visual_revision = int(frame.get("visual_revision", building_visual_revision))
 	if not frame.has("plot_transforms"):
 		return true
+	_sites_worked = true
 
 	var plot_buffers: Array = frame.get("plot_transforms", []) as Array
 	var site_buffers: Array = frame.get("construction_site_transforms", []) as Array

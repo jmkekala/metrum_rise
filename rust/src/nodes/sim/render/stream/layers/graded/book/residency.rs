@@ -33,6 +33,7 @@ impl GradedTileBook {
             }
             Follow::Step(step) => {
                 if let Some(&patch) = self.state.resident.get(&key) {
+                    self.frame.step_news += 1;
                     self.follow_patch(
                         key,
                         Some(Patch {

@@ -89,6 +89,9 @@ const PATCH_RESOURCE_POOL_MAX := 96
 const PATCH_PAYLOAD_POLL_BUDGET_PER_FRAME := 64
 const PATCH_WATER_TEXTURE_SYNC_BUDGET_PER_FRAME := 128
 const PATCH_WATER_TEXTURE_SYNC_BUDGET_MS := 1.0
+# A dirty patch's stage (height and mask images, its land cover from the payload) as the install
+# ledger predicts it, microseconds; the first of a frame always stages.
+const DIRTY_STAGE_US := 300.0
 const FIELD_OVERLAY_TEXTURE_TILE_M := 12.0
 const FIELD_OVERLAY_STRENGTH := 0.84
 const FIELD_OVERLAY_GRAIN_TINT := Color(0.98, 1.02, 0.90, 1.0)
@@ -155,6 +158,10 @@ var _build_perf := false
 # The dirty-patch commit's parts while the perf channel is on (`RENDER-40`): its prepare (stage)
 # and commit milliseconds and the patches it committed, since the last perf record.
 var _commit_us := PackedFloat64Array([0, 0, 0])
+# The dirty patches staged so far (`RENDER-40`, `RENDER-32-Q`): key -> stage, kept across frames
+# while the key's payload and spare resources still hold it, so an edit's patches stage a few a
+# frame inside the frame's install ledger and commit together.
+var _dirty_stages := {}
 var pending_terrain_ack_states: PackedInt64Array = PackedInt64Array()
 var dirty_patch_payload_generations: Dictionary = {}
 var patch_mesh_cache: Dictionary = {}
@@ -589,7 +596,7 @@ func _try_commit_standalone_terrain_visual_update() -> bool:
 		return false
 	var network_generation := _terrain_network_render_generation()
 	var prepare_start_us := Time.get_ticks_usec() if _build_perf else 0
-	var prepared := prepare_terrain_visual_update(false)
+	var prepared := _prepare_staged_terrain_visual_update()
 	if _build_perf:
 		_commit_us[0] += Time.get_ticks_usec() - prepare_start_us
 	if prepared.is_empty():
@@ -601,13 +608,89 @@ func _try_commit_standalone_terrain_visual_update() -> bool:
 		or _terrain_network_render_generation() != network_generation
 	):
 		return false
-	if not _build_perf:
-		return commit_prepared_terrain_visual_update(prepared)
+	# The commit is the batch's atomic unit: accounted in the ledger, never split.
 	var commit_start_us := Time.get_ticks_usec()
 	var committed := commit_prepared_terrain_visual_update(prepared)
-	_commit_us[1] += Time.get_ticks_usec() - commit_start_us
-	_commit_us[2] += (prepared["dirty_keys"] as Array).size() if committed else 0
+	var commit_us := Time.get_ticks_usec() - commit_start_us
+	if committed:
+		_dirty_stages.clear()
+	if _stream != null:
+		_stream.charge_install(0, float(commit_us))
+	if _build_perf:
+		_commit_us[1] += commit_us
+		_commit_us[2] += (prepared["dirty_keys"] as Array).size() if committed else 0
 	return committed
+
+# `prepare_terrain_visual_update` for the standalone commit (`RENDER-40`): the dirty patches
+# stage a patch a unit while the frame's install ledger has room (the first of a frame always),
+# the staged ones kept across frames; ready only once every dirty patch is staged.
+func _prepare_staged_terrain_visual_update() -> Dictionary:
+	if not _retry_pending_terrain_ack():
+		return {}
+	var dirty_states: PackedInt64Array = simulation_node.get_dirty_terrain_patch_payload_states()
+	var dirty_keys := _dirty_patch_payload_keys_from_states(dirty_states)
+	if dirty_keys.is_empty():
+		_dirty_stages.clear()
+		if simulation_node.is_terrain_dirty():
+			return {}
+		return {
+			"dirty_states": dirty_states,
+			"dirty_keys": dirty_keys,
+			"patch_stages": {},
+			"border_stage": _stage_terrain_border_update(),
+		}
+	if not _dirty_patch_payloads_ready_for_atomic_upload(dirty_keys):
+		return {}
+	if not _dirty_patch_payloads_renderable_for_atomic_upload(dirty_keys):
+		return {}
+	var stages := {}
+	var staged_this_frame := 0
+	var complete := true
+	for key in dirty_keys:
+		if not patches.has(key):
+			continue
+		var patch_data: Dictionary = patch_payload_ready[key] as Dictionary
+		var kept: Dictionary = _dirty_stages.get(key, {})
+		# A kept stage holds while its payload is the one ready and no other commit took the
+		# patch's spare resources since.
+		if (
+			not kept.is_empty()
+			and is_same(kept["patch_data"], patch_data)
+			and is_same(kept["height_texture"], (patches[key] as Dictionary).get("spare_height_texture"))
+		):
+			stages[key] = kept
+			continue
+		if staged_this_frame > 0 and _stream != null and _stream.get_install_room_us() < DIRTY_STAGE_US:
+			complete = false
+			continue
+		var start_us := Time.get_ticks_usec()
+		var stage := _stage_terrain_patch_update(
+			key,
+			patch_data,
+			int(dirty_patch_payload_generations.get(key, -1)),
+			_terrain_patch_payload_render_step_mm(key)
+		)
+		if _stream != null:
+			_stream.charge_install(0, float(Time.get_ticks_usec() - start_us))
+		if stage.is_empty():
+			_dirty_stages.clear()
+			return {}
+		staged_this_frame += 1
+		stages[key] = stage
+	_dirty_stages = stages
+	if not complete:
+		return {}
+	var border_stage: Dictionary = {}
+	if _dirty_patch_keys_touch_border(dirty_keys):
+		border_stage = _stage_terrain_border_update()
+		if not bool(border_stage.get("valid", false)):
+			return {}
+	return {
+		"dirty_states": dirty_states,
+		"dirty_keys": dirty_keys,
+		"patch_stages": stages,
+		"border_stage": border_stage,
+	}
 
 func _terrain_network_render_generation() -> int:
 	if simulation_node.has_method("get_network_render_generation"):
@@ -937,7 +1020,9 @@ func _stage_terrain_patch_update(
 		"valid": true,
 		"patch_node_id": (patch["node"] as MeshInstance3D).get_instance_id(),
 		"patch_data": patch_data,
-		"land_cover": _stage_patch_land_cover(key, patch),
+		# The payload's land cover (built on the payload worker) when it is current, so the
+		# stage queries the core for it no more (`RENDER-40`).
+		"land_cover": _stage_patch_land_cover(key, patch, false, patch_data.get("land_cover", {}) as Dictionary),
 		"height_image": height_image,
 		"height_texture": height_texture,
 		"mask_image": mask_image,
@@ -1347,7 +1432,10 @@ func _stage_patch_land_cover(
 	if not force and not current.is_empty() and simulation_node.is_vegetation_land_cover_current(key, current["generations"]):
 		return current
 	var query_us := Time.get_ticks_usec() if _build_perf else 0
-	var data: Dictionary = prepared if not prepared.is_empty() else simulation_node.get_vegetation_land_cover(key)
+	# Forced (a build), the payload's land cover as it is; otherwise only while it is current.
+	var data: Dictionary = prepared
+	if data.is_empty() or (not force and not simulation_node.is_vegetation_land_cover_current(key, data["generations"])):
+		data = simulation_node.get_vegetation_land_cover(key)
 	if _build_perf:
 		_build_us[8] += float(Time.get_ticks_usec() - query_us)
 		_build_us[9] += 0.0 if prepared.is_empty() else 1.0

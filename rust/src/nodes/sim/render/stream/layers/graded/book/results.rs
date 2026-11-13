@@ -43,6 +43,11 @@ const POLL_BATCH: usize = 4;
 /// us each (30k and 100k alike; the 100k turns' patch-wide rewrites are the camera's, not the
 /// installs').
 const CELL_CHARGE_US: i64 = 8;
+/// A patch queued for a whole rewrite (the camera's re-level or an install), charged in the same
+/// checks (`RENDER-32-Q`): the rewrite runs later in the frame, 50-90 us a patch on the 30k and
+/// 100k turns (frames whose cell rewrites included patches, against those without), so a frame
+/// with patch rewrites polls less and the frame's install ledger holds.
+pub(super) const PATCH_CHARGE_US: i64 = 80;
 
 // `take_result_counts`: results deferred, tiles that waited for their sets' variant, evictions
 // and same-level uploads the book applied, then the longest poll (us, kept), then the perf
@@ -422,13 +427,15 @@ impl<H: Host> Run<H> {
         Self { host, start_us: 0, progressed: true, placed: 0, split: false }
     }
 
-    // `_over_budget` with the placed tiles' cell rewrites charged (as if the frame had started
-    // that much earlier): the trace's answer where one records or replays.
+    // `_over_budget` with the placed tiles' cell rewrites and the queued patch rewrites charged
+    // (as if the frame had started that much earlier): the trace's answer where one records or
+    // replays.
     fn over(&mut self) -> bool {
-        let start_us = self.start_us - self.placed * CELL_CHARGE_US;
         let now_us = self.host.now_us();
         let mut book = self.host.book();
         let book = &mut *book;
+        let patches = book.state.cells.dirty_patches.len() as i64;
+        let start_us = self.start_us - self.placed * CELL_CHARGE_US - patches * PATCH_CHARGE_US;
         if book.trace.is_some() {
             return over_budget(&mut book.trace, book.state.unbudgeted, start_us);
         }

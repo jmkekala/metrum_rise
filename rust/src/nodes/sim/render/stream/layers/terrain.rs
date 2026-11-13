@@ -265,11 +265,14 @@ pub(crate) struct UnitCosts {
 /// image and texture, a mask layer, the land cover from its payload and the patch's own material
 /// parameters in `terrain.gd`) takes 0.16 ms a build (0.41 before the land cover left the main
 /// thread and the constant parameters moved to the pooled material); an activation of a built
-/// patch is a node shown, a level change and the graded hand-over's bookkeeping.
+/// patch is a node shown, a level change and the graded hand-over's bookkeeping. A level change
+/// (terrain or water) measured 11 us at the median, 25-36 at the 95th percentile (frames of
+/// level changes only, 30k, 100k and Kuopio turns, `RENDER-32-Q`): 20 us, against 60 and 40
+/// before, which spent Kuopio's turn frames' budget while measured 0.2-0.4 ms.
 pub(crate) const TERRAIN_COSTS: UnitCosts = UnitCosts {
     activate_us: 100.0,
     build_us: 200.0,
-    lod_us: 60.0,
+    lod_us: 20.0,
     free_us: 40.0,
 };
 /// Water's unit costs, measured as terrain's: an activation that builds the node (a depth image
@@ -277,7 +280,7 @@ pub(crate) const TERRAIN_COSTS: UnitCosts = UnitCosts {
 pub(crate) const WATER_COSTS: UnitCosts = UnitCosts {
     activate_us: 60.0,
     build_us: 120.0,
-    lod_us: 40.0,
+    lod_us: 20.0,
     free_us: 30.0,
 };
 
@@ -395,6 +398,8 @@ pub(crate) struct PatchStream {
     grid: Option<PatchGrid>,
     limits: Limits,
     costs: UnitCosts,
+    // What the level changes (upgrades) leave for the frame's holes (`RENDER-32-Q`).
+    upgrade_reserve_us: f64,
     flags: Vec<u8>,
     // The installed step of a resident patch; the ring's step at the last check.
     step: Vec<u8>,
@@ -409,6 +414,9 @@ pub(crate) struct PatchStream {
     queue: Vec<u32>,
     prewarm: Vec<u32>,
     missing: usize,
+    // Of the missing, those whose payload Rust refused: never asked again, so no settled view
+    // waits for them (AUDIT-stream-2 finding 5).
+    refused: usize,
     extra: usize,
     resident: usize,
     // The wanted square (terrain) and the prewarm square.
@@ -439,6 +447,7 @@ impl PatchStream {
             grid: None,
             limits,
             costs,
+            upgrade_reserve_us: 0.0,
             flags: Vec::new(),
             step: Vec::new(),
             ring_step: Vec::new(),
@@ -452,6 +461,7 @@ impl PatchStream {
             queue: Vec::new(),
             prewarm: Vec::new(),
             missing: 0,
+            refused: 0,
             extra: 0,
             resident: 0,
             square: None,
@@ -520,6 +530,7 @@ impl PatchStream {
         );
         self.ring = RingSet::new(lattice);
         self.missing = 0;
+        self.refused = 0;
         self.extra = 0;
         self.resident = 0;
         self.square = None;
@@ -549,9 +560,16 @@ impl PatchStream {
         self.grid
     }
 
-    /// Wanted patches not resident, resident patches not wanted, and patches queued for a check.
+    /// Wanted patches not resident (refused payloads excluded), resident patches not wanted,
+    /// and patches queued for a check.
     pub(crate) fn pending(&self) -> [usize; 3] {
-        [self.missing, self.extra, self.queue.len()]
+        [self.missing - self.refused, self.extra, self.queue.len()]
+    }
+
+    /// Wanted patches whose payload was refused (holes for good, a contract fault the scripts
+    /// report).
+    pub(crate) fn refused_count(&self) -> usize {
+        self.refused
     }
 
     /// Resident patches.
@@ -562,7 +580,7 @@ impl PatchStream {
     /// Whether the layer has work left that a settled view waits for (prewarm excluded, as the
     /// scripts' `has_pending_render_work(false)`).
     pub(crate) fn has_pending_work(&self) -> bool {
-        self.missing > 0 || self.extra > 0 || !self.queue.is_empty()
+        self.missing > self.refused || self.extra > 0 || !self.queue.is_empty()
     }
 
     /// `key`'s installed step (resident patches).
@@ -628,6 +646,9 @@ impl PatchStream {
         };
         let index = grid.index(key);
         let flags = self.flags[index] & !REQUESTED;
+        if news == Payload::Refused && flags & (WANTED | RESIDENT | REFUSED) == WANTED {
+            self.refused += 1;
+        }
         self.flags[index] = match news {
             Payload::Ready => flags | READY,
             Payload::Dropped => flags & !READY,
@@ -692,6 +713,7 @@ impl PatchStream {
                 self.extra -= 1;
             } else {
                 self.missing += 1;
+                self.refused += usize::from(flags & REFUSED != 0);
                 self.holes.push(index as u32);
             }
         } else {
@@ -701,6 +723,7 @@ impl PatchStream {
                 self.leaving.push(index as u32);
             } else {
                 self.missing -= 1;
+                self.refused -= usize::from(flags & REFUSED != 0);
             }
         }
     }
@@ -786,6 +809,12 @@ impl PatchStream {
         }
     }
 
+    /// Keeps `reserve_us` of the frame's budget from the level changes (the holes' reserve of
+    /// the install ledger, `RENDER-32-Q`); the first unit of a frame still runs.
+    pub(crate) fn set_upgrade_reserve(&mut self, reserve_us: f64) {
+        self.upgrade_reserve_us = reserve_us;
+    }
+
     /// One frame: the level of detail gate, then units in order while the budget admits them,
     /// then payload requests. `eye` is the view's (none before a camera); `in_view` orders work
     /// only. Returns the frame's counts.
@@ -812,6 +841,7 @@ impl PatchStream {
         self.lod_gate(grid, eye, delta);
         self.work.ring_cells = self.ring.visited();
         let admit = |budget: &FrameBudget, cost: f64| unbudgeted || budget.admits(cost);
+        let upgrade_reserve_us = self.upgrade_reserve_us;
         let mut blocked = false;
         let mut held = false;
 
@@ -877,7 +907,7 @@ impl PatchStream {
                 if target == self.step[index] {
                     continue;
                 }
-                if !admit(budget, self.costs.lod_us) {
+                if !(unbudgeted || budget.admits_upgrade(self.costs.lod_us, upgrade_reserve_us)) {
                     self.flags[index] |= QUEUED;
                     self.work.deferred += 1;
                     held = true;

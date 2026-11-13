@@ -519,3 +519,29 @@ fn replay(text: &str) -> Replay {
     close_frame(&mut gate, frame, deferred, checked, &mut report);
     report
 }
+
+#[test]
+fn a_refused_payload_leaves_no_pending_work() {
+    // A wanted patch whose payload is refused is never asked again: the layer settles without
+    // it (AUDIT-stream-2 finding 5), and it counts as missing again only when wanted anew.
+    let mut layer = PatchStream::new(TERRAIN_LIMITS, COSTS);
+    layer.reset(Some(GRID));
+    let mut scripts = Scripts::default();
+    let eye = [0.0, 800.0, 0.0];
+    layer.set_square(GRID.target(eye, 16000.0, false));
+    let mut budget = FrameBudget::new(f64::INFINITY);
+    layer.frame(Some(eye), 0.016, &mut budget, &FixedClock, false, &|_| false, &mut scripts);
+    let refused = scripts.requested.remove(0);
+    layer.payload(refused, Payload::Refused);
+    for _ in 0..200 {
+        frame(&mut layer, &mut scripts, eye, 0.016);
+    }
+    assert!(!scripts.resident.contains_key(&refused));
+    assert_eq!(layer.refused_count(), 1);
+    assert_eq!(layer.pending()[0], 0);
+    assert!(!layer.has_pending_work(), "a refused hole holds no settle");
+    assert_ne!(refused, [0, 0]);
+    layer.set_square([0, 0, 0, 0]);
+    assert_eq!(layer.refused_count(), 0, "out of the square it is no hole");
+}
+

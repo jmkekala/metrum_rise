@@ -13,10 +13,15 @@
 //! calls to the steps (each with its own bound); the perf channel's parts are a dictionary built
 //! only while the channel is on or on an edit batch's frame, as before.
 
-use super::results::{Run, ScriptHost};
+use super::results::{PATCH_CHARGE_US, Run, ScriptHost};
 use super::*;
+use crate::nodes::sim::render::stream::schedule::{Owner, with_ledger};
 use crate::nodes::simulation_node::SimulationNode;
-use godot::classes::Time;
+use godot::classes::{Engine, Time};
+
+// The graded tiles' share of the frame's install ledger, microseconds (`RENDER-32-K` part 2's
+// own budget, `RENDER-32-Q`: inside the ledger, as an upgrade owner ahead of the streaming node).
+const GRADED_SHARE_US: i64 = 1000;
 
 /// The renderer's counters (`get_pool_counters`), cumulative from setup.
 #[derive(Default)]
@@ -73,6 +78,8 @@ pub(super) struct FrameState {
     pub(super) considered: i64,
     pub(super) handed: i64,
     split: [i64; 5],
+    // Resident patches whose step changed since the last frame (`follow_terrain`).
+    pub(super) step_news: i64,
 }
 
 fn now_us() -> i64 {
@@ -151,6 +158,17 @@ impl GradedTileBook {
         perf: bool,
     ) -> i64 {
         let start_us = now_us();
+        // The budget checks measure from a start moved back by what the ledger cannot give of
+        // the share, so every check of the frame (results, builds, syncs) keeps to the room.
+        let frame = Engine::singleton().get_process_frames();
+        let room = with_ledger(frame, |ledger| ledger.upgrade_room_us());
+        // The resident patches whose level of detail changed since the last frame rewrite their
+        // cells later in this frame (`follow_news`): charged up front, as the queued ones are in
+        // every check (`PATCH_CHARGE_US`). A patch that became resident rewrites none.
+        let step_news = std::mem::take(&mut book.bind_mut().frame.step_news);
+        let budget_start_us = start_us
+            - (GRADED_SHARE_US - (room.max(0.0) as i64).min(GRADED_SHARE_US))
+            - step_news * PATCH_CHARGE_US;
         let uploads_before = {
             let mut this = book.bind_mut();
             this.collect_counts();
@@ -179,7 +197,7 @@ impl GradedTileBook {
         if batch_tiles == 0 {
             Run::budgeted(
                 ScriptHost::timed(book.clone(), renderer.clone(), simulation),
-                start_us,
+                budget_start_us,
             )
             .results();
         }
@@ -196,7 +214,7 @@ impl GradedTileBook {
             Self::effects(&mut book, &mut renderer);
         }
         let changes_us = now_us();
-        Self::advance_builds(book.clone(), renderer.clone(), start_us);
+        Self::advance_builds(book.clone(), renderer.clone(), budget_start_us);
         let builds_us = now_us();
         if book.bind().has_variant_waits() {
             Self::take_variant_waits(book.clone(), renderer.clone());
@@ -223,6 +241,14 @@ impl GradedTileBook {
         Self::effects(&mut book, &mut renderer);
         let (cell_patches, wall_patches, cells_us) =
             Self::cells_and_walls(&mut book, &mut renderer);
+        // The ledger's charge: the budgeted steps (the re-level, the edit batch and the results;
+        // the cell set builds) and the cell and wall rewrites they caused.
+        let charged =
+            (polled_us - start_us) + (builds_us - changes_us) + (now_us() - watched_us);
+        if charged > 0 {
+            let us = charged as f64;
+            with_ledger(frame, |ledger| ledger.charge(Owner::Graded, us, us));
+        }
         let mut this = book.bind_mut();
         this.count_unready_in_view();
         if batch_tiles > 0 || perf {

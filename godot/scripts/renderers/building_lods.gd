@@ -163,7 +163,8 @@ func update(camera: Camera3D) -> bool:
 	uploaded_bytes = 0
 	evaluated_parts = 0
 	queried_chunks = 0
-	timing = {}
+	if not timing.is_empty():
+		timing = {}
 	if camera == null:
 		return false
 	_link_scenarios()
@@ -192,9 +193,11 @@ func update(camera: Camera3D) -> bool:
 		return false
 	evaluated_parts = int(frame.get("evaluated_parts", 0))
 	queried_chunks = int(frame.get("queried_chunks", 0))
-	timing = {"prepare_us": frame.get("prepare_us", 0.0), "update_us": frame.get("update_us", 0.0),
-		"publish_us": frame.get("publish_us", 0.0), "placing_us": frame.get("placing_us", 0.0),
-		"evaluating_us": frame.get("evaluating_us", 0.0)}
+	# The timing lanes exist only while the perf channel is on (no dictionary a frame otherwise).
+	if frame.has("update_us"):
+		timing = {"prepare_us": frame.get("prepare_us", 0.0), "update_us": frame.get("update_us", 0.0),
+			"publish_us": frame.get("publish_us", 0.0), "placing_us": frame.get("placing_us", 0.0),
+			"evaluating_us": frame.get("evaluating_us", 0.0)}
 	var missing: PackedInt32Array = frame.get("missing", PackedInt32Array())
 	if missing.is_empty():
 		uploaded_bytes = int(frame.get("uploaded_bytes", 0))

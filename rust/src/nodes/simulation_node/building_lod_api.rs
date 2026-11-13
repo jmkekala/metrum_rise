@@ -8,6 +8,7 @@ use crate::nodes::sim::render::building_lod::spatial::{Pose, query_bounds};
 use crate::nodes::sim::render::building_lod::{BatchKey, Part, View};
 use crate::nodes::sim::render::stream::backend::{GodotBackend, slot_census};
 use crate::nodes::sim::render::stream::probe;
+use crate::nodes::sim::render::stream::schedule::{Owner, with_ledger};
 use crate::nodes::sim::render::stream::layers::buildings::{
     Applied, BuildingLayer, Look, SLOT_LIMIT, SPARE_LIMIT,
 };
@@ -264,11 +265,15 @@ impl SimulationNode {
         let update_us = update_start.elapsed().as_secs_f64() * 1e6;
         drop(core);
         result.set("busy", false);
-        // Microseconds: the frame before the tier update (lock, site queries, bounds), the update.
-        result.set("prepare_us", (update_start - start).as_secs_f64() * 1e6);
-        result.set("update_us", update_us);
-        result.set("placing_us", self.building_lods.placing_us);
-        result.set("evaluating_us", self.building_lods.evaluating_us);
+        // Microseconds: the frame before the tier update (lock, site queries, bounds), the update;
+        // only while the perf channel is on (each key a Godot string: AUDIT-stream finding 10).
+        let perf = crate::debug::Channel::Perf.enabled();
+        if perf {
+            result.set("prepare_us", (update_start - start).as_secs_f64() * 1e6);
+            result.set("update_us", update_us);
+            result.set("placing_us", self.building_lods.placing_us);
+            result.set("evaluating_us", self.building_lods.evaluating_us);
+        }
         result.set("evaluated_parts", self.building_lods.evaluated_parts as i64);
         result.set("queried_chunks", self.building_lods.queried_chunks as i64);
         let waiting = self
@@ -288,7 +293,9 @@ impl SimulationNode {
         if missing.is_empty() {
             let publish_start = std::time::Instant::now();
             result.set("uploaded_bytes", self.publish_building_lods());
-            result.set("publish_us", publish_start.elapsed().as_secs_f64() * 1e6);
+            if perf {
+                result.set("publish_us", publish_start.elapsed().as_secs_f64() * 1e6);
+            }
         } else {
             result.set("missing", missing);
         }
@@ -308,10 +315,16 @@ impl SimulationNode {
         if !draw.layer.missing(lods.changes()).is_empty() {
             return -1;
         }
+        let start = std::time::Instant::now();
         let applied = draw
             .layer
             .apply(&mut draw.backend, &lods.removed, lods.changes());
         draw.applied = applied;
+        // Charged to the frame's install ledger (`RENDER-32-Q`): a frame's publication is one
+        // atomic unit (`RENDER-42`), so it is accounted, not split.
+        let us = start.elapsed().as_secs_f64() * 1e6;
+        let frame = godot::classes::Engine::singleton().get_process_frames();
+        with_ledger(frame, |ledger| ledger.charge(Owner::BuildingPublication, us, us));
         // A frame the pool could not take whole keeps its changes for the next offer.
         if !draw.layer.waiting() {
             lods.acknowledge();

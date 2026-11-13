@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
-//! The render backend (`RENDER-32-E`, `docs/terrain.md` "Streaming core"): the only code of the
-//! streaming core that calls `RenderingServer`, behind [`RenderBackend`], and the pools of
-//! `MultiMesh` and instance objects the layers draw with.
+//! The render backend (`RENDER-32-E`, `docs/terrain.md` "Streaming core"): the streaming core's
+//! `RenderingServer` calls behind [`RenderBackend`], and the pools of `MultiMesh` and instance
+//! objects the layers draw with. One exception calls the server beside it: the graded book's
+//! material sync (`graded/book.rs` `MaterialSync`) reads and writes the terrain patches' material
+//! parameters directly, unrecorded (AUDIT-stream finding 9).
 //!
 //! A layer draws a batch through a [`Slot`]: one `MultiMesh`, its instance in the main scenario
 //! and, lazily, a shadow caster instance and a water reflection instance on the same

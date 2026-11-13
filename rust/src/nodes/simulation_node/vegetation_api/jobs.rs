@@ -21,8 +21,8 @@ use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Most patch jobs out at once, from the request until the poll takes the result: twice the
-/// renderer's per-frame request budget (16 sub-patches), so a frame's requests never wait for
-/// the last frame's to be polled.
+/// renderer's per-frame request budget (16 sub-patches). Up to eight of them may be prepares
+/// (`RENDER-32-N`), which wait behind every request, leaving requests 24 when all are out.
 const MAX_IN_FLIGHT: usize = 32;
 /// Bytes of finished products the cache may hold before no job starts (`docs/terrain.md`
 /// "Streaming core": 64 MB a layer).

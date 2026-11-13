@@ -26,10 +26,9 @@
 //! - **Requests**: a queue, missing patches before drawn ones and nearest first as of the last
 //!   evaluation, taken up to the upload budget a frame.
 //!
-//! Costs: a still frame `O(1)` (one `try_lock` read of the land cover epoch) while no stand-in
-//! waits, else `O(stand-ins x subdivision²)` (every frame puts away the stand-ins whose area is
-//! built: a key copy and sort, then `area_built` each; stand-ins last while the wanted patches
-//! over them are not installed, which a refused request or a full pool does not bound); a crossing
+//! Costs: a still frame `O(1)` (one `try_lock` read of the land cover epoch), stand-ins waiting
+//! or not: they are checked only after an evaluation or an install, the only changes that can
+//! build their area (`O(stand-ins x subdivision²)` then); a crossing
 //! `O(ring boundary blocks + changes + queue log queue)`; a moving frame `O(patches due + buckets
 //! passed)`; an edit `O(patches of the edited blocks)`; a request `O(1)`. Nothing allocates once
 //! the storage has grown.
@@ -192,8 +191,9 @@ pub(crate) struct VegetationResidency {
     scratch: Vec<PatchKey>,
     entering: Vec<PatchKey>,
     leaving: Vec<PatchKey>,
-    // Wanted patches retired out of the drawn set (tests), restored as the next evaluation finds
-    // them, as the script's pass over every wanted key did.
+    // Wanted patches retired out of the drawn set (tests of the restore path), restored as the
+    // next evaluation finds them, as the script's pass over every wanted key did.
+    #[cfg(test)]
     retired: Vec<PatchKey>,
     tree_count: i64,
     generated: u64,
@@ -240,6 +240,7 @@ impl Default for VegetationResidency {
             scratch: Vec::new(),
             entering: Vec::new(),
             leaving: Vec::new(),
+            #[cfg(test)]
             retired: Vec::new(),
             tree_count: 0,
             generated: 0,
@@ -279,6 +280,7 @@ impl VegetationResidency {
         self.queue.clear();
         self.queued.clear();
         self.requested.clear();
+        #[cfg(test)]
         self.retired.clear();
         self.vegetation.clear();
         self.epoch = -1;
@@ -427,13 +429,15 @@ impl VegetationResidency {
         Some(settings.bands(distance, span, previous))
     }
 
-    /// Queues `key` for a request check (probes: an obsolete band request must not rebuild).
+    /// Queues `key` for a request check (tests: an obsolete band request must not rebuild).
+    #[cfg(test)]
     pub(crate) fn queue(&mut self, key: PatchKey) {
         self.queue_patch(key);
     }
 
     /// Takes a drawn patch out of the drawn set as if it had left it (hidden into the cache, or
     /// freed out of range; `_retire_patch`), for tests of the restore path.
+    #[cfg(test)]
     pub(crate) fn retire(
         &mut self,
         key: PatchKey,
@@ -474,7 +478,8 @@ impl VegetationResidency {
         let cell = camera_cell(camera, span);
         let moved = self.last_eye.map_or(0.0, |last| travel(last, eye));
         self.last_eye = Some(eye);
-        if !self.evaluated || self.revised || self.last_cell != Some(cell) {
+        let evaluate = !self.evaluated || self.revised || self.last_cell != Some(cell);
+        if evaluate {
             self.evaluate(&settings, camera, layer, backend, jobs);
             self.last_cell = Some(cell);
         }
@@ -485,7 +490,10 @@ impl VegetationResidency {
             self.check_stale_owners(&settings);
         }
         self.request(&settings, camera, layer, jobs);
-        if !self.standins.is_empty() {
+        // Whether a stand-in's area is built changes only with the wanted set and the drawn
+        // patches: the evaluation here and the installs (`take_installs`, which checks after
+        // them), so a frame without either has nothing to put away (AUDIT-stream finding 14).
+        if evaluate && !self.standins.is_empty() {
             self.release_standins(&settings, camera, layer, backend);
         }
     }
@@ -799,6 +807,7 @@ impl VegetationResidency {
                 layer.forget(key);
             }
         }
+        #[cfg(test)]
         entering.extend(
             self.retired
                 .drain(..)

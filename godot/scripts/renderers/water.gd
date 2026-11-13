@@ -192,12 +192,21 @@ func _process(delta: float) -> void:
 	_process_terrain_patch_binding_queue(WATER_TERRAIN_BINDING_BUDGET_PER_FRAME)
 	terrain_binding_elapsed_ms = float(Time.get_ticks_usec() - terrain_binding_start_us) / 1000.0
 
+	var mesh_work := (
+		not mesh_refresh_queue.is_empty()
+		or not mesh_pending_lod.is_empty()
+		or not mesh_apply_queue.is_empty()
+	)
 	var mesh_refresh_start_us := Time.get_ticks_usec()
 	mesh_refresh_perf_stats = _process_mesh_refresh_queue(
 		WATER_PATCH_MESH_REQUEST_BUDGET_PER_FRAME,
 		perf_enabled
 	)
 	mesh_refresh_elapsed_ms = float(Time.get_ticks_usec() - mesh_refresh_start_us) / 1000.0
+	# The mesh pipeline's and the dirty upload's work, charged to the frame's install ledger
+	# (`RENDER-32-Q`); its own request, submit, poll and apply budgets bound it (`WATER-01`).
+	if (mesh_work or upload_elapsed_ms > 0.0) and _stream != null:
+		_stream.charge_install(2, (mesh_refresh_elapsed_ms + upload_elapsed_ms) * 1000.0)
 
 	if _terrain_debug_enabled:
 		var frame_elapsed_ms := float(Time.get_ticks_usec() - frame_start_us) / 1000.0

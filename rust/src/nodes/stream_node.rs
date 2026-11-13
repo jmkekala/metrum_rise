@@ -51,12 +51,14 @@ use crate::nodes::sim::render::stream::layers::vegetation::{
 };
 use crate::nodes::sim::render::stream::probe;
 use crate::nodes::sim::render::stream::view::CameraSample;
-use crate::nodes::sim::render::stream::schedule::{FrameBudget, MonotonicClock, STREAM_BUDGET_US};
+use crate::nodes::sim::render::stream::schedule::{
+    FrameBudget, MonotonicClock, Owner, STREAM_BUDGET_US, with_ledger,
+};
 use crate::nodes::sim::render::vegetation_product::godot_math::Aabb;
 use crate::nodes::sim::render::vegetation_product::{Batch, VegetationProduct};
 use crate::nodes::simulation_node::SimulationNode;
 use crate::nodes::simulation_node::vegetation_api::jobs::{self, Spawner};
-use godot::classes::{INode, Node, RenderingServer, ResourceLoader, Script};
+use godot::classes::{Engine, INode, Node, RenderingServer, ResourceLoader, Script};
 use godot::prelude::*;
 
 /// Runs the streaming core's frame: pulls prepared products, follows the camera and installs
@@ -69,8 +71,14 @@ pub struct StreamNode {
     vegetation: VegetationLayer,
     residency: VegetationResidency,
     spawner: Option<Spawner>,
+    // The pull's landed products, taken under the jobs' lock (reused storage).
+    landed: Vec<jobs::Delivered>,
     view: Option<CameraSample>,
+    // This pass's account inside the frame's ledger (`RENDER-32-Q`): what every owner of the
+    // frame spent, the node's own units; the node's own spend of the frame apart.
     budget: FrameBudget,
+    ledger_frame: u64,
+    frame_spent: [f64; 2],
     clock: MonotonicClock,
     // The perf channel: this frame's main-thread time and counters, recorded before the draw.
     perf: bool,
@@ -79,8 +87,12 @@ pub struct StreamNode {
     frame_installs: usize,
     frame_refreshed: usize,
     frame_copy_us: f64,
-    // The frame's frees through the backend (outside the budget: AUDIT-stream finding 6).
+    // The frame's frees through the backend (the `free` class, AUDIT-stream finding 6), and the
+    // pass's, charged to the ledger at its end.
     frame_free_us: f64,
+    frame_free_pass_us: f64,
+    // The frame's prepared-set walks (`RENDER-32-N`), measured.
+    frame_prepare_us: f64,
     frame_pulled: usize,
     frame_residency_us: f64,
     // Terrain and water patches (`RENDER-32-M`).
@@ -93,6 +105,8 @@ pub struct StreamNode {
     // The post-load window (`POST_LOAD_PATCH_BUDGET_US`): from a world reset until the patches
     // first settle, their units run under their own budget.
     post_load_window: bool,
+    // Seconds the window has been open outside the load's hold (closed at `POST_LOAD_WINDOW_S`).
+    post_load_s: f64,
     post_load_budget: FrameBudget,
     camera_far: f32,
     delta: f64,
@@ -131,8 +145,11 @@ impl INode for StreamNode {
             vegetation: VegetationLayer::new(SLOT_LIMIT, SPARE_LIMIT),
             residency: VegetationResidency::default(),
             spawner: None,
+            landed: Vec::new(),
             view: None,
             budget: FrameBudget::new(STREAM_BUDGET_US),
+            ledger_frame: 0,
+            frame_spent: [0.0; 2],
             clock: MonotonicClock::default(),
             perf: false,
             perf_script: None,
@@ -141,6 +158,8 @@ impl INode for StreamNode {
             frame_refreshed: 0,
             frame_copy_us: 0.0,
             frame_free_us: 0.0,
+            frame_free_pass_us: 0.0,
+            frame_prepare_us: 0.0,
             frame_pulled: 0,
             frame_residency_us: 0.0,
             terrain: PatchStream::new(TERRAIN_LIMITS, TERRAIN_COSTS),
@@ -150,6 +169,7 @@ impl INode for StreamNode {
             full_world: false,
             load_settling: false,
             post_load_window: false,
+            post_load_s: 0.0,
             post_load_budget: FrameBudget::new(POST_LOAD_PATCH_BUDGET_US),
             camera_far: f32::INFINITY,
             delta: 0.0,
@@ -187,11 +207,13 @@ impl INode for StreamNode {
     fn process(&mut self, delta: f64) {
         self.delta = delta;
         self.budget.begin_frame();
+        self.frame_spent = [0.0; 2];
         self.frame_us = 0.0;
         self.frame_installs = 0;
         self.frame_refreshed = 0;
         self.frame_copy_us = 0.0;
         self.frame_free_us = 0.0;
+        self.frame_prepare_us = 0.0;
         self.frame_pulled = 0;
         self.frame_residency_us = 0.0;
         self.run_pass(true);
@@ -445,36 +467,29 @@ impl StreamNode {
             })
     }
 
-    /// Queues `key` for a request check, as a band change or an edit would (tests).
+    /// What an owner installing upgrades ahead of this node may still spend of the frame's
+    /// install ledger, microseconds (`RENDER-32-Q`; may be negative). `O(1)`.
     #[func]
-    pub fn queue_vegetation_patch(&mut self, key: Vector3i) {
-        self.residency.queue(patch_key(key));
+    pub fn get_install_room_us(&self) -> f64 {
+        with_ledger(Engine::singleton().get_process_frames(), |ledger| {
+            ledger.upgrade_room_us()
+        })
     }
 
-    /// Takes a drawn patch out of the drawn set, hidden into the cache or freed (tests of the
-    /// restore path).
+    /// Charges a script owner's measured install work to the frame's ledger: `owner` 0 the
+    /// terrain's dirty-patch commit, 2 the water's mesh pipeline, 4 the building sites
+    /// (`schedule::Owner`'s order); others are ignored. `O(1)`.
     #[func]
-    pub fn retire_vegetation_patch(&mut self, key: Vector3i) {
-        if let Some(backend) = self.backend.as_mut() {
-            self.residency
-                .retire(patch_key(key), &mut self.vegetation, backend);
-        }
-    }
-
-    /// The view the core measured from this frame (`CameraNode`'s, or the viewport camera's
-    /// position): `eye` and, from a `CameraNode`, `pivot`, `yaw`, `pitch`, `distance`. Empty
-    /// without a camera.
-    #[func]
-    pub fn get_stream_view(&self) -> VarDictionary {
-        let mut out = VarDictionary::new();
-        if let Some(view) = self.view {
-            out.set("eye", Vector3::from_array(view.eye));
-            out.set("pivot", Vector3::from_array(view.pivot));
-            out.set("yaw", view.yaw);
-            out.set("pitch", view.pitch);
-            out.set("distance", view.distance);
-        }
-        out
+    pub fn charge_install(&mut self, owner: i64, measured_us: f64) {
+        let owner = match owner {
+            0 => Owner::TerrainCommit,
+            2 => Owner::Water,
+            4 => Owner::BuildingSites,
+            _ => return,
+        };
+        with_ledger(Engine::singleton().get_process_frames(), |ledger| {
+            ledger.charge(owner, measured_us, measured_us)
+        });
     }
 
     /// Frees every vegetation patch and drops what waits (the renderer's reset).
@@ -717,6 +732,7 @@ impl StreamNode {
         self.terrain.reset(grid);
         self.water.reset(grid);
         self.post_load_window = grid.is_some();
+        self.post_load_s = 0.0;
         self.terrain_scripts = Some(terrain);
         self.water_scripts = water;
     }
@@ -1096,6 +1112,14 @@ impl StreamNode {
             self.post_load_budget.begin_frame();
         }
         let window_before = self.post_load_budget.measured_us;
+        // Level changes keep the ledger's reserve while holes waited (none in the window).
+        let reserve = if window {
+            0.0
+        } else {
+            with_ledger(self.ledger_frame, |ledger| ledger.reserve_us())
+        };
+        self.water.set_upgrade_reserve(reserve);
+        self.terrain.set_upgrade_reserve(reserve);
         // The water first, then the terrain: the water's holes are terrain patches resident since
         // the last frame and its units are cheap, so a shore draws a frame after its ground, as
         // the scripts drew it, and the water's first draw (its shader's first use) falls inside
@@ -1140,11 +1164,16 @@ impl StreamNode {
             );
         }
         self.follow_terrain();
-        // The window closes when the patches first settle with residents.
+        // The window closes when the patches first settle with residents, or after
+        // `POST_LOAD_WINDOW_S` of frames outside the load's hold (a view never let settle).
+        if window {
+            self.post_load_s += self.delta;
+        }
         if self.post_load_window
-            && self.terrain.resident_count() > 0
-            && !self.terrain.has_pending_work()
-            && !self.water.has_pending_work()
+            && (self.post_load_s >= POST_LOAD_WINDOW_S
+                || self.terrain.resident_count() > 0
+                    && !self.terrain.has_pending_work()
+                    && !self.water.has_pending_work())
         {
             self.post_load_window = false;
         }
@@ -1219,6 +1248,46 @@ impl StreamNode {
     // what is left of the frame's budget, take the installs.
     fn run_pass(&mut self, residency: bool) {
         let start = std::time::Instant::now();
+        self.open_ledger();
+        self.run_units(residency, start);
+        self.close_ledger();
+    }
+
+    // This pass's account: the frame's ledger as the owners before it left it, with the node's
+    // own units so far (its first unit of the frame always runs).
+    fn open_ledger(&mut self) {
+        self.ledger_frame = Engine::singleton().get_process_frames();
+        let units = self.budget.units;
+        self.budget = with_ledger(self.ledger_frame, |ledger| {
+            FrameBudget::within(&ledger.budget, units)
+        });
+    }
+
+    // Charges the pass's units and frees to the ledger and says whether holes still wait.
+    fn close_ledger(&mut self) {
+        let budget = self.budget;
+        let free_us = std::mem::take(&mut self.frame_free_pass_us);
+        let holes = self.vegetation.holes_waiting()
+            || self.terrain.pending()[0] > 0
+            || self.water.pending()[0] > 0;
+        let spent = with_ledger(self.ledger_frame, |ledger| {
+            let measured = budget.measured_us - ledger.budget.measured_us - free_us;
+            let predicted = budget.predicted_us - ledger.budget.predicted_us;
+            if measured > 0.0 || predicted > 0.0 {
+                ledger.charge(Owner::Stream, predicted, measured.max(0.0));
+            }
+            if free_us > 0.0 {
+                ledger.budget.add_spent(free_us);
+                ledger.charged[Owner::Free as usize] += free_us;
+            }
+            ledger.holes_waiting = holes;
+            [ledger.charged[Owner::Stream as usize], ledger.budget.measured_us]
+        });
+        self.frame_spent = spent;
+    }
+
+    // One pass's work (`run_pass`).
+    fn run_units(&mut self, residency: bool, start: std::time::Instant) {
         self.update_camera();
         if residency {
             self.patch_frame();
@@ -1231,15 +1300,29 @@ impl StreamNode {
             let mut jobs = Jobs(self.spawner.as_mut());
             self.residency
                 .frame(eye, &mut self.vegetation, backend, &mut jobs);
-            // While nothing wanted waits, products along the camera's reach (`RENDER-32-N`).
+            // The residency's frees narrow the installs' room (the `free` class).
+            let free_us = backend.take_free_us();
+            self.budget.add_spent(free_us);
+            self.frame_free_pass_us += free_us;
+            self.frame_free_us += free_us;
+            // While nothing wanted waits, products along the camera's reach (`RENDER-32-N`); the
+            // reach walks are the ledger's (AUDIT-stream-2 finding 8), as measured time.
+            let prepare = std::time::Instant::now();
             self.residency.prepare(self.view, &mut jobs);
+            let prepare_us = prepare.elapsed().as_secs_f64() * 1e6;
+            self.budget.add_spent(prepare_us);
+            self.frame_prepare_us += prepare_us;
             self.frame_residency_us = start.elapsed().as_secs_f64() * 1e6;
         }
         self.pull();
         if residency {
             // The prepares that landed freed their places: the still view prepares once more.
+            let prepare = std::time::Instant::now();
             self.residency
                 .prepare_after_pull(&mut Jobs(self.spawner.as_mut()));
+            let prepare_us = prepare.elapsed().as_secs_f64() * 1e6;
+            self.budget.add_spent(prepare_us);
+            self.frame_prepare_us += prepare_us;
         }
         let in_view = self.frustum();
         let Some(backend) = self.backend.as_mut() else {
@@ -1256,7 +1339,10 @@ impl StreamNode {
                 .install(backend, &mut self.budget, &self.clock, &test, false);
         self.residency.take_installs(&mut self.vegetation, backend);
         self.frame_copy_us += backend.take_copy_us();
-        self.frame_free_us += backend.take_free_us();
+        let free_us = backend.take_free_us();
+        self.budget.add_spent(free_us);
+        self.frame_free_pass_us += free_us;
+        self.frame_free_us += free_us;
         self.recycle_spent();
         // The patches' and the road hydration's shares are their own records (`terrain_stream`,
         // `road_hydration`).
@@ -1275,8 +1361,14 @@ impl StreamNode {
         };
         // Requests a busy core put back are tried again here at the latest, once a pass.
         jobs::pump(spawner);
-        let mut jobs = spawner.jobs.lock().unwrap();
-        while let Some(delivered) = jobs.poll() {
+        // Taken under the jobs' lock, handled after it (a held product's eviction sorts the held
+        // set: the workers do not wait for it; AUDIT-stream-2 finding 8). Reused storage.
+        let mut landed = std::mem::take(&mut self.landed);
+        {
+            let mut jobs = spawner.jobs.lock().unwrap();
+            landed.extend(std::iter::from_fn(|| jobs.poll()));
+        }
+        for delivered in landed.drain(..) {
             self.frame_pulled += 1;
             // A product prepared ahead is held by the residency, not installed (`RENDER-32-N`).
             match delivered.product {
@@ -1299,6 +1391,7 @@ impl StreamNode {
                 }
             }
         }
+        self.landed = landed;
     }
 
     // Returns installed and dropped products' storage to the jobs.
@@ -1369,7 +1462,9 @@ impl StreamNode {
         let status = self.vegetation.status();
         let mut details = VarDictionary::new();
         details.set("installs", self.frame_installs as i64);
-        details.set("install_ms", self.budget.measured_us / 1000.0);
+        // The node's own units (the ledger's `Stream` charge) and the frame's whole ledger.
+        details.set("install_ms", self.frame_spent[0] / 1000.0);
+        details.set("ledger_ms", self.frame_spent[1] / 1000.0);
         details.set("predicted_ms", self.budget.predicted_us / 1000.0);
         details.set("upload_max_ms", self.budget.max_unit_us / 1000.0);
         details.set(
@@ -1378,6 +1473,7 @@ impl StreamNode {
         );
         details.set("poll_ms", self.frame_copy_us / 1000.0);
         details.set("free_ms", self.frame_free_us / 1000.0);
+        details.set("prepare_ms", self.frame_prepare_us / 1000.0);
         details.set("pulled", self.frame_pulled as i64);
         details.set("refreshed", self.frame_refreshed as i64);
         details.set("stream_pending", status.pending as i64);
@@ -1412,6 +1508,7 @@ impl StreamNode {
             ] {
                 let [missing, leaving, queue] = layer.pending();
                 patches.set(format!("{name}_missing"), missing as i64);
+                patches.set(format!("{name}_refused"), layer.refused_count() as i64);
                 patches.set(format!("{name}_leaving"), leaving as i64);
                 patches.set(format!("{name}_lod_queue"), queue as i64);
                 patches.set(format!("{name}_resident"), layer.resident_count() as i64);
@@ -1555,14 +1652,23 @@ fn product_from_dictionary(data: &VarDictionary) -> Option<VegetationProduct> {
         let buffer = usize::try_from(ints[7])
             .ok()
             .filter(|&at| at < buffers.len())?;
+        // Lanes that do not fit their type, or a drawn batch whose count does not match its
+        // buffer (the install would index past it every frame: AUDIT-stream finding 8), refuse.
+        let lane = |at: usize| u8::try_from(ints[at]).ok();
+        let count = u32::try_from(ints[4]).ok()?;
+        let (proxy, colors, custom) = (ints[3] == 1, ints[5] == 1, ints[6] == 1);
+        let stride = 12 + 4 * usize::from(colors) + 4 * usize::from(custom);
+        if !proxy && buffers[buffer].len() != count as usize * stride {
+            return None;
+        }
         out.push(Batch {
-            species: ints[0] as u8,
-            lod: ints[1] as u8,
-            variant: ints[2] as u8,
-            proxy: ints[3] == 1,
-            count: ints[4] as u32,
-            colors: ints[5] == 1,
-            custom: ints[6] == 1,
+            species: lane(0)?,
+            lod: lane(1)?,
+            variant: lane(2)?,
+            proxy,
+            count,
+            colors,
+            custom,
             buffer,
             mesh_bounds: aabb(&floats[0..6]),
             shared_bounds: aabb(&floats[6..12]),
@@ -1576,6 +1682,11 @@ fn product_from_dictionary(data: &VarDictionary) -> Option<VegetationProduct> {
         Aabb::new(canopy.position.to_array(), canopy.size.to_array()),
     ))
 }
+
+// The post-load window's longest life outside the load's hold, seconds (AUDIT-stream-2 finding
+// 5): a load settles its patches in 0.6-8.5 s (Kuopio, 100k); a camera that never lets them
+// settle no longer keeps their own budget for the session.
+const POST_LOAD_WINDOW_S: f64 = 30.0;
 
 // The lowest and highest ground a patch's view test assumes, metres: the box only orders work.
 const PATCH_LOW_M: f32 = -500.0;

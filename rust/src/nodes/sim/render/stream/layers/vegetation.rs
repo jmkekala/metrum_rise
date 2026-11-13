@@ -394,6 +394,12 @@ impl VegetationLayer {
         &self.pool
     }
 
+    /// Whether a waiting product would fill a hole (`RENDER-32-Q`: the ledger's reserve), by the
+    /// classes of the last install pass. `O(pending)`.
+    pub(crate) fn holes_waiting(&self) -> bool {
+        self.pending.iter().any(|pending| pending.class <= Class::Hole)
+    }
+
     /// Products waiting.
     pub(crate) fn pending(&self) -> usize {
         self.pending.len()

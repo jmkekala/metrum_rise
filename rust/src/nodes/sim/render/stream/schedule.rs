@@ -103,6 +103,24 @@ impl FrameBudget {
         self.units == 0 || self.spent_us() + predicted_us <= self.budget_us
     }
 
+    /// This owner's account inside the frame's account `frame`: the frame's spend so far, its
+    /// own `units` (so its first unit of the frame still runs).
+    pub(crate) fn within(frame: &FrameBudget, units: u32) -> Self {
+        Self { units, ..*frame }
+    }
+
+    /// Whether an upgrade predicted at `predicted_us` may start with `reserve_us` kept for holes
+    /// (`RENDER-32-Q`): within the budget less the reserve, or as the owner's first unit.
+    pub(crate) fn admits_upgrade(&self, predicted_us: f64, reserve_us: f64) -> bool {
+        self.units == 0 || self.spent_us() + predicted_us <= self.budget_us - reserve_us
+    }
+
+    /// Accounts measured time that is not a unit (frees): it narrows the room, never a unit's
+    /// right to run first.
+    pub(crate) fn add_spent(&mut self, measured_us: f64) {
+        self.measured_us += measured_us;
+    }
+
     /// Accounts a unit that ran.
     pub(crate) fn record(&mut self, predicted_us: f64, measured_us: f64) {
         self.units += 1;
@@ -111,6 +129,105 @@ impl FrameBudget {
         self.max_unit_us = self.max_unit_us.max(measured_us);
         self.max_overrun_us = self.max_overrun_us.max(measured_us - predicted_us);
     }
+}
+
+/// The streaming node's reserve against upgrades installed ahead of it in the frame, while its
+/// last frame left holes waiting (`RENDER-32-Q`): the classes' order across owners.
+pub(crate) const HOLE_RESERVE_US: f64 = 1000.0;
+
+/// The frame's install owners (`RENDER-32-Q`), each charging the one ledger. The process order
+/// of a frame is theirs too: the terrain's dirty-patch commit and the graded tiles
+/// (`terrain.gd`), the water's mesh pipeline (`water.gd`), the building batches and sites
+/// (`buildings.gd`), then the streaming node (patch units, vegetation) and its frees.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Owner {
+    /// The terrain's dirty patches, staged a patch a unit (`RENDER-40`).
+    TerrainCommit,
+    /// The graded tiles' poll, cell set builds and the cell and wall rewrites they cause.
+    Graded,
+    /// The water's mesh request, submit, poll and apply (`WATER-01`).
+    Water,
+    /// The building LOD batches' publication.
+    BuildingPublication,
+    /// The plots' and construction sites' transforms (`RENDER-30`).
+    BuildingSites,
+    /// The streaming node's units: terrain and water patches, vegetation.
+    Stream,
+    /// The streaming node's frees (the plan's `free` class, AUDIT-stream finding 6).
+    Free,
+}
+
+/// Owners in [`Owner`] order.
+pub(crate) const OWNERS: usize = 7;
+
+/// The frame's one install ledger (`RENDER-32-Q`, `PLAN-STREAM` decision 6): every owner of
+/// main-thread install work charges the frame's [`STREAM_BUDGET_US`] here, in the frame's process
+/// order. Owners that install upgrades ahead of the streaming node in the frame (the terrain's
+/// commit, the graded tiles) take only what [`Self::upgrade_room_us`] leaves, so the node's holes
+/// keep [`HOLE_RESERVE_US`]; each owner's first unit of a frame always runs, so the worst frame
+/// overruns by one unit an owner. The load windows (the post-load patches', the road hydration's)
+/// and an edit's atomic batch are named exceptions with budgets of their own. `O(1)` a charge.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct FrameLedger {
+    frame: u64,
+    /// The frame's account: what every owner spent.
+    pub(crate) budget: FrameBudget,
+    /// Whether the streaming node's last frame left holes waiting.
+    pub(crate) holes_waiting: bool,
+    /// Measured microseconds by [`Owner`] this frame.
+    pub(crate) charged: [f64; OWNERS],
+}
+
+impl FrameLedger {
+    /// A ledger of `budget_us` a frame.
+    pub(crate) fn new(budget_us: f64) -> Self {
+        Self {
+            budget: FrameBudget::new(budget_us),
+            ..Self::default()
+        }
+    }
+
+    /// Opens process frame `frame`: a new one starts an empty account (the holes flag carries).
+    pub(crate) fn open(&mut self, frame: u64) {
+        if frame != self.frame {
+            self.frame = frame;
+            self.budget.begin_frame();
+            self.charged = [0.0; OWNERS];
+        }
+    }
+
+    /// What an owner installing upgrades ahead of the streaming node may still spend.
+    pub(crate) fn upgrade_room_us(&self) -> f64 {
+        self.budget.budget_us - self.reserve_us() - self.budget.spent_us()
+    }
+
+    /// What upgrades leave for holes this frame: [`HOLE_RESERVE_US`] while the streaming node's
+    /// last frame left holes waiting.
+    pub(crate) fn reserve_us(&self) -> f64 {
+        if self.holes_waiting { HOLE_RESERVE_US } else { 0.0 }
+    }
+
+    /// Accounts `owner`'s unit (predicted and measured microseconds).
+    pub(crate) fn charge(&mut self, owner: Owner, predicted_us: f64, measured_us: f64) {
+        self.budget.record(predicted_us, measured_us);
+        self.charged[owner as usize] += measured_us;
+    }
+}
+
+thread_local! {
+    // The main thread's ledger: every owner runs there.
+    static LEDGER: std::cell::Cell<FrameLedger> = std::cell::Cell::new(FrameLedger::new(STREAM_BUDGET_US));
+}
+
+/// Runs `f` on the main thread's ledger, opened for process frame `frame`.
+pub(crate) fn with_ledger<R>(frame: u64, f: impl FnOnce(&mut FrameLedger) -> R) -> R {
+    LEDGER.with(|cell| {
+        let mut ledger = cell.get();
+        ledger.open(frame);
+        let out = f(&mut ledger);
+        cell.set(ledger);
+        out
+    })
 }
 
 #[cfg(test)]
@@ -158,5 +275,23 @@ mod tests {
                 Class::Upgrade
             ]
         );
+    }
+
+    #[test]
+    fn owners_share_one_frame_and_upgrades_leave_the_holes_their_reserve() {
+        let mut ledger = FrameLedger::new(2000.0);
+        ledger.open(7);
+        ledger.charge(Owner::Graded, 100.0, 600.0);
+        assert_eq!(ledger.upgrade_room_us(), 1400.0);
+        ledger.holes_waiting = true;
+        assert_eq!(ledger.upgrade_room_us(), 400.0, "the holes keep their reserve");
+        ledger.charge(Owner::BuildingPublication, 0.0, 300.0);
+        ledger.open(7);
+        assert_eq!(ledger.budget.spent_us(), 900.0, "the same frame keeps its account");
+        assert_eq!(ledger.charged[Owner::Graded as usize], 600.0);
+        ledger.open(8);
+        assert_eq!(ledger.budget.spent_us(), 0.0, "a new frame starts empty");
+        assert_eq!(ledger.charged, [0.0; OWNERS]);
+        assert!(ledger.holes_waiting, "the flag is the last frame's until the node sets it");
     }
 }
