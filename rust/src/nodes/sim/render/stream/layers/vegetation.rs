@@ -65,7 +65,7 @@ pub(crate) const HANDS_OVER: u32 = 0;
 pub(crate) const DETAIL_FULL: u8 = 0;
 const DETAIL_REDUCED: u8 = 1;
 const DETAIL_BLEND: u8 = 2;
-// Install events: key, serial, plants drawn (-1: the core was busy, ask again), install time.
+// Install events: key, serial, plants drawn, install time.
 const EVENT_LANES: usize = 6;
 // Predicted backend calls of one batch's install (fill, draw, the reflection or caster).
 const CALLS_PER_BATCH: usize = 12;
@@ -260,19 +260,6 @@ impl VegetationLayer {
             heights,
             installed: false,
         });
-    }
-
-    /// Reports a request whose core was busy: the residency asks for the patch again.
-    pub(crate) fn deliver_busy(&mut self, key: PatchKey, serial: u64) {
-        let event: [i64; EVENT_LANES] = [
-            i64::from(key[0]),
-            i64::from(key[1]),
-            i64::from(key[2]),
-            serial as i64,
-            -1,
-            0,
-        ];
-        self.events.extend_from_slice(&event);
     }
 
     /// Takes back a waiting product of `key` (its request was superseded or cancelled), for the

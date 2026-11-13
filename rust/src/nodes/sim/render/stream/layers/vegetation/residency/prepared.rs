@@ -94,6 +94,8 @@ pub(crate) struct HeldProducts<K, P> {
     over_cap: u64,
     // Eviction scratch: (distance², key), reused.
     order: Vec<(f32, K)>,
+    // The farthest distance² the last eviction pass kept (its view's), for `evicts`.
+    kept_far: Option<f32>,
 }
 
 /// Over the cap the products are evicted down to the cap less this share of it, so an eviction's
@@ -109,7 +111,21 @@ impl<K: Copy + Ord + std::hash::Hash, P> HeldProducts<K, P> {
             cap,
             over_cap: 0,
             order: Vec::new(),
+            kept_far: None,
         }
+    }
+
+    // The bytes an eviction pass leaves at most.
+    fn low_water(&self) -> usize {
+        self.cap - self.cap / EVICT_LOW_WATER_SHARE
+    }
+
+    /// Whether a product `distance_sq` from the view would be evicted as it lands: the store is
+    /// over its low-water mark and its last eviction pass kept nothing that far (AUDIT-stream-2
+    /// finding 9: at the cap a far prepare was evicted as it landed, and prepared again at the
+    /// next still view). `O(1)`.
+    pub(crate) fn evicts(&self, distance_sq: f32) -> bool {
+        self.bytes > self.low_water() && self.kept_far.is_some_and(|far| distance_sq > far)
     }
 
     /// Holds `held` for `key` (replacing an older product, returned in `out`). Over the cap,
@@ -135,9 +151,11 @@ impl<K: Copy + Ord + std::hash::Hash, P> HeldProducts<K, P> {
         );
         // Evicted first: farther, then the larger key.
         order.sort_unstable_by(|a, b| b.0.total_cmp(&a.0).then(b.1.cmp(&a.1)));
-        let low_water = self.cap - self.cap / EVICT_LOW_WATER_SHARE;
-        for &(_, key) in &order {
+        let low_water = self.low_water();
+        self.kept_far = None;
+        for &(distance, key) in &order {
             if self.bytes <= low_water {
+                self.kept_far = Some(distance);
                 break;
             }
             if let Some(evicted) = self.take(key) {
@@ -170,6 +188,7 @@ impl<K: Copy + Ord + std::hash::Hash, P> HeldProducts<K, P> {
     pub(crate) fn clear(&mut self, out: &mut Vec<P>) {
         out.extend(self.held.drain().map(|(_, held)| held.product));
         self.bytes = 0;
+        self.kept_far = None;
     }
 
     /// Products held, their bytes and the evictions so far.
@@ -514,6 +533,14 @@ impl VegetationResidency {
         if prepared.preparing.len() >= PREPARE_IN_FLIGHT {
             return Step::Full;
         }
+        // A product the store would evict as it lands is not prepared for this view.
+        let centre = key_centre(key, self.terrain_span, settings.world);
+        if let Some(view) = self.held_view()
+            && self.prepared.held.evicts(view_distance_squared(centre, view))
+        {
+            self.prepared.considered.insert((key, bands));
+            return Step::Done;
+        }
         let span = key_span(key, self.terrain_span);
         let order = PatchOrder {
             key,
@@ -627,20 +654,6 @@ impl VegetationResidency {
             product: Ahead { delivery, request },
         };
         self.prepared.hold(key, request.bands, held, view);
-    }
-
-    /// A prepare whose core was busy: it is dropped (true), not asked again for this view.
-    pub(crate) fn prepared_busy(&mut self, key: PatchKey, serial: u64) -> bool {
-        if self
-            .prepared
-            .preparing
-            .get(&key)
-            .is_some_and(|request| request.serial == serial)
-        {
-            self.prepared.preparing.remove(&key);
-            return true;
-        }
-        false
     }
 
     // At a request: the product held or in flight for `key` if it was built for `request`'s
@@ -797,6 +810,25 @@ mod tests {
         far.hold([1, 0, 1], held(9, [2500.0, 0.0], 40), view, &mut left);
         far.hold([2, 0, 1], held(10, [4900.0, 0.0], 40), view, &mut left);
         assert_eq!(left, vec![9], "the one far from both leaves");
+    }
+
+    #[test]
+    fn over_the_low_water_a_product_farther_than_the_pass_kept_would_be_evicted() {
+        let at = [[0.0, 0.0]; 2];
+        let mut store = HeldProducts::new(160);
+        let mut gone = Vec::new();
+        for i in 0..11 {
+            store.hold([i, 0, 1], held(i as u32, [i as f32 * 10.0, 0.0], 16), at, &mut gone);
+        }
+        // The pass evicted the two farthest (100 m, 90 m) and kept 80 m.
+        assert_eq!(gone, vec![10, 9]);
+        assert!(!store.evicts(90.0 * 90.0), "at the low water nothing is refused");
+        store.hold([20, 0, 1], held(20, [0.0, 5.0], 16), at, &mut gone);
+        assert!(store.evicts(81.0 * 81.0) && !store.evicts(80.0 * 80.0));
+        store.take([20, 0, 1]);
+        assert!(!store.evicts(1e9), "back at the low water");
+        store.clear(&mut Vec::new());
+        assert!(!store.evicts(1e9));
     }
 
     #[test]

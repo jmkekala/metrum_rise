@@ -119,15 +119,14 @@ fn ahead_running_limit(simulating: bool) -> usize {
     if simulating { 1 } else { MAX_RUNNING }
 }
 
-/// A finished poll: the request's key and serial, and its product (`None`: the inputs were
-/// busy, ask again).
+/// A finished poll: the request's key and serial, and its product.
 pub(crate) struct Delivered {
     /// The patch key.
     pub(crate) key: PatchKey,
     /// The request serial.
     pub(crate) serial: u64,
     /// The product; return it with [`VegetationJobs::recycle`].
-    pub(crate) product: Option<VegetationProduct>,
+    pub(crate) product: VegetationProduct,
 }
 
 impl VegetationJobs {
@@ -151,8 +150,8 @@ impl VegetationJobs {
     }
 
     /// Lands a job's result for the poll.
-    pub(super) fn land(&mut self, key: PatchKey, serial: u64, product: Option<VegetationProduct>) {
-        let bytes = product.as_ref().map_or(0, VegetationProduct::bytes);
+    pub(super) fn land(&mut self, key: PatchKey, serial: u64, product: VegetationProduct) {
+        let bytes = product.bytes();
         self.cache.land(key, serial, product, bytes);
     }
 
@@ -169,9 +168,7 @@ impl VegetationJobs {
             }
             // Past the spare limit a stale product's storage is dropped here (rare: a request
             // superseded while its job ran).
-            if let Some(product) = landed.product {
-                drop(self.cache.recycle(product));
-            }
+            drop(self.cache.recycle(landed.product));
         }
         None
     }
@@ -284,7 +281,7 @@ pub(crate) fn pump(spawner: &Spawner) {
             if jobs.queue.is_live(waiting.request.key, waiting.serial) {
                 batch.push(waiting);
             } else {
-                jobs.land(waiting.request.key, waiting.serial, Some(waiting.product));
+                jobs.land(waiting.request.key, waiting.serial, waiting.product);
             }
         }
         if batch.is_empty() {
@@ -376,7 +373,7 @@ fn build(spawner: &Spawner, waiting: Waiting, inputs: VegetationPatchInputs) {
         product.span = request.span;
         {
             let mut jobs = next.jobs.lock().unwrap();
-            jobs.land(request.key, serial, Some(product));
+            jobs.land(request.key, serial, product);
             jobs.running -= 1;
             if ahead {
                 jobs.running_ahead -= 1;

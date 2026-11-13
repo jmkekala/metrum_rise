@@ -110,10 +110,16 @@ pub(crate) fn reach_samples(view: &CameraSample, out: &mut Vec<ReachSample>) {
 // distance and `distance x rate^k` away from it up to the maximum, each end exact. The eye's
 // ground offset from the pivot scales with the distance (the pitch holds while zooming).
 fn zoom_line(view: &CameraSample, pivot: [f64; 2], offset: [f64; 2], out: &mut Vec<ReachSample>) {
-    let distance = f64::from(view.distance);
     let (low, high) = (f64::from(view.min_distance), f64::from(view.max_distance));
-    let usable = distance > 0.0 && low > 0.0 && high >= low;
+    let usable = low > 0.0 && high >= low;
     if !usable {
+        return;
+    }
+    // A distance outside the range (a camera bug: `CameraNode` clamps it) starts at the nearer
+    // end, so the line takes at most its bound of steps and an infinite one ends (AUDIT-stream-2
+    // finding 11); NaN stays NaN and is not usable.
+    let distance = f64::from(view.distance).clamp(low, high);
+    if distance.is_nan() {
         return;
     }
     // The steps the whole range takes at the camera's rate; a rate slower than the bound allows
@@ -222,6 +228,17 @@ mod tests {
         assert_eq!(pan.len(), PAN_DIRECTIONS);
         let pan_chord = 2.0 * 240.0 * (std::f64::consts::PI / 8.0).sin();
         assert!(pan.iter().all(|s| (s.spacing - pan_chord).abs() < 1e-9));
+    }
+
+    #[test]
+    fn a_distance_outside_the_range_takes_the_bounded_line_and_ends() {
+        // AUDIT-stream-2 finding 11: above the maximum the line added duplicates at the end (past
+        // the reserve); at infinity it never ended.
+        for distance in [80_000.0, f32::INFINITY, 1.0, f32::NAN] {
+            let mut out = Vec::new();
+            reach_samples(&view(distance), &mut out);
+            assert!(out.len() <= MAX_SAMPLES, "{distance}: {}", out.len());
+        }
     }
 
     #[test]

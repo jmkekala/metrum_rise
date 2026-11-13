@@ -256,13 +256,12 @@ fn delivered(
         .map(|request| jobs.start(request.key).unwrap().0)
         .collect();
     for &i in order {
-        jobs.land(requests[i].key, serials[i], Some(products[i].clone()));
+        jobs.land(requests[i].key, serials[i], products[i].clone());
     }
     let mut out = BTreeMap::new();
     while let Some(result) = jobs.poll() {
-        let product = result.product.unwrap();
-        assert!(out.insert(result.key, fingerprint(&product)).is_none());
-        drop(jobs.recycle(product));
+        assert!(out.insert(result.key, fingerprint(&result.product)).is_none());
+        drop(jobs.recycle(result.product));
     }
     assert_eq!(jobs.in_flight(), 0);
     out
@@ -308,7 +307,7 @@ fn a_stale_request_is_never_delivered() {
     let marked = |count: i64| {
         let mut product = VegetationProduct::default();
         product.tree_count = count;
-        Some(product)
+        product
     };
     let key = [3, 4, 4];
     let old = jobs.start(key).unwrap().0;
@@ -318,26 +317,24 @@ fn a_stale_request_is_never_delivered() {
     jobs.land(key, old, marked(1));
     let result = jobs.poll().unwrap();
     assert_eq!(
-        (result.serial, result.product.unwrap().tree_count),
+        (result.serial, result.product.tree_count),
         (new, 2)
     );
     assert!(
         jobs.poll().is_none(),
         "the older request's product is dropped"
     );
-    // A cancelled request and a cleared one are dropped too, and a busy one is delivered so the
-    // renderer asks again.
+    // A cancelled request and a cleared one are dropped too; a live one after them is delivered.
     let cancelled = jobs.start([1, 1, 1]).unwrap().0;
     jobs.cancel([1, 1, 1]);
     let cleared = jobs.start([2, 2, 1]).unwrap().0;
     jobs.clear();
-    let busy = jobs.start([5, 5, 1]).unwrap().0;
+    let live = jobs.start([5, 5, 1]).unwrap().0;
     jobs.land([1, 1, 1], cancelled, marked(3));
     jobs.land([2, 2, 1], cleared, marked(4));
-    jobs.land([5, 5, 1], busy, None);
+    jobs.land([5, 5, 1], live, marked(5));
     let result = jobs.poll().unwrap();
-    assert_eq!((result.key, result.serial), ([5, 5, 1], busy));
-    assert!(result.product.is_none());
+    assert_eq!((result.key, result.serial, result.product.tree_count), ([5, 5, 1], live, 5));
     assert!(jobs.poll().is_none());
     assert_eq!(jobs.in_flight(), 0);
 }

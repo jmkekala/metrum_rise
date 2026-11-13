@@ -454,7 +454,9 @@ impl SimulationNode {
         out
     }
 
-    // A new catalogue or the node leaving the tree: every slot and look goes.
+    // A new catalogue or the node leaving the tree: every slot and look goes, and the LOD state
+    // forgets what it drew, so a later frame publishes every batch again (AUDIT-stream-2
+    // finding 10: a node entering a tree again drew nothing until each batch changed).
     pub(super) fn reset_building_draw(&mut self) {
         if let Some(draw) = self.building_draw.as_mut() {
             draw.layer.reset(&mut draw.backend);
@@ -462,6 +464,9 @@ impl SimulationNode {
                 .set_catalogue(Vec::new(), Vec::new(), reflection_parameters());
             draw.waited = 0;
         }
+        self.building_lods.invalidate_world();
+        // No slot is left for the removals to return.
+        self.building_lods.removed.clear();
     }
 }
 

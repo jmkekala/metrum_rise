@@ -152,8 +152,6 @@ pub(crate) struct ResidencyWork {
     pub(crate) requests: usize,
     /// Installs taken.
     pub(crate) installs: usize,
-    /// Products that came back busy.
-    pub(crate) busy: usize,
     /// Stand-ins put away.
     pub(crate) released: usize,
 }
@@ -502,8 +500,7 @@ impl VegetationResidency {
     }
 
     /// Takes the install layer's events after an install pass: an installed patch becomes drawn
-    /// with its request's record (queued again if the camera or an edit moved since); a busy one
-    /// is queued again; then the stand-ins whose area is now built are put away, in the same
+    /// with its request's record (queued again if the camera or an edit moved since); then the stand-ins whose area is now built are put away, in the same
     /// pass, so a tier change draws one tier in every frame.
     pub(crate) fn take_installs(
         &mut self,
@@ -512,6 +509,9 @@ impl VegetationResidency {
     ) {
         let Some(settings) = self.settings else {
             layer.clear_events();
+            // No record to keep them with: the installed products are spent (AUDIT-stream-2
+            // finding 12: they stayed in the layer until its reset).
+            self.retain_installed(&[], layer);
             return;
         };
         let mut installs = 0;
@@ -534,11 +534,6 @@ impl VegetationResidency {
                 continue;
             };
             self.requested.remove(&key);
-            if event[4] < 0 {
-                self.work.busy += 1;
-                self.queue_patch(key);
-                continue;
-            }
             if let Some(old) = self.patches.get(&key) {
                 self.tree_count -= old.tree_count;
             }

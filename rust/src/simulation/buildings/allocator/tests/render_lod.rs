@@ -166,6 +166,25 @@ fn building_lod_lifecycle_updates_construction_desertion_removal_and_world_repla
 }
 
 #[test]
+fn building_lod_state_reset_with_its_slots_publishes_every_batch_again() {
+    // AUDIT-stream-2 finding 10: the node leaving the tree frees the batches' slots; the LOD
+    // state is invalidated with them (`reset_building_draw`), so the next frame offers every live
+    // batch for drawing instead of nothing until each batch changed by itself.
+    let (allocator, mut renderer) = setup(0);
+    let view = camera(256.0);
+    renderer.update(&allocator, [0, 0, 0, 0], view, None, 0.0, Instant::now());
+    renderer.acknowledge();
+    assert!(!renderer.update(&allocator, [0, 0, 0, 0], view, None, 0.0, Instant::now()));
+    renderer.invalidate_world();
+    renderer.removed.clear();
+    assert!(renderer.update(&allocator, [0, 0, 0, 0], view, None, 0.0, Instant::now()));
+    let live: Vec<_> = output(&renderer).into_iter().map(|(key, _)| key).collect();
+    let offered: Vec<_> = renderer.changes().filter(|change| !change.rows.is_empty()).map(|change| change.key).collect();
+    assert!(!live.is_empty());
+    assert_eq!(offered, live, "every live batch offered again");
+}
+
+#[test]
 fn building_lod_level_change_rises_in_real_time_and_settles() {
     let (mut allocator, mut renderer) = setup(0);
     allocator.buildings[0].parcel_id = 7;

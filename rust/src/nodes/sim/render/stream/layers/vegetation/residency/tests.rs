@@ -973,3 +973,34 @@ fn a_held_product_superseded_before_its_install_is_held_again() {
         assert!(residency.prepared_variants(key).contains(&bands), "{key:?} held again");
     }
 }
+
+#[test]
+fn installs_without_settings_spend_their_products() {
+    // AUDIT-stream-2 finding 12: a residency without settings (tests, previews) kept every
+    // product the layer installed in the layer's retained list until a reset.
+    let mut residency = VegetationResidency::default();
+    let mut layer = VegetationLayer::new(1 << 16, 1024);
+    layer.set_rules(RULES);
+    let mut backend = Recorder::new();
+    let order = PatchOrder {
+        key: [0, 0, 1],
+        origin: [0.0, 0.0],
+        span: 64.0,
+        bands: Bands::default(),
+        ahead: false,
+    };
+    layer.deliver(Delivery {
+        key: order.key,
+        serial: 1,
+        product: product(&order),
+        origin: order.origin,
+        span: order.span,
+    });
+    let mut budget = FrameBudget::new(STREAM_BUDGET_US);
+    let clock = MonotonicClock::default();
+    layer.install(&mut backend, &mut budget, &clock, &|_, _| true, true);
+    assert_eq!(layer.retained.len(), 1);
+    residency.take_installs(&mut layer, &mut backend);
+    assert!(layer.retained.is_empty());
+    assert_eq!(residency.take_prepared_spent().count(), 1);
+}

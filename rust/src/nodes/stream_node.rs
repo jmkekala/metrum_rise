@@ -1357,7 +1357,7 @@ impl StreamNode {
         self.frame_us += start.elapsed().as_secs_f64() * 1e6 - patches_us;
     }
 
-    // Takes every finished product of a live request from the jobs; a busy one becomes an event.
+    // Takes every finished product of a live request from the jobs.
     fn pull(&mut self) {
         let Some(spawner) = self.spawner.as_ref() else {
             return;
@@ -1374,24 +1374,16 @@ impl StreamNode {
         for delivered in landed.drain(..) {
             self.frame_pulled += 1;
             // A product prepared ahead is held by the residency, not installed (`RENDER-32-N`).
-            match delivered.product {
-                Some(product) => {
-                    let delivery = Delivery {
-                        key: delivered.key,
-                        serial: delivered.serial,
-                        origin: product.origin,
-                        span: product.span,
-                        product,
-                    };
-                    if let Some(delivery) = self.residency.take_prepared(delivery) {
-                        self.vegetation.deliver(delivery);
-                    }
-                }
-                None => {
-                    if !self.residency.prepared_busy(delivered.key, delivered.serial) {
-                        self.vegetation.deliver_busy(delivered.key, delivered.serial);
-                    }
-                }
+            let product = delivered.product;
+            let delivery = Delivery {
+                key: delivered.key,
+                serial: delivered.serial,
+                origin: product.origin,
+                span: product.span,
+                product,
+            };
+            if let Some(delivery) = self.residency.take_prepared(delivery) {
+                self.vegetation.deliver(delivery);
             }
         }
         self.landed = landed;
@@ -1499,7 +1491,6 @@ impl StreamNode {
         details.set("cache_checks", work.cache_checks as i64);
         details.set("requests", work.requests as i64);
         details.set("uploads", work.installs as i64);
-        details.set("busy", work.busy as i64);
         details.set("standins_released", work.released as i64);
         let counts = self.residency.counts();
         details.set("wanted", counts[0]);
