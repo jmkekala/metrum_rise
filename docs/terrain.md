@@ -17696,8 +17696,9 @@ the control's 1.2-1.8, 1.7-2.0 apart from those frames, and 1.6-2.9); the probe 
 three branch runs and both control runs: the failing run's first stroke's undo installed its
 graded batch without a batch frame of its own (the graded renderer's one-batch-frame check):
 timing-dependent, the first stroke now running without the long frame before its undo, and not
-seen in the other two runs; for review. The teardown probe (BX1's: a new Kuopio game with roads, Zoning on and off, the 30k city
-loaded, quit): no mesh-null, leaked-RID, leaked-dependency or error line at any step or at exit.
+seen in the other two runs; for review (CB2b: 5 of 5 a side passed). The teardown probe (BX1's: a new Kuopio game with roads, Zoning on and off, the 30k city
+loaded, quit): no mesh-null, leaked-RID, leaked-dependency or error line at any step or at exit
+(CB2c adds the mesh ledger's count, below).
 Stills (10:00): Kuopio's `close`, `mid` and `forest_low` after 4,000 warm-up frames
 byte-identical; the 30k city two runs a side: `city` and `city_low` byte-identical in both pairs,
 `saved` 2-3 pixels (delta at most 3) where control against control differs by 2, `systematic`
@@ -17711,6 +17712,30 @@ the second series (first: 30k `zoom_in`, `zoom_in_repeat` and `jump` maxima, Kuo
 runs road code, and Kuopio's load call now makes the lamp and sign models (decided above), which
 its first `post_load` frames may carry. No simulation-thread code changed, so the session's
 `./run.sh --timing` half has nothing to time.
+
+**Round CB2c (2026-11-14, rebased on `dev` `04505c09`, for review): the teardown count and the
+load's lamp parts.** The hydration has an opt-in mesh ledger (`set_road_hydration_mesh_ledger`,
+`get_road_hydration_meshes_alive`, `get_road_hydration_meshes_made`, `get_road_hydration_build_meshes`;
+off it costs one thread-local check a mesh made). A freed `ArrayMesh` frees its server mesh and
+the hydration makes no other server handle, so "every alive ledger mesh is drawn by a chunk or held
+by a build" proves its handles freed. `road_render_publication_test` now reloads as the game does
+(the renderer reset, so its post-load byte audit reads hydrated chunks; it kept the old chunks
+before) and checks the ledger: made, each alive one drawn, none alive after the chunks drop. The
+teardown probe (`METRUM_TEARDOWN_PAN=1`: pans during each load's hydration, 147 meshes made for 66
+kept, the dropped builds' freed; a road dragged, committed and undone inside a hydrated chunk,
+whose mesh is freed) has no unaccounted mesh and no error line at any step. Without a streaming
+core (tests) the hydration installs inside NetworkRenderer's commit, where the network is still
+dirty: its parts no longer answer busy there (they left the chunk out). The 30k load (fresh, same
+measure as above, `$ARTIFACTS` art-cb2/stream2): five runs of the rebased branch had 1-3 frames of
+road work over 4.0 ms (max 4.3-5.6 ms), lamp parts in 13 of 14: the first lights part paid the
+street light book's buffers (3.3 ms, made in its first `set_chunk`) and the engine's first batch
+node (1.7-4.4 ms); both are now paid in the load call's prewarm (`set_kinds`). Three runs after:
+0, 1 and 1 frames over (4.24 and 4.39 ms, max 3.56 in the clean run), median 2.41-2.46 ms. The
+frames left are single engine stalls of 1.5-3 ms inside one lamp batch node's creation
+(`MultiMeshInstance3D.new()`, `MultiMesh.instance_count`) mid-load: the bar is not met on every
+run; pooled server instances for the lamps (no node per batch) are the fix, not a slice size.
+Digests (30k 5/5, Kuopio 8/8, every family) equal and Kuopio's stills byte-identical on the final
+library; Kuopio's drag probe passes.
 
 ## Implemented Runtime Contract
 
