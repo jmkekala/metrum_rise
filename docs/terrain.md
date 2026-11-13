@@ -17672,10 +17672,10 @@ art-cb2/stream and `roads.py`):**
 
 | Input | Frames with road work | Max a frame | Median | Over 4.0 ms | Largest part |
 |---|---:|---:|---:|---:|---:|
-| 30k load, branch | 61 | 3.48 ms | 2.44 ms | 0 | 1.76 ms |
-| 30k load, control (CB part 1's, `9488992a`) | 59 | 9.09 ms | 5.35 ms | 49 | 9.09 ms |
+| 30k load, branch (two runs) | 60-61 | 3.48-3.66 ms | 2.44-2.49 ms | 0 | 1.76-1.81 ms |
+| 30k load, control (`5b790031`, same boot) | 59 | 11.5 ms | 5.34 ms | 49 | 11.5 ms |
 | 100k load, branch (diagnosis) | 205 | 22.0 ms | 2.52 ms | 4 | 20.7 ms |
-| 100k load, control (CB part 1's) | 185 | 26.4 ms | 5.73 ms | 154 | 26.4 ms |
+| 100k load, control (CB part 1's `9488992a`, historical) | 185 | 26.4 ms | 5.73 ms | 154 | 26.4 ms |
 | 30k and 100k pans | 0 | - | - | 0 | - |
 
 The 30k load meets the bar: no frame of road work above the 4.0 ms hydration budget. At 100k
@@ -17685,6 +17685,23 @@ staging buffer stalling; not split further: a surface is one buffer) and two lam
 of 4.7 ms with one 2-3 ms engine spike inside a single batch node (seen at 30k too before the
 1.0 ms slice). The analysis counts the network refresh's road share only: CB part 1's tables
 counted its whole time, whose first frame is the terrain's visuals (5 ms), not road work.
+
+**Products and edits (fresh, the same boot; control `dev` `5b790031`'s release library with its
+scripts and this branch's benchmark script).** Digests (`--digests`, one run a side): the 30k
+city's road chunks 5 of 5 settle points equal, graded, buildings, parked cars, vegetation and
+water equal too; Kuopio 8 of 8 in every family. Kuopio's drag probe (39 strokes, perf channel,
+untimed): the first commits' 222-273 ms frames of road work on the control are gone on the branch
+(road work at most 1.5-2.0 ms on a commit, 1.8-2.7 on a fast commit, 1.4-3.7 on an undo, against
+the control's 1.2-1.8, 1.7-2.0 apart from those frames, and 1.6-2.9); the probe passes on two of
+three branch runs and both control runs: the failing run's first stroke's undo installed its
+graded batch without a batch frame of its own (the graded renderer's one-batch-frame check):
+timing-dependent, the first stroke now running without the long frame before its undo, and not
+seen in the other two runs; for review. The teardown probe (BX1's: a new Kuopio game with roads, Zoning on and off, the 30k city
+loaded, quit): no mesh-null, leaked-RID, leaked-dependency or error line at any step or at exit.
+Stills (10:00): Kuopio's `close`, `mid` and `forest_low` after 4,000 warm-up frames
+byte-identical; the 30k city two runs a side: `city` and `city_low` byte-identical in both pairs,
+`saved` 2-3 pixels (delta at most 3) where control against control differs by 2, `systematic`
+none on all three (the `RENDER-45` residue).
 
 ## Implemented Runtime Contract
 
