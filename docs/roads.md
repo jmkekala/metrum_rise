@@ -12225,7 +12225,7 @@ grade.
 
 ## Road tools (`ROAD-112`, `ROAD-113`)
 
-**Status: planned (2026-11-12), nothing built.** The user asked for a complete refactor of the
+**Status: in progress.** Planned 2026-11-12; round A (the guide kernel) built 2026-11-13. The user asked for a complete refactor of the
 road tool, Rust-first: the current straight mode and the GDScript `Curve3D` "curve" (a cubic
 Bezier whose handles are the raw vectors to the control point, so its curvature, radius and
 length are not exact) are replaced. Mechanics follow the genre (city builders' straight, curve,
@@ -12244,6 +12244,29 @@ continuous, grid, parallel, replace and freeform tools); no names, art or look a
   per mode; pick, snapping, measurement and HUD values, height handles, batch builders,
   plan-mode drafts, redo. No clothoids for now (cars do not slow for radius); the segment enum
   leaves room for one.
+- **Guide kernel** (round A, `simulation/network/guide.rs` and `guide/`, engine-free, `f64` in
+  XZ). `GuideSegment` is a line, an exact circular arc or a cubic Bezier (a spiral variant can be
+  added later); `GuidePath` chains them, each segment starting where the last ends bit for bit.
+  An arc is stored as its two ends plus the bulge `tan(sweep / 4)` (centre, radius, start angle
+  and sweep are derived; `Arc::from_centre` builds one from them), so reversal is exact and a
+  split's pieces share their joint. Constructions are closed form: the simple curve
+  (`set_fillet`: the arc tangent to both legs with tangent length `min(|AC|, |CB|)` and a
+  straight lead on the longer leg, starting at A and ending at B bit for bit), the biarc S-curve
+  by the equal-tangent-length rule (`set_biarc`), and the arc from a start tangent through an end
+  point (`GuideSegment::tangent_to`, the continuous mode's). Each segment gives its length
+  (closed form; a Bezier by 5-point Gauss-Legendre on 64 parameter intervals), point and
+  tangent at arc length, end tangents, minimum radius (sampled at 257 parameters for a Bezier),
+  `split_at` and `reversed`. `offset(d)` (left of travel for positive `d`) takes lines to
+  parallels and arcs to concentric arcs and refuses corners and radii not larger than an offset
+  towards the centre; `flatten_offset_into` also offsets Bezier spans per sample with the same
+  refusal; a one-way copy is the reversed offset path. **Flattening** (`flatten_into`, into a
+  caller-owned buffer): `n = max(1, ceil(L / min(4 m, sqrt(8 R_min 0.05 m))))` equal arc-length
+  steps for every kind, lines included, with radii under 1 m counted as 1 m (no road allows them;
+  the floor bounds a near-cusp Bezier's point count). A Bezier's arc length inverts by its table
+  plus two fixed Newton steps. Tests (`guide/tests.rs`) check tangency within 1e-9 rad, the sag
+  and step bounds, arc length against the closed form within 1e-9, `f32` placement at +-10 km,
+  offsets, split, join, reversal and bitwise determinism. Benchmark
+  `road_tool_guide_benchmark` (results under "Guide kernel benchmark" below).
 - **Protocol.** GDScript sends `road_tool_event` and `road_tool_set_option` and calls
   `road_tool_frame` once a frame; the frame returns the existing `preview_road` dictionary
   unchanged, plus gizmo arrays, HUD numbers, cursor and state. `preview_road` and
@@ -12262,6 +12285,29 @@ continuous, grid, parallel, replace and freeform tools); no names, art or look a
 - **Redo** re-runs the undone action's stored request through the normal commit; any new edit
   clears it. The undo record carries its request, undo refunds the build cost, and a redo
   refuses when it would demolish buildings that appeared after the undo.
+
+### Guide kernel benchmark (round A)
+
+Fresh, 2026-11-13, branch `roadtools-a` (`dev` `9488992a` plus the kernel), release bench
+profile, one thread pinned by `taskset -c 0,2,4,6,8,10,12,14`, under the run and exclusive timing
+locks, nothing else timed:
+
+```bash
+cd rust && cargo bench --bench road_tool_guide_benchmark --no-run
+taskset -c 0,2,4,6,8,10,12,14 "$BENCH_BINARY" --bench
+```
+
+| Row | Path (at 10 km from the origin) | Points | Time (Criterion mean, 95% interval) |
+| --- | --- | --- | --- |
+| `flatten_arc_1km` | arc, radius 500 m, sweep 2 rad, 1,000 m | 251 | 2.158 us (2.157-2.158) |
+| `flatten_bezier_1km` | cubic Bezier, 986.8 m | 248 | 18.59 us (18.58-18.59) |
+
+The arc is well under the plan's 20 us expectation. The Bezier pays its 64-interval length table,
+257 curvature samples and two Newton steps a point; nothing in a per-pose loop flattens a long
+Bezier yet (round N's freeform tool will). **No allocation beyond the output:** the bench's
+`METRUM_GUIDE_ALLOC_PROBE=<n>` mode flattens both paths `n` times into warmed buffers and exits;
+under `heaptrack --record-only`, `n = 0` and `n = 100000` both record 496 allocation calls (the
+process's own), so 200,000 warmed flattens allocated nothing.
 
 ### Decisions (user, 2026-11-12, all as recommended)
 
