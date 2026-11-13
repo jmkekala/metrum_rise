@@ -184,8 +184,11 @@ impl SimCore {
                     preview.map(PiecesSource::Preview),
                 )
             }
-            StrokePlan::Batch(dry) => match dry.rebased(self, live_fingerprint) {
-                Some((plan, delta)) => (Some(PlanSource::Owned(plan)), Some(PiecesSource::Delta(delta))),
+            StrokePlan::Batch(dry) => match (*dry).rebased(self, live_fingerprint) {
+                Some((plan, delta)) => (
+                    Some(PlanSource::Owned(Box::new(plan))),
+                    Some(PiecesSource::Delta(delta)),
+                ),
                 None => (None, None),
             },
         };
@@ -194,7 +197,7 @@ impl SimCore {
         let fresh_plan;
         let edit_plan = match &reused_plan {
             Some(PlanSource::Preview(preview)) => &preview.plan,
-            Some(PlanSource::Owned(plan)) => plan,
+            Some(PlanSource::Owned(plan)) => &**plan,
             None => {
                 fresh_plan = RoadEditPlan::compile(
                     self,
@@ -490,13 +493,13 @@ pub(super) enum StrokePlan {
     Preview(Option<Arc<RoadPreview>>),
     /// The batch's dry run of the stroke (`ROAD-112` round F), used while the batch's chain
     /// holds ([`super::road_batch::DryRunStroke::rebased`]).
-    Batch(super::road_batch::DryRunStroke),
+    Batch(Box<super::road_batch::DryRunStroke>),
 }
 
 // The plan a core reuses, and the pieces it installs.
 enum PlanSource {
     Preview(Arc<RoadPreview>),
-    Owned(RoadEditPlan),
+    Owned(Box<RoadEditPlan>),
 }
 
 enum PiecesSource {

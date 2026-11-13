@@ -171,7 +171,7 @@ impl SimCore {
             // earlier strokes' here, before the next stroke reads them.
             let mut core = self.commit_stroke_core(
                 stroke,
-                StrokePlan::Batch(dry),
+                StrokePlan::Batch(Box::new(dry)),
                 index + 1 == count,
                 road_total,
                 metrics,
@@ -211,7 +211,15 @@ impl SimCore {
             tail_ms,
             reused,
         };
-        debug_log!("road", "road_batch strokes={count} {times:?}");
+        debug_log!(
+            "road",
+            "road_batch strokes={} dry_run_ms={:.3} core_ms={:?} tail_ms={:.3} reused={}",
+            count,
+            times.dry_run_ms,
+            times.core_ms,
+            times.tail_ms,
+            times.reused
+        );
         let outcome = self.finish_commit(stroke, tail, road_total, &submitted[count - 1]);
         RoadBatchOutcome {
             outcome,
