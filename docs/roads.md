@@ -12258,7 +12258,7 @@ continuous, grid, parallel, replace and freeform tools); no names, art or look a
   (bridge threshold 1.0 m above ground, today's rule).
 - **Multi-stroke preview**: an outline ghost every pose, exact pieces one stroke a frame when the
   pointer rests (one stroke's stage budgets are about 7.5 ms). Cap 40 strokes / 8 km a batch,
-  final after round G's measurement.
+  final after round G1's measurement.
 - **Redo** re-runs the undone action's stored request through the normal commit; any new edit
   clears it. The undo record carries its request, undo refunds the build cost, and a redo
   refuses when it would demolish buildings that appeared after the undo.
@@ -12290,44 +12290,66 @@ continuous, grid, parallel, replace and freeform tools); no names, art or look a
 
 ### Rounds
 
+Order revised by the user (2026-11-13): basic drawing and visuals first, then heights and
+bridges (also basic), then the advanced tools; moving and reshaping built roads (`ROAD-113`)
+last. Round G is split: G2 joins phase 1; G1 stays before H, because an automatic bridge or
+tunnel splits one draft into several strokes that preview and commit as one batch. Round CB is
+`RENDER-52`, done in phase 1 after round D, the last round to edit `network_tool.gd`.
+
 | Round | Scope | Hours | Timing level |
 | --- | --- | --- | --- |
+| | *Phase 1: basic drawing and visuals* | | |
 | A | Guide geometry kernel | 4.5 | R |
 | B | Session, pick, snap, measure (not wired) | 5 | R |
 | C | Bridge calls; session drives preview and commit; straight parity bitwise | 4.5 | F + preview rows |
 | D | Simple curve, continuous, HUD, gizmos; GDScript curve code deleted | 5 | F + preview rows |
 | E | Snapping toggles, guide lines, angle lock, length steps | 3 | R |
 | | **Landing 1** | | L |
+| N | Complex curve and freeform handles | 4 | R |
+| G2 | T65 option (c): the terrain cut-out follows the drawn road | 4 | F + preview rows |
+| CB | Road chunk renderer out of `network_tool.gd` into the stream `roads` layer (`RENDER-52`) | 5 | F + stream rows |
+| | **Landing 2** | | L |
+| | *Phase 2: heights and bridges* | | |
 | F | Batch commit, grouped undo, undo refund | 5 | F + K22 |
-| G | Two-tier batch preview; part 2: T65 option (c), the terrain cut-out follows the drawn road | 8 | F + preview rows |
+| G1 | Two-tier batch preview | 4 | F + preview rows |
 | H | Profile field, automatic bridge/tunnel segmentation | 5 | F + K22 |
 | I | Height handles and HUD | 3 | R |
-| | **Landing 2** | | L |
+| | **Landing 3** | | L |
+| | *Phase 3: advanced tools* | | |
 | J | Grid | 4 | R |
-| K | Parallel | 4 | R |
+| K | Parallel mode | 3 | R |
 | L | Replace, flip, eyedropper | 4.5 | F + K22 |
 | M | Route upgrade | 3 | R |
-| | **Landing 3** | | L |
-| N | Complex curve and freeform handles | 4 | R |
+| | **Landing 4** | | L |
 | O | Redo | 3 | F |
 | P | Plan mode | 4 | R |
 | Q | Acceptance, cleanup, docs | 3 | L |
-| | **Landing 4** | | |
+| | **Landing 5** | | |
+| | *`ROAD-113`* | | |
 | MV0 | Stored edge guides, save bump | 6 | F + K22 |
 | MV1 | Geometry edit core, undo, refund, redo | 7 | F + K22 |
 | MV2 | Geometry edit preview | 4 | F + preview rows |
 | MV3 | Shift in Replace | 5 | R |
-| | **Landing 5** | | L |
+| | **Landing 6** | | L |
 | MV4 | Move tool | 5 | R |
 | MV5 | Reshape handles | 4 | R |
 | MV6 | Bridges | 4 | F + K22 |
 | MV7 | Acceptance, docs | 3 | L |
-| | **Landing 6** | | |
+| | **Landing 7** | | |
 
-Rounds A and B add new files only. Round C and later start after `RENDER-32`'s G2c-5, R1 and
-BX1 have landed and re-read `road_tool.gd`, `network_tool.gd` and the hold rule at their base.
+About 76.5 h for `ROAD-112` and 38 h for `ROAD-113`. Rounds A and B add new files only. Round C
+and later start after `RENDER-32`'s G2c-5, R1 and BX1 have landed and re-read `road_tool.gd`,
+`network_tool.gd` and the hold rule at their base.
 
-Round G part 2 (user decision 2026-11-12): T65's remaining junction frames, where a drag pose
+**Parallel mode** (user, 2026-11-13) works as in CS2: a toggle on every drawing mode, not a
+separate tool. Each drawn road gets one copy beside it at a set centre-to-centre spacing, an
+exact offset (parallel lines, concentric arcs; refused where the inner radius drops below the
+type's minimum). A one-way type's copy is the reversed offset path, so two one-way roads make a
+divided road; a two-way type's copy is the same type. The copy sits on the left by default
+(right-hand traffic), one key swaps the side, and keys or the scroll wheel step the spacing. Both
+roads commit as one undo step. There is no copy from an existing road and no multiple copies.
+
+**G2** (user decision 2026-11-12): T65's remaining junction frames, where a drag pose
 replaces published pieces and the published graded tiles drop the old pieces' cut-out before the
 pose's exact selection is ready, take option (c): the graded terrain's road cut-out follows the
 road pieces drawn that frame, so road and terrain never disagree and the road is not held. It
