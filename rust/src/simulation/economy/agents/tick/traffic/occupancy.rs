@@ -2,7 +2,9 @@
 
 //! Lane occupancy, gap, and entry-claim helpers.
 
-use super::super::super::{TRANSIT_INTERSECTION, TRANSIT_NETWORK};
+use super::super::super::{
+    ACCESS_PLAN_VALID, ACCESS_WALK_STRANDED, MODE_WALK, TRANSIT_INTERSECTION, TRANSIT_NETWORK,
+};
 use super::super::claims::LaneClaimContext;
 use crate::config::{CAR_LENGTH, IDM_S_MIN, IDM_T_HEAD};
 use crate::simulation::economy::agents::determinism::stable_index;
@@ -63,6 +65,19 @@ pub(in crate::simulation::economy::agents) fn lane_attach_slot_clear(
 #[inline(always)]
 pub(in crate::simulation::economy::agents::tick) fn live_lane_bucket_transit(transit: u8) -> bool {
     transit == TRANSIT_NETWORK || transit == TRANSIT_INTERSECTION
+}
+
+/// Whether a live lane agent with transit mode `mode` and access flags `flags` holds its place
+/// in its lane's bucket (`TRAFFIC-37`): every car, and a walker walking a planned route. A
+/// walker that stands with no route, stranded ([`ACCESS_WALK_STRANDED`]) or with no plan (its
+/// trip taken, waiting for its household's next home, `TRAFFIC-24`, or for its replan gate),
+/// keeps its lane, distance and node, so it plans from its own sidewalk (`TRAFFIC-19`), but is in
+/// no bucket: the walkers behind it pass, as traffic passes a car waiting off its lane
+/// (`TRAFFIC-29`, `TRAFFIC-31`). It rejoins with the plan it walks on. The one membership test of
+/// the bucket fill, its patches and its rebuild check; O(1), two column reads per lane agent.
+#[inline(always)]
+pub(in crate::simulation::economy::agents) fn lane_bucket_member(mode: u8, flags: u8) -> bool {
+    mode != MODE_WALK || flags & (ACCESS_PLAN_VALID | ACCESS_WALK_STRANDED) == ACCESS_PLAN_VALID
 }
 
 /// Returns whether a connector or lane can be entered at distance zero.

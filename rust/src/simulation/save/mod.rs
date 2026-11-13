@@ -831,7 +831,13 @@ pub(crate) fn load_from_sqlite(
         |r| r.get(0),
     )?;
     let mut parking = crate::simulation::parking::ParkingSystem::load_json(&parking_json)?;
-    households.parking_changes = std::mem::take(&mut parking.pending_households).into_iter().map(crate::simulation::core::handles::Handle::from_bits).collect();
+    // The saved events come first; a load repair's removal may have queued its own after them.
+    let mut parking_changes: Vec<_> = std::mem::take(&mut parking.pending_households).into_iter().map(crate::simulation::core::handles::Handle::from_bits).collect();
+    parking_changes.append(&mut households.parking_changes);
+    households.parking_changes = parking_changes;
+    // After the member lists and the parking events: the households it creates publish their
+    // cars as an arrival's do (`ECON-29`).
+    households.unhouse_homeless_arrival_carriers(&mut agents, &allocator);
     parking.validate_sources(&allocator, &graph)?;
     parking.validate_custody(&agents,&households)?;
     Ok(LoadedSimulation {

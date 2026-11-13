@@ -1002,17 +1002,18 @@ fn a_walker_with_no_home_whose_job_ends_on_the_way_waits_at_its_lane_end() {
     assert_eq!(agents.stranded_report().waiting_for_home, 1);
 }
 
-// STRAND (diagnosis, 2026-11-13; the owner's dump, agents 350/352/353/355): a household moving in
-// walks from the border to the home admission claimed for it, and a road takes that home on the
-// way (`ZONE-09`: `demolish_for_road` evacuates the batch, then removes each building). Another
-// home across the block has a vacancy, but the evacuation rehouses only households that already
-// exist (`evacuate_referencing` skips an agent with no household record), so the carrier keeps
-// its household (`pending_household_size`) with no home and no destination. At the end of its
-// sidewalk it fails with no plan, gives up and, with no home, is stranded there for good: its
-// backoff plans again for a destination it does not have. A resident walking home behind it on
-// the same sidewalk keeps the car spacing behind it and never reaches its door.
+// `ECON-29` (round STRAND's dump, agents 350/352/353/355): a household moving in walks from the
+// border to the home admission claimed for it, and a road takes that home on the way (`ZONE-09`:
+// `demolish_for_road` evacuates the batch, then removes each building). The family becomes an
+// unhoused household where it stands: the carrier is its first member and walks to the end of
+// its sidewalk, where it waits for a home with no plan, out of the lane buckets (`TRAFFIC-37`),
+// so the resident walking behind it passes and gets home; the other member waits in no building.
+// The housing queue then rehouses it by its own rule in the vacancy across the block, and both
+// members go there. Before the fix the carrier kept its household with no home, was stranded at
+// its lane end replanning to nowhere, and the resident queued 2.7 m behind it for good.
 #[test]
-fn strand_a_moving_in_walker_whose_home_a_road_takes_is_never_rehoused_and_holds_its_sidewalk() {
+fn a_moving_in_walker_whose_home_a_road_takes_becomes_an_unhoused_household_and_frees_its_sidewalk()
+{
     let mut block = Block::new(false, false);
     let asset = register_test_asset(
         &mut block.allocator,
@@ -1025,9 +1026,11 @@ fn strand_a_moving_in_walker_whose_home_a_road_takes_is_never_rehoused_and_holds
     }
     block.allocator.rebuild_zone_index();
     let mut agents = AgentSystem::new();
-    // The carrier, 30 m from the end of road 1's outer sidewalk, its home claimed at admission.
+    // The carrier of a two-adult family, 30 m from the end of road 1's outer sidewalk, its home
+    // claimed at admission.
     let carrier = block.walker(&mut agents, 0, 30.0);
     agents.pending_household_size[carrier] = 2;
+    agents.pending_household_adults[carrier] = 2;
     block.allocator.claim_vacancy(0);
     // A resident of building 1 walking home 4 m behind it.
     let resident = block.walker(&mut agents, 1, 34.0);
@@ -1070,67 +1073,126 @@ fn strand_a_moving_in_walker_whose_home_a_road_takes_is_never_rehoused_and_holds
     ));
     // The other home is building 0 now; it still has every place free.
     assert_eq!(agents.target_building[resident], 0);
+    let slot =
+        crate::simulation::buildings::allocator::baseline_private_zone_slot(ZoneType::Residential)
+            .unwrap();
+    assert_eq!(
+        block.allocator.vacancy_index[slot],
+        vec![0],
+        "a vacancy stands"
+    );
+    // An unhoused household of two adults: the carrier and a member in no building. Nothing is
+    // claimed for it at the demolition.
+    assert_eq!(households.households.len(), 1);
+    let household = &households.households[0];
+    assert_eq!(household.home_building_id, usize::MAX);
+    assert_eq!((household.member_count, household.adult_count), (2, 2));
+    assert_eq!(household.unhoused_days_elapsed, 0);
+    assert_eq!(households.pending_arrivals.households, 0);
     assert_eq!(block.allocator.buildings[0].occupancy, 0);
-    let slot = crate::simulation::buildings::allocator::baseline_private_zone_slot(
-        ZoneType::Residential,
-    )
-    .unwrap();
-    assert_eq!(block.allocator.vacancy_index[slot], vec![0], "a vacancy stands");
-    // Not rehoused: still a household on its way in, with nowhere to go.
-    assert_eq!(agents.pending_household_size[carrier], 2);
-    assert_eq!(agents.household_id[carrier], usize::MAX);
+    assert_eq!(agents.pending_household_size[carrier], 0);
+    assert_eq!(agents.household_id[carrier], 0);
     assert_eq!(agents.home_building[carrier], usize::MAX);
     assert_eq!(agents.target_building[carrier], usize::MAX);
+    let member = agents.len() - 1;
+    assert_ne!(member, resident);
+    assert_eq!(agents.household_id[member], 0);
+    assert_eq!(agents.transit[member], TRANSIT_IN_BUILDING);
+    assert_eq!(
+        agents.current_building[member],
+        usize::MAX,
+        "in no building"
+    );
 
-    // It walks to the end of its sidewalk and is stranded there: the dump's record.
+    // The carrier walks to the end of its sidewalk and waits there, not stranded and with no
+    // record; the resident behind it passes and gets home.
     assert!(
-        walk_until(&mut block, &mut agents, carrier, 60.0, |a| stranded(a, carrier)),
-        "it is stranded"
+        walk_until(&mut block, &mut agents, resident, 60.0, |a| {
+            a.transit[resident] == TRANSIT_IN_BUILDING
+        }),
+        "the resident gets home past it"
     );
-    let line = agents
-        .trip_failures
-        .lines
-        .iter()
-        .find(|line| line.contains(&format!("agent {carrier} ")))
-        .cloned()
-        .unwrap_or_default();
-    assert!(
-        line.contains("household moving in, on foot")
-            && line.contains(
-                "with no destination: travelling with no plan to reach its destination; \
-                 stranded with no way home: waits at the end of its lane, plans again in 5 s"
-            ),
-        "{:#?}",
-        agents.trip_failures.lines
-    );
-    // Ten game minutes on it still stands there, its backoff planning for no destination, and
-    // the resident behind it keeps the car spacing and never gets home.
-    for _ in 0..6_000 {
+    assert_eq!(agents.current_building[resident], 0);
+    for _ in 0..600 {
         block.tick(&mut agents);
     }
     assert_eq!(
-        (agents.current_lane_id[carrier], agents.lane_distance[carrier]),
+        (
+            agents.current_lane_id[carrier],
+            agents.lane_distance[carrier]
+        ),
         (lane, length),
         "it waits at the end of its lane, on it"
     );
-    assert!(stranded(&agents, carrier));
-    assert_eq!(agents.target_building[carrier], usize::MAX);
-    assert_eq!(agents.pending_household_size[carrier], 2);
-    assert!(agents.network_replan_failures[carrier] >= 3, "its backoff runs on");
-    assert_eq!(block.allocator.buildings[0].occupancy, 0, "the vacancy is never taken");
-    assert_eq!(agents.current_lane_id[resident], lane);
+    assert_eq!(agents.access_flags[carrier], 0, "no plan, not stranded");
     assert!(
-        agents.lane_distance[resident] <= length - 2.0,
-        "the resident queues behind it: {} of {length}",
-        agents.lane_distance[resident]
-    );
-    assert_ne!(agents.transit[resident], TRANSIT_IN_BUILDING, "it never gets home");
-    eprintln!(
-        "STRAND carrier lane {lane} d {:.1}/{length:.1} failures {} next {:.1}; resident d {:.2}; lines {:#?}",
-        agents.lane_distance[carrier],
-        agents.network_replan_failures[carrier],
-        agents.next_replan_time[carrier],
-        agents.lane_distance[resident],
+        agents.trip_failures.lines.is_empty(),
+        "{:#?}",
         agents.trip_failures.lines
+    );
+    agents.refresh_stranded_report(&block.network, &block.graph);
+    assert_eq!(agents.stranded_report().waiting_for_home, 1);
+
+    // Its hourly phase queues its rehousing. The housing queue's own rule (`affordable_home`):
+    // an immigrant's starting budget alone affords no home, so it stays unhoused; once its
+    // reserves afford one (its wages, say) the queue gives it the vacancy.
+    households.queue_every_household_for_test(0, &mut agents, &block.allocator);
+    households.serve_housing_requests(8, &mut agents, &mut block.allocator);
+    assert_eq!(households.households[0].home_building_id, usize::MAX);
+    households.households[0].budget = 1_000.0;
+    households.queue_every_household_for_test(0, &mut agents, &block.allocator);
+    assert_eq!(
+        households.serve_housing_requests(8, &mut agents, &mut block.allocator),
+        1
+    );
+    assert_eq!(households.households[0].home_building_id, 0, "rehoused");
+    assert_eq!(agents.target_building[carrier], 0);
+    assert!(
+        walk_until(&mut block, &mut agents, carrier, 120.0, |a| at_home(
+            a, carrier
+        )),
+        "it walks to its new home"
+    );
+    for _ in 0..10 {
+        block.tick(&mut agents);
+    }
+    assert!(at_home(&agents, member), "the other member is home too");
+}
+
+// `TRAFFIC-37`: a walker with no home whose job ends on the way waits at the end of its lane for
+// its household's next home (`TRAFFIC-24`), with no plan. It keeps its lane but is in no lane
+// bucket, so a walker behind it on the same sidewalk passes it and gets home; before the fix the
+// walker behind stopped 2.7 m short of it for good.
+#[test]
+fn a_walker_waiting_for_a_home_at_its_lane_end_lets_the_walkers_behind_it_pass() {
+    let mut block = Block::new(false, false);
+    let mut agents = AgentSystem::new();
+    let waiting = block.walker(&mut agents, 1, 20.0);
+    agents.home_building[waiting] = usize::MAX;
+    agents.work_building[waiting] = 1;
+    agents.activity[waiting] = ACTIVITY_WORK;
+    let resident = block.walker(&mut agents, 0, 24.0);
+    let lane = agents.current_lane_id[waiting];
+    let length = block.network.lane_system.lanes[lane].length;
+    block.tick(&mut agents);
+    agents.assign_work_building(waiting, usize::MAX, 0);
+    assert!(
+        walk_until(&mut block, &mut agents, resident, 60.0, |a| at_home(
+            a, resident
+        )),
+        "the walker behind gets home"
+    );
+    assert_eq!(
+        (
+            agents.current_lane_id[waiting],
+            agents.lane_distance[waiting]
+        ),
+        (lane, length),
+        "the waiting walker keeps its place at its lane end"
+    );
+    assert_eq!(agents.access_flags[waiting], 0);
+    assert!(
+        agents.lane_buckets[lane].iter().all(|&(_, i)| i != waiting),
+        "it is in no bucket"
     );
 }

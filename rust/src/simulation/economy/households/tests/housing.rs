@@ -1099,3 +1099,97 @@ fn housing_requests_leave_oldest_first_across_rehousings_and_reviews() {
         "a household's rehousing goes before its review of the same slot"
     );
 }
+
+// `ECON-29`: a family on its way in whose home goes while no other home is free becomes an
+// unhoused household, here through the removal that does not evacuate (an expired
+// compatibility's, `evict_building_unhousing_arrivals`) and still held at its border. It keeps
+// waiting unhoused, its days counted; a home that frees later houses it by the housing rule, and
+// with none it becomes exit-eligible after `persistent_exit_max_unhoused_days`.
+#[test]
+fn an_arrival_whose_home_goes_with_no_vacancy_waits_unhoused_then_is_housed_or_may_leave() {
+    for home_frees in [true, false] {
+        let mut allocator = BuildingAllocator::new();
+        let asset =
+            register_test_residential_asset_with_capacity(&mut allocator, "test", "arrival", 1);
+        allocator
+            .buildings
+            .push(make_building(0.0, ZoneType::Residential, &asset, 0.0));
+        allocator.rebuild_zone_index();
+        allocator.claim_vacancy(0);
+        let mut households = HouseholdSystem::new();
+        let mut agents = AgentSystem::new();
+        let carrier = agents.spawn_household_arrival_carrier(
+            0,
+            3,
+            crate::simulation::economy::agents::HouseholdAgeComposition {
+                adult_count: 2,
+                elder_count: 0,
+                child_count: 1,
+            },
+            0,
+            5.0,
+            7.0,
+        );
+        households.record_pending_arrival(agents.pending_household_composition(carrier));
+        let mut zoning = crate::simulation::zoning::ZoningSystem::new(
+            &crate::simulation::core::config::WorldConfig::default(),
+        );
+        assert!(allocator.remove_building_for_bulldoze(
+            0,
+            &mut zoning,
+            &mut agents,
+            &mut households,
+            &mut ShipmentSystem::new(),
+            &mut 0.0,
+        ));
+        assert!(allocator.buildings.is_empty(), "no home is left");
+        assert_eq!(households.households.len(), 1);
+        let family = &households.households[0];
+        assert_eq!(family.home_building_id, usize::MAX);
+        assert_eq!((family.member_count, family.adult_count), (3, 2));
+        assert_eq!(households.pending_arrivals.households, 0);
+        assert_eq!(agents.len(), 3);
+        for member in 0..3 {
+            assert_eq!(agents.household_id[member], 0);
+            assert_eq!(agents.home_building[member], usize::MAX);
+            assert_eq!(agents.pending_household_size[member], 0);
+            assert_eq!(agents.transit[member], TRANSIT_IN_BUILDING);
+            assert_eq!(
+                agents.current_building[member],
+                usize::MAX,
+                "in no building"
+            );
+        }
+        assert!(
+            !agents.departure_held(carrier),
+            "it no longer waits to set out"
+        );
+        assert!(!households.exit_eligible(0, exit_policy(), &allocator));
+
+        // Its daily housing reviews find no home and count its days without one.
+        households.households[0].budget = 1_000.0;
+        households.resolve_household_housing(&mut agents, &mut allocator);
+        assert_eq!(households.households[0].home_building_id, usize::MAX);
+        assert_eq!(households.households[0].unhoused_days_elapsed, 1);
+        if home_frees {
+            allocator
+                .buildings
+                .push(make_building(40.0, ZoneType::Residential, &asset, 0.0));
+            allocator.rebuild_zone_index();
+            households.recount_every_household(&agents, &allocator);
+            households.rehouse_unhoused_before_growth(&mut agents, &mut allocator);
+            assert_eq!(households.households[0].home_building_id, 0, "housed");
+            assert_eq!(households.households[0].unhoused_days_elapsed, 0);
+            assert!((0..3).all(|member| agents.home_building[member] == 0));
+            assert_eq!(allocator.buildings[0].occupancy, 1);
+        } else {
+            for _ in 1..exit_policy().max_unhoused_days {
+                households.resolve_household_housing(&mut agents, &mut allocator);
+            }
+            assert!(
+                households.exit_eligible(0, exit_policy(), &allocator),
+                "it may leave"
+            );
+        }
+    }
+}

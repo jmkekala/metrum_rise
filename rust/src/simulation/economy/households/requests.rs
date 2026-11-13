@@ -70,7 +70,7 @@ impl HouseholdSystem {
     /// Queues every household's requests at once, in household order, as their hourly phases
     /// in the hour of `slot` would.
     #[cfg(test)]
-    pub(super) fn queue_every_household_for_test(
+    pub(crate) fn queue_every_household_for_test(
         &mut self,
         slot: u64,
         agents: &mut AgentSystem,

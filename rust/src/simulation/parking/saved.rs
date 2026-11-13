@@ -429,8 +429,13 @@ impl ParkingSystem {
                     || (households.handles.handle(agents.household_id[i]).to_bits() != owner
                         && !agents.parking_trip[i].delivery_only
                         && !(owner == u64::MAX
-                            && agents.pending_household_size[i] > 0
-                            && agents.parking_trip[i].arrival_ownership))
+                            && agents.parking_trip[i].arrival_ownership
+                            && (agents.pending_household_size[i] > 0
+                                // Unhoused on its way in (`ECON-29`): its household adopts the
+                                // car at the queued publication.
+                                || pending.contains(
+                                    &households.handles.handle(agents.household_id[i]).to_bits(),
+                                ))))
                 {
                     return Err("invalid parking custody".into());
                 }

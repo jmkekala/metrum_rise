@@ -197,6 +197,52 @@ impl AgentSystem {
         }
     }
 
+    /// The lanes holding agent `agent_idx`'s entries in the retained snapshot, as read before a
+    /// mutator outside the tick changes its bucket membership in place
+    /// ([`Self::update_lane_bucket_membership`]); none when the snapshot does not cover it. O(1).
+    pub(in crate::simulation::economy::agents) fn lane_bucket_entry_lanes(
+        &self,
+        agent_idx: usize,
+    ) -> [Option<usize>; 2] {
+        if !self.lane_bucket_snapshot_valid || agent_idx >= self.lane_bucket_snapshot_agent_count {
+            return [None, None];
+        }
+        self.agent_bucket_lanes(agent_idx, self.lane_bucket_snapshot_lane_count)
+    }
+
+    /// Keeps the snapshot in step after a mutator outside the tick changed whether agent
+    /// `agent_idx` is a bucket member while it stays where it is (a walker's plan cleared on
+    /// the road, `TRAFFIC-37`): moves its entries from `before`
+    /// ([`Self::lane_bucket_entry_lanes`] before the change) to the lanes of its state now.
+    /// Its live lane-agent count is unchanged. O(entries on its lanes), allocation-free.
+    pub(in crate::simulation::economy::agents) fn update_lane_bucket_membership(
+        &mut self,
+        agent_idx: usize,
+        before: [Option<usize>; 2],
+    ) {
+        if !self.lane_bucket_snapshot_valid || agent_idx >= self.lane_bucket_snapshot_agent_count {
+            return;
+        }
+        let after = self.agent_bucket_lanes(agent_idx, self.lane_bucket_snapshot_lane_count);
+        if before == after {
+            return;
+        }
+        for lid in before.into_iter().flatten() {
+            if self.remove_lane_entry(lid, agent_idx).is_none() {
+                self.invalidate_lane_bucket_snapshot();
+                return;
+            }
+        }
+        let lane_distance = self.agents.lane_distance[agent_idx];
+        for lid in after.into_iter().flatten() {
+            self.insert_lane_entry(lid, lane_distance, agent_idx);
+        }
+        #[cfg(test)]
+        {
+            self.lane_bucket_patched = true;
+        }
+    }
+
     #[cfg(test)]
     fn count_lane_bucket_entries(&self) {
         let entries = self

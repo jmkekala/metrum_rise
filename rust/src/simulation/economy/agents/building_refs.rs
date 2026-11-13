@@ -29,7 +29,7 @@ impl AgentSystem {
     /// Agents any of whose building references name `first` or `second`, ascending, in one
     /// scan on the pool (`SIM-02-K`): a removal of `first` that moves building `second` into its
     /// index finds here every agent its evacuation, eviction and remap change, and passes them
-    /// to [`Self::evacuate_building_among`], [`Self::evict_building_among`] and
+    /// to [`Self::evacuate_building_among`], [`Self::evict_building_unhousing_arrivals`] and
     /// [`Self::remap_building_among`]. O(A/p).
     pub(crate) fn agents_referencing_buildings(&self, first: usize, second: usize) -> Vec<usize> {
         let agents = &self.agents;
@@ -150,6 +150,47 @@ impl AgentSystem {
         self.clear_schedule_building_cache(agent_idx);
     }
 
+    /// Makes border household carrier `agent_idx`, whose home goes before it arrives
+    /// (`ECON-29`), the first member of its new household `household_id`, where it stands: it
+    /// carries no household any more, and the removal then treats it as any resident of the
+    /// home (`evacuate_referencing` or `evict_referencing` clear its home and its trip there).
+    /// One still held at its border never set out: it settles there in no building, as a
+    /// resident displaced indoors waits for its household's next home. O(household size).
+    pub(crate) fn unhouse_household_carrier(
+        &mut self,
+        agent_idx: usize,
+        household_id: usize,
+        age_group: u8,
+    ) {
+        self.set_household_membership(agent_idx, household_id);
+        self.agents.age_group[agent_idx] = age_group;
+        self.agents.pending_household_size[agent_idx] = 0;
+        self.agents.pending_household_adults[agent_idx] = 0;
+        self.agents.pending_household_elders[agent_idx] = 0;
+        if self.release_departure(agent_idx) {
+            // Held at the border it is in no lane bucket, and its trip was never planned.
+            self.agents.target_building[agent_idx] = usize::MAX;
+            self.agents.planned_target_building[agent_idx] = usize::MAX;
+            self.clear_route_and_lane_state(agent_idx);
+            self.agents.transit_mode[agent_idx] = MODE_WALK;
+            self.agents.transit[agent_idx] = TRANSIT_IN_BUILDING;
+            self.agents.current_building[agent_idx] = usize::MAX;
+        }
+        self.clear_schedule_building_cache(agent_idx);
+    }
+
+    /// Drops the trip of agent `agent_idx`, loaded from a save, whose destination is gone, as an
+    /// evacuation drops it (`evacuate_referencing`): no destination, no plan, so a walker on the
+    /// road waits at its lane end for its household's next home (`TRAFFIC-24`) instead of
+    /// replanning to nowhere. Load only, before the lane buckets are built. O(1).
+    pub(crate) fn drop_taken_trip(&mut self, agent_idx: usize) {
+        self.agents.target_building[agent_idx] = usize::MAX;
+        self.agents.planned_target_building[agent_idx] = usize::MAX;
+        self.agents.planned_activity[agent_idx] = 0;
+        self.clear_access_plan_and_path(agent_idx);
+        self.agents.next_replan_time[agent_idx] = 0.0;
+    }
+
     /// Updates a household member after their household relocates to a new home.
     pub(crate) fn relocate_household_member_home(
         &mut self,
@@ -218,7 +259,7 @@ impl AgentSystem {
                 self.agents.planned_activity[agent_idx] = ACTIVITY_HOME;
             }
             if needs_replan {
-                self.clear_access_plan_and_path(agent_idx);
+                self.clear_plan_in_place(agent_idx);
                 self.agents.next_replan_time[agent_idx] = 0.0;
                 self.agents.network_replan_failures[agent_idx] = 0;
                 self.clear_schedule_building_cache(agent_idx);
@@ -261,7 +302,7 @@ impl AgentSystem {
                 needs_replan = !on_access;
             }
             if needs_replan {
-                self.clear_access_plan_and_path(agent_idx);
+                self.clear_plan_in_place(agent_idx);
                 self.agents.next_replan_time[agent_idx] = 0.0;
                 self.agents.network_replan_failures[agent_idx] = 0;
                 self.clear_schedule_building_cache(agent_idx);
@@ -320,7 +361,7 @@ impl AgentSystem {
                     needs_replan = !on_access;
                 }
                 if needs_replan {
-                    self.clear_access_plan_and_path(agent_idx);
+                    self.clear_plan_in_place(agent_idx);
                     self.agents.next_replan_time[agent_idx] = 0.0;
                     self.agents.network_replan_failures[agent_idx] = 0;
                     // A homeless walker whose trip to work this cancelled waits at its lane end
@@ -350,9 +391,36 @@ impl AgentSystem {
     /// [`Self::evict_building`] for a removal that found its agents with
     /// [`Self::agents_referencing_buildings`]: only the ascending `candidates` that still name
     /// `building_id` are evicted, which is every agent that does, since the removal changes no
-    /// other agent's references before. O(candidates) (`SIM-02-K`).
+    /// other agent's references before. O(candidates) (`SIM-02-K`). Removals call
+    /// [`Self::evict_building_unhousing_arrivals`]; this is its eviction alone.
+    #[cfg(test)]
     pub(crate) fn evict_building_among(&mut self, building_id: usize, candidates: &[usize]) {
         let referencing = self.referencing_among(building_id, candidates);
+        self.evict_referencing(building_id, referencing);
+    }
+
+    /// Evicts the agents naming `building_id` for its removal, as [`Self::evict_building`] does,
+    /// over `candidates` (`SIM-02-K`); each arrival carrier whose home is
+    /// `building_id` first becomes its unhoused household
+    /// ([`HouseholdSystem::unhouse_arrival_carrier`], `ECON-29`), so no family on its way in is
+    /// left carrying a household to nowhere; after an evacuation there is none left. `candidates`
+    /// hold every agent naming `building_id` (ascending). O(candidates) plus the households'
+    /// sizes.
+    pub(crate) fn evict_building_unhousing_arrivals(
+        &mut self,
+        building_id: usize,
+        candidates: &[usize],
+        households: &mut HouseholdSystem,
+        allocator: &BuildingAllocator,
+    ) {
+        let referencing = self.referencing_among(building_id, candidates);
+        for &i in &referencing {
+            if self.agents.pending_household_size[i] > 0
+                && self.agents.home_building[i] == building_id
+            {
+                households.unhouse_arrival_carrier(i, self, allocator);
+            }
+        }
         self.evict_referencing(building_id, referencing);
     }
 
@@ -508,6 +576,14 @@ impl AgentSystem {
             if self.agents.home_building[agent_idx] != building_id {
                 continue;
             }
+            if self.agents.pending_household_size[agent_idx] > 0 {
+                // A family on its way in becomes an unhoused household (`ECON-29`): the housing
+                // queue finds its home by its own rule, not the first vacancy here. Ascending
+                // agent order, so the households are created in a fixed order.
+                let household_id = households.unhouse_arrival_carrier(agent_idx, self, allocator);
+                household_targets.insert(household_id, None);
+                continue;
+            }
             let household_id = self.agents.household_id[agent_idx];
             if household_id >= households.households.len()
                 || household_targets.contains_key(&household_id)
@@ -642,6 +718,9 @@ impl AgentSystem {
                 self.clear_access_plan_and_path(agent_idx);
                 self.agents.next_replan_time[agent_idx] = 0.0;
                 self.agents.network_replan_failures[agent_idx] = 0;
+                // A walker with no home left waits on the road for its household's next one
+                // (`TRAFFIC-19`), reported as eviction reports it.
+                self.note_waiting_for_home(agent_idx);
             }
         }
         self.invalidate_lane_bucket_snapshot();
@@ -879,6 +958,14 @@ impl AgentSystem {
         self.agents.overtake_blocked_time_s[agent_idx] = 0.0;
         self.agents.overtake_cooldown_s[agent_idx] = 0.0;
         self.agents.speed[agent_idx] = 0.0;
+    }
+
+    // Clears the plan of an agent outside the tick where it stands: a walker on the road keeps
+    // its lane but leaves the lane buckets with its plan (`TRAFFIC-37`). O(entries on its lanes).
+    fn clear_plan_in_place(&mut self, agent_idx: usize) {
+        let before = self.lane_bucket_entry_lanes(agent_idx);
+        self.clear_access_plan_and_path(agent_idx);
+        self.update_lane_bucket_membership(agent_idx, before);
     }
 
     fn clear_access_plan_and_path(&mut self, agent_idx: usize) {

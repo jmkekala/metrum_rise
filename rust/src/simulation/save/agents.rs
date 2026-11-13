@@ -428,9 +428,10 @@ pub(super) fn validate_loaded_agents(
         {
             agents.home_building[i] = usize::MAX;
         }
-        if agents.pending_household_size[i] > 0
-            && (agents.home_building[i] == usize::MAX || agents.household_id[i] != usize::MAX)
-        {
+        // A carrier with no home is a family whose home a demolition took on its way in, in a
+        // save from before `ECON-29`; the load makes it the unhoused household the running game
+        // now makes of it (`unhouse_homeless_arrival_carriers`), so its size is kept.
+        if agents.pending_household_size[i] > 0 && agents.household_id[i] != usize::MAX {
             agents.pending_household_size[i] = 0;
         }
         if agents.work_building[i] != usize::MAX

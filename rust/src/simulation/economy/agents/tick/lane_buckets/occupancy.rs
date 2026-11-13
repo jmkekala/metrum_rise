@@ -3,13 +3,16 @@
 //! Retained per-lane occupancy snapshot maintenance.
 //!
 //! The snapshot is a function of the agents' lane state: each live lane agent's
-//! `(lane_distance, index)` in its current lane's bucket, plus a source-lane ghost while a lane
+//! `(lane_distance, index)` in its current lane's bucket, except a walker standing with no route
+//! (`lane_bucket_member`, `TRAFFIC-37`), plus a source-lane ghost while a lane
 //! change is under way, every bucket sorted by distance with an index tiebreak. A fill rebuilds
 //! it from every agent on the shared pool; between fills it follows appends and swap-removes
 //! entry by entry (`SIM-02-K` part 4).
 
 use super::super::runtime::PAR_THRESHOLD;
-use super::super::traffic::{LANE_CHANGE_FINISH_EPS_M, live_lane_bucket_transit};
+use super::super::traffic::{
+    LANE_CHANGE_FINISH_EPS_M, lane_bucket_member, live_lane_bucket_transit,
+};
 use crate::config::{CAR_LENGTH, IDM_S_MIN};
 use crate::simulation::economy::agents::TRANSIT_NETWORK;
 use crate::simulation::economy::agents::data::AgentSystem;
@@ -118,13 +121,19 @@ impl AgentSystem {
     }
 
     /// The lanes holding agent `agent_idx`'s entries in a snapshot of its current state: its
-    /// current lane and, during a lane change, the source lane's ghost.
+    /// current lane and, during a lane change, the source lane's ghost; none for a walker standing
+    /// with no route ([`lane_bucket_member`]).
     pub(super) fn agent_bucket_lanes(
         &self,
         agent_idx: usize,
         lane_count: usize,
     ) -> [Option<usize>; 2] {
-        if !live_lane_bucket_transit(self.agents.transit[agent_idx]) {
+        if !live_lane_bucket_transit(self.agents.transit[agent_idx])
+            || !lane_bucket_member(
+                self.agents.transit_mode[agent_idx],
+                self.agents.access_flags[agent_idx],
+            )
+        {
             return [None, None];
         }
         let lid = self.agents.current_lane_id[agent_idx];
@@ -196,14 +205,24 @@ impl AgentSystem {
         let groups = &mut scratch.groups[..chunk_count * range_count];
         let transit = &self.agents.transit[..n];
         let lanes = &self.agents.current_lane_id[..n];
+        let modes = &self.agents.transit_mode[..n];
+        let flags = &self.agents.access_flags[..n];
         let live = if parallel {
             groups
                 .par_chunks_mut(range_count)
                 .zip(transit.par_chunks(KEY_CHUNK))
                 .zip(lanes.par_chunks(KEY_CHUNK))
+                .zip(modes.par_chunks(KEY_CHUNK))
+                .zip(flags.par_chunks(KEY_CHUNK))
                 .enumerate()
-                .map(|(chunk, ((out, transit), lanes))| {
-                    group_lane_agents(chunk, out, transit, lanes, lane_count, range_len)
+                .map(|(chunk, ((((out, transit), lanes), modes), flags))| {
+                    let columns = AgentColumns {
+                        transit,
+                        lanes,
+                        modes,
+                        flags,
+                    };
+                    group_lane_agents(chunk, out, columns, lane_count, range_len)
                 })
                 .sum()
         } else {
@@ -211,9 +230,17 @@ impl AgentSystem {
                 .chunks_mut(range_count)
                 .zip(transit.chunks(KEY_CHUNK))
                 .zip(lanes.chunks(KEY_CHUNK))
+                .zip(modes.chunks(KEY_CHUNK))
+                .zip(flags.chunks(KEY_CHUNK))
                 .enumerate()
-                .map(|(chunk, ((out, transit), lanes))| {
-                    group_lane_agents(chunk, out, transit, lanes, lane_count, range_len)
+                .map(|(chunk, ((((out, transit), lanes), modes), flags))| {
+                    let columns = AgentColumns {
+                        transit,
+                        lanes,
+                        modes,
+                        flags,
+                    };
+                    group_lane_agents(chunk, out, columns, lane_count, range_len)
                 })
                 .sum()
         };
@@ -283,13 +310,20 @@ impl AgentSystem {
     }
 }
 
-// Groups the lane agents of agent chunk `chunk` by lane range; returns the chunk's live
-// lane-agent count.
+// One agent chunk's columns the grouping reads.
+struct AgentColumns<'a> {
+    transit: &'a [u8],
+    lanes: &'a [usize],
+    modes: &'a [u8],
+    flags: &'a [u8],
+}
+
+// Groups the bucket members among the lane agents of agent chunk `chunk` by lane range; returns
+// the chunk's live lane-agent count, members or not.
 fn group_lane_agents(
     chunk: usize,
     out: &mut [Vec<u32>],
-    transit: &[u8],
-    lanes: &[usize],
+    columns: AgentColumns<'_>,
     lane_count: usize,
     range_len: usize,
 ) -> usize {
@@ -297,10 +331,11 @@ fn group_lane_agents(
         group.clear();
     }
     let mut live = 0;
-    for (offset, (&transit, &lid)) in transit.iter().zip(lanes).enumerate() {
+    for (offset, (&transit, &lid)) in columns.transit.iter().zip(columns.lanes).enumerate() {
         if live_lane_bucket_transit(transit) {
             live += 1;
-            if lid < lane_count {
+            if lid < lane_count && lane_bucket_member(columns.modes[offset], columns.flags[offset])
+            {
                 out[lid / range_len].push((chunk * KEY_CHUNK + offset) as u32);
             }
         }

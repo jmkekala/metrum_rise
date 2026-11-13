@@ -64,6 +64,11 @@ must receive a physical route home while the old entrance exists. The subsequent
 swap-remap preserve that destination. The existing removal scans remain O(A) per bounded action;
 evacuation adds routing only for displaced occupants. Housed occupants do not trigger a border
 search. Other cleanup and player-bulldoze paths retain their existing lifecycle contracts.
+Every removal turns a family still on its way in to the removed home (an arrival carrier) into an
+unhoused household first (`ECON-29`, [`demand.md`](demand.md#household-admission)): the evacuation
+does it in its household pass, and a removal that does not evacuate (an expired compatibility)
+does it in its eviction (`evict_building_unhousing_arrivals`), so no removal leaves a carrier with
+a household and no home.
 
 ## Core Data Model
 

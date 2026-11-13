@@ -241,6 +241,86 @@ impl HouseholdSystem {
         true
     }
 
+    /// Makes arrival carrier `agent_idx`, whose home goes before it arrives (a road, the player
+    /// or redevelopment demolishes it; `ECON-29`), the household it carries, unhoused: the
+    /// household an arrival creates at its home ([`Self::admit_immigrant_household`], its
+    /// approved composition, an immigrant's budget and stock), with no home and a new unhoused
+    /// household's counters. It leaves the pending arrival count at once, as a materialized
+    /// family does. The carrier becomes its first member where it stands
+    /// ([`AgentSystem::unhouse_household_carrier`]); the others, carried until now, are
+    /// residents in no building at its position, as members displaced indoors wait. From here
+    /// it is an unhoused household: the housing queue rehouses it by its own rule
+    /// (`affordable_home`), or the exit rules take it. Returns the household. O(household
+    /// size); the caller removes the home after.
+    pub(crate) fn unhouse_arrival_carrier(
+        &mut self,
+        agent_idx: usize,
+        agents: &mut AgentSystem,
+        allocator: &BuildingAllocator,
+    ) -> usize {
+        let pending_size = agents.pending_household_size[agent_idx];
+        debug_assert!(pending_size > 0 && agents.household_id[agent_idx] == usize::MAX);
+        let catalog = load_runtime_economy_catalog().unwrap_or_else(|err| {
+            panic!("could not load built-in economy catalog for an unhoused arrival: {err}")
+        });
+        let tuning = load_runtime_economy_tuning().unwrap_or_else(|err| {
+            panic!("could not load built-in economy tuning for an unhoused arrival: {err}")
+        });
+        let composition = agents.pending_household_composition(agent_idx);
+        let household_id = self.admit_immigrant_household(
+            &catalog,
+            &tuning,
+            usize::MAX,
+            pending_size,
+            composition,
+        );
+        self.record_materialized_arrival(composition);
+        agents.unhouse_household_carrier(agent_idx, household_id, composition.member_age_group(0));
+        let (x, y) = (agents.pos_x[agent_idx], agents.pos_y[agent_idx]);
+        for member_index in 1..pending_size {
+            // Home `usize::MAX`: a resident in no building, not on the map.
+            let resident = agents.spawn_housed_agent_with_age_group(
+                usize::MAX,
+                x,
+                y,
+                composition.member_age_group(member_index),
+            );
+            agents.assign_household_id(resident, household_id);
+        }
+        self.recount_household(household_id, agents, allocator, &catalog);
+        for category in [crate::debug::Channel::Economy, crate::debug::Channel::Spawn] {
+            debug_log!(
+                category,
+                "household arrival carrier unhoused household_id={} size={} carrier_agent={}",
+                household_id,
+                pending_size,
+                agent_idx,
+            );
+        }
+        household_id
+    }
+
+    /// Makes every arrival carrier a save holds with no home (a save from before `ECON-29`,
+    /// whose demolition left the family on its way in to nowhere) the unhoused household
+    /// [`Self::unhouse_arrival_carrier`] makes of it now, and drops the trip it no longer has,
+    /// so it loads as the running game would hold it. Load only: O(agents).
+    pub(crate) fn unhouse_homeless_arrival_carriers(
+        &mut self,
+        agents: &mut AgentSystem,
+        allocator: &BuildingAllocator,
+    ) {
+        for agent_idx in 0..agents.len() {
+            if agents.pending_household_size[agent_idx] == 0
+                || agents.home_building[agent_idx] != usize::MAX
+                || agents.household_id[agent_idx] != usize::MAX
+            {
+                continue;
+            }
+            self.unhouse_arrival_carrier(agent_idx, agents, allocator);
+            agents.drop_taken_trip(agent_idx);
+        }
+    }
+
     /// Test driver: materializes every carrier at its home in dense order, then recounts.
     /// Returns the households and residents created.
     #[cfg(test)]

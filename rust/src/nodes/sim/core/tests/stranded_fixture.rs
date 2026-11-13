@@ -435,7 +435,8 @@ fn a_walker_off_every_sidewalk_walks_to_one_and_continues_across_a_save_file() {
 
 // `PERF-13`: two walkers whose trip was taken from them on the way (no plan and no destination,
 // as when a job ends mid-walk) walk to the end of their sidewalk on road 2. The first keeps its
-// lane there with its cursor one past its empty path (`TRAFFIC-19`), the second waits behind it.
+// lane there with its cursor one past its empty path (`TRAFFIC-19`), and so does the second, which
+// passes it (`TRAFFIC-37`).
 // Saved and loaded, the city continues as the unsaved one, frame for frame: the loader took the
 // first walker off its lane as a stale route, so the second walked on to the end.
 #[test]
@@ -479,10 +480,15 @@ fn walkers_kept_at_their_path_end_continue_across_a_save_file() {
         (lane, length, 1, 0),
         "the first walker waits at its lane's end"
     );
-    assert_eq!(agents.current_lane_id[kept[1]], lane);
-    assert!(
-        agents.lane_distance[kept[1]] < length,
-        "the second walker waits behind it"
+    // The second walked past it to the lane's end (`TRAFFIC-37`: a walker standing with no plan
+    // is in no lane bucket); before, it waited 2.7 m behind.
+    assert_eq!(
+        (
+            agents.current_lane_id[kept[1]],
+            agents.lane_distance[kept[1]]
+        ),
+        (lane, length),
+        "the second walker waits at the lane's end too"
     );
     let path = temp_save_path("walkers_kept_at_path_end");
     continuous

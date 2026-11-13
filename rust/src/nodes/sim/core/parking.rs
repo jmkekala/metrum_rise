@@ -375,28 +375,26 @@ impl SimCore {
                 self.parking.remove_household_car(owner);
                 continue;
             };
-            let household = &self.households.households[h];
-            let Some(home) = self.allocator.buildings.get(household.home_building_id) else {
-                continue;
-            };
-            let home_handle = self
-                .allocator
-                .building_handles
-                .handle(household.home_building_id)
-                .to_bits();
-            let density = profiles
-                .density_for_runtime_id(home.zone_profile_runtime_id)
-                .unwrap_or(ZoneDensity::Low);
+            let home_id = self.households.households[h].home_building_id;
             let members: Vec<_> = self.agents.household_members(h).collect();
             let arrival = members.iter().copied().find(|&i| self.agents.parking_trip[i].arrival_ownership);
             if let Some(carrier) = arrival {
+                // An arrival keeps the car decided at its border, also one whose home went on
+                // its way in and arrives unhoused (`ECON-29`).
                 self.parking.adopt_arrival_car(owner, self.agents.parking_trip[carrier].vehicle);
                 self.agents.agents.parking_trip[carrier].arrival_ownership = false;
             } else {
+                let Some(home) = self.allocator.buildings.get(home_id) else {
+                    continue;
+                };
+                let density = profiles
+                    .density_for_runtime_id(home.zone_profile_runtime_id)
+                    .unwrap_or(ZoneDensity::Low);
                 self.parking.assign_household(owner, density, [home.center_x, home.center_y]);
+                let home_handle = self.allocator.building_handles.handle(home_id).to_bits();
+                self.parking.park_new_car(self.parking.household_car(owner), home_handle);
             }
             let car = self.parking.household_car(owner);
-            if arrival.is_none() { self.parking.park_new_car(car, home_handle); }
             self.parking.custody_changes.push(car);
             for member in members {
                 self.agents.agents.parking_trip[member].vehicle = car;

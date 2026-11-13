@@ -319,6 +319,33 @@ still on their way. A carrier that reaches its home takes its family off the cou
 adults and transfer claims never count twice, as pending and as housed (`ECON-28`; before, a pass
 between the arrival and the recount funded a four-worker entrant on five counted adults for three).
 
+**A family whose home goes on its way in (`ECON-29`, the owner's rule of 2026-11-13).** When a
+road, the player, redevelopment or an expired compatibility removes the home a carrier is still
+travelling to (or waiting at its border for), the removal makes the family a household at once,
+unhoused: the household an arrival creates at its home (`admit_immigrant_household`, its approved
+composition, an immigrant's budget and stock) with no home and a new unhoused household's counters
+(`HouseholdSystem::unhouse_arrival_carrier`, from `evacuate_referencing` or, for a removal that
+does not evacuate, `evict_building_unhousing_arrivals`). It leaves the pending arrival count in
+the same change, as a materialized family does; no journaled book of the hourly pass is touched
+(removals run outside the pass). The carrier becomes its first member where it stands and the
+family's other members are residents in no building at its position, as members displaced indoors
+wait. From then on it is an ordinary unhoused household: no home is claimed for it at the
+demolition; its hourly phase queues its rehousing and the `housing requests` queue gives it the
+best home its reserves afford ([`economy.md`](economy.md#household-housing-affordability-relocation-and-eviction)),
+or after `persistent_exit_*_unhoused_days` the exit rules take it ([Household removal](#household-removal)).
+Its car is the one decided at its border, adopted by the household at its next parking
+publication. Between the demolition and the rehousing its members do what unhoused residents do:
+a walker on the road walks to its lane end and waits there off the lane buckets
+([`traffic.md`](traffic.md#walkers-follow-their-routes-sidewalks-road-74), `TRAFFIC-37`), a driver
+settles where its drive's recovery leaves it with its car off the map (`TRAFFIC-29`), a carrier
+still at its border settles there, and a carrier already inside the removed home leaves it as an
+unhoused occupant does; once rehoused the walker walks to the new home and the others enter it.
+O(household size) per family, no scan; families of one demolition batch are made in ascending
+agent order, so the household ids are deterministic. A save from before the fix holding such a
+family (a carrier with a pending household and no home) loads it into the same state
+(`unhouse_homeless_arrival_carriers`, its trip dropped); before, the loader dropped its size and
+left a walker with no household.
+
 The **empty-town bootstrap** offers the first home when the city has a border and no households.
 
 ## Household removal

@@ -436,7 +436,8 @@ impl BuildingAllocator {
         }
         zoning.clear_parcel_occupancy(b_parcel_id);
 
-        agents.evict_building(i);
+        let referencing = agents.agents_referencing_buildings(i, i);
+        agents.evict_building_unhousing_arrivals(i, &referencing, households, self);
         households.invalidate_building(i, self);
         logistics.invalidate_building(i, self, agents, treasury_balance);
         let city_owned = self.is_city_service_building(&self.buildings[i]);
@@ -2050,10 +2051,15 @@ impl BuildingAllocator {
             }
             (None, _) => None,
         };
-        match candidates {
-            Some(candidates) => agents.evict_building_among(building_idx, candidates),
-            None => agents.evict_building(building_idx),
-        }
+        let scanned_agents;
+        let agent_candidates = match candidates {
+            Some(candidates) => candidates,
+            None => {
+                scanned_agents = agents.agents_referencing_buildings(building_idx, building_idx);
+                scanned_agents.as_slice()
+            }
+        };
+        agents.evict_building_unhousing_arrivals(building_idx, agent_candidates, households, self);
         let agent_count = agents.agents.len();
         match household_candidates {
             Some(candidates) => {

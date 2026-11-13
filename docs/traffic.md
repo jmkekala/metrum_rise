@@ -684,6 +684,28 @@ crossings).
     path ends, and the old rule dropped the lane: it stood lane-less at the node with no trip, and
     once rehoused would have planned from the node (with the watchdog's three retries and move
     home behind a failed plan).
+  - *Standing walkers leave the lane buckets* (`TRAFFIC-37`, round FSTRAND, 2026-11-13). A walker
+    that stands with no route, stranded (`ACCESS_WALK_STRANDED`) or with no plan (its trip taken
+    and waiting for its household's next home, the case `TRAFFIC-24` left on its lane; or waiting
+    for its replan gate), keeps its lane, distance and node, so its replans still start from its
+    own sidewalk (the `TRAFFIC-19` rule), but holds no place in the lane's bucket: the bucket
+    fill's overlap correction no longer stops the walkers behind it 2.7 m short, and they pass it,
+    as traffic passes a car waiting off its lane (`TRAFFIC-29`, `TRAFFIC-31`; a car drops its lane
+    for that, which a walker must not, so the cars' helper does not fit). One shared test,
+    `lane_bucket_member(transit_mode, access_flags)`, beside `live_lane_bucket_transit`, serves the
+    fill (`group_lane_agents`), its patches (`agent_bucket_lanes`: join, leave, swap-remove) and
+    the test-only rebuild check, so they cannot disagree: O(1), two column reads per lane agent,
+    no allocation, and the buckets get smaller. Membership changes in the tick (a plan set, a
+    stranding) are read by the next fill; the mutators outside the tick that clear a walker's plan
+    on the road (rehousing, eviction, a job's end) move its entries with it
+    (`update_lane_bucket_membership`, O(entries on its lanes)), and an evacuation or road edit
+    rebuilds the snapshot as before. A walker that gets a plan again rejoins at the next fill; one
+    within 2.7 m behind is then pushed back once. The live lane-agent count is unchanged. Walkers
+    draw through a standing one (no sideways offset). Found with round STRAND's dump: 77 walkers
+    stood single file behind 5 homeless families on the district's only sidewalk from the border.
+    Tests: `a_walker_waiting_for_a_home_at_its_lane_end_lets_the_walkers_behind_it_pass` and
+    `a_moving_in_walker_whose_home_a_road_takes_becomes_an_unhoused_household_and_frees_its_sidewalk`
+    (each fails without the rule: the walker behind never gets home).
   - *Off the network* (round T19b, 2026-11-02, the user's decision; `walk_home::walk_to_sidewalk`).
     A walker off every sidewalk, its road removed under it and no sidewalk end into its node
     within 30 m, looks for the nearest sidewalk point within `OFF_NETWORK_WALK_MAX_M` (200 m,
@@ -3015,4 +3037,5 @@ The measured ignored tests are
   must keep connector lanes and `next_lanes` in sync
 - a border queue of held cars is not shortened by the entry hold: the borders' throughput (one
   single-lane trunk per 10,000 residents in the perf fixture) is a separate fixture question
-- walkers keep car spacing (2.7 m) in lane buckets, connector entry claims and overlap correction
+- walkers walking a route keep car spacing (2.7 m) in lane buckets, connector entry claims and
+  overlap correction; a walker standing with no route is in no bucket (`TRAFFIC-37`)
