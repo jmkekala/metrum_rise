@@ -262,8 +262,10 @@ impl SimulationNode {
         if let Some(source) = self.road_hydration.as_mut() {
             let head: Vec<RoadKey> = keys
                 .as_slice()
-                .chunks_exact(2)
-                .map(|key| [key[0], key[1]])
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .copied()
                 .collect();
             source.prepare(&head);
         }

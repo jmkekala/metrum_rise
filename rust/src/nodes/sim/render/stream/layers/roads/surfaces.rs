@@ -245,31 +245,15 @@ fn bounds(vertices: &[Vector3]) -> [f32; 6] {
     [low[0], low[1], low[2], size(0), size(1), size(2)]
 }
 
-// `(uint16_t)CLAMP(x * 65535, 0, 65535)` in f32 (NaN reads 0, as the engine's conversion does on
-// x86-64 and as Rust's saturating cast does).
+// `(uint16_t)CLAMP(x * 65535, 0, 65535)` in f32, truncated (a NaN stays NaN through the clamp and
+// reads 0, as the engine's conversion does on x86-64 and as Rust's saturating cast does).
 fn unorm16(value: f32) -> u16 {
-    let scaled = value * 65535.0;
-    let clamped = if scaled < 0.0 {
-        0.0
-    } else if scaled > 65535.0 {
-        65535.0
-    } else {
-        scaled
-    };
-    clamped as u16
+    (value * 65535.0).clamp(0.0, 65535.0) as u16
 }
 
-// `uint8_t(CLAMP(c * 255.0, 0.0, 255.0))` with the product in double precision.
+// `uint8_t(CLAMP(c * 255.0, 0.0, 255.0))` with the product in double precision, truncated.
 fn unorm8(value: f32) -> u8 {
-    let scaled = f64::from(value) * 255.0;
-    let clamped = if scaled < 0.0 {
-        0.0
-    } else if scaled > 255.0 {
-        255.0
-    } else {
-        scaled
-    };
-    clamped as u8
+    (f64::from(value) * 255.0).clamp(0.0, 255.0) as u8
 }
 
 // `Vector3::octahedron_encode`, in f32 as the engine computes it.

@@ -884,7 +884,7 @@ impl StreamNode {
         self.roads.begin(
             span as f32,
             [origin.x, origin.y],
-            keys.chunks_exact(2).map(|key| [key[0], key[1]]),
+            keys.as_chunks::<2>().0.iter().copied(),
         );
         self.road_scripts = Some(executor);
         if self.roads.pending() == 0 {

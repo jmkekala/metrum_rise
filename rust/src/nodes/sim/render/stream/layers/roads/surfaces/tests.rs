@@ -19,8 +19,11 @@ fn normalized_vector(x: f64, y: f64, z: f64) -> Vector3 {
     Vector3::new(x, y, z)
 }
 
+// Positions, normals, UVs, colours and `CUSTOM0`.
+type Arrays = (Vec<Vector3>, Vec<Vector3>, Vec<Vector2>, Vec<Color>, Vec<Vector4>);
+
 // `format_probe.gd`'s six vertices, as GDScript makes them.
-fn probe_arrays() -> (Vec<Vector3>, Vec<Vector3>, Vec<Vector2>, Vec<Color>, Vec<Vector4>) {
+fn probe_arrays() -> Arrays {
     let mut arrays = (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
     for i in 0..6 {
         let f = f64::from(i);
