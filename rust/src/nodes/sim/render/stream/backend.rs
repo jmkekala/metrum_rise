@@ -792,6 +792,9 @@ mod godot_backend {
         scratch: Map<usize, PackedFloat32Array>,
         // Microseconds spent copying rows into the upload arrays since the last take.
         copy_us: f64,
+        // Microseconds spent in `free_rid` since the last take (`RENDER-32-Q`: the frees' share
+        // of the frame, outside the install budget).
+        free_us: f64,
         // The texture layer writes (`RENDER-32-K` part 2): one reused upload array per layer
         // length (a page copy alternates its slot layer and its atlas layers); the
         // `RenderingDevice` where this thread may call it (Forward+ and Mobile, Godot's default
@@ -824,6 +827,7 @@ mod godot_backend {
                 scenarios: [Some(scenario), None],
                 scratch: Map::default(),
                 copy_us: 0.0,
+                free_us: 0.0,
                 uploads: Map::default(),
                 device,
                 images: Map::default(),
@@ -920,6 +924,11 @@ mod godot_backend {
         /// The microseconds spent copying rows into upload arrays since the last call.
         pub(crate) fn take_copy_us(&mut self) -> f64 {
             std::mem::take(&mut self.copy_us)
+        }
+
+        /// The microseconds spent freeing objects since the last call.
+        pub(crate) fn take_free_us(&mut self) -> f64 {
+            std::mem::take(&mut self.free_us)
         }
     }
 
@@ -1097,7 +1106,9 @@ mod godot_backend {
         }
 
         fn free(&mut self, handle: Handle) {
+            let start = std::time::Instant::now();
             self.server.free_rid(Rid::new(handle));
+            self.free_us += start.elapsed().as_secs_f64() * 1e6;
         }
 
         fn material_create(&mut self, shader: Handle) -> Handle {

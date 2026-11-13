@@ -243,10 +243,14 @@ func _process(_delta: float) -> void:
 	var frame_start_us := Time.get_ticks_usec() if PerfDebug.is_enabled() else 0
 	if lod_renderer != null:
 		lod_renderer.update(get_viewport().get_camera_3d())
+	var sites_start_us := Time.get_ticks_usec() if PerfDebug.is_enabled() else 0
 	_update_building_render_frame()
 	if PerfDebug.is_enabled():
-		var elapsed_ms := float(Time.get_ticks_usec() - frame_start_us) / 1000.0
+		var end_us := Time.get_ticks_usec()
+		var elapsed_ms := float(end_us - frame_start_us) / 1000.0
 		var details := {
+			# The plots' and construction sites' frame (`RENDER-30`), apart from the LOD batches.
+			"sites_ms": float(end_us - sites_start_us) / 1000.0,
 			"lod_parts": lod_renderer.evaluated_parts if lod_renderer else 0,
 			"lod_chunks": lod_renderer.queried_chunks if lod_renderer else 0,
 			"upload_bytes": lod_renderer.uploaded_bytes if lod_renderer else 0,

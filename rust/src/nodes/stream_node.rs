@@ -79,6 +79,8 @@ pub struct StreamNode {
     frame_installs: usize,
     frame_refreshed: usize,
     frame_copy_us: f64,
+    // The frame's frees through the backend (outside the budget: AUDIT-stream finding 6).
+    frame_free_us: f64,
     frame_pulled: usize,
     frame_residency_us: f64,
     // Terrain and water patches (`RENDER-32-M`).
@@ -138,6 +140,7 @@ impl INode for StreamNode {
             frame_installs: 0,
             frame_refreshed: 0,
             frame_copy_us: 0.0,
+            frame_free_us: 0.0,
             frame_pulled: 0,
             frame_residency_us: 0.0,
             terrain: PatchStream::new(TERRAIN_LIMITS, TERRAIN_COSTS),
@@ -188,6 +191,7 @@ impl INode for StreamNode {
         self.frame_installs = 0;
         self.frame_refreshed = 0;
         self.frame_copy_us = 0.0;
+        self.frame_free_us = 0.0;
         self.frame_pulled = 0;
         self.frame_residency_us = 0.0;
         self.run_pass(true);
@@ -1252,6 +1256,7 @@ impl StreamNode {
                 .install(backend, &mut self.budget, &self.clock, &test, false);
         self.residency.take_installs(&mut self.vegetation, backend);
         self.frame_copy_us += backend.take_copy_us();
+        self.frame_free_us += backend.take_free_us();
         self.recycle_spent();
         // The patches' and the road hydration's shares are their own records (`terrain_stream`,
         // `road_hydration`).
@@ -1372,6 +1377,7 @@ impl StreamNode {
             self.budget.max_overrun_us.max(0.0) / 1000.0,
         );
         details.set("poll_ms", self.frame_copy_us / 1000.0);
+        details.set("free_ms", self.frame_free_us / 1000.0);
         details.set("pulled", self.frame_pulled as i64);
         details.set("refreshed", self.frame_refreshed as i64);
         details.set("stream_pending", status.pending as i64);
