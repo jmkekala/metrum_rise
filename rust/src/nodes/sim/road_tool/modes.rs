@@ -52,7 +52,8 @@ impl DrawMode {
 /// Fills `path` with the draft of `mode` from the placed points (`placed[0]` the start) and the
 /// live cursor `live`, which stands for the next point. `tangent` is the unit start tangent the
 /// continuous constraint holds (`None` when continuous is off or the stroke has none). While
-/// points are missing the path is the ghost line from the last placed point. `O(1)`, no
+/// points are missing the path is the ghost line from the last placed point, except the
+/// S-curve's: the line from its start, then the fillet through its start aim. `O(1)`, no
 /// allocation once `path` holds three segments. Freeform drafts shape through
 /// `freeform::Freeform::shape` (they keep handles); here they draw the ghost line.
 pub fn shape(

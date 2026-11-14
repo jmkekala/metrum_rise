@@ -30,6 +30,7 @@ mod ground_marks;
 mod heights;
 mod labels;
 mod scurve_freeform;
+mod scurve_steps;
 
 // One small world shared by the scripted tests: the bench neighbourhood, no background.
 fn view() -> &'static RoadToolQuerySnapshot {

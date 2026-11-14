@@ -102,6 +102,16 @@ impl RoadToolBench {
         }
     }
 
+    /// Restarts an S-curve at the junction before its start aim (`with_start_aim` false) or with
+    /// only the start aim placed, so each move previews its first or second step (round SC:
+    /// Straight's line from the start, then the simple curve's fillet through the start aim).
+    pub fn restart_scurve_step(&mut self, with_start_aim: bool) {
+        self.start_stroke(DrawMode::ComplexCurve);
+        if with_start_aim {
+            self.place(Vector3::new(60.0, 0.0, 20.0));
+        }
+    }
+
     /// Restarts a freeform draft of three nodes in its edit phase with its middle node grabbed,
     /// so each move drags that node (round N's edit phase).
     pub fn restart_freeform_drag(&mut self) {

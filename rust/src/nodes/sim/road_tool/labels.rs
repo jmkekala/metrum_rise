@@ -18,6 +18,7 @@
 //! (round H2, [`super::height::ground_marks::push_height_labels`]).
 
 use super::measure::{EndRoad, HudValues};
+use super::modes::DrawMode;
 use crate::simulation::network::guide::{DVec2, GuidePath, GuideSegment};
 use godot::prelude::{Vector2, Vector3};
 
@@ -50,9 +51,9 @@ pub enum LabelKind {
     /// A warning or a refusal, worded from the draft's refusal or the preview
     /// ([`super::wording::label_text`]).
     Notice,
-    /// How to go on with an open freeform draft (round V item 7): its text is [`hint_text`] of
-    /// the value (0 placing, 1 editing).
-    Hint,
+    /// How to go on with an open draft at its step (round V item 7 for freeform, round SC for
+    /// the curves): its text is [`super::wording::hint_text`] of the step.
+    Hint(HintStep),
     /// The edit phase's clickable Build chip beside the last node: builds the draft.
     Build,
     /// The edit phase's clickable Cancel chip beside the last node: drops the draft.
@@ -75,14 +76,54 @@ pub enum EndPart {
     Tunnel,
 }
 
-/// The hint chip's text for a freeform draft placing nodes (`editing` false) or in its edit
-/// phase.
-pub fn hint_text(editing: bool) -> &'static str {
-    if editing {
-        "Drag nodes or handles · Enter or click to build · Esc to cancel"
-    } else {
-        "Click to add a node · click the last node or Enter to finish"
+/// The step an open draft's hint chip names: what the next click (or key) does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HintStep {
+    /// Freeform placing: a click adds a node; the last node again or Enter finishes.
+    AddNode,
+    /// Freeform's edit phase: drag, build or cancel.
+    EditNodes,
+    /// A simple curve's second click: its control point.
+    ControlPoint,
+    /// An S-curve's second click: the point its road leaves towards.
+    StartDirection,
+    /// An S-curve's third click: the point its road arrives from.
+    EndDirection,
+    /// A curve's or an S-curve's last click: the end, which sends the road.
+    PlaceEnd,
+}
+
+/// The hint step of a simple curve or an S-curve with `placed` points placed (the start
+/// included), `None` for a straight stroke, freeform (its own steps) or before the start
+/// (round SC). `O(1)`.
+pub fn draft_hint(mode: DrawMode, placed: usize) -> Option<HintStep> {
+    match (mode, placed) {
+        (DrawMode::SimpleCurve, 1) => Some(HintStep::ControlPoint),
+        (DrawMode::ComplexCurve, 1) => Some(HintStep::StartDirection),
+        (DrawMode::ComplexCurve, 2) => Some(HintStep::EndDirection),
+        (DrawMode::SimpleCurve, 2) | (DrawMode::ComplexCurve, 3) => Some(HintStep::PlaceEnd),
+        _ => None,
     }
+}
+
+/// Pushes the hint chip of `step` at `at` (the cursor or the last node), pushed sideways off the
+/// travel from `from` (the point placed before it, if any). `O(1)`.
+pub fn push_hint(step: HintStep, at: Vector3, from: Option<Vector3>, out: &mut Vec<ToolLabel>) {
+    out.push(ToolLabel {
+        kind: LabelKind::Hint(step),
+        value: 0.0,
+        anchor: at,
+        side: travel(at, from).perp(),
+        tone: LabelTone::Normal,
+    });
+}
+
+// The unit plan direction from `from` to `to`, east when there is none.
+fn travel(to: Vector3, from: Option<Vector3>) -> DVec2 {
+    from.and_then(|from| {
+        DVec2::new(f64::from(to.x - from.x), f64::from(to.z - from.z)).try_normalize()
+    })
+    .unwrap_or(DVec2::X)
 }
 
 /// Pushes the chips of an open freeform draft whose last node is `last`, reached from `previous`
@@ -94,31 +135,24 @@ pub fn push_freeform_labels(
     editing: bool,
     out: &mut Vec<ToolLabel>,
 ) {
-    let along = previous
-        .and_then(|previous| {
-            DVec2::new(
-                f64::from(last.x - previous.x),
-                f64::from(last.z - previous.z),
-            )
-            .try_normalize()
-        })
-        .unwrap_or(DVec2::X);
-    let label = |kind, value, side| ToolLabel {
+    let along = travel(last, previous);
+    let label = |kind| ToolLabel {
         kind,
-        value,
+        value: 0.0,
         anchor: last,
-        side,
+        side: along,
         tone: LabelTone::Normal,
     };
     if editing {
-        out.push(label(LabelKind::Build, 0.0, along));
-        out.push(label(LabelKind::Cancel, 0.0, along));
+        out.push(label(LabelKind::Build));
+        out.push(label(LabelKind::Cancel));
     }
-    out.push(label(
-        LabelKind::Hint,
-        f64::from(u8::from(editing)),
-        along.perp(),
-    ));
+    let step = if editing {
+        HintStep::EditNodes
+    } else {
+        HintStep::AddNode
+    };
+    push_hint(step, last, previous, out);
 }
 
 /// How a chip is coloured.

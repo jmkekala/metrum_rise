@@ -294,9 +294,9 @@ fn arc_radii(path: &GuidePath) -> [f64; 2] {
     [radius(&path.segments()[0]), radius(&path.segments()[1])]
 }
 
-// The S-curve's aim legs are gizmos only; at its end the HUD gives both arcs' radii, the design
-// speed and the tight-curve verdict of the tighter; the gizmos show the arcs' control points
-// and the joint.
+// The S-curve's aim legs draw as tangent gizmos (and, since round SC, a road preview: see
+// `scurve_steps`); at its end the HUD gives both arcs' radii, the design speed and the
+// tight-curve verdict of the tighter; the gizmos show the arcs' control points and the joint.
 #[test]
 fn s_curve_reports_both_radii_and_judges_the_tighter() {
     let mut tool = session();
@@ -305,8 +305,6 @@ fn s_curve_reports_both_radii_and_judges_the_tighter() {
     move_to(&mut tool, at(-260.0, 150.0));
     for placed in 1..3 {
         let frame = tool.frame();
-        assert!(frame.stroke.points.is_empty(), "aim legs are no road");
-        assert_eq!(frame.state.refusal, None);
         assert!(frame.gizmos.line_classes.contains(&GizmoLineClass::Tangent));
         assert_eq!(frame.state.phase, Phase::Placing { placed });
         click(&mut tool, at(-270.0 + 40.0 * placed as f32, 170.0));

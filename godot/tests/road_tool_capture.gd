@@ -17,6 +17,8 @@
 ## four road types snapped on one zoning grid with their curb lines.
 ## `METRUM_ROAD_TOOL_CAPTURE_SET=batch_ghost` writes round V2's: a level draft across a sculpted
 ## valley, which segments into ground, a bridge and ground, as tier 1's batch ghost.
+## `METRUM_ROAD_TOOL_CAPTURE_SET=scurve_steps` writes round SC's: an S-curve after its first,
+## second and third click (the road previewed with the step's hint chip) and finished.
 extends SceneTree
 
 const RoadToolScript := preload("res://scripts/tools/road_tool.gd")
@@ -73,9 +75,11 @@ func _run() -> void:
 	_tool.active = true
 	_tool.begin_preview_measurement()
 	var capture_set := OS.get_environment("METRUM_ROAD_TOOL_CAPTURE_SET")
-	if capture_set in ["snapping", "scurve_freeform", "restyle", "batch_ghost"]:
+	if capture_set in ["snapping", "scurve_freeform", "restyle", "batch_ghost", "scurve_steps"]:
 		if capture_set == "snapping":
 			await _capture_snapping()
+		elif capture_set == "scurve_steps":
+			await _capture_scurve_steps()
 		elif capture_set == "restyle":
 			await _capture_restyle()
 		elif capture_set == "batch_ghost":
@@ -231,6 +235,25 @@ func _capture_snapping() -> void:
 	_tool.zoning_grid_snap_enabled = false
 	_tool.cancel_road()
 	_tool.set_process(true)
+
+# Round SC: an S-curve step by step, its road previewed from the first click, then built.
+func _capture_scurve_steps() -> void:
+	_tool.draw_mode = RoadToolScript.DrawMode.COMPLEX_CURVE
+	_tool._begin_stroke(Vector3(-70.0, 0.0, 60.0))
+	_tool.set_scripted_pointer(true, Vector3(-30.0, 0.0, 55.0))
+	await _capture("scurve_step1")
+	_expect(_tool.stroke_preview_current(), "the first step is previewed")
+	_tool._commit_segment(Vector3(-40.0, 0.0, 60.0))
+	_tool.set_scripted_pointer(true, Vector3(25.0, 0.0, 15.0))
+	await _capture("scurve_step2")
+	_expect(_tool.stroke_preview_current(), "the second step is previewed")
+	_tool._commit_segment(Vector3(30.0, 0.0, 10.0))
+	_tool.set_scripted_pointer(true, Vector3(72.0, 0.0, 10.0))
+	await _capture("scurve_step3")
+	_expect(_tool._commit_segment(Vector3(72.0, 0.0, 10.0)), "the end click sends the S-curve")
+	await _ack()
+	_tool.cancel_road()
+	await _capture("scurve_finished")
 
 # Round N: an S-curve mid-draw (its end dragged round a circle for the upload record), then a
 # freeform draft placed, taken into its edit phase, one handle dragged (round a circle too), and

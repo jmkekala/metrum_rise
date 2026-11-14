@@ -442,7 +442,7 @@ impl SimulationNode {
             LabelKind::Bearing => 6,
             LabelKind::DesignSpeed => 7,
             LabelKind::Notice => 8,
-            LabelKind::Hint => 9,
+            LabelKind::Hint(_) => 9,
             LabelKind::Build => 10,
             LabelKind::Cancel => 11,
             LabelKind::EndHeight(_) => 12,

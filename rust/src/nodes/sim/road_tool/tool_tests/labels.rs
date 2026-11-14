@@ -11,7 +11,8 @@ use crate::nodes::sim::road_tool::guides::{
     GUIDE_PAST_M, grid_curb_offset_m, push_alignment_guide, push_grid_curbs, zoning_depth_m,
 };
 use crate::nodes::sim::road_tool::labels::{
-    LabelKind, LabelTone, PreviewFacts, ToolLabel, apply_preview, middle_label, place_chips,
+    HintStep, LabelKind, LabelTone, PreviewFacts, ToolLabel, apply_preview, middle_label,
+    place_chips,
 };
 use crate::nodes::sim::road_tool::measure::{RoadTypeSpec, bearing_deg, design_speed_kmh};
 use crate::nodes::sim::road_tool::pick::lane_width_m;
@@ -192,13 +193,16 @@ fn freeform_hint_and_buttons() {
     click(&mut tool, scripted(-280.0, 200.0));
     click(&mut tool, scripted(-240.0, 220.0));
     move_to(&mut tool, scripted(-200.0, 200.0));
-    let hint = labels_of(tool.frame(), LabelKind::Hint);
+    let hint = labels_of(tool.frame(), LabelKind::Hint(HintStep::AddNode));
     assert_eq!(hint.len(), 1);
-    assert_eq!(hint[0].value, 0.0);
     assert!(labels_of(tool.frame(), LabelKind::Build).is_empty());
     tool.handle_event(view(), RoadToolEvent::Action(RoadToolAction::Confirm));
     let frame = tool.frame();
-    assert_eq!(labels_of(frame, LabelKind::Hint)[0].value, 1.0);
+    assert_eq!(
+        labels_of(frame, LabelKind::Hint(HintStep::EditNodes)).len(),
+        1
+    );
+    assert!(labels_of(frame, LabelKind::Hint(HintStep::AddNode)).is_empty());
     for kind in [LabelKind::Build, LabelKind::Cancel] {
         let chip = labels_of(frame, kind);
         assert_eq!(chip.len(), 1);

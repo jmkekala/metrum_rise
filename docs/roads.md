@@ -13050,7 +13050,8 @@ Freeform, Gizmos, HUD).
 
 - **S-curve UI**: the "S-curve" button (Tool mode row) sends `mode_complex_curve`. The session
   draws its aim legs as tangent gizmos and sends no stroke before the end is live (round D's
-  ghost legs were previewed as road); at the end it pushes the control polygon (start, each
+  ghost legs were previewed as road; replaced by [round SC](#s-curve-preview-and-step-hints-round-sc),
+  which previews from the first click); at the end it pushes the control polygon (start, each
   arc's control point where its end tangents meet, the joint, end), the two control points as
   `Handle` and the joint as `Joint` (`modes::biarc_controls`: an arc's tangent length is
   `chord (1 + b^2) / (2 (1 - b^2))` in the stored bulge form, `O(1)`). `HudValues::other_radius_m`
@@ -13119,7 +13120,7 @@ Freeform, Gizmos, HUD).
   round is a time; the straight and simple-curve paths are unchanged (bitwise products) and the
   new modes run only when chosen.
 - **Decisions under the delegation (for review)**: N1 the S-curve's aim legs are gizmos only (no
-  road preview before the end is live); N2 freeform ends its placing on a click on the last
+  road preview before the end is live; replaced by the user's decision in round SC); N2 freeform ends its placing on a click on the last
   node, Enter, a node on a road or the map edge, or the sixteenth node; N3 grips within a fixed
   4 m (world metres, as every tool tolerance); N4 Ctrl breaks a joint (Alt with the left button
   orbits the camera) and a broken joint stays broken; N5 automatic handles are the Catmull-Rom
@@ -13638,7 +13639,7 @@ under "Drawing and placement" (Gizmos, Zoning-depth guide, Grid curbs, HUD, Free
   clutter in the stills; easy to add (the scratch holds the candidates). V5 guides and the angle
   ray end 12 m past the cursor (round E drew 64 m both ways). V6 the grid curbs only in straight
   mode (the grid snaps a straight leg through the start); a type with a sidewalk on one side
-  still shows both zoning outlines. V7 no hint chip for the S-curve and the simple curve yet: their
+  still shows both zoning outlines. V7 (done in round SC) no hint chip for the S-curve and the simple curve yet: their
   clicks are fixed in number and the tangent gizmos show the next point; recommended next if the
   user finds the S-curve's four clicks unclear (one line of Rust wording per placed count). V8
   the zoning guide's outside 3 px at 90 % and inside 2 px at 40 %, both solid, in the guides'
@@ -13758,6 +13759,41 @@ stay on the ground): curve end p50 0.090 / p95 0.174 / max 0.211 ms, S-curve end
 each case from above and low (`raised_end_bridge`, `lowered_end_cut_then_tunnel`,
 `end_over_lower_road`), the built entry and exit, both portal close-ups, the bridge then tunnel
 batch with a chip at each end.
+
+### S-curve preview and step hints (round SC)
+
+Built 2026-11-14 on branch `roadtools-sc` (`dev` `c87eb234`) after the user's report ("S-curve
+needs two clicks for me to see the preview"). Rules under "Drawing and placement" (Modes, Curve
+step hints). Rust: `modes/complex_curve.rs` (the start aim placed: `set_fillet(start,
+start_aim, cursor)`, the simple curve's draft), `session.rs` (round N's gate that sent no stroke
+before the end aim is gone; the hint chip pushed before the draft's chips; the second step's
+tangent leg runs start, start aim, cursor), `labels.rs` (`LabelKind::Hint(HintStep)`,
+`draft_hint`, `push_hint`; freeform's chips unchanged), `wording.rs` (`hint_text`). The bench's
+allocation probe also runs the S-curve's first two steps (`RoadToolBench::restart_scurve_step`).
+
+- **Fresh checks**: Rust `tool_tests/scurve_steps.rs`: the first step's stroke request and HUD
+  equal Straight mode's for the same points, the second step's equal the simple curve's; one
+  hint chip per curve step with its text, none for straight; a cancel at each step leaves no
+  stroke, chip or commit; the finished S-curve's sent stroke (pointer moves between the clicks)
+  digest-equal to `dev` `c87eb234`'s. Godot `network_tool_chunk_renderer_test`
+  (`_test_s_curve_and_freeform`, real node): a preview after the first click, the hint chip per
+  step: PASS. Kuopio drag probe 78/78 and gameplay fixtures 17/17 EQUAL in every product
+  against the `c87eb234` release library and scripts built at the branch point (drag probe PASS
+  on both sides). Allocation (heaptrack `--record-only`, session bench 30k, every mode plus the
+  S-curve's first two steps): n=0 2,442,907 / 2,442,896, n=20 2,442,926, n=200 2,442,898
+  calls: none per pointer move. Gates: clippy `--all-targets` set equal to the branch point's,
+  `cargo doc` missing_docs 0, debug `cargo test --lib` 2,722 passed / 0 failed / 230 ignored,
+  `./run.sh --test` PASS (nextest 2,726 / 2,726, 231 skipped; godot-main, godot-vehicle PASS).
+  No timing (no bar is a time; the straight and curve paths are unchanged, products bitwise).
+  Stills (`$ARTIFACTS`, gamescope headless 1920x1080, `road_tool_capture.gd` set
+  `scurve_steps`): after the first, second and third click, finished.
+- **Decisions for review**: SC1 the second step previews the simple curve's fillet through the
+  start aim (alternatives: the arc leaving along the start direction through the cursor, or the
+  start leg alone); SC2 the simple curve gets the same step hints (recommended: its control-point
+  click is as unexplained as the S-curve's aims; drop by deleting its two `draft_hint` rows);
+  SC3 the hint sits at the cursor, pushed sideways off the last leg, before every other chip in
+  placement order; SC4 a pose with the cursor on the point just placed reads "too short", as the
+  other modes do.
 
 ### Decisions (user, 2026-11-12, all as recommended)
 
@@ -13918,9 +13954,13 @@ the clicks, the mode buttons and the acknowledgement and draws what `road_tool_f
   control-point click places a point and sends nothing; the end click sends the stroke. The
   **S-curve** (round N: four clicks, the start, a point the road leaves towards, a point it
   arrives from, the end; the biarc by the equal-tangent-length rule, two arcs meeting tangent at
-  the joint) and **Freeform** (round N, below). The S-curve's aim legs draw as tangent gizmos
-  only: nothing is previewed as road until the end is live. Pressing the current mode's button
-  again keeps the stroke; another mode drops it.
+  the joint) and **Freeform** (round N, below). The S-curve is previewed as road from its first
+  click (round SC, the user's decision of 2026-11-14 replacing round N's N1): before the start
+  aim Straight's line from the start to the cursor, before the end aim the simple curve's fillet
+  of the start, the start aim and the cursor (the same stroke requests and previews as those
+  modes for the same points), and from the end aim on the S-curve itself; its aim legs stay
+  dashed tangent gizmos on top. Pressing the current mode's button again keeps the stroke;
+  another mode drops it.
 - **Freeform** (round N, `modes/freeform.rs`): each click places a node; the road is cubic
   Bezier spans through the nodes, the live cursor the provisional last one. Clicking the last
   node again or Enter (two nodes or more), a node snapped to a road or the map edge, or the
@@ -14006,6 +14046,12 @@ the clicks, the mode buttons and the acknowledgement and draws what `road_tool_f
   or handles · Enter or click to build · Esc to cancel", worded by Rust) and, in the edit phase,
   clickable Build (check mark) and Cancel (cross) chips beside the last node. Their clicks are the
   GUI's: they never place a node or count as a click elsewhere.
+- **Curve step hints** (round SC): the S-curve and the simple curve show one hint chip at the
+  cursor per step, worded in `wording::hint_text` (`labels::HintStep`, chosen by
+  `labels::draft_hint` from the mode and the placed count): the S-curve "Click to set the start
+  direction", "Click to set the end direction", "Click to place the end"; the simple curve
+  "Click to place the control point", "Click to place the end"; each followed by "· Esc to
+  cancel". A straight stroke has none.
 - **Tight curves**: the session refuses a draft whose smallest arc radius is under the type's
   illegal radius, 1.25 roadbed half-widths (`illegal_radius_m`, computed when the type
   changes), as `road_tight_curve` ("Curve too tight: radius r m, needs l m") before any

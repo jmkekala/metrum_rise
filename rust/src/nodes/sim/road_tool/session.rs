@@ -41,7 +41,7 @@ use super::guides::{
     ZoningScratch, grid_curb_offset_m, push_alignment_guide, push_grid_curbs, push_zoning_guide,
     zoning_depth_m,
 };
-use super::labels::{push_draft_labels, push_freeform_labels};
+use super::labels::{draft_hint, push_draft_labels, push_freeform_labels, push_hint};
 use super::measure::{EndRoad, RoadTypeSpec, illegal_radius_m, measure};
 use super::modes::freeform::{Freeform, Grip, MAX_NODES};
 use super::modes::{self, DrawMode};
@@ -1154,9 +1154,10 @@ impl RoadToolSession {
             &mut self.path,
         );
         self.push_tangent_legs(cursor.position, shaped.is_ok());
-        // The complex curve's aim legs are no road (round N): nothing to preview before its end.
-        if self.mode == DrawMode::ComplexCurve && self.placed_len < 3 {
-            return;
+        // The next click's hint at the cursor (round SC), before the draft's chips.
+        if let Some(step) = draft_hint(self.mode, self.placed_len) {
+            let last = self.placed[self.placed_len - 1];
+            push_hint(step, cursor.position, Some(last), &mut self.frame.labels);
         }
         if let Err(error) = shaped {
             self.frame.state.refusal = Some(refusal(error));
@@ -1381,9 +1382,9 @@ impl RoadToolSession {
     }
 
     // Handles at the placed points and the cursor; for curves the tangent legs through them.
-    // The complex curve's legs are its two aim legs, and once `shaped` its control polygon
-    // (start, the arcs' control points around the joint, end) with handles at the arcs'
-    // control points and a joint handle.
+    // The complex curve's legs are its aim legs (before the end aim, the simple curve's legs
+    // through the start aim), and once `shaped` its control polygon (start, the arcs' control
+    // points around the joint, end) with handles at the arcs' control points and a joint handle.
     fn push_tangent_legs(&mut self, live: Vector3, shaped: bool) {
         let gizmos = &mut self.frame.gizmos;
         for (index, point) in self.placed[..self.placed_len].iter().enumerate() {
@@ -1400,7 +1401,7 @@ impl RoadToolSession {
             match *placed {
                 [start] => gizmos.push_line(GizmoLineClass::Tangent, [start, live]),
                 [start, start_aim] => {
-                    gizmos.push_line(GizmoLineClass::Tangent, [start, start_aim]);
+                    gizmos.push_line(GizmoLineClass::Tangent, [start, start_aim, live]);
                 }
                 [start, start_aim, end_aim, ..] => {
                     gizmos.push_line(GizmoLineClass::Tangent, [start, start_aim]);

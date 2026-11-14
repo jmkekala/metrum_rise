@@ -2,8 +2,10 @@
 
 //! Complex curve: the biarc S-curve (`GuidePath::set_biarc`, equal tangent lengths). Clicks: the
 //! start `A`, a point giving the start tangent (`A -> TA`), a point giving the end tangent, then
-//! the end `B`, which the road reaches along `TB -> B`. Before the last click there is no road
-//! to draw yet (round N): the aim legs are gizmos only, never previewed as road.
+//! the end `B`, which the road reaches along `TB -> B`. Until the end is live the draft is what
+//! the other modes draw for the same points (round SC, the user's decision replacing round N's
+//! gizmo-only aim legs): Straight's line from the start to the cursor, then the simple curve's
+//! fillet of the start, the start aim and the cursor; the S-curve forms at the third click.
 
 use crate::simulation::network::guide::{DVec2, GuideError, GuidePath, GuideSegment};
 
@@ -12,7 +14,8 @@ pub(super) fn shape(placed: &[DVec2], live: DVec2, path: &mut GuidePath) -> Resu
         [start, start_aim, end_aim, ..] => {
             path.set_biarc(start, start_aim - start, live, live - end_aim)
         }
-        [.., last] => super::ghost(last, live, path),
+        [start, start_aim] => path.set_fillet(start, start_aim, live),
+        [start] => super::ghost(start, live, path),
         [] => unreachable!("the session shapes only a started stroke"),
     }
 }

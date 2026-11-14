@@ -3,14 +3,14 @@
 //! The player's text for the road tool and for road verdicts (`ROAD-112` round V2): the one place
 //! these strings live (a later translation replaces this module's strings, nothing else). The
 //! road tool's chips ([`label_text`]: each chip's value with its units, rounding and compass
-//! letters, the freeform hint, the Build and Cancel buttons and the notice's warning or refusal)
+//! letters, the draft hint, the Build and Cancel buttons and the notice's warning or refusal)
 //! and the text of every road refusal key ([`reason_text`]), which `road_reason_text.gd` reads
 //! through `RoadWording` for the other hosts (the Road Properties window, the road builder, the
 //! junction pocket rows, the roundabout tool). GDScript only measures and draws these strings.
 
 use std::fmt::Write;
 
-use super::labels::{EndPart, LabelKind, LabelTone, ToolLabel, hint_text};
+use super::labels::{EndPart, HintStep, LabelKind, LabelTone, ToolLabel};
 
 /// The numbers a refusal's text quotes, as the stroke preview's dictionary carries them
 /// (`clearance_m`, `required_clearance_m`, `geometry_measured`, `geometry_limit`; 0 when absent).
@@ -84,8 +84,8 @@ pub fn label_text(label: &ToolLabel, notice: &NoticeFacts, out: &mut String) {
             push_notice(label.tone, notice, out);
             Ok(())
         }
-        LabelKind::Hint => {
-            out.push_str(hint_text(value > 0.0));
+        LabelKind::Hint(step) => {
+            out.push_str(hint_text(step));
             Ok(())
         }
         LabelKind::Build => {
@@ -98,6 +98,19 @@ pub fn label_text(label: &ToolLabel, notice: &NoticeFacts, out: &mut String) {
         }
         LabelKind::EndHeight(part) => write!(out, "{value:+.1} m {}", end_part_text(part)),
     };
+}
+
+/// The hint chip's text for an open draft's `step` (round V item 7: freeform; round SC: the
+/// simple curve's and the S-curve's clicks, the user's wording of 2026-11-14).
+pub fn hint_text(step: HintStep) -> &'static str {
+    match step {
+        HintStep::AddNode => "Click to add a node · click the last node or Enter to finish",
+        HintStep::EditNodes => "Drag nodes or handles · Enter or click to build · Esc to cancel",
+        HintStep::ControlPoint => "Click to place the control point · Esc to cancel",
+        HintStep::StartDirection => "Click to set the start direction · Esc to cancel",
+        HintStep::EndDirection => "Click to set the end direction · Esc to cancel",
+        HintStep::PlaceEnd => "Click to place the end · Esc to cancel",
+    }
 }
 
 // The part an end is on, as its height chip names it (round H2).
@@ -329,8 +342,16 @@ mod tests {
             (LabelKind::Bearing, 359.6, "N 0°"),
             (LabelKind::Bearing, 202.4, "S 202°"),
             (LabelKind::DesignSpeed, 49.7, "49 km/h"),
-            (LabelKind::Hint, 1.0, hint_text(true)),
-            (LabelKind::Hint, 0.0, hint_text(false)),
+            (
+                LabelKind::Hint(HintStep::EditNodes),
+                0.0,
+                "Drag nodes or handles · Enter or click to build · Esc to cancel",
+            ),
+            (
+                LabelKind::Hint(HintStep::StartDirection),
+                0.0,
+                "Click to set the start direction · Esc to cancel",
+            ),
             (LabelKind::Build, 0.0, "Build"),
             (LabelKind::Cancel, 0.0, "Cancel"),
         ] {

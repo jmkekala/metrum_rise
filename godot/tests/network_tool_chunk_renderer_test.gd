@@ -1012,10 +1012,11 @@ func _collinear(a: Vector3, node: Vector3, b: Vector3) -> bool:
 	var v := Vector2(b.x - node.x, b.z - node.z).normalized()
 	return absf(u.cross(v)) < 1.0e-4 and u.dot(v) < 0.0
 
-# Round N (`ROAD-112`) on the real node: an S-curve drawn (aim legs are no road; its gizmos and
-# both radii) and committed; a freeform draft placed, taken into its edit phase with Enter,
-# edited (a handle drag keeps its joint collinear, Ctrl breaks one) and built with Enter; Escape
-# on a draft in its edit phase leaves nothing.
+# Round N (`ROAD-112`) on the real node: an S-curve drawn (round SC: previewed as road from the
+# first click with a hint chip a step; its gizmos and both radii) and committed; a freeform
+# draft placed, taken into its edit phase with Enter, edited (a handle drag keeps its joint
+# collinear, Ctrl breaks one) and built with Enter; Escape on a draft in its edit phase leaves
+# nothing.
 func _test_s_curve_and_freeform(simulation: SimulationNode) -> void:
 	var tool := _session_road_tool(simulation)
 	var manager = preload("res://scripts/core/input_manager.gd").new()
@@ -1023,14 +1024,21 @@ func _test_s_curve_and_freeform(simulation: SimulationNode) -> void:
 	manager.current_tool = manager.Tool.ROAD
 	tool.draw_mode = RoadToolScript.DrawMode.COMPLEX_CURVE
 	tool._begin_stroke(Vector3(0.0, 0.0, -30.0))
+	# Round SC: the road is previewed from the first click, with a hint chip a step.
+	tool.pointer = Vector3(15.0, 0.0, -30.0)
+	_road_frame(tool)
+	_expect(tool.stroke_preview_current() and tool._session_points == PackedVector3Array([Vector3(0.0, 0.0, -30.0), tool.pointer]), "after the first click the leg is previewed as road: %s" % tool._session_points)
+	_expect(tool.hud.text().contains("Click to set the start direction"), "the first step's hint: %s" % tool.hud.text())
 	_expect(not tool._commit_segment(Vector3(15.0, 0.0, -30.0)), "the start aim point commits nothing")
 	tool.pointer = Vector3(45.0, 0.0, -10.0)
 	_road_frame(tool)
-	_expect(tool._session_points.is_empty() and tool._preview.is_empty(), "an S-curve's aim legs are not previewed as road")
-	_expect(tool.gizmos._line_classes == PackedInt32Array([3, 3]), "the aim leg draws as a tangent gizmo (and the start's height stem)")
+	_expect(tool.stroke_preview_current() and tool._session_points.size() > 3, "after the second click the curve through the start aim is previewed")
+	_expect(tool.hud.text().contains("Click to set the end direction") and not tool.hud.text().contains("start direction"), "the second step's hint: %s" % tool.hud.text())
+	_expect(3 in tool.gizmos._line_classes and 0 in tool.gizmos._line_classes, "the aim legs stay tangent gizmos over the draft's centreline")
 	_expect(not tool._commit_segment(tool.pointer), "the end aim point commits nothing")
 	tool.pointer = Vector3(60.0, 0.0, -10.0)
 	_road_frame(tool)
+	_expect(tool.hud.text().contains("Click to place the end"), "the last step's hint: %s" % tool.hud.text())
 	var points := tool._session_points
 	_expect(points.size() > 3 and points[0] == Vector3(0.0, 0.0, -30.0) and points[-1] == tool.pointer, "the S-curve runs from the start to the cursor")
 	_expect(_gizmo_handles(tool, 4).size() == 1 and _gizmo_handles(tool, 5).size() == 3, "the S-curve shows its joint, both arcs' control points and the start's height grip")
