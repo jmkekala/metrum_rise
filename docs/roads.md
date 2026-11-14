@@ -12268,7 +12268,7 @@ grade.
 
 ## Road tools (`ROAD-112`, `ROAD-113`)
 
-**Status: in progress.** Planned 2026-11-12; round A (the guide kernel) and round B (the session core, not wired) built 2026-11-13, round B landed 2026-11-14; round F (batch commit, grouped undo, undo refund) built 2026-11-13, held for its batch bar until fix round F2 (2026-11-14), which meets it: ready to land; round C (the wiring: straight strokes run on the session) built 2026-11-14. The user asked for a complete refactor of the
+**Status: in progress.** Planned 2026-11-12; round A (the guide kernel) and round B (the session core, not wired) built 2026-11-13, round B landed 2026-11-14; round F (batch commit, grouped undo, undo refund) built 2026-11-13, held for its batch bar until fix round F2 (2026-11-14), which meets it, landed 2026-11-14; round C (the wiring: straight strokes run on the session) built and landed 2026-11-14. The user asked for a complete refactor of the
 road tool, Rust-first: the current straight mode and the GDScript `Curve3D` "curve" (a cubic
 Bezier whose handles are the raw vectors to the control point, so its curvature, radius and
 length are not exact) are replaced. Mechanics follow the genre (city builders' straight, curve,
@@ -12500,7 +12500,7 @@ Criterion at 30k (mean, 95% interval): control 122.52 us (122.22-122.82), sessio
 ### Batch commit, grouped undo and undo refund (round F)
 
 Built 2026-11-13 on branch `roadtools-f` (`dev` `d10c2404` plus the round); held for its batch
-bar, fixed and measured again by round F2 (below), ready to land on branch `roadtools-f2`. The
+bar, fixed and measured again by round F2 (below), landed on `dev` 2026-11-14 from branch `roadtools-f2`. The
 contract is in ["Preview, commit, undo and load"](#preview-commit-undo-and-load) ("Batch commit").
 New `core/road_batch.rs`; `road_commit.rs` split into `commit_stroke_core` and `commit_tail`;
 `undo.rs` restores groups and refunds; bridge `add_road_batch`, no tool UI.
@@ -12648,7 +12648,7 @@ Fresh, 2026-11-14, branch `roadtools-c` on `dev` `58d79a53` (control: the releas
   (max ms, control / branch) fast commit 0.63, 0.44 / 0.52, 0.66, commit 0.28, 0.19 / 0.19, 0.21,
   undo 0.40, 0.37 / 0.33, 0.51, catch-up 0.50, 0.67 / 0.46, 0.61, all under the 1.0 ms share.
   The probe's runner takes its locks in its own checkout's `rust/target`, so from a worktree it
-  missed the shared timing lock; these runs held it from outside (`flock -s`).
+  missed the shared timing lock (`TOOLS-24`); these runs held it from outside (`flock -s`).
 - **No allocation per pointer move** in the wired path: a move is `road_tool_pointer` (typed
   arguments), the view's read lock and `RoadToolSession::handle_event`, the cursor returned as a
   `Vector3`. The session benchmark's allocation probe (`METRUM_ROAD_TOOL_ALLOC_PROBE`, 30k tier,
@@ -12693,6 +12693,13 @@ Fresh, 2026-11-14, branch `roadtools-c` on `dev` `58d79a53` (control: the releas
   `cargo test --lib` 2,631 passed, 0 failed, 225 ignored; `./run.sh --test` PASS (nextest 2,635
   of 2,635, 226 skipped; both Godot chains PASS); `cargo clippy --all-targets` the base's one
   warning.
+- **Landing (round LC, 2026-11-14)**: cherry-picked onto `dev` `cd49a275` (rounds F and F2 landed),
+  the code without conflicts. Fresh on the landing tip: clippy `--all-targets` the base's one
+  warning; debug `cargo test --lib` 2,637 passed, 0 failed, 227 ignored (the batch tests 6 of 6,
+  the road tool and interaction tests 56); `./run.sh --test` PASS (nextest 2,641 of 2,641, 228
+  skipped; both Godot chains PASS); Kuopio's 39 strokes recorded again (`commit_products.gd`, release
+  library): all 78 commits' request, graph, counters, published meshes and graded tiles equal to
+  round C's control and branch records. The gameplay fixtures' control record was no longer kept.
 
 ### Decisions (user, 2026-11-12, all as recommended)
 
