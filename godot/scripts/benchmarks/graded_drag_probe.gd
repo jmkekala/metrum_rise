@@ -36,11 +36,14 @@
 ## (`ROAD-68-H` round 7) adds a vegetation row to every frame (the plants drawn on a drawn road
 ## around the stroke, and the drawn plants against Rust's placement now) and records n frames after
 ## the converged click, the last of which must show the vegetation of the committed road.
+## METRUM_GRADED_DRAG_PRODUCTS=1 (check-only, `ROAD-112` round C) records each commit's request and
+## products (`commit_products.gd`) in its drag's `products`, for a bitwise comparison of two runs.
 extends RefCounted
 
 const MANIFEST := "res://../benchmarks/fixtures/kuopio-terrain/placements.json"
 const Vegetation := preload("res://scripts/renderers/vegetation.gd")
 const RoadChunkRenderer := preload("res://scripts/renderers/road_chunk_renderer.gd")
+const CommitProducts := preload("res://scripts/benchmarks/commit_products.gd")
 const POSES := 8
 # The Godot terrain install share of a pose, commit or undo frame (`terrain.md` budgets).
 const SHARE_MS := 1.0
@@ -405,12 +408,15 @@ func _drag(record: Dictionary, start: Vector2, end: Vector2, stroke: Dictionary,
 	var kind := "commit" if converge else "fast_commit"
 	_kind = kind
 	var queued: bool = tool._commit_segment(end_pos)
+	var request: PackedVector3Array = tool._commit_points
 	tool.active = false
 	_expect(queued, record, "the %s queues" % kind)
 	if queued:
 		var edit := await _edit(record, kind)
 		out["committed"] = bool(edit.get("installed", false))
 		out["edit"] = edit
+		if OS.get_environment("METRUM_GRADED_DRAG_PRODUCTS") == "1":
+			out["products"] = CommitProducts.record(_bench.simulation_node, _bench.terrain, request)
 	out["frames"] = _frames
 	return out
 

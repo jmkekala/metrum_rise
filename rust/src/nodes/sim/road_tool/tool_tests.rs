@@ -694,3 +694,133 @@ fn hud_closed_forms() {
     assert!((hud.build_cost - hud.length_m * per_m).abs() < 1e-9);
     assert_eq!(NEIGHBOURHOOD.len(), 7);
 }
+
+// Round C (`ROAD-112`): the HUD prices the selected road type (B9) as the preview prices the
+// same stroke: the per-metre build price of the preview's prepared input (its median, parking,
+// attributes and class) and the session's lanes, for a type that is not the default road.
+#[test]
+fn hud_prices_the_selected_type_as_the_preview() {
+    use crate::simulation::network::graph::{RoadMedian, RoadParking};
+    use crate::simulation::network::road_edit::plan_road_edit;
+    use crate::simulation::network::road_types::RoadAttributes;
+    use crate::simulation::network::road_types::cost::{build_per_m, stroke_weight};
+    use super::measure::RoadTypeSpec;
+    let spec = RoadTypeSpec {
+        fwd_lanes: 2,
+        bkw_lanes: 2,
+        median: RoadMedian::from_tool(1, 2.0).ok().flatten(),
+        parking: RoadParking::from_code(3).expect("both kerbs"),
+        attributes: RoadAttributes::from_tool(70, 3, true, false).expect("attributes"),
+    };
+    assert!(spec.median.is_some());
+    let mut tool = session();
+    tool.set_option(RoadToolOption::RoadType(spec));
+    click(&mut tool, ray(-250.0, 100.0));
+    move_to(&mut tool, ray(-150.0, 120.0));
+    let frame = tool.frame();
+    // The preview's plan (`RoadEditPlan::compile_from`'s preparation): its prepared input prices
+    // the preview (`preview.rs` `stroke_cost_weight`).
+    let (prepared, validation, _) = plan_road_edit(
+        &frame.stroke.points,
+        spec.fwd_lanes,
+        spec.bkw_lanes,
+        (spec.median, spec.parking, spec.attributes),
+        &view().terrain,
+        &view().region_graph,
+        &view().roadbed,
+        frame.stroke.snap_to_existing_roads,
+        false,
+    );
+    assert!(validation.is_valid, "{}", validation.invalid_reason);
+    let preview_per_m = build_per_m(stroke_weight(
+        (spec.fwd_lanes, spec.bkw_lanes),
+        prepared.median,
+        prepared.parking,
+        prepared.attributes,
+        prepared.class,
+    ));
+    let hud = frame.hud;
+    assert!(
+        (hud.build_cost / hud.length_m - preview_per_m).abs() < 1e-9 * preview_per_m,
+        "HUD {} / m, preview {} / m",
+        hud.build_cost / hud.length_m,
+        preview_per_m
+    );
+    // The default road's price differs, so the check above is the type's.
+    let mut plain = session();
+    click(&mut plain, ray(-250.0, 100.0));
+    move_to(&mut plain, ray(-150.0, 120.0));
+    let plain_hud = plain.frame().hud;
+    assert!(plain_hud.build_cost / plain_hud.length_m < 0.9 * preview_per_m);
+}
+
+// Round C: a scripted pointer is the cursor exactly (today's `set_scripted_pointer`), even where
+// a snap would take a picked or world pointer, and the stroke is its two points bit for bit.
+#[test]
+fn scripted_pointer_is_taken_exactly() {
+    let mut tool = session();
+    let start = Vector3::new(0.3, 0.7, 0.4); // inside the junction's node snap
+    let end = Vector3::new(150.25, 1.5, 0.75); // on the east road
+    click(&mut tool, Pointer::Scripted(start));
+    click(&mut tool, Pointer::Scripted(end));
+    let commit = tool.take_commit().expect("a stroke");
+    assert_eq!(commit.points, vec![start, end]);
+    // The chain goes on from the exact end: no network target was taken.
+    ack(&mut tool, true);
+    assert_eq!(tool.frame().state.phase, Phase::Placing { placed: 1 });
+}
+
+// Round C: cancelling while the stroke waits for its acknowledgement ends it whatever the answer;
+// a refusal without the cancel keeps it editable.
+#[test]
+fn cancel_while_pending_survives_a_refusal() {
+    for cancel in [false, true] {
+        let mut tool = session();
+        click(&mut tool, ray(-250.0, 100.0));
+        click(&mut tool, ray(-150.0, 120.0));
+        assert!(tool.take_commit().is_some());
+        if cancel {
+            tool.handle_event(view(), RoadToolEvent::Action(RoadToolAction::Cancel));
+        }
+        ack(&mut tool, false);
+        let expected = if cancel {
+            Phase::Idle
+        } else {
+            Phase::Placing { placed: 1 }
+        };
+        assert_eq!(tool.frame().state.phase, expected, "cancel {cancel}");
+    }
+}
+
+// Round C: the keyboard height offset lifts a ground pick as today's cursor lifts it.
+#[test]
+fn altitude_offset_lifts_the_ground_pick() {
+    let mut tool = session();
+    tool.set_option(RoadToolOption::AltitudeOffsetM(3.0));
+    let pointer = ray(-250.0, 100.0);
+    move_to(&mut tool, pointer);
+    let Pointer::Ray { origin, dir } = pointer else {
+        unreachable!()
+    };
+    let today = road_tool_cursor(
+        view(),
+        &CursorQuery {
+            ray_origin: origin,
+            ray_dir: dir,
+            altitude_offset_m: 3.0,
+            active: false,
+            current_state: 0,
+            start_pos: Vector3::ZERO,
+            control_pos: Vector3::ZERO,
+            zoning_snap_enabled: false,
+            fwd_lanes: 1,
+            bkw_lanes: 1,
+            border_snap_dist_m: BORDER_SNAP_M,
+            previous_snap: None,
+            sticky_release_dist_m: SNAP_RELEASE_M,
+            angle_snap: Vector3::ZERO,
+        },
+    )
+    .expect("the ray meets the ground");
+    assert_eq!(tool.frame().cursor.position, today.position);
+}

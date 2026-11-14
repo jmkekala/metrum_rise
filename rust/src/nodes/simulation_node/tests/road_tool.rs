@@ -3,7 +3,10 @@
 //! Road Tool regression tests for the simulation-node bridge.
 
 use super::*;
-use crate::simulation::network::interaction::StructureHit;
+use crate::nodes::sim::road_tool::pick::{
+    closest_cursor_hit, cursor_network_snap, is_near_border, structure_hit,
+};
+use crate::simulation::network::interaction::{NetworkSnapTarget, StructureHit};
 
 #[test]
 fn road_tool_cursor_classifies_closer_road_hit_as_absolute_height() {
@@ -12,7 +15,7 @@ fn road_tool_cursor_classifies_closer_road_hit_as_absolute_height() {
     let terrain_hit = Vector3::new(0.0, 0.0, 0.0);
 
     let (hit, road_owned) =
-        SimulationNode::road_tool_closest_cursor_hit(ray_origin, Some(road_hit), Some(terrain_hit))
+        closest_cursor_hit(ray_origin, Some(road_hit), Some(terrain_hit))
             .expect("cursor should select one visible hit");
 
     assert_eq!(hit, road_hit);
@@ -29,7 +32,7 @@ fn road_tool_cursor_classifies_closer_terrain_hit_as_offsettable_height() {
     let terrain_hit = Vector3::new(0.0, 0.0, 0.0);
 
     let (hit, road_owned) =
-        SimulationNode::road_tool_closest_cursor_hit(ray_origin, Some(road_hit), Some(terrain_hit))
+        closest_cursor_hit(ray_origin, Some(road_hit), Some(terrain_hit))
             .expect("cursor should select one visible hit");
 
     assert_eq!(hit, terrain_hit);
@@ -44,13 +47,11 @@ fn road_tool_sticky_network_snap_slides_inside_release_radius() {
     let graph = test_snap_graph();
     for step in 0..40 {
         let x = 6.0 + step as f32 * 0.2;
-        let snap = SimulationNode::road_tool_cursor_network_snap(
+        let snap = cursor_network_snap(
             &graph,
             Vector3::new(x, 40.0, 7.9),
             StructureHit::Ground,
-            0,
-            -1,
-            1,
+            Some((NetworkSnapTarget::Edge(0), 1)),
             1,
             8.0,
         )
@@ -64,7 +65,7 @@ fn road_tool_sticky_network_snap_slides_inside_release_radius() {
 fn road_tool_sticky_network_snap_releases_outside_release_radius() {
     let graph = test_snap_graph();
 
-    use crate::simulation::network::interaction::{NetworkSnapTarget, retained_network_snap_xz};
+    use crate::simulation::network::interaction::retained_network_snap_xz;
     assert!(
         retained_network_snap_xz(
             &graph,
@@ -80,27 +81,22 @@ fn road_tool_sticky_network_snap_releases_outside_release_radius() {
 #[test]
 fn road_tool_sticky_network_snap_rejects_stale_generation() {
     let graph = test_snap_graph();
-    use crate::simulation::network::interaction::NetworkSnapTarget;
     let position = Vector3::new(7.0, 0.0, 0.0);
-    let retained = SimulationNode::road_tool_cursor_network_snap(
+    let retained = cursor_network_snap(
         &graph,
         position,
         StructureHit::Ground,
-        -1,
-        0,
-        1,
+        Some((NetworkSnapTarget::Node(0), 1)),
         1,
         8.0,
     )
     .unwrap();
     assert_eq!(retained.target, NetworkSnapTarget::Node(0));
-    let fresh = SimulationNode::road_tool_cursor_network_snap(
+    let fresh = cursor_network_snap(
         &graph,
         position,
         StructureHit::Ground,
-        -1,
-        0,
-        1,
+        Some((NetworkSnapTarget::Node(0), 1)),
         2,
         8.0,
     )
@@ -115,25 +111,25 @@ fn road_tool_border_precheck_matches_strict_heightmap_bounds() {
     let half_height_m = 40.0;
     let threshold_m = 3.0;
 
-    assert!(!SimulationNode::road_tool_is_near_border(
+    assert!(!is_near_border(
         Vector3::ZERO,
         half_width_m,
         half_height_m,
         threshold_m,
     ));
-    assert!(!SimulationNode::road_tool_is_near_border(
+    assert!(!is_near_border(
         Vector3::new(47.0, 0.0, 37.0),
         half_width_m,
         half_height_m,
         threshold_m,
     ));
-    assert!(SimulationNode::road_tool_is_near_border(
+    assert!(is_near_border(
         Vector3::new(47.001, 0.0, 0.0),
         half_width_m,
         half_height_m,
         threshold_m,
     ));
-    assert!(SimulationNode::road_tool_is_near_border(
+    assert!(is_near_border(
         Vector3::new(0.0, 0.0, -37.001),
         half_width_m,
         half_height_m,
@@ -149,7 +145,7 @@ fn road_tool_border_precheck_matches_strict_heightmap_bounds() {
 // took the elevated span. Tunnels are covered by `interaction`'s test: a bore is never a hit.
 #[test]
 fn road_tool_cursor_snaps_only_to_the_structure_its_ray_hit() {
-    use crate::simulation::network::interaction::{NetworkSnapTarget, get_closest_network_snap_xz};
+    use crate::simulation::network::interaction::get_closest_network_snap_xz;
     use crate::simulation::network::types::EdgeClass;
     let mut core = test_core_with_flat_terrain(0.0);
     core.treasury.balance = 1.0e7;
@@ -172,13 +168,12 @@ fn road_tool_cursor_snaps_only_to_the_structure_its_ray_hit() {
     let cursor = |origin: Vector3, direction: Vector3| {
         let road = roadbed.raycast_piece(origin, direction);
         let terrain = ground(origin, direction);
-        let hit = SimulationNode::road_tool_structure_hit(graph, origin, road, Some(terrain));
+        let hit = structure_hit(graph, origin, road, Some(terrain));
         let at = match road {
             Some((road_hit, _)) if hit != StructureHit::Ground => road_hit,
             _ => terrain,
         };
-        let snap =
-            SimulationNode::road_tool_cursor_network_snap(graph, at, hit, -1, -1, -1, 0, 8.0);
+        let snap = cursor_network_snap(graph, at, hit, None, 0, 8.0);
         (hit, at, snap)
     };
 

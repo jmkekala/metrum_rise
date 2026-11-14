@@ -56,9 +56,11 @@ pub enum Pointer {
         /// Ray direction.
         dir: Vector3,
     },
-    /// A world position (scripts and benchmarks, as `set_scripted_pointer`): taken as a ground
-    /// hit there.
+    /// A world position: taken as a ground hit there, then snapped.
     World(Vector3),
+    /// A scripted world position (tests, benchmarks and probes, today's `set_scripted_pointer`):
+    /// the cursor exactly, neither picked nor snapped.
+    Scripted(Vector3),
 }
 
 /// A pointer button.
@@ -125,6 +127,9 @@ pub enum RoadToolOption {
     LengthStepM(Option<f64>),
     /// Continuous: the tangent constraint at a stroke's start.
     Continuous(bool),
+    /// The keyboard height offset added to a ground pick (PageUp/PageDown, until round I's
+    /// handles), in metres.
+    AltitudeOffsetM(f32),
 }
 
 // The resolved cursor of the last pose.
@@ -138,6 +143,8 @@ struct Cursor {
 #[derive(Clone, Copy, Debug)]
 struct Pending {
     chain: bool,
+    // The player cancelled while it was pending: a refusal does not bring the stroke back.
+    cancelled: bool,
     end: Vector3,
     end_tangent: Option<DVec2>,
 }
@@ -149,6 +156,7 @@ pub struct RoadToolSession {
     snap: SnapOptions,
     spec: RoadTypeSpec,
     continuous: bool,
+    altitude_offset_m: f32,
     placed: [Vector3; MAX_POINTS],
     placed_len: usize,
     // How the road the stroke starts on leaves its start, or the carried tangent.
@@ -179,6 +187,7 @@ impl RoadToolSession {
             snap: SnapOptions::default(),
             spec: RoadTypeSpec::default(),
             continuous: false,
+            altitude_offset_m: 0.0,
             placed: [Vector3::ZERO; MAX_POINTS],
             placed_len: 0,
             start_road: None,
@@ -197,6 +206,11 @@ impl RoadToolSession {
     /// The current frame.
     pub fn frame(&self) -> &RoadToolFrame {
         &self.frame
+    }
+
+    /// The drawn road type.
+    pub fn spec(&self) -> RoadTypeSpec {
+        self.spec
     }
 
     /// Takes the stroke to commit, if the last confirming click produced one; the session keeps
@@ -223,6 +237,7 @@ impl RoadToolSession {
                 self.snap.length_step_m = step.filter(|step| *step > 0.0);
             }
             RoadToolOption::Continuous(on) => self.continuous = on,
+            RoadToolOption::AltitudeOffsetM(offset) => self.altitude_offset_m = offset,
         }
     }
 
@@ -261,6 +276,7 @@ impl RoadToolSession {
         if let Some(pending) = &mut self.pending {
             // The sent stroke still lands; the chain does not continue from it.
             pending.chain = false;
+            pending.cancelled = true;
             return;
         }
         self.placed_len = 0;
@@ -309,6 +325,7 @@ impl RoadToolSession {
         let border = self.start_on_border || cursor.snapped.kind == SnapKind::Border;
         self.pending = Some(Pending {
             chain: cursor.snapped.target.is_none() && !border,
+            cancelled: false,
             end: *self.frame.stroke.points.last().expect("two points"),
             end_tangent: self.path.end_tangent(),
         });
@@ -332,7 +349,7 @@ impl RoadToolSession {
             return;
         };
         self.frame.commit = None;
-        if !committed {
+        if !committed && !pending.cancelled {
             // The refusal keeps the stroke editable at its last point.
             return;
         }
@@ -377,7 +394,7 @@ impl RoadToolSession {
     // Pick and snap one pointer pose. `None` when the pointer meets no surface.
     fn resolve_cursor(&mut self, view: &RoadToolQuerySnapshot, pointer: Pointer) -> Option<Cursor> {
         let (raw, hit_road, structure) = match pointer {
-            Pointer::Ray { origin, dir } => match pick_surface(view, origin, dir, 0.0)? {
+            Pointer::Ray { origin, dir } => match pick_surface(view, origin, dir, self.altitude_offset_m)? {
                 SurfacePick::Surface {
                     position,
                     hit_road,
@@ -397,6 +414,19 @@ impl RoadToolSession {
                 }
             },
             Pointer::World(position) => (position, false, StructureHit::Any),
+            Pointer::Scripted(position) => {
+                self.sticky = None;
+                return Some(Cursor {
+                    position,
+                    snapped: Snapped {
+                        xz: xz_of(position),
+                        kind: SnapKind::Free,
+                        target: None,
+                        stepped: false,
+                        angle_broken: false,
+                    },
+                });
+            }
         };
         let graph = &view.region_graph;
         let raw_xz = xz_of(raw);
@@ -490,7 +520,7 @@ impl RoadToolSession {
                 snapped.xz.y as f32,
                 hit_road,
                 raw.y,
-                0.0,
+                self.altitude_offset_m,
             ),
         };
         let position = Vector3::new(snapped.xz.x as f32, height, snapped.xz.y as f32);

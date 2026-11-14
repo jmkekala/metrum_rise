@@ -34,6 +34,7 @@ impl SimulationNode {
         match crate::simulation::network::graph::RoadMedian::from_tool(style, width_m) {
             Ok(median) => {
                 self.road_tool_median = median;
+                self.sync_road_tool_spec();
                 GString::new()
             }
             Err(reason) => reason.into(),
@@ -50,6 +51,7 @@ impl SimulationNode {
         match crate::simulation::network::graph::RoadParking::from_code(code) {
             Some(parking) => {
                 self.road_tool_parking = parking;
+                self.sync_road_tool_spec();
                 GString::new()
             }
             None => "parking_code_out_of_range".into(),
@@ -77,6 +79,7 @@ impl SimulationNode {
         match RoadAttributes::from_tool(speed_kmh.into(), sidewalks.into(), zoning, street_lights) {
             Ok(attributes) => {
                 self.road_tool_attributes = attributes;
+                self.sync_road_tool_spec();
                 GString::new()
             }
             Err(reason) => reason.into(),
@@ -353,6 +356,17 @@ impl SimulationNode {
         bkw_lanes: i32,
         snap_to_existing_roads: bool,
     ) -> VarDictionary {
+        self.preview_stroke(points.to_vec(), fwd_lanes, bkw_lanes, snap_to_existing_roads)
+    }
+
+    // [`Self::preview_road`] for a stroke already in Rust (the road tool session's).
+    pub(super) fn preview_stroke(
+        &self,
+        points: Vec<Vector3>,
+        fwd_lanes: i32,
+        bkw_lanes: i32,
+        snap_to_existing_roads: bool,
+    ) -> VarDictionary {
         let mut graded_tiles = Vec::new();
         let mut graded_removed = Vec::new();
         let land = self.road_tool.land();
@@ -374,7 +388,7 @@ impl SimulationNode {
             let surface_generation = context.view.surface_generation;
             let preview = Arc::new(context.preview_road(RoadPreviewRequest {
                 surface_generation,
-                points: points.to_vec(),
+                points,
                 fwd_lanes,
                 bkw_lanes,
                 snap_to_existing_roads,

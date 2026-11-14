@@ -3,13 +3,10 @@
 //! Cursor road-tool Godot API methods.
 
 use super::super::super::*;
+use crate::nodes::sim::road_tool::pick::{CursorQuery, road_tool_cursor};
 use crate::simulation::network::interaction::{
-    NetworkSnap, NetworkSnapTarget, StartDirection, StructureHit, road_start_direction,
-    snap_stroke_angle,
+    NetworkSnapTarget, StartDirection, road_start_direction,
 };
-
-// A stroke within this many degrees of a snap angle is pulled onto it.
-const ANGLE_SNAP_TOLERANCE_DEG: f32 = 4.0;
 
 #[godot_api(secondary)]
 impl SimulationNode {
@@ -41,7 +38,8 @@ impl SimulationNode {
     /// `angle_snap` is the reference direction (unit XZ). While the straight-road end is being
     /// placed (`current_state` 2), a stroke from `start_pos` within 4 degrees of a 45-degree
     /// multiple from the reference snaps onto it. A zero reference leaves the cursor free.
-    /// Network targets win over angle snapping.
+    /// Network targets win over angle snapping. The query is `pick::road_tool_cursor`; since
+    /// `ROAD-112` round C only the curve modes' GDScript path calls it.
     #[func]
     #[allow(clippy::too_many_arguments)]
     pub fn get_road_tool_cursor_pos(
@@ -62,148 +60,43 @@ impl SimulationNode {
         angle_snap: Vector3,
     ) -> Variant {
         let query = self.road_tool.view.read().unwrap();
-        let (world_w, world_h) = query.terrain.world_size();
-        let half_w = world_w * 0.5;
-        let half_h = world_h * 0.5;
-        let border_snap_dist = border_snap_dist_m.min(half_w.min(half_h));
-
-        let road_hit = query.roadbed.raycast_piece(ray_origin, ray_dir);
-        let terrain_hit = query.with_graded_surface(|surface, scratch| {
-            surface
-                .raycast_surface(
-                    [ray_origin.x, ray_origin.y, ray_origin.z].map(f64::from),
-                    [ray_dir.x, ray_dir.y, ray_dir.z].map(f64::from),
-                    scratch,
-                )
-                .map(|[x, y, z]| Vector3::new(x as f32, y as f32, z as f32))
-        });
-        // The level the ray hit (`ROAD-99`): a road's surface, or the ground. Under a bridge the
-        // cursor stays on the road or the ground it hit, not on the deck over it.
-        let structure_hit =
-            Self::road_tool_structure_hit(&query.region_graph, ray_origin, road_hit, terrain_hit);
-        let road_hit = road_hit.map(|(hit, _)| hit);
-        let (mut pos, hit_road) =
-            match Self::road_tool_closest_cursor_hit(ray_origin, road_hit, terrain_hit) {
-                Some((hit, true)) => (hit, true),
-                Some((mut hit, false)) => {
-                    hit.y += altitude_offset_m;
-                    (hit, false)
-                }
-                None => {
-                    if ray_dir.y >= -0.001 {
-                        return Variant::nil();
-                    }
-                    let t_plane = -ray_origin.y / ray_dir.y;
-                    let mut hit = ray_origin + ray_dir * t_plane;
-                    hit.x = hit.x.clamp(-half_w, half_w);
-                    hit.z = hit.z.clamp(-half_h, half_h);
-                    hit = Self::road_tool_snap_to_border(hit, half_w, half_h);
-                    hit.y = Self::road_tool_cursor_height_at_xz(
-                        &query,
-                        hit.x,
-                        hit.z,
-                        altitude_offset_m,
-                    );
-                    return Self::road_tool_cursor_result(hit, None, query.surface_generation);
-                }
-            };
-        let hit_m = pos.y;
-        let level_height_at = |x: f32, z: f32| {
-            Self::road_tool_cursor_level_height_at(&query, x, z, hit_road, hit_m, altitude_offset_m)
-        };
-
         let previous_id = |key| {
             previous_snap
                 .get(key)
                 .and_then(|value| value.try_to::<i64>().ok())
                 .unwrap_or(-1)
         };
-        if zoning_snap_enabled {
-            let raw_snap = Self::road_tool_cursor_network_snap(
-                &query.region_graph,
-                pos,
-                structure_hit,
-                previous_id("snap_edge"),
-                previous_id("snap_node"),
-                previous_id("surface_generation"),
-                query.surface_generation,
-                sticky_network_snap_release_dist_m,
-            );
-            // Existing junctions remain exact connection targets.
-            if let Some(snap) =
-                raw_snap.filter(|snap| matches!(snap.target, NetworkSnapTarget::Node(_)))
-            {
-                pos = snap.position;
-            } else {
-                let xz = |point: Vector3| glam::DVec2::new(f64::from(point.x), f64::from(point.z));
-                let width = ((fwd_lanes.clamp(0, 4) + bkw_lanes.clamp(0, 4)) as f32
-                    * crate::config::LANE_WIDTH)
-                    .max(2.0);
-                let snapped = query.zoning_grid.snap_road_cursor(
-                    &query.region_graph,
-                    xz(pos),
-                    (active && current_state != 0).then_some(xz(start_pos)),
-                    f64::from(width),
-                );
-                pos.x = snapped.x as f32;
-                pos.z = snapped.y as f32;
-            }
-            pos.y = level_height_at(pos.x, pos.z);
-        }
-
-        if let Some(snap) = Self::road_tool_cursor_network_snap(
-            &query.region_graph,
-            pos,
-            structure_hit,
-            previous_id("snap_edge"),
-            previous_id("snap_node"),
-            previous_id("surface_generation"),
-            query.surface_generation,
-            sticky_network_snap_release_dist_m,
-        ) {
-            // A snapped node or edge reports its graph height (`ROAD-99`).
-            return Self::road_tool_cursor_result(
-                snap.position,
-                Some(snap.target),
-                query.surface_generation,
-            );
-        }
-
-        if active
-            && current_state == 2
-            && !zoning_snap_enabled
-            && let Some(mut snapped) = snap_stroke_angle(
+        let cursor = road_tool_cursor(
+            &query,
+            &CursorQuery {
+                ray_origin,
+                ray_dir,
+                altitude_offset_m,
+                active,
+                current_state,
                 start_pos,
-                pos,
+                control_pos,
+                zoning_snap_enabled,
+                fwd_lanes,
+                bkw_lanes,
+                border_snap_dist_m,
+                previous_snap: decode_target(
+                    previous_id("snap_node"),
+                    previous_id("snap_edge"),
+                    previous_id("surface_generation"),
+                ),
+                sticky_release_dist_m: sticky_network_snap_release_dist_m,
                 angle_snap,
-                ANGLE_SNAP_TOLERANCE_DEG.to_radians(),
-            )
-        {
-            snapped.y = level_height_at(snapped.x, snapped.z);
-            let mut result = Self::road_tool_cursor_result(snapped, None, query.surface_generation);
-            if let Ok(mut dict) = result.try_to::<VarDictionary>() {
-                dict.set("angle_snapped", true);
-                result = dict.to_variant();
+            },
+        );
+        cursor.map_or_else(Variant::nil, |cursor| {
+            let mut result =
+                Self::road_tool_cursor_result(cursor.position, cursor.target, cursor.surface_generation);
+            if cursor.angle_snapped {
+                result.set("angle_snapped", true);
             }
-            return result;
-        }
-
-        if Self::road_tool_is_near_border(pos, half_w, half_h, border_snap_dist) {
-            pos = Self::road_tool_snap_to_border(pos, half_w, half_h);
-            pos.y = level_height_at(pos.x, pos.z);
-            return Self::road_tool_cursor_result(pos, None, query.surface_generation);
-        }
-
-        if active {
-            if pos.distance_to(start_pos) < 2.5 {
-                return Self::road_tool_cursor_result(start_pos, None, query.surface_generation);
-            }
-            if current_state == 2 && pos.distance_to(control_pos) < 2.5 {
-                return Self::road_tool_cursor_result(control_pos, None, query.surface_generation);
-            }
-        }
-
-        Self::road_tool_cursor_result(pos, None, query.surface_generation)
+            result.to_variant()
+        })
     }
 
     /// How a road started at `pos` should leave it, from the snap target the cursor returned
@@ -220,14 +113,9 @@ impl SimulationNode {
         surface_generation: i64,
     ) -> VarDictionary {
         let query = self.road_tool.view.read().unwrap();
-        let target = (u64::try_from(surface_generation).ok() == Some(query.surface_generation))
-            .then(|| {
-                u32::try_from(snap_node)
-                    .ok()
-                    .map(NetworkSnapTarget::Node)
-                    .or_else(|| usize::try_from(snap_edge).ok().map(NetworkSnapTarget::Edge))
-            })
-            .flatten();
+        let target = decode_target(snap_node, snap_edge, surface_generation)
+            .filter(|&(_, generation)| generation == query.surface_generation)
+            .map(|(target, _)| target);
         let (kind, direction) = match target
             .and_then(|target| road_start_direction(&query.region_graph, target, pos))
         {
@@ -245,7 +133,7 @@ impl SimulationNode {
         position: Vector3,
         target: Option<NetworkSnapTarget>,
         generation: u64,
-    ) -> Variant {
+    ) -> VarDictionary {
         let mut result = VarDictionary::new();
         result.set("position", position);
         result.set(
@@ -266,122 +154,21 @@ impl SimulationNode {
             "surface_generation",
             i64::try_from(generation).unwrap_or(-1),
         );
-        result.to_variant()
+        result
     }
+}
 
-    // The network snap of a cursor at `cursor_pos` whose ray hit `structure_hit`: the previous
-    // target while the cursor stays within its release radius and the ray still admits it, else
-    // a fresh acquisition among the targets the ray admits (`ROAD-99` follow-up B1).
-    #[allow(clippy::too_many_arguments)]
-    pub(in crate::nodes::simulation_node) fn road_tool_cursor_network_snap(
-        graph: &crate::simulation::network::graph::RegionGraph,
-        cursor_pos: Vector3,
-        structure_hit: StructureHit,
-        edge_id: i64,
-        node_id: i64,
-        target_generation: i64,
-        surface_generation: u64,
-        release_dist_m: f32,
-    ) -> Option<NetworkSnap> {
-        use crate::simulation::network::interaction::{
-            get_closest_network_snap_at_hit, retained_network_snap_xz,
-        };
-        // IDs are snapshot-local: never reuse a target after topology/generation replacement.
-        let target = (u64::try_from(target_generation).ok() == Some(surface_generation))
-            .then(|| {
-                u32::try_from(node_id)
-                    .ok()
-                    .map(NetworkSnapTarget::Node)
-                    .or_else(|| usize::try_from(edge_id).ok().map(NetworkSnapTarget::Edge))
-            })
-            .flatten();
-        if let Some(snap) = target
-            .filter(|&target| structure_hit.admits(graph, target))
-            .and_then(|target| {
-                retained_network_snap_xz(graph, cursor_pos, target, 5.0, release_dist_m)
-            })
-            .filter(|snap| structure_hit.admits(graph, snap.target))
-        {
-            return Some(snap);
-        }
-        get_closest_network_snap_at_hit(graph, cursor_pos, 5.0, structure_hit)
-    }
-
-    pub(in crate::nodes::simulation_node) fn road_tool_closest_cursor_hit(
-        ray_origin: Vector3,
-        road_hit: Option<Vector3>,
-        terrain_hit: Option<Vector3>,
-    ) -> Option<(Vector3, bool)> {
-        match (road_hit, terrain_hit) {
-            (Some(road), Some(terrain)) => {
-                let road_dist_sq = (road - ray_origin).length_squared();
-                let terrain_dist_sq = (terrain - ray_origin).length_squared();
-                if road_dist_sq <= terrain_dist_sq {
-                    Some((road, true))
-                } else {
-                    Some((terrain, false))
-                }
-            }
-            (Some(road), None) => Some((road, true)),
-            (None, Some(terrain)) => Some((terrain, false)),
-            (None, None) => None,
-        }
-    }
-
-    // The structure the cursor's ray hit, the only one it may snap to (`ROAD-99` follow-up B1):
-    // the bridge deck or deck node piece the road hit belongs to when that hit is the nearer
-    // one; the ground when the ray hit the ground first, or a grounded piece, or a buried bore.
-    pub(in crate::nodes::simulation_node) fn road_tool_structure_hit(
-        graph: &crate::simulation::network::graph::RegionGraph,
-        ray_origin: Vector3,
-        road_hit: Option<(Vector3, crate::simulation::network::roadbed::PieceId)>,
-        terrain_hit: Option<Vector3>,
-    ) -> StructureHit {
-        let piece = road_hit
-            .filter(|&(hit, _)| {
-                Self::road_tool_closest_cursor_hit(ray_origin, Some(hit), terrain_hit)
-                    .is_some_and(|(_, road)| road)
-            })
-            .map(|(_, piece)| piece);
-        StructureHit::of_piece(graph, piece)
-    }
-
-    // The cursor's height at an XZ point near its hit, on the level the ray hit (`ROAD-99`): on a
-    // road, the exposed surface there nearest the hit's height `hit_m`; on the ground, a grounded
-    // road's surface there, else the ground with the tool's altitude offset. Where no bridge's or
-    // tunnel's piece holds the point it equals `road_tool_cursor_height_at_xz` on the ground.
-    fn road_tool_cursor_level_height_at(
-        query: &RoadToolQuerySnapshot,
-        x: f32,
-        z: f32,
-        hit_road: bool,
-        hit_m: f32,
-        altitude_offset_m: f32,
-    ) -> f32 {
-        let road_m = if hit_road {
-            query.roadbed.exposed_height_nearest_at(x, z, hit_m)
-        } else {
-            query.roadbed.grounded_height_at(x, z)
-        };
-        road_m.unwrap_or_else(|| {
-            query.with_graded_surface(|surface, scratch| {
-                surface.ground_height_at(f64::from(x), f64::from(z), scratch) as f32
-                    + altitude_offset_m
-            })
-        })
-    }
-
-    fn road_tool_cursor_height_at_xz(
-        query: &RoadToolQuerySnapshot,
-        x: f32,
-        z: f32,
-        altitude_offset_m: f32,
-    ) -> f32 {
-        query.roadbed.exposed_height_at(x, z).unwrap_or_else(|| {
-            query.with_graded_surface(|surface, scratch| {
-                surface.ground_height_at(f64::from(x), f64::from(z), scratch) as f32
-                    + altitude_offset_m
-            })
-        })
-    }
+// A network target from the bridge's ids (-1 when absent; a node before an edge) and the view
+// generation it was taken at; `None` without a target or a valid generation.
+fn decode_target(
+    snap_node: i64,
+    snap_edge: i64,
+    generation: i64,
+) -> Option<(NetworkSnapTarget, u64)> {
+    let generation = u64::try_from(generation).ok()?;
+    let target = u32::try_from(snap_node)
+        .ok()
+        .map(NetworkSnapTarget::Node)
+        .or_else(|| usize::try_from(snap_edge).ok().map(NetworkSnapTarget::Edge))?;
+    Some((target, generation))
 }

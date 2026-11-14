@@ -21,9 +21,9 @@
 
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::interaction::{
-    NetworkSnap, NetworkSnapTarget, StructureHit, retained_network_snap_xz,
+    NetworkSnap, NetworkSnapTarget, StructureHit, closest_network_snap_at_hit_into,
+    retained_network_snap_xz,
 };
-use crate::simulation::network::types::EdgeClass;
 use glam::DVec2;
 use godot::prelude::Vector3;
 
@@ -34,8 +34,6 @@ pub const GUIDE_RADIUS_M: f64 = 64.0;
 // An edge-and-angle intersection is taken within this many metres of the raw cursor: the
 // network snap's own reach.
 const EDGE_REACH_M: f64 = super::pick::NETWORK_SNAP_REACH_M as f64;
-// Today's edge acquisition: endpoints are not taken within this margin of an edge's ends.
-const EDGE_SNAP_ENDPOINT_MARGIN_M: f32 = 0.25;
 // Lines closer to parallel than this (sine of their angle) have no intersection.
 const PARALLEL_SIN: f64 = 1e-9;
 
@@ -503,10 +501,9 @@ pub(crate) fn edge_direction_at(
 }
 
 /// The network snap of a cursor whose ray hit `structure`: the retained target while in its
-/// release radius, else today's acquisition (`get_closest_network_snap_at_hit`, nodes 2.5x as
-/// attractive, absolute node priority within reach, ground before structure, the nearer level
-/// on a tie of both) with the edge candidates in `scratch` instead of a fresh list. Equal to
-/// today's snap bitwise (tested). `O(nodes in visited cells + log E + K * segments)`, no
+/// release radius, else the acquisition (`interaction::closest_network_snap_at_hit_into`, nodes
+/// 2.5x as attractive, absolute node priority within reach, ground before structure, the nearer
+/// level on a tie of both) with the edge candidates in `scratch`. `O(nodes in visited cells + log E + K * segments)`, no
 /// allocation after warm-up.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn network_snap(
@@ -531,152 +528,5 @@ pub(crate) fn network_snap(
     {
         return Some(snap);
     }
-    acquire(graph, world_pos, max_dist, structure, &mut scratch.edges)
-}
-
-// `get_closest_network_snap_at_hit` with a reused candidate buffer: same candidates, order and
-// comparisons. A structure-level candidate is admitted exactly when `StructureHit::admits` says
-// so (it is not grounded, or not standard, so `admits` is the private allow test).
-fn acquire(
-    graph: &RegionGraph,
-    world_pos: Vector3,
-    max_dist: f32,
-    hit: StructureHit,
-    edges: &mut Vec<usize>,
-) -> Option<NetworkSnap> {
-    let mut closest_pos: [Option<NetworkSnap>; 2] = [None; 2];
-    let mut min_score = [f32::MAX; 2];
-    let node_snap_dist = max_dist * 2.5;
-    let mut closest_node_dist = [f32::MAX; 2];
-    let min = Vector3::new(
-        world_pos.x - node_snap_dist,
-        0.0,
-        world_pos.z - node_snap_dist,
-    );
-    let max = Vector3::new(
-        world_pos.x + node_snap_dist,
-        0.0,
-        world_pos.z + node_snap_dist,
-    );
-    graph.visit_nodes_near_aabb(min, max, |node_id| {
-        if !graph.is_live_canonical_node(node_id) {
-            return;
-        }
-        let node = graph.node(node_id);
-        let d = snap_distance(node.pos, world_pos);
-        if d < node_snap_dist {
-            let level = usize::from(!graph.grounded_node(node_id));
-            if level == 1 && !hit.admits(graph, NetworkSnapTarget::Node(node_id)) {
-                return;
-            }
-            let score = d * 0.4;
-            if score < min_score[level]
-                || (score == min_score[level]
-                    && closest_pos[level].is_some_and(|snap: NetworkSnap| {
-                        matches!(snap.target, NetworkSnapTarget::Node(best) if node_id < best)
-                    }))
-            {
-                min_score[level] = score;
-                closest_pos[level] = Some(NetworkSnap {
-                    position: node.pos,
-                    target: NetworkSnapTarget::Node(node_id),
-                });
-            }
-            if d < closest_node_dist[level] {
-                closest_node_dist[level] = d;
-            }
-        }
-    });
-    let locked = closest_node_dist.map(|distance| distance <= max_dist);
-    if !(locked[0] && locked[1]) {
-        let radius = max_dist.max(20.0);
-        edges.clear();
-        graph.visit_edges_near_aabb(
-            Vector3::new(world_pos.x - radius, 0.0, world_pos.z - radius),
-            Vector3::new(world_pos.x + radius, 0.0, world_pos.z + radius),
-            |edge| edges.push(edge),
-        );
-        edges.sort_unstable();
-        for &edge_idx in edges.iter() {
-            let edge = graph.edge(edge_idx);
-            let level = usize::from(edge.class != EdgeClass::Standard);
-            if edge.deleted
-                || locked[level]
-                || (level == 1 && !hit.admits(graph, NetworkSnapTarget::Edge(edge_idx)))
-            {
-                continue;
-            }
-            let edge_snap_dist = f32::max(max_dist, edge.width * 0.5 + 1.0);
-            for (index, segment) in edge.geometry.windows(2).enumerate() {
-                let Some(pos) = edge_snap_point(
-                    world_pos,
-                    segment[0],
-                    segment[1],
-                    index == 0,
-                    index + 2 == edge.geometry.len(),
-                ) else {
-                    continue;
-                };
-                let d_perp = snap_distance(pos, world_pos);
-                if d_perp < edge_snap_dist && d_perp < min_score[level] {
-                    min_score[level] = d_perp;
-                    closest_pos[level] = Some(NetworkSnap {
-                        position: pos,
-                        target: NetworkSnapTarget::Edge(edge_idx),
-                    });
-                }
-            }
-        }
-    }
-    match closest_pos.map(|snap| snap.map(|snap| at_graph_height(graph, snap))) {
-        [Some(ground), Some(structure)]
-            if (structure.position.y - world_pos.y).abs()
-                < (ground.position.y - world_pos.y).abs() =>
-        {
-            Some(structure)
-        }
-        [ground, structure] => ground.or(structure),
-    }
-}
-
-// As `interaction::at_graph_height`: an edge snap at its profile's height there.
-fn at_graph_height(graph: &RegionGraph, mut snap: NetworkSnap) -> NetworkSnap {
-    if let NetworkSnapTarget::Edge(edge_idx) = snap.target {
-        snap.position.y = RegionGraph::profile_height_at(
-            edge_points(graph, edge_idx),
-            snap.position.x,
-            snap.position.z,
-        );
-    }
-    snap
-}
-
-fn snap_distance(a: Vector3, b: Vector3) -> f32 {
-    let dx = a.x - b.x;
-    let dz = a.z - b.z;
-    (dx * dx + dz * dz).sqrt()
-}
-
-// As `interaction::get_edge_snap_point`: the projection onto one segment, kept a margin off the
-// edge's own ends.
-fn edge_snap_point(
-    p: Vector3,
-    a: Vector3,
-    b: Vector3,
-    start_endpoint: bool,
-    end_endpoint: bool,
-) -> Option<Vector3> {
-    let dx = b.x - a.x;
-    let dz = b.z - a.z;
-    let length_sq = dx * dx + dz * dz;
-    if length_sq <= 0.000001 {
-        return None;
-    }
-    let seg_len = length_sq.sqrt();
-    let end_margin = (EDGE_SNAP_ENDPOINT_MARGIN_M / seg_len).min(0.49);
-    let t = (((p.x - a.x) * dx + (p.z - a.z) * dz) / length_sq).clamp(
-        if start_endpoint { end_margin } else { 0.0 },
-        if end_endpoint { 1.0 - end_margin } else { 1.0 },
-    );
-    Some(a + (b - a) * t)
+    closest_network_snap_at_hit_into(graph, world_pos, max_dist, structure, &mut scratch.edges)
 }

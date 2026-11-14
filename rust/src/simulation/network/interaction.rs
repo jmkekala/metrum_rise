@@ -210,12 +210,26 @@ pub(crate) fn get_closest_network_snap_xz(
 /// [`get_closest_network_snap_xz`] for a cursor whose ray hit `hit` (`ROAD-99` follow-up B1): the
 /// structures' level takes only the structure the ray hit, so a cursor on the ground beside or
 /// under a bridge, or on a hill over a tunnel, never snaps to it. The ground's level is as
-/// before, bitwise. Adds an `O(degree)` test per structure candidate.
+/// before, bitwise. Adds an `O(degree)` test per structure candidate. Allocates the edge
+/// candidate list; a per-move caller keeps one with [`closest_network_snap_at_hit_into`].
 pub(crate) fn get_closest_network_snap_at_hit(
     graph: &RegionGraph,
     world_pos: Vector3,
     max_dist: f32,
     hit: StructureHit,
+) -> Option<NetworkSnap> {
+    closest_network_snap_at_hit_into(graph, world_pos, max_dist, hit, &mut Vec::new())
+}
+
+/// [`get_closest_network_snap_at_hit`] with the caller's edge candidate buffer (`ROAD-112`): the
+/// road tool's per-move snap allocates nothing once `edges` has grown. Same candidates, order
+/// and comparisons. `O(nodes in the visited node cells + log E + K * segments)`.
+pub(crate) fn closest_network_snap_at_hit_into(
+    graph: &RegionGraph,
+    world_pos: Vector3,
+    max_dist: f32,
+    hit: StructureHit,
+    edges: &mut Vec<usize>,
 ) -> Option<NetworkSnap> {
     // Per level, ground first: the best snap, its score and the nearest node's distance.
     let mut closest_pos: [Option<NetworkSnap>; 2] = [None; 2];
@@ -276,10 +290,16 @@ pub(crate) fn get_closest_network_snap_at_hit(
     // candidates ascend by edge id and the strict comparison below keeps the lowest id among
     // edges at exactly the same distance (`ROAD-68` open question 37).
     if !(locked[0] && locked[1]) {
-        let mut nearby_edges = graph.get_edges_near_point(world_pos, max_dist.max(20.0));
-        nearby_edges.sort_unstable();
+        let radius = max_dist.max(20.0);
+        edges.clear();
+        graph.visit_edges_near_aabb(
+            Vector3::new(world_pos.x - radius, 0.0, world_pos.z - radius),
+            Vector3::new(world_pos.x + radius, 0.0, world_pos.z + radius),
+            |edge| edges.push(edge),
+        );
+        edges.sort_unstable();
 
-        for edge_idx in nearby_edges {
+        for &edge_idx in edges.iter() {
             let edge = graph.edge(edge_idx);
             let level = usize::from(edge.class != EdgeClass::Standard);
             if edge.deleted || locked[level] || (level == 1 && !hit.allows_edge(graph, edge_idx)) {

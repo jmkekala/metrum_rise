@@ -204,7 +204,6 @@ class TestRoadTool:
 	var chunks: TestChunks
 	var topology_dirty_count: int = 0
 	var nodes_dirty_count: int = 0
-	var border_check_count: int = 0
 
 	func _init() -> void:
 		chunks = TestChunks.new()
@@ -227,9 +226,6 @@ class TestRoadTool:
 	func mark_network_topology_dirty() -> void:
 		topology_dirty_count += 1
 		mark_network_nodes_dirty()
-
-	func drain_pending_border_checks() -> void:
-		border_check_count += 1
 
 class MockRoadCandidateSimulation:
 	extends MockSimulation
@@ -606,7 +602,6 @@ func _run() -> void:
 	_expect(simulation.acknowledged_generations == [10], "the complete pair must reach the exact acknowledgement fence")
 	_expect(simulation.dirty, "a rejected exact acknowledgement must retain network dirtiness")
 	_expect(water.refresh_count == 0, "water clipping must wait when the exact acknowledgement fails")
-	_expect(road_tool.border_check_count == 0, "border checks must wait when the exact acknowledgement fails")
 	_expect(zoning_overlay.dirty_count == 0, "zoning visuals must wait when the exact acknowledgement fails")
 	_expect(
 		road_tool.nodes_dirty_count == atomic_previous_nodes_dirty_count,
@@ -618,7 +613,6 @@ func _run() -> void:
 	_expect(simulation.acknowledged_generations == [10, 10], "the exact paired generation must retry acknowledgement")
 	_expect(not simulation.dirty, "the successful exact acknowledgement must clear network dirtiness")
 	_expect(water.refresh_count == 1, "water clipping must refresh after exact acknowledgement")
-	_expect(road_tool.border_check_count == 1, "border checks must run after exact acknowledgement")
 	_expect(zoning_overlay.dirty_count == 1, "zoning visuals must refresh after exact acknowledgement")
 	_expect(
 		road_tool.nodes_dirty_count == atomic_previous_nodes_dirty_count + 1,
@@ -880,8 +874,6 @@ func _test_native_road_cursor_contract() -> void:
 	modes.zoning_grid_snap_enabled = false
 	modes.blueprint_mesh = MeshInstance3D.new()
 	modes.add_child(modes.blueprint_mesh)
-	modes._begin_stroke(Vector3.ZERO, 1, Vector3.RIGHT)
-	_expect(modes._angle_snap() == Vector3.RIGHT, "straight strokes retain their start direction for angle snapping")
 	var shift := InputEventKey.new()
 	shift.keycode = KEY_SHIFT
 	shift.pressed = true
@@ -889,7 +881,6 @@ func _test_native_road_cursor_contract() -> void:
 	Input.parse_input_event(shift)
 	Input.flush_buffered_events()
 	_expect(not modes._zoning_snap_enabled() and modes._snap_to_roads_enabled(), "Shift must not enable zoning snap or disable road connections")
-	_expect(modes._angle_snap() == Vector3.ZERO, "Shift makes straight-road angle snapping free")
 	modes.zoning_grid_snap_enabled = true
 	_expect(modes._zoning_snap_enabled(), "checkbox controls zoning snap while Shift is held")
 	shift = InputEventKey.new()
@@ -897,11 +888,9 @@ func _test_native_road_cursor_contract() -> void:
 	Input.parse_input_event(shift)
 	Input.flush_buffered_events()
 	_expect(modes._zoning_snap_enabled(), "releasing Shift must not change the checkbox setting")
-	_expect(modes._angle_snap() == Vector3.RIGHT, "releasing Shift restores straight-road angle snapping")
 	modes.zoning_grid_snap_enabled = true
 	modes.draw_mode = 1
 	_expect(not modes._zoning_snap_enabled(), "spline drawing does not promise a square zoning lattice")
-	_expect(modes._angle_snap() == Vector3.ZERO, "curve endpoints and control points remain free of angle snapping")
 	modes.cancel_road()
 	modes.free()
 	var invalid := PackedVector3Array([Vector3.ZERO])
@@ -1004,6 +993,9 @@ func _pointer_road_tool(simulation: MockRoadCandidateSimulation) -> PointerRoadT
 	simulation.validation = {"is_valid": true}
 	var tool := PointerRoadTool.new()
 	tool.simulation_node = simulation
+	# The script's own preview path, which the curves keep until round D; straight strokes are
+	# Rust's session's (`ROAD-112` round C), tested in Rust and by the native contract below.
+	tool.draw_mode = 1
 	tool.make_chunks()
 	tool.blueprint_mesh = MeshInstance3D.new()
 	tool.add_child(tool.blueprint_mesh)
@@ -1135,6 +1127,7 @@ func _test_road_commit_acknowledgment() -> void:
 	simulation.validation = {"is_valid": true}
 	var tool := RoadToolScript.new()
 	tool.simulation_node = simulation
+	tool.draw_mode = 1
 	tool.make_chunks()
 	tool.active = true
 	tool.blueprint_mesh = MeshInstance3D.new()
@@ -1162,18 +1155,14 @@ func _test_road_commit_acknowledgment() -> void:
 	tool._poll_road_commit_result()
 	_expect(tool.current_path == path and tool._commit_request_id == 0, "rejection must keep the stroke editable")
 	_expect(tool._info_label.visible and tool._info_label.text.contains("could not be built"), "rejection must explain that no road was built")
-	_expect(tool._pending_border_checks.is_empty(), "rejection must retire its border check")
 	simulation.commit_result = null
 	_expect(not tool._commit_segment(endpoint) and simulation.commit_requests == 1, "the same stroke on the same context keeps its rejection")
 	endpoint = Vector3(44.0, 0.0, 0.0)
 	_expect(tool._commit_segment(endpoint), "a moved stroke permits another attempt")
 	simulation.commit_result = {"committed": true, "generation": 2}
 	tool._poll_road_commit_result()
-	_expect(tool.current_path != null and tool.current_path != path and tool.current_state == RoadToolScript.State.SETTING_END, "acceptance must start the next straight stroke")
-	_expect(tool.start_pos == endpoint and tool._angle_snap() == Vector3.RIGHT, "straight continuation must retain the accepted endpoint and end direction")
-	tool._angle_snapped = true
-	tool._update_preview_measurement_label(PackedVector3Array([endpoint, endpoint + Vector3.RIGHT * 20.0]))
-	_expect(tool._info_label.text.contains("[snapped]"), "angle-snapped straight preview must retain its HUD label")
+	_expect(tool.current_path != null and tool.current_path != path and tool.current_state == RoadToolScript.State.SETTING_CONTROL, "acceptance must start the next stroke")
+	_expect(tool.start_pos == endpoint and tool._commit_end_dir.distance_to(Vector3.RIGHT) < 0.001, "continuation must retain the accepted endpoint and end direction")
 	tool.cancel_road()
 	tool.free()
 	simulation.free()
@@ -1242,8 +1231,9 @@ func _test_free_control_curve_chain() -> void:
 	manager._handle_escape()
 	_expect(tool.current_state == RoadToolScript.State.IDLE and tool.current_path == null and not tool.active, "Escape must end the curve chain and deactivate the tool")
 	manager.free()
-	# Network-connected endpoints end either drawing mode, for both node and edge targets.
-	for mode in [0, 1]:
+	# Network-connected endpoints end the curve chain, for both node and edge targets (the straight
+	# chain rules are the session's: `nodes::sim::road_tool::tool_tests::chain_rules`).
+	for mode in [1]:
 		for target in [{"snap_node": 7}, {"snap_edge": 9}]:
 			tool.draw_mode = mode
 			tool._begin_stroke(Vector3.ZERO, 1, Vector3.RIGHT)
@@ -1254,9 +1244,9 @@ func _test_free_control_curve_chain() -> void:
 			_expect(tool._commit_segment(Vector3(40.0, 0.0, 0.0)), "network-connected endpoint must queue a road")
 			tool._poll_road_commit_result()
 			_expect(tool.current_state == RoadToolScript.State.IDLE and tool.current_path == null, "ending on existing network must end the chain")
-	# A road that prompts for an external connection ends either drawing mode.
+	# A road that prompts for an external connection ends the curve chain.
 	simulation.border_node = 3
-	for mode in [0, 1]:
+	for mode in [1]:
 		tool.draw_mode = mode
 		tool._begin_stroke(Vector3.ZERO, 1, Vector3.RIGHT)
 		if mode == 1:

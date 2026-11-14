@@ -79,7 +79,9 @@
 //! | | `get_preview_road_surface_result` | `road_tool.gd` |
 //! | | `get_road_surface_debug_data` | `network_tool.gd` |
 //! | | `get_road_surface_probe_debug` | `network_tool.gd` |
-//! | | `get_road_tool_cursor_pos` | `road_tool.gd` |
+//! | | `road_tool_pointer`, `road_tool_pointer_at` | `road_tool.gd` |
+//! | | `road_tool_event`, `road_tool_set_option`, `road_tool_frame` | `road_tool.gd` |
+//! | | `get_road_tool_cursor_pos` | `road_tool.gd` (curves, until `ROAD-112` round D) |
 //! | | `get_road_tool_start_direction` | `road_tool.gd` |
 //! | | `get_closest_network_point` | `road_tool.gd`, `zoning_tool.gd` |
 //! | | `check_border_candidate` | `road_tool.gd` |
@@ -117,9 +119,8 @@ use godot::prelude::*;
 
 use crate::config;
 use crate::nodes::sim::core::{
-    CoreTurnstile, DailyBudgetLedgerEntry, RenderSnapshot, RoadPreviewRequest,
-    RoadToolQuerySnapshot, RoadToolShared, SERVICE_POLICY_ELECTRICITY, SimCommand, SimCore,
-    run_sim_thread,
+    CoreTurnstile, DailyBudgetLedgerEntry, RenderSnapshot, RoadPreviewRequest, RoadToolShared,
+    SERVICE_POLICY_ELECTRICITY, SimCommand, SimCore, run_sim_thread,
 };
 #[cfg(test)]
 use crate::nodes::sim::core::road_tool_snapshot_from_core;
@@ -213,6 +214,9 @@ pub struct SimulationNode {
     /// The road tool's published view (cursor picking, hover, terrain jobs) and its preview
     /// context, both read without locking SimCore (`ROAD-68-E`).
     pub(crate) road_tool: Arc<RoadToolShared>,
+    /// The road tool session (`ROAD-112`): cursor, stroke, chain and commit of the drawing modes
+    /// it drives, and the preview the bridge ran for its stroke. Main thread only.
+    pub(crate) road_tool_session: network_api::road_tool::RoadToolBridge,
     /// The road tool's tunnel intent (`ROAD-61`), copied into every request the tool sends.
     pub(crate) road_tool_tunnel: bool,
     /// The road tool's median (`ROAD-80`), copied into every request the tool sends.
@@ -363,29 +367,9 @@ impl SimulationNode {
             }
         }
     }
+    // Whether `pos` lies within `threshold` of the map's edge (the road tool's rule, `pick.rs`).
     fn road_tool_is_near_border(pos: Vector3, half_w: f32, half_h: f32, threshold: f32) -> bool {
-        pos.x < -half_w + threshold
-            || pos.x > half_w - threshold
-            || pos.z < -half_h + threshold
-            || pos.z > half_h - threshold
-    }
-
-    fn road_tool_snap_to_border(mut pos: Vector3, half_w: f32, half_h: f32) -> Vector3 {
-        let d_left = pos.x + half_w;
-        let d_right = half_w - pos.x;
-        let d_top = pos.z + half_h;
-        let d_bottom = half_h - pos.z;
-        let min_d = d_left.min(d_right).min(d_top).min(d_bottom);
-        if min_d == d_left {
-            pos.x = -half_w;
-        } else if min_d == d_right {
-            pos.x = half_w;
-        } else if min_d == d_top {
-            pos.z = -half_h;
-        } else {
-            pos.z = half_h;
-        }
-        pos
+        crate::nodes::sim::road_tool::pick::is_near_border(pos, half_w, half_h, threshold)
     }
 
     /// Returns the dimensions of the heightmap.
@@ -592,6 +576,7 @@ impl INode3D for SimulationNode {
             road_commit_request_id: 0,
             road_commit_result: None,
             road_tool,
+            road_tool_session: Default::default(),
             road_tool_tunnel: false,
             road_tool_median: None,
             road_tool_parking: Default::default(),

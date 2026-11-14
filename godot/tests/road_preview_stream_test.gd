@@ -113,13 +113,17 @@ func _stream_fixture(fixture: Dictionary) -> Dictionary:
 		var displayed_us := Time.get_ticks_usec()
 		var frame_ms := float(displayed_us - input_us) / 1000.0
 		process_times.append(frame_ms)
-		final_points = tool._road_surface_points_from_curve(tool.current_path.curve)
-		if tool.draw_mode == 1:
-			_expect(tool.current_path.curve.get_point_out(0) == tool.control_pos - tool.start_pos, "moving curve preview must retain the freely chosen control handle")
-			_expect(tool.current_path.curve.get_point_in(1) == tool.control_pos - point, "moving curve preview must follow the control point and current endpoint")
 		var preview: Dictionary = tool._preview
 		# The frame that sampled the pose previewed it; a valid pose is shown in that frame.
-		_expect(tool._preview_is_for(final_points), "every frame previews its own pose: fixture=%s frame=%d" % [fixture.name, index])
+		if tool.draw_mode == 1:
+			final_points = tool._road_surface_points_from_curve(tool.current_path.curve)
+			_expect(tool.current_path.curve.get_point_out(0) == tool.control_pos - tool.start_pos, "moving curve preview must retain the freely chosen control handle")
+			_expect(tool.current_path.curve.get_point_in(1) == tool.control_pos - point, "moving curve preview must follow the control point and current endpoint")
+			_expect(tool._preview_is_for(final_points), "every frame previews its own pose: fixture=%s frame=%d" % [fixture.name, index])
+		else:
+			# The session's straight stroke: the start and this frame's scripted pointer exactly.
+			final_points = tool._preview_points
+			_expect(final_points.size() == 2 and final_points[1] == point, "every frame previews its own pose: fixture=%s frame=%d" % [fixture.name, index])
 		var valid: bool = preview.get("is_valid", false)
 		var shown: bool = tool._preview_display.sequence == int(preview.get("sequence", -1))
 		_expect(not valid or shown, "a valid pose is shown in the frame that sampled it: fixture=%s frame=%d" % [fixture.name, index])

@@ -299,7 +299,7 @@ pub(crate) fn cursor_network_snap(
 }
 
 // The nearer of the road and terrain hits, and whether it is the road's.
-fn closest_cursor_hit(
+pub(crate) fn closest_cursor_hit(
     ray_origin: Vector3,
     road_hit: Option<Vector3>,
     terrain_hit: Option<Vector3>,
@@ -323,7 +323,7 @@ fn closest_cursor_hit(
 // The structure the cursor's ray hit, the only one it may snap to (`ROAD-99` follow-up B1):
 // the bridge deck or deck node piece the road hit belongs to when that hit is the nearer
 // one; the ground when the ray hit the ground first, or a grounded piece, or a buried bore.
-fn structure_hit(
+pub(crate) fn structure_hit(
     graph: &RegionGraph,
     ray_origin: Vector3,
     road_hit: Option<(Vector3, PieceId)>,

@@ -5,6 +5,8 @@
 ## Loads a controlled synthetic world or pinned authored state, drives production RoadTool paths, waits for
 ## the matching terrain/road/water render work to settle, and verifies a controlled layout matrix.
 ## The harness is only attached when `--gameplay-road-benchmark` is passed on the command line.
+## METRUM_GAMEPLAY_ROAD_PRODUCTS=1 (untimed) records each fixture commit's request and products
+## (`commit_products.gd`) in its result, for a bitwise comparison of two builds.
 extends Node
 
 const RoadToolScript = preload("res://scripts/tools/road_tool.gd")
@@ -1004,6 +1006,7 @@ func _run_segment(
 	var dispatch_start_us := Time.get_ticks_usec()
 	var queued: bool = road_tool._commit_segment(end_pos)
 	var dispatch_ms := _elapsed_ms(dispatch_start_us)
+	var request: PackedVector3Array = road_tool._commit_points
 	if not queued:
 		var rejected := {
 			"ok": false,
@@ -1038,6 +1041,9 @@ func _run_segment(
 		"frame_time_ms": Metrics.distribution(_frame_samples),
 		"state_after": simulation_node.get_road_benchmark_state(),
 	}
+	if OS.get_environment("METRUM_GAMEPLAY_ROAD_PRODUCTS") == "1":
+		# Untimed parity runs (`ROAD-112` round C): the commit's request and products.
+		result["products"] = preload("res://scripts/benchmarks/commit_products.gd").record(simulation_node, terrain, request)
 	if preview_wait.has("ready_ms"):
 		result["preview_ready_ms"] = preview_wait.ready_ms
 		result["pointer_idle_to_ready_ms"] = float(preview_wait.ready_ms) - float(last_pointer_us - preview_start_us) / 1000.0
@@ -1087,6 +1093,12 @@ func _begin_scripted_road(
 	road_tool.draw_mode = int(segment["draw_mode"])
 	road_tool.fwd_lanes = int(segment["fwd_lanes"])
 	road_tool.bkw_lanes = int(segment["bkw_lanes"])
+	if road_tool.draw_mode == 0:
+		# Straight strokes are the road tool session's (`ROAD-112` round C): a scripted start.
+		road_tool._begin_stroke(start_pos, 0, Vector3.ZERO)
+		road_tool.set_scripted_pointer(true, end_pos)
+		road_tool._queue_preview_update()
+		return
 	road_tool.start_pos = start_pos
 	road_tool.control_pos = (
 		_surface_point(anchor + segment["control_offset"])
@@ -1108,9 +1120,8 @@ func _wait_for_preview(timeout_sec: float, start_us: int = 0) -> Dictionary:
 	while _elapsed_ms(start_us) < timeout_sec * 1000.0:
 		await get_tree().process_frame
 		# The preview is synchronous: the frame that sampled the stroke previewed and staged it.
-		var points: PackedVector3Array = road_tool._road_surface_points_from_curve(road_tool.current_path.curve)
 		var preview: Dictionary = road_tool._preview
-		var current: bool = not road_tool._preview_update_pending and road_tool._preview_is_for(points)
+		var current: bool = road_tool.stroke_preview_current()
 		if current and not bool(preview.get("is_valid", false)):
 			return {
 				"ok": false,
@@ -1238,7 +1249,6 @@ func _is_idle() -> bool:
 		and not simulation_node.is_terrain_dirty()
 		and _road_chunk_generation() >= 0
 		and road_tool._commit_request_id == 0
-		and road_tool._pending_border_checks.is_empty()
 		and not terrain.has_pending_render_work(false)
 		and not water.has_pending_render_work(false)
 	)
@@ -1249,7 +1259,6 @@ func _pending_work_snapshot() -> Dictionary:
 		"terrain_dirty": simulation_node.is_terrain_dirty(),
 		"water_dirty": simulation_node.is_water_dirty(),
 		"road_hydration": _road_chunk_generation() < 0,
-		"border_checks": road_tool._pending_border_checks.size(),
 		"terrain": terrain.get_pending_render_work_counts(),
 		"terrain_failures": terrain.get_blocked_dirty_patch_failures(),
 		"water": water.get_pending_render_work_counts(),

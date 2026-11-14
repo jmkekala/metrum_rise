@@ -100,7 +100,6 @@ func _process(_delta: float) -> void:
 					"terrain_visuals": terrain_visuals_ms,
 					"water_visuals": 0.0,
 					"road_mesh": road_mesh_ms,
-					"border_checks": 0.0,
 				}
 			)
 		return
@@ -161,13 +160,7 @@ func _process(_delta: float) -> void:
 		water.refresh_road_covered_patches(dirty_terrain_patch_keys)
 	var water_visuals_ms := float(Time.get_ticks_usec() - water_visuals_start_us) / 1000.0
 
-	# 6. Check whether any queued road endpoints are border connections.
-	# Must run after the road is in the graph so check_border_candidate() finds the node.
-	var border_checks_start_us := Time.get_ticks_usec()
-	road_tool.drain_pending_border_checks()
-	var border_checks_ms := float(Time.get_ticks_usec() - border_checks_start_us) / 1000.0
-
-	# 7. Road geometry changed → refresh no-build edge overlay geometry.
+	# 6. Road geometry changed → refresh no-build edge overlay geometry.
 	if zoning_overlay: zoning_overlay.mark_no_build_dirty()
 
 	var total_ms := float(Time.get_ticks_usec() - total_start_us) / 1000.0
@@ -179,20 +172,18 @@ func _process(_delta: float) -> void:
 				"terrain_visuals": terrain_visuals_ms,
 				"water_visuals": water_visuals_ms,
 				"road_mesh": road_mesh_ms,
-				"border_checks": border_checks_ms,
 			}
 		)
 	if _road_debug_enabled:
 		MetrumDebug.log(
 			"road",
-			"refresh terrain_rebuild_ms=%.3f dirty_patches=%d terrain_visuals_ms=%.3f water_visuals_ms=%.3f road_mesh_ms=%.3f border_checks_ms=%.3f total_ms=%.3f"
+			"refresh terrain_rebuild_ms=%.3f dirty_patches=%d terrain_visuals_ms=%.3f water_visuals_ms=%.3f road_mesh_ms=%.3f total_ms=%.3f"
 			% [
 				terrain_rebuild_ms,
 				dirty_patch_pairs,
 				terrain_visuals_ms,
 				water_visuals_ms,
 				road_mesh_ms,
-				border_checks_ms,
 				total_ms,
 			]
 		)
