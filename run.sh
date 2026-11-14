@@ -511,7 +511,8 @@ godot_vehicle_chain() {
     for script in \
         vehicle_ground_support_test road_turn_lanes_test road_walkway_preset_test road_types_test \
         road_builder_test road_junction_preview_test road_preview_stream_test \
-        road_tunnels_test road_batch_preview_test agent_inspector_test core_busy_input_test; do
+        road_tunnels_test road_batch_preview_test road_height_handles_test agent_inspector_test \
+        core_busy_input_test; do
         run_godot_bridge_test "$script" || return 1
     done
     # Record and replay (`RENDER-32-I`): the zoning reference test's graded renderers record their

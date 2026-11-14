@@ -27,7 +27,7 @@ pub(crate) use input::{
 pub(crate) use support::{DraftGround, RebuiltPieces, plan_road_edit};
 pub(crate) use tunnel::tunnel_run_reaches_cover;
 pub(crate) use validation::{
-    RoadPreviewValidation, validate_road_candidate_fast, validate_road_edit,
+    PREVIEW_MIN_ENDPOINT_SEGMENT_M, RoadPreviewValidation, validate_road_candidate_fast, validate_road_edit,
 };
 
 /// Local dependency scope and timings from the shared junction/profile finalizer.

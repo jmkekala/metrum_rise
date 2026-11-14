@@ -63,7 +63,9 @@ pub(crate) enum RoadProfile {
 }
 
 impl RoadProfile {
-    /// The profile of a stroke drawn with the legacy tunnel toggle: `Tunnel` or `FollowGround`.
+    /// The profile of a stroke drawn with the retired tunnel toggle (`ROAD-61`; tests still name
+    /// strokes by it): `Tunnel` or `FollowGround`.
+    #[cfg(test)]
     pub(crate) fn from_tunnel(tunnel: bool) -> Self {
         if tunnel { Self::Tunnel } else { Self::FollowGround }
     }

@@ -29,9 +29,13 @@
 ## from the frame that staged them; frames without a new pose stage the pose's rest, and the
 ## commit's edit replaces them with the committed tiles in one frame. Also the snapping options
 ## (network snap, guide lines, zoning grid, angle lock step, length step; Shift draws free of all
-## but the network, B5) and the tunnel toggle (`ROAD-61`; T or the options
-## checkbox: Rust keeps the drawn profile through the ground, the covered stretch becomes a
-## tunnel and its open ends approaches). The next stroke's lanes, median, kerbside parking and
+## but the network, B5). Heights (round I): each free end has a height handle, a grip above it;
+## a press on a grip drags it (Rust projects the pointer onto its vertical line in 0.5 m steps,
+## Shift free) until the release, and PageUp/PageDown (`step_height`) move the active handle by
+## the same step. A handle off the ground, or straight grade (T or the options checkbox), gives
+## the stroke a grade line that Rust cuts into ground, bridge and tunnel strokes: one previews
+## as any stroke, several as a batch (the ghost while the pointer moves, the exact pieces once
+## the pose rests) and commit as one undo step. The next stroke's lanes, median, kerbside parking and
 ## attributes come from a road type (`ROAD-101`, `PARK-05`): `set_road_type` reads the type's
 ## cross-section from Rust's `get_road_types` and sets the lanes, the median through
 ## `set_road_tool_median`, the parking through `set_road_tool_parking`, and the type's speed,
@@ -46,7 +50,7 @@
 ## stroke removes (`demolish_lots`) with the bulldoze tool's highlight and the HUD names the
 ## buildings it demolishes (`demolish_count`); plotted land refuses with its reason.
 ## Rust methods called: road_tool_pointer(), road_tool_pointer_at(), road_tool_event(),
-## road_tool_set_option(), road_tool_frame(), set_road_tool_tunnel(), set_road_tool_median(),
+## road_tool_set_option(), road_tool_frame(), set_road_tool_median(),
 ## set_road_tool_parking(), set_road_tool_attributes(), get_road_types(),
 ## advance_road_preview_terrain(), release_road_preview_terrain(), get_road_commit_result(),
 ## check_border_candidate(), set_border_connection(), get_road_tool_surface_generation().
@@ -84,7 +88,6 @@ var bkw_lanes: int = 1:
 	set(count):
 		bkw_lanes = count
 		_send_lanes()
-var altitude_offset: float = 0.0
 
 ## The drawing mode (`DrawMode`), the session's: setting it sends the mode action, which drops
 ## the stroke and ends the chain when the mode changes (the session's own mode is what counts:
@@ -132,9 +135,10 @@ var length_step_m: float = 0.0:
 	set(step):
 		length_step_m = step
 		_send_option("length_step_m", step)
-# The tunnel intent, held by Rust for every preview, commit and refusal; the T toggle's state.
-var tunnel_enabled: bool = false
-signal tunnel_toggled(enabled: bool)
+## Straight grade (U3): the grade line between the ends' heights even with both handles on the
+## ground; the T toggle's and the checkbox's state, held by Rust's session.
+var straight_grade: bool = false
+signal straight_grade_toggled(enabled: bool)
 # The next stroke's median (`ROAD-80`) as last set in Rust: style 0 none, 1 painted, 2 kerbed
 # grass, 3 kerbed paving, and its width with kerbs, in metres.
 var median_style: int = 0
@@ -256,7 +260,7 @@ func _ready():
 	reassert_intent()
 
 ## Sends the tool's whole intent to Rust's session: lanes, every snapping option, continuous,
-## the height offset, tunnel, median, parking and attributes, as this script reads them out.
+## straight grade, median, parking and attributes, as this script reads them out.
 ## Called when the tool is switched on, so whatever set Rust's intent directly meanwhile (the
 ## debug replay) is undone before the next stroke.
 func reassert_intent() -> void:
@@ -269,8 +273,7 @@ func reassert_intent() -> void:
 	_send_option("angle_step_deg", angle_step_deg)
 	_send_option("length_step_m", length_step_m)
 	_send_option("continuous", continuous)
-	_send_option("altitude_offset_m", altitude_offset)
-	simulation_node.set_road_tool_tunnel(tunnel_enabled)
+	_send_option("straight_grade", straight_grade)
 	simulation_node.set_road_tool_median(median_style, median_width)
 	simulation_node.set_road_tool_parking(parking)
 	simulation_node.set_road_tool_attributes(speed_kmh, sidewalks, zoning, street_lights)
@@ -351,6 +354,15 @@ func _session_frame(moved: bool) -> void:
 		_show_graded(simulation_node.advance_road_preview_terrain())
 	_show_draft_refusal(String(frame.get("refusal", "")), frame.get("cursor", Vector3.ZERO))
 	_show_gizmos(frame)
+	_show_batch_ghost(frame)
+
+# A batch pose's ghost (round I): drawn while the batch's exact pieces are not ready, gone once
+# they show or the draft is no batch.
+func _show_batch_ghost(frame: Dictionary) -> void:
+	if frame.has("batch"):
+		gizmos.show_batch_ghost(frame["batch"])
+	elif bool(frame.get("batch_cleared", false)):
+		gizmos.clear_batch_ghost()
 
 # The HUD for a draft the session refuses before any preview (a curve folding back, an S-curve
 # without a solution, an arc tighter than the road type allows); a draft at its start point is
@@ -402,13 +414,23 @@ func set_lanes(fwd: int, bkw: int) -> void:
 	bkw_lanes = clamp(bkw, 0, 4)
 	_queue_preview_update()
 
-func set_tunnel(enabled: bool) -> void:
-	if enabled == tunnel_enabled:
+## Turns straight grade on or off (T, the options checkbox).
+func set_straight_grade(enabled: bool) -> void:
+	if enabled == straight_grade:
 		return
-	tunnel_enabled = enabled
-	simulation_node.set_road_tool_tunnel(enabled)
-	tunnel_toggled.emit(enabled)
+	straight_grade = enabled
+	_send_option("straight_grade", enabled)
+	straight_grade_toggled.emit(enabled)
 	_intent_changed()
+
+## PageUp/PageDown: the active height handle by `steps` 0.5 m steps, as a drag sets it (the live
+## end's while drawing, the hovered or last dragged one in a freeform edit phase).
+func step_height(steps: int) -> void:
+	if not _has_session():
+		return
+	for _step in absi(steps):
+		_read_press(simulation_node.road_tool_event("raise_handle" if steps > 0 else "lower_handle"))
+	_queue_preview_update()
 
 ## Sets the next stroke's median through Rust and returns its refusal key ("" when set). A
 ## refused median leaves the tool's median as it was.
@@ -490,14 +512,9 @@ func _road_type(id: String, library: Dictionary) -> Dictionary:
 			return type
 	return {}
 
-# Rust's tunnel, median, parking or attributes changed: the stroke previews again (the session
-# compares them itself).
+# Rust's straight grade, median, parking or attributes changed: the stroke previews again (the
+# session compares them itself).
 func _intent_changed() -> void:
-	_queue_preview_update()
-
-func adjust_altitude(delta: float):
-	altitude_offset += delta
-	_send_option("altitude_offset_m", altitude_offset)
 	_queue_preview_update()
 
 func _unhandled_input(event):

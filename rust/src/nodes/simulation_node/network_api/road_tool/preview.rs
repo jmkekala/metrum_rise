@@ -15,20 +15,6 @@ fn lanes_u8(count: i32) -> u8 {
 
 #[godot_api(secondary)]
 impl SimulationNode {
-    /// Sets the road tool's tunnel intent (`ROAD-61`), which every later hover check, preview,
-    /// commit and refusal report of the tool carries: with it a stroke keeps its drawn profile
-    /// through the ground, its covered stretch becomes a tunnel and its open ends approaches.
-    #[func]
-    pub fn set_road_tool_tunnel(&mut self, tunnel: bool) {
-        self.road_tool_tunnel = tunnel;
-    }
-
-    // The profile of a stroke the tool draws without a segmented draft: the tunnel intent's
-    // `Tunnel`, else `FollowGround` (`ROAD-112` round H).
-    pub(crate) fn road_tool_profile(&self) -> RoadProfile {
-        RoadProfile::from_tunnel(self.road_tool_tunnel)
-    }
-
     /// Sets the road tool's median (`ROAD-80`) for every later hover check, preview, commit and
     /// refusal report of the tool: `style` 0 none, 1 painted, 2 kerbed grass, 3 kerbed paving,
     /// `width_m` within the style's range. Returns the empty string when set, else the refusal
@@ -147,7 +133,7 @@ impl SimulationNode {
                 fwd_lanes,
                 bkw_lanes,
                 snap_to_existing_roads,
-                profile: self.road_tool_profile(),
+                profile: RoadProfile::FollowGround,
                 median: self.road_tool_median,
                 parking: self.road_tool_parking,
                 attributes: self.road_tool_attributes,
@@ -187,7 +173,7 @@ impl SimulationNode {
                 fwd_lanes,
                 bkw_lanes,
                 snap_to_existing_roads,
-                profile: self.road_tool_profile(),
+                profile: RoadProfile::FollowGround,
                 median: self.road_tool_median,
                 parking: self.road_tool_parking,
                 attributes: self.road_tool_attributes,
@@ -233,7 +219,7 @@ impl SimulationNode {
                 &query.region_graph,
                 &query.roadbed,
                 snap_to_existing_roads,
-                self.road_tool_profile(),
+                RoadProfile::FollowGround,
             );
             let validation = crate::nodes::sim::road_tool::validate_road_candidate_against_water(
                 &prepared_input,
@@ -278,7 +264,7 @@ impl SimulationNode {
                     fwd_lanes,
                     bkw_lanes,
                     snap_to_existing_roads,
-                    profile: self.road_tool_profile(),
+                    profile: RoadProfile::FollowGround,
                     median: self.road_tool_median,
                     parking: self.road_tool_parking,
                     attributes: self.road_tool_attributes,
@@ -305,7 +291,27 @@ impl SimulationNode {
         snap_to_existing_roads: bool,
         validation: VarDictionary,
     ) -> i64 {
+        self.log_road_tool_rejection_as(
+            points,
+            [fwd_lanes, bkw_lanes],
+            snap_to_existing_roads,
+            validation,
+            RoadProfile::FollowGround,
+        )
+    }
+
+    // [`Self::log_road_tool_rejection`] for a stroke of `profile` (a graded draft's stroke,
+    // `ROAD-112` round I).
+    pub(super) fn log_road_tool_rejection_as(
+        &self,
+        points: PackedVector3Array,
+        lanes: [i32; 2],
+        snap_to_existing_roads: bool,
+        validation: VarDictionary,
+        profile: RoadProfile,
+    ) -> i64 {
         use crate::nodes::sim::core::{RejectedBy, RoadAttempt, RoadRejection};
+        let [fwd_lanes, bkw_lanes] = lanes;
         let int = |key: &str| {
             validation
                 .get(key)
@@ -337,7 +343,7 @@ impl SimulationNode {
                 fwd_lanes,
                 bkw_lanes,
                 snap: snap_to_existing_roads,
-                profile: self.road_tool_profile(),
+                profile,
                 median: self.road_tool_median,
                 parking: self.road_tool_parking,
                 attributes: self.road_tool_attributes,
@@ -370,7 +376,7 @@ impl SimulationNode {
             fwd_lanes,
             bkw_lanes,
             snap_to_existing_roads,
-            self.road_tool_profile(),
+            RoadProfile::FollowGround,
         )
     }
 

@@ -19,10 +19,23 @@
 //! and handles (press, pointer moves, release) until `confirm` or a press off every grip sends
 //! the stroke. A drag takes the network snap but no anchor-bound constraint (angle lock, length
 //! step, guide lines from the anchor) and no self snap.
+//!
+//! Heights (round I, `height/handles.rs`): each end has a height handle, free (an offset above
+//! its support) or locked to the road it joins. A press on a free placed end's grip (the start;
+//! a freeform draft's last node in the edit phase) drags it until the release; PageUp/PageDown
+//! ([`RoadToolAction::RaiseHandle`], [`RoadToolAction::LowerHandle`]) move the active handle by
+//! the same step: the live end's while drawing (a new start takes the live end's offset), the
+//! hovered or last dragged one in the edit phase. A free end off its support, or straight grade,
+//! gives the stroke a grade line ([`StrokeRequest::grade`]); [`RoadToolSession::update_draft`]
+//! segments it once a frame.
 
 use super::frame::{
-    DraftRefusal, GizmoHandleKind, GizmoLineClass, Phase, RoadToolFrame, StrokeRequest,
+    DraftRefusal, DraftRun, GizmoHandleKind, GizmoLineClass, Phase, RoadToolFrame, StrokeRequest,
 };
+use super::height::handles::{
+    DraftEnd, EndHeights, HeightHandle, drag_offset, grip_at, stepped_by,
+};
+use super::height::{DraftSection, apply_grade_line, segment_draft};
 use super::measure::{EndRoad, RoadTypeSpec, illegal_radius_m, measure};
 use super::modes::freeform::{Freeform, Grip, MAX_NODES};
 use super::modes::{self, DrawMode};
@@ -39,6 +52,7 @@ use crate::simulation::network::guide::{DVec2, GuideError, GuidePath, GuideSegme
 use crate::simulation::network::interaction::{
     NetworkSnapTarget, StartDirection, StructureHit, road_start_direction,
 };
+use crate::simulation::network::road_edit::RoadProfile;
 use godot::prelude::Vector3;
 
 /// Today's map-edge snap distance (`MAP_BORDER_SNAP_DIST_M`).
@@ -94,6 +108,11 @@ pub enum RoadToolAction {
     ModeComplexCurve,
     /// Switches to freeform (drops the stroke; nothing when already in it).
     ModeFreeform,
+    /// Raises the active height handle by one step (PageUp): the live end's while drawing, the
+    /// hovered or last dragged one in an edit phase. A locked end does not move.
+    RaiseHandle,
+    /// Lowers the active height handle by one step (PageDown).
+    LowerHandle,
 }
 
 /// One input event (plan 2.3 `road_tool_event`).
@@ -138,9 +157,9 @@ pub enum RoadToolOption {
     LengthStepM(Option<f64>),
     /// Continuous: the tangent constraint at a stroke's start.
     Continuous(bool),
-    /// The keyboard height offset added to a ground pick (PageUp/PageDown, until round I's
-    /// handles), in metres.
-    AltitudeOffsetM(f32),
+    /// Straight grade (U3): the grade line between the ends' heights even when both ends sit
+    /// on their supports.
+    StraightGrade(bool),
 }
 
 // The resolved cursor of the last pose.
@@ -162,6 +181,39 @@ struct Pending {
     end_tangent: Option<DVec2>,
 }
 
+// What the frame's draft report was made for (`RoadToolSession::update_draft`); its points
+// buffer is reused.
+#[derive(Debug, Default)]
+struct DraftKey {
+    made: bool,
+    points: Vec<Vector3>,
+    grade: Option<[f32; 2]>,
+    spec: RoadTypeSpec,
+    snap: bool,
+    generation: u64,
+}
+
+impl DraftKey {
+    fn matches(&self, stroke: &StrokeRequest, spec: RoadTypeSpec, generation: u64) -> bool {
+        self.made
+            && self.points == stroke.points
+            && self.grade == stroke.grade
+            && self.spec == spec
+            && self.snap == stroke.snap_to_existing_roads
+            && self.generation == generation
+    }
+
+    fn set(&mut self, stroke: &StrokeRequest, spec: RoadTypeSpec, generation: u64) {
+        self.made = true;
+        self.points.clear();
+        self.points.extend_from_slice(&stroke.points);
+        self.grade = stroke.grade;
+        self.spec = spec;
+        self.snap = stroke.snap_to_existing_roads;
+        self.generation = generation;
+    }
+}
+
 /// The road tool session: options, phase, the stroke's placed points, the draft and the frame.
 #[derive(Debug)]
 pub struct RoadToolSession {
@@ -171,7 +223,12 @@ pub struct RoadToolSession {
     // The spec's illegal radius (`measure::illegal_radius_m`), kept with the spec: it allocates.
     illegal_radius_m: f64,
     continuous: bool,
-    altitude_offset_m: f32,
+    // The end heights (round I).
+    heights: EndHeights,
+    // The last pointer: a press grabs the height grip under it.
+    pointer: Option<Pointer>,
+    // What the draft report was made for (`update_draft`).
+    draft_key: DraftKey,
     placed: [Vector3; MAX_POINTS],
     placed_len: usize,
     // How the road the stroke starts on leaves its start, or the carried tangent.
@@ -208,7 +265,9 @@ impl RoadToolSession {
             spec,
             illegal_radius_m: illegal_radius_m(&spec),
             continuous: false,
-            altitude_offset_m: 0.0,
+            heights: EndHeights::default(),
+            pointer: None,
+            draft_key: DraftKey::default(),
             placed: [Vector3::ZERO; MAX_POINTS],
             placed_len: 0,
             start_road: None,
@@ -287,7 +346,7 @@ impl RoadToolSession {
                 self.snap.length_step_m = step.filter(|step| *step > 0.0);
             }
             RoadToolOption::Continuous(on) => self.continuous = on,
-            RoadToolOption::AltitudeOffsetM(offset) => self.altitude_offset_m = offset,
+            RoadToolOption::StraightGrade(on) => self.heights.straight_grade = on,
         }
     }
 
@@ -301,14 +360,28 @@ impl RoadToolSession {
             } => {
                 self.shift = shift;
                 self.ctrl = ctrl;
-                self.cursor = self.resolve_cursor(view, pointer).or(self.cursor);
-                self.drag(view);
+                self.pointer = Some(pointer);
+                if let Some(end) = self.heights.grip {
+                    // A height drag holds the cursor: the end stays where it is.
+                    self.drag_height(end, pointer);
+                } else {
+                    self.cursor = self.resolve_cursor(view, pointer).or(self.cursor);
+                    self.drag(view);
+                    self.hover_height(pointer);
+                }
             }
-            RoadToolEvent::Press(PointerButton::Left) => self.click(view, false),
+            RoadToolEvent::Press(PointerButton::Left) => {
+                if !self.grab_height() {
+                    self.click(view, false);
+                }
+            }
             RoadToolEvent::Action(RoadToolAction::Confirm) => self.click(view, true),
             RoadToolEvent::Press(PointerButton::Right)
             | RoadToolEvent::Action(RoadToolAction::Cancel) => self.cancel(),
-            RoadToolEvent::Release(PointerButton::Left) => self.freeform.release(),
+            RoadToolEvent::Release(PointerButton::Left) => {
+                self.heights.grip = None;
+                self.freeform.release();
+            }
             RoadToolEvent::Release(PointerButton::Right) => {}
             RoadToolEvent::Action(RoadToolAction::ModeStraight) => {
                 self.set_mode(DrawMode::Straight)
@@ -322,6 +395,8 @@ impl RoadToolSession {
             RoadToolEvent::Action(RoadToolAction::ModeFreeform) => {
                 self.set_mode(DrawMode::Freeform)
             }
+            RoadToolEvent::Action(RoadToolAction::RaiseHandle) => self.step_height(1),
+            RoadToolEvent::Action(RoadToolAction::LowerHandle) => self.step_height(-1),
             RoadToolEvent::CommitAck { committed } => self.acknowledge(view, committed),
         }
         self.refresh(view);
@@ -348,6 +423,225 @@ impl RoadToolSession {
         self.chained = false;
         self.sticky = None;
         self.freeform.reset();
+        self.heights.grip = None;
+    }
+
+    // Which height handle PageUp/PageDown move: the hovered or last dragged one in a freeform
+    // draft's edit phase, else the live end's.
+    fn active_end(&self) -> DraftEnd {
+        if self.freeform.editing() {
+            self.heights.active
+        } else {
+            DraftEnd::End
+        }
+    }
+
+    // Which handles a press may grab: a placed start's, and a freeform draft's last node's in
+    // the edit phase (the live end follows the cursor).
+    fn grabbable(&self) -> [bool; 2] {
+        let free = self.pending.is_none();
+        [free && self.placed_len > 0, free && self.freeform.editing()]
+    }
+
+    // A press on a height grip grabs it (before any other meaning of the press).
+    fn grab_height(&mut self) -> bool {
+        let Some(pointer) = self.pointer else {
+            return false;
+        };
+        let Some(end) = grip_at(&self.frame.height_handles, self.grabbable(), pointer) else {
+            return false;
+        };
+        self.heights.grip = Some(end);
+        self.heights.active = end;
+        true
+    }
+
+    // A pointer move while a grip is held: the end's offset where the pointer puts the grip.
+    fn drag_height(&mut self, end: DraftEnd, pointer: Pointer) {
+        let Some(handle) = self.frame.height_handles[end as usize] else {
+            return;
+        };
+        if let Some(offset_m) = drag_offset(&handle, pointer, self.shift) {
+            self.heights.set_offset(end, offset_m);
+        }
+    }
+
+    // In the edit phase the handle under the pointer becomes the one the keys move.
+    fn hover_height(&mut self, pointer: Pointer) {
+        if !self.freeform.editing() {
+            return;
+        }
+        if let Some(end) = grip_at(&self.frame.height_handles, [true; 2], pointer) {
+            self.heights.active = end;
+        }
+    }
+
+    // PageUp/PageDown: the active handle by `steps` height steps, as a drag would set it; a
+    // locked end does not move.
+    fn step_height(&mut self, steps: i32) {
+        let end = self.active_end();
+        if self.frame.height_handles[end as usize].is_some_and(|handle| handle.locked) {
+            return;
+        }
+        let offset_m = stepped_by(self.heights.offset(end), steps);
+        self.heights.set_offset(end, offset_m);
+    }
+
+    // The pose's height handles for a draft from `start` to `end` (the ends on their supports),
+    // into the frame.
+    fn set_handles(&mut self, start: Vector3, end: Vector3, end_locked: bool) -> [HeightHandle; 2] {
+        let mut handles = self.heights.handles(start, end, end_locked);
+        let active = self.active_end();
+        for handle in &mut handles {
+            handle.active = handle.end == active;
+        }
+        self.frame.height_handles = handles.map(Some);
+        handles
+    }
+
+    // A graded draft (a free end off its support, or straight grade): the stroke's heights become
+    // the grade line between the handles' heights, and the request carries it.
+    fn apply_grade(&mut self, handles: &[HeightHandle; 2]) {
+        if !self.heights.graded(handles) {
+            return;
+        }
+        let heights = [handles[0].height_m, handles[1].height_m];
+        apply_grade_line(&mut self.frame.stroke.points, heights);
+        self.frame.stroke.grade = Some(heights);
+    }
+
+    // The HUD's heights and slopes of the pose: each end's height above its support (a locked
+    // end's above the source terrain), the draft's slope between its ends over the guide's
+    // length, and each piece's (`RoadToolFrame::piece_slopes_percent`). `O(pieces)`, no
+    // allocation.
+    fn measure_heights(&mut self, view: &RoadToolQuerySnapshot, handles: &[HeightHandle; 2]) {
+        let terrain = |at: DVec2| {
+            let height = view.terrain.sample_height_world(at.x as f32, at.y as f32);
+            f64::from(height * crate::config::HEIGHT_SCALE)
+        };
+        let above = |handle: &HeightHandle| {
+            if handle.locked {
+                f64::from(handle.height_m) - terrain(xz_of(handle.support))
+            } else {
+                f64::from(handle.offset_m)
+            }
+        };
+        let frame = &mut self.frame;
+        frame.hud.start_height_m = Some(above(&handles[0]));
+        frame.hud.end_height_m = Some(above(&handles[1]));
+        let segments = self.path.segments();
+        let length_m: f64 = segments.iter().map(GuideSegment::length).sum();
+        if length_m <= 0.0 {
+            return;
+        }
+        let ends = [f64::from(handles[0].height_m), f64::from(handles[1].height_m)];
+        let grade = (ends[1] - ends[0]) / length_m * 100.0;
+        frame.hud.slope_percent = Some(grade);
+        let graded = frame.stroke.grade.is_some();
+        let mut from = ends[0];
+        for (index, segment) in segments.iter().enumerate() {
+            let to = if index + 1 == segments.len() {
+                ends[1]
+            } else {
+                terrain(segment.end())
+            };
+            let slope = match segment.length() {
+                _ if graded => grade,
+                run if run > 0.0 => (to - from) / run * 100.0,
+                _ => 0.0,
+            };
+            frame.piece_slopes_percent.push(slope);
+            from = to;
+        }
+    }
+
+    // Each free handle's stem (support to grip) and grip, when
+    // a press can grab it or it stands off its support. A locked end draws nothing of its own.
+    fn push_height_gizmos(&mut self) {
+        let grabbable = self.grabbable();
+        let frame = &mut self.frame;
+        for (handle, grabbable) in frame.height_handles.iter().zip(grabbable) {
+            let Some(handle) =
+                handle.filter(|handle| !handle.locked && (grabbable || handle.offset_m != 0.0))
+            else {
+                continue;
+            };
+            frame
+                .gizmos
+                .push_line(GizmoLineClass::HeightStem, [handle.support, handle.grip]);
+            frame.gizmos.push_handle(GizmoHandleKind::HeightGrip, handle.grip);
+        }
+    }
+
+    /// Brings the frame's draft report ([`RoadToolFrame::draft`]) up to date with the pose on
+    /// `view`, once a frame (the bridge's `road_tool_frame`; never on a pointer move, since the
+    /// segmentation allocates): a graded stroke's segmentation (`height::segment_draft`: its
+    /// strokes or its refusal) and the runs' classes, lengths and slopes; a follow-ground
+    /// stroke's one run. Returns whether the report changed (a new stroke, grade, road type,
+    /// snap or view generation); otherwise it stands. `O(points)` to compare; a change costs
+    /// the segmentation, `O(draft length / 4 m)` ground reads and one cover test per run below
+    /// the ground.
+    pub(crate) fn update_draft(&mut self, view: &RoadToolQuerySnapshot) -> bool {
+        let stroke = &self.frame.stroke;
+        if self.draft_key.matches(stroke, self.spec, view.surface_generation) {
+            return false;
+        }
+        self.draft_key.set(stroke, self.spec, view.surface_generation);
+        let draft = &mut self.frame.draft;
+        draft.clear();
+        let points = &stroke.points;
+        if points.len() < 2 {
+            return true;
+        }
+        let length_m: f64 = points
+            .windows(2)
+            .map(|pair| f64::from((pair[1].x - pair[0].x).hypot(pair[1].z - pair[0].z)))
+            .sum();
+        let (first, last) = (points[0], points[points.len() - 1]);
+        let slope_percent = if length_m > 0.0 {
+            f64::from(last.y - first.y) / length_m * 100.0
+        } else {
+            0.0
+        };
+        let Some(heights) = stroke.grade else {
+            draft.runs.push(DraftRun {
+                profile: RoadProfile::FollowGround,
+                length_m,
+                slope_percent,
+            });
+            return true;
+        };
+        let section = DraftSection {
+            fwd_lanes: i32::from(self.spec.fwd_lanes),
+            bkw_lanes: i32::from(self.spec.bkw_lanes),
+            snap_to_existing_roads: stroke.snap_to_existing_roads,
+            median: self.spec.median,
+            parking: self.spec.parking,
+            attributes: self.spec.attributes,
+        };
+        match segment_draft(
+            points,
+            heights,
+            section,
+            &view.terrain,
+            &view.region_graph,
+            &view.roadbed,
+        ) {
+            Ok(strokes) => {
+                draft.runs.extend(strokes.iter().map(|part| DraftRun {
+                    profile: part.profile,
+                    length_m: part
+                        .points
+                        .windows(2)
+                        .map(|pair| f64::from((pair[1].x - pair[0].x).hypot(pair[1].z - pair[0].z)))
+                        .sum(),
+                    slope_percent,
+                }));
+                draft.strokes = strokes;
+            }
+            Err(reason) => draft.refusal = Some(reason),
+        }
+        true
     }
 
     fn phase(&self) -> Phase {
@@ -467,6 +761,7 @@ impl RoadToolSession {
                     cursor.snapped.kind == SnapKind::Border,
                 );
                 if index == 0 {
+                    self.heights.start_locked = cursor.snapped.target.is_some();
                     self.start_on_border = cursor.snapped.kind == SnapKind::Border;
                     self.start_road = cursor
                         .snapped
@@ -493,6 +788,10 @@ impl RoadToolSession {
         self.placed[0] = position;
         self.placed_len = 1;
         self.chained = false;
+        // The start takes the live end's height: it was placed with it.
+        self.heights.start_offset_m = self.heights.end_offset_m;
+        self.heights.start_locked = snapped.target.is_some();
+        self.heights.grip = None;
         self.start_on_border = snapped.kind == SnapKind::Border;
         self.freeform.reset();
         self.freeform.place(0, snapped.target, self.start_on_border);
@@ -532,6 +831,8 @@ impl RoadToolSession {
             );
             self.start_road = pending.end_tangent.map(EndRoad::Continue);
             self.chained = true;
+            // The chain starts on the accepted stroke's end node: its graph height.
+            self.heights.start_locked = true;
         }
     }
 
@@ -558,7 +859,7 @@ impl RoadToolSession {
     // Pick and snap one pointer pose. `None` when the pointer meets no surface.
     fn resolve_cursor(&mut self, view: &RoadToolQuerySnapshot, pointer: Pointer) -> Option<Cursor> {
         let (raw, hit_road, structure) = match pointer {
-            Pointer::Ray { origin, dir } => match pick_surface(view, origin, dir, self.altitude_offset_m)? {
+            Pointer::Ray { origin, dir } => match pick_surface(view, origin, dir, 0.0)? {
                 SurfacePick::Surface {
                     position,
                     hit_road,
@@ -689,7 +990,7 @@ impl RoadToolSession {
                 snapped.xz.y as f32,
                 hit_road,
                 raw.y,
-                self.altitude_offset_m,
+                0.0,
             ),
         };
         let position = Vector3::new(snapped.xz.x as f32, height, snapped.xz.y as f32);
@@ -777,13 +1078,34 @@ impl RoadToolSession {
             return;
         }
         self.frame.clear_pose();
-        let Some(cursor) = self.cursor.filter(|_| self.placed_len > 0) else {
+        self.refresh_draft(view);
+        self.push_height_gizmos();
+    }
+
+    // The pose's draft: shape, stroke request, heights, HUD and gizmos (all but the height
+    // handles' gizmos).
+    fn refresh_draft(&mut self, view: &RoadToolQuerySnapshot) {
+        let Some(cursor) = self.cursor else {
             return;
         };
+        if self.placed_len == 0 {
+            // The cursor's handle: the height a start placed now takes.
+            let mut handle = HeightHandle::new(
+                DraftEnd::End,
+                cursor.position,
+                self.heights.end_offset_m,
+                cursor.snapped.target.is_some(),
+            );
+            handle.active = true;
+            self.frame.height_handles[1] = Some(handle);
+            return;
+        }
         if self.mode == DrawMode::Freeform {
             self.refresh_freeform(view, cursor);
             return;
         }
+        let handles =
+            self.set_handles(self.placed[0], cursor.position, cursor.snapped.target.is_some());
         let live = xz_of(cursor.position);
         let tangent = self.held_tangent(live);
         let placed_xz = self.placed_xz();
@@ -803,11 +1125,13 @@ impl RoadToolSession {
             self.frame.state.refusal = Some(refusal(error));
             return;
         }
-        if !self.build_stroke(cursor.position) {
+        if !self.build_stroke(handles[0].point(), handles[1].point()) {
             self.frame.state.refusal = Some(DraftRefusal::TooShort);
             return;
         }
+        self.apply_grade(&handles);
         self.measure_pose(view, cursor.snapped.target, cursor.position);
+        self.measure_heights(view, &handles);
         self.push_constraint_line(cursor);
     }
 
@@ -830,6 +1154,13 @@ impl RoadToolSession {
         let shaped = self.freeform.shape(&nodes_xz[..count], &mut self.path);
         self.freeform
             .push_gizmos(&mut self.frame.gizmos, &nodes[..count], self.chained);
+        let end = nodes[count - 1];
+        let end_target = if count == self.placed_len {
+            self.freeform.snap_of(count - 1).0
+        } else {
+            cursor.snapped.target
+        };
+        let handles = self.set_handles(nodes[0], end, end_target.is_some());
         if let Err(error) = shaped {
             self.frame.state.refusal = Some(refusal(error));
             return;
@@ -838,13 +1169,9 @@ impl RoadToolSession {
             self.frame.state.refusal = Some(DraftRefusal::TooShort);
             return;
         }
-        let end = nodes[count - 1];
-        let end_target = if count == self.placed_len {
-            self.freeform.snap_of(count - 1).0
-        } else {
-            cursor.snapped.target
-        };
+        self.apply_grade(&handles);
         self.measure_pose(view, end_target, end);
+        self.measure_heights(view, &handles);
         if !editing {
             self.push_constraint_line(cursor);
         }
@@ -930,11 +1257,11 @@ impl RoadToolSession {
         true
     }
 
-    // Fills the frame's stroke request from the path: a single line's two ends exactly (today's
-    // straight request), else the kernel's flattening with heights interpolated by arc length
-    // between the start's and the cursor's. False when the ends are within 5 cm.
-    fn build_stroke(&mut self, end: Vector3) -> bool {
-        let start = self.placed[0];
+    // Fills the frame's stroke request from the path from `start` to `end` (the placed start and
+    // the cursor at their handles' heights): a single line's two ends exactly (today's straight
+    // request), else the kernel's flattening with heights interpolated by arc length between the
+    // two. False when the ends are within 5 cm.
+    fn build_stroke(&mut self, start: Vector3, end: Vector3) -> bool {
         let stroke = &mut self.frame.stroke;
         stroke.spec = self.spec;
         stroke.snap_to_existing_roads = self.snap.network;

@@ -46,9 +46,8 @@ static func replay_attempt(simulation: Node, tree: SceneTree, attempt: Dictionar
 	var snap := bool(attempt.get("snap", true))
 	# The attempt's stroke profile (`ROAD-112` round H, `RoadProfile::code`: 0 follow ground,
 	# 1 held ground, 2 bridge, 3 tunnel); a record from before it has the tunnel flag
-	# (`ROAD-61`). The road tool re-asserts its own tunnel intent per preview.
+	# (`ROAD-61`).
 	var profile := int(attempt.get("profile", 3 if bool(attempt.get("tunnel", false)) else 0))
-	simulation.set_road_tool_tunnel(profile == 3)
 	# Its median (`ROAD-80`), re-asserted by the road tool per preview the same way.
 	simulation.set_road_tool_median(int(attempt.get("median_style", 0)), float(attempt.get("median_width", 0.0)))
 	simulation.set_road_tool_parking(int(attempt.get("parking", 0)))
@@ -59,9 +58,9 @@ static func replay_attempt(simulation: Node, tree: SceneTree, attempt: Dictionar
 	if points.size() < 2:
 		return {"by": "tool", "reason": "too_short"}
 	var request := 0
-	if profile == 1 or profile == 2:
-		# A held ground road or an explicit bridge of a segmented draft: the tool's click check
-		# knows only the tunnel intent, so the commit alone judges it.
+	if profile != 0:
+		# A stroke of a segmented draft (held ground, bridge or tunnel): the tool's click check
+		# knows only the follow-ground profile, so the commit alone judges it.
 		request = simulation.add_road_with_profile(points, fwd, bkw, snap, profile)
 	else:
 		# The check waits for the core for its parcel clearance, so it always answers (`ROAD-102`).

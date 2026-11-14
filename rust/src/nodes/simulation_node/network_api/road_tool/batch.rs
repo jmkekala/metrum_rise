@@ -79,8 +79,32 @@ impl SimulationNode {
         resting: bool,
         dict: &mut VarDictionary,
     ) {
+        if !self.preview_road_batch_tier1(&requests, dict) {
+            return;
+        }
+        if !resting {
+            // A new pose restarts tier 2 when the pointer next rests.
+            self.road_tool
+                .context
+                .lock()
+                .expect("road tool context lock poisoned")
+                .clear_batch();
+            dict.set("tier2_state", "running");
+            dict.set("tier2_done", 0_i64);
+            return;
+        }
+        self.preview_road_batch_tier2(requests, dict);
+    }
+
+    // Tier 1 of a batch pose into `dict`: `reason`, the strokes' hover verdicts, costs, lengths
+    // and the ghost. False (tier 2 dropped) over the caps.
+    pub(super) fn preview_road_batch_tier1(
+        &self,
+        requests: &[RoadPreviewRequest],
+        dict: &mut VarDictionary,
+    ) -> bool {
         let tier1_start = std::time::Instant::now();
-        let hover = self.road_tool.view.read().unwrap().validate_batch(&requests);
+        let hover = self.road_tool.view.read().unwrap().validate_batch(requests);
         let Some(hover) = hover else {
             dict.set("reason", BATCH_TOO_LARGE_REASON);
             self.road_tool
@@ -88,7 +112,7 @@ impl SimulationNode {
                 .lock()
                 .expect("road tool context lock poisoned")
                 .clear_batch();
-            return;
+            return false;
         };
         let mut ghost = Vec::new();
         let mut ghost_starts = PackedInt32Array::new();
@@ -124,18 +148,21 @@ impl SimulationNode {
         dict.set("ghost", PackedVector3Array::from(ghost.as_slice()));
         dict.set("ghost_starts", ghost_starts);
         dict.set("tier1_ms", tier1_start.elapsed().as_secs_f64() * 1000.0);
+        true
+    }
+
+    // One tier-2 step of a resting batch pose into `dict` (`tier2_*`, and on the frame that
+    // completes an accepted batch's overlay its exact preview).
+    pub(super) fn preview_road_batch_tier2(
+        &self,
+        requests: Vec<RoadPreviewRequest>,
+        dict: &mut VarDictionary,
+    ) {
         let mut context = self
             .road_tool
             .context
             .lock()
             .expect("road tool context lock poisoned");
-        if !resting {
-            // A new pose restarts tier 2 when the pointer next rests.
-            context.clear_batch();
-            dict.set("tier2_state", "running");
-            dict.set("tier2_done", 0_i64);
-            return;
-        }
         context.land = self.road_tool.land();
         let (batch, frame) = context.preview_batch_step(requests);
         Self::set_tier2(dict, batch, frame.unwrap_or_default());

@@ -306,7 +306,7 @@ func _unhandled_input(event):
 			KEY_P: _toggle_agent_paths()
 			KEY_T:
 				if current_tool == Tool.ROAD:
-					road_tool.set_tunnel(not road_tool.tunnel_enabled)
+					road_tool.set_straight_grade(not road_tool.straight_grade)
 					get_viewport().set_input_as_handled()
 			KEY_SPACE:
 				_toggle_pause()
@@ -321,9 +321,9 @@ func _unhandled_input(event):
 			KEY_7, KEY_8, KEY_9, KEY_0, KEY_MINUS:
 				_handle_overlay_mode(event.keycode)
 
-			# Altitude Adjustments
-			KEY_PAGEUP: _handle_altitude_adjust(2.5)
-			KEY_PAGEDOWN: _handle_altitude_adjust(-2.5)
+			# The active height handle, one 0.5 m step (`ROAD-112` round I)
+			KEY_PAGEUP: _handle_height_step(1)
+			KEY_PAGEDOWN: _handle_height_step(-1)
 
 			# Zoning Selection
 			KEY_1, KEY_2, KEY_3:
@@ -742,9 +742,9 @@ func _handle_confirm() -> void:
 	if (current_tool == Tool.ROAD or current_tool == Tool.WALKWAY) and road_tool and road_tool.is_drawing():
 		road_tool.confirm_road()
 
-func _handle_altitude_adjust(delta):
+func _handle_height_step(steps: int) -> void:
 	if (current_tool == Tool.ROAD or current_tool == Tool.WALKWAY) and road_tool:
-		road_tool.adjust_altitude(delta)
+		road_tool.step_height(steps)
 
 func menu_save_game() -> void:
 	_handle_save_game()

@@ -18,7 +18,9 @@
 //! | the same run reaching no bore cover, no deeper than 5 m | `HeldGround`, in a cut |
 //! | the same run deeper than 5 m | refused, [`CUT_TOO_DEEP_REASON`] |
 //!
-//! Consecutive held ground runs make one stroke of the draft's own points. The strokes are consecutive, each starting at
+//! Consecutive held ground runs make one stroke of the draft's own points. A held ground run
+//! shorter than the shortest stroke the checks accept (2 m) joins a neighbouring structure
+//! (round I's short-run rule, [`segment_grade_line`]). The strokes are consecutive, each starting at
 //! the point where the last ends, bit for bit, and commit as one batch (round F,
 //! [`draft_batch`]): one undo step. The existing preparation, validation and commit judge each
 //! stroke as they judge a stroke of its profile drawn alone.
@@ -31,12 +33,15 @@ use crate::nodes::sim::core::{RoadBatchRequest, RoadCommitRequest};
 use crate::simulation::network::grade::ROAD_SOURCE_DELTA_MAX_M;
 use crate::simulation::network::graph::{RegionGraph, RoadMedian, RoadParking};
 use crate::simulation::network::road_edit::{
-    DraftGround, PREVIEW_CLEARANCE_M, RoadProfile, tunnel_run_reaches_cover,
+    DraftGround, PREVIEW_CLEARANCE_M, PREVIEW_MIN_ENDPOINT_SEGMENT_M, RoadProfile,
+    tunnel_run_reaches_cover,
 };
 use crate::simulation::network::road_types::RoadAttributes;
 use crate::simulation::network::roadbed::RoadbedSystem;
 use crate::simulation::terrain::TerrainSystem;
 use godot::prelude::Vector3;
+
+pub mod handles;
 
 /// The refusal of a draft whose grade line runs more than 5 m below the ground (the source
 /// band, `grade::ROAD_SOURCE_DELTA_MAX_M`) where no knot reaches bore cover: neither a cut nor
@@ -137,6 +142,32 @@ pub(crate) fn draft_batch(strokes: Vec<DraftStroke>, section: DraftSection) -> R
     }
 }
 
+/// Sets `points`' heights to the grade line from `heights[0]` at the first point to
+/// `heights[1]` at the last over horizontal arc length, exactly as [`segment_grade_line`] reads
+/// it (the same sums in the same order), so a graded stroke request's points stand on the line
+/// its segmentation cuts. `O(points)`, no allocation.
+pub(crate) fn apply_grade_line(points: &mut [Vector3], heights: [f32; 2]) {
+    let horizontal = |a: Vector3, b: Vector3| (b.x - a.x).hypot(b.z - a.z);
+    let length_m: f32 = (1..points.len())
+        .map(|index| horizontal(points[index - 1], points[index]))
+        .fold(0.0, |length, run| length + run);
+    let mut station = 0.0;
+    for index in 0..points.len() {
+        if index > 0 {
+            station += horizontal(points[index - 1], points[index]);
+        }
+        points[index].y = grade_height(heights, station, length_m);
+    }
+}
+
+// The grade line's height at arc length `s` of `length_m`: exactly the end heights at the ends.
+fn grade_height(heights: [f32; 2], s: f32, length_m: f32) -> f32 {
+    if s >= length_m {
+        return heights[1];
+    }
+    heights[0] + (heights[1] - heights[0]) * (s / length_m)
+}
+
 // What a run of the grade line is before the cover test.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum RunKind {
@@ -199,11 +230,60 @@ pub(crate) fn segment_grade_line(
     if line.length_m - cursor_m > RUN_EPSILON_M {
         push(cursor_m, line.length_m, RoadProfile::HeldGround);
     }
+    absorb_short_held_runs(&mut runs, |s| line.height_at(s) - ground_at(&line, &mut ground, s));
     out.extend(runs.into_iter().map(|(from_m, to_m, profile)| DraftStroke {
         points: line.points(from_m, to_m),
         profile,
     }));
     Ok(())
+}
+
+// The short-run rule (round I): a held ground run shorter than the shortest stroke the checks
+// accept (`PREVIEW_MIN_ENDPOINT_SEGMENT_M`, 2 m, `too_short`) cannot be a stroke of its own, so it
+// joins a neighbouring structure run, which holds the authored heights exactly (a bridge's deck,
+// a tunnel stroke's approach) and so keeps the grade line through it. Of its neighbours it joins
+// the one on its side of the ground: a bridge when the grade line at the run's middle stands on or
+// above the ground (`clearance(s) >= 0`), a tunnel (as more of its open approach) when below;
+// when neither neighbour is of that class, the one before it, else the one after. A run with no
+// structure beside it (a draft of one held run) stays. `O(runs)` plus one ground query per short
+// run.
+fn absorb_short_held_runs(
+    runs: &mut Vec<(f32, f32, RoadProfile)>,
+    mut clearance: impl FnMut(f32) -> f32,
+) {
+    let mut index = 0;
+    while index < runs.len() {
+        let (from_m, to_m, profile) = runs[index];
+        if profile != RoadProfile::HeldGround || to_m - from_m >= PREVIEW_MIN_ENDPOINT_SEGMENT_M {
+            index += 1;
+            continue;
+        }
+        let before = index.checked_sub(1);
+        let after = (index + 1 < runs.len()).then_some(index + 1);
+        let wanted = if clearance((from_m + to_m) * 0.5) >= 0.0 {
+            RoadProfile::Bridge
+        } else {
+            RoadProfile::Tunnel
+        };
+        let matches = |neighbour: Option<usize>| neighbour.filter(|&n| runs[n].2 == wanted);
+        let Some(target) = matches(before).or(matches(after)).or(before).or(after) else {
+            index += 1;
+            continue;
+        };
+        // Held runs are joined when pushed, so both neighbours are structures.
+        if target < index {
+            runs[target].1 = to_m;
+        } else {
+            runs[target].0 = from_m;
+        }
+        runs.remove(index);
+    }
+}
+
+// The ground under the grade line at arc length `s`.
+fn ground_at(line: &GradeLine, ground: &mut impl FnMut(f32, f32) -> f32, s: f32) -> f32 {
+    let point = line.point_at(s);
+    ground(point.x, point.z)
 }
 
 // The structure runs of the knots in order: `(start_m, end_m, kind, least clearance)` for each
@@ -288,10 +368,7 @@ impl<'a> GradeLine<'a> {
 
     // The grade line's height at arc length `s`: exactly the end heights at the ends.
     fn height_at(&self, s: f32) -> f32 {
-        if s >= self.length_m {
-            return self.heights[1];
-        }
-        self.heights[0] + (self.heights[1] - self.heights[0]) * (s / self.length_m)
+        grade_height(self.heights, s, self.length_m)
     }
 
     // The lattice: each segment of the path in equal steps of at most 4 m, its end points

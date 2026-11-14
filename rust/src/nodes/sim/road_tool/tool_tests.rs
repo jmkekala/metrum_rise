@@ -26,6 +26,7 @@ use crate::simulation::network::interaction::{
 use godot::prelude::Vector3;
 use std::sync::OnceLock;
 
+mod heights;
 mod scurve_freeform;
 
 // One small world shared by the scripted tests: the bench neighbourhood, no background.
@@ -795,39 +796,6 @@ fn cancel_while_pending_survives_a_refusal() {
     }
 }
 
-// Round C: the keyboard height offset lifts a ground pick as today's cursor lifts it.
-#[test]
-fn altitude_offset_lifts_the_ground_pick() {
-    let mut tool = session();
-    tool.set_option(RoadToolOption::AltitudeOffsetM(3.0));
-    let pointer = ray(-250.0, 100.0);
-    move_to(&mut tool, pointer);
-    let Pointer::Ray { origin, dir } = pointer else {
-        unreachable!()
-    };
-    let today = road_tool_cursor(
-        view(),
-        &CursorQuery {
-            ray_origin: origin,
-            ray_dir: dir,
-            altitude_offset_m: 3.0,
-            active: false,
-            current_state: 0,
-            start_pos: Vector3::ZERO,
-            control_pos: Vector3::ZERO,
-            zoning_snap_enabled: false,
-            fwd_lanes: 1,
-            bkw_lanes: 1,
-            border_snap_dist_m: BORDER_SNAP_M,
-            previous_snap: None,
-            sticky_release_dist_m: SNAP_RELEASE_M,
-            angle_snap: Vector3::ZERO,
-        },
-    )
-    .expect("the ray meets the ground");
-    assert_eq!(tool.frame().cursor.position, today.position);
-}
-
 // --- Round D (`ROAD-112`): curves on the session, the radius rule, gizmos ----------------------
 
 // The ground height under `(x, z)`, picked by a vertical ray on open ground.
@@ -949,7 +917,8 @@ fn tight_curve_refusal_follows_the_radius_check() {
 }
 
 // Gizmos: the placed start, the control point and the live end as handles; the draft's
-// centreline and, for a curve, its two tangent legs. A chained stroke's start is the chain start.
+// centreline and, for a curve, its two tangent legs; the free start's height grip on its stem
+// (round I). A chained stroke's start is the chain start, locked: no grip.
 #[test]
 fn gizmos_name_the_handles_and_legs() {
     use super::frame::{GizmoHandleKind, GizmoLineClass};
@@ -960,17 +929,22 @@ fn gizmos_name_the_handles_and_legs() {
         [
             GizmoHandleKind::Endpoint,
             GizmoHandleKind::Control,
-            GizmoHandleKind::Cursor
+            GizmoHandleKind::Cursor,
+            GizmoHandleKind::HeightGrip
         ]
     );
     assert_eq!(
         gizmos.line_classes,
-        [GizmoLineClass::Tangent, GizmoLineClass::Draft]
+        [
+            GizmoLineClass::Tangent,
+            GizmoLineClass::Draft,
+            GizmoLineClass::HeightStem
+        ]
     );
     assert_eq!(gizmos.line_starts[0], 0);
     assert_eq!(gizmos.line_starts[1], 3);
     assert_eq!(
-        gizmos.line_points.len() - 3,
+        gizmos.line_points.len() - 3 - 2,
         tool.frame().stroke.points.len()
     );
 

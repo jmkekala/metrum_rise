@@ -65,7 +65,8 @@ const PREVIEW_JUNCTION_BANDS_REASON: &str = "junction_band_mismatch";
 const PREVIEW_JUNCTION_ARM_REASON: &str = "junction_arm_too_short";
 const PREVIEW_JUNCTION_PROFILE_REASON: &str = "junction_profile_mismatch";
 const PREVIEW_JUNCTION_LAYOUT_REASON: &str = "junction_layout_invalid";
-const PREVIEW_MIN_ENDPOINT_SEGMENT_M: f32 = 2.0;
+/// The shortest stroke the checks accept, metres of horizontal length (`too_short`).
+pub(crate) const PREVIEW_MIN_ENDPOINT_SEGMENT_M: f32 = 2.0;
 const PREVIEW_BRIDGE_GROUND_TOLERANCE_M: f32 = 0.05;
 // Degenerate profile steps shorter than this add no length.
 const SAMPLE_EPSILON_M: f32 = 0.001;

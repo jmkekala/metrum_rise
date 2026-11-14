@@ -1,10 +1,11 @@
 # SPDX-License-Identifier: GPL-2.0-only
 
-## Road tunnels through the player's road tool (`ROAD-61`): on a sculpted hill the tool's tunnel
-## toggle previews and commits a straight stroke between two ends outside the hill as a tunnel
-## between two approaches, the T key flips the toggle and its checkbox, a stroke that never gets
-## the bore's cover is refused with its reason, the surface over the bore stays the hill, and a
-## debug car drives in at one portal and out at the other, reported inside the bore.
+## Road tunnels through the player's road tool (`ROAD-61`, `ROAD-112` round I): on a sculpted hill
+## the tool's straight grade (T, and its checkbox) previews a level stroke between two ends
+## outside the hill as a batch, held ground to the hill, a tunnel stroke (approaches in a cut and
+## the bore), held ground beyond, and commits it as one road; a level stroke past the hill gets
+## no tunnel; the surface over the bore stays the hill, and a debug car drives in at one portal
+## and out at the other, reported inside the bore.
 ## METRUM_ROAD61_SCREENSHOT, when set on a rendered run, saves the west portal
 ## (METRUM_ROAD61_VIEW picks another view, METRUM_ROAD61_INSIDE=1 lets the camera into the bore,
 ## METRUM_ROAD61_DRIVE_S how long the car drives first). METRUM_ROAD61_SKY_TEST=1 on a rendered
@@ -64,14 +65,15 @@ func _run() -> void:
 	tool.bkw_lanes = 1
 	input_manager.current_tool = input_manager.Tool.ROAD
 	_press_t(input_manager)
-	_expect(tool.tunnel_enabled, "T must turn the tunnel toggle on")
-	if ui != null and ui.tunnel_check != null:
-		_expect(ui.tunnel_check.button_pressed, "the checkbox must follow the T key")
+	_expect(tool.straight_grade, "T must turn straight grade on")
+	if ui != null and ui.straight_grade_check != null:
+		_expect(ui.straight_grade_check.button_pressed, "the checkbox must follow the T key")
 
-	# The stroke that stays above 5 m of cover nowhere: a refusal with its reason, no road.
+	# A level stroke past the hill's flank never reaches the bore's cover: no tunnel stroke.
 	var shallow := PackedVector3Array([_ground(Vector2(-150.0, 120.0)), _ground(Vector2(150.0, 120.0))])
-	var refused := _preview(tool, shallow)
-	_expect(not refused.get("is_valid", true) and refused.get("invalid_reason", "") == "tunnel_cover", "a stroke past the hill must be refused for its cover, got %s" % refused.get("invalid_reason", "missing"))
+	var flank := _preview(tool, shallow)
+	print("past the hill: valid %s reason %s draft %s" % [flank.get("is_valid"), flank.get("invalid_reason", ""), _draft_profiles])
+	_expect(not _draft_profiles.has(3), "a stroke past the hill must get no tunnel, got %s" % [_draft_profiles])
 	tool.cancel_road()
 
 	_bore_cover_ground = minf(_ground(Vector2(-50.0, 0.0)).y, _ground(Vector2(50.0, 0.0)).y)
@@ -84,11 +86,8 @@ func _run() -> void:
 			_east_portal_x = x
 	print("hill profile at z = 0: %s" % [range(-100, 1, 10).map(func(x): return "%d:%.1f" % [x, _ground(Vector2(x, 0.0)).y])])
 	var preview := _preview(tool, points)
-	_expect(preview.get("is_valid", false), "the tunnel stroke must preview: %s" % preview.get("invalid_reason", "missing"))
-	_expect(preview.get("tunnel", false), "the preview must carry the tunnel intent")
-	var prepared: PackedVector3Array = preview.get("prepared_points", PackedVector3Array())
-	for point in prepared:
-		_expect(absf(point.y - points[0].y) < 0.01, "a straight tunnel keeps the chord, got %s" % point)
+	_expect(preview.get("is_valid", false) and preview.get("has_road_chunks", false), "the tunnel draft must preview its pieces: %s" % preview.get("invalid_reason", "missing"))
+	_expect(_draft_profiles.has(3) and _draft_profiles.count(3) == 1, "the draft must hold one tunnel stroke, got %s" % [_draft_profiles])
 	_expect(tool._commit_segment(points[-1]), "the click must queue the tunnel")
 	var deadline := Time.get_ticks_msec() + TIMEOUT_MS
 	while tool._commit_request_id > 0 and Time.get_ticks_msec() < deadline:
@@ -99,14 +98,14 @@ func _run() -> void:
 	for edge in int(_simulation.get_road_benchmark_state()["edge_slots"]):
 		classes.append(_simulation.get_edge_class(edge))
 	classes.sort()
-	_expect(classes == [0, 0, 2], "the stroke must commit as two approaches and a tunnel, got %s" % [classes])
+	_expect(classes.count(2) == 1 and classes.count(0) == classes.size() - 1, "the draft must commit as ground roads and one tunnel, got %s" % [classes])
 	# Over the bore the visible surface is the hill, not the buried deck.
 	var over_bore: float = _simulation.get_world_surface_height(Vector2.ZERO)
 	_expect(over_bore > points[0].y + 5.0, "the surface over the bore must be the hill, got %.2f over a deck at %.2f" % [over_bore, points[0].y])
 
 	await _drive_through()
 	_press_t(input_manager)
-	_expect(not tool.tunnel_enabled, "T must turn the tunnel toggle off")
+	_expect(not tool.straight_grade, "T must turn straight grade off")
 
 	var screenshot := OS.get_environment("METRUM_ROAD61_SCREENSHOT")
 	if OS.get_environment("METRUM_ROAD61_SKY_TEST") == "1":
@@ -124,11 +123,20 @@ func _press_t(input_manager: Node) -> void:
 func _ground(at: Vector2) -> Vector3:
 	return Vector3(at.x, _simulation.get_world_surface_height(at), at.y)
 
-# One frame samples the stroke and previews it synchronously, as the pointer would.
+# The draft's run profiles (`RoadProfile::code` each) of the last pose `_preview` settled.
+var _draft_profiles := []
+
+# Frames sample the stroke and preview it as the pointer would, resting: a batch pose until its
+# exact pieces show or it is refused.
 func _preview(tool: Node, points: PackedVector3Array) -> Dictionary:
 	tool._begin_stroke(points[0])
 	tool.set_scripted_pointer(true, points[-1])
-	tool._process(1.0 / 60.0)
+	for frame in 400:
+		tool._process(1.0 / 60.0)
+		var shown: Dictionary = tool._preview
+		if not shown.get("is_valid", false) or shown.get("has_road_chunks", false):
+			break
+	_draft_profiles = Array(_simulation.road_tool_heights().get("draft_profiles", PackedInt32Array()))
 	return tool._preview
 
 # A debug car from the west approach to the east one passes the bore under the hill's top.

@@ -368,3 +368,89 @@ fn a_deep_cut_without_bore_cover_is_refused() {
         Err(crate::nodes::sim::road_tool::height::CUT_TOO_DEEP_REASON)
     );
 }
+
+// The portal rows' x of every published span piece of `core` (round I's flat-ground tunnels run
+// along x), each checked to carry its collar (the headwall) and a lined bore beside it.
+fn portal_rows_x(core: &SimCore) -> Vec<f64> {
+    use crate::simulation::network::roadbed::PieceId;
+    let roadbed = &core.transit_network.roadbed;
+    let mut rows = Vec::new();
+    for mesh in (0..core.region_graph.edge_count())
+        .filter_map(|edge| roadbed.piece_mesh(PieceId::Span(edge)))
+    {
+        let before = rows.len();
+        rows.extend(mesh.portal_rows().map(|row| row[0].x));
+        if rows.len() > before {
+            assert!(!mesh.collar_triangles().is_empty(), "a portal row without its collar");
+            assert!(!mesh.lining_triangles().is_empty(), "a portal row without a lining");
+        }
+    }
+    rows.sort_by(f64::total_cmp);
+    rows
+}
+
+fn live_edges(core: &SimCore, class: EdgeClass) -> usize {
+    core.region_graph
+        .edges()
+        .iter()
+        .filter(|edge| !edge.deleted && edge.class == class)
+        .count()
+}
+
+fn commit_draft(core: &mut SimCore, path: &[Vector3], heights: [f32; 2]) -> Vec<RoadProfile> {
+    let strokes = segment_draft(
+        path,
+        heights,
+        SECTION,
+        &core.heightmap,
+        &core.region_graph,
+        &core.transit_network.roadbed,
+    )
+    .unwrap();
+    let profiles = strokes.iter().map(|stroke| stroke.profile).collect();
+    let outcome = core.commit_road_batch(
+        draft_batch(strokes, SECTION),
+        std::time::Instant::now(),
+        Default::default(),
+    );
+    assert!(
+        outcome.outcome.committed,
+        "{} at stroke {:?}",
+        outcome.outcome.rejection, outcome.refused_stroke
+    );
+    core.precompute_road_mesh_data();
+    profiles
+}
+
+// Round I, on flat ground (the user's question): a draft from the ground whose far end is
+// lowered 10 m is one tunnel stroke, its approach a cut ramp from the start and its bore from
+// the first lattice knot with the 5 m cover (x = -48, 52 m along at 10 %), the end buried.
+// Committed as one batch it builds the approach, the bore and one portal row there. A second
+// draft back up from the buried end to the ground mirrors it: a second bore and portal, and one
+// undo takes back only that draft.
+#[test]
+fn a_lowered_draft_on_flat_ground_ramps_through_a_portal() {
+    let mut core = flat_core();
+    let down = [Vector3::new(-100.0, 0.0, 0.0), Vector3::new(0.0, 0.0, 0.0)];
+    assert_eq!(
+        commit_draft(&mut core, &down, [0.0, -10.0]),
+        [RoadProfile::Tunnel]
+    );
+    assert_eq!(live_edges(&core, EdgeClass::Tunnel), 1);
+    assert!(live_edges(&core, EdgeClass::Standard) >= 1, "the approach");
+    let rows = portal_rows_x(&core);
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert!((rows[0] + 48.0).abs() <= 4.0, "portal at {rows:?}");
+
+    let up = [Vector3::new(0.0, -10.0, 0.0), Vector3::new(100.0, 0.0, 0.0)];
+    assert_eq!(
+        commit_draft(&mut core, &up, [-10.0, 0.0]),
+        [RoadProfile::Tunnel]
+    );
+    assert_eq!(live_edges(&core, EdgeClass::Tunnel), 2);
+    let rows = portal_rows_x(&core);
+    assert_eq!(rows.len(), 2, "{rows:?}");
+    assert!((rows[1] - 48.0).abs() <= 4.0, "portal at {rows:?}");
+    assert!(core.undo_action_internal());
+    assert_eq!(live_edges(&core, EdgeClass::Tunnel), 1);
+}

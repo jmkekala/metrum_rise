@@ -12876,7 +12876,9 @@ read on the 4 m tunnel lattice along the draft, crossings interpolated linearly 
 | the same run without bore cover, no deeper than 5 m | held ground, in a cut |
 | the same run deeper than 5 m | refused, `cut_too_deep` |
 
-Consecutive held ground runs make one stroke of the draft's own points. The strokes share their
+Consecutive held ground runs make one stroke of the draft's own points. A held ground run shorter
+than the shortest stroke the checks accept (2 m, `too_short`) joins a neighbouring structure
+(round I's short-run rule, below). The strokes share their
 joints bit for bit (the ends exactly the draft's end heights) and commit as one batch
 (`draft_batch`, round F): one undo step. A draft whose grade line stays more than 1.0 m above flat
 ground is one bridge stroke of the draft's own points, the stroke today's tool makes with both

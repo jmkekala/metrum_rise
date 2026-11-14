@@ -38,6 +38,11 @@ static func text(preview: Dictionary, fallback: String = "Road cannot be placed"
 			]
 		"tunnel_join":
 			return "Roads cannot join a tunnel inside its bore: join it at a portal"
+		# A graded draft (`ROAD-112` rounds H, I): the segmentation's and the batch's refusals.
+		"cut_too_deep":
+			return "Too deep for a cutting (over 5 m) and too little ground over it for a tunnel: raise or lower the road"
+		"batch_too_large":
+			return "Too long for one road draft: draw it in shorter pieces"
 		"tunnel_crossing":
 			return "Tunnels cannot cross other tunnels or meet roads underground"
 		"junction_in_trench":

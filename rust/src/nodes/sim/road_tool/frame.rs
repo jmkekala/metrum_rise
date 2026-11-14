@@ -6,9 +6,12 @@
 //! carries the stroke request the existing back end takes (`preview_road` / `add_road_with_snap`
 //! points, lanes and type), which round C hands to the preview.
 
+use super::height::DraftStroke;
+use super::height::handles::HeightHandle;
 use super::measure::{HudValues, RoadTypeSpec};
 use super::modes::DrawMode;
 use super::snap::SnapKind;
+use crate::simulation::network::road_edit::RoadProfile;
 use godot::prelude::Vector3;
 
 /// One stroke as the existing back end takes it.
@@ -21,11 +24,53 @@ pub struct StrokeRequest {
     pub spec: RoadTypeSpec,
     /// Whether the plan snaps the stroke's ends to existing roads (the network snap toggle).
     pub snap_to_existing_roads: bool,
+    /// The grade line's world heights at the first and last point (round I): `Some` when a
+    /// free end's handle is off its support or straight grade is on, and the points' heights
+    /// are then that grade line, which the bridge segments into ground, bridge and tunnel
+    /// strokes (`height::segment_draft`). `None`: the stroke follows the ground, sent as it is
+    /// (`RoadProfile::FollowGround`).
+    pub grade: Option<[f32; 2]>,
 }
 
 impl StrokeRequest {
     fn clear(&mut self) {
         self.points.clear();
+        self.grade = None;
+    }
+}
+
+/// One run of a draft's profile, in drawing order (round I, for the HUD's chips).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DraftRun {
+    /// How the run is built: `FollowGround` for a draft without a grade line (one run), else
+    /// the segmentation's class (held ground, bridge, tunnel).
+    pub(crate) profile: RoadProfile,
+    /// Horizontal length in metres.
+    pub length_m: f64,
+    /// Slope in percent along the drawing direction: the grade line's for a graded draft, the
+    /// drawn ends' mean for a follow-ground one.
+    pub slope_percent: f64,
+}
+
+/// The draft's heights as the frame's preview step reads them (round I): filled once a frame by
+/// `RoadToolSession::update_draft`, never on a pointer move (segmentation reads the ground and
+/// tests bore cover, which allocate).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct DraftReport {
+    /// The graded draft's strokes (`height::segment_draft`); empty for a follow-ground draft or
+    /// a refused one.
+    pub(crate) strokes: Vec<DraftStroke>,
+    /// The segmentation's refusal (`cut_too_deep`).
+    pub refusal: Option<&'static str>,
+    /// The runs with their class, length and slope.
+    pub runs: Vec<DraftRun>,
+}
+
+impl DraftReport {
+    pub(crate) fn clear(&mut self) {
+        self.strokes.clear();
+        self.refusal = None;
+        self.runs.clear();
     }
 }
 
@@ -42,6 +87,9 @@ pub enum GizmoLineClass {
     /// control polygon (start, first arc's control point, joint, second arc's control point,
     /// end) and a freeform node's handle stems.
     Tangent,
+    /// A height handle's stem, from the end's support up to its grip (round I; drawn as a
+    /// tangent leg until the restyle gives it a look).
+    HeightStem,
 }
 
 /// A gizmo handle's kind.
@@ -61,6 +109,8 @@ pub enum GizmoHandleKind {
     /// A control point the player does not place: an S-curve arc's control point (where its end
     /// tangents meet), a freeform node's Bezier handle.
     Handle,
+    /// A free end's height grip (round I; drawn as a handle until the restyle gives it a look).
+    HeightGrip,
 }
 
 /// Packed gizmos: line strips (`line_points[line_starts[i]..line_starts[i + 1]]`, the last to
@@ -196,6 +246,15 @@ pub struct RoadToolFrame {
     pub piece_lengths_m: Vec<f64>,
     /// Each piece's smallest radius in metres, infinite for a straight piece.
     pub piece_radii_m: Vec<f64>,
+    /// Each piece's slope in percent along the drawing direction (round I): the grade line's
+    /// for a graded draft; for a follow-ground draft the source terrain's between the piece's
+    /// ends (the drawn ends' own heights at the draft's ends), which the solve follows.
+    pub piece_slopes_percent: Vec<f64>,
+    /// The draft's height handles (round I): the start's and the end's (the live end's while
+    /// placing; before a stroke starts, the cursor's, whose offset a start placed there takes).
+    pub height_handles: [Option<HeightHandle>; 2],
+    /// The draft's heights, segmentation and slopes (`RoadToolSession::update_draft`).
+    pub draft: DraftReport,
     /// The cursor.
     pub cursor: CursorState,
     /// Mode, phase, refusal.
@@ -210,6 +269,8 @@ impl RoadToolFrame {
         self.hud = HudValues::default();
         self.piece_lengths_m.clear();
         self.piece_radii_m.clear();
+        self.piece_slopes_percent.clear();
+        self.height_handles = [None; 2];
         self.state.refusal = None;
     }
 }
