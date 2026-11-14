@@ -13488,6 +13488,92 @@ records are equal on every 1× row (`GrowthDayRecord` day 13, 15,588 households,
   checkout's run lock and exclusive timing lock held from outside (`TOOLS-24`), one C B B C pass
   from 14:34:03, quiet machine): every run PASS, 0 failures, 39 of 39 fast commits; the terrain install share (max ms, control / branch) fast commit 0.44, 0.47 / 0.49, 0.50, commit 0.21, 0.16 / 0.20, 0.21, undo 0.43, 0.34 / 0.40, 0.36, catch-up 0.50, 0.50 / 0.46, 0.47, all under the 1.0 ms share. Level.
 
+### Final timing of the basic refactor (round LF)
+
+Run 2026-11-14 18:47-19:20, the same boot as round L1, level L. The branch is `roadtools-lf`: `dev`
+`e618f77d` (rounds I, V, V2 and H2 after landing 1) plus round FX cherry-picked. The roadmap's
+`ROAD-112` row was the only conflict, and the merged row keeps H2's sentence and FX's. The control
+is the landing 1 tip `c884802a`: round L1's kept branch release library (`15bd3c17df73d2ac`) and
+release lib test binary (`527710f93941b70b`), reused rather than rebuilt. The branch's release
+library (`3821d593c057638c`) and release lib test binary (`3789bca45ba4b87f`) were built fresh.
+Eight workers on the performance cores, `METRUM_DEBUG=0`, the run lock and the exclusive timing
+lock around every timed or rendered run. A browser was open. No other Godot or build process ran
+during any timed or rendered run: the rows and probes sampled every 2 s and found 0 busy samples.
+
+```bash
+./run.sh --timing --level L --control <the control's $TEST_BINARY> --branch "$TEST_BINARY" --base c884802a \
+    --control-cache "$ARTIFACTS/cache-ctl" --branch-cache "$ARTIFACTS/cache-br" --artifacts "$ARTIFACTS/timing"
+./run.sh --timing --artifacts "$ARTIFACTS/timing" --rerun p07-7-br
+```
+
+Both snapshot caches were generated fresh by these binaries (`TOOLS-23`): the control's 30k city,
+plus the branch's 10k, 30k, fiscal and commit cities. The 30k day records are equal on every 1× row
+(`GrowthDayRecord` day 13, 15,588 households, 40,483 jobs), and match round L1's. The calibration
+passed: the first control 32× run against L1's cached rows read -0.2 % mean, -0.6 % p99 and
+-3.6 % p99.9. So the control's 1× day (13:19), K22 row (12:57) and contract row (12:57) are round
+L1's cached rows for the same binary.
+
+- **`PERF-07` 30k 32× C B B C:** every compared metric is level. Mean 4.372 / 4.428 ms (+1.3 %),
+  p99 6.83 / 7.09, p99.9 8.71 / 9.58, worst unpreempted frame 9.82 / 10.04 ms. Components are
+  within 1.8 % and `load_s` is 7.46 / 7.57 s. One branch row was noisy (253 preempted frames), so
+  its tolerances were doubled. The acceptance misses on all four rows are `PERF-17`'s known
+  exception (worst unpreempted 9.79-10.06 ms).
+- **`PERF-07` 30k 1×:** the session's two branch days read 2.301 and 2.277 ms against the cached
+  control day's 2.223 ms. The mean is +3.0 % (tolerance 1.7 %, flagged worse) and the agent
+  component +3.1 % (tolerance 3.1 %). p99 3.76 / 3.87, p99.9 4.25 / 4.35 and worst unpreempted
+  7.48 / 7.84 ms are level, as are the snapshot and slot components and `load_s`. Acceptance passes
+  on every day: unpreempted / p99.9 / preempted less wait are 7.48 / 4.25 / 5.36 (control), and
+  7.98 / 4.35 / 4.40 and 7.70 / 4.36 / 4.56 ms (branch). The flag is near its
+  limit, so one more branch day was timed (`--rerun p07-7-br`, 19:17-19:20, quiet machine,
+  coordinator's request): mean 2.261 ms, p99 3.87, p99.9 4.53, worst unpreempted 7.63 ms, 4,884
+  preempted frames, acceptance PASS (7.63 / 4.53 / 5.47 ms). With 2.301 and 2.261 ms the mean is
+  still +2.6 % (tolerance 1.7 %, worse). The agent component (+2.5 %) and every other metric are
+  level. Over the three branch days (2.301, 2.277 and 2.261 ms) the mean is +2.4 to +3.5 % against one
+  control day from six hours earlier. Round L1 read this control binary at 2.223-2.306 ms over its
+  days, and the runner's same-binary drift between sessions of one boot reached +5 % (`PERF-19`).
+  Since `c884802a` the changes are in road tool, preview, road edit and road render code. The path
+  rule classes the diff as F, because of the preview request's profile field in
+  `nodes/sim/core/thread.rs` and the road render files. Nothing in them was attributed, and the flag
+  is reported, not bisected.
+- **K22 30k:** branch click-to-ack 7.12 ms and commit 7.09 ms, against the control's cached row
+  from 12:57 at 6.65 / 6.61 ms (+7 %). Each side has one run and no tolerance, and the control's
+  row is about six hours older than the branch's.
+- **Economy contract `--diff c884802a`** (branch timed, control from the cache): the status is
+  `failed` on the same four open work-count scaling limits as `dev` (`PERF-01`: `staffing_trials`,
+  `supplier_searches`, `supplier_routes`, `job_search_keys`), with work counts identical to the
+  control's. Hours: 10k 1.010 against 1.260 ms, 30k 3.336 against 3.203 ms. Round L1's four
+  outside-runner runs of this control binary read 0.926-1.004 and 3.186-3.247 ms. No time budget
+  failed.
+- **Preview rows** (round L1's rows and settings, gamescope's headless backend at 1920x1080, four
+  workers, 100 samples after 8 warm-ups, one C B B C pass, 18:58-19:03). Poses shown exactly within
+  16.7 ms, all ten rows together: control 996 and 914, branch 898 and 921 (1,910 / 1,819, -4.8 %).
+  As a share of the exact poses: control 54.2 and 53.0 %, branch 53.8 and 53.1 %, both inside the
+  control's spread. Against the landing 1 tip, the shares are level: rounds I, V, V2, H2 and FX add
+  no further drop. The D-era drop that round L1 read against `1be1c85c` (control 60.5 and 56.1 %)
+  is part of this control and was not measured again. Per case (control runs / branch runs):
+  `sloped_t` 204, 214 / 190, 172; `sloped_branch` 196, 165 / 186, 207; `flat_cross` 207, 172 /
+  145, 190; `sloped_cross` 161, 168 / 168, 157; `dense` 228, 195 / 209, 195.
+- **Drag probe** (Kuopio's 39 strokes, the branch worktree's `tools/graded_drag_probe.py`,
+  gamescope's headless backend, `METRUM_DEBUG_PERF=1`, `METRUM_GRADED_DRAG_CONTINUE=1`, the main
+  checkout's locks held from outside (`TOOLS-24`), one C B B C pass, 19:03-19:13). Every run
+  passed with 0 failures and 39 of 39 fast commits. Terrain install share, max ms (control /
+  branch): fast commit 0.46, 0.50 / 0.45, 0.50; commit 0.19, 0.23 / 0.19, 0.19; undo 0.47, 0.40 /
+  0.45, 0.32; catch-up 0.65, 0.51 / 0.52, 0.55. All are under the 1.0 ms share. Level.
+- **Gates on the tip (fresh):**
+  - Clippy `--all-targets`: the branch point's warning set (`asset_document.rs:15` only), and
+    `cargo doc` reports 0 missing docs.
+  - Debug `cargo test --lib`: 2,718 passed, 0 failed, 230 ignored. This includes FX's four new
+    tests and H2's five `ground_marks` tests.
+  - `./run.sh --test` (19:13-19:17, after the rendered runs): PASS. nextest ran 2,722 of 2,722
+    with 231 skipped. godot-main and godot-vehicle passed with 0 SCRIPT ERROR, and no Godot
+    script was skipped.
+  - Products against H2's library (`2a81821d`): the gameplay fixtures are 17 / 17 EQUAL, and
+    Kuopio's 78 commits are 78 / 78 EQUAL against H2's quiet rerun. Against H2's first record,
+    which ran under load, `kuopio_06#18`'s graded tiles differ (`TERRAIN-30`).
+- **For a later bisect** (none was run): per-round release libraries are kept for rounds I, V, H2
+  and FX. Their release test binaries are not, and the 1× rows need test binaries, so each round's
+  test binary would be built from its commit.
+
 ### Lines, labels and guides restyle (round V)
 
 Built 2026-11-14 on branch `roadtools-v` (`dev` `030726d7`) after the user's test of landing 1
