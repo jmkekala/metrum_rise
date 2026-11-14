@@ -2,8 +2,8 @@
 
 //! Simple curve (U1): start, a free control point, end. The draft is the fillet arc tangent to
 //! both legs with tangent length `min(|AC|, |CB|)` plus a straight lead on the longer leg
-//! (`GuidePath::set_fillet`); collinear legs give the line. Started with a road tangent, the
-//! control point is held on the tangent's forward ray, so the curve leaves tangent to the road;
+//! (`GuidePath::set_fillet`); collinear legs give the line. At a continuous chained start the
+//! control point is held on the tangent's forward ray, so the curve leaves along the last stroke;
 //! the placed control is projected onto the ray again for the shape (its stored `f32` point is
 //! off the ray by rounding), so it leaves along the tangent exactly (round CT).
 

@@ -263,12 +263,12 @@ func _build_ui():
 	freeform_btn.tooltip_text = "Click the road's points; click the last one again or press Enter to edit. Drag points and handles (Ctrl breaks a joint), then Enter or click elsewhere to build."
 	mode_row.add_child(freeform_btn)
 
-	# Continuous (`ROAD-112` round D): the next stroke leaves along the road or the chain it
-	# starts on, for straight roads and curves (B8; the S-curve and freeform set their own).
+	# Continuous (`ROAD-112` rounds D, CT, CT2): a chained stroke leaves along the last road's end
+	# direction in every mode; a first click on an existing road aims freely.
 	continuous_check = CheckBox.new()
 	continuous_check.text = "Continuous"
 	continuous_check.focus_mode = Control.FOCUS_NONE
-	continuous_check.tooltip_text = "Start each road along the road or the last road it continues from."
+	continuous_check.tooltip_text = "Continue each new road in the direction the last one ended."
 	continuous_check.toggled.connect(func(enabled: bool): road_tool.continuous = enabled)
 	# Its own row under the modes, so the panel keeps its width with four mode buttons.
 	var continuous_row := HBoxContainer.new()

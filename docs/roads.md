@@ -12401,9 +12401,9 @@ since round D).
   node and handle drags before the build, under "Drawing and placement").
   Curve requests are the kernel's flattening with heights interpolated by arc length between the
   start's and the cursor's (round I brings handles); the ends are the clicked points bit for bit.
-  **Continuous** adds the tangent constraint: a straight stroke from a start tangent (a carried
-  one, or a dead end or road it starts on) becomes the line or arc leaving along it through the
-  cursor, and a simple curve's control point is held on the tangent's forward ray; a chained
+  **Continuous** adds the tangent constraint at a chained start only (round CT2; a dead end or
+  road a first click lands on carries none): a straight stroke from the carried tangent becomes
+  the line or arc leaving along it through the cursor, and a simple curve's control point is held on the tangent's forward ray; a chained
   S-curve takes the carried tangent as its start aim and a chained freeform draft locks its
   start's handle to it (round CT). **Chain**: an
   accepted stroke starts the next at its end carrying its end tangent, unless it ended on a node
@@ -13849,6 +13849,30 @@ steps and a chained freeform draft (`RoadToolBench::restart_chained`).
   curve's continuous draft now leaves along the tangent exactly (its control re-projected), a
   change below `f32` rounding of the control point.
 
+### Continuous carries a direction only for a chained start (round CT2)
+
+Built 2026-11-14 on branch `roadtools-ct2` (`dev` `39d76272`) after the user's report: with
+Continuous on, a Straight or Curve stroke whose first click landed on an existing road mid-span
+was held along that road (B8 read the start road's direction as the tangent), so it could not
+aim away and a stroke across it was refused at a 3 degree junction arm, while the S-curve and
+freeform (round CT) already aimed freely there. Rust: `session.rs` `carried_direction` is the one
+rule for all four modes (Continuous on, a chained start, the chain's `Continue` direction);
+`carry_chain` (S-curve, freeform) and `held_tangent` / `draft_tangent` (straight, simple curve)
+read only it, so a start on a road mid-span, a node or a dead end that is not the chain's end
+carries nothing. The start road's direction still serves the angle lock's reference and the
+end-angle chips. The Continuous checkbox's tooltip (`main_ui.gd`) now says what it does:
+"Continue each new road in the direction the last one ended." Cost: unchanged, `O(1)` a pose,
+no allocation.
+
+- **Fresh checks**: Rust `continuous_chain.rs` `first_clicks_on_the_network_aim_freely`
+  (Continuous on, Straight and Curve started by a camera ray on the edge mid-span at
+  (-150, 0), the junction node at the origin and the spur's dead end at (-40, 200): the draft
+  toward a cursor 90 degrees off the road, 45 off the junction's arms, leaves toward it within
+  1e-6 rad and is not refused; the curve's placed control likewise; it fails on `dev`
+  `39d76272`, 90 degrees off at the mid-span start). Round CT's join tests (under 1e-9 rad) and
+  the Continuous-off digest (58 frames, `0x2259_b84d_6713_cfb6`) pass unchanged. Kuopio 78 + fixtures 17 parity against round CT's records,
+  the allocation probe and gate checks 1-3 were still running at this commit (`$ARTIFACTS`).
+
 ### Decisions (user, 2026-11-12, all as recommended)
 
 - U1 simple curve = three clicks, free control point, exact arc plus a straight lead.
@@ -14033,10 +14057,13 @@ the clicks, the mode buttons and the acknowledgement and draws what `road_tool_f
   cusp or a tiny loop) reads a radius near 0 and the draft is refused as too tight; a draft
   whose flattening would pass 12,650 steps (8 km at the finest step) is refused as too long
   ([round FX](#folded-handles-the-freeform-hang-round-fx)).
-- **Continuous** (a checkbox beside the modes, off by default): a stroke that starts on a dead
-  end, along a road or where the chain left off leaves along that direction: a straight stroke
-  becomes the line or arc leaving tangent through the cursor, a curve's control point is held
-  on the tangent's forward ray (B8). Every mode continues a chain with its direction carried
+- **Continuous** (a checkbox beside the modes, off by default) has one rule for every mode
+  (rounds CT and CT2): only a **chained start**, the end of the stroke the tool just built,
+  carries a direction, that stroke's end tangent. A first click on an existing road (mid-span,
+  a node, or a dead end that is not the chain's end) carries none: every mode aims freely from
+  it, as with Continuous off. At a chained start a straight stroke becomes the line or arc
+  leaving tangent through the cursor and a curve's control point is held on the tangent's
+  forward ray (B8). Every mode continues a chain with its direction carried
   (round CT, the user's decision of 2026-11-14 replacing B8 / N7 for the S-curve and
   freeform): the next **S-curve** starts at the previous end with its start direction set from
   the previous road's end tangent, so its "start direction" click is skipped and its hint

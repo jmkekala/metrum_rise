@@ -2,7 +2,7 @@
 
 //! Straight mode: two clicks, one line. Its stroke request is the line's two ends, exactly the
 //! two points today's tool sends (round A decision D2: the kernel's 4 m flattening is not sent).
-//! In continuous mode with a start tangent it is the line or arc leaving the start along the
+//! In continuous mode at a chained start (the carried tangent) it is the line or arc leaving the start along the
 //! tangent through the cursor (`GuideSegment::tangent_to`): a line only when the cursor lies
 //! exactly ahead.
 

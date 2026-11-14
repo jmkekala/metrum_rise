@@ -17,6 +17,8 @@
 //! decision of 2026-11-14 replacing B8 / N7) the chain carries its direction into every mode: the
 //! S-curve takes it as its start aim (that step is skipped), freeform locks its start's handle to
 //! it, and a mode change while only the chained start is placed keeps the chain in the new mode.
+//! Only a chained start carries a direction (round CT2): a first click on an existing road, a
+//! node or a dead end that is not the chain's end aims freely in every mode.
 //!
 //! Freeform (round N, `modes/freeform.rs`): clicks place nodes, then an edit phase drags nodes
 //! and handles (press, pointer moves, release) until `confirm` or a press off every grip sends
@@ -165,7 +167,7 @@ pub enum RoadToolOption {
     AngleStepDeg(Option<f64>),
     /// Length step in metres; zero, negative or `None` turns it off.
     LengthStepM(Option<f64>),
-    /// Continuous: the tangent constraint at a stroke's start.
+    /// Continuous: a chained start carries the previous stroke's end direction.
     Continuous(bool),
     /// Straight grade (U3): the grade line between the ends' heights even when both ends sit
     /// on their supports.
@@ -328,7 +330,7 @@ impl RoadToolSession {
         self.placed_len
     }
 
-    /// Whether continuous (the tangent constraint at a stroke's start) is on.
+    /// Whether continuous (a chained start carries the previous stroke's direction) is on.
     pub fn continuous(&self) -> bool {
         self.continuous
     }
@@ -446,16 +448,23 @@ impl RoadToolSession {
         self.chained && self.pending.is_none() && self.placed_len == 1 && !self.freeform.editing()
     }
 
-    // Continuous on (round CT): a chained start carries the last road's end direction into the
-    // S-curve (its start aim) and freeform (its start handle's direction); off, neither.
-    // Straight and the simple curve read it live (`held_tangent`).
-    fn carry_chain(&mut self) {
-        let direction = match self.start_road {
+    // Continuous's one rule for every mode (rounds CT, CT2): only a chained start (the end of the
+    // stroke the tool just built) carries a direction, the built stroke's end tangent. A first
+    // click on an existing road, a node or a dead end that is not the chain's end carries none:
+    // the stroke aims freely from it. Off, nothing is carried.
+    fn carried_direction(&self) -> Option<DVec2> {
+        match self.start_road {
             Some(EndRoad::Continue(direction)) if self.continuous && self.chained => {
                 Some(direction)
             }
             _ => None,
-        };
+        }
+    }
+
+    // A chained start carries `carried_direction` into the S-curve (its start aim) and freeform
+    // (its start handle's direction). Straight and the simple curve read it live (`held_tangent`).
+    fn carry_chain(&mut self) {
+        let direction = self.carried_direction();
         self.carried_aim = direction.filter(|_| self.mode == DrawMode::ComplexCurve);
         self.freeform
             .lock_start(direction.filter(|_| self.mode == DrawMode::Freeform));
@@ -741,7 +750,7 @@ impl RoadToolSession {
         if self.steps() + 1 < self.mode.points() {
             let mut point = cursor.position;
             if self.mode == DrawMode::SimpleCurve
-                && let Some(tangent) = self.held_tangent(xz_of(point))
+                && let Some(tangent) = self.held_tangent()
             {
                 let held = modes::held_control(xz_of(self.placed[0]), xz_of(point), Some(tangent));
                 point.x = held.x as f32;
@@ -915,13 +924,13 @@ impl RoadToolSession {
         }
     }
 
-    // The start tangent the continuous constraint holds, while it applies (before the second
+    // The carried direction the continuous constraint holds, while it applies (before the second
     // point of a straight stroke or the control point of a simple curve; the S-curve and
     // freeform take a chain's direction once, `carry_chain`).
-    fn held_tangent(&self, live: DVec2) -> Option<DVec2> {
+    fn held_tangent(&self) -> Option<DVec2> {
         let held = matches!(self.mode, DrawMode::Straight | DrawMode::SimpleCurve);
-        (self.continuous && self.placed_len == 1 && held)
-            .then(|| self.start_tangent(live))
+        (self.placed_len == 1 && held)
+            .then(|| self.carried_direction())
             .flatten()
     }
 
@@ -929,12 +938,10 @@ impl RoadToolSession {
     // once its control point is placed (held on the ray, whose stored `f32` point the shape
     // re-projects, so the curve leaves along the tangent exactly: round CT); or the S-curve's
     // carried start aim.
-    fn draft_tangent(&self, live: DVec2) -> Option<DVec2> {
+    fn draft_tangent(&self) -> Option<DVec2> {
         match (self.mode, self.placed_len) {
-            (DrawMode::SimpleCurve, 2) if self.continuous => {
-                self.start_tangent(xz_of(self.placed[1]))
-            }
-            _ => self.held_tangent(live).or(self.carried_aim),
+            (DrawMode::SimpleCurve, 2) => self.carried_direction(),
+            _ => self.held_tangent().or(self.carried_aim),
         }
     }
 
@@ -1208,7 +1215,7 @@ impl RoadToolSession {
         let handles =
             self.set_handles(self.placed[0], cursor.position, cursor.snapped.target.is_some());
         let live = xz_of(cursor.position);
-        let tangent = self.draft_tangent(live);
+        let tangent = self.draft_tangent();
         let placed_xz = self.placed_xz();
         let shaped = modes::shape(
             self.mode,

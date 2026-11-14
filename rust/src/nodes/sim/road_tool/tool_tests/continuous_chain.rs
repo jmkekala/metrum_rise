@@ -6,12 +6,13 @@
 //! tangent-continuous on the guide paths. Continuous off sends and shows what `dev` `8855c25f`
 //! did (a frame digest recorded there).
 
-use super::{ack, click, ground_at, move_to, session, view};
+use super::{ack, click, ground_at, move_to, ray, session, view};
 use crate::nodes::sim::road_tool::frame::{GizmoHandleKind, Phase, RoadToolFrame};
 use crate::nodes::sim::road_tool::labels::{HintStep, LabelKind};
 use crate::nodes::sim::road_tool::session::{
     Pointer, PointerButton, RoadToolAction, RoadToolEvent, RoadToolOption, RoadToolSession,
 };
+use crate::nodes::sim::road_tool::snap::SnapKind;
 use crate::simulation::network::guide::DVec2;
 use godot::prelude::Vector3;
 
@@ -192,6 +193,55 @@ fn mixed_chain_is_tangent_continuous() {
     move_to(&mut tool, at(-200.0, 280.0));
     assert_joins(&tool, join, "freeform -> curve");
     build(&mut tool, Some(at(-200.0, 280.0)));
+}
+
+// Round CT2: only a chained start carries a direction. With Continuous on, Straight and the
+// simple curve started by a first click on an existing road mid-span, on the junction node or on
+// the spur's dead end (not the chain's end) aim freely: the stroke to a cursor 90 degrees off the
+// road (45 off the junction's arms) is previewed toward it, not held along the road nor refused.
+#[test]
+fn first_clicks_on_the_network_aim_freely() {
+    let half = std::f64::consts::FRAC_1_SQRT_2;
+    // (start, the road's direction there, the aim off it).
+    let starts = [
+        ((-150.0, 0.0), DVec2::X, DVec2::Y),
+        ((0.0, 0.0), DVec2::new(half, -half), DVec2::new(half, half)),
+        ((-40.0, 200.0), DVec2::new(half, half), DVec2::new(-half, half)),
+    ];
+    let toward = |tool: &RoadToolSession, to: Vector3, what: &str| {
+        let frame = tool.frame();
+        assert_eq!(frame.state.refusal, None, "{what}");
+        let start = frame.stroke.points[0];
+        let aim = DVec2::new(f64::from(to.x - start.x), f64::from(to.z - start.z));
+        let leaves = tool.path().start_tangent().expect("a draft");
+        let gap = heading_gap(aim.normalize(), leaves);
+        assert!(gap < 1e-6, "{what}: leaves {gap:e} rad off its aim");
+    };
+    for ((x, z), road, aim) in starts {
+        let start = DVec2::new(f64::from(x), f64::from(z));
+        let point = |p: DVec2| at(p.x as f32, p.y as f32);
+        let control = start + aim * 50.0;
+        let end = start + aim * 90.0 + road * 40.0;
+        for mode in [RoadToolAction::ModeStraight, RoadToolAction::ModeSimpleCurve] {
+            let what = format!("{mode:?} from ({x}, {z})");
+            let mut tool = continuous();
+            act(&mut tool, mode);
+            // A camera ray: the start takes the network snap (a scripted pointer is free).
+            click(&mut tool, ray(x, z));
+            assert!(
+                matches!(tool.frame().cursor.snap, SnapKind::Edge | SnapKind::Node),
+                "{what} starts on the network"
+            );
+            move_to(&mut tool, point(control));
+            toward(&tool, tool.frame().cursor.position, &what);
+            if mode == RoadToolAction::ModeSimpleCurve {
+                click(&mut tool, point(control));
+                let placed = tool.frame().cursor.position;
+                move_to(&mut tool, point(end));
+                toward(&tool, placed, &format!("{what}, its control"));
+            }
+        }
+    }
 }
 
 // A cancel at the chained S-curve's or freeform draft's every step leaves nothing; a mode change
