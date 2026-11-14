@@ -1162,8 +1162,8 @@ impl RoadToolSession {
             self.frame.state.refusal = Some(refusal(error));
             return;
         }
-        if !self.build_stroke(handles[0].point(), handles[1].point()) {
-            self.frame.state.refusal = Some(DraftRefusal::TooShort);
+        if let Err(reason) = self.build_stroke(handles[0].point(), handles[1].point()) {
+            self.frame.state.refusal = Some(reason);
             return;
         }
         self.apply_grade(view, &handles);
@@ -1208,8 +1208,8 @@ impl RoadToolSession {
             self.frame.state.refusal = Some(refusal(error));
             return;
         }
-        if !self.build_freeform_stroke(&nodes[..count]) {
-            self.frame.state.refusal = Some(DraftRefusal::TooShort);
+        if let Err(reason) = self.build_freeform_stroke(&nodes[..count]) {
+            self.frame.state.refusal = Some(reason);
             return;
         }
         self.apply_grade(view, &handles);
@@ -1276,15 +1276,18 @@ impl RoadToolSession {
 
     // Fills the frame's stroke request for the freeform `nodes`: the kernel's flattening of the
     // spans, each span's heights interpolated by arc length between its two nodes', so every
-    // node is a stroke point bit for bit. False when the ends are within 5 cm.
-    fn build_freeform_stroke(&mut self, nodes: &[Vector3]) -> bool {
+    // node is a stroke point bit for bit. Refused when the ends are within 5 cm or the
+    // flattening passes its step cap.
+    fn build_freeform_stroke(&mut self, nodes: &[Vector3]) -> Result<(), DraftRefusal> {
         let stroke = &mut self.frame.stroke;
         stroke.spec = self.spec;
         stroke.snap_to_existing_roads = self.snap.network;
         if nodes[0].distance_to(nodes[nodes.len() - 1]) <= POINT_EPS_M {
-            return false;
+            return Err(DraftRefusal::TooShort);
         }
-        self.path.flatten_into(&mut self.flat);
+        self.path
+            .flatten_into(&mut self.flat)
+            .map_err(|_| DraftRefusal::TooLong)?;
         // Each span's points are its flattening's steps from its start node (written once).
         let mut first = 0;
         for (span, segment) in self.path.segments().iter().enumerate() {
@@ -1316,19 +1319,19 @@ impl RoadToolSession {
             first += steps;
         }
         debug_assert_eq!(first + 1, self.flat.len(), "every span's steps counted");
-        true
+        Ok(())
     }
 
     // Fills the frame's stroke request from the path from `start` to `end` (the placed start and
     // the cursor at their handles' heights): a single line's two ends exactly (today's straight
     // request), else the kernel's flattening with heights interpolated by arc length between the
-    // two. False when the ends are within 5 cm.
-    fn build_stroke(&mut self, start: Vector3, end: Vector3) -> bool {
+    // two. Refused when the ends are within 5 cm or the flattening passes its step cap.
+    fn build_stroke(&mut self, start: Vector3, end: Vector3) -> Result<(), DraftRefusal> {
         let stroke = &mut self.frame.stroke;
         stroke.spec = self.spec;
         stroke.snap_to_existing_roads = self.snap.network;
         if start.distance_to(end) <= POINT_EPS_M {
-            return false;
+            return Err(DraftRefusal::TooShort);
         }
         if let [GuideSegment::Line(line)] = self.path.segments() {
             // A straight stroke is its start and the cursor bit for bit; a ghost leg (a curve's
@@ -1343,9 +1346,11 @@ impl RoadToolSession {
             };
             stroke.points.push(from);
             stroke.points.push(to);
-            return true;
+            return Ok(());
         }
-        self.path.flatten_into(&mut self.flat);
+        self.path
+            .flatten_into(&mut self.flat)
+            .map_err(|_| DraftRefusal::TooLong)?;
         let total: f64 = self
             .flat
             .windows(2)
@@ -1372,7 +1377,7 @@ impl RoadToolSession {
             .points
             .last_mut()
             .expect("flattened paths have two points") = end;
-        true
+        Ok(())
     }
 
     // Handles at the placed points and the cursor; for curves the tangent legs through them.

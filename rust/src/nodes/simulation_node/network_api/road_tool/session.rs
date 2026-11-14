@@ -1282,5 +1282,6 @@ fn refusal_key(refusal: DraftRefusal) -> &'static str {
         DraftRefusal::FullTurn => "full_turn",
         DraftRefusal::NoBiarc => "no_biarc",
         DraftRefusal::TightCurve => "road_tight_curve",
+        DraftRefusal::TooLong => "batch_too_large",
     }
 }

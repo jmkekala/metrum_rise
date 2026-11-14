@@ -13127,6 +13127,48 @@ Freeform, Gizmos, HUD).
   heights by arc length per span between its nodes; N7 no continuous constraint for the S-curve
   or freeform (B8), the chain applies; N8 a chained freeform start is not draggable.
 
+#### Folded handles: the freeform hang (round FX)
+
+Built 2026-11-14 on branch `roadtools-fx` (`dev` `3a950b78`). The user flipped a freeform
+handle about 180 degrees and the game froze, its memory growing to 40 GB (a second freeze: a
+node whose spans arrive and leave nearly reversed, the HUD reading 0 km/h).
+
+- **Root cause.** The zoning-depth guide offsets the draft by the depth (about 65 m) every
+  pose; a Bezier span's offset (`guide/offset.rs`) is sampled at the span's own arc-length
+  steps, counted from the span's length times the largest stretch `1 - k d` over the curvature
+  samples. A flipped handle makes a cusp or a tiny loop: on its outside the curvature is huge
+  but finite, so the stretch was huge but accepted, and the offset asked for up to about 1e11
+  points, pushed one by one. The tight-curve refusal was set after the guide, so it never
+  showed.
+- **Fix.** `CubicBezier::min_radius` also reads the speed's interior minima (where
+  `B' . B''` turns from negative to positive between two of the 257 samples, by 52 bisection
+  steps; at most two): curvature is at most `|B''| / |B'|^2`, so a cusp's peak, narrower than
+  a sample step, sits there, and the radius there is `|B'|^2 / |B''|` exactly (0 on a fold whose
+  control points lie on one line, which the sampled radius read as straight). A folded draft
+  is refused as `road_tight_curve`. A Bezier offset is refused where the radius falls under
+  `FLATTEN_RADIUS_FLOOR_M` (`OffsetRefusal::TooTight`), which bounds the stretch by
+  `1 + |d| / 1 m`.
+- **Bound.** One flattening or offset writes at most `FLATTEN_MAX_STEPS` = 12,650 steps, the
+  batch cap's 8 km (decision U6) at the rule's finest step `sqrt(8 x 1 m x 5 cm)` = 0.632 m;
+  more is refused before the points are written (`TooManySteps`, `OffsetRefusal::TooManySteps`;
+  the session's `DraftRefusal::TooLong`, worded as `batch_too_large`). `min_radius` costs
+  `O(257 + 2 x 52)` evaluations a span instead of `O(257)`.
+- **Tests.** `freeform_handle_turned_full_circle_stays_bounded` (a handle turned in 1-degree
+  steps and to within 1e-7 degrees of the fold on a two-node, a three-node and the user's
+  four-span reversal draft, collinear and Ctrl-broken: every pose under 2 s, under 2,000 stroke
+  and 50,000 gizmo points, a stroke or a refusal; the exact fold refused as too tight; on `dev`
+  1 degree off the fold already drew 751,246 gizmo points), `freeform_near_cusp_on_a_radius_sample_is_refused`
+  (handles at `(-200, 50)` and `(-400, 50 + 1/1024)`: on `dev` killed at a 6 GB memory cap
+  after 44 s; now refused at once), `bezier_cusps_read_a_zero_radius_and_refuse_offsets` and
+  `flattening_and_offsets_refuse_beyond_the_step_cap` (kernel).
+- **The watchdog.** The hang watchdog (`debug/crash.rs`, "Crash and Hang Diagnostics" in
+  `debug.md`) runs only with `METRUM_CRASH_DIAGNOSTICS=1` (on by default for `./run.sh
+  --release`) and counts progress from the simulation thread's frames, phases and commands. The
+  road tool runs on the main thread, so a main thread stuck inside a Rust call while the
+  simulation thread kept stepping looked alive. Catching it takes a main-thread heartbeat
+  stamped every `_process`, armed after the load hand-over and suspended around long main-thread
+  calls (load, save) that legitimately stall: not done here.
+
 ### Batch preview (round G1)
 
 Built 2026-11-14 on branch `roadtools-g1` (`dev` `90f5409d`): plan 6.2, a draft that is several
@@ -13810,7 +13852,10 @@ the clicks, the mode buttons and the acknowledgement and draws what `road_tool_f
   Ctrl is held while dragging, which breaks the joint for good (the handles move apart). The
   stroke is the kernel's flattening of the spans (sag at most 5 cm, steps at most 4 m), every
   node a stroke point bit for bit, heights interpolated by arc length between each span's
-  nodes. Continuous does not apply (B8); the chain does.
+  nodes. Continuous does not apply (B8); the chain does. A handle folded back over its span (a
+  cusp or a tiny loop) reads a radius near 0 and the draft is refused as too tight; a draft
+  whose flattening would pass 12,650 steps (8 km at the finest step) is refused as too long
+  ([round FX](#folded-handles-the-freeform-hang-round-fx)).
 - **Continuous** (a checkbox beside the modes, off by default): a stroke that starts on a dead
   end, along a road or where the chain left off leaves along that direction: a straight stroke
   becomes the line or arc leaving tangent through the cursor, a curve's control point is held

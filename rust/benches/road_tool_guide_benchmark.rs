@@ -35,13 +35,14 @@ fn allocation_probe(iterations: usize, paths: &[GuidePath]) -> ! {
         .iter()
         .map(|path| {
             let mut points = Vec::new();
-            path.flatten_into(&mut points);
+            path.flatten_into(&mut points).expect("within the step cap");
             points
         })
         .collect();
     for _ in 0..iterations {
         for (path, points) in paths.iter().zip(&mut buffers) {
-            path.flatten_into(black_box(points));
+            path.flatten_into(black_box(points))
+                .expect("within the step cap");
         }
     }
     std::process::exit(0)

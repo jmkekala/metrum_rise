@@ -513,7 +513,7 @@ fn flattened_fillet(x0: f64, z0: f64, radius: f64, deflection: f64, lead: f64) -
     let mut path = GuidePath::new();
     path.set_fillet(a, c, b).expect("a fillet");
     let mut flat = Vec::new();
-    path.flatten_into(&mut flat);
+    path.flatten_into(&mut flat).unwrap();
     flat.iter()
         .map(|p| Vector3::new(p.x as f32, 0.0, p.y as f32))
         .collect()

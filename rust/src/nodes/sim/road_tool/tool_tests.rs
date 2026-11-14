@@ -578,7 +578,7 @@ fn simple_curve_three_clicks() {
     path.set_fillet(d(-250.0, 100.0), d(-150.0, 100.0), d(-150.0, 160.0))
         .unwrap();
     let mut flat = Vec::new();
-    path.flatten_into(&mut flat);
+    path.flatten_into(&mut flat).unwrap();
     assert_eq!(points.len(), flat.len());
     for (point, expected) in points.iter().zip(&flat).skip(1).take(flat.len() - 2) {
         assert_eq!((point.x, point.z), (expected.x as f32, expected.y as f32));

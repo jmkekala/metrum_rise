@@ -13,9 +13,15 @@
 //! is a pure function of the control points.
 //!
 //! **Minimum radius** is sampled: the radius `|B'|^3 / |B' x B''|` at `RADIUS_SAMPLES + 1`
-//! equal parameter steps. A curvature peak narrower than a sample step (near a cusp) can be
-//! missed; such a span has a radius below every road type's limit wherever it is sampled
-//! closely, and the stroke validator refuses it on its flattened polyline.
+//! equal parameter steps, and at the speed's interior minima (`ROAD-112` round FX). Curvature
+//! is at most `|B''| / |B'|^2`, so it peaks sharply only where the speed nearly vanishes: a cusp
+//! or a tiny loop (a folded or flipped handle), whose peak is narrower than a sample step and
+//! was missed. The minima are where the slope `B' . B''` of the squared speed turns from
+//! negative to positive between two samples (at most two, the slope being a cubic), located by
+//! `MINIMUM_STEPS` bisection steps. There `B'` is perpendicular to `B''`, so the radius is
+//! `|B'|^2 / |B''|` exactly, a form that stays right on a fold whose control points lie on one
+//! line (where the cross product vanishes and the sampled radius reads straight); a cusp reads
+//! 0. Elsewhere the curvature stays sampled, as before.
 
 use super::GuideError;
 use glam::DVec2;
@@ -23,6 +29,9 @@ use glam::DVec2;
 const TABLE_INTERVALS: usize = 64;
 const RADIUS_SAMPLES: usize = 256;
 const NEWTON_STEPS: usize = 2;
+// Bisection steps locating a speed minimum between two radius samples (2^-52 of a sample step,
+// below the parameter's own resolution).
+const MINIMUM_STEPS: usize = 52;
 // 5-point Gauss-Legendre nodes and weights on [-1, 1].
 const GAUSS_NODES: [f64; 5] = [
     0.0,
@@ -191,17 +200,62 @@ impl CubicBezier {
         first.perp_dot(self.second_derivative(t)) / (speed * speed * speed)
     }
 
-    /// The sampled minimum radius of curvature (module docs): infinite for a straight span,
-    /// zero where a sample lands on a cusp.
+    /// The sampled minimum radius of curvature (module docs): the equal parameter samples and
+    /// the speed's interior minima; infinite for a straight span, zero at a cusp.
     pub fn min_radius(&self) -> f64 {
-        Self::radius_sample_parameters()
+        let sampled = Self::radius_sample_parameters()
             .map(|t| 1.0 / self.signed_curvature(t).abs())
-            .fold(f64::INFINITY, f64::min)
+            .fold(f64::INFINITY, f64::min);
+        self.speed_minima()
+            .into_iter()
+            .flatten()
+            .map(|t| self.radius_at_speed_minimum(t))
+            .fold(sampled, f64::min)
     }
 
     // The curvature samples of `min_radius`, as parameters.
     pub(super) fn radius_sample_parameters() -> impl Iterator<Item = f64> {
         (0..=RADIUS_SAMPLES).map(|index| index as f64 / RADIUS_SAMPLES as f64)
+    }
+
+    // `B' . B''`, half the slope of the squared speed: negative while the speed falls.
+    fn speed_slope(&self, t: f64) -> f64 {
+        self.derivative(t).dot(self.second_derivative(t))
+    }
+
+    // The parameters of the speed's interior minima (module docs), in order: at most two.
+    // `O(RADIUS_SAMPLES + MINIMUM_STEPS)`, no allocation.
+    pub(super) fn speed_minima(&self) -> [Option<f64>; 2] {
+        let mut minima = [None; 2];
+        let mut found = 0;
+        let mut previous = (0.0, self.speed_slope(0.0));
+        for t in Self::radius_sample_parameters().skip(1) {
+            let slope = self.speed_slope(t);
+            if previous.1 < 0.0 && slope >= 0.0 && found < minima.len() {
+                let (mut lo, mut hi) = (previous.0, t);
+                for _ in 0..MINIMUM_STEPS {
+                    let mid = 0.5 * (lo + hi);
+                    if self.speed_slope(mid) < 0.0 {
+                        lo = mid;
+                    } else {
+                        hi = mid;
+                    }
+                }
+                minima[found] = Some(hi);
+                found += 1;
+            }
+            previous = (t, slope);
+        }
+        minima
+    }
+
+    // The radius `|B'|^2 / |B''|` at a speed minimum `t` (module docs): zero at a cusp.
+    pub(super) fn radius_at_speed_minimum(&self, t: f64) -> f64 {
+        let speed_sq = self.derivative(t).length_squared();
+        if speed_sq == 0.0 {
+            return 0.0;
+        }
+        speed_sq / self.second_derivative(t).length()
     }
 
     // Split at `0 < s < length` by de Casteljau; both halves share the split point and keep this

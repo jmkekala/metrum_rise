@@ -240,6 +240,9 @@ pub enum DraftRefusal {
     /// An arc is tighter than the road type's illegal radius as the radius check reads it
     /// (`road_tight_curve`).
     TightCurve,
+    /// The draft's flattening passes its step cap (`FLATTEN_MAX_STEPS`: longer than a batch's
+    /// 8 km at the finest step; `batch_too_large`).
+    TooLong,
 }
 
 /// The state record.

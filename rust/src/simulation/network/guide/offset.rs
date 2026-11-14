@@ -8,9 +8,18 @@
 //! A positive distance offsets to the left of the direction of travel. An offset towards a
 //! centre of curvature is refused where the radius is not larger than the distance (the offset
 //! curve would reach the centre and fold over).
+//!
+//! A Bezier span is offset at its own equal arc-length steps, so a step of the offset is the
+//! span's step times the stretch `1 - k d`; on the outside of a near cusp (a folded or flipped
+//! handle: radius near zero, the curvature finite but huge) the stretch, and with it the step
+//! count, was unbounded and a pose ran the game out of memory (`ROAD-112` round FX). A span
+//! whose radius falls under `FLATTEN_RADIUS_FLOOR_M` is refused ([`OffsetRefusal::TooTight`]),
+//! its speed minima read with the samples (`bezier.rs`), so the stretch is at most
+//! `1 + |d| / 1 m`; and an offset keeps the flattening's bound of `FLATTEN_MAX_STEPS` steps
+//! ([`OffsetRefusal::TooManySteps`]).
 
 use super::bezier::CubicBezier;
-use super::flatten::flatten_count;
+use super::flatten::{FLATTEN_RADIUS_FLOOR_M, TooManySteps, check_steps, flatten_count};
 use super::{DVec2, GuidePath, GuideSegment};
 
 // Joints closer to tangent-continuous than this sine are offset as smooth joints; the
@@ -38,6 +47,14 @@ pub enum OffsetRefusal {
         /// The segment's index in the path.
         segment: usize,
     },
+    /// This Bezier span's radius falls under `FLATTEN_RADIUS_FLOOR_M` somewhere (a cusp or a
+    /// tiny loop: a folded or flipped handle), which the flattening rule does not resolve.
+    TooTight {
+        /// The segment's index in the path.
+        segment: usize,
+    },
+    /// The offset would write more than `FLATTEN_MAX_STEPS` steps.
+    TooManySteps,
 }
 
 impl OffsetRefusal {
@@ -46,7 +63,15 @@ impl OffsetRefusal {
             Self::RadiusUnderOffset { .. } => Self::RadiusUnderOffset { segment: index },
             Self::Corner { .. } => Self::Corner { joint: index },
             Self::NotClosedForm { .. } => Self::NotClosedForm { segment: index },
+            Self::TooTight { .. } => Self::TooTight { segment: index },
+            Self::TooManySteps => Self::TooManySteps,
         }
+    }
+}
+
+impl From<TooManySteps> for OffsetRefusal {
+    fn from(_: TooManySteps) -> Self {
+        Self::TooManySteps
     }
 }
 
@@ -70,8 +95,9 @@ fn exact_offset(
 // equal arc-length steps, counted by the flattening rule for the offset curve. The offset
 // stretches a step by `1 - k d` (signed curvature `k`) and has radius `(1 - k d) / |k|`, so the
 // rule takes the length times the largest stretch and the smallest offset radius over the
-// curvature samples; a sample with `1 - k d <= 0` refuses. `skip_start` leaves out the first
-// point (a joint already written).
+// curvature samples and the speed minima; a sample with `1 - k d <= 0` refuses, and so does a
+// radius under `FLATTEN_RADIUS_FLOOR_M` (module docs), which bounds the stretch by
+// `1 + |d| / 1 m`. `skip_start` leaves out the first point (a joint already written).
 fn append_bezier_offset(
     curve: &CubicBezier,
     d: f64,
@@ -80,17 +106,28 @@ fn append_bezier_offset(
     out: &mut Vec<DVec2>,
 ) -> Result<(), OffsetRefusal> {
     let refusal = OffsetRefusal::RadiusUnderOffset { segment: index };
+    let too_tight = OffsetRefusal::TooTight { segment: index };
     let stretch_at = |t: f64| {
         let curvature = curve.signed_curvature(t);
+        if !curvature.is_finite() || curvature.abs() * FLATTEN_RADIUS_FLOOR_M > 1.0 {
+            return Err(too_tight);
+        }
         let stretch = 1.0 - curvature * d;
-        if curvature.is_finite() && stretch > 0.0 {
+        if stretch > 0.0 {
             Ok((stretch, stretch / curvature.abs()))
         } else {
             Err(refusal)
         }
     };
+    let minima = curve.speed_minima();
+    for t in minima.into_iter().flatten() {
+        // The robust radius at a speed minimum: a fold's control points on one line read 0.
+        if curve.radius_at_speed_minimum(t) < FLATTEN_RADIUS_FLOOR_M {
+            return Err(too_tight);
+        }
+    }
     let (mut max_stretch, mut min_radius) = (1.0_f64, f64::INFINITY);
-    for t in CubicBezier::radius_sample_parameters() {
+    for t in CubicBezier::radius_sample_parameters().chain(minima.into_iter().flatten()) {
         let (stretch, radius) = stretch_at(t)?;
         max_stretch = max_stretch.max(stretch);
         min_radius = min_radius.min(radius);
@@ -98,6 +135,7 @@ fn append_bezier_offset(
     let table = curve.arc_length_table();
     let length = table.length();
     let count = flatten_count(length * max_stretch, min_radius);
+    check_steps(out.len() + usize::from(!skip_start), count)?;
     for step in usize::from(skip_start)..=count {
         let t = match step {
             0 => 0.0,
@@ -145,8 +183,10 @@ impl GuidePath {
     /// refusal): lines and arcs offset exactly and flattened by the rule, Bezier spans offset
     /// per sample (`position + d * normal` at their own arc-length steps, counted by the rule
     /// for the offset curve) and refused where the radius is not larger than an offset towards
-    /// the centre. The polyline a parallel copy sends to the back end. `O(points)`, no
-    /// allocation beyond growing `out`.
+    /// the centre, and for a Bezier span whose radius falls under `FLATTEN_RADIUS_FLOOR_M` (a
+    /// cusp or tiny loop). Refused beyond `FLATTEN_MAX_STEPS` steps, before writing them. The
+    /// polyline a parallel copy sends to the back end. `O(points)`, at most
+    /// `FLATTEN_MAX_STEPS + 1`, no allocation beyond growing `out`.
     pub fn flatten_offset_into(&self, d: f64, out: &mut Vec<DVec2>) -> Result<(), OffsetRefusal> {
         out.clear();
         self.check_smooth_joints()?;
@@ -164,7 +204,7 @@ impl GuidePath {
                             piece
                         }
                     };
-                    piece.append_flattened(out);
+                    piece.append_flattened(out)?;
                 }
             }
         }

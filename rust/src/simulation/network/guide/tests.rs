@@ -260,7 +260,9 @@ fn flattened_arc_points_stay_on_the_circle_after_the_f32_cast() {
         let near_origin = cx.abs() < 1_000.0;
         for radius in [12.0, 250.0, if near_origin { 500.0 } else { 2_000.0 }] {
             for sweep in [1.3, -2.9, 5.5] {
-                arc_path(centre, radius, -0.4, sweep).flatten_into(&mut points);
+                arc_path(centre, radius, -0.4, sweep)
+                    .flatten_into(&mut points)
+                    .unwrap();
                 assert!(points.len() > 2);
                 for &p in &points {
                     assert!(((p - centre).length() - radius).abs() <= 1e-9, "f64 point");
@@ -311,7 +313,7 @@ fn flattening_keeps_sag_and_step_bounds() {
     let mut points = Vec::new();
     for (ox, oz) in ORIGINS {
         for path in sample_paths(v(ox, oz)) {
-            path.flatten_into(&mut points);
+            path.flatten_into(&mut points).unwrap();
             assert_flattening_bounds(&path, &points);
         }
     }
@@ -436,7 +438,7 @@ fn path_offset_keeps_joints_and_one_way_copy_reverses() {
     // The flattened offset is the exact offset's flattening.
     let (mut sampled, mut exact) = (Vec::new(), Vec::new());
     path.flatten_offset_into(7.0, &mut sampled).unwrap();
-    shifted.flatten_into(&mut exact);
+    shifted.flatten_into(&mut exact).unwrap();
     assert_eq!(sampled, exact);
     // A corner refuses.
     let mut cornered = GuidePath::new();
@@ -485,6 +487,94 @@ fn bezier_offset_is_refused_where_its_radius_is_under_the_offset() {
             assert!((pair[1] - pair[0]).length() <= FLATTEN_MAX_STEP_M);
         }
     }
+}
+
+// Round FX: a near cusp (a flipped handle) whose loop of about 10 nm radius sits on a radius
+// sample, and an exact fold (all four control points on one line, the cusp between samples),
+// read their radius at the speed minimum and refuse every offset at once; on `dev` `3a950b78`
+// the first's outside offset asked for about 1e11 points.
+#[test]
+fn bezier_cusps_read_a_zero_radius_and_refuse_offsets() {
+    let near_cusp = bezier(
+        v(-280.0, 140.0),
+        [
+            (0.0, 0.0),
+            (-200.0, 50.0),
+            (-300.0, 50.0 + 1.0 / 1024.0),
+            (100.0, 0.0),
+        ],
+    );
+    let fold = bezier(
+        v(0.0, 0.0),
+        [(0.0, 0.0), (-50.0, 0.0), (50.0, 0.0), (100.0, 0.0)],
+    );
+    let mut points = Vec::new();
+    for (path, under) in [(near_cusp, 1e-6), (fold, 1e-9)] {
+        let GuideSegment::Bezier(curve) = path.segments()[0] else {
+            unreachable!()
+        };
+        let radius = curve.min_radius();
+        assert!(radius < under, "{radius}");
+        for d in [65.0, -65.0, 0.5, -0.5] {
+            assert_eq!(
+                path.flatten_offset_into(d, &mut points),
+                Err(OffsetRefusal::TooTight { segment: 0 })
+            );
+        }
+        // The centreline stays bounded: the radius floor's step.
+        path.flatten_into(&mut points).unwrap();
+        assert_eq!(
+            points.len(),
+            flatten_count(curve.length(), FLATTEN_RADIUS_FLOOR_M) + 1
+        );
+    }
+}
+
+// The step cap is the batch cap's 8 km at the rule's finest step: a path asking for more is
+// refused before its points are written, flattened or offset; one exactly at the cap is not.
+#[test]
+fn flattening_and_offsets_refuse_beyond_the_step_cap() {
+    assert_eq!(
+        flatten_count(8_000.0, FLATTEN_RADIUS_FLOOR_M),
+        FLATTEN_MAX_STEPS
+    );
+    let mut points = Vec::new();
+    let at_cap = FLATTEN_MAX_STEP_M * FLATTEN_MAX_STEPS as f64;
+    let line = |length: f64| {
+        GuidePath::from_segment(GuideSegment::Line(Line::new(v(0.0, 0.0), v(length, 0.0))))
+    };
+    line(at_cap).flatten_into(&mut points).unwrap();
+    assert_eq!(points.len(), FLATTEN_MAX_STEPS + 1);
+    line(at_cap).flatten_offset_into(10.0, &mut points).unwrap();
+    assert_eq!(points.len(), FLATTEN_MAX_STEPS + 1);
+    let over = line(at_cap + 1.0);
+    assert_eq!(over.flatten_into(&mut points), Err(TooManySteps));
+    assert_eq!(points.len(), 1, "refused before its points are written");
+    assert_eq!(
+        over.flatten_offset_into(10.0, &mut points),
+        Err(OffsetRefusal::TooManySteps)
+    );
+    // Two pieces each under the cap, together over it.
+    let mut joined = line(at_cap * 0.75);
+    joined.push(GuideSegment::Line(Line::new(
+        v(at_cap * 0.75, 0.0),
+        v(at_cap * 1.5, 0.0),
+    )));
+    assert_eq!(joined.flatten_into(&mut points), Err(TooManySteps));
+    // A Bezier span's offset whose stretch would pass the cap.
+    let long = bezier(
+        v(0.0, 0.0),
+        [
+            (0.0, 0.0),
+            (20_000.0, 0.0),
+            (40_000.0, 3_000.0),
+            (60_000.0, 0.0),
+        ],
+    );
+    assert_eq!(
+        long.flatten_offset_into(10.0, &mut points),
+        Err(OffsetRefusal::TooManySteps)
+    );
 }
 
 #[test]
@@ -544,8 +634,8 @@ fn same_input_gives_bitwise_equal_points() {
         let mut reused = vec![v(1.0, 2.0); 5000];
         let mut fresh = Vec::new();
         for (a, b) in first.iter().zip(&second) {
-            a.flatten_into(&mut fresh);
-            b.flatten_into(&mut reused);
+            a.flatten_into(&mut fresh).unwrap();
+            b.flatten_into(&mut reused).unwrap();
             assert_eq!(bits(&fresh), bits(&reused));
             a.flatten_offset_into(-3.5, &mut fresh).unwrap();
             b.flatten_offset_into(-3.5, &mut reused).unwrap();

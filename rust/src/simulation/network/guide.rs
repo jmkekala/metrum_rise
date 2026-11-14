@@ -30,7 +30,10 @@ mod tests;
 
 pub use arc::Arc;
 pub use bezier::CubicBezier;
-pub use flatten::{FLATTEN_MAX_SAG_M, FLATTEN_MAX_STEP_M, FLATTEN_RADIUS_FLOOR_M, flatten_count};
+pub use flatten::{
+    FLATTEN_MAX_SAG_M, FLATTEN_MAX_STEP_M, FLATTEN_MAX_STEPS, FLATTEN_RADIUS_FLOOR_M, TooManySteps,
+    flatten_count,
+};
 pub use glam::DVec2;
 pub use line::Line;
 pub use offset::OffsetRefusal;

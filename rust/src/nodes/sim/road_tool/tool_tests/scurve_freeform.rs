@@ -162,7 +162,7 @@ fn freeform_commits_the_flattening_rule() {
     let sent = tool.take_commit().expect("confirm sends the stroke");
     assert_eq!(sent.points, tool.frame().stroke.points);
     let mut flat = Vec::new();
-    path.flatten_into(&mut flat);
+    path.flatten_into(&mut flat).unwrap();
     assert_eq!(sent.points.len(), flat.len());
     for (point, expected) in sent.points.iter().zip(&flat) {
         assert_eq!((point.x, point.z), (expected.x as f32, expected.y as f32));
@@ -396,4 +396,167 @@ fn s_curve_and_freeform_frames_are_deterministic() {
         frames
     };
     assert_eq!(run(), run());
+}
+
+// Round FX: a handle turned through a full circle about its node, onto the exact fold (the
+// handle straight back, away from the next node: a cusp) and ever nearer it (a tiny loop), poses
+// in bounded work at every angle: the stroke, the guides and the labels stay small, and a pose
+// the road cannot be built along shows a refusal. On `dev` `3a950b78` the zoning-depth guide's
+// Bezier offset asked for unbounded points near the fold and the game ran out of memory. The
+// drafts: node 0's outward handle on a two-node draft; node 1's on a three-node draft (its
+// inward handle turning with it); and the user's second freeze, a four-span draft whose third
+// node is a near reversal (the spans arrive heading down-right and leave heading back up), its
+// outward handle pulled far out, collinear and Ctrl-broken.
+#[test]
+fn freeform_handle_turned_full_circle_stays_bounded() {
+    let reversal: &[(f32, f32)] = &[
+        (-420.0, 100.0),
+        (-310.0, 130.0),
+        (-200.0, 190.0),
+        (-320.0, 210.0),
+        (-390.0, 250.0),
+    ];
+    // The nodes, the grabbed node, its outward handle's index in the frame, Ctrl, handle length.
+    type Draft<'a> = (&'a [(f32, f32)], usize, usize, bool, f64);
+    let drafts: [Draft; 4] = [
+        (&[(-280.0, 140.0), (-180.0, 140.0)], 0, 0, false, 33.0),
+        (
+            &[(-280.0, 140.0), (-230.0, 140.0), (-180.0, 140.0)],
+            1,
+            2,
+            false,
+            25.0,
+        ),
+        (reversal, 2, 4, false, 90.0),
+        (reversal, 2, 4, true, 90.0),
+    ];
+    for (nodes, grabbed, handle_index, ctrl, length) in drafts {
+        let mut tool = session();
+        mode(&mut tool, RoadToolAction::ModeFreeform);
+        for &(x, z) in nodes {
+            click(&mut tool, at(x, z));
+        }
+        event(&mut tool, RoadToolEvent::Action(RoadToolAction::Confirm));
+        assert_eq!(tool.frame().state.phase, Phase::Editing);
+        let handle = handles(&tool.frame().gizmos, GizmoHandleKind::Handle)[handle_index];
+        let (node, next) = (nodes[grabbed], nodes[grabbed + 1]);
+        let centre = DVec2::new(f64::from(node.0), f64::from(node.1));
+        let away = centre - DVec2::new(f64::from(next.0), f64::from(next.1));
+        // The fold: the handle pointing straight away from the next node.
+        let fold = away.y.atan2(away.x).to_degrees();
+        let mut angles: Vec<f64> = (0..360).map(|step| fold + f64::from(step)).collect();
+        for exponent in 1..=7 {
+            let near = 10f64.powi(-exponent);
+            angles.extend([fold - near, fold + near]);
+        }
+        move_to(&mut tool, Pointer::Scripted(handle));
+        event(&mut tool, RoadToolEvent::Press(PointerButton::Left));
+        let mut at_fold = None;
+        for &angle in &angles {
+            let (sin, cos) = angle.to_radians().sin_cos();
+            let target = centre + DVec2::new(cos, sin) * length;
+            let started = std::time::Instant::now();
+            // Shift frees the guide snaps: the pointer is the handle.
+            event(
+                &mut tool,
+                RoadToolEvent::Pointer {
+                    pointer: Pointer::Scripted(Vector3::new(
+                        target.x as f32,
+                        handle.y,
+                        target.y as f32,
+                    )),
+                    shift: true,
+                    ctrl,
+                },
+            );
+            let elapsed = started.elapsed();
+            let frame = tool.frame();
+            let at_angle = format!("draft {grabbed}/{ctrl}, angle {angle}");
+            assert!(
+                elapsed.as_secs_f64() < 2.0,
+                "{at_angle}: a pose took {elapsed:?}"
+            );
+            assert!(
+                frame.stroke.points.len() < 2_000,
+                "{at_angle}: {} stroke points",
+                frame.stroke.points.len()
+            );
+            assert!(
+                frame.gizmos.line_points.len() < 50_000,
+                "{at_angle}: {} gizmo points",
+                frame.gizmos.line_points.len()
+            );
+            assert!(frame.labels.len() < 64, "{at_angle}");
+            assert!(
+                !frame.stroke.points.is_empty() || frame.state.refusal.is_some(),
+                "{at_angle}: no stroke and no refusal"
+            );
+            if angle == fold {
+                at_fold = frame.state.refusal;
+            }
+        }
+        event(&mut tool, RoadToolEvent::Release(PointerButton::Left));
+        if ctrl || grabbed < 2 {
+            // At the fold all four control points of the span leaving the node lie on one line
+            // and the span runs back over itself: a cusp, refused as too tight.
+            assert_eq!(
+                at_fold,
+                Some(DraftRefusal::TightCurve),
+                "draft {grabbed}/{ctrl}"
+            );
+        }
+    }
+}
+
+// Round FX: the near cusp a sweep steps over, built exactly. Node 0's handle flipped back to
+// `(-200, 50)` and node 1's at `(-400, 50 + 1/1024)` put the span's speed within 1/1024 m of zero
+// at parameter 1/2, one of the radius samples: a loop of about 10 nm radius, the rest of the
+// span curving the same way. On `dev` `3a950b78` the zoning-depth guide's offset to the loop's
+// outside multiplied the span's length by the stretch `1 + depth / radius` (about 1e11) and
+// never finished the pose (it ran out of memory); now the pose ends at once, refused as too
+// tight.
+#[test]
+fn freeform_near_cusp_on_a_radius_sample_is_refused() {
+    let mut tool = session();
+    mode(&mut tool, RoadToolAction::ModeFreeform);
+    click(&mut tool, at(-280.0, 140.0));
+    click(&mut tool, at(-180.0, 140.0));
+    event(&mut tool, RoadToolEvent::Action(RoadToolAction::Confirm));
+    let short = 1.0_f32 / 1024.0;
+    // Node 1's inward handle first (it is automatic until dragged), then node 0's outward.
+    for (index, target) in [(1, (-580.0, 190.0 + short)), (0, (-480.0, 190.0))] {
+        let handle = handles(&tool.frame().gizmos, GizmoHandleKind::Handle)[index];
+        move_to(&mut tool, Pointer::Scripted(handle));
+        event(&mut tool, RoadToolEvent::Press(PointerButton::Left));
+        let started = std::time::Instant::now();
+        event(
+            &mut tool,
+            RoadToolEvent::Pointer {
+                pointer: Pointer::Scripted(Vector3::new(target.0, handle.y, target.1)),
+                shift: true,
+                ctrl: false,
+            },
+        );
+        assert!(
+            started.elapsed().as_secs_f64() < 2.0,
+            "{:?}",
+            started.elapsed()
+        );
+        event(&mut tool, RoadToolEvent::Release(PointerButton::Left));
+    }
+    let GuideSegment::Bezier(curve) = tool.path().segments()[0] else {
+        panic!("a Bezier span");
+    };
+    let [p0, p1, p2, p3] = curve.points();
+    assert_eq!(p1 - p0, DVec2::new(-200.0, 50.0));
+    assert_eq!(p2 - p3, DVec2::new(-400.0, 50.0 + f64::from(short)));
+    let frame = tool.frame();
+    assert_eq!(
+        frame.state.refusal,
+        Some(DraftRefusal::TightCurve),
+        "{:?}",
+        frame.hud
+    );
+    assert!(frame.stroke.points.is_empty());
+    assert!(frame.gizmos.line_points.len() < 50_000);
 }
