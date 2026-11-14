@@ -17747,7 +17747,7 @@ level-of-detail batches and each chunk's glow on the stream backend's `SlotPool`
 and one instance a slot, no node, resource or engine object), with what the nodes gave the server:
 the lamp material, the band's range with its 10 m hysteresis margins, the first two levels
 casting with a 32 m extra margin, the last and the glow a 2 m one, the chunk's frame origin;
-batches show together once all are made. Slots alone were not enough (art-cb3 `cb3a`-`cb3c`,
+batches show together once all are made. Slots alone were not enough (`$ARTIFACTS` art-cb3 `cb3a`-`cb3c`,
 `[CB3]` timers, removed): lights parts fell to about 0.6 ms, but a new slot's creation stalls
 0.4-2.9 ms now and then and a buffer's upload 0.3-2.8 ms (the engine's allocations and staging,
 not predictable from the call), and the hydration's first-frame reset freed the prewarmed spares.
@@ -17781,6 +17781,9 @@ frame; the instrumented first frames 1,305-1,401 ms against 777-1,253 on CB2c's 
 review. The 100k load (diagnosis, one run): lights parts 0.04-0.07 ms; 2 of 158 road frames over
 4.0 ms, the two single multi-megabyte surfaces (15.7 and 16.4 ms) CB2 left open. Kuopio (no roads: no lamp work in its frames) flags p50 +0.0-0.3 ms on `turn_out 0.5s`,
 `turn_repeat 1s`, `pan_back`, `zoom_out` and `jump` (spreads 0.0-0.3), read as noise for review.
+A second series (`$ARTIFACTS` art-cb3/series2): only the `post_load` maximum repeats (+107 ms over a spread of
+73); 30k `far_zoom_out` is +0.5 ms again but within its spread (0.6), with the same draw calls and
+primitives as the control (a review item); none of the Kuopio flags repeats.
 
 ## Implemented Runtime Contract
 
