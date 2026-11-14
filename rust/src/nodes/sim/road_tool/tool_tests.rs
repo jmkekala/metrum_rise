@@ -824,3 +824,204 @@ fn altitude_offset_lifts_the_ground_pick() {
     .expect("the ray meets the ground");
     assert_eq!(tool.frame().cursor.position, today.position);
 }
+
+// --- Round D (`ROAD-112`): curves on the session, the radius rule, gizmos ----------------------
+
+// The ground height under `(x, z)`, picked by a vertical ray on open ground.
+fn ground_at(x: f32, z: f32) -> f32 {
+    let mut probe = session();
+    move_to(&mut probe, ray(x, z));
+    probe.frame().cursor.position.y
+}
+
+// A simple curve placed with exact (scripted) clicks at `a`, `c`, `b` on the ground; the frame
+// is left at the end's pose, not yet confirmed.
+fn scripted_simple_curve(a: (f64, f64), c: (f64, f64), b: (f64, f64)) -> RoadToolSession {
+    let y = ground_at(a.0 as f32, a.1 as f32);
+    let at = |p: (f64, f64)| Pointer::Scripted(Vector3::new(p.0 as f32, y, p.1 as f32));
+    let mut tool = session();
+    tool.handle_event(
+        view(),
+        RoadToolEvent::Action(RoadToolAction::ModeSimpleCurve),
+    );
+    click(&mut tool, at(a));
+    click(&mut tool, at(c));
+    move_to(&mut tool, at(b));
+    tool
+}
+
+// The HUD's radius is the constructed fillet's, `T / tan(delta / 2)`, within 1 mm: legs of 70 m
+// and 50 m (T = 50 m) turning by atan(4 / 3), so R = 50 / tan(atan(1 / 2)) = 100 m exactly.
+#[test]
+fn drawn_curve_reports_its_constructed_radius() {
+    let tool = scripted_simple_curve((-280.0, 200.0), (-210.0, 200.0), (-180.0, 240.0));
+    let frame = tool.frame();
+    assert_eq!(frame.state.refusal, None);
+    let (a, c, b) = (d(-280.0, 200.0), d(-210.0, 200.0), d(-180.0, 240.0));
+    let (leg_in, leg_out) = (c - a, b - c);
+    let tangent = leg_in.length().min(leg_out.length());
+    let delta = leg_in.perp_dot(leg_out).abs().atan2(leg_in.dot(leg_out));
+    let constructed = tangent / (delta / 2.0).tan();
+    assert!((constructed - 100.0).abs() < 1e-9, "{constructed}");
+    let radius = frame.hud.radius_m.expect("an arc");
+    assert!(
+        (radius - constructed).abs() < 1e-3,
+        "HUD {radius} m, constructed {constructed} m"
+    );
+    assert_eq!(frame.hud.design_speed_kmh, Some(design_speed_kmh(radius)));
+    assert!(!frame.hud.tight_radius);
+}
+
+// The radius rule (plan section 5, `road_tight_curve`): the tool refuses exactly the drafts the
+// radius check would refuse, and the check never refuses a draft the tool sends. The check reads
+// the flattened arc's chord radius `2 R sin(theta / 2) / theta` (the HUD's `flattened_radius_m`),
+// so any curve below the illegal radius is refused, and a curve at most 0.3 % above it with an
+// arc longer than the check's window is refused too (decision D3). Quarter turns (shorter than
+// the window) and 170 degree turns (longer), from 1 mm to 0.5 m on either side of the limit.
+#[test]
+fn tight_curve_refusal_follows_the_radius_check() {
+    use super::measure::{RoadTypeSpec, illegal_radius_m};
+    use crate::simulation::network::road_edit::plan_road_edit;
+    let spec = RoadTypeSpec::default();
+    let limit = illegal_radius_m(&spec);
+    assert!(limit > 1.0, "{limit}");
+    let (x0, z0) = (-280.0, 220.0);
+    for deflection_deg in [90.0f64, 170.0] {
+        let deflection = deflection_deg.to_radians();
+        for offset in [-0.5, -1e-3, 1e-3, 0.02, 0.5] {
+            let radius = limit + offset;
+            // Equal legs `T`, so no lead: `R = T / tan(delta / 2)`.
+            let leg = radius * (0.5 * deflection).tan();
+            let c = (x0 + leg, z0);
+            let b = (c.0 + leg * deflection.cos(), c.1 + leg * deflection.sin());
+            let tool = scripted_simple_curve((x0, z0), c, b);
+            let frame = tool.frame();
+            let hud = frame.hud;
+            let hud_radius = hud.radius_m.expect("an arc");
+            assert!(
+                (hud_radius - radius).abs() < 1e-3,
+                "{hud_radius} vs {radius}"
+            );
+            let flattened = hud.flattened_radius_m.expect("an arc");
+            assert!(flattened <= hud_radius && hud_radius - flattened < 3e-3 * hud_radius);
+            assert_eq!(hud.illegal_radius_m, limit);
+            let case = format!(
+                "{deflection_deg} degrees, radius {radius} (flattened {flattened}, limit {limit})"
+            );
+            if offset < 0.0 {
+                assert!(
+                    hud.tight_radius,
+                    "{case}: below the limit is always refused"
+                );
+            }
+            if hud.tight_radius {
+                assert_eq!(
+                    frame.state.refusal,
+                    Some(DraftRefusal::TightCurve),
+                    "{case}"
+                );
+                assert!(frame.stroke.points.is_empty(), "{case}");
+                continue;
+            }
+            assert_eq!(frame.state.refusal, None, "{case}");
+            let (_, validation, _) = plan_road_edit(
+                &frame.stroke.points,
+                spec.fwd_lanes,
+                spec.bkw_lanes,
+                (spec.median, spec.parking, spec.attributes),
+                &view().terrain,
+                &view().region_graph,
+                &view().roadbed,
+                frame.stroke.snap_to_existing_roads,
+                false,
+            );
+            assert!(
+                validation.is_valid,
+                "{case}: {} measured {} limit {}",
+                validation.invalid_reason, validation.geometry_measured, validation.geometry_limit
+            );
+        }
+    }
+}
+
+// Gizmos: the placed start, the control point and the live end as handles; the draft's
+// centreline and, for a curve, its two tangent legs. A chained stroke's start is the chain start.
+#[test]
+fn gizmos_name_the_handles_and_legs() {
+    use super::frame::{GizmoHandleKind, GizmoLineClass};
+    let tool = scripted_simple_curve((-280.0, 200.0), (-210.0, 200.0), (-180.0, 240.0));
+    let gizmos = &tool.frame().gizmos;
+    assert_eq!(
+        gizmos.handle_kinds,
+        [
+            GizmoHandleKind::Endpoint,
+            GizmoHandleKind::Control,
+            GizmoHandleKind::Cursor
+        ]
+    );
+    assert_eq!(
+        gizmos.line_classes,
+        [GizmoLineClass::Tangent, GizmoLineClass::Draft]
+    );
+    assert_eq!(gizmos.line_starts[0], 0);
+    assert_eq!(gizmos.line_starts[1], 3);
+    assert_eq!(
+        gizmos.line_points.len() - 3,
+        tool.frame().stroke.points.len()
+    );
+
+    let y = ground_at(-280.0, 200.0);
+    let at = |x: f32, z: f32| Pointer::Scripted(Vector3::new(x, y, z));
+    let mut chain = session();
+    click(&mut chain, at(-280.0, 200.0));
+    click(&mut chain, at(-240.0, 200.0));
+    ack(&mut chain, true);
+    move_to(&mut chain, at(-220.0, 230.0));
+    let gizmos = &chain.frame().gizmos;
+    assert_eq!(
+        gizmos.handle_kinds,
+        [GizmoHandleKind::ChainStart, GizmoHandleKind::Cursor]
+    );
+    assert_eq!(gizmos.line_classes, [GizmoLineClass::Draft]);
+}
+
+// Continuous applies to the simple curve (B8): the control point is held on the carried tangent's
+// forward ray, so the chained curve leaves along the previous stroke.
+#[test]
+fn continuous_simple_curve_holds_the_control_on_the_tangent() {
+    let y = ground_at(-280.0, 200.0);
+    let at = |x: f32, z: f32| Pointer::Scripted(Vector3::new(x, y, z));
+    let mut tool = session();
+    tool.set_option(RoadToolOption::Continuous(true));
+    tool.handle_event(
+        view(),
+        RoadToolEvent::Action(RoadToolAction::ModeSimpleCurve),
+    );
+    click(&mut tool, at(-280.0, 200.0));
+    click(&mut tool, at(-260.0, 200.0));
+    click(&mut tool, at(-240.0, 220.0));
+    ack(&mut tool, true);
+    // The carried tangent leaves north-east (45 degrees); a control click off that ray lands on it.
+    click(&mut tool, at(-200.0, 240.0));
+    move_to(&mut tool, at(-190.0, 280.0));
+    let frame = tool.frame();
+    assert_eq!(frame.state.refusal, None);
+    let points = &frame.stroke.points;
+    let first = DVec2::new(
+        f64::from(points[1].x - points[0].x),
+        f64::from(points[1].z - points[0].z),
+    )
+    .normalize();
+    let carried = DVec2::new(1.0, 1.0).normalize();
+    assert!(
+        first.perp_dot(carried).abs() < 1e-3,
+        "leaves along {first:?}"
+    );
+    assert_eq!(frame.hud.start_angle_deg.map(|a| a < 0.1), Some(true));
+    // The current mode again keeps the stroke (the mode buttons send it on every press).
+    tool.handle_event(
+        view(),
+        RoadToolEvent::Action(RoadToolAction::ModeSimpleCurve),
+    );
+    assert_eq!(tool.frame().state.phase, Phase::Placing { placed: 2 });
+}

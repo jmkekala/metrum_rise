@@ -196,7 +196,7 @@ func _fixture(fixture: Dictionary) -> void:
 	for index in points.size():
 		points[index].y += float(fixture.get("height", 0.0))
 	# One frame samples the stroke, previews it synchronously and shows its chunks.
-	tool._begin_stroke(points[0], 0, Vector3.ZERO)
+	tool._begin_stroke(points[0])
 	tool.set_scripted_pointer(true, points[-1])
 	tool._process(1.0 / 60.0)
 	var preview: Dictionary = tool._preview
@@ -267,7 +267,7 @@ func _fixture(fixture: Dictionary) -> void:
 # shown until the committed generation's chunks are installed, which replace it in one call.
 # `crossed`: the stroke's closure holds crossings, whose paint the preview must carry.
 func _commit_previewed(tool: Node3D, points: PackedVector3Array, preview: Dictionary, resident: Dictionary, crossed: bool, label: String) -> void:
-	tool._begin_stroke(points[0], 0, Vector3.ZERO)
+	tool._begin_stroke(points[0])
 	tool.set_scripted_pointer(true, points[-1])
 	tool._process(1.0 / 60.0)
 	# The frames after the pose stage the rest of its graded tiles (T27 (d)); the click then
@@ -294,7 +294,7 @@ func _commit_previewed(tool: Node3D, points: PackedVector3Array, preview: Dictio
 	_expect(tool._swap_display == held and not held._instances.is_empty(), "the preview stays shown until the committed chunks are installed")
 	# The next stroke previews on the committed context before its chunks are installed.
 	tool.cancel_road()
-	tool._begin_stroke(_ground_point(-48.0, 40.0), 0, Vector3.ZERO)
+	tool._begin_stroke(_ground_point(-48.0, 40.0))
 	tool.set_scripted_pointer(true, _ground_point(48.0, 40.0))
 	tool._process(1.0 / 60.0)
 	# A next stroke the tool refuses (one crossing the cross's arm by its end) shows nothing.

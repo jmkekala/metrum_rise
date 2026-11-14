@@ -82,11 +82,12 @@ func _stream_fixture(fixture: Dictionary) -> Dictionary:
 	tool.active = true
 	tool.fwd_lanes = fixture.forward
 	tool.draw_mode = 1 if fixture.get("curve", false) else 0
-	tool._begin_stroke(_stream_point(fixture, 0.0, 0.0 if endpoint_join else -48.0), 1, Vector3.RIGHT)
+	var start := _stream_point(fixture, 0.0, 0.0 if endpoint_join else -48.0)
+	var control := _stream_point(fixture, 0.0, -24.0)
+	tool._begin_stroke(start)
 	if tool.draw_mode == 1:
-		_expect(tool.current_state == RoadToolScript.State.SETTING_CONTROL, "curve stream must begin with a free control point despite its road direction")
-		tool.control_pos = _stream_point(fixture, 0.0, -24.0)
-		tool.current_state = RoadToolScript.State.SETTING_END
+		# The curve's free control point (U1), even where the stroke starts on a road.
+		_expect(not tool._commit_segment(control), "a curve's control-point click sends nothing")
 	var generation := simulation.get_network_render_generation()
 	_expect(tool.chunks.update(generation) == generation, "stream source meshes must hydrate")
 	tool._node_visuals_dirty = false
@@ -116,10 +117,16 @@ func _stream_fixture(fixture: Dictionary) -> Dictionary:
 		var preview: Dictionary = tool._preview
 		# The frame that sampled the pose previewed it; a valid pose is shown in that frame.
 		if tool.draw_mode == 1:
-			final_points = tool._road_surface_points_from_curve(tool.current_path.curve)
-			_expect(tool.current_path.curve.get_point_out(0) == tool.control_pos - tool.start_pos, "moving curve preview must retain the freely chosen control handle")
-			_expect(tool.current_path.curve.get_point_in(1) == tool.control_pos - point, "moving curve preview must follow the control point and current endpoint")
-			_expect(tool._preview_is_for(final_points), "every frame previews its own pose: fixture=%s frame=%d" % [fixture.name, index])
+			# The session's simple curve: the exact fillet arc from the start to this frame's pointer
+			# whose radius is T / tan(delta / 2) for the legs start -> control -> pointer.
+			final_points = tool._preview_points
+			_expect(tool.stroke_preview_current() and final_points[0] == start and final_points[-1] == point, "every frame previews its own pose: fixture=%s frame=%d" % [fixture.name, index])
+			var leg_in := Vector2(control.x - start.x, control.z - start.z)
+			var leg_out := Vector2(point.x - control.x, point.z - control.z)
+			var deflection := absf(leg_in.angle_to(leg_out))
+			if deflection > 0.001:
+				var expected_radius := minf(leg_in.length(), leg_out.length()) / tan(0.5 * deflection)
+				_expect(absf(float(tool._session_hud.get("radius_m", -1.0)) - expected_radius) < 0.01, "the curve is the fillet arc of its clicks: fixture=%s frame=%d" % [fixture.name, index])
 		else:
 			# The session's straight stroke: the start and this frame's scripted pointer exactly.
 			final_points = tool._preview_points

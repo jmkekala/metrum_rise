@@ -22,8 +22,9 @@ const DESIGN_GRADE_CHANGE_PER_M: f32 = 0.018;
 // Hard vertical-curvature bound: the specification's 0.05 with the ~20% leeway placement allows
 // over real-world maxima.
 const ILLEGAL_GRADE_CHANGE_PER_M: f32 = 0.06;
-// Safety margin above the offset-curve folding radius (the roadbed half-width).
-const ILLEGAL_RADIUS_HALF_WIDTH_FACTOR: f32 = 1.25;
+/// Safety margin above the offset-curve folding radius (the roadbed half-width): the illegal
+/// horizontal radius in roadbed half-widths.
+pub(crate) const ILLEGAL_RADIUS_HALF_WIDTH_FACTOR: f32 = 1.25;
 // Length of road, in roadbed half-widths, over which turning is measured for the radius. With
 // the illegal radius at 1.25 half-widths, a stretch this long is refused once it turns more than
 // about 137 degrees: a hairpin, not a street corner.

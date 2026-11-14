@@ -227,88 +227,25 @@ class TestRoadTool:
 		topology_dirty_count += 1
 		mark_network_nodes_dirty()
 
-class MockRoadCandidateSimulation:
-	extends MockSimulation
-	var validation: Dictionary = {}
-	# preview_road calls and the exact stroke of the last one.
-	var preview_calls: int = 0
-	var last_preview_points := PackedVector3Array()
-	var commit_requests: int = 0
-	var commit_points := PackedVector3Array()
-	var commit_result: Variant = null
-	var border_node: int = -1
-	var start_direction := {"kind": 0, "direction": Vector3.ZERO}
-
-	func get_road_tool_start_direction(_pos, _node, _edge, _generation) -> Dictionary:
-		return start_direction
-
-	func add_road_with_snap(points, _fwd, _bkw, _snap) -> int:
-		commit_requests += 1
-		commit_points = points
-		return commit_requests
-
-	func get_road_commit_result(_request_id: int) -> Variant:
-		return commit_result
-
-	func check_border_candidate(_pos: Vector3) -> int:
-		return border_node
-
-	# The preview's graded tiles (TERRAIN-07-E): the mock shows none.
-	func advance_road_preview_terrain() -> Dictionary:
-		return {}
-
-	func release_road_preview_terrain() -> int:
-		return 0
-
-	func set_road_tool_tunnel(_tunnel: bool) -> void:
-		pass
-
-	func set_road_tool_median(_style: int, _width: float) -> String:
-		return ""
-
-	func set_road_tool_parking(_code: int) -> String:
-		return ""
-
-	func set_road_tool_attributes(_speed_kmh: int, _sidewalks: int, _zoning: bool, _street_lights: bool) -> String:
-		return ""
-
-	func preview_road(points, _fwd, _bkw, _snap) -> Dictionary:
-		preview_calls += 1
-		last_preview_points = points
-		var result := validation.duplicate(true)
-		result["prepared_points"] = points
-		result["surface_generation"] = generation
-		return result
-
-class ClickRoadTool:
-	extends RoadToolScript
-	var pointer := Vector3.ZERO
-
-	func get_world_mouse_pos() -> Vector3:
-		is_valid = true
-		return pointer
-
+# A road tool whose pointer is a scripted world point sent to the session exactly, counting the
+# pointer queries and the previews it shows.
 class PointerRoadTool:
 	extends RoadToolScript
 	var pointer: Vector3 = Vector3.ZERO
 	var pointer_queries: int = 0
 	var draws: int = 0
-	var last_drawn_points := PackedVector3Array()
 
 	func get_world_mouse_pos() -> Vector3:
 		pointer_queries += 1
 		is_valid = true
+		simulation_node.road_tool_pointer_at(pointer)
 		return pointer
-
-	func _update_blueprint_visuals() -> void:
-		pass
 
 	func _update_node_visuals() -> void:
 		pass
 
 	func _show_preview(points: PackedVector3Array) -> void:
 		draws += 1
-		last_drawn_points = points
 		super._show_preview(points)
 
 class ProcessPhaseProbe:
@@ -329,12 +266,7 @@ func _initialize() -> void:
 
 func _run() -> void:
 	await _test_road_preview_process_phases()
-	_test_road_pointer_frame_updates()
-	_test_road_preview_swaps_on_installed_commit()
 	await _test_native_road_cursor_contract()
-	_test_road_preview_context_revision()
-	_test_road_commit_acknowledgment()
-	_test_free_control_curve_chain()
 	var host := Node3D.new()
 	root.add_child(host)
 	var simulation := MockSimulation.new()
@@ -798,56 +730,21 @@ func _test_native_road_cursor_contract() -> void:
 	simulation.name = "SimulationNode"
 	host.add_child(simulation)
 	_expect(simulation.create_blank_world(256.0, 256.0, 8.0, 128.0, 0.0), "cursor bridge fixture must create a flat world")
-	var previous: Dictionary = {}
+	# The session's cursor (`ROAD-112`): a vertical ray onto free ground moves it continuously.
 	for index in range(5):
 		var x := 30.0 + index * 0.1
-		var result: Variant = simulation.get_road_tool_cursor_pos(
-			Vector3(x, 100.0, 20.0), Vector3.DOWN, 0.0, false, 0,
-			Vector3.ZERO, Vector3.ZERO, false, 1, 1, 25.0, previous, 8.0, Vector3.ZERO
-		)
-		_expect(result is Dictionary, "native cursor result must include position and target identity")
-		if result is Dictionary:
-			var position: Vector3 = result["position"]
-			_expect(absf(position.x - x) < 0.0001 and absf(position.z - 20.0) < 0.0001, "free cursor motion must remain continuous through the native bridge")
-			_expect(result["snap_edge"] == -1 and result["snap_node"] == -1, "free terrain must not retain a network target")
-			_expect(result["surface_generation"] == simulation.get_road_tool_surface_generation(), "cursor target must carry its source generation")
-			previous = result
+		var cursor: Variant = simulation.road_tool_pointer(Vector3(x, 100.0, 20.0), Vector3.DOWN, false)
+		_expect(cursor is Vector3 and absf(cursor.x - x) < 0.0001 and absf(cursor.z - 20.0) < 0.0001, "free cursor motion must remain continuous through the session")
+		_expect(String(simulation.road_tool_frame().get("snap", "")) == "free", "free terrain takes no snap")
 	await _test_native_road_preview_contract(simulation)
 	var points := PackedVector3Array([Vector3(-60.0, 0.0, 32.0), Vector3(60.0, 0.0, 32.0)])
 	var request := simulation.add_road_with_snap(points, 1, 1, true)
 	var accepted: Dictionary = await _await_road_commit(simulation, request)
 	_expect(accepted.get("committed", false) and simulation.get_road_benchmark_state()["live_edges"] == 1, "native acknowledgment must reflect an accepted road")
-	var grid_cursor: Dictionary = simulation.get_road_tool_cursor_pos(
-		Vector3(6.0, 100.0, 104.0), Vector3.DOWN, 0.0, true, 2,
-		Vector3(5.0, 0.0, 32.0), Vector3.ZERO, true, 1, 1, 0.0, {}, 8.0, Vector3.ZERO
-	)
-	_expect(grid_cursor["position"].distance_to(Vector3(5.0, 0.0, 102.0)) < 0.01, "zoning snap must use the curb grid without guide snapping")
-	var angled_cursor: Dictionary = simulation.get_road_tool_cursor_pos(
-		Vector3(45.0, 100.0, 102.0), Vector3.DOWN, 0.0, true, 2,
-		Vector3(5.0, 0.0, 32.0), Vector3.ZERO, true, 1, 1, 0.0, {}, 8.0, Vector3.ZERO
-	)
-	_expect(angled_cursor["position"].distance_to(Vector3(45.0, 0.0, 102.0)) < 0.01, "zoning snap must allow free angles away from grid axes")
-	var free_cursor: Dictionary = simulation.get_road_tool_cursor_pos(
-		Vector3(80.0, 100.0, 33.0), Vector3.DOWN, 0.0, true, 2,
-		Vector3(60.0, 0.0, 32.0), Vector3.ZERO, false, 1, 1, 0.0, {}, 8.0, Vector3.ZERO)
-	_expect(free_cursor["position"].distance_to(Vector3(80.0, 0.0, 33.0)) < 0.01, "removed continuation guides must not snap the cursor")
-	_expect(not free_cursor.has("guide_vertices"), "cursor bridge must not generate guide geometry")
-	var snapped_cursor: Dictionary = simulation.get_road_tool_cursor_pos(
-		Vector3(80.0, 100.0, 33.0), Vector3.DOWN, 0.0, true, 2,
-		Vector3(60.0, 0.0, 32.0), Vector3.ZERO, false, 1, 1, 0.0, {}, 8.0, Vector3(1.0, 0.0, 0.0))
-	_expect(absf(snapped_cursor["position"].z - 32.0) < 0.01 and snapped_cursor.get("angle_snapped", false), "a stroke 3° off its start direction must snap onto it")
-	var end_cursor: Dictionary = simulation.get_road_tool_cursor_pos(
-		Vector3(60.5, 100.0, 32.5), Vector3.DOWN, 0.0, false, 0,
-		Vector3.ZERO, Vector3.ZERO, false, 1, 1, 0.0, {}, 8.0, Vector3.ZERO)
-	var continuation: Dictionary = simulation.get_road_tool_start_direction(
-		end_cursor["position"], end_cursor["snap_node"], end_cursor["snap_edge"], end_cursor["surface_generation"])
-	_expect(end_cursor["snap_node"] >= 0 and continuation["kind"] == 1 and continuation["direction"].distance_to(Vector3(1.0, 0.0, 0.0)) < 0.01, "a stroke from a dead end must continue its road")
-	var branch_cursor: Dictionary = simulation.get_road_tool_cursor_pos(
-		Vector3(3.0, 100.0, 33.0), Vector3.DOWN, 0.0, false, 0,
-		Vector3.ZERO, Vector3.ZERO, true, 1, 1, 0.0, {}, 8.0, Vector3.ZERO
-	)
-	_expect(absf(branch_cursor["position"].x - 5.0) < 0.01 and absf(branch_cursor["position"].z - 32.0) < 0.01, "grid-aligned branch start must remain on the supplying road")
-	_expect(branch_cursor["snap_edge"] >= 0, "zoning snap must retain real road connections")
+	# Near the committed road's dead end the session's cursor takes its node.
+	var end_cursor: Variant = simulation.road_tool_pointer(Vector3(60.5, 100.0, 32.5), Vector3.DOWN, false)
+	_expect(end_cursor is Vector3 and Vector2(end_cursor.x, end_cursor.z).distance_to(Vector2(60.0, 32.0)) < 0.01, "the cursor snaps onto the dead end")
+	_expect(String(simulation.road_tool_frame().get("snap", "")) == "node", "the dead end's node takes the cursor")
 	var modes := RoadToolScript.new()
 	var ui = preload("res://scripts/ui/main_ui.gd").new()
 	var manager = preload("res://scripts/core/input_manager.gd").new()
@@ -861,9 +758,12 @@ func _test_native_road_cursor_contract() -> void:
 	ui.zoning_grid_snap_check.button_pressed = true
 	_expect(modes._zoning_snap_enabled(), "the actual checkbox must enable zoning snap")
 	ui._set_draw_mode(1)
-	_expect(ui.zoning_grid_snap_check.disabled and not modes._zoning_snap_enabled(), "spline mode disables zoning snap")
+	_expect(modes.draw_mode == 1 and ui.curve_btn.button_pressed and not ui.straight_btn.button_pressed, "the Curve button picks the simple curve")
+	_expect(not ui.zoning_grid_snap_check.disabled and modes._zoning_snap_enabled(), "the session snaps to the zoning grid in every mode")
+	ui.continuous_check.button_pressed = true
+	_expect(modes.continuous, "the Continuous checkbox sets the tool's continuous option")
 	ui._set_draw_mode(0)
-	_expect(not ui.zoning_grid_snap_check.disabled and modes._zoning_snap_enabled(), "returning to straight mode restores the checkbox setting")
+	_expect(modes.draw_mode == 0, "the Straight button picks straight mode")
 	ui.zoning_grid_snap_check.button_pressed = false
 	ui.free()
 	manager.free()
@@ -888,9 +788,6 @@ func _test_native_road_cursor_contract() -> void:
 	Input.parse_input_event(shift)
 	Input.flush_buffered_events()
 	_expect(modes._zoning_snap_enabled(), "releasing Shift must not change the checkbox setting")
-	modes.zoning_grid_snap_enabled = true
-	modes.draw_mode = 1
-	_expect(not modes._zoning_snap_enabled(), "spline drawing does not promise a square zoning lattice")
 	modes.cancel_road()
 	modes.free()
 	var invalid := PackedVector3Array([Vector3.ZERO])
@@ -900,6 +797,7 @@ func _test_native_road_cursor_contract() -> void:
 	_expect(not superseded["committed"] and superseded["detail"] == "road_request_replaced", "superseded requests must not wait forever")
 	var rejected: Dictionary = await _await_road_commit(simulation, request)
 	_expect(not rejected.get("committed", true) and simulation.get_road_benchmark_state()["live_edges"] == 1, "native rejection must acknowledge that no topology was added")
+	await _test_session_strokes(simulation)
 	host.free()
 
 func _await_road_commit(simulation: SimulationNode, request: int) -> Dictionary:
@@ -947,7 +845,7 @@ func _test_native_road_preview_contract(simulation: SimulationNode) -> void:
 	tool.active = true
 	tool._node_visuals_dirty = false
 	tool._node_visuals_visible = true
-	tool._begin_stroke(points[0], 0, Vector3.ZERO)
+	tool._begin_stroke(points[0])
 	tool.set_scripted_pointer(true, points[-1])
 	tool._process(1.0 / 60.0)
 	_expect(tool._preview_display.sequence > 0, "one frame previews and shows the stroke's chunks")
@@ -988,31 +886,111 @@ func _test_native_road_preview_contract(simulation: SimulationNode) -> void:
 	tool.cancel_road()
 	tool.free()
 
-func _pointer_road_tool(simulation: MockRoadCandidateSimulation) -> PointerRoadTool:
-	simulation.generation = 1
-	simulation.validation = {"is_valid": true}
+# A road tool on the real node with a scripted pointer, active and with a HUD label, outside the
+# tree (the frames are driven by hand).
+func _session_road_tool(simulation: SimulationNode) -> PointerRoadTool:
 	var tool := PointerRoadTool.new()
+	tool.name = "RoadTool"
 	tool.simulation_node = simulation
-	# The script's own preview path, which the curves keep until round D; straight strokes are
-	# Rust's session's (`ROAD-112` round C), tested in Rust and by the native contract below.
-	tool.draw_mode = 1
 	tool.make_chunks()
-	tool.blueprint_mesh = MeshInstance3D.new()
-	tool.add_child(tool.blueprint_mesh)
+	tool.chunks.update(simulation.get_network_render_generation())
+	tool._info_label = Label.new()
+	tool.add_child(tool._info_label)
+	tool._node_visuals_dirty = false
+	tool._node_visuals_visible = true
 	tool.active = true
-	tool.current_state = RoadToolScript.State.SETTING_END
-	tool.start_pos = Vector3.ZERO
-	tool.control_pos = Vector3.ZERO
-	tool.current_path = Path3D.new()
-	tool.current_path.curve = Curve3D.new()
-	tool.current_path.curve.bake_interval = 0.5
-	tool.add_child(tool.current_path)
-	tool._last_world_mouse_pos = Vector3(10.0, 0.0, 0.0)
-	tool._has_last_world_mouse_pos = true
 	return tool
 
 func _road_frame(tool: PointerRoadTool) -> void:
 	tool._process(1.0 / 60.0)
+
+# Waits until the tool's sent stroke is acknowledged (the frame polls it).
+func _await_ack(tool: PointerRoadTool) -> void:
+	var deadline := Time.get_ticks_msec() + 10000
+	while tool._commit_request_id > 0 and Time.get_ticks_msec() < deadline:
+		await process_frame
+		_road_frame(tool)
+	_expect(tool._commit_request_id == 0, "the sent stroke must be acknowledged")
+
+# The bridge on the real node (`ROAD-112` rounds C, D): every frame previews its own pose once,
+# a click submits that preview and the chain continues; the curve modes, their gizmos and the
+# HUD; right-click and Escape end the chain.
+func _test_session_strokes(simulation: SimulationNode) -> void:
+	var tool := _session_road_tool(simulation)
+	# Straight: input bursts coalesce into one preview per moved frame, none for a still one.
+	tool._begin_stroke(Vector3(-60.0, 0.0, -60.0))
+	for index in range(32):
+		tool.pointer = Vector3(-20.0 + index, 0.0, -60.0)
+		tool._queue_preview_update()
+	var shown := tool._preview_sequence
+	_road_frame(tool)
+	_expect(tool.pointer_queries == 1 and tool._preview_sequence == shown + 1 and tool.draws == 1, "32 queued updates coalesce into one synchronous preview")
+	_expect(tool._session_points[-1] == tool.pointer and tool.stroke_preview_current(), "the frame previews this frame's pointer")
+	for index in range(4):
+		tool.pointer.x += 0.25
+		_road_frame(tool)
+	_expect(tool._preview_sequence == shown + 5, "every moved pose is previewed in its own frame")
+	_road_frame(tool)
+	_expect(tool._preview_sequence == shown + 5, "an unchanged stroke is not previewed again")
+	tool.set_lanes(2, 1)
+	_road_frame(tool)
+	_expect(tool._preview_sequence == shown + 6, "a lane change previews the new width")
+	tool.set_lanes(1, 1)
+	_road_frame(tool)
+	var gizmo_kinds: PackedInt32Array = tool.gizmos._handle_kinds
+	_expect(gizmo_kinds == PackedInt32Array([0, 3]), "a straight stroke shows its start and live end: %s" % gizmo_kinds)
+	_expect(tool._info_label.visible and tool._info_label.text.contains("cost"), "the HUD shows the stroke's numbers")
+	# The click submits the standing preview; a second click waits for the acknowledgement.
+	var end := tool.pointer
+	_expect(tool._commit_segment(end), "a valid click queues the previewed stroke")
+	_expect(not tool._commit_segment(end) and tool.is_drawing(), "a pending placement blocks another")
+	await _await_ack(tool)
+	_road_frame(tool)
+	var frame: Dictionary = simulation.road_tool_frame()
+	_expect(int(frame["phase"]) == 1 and int(frame["placed"]) == 1, "an accepted stroke starts the next at its end")
+	_expect(PackedInt32Array(frame["gizmo_handle_kinds"])[0] == 2, "the chained stroke's start is the chain start")
+	_expect(tool._swap_generation >= 0 or tool._swap_display == null, "the committed preview is held or already swapped")
+	# Right-click ends the chain and keeps the tool; Escape ends the tool.
+	var manager = preload("res://scripts/core/input_manager.gd").new()
+	manager.road_tool = tool
+	manager.current_tool = manager.Tool.ROAD
+	var right_click := InputEventMouseButton.new()
+	right_click.button_index = MOUSE_BUTTON_RIGHT
+	right_click.pressed = true
+	manager._handle_mouse(right_click)
+	_expect(not tool.is_drawing() and tool.active, "right-click ends the chain and keeps the road tool")
+	# Simple curve (U1): start, a free control point (no commit), the end.
+	tool.draw_mode = RoadToolScript.DrawMode.SIMPLE_CURVE
+	tool._begin_stroke(Vector3(-100.0, 0.0, 60.0))
+	var requests := tool._commit_request_id
+	_expect(not tool._commit_segment(Vector3(-60.0, 0.0, 60.0)) and tool._commit_request_id == requests, "a control-point click commits nothing")
+	_expect(int(simulation.road_tool_frame()["placed"]) == 2, "the control point is placed")
+	tool.pointer = Vector3(-60.0, 0.0, 100.0)
+	_road_frame(tool)
+	var points := tool._session_points
+	_expect(points.size() > 3 and points[0] == Vector3(-100.0, 0.0, 60.0) and points[-1] == tool.pointer, "the curve runs from the start to the cursor through the arc")
+	_expect(tool.gizmos._handle_kinds == PackedInt32Array([0, 1, 3]) and tool.gizmos._line_classes == PackedInt32Array([3, 0]), "a curve shows its start, control point, live end, tangent legs and centreline")
+	_expect(absf(float(tool._session_hud["radius_m"]) - 40.0) < 0.001, "the HUD's radius is the fillet's: %s" % tool._session_hud.get("radius_m"))
+	_expect(tool._info_label.text.contains("radius 40.0 m"), "the HUD names the radius: '%s'" % tool._info_label.text)
+	_expect(tool._commit_segment(tool.pointer), "the end click sends the curve")
+	await _await_ack(tool)
+	_road_frame(tool)
+	_expect(int(simulation.road_tool_frame()["placed"]) == 1, "an accepted curve chains at its end with a free control point next")
+	# A curve tighter than the road type allows is refused before any preview.
+	tool.cancel_road()
+	tool._begin_stroke(Vector3(-100.0, 0.0, -100.0))
+	tool._commit_segment(Vector3(-96.0, 0.0, -100.0))
+	tool.pointer = Vector3(-96.0, 0.0, -96.0)
+	_road_frame(tool)
+	frame = simulation.road_tool_frame()
+	_expect(String(frame["refusal"]) == "road_tight_curve" and PackedVector3Array(frame["points"]).is_empty(), "a 4 m radius is refused as too tight")
+	_expect(tool._info_label.visible and tool._info_label.text.begins_with("Curve too tight"), "the HUD words the tight curve: '%s'" % tool._info_label.text)
+	_expect(not tool._commit_segment(tool.pointer), "a refused draft is not sent")
+	manager._handle_escape()
+	_expect(not tool.is_drawing() and not tool.active, "Escape ends the stroke and the tool")
+	tool.draw_mode = RoadToolScript.DrawMode.STRAIGHT
+	manager.free()
+	tool.free()
 
 func _test_road_preview_process_phases() -> void:
 	# Input and camera settle first; the road tool previews this frame's pointer after them.
@@ -1037,236 +1015,6 @@ func _test_road_preview_process_phases() -> void:
 	for child in root.get_children():
 		if child is ProcessPhaseProbe:
 			child.free()
-
-func _test_road_pointer_frame_updates() -> void:
-	var simulation := MockRoadCandidateSimulation.new()
-	var tool := _pointer_road_tool(simulation)
-	for index in range(32):
-		tool.pointer = Vector3(20.0 + index, 0.0, 0.0)
-		tool._unhandled_input(InputEventMouseMotion.new())
-		tool._queue_preview_update()
-	_expect(simulation.preview_calls == 0 and tool.draws == 0, "input bursts must not preview before the frame update")
-	_road_frame(tool)
-	_expect(tool.pointer_queries == 1, "the frame must resolve the cursor once")
-	_expect(simulation.preview_calls == 1 and tool.draws == 1, "32 queued updates must coalesce into one synchronous preview")
-	_expect(tool.last_drawn_points[-1] == tool.pointer and simulation.last_preview_points[-1] == tool.pointer, "the frame previews and shows this frame's pointer")
-	tool.pointer = Vector3(60.0, 0.0, 0.0)
-	_road_frame(tool)
-	_expect(simulation.preview_calls == 2 and tool.last_drawn_points[-1] == tool.pointer, "camera-only pointer movement must preview again without a motion event")
-	for index in range(8):
-		tool.pointer.x = 60.25 + float(index) * 0.25
-		_road_frame(tool)
-		_expect(simulation.last_preview_points[-1] == tool.pointer, "every moved pose is previewed in its own frame")
-	_expect(simulation.preview_calls == 10, "one preview per moved frame, no backlog")
-	for index in range(16):
-		tool._unhandled_input(InputEventMouseMotion.new())
-	_road_frame(tool)
-	_expect(simulation.preview_calls == 10, "an unchanged stroke must not preview again")
-	tool.pointer.x += 0.01
-	_road_frame(tool)
-	_expect(simulation.preview_calls == 11, "a sub-5 cm move must preview the exact new stroke")
-	tool.set_lanes(tool.fwd_lanes + 1, tool.bkw_lanes)
-	_road_frame(tool)
-	_expect(simulation.preview_calls == 12, "a lane change must preview the new width")
-	# Click between frames: the click previews the freshly resolved cursor and submits it.
-	simulation.validation = {"is_valid": false, "invalid_reason": "test_rejection"}
-	tool.pointer = Vector3(75.0, 0.0, 0.0)
-	tool._handle_click()
-	_expect(simulation.last_preview_points[-1] == tool.pointer and simulation.commit_requests == 0, "a refused click previews the clicked stroke and commits nothing")
-	_expect(simulation.rejection_reports.size() == 1, "a refused click must report once")
-	var report: Dictionary = simulation.rejection_reports[-1] if simulation.rejection_reports.size() > 0 else {}
-	_expect(report.get("points") == simulation.last_preview_points and report.get("validation", {}).get("invalid_reason") == "test_rejection", "the report must carry the clicked stroke and its validation")
-	tool.reset_main_mesh_chunks()
-	_expect(tool._preview.is_empty(), "renderer reset must retire the preview")
-	tool.free()
-	simulation.free()
-
-func _test_road_preview_swaps_on_installed_commit() -> void:
-	var simulation := MockRoadCandidateSimulation.new()
-	var tool := _pointer_road_tool(simulation)
-	tool.pointer = Vector3(40.0, 0.0, 0.0)
-	_road_frame(tool)
-	var shown = tool._preview_display
-	_expect(tool._commit_segment(tool.pointer), "a valid click queues the previewed stroke")
-	_expect(simulation.commit_points == simulation.last_preview_points, "the click submits exactly the previewed stroke")
-	simulation.commit_result = {"committed": true, "generation": 5}
-	tool._poll_road_commit_result()
-	_expect(tool._swap_display == shown and tool._swap_generation == 5, "an accepted commit keeps its preview shown until its chunks are installed")
-	tool.chunks.generation = 4
-	tool.road_chunks_installed(4)
-	_expect(tool._swap_display == shown, "an older generation's chunks do not end the preview")
-	tool.chunks.generation = 5
-	tool.road_chunks_installed(5)
-	_expect(tool._swap_display == null and shown._instances.is_empty(), "the committed chunks replace the preview in the same call")
-	tool.free()
-	simulation.free()
-
-func _test_road_preview_context_revision() -> void:
-	var simulation := MockRoadCandidateSimulation.new()
-	var tool := _pointer_road_tool(simulation)
-	tool._info_label = Label.new()
-	tool.add_child(tool._info_label)
-	simulation.validation = {"is_valid": false, "invalid_reason": "parcel_overlap"}
-	tool.pointer = Vector3(50.0, 0.0, 0.0)
-	_road_frame(tool)
-	_expect(not tool.is_valid and tool._info_label.text.contains("zoning"), "a refused preview must explain the rejection")
-	var calls := simulation.preview_calls
-	_road_frame(tool)
-	_expect(simulation.preview_calls == calls, "a stationary stroke on the same context is previewed once")
-	# A publication (commit, undo, edit) moves the context on; the stationary stroke previews again.
-	simulation.generation += 1
-	simulation.validation = {"is_valid": true}
-	_road_frame(tool)
-	_expect(simulation.preview_calls == calls + 1 and tool.is_valid, "a new context generation previews a stationary stroke again")
-	tool.free()
-	simulation.free()
-
-func _test_road_commit_acknowledgment() -> void:
-	var simulation := MockRoadCandidateSimulation.new()
-	simulation.generation = 1
-	simulation.validation = {"is_valid": true}
-	var tool := RoadToolScript.new()
-	tool.simulation_node = simulation
-	tool.draw_mode = 1
-	tool.make_chunks()
-	tool.active = true
-	tool.blueprint_mesh = MeshInstance3D.new()
-	tool.add_child(tool.blueprint_mesh)
-	tool._info_label = Label.new()
-	tool.add_child(tool._info_label)
-	tool.current_state = RoadToolScript.State.SETTING_END
-	tool.current_path = Path3D.new()
-	tool.current_path.curve = Curve3D.new()
-	tool.add_child(tool.current_path)
-	var path := tool.current_path
-	var endpoint := Vector3(40.0, 0.0, 0.0)
-	tool._last_world_mouse_pos = endpoint
-	tool._has_last_world_mouse_pos = true
-	tool._update_preview()
-	_expect(simulation.preview_calls == 1, "hover previews the stroke before the click")
-	_expect(tool._commit_segment(endpoint), "valid click must queue a placement")
-	_expect(simulation.preview_calls == 1, "the click reuses the preview of the same stroke")
-	tool._poll_road_commit_result()
-	_expect(tool.current_path == path and tool._commit_request_id > 0, "pending placement must retain its stroke")
-	_expect(not tool._commit_segment(endpoint) and simulation.commit_requests == 1, "pending placement must block duplicate dispatch")
-	tool._update_preview()
-	_expect(simulation.preview_calls == 1, "a pending placement must not preview")
-	simulation.commit_result = {"committed": false, "detail": "rejected=road_plan_invalid"}
-	tool._poll_road_commit_result()
-	_expect(tool.current_path == path and tool._commit_request_id == 0, "rejection must keep the stroke editable")
-	_expect(tool._info_label.visible and tool._info_label.text.contains("could not be built"), "rejection must explain that no road was built")
-	simulation.commit_result = null
-	_expect(not tool._commit_segment(endpoint) and simulation.commit_requests == 1, "the same stroke on the same context keeps its rejection")
-	endpoint = Vector3(44.0, 0.0, 0.0)
-	_expect(tool._commit_segment(endpoint), "a moved stroke permits another attempt")
-	simulation.commit_result = {"committed": true, "generation": 2}
-	tool._poll_road_commit_result()
-	_expect(tool.current_path != null and tool.current_path != path and tool.current_state == RoadToolScript.State.SETTING_CONTROL, "acceptance must start the next stroke")
-	_expect(tool.start_pos == endpoint and tool._commit_end_dir.distance_to(Vector3.RIGHT) < 0.001, "continuation must retain the accepted endpoint and end direction")
-	tool.cancel_road()
-	tool.free()
-	simulation.free()
-
-func _test_free_control_curve_chain() -> void:
-	var simulation := MockRoadCandidateSimulation.new()
-	simulation.generation = 1
-	simulation.validation = {"is_valid": true}
-	var tool := ClickRoadTool.new()
-	tool.simulation_node = simulation
-	tool.make_chunks()
-	tool.blueprint_mesh = MeshInstance3D.new()
-	tool.add_child(tool.blueprint_mesh)
-	tool._info_label = Label.new()
-	tool.add_child(tool._info_label)
-	tool.draw_mode = 1
-	tool.active = true
-	# Free terrain, dead ends and through roads all need the same control-point gesture.
-	for kind in [0, 1, 2]:
-		simulation.start_direction = {"kind": kind, "direction": Vector3.RIGHT if kind != 0 else Vector3.ZERO}
-		tool.pointer = Vector3.ZERO
-		tool._handle_click()
-		_expect(tool.current_state == RoadToolScript.State.SETTING_CONTROL, "every curve start must request a free control point")
-		tool.pointer = Vector3(20.0, 0.0, 10.0)
-		tool._last_world_mouse_pos = tool.pointer
-		var ghost := tool._refresh_preview_curve()
-		_expect(ghost[0] == Vector3.ZERO and ghost[-1] == tool.pointer, "control selection previews the original start-to-cursor leg")
-		tool._handle_click()
-		_expect(tool.current_state == RoadToolScript.State.SETTING_END and tool.control_pos == tool.pointer, "the second click must retain the freely chosen control point")
-		_expect(simulation.commit_requests == 0, "a control-point click must not commit a road")
-		tool.cancel_road()
-	# Both curves bend the same way; their start handles must not inherit the preceding tangent.
-	tool.pointer = Vector3.ZERO
-	tool._handle_click()
-	tool.pointer = Vector3(20.0, 0.0, 10.0)
-	tool._handle_click()
-	tool.pointer = Vector3(40.0, 0.0, 0.0)
-	tool._handle_click()
-	var first_points := tool._commit_points
-	_expect(tool.current_path.curve.get_point_out(0) == Vector3(20.0, 0.0, 10.0), "curve preview must use the old control-point start handle")
-	_expect(tool.current_path.curve.get_point_in(1) == Vector3(-20.0, 0.0, 10.0), "curve preview must use the old control-point end handle")
-	_expect(first_points[0] == Vector3.ZERO and first_points[-1] == tool.pointer, "committed samples must retain the preview endpoints")
-	tool._poll_road_commit_result()
-	_expect(tool.current_state == RoadToolScript.State.SETTING_END, "pending acceptance must not advance the curve chain")
-	simulation.commit_result = {"committed": true}
-	tool._poll_road_commit_result()
-	_expect(tool.current_state == RoadToolScript.State.SETTING_CONTROL and tool.start_pos == Vector3(40.0, 0.0, 0.0), "accepted curve must chain at its endpoint with a new free control point")
-	tool.pointer = Vector3(60.0, 0.0, 10.0)
-	tool._handle_click()
-	tool.pointer = Vector3(80.0, 0.0, 0.0)
-	tool._handle_click()
-	_expect(tool.current_path.curve.get_point_out(0) == Vector3(20.0, 0.0, 10.0), "a chained curve may bend the same way as the previous curve")
-	_expect(tool._commit_points.size() == first_points.size(), "translated identical curves must have matching preview sampling")
-	for index in range(mini(first_points.size(), tool._commit_points.size())):
-		_expect(tool._commit_points[index].distance_to(first_points[index] + Vector3(40.0, 0.0, 0.0)) < 0.001, "chained preview must reproduce the freely chosen curve geometry")
-	tool._poll_road_commit_result()
-	var manager = preload("res://scripts/core/input_manager.gd").new()
-	manager.road_tool = tool
-	manager.current_tool = manager.Tool.ROAD
-	var right_click := InputEventMouseButton.new()
-	right_click.button_index = MOUSE_BUTTON_RIGHT
-	right_click.pressed = true
-	manager._handle_mouse(right_click)
-	_expect(tool.current_state == RoadToolScript.State.IDLE and tool.current_path == null and tool.active, "right-click must end the curve chain while retaining the road tool")
-	tool._begin_stroke(Vector3.ZERO, 1, Vector3.RIGHT)
-	manager._handle_escape()
-	_expect(tool.current_state == RoadToolScript.State.IDLE and tool.current_path == null and not tool.active, "Escape must end the curve chain and deactivate the tool")
-	manager.free()
-	# Network-connected endpoints end the curve chain, for both node and edge targets (the straight
-	# chain rules are the session's: `nodes::sim::road_tool::tool_tests::chain_rules`).
-	for mode in [1]:
-		for target in [{"snap_node": 7}, {"snap_edge": 9}]:
-			tool.draw_mode = mode
-			tool._begin_stroke(Vector3.ZERO, 1, Vector3.RIGHT)
-			if mode == 1:
-				tool.pointer = Vector3(20.0, 0.0, 10.0)
-				tool._handle_click()
-			tool._sticky_network_snap = target
-			_expect(tool._commit_segment(Vector3(40.0, 0.0, 0.0)), "network-connected endpoint must queue a road")
-			tool._poll_road_commit_result()
-			_expect(tool.current_state == RoadToolScript.State.IDLE and tool.current_path == null, "ending on existing network must end the chain")
-	# A road that prompts for an external connection ends the curve chain.
-	simulation.border_node = 3
-	for mode in [1]:
-		tool.draw_mode = mode
-		tool._begin_stroke(Vector3.ZERO, 1, Vector3.RIGHT)
-		if mode == 1:
-			tool.pointer = Vector3(20.0, 0.0, 10.0)
-			tool._handle_click()
-		_expect(tool._commit_segment(Vector3(40.0, 0.0, 0.0)), "map-edge endpoint must queue a road")
-		tool._poll_road_commit_result()
-		_expect(tool.current_state == RoadToolScript.State.IDLE and tool.current_path == null, "reaching the map edge must end the chain")
-	simulation.border_node = -1
-	# A valid curve can have its control point at the end, leaving a zero analytical end handle.
-	tool.draw_mode = 1
-	tool._begin_stroke(Vector3.ZERO, 1, Vector3.RIGHT)
-	tool.pointer = Vector3(40.0, 0.0, 0.0)
-	tool._handle_click()
-	tool._handle_click()
-	tool._poll_road_commit_result()
-	_expect(tool.current_state == RoadToolScript.State.SETTING_CONTROL, "a zero end handle must not stop an accepted curve chain")
-	tool.cancel_road()
-	tool.free()
-	simulation.free()
 
 func _expect(condition: bool, message: String) -> void:
 	if condition:

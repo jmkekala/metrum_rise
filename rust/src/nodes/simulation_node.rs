@@ -81,8 +81,6 @@
 //! | | `get_road_surface_probe_debug` | `network_tool.gd` |
 //! | | `road_tool_pointer`, `road_tool_pointer_at` | `road_tool.gd` |
 //! | | `road_tool_event`, `road_tool_set_option`, `road_tool_frame` | `road_tool.gd` |
-//! | | `get_road_tool_cursor_pos` | `road_tool.gd` (curves, until `ROAD-112` round D) |
-//! | | `get_road_tool_start_direction` | `road_tool.gd` |
 //! | | `get_closest_network_point` | `road_tool.gd`, `zoning_tool.gd` |
 //! | | `check_border_candidate` | `road_tool.gd` |
 //! | | `set_border_connection` | `road_tool.gd` |

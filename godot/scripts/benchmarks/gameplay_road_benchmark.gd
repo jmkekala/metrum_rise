@@ -751,25 +751,25 @@ func _anchor_supports_fixture(anchor: Vector2, fixture: Dictionary) -> bool:
 			return false
 	return true
 
+# The stroke a segment draws: a straight segment's two surface points; a curve's polyline as the
+# road tool's session draws it (`ROAD-112` round D: the simple curve through the control point),
+# read from a scripted draft that is dropped again.
 func _segment_surface_points(anchor: Vector2, segment: Dictionary) -> PackedVector3Array:
 	var start_pos := _surface_point(anchor + segment["start_offset"])
 	var end_pos := _surface_point(anchor + segment["end_offset"])
-	var curve := Curve3D.new()
-	curve.bake_interval = 0.5
-	curve.up_vector_enabled = false
 	if int(segment["draw_mode"]) == 0:
-		curve.add_point(start_pos)
-		curve.add_point(end_pos)
-	else:
-		var control_pos := _surface_point(anchor + segment["control_offset"])
-		var start_tangent := control_pos - start_pos
-		var end_tangent := end_pos - control_pos
-		curve.add_point(start_pos, Vector3.ZERO, start_tangent)
-		curve.add_point(end_pos, -end_tangent, Vector3.ZERO)
+		return PackedVector3Array([start_pos, end_pos])
+	var was_active: bool = road_tool.active
 	var previous_draw_mode: int = road_tool.draw_mode
+	road_tool.cancel_road()
 	road_tool.draw_mode = int(segment["draw_mode"])
-	var points: PackedVector3Array = road_tool._road_surface_points_from_curve(curve)
+	road_tool._begin_stroke(start_pos)
+	road_tool._commit_segment(_surface_point(anchor + segment["control_offset"]))
+	simulation_node.road_tool_pointer_at(end_pos)
+	var points: PackedVector3Array = simulation_node.road_tool_frame().get("points", PackedVector3Array())
+	road_tool.cancel_road()
 	road_tool.draw_mode = previous_draw_mode
+	road_tool.active = was_active
 	return points
 
 func _run_fixture(
@@ -1093,25 +1093,12 @@ func _begin_scripted_road(
 	road_tool.draw_mode = int(segment["draw_mode"])
 	road_tool.fwd_lanes = int(segment["fwd_lanes"])
 	road_tool.bkw_lanes = int(segment["bkw_lanes"])
-	if road_tool.draw_mode == 0:
-		# Straight strokes are the road tool session's (`ROAD-112` round C): a scripted start.
-		road_tool._begin_stroke(start_pos, 0, Vector3.ZERO)
-		road_tool.set_scripted_pointer(true, end_pos)
-		road_tool._queue_preview_update()
-		return
-	road_tool.start_pos = start_pos
-	road_tool.control_pos = (
-		_surface_point(anchor + segment["control_offset"])
-		if segment.has("control_offset")
-		else start_pos
-	)
-	road_tool.current_state = RoadToolScript.State.SETTING_END
+	# Every mode is the road tool session's (`ROAD-112` rounds C, D): a scripted start, a curve's
+	# scripted control point, then the scripted pointer at the end.
+	road_tool._begin_stroke(start_pos)
+	if road_tool.draw_mode != 0:
+		road_tool._commit_segment(_surface_point(anchor + segment["control_offset"]))
 	road_tool.set_scripted_pointer(true, end_pos)
-	road_tool.current_path = Path3D.new()
-	road_tool.current_path.curve = Curve3D.new()
-	road_tool.current_path.curve.bake_interval = 0.5
-	road_tool.current_path.curve.up_vector_enabled = false
-	road_tool.add_child(road_tool.current_path)
 	road_tool._queue_preview_update()
 
 func _wait_for_preview(timeout_sec: float, start_us: int = 0) -> Dictionary:

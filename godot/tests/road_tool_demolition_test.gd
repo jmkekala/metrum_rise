@@ -95,7 +95,7 @@ func _road_tool() -> Node3D:
 func _preview_until(tool: Node3D, points: PackedVector3Array, done: Callable) -> Dictionary:
 	var deadline := Time.get_ticks_msec() + TIMEOUT_MS
 	while true:
-		tool._begin_stroke(points[0], 0, Vector3.ZERO)
+		tool._begin_stroke(points[0])
 		tool.set_scripted_pointer(true, points[-1])
 		tool._process(1.0 / 60.0)
 		if done.call(tool._preview) or Time.get_ticks_msec() > deadline:

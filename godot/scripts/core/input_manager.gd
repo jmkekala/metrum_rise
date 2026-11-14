@@ -497,7 +497,7 @@ func _ensure_saves_dir() -> void:
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(SAVES_DIR))
 
 func _refresh_after_world_load():
-	if road_tool and road_tool.current_state != 0:
+	if road_tool and road_tool.is_drawing():
 		road_tool.cancel_road()
 	_cancel_active_tool()
 	if building_inspector:
@@ -726,7 +726,7 @@ func _on_agent_building_requested(world_pos: Vector3, screen_pos: Vector2) -> vo
 		building_inspector.try_inspect(world_pos, screen_pos, false)
 
 func _handle_right_click():
-	if (current_tool == Tool.ROAD or current_tool == Tool.WALKWAY) and road_tool.current_state != 0:
+	if (current_tool == Tool.ROAD or current_tool == Tool.WALKWAY) and road_tool.is_drawing():
 		road_tool.cancel_road()
 	elif current_tool == Tool.SCULPT:
 		pass # Right click is used for lowering ground during sculpting

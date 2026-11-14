@@ -7,10 +7,12 @@
 //! Rust sends numbers only; texts are built in GDScript.
 
 use crate::simulation::network::graph::{RoadMedian, RoadParking};
-use crate::simulation::network::guide::{DVec2, GuidePath};
+use crate::simulation::network::guide::{DVec2, GuidePath, GuideSegment};
 use crate::simulation::network::road_types::RoadAttributes;
 use crate::simulation::network::road_types::cost::{build_per_m, stroke_weight, upkeep_per_m_day};
+use crate::simulation::network::roadbed::preview_candidate_roadbed_half_width_m;
 use crate::simulation::network::types::EdgeClass;
+use crate::simulation::network::validate::ILLEGAL_RADIUS_HALF_WIDTH_FACTOR;
 use godot::prelude::Vector3;
 
 // `validate.rs` `design_radius`: R = v^2 / (127 f) with v in km/h and lateral friction f = 0.20.
@@ -69,6 +71,14 @@ pub struct HudValues {
     /// Whether the design speed is below the road type's speed limit (advice only: cars do not
     /// slow for a curve today).
     pub design_speed_warning: bool,
+    /// The drawn road type's illegal radius in metres (`validate.rs`: 1.25 roadbed half-widths).
+    pub illegal_radius_m: f64,
+    /// The smallest radius the radius check reads on the stroke request's flattened arcs
+    /// ([`flattened_radius_m`]); `None` for a draft without arcs.
+    pub flattened_radius_m: Option<f64>,
+    /// Whether the flattened radius is below the illegal radius: the session refuses the draft
+    /// as `road_tight_curve`, as the radius check would.
+    pub tight_radius: bool,
     /// Build cost of the stroke as a standard (ground) road; the preview's class prices
     /// bridges and tunnels.
     pub build_cost: f64,
@@ -91,12 +101,14 @@ pub enum EndRoad {
     Along(DVec2),
 }
 
-/// The HUD numbers for `path`, whose stroke request is `points`, drawn as `spec`. `start_road`
-/// and `end_road` are the roads met at the ends. `O(points + segments)`, no allocation.
+/// The HUD numbers for `path`, whose stroke request is `points`, drawn as `spec` with the
+/// illegal radius `illegal_radius_m` ([`illegal_radius_m`]). `start_road` and `end_road` are the
+/// roads met at the ends. `O(points + segments)`, no allocation.
 pub fn measure(
     path: &GuidePath,
     points: &[Vector3],
     spec: &RoadTypeSpec,
+    illegal_radius_m: f64,
     start_road: Option<EndRoad>,
     end_road: Option<EndRoad>,
 ) -> HudValues {
@@ -109,6 +121,7 @@ pub fn measure(
         EdgeClass::Standard,
     );
     let radius_m = Some(path.min_radius()).filter(|radius| radius.is_finite());
+    let flattened_radius_m = flattened_radius_m(path);
     let design_speed_kmh = radius_m.map(design_speed_kmh);
     let limit_kmh = f64::from(spec.attributes.speed_ms) * MS_TO_KMH;
     let (start_tangent, end_tangent) = (path.start_tangent(), path.end_tangent());
@@ -126,10 +139,48 @@ pub fn measure(
         radius_m,
         design_speed_kmh,
         design_speed_warning: design_speed_kmh.is_some_and(|speed| speed < limit_kmh),
+        illegal_radius_m,
+        flattened_radius_m,
+        tight_radius: flattened_radius_m.is_some_and(|radius| radius < illegal_radius_m),
         build_cost: length_m * build_per_m(weight),
         upkeep_per_day: length_m * upkeep_per_m_day(weight),
         ..HudValues::default()
     }
+}
+
+/// The illegal radius of `spec` drawn on the ground, in metres: the radius check's limit
+/// (`validate.rs`, 1.25 roadbed half-widths of the edge the stroke becomes). Allocates (it builds
+/// the edge): the session calls it when the road type changes, never per pose.
+pub fn illegal_radius_m(spec: &RoadTypeSpec) -> f64 {
+    let half_width_m = preview_candidate_roadbed_half_width_m(
+        &[Vector3::ZERO, Vector3::new(1.0, 0.0, 0.0)],
+        EdgeClass::Standard,
+        spec.fwd_lanes,
+        spec.bkw_lanes,
+        spec.median,
+        spec.parking,
+        spec.attributes,
+    );
+    f64::from(half_width_m * ILLEGAL_RADIUS_HALF_WIDTH_FACTOR)
+}
+
+/// The smallest radius the radius check (`validate.rs` `visit_turning_radii`: horizontal chord
+/// length over net turn) reads on `path`'s arcs as the kernel flattens them: an arc of radius
+/// `R` in `n` equal chords turns `theta = sweep / n` at each vertex, and each chord is
+/// `2 R sin(theta / 2)` long, so a window inside the arc reads `2 R sin(theta / 2) / theta`, a
+/// little under `R` (at most `theta^2 / 24` relative, 0.3 % at the tightest legal radius).
+/// Windows reaching a straight lead read more. `None` without arcs. `O(segments)`.
+pub fn flattened_radius_m(path: &GuidePath) -> Option<f64> {
+    path.segments()
+        .iter()
+        .filter_map(|segment| match segment {
+            GuideSegment::Arc(arc) => {
+                let theta = arc.sweep().abs() / segment.flatten_count() as f64;
+                Some(2.0 * arc.radius() * (0.5 * theta).sin() / theta)
+            }
+            _ => None,
+        })
+        .reduce(f64::min)
 }
 
 /// `v = sqrt(127 * 0.20 * R)` km/h, the inverse of `validate::design_radius`, rounded down to

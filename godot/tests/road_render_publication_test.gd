@@ -93,7 +93,7 @@ func _run():
 		camera.look_at(b)
 		tool.active = true
 		tool._node_visuals_dirty = false
-		tool._begin_stroke(a, 0, Vector3.ZERO)
+		tool._begin_stroke(a)
 		tool.set_scripted_pointer(true, b)
 		for frame in 5:
 			tool.set_scripted_pointer(true,b + Vector3((4-frame)*8,0,0))

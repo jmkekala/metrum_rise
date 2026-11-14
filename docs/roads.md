@@ -12274,13 +12274,13 @@ grade.
 
 ## Road tools (`ROAD-112`, `ROAD-113`)
 
-**Status: in progress.** Planned 2026-11-12; round A (the guide kernel) and round B (the session core, not wired) built 2026-11-13, round B landed 2026-11-14; round F (batch commit, grouped undo, undo refund) built 2026-11-13, held for its batch bar until fix round F2 (2026-11-14), which meets it, landed 2026-11-14; round C (the wiring: straight strokes run on the session) built and landed 2026-11-14; round H (the stroke profile field, the held-ground profile and the automatic bridge/tunnel segmentation, Rust only) built 2026-11-14 on branch `roadtools-h`, for review. The user asked for a complete refactor of the
+**Status: in progress.** Planned 2026-11-12; round A (the guide kernel) and round B (the session core, not wired) built 2026-11-13, round B landed 2026-11-14; round F (batch commit, grouped undo, undo refund) built 2026-11-13, held for its batch bar until fix round F2 (2026-11-14), which meets it, landed 2026-11-14; round C (the wiring: straight strokes run on the session) built and landed 2026-11-14; round H (the stroke profile field, the held-ground profile and the automatic bridge/tunnel segmentation, Rust only) built 2026-11-14 on branch `roadtools-h`, for review; round D (curves, continuous, gizmos and the HUD on the session, the GDScript curve path deleted) built 2026-11-14 on branch `roadtools-d`, for review. The user asked for a complete refactor of the
 road tool, Rust-first: the current straight mode and the GDScript `Curve3D` "curve" (a cubic
 Bezier whose handles are the raw vectors to the control point, so its curvature, radius and
 length are not exact) are replaced. Mechanics follow the genre (city builders' straight, curve,
 continuous, grid, parallel, replace and freeform tools); no names, art or look are copied.
-"Drawing and placement (`ROAD-63`)" below describes today's tool (its straight mode on the session since round C)
-until round D lands.
+"Drawing and placement (`ROAD-63`)" below describes the tool as players use it (every mode on the session
+since round D).
 
 ### Design (`ROAD-112`)
 
@@ -12338,7 +12338,14 @@ until round D lands.
   acknowledgement. `preview_road` and `add_road_with_snap` stay the low-level entries the bridge
   calls and replays use. GDScript keeps input forwarding, the preview display, the commit's
   holds and graded epochs, the HUD label and the external-connection prompt; preview holds come
-  from `RENDER-32`'s single Rust hold rule. Gizmos are drawn from round D.
+  from `RENDER-32`'s single Rust hold rule. Round D adds to the frame `mode`, `continuous`, the
+  HUD's `radius_m`, `design_speed_kmh`, `design_speed_warning`, `illegal_radius_m`,
+  `flattened_radius_m` and `tight_radius`, and the gizmos as packed arrays
+  (`gizmo_line_points` with `gizmo_line_starts` and `gizmo_line_classes`: 0 centreline, 1 guide
+  line, 2 angle ray, 3 tangent leg; `gizmo_handles` with `gizmo_handle_kinds`: 0 placed end,
+  1 control point, 2 chain start, 3 live end), one copy each once a frame; `road_tool_event`
+  also returns `placed`; a mode action for the current mode keeps the stroke. The draft refusal
+  `road_tight_curve` joins `too_short`, `fold_back`, `full_turn` and `no_biarc`.
 - **Snapping precedence** (round B, `road_tool/snap.rs`, pure `resolve` over one pose's
   candidates): a network **node** wins outright (an angle lock that was on is reported broken);
   else the direction constraint `D` (the angle lock: the step multiple of the reference nearest
@@ -12710,6 +12717,110 @@ Fresh, 2026-11-14, branch `roadtools-c` on `dev` `58d79a53` (control: the releas
   library): all 78 commits' request, graph, counters, published meshes and graded tiles equal to
   round C's control and branch records. The gameplay fixtures' control record was no longer kept.
 
+### Curves, gizmos and HUD record (round D)
+
+Fresh, 2026-11-14, branch `roadtools-d` on `dev` `05915359` (round H landed; control: the release
+build of `05915359`, same boot). What changed is under "Protocol" above and in "Drawing and
+placement".
+
+- **What went**: `road_tool.gd` 1,257 -> 846 lines (+189 / -600): the `State` machine, the
+  `Path3D` / `Curve3D` path (`_refresh_preview_curve`, `_road_surface_points_from_curve`,
+  `_append_road_surface_point`, `_update_preview`, `_preview_road`, `_preview_is_for`), the curve
+  halves of `_handle_click`, `_commit_segment` and the commit's chain, the sticky-snap
+  bookkeeping, `get_world_mouse_pos`'s curve query, the label's angle math and the mirrored
+  lane keys; the bridge's `get_road_tool_cursor_pos` and `get_road_tool_start_direction` (with
+  their result encoder). `pick::road_tool_cursor` stays as the frozen reference the session is
+  measured against (the session benchmark's control and the straight-parity tests). New:
+  `road_tool_gizmos.gd` (104 lines), `road_tool_hud.gd` (93), the opt-in capture
+  `tests/road_tool_capture.gd`. `network_tool.gd` keeps its blueprint mesh: the roundabout tool
+  draws its ring there.
+- **Radius**: `drawn_curve_reports_its_constructed_radius` (legs of 70 m and 50 m turning by
+  atan(4/3): the HUD's radius equals `T / tan(delta / 2)` = 100 m within 1 mm, the design speed
+  its closed form); `tight_curve_refusal_follows_the_radius_check` (a quarter turn and a 170°
+  turn of the default road at the illegal radius 6.25 m -0.5 m, -1 mm, +1 mm, +2 cm, +0.5 m: the
+  HUD's radius within 1 mm of the drawn one, the flattened radius at most 0.3 % under it, every
+  draft below the limit refused by the session as `road_tight_curve` with no stroke, every
+  draft the session sends planned by `plan_road_edit` without a refusal). Decision D3 (below):
+  at +1 mm and +2 cm both turns are refused by the session, because their flattened arcs read
+  under 6.25 m; the 170° arc at +1 mm or +2 cm would also be refused by the plan's own check (a
+  window inside the arc reads the flattened radius), the quarter turn would not (its window
+  reaches the straight lead).
+- **Gizmos and HUD**: `gizmos_name_the_handles_and_legs` (a curve's start, control point and
+  live end, its tangent legs and centreline; a chained stroke's start), the bridge test
+  `_test_session_strokes` in `network_tool_chunk_renderer_test.gd` on the real node (one preview
+  per moved frame, none for a still one, the click submitting the standing preview, the chain,
+  the curve's three clicks with the HUD's 40.0 m radius in the label, a 4 m curve refused before
+  any preview with "Curve too tight", right-click and Escape), `road_preview_stream_test.gd`
+  (the curve fixture's every frame previews the fillet arc of its clicks: the HUD's radius
+  equals `T / tan(delta / 2)` within 1 cm). Gizmo upload, rendered (gamescope's headless
+  backend, 1920x1080, a curve's end dragged for 120 frames, every frame a new pose): rebuilding
+  the surfaces each pose read p50 0.060 ms, p95 0.073 ms, max 0.078 ms alone on the machine (a
+  first run beside the Godot test suites p95 0.136, max 0.238 ms); the final code rewrites the
+  vertex buffers in place while the surfaces' layout holds (`mesh_surface_update_vertex_region`,
+  the server's copy read back equal to the draft): p50 0.028 ms, p95 0.098 ms, max 0.140 ms
+  (bar 0.2 ms a frame).
+- **Stills for review** (`$ARTIFACTS/stills`, from `road_tool_capture.gd`): straight mid-draw, a
+  curve mid-draw, the committed curve with the chain's next stroke, continuous from a dead end
+  and in a chain, the HUD's design-speed warning and a refused tight curve.
+- **Straight parity, bitwise** (`commit_products.gd`, after the last code change; control
+  `05915359`'s library and scripts): Kuopio's 39 strokes, 78 commits: request, graph, counters,
+  published meshes and graded tiles equal at every commit. The gameplay benchmark's 17 fixture
+  commits (headless), recorded fresh on both sides: 16 equal; the one that differs is
+  `bend_curved_2l`'s curve, by intent (the control's Bezier, 25 points and 92.03 m; the
+  session's simple curve through the same three points, 24 points and 91.03 m).
+- **Drag probe** (Kuopio's 39 strokes, gamescope's headless backend at 1920x1080, untimed, the
+  main checkout's shared timing lock held from outside): two runs a side, every run PASS, 0
+  failures, 39 of 39 fast commits; the terrain install share (max ms, control / branch) fast
+  commit 0.56, 0.63 / 0.69, 0.68, commit 0.28, 0.25 / 0.28, 0.19, undo 0.36, 0.69 / 0.53, 0.43,
+  catch-up 0.46, 0.60 / 0.68, 0.70, all under the 1.0 ms share.
+- **No allocation per pointer move**: the session benchmark's allocation probe
+  (`METRUM_ROAD_TOOL_ALLOC_PROBE`, 30k tier, release, `heaptrack --record-only`): `n = 0`
+  2,442,905 and 2,442,927 allocation calls, `n = 20` 2,442,927, `n = 200` 2,442,910: none per
+  move. The frame allocates its dictionary and the gizmo arrays once a frame; the road type's
+  illegal radius is computed when the type changes, not per pose.
+- **Timing session level F** (`tools/timing_session.py --level F --k22`, control the release
+  test binary of `05915359` `872d35534d08923b`, branch `9ee2db947de1ef88`, eight workers on the
+  performance cores, one boot): `PERF-07` 30k 32x C B B C every compared metric `level` (mean
+  4.420 / 4.470 ms, p99 6.98 / 7.21; one control row noisy, its tolerances doubled; the
+  acceptance misses on both sides are `PERF-17`'s known exception); 30k 1x every metric `level`
+  (mean 2.279 / 2.249 ms, p99 3.86 / 3.92, p99.9 4.37 / 4.79 against an 11.3 % tolerance) and
+  acceptance PASS on both rows; K22 30k click-to-ack 6.89 / 6.52 ms (commit 6.84 / 6.48). No
+  simulation-thread code changed (the tool session, its bridge and the HUD's radius constant).
+- **Preview rows** (`ROAD-68-H`'s carried paused rows through the gameplay harness, 100 samples
+  after 8 warm-ups, four workers, no FPS cap, gamescope's headless backend at 1920x1080, both
+  locks; three series, C B B C, B C C B, C B B C): poses shown exactly within 16.7 ms of their
+  sample, all ten rows together, control / branch: 1,931 / 1,783, 1,921 / 1,714, 1,992 / 1,856;
+  per case the branch sat inside the control's spread for the T and branch rows and at or under
+  its lower run for the two cross rows. The machine's desktop was in use (a browser playing
+  video) through every rendered run, so the rows are noisy; the coordinator read branch and
+  control as level (within about 0.5-2.5 points of the on-time share across the runs) and
+  stopped the series (2026-11-14). Two side experiments before that (scripts overlaid on the
+  branch's library, same noise): without the gizmos, and without the gizmos with today's
+  one-line label, read within the same spread. The synchronous call's p50 is unchanged (the
+  bridge runs the same `preview_road`).
+- **Tests**: debug `cargo test --lib` 2,655 passed, 0 failed, 227 ignored (the road tool's 53);
+  `cargo clippy --all-targets` the base's one warning (`asset_document.rs:15`); `cargo doc`
+  missing-docs 0; `./run.sh --test` PASS on the final tree (nextest 2,659 of 2,659, 228 skipped;
+  both Godot chains PASS); the touched Godot tests pass headless
+  (`network_tool_chunk_renderer_test`, `road_preview_stream_test`, `road_junction_preview_test`,
+  `road_render_publication_test`, `road_tunnels_test`, `road_roundabouts_test`,
+  `zoning_road_tool_test`, `crosswalk_toggle_test`, `road_cross_section_test`,
+  `road_rejection_report_test`, `road_mixed_junction_test`, `road_turn_lanes_test` and others;
+  the fixture-bound ones in `./run.sh --test`).
+- **Decisions under the user's delegation (for review)**: D1 the complex curve keeps no button
+  until round N (its ghost legs now run from the last placed point); D2 the tool re-sends its
+  intent on activation instead of the debug replay re-asserting it (`road_attempt_replay.gd` was
+  lane Y's file; the replay runs without a tool); D3 the tight-curve rule as above: the session
+  refuses on the flattened radius, which leaves a band of at most 0.3 % above the illegal radius
+  where a drawn curve is refused although its true radius is legal (options: accept,
+  recommended; make the radius check read arcs exactly, a shared rule that also moves curve
+  signs and the hairpin window; flatten tight arcs finer, which narrows the band but never
+  closes it); D4 a mode action for the current mode keeps the stroke; D5 "Straight", "Curve"
+  and a "Continuous" checkbox, the zoning-grid checkbox enabled in every mode; D6 the gizmo and
+  HUD look (plain defaults, listed under "Drawing and placement"; no arc-centre gizmo); D7 the
+  HUD's cost is the preview's class-priced cost, its upkeep the session's standard-road upkeep;
+  D8 `pick::road_tool_cursor` kept as the frozen reference.
+
 ### Heights and automatic bridges and tunnels (round H)
 
 Built 2026-11-14 on branch `roadtools-h` (`dev` `cd49a275`, rebased onto `93fa62dd` after round C
@@ -12940,31 +13051,60 @@ moved.
 
 ## Drawing and placement (`ROAD-63`)
 
-The road tool (`godot/scripts/tools/road_tool.gd`) draws continuously: an accepted road starts the
-next stroke at its end, leaving in its end direction, until right-click or Esc, until the road
-ends on an existing road or junction, or until it reaches the map edge. A committed road with an
-end on the map edge raises the external-connection prompt when its acknowledgement arrives
-(`check_border_candidate` on the stroke's ends; before round C the network renderer drained a
-queue of them after the refresh) and ends the chain, so the dialog never sits over a stroke still
-following the pointer off the map. A curve stroke has a start direction from
-`get_road_tool_start_direction`, which reads only the edges at the cursor's snap target: a dead end
-is continued (signed), a road or degree-two node gives its direction (either sense), free ground
-and junctions give none. It replaced the tool's `get_road_tangent_at`, which scanned every edge in
-the city on each click.
+The road tool (`godot/scripts/tools/road_tool.gd`) is a thin bridge to Rust's road tool session
+(`ROAD-112`, [protocol](#design-road-112)) in every mode since round D: it forwards the pointer,
+the clicks, the mode buttons and the acknowledgement and draws what `road_tool_frame` returns
+(the preview, the gizmos and the HUD). It keeps no stroke geometry of its own: the GDScript
+`Curve3D` path, its state machine and the cursor query it used (`get_road_tool_cursor_pos`,
+`get_road_tool_start_direction`) are gone.
 
-- Straight mode runs on the road tool session since `ROAD-112` round C
-  ([protocol](#design-road-112)): Rust resolves the cursor (the session's snapping precedence,
-  with guide lines on and the angle lock off by default, U2), keeps the stroke and the chain
-  (`ROAD-112` B4: a stroke whose end took a node, an edge or the map edge ends it), previews the
-  stroke and sends it. Today's soft 45° magnet (`interaction::snap_stroke_angle`, within 4° of a
-  multiple of 45° from the start direction) is gone from the straight mode; the lock's steps come
-  to the UI in round E. Shift frees the cursor of the lock, guides and grid; network snaps stay.
-  The label shows `[snapped]` when a guide or the lock took the cursor and the angle to the road
-  the stroke starts on from the session's HUD.
-- Curve mode keeps the three-click quadratic curve (start, free control point, end) on every
-  stroke, continuation included, and does not snap. A curve aimed only by its end point, as a
-  constant-radius arc from the inherited direction, was tried and dropped: continuing a chain then
-  forced each curve to leave along the previous one, so players could no longer choose the bend.
+- **Modes** (the options panel's Tool mode, `main_ui.gd`): **Straight** (two clicks; the
+  request is exactly the two ends) and **Curve**, the simple curve (U1: three clicks, start, a
+  free control point, end; the exact circular arc tangent to both legs with tangent length
+  `min(|AC|, |CB|)` and a straight lead on the longer leg, flattened by the kernel's rule). A
+  control-point click places a point and sends nothing; the end click sends the stroke. The
+  session also has the complex curve (the biarc S-curve, four clicks); its button comes with
+  round N. Pressing the current mode's button again keeps the stroke; another mode drops it.
+- **Continuous** (a checkbox beside the modes, off by default): a stroke that starts on a dead
+  end, along a road or where the chain left off leaves along that direction: a straight stroke
+  becomes the line or arc leaving tangent through the cursor, a curve's control point is held
+  on the tangent's forward ray (B8).
+- **Chain**: an accepted road starts the next stroke at its end, carrying its end direction,
+  until right-click or Esc, until the road ends on an existing road or junction, or until it
+  reaches the map edge (a committed end on the map edge raises the external-connection prompt
+  at its acknowledgement, `check_border_candidate` on the stroke's ends, and ends the chain).
+  A refused commit keeps the stroke editable.
+- **Snapping** is the session's (the precedence under "Snapping precedence" above: network
+  node, then edge, guide line or zoning grid, map edge and self snap), in every mode; the
+  zoning-grid checkbox now applies to curves too. Guide lines are on and the angle lock off by
+  default (U2); Shift frees the cursor of the lock, guides and grid. The soft 45° magnet is
+  gone. Snapping toggles and steps come to the UI in round E.
+- **Gizmos** (`road_tool_gizmos.gd`, from the frame's packed arrays, one reused mesh): the
+  draft's centreline (white), a curve's tangent legs (amber), the guide line or angle ray that
+  took the cursor (blue), and handles as screen-sized points: the placed start (white), a
+  control point (amber), a chained stroke's start (green) and the live end (blue). Drawn over
+  the road, unshaded.
+- **HUD** (`road_tool_hud.gd`, a label above-right of the stroke's end, the same pixel size at
+  every zoom): length, the angle to the road the stroke starts on (folded to 0..90°) or the
+  compass bearing, cost (the preview's, class-priced) and upkeep per day, the steepest grade,
+  the arc's radius and design speed `sqrt(127 * 0.20 * R)` rounded down to 5 km/h, the
+  demolitions and the plan state. Amber when the design speed is under the type's limit (cars
+  do not slow for curves today: advice only), for a steep grade or while a stroke is pending;
+  red with the reason when refused. Rust sends only numbers and keys; `road_reason_text.gd`
+  words refusals, including the session's draft refusals (a curve folding back, an S-curve
+  without a solution, a curve too tight).
+- **Tight curves**: the session refuses a draft whose flattened arc the radius check would
+  refuse (`road_tight_curve`, worded "Curve too tight: radius r m, needs l m"), before any
+  preview. The check (`validate.rs`) reads a polyline's radius as its horizontal chord length
+  over net turn in a window of three roadbed half-widths; on a flattened arc of radius `R` in
+  `n` equal steps that is `2 R sin(theta / 2) / theta` with `theta = sweep / n`, at most 0.3 %
+  under `R` at the tightest legal radius. The session compares that flattened radius (the
+  HUD's `flattened_radius_m`) with the illegal radius, 1.25 roadbed half-widths of the type
+  (`illegal_radius_m`, computed when the type changes), so a curve it sends is never refused as
+  too tight and one below the limit never reaches the preview (decision D3 below).
+- The road tool sends its whole intent (lanes, snapping, continuous, height offset, tunnel,
+  median, parking, attributes) to Rust again whenever it is switched on, so a debug replay
+  that set Rust's intent directly never outlasts the tool's own readout.
 
 Node movement and merging update graph ownership, spatial entries and edge routing metrics in the
 same mutation (`AUDIT-01-A17`). Merges resolve both canonical parents before selecting the lower

@@ -237,5 +237,12 @@ static func text(preview: Dictionary, fallback: String = "Road cannot be placed"
 			return "A junction at the road's end cannot fit this width"
 		"road_commit_rejected":
 			return "Road could not be built; adjust the road and try again"
+		# The road tool's draft refusals (`road_tool_frame`'s `refusal`, `ROAD-112`).
+		"fold_back":
+			return "The curve folds back on itself: move the control point"
+		"full_turn":
+			return "The end lies straight behind the start's direction"
+		"no_biarc":
+			return "No S-curve joins these two directions: move a tangent point"
 		_:
 			return fallback

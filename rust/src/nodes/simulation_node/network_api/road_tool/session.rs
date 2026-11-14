@@ -7,13 +7,17 @@
 //! it changed and sends the confirmed stroke with `add_road_with_snap`. One session per
 //! `SimulationNode`, used from the main thread only.
 //!
-//! Round C drives the straight mode; the curve modes stay on `road_tool.gd`'s own path until
-//! round D. The pointer calls take typed arguments, so a pointer move allocates nothing once the
-//! session's buffers have grown (the frame and the preview allocate, once a frame).
+//! Every drawing mode runs on the session (round D: the simple and complex curves and continuous
+//! too); the frame carries the gizmos and the HUD numbers `road_tool.gd` draws. The pointer
+//! calls take typed arguments, so a pointer move allocates nothing once the session's buffers
+//! have grown (the frame and the preview allocate, once a frame).
 
 use super::super::super::*;
-use crate::nodes::sim::road_tool::frame::{DraftRefusal, Phase, StrokeRequest};
+use crate::nodes::sim::road_tool::frame::{
+    DraftRefusal, GizmoHandleKind, GizmoLineClass, Gizmos, Phase, StrokeRequest,
+};
 use crate::nodes::sim::road_tool::measure::RoadTypeSpec;
+use crate::nodes::sim::road_tool::modes::DrawMode;
 use crate::nodes::sim::road_tool::session::{
     Pointer, PointerButton, RoadToolAction, RoadToolEvent, RoadToolOption, RoadToolSession,
 };
@@ -73,8 +77,8 @@ impl SimulationNode {
     /// unchanged stroke on the same context stays refused, `road_commit_rejected`), and
     /// `forget_preview`
     /// (the bridge drops its standing preview, so the next frame previews the stroke afresh:
-    /// measurements and another world). Returns `phase` (as
-    /// `road_tool_frame` reports it, after the event), and for a click that sent the stroke:
+    /// measurements and another world). Returns `phase` and `placed` (as
+    /// `road_tool_frame` reports them, after the event), and for a click that sent the stroke:
     /// `points` (the stroke), `preview` (the preview of exactly this
     /// stroke, the dictionary `preview_road` returns), `fresh` (whether the click had to preview
     /// it), `request_id` (the commit to poll, 0 when the preview refused it: the click is then
@@ -108,7 +112,9 @@ impl SimulationNode {
             Some(stroke) => self.road_tool_submit(stroke),
             None => VarDictionary::new(),
         };
-        result.set("phase", self.road_tool_phase().0);
+        let (phase, placed) = self.road_tool_phase();
+        result.set("phase", phase);
+        result.set("placed", placed);
         result
     }
 
@@ -152,16 +158,25 @@ impl SimulationNode {
     }
 
     /// The road tool's frame, called once a frame while the tool is active: `phase` (0 idle,
-    /// 1 placing, 2 waiting for the commit's acknowledgement), `placed` (points down), `cursor`
-    /// and `cursor_valid`, `snap` (what took the cursor: `free`, `node`, `edge`, `guide`,
+    /// 1 placing, 2 waiting for the commit's acknowledgement), `placed` (points down), `mode`
+    /// (0 straight, 1 simple curve, 2 complex curve), `continuous`, `cursor` and
+    /// `cursor_valid`, `snap` (what took the cursor: `free`, `node`, `edge`, `guide`,
     /// `guide_corner`, `grid`, `angle`, `angle_edge`, `angle_guide`, `angle_grid`, `border`,
     /// `self`), `points` (the stroke of this pose, empty without one), `refusal` (why the draft
-    /// has no stroke: `too_short`, `fold_back`, `full_turn`, `no_biarc`, else ""), `hud`
+    /// has no stroke: `too_short`, `fold_back`, `full_turn`, `no_biarc`, `road_tight_curve`, else
+    /// ""), `hud`
     /// (`length_m`, `bearing_deg`, `start_angle_deg` and `end_angle_deg` (-1 for none),
-    /// `build_cost` and `upkeep_per_day` of the drawn road type). When the stroke, its type or
-    /// the context changed since the last preview, the frame previews it: `preview` holds
-    /// `preview_road`'s dictionary; `preview_cleared` is true when the stroke went away. No
-    /// preview while a sent stroke waits for its acknowledgement.
+    /// `radius_m` (the smallest arc radius, -1 for a straight draft), `design_speed_kmh` (-1
+    /// for none), `design_speed_warning`, `illegal_radius_m`, `flattened_radius_m` (what the radius
+    /// check reads on the flattened arcs, -1 for none), `tight_radius`, `build_cost` and
+    /// `upkeep_per_day` of the drawn road type), and the gizmos as packed arrays:
+    /// `gizmo_line_points` with `gizmo_line_starts` (each strip's first point) and
+    /// `gizmo_line_classes` (0 draft centreline, 1 guide line, 2 angle ray, 3 tangent leg),
+    /// `gizmo_handles` with `gizmo_handle_kinds` (0 placed end, 1 control point, 2 chain start,
+    /// 3 the live end). When the stroke, its type or the context changed since the last
+    /// preview, the frame previews it: `preview` holds `preview_road`'s dictionary;
+    /// `preview_cleared` is true when the stroke went away. No preview while a sent stroke waits
+    /// for its acknowledgement.
     #[func]
     pub fn road_tool_frame(&mut self) -> VarDictionary {
         let mut dict = self.road_tool_frame_record();
@@ -196,6 +211,8 @@ impl SimulationNode {
         let mut dict = VarDictionary::new();
         dict.set("phase", phase.0);
         dict.set("placed", phase.1);
+        dict.set("mode", mode_code(frame.state.mode));
+        dict.set("continuous", self.road_tool_session.session.continuous());
         dict.set("cursor", frame.cursor.position);
         dict.set("cursor_valid", frame.cursor.valid);
         dict.set("snap", snap_key(frame.cursor.snap));
@@ -211,10 +228,17 @@ impl SimulationNode {
                 "bearing_deg": hud.bearing_deg,
                 "start_angle_deg": angle(hud.start_angle_deg),
                 "end_angle_deg": angle(hud.end_angle_deg),
+                "radius_m": hud.radius_m.unwrap_or(-1.0),
+                "design_speed_kmh": hud.design_speed_kmh.unwrap_or(-1.0),
+                "design_speed_warning": hud.design_speed_warning,
+                "illegal_radius_m": hud.illegal_radius_m,
+                "flattened_radius_m": hud.flattened_radius_m.unwrap_or(-1.0),
+                "tight_radius": hud.tight_radius,
                 "build_cost": hud.build_cost,
                 "upkeep_per_day": hud.upkeep_per_day,
             },
         );
+        set_gizmos(&mut dict, &frame.gizmos);
         dict
     }
 
@@ -359,6 +383,63 @@ impl SimulationNode {
     }
 }
 
+// The frame's gizmos as packed arrays (`road_tool_gizmos.gd` draws them): one copy each, once a
+// frame.
+fn set_gizmos(dict: &mut VarDictionary, gizmos: &Gizmos) {
+    let line_class = |class: &GizmoLineClass| match class {
+        GizmoLineClass::Draft => 0,
+        GizmoLineClass::Guide => 1,
+        GizmoLineClass::Angle => 2,
+        GizmoLineClass::Tangent => 3,
+    };
+    let handle_kind = |kind: &GizmoHandleKind| match kind {
+        GizmoHandleKind::Endpoint => 0,
+        GizmoHandleKind::Control => 1,
+        GizmoHandleKind::ChainStart => 2,
+        GizmoHandleKind::Cursor => 3,
+    };
+    dict.set(
+        "gizmo_line_points",
+        PackedVector3Array::from(gizmos.line_points.as_slice()),
+    );
+    dict.set(
+        "gizmo_line_starts",
+        gizmos
+            .line_starts
+            .iter()
+            .map(|&start| start as i32)
+            .collect::<PackedInt32Array>(),
+    );
+    dict.set(
+        "gizmo_line_classes",
+        gizmos
+            .line_classes
+            .iter()
+            .map(line_class)
+            .collect::<PackedInt32Array>(),
+    );
+    dict.set(
+        "gizmo_handles",
+        PackedVector3Array::from(gizmos.handles.as_slice()),
+    );
+    dict.set(
+        "gizmo_handle_kinds",
+        gizmos
+            .handle_kinds
+            .iter()
+            .map(handle_kind)
+            .collect::<PackedInt32Array>(),
+    );
+}
+
+fn mode_code(mode: DrawMode) -> i64 {
+    match mode {
+        DrawMode::Straight => 0,
+        DrawMode::SimpleCurve => 1,
+        DrawMode::ComplexCurve => 2,
+    }
+}
+
 fn snap_key(kind: SnapKind) -> &'static str {
     match kind {
         SnapKind::Free => "free",
@@ -382,5 +463,6 @@ fn refusal_key(refusal: DraftRefusal) -> &'static str {
         DraftRefusal::FoldBack => "fold_back",
         DraftRefusal::FullTurn => "full_turn",
         DraftRefusal::NoBiarc => "no_biarc",
+        DraftRefusal::TightCurve => "road_tight_curve",
     }
 }

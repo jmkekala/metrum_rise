@@ -56,7 +56,8 @@ var road_builder: RoadBuilderWindow
 
 # Road options
 var straight_btn: Button
-var spline_btn: Button
+var curve_btn: Button
+var continuous_check: CheckBox
 var zoning_grid_snap_check: CheckBox
 var tunnel_check: CheckBox
 var zoning_combined_hbox: VBoxContainer
@@ -229,11 +230,21 @@ func _build_ui():
 	straight_btn.button_pressed = true 
 	mode_row.add_child(straight_btn)
 
-	spline_btn = Button.new()
-	spline_btn.text = "Spline"
-	spline_btn.toggle_mode = true
-	spline_btn.focus_mode = Control.FOCUS_NONE
-	mode_row.add_child(spline_btn)
+	curve_btn = Button.new()
+	curve_btn.text = "Curve"
+	curve_btn.toggle_mode = true
+	curve_btn.focus_mode = Control.FOCUS_NONE
+	curve_btn.tooltip_text = "Three clicks: start, a control point, end. The road follows an exact arc tangent to both legs."
+	mode_row.add_child(curve_btn)
+
+	# Continuous (`ROAD-112` round D): the next stroke leaves along the road or the chain it
+	# starts on, in both modes.
+	continuous_check = CheckBox.new()
+	continuous_check.text = "Continuous"
+	continuous_check.focus_mode = Control.FOCUS_NONE
+	continuous_check.tooltip_text = "Start each road along the road or the last road it continues from."
+	continuous_check.toggled.connect(func(enabled: bool): road_tool.continuous = enabled)
+	mode_row.add_child(continuous_check)
 	
 	var snap_row := HBoxContainer.new()
 	var snap_label := Label.new()
@@ -846,7 +857,7 @@ func _connect_signals():
 	bulldoze_btn.pressed.connect(_on_bulldoze_pressed)
 	
 	straight_btn.pressed.connect(func(): _set_draw_mode(0))
-	spline_btn.pressed.connect(func(): _set_draw_mode(1))
+	curve_btn.pressed.connect(func(): _set_draw_mode(1))
 	speed_down_btn.pressed.connect(func(): input_manager.step_simulation_speed(-1))
 	speed_up_btn.pressed.connect(func(): input_manager.step_simulation_speed(1))
 
@@ -981,10 +992,10 @@ func _on_road_types_changed(created_id: String) -> void:
 		road_combined_hbox.visible = true
 		_select_road_type(created_id, false)
 
+# The mode buttons send the session's mode action (Rust's `mode_straight` / `mode_simple_curve`).
 func _set_draw_mode(mode: int):
 	straight_btn.button_pressed = (mode == 0)
-	spline_btn.button_pressed = (mode == 1)
-	zoning_grid_snap_check.disabled = mode != 0
+	curve_btn.button_pressed = (mode == 1)
 	if road_tool:
 		road_tool.draw_mode = mode
 

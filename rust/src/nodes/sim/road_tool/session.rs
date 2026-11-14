@@ -18,7 +18,7 @@
 use super::frame::{
     DraftRefusal, GizmoHandleKind, GizmoLineClass, Phase, RoadToolFrame, StrokeRequest,
 };
-use super::measure::{EndRoad, RoadTypeSpec, measure};
+use super::measure::{EndRoad, RoadTypeSpec, illegal_radius_m, measure};
 use super::modes::{self, DrawMode};
 use super::pick::{
     NETWORK_SNAP_REACH_M, SELF_SNAP_M, SurfacePick, half_extents, is_near_border, lane_width_m,
@@ -79,11 +79,11 @@ pub enum RoadToolAction {
     Cancel,
     /// Places the stroke's confirming point at the cursor (the last click's meaning).
     Confirm,
-    /// Switches to straight mode (drops the stroke).
+    /// Switches to straight mode (drops the stroke; nothing when already straight).
     ModeStraight,
-    /// Switches to the simple curve (drops the stroke).
+    /// Switches to the simple curve (drops the stroke; nothing when already in it).
     ModeSimpleCurve,
-    /// Switches to the complex curve (drops the stroke).
+    /// Switches to the complex curve (drops the stroke; nothing when already in it).
     ModeComplexCurve,
 }
 
@@ -155,6 +155,8 @@ pub struct RoadToolSession {
     mode: DrawMode,
     snap: SnapOptions,
     spec: RoadTypeSpec,
+    // The spec's illegal radius (`measure::illegal_radius_m`), kept with the spec: it allocates.
+    illegal_radius_m: f64,
     continuous: bool,
     altitude_offset_m: f32,
     placed: [Vector3; MAX_POINTS],
@@ -162,6 +164,8 @@ pub struct RoadToolSession {
     // How the road the stroke starts on leaves its start, or the carried tangent.
     start_road: Option<EndRoad>,
     start_on_border: bool,
+    // The stroke starts where the last accepted one ended (the chain).
+    chained: bool,
     // The retained network target and the view generation it was taken at.
     sticky: Option<(NetworkSnapTarget, u64)>,
     cursor: Option<Cursor>,
@@ -182,16 +186,19 @@ impl Default for RoadToolSession {
 impl RoadToolSession {
     /// A session in straight mode with the U2 defaults and the default two-lane road.
     pub fn new() -> Self {
+        let spec = RoadTypeSpec::default();
         Self {
             mode: DrawMode::Straight,
             snap: SnapOptions::default(),
-            spec: RoadTypeSpec::default(),
+            spec,
+            illegal_radius_m: illegal_radius_m(&spec),
             continuous: false,
             altitude_offset_m: 0.0,
             placed: [Vector3::ZERO; MAX_POINTS],
             placed_len: 0,
             start_road: None,
             start_on_border: false,
+            chained: false,
             sticky: None,
             cursor: None,
             shift: false,
@@ -213,6 +220,16 @@ impl RoadToolSession {
         self.spec
     }
 
+    /// The drawing mode.
+    pub fn mode(&self) -> DrawMode {
+        self.mode
+    }
+
+    /// Whether continuous (the tangent constraint at a stroke's start) is on.
+    pub fn continuous(&self) -> bool {
+        self.continuous
+    }
+
     /// Takes the stroke to commit, if the last confirming click produced one; the session keeps
     /// waiting for its [`RoadToolEvent::CommitAck`].
     pub fn take_commit(&mut self) -> Option<StrokeRequest> {
@@ -223,7 +240,12 @@ impl RoadToolSession {
     /// re-prices the draft at once.
     pub fn set_option(&mut self, option: RoadToolOption) {
         match option {
-            RoadToolOption::RoadType(spec) => self.spec = spec,
+            RoadToolOption::RoadType(spec) => {
+                if spec != self.spec {
+                    self.illegal_radius_m = illegal_radius_m(&spec);
+                }
+                self.spec = spec;
+            }
             RoadToolOption::NetworkSnap(on) => {
                 self.snap.network = on;
                 self.sticky = None;
@@ -267,9 +289,12 @@ impl RoadToolSession {
         self.refresh(view);
     }
 
+    // A different mode drops the stroke; the current mode again changes nothing.
     fn set_mode(&mut self, mode: DrawMode) {
-        self.cancel();
-        self.mode = mode;
+        if mode != self.mode {
+            self.cancel();
+            self.mode = mode;
+        }
     }
 
     fn cancel(&mut self) {
@@ -282,6 +307,7 @@ impl RoadToolSession {
         self.placed_len = 0;
         self.start_road = None;
         self.start_on_border = false;
+        self.chained = false;
         self.sticky = None;
     }
 
@@ -336,6 +362,7 @@ impl RoadToolSession {
     fn begin(&mut self, view: &RoadToolQuerySnapshot, position: Vector3, snapped: Snapped) {
         self.placed[0] = position;
         self.placed_len = 1;
+        self.chained = false;
         self.start_on_border = snapped.kind == SnapKind::Border;
         self.start_road = snapped
             .target
@@ -356,6 +383,7 @@ impl RoadToolSession {
         self.placed_len = 0;
         self.start_road = None;
         self.start_on_border = false;
+        self.chained = false;
         self.sticky = None;
         if pending.chain {
             self.begin(
@@ -370,6 +398,7 @@ impl RoadToolSession {
                 },
             );
             self.start_road = pending.end_tangent.map(EndRoad::Continue);
+            self.chained = true;
         }
     }
 
@@ -623,6 +652,7 @@ impl RoadToolSession {
             &self.path,
             &self.frame.stroke.points,
             &self.spec,
+            self.illegal_radius_m,
             self.start_road,
             end_road,
         );
@@ -630,6 +660,12 @@ impl RoadToolSession {
         frame
             .gizmos
             .push_line(GizmoLineClass::Draft, frame.stroke.points.iter().copied());
+        if frame.hud.tight_radius {
+            // The radius check would refuse it: no stroke to preview or send; the HUD keeps the
+            // numbers.
+            frame.state.refusal = Some(DraftRefusal::TightCurve);
+            frame.stroke.points.clear();
+        }
         self.push_constraint_line(cursor);
     }
 
@@ -644,9 +680,19 @@ impl RoadToolSession {
         if start.distance_to(end) <= POINT_EPS_M {
             return false;
         }
-        if let [GuideSegment::Line(_)] = self.path.segments() {
-            stroke.points.push(start);
-            stroke.points.push(end);
+        if let [GuideSegment::Line(line)] = self.path.segments() {
+            // A straight stroke is its start and the cursor bit for bit; a ghost leg (a curve's
+            // line to its next point, or to the control point held on the tangent ray) runs
+            // from the last placed point to the line's own end at the cursor's height.
+            let last = self.placed[self.placed_len - 1];
+            let from = if xz_of(start) == line.a { start } else { last };
+            let to = if xz_of(end) == line.b {
+                end
+            } else {
+                Vector3::new(line.b.x as f32, end.y, line.b.y as f32)
+            };
+            stroke.points.push(from);
+            stroke.points.push(to);
             return true;
         }
         self.path.flatten_into(&mut self.flat);
@@ -683,14 +729,14 @@ impl RoadToolSession {
     fn push_tangent_legs(&mut self, live: Vector3) {
         let gizmos = &mut self.frame.gizmos;
         for (index, point) in self.placed[..self.placed_len].iter().enumerate() {
-            let kind = if index == 0 {
-                GizmoHandleKind::Endpoint
-            } else {
-                GizmoHandleKind::Control
+            let kind = match index {
+                0 if self.chained => GizmoHandleKind::ChainStart,
+                0 => GizmoHandleKind::Endpoint,
+                _ => GizmoHandleKind::Control,
             };
             gizmos.push_handle(kind, *point);
         }
-        gizmos.push_handle(GizmoHandleKind::Endpoint, live);
+        gizmos.push_handle(GizmoHandleKind::Cursor, live);
         if self.mode != DrawMode::Straight && self.placed_len > 1 {
             let placed = &self.placed[..self.placed_len];
             gizmos.push_line(

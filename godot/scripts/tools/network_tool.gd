@@ -5,8 +5,9 @@
 ## Rust methods called: add_road(), get_closest_network_point(), get_closest_node(),
 ##   get_network_nodes(), get_node_pos(), get_world_surface_height(),
 ##   intersect_world_surface(), hover_world_surface(),
-##   get_road_tool_cursor_pos(), get_road_surface_debug_data()
-## Owns the shared preview mesh, blueprint spline, and node snapping MultiMesh. The committed
+##   get_road_surface_debug_data()
+## Owns the shared blueprint mesh (the roundabout tool's ring; the road tool draws its preview as
+## road chunks and its gizmos itself) and the node snapping MultiMesh. The committed
 ## network's chunks are drawn by `road_chunk_renderer.gd` (`RENDER-52`), the road tool's `chunks`.
 ## Subclasses override _handle_input() and _commit() for their specific editing behaviour.
 extends Node3D

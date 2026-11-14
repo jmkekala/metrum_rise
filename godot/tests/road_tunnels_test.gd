@@ -126,7 +126,7 @@ func _ground(at: Vector2) -> Vector3:
 
 # One frame samples the stroke and previews it synchronously, as the pointer would.
 func _preview(tool: Node, points: PackedVector3Array) -> Dictionary:
-	tool._begin_stroke(points[0], 0, Vector3.ZERO)
+	tool._begin_stroke(points[0])
 	tool.set_scripted_pointer(true, points[-1])
 	tool._process(1.0 / 60.0)
 	return tool._preview

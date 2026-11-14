@@ -3,11 +3,11 @@
 //! Road-tool picking (`ROAD-112` round B): the pointer ray to a surface point on the level it hit
 //! (`ROAD-99` `StructureHit`), and today's whole cursor query as plain Rust.
 //!
-//! [`road_tool_cursor`] is the bridge's `get_road_tool_cursor_pos` (`network_api/road_tool/
-//! cursor.rs`) copied operation for operation, returning a [`CursorResult`] in place of the Godot
-//! dictionary; its helpers are `SimulationNode`'s `road_tool_*` statics. Round C turns the bridge
-//! method into a thin wrapper over it. The session uses [`pick_surface`] and the level height
-//! helpers only; its snapping is `snap.rs`.
+//! [`road_tool_cursor`] is the cursor query the tool used before its session (the bridge's
+//! `get_road_tool_cursor_pos`, deleted with the GDScript curve path in round D), kept frozen as
+//! the reference the session is measured against: the session benchmark's control and the
+//! straight-parity tests. The session uses [`pick_surface`] and the level height helpers only;
+//! its snapping is `snap.rs`.
 
 use crate::nodes::sim::core::RoadToolQuerySnapshot;
 use crate::simulation::network::graph::RegionGraph;

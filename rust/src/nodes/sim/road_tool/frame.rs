@@ -49,6 +49,10 @@ pub enum GizmoHandleKind {
     Endpoint,
     /// A placed control or tangent point.
     Control,
+    /// The start of a stroke that continues the chain from the last accepted stroke's end.
+    ChainStart,
+    /// The live end at the cursor.
+    Cursor,
 }
 
 /// Packed gizmos: line strips (`line_points[line_starts[i]..line_starts[i + 1]]`, the last to
@@ -147,6 +151,9 @@ pub enum DraftRefusal {
     FullTurn,
     /// The biarc has no solution for these tangents.
     NoBiarc,
+    /// An arc is tighter than the road type's illegal radius as the radius check reads it
+    /// (`road_tight_curve`).
+    TightCurve,
 }
 
 /// The state record.
