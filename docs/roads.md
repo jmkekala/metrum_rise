@@ -13870,8 +13870,14 @@ no allocation.
   toward a cursor 90 degrees off the road, 45 off the junction's arms, leaves toward it within
   1e-6 rad and is not refused; the curve's placed control likewise; it fails on `dev`
   `39d76272`, 90 degrees off at the mid-span start). Round CT's join tests (under 1e-9 rad) and
-  the Continuous-off digest (58 frames, `0x2259_b84d_6713_cfb6`) pass unchanged. Kuopio 78 + fixtures 17 parity against round CT's records,
-  the allocation probe and gate checks 1-3 were still running at this commit (`$ARTIFACTS`).
+  the Continuous-off digest (58 frames, `0x2259_b84d_6713_cfb6`) pass unchanged. Kuopio drag probe 78/78 and gameplay fixtures 17/17
+  EQUAL in every product (request, graph, state, mesh, graded; probe PASS) against round CT's
+  records (`dev` `39d76272`'s library, sha `3ce27077`; branch library `526c3cd6`). Allocation
+  (heaptrack `--record-only`, session bench 30k, every mode): n=0 2,442,922 / 2,442,856, n=20
+  2,442,879, n=200 2,442,888 calls: none per pointer move. Gates: clippy `--all-targets` set
+  equal to the branch point's (`asset_document.rs:15` only), `cargo doc` missing_docs 0, debug
+  `cargo test --lib` 2,728 passed / 0 failed / 230 ignored, `./run.sh --test` PASS (nextest
+  2,732 / 2,732, 231 skipped; godot-main, godot-vehicle PASS; 0 SCRIPT ERROR). No timing.
 
 ### Decisions (user, 2026-11-12, all as recommended)
 
