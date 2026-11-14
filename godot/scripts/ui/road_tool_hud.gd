@@ -20,7 +20,7 @@ signal cancel_pressed
 const UiStyle := preload("res://scripts/ui/ui_style.gd")
 
 ## Chip kinds as `road_tool_frame` numbers them (`label_kinds`).
-enum Kind { PIECE_LENGTH, TOTAL_LENGTH, RADIUS, ANGLE, SLOPE, COST, BEARING, DESIGN_SPEED, NOTICE, HINT, BUILD, CANCEL }
+enum Kind { PIECE_LENGTH, TOTAL_LENGTH, RADIUS, ANGLE, SLOPE, COST, BEARING, DESIGN_SPEED, NOTICE, HINT, BUILD, CANCEL, END_HEIGHT }
 ## Chip tones (`label_tones`).
 enum Tone { NORMAL, WARNING, REFUSED }
 
@@ -223,7 +223,7 @@ func _draw_chips() -> void:
 
 # Small vector icons, drawn in `box`: a double arrow (a piece's length; with end bars, the total),
 # an arc and its radius, an angle, a slope, a coin, a compass needle, a speed gauge, a warning
-# triangle or a refusal's crossed circle.
+# triangle or a refusal's crossed circle, an end's height (a vertical double arrow over the ground).
 func _draw_icon(kind: int, tone: int, box: Rect2, color: Color) -> void:
 	var c := box.get_center()
 	var h := box.size.x * 0.5
@@ -256,6 +256,14 @@ func _draw_icon(kind: int, tone: int, box: Rect2, color: Color) -> void:
 		Kind.DESIGN_SPEED:
 			_canvas.draw_arc(c + Vector2(0.0, h * 0.4), h, PI, TAU, 12, color, 1.5, true)
 			_canvas.draw_line(c + Vector2(0.0, h * 0.4), c + Vector2(h * 0.55, -h * 0.35), color, 1.5, true)
+		Kind.END_HEIGHT:
+			# A vertical double arrow over a ground line: an end's height above its ground.
+			var top := c + Vector2(0.0, -h)
+			var foot := c + Vector2(0.0, h * 0.6)
+			_canvas.draw_line(top, foot, color, 1.5, true)
+			_canvas.draw_polyline(PackedVector2Array([top + Vector2(-3.0, 3.0), top, top + Vector2(3.0, 3.0)]), color, 1.5, true)
+			_canvas.draw_polyline(PackedVector2Array([foot + Vector2(-3.0, -3.0), foot, foot + Vector2(3.0, -3.0)]), color, 1.5, true)
+			_canvas.draw_line(c + Vector2(-h, h), c + Vector2(h, h), color, 1.5, true)
 		Kind.HINT:
 			_canvas.draw_arc(c, h, 0.0, TAU, 16, color, 1.5, true)
 			_canvas.draw_line(c + Vector2(0.0, -h * 0.1), c + Vector2(0.0, h * 0.55), color, 1.5, true)

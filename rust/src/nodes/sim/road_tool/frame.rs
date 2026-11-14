@@ -7,6 +7,7 @@
 //! points, lanes and type), which round C hands to the preview.
 
 use super::height::DraftStroke;
+use super::height::ground_marks::GroundMark;
 use super::height::handles::HeightHandle;
 use super::labels::ToolLabel;
 use super::measure::{HudValues, RoadTypeSpec};
@@ -100,6 +101,9 @@ pub enum GizmoLineClass {
     ZoningInside,
     /// A curb the zoning-grid snap aligned, and its tick on the end's cell line (round V item 8).
     GridCurb,
+    /// An end's ground marker (round H2): the vertical line from the end down (or up) to the
+    /// ground under it, and the ring on the ground around that point.
+    GroundMarker,
 }
 
 /// A gizmo handle's kind.
@@ -274,6 +278,10 @@ pub struct RoadToolFrame {
     /// The draft's height handles (round I): the start's and the end's (the live end's while
     /// placing; before a stroke starts, the cursor's, whose offset a start placed there takes).
     pub height_handles: [Option<HeightHandle>; 2],
+    /// Each end's ground marker (round H2: start, end), for an end off the ground under it or
+    /// whose grip is hovered or dragged; its gizmos are in [`Self::gizmos`], its chip the
+    /// bridge's ([`super::height::ground_marks::push_height_labels`]).
+    pub ground_marks: [Option<GroundMark>; 2],
     /// The draft's heights, segmentation and slopes (`RoadToolSession::update_draft`).
     pub draft: DraftReport,
     /// The label chips on the geometry (round V): what each says, where it is anchored and to
@@ -297,6 +305,7 @@ impl RoadToolFrame {
         self.piece_radii_m.clear();
         self.piece_slopes_percent.clear();
         self.height_handles = [None; 2];
+        self.ground_marks = [None; 2];
         self.labels.clear();
         self.state.refusal = None;
     }

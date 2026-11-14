@@ -9,7 +9,7 @@ render_mode unshaded, cull_disabled, depth_test_disabled, depth_draw_never, shad
 // its colour, width and dash from the arrays below (one surface for every look). Drawn over the
 // terrain and the roads.
 
-const int LOOKS = 7;
+const int LOOKS = 8;
 uniform vec4 colors[LOOKS] : source_color;
 // Line width in pixels.
 uniform float widths_px[LOOKS];

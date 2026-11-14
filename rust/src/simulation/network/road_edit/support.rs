@@ -121,36 +121,33 @@ impl<'a> StrokeSupport<'a> {
 /// The ground under a draft's grade line (`ROAD-112` round H, plan section 4): what a stroke's
 /// profile solve reads as its support, the highest grounded carriageway at a point (a bridge's
 /// deck and a tunnel's do not count, as for [`StrokeSupport`] with nothing excluded), else the
-/// source terrain.
+/// source terrain. It records nothing (no piece is excluded, so the pieces read are not needed):
+/// a query allocates nothing, so the road tool reads it on every pointer move for its ground
+/// markers (round H2).
+#[derive(Clone, Copy)]
 pub(crate) struct DraftGround<'a> {
     terrain: &'a TerrainSystem,
-    support: StrokeSupport<'a>,
+    roadbed: &'a RoadbedSystem,
 }
 
 impl<'a> DraftGround<'a> {
-    /// The ground of one terrain, graph and roadbed generation.
-    pub(crate) fn new(
-        terrain: &'a TerrainSystem,
-        graph: &'a RegionGraph,
-        roadbed: &'a RoadbedSystem,
-    ) -> Self {
-        static NOTHING_REBUILT: RebuiltPieces = RebuiltPieces {
-            pieces: Vec::new(),
-            crossed: Vec::new(),
-            joined_ends: [None; 2],
-        };
-        Self {
-            terrain,
-            support: StrokeSupport::new(roadbed, graph, &NOTHING_REBUILT),
-        }
+    /// The ground of one terrain and roadbed generation.
+    pub(crate) fn new(terrain: &'a TerrainSystem, roadbed: &'a RoadbedSystem) -> Self {
+        Self { terrain, roadbed }
     }
 
-    /// The ground height at a world XZ point, metres. `O(pieces in the point's query cell)`;
-    /// the pieces read are kept, so the buffer grows once per draft.
-    pub(crate) fn height_at(&mut self, x: f32, z: f32) -> f32 {
-        let terrain = self.terrain;
-        self.support.height_at(x, z).unwrap_or_else(|| {
-            terrain.sample_height_world(x, z) * crate::config::HEIGHT_SCALE
+    /// The ground height at a world XZ point, metres. `O(pieces in the point's query cell)`, no
+    /// allocation.
+    pub(crate) fn height_at(&self, x: f32, z: f32) -> f32 {
+        let mut best: Option<f32> = None;
+        self.roadbed
+            .for_each_grounded_carriageway_top_at(x, z, |_, height_m| {
+                if best.is_none_or(|best_m| height_m > best_m) {
+                    best = Some(height_m);
+                }
+            });
+        best.unwrap_or_else(|| {
+            self.terrain.sample_height_world(x, z) * crate::config::HEIGHT_SCALE
         })
     }
 }

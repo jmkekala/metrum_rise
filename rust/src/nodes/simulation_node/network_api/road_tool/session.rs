@@ -26,6 +26,7 @@ use crate::nodes::sim::road_tool::frame::{
     DraftRefusal, GizmoHandleKind, GizmoLineClass, Gizmos, Phase, RoadToolFrame, StrokeRequest,
 };
 use crate::nodes::sim::road_tool::height::draft_batch;
+use crate::nodes::sim::road_tool::height::ground_marks::push_height_labels;
 use crate::nodes::sim::road_tool::labels::{
     LabelKind, LabelTone, PreviewFacts, apply_preview, middle_label, place_chips,
 };
@@ -283,18 +284,20 @@ impl SimulationNode {
     /// arc, an S-curve's two arcs, a freeform draft's spans), and the gizmos as packed arrays:
     /// `gizmo_line_points` with `gizmo_line_starts` (each strip's first point) and
     /// `gizmo_line_classes` (0 draft centreline, 1 guide line, 2 angle ray, 3 tangent leg, 4 the
-    /// zoning-depth guide's outside, 5 its inside, 6 a grid curb), the same strips as quads for
+    /// zoning-depth guide's outside, 5 its inside, 6 a grid curb, 7 an end's ground marker: its
+    /// vertical line and its ring, round H2), the same strips as quads for
     /// `road_tool_line.gdshader` (rounds V, V2): `gizmo_line_vertices` and
     /// `gizmo_line_attributes` (five floats a vertex, the last its look: 0 the centreline, 1 a
     /// guide, the angle ray, a tangent leg or a height stem, 2 and 3 the zoning guide's outside
-    /// and inside, 4 a grid curb), empty without strips,
+    /// and inside, 4 a grid curb, 7 a ground marker), empty without strips,
     /// `gizmo_handles` with `gizmo_handle_kinds` (0 placed end, 1 control point, 2 chain start,
     /// 3 the live end or the grabbed freeform grip, 4 a joint: the S-curve's or a freeform inner
     /// node, 5 a handle: an S-curve arc's control point, a freeform Bezier handle or a height
     /// handle's grip, whose stem is a guide strip; `gizmo_handle_attributes`: the kinds as the
     /// one handle surface's UVs), the label chips (`label_kinds`: 0 piece
     /// length, 1 total length, 2 radius, 3 angle, 4 slope, 5 cost, 6 bearing, 7 design speed, 8
-    /// notice, 9 hint, 10 Build, 11 Cancel; `label_values`, `label_anchors`, `label_sides`,
+    /// notice, 9 hint, 10 Build, 11 Cancel, 12 an end's height above its ground with its part,
+    /// round H2; `label_values`, `label_anchors`, `label_sides`,
     /// `label_tones`: 0 normal, 1 warning, 2 refused; `label_texts`, each chip's text as shown,
     /// from `road_tool::wording`; `label_sizes`, each chip's pixels in the HUD's font,
     /// `road_tool_set_chip_font`) and
@@ -421,6 +424,14 @@ impl SimulationNode {
                 .unwrap_or(0);
             notice.checking = !(plan_state.is_empty() || plan_state == "ready");
         }
+        // Each marked end's height chip (round H2), after the frame's segmentation named its
+        // part; placed after every other chip.
+        push_height_labels(
+            &frame.ground_marks,
+            &frame.stroke.points,
+            &frame.draft.runs,
+            &mut labels,
+        );
         let kind = |kind: LabelKind| match kind {
             LabelKind::PieceLength => 0,
             LabelKind::TotalLength => 1,
@@ -434,6 +445,7 @@ impl SimulationNode {
             LabelKind::Hint => 9,
             LabelKind::Build => 10,
             LabelKind::Cancel => 11,
+            LabelKind::EndHeight(_) => 12,
         };
         let tone = |tone: LabelTone| match tone {
             LabelTone::Normal => 0,
@@ -1056,6 +1068,7 @@ fn set_gizmos(dict: &mut VarDictionary, gizmos: &Gizmos) {
         GizmoLineClass::ZoningOutside => 4,
         GizmoLineClass::ZoningInside => 5,
         GizmoLineClass::GridCurb => 6,
+        GizmoLineClass::GroundMarker => 7,
     };
     let handle_kind = |kind: &GizmoHandleKind| match kind {
         GizmoHandleKind::Endpoint => 0,
@@ -1150,6 +1163,8 @@ pub(super) enum LineStyle {
     GhostEdge = 5,
     /// A batch ghost's edges, tier 1 refusing the stroke.
     GhostRefusedEdge = 6,
+    /// An end's ground marker: its vertical line and its ring on the ground (round H2).
+    GroundMarker = 7,
 }
 
 // A strip class's look.
@@ -1163,6 +1178,7 @@ fn line_style(class: GizmoLineClass) -> LineStyle {
         GizmoLineClass::ZoningOutside => LineStyle::ZoningOutside,
         GizmoLineClass::ZoningInside => LineStyle::ZoningInside,
         GizmoLineClass::GridCurb => LineStyle::GridCurb,
+        GizmoLineClass::GroundMarker => LineStyle::GroundMarker,
     }
 }
 

@@ -1,13 +1,14 @@
 # SPDX-License-Identifier: GPL-2.0-only
 
-## Opt-in stills of the road tool's height handles (`ROAD-112` round I) on flat ground, in the
-## current plain look: a draft whose ends are raised (a bridge draft), a draft whose far end is
-## lowered 10 m (a tunnel draft: a cut ramp and the bore), that draft built (the portal where the
-## cover is reached) and the chain's draft back up from its buried end (the second portal), a bridge then
-## a tunnel in one draft (a batch), and a cut under a narrow ridge, too deep for a cutting with too
-## little ground for a bore (`cut_too_deep`). Uses a fresh blank world and an isolated test
-## profile; never loads or writes a gameplay save. `METRUM_ROAD_TOOL_CAPTURE_DIR` names the
-## output directory; needs a rendering device (gamescope's headless backend).
+## Opt-in stills of the road tool's height display (`ROAD-112` rounds I and H2) on flat ground: each
+## case from above and from a low angle. A draft whose end is raised 6.5 m (a bridge: the end's
+## ground marker and "+6.5 m bridge" chip), a draft whose end is lowered 10 m (a cut ramp then the
+## bore: "-10.0 m tunnel"), that draft built and the chain's draft back up from its buried end
+## built (the entry and the exit portal, each close from its own side), an end raised over a
+## lower road (the marker stands on the road), and a bridge then a tunnel in one draft (a batch).
+## Uses a fresh blank world and an isolated test profile; never loads or writes a gameplay save.
+## `METRUM_ROAD_TOOL_CAPTURE_DIR` names the output directory; needs a rendering device
+## (gamescope's headless backend).
 extends SceneTree
 
 # `height::handles::HANDLE_STEM_M`: the grip stands this far above its end.
@@ -37,11 +38,6 @@ func _run() -> void:
 	await process_frame
 	_simulation = _main.get_node("SimulationNode")
 	_expect(_simulation.create_blank_world(2048.0, 2048.0, 2.0, 512.0, 0.0), "Capture world loads")
-	# A narrow ridge for the refusal, 300 m north of the other drafts.
-	for step in 120:
-		if _simulation.get_world_surface_height(Vector2(0.0, -300.0)) > 9.0:
-			break
-		_simulation.sculpt_terrain(Vector2(0.0, -300.0), 5.0, 1.0)
 	_simulation.set_simulation_speed(0.0)
 	var input: Node = _main.get_node("InputManager")
 	input._refresh_after_world_load()
@@ -64,25 +60,23 @@ func _run() -> void:
 	_tool.set_road_type(_tool.DEFAULT_ROAD_TYPE)
 	_tool.active = true
 
-	# Both ends raised 6 m over flat ground: one bridge, previewed as a stroke. The start's grip
-	# is dragged; the live end is raised with PageUp (twelve 0.5 m steps).
-	_look(Vector3(0.0, 3.0, 0.0), Vector3(-40.0, 40.0, 110.0))
+	# The end raised 6.5 m over flat ground (thirteen 0.5 m PageUp steps): one bridge, its end's
+	# ground marker and height chip.
 	var start := Vector3(-60.0, 0.0, 0.0)
 	var end := Vector3(60.0, 0.0, 0.0)
 	_tool._begin_stroke(start)
 	_tool.set_scripted_pointer(true, end)
 	await _frames(2)
-	await _drag_start(start, 6.0)
-	_tool.step_height(12)
+	_tool.step_height(13)
 	await _settle()
 	_expect(_profiles() == [2], "the raised draft is one bridge, got %s" % [_profiles()])
-	await _capture("raised_bridge_draft")
+	await _capture_pair("raised_end_bridge", Vector3(20.0, 3.0, 0.0), Vector3(80.0, 6.0, 40.0))
 
-	# The far end lowered 10 m: one tunnel stroke, a cut ramp from the start and the bore from
-	# where the cover reaches 5 m.
+	# The end lowered 10 m: one tunnel stroke, a cut ramp from the start and the bore from where
+	# the cover reaches 5 m.
 	_tool.cancel_road()
 	# A new start takes the live end's offset: back to the ground first, then the end down.
-	_tool.step_height(-12)
+	_tool.step_height(-13)
 	start = Vector3(-60.0, 0.0, 60.0)
 	end = Vector3(60.0, 0.0, 60.0)
 	_tool._begin_stroke(start)
@@ -91,8 +85,7 @@ func _run() -> void:
 	_tool.step_height(-20)
 	await _settle()
 	_expect(_profiles() == [3], "the lowered draft is one tunnel, got %s (%s)" % [_profiles(), _simulation.road_tool_heights().get("draft_reason")])
-	_look(Vector3(0.0, -3.0, 60.0), Vector3(-30.0, 35.0, 150.0))
-	await _capture("lowered_tunnel_draft")
+	await _capture_pair("lowered_end_cut_then_tunnel", Vector3(20.0, -3.0, 60.0), Vector3(85.0, 3.0, 95.0))
 	_expect(_tool._commit_segment(end), "the tunnel draft is sent")
 	await _ack()
 	# Built; the chain's next draft starts locked on the buried end (no stroke yet).
@@ -108,33 +101,47 @@ func _run() -> void:
 	_expect(_tool._commit_segment(up), "the draft back up is sent")
 	await _ack()
 	_tool.cancel_road()
-	_look(Vector3(120.0, -2.0, 60.0), Vector3(185.0, 25.0, 95.0))
+	# The exit portal from the exit side: the road climbing out towards the camera, and close
+	# in at the portal's mouth.
+	_look(Vector3(110.0, -3.0, 60.0), Vector3(200.0, 20.0, 80.0))
 	await _capture("tunnel_exit_built")
+	_look(Vector3(105.0, -4.0, 60.0), Vector3(150.0, 4.0, 66.0))
+	await _capture("tunnel_exit_portal_close")
+	# The entry portal from the same pose mirrored about the buried joint (x = 60, z = 60).
+	_look(Vector3(15.0, -4.0, 60.0), Vector3(-30.0, 4.0, 54.0))
+	await _capture("tunnel_entry_portal_close")
 
-	# A bridge then a tunnel in one draft: the start raised 5 m, the end lowered 8 m (a batch).
-	_tool._begin_stroke(Vector3(-60.0, 0.0, 140.0))
-	_tool.set_scripted_pointer(true, Vector3(60.0, 0.0, 140.0))
+	# An end raised 8 m over a lower road (snap off, so the end stays free over it): the
+	# marker's foot and the chip's height are the road's carriageway, as the segmentation reads.
+	_tool._begin_stroke(Vector3(-60.0, 0.0, 200.0))
+	_tool.set_scripted_pointer(true, Vector3(60.0, 0.0, 200.0))
+	await _frames(3)
+	_expect(_tool._commit_segment(Vector3(60.0, 0.0, 200.0)), "the lower road commits")
+	await _ack()
+	_tool.cancel_road()
+	_tool.network_snap_enabled = false
+	_tool._begin_stroke(Vector3(0.0, 0.0, 140.0))
+	_tool.set_scripted_pointer(true, Vector3(0.0, 0.0, 200.0))
+	await _frames(1)
+	_tool.step_height(16)
+	await _settle()
+	_expect(_profiles() == [2], "the draft over the road is one bridge, got %s" % [_profiles()])
+	await _capture_pair("end_over_lower_road", Vector3(0.0, 3.0, 185.0), Vector3(45.0, 6.0, 230.0))
+	_tool.cancel_road()
+	_tool.step_height(-16)
+	_tool.network_snap_enabled = true
+
+	# A bridge then a tunnel in one draft: the start raised 5 m, the end lowered 8 m (a batch);
+	# a height chip at each end.
+	_tool._begin_stroke(Vector3(-60.0, 0.0, 300.0))
+	_tool.set_scripted_pointer(true, Vector3(60.0, 0.0, 300.0))
 	await _frames(2)
-	await _drag_start(Vector3(-60.0, 0.0, 140.0), 5.0)
+	await _drag_start(Vector3(-60.0, 0.0, 300.0), 5.0)
 	_tool.step_height(-16)
 	await _settle()
 	_expect(_profiles() == [2, 3], "a bridge then a tunnel, got %s" % [_profiles()])
-	_look(Vector3(0.0, 0.0, 140.0), Vector3(-40.0, 40.0, 240.0))
+	_look(Vector3(0.0, 0.0, 300.0), Vector3(-40.0, 40.0, 400.0))
 	await _capture("bridge_then_tunnel_batch")
-
-	# Straight grade through the narrow ridge at the ground: 9 m under its top, with too little
-	# ground across the bore's section for its cover: refused.
-	_tool.cancel_road()
-	_tool.step_height(16)
-	_tool.set_straight_grade(true)
-	_tool._begin_stroke(Vector3(-40.0, 0.0, -300.0))
-	_tool.set_scripted_pointer(true, Vector3(40.0, 0.0, -300.0))
-	await _settle()
-	var refused: Dictionary = _tool._preview
-	_expect(not refused.get("is_valid", true) and refused.get("invalid_reason", "") == "cut_too_deep", "the ridge draft is refused cut_too_deep, got %s" % refused.get("invalid_reason", "missing"))
-	_look(Vector3(0.0, 3.0, -300.0), Vector3(-30.0, 35.0, -230.0))
-	await _capture("cut_too_deep_refused")
-	_tool.set_straight_grade(false)
 	_tool.cancel_road()
 	_main.queue_free()
 	await process_frame
@@ -154,6 +161,13 @@ func _drag_start(start: Vector3, rise_m: float) -> void:
 	_simulation.road_tool_event("release")
 	_tool.set_scripted_pointer(true, live)
 	await _frames(1)
+
+# One case from above (looking down on `target`) and from a low angle (from `low`).
+func _capture_pair(label: String, target: Vector3, low: Vector3) -> void:
+	_look(target, target + Vector3(0.0, 140.0, 30.0))
+	await _capture(label + "_top")
+	_look(target, low)
+	await _capture(label + "_low")
 
 func _profiles() -> Array:
 	return Array(_simulation.road_tool_heights().get("draft_profiles", PackedInt32Array()))

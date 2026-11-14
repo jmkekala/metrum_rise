@@ -14,7 +14,8 @@
 //! freeform joint, and near the end the cost, the bearing and the design speed (amber below the
 //! road's speed limit). The bridge adds what the preview knows ([`apply_preview`]): the class
 //! priced cost, the steepest grade (from 0.5 %) and one notice for a refusal or a warning.
-//! There is no upkeep chip (the user, 2026-11-14).
+//! There is no upkeep chip (the user, 2026-11-14). Each end off its ground gets a height chip
+//! (round H2, [`super::height::ground_marks::push_height_labels`]).
 
 use super::measure::{EndRoad, HudValues};
 use crate::simulation::network::guide::{DVec2, GuidePath, GuideSegment};
@@ -56,6 +57,22 @@ pub enum LabelKind {
     Build,
     /// The edit phase's clickable Cancel chip beside the last node: drops the draft.
     Cancel,
+    /// An end's signed height above the ground under it in metres, with the part the end is
+    /// on (round H2, [`super::height::ground_marks`]).
+    EndHeight(EndPart),
+}
+
+/// What an end of a draft is built as, for its height chip (round H2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EndPart {
+    /// A road on the ground (held or followed, within the clearance of the ground).
+    Ground,
+    /// A bridge.
+    Bridge,
+    /// A ground road held below the ground: a cut.
+    Cut,
+    /// A tunnel.
+    Tunnel,
 }
 
 /// The hint chip's text for a freeform draft placing nodes (`editing` false) or in its edit

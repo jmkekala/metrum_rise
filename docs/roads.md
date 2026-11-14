@@ -12923,6 +12923,29 @@ at most +0.014 ms against the bar's +0.1 ms; commit 13.34 / 6.82 / 4.82 against 
 identical. The follow-ground and tunnel paths run the same code as before (one branch on the
 profile), so nothing beyond noise was expected.
 
+**The display (round H2, the user's 2026-11-14 test drive).** Each end of a draft that stands
+off the ground under it shows that ground: a **ground marker**, a solid vertical line from the
+end down (or up) to the ground directly under (or over) it and a 2 m ring on that ground around
+the foot, every ring point at the ground's height at its own XZ (gizmo class `GroundMarker`, line
+look 7 of the one palette: the stroke's white, 2 px, solid, over the terrain like every road tool
+line); and a **height chip**, the end's signed height above that ground to 0.1 m with the part
+the end is on: "+6.5 m bridge", "-10.0 m tunnel", "-3.0 m cut", "+0.5 m ground" (chip kind 12,
+text from `wording::label_text`, placed after every other chip by round V's rule, so clear of
+them and of the handles; anchored at the end, pushed to the left of travel, the end's other chips
+sit to its right). The ground is the one the segmentation reads (`DraftGround`: the highest
+grounded carriageway at the point, else the source terrain), so an end over a lower road measures
+from that road's carriageway and the chip's height is the clearance the segmentation classifies
+the end by. A marker shows while the end is more than 0.25 m (`GROUND_MARK_MIN_M`, half a height
+step) off that ground, or while its grip is hovered or dragged; the part is the segmentation's
+run at that end (bridge, tunnel; a held run more than 1.0 m under the ground is a cut, else
+ground; a follow-ground end more than 1.0 m above it is the inferred bridge, else ground; with no
+run, a refused segmentation, above is a bridge and below a cut). A chip needs a stroke: a placed
+start with the cursor on it shows its markers only. The session pushes the markers on every pose
+(`height/ground_marks.rs` `push_ground_mark`, `O(ring points x pieces in a query cell)`, no
+allocation once the gizmo buffers have grown; `DraftGround` no longer records the pieces it read,
+which nothing used); the bridge adds the chips once a frame after the segmentation
+(`push_height_labels`). Record: [round H2](#height-display-round-h2).
+
 ### The terrain's cut under a replaced road (round G2)
 
 Built 2026-11-14 on branch `roadtools-g2` (`dev` `05915359`): T65 option (c), the user's choice
@@ -13558,6 +13581,60 @@ stems in the guide look (`HeightStem` in the guide style); round I's draft refus
   (rounds LG1 and I included) agree, so that run's graded product is not deterministic under heavy
   load (for review).
 
+### Height display (round H2)
+
+Built 2026-11-14 on branch `roadtools-h2` (`dev` `3a950b78`, round V2 landed) after the user's
+test drive of `dev` `93d7aaad` ("it is hard to see the height of the road, or how deep the road
+is"); the user chose two pieces, the ground marker and the height chip (the curtain, an
+underground path, a bigger grip and a profile chip were not chosen). Rules in the [heights
+section](#heights-and-automatic-bridges-and-tunnels-round-h) ("The display"). Rust:
+`road_tool/height/ground_marks.rs` (new: `GroundMark`, `push_ground_mark`, `end_part`,
+`push_height_labels`), `frame.rs` (`ground_marks`, `GizmoLineClass::GroundMarker`), `labels.rs`
+(`LabelKind::EndHeight`, `EndPart`), `wording.rs`, `session.rs`; the bridge's
+`network_api/road_tool/session.rs` (line class 7 and look 7, chip kind 12, the chips after the
+segmentation); `road_edit/support.rs` (`DraftGround` reads the same max without recording the
+pieces it read: no allocation, so the session reads it on every pose; `segment_draft` reads the
+same heights). GDScript draws only: one palette entry (`road_tool_gizmos.gd`), `LOOKS` 8
+(`road_tool_line.gdshader`), the chip's icon (`road_tool_hud.gd`).
+
+**Tunnel exit verification (the user asked).** The Rust check
+`road_profiles::a_lowered_draft_on_flat_ground_ramps_through_a_portal` commits the flat-ground
+down-then-up pair (0 to -10 m over 100 m, then -10 m back up to the ground over 100 m) and asserts a
+tunnel edge and a portal row at both ends, each portal row's piece carrying its collar and a
+lining (`portal_rows_x`); fresh pass. Stills from each side (gamescope headless 1920x1080,
+`road_height_capture.gd`): `tunnel_entry_portal_close` and `tunnel_exit_portal_close`, the same
+pose mirrored about the buried joint. The entry's mouth reads dark (lining) across its width; the
+exit's mouth shows the sky through its right-hand third, so from the exit side part of the bore
+is open where the lining should close it (round I saw the exit "light blue"; not investigated
+here, `ROAD-61` lining look, for review). Both cuts show a vertical grass edge on one side and a
+retaining wall on the other.
+
+**Fresh results** (2026-11-14, final code). Rust: five tests in
+`road_tool/tool_tests/ground_marks.rs` (a raised end's marker runs from the handle's height to the
+terrain within 1 mm, its ring lies on the ground and its chip reads "+6.5 m bridge"; ends lowered
+3 m and 10 m read "-3.0 m cut" and "-10.0 m tunnel" with the foot on the terrain over them; an end
+raised over the road at z = -60, snap off, has its foot on the highest grounded carriageway within
+1 mm; ends on the ground have no marker or chip, and a raised live end with no stroke a marker
+but no chip; with both ends of a 32 m draft raised, every chip, both height chips included,
+places clear of the others and of the handles). Gates: `cargo clippy --all-targets` the branch
+point's one warning (`asset_document.rs:15`); `cargo doc` missing docs 0; debug `cargo test
+--lib` 2,714 passed, 0 failed, 230 ignored; `./run.sh --test` PASS (nextest 2,718 of 2,718, 231
+skipped; both Godot chains PASS, no script error). Godot: `network_tool_chunk_renderer`,
+`road_height_handles`, `road_tunnels`, `road_batch_preview`, `road_junction_preview` PASS.
+Products against the round V2 tip's records (`dev` `3a950b78`): Kuopio's 78 commits and the
+gameplay fixtures' 17 EQUAL in every product, the drag probe PASS; one earlier branch run, under
+another lane's build load, differed in `kuopio_06` attempt 18's graded tiles only, equal to round
+V2's own heavy-load control run of the same stroke: the load-dependent graded product round V2
+reported, seen a second time (for review). Allocation (`heaptrack --record-only`, the session
+bench at 30k, every mode with the graded strokes and the grip drag): 2,442,910 / 2,442,859 calls
+at n = 0, 2,442,897 at n = 20, 2,442,864 at n = 200: none per pointer move. Gizmo plus label
+upload a drag frame (once, quiet machine, `road_tool_capture.gd`'s drags at 1920x1080, whose ends
+stay on the ground): curve end p50 0.090 / p95 0.174 / max 0.211 ms, S-curve end 0.049 / 0.068 /
+0.170, freeform handle 0.051 / 0.075 / 0.095: p95 under round V's 0.2 ms. Stills (`$ARTIFACTS`):
+each case from above and low (`raised_end_bridge`, `lowered_end_cut_then_tunnel`,
+`end_over_lower_road`), the built entry and exit, both portal close-ups, the bridge then tunnel
+batch with a chip at each end.
+
 ### Decisions (user, 2026-11-12, all as recommended)
 
 - U1 simple curve = three clicks, free control point, exact arc plus a straight lead.
@@ -13612,6 +13689,7 @@ round D rebases on CB and edits only tool code there (CB's first part landed the
 | G1 | Two-tier batch preview | 4 | F + preview rows |
 | H | Profile field, automatic bridge/tunnel segmentation | 5 | F + K22 |
 | I | Height handles and HUD (done 2026-11-14, [record](#height-handles-and-graded-drafts-round-i)) | 3 | R |
+| H2 | Height display: ground markers and height chips (done 2026-11-14, [record](#height-display-round-h2)) | 2 | R |
 | | **Landing 3** | | L |
 | | *Phase 3: advanced tools* | | |
 | J | Grid | 4 | R |

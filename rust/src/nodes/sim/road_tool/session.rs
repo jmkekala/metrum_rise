@@ -32,6 +32,7 @@
 use super::frame::{
     DraftRefusal, DraftRun, GizmoHandleKind, GizmoLineClass, Phase, RoadToolFrame, StrokeRequest,
 };
+use super::height::ground_marks::push_ground_mark;
 use super::height::handles::{
     DraftEnd, EndHeights, HeightHandle, drag_offset, grip_at, stepped_by,
 };
@@ -57,7 +58,7 @@ use crate::simulation::network::guide::{DVec2, GuideError, GuidePath, GuideSegme
 use crate::simulation::network::interaction::{
     NetworkSnapTarget, StartDirection, StructureHit, road_start_direction,
 };
-use crate::simulation::network::road_edit::{PREVIEW_CLEARANCE_M, RoadProfile};
+use crate::simulation::network::road_edit::{DraftGround, PREVIEW_CLEARANCE_M, RoadProfile};
 use godot::prelude::Vector3;
 
 /// Today's map-edge snap distance (`MAP_BORDER_SNAP_DIST_M`).
@@ -1097,6 +1098,25 @@ impl RoadToolSession {
         self.frame.clear_pose();
         self.refresh_draft(view);
         self.push_height_gizmos();
+        self.push_ground_marks(view);
+    }
+
+    // Each end's ground marker (round H2) when it stands off the ground under it, or while its
+    // grip is dragged or under the pointer. `O(ring points x pieces in a query cell)` an end, no
+    // allocation once the gizmo buffers have grown.
+    fn push_ground_marks(&mut self, view: &RoadToolQuerySnapshot) {
+        let ground = DraftGround::new(&view.terrain, &view.roadbed);
+        let hovered = self
+            .pointer
+            .and_then(|pointer| grip_at(&self.frame.height_handles, [true; 2], pointer));
+        let frame = &mut self.frame;
+        for (slot, handle) in frame.ground_marks.iter_mut().zip(frame.height_handles) {
+            let Some(handle) = handle else {
+                continue;
+            };
+            let held = self.heights.grip == Some(handle.end) || hovered == Some(handle.end);
+            *slot = push_ground_mark(&handle, held, &ground, &mut frame.gizmos);
+        }
     }
 
     // The pose's draft: shape, stroke request, heights, HUD and gizmos (all but the height

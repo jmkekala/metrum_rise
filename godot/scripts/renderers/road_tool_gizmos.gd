@@ -24,7 +24,8 @@ const HandleShader := preload("res://scripts/shaders/road_tool_handle.gdshader")
 
 ## The gizmos' one palette: the line looks in the order Rust numbers them (`LineStyle`: the
 ## stroke's centreline; every guide line in one colour, width and dash; the zoning guide's
-## outside and inside; the grid curbs; the batch ghost's edges, accepted and refused), the batch
+## outside and inside; the grid curbs; the batch ghost's edges, accepted and refused; an end's
+## ground marker), the batch
 ## ghost's fills, and the handles by kind (placed end, control point, chain start, live end,
 ## joint, handle).
 const PALETTE := {
@@ -43,6 +44,9 @@ const PALETTE := {
 		# the HUD's refusal red when not.
 		[Color(1.0, 1.0, 1.0, 0.82), 2.0, 0.0, 0.0],
 		[Color(1.0, 0.40, 0.30, 0.95), 2.0, 0.0, 0.0],
+		# An end's ground marker (round H2): its vertical line to the ground and its ring there,
+		# solid, in the stroke's white.
+		[Color(1.0, 1.0, 1.0, 0.9), 2.0, 0.0, 0.0],
 	],
 	# The batch ghost's fills (accepted, refused): each stroke's ribbon at its road's width.
 	"ghost_fills": [Color(1.0, 1.0, 1.0, 0.18), Color(1.0, 0.40, 0.30, 0.28)],

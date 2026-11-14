@@ -41,6 +41,7 @@ use crate::simulation::network::roadbed::RoadbedSystem;
 use crate::simulation::terrain::TerrainSystem;
 use godot::prelude::Vector3;
 
+pub mod ground_marks;
 pub mod handles;
 
 /// The refusal of a draft whose grade line runs more than 5 m below the ground (the source
@@ -100,7 +101,7 @@ pub(crate) fn segment_draft(
     graph: &RegionGraph,
     roadbed: &RoadbedSystem,
 ) -> Result<Vec<DraftStroke>, &'static str> {
-    let mut ground = DraftGround::new(terrain, graph, roadbed);
+    let ground = DraftGround::new(terrain, roadbed);
     let mut strokes = Vec::new();
     segment_grade_line(
         path,

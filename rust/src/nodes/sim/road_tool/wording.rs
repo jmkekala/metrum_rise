@@ -10,7 +10,7 @@
 
 use std::fmt::Write;
 
-use super::labels::{LabelKind, LabelTone, ToolLabel, hint_text};
+use super::labels::{EndPart, LabelKind, LabelTone, ToolLabel, hint_text};
 
 /// The numbers a refusal's text quotes, as the stroke preview's dictionary carries them
 /// (`clearance_m`, `required_clearance_m`, `geometry_measured`, `geometry_limit`; 0 when absent).
@@ -54,7 +54,8 @@ const COMPASS: [&str; 8] = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
 
 /// Writes `label`'s text into `out` (cleared first): lengths "12.3 m" under 100 m, else "123
 /// m"; radii "R 12.3 m" / "R 123 m"; angles and design speeds in whole units (truncated);
-/// grades "1.5 %"; money "$12,345"; the bearing "NE 47°"; the notice from `notice`.
+/// grades "1.5 %"; money "$12,345"; the bearing "NE 47°"; an end's height "+6.5 m bridge" (one
+/// decimal, signed, and the part); the notice from `notice`.
 pub fn label_text(label: &ToolLabel, notice: &NoticeFacts, out: &mut String) {
     out.clear();
     let value = label.value;
@@ -95,7 +96,18 @@ pub fn label_text(label: &ToolLabel, notice: &NoticeFacts, out: &mut String) {
             out.push_str("Cancel");
             Ok(())
         }
+        LabelKind::EndHeight(part) => write!(out, "{value:+.1} m {}", end_part_text(part)),
     };
+}
+
+// The part an end is on, as its height chip names it (round H2).
+fn end_part_text(part: EndPart) -> &'static str {
+    match part {
+        EndPart::Ground => "ground",
+        EndPart::Bridge => "bridge",
+        EndPart::Cut => "cut",
+        EndPart::Tunnel => "tunnel",
+    }
 }
 
 // Money in whole units with thousands separators: "$1,234", "-$56".
