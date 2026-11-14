@@ -44,6 +44,7 @@ const RoadToolScript := preload("res://scripts/tools/road_tool.gd")
 const WorldMaterialsScript := preload("res://scripts/renderers/world_materials.gd")
 const TerrainScript := preload("res://scripts/renderers/terrain.gd")
 const ZoningToolScript := preload("res://scripts/tools/zoning_tool.gd")
+const RoadToolHudScript := preload("res://scripts/ui/road_tool_hud.gd")
 const LAYERS: Array[String] = ["skirt", "curb", "raised_step", "sidewalk", "road", "marking", "concrete", "lining", "median_grass"]
 var _failures := 0
 var simulation: SimulationNode
@@ -164,8 +165,7 @@ func _fixture(fixture: Dictionary) -> void:
 	tool.make_chunks()
 	tool.blueprint_mesh = MeshInstance3D.new()
 	tool.add_child(tool.blueprint_mesh)
-	tool._info_label = Label.new()
-	tool.add_child(tool._info_label)
+	tool.attach_hud(RoadToolHudScript.new())
 	tool._road_preview_material = WorldMaterialsScript.road_preview_material()
 	tool.blueprint_mesh.material_override = tool._road_preview_material
 	tool.fwd_lanes = fixture["forward"]
@@ -206,7 +206,7 @@ func _fixture(fixture: Dictionary) -> void:
 		return
 	_expect(preview.get("has_road_chunks", false), "%s preview must return its compiled chunks" % fixture["name"])
 	_expect(tool._preview_display.sequence == int(preview.get("sequence", -1)), "the frame that sampled the stroke must show its chunks")
-	_expect(not tool._info_label.text.contains("Checking"), "a synchronous preview is never pending")
+	_expect(not tool.hud.text().contains("Placing"), "a synchronous preview is never pending: '%s'" % tool.hud.text())
 	_expect(tool.blueprint_mesh.mesh == null, "the preview shows chunks, never a ribbon")
 	if not isolated and not fixture.get("sloped", false):
 		_expect_existing_road_height(preview)

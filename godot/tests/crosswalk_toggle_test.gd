@@ -9,6 +9,7 @@ extends SceneTree
 const SelectTool := preload("res://scripts/tools/select_tool.gd")
 const RoadToolScript := preload("res://scripts/tools/road_tool.gd")
 const WorldMaterialsScript := preload("res://scripts/renderers/world_materials.gd")
+const RoadToolHudScript := preload("res://scripts/ui/road_tool_hud.gd")
 var _failures := 0
 var simulation: SimulationNode
 
@@ -109,8 +110,7 @@ func _run() -> void:
 	road_tool.make_chunks()
 	road_tool.blueprint_mesh = MeshInstance3D.new()
 	road_tool.add_child(road_tool.blueprint_mesh)
-	road_tool._info_label = Label.new()
-	road_tool.add_child(road_tool._info_label)
+	road_tool.attach_hud(RoadToolHudScript.new())
 	road_tool._road_preview_material = WorldMaterialsScript.road_preview_material()
 	_expect(_install(road_tool), "the cross's chunks must install")
 	var painted_before := _painted_vertices(road_tool)

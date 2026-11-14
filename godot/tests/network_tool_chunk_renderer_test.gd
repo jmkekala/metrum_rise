@@ -8,6 +8,7 @@ extends SceneTree
 const NetworkRendererScript := preload("res://scripts/renderers/network_renderer.gd")
 const TerrainRendererScript := preload("res://scripts/renderers/terrain.gd")
 const RoadToolScript := preload("res://scripts/tools/road_tool.gd")
+const RoadToolHudScript := preload("res://scripts/ui/road_tool_hud.gd")
 const InputManagerScript := preload("res://scripts/core/input_manager.gd")
 const WorldMaterialsScript := preload("res://scripts/renderers/world_materials.gd")
 const LAYERS := ["skirt", "curb", "raised_step", "sidewalk", "road", "marking", "concrete", "lining"]
@@ -827,8 +828,6 @@ func _test_native_road_preview_contract(simulation: SimulationNode) -> void:
 	tool.add_child(tool.blueprint_mesh)
 	tool._road_preview_material = WorldMaterialsScript.road_preview_material()
 	tool.blueprint_mesh.material_override = tool._road_preview_material
-	tool._info_label = Label.new()
-	tool.add_child(tool._info_label)
 	var points := PackedVector3Array([Vector3(-40.0, 0.0, -8.0), Vector3(0.0, 0.0, 8.0), Vector3(40.0, 0.0, -8.0)])
 	for lanes in [Vector2i(1, 1), Vector2i(3, 1), Vector2i(1, 0), Vector2i(0, 0)]:
 		var preview: Dictionary = simulation.preview_road(points, lanes.x, lanes.y, false)
@@ -876,7 +875,8 @@ func _test_native_road_preview_contract(simulation: SimulationNode) -> void:
 	tool._preview = rejected
 	tool._show_preview(points)
 	_expect(tool._preview_display.sequence == 0 and tool._preview_display._instances.is_empty(), "a rejected stroke shows no road")
-	_expect(tool._info_label.visible and tool._info_label.text.contains("terrain boundary"), "terrain rejection must retain an explanatory label")
+	var notice := RoadToolHudScript.chip_text(RoadToolHudScript.Kind.NOTICE, 0.0, RoadToolHudScript.Tone.REFUSED, "", {}, rejected)
+	_expect(notice.contains("terrain boundary"), "terrain rejection must retain an explanatory notice: '%s'" % notice)
 	_expect(tool._road_preview_material.get_shader_parameter("placement_state") == 2, "rejected placement must be red")
 	if OS.get_environment("METRUM_ROAD_PREVIEW_TIMING") == "1":
 		for lane_count in [1, 4]:
@@ -900,8 +900,7 @@ func _session_road_tool(simulation: SimulationNode) -> PointerRoadTool:
 	tool.simulation_node = simulation
 	tool.make_chunks()
 	tool.chunks.update(simulation.get_network_render_generation())
-	tool._info_label = Label.new()
-	tool.add_child(tool._info_label)
+	tool.attach_hud(RoadToolHudScript.new())
 	tool._node_visuals_dirty = false
 	tool._node_visuals_visible = true
 	tool.active = true
@@ -944,9 +943,9 @@ func _test_session_strokes(simulation: SimulationNode) -> void:
 	tool.set_lanes(1, 1)
 	_road_frame(tool)
 	var gizmo_kinds: PackedInt32Array = tool.gizmos._handle_kinds
-	# The free start's height grip draws as a handle (5) on a tangent-coloured stem (round I).
+	# The free start's height grip draws as a handle (5) on a stem in the guide look (rounds I, V2).
 	_expect(gizmo_kinds == PackedInt32Array([0, 3, 5]), "a straight stroke shows its start, live end and the start's height grip: %s" % gizmo_kinds)
-	_expect(tool._info_label.visible and tool._info_label.text.contains("cost"), "the HUD shows the stroke's numbers")
+	_expect(tool.hud.text().contains("$") and tool.hud.text().contains(" m") and not tool.hud.text().contains("/day"), "the HUD's chips show the stroke's numbers, no upkeep: '%s'" % tool.hud.text())
 	# The click submits the standing preview; a second click waits for the acknowledgement.
 	var end := tool.pointer
 	_expect(tool._commit_segment(end), "a valid click queues the previewed stroke")
@@ -976,9 +975,9 @@ func _test_session_strokes(simulation: SimulationNode) -> void:
 	_road_frame(tool)
 	var points := tool._session_points
 	_expect(points.size() > 3 and points[0] == Vector3(-100.0, 0.0, 60.0) and points[-1] == tool.pointer, "the curve runs from the start to the cursor through the arc")
-	_expect(tool.gizmos._handle_kinds == PackedInt32Array([0, 1, 3, 5]) and tool.gizmos._line_classes == PackedInt32Array([3, 0, 3]), "a curve shows its start, control point, live end, tangent legs, centreline and the start's height grip on its stem")
+	_expect(tool.gizmos._handle_kinds == PackedInt32Array([0, 1, 3, 5]) and tool.gizmos._line_classes.slice(0, 2) == PackedInt32Array([3, 0]) and tool.gizmos._line_classes.count(3) == 2 and tool.gizmos._line_classes.has(4), "a curve shows its start, control point, live end, tangent legs, centreline, zoning guides and the start's height grip on its stem")
 	_expect(absf(float(tool._session_hud["radius_m"]) - 40.0) < 0.001, "the HUD's radius is the fillet's: %s" % tool._session_hud.get("radius_m"))
-	_expect(tool._info_label.text.contains("radius 40.0 m"), "the HUD names the radius: '%s'" % tool._info_label.text)
+	_expect(tool.hud.text().contains("R 40.0 m"), "the HUD names the radius: '%s'" % tool.hud.text())
 	_expect(tool._commit_segment(tool.pointer), "the end click sends the curve")
 	await _await_ack(tool)
 	_road_frame(tool)
@@ -991,7 +990,7 @@ func _test_session_strokes(simulation: SimulationNode) -> void:
 	_road_frame(tool)
 	frame = simulation.road_tool_frame()
 	_expect(String(frame["refusal"]) == "road_tight_curve" and PackedVector3Array(frame["points"]).is_empty(), "a 4 m radius is refused as too tight")
-	_expect(tool._info_label.visible and tool._info_label.text.begins_with("Curve too tight"), "the HUD words the tight curve: '%s'" % tool._info_label.text)
+	_expect(tool.hud.text().contains("Curve too tight"), "the HUD words the tight curve: '%s'" % tool.hud.text())
 	_expect(not tool._commit_segment(tool.pointer), "a refused draft is not sent")
 	manager._handle_escape()
 	_expect(not tool.is_drawing() and not tool.active, "Escape ends the stroke and the tool")
@@ -1112,9 +1111,64 @@ func _test_s_curve_and_freeform(simulation: SimulationNode) -> void:
 	frame = simulation.road_tool_frame()
 	_expect(int(frame["phase"]) == 0 and PackedVector3Array(frame["points"]).is_empty() and PackedVector3Array(frame["gizmo_handles"]).is_empty(), "Escape drops the draft")
 	_expect(not tool.gizmos.visible and tool._preview.is_empty() and int(simulation.get_road_benchmark_state()["live_edges"]) == edges, "Escape leaves nothing")
+	await _test_freeform_chips(simulation, tool)
 	tool.draw_mode = RoadToolScript.DrawMode.STRAIGHT
 	manager.free()
 	tool.free()
+
+# Round V item 7 (on open ground east of the curve tests): an open freeform draft shows its hint; in the edit phase the Build chip builds
+# it and the Cancel chip drops it, each click taken by the GUI (it never reaches the world). The
+# HUD is moved into the tree under a camera looking down so its chips are placed and clickable.
+func _test_freeform_chips(simulation: SimulationNode, tool: PointerRoadTool) -> void:
+	var camera := Camera3D.new()
+	root.add_child(camera)
+	camera.position = Vector3(60.0, 260.0, 90.0)
+	camera.look_at(Vector3(60.0, 0.0, 89.99))
+	camera.current = true
+	var hud = tool.hud
+	hud.reparent(root)
+	hud.simulation_node = simulation
+	tool.cancel_road()
+	tool.draw_mode = RoadToolScript.DrawMode.FREEFORM
+	tool._begin_stroke(Vector3(30.0, 0.0, 85.0))
+	tool.pointer = Vector3(60.0, 0.0, 95.0)
+	_road_frame(tool)
+	_expect(hud.text().contains("Click to add a node"), "a placing draft hints how to go on: '%s'" % hud.text())
+	for action in ["build", "cancel"]:
+		tool.cancel_road()
+		tool._begin_stroke(Vector3(30.0, 0.0, 85.0))
+		tool._commit_segment(Vector3(60.0, 0.0, 95.0))
+		tool._commit_segment(Vector3(90.0, 0.0, 85.0))
+		tool.confirm_road()
+		_road_frame(tool)
+		_expect(int(simulation.road_tool_frame()["phase"]) == 3, "the draft is in its edit phase")
+		_expect(hud.text().contains("Enter or click to build") and hud.text().contains("Build") and hud.text().contains("Cancel"), "the edit phase hints and offers Build and Cancel: '%s'" % hud.text())
+		hud.place(camera)
+		var rect: Rect2 = hud.chip_rect(hud.Kind.BUILD if action == "build" else hud.Kind.CANCEL)
+		_expect(rect.has_area(), "the %s chip is placed" % action)
+		var edges := int(simulation.get_road_benchmark_state()["live_edges"])
+		var press := InputEventMouseButton.new()
+		press.button_index = MOUSE_BUTTON_LEFT
+		press.pressed = true
+		press.position = rect.get_center()
+		press.global_position = press.position
+		root.push_input(press)
+		_expect(root.is_input_handled(), "the %s chip's click is the GUI's" % action)
+		var release := press.duplicate()
+		release.pressed = false
+		root.push_input(release)
+		if action == "build":
+			_expect(tool._commit_request_id > 0, "the Build chip sends the draft")
+			await _await_ack(tool)
+			_expect(int(simulation.get_road_benchmark_state()["live_edges"]) > edges, "the Build chip builds the freeform road")
+		else:
+			_road_frame(tool)
+			var frame: Dictionary = simulation.road_tool_frame()
+			_expect(int(frame["phase"]) == 0 and PackedVector3Array(frame["points"]).is_empty(), "the Cancel chip drops the draft")
+			_expect(int(simulation.get_road_benchmark_state()["live_edges"]) == edges and hud.text().is_empty(), "the Cancel chip leaves nothing")
+	tool.cancel_road()
+	hud.reparent(tool)
+	camera.free()
 
 # The options row's Snapping and Steps rows (`ROAD-112` round E) on the real node: each control
 # reaches Rust's session under its option name (read back through what takes a camera ray's

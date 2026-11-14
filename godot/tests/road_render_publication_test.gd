@@ -15,6 +15,7 @@ const RoadTool := preload("res://scripts/tools/road_tool.gd")
 const Terrain := preload("res://scripts/renderers/terrain.gd")
 const Network := preload("res://scripts/renderers/network_renderer.gd")
 const RoadChunkRenderer := preload("res://scripts/renderers/road_chunk_renderer.gd")
+const RoadToolHudScript := preload("res://scripts/ui/road_tool_hud.gd")
 const LAYERS := ["skirt", "curb", "raised_step", "sidewalk", "road", "marking", "concrete", "lining", "median_grass"]
 var sim: SimulationNode
 var terrain
@@ -69,8 +70,7 @@ func _run():
 	host.add_child(tool.chunks.chunk_root)
 	tool.blueprint_mesh = MeshInstance3D.new()
 	tool.add_child(tool.blueprint_mesh)
-	tool._info_label = Label.new()
-	tool.add_child(tool._info_label)
+	tool.attach_hud(RoadToolHudScript.new())
 	tool._node_visuals_visible = true
 	network = Network.new()
 	network.simulation_node = sim

@@ -26,6 +26,9 @@ use crate::nodes::sim::road_tool::frame::{
     DraftRefusal, GizmoHandleKind, GizmoLineClass, Gizmos, Phase, RoadToolFrame, StrokeRequest,
 };
 use crate::nodes::sim::road_tool::height::draft_batch;
+use crate::nodes::sim::road_tool::labels::{
+    LabelKind, LabelTone, PreviewFacts, apply_preview, hint_text, middle_label, place_chips,
+};
 use crate::nodes::sim::road_tool::measure::RoadTypeSpec;
 use crate::nodes::sim::road_tool::modes::DrawMode;
 use crate::nodes::sim::road_tool::session::{
@@ -212,11 +215,20 @@ impl SimulationNode {
     /// guide piece's length and smallest radius, -1 for a straight piece: a curve's lead and
     /// arc, an S-curve's two arcs, a freeform draft's spans), and the gizmos as packed arrays:
     /// `gizmo_line_points` with `gizmo_line_starts` (each strip's first point) and
-    /// `gizmo_line_classes` (0 draft centreline, 1 guide line, 2 angle ray, 3 tangent leg),
+    /// `gizmo_line_classes` (0 draft centreline, 1 guide line, 2 angle ray, 3 tangent leg, 4 the
+    /// zoning-depth guide's outside, 5 its inside, 6 a grid curb), the same strips as quads for
+    /// `road_tool_line.gdshader`, by style (round V): `gizmo_stroke_vertices` / `_attributes`
+    /// (the centreline), `gizmo_guide_*` (guides, the angle ray, tangent legs),
+    /// `gizmo_zoning_out_*` (the zoning guide's outside), `gizmo_zoning_in_*` (its inside) and
+    /// `gizmo_curb_*` (the grid curbs), empty for a style without strips,
     /// `gizmo_handles` with `gizmo_handle_kinds` (0 placed end, 1 control point, 2 chain start,
     /// 3 the live end or the grabbed freeform grip, 4 a joint: the S-curve's or a freeform inner
     /// node, 5 a handle: an S-curve arc's control point, a freeform Bezier handle or a height
-    /// handle's grip, whose stem is a tangent strip). Heights (round I): `grade` (the grade
+    /// handle's grip, whose stem is a guide strip), the label chips (`label_kinds`: 0 piece
+    /// length, 1 total length, 2 radius, 3 angle, 4 slope, 5 cost, 6 bearing, 7 design speed, 8
+    /// notice, 9 hint, 10 Build, 11 Cancel; `label_values`, `label_anchors`, `label_sides`,
+    /// `label_tones`: 0 normal, 1 warning, 2 refused; `label_hint`, the hint's text) and
+    /// `zoning_depth_m` (-1 for a type that does not zone). Heights (round I): `grade` (the grade
     /// line's two end heights, empty when the stroke follows the ground), `height_handles`
     /// (one dictionary per end that has one: `end` 0 start or 1 end, `support`, `height_m`,
     /// `offset_m`, `grip`, `locked`, `active`), the HUD's `start_height_m`, `end_height_m`
@@ -240,26 +252,25 @@ impl SimulationNode {
             frame.state.phase == Phase::AwaitingAck,
             frame.stroke.points.len() >= 2,
         );
-        if awaiting {
-            return dict;
-        }
-        if !has_stroke {
-            if self.road_tool_session.previewed.take().is_some() {
-                self.road_tool_session.preview = None;
-                dict.set("preview_cleared", true);
+        // No preview while the sent stroke waits; its chips show it pending.
+        if !awaiting {
+            if !has_stroke {
+                if self.road_tool_session.previewed.take().is_some() {
+                    self.road_tool_session.preview = None;
+                    dict.set("preview_cleared", true);
+                }
+                self.road_tool_session.batch_running = false;
+                self.road_tool_clear_batch_ghost(&mut dict);
+            } else if !self.road_tool_preview_current() {
+                let preview = self.road_tool_run_preview(Some(&mut dict));
+                dict.set("preview", preview);
+            } else if self.road_tool_session.batch_running
+                && let Some(preview) = self.road_tool_step_batch(&mut dict)
+            {
+                dict.set("preview", preview);
             }
-            self.road_tool_session.batch_running = false;
-            self.road_tool_clear_batch_ghost(&mut dict);
-            return dict;
         }
-        if !self.road_tool_preview_current() {
-            let preview = self.road_tool_run_preview(Some(&mut dict));
-            dict.set("preview", preview);
-        } else if self.road_tool_session.batch_running
-            && let Some(preview) = self.road_tool_step_batch(&mut dict)
-        {
-            dict.set("preview", preview);
-        }
+        self.road_tool_set_labels(&mut dict, awaiting && has_stroke);
         dict
     }
 
@@ -272,6 +283,139 @@ impl SimulationNode {
         let mut dict = VarDictionary::new();
         set_heights(&mut dict, self.road_tool_session.session.frame());
         dict
+    }
+
+    /// Places the road tool's label chips on the screen (`road_tool_hud.gd`, round V): chip `i`
+    /// of `sizes[i]` pixels, anchored at the projected `anchors[i]`, pushed along the projected
+    /// unit direction `sides[i]`, `gap` pixels from its anchor, from every chip placed before
+    /// it and from the squares of `obstacle_px` about each of `obstacles` (the projected
+    /// handles) (`labels::place_chips`, the one placement rule). Returns each chip's top-left
+    /// corner.
+    #[func]
+    pub fn road_tool_place_labels(
+        &self,
+        anchors: PackedVector2Array,
+        sides: PackedVector2Array,
+        sizes: PackedVector2Array,
+        obstacles: PackedVector2Array,
+        obstacle_px: f32,
+        gap: f32,
+    ) -> PackedVector2Array {
+        let mut corners = Vec::with_capacity(anchors.len());
+        place_chips(
+            anchors.as_slice(),
+            sides.as_slice(),
+            sizes.as_slice(),
+            obstacles.as_slice(),
+            obstacle_px,
+            gap,
+            &mut corners,
+        );
+        PackedVector2Array::from(corners.as_slice())
+    }
+
+    // The frame's label chips with what the standing preview says (the class-priced cost, the
+    // steepest grade, a refusal or a warning; `pending` while the sent stroke waits), as packed
+    // arrays: `label_kinds`, `label_values`, `label_anchors`, `label_sides` (unit XZ, y 0) and
+    // `label_tones`, with `label_hint` (the hint chip's text) and `zoning_depth_m`.
+    fn road_tool_set_labels(&self, dict: &mut VarDictionary, pending: bool) {
+        let frame = self.road_tool_session.session.frame();
+        let mut labels = frame.labels.clone();
+        let preview = self
+            .road_tool_session
+            .preview
+            .as_ref()
+            .filter(|_| frame.stroke.points.len() >= 2);
+        if let Some(preview) = preview {
+            let number = |key: &str| preview.get(key).and_then(|v| v.try_to::<f64>().ok());
+            let text = |key: &str| {
+                preview
+                    .get(key)
+                    .and_then(|v| v.try_to::<GString>().ok())
+                    .map(|v| v.to_string())
+                    .unwrap_or_default()
+            };
+            let valid = preview
+                .get("is_valid")
+                .and_then(|v| v.try_to::<bool>().ok())
+                .unwrap_or(false);
+            let plan_state = text("plan_state");
+            let facts = PreviewFacts {
+                refused: !valid,
+                pending,
+                build_cost: number("build_cost"),
+                max_grade: number("max_grade"),
+                warning: !text("warning_reason").is_empty()
+                    || preview
+                        .get("demolish_count")
+                        .and_then(|v| v.try_to::<i64>().ok())
+                        .is_some_and(|count| count > 0)
+                    || !(plan_state.is_empty() || plan_state == "ready"),
+            };
+            let middle = middle_label(&labels);
+            apply_preview(&mut labels, facts, middle);
+        }
+        let kind = |kind: LabelKind| match kind {
+            LabelKind::PieceLength => 0,
+            LabelKind::TotalLength => 1,
+            LabelKind::Radius => 2,
+            LabelKind::Angle => 3,
+            LabelKind::Slope => 4,
+            LabelKind::Cost => 5,
+            LabelKind::Bearing => 6,
+            LabelKind::DesignSpeed => 7,
+            LabelKind::Notice => 8,
+            LabelKind::Hint => 9,
+            LabelKind::Build => 10,
+            LabelKind::Cancel => 11,
+        };
+        let tone = |tone: LabelTone| match tone {
+            LabelTone::Normal => 0,
+            LabelTone::Warning => 1,
+            LabelTone::Refused => 2,
+        };
+        dict.set(
+            "label_kinds",
+            labels
+                .iter()
+                .map(|l| kind(l.kind))
+                .collect::<PackedInt32Array>(),
+        );
+        dict.set(
+            "label_values",
+            labels
+                .iter()
+                .map(|l| l.value)
+                .collect::<PackedFloat64Array>(),
+        );
+        dict.set(
+            "label_anchors",
+            labels
+                .iter()
+                .map(|l| l.anchor)
+                .collect::<PackedVector3Array>(),
+        );
+        dict.set(
+            "label_sides",
+            labels
+                .iter()
+                .map(|l| Vector3::new(l.side.x as f32, 0.0, l.side.y as f32))
+                .collect::<PackedVector3Array>(),
+        );
+        dict.set(
+            "label_tones",
+            labels
+                .iter()
+                .map(|l| tone(l.tone))
+                .collect::<PackedInt32Array>(),
+        );
+        dict.set("zoning_depth_m", frame.zoning_depth_m.unwrap_or(-1.0));
+        // The hint chip's wording (`labels::hint_text`), "" without one.
+        let hint = labels
+            .iter()
+            .find(|label| label.kind == LabelKind::Hint)
+            .map_or("", |label| hint_text(label.value > 0.0));
+        dict.set("label_hint", hint);
     }
 
     // The road tool's frame record without the preview.
@@ -738,8 +882,11 @@ fn set_gizmos(dict: &mut VarDictionary, gizmos: &Gizmos) {
         GizmoLineClass::Draft => 0,
         GizmoLineClass::Guide => 1,
         GizmoLineClass::Angle => 2,
-        // A height stem draws as a tangent leg until the restyle gives it a look (round I).
+        // A height stem draws in the guide look (round V2).
         GizmoLineClass::Tangent | GizmoLineClass::HeightStem => 3,
+        GizmoLineClass::ZoningOutside => 4,
+        GizmoLineClass::ZoningInside => 5,
+        GizmoLineClass::GridCurb => 6,
     };
     let handle_kind = |kind: &GizmoHandleKind| match kind {
         GizmoHandleKind::Endpoint => 0,
@@ -770,6 +917,10 @@ fn set_gizmos(dict: &mut VarDictionary, gizmos: &Gizmos) {
             .map(line_class)
             .collect::<PackedInt32Array>(),
     );
+    for ((vertices, attributes), quads) in LINE_STYLE_KEYS.into_iter().zip(line_quads(gizmos)) {
+        dict.set(vertices, quads.vertices);
+        dict.set(attributes, quads.attributes);
+    }
     dict.set(
         "gizmo_handles",
         PackedVector3Array::from(gizmos.handles.as_slice()),
@@ -782,6 +933,115 @@ fn set_gizmos(dict: &mut VarDictionary, gizmos: &Gizmos) {
             .map(handle_kind)
             .collect::<PackedInt32Array>(),
     );
+}
+
+// The quads one line style draws (`road_tool_line.gdshader` widens them on the screen, as
+// `route_ribbon.gdshader` does): four vertices a segment, the vertex buffer's positions and the
+// attribute buffer's interleaved `[other end x, y, z, side * (dash metres + 1)]` (UV then UV2, 16
+// bytes a vertex; the side is the sign, the dash station the magnitude less one), padded with
+// collapsed quads to a power-of-two segment count (at least 16; none for a style without
+// strips) so a drag keeps the surfaces' layout and uploads in place.
+#[derive(Default)]
+struct LineQuads {
+    vertices: PackedVector3Array,
+    attributes: PackedFloat32Array,
+}
+
+// Minimum quads a line surface holds.
+const LINE_QUADS_MIN: usize = 16;
+
+// The line styles' frame keys (vertices, attributes), in style order (`line_style`).
+const LINE_STYLE_KEYS: [(&str, &str); LINE_STYLES] = [
+    ("gizmo_stroke_vertices", "gizmo_stroke_attributes"),
+    ("gizmo_guide_vertices", "gizmo_guide_attributes"),
+    ("gizmo_zoning_out_vertices", "gizmo_zoning_out_attributes"),
+    ("gizmo_zoning_in_vertices", "gizmo_zoning_in_attributes"),
+    ("gizmo_curb_vertices", "gizmo_curb_attributes"),
+];
+const LINE_STYLES: usize = 5;
+
+// A strip class's style: the draft's centreline; every guide in one look (round V item 6, a
+// height handle's stem too, round V2); the
+// zoning guide's outside and inside (item 9); the grid curbs (item 8, drawn to stand out on the
+// preview road's own edges).
+fn line_style(class: GizmoLineClass) -> usize {
+    match class {
+        GizmoLineClass::Draft => 0,
+        GizmoLineClass::Guide
+        | GizmoLineClass::Angle
+        | GizmoLineClass::Tangent
+        | GizmoLineClass::HeightStem => 1,
+        GizmoLineClass::ZoningOutside => 2,
+        GizmoLineClass::ZoningInside => 3,
+        GizmoLineClass::GridCurb => 4,
+    }
+}
+
+// The gizmo strips as quads, one set per style (`line_style`). `O(strip points)`.
+fn line_quads(gizmos: &Gizmos) -> [LineQuads; LINE_STYLES] {
+    let mut out: [LineQuads; LINE_STYLES] = Default::default();
+    let mut counts = [0usize; LINE_STYLES];
+    let strips = gizmos.line_starts.len();
+    let strip = |index: usize| {
+        let start = gizmos.line_starts[index] as usize;
+        let end = gizmos
+            .line_starts
+            .get(index + 1)
+            .map_or(gizmos.line_points.len(), |&end| end as usize);
+        &gizmos.line_points[start..end]
+    };
+    for index in 0..strips {
+        let style = line_style(gizmos.line_classes[index]);
+        counts[style] += strip(index).len().saturating_sub(1);
+    }
+    for (style, quads) in out.iter_mut().enumerate() {
+        // A style without strips sends no quads (its surface is left out).
+        let capacity = if counts[style] == 0 {
+            0
+        } else {
+            counts[style].max(LINE_QUADS_MIN).next_power_of_two()
+        };
+        quads.vertices.resize(capacity * 4);
+        quads.attributes.resize(capacity * 4 * 4);
+    }
+    let mut written = [0usize; LINE_STYLES];
+    for index in 0..strips {
+        let style = line_style(gizmos.line_classes[index]);
+        let quads = &mut out[style];
+        let (vertices, attributes) = (
+            quads.vertices.as_mut_slice(),
+            quads.attributes.as_mut_slice(),
+        );
+        let mut dash = 0.0;
+        for pair in strip(index).windows(2) {
+            let (a, b) = (pair[0], pair[1]);
+            let length = a.distance_to(b);
+            let quad = written[style];
+            // Each end twice, one vertex per side; the side's sign is taken from the start's
+            // view, so it flips at the far end (whose other end points back).
+            for (corner, (point, other, side, at)) in [
+                (a, b, 1.0, dash),
+                (a, b, -1.0, dash),
+                (b, a, -1.0, dash + length),
+                (b, a, 1.0, dash + length),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let vertex = quad * 4 + corner;
+                vertices[vertex] = point;
+                attributes[vertex * 4..vertex * 4 + 4].copy_from_slice(&[
+                    other.x,
+                    other.y,
+                    other.z,
+                    side * (at + 1.0),
+                ]);
+            }
+            dash += length;
+            written[style] += 1;
+        }
+    }
+    out
 }
 
 fn mode_code(mode: DrawMode) -> i64 {

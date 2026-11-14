@@ -8,6 +8,7 @@
 
 use super::height::DraftStroke;
 use super::height::handles::HeightHandle;
+use super::labels::ToolLabel;
 use super::measure::{HudValues, RoadTypeSpec};
 use super::modes::DrawMode;
 use super::snap::SnapKind;
@@ -87,9 +88,18 @@ pub enum GizmoLineClass {
     /// control polygon (start, first arc's control point, joint, second arc's control point,
     /// end) and a freeform node's handle stems.
     Tangent,
-    /// A height handle's stem, from the end's support up to its grip (round I; drawn as a
-    /// tangent leg until the restyle gives it a look).
+    /// A height handle's stem, from the end's support up to its grip (round I; drawn in the
+    /// guide look, round V2).
     HeightStem,
+    /// The zoning-depth guide's outside (round V items 4 and 9): every point whose distance to
+    /// the stroke equals the depth the road's zoning reaches (the side offsets and the end
+    /// circles' outer caps).
+    ZoningOutside,
+    /// The zoning-depth guide's inside: the parts of the end circles over the stroke (nearer to
+    /// it than the depth).
+    ZoningInside,
+    /// A curb the zoning-grid snap aligned, and its tick on the end's cell line (round V item 8).
+    GridCurb,
 }
 
 /// A gizmo handle's kind.
@@ -147,6 +157,17 @@ impl Gizmos {
         self.line_starts.push(self.line_points.len() as u32);
         self.line_classes.push(class);
         self.line_points.extend(points);
+    }
+
+    /// Starts a strip of `class`; [`Self::push_point`] appends its points.
+    pub(crate) fn begin_line(&mut self, class: GizmoLineClass) {
+        self.line_starts.push(self.line_points.len() as u32);
+        self.line_classes.push(class);
+    }
+
+    /// Appends a point to the strip begun last.
+    pub(crate) fn push_point(&mut self, point: Vector3) {
+        self.line_points.push(point);
     }
 
     /// Appends one handle.
@@ -255,6 +276,11 @@ pub struct RoadToolFrame {
     pub height_handles: [Option<HeightHandle>; 2],
     /// The draft's heights, segmentation and slopes (`RoadToolSession::update_draft`).
     pub draft: DraftReport,
+    /// The label chips on the geometry (round V): what each says, where it is anchored and to
+    /// which side it is offset. Empty while no draft has a stroke.
+    pub labels: Vec<ToolLabel>,
+    /// The zoning depth of the drawn road type in metres (`None` for a type without zoning).
+    pub zoning_depth_m: Option<f64>,
     /// The cursor.
     pub cursor: CursorState,
     /// Mode, phase, refusal.
@@ -271,6 +297,7 @@ impl RoadToolFrame {
         self.piece_radii_m.clear();
         self.piece_slopes_percent.clear();
         self.height_handles = [None; 2];
+        self.labels.clear();
         self.state.refusal = None;
     }
 }

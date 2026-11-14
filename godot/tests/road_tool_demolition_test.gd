@@ -11,6 +11,7 @@ extends SceneTree
 const RoadToolScript := preload("res://scripts/tools/road_tool.gd")
 const WorldMaterialsScript := preload("res://scripts/renderers/world_materials.gd")
 const RoadReasonText := preload("res://scripts/ui/road_reason_text.gd")
+const RoadToolHudScript := preload("res://scripts/ui/road_tool_hud.gd")
 const PARKING_LOT := "parking:building.parking.small_lot"
 const TIMEOUT_MS := 20000
 
@@ -77,8 +78,7 @@ func _road_tool() -> Node3D:
 	tool.make_chunks()
 	tool.blueprint_mesh = MeshInstance3D.new()
 	tool.add_child(tool.blueprint_mesh)
-	tool._info_label = Label.new()
-	tool.add_child(tool._info_label)
+	tool.attach_hud(RoadToolHudScript.new())
 	tool._road_preview_material = WorldMaterialsScript.road_preview_material()
 	tool.blueprint_mesh.material_override = tool._road_preview_material
 	tool.fwd_lanes = 1
@@ -123,7 +123,7 @@ func _test_house(tool: Node3D, points: PackedVector3Array) -> void:
 	_expect(int(preview.get("demolish_count", 0)) == 1, "the stroke demolishes the one house: %s" % preview.get("demolish_count", 0))
 	var lots: PackedVector3Array = preview.get("demolish_lots", PackedVector3Array())
 	_expect(lots.size() == 4, "one lot outline, four corners: %d" % lots.size())
-	_expect(tool._info_label.text.contains("demolishes 1 building") and not tool._info_label.text.contains("buildings"), "the HUD names the demolition: '%s'" % tool._info_label.text)
+	_expect(tool.hud.text().contains("demolishes 1 building") and not tool.hud.text().contains("buildings"), "the HUD names the demolition: '%s'" % tool.hud.text())
 	var outline: MeshInstance3D = tool._demolish_mesh
 	_expect(outline != null and outline.visible and outline.mesh != null, "the lot is outlined")
 	if outline != null and outline.mesh != null:
@@ -147,7 +147,7 @@ func _test_parking_lot(tool: Node3D) -> void:
 	var before: Dictionary = simulation.get_road_benchmark_state()
 	var preview := await _preview_until(tool, points, func(p: Dictionary) -> bool: return not p.get("is_valid", true))
 	_expect(not preview.get("is_valid", true) and preview.get("invalid_reason", "") == "plotted_building_overlap", "a placed building's lot refuses the stroke: %s" % preview.get("invalid_reason", ""))
-	_expect(tool._info_label.text == RoadReasonText.text(preview), "the HUD words the refusal: '%s'" % tool._info_label.text)
+	_expect(tool.hud.text().contains(RoadReasonText.text(preview)), "the HUD words the refusal: '%s'" % tool.hud.text())
 	_expect(int(preview.get("demolish_count", -1)) == 0 and (preview.get("demolish_lots", PackedVector3Array()) as PackedVector3Array).is_empty(), "a refused stroke takes nothing")
 	_expect(tool._demolish_mesh == null or not tool._demolish_mesh.visible, "a refused stroke outlines nothing")
 	_expect(not tool._commit_segment(points[-1]), "the click does not queue a refused stroke")

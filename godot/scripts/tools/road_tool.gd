@@ -164,15 +164,18 @@ var last_road_type_id: String = DEFAULT_ROAD_TYPE
 signal road_type_changed(id: String)
 
 
-# The HUD (`road_tool_hud.gd`) and its label (tests assemble a tool with a label of their own);
-# the label's world anchor, projected to the screen each frame.
+# The HUD (`road_tool_hud.gd`): the label chips of the frame, projected and placed each frame
+# (tests assemble a tool with a HUD of their own).
 var hud = null
-var _info_label: Label = null
-var _label_world_pos: Vector3 = Vector3.ZERO
 # The tool's gizmos (`road_tool_gizmos.gd`), made on the first frame.
 var gizmos = null
-## Each gizmo upload's milliseconds while the preview is measured (`begin_preview_measurement`).
+## Each frame's gizmo upload and label placement milliseconds while the preview is measured
+## (`begin_preview_measurement`).
 var gizmo_upload_ms := PackedFloat32Array()
+## The same frames' parts: the gizmo upload, the chips' wording and their placement.
+var gizmo_part_ms := {"gizmos": PackedFloat32Array(), "label_words": PackedFloat32Array(), "label_place": PackedFloat32Array()}
+# This frame's chip wording milliseconds (`_session_frame`).
+var _label_word_ms := 0.0
 
 var preview_metrics: RefCounted
 var _preview_input_us := 0
@@ -254,10 +257,16 @@ func _ready():
 		blueprint_mesh.material_override = _road_preview_material
 	if MetrumDebug.is_enabled("perf"):
 		begin_preview_measurement()
-	hud = RoadToolHud.new()
-	add_child(hud)
-	_info_label = hud.label
+	attach_hud(RoadToolHud.new())
 	reassert_intent()
+
+## Makes `new_hud` (`road_tool_hud.gd`) the tool's HUD, a child of the tool: its Build chip
+## builds an open freeform draft (Enter's `confirm`), its Cancel chip drops it.
+func attach_hud(new_hud) -> void:
+	hud = new_hud
+	add_child(hud)
+	hud.build_pressed.connect(confirm_road)
+	hud.cancel_pressed.connect(cancel_road)
 
 ## Sends the tool's whole intent to Rust's session: lanes, every snapping option, continuous,
 ## straight grade, median, parking and attributes, as this script reads them out.
@@ -290,20 +299,30 @@ func _process(delta):
 	var had_mouse_pos := _has_last_world_mouse_pos
 	super._process(delta)
 	if not active:
-		if _info_label:
-			_info_label.visible = false
+		if hud != null:
+			hud.clear()
 		if gizmos != null:
 			gizmos.clear()
 	# The base tool has now resolved this frame's pointer, including camera-only movement.
 	var moved := _has_last_world_mouse_pos and (not had_mouse_pos or previous_mouse_pos != _last_world_mouse_pos)
+	var gizmo_ms := 0.0
+	_label_word_ms = 0.0
 	if active and _has_session():
-		_session_frame(moved)
-	_place_label()
+		gizmo_ms = _session_frame(moved)
+	_place_labels(gizmo_ms)
 
-# Projects the HUD label to the screen each frame, so it stays the same pixel size at any zoom.
-func _place_label() -> void:
-	if hud != null and is_inside_tree():
-		hud.place(get_viewport().get_camera_3d(), _label_world_pos)
+# Projects and places the HUD's chips each frame, so they stay the same pixel size at any zoom;
+# records the frame's gizmo upload plus placement while measured.
+func _place_labels(gizmo_ms: float) -> void:
+	if hud == null or not is_inside_tree():
+		return
+	hud.simulation_node = simulation_node
+	var label_ms: float = hud.place(get_viewport().get_camera_3d())
+	if preview_metrics != null and gizmo_ms + _label_word_ms + label_ms > 0.0:
+		gizmo_upload_ms.append(gizmo_ms + _label_word_ms + label_ms)
+		gizmo_part_ms["gizmos"].append(gizmo_ms)
+		gizmo_part_ms["label_words"].append(_label_word_ms)
+		gizmo_part_ms["label_place"].append(label_ms)
 
 func _snap_to_roads_enabled() -> bool:
 	return true
@@ -329,8 +348,8 @@ func _is_editable() -> bool:
 
 # One frame of the session: the scripted pointer, then the frame record, its preview when the
 # stroke, its type or the context changed, or the next share of the pose's graded tiles; then
-# the gizmos.
-func _session_frame(moved: bool) -> void:
+# the gizmos and the HUD's chips. Returns the gizmo upload's milliseconds.
+func _session_frame(moved: bool) -> float:
 	if _scripted_pointer_enabled:
 		simulation_node.road_tool_pointer_at(_scripted_pointer_position)
 	if moved:
@@ -352,9 +371,13 @@ func _session_frame(moved: bool) -> void:
 	elif _graded_pending > 0 and _commit_request_id == 0 and _is_editable():
 		# A frame without a new pose stages the next share of the pose's graded tiles.
 		_show_graded(simulation_node.advance_road_preview_terrain())
-	_show_draft_refusal(String(frame.get("refusal", "")), frame.get("cursor", Vector3.ZERO))
-	_show_gizmos(frame)
+	if hud != null:
+		var word_us := Time.get_ticks_usec()
+		if hud.show_labels(frame, _preview):
+			_label_word_ms = float(Time.get_ticks_usec() - word_us) / 1000.0
+	var gizmo_ms := _show_gizmos(frame)
 	_show_batch_ghost(frame)
+	return gizmo_ms
 
 # A batch pose's ghost (round I): drawn while the batch's exact pieces are not ready, gone once
 # they show or the draft is no batch.
@@ -364,21 +387,6 @@ func _show_batch_ghost(frame: Dictionary) -> void:
 	elif bool(frame.get("batch_cleared", false)):
 		gizmos.clear_batch_ghost()
 
-# The HUD for a draft the session refuses before any preview (a curve folding back, an S-curve
-# without a solution, an arc tighter than the road type allows); a draft at its start point is
-# only too short, which shows nothing.
-func _show_draft_refusal(refusal: String, cursor: Vector3) -> void:
-	if refusal.is_empty() or refusal == "too_short" or not _is_editable() or not _info_label:
-		return
-	var refused := {
-		"is_valid": false,
-		"invalid_reason": refusal,
-		"geometry_measured": float(_session_hud.get("radius_m", 0.0)),
-		"geometry_limit": float(_session_hud.get("illegal_radius_m", 0.0)),
-	}
-	RoadToolHud.write_label(_info_label, _session_hud, refused, _session_snap, false)
-	_label_world_pos = cursor + Vector3(0.0, 2.0, 0.0)
-
 func _read_session_frame(frame: Dictionary) -> void:
 	_session_phase = int(frame.get("phase", 0))
 	_session_snap = String(frame.get("snap", "free"))
@@ -386,14 +394,12 @@ func _read_session_frame(frame: Dictionary) -> void:
 	_session_points = frame.get("points", PackedVector3Array())
 	_draw_mode = int(frame.get("mode", _draw_mode))
 
-# Draws the frame's gizmos (one reused mesh) and records their upload while measured.
-func _show_gizmos(frame: Dictionary) -> void:
+# Draws the frame's gizmos (one reused mesh); returns the upload's milliseconds.
+func _show_gizmos(frame: Dictionary) -> float:
 	if gizmos == null:
 		gizmos = RoadToolGizmos.new()
 		add_child(gizmos)
-	var upload_ms: float = gizmos.show_frame(frame)
-	if preview_metrics != null and upload_ms > 0.0:
-		gizmo_upload_ms.append(upload_ms)
+	return gizmos.show_frame(frame)
 
 # Takes a preview the session's bridge ran (in its frame or at a click) as the latest preview.
 func _adopt_session_preview(preview: Dictionary, points: PackedVector3Array, start_us: int, end_us: int) -> void:
@@ -555,7 +561,7 @@ func _handle_click():
 	_log_click_detail(state_before, is_valid, mouse_ms, 0.0, 0.0, commit_ms, total_start_us)
 
 # Shows the latest preview's chunks in this frame; an invalid stroke shows only its reason.
-func _show_preview(points: PackedVector3Array) -> void:
+func _show_preview(_points: PackedVector3Array) -> void:
 	is_valid = bool(_preview.get("is_valid", false))
 	_update_road_preview_material(_preview)
 	var sequence := int(_preview.get("sequence", 0))
@@ -577,7 +583,6 @@ func _show_preview(points: PackedVector3Array) -> void:
 			_preview_metric_row["stage_install_ms"] = float(Time.get_ticks_usec() - stage_us) / 1000.0
 			_preview_metric_row["graded_install_ms"] = graded_ms
 			preview_metrics.installed(sequence)
-	_update_hud(_preview.get("prepared_points", points), _preview)
 
 # Outlines the lots a valid stroke removes (`ZONE-09`), four corners each, as the bulldoze tool
 # outlines what it removes; anything else clears them.
@@ -626,8 +631,8 @@ func _clear_preview_visual() -> void:
 	_preview_drawn_sequence = 0
 	if blueprint_mesh:
 		blueprint_mesh.mesh = null
-	if _info_label:
-		_info_label.visible = false
+	if hud != null:
+		hud.clear()
 
 # After an accepted commit the preview stays shown until the committed generation's chunks are
 # installed; `road_chunks_installed` releases it in the same call, so no frame shows neither.
@@ -691,14 +696,6 @@ func _update_road_preview_material(preview: Dictionary) -> void:
 	var state := 1 if bool(preview.get("is_pending", false)) else (0 if bool(preview.get("is_valid", false)) else 2)
 	_road_preview_material.set_shader_parameter("placement_state", state)
 
-# The HUD for the stroke `points` and its `preview`: Rust's numbers, worded by `road_tool_hud.gd`,
-# anchored above the stroke's end.
-func _update_hud(points: PackedVector3Array, preview: Dictionary) -> void:
-	if not _info_label or points.size() < 2:
-		return
-	RoadToolHud.write_label(_info_label, _session_hud, preview, _session_snap, active and _zoning_snap_enabled())
-	_label_world_pos = points[points.size() - 1] + Vector3(0.0, 2.0, 0.0)
-
 # A press (or Enter's `confirm`) on the session: places a point, grabs a freeform grip, or sends
 # the stroke. True when a commit was queued.
 func _session_press(event_name: String = "press") -> bool:
@@ -727,7 +724,6 @@ func _session_press(event_name: String = "press") -> bool:
 	_graded_pending = 0
 	_commit_points = points
 	_commit_validation = validation
-	_update_hud(validation.get("prepared_points", points), {"is_pending": true, "build_cost": validation.get("build_cost", 0.0)})
 	return true
 
 func _read_press(result: Dictionary) -> void:
@@ -816,8 +812,8 @@ func cancel_road():
 	_clear_preview_cache()
 	if gizmos != null:
 		gizmos.clear()
-	if _info_label:
-		_info_label.visible = false
+	if hud != null:
+		hud.clear()
 
 ## Drops the committed chunks and the preview (another world): the next refresh takes the whole
 ## network.

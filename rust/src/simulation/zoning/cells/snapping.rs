@@ -20,6 +20,11 @@ impl RoadGridSnap {
         Self { alignments, cell_m }
     }
 
+    /// The zoning cell size in metres.
+    pub(crate) fn cell_m(&self) -> f64 {
+        self.cell_m
+    }
+
     /// Snaps a straight road's cursor to curb-compatible centreline coordinates.
     /// Uses the edge R-tree and prepared alignment lookup: O(log E + K log A), no allocations,
     /// for K nearby edges and A alignment entries (persistent hash-trie lookups). An active stroke keeps its start fixed and snaps only near a grid axis.

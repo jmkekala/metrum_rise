@@ -11,6 +11,9 @@
 ## freeform draft in its edit phase, the committed freeform road, and
 ## `gizmo_upload_scurve_freeform.json` (uploads while an S-curve's end and a freeform handle are
 ## dragged).
+## `METRUM_ROAD_TOOL_CAPTURE_SET=restyle` writes round V's extras: a stroke climbing steeply, the
+## same straight stroke at a far zoom (the lines' and chips' size stays constant on screen), and
+## four road types snapped on one zoning grid with their curb lines.
 extends SceneTree
 
 const RoadToolScript := preload("res://scripts/tools/road_tool.gd")
@@ -22,6 +25,8 @@ var _simulation: Node
 var _tool
 var _failures := 0
 var _upload_order := PackedFloat32Array()
+# The last drag's parts (`_parts`).
+var _last_parts := {}
 
 func _initialize() -> void:
 	call_deferred("_run")
@@ -65,9 +70,11 @@ func _run() -> void:
 	_tool.active = true
 	_tool.begin_preview_measurement()
 	var capture_set := OS.get_environment("METRUM_ROAD_TOOL_CAPTURE_SET")
-	if capture_set == "snapping" or capture_set == "scurve_freeform":
+	if capture_set in ["snapping", "scurve_freeform", "restyle"]:
 		if capture_set == "snapping":
 			await _capture_snapping()
+		elif capture_set == "restyle":
+			await _capture_restyle()
 		else:
 			await _capture_scurve_freeform()
 		_main.queue_free()
@@ -95,16 +102,24 @@ func _run() -> void:
 	await _capture("curve_mid_draw")
 	# The gizmo upload while the curve's end is dragged (every frame a new pose).
 	_tool.gizmo_upload_ms = PackedFloat32Array()
+	for key in _tool.gizmo_part_ms:
+		_tool.gizmo_part_ms[key] = PackedFloat32Array()
 	for index in 120:
 		var turn := float(index) / 120.0 * TAU
 		_tool.set_scripted_pointer(true, Vector3(40.0 + 12.0 * cos(turn), 0.0, 10.0 + 12.0 * sin(turn)))
 		await process_frame
 	_upload_order = _tool.gizmo_upload_ms.duplicate()
+	_last_parts = _parts()
 	# The drag rewrote the vertex buffers in place: the server's copy is this frame's draft.
 	var gizmo_mesh: ArrayMesh = _tool.gizmos.mesh
-	var drawn: Array = RenderingServer.mesh_surface_get_arrays(gizmo_mesh.get_rid(), 1)
-	var expected: PackedVector3Array = _tool.gizmos._line_points.slice(int(_simulation.road_tool_frame()["gizmo_line_starts"][1]))
-	_expect(not drawn.is_empty() and PackedVector3Array(drawn[Mesh.ARRAY_VERTEX]) == expected, "the in-place gizmo upload leaves the draft's vertices on the server")
+	var drawn: Array = RenderingServer.mesh_surface_get_arrays(gizmo_mesh.get_rid(), 0)
+	var expected: PackedVector3Array = _simulation.road_tool_frame()["gizmo_stroke_vertices"]
+	_expect(not drawn.is_empty() and PackedVector3Array(drawn[Mesh.ARRAY_VERTEX]) == expected, "the in-place gizmo upload leaves the stroke's quads on the server")
+	# The interleaved attributes went into the attribute buffer as UV and UV2 (round V).
+	var attributes: PackedFloat32Array = _simulation.road_tool_frame()["gizmo_stroke_attributes"]
+	var uv: PackedVector2Array = drawn[Mesh.ARRAY_TEX_UV]
+	var uv2: PackedVector2Array = drawn[Mesh.ARRAY_TEX_UV2]
+	_expect(uv.size() * 4 == attributes.size() and uv[1] == Vector2(attributes[4], attributes[5]) and uv2[1] == Vector2(attributes[6], attributes[7]), "the stroke's attributes are its other ends and sides on the server")
 	var uploads: Array = Array(_tool.gizmo_upload_ms)
 	uploads.sort()
 	_tool.set_scripted_pointer(true, Vector3(40.0, 0.0, 10.0))
@@ -152,6 +167,7 @@ func _run() -> void:
 		"gizmo_upload_ms_p95": p95,
 		"gizmo_upload_ms_max": uploads[-1] if not uploads.is_empty() else -1.0,
 		"gizmo_upload_ms_in_order": Array(_upload_order),
+		"parts": _last_parts,
 		"failures": _failures,
 	}
 	var file := FileAccess.open(_output.path_join("gizmo_upload.json"), FileAccess.WRITE)
@@ -215,6 +231,7 @@ func _capture_scurve_freeform() -> void:
 	await _frames(3)
 	var first_upload := Array(_tool.gizmo_upload_ms)
 	uploads["scurve"] = await _drag_record(Vector3(60.0, 0.0, 10.0), func(at: Vector3): _tool.set_scripted_pointer(true, at))
+	var parts := {"scurve": _last_parts}
 	_tool.set_scripted_pointer(true, Vector3(60.0, 0.0, 10.0))
 	await _capture("scurve_mid_draw")
 	_tool.cancel_road()
@@ -238,6 +255,7 @@ func _capture_scurve_freeform() -> void:
 	_tool._session_press()
 	var grip := handles[2] + Vector3(10.0, 0.0, 6.0)
 	uploads["freeform_handle"] = await _drag_record(grip, func(at: Vector3): _tool.set_scripted_pointer(true, at))
+	parts["freeform_handle"] = _last_parts
 	_tool.set_scripted_pointer(true, grip)
 	await _frames(2)
 	_simulation.road_tool_event("release")
@@ -247,7 +265,7 @@ func _capture_scurve_freeform() -> void:
 	await _ack()
 	_tool.cancel_road()
 	await _capture("freeform_committed")
-	var report := {"engine": Engine.get_version_info(), "adapter": RenderingServer.get_video_adapter_name(), "failures": _failures, "first_uploads_ms": first_upload}
+	var report := {"engine": Engine.get_version_info(), "adapter": RenderingServer.get_video_adapter_name(), "failures": _failures, "first_uploads_ms": first_upload, "parts": parts}
 	for key in uploads:
 		var times: Array = uploads[key]
 		var sorted := times.duplicate()
@@ -264,21 +282,74 @@ func _capture_scurve_freeform() -> void:
 	file.close()
 	print("ROAD_TOOL_CAPTURE %s" % JSON.stringify(report))
 
+# Round V: a straight stroke climbing 9 m over 60 m (its grade chip and the steep notice), then
+# a straight stroke seen from 900 m.
+func _capture_restyle() -> void:
+	_tool.draw_mode = RoadToolScript.DrawMode.STRAIGHT
+	_tool._begin_stroke(Vector3(-40.0, 0.0, 50.0))
+	_tool.set_scripted_pointer(true, Vector3(20.0, 9.0, 30.0))
+	await _capture("steep_slope")
+	_tool.set_scripted_pointer(true, Vector3(40.0, 0.0, 10.0))
+	await _capture("straight_near")
+	_camera.position = Vector3(0.0, 760.0, 560.0)
+	_camera.look_at(Vector3(0.0, 0.0, 10.0))
+	await _capture("straight_far_zoom")
+	_tool.cancel_road()
+	# Item 8: four road types snapped on one zoning grid (a base road's cells), each drawn by
+	# vertical camera rays with the grid snap on; the curbs and their ticks show.
+	_camera.position = Vector3(0.0, 150.0, 200.0)
+	_camera.look_at(Vector3(0.0, 0.0, 100.0))
+	_tool._begin_stroke(Vector3(-140.0, 0.0, 40.0))
+	_tool.set_scripted_pointer(true, Vector3(140.0, 0.0, 40.0))
+	await _frames(3)
+	_expect(_tool._commit_segment(Vector3(140.0, 0.0, 40.0)), "the grid's base road commits")
+	await _ack()
+	_tool.cancel_road()
+	_tool.zoning_grid_snap_enabled = true
+	_tool.set_process(false)
+	_tool.set_scripted_pointer(false)
+	for type_id in ["builtin:road_2l", "builtin:road_4l", "builtin:walkway", "builtin:one_way_1l"]:
+		_tool.set_road_type(type_id)
+		_ray(Vector3(-43.0, 0.0, 103.0))
+		_tool._read_press(_simulation.road_tool_event("press"))
+		_ray(Vector3(47.0, 0.0, 104.0))
+		var snap := String(_simulation.road_tool_frame()["snap"])
+		_expect(snap == "grid", "%s: the grid takes the cursor (%s)" % [type_id, snap])
+		_ray(Vector3(47.0, 0.0, 104.0))
+		await _capture("grid_curbs_" + type_id.trim_prefix("builtin:"))
+		_tool.cancel_road()
+	_tool.zoning_grid_snap_enabled = false
+	_tool.set_road_type(_tool.DEFAULT_ROAD_TYPE)
+	_tool.set_process(true)
+
+# The recorded frames' parts (gizmo upload, chip wording, chip placement): p50, p95 and max each.
+func _parts() -> Dictionary:
+	var parts := {}
+	for key in _tool.gizmo_part_ms:
+		var times := Array(_tool.gizmo_part_ms[key])
+		times.sort()
+		parts[key] = [times[times.size() / 2], times[int(times.size() * 0.95)], times[-1]] if not times.is_empty() else []
+	return parts
+
 # Moves the pointer round a 12 m circle about `centre` for 120 frames through `move` and returns
 # the gizmo uploads those frames recorded (ms each).
 func _drag_record(centre: Vector3, move: Callable) -> Array:
 	_tool.gizmo_upload_ms = PackedFloat32Array()
+	for key in _tool.gizmo_part_ms:
+		_tool.gizmo_part_ms[key] = PackedFloat32Array()
+	for key in _tool.gizmo_part_ms:
+		_tool.gizmo_part_ms[key] = PackedFloat32Array()
 	for index in 120:
 		var turn := float(index) / 120.0 * TAU
 		move.call(centre + Vector3(12.0 * cos(turn), 0.0, 12.0 * sin(turn)))
 		await process_frame
+	_last_parts = _parts()
 	return Array(_tool.gizmo_upload_ms)
 
 # The session's cursor for a vertical camera ray onto `at`, then one frame of the tool's drawing.
 func _ray(at: Vector3) -> void:
 	_simulation.road_tool_pointer(Vector3(at.x, 200.0, at.z), Vector3.DOWN, false)
-	_tool._session_frame(true)
-	_tool._place_label()
+	_tool._place_labels(_tool._session_frame(true))
 
 func _frames(count: int) -> void:
 	for frame in count:

@@ -1,62 +1,96 @@
 # SPDX-License-Identifier: GPL-2.0-only
 
-## The road tool's gizmos (`ROAD-112` round D): what `road_tool_frame` sends as packed arrays,
-## drawn into one reused `ArrayMesh`. Line strips (`gizmo_line_points`, each strip starting at
-## its `gizmo_line_starts` entry) draw one surface each in their class's colour: the draft's
-## centreline, a guide line, the angle ray, a curve's tangent legs (and round N's S-curve control
-## polygon and freeform handle stems). Handles (`gizmo_handles`) draw as screen-sized points, one
-## surface per kind: a placed end, a control point, the chain's start, the live end (or the
-## grabbed freeform grip), a joint (the S-curve's, a freeform inner node) and a handle (an
-## S-curve arc's control point, a freeform Bezier handle). Plain defaults: unshaded, drawn over the road, colours from the tool's
-## existing palette (white, the HUD's amber, the cursor's green, the node markers' blue). Rust
+## The road tool's gizmos (`ROAD-112` rounds D and V): what `road_tool_frame` sends, drawn into
+## one reused `ArrayMesh` over the terrain and the roads (no depth test), so the stroke's path
+## stays visible where the preview terrain's grass covers the preview road. Up to five line
+## surfaces of quads Rust built (`gizmo_stroke_*`, `gizmo_guide_*`, `gizmo_zoning_out_*`,
+## `gizmo_zoning_in_*`, `gizmo_curb_*`; none for a style without quads), widened to a constant on-screen width by `road_tool_line.gdshader`: the
+## stroke's centreline, solid and thick; every guide line in one look (alignment guides, the
+## angle ray, tangent legs, control polygons and handle stems), dashed and thinner; the
+## zoning-depth guide's outside (and the grid snap's curbs) solid and strong, its inside solid and
+## faint (round V item 9); the grid snap's curbs solid in their own colour (item 8). Handles (`gizmo_handles`) draw as
+## filled round points of a constant size, one surface per kind: a placed end, a control point,
+## the chain's start, the live end (or the grabbed freeform grip), a joint and a handle. The
+## palette is defined once (`PALETTE`), from the UI theme's colours (`ui_style.gd`). Rust
 ## decides every point; this script only uploads them, and only when they changed: in place
-## while the surfaces' layout holds (a drag), rebuilt when it changes.
+## while the surfaces' layout holds (Rust pads the quads to power-of-two counts), rebuilt when it
+## changes.
 extends MeshInstance3D
 
 const SceneLightingConfig := preload("res://scripts/core/scene_lighting.gd")
-# By line class: draft centreline, guide line, angle ray, tangent leg.
-const LINE_COLORS := [
-	Color(1.0, 1.0, 1.0, 0.9),
-	Color(0.26, 0.92, 0.95, 0.85),
-	Color(0.3, 0.8, 1.0, 0.85),
-	Color(1.0, 0.76, 0.18, 0.95),
-]
-# By handle kind: placed end, control point, chain start, live end, joint, handle.
-const HANDLE_COLORS := [
-	Color(1.0, 1.0, 1.0, 0.95),
-	Color(1.0, 0.76, 0.18, 0.95),
-	Color(0.0, 1.0, 0.5, 0.95),
-	Color(0.3, 0.8, 1.0, 0.95),
-	Color(1.0, 0.42, 0.82, 0.95),
-	Color(1.0, 0.9, 0.55, 0.95),
-]
-const HANDLE_SIZE_PX := 10.0
+const LineShader := preload("res://scripts/shaders/road_tool_line.gdshader")
+const HandleShader := preload("res://scripts/shaders/road_tool_handle.gdshader")
+
+## The gizmos' one palette: the stroke's centreline, every guide line (one colour, width and
+## dash), and the handles by kind (placed end, control point, chain start, live end, joint,
+## handle).
+const PALETTE := {
+	"stroke": Color(1.0, 1.0, 1.0, 0.82),
+	"stroke_width_px": 4.0,
+	"guide": Color(0.72, 0.74, 1.0, 0.72),
+	"guide_width_px": 2.0,
+	"guide_dash_px": 9.0,
+	"guide_gap_px": 6.0,
+	# The zoning-depth guide (round V item 9): its outside (and the grid curbs) solid and strong,
+	# its inside solid and faint.
+	"zoning_out": Color(0.72, 0.74, 1.0, 0.9),
+	"zoning_out_width_px": 3.0,
+	"zoning_in": Color(0.72, 0.74, 1.0, 0.4),
+	"zoning_in_width_px": 2.0,
+	# The grid snap's curbs (item 8): solid, in a colour that stands out on the preview road's
+	# light edges.
+	"curb": Color(0.35, 0.82, 1.0, 0.95),
+	"curb_width_px": 3.0,
+	"handles": [
+		Color(1.0, 1.0, 1.0, 0.95),
+		Color(0.65, 0.65, 0.90, 0.95),
+		Color(0.35, 0.95, 0.55, 0.95),
+		Color(1.0, 1.0, 1.0, 0.95),
+		Color(0.65, 0.65, 0.90, 0.95),
+		Color(0.82, 0.82, 0.98, 0.95),
+	],
+	"handle_sizes_px": [14.0, 13.0, 14.0, 16.0, 12.0, 10.0],
+}
+# The line surfaces' frame keys, in surface order: the stroke, the guides, the zoning guide's
+# outside and inside, the grid curbs. A style without quads has no surface.
+const LINE_KEYS := ["gizmo_stroke", "gizmo_guide", "gizmo_zoning_out", "gizmo_zoning_in", "gizmo_curb"]
 
 var _mesh := ArrayMesh.new()
-var _line_materials: Array[StandardMaterial3D] = []
-var _handle_materials: Array[StandardMaterial3D] = []
+var _line_materials: Array[ShaderMaterial] = []
+var _handle_materials: Array[ShaderMaterial] = []
 # The arrays last uploaded: an unchanged frame uploads nothing.
 var _line_points := PackedVector3Array()
+var _line_classes := PackedInt32Array()
 var _handles := PackedVector3Array()
 var _handle_kinds := PackedInt32Array()
-var _line_classes := PackedInt32Array()
-# The surfaces' layout (each strip's start and class, each handle kind's count): while it holds,
-# a new pose rewrites the vertex buffers in place instead of rebuilding the surfaces.
+# The surfaces' layout (each line surface's vertex count, each handle kind's count): while it
+# holds, a new pose rewrites the buffers in place instead of rebuilding the surfaces.
 var _layout := PackedInt32Array()
 # Each handle kind's points of this frame.
 var _kind_points: Array[PackedVector3Array] = []
+# Quad index buffers by vertex count (two triangles a quad), made once per count.
+var _quad_indices := {}
 
 func _init() -> void:
 	mesh = _mesh
 	# Vertices move in place without the mesh's bounds following: never cull the gizmos.
 	custom_aabb = AABB(Vector3(-1.0e6, -1.0e4, -1.0e6), Vector3(2.0e6, 2.0e4, 2.0e6))
-	for kind in HANDLE_COLORS.size():
-		_kind_points.append(PackedVector3Array())
 	SceneLightingConfig.apply_shadow_policy(self, SceneLightingConfig.SHADOW_DEBUG_OVERLAY, "roads")
-	for color in LINE_COLORS:
-		_line_materials.append(_material(color, false))
-	for color in HANDLE_COLORS:
-		_handle_materials.append(_material(color, true))
+	_line_materials.append(_line_material(PALETTE["stroke"], PALETTE["stroke_width_px"], 0.0, 0.0))
+	_line_materials.append(_line_material(PALETTE["guide"], PALETTE["guide_width_px"], PALETTE["guide_dash_px"], PALETTE["guide_gap_px"]))
+	_line_materials.append(_line_material(PALETTE["zoning_out"], PALETTE["zoning_out_width_px"], 0.0, 0.0))
+	_line_materials.append(_line_material(PALETTE["zoning_in"], PALETTE["zoning_in_width_px"], 0.0, 0.0))
+	_line_materials.append(_line_material(PALETTE["curb"], PALETTE["curb_width_px"], 0.0, 0.0))
+	var colors: Array = PALETTE["handles"]
+	var sizes: Array = PALETTE["handle_sizes_px"]
+	for kind in colors.size():
+		_kind_points.append(PackedVector3Array())
+		var material := ShaderMaterial.new()
+		material.shader = HandleShader
+		material.set_shader_parameter("color", colors[kind])
+		material.set_shader_parameter("size_px", sizes[kind])
+		material.render_priority = 11
+		_handle_materials.append(material)
 
 ## Uploads the frame's gizmos when they differ from the last ones; returns the milliseconds the
 ## upload took (0 when nothing changed).
@@ -72,49 +106,76 @@ func show_frame(frame: Dictionary) -> float:
 	_line_classes = line_classes
 	_handles = handles
 	_handle_kinds = handle_kinds
-	var starts: PackedInt32Array = frame.get("gizmo_line_starts", PackedInt32Array())
+	# The dashes keep their length on screen at the cursor's depth.
+	_line_materials[1].set_shader_parameter("dash_focus", frame.get("cursor", Vector3.ZERO))
 	# One point surface per handle kind (a freeform draft has up to 16 nodes and 30 handles).
-	for kind in HANDLE_COLORS.size():
-		var points := PackedVector3Array()
-		for index in handles.size():
-			if handle_kinds[index] == kind:
-				points.append(handles[index])
-		_kind_points[kind] = points
-	var layout := starts.duplicate()
-	layout.append(line_points.size())
-	layout.append_array(line_classes)
-	for kind in HANDLE_COLORS.size():
+	for kind in _kind_points.size():
+		_kind_points[kind] = PackedVector3Array()
+	for index in handles.size():
+		_kind_points[handle_kinds[index]].append(handles[index])
+	var layout := PackedInt32Array()
+	var has_lines := not line_points.is_empty()
+	for key in LINE_KEYS:
+		var vertices: PackedVector3Array = frame.get(key + "_vertices", PackedVector3Array())
+		layout.append(vertices.size() if has_lines else 0)
+	for kind in _kind_points.size():
 		layout.append(_kind_points[kind].size())
 	if layout == _layout and _mesh.get_surface_count() > 0:
-		_update_in_place(line_points, starts)
+		_update_in_place(frame, has_lines)
 	else:
 		_layout = layout
-		_rebuild(line_points, starts, line_classes)
+		_rebuild(frame, has_lines)
 	visible = _mesh.get_surface_count() > 0
 	return float(Time.get_ticks_usec() - start_us) / 1000.0
 
-# New surfaces for a new layout: one per strip of two or more points, one per handle kind.
-func _rebuild(line_points: PackedVector3Array, starts: PackedInt32Array, line_classes: PackedInt32Array) -> void:
+# New surfaces for a new layout: the two line surfaces (when there are lines), one per handle
+# kind with points.
+func _rebuild(frame: Dictionary, has_lines: bool) -> void:
 	_mesh.clear_surfaces()
-	for strip in starts.size():
-		var end := starts[strip + 1] if strip + 1 < starts.size() else line_points.size()
-		if end - starts[strip] >= 2:
-			_add_surface(Mesh.PRIMITIVE_LINE_STRIP, line_points.slice(starts[strip], end), _line_materials[line_classes[strip]])
-	for kind in HANDLE_COLORS.size():
+	if has_lines:
+		for style in LINE_KEYS.size():
+			var vertices: PackedVector3Array = frame.get(LINE_KEYS[style] + "_vertices", PackedVector3Array())
+			var attributes: PackedFloat32Array = frame.get(LINE_KEYS[style] + "_attributes", PackedFloat32Array())
+			var count := vertices.size()
+			if count == 0:
+				continue
+			var arrays := []
+			arrays.resize(Mesh.ARRAY_MAX)
+			arrays[Mesh.ARRAY_VERTEX] = vertices
+			# Placeholders of the right size: the interleaved attributes go in below in one write.
+			var uv := PackedVector2Array()
+			uv.resize(count)
+			arrays[Mesh.ARRAY_TEX_UV] = uv
+			arrays[Mesh.ARRAY_TEX_UV2] = uv
+			arrays[Mesh.ARRAY_INDEX] = _indices(count)
+			_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+			var surface := _mesh.get_surface_count() - 1
+			_mesh.surface_set_material(surface, _line_materials[style])
+			RenderingServer.mesh_surface_update_attribute_region(_mesh.get_rid(), surface, 0, attributes.to_byte_array())
+	for kind in _kind_points.size():
 		if not _kind_points[kind].is_empty():
-			_add_surface(Mesh.PRIMITIVE_POINTS, _kind_points[kind], _handle_materials[kind])
+			var arrays := []
+			arrays.resize(Mesh.ARRAY_MAX)
+			arrays[Mesh.ARRAY_VERTEX] = _kind_points[kind]
+			_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_POINTS, arrays)
+			_mesh.surface_set_material(_mesh.get_surface_count() - 1, _handle_materials[kind])
 
-# The same layout: each surface's positions (12 bytes a vertex, the only attribute) rewritten in
-# its existing vertex buffer, in the order `_rebuild` made the surfaces.
-func _update_in_place(line_points: PackedVector3Array, starts: PackedInt32Array) -> void:
+# The same layout: each surface's positions (12 bytes a vertex) and, for the lines, the
+# interleaved attributes (16 bytes a vertex) rewritten in their existing buffers, in the order
+# `_rebuild` made the surfaces.
+func _update_in_place(frame: Dictionary, has_lines: bool) -> void:
 	var rid := _mesh.get_rid()
 	var surface := 0
-	for strip in starts.size():
-		var end := starts[strip + 1] if strip + 1 < starts.size() else line_points.size()
-		if end - starts[strip] >= 2:
-			RenderingServer.mesh_surface_update_vertex_region(rid, surface, 0, line_points.slice(starts[strip], end).to_byte_array())
+	if has_lines:
+		for key in LINE_KEYS:
+			var vertices: PackedVector3Array = frame.get(key + "_vertices", PackedVector3Array())
+			var attributes: PackedFloat32Array = frame.get(key + "_attributes", PackedFloat32Array())
+			if vertices.is_empty():
+				continue
+			RenderingServer.mesh_surface_update_vertex_region(rid, surface, 0, vertices.to_byte_array())
+			RenderingServer.mesh_surface_update_attribute_region(rid, surface, 0, attributes.to_byte_array())
 			surface += 1
-	for kind in HANDLE_COLORS.size():
+	for kind in _kind_points.size():
 		if not _kind_points[kind].is_empty():
 			RenderingServer.mesh_surface_update_vertex_region(rid, surface, 0, _kind_points[kind].to_byte_array())
 			surface += 1
@@ -128,24 +189,32 @@ func clear() -> void:
 	_layout = PackedInt32Array()
 	visible = false
 
-func _add_surface(primitive: int, points: PackedVector3Array, material: StandardMaterial3D) -> void:
-	var arrays := []
-	arrays.resize(Mesh.ARRAY_MAX)
-	arrays[Mesh.ARRAY_VERTEX] = points
-	_mesh.add_surface_from_arrays(primitive, arrays)
-	_mesh.surface_set_material(_mesh.get_surface_count() - 1, material)
+# Two triangles per quad of four vertices (`a+, a-, b+, b-`), made once per vertex count.
+func _indices(count: int) -> PackedInt32Array:
+	if _quad_indices.has(count):
+		return _quad_indices[count]
+	var indices := PackedInt32Array()
+	indices.resize(count / 4 * 6)
+	for quad in count / 4:
+		var base := quad * 4
+		var at := quad * 6
+		indices[at] = base
+		indices[at + 1] = base + 1
+		indices[at + 2] = base + 2
+		indices[at + 3] = base + 2
+		indices[at + 4] = base + 1
+		indices[at + 5] = base + 3
+	_quad_indices[count] = indices
+	return indices
 
-# Unshaded, over the road and the terrain (an overlay, not a lit world material).
-static func _material(color: Color, points: bool) -> StandardMaterial3D:
-	var material := StandardMaterial3D.new()
-	material.albedo_color = color
-	material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	material.no_depth_test = true
+static func _line_material(color: Color, width_px: float, dash_px: float, gap_px: float) -> ShaderMaterial:
+	var material := ShaderMaterial.new()
+	material.shader = LineShader
+	material.set_shader_parameter("color", color)
+	material.set_shader_parameter("width_px", width_px)
+	material.set_shader_parameter("dash_px", dash_px)
+	material.set_shader_parameter("gap_px", gap_px)
 	material.render_priority = 10
-	if points:
-		material.use_point_size = true
-		material.point_size = HANDLE_SIZE_PX
 	return material
 
 # Batch preview ghost (`ROAD-112` round G1): tier 1's ribbons of a draft's strokes, drawn by its

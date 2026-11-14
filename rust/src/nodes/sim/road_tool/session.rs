@@ -36,6 +36,11 @@ use super::height::handles::{
     DraftEnd, EndHeights, HeightHandle, drag_offset, grip_at, stepped_by,
 };
 use super::height::{DraftSection, apply_grade_line, segment_draft};
+use super::guides::{
+    ZoningScratch, grid_curb_offset_m, push_alignment_guide, push_grid_curbs, push_zoning_guide,
+    zoning_depth_m,
+};
+use super::labels::{push_draft_labels, push_freeform_labels};
 use super::measure::{EndRoad, RoadTypeSpec, illegal_radius_m, measure};
 use super::modes::freeform::{Freeform, Grip, MAX_NODES};
 use super::modes::{self, DrawMode};
@@ -45,7 +50,7 @@ use super::pick::{
 };
 use super::snap::{
     GuideLine, SnapInput, SnapKind, SnapOptions, SnapScratch, Snapped, apply_length_step,
-    collect_guides, edge_direction_at, nearest_guide, network_snap, resolve, xz_of,
+    collect_guides, edge_direction_at, holding_guides, nearest_guide, network_snap, resolve, xz_of,
 };
 use crate::nodes::sim::core::RoadToolQuerySnapshot;
 use crate::simulation::network::guide::{DVec2, GuideError, GuidePath, GuideSegment};
@@ -246,6 +251,7 @@ pub struct RoadToolSession {
     path: GuidePath,
     flat: Vec<DVec2>,
     scratch: SnapScratch,
+    zoning: ZoningScratch,
     frame: RoadToolFrame,
 }
 
@@ -282,6 +288,7 @@ impl RoadToolSession {
             path: GuidePath::new(),
             flat: Vec::new(),
             scratch: SnapScratch::default(),
+            zoning: ZoningScratch::default(),
             frame: RoadToolFrame::default(),
         }
     }
@@ -1171,6 +1178,12 @@ impl RoadToolSession {
             cursor.snapped.target
         };
         let handles = self.set_handles(nodes[0], end, end_target.is_some());
+        push_freeform_labels(
+            nodes[count - 1],
+            count.checked_sub(2).map(|index| nodes[index]),
+            editing,
+            &mut self.frame.labels,
+        );
         if let Err(error) = shaped {
             self.frame.state.refusal = Some(refusal(error));
             return;
@@ -1214,6 +1227,25 @@ impl RoadToolSession {
         frame
             .gizmos
             .push_line(GizmoLineClass::Draft, frame.stroke.points.iter().copied());
+        push_draft_labels(
+            &self.path,
+            &frame.stroke.points,
+            &frame.hud,
+            self.start_road,
+            end_road,
+            frame.hud.tight_radius,
+            &mut frame.labels,
+        );
+        frame.zoning_depth_m = zoning_depth_m(&self.spec, view.zoning_grid.cell_m());
+        if let Some(depth) = frame.zoning_depth_m {
+            push_zoning_guide(
+                &mut frame.gizmos,
+                &self.path,
+                &frame.stroke.points,
+                depth,
+                &mut self.zoning,
+            );
+        }
         if frame.hud.tight_radius {
             // The radius check would refuse it: no stroke to preview or send; the HUD keeps the
             // numbers.
@@ -1374,38 +1406,42 @@ impl RoadToolSession {
     }
 
     // The constraints that took the cursor, as gizmo strips: the angle lock's ray from the anchor
-    // through the cursor and on past it by the guides' radius, the guide line through the cursor
-    // either way (with the ray where the two meet).
+    // through the cursor and on past it, the guide line (both at a corner) from where it comes
+    // from through the cursor and on past it.
     fn push_constraint_line(&mut self, cursor: Cursor) {
         let anchor = self.placed[self.placed_len - 1];
-        let reach = super::snap::GUIDE_RADIUS_M;
+        let y = cursor.position.y;
+        if self.mode == DrawMode::Straight
+            && matches!(cursor.snapped.kind, SnapKind::Grid | SnapKind::AngleGrid)
+        {
+            // The grid snaps a stroke along an axis through its start (round V item 8).
+            let offset = grid_curb_offset_m(&self.spec);
+            push_grid_curbs(&mut self.frame.gizmos, self.placed[0], cursor.position, offset);
+        }
         if matches!(
             cursor.snapped.kind,
             SnapKind::Angle | SnapKind::AngleEdge | SnapKind::AngleGuide | SnapKind::AngleGrid
         ) {
-            let beyond = (cursor.snapped.xz - xz_of(anchor))
-                .try_normalize()
-                .map_or(cursor.position, |dir| {
-                    let p = cursor.snapped.xz + dir * reach;
-                    Vector3::new(p.x as f32, cursor.position.y, p.y as f32)
-                });
-            self.frame
-                .gizmos
-                .push_line(GizmoLineClass::Angle, [anchor, cursor.position, beyond]);
+            let ray = GuideLine {
+                origin: xz_of(anchor),
+                dir: (cursor.snapped.xz - xz_of(anchor))
+                    .try_normalize()
+                    .unwrap_or(DVec2::X),
+            };
+            push_alignment_guide(&mut self.frame.gizmos, ray, cursor.snapped.xz, y);
+            if let Some(line) = self.frame.gizmos.line_classes.last_mut() {
+                *line = GizmoLineClass::Angle;
+            }
         }
         if matches!(
             cursor.snapped.kind,
             SnapKind::Guide | SnapKind::GuideCorner | SnapKind::AngleGuide
-        ) && let Some(guide) = nearest_guide(&self.scratch.guides, cursor.snapped.xz)
-        {
-            let at = |offset: f64| {
-                let p = guide.origin
-                    + guide.dir * ((cursor.snapped.xz - guide.origin).dot(guide.dir) + offset);
-                Vector3::new(p.x as f32, cursor.position.y, p.y as f32)
-            };
-            self.frame
-                .gizmos
-                .push_line(GizmoLineClass::Guide, [at(-reach), at(reach)]);
+        ) {
+            let [first, second] = holding_guides(&self.scratch.guides, cursor.snapped.xz);
+            let corner = cursor.snapped.kind == SnapKind::GuideCorner;
+            for guide in [first, second.filter(|_| corner)].into_iter().flatten() {
+                push_alignment_guide(&mut self.frame.gizmos, guide, cursor.snapped.xz, y);
+            }
         }
     }
 }

@@ -7,7 +7,9 @@
 pub mod batch;
 pub mod bench;
 pub mod frame;
+pub mod guides;
 pub mod height;
+pub mod labels;
 pub mod measure;
 pub mod modes;
 pub mod pick;

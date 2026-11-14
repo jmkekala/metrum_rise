@@ -12274,7 +12274,7 @@ grade.
 
 ## Road tools (`ROAD-112`, `ROAD-113`)
 
-**Status: in progress.** Planned 2026-11-12; round A (the guide kernel) and round B (the session core, not wired) built 2026-11-13, round B landed 2026-11-14; round F (batch commit, grouped undo, undo refund) built 2026-11-13, held for its batch bar until fix round F2 (2026-11-14), which meets it, landed 2026-11-14; round C (the wiring: straight strokes run on the session) built and landed 2026-11-14; round H (the stroke profile field, the held-ground profile and the automatic bridge/tunnel segmentation, Rust only) built 2026-11-14 on branch `roadtools-h`, for review; round D (curves, continuous, gizmos and the HUD on the session, the GDScript curve path deleted) built 2026-11-14 on branch `roadtools-d`, for review; round E (the snapping options row, and the radius check reading a flattened arc's radius exactly) built 2026-11-14 on branch `roadtools-e`, for review; round N (the S-curve and freeform with an edit phase before the build in the UI, and the Rust hold rule wired) built 2026-11-14 on branch `roadtools-n`, for review; round G1 (the two-tier batch preview and the profile inside the preview request) built 2026-11-14 on branch `roadtools-g1` and its fix round G1b (the accepted batch's overlay built over several frames) on `roadtools-g1b`, both landed 2026-11-14 over round N (round LG1). The user asked for a complete refactor of the
+**Status: in progress.** Planned 2026-11-12; round A (the guide kernel) and round B (the session core, not wired) built 2026-11-13, round B landed 2026-11-14; round F (batch commit, grouped undo, undo refund) built 2026-11-13, held for its batch bar until fix round F2 (2026-11-14), which meets it, landed 2026-11-14; round C (the wiring: straight strokes run on the session) built and landed 2026-11-14; round H (the stroke profile field, the held-ground profile and the automatic bridge/tunnel segmentation, Rust only) built 2026-11-14 on branch `roadtools-h`, for review; round D (curves, continuous, gizmos and the HUD on the session, the GDScript curve path deleted) built 2026-11-14 on branch `roadtools-d`, for review; round E (the snapping options row, and the radius check reading a flattened arc's radius exactly) built 2026-11-14 on branch `roadtools-e`, for review; round N (the S-curve and freeform with an edit phase before the build in the UI, and the Rust hold rule wired) built 2026-11-14 on branch `roadtools-n`, for review; round G1 (the two-tier batch preview and the profile inside the preview request) built 2026-11-14 on branch `roadtools-g1` and its fix round G1b (the accepted batch's overlay built over several frames) on `roadtools-g1b`, both landed 2026-11-14 over round N (round LG1); round V (the user's restyle of the lines and HUD: thick lines and one dashed guide look over the terrain, label chips on the geometry without upkeep, zoning-depth guides, alignment guides from their source, grid curbs, freeform hint and Build / Cancel chips) built 2026-11-14 on branch `roadtools-v`, for review. The user asked for a complete refactor of the
 road tool, Rust-first: the current straight mode and the GDScript `Curve3D` "curve" (a cubic
 Bezier whose handles are the raw vectors to the control point, so its curvature, radius and
 length are not exact) are replaced. Mechanics follow the genre (city builders' straight, curve,
@@ -13422,6 +13422,82 @@ records are equal on every 1× row (`GrowthDayRecord` day 13, 15,588 households,
   checkout's run lock and exclusive timing lock held from outside (`TOOLS-24`), one C B B C pass
   from 14:34:03, quiet machine): every run PASS, 0 failures, 39 of 39 fast commits; the terrain install share (max ms, control / branch) fast commit 0.44, 0.47 / 0.49, 0.50, commit 0.21, 0.16 / 0.20, 0.21, undo 0.43, 0.34 / 0.40, 0.36, catch-up 0.50, 0.50 / 0.46, 0.47, all under the 1.0 ms share. Level.
 
+### Lines, labels and guides restyle (round V)
+
+Built 2026-11-14 on branch `roadtools-v` (`dev` `030726d7`) after the user's test of landing 1
+("the lines are 1 pixel wide"; "too much information, no upkeep"). What changed for players is
+under "Drawing and placement" (Gizmos, Zoning-depth guide, Grid curbs, HUD, Freeform hints).
+
+- **Lines**: the bridge turns the frame's gizmo strips into quads (`line_quads`: four vertices a
+  segment; the vertex buffer's positions and an interleaved attribute buffer of the other end and
+  the side times the strip station plus one, UV then UV2), padded with collapsed quads to a
+  power-of-two count of at least 16, so a drag keeps the surfaces' layout and rewrites both
+  buffers in place (`mesh_surface_update_vertex_region` / `_attribute_region`); index buffers
+  are made once per count. `road_tool_line.gdshader` widens them on the screen as
+  `route_ribbon.gdshader` does, dashes by screen pixels at the cursor's depth and antialiases one
+  pixel; `road_tool_handle.gdshader` draws round filled points. Both disable the depth test, so
+  the path stays visible where the lagging preview terrain's grass covers the preview road (item
+  3: no preview hue, the user's choice).
+- **Labels** (`road_tool/labels.rs`): `RoadToolFrame::labels` (kind, value, world anchor, side,
+  tone) from `push_draft_labels` (pieces, arcs, total, angles at the ends and freeform corners,
+  cost, bearing, design speed; a refusal notice for a tight curve) and `push_freeform_labels`
+  (hint, Build, Cancel); the bridge's `apply_preview` puts in the preview's class-priced cost,
+  its steepest grade from 0.5 % and a notice (refused, or warning: steep, demolitions, plan
+  being checked, stroke being sent). `place_chips` is the one placement rule (pure, tested).
+  Upkeep is no longer shown (`HudValues::upkeep_per_day` stays in the frame for other readers).
+- **Guides** (`road_tool/guides.rs`): `zoning_depth_m` (kerb `width / 2 + SIDEWALK_WIDTH` of the
+  edge the stroke builds, plus `CELL_DEPTH` rows; `None` without zoning, for a walkway or without
+  sidewalks), `push_zoning_guide` (the guide kernel's `flatten_offset_into`, the stroke's
+  flattening buffer reused), `push_alignment_guide` (source to 12 m past the snapped point; the
+  angle ray too; both guides at a corner, `snap::holding_guides`), `grid_curb_offset_m` and
+  `push_grid_curbs` (straight mode, while `Grid` or `AngleGrid` holds the cursor). The zoning
+  guide's split (item 9) queries the flattened stroke through bounding boxes of 16 segments
+  (`ZoningScratch`, reused): `O(P (C + 16 K))` per pose for `P` guide points, `C` boxes and `K`
+  boxes within the depth; a class change is located by 20 bisection steps on its chord.
+  Line styles without strips send no quads, so a frame draws up to five line surfaces.
+- **Freeform discoverability** (item 7): hint chip by phase (Rust's wording, `labels::hint_text`),
+  clickable Build and Cancel chips beside the last node in the edit phase: GUI controls over the
+  chips (`road_tool_hud.gd`), so their clicks never reach the road tool's `_unhandled_input`;
+  `road_tool.gd` `attach_hud` connects them to `confirm_road` and `cancel_road`.
+- **Fresh results (2026-11-14, final code)**: debug `cargo test --lib` 2,683 passed, 0 failed,
+  228 ignored; `./run.sh --test` PASS (nextest 2,687 / 2,687, 229 skipped; godot-main and
+  godot-vehicle PASS, 0 SCRIPT ERROR); clippy `--all-targets` the branch point's warning set
+  (`asset_document.rs:15` only); `cargo doc` missing-docs 0. New Rust tests in
+  `road_tool/tool_tests/labels.rs` (12): each mode's chips against their closed forms (100 m
+  straight; R = 100 m with its 20 m lead and `20 + 100 atan(4/3)` total within 1 mm; both S-curve
+  radii; chained angles 180 and 90; no upkeep chip; bearing and design speed present), warnings
+  and refusals, the preview facts, the placement rule on three fixtures (deterministic bit for
+  bit, no overlaps, clear of handles), the zoning depth against the cells a straight road
+  generates (65 m, within 1 mm), the outside stadium and inside half circles, the grid curbs of
+  every built-in type on the snap's cell lines, the freeform hint and buttons. Godot: the
+  renderer test's freeform chips (the Build chip's click is the GUI's and builds, the Cancel chip
+  leaves nothing). Allocation (`heaptrack --record-only`, session bench 30k, every mode):
+  2,442,905 / 2,442,845 calls (n = 0), 2,442,882 (n = 20), 2,442,866 (n = 200): none per move.
+  Products (`commit_products.gd` via the drag probe and the gameplay fixtures; control: round N's
+  final release library and scripts, which `dev` `030726d7` is): Kuopio 78 / 78 commits and the
+  fixtures 17 / 17 EQUAL in every product. Gizmo plus label upload a frame (gamescope headless
+  1920x1080, 120-frame drags; another lane's builds and probes ran, load average about 7): curve
+  end p50 0.186 / p95 0.409 ms, S-curve end 0.133 / 0.261, freeform handle 0.156 / 0.444; parts at
+  p50: gizmos 0.05, chip wording 0.05-0.08, placement 0.03-0.05 ms. The 0.2 ms bar holds at the
+  median, not at p95 under that load (for review).
+- **Decisions under the delegation (for review)**: V1 palette from `ui_style.gd`: stroke white
+  82 % 4 px; one guide look, lavender (`TEXT_SECTION`'s hue) 72 %, 2 px, 9 px dash, 6 px gap;
+  chips `BG_HUD_SHELL`-dark with lavender icons, amber and `TEXT_ALERT` red tones; handles 10-16
+  px. V2 lengths are plan (horizontal) lengths, as the length step measures; the cost stays the
+  3D build length's. V3 angle chips read 180 straight on out of a dead end (the angle between
+  the roads), the acute angle against a road through the point. V4 no fainter "nearest guide in
+  reach" line: with the zoning guide and the held guides drawn, a further faint line read as
+  clutter in the stills; easy to add (the scratch holds the candidates). V5 guides and the angle
+  ray end 12 m past the cursor (round E drew 64 m both ways). V6 the grid curbs only in straight
+  mode (the grid snaps a straight leg through the start); a type with a sidewalk on one side
+  still shows both zoning outlines. V7 no hint chip for the S-curve and the simple curve yet: their
+  clicks are fixed in number and the tangent gizmos show the next point; recommended next if the
+  user finds the S-curve's four clicks unclear (one line of Rust wording per placed count). V8
+  the zoning guide's outside 3 px at 90 % and inside 2 px at 40 %, both solid, in the guides'
+  lavender (item 9, the user's preferred look). V9 the grid curbs solid, 3 px, light blue: in the
+  guide look they vanished on the preview road's light edges (coordinator's review of the first
+  stills).
+
 ### Decisions (user, 2026-11-12, all as recommended)
 
 - U1 simple curve = three clicks, free control point, exact arc plus a straight lead.
@@ -13616,26 +13692,51 @@ the clicks, the mode buttons and the acknowledgement and draws what `road_tool_f
   option name and is re-sent whenever the tool is switched on. Shift frees the cursor of the
   lock, guides, grid and length step while held; the network snap stays (B5). The soft 45°
   magnet is gone.
-- **Gizmos** (`road_tool_gizmos.gd`, from the frame's packed arrays, one reused mesh): the
-  draft's centreline (white), a curve's tangent legs (amber), what took the cursor (blue): the
-  angle lock's ray from the stroke's last point through the cursor and 64 m on past it, a guide
-  line 64 m either side of the cursor (both where an angle meets a guide), and handles as screen-sized points: the placed start (white), a
-  control point (amber), a chained stroke's start (green) and the live end (blue). Drawn over
-  the road, unshaded. Round N: the S-curve's aim legs and its control polygon (start, the first
-  arc's control point, the joint, the second arc's control point, end) in amber with the arcs'
-  control points (pale amber) and the joint (pink); a freeform draft's inner nodes as joints
-  (pink) and, in the edit phase, each node's handles (pale amber) on amber stems, the grabbed
-  one in the live end's blue.
-- **HUD** (`road_tool_hud.gd`, a label above-right of the stroke's end, the same pixel size at
-  every zoom): length, the angle to the road the stroke starts on (folded to 0..90°) or the
-  compass bearing, cost (the preview's, class-priced) and upkeep per day, the steepest grade,
-  the arc's radius (an S-curve's tighter one, which the design speed and the tight-curve
-  verdict judge) and design speed `sqrt(127 * 0.20 * R)` rounded down to 5 km/h, the
-  demolitions and the plan state. Amber when the design speed is under the type's limit (cars
-  do not slow for curves today: advice only), for a steep grade or while a stroke is pending;
-  red with the reason when refused. Rust sends only numbers and keys; `road_reason_text.gd`
-  words refusals, including the session's draft refusals (a curve folding back, an S-curve
-  without a solution, a curve too tight).
+- **Gizmos** (`road_tool_gizmos.gd`, round V's look; one reused mesh, drawn over the terrain and
+  the roads with no depth test, so the path stays visible where the lagging preview terrain's
+  grass covers the preview road; no preview hue): lines are quads Rust builds from the frame's
+  strips and `road_tool_line.gdshader` widens to a constant on-screen width. Two looks, one
+  palette (`PALETTE`, from the UI theme): the stroke's centreline solid, 4 px, white at 82 %;
+  every guide line (alignment guides, the angle ray, tangent legs, control polygons and handle
+  stems) dashed 9 px on, 6 px off at the cursor's depth, 2 px, pale lavender at 72 %; the
+  zoning-depth guide solid in the same lavender, its outside 3 px at 90 %, its inside 2 px at
+  40 % (item 9, the user's exception to the one look); the grid curbs solid, 3 px, light blue. Alignment guides run from their source (the dead end, node or anchor)
+  through the snapped point and 12 m on (both at a guide corner); the angle ray likewise from the
+  anchor. Handles are filled round points with a dark rim: the placed start and the live end
+  white (14 and 16 px), a control point and a joint lavender, the chain's start green, a
+  Bezier or arc handle pale (10 px).
+- **Zoning-depth guide** (round V): for a type that zones, a circle around the stroke's start and
+  end and the stroke offset to either side, all at the depth its cells reach: the kerb (half the
+  carriageway width plus the sidewalk) plus six 10 m rows (65 m for the two-lane road). A road
+  drawn along it leaves blocks exactly six cells deep. Curves follow the exact offset; a side
+  whose offset the kernel refuses (a curve tighter than the depth, a freeform corner) is left out.
+  Rust splits it by distance to the stroke (item 9): the outside, every point the depth from the
+  stroke (the side offsets and the circles' outer caps: a stadium for a straight), and the
+  inside, nearer than the depth (the circles' halves over the stroke); a cap is also bounded by
+  the line across its end tangent, since the distance changes only quadratically near it.
+- **Grid curbs** (round V): while the zoning-grid snap holds a straight stroke's cursor, the road's
+  two curbs (half the snap's width, lanes times 3.5 m and at least 2 m, plus the sidewalk) are drawn
+  along it and on past the end, each with a tick on the cell line the snap ended the road half a
+  road past, so the player sees why the snapped point moves with the road's width.
+- **HUD** (`road_tool_hud.gd`, round V): label chips on the geometry, each a dark rounded panel
+  with a small vector icon and one value, the same pixel size at every zoom. Rust's frame decides
+  which exist, their values, anchors and sides (`labels.rs`); the bridge adds what the preview
+  says. Each straight or Bezier piece's plan length at its middle, each arc's radius at its
+  middle (outside the curve), the total plan length when there is more than one piece, the angle
+  where the stroke meets a road (180° straight on out of a dead end; a road through the point
+  reads its acute angle) or bends at a freeform corner, the steepest grade from 0.5 %, and at the
+  end the cost (the preview's, class-priced), the bearing and the design speed (amber under the
+  type's limit). No upkeep (user, 2026-11-14). One notice chip near the end: red with the
+  refusal, amber for a steep grade, demolitions, a plan being checked or a stroke being sent.
+  `SimulationNode.road_tool_place_labels` places the chips (`labels::place_chips`): each goes out
+  along its side from its anchor, then while it overlaps an earlier chip or a handle steps by its
+  own height, alternately down and up, so chips sharing an anchor stack in a column beside it;
+  deterministic, no physics.
+- **Freeform hints** (round V item 7): an open freeform draft shows a hint chip near its last node
+  ("Click to add a node · click the last node or Enter to finish"; in the edit phase "Drag nodes
+  or handles · Enter or click to build · Esc to cancel", worded by Rust) and, in the edit phase,
+  clickable Build (check mark) and Cancel (cross) chips beside the last node. Their clicks are the
+  GUI's: they never place a node or count as a click elsewhere.
 - **Tight curves**: the session refuses a draft whose smallest arc radius is under the type's
   illegal radius, 1.25 roadbed half-widths (`illegal_radius_m`, computed when the type
   changes), as `road_tight_curve` ("Curve too tight: radius r m, needs l m") before any

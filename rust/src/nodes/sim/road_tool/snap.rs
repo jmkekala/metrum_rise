@@ -308,6 +308,12 @@ pub fn nearest_guide(guides: &[GuideLine], raw: DVec2) -> Option<GuideLine> {
     nearest_guides(guides, raw)[0].map(|(_, guide)| guide)
 }
 
+/// The guide lines holding a cursor at `xz`: the nearest in reach and the nearest in reach that
+/// crosses it (both meet at a [`SnapKind::GuideCorner`]). `O(guides)`.
+pub fn holding_guides(guides: &[GuideLine], xz: DVec2) -> [Option<GuideLine>; 2] {
+    nearest_guides(guides, xz).map(|guide| guide.map(|(_, guide)| guide))
+}
+
 // The nearest guide line within reach and the nearest one in reach that crosses it (a corner
 // needs two directions); on equal distance the earlier candidate. Two passes, `O(guides)`.
 fn nearest_guides(guides: &[GuideLine], raw: DVec2) -> [Option<(f64, GuideLine)>; 2] {

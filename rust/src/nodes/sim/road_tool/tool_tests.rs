@@ -27,6 +27,7 @@ use godot::prelude::Vector3;
 use std::sync::OnceLock;
 
 mod heights;
+mod labels;
 mod scurve_freeform;
 
 // One small world shared by the scripted tests: the bench neighbourhood, no background.
@@ -933,18 +934,28 @@ fn gizmos_name_the_handles_and_legs() {
             GizmoHandleKind::HeightGrip
         ]
     );
+    // Round V: the zoning-depth guide's runs follow (outside and inside); round I: the start's
+    // height stem.
     assert_eq!(
-        gizmos.line_classes,
-        [
-            GizmoLineClass::Tangent,
-            GizmoLineClass::Draft,
-            GizmoLineClass::HeightStem
-        ]
+        gizmos.line_classes[..2],
+        [GizmoLineClass::Tangent, GizmoLineClass::Draft]
+    );
+    assert!(gizmos.line_classes[2..].iter().all(|class| matches!(
+        class,
+        GizmoLineClass::ZoningOutside | GizmoLineClass::ZoningInside | GizmoLineClass::HeightStem
+    )));
+    assert_eq!(
+        gizmos
+            .line_classes
+            .iter()
+            .filter(|&&class| class == GizmoLineClass::HeightStem)
+            .count(),
+        1
     );
     assert_eq!(gizmos.line_starts[0], 0);
     assert_eq!(gizmos.line_starts[1], 3);
     assert_eq!(
-        gizmos.line_points.len() - 3 - 2,
+        gizmos.line_starts[2] as usize - 3,
         tool.frame().stroke.points.len()
     );
 
@@ -960,7 +971,11 @@ fn gizmos_name_the_handles_and_legs() {
         gizmos.handle_kinds,
         [GizmoHandleKind::ChainStart, GizmoHandleKind::Cursor]
     );
-    assert_eq!(gizmos.line_classes, [GizmoLineClass::Draft]);
+    assert_eq!(gizmos.line_classes[0], GizmoLineClass::Draft);
+    assert!(gizmos.line_classes[1..].iter().all(|class| matches!(
+        class,
+        GizmoLineClass::ZoningOutside | GizmoLineClass::ZoningInside
+    )));
 }
 
 // Continuous applies to the simple curve (B8): the control point is held on the carried tangent's
@@ -1104,7 +1119,7 @@ fn each_snapping_toggle_off_removes_its_constraint() {
         assert_eq!(pose(&[on, off, on], start, at).frame().cursor.snap, kind);
     }
     // The gizmos draw what took the cursor: the angle lock's ray from the start through the
-    // cursor and on past it; the guide line through the cursor.
+    // cursor and on past it (round V: `GUIDE_PAST_M`); the guide line through the cursor.
     let locked = posed(&[RoadToolOption::AngleStepDeg(Some(15.0))], Some(open), aim);
     let gizmos = &locked.frame().gizmos;
     let ray_strip = gizmos
@@ -1114,9 +1129,9 @@ fn each_snapping_toggle_off_removes_its_constraint() {
         .expect("the angle ray");
     let ray_start = gizmos.line_starts[ray_strip] as usize;
     let cursor = locked.frame().cursor.position;
-    let strip = &gizmos.line_points[ray_start..ray_start + 3];
-    assert_eq!(strip[1], cursor);
-    assert!(strip[2].x > cursor.x + 60.0 && (strip[2].z - cursor.z).abs() < 1e-3);
+    let strip = &gizmos.line_points[ray_start..ray_start + 2];
+    let past = super::guides::GUIDE_PAST_M as f32;
+    assert!((strip[1].x - (cursor.x + past)).abs() < 1e-3 && (strip[1].z - cursor.z).abs() < 1e-3);
     let guided = posed(&[], Some(ray(-250.0, 150.0)), guide);
     assert!(
         guided
