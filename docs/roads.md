@@ -13524,17 +13524,13 @@ L1's cached rows for the same binary.
   7.48 / 7.84 ms are level, as are the snapshot and slot components and `load_s`. Acceptance passes
   on every day: unpreempted / p99.9 / preempted less wait are 7.48 / 4.25 / 5.36 (control), and
   7.98 / 4.35 / 4.40 and 7.70 / 4.36 / 4.56 ms (branch). The flag is near its
-  limit, so one more branch day was timed (`--rerun p07-7-br`, 19:17-19:20, quiet machine,
-  coordinator's request): mean 2.261 ms, p99 3.87, p99.9 4.53, worst unpreempted 7.63 ms, 4,884
-  preempted frames, acceptance PASS (7.63 / 4.53 / 5.47 ms). With 2.301 and 2.261 ms the mean is
-  still +2.6 % (tolerance 1.7 %, worse). The agent component (+2.5 %) and every other metric are
-  level. Over the three branch days (2.301, 2.277 and 2.261 ms) the mean is +2.4 to +3.5 % against one
-  control day from six hours earlier. Round L1 read this control binary at 2.223-2.306 ms over its
-  days, and the runner's same-binary drift between sessions of one boot reached +5 % (`PERF-19`).
-  Since `c884802a` the changes are in road tool, preview, road edit and road render code. The path
-  rule classes the diff as F, because of the preview request's profile field in
-  `nodes/sim/core/thread.rs` and the road render files. Nothing in them was attributed, and the flag
-  is reported, not bisected.
+  limit, so one more branch day was timed (`--rerun p07-7-br`, 19:17-19:20, quiet machine):
+  mean 2.261 ms, p99 3.87, p99.9 4.53, worst unpreempted 7.63 ms, 4,884 preempted frames,
+  acceptance PASS (7.63 / 4.53 / 5.47 ms). Against the control, the runner's pair (2.301 and
+  2.261 ms, mean 2.281) reads +2.6 % (tolerance 1.7 %), **worse** again. p99, p99.9, the agent
+  component (+2.5 %) and every other metric are level. All three branch days (2.301, 2.277 and
+  2.261 ms) are slower than the one cached control day, which ran on a quiet machine. Open as
+  `PERF-24`: a same-session fresh control day confirms or clears it.
 - **K22 30k:** branch click-to-ack 7.12 ms and commit 7.09 ms, against the control's cached row
   from 12:57 at 6.65 / 6.61 ms (+7 %). Each side has one run and no tolerance, and the control's
   row is about six hours older than the branch's.
@@ -13570,8 +13566,8 @@ L1's cached rows for the same binary.
   - Products against H2's library (`2a81821d`): the gameplay fixtures are 17 / 17 EQUAL, and
     Kuopio's 78 commits are 78 / 78 EQUAL against H2's quiet rerun. Against H2's first record,
     which ran under load, `kuopio_06#18`'s graded tiles differ (`TERRAIN-30`).
-- **For a later bisect** (none was run): per-round release libraries are kept for rounds I, V, H2
-  and FX. Their release test binaries are not, and the 1× rows need test binaries, so each round's
+- **For a later bisect** (none was run): per-round release libraries are kept for rounds G1, V, I,
+  H2 and FX. Their release test binaries are not, and the 1× rows need test binaries, so each round's
   test binary would be built from its commit.
 
 ### Lines, labels and guides restyle (round V)
