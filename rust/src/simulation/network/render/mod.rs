@@ -236,6 +236,16 @@ impl NetworkMeshData {
         Arc::new(self)
     }
 
+    // `seal` for a mesh appended from parts (`append_owner_runs`) that were each checked by
+    // `render_payload_is_valid` before they were appended (`valid`, all of them): whole-triangle
+    // runs with every attribute concatenate into well-formed buffers, and finiteness holds
+    // element by element, so the check of the whole is not repeated. Test builds repeat it.
+    pub(super) fn seal_parts(mut self, valid: bool) -> Arc<Self> {
+        debug_assert_eq!(valid, self.render_payload_is_valid(), "the parts' check is the whole's");
+        self.render_payload_validated = valid;
+        Arc::new(self)
+    }
+
     /// Reports whether `seal` certified these buffers; uncertified meshes need full validation.
     pub(crate) fn render_payload_validated(&self) -> bool {
         self.render_payload_validated

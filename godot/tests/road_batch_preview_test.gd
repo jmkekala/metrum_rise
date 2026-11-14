@@ -3,7 +3,8 @@
 ## Batch preview through the bridge (`ROAD-112` round G1): a level draft across a sculpted valley
 ## segments into held ground, a bridge and held ground (`preview_road_draft`). Every pose runs
 ## tier 1 (each stroke valid, a ghost ribbon per stroke, the costs summed); resting poses run
-## tier 2 one stroke a frame until it accepts the batch with the exact road chunks; the gizmos
+## tier 2 one stroke a frame, then its overlay over at most as many frames, until it accepts the
+## batch with the exact road chunks; the gizmos
 ## draw the ghost; the commit of the same draft (`add_road_draft`) takes tier 2's plans and
 ## commits a bridge as one batch.
 extends SceneTree
@@ -64,9 +65,10 @@ func _run() -> void:
 	gizmos.show_batch_ghost(pose)
 	_expect(gizmos.batch_ghost_surfaces() == 1, "valid strokes draw one ghost surface")
 
-	# Tier 2 while the pointer rests: one stroke a frame, then the exact preview.
+	# Tier 2 while the pointer rests: one stroke a frame, then the exact overlay over at most as
+	# many frames (round G1b), shown whole on the frame that completes it.
 	var accepted := {}
-	for frame in count + 2:
+	for frame in 2 * count + 1:
 		var rest: Dictionary = simulation.preview_road_draft(path, 0.0, 0.0, 1, 1, true, true)
 		_expect(int(rest.get("tier2_done", -1)) == mini(frame + 1, count), "tier 2 finishes one stroke a frame, got %s at frame %d" % [rest.get("tier2_done"), frame])
 		if rest.get("tier2_state", "") != "running":

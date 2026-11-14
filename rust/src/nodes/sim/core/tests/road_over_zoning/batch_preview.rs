@@ -163,6 +163,59 @@ fn tier_two_previews_the_batch_commits_pieces() {
     assert_eq!(batch.roadbed().generation(), live.generation());
 }
 
+// The accepted batch's overlay follows the accepting frame over at most one frame per stroke
+// (round G1b), each emitting one owner group, with the replica the view's graph after every
+// frame; it is handed over whole, bit for bit the overlay one call builds over every changed
+// chunk (round G1's accepting frame), and the commit still takes tier 2's plans.
+#[test]
+fn the_batch_overlay_builds_over_frames_as_one_call_builds_it() {
+    let (mut core, _) = street_with_houses();
+    let mut context = tool_context(&mut core);
+    let view = graph_digest(&context.view.region_graph);
+    assert_eq!(
+        finish_tier_two(&mut context, &DRAFT),
+        BatchVerdict::Accepted
+    );
+    assert!(
+        context.batch().expect("the batch").pieces.is_none(),
+        "the overlay follows the accepting frame"
+    );
+    let mut frames = 0;
+    loop {
+        let (batch, frame) = context.preview_batch_step(requests(&context, &DRAFT));
+        let frame = frame.expect("an overlay frame");
+        assert_eq!((frame.plan_ms, frame.graded_ms), (0.0, 0.0));
+        frames += 1;
+        let done = batch.pieces.is_some();
+        assert_eq!(graph_digest(&context.replica), view, "the replica is restored");
+        if done {
+            break;
+        }
+        assert!(frames < DRAFT.len(), "at most one frame per stroke");
+    }
+    assert!(frames > 1, "the overlay is split: {frames} frame(s)");
+    let (_, frame) = context.preview_batch_step(requests(&context, &DRAFT));
+    assert!(frame.is_none(), "a finished batch takes no frame");
+    let one_call = context
+        .batch_overlay_in_one_call()
+        .expect("a finished batch")
+        .expect("the view's chunks compose");
+    assert_eq!(graph_digest(&context.replica), view);
+    let built = context.batch().expect("the batch").pieces.as_ref();
+    let built = built.and_then(|pieces| pieces.chunks.as_ref()).expect("the overlay");
+    assert!(!built.is_empty());
+    assert_eq!(
+        built.keys().collect::<Vec<_>>(),
+        one_call.keys().collect::<Vec<_>>()
+    );
+    for (chunk, preview) in built {
+        assert!(preview.same_preview(&one_call[chunk]), "chunk {chunk:?}");
+    }
+    assert!(context
+        .take_batch_products(&requests(&context, &DRAFT))
+        .is_some());
+}
+
 // Tier 2 refuses the stroke the commit refuses, for the commit's reason: the last stroke over a
 // field.
 #[test]

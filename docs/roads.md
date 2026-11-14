@@ -13130,9 +13130,10 @@ stroke's checkpoint, captured after it), runs its stroke and restores every chec
 first, so every other replica reader (single preview, roundabout sites, editor checks, `follow`)
 is untouched and a new pose restarts at `O(1)`. A refusal names the stroke and the dry run's key
 (`field_overlap`, a hover reason, `render_geometry_invalid`, `road_plan_provisional`). The
-accepting frame builds the exact overlay of every changed chunk (the union of the strokes'
-deltas over the final roadbed, `generate_preview_overlay`) and stages the pose's graded tiles, as
-a single stroke's preview does; the bridge returns them under `preview_road`'s keys.
+accepting frame stages the pose's graded tiles, as a single stroke's preview does; the exact
+overlay of every changed chunk (the union of the strokes' deltas over the final roadbed) follows
+over the next frames (round G1b, below) and the bridge returns it, with the tiles, under
+`preview_road`'s keys on the frame that completes it.
 
 **Commit.** A click before tier 2 ends goes to the commit's dry run, unchanged. An accepted tier
 2 of exactly the clicked strokes (`take_batch_products`) travels with `AddRoadBatch`
@@ -13184,6 +13185,65 @@ payload is the union of eight strokes' chunks, 2.6 ms against one stroke's 1.7-1
 review). Not run this round: the rendered single-stroke preview rows and the Kuopio products
 against a control; the single-stroke path changed only by the request's field (its plan and
 preview functions are the same calls), and the parity digests hold.
+
+**Round G1b** (2026-11-14, branch `roadtools-g1b`, round G1 rebased onto `dev` `c884802a`): the
+accepting frame's payload. Measured first (a probe in `generate_preview_overlay`, the 30k
+fixture): the single stroke and the eight-stroke batch change the same six render chunks; the
+batch's 2.6 ms is the emission of 48 owners' pieces (2.2 ms, 80k vertices, against the single
+stroke's 20 owners, 1.4 ms) plus the published runs it hides (0.4 ms) and the seal (0.2 ms). So
+splitting by chunks would not help: the overlay is now built by owner groups. The accepting frame
+stages the graded tiles only; the frames after it each emit one group (the batch's owners in
+emission order, spans then nodes by id, cut into one group per stroke at equal shares of their
+pieces' triangles; `render/road/preview_parts.rs`, `PreviewOverlayParts`) into every changed
+chunk, append its runs to the chunks built so far (`NetworkMeshData::append_owner_runs`: in
+every layer a later group's owners follow the earlier ones', so appending is the owner-order
+merge the commit's splice does) and find its owners' published runs. An owner's triangles do not
+depend on which other owners are emitted with it (the splice's own rule), so the appended chunks
+are the one-call overlay bit for bit. The last group's frame seals the chunks (validity checked
+per part, `seal_parts`; test builds recheck the whole) and hands the overlay over whole: the
+bridge keeps `tier2_state` at `running` until then, so the batch never shows half. Cost per frame
+`O(one group's pieces' triangles + its hidden runs)`; the last adds the concatenation of the hidden
+ranges and positions. The commit's reuse of tier 2's plans is unchanged (available from the
+accepting frame, as before). An eight-stroke batch now shows after 16 resting frames instead of 8.
+Test: `the_batch_overlay_builds_over_frames_as_one_call_builds_it` (more than one overlay frame,
+at most one per stroke, the replica restored after each, every chunk bit for bit the one-call
+overlay, plans still handed to the commit). Godot `road_batch_preview_test` waits for the
+overlay frames.
+
+Measured (fresh, 2026-11-14, release lib test binaries, `$TEST_BINARY
+nodes::sim::core::populated_city::batch_commit::benchmark_populated_batch_overlay --ignored
+--nocapture --exact`, `RAYON_NUM_THREADS=8` on the eight P-cores, the K22 30k city; control `dev`
+`c884802a` with the single-stroke half of the benchmark, alternated C B C B C B; single-stroke stages
+medians of 11, tier-2 frames medians of 5 runs of the whole batch; logs in `$ARTIFACTS`):
+
+| Measure | Pair 1 (C, B) | Pair 2 (C, B) | Pair 3 (C, B) | Bar |
+| --- | --- | --- | --- | --- |
+| Single stroke's payload, control | 1.65 ms | 1.74 ms | 1.62 ms | the bar |
+| Largest overlay frame's payload, branch (8 frames) | 0.81 ms | 1.11 ms | 0.94 ms | at most the control's single stroke: pass |
+| Overlay frames' payloads, branch | 0.46-0.81 ms | 0.62-1.11 ms | 0.40-0.94 ms | |
+| Overlay frames' roadbed stage (replay and restore) | 0.25-0.28 ms | 0.36-0.45 ms | 0.20-0.25 ms | 0.5 ms |
+| Last stroke's frame: plan / roadbed / graded | 0.69 / 0.55 / 1.12 ms | 1.24 / 1.11 / 2.02 ms | 0.49 / 0.42 / 0.99 ms | 1.0 / 0.5 / 3.0 ms; the control's single stroke 0.58 / 1.02 / 1.32, 0.72 / 1.15 / 1.24, 0.56 / 0.86 / 1.23 |
+| Single stroke's payload, branch (same code) | 1.81 ms | 1.52 ms | 1.58 ms | |
+| The overlay in one call (round G1's accepting frame, with replay) | 3.22 ms | 5.48 ms | 3.32 ms | |
+| Frames' overlay equals the one call, bit for bit | yes | yes | yes | |
+
+The second pair's branch run was slower on every tier-2 stage (plan stages 0.9-1.3 ms against
+0.4-0.7 in the others; the desktop was in use), so a third pair ran (its branch half after the
+parity runs below, not adjacent): every stage of every frame at or under the control's single
+stroke there. The overlay frames' payload passes in all three.
+
+What round G1 left unrun, against `dev` `c884802a`'s release library and scripts (fresh,
+2026-11-14): Kuopio's 39 strokes through the drag probe with `METRUM_GRADED_DRAG_PRODUCTS=1`, 78
+commits EQUAL in every product (request, graph, state, chunks, curve signs, graded tiles); the
+gameplay fixtures with `METRUM_GAMEPLAY_ROAD_PRODUCTS=1`, 17 commits EQUAL; the Kuopio drag probe
+on the branch PASS (0 failures, 39 fast commits, every share under its bar; the main checkout's
+locks held from outside, `TOOLS-24`). The rendered single-stroke preview rows (`road_preview`
+carried rows, one C B B C pass, gamescope's headless backend at 1920x1080, the desktop in use):
+exact poses on time, all rows together, control 65.4 % and 64.1 %, branch 53.5 % and 68.5 %. Not
+level by the rule: the first branch run is below the control's spread and the second above it
+(the first ran with the highest viewport CPU p95 of the pass, 3.2-3.3 ms against 1.9-2.8). The
+single-stroke preview's code is the control's except the request's profile field (round G1), so
+this reads as the desktop's noise; for review.
 
 ### Decisions (user, 2026-11-12, all as recommended)
 

@@ -69,9 +69,32 @@ impl NetworkMeshData {
         Some(spliced)
     }
 
+    /// Appends every run of `part`, whose owners all follow this mesh's in owner order: per
+    /// layer, the runs one emission of both owner sets writes, as [`Self::splice_owners`] merges
+    /// them, without copying this mesh again (`ROAD-112` round G1b, a batch preview's overlay
+    /// built over frames). Lights and signs are not carried. `None` when a run of `part` has no
+    /// owner. `O(part's vertices)` amortised.
+    pub(super) fn append_owner_runs(&mut self, part: &Self) -> Option<()> {
+        for layer in 0..LAYERS {
+            let runs = part.owner_runs(layer)?;
+            debug_assert!(
+                runs.first().is_none_or(|(first, _)| {
+                    self.owner_ranges[layer].last().is_none_or(|last| {
+                        last.owner.map(owner_order) < Some(owner_order(*first))
+                    })
+                }),
+                "parts append in owner order"
+            );
+            for (owner, range) in runs {
+                self.append_run(part, layer, owner, range);
+            }
+        }
+        Some(())
+    }
+
     /// Whether two meshes carry the same payload: every layer's attributes and owner ranges,
     /// street lights and signs.
-    #[cfg(debug_assertions)]
+    #[cfg(any(test, debug_assertions))]
     pub(super) fn same_payload(&self, other: &Self) -> bool {
         (0..LAYERS).all(|layer| {
             let (a, b) = (self.layer(layer), other.layer(layer));
@@ -235,7 +258,7 @@ impl NetworkMeshData {
 // Layers in `owner_ranges` order: skirt, curb, raised step, sidewalk, road, marking,
 // concrete, lining, median grass (the `MeshLayer` discriminants); only the road layer carries
 // crossing frames.
-const LAYERS: usize = 9;
+pub(super) const LAYERS: usize = 9;
 const ROAD_LAYER: usize = 4;
 
 // Emission order within a layer: every span by edge id, then every node piece by node id.

@@ -414,8 +414,11 @@ fn benchmark_populated_batch_preview() {
                 if let Some(frame) = frame {
                     frames.push([frame.plan_ms, frame.roadbed_ms, frame.payload_ms, frame.graded_ms]);
                 }
-                if let Some(verdict) = batch.verdict.clone() {
-                    break verdict;
+                // An accepted batch's overlay follows over the next frames (round G1b).
+                if batch.pieces.is_some() || batch.verdict.as_ref().is_some_and(|verdict| {
+                    *verdict != crate::nodes::sim::core::BatchVerdict::Accepted
+                }) {
+                    break batch.verdict.clone().expect("tier 2 ended");
                 }
             };
             assert_eq!(verdict, crate::nodes::sim::core::BatchVerdict::Accepted);
@@ -454,6 +457,126 @@ fn benchmark_populated_batch_preview() {
                     "previewed_dry": [previewed.times.dry_parts.plan_ms, previewed.times.dry_parts.compile_ms],
                     "commit_reference": reference,
                     "products_equal": previewed_products == reference_products})
+            );
+        }
+    }
+}
+
+// One stroke's preview stages of the first branch, `METRUM_SINGLE_RUNS` times (default 11):
+// the median of each stage.
+fn single_preview_stages(
+    context: &mut crate::nodes::sim::core::RoadPreviewContext,
+    points: &[Vector3],
+) -> [f64; 4] {
+    let runs: usize = std::env::var("METRUM_SINGLE_RUNS")
+        .map(|value| value.parse().unwrap())
+        .unwrap_or(11);
+    let mut stages: [Vec<f64>; 4] = Default::default();
+    for _ in 0..runs {
+        let times = context.preview_road(preview_request(context, points)).times;
+        for (stage, ms) in stages.iter_mut().zip([
+            times.plan_ms,
+            times.roadbed_ms,
+            times.payload_ms,
+            times.graded_ms,
+        ]) {
+            stage.push(ms);
+        }
+    }
+    stages.map(|samples| median_max(samples)[0])
+}
+
+/// `benchmark_populated_batch_overlay` (`ROAD-112` round G1b): on each `METRUM_COMMIT_TIERS`
+/// city (default 30k) as the commit breakdown loads it, `BATCH_OVERLAY` prints a single
+/// stroke's preview stages (the first branch, medians of `METRUM_SINGLE_RUNS`) and tier 2 of
+/// the eight branches `METRUM_TIER2_RUNS` times (default 5) to its whole overlay: each frame's
+/// median stages `[plan, roadbed, payload, graded]`, the largest frame payload, the one-call
+/// overlay's time on the same replica (round G1's accepting frame) and whether the frames'
+/// overlay equals it bit for bit. The bar: no frame's payload over the control's single stroke.
+#[test]
+#[ignore = "release ROAD-112 round G1b batch overlay on the K22 cities; loads them outside timing"]
+fn benchmark_populated_batch_overlay() {
+    super::contract::timing_mode();
+    let rounds: usize = std::env::var("METRUM_BATCH_ROUNDS")
+        .map(|value| value.parse().unwrap())
+        .unwrap_or(1);
+    let tier2_runs: usize = std::env::var("METRUM_TIER2_RUNS")
+        .map(|value| value.parse().unwrap())
+        .unwrap_or(5);
+    let tiers: Vec<u32> = std::env::var("METRUM_COMMIT_TIERS")
+        .map(|value| value.split(',').map(|t| t.trim().parse().unwrap()).collect())
+        .unwrap_or_else(|_| vec![30_000]);
+    for residents in tiers {
+        for round in 0..rounds {
+            let (mut core, _) = commit_city(residents);
+            let published = prepare(&mut core);
+            settle(&mut core, &published, None);
+            let mut context = preview_context(&mut core, &published);
+            let branches = branches(&core);
+            let single = single_preview_stages(&mut context, &branches[0]);
+            let requests: Vec<_> = branches
+                .iter()
+                .map(|points| preview_request(&context, points))
+                .collect();
+            let mut frames: Vec<[Vec<f64>; 4]> = Vec::new();
+            let (mut one_call, mut equal) = (Vec::new(), true);
+            for _ in 0..tier2_runs {
+                context.clear_batch();
+                let mut index = 0;
+                loop {
+                    let (batch, frame) = context.preview_batch_step(requests.clone());
+                    let frame = frame.expect("tier 2 runs to its overlay");
+                    if frames.len() == index {
+                        frames.push(Default::default());
+                    }
+                    for (stage, ms) in frames[index].iter_mut().zip([
+                        frame.plan_ms,
+                        frame.roadbed_ms,
+                        frame.payload_ms,
+                        frame.graded_ms,
+                    ]) {
+                        stage.push(ms);
+                    }
+                    index += 1;
+                    if batch.pieces.is_some() {
+                        break;
+                    }
+                    assert!(
+                        !matches!(
+                            batch.verdict,
+                            Some(crate::nodes::sim::core::BatchVerdict::Refused { .. })
+                        ),
+                        "the branches are accepted"
+                    );
+                }
+                let start = Instant::now();
+                let whole = context
+                    .batch_overlay_in_one_call()
+                    .expect("a finished batch")
+                    .expect("the view's chunks compose");
+                one_call.push(start.elapsed().as_secs_f64() * 1e3);
+                let built = context.batch().and_then(|batch| batch.pieces.as_ref());
+                let built = built.and_then(|pieces| pieces.chunks.as_ref()).expect("the overlay");
+                equal &= built.len() == whole.len()
+                    && built.iter().all(|(chunk, preview)| {
+                        whole
+                            .get(chunk)
+                            .is_some_and(|other| preview.same_preview(other))
+                    });
+            }
+            let frames: Vec<[f64; 4]> = frames
+                .into_iter()
+                .map(|stages| stages.map(|samples| median_max(samples)[0]))
+                .collect();
+            let max_payload = frames.iter().map(|frame| frame[2]).fold(0.0, f64::max);
+            eprintln!(
+                "BATCH_OVERLAY {}",
+                serde_json::json!({"residents": residents, "round": round,
+                    "single_preview": single,
+                    "tier2_frames": frames,
+                    "max_frame_payload_ms": max_payload,
+                    "one_call_overlay_ms": median_max(one_call),
+                    "overlay_equal": equal})
             );
         }
     }

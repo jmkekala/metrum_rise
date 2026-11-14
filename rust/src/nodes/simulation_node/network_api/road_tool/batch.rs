@@ -3,8 +3,9 @@
 //! Batch preview Godot API (`ROAD-112` round G1, plan 6.2): a draft that segments into several
 //! strokes (`segment_draft`, round H) previews as a batch. Every pose runs tier 1 (each stroke's
 //! hover check and a ribbon ghost; exact cost and length); a resting pointer also runs one tier-2
-//! stroke a frame on the preview's replica, and the frame that finishes it returns the exact
-//! overlay as `preview_road` does. The commit of the same draft (`add_road_draft`) takes a
+//! stroke a frame on the preview's replica, then the exact overlay in as many frames (a
+//! stroke's share of its triangles each), and the frame that completes it returns the overlay
+//! as `preview_road` does. The commit of the same draft (`add_road_draft`) takes a
 //! finished tier 2's plans and pieces in place of its dry run's planning. Takes the context lock
 //! only, never the core lock.
 
@@ -32,8 +33,10 @@ impl SimulationNode {
     /// `tier2_state` (`running`, `accepted` or `refused`), `tier2_reason` and `tier2_stroke` (a
     /// refusal's key and stroke, -1 for the whole batch), `tier2_ms` (this frame's tier-2 work)
     /// with its stages `tier2_plan_ms`, `tier2_roadbed_ms`, `tier2_payload_ms`,
-    /// `tier2_graded_ms`. The frame that accepts the batch adds what `preview_road` returns for
-    /// a stroke's pieces: `has_road_chunks`, `road_chunks`, `road_mesh_generation`,
+    /// `tier2_graded_ms`. Once every stroke is planned, the resting frames after build the exact
+    /// overlay, a stroke's share of its triangles a frame (round G1b), and `tier2_state` stays
+    /// `running` until it is whole. The frame that turns it `accepted` adds what `preview_road`
+    /// returns for a stroke's pieces: `has_road_chunks`, `road_chunks`, `road_mesh_generation`,
     /// `chunk_span_m`, `chunk_origin_x_m`, `chunk_origin_z_m`, `changed_chunks`, the graded
     /// tiles' changes, `demolish_count` and `demolish_lots`.
     #[func]
@@ -136,7 +139,7 @@ impl SimulationNode {
         context.land = self.road_tool.land();
         let (batch, frame) = context.preview_batch_step(requests);
         Self::set_tier2(dict, batch, frame.unwrap_or_default());
-        // The exact preview goes once, on the frame that accepted the batch.
+        // The exact preview goes once, on the frame that completed the accepted batch's overlay.
         if frame.is_some() && batch.pieces.is_some() {
             Self::set_batch_pieces(&mut context, dict);
         }
@@ -149,7 +152,9 @@ impl SimulationNode {
         frame: crate::nodes::sim::core::RoadPreviewTimes,
     ) {
         let (state, reason, stroke) = match &batch.verdict {
+            // An accepted batch is shown once its overlay is whole.
             None => ("running", "", -1),
+            Some(BatchVerdict::Accepted) if batch.pieces.is_none() => ("running", "", -1),
             Some(BatchVerdict::Accepted) => ("accepted", "", -1),
             Some(BatchVerdict::Refused { stroke, reason }) => (
                 "refused",

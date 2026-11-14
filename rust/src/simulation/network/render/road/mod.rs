@@ -27,6 +27,9 @@ pub(crate) mod road_signs;
 pub mod standard_surface;
 pub(crate) mod street_lights;
 mod verge;
+mod preview_parts;
+
+pub(crate) use preview_parts::PreviewOverlayParts;
 
 pub(super) const MIN_SEGMENT_LEN: f32 = 0.01;
 pub(super) const MARKING_RENDER_Z_BIAS_M: f32 = ROAD_DECAL_RENDER_Z_BIAS_M;
@@ -205,6 +208,24 @@ pub(crate) struct PreviewChunk {
     /// The published chunk's positions in `hidden`'s ranges, in their order: what Godot puts
     /// back when a run is shown again.
     pub(crate) hidden_positions: Vec<Vector3>,
+}
+
+#[cfg(test)]
+impl PreviewChunk {
+    // Whether two previews of a chunk are the same bit for bit: the overlay's payload and its
+    // seal, the hidden runs and their positions.
+    pub(crate) fn same_preview(&self, other: &Self) -> bool {
+        let bits = |positions: &[Vector3]| -> Vec<[u32; 3]> {
+            positions
+                .iter()
+                .map(|p| [p.x.to_bits(), p.y.to_bits(), p.z.to_bits()])
+                .collect()
+        };
+        self.overlay.same_payload(&other.overlay)
+            && self.overlay.render_payload_validated() == other.overlay.render_payload_validated()
+            && self.hidden == other.hidden
+            && bits(&self.hidden_positions) == bits(&other.hidden_positions)
+    }
 }
 
 impl RoadRenderer {

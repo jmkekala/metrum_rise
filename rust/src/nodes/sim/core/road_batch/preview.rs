@@ -15,9 +15,13 @@
 //! its land judged as the preview judges it. The replica is put back at the end of every frame
 //! (the context's invariant: between calls it equals the view's graph), and the next frame
 //! replays the done strokes' records forward first, `O(their local records)`. A new pose
-//! restarts the batch; nothing needs undoing then. The frame that finishes the last stroke also
-//! builds the exact overlay of the changed chunks and stages the pose's graded tiles, as a
-//! single stroke's preview does.
+//! restarts the batch; nothing needs undoing then. The frame that accepts the last stroke also
+//! stages the pose's graded tiles, as a single stroke's preview does. The exact overlay of the
+//! changed chunks follows over the next frames (round G1b), on the replica with every stroke
+//! replayed: the batch's owners in emission order cut into one group per stroke at equal shares
+//! of their triangles, one group emitted a frame and appended to the chunks
+//! ([`PreviewOverlayParts`]), so no frame's payload grows with the batch. The overlay is handed
+//! over whole on the last of them, so the batch never shows half.
 //!
 //! **Commit**: a finished, accepted tier 2 whose fingerprint chain is current hands its plans and
 //! pieces to the batch commit ([`BatchPreviewProducts`]), which then skips planning and
@@ -41,7 +45,7 @@ use super::super::road_tool_context::RoadPreviewContext;
 use super::super::road_tool_land::ViewLand;
 use crate::nodes::sim::road_tool::validate_road_candidate_against_water;
 use crate::simulation::network::graph::RegionGraphUndoDelta;
-use crate::simulation::network::render::road::{PreviewChunk, RoadRenderer};
+use crate::simulation::network::render::road::{PreviewChunk, PreviewOverlayParts};
 use crate::simulation::network::road_edit::{PreparedRoadInput, RoadPreviewValidation};
 use crate::simulation::network::roadbed::{PieceId, RoadbedDelta, RoadbedSystem, SurfaceChunkKey};
 
@@ -133,9 +137,11 @@ pub(crate) struct BatchPreview {
     roadbed: RoadbedSystem,
     /// The done strokes, in the batch's order.
     pub(crate) strokes: Vec<BatchPreviewStroke>,
-    /// `Some` once tier 2 ended.
+    /// `Some` once tier 2 ended: `Accepted` once every stroke planned, before its overlay.
     pub(crate) verdict: Option<BatchVerdict>,
-    /// The exact preview, once an accepted batch finished.
+    // The accepted batch's overlay being built, one owner group a frame.
+    payload: Option<PreviewOverlayParts>,
+    /// The exact preview, once an accepted batch's overlay is built.
     pub(crate) pieces: Option<BatchPreviewPieces>,
     /// Each tier-2 frame's stages, in frame order.
     pub(crate) frames: Vec<RoadPreviewTimes>,
@@ -154,6 +160,11 @@ impl BatchPreview {
     #[cfg(test)]
     pub(crate) fn roadbed(&self) -> &RoadbedSystem {
         &self.roadbed
+    }
+
+    // Whether a frame has tier-2 work: a stroke to plan, or an accepted batch's overlay.
+    fn pending(&self) -> bool {
+        self.verdict.is_none() || self.payload.is_some()
     }
 
     /// Whether tier 2 ended accepted for exactly `requests` on the fingerprint `base`.
@@ -194,8 +205,9 @@ impl RoadPreviewContext {
     /// this view by one stroke, or restarts it when the strokes or the view changed (a new pose).
     /// The replica equals the view's graph again on return. Returns the batch's state. Cost per
     /// frame: one stroke's plan, compile and land judgement, plus the done strokes' local
-    /// records replayed and restored; the finishing frame adds the overlay and graded staging.
-    /// The frame's stages are returned when this call advanced tier 2 (`None` once it ended).
+    /// records replayed and restored; the accepting frame adds the graded staging, and each
+    /// frame after it one stroke's chunks of the overlay. The frame's stages are returned when
+    /// this call advanced tier 2 (`None` once it ended and its overlay is built).
     pub(crate) fn preview_batch_step(
         &mut self,
         requests: Vec<RoadPreviewRequest>,
@@ -213,7 +225,7 @@ impl RoadPreviewContext {
             self.restart_batch(requests, base);
         }
         let mut batch = self.batch.take().expect("a batch was just ensured");
-        let frame = batch.verdict.is_none().then(|| self.step_batch(&mut batch));
+        let frame = batch.pending().then(|| self.step_batch(&mut batch));
         (self.batch.insert(batch), frame)
     }
 
@@ -264,33 +276,57 @@ impl RoadPreviewContext {
             }),
             requests,
             base,
+            payload: None,
             pieces: None,
             frames: Vec::new(),
         });
     }
 
-    // One stroke of tier 2 (module documentation), with the replica replayed to the done
-    // strokes' state first and restored to the view's graph after.
+    // One stroke of tier 2, or one stroke's chunks of an accepted batch's overlay (module
+    // documentation), with the replica replayed to the done strokes' state first and restored
+    // to the view's graph after.
     fn step_batch(&mut self, batch: &mut BatchPreview) -> RoadPreviewTimes {
         let plan_start = Instant::now();
         for stroke in &batch.strokes {
             self.replica.restore_undo_delta_local(&stroke.forward);
         }
-        let index = batch.strokes.len();
         let mut times = RoadPreviewTimes::default();
-        let outcome = self.batch_stroke(batch, index, plan_start, &mut times);
-        match outcome {
-            Err(reason) => {
-                batch.verdict = Some(BatchVerdict::Refused {
-                    stroke: Some(index),
-                    reason,
-                });
+        if let Some(parts) = batch.payload.as_mut() {
+            times.roadbed_ms = plan_start.elapsed().as_secs_f64() * 1000.0;
+            let payload_start = Instant::now();
+            let sites = super::super::graded_stage::PreviewSites::new(
+                &self.view.terrain,
+                &self.view.terrain_inputs,
+            );
+            let built = parts.build_next(
+                &self.replica,
+                &self.view.terrain,
+                &sites,
+                &batch.roadbed,
+                &self.view.road_mesh_chunks,
+            );
+            if built.is_none() || parts.is_done() {
+                let parts = batch.payload.take().expect("the parts being built");
+                let chunks = built.map(|()| parts.finish());
+                batch.pieces = Some(BatchPreviewPieces { chunks });
             }
-            Ok(stroke) => {
-                batch.strokes.push(stroke);
-                if batch.strokes.len() == batch.requests.len() {
-                    batch.pieces = Some(self.finish_batch(batch, &mut times));
-                    batch.verdict = Some(BatchVerdict::Accepted);
+            times.payload_ms = payload_start.elapsed().as_secs_f64() * 1000.0;
+        } else {
+            let index = batch.strokes.len();
+            let outcome = self.batch_stroke(batch, index, plan_start, &mut times);
+            match outcome {
+                Err(reason) => {
+                    batch.verdict = Some(BatchVerdict::Refused {
+                        stroke: Some(index),
+                        reason,
+                    });
+                }
+                Ok(stroke) => {
+                    batch.strokes.push(stroke);
+                    if batch.strokes.len() == batch.requests.len() {
+                        self.accept_batch(batch, &mut times);
+                        batch.verdict = Some(BatchVerdict::Accepted);
+                    }
                 }
             }
         }
@@ -384,28 +420,54 @@ impl RoadPreviewContext {
         })
     }
 
-    // The finishing frame, on the replica with every stroke applied: the exact overlay of every
-    // changed chunk and the pose's graded tiles, as a single stroke's preview builds them from
-    // its one delta (`compile_plan_pieces`), over the union of the strokes' deltas.
-    fn finish_batch(
+    /// Test builds: the finished batch's overlay built in one call over every chunk its strokes
+    /// changed, as round G1 built it on the accepting frame; the replica equals the view's graph
+    /// again on return. `None` without a finished batch.
+    #[cfg(test)]
+    pub(crate) fn batch_overlay_in_one_call(
         &mut self,
-        batch: &mut BatchPreview,
-        times: &mut RoadPreviewTimes,
-    ) -> BatchPreviewPieces {
-        // Every owner a stroke rebuilt or failed, with whether the batch's roadbed now holds a
-        // piece for it (a later stroke may rebuild an earlier one's piece).
-        let owners: BTreeSet<PieceId> = batch
+    ) -> Option<Option<BTreeMap<SurfaceChunkKey, PreviewChunk>>> {
+        let batch = self.batch.take()?;
+        let finished = batch.strokes.len() == batch.requests.len();
+        let closure: Vec<_> = batch_owners(&batch.strokes)
+            .into_iter()
+            .map(|id| (id, batch.roadbed.piece_mesh(id).is_some()))
+            .collect();
+        let target: BTreeSet<_> = batch
             .strokes
             .iter()
-            .flat_map(|stroke| {
-                let delta = &stroke.delta;
-                delta.pieces().map(|(id, _)| id).chain(
-                    delta
-                        .failed_nodes()
-                        .map(|(node, _)| PieceId::Node(node)),
-                )
-            })
+            .flat_map(|stroke| stroke.changed_chunks.iter().copied())
             .collect();
+        for stroke in &batch.strokes {
+            self.replica.restore_undo_delta_local(&stroke.forward);
+        }
+        let sites = super::super::graded_stage::PreviewSites::new(
+            &self.view.terrain,
+            &self.view.terrain_inputs,
+        );
+        let chunks = crate::simulation::network::render::road::RoadRenderer
+            .generate_preview_overlay(
+                &self.replica,
+                &self.view.terrain,
+                &sites,
+                &batch.roadbed,
+                &target,
+                &closure,
+                self.view.roadbed.generation(),
+                &self.view.road_mesh_chunks,
+            );
+        for stroke in batch.strokes.iter().rev() {
+            self.replica.restore_undo_delta_local(&stroke.backward);
+        }
+        self.batch = Some(batch);
+        finished.then_some(chunks)
+    }
+
+    // The accepting frame, on the replica with every stroke applied: the pose's graded tiles,
+    // as a single stroke's preview stages them from its one delta (`compile_plan_pieces`), over
+    // the union of the strokes' deltas, and the overlay's closure for the frames after.
+    fn accept_batch(&mut self, batch: &mut BatchPreview, times: &mut RoadPreviewTimes) {
+        let owners = batch_owners(&batch.strokes);
         let terrain_changes = batch.roadbed.take_terrain_changes();
         let graded_start = Instant::now();
         let end = batch
@@ -424,36 +486,41 @@ impl RoadPreviewContext {
             end,
         );
         times.graded_ms = graded_start.elapsed().as_secs_f64() * 1000.0;
-        let payload_start = Instant::now();
-        let built_after = self.view.roadbed.generation();
-        let chunks = (self.view.road_mesh_generation == Some(built_after))
-            .then(|| {
-                let target: BTreeSet<_> = batch
-                    .strokes
-                    .iter()
-                    .flat_map(|stroke| stroke.changed_chunks.iter().copied())
-                    .collect();
-                let closure: Vec<_> = owners
-                    .iter()
-                    .map(|&id| (id, batch.roadbed.piece_mesh(id).is_some()))
-                    .collect();
-                let sites = super::super::graded_stage::PreviewSites::new(
-                    &self.view.terrain,
-                    &self.view.terrain_inputs,
-                );
-                RoadRenderer.generate_preview_overlay(
-                    &self.replica,
-                    &self.view.terrain,
-                    &sites,
-                    &batch.roadbed,
-                    &target,
-                    &closure,
-                    built_after,
-                    &self.view.road_mesh_chunks,
-                )
-            })
-            .flatten();
-        times.payload_ms = payload_start.elapsed().as_secs_f64() * 1000.0;
-        BatchPreviewPieces { chunks }
+        // The overlay composes over the published chunks only while they are the view's.
+        if self.view.road_mesh_generation != Some(self.view.roadbed.generation()) {
+            batch.pieces = Some(BatchPreviewPieces { chunks: None });
+            return;
+        }
+        let target = batch
+            .strokes
+            .iter()
+            .flat_map(|stroke| stroke.changed_chunks.iter().copied())
+            .collect();
+        // With whether the batch's roadbed now holds a piece for each (a later stroke may
+        // rebuild an earlier one's piece).
+        let closure = owners
+            .iter()
+            .map(|&id| (id, batch.roadbed.piece_mesh(id).is_some()))
+            .collect();
+        batch.payload = Some(PreviewOverlayParts::new(
+            &batch.roadbed,
+            target,
+            closure,
+            batch.strokes.len(),
+        ));
     }
+}
+
+// Every owner a stroke of the batch rebuilt or failed, ascending (the emission order).
+fn batch_owners(strokes: &[BatchPreviewStroke]) -> BTreeSet<PieceId> {
+    strokes
+        .iter()
+        .flat_map(|stroke| {
+            let delta = &stroke.delta;
+            delta
+                .pieces()
+                .map(|(id, _)| id)
+                .chain(delta.failed_nodes().map(|(node, _)| PieceId::Node(node)))
+        })
+        .collect()
 }
