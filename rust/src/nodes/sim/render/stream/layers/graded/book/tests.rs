@@ -553,6 +553,81 @@ fn a_commit_no_held_tile_takes_releases_its_preview_through_the_renderer() {
     assert_eq!(world.book.installed_edit_serial(), 8);
 }
 
+// The mesh and custom data `tile`'s cell has in patch (0, 0)'s set.
+fn cell_of(world: &Recorder, tile: Tile) -> (usize, [f32; 4]) {
+    let cells = &world.book.state.cells;
+    let set = &cells.sets[*cells.by_patch.get(&(0, 0)).expect("the set") as usize];
+    let (mesh, index) = set.at[set.place(tile)];
+    (mesh as usize, set.custom[mesh as usize][index as usize])
+}
+
+// The frame's cell rewrites, applied.
+fn apply_cells(world: &mut Recorder) {
+    world.book.apply_cell_changes();
+    world.apply_effects();
+}
+
+// T65 option (c) (`ROAD-112` round G2): a pose's backstop tiles draw their installed tile in the
+// behind-the-road variant with the backstop bit from the pose's own frame (the set takes the
+// variant at once); a preview tile over one draws as itself; a catch-up frame keeps them, the
+// next pose replaces them, and the epoch's release puts them back, after which a frame of that
+// epoch sets none.
+#[test]
+fn a_poses_backstop_tiles_draw_their_cut_until_their_epoch_is_released() {
+    use crate::nodes::sim::render::stream::layers::graded::cells::CELL_BEHIND;
+    let mut world = installed_world();
+    apply_cells(&mut world);
+    let gl2 = 2;
+    let plain = cell_of(&world, TILES[0]);
+    assert_eq!(plain.0, gl2);
+    let flat = |tiles: &[Tile]| -> Vec<i32> { tiles.iter().flat_map(|t| [t.x, t.z]).collect() };
+    assert!(Run::unbudgeted(&mut world).set_cut(5, &flat(&TILES[..2])));
+    apply_cells(&mut world);
+    for tile in &TILES[..2] {
+        let (mesh, custom) = cell_of(&world, *tile);
+        assert_eq!(mesh, gl2 + CELL_BEHIND, "{tile:?} draws in the variant");
+        assert_eq!(custom[3] as u32 & 64, 64, "{tile:?} carries the backstop bit");
+        assert_eq!(custom[3] as u32 & 63, plain.1[3] as u32 & 63, "its side codes unchanged");
+    }
+    assert_eq!(cell_of(&world, TILES[2]).0, gl2);
+    let set = *world.book.state.cells.by_patch.get(&(0, 0)).expect("the set");
+    assert!(world.book.state.cells.sets[set as usize].variant, "the set took the variant");
+    // A preview tile over a backstop tile draws as itself (the pose's own cut).
+    Run::unbudgeted(&mut world).preview_frame(&[], [bake(TILES[0], (2, 0), 5, false)]);
+    apply_cells(&mut world);
+    let (mesh, custom) = cell_of(&world, TILES[0]);
+    assert_eq!((mesh, custom[3] as u32 & 64), (gl2, 0));
+    // The same set again changes nothing; the next pose's set replaces it.
+    assert!(!Run::unbudgeted(&mut world).set_cut(5, &flat(&TILES[..2])));
+    assert!(Run::unbudgeted(&mut world).set_cut(5, &flat(&TILES[1..3])));
+    apply_cells(&mut world);
+    assert_eq!(cell_of(&world, TILES[2]).0, gl2 + CELL_BEHIND);
+    // The epoch's release (a cancel) puts every tile back, and a later frame of it sets none.
+    Run::unbudgeted(&mut world).release_epochs(5, 5);
+    apply_cells(&mut world);
+    for tile in TILES {
+        let (mesh, custom) = cell_of(&world, tile);
+        assert_eq!((mesh, custom[3] as u32 & 64), (gl2, 0), "{tile:?}");
+    }
+    assert!(!Run::unbudgeted(&mut world).set_cut(5, &flat(&TILES)));
+    // The next epoch's tiles go with its commit's edit batch.
+    assert!(Run::unbudgeted(&mut world).set_cut(6, &flat(&TILES[..1])));
+    let mut commit = edit(9, &TILES[3..]);
+    commit.preview_epoch = 6;
+    world.polls.push_back(vec![Polled::Edit(commit)]);
+    world.frame(0);
+    world.request_all();
+    world
+        .polls
+        .push_back(vec![Polled::Tile(world.baked(TILES[3], false))]);
+    world.frame(0);
+    apply_cells(&mut world);
+    assert_eq!(cell_of(&world, TILES[0]).0, gl2 + CELL_BEHIND, "held until the batch");
+    assert_eq!(Run::unbudgeted(&mut world).install_edit_batch(), 1);
+    apply_cells(&mut world);
+    assert_eq!(cell_of(&world, TILES[0]).0, gl2, "released with the batch");
+}
+
 #[test]
 fn the_cores_entries_are_news_and_follow_steps_and_generations() {
     use crate::nodes::sim::render::stream::layers::terrain::Follow;

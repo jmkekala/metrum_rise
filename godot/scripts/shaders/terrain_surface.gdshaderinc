@@ -530,6 +530,9 @@ void vertex() {
 	ivec2 cell_p = ivec2(0);
 	var_cell = ivec4(-1, -1, 0, 0);
 	var_cell_delta = 0.0;
+#ifdef TERRAIN_GRADED_BEHIND
+	var_cell_backstop = 0;
+#endif
 	if (cells) {
 		cell = cell_frame(INSTANCE_CUSTOM, cell_hm);
 		// VERTEX.xz holds the mesh vertex's lattice index; the instance transform is identity.
@@ -539,6 +542,9 @@ void vertex() {
 		VERTEX = vec3(vec2(cell.origin_hm + cell_p - patch_centre_hm) * 0.5, 0.0).xzy;
 		var_cell_local_m = vec2(cell_p) * 0.5;
 		var_cell = ivec4(cell.slot, cell.code, cell.phase);
+#ifdef TERRAIN_GRADED_BEHIND
+		var_cell_backstop = (cell_codes(INSTANCE_CUSTOM) >> 15) & 1;
+#endif
 	}
 	vec2 safe_inner_size = max(inner_sample_size_texels, vec2(1.0));
 	vec2 patch_uv = clamp(
@@ -673,6 +679,34 @@ void fragment() {
 				DEPTH = behind_clip.z / behind_clip.w;
 #endif
 			}
+		}
+	}
+	if (cut && var_cell_backstop != 0) {
+		// The backstop (T65 option (c), `ROAD-112` round G2): a road preview's pose replaced the
+		// published pieces whose cut this installed tile's bake holds, and the road draws the
+		// pose's pieces instead, whose edges may lie lower or higher than the cut's edge or leave
+		// it uncovered. The cut ground is drawn instead of discarded, at the depth of its own
+		// ray's point a hundredth of the way short of the far plane (`far_plane`, `far_view` as
+		// above), so every surface drawn in front of it hides it and it shows only where nothing
+		// is drawn: where the background showed through the published cut. In the shadow pass
+		// it lies at the far end of the light's range and shadows nothing.
+		mat4 backstop_rows = transpose(PROJECTION_MATRIX);
+#if CURRENT_RENDERER == RENDERER_COMPATIBILITY
+		vec4 backstop_far = backstop_rows[3] - backstop_rows[2];
+#else
+		vec4 backstop_far = backstop_rows[2];
+#endif
+		float backstop_view = dot(backstop_far.xyz, VIEW);
+		float backstop_to_far = dot(backstop_far, vec4(VERTEX, 1.0));
+		if (backstop_view > 0.0 && backstop_to_far > 0.0) {
+			cut = false;
+			vec3 backstop = VERTEX - VIEW * (0.99 * backstop_to_far / backstop_view);
+			vec4 backstop_clip = PROJECTION_MATRIX * vec4(backstop, 1.0);
+#if CURRENT_RENDERER == RENDERER_COMPATIBILITY
+			DEPTH = backstop_clip.z / backstop_clip.w * 0.5 + 0.5;
+#else
+			DEPTH = backstop_clip.z / backstop_clip.w;
+#endif
 		}
 	}
 #else

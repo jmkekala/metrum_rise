@@ -9,6 +9,7 @@ use crate::nodes::sim::road_tool::height::{DraftSection, draft_batch, segment_dr
 use crate::simulation::network::road_edit::RoadProfile;
 use crate::simulation::network::road_types::RoadAttributes;
 
+mod road_holds;
 pub(super) mod road_tool;
 mod road_types;
 mod roundabouts;

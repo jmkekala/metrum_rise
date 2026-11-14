@@ -161,6 +161,13 @@ func _replay(path: String) -> bool:
 				renderer.unbudgeted = words[3] == "1"
 				renderer.residency_settling = words[4] == "1"
 				renderer.process(Vector3(camera[0], camera[1], camera[2]), Trace.keys_of(words[6]))
+			"preview_cut":
+				# A pose's backstop tiles (T65 option (c)): show_preview recorded them before the
+				# frame's preview line, and takes both lines again.
+				var changes := Trace.preview_of(String(trace._lines[trace._at + 1]).substr(2))
+				changes["graded_epoch"] = int(words[2])
+				changes["graded_cut"] = PackedInt32Array(Array(Trace.ints_of(words[3])))
+				renderer.show_preview(changes)
 			"preview":
 				renderer.show_preview(Trace.preview_of(line.substr(2)))
 			"release_preview":

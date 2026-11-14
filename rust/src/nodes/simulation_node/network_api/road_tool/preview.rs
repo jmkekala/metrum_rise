@@ -347,7 +347,10 @@ impl SimulationNode {
     /// rebuilt pieces' triangles and the published runs they replace (`road_chunks`, below the
     /// chunk since `ROAD-68-H` round 3), indexing the resident chunks of `road_mesh_generation`.
     /// A click on the same stroke submits this preview, and the commit installs its pieces while
-    /// the fingerprint is current. Takes the context lock only, never the core lock.
+    /// the fingerprint is current. `graded_cut` (flat `(x, z)`, under `graded_epoch`): the tiles
+    /// whose installed graded tile draws its road cut as the backstop while it shows under this
+    /// pose (T65 option (c), `ROAD-112` round G2; empty when the pose draws no road). Takes the
+    /// context lock only, never the core lock.
     #[func]
     pub fn preview_road(
         &self,
@@ -369,6 +372,7 @@ impl SimulationNode {
     ) -> VarDictionary {
         let mut graded_tiles = Vec::new();
         let mut graded_removed = Vec::new();
+        let mut graded_cut = Vec::new();
         let land = self.road_tool.land();
         let (
             preview,
@@ -401,6 +405,18 @@ impl SimulationNode {
             context
                 .graded
                 .take_shown_changes(&mut graded_tiles, &mut graded_removed);
+            // T65 option (c): the tiles whose published cut this pose's road may leave open,
+            // none when it draws no road.
+            {
+                let context = &mut *context;
+                let delta = (preview.pieces.as_ref())
+                    .filter(|_| preview.validation.is_valid)
+                    .map(|pieces| &pieces.delta);
+                graded_cut.extend(
+                    (context.graded.cut_tiles(&context.view.roadbed, delta).iter())
+                        .flat_map(|tile| [tile.x, tile.z]),
+                );
+            }
             let demolish_lots = preview
                 .pieces
                 .as_ref()
@@ -469,6 +485,9 @@ impl SimulationNode {
             graded_epoch,
             cell_m,
         );
+        // A pose's frame replaces its epoch's backstop tiles (flat `(x, z)`); a catch-up frame
+        // carries none and keeps them.
+        dict.set("graded_cut", PackedInt32Array::from(graded_cut.as_slice()));
         let has_road_chunks = preview
             .pieces
             .as_ref()

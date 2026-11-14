@@ -34,7 +34,7 @@ use super::road_terrain_inputs::RoadTerrainInputs;
 use super::state::SimCore;
 use crate::simulation::buildings::allocator::BuildingSiteTerrainSnapshot;
 use crate::simulation::core::pure_job::{JobStart, PureJob};
-use crate::simulation::network::roadbed::{PieceId, RoadbedSystem, TerrainChanges};
+use crate::simulation::network::roadbed::{PieceId, RoadbedDelta, RoadbedSystem, TerrainChanges};
 use crate::simulation::terrain::TerrainSystem;
 use crate::simulation::terrain::graded::{
     BakeError, Level, LevelRule, SiteBuffer, SiteSource, StageScratch, StageStats, StagedTile,
@@ -108,6 +108,32 @@ pub(crate) const POSE_FRAME_TILES: usize = 1;
 /// 2.65 ms with two tiles and 3.03 ms with three, so two. On Kuopio's steepest strokes a single
 /// tile's bake alone takes up to 3.64 ms, so no count fits there (`docs/terrain.md` T27).
 pub(crate) const CATCH_UP_FRAME_TILES: usize = 2;
+
+/// The tiles whose published road cut the drawn road may leave open (T65 option (c), `ROAD-112`
+/// round G2): every tile meeting the bounds of a published piece `delta` replaces. A preview
+/// draws `delta`'s pieces in place of those (their runs collapsed), so a published tile's cut
+/// opens where they covered the ground and the pose's pieces do not; outside these tiles every
+/// published cut lies under a piece the road still draws. Into `out`, sorted and unique.
+/// `O(replaced pieces x their tiles + out log out)`, independent of the city.
+pub(crate) fn replaced_cut_tiles(
+    published: &RoadbedSystem,
+    delta: &RoadbedDelta,
+    out: &mut Vec<TileKey>,
+) {
+    out.clear();
+    for (id, _) in delta.pieces() {
+        let Some(mesh) = published.piece_mesh(id) else {
+            continue;
+        };
+        let [min_x, min_z, max_x, max_z] = mesh.bounds_xz();
+        let (low, high) = (TileKey::at(min_x, min_z), TileKey::at(max_x, max_z));
+        for x in low.x..=high.x {
+            out.extend((low.z..=high.z).map(|z| TileKey { x, z }));
+        }
+    }
+    out.sort_unstable();
+    out.dedup();
+}
 
 /// One frame's graded tiles of the road tool's preview: the tiles shown after it, or why the
 /// frame could not stage them, with what the frame staged.
@@ -196,6 +222,9 @@ pub(crate) struct GradedPreview {
     // One frame's share, in `(level, tile)` order.
     share: Vec<(Level, TileKey)>,
     scratch: StageScratch,
+    // The latest pose's tiles whose published cut its road may leave open (scratch of
+    // `cut_tiles`).
+    cut: Vec<TileKey>,
 }
 
 impl GradedPreview {
@@ -372,6 +401,25 @@ impl GradedPreview {
     /// The preview epoch the shown tiles belong to.
     pub(crate) fn epoch(&self) -> u64 {
         self.epoch
+    }
+
+    /// The tiles where the renderer draws the published tiles' cut ground behind every drawn
+    /// surface while they show under this pose (T65 option (c), `ROAD-112` round G2): those of
+    /// [`replaced_cut_tiles`] for the pose's `delta` over the `published` roadbed, none for a
+    /// pose that draws no road (`None`). Not narrowed to the pose's selection: the renderer may
+    /// hold a tile at another level than the selection's rule gives it, where its bake can
+    /// change unselected. `O(replaced pieces x their tiles)`; no allocation once the scratch has
+    /// grown.
+    pub(crate) fn cut_tiles(
+        &mut self,
+        published: &RoadbedSystem,
+        delta: Option<&RoadbedDelta>,
+    ) -> &[TileKey] {
+        match delta {
+            Some(delta) => replaced_cut_tiles(published, delta, &mut self.cut),
+            None => self.cut.clear(),
+        }
+        &self.cut
     }
 
     /// The tiles the renderer draws: the latest pose's whole selection, each its exact bake, or

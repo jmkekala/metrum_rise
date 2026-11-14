@@ -517,6 +517,8 @@ impl<H: Host> Run<H> {
                 self.drop_preview(tile);
             }
             self.host.book().drop_preview_waits(0, release);
+            // The committed tiles are cut for the road the batch's chunks draw.
+            self.host.book().state.release_cut(-(1 << 62), release);
         }
         count
     }
@@ -617,13 +619,23 @@ impl<H: Host> Run<H> {
         }
     }
 
-    // The preview tiles of epochs `first` to `last` dropped, and those waiting for their variant.
+    // The preview tiles of epochs `first` to `last` dropped, and those waiting for their variant,
+    // with their backstop tiles (T65 option (c)).
     pub(super) fn release_epochs(&mut self, first: i64, last: i64) {
         let tiles = self.host.book().preview_tiles(first, last);
         for tile in tiles {
             self.drop_preview(tile);
         }
         self.host.book().drop_preview_waits(first, last);
+        self.host.book().state.release_cut(first, last);
+    }
+
+    // T65 option (c): epoch `epoch`'s backstop tiles become `cut` (flat `(x, z)`). Returns
+    // whether any tile's changed.
+    pub(super) fn set_cut(&mut self, epoch: i64, cut: &[i32]) -> bool {
+        let changed = self.host.book().state.set_cut(epoch, cut);
+        self.effects();
+        changed
     }
 
     // The preview tiles waiting for their sets' variant that can show now do, in the order they

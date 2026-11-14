@@ -189,6 +189,143 @@ pub(crate) fn stage_digest(stage: &TileStage) -> String {
     format!("{digest:016x}")
 }
 
+// T65 option (c) (`ROAD-112` round G2): what one drawn frame of a pose shows where it replaces
+// published pieces. The road draws the pose's roadbed (the published chunks with the replaced runs
+// collapsed and the rebuilt pieces over them); the terrain draws the displayed pose tiles, else the
+// published tiles, which discard the published grounded coverage. Sampled every `step` metres
+// over the replaced pieces' bounds (outside them every published cut lies under a piece the road
+// still draws, at the published top): `holes` the published cut's points with no drawn road,
+// `open` those where the drawn road's top differs from the published one (a hole, or a step at the
+// cut: the background shows past it), `open_outside` those outside the backstop tiles
+// (`GradedPreview::cut_tiles`), `steps` the open points at the cut's edge (a neighbour a step away
+// lies outside it) with the most the drawn top lies below (`drop_max_m`) and above (`rise_max_m`)
+// the published one there, and `over_road` the backstop tiles' cut points where the published
+// ground (the inside rule) stands above the drawn top, which a backstop at the ground's own
+// depth would show over the road (the most: `over_max_m`); `rule_us` the backstop tiles' cost.
+#[derive(Debug, Default)]
+pub(crate) struct CutFrame {
+    pub(crate) replaced: usize,
+    pub(crate) rule_tiles: usize,
+    pub(crate) rule_us: f64,
+    pub(crate) displayed: usize,
+    pub(crate) holes: usize,
+    pub(crate) open: usize,
+    pub(crate) open_outside: usize,
+    pub(crate) steps: usize,
+    pub(crate) drop_max_m: f64,
+    pub(crate) rise_max_m: f64,
+    pub(crate) over_road: usize,
+    pub(crate) over_max_m: f64,
+}
+
+impl CutFrame {
+    fn json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "replaced": self.replaced, "rule_tiles": self.rule_tiles, "rule_us": self.rule_us,
+            "displayed": self.displayed, "holes": self.holes, "open": self.open,
+            "open_outside": self.open_outside, "steps": self.steps,
+            "drop_max_m": self.drop_max_m, "rise_max_m": self.rise_max_m,
+            "over_road": self.over_road, "over_max_m": self.over_max_m,
+        })
+    }
+}
+
+pub(crate) fn cut_frame(
+    context: &mut RoadPreviewContext,
+    preview: &RoadPreview,
+    step: f64,
+) -> Option<CutFrame> {
+    use crate::simulation::terrain::graded::TileKey;
+    let pieces = preview.pieces.as_ref()?;
+    let published = Arc::clone(&context.view.roadbed);
+    let drawn = &pieces.roadbed;
+    let started = std::time::Instant::now();
+    let rule = context
+        .graded
+        .cut_tiles(&published, Some(&pieces.delta))
+        .to_vec();
+    let mut frame = CutFrame {
+        rule_us: started.elapsed().as_secs_f64() * 1e6,
+        rule_tiles: rule.len(),
+        ..CutFrame::default()
+    };
+    let mut displayed: Vec<TileKey> = (context.graded.displayed().tiles().iter())
+        .map(|tile| tile.tile)
+        .collect();
+    displayed.sort_unstable();
+    frame.displayed = displayed.len();
+    let replaced: Vec<_> = (pieces.delta.pieces())
+        .filter_map(|(id, _)| published.piece_mesh(id))
+        .collect();
+    frame.replaced = replaced.len();
+    if replaced.is_empty() {
+        return Some(frame);
+    }
+    let mut bounds = [f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY];
+    for mesh in &replaced {
+        let [a, b, c, d] = mesh.bounds_xz();
+        bounds = [bounds[0].min(a), bounds[1].min(b), bounds[2].max(c), bounds[3].max(d)];
+    }
+    let (nx, nz) = (
+        ((bounds[2] - bounds[0]) / step).ceil() as i64,
+        ((bounds[3] - bounds[1]) / step).ceil() as i64,
+    );
+    let cut = |x: f64, z: f64| published.grounded_height_at(x as f32, z as f32).is_some();
+    context.view.with_graded_surface(|surface, scratch| {
+        for i in 0..=nx {
+            for j in 0..=nz {
+                let (x, z) = (bounds[0] + i as f64 * step, bounds[1] + j as f64 * step);
+                if !cut(x, z) {
+                    continue;
+                }
+                let tile = TileKey::at(x, z);
+                if displayed.binary_search(&tile).is_ok() {
+                    // The pose's exact tile: its cut is the drawn road's.
+                    continue;
+                }
+                let in_rule = rule.binary_search(&tile).is_ok();
+                let (old, new) = (
+                    published.height_at(x as f32, z as f32),
+                    drawn.height_at(x as f32, z as f32),
+                );
+                frame.holes += usize::from(new.is_none());
+                if old != new {
+                    frame.open += 1;
+                    frame.open_outside += usize::from(!in_rule);
+                    let edge = [(step, 0.0), (-step, 0.0), (0.0, step), (0.0, -step)]
+                        .iter()
+                        .any(|&(dx, dz)| !cut(x + dx, z + dz));
+                    if edge && let (Some(old), Some(new)) = (old, new) {
+                        let drop = f64::from(old) - f64::from(new);
+                        frame.steps += 1;
+                        frame.drop_max_m = frame.drop_max_m.max(drop);
+                        frame.rise_max_m = frame.rise_max_m.max(-drop);
+                    }
+                }
+                if let (true, Some(top)) = (in_rule, new) {
+                    let above = surface.ground_height_at(x, z, scratch) - f64::from(top);
+                    if above > 0.0 {
+                        frame.over_road += 1;
+                        frame.over_max_m = frame.over_max_m.max(above);
+                    }
+                }
+            }
+        }
+    });
+    Some(frame)
+}
+
+// The spike's record of a frame, with `METRUM_CUT_SPIKE` set (sampled every
+// `METRUM_CUT_SPIKE_STEP` metres, 0.25 by default).
+fn cut_spike(context: &mut RoadPreviewContext, preview: &RoadPreview) -> Option<serde_json::Value> {
+    std::env::var_os("METRUM_CUT_SPIKE")?;
+    let step = std::env::var("METRUM_CUT_SPIKE_STEP")
+        .ok()
+        .and_then(|step| step.parse().ok())
+        .unwrap_or(0.25);
+    cut_frame(context, preview, step).map(|frame| frame.json())
+}
+
 /// A dragged stroke's frames on the road tool's preview (T27 (d)).
 pub(crate) struct Drag {
     /// Per frame what its graded terrain did: `pose` (1-based; `null` for a catch-up frame),
@@ -256,6 +393,9 @@ pub(crate) fn drag(
                 "pose": step + 1, "span_ms": span, "invalid": preview.validation.invalid_reason,
             }),
         });
+        if let Some(cut) = cut_spike(context, &preview) {
+            frames.last_mut().unwrap()["cut"] = cut;
+        }
         last = Some((points.clone(), preview));
     }
     let (points, mut preview) = last.expect("a pose");
@@ -268,6 +408,9 @@ pub(crate) fn drag(
         frames.push(frame_record(None, &graded, span));
         if let Some(pieces) = preview.pieces.as_mut() {
             pieces.graded = graded;
+        }
+        if let Some(cut) = cut_spike(context, &preview) {
+            frames.last_mut().unwrap()["cut"] = cut;
         }
         called = std::time::Instant::now();
     }
@@ -438,6 +581,62 @@ fn check_frame(
         "{label}: every displayed tile is the pose's exact bake"
     );
     Arc::clone(stage)
+}
+
+// T65 option (c) (`ROAD-112` round G2), the Rust-only replay: on every drag of the junction
+// fixtures, flat and sloped, a frame of a pose that replaces published pieces draws the pose's
+// pieces alone (the drawn roadbed holds each replaced owner's rebuilt piece, never the published
+// one: one road version), and every point of the published cut the drawn road leaves open (no
+// drawn road there, or a drawn top other than the published one, which lets the background show
+// past the cut's edge) lies in the frame's backstop tiles, whose cut ground draws behind every
+// drawn surface. The poses and their catch-up frames, sampled every 0.25 m.
+#[test]
+fn a_pose_replacing_published_pieces_leaves_no_open_cut_outside_its_backstop() {
+    let mut replacing = 0;
+    for case in cases() {
+        for sloped in [false, true] {
+            let name = format!("{} sloped {sloped}", case.name);
+            let order: Vec<usize> = (0..case.roads.len()).collect();
+            let mut core = committed_on(case.world_m, &case.roads, &order, sloped);
+            core.benchmark_mode = false;
+            core.refresh_road_terrain_inputs();
+            let mut context = RoadPreviewContext::capture(
+                road_tool_snapshot_from_core(&core).expect("current roadbed"),
+            );
+            let [start, end] = case.drag;
+            let poses: Vec<_> = [0.4, 0.6, 0.8, 1.0]
+                .map(|u| stroke(&core, [start, start.lerp(end, u)]))
+                .to_vec();
+            let mut last = None;
+            for (index, points) in poses.iter().enumerate() {
+                let pose = preview(&mut context, points);
+                let label = format!("{name} pose {index}");
+                let pieces = pose.pieces.as_ref().unwrap_or_else(|| panic!("{label}: no pieces"));
+                for (id, rebuilt) in pieces.delta.pieces() {
+                    let drawn = pieces.roadbed.piece_mesh(id);
+                    assert!(
+                        match (drawn, rebuilt) {
+                            (Some(drawn), Some(rebuilt)) => std::ptr::eq(drawn, rebuilt),
+                            (drawn, rebuilt) => drawn.is_none() && rebuilt.is_none(),
+                        },
+                        "{label}: owner {id:?} draws a piece other than its rebuilt one"
+                    );
+                }
+                let frame = cut_frame(&mut context, &pose, 0.25).expect("the pose's pieces");
+                assert_eq!(frame.open_outside, 0, "{label}: {frame:?}");
+                replacing += usize::from(frame.replaced > 0);
+                last = Some(pose);
+            }
+            let last = last.expect("a pose");
+            let mut frames = 0;
+            while context.catch_up_graded().is_some() {
+                frames += 1;
+                let frame = cut_frame(&mut context, &last, 0.25).expect("the pose's pieces");
+                assert_eq!(frame.open_outside, 0, "{name} catch-up frame {frames}: {frame:?}");
+            }
+        }
+    }
+    assert!(replacing > 0, "no pose replaced a published piece");
 }
 
 #[test]

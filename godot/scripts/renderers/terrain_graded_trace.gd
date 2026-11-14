@@ -294,6 +294,10 @@ static func preview(changes: Dictionary) -> String:
 		tiles.append(tile(shown))
 	return "preview %s %s" % [ints(changes.get("graded_removed", PackedInt32Array())), "|".join(tiles) if not tiles.is_empty() else "-"]
 
+## A pose's backstop tiles (T65 option (c)), recorded before its preview line, which takes them.
+static func preview_cut(epoch: int, cut: PackedInt32Array) -> String:
+	return "preview_cut %d %s" % [epoch, ints(cut)]
+
 static func preview_of(text: String) -> Dictionary:
 	var parts := text.split(" ", true, 2)
 	var tiles := []

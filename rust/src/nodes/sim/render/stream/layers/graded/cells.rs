@@ -29,6 +29,10 @@ pub(crate) const CELL_PLAIN: usize = 5;
 // Three transform rows followed by custom data, as `MultiMesh.TRANSFORM_3D` packs them.
 const CELL_INSTANCE_FLOATS: usize = 16;
 const PATCH_TILE_ROW: i32 = 32;
+// The bit of a cell's fourth custom channel that marks a backstop tile (T65 option (c)), above the
+// north and south side codes' six bits; below 2048, so the Compatibility renderer's half floats
+// hold it exactly.
+const CELL_BACKSTOP: u32 = 64;
 /// Wall face instances a set's wall `MultiMesh` starts with.
 pub(crate) const MAX_WALLS_PER_PATCH: u32 = 256;
 const WALL_FACE_FLOATS: usize = 8;
@@ -125,6 +129,8 @@ pub(crate) struct Cells {
     pub(crate) builds: OrderedMap<PatchKey, ()>,
     pub(crate) builds_urgent: OrderedMap<PatchKey, ()>,
     pub(crate) variants_wanted: OrderedMap<PatchKey, ()>,
+    // The road preview's backstop tiles (T65 option (c)).
+    pub(crate) cut: CutTiles,
     pub(crate) patch_steps: std::collections::HashMap<PatchKey, i32>,
     // The last mask revision given, and how many were (`mask_revision_bumps`).
     pub(crate) mask_revision: i64,
@@ -146,6 +152,36 @@ pub(crate) struct Cells {
     meeting: Vec<PatchKey>,
     patch_scratch: Vec<PatchKey>,
     erased: Vec<Tile>,
+}
+
+/// The road preview's backstop tiles (T65 option (c), `ROAD-112` round G2): per preview epoch
+/// the tiles meeting the published pieces its latest pose replaces (`graded_cut`). While such a
+/// tile draws its installed tile, the road draws the pose's pieces in place of the replaced ones,
+/// which may leave the installed tile's road cut open (their edges lie lower or higher than its
+/// cut's edge, or do not cover it): the tile's cells then draw in the behind-the-road variant,
+/// whose cut ground takes the far plane's depth along its ray instead of being discarded, so it
+/// shows only where nothing drawn lies in front of it, where the background showed. An epoch's
+/// tiles go with its preview tiles (a cancel, or the edit batch of its commit).
+#[derive(Clone, Debug, Default)]
+pub(crate) struct CutTiles {
+    // Per epoch its tiles, sorted; at most the epochs whose preview tiles the renderer holds
+    // (a commit's, waiting for its batch, and the next stroke's).
+    epochs: Vec<(i64, Vec<Tile>)>,
+    // The highest epoch released: a later frame of it (a refused stroke's preview shown again)
+    // sets nothing.
+    released: Option<i64>,
+    // Scratch: the tiles whose backstop changes, and an epoch's next tiles.
+    changed: Vec<Tile>,
+    next: Vec<Tile>,
+}
+
+impl CutTiles {
+    /// Whether some epoch's backstop holds `tile`. `O(epochs x log tiles)`.
+    pub(crate) fn holds(&self, tile: Tile) -> bool {
+        self.epochs
+            .iter()
+            .any(|(_, tiles)| tiles.binary_search(&tile).is_ok())
+    }
 }
 
 /// A copy of what a tile shows, for `_shown_changed`.
@@ -298,8 +334,21 @@ impl Graded {
     // `_cell_mesh`: the cell mesh a tile draws in, in patch `key`.
     pub(crate) fn cell_mesh(&self, tile: Tile, key: PatchKey) -> usize {
         self.shown_in(tile, key).map_or(CELL_BASE, |entry| {
-            usize::from(entry.level) + if entry.behind { CELL_BEHIND } else { 0 }
+            let behind = entry.behind || self.backstop_in(tile, key);
+            usize::from(entry.level) + if behind { CELL_BEHIND } else { 0 }
         })
+    }
+
+    // T65 option (c): whether `tile` draws its installed tile's road cut as the backstop in
+    // patch `key`'s cells ([`CutTiles`]): a preview epoch's backstop holds it, it draws its
+    // installed tile there (a preview tile is the pose's own bake, cut for the drawn road) and
+    // the patch's set holds the behind-the-road variant, which draws it.
+    fn backstop_in(&self, tile: Tile, key: PatchKey) -> bool {
+        self.cells.cut.holds(tile)
+            && !(self.preview.get(&tile)).is_some_and(|entry| self.has_copy(entry, key))
+            && (self.installed.get(&tile)).is_some_and(|entry| self.has_copy(entry, key))
+            && (self.cells.by_patch.get(&key))
+                .is_some_and(|&set| self.cells.sets[set as usize].variant)
     }
 
     // The patches whose rectangle meets the rectangle at `position` of `size` (`_patches_meeting`,
@@ -368,7 +417,9 @@ impl Graded {
             entry.copy_in(page).map_or(-1, |copy| copy.slot as i64)
         });
         let place = (tile.x - first.x) + PATCH_TILE_ROW * (tile.z - first.z);
-        [place as f32, slot as f32, (codes & 511) as f32, (codes >> 9) as f32]
+        // The fourth channel's bit 6 marks a backstop tile (T65 option (c)); its codes take six.
+        let backstop = if self.backstop_in(tile, key) { CELL_BACKSTOP } else { 0 };
+        [place as f32, slot as f32, (codes & 511) as f32, ((codes >> 9) | backstop) as f32]
     }
 
     // --- Marks. ---
@@ -972,7 +1023,87 @@ impl Graded {
         self.cells.sets[set as usize].tiles.iter().any(|tile| {
             self.preview.get(tile).is_some_and(|entry| entry.behind)
                 || self.installed.get(tile).is_some_and(|entry| entry.behind)
+                || (self.cells.cut.holds(*tile) && self.installed.contains_key(tile))
         })
+    }
+
+    /// T65 option (c): epoch `epoch`'s backstop tiles become `tiles` (flat `(x, z)`, a pose's
+    /// `graded_cut`), unless the epoch was released. A set holding a new one takes the
+    /// behind-the-road variant at once, so the backstop draws in the pose's own frame; every
+    /// tile whose backstop changes rewrites its cells. Returns whether any tile's changed.
+    /// `O((old + new) log new)` plus the rewrites; no allocation once the scratch has grown,
+    /// but an epoch's first tiles.
+    pub(crate) fn set_cut(&mut self, epoch: i64, tiles: &[i32]) -> bool {
+        let cut = &mut self.cells.cut;
+        if cut.released.is_some_and(|released| epoch <= released) {
+            return false;
+        }
+        let at = cut.epochs.iter().position(|(held, _)| *held == epoch);
+        if at.is_none() && tiles.is_empty() {
+            return false;
+        }
+        let at = at.unwrap_or_else(|| {
+            let at = cut.epochs.partition_point(|(held, _)| *held < epoch);
+            cut.epochs.insert(at, (epoch, Vec::new()));
+            at
+        });
+        let mut next = std::mem::take(&mut cut.next);
+        next.clear();
+        next.extend(tiles.as_chunks::<2>().0.iter().map(|&[x, z]| Tile { x, z }));
+        next.sort_unstable();
+        next.dedup();
+        let mut changed = std::mem::take(&mut cut.changed);
+        changed.clear();
+        let old = &cut.epochs[at].1;
+        changed.extend(old.iter().filter(|tile| next.binary_search(tile).is_err()));
+        changed.extend(next.iter().filter(|tile| old.binary_search(tile).is_err()));
+        std::mem::swap(&mut cut.epochs[at].1, &mut next);
+        cut.next = next;
+        if cut.epochs[at].1.is_empty() {
+            cut.epochs.remove(at);
+        }
+        self.cut_changed(&changed);
+        let any = !changed.is_empty();
+        self.cells.cut.changed = changed;
+        any
+    }
+
+    /// T65 option (c): the backstop tiles of epochs `first` to `last` go with their preview
+    /// tiles. `O(their tiles)` plus the rewrites.
+    pub(crate) fn release_cut(&mut self, first: i64, last: i64) {
+        let cut = &mut self.cells.cut;
+        cut.released = Some(cut.released.map_or(last, |released| released.max(last)));
+        let mut changed = std::mem::take(&mut cut.changed);
+        changed.clear();
+        cut.epochs.retain(|(epoch, tiles)| {
+            let keep = *epoch < first || *epoch > last;
+            if !keep {
+                changed.extend_from_slice(tiles);
+            }
+            keep
+        });
+        self.cut_changed(&changed);
+        self.cells.cut.changed = changed;
+    }
+
+    // The cells of tiles whose backstop changed: a set holding one that lacks the
+    // behind-the-road variant takes it, and each tile's instances are rewritten.
+    fn cut_changed(&mut self, tiles: &[Tile]) {
+        for &tile in tiles {
+            if self.cells.cut.holds(tile) && self.installed.contains_key(&tile) {
+                let keys = self.tile_patches(tile);
+                for &key in &keys {
+                    if let Some(&set) = self.cells.by_patch.get(&key)
+                        && !self.cells.sets[set as usize].variant
+                        && self.cells.sets[set as usize].holds(tile)
+                    {
+                        self.add_variant(set);
+                    }
+                }
+                self.cells.key_scratch = keys;
+            }
+            self.cell_changed(tile, false);
+        }
     }
 
     /// `_variant_missing`: whether a set of the patches meeting `tile` lacks the variant; each
@@ -1098,6 +1229,7 @@ impl Graded {
         cells.builds.clear();
         cells.builds_urgent.clear();
         cells.variants_wanted.clear();
+        cells.cut = CutTiles::default();
         cells.dirty_shown.clear();
         cells.staged_walls = None;
     }

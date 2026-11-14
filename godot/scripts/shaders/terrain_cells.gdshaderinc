@@ -40,6 +40,11 @@ varying vec2 var_cell_local_m;
 varying flat ivec4 var_cell;
 varying float var_cell_delta;
 varying vec3 var_cell_normal;
+#ifdef TERRAIN_GRADED_BEHIND
+// 1 where the cell's tile draws its road cut as the backstop (T65 option (c), `ROAD-112` round
+// G2): bit 15 of its codes, the fourth custom channel's bit 6, which no side code reads.
+varying flat int var_cell_backstop;
+#endif
 
 // floor(a / b) for b > 0, exact: GLSL leaves % and / undefined or truncating for negative
 // operands, so the float quotient is corrected by the exact integer remainder.

@@ -374,11 +374,18 @@ func release_patch(key: Vector2i, patch_node: GeometryInstance3D) -> void:
 ## tiles, the token the preview epoch) and `graded_removed` (flat (x, z) pairs), as preview_road
 ## and advance_road_preview_terrain return them. A shown tile takes a free slot of its level's
 ## pool and draws in place of the installed tile from this frame; a removed one returns to the
-## installed tile. Returns the milliseconds it took. O(changed tiles x slot bytes).
+## installed tile. A pose's frame also carries `graded_cut` under `graded_epoch`: the tiles whose
+## installed tile draws its road cut as the backstop while it shows (T65 option (c)); a catch-up
+## frame keeps them. Returns the milliseconds it took. O(changed tiles x slot bytes).
 func show_preview(changes: Dictionary) -> float:
+	var cut: Variant = changes.get("graded_cut")
+	var epoch := int(changes.get("graded_epoch", -1)) if cut is PackedInt32Array else -1
 	if trace != null:
+		if epoch >= 0:
+			trace.entry(GradedTrace.preview_cut(epoch, cut))
 		trace.entry(GradedTrace.preview(changes))
-	return GradedTileBook.preview_changes(_book, self, changes.get("graded_removed", PackedInt32Array()), changes.get("graded_tiles", []))
+	return GradedTileBook.preview_changes(_book, self, changes.get("graded_removed", PackedInt32Array()), changes.get("graded_tiles", []),
+		cut if epoch >= 0 else PackedInt32Array(), epoch)
 
 ## Drops the preview tiles of preview epochs `first_epoch` to `last_epoch`: the installed tiles
 ## draw again. A cancelled preview drops its own epoch; an edit batch drops every epoch up to the

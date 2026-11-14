@@ -294,19 +294,26 @@ impl GradedTileBook {
     /// One road preview frame (`show_preview`'s work after its trace entry): `removed` (flat
     /// `(x, z)`) drop back to their installed tile, then each of `tiles` (packed as
     /// `poll_graded_tile_results` packs its tiles, the token the preview epoch) takes slots of
-    /// its own, and the cells and walls follow in this frame. Returns the milliseconds it took.
-    /// O(changed tiles x slot bytes).
+    /// its own, and the cells and walls follow in this frame. A pose's frame (`epoch` at least
+    /// 0) also sets that preview epoch's backstop tiles to `cut` (flat `(x, z)`, the pose's
+    /// `graded_cut`, T65 option (c)); a catch-up frame (`epoch` -1) keeps them. Returns the
+    /// milliseconds it took. O(changed tiles x slot bytes + backstop tiles' changes).
     #[func]
     pub fn preview_changes(
         mut book: Gd<GradedTileBook>,
         mut renderer: Gd<RefCounted>,
         removed: PackedInt32Array,
         tiles: VarArray,
+        cut: PackedInt32Array,
+        epoch: i64,
     ) -> f64 {
-        if removed.is_empty() && tiles.is_empty() {
+        let start_us = now_us();
+        let cut_changed = epoch >= 0
+            && Run::unbudgeted(ScriptHost::new(book.clone(), renderer.clone()))
+                .set_cut(epoch, cut.as_slice());
+        if removed.is_empty() && tiles.is_empty() && !cut_changed {
             return 0.0;
         }
-        let start_us = now_us();
         let shown = tiles.len() as i64;
         Self::show_preview_frame(book.clone(), renderer.clone(), removed, tiles);
         let tiles_us = now_us();

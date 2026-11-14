@@ -1271,6 +1271,44 @@ fn kuopio_drag_tile_costs() {
     }
 }
 
+// T65 option (c) spike (`ROAD-112` round G2): `METRUM_DRAG_CASE`'s stroke `METRUM_DRAG_ATTEMPT`
+// (`kuopio_03` attempt 8 by default, the drag probe's junction frames), its case's earlier
+// strokes committed first, dragged as `benchmark_kuopio_graded_drags` drags it with
+// `METRUM_CUT_SPIKE` set: each frame's `cut` record (`graded_stage::cut_spike`).
+#[test]
+#[ignore = "manual T65 (c) spike: METRUM_CUT_SPIKE=1 cargo test --release --lib t65_cut_spike_kuopio -- --ignored --nocapture"]
+fn t65_cut_spike_kuopio() {
+    let manifest = kuopio_manifest();
+    let case_id = std::env::var("METRUM_DRAG_CASE").unwrap_or_else(|_| "kuopio_03".into());
+    let attempt: i64 = std::env::var("METRUM_DRAG_ATTEMPT")
+        .ok()
+        .and_then(|attempt| attempt.parse().ok())
+        .unwrap_or(8);
+    let case = manifest["cases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|case| case["case_id"] == case_id.as_str())
+        .expect("the case");
+    let mut core = kuopio_source_core();
+    for stroke in case["segments"].as_array().unwrap() {
+        if stroke["attempt"].as_i64() != Some(attempt) {
+            commit_recorded_stroke(&mut core, stroke);
+            continue;
+        }
+        let record = graded_drag(&mut core, stroke);
+        for frame in record["frames"].as_array().unwrap() {
+            eprintln!("T65_CUT_FRAME {}", serde_json::json!({
+                "pose": frame["pose"], "pending": frame["pending"], "frame_ms": frame["frame_ms"],
+                "cut": frame["cut"],
+            }));
+            assert_eq!(frame["cut"]["open_outside"].as_u64().unwrap_or(0), 0, "{frame}");
+        }
+        return;
+    }
+    panic!("no stroke {attempt} in {case_id}");
+}
+
 // One recorded stroke as the drags and clicks of `drag_and_click`, then committed again (see
 // `benchmark_kuopio_graded_drags`); the poses' ends at the heights the road tool picks.
 fn graded_drag(core: &mut SimCore, stroke: &serde_json::Value) -> serde_json::Value {
