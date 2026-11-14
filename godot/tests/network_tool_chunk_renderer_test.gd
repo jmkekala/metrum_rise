@@ -875,7 +875,7 @@ func _test_native_road_preview_contract(simulation: SimulationNode) -> void:
 	tool._preview = rejected
 	tool._show_preview(points)
 	_expect(tool._preview_display.sequence == 0 and tool._preview_display._instances.is_empty(), "a rejected stroke shows no road")
-	var notice := RoadToolHudScript.chip_text(RoadToolHudScript.Kind.NOTICE, 0.0, RoadToolHudScript.Tone.REFUSED, "", {}, rejected)
+	var notice: String = RoadWording.reason_text(rejected, RoadWording.default_refusal())
 	_expect(notice.contains("terrain boundary"), "terrain rejection must retain an explanatory notice: '%s'" % notice)
 	_expect(tool._road_preview_material.get_shader_parameter("placement_state") == 2, "rejected placement must be red")
 	if OS.get_environment("METRUM_ROAD_PREVIEW_TIMING") == "1":

@@ -1,15 +1,15 @@
 # SPDX-License-Identifier: GPL-2.0-only
 
-## The road tool's HUD (`ROAD-112` rounds D and V): label chips on the geometry, each a small
-## dark rounded panel with a vector icon and one value, the same pixel size at every zoom.
-## Rust's frame decides which chips exist, their values, tones, world anchors and the side each
-## is pushed to (`label_*`); `SimulationNode.road_tool_place_labels` places them without overlap
-## (one deterministic rule). This script only words the values, projects the anchors and draws.
-## A notice chip words the frame's refusal or the preview's verdict through
-## `road_reason_text.gd` (red for a refusal, amber for a warning or a stroke being sent). An
-## open freeform draft adds a hint chip (Rust's wording) and, in its edit phase, the clickable
-## Build and Cancel chips beside its last node: their clicks are the GUI's (they never reach the
-## world), emitting `build_pressed` and `cancel_pressed`. Chips keep clear of the handles.
+## The road tool's HUD (`ROAD-112` rounds D, V and V2): label chips on the geometry, each a small
+## dark rounded panel with a vector icon and one text, the same pixel size at every zoom.
+## Rust's frame decides which chips exist, their texts (values with their units, the hint, the
+## notice's warning or refusal: `road_tool::wording`), tones, world anchors and the side each is
+## pushed to (`label_*`), and their sizes in the font this script sends it once
+## (`road_tool_set_chip_font`); `SimulationNode.road_tool_place_chips` projects and places them
+## without overlap (one deterministic rule). This script only hands over the camera and draws. A notice chip is red for a refusal, amber for a warning or a stroke being sent. An
+## open freeform draft adds a hint chip and, in its edit phase, the clickable Build and Cancel
+## chips beside its last node: their clicks are the GUI's (they never reach the world),
+## emitting `build_pressed` and `cancel_pressed`. Chips keep clear of the handles.
 extends CanvasLayer
 
 ## The Build chip was clicked.
@@ -17,7 +17,6 @@ signal build_pressed
 ## The Cancel chip was clicked.
 signal cancel_pressed
 
-const RoadReasonText := preload("res://scripts/ui/road_reason_text.gd")
 const UiStyle := preload("res://scripts/ui/ui_style.gd")
 
 ## Chip kinds as `road_tool_frame` numbers them (`label_kinds`).
@@ -41,33 +40,32 @@ const GAP_PX := 6.0
 ## The square kept clear about each handle, in pixels.
 const HANDLE_CLEAR_PX := 18.0
 const BUTTON_BG := Color(0.16, 0.16, 0.24, 0.92)
-const COMPASS := ["N", "NE", "E", "SE", "S", "SW", "W", "NW"]
 
-## The node that places the chips (`road_tool_place_labels`); without one a chip sits on its
-## anchor.
-var simulation_node: Object = null
+## The node whose road tool frame the chips come from: it sizes them in the font this HUD sends
+## it (`road_tool_set_chip_font`) and places them (`road_tool_place_chips`); without one no chip
+## shows.
+var simulation_node: Object = null:
+	set(node):
+		if node != simulation_node:
+			simulation_node = node
+			_send_font()
 
 var _canvas: Control
 var _font: Font
 var _style := StyleBoxFlat.new()
-# This frame's chips: kind, tone, text, size, world anchor and side, and their screen corners.
+# This frame's chips: kind, tone, text (Rust's), size, world anchor and side, and their screen
+# corners.
 var _kinds := PackedInt32Array()
 var _tones := PackedInt32Array()
 var _texts := PackedStringArray()
 var _sizes := PackedVector2Array()
 var _anchors := PackedVector3Array()
-var _sides := PackedVector3Array()
 var _corners := PackedVector2Array()
-var _shown := PackedByteArray()
-# The frame arrays the chips were last built from: an unchanged frame rewords nothing.
-var _values := PackedFloat64Array()
-var _verdict := ""
+# The handles the chips were last placed clear of.
 var _handles := PackedVector3Array()
-# The chips' font size (`UiStyle.scaled_font_size` reads the settings: taken again whenever the
-# chips are cleared, not every frame).
+# The chips' font size (`UiStyle.scaled_font_size` reads the settings: taken again, and the font
+# sent to Rust again, whenever the chips are cleared, not every frame).
 var _font_size := 0
-# Character advances in pixels at `_font_size` (`_text_width`).
-var _advances := {}
 # What the chips were last placed for (camera and chips): an unchanged frame places nothing.
 var _placed_view := Transform3D()
 var _placed_fov := 0.0
@@ -110,66 +108,47 @@ func _hit_area(pressed: Signal) -> Control:
 	add_child(hit)
 	return hit
 
-## Takes the frame's chips: words them (only when the frame's chips or the verdict changed) from
-## the `label_*` arrays, the draft `refusal` key and `preview` (the stroke's preview, for a
-## notice). Returns whether there are chips.
-func show_labels(frame: Dictionary, preview: Dictionary) -> bool:
+## Takes the frame's chips (the `label_*` arrays: texts and sizes are Rust's). Returns whether
+## there are chips.
+func show_labels(frame: Dictionary) -> bool:
 	var kinds: PackedInt32Array = frame.get("label_kinds", PackedInt32Array())
-	var values: PackedFloat64Array = frame.get("label_values", PackedFloat64Array())
+	var texts: PackedStringArray = frame.get("label_texts", PackedStringArray())
 	var tones: PackedInt32Array = frame.get("label_tones", PackedInt32Array())
-	_anchors = frame.get("label_anchors", PackedVector3Array())
-	_sides = frame.get("label_sides", PackedVector3Array())
+	var anchors: PackedVector3Array = frame.get("label_anchors", PackedVector3Array())
 	var handles: PackedVector3Array = frame.get("gizmo_handles", PackedVector3Array())
-	var refusal := String(frame.get("refusal", ""))
-	var hint := String(frame.get("label_hint", ""))
-	var verdict := "%s|%s|%s|%s|%s" % [refusal, hint, preview.get("invalid_reason", ""), preview.get("warning_reason", ""), preview.get("demolish_count", 0)]
-	if kinds == _kinds and values == _values and tones == _tones and verdict == _verdict and handles == _handles:
+	# Rounded texts repeat while the geometry moves: the anchors decide a new placement too.
+	if kinds == _kinds and texts == _texts and tones == _tones and handles == _handles and anchors == _anchors:
 		return not kinds.is_empty()
+	_anchors = anchors
 	_handles = handles
-	var reword := verdict != _verdict or kinds.size() != _kinds.size()
-	var old_kinds := _kinds
-	var old_values := _values
-	var old_tones := _tones
 	_kinds = kinds
-	_values = values
 	_tones = tones
-	_verdict = verdict
+	_texts = texts
+	_sizes = frame.get("label_sizes", PackedVector2Array())
 	_placed_dirty = true
-	_texts.resize(kinds.size())
-	_sizes.resize(kinds.size())
-	var hud: Dictionary = frame.get("hud", {})
 	if _font_size == 0:
-		_font_size = UiStyle.scaled_font_size(FONT_SIZE)
-		_advances.clear()
-	var font_size := _font_size
-	for index in kinds.size():
-		# Only a chip whose kind, value or tone changed is reworded (the verdict rewords all).
-		if not reword and index < old_kinds.size() and kinds[index] == old_kinds[index] and values[index] == old_values[index] and tones[index] == old_tones[index]:
-			continue
-		_texts[index] = hint if kinds[index] == Kind.HINT else chip_text(kinds[index], values[index], tones[index], refusal, hud, preview)
-		_sizes[index] = Vector2(PAD_X * 2.0 + ICON_PX + ICON_GAP + _text_width(_texts[index], font_size), maxf(_font.get_height(font_size), ICON_PX) + PAD_Y * 2.0)
+		_send_font()
 	return not kinds.is_empty()
 
-# A text's width as the sum of its characters' advances, cached per character: a drag rewords
-# chips every frame, and shaping each new string costs several times this.
-func _text_width(text: String, font_size: int) -> float:
-	var width := 0.0
-	for index in text.length():
-		var code := text.unicode_at(index)
-		var advance = _advances.get(code)
-		if advance == null:
-			advance = _font.get_char_size(code, font_size).x
-			_advances[code] = advance
-		width += advance
-	return ceilf(width)
+# Sends the chips' font to Rust, which sizes the texts in it: the advance of every character the
+# wording writes, the panel beside the text and its height.
+func _send_font() -> void:
+	_font_size = UiStyle.scaled_font_size(FONT_SIZE)
+	if simulation_node == null:
+		return
+	var characters: String = simulation_node.road_tool_chip_characters()
+	var advances := PackedFloat32Array()
+	advances.resize(characters.length())
+	for index in characters.length():
+		advances[index] = _font.get_char_size(characters.unicode_at(index), _font_size).x
+	simulation_node.road_tool_set_chip_font(characters, advances, PAD_X * 2.0 + ICON_PX + ICON_GAP, maxf(_font.get_height(_font_size), ICON_PX) + PAD_Y * 2.0)
 
 ## Removes every chip.
 func clear() -> void:
 	_kinds = PackedInt32Array()
-	_values = PackedFloat64Array()
 	_texts = PackedStringArray()
+	_sizes = PackedVector2Array()
 	_corners = PackedVector2Array()
-	_verdict = ""
 	_placed_dirty = true
 	_font_size = 0
 	_build_hit.visible = false
@@ -199,41 +178,24 @@ func place(camera: Camera3D) -> float:
 	_placed_fov = camera.fov
 	_placed_size = viewport_size
 	_placed_dirty = false
-	var anchors := PackedVector2Array()
-	var sides := PackedVector2Array()
-	var sizes := PackedVector2Array()
-	_shown.resize(_kinds.size())
-	for index in _kinds.size():
-		var anchor := _anchors[index]
-		_shown[index] = 0 if camera.is_position_behind(anchor) else 1
-		if _shown[index] == 0:
-			continue
-		var at := camera.unproject_position(anchor)
-		anchors.append(at)
-		sides.append(camera.unproject_position(anchor + _sides[index] * 4.0) - at)
-		sizes.append(_sizes[index])
-	var obstacles := PackedVector2Array()
-	for handle in _handles:
-		if not camera.is_position_behind(handle):
-			obstacles.append(camera.unproject_position(handle))
-	if simulation_node != null:
-		_corners = simulation_node.road_tool_place_labels(anchors, sides, sizes, obstacles, HANDLE_CLEAR_PX, GAP_PX)
+	# Rust projects the anchors, their sides and the handles and places the chips (round V2).
+	if simulation_node == null:
+		_corners = PackedVector2Array()
 	else:
-		_corners = anchors
-	_place_hit(_build_hit, Kind.BUILD)
-	_place_hit(_cancel_hit, Kind.CANCEL)
+		var view_projection := camera.get_camera_projection() * Projection(camera.get_camera_transform().affine_inverse())
+		# One corner a chip, NaN behind the camera.
+		_corners = simulation_node.road_tool_place_chips(view_projection, viewport_size, camera.near, HANDLE_CLEAR_PX, GAP_PX)
+	if _kinds.has(Kind.BUILD) or _kinds.has(Kind.CANCEL) or _build_hit.visible or _cancel_hit.visible:
+		_place_hit(_build_hit, Kind.BUILD)
+		_place_hit(_cancel_hit, Kind.CANCEL)
 	_canvas.queue_redraw()
 	return float(Time.get_ticks_usec() - start_us) / 1000.0
 
 ## The screen rectangle of the shown chip of `kind`, or an empty one.
 func chip_rect(kind: int) -> Rect2:
-	var shown := 0
-	for index in _kinds.size():
-		if index >= _shown.size() or _shown[index] == 0:
-			continue
-		if _kinds[index] == kind and shown < _corners.size():
-			return Rect2(_corners[shown], _sizes[index])
-		shown += 1
+	for index in mini(_kinds.size(), _corners.size()):
+		if _kinds[index] == kind and not is_nan(_corners[index].x):
+			return Rect2(_corners[index], _sizes[index])
 	return Rect2()
 
 # Puts a clickable chip's hit area over its chip, or hides it.
@@ -244,72 +206,12 @@ func _place_hit(hit: Control, kind: int) -> void:
 		hit.position = rect.position
 		hit.size = rect.size
 
-## A chip's text: `value` of `kind` worded, or for a notice the refusal (`refusal`, a draft's;
-## else `preview`'s) or the warning the preview carries.
-static func chip_text(kind: int, value: float, tone: int, refusal: String, hud: Dictionary, preview: Dictionary) -> String:
-	match kind:
-		Kind.PIECE_LENGTH, Kind.TOTAL_LENGTH:
-			return ("%.0f m" if value >= 100.0 else "%.1f m") % value
-		Kind.RADIUS:
-			return "R %.0f m" % value if value >= 100.0 else "R %.1f m" % value
-		Kind.ANGLE:
-			return "%d°" % int(value)
-		Kind.SLOPE:
-			return "%.1f %%" % value
-		Kind.COST:
-			return _money(value)
-		Kind.BEARING:
-			return "%s %d°" % [COMPASS[int(round(value / 45.0)) % 8], int(round(value)) % 360]
-		Kind.DESIGN_SPEED:
-			return "%d km/h" % int(value)
-		Kind.NOTICE:
-			return _notice_text(tone, refusal, hud, preview)
-		Kind.BUILD:
-			return "Build"
-		Kind.CANCEL:
-			return "Cancel"
-	return ""
-
-static func _notice_text(tone: int, refusal: String, hud: Dictionary, preview: Dictionary) -> String:
-	if tone == Tone.REFUSED:
-		if not refusal.is_empty():
-			return RoadReasonText.text({
-				"is_valid": false,
-				"invalid_reason": refusal,
-				"geometry_measured": float(hud.get("radius_m", 0.0)),
-				"geometry_limit": float(hud.get("illegal_radius_m", 0.0)),
-			})
-		return RoadReasonText.text(preview)
-	var parts := PackedStringArray()
-	# A grade above the design tier is shown, not refused (ROAD-68 question 37).
-	if String(preview.get("warning_reason", "")) == "road_steep":
-		parts.append("steep %.0f%% (design %.0f%%)" % [float(preview.get("max_grade", 0.0)) * 100.0, float(preview.get("warning_limit", 0.0)) * 100.0])
-	var demolish := int(preview.get("demolish_count", 0))
-	if demolish > 0:
-		parts.append("demolishes %d building%s" % [demolish, "" if demolish == 1 else "s"])
-	var state := String(preview.get("plan_state", ""))
-	if not state.is_empty() and state != "ready":
-		parts.append("checking road")
-	return "Placing…" if parts.is_empty() else " · ".join(parts)
-
-static func _money(value: float) -> String:
-	var digits := str(int(round(absf(value))))
-	var grouped := ""
-	while digits.length() > 3:
-		grouped = "," + digits.right(3) + grouped
-		digits = digits.left(digits.length() - 3)
-	return ("-$" if value < 0.0 else "$") + digits + grouped
-
 func _draw_chips() -> void:
 	var font_size := _font_size if _font_size > 0 else UiStyle.scaled_font_size(FONT_SIZE)
-	var shown := 0
-	for index in _kinds.size():
-		if index >= _shown.size() or _shown[index] == 0:
+	for index in mini(_kinds.size(), _corners.size()):
+		if is_nan(_corners[index].x):
 			continue
-		if shown >= _corners.size():
-			break
-		var rect := Rect2(_corners[shown], _sizes[index])
-		shown += 1
+		var rect := Rect2(_corners[index], _sizes[index])
 		var button := _kinds[index] == Kind.BUILD or _kinds[index] == Kind.CANCEL
 		_canvas.draw_style_box(_button_style if button else _style, rect)
 		var tone := _tones[index]

@@ -11588,7 +11588,8 @@ along the direction the road was drawn). It opens at 400 x 540 px (minimum 360 x
 from upstream's 400 x 500 px (minimum 360 x 460) for the parking row. Its round R5b2 Turn pocket
 section moved to the Junction window ([round R5c2](#the-turn-pocket-tool-round-r5b2)). The
 reason text is `ui/road_reason_text.gd`, shared with the road tool's stroke preview, and words
-the road types' layout, name and library keys too. The median style row and width stepper live on as `ui/median_controls.gd` for the
+the road types' layout, name and library keys too (since `ROAD-112` round V2 it calls Rust's
+`RoadWording`, whose strings live in `road_tool/wording.rs`). The median style row and width stepper live on as `ui/median_controls.gd` for the
 road builder's median part.
 
 **Crossing toggle (round R3b1).** The crossing toggle's commit now rebuilds its node's lanes,
@@ -12274,7 +12275,7 @@ grade.
 
 ## Road tools (`ROAD-112`, `ROAD-113`)
 
-**Status: in progress.** Planned 2026-11-12; round A (the guide kernel) and round B (the session core, not wired) built 2026-11-13, round B landed 2026-11-14; round F (batch commit, grouped undo, undo refund) built 2026-11-13, held for its batch bar until fix round F2 (2026-11-14), which meets it, landed 2026-11-14; round C (the wiring: straight strokes run on the session) built and landed 2026-11-14; round H (the stroke profile field, the held-ground profile and the automatic bridge/tunnel segmentation, Rust only) built 2026-11-14 on branch `roadtools-h`, for review; round D (curves, continuous, gizmos and the HUD on the session, the GDScript curve path deleted) built 2026-11-14 on branch `roadtools-d`, for review; round E (the snapping options row, and the radius check reading a flattened arc's radius exactly) built 2026-11-14 on branch `roadtools-e`, for review; round N (the S-curve and freeform with an edit phase before the build in the UI, and the Rust hold rule wired) built 2026-11-14 on branch `roadtools-n`, for review; round G1 (the two-tier batch preview and the profile inside the preview request) built 2026-11-14 on branch `roadtools-g1` and its fix round G1b (the accepted batch's overlay built over several frames) on `roadtools-g1b`, both landed 2026-11-14 over round N (round LG1); round V (the user's restyle of the lines and HUD: thick lines and one dashed guide look over the terrain, label chips on the geometry without upkeep, zoning-depth guides, alignment guides from their source, grid curbs, freeform hint and Build / Cancel chips) built 2026-11-14 on branch `roadtools-v`, for review. The user asked for a complete refactor of the
+**Status: in progress.** Planned 2026-11-12; round A (the guide kernel) and round B (the session core, not wired) built 2026-11-13, round B landed 2026-11-14; round F (batch commit, grouped undo, undo refund) built 2026-11-13, held for its batch bar until fix round F2 (2026-11-14), which meets it, landed 2026-11-14; round C (the wiring: straight strokes run on the session) built and landed 2026-11-14; round H (the stroke profile field, the held-ground profile and the automatic bridge/tunnel segmentation, Rust only) built 2026-11-14 on branch `roadtools-h`, for review; round D (curves, continuous, gizmos and the HUD on the session, the GDScript curve path deleted) built 2026-11-14 on branch `roadtools-d`, for review; round E (the snapping options row, and the radius check reading a flattened arc's radius exactly) built 2026-11-14 on branch `roadtools-e`, for review; round N (the S-curve and freeform with an edit phase before the build in the UI, and the Rust hold rule wired) built 2026-11-14 on branch `roadtools-n`, for review; round G1 (the two-tier batch preview and the profile inside the preview request) built 2026-11-14 on branch `roadtools-g1` and its fix round G1b (the accepted batch's overlay built over several frames) on `roadtools-g1b`, both landed 2026-11-14 over round N (round LG1); round V (the user's restyle of the lines and HUD: thick lines and one dashed guide look over the terrain, label chips on the geometry without upkeep, zoning-depth guides, alignment guides from their source, grid curbs, freeform hint and Build / Cancel chips) built 2026-11-14 on branch `roadtools-v`, put onto `dev` `93d7aaad` over G1, G1b and I by round V2 (with the batch ghost in its look and the chip wording in Rust) on `roadtools-v2`, for review. The user asked for a complete refactor of the
 road tool, Rust-first: the current straight mode and the GDScript `Curve3D` "curve" (a cubic
 Bezier whose handles are the raw vectors to the control point, so its curvature, radius and
 length are not exact) are replaced. Mechanics follow the genre (city builders' straight, curve,
@@ -13498,6 +13499,65 @@ under "Drawing and placement" (Gizmos, Zoning-depth guide, Grid curbs, HUD, Free
   guide look they vanished on the preview road's light edges (coordinator's review of the first
   stills).
 
+**Round V2** (2026-11-14, branch `roadtools-v2` on `dev` `93d7aaad`): round V cherry-picked over
+rounds G1 and G1b, then rebased over round I. Over G1 the conflicts were in the docs only (both
+sides kept), but G1's batch ghost called round D's material helper, which round V had removed, so
+the ghost is redrawn. Over round I both kept: the height grips draw as round V's handles and their
+stems in the guide look (`HeightStem` in the guide style); round I's draft refusal text block
+(`_show_draft_refusal`) gives way to round V's notice chip; I's two refusal texts (`cut_too_deep`,
+`batch_too_large`) moved into the Rust table with the others.
+
+- **Batch ghost in round V's look** (one palette): the ribbon's faint fill (unshaded, over the
+  terrain like the lines, the stroke's white for a stroke tier 1 accepts, the refusal red
+  otherwise; `PALETTE` `ghost_*`) and its two edges as solid 2 px lines of
+  `road_tool_line.gdshader`: `push_ghost_edges` (`road_tool/batch.rs`, the ribbon's own mitred
+  offsets, `O(points)`) and the bridge's `ghost_valid_*` / `ghost_refused_*` quads (`strip_quads`,
+  round V's gizmo quad builder generalised to any strips and styles).
+- **Wording in Rust (the user, 2026-11-14)**: the frame carries every chip's text
+  (`label_texts`; `label_hint` is gone): `road_tool/wording.rs` `label_text` (lengths "42.2 m"
+  under 100 m, else "153 m"; radii likewise with "R"; whole degrees and km/h truncated; grades to
+  0.1 %; money with thousands separators; the compass bearing "NE 47°"; the freeform hint; Build
+  and Cancel; the notice's warnings joined by " · " or its refusal) and `reason_text`, the road
+  refusal table `road_reason_text.gd` held, so the strings live in one Rust place.
+  `road_reason_text.gd` calls it through the `RoadWording` class, so every other host (Road
+  Properties, the road builder, the pocket rows, the roundabout tool) shows the same strings.
+  `road_tool_hud.gd` only measures a chip whose text changed and draws; it places again when the
+  anchors move (rounded texts repeat while the geometry moves).
+- **The overlay's per-frame cost (round V's 0.2 ms bar)**: measured on the rebased tree with the
+  wording in Rust, the gizmo plus label work a drag frame still read p95 0.32-0.36 ms (curve end)
+  and 0.35-0.38 ms (freeform handle) on a quiet machine, so the remaining GDScript work moved too:
+  every line look in one surface (`gizmo_line_vertices` / `_attributes`, five floats a vertex,
+  the last the look, `LineStyle`; `road_tool_line.gdshader` reads colour, width and dash from
+  arrays by it; the batch ghost's edges share the material as looks 5 and 6), every handle in one
+  point surface (`gizmo_handle_attributes`, the kind as UV; `road_tool_handle.gdshader` arrays),
+  the chips' sizes in the frame (`label_sizes`, from the font the HUD sends once,
+  `road_tool_set_chip_font`), and their projection and placement in one call
+  (`road_tool_place_chips(view_projection, viewport, near, ...)`, one corner a chip, NaN behind
+  the camera). A drag frame now makes four `RenderingServer` uploads instead of up to sixteen.
+- **Fresh results** (2026-11-14, final code): the bar per frame (gamescope's headless backend at
+  1920x1080, 120-frame drags, `road_tool_capture.gd`, the branch's release library; alternated C B
+  B C with `dev` `b2d0082e`'s library and capture script, whose number is round D's gizmo upload
+  alone, 17:05-17:07, machine otherwise idle, the user's game had ended at 16:42): curve end p50
+  0.097 / 0.111, p95 0.161 / 0.172, max 0.210 / 0.257 ms; S-curve end p50 0.049 / 0.045, p95
+  0.073 / 0.070, max 0.129 / 0.135 ms; freeform handle p50 0.111 / 0.108, p95 0.194 / 0.189, max
+  0.337 / 0.221 ms: p95 under 0.2 ms in every case, the maxima above it. The control's gizmo
+  upload alone read p95 0.156-0.165 (curve), 0.062-0.072 (S-curve), 0.213-0.214 ms (freeform),
+  max 0.20-0.30 ms. Gates on the final tree: `cargo clippy --all-targets` the branch point's one
+  warning (`asset_document.rs:15`); `cargo doc` missing docs 0; debug `cargo test --lib` 2,709
+  passed, 0 failed, 230 ignored; `./run.sh --test` PASS (nextest 2,713 of 2,713, 231 skipped; both
+  Godot chains PASS, no script error). New Rust tests: `road_tool/wording.rs` (every chip kind's
+  text, notices, the refusal table), `road_tool/batch.rs` (the ghost's edges are the ribbon's
+  sides); Godot: `road_batch_preview_test` checks the ghost's edge quads and its two surfaces, the
+  capture's server check reads the one line surface's looks. Products against `b2d0082e`'s release
+  library and scripts: Kuopio's 39 strokes, 78 commits, and the gameplay fixtures' 17 EQUAL in
+  every product; the Kuopio drag probe PASS (0 failures, 39 fast commits). Allocation
+  (`heaptrack --record-only`, the session bench at 30k, every mode): 2,442,892 / 2,442,938 calls
+  at n = 0, 2,442,932 at n = 20, 2,442,891 at n = 200: none per pointer move. One earlier control
+  run of the drag probe (16:03, load average near 29 from other builds) differed in one stroke's
+  graded tiles (`kuopio_06` attempt 18, both commits); its rerun and every other run that day
+  (rounds LG1 and I included) agree, so that run's graded product is not deterministic under heavy
+  load (for review).
+
 ### Decisions (user, 2026-11-12, all as recommended)
 
 - U1 simple curve = three clicks, free control point, exact arc plus a straight lead.
@@ -13721,14 +13781,18 @@ the clicks, the mode buttons and the acknowledgement and draws what `road_tool_f
 - **HUD** (`road_tool_hud.gd`, round V): label chips on the geometry, each a dark rounded panel
   with a small vector icon and one value, the same pixel size at every zoom. Rust's frame decides
   which exist, their values, anchors and sides (`labels.rs`); the bridge adds what the preview
-  says. Each straight or Bezier piece's plan length at its middle, each arc's radius at its
+  says, and every chip's text as shown (round V2, `road_tool/wording.rs`, the one place the
+  strings live: units and rounding, compass letters, money, the hint, Build and Cancel, the
+  notice's warnings and refusal); GDScript only measures and draws the texts. Each straight or Bezier piece's plan length at its middle, each arc's radius at its
   middle (outside the curve), the total plan length when there is more than one piece, the angle
   where the stroke meets a road (180° straight on out of a dead end; a road through the point
   reads its acute angle) or bends at a freeform corner, the steepest grade from 0.5 %, and at the
   end the cost (the preview's, class-priced), the bearing and the design speed (amber under the
   type's limit). No upkeep (user, 2026-11-14). One notice chip near the end: red with the
   refusal, amber for a steep grade, demolitions, a plan being checked or a stroke being sent.
-  `SimulationNode.road_tool_place_labels` places the chips (`labels::place_chips`): each goes out
+  `SimulationNode.road_tool_place_chips` projects the anchors and handles with the camera's
+  matrices and places the chips (`labels::place_chips`; round V2, sized in the font the HUD sends
+  once, `road_tool_set_chip_font`): each goes out
   along its side from its anchor, then while it overlaps an earlier chip or a handle steps by its
   own height, alternately down and up, so chips sharing an anchor stack in a column beside it;
   deterministic, no physics.

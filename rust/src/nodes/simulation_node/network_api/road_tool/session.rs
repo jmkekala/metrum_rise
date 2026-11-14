@@ -27,7 +27,7 @@ use crate::nodes::sim::road_tool::frame::{
 };
 use crate::nodes::sim::road_tool::height::draft_batch;
 use crate::nodes::sim::road_tool::labels::{
-    LabelKind, LabelTone, PreviewFacts, apply_preview, hint_text, middle_label, place_chips,
+    LabelKind, LabelTone, PreviewFacts, apply_preview, middle_label, place_chips,
 };
 use crate::nodes::sim::road_tool::measure::RoadTypeSpec;
 use crate::nodes::sim::road_tool::modes::DrawMode;
@@ -35,6 +35,11 @@ use crate::nodes::sim::road_tool::session::{
     Pointer, PointerButton, RoadToolAction, RoadToolEvent, RoadToolOption, RoadToolSession,
 };
 use crate::nodes::sim::road_tool::snap::SnapKind;
+use crate::nodes::sim::road_tool::labels::ToolLabel;
+use crate::nodes::sim::road_tool::wording::{
+    CHIP_EXTRA_CHARACTERS, NoticeFacts, ReasonFacts, label_text,
+};
+use crate::nodes::road_wording::reason_facts;
 use crate::simulation::network::road_edit::RoadProfile;
 
 /// The road tool session of one `SimulationNode` and the preview the bridge last ran for it.
@@ -49,6 +54,68 @@ pub(crate) struct RoadToolBridge {
     batch_running: bool,
     // A batch ghost is drawn (`road_tool_gizmos.gd`'s `show_batch_ghost`).
     batch_ghost: bool,
+    // The HUD's chip font (round V2): character advances and the chip's padding, so the frame
+    // sizes the chips and `road_tool_place_chips` places them without GDScript work.
+    chip_font: ChipFont,
+    // The last frame's chips (with the preview's facts) and their pixel sizes, for placement.
+    labels: Vec<ToolLabel>,
+    label_sizes: Vec<Vector2>,
+    // Placement scratch: projected anchors, sides, sizes and handles, and the corners.
+    chip_scratch: ChipScratch,
+}
+
+// The chips' font metrics as `road_tool_hud.gd` measures them (`road_tool_set_chip_font`).
+#[derive(Default)]
+struct ChipFont {
+    // Advances in pixels by character: printable ASCII by code, the rest listed.
+    ascii: Vec<f32>,
+    other: Vec<(char, f32)>,
+    // The panel's width beside the text (padding, icon and gap) and its height.
+    extra_px: f32,
+    height_px: f32,
+}
+
+impl ChipFont {
+    // A text's chip size: the text's advances summed and rounded up, plus the panel.
+    fn chip_size(&self, text: &str) -> Vector2 {
+        let fallback = self.ascii.get(usize::from(b'0')).copied().unwrap_or(0.0);
+        let width: f32 = text
+            .chars()
+            .map(|c| {
+                self.ascii.get(c as usize).copied().unwrap_or_else(|| {
+                    self.other
+                        .iter()
+                        .find(|(other, _)| *other == c)
+                        .map_or(fallback, |&(_, advance)| advance)
+                })
+            })
+            .sum();
+        Vector2::new(width.ceil() + self.extra_px, self.height_px)
+    }
+}
+
+#[derive(Default)]
+struct ChipScratch {
+    anchors: Vec<Vector2>,
+    sides: Vec<Vector2>,
+    sizes: Vec<Vector2>,
+    obstacles: Vec<Vector2>,
+    corners: Vec<Vector2>,
+    // Each chip is in front of the camera.
+    shown: Vec<bool>,
+}
+
+// Godot's `Camera3D.unproject_position` with the camera's `view_projection` (projection times the
+// inverse camera transform) and the viewport's size; `None` behind the near plane `near`.
+fn unproject(view_projection: &Projection, viewport: Vector2, near: f32, point: Vector3) -> Option<Vector2> {
+    let [x, y, z, w] = view_projection.cols;
+    let clip = x * point.x + y * point.y + z * point.z + w;
+    (clip.w >= near).then(|| {
+        Vector2::new(
+            (clip.x / clip.w * 0.5 + 0.5) * viewport.x,
+            (-clip.y / clip.w * 0.5 + 0.5) * viewport.y,
+        )
+    })
 }
 
 // The inputs a preview depends on, as today's `_preview_is_for` compared them: the stroke, its
@@ -217,17 +284,20 @@ impl SimulationNode {
     /// `gizmo_line_points` with `gizmo_line_starts` (each strip's first point) and
     /// `gizmo_line_classes` (0 draft centreline, 1 guide line, 2 angle ray, 3 tangent leg, 4 the
     /// zoning-depth guide's outside, 5 its inside, 6 a grid curb), the same strips as quads for
-    /// `road_tool_line.gdshader`, by style (round V): `gizmo_stroke_vertices` / `_attributes`
-    /// (the centreline), `gizmo_guide_*` (guides, the angle ray, tangent legs),
-    /// `gizmo_zoning_out_*` (the zoning guide's outside), `gizmo_zoning_in_*` (its inside) and
-    /// `gizmo_curb_*` (the grid curbs), empty for a style without strips,
+    /// `road_tool_line.gdshader` (rounds V, V2): `gizmo_line_vertices` and
+    /// `gizmo_line_attributes` (five floats a vertex, the last its look: 0 the centreline, 1 a
+    /// guide, the angle ray, a tangent leg or a height stem, 2 and 3 the zoning guide's outside
+    /// and inside, 4 a grid curb), empty without strips,
     /// `gizmo_handles` with `gizmo_handle_kinds` (0 placed end, 1 control point, 2 chain start,
     /// 3 the live end or the grabbed freeform grip, 4 a joint: the S-curve's or a freeform inner
     /// node, 5 a handle: an S-curve arc's control point, a freeform Bezier handle or a height
-    /// handle's grip, whose stem is a guide strip), the label chips (`label_kinds`: 0 piece
+    /// handle's grip, whose stem is a guide strip; `gizmo_handle_attributes`: the kinds as the
+    /// one handle surface's UVs), the label chips (`label_kinds`: 0 piece
     /// length, 1 total length, 2 radius, 3 angle, 4 slope, 5 cost, 6 bearing, 7 design speed, 8
     /// notice, 9 hint, 10 Build, 11 Cancel; `label_values`, `label_anchors`, `label_sides`,
-    /// `label_tones`: 0 normal, 1 warning, 2 refused; `label_hint`, the hint's text) and
+    /// `label_tones`: 0 normal, 1 warning, 2 refused; `label_texts`, each chip's text as shown,
+    /// from `road_tool::wording`; `label_sizes`, each chip's pixels in the HUD's font,
+    /// `road_tool_set_chip_font`) and
     /// `zoning_depth_m` (-1 for a type that does not zone). Heights (round I): `grade` (the grade
     /// line's two end heights, empty when the stroke follows the ground), `height_handles`
     /// (one dictionary per end that has one: `end` 0 start or 1 end, `support`, `height_m`,
@@ -285,40 +355,11 @@ impl SimulationNode {
         dict
     }
 
-    /// Places the road tool's label chips on the screen (`road_tool_hud.gd`, round V): chip `i`
-    /// of `sizes[i]` pixels, anchored at the projected `anchors[i]`, pushed along the projected
-    /// unit direction `sides[i]`, `gap` pixels from its anchor, from every chip placed before
-    /// it and from the squares of `obstacle_px` about each of `obstacles` (the projected
-    /// handles) (`labels::place_chips`, the one placement rule). Returns each chip's top-left
-    /// corner.
-    #[func]
-    pub fn road_tool_place_labels(
-        &self,
-        anchors: PackedVector2Array,
-        sides: PackedVector2Array,
-        sizes: PackedVector2Array,
-        obstacles: PackedVector2Array,
-        obstacle_px: f32,
-        gap: f32,
-    ) -> PackedVector2Array {
-        let mut corners = Vec::with_capacity(anchors.len());
-        place_chips(
-            anchors.as_slice(),
-            sides.as_slice(),
-            sizes.as_slice(),
-            obstacles.as_slice(),
-            obstacle_px,
-            gap,
-            &mut corners,
-        );
-        PackedVector2Array::from(corners.as_slice())
-    }
-
     // The frame's label chips with what the standing preview says (the class-priced cost, the
     // steepest grade, a refusal or a warning; `pending` while the sent stroke waits), as packed
-    // arrays: `label_kinds`, `label_values`, `label_anchors`, `label_sides` (unit XZ, y 0) and
-    // `label_tones`, with `label_hint` (the hint chip's text) and `zoning_depth_m`.
-    fn road_tool_set_labels(&self, dict: &mut VarDictionary, pending: bool) {
+    // arrays: `label_kinds`, `label_values`, `label_anchors`, `label_sides` (unit XZ, y 0),
+    // `label_tones` and `label_texts` (each chip's text, round V2), with `zoning_depth_m`.
+    fn road_tool_set_labels(&mut self, dict: &mut VarDictionary, pending: bool) {
         let frame = self.road_tool_session.session.frame();
         let mut labels = frame.labels.clone();
         let preview = self
@@ -326,6 +367,17 @@ impl SimulationNode {
             .preview
             .as_ref()
             .filter(|_| frame.stroke.points.len() >= 2);
+        let hud = frame.hud;
+        let mut notice = NoticeFacts {
+            refusal: frame.state.refusal.map_or("", refusal_key),
+            draft: ReasonFacts {
+                geometry_measured: Some(hud.radius_m.unwrap_or(-1.0)),
+                geometry_limit: hud.illegal_radius_m,
+                ..ReasonFacts::default()
+            },
+            ..NoticeFacts::default()
+        };
+        let preview_reason;
         if let Some(preview) = preview {
             let number = |key: &str| preview.get(key).and_then(|v| v.try_to::<f64>().ok());
             let text = |key: &str| {
@@ -354,6 +406,20 @@ impl SimulationNode {
             };
             let middle = middle_label(&labels);
             apply_preview(&mut labels, facts, middle);
+            preview_reason = text("invalid_reason");
+            notice.preview_reason = &preview_reason;
+            notice.preview = reason_facts(preview);
+            notice.steep = (text("warning_reason") == "road_steep").then(|| {
+                (
+                    number("max_grade").unwrap_or(0.0),
+                    number("warning_limit").unwrap_or(0.0),
+                )
+            });
+            notice.demolish_count = preview
+                .get("demolish_count")
+                .and_then(|v| v.try_to::<i64>().ok())
+                .unwrap_or(0);
+            notice.checking = !(plan_state.is_empty() || plan_state == "ready");
         }
         let kind = |kind: LabelKind| match kind {
             LabelKind::PieceLength => 0,
@@ -410,12 +476,115 @@ impl SimulationNode {
                 .collect::<PackedInt32Array>(),
         );
         dict.set("zoning_depth_m", frame.zoning_depth_m.unwrap_or(-1.0));
-        // The hint chip's wording (`labels::hint_text`), "" without one.
-        let hint = labels
+        // Each chip's text and its size in the HUD's font (round V2).
+        let mut text = String::new();
+        let mut texts = PackedStringArray::new();
+        let bridge = &mut self.road_tool_session;
+        bridge.label_sizes.clear();
+        for label in &labels {
+            label_text(label, &notice, &mut text);
+            texts.push(&GString::from(text.as_str()));
+            bridge.label_sizes.push(bridge.chip_font.chip_size(&text));
+        }
+        dict.set("label_texts", texts);
+        dict.set(
+            "label_sizes",
+            PackedVector2Array::from(bridge.label_sizes.as_slice()),
+        );
+        bridge.labels.clone_from(&labels);
+    }
+
+    /// Sets the HUD's chip font (round V2): `advances[i]` pixels for the `i`th character of
+    /// `characters`, and the chip's panel: `extra_px` beside the text (padding, icon, gap) and
+    /// `height_px`. The frame's `label_sizes` follow from these.
+    #[func]
+    pub fn road_tool_set_chip_font(
+        &mut self,
+        characters: GString,
+        advances: PackedFloat32Array,
+        extra_px: f32,
+        height_px: f32,
+    ) {
+        let font = &mut self.road_tool_session.chip_font;
+        font.ascii.clear();
+        font.ascii.resize(128, 0.0);
+        font.other.clear();
+        for (c, &advance) in characters.to_string().chars().zip(advances.as_slice()) {
+            match font.ascii.get_mut(c as usize) {
+                Some(slot) => *slot = advance,
+                None => font.other.push((c, advance)),
+            }
+        }
+        font.extra_px = extra_px;
+        font.height_px = height_px;
+    }
+
+    /// The characters the chips' texts use, for `road_tool_set_chip_font`: printable ASCII and
+    /// the few others the wording writes.
+    #[func]
+    pub fn road_tool_chip_characters() -> GString {
+        let mut characters: String = (b' '..=b'~').map(char::from).collect();
+        characters.push_str(CHIP_EXTRA_CHARACTERS);
+        characters.as_str().into()
+    }
+
+    /// Places the last frame's chips on the screen (round V2: the projection in Rust): each
+    /// chip's world anchor and side and the frame's handles projected with `view_projection`
+    /// (the camera's projection times its inverse transform) onto a `viewport` of pixels
+    /// (behind the `near` plane: not shown), then `labels::place_chips` with the frame's sizes,
+    /// `obstacle_px` squares about the handles and `gap`. Returns each chip's top-left corner, NaN
+    /// for a chip behind the camera.
+    #[func]
+    pub fn road_tool_place_chips(
+        &mut self,
+        view_projection: Projection,
+        viewport: Vector2,
+        near: f32,
+        obstacle_px: f32,
+        gap: f32,
+    ) -> PackedVector2Array {
+        let bridge = &mut self.road_tool_session;
+        let scratch = &mut bridge.chip_scratch;
+        scratch.anchors.clear();
+        scratch.sides.clear();
+        scratch.sizes.clear();
+        scratch.shown.clear();
+        for (label, &size) in bridge.labels.iter().zip(&bridge.label_sizes) {
+            let at = unproject(&view_projection, viewport, near, label.anchor);
+            scratch.shown.push(at.is_some());
+            let Some(at) = at else { continue };
+            let side = Vector3::new(label.side.x as f32, 0.0, label.side.y as f32);
+            let toward = unproject(&view_projection, viewport, near, label.anchor + side * 4.0);
+            scratch.anchors.push(at);
+            scratch.sides.push(toward.map_or(Vector2::ZERO, |toward| toward - at));
+            scratch.sizes.push(size);
+        }
+        scratch.obstacles.clear();
+        for &handle in &bridge.session.frame().gizmos.handles {
+            if let Some(at) = unproject(&view_projection, viewport, near, handle) {
+                scratch.obstacles.push(at);
+            }
+        }
+        place_chips(
+            &scratch.anchors,
+            &scratch.sides,
+            &scratch.sizes,
+            &scratch.obstacles,
+            obstacle_px,
+            gap,
+            &mut scratch.corners,
+        );
+        let mut placed = scratch.corners.iter();
+        scratch
+            .shown
             .iter()
-            .find(|label| label.kind == LabelKind::Hint)
-            .map_or("", |label| hint_text(label.value > 0.0));
-        dict.set("label_hint", hint);
+            .map(|&shown| {
+                shown
+                    .then(|| placed.next().copied())
+                    .flatten()
+                    .unwrap_or(Vector2::new(f32::NAN, f32::NAN))
+            })
+            .collect()
     }
 
     // The road tool's frame record without the preview.
@@ -894,7 +1063,7 @@ fn set_gizmos(dict: &mut VarDictionary, gizmos: &Gizmos) {
         GizmoHandleKind::ChainStart => 2,
         GizmoHandleKind::Cursor => 3,
         GizmoHandleKind::Joint => 4,
-        // A height grip draws as a handle until the restyle gives it a look (round I).
+        // A height grip draws as a handle, in round V's look (rounds I, V2).
         GizmoHandleKind::Handle | GizmoHandleKind::HeightGrip => 5,
     };
     dict.set(
@@ -917,10 +1086,9 @@ fn set_gizmos(dict: &mut VarDictionary, gizmos: &Gizmos) {
             .map(line_class)
             .collect::<PackedInt32Array>(),
     );
-    for ((vertices, attributes), quads) in LINE_STYLE_KEYS.into_iter().zip(line_quads(gizmos)) {
-        dict.set(vertices, quads.vertices);
-        dict.set(attributes, quads.attributes);
-    }
+    let quads = line_quads(gizmos);
+    dict.set("gizmo_line_vertices", quads.vertices);
+    dict.set("gizmo_line_attributes", quads.attributes);
     dict.set(
         "gizmo_handles",
         PackedVector3Array::from(gizmos.handles.as_slice()),
@@ -933,90 +1101,115 @@ fn set_gizmos(dict: &mut VarDictionary, gizmos: &Gizmos) {
             .map(handle_kind)
             .collect::<PackedInt32Array>(),
     );
+    // One point surface for every handle (round V2): each point's kind as its UV, the
+    // attribute buffer `road_tool_handle.gdshader` reads its colour and size by.
+    dict.set(
+        "gizmo_handle_attributes",
+        gizmos
+            .handle_kinds
+            .iter()
+            .flat_map(|kind| [handle_kind(kind) as f32, 0.0])
+            .collect::<PackedFloat32Array>(),
+    );
 }
 
-// The quads one line style draws (`road_tool_line.gdshader` widens them on the screen, as
+// The quads of the road tool's lines (`road_tool_line.gdshader` widens them on the screen, as
 // `route_ribbon.gdshader` does): four vertices a segment, the vertex buffer's positions and the
-// attribute buffer's interleaved `[other end x, y, z, side * (dash metres + 1)]` (UV then UV2, 16
-// bytes a vertex; the side is the sign, the dash station the magnitude less one), padded with
-// collapsed quads to a power-of-two segment count (at least 16; none for a style without
-// strips) so a drag keeps the surfaces' layout and uploads in place.
+// attribute buffer's interleaved `[other end x, y, z, side * (dash metres + 1), style]` (UV, UV2
+// and CUSTOM0's red, 20 bytes a vertex; the side is the sign, the dash station the magnitude less
+// one; the style picks the shader's colour, width and dash: `LineStyle`), padded with collapsed
+// quads to a power-of-two segment count (at least 16; none without strips) so a drag keeps the
+// surface's layout and uploads in place. Every style in one surface (round V2: one upload a
+// frame instead of one a style).
 #[derive(Default)]
-struct LineQuads {
-    vertices: PackedVector3Array,
-    attributes: PackedFloat32Array,
+pub(super) struct LineQuads {
+    pub(super) vertices: PackedVector3Array,
+    pub(super) attributes: PackedFloat32Array,
 }
 
 // Minimum quads a line surface holds.
 const LINE_QUADS_MIN: usize = 16;
+// Floats a vertex's attributes take.
+const LINE_ATTRIBUTES: usize = 5;
 
-// The line styles' frame keys (vertices, attributes), in style order (`line_style`).
-const LINE_STYLE_KEYS: [(&str, &str); LINE_STYLES] = [
-    ("gizmo_stroke_vertices", "gizmo_stroke_attributes"),
-    ("gizmo_guide_vertices", "gizmo_guide_attributes"),
-    ("gizmo_zoning_out_vertices", "gizmo_zoning_out_attributes"),
-    ("gizmo_zoning_in_vertices", "gizmo_zoning_in_attributes"),
-    ("gizmo_curb_vertices", "gizmo_curb_attributes"),
-];
-const LINE_STYLES: usize = 5;
+/// The line looks `road_tool_line.gdshader` draws, as the attributes number them (its palette
+/// arrays in `road_tool_gizmos.gd`'s `PALETTE` follow this order).
+#[derive(Clone, Copy)]
+pub(super) enum LineStyle {
+    /// The draft's centreline.
+    Stroke = 0,
+    /// Every guide line in one look (round V item 6; a height handle's stem too, round V2).
+    Guide = 1,
+    /// The zoning guide's outside (item 9).
+    ZoningOutside = 2,
+    /// Its inside.
+    ZoningInside = 3,
+    /// The grid curbs (item 8, drawn to stand out on the preview road's own edges).
+    GridCurb = 4,
+    /// A batch ghost's edges, tier 1 accepting the stroke (round V2).
+    GhostEdge = 5,
+    /// A batch ghost's edges, tier 1 refusing the stroke.
+    GhostRefusedEdge = 6,
+}
 
-// A strip class's style: the draft's centreline; every guide in one look (round V item 6, a
-// height handle's stem too, round V2); the
-// zoning guide's outside and inside (item 9); the grid curbs (item 8, drawn to stand out on the
-// preview road's own edges).
-fn line_style(class: GizmoLineClass) -> usize {
+// A strip class's look.
+fn line_style(class: GizmoLineClass) -> LineStyle {
     match class {
-        GizmoLineClass::Draft => 0,
+        GizmoLineClass::Draft => LineStyle::Stroke,
         GizmoLineClass::Guide
         | GizmoLineClass::Angle
         | GizmoLineClass::Tangent
-        | GizmoLineClass::HeightStem => 1,
-        GizmoLineClass::ZoningOutside => 2,
-        GizmoLineClass::ZoningInside => 3,
-        GizmoLineClass::GridCurb => 4,
+        | GizmoLineClass::HeightStem => LineStyle::Guide,
+        GizmoLineClass::ZoningOutside => LineStyle::ZoningOutside,
+        GizmoLineClass::ZoningInside => LineStyle::ZoningInside,
+        GizmoLineClass::GridCurb => LineStyle::GridCurb,
     }
 }
 
-// The gizmo strips as quads, one set per style (`line_style`). `O(strip points)`.
-fn line_quads(gizmos: &Gizmos) -> [LineQuads; LINE_STYLES] {
-    let mut out: [LineQuads; LINE_STYLES] = Default::default();
-    let mut counts = [0usize; LINE_STYLES];
-    let strips = gizmos.line_starts.len();
+// The gizmo strips as quads. `O(strip points)`.
+fn line_quads(gizmos: &Gizmos) -> LineQuads {
+    strip_quads(&gizmos.line_points, &gizmos.line_starts, |strip| {
+        line_style(gizmos.line_classes[strip])
+    })
+}
+
+// Strips (`points` back to back, `starts` each strip's first point) as quads, each strip in the
+// look `style_of` its index; the batch ghost's edges use it too. `O(points)`.
+pub(super) fn strip_quads(
+    points: &[Vector3],
+    starts: &[u32],
+    style_of: impl Fn(usize) -> LineStyle,
+) -> LineQuads {
     let strip = |index: usize| {
-        let start = gizmos.line_starts[index] as usize;
-        let end = gizmos
-            .line_starts
+        let start = starts[index] as usize;
+        let end = starts
             .get(index + 1)
-            .map_or(gizmos.line_points.len(), |&end| end as usize);
-        &gizmos.line_points[start..end]
+            .map_or(points.len(), |&end| end as usize);
+        &points[start..end]
     };
-    for index in 0..strips {
-        let style = line_style(gizmos.line_classes[index]);
-        counts[style] += strip(index).len().saturating_sub(1);
-    }
-    for (style, quads) in out.iter_mut().enumerate() {
-        // A style without strips sends no quads (its surface is left out).
-        let capacity = if counts[style] == 0 {
-            0
-        } else {
-            counts[style].max(LINE_QUADS_MIN).next_power_of_two()
-        };
-        quads.vertices.resize(capacity * 4);
-        quads.attributes.resize(capacity * 4 * 4);
-    }
-    let mut written = [0usize; LINE_STYLES];
-    for index in 0..strips {
-        let style = line_style(gizmos.line_classes[index]);
-        let quads = &mut out[style];
-        let (vertices, attributes) = (
-            quads.vertices.as_mut_slice(),
-            quads.attributes.as_mut_slice(),
-        );
+    let segments: usize = (0..starts.len())
+        .map(|index| strip(index).len().saturating_sub(1))
+        .sum();
+    // Without strips no quads (the surface is left out).
+    let capacity = if segments == 0 {
+        0
+    } else {
+        segments.max(LINE_QUADS_MIN).next_power_of_two()
+    };
+    let mut quads = LineQuads::default();
+    quads.vertices.resize(capacity * 4);
+    quads.attributes.resize(capacity * 4 * LINE_ATTRIBUTES);
+    let (vertices, attributes) = (
+        quads.vertices.as_mut_slice(),
+        quads.attributes.as_mut_slice(),
+    );
+    let mut quad = 0;
+    for index in 0..starts.len() {
+        let style = style_of(index) as u8 as f32;
         let mut dash = 0.0;
         for pair in strip(index).windows(2) {
             let (a, b) = (pair[0], pair[1]);
             let length = a.distance_to(b);
-            let quad = written[style];
             // Each end twice, one vertex per side; the side's sign is taken from the start's
             // view, so it flips at the far end (whose other end points back).
             for (corner, (point, other, side, at)) in [
@@ -1030,18 +1223,14 @@ fn line_quads(gizmos: &Gizmos) -> [LineQuads; LINE_STYLES] {
             {
                 let vertex = quad * 4 + corner;
                 vertices[vertex] = point;
-                attributes[vertex * 4..vertex * 4 + 4].copy_from_slice(&[
-                    other.x,
-                    other.y,
-                    other.z,
-                    side * (at + 1.0),
-                ]);
+                attributes[vertex * LINE_ATTRIBUTES..(vertex + 1) * LINE_ATTRIBUTES]
+                    .copy_from_slice(&[other.x, other.y, other.z, side * (at + 1.0), style]);
             }
             dash += length;
-            written[style] += 1;
+            quad += 1;
         }
     }
-    out
+    quads
 }
 
 fn mode_code(mode: DrawMode) -> i64 {

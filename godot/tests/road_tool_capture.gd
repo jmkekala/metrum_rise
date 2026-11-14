@@ -6,7 +6,8 @@
 ## rendering device (gamescope's headless backend). Writes `<mode>.png` stills and
 ## `gizmo_upload.json` (milliseconds per upload while a curve is dragged).
 ## `METRUM_ROAD_TOOL_CAPTURE_SET=snapping` writes round E's stills instead: the options panel's
-## Snapping and Steps rows, a guide line and the angle lock taking the cursor.
+## Snapping and Steps rows, a guide line and the angle lock taking the cursor, then the zoning
+## grid holding it beside the dead end (the grid snap's curbs, round V2).
 ## `METRUM_ROAD_TOOL_CAPTURE_SET=scurve_freeform` writes round N's: an S-curve mid-draw, a
 ## freeform draft in its edit phase, the committed freeform road, and
 ## `gizmo_upload_scurve_freeform.json` (uploads while an S-curve's end and a freeform handle are
@@ -14,6 +15,8 @@
 ## `METRUM_ROAD_TOOL_CAPTURE_SET=restyle` writes round V's extras: a stroke climbing steeply, the
 ## same straight stroke at a far zoom (the lines' and chips' size stays constant on screen), and
 ## four road types snapped on one zoning grid with their curb lines.
+## `METRUM_ROAD_TOOL_CAPTURE_SET=batch_ghost` writes round V2's: a level draft across a sculpted
+## valley, which segments into ground, a bridge and ground, as tier 1's batch ghost.
 extends SceneTree
 
 const RoadToolScript := preload("res://scripts/tools/road_tool.gd")
@@ -70,11 +73,13 @@ func _run() -> void:
 	_tool.active = true
 	_tool.begin_preview_measurement()
 	var capture_set := OS.get_environment("METRUM_ROAD_TOOL_CAPTURE_SET")
-	if capture_set in ["snapping", "scurve_freeform", "restyle"]:
+	if capture_set in ["snapping", "scurve_freeform", "restyle", "batch_ghost"]:
 		if capture_set == "snapping":
 			await _capture_snapping()
 		elif capture_set == "restyle":
 			await _capture_restyle()
+		elif capture_set == "batch_ghost":
+			await _capture_batch_ghost()
 		else:
 			await _capture_scurve_freeform()
 		_main.queue_free()
@@ -113,13 +118,15 @@ func _run() -> void:
 	# The drag rewrote the vertex buffers in place: the server's copy is this frame's draft.
 	var gizmo_mesh: ArrayMesh = _tool.gizmos.mesh
 	var drawn: Array = RenderingServer.mesh_surface_get_arrays(gizmo_mesh.get_rid(), 0)
-	var expected: PackedVector3Array = _simulation.road_tool_frame()["gizmo_stroke_vertices"]
-	_expect(not drawn.is_empty() and PackedVector3Array(drawn[Mesh.ARRAY_VERTEX]) == expected, "the in-place gizmo upload leaves the stroke's quads on the server")
-	# The interleaved attributes went into the attribute buffer as UV and UV2 (round V).
-	var attributes: PackedFloat32Array = _simulation.road_tool_frame()["gizmo_stroke_attributes"]
+	var expected: PackedVector3Array = _simulation.road_tool_frame()["gizmo_line_vertices"]
+	_expect(not drawn.is_empty() and PackedVector3Array(drawn[Mesh.ARRAY_VERTEX]) == expected, "the in-place gizmo upload leaves the lines' quads on the server")
+	# The interleaved attributes went into the attribute buffer as UV, UV2 and the look (rounds V,
+	# V2: five floats a vertex).
+	var attributes: PackedFloat32Array = _simulation.road_tool_frame()["gizmo_line_attributes"]
 	var uv: PackedVector2Array = drawn[Mesh.ARRAY_TEX_UV]
 	var uv2: PackedVector2Array = drawn[Mesh.ARRAY_TEX_UV2]
-	_expect(uv.size() * 4 == attributes.size() and uv[1] == Vector2(attributes[4], attributes[5]) and uv2[1] == Vector2(attributes[6], attributes[7]), "the stroke's attributes are its other ends and sides on the server")
+	var looks: PackedFloat32Array = drawn[Mesh.ARRAY_CUSTOM0]
+	_expect(uv.size() * 5 == attributes.size() and uv[1] == Vector2(attributes[5], attributes[6]) and uv2[1] == Vector2(attributes[7], attributes[8]) and looks[1] == attributes[9], "the lines' attributes are their other ends, sides and looks on the server")
 	var uploads: Array = Array(_tool.gizmo_upload_ms)
 	uploads.sort()
 	_tool.set_scripted_pointer(true, Vector3(40.0, 0.0, 10.0))
@@ -213,6 +220,15 @@ func _capture_snapping() -> void:
 	await _capture("snapping_angle_lock")
 	ui.angle_step_option.select(0)
 	ui.angle_step_option.item_selected.emit(0)
+	# Round V2: the zoning-grid snap on, the cursor over the dead end's cells, so the grid holds it
+	# and the road's curbs show on the cell lines.
+	_tool.zoning_grid_snap_enabled = true
+	_ray(Vector3(243.0, 0.0, 27.0))
+	var grid_snap := String(_simulation.road_tool_frame()["snap"])
+	_expect(grid_snap in ["grid", "angle_grid"], "the zoning grid takes the cursor (%s)" % grid_snap)
+	_ray(Vector3(243.0, 0.0, 27.0))
+	await _capture("snapping_grid_curbs")
+	_tool.zoning_grid_snap_enabled = false
 	_tool.cancel_road()
 	_tool.set_process(true)
 
@@ -321,6 +337,26 @@ func _capture_restyle() -> void:
 	_tool.zoning_grid_snap_enabled = false
 	_tool.set_road_type(_tool.DEFAULT_ROAD_TYPE)
 	_tool.set_process(true)
+
+# Round V2: a valley sculpted 12 m deep under a level 400 m draft (as `road_batch_preview_test`),
+# whose segmentation is ground, a bridge and ground; tier 1's ghost of that pose in the gizmos.
+func _capture_batch_ghost() -> void:
+	var centre := Vector2(0.0, 10.0)
+	for step in 80:
+		if _simulation.get_world_surface_height(centre) < -12.0:
+			break
+		_simulation.sculpt_terrain(centre, 70.0, -1.0)
+	_expect(_simulation.get_world_surface_height(centre) < -12.0, "the sculpt tool lowers a valley")
+	_camera.position = Vector3(-150.0, 70.0, 120.0)
+	_camera.look_at(Vector3(-20.0, -6.0, 10.0))
+	var path := PackedVector3Array([Vector3(-200.0, 0.0, 10.0), Vector3(200.0, 0.0, 10.0)])
+	var pose: Dictionary = _simulation.preview_road_draft(path, 0.0, 0.0, 1, 1, true, false)
+	_expect(int(pose.get("stroke_count", 0)) >= 3 and PackedInt32Array(pose.get("profiles", PackedInt32Array())).has(2), "the draft segments with a bridge: %s" % [pose.get("profiles", [])])
+	if _tool.gizmos == null:
+		_tool._show_gizmos({})
+	_tool.gizmos.show_batch_ghost(pose)
+	await _capture("batch_ghost")
+	_tool.gizmos.clear_batch_ghost()
 
 # The recorded frames' parts (gizmo upload, chip wording, chip placement): p50, p95 and max each.
 func _parts() -> Dictionary:

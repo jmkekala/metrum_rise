@@ -13,7 +13,9 @@ use super::super::super::*;
 use crate::nodes::sim::core::{
     BATCH_TOO_LARGE_REASON, BatchPreview, BatchVerdict, polyline_length_m,
 };
-use crate::nodes::sim::road_tool::batch::{draft_requests, ghost_half_width_m, push_ghost_ribbon};
+use crate::nodes::sim::road_tool::batch::{
+    draft_requests, ghost_half_width_m, push_ghost_edges, push_ghost_ribbon,
+};
 use crate::nodes::sim::road_tool::height::segment_draft;
 use crate::simulation::network::road_types::cost as road_cost;
 
@@ -29,7 +31,10 @@ impl SimulationNode {
     /// `reasons` (each stroke's hover refusal, empty when valid), `costs` and `lengths_m` (each
     /// stroke's exact build cost and prepared length), `build_cost` and `length_m` (their sums),
     /// `ghost` (a triangle list: every stroke's ribbon at its road's width) with `ghost_starts`
-    /// (each stroke's first vertex), `tier1_ms`; and `tier2_done` (strokes tier 2 finished),
+    /// (each stroke's first vertex), the ribbons' edges as `road_tool_line.gdshader` quads
+    /// (round V2; as `road_tool_frame`'s `gizmo_line_*`, looks 5 accepted and 6 refused)
+    /// `ghost_line_vertices` and `ghost_line_attributes`,
+    /// `tier1_ms`; and `tier2_done` (strokes tier 2 finished),
     /// `tier2_state` (`running`, `accepted` or `refused`), `tier2_reason` and `tier2_stroke` (a
     /// refusal's key and stroke, -1 for the whole batch), `tier2_ms` (this frame's tier-2 work)
     /// with its stages `tier2_plan_ms`, `tier2_roadbed_ms`, `tier2_payload_ms`,
@@ -116,13 +121,16 @@ impl SimulationNode {
         };
         let mut ghost = Vec::new();
         let mut ghost_starts = PackedInt32Array::new();
+        let (mut edges, mut edge_starts) = (Vec::new(), Vec::new());
         let (mut costs, mut lengths) = (PackedFloat64Array::new(), PackedFloat64Array::new());
         let mut valid = PackedInt32Array::new();
         let mut reasons = PackedStringArray::new();
         let mut profiles = PackedInt32Array::new();
         for (request, (prepared, validation)) in requests.iter().zip(&hover) {
             ghost_starts.push(ghost.len() as i32);
-            push_ghost_ribbon(prepared, ghost_half_width_m(request), &mut ghost);
+            let half_width_m = ghost_half_width_m(request);
+            push_ghost_ribbon(prepared, half_width_m, &mut ghost);
+            push_ghost_edges(&prepared.points, half_width_m, &mut edges, &mut edge_starts);
             let weight =
                 Self::stroke_cost_weight((request.fwd_lanes, request.bkw_lanes), prepared);
             let length_m = polyline_length_m(&prepared.points);
@@ -136,6 +144,17 @@ impl SimulationNode {
             });
             profiles.push(request.profile.code());
         }
+        // Two edge strips a stroke, in the ghost's look by tier 1's verdict.
+        let verdicts = valid.as_slice();
+        let edge_quads = super::session::strip_quads(&edges, &edge_starts, |strip| {
+            if verdicts[strip / 2] == 0 {
+                super::session::LineStyle::GhostRefusedEdge
+            } else {
+                super::session::LineStyle::GhostEdge
+            }
+        });
+        dict.set("ghost_line_vertices", edge_quads.vertices);
+        dict.set("ghost_line_attributes", edge_quads.attributes);
         dict.set("reason", "");
         dict.set("stroke_count", requests.len() as i64);
         dict.set("build_cost", costs.as_slice().iter().sum::<f64>());

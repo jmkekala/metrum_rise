@@ -267,6 +267,9 @@ func attach_hud(new_hud) -> void:
 	add_child(hud)
 	hud.build_pressed.connect(confirm_road)
 	hud.cancel_pressed.connect(cancel_road)
+	# The HUD sends its chip font to Rust once it knows the node (round V2).
+	if is_instance_valid(simulation_node):
+		hud.simulation_node = simulation_node
 
 ## Sends the tool's whole intent to Rust's session: lanes, every snapping option, continuous,
 ## straight grade, median, parking and attributes, as this script reads them out.
@@ -373,7 +376,7 @@ func _session_frame(moved: bool) -> float:
 		_show_graded(simulation_node.advance_road_preview_terrain())
 	if hud != null:
 		var word_us := Time.get_ticks_usec()
-		if hud.show_labels(frame, _preview):
+		if hud.show_labels(frame):
 			_label_word_ms = float(Time.get_ticks_usec() - word_us) / 1000.0
 	var gizmo_ms := _show_gizmos(frame)
 	_show_batch_ghost(frame)

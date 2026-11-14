@@ -1,26 +1,38 @@
 shader_type spatial;
 render_mode unshaded, cull_disabled, depth_test_disabled, depth_draw_never, shadows_disabled, fog_disabled;
 
-// The road tool's lines (`ROAD-112` round V): quads of a constant on-screen width, as
-// `route_ribbon.gdshader` widens them, from `road_tool_frame`'s `gizmo_*_vertices` and
-// `gizmo_*_attributes`. Each corner carries its segment's other end in UV (x, y) and UV2.x, and in
+// The road tool's lines (`ROAD-112` rounds V and V2): quads of a constant on-screen width, as
+// `route_ribbon.gdshader` widens them, from `road_tool_frame`'s `gizmo_line_vertices` and
+// `gizmo_line_attributes`. Each corner carries its segment's other end in UV (x, y) and UV2.x, in
 // UV2.y the side it moves to as the sign and its station along the strip in metres plus one as
-// the magnitude (0 on a padding quad, which collapses). Drawn over the terrain and the roads.
+// the magnitude (0 on a padding quad, which collapses), and in CUSTOM0.x its look, which picks
+// its colour, width and dash from the arrays below (one surface for every look). Drawn over the
+// terrain and the roads.
 
+const int LOOKS = 7;
+uniform vec4 colors[LOOKS] : source_color;
 // Line width in pixels.
-uniform float width_px = 4.0;
-uniform vec4 color : source_color = vec4(1.0);
+uniform float widths_px[LOOKS];
 // Dash and gap in pixels at the depth of `dash_focus` (0 dash: solid).
-uniform float dash_px = 0.0;
-uniform float gap_px = 0.0;
+uniform float dashes_px[LOOKS];
+uniform float gaps_px[LOOKS];
 // The world point whose depth sets the dashes' scale (the cursor), so a dash keeps its length on
 // screen at every zoom without its pattern sliding along the line.
 uniform vec3 dash_focus = vec3(0.0);
 
 varying float station_px;
 varying float across;
+varying vec4 color;
+varying float width_px;
+varying float dash_px;
+varying float gap_px;
 
 void vertex() {
+	int look = clamp(int(CUSTOM0.x + 0.5), 0, LOOKS - 1);
+	color = colors[look];
+	width_px = widths_px[look];
+	dash_px = dashes_px[look];
+	gap_px = gaps_px[look];
 	vec4 here = PROJECTION_MATRIX * (MODELVIEW_MATRIX * vec4(VERTEX, 1.0));
 	vec4 there = PROJECTION_MATRIX * (MODELVIEW_MATRIX * vec4(UV.x, UV.y, UV2.x, 1.0));
 	// Screen direction in pixels; a point behind the camera is held just in front of it.

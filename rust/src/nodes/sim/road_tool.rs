@@ -15,6 +15,7 @@ pub mod modes;
 pub mod pick;
 pub mod session;
 pub mod snap;
+pub mod wording;
 #[cfg(test)]
 mod tool_tests;
 

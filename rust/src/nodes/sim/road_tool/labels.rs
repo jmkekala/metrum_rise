@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
 //! The road tool's label chips (`ROAD-112` round V): small panels on the geometry, each with one
-//! value, as the HUD. Rust decides which chips exist, their values, their world anchors and the
-//! side each is pushed to; `road_tool_hud.gd` words the values, projects the anchors and places
-//! the chips with [`place_chips`], the one placement rule (offset along the side, then step).
+//! value, as the HUD. Rust decides which chips exist, their values, their text
+//! ([`super::wording::label_text`], round V2), their world anchors and the side each is pushed
+//! to; `road_tool_hud.gd` measures and draws the text, projects the anchors and places the chips
+//! with [`place_chips`], the one placement rule (offset along the side, then step).
 //!
 //! The chips of a draft ([`push_draft_labels`], from the session's guide path and HUD numbers):
 //! the plan length of each straight or Bezier piece at its middle, the radius at each arc's
@@ -45,8 +46,8 @@ pub enum LabelKind {
     Bearing,
     /// The design speed of the tightest curve, in km/h.
     DesignSpeed,
-    /// A warning or a refusal; `road_tool_hud.gd` words it from the frame's refusal or the
-    /// preview.
+    /// A warning or a refusal, worded from the draft's refusal or the preview
+    /// ([`super::wording::label_text`]).
     Notice,
     /// How to go on with an open freeform draft (round V item 7): its text is [`hint_text`] of
     /// the value (0 placing, 1 editing).
