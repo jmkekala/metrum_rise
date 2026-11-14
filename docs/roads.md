@@ -13245,6 +13245,77 @@ level by the rule: the first branch run is below the control's spread and the se
 single-stroke preview's code is the control's except the request's profile field (round G1), so
 this reads as the desktop's noise; for review.
 
+### Landing 1 timing (round L1)
+
+Run 2026-11-14 12:26-14:44, one boot, level L. Control: `dev` `1be1c85c` (before round B);
+branch: `dev` `c884802a` (rounds B, C, D, E, F/F2, H and G2). Both release libraries and release
+lib test binaries were built fresh in their own worktrees (test binaries: control
+`d1ef79e933214c81`, branch `527710f93941b70b`; libraries: control `950de6e86c8d4f45`, branch
+`15bd3c17df73d2ac`). Eight workers on the performance cores, `METRUM_DEBUG=0`, the run lock and
+the exclusive timing lock around every timed or rendered run. The desktop was in use (a browser
+open), and the user played the game twice during the round (below).
+
+```bash
+./run.sh --timing --level L --control <the control's $TEST_BINARY> --branch "$TEST_BINARY" --base 1be1c85c \
+    --control-cache "$ARTIFACTS/cache-ctl" --branch-cache "$ARTIFACTS/cache-br" --artifacts "$ARTIFACTS/timing"
+./run.sh --timing --artifacts "$ARTIFACTS/timing" --rerun p07-5-ctl
+./run.sh --timing --artifacts "$ARTIFACTS/timing" --rerun p07-6-br,p07-7-br
+```
+
+Both sides' snapshot caches were generated fresh by these binaries (`TOOLS-23`); the 30k day
+records are equal on every 1× row (`GrowthDayRecord` day 13, 15,588 households, 40,483 jobs).
+
+- **The user's game during the session** (`./run.sh --release` in the main checkout: compile
+  12:46:16-12:47:50, Godot 12:47:51-12:50:25) overlapped the control's 1× day `p07-5-ctl`
+  (mean 2.70 ms, 42,647 preempted frames, acceptance FAIL). It was rerun once on a quiet machine.
+  The runner held the branch's first 1× day while Godot ran and started it after Godot exited.
+- **`PERF-07` 30k 32× C B B C:** every compared metric level: mean 4.328 / 4.358 ms (+0.7 %),
+  p99 6.80 / 6.85, p99.9 8.72 / 9.08, worst unpreempted frame 9.64 / 9.63 ms, components within
+  1.2 %, `load_s` 7.56 / 7.47 s. One control row was noisy, so its tolerances were doubled. The
+  acceptance misses on all four rows are `PERF-17`'s known exception (worst unpreempted
+  9.29-9.97 ms).
+- **`PERF-07` 30k 1×:** the session's first branch days were 2.242 / 2.306 ms. Against the
+  rerun control day, p99.9 read +23.1 % (tolerance 9.8 %), from the second day (p99.9 6.08 ms,
+  9,129 preempted frames against 4,617 and 5,306). Both branch days were rerun once and the flag
+  did not repeat: control 2.246 ms against branch 2.223 / 2.247 ms. Every metric is level (mean
+  -0.5 %, p99 3.86 / 3.82, p99.9 4.39 / 4.41, worst unpreempted 7.55 / 7.59 ms, agent, snapshot
+  and slot components within 2.8 %). Acceptance passes on all three days: unpreempted / p99.9 /
+  preempted less wait 7.55 / 4.39 / 4.99 (control), 7.48 / 4.25 / 5.36 and 7.70 / 4.57 / 5.98
+  ms (branch).
+- **K22 30k (branch only; the control's row is cache-only and had no cached row this boot, so
+  it was skipped):** click-to-ack 6.65 ms, commit 6.61 ms.
+- **Economy contract `--diff 1be1c85c`.** The session timed the branch only, because the
+  control's row was cache-only and skipped. Its status is `failed` (exit 1) on the same four
+  open work-count scaling limits that `dev` fails (`PERF-01`): `staffing_trials`,
+  `supplier_searches`, `supplier_routes` and `job_search_keys`, 10k to 30k against the 3.28×
+  limit. No time budget failed. To compare, one C B B C pass of `tools/perf_contract.py
+  --diff 1be1c85c` ran outside the runner under the same locks and pinning. The control's 10k
+  and fiscal cities were prepared first, untimed, and no timed run generated a snapshot. Every
+  run fails on the same four limits with identical work counts on both sides. Hours: 10k 0.992,
+  1.046 (control) and 1.004, 0.926 ms (branch); 30k 3.280, 3.275 and 3.247, 3.186 ms. Days
+  0.0013-0.0016 ms. Level. The session's own branch row read 1.26 ms at 10k (30k 3.20), outside
+  both sides' four runs. The control's fourth run waited for the user's second game (13:53-14:15)
+  to end and ran 14:15:39-14:17:31 on a quiet machine.
+- **Preview rows** (`ROAD-68-H`'s carried paused rows as round D ran them, gamescope's headless
+  backend at 1920x1080, four workers, 100 samples after 8 warm-ups, one C B B C pass,
+  14:27:43-14:33:32, no other Godot or build running; a browser open). Poses shown exactly within
+  16.7 ms, all ten rows together: control 1,024 and 992, branch 903 and 987 (2,016 / 1,890,
+  -6.3 %). As a share of the exact poses: control 60.5 and 56.1 %, branch 53.3 and 57.4 %. One
+  branch run lies inside the control's spread and one lies under it. Per case (control runs /
+  branch runs): `sloped_t` 189, 187 / 193, 216; `sloped_branch` 274, 203 / 187, 213;
+  `flat_cross` 181, 202 / 164, 171; `sloped_cross` 183, 205 / 183, 186; `dense` 197, 195 / 176,
+  201. This repeats round D's reading (7-11 % fewer on its branch in three series against
+  `05915359`; round G2 -8.7 % against the same control; round C -2.4 %, level). No rerun or
+  bisect series ran (the user, 2026-11-14: the round stops here). By these series, the drop
+  arrives with round D (round C read level, D read it against `05915359`), but no same-session
+  series has isolated it. The first rows pass (14:23) failed in Godot before any sample: the new
+  worktree's project had no `.godot` import, so global classes such as `MetrumDebug` were
+  undeclared. It ran again after one `--import` pass.
+- **Drag probe** (Kuopio's 39 strokes, `tools/graded_drag_probe.py` from the branch worktree,
+  gamescope's headless backend, `METRUM_DEBUG_PERF=1`, `METRUM_GRADED_DRAG_CONTINUE=1`, the main
+  checkout's run lock and exclusive timing lock held from outside (`TOOLS-24`), one C B B C pass
+  from 14:34:03, quiet machine): every run PASS, 0 failures, 39 of 39 fast commits; the terrain install share (max ms, control / branch) fast commit 0.44, 0.47 / 0.49, 0.50, commit 0.21, 0.16 / 0.20, 0.21, undo 0.43, 0.34 / 0.40, 0.36, catch-up 0.50, 0.50 / 0.46, 0.47, all under the 1.0 ms share. Level.
+
 ### Decisions (user, 2026-11-12, all as recommended)
 
 - U1 simple curve = three clicks, free control point, exact arc plus a straight lead.
