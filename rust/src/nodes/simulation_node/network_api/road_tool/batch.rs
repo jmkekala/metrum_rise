@@ -235,6 +235,8 @@ impl SimulationNode {
             demolish_lots.extend_array(&super::view_lot_outlines(context, &stroke.take));
         }
         dict.set("changed_chunks", changed);
+        // The pose's tiles the accepting frame left for the display's catch-up frames (round I).
+        dict.set("graded_pending", batch.graded_pending as i64);
         dict.set("demolish_count", demolish_count as i64);
         dict.set("demolish_lots", demolish_lots);
         let roadbed = &context.view.roadbed;

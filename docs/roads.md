@@ -13292,8 +13292,11 @@ with its profile (`preview_stroke`) and commits as a batch of one (`add_road_wit
 path); several preview as a batch (round G1): each new pose runs tier 1 and draws its ghost
 (`batch` in the frame), each resting frame one tier-2 step, and the frame tier 2 accepts the batch
 shows its exact pieces as a `preview_road` dictionary and clears the ghost (`batch_cleared`); the
-click commits the strokes as one batch, one undo step, with tier 2's plans when it finished. A
-refused segmentation (`cut_too_deep`) or batch (`batch_too_large`) is the preview's refusal; the
+click commits the strokes as one batch, one undo step, with tier 2's plans when it finished. The
+accepted batch now reports the graded tiles its accepting frame left (`graded_pending`,
+`BatchPreview::graded_pending`), so the display's catch-up frames stage the rest as a stroke's do
+(before, a batch's cut past the first share never showed: the tunnel approach of a bridge then a
+tunnel lay under the grass in the preview). A refused segmentation (`cut_too_deep`) or batch (`batch_too_large`) is the preview's refusal; the
 refusal's log line names the refusing stroke and its profile.
 
 **Short-run rule.** A held ground run shorter than the shortest stroke the checks accept (2 m,

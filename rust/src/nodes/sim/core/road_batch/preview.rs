@@ -145,6 +145,9 @@ pub(crate) struct BatchPreview {
     pub(crate) pieces: Option<BatchPreviewPieces>,
     /// Each tier-2 frame's stages, in frame order.
     pub(crate) frames: Vec<RoadPreviewTimes>,
+    /// The accepted pose's graded tiles still to stage after the accepting frame's share (the
+    /// display's catch-up frames stage them, `advance_road_preview_terrain`, as a stroke's).
+    pub(crate) graded_pending: usize,
 }
 
 impl RoadPreviewContext {
@@ -279,6 +282,7 @@ impl RoadPreviewContext {
             payload: None,
             pieces: None,
             frames: Vec::new(),
+            graded_pending: 0,
         });
     }
 
@@ -476,7 +480,7 @@ impl RoadPreviewContext {
             .and_then(|request| request.points.last())
             .map_or([0.0; 2], |end| [f64::from(end.x), f64::from(end.z)]);
         // The shown tiles are staged as a stroke's pose stages them; the commit stages its own.
-        self.graded.stage_pose(
+        batch.graded_pending = self.graded.stage_pose(
             &self.view.terrain,
             &self.view.roadbed,
             &batch.roadbed,
@@ -484,7 +488,8 @@ impl RoadPreviewContext {
             &terrain_changes,
             owners.iter().copied(),
             end,
-        );
+        )
+        .pending;
         times.graded_ms = graded_start.elapsed().as_secs_f64() * 1000.0;
         // The overlay composes over the published chunks only while they are the view's.
         if self.view.road_mesh_generation != Some(self.view.roadbed.generation()) {
