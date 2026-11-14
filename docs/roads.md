@@ -13245,6 +13245,16 @@ level by the rule: the first branch run is below the control's spread and the se
 single-stroke preview's code is the control's except the request's profile field (round G1), so
 this reads as the desktop's noise; for review.
 
+**Landed** (round LG1, 2026-11-14): rounds G1 and G1b cherry-picked onto `dev` `030726d7`, with
+round N underneath (conflicts in the docs only; N's S-curve and freeform gizmos and holds and
+G1's batch ghost and profile field both kept). Fresh on the landed tree: `cargo clippy
+--all-targets` the branch point's one warning (`asset_document.rs:15`); debug `cargo test --lib`
+2,679 passed, 0 failed, 230 ignored; `./run.sh --test` PASS (nextest 2,683 of 2,683, 231
+skipped; both Godot chains PASS, no script error). Against round N's release library and
+`030726d7`'s scripts: Kuopio's 39 strokes, 78 commits, and the gameplay fixtures' 17 commits
+EQUAL in every product; the Kuopio drag probe on the landed library PASS (0 failures, 39 fast
+commits; the main checkout's locks held from outside, `TOOLS-24`). No timing session.
+
 ### Landing 1 timing (round L1)
 
 Run 2026-11-14 12:26-14:44, one boot, level L. Control: `dev` `1be1c85c` (before round B);
