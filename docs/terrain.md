@@ -17737,6 +17737,51 @@ run; pooled server instances for the lamps (no node per batch) are the fix, not 
 Digests (30k 5/5, Kuopio 8/8, every family) equal and Kuopio's stills byte-identical on the final
 library; Kuopio's drag probe passes.
 
+**Round CB3 (2026-11-14, for review): the street lamps on pooled server slots, built in the load
+call.** Measured first on CB2c's tip (`3e74ccc8`, five instrumented 30k loads, `$ARTIFACTS`
+art-cb3/stream `base-*`): 2, 2, 1, 4 and 0 frames of road work over 4.0 ms (max 10.4, 4.3, 4.5,
+9.1, 3.8 ms); all but one are lights parts of 4.0-9.0 ms predicted at 1.0 (the first batches of
+the 15 lamp and glow meshes CB2c's prewarm did not make), the other a hydration start of 10.4 ms. The
+lamp book (`street_lights.rs`, `street_lights/draw.rs`) now draws each 64 m cell and kind's three
+level-of-detail batches and each chunk's glow on the stream backend's `SlotPool` (one `MultiMesh`
+and one instance a slot, no node, resource or engine object), with what the nodes gave the server:
+the lamp material, the band's range with its 10 m hysteresis margins, the first two levels
+casting with a 32 m extra margin, the last and the glow a 2 m one, the chunk's frame origin;
+batches show together once all are made. Slots alone were not enough (art-cb3 `cb3a`-`cb3c`,
+`[CB3]` timers, removed): lights parts fell to about 0.6 ms, but a new slot's creation stalls
+0.4-2.9 ms now and then and a buffer's upload 0.3-2.8 ms (the engine's allocations and staging,
+not predictable from the call), and the hydration's first-frame reset freed the prewarmed spares.
+So the load call's prewarm (`road_chunk_hydration.gd` `prewarm`) now builds every road chunk's
+batches hidden (`get_road_mesh_lights_all`, `StreetLightBook.prebuild_draw`: 11,670 slots for the
+30k city's 61 lit chunks, 62-98 ms of the load call), a reset keeps them, and a load frame's
+lights part only shows a chunk whose lights match its prebuilt ones (0.05-0.08 ms a chunk); a
+chunk that differs builds in its own parts as before. The chunk layers' materials' first use
+(3.2 ms in one run's first frame) moved to the prewarm too. Costs: the prebuild `O(lamps +
+batches)` once a load; a shown chunk `O(its slots)` visibility flips; an edit's chunk `O(lamps)`
+floats written into reused slots; a removal or reset `O(slots)`; at most 65,536 spares. Five
+instrumented 30k loads of the final library (`fin-*`, roads.py): 0 frames over 4.0 ms in every
+run, max 1.81, 3.32, 3.98, 2.48 and 2.02 ms (median 0.97-1.07, 47 frames with road work, 66
+chunks); pans have no road work. The teardown probe counts the lamp slot ledger at each step (made
+less freed equals live plus spares, none live after the new game; the exit's leaked-RID lines
+cover the rest). `shadow_variants.gd` toggles the lamps' casting through the book
+(`set_cast_shadows`); its node census no longer counts lamps.
+Fresh on the final library against CB2's control (`5b790031`, same boot): digests 30k 5/5 and
+Kuopio 8/8, every family equal; Kuopio's stills byte-identical; the 30k stills (two a side)
+identical at `city` and `city_low`, `saved` 3-4 px (the control against itself 2 px), `stills
+systematic` none on all three. The teardown probe (two loads with pans, a city road and its undo,
+a new game) passes with no error line; the lamp ledger balances at every step (after the first
+load 11,775 made, 89 freed, 11,677 live, 9 spare; after the new game none live, the prewarm's 16
+spares, freed at exit). Kuopio's drag probe passes 2 of 2 a side, its edit frames level or better.
+Level F series C B B C (`$ARTIFACTS` art-cb3/series): every moving phase level or better at 30k
+but `far_zoom_out` (p50 +0.5 ms, spread 0.5); `post_load` p50 -1.3 ms and its maximum (the held
+load frame) +155 ms over a spread of 111: the load call now builds the lamps (the road prewarm
+122-131 ms, 62-98 of it the prebuild; the engine then takes up the 11,670 new instances in that
+frame; the instrumented first frames 1,305-1,401 ms against 777-1,253 on CB2c's tip, settle
+7.0-7.6 s against 6.8-7.2): the lamps' cost moved from the load frames into the held load, for
+review. The 100k load (diagnosis, one run): lights parts 0.04-0.07 ms; 2 of 158 road frames over
+4.0 ms, the two single multi-megabyte surfaces (15.7 and 16.4 ms) CB2 left open. Kuopio (no roads: no lamp work in its frames) flags p50 +0.0-0.3 ms on `turn_out 0.5s`,
+`turn_repeat 1s`, `pan_back`, `zoom_out` and `jump` (spreads 0.0-0.3), read as noise for review.
+
 ## Implemented Runtime Contract
 
 ### 1. `WorldConfig` Is The Authoritative World Metadata
