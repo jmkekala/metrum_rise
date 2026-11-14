@@ -12268,12 +12268,13 @@ grade.
 
 ## Road tools (`ROAD-112`, `ROAD-113`)
 
-**Status: in progress.** Planned 2026-11-12; round A (the guide kernel) and round B (the session core, not wired) built 2026-11-13, round B landed 2026-11-14; round F (batch commit, grouped undo, undo refund) built 2026-11-13, held for its batch bar until fix round F2 (2026-11-14), which meets it: ready to land. The user asked for a complete refactor of the
+**Status: in progress.** Planned 2026-11-12; round A (the guide kernel) and round B (the session core, not wired) built 2026-11-13, round B landed 2026-11-14; round F (batch commit, grouped undo, undo refund) built 2026-11-13, held for its batch bar until fix round F2 (2026-11-14), which meets it: ready to land; round C (the wiring: straight strokes run on the session) built 2026-11-14. The user asked for a complete refactor of the
 road tool, Rust-first: the current straight mode and the GDScript `Curve3D` "curve" (a cubic
 Bezier whose handles are the raw vectors to the control point, so its curvature, radius and
 length are not exact) are replaced. Mechanics follow the genre (city builders' straight, curve,
 continuous, grid, parallel, replace and freeform tools); no names, art or look are copied.
-"Drawing and placement (`ROAD-63`)" below describes today's tool until round D lands.
+"Drawing and placement (`ROAD-63`)" below describes today's tool (its straight mode on the session since round C)
+until round D lands.
 
 ### Design (`ROAD-112`)
 
@@ -12310,11 +12311,28 @@ continuous, grid, parallel, replace and freeform tools); no names, art or look a
   and step bounds, arc length against the closed form within 1e-9, `f32` placement at +-10 km,
   offsets, split, join, reversal and bitwise determinism. Benchmark
   `road_tool_guide_benchmark` (results under "Guide kernel benchmark" below).
-- **Protocol.** GDScript sends `road_tool_event` and `road_tool_set_option` and calls
-  `road_tool_frame` once a frame; the frame returns the existing `preview_road` dictionary
-  unchanged, plus gizmo arrays, HUD numbers, cursor and state. `preview_road` and
-  `add_road_with_snap` stay as low-level entries for replays and the drag probe. GDScript keeps
-  input forwarding and drawing; preview holds come from `RENDER-32`'s single Rust hold rule.
+- **Protocol** (as built in round C, bridge `network_api/road_tool/session.rs`). The pointer
+  goes as typed calls so a move allocates nothing: `road_tool_pointer(origin, dir, shift)` (a
+  camera ray) and `road_tool_pointer_at(position)` (a scripted point, taken exactly, as
+  `set_scripted_pointer` was); both return the resolved cursor. `road_tool_event(name)` takes
+  `press`, `right`, `release`, `cancel`, `confirm`, the three modes, the acknowledgement
+  `committed` / `refused`, and `forget_preview`; it returns the phase and, for the click that
+  sends the stroke, its points, the preview of exactly it (`fresh` when the click had to preview
+  it) and the commit's request id (0 when the preview refused it: the bridge logs the tool's
+  refusal and the stroke stays editable; after the core refused a commit, the unchanged stroke
+  on the same context stays refused as `road_commit_rejected`, today's rule). `road_tool_set_option(name, value)`: `lanes`, the
+  snapping toggles and steps, `continuous`, `altitude_offset_m` (PageUp/PageDown until round I);
+  the median, parking and attributes stay with `set_road_tool_median` / `_parking` /
+  `_attributes`, which now also set the session's road type, so the session's requests and HUD
+  price the selected type (B9). `road_tool_frame()` once a frame: phase, cursor and what took it,
+  the pose's stroke points, the draft's refusal, the HUD numbers, and `preview` (the unchanged
+  `preview_road` dictionary) when the stroke, its type, the snap and tunnel flags or the context
+  generation changed since the last preview (today's `_preview_is_for` rule, compared in place),
+  `preview_cleared` when the stroke went away; no preview while a sent stroke waits for its
+  acknowledgement. `preview_road` and `add_road_with_snap` stay the low-level entries the bridge
+  calls and replays use. GDScript keeps input forwarding, the preview display, the commit's
+  holds and graded epochs, the HUD label and the external-connection prompt; preview holds come
+  from `RENDER-32`'s single Rust hold rule. Gizmos are drawn from round D.
 - **Snapping precedence** (round B, `road_tool/snap.rs`, pure `resolve` over one pose's
   candidates): a network **node** wins outright (an angle lock that was on is reported broken);
   else the direction constraint `D` (the angle lock: the step multiple of the reference nearest
@@ -12605,6 +12623,77 @@ one-by-one run's, and all eight strokes reused their dry run. Eight single commi
   (means 7.95 and 8.17, +2.8 %, one sample each; +0.4 % in the first session, -1.4 % in round
   F's): level, products identical; F2 does not change the single commit's work.
 
+### Wiring record (round C)
+
+Fresh, 2026-11-14, branch `roadtools-c` on `dev` `58d79a53` (control: the release build of
+`58d79a53`, same boot). What changed is under "Protocol" above and in "Drawing and placement".
+
+- **Straight parity, bitwise** (the committed products of every recorded straight stroke against
+  the control's): the drag probe's `METRUM_GRADED_DRAG_PRODUCTS=1` and the gameplay benchmark's
+  `METRUM_GAMEPLAY_ROAD_PRODUCTS=1` record per commit, through `commit_products.gd`, the request
+  sent (its points), the graph (each edge slot's geometry, width and class), the counters, the
+  road chunk meshes as Rust publishes them (`get_road_mesh_data`'s full snapshot) and the graded
+  tiles installed (level, step, walls and, rendered, every page copy read back). The control ran
+  `58d79a53`'s scripts with the same recorder overlaid. Both
+  ran after the last code change (library `3285b84f8b10ed8b`; control `58d79a53`'s): **Kuopio's
+  39 strokes**, 78 commits (each stroke's fast and converged commit), and the gameplay
+  benchmark's 17 fixture commits (headless: the graded tiles without their pages): request,
+  graph, counters, published meshes and graded tiles **equal at every commit** (1,584 graded
+  tiles read back on Kuopio). The chunks drawn at the moment of the record are no product: their
+  server surfaces differ between two runs of the same build (control against control, 17 of 17
+  fixture commits), so they are left out.
+- **Drag probe** (Kuopio's 39 strokes, gamescope's headless backend at 1920x1080, untimed):
+  two runs a side, after the products runs:
+  every run PASS, 0 failures, 39 of 39 fast commits (13 of 13 cases); the terrain install share
+  (max ms, control / branch) fast commit 0.63, 0.44 / 0.52, 0.66, commit 0.28, 0.19 / 0.19, 0.21,
+  undo 0.40, 0.37 / 0.33, 0.51, catch-up 0.50, 0.67 / 0.46, 0.61, all under the 1.0 ms share.
+  The probe's runner takes its locks in its own checkout's `rust/target`, so from a worktree it
+  missed the shared timing lock; these runs held it from outside (`flock -s`).
+- **No allocation per pointer move** in the wired path: a move is `road_tool_pointer` (typed
+  arguments), the view's read lock and `RoadToolSession::handle_event`, the cursor returned as a
+  `Vector3`. The session benchmark's allocation probe (`METRUM_ROAD_TOOL_ALLOC_PROBE`, 30k tier,
+  release, `heaptrack --record-only`) on this branch: `n = 0` 3,419,165 and 3,419,151 allocation
+  calls, `n = 20` (20,480 warmed moves) 3,419,141, `n = 200` (204,800 moves) 3,419,080: none per
+  move. The frame (`road_tool_frame`) allocates its dictionary once a frame, and the preview as
+  before.
+- **Pricing (B9)**: `hud_prices_the_selected_type_as_the_preview` draws a 2 + 2 road with a
+  painted median, parking on both kerbs and 70 km/h and checks the HUD's price per metre against
+  the preview's plan (`plan_road_edit`'s prepared input, as `preview.rs` prices it): equal within
+  1e-9. Found on the way: the hover check (`RoadToolQuerySnapshot::validate`, behind
+  `validate_road_candidate_with_snap`) sets the stroke's median and attributes but not its
+  parking, so its `build_cost` leaves parking out and its checks never see it; the preview and
+  the commit (`plan_road_edit`) are right. Not changed here (`road_preview.rs` is round H's file).
+- **Preview rows and timing**: the preview rows (`ROAD-68-H`'s carried paused rows,
+  `road_preview_replay.gd` through the gameplay harness, 100 samples after 8 warm-ups, four
+  workers, no FPS cap, gamescope's headless backend at 1920x1080, control and branch C B B C,
+  both locks; the populated rows ran on the 100k city, which timing no longer uses, so they are
+  left out). Poses shown exactly within 16.7 ms of their sample, of 500, control / branch:
+  sloped_t 188, 179 / 170, 193; sloped_branch 178, 199 / 164, 180; flat_cross 161, 184 / 171,
+  206; sloped_cross 206, 175 / 176, 163; dense 206, 163 / 191, 181 (all ten rows together 1,839
+  / 1,795, -2.4 %); the control's own spread between its two runs is 5-23 % a case, and two
+  branch rows fall up to 8 % under the control's lower run while the others lie inside or above
+  it: level within the same-binary spread. The synchronous call's p50 is unchanged (5.0-6.6 ms a
+  case on both sides): the bridge runs the same `preview_road`. Timing session level F
+  (`./run.sh --timing --level F --k22`, control the release test binary of `58d79a53`
+  `ca117f88b90d24b0`, branch `d0870f7a331d8390`, eight workers on the performance cores, one
+  boot): `PERF-07` 30k 32x C B B C every compared metric `level` (mean 4.371 / 4.364 ms, p99
+  7.02 / 6.92, the acceptance misses on both sides the known exception `PERF-17`); 30k 1x
+  mean, p99 and p99.9 `level` in both passes, with one component flagged at its edge in each
+  (first pass, one row a side: the single worst unpreempted frame 6.89 / 7.49 ms, +8.6 % against
+  8.5 %; the runner's rerun, control one row, branch two: max unpreempted level, mean agent
+  1.102 / 1.136 ms, +3.1 % against 3.1 %, with the branch rows preempted 4,555 and 5,071 times
+  against the control's 3,485: a busier machine), acceptance PASS on every row; K22 30k
+  click-to-ack 6.89 / 6.74 ms (commit 6.86 / 6.70). No simulation-thread code changed: the Rust
+  edits are the bridge, the tool session and the cursor's snap acquisition. Its two edge flags (+8.6 % against 8.5 %, +3.1 % against 3.1 %, one a pass, neither repeated) are read as noise, for review.
+- **Tests**: new in `road_tool/tool_tests.rs` the pricing test above, a scripted pointer taken
+  exactly, a cancel while pending surviving a refusal, and the height offset against today's
+  cursor; the bridge's cursor tests call `pick.rs`; `network_tool_chunk_renderer_test.gd`'s mock
+  tests of the script's own preview path run in curve mode (the straight path is the session's),
+  and `road_preview_stream_test.gd` checks the session's straight stroke. Debug
+  `cargo test --lib` 2,631 passed, 0 failed, 225 ignored; `./run.sh --test` PASS (nextest 2,635
+  of 2,635, 226 skipped; both Godot chains PASS); `cargo clippy --all-targets` the base's one
+  warning.
+
 ### Decisions (user, 2026-11-12, all as recommended)
 
 - U1 simple curve = three clicks, free control point, exact arc plus a straight lead.
@@ -12751,18 +12840,25 @@ moved.
 
 The road tool (`godot/scripts/tools/road_tool.gd`) draws continuously: an accepted road starts the
 next stroke at its end, leaving in its end direction, until right-click or Esc, until the road
-ends on an existing road or junction, or until it reaches the map edge: a road that raises the
-external-connection prompt ends the chain, so the dialog never sits over a stroke still following
-the pointer off the map. Each stroke has a start direction from
+ends on an existing road or junction, or until it reaches the map edge. A committed road with an
+end on the map edge raises the external-connection prompt when its acknowledgement arrives
+(`check_border_candidate` on the stroke's ends; before round C the network renderer drained a
+queue of them after the refresh) and ends the chain, so the dialog never sits over a stroke still
+following the pointer off the map. A curve stroke has a start direction from
 `get_road_tool_start_direction`, which reads only the edges at the cursor's snap target: a dead end
 is continued (signed), a road or degree-two node gives its direction (either sense), free ground
 and junctions give none. It replaced the tool's `get_road_tangent_at`, which scanned every edge in
 the city on each click.
 
-- Straight mode snaps the stroke every 45° from the start direction (straight on, square, half
-  square) when it lies within 4° of one. Snapping runs in Rust inside `get_road_tool_cursor_pos` (`interaction::snap_stroke_angle`),
-  after network snapping, which wins, and off while the zoning grid snaps. Shift draws free; the
-  label shows `[snapped]`.
+- Straight mode runs on the road tool session since `ROAD-112` round C
+  ([protocol](#design-road-112)): Rust resolves the cursor (the session's snapping precedence,
+  with guide lines on and the angle lock off by default, U2), keeps the stroke and the chain
+  (`ROAD-112` B4: a stroke whose end took a node, an edge or the map edge ends it), previews the
+  stroke and sends it. Today's soft 45° magnet (`interaction::snap_stroke_angle`, within 4° of a
+  multiple of 45° from the start direction) is gone from the straight mode; the lock's steps come
+  to the UI in round E. Shift frees the cursor of the lock, guides and grid; network snaps stay.
+  The label shows `[snapped]` when a guide or the lock took the cursor and the angle to the road
+  the stroke starts on from the session's HUD.
 - Curve mode keeps the three-click quadratic curve (start, free control point, end) on every
   stroke, continuation included, and does not snap. A curve aimed only by its end point, as a
   constant-radius arc from the inherited direction, was tried and dropped: continuing a chain then
