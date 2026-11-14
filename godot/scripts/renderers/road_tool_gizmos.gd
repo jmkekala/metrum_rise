@@ -147,3 +147,58 @@ static func _material(color: Color, points: bool) -> StandardMaterial3D:
 		material.use_point_size = true
 		material.point_size = HANDLE_SIZE_PX
 	return material
+
+# Batch preview ghost (`ROAD-112` round G1): tier 1's ribbons of a draft's strokes, drawn by its
+# own child mesh so the gizmos' in-place layout above never sees it. Valid strokes in the
+# centreline's white, refused ones in the HUD's red, both translucent; the batch's exact preview
+# replaces it through the road preview display once tier 2 accepts.
+const GHOST_COLORS := [Color(1.0, 1.0, 1.0, 0.35), Color(1.0, 0.3, 0.25, 0.45)]
+
+var _ghost: MeshInstance3D
+var _ghost_materials: Array[StandardMaterial3D] = []
+
+## Draws tier 1's ghost of a batch pose (`preview_road_draft`'s `ghost`, `ghost_starts` and
+## `valid`): one triangle-list surface per verdict. Returns the upload's milliseconds.
+func show_batch_ghost(result: Dictionary) -> float:
+	var start_us := Time.get_ticks_usec()
+	if _ghost == null:
+		_ghost = MeshInstance3D.new()
+		_ghost.mesh = ArrayMesh.new()
+		_ghost.custom_aabb = custom_aabb
+		SceneLightingConfig.apply_shadow_policy(_ghost, SceneLightingConfig.SHADOW_DEBUG_OVERLAY, "roads")
+		for color in GHOST_COLORS:
+			var material := _material(color, false)
+			material.cull_mode = BaseMaterial3D.CULL_DISABLED
+			_ghost_materials.append(material)
+		add_child(_ghost)
+	var ghost: PackedVector3Array = result.get("ghost", PackedVector3Array())
+	var starts: PackedInt32Array = result.get("ghost_starts", PackedInt32Array())
+	var valid: PackedInt32Array = result.get("valid", PackedInt32Array())
+	# Each stroke's vertices run from its start to the next stroke's (or the end).
+	var by_verdict: Array[PackedVector3Array] = [PackedVector3Array(), PackedVector3Array()]
+	for stroke in starts.size():
+		var end := starts[stroke + 1] if stroke + 1 < starts.size() else ghost.size()
+		var refused := 0 if stroke < valid.size() and valid[stroke] != 0 else 1
+		by_verdict[refused].append_array(ghost.slice(starts[stroke], end))
+	var mesh: ArrayMesh = _ghost.mesh
+	mesh.clear_surfaces()
+	for verdict in by_verdict.size():
+		if by_verdict[verdict].is_empty():
+			continue
+		var arrays := []
+		arrays.resize(Mesh.ARRAY_MAX)
+		arrays[Mesh.ARRAY_VERTEX] = by_verdict[verdict]
+		mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+		mesh.surface_set_material(mesh.get_surface_count() - 1, _ghost_materials[verdict])
+	_ghost.visible = mesh.get_surface_count() > 0
+	return float(Time.get_ticks_usec() - start_us) / 1000.0
+
+## Removes the batch ghost.
+func clear_batch_ghost() -> void:
+	if _ghost != null:
+		(_ghost.mesh as ArrayMesh).clear_surfaces()
+		_ghost.visible = false
+
+## The batch ghost's surface count (tests).
+func batch_ghost_surfaces() -> int:
+	return 0 if _ghost == null else (_ghost.mesh as ArrayMesh).get_surface_count()

@@ -13101,6 +13101,90 @@ Freeform, Gizmos, HUD).
   heights by arc length per span between its nodes; N7 no continuous constraint for the S-curve
   or freeform (B8), the chain applies; N8 a chained freeform start is not draggable.
 
+### Batch preview (round G1)
+
+Built 2026-11-14 on branch `roadtools-g1` (`dev` `90f5409d`): plan 6.2, a draft that is several
+strokes previews inside the frame in two tiers; and round H's hookup step 1, the stroke's profile
+inside the preview request.
+
+**Profile in the request.** `RoadPreviewRequest.profile` (`RoadProfile`) replaces its `tunnel`
+flag, `RoadAttempt.profile` replaces `tunnel` (the replay record already carried the code), and
+`SimCommand::AddRoad` carries the profile; the seams `compile_profiled*`,
+`preview_road_profiled`, `report_profiled` and `From<bool> for RoadProfile` are gone. The bridge's
+tunnel toggle maps to a profile once (`road_tool_profile`); the preview dictionary adds `profile`
+(code) beside `tunnel`. Products unchanged: the `road_profiles` parity digests (recorded on
+`cd49a275`) pass, and every existing road test passes unchanged.
+
+**Tier 1, every pose** (`RoadToolQuerySnapshot::validate_batch`): each stroke's hover check
+(`validate`: preparation with its profile, ends, water) on the published view, the strokes in
+parallel; per stroke its validity and reason, exact cost (class-priced, as `preview_road`) and
+length, and a ribbon ghost of its prepared points at the road's width (`road_tool/batch.rs`,
+mitred joints). No topology and no pieces: a stroke does not see the earlier ones.
+
+**Tier 2, while the pointer rests** (`RoadPreviewContext::preview_batch_step`,
+`core/road_batch/preview.rs`): one stroke a frame, the commit's own plan, pieces and land rules
+on the preview's replica and an `O(1)` copy of the view's roadbed, in the batch's order, each
+stroke on what the earlier ones left. Invariant: **between calls the replica equals the view's
+graph**; a frame replays the done strokes' records forward (`affected_topology_ids` of each
+stroke's checkpoint, captured after it), runs its stroke and restores every checkpoint newest
+first, so every other replica reader (single preview, roundabout sites, editor checks, `follow`)
+is untouched and a new pose restarts at `O(1)`. A refusal names the stroke and the dry run's key
+(`field_overlap`, a hover reason, `render_geometry_invalid`, `road_plan_provisional`). The
+accepting frame builds the exact overlay of every changed chunk (the union of the strokes'
+deltas over the final roadbed, `generate_preview_overlay`) and stages the pose's graded tiles, as
+a single stroke's preview does; the bridge returns them under `preview_road`'s keys.
+
+**Commit.** A click before tier 2 ends goes to the commit's dry run, unchanged. An accepted tier
+2 of exactly the clicked strokes (`take_batch_products`) travels with `AddRoadBatch`
+(`RoadBatchRequest.preview`); when its first fingerprint is the live core's, the dry run installs
+each stroke's plan and pieces while the chain holds (each stroke's fingerprint equals the dry
+run's copy before it) and keeps every live check (plan status, fast and water checks, plotted
+land on the core's land, failed nodes); the cores then reuse them as in round F2.
+
+**Caps** (decision U6): 40 strokes and 8 km of drawn polyline a batch; over either, both tiers
+refuse as `batch_too_large`, never trimmed.
+
+**Bridge.** `preview_road_draft(path, start_m, end_m, fwd, bkw, snap, resting)`: the draft's
+segmentation (`segment_draft`), tier 1 every call, tier 2 one stroke when `resting`
+(keys in the rustdoc). `add_road_draft` attaches tier 2's products and reports `previewed`.
+`road_tool_gizmos.gd` `show_batch_ghost(result)` draws the ghost in its own child mesh (valid
+white, refused red), `clear_batch_ghost()`. The session's height handles (round I) call these;
+`road_tool.gd` is unchanged.
+
+**Tests.** `road_over_zoning::batch_preview`: tier 1 is each stroke's hover check; tier 2's
+finished roadbed is the batch commit's pieces bitwise (every piece of the graph, and the
+generation), with the replica the view's graph after every frame; tier 2 refuses the stroke the
+commit refuses (`field_overlap`, stroke 2); a new pose restarts on a restored replica; a batch
+committed with tier 2's plans equals one through the dry run (products, `preview_reused` = 3);
+products for other strokes are not installed; the caps. Godot `road_batch_preview_test`: a level
+draft over a sculpted valley (ground, bridge, ground) through `preview_road_draft`, the ghost,
+tier 2 to acceptance, and `add_road_draft` committing a bridge with `previewed`.
+
+**Measured** (fresh, 2026-11-14, release lib test binary of the branch, `$TEST_BINARY
+nodes::sim::core::populated_city::batch_commit::benchmark_populated_batch_preview --ignored
+--nocapture --exact`, `RAYON_NUM_THREADS=8` on the eight P-cores, the K22 30k city, two rounds;
+log in `$ARTIFACTS`):
+
+| Measure | Round 0 | Round 1 | Bar |
+| --- | --- | --- | --- |
+| Hover check per stroke (40 strokes of 200 m, serial), median / max | 0.070 / 0.101 ms | 0.070 / 0.084 ms | measure first |
+| 40 hover checks one after another, median | 2.81 ms | 2.79 ms | (why tier 1 runs in parallel) |
+| Tier 1 of the capped batch (40 strokes, 8 km, parallel, with the ghosts), median / max of 21 | 0.79 / 1.00 ms | 0.70 / 0.84 ms | 2.0 ms: pass |
+| Tier-2 frames, plan stage (8 branches) | 0.39-0.66 ms | 0.38-0.58 ms | 1.0 ms: pass |
+| Tier-2 frames, roadbed stage (incl. replay and restore) | 0.41-0.97 ms | 0.36-1.04 ms | 0.5 ms; the single stroke's own 0.97 / 1.38 ms |
+| Finishing frame payload / graded | 2.66 / 1.73 ms | 2.56 / 1.27 ms | 1.0 / 3.0 ms; the single stroke's 1.83 / 1.59, 1.68 / 1.55 |
+| Batch dry run with tier 2's plans / without | 1.42 / 5.88 ms | 1.30 / 5.83 ms | (plan 2.4 and compile 2.1 ms skipped) |
+| Batch commit with / without | 73.2 / 76.6 ms | 74.6 / 76.3 ms | products equal both rounds |
+
+The cap stays at 40 strokes: serially the hover checks would take 2.8 ms, in parallel 0.7-1.0
+ms. Every tier-2 frame's plan stage is inside its 1.0 ms budget; its roadbed stage is inside 0.5 ms
+from the second stroke on and at most the single stroke's own (which misses the provisional 0.5
+ms on this fixture too: the first branch splits the long border trunk); the finishing frame's
+payload is the union of eight strokes' chunks, 2.6 ms against one stroke's 1.7-1.8 ms (for
+review). Not run this round: the rendered single-stroke preview rows and the Kuopio products
+against a control; the single-stroke path changed only by the request's field (its plan and
+preview functions are the same calls), and the parity digests hold.
+
 ### Decisions (user, 2026-11-12, all as recommended)
 
 - U1 simple curve = three clicks, free control point, exact arc plus a straight lead.

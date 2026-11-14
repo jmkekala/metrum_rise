@@ -309,3 +309,152 @@ fn benchmark_batch_locality() {
         }
     }
 }
+
+// The road tool's view of a prepared city as a context, with the land it takes.
+fn preview_context(
+    core: &mut SimCore,
+    published: &RoadToolShared,
+) -> crate::nodes::sim::core::RoadPreviewContext {
+    let mut context = crate::nodes::sim::core::RoadPreviewContext::capture(
+        published.view.read().unwrap().clone(),
+    );
+    context.land = core.current_road_tool_land();
+    context
+}
+
+fn preview_request(
+    context: &crate::nodes::sim::core::RoadPreviewContext,
+    points: &[Vector3],
+) -> crate::nodes::sim::core::RoadPreviewRequest {
+    crate::nodes::sim::core::RoadPreviewRequest {
+        surface_generation: context.view.surface_generation,
+        points: points.to_vec(),
+        fwd_lanes: 1,
+        bkw_lanes: 1,
+        snap_to_existing_roads: true,
+        profile: crate::simulation::network::road_edit::RoadProfile::FollowGround,
+        median: None,
+        parking: crate::simulation::network::graph::RoadParking::NONE,
+        attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
+    }
+}
+
+fn median_max(mut samples: Vec<f64>) -> [f64; 2] {
+    samples.sort_by(f64::total_cmp);
+    [samples[samples.len() / 2], samples[samples.len() - 1]]
+}
+
+/// `benchmark_populated_batch_preview` (`ROAD-112` round G1): on each `METRUM_COMMIT_TIERS` city
+/// (default 30k) as the commit breakdown loads it, `BATCH_PREVIEW` prints tier 1 of a capped
+/// batch (40 strokes of 200 m, 8 km: the eight round-F branch starts, five copies each 10 m
+/// apart) as one stroke's hover check after another and as `validate_batch` with the ghost
+/// ribbons (median and max of 21 runs; the bar is 2.0 ms); a single stroke's preview stages
+/// (the first branch); tier 2 of the eight branches frame by frame (each frame's stages against
+/// the single-stroke stage budgets); the batch commit's dry run with tier 2's products and, on
+/// a fresh load, without them, with the products compared.
+#[test]
+#[ignore = "release ROAD-112 round G1 batch preview on the K22 cities; loads them outside timing"]
+fn benchmark_populated_batch_preview() {
+    use crate::nodes::sim::road_tool::batch::{ghost_half_width_m, push_ghost_ribbon};
+    super::contract::timing_mode();
+    let rounds: usize = std::env::var("METRUM_BATCH_ROUNDS")
+        .map(|value| value.parse().unwrap())
+        .unwrap_or(2);
+    let tiers: Vec<u32> = std::env::var("METRUM_COMMIT_TIERS")
+        .map(|value| value.split(',').map(|t| t.trim().parse().unwrap()).collect())
+        .unwrap_or_else(|_| vec![30_000]);
+    for residents in tiers {
+        for round in 0..rounds {
+            let (mut core, _) = commit_city(residents);
+            let before = (
+                core.region_graph.edge_count(),
+                core.region_graph.node_count() as u32,
+            );
+            let published = prepare(&mut core);
+            settle(&mut core, &published, None);
+            let mut context = preview_context(&mut core, &published);
+            let branches = branches(&core);
+            let capped: Vec<_> = branches
+                .iter()
+                .flat_map(|[start, _]| {
+                    (0..5).map(move |copy| {
+                        let start = *start + Vector3::new(10.0 * copy as f32, 0.0, 0.0);
+                        [start, start + Vector3::new(0.0, 0.0, 200.0)]
+                    })
+                })
+                .map(|points| preview_request(&context, &points))
+                .collect();
+            // Tier 1: the hover check one stroke after another, and the batch call.
+            let (mut serial, mut tier1) = (Vec::new(), Vec::new());
+            let mut ghost = Vec::new();
+            for _ in 0..21 {
+                let start = Instant::now();
+                for request in &capped {
+                    std::hint::black_box(context.view.validate(request));
+                }
+                serial.push(start.elapsed().as_secs_f64() * 1e3);
+                let start = Instant::now();
+                let hover = context.view.validate_batch(&capped).expect("at the caps");
+                ghost.clear();
+                for (request, (prepared, _)) in capped.iter().zip(&hover) {
+                    push_ghost_ribbon(prepared, ghost_half_width_m(request), &mut ghost);
+                }
+                tier1.push(start.elapsed().as_secs_f64() * 1e3);
+            }
+            // A single stroke's preview of the first branch, then the eight branches' tier 2.
+            let single = context.preview_road(preview_request(&context, &branches[0]));
+            let single = single.times;
+            let requests: Vec<_> = branches
+                .iter()
+                .map(|points| preview_request(&context, points))
+                .collect();
+            let mut frames = Vec::new();
+            let verdict = loop {
+                let (batch, frame) = context.preview_batch_step(requests.clone());
+                if let Some(frame) = frame {
+                    frames.push([frame.plan_ms, frame.roadbed_ms, frame.payload_ms, frame.graded_ms]);
+                }
+                if let Some(verdict) = batch.verdict.clone() {
+                    break verdict;
+                }
+            };
+            assert_eq!(verdict, crate::nodes::sim::core::BatchVerdict::Accepted);
+            let products = context.take_batch_products(&requests);
+            let strokes: Vec<_> = branches.iter().copied().map(stroke).collect();
+            let start = Instant::now();
+            let previewed = core.commit_road_batch(
+                RoadBatchRequest {
+                    strokes,
+                    preview: products,
+                },
+                start,
+                Default::default(),
+            );
+            let previewed_ms = start.elapsed().as_secs_f64() * 1e3;
+            assert!(previewed.outcome.committed);
+            settle(&mut core, &published, previewed.outcome.road_snapshot);
+            let previewed_products = network_products(&core, before.0, before.1);
+            drop(context);
+            drop(core);
+            let (mut core, _) = commit_city(residents);
+            let reference = batch(&mut core);
+            let reference_products = network_products(&core, before.0, before.1);
+            eprintln!(
+                "BATCH_PREVIEW {}",
+                serde_json::json!({"residents": residents, "round": round,
+                    "capped_strokes": capped.len(),
+                    "hover_serial_ms": median_max(serial.clone()),
+                    "hover_per_stroke_ms": median_max(serial).map(|ms| ms / capped.len() as f64),
+                    "tier1_ms": median_max(tier1),
+                    "single_preview": [single.plan_ms, single.roadbed_ms, single.payload_ms, single.graded_ms],
+                    "tier2_frames": frames,
+                    "commit_previewed_ms": previewed_ms,
+                    "dry_run_previewed_ms": previewed.times.dry_run_ms,
+                    "preview_reused": previewed.times.preview_reused,
+                    "previewed_dry": [previewed.times.dry_parts.plan_ms, previewed.times.dry_parts.compile_ms],
+                    "commit_reference": reference,
+                    "products_equal": previewed_products == reference_products})
+            );
+        }
+    }
+}
