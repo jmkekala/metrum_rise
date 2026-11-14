@@ -127,7 +127,7 @@ fn committed(core: &mut SimCore, (x0, z0): (f32, f32), (x1, z1): (f32, f32)) {
             fwd_lanes: 1,
             bkw_lanes: 1,
             snap_to_existing_roads: true,
-            tunnel: false,
+            profile: crate::simulation::network::road_edit::RoadProfile::FollowGround,
             median: None,
             parking: crate::simulation::network::graph::RoadParking::NONE,
             attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,

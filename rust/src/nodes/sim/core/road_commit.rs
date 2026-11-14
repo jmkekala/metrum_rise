@@ -19,7 +19,7 @@ use super::state::SimCore;
 use crate::debug_log;
 use crate::nodes::sim::benchmark::road_edit::RoadEditMetrics;
 use crate::simulation::core::pure_job::JobStart;
-use crate::simulation::network::road_edit::FinalizedRoadGeometry;
+use crate::simulation::network::road_edit::{FinalizedRoadGeometry, RoadProfile};
 use crate::simulation::network::roadbed::RoadbedDelta;
 use crate::simulation::zoning::cells::CellBounds;
 use godot::prelude::Vector3;
@@ -34,9 +34,10 @@ pub(crate) struct RoadCommitRequest {
     pub(crate) bkw_lanes: i32,
     /// Whether authored endpoints may snap to nearby existing road nodes.
     pub(crate) snap_to_existing_roads: bool,
-    /// The road tool's tunnel intent (`ROAD-61`): a preview made without it is not this
-    /// stroke's, and a fresh plan prepares the stroke with it.
-    pub(crate) tunnel: bool,
+    /// How the stroke's heights are made (`ROAD-112` round H; the tunnel intent of `ROAD-61` is
+    /// `RoadProfile::Tunnel`): a preview made with another is not this stroke's, and a fresh
+    /// plan prepares the stroke with it.
+    pub(crate) profile: RoadProfile,
     /// The road tool's median (`ROAD-80`): a preview made without it is not this stroke's, and
     /// the stroke's edge carries it.
     pub(crate) median: Option<crate::simulation::network::graph::RoadMedian>,
@@ -152,7 +153,7 @@ impl SimCore {
             fwd_lanes,
             bkw_lanes,
             snap_to_existing_roads,
-            tunnel,
+            profile,
             median,
             parking,
             attributes,
@@ -175,7 +176,7 @@ impl SimCore {
                             fwd_lanes,
                             bkw_lanes,
                             snap_to_existing_roads,
-                            tunnel,
+                            profile,
                             (median, parking, attributes),
                         )
                 });
@@ -199,7 +200,7 @@ impl SimCore {
             Some(PlanSource::Preview(preview)) => &preview.plan,
             Some(PlanSource::Owned(plan)) => &**plan,
             None => {
-                fresh_plan = RoadEditPlan::compile(
+                fresh_plan = RoadEditPlan::compile_profiled(
                     self,
                     RoadPreviewRequest {
                         surface_generation: self.road_tool_surface_generation,
@@ -207,11 +208,12 @@ impl SimCore {
                         fwd_lanes,
                         bkw_lanes,
                         snap_to_existing_roads,
-                        tunnel,
+                        tunnel: profile == RoadProfile::Tunnel,
                         median,
                         parking,
                         attributes,
                     },
+                    profile,
                 );
                 &fresh_plan
             }
@@ -479,9 +481,10 @@ impl SimCore {
             .last_road_rejection
             .take()
             .unwrap_or_else(|| RoadRejection::new("unknown", self.last_road_timing.clone()));
-        rejection.report(
+        rejection.report_profiled(
             RejectedBy::Commit,
             submitted.attempt(),
+            submitted.profile,
             self.road_tool_surface_generation,
         );
         rejection.reason
@@ -535,7 +538,7 @@ pub(super) struct SubmittedStroke {
     fwd_lanes: i32,
     bkw_lanes: i32,
     snap: bool,
-    tunnel: bool,
+    profile: RoadProfile,
     median: Option<crate::simulation::network::graph::RoadMedian>,
     parking: crate::simulation::network::graph::RoadParking,
     attributes: crate::simulation::network::road_types::RoadAttributes,
@@ -549,7 +552,7 @@ impl SubmittedStroke {
             fwd_lanes: request.fwd_lanes,
             bkw_lanes: request.bkw_lanes,
             snap: request.snap_to_existing_roads,
-            tunnel: request.tunnel,
+            profile: request.profile,
             median: request.median,
             parking: request.parking,
             attributes: request.attributes,
@@ -562,7 +565,7 @@ impl SubmittedStroke {
             fwd_lanes: self.fwd_lanes,
             bkw_lanes: self.bkw_lanes,
             snap: self.snap,
-            tunnel: self.tunnel,
+            tunnel: self.profile == RoadProfile::Tunnel,
             median: self.median,
             parking: self.parking,
             attributes: self.attributes,
@@ -604,7 +607,7 @@ mod tests {
                 fwd_lanes: 2,
                 bkw_lanes: 1,
                 snap_to_existing_roads: false,
-                tunnel: false,
+                profile: RoadProfile::FollowGround,
                 median: None,
                 parking: crate::simulation::network::graph::RoadParking::NONE,
                 attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,

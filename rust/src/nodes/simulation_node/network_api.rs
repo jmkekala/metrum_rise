@@ -5,6 +5,8 @@
 use super::*;
 use crate::nodes::sim::core::RoadRejection;
 use crate::simulation::network::graph::{RoadMedian, RoadParking};
+use crate::nodes::sim::road_tool::height::{DraftSection, draft_batch, segment_draft};
+use crate::simulation::network::road_edit::RoadProfile;
 use crate::simulation::network::road_types::RoadAttributes;
 
 pub(super) mod road_tool;
@@ -145,24 +147,91 @@ impl SimulationNode {
                 fwd_lanes,
                 bkw_lanes,
                 snap_to_existing_roads,
-                tunnel: self.road_tool_tunnel,
+                profile: RoadProfile::from_tunnel(self.road_tool_tunnel),
                 median: self.road_tool_median,
                 parking: self.road_tool_parking,
                 attributes: self.road_tool_attributes,
                 preview: None,
             })
             .collect();
-        let (completion, result) = std::sync::mpsc::sync_channel(1);
-        self.road_commit_request_id = self.road_commit_request_id.wrapping_add(1).max(1);
-        self.road_commit_result = Some(result);
-        let _ = self
-            .cmd_tx
-            .send(crate::nodes::sim::core::SimCommand::AddRoadBatch {
-                request: crate::nodes::sim::core::RoadBatchRequest { strokes },
-                enqueued_at: Instant::now(),
-                completion,
-            });
-        self.road_commit_request_id
+        self.send_road_batch(crate::nodes::sim::core::RoadBatchRequest { strokes })
+    }
+
+    /// Queues one stroke with the stroke profile `profile` (`ROAD-112` round H,
+    /// `RoadProfile::code`: 0 follow ground, 1 held ground, 2 bridge, 3 tunnel) and the road
+    /// tool's other options, as a batch of one (which commits exactly as a single stroke). The
+    /// replay of a refused stroke's record uses it for every profile but the tool's own. Returns
+    /// the completion identity for `get_road_commit_result`; 0 for a profile out of range.
+    #[func]
+    pub fn add_road_with_profile(
+        &mut self,
+        points: PackedVector3Array,
+        fwd_lanes: i32,
+        bkw_lanes: i32,
+        snap_to_existing_roads: bool,
+        profile: i32,
+    ) -> i64 {
+        let Some(profile) = RoadProfile::from_code(profile) else {
+            return 0;
+        };
+        let stroke = crate::nodes::sim::road_tool::height::DraftStroke {
+            points: points.to_vec(),
+            profile,
+        };
+        let section = self.road_draft_section(fwd_lanes, bkw_lanes, snap_to_existing_roads);
+        self.send_road_batch(draft_batch(vec![stroke], section))
+    }
+
+    /// Segments a draft along `path` whose grade line runs from `start_m` to `end_m` (world
+    /// heights at its first and last point) into ground, bridge and tunnel strokes on the road
+    /// tool's published view (`ROAD-112` round H, `docs/roads.md` "Heights and automatic bridges
+    /// and tunnels") and queues them as one batch: one undo step. Returns `request_id` (0 when
+    /// refused before sending), `reason` (empty, or the segmentation's refusal such as
+    /// `cut_too_deep`) and `strokes` (one dictionary per stroke: `points`, `profile` as
+    /// `RoadProfile::code`). Round I's height handles call the same segmentation per pose.
+    #[func]
+    pub fn add_road_draft(
+        &mut self,
+        path: PackedVector3Array,
+        start_m: f32,
+        end_m: f32,
+        fwd_lanes: i32,
+        bkw_lanes: i32,
+        snap_to_existing_roads: bool,
+    ) -> VarDictionary {
+        let section = self.road_draft_section(fwd_lanes, bkw_lanes, snap_to_existing_roads);
+        let segmented = {
+            let view = self.road_tool.view.read().unwrap();
+            segment_draft(
+                &path.to_vec(),
+                [start_m, end_m],
+                section,
+                &view.terrain,
+                &view.region_graph,
+                &view.roadbed,
+            )
+        };
+        let mut result = VarDictionary::new();
+        match segmented {
+            Ok(strokes) => {
+                let mut listed = VarArray::new();
+                for stroke in &strokes {
+                    listed.push(&vdict! {
+                        "points": PackedVector3Array::from(stroke.points.as_slice()),
+                        "profile": stroke.profile.code(),
+                    }.to_variant());
+                }
+                result.set("strokes", listed);
+                result.set("reason", "");
+                result.set("request_id", self.send_road_batch(draft_batch(strokes, section)));
+            }
+            Err(reason) => {
+                result.set("strokes", VarArray::new());
+                result.set("reason", reason);
+                result.set("request_id", 0_i64);
+            }
+        }
+        result
     }
 
     /// Consumes the latest placement's acceptance or rejection without locking the simulation:
@@ -935,4 +1004,39 @@ fn cross_section_spec(
                 RoadRejection::new(reason, format!("{speed_kmh} km/h, sidewalks {sidewalks}"))
             })?;
     Ok((median, parking, attributes))
+}
+
+impl SimulationNode {
+    // The road tool's options as a draft's shared section (`ROAD-112` round H).
+    fn road_draft_section(
+        &self,
+        fwd_lanes: i32,
+        bkw_lanes: i32,
+        snap_to_existing_roads: bool,
+    ) -> DraftSection {
+        DraftSection {
+            fwd_lanes,
+            bkw_lanes,
+            snap_to_existing_roads,
+            median: self.road_tool_median,
+            parking: self.road_tool_parking,
+            attributes: self.road_tool_attributes,
+        }
+    }
+
+    // Queues a batch (`ROAD-112` round F) and returns its completion identity for
+    // `get_road_commit_result`.
+    fn send_road_batch(&mut self, request: crate::nodes::sim::core::RoadBatchRequest) -> i64 {
+        let (completion, result) = std::sync::mpsc::sync_channel(1);
+        self.road_commit_request_id = self.road_commit_request_id.wrapping_add(1).max(1);
+        self.road_commit_result = Some(result);
+        let _ = self
+            .cmd_tx
+            .send(crate::nodes::sim::core::SimCommand::AddRoadBatch {
+                request,
+                enqueued_at: Instant::now(),
+                completion,
+            });
+        self.road_commit_request_id
+    }
 }

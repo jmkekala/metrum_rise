@@ -44,8 +44,11 @@ static func replay_attempt(simulation: Node, tree: SceneTree, attempt: Dictionar
 	var fwd := int(attempt.get("fwd_lanes", 1))
 	var bkw := int(attempt.get("bkw_lanes", 1))
 	var snap := bool(attempt.get("snap", true))
-	# The attempt's tunnel intent (`ROAD-61`); the road tool re-asserts its own per preview.
-	simulation.set_road_tool_tunnel(bool(attempt.get("tunnel", false)))
+	# The attempt's stroke profile (`ROAD-112` round H, `RoadProfile::code`: 0 follow ground,
+	# 1 held ground, 2 bridge, 3 tunnel); a record from before it has the tunnel flag
+	# (`ROAD-61`). The road tool re-asserts its own tunnel intent per preview.
+	var profile := int(attempt.get("profile", 3 if bool(attempt.get("tunnel", false)) else 0))
+	simulation.set_road_tool_tunnel(profile == 3)
 	# Its median (`ROAD-80`), re-asserted by the road tool per preview the same way.
 	simulation.set_road_tool_median(int(attempt.get("median_style", 0)), float(attempt.get("median_width", 0.0)))
 	simulation.set_road_tool_parking(int(attempt.get("parking", 0)))
@@ -55,12 +58,18 @@ static func replay_attempt(simulation: Node, tree: SceneTree, attempt: Dictionar
 		bool(attempt.get("zoning", true)), bool(attempt.get("street_lights", true)))
 	if points.size() < 2:
 		return {"by": "tool", "reason": "too_short"}
-	# The check waits for the core for its parcel clearance, so it always answers (`ROAD-102`).
-	var checked: Variant = simulation.validate_road_candidate_for_commit_with_snap(points, fwd, bkw, snap)
-	var validation: Dictionary = checked if checked is Dictionary else {}
-	if not validation.get("is_valid", false):
-		return {"by": "tool", "reason": String(validation.get("invalid_reason", "validation_unavailable"))}
-	var request: int = simulation.add_road_with_snap(points, fwd, bkw, snap)
+	var request := 0
+	if profile == 1 or profile == 2:
+		# A held ground road or an explicit bridge of a segmented draft: the tool's click check
+		# knows only the tunnel intent, so the commit alone judges it.
+		request = simulation.add_road_with_profile(points, fwd, bkw, snap, profile)
+	else:
+		# The check waits for the core for its parcel clearance, so it always answers (`ROAD-102`).
+		var checked: Variant = simulation.validate_road_candidate_for_commit_with_snap(points, fwd, bkw, snap)
+		var validation: Dictionary = checked if checked is Dictionary else {}
+		if not validation.get("is_valid", false):
+			return {"by": "tool", "reason": String(validation.get("invalid_reason", "validation_unavailable"))}
+		request = simulation.add_road_with_snap(points, fwd, bkw, snap)
 	for frame in POLL_FRAMES:
 		var result: Variant = simulation.get_road_commit_result(request)
 		if result is Dictionary:

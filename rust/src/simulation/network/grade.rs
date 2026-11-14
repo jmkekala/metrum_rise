@@ -24,7 +24,7 @@ pub(crate) const ROAD_GRADE_BUILT: f32 = 0.33;
 // solve or a junction blend constructs keeps within this of the source terrain under it, so the
 // maximum grade is met by cut or fill only this deep, and an edit that cannot keep both is
 // refused (`ROAD-68` open questions 37 and 39).
-const ROAD_SOURCE_DELTA_MAX_M: f32 = 5.0;
+pub(crate) const ROAD_SOURCE_DELTA_MAX_M: f32 = 5.0;
 
 /// The source terrain height under a world XZ point, which the source-delta limit measures from.
 pub(crate) fn source_ground_m(terrain: &TerrainSystem, x: f32, z: f32) -> f32 {

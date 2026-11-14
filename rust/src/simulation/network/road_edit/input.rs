@@ -26,10 +26,78 @@ const ROAD_PROFILE_SOLVER_ITERS: usize = 64;
 const ROAD_PROFILE_SMOOTH_WEIGHT: f32 = 0.22;
 const ROAD_PROFILE_TERRAIN_WEIGHT: f32 = 0.30;
 const ROAD_PROFILE_MAX_GRADE_CHANGE_PER_M: f32 = 0.018;
-pub(super) const PREVIEW_CLEARANCE_M: f32 = 1.0;
+/// How far a stroke's end stands above its support before the follow-ground profile makes it a
+/// bridge, and the band around the ground a draft's grade line holds as a ground road
+/// (`ROAD-112` round H), metres.
+pub(crate) const PREVIEW_CLEARANCE_M: f32 = 1.0;
 // The solve's design grade, which it relaxes span by span towards the ground's slope, up to the
 // hard maximum (`ROAD-68` open question 37).
 pub(super) const ROAD_PROFILE_MAX_GRADE: f32 = ROAD_GRADE_WARNING;
+
+/// How a stroke's heights are made: the profile field of a stroke request (`ROAD-112` round H,
+/// plan section 4), part of the preview's and the plan's identity, the refusal report and the
+/// replay record. A draft's grade line is cut into strokes of these by the road tool's
+/// segmentation (`nodes/sim/road_tool/height.rs`); a stroke drawn without one is `FollowGround`, or
+/// `Tunnel` with the tunnel intent.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub(crate) enum RoadProfile {
+    /// Today's solve: the ends and met carriageways pin, the rest is the smoothed profile within
+    /// the source band of the ground; the authored heights decide only the class, a bridge when
+    /// an end stands more than [`PREVIEW_CLEARANCE_M`] above its support and none that far below
+    /// it (and a ramp from an elevated bridge terminal down to the ground).
+    #[default]
+    FollowGround,
+    /// A ground road holding the authored heights: the same solve with the stroke's own heights
+    /// (linear along each segment) as its targets in place of the ground, the ends pinned at them
+    /// (a joined node's at its graph height) and met carriageways pinned as in `FollowGround`;
+    /// never a bridge. The grade line's runs that stay within [`PREVIEW_CLEARANCE_M`] of the
+    /// ground, and the shallow cuts.
+    HeldGround,
+    /// A bridge keeping its authored heights whatever its ends' clearance: the grade line's runs
+    /// above the ground, landing to landing. Clearance, the ground-transition rule and
+    /// `bridge_too_low` judge it as they judge an inferred bridge.
+    Bridge,
+    /// The tunnel intent (`ROAD-61`, [`super::tunnel`]): the authored profile on the tunnel
+    /// lattice, a bore where the section cover reaches the cover rule, approaches in a cut.
+    Tunnel,
+}
+
+impl From<bool> for RoadProfile {
+    // The bridge's tunnel toggle (`set_road_tool_tunnel`) until the road tool session sends a
+    // profile (`ROAD-112` round I / G1, after round C rewires the bridge's preview calls).
+    fn from(tunnel: bool) -> Self {
+        Self::from_tunnel(tunnel)
+    }
+}
+
+impl RoadProfile {
+    /// The profile of a stroke drawn with the legacy tunnel toggle: `Tunnel` or `FollowGround`.
+    pub(crate) fn from_tunnel(tunnel: bool) -> Self {
+        if tunnel { Self::Tunnel } else { Self::FollowGround }
+    }
+
+    /// The profile's code in the refusal report's replay record and the bridge: 0 follow ground,
+    /// 1 held ground, 2 bridge, 3 tunnel.
+    pub(crate) fn code(self) -> i32 {
+        match self {
+            Self::FollowGround => 0,
+            Self::HeldGround => 1,
+            Self::Bridge => 2,
+            Self::Tunnel => 3,
+        }
+    }
+
+    /// The profile of a [`Self::code`]; `None` out of range.
+    pub(crate) fn from_code(code: i32) -> Option<Self> {
+        Some(match code {
+            0 => Self::FollowGround,
+            1 => Self::HeldGround,
+            2 => Self::Bridge,
+            3 => Self::Tunnel,
+            _ => return None,
+        })
+    }
+}
 
 /// Solved road-tool geometry plus optional profile edits to an existing terminal edge.
 #[derive(Clone, Debug)]
@@ -124,8 +192,12 @@ thread_local! {
 // Standard roads keep the authored XZ alignment, are densified against terrain samples, and
 // receive a constrained smooth vertical profile. Bridge and tunnel strokes preserve authored
 // heights after light XZ simplification when an authored endpoint is intentionally off terrain.
-fn prepare_road_input_points(raw_points: &[Vector3], terrain: &TerrainSystem) -> PreparedPoints {
-    prepare_road_input_points_with_support(raw_points, terrain, |_, _| None, [None; 2])
+fn prepare_road_input_points(
+    raw_points: &[Vector3],
+    terrain: &TerrainSystem,
+    profile: RoadProfile,
+) -> PreparedPoints {
+    prepare_road_input_points_with_support(raw_points, terrain, |_, _| None, [None; 2], profile)
 }
 
 // Prepares road-tool input while using visible carriageways as hard profile pins.
@@ -139,6 +211,7 @@ fn prepare_road_input_points_to_visible_surface(
     raw_points: &[Vector3],
     terrain: &TerrainSystem,
     support: &mut StrokeSupport,
+    profile: RoadProfile,
 ) -> PreparedPoints {
     let end_heights = [support.end_height(0), support.end_height(1)];
     prepare_road_input_points_with_support(
@@ -146,6 +219,7 @@ fn prepare_road_input_points_to_visible_surface(
         terrain,
         |x, z| support.height_at(x, z),
         end_heights,
+        profile,
     )
 }
 
@@ -158,9 +232,10 @@ fn prepare_snapped_road_input_to_visible_surface(
     terrain: &TerrainSystem,
     graph: &RegionGraph,
     support: &mut StrokeSupport,
+    profile: RoadProfile,
 ) -> PreparedRoadInput {
     let (mut points, mut class, forced_grade, mut elevated_ends) =
-        prepare_road_input_points_to_visible_surface(raw_points, terrain, support);
+        prepare_road_input_points_to_visible_surface(raw_points, terrain, support, profile);
     snap_road_endpoints_to_existing_nodes(&mut points, graph);
     let joined_spans = snap_road_endpoints_to_structure_spans(
         &mut points,
@@ -234,15 +309,16 @@ fn snap_road_endpoints_to_structure_spans(
 
 /// Prepares road-tool input with optional endpoint snapping to the existing road graph, pinned
 /// to every visible carriageway: the first pass of [`super::plan_road_edit`], which the commit,
-/// the preview and the editor's checks use (`ROAD-68` open question 16). With `tunnel`, the
-/// tool's tunnel intent, the stroke keeps its authored profile instead (`ROAD-61`).
+/// the preview and the editor's checks use (`ROAD-68` open question 16), with the stroke's
+/// `profile` ([`RoadProfile`]): a tunnel keeps its authored profile on the tunnel lattice
+/// (`ROAD-61`).
 pub(crate) fn prepare_road_input_for_tool(
     raw_points: &[Vector3],
     terrain: &TerrainSystem,
     graph: &RegionGraph,
     roadbed: &RoadbedSystem,
     snap_to_existing_roads: bool,
-    tunnel: bool,
+    profile: impl Into<RoadProfile>,
 ) -> PreparedRoadInput {
     let excluded = RebuiltPieces::default();
     prepare_road_input_excluding(
@@ -251,7 +327,7 @@ pub(crate) fn prepare_road_input_for_tool(
         graph,
         roadbed,
         snap_to_existing_roads,
-        tunnel,
+        profile.into(),
         &excluded,
     )
     .0
@@ -265,10 +341,10 @@ pub(super) fn prepare_road_input_excluding(
     graph: &RegionGraph,
     roadbed: &RoadbedSystem,
     snap_to_existing_roads: bool,
-    tunnel: bool,
+    profile: RoadProfile,
     excluded: &RebuiltPieces,
 ) -> (PreparedRoadInput, Vec<PieceId>) {
-    if tunnel {
+    if profile == RoadProfile::Tunnel {
         let prepared =
             super::tunnel::prepare_tunnel_input(raw_points, graph, snap_to_existing_roads);
         return (prepared, Vec::new());
@@ -280,12 +356,13 @@ pub(super) fn prepare_road_input_excluding(
             terrain,
             graph,
             &mut support,
+            profile,
         );
         return (prepared, support.into_read());
     }
 
     let (points, class, forced_grade, elevated_ends) =
-        prepare_road_input_points(raw_points, terrain);
+        prepare_road_input_points(raw_points, terrain, profile);
     let prepared = PreparedRoadInput {
         points,
         class,
@@ -325,6 +402,7 @@ fn prepare_road_input_points_with_support(
     terrain: &TerrainSystem,
     visible_support_height_at: impl FnMut(f32, f32) -> Option<f32>,
     end_heights: [Option<f32>; 2],
+    profile: RoadProfile,
 ) -> PreparedPoints {
     // Taken for the solve, not borrowed: a solve nested on this thread (a pool job stolen while
     // a support query waits) starts from empty buffers instead of failing a borrow.
@@ -334,6 +412,7 @@ fn prepare_road_input_points_with_support(
         terrain,
         visible_support_height_at,
         end_heights,
+        profile,
         &mut scratch,
     );
     STROKE_SCRATCH.set(scratch);
@@ -345,6 +424,7 @@ fn prepare_road_input_points_in(
     terrain: &TerrainSystem,
     mut visible_support_height_at: impl FnMut(f32, f32) -> Option<f32>,
     end_heights: [Option<f32>; 2],
+    profile: RoadProfile,
     scratch: &mut StrokeScratch,
 ) -> PreparedPoints {
     let StrokeScratch {
@@ -378,7 +458,15 @@ fn prepare_road_input_points_in(
         }
     }
 
-    if elevated_ends.contains(&true) && !endpoint_below_clearance {
+    // The class follows the profile (`ROAD-112` round H): an explicit bridge keeps its heights
+    // whatever its ends' clearance, a held ground road is never a bridge, and only the
+    // follow-ground profile infers one from its ends.
+    let bridge = match profile {
+        RoadProfile::Bridge => true,
+        RoadProfile::FollowGround => elevated_ends.contains(&true) && !endpoint_below_clearance,
+        RoadProfile::HeldGround | RoadProfile::Tunnel => false,
+    };
+    if bridge {
         return (simplified_points.clone(), EdgeClass::Bridge, None, elevated_ends);
     }
 
@@ -386,6 +474,7 @@ fn prepare_road_input_points_in(
         simplified_points,
         terrain,
         &mut visible_support_height_at,
+        profile == RoadProfile::HeldGround,
         samples,
     );
     // The two ends are pinned already; a joined node's graph height replaces their support.
@@ -516,11 +605,14 @@ pub(super) fn simplify_road_alignment_points(points: &[Vector3], simplified_poin
     }
 }
 
-// Into `samples`, which allocates only to grow.
+// Into `samples`, which allocates only to grow. With `held` (`RoadProfile::HeldGround`) a sample
+// off every carriageway targets the alignment's own height, linear along its segment, in place
+// of the ground.
 fn build_standard_road_profile_samples(
     alignment_points: &[Vector3],
     terrain: &TerrainSystem,
     visible_support_height_at: &mut impl FnMut(f32, f32) -> Option<f32>,
+    held: bool,
     samples: &mut Vec<RoadVerticalProfileSample>,
 ) {
     samples.clear();
@@ -536,9 +628,8 @@ fn build_standard_road_profile_samples(
                 samples,
                 terrain,
                 visible_support_height_at,
-                a.x,
-                a.z,
-                false,
+                (a.x, a.z),
+                held.then_some(a.y),
             );
         }
         let segment_count = (len_xz / ROAD_PROFILE_SAMPLE_STEP_M).ceil().max(1.0) as usize;
@@ -548,9 +639,8 @@ fn build_standard_road_profile_samples(
                 samples,
                 terrain,
                 visible_support_height_at,
-                a.x + (b.x - a.x) * t,
-                a.z + (b.z - a.z) * t,
-                false,
+                (a.x + (b.x - a.x) * t, a.z + (b.z - a.z) * t),
+                held.then_some(a.y + (b.y - a.y) * t),
             );
         }
     }
@@ -563,23 +653,27 @@ fn build_standard_road_profile_samples(
     }
 }
 
+// `held_m`: the held ground profile's target off the carriageways.
 fn push_standard_road_profile_sample(
     samples: &mut Vec<RoadVerticalProfileSample>,
     terrain: &TerrainSystem,
     visible_support_height_at: &mut impl FnMut(f32, f32) -> Option<f32>,
-    x: f32,
-    z: f32,
-    pinned: bool,
+    (x, z): (f32, f32),
+    held_m: Option<f32>,
 ) {
-    let (target_y, visible_support_found) =
+    let (support_m, visible_support_found) =
         road_profile_support_height(terrain, visible_support_height_at, x, z);
+    let target_y = match held_m {
+        Some(held_m) if !visible_support_found => held_m,
+        _ => support_m,
+    };
     samples.push(RoadVerticalProfileSample {
         x,
         z,
         target_y,
         ground_y: source_ground_m(terrain, x, z),
         y: target_y,
-        pinned: pinned || visible_support_found,
+        pinned: visible_support_found,
     });
 }
 

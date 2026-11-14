@@ -105,6 +105,35 @@ pub(super) fn prepare_tunnel_input(
     }
 }
 
+/// Whether a run of a draft's grade line below the ground reaches bore cover anywhere
+/// (`ROAD-112` round H, plan section 4): any knot of the run's tunnel lattice
+/// ([`prepare_tunnel_input`], ends unsnapped) with [`TUNNEL_COVER_M`] of section cover
+/// ([`section_cover_m`]) under the ground or a grounded road's deck. A run that reaches it is a
+/// tunnel-intent stroke; one that does not is a ground road in a cut, or refused when the cut is
+/// too deep. `O(knots x half_width_m / TUNNEL_LATTICE_M x deck profile points)` plus one lattice
+/// and one excerpt query.
+pub(crate) fn tunnel_run_reaches_cover(
+    points: &[Vector3],
+    (fwd_lanes, bkw_lanes): (u8, u8),
+    (median, parking, attributes): (
+        Option<RoadMedian>,
+        RoadParking,
+        crate::simulation::network::road_types::RoadAttributes,
+    ),
+    terrain: &TerrainSystem,
+    graph: &RegionGraph,
+) -> bool {
+    let knots = prepare_tunnel_input(points, graph, false).points;
+    if knots.len() < 2 {
+        return false;
+    }
+    let half_width_m =
+        tunnel_section_half_width_m(&knots, fwd_lanes, bkw_lanes, median, parking, attributes);
+    let decks = grounded_decks_near(graph, &knots, half_width_m);
+    (0..knots.len())
+        .any(|index| section_cover_m(terrain, &decks, &knots, index, half_width_m) >= TUNNEL_COVER_M)
+}
+
 /// The source terrain's height above `point`, metres.
 pub(super) fn cover_m(terrain: &TerrainSystem, point: Vector3) -> f32 {
     terrain.sample_height_world(point.x, point.z) * config::HEIGHT_SCALE - point.y

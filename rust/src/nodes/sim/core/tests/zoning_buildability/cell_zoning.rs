@@ -876,7 +876,7 @@ fn painted_cells_over_a_tunnel_take_lots() {
             fwd_lanes: 1,
             bkw_lanes: 1,
             snap_to_existing_roads: true,
-            tunnel: true,
+            profile: crate::simulation::network::road_edit::RoadProfile::Tunnel,
             median: None,
             parking: crate::simulation::network::graph::RoadParking::NONE,
             attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,

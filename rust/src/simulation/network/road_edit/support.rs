@@ -7,7 +7,7 @@
 //! so [`plan_road_edit`] prepares and plans the stroke again until the pieces a preparation
 //! read are none its own plan rebuilds.
 
-use super::input::prepare_road_input_excluding;
+use super::input::{RoadProfile, prepare_road_input_excluding};
 use super::{PreparedRoadInput, RoadPreviewValidation, RoadTopologyPlan, validate_road_edit};
 use crate::simulation::network::graph::{RegionGraph, RoadMedian, RoadParking};
 use crate::simulation::network::road_types::RoadAttributes;
@@ -118,6 +118,43 @@ impl<'a> StrokeSupport<'a> {
     }
 }
 
+/// The ground under a draft's grade line (`ROAD-112` round H, plan section 4): what a stroke's
+/// profile solve reads as its support, the highest grounded carriageway at a point (a bridge's
+/// deck and a tunnel's do not count, as for [`StrokeSupport`] with nothing excluded), else the
+/// source terrain.
+pub(crate) struct DraftGround<'a> {
+    terrain: &'a TerrainSystem,
+    support: StrokeSupport<'a>,
+}
+
+impl<'a> DraftGround<'a> {
+    /// The ground of one terrain, graph and roadbed generation.
+    pub(crate) fn new(
+        terrain: &'a TerrainSystem,
+        graph: &'a RegionGraph,
+        roadbed: &'a RoadbedSystem,
+    ) -> Self {
+        static NOTHING_REBUILT: RebuiltPieces = RebuiltPieces {
+            pieces: Vec::new(),
+            crossed: Vec::new(),
+            joined_ends: [None; 2],
+        };
+        Self {
+            terrain,
+            support: StrokeSupport::new(roadbed, graph, &NOTHING_REBUILT),
+        }
+    }
+
+    /// The ground height at a world XZ point, metres. `O(pieces in the point's query cell)`;
+    /// the pieces read are kept, so the buffer grows once per draft.
+    pub(crate) fn height_at(&mut self, x: f32, z: f32) -> f32 {
+        let terrain = self.terrain;
+        self.support.height_at(x, z).unwrap_or_else(|| {
+            terrain.sample_height_world(x, z) * crate::config::HEIGHT_SCALE
+        })
+    }
+}
+
 /// Prepares, validates and plans a stroke so that its profile reads no piece its own edit
 /// rebuilds (`ROAD-68` open question 16). The first pass reads every visible carriageway; while a
 /// pass read a piece its own plan rebuilds, the stroke is prepared and planned again with those
@@ -136,12 +173,13 @@ pub(crate) fn plan_road_edit(
     graph: &RegionGraph,
     roadbed: &RoadbedSystem,
     snap_to_existing_roads: bool,
-    tunnel: bool,
+    profile: impl Into<RoadProfile>,
 ) -> (
     PreparedRoadInput,
     RoadPreviewValidation,
     Option<RoadTopologyPlan>,
 ) {
+    let profile = profile.into();
     let mut excluded = RebuiltPieces::default();
     loop {
         let (mut prepared, read) = prepare_road_input_excluding(
@@ -150,7 +188,7 @@ pub(crate) fn plan_road_edit(
             graph,
             roadbed,
             snap_to_existing_roads,
-            tunnel,
+            profile,
             &excluded,
         );
         prepared.median = median;

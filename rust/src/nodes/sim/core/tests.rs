@@ -25,6 +25,7 @@ mod road_plan_scaling;
 mod road_pockets;
 mod road_roundabouts;
 mod road_preview;
+mod road_profiles;
 mod road_terrain_plan;
 mod road_over_tunnels;
 mod road_over_zoning;

@@ -10,7 +10,7 @@ use crate::simulation::buildings::allocator::{
 };
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::road_edit::{
-    PreparedRoadInput, RoadPreviewValidation, RoadTopologyPlan, plan_road_edit,
+    PreparedRoadInput, RoadPreviewValidation, RoadProfile, RoadTopologyPlan, plan_road_edit,
 };
 use crate::simulation::network::roadbed::{PieceMesh, RoadbedSystem};
 use crate::simulation::terrain::TerrainSystem;
@@ -31,6 +31,9 @@ use godot::prelude::{Vector2, Vector3};
 #[derive(Debug)]
 pub(crate) struct RoadEditPlan {
     request: RoadPreviewRequest,
+    // The stroke's profile (`ROAD-112` round H), part of its identity beside the request; the
+    // request's tunnel intent agrees with it (`RoadProfile::Tunnel`).
+    profile: RoadProfile,
     terrain_source_generation: u64,
     prepared: PreparedRoadInput,
     validation: RoadPreviewValidation,
@@ -530,11 +533,22 @@ fn outward(x: f64, z: f64, step: fn(f32) -> f32) -> Vector2 {
 impl RoadEditPlan {
     /// Builds the local road solution from borrowed live inputs without cloning the city.
     pub(crate) fn compile(core: &SimCore, request: RoadPreviewRequest) -> Self {
-        Self::compile_from(
+        let profile = RoadProfile::from_tunnel(request.tunnel);
+        Self::compile_profiled(core, request, profile)
+    }
+
+    /// [`Self::compile`] with the stroke's `profile` (`ROAD-112` round H).
+    pub(crate) fn compile_profiled(
+        core: &SimCore,
+        request: RoadPreviewRequest,
+        profile: RoadProfile,
+    ) -> Self {
+        Self::compile_profiled_from(
             &core.heightmap,
             &core.region_graph,
             &core.transit_network.roadbed,
             request,
+            profile,
         )
     }
 
@@ -548,6 +562,21 @@ impl RoadEditPlan {
         roadbed: &RoadbedSystem,
         request: RoadPreviewRequest,
     ) -> Self {
+        let profile = RoadProfile::from_tunnel(request.tunnel);
+        Self::compile_profiled_from(terrain, graph, roadbed, request, profile)
+    }
+
+    /// [`Self::compile_from`] with the stroke's `profile` (`ROAD-112` round H): the request's
+    /// tunnel intent must be `profile == Tunnel`. Until the bridge sends a profile, the requests
+    /// it builds carry the tunnel toggle and plan through [`Self::compile_from`].
+    pub(crate) fn compile_profiled_from(
+        terrain: &TerrainSystem,
+        graph: &RegionGraph,
+        roadbed: &RoadbedSystem,
+        request: RoadPreviewRequest,
+        profile: RoadProfile,
+    ) -> Self {
+        debug_assert_eq!(request.tunnel, profile == RoadProfile::Tunnel);
         let (prepared, validation, topology) = plan_road_edit(
             &request.points,
             request.fwd_lanes.clamp(0, 255) as u8,
@@ -557,10 +586,11 @@ impl RoadEditPlan {
             graph,
             roadbed,
             request.snap_to_existing_roads,
-            request.tunnel,
+            profile,
         );
         Self::new(
             request,
+            profile,
             terrain.source_generation(),
             prepared,
             validation,
@@ -579,6 +609,11 @@ impl RoadEditPlan {
     /// The stroke this plan was compiled for.
     pub(crate) fn request(&self) -> &RoadPreviewRequest {
         &self.request
+    }
+
+    /// The stroke's profile, part of its identity beside [`Self::request`].
+    pub(crate) fn profile(&self) -> RoadProfile {
+        self.profile
     }
 
     /// The prepared stroke.
@@ -664,6 +699,7 @@ impl RoadEditPlan {
     /// Retains the preparation and solved graph delta.
     pub(super) fn new(
         request: RoadPreviewRequest,
+        profile: RoadProfile,
         terrain_source_generation: u64,
         prepared: PreparedRoadInput,
         validation: RoadPreviewValidation,
@@ -671,6 +707,7 @@ impl RoadEditPlan {
     ) -> Self {
         Self {
             request,
+            profile,
             terrain_source_generation,
             prepared,
             validation,
@@ -742,6 +779,7 @@ mod tests {
                 parking: crate::simulation::network::graph::RoadParking::NONE,
                 attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
             },
+            RoadProfile::FollowGround,
             3,
             prepared,
             RoadPreviewValidation::valid(0.0),

@@ -326,7 +326,7 @@ fn parking_needs_a_sidewalk_on_its_own_side_on_a_stroke_and_in_place() {
                 bkw_lanes: 1,
                 snap_to_existing_roads: true,
                 preview: None,
-                tunnel: false,
+                profile: crate::simulation::network::road_edit::RoadProfile::FollowGround,
                 median: None,
                 parking,
                 attributes: attributes(sidewalks),

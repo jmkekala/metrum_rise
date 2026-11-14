@@ -165,7 +165,7 @@ fn committed_with(
                 fwd_lanes: lanes,
                 bkw_lanes: lanes,
                 snap_to_existing_roads: true,
-                tunnel: false,
+                profile: crate::simulation::network::road_edit::RoadProfile::FollowGround,
                 median: None,
                 parking: crate::simulation::network::graph::RoadParking::NONE,
                 attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,

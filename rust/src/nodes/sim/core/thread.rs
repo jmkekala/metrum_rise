@@ -317,7 +317,10 @@ pub(crate) fn run_sim_thread(
                                 fwd_lanes,
                                 bkw_lanes,
                                 snap_to_existing_roads,
-                                tunnel,
+                                profile:
+                                    crate::simulation::network::road_edit::RoadProfile::from_tunnel(
+                                        tunnel,
+                                    ),
                                 median,
                                 parking,
                                 attributes,

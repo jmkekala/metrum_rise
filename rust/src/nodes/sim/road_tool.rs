@@ -6,6 +6,7 @@
 
 pub mod bench;
 pub mod frame;
+pub mod height;
 pub mod measure;
 pub mod modes;
 pub mod pick;

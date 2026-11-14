@@ -88,7 +88,7 @@ fn draw(core: &mut SimCore, points: &[Vector3], tunnel: bool, snap: bool) -> Dra
             fwd_lanes: 1,
             bkw_lanes: 1,
             snap_to_existing_roads: snap,
-            tunnel,
+            profile: crate::simulation::network::road_edit::RoadProfile::from_tunnel(tunnel),
             median: None,
             parking: crate::simulation::network::graph::RoadParking::NONE,
             attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,

@@ -116,7 +116,7 @@ fn commit_with(
             fwd_lanes: 1,
             bkw_lanes: 1,
             snap_to_existing_roads: true,
-            tunnel: false,
+            profile: crate::simulation::network::road_edit::RoadProfile::FollowGround,
             median,
             attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
             preview,
@@ -553,7 +553,7 @@ fn a_widening_continuation_previews_its_committed_chunks() {
                 fwd_lanes: 2,
                 bkw_lanes: 2,
                 snap_to_existing_roads: true,
-                tunnel: false,
+                profile: crate::simulation::network::road_edit::RoadProfile::FollowGround,
                 median: None,
                 parking: crate::simulation::network::graph::RoadParking::NONE,
                 attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
@@ -955,7 +955,7 @@ fn a_stroke_median_needs_a_road_with_both_directions() {
                 fwd_lanes: fwd,
                 bkw_lanes: bkw,
                 snap_to_existing_roads: true,
-                tunnel: false,
+                profile: crate::simulation::network::road_edit::RoadProfile::FollowGround,
                 median,
                 attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
                 preview: None,
@@ -1026,7 +1026,7 @@ fn a_painted_median_is_hatched_between_the_lane_groups() {
                 fwd_lanes: lanes,
                 bkw_lanes: lanes,
                 snap_to_existing_roads: true,
-                tunnel: false,
+                profile: crate::simulation::network::road_edit::RoadProfile::FollowGround,
                 median,
                 attributes: crate::simulation::network::road_types::RoadAttributes {
                     speed_ms: speed_kmh / 3.6,
@@ -1171,7 +1171,7 @@ fn a_movement_selective_approach_paints_its_dividers_solid_before_the_junction()
             fwd_lanes: 2,
             bkw_lanes: 2,
             snap_to_existing_roads: true,
-            tunnel: false,
+            profile: crate::simulation::network::road_edit::RoadProfile::FollowGround,
             median: None,
             parking: Default::default(),
             attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
@@ -1374,4 +1374,49 @@ fn a_lane_rule_edit_repaints_the_arrows_of_its_arms() {
     );
     assert!(core.undo_action_internal());
     assert_eq!(painted(&mut core), centre_lines, "undo takes the arrow off");
+}
+
+// The hover check reads the stroke's kerbside parking (`PARK-05`) as the preview's plan does
+// (found by `ROAD-112` round C, fixed in round H): its prepared input carries the parking, so
+// the cost the bridge derives from it counts the parking lanes, and a stroke parking on a side
+// without a sidewalk is refused by both alike.
+#[test]
+fn hover_validation_reads_the_strokes_parking() {
+    use crate::nodes::sim::core::road_preview::road_tool_snapshot_from_core;
+    use crate::simulation::network::graph::RoadParking;
+    use crate::simulation::network::road_types::{RoadAttributes, cost};
+    let mut core = test_core();
+    core.heightmap = TerrainSystem::with_chunking(257, 257, 1.0, 129, 0.0);
+    core.transit_network = TransitNetwork::new_with_surface_chunk_span(64.0);
+    core.precompute_road_mesh_data();
+    core.refresh_road_terrain_inputs();
+    let both = RoadParking::from_code(3).unwrap();
+    let bare = RoadAttributes::from_tool(50, 0, true, true).unwrap();
+    for (attributes, valid) in [(RoadAttributes::DEFAULT, true), (bare, false)] {
+        let request = || RoadPreviewRequest {
+            surface_generation: core.road_tool_surface_generation,
+            points: vec![Vector3::new(-40.0, 0.0, 0.0), Vector3::new(40.0, 0.0, 0.0)],
+            fwd_lanes: 1,
+            bkw_lanes: 1,
+            snap_to_existing_roads: false,
+            tunnel: false,
+            median: None,
+            parking: both,
+            attributes,
+        };
+        let view = road_tool_snapshot_from_core(&core).expect("current roadbed");
+        let (hover, hover_validation) = view.validate(&request());
+        let preview = RoadPreviewContext::capture(view).preview_road(request());
+        let planned = preview.plan.prepared();
+        assert_eq!(hover.parking, both);
+        assert_eq!(hover_validation.is_valid, valid);
+        assert_eq!(
+            (hover_validation.is_valid, hover_validation.invalid_reason),
+            (preview.validation.is_valid, preview.validation.invalid_reason)
+        );
+        let weight = |prepared: &crate::simulation::network::road_edit::PreparedRoadInput| {
+            cost::stroke_weight((1, 1), prepared.median, prepared.parking, prepared.attributes, prepared.class)
+        };
+        assert_eq!(weight(&hover), weight(planned));
+    }
 }

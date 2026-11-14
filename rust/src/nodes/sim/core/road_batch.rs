@@ -33,7 +33,7 @@ use crate::debug_log;
 use crate::nodes::sim::benchmark::road_edit::RoadEditMetrics;
 use crate::nodes::sim::road_tool::validate_road_candidate_against_water;
 use crate::simulation::network::graph::RegionGraphUndoDelta;
-use crate::simulation::network::road_edit::validate_road_candidate_fast;
+use crate::simulation::network::road_edit::{RoadProfile, validate_road_candidate_fast};
 use crate::simulation::network::roadbed::{RoadbedDelta, RoadbedSystem};
 
 /// An ordered list of strokes committed as one transaction and undone as one step.
@@ -401,7 +401,7 @@ impl SimCore {
         let mut clock = Instant::now();
         let fingerprint =
             RoadPreviewFingerprint::of(self.road_tool_surface_generation, roadbed, &self.heightmap);
-        let plan = RoadEditPlan::compile_from(
+        let plan = RoadEditPlan::compile_profiled_from(
             &self.heightmap,
             &self.region_graph,
             roadbed,
@@ -411,11 +411,12 @@ impl SimCore {
                 fwd_lanes: stroke.fwd_lanes,
                 bkw_lanes: stroke.bkw_lanes,
                 snap_to_existing_roads: stroke.snap_to_existing_roads,
-                tunnel: stroke.tunnel,
+                tunnel: stroke.profile == RoadProfile::Tunnel,
                 median: stroke.median,
                 parking: stroke.parking,
                 attributes: stroke.attributes,
             },
+            stroke.profile,
         );
         DryRunParts::lap(&mut parts.plan_ms, &mut clock);
         // The live roadbed is the dry run's base and stays untouched, so the plan's readiness

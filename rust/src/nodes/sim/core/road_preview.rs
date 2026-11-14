@@ -25,7 +25,7 @@ use crate::simulation::network::render::RoadChunkMap;
 use crate::simulation::network::road_types::RoadAttributes;
 use crate::simulation::network::render::road::{PreviewChunk, RoadRenderer};
 use crate::simulation::network::road_edit::{
-    PreparedRoadInput, RoadPreviewValidation, prepare_road_input_for_tool,
+    PreparedRoadInput, RoadPreviewValidation, RoadProfile, prepare_road_input_for_tool,
     validate_road_candidate_fast,
 };
 use crate::simulation::network::roadbed::{
@@ -44,6 +44,9 @@ pub(crate) struct RoadPreviewRequest {
     pub(crate) bkw_lanes: i32,
     pub(crate) snap_to_existing_roads: bool,
     /// The road tool's tunnel intent (`ROAD-61`): part of the preview's and the plan's identity.
+    /// A stroke's full profile (`ROAD-112` round H, [`RoadProfile`]) travels beside the request
+    /// ([`RoadPreviewContext::preview_road_profiled`], [`RoadEditPlan::compile_profiled_from`])
+    /// until the bridge's requests carry one; this flag is then `profile == Tunnel`.
     pub(crate) tunnel: bool,
     /// The road tool's median (`ROAD-80`): part of the preview's and the plan's identity; the
     /// stroke's edge carries it and its corridor checks widen by it.
@@ -228,6 +231,7 @@ impl RoadToolQuerySnapshot {
             request.tunnel,
         );
         prepared.median = request.median;
+        prepared.parking = request.parking;
         prepared.attributes = request.attributes;
         let validation = validate_road_candidate_fast(
             &prepared,
@@ -357,7 +361,8 @@ pub(crate) struct RoadPreview {
 }
 
 impl RoadPreview {
-    /// True when this preview was made for exactly this stroke.
+    /// True when this preview was made for exactly this stroke, its `profile` included (a
+    /// bridge-side caller passes its tunnel toggle).
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn is_for(
         &self,
@@ -365,7 +370,7 @@ impl RoadPreview {
         fwd_lanes: i32,
         bkw_lanes: i32,
         snap_to_existing_roads: bool,
-        tunnel: bool,
+        profile: impl Into<RoadProfile>,
         (median, parking, attributes): (Option<RoadMedian>, RoadParking, RoadAttributes),
     ) -> bool {
         let request = self.plan.request();
@@ -373,7 +378,7 @@ impl RoadPreview {
             && request.fwd_lanes == fwd_lanes
             && request.bkw_lanes == bkw_lanes
             && request.snap_to_existing_roads == snap_to_existing_roads
-            && request.tunnel == tunnel
+            && self.plan.profile() == profile.into()
             && request.median == median
             && request.parking == parking
             && request.attributes == attributes
@@ -388,17 +393,30 @@ impl RoadPreviewContext {
     /// these pieces bitwise. No core lock; cost
     /// `O(stroke + local excerpt + closure pieces)`, independent of the city.
     pub(crate) fn preview_road(&mut self, request: RoadPreviewRequest) -> RoadPreview {
+        let profile = RoadProfile::from_tunnel(request.tunnel);
+        self.preview_road_profiled(request, profile)
+    }
+
+    /// [`Self::preview_road`] with the stroke's `profile` (`ROAD-112` round H): a held ground
+    /// road or an explicit bridge of a segmented draft. The request's tunnel intent must be
+    /// `profile == Tunnel`.
+    pub(crate) fn preview_road_profiled(
+        &mut self,
+        request: RoadPreviewRequest,
+        profile: RoadProfile,
+    ) -> RoadPreview {
         let plan_start = Instant::now();
         let fingerprint = RoadPreviewFingerprint::of(
             self.view.surface_generation,
             &self.view.roadbed,
             &self.view.terrain,
         );
-        let plan = RoadEditPlan::compile_from(
+        let plan = RoadEditPlan::compile_profiled_from(
             &self.view.terrain,
             &self.replica,
             &self.view.roadbed,
             request,
+            profile,
         );
         let validation = {
             let request = plan.request();
