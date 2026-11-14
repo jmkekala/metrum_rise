@@ -4,7 +4,7 @@
 
 use super::super::super::*;
 use crate::nodes::sim::core::RoadCorridorClearance;
-use crate::simulation::network::road_edit::{PreparedRoadInput, plan_road_edit};
+use crate::simulation::network::road_edit::{PreparedRoadInput, RoadProfile, plan_road_edit};
 use crate::simulation::network::road_types::cost as road_cost;
 use crate::simulation::network::types::EdgeClass;
 
@@ -21,6 +21,12 @@ impl SimulationNode {
     #[func]
     pub fn set_road_tool_tunnel(&mut self, tunnel: bool) {
         self.road_tool_tunnel = tunnel;
+    }
+
+    // The profile of a stroke the tool draws without a segmented draft: the tunnel intent's
+    // `Tunnel`, else `FollowGround` (`ROAD-112` round H).
+    pub(crate) fn road_tool_profile(&self) -> RoadProfile {
+        RoadProfile::from_tunnel(self.road_tool_tunnel)
     }
 
     /// Sets the road tool's median (`ROAD-80`) for every later hover check, preview, commit and
@@ -141,7 +147,7 @@ impl SimulationNode {
                 fwd_lanes,
                 bkw_lanes,
                 snap_to_existing_roads,
-                tunnel: self.road_tool_tunnel,
+                profile: self.road_tool_profile(),
                 median: self.road_tool_median,
                 parking: self.road_tool_parking,
                 attributes: self.road_tool_attributes,
@@ -181,7 +187,7 @@ impl SimulationNode {
                 fwd_lanes,
                 bkw_lanes,
                 snap_to_existing_roads,
-                tunnel: self.road_tool_tunnel,
+                profile: self.road_tool_profile(),
                 median: self.road_tool_median,
                 parking: self.road_tool_parking,
                 attributes: self.road_tool_attributes,
@@ -227,7 +233,7 @@ impl SimulationNode {
                 &query.region_graph,
                 &query.roadbed,
                 snap_to_existing_roads,
-                self.road_tool_tunnel,
+                self.road_tool_profile(),
             );
             let validation = crate::nodes::sim::road_tool::validate_road_candidate_against_water(
                 &prepared_input,
@@ -272,7 +278,7 @@ impl SimulationNode {
                     fwd_lanes,
                     bkw_lanes,
                     snap_to_existing_roads,
-                    tunnel: self.road_tool_tunnel,
+                    profile: self.road_tool_profile(),
                     median: self.road_tool_median,
                     parking: self.road_tool_parking,
                     attributes: self.road_tool_attributes,
@@ -331,7 +337,7 @@ impl SimulationNode {
                 fwd_lanes,
                 bkw_lanes,
                 snap: snap_to_existing_roads,
-                tunnel: self.road_tool_tunnel,
+                profile: self.road_tool_profile(),
                 median: self.road_tool_median,
                 parking: self.road_tool_parking,
                 attributes: self.road_tool_attributes,
@@ -359,16 +365,24 @@ impl SimulationNode {
         bkw_lanes: i32,
         snap_to_existing_roads: bool,
     ) -> VarDictionary {
-        self.preview_stroke(points.to_vec(), fwd_lanes, bkw_lanes, snap_to_existing_roads)
+        self.preview_stroke(
+            points.to_vec(),
+            fwd_lanes,
+            bkw_lanes,
+            snap_to_existing_roads,
+            self.road_tool_profile(),
+        )
     }
 
-    // [`Self::preview_road`] for a stroke already in Rust (the road tool session's).
+    // [`Self::preview_road`] for a stroke already in Rust (the road tool session's), with its
+    // `profile`.
     pub(super) fn preview_stroke(
         &self,
         points: Vec<Vector3>,
         fwd_lanes: i32,
         bkw_lanes: i32,
         snap_to_existing_roads: bool,
+        profile: RoadProfile,
     ) -> VarDictionary {
         let mut graded_tiles = Vec::new();
         let mut graded_removed = Vec::new();
@@ -396,7 +410,7 @@ impl SimulationNode {
                 fwd_lanes,
                 bkw_lanes,
                 snap_to_existing_roads,
-                tunnel: self.road_tool_tunnel,
+                profile,
                 median: self.road_tool_median,
                 parking: self.road_tool_parking,
                 attributes: self.road_tool_attributes,
@@ -454,7 +468,8 @@ impl SimulationNode {
             "terrain_source_generation",
             generation(fingerprint.terrain_source_generation),
         );
-        dict.set("tunnel", preview.plan.request().tunnel);
+        dict.set("tunnel", preview.plan.profile() == RoadProfile::Tunnel);
+        dict.set("profile", i64::from(preview.plan.profile().code()));
         dict.set("plan_ms", preview.times.plan_ms);
         dict.set("roadbed_ms", preview.times.roadbed_ms);
         dict.set("payload_ms", preview.times.payload_ms);
@@ -625,7 +640,7 @@ impl SimulationNode {
     // The shown graded tiles' changes of a preview frame: `graded_tiles` (packed as
     // `poll_graded_tile_results` packs its tiles, the token the epoch), `graded_removed` (flat
     // `(x, z)` pairs of the tiles shown no more) and `graded_epoch`.
-    fn set_graded_preview_changes(
+    pub(super) fn set_graded_preview_changes(
         dict: &mut VarDictionary,
         tiles: &[crate::simulation::terrain::graded::StagedTile],
         removed: &[crate::simulation::terrain::graded::TileKey],
@@ -650,7 +665,7 @@ impl SimulationNode {
     // The preview's chunks below the chunk (`ROAD-68-H` round 3): each overlay in the committed
     // publication's mesh format, with `hidden` (flat `[layer, start, end]` vertex ranges of the
     // resident chunk's runs it replaces) and `hidden_positions` (their published positions).
-    fn preview_road_chunk_updates(
+    pub(super) fn preview_road_chunk_updates(
         chunks: &std::collections::BTreeMap<
             crate::simulation::network::roadbed::SurfaceChunkKey,
             crate::simulation::network::render::road::PreviewChunk,
@@ -800,7 +815,7 @@ impl SimulationNode {
 
     // A previewed stroke's cost weight: its lanes, and the median, parking, attributes and class
     // its prepared input carries.
-    fn stroke_cost_weight(lanes: (i32, i32), prepared: &PreparedRoadInput) -> f64 {
+    pub(super) fn stroke_cost_weight(lanes: (i32, i32), prepared: &PreparedRoadInput) -> f64 {
         road_cost::stroke_weight(
             (lanes_u8(lanes.0), lanes_u8(lanes.1)),
             prepared.median,
@@ -810,7 +825,7 @@ impl SimulationNode {
         )
     }
 
-    fn road_build_length_m(points: &[Vector3]) -> f64 {
+    pub(super) fn road_build_length_m(points: &[Vector3]) -> f64 {
         points
             .windows(2)
             .map(|pair| {

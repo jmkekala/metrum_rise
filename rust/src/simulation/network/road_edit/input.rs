@@ -62,14 +62,6 @@ pub(crate) enum RoadProfile {
     Tunnel,
 }
 
-impl From<bool> for RoadProfile {
-    // The bridge's tunnel toggle (`set_road_tool_tunnel`) until the road tool session sends a
-    // profile (`ROAD-112` round I / G1, after round C rewires the bridge's preview calls).
-    fn from(tunnel: bool) -> Self {
-        Self::from_tunnel(tunnel)
-    }
-}
-
 impl RoadProfile {
     /// The profile of a stroke drawn with the legacy tunnel toggle: `Tunnel` or `FollowGround`.
     pub(crate) fn from_tunnel(tunnel: bool) -> Self {
@@ -318,7 +310,7 @@ pub(crate) fn prepare_road_input_for_tool(
     graph: &RegionGraph,
     roadbed: &RoadbedSystem,
     snap_to_existing_roads: bool,
-    profile: impl Into<RoadProfile>,
+    profile: RoadProfile,
 ) -> PreparedRoadInput {
     let excluded = RebuiltPieces::default();
     prepare_road_input_excluding(
@@ -327,7 +319,7 @@ pub(crate) fn prepare_road_input_for_tool(
         graph,
         roadbed,
         snap_to_existing_roads,
-        profile.into(),
+        profile,
         &excluded,
     )
     .0

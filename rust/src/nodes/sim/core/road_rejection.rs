@@ -42,10 +42,9 @@ pub(crate) struct RoadAttempt<'a> {
     pub(crate) fwd_lanes: i32,
     pub(crate) bkw_lanes: i32,
     pub(crate) snap: bool,
-    /// The road tool's tunnel intent (`ROAD-61`), which a replay sets before it draws. A stroke
-    /// with another profile (`ROAD-112` round H) reports through
-    /// [`RoadRejection::report_profiled`].
-    pub(crate) tunnel: bool,
+    /// The stroke's profile (`ROAD-112` round H; the tunnel intent of `ROAD-61`), which the
+    /// replay record carries.
+    pub(crate) profile: RoadProfile,
     /// The road tool's median (`ROAD-80`), which a replay sets before it draws.
     pub(crate) median: Option<RoadMedian>,
     /// The road tool's kerbside parking (`PARK-05`).
@@ -101,20 +100,8 @@ impl RoadRejection {
 
     /// Logs both lines on `events` and returns the attempt number that ties them together.
     pub(crate) fn report(&self, by: RejectedBy, attempt: RoadAttempt<'_>, generation: u64) -> u64 {
-        self.report_profiled(by, attempt, RoadProfile::from_tunnel(attempt.tunnel), generation)
-    }
-
-    /// [`Self::report`] for a stroke with its `profile` (`ROAD-112` round H), which the replay
-    /// record carries; `attempt.tunnel` must be `profile == Tunnel`.
-    pub(crate) fn report_profiled(
-        &self,
-        by: RejectedBy,
-        attempt: RoadAttempt<'_>,
-        profile: RoadProfile,
-        generation: u64,
-    ) -> u64 {
         let number = NEXT_ATTEMPT.fetch_add(1, Ordering::Relaxed);
-        let (why, replay) = self.lines(number, by, attempt, profile, generation);
+        let (why, replay) = self.lines(number, by, attempt, generation);
         debug_log!("events", "{why}");
         debug_log!("events", "{replay}");
         number
@@ -125,7 +112,6 @@ impl RoadRejection {
         number: u64,
         by: RejectedBy,
         attempt: RoadAttempt<'_>,
-        profile: RoadProfile,
         generation: u64,
     ) -> (String, String) {
         let mut why = format!(
@@ -150,7 +136,7 @@ impl RoadRejection {
             fwd_lanes: attempt.fwd_lanes,
             bkw_lanes: attempt.bkw_lanes,
             snap: attempt.snap,
-            profile: profile.code(),
+            profile: attempt.profile.code(),
             median_style: RoadMedian::style_code(attempt.median),
             median_width: attempt.median.map_or(0.0, |median| median.width_m),
             parking: attempt.parking.code(),
@@ -469,12 +455,12 @@ mod tests {
             fwd_lanes: 2,
             bkw_lanes: 1,
             snap: true,
-            tunnel: true,
+            profile: RoadProfile::Tunnel,
             median: None,
             parking: crate::simulation::network::graph::RoadParking::NONE,
             attributes: RoadAttributes::from_tool(100, 1, false, false).unwrap(),
         };
-        let (why, replay) = rejection.lines(7, RejectedBy::Commit, attempt, RoadProfile::Tunnel, 42);
+        let (why, replay) = rejection.lines(7, RejectedBy::Commit, attempt, 42);
         assert_eq!(
             why,
             "road rejected by commit: bridge_clearance: clearance 1.50 m at the middle of the \
@@ -552,12 +538,12 @@ mod tests {
             fwd_lanes: 1,
             bkw_lanes: 1,
             snap: false,
-            tunnel: false,
+            profile: RoadProfile::FollowGround,
             median: None,
             parking: crate::simulation::network::graph::RoadParking::NONE,
             attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
         };
-        let (why, _) = plain.lines(1, RejectedBy::Tool, attempt, RoadProfile::FollowGround, 0);
+        let (why, _) = plain.lines(1, RejectedBy::Tool, attempt, 0);
         assert_eq!(
             why,
             "road rejected by tool: zoning_cell_overlap: the corridor overlaps painted zoning \

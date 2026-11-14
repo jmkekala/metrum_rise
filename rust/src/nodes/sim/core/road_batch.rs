@@ -23,6 +23,14 @@
 
 use std::time::Instant;
 
+mod preview;
+
+#[cfg(test)]
+pub(crate) use preview::{BATCH_MAX_LENGTH_M, BATCH_MAX_STROKES};
+pub(crate) use preview::{
+    BATCH_TOO_LARGE_REASON, BatchPreview, BatchPreviewProducts, BatchVerdict, polyline_length_m,
+};
+
 use super::frame::record_crash_phase_for_core;
 use super::road_commit::{RoadCommitOutcome, RoadCommitRequest, StrokePlan, SubmittedStroke};
 use super::road_edit_plan::{CoreLand, RoadEditPlan, first_plotted_overlap};
@@ -33,7 +41,7 @@ use crate::debug_log;
 use crate::nodes::sim::benchmark::road_edit::RoadEditMetrics;
 use crate::nodes::sim::road_tool::validate_road_candidate_against_water;
 use crate::simulation::network::graph::RegionGraphUndoDelta;
-use crate::simulation::network::road_edit::{RoadProfile, validate_road_candidate_fast};
+use crate::simulation::network::road_edit::validate_road_candidate_fast;
 use crate::simulation::network::roadbed::{RoadbedDelta, RoadbedSystem};
 
 /// An ordered list of strokes committed as one transaction and undone as one step.
@@ -41,6 +49,10 @@ pub(crate) struct RoadBatchRequest {
     /// The strokes in commit order (the batch's determinism rule). Their `preview` is not
     /// read: the batch's dry run is each stroke's preview.
     pub(crate) strokes: Vec<RoadCommitRequest>,
+    /// The batch preview's plans and pieces for exactly these strokes (`ROAD-112` round G1):
+    /// while their fingerprint chain is current the dry run installs them instead of planning
+    /// and compiling, and keeps only the live checks.
+    pub(crate) preview: Option<BatchPreviewProducts>,
 }
 
 /// Result of [`SimCore::commit_road_batch`].
@@ -65,6 +77,9 @@ pub(crate) struct RoadBatchTimes {
     pub(crate) tail_ms: f64,
     /// How many strokes installed their dry run's plan and pieces (the batch's chain held).
     pub(crate) reused: usize,
+    /// How many strokes the dry run took from the batch preview instead of planning and
+    /// compiling them (`ROAD-112` round G1).
+    pub(crate) preview_reused: usize,
     /// The dry run's stages summed over its strokes (`ROAD-112` round F2).
     pub(crate) dry_parts: DryRunParts,
     /// Each committed stroke's core stages ([`core_parts`]); its `buildings_ms` holds the
@@ -186,7 +201,10 @@ impl SimCore {
         edit_metrics: RoadEditMetrics,
         reuse: bool,
     ) -> RoadBatchOutcome {
-        let mut strokes = request.strokes;
+        let RoadBatchRequest {
+            mut strokes,
+            preview,
+        } = request;
         if strokes.len() == 1 {
             let mut stroke = strokes.pop().expect("one stroke");
             stroke.preview = None;
@@ -202,13 +220,14 @@ impl SimCore {
         self.adopt_pending_cell_lots();
         record_crash_phase_for_core(self, "add road batch shared pool wait");
         crate::thread_pools::install(|| {
-            self.commit_road_batch_in_pool(strokes, road_total, edit_metrics, reuse)
+            self.commit_road_batch_in_pool(strokes, preview, road_total, edit_metrics, reuse)
         })
     }
 
     fn commit_road_batch_in_pool(
         &mut self,
         strokes: Vec<RoadCommitRequest>,
+        preview: Option<BatchPreviewProducts>,
         road_total: Instant,
         edit_metrics: RoadEditMetrics,
         reuse: bool,
@@ -217,7 +236,8 @@ impl SimCore {
         let dry_start = Instant::now();
         record_crash_phase_for_core(self, "add road batch dry run");
         let mut dry_parts = DryRunParts::default();
-        let dry = self.dry_run_batch(&strokes, &mut dry_parts);
+        let mut preview_reused = 0;
+        let dry = self.dry_run_batch(&strokes, preview, &mut dry_parts, &mut preview_reused);
         let dry_run_ms = dry_start.elapsed().as_secs_f64() * 1000.0;
         let dry = match dry {
             Ok(dry) => dry,
@@ -228,6 +248,7 @@ impl SimCore {
                     self.finish_refused_batch(index, road_total, edit_metrics, &submitted);
                 batch.times.dry_run_ms = dry_run_ms;
                 batch.times.dry_parts = dry_parts;
+                batch.times.preview_reused = preview_reused;
                 return batch;
             }
         };
@@ -296,6 +317,7 @@ impl SimCore {
             core_ms,
             tail_ms,
             reused,
+            preview_reused,
             dry_parts,
             core_parts: parts,
             tail_parts: [
@@ -358,11 +380,21 @@ impl SimCore {
     // roadbed, in order; then the graph is put back. Each stroke's plan and pieces, or the first
     // refused stroke's index and refusal. Nothing outside the graph changes, and the graph is
     // restored either way. `O(sum of the strokes' plan, local records and closure pieces)`.
+    //
+    // With the batch preview's `preview` of exactly these strokes whose first fingerprint is the
+    // live core's, each stroke's plan and pieces come from it while the chain holds (a stroke's
+    // fingerprint equals the dry run's copy before it); the checks run as without it.
     fn dry_run_batch(
         &mut self,
         strokes: &[RoadCommitRequest],
+        preview: Option<BatchPreviewProducts>,
         parts: &mut DryRunParts,
+        preview_reused: &mut usize,
     ) -> Result<Vec<DryRunStroke>, (usize, RoadRejection)> {
+        let live = RoadPreviewFingerprint::live(self);
+        let mut previewed = preview
+            .filter(|preview| preview.is_for(strokes, live))
+            .map(|preview| preview.strokes.into_iter());
         // The explicit sites are queried through the site index, as the commit's take reads it.
         self.allocator
             .prepare_building_site_query_index(self.config.zone_cell_m);
@@ -371,7 +403,21 @@ impl SimCore {
         let mut dry = Vec::with_capacity(strokes.len());
         let mut verdict = Ok(());
         for (index, stroke) in strokes.iter().enumerate() {
-            match self.dry_run_stroke(stroke, &mut roadbed, &mut checkpoints, parts) {
+            let fingerprint = RoadPreviewFingerprint::of(
+                self.road_tool_surface_generation,
+                &roadbed,
+                &self.heightmap,
+            );
+            // The chain: the preview planned this stroke on exactly the dry run's state.
+            let planned = previewed
+                .as_mut()
+                .and_then(Iterator::next)
+                .filter(|(_, _, planned)| *planned == fingerprint);
+            if planned.is_none() {
+                previewed = None;
+            }
+            *preview_reused += usize::from(planned.is_some());
+            match self.dry_run_stroke(stroke, planned, &mut roadbed, &mut checkpoints, parts) {
                 Ok(stroke) => dry.push(stroke),
                 Err(rejection) => {
                     verdict = Err((index, rejection));
@@ -394,6 +440,7 @@ impl SimCore {
     fn dry_run_stroke(
         &mut self,
         stroke: &RoadCommitRequest,
+        planned: Option<(RoadEditPlan, RoadbedDelta, RoadPreviewFingerprint)>,
         roadbed: &mut RoadbedSystem,
         checkpoints: &mut Vec<RegionGraphUndoDelta>,
         parts: &mut DryRunParts,
@@ -401,23 +448,28 @@ impl SimCore {
         let mut clock = Instant::now();
         let fingerprint =
             RoadPreviewFingerprint::of(self.road_tool_surface_generation, roadbed, &self.heightmap);
-        let plan = RoadEditPlan::compile_profiled_from(
-            &self.heightmap,
-            &self.region_graph,
-            roadbed,
-            RoadPreviewRequest {
-                surface_generation: self.road_tool_surface_generation,
-                points: stroke.points.clone(),
-                fwd_lanes: stroke.fwd_lanes,
-                bkw_lanes: stroke.bkw_lanes,
-                snap_to_existing_roads: stroke.snap_to_existing_roads,
-                tunnel: stroke.profile == RoadProfile::Tunnel,
-                median: stroke.median,
-                parking: stroke.parking,
-                attributes: stroke.attributes,
-            },
-            stroke.profile,
-        );
+        let (plan, planned_delta) = match planned {
+            Some((plan, delta, _)) => (plan, Some(delta)),
+            None => (
+                RoadEditPlan::compile_from(
+                    &self.heightmap,
+                    &self.region_graph,
+                    roadbed,
+                    RoadPreviewRequest {
+                        surface_generation: self.road_tool_surface_generation,
+                        points: stroke.points.clone(),
+                        fwd_lanes: stroke.fwd_lanes,
+                        bkw_lanes: stroke.bkw_lanes,
+                        snap_to_existing_roads: stroke.snap_to_existing_roads,
+                        profile: stroke.profile,
+                        median: stroke.median,
+                        parking: stroke.parking,
+                        attributes: stroke.attributes,
+                    },
+                ),
+                None,
+            ),
+        };
         DryRunParts::lap(&mut parts.plan_ms, &mut clock);
         // The live roadbed is the dry run's base and stays untouched, so the plan's readiness
         // reads the graph the earlier strokes left.
@@ -456,7 +508,13 @@ impl SimCore {
         let applied = applied.expect("a ready plan's sources are live");
         applied.mark_pieces(roadbed);
         DryRunParts::lap(&mut parts.apply_ms, &mut clock);
-        let delta = roadbed.compile_delta(&self.region_graph);
+        let delta = match planned_delta {
+            Some(delta) => {
+                debug_assert!(roadbed.can_install(&delta), "the preview's chain holds");
+                delta
+            }
+            None => roadbed.compile_delta(&self.region_graph),
+        };
         DryRunParts::lap(&mut parts.compile_ms, &mut clock);
         let (_, restore) = roadbed.install(&delta);
         DryRunParts::lap(&mut parts.install_ms, &mut clock);

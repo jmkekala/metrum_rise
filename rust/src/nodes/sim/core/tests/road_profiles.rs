@@ -41,7 +41,7 @@ fn request(core: &SimCore, points: &[Vector3], profile: RoadProfile) -> RoadPrev
         fwd_lanes: SECTION.fwd_lanes,
         bkw_lanes: SECTION.bkw_lanes,
         snap_to_existing_roads: SECTION.snap_to_existing_roads,
-        tunnel: profile == RoadProfile::Tunnel,
+        profile,
         median: None,
         parking: SECTION.parking,
         attributes: SECTION.attributes,
@@ -130,10 +130,9 @@ fn raised_plans(core: &SimCore, points: &[Vector3]) -> Vec<RoadEditPlan> {
     strokes
         .iter()
         .map(|stroke| {
-            RoadEditPlan::compile_profiled(
+            RoadEditPlan::compile(
                 core,
                 request(core, &stroke.points, stroke.profile),
-                stroke.profile,
             )
         })
         .collect()
@@ -174,10 +173,9 @@ fn todays_strokes_keep_the_branch_points_products() {
     let mut follow = Digest::default();
     let mut core = cone_hill_core(100.0, 0.25);
     for stroke in follow_ground_strokes() {
-        follow.plan(&RoadEditPlan::compile_profiled(
+        follow.plan(&RoadEditPlan::compile(
             &core,
             request(&core, &stroke, RoadProfile::FollowGround),
-            RoadProfile::FollowGround,
         ));
         let committed = commit(&mut core, &stroke, RoadProfile::FollowGround);
         follow.word(u32::from(committed));
@@ -210,10 +208,9 @@ fn todays_strokes_keep_the_branch_points_products() {
 
     let mut tunnels = Digest::default();
     for mut core in [hill_core(80.0), cone_hill_core(100.0, 0.25)] {
-        tunnels.plan(&RoadEditPlan::compile_profiled(
+        tunnels.plan(&RoadEditPlan::compile(
             &core,
             request(&core, &THROUGH_HILL, RoadProfile::Tunnel),
-            RoadProfile::Tunnel,
         ));
         assert!(commit(&mut core, &THROUGH_HILL, RoadProfile::Tunnel));
         tunnels.graph(&core);

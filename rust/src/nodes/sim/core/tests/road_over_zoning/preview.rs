@@ -36,7 +36,7 @@ fn request(context: &RoadPreviewContext, points: &[Vector3]) -> RoadPreviewReque
         fwd_lanes: 1,
         bkw_lanes: 1,
         snap_to_existing_roads: true,
-        tunnel: false,
+        profile: crate::simulation::network::road_edit::RoadProfile::FollowGround,
         median: None,
         parking: RoadParking::NONE,
         attributes: RoadAttributes::DEFAULT,

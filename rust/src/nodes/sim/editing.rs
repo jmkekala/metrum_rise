@@ -1578,7 +1578,7 @@ impl SimCore {
                     bkw_lanes,
                     snap_to_existing_roads,
                     // Plan-less callers draw without the tool's tunnel intent or median.
-                    tunnel: false,
+                    profile: crate::simulation::network::road_edit::RoadProfile::FollowGround,
                     median: None,
                     parking: crate::simulation::network::graph::RoadParking::NONE,
                     attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
@@ -1636,7 +1636,7 @@ impl SimCore {
                 &self.region_graph,
                 &self.transit_network.roadbed,
                 snap_to_existing_roads,
-                false,
+                crate::simulation::network::road_edit::RoadProfile::FollowGround,
             )
             .0;
             &fresh_input

@@ -5,6 +5,7 @@
 use super::*;
 use crate::nodes::sim::core::RoadRejection;
 use crate::simulation::network::graph::{RoadMedian, RoadParking};
+use crate::nodes::sim::road_tool::batch::draft_requests;
 use crate::nodes::sim::road_tool::height::{DraftSection, draft_batch, segment_draft};
 use crate::simulation::network::road_edit::RoadProfile;
 use crate::simulation::network::road_types::RoadAttributes;
@@ -75,7 +76,7 @@ impl SimulationNode {
             fwd_lanes,
             bkw_lanes,
             snap_to_existing_roads,
-            self.road_tool_tunnel,
+            RoadProfile::from_tunnel(self.road_tool_tunnel),
             (
                 self.road_tool_median,
                 self.road_tool_parking,
@@ -93,7 +94,7 @@ impl SimulationNode {
                 fwd_lanes,
                 bkw_lanes,
                 snap_to_existing_roads,
-                tunnel: self.road_tool_tunnel,
+                profile: RoadProfile::from_tunnel(self.road_tool_tunnel),
                 median: self.road_tool_median,
                 parking: self.road_tool_parking,
                 attributes: self.road_tool_attributes,
@@ -155,7 +156,10 @@ impl SimulationNode {
                 preview: None,
             })
             .collect();
-        self.send_road_batch(crate::nodes::sim::core::RoadBatchRequest { strokes })
+        self.send_road_batch(crate::nodes::sim::core::RoadBatchRequest {
+            strokes,
+            preview: None,
+        })
     }
 
     /// Queues one stroke with the stroke profile `profile` (`ROAD-112` round H,
@@ -188,8 +192,10 @@ impl SimulationNode {
     /// tool's published view (`ROAD-112` round H, `docs/roads.md` "Heights and automatic bridges
     /// and tunnels") and queues them as one batch: one undo step. Returns `request_id` (0 when
     /// refused before sending), `reason` (empty, or the segmentation's refusal such as
-    /// `cut_too_deep`) and `strokes` (one dictionary per stroke: `points`, `profile` as
-    /// `RoadProfile::code`). Round I's height handles call the same segmentation per pose.
+    /// `cut_too_deep`), `strokes` (one dictionary per stroke: `points`, `profile` as
+    /// `RoadProfile::code`) and `previewed` (whether a finished batch preview of exactly these
+    /// strokes, `preview_road_draft`, planned them for the commit). Round I's height handles
+    /// call the same segmentation per pose.
     #[func]
     pub fn add_road_draft(
         &mut self,
@@ -201,16 +207,17 @@ impl SimulationNode {
         snap_to_existing_roads: bool,
     ) -> VarDictionary {
         let section = self.road_draft_section(fwd_lanes, bkw_lanes, snap_to_existing_roads);
-        let segmented = {
+        let (segmented, surface_generation) = {
             let view = self.road_tool.view.read().unwrap();
-            segment_draft(
+            let segmented = segment_draft(
                 &path.to_vec(),
                 [start_m, end_m],
                 section,
                 &view.terrain,
                 &view.region_graph,
                 &view.roadbed,
-            )
+            );
+            (segmented, view.surface_generation)
         };
         let mut result = VarDictionary::new();
         match segmented {
@@ -224,7 +231,19 @@ impl SimulationNode {
                 }
                 result.set("strokes", listed);
                 result.set("reason", "");
-                result.set("request_id", self.send_road_batch(draft_batch(strokes, section)));
+                // A finished tier 2 of exactly these strokes hands its plans and pieces to the
+                // commit (`ROAD-112` round G1); otherwise the commit's dry run plans them.
+                let requests = draft_requests(&strokes, section, surface_generation);
+                let preview = self
+                    .road_tool
+                    .context
+                    .lock()
+                    .expect("road tool context lock poisoned")
+                    .take_batch_products(&requests);
+                result.set("previewed", preview.is_some());
+                let mut batch = draft_batch(strokes, section);
+                batch.preview = preview;
+                result.set("request_id", self.send_road_batch(batch));
             }
             Err(reason) => {
                 result.set("strokes", VarArray::new());

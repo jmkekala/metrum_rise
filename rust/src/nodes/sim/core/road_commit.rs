@@ -200,7 +200,7 @@ impl SimCore {
             Some(PlanSource::Preview(preview)) => &preview.plan,
             Some(PlanSource::Owned(plan)) => &**plan,
             None => {
-                fresh_plan = RoadEditPlan::compile_profiled(
+                fresh_plan = RoadEditPlan::compile(
                     self,
                     RoadPreviewRequest {
                         surface_generation: self.road_tool_surface_generation,
@@ -208,12 +208,11 @@ impl SimCore {
                         fwd_lanes,
                         bkw_lanes,
                         snap_to_existing_roads,
-                        tunnel: profile == RoadProfile::Tunnel,
+                        profile,
                         median,
                         parking,
                         attributes,
                     },
-                    profile,
                 );
                 &fresh_plan
             }
@@ -481,10 +480,9 @@ impl SimCore {
             .last_road_rejection
             .take()
             .unwrap_or_else(|| RoadRejection::new("unknown", self.last_road_timing.clone()));
-        rejection.report_profiled(
+        rejection.report(
             RejectedBy::Commit,
             submitted.attempt(),
-            submitted.profile,
             self.road_tool_surface_generation,
         );
         rejection.reason
@@ -565,7 +563,7 @@ impl SubmittedStroke {
             fwd_lanes: self.fwd_lanes,
             bkw_lanes: self.bkw_lanes,
             snap: self.snap,
-            tunnel: self.profile == RoadProfile::Tunnel,
+            profile: self.profile,
             median: self.median,
             parking: self.parking,
             attributes: self.attributes,

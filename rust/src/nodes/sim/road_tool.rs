@@ -4,6 +4,7 @@
 //! (`ROAD-112`): picking, snapping, the drawing modes, the HUD numbers and the session that owns
 //! the tool's state and builds its frame.
 
+pub mod batch;
 pub mod bench;
 pub mod frame;
 pub mod height;
@@ -127,7 +128,7 @@ mod tests {
             &graph,
             &RoadbedSystem::new(30.0),
             false,
-            false,
+            crate::simulation::network::road_edit::RoadProfile::FollowGround,
         );
         let validation = validate_road_candidate_fast(&prepared, (1, 1), &terrain, &graph);
         (prepared, validation)

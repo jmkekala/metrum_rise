@@ -2,6 +2,7 @@
 
 //! Road-tool session, preview, cursor snapping, and surface-debug Godot API methods.
 
+mod batch;
 mod cursor;
 mod ghost;
 mod preview;

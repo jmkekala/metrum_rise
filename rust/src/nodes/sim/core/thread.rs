@@ -59,8 +59,8 @@ pub(crate) enum SimCommand {
         bkw_lanes: i32,
         /// Whether authored endpoints may snap to nearby existing road nodes.
         snap_to_existing_roads: bool,
-        /// The road tool's tunnel intent at submission (`ROAD-61`).
-        tunnel: bool,
+        /// The stroke's profile at submission (`ROAD-112` round H; the tunnel intent of `ROAD-61`).
+        profile: crate::simulation::network::road_edit::RoadProfile,
         /// The road tool's median at submission (`ROAD-80`).
         median: Option<crate::simulation::network::graph::RoadMedian>,
         /// The road tool's kerbside parking at submission (`PARK-05`).
@@ -276,7 +276,7 @@ pub(crate) fn run_sim_thread(
                     fwd_lanes,
                     bkw_lanes,
                     snap_to_existing_roads,
-                    tunnel,
+                    profile,
                     median,
                     parking,
                     attributes,
@@ -317,10 +317,7 @@ pub(crate) fn run_sim_thread(
                                 fwd_lanes,
                                 bkw_lanes,
                                 snap_to_existing_roads,
-                                profile:
-                                    crate::simulation::network::road_edit::RoadProfile::from_tunnel(
-                                        tunnel,
-                                    ),
+                                profile,
                                 median,
                                 parking,
                                 attributes,

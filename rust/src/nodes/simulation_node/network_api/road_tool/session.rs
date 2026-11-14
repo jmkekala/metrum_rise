@@ -22,6 +22,7 @@ use crate::nodes::sim::road_tool::session::{
     Pointer, PointerButton, RoadToolAction, RoadToolEvent, RoadToolOption, RoadToolSession,
 };
 use crate::nodes::sim::road_tool::snap::SnapKind;
+use crate::simulation::network::road_edit::RoadProfile;
 
 /// The road tool session of one `SimulationNode` and the preview the bridge last ran for it.
 #[derive(Default)]
@@ -34,13 +35,13 @@ pub(crate) struct RoadToolBridge {
 }
 
 // The inputs a preview depends on, as today's `_preview_is_for` compared them: the stroke, its
-// cross-section, the snap and tunnel flags and the context generation the preview was made on.
+// cross-section, the snap flag, the profile and the context generation the preview was made on.
 #[derive(Clone, Debug, PartialEq)]
 struct PreviewKey {
     points: Vec<Vector3>,
     spec: RoadTypeSpec,
     snap: bool,
-    tunnel: bool,
+    profile: RoadProfile,
     generation: i64,
 }
 
@@ -341,7 +342,7 @@ impl SimulationNode {
             key.points == stroke.points
                 && key.spec == bridge.session.spec()
                 && key.snap == stroke.snap_to_existing_roads
-                && key.tunnel == self.road_tool_tunnel
+                && key.profile == self.road_tool_profile()
                 && key.generation == self.road_tool_view_generation()
         })
     }
@@ -352,9 +353,10 @@ impl SimulationNode {
     }
 
     // Previews the session's stroke `points` with the session's lanes and the bridge's median,
-    // parking, attributes and tunnel, and keeps the result as the standing preview.
+    // parking, attributes and profile, and keeps the result as the standing preview.
     fn road_tool_run_preview(&mut self, points: Vec<Vector3>) -> VarDictionary {
         let spec = self.road_tool_session.session.spec();
+        let profile = self.road_tool_profile();
         let snap = self
             .road_tool_session
             .session
@@ -366,6 +368,7 @@ impl SimulationNode {
             i32::from(spec.fwd_lanes),
             i32::from(spec.bkw_lanes),
             snap,
+            profile,
         );
         let generation = preview
             .get("surface_generation")
@@ -375,7 +378,7 @@ impl SimulationNode {
             points,
             spec,
             snap,
-            tunnel: self.road_tool_tunnel,
+            profile,
             generation,
         });
         self.road_tool_session.preview = Some(preview.clone());

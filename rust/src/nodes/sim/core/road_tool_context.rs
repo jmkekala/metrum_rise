@@ -310,7 +310,7 @@ impl RoadToolShared {
         fwd_lanes: i32,
         bkw_lanes: i32,
         snap_to_existing_roads: bool,
-        tunnel: bool,
+        profile: crate::simulation::network::road_edit::RoadProfile,
         stroke: (
             Option<crate::simulation::network::graph::RoadMedian>,
             crate::simulation::network::graph::RoadParking,
@@ -330,7 +330,7 @@ impl RoadToolShared {
                     fwd_lanes,
                     bkw_lanes,
                     snap_to_existing_roads,
-                    tunnel,
+                    profile,
                     stroke,
                 )
             })
@@ -402,6 +402,9 @@ pub(crate) struct RoadPreviewContext {
     pub(crate) graded: crate::nodes::sim::core::GradedPreview,
     /// The land the preview takes (`ZONE-09`): [`RoadToolShared::land`] at the pose.
     pub(crate) land: Arc<RoadToolLand>,
+    // The batch preview's tier 2 (`ROAD-112` round G1), dropped with the view it was made on.
+    // The replica equals the view's graph between its frames.
+    pub(super) batch: Option<super::road_batch::BatchPreview>,
 }
 
 impl RoadPreviewContext {
@@ -416,6 +419,7 @@ impl RoadPreviewContext {
             roadbed_scratch: Default::default(),
             graded: Default::default(),
             land: Default::default(),
+            batch: None,
         }
     }
 
@@ -456,6 +460,7 @@ impl RoadPreviewContext {
         }
         self.sequence = publication.sequence;
         self.last_preview = None;
+        self.batch = None;
         self.graded.supersede();
         #[cfg(debug_assertions)]
         assert_replica_matches(&self.replica, &self.view.region_graph);

@@ -173,13 +173,12 @@ pub(crate) fn plan_road_edit(
     graph: &RegionGraph,
     roadbed: &RoadbedSystem,
     snap_to_existing_roads: bool,
-    profile: impl Into<RoadProfile>,
+    profile: RoadProfile,
 ) -> (
     PreparedRoadInput,
     RoadPreviewValidation,
     Option<RoadTopologyPlan>,
 ) {
-    let profile = profile.into();
     let mut excluded = RebuiltPieces::default();
     loop {
         let (mut prepared, read) = prepare_road_input_excluding(

@@ -13,7 +13,7 @@ use crate::simulation::network::road_types::RoadAttributes;
 
 // A draft from the south into the street's middle, as consecutive segments, and a cross street
 // joining it at the segments' joint: the second segment and the cross street take houses.
-const DRAFT: [[Vector3; 2]; 3] = [
+pub(super) const DRAFT: [[Vector3; 2]; 3] = [
     [Vector3::new(0.0, 0.0, -70.0), Vector3::new(0.0, 0.0, -35.0)],
     [Vector3::new(0.0, 0.0, -35.0), Vector3::new(0.0, 0.0, 0.0)],
     [
@@ -22,7 +22,7 @@ const DRAFT: [[Vector3; 2]; 3] = [
     ],
 ];
 
-fn stroke(points: &[Vector3]) -> RoadCommitRequest {
+pub(super) fn stroke(points: &[Vector3]) -> RoadCommitRequest {
     RoadCommitRequest {
         points: points.to_vec(),
         fwd_lanes: 1,
@@ -42,6 +42,7 @@ fn commit_batch(core: &mut SimCore, strokes: &[[Vector3; 2]]) -> Option<(usize, 
     let batch = core.commit_road_batch(
         RoadBatchRequest {
             strokes: strokes.iter().map(|points| stroke(points)).collect(),
+            preview: None,
         },
         std::time::Instant::now(),
         Default::default(),
@@ -69,7 +70,7 @@ fn roadbed_digest(core: &SimCore) -> u64 {
 // (ends, widths, geometry and profiles), the roadbed's pieces, the cells (paint, claims and lots),
 // parcels with occupants, buildings, agents and households (`land_state`, without the undo
 // history's length), and the treasury.
-fn products(core: &SimCore) -> Vec<u64> {
+pub(super) fn products(core: &SimCore) -> Vec<u64> {
     let edges: Vec<_> = core
         .region_graph
         .edges()
@@ -117,6 +118,7 @@ fn a_batch_equals_its_strokes_committed_one_by_one() {
     let outcome = batch.commit_road_batch(
         RoadBatchRequest {
             strokes: DRAFT.iter().map(|points| stroke(points)).collect(),
+            preview: None,
         },
         std::time::Instant::now(),
         Default::default(),
@@ -151,6 +153,7 @@ fn a_batch_equals_its_strokes_committed_one_by_one() {
 fn a_batch_reusing_its_dry_run_equals_one_planned_afresh() {
     let request = || RoadBatchRequest {
         strokes: DRAFT.iter().map(|points| stroke(points)).collect(),
+        preview: None,
     };
     let (mut fresh, _) = street_with_houses();
     fresh.precompute_road_mesh_data();

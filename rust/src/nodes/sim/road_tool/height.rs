@@ -133,6 +133,7 @@ pub(crate) fn draft_batch(strokes: Vec<DraftStroke>, section: DraftSection) -> R
                 preview: None,
             })
             .collect(),
+        preview: None,
     }
 }
 

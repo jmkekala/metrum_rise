@@ -36,18 +36,17 @@ use crate::simulation::terrain::graded::{GradedSurface, QueryScratch};
 use crate::simulation::water::WaterSystem;
 
 /// One road-tool stroke submitted for preview or commit planning.
-#[derive(Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct RoadPreviewRequest {
     pub(crate) surface_generation: u64,
     pub(crate) points: Vec<Vector3>,
     pub(crate) fwd_lanes: i32,
     pub(crate) bkw_lanes: i32,
     pub(crate) snap_to_existing_roads: bool,
-    /// The road tool's tunnel intent (`ROAD-61`): part of the preview's and the plan's identity.
-    /// A stroke's full profile (`ROAD-112` round H, [`RoadProfile`]) travels beside the request
-    /// ([`RoadPreviewContext::preview_road_profiled`], [`RoadEditPlan::compile_profiled_from`])
-    /// until the bridge's requests carry one; this flag is then `profile == Tunnel`.
-    pub(crate) tunnel: bool,
+    /// The stroke's profile (`ROAD-112` round H, [`RoadProfile`]): following the ground, a held
+    /// ground road or an explicit bridge of a segmented draft, or the tunnel intent (`ROAD-61`).
+    /// Part of the preview's and the plan's identity.
+    pub(crate) profile: RoadProfile,
     /// The road tool's median (`ROAD-80`): part of the preview's and the plan's identity; the
     /// stroke's edge carries it and its corridor checks widen by it.
     pub(crate) median: Option<RoadMedian>,
@@ -228,7 +227,7 @@ impl RoadToolQuerySnapshot {
             &self.region_graph,
             &self.roadbed,
             request.snap_to_existing_roads,
-            request.tunnel,
+            request.profile,
         );
         prepared.median = request.median;
         prepared.parking = request.parking;
@@ -361,8 +360,7 @@ pub(crate) struct RoadPreview {
 }
 
 impl RoadPreview {
-    /// True when this preview was made for exactly this stroke, its `profile` included (a
-    /// bridge-side caller passes its tunnel toggle).
+    /// True when this preview was made for exactly this stroke, its `profile` included.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn is_for(
         &self,
@@ -370,7 +368,7 @@ impl RoadPreview {
         fwd_lanes: i32,
         bkw_lanes: i32,
         snap_to_existing_roads: bool,
-        profile: impl Into<RoadProfile>,
+        profile: RoadProfile,
         (median, parking, attributes): (Option<RoadMedian>, RoadParking, RoadAttributes),
     ) -> bool {
         let request = self.plan.request();
@@ -378,7 +376,7 @@ impl RoadPreview {
             && request.fwd_lanes == fwd_lanes
             && request.bkw_lanes == bkw_lanes
             && request.snap_to_existing_roads == snap_to_existing_roads
-            && self.plan.profile() == profile.into()
+            && self.plan.profile() == profile
             && request.median == median
             && request.parking == parking
             && request.attributes == attributes
@@ -393,30 +391,17 @@ impl RoadPreviewContext {
     /// these pieces bitwise. No core lock; cost
     /// `O(stroke + local excerpt + closure pieces)`, independent of the city.
     pub(crate) fn preview_road(&mut self, request: RoadPreviewRequest) -> RoadPreview {
-        let profile = RoadProfile::from_tunnel(request.tunnel);
-        self.preview_road_profiled(request, profile)
-    }
-
-    /// [`Self::preview_road`] with the stroke's `profile` (`ROAD-112` round H): a held ground
-    /// road or an explicit bridge of a segmented draft. The request's tunnel intent must be
-    /// `profile == Tunnel`.
-    pub(crate) fn preview_road_profiled(
-        &mut self,
-        request: RoadPreviewRequest,
-        profile: RoadProfile,
-    ) -> RoadPreview {
         let plan_start = Instant::now();
         let fingerprint = RoadPreviewFingerprint::of(
             self.view.surface_generation,
             &self.view.roadbed,
             &self.view.terrain,
         );
-        let plan = RoadEditPlan::compile_profiled_from(
+        let plan = RoadEditPlan::compile_from(
             &self.view.terrain,
             &self.replica,
             &self.view.roadbed,
             request,
-            profile,
         );
         let validation = {
             let request = plan.request();

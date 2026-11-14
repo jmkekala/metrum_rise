@@ -639,7 +639,7 @@ fn measure_populated_road_plan_scaling(
             fwd_lanes: 1,
             bkw_lanes: 1,
             snap_to_existing_roads: true,
-            tunnel,
+            profile: crate::simulation::network::road_edit::RoadProfile::from_tunnel(tunnel),
             median: (measured == Measured::Divided).then_some(GRASS),
             attributes: if measured == Measured::OneSided {
                 one_sided()
@@ -1096,7 +1096,7 @@ fn measure_ring_join(core: &mut SimCore, remote_buildings: usize, remote_roads: 
         fwd_lanes: 1,
         bkw_lanes: 1,
         snap_to_existing_roads: true,
-        tunnel: false,
+        profile: crate::simulation::network::road_edit::RoadProfile::FollowGround,
         median: None,
         parking: Default::default(),
         attributes: RoadAttributes::DEFAULT,

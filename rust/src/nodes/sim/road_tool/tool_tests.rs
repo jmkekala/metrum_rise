@@ -732,7 +732,7 @@ fn hud_prices_the_selected_type_as_the_preview() {
         &view().region_graph,
         &view().roadbed,
         frame.stroke.snap_to_existing_roads,
-        false,
+        crate::simulation::network::road_edit::RoadProfile::FollowGround,
     );
     assert!(validation.is_valid, "{}", validation.invalid_reason);
     let preview_per_m = build_per_m(stroke_weight(
@@ -934,7 +934,7 @@ fn tight_curve_refusal_follows_the_radius_check() {
                     &view().region_graph,
                     &view().roadbed,
                     frame.stroke.snap_to_existing_roads,
-                    false,
+                    crate::simulation::network::road_edit::RoadProfile::FollowGround,
                 );
                 assert!(
                     validation.is_valid,

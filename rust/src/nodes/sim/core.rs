@@ -61,7 +61,8 @@ pub(crate) use budget::{
     SERVICE_POLICY_ELECTRICITY,
 };
 pub(crate) use road_preview::{
-    RoadCorridorClearance, RoadPreviewRequest, RoadToolQuerySnapshot, StrokePieces,
+    RoadCorridorClearance, RoadPreviewRequest, RoadPreviewTimes, RoadToolQuerySnapshot,
+    StrokePieces,
 };
 pub(crate) use road_terrain_inputs::RoadTerrainInputsLog;
 pub(crate) use road_tool_context::{RoadPreviewContext, RoadToolPublisher, RoadToolShared};
@@ -77,7 +78,9 @@ pub(crate) use water_preview::{
     WorldWaterFillKind,
 };
 
-pub(crate) use road_batch::RoadBatchRequest;
+pub(crate) use road_batch::{
+    BATCH_TOO_LARGE_REASON, BatchPreview, BatchVerdict, RoadBatchRequest, polyline_length_m,
+};
 pub(crate) use road_commit::RoadCommitRequest;
 #[cfg(test)]
 pub(crate) use road_preview::road_tool_snapshot_from_core;

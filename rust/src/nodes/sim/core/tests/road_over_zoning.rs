@@ -865,6 +865,7 @@ fn a_bridge_deck_over_a_field_is_no_field_overlap() {
 }
 
 mod batch;
+mod batch_preview;
 mod edits;
 mod placements;
 mod preview;

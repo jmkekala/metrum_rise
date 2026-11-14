@@ -368,7 +368,7 @@ fn a_preview_near_a_bare_node_is_what_the_commit_installs() {
         fwd_lanes: 1,
         bkw_lanes: 1,
         snap_to_existing_roads: true,
-        tunnel: false,
+        profile: crate::simulation::network::road_edit::RoadProfile::FollowGround,
         median: None,
         parking: Default::default(),
         attributes: RoadAttributes::DEFAULT,

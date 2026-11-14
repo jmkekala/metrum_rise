@@ -125,7 +125,14 @@ fn batch(core: &mut SimCore) -> serde_json::Value {
     settle(core, &published, None);
     let strokes = branches(core).into_iter().map(stroke).collect();
     let start = Instant::now();
-    let batch = core.commit_road_batch(RoadBatchRequest { strokes }, start, Default::default());
+    let batch = core.commit_road_batch(
+        RoadBatchRequest {
+            strokes,
+            preview: None,
+        },
+        start,
+        Default::default(),
+    );
     let batch_ms = start.elapsed().as_secs_f64() * 1e3;
     assert!(
         batch.outcome.committed,

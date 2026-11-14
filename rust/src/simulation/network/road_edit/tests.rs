@@ -54,7 +54,7 @@ impl Fixture {
             &self.graph,
             &self.network.roadbed,
             true,
-            false,
+            crate::simulation::network::road_edit::RoadProfile::FollowGround,
         );
         let (validation, plan) = validate_road_edit(&prepared, 1, 1, &self.terrain, &self.graph);
         assert!(validation.is_valid, "{validation:?}");
@@ -571,7 +571,7 @@ impl Fixture {
             &self.graph,
             &self.network.roadbed,
             true,
-            false,
+            crate::simulation::network::road_edit::RoadProfile::FollowGround,
         )
     }
 
