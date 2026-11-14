@@ -1907,6 +1907,12 @@ their inputs equal the restored ones ([`terrain.md`](terrain.md#preview-commit-u
 A terrain record keeps the source terrain, and undo restores the source and the visual buffer
 from it (`TERRAIN-07-E`, authoritative terrain undo).
 
+**Stroke profile** (`ROAD-112` round H). A stroke's heights are made by its profile
+(`RoadProfile`: follow ground, held ground, bridge, tunnel), part of the preview's and the plan's
+identity and of the refusal's replay record; an automatically segmented draft commits its strokes
+as one batch. Rules in ["Heights and automatic bridges and tunnels (round
+H)"](#heights-and-automatic-bridges-and-tunnels-round-h).
+
 **Batch commit** (`ROAD-112` round F, `core/road_batch.rs`). `SimCommand::AddRoadBatch` (bridge
 `add_road_batch`) commits an ordered list of strokes (`RoadBatchRequest`) as one transaction.
 Order is the determinism rule: the strokes commit in the listed order, each later one meeting the
@@ -12268,7 +12274,7 @@ grade.
 
 ## Road tools (`ROAD-112`, `ROAD-113`)
 
-**Status: in progress.** Planned 2026-11-12; round A (the guide kernel) and round B (the session core, not wired) built 2026-11-13, round B landed 2026-11-14; round F (batch commit, grouped undo, undo refund) built 2026-11-13, held for its batch bar until fix round F2 (2026-11-14), which meets it, landed 2026-11-14; round C (the wiring: straight strokes run on the session) built and landed 2026-11-14. The user asked for a complete refactor of the
+**Status: in progress.** Planned 2026-11-12; round A (the guide kernel) and round B (the session core, not wired) built 2026-11-13, round B landed 2026-11-14; round F (batch commit, grouped undo, undo refund) built 2026-11-13, held for its batch bar until fix round F2 (2026-11-14), which meets it, landed 2026-11-14; round C (the wiring: straight strokes run on the session) built and landed 2026-11-14; round H (the stroke profile field, the held-ground profile and the automatic bridge/tunnel segmentation, Rust only) built 2026-11-14 on branch `roadtools-h`, for review. The user asked for a complete refactor of the
 road tool, Rust-first: the current straight mode and the GDScript `Curve3D` "curve" (a cubic
 Bezier whose handles are the raw vectors to the control point, so its curvature, radius and
 length are not exact) are replaced. Mechanics follow the genre (city builders' straight, curve,
@@ -12388,7 +12394,10 @@ until round D lands.
 - **Height**: handles at the stroke ends. Both ends at 0 with straight grade off is today's
   follow-ground solve, bit for bit; a moved handle or straight grade switched on gives a grade
   line between the ends. A span leaving the ground becomes a bridge or tunnel automatically
-  (bridge threshold 1.0 m above ground, today's rule).
+  (bridge threshold 1.0 m above ground, today's rule). The back end (round H): every stroke
+  carries a profile (`RoadProfile`: follow ground, held ground, bridge, tunnel) and a draft's
+  grade line is cut into strokes of those by the table in "Heights and automatic bridges and
+  tunnels (round H)" below; round I adds the handles.
 - **Multi-stroke preview**: an outline ghost every pose, exact pieces one stroke a frame when the
   pointer rests (one stroke's stage budgets are about 7.5 ms). Cap 40 strokes / 8 km a batch,
   final after round G1's measurement.
@@ -12701,6 +12710,92 @@ Fresh, 2026-11-14, branch `roadtools-c` on `dev` `58d79a53` (control: the releas
   library): all 78 commits' request, graph, counters, published meshes and graded tiles equal to
   round C's control and branch records. The gameplay fixtures' control record was no longer kept.
 
+### Heights and automatic bridges and tunnels (round H)
+
+Built 2026-11-14 on branch `roadtools-h` (`dev` `cd49a275`, rebased onto `93fa62dd` after round C
+landed), Rust only: no tool UI until round I (height handles) and G1 (batch preview). Plan
+section 4.
+
+**The stroke profile field.** Every stroke request carries how its heights are made
+(`road_edit::RoadProfile`; replay and bridge code 0-3):
+
+- `FollowGround`: today's solve, unchanged: ends and met carriageways pin, the rest is the
+  smoothed profile within the 5 m source band; the authored heights only pick the class (a bridge
+  when an end stands more than 1.0 m above its support and none that far below it; the ramp from
+  an elevated bridge terminal).
+- `HeldGround`: the same solve with the stroke's own heights (linear along each segment) as the
+  targets in place of the ground, the ends pinned at them and met carriageways pinned as before;
+  the source band still bounds every unpinned sample; never a bridge.
+- `Bridge`: the authored heights kept whatever the ends' clearance; clearance, the ground
+  transition rule and `bridge_too_low` judge it as an inferred bridge.
+- `Tunnel`: the tunnel intent (`ROAD-61`), unchanged.
+
+`RoadCommitRequest.profile` replaces the tunnel flag; the plan (`RoadEditPlan::profile`), the
+preview's identity (`RoadPreview::is_for`), the batch's dry run and the refusal report's replay
+record (`profile`, which a record from before reads from its `tunnel` flag) carry it. Until rounds
+I / G1 send a profile from the session, the bridge's own requests (`preview.rs`, the session's)
+still send the tool's tunnel toggle: `RoadPreviewRequest.tunnel` stays and a profile travels
+beside it
+(`RoadPreviewContext::preview_road_profiled`, `RoadEditPlan::compile_profiled_from`,
+`RoadRejection::report_profiled`; `plan_road_edit` and `prepare_road_input_for_tool` take either).
+
+**Segmentation** (`nodes/sim/road_tool/height.rs`, `segment_draft`): the grade line from the
+draft's start height to its end height over arc length; its clearance `c` = grade line minus the
+ground under it (`road_edit::DraftGround`: the highest grounded carriageway, else the terrain),
+read on the 4 m tunnel lattice along the draft, crossings interpolated linearly between knots.
+
+| Run | Stroke |
+| --- | --- |
+| `c` within +-1.0 m | held ground |
+| `c` above +1.0 m somewhere: the whole run where `c > 0`, landing to landing | bridge |
+| `c` below -1.0 m somewhere: the whole run where `c < 0`, with a knot of bore cover | tunnel (approaches in a cut, the bore where the section cover reaches the cover rule) |
+| the same run without bore cover, no deeper than 5 m | held ground, in a cut |
+| the same run deeper than 5 m | refused, `cut_too_deep` |
+
+Consecutive held ground runs make one stroke of the draft's own points. The strokes share their
+joints bit for bit (the ends exactly the draft's end heights) and commit as one batch
+(`draft_batch`, round F): one undo step. A draft whose grade line stays more than 1.0 m above flat
+ground is one bridge stroke of the draft's own points, the stroke today's tool makes with both
+ends raised. Cover is tested per below-ground run with the draft's section
+(`road_edit::tunnel_run_reaches_cover`, the bore's own `section_cover_m`). Cost per draft:
+`O(length / 4 m)` ground queries, one cover test per below-ground run, the returned strokes; never
+per tick. Bridge entries (for the replay and round I): `add_road_with_profile` (one stroke with
+a profile, as a batch of one) and `add_road_draft` (segment on the road tool's view and send the
+batch; returns the strokes, the refusal and the completion id).
+
+Tests (Rust): `road_tool::height::tests` (each table row, crossings, the joints, a bridge then a
+tunnel along a bent draft, determinism, the profile codes); `core/tests/road_profiles.rs`:
+today's strokes keep the branch point's products (follow-ground plans and commits on a 1:4 hill,
+both ends raised 2.5 m and 5 m over flat ground through the segmented draft's explicit bridge,
+the two tunnel fixtures through `RoadProfile::Tunnel`: digests recorded by running the test's twin
+on `dev` `cd49a275`), raised ends give the inferred bridge's points, class, ends and validation, a
+level draft over a valley and through a hill commits held ground, bridge, held ground, tunnel,
+held ground as one batch with its joints on the grade line and one undo removes it, and a 6 m cut
+under a ridge too narrow for the bore is refused `cut_too_deep`. `road_grade_separation` and
+`road_tunnels` assertions unchanged (their requests spell the tunnel flag through the profile).
+
+**Also fixed (found by round C):** the hover check (`RoadToolQuerySnapshot::validate`, the
+bridge's `validate_road_candidate_with_snap`) never set the stroke's kerbside parking on its
+prepared input, so its `build_cost` left the parking lanes out and its parking checks never ran;
+preview and commit were right. It now carries the parking; test
+`road_preview::hover_validation_reads_the_strokes_parking` (cost weight and verdict equal the
+preview plan's, with and without a sidewalk under the parking).
+
+**Measured** (fresh, 2026-11-14, release test binaries `$TEST_BINARY` of `dev` `cd49a275` (C)
+and this round (H), eight workers pinned to the performance cores, both timing locks, same
+session). Timing level F with K22 (`./run.sh --timing --level F --k22`, both 30k cities generated
+fresh per side, `--control-cache` / `--branch-cache`, `TOOLS-23`): every 30k 1x and 32x metric
+level (1x mean -0.4 %, worst unpreempted -1.5 %; 32x mean -0.4 %), every 1x row passes its
+acceptance (the 32x rows are the known `PERF-17` exception), day records equal. K22 at 30k: the
+commit's plan stage, the bar, 0.570 / 0.371 / 0.331 ms (C) against 0.507 / 0.385 / 0.328 ms (H),
+at most +0.014 ms against the bar's +0.1 ms; commit 13.34 / 6.82 / 4.82 against 12.69 / 6.68 /
+4.65 ms; `COMMIT_PRODUCTS` identical. Preview stages (`benchmark_road_preview_stages`,
+`benchmark_tunnel_preview_stages`, `RAYON_NUM_THREADS=4`, C H H C), plan p50 ms: `sloped_t`
+0.435 0.444 / 0.433 0.440, `sloped_branch` 0.383 0.384 / 0.399 0.378, `divided_t` 0.451 0.461 /
+0.443 0.445, tunnel 1:2 0.199 0.204 / 0.203 0.202; payload, hidden and lining vertex counts
+identical. The follow-ground and tunnel paths run the same code as before (one branch on the
+profile), so nothing beyond noise was expected.
+
 ### Decisions (user, 2026-11-12, all as recommended)
 
 - U1 simple curve = three clicks, free control point, exact arc plus a straight lead.
@@ -12960,6 +13055,10 @@ pinned it and the crossing became a junction on the bridge, or the stroke was to
 bridge drawn over a road within 4.5 m split the road and dipped to it; above 4.5 m nothing checked
 the clearance. `config::CLEARANCE_THRESHOLD` (5 m) had no reader and is deleted.
 
+Since `ROAD-112` round H a bridge is also chosen explicitly: a draft's grade line cut into strokes
+gives each run above the ground a `RoadProfile::Bridge` stroke, landing to landing, judged by the
+same rules as an inferred bridge ([round H](#heights-and-automatic-bridges-and-tunnels-round-h)).
+
 **The rules** (`topology::StrokeGrade`: where a new edge is a structure, which of its ends stand on
 the ground). A structure is a bridge, or a tunnel stroke's bore between its portals; a node is
 grounded when a live standard edge meets it (`RegionGraph::grounded_node`, the roadbed's notion).
@@ -13159,6 +13258,11 @@ below (grade limit `ROAD-96`, trench junctions, flat-ground ramps). Ported from 
 `55cf6f85`, logic only); the fork's profile logic lived in the deleted `surface/` compiler and its
 tool intent rode on a Junction / Over / Under / Tunnel crossing selector, which is not ported (grade
 separation is out of the port), so the logic is re-implemented on `road_edit` and the roadbed.
+
+Since `ROAD-112` round H the tunnel intent is the stroke profile `RoadProfile::Tunnel`, and a
+draft's grade line gives its runs below the ground that reach bore cover a tunnel stroke
+automatically ([round H](#heights-and-automatic-bridges-and-tunnels-round-h)); the rules below
+are unchanged.
 
 **The problem.** The road tool picked Standard / Bridge / Tunnel from the stroke's two ends only
 (`road_edit/input.rs`, `prepare_road_input_points_in`). A stroke through a hill drawn with both
