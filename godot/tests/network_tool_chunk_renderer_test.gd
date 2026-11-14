@@ -944,7 +944,8 @@ func _test_session_strokes(simulation: SimulationNode) -> void:
 	tool.set_lanes(1, 1)
 	_road_frame(tool)
 	var gizmo_kinds: PackedInt32Array = tool.gizmos._handle_kinds
-	_expect(gizmo_kinds == PackedInt32Array([0, 3]), "a straight stroke shows its start and live end: %s" % gizmo_kinds)
+	# The free start's height grip draws as a handle (5) on a tangent-coloured stem (round I).
+	_expect(gizmo_kinds == PackedInt32Array([0, 3, 5]), "a straight stroke shows its start, live end and the start's height grip: %s" % gizmo_kinds)
 	_expect(tool._info_label.visible and tool._info_label.text.contains("cost"), "the HUD shows the stroke's numbers")
 	# The click submits the standing preview; a second click waits for the acknowledgement.
 	var end := tool.pointer
@@ -975,7 +976,7 @@ func _test_session_strokes(simulation: SimulationNode) -> void:
 	_road_frame(tool)
 	var points := tool._session_points
 	_expect(points.size() > 3 and points[0] == Vector3(-100.0, 0.0, 60.0) and points[-1] == tool.pointer, "the curve runs from the start to the cursor through the arc")
-	_expect(tool.gizmos._handle_kinds == PackedInt32Array([0, 1, 3]) and tool.gizmos._line_classes == PackedInt32Array([3, 0]), "a curve shows its start, control point, live end, tangent legs and centreline")
+	_expect(tool.gizmos._handle_kinds == PackedInt32Array([0, 1, 3, 5]) and tool.gizmos._line_classes == PackedInt32Array([3, 0, 3]), "a curve shows its start, control point, live end, tangent legs, centreline and the start's height grip on its stem")
 	_expect(absf(float(tool._session_hud["radius_m"]) - 40.0) < 0.001, "the HUD's radius is the fillet's: %s" % tool._session_hud.get("radius_m"))
 	_expect(tool._info_label.text.contains("radius 40.0 m"), "the HUD names the radius: '%s'" % tool._info_label.text)
 	_expect(tool._commit_segment(tool.pointer), "the end click sends the curve")
@@ -1027,13 +1028,13 @@ func _test_s_curve_and_freeform(simulation: SimulationNode) -> void:
 	tool.pointer = Vector3(45.0, 0.0, -10.0)
 	_road_frame(tool)
 	_expect(tool._session_points.is_empty() and tool._preview.is_empty(), "an S-curve's aim legs are not previewed as road")
-	_expect(tool.gizmos._line_classes == PackedInt32Array([3]), "the aim leg draws as a tangent gizmo")
+	_expect(tool.gizmos._line_classes == PackedInt32Array([3, 3]), "the aim leg draws as a tangent gizmo (and the start's height stem)")
 	_expect(not tool._commit_segment(tool.pointer), "the end aim point commits nothing")
 	tool.pointer = Vector3(60.0, 0.0, -10.0)
 	_road_frame(tool)
 	var points := tool._session_points
 	_expect(points.size() > 3 and points[0] == Vector3(0.0, 0.0, -30.0) and points[-1] == tool.pointer, "the S-curve runs from the start to the cursor")
-	_expect(_gizmo_handles(tool, 4).size() == 1 and _gizmo_handles(tool, 5).size() == 2, "the S-curve shows its joint and both arcs' control points")
+	_expect(_gizmo_handles(tool, 4).size() == 1 and _gizmo_handles(tool, 5).size() == 3, "the S-curve shows its joint, both arcs' control points and the start's height grip")
 	var radius := float(tool._session_hud.get("radius_m", -1.0))
 	var other := float(tool._session_hud.get("other_radius_m", -1.0))
 	_expect(radius > 0.0 and other >= radius, "the HUD gives both radii, the tighter first: %s, %s" % [radius, other])
@@ -1059,7 +1060,8 @@ func _test_s_curve_and_freeform(simulation: SimulationNode) -> void:
 	var frame: Dictionary = simulation.road_tool_frame()
 	_expect(int(frame["phase"]) == 3 and int(frame["placed"]) == 4, "Enter starts the edit phase: %s" % frame["phase"])
 	var handles := _gizmo_handles(tool, 5)
-	_expect(handles.size() == 6, "every inner node has two handles and each end one: %d" % handles.size())
+	# Six Bezier handles, then the two ends' height grips (round I).
+	_expect(handles.size() == 8, "every inner node has two handles, each end one and a height grip: %d" % handles.size())
 	# Drag node 1's outward handle; its inward handle turns with it.
 	var shown := tool._preview_sequence
 	tool.pointer = handles[2]

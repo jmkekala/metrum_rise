@@ -13326,7 +13326,30 @@ bore is a buried continuation): Rust test `road_profiles::a_lowered_draft_on_fla
 (the portal row within a lattice step of x = -48 for a 10 m drop over 100 m, its collar and
 lining, the second draft's portal, one undo per draft), Godot `road_height_handles_test`, stills.
 A single draft's grade is straight between its ends (U3), so down-then-up between two ground
-points is two drafts (two undo steps).
+points is two drafts (two undo steps). The only tool change it needed: a locked end buried more
+than 1.0 m under the terrain grades the draft (the chain's start on a tunnel's buried end), where
+before the draft back up was a follow-ground stroke; a raised locked end still leaves the draft to
+follow the ground, which infers its bridge, so strokes from decks are unchanged.
+
+**Fresh results** (2026-11-14, this round). Rust: `road_tool::tool_tests::heights` (grip drag
+projection and the 0.5 m step, Shift free; keys equal a drag bitwise; offsets back at 0 send the
+stroke bitwise, straight grade grades the same points; a locked end does not move; segmentation on
+the frame with runs, slopes and end heights; the chain starts locked at a raised end; the chain
+back up from a buried end is a tunnel), `height::handles` (projection, stepping, a locked handle),
+the short-run rows, `road_profiles::a_lowered_draft_on_flat_ground_ramps_through_a_portal`. Godot
+(release library, headless): `road_height_handles_test` (new, in the vehicle chain: the start's grip
+dragged 5 m up gives one bridge previewed as a stroke; PageDown 16 times gives a bridge then a
+tunnel, a batch whose ghost shows and then its exact pieces; one click builds a bridge and a
+tunnel, one undo removes all), `road_tunnels_test` (now through Straight grade: held ground, the
+tunnel stroke and held ground as one batch, one tunnel edge, the car drives through),
+`road_batch_preview_test`. Straight parity against `dev` `b2d0082e`'s release library and scripts
+(`commit_products.gd`): Kuopio's 39 strokes, 78 commits, every product equal, the drag probe PASS;
+the gameplay fixtures' 17 commits equal. Allocation (`heaptrack --record-only`, the session
+bench's probe at 30k with a graded stroke and a height grip drag added): 2,442,899 / 2,442,937
+calls (n = 0), 2,442,924 (n = 20), 2,442,884 (n = 200): none per move. No timing session (user,
+2026-11-14). Stills (gamescope headless, today's look): a raised bridge draft, a lowered tunnel
+draft, the built entry ramp and portal on flat ground, the chain's draft back up built, a bridge
+then a tunnel batch, the `cut_too_deep` refusal under a narrow ridge.
 
 ### Landing 1 timing (round L1)
 
