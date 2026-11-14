@@ -52,7 +52,7 @@ use crate::simulation::network::guide::{DVec2, GuideError, GuidePath, GuideSegme
 use crate::simulation::network::interaction::{
     NetworkSnapTarget, StartDirection, StructureHit, road_start_direction,
 };
-use crate::simulation::network::road_edit::RoadProfile;
+use crate::simulation::network::road_edit::{PREVIEW_CLEARANCE_M, RoadProfile};
 use godot::prelude::Vector3;
 
 /// Today's map-edge snap distance (`MAP_BORDER_SNAP_DIST_M`).
@@ -499,10 +499,20 @@ impl RoadToolSession {
         handles
     }
 
-    // A graded draft (a free end off its support, or straight grade): the stroke's heights become
-    // the grade line between the handles' heights, and the request carries it.
-    fn apply_grade(&mut self, handles: &[HeightHandle; 2]) {
-        if !self.heights.graded(handles) {
+    // A graded draft (a free end off its support, straight grade, or a locked end buried more
+    // than 1.0 m under the terrain: a tunnel's buried end, from which a follow-ground stroke could
+    // only climb through the ground): the stroke's heights become the grade line between the
+    // handles' heights, and the request carries it. A locked end raised above the ground stays
+    // today's follow-ground stroke, which infers its bridge.
+    fn apply_grade(&mut self, view: &RoadToolQuerySnapshot, handles: &[HeightHandle; 2]) {
+        let buried = |handle: &HeightHandle| {
+            let ground = view
+                .terrain
+                .sample_height_world(handle.support.x, handle.support.z)
+                * crate::config::HEIGHT_SCALE;
+            handle.locked && handle.height_m < ground - PREVIEW_CLEARANCE_M
+        };
+        if !self.heights.graded(handles) && !handles.iter().any(buried) {
             return;
         }
         let heights = [handles[0].height_m, handles[1].height_m];
@@ -1129,7 +1139,7 @@ impl RoadToolSession {
             self.frame.state.refusal = Some(DraftRefusal::TooShort);
             return;
         }
-        self.apply_grade(&handles);
+        self.apply_grade(view, &handles);
         self.measure_pose(view, cursor.snapped.target, cursor.position);
         self.measure_heights(view, &handles);
         self.push_constraint_line(cursor);
@@ -1169,7 +1179,7 @@ impl RoadToolSession {
             self.frame.state.refusal = Some(DraftRefusal::TooShort);
             return;
         }
-        self.apply_grade(&handles);
+        self.apply_grade(view, &handles);
         self.measure_pose(view, end_target, end);
         self.measure_heights(view, &handles);
         if !editing {

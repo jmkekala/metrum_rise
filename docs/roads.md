@@ -12328,7 +12328,7 @@ since round D).
   refusal and the stroke stays editable; after the core refused a commit, the unchanged stroke
   on the same context stays refused as `road_commit_rejected`, today's rule). `road_tool_set_option(name, value)`: `lanes`, the
   snapping toggles and steps (`network_snap`, `guide_lines`, `zoning_grid`; `angle_step_deg`
-  15, 30, 45 or 90 and `length_step_m`, any other step, 0 included, off), `continuous`, `altitude_offset_m` (PageUp/PageDown until round I);
+  15, 30, 45 or 90 and `length_step_m`, any other step, 0 included, off), `continuous`, `altitude_offset_m` (PageUp/PageDown until round I, which replaced it with `straight_grade` and the height handles);
   the median, parking and attributes stay with `set_road_tool_median` / `_parking` /
   `_attributes`, which now also set the session's road type, so the session's requests and HUD
   price the selected type (B9). `road_tool_frame()` once a frame: phase, cursor and what took it,
@@ -13257,6 +13257,74 @@ skipped; both Godot chains PASS, no script error). Against round N's release lib
 EQUAL in every product; the Kuopio drag probe on the landed library PASS (0 failures, 39 fast
 commits; the main checkout's locks held from outside, `TOOLS-24`). No timing session.
 
+### Height handles and graded drafts (round I)
+
+Built 2026-11-14 on branch `roadtools-i` (`dev` `b2d0082e`): plan section 4's handles, round H's
+hookup step 2, the short-run rule and the HUD's height data. Rust: `road_tool/height/handles.rs`
+(new), `session.rs`, `frame.rs`, `height.rs`; the bridge's `network_api/road_tool/session.rs`
+and `batch.rs`.
+
+**Handles.** Each end of a draft has a height handle (`HeightHandle`): `Free`, an offset above
+its support (the ground or road surface the pointer met), or `Locked` to the graph height of the
+road it joins (a node or edge snap, or the chain's start on the accepted stroke's end node); a
+locked end cannot move. A free end's grip stands 4 m (`HANDLE_STEM_M`) above the end's height, so
+a press on the end itself keeps its meaning. A left press within 2 m of a grip (the camera ray's
+distance to it, and nearer than to the end) grabs it before any other meaning of the press; while
+held, pointer moves project the ray onto the grip's vertical line (the closest point of the two
+lines) and round the end's offset to **0.5 m** (`HEIGHT_STEP_M`; Shift free), the cursor and the
+live end staying where they were; the release lets go. A press may grab the placed start's grip
+and, in a freeform draft's edit phase, the last node's; the live end follows the cursor and is
+moved by keys. **PageUp/PageDown** (user, 2026-11-14) move the active handle by one 0.5 m step
+through the session event `raise_handle` / `lower_handle`: the live end's while drawing, the
+hovered or last dragged one in an edit phase; the step is the drag's rounding from the nearest
+step, so keys and drags make the same offsets and drafts bit for bit (test). The live end's
+offset is a tool setting kept across strokes; a new start takes it (it was placed with it). The
+old keyboard-only path (`adjust_altitude`, the cursor's altitude offset) and the tunnel toggle
+(`set_road_tool_tunnel`, its checkbox) are gone: the checkbox is **Straight grade (T)** (U3).
+
+**Graded drafts.** Both handles on their supports and straight grade off: the stroke as before
+(`FollowGround`), bit for bit. Otherwise the stroke request carries its grade line
+(`StrokeRequest::grade`, the two end heights; the points stand on it, `height::apply_grade_line`
+with segmentation's own sums) and the frame's step (`RoadToolSession::update_draft`, once a
+frame in `road_tool_frame`, never on a pointer move, re-run only when the stroke, grade, road
+type, snap or view generation changed) segments it (`segment_draft`). One stroke previews alone
+with its profile (`preview_stroke`) and commits as a batch of one (`add_road_with_profile`'s
+path); several preview as a batch (round G1): each new pose runs tier 1 and draws its ghost
+(`batch` in the frame), each resting frame one tier-2 step, and the frame tier 2 accepts the batch
+shows its exact pieces as a `preview_road` dictionary and clears the ghost (`batch_cleared`); the
+click commits the strokes as one batch, one undo step, with tier 2's plans when it finished. A
+refused segmentation (`cut_too_deep`) or batch (`batch_too_large`) is the preview's refusal; the
+refusal's log line names the refusing stroke and its profile.
+
+**Short-run rule.** A held ground run shorter than the shortest stroke the checks accept (2 m,
+`too_short`) cannot be a stroke of its own, so it joins a neighbouring structure, which holds the
+authored heights exactly and so keeps the grade line through it: the one on its side of the
+ground, a bridge when the grade line at the run's middle stands on or above the ground, a tunnel
+(more of its open approach) when below; when neither neighbour is of that class, the one before
+it, else the one after (a short run at a draft's end has one). Table rows in
+`road_tool::height::tests` (below the ground joins the tunnel, above joins the bridge, at an end,
+a run of 2 m or more stays).
+
+**Frame data** (for round V's chips): `height_handles` (each end's support, height, offset,
+grip, locked, active), the HUD's `start_height_m` / `end_height_m` (above the support; a locked
+end's above the terrain) and `slope_percent` (the draft's, between its ends over the guide's
+length), `piece_slopes_percent` per guide piece (the grade line's, or for a follow-ground draft
+the terrain's between the piece's ends), and the draft's runs (`draft_profiles`,
+`draft_lengths_m`, `draft_slopes_percent`, `draft_reason`). Gizmos: each grabbable or raised free
+handle's stem and grip as their own kinds (`HeightStem`, `HeightGrip`), drawn with the tangent
+leg's and the handle's look until the restyle gives them one; a locked end draws none.
+`road_tool_heights()` reads the heights part without previewing (tests).
+
+**Tunnel entries on flat ground** (the user's question, 2026-11-14): a draft from the ground
+whose far end is lowered is one tunnel stroke: its approach a cut ramp from the start, the bore
+from the first 4 m knot with the 5 m cover, the end buried; the draft back up from the buried end
+mirrors it. Both work end to end with the existing tunnel rules (`ROAD-61`: an end inside the
+bore is a buried continuation): Rust test `road_profiles::a_lowered_draft_on_flat_ground_ramps_through_a_portal`
+(the portal row within a lattice step of x = -48 for a 10 m drop over 100 m, its collar and
+lining, the second draft's portal, one undo per draft), Godot `road_height_handles_test`, stills.
+A single draft's grade is straight between its ends (U3), so down-then-up between two ground
+points is two drafts (two undo steps).
+
 ### Landing 1 timing (round L1)
 
 Run 2026-11-14 12:26-14:44, one boot, level L. Control: `dev` `1be1c85c` (before round B);
@@ -13381,7 +13449,7 @@ round D rebases on CB and edits only tool code there (CB's first part landed the
 | F | Batch commit, grouped undo, undo refund | 5 | F + K22 |
 | G1 | Two-tier batch preview | 4 | F + preview rows |
 | H | Profile field, automatic bridge/tunnel segmentation | 5 | F + K22 |
-| I | Height handles and HUD | 3 | R |
+| I | Height handles and HUD (done 2026-11-14, [record](#height-handles-and-graded-drafts-round-i)) | 3 | R |
 | | **Landing 3** | | L |
 | | *Phase 3: advanced tools* | | |
 | J | Grid | 4 | R |
@@ -13882,7 +13950,10 @@ concrete) do not reproduce on `dev`: the constructive roadbed builds every edge'
 validation and the exact plan agree on all three. The defect left is the first probe's: a tunnel
 cannot be drawn between two grounded ends, which is how a player draws one through a hill.
 
-**The tool.** The road tool has a tunnel toggle: `T` with the road tool active, or the
+**The tool.** (Since `ROAD-112` round I the toggle below is gone: a tunnel comes from a graded
+draft's segmentation, with Straight grade (`T`, the checkbox) or a lowered height handle; see
+[Height handles and graded drafts](#height-handles-and-graded-drafts-round-i). The rules of the
+tunnel stroke itself are unchanged.) The road tool had a tunnel toggle: `T` with the road tool active, or the
 "Tunnel (T)" checkbox in the road options (`road_tool.gd` `set_tunnel`, `main_ui.gd`). Rust holds
 the intent as `SimulationNode::road_tool_tunnel` (`set_road_tool_tunnel`), and every request the
 tool sends carries it: the hover check, the synchronous preview (`RoadPreviewRequest::tunnel`,

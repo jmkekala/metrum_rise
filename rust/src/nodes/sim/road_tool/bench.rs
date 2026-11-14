@@ -123,6 +123,36 @@ impl RoadToolBench {
         );
     }
 
+    /// Restarts a straight stroke at the junction with straight grade on and the live end's
+    /// handle raised 5 m (PageUp ten times), so each move builds a graded stroke (round I).
+    pub fn restart_raised(&mut self) {
+        use super::session::{RoadToolAction, RoadToolOption};
+        self.restart(DrawMode::Straight);
+        self.session.set_option(RoadToolOption::StraightGrade(true));
+        for _ in 0..10 {
+            self.event(RoadToolEvent::Action(RoadToolAction::RaiseHandle));
+        }
+    }
+
+    /// Restarts a straight stroke from a block's middle with its start's height grip grabbed,
+    /// so each move drags the grip (round I: the ray projected onto its vertical line).
+    pub fn restart_height_drag(&mut self) {
+        use super::session::RoadToolAction;
+        self.event(RoadToolEvent::Action(RoadToolAction::Cancel));
+        self.event(RoadToolEvent::Action(RoadToolAction::ModeStraight));
+        self.place(Vector3::new(50.0, 0.0, 50.0));
+        let grip = self.session.frame().height_handles[0]
+            .expect("a free start's handle")
+            .grip;
+        self.event(RoadToolEvent::Pointer {
+            pointer: Pointer::Scripted(grip),
+            shift: false,
+            ctrl: false,
+        });
+        self.event(RoadToolEvent::Press(PointerButton::Left));
+        assert_eq!(self.session.placed_count(), 1, "the press grabs the grip");
+    }
+
     // A pointer at a world point, then a left press there.
     fn place(&mut self, point: Vector3) {
         self.event(RoadToolEvent::Pointer {

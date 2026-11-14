@@ -282,3 +282,31 @@ fn the_chain_starts_locked_at_the_raised_end() {
     assert_eq!(start.height_m, ground(END).y + 5.0);
     assert_eq!(tool.frame().height_handles[1].unwrap().offset_m, 5.0);
 }
+
+// A draft lowered 10 m at its far end on flat ground is one tunnel stroke (a cut ramp, then the
+// bore); its chain starts locked on the buried end, and that start alone grades the next draft,
+// so the draft back up to the ground is a tunnel too (flat-ground tunnel entries, the user's
+// question).
+#[test]
+fn a_chain_from_a_buried_end_grades_the_draft_back_up() {
+    let mut tool = draft();
+    key(&mut tool, RoadToolAction::LowerHandle, 20);
+    assert!(tool.update_draft(view()));
+    let profiles: Vec<_> = tool.frame().draft.runs.iter().map(|run| run.profile).collect();
+    assert_eq!(profiles, [RoadProfile::Tunnel]);
+    click(&mut tool, at(END));
+    assert!(tool.take_commit().is_some());
+    ack(&mut tool, true);
+    key(&mut tool, RoadToolAction::RaiseHandle, 20);
+    move_to(&mut tool, at((-80.0, 250.0)));
+    let frame = tool.frame();
+    assert!(frame.height_handles[0].unwrap().locked);
+    assert_eq!(frame.height_handles[1].unwrap().offset_m, 0.0);
+    assert_eq!(
+        frame.stroke.grade,
+        Some([ground(END).y - 10.0, ground((-80.0, 250.0)).y])
+    );
+    assert!(tool.update_draft(view()));
+    let profiles: Vec<_> = tool.frame().draft.runs.iter().map(|run| run.profile).collect();
+    assert_eq!(profiles, [RoadProfile::Tunnel]);
+}

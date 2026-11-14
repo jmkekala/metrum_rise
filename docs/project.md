@@ -309,10 +309,11 @@ plain junction lacks until `TRAFFIC-09`, so a ring on a city's busiest junction 
 ([traffic.md](traffic.md#give-way-on-entry-to-a-roundabout-road-62)). Save format 117
 ([ROAD-62](roads.md#roundabouts-road-62); landed on `dev` 2026-11-06).
 
-The road tool can build a tunnel through a hill: with its tunnel toggle (`T` or the road options
-checkbox) a stroke keeps its drawn height through the ground, the stretch where the hill stands
-5 m above the road across its whole width becomes a tunnel between two approaches and cars drive
-through; without the toggle a stroke is always a grounded road. Tunnels under water, crossing
+The road tool can build a tunnel through a hill: with Straight grade (`T` or the road options
+checkbox; the tunnel toggle until `ROAD-112` round I) or an end's height handle lowered, a draft
+keeps a straight grade through the ground, the stretch where the hill stands 5 m above the road
+across its whole width becomes a tunnel between two approaches (on flat ground too: a cut ramp
+down to a portal) and cars drive through; a draft that follows the ground is a grounded road. Tunnels under water, crossing
 tunnels, strokes without enough cover across the bore and junctions below the ground in an
 approach are refused with a reason. The tunnel is closed: a 0.5 m thick concrete lining (walls
 and ceiling) around the road, lit by lamp strips every 10 m, and a flat concrete collar round
@@ -1673,6 +1674,7 @@ reopening requires a current reproduction, not an assumption that the old geomet
 
 ## Recent Structural Changes
 
+- `ROAD-112` round I (2026-11-14, branch `roadtools-i`, for review): each end of a road draft has a height handle (a grip above the end; drag it up or down in 0.5 m steps, or PageUp/PageDown on the active one; an end on a road is locked to it). A raised or lowered end, or Straight grade (T, the checkbox that replaces the tunnel toggle), runs the road on a straight grade that Rust cuts into ground, bridge and tunnel strokes, previewed as one stroke or a batch and built as one undo step; a lowered end on flat ground ramps down in a cut into a tunnel portal. Details in [`roads.md`](roads.md#height-handles-and-graded-drafts-round-i).
 - `ROAD-112` round G1 (2026-11-14, branch `roadtools-g1`, with fix round G1b landed on `dev` over round N by round LG1): a draft that becomes several strokes (automatic bridges and tunnels) previews in two tiers: every pose checks each stroke as the hover does and draws a ghost ribbon with exact cost and length; while the pointer rests the exact pieces build one stroke a frame and replace the ghost, and a click then commits those plans. Batches are capped at 40 strokes and 8 km (`batch_too_large`). The stroke profile now travels inside the preview request. Round G1b (2026-11-14, branch `roadtools-g1b`, for review) builds the accepted batch's exact pieces over the next frames, one share of the batch a frame, so no frame costs more than a single stroke's preview ([record](roads.md#batch-preview-round-g1)).
 - `ROAD-112` round N (2026-11-14, branch `roadtools-n`, for review): the road options panel gains S-curve (four clicks, two arcs meeting tangent; the tighter arc is judged, both radii and every piece's length are in the frame for the coming restyle) and Freeform (clicked nodes of Bezier spans, then an edit phase: drag nodes and handles, Ctrl breaks a joint, Enter or a click elsewhere builds, Esc or right-click drops it); the road chunk renderer and the road tool take their holds from the Rust rule `RoadDrawHolds` ([`roads.md`](roads.md#s-curve-and-freeform-with-edit-before-build-round-n)).
 - `ROAD-112` round E (2026-11-14, branch `roadtools-e`, for review): the road options panel gains the snapping toggles (roads, guide lines, zoning grid) and steps (angle lock, length step), sent to the Rust session and re-sent whenever the tool is switched on; the radius check now reads a flattened arc's radius exactly, so a curve at or above the illegal radius is never refused and the tool refuses exactly those below it ([`roads.md`](roads.md#snapping-options-and-the-radius-reading-round-e)).
