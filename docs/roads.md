@@ -12907,6 +12907,39 @@ at most +0.014 ms against the bar's +0.1 ms; commit 13.34 / 6.82 / 4.82 against 
 identical. The follow-ground and tunnel paths run the same code as before (one branch on the
 profile), so nothing beyond noise was expected.
 
+### The terrain's cut under a replaced road (round G2)
+
+Built 2026-11-14 on branch `roadtools-g2` (`dev` `05915359`): T65 option (c), the user's choice
+of 2026-11-12. The drag probe's last background frames (`kuopio_03` attempt 8, 16-18 a run) were
+steps between the published graded tiles' cut and the pose's rebuilt junction, which covers that
+cut but lies lower or higher at its edge. While a pose replaces published pieces, the published
+tiles meeting them draw their cut ground behind every drawn surface (the backstop), so the ground
+shows only where the background showed; the road is not held. Rule, spike and results:
+[`terrain.md`](terrain.md#t65-option-c-the-backstop-under-a-replaced-road-road-112-round-g2-2026-11-14).
+The preview dictionary gains `graded_cut` (flat `(x, z)`, under `graded_epoch`); the road tool
+passes it to the graded renderer unchanged (`_show_graded` hands the whole frame over).
+
+**The holds' rule in Rust.** The road drawing holds (T61 (2)) are decided by `RoadDrawHolds`
+(`simulation_node/network_api/road_holds.rs`, a `RefCounted`): `hold_install(full_replace,
+journal_serial, installed_serial)`, `release_install(installed_serial, force)`, `is_holding`,
+`held_serial`, `hold_preview(generation)`, `release_preview(chunks_generation)`, `drop_preview`.
+The GDScript keeps the Godot objects. Its call sites change after round E (round E edits
+`road_tool.gd`; the lines below are `dev` `2783c90a`'s, round D's; the chunk side moved from
+`network_tool.gd` to `road_chunk_renderer.gd` in round CB part 1):
+
+- `road_chunk_renderer.gd`: a `holds := RoadDrawHolds.new()` member replaces `held_serial`;
+  `install` takes `holds.hold_install(full_replace, <journal serial or -1>, <installed serial>)`
+  in place of `_chunk_hold_serial()` and drops `held_serial = maxi(held_serial, hold)`;
+  `is_holding()` returns `holds.is_holding()`; `release_held(force)` returns unless
+  `holds.release_install(<installed serial or the int maximum>, force)` and drops
+  `held_serial = -1`; `_chunk_hold_serial` and `_held_edit_installed` become the two serial
+  reads; readers of `held_serial` call `holds.held_serial()`.
+- `road_tool.gd`: `_swap_generation` goes; `_hold_preview_until(generation)` calls
+  `chunks.holds.hold_preview(generation)`; `_release_swapped_preview()` resets the swapped display
+  when `chunks.holds.release_preview(chunks.generation)`; the reset of the swapped display at
+  cancel calls `chunks.holds.drop_preview()`.
+- `network_tool.gd`: none (its holds left with the chunk renderer).
+
 ### Decisions (user, 2026-11-12, all as recommended)
 
 - U1 simple curve = three clicks, free control point, exact arc plus a straight lead.

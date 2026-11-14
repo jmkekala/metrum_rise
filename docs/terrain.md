@@ -4597,7 +4597,10 @@ km.
     pieces (a junction) still shows the background where the published tiles cut the replaced
     pieces until its selection displays, and a fast click's newly graded tile waits for its
     patch's list beside an installed one: both carried to [T65](#terrain-07-open-questions)
-    (the user, 2026-10-29), not accepted.
+    (the user, 2026-10-29), not accepted. The fast click's: fixed in `RENDER-32-K` part 5
+    (`TERRAIN-23`). The junction's: since `ROAD-112` round G2 (T65 option (c)) the published tiles
+    meeting the replaced pieces draw their cut ground behind every drawn surface while they show
+    under the pose ([record](#t65-option-c-the-backstop-under-a-replaced-road-road-112-round-g2-2026-11-14)).
   - *Convergence.* Once the poses stop, the shown tiles are the last pose's after
     `ceil((|W| - 1) / 2)` catch-up frames, bitwise its fresh bake and the commit's tiles.
   - *The commit.* The click offers the tiles the preview shows at that moment (the latest
@@ -11734,6 +11737,12 @@ measures it and the recommendation's condition decides; T2 was decided by the us
       fast click's crack belong here, not accepted. Since 2026-11-11 option (3) is built as the
       streaming core's edit batches in `RENDER-32-K` (G2c,
       [streaming core](#streaming-core-render-32)).
+    - **Option (c), chosen by the user (2026-11-12), built in `ROAD-112` round G2 (2026-11-14, for
+      review):** the spike found the last junction frames are steps, not uncovered cut (the pose's
+      junction lies up to 0.22 m lower or 2.84 m higher than the published cut's edge); while a pose
+      replaces published pieces, the published tiles meeting them draw their cut ground behind every
+      drawn surface (the backstop), so it shows only where the background showed;
+      [record](#t65-option-c-the-backstop-under-a-replaced-road-road-112-round-g2-2026-11-14).
     - **A third layer: the vegetation (`ROAD-68-H` round 7, 2026-10-29).** Round 6's clip of
       `kuopio_03` attempt 8 showed a pine and ground plants standing on the drawn road in the
       final tip's panel (the undo's frame; the converged commit's last frames), not in the
@@ -14850,6 +14859,134 @@ the draw states set two properties of a lent node, as before): met. No per-frame
 only with the perf channel on or on an edit batch's frame, as before): met. Graded totals not worse
 than control: met. Rows level: level at p50 everywhere after the one rerun, the 30k `turn_out` 1 s and Kuopio's two 1 s maxima flagged and attributed to work this round does not touch (above; for review). One instrumented 100k load a side: taken. `PERF-07` at
 level F: level or better. Not relaxed.
+
+### T65 option (c): the backstop under a replaced road (`ROAD-112` round G2, 2026-11-14)
+
+The user chose [T65](#terrain-07-open-questions) option (c) on 2026-11-12: the graded terrain's
+road cut follows the road pieces drawn in the frame (preview or published), without holding the
+road. Built on branch `roadtools-g2` (`dev` `05915359`, rebased onto `2783c90a` once round D
+landed), spike first as the user ordered
+(2026-10-29), decided under the night delegation where a choice was open, for review.
+
+**The spike: what the junction frames are.** A Rust-only replay of `kuopio_03` attempt 8 (its
+case's earlier strokes committed, the stroke dragged and caught up as the probe drags it,
+`t65_cut_spike_kuopio`) and of the 30k commit city's three trunk branches
+(`benchmark_populated_graded_drags` with `METRUM_CUT_SPIKE`), sampled every 0.25 m over the
+replaced pieces: on every frame where a pose replaces published pieces (Kuopio's last pose and its
+three catch-up frames; the 30k branches from their second pose on) the drawn pose covers the
+published cut entirely in XZ (0 sampled points of the cut without a drawn road). The background
+shows through **steps**: the pose's rebuilt junction and span lie up to 0.22 m lower (Kuopio;
+0.12 m at 30k) or up to 2.84 m higher (Kuopio) than the published road at the published cut's edge
+(139 edge points on Kuopio's frames), and the published ground, graded to the published edge,
+leaves an opening at a grazing view. So a cut that follows the drawn road in XZ alone would not
+remove one frame; what removes them is ground where the drawn road leaves the published cut open.
+The published inside-rule ground at its own depth would stand above the drawn road at 80 sampled
+points on Kuopio's frames (up to 0.196 m) and 264-330 at 30k (up to 0.12 m), so it must not draw
+at its own depth.
+
+**The rule.** While a pose that replaces published pieces draws, every tile meeting a replaced
+piece's bounds (`graded_stage.rs` `replaced_cut_tiles`, `O(replaced pieces x their tiles)`) is a
+**backstop tile** of the pose's preview epoch (the preview dictionary's `graded_cut`). A backstop
+tile that draws its installed (published) tile draws its cells in the behind-the-road variant with
+the backstop bit (the fourth custom channel's bit 6), and there the cut ground is drawn instead of
+discarded, at the depth of its own ray's point a hundredth of the way short of the far plane: every
+surface drawn in front of it hides it, so it shows only where nothing is drawn, which is where the
+background showed. A preview tile (the pose's own bake) draws as itself. The epoch's backstop tiles
+go with its preview tiles: at a cancel, a refused commit, or in the frame its commit's edit batch
+installs (the committed tiles are cut for the committed road the released chunks draw); a frame
+of a released epoch (a refused stroke's preview shown again) sets none. A set holding a new
+backstop tile takes the variant in the pose's own frame. Not narrowed to the pose's selection: the
+renderer may hold a tile at another level than the selection's rule gives it, where its bake can
+change unselected.
+
+How the rule answers option (2)'s open problems: under a bridge deck nothing changes (only the
+grounded cut is in question, and the deck draws in front of the backstop); a hill in front of the
+road hides the backstop by depth (no screen-space cut); in the shadow pass the backstop lies at the
+far end of the light's range and shadows nothing; and nothing depends on draw order. The road is
+never held, and one road version draws: the pose's pieces in place of the replaced ones (the
+replay test checks every replaced owner draws its rebuilt piece). The vegetation (T65's third
+layer) is unchanged.
+
+**What changed.** `GradedPreview::cut_tiles` and the bridge's `graded_cut` (`preview.rs`); the
+book's `CutTiles` (`cells.rs`: `set_cut`, `release_cut`, `backstop_in`, the cell mesh and custom
+data), `preview_changes` taking the cut and its epoch, the batch and epoch releases dropping it;
+`terrain_graded_tiles.gd` passing it, the trace's `preview_cut` line (recorded before its frame's
+preview line, replayed with it); the behind variant's backstop (`terrain_surface.gdshaderinc`,
+`terrain_cells.gdshaderinc`: a flat varying only in that variant, so the plain graded shader is
+unchanged). The road drawing holds' rule (T61 (2), the chunk install's serial and the held
+commit preview's generation) is Rust's `RoadDrawHolds`
+(`simulation_node/network_api/road_holds.rs`); its GDScript call sites change after round E
+(`roads.md`, round G2).
+
+**Fresh results** (2026-11-14; control `dev` `05915359`'s release library and release lib test
+binary built in a side worktree, with its scripts; the branch's release library, `$ARTIFACTS` of
+the round).
+
+- Spike cost (the rule, per pose; a catch-up frame keeps the set and costs nothing): Kuopio 1.6-5.3
+  us (5 replaced pieces, 13 tiles), the 30k city up to 17.4 us (16 pieces, 38 tiles, the first pose
+  growing the scratch), against the pose's 3.0 ms terrain stage. No cost problem, so built.
+- Tests (Rust, no engine): the replay on the junction fixtures (T, Y, four-way, split trunk, flat
+  and on the slope; poses and catch-up frames): every point of a published cut the drawn road
+  leaves open lies in a backstop tile, and every replaced owner draws its rebuilt piece
+  (`a_pose_replacing_published_pieces_leaves_no_open_cut_outside_its_backstop`); Kuopio's
+  `kuopio_03` attempt 8 likewise (`t65_cut_spike_kuopio`, manual); the book's backstop: set in the
+  pose's frame with the variant, a preview tile drawing as itself, replaced by the next pose, kept
+  by a catch-up frame, released by a cancel and by its commit's edit batch, a released epoch's
+  frame setting none (`a_poses_backstop_tiles_draw_their_cut_until_their_epoch_is_released`); the
+  holds' rule (`road_holds`).
+- The drag probe (gamescope headless, swing 30 degrees with pauses, background pixels counted,
+  Kuopio's 39 strokes, same session): branch 0 of 6,138 frames show the background, PASS; control
+  17 of 6,146, all `kuopio_03` attempt 8, FAIL on them (`kuopio_03` alone earlier the same session:
+  control 18, branch 0). The fast commit installs in one batch frame on every stroke on both sides;
+  43 cell set variants made on both sides.
+  On the final library (two changes after the probe's, neither in a frame path: the holds' class
+  and a scoped borrow in the bridge) `kuopio_03` again: 0 on attempt 8, PASS.
+- Timing, level F (`./run.sh --timing --level F --base 05915359`, 10:11-10:30, release test
+  binaries, P-cores, eight workers): 30k 1x mean 2.261 / 2.257 ms, p99 3.85 / 3.83, p99.9 4.29 /
+  4.37, every metric level; the branch's acceptance PASS, the control's FAIL on its unpreempted
+  maximum (8.03 ms, 2,510 preempted frames); 30k 32x C B B C level on every metric (two rows
+  flagged noisy, tolerances doubled; the `PERF-17` known exception on all four); K22 30k
+  click-to-ack 7.16 / 6.72 ms. No simulation-thread code changed. (The timing session ran before
+  the user's reduction of the road tool rounds' timing reached the round.)
+- Preview rows (`ROAD-68-H`'s paused rows `sloped_t`, `sloped_branch`, `flat_cross`,
+  `sloped_cross`, `dense`, every one with poses that replace published pieces; gamescope headless,
+  1920x1080, four workers, 100 samples after 8 warm-ups, C B B C, 10:35-10:42, one pass by the
+  coordinator's decision, the desktop in use meanwhile): poses exact within 16.7 ms, control 51.8
+  and 51.2 % of the sampled poses, branch 52.1 and 48.1 % (1,823 of 3,540 against 1,664 of
+  3,320); the viewport's GPU p95 is 0.08-0.14 ms higher on the branch in every case and run (1.66-1.76
+  against 1.58-1.64 ms): the backstop tiles' cells draw in the behind variant, which writes depth
+  and so runs without the early depth test, on the frames a pose replaces published pieces.
+- Products (untimed, the same libraries): Kuopio's stills `close`, `mid`, `forest_low`
+  byte-identical (4,000 warm-up frames, one a side); settled installs by digest on the 30k city
+  (load, still and turns, one a side): graded 4 of 4, buildings 4 of 4, roads 4 of 4, parked 4 of 4,
+  vegetation 4 of 4, water 1 of 1 equal. The 30k city's stills were not taken (decided under the
+  delegation: no still frame has a preview, and the plain graded shader is unchanged; Kuopio's
+  byte identity covers the behind variant with the bit clear). The nine tracked traces hold no
+  preview frame, so they replay as before by construction (the gate replays them); a
+  `kuopio_03` drag-probe trace recorded with the branch after the rebase (330,756 lines, 217 preview
+  frames, 123 of them carrying a pose's backstop tiles) replays bit for bit through the branch's
+  renderer (`graded_replay`), and the rebased library's probe on `kuopio_03` shows the background
+  in 0 frames (PASS).
+- Gates on the rebased tree (`2783c90a` plus this round): clippy `--all-targets` warning set equal
+  to `2783c90a`'s (`asset_document.rs:15` only); debug `cargo test --lib` 2,659 passed, 0 failed,
+  228 ignored; `./run.sh --test` PASS (nextest 2,663 of 2,663, 229 skipped; both Godot chains, 0
+  `SCRIPT ERROR`, no Godot script skipped; the eight self-recorded zoning traces, the bridge trace
+  and the nine tracked goldens replay bit for bit); `cargo doc` before the rebase: no missing-docs
+  warning. The timing, the rows and the products above ran on the tree before the rebase (round D changed no
+  file of this round's; the probe and the trace were taken again after it).
+
+**Against the bars.** `kuopio_03` attempt 8's junction frames 16-18 to 0 and the probe passing
+otherwise: met. A pose replacing published pieces never shows two road versions or a hole for the
+drawn set, by test (the fixtures) and on Kuopio: met. The moving preview rows' target (the drawn
+pose the sampled one within 16.7 ms) not worse than control: not shown either way, for review: the branch's runs straddle the
+control's (52.1 and 48.1 % against 51.8 and 51.2 %), one above and one 3.1 points below its spread,
+in one noisy pass; what the branch measurably adds is 0.08-0.14 ms of GPU p95 on frames whose pose
+replaces published pieces (the backstop's behind variant, which loses the early depth test).
+Options if that cost matters: narrow the backstop tiles from the replaced pieces' bounds to the
+tiles their grounded top triangles meet (fewer tiles for long diagonal spans; the close-up rows'
+junction tiles stay), or accept it. Recommended: accept (it lasts only while such a pose shows and
+replaces visible background with ground). Replayed traces: met. Digests and Kuopio's stills: equal.
+Timing level F: level. Not relaxed.
 
 ### Buildings by travel bucket, batches through the pools (`RENDER-32-L`, 2026-11-12)
 
