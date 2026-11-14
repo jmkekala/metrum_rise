@@ -12227,7 +12227,7 @@ grade.
 
 ## Road tools (`ROAD-112`, `ROAD-113`)
 
-**Status: in progress.** Planned 2026-11-12; round A (the guide kernel) and round B (the session core, not wired) built 2026-11-13. The user asked for a complete refactor of the
+**Status: in progress.** Planned 2026-11-12; round A (the guide kernel) and round B (the session core, not wired) built 2026-11-13, round B landed 2026-11-14. The user asked for a complete refactor of the
 road tool, Rust-first: the current straight mode and the GDScript `Curve3D` "curve" (a cubic
 Bezier whose handles are the raw vectors to the control point, so its curvature, radius and
 length are not exact) are replaced. Mechanics follow the genre (city builders' straight, curve,
@@ -12416,7 +12416,9 @@ Criterion at 30k (mean, 95% interval): control 122.52 us (122.22-122.82), sessio
   1,997,821 at 0 / 1k / 10k / 30k (+2.8 %, the `log` depth of the piece index's hash trie, the
   edge R-tree and the piece map), while cycles grow +8.4 % (580,539 to 629,434) and L1 data
   misses +31 % (11,208 to 14,686): about two thirds of the growth is the larger city's working
-  set in the cache, with the same work. Open for the user (`ROAD-112` B10).
+  set in the cache, with the same work. Accepted by the user 2026-11-14 (`ROAD-112` B10, option
+  (a)): round B lands with this miss and this 800 m grid neighbourhood; the graded queries' cache
+  cost is `ROAD-116`.
 - **No allocation per move** (on the first fixture, before the rebase): the bench's
   `METRUM_ROAD_TOOL_ALLOC_PROBE=<n>` builds the 30k fixture, warms both modes over one trail, runs
   `n` more trails of each and exits; under `heaptrack --record-only` three `n = 0` runs record
