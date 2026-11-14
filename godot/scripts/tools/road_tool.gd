@@ -10,7 +10,8 @@
 ## node or Enter starts the edit phase, where a press drags a node or a handle until the release,
 ## Ctrl breaks a joint, and Enter or a click elsewhere builds; right-click or Esc drops it). The
 ## straight stroke and the simple curve can be continuous (the stroke leaves along the road or
-## the chain it starts on). The script forwards the pointer (`road_tool_pointer` with Shift and
+## the chain it starts on), and a continuous chain carries its direction into the S-curve and
+## freeform too (round CT). The script forwards the pointer (`road_tool_pointer` with Shift and
 ## Ctrl, or `road_tool_pointer_at` for a scripted pointer), the clicks and releases, Enter
 ## (`confirm`), the mode actions and the acknowledgement (`road_tool_event`) and the options
 ## (`road_tool_set_option`),
@@ -105,7 +106,7 @@ var draw_mode: int:
 		_draw_mode = mode
 var _draw_mode: int = DrawMode.STRAIGHT
 ## Continuous: a stroke leaves along the road or the chain it starts on (the session's tangent
-## constraint, B8: straight strokes and simple curves).
+## constraint: straight strokes and simple curves; a chain's S-curve and freeform, round CT).
 var continuous: bool = false:
 	set(enabled):
 		continuous = enabled

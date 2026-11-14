@@ -805,6 +805,8 @@ func _test_native_road_cursor_contract() -> void:
 	await _test_session_strokes(simulation)
 	await _test_s_curve_and_freeform(simulation)
 	_test_snapping_options_row(simulation)
+	# After the snapping row: its chained roads would add guide lines there.
+	await _test_continuous_chains(simulation)
 	host.free()
 
 func _await_road_commit(simulation: SimulationNode, request: int) -> Dictionary:
@@ -1122,6 +1124,61 @@ func _test_s_curve_and_freeform(simulation: SimulationNode) -> void:
 	await _test_freeform_chips(simulation, tool)
 	tool.draw_mode = RoadToolScript.DrawMode.STRAIGHT
 	manager.free()
+	tool.free()
+
+# Round CT: with Continuous on, a built S-curve chains into the next one with its start direction
+# carried (its hints start at the end direction), and a mode change at the chained start carries
+# the chain into freeform, whose two chained drafts build too (open ground between the z = 32 road
+# and the chip tests).
+func _test_continuous_chains(simulation: SimulationNode) -> void:
+	var tool := _session_road_tool(simulation)
+	tool.cancel_road()
+	tool.continuous = true
+	tool.draw_mode = RoadToolScript.DrawMode.COMPLEX_CURVE
+	tool._begin_stroke(Vector3(-45.0, 0.0, 48.0))
+	tool._commit_segment(Vector3(-35.0, 0.0, 48.0))
+	tool._commit_segment(Vector3(-22.0, 0.0, 56.0))
+	tool.pointer = Vector3(-15.0, 0.0, 56.0)
+	_road_frame(tool)
+	var edges := int(simulation.get_road_benchmark_state()["live_edges"])
+	_expect(tool._commit_segment(tool.pointer), "the first S-curve is sent")
+	await _await_ack(tool)
+	_expect(int(simulation.get_road_benchmark_state()["live_edges"]) > edges, "the first S-curve is built")
+	# The chained S-curve: its start direction is set, so its first hint is the end direction's.
+	tool.pointer = Vector3(-5.0, 0.0, 60.0)
+	_road_frame(tool)
+	var frame: Dictionary = simulation.road_tool_frame()
+	var hints := [tool.hud.text()]
+	_expect(int(frame["phase"]) == 1 and int(frame["placed"]) == 2, "the chained S-curve starts with its start direction set: %s" % frame["placed"])
+	_expect(tool.stroke_preview_current() and tool._session_points[0] == Vector3(-15.0, 0.0, 56.0), "the chained S-curve is previewed from the chain's end")
+	_expect(not tool._commit_segment(Vector3(0.0, 0.0, 62.0)), "the end aim commits nothing")
+	tool.pointer = Vector3(8.0, 0.0, 62.0)
+	_road_frame(tool)
+	hints.append(tool.hud.text())
+	_expect(hints[0].contains("Click to set the end direction") and not hints[0].contains("start direction") and hints[1].contains("Click to place the end"), "the second S-curve's hints start at the end direction: %s" % [hints])
+	edges = int(simulation.get_road_benchmark_state()["live_edges"])
+	_expect(tool._commit_segment(tool.pointer), "the chained S-curve is sent")
+	await _await_ack(tool)
+	_expect(int(simulation.get_road_benchmark_state()["live_edges"]) > edges, "the chained S-curve is built")
+	# Freeform chosen at the chained start keeps the chain: two chained drafts.
+	tool.draw_mode = RoadToolScript.DrawMode.FREEFORM
+	for nodes in [[Vector3(25.0, 0.0, 58.0), Vector3(40.0, 0.0, 52.0)], [Vector3(55.0, 0.0, 50.0), Vector3(70.0, 0.0, 55.0)]]:
+		_road_frame(tool)
+		frame = simulation.road_tool_frame()
+		_expect(int(frame["phase"]) == 1 and int(frame["placed"]) == 1, "the freeform draft starts at the chain's end")
+		for node in nodes:
+			_expect(not tool._commit_segment(node), "a freeform node commits nothing")
+		tool.confirm_road()
+		_road_frame(tool)
+		_expect(int(simulation.road_tool_frame()["phase"]) == 3, "Enter starts the chained draft's edit phase")
+		edges = int(simulation.get_road_benchmark_state()["live_edges"])
+		tool.confirm_road()
+		_expect(tool._commit_request_id > 0, "Enter sends the chained freeform draft")
+		await _await_ack(tool)
+		_expect(int(simulation.get_road_benchmark_state()["live_edges"]) > edges, "the chained freeform draft is built")
+	tool.cancel_road()
+	tool.continuous = false
+	tool.draw_mode = RoadToolScript.DrawMode.STRAIGHT
 	tool.free()
 
 # Round V item 7 (on open ground east of the curve tests): an open freeform draft shows its hint; in the edit phase the Build chip builds

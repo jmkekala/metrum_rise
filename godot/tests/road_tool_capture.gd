@@ -19,6 +19,9 @@
 ## valley, which segments into ground, a bridge and ground, as tier 1's batch ghost.
 ## `METRUM_ROAD_TOOL_CAPTURE_SET=scurve_steps` writes round SC's: an S-curve after its first,
 ## second and third click (the road previewed with the step's hint chip) and finished.
+## `METRUM_ROAD_TOOL_CAPTURE_SET=continuous_chains` writes round CT's: with Continuous on, a built
+## S-curve and the chained one previewed from its end, then a built freeform draft and the
+## chained one in its edit phase.
 extends SceneTree
 
 const RoadToolScript := preload("res://scripts/tools/road_tool.gd")
@@ -75,9 +78,11 @@ func _run() -> void:
 	_tool.active = true
 	_tool.begin_preview_measurement()
 	var capture_set := OS.get_environment("METRUM_ROAD_TOOL_CAPTURE_SET")
-	if capture_set in ["snapping", "scurve_freeform", "restyle", "batch_ghost", "scurve_steps"]:
+	if capture_set in ["snapping", "scurve_freeform", "restyle", "batch_ghost", "scurve_steps", "continuous_chains"]:
 		if capture_set == "snapping":
 			await _capture_snapping()
+		elif capture_set == "continuous_chains":
+			await _capture_continuous_chains()
 		elif capture_set == "scurve_steps":
 			await _capture_scurve_steps()
 		elif capture_set == "restyle":
@@ -254,6 +259,47 @@ func _capture_scurve_steps() -> void:
 	await _ack()
 	_tool.cancel_road()
 	await _capture("scurve_finished")
+
+# Round CT: Continuous on; an S-curve built, the chained S-curve (its start direction carried)
+# previewed to its end; a freeform draft built, the chained draft (its start handle locked to the
+# carried direction) in its edit phase.
+func _capture_continuous_chains() -> void:
+	_tool.continuous = true
+	_tool.draw_mode = RoadToolScript.DrawMode.COMPLEX_CURVE
+	_tool._begin_stroke(Vector3(-90.0, 0.0, 40.0))
+	_tool._commit_segment(Vector3(-70.0, 0.0, 40.0))
+	_tool._commit_segment(Vector3(-45.0, 0.0, 20.0))
+	_tool.set_scripted_pointer(true, Vector3(-30.0, 0.0, 20.0))
+	await _frames(3)
+	_expect(_tool._commit_segment(Vector3(-30.0, 0.0, 20.0)), "the first S-curve is sent")
+	await _ack()
+	_expect(int(_simulation.road_tool_frame()["placed"]) == 2, "the chained S-curve has its start direction")
+	_tool._commit_segment(Vector3(0.0, 0.0, 40.0))
+	_tool.set_scripted_pointer(true, Vector3(25.0, 0.0, 40.0))
+	await _capture("chained_scurve_pair")
+	_expect(_tool.stroke_preview_current(), "the chained S-curve is previewed")
+	_expect(_tool._commit_segment(Vector3(25.0, 0.0, 40.0)), "the chained S-curve is sent")
+	await _ack()
+	_tool.cancel_road()
+	_tool.draw_mode = RoadToolScript.DrawMode.FREEFORM
+	_tool._begin_stroke(Vector3(-90.0, 0.0, -30.0))
+	for node in [Vector3(-60.0, 0.0, -10.0), Vector3(-30.0, 0.0, -30.0)]:
+		_tool._commit_segment(node)
+	_tool._session_press("confirm")
+	await _frames(3)
+	_tool._session_press("confirm")
+	_expect(_tool._commit_request_id > 0, "the first freeform draft is sent")
+	await _ack()
+	for node in [Vector3(0.0, 0.0, -40.0), Vector3(30.0, 0.0, -20.0)]:
+		_tool._commit_segment(node)
+	_tool._session_press("confirm")
+	await _frames(3)
+	_expect(int(_simulation.road_tool_frame()["phase"]) == 3, "the chained draft is in its edit phase")
+	await _capture("chained_freeform_pair")
+	_tool._session_press("confirm")
+	await _ack()
+	_tool.cancel_road()
+	_tool.continuous = false
 
 # Round N: an S-curve mid-draw (its end dragged round a circle for the upload record), then a
 # freeform draft placed, taken into its edit phase, one handle dragged (round a circle too), and

@@ -26,6 +26,7 @@ use crate::simulation::network::interaction::{
 use godot::prelude::Vector3;
 use std::sync::OnceLock;
 
+mod continuous_chain;
 mod ground_marks;
 mod heights;
 mod labels;

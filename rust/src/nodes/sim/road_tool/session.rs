@@ -13,7 +13,10 @@
 //! Chain rules (today's, workflow 3): an accepted stroke starts the next at its end, carrying its
 //! end tangent, unless it ended on the network (a node or edge snap), either end lies on the map
 //! edge, or the player cancelled meanwhile; right-click or `cancel` ends the chain. A refused
-//! commit leaves the stroke editable at its last point.
+//! commit leaves the stroke editable at its last point. With Continuous on (round CT, the user's
+//! decision of 2026-11-14 replacing B8 / N7) the chain carries its direction into every mode: the
+//! S-curve takes it as its start aim (that step is skipped), freeform locks its start's handle to
+//! it, and a mode change while only the chained start is placed keeps the chain in the new mode.
 //!
 //! Freeform (round N, `modes/freeform.rs`): clicks place nodes, then an edit phase drags nodes
 //! and handles (press, pointer moves, release) until `confirm` or a press off every grip sends
@@ -30,7 +33,8 @@
 //! segments it once a frame.
 
 use super::frame::{
-    DraftRefusal, DraftRun, GizmoHandleKind, GizmoLineClass, Phase, RoadToolFrame, StrokeRequest,
+    DraftRefusal, DraftRun, GizmoHandleKind, GizmoLineClass, Gizmos, Phase, RoadToolFrame,
+    StrokeRequest,
 };
 use super::height::ground_marks::push_ground_mark;
 use super::height::handles::{
@@ -242,6 +246,9 @@ pub struct RoadToolSession {
     start_on_border: bool,
     // The stroke starts where the last accepted one ended (the chain).
     chained: bool,
+    // A continuous chain's S-curve: the carried unit direction standing for its start aim click
+    // (round CT; not among the placed points).
+    carried_aim: Option<DVec2>,
     // The retained network target and the view generation it was taken at.
     sticky: Option<(NetworkSnapTarget, u64)>,
     cursor: Option<Cursor>,
@@ -280,6 +287,7 @@ impl RoadToolSession {
             start_road: None,
             start_on_border: false,
             chained: false,
+            carried_aim: None,
             sticky: None,
             cursor: None,
             shift: false,
@@ -353,7 +361,12 @@ impl RoadToolSession {
             RoadToolOption::LengthStepM(step) => {
                 self.snap.length_step_m = step.filter(|step| *step > 0.0);
             }
-            RoadToolOption::Continuous(on) => self.continuous = on,
+            RoadToolOption::Continuous(on) => {
+                self.continuous = on;
+                if self.only_chain_start() {
+                    self.carry_chain();
+                }
+            }
             RoadToolOption::StraightGrade(on) => self.heights.straight_grade = on,
         }
     }
@@ -410,12 +423,47 @@ impl RoadToolSession {
         self.refresh(view);
     }
 
-    // A different mode drops the stroke; the current mode again changes nothing.
+    // A different mode drops the stroke; the current mode again changes nothing. With Continuous
+    // on, a chain whose stroke has only its chained start placed keeps it (round CT).
     fn set_mode(&mut self, mode: DrawMode) {
-        if mode != self.mode {
-            self.cancel();
-            self.mode = mode;
+        if mode == self.mode {
+            return;
         }
+        let keep = self.continuous && self.only_chain_start();
+        if !keep {
+            self.cancel();
+        }
+        self.mode = mode;
+        if keep {
+            self.heights.grip = None;
+            self.sticky = None;
+            self.carry_chain();
+        }
+    }
+
+    // Whether the stroke is a chain's start alone: nothing else placed, nothing pending.
+    fn only_chain_start(&self) -> bool {
+        self.chained && self.pending.is_none() && self.placed_len == 1 && !self.freeform.editing()
+    }
+
+    // Continuous on (round CT): a chained start carries the last road's end direction into the
+    // S-curve (its start aim) and freeform (its start handle's direction); off, neither.
+    // Straight and the simple curve read it live (`held_tangent`).
+    fn carry_chain(&mut self) {
+        let direction = match self.start_road {
+            Some(EndRoad::Continue(direction)) if self.continuous && self.chained => {
+                Some(direction)
+            }
+            _ => None,
+        };
+        self.carried_aim = direction.filter(|_| self.mode == DrawMode::ComplexCurve);
+        self.freeform
+            .lock_start(direction.filter(|_| self.mode == DrawMode::Freeform));
+    }
+
+    // The points the stroke's steps have set: the placed ones and a carried start aim.
+    fn steps(&self) -> usize {
+        self.placed_len + usize::from(self.carried_aim.is_some())
     }
 
     fn cancel(&mut self) {
@@ -429,6 +477,7 @@ impl RoadToolSession {
         self.start_road = None;
         self.start_on_border = false;
         self.chained = false;
+        self.carried_aim = None;
         self.sticky = None;
         self.freeform.reset();
         self.heights.grip = None;
@@ -667,8 +716,8 @@ impl RoadToolSession {
             (Some(_), _) => Phase::AwaitingAck,
             (None, 0) => Phase::Idle,
             _ if self.freeform.editing() => Phase::Editing,
-            (None, placed) => Phase::Placing {
-                placed: placed as u8,
+            (None, _) => Phase::Placing {
+                placed: self.steps() as u8,
             },
         }
     }
@@ -689,7 +738,7 @@ impl RoadToolSession {
             self.freeform_click(cursor, confirm);
             return;
         }
-        if self.placed_len + 1 < self.mode.points() {
+        if self.steps() + 1 < self.mode.points() {
             let mut point = cursor.position;
             if self.mode == DrawMode::SimpleCurve
                 && let Some(tangent) = self.held_tangent(xz_of(point))
@@ -806,6 +855,7 @@ impl RoadToolSession {
         self.placed[0] = position;
         self.placed_len = 1;
         self.chained = false;
+        self.carried_aim = None;
         // The start takes the live end's height: it was placed with it.
         self.heights.start_offset_m = self.heights.end_offset_m;
         self.heights.start_locked = snapped.target.is_some();
@@ -851,6 +901,7 @@ impl RoadToolSession {
             self.chained = true;
             // The chain starts on the accepted stroke's end node: its graph height.
             self.heights.start_locked = true;
+            self.carry_chain();
         }
     }
 
@@ -865,13 +916,26 @@ impl RoadToolSession {
     }
 
     // The start tangent the continuous constraint holds, while it applies (before the second
-    // point of a straight stroke or the control point of a simple curve; B8: not the complex
-    // curve or freeform, which set their own).
+    // point of a straight stroke or the control point of a simple curve; the S-curve and
+    // freeform take a chain's direction once, `carry_chain`).
     fn held_tangent(&self, live: DVec2) -> Option<DVec2> {
         let held = matches!(self.mode, DrawMode::Straight | DrawMode::SimpleCurve);
         (self.continuous && self.placed_len == 1 && held)
             .then(|| self.start_tangent(live))
             .flatten()
+    }
+
+    // The start direction the pose's draft leaves along: the held tangent; a simple curve's
+    // once its control point is placed (held on the ray, whose stored `f32` point the shape
+    // re-projects, so the curve leaves along the tangent exactly: round CT); or the S-curve's
+    // carried start aim.
+    fn draft_tangent(&self, live: DVec2) -> Option<DVec2> {
+        match (self.mode, self.placed_len) {
+            (DrawMode::SimpleCurve, 2) if self.continuous => {
+                self.start_tangent(xz_of(self.placed[1]))
+            }
+            _ => self.held_tangent(live).or(self.carried_aim),
+        }
     }
 
     // Pick and snap one pointer pose. `None` when the pointer meets no surface.
@@ -961,10 +1025,10 @@ impl RoadToolSession {
             (point, dir)
         });
         if constrained && self.snap.guides {
-            let first_axis = (self.placed_len >= 2).then(|| {
-                let (a, b) = (xz_of(self.placed[0]), xz_of(self.placed[1]));
-                (b - a)
-                    .try_normalize()
+            let first_axis = (self.steps() >= 2).then(|| {
+                let a = xz_of(self.placed[0]);
+                self.carried_aim
+                    .or_else(|| (xz_of(self.placed[1]) - a).try_normalize())
                     .map(|dir| GuideLine { origin: a, dir })
             });
             collect_guides(
@@ -1144,7 +1208,7 @@ impl RoadToolSession {
         let handles =
             self.set_handles(self.placed[0], cursor.position, cursor.snapped.target.is_some());
         let live = xz_of(cursor.position);
-        let tangent = self.held_tangent(live);
+        let tangent = self.draft_tangent(live);
         let placed_xz = self.placed_xz();
         let shaped = modes::shape(
             self.mode,
@@ -1155,7 +1219,7 @@ impl RoadToolSession {
         );
         self.push_tangent_legs(cursor.position, shaped.is_ok());
         // The next click's hint at the cursor (round SC), before the draft's chips.
-        if let Some(step) = draft_hint(self.mode, self.placed_len) {
+        if let Some(step) = draft_hint(self.mode, self.steps()) {
             let last = self.placed[self.placed_len - 1];
             push_hint(step, cursor.position, Some(last), &mut self.frame.labels);
         }
@@ -1396,7 +1460,26 @@ impl RoadToolSession {
             gizmos.push_handle(kind, *point);
         }
         gizmos.push_handle(GizmoHandleKind::Cursor, live);
-        if self.mode == DrawMode::ComplexCurve {
+        if self.carried_aim.is_some() {
+            // A carried start aim (round CT) is no point: before the end aim the leg runs from the
+            // start to where the draft's tangents meet and on to the cursor; after it, the end
+            // aim leg and the control polygon, which leaves the start along the direction.
+            match self.placed[..self.placed_len] {
+                [start] => match modes::single_control(&self.path).filter(|_| shaped) {
+                    Some(aim) => {
+                        let aim =
+                            Vector3::new(aim.x as f32, (start.y + live.y) * 0.5, aim.y as f32);
+                        gizmos.push_line(GizmoLineClass::Tangent, [start, aim, live]);
+                    }
+                    None => gizmos.push_line(GizmoLineClass::Tangent, [start, live]),
+                },
+                [start, end_aim, ..] => {
+                    gizmos.push_line(GizmoLineClass::Tangent, [end_aim, live]);
+                    push_control_polygon(gizmos, &self.path, start, live, shaped);
+                }
+                [] => {}
+            }
+        } else if self.mode == DrawMode::ComplexCurve {
             let placed = &self.placed[..self.placed_len];
             match *placed {
                 [start] => gizmos.push_line(GizmoLineClass::Tangent, [start, live]),
@@ -1406,19 +1489,7 @@ impl RoadToolSession {
                 [start, start_aim, end_aim, ..] => {
                     gizmos.push_line(GizmoLineClass::Tangent, [start, start_aim]);
                     gizmos.push_line(GizmoLineClass::Tangent, [end_aim, live]);
-                    if let Some(controls) = modes::biarc_controls(&self.path).filter(|_| shaped) {
-                        // Drawn over everything, so one height serves: the ends' mean.
-                        let y = (start.y + live.y) * 0.5;
-                        let at = |p: DVec2| Vector3::new(p.x as f32, y, p.y as f32);
-                        let [first, joint, second] = controls.map(at);
-                        gizmos.push_line(
-                            GizmoLineClass::Tangent,
-                            [start, first, joint, second, live],
-                        );
-                        gizmos.push_handle(GizmoHandleKind::Handle, first);
-                        gizmos.push_handle(GizmoHandleKind::Joint, joint);
-                        gizmos.push_handle(GizmoHandleKind::Handle, second);
-                    }
+                    push_control_polygon(gizmos, &self.path, start, live, shaped);
                 }
                 [] => {}
             }
@@ -1470,6 +1541,28 @@ impl RoadToolSession {
             }
         }
     }
+}
+
+// The S-curve's control polygon (start, the arcs' control points around the joint, end) with
+// handles at the arcs' control points and a joint handle, once `shaped` as a biarc.
+fn push_control_polygon(
+    gizmos: &mut Gizmos,
+    path: &GuidePath,
+    start: Vector3,
+    live: Vector3,
+    shaped: bool,
+) {
+    let Some(controls) = modes::biarc_controls(path).filter(|_| shaped) else {
+        return;
+    };
+    // Drawn over everything, so one height serves: the ends' mean.
+    let y = (start.y + live.y) * 0.5;
+    let at = |p: DVec2| Vector3::new(p.x as f32, y, p.y as f32);
+    let [first, joint, second] = controls.map(at);
+    gizmos.push_line(GizmoLineClass::Tangent, [start, first, joint, second, live]);
+    gizmos.push_handle(GizmoHandleKind::Handle, first);
+    gizmos.push_handle(GizmoHandleKind::Joint, joint);
+    gizmos.push_handle(GizmoHandleKind::Handle, second);
 }
 
 fn end_road(direction: StartDirection) -> EndRoad {

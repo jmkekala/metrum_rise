@@ -163,6 +163,43 @@ impl RoadToolBench {
         assert_eq!(self.session.placed_count(), 1, "the press grabs the grip");
     }
 
+    /// Restarts a continuous chain (round CT): Continuous on, a straight stroke on open ground
+    /// sent and accepted, then `mode` chosen at the chained start (the S-curve with its start
+    /// aim carried, freeform with its start handle locked) and, when `one_more`, the S-curve's
+    /// end aim or freeform's second node placed, so each move previews the chained draft.
+    /// Continuous stays on.
+    pub fn restart_chained(&mut self, mode: DrawMode, one_more: bool) {
+        use super::session::{RoadToolAction, RoadToolOption};
+        self.event(RoadToolEvent::Action(RoadToolAction::Cancel));
+        self.event(RoadToolEvent::Action(RoadToolAction::ModeStraight));
+        self.session.set_option(RoadToolOption::Continuous(true));
+        // Exact points in a block (no snap), so the stroke ends on open ground and chains.
+        let click = |bench: &mut Self, point: Vector3| {
+            bench.event(RoadToolEvent::Pointer {
+                pointer: Pointer::Scripted(point),
+                shift: false,
+                ctrl: false,
+            });
+            bench.event(RoadToolEvent::Press(PointerButton::Left));
+        };
+        click(self, Vector3::new(40.0, 0.0, 50.0));
+        click(self, Vector3::new(60.0, 0.0, 45.0));
+        assert!(
+            self.session.take_commit().is_some(),
+            "the straight stroke is sent"
+        );
+        self.event(RoadToolEvent::CommitAck { committed: true });
+        self.event(RoadToolEvent::Action(mode_action(mode)));
+        assert_eq!(
+            self.session.placed_count(),
+            1,
+            "the chain carries into the mode"
+        );
+        if one_more {
+            click(self, Vector3::new(110.0, 0.0, 70.0));
+        }
+    }
+
     // A pointer at a world point, then a left press there.
     fn place(&mut self, point: Vector3) {
         self.event(RoadToolEvent::Pointer {
@@ -249,14 +286,7 @@ impl RoadToolBench {
     }
 
     fn start_stroke(&mut self, mode: DrawMode) {
-        use super::session::RoadToolAction;
-        let action = match mode {
-            DrawMode::Straight => RoadToolAction::ModeStraight,
-            DrawMode::SimpleCurve => RoadToolAction::ModeSimpleCurve,
-            DrawMode::ComplexCurve => RoadToolAction::ModeComplexCurve,
-            DrawMode::Freeform => RoadToolAction::ModeFreeform,
-        };
-        self.event(RoadToolEvent::Action(action));
+        self.event(RoadToolEvent::Action(mode_action(mode)));
         self.event(RoadToolEvent::Pointer {
             pointer: Pointer::World(START),
             shift: false,
@@ -267,6 +297,17 @@ impl RoadToolBench {
 
     fn event(&mut self, event: RoadToolEvent) {
         self.session.handle_event(&self.view, event);
+    }
+}
+
+// The mode button's action for `mode`.
+fn mode_action(mode: DrawMode) -> super::session::RoadToolAction {
+    use super::session::RoadToolAction;
+    match mode {
+        DrawMode::Straight => RoadToolAction::ModeStraight,
+        DrawMode::SimpleCurve => RoadToolAction::ModeSimpleCurve,
+        DrawMode::ComplexCurve => RoadToolAction::ModeComplexCurve,
+        DrawMode::Freeform => RoadToolAction::ModeFreeform,
     }
 }
 

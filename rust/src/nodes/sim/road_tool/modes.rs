@@ -7,16 +7,17 @@
 //! (the start included); the last click confirms the stroke. Continuous mode adds the tangent
 //! constraint to a stroke with a start tangent (a carried one, or a road it starts on): a
 //! straight stroke becomes the line or arc leaving along it through the cursor (plan 2.2), a
-//! simple curve's control point is held on its ray (U1); the complex curve and freeform set
-//! their own (B8). Freeform (round N) keeps its nodes' handles and its edit phase in
-//! `freeform::Freeform`, which the session drives beside its placed points.
+//! simple curve's control point is held on its ray (U1). A continuous chain (round CT, the
+//! user's decision replacing B8) also carries its direction into the S-curve, as its start aim,
+//! and freeform, as its start's handle direction. Freeform (round N) keeps its nodes' handles
+//! and its edit phase in `freeform::Freeform`, which the session drives beside its placed points.
 
 mod complex_curve;
 pub mod freeform;
 mod simple_curve;
 mod straight;
 
-pub(crate) use complex_curve::biarc_controls;
+pub(crate) use complex_curve::{biarc_controls, single_control};
 pub(crate) use simple_curve::held_control;
 
 use crate::simulation::network::guide::{DVec2, GuideError, GuidePath, GuideSegment, Line};
@@ -51,7 +52,8 @@ impl DrawMode {
 
 /// Fills `path` with the draft of `mode` from the placed points (`placed[0]` the start) and the
 /// live cursor `live`, which stands for the next point. `tangent` is the unit start tangent the
-/// continuous constraint holds (`None` when continuous is off or the stroke has none). While
+/// continuous constraint holds (`None` when continuous is off or the stroke has none; for the
+/// S-curve the carried start aim, which then is not among `placed`). While
 /// points are missing the path is the ghost line from the last placed point, except the
 /// S-curve's: the line from its start, then the fillet through its start aim. `O(1)`, no
 /// allocation once `path` holds three segments. Freeform drafts shape through
@@ -70,7 +72,7 @@ pub fn shape(
     match mode {
         DrawMode::Straight => straight::shape(start, live, tangent, path),
         DrawMode::SimpleCurve => simple_curve::shape(placed, live, tangent, path),
-        DrawMode::ComplexCurve => complex_curve::shape(placed, live, path),
+        DrawMode::ComplexCurve => complex_curve::shape(placed, live, tangent, path),
         DrawMode::Freeform => ghost(*placed.last().expect("a started stroke"), live, path),
     }
 }

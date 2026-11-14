@@ -19,7 +19,10 @@
 //! line with thirds). Dragging a handle makes the node's handles the player's; the opposite
 //! handle turns with it, keeping its own length, so the joint stays collinear, unless the drag
 //! breaks it (Ctrl): a broken node's handles move apart from then on. A chained stroke's start is
-//! where the last road ended, so it is not grabbed.
+//! where the last road ended, so it is not grabbed. With Continuous on (round CT) a chained
+//! start's handle is locked to the carried direction (the last road's end tangent): automatic or
+//! dragged, only its length changes, and Ctrl does not break it (no other chained start can
+//! leave its carried direction either).
 //!
 //! Everything is fixed-size: the spans are rebuilt in the session's reused path, so a pose
 //! allocates nothing. `O(nodes)` per pose, plus the kernel's Bezier work per span.
@@ -67,6 +70,9 @@ pub(crate) struct Freeform {
     // last node's, the HUD its road).
     targets: [Option<NetworkSnapTarget>; MAX_NODES],
     border: [bool; MAX_NODES],
+    // The unit direction the start's outward handle is locked to (a continuous chain's carried
+    // end tangent).
+    start_direction: Option<DVec2>,
     editing: bool,
     grip: Option<Grip>,
 }
@@ -79,6 +85,7 @@ impl Default for Freeform {
             broken: [false; MAX_NODES],
             targets: [None; MAX_NODES],
             border: [false; MAX_NODES],
+            start_direction: None,
             editing: false,
             grip: None,
         }
@@ -99,6 +106,12 @@ impl Freeform {
             self.manual[index] = false;
             self.broken[index] = false;
         }
+    }
+
+    /// Locks the start's outward handle to the unit `direction` (`None` frees it): a
+    /// continuous chain's carried end tangent.
+    pub(crate) fn lock_start(&mut self, direction: Option<DVec2>) {
+        self.start_direction = direction;
     }
 
     /// Whether the draft is in its edit phase.
@@ -168,7 +181,8 @@ impl Freeform {
     /// Moves the grabbed handle to `at` (a node's grip is the session's to move, with its
     /// snap). The opposite handle turns to stay collinear, keeping its length, unless the node
     /// is broken or `break_joint` (Ctrl) breaks it now. A handle dragged onto its node keeps its
-    /// last place (a span needs a non-zero end handle).
+    /// last place (a span needs a non-zero end handle). A locked start's handle takes the drag's
+    /// length along its direction (not behind the node: it keeps its last place).
     pub(crate) fn drag_handle(&mut self, nodes: &[DVec2], at: DVec2, break_joint: bool) {
         let (index, outward) = match self.grip {
             Some(Grip::Inward(index)) => (index, false),
@@ -177,6 +191,13 @@ impl Freeform {
         };
         let offset = at - nodes[index];
         if offset == DVec2::ZERO {
+            return;
+        }
+        if let Some(direction) = self.start_direction.filter(|_| index == 0) {
+            let length = offset.dot(direction);
+            if length > 0.0 {
+                self.handles[0].outward = direction * length;
+            }
             return;
         }
         if break_joint {
@@ -225,17 +246,23 @@ impl Freeform {
                 };
             }
         }
-        // An end aims at its neighbour's handle; two automatic ends make the line in thirds.
+        // An end aims at its neighbour's handle; two automatic ends make the line in thirds. A
+        // locked start keeps the automatic length along its direction, and the end aims at it.
         let last = count - 1;
         if !manual(0) {
-            self.handles[0].outward = if count > 2 || manual(last) {
+            let outward = if count > 2 || manual(last) {
                 (nodes[1] + self.handles[1].inward - nodes[0]) / 2.0
             } else {
                 (nodes[1] - nodes[0]) / 3.0
             };
+            self.handles[0].outward = match self.start_direction {
+                Some(direction) => direction * outward.length(),
+                None => outward,
+            };
         }
+        let start_locked = self.start_direction.is_some();
         if !manual(last) {
-            self.handles[last].inward = if count > 2 || manual(0) {
+            self.handles[last].inward = if count > 2 || manual(0) || start_locked {
                 (nodes[last - 1] + self.handles[last - 1].outward - nodes[last]) / 2.0
             } else {
                 (nodes[0] - nodes[1]) / 3.0

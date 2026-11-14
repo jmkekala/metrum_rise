@@ -12,7 +12,7 @@
 //!   printing one `ROAD_TOOL_LOCALITY` JSON line per tier with p50/p99/max in microseconds and the
 //!   trail's frame digest; panics when a tier's digest differs from the first tier's.
 //! - `METRUM_ROAD_TOOL_ALLOC_PROBE=<n>`: builds the tier `METRUM_ROAD_TOOL_TIER` (default 30000),
-//!   warms every session mode (the S-curve's first two steps, a freeform drag, a graded stroke and a height grip drag) over one
+//!   warms every session mode (the S-curve's first two steps, a freeform drag, a graded stroke, a height grip drag and the continuous chain's S-curve and freeform) over one
 //!   trail, runs `n` more trails of each
 //!   and exits. Run under
 //!   `heaptrack --record-only` with `n = 0` and `n = 20`: equal allocation counts mean a warmed
@@ -106,8 +106,10 @@ fn allocation_probe(trails: usize) -> ! {
     let mut bench = RoadToolBench::build(env_usize("METRUM_ROAD_TOOL_TIER").unwrap_or(30_000));
     let moves = bench.moves();
     // Every drawing mode, the S-curve's first two steps (round SC), a freeform drag in the edit
-    // phase (round N), a graded straight stroke and a height grip drag (round I).
-    let restarts: [fn(&mut RoadToolBench); 9] = [
+    // phase (round N), a graded straight stroke and a height grip drag (round I), and last (they
+    // leave Continuous on) the continuous chain's S-curve at its two steps and freeform (round
+    // CT).
+    let restarts: [fn(&mut RoadToolBench); 12] = [
         |bench| bench.restart(DrawMode::Straight),
         |bench| bench.restart(DrawMode::SimpleCurve),
         |bench| bench.restart(DrawMode::ComplexCurve),
@@ -117,6 +119,9 @@ fn allocation_probe(trails: usize) -> ! {
         RoadToolBench::restart_freeform_drag,
         RoadToolBench::restart_raised,
         RoadToolBench::restart_height_drag,
+        |bench| bench.restart_chained(DrawMode::ComplexCurve, false),
+        |bench| bench.restart_chained(DrawMode::ComplexCurve, true),
+        |bench| bench.restart_chained(DrawMode::Freeform, true),
     ];
     for restart in restarts {
         restart(&mut bench);
