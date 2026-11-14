@@ -173,7 +173,9 @@ load frames with road work exceed the 4 ms hydration budget). Its second part (r
 bitwise equal to the GDScript build, and installs them a surface a part, the street lights in
 1.0 ms slices, then one swap: a 30k load's road work is at most 3.6-4.4 ms a frame, 0-1 frames a
 run over the 4 ms budget, single engine stalls in one lamp batch node (CB2c, 2026-11-14; control
-9.1 ms, 49 frames over), and Kuopio's first commits no longer make the lamp and sign models in one
+9.1 ms, 49 frames over); round CB3 (2026-11-14, for review) draws the lamps on pooled server slots
+built hidden in the load call, and no 30k load frame's road work passes 4.0 ms (five of five runs,
+max 1.8-4.0 ms). Kuopio's first commits no longer make the lamp and sign models in one
 frame; a mesh ledger shows the hydration's server meshes freed; edits still build in GDScript ([record](terrain.md#the-road-chunk-renderers-rust-half-render-52-round-cb-part-2-2026-11-13)).
 `RENDER-32-N` (2026-11-13, for review) measured how many frames a chunk that comes into view
 waits before it draws, per layer, on 0.5 s turns, a far zoom-out to 40 km and a zoom from there to

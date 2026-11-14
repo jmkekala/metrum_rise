@@ -94,8 +94,9 @@ fn prewarmed_spares_serve_the_first_batches_and_a_reset_frees_every_slot() {
     draw.begin(&mut backend, (1, -2), origin, batches(origin));
     assert!(draw.build_part(&mut backend, (1, -2), f64::INFINITY));
     let built = draw.ledger();
-    // Every mesh's first small batch took its spare: nothing made beyond the chunk's slots.
-    assert_eq!((built.spares, built.made), (0, built.live as u64));
+    // Every lamp mesh's first small batch took its spare (the glow's 48 heads are a larger
+    // class): nothing made beyond the chunk's slots.
+    assert_eq!((built.spares, built.made), (1, built.live as u64 + 1));
     // A replaced chunk takes its own slots back.
     draw.begin(&mut backend, (1, -2), origin, batches(origin));
     assert_eq!(backend.visible(Scenario::Main).count(), 0);
@@ -109,7 +110,7 @@ fn prewarmed_spares_serve_the_first_batches_and_a_reset_frees_every_slot() {
     assert!(draw.build_part(&mut backend, (1, -2), f64::INFINITY));
     draw.clear(&mut backend);
     let reset = draw.ledger();
-    assert_eq!((reset.live, reset.spares), (0, built.live));
+    assert_eq!((reset.live, reset.spares), (0, built.live + 1));
     assert_eq!(backend.visible(Scenario::Main).count(), 0);
     draw.free_all(&mut backend);
     let end = draw.ledger();
@@ -147,13 +148,14 @@ fn a_prebuilt_chunk_only_shows_when_its_batches_come() {
         &mut backend,
         [((1, -2), origin, batches(origin))].into_iter(),
     );
-    assert_eq!(made, draw.ledger().made);
+    // The prewarm's spares are made first and taken where a batch's class is the smallest.
+    assert_eq!(made + MESHES as u64, draw.ledger().made);
     assert_eq!(backend.visible(Scenario::Main).count(), 0);
     let commands = backend.commands.len();
     // The same batches: one part shows them, nothing made or written.
     draw.begin(&mut backend, (1, -2), origin, batches(origin));
     assert!(draw.build_part(&mut backend, (1, -2), 0.0));
-    assert_eq!(draw.ledger().made, made);
+    assert_eq!(draw.ledger().made, made + MESHES as u64);
     assert!(
         backend.commands[commands..]
             .iter()

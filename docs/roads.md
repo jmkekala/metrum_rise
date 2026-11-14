@@ -12408,8 +12408,9 @@ road tool) `mark_network_nodes_dirty`, `road_chunks_installed(generation)` and
 load's hydration builds them in Rust: each chunk's surfaces are encoded in Godot's own layout on
 the background pool (`stream/layers/roads/surfaces.rs`, bitwise equal to
 `add_surface_from_arrays`), added a surface a part to a hidden `ArrayMesh` through
-`RenderingServer.mesh_add_surface`, the chunk's street lights make their nodes in 1.0 ms slices
-(`street_lights.gd` `begin_chunk`/`build_chunk_part`), and the swap installs the finished mesh
+`RenderingServer.mesh_add_surface`, the chunk's street lights draw (`street_lights.gd`
+`begin_chunk`/`build_chunk_part`: since CB3 their batches were built hidden in the load call and
+the part shows them), and the swap installs the finished mesh
 through `install_built` (holds unchanged). Edits (`update`, `commit_staged`) and the preview's
 overlays still build in GDScript (`build_chunk`, `fill_chunk_mesh`). Every chunk mesh carries the
 `road_layer_surfaces`, `road_layer_counts` and `road_layer_formats` metas; the preview display
@@ -13766,7 +13767,11 @@ Every standard road and footpath gets street lights, placed in Rust with the roa
 `godot/scripts/renderers/street_lights.gd`; its camera passes (the lamp grid, the far light map,
 the light pool) and each chunk's instance buffers are built in Rust by `StreetLightBook`
 (`rust/src/nodes/sim/render/street_lights.rs`, `RENDER-32-H`), and the script uploads two
-textures and places the pool's lights.
+textures and places the pool's lights. The chunks' batches (per 64 m cell and kind three levels of
+detail, per chunk one glow batch) are no nodes since `RENDER-52` round CB3 (2026-11-14): the book
+draws them on the stream backend's pooled `RenderingServer` slots (`street_lights/draw.rs`) with
+the settings the batch nodes had, builds a load's batches hidden in the load call, and frees every
+slot when the renderer leaves the tree.
 
 - Placement is a pure function of the compiled sections, along whole streets: chains of edges
   through degree-two nodes that take the same family of light (residential, main road, path).
