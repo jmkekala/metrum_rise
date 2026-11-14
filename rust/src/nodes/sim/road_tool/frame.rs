@@ -38,7 +38,9 @@ pub enum GizmoLineClass {
     Guide,
     /// The angle lock's ray.
     Angle,
-    /// A curve's tangent leg (start to control point, control point to end).
+    /// A curve's tangent leg (start to control point, control point to end), the S-curve's
+    /// control polygon (start, first arc's control point, joint, second arc's control point,
+    /// end) and a freeform node's handle stems.
     Tangent,
 }
 
@@ -51,8 +53,14 @@ pub enum GizmoHandleKind {
     Control,
     /// The start of a stroke that continues the chain from the last accepted stroke's end.
     ChainStart,
-    /// The live end at the cursor.
+    /// The live end at the cursor, and the freeform grip being dragged.
     Cursor,
+    /// Where two pieces of the draft meet: the S-curve's joint between its arcs, a freeform
+    /// draft's inner node.
+    Joint,
+    /// A control point the player does not place: an S-curve arc's control point (where its end
+    /// tangents meet), a freeform node's Bezier handle.
+    Handle,
 }
 
 /// Packed gizmos: line strips (`line_points[line_starts[i]..line_starts[i + 1]]`, the last to
@@ -138,6 +146,9 @@ pub enum Phase {
     },
     /// The stroke was sent; clicks wait for its commit acknowledgement.
     AwaitingAck,
+    /// A freeform draft's edit phase (round N): every node is placed; a press on a node or
+    /// handle drags it, any other press or `confirm` sends the stroke.
+    Editing,
 }
 
 /// Why the draft has no stroke request this pose.
@@ -179,6 +190,12 @@ pub struct RoadToolFrame {
     pub gizmos: Gizmos,
     /// HUD numbers (zero while no draft has a stroke).
     pub hud: HudValues,
+    /// The draft's pieces in order (its guide segments: a curve's lead and arc, an S-curve's two
+    /// arcs, a freeform draft's spans): each one's length in metres (horizontal, along the
+    /// guide), for labels on the geometry. Empty while no draft has a stroke.
+    pub piece_lengths_m: Vec<f64>,
+    /// Each piece's smallest radius in metres, infinite for a straight piece.
+    pub piece_radii_m: Vec<f64>,
     /// The cursor.
     pub cursor: CursorState,
     /// Mode, phase, refusal.
@@ -191,6 +208,8 @@ impl RoadToolFrame {
         self.stroke.clear();
         self.gizmos.clear();
         self.hud = HudValues::default();
+        self.piece_lengths_m.clear();
+        self.piece_radii_m.clear();
         self.state.refusal = None;
     }
 }

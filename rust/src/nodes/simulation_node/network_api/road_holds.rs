@@ -119,6 +119,12 @@ impl RoadDrawHolds {
         self.holds.release_preview(chunks_generation)
     }
 
+    /// The road mesh generation a held commit preview waits for, -1 when none is held.
+    #[func]
+    pub fn held_preview(&self) -> i64 {
+        self.holds.preview
+    }
+
     /// Drops the preview hold (its display was reset: a new commit's preview, a cancel).
     #[func]
     pub fn drop_preview(&mut self) {

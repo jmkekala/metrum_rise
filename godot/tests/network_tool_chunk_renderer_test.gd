@@ -762,6 +762,10 @@ func _test_native_road_cursor_contract() -> void:
 	_expect(not ui.zoning_grid_snap_check.disabled and modes._zoning_snap_enabled(), "the session snaps to the zoning grid in every mode")
 	ui.continuous_check.button_pressed = true
 	_expect(modes.continuous, "the Continuous checkbox sets the tool's continuous option")
+	ui._set_draw_mode(2)
+	_expect(modes.draw_mode == 2 and ui.s_curve_btn.button_pressed and not ui.curve_btn.button_pressed, "the S-curve button picks the complex curve")
+	ui._set_draw_mode(3)
+	_expect(modes.draw_mode == 3 and ui.freeform_btn.button_pressed and not ui.s_curve_btn.button_pressed, "the Freeform button picks freeform")
 	ui._set_draw_mode(0)
 	_expect(modes.draw_mode == 0, "the Straight button picks straight mode")
 	ui.zoning_grid_snap_check.button_pressed = false
@@ -798,6 +802,7 @@ func _test_native_road_cursor_contract() -> void:
 	var rejected: Dictionary = await _await_road_commit(simulation, request)
 	_expect(not rejected.get("committed", true) and simulation.get_road_benchmark_state()["live_edges"] == 1, "native rejection must acknowledge that no topology was added")
 	await _test_session_strokes(simulation)
+	await _test_s_curve_and_freeform(simulation)
 	_test_snapping_options_row(simulation)
 	host.free()
 
@@ -950,7 +955,7 @@ func _test_session_strokes(simulation: SimulationNode) -> void:
 	var frame: Dictionary = simulation.road_tool_frame()
 	_expect(int(frame["phase"]) == 1 and int(frame["placed"]) == 1, "an accepted stroke starts the next at its end")
 	_expect(PackedInt32Array(frame["gizmo_handle_kinds"])[0] == 2, "the chained stroke's start is the chain start")
-	_expect(tool._swap_generation >= 0 or tool._swap_display == null, "the committed preview is held or already swapped")
+	_expect(tool.chunks.holds.held_preview() >= 0 or tool._swap_display == null, "the committed preview is held or already swapped")
 	# Right-click ends the chain and keeps the tool; Escape ends the tool.
 	var manager = preload("res://scripts/core/input_manager.gd").new()
 	manager.road_tool = tool
@@ -989,6 +994,122 @@ func _test_session_strokes(simulation: SimulationNode) -> void:
 	_expect(not tool._commit_segment(tool.pointer), "a refused draft is not sent")
 	manager._handle_escape()
 	_expect(not tool.is_drawing() and not tool.active, "Escape ends the stroke and the tool")
+	tool.draw_mode = RoadToolScript.DrawMode.STRAIGHT
+	manager.free()
+	tool.free()
+
+# The gizmo handles of `kind` (`road_tool_gizmos.gd`'s last upload), in frame order.
+func _gizmo_handles(tool: PointerRoadTool, kind: int) -> PackedVector3Array:
+	var found := PackedVector3Array()
+	for index in tool.gizmos._handles.size():
+		if tool.gizmos._handle_kinds[index] == kind:
+			found.append(tool.gizmos._handles[index])
+	return found
+
+# Whether the handle points `a` and `b` lie on one line through `node`, on opposite sides.
+func _collinear(a: Vector3, node: Vector3, b: Vector3) -> bool:
+	var u := Vector2(a.x - node.x, a.z - node.z).normalized()
+	var v := Vector2(b.x - node.x, b.z - node.z).normalized()
+	return absf(u.cross(v)) < 1.0e-4 and u.dot(v) < 0.0
+
+# Round N (`ROAD-112`) on the real node: an S-curve drawn (aim legs are no road; its gizmos and
+# both radii) and committed; a freeform draft placed, taken into its edit phase with Enter,
+# edited (a handle drag keeps its joint collinear, Ctrl breaks one) and built with Enter; Escape
+# on a draft in its edit phase leaves nothing.
+func _test_s_curve_and_freeform(simulation: SimulationNode) -> void:
+	var tool := _session_road_tool(simulation)
+	var manager = preload("res://scripts/core/input_manager.gd").new()
+	manager.road_tool = tool
+	manager.current_tool = manager.Tool.ROAD
+	tool.draw_mode = RoadToolScript.DrawMode.COMPLEX_CURVE
+	tool._begin_stroke(Vector3(0.0, 0.0, -30.0))
+	_expect(not tool._commit_segment(Vector3(15.0, 0.0, -30.0)), "the start aim point commits nothing")
+	tool.pointer = Vector3(45.0, 0.0, -10.0)
+	_road_frame(tool)
+	_expect(tool._session_points.is_empty() and tool._preview.is_empty(), "an S-curve's aim legs are not previewed as road")
+	_expect(tool.gizmos._line_classes == PackedInt32Array([3]), "the aim leg draws as a tangent gizmo")
+	_expect(not tool._commit_segment(tool.pointer), "the end aim point commits nothing")
+	tool.pointer = Vector3(60.0, 0.0, -10.0)
+	_road_frame(tool)
+	var points := tool._session_points
+	_expect(points.size() > 3 and points[0] == Vector3(0.0, 0.0, -30.0) and points[-1] == tool.pointer, "the S-curve runs from the start to the cursor")
+	_expect(_gizmo_handles(tool, 4).size() == 1 and _gizmo_handles(tool, 5).size() == 2, "the S-curve shows its joint and both arcs' control points")
+	var radius := float(tool._session_hud.get("radius_m", -1.0))
+	var other := float(tool._session_hud.get("other_radius_m", -1.0))
+	_expect(radius > 0.0 and other >= radius, "the HUD gives both radii, the tighter first: %s, %s" % [radius, other])
+	var lengths := PackedFloat64Array(simulation.road_tool_frame()["piece_lengths_m"])
+	_expect(lengths.size() == 2 and absf(lengths[0] + lengths[1] - float(tool._session_hud["length_m"])) < 0.5, "the frame gives each arc's length: %s" % lengths)
+	var edges := int(simulation.get_road_benchmark_state()["live_edges"])
+	_expect(tool._commit_segment(tool.pointer), "the end click sends the S-curve")
+	await _await_ack(tool)
+	_expect(int(simulation.get_road_benchmark_state()["live_edges"]) > edges, "the S-curve is built")
+	tool.cancel_road()
+
+	# Freeform: three clicks, the live fourth node, a click on it, Enter.
+	tool.draw_mode = RoadToolScript.DrawMode.FREEFORM
+	tool._begin_stroke(Vector3(-115.0, 0.0, -35.0))
+	for node in [Vector3(-80.0, 0.0, -20.0), Vector3(-45.0, 0.0, -35.0)]:
+		_expect(not tool._commit_segment(node), "a freeform node commits nothing")
+	tool.pointer = Vector3(-10.0, 0.0, -20.0)
+	_road_frame(tool)
+	_expect(tool._session_points.size() > 4 and tool._session_points[-1] == tool.pointer and tool.stroke_preview_current(), "the live node is previewed as the draft's end")
+	_expect(not tool._commit_segment(tool.pointer), "the fourth node commits nothing")
+	manager._handle_confirm()
+	_road_frame(tool)
+	var frame: Dictionary = simulation.road_tool_frame()
+	_expect(int(frame["phase"]) == 3 and int(frame["placed"]) == 4, "Enter starts the edit phase: %s" % frame["phase"])
+	var handles := _gizmo_handles(tool, 5)
+	_expect(handles.size() == 6, "every inner node has two handles and each end one: %d" % handles.size())
+	# Drag node 1's outward handle; its inward handle turns with it.
+	var shown := tool._preview_sequence
+	tool.pointer = handles[2]
+	_road_frame(tool)
+	_expect(not tool._session_press(), "a press on a handle grabs it")
+	tool.pointer = handles[2] + Vector3(6.0, 0.0, 5.0)
+	_road_frame(tool)
+	var release := InputEventMouseButton.new()
+	release.button_index = MOUSE_BUTTON_LEFT
+	release.pressed = false
+	tool._unhandled_input(release)
+	_road_frame(tool)
+	var joints := _gizmo_handles(tool, 4)
+	handles = _gizmo_handles(tool, 5)
+	_expect(tool._preview_sequence > shown, "the edited draft is previewed")
+	_expect(handles[2].distance_to(tool.pointer) < 0.01, "the handle follows the pointer")
+	_expect(_collinear(handles[1], joints[0], handles[2]), "the joint stays collinear")
+	# Ctrl breaks node 2's joint: its inward handle moves alone.
+	tool.pointer = handles[3]
+	_road_frame(tool)
+	tool._session_press()
+	tool.pointer = handles[3] + Vector3(-4.0, 0.0, -6.0)
+	simulation.road_tool_pointer_at(tool.pointer, true)
+	_road_frame(tool)
+	tool._unhandled_input(release)
+	_road_frame(tool)
+	var broken := _gizmo_handles(tool, 5)
+	_expect(broken[4] == handles[4] and not _collinear(broken[3], joints[1], broken[4]), "Ctrl breaks the joint")
+	# Enter builds it.
+	edges = int(simulation.get_road_benchmark_state()["live_edges"])
+	manager._handle_confirm()
+	_expect(tool._commit_request_id > 0, "Enter sends the edited draft")
+	await _await_ack(tool)
+	_expect(int(simulation.get_road_benchmark_state()["live_edges"]) > edges, "the freeform road is built")
+	_road_frame(tool)
+	frame = simulation.road_tool_frame()
+	_expect(int(frame["phase"]) == 1 and int(frame["placed"]) == 1, "an accepted freeform road chains at its end")
+	# Escape on a draft in its edit phase leaves nothing.
+	tool.cancel_road()
+	tool._begin_stroke(Vector3(-90.0, 0.0, 10.0))
+	tool._commit_segment(Vector3(-60.0, 0.0, 20.0))
+	manager._handle_confirm()
+	_road_frame(tool)
+	_expect(int(simulation.road_tool_frame()["phase"]) == 3, "a two-node draft takes Enter into its edit phase")
+	edges = int(simulation.get_road_benchmark_state()["live_edges"])
+	manager._handle_escape()
+	_road_frame(tool)
+	frame = simulation.road_tool_frame()
+	_expect(int(frame["phase"]) == 0 and PackedVector3Array(frame["points"]).is_empty() and PackedVector3Array(frame["gizmo_handles"]).is_empty(), "Escape drops the draft")
+	_expect(not tool.gizmos.visible and tool._preview.is_empty() and int(simulation.get_road_benchmark_state()["live_edges"]) == edges, "Escape leaves nothing")
 	tool.draw_mode = RoadToolScript.DrawMode.STRAIGHT
 	manager.free()
 	tool.free()

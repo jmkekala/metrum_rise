@@ -14,11 +14,17 @@
 //! end tangent, unless it ended on the network (a node or edge snap), either end lies on the map
 //! edge, or the player cancelled meanwhile; right-click or `cancel` ends the chain. A refused
 //! commit leaves the stroke editable at its last point.
+//!
+//! Freeform (round N, `modes/freeform.rs`): clicks place nodes, then an edit phase drags nodes
+//! and handles (press, pointer moves, release) until `confirm` or a press off every grip sends
+//! the stroke. A drag takes the network snap but no anchor-bound constraint (angle lock, length
+//! step, guide lines from the anchor) and no self snap.
 
 use super::frame::{
     DraftRefusal, GizmoHandleKind, GizmoLineClass, Phase, RoadToolFrame, StrokeRequest,
 };
 use super::measure::{EndRoad, RoadTypeSpec, illegal_radius_m, measure};
+use super::modes::freeform::{Freeform, Grip, MAX_NODES};
 use super::modes::{self, DrawMode};
 use super::pick::{
     NETWORK_SNAP_REACH_M, SELF_SNAP_M, SurfacePick, half_extents, is_near_border, lane_width_m,
@@ -41,8 +47,8 @@ pub const BORDER_SNAP_M: f32 = 25.0;
 pub const SNAP_RELEASE_M: f32 = 8.0;
 // Today's `ROAD_SURFACE_POINT_EPS_M`: a straight stroke's ends must lie further apart.
 const POINT_EPS_M: f32 = 0.05;
-// Most points a mode places (the complex curve's four).
-const MAX_POINTS: usize = 4;
+// Most points a mode places (freeform's nodes).
+const MAX_POINTS: usize = MAX_NODES;
 // Angle lock steps the option accepts, in degrees.
 const ANGLE_STEPS_DEG: [f64; 4] = [15.0, 30.0, 45.0, 90.0];
 
@@ -77,7 +83,8 @@ pub enum PointerButton {
 pub enum RoadToolAction {
     /// Drops the stroke and ends the chain.
     Cancel,
-    /// Places the stroke's confirming point at the cursor (the last click's meaning).
+    /// Places the stroke's confirming point at the cursor (the last click's meaning); in
+    /// freeform it ends the placing (two nodes or more), and in the edit phase sends the stroke.
     Confirm,
     /// Switches to straight mode (drops the stroke; nothing when already straight).
     ModeStraight,
@@ -85,6 +92,8 @@ pub enum RoadToolAction {
     ModeSimpleCurve,
     /// Switches to the complex curve (drops the stroke; nothing when already in it).
     ModeComplexCurve,
+    /// Switches to freeform (drops the stroke; nothing when already in it).
+    ModeFreeform,
 }
 
 /// One input event (plan 2.3 `road_tool_event`).
@@ -96,10 +105,12 @@ pub enum RoadToolEvent {
         pointer: Pointer,
         /// Shift: frees the cursor of the angle lock, guide lines, grid and length step.
         shift: bool,
+        /// Ctrl: a freeform handle drag breaks its node's joint (the handles move apart).
+        ctrl: bool,
     },
     /// A button went down.
     Press(PointerButton),
-    /// A button went up (no meaning yet; drags come with the handles).
+    /// A button went up: ends a freeform drag.
     Release(PointerButton),
     /// A named action.
     Action(RoadToolAction),
@@ -137,6 +148,8 @@ pub enum RoadToolOption {
 struct Cursor {
     position: Vector3,
     snapped: Snapped,
+    // The pick before snapping (freeform grips are grabbed where the pointer is).
+    raw: DVec2,
 }
 
 // What the session remembers of the stroke it sent, for the chain.
@@ -170,7 +183,9 @@ pub struct RoadToolSession {
     sticky: Option<(NetworkSnapTarget, u64)>,
     cursor: Option<Cursor>,
     shift: bool,
+    ctrl: bool,
     pending: Option<Pending>,
+    freeform: Freeform,
     path: GuidePath,
     flat: Vec<DVec2>,
     scratch: SnapScratch,
@@ -202,7 +217,9 @@ impl RoadToolSession {
             sticky: None,
             cursor: None,
             shift: false,
+            ctrl: false,
             pending: None,
+            freeform: Freeform::default(),
             path: GuidePath::new(),
             flat: Vec::new(),
             scratch: SnapScratch::default(),
@@ -223,6 +240,17 @@ impl RoadToolSession {
     /// The drawing mode.
     pub fn mode(&self) -> DrawMode {
         self.mode
+    }
+
+    // The draft's guide path (tests compare the stroke with its flattening).
+    #[cfg(test)]
+    pub(crate) fn path(&self) -> &GuidePath {
+        &self.path
+    }
+
+    /// Points the stroke has placed (a freeform draft's nodes), the start included.
+    pub fn placed_count(&self) -> usize {
+        self.placed_len
     }
 
     /// Whether continuous (the tangent constraint at a stroke's start) is on.
@@ -266,15 +294,22 @@ impl RoadToolSession {
     /// Handles one event against the published view and brings the frame up to date.
     pub(crate) fn handle_event(&mut self, view: &RoadToolQuerySnapshot, event: RoadToolEvent) {
         match event {
-            RoadToolEvent::Pointer { pointer, shift } => {
+            RoadToolEvent::Pointer {
+                pointer,
+                shift,
+                ctrl,
+            } => {
                 self.shift = shift;
+                self.ctrl = ctrl;
                 self.cursor = self.resolve_cursor(view, pointer).or(self.cursor);
+                self.drag(view);
             }
-            RoadToolEvent::Press(PointerButton::Left)
-            | RoadToolEvent::Action(RoadToolAction::Confirm) => self.click(view),
+            RoadToolEvent::Press(PointerButton::Left) => self.click(view, false),
+            RoadToolEvent::Action(RoadToolAction::Confirm) => self.click(view, true),
             RoadToolEvent::Press(PointerButton::Right)
             | RoadToolEvent::Action(RoadToolAction::Cancel) => self.cancel(),
-            RoadToolEvent::Release(_) => {}
+            RoadToolEvent::Release(PointerButton::Left) => self.freeform.release(),
+            RoadToolEvent::Release(PointerButton::Right) => {}
             RoadToolEvent::Action(RoadToolAction::ModeStraight) => {
                 self.set_mode(DrawMode::Straight)
             }
@@ -283,6 +318,9 @@ impl RoadToolSession {
             }
             RoadToolEvent::Action(RoadToolAction::ModeComplexCurve) => {
                 self.set_mode(DrawMode::ComplexCurve)
+            }
+            RoadToolEvent::Action(RoadToolAction::ModeFreeform) => {
+                self.set_mode(DrawMode::Freeform)
             }
             RoadToolEvent::CommitAck { committed } => self.acknowledge(view, committed),
         }
@@ -309,25 +347,34 @@ impl RoadToolSession {
         self.start_on_border = false;
         self.chained = false;
         self.sticky = None;
+        self.freeform.reset();
     }
 
     fn phase(&self) -> Phase {
         match (self.pending, self.placed_len) {
             (Some(_), _) => Phase::AwaitingAck,
             (None, 0) => Phase::Idle,
+            _ if self.freeform.editing() => Phase::Editing,
             (None, placed) => Phase::Placing {
                 placed: placed as u8,
             },
         }
     }
 
-    // A left click: start a stroke, place the next point, or send the stroke.
-    fn click(&mut self, view: &RoadToolQuerySnapshot) {
+    // A left click (`confirm`: the confirming action): start a stroke, place the next point, or
+    // send the stroke.
+    fn click(&mut self, view: &RoadToolQuerySnapshot, confirm: bool) {
         let Some(cursor) = self.cursor.filter(|_| self.pending.is_none()) else {
             return;
         };
         if self.placed_len == 0 {
-            self.begin(view, cursor.position, cursor.snapped);
+            if !(confirm && self.mode == DrawMode::Freeform) {
+                self.begin(view, cursor.position, cursor.snapped);
+            }
+            return;
+        }
+        if self.mode == DrawMode::Freeform {
+            self.freeform_click(cursor, confirm);
             return;
         }
         if self.placed_len + 1 < self.mode.points() {
@@ -345,17 +392,100 @@ impl RoadToolSession {
             self.sticky = None;
             return;
         }
+        self.send(
+            cursor.snapped.target.is_some(),
+            cursor.snapped.kind == SnapKind::Border,
+        );
+    }
+
+    // Sends the pose's stroke, unless the draft has none: the chain continues from its end
+    // unless that end met the network or either end lies on the map edge.
+    fn send(&mut self, end_on_network: bool, end_on_border: bool) {
         if self.frame.stroke.points.len() < 2 || self.frame.state.refusal.is_some() {
             return;
         }
-        let border = self.start_on_border || cursor.snapped.kind == SnapKind::Border;
+        let border = self.start_on_border || end_on_border;
         self.pending = Some(Pending {
-            chain: cursor.snapped.target.is_none() && !border,
+            chain: !end_on_network && !border,
             cancelled: false,
             end: *self.frame.stroke.points.last().expect("two points"),
             end_tangent: self.path.end_tangent(),
         });
         self.frame.commit = Some(self.frame.stroke.clone());
+    }
+
+    // A freeform click after the start. Placing: a click on the last node or `confirm` (two
+    // nodes or more) starts the edit phase; any other click places a node, and a node on the
+    // network or the map edge, or the last node there is room for, also starts it. Editing: a
+    // press on a grip grabs it; any other press, or `confirm`, sends the stroke.
+    fn freeform_click(&mut self, cursor: Cursor, confirm: bool) {
+        if self.freeform.editing() {
+            let nodes = self.placed_xz();
+            let grip = self
+                .freeform
+                .grip_at(&nodes[..self.placed_len], cursor.raw, self.chained);
+            match grip {
+                Some(grip) if !confirm => self.freeform.grab(grip),
+                _ => {
+                    let (target, border) = self.freeform.snap_of(self.placed_len - 1);
+                    self.send(target.is_some(), border);
+                }
+            }
+            return;
+        }
+        let last = self.placed[self.placed_len - 1];
+        let on_last = xz_of(last).distance(xz_of(cursor.position)) <= f64::from(POINT_EPS_M);
+        if confirm || on_last {
+            if self.placed_len >= 2 {
+                self.freeform.start_editing();
+            }
+            return;
+        }
+        let index = self.placed_len;
+        let border = cursor.snapped.kind == SnapKind::Border;
+        self.placed[index] = cursor.position;
+        self.placed_len += 1;
+        self.freeform.place(index, cursor.snapped.target, border);
+        if cursor.snapped.target.is_some() || border || self.placed_len == MAX_POINTS {
+            self.freeform.start_editing();
+        }
+        self.sticky = None;
+    }
+
+    // A pointer move during a freeform drag: a node follows the cursor with its snap (a start
+    // keeps its road's direction), a handle the cursor's ground position.
+    fn drag(&mut self, view: &RoadToolQuerySnapshot) {
+        let (Some(grip), Some(cursor)) = (self.freeform.grip(), self.cursor) else {
+            return;
+        };
+        match grip {
+            Grip::Node(index) => {
+                self.placed[index] = cursor.position;
+                self.freeform.place(
+                    index,
+                    cursor.snapped.target,
+                    cursor.snapped.kind == SnapKind::Border,
+                );
+                if index == 0 {
+                    self.start_on_border = cursor.snapped.kind == SnapKind::Border;
+                    self.start_road = cursor
+                        .snapped
+                        .target
+                        .and_then(|target| {
+                            road_start_direction(&view.region_graph, target, cursor.position)
+                        })
+                        .map(end_road);
+                }
+            }
+            Grip::Inward(_) | Grip::Outward(_) => {
+                let nodes = self.placed_xz();
+                self.freeform.drag_handle(
+                    &nodes[..self.placed_len],
+                    xz_of(cursor.position),
+                    self.ctrl,
+                );
+            }
+        }
     }
 
     // Starts a stroke at `position`, reading how the road there leaves it.
@@ -364,6 +494,8 @@ impl RoadToolSession {
         self.placed_len = 1;
         self.chained = false;
         self.start_on_border = snapped.kind == SnapKind::Border;
+        self.freeform.reset();
+        self.freeform.place(0, snapped.target, self.start_on_border);
         self.start_road = snapped
             .target
             .and_then(|target| road_start_direction(&view.region_graph, target, position))
@@ -385,6 +517,7 @@ impl RoadToolSession {
         self.start_on_border = false;
         self.chained = false;
         self.sticky = None;
+        self.freeform.reset();
         if pending.chain {
             self.begin(
                 view,
@@ -413,9 +546,11 @@ impl RoadToolSession {
     }
 
     // The start tangent the continuous constraint holds, while it applies (before the second
-    // point of a straight stroke or the control point of a simple curve).
+    // point of a straight stroke or the control point of a simple curve; B8: not the complex
+    // curve or freeform, which set their own).
     fn held_tangent(&self, live: DVec2) -> Option<DVec2> {
-        (self.continuous && self.placed_len == 1 && self.mode != DrawMode::ComplexCurve)
+        let held = matches!(self.mode, DrawMode::Straight | DrawMode::SimpleCurve);
+        (self.continuous && self.placed_len == 1 && held)
             .then(|| self.start_tangent(live))
             .flatten()
     }
@@ -432,6 +567,7 @@ impl RoadToolSession {
                 SurfacePick::Plane(position) => {
                     return Some(Cursor {
                         position,
+                        raw: xz_of(position),
                         snapped: Snapped {
                             xz: xz_of(position),
                             kind: SnapKind::Border,
@@ -447,6 +583,7 @@ impl RoadToolSession {
                 self.sticky = None;
                 return Some(Cursor {
                     position,
+                    raw: xz_of(position),
                     snapped: Snapped {
                         xz: xz_of(position),
                         kind: SnapKind::Free,
@@ -459,8 +596,11 @@ impl RoadToolSession {
         };
         let graph = &view.region_graph;
         let raw_xz = xz_of(raw);
-        let anchor = (self.placed_len > 0).then(|| xz_of(self.placed[self.placed_len - 1]));
-        let reference = self.reference(raw_xz);
+        // A freeform drag has no anchor: the grip is not the stroke's next point.
+        let dragging = self.freeform.grip().is_some();
+        let anchor =
+            (self.placed_len > 0 && !dragging).then(|| xz_of(self.placed[self.placed_len - 1]));
+        let reference = self.reference(raw_xz).filter(|_| !dragging);
         let constrained = !self.shift;
 
         let network = self
@@ -529,7 +669,7 @@ impl RoadToolSession {
         };
         let mut snapped = resolve(&input, &self.snap, &self.scratch.guides);
         if snapped.kind == SnapKind::Free {
-            snapped = self.border_or_self(view, snapped);
+            snapped = self.border_or_self(view, snapped, !dragging);
         }
         if constrained {
             let guide = (snapped.kind == SnapKind::Guide)
@@ -556,9 +696,13 @@ impl RoadToolSession {
         // The retained target, unless it is the stroke's own point (today's sticky rule).
         self.sticky = snapped
             .target
-            .filter(|_| self.self_point(snapped.xz).is_none())
+            .filter(|_| dragging || self.self_point(snapped.xz).is_none())
             .map(|target| (target, view.surface_generation));
-        Some(Cursor { position, snapped })
+        Some(Cursor {
+            position,
+            snapped,
+            raw: raw_xz,
+        })
     }
 
     // The angle lock's and guides' reference at the anchor: the start tangent for the first
@@ -571,8 +715,14 @@ impl RoadToolSession {
         }
     }
 
-    // Rule 7: map-edge snap, then self snap, for a cursor nothing else took (today's order).
-    fn border_or_self(&self, view: &RoadToolQuerySnapshot, snapped: Snapped) -> Snapped {
+    // Rule 7: map-edge snap, then self snap (unless `self_snap` is off: a freeform drag), for a
+    // cursor nothing else took (today's order).
+    fn border_or_self(
+        &self,
+        view: &RoadToolQuerySnapshot,
+        snapped: Snapped,
+        self_snap: bool,
+    ) -> Snapped {
         let (half_w, half_h) = half_extents(view);
         let reach = BORDER_SNAP_M.min(half_w.min(half_h));
         let at = Vector3::new(snapped.xz.x as f32, 0.0, snapped.xz.y as f32);
@@ -583,7 +733,7 @@ impl RoadToolSession {
                 ..snapped
             };
         }
-        match self.self_point(snapped.xz) {
+        match self.self_point(snapped.xz).filter(|_| self_snap) {
             Some(point) => Snapped {
                 xz: xz_of(point),
                 kind: SnapKind::SelfPoint,
@@ -591,6 +741,15 @@ impl RoadToolSession {
             },
             None => snapped,
         }
+    }
+
+    // The placed points in XZ (the first `placed_len` entries; the rest zero).
+    fn placed_xz(&self) -> [DVec2; MAX_POINTS] {
+        let mut placed = [DVec2::ZERO; MAX_POINTS];
+        for (xz, point) in placed.iter_mut().zip(&self.placed[..self.placed_len]) {
+            *xz = xz_of(*point);
+        }
+        placed
     }
 
     // The placed point within the self-snap radius of `xz` (earliest first), if any.
@@ -621,12 +780,13 @@ impl RoadToolSession {
         let Some(cursor) = self.cursor.filter(|_| self.placed_len > 0) else {
             return;
         };
+        if self.mode == DrawMode::Freeform {
+            self.refresh_freeform(view, cursor);
+            return;
+        }
         let live = xz_of(cursor.position);
         let tangent = self.held_tangent(live);
-        let mut placed_xz = [DVec2::ZERO; MAX_POINTS];
-        for (xz, point) in placed_xz.iter_mut().zip(&self.placed[..self.placed_len]) {
-            *xz = xz_of(*point);
-        }
+        let placed_xz = self.placed_xz();
         let shaped = modes::shape(
             self.mode,
             &placed_xz[..self.placed_len],
@@ -634,7 +794,11 @@ impl RoadToolSession {
             tangent,
             &mut self.path,
         );
-        self.push_tangent_legs(cursor.position);
+        self.push_tangent_legs(cursor.position, shaped.is_ok());
+        // The complex curve's aim legs are no road (round N): nothing to preview before its end.
+        if self.mode == DrawMode::ComplexCurve && self.placed_len < 3 {
+            return;
+        }
         if let Err(error) = shaped {
             self.frame.state.refusal = Some(refusal(error));
             return;
@@ -643,10 +807,59 @@ impl RoadToolSession {
             self.frame.state.refusal = Some(DraftRefusal::TooShort);
             return;
         }
-        let end_road = cursor
-            .snapped
-            .target
-            .and_then(|target| road_start_direction(&view.region_graph, target, cursor.position))
+        self.measure_pose(view, cursor.snapped.target, cursor.position);
+        self.push_constraint_line(cursor);
+    }
+
+    // A freeform pose: the spans through the placed nodes and, while placing, the cursor as the
+    // provisional last node (unless it stands on the last one); the stroke, HUD and gizmos.
+    fn refresh_freeform(&mut self, view: &RoadToolQuerySnapshot, cursor: Cursor) {
+        let editing = self.freeform.editing();
+        let mut nodes = [Vector3::ZERO; MAX_POINTS + 1];
+        nodes[..self.placed_len].copy_from_slice(&self.placed[..self.placed_len]);
+        let mut count = self.placed_len;
+        let last = xz_of(self.placed[count - 1]);
+        if !editing && last.distance(xz_of(cursor.position)) > f64::from(POINT_EPS_M) {
+            nodes[count] = cursor.position;
+            count += 1;
+        }
+        let mut nodes_xz = [DVec2::ZERO; MAX_POINTS + 1];
+        for (xz, node) in nodes_xz.iter_mut().zip(&nodes[..count]) {
+            *xz = xz_of(*node);
+        }
+        let shaped = self.freeform.shape(&nodes_xz[..count], &mut self.path);
+        self.freeform
+            .push_gizmos(&mut self.frame.gizmos, &nodes[..count], self.chained);
+        if let Err(error) = shaped {
+            self.frame.state.refusal = Some(refusal(error));
+            return;
+        }
+        if !self.build_freeform_stroke(&nodes[..count]) {
+            self.frame.state.refusal = Some(DraftRefusal::TooShort);
+            return;
+        }
+        let end = nodes[count - 1];
+        let end_target = if count == self.placed_len {
+            self.freeform.snap_of(count - 1).0
+        } else {
+            cursor.snapped.target
+        };
+        self.measure_pose(view, end_target, end);
+        if !editing {
+            self.push_constraint_line(cursor);
+        }
+    }
+
+    // The pose's HUD (the end met `end_target` at `end`), the draft's centreline and the
+    // tight-curve refusal.
+    fn measure_pose(
+        &mut self,
+        view: &RoadToolQuerySnapshot,
+        end_target: Option<NetworkSnapTarget>,
+        end: Vector3,
+    ) {
+        let end_road = end_target
+            .and_then(|target| road_start_direction(&view.region_graph, target, end))
             .map(end_road);
         self.frame.hud = measure(
             &self.path,
@@ -657,6 +870,10 @@ impl RoadToolSession {
             end_road,
         );
         let frame = &mut self.frame;
+        for segment in self.path.segments() {
+            frame.piece_lengths_m.push(segment.length());
+            frame.piece_radii_m.push(segment.min_radius());
+        }
         frame
             .gizmos
             .push_line(GizmoLineClass::Draft, frame.stroke.points.iter().copied());
@@ -666,7 +883,51 @@ impl RoadToolSession {
             frame.state.refusal = Some(DraftRefusal::TightCurve);
             frame.stroke.points.clear();
         }
-        self.push_constraint_line(cursor);
+    }
+
+    // Fills the frame's stroke request for the freeform `nodes`: the kernel's flattening of the
+    // spans, each span's heights interpolated by arc length between its two nodes', so every
+    // node is a stroke point bit for bit. False when the ends are within 5 cm.
+    fn build_freeform_stroke(&mut self, nodes: &[Vector3]) -> bool {
+        let stroke = &mut self.frame.stroke;
+        stroke.spec = self.spec;
+        stroke.snap_to_existing_roads = self.snap.network;
+        if nodes[0].distance_to(nodes[nodes.len() - 1]) <= POINT_EPS_M {
+            return false;
+        }
+        self.path.flatten_into(&mut self.flat);
+        // Each span's points are its flattening's steps from its start node (written once).
+        let mut first = 0;
+        for (span, segment) in self.path.segments().iter().enumerate() {
+            let steps = segment.flatten_count();
+            let points = &self.flat[first..=first + steps];
+            let total: f64 = points
+                .windows(2)
+                .map(|pair| pair[0].distance(pair[1]))
+                .sum();
+            let (y0, y1) = (f64::from(nodes[span].y), f64::from(nodes[span + 1].y));
+            let mut station = 0.0;
+            for (index, point) in points.iter().enumerate() {
+                if index > 0 {
+                    station += point.distance(points[index - 1]);
+                } else if span > 0 {
+                    continue;
+                }
+                let y = if index == steps {
+                    y1
+                } else if total > 0.0 {
+                    y0 + (y1 - y0) * (station / total)
+                } else {
+                    y0
+                };
+                stroke
+                    .points
+                    .push(Vector3::new(point.x as f32, y as f32, point.y as f32));
+            }
+            first += steps;
+        }
+        debug_assert_eq!(first + 1, self.flat.len(), "every span's steps counted");
+        true
     }
 
     // Fills the frame's stroke request from the path: a single line's two ends exactly (today's
@@ -726,7 +987,10 @@ impl RoadToolSession {
     }
 
     // Handles at the placed points and the cursor; for curves the tangent legs through them.
-    fn push_tangent_legs(&mut self, live: Vector3) {
+    // The complex curve's legs are its two aim legs, and once `shaped` its control polygon
+    // (start, the arcs' control points around the joint, end) with handles at the arcs'
+    // control points and a joint handle.
+    fn push_tangent_legs(&mut self, live: Vector3, shaped: bool) {
         let gizmos = &mut self.frame.gizmos;
         for (index, point) in self.placed[..self.placed_len].iter().enumerate() {
             let kind = match index {
@@ -737,7 +1001,33 @@ impl RoadToolSession {
             gizmos.push_handle(kind, *point);
         }
         gizmos.push_handle(GizmoHandleKind::Cursor, live);
-        if self.mode != DrawMode::Straight && self.placed_len > 1 {
+        if self.mode == DrawMode::ComplexCurve {
+            let placed = &self.placed[..self.placed_len];
+            match *placed {
+                [start] => gizmos.push_line(GizmoLineClass::Tangent, [start, live]),
+                [start, start_aim] => {
+                    gizmos.push_line(GizmoLineClass::Tangent, [start, start_aim]);
+                }
+                [start, start_aim, end_aim, ..] => {
+                    gizmos.push_line(GizmoLineClass::Tangent, [start, start_aim]);
+                    gizmos.push_line(GizmoLineClass::Tangent, [end_aim, live]);
+                    if let Some(controls) = modes::biarc_controls(&self.path).filter(|_| shaped) {
+                        // Drawn over everything, so one height serves: the ends' mean.
+                        let y = (start.y + live.y) * 0.5;
+                        let at = |p: DVec2| Vector3::new(p.x as f32, y, p.y as f32);
+                        let [first, joint, second] = controls.map(at);
+                        gizmos.push_line(
+                            GizmoLineClass::Tangent,
+                            [start, first, joint, second, live],
+                        );
+                        gizmos.push_handle(GizmoHandleKind::Handle, first);
+                        gizmos.push_handle(GizmoHandleKind::Joint, joint);
+                        gizmos.push_handle(GizmoHandleKind::Handle, second);
+                    }
+                }
+                [] => {}
+            }
+        } else if self.mode != DrawMode::Straight && self.placed_len > 1 {
             let placed = &self.placed[..self.placed_len];
             gizmos.push_line(
                 GizmoLineClass::Tangent,

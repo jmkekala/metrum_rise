@@ -7,7 +7,7 @@
 //! Rust sends numbers only; texts are built in GDScript.
 
 use crate::simulation::network::graph::{RoadMedian, RoadParking};
-use crate::simulation::network::guide::{DVec2, GuidePath};
+use crate::simulation::network::guide::{DVec2, GuidePath, GuideSegment};
 use crate::simulation::network::road_types::RoadAttributes;
 use crate::simulation::network::road_types::cost::{build_per_m, stroke_weight, upkeep_per_m_day};
 use crate::simulation::network::roadbed::preview_candidate_roadbed_half_width_m;
@@ -64,8 +64,12 @@ pub struct HudValues {
     pub start_angle_deg: Option<f64>,
     /// The same at a joined end.
     pub end_angle_deg: Option<f64>,
-    /// Smallest arc radius in metres; `None` for a straight draft.
+    /// Smallest arc radius in metres; `None` for a straight draft. The tight-curve verdict and
+    /// the design speed judge this one.
     pub radius_m: Option<f64>,
+    /// The other arc's radius of a draft made of two arcs (the S-curve, round N), in metres;
+    /// `None` for any other draft. Never smaller than `radius_m`.
+    pub other_radius_m: Option<f64>,
     /// Design speed of that radius, `sqrt(127 * 0.20 * R)` km/h rounded down to 5 km/h.
     pub design_speed_kmh: Option<f64>,
     /// Whether the design speed is below the road type's speed limit (advice only: cars do not
@@ -134,6 +138,7 @@ pub fn measure(
             .zip(end_road)
             .map(|(t, road)| end_angle(-t, road)),
         radius_m,
+        other_radius_m: other_radius_m(path),
         design_speed_kmh,
         design_speed_warning: design_speed_kmh.is_some_and(|speed| speed < limit_kmh),
         illegal_radius_m,
@@ -141,6 +146,16 @@ pub fn measure(
         build_cost: length_m * build_per_m(weight),
         upkeep_per_day: length_m * upkeep_per_m_day(weight),
         ..HudValues::default()
+    }
+}
+
+// The larger radius of a path made of exactly two arcs (an S-curve whose halves both curve).
+fn other_radius_m(path: &GuidePath) -> Option<f64> {
+    match path.segments() {
+        [GuideSegment::Arc(first), GuideSegment::Arc(second)] => {
+            Some(first.radius().max(second.radius()))
+        }
+        _ => None,
     }
 }
 

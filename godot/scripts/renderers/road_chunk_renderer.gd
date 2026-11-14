@@ -47,12 +47,14 @@ var origin_z_m: float = 0.0
 var _staged: Dictionary = {}
 # T61 (2), docs/terrain.md: an install made while a graded terrain edit is still to draw keeps
 # the chunks it replaces drawn and its own hidden until the graded renderer has installed the
-# edits up to `held_serial` (the journal's serial read at the install), so the road and the
+# edits up to the held serial (the journal's serial read at the install), so the road and the
 # terrain cut under it change in one frame (the undo's frame had the road gone over the cut).
+# Rust's `RoadDrawHolds` decides when to hold and release; these keep the held Godot objects.
 var _held_chunks: Array[MeshInstance3D] = []
 var _hidden_chunks: Array[MeshInstance3D] = []
-## The graded edit serial the held install waits for, -1 when nothing is held.
-var held_serial: int = -1
+## The holds' rule (`RoadDrawHolds`, Rust): the held install's serial (`holds.held_serial()`, -1
+## when nothing is held) and the road tool's held commit preview.
+var holds := RoadDrawHolds.new()
 ## Populated only while benchmark/diagnostic preview meshes are staged.
 var upload_metrics: Dictionary = {}
 
@@ -262,7 +264,7 @@ func install(
 ) -> int:
 	if invalidate_nodes and host != null:
 		host.mark_network_nodes_dirty()
-	var hold := -1 if full_replace else _chunk_hold_serial()
+	var hold: int = holds.hold_install(full_replace, _journal_serial(), _installed_serial())
 	if hold < 0:
 		release_held(true)
 	# Lights and signs exist only on the scene's road tool (`_ready`); tests that assemble a
@@ -305,7 +307,6 @@ func install(
 			_hidden_chunks.append(instance)
 		chunk_root.add_child(instance)
 		chunks[key] = instance
-	held_serial = maxi(held_serial, hold)
 	generation = surface_generation
 	span_m = chunk_span_m
 	origin_x_m = chunk_origin_x_m
@@ -317,18 +318,17 @@ func install(
 # Any install (an undo, a commit, a deletion) made while the graded journal holds an edit the
 # renderer has not installed waits for it (T61 (2)): until then the replaced chunks draw over the
 # terrain cut they were baked with. A held commit keeps its preview drawn too (the road tool's
-# swapped preview). The acknowledgement is not delayed: only the drawing waits. -1 to draw now.
-func _chunk_hold_serial() -> int:
-	var graded = _graded_renderer()
-	if graded == null or not is_instance_valid(simulation_node):
+# swapped preview). The acknowledgement is not delayed: only the drawing waits. The graded
+# journal's serial, -1 without a graded renderer or a simulation node (nothing to wait for).
+func _journal_serial() -> int:
+	if _graded_renderer() == null or not is_instance_valid(simulation_node):
 		return -1
-	var serial := int(simulation_node.get_graded_edit_serial())
-	return serial if serial > graded.installed_edit_serial() else -1
+	return int(simulation_node.get_graded_edit_serial())
 
-# Whether the graded renderer has installed the edits up to `serial`.
-func _held_edit_installed(serial: int) -> bool:
+# The graded renderer's installed edit serial; without one every edit counts as installed.
+func _installed_serial() -> int:
 	var graded = _graded_renderer()
-	return graded == null or graded.installed_edit_serial() >= serial
+	return graded.installed_edit_serial() if graded != null else 9223372036854775807
 
 # The terrain renderer's graded tiles, or null without one (tests without terrain).
 func _graded_renderer():
@@ -338,14 +338,14 @@ func _graded_renderer():
 
 ## Whether an install is held for a graded edit (T61 (2)): its chunks are not drawn yet.
 func is_holding() -> bool:
-	return held_serial >= 0
+	return holds.is_holding()
 
 ## Swaps the chunks an install held (T61 (2)) for the installed ones once the graded renderer
 ## has installed the edits it waited for, or now with `force`. NetworkRenderer calls it each
 ## frame after the terrain has processed, so the swap draws in the edit batch's frame.
 ## O(held chunks).
 func release_held(force: bool = false) -> void:
-	if held_serial < 0 or (not force and not _held_edit_installed(held_serial)):
+	if not holds.release_install(_installed_serial(), force):
 		return
 	for instance in _held_chunks:
 		_free_chunk_instance(instance)
@@ -354,7 +354,6 @@ func release_held(force: bool = false) -> void:
 			instance.visible = true
 	_held_chunks.clear()
 	_hidden_chunks.clear()
-	held_serial = -1
 	if host != null:
 		host.road_chunks_released()
 

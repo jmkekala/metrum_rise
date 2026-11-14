@@ -332,6 +332,10 @@ func _unhandled_input(event):
 			KEY_ESCAPE:
 				_handle_escape()
 
+			# Enter: a freeform road's edit phase starts, then builds (`ROAD-112` round N).
+			KEY_ENTER, KEY_KP_ENTER:
+				_handle_confirm()
+
 	if event is InputEventMouseButton:
 		_handle_mouse(event)
 
@@ -733,6 +737,10 @@ func _handle_right_click():
 
 	else:
 		_cancel_active_tool()
+
+func _handle_confirm() -> void:
+	if (current_tool == Tool.ROAD or current_tool == Tool.WALKWAY) and road_tool and road_tool.is_drawing():
+		road_tool.confirm_road()
 
 func _handle_altitude_adjust(delta):
 	if (current_tool == Tool.ROAD or current_tool == Tool.WALKWAY) and road_tool:

@@ -5,10 +5,15 @@
 ##
 ## Every drawing mode runs on the session (round D): straight (two clicks), the simple curve
 ## (three clicks: start, a free control point, end; the exact fillet arc plus a straight lead,
-## U1) and the complex curve (four clicks, the biarc S-curve), each optionally continuous (the
-## stroke leaves along the road or the chain it starts on). The script forwards the pointer
-## (`road_tool_pointer`, or `road_tool_pointer_at` for a scripted pointer), the clicks, the mode
-## actions and the acknowledgement (`road_tool_event`) and the options (`road_tool_set_option`),
+## U1), the S-curve (round N: four clicks, start, a start aim point, an end aim point, end; the
+## biarc) and freeform (round N: clicks place the nodes of Bezier spans; a click on the last
+## node or Enter starts the edit phase, where a press drags a node or a handle until the release,
+## Ctrl breaks a joint, and Enter or a click elsewhere builds; right-click or Esc drops it). The
+## straight stroke and the simple curve can be continuous (the stroke leaves along the road or
+## the chain it starts on). The script forwards the pointer (`road_tool_pointer` with Shift and
+## Ctrl, or `road_tool_pointer_at` for a scripted pointer), the clicks and releases, Enter
+## (`confirm`), the mode actions and the acknowledgement (`road_tool_event`) and the options
+## (`road_tool_set_option`),
 ## and shows what `road_tool_frame` returns once a frame: the preview, the gizmos
 ## (`road_tool_gizmos.gd`: centreline, tangent legs, guide and angle lines, handles) and the HUD
 ## (`road_tool_hud.gd`, from Rust's numbers only). Rust resolves the cursor and its snapping,
@@ -62,8 +67,13 @@ const HighlightMesh := preload("res://scripts/renderers/highlight_mesh.gd")
 const PREVIEW_SAMPLE_PROCESS_PRIORITY := -100
 
 ## Drawing modes, numbered as the session's frame reports them (`mode`).
-enum DrawMode { STRAIGHT, SIMPLE_CURVE, COMPLEX_CURVE }
-const _MODE_EVENTS := ["mode_straight", "mode_simple_curve", "mode_complex_curve"]
+enum DrawMode { STRAIGHT, SIMPLE_CURVE, COMPLEX_CURVE, FREEFORM }
+const _MODE_EVENTS := ["mode_straight", "mode_simple_curve", "mode_complex_curve", "mode_freeform"]
+# The session's phases (`phase`): no stroke, placing points, a sent stroke awaiting its
+# acknowledgement, a freeform draft's edit phase.
+const PHASE_IDLE := 0
+const PHASE_PLACING := 1
+const PHASE_EDITING := 3
 
 # The next stroke's lanes; Rust's session holds them too (`lanes`).
 var fwd_lanes: int = 1:
@@ -83,7 +93,7 @@ var draw_mode: int:
 	get:
 		return _draw_mode
 	set(mode):
-		mode = clampi(mode, DrawMode.STRAIGHT, DrawMode.COMPLEX_CURVE)
+		mode = clampi(mode, DrawMode.STRAIGHT, DrawMode.FREEFORM)
 		if _has_session():
 			_read_press(simulation_node.road_tool_event(_MODE_EVENTS[mode]))
 			if mode != _draw_mode:
@@ -176,9 +186,9 @@ var _preview_points := PackedVector3Array()
 var _preview_sequence: int = 0
 var _preview_drawn_sequence: int = 0
 var _preview_display = PreviewDisplay.new()
-# An accepted commit's preview, held until the chunks of `_swap_generation` are installed.
+# An accepted commit's preview, held until the chunks of its generation are installed (the hold
+# is `chunks.holds`', Rust's rule).
 var _swap_display = null
-var _swap_generation: int = -1
 var _commit_request_id: int = 0
 var _commit_points := PackedVector3Array()
 var _commit_validation: Dictionary = {}
@@ -307,7 +317,12 @@ func _send_lanes() -> void:
 
 ## Whether a stroke is being drawn: a point is placed, or a sent stroke awaits its answer.
 func is_drawing() -> bool:
-	return _session_phase != 0
+	return _session_phase != PHASE_IDLE
+
+# Whether the stroke is the player's to change: points are being placed or a freeform draft is
+# in its edit phase.
+func _is_editable() -> bool:
+	return _session_phase == PHASE_PLACING or _session_phase == PHASE_EDITING
 
 # One frame of the session: the scripted pointer, then the frame record, its preview when the
 # stroke, its type or the context changed, or the next share of the pose's graded tiles; then
@@ -331,7 +346,7 @@ func _session_frame(moved: bool) -> void:
 	elif bool(frame.get("preview_cleared", false)):
 		_clear_preview_visual()
 		_clear_preview_cache()
-	elif _graded_pending > 0 and _commit_request_id == 0 and _session_phase == 1:
+	elif _graded_pending > 0 and _commit_request_id == 0 and _is_editable():
 		# A frame without a new pose stages the next share of the pose's graded tiles.
 		_show_graded(simulation_node.advance_road_preview_terrain())
 	_show_draft_refusal(String(frame.get("refusal", "")), frame.get("cursor", Vector3.ZERO))
@@ -341,7 +356,7 @@ func _session_frame(moved: bool) -> void:
 # without a solution, an arc tighter than the road type allows); a draft at its start point is
 # only too short, which shows nothing.
 func _show_draft_refusal(refusal: String, cursor: Vector3) -> void:
-	if refusal.is_empty() or refusal == "too_short" or _session_phase != 1 or not _info_label:
+	if refusal.is_empty() or refusal == "too_short" or not _is_editable() or not _info_label:
 		return
 	var refused := {
 		"is_valid": false,
@@ -492,6 +507,16 @@ func _unhandled_input(event):
 	if active and event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
 		if event.pressed:
 			_handle_click()
+		elif _has_session():
+			# Ends a freeform drag.
+			simulation_node.road_tool_event("release")
+
+## Enter: ends a freeform draft's placing, or builds the draft in its edit phase (the session's
+## `confirm`; in the click modes it places the next point at the cursor, as a click would).
+func confirm_road() -> void:
+	if _scripted_pointer_enabled or _commit_request_id > 0 or not _has_session() or not is_drawing():
+		return
+	_session_press("confirm")
 
 # A click: the session's cursor under the pointer now (a click can arrive before _process), then
 # the press, which places the next point or sends the stroke.
@@ -593,17 +618,16 @@ func _hold_preview_until(generation: int) -> void:
 	if _swap_display != null:
 		_swap_display.reset()
 	_swap_display = _preview_display
-	_swap_generation = generation
+	chunks.holds.hold_preview(generation)
 	_preview_display = PreviewDisplay.new()
 	_preview_drawn_sequence = 0
 	_release_swapped_preview()
 
 func _release_swapped_preview() -> void:
 	# Chunks held for a graded edit (T61 (2)) draw the preview's state with it until they swap.
-	if _swap_display != null and chunks.generation >= _swap_generation and not chunks.is_holding():
+	if _swap_display != null and chunks.holds.release_preview(chunks.generation):
 		_swap_display.reset()
 		_swap_display = null
-		_swap_generation = -1
 
 ## The chunk renderer swapped the chunks it held for a graded edit (T61 (2)) for the installed
 ## ones; a held commit's preview (`_release_swapped_preview`) goes with them.
@@ -658,10 +682,11 @@ func _update_hud(points: PackedVector3Array, preview: Dictionary) -> void:
 	RoadToolHud.write_label(_info_label, _session_hud, preview, _session_snap, active and _zoning_snap_enabled())
 	_label_world_pos = points[points.size() - 1] + Vector3(0.0, 2.0, 0.0)
 
-# A press on the session: places a point, or sends the stroke. True when a commit was queued.
-func _session_press() -> bool:
+# A press (or Enter's `confirm`) on the session: places a point, grabs a freeform grip, or sends
+# the stroke. True when a commit was queued.
+func _session_press(event_name: String = "press") -> bool:
 	var start_us := Time.get_ticks_usec()
-	var result: Dictionary = simulation_node.road_tool_event("press")
+	var result: Dictionary = simulation_node.road_tool_event(event_name)
 	_read_press(result)
 	if not result.has("points"):
 		return false
@@ -729,7 +754,7 @@ func _poll_road_commit_result() -> void:
 			_read_press(simulation_node.road_tool_event("cancel"))
 		_clear_preview_visual()
 		_clear_preview_cache()
-	elif _session_phase == 1:
+	elif _is_editable():
 		_show_rejected_commit()
 	if border_node >= 0:
 		_prompt_border_connection(border_node)
@@ -785,7 +810,7 @@ func reset_main_mesh_chunks() -> void:
 	if _swap_display != null:
 		_swap_display.reset()
 		_swap_display = null
-		_swap_generation = -1
+	chunks.holds.drop_preview()
 	_clear_preview_cache()
 	chunks.reset()
 	_queue_preview_update()
@@ -820,7 +845,8 @@ func _prompt_border_connection(node_id: int) -> void:
 	dialog.popup_centered()
 
 
-# The session's cursor for the pointer's camera ray (Shift draws free), sent once per frame by
+# The session's cursor for the pointer's camera ray (Shift draws free, Ctrl breaks a freeform
+# joint while dragging its handle), sent once per frame by
 # the base tool and once per click.
 func get_world_mouse_pos() -> Vector3:
 	var camera := get_viewport().get_camera_3d()
@@ -828,7 +854,7 @@ func get_world_mouse_pos() -> Vector3:
 		is_valid = false
 		return Vector3.ZERO
 	var mouse_screen := get_viewport().get_mouse_position()
-	var cursor: Variant = simulation_node.road_tool_pointer(camera.project_ray_origin(mouse_screen), camera.project_ray_normal(mouse_screen), Input.is_key_pressed(KEY_SHIFT))
+	var cursor: Variant = simulation_node.road_tool_pointer(camera.project_ray_origin(mouse_screen), camera.project_ray_normal(mouse_screen), Input.is_key_pressed(KEY_SHIFT), Input.is_key_pressed(KEY_CTRL))
 	is_valid = cursor != null
 	return cursor if is_valid else Vector3.ZERO
 

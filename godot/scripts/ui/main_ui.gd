@@ -61,6 +61,8 @@ var road_builder: RoadBuilderWindow
 # Road options
 var straight_btn: Button
 var curve_btn: Button
+var s_curve_btn: Button
+var freeform_btn: Button
 var continuous_check: CheckBox
 var zoning_grid_snap_check: CheckBox
 var network_snap_check: CheckBox
@@ -246,14 +248,35 @@ func _build_ui():
 	curve_btn.tooltip_text = "Three clicks: start, a control point, end. The road follows an exact arc tangent to both legs."
 	mode_row.add_child(curve_btn)
 
+	# Round N (`ROAD-112`): the biarc S-curve and freeform with its edit phase.
+	s_curve_btn = Button.new()
+	s_curve_btn.text = "S-curve"
+	s_curve_btn.toggle_mode = true
+	s_curve_btn.focus_mode = Control.FOCUS_NONE
+	s_curve_btn.tooltip_text = "Four clicks: start, a point it leaves towards, a point it arrives from, end. Two arcs meet tangent to each other."
+	mode_row.add_child(s_curve_btn)
+
+	freeform_btn = Button.new()
+	freeform_btn.text = "Freeform"
+	freeform_btn.toggle_mode = true
+	freeform_btn.focus_mode = Control.FOCUS_NONE
+	freeform_btn.tooltip_text = "Click the road's points; click the last one again or press Enter to edit. Drag points and handles (Ctrl breaks a joint), then Enter or click elsewhere to build."
+	mode_row.add_child(freeform_btn)
+
 	# Continuous (`ROAD-112` round D): the next stroke leaves along the road or the chain it
-	# starts on, in both modes.
+	# starts on, for straight roads and curves (B8; the S-curve and freeform set their own).
 	continuous_check = CheckBox.new()
 	continuous_check.text = "Continuous"
 	continuous_check.focus_mode = Control.FOCUS_NONE
 	continuous_check.tooltip_text = "Start each road along the road or the last road it continues from."
 	continuous_check.toggled.connect(func(enabled: bool): road_tool.continuous = enabled)
-	mode_row.add_child(continuous_check)
+	# Its own row under the modes, so the panel keeps its width with four mode buttons.
+	var continuous_row := HBoxContainer.new()
+	var continuous_indent := Label.new()
+	continuous_indent.custom_minimum_size.x = 84.0
+	continuous_row.add_child(continuous_indent)
+	continuous_row.add_child(continuous_check)
+	road_options_menu.add_child(continuous_row)
 	
 	_build_snapping_rows()
 
@@ -856,6 +879,8 @@ func _connect_signals():
 	
 	straight_btn.pressed.connect(func(): _set_draw_mode(0))
 	curve_btn.pressed.connect(func(): _set_draw_mode(1))
+	s_curve_btn.pressed.connect(func(): _set_draw_mode(2))
+	freeform_btn.pressed.connect(func(): _set_draw_mode(3))
 	speed_down_btn.pressed.connect(func(): input_manager.step_simulation_speed(-1))
 	speed_up_btn.pressed.connect(func(): input_manager.step_simulation_speed(1))
 
@@ -1058,6 +1083,8 @@ func _option_check(row: HBoxContainer, text: String, tooltip: String) -> CheckBo
 func _set_draw_mode(mode: int):
 	straight_btn.button_pressed = (mode == 0)
 	curve_btn.button_pressed = (mode == 1)
+	s_curve_btn.button_pressed = (mode == 2)
+	freeform_btn.button_pressed = (mode == 3)
 	if road_tool:
 		road_tool.draw_mode = mode
 

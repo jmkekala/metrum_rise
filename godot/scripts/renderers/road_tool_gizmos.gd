@@ -3,9 +3,11 @@
 ## The road tool's gizmos (`ROAD-112` round D): what `road_tool_frame` sends as packed arrays,
 ## drawn into one reused `ArrayMesh`. Line strips (`gizmo_line_points`, each strip starting at
 ## its `gizmo_line_starts` entry) draw one surface each in their class's colour: the draft's
-## centreline, a guide line, the angle ray, a curve's tangent legs. Handles (`gizmo_handles`)
-## draw as screen-sized points, one surface per kind: a placed end, a control point, the chain's
-## start, the live end. Plain defaults: unshaded, drawn over the road, colours from the tool's
+## centreline, a guide line, the angle ray, a curve's tangent legs (and round N's S-curve control
+## polygon and freeform handle stems). Handles (`gizmo_handles`) draw as screen-sized points, one
+## surface per kind: a placed end, a control point, the chain's start, the live end (or the
+## grabbed freeform grip), a joint (the S-curve's, a freeform inner node) and a handle (an
+## S-curve arc's control point, a freeform Bezier handle). Plain defaults: unshaded, drawn over the road, colours from the tool's
 ## existing palette (white, the HUD's amber, the cursor's green, the node markers' blue). Rust
 ## decides every point; this script only uploads them, and only when they changed: in place
 ## while the surfaces' layout holds (a drag), rebuilt when it changes.
@@ -19,12 +21,14 @@ const LINE_COLORS := [
 	Color(0.3, 0.8, 1.0, 0.85),
 	Color(1.0, 0.76, 0.18, 0.95),
 ]
-# By handle kind: placed end, control point, chain start, live end.
+# By handle kind: placed end, control point, chain start, live end, joint, handle.
 const HANDLE_COLORS := [
 	Color(1.0, 1.0, 1.0, 0.95),
 	Color(1.0, 0.76, 0.18, 0.95),
 	Color(0.0, 1.0, 0.5, 0.95),
 	Color(0.3, 0.8, 1.0, 0.95),
+	Color(1.0, 0.42, 0.82, 0.95),
+	Color(1.0, 0.9, 0.55, 0.95),
 ]
 const HANDLE_SIZE_PX := 10.0
 
@@ -69,7 +73,7 @@ func show_frame(frame: Dictionary) -> float:
 	_handles = handles
 	_handle_kinds = handle_kinds
 	var starts: PackedInt32Array = frame.get("gizmo_line_starts", PackedInt32Array())
-	# One point surface per handle kind (a stroke has at most five handles).
+	# One point surface per handle kind (a freeform draft has up to 16 nodes and 30 handles).
 	for kind in HANDLE_COLORS.size():
 		var points := PackedVector3Array()
 		for index in handles.size():

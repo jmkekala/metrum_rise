@@ -12,12 +12,14 @@
 //!   printing one `ROAD_TOOL_LOCALITY` JSON line per tier with p50/p99/max in microseconds and the
 //!   trail's frame digest; panics when a tier's digest differs from the first tier's.
 //! - `METRUM_ROAD_TOOL_ALLOC_PROBE=<n>`: builds the tier `METRUM_ROAD_TOOL_TIER` (default 30000),
-//!   warms both session modes over one trail, runs `n` more trails of each and exits. Run under
+//!   warms every session mode (and a freeform drag) over one trail, runs `n` more trails of each
+//!   and exits. Run under
 //!   `heaptrack --record-only` with `n = 0` and `n = 20`: equal allocation counts mean a warmed
 //!   move allocates nothing.
 
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use metrum_rise::nodes::sim::road_tool::bench::RoadToolBench;
+use metrum_rise::nodes::sim::road_tool::modes::DrawMode;
 use std::time::Instant;
 
 fn env_usize(name: &str) -> Option<usize> {
@@ -72,10 +74,10 @@ fn locality(tiers: &str) -> ! {
         let mut bench = RoadToolBench::build(tier);
         let setup_s = started.elapsed().as_secs_f64();
         let control = per_move_us(&mut bench, rounds, RoadToolBench::cursor_move);
-        bench.restart(true);
+        bench.restart(DrawMode::Straight);
         let straight_digest = trail_digest(&mut bench);
         let straight = per_move_us(&mut bench, rounds, RoadToolBench::session_move);
-        bench.restart(false);
+        bench.restart(DrawMode::SimpleCurve);
         let curve_digest = trail_digest(&mut bench);
         let curve = per_move_us(&mut bench, rounds, RoadToolBench::session_move);
         let digests = (straight_digest, curve_digest);
@@ -102,8 +104,18 @@ fn locality(tiers: &str) -> ! {
 fn allocation_probe(trails: usize) -> ! {
     let mut bench = RoadToolBench::build(env_usize("METRUM_ROAD_TOOL_TIER").unwrap_or(30_000));
     let moves = bench.moves();
-    for straight in [true, false] {
-        bench.restart(straight);
+    // Every drawing mode, then a freeform drag in the edit phase (round N).
+    for mode in [
+        Some(DrawMode::Straight),
+        Some(DrawMode::SimpleCurve),
+        Some(DrawMode::ComplexCurve),
+        Some(DrawMode::Freeform),
+        None,
+    ] {
+        match mode {
+            Some(mode) => bench.restart(mode),
+            None => bench.restart_freeform_drag(),
+        }
         for index in 0..moves * (1 + trails) {
             black_box(bench.session_move(index));
         }
@@ -128,8 +140,11 @@ fn bench_session(c: &mut Criterion) {
             black_box(bench.cursor_move(index % moves))
         })
     });
-    for (name, straight) in [("session_straight", true), ("session_curve", false)] {
-        bench.restart(straight);
+    for (name, mode) in [
+        ("session_straight", DrawMode::Straight),
+        ("session_curve", DrawMode::SimpleCurve),
+    ] {
+        bench.restart(mode);
         group.bench_function(name, |b| {
             b.iter(|| {
                 index += 1;

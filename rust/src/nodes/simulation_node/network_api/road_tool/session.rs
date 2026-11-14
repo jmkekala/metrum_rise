@@ -47,32 +47,48 @@ struct PreviewKey {
 #[godot_api(secondary)]
 impl SimulationNode {
     /// The road tool's pointer moved: a camera ray (`ROAD-112`). Shift frees the cursor of the
-    /// angle lock, guide lines, the zoning grid and the length step. Returns the resolved cursor,
-    /// or `null` while no pointer has met a surface. Reads the published view only; allocates
-    /// nothing once the session's buffers have grown.
+    /// angle lock, guide lines, the zoning grid and the length step; Ctrl breaks the joint of a
+    /// freeform handle being dragged. Returns the resolved cursor, or `null` while no pointer
+    /// has met a surface. Reads the published view only; allocates nothing once the session's
+    /// buffers have grown.
     #[func]
-    pub fn road_tool_pointer(&mut self, origin: Vector3, dir: Vector3, shift: bool) -> Variant {
+    pub fn road_tool_pointer(
+        &mut self,
+        origin: Vector3,
+        dir: Vector3,
+        shift: bool,
+        #[opt(default = false)] ctrl: bool,
+    ) -> Variant {
         self.road_tool_handle(RoadToolEvent::Pointer {
             pointer: Pointer::Ray { origin, dir },
             shift,
+            ctrl,
         });
         self.road_tool_cursor_variant()
     }
 
     /// The road tool's pointer at a scripted world position (tests, benchmarks and probes, as
-    /// `set_scripted_pointer`): the cursor exactly, neither picked nor snapped.
+    /// `set_scripted_pointer`): the cursor exactly, neither picked nor snapped. `ctrl` as for
+    /// `road_tool_pointer`.
     #[func]
-    pub fn road_tool_pointer_at(&mut self, position: Vector3) -> Variant {
+    pub fn road_tool_pointer_at(
+        &mut self,
+        position: Vector3,
+        #[opt(default = false)] ctrl: bool,
+    ) -> Variant {
         self.road_tool_handle(RoadToolEvent::Pointer {
             pointer: Pointer::Scripted(position),
             shift: false,
+            ctrl,
         });
         self.road_tool_cursor_variant()
     }
 
     /// One road tool event by name: `press` (left button: places a point; the stroke's last one
-    /// sends it), `right` (right button), `release`, `cancel`, `confirm`, `mode_straight`,
-    /// `mode_simple_curve`, `mode_complex_curve`, and the commit acknowledgement `committed` or
+    /// sends it; in freeform's edit phase grabs the node or handle under the pointer, else sends
+    /// the stroke), `right` (right button), `release` (ends a freeform drag), `cancel`,
+    /// `confirm` (freeform: ends the placing, then sends the stroke), `mode_straight`,
+    /// `mode_simple_curve`, `mode_complex_curve`, `mode_freeform`, and the commit acknowledgement `committed` or
     /// `refused` (what `get_road_commit_result` said of the sent stroke; after a refusal the
     /// unchanged stroke on the same context stays refused, `road_commit_rejected`), and
     /// `forget_preview`
@@ -95,6 +111,7 @@ impl SimulationNode {
             "mode_straight" => RoadToolEvent::Action(RoadToolAction::ModeStraight),
             "mode_simple_curve" => RoadToolEvent::Action(RoadToolAction::ModeSimpleCurve),
             "mode_complex_curve" => RoadToolEvent::Action(RoadToolAction::ModeComplexCurve),
+            "mode_freeform" => RoadToolEvent::Action(RoadToolAction::ModeFreeform),
             "committed" => RoadToolEvent::CommitAck { committed: true },
             "refused" => RoadToolEvent::CommitAck { committed: false },
             "forget_preview" => {
@@ -158,21 +175,26 @@ impl SimulationNode {
     }
 
     /// The road tool's frame, called once a frame while the tool is active: `phase` (0 idle,
-    /// 1 placing, 2 waiting for the commit's acknowledgement), `placed` (points down), `mode`
-    /// (0 straight, 1 simple curve, 2 complex curve), `continuous`, `cursor` and
+    /// 1 placing, 2 waiting for the commit's acknowledgement, 3 a freeform draft's edit phase),
+    /// `placed` (points down), `mode` (0 straight, 1 simple curve, 2 complex curve, 3 freeform),
+    /// `continuous`, `cursor` and
     /// `cursor_valid`, `snap` (what took the cursor: `free`, `node`, `edge`, `guide`,
     /// `guide_corner`, `grid`, `angle`, `angle_edge`, `angle_guide`, `angle_grid`, `border`,
     /// `self`), `points` (the stroke of this pose, empty without one), `refusal` (why the draft
     /// has no stroke: `too_short`, `fold_back`, `full_turn`, `no_biarc`, `road_tight_curve`, else
     /// ""), `hud`
     /// (`length_m`, `bearing_deg`, `start_angle_deg` and `end_angle_deg` (-1 for none),
-    /// `radius_m` (the smallest arc radius, -1 for a straight draft), `design_speed_kmh` (-1
+    /// `radius_m` (the smallest arc radius, -1 for a straight draft), `other_radius_m` (an
+    /// S-curve's other arc radius, -1 for any other draft), `design_speed_kmh` (-1
     /// for none), `design_speed_warning`, `illegal_radius_m`, `tight_radius`, `build_cost` and
-    /// `upkeep_per_day` of the drawn road type), and the gizmos as packed arrays:
+    /// `upkeep_per_day` of the drawn road type), `piece_lengths_m` and `piece_radii_m` (each
+    /// guide piece's length and smallest radius, -1 for a straight piece: a curve's lead and
+    /// arc, an S-curve's two arcs, a freeform draft's spans), and the gizmos as packed arrays:
     /// `gizmo_line_points` with `gizmo_line_starts` (each strip's first point) and
     /// `gizmo_line_classes` (0 draft centreline, 1 guide line, 2 angle ray, 3 tangent leg),
     /// `gizmo_handles` with `gizmo_handle_kinds` (0 placed end, 1 control point, 2 chain start,
-    /// 3 the live end). When the stroke, its type or the context changed since the last
+    /// 3 the live end or the grabbed freeform grip, 4 a joint: the S-curve's or a freeform inner
+    /// node, 5 a handle: an S-curve arc's control point or a freeform Bezier handle). When the stroke, its type or the context changed since the last
     /// preview, the frame previews it: `preview` holds `preview_road`'s dictionary;
     /// `preview_cleared` is true when the stroke went away. No preview while a sent stroke waits
     /// for its acknowledgement.
@@ -228,6 +250,7 @@ impl SimulationNode {
                 "start_angle_deg": angle(hud.start_angle_deg),
                 "end_angle_deg": angle(hud.end_angle_deg),
                 "radius_m": hud.radius_m.unwrap_or(-1.0),
+                "other_radius_m": hud.other_radius_m.unwrap_or(-1.0),
                 "design_speed_kmh": hud.design_speed_kmh.unwrap_or(-1.0),
                 "design_speed_warning": hud.design_speed_warning,
                 "illegal_radius_m": hud.illegal_radius_m,
@@ -235,6 +258,18 @@ impl SimulationNode {
                 "build_cost": hud.build_cost,
                 "upkeep_per_day": hud.upkeep_per_day,
             },
+        );
+        dict.set(
+            "piece_lengths_m",
+            PackedFloat64Array::from(frame.piece_lengths_m.as_slice()),
+        );
+        dict.set(
+            "piece_radii_m",
+            frame
+                .piece_radii_m
+                .iter()
+                .map(|radius| if radius.is_finite() { *radius } else { -1.0 })
+                .collect::<PackedFloat64Array>(),
         );
         set_gizmos(&mut dict, &frame.gizmos);
         dict
@@ -246,6 +281,7 @@ impl SimulationNode {
             Phase::Idle => (0, 0),
             Phase::Placing { placed } => (1, i64::from(placed)),
             Phase::AwaitingAck => (2, 0),
+            Phase::Editing => (3, self.road_tool_session.session.placed_count() as i64),
         }
     }
 
@@ -395,6 +431,8 @@ fn set_gizmos(dict: &mut VarDictionary, gizmos: &Gizmos) {
         GizmoHandleKind::Control => 1,
         GizmoHandleKind::ChainStart => 2,
         GizmoHandleKind::Cursor => 3,
+        GizmoHandleKind::Joint => 4,
+        GizmoHandleKind::Handle => 5,
     };
     dict.set(
         "gizmo_line_points",
@@ -435,6 +473,7 @@ fn mode_code(mode: DrawMode) -> i64 {
         DrawMode::Straight => 0,
         DrawMode::SimpleCurve => 1,
         DrawMode::ComplexCurve => 2,
+        DrawMode::Freeform => 3,
     }
 }
 

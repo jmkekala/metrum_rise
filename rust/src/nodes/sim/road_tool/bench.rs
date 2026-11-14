@@ -80,21 +80,57 @@ impl RoadToolBench {
         self.rays.len()
     }
 
-    /// Restarts the session's stroke in `straight` (`true`) or simple curve mode; the curve gets
-    /// its control point 150 m east of the start, so each move shapes a fillet arc.
-    pub fn restart(&mut self, straight: bool) {
-        self.start_stroke(if straight {
-            DrawMode::Straight
-        } else {
-            DrawMode::SimpleCurve
-        });
-        if !straight {
-            self.event(RoadToolEvent::Pointer {
-                pointer: Pointer::World(Vector3::new(150.0, 0.0, 30.0)),
-                shift: false,
-            });
-            self.event(RoadToolEvent::Press(PointerButton::Left));
+    /// Restarts the session's stroke in `mode` at the junction, so each move shapes that mode's
+    /// draft: the simple curve gets its control point 150 m east of the start (a fillet arc), the
+    /// S-curve its two aim points (a biarc), freeform two nodes (the move is the live third).
+    pub fn restart(&mut self, mode: DrawMode) {
+        self.start_stroke(mode);
+        let placed: &[Vector3] = match mode {
+            DrawMode::Straight => &[],
+            DrawMode::SimpleCurve => &[Vector3::new(150.0, 0.0, 30.0)],
+            DrawMode::ComplexCurve => &[
+                Vector3::new(60.0, 0.0, 20.0),
+                Vector3::new(120.0, 0.0, 60.0),
+            ],
+            DrawMode::Freeform => &[
+                Vector3::new(60.0, 0.0, 40.0),
+                Vector3::new(120.0, 0.0, -30.0),
+            ],
+        };
+        for point in placed {
+            self.place(*point);
         }
+    }
+
+    /// Restarts a freeform draft of three nodes in its edit phase with its middle node grabbed,
+    /// so each move drags that node (round N's edit phase).
+    pub fn restart_freeform_drag(&mut self) {
+        use super::session::RoadToolAction;
+        self.restart(DrawMode::Freeform);
+        self.place(Vector3::new(180.0, 0.0, 50.0));
+        self.event(RoadToolEvent::Action(RoadToolAction::Confirm));
+        // The middle node where the snaps put it (the frame lists the nodes' handles first).
+        let node = self.session.frame().gizmos.handles[1];
+        self.event(RoadToolEvent::Pointer {
+            pointer: Pointer::Scripted(node),
+            shift: false,
+            ctrl: false,
+        });
+        self.event(RoadToolEvent::Press(PointerButton::Left));
+        assert!(
+            self.session.frame().commit.is_none(),
+            "the press grabs the node"
+        );
+    }
+
+    // A pointer at a world point, then a left press there.
+    fn place(&mut self, point: Vector3) {
+        self.event(RoadToolEvent::Pointer {
+            pointer: Pointer::World(point),
+            shift: false,
+            ctrl: false,
+        });
+        self.event(RoadToolEvent::Press(PointerButton::Left));
     }
 
     /// One session pointer move along the trail (pick, snap, shape, measure). Returns the
@@ -104,6 +140,7 @@ impl RoadToolBench {
         self.event(RoadToolEvent::Pointer {
             pointer: Pointer::Ray { origin, dir },
             shift: false,
+            ctrl: false,
         });
         self.session.frame().cursor.position.x
     }
@@ -177,11 +214,13 @@ impl RoadToolBench {
             DrawMode::Straight => RoadToolAction::ModeStraight,
             DrawMode::SimpleCurve => RoadToolAction::ModeSimpleCurve,
             DrawMode::ComplexCurve => RoadToolAction::ModeComplexCurve,
+            DrawMode::Freeform => RoadToolAction::ModeFreeform,
         };
         self.event(RoadToolEvent::Action(action));
         self.event(RoadToolEvent::Pointer {
             pointer: Pointer::World(START),
             shift: false,
+            ctrl: false,
         });
         self.event(RoadToolEvent::Press(PointerButton::Left));
     }

@@ -26,6 +26,8 @@ use crate::simulation::network::interaction::{
 use godot::prelude::Vector3;
 use std::sync::OnceLock;
 
+mod scurve_freeform;
+
 // One small world shared by the scripted tests: the bench neighbourhood, no background.
 fn view() -> &'static RoadToolQuerySnapshot {
     static VIEW: OnceLock<RoadToolQuerySnapshot> = OnceLock::new();
@@ -385,6 +387,7 @@ fn move_to(session: &mut RoadToolSession, pointer: Pointer) {
         RoadToolEvent::Pointer {
             pointer,
             shift: false,
+            ctrl: false,
         },
     );
 }

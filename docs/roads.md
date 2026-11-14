@@ -12274,7 +12274,7 @@ grade.
 
 ## Road tools (`ROAD-112`, `ROAD-113`)
 
-**Status: in progress.** Planned 2026-11-12; round A (the guide kernel) and round B (the session core, not wired) built 2026-11-13, round B landed 2026-11-14; round F (batch commit, grouped undo, undo refund) built 2026-11-13, held for its batch bar until fix round F2 (2026-11-14), which meets it, landed 2026-11-14; round C (the wiring: straight strokes run on the session) built and landed 2026-11-14; round H (the stroke profile field, the held-ground profile and the automatic bridge/tunnel segmentation, Rust only) built 2026-11-14 on branch `roadtools-h`, for review; round D (curves, continuous, gizmos and the HUD on the session, the GDScript curve path deleted) built 2026-11-14 on branch `roadtools-d`, for review; round E (the snapping options row, and the radius check reading a flattened arc's radius exactly) built 2026-11-14 on branch `roadtools-e`, for review. The user asked for a complete refactor of the
+**Status: in progress.** Planned 2026-11-12; round A (the guide kernel) and round B (the session core, not wired) built 2026-11-13, round B landed 2026-11-14; round F (batch commit, grouped undo, undo refund) built 2026-11-13, held for its batch bar until fix round F2 (2026-11-14), which meets it, landed 2026-11-14; round C (the wiring: straight strokes run on the session) built and landed 2026-11-14; round H (the stroke profile field, the held-ground profile and the automatic bridge/tunnel segmentation, Rust only) built 2026-11-14 on branch `roadtools-h`, for review; round D (curves, continuous, gizmos and the HUD on the session, the GDScript curve path deleted) built 2026-11-14 on branch `roadtools-d`, for review; round E (the snapping options row, and the radius check reading a flattened arc's radius exactly) built 2026-11-14 on branch `roadtools-e`, for review; round N (the S-curve and freeform with an edit phase before the build in the UI, and the Rust hold rule wired) built 2026-11-14 on branch `roadtools-n`, for review. The user asked for a complete refactor of the
 road tool, Rust-first: the current straight mode and the GDScript `Curve3D` "curve" (a cubic
 Bezier whose handles are the raw vectors to the control point, so its curvature, radius and
 length are not exact) are replaced. Mechanics follow the genre (city builders' straight, curve,
@@ -12346,7 +12346,17 @@ since round D).
   line, 2 angle ray, 3 tangent leg; `gizmo_handles` with `gizmo_handle_kinds`: 0 placed end,
   1 control point, 2 chain start, 3 live end), one copy each once a frame; `road_tool_event`
   also returns `placed`; a mode action for the current mode keeps the stroke. The draft refusal
-  `road_tight_curve` joins `too_short`, `fold_back`, `full_turn` and `no_biarc`.
+  `road_tight_curve` joins `too_short`, `fold_back`, `full_turn` and `no_biarc`. Round N adds
+  the action `mode_freeform` (frame `mode` 3), the phase 3 (a freeform draft's edit phase,
+  `placed` its node count), `release` (ends a freeform drag), `confirm` ending a freeform
+  placing and then sending the draft, an optional `ctrl` on `road_tool_pointer` and
+  `road_tool_pointer_at` (breaks the joint of a freeform handle being dragged), the handle
+  kinds 4 (a joint: the S-curve's, a freeform inner node) and 5 (a handle: an S-curve arc's
+  control point, a freeform Bezier handle; the grabbed grip shows as 3), and the HUD's
+  `other_radius_m` (an S-curve's other arc, -1 otherwise), and `piece_lengths_m` /
+  `piece_radii_m` (each guide piece's length and smallest radius, -1 straight: a curve's lead
+  and arc, an S-curve's arcs, a freeform draft's spans) for labels on the geometry. The look
+  (lines, labels, HUD wording) is the next round's restyle; round N draws with round D's code.
 - **Snapping precedence** (round B, `road_tool/snap.rs`, pure `resolve` over one pose's
   candidates): a network **node** wins outright (an angle lock that was on is reported broken);
   else the direction constraint `D` (the angle lock: the step multiple of the reference nearest
@@ -12385,7 +12395,9 @@ since round D).
   from the bridge's cursor), snap, shape, measure; no preview. **Modes**: straight (two clicks;
   the request is exactly the two ends today's tool sends); simple curve (U1: start, free control
   point, end; the fillet arc plus a straight lead; refused when the legs fold back); complex
-  curve (start, a start-tangent point, an end-tangent point, end; the biarc; `NoBiarc` refused).
+  curve (start, a start-tangent point, an end-tangent point, end; the biarc; `NoBiarc` refused);
+  freeform (round N, `modes/freeform.rs`: Bezier spans through clicked nodes, an edit phase of
+  node and handle drags before the build, under "Drawing and placement").
   Curve requests are the kernel's flattening with heights interpolated by arc length between the
   start's and the cursor's (round I brings handles); the ends are the clicked points bit for bit.
   **Continuous** adds the tangent constraint: a straight stroke from a start tangent (a carried
@@ -13004,6 +13016,91 @@ G2 landed; control: round G2's release library of that code). What changed for p
   Roads row still fits 1,280 px with 13 custom types (`road_types_test`); E4 the angle ray
   drawn 64 m past the cursor, the guide line as well where an angle meets it.
 
+### S-curve and freeform with edit before build (round N)
+
+Built 2026-11-14 on branch `roadtools-n` (`dev` `c884802a`; control: the release library and
+scripts of `c884802a`). What changed for players is under "Drawing and placement" (Modes,
+Freeform, Gizmos, HUD).
+
+- **S-curve UI**: the "S-curve" button (Tool mode row) sends `mode_complex_curve`. The session
+  draws its aim legs as tangent gizmos and sends no stroke before the end is live (round D's
+  ghost legs were previewed as road); at the end it pushes the control polygon (start, each
+  arc's control point where its end tangents meet, the joint, end), the two control points as
+  `Handle` and the joint as `Joint` (`modes::biarc_controls`: an arc's tangent length is
+  `chord (1 + b^2) / (2 (1 - b^2))` in the stored bulge form, `O(1)`). `HudValues::other_radius_m`
+  is the larger radius of a draft of exactly two arcs; `radius_m` stays the smaller and alone
+  feeds the design speed and the tight-curve verdict.
+- **Freeform** (`modes/freeform.rs`, `Freeform` beside the session's placed points, which grow
+  to 16): placing, the edit phase (`Phase::Editing`), grips within a fixed 4 m (nodes before
+  handles, lower index on a tie), handle drags keeping the joint collinear with the opposite
+  handle's length kept, Ctrl breaking it for good, automatic handles until a handle is dragged,
+  a chained start not grabbed. During a drag the cursor takes the network snap but no anchor,
+  reference or self snap. The stroke is `GuidePath::flatten_into` of the spans with heights by
+  arc length per span (`build_freeform_stroke`); the HUD's end road is the last node's snap.
+  Per pose `O(nodes)` plus the kernel's per-span Bezier work (a 65-entry length table, 257
+  curvature samples, the flattening), all in fixed arrays and the session's reused buffers.
+- **Holds wired** (`RoadDrawHolds`, round G2's rule): `road_chunk_renderer.gd` keeps a `holds`
+  instance and asks it at every install (`hold_install` with the graded journal's serial and the
+  renderer's installed serial), release (`release_install`) and `is_holding`; `road_tool.gd`'s
+  commit preview hold is `holds.hold_preview` / `release_preview` / `drop_preview`. Deleted:
+  `held_serial` and `_swap_generation` and the serial comparisons. New getter `held_preview`.
+- **GDScript**: `road_tool.gd` forwards the left button's release, Ctrl with the pointer, Enter
+  (`input_manager.gd`, `confirm_road`); the edit phase counts as an editable stroke for the
+  graded catch-up, the draft refusal's HUD and a refused commit. The two new handle kinds get
+  colours in round D's palette; the HUD and its wording are round D's unchanged (the restyle
+  round after this one redoes gizmos and HUD for every mode from the frame's data:
+  `other_radius_m`, `piece_lengths_m`, `piece_radii_m`, the joint and handle positions).
+- **Tests** (Rust, `road_tool/tool_tests/scurve_freeform.rs`, `modes/freeform.rs`):
+  `freeform_handle_edits_keep_joints_collinear_unless_broken` (a dragged handle keeps its joint
+  within 1e-9 rad and the opposite handle's length; Ctrl breaks it, a broken joint's handles
+  then move apart; a dragged node carries its handles), `freeform_commits_the_flattening_rule`
+  (the sent stroke is the path's flattening bit for bit, every node a point, no step over 4 m,
+  the true curve sampled every 5 cm within 5 cm of the chords), `freeform_cancel_leaves_nothing`
+  (Esc and right-click in the edit phase: no stroke, gizmos, HUD or commit; the next draft's
+  handles automatic again), `freeform_ends_on_the_network_and_chains_on_open_ground` (a node on
+  an edge ends the placing and the chain; a press within the grip reach grabs; a refused commit
+  stays in the edit phase), `s_curve_reports_both_radii_and_judges_the_tighter` (aim legs no
+  stroke and no refusal; `radius_m` the smaller arc, `other_radius_m` the larger, the design
+  speed of the smaller, the joint and control points; an S with one arc under the illegal radius
+  and one over refused as `road_tight_curve`), `s_curve_and_freeform_frames_are_deterministic`
+  (the same events, drags and Ctrl included, give bitwise equal frames), and the kernel-side
+  freeform tests (automatic handles keep a straight draft straight and joints tangent). Godot:
+  `_test_s_curve_and_freeform` in `network_tool_chunk_renderer_test.gd` on the real node (an
+  S-curve drawn and committed; a freeform draft placed, taken into its edit phase by Enter
+  through the input manager, a handle dragged with its joint kept collinear, one broken with
+  Ctrl, built by Enter and chained; Esc in the edit phase leaves nothing); the S-curve and
+  Freeform buttons in the options row test.
+- **Straight and simple-curve parity, bitwise** (`commit_products.gd`, control `c884802a`'s
+  library and scripts, fresh this round): the Kuopio drag probe's 39 strokes, 78 commits, and the
+  gameplay benchmark's 17 fixture commits (headless): request, graph, counters, meshes (with and
+  without curve signs) and graded tiles equal at every commit. The drag probe on the rewired
+  holds: PASS on both sides, 0 failures, 39 of 39 fast commits.
+- **Allocation** (heaptrack `--record-only` on the session bench at 30k, every mode: straight,
+  simple curve, S-curve, freeform placing and a freeform node drag, 512 moves a trail each):
+  2,442,888 and 2,442,893 allocation calls with no extra trail, 2,442,913 with 20 and 2,442,901
+  with 200 (512,000 more moves): none per move.
+- **Gizmo upload** (rendered, gamescope's headless backend, 1920x1080, 120 drag frames each,
+  `road_tool_capture.gd` set `scurve_freeform`): an S-curve's end dragged p50 0.029, p95 0.112,
+  max 0.194 ms; a freeform handle dragged p50 0.032, p95 0.118, max 0.123 ms (bar 0.2 ms). The
+  process's first gizmo upload (new surfaces and materials) took 3.2 ms once, recorded apart.
+- **Stills** (`$ARTIFACTS/stills`): `scurve_mid_draw.png`, `freeform_edit_phase.png`,
+  `freeform_committed.png`.
+- **Gates** (fresh, final tree): debug `cargo test --lib` 2,671 passed, 0 failed, 228 ignored;
+  `cargo clippy --all-targets` the branch point's one warning (`asset_document.rs:15`);
+  `./run.sh --test` PASS (nextest 2,675 of 2,675, 229 skipped; both Godot chains PASS, no script
+  skipped, no script error; a first run failed `road_types_test`, the options panel 1,356 px wide
+  with the two new mode buttons, so Continuous moved to its own row under the modes). No timing session (the user's 2026-11-14 reduction): no bar of this
+  round is a time; the straight and simple-curve paths are unchanged (bitwise products) and the
+  new modes run only when chosen.
+- **Decisions under the delegation (for review)**: N1 the S-curve's aim legs are gizmos only (no
+  road preview before the end is live); N2 freeform ends its placing on a click on the last
+  node, Enter, a node on a road or the map edge, or the sixteenth node; N3 grips within a fixed
+  4 m (world metres, as every tool tolerance); N4 Ctrl breaks a joint (Alt with the left button
+  orbits the camera) and a broken joint stays broken; N5 automatic handles are the Catmull-Rom
+  tangent at inner nodes and half way to the neighbour's handle at the ends; N6 freeform
+  heights by arc length per span between its nodes; N7 no continuous constraint for the S-curve
+  or freeform (B8), the chain applies; N8 a chained freeform start is not draggable.
+
 ### Decisions (user, 2026-11-12, all as recommended)
 
 - U1 simple curve = three clicks, free control point, exact arc plus a straight lead.
@@ -13095,7 +13192,7 @@ only. Its calls: `update(expected_generation, stage_only)`, `commit_staged`, `di
 hydration's parts `install_built`, `install_lights`, `build_lights_part`, `lights_building` and
 `hydration_materials`, `is_holding`, and for the preview display `chunks`, `new_chunk_node`,
 `fill_chunk_mesh`, `place_chunk`, `chunk_root`; read-only state `generation`, `span_m`,
-`origin_x_m`, `origin_z_m`, `held_serial`, `street_lights`, `road_signs`. It tells its host (the
+`origin_x_m`, `origin_z_m`, `holds` (the Rust hold rule, `RoadDrawHolds`; round N), `street_lights`, `road_signs`. It tells its host (the
 road tool) `mark_network_nodes_dirty`, `road_chunks_installed(generation)` and
 `road_chunks_released()`. Chunks are `MeshInstance3D` nodes. Since CB part 2 (2026-11-13) a
 load's hydration builds them in Rust: each chunk's surfaces are encoded in Godot's own layout on
@@ -13160,8 +13257,25 @@ the clicks, the mode buttons and the acknowledgement and draws what `road_tool_f
   free control point, end; the exact circular arc tangent to both legs with tangent length
   `min(|AC|, |CB|)` and a straight lead on the longer leg, flattened by the kernel's rule). A
   control-point click places a point and sends nothing; the end click sends the stroke. The
-  session also has the complex curve (the biarc S-curve, four clicks); its button comes with
-  round N. Pressing the current mode's button again keeps the stroke; another mode drops it.
+  **S-curve** (round N: four clicks, the start, a point the road leaves towards, a point it
+  arrives from, the end; the biarc by the equal-tangent-length rule, two arcs meeting tangent at
+  the joint) and **Freeform** (round N, below). The S-curve's aim legs draw as tangent gizmos
+  only: nothing is previewed as road until the end is live. Pressing the current mode's button
+  again keeps the stroke; another mode drops it.
+- **Freeform** (round N, `modes/freeform.rs`): each click places a node; the road is cubic
+  Bezier spans through the nodes, the live cursor the provisional last one. Clicking the last
+  node again or Enter (two nodes or more), a node snapped to a road or the map edge, or the
+  sixteenth node ends the placing and starts the **edit phase**: a press within 4 m of a node
+  or a handle grabs it and the pointer drags it until the button is released (a node takes the
+  network snap, never the angle lock, length step or self snap; a chained start stays where the
+  last road ended); Enter or a press anywhere else builds the road; right-click or Esc drops the
+  draft and leaves nothing. A node's handles are automatic (an inner node's `+-(next -
+  previous) / 6`, an end's half way to its neighbour's handle) until one is dragged; the
+  opposite handle then turns with it and keeps its length, so the joint stays smooth, unless
+  Ctrl is held while dragging, which breaks the joint for good (the handles move apart). The
+  stroke is the kernel's flattening of the spans (sag at most 5 cm, steps at most 4 m), every
+  node a stroke point bit for bit, heights interpolated by arc length between each span's
+  nodes. Continuous does not apply (B8); the chain does.
 - **Continuous** (a checkbox beside the modes, off by default): a stroke that starts on a dead
   end, along a road or where the chain left off leaves along that direction: a straight stroke
   becomes the line or arc leaving tangent through the cursor, a curve's control point is held
@@ -13186,11 +13300,16 @@ the clicks, the mode buttons and the acknowledgement and draws what `road_tool_f
   angle lock's ray from the stroke's last point through the cursor and 64 m on past it, a guide
   line 64 m either side of the cursor (both where an angle meets a guide), and handles as screen-sized points: the placed start (white), a
   control point (amber), a chained stroke's start (green) and the live end (blue). Drawn over
-  the road, unshaded.
+  the road, unshaded. Round N: the S-curve's aim legs and its control polygon (start, the first
+  arc's control point, the joint, the second arc's control point, end) in amber with the arcs'
+  control points (pale amber) and the joint (pink); a freeform draft's inner nodes as joints
+  (pink) and, in the edit phase, each node's handles (pale amber) on amber stems, the grabbed
+  one in the live end's blue.
 - **HUD** (`road_tool_hud.gd`, a label above-right of the stroke's end, the same pixel size at
   every zoom): length, the angle to the road the stroke starts on (folded to 0..90°) or the
   compass bearing, cost (the preview's, class-priced) and upkeep per day, the steepest grade,
-  the arc's radius and design speed `sqrt(127 * 0.20 * R)` rounded down to 5 km/h, the
+  the arc's radius (an S-curve's tighter one, which the design speed and the tight-curve
+  verdict judge) and design speed `sqrt(127 * 0.20 * R)` rounded down to 5 km/h, the
   demolitions and the plan state. Amber when the design speed is under the type's limit (cars
   do not slow for curves today: advice only), for a steep grade or while a stroke is pending;
   red with the reason when refused. Rust sends only numbers and keys; `road_reason_text.gd`

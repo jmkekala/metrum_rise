@@ -7,6 +7,10 @@
 ## `gizmo_upload.json` (milliseconds per upload while a curve is dragged).
 ## `METRUM_ROAD_TOOL_CAPTURE_SET=snapping` writes round E's stills instead: the options panel's
 ## Snapping and Steps rows, a guide line and the angle lock taking the cursor.
+## `METRUM_ROAD_TOOL_CAPTURE_SET=scurve_freeform` writes round N's: an S-curve mid-draw, a
+## freeform draft in its edit phase, the committed freeform road, and
+## `gizmo_upload_scurve_freeform.json` (uploads while an S-curve's end and a freeform handle are
+## dragged).
 extends SceneTree
 
 const RoadToolScript := preload("res://scripts/tools/road_tool.gd")
@@ -60,8 +64,12 @@ func _run() -> void:
 	_tool.set_road_type(_tool.DEFAULT_ROAD_TYPE)
 	_tool.active = true
 	_tool.begin_preview_measurement()
-	if OS.get_environment("METRUM_ROAD_TOOL_CAPTURE_SET") == "snapping":
-		await _capture_snapping()
+	var capture_set := OS.get_environment("METRUM_ROAD_TOOL_CAPTURE_SET")
+	if capture_set == "snapping" or capture_set == "scurve_freeform":
+		if capture_set == "snapping":
+			await _capture_snapping()
+		else:
+			await _capture_scurve_freeform()
 		_main.queue_free()
 		await process_frame
 		quit(0 if _failures == 0 else 1)
@@ -191,6 +199,80 @@ func _capture_snapping() -> void:
 	ui.angle_step_option.item_selected.emit(0)
 	_tool.cancel_road()
 	_tool.set_process(true)
+
+# Round N: an S-curve mid-draw (its end dragged round a circle for the upload record), then a
+# freeform draft placed, taken into its edit phase, one handle dragged (round a circle too), and
+# built.
+func _capture_scurve_freeform() -> void:
+	var uploads := {}
+	_tool.draw_mode = RoadToolScript.DrawMode.COMPLEX_CURVE
+	_tool._begin_stroke(Vector3(-70.0, 0.0, 60.0))
+	_tool._commit_segment(Vector3(-40.0, 0.0, 60.0))
+	_tool._commit_segment(Vector3(30.0, 0.0, 10.0))
+	# The process's first gizmo upload (new surfaces and materials) apart from the drag's.
+	_tool.gizmo_upload_ms = PackedFloat32Array()
+	_tool.set_scripted_pointer(true, Vector3(72.0, 0.0, 10.0))
+	await _frames(3)
+	var first_upload := Array(_tool.gizmo_upload_ms)
+	uploads["scurve"] = await _drag_record(Vector3(60.0, 0.0, 10.0), func(at: Vector3): _tool.set_scripted_pointer(true, at))
+	_tool.set_scripted_pointer(true, Vector3(60.0, 0.0, 10.0))
+	await _capture("scurve_mid_draw")
+	_tool.cancel_road()
+	_tool.draw_mode = RoadToolScript.DrawMode.FREEFORM
+	_tool._begin_stroke(Vector3(-90.0, 0.0, 0.0))
+	for node in [Vector3(-40.0, 0.0, 30.0), Vector3(10.0, 0.0, 0.0)]:
+		_expect(not _tool._commit_segment(node), "a freeform node commits nothing")
+	_tool.set_scripted_pointer(true, Vector3(60.0, 0.0, 30.0))
+	await _frames(3)
+	_tool._commit_segment(Vector3(60.0, 0.0, 30.0))
+	_tool._session_press("confirm")
+	await _frames(3)
+	_expect(int(_simulation.road_tool_frame()["phase"]) == 3, "the draft is in its edit phase")
+	# Node 1's outward handle (handles in frame order: node 0 out, node 1 in, node 1 out, ...).
+	var handles := PackedVector3Array()
+	for index in _tool.gizmos._handles.size():
+		if _tool.gizmos._handle_kinds[index] == 5:
+			handles.append(_tool.gizmos._handles[index])
+	_tool.set_scripted_pointer(true, handles[2])
+	await _frames(2)
+	_tool._session_press()
+	var grip := handles[2] + Vector3(10.0, 0.0, 6.0)
+	uploads["freeform_handle"] = await _drag_record(grip, func(at: Vector3): _tool.set_scripted_pointer(true, at))
+	_tool.set_scripted_pointer(true, grip)
+	await _frames(2)
+	_simulation.road_tool_event("release")
+	await _capture("freeform_edit_phase")
+	_tool._session_press("confirm")
+	_expect(_tool._commit_request_id > 0, "the freeform draft is sent")
+	await _ack()
+	_tool.cancel_road()
+	await _capture("freeform_committed")
+	var report := {"engine": Engine.get_version_info(), "adapter": RenderingServer.get_video_adapter_name(), "failures": _failures, "first_uploads_ms": first_upload}
+	for key in uploads:
+		var times: Array = uploads[key]
+		var sorted := times.duplicate()
+		sorted.sort()
+		report[key] = {
+			"uploads": sorted.size(),
+			"p50": sorted[sorted.size() / 2] if not sorted.is_empty() else -1.0,
+			"p95": sorted[int(sorted.size() * 0.95)] if not sorted.is_empty() else -1.0,
+			"max": sorted[-1] if not sorted.is_empty() else -1.0,
+			"in_order": times,
+		}
+	var file := FileAccess.open(_output.path_join("gizmo_upload_scurve_freeform.json"), FileAccess.WRITE)
+	file.store_string(JSON.stringify(report, "\t"))
+	file.close()
+	print("ROAD_TOOL_CAPTURE %s" % JSON.stringify(report))
+
+# Moves the pointer round a 12 m circle about `centre` for 120 frames through `move` and returns
+# the gizmo uploads those frames recorded (ms each).
+func _drag_record(centre: Vector3, move: Callable) -> Array:
+	_tool.gizmo_upload_ms = PackedFloat32Array()
+	for index in 120:
+		var turn := float(index) / 120.0 * TAU
+		move.call(centre + Vector3(12.0 * cos(turn), 0.0, 12.0 * sin(turn)))
+		await process_frame
+	return Array(_tool.gizmo_upload_ms)
 
 # The session's cursor for a vertical camera ray onto `at`, then one frame of the tool's drawing.
 func _ray(at: Vector3) -> void:
