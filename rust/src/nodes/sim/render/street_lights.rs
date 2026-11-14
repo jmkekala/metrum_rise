@@ -32,12 +32,16 @@
 //! frame; when both textures are due, the one that waited goes first. A still camera costs a
 //! few comparisons. No allocation once the scratch buffers reached their size.
 
+use super::stream::backend::GodotBackend;
 use super::vegetation_product::godot_math::{Basis, basis_axis_angle};
+use draw::LampDraw;
 use godot::prelude::*;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap};
 
 type Map<K, V> = HashMap<K, V, foldhash::fast::FixedState>;
+
+mod draw;
 
 /// Lamp grid cell side in metres.
 pub(crate) const CELL_M: f32 = 16.0;
@@ -336,7 +340,7 @@ type Bucket = ((i64, i64, u8), Vec<(Basis, [f32; 3])>);
 
 // One chunk's lamp heads (world space) and kinds, in the control's bucket order.
 #[derive(Default)]
-struct Chunk {
+pub(crate) struct Chunk {
     order: u64,
     heads: Vec<[f32; 3]>,
     kinds: Vec<u8>,
@@ -479,6 +483,21 @@ impl LampBook {
         }
     }
 
+    // A light's batch: its 64 m cell of the chunk's frame and its kind; `None` for a kind
+    // without its model (skipped, as the control did).
+    fn bucket(&self, light: &[f32; 5]) -> Option<(i64, i64, u8)> {
+        let kind = light[4] as i64;
+        if kind < 0 || kind >= KINDS as i64 || !self.loaded[kind as usize] {
+            return None;
+        }
+        let cell_m = 64.0;
+        Some((
+            (f64::from(light[0]) / cell_m).floor() as i64,
+            (f64::from(light[2]) / cell_m).floor() as i64,
+            kind as u8,
+        ))
+    }
+
     /// Installs a chunk's lights (five floats each: chunk-local pole base, yaw, kind) with its
     /// frame `origin`, replacing what it held, and returns its batches. `O(lights)` plus the far
     /// map's patch; the grid re-packs the chunk's cells at the next update.
@@ -490,25 +509,27 @@ impl LampBook {
         far: &mut [u8],
     ) -> ChunkBatches {
         self.remove_chunk(key, far);
-        let mut batches = ChunkBatches::default();
         if lights.len() < 5 {
-            return batches;
+            return ChunkBatches::default();
         }
+        let (batches, chunk) = self.chunk_batches(origin, lights);
+        self.insert_heads(key, chunk.heads, chunk.kinds, far);
+        batches
+    }
+
+    /// The batches `set_chunk` makes of a chunk's `lights` at its frame `origin`, without
+    /// installing them (the street lights' load prebuild, `RENDER-52` part 2), and the chunk's
+    /// world-space heads and kinds. `O(lights)`.
+    pub(crate) fn chunk_batches(&self, origin: [f32; 3], lights: &[f32]) -> (ChunkBatches, Chunk) {
+        let mut batches = ChunkBatches::default();
         // Transforms bucketed by (cell x, cell z, kind), buckets in first-seen order.
         let mut buckets: Vec<Bucket> = Vec::new();
         let mut index: Map<(i64, i64, u8), usize> = Map::default();
         for light in lights.as_chunks::<5>().0 {
-            let kind = light[4] as i64;
-            if kind < 0 || kind >= KINDS as i64 || !self.loaded[kind as usize] {
+            let Some(bucket) = self.bucket(light) else {
                 continue;
-            }
+            };
             let base = [light[0], light[1], light[2]];
-            let cell_m = 64.0;
-            let bucket = (
-                (f64::from(base[0]) / cell_m).floor() as i64,
-                (f64::from(base[2]) / cell_m).floor() as i64,
-                kind as u8,
-            );
             let slot = *index.entry(bucket).or_insert_with(|| {
                 buckets.push((bucket, Vec::new()));
                 buckets.len() - 1
@@ -549,8 +570,7 @@ impl LampBook {
                 .glow
                 .extend_from_slice(&self.colors[usize::from(kind)]);
         }
-        self.insert_heads(key, chunk.heads, chunk.kinds, far);
-        batches
+        (batches, chunk)
     }
 
     /// Installs a chunk's world-space heads and kinds directly (what `set_chunk` derives from its
@@ -955,6 +975,9 @@ pub struct StreetLightBook {
     book: LampBook,
     cells: PackedByteArray,
     far: PackedByteArray,
+    // The chunks' batches on server slots (`RENDER-52` part 2), once `attach_draw` gave them a
+    // world.
+    draw: Option<(GodotBackend, LampDraw)>,
 }
 
 impl StreetLightBook {
@@ -1042,15 +1065,164 @@ impl StreetLightBook {
     #[func]
     pub fn remove_chunk(&mut self, key: Vector2i) -> bool {
         self.buffers();
+        if let Some((backend, draw)) = self.draw.as_mut() {
+            draw.remove(backend, (key.x, key.y));
+        }
         self.book
             .remove_chunk((key.x, key.y), self.far.as_mut_slice())
     }
 
-    /// Takes every chunk out.
+    /// Takes every chunk out; their batches' slots are released (kept as spares up to the
+    /// draw's limit, for the next world's chunks).
     #[func]
     pub fn clear(&mut self) {
         self.buffers();
+        if let Some((backend, draw)) = self.draw.as_mut() {
+            draw.clear(backend);
+        }
         self.book.clear(self.far.as_mut_slice());
+    }
+
+    /// Draws the chunks' batches in `scenario` from now on (`street_lights.gd`, once its lamp
+    /// meshes exist; a second call keeps the draw): `meshes` holds every kind's three levels of
+    /// detail (kind-major, `KINDS * 3`) then the glow quad, `material` the lamps' material
+    /// override. Makes a spare slot of every mesh ([`LampDraw::prewarm`]). False on a malformed
+    /// catalogue.
+    #[func]
+    pub fn attach_draw(&mut self, scenario: Rid, meshes: Array<Rid>, material: Rid) -> bool {
+        if self.draw.is_some() {
+            return true;
+        }
+        if !scenario.is_valid() || meshes.len() != draw::MESHES || !material.is_valid() {
+            godot_error!("attach_draw: malformed lamp catalogue");
+            return false;
+        }
+        let mut backend = GodotBackend::new(scenario);
+        backend.set_catalogue(meshes.iter_shared().collect(), vec![material], Vec::new());
+        let mut draw = LampDraw::default();
+        draw.prewarm(&mut backend);
+        self.draw = Some((backend, draw));
+        true
+    }
+
+    /// Makes a world's lamp batches ahead of its load (the load call's prewarm, `RENDER-52`
+    /// part 2, round CB3): every road chunk `keys` (x, z pairs) with its frame `origins` and
+    /// `lights` (one `PackedFloat32Array` a chunk, its payload's `street_lights`) is built on
+    /// slots, written and hidden, so a load frame's lights part only shows them
+    /// ([`LampDraw::prebuild`]). The book takes no chunk here. Needs the kinds (`set_kinds`) and
+    /// a draw; returns the slots made. `O(lights + batches)`.
+    #[func]
+    pub fn prebuild_draw(
+        &mut self,
+        keys: PackedInt32Array,
+        origins: PackedVector3Array,
+        lights: VarArray,
+    ) -> i64 {
+        let Some((backend, draw)) = self.draw.as_mut() else {
+            return 0;
+        };
+        let keys = keys.as_slice().as_chunks::<2>().0;
+        let book = &self.book;
+        let chunks = keys
+            .iter()
+            .zip(origins.as_slice())
+            .zip(lights.iter_shared())
+            .filter_map(|((key, origin), lights)| {
+                let lights = lights.try_to::<PackedFloat32Array>().ok()?;
+                let origin = [origin.x, origin.y, origin.z];
+                (lights.len() >= 5)
+                    .then(|| ((key[0], key[1]), origin, book.chunk_batches(origin, lights.as_slice()).0))
+            });
+        draw.prebuild(backend, chunks) as i64
+    }
+
+    /// Frees every slot and lets the draw go (the renderer leaves the tree): no slot outlives
+    /// it, nor the meshes they name. The chunks' lamps stay in the book.
+    #[func]
+    pub fn release_draw(&mut self) {
+        if let Some((mut backend, mut draw)) = self.draw.take() {
+            draw.free_all(&mut backend);
+        }
+    }
+
+    /// Whether reused slots take fresh storage (the viewport draws motion vectors).
+    #[func]
+    pub fn set_fresh_buffers(&mut self, fresh: bool) {
+        if let Some((_, draw)) = self.draw.as_mut() {
+            draw.set_fresh(fresh);
+        }
+    }
+
+    /// Whether the lamps' first two levels of detail cast the sun's shadow (a shadow
+    /// benchmark's class toggle; the game always casts).
+    #[func]
+    pub fn set_cast_shadows(&mut self, cast: bool) {
+        if let Some((backend, draw)) = self.draw.as_mut() {
+            draw.set_cast_shadows(backend, cast);
+        }
+    }
+
+    /// `set_chunk` for the draw (`RENDER-52` part 2): installs chunk `key`'s lights in the
+    /// book now and starts its batches on the draw's slots, releasing what it drew; nothing
+    /// draws until `build_chunk_part` made them all. Without a draw only the book takes them.
+    /// `O(lights)`.
+    #[func]
+    pub fn begin_chunk(&mut self, key: Vector2i, origin: Vector3, lights: PackedFloat32Array) {
+        self.buffers();
+        let origin = [origin.x, origin.y, origin.z];
+        let batches =
+            self.book
+                .set_chunk((key.x, key.y), origin, lights.as_slice(), self.far.as_mut_slice());
+        if let Some((backend, draw)) = self.draw.as_mut() {
+            draw.begin(backend, (key.x, key.y), origin, batches);
+        }
+    }
+
+    /// Makes chunk `key`'s next batches until `budget_us` microseconds have passed (one batch
+    /// at least); true when none is left, the chunk then drawn. `O(lamps made)`.
+    #[func]
+    pub fn build_chunk_part(&mut self, key: Vector2i, budget_us: f64) -> bool {
+        match self.draw.as_mut() {
+            Some((backend, draw)) => draw.build_part(backend, (key.x, key.y), budget_us),
+            None => true,
+        }
+    }
+
+    /// Whether chunk `key`'s batches are still being made.
+    #[func]
+    pub fn is_building(&self, key: Vector2i) -> bool {
+        self.draw
+            .as_ref()
+            .is_some_and(|(_, draw)| draw.is_building((key.x, key.y)))
+    }
+
+    /// The draw's slot ledger (the teardown probe and tests): `made`, `freed`, `live` (drawing
+    /// or being made) and `spares`, each slot one `MultiMesh` and one instance; all zero
+    /// without a draw.
+    #[func]
+    pub fn get_draw_ledger(&self) -> VarDictionary {
+        let ledger = self
+            .draw
+            .as_ref()
+            .map(|(_, draw)| draw.ledger())
+            .unwrap_or_default();
+        let mut out = VarDictionary::new();
+        out.set("made", ledger.made as i64);
+        out.set("freed", ledger.freed as i64);
+        out.set("live", ledger.live as i64);
+        out.set("spares", ledger.spares as i64);
+        out
+    }
+
+    /// Chunk `key`'s drawn instances: x the level-of-detail batches' (three a lamp), y the
+    /// glow's (one a head); zero while it is not drawn. For tests.
+    #[func]
+    pub fn get_drawn_instances(&self, key: Vector2i) -> Vector2i {
+        let (lods, glow) = self
+            .draw
+            .as_ref()
+            .map_or((0, 0), |(_, draw)| draw.drawn_instances((key.x, key.y)));
+        Vector2i::new(lods as i32, glow as i32)
     }
 
     /// A day frame of `delta_s`: true when the pool's lights were on and must hide.

@@ -9,7 +9,9 @@
 ## (`Parameter "mesh" is null`, leaked RIDs at exit) are counted per step. With a library that has
 ## the road hydration's mesh ledger (`RENDER-52` part 2) it also counts, at each step's end, the
 ## meshes the hydrations made that are still alive: each must be drawn by a chunk node or held by
-## a build not swapped in yet, else the probe fails. METRUM_TEARDOWN_PAN=1 moves the camera while
+## a build not swapped in yet, else the probe fails. The street lights' slot ledger (`RENDER-52`
+## part 2, round CB3) is counted too: made less freed must be the slots live and spare, and none
+## may be live after a new game (the exit's leaked-RID lines cover the rest). METRUM_TEARDOWN_PAN=1 moves the camera while
 ## each load's hydration runs (its builds left behind are dropped), and a road is added in the
 ## loaded city (the edit replaces hydrated chunks). Otherwise the probe checks only that each
 ## step ran.
@@ -207,6 +209,9 @@ func _begin(step: String) -> void:
 func _end(step: String, details: Dictionary = {}) -> void:
 	if _ledger:
 		details = details.merged({"hydration_meshes": _ledger_counts(step)})
+	var lamps: Variant = _lamp_counts(step)
+	if lamps != null:
+		details = details.merged({"lamp_slots": lamps})
 	_bench._metrics.steps.append(details.merged({"step": step}))
 	print("[TEARDOWN] end %s %s" % [step, JSON.stringify(details)])
 
@@ -235,9 +240,22 @@ func _ledger_counts(step: String) -> Dictionary:
 		_ledger_failures.append("%s: %s" % [step, JSON.stringify(counts)])
 	return counts
 
+# The street lights' slot ledger (null without the book's draw): `made`, `freed`, `live`,
+# `spares`; each slot is one MultiMesh and one instance.
+func _lamp_counts(step: String) -> Variant:
+	var lights: Node = _bench.road_tool.chunks.street_lights
+	var book: Variant = lights.get("_book") if lights != null else null
+	if book == null or not (book as Object).has_method("get_draw_ledger"):
+		return null
+	var counts: Dictionary = book.get_draw_ledger()
+	if int(counts.made) - int(counts.freed) != int(counts.live) + int(counts.spares) \
+			or (step.begins_with("new_game") and int(counts.live) != 0):
+		_ledger_failures.append("%s lamps: %s" % [step, JSON.stringify(counts)])
+	return counts
+
 func _finish(failure: String) -> void:
 	if failure.is_empty() and not _ledger_failures.is_empty():
-		failure = "hydration meshes unaccounted for: " + ", ".join(_ledger_failures)
+		failure = "hydration meshes or lamp slots unaccounted for: " + ", ".join(_ledger_failures)
 	_bench._metrics["success"] = failure.is_empty()
 	_bench._metrics["failure"] = failure
 	if not failure.is_empty():

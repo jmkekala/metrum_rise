@@ -33,11 +33,13 @@ use std::sync::PoisonError;
 pub(crate) const ROAD_US_PER_BYTE: f64 = 0.0005;
 /// Predicted fixed cost of a surface part, microseconds.
 pub(crate) const ROAD_SURFACE_US: f64 = 20.0;
-/// Predicted cost of a chunk's street lights, microseconds a lamp (`street_lights.gd`'s batch
-/// nodes; 7.5-9.8 us measured on the 30k city's load).
+/// Predicted cost of a chunk's street lights, microseconds a lamp: their batches built on the
+/// lamp book's slots in the part (7.5-9.8 us a lamp as nodes on the 30k city's load; a load's
+/// chunks are built in the load call since `RENDER-52` part 2's round CB3, and their part only
+/// shows them, 0.06-0.07 ms a chunk).
 pub(crate) const ROAD_US_PER_LIGHT: f64 = 9.0;
 /// The slice a street lights part runs for, microseconds (`road_chunk_hydration.gd`'s
-/// `LIGHTS_SLICE_US`): a chunk's lamps make their nodes over as many parts as it takes.
+/// `LIGHTS_SLICE_US`): a chunk's lamps make their batches over as many parts as it takes.
 pub(crate) const ROAD_LIGHTS_SLICE_US: f64 = 1000.0;
 /// Predicted cost of a chunk's swap (its node and signs), microseconds.
 pub(crate) const ROAD_SWAP_US: f64 = 150.0;
@@ -261,6 +263,37 @@ impl SimulationNode {
         out.set("chunk_origin_z_m", source.origin[1]);
         out.set("keys", keys);
         self.road_hydration = Some(source);
+        out
+    }
+
+    /// Every road chunk's street lights as the next hydration will hand them out, for the
+    /// street lights' load prebuild (`RENDER-52` part 2, round CB3: their batches made in the
+    /// load call): `chunk_span_m`, `chunk_origin_x_m`, `chunk_origin_z_m` of the road chunk
+    /// grid, `keys` (x, z pairs of the chunks with lights) and `lights` (one `PackedFloat32Array`
+    /// a key, five floats a light). Empty while the road mesh cache is behind the network.
+    /// `O(lights)`.
+    #[func]
+    pub fn get_road_mesh_lights_all(&mut self) -> VarDictionary {
+        let core = self.lock_core();
+        let mut out = VarDictionary::new();
+        if core.cached_road_mesh_generation != core.road_tool_surface_generation {
+            return out;
+        }
+        let (x, z) = core.transit_network.roadbed.chunk_origin_m();
+        let mut keys = PackedInt32Array::new();
+        let mut lights = VarArray::new();
+        for (&(chunk_x, chunk_z), chunk) in &core.cached_road_mesh_chunks {
+            if !chunk.street_lights.is_empty() {
+                keys.push(chunk_x);
+                keys.push(chunk_z);
+                lights.push(&SimCore::road_mesh_lights(chunk).to_variant());
+            }
+        }
+        out.set("chunk_span_m", core.transit_network.roadbed.chunk_span_m());
+        out.set("chunk_origin_x_m", x);
+        out.set("chunk_origin_z_m", z);
+        out.set("keys", keys);
+        out.set("lights", lights);
         out
     }
 

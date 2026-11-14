@@ -2,7 +2,8 @@
 
 ## Headless lamp grid coverage, packing, deterministic overflow, far-map splat and chunk-edit
 ## regression through the Rust `StreetLightBook` (`RENDER-32-H`), and the chunk batches against
-## the transforms GDScript builds; no scene or assets.
+## the transforms GDScript builds, drawn on the book's slots and freed by a reset (`RENDER-52`
+## part 2); no scene or assets.
 extends SceneTree
 
 const StreetLights := preload("res://scripts/renderers/street_lights.gd")
@@ -16,6 +17,8 @@ func _initialize() -> void:
 	_test_overflow()
 	_test_far_splat()
 	_test_far_edits()
+	# The root enters the tree after `_initialize`: the drawn batches need its world.
+	await process_frame
 	_test_batches()
 	quit(1 if _failures > 0 else 0)
 
@@ -147,30 +150,25 @@ func _test_far_edits() -> void:
 	lights.free()
 
 # The chunk's batches carry the transforms GDScript builds from the same lights, bit for bit, and
-# the glow batch one quad a lamp head.
+# the glow batch one quad a lamp head; the book draws them on its slots and frees every slot.
 func _test_batches() -> void:
 	var lights: Node3D = StreetLights.new()
-	lights.call("_upload_kinds")
+	# In the tree: the book draws in its world.
+	root.add_child(lights)
 	var raw := PackedFloat32Array()
 	for i in 40:
 		raw.append_array([-250.0 + float(i) * 12.31, 3.7 + float(i) * 0.05, 240.0 - float(i) * 11.77,
 			-3.1 + float(i) * 0.157, float(i % 5)])
 	lights.set_chunk(Vector2i(1, -2), Vector3(768.0, 0.0, -768.0), raw)
-	var root: Node3D = lights.get("_chunks")[Vector2i(1, -2)]
 	var expected := {}
 	for i in range(0, raw.size(), 5):
 		var t := Transform3D(Basis(Vector3.UP, raw[i + 3]), Vector3(raw[i], raw[i + 1], raw[i + 2]))
 		expected[PackedFloat32Array([t.basis.x.x, t.basis.y.x, t.basis.z.x, t.origin.x, t.basis.x.y,
 			t.basis.y.y, t.basis.z.y, t.origin.y, t.basis.x.z, t.basis.y.z, t.basis.z.z, t.origin.z]).to_byte_array().hex_encode()] = true
 	var seen := 0
-	var glow := 0
-	var nodes := 0
-	for child in root.get_children():
-		var multimesh := (child as MultiMeshInstance3D).multimesh
-		if child.name == "Glow":
-			glow = multimesh.instance_count
-		else:
-			nodes += multimesh.instance_count
+	var drawn: Vector2i = (lights.get("_book") as StreetLightBook).get_drawn_instances(Vector2i(1, -2))
+	var nodes := drawn.x
+	var glow := drawn.y
 	# The same lights through a book of its own: its buffers, as the nodes received them.
 	var book := StreetLightBook.new()
 	book.set_kinds(PackedColorArray(StreetLights.LAMP_COLORS), PackedColorArray(StreetLights.LAMP_COLORS),
@@ -181,8 +179,16 @@ func _test_batches() -> void:
 			var bytes := buffer.slice(index, index + 12).to_byte_array().hex_encode()
 			_expect(expected.has(bytes), "batch transform %s is a light's" % bytes)
 			seen += 3
-	_expect(nodes == seen, "the nodes hold the book's batches: %d of %d" % [nodes, seen])
+	_expect(nodes == seen, "the slots draw the book's batches: %d of %d" % [nodes, seen])
 	# Three levels of detail a light; the median pole has two heads.
 	_expect(seen == 3 * 40, "every light in three level-of-detail batches: %d" % seen)
 	_expect(glow == 48, "one glow quad a head: %d" % glow)
+	# A reset keeps the slots as spares; leaving the tree frees them all.
+	lights.clear()
+	var drawing: StreetLightBook = lights.get("_book")
+	var ledger: Dictionary = drawing.get_draw_ledger()
+	_expect(int(ledger["made"]) > 0 and ledger["live"] == 0
+		and int(ledger["made"]) - int(ledger["freed"]) == int(ledger["spares"]), "a reset keeps spares: %s" % ledger)
+	root.remove_child(lights)
+	_expect(drawing.get_draw_ledger()["made"] == 0, "leaving the tree lets the draw go: %s" % drawing.get_draw_ledger())
 	lights.free()

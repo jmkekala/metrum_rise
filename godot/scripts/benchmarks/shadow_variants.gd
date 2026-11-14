@@ -29,12 +29,13 @@ const NAMES: Array[String] = ["full", "none", "filter2", "filter3", "no_pcss", "
 	"no_cars", "no_walkers", "no_parked", "no_furniture", "agents_all"]
 const CLASSES: Array[String] = ["buildings", "trees", "cars", "walkers", "parked", "furniture"]
 # The node renderers' shadow policy categories (`SceneLighting.apply_shadow_policy`) per class;
-# the building batches, the parked cars and the vegetation draw through Rust and have toggles.
+# the building batches, the parked cars, the street lights and the vegetation draw through Rust
+# and have toggles.
 const NODE_CATEGORIES := {
 	"buildings": ["buildings"],
 	"cars": ["cars"],
 	"walkers": ["walkers"],
-	"furniture": ["road_signs", "street_lights"],
+	"furniture": ["road_signs"],
 }
 # `GameSettings.SHADOW_QUALITY_*`, by value: this script is copied over older trees' scripts.
 const QUALITY_HIGH := 0
@@ -167,6 +168,11 @@ static func _set_class_casts(main: Node, name: String, cast: bool) -> void:
 			main.get_node("Vegetation").set_cast_shadows(cast)
 		"parked":
 			main.get_node("StreamNode").set_parked_cast_shadows(cast)
+		"furniture":
+			# The street lights' batches are the Rust book's slots (`RENDER-52` part 2).
+			var lights := main.find_child("StreetLights", true, false)
+			if lights != null and lights.has_method("set_cast_shadows"):
+				lights.set_cast_shadows(cast)
 		"cars", "walkers":
 			# The agents' twins (`RENDER-15`, R47); their bucket nodes cast nothing.
 			var stream := main.get_node("StreamNode")

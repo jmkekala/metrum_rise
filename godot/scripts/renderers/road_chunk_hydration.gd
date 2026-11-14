@@ -32,15 +32,25 @@ var _plan: Dictionary = {}
 var _span := 0.0
 var _origin := Vector2.ZERO
 
-## Makes the road chunks' one-time resources (the sign models and the lamp meshes and kinds) in the
+## Makes the road chunks' one-time resources (the sign models, the lamp meshes and kinds) and the
+## world's street light batches, hidden until their chunks install, in the
 ## load call, which waits anyway, instead of in the first chunk's unit (0.3 s at 100k). A world
 ## without roads makes them too: else its first commit with a lamp or a sign paid them in one
 ## frame (Kuopio's first commits' 207-222 ms frames, `RENDER-52` part 2).
 func prewarm() -> void:
 	if chunks.road_signs != null:
 		chunks.road_signs._ensure_meshes()
+	# The chunk layers' materials (their first use cost 3.2 ms in a 30k load's first frame).
+	chunks.hydration_materials()
 	if chunks.street_lights != null:
-		chunks.street_lights._set_kinds()
+		# The world's lamp batches, built hidden here: a load frame's lights part only shows them.
+		var world: Dictionary = simulation_node.get_road_mesh_lights_all()
+		var keys: PackedInt32Array = world.get("keys", PackedInt32Array())
+		var origins := PackedVector3Array()
+		for at in range(0, keys.size(), 2):
+			origins.append(chunks.chunk_frame_centre(Vector2i(keys[at], keys[at + 1]),
+				float(world["chunk_span_m"]), float(world["chunk_origin_x_m"]), float(world["chunk_origin_z_m"])))
+		chunks.street_lights.prewarm(keys, origins, world.get("lights", []))
 
 ## Takes the network at `generation` from Rust for a hydration. False when the network moved
 ## past it (try again later). Nothing is drawn or replaced yet.

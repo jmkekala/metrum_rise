@@ -694,6 +694,17 @@ impl SlotPool {
         }
     }
 
+    /// Frees every spare slot (a layer that sizes its spares itself ahead of its installs, the
+    /// street lights' load reserve, `RENDER-52` part 2). `O(slots)`.
+    pub(crate) fn free_spares(&mut self, backend: &mut impl RenderBackend) {
+        let spares: Vec<SlotId> = self.spare.drain().flat_map(|(_, list)| list).collect();
+        for id in spares {
+            self.free_slot(backend, id);
+        }
+        self.spare_order.clear();
+        self.spares = 0;
+    }
+
     /// Frees every slot (a renderer reset or the end of the backend).
     pub(crate) fn clear(&mut self, backend: &mut impl RenderBackend) {
         for id in 0..self.slots.len() {
