@@ -148,7 +148,13 @@ impl SimCore {
     /// Accepts a road only after its roadbed builds, restoring the staged checkpoint otherwise.
     #[cfg(test)]
     pub(crate) fn validate_staged_road_render(&mut self) -> bool {
-        self.validate_staged_road_render_installing(None, None, &[], &mut Default::default())
+        self.validate_staged_road_render_installing(
+            None,
+            None,
+            &[],
+            false,
+            &mut Default::default(),
+        )
     }
 
     /// As [`Self::validate_staged_road_render`], installing a preview's pieces when they still
@@ -162,19 +168,22 @@ impl SimCore {
     /// (`TERRAIN-07-E`): an accepted edit stages its
     /// graded tiles, adopting the preview's `graded` tiles whose inputs equal the committed ones.
     /// The undo record keeps what the install replaced and the erased paint. True when the edit
-    /// is accepted. `metrics` receives the sub-stages' times (`surface_roadbed_ms`,
-    /// `surface_overlap_ms`, `surface_land_ms`, `surface_graded_ms`).
+    /// is accepted. `plotted_judged`: a batch's dry run already gave `delta`'s plotted verdict
+    /// (`ROAD-112` round F2), which holds when `delta` is the one installed. `metrics` receives
+    /// the sub-stages' times (`surface_roadbed_ms`, `surface_overlap_ms`, `surface_land_ms`,
+    /// `surface_graded_ms`).
     pub(crate) fn validate_staged_road_render_installing(
         &mut self,
         delta: Option<&RoadbedDelta>,
         graded: Option<&crate::nodes::sim::core::GradedPose>,
         regeneration: &[CellBounds],
+        plotted_judged: bool,
         metrics: &mut RoadEditMetrics,
     ) -> bool {
         let roadbed_start = Instant::now();
         // The graded selection reads the roadbeds before and after the install (`O(1)`).
         let roadbed_before = self.transit_network.roadbed.snapshot();
-        let (_, restore, _) = self.publish_network_surface(false, delta);
+        let (_, restore, installed_delta) = self.publish_network_surface(false, delta);
         metrics.surface_roadbed_ms = roadbed_start.elapsed().as_secs_f64() * 1000.0;
         let overlap_start = Instant::now();
         // The explicit sites are queried through the site index.
@@ -183,7 +192,11 @@ impl SimCore {
         let roadbed = &self.transit_network.roadbed;
         let before: Vec<_> = restore.replaced_pieces().collect();
         let installed: Vec<_> = roadbed.installed_pieces(&restore).collect();
-        let take = RoadLandTake::in_core(self, &installed, &before);
+        let take = if plotted_judged && installed_delta {
+            RoadLandTake::in_core_judged(self, &installed, &before)
+        } else {
+            RoadLandTake::in_core(self, &installed, &before)
+        };
         metrics.surface_overlap_ms = overlap_start.elapsed().as_secs_f64() * 1000.0;
         if let Some(overlap) = take.plotted {
             self.rollback_staged_road_edit(Some(&restore));

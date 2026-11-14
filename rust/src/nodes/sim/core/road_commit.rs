@@ -256,18 +256,20 @@ impl SimCore {
             edit_metrics.dirty_edges = dirty_count;
             let surface_start = Instant::now();
             record_crash_phase_for_core(self, "add road render validation");
-            let (delta, graded) = match &reused_pieces {
+            // A batch's dry run judged its pieces' plotted land (`ROAD-112` round F2).
+            let (delta, graded, plotted_judged) = match &reused_pieces {
                 Some(PiecesSource::Preview(preview)) => match preview.pieces.as_ref() {
-                    Some(pieces) => (Some(&pieces.delta), Some(&pieces.graded)),
-                    None => (None, None),
+                    Some(pieces) => (Some(&pieces.delta), Some(&pieces.graded), false),
+                    None => (None, None, false),
                 },
-                Some(PiecesSource::Delta(delta)) => (Some(delta), None),
-                None => (None, None),
+                Some(PiecesSource::Delta(delta)) => (Some(delta), None, true),
+                None => (None, None, false),
             };
             road_add.committed = self.validate_staged_road_render_installing(
                 delta,
                 graded,
                 &road_add.regeneration,
+                plotted_judged,
                 &mut edit_metrics,
             );
             surface_ms = surface_start.elapsed().as_secs_f64() * 1000.0;

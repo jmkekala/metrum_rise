@@ -25,7 +25,7 @@ use std::time::Instant;
 
 use super::frame::record_crash_phase_for_core;
 use super::road_commit::{RoadCommitOutcome, RoadCommitRequest, StrokePlan, SubmittedStroke};
-use super::road_edit_plan::{RoadEditPlan, RoadLandTake};
+use super::road_edit_plan::{CoreLand, RoadEditPlan, first_plotted_overlap};
 use super::road_preview::{RoadPreviewFingerprint, RoadPreviewRequest};
 use super::road_rejection::RoadRejection;
 use super::state::SimCore;
@@ -65,6 +65,64 @@ pub(crate) struct RoadBatchTimes {
     pub(crate) tail_ms: f64,
     /// How many strokes installed their dry run's plan and pieces (the batch's chain held).
     pub(crate) reused: usize,
+    /// The dry run's stages summed over its strokes (`ROAD-112` round F2).
+    pub(crate) dry_parts: DryRunParts,
+    /// Each committed stroke's core stages ([`core_parts`]); its `buildings_ms` holds the
+    /// intermediate strokes' lot plans (the last stroke's are deferred).
+    pub(crate) core_parts: Vec<[f64; CORE_PARTS]>,
+    /// The tail's stages: mesh precompute, publication with its graph copy, routing schedule
+    /// and lot plan spawn.
+    pub(crate) tail_parts: [f64; 4],
+}
+
+/// The dry run's stages summed over the batch's strokes, in milliseconds (`ROAD-112` round F2).
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct DryRunParts {
+    /// The plan (`RoadEditPlan::compile_from`).
+    pub(crate) plan_ms: f64,
+    /// The plan's readiness and the stroke checks.
+    pub(crate) checks_ms: f64,
+    /// The graph checkpoint and the plan applied to the graph, its pieces marked.
+    pub(crate) apply_ms: f64,
+    /// The closure compiled (`compile_delta`).
+    pub(crate) compile_ms: f64,
+    /// The pieces installed into the dry run's roadbed copy.
+    pub(crate) install_ms: f64,
+    /// The plotted land judged.
+    pub(crate) land_ms: f64,
+    /// The graph put back.
+    pub(crate) restore_ms: f64,
+}
+
+/// How many stages [`core_parts`] reports.
+pub(crate) const CORE_PARTS: usize = 11;
+
+/// A stroke core's stages from its metrics, in milliseconds: plan, undo record, topology,
+/// zoning marks, roadbed install, land judgement, land take, graded tiles, agent invalidation,
+/// lanes and reattachment, lot plan and entrances.
+pub(crate) fn core_parts(m: &RoadEditMetrics) -> [f64; CORE_PARTS] {
+    [
+        m.road_plan_ms,
+        m.undo_ms,
+        m.topology_ms,
+        m.zoning_ms,
+        m.surface_roadbed_ms,
+        m.surface_overlap_ms,
+        m.surface_land_ms,
+        m.surface_graded_ms,
+        m.agent_invalidate_ms,
+        m.lanes_and_reattach_ms,
+        m.buildings_ms,
+    ]
+}
+
+impl DryRunParts {
+    // Adds the time since `*start` to `field` and restarts the clock.
+    fn lap(field: &mut f64, start: &mut Instant) {
+        let now = Instant::now();
+        *field += (now - *start).as_secs_f64() * 1000.0;
+        *start = now;
+    }
 }
 
 /// One stroke of a batch as its dry run planned and compiled it, for the commit to install.
@@ -105,6 +163,29 @@ impl SimCore {
         road_total: Instant,
         edit_metrics: RoadEditMetrics,
     ) -> RoadBatchOutcome {
+        self.commit_road_batch_with(request, road_total, edit_metrics, true)
+    }
+
+    /// [`Self::commit_road_batch`] with every stroke's core planning and compiling afresh
+    /// instead of installing its dry run's products: the reference the reuse must equal
+    /// bitwise (`ROAD-112` round F2).
+    #[cfg(test)]
+    pub(crate) fn commit_road_batch_without_reuse(
+        &mut self,
+        request: RoadBatchRequest,
+    ) -> RoadBatchOutcome {
+        self.commit_road_batch_with(request, Instant::now(), Default::default(), false)
+    }
+
+    // `reuse`: the cores install their dry run's plan, pieces and plotted verdict while the
+    // batch's chain holds; otherwise they plan as a single commit without a preview does.
+    fn commit_road_batch_with(
+        &mut self,
+        request: RoadBatchRequest,
+        road_total: Instant,
+        edit_metrics: RoadEditMetrics,
+        reuse: bool,
+    ) -> RoadBatchOutcome {
         let mut strokes = request.strokes;
         if strokes.len() == 1 {
             let mut stroke = strokes.pop().expect("one stroke");
@@ -121,7 +202,7 @@ impl SimCore {
         self.adopt_pending_cell_lots();
         record_crash_phase_for_core(self, "add road batch shared pool wait");
         crate::thread_pools::install(|| {
-            self.commit_road_batch_in_pool(strokes, road_total, edit_metrics)
+            self.commit_road_batch_in_pool(strokes, road_total, edit_metrics, reuse)
         })
     }
 
@@ -130,11 +211,13 @@ impl SimCore {
         strokes: Vec<RoadCommitRequest>,
         road_total: Instant,
         edit_metrics: RoadEditMetrics,
+        reuse: bool,
     ) -> RoadBatchOutcome {
         let submitted: Vec<SubmittedStroke> = strokes.iter().map(SubmittedStroke::of).collect();
         let dry_start = Instant::now();
         record_crash_phase_for_core(self, "add road batch dry run");
-        let dry = self.dry_run_batch(&strokes);
+        let mut dry_parts = DryRunParts::default();
+        let dry = self.dry_run_batch(&strokes, &mut dry_parts);
         let dry_run_ms = dry_start.elapsed().as_secs_f64() * 1000.0;
         let dry = match dry {
             Ok(dry) => dry,
@@ -144,6 +227,7 @@ impl SimCore {
                 let mut batch =
                     self.finish_refused_batch(index, road_total, edit_metrics, &submitted);
                 batch.times.dry_run_ms = dry_run_ms;
+                batch.times.dry_parts = dry_parts;
                 return batch;
             }
         };
@@ -153,6 +237,7 @@ impl SimCore {
         let count = strokes.len();
         let mut kept_tiles = Vec::with_capacity(count);
         let mut core_ms = Vec::with_capacity(count);
+        let mut parts = Vec::with_capacity(count);
         let mut reused = 0;
         let mut last = None;
         for (index, (stroke, dry)) in strokes.into_iter().zip(dry).enumerate() {
@@ -169,14 +254,15 @@ impl SimCore {
             };
             // The last stroke's lots are planned off the commit, as a single commit's; the
             // earlier strokes' here, before the next stroke reads them.
-            let mut core = self.commit_stroke_core(
-                stroke,
-                StrokePlan::Batch(Box::new(dry)),
-                index + 1 == count,
-                road_total,
-                metrics,
-            );
+            let plan = if reuse {
+                StrokePlan::Batch(Box::new(dry))
+            } else {
+                StrokePlan::Preview(None)
+            };
+            let mut core =
+                self.commit_stroke_core(stroke, plan, index + 1 == count, road_total, metrics);
             core_ms.push(core_start.elapsed().as_secs_f64() * 1000.0);
+            parts.push(core_parts(&core.metrics));
             if !core.committed {
                 // The dry run's verdict is the commit's, so this is unreachable; should it
                 // happen, the batch's strokes so far are undone (their taken land stays
@@ -210,15 +296,30 @@ impl SimCore {
             core_ms,
             tail_ms,
             reused,
+            dry_parts,
+            core_parts: parts,
+            tail_parts: [
+                tail.mesh_ms,
+                tail.snapshot_ms,
+                stroke.metrics.routing_ms,
+                stroke.metrics.lots_spawn_ms,
+            ],
         };
         debug_log!(
             "road",
-            "road_batch strokes={} dry_run_ms={:.3} core_ms={:?} tail_ms={:.3} reused={}",
+            "road_batch strokes={} dry_run_ms={:.3} core_ms={:?} tail_ms={:.3} reused={} dry={:?} lots_ms={:?} tail_parts={:?}",
             count,
             times.dry_run_ms,
             times.core_ms,
             times.tail_ms,
-            times.reused
+            times.reused,
+            times.dry_parts,
+            times
+                .core_parts
+                .iter()
+                .map(|parts| parts[CORE_PARTS - 1])
+                .collect::<Vec<_>>(),
+            times.tail_parts
         );
         let outcome = self.finish_commit(stroke, tail, road_total, &submitted[count - 1]);
         RoadBatchOutcome {
@@ -260,6 +361,7 @@ impl SimCore {
     fn dry_run_batch(
         &mut self,
         strokes: &[RoadCommitRequest],
+        parts: &mut DryRunParts,
     ) -> Result<Vec<DryRunStroke>, (usize, RoadRejection)> {
         // The explicit sites are queried through the site index, as the commit's take reads it.
         self.allocator
@@ -269,7 +371,7 @@ impl SimCore {
         let mut dry = Vec::with_capacity(strokes.len());
         let mut verdict = Ok(());
         for (index, stroke) in strokes.iter().enumerate() {
-            match self.dry_run_stroke(stroke, &mut roadbed, &mut checkpoints) {
+            match self.dry_run_stroke(stroke, &mut roadbed, &mut checkpoints, parts) {
                 Ok(stroke) => dry.push(stroke),
                 Err(rejection) => {
                     verdict = Err((index, rejection));
@@ -277,9 +379,11 @@ impl SimCore {
                 }
             }
         }
+        let mut clock = Instant::now();
         for checkpoint in checkpoints.iter().rev() {
             self.region_graph.restore_undo_delta_local(checkpoint);
         }
+        DryRunParts::lap(&mut parts.restore_ms, &mut clock);
         verdict.map(|()| dry)
     }
 
@@ -292,7 +396,9 @@ impl SimCore {
         stroke: &RoadCommitRequest,
         roadbed: &mut RoadbedSystem,
         checkpoints: &mut Vec<RegionGraphUndoDelta>,
+        parts: &mut DryRunParts,
     ) -> Result<DryRunStroke, RoadRejection> {
+        let mut clock = Instant::now();
         let fingerprint =
             RoadPreviewFingerprint::of(self.road_tool_surface_generation, roadbed, &self.heightmap);
         let plan = RoadEditPlan::compile_from(
@@ -311,6 +417,7 @@ impl SimCore {
                 attributes: stroke.attributes,
             },
         );
+        DryRunParts::lap(&mut parts.plan_ms, &mut clock);
         // The live roadbed is the dry run's base and stays untouched, so the plan's readiness
         // reads the graph the earlier strokes left.
         if plan.status(self) != "ready" {
@@ -335,6 +442,7 @@ impl SimCore {
                 &prepared.points,
             ));
         }
+        DryRunParts::lap(&mut parts.checks_ms, &mut clock);
         let topology = plan
             .topology_for(&self.region_graph)
             .expect("a ready plan's sources are live");
@@ -346,11 +454,17 @@ impl SimCore {
         checkpoints.push(checkpoint);
         let applied = applied.expect("a ready plan's sources are live");
         applied.mark_pieces(roadbed);
+        DryRunParts::lap(&mut parts.apply_ms, &mut clock);
         let delta = roadbed.compile_delta(&self.region_graph);
+        DryRunParts::lap(&mut parts.compile_ms, &mut clock);
         let (_, restore) = roadbed.install(&delta);
+        DryRunParts::lap(&mut parts.install_ms, &mut clock);
         let before: Vec<_> = restore.replaced_pieces().collect();
         let installed: Vec<_> = roadbed.installed_pieces(&restore).collect();
-        if let Some(overlap) = RoadLandTake::in_core(self, &installed, &before).plotted {
+        // The verdict alone: the zoned take is the core's (`RoadLandTake::in_core_judged`).
+        let plotted = first_plotted_overlap(&CoreLand::of(self), &installed, &before);
+        DryRunParts::lap(&mut parts.land_ms, &mut clock);
+        if let Some(overlap) = plotted {
             return Err(overlap.rejection(self));
         }
         if let Some(&node) = roadbed.failed_nodes().first() {

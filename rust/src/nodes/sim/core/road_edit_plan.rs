@@ -287,6 +287,23 @@ impl RoadLandTake {
     pub(crate) fn in_core(core: &SimCore, pieces: &[&PieceMesh], before: &[&PieceMesh]) -> Self {
         Self::of(&CoreLand::of(core), pieces, before, &[], None)
     }
+
+    /// [`Self::in_core`] of pieces whose plotted verdict a batch's dry run already gave on the
+    /// same pieces and land (`ROAD-112` round F2): the zoned take alone, `plotted` `None`. A
+    /// batch changes no plotted reservation (a stroke covering one refuses the batch), so the
+    /// verdict holds; debug builds judge it again.
+    pub(crate) fn in_core_judged(
+        core: &SimCore,
+        pieces: &[&PieceMesh],
+        before: &[&PieceMesh],
+    ) -> Self {
+        let land = CoreLand::of(core);
+        debug_assert!(
+            first_plotted_overlap(&land, pieces, before).is_none(),
+            "a batch stroke's dry run judged its pieces clear of plotted land"
+        );
+        Self::zoned(&land, pieces, before, &[])
+    }
 }
 
 // What newly covers land in a take: a piece the edit installs, or an extra footprint.
@@ -362,6 +379,23 @@ impl<B: Copy + Ord> RoadLandTake<B> {
                 ..Self::default()
             };
         }
+        Self::zoned(land, pieces, before, extra)
+    }
+
+    // [`Self::of`] past its plotted verdict: the cells, lots and buildings the covers newly
+    // cover.
+    fn zoned<S: RoadLandSource<Building = B>>(
+        land: &S,
+        pieces: &[&PieceMesh],
+        before: &[&PieceMesh],
+        extra: &[PolygonFootprint<'static>],
+    ) -> Self {
+        let covers = || {
+            pieces
+                .iter()
+                .map(|&mesh| Cover::Piece(mesh))
+                .chain(extra.iter().map(Cover::Footprint))
+        };
         let cells_store = land.cells();
         let mut keys = ZoningSystem::reserved_cells_newly_covered_by_road_pieces(
             cells_store,

@@ -7,8 +7,12 @@
 //! apart, committed one by one with the frames to routing adoption between them (untimed), then,
 //! on a fresh load of the same city, as one batch. `BATCH_ROUND` prints each single commit's wall
 //! time split into its core and its tail (mesh precompute, publication, routing schedule, lot
-//! spawn) and the batch's dry run, cores and tail; the bar is the batch's wall time against the
-//! eight single cores plus one mean tail. Rounds alternate (`METRUM_BATCH_ROUNDS`, default 3).
+//! spawn) and the batch's dry run, cores and tail, each with its stages. The bar (the user's
+//! option (a), 2026-11-14) is the batch's wall time against the eight single cores plus the
+//! intermediate strokes' lot plans plus the batch's one tail (`batch_over_bar`), also with a
+//! single commit's mean tail; `batch_over_proxy` is round LBF's reading, the batch's own cores
+//! (which take their plan and pieces from the dry run) plus its tail. Rounds alternate
+//! (`METRUM_BATCH_ROUNDS`, default 3).
 //!
 //! `benchmark_batch_locality`: the same batch on the commit locality's neighbourhood
 //! (`commit_locality`) with a remote background of `METRUM_LOCALITY_TIERS` sites; the batch's
@@ -21,6 +25,7 @@ use godot::prelude::Vector3;
 use super::routing_benchmark::{commit_city, trunk_branch_end, trunk_branch_starts_at};
 use crate::debug::work::debug_hash;
 use crate::nodes::sim::core::frame::FRAME_DT_S;
+use crate::nodes::sim::core::road_batch::{CORE_PARTS, core_parts};
 use crate::nodes::sim::core::state::SimCore;
 use crate::nodes::sim::core::{RoadBatchRequest, RoadCommitRequest, RoadToolShared};
 use crate::simulation::network::roadbed::PieceId;
@@ -106,7 +111,8 @@ fn singles(core: &mut SimCore) -> Vec<serde_json::Value> {
             let tail_ms = m.mesh_ms + m.snapshot_ms + m.routing_ms + m.lots_spawn_ms;
             let row = serde_json::json!({"commit_ms": commit_ms, "tail_ms": tail_ms,
                 "core_ms": commit_ms - tail_ms, "mesh_ms": m.mesh_ms,
-                "snapshot_ms": m.snapshot_ms});
+                "snapshot_ms": m.snapshot_ms, "routing_ms": m.routing_ms,
+                "lots_spawn_ms": m.lots_spawn_ms, "core_parts": core_parts(m)});
             settle(core, &published, outcome.road_snapshot);
             row
         })
@@ -128,8 +134,13 @@ fn batch(core: &mut SimCore) -> serde_json::Value {
     );
     let times = batch.times;
     settle(core, &published, batch.outcome.road_snapshot);
+    let dry = times.dry_parts;
     serde_json::json!({"batch_ms": batch_ms, "dry_run_ms": times.dry_run_ms,
-        "core_ms": times.core_ms, "tail_ms": times.tail_ms, "reused": times.reused})
+        "core_ms": times.core_ms, "tail_ms": times.tail_ms, "reused": times.reused,
+        "dry_parts": {"plan": dry.plan_ms, "checks": dry.checks_ms, "apply": dry.apply_ms,
+            "compile": dry.compile_ms, "install": dry.install_ms, "land": dry.land_ms,
+            "restore": dry.restore_ms},
+        "core_parts": times.core_parts, "tail_parts": times.tail_parts})
 }
 
 // The network products the strokes leave: live edges' ends and geometry, the roadbed's pieces,
@@ -200,14 +211,37 @@ fn benchmark_populated_batch_commit() {
                 .iter()
                 .map(|row| row["tail_ms"].as_f64().unwrap())
                 .collect();
-            let bound = cores + tails.iter().sum::<f64>() / tails.len() as f64;
+            let mean_tail = tails.iter().sum::<f64>() / tails.len() as f64;
+            let bound = cores + mean_tail;
             let batch_ms = batch["batch_ms"].as_f64().unwrap();
+            // The redefined bar (the user's option (a), 2026-11-14): the per-stroke cores (the
+            // single commits'), the intermediate strokes' lot plans (the batch plans them in
+            // their cores) and the batch's one tail; also with a single commit's mean tail.
+            let lots: f64 = batch["core_parts"].as_array().unwrap()[..OFFSETS.len() - 1]
+                .iter()
+                .map(|parts| parts[CORE_PARTS - 1].as_f64().unwrap())
+                .sum();
+            let bar = cores + lots + batch["tail_ms"].as_f64().unwrap();
+            let bar_single_tail = cores + lots + mean_tail;
+            // Round LBF's proxy: the batch's own cores, which hold those lot plans but not the
+            // plan and compile they install from the dry run (round F2).
+            let batch_cores: f64 = batch["core_ms"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|ms| ms.as_f64().unwrap())
+                .sum();
+            let proxy = batch_cores + batch["tail_ms"].as_f64().unwrap();
             eprintln!(
                 "BATCH_ROUND {}",
                 serde_json::json!({"residents": residents, "round": round,
                     "singles": singles, "batch": batch,
                     "eight_singles_ms": singles.iter().map(|row| row["commit_ms"].as_f64().unwrap()).sum::<f64>(),
                     "eight_cores_one_tail_ms": bound, "batch_over_bound": batch_ms / bound,
+                    "intermediate_lots_ms": lots, "bar_ms": bar, "batch_over_bar": batch_ms / bar,
+                    "bar_single_tail_ms": bar_single_tail,
+                    "batch_over_bar_single_tail": batch_ms / bar_single_tail,
+                    "proxy_ms": proxy, "batch_over_proxy": batch_ms / proxy,
                     "graph_roadbed_equal": single_products[..2] == batch_products[..2],
                     "cells_parcels_equal": single_products[2..] == batch_products[2..]})
             );

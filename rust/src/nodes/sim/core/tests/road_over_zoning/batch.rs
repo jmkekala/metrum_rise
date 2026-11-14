@@ -145,6 +145,30 @@ fn a_batch_equals_its_strokes_committed_one_by_one() {
     assert!(single_groups.windows(2).all(|pair| pair[0] != pair[1]));
 }
 
+// Round F2: the cores installing their dry run's plan, pieces and plotted verdict leave the same
+// products bitwise as cores that plan, compile and judge every stroke afresh.
+#[test]
+fn a_batch_reusing_its_dry_run_equals_one_planned_afresh() {
+    let request = || RoadBatchRequest {
+        strokes: DRAFT.iter().map(|points| stroke(points)).collect(),
+    };
+    let (mut fresh, _) = street_with_houses();
+    fresh.precompute_road_mesh_data();
+    let outcome = fresh.commit_road_batch_without_reuse(request());
+    assert!(outcome.outcome.committed);
+    assert_eq!(outcome.times.reused, 0, "every core planned afresh");
+    fresh.adopt_pending_cell_lots();
+    let (mut reused, _) = street_with_houses();
+    reused.precompute_road_mesh_data();
+    let outcome =
+        reused.commit_road_batch(request(), std::time::Instant::now(), Default::default());
+    assert!(outcome.outcome.committed);
+    assert_eq!(outcome.times.reused, DRAFT.len());
+    reused.adopt_pending_cell_lots();
+    assert_eq!(products(&reused), products(&fresh));
+    assert_references_consistent(&reused);
+}
+
 // Test 2: one undo takes the whole batch back: the graph, roadbed, paint and the treasury (the
 // build cost refunded, U5) are as before it; the demolished houses stay demolished.
 #[test]
