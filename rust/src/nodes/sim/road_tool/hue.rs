@@ -19,6 +19,12 @@
 //! cells of at most [`GROUND_STEP_M`] along and [`GROUND_STEP_ACROSS_M`] across, so it follows
 //! the ground between the road's points. Its state ([`HueState`]) follows the draft's preview.
 //!
+//! Round HU2: where the preview draws road pieces, a ground or cut stroke's fill is those pieces
+//! themselves ([`surface`]): their top triangles and curb faces (carriageway, kerbs, sidewalks,
+//! junction corners, end caps), each point at least the lift above both the piece and the drawn
+//! ground the caller reads there (the session reads the source terrain, decision HU2-1). The path's widened strip above stays the fill of
+//! a draft the preview draws no pieces for (a refused or pending pose) and of bridges.
+//!
 //! Rust builds the mesh and decides its state and when it shows; `road_tool_hue.gd` draws it.
 //! Cost per pose: `O(path points + footprint area / 8 m²)` vertices, one ground query each
 //! (`O(pieces in its query cell)`); the buffers are reused, so a pose allocates nothing once
@@ -27,6 +33,7 @@
 use super::batch::{plan_normal, ribbon_offset};
 use super::frame::{Phase, RoadToolFrame};
 use super::height::apply_grade_line;
+use crate::simulation::network::roadbed::PieceMesh;
 use crate::simulation::network::road_edit::RoadProfile;
 use crate::simulation::network::types::EdgeClass;
 use godot::prelude::Vector3;
@@ -110,6 +117,8 @@ pub(crate) struct FootprintHue {
     pub(crate) outline: Vec<Vector3>,
     /// Each outline strip's first point in [`Self::outline`].
     pub(crate) outline_starts: Vec<u32>,
+    // The draft's drawn road pieces (round HU2), the fill of its ground and cut strokes.
+    surface: surface::PieceSurface,
     state: Option<HueState>,
     revision: u64,
 }
@@ -136,6 +145,21 @@ impl FootprintHue {
     pub(crate) fn begin(&mut self) {
         self.path.clear();
         self.kinds.clear();
+        self.surface.clear();
+    }
+
+    /// Adds the preview's road pieces the pushed path runs over (its spans, end caps, bends and
+    /// junctions; not an existing road's span the edit only rebuilt): the fill of the path's
+    /// ground and cut strokes becomes their drawn surface. Push the strokes first.
+    pub(crate) fn push_pieces<'a>(&mut self, pieces: impl Iterator<Item = &'a PieceMesh>) {
+        self.surface.push_pieces(&self.path, pieces);
+    }
+
+    /// The plan bounds `[min_x, min_z, max_x, max_z]` of the pushed pieces (what the drawn
+    /// ground is read over), `None` without one.
+    #[cfg(test)]
+    pub(crate) fn surface_bounds(&self) -> Option<[f64; 4]> {
+        self.surface.bounds()
     }
 
     /// Appends a stroke's points (in drawing order) of `kind`; a first point equal to the path's
@@ -166,17 +190,25 @@ impl FootprintHue {
     }
 
     /// Builds the hue of the pushed path at `half_width_m` either side, in `state`, reading the
-    /// ground under bridges from `ground` (world XZ to height). A path without horizontal length
-    /// hides the hue. `O(path points + bridge cells)`.
+    /// ground of the path's strip from `ground` (world XZ to height) and the drawn ground under
+    /// the pushed pieces from `drawn` (read at the graded surface's `GL0` lattice points). A path
+    /// without horizontal length hides the hue. `O(path points + strip cells)` plus the pieces'
+    /// ([`surface`]).
     pub(crate) fn finish(
         &mut self,
         half_width_m: f32,
         mut ground: impl FnMut(f32, f32) -> f32,
+        drawn: impl FnMut(f64, f64) -> f64,
         state: HueState,
     ) {
         self.fill.clear();
         self.outline.clear();
         self.outline_starts.clear();
+        let pieces = !self.surface.is_empty();
+        if pieces {
+            self.surface
+                .build(f64::from(HUE_LIFT_M), drawn, &mut self.fill);
+        }
         let path = &self.path;
         let mut tunnel_from: Option<usize> = None;
         for index in 0..path.len().saturating_sub(1) {
@@ -195,7 +227,9 @@ impl FootprintHue {
                 );
             }
             let (a, b) = (path[index], path[index + 1]);
-            if kind == HueKind::Tunnel || plan_normal(a, b).is_none() {
+            // The drawn pieces replace a ground or cut stroke's strip.
+            let drawn_road = pieces && kind == HueKind::Road;
+            if kind == HueKind::Tunnel || drawn_road || plan_normal(a, b).is_none() {
                 continue;
             }
             let (offset_a, offset_b) = (
@@ -379,5 +413,6 @@ fn push_edge(
     }
 }
 
+mod surface;
 #[cfg(test)]
 mod tests;

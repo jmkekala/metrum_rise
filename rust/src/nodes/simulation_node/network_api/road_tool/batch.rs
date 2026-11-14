@@ -168,6 +168,8 @@ impl SimulationNode {
             hue.finish(
                 ghost_half_width_m(first),
                 |x, z| ground.height_at(x, z),
+                // Tier 1 draws no pieces: the strokes' strips are the fill.
+                |_, _| f64::NEG_INFINITY,
                 state,
             );
         }

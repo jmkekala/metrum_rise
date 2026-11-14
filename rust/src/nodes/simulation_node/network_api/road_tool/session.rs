@@ -891,11 +891,34 @@ impl SimulationNode {
         let view = self.road_tool.view.read().unwrap();
         let ground = DraftGround::new(&view.terrain, &view.roadbed);
         let hue = &mut self.road_tool_session.hue;
+        let kind = HueKind::of(profile, prepared.class);
         hue.begin();
-        hue.push_stroke(&prepared.points, HueKind::of(profile, prepared.class));
+        hue.push_stroke(&prepared.points, kind);
+        // Round HU2: a ground or cut stroke's hue is the preview's own grounded pieces (a
+        // bridge's stays on the ground under the deck, a tunnel's an outline).
+        if kind == HueKind::Road
+            && let Some(pieces) = &last.pieces
+        {
+            hue.push_pieces(
+                (pieces.delta.pieces())
+                    .filter_map(|(_, mesh)| mesh)
+                    .filter(|mesh| mesh.grounded() && !mesh.buried()),
+            );
+        }
+        // The drawn ground under the pieces, read at the `GL0` lattice points: the source
+        // terrain (the graded surface's base). The published graded surface itself costs up to
+        // about a second a pose through this snapshot's index-free queries in a city (round HU2,
+        // decision HU2-1), so it is not read here yet.
+        let terrain = &view.terrain;
         hue.finish(
             ghost_half_width_m(request),
             |x, z| ground.height_at(x, z),
+            |x, z| {
+                f64::from(
+                    terrain.sample_height_world(x as f32, z as f32)
+                        * crate::config::HEIGHT_SCALE,
+                )
+            },
             state,
         );
     }
@@ -910,7 +933,12 @@ impl SimulationNode {
         hue.begin();
         hue.push_graded(&frame.stroke.points, heights);
         // A graded stroke's road holds the grade line: no ground is read.
-        hue.finish(ghost_half_width_m(&request), |_, _| 0.0, HueState::Refused);
+        hue.finish(
+            ghost_half_width_m(&request),
+            |_, _| 0.0,
+            |_, _| f64::NEG_INFINITY,
+            HueState::Refused,
+        );
     }
 
     // A preview request of `points` with the session's section: what sizes the hue's width.

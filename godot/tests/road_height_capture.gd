@@ -237,6 +237,28 @@ func _capture_hue() -> void:
 	await _capture_pair("hue_refused", Vector3(-20.0, 0.0, 854.0), Vector3(-60.0, 14.0, 900.0))
 	_tool.cancel_road()
 
+	# Round HU2: a short draft from the existing road (its junction corners and end cap under the
+	# hue), then a long draft on a slope beside an existing road's graded ground.
+	_tool._begin_stroke(Vector3(50.0, 0.0, 885.0))
+	_tool.set_scripted_pointer(true, Vector3(50.0, 0.0, 850.0))
+	await _settle()
+	_log_hue("short_junction")
+	await _capture_pair("hue_short_junction", Vector3(50.0, 0.0, 862.0), Vector3(20.0, 14.0, 900.0))
+	_tool.cancel_road()
+	_raise(Vector2(-400.0, 300.0), 110.0, 12.0)
+	_tool._begin_stroke(Vector3(-490.0, 0.0, 300.0))
+	_tool.set_scripted_pointer(true, Vector3(-330.0, 0.0, 300.0))
+	await _frames(3)
+	_expect(_tool._commit_segment(Vector3(-330.0, 0.0, 300.0)), "the sloped road commits")
+	await _ack()
+	_tool.cancel_road()
+	_tool._begin_stroke(Vector3(-490.0, 0.0, 316.0))
+	_tool.set_scripted_pointer(true, Vector3(-330.0, 0.0, 316.0))
+	await _settle()
+	_log_hue("beside_graded")
+	await _capture_pair("hue_beside_graded", Vector3(-440.0, 6.0, 312.0), Vector3(-470.0, 26.0, 360.0))
+	_tool.cancel_road()
+
 	# Across water: a basin 8 m deep filled to 2 m below the ground, crossed level (a bridge).
 	_raise(Vector2(450.0, 0.0), 70.0, -8.0)
 	var lake: Dictionary = _simulation.begin_world_lake_fill_preview(Vector2(450.0, 0.0), -2.0)

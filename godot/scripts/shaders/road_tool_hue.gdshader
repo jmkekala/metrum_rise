@@ -5,18 +5,18 @@ render_mode unshaded, cull_disabled, depth_draw_never, shadows_disabled, fog_dis
 
 // The road tool's footprint hue (`ROAD-112` round HU): a flat translucent colour by the draft's
 // state, drawn once with the normal depth test, so hills, trees and buildings in front hide it.
-// Rust lifts it 5 cm over the higher of the road and the ground; the vertex is also pulled
-// towards the camera by 5 cm plus 0.2 % of its distance, so the rendered terrain (its own
-// triangles and levels, which the heightmap samples only approximate) does not cover it, while a
-// hill in front still does. A refused draft is hatched with diagonal screen stripes as well, so
+// Rust lays it on the preview's drawn pieces, 5 cm over both them and the drawn ground at every
+// point (round HU2), so the geometry keeps it on top; the vertex is pulled towards the camera by
+// only 1 cm plus 0.05 % of its distance, a guard against depth-buffer z-fighting at range, while
+// a hill in front still hides it. A refused draft is hatched with diagonal screen stripes as well, so
 // the refusal does not rest on colour alone.
 
 uniform vec4 hue_color : source_color = vec4(0.35, 0.65, 1.0, 1.0);
 uniform float hue_alpha = 0.3;
 uniform bool hatched = false;
 // The pull towards the camera: a constant and a share of the distance.
-const float PULL_M = 0.05;
-const float PULL_SHARE = 0.002;
+const float PULL_M = 0.01;
+const float PULL_SHARE = 0.0005;
 // The hatching's period in pixels: stripes half as wide.
 const float HATCH_PX = 12.0;
 

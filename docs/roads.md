@@ -13964,6 +13964,63 @@ see is under "Drawing and placement" (Footprint hue).
   would be the alternative. Grass blades in front of the hue partly cover it (it lies 5 cm over
   the ground they stand on).
 
+### Footprint hue on the drawn pieces (round HU2)
+
+Built 2026-11-15 on branch `roadtools-hu` (over round HU's `927ca571`) after the user's test
+(about 00:40): the preview's kerbs, sidewalks and junction corners lay outside the hue (its
+footprint was the idealised strip), a stretch of preview asphalt and kerb drew over it (the hue
+was lifted from the centreline, the road is cambered with raised sidewalks), and terrain drew over
+it in a jagged pattern (2 m x 4 m cells interpolated under the drawn surface).
+
+- **Footprint from what is drawn** (`road_tool/hue/surface.rs`, `PieceSurface`): a ground or cut
+  stroke whose preview draws pieces takes the grounded pieces of the preview's delta its stroke
+  runs over (a sample every 1 m along the prepared path inside one of the piece's top
+  triangles): its spans, end caps, bends and the junctions it makes, never an existing road's
+  span the edit only rebuilds. The hue is their top triangles plus curb faces, one
+  non-overlapping mesh (the pieces' tops tile the plan). A refused or pending pose, a batch's
+  tier 1, a bridge and a tunnel keep round HU's strip and outline.
+- **Height rule**: each top triangle is cut by a world 2 m grid (Sutherland-Hodgman, each crossing
+  computed from its edge's ends in a fixed order, so neighbours share their cut points bitwise);
+  each fragment lies on its triangle's plane `H`; its deficit is `max(0, G - H)` over the `GL0`
+  (0.5 m) lattice points of the lattice cells meeting its bounds (the drawn ground `G` is linear on
+  each lattice triangle, so `G - H` is at most that anywhere on the fragment); a vertex rises by
+  the largest deficit of the fragments sharing its plan position (keys at 0.1 mm), so the mesh
+  stays closed; then 5 cm. Every point of the hue is at least 5 cm above both the road surface
+  under it (camber, kerbs and sidewalks) and the ground read. Curb faces take their corners'
+  rises. Cost per pose `O(cells the top triangles meet + fragments x 25 + vertices log
+  vertices)`; buffers reused.
+- **Ground read** (decision HU2-1): the session reads the **source terrain** (the graded surface's
+  base) at the lattice points. The published graded surface through the road tool's snapshot
+  (`with_graded_surface`, no query index) cost **915 ms a pose** for the neighbourhood street's
+  pieces (290 m, 5,004 triangles; release test probe, one run) against 0.87 ms with a constant
+  ground, so it is not read: beside a committed road's graded cut or fill the hue can still sit
+  under that grading. Options: (a) give the snapshot the persistent terrain query index, then
+  read the graded surface (recommended); (b) keep the source terrain; (c) read the graded surface
+  only at 2 m points (no guarantee between them).
+- **Shader**: the pull towards the camera is now only a z-fighting guard, 1 cm plus 0.05 % of the
+  distance (was 5 cm plus 0.2 %); the geometry keeps the hue on top. Tunnel outlines keep the line
+  shader's pull.
+- **Fresh checks** (the final tree): Rust `hue/tests.rs` 12 (round HU's 8 plus: the hue of
+  a draft onto the sloped T junction fixture covers the south span, the junction and the end cap,
+  area within 1 % of their top triangles; over a fill, a cut and a bumpy graded neighbour every
+  hue vertex and every lattice point inside a hue triangle is at least the lift above the drawn
+  ground; over low ground every hue triangle is the lift above its road top, some on a raised
+  sidewalk; over the neighbourhood's street with the real published graded surface every lattice
+  point inside the hue at least the lift above it). Kuopio drag probe 78/78 and gameplay fixtures
+  17/17 EQUAL in every product against round CT2's records of `dev` `8fb818e1` (probe PASS, 0
+  failures). Allocation (heaptrack `--record-only`, session bench 30k): n=0 2,442,885 /
+  2,442,851, n=20 2,442,857, n=200 2,442,949 calls: none per pointer move. Hue + gizmo + label
+  upload (once, gamescope headless 1920x1080, load 3.0-3.9, no control): curve end p50 0.104 /
+  p95 0.200 / max 0.223 ms, S-curve end 0.059 / 0.096 / 0.156, freeform handle 0.078 / 0.173 /
+  0.245: p95 at most 0.2 ms in every mode (the curve end at the bar). The fill is larger than
+  round HU's (up to 8,192 padded triangles, about 295 KB, on the stills' 85-160 m drafts). Stills
+  (`road_height_capture.gd` set `hue`, 0 failures): round HU's set plus a short draft from a
+  road (its junction corners and end cap under the hue) and a long sloped draft beside a
+  committed road, top and low each. Gates: clippy `--all-targets` set equal to the branch
+  point's (`asset_document.rs:15` only), `cargo doc` missing_docs 0, debug `cargo test --lib`
+  2,740 passed / 0 failed / 230 ignored, `./run.sh --test` PASS (nextest 2,744 / 2,744, 231
+  skipped; godot-main, godot-vehicle PASS; 0 SCRIPT ERROR). No timing session.
+
 ### Decisions (user, 2026-11-12, all as recommended)
 
 - U1 simple curve = three clicks, free control point, exact arc plus a straight lead.
@@ -14203,10 +14260,16 @@ the clicks, the mode buttons and the acknowledgement and draws what `road_tool_f
   its placement tint). One non-overlapping mesh of the whole draft (its strokes joined, mitred
   joints), so its alpha never stacks at a junction or where pieces overlap. It is drawn once
   with the normal depth test (the user, 2026-11-14: it must **not** show through hills, trees
-  or buildings), so it lies 5 cm over the higher of the road and the ground (the ground the
-  segmentation reads: the highest grounded carriageway, else the terrain), sampled every 2 m
-  along and 4 m across: over a cut or a buried road on the grass above it, over a fill on the
-  road; hills, trees and buildings in front hide it. A bridge's hue lies **on the ground under
+  or buildings). Where the preview draws road (round HU2), the hue is the preview's own pieces
+  the draft runs over: carriageway, kerbs, sidewalks, junction corners and end caps, never an
+  existing road's span the edit only rebuilds; every point of it lies at least 5 cm above both
+  that drawn road (its camber and raised sidewalks included) and the ground there (the source
+  terrain for now; a committed road's grading beside it is not read yet, decision HU2-1), so
+  neither the asphalt nor the kerbs draw over it, nor the terrain away from that grading:
+  over a cut or a buried road on the grass above it, over a fill on the road. A draft the
+  preview draws no road for (refused, pending, a batch's tier 1) keeps the prepared footprint
+  (its strokes widened, 5 cm over the higher of the road and the segmentation's ground, sampled
+  every 2 m along and 4 m across). Hills, trees and buildings in front hide it. A bridge's hue lies **on the ground under
   the deck**; a tunnel stroke is outlined (solid edges on the ground over the bore, depth-tested,
   no fill). Unshaded, translucent at 30 %, no depth write; above water, below the tool's lines
   and chips. States from the palette: blue valid, amber checking (a batch's tier 2

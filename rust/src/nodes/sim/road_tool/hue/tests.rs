@@ -4,7 +4,9 @@
 //! overlap, area within 1 %) for a straight, a curve and a draft onto an existing road; it lies
 //! on the higher of the road and the ground (a cut, a fill); a bridge's hue lies on the ground
 //! under the deck; a tunnel's is outlined on the ground, not filled; the state
-//! follows the preview; no hue after a cancel or a commit.
+//! follows the preview; no hue after a cancel or a commit. Round HU2: over the preview's pieces
+//! the hue is their drawn surface (a junction corner and an end cap included, an existing road's
+//! span not), at least the lift above every drawn surface at every point.
 
 use super::*;
 use crate::nodes::sim::road_tool::batch::{draft_requests, ghost_half_width_m};
@@ -18,6 +20,11 @@ use crate::simulation::network::road_edit::DraftGround;
 
 fn flat(_: f32, _: f32) -> f32 {
     0.0
+}
+
+// The drawn ground of a hue without pieces: never read.
+fn no_pieces(_: f64, _: f64) -> f64 {
+    f64::NEG_INFINITY
 }
 
 // A valley: 12 m deep at x = 50, varying across the road too.
@@ -35,7 +42,7 @@ fn hue_of(
     let mut hue = FootprintHue::default();
     hue.begin();
     hue.push_stroke(points, kind);
-    hue.finish(half_width_m, ground, HueState::Valid);
+    hue.finish(half_width_m, ground, no_pieces, HueState::Valid);
     hue
 }
 
@@ -194,7 +201,7 @@ fn a_junction_drafts_hue_covers_its_footprint_once() {
         &prepared.points,
         HueKind::of(RoadProfile::FollowGround, prepared.class),
     );
-    hue.finish(half_width_m, |x, z| ground.height_at(x, z), HueState::Valid);
+    hue.finish(half_width_m, |x, z| ground.height_at(x, z), no_pieces, HueState::Valid);
     assert_area(hue.filled(), &prepared.points, half_width_m);
     assert!(assert_covers_once(hue.filled(), &prepared.points, half_width_m) > 1_000);
 }
@@ -242,7 +249,7 @@ fn a_bridges_hue_lies_on_the_ground_under_it() {
     hue.push_stroke(&approach, HueKind::Road);
     hue.push_stroke(&bridge, HueKind::Bridge);
     hue.push_stroke(&landing, HueKind::Road);
-    hue.finish(5.0, valley, HueState::Valid);
+    hue.finish(5.0, valley, no_pieces, HueState::Valid);
     let mut on_ground = 0;
     for vertex in hue.filled() {
         if vertex.x > 1.0 && vertex.x < 99.0 {
@@ -282,7 +289,7 @@ fn a_tunnels_hue_is_an_outline() {
         HueKind::of(RoadProfile::Tunnel, EdgeClass::Standard),
     );
     hue.push_stroke(&road_out, HueKind::Road);
-    hue.finish(4.0, flat, HueState::Valid);
+    hue.finish(4.0, flat, no_pieces, HueState::Valid);
     for triangle in hue.filled().chunks(3) {
         let centre_x = (triangle[0].x + triangle[1].x + triangle[2].x) / 3.0;
         assert!(
@@ -321,7 +328,7 @@ fn the_hue_state_follows_the_preview() {
     assert_eq!((hue.state(), hue.revision()), (None, 0));
     hue.begin();
     hue.push_stroke(&line, HueKind::Road);
-    hue.finish(4.0, flat, HueState::Checking);
+    hue.finish(4.0, flat, no_pieces, HueState::Checking);
     assert_eq!((hue.state(), hue.revision()), (Some(HueState::Checking), 1));
     hue.set_state(HueState::Checking);
     assert_eq!(hue.revision(), 1);
@@ -330,7 +337,7 @@ fn the_hue_state_follows_the_preview() {
     // A refused graded draft without a prepared stroke: its points at the grade line.
     hue.begin();
     hue.push_graded(&line, [3.0, 7.0]);
-    hue.finish(4.0, flat, HueState::Refused);
+    hue.finish(4.0, flat, no_pieces, HueState::Refused);
     assert_eq!(hue.state(), Some(HueState::Refused));
     let heights = hue.filled().iter().map(|vertex| vertex.y);
     let (low, high) = heights.fold((f32::MAX, f32::MIN), |(lo, hi), y| (lo.min(y), hi.max(y)));
@@ -358,7 +365,7 @@ fn no_hue_after_a_cancel_or_a_commit() {
         if tool.frame().stroke.points.len() >= 2 {
             hue.begin();
             hue.push_stroke(&tool.frame().stroke.points, HueKind::Road);
-            hue.finish(4.0, flat, HueState::Valid);
+            hue.finish(4.0, flat, no_pieces, HueState::Valid);
         }
         hue.follow(tool.frame());
         hue.state().is_some()
@@ -385,4 +392,263 @@ fn no_hue_after_a_cancel_or_a_commit() {
     tool.handle_event(view, RoadToolEvent::CommitAck { committed: true });
     // A chain continues from the committed end with the pointer still there: no stroke yet.
     assert!(!shown(&mut tool, &mut hue));
+}
+
+// Round HU2: a draft from the south onto a T junction's centre, over the sloped fixture's
+// compiled pieces (two-way roads with raised sidewalks).
+mod drawn {
+    use super::*;
+    use crate::simulation::network::roadbed::fixtures::{SLOPE, point, t_junction};
+    use crate::simulation::network::roadbed::{PieceId, RoadVec3, RoadbedSystem};
+
+    fn junction() -> RoadbedSystem {
+        let mut roadbed = RoadbedSystem::new(64.0);
+        roadbed.compile_dirty(&t_junction(true));
+        assert!(roadbed.failed_nodes().is_empty());
+        roadbed
+    }
+
+    // Every compiled piece with its mesh.
+    fn all(roadbed: &RoadbedSystem) -> impl Iterator<Item = (PieceId, Option<&PieceMesh>)> {
+        (roadbed.pieces_in_bounds([-1.0e6, -1.0e6, 1.0e6, 1.0e6]))
+            .map(|(id, _)| (id, roadbed.piece_mesh(id)))
+    }
+
+    fn draft() -> Vec<Vector3> {
+        vec![point(0.0, 60.0, true), point(0.0, 0.0, true)]
+    }
+
+    fn hue_over(roadbed: &RoadbedSystem, ground: impl Fn(f64, f64) -> f64) -> FootprintHue {
+        let mut hue = FootprintHue::default();
+        hue.begin();
+        hue.push_stroke(&draft(), HueKind::Road);
+        hue.push_pieces(
+            all(roadbed)
+                .filter_map(|(_, mesh)| mesh)
+                .filter(|mesh| mesh.grounded()),
+        );
+        hue.finish(5.0, flat, ground, HueState::Valid);
+        hue
+    }
+
+    fn top_area(roadbed: &RoadbedSystem, ids: &[PieceId]) -> f64 {
+        let mut area = 0.0;
+        for (id, mesh) in all(roadbed) {
+            let Some(mesh) = mesh.filter(|_| ids.contains(&id)) else {
+                continue;
+            };
+            for triangle in 0..mesh.top_triangle_count() {
+                let [a, b, c] = mesh.triangle_points(triangle);
+                area += ((b.x - a.x) * (c.z - a.z) - (b.z - a.z) * (c.x - a.x)).abs() * 0.5;
+            }
+        }
+        area
+    }
+
+    // The highest drawn road top at plan point `(x, z)` among `roadbed`'s pieces, if any.
+    fn road_at(tops: &[[RoadVec3; 3]], x: f64, z: f64) -> Option<f64> {
+        let mut best: Option<f64> = None;
+        for t in tops {
+            let det = (t[1].x - t[0].x) * (t[2].z - t[0].z) - (t[1].z - t[0].z) * (t[2].x - t[0].x);
+            if det.abs() < 1.0e-9 {
+                continue;
+            }
+            let u = ((x - t[0].x) * (t[2].z - t[0].z) - (z - t[0].z) * (t[2].x - t[0].x)) / det;
+            let v = ((t[1].x - t[0].x) * (z - t[0].z) - (t[1].z - t[0].z) * (x - t[0].x)) / det;
+            if u >= -1.0e-4 && v >= -1.0e-4 && u + v <= 1.0 + 1.0e-4 {
+                let y = t[0].y + u * (t[1].y - t[0].y) + v * (t[2].y - t[0].y);
+                best = Some(best.map_or(y, |b| b.max(y)));
+            }
+        }
+        best
+    }
+
+    // A test ground: world XZ and the fixture's slope to height.
+    type Ground = fn(f64, f64, f64) -> f64;
+
+    // The drawn ground at `(x, z)`: `ground` at the `GL0` lattice points, linear on each
+    // lattice cell's two triangles (split along its `(i, j)`-`(i + 1, j + 1)` diagonal).
+    fn lattice_at(ground: impl Fn(f64, f64) -> f64, x: f64, z: f64) -> f64 {
+        let step = surface::GROUND_LATTICE_M;
+        let (i, j) = ((x / step).floor(), (z / step).floor());
+        let (fx, fz) = (x / step - i, z / step - j);
+        let g = |di: f64, dj: f64| ground((i + di) * step, (j + dj) * step);
+        if fx >= fz {
+            g(0.0, 0.0) + fx * (g(1.0, 0.0) - g(0.0, 0.0)) + fz * (g(1.0, 1.0) - g(1.0, 0.0))
+        } else {
+            g(0.0, 0.0) + fz * (g(0.0, 1.0) - g(0.0, 0.0)) + fx * (g(1.0, 1.0) - g(0.0, 1.0))
+        }
+    }
+
+    #[test]
+    fn hu2_hue_covers_the_drawn_pieces_once() {
+        let roadbed = junction();
+        let hue = hue_over(&roadbed, |_, _| f64::NEG_INFINITY);
+        // The south span, the junction (its corners) and the south end cap; not the west or
+        // east spans the draft does not run over.
+        let ids = [PieceId::Span(2), PieceId::Node(0), PieceId::Node(3)];
+        let expected = top_area(&roadbed, &ids);
+        let corner = top_area(&roadbed, &[PieceId::Node(0)]);
+        let cap = top_area(&roadbed, &[PieceId::Node(3)]);
+        assert!(corner > 1.0 && cap > 1.0, "a junction and an end cap: {corner} {cap}");
+        let area = f64::from(plan_area(hue.filled()));
+        assert!(
+            (area - expected).abs() <= 0.01 * expected,
+            "hue {area} m² vs drawn pieces {expected} m²"
+        );
+        assert!(hue.state() == Some(HueState::Valid) && hue.fill.len() % 3 == 0);
+    }
+
+    #[test]
+    fn hu2_hue_lies_above_every_drawn_surface() {
+        let roadbed = junction();
+        let tops: Vec<[RoadVec3; 3]> = all(&roadbed)
+            .filter_map(|(_, mesh)| mesh)
+            .flat_map(|mesh| (0..mesh.top_triangle_count()).map(|t| mesh.triangle_points(t)))
+            .collect();
+        let curbs = all(&roadbed)
+            .filter_map(|(_, mesh)| mesh)
+            .map(|mesh| mesh.curb_face_triangles().len())
+            .sum::<usize>();
+        assert!(curbs > 0, "the fixture has kerbs");
+        let slope = f64::from(SLOPE);
+        let cases: [(&str, Ground); 3] = [
+            ("fill", |x, _, slope| slope * x - 4.0),
+            ("cut", |x, z, slope| slope * x + 3.0 + 0.5 * (0.7 * x).sin() * (0.4 * z).cos()),
+            ("graded neighbour", |x, z, slope| {
+                slope * x + 0.4 * (1.7 * x).sin() * (1.3 * z).cos()
+            }),
+        ];
+        let lift = f64::from(HUE_LIFT_M);
+        for (name, ground) in cases {
+            let hue = hue_over(&roadbed, |x, z| ground(x, z, slope));
+            let mut checked = 0;
+            for t in hue.filled().chunks(3) {
+                let [a, b, c] = [t[0], t[1], t[2]].map(|p| [f64::from(p.x), f64::from(p.y), f64::from(p.z)]);
+                let det = (b[0] - a[0]) * (c[2] - a[2]) - (b[2] - a[2]) * (c[0] - a[0]);
+                if det.abs() < 1.0e-6 {
+                    continue; // a curb face or a collapsed padding triangle
+                }
+                let hue_at = |x: f64, z: f64| -> Option<f64> {
+                    let u = ((x - a[0]) * (c[2] - a[2]) - (z - a[2]) * (c[0] - a[0])) / det;
+                    let v = ((b[0] - a[0]) * (z - a[2]) - (b[2] - a[2]) * (x - a[0])) / det;
+                    (u >= -1.0e-6 && v >= -1.0e-6 && u + v <= 1.0 + 1.0e-6)
+                        .then(|| a[1] + u * (b[1] - a[1]) + v * (c[1] - a[1]))
+                };
+                // The hue's own vertices: over a piece, above the ground (the road under them is
+                // their own fragment's plane, which they never go below: see the next test).
+                for p in [a, b, c] {
+                    assert!(road_at(&tops, p[0], p[2]).is_some(), "{name}: vertex off the pieces");
+                    let drawn = lattice_at(|x, z| ground(x, z, slope), p[0], p[2]);
+                    assert!(p[1] >= drawn + lift - 2.0e-3, "{name}: vertex under the ground");
+                }
+                // The drawn ground's vertices (its lattice points) inside the triangle.
+                let step = surface::GROUND_LATTICE_M;
+                let [x0, x1] = [a[0].min(b[0]).min(c[0]), a[0].max(b[0]).max(c[0])];
+                let [z0, z1] = [a[2].min(b[2]).min(c[2]), a[2].max(b[2]).max(c[2])];
+                let mut i = (x0 / step).ceil() as i64;
+                while (i as f64) * step <= x1 {
+                    let mut j = (z0 / step).ceil() as i64;
+                    while (j as f64) * step <= z1 {
+                        let (x, z) = (i as f64 * step, j as f64 * step);
+                        if let Some(h) = hue_at(x, z) {
+                            assert!(
+                                h >= ground(x, z, slope) + lift - 2.0e-3,
+                                "{name}: hue {h} under the ground {} at ({x}, {z})",
+                                ground(x, z, slope)
+                            );
+                            checked += 1;
+                        }
+                        j += 1;
+                    }
+                    i += 1;
+                }
+            }
+            assert!(checked > 1000, "{name}: {checked} lattice points checked");
+        }
+    }
+
+    // The neighbourhood's west street (published pieces, with sidewalks and junctions) under a
+    // draft along it, over the view's real published graded surface: every lattice point inside
+    // a hue triangle at least the lift above the graded ground, as the session reads it (one
+    // gather over the pieces' bounds).
+    #[test]
+    fn hu2_hue_lies_above_the_published_graded_ground() {
+        let view = tool_tests_view();
+        let path = [Vector3::new(-190.0, 0.0, 0.0), Vector3::new(-110.0, 0.0, 0.0)];
+        let mut hue = FootprintHue::default();
+        hue.begin();
+        hue.push_stroke(&path, HueKind::Road);
+        hue.push_pieces(
+            (view.roadbed.pieces_in_bounds([-200.0, -20.0, -100.0, 20.0]))
+                .filter_map(|(id, _)| view.roadbed.piece_mesh(id))
+                .filter(|mesh| mesh.grounded()),
+        );
+        let bounds = hue.surface_bounds().expect("the street's pieces");
+        view.with_graded_surface(|surface, scratch| {
+            let reach = (bounds[2] - bounds[0]).max(bounds[3] - bounds[1]) * 0.5 + 2.0;
+            let (x, z) = ((bounds[0] + bounds[2]) * 0.5, (bounds[1] + bounds[3]) * 0.5);
+            surface.gather_near(x, z, reach, scratch);
+            hue.finish(5.0, flat, |x, z| surface.ground_height_near(x, z, scratch), HueState::Valid);
+        });
+        let lift = f64::from(HUE_LIFT_M);
+        let mut checked = 0;
+        view.with_graded_surface(|surface, scratch| {
+            for t in hue.filled().chunks(3) {
+                let [a, b, c] = [t[0], t[1], t[2]].map(|p| [f64::from(p.x), f64::from(p.y), f64::from(p.z)]);
+                let det = (b[0] - a[0]) * (c[2] - a[2]) - (b[2] - a[2]) * (c[0] - a[0]);
+                if det.abs() < 1.0e-6 {
+                    continue;
+                }
+                let step = surface::GROUND_LATTICE_M;
+                let [x0, x1] = [a[0].min(b[0]).min(c[0]), a[0].max(b[0]).max(c[0])];
+                let [z0, z1] = [a[2].min(b[2]).min(c[2]), a[2].max(b[2]).max(c[2])];
+                for i in (x0 / step).ceil() as i64..=(x1 / step).floor() as i64 {
+                    for j in (z0 / step).ceil() as i64..=(z1 / step).floor() as i64 {
+                        let (x, z) = (i as f64 * step, j as f64 * step);
+                        let u = ((x - a[0]) * (c[2] - a[2]) - (z - a[2]) * (c[0] - a[0])) / det;
+                        let v = ((b[0] - a[0]) * (z - a[2]) - (b[2] - a[2]) * (x - a[0])) / det;
+                        if u < -1.0e-6 || v < -1.0e-6 || u + v > 1.0 + 1.0e-6 {
+                            continue;
+                        }
+                        let h = a[1] + u * (b[1] - a[1]) + v * (c[1] - a[1]);
+                        let ground = surface.ground_height_at(x, z, scratch);
+                        assert!(h >= ground + lift - 2.0e-3, "hue {h} under the graded {ground} at ({x}, {z})");
+                        checked += 1;
+                    }
+                }
+            }
+        });
+        assert!(checked > 1000, "{checked} lattice points checked");
+    }
+
+    #[test]
+    fn hu2_hue_lies_on_the_road_above_low_ground() {
+        // Over low ground every hue vertex is exactly the lift above the drawn road top there:
+        // the camber and the raised sidewalks are followed, not the centreline.
+        let roadbed = junction();
+        let tops: Vec<[RoadVec3; 3]> = all(&roadbed)
+            .filter_map(|(_, mesh)| mesh)
+            .flat_map(|mesh| (0..mesh.top_triangle_count()).map(|t| mesh.triangle_points(t)))
+            .collect();
+        let hue = hue_over(&roadbed, |_, _| -100.0);
+        let lift = f64::from(HUE_LIFT_M);
+        let mut sidewalk = false;
+        for t in hue.filled().chunks(3) {
+            let det = (t[1].x - t[0].x) * (t[2].z - t[0].z) - (t[1].z - t[0].z) * (t[2].x - t[0].x);
+            if det.abs() < 1.0e-6 {
+                continue;
+            }
+            // The fragment's own plane: the triangle's centroid lies inside one top triangle.
+            let (x, z) = (
+                f64::from(t[0].x + t[1].x + t[2].x) / 3.0,
+                f64::from(t[0].z + t[1].z + t[2].z) / 3.0,
+            );
+            let y = f64::from(t[0].y + t[1].y + t[2].y) / 3.0;
+            let road = road_at(&tops, x, z).expect("over a piece");
+            assert!((y - road - lift).abs() < 2.0e-3, "hue {y} vs road {road} + lift at ({x}, {z})");
+            sidewalk |= road - f64::from(SLOPE) * x > 0.1;
+        }
+        assert!(sidewalk, "some hue lies on a raised sidewalk");
+    }
 }
