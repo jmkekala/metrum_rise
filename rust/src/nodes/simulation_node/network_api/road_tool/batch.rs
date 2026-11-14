@@ -17,6 +17,8 @@ use crate::nodes::sim::road_tool::batch::{
     draft_requests, ghost_half_width_m, push_ghost_edges, push_ghost_ribbon,
 };
 use crate::nodes::sim::road_tool::height::segment_draft;
+use crate::nodes::sim::road_tool::hue::{FootprintHue, HueKind, HueState};
+use crate::simulation::network::road_edit::DraftGround;
 use crate::simulation::network::road_types::cost as road_cost;
 
 #[godot_api(secondary)]
@@ -84,7 +86,7 @@ impl SimulationNode {
         resting: bool,
         dict: &mut VarDictionary,
     ) {
-        if !self.preview_road_batch_tier1(&requests, dict) {
+        if !self.preview_road_batch_tier1(&requests, dict, None) {
             return;
         }
         if !resting {
@@ -102,15 +104,19 @@ impl SimulationNode {
     }
 
     // Tier 1 of a batch pose into `dict`: `reason`, the strokes' hover verdicts, costs, lengths
-    // and the ghost. False (tier 2 dropped) over the caps.
+    // and the ghost; with `hue`, the strokes' footprint hue (round HU: checking while every
+    // stroke passes, else refused). False (tier 2 dropped) over the caps, the hue untouched.
     pub(super) fn preview_road_batch_tier1(
         &self,
         requests: &[RoadPreviewRequest],
         dict: &mut VarDictionary,
+        hue: Option<&mut FootprintHue>,
     ) -> bool {
         let tier1_start = std::time::Instant::now();
-        let hover = self.road_tool.view.read().unwrap().validate_batch(requests);
+        let view = self.road_tool.view.read().unwrap();
+        let hover = view.validate_batch(requests);
         let Some(hover) = hover else {
+            drop(view);
             dict.set("reason", BATCH_TOO_LARGE_REASON);
             self.road_tool
                 .context
@@ -144,6 +150,28 @@ impl SimulationNode {
             });
             profiles.push(request.profile.code());
         }
+        if let (Some(hue), Some(first)) = (hue, requests.first()) {
+            let ground = DraftGround::new(&view.terrain, &view.roadbed);
+            hue.begin();
+            for (request, (prepared, _)) in requests.iter().zip(&hover) {
+                hue.push_stroke(
+                    &prepared.points,
+                    HueKind::of(request.profile, prepared.class),
+                );
+            }
+            let state = if valid.as_slice().iter().all(|&valid| valid != 0) {
+                HueState::Checking
+            } else {
+                HueState::Refused
+            };
+            // Every stroke of a draft shares its section, so its width.
+            hue.finish(
+                ghost_half_width_m(first),
+                |x, z| ground.height_at(x, z),
+                state,
+            );
+        }
+        drop(view);
         // Two edge strips a stroke, in the ghost's look by tier 1's verdict.
         let verdicts = valid.as_slice();
         let edge_quads = super::session::strip_quads(&edges, &edge_starts, |strip| {

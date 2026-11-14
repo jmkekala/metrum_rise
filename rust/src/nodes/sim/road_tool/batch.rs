@@ -93,7 +93,7 @@ pub(crate) fn push_ghost_edges(
 
 // The unit normal of segment `a`-`b` in the XZ plane (left of its direction), `None` without
 // horizontal length.
-fn plan_normal(a: Vector3, b: Vector3) -> Option<Vector3> {
+pub(super) fn plan_normal(a: Vector3, b: Vector3) -> Option<Vector3> {
     let along = Vector3::new(b.x - a.x, 0.0, b.z - a.z);
     let length = along.length();
     (length > f32::EPSILON).then(|| Vector3::new(-along.z, 0.0, along.x) / length)
@@ -101,7 +101,7 @@ fn plan_normal(a: Vector3, b: Vector3) -> Option<Vector3> {
 
 // The ribbon's offset at point `i`: the mitre of its two segments' normals, its one segment's at
 // an end; capped at twice the half width so a sharp joint cannot throw the ribbon far.
-fn ribbon_offset(points: &[Vector3], i: usize, half_width_m: f32) -> Vector3 {
+pub(super) fn ribbon_offset(points: &[Vector3], i: usize, half_width_m: f32) -> Vector3 {
     let before = (i > 0).then(|| plan_normal(points[i - 1], points[i])).flatten();
     let after = (i + 1 < points.len())
         .then(|| plan_normal(points[i], points[i + 1]))

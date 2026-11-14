@@ -21,12 +21,13 @@
 //! refusal.
 
 use super::super::super::*;
-use crate::nodes::sim::road_tool::batch::draft_requests;
+use crate::nodes::sim::road_tool::batch::{draft_requests, ghost_half_width_m};
 use crate::nodes::sim::road_tool::frame::{
     DraftRefusal, GizmoHandleKind, GizmoLineClass, Gizmos, Phase, RoadToolFrame, StrokeRequest,
 };
 use crate::nodes::sim::road_tool::height::draft_batch;
 use crate::nodes::sim::road_tool::height::ground_marks::push_height_labels;
+use crate::nodes::sim::road_tool::hue::{FootprintHue, HueKind, HueState};
 use crate::nodes::sim::road_tool::labels::{
     LabelKind, LabelTone, PreviewFacts, apply_preview, middle_label, place_chips,
 };
@@ -41,7 +42,7 @@ use crate::nodes::sim::road_tool::wording::{
     CHIP_EXTRA_CHARACTERS, NoticeFacts, ReasonFacts, label_text,
 };
 use crate::nodes::road_wording::reason_facts;
-use crate::simulation::network::road_edit::RoadProfile;
+use crate::simulation::network::road_edit::{DraftGround, RoadProfile};
 
 /// The road tool session of one `SimulationNode` and the preview the bridge last ran for it.
 #[derive(Default)]
@@ -55,6 +56,8 @@ pub(crate) struct RoadToolBridge {
     batch_running: bool,
     // A batch ghost is drawn (`road_tool_gizmos.gd`'s `show_batch_ghost`).
     batch_ghost: bool,
+    // The draft's footprint hue (round HU), built with each preview of a new pose.
+    hue: FootprintHue,
     // The HUD's chip font (round V2): character advances and the chip's padding, so the frame
     // sizes the chips and `road_tool_place_chips` places them without GDScript work.
     chip_font: ChipFont,
@@ -343,8 +346,40 @@ impl SimulationNode {
                 dict.set("preview", preview);
             }
         }
+        let bridge = &mut self.road_tool_session;
+        bridge.hue.follow(bridge.session.frame());
+        dict.set("hue_revision", bridge.hue.revision() as i64);
         self.road_tool_set_labels(&mut dict, awaiting && has_stroke);
         dict
+    }
+
+    /// The draft's footprint hue (`ROAD-112` round HU; a stopgap marking the footprint while the
+    /// preview terrain lags, T27 (d)), as of the last `road_tool_frame`, whose `hue_revision`
+    /// changes whenever it does: `revision`, `state` (-1 hidden, 0 valid, 1 checking, 2
+    /// refused, drawn hatched), the fill (a triangle list on the road, a bridge's on the ground
+    /// under it, padded with collapsed triangles to a power-of-two count so a drag uploads in
+    /// place) as `fill_vertices` (its count) and `fill_bytes` (the vertex buffer's bytes, three
+    /// little-endian `f32` a vertex, uploaded as they are), and the tunnel runs' outlines as
+    /// `road_tool_line.gdshader` quads (`outline_vertices`, `outline_attributes`, looks 8 to 10
+    /// by state; empty without a tunnel).
+    #[func]
+    pub fn road_tool_hue(&self) -> VarDictionary {
+        let hue = &self.road_tool_session.hue;
+        let state = hue.state();
+        let style = match state {
+            Some(HueState::Checking) => LineStyle::HueOutlineChecking,
+            Some(HueState::Refused) => LineStyle::HueOutlineRefused,
+            _ => LineStyle::HueOutlineValid,
+        };
+        let outline = strip_quads(&hue.outline, &hue.outline_starts, |_| style);
+        vdict! {
+            "revision": hue.revision() as i64,
+            "state": state.map_or(-1, |state| state as i64),
+            "fill_vertices": hue.fill.len() as i64,
+            "fill_bytes": PackedByteArray::from(hue.fill_bytes.as_slice()),
+            "outline_vertices": outline.vertices,
+            "outline_attributes": outline.attributes,
+        }
     }
 
     /// The heights part of the session's last frame record (`road_tool_frame`'s round I keys:
@@ -673,6 +708,7 @@ impl SimulationNode {
         rejected.set("is_valid", false);
         rejected.set("is_pending", false);
         rejected.set("invalid_reason", "road_commit_rejected");
+        self.road_tool_session.hue.set_state(HueState::Refused);
         // Its graded tiles were handed over at the click.
         for key in ["graded_tiles", "graded_removed", "graded_pending"] {
             rejected.remove(key);
@@ -772,22 +808,32 @@ impl SimulationNode {
         let draft = &self.road_tool_session.session.frame().draft;
         let mut tier1 = None;
         let preview = match (stroke.grade, draft.refusal, draft.strokes.as_slice()) {
-            (None, ..) => self.preview_stroke(
-                stroke.points.clone(),
-                fwd,
-                bkw,
-                snap,
-                RoadProfile::FollowGround,
-            ),
-            (Some(_), Some(reason), _) => vdict! {
-                "is_valid": false,
-                "is_pending": false,
-                "invalid_reason": reason,
-                "build_cost": 0.0,
-                "surface_generation": self.road_tool_view_generation(),
-            },
+            (None, ..) => {
+                let preview = self.preview_stroke(
+                    stroke.points.clone(),
+                    fwd,
+                    bkw,
+                    snap,
+                    RoadProfile::FollowGround,
+                );
+                self.road_tool_hue_of_preview(RoadProfile::FollowGround, &preview);
+                preview
+            }
+            (Some(_), Some(reason), _) => {
+                self.road_tool_hue_of_stroke();
+                vdict! {
+                    "is_valid": false,
+                    "is_pending": false,
+                    "invalid_reason": reason,
+                    "build_cost": 0.0,
+                    "surface_generation": self.road_tool_view_generation(),
+                }
+            }
             (Some(_), None, [single]) => {
-                self.preview_stroke(single.points.clone(), fwd, bkw, snap, single.profile)
+                let profile = single.profile;
+                let preview = self.preview_stroke(single.points.clone(), fwd, bkw, snap, profile);
+                self.road_tool_hue_of_preview(profile, &preview);
+                preview
             }
             (Some(_), None, _) => {
                 let (preview, pose) = self.road_tool_batch_pose();
@@ -819,12 +865,84 @@ impl SimulationNode {
         preview
     }
 
+    // The hue of the single stroke `preview_stroke` just previewed with `profile`: its prepared
+    // points (a refused pose's too, which draws no road), in the preview's state.
+    fn road_tool_hue_of_preview(&mut self, profile: RoadProfile, preview: &VarDictionary) {
+        let flag = |key: &str| {
+            preview
+                .get(key)
+                .and_then(|value| value.try_to::<bool>().ok())
+                .unwrap_or(false)
+        };
+        let state = HueState::of_preview(flag("is_valid"), flag("is_pending"));
+        let last = self
+            .road_tool
+            .context
+            .lock()
+            .expect("road tool context lock poisoned")
+            .last_preview
+            .clone();
+        let Some(last) = last else {
+            self.road_tool_session.hue.clear();
+            return;
+        };
+        let prepared = last.plan.prepared();
+        let request = &self.road_tool_hue_request(&prepared.points, profile);
+        let view = self.road_tool.view.read().unwrap();
+        let ground = DraftGround::new(&view.terrain, &view.roadbed);
+        let hue = &mut self.road_tool_session.hue;
+        hue.begin();
+        hue.push_stroke(&prepared.points, HueKind::of(profile, prepared.class));
+        hue.finish(
+            ghost_half_width_m(request),
+            |x, z| ground.height_at(x, z),
+            state,
+        );
+    }
+
+    // The hue of a refused graded draft that has no prepared stroke (its segmentation refused
+    // it): the stroke's points at its grade line, refused.
+    fn road_tool_hue_of_stroke(&mut self) {
+        let frame = self.road_tool_session.session.frame();
+        let request = self.road_tool_hue_request(&[], RoadProfile::HeldGround);
+        let heights = frame.stroke.grade.unwrap_or_default();
+        let hue = &mut self.road_tool_session.hue;
+        hue.begin();
+        hue.push_graded(&frame.stroke.points, heights);
+        // A graded stroke's road holds the grade line: no ground is read.
+        hue.finish(ghost_half_width_m(&request), |_, _| 0.0, HueState::Refused);
+    }
+
+    // A preview request of `points` with the session's section: what sizes the hue's width.
+    fn road_tool_hue_request(
+        &self,
+        points: &[Vector3],
+        profile: RoadProfile,
+    ) -> RoadPreviewRequest {
+        let section = self.road_tool_draft_section(self.road_tool_session.session.frame());
+        let stroke = crate::nodes::sim::road_tool::height::DraftStroke {
+            points: points.to_vec(),
+            profile,
+        };
+        draft_requests(std::slice::from_ref(&stroke), section, 0).remove(0)
+    }
+
     // A new batch pose: tier 1 (`preview_road_draft`'s keys, the ghost) and the standing preview
     // it gives, pending while every stroke passes (tier 2 then runs on the resting frames), else
-    // the first refusal with its stroke (`draft_stroke`).
+    // the first refusal with its stroke (`draft_stroke`). The hue takes tier 1's prepared
+    // strokes (checking while tier 2 runs), or the drawn stroke's over the caps.
     fn road_tool_batch_pose(&mut self) -> (VarDictionary, VarDictionary) {
         let mut pose = VarDictionary::new();
-        self.preview_road_batch_tier1(&self.road_tool_draft_requests(), &mut pose);
+        let mut hue = std::mem::take(&mut self.road_tool_session.hue);
+        let within_caps = self.preview_road_batch_tier1(
+            &self.road_tool_draft_requests(),
+            &mut pose,
+            Some(&mut hue),
+        );
+        self.road_tool_session.hue = hue;
+        if !within_caps {
+            self.road_tool_hue_of_stroke();
+        }
         let text = |key: &str| pose.get(key).map(|value| value.to::<GString>().to_string());
         let mut reason = text("reason").unwrap_or_default();
         let mut stroke = -1_i64;
@@ -881,6 +999,11 @@ impl SimulationNode {
             }
         }
         let accepted = state == "accepted";
+        self.road_tool_session.hue.set_state(if accepted {
+            HueState::Valid
+        } else {
+            HueState::Refused
+        });
         preview.set("is_valid", accepted);
         preview.set("is_pending", false);
         preview.set("invalid_reason", text("tier2_reason"));
@@ -1165,6 +1288,12 @@ pub(super) enum LineStyle {
     GhostRefusedEdge = 6,
     /// An end's ground marker: its vertical line and its ring on the ground (round H2).
     GroundMarker = 7,
+    /// A tunnel run's outline in the footprint hue (round HU), the draft accepted.
+    HueOutlineValid = 8,
+    /// The same, the draft still checked.
+    HueOutlineChecking = 9,
+    /// The same, the draft refused.
+    HueOutlineRefused = 10,
 }
 
 // A strip class's look.

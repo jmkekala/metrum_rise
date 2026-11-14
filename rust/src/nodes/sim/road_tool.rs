@@ -9,6 +9,7 @@ pub mod bench;
 pub mod frame;
 pub mod guides;
 pub mod height;
+pub mod hue;
 pub mod labels;
 pub mod measure;
 pub mod modes;

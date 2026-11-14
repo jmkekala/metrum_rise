@@ -6,7 +6,9 @@
 ## bore: "-10.0 m tunnel"), that draft built and the chain's draft back up from its buried end
 ## built (the entry and the exit portal, each close from its own side), an end raised over a
 ## lower road (the marker stands on the road), and a bridge then a tunnel in one draft (a batch).
-## Uses a fresh blank world and an isolated test profile; never loads or writes a gameplay save.
+## `METRUM_ROAD_HEIGHT_CAPTURE_SET=hue` writes round HU's stills of the draft's footprint hue
+## instead (`_capture_hue`). Uses a fresh blank world and an isolated test profile; never loads or
+## writes a gameplay save.
 ## `METRUM_ROAD_TOOL_CAPTURE_DIR` names the output directory; needs a rendering device
 ## (gamescope's headless backend).
 extends SceneTree
@@ -59,6 +61,13 @@ func _run() -> void:
 	_tool = _main.get_node("RoadTool")
 	_tool.set_road_type(_tool.DEFAULT_ROAD_TYPE)
 	_tool.active = true
+	if OS.get_environment("METRUM_ROAD_HEIGHT_CAPTURE_SET") == "hue":
+		await _capture_hue()
+		_main.queue_free()
+		await process_frame
+		print("road_height_capture: %d failures" % _failures)
+		quit(0 if _failures == 0 else 1)
+		return
 
 	# The end raised 6.5 m over flat ground (thirteen 0.5 m PageUp steps): one bridge, its end's
 	# ground marker and height chip.
@@ -148,6 +157,113 @@ func _run() -> void:
 	print("road_height_capture: %d failures" % _failures)
 	quit(0 if _failures == 0 else 1)
 
+# Round HU: the draft's footprint hue (valid blue, checking amber, refused red and hatched; on the
+# ground under a bridge, outlined over a tunnel, through the hill in front of a road). Each case
+# logs its draft's runs and the hue's state.
+func _capture_hue() -> void:
+	# A deep cut on flat ground: the end lowered 4.5 m, held ground in a cut.
+	_tool._begin_stroke(Vector3(-60.0, 0.0, 0.0))
+	_tool.set_scripted_pointer(true, Vector3(60.0, 0.0, 0.0))
+	await _frames(2)
+	_tool.step_height(-9)
+	await _settle()
+	_log_hue("cut")
+	_expect(_profiles() == [1], "the lowered draft is one held cut, got %s" % [_profiles()])
+	await _capture_pair("hue_cut_flat", Vector3(20.0, -2.0, 0.0), Vector3(85.0, 4.0, 35.0))
+	_tool.cancel_road()
+	_tool.step_height(9)
+
+	# A road behind a hill: a 30 m hill between the camera and a draft on the flat behind it,
+	# running away from the camera.
+	_raise(Vector2(0.0, 200.0), 80.0, 30.0)
+	_tool._begin_stroke(Vector3(0.0, 0.0, 290.0))
+	_tool.set_scripted_pointer(true, Vector3(10.0, 0.0, 420.0))
+	await _settle()
+	_log_hue("behind_hill")
+	_look(Vector3(0.0, 0.0, 350.0), Vector3(-15.0, 42.0, 60.0))
+	await _capture("hue_behind_hill")
+	_tool.cancel_road()
+
+	# A bridge: straight grade across a 12 m valley, ground, a bridge, ground; the bridge's hue on
+	# the valley floor.
+	_raise(Vector2(0.0, 450.0), 70.0, -12.0)
+	_tool.set_straight_grade(true)
+	_tool._begin_stroke(Vector3(-150.0, 0.0, 450.0))
+	_tool.set_scripted_pointer(true, Vector3(150.0, 0.0, 450.0))
+	await _settle()
+	_log_hue("bridge")
+	_expect(_profiles().has(2), "the level draft has a bridge, got %s" % [_profiles()])
+	await _capture_pair("hue_bridge", Vector3(0.0, -8.0, 450.0), Vector3(-130.0, 8.0, 540.0))
+	_main.get_node("SceneLighting").pin_hour_of_day(0.5)
+	await _capture("hue_bridge_night")
+	_main.get_node("SceneLighting").pin_hour_of_day(12.0)
+	_tool.cancel_road()
+	_tool.set_straight_grade(false)
+
+	# A bridge then a tunnel in one draft (start raised 5 m, end lowered 8 m): the bridge's hue
+	# on the ground, the tunnel's outline.
+	_tool._begin_stroke(Vector3(-60.0, 0.0, 650.0))
+	_tool.set_scripted_pointer(true, Vector3(60.0, 0.0, 650.0))
+	await _frames(2)
+	await _drag_start(Vector3(-60.0, 0.0, 650.0), 5.0)
+	_tool.step_height(-16)
+	await _settle()
+	_log_hue("bridge_then_tunnel")
+	_expect(_profiles() == [2, 3], "a bridge then a tunnel, got %s" % [_profiles()])
+	await _capture_pair("hue_bridge_then_tunnel", Vector3(0.0, 0.0, 650.0), Vector3(-40.0, 30.0, 740.0))
+	_tool.cancel_road()
+	_tool.step_height(16)
+
+	# A junction onto an existing road: one hue over the draft's footprint, none on the road.
+	_tool._begin_stroke(Vector3(-80.0, 0.0, 850.0))
+	_tool.set_scripted_pointer(true, Vector3(80.0, 0.0, 850.0))
+	await _frames(3)
+	_expect(_tool._commit_segment(Vector3(80.0, 0.0, 850.0)), "the existing road commits")
+	await _ack()
+	_tool.cancel_road()
+	_tool._begin_stroke(Vector3(-30.0, 0.0, 930.0))
+	_tool.set_scripted_pointer(true, Vector3(0.0, 0.0, 850.0))
+	await _settle()
+	_log_hue("junction")
+	await _capture_pair("hue_junction", Vector3(-10.0, 0.0, 875.0), Vector3(-60.0, 18.0, 950.0))
+	_tool.cancel_road()
+
+	# A refusal: a draft joining the existing road at about 6 degrees (`junction_arm_angle`).
+	_tool._begin_stroke(Vector3(-60.0, 0.0, 858.0))
+	_tool.set_scripted_pointer(true, Vector3(20.0, 0.0, 850.0))
+	await _settle()
+	_log_hue("refused")
+	_expect(int(_simulation.road_tool_hue().get("state", -1)) == 2, "the refused draft's hue is refused")
+	await _capture_pair("hue_refused", Vector3(-20.0, 0.0, 854.0), Vector3(-60.0, 14.0, 900.0))
+	_tool.cancel_road()
+
+	# Across water: a basin 8 m deep filled to 2 m below the ground, crossed level (a bridge).
+	_raise(Vector2(450.0, 0.0), 70.0, -8.0)
+	var lake: Dictionary = _simulation.begin_world_lake_fill_preview(Vector2(450.0, 0.0), -2.0)
+	_expect(_simulation.commit_world_lake_fill_preview(), "the lake fills: %s" % [lake])
+	_tool.set_straight_grade(true)
+	_tool._begin_stroke(Vector3(300.0, 0.0, 0.0))
+	_tool.set_scripted_pointer(true, Vector3(600.0, 0.0, 0.0))
+	await _settle()
+	_log_hue("across_water")
+	await _capture_pair("hue_across_water", Vector3(450.0, -3.0, 0.0), Vector3(420.0, 6.0, 90.0))
+	_tool.cancel_road()
+	_tool.set_straight_grade(false)
+
+# Sculpts `centre` by `height_m` (a hill up, a valley down) with the sculpt tool's brush.
+func _raise(centre: Vector2, radius: float, height_m: float) -> void:
+	for step in 120:
+		var now: float = _simulation.get_world_surface_height(centre)
+		if (height_m > 0.0 and now > height_m) or (height_m < 0.0 and now < height_m):
+			break
+		_simulation.sculpt_terrain(centre, radius, signf(height_m))
+	_expect(absf(_simulation.get_world_surface_height(centre)) >= absf(height_m), "the sculpt reaches %.1f m" % height_m)
+
+func _log_hue(label: String) -> void:
+	var hue: Dictionary = _simulation.road_tool_hue()
+	var heights: Dictionary = _simulation.road_tool_heights()
+	print("hue %s: state %d, fill %d vertices, outline %d, runs %s, draft reason '%s', preview reason '%s'" % [label, int(hue.get("state", -1)), int(hue.get("fill_vertices", 0)), PackedVector3Array(hue.get("outline_vertices", PackedVector3Array())).size(), _profiles(), heights.get("draft_reason", ""), _tool._preview.get("invalid_reason", "")])
+
 # Grabs the start's grip (a press with the scripted pointer on it), drags it `rise_m` up and lets
 # go; the pointer goes back to the live end.
 func _drag_start(start: Vector3, rise_m: float) -> void:
@@ -198,8 +314,9 @@ func _ack() -> void:
 
 func _capture(label: String) -> void:
 	var terrain: Node = _main.get_node("Terrain")
+	var water: Node = _main.get_node("Water")
 	var deadline := Time.get_ticks_msec() + 20000
-	while (_simulation.is_network_dirty() or _simulation.is_terrain_dirty() or terrain.unready_patches_near_camera(400.0) > 0) and Time.get_ticks_msec() < deadline:
+	while (_simulation.is_network_dirty() or _simulation.is_terrain_dirty() or terrain.unready_patches_near_camera(400.0) > 0 or water.has_pending_render_work(false)) and Time.get_ticks_msec() < deadline:
 		await process_frame
 	await _frames(20)
 	await RenderingServer.frame_post_draw

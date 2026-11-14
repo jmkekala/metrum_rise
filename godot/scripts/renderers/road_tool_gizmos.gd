@@ -20,12 +20,13 @@ extends MeshInstance3D
 
 const SceneLightingConfig := preload("res://scripts/core/scene_lighting.gd")
 const LineShader := preload("res://scripts/shaders/road_tool_line.gdshader")
+const LineDepthShader := preload("res://scripts/shaders/road_tool_line_depth.gdshader")
 const HandleShader := preload("res://scripts/shaders/road_tool_handle.gdshader")
 
 ## The gizmos' one palette: the line looks in the order Rust numbers them (`LineStyle`: the
 ## stroke's centreline; every guide line in one colour, width and dash; the zoning guide's
 ## outside and inside; the grid curbs; the batch ghost's edges, accepted and refused; an end's
-## ground marker), the batch
+## ground marker; the footprint hue's tunnel outlines by state), the footprint hue, the batch
 ## ghost's fills, and the handles by kind (placed end, control point, chain start, live end,
 ## joint, handle).
 const PALETTE := {
@@ -47,7 +48,16 @@ const PALETTE := {
 		# An end's ground marker (round H2): its vertical line to the ground and its ring there,
 		# solid, in the stroke's white.
 		[Color(1.0, 1.0, 1.0, 0.9), 2.0, 0.0, 0.0],
+		# The footprint hue's tunnel outlines (round HU), solid and depth-tested on the ground
+		# over the bore, in the hue's colour by state: valid, checking, refused.
+		[Color(0.35, 0.65, 1.0, 0.85), 2.0, 0.0, 0.0],
+		[Color(1.0, 0.76, 0.18, 0.85), 2.0, 0.0, 0.0],
+		[Color(1.0, 0.40, 0.30, 0.9), 2.0, 0.0, 0.0],
 	],
+	# The footprint hue's fill (round HU, `road_tool_hue.gd`) by state: valid blue, checking the
+	# chips' warning amber, refused the HUD's refusal red (also hatched); one alpha, depth-tested.
+	"hue": [Color(0.35, 0.65, 1.0), Color(1.0, 0.76, 0.18), Color(1.0, 0.40, 0.30)],
+	"hue_alpha": 0.30,
 	# The batch ghost's fills (accepted, refused): each stroke's ribbon at its road's width.
 	"ghost_fills": [Color(1.0, 1.0, 1.0, 0.18), Color(1.0, 0.40, 0.30, 0.28)],
 	"handles": [
@@ -67,6 +77,8 @@ var _mesh := ArrayMesh.new()
 # Every line look in one material (round V2), shared with the batch ghost's edges.
 var _line_material := ShaderMaterial.new()
 var _handle_material := ShaderMaterial.new()
+# `depth_line_material`, made on first use.
+var _depth_line_material: ShaderMaterial = null
 # The arrays last uploaded: an unchanged frame uploads nothing.
 var _line_points := PackedVector3Array()
 var _line_classes := PackedInt32Array()
@@ -141,7 +153,7 @@ func show_frame(frame: Dictionary) -> float:
 		_layout = layout
 		_mesh.clear_surfaces()
 		if not vertices.is_empty():
-			_add_line_surface(_mesh, vertices, attributes)
+			add_line_surface(_mesh, vertices, attributes)
 		if not handles.is_empty():
 			var arrays := []
 			arrays.resize(Mesh.ARRAY_MAX)
@@ -158,9 +170,10 @@ func show_frame(frame: Dictionary) -> float:
 	visible = _mesh.get_surface_count() > 0
 	return float(Time.get_ticks_usec() - start_us) / 1000.0
 
-# Appends a line surface of quads (`road_tool_line.gdshader`) to `mesh`: placeholders of the
-# right size for UV, UV2 and the look, then Rust's interleaved attributes in one write.
-func _add_line_surface(mesh: ArrayMesh, vertices: PackedVector3Array, attributes: PackedFloat32Array) -> void:
+## Appends a line surface of quads (`road_tool_line.gdshader`) to `mesh`: placeholders of the
+## right size for UV, UV2 and the look, then Rust's interleaved attributes in one write (the
+## batch ghost and the footprint hue's tunnel outlines draw their edges with it too).
+func add_line_surface(mesh: ArrayMesh, vertices: PackedVector3Array, attributes: PackedFloat32Array) -> void:
 	var count := vertices.size()
 	var arrays := []
 	arrays.resize(Mesh.ARRAY_MAX)
@@ -177,6 +190,15 @@ func _add_line_surface(mesh: ArrayMesh, vertices: PackedVector3Array, attributes
 	var surface := mesh.get_surface_count() - 1
 	mesh.surface_set_material(surface, _line_material)
 	RenderingServer.mesh_surface_update_attribute_region(mesh.get_rid(), surface, 0, attributes.to_byte_array())
+
+## The line material with the normal depth test (`road_tool_line_depth.gdshader`, the same
+## palette): the footprint hue's tunnel outlines, which hills, trees and buildings hide.
+func depth_line_material() -> ShaderMaterial:
+	if _depth_line_material == null:
+		_depth_line_material = _line_material.duplicate()
+		_depth_line_material.shader = LineDepthShader
+		_depth_line_material.render_priority = 8
+	return _depth_line_material
 
 ## Removes every gizmo.
 func clear() -> void:
@@ -248,7 +270,7 @@ func show_batch_ghost(result: Dictionary) -> float:
 		mesh.surface_set_material(mesh.get_surface_count() - 1, _ghost_fills[verdict])
 	var edges: PackedVector3Array = result.get("ghost_line_vertices", PackedVector3Array())
 	if not edges.is_empty():
-		_add_line_surface(mesh, edges, result.get("ghost_line_attributes", PackedFloat32Array()))
+		add_line_surface(mesh, edges, result.get("ghost_line_attributes", PackedFloat32Array()))
 	_ghost.visible = mesh.get_surface_count() > 0
 	return float(Time.get_ticks_usec() - start_us) / 1000.0
 

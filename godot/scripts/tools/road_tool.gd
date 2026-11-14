@@ -16,7 +16,8 @@
 ## (`confirm`), the mode actions and the acknowledgement (`road_tool_event`) and the options
 ## (`road_tool_set_option`),
 ## and shows what `road_tool_frame` returns once a frame: the preview, the gizmos
-## (`road_tool_gizmos.gd`: centreline, tangent legs, guide and angle lines, handles) and the HUD
+## (`road_tool_gizmos.gd`: centreline, tangent legs, guide and angle lines, handles), the draft's
+## footprint hue (`road_tool_hue.gd`, round HU, a stopgap for the lagging preview terrain) and the HUD
 ## (`road_tool_hud.gd`, from Rust's numbers only). Rust resolves the cursor and its snapping,
 ## keeps the stroke and the chain, previews the stroke when it changed and sends the confirmed
 ## stroke.
@@ -64,6 +65,7 @@ extends "res://scripts/tools/network_tool.gd"
 const PreviewDisplay := preload("res://scripts/renderers/road_preview_display.gd")
 const RoadChunkRenderer := preload("res://scripts/renderers/road_chunk_renderer.gd")
 const RoadToolGizmos := preload("res://scripts/renderers/road_tool_gizmos.gd")
+const RoadToolHue := preload("res://scripts/renderers/road_tool_hue.gd")
 const RoadToolHud := preload("res://scripts/ui/road_tool_hud.gd")
 const RoadReasonText := preload("res://scripts/ui/road_reason_text.gd")
 const RoadTypeMenu := preload("res://scripts/ui/road_type_menu.gd")
@@ -170,6 +172,12 @@ signal road_type_changed(id: String)
 var hud = null
 # The tool's gizmos (`road_tool_gizmos.gd`), made on the first frame.
 var gizmos = null
+# The draft's footprint hue (`road_tool_hue.gd`, round HU), made on the first frame, and the
+# `hue_revision` it shows (-1: fetch Rust's on the next frame). A commit's hue moves to
+# `_held_hue` with its preview and goes in the frame the commit's hold releases.
+var _hue = null
+var _hue_revision := -1
+var _held_hue = null
 ## Each frame's gizmo upload and label placement milliseconds while the preview is measured
 ## (`begin_preview_measurement`).
 var gizmo_upload_ms := PackedFloat32Array()
@@ -307,6 +315,7 @@ func _process(delta):
 			hud.clear()
 		if gizmos != null:
 			gizmos.clear()
+		_clear_hue()
 	# The base tool has now resolved this frame's pointer, including camera-only movement.
 	var moved := _has_last_world_mouse_pos and (not had_mouse_pos or previous_mouse_pos != _last_world_mouse_pos)
 	var gizmo_ms := 0.0
@@ -379,7 +388,7 @@ func _session_frame(moved: bool) -> float:
 		var word_us := Time.get_ticks_usec()
 		if hud.show_labels(frame):
 			_label_word_ms = float(Time.get_ticks_usec() - word_us) / 1000.0
-	var gizmo_ms := _show_gizmos(frame)
+	var gizmo_ms := _show_gizmos(frame) + _show_hue(frame)
 	_show_batch_ghost(frame)
 	return gizmo_ms
 
@@ -404,6 +413,23 @@ func _show_gizmos(frame: Dictionary) -> float:
 		gizmos = RoadToolGizmos.new()
 		add_child(gizmos)
 	return gizmos.show_frame(frame)
+
+# Draws the draft's footprint hue when Rust's changed (`hue_revision`); returns the upload's
+# milliseconds.
+func _show_hue(frame: Dictionary) -> float:
+	var revision := int(frame.get("hue_revision", -1))
+	if revision == _hue_revision:
+		return 0.0
+	_hue_revision = revision
+	if _hue == null:
+		_hue = RoadToolHue.new(gizmos)
+		add_child(_hue)
+	return _hue.show_hue(simulation_node.road_tool_hue())
+
+func _clear_hue() -> void:
+	if _hue != null:
+		_hue.clear()
+	_hue_revision = -1
 
 # Takes a preview the session's bridge ran (in its frame or at a click) as the latest preview.
 func _adopt_session_preview(preview: Dictionary, points: PackedVector3Array, start_us: int, end_us: int) -> void:
@@ -644,6 +670,11 @@ func _hold_preview_until(generation: int) -> void:
 	if _swap_display != null:
 		_swap_display.reset()
 	_swap_display = _preview_display
+	# The commit's hue stays with its preview until the hold releases.
+	_drop_held_hue()
+	_held_hue = _hue
+	_hue = null
+	_hue_revision = -1
 	chunks.holds.hold_preview(generation)
 	_preview_display = PreviewDisplay.new()
 	_preview_drawn_sequence = 0
@@ -654,6 +685,12 @@ func _release_swapped_preview() -> void:
 	if _swap_display != null and chunks.holds.release_preview(chunks.generation):
 		_swap_display.reset()
 		_swap_display = null
+		_drop_held_hue()
+
+func _drop_held_hue() -> void:
+	if _held_hue != null:
+		_held_hue.queue_free()
+		_held_hue = null
 
 ## The chunk renderer swapped the chunks it held for a graded edit (T61 (2)) for the installed
 ## ones; a held commit's preview (`_release_swapped_preview`) goes with them.
@@ -816,6 +853,7 @@ func cancel_road():
 	_clear_preview_cache()
 	if gizmos != null:
 		gizmos.clear()
+	_clear_hue()
 	if hud != null:
 		hud.clear()
 
@@ -827,6 +865,7 @@ func reset_main_mesh_chunks() -> void:
 	if _swap_display != null:
 		_swap_display.reset()
 		_swap_display = null
+	_drop_held_hue()
 	chunks.holds.drop_preview()
 	_clear_preview_cache()
 	chunks.reset()

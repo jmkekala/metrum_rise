@@ -34,7 +34,7 @@ mod scurve_freeform;
 mod scurve_steps;
 
 // One small world shared by the scripted tests: the bench neighbourhood, no background.
-fn view() -> &'static RoadToolQuerySnapshot {
+pub(super) fn view() -> &'static RoadToolQuerySnapshot {
     static VIEW: OnceLock<RoadToolQuerySnapshot> = OnceLock::new();
     VIEW.get_or_init(|| neighbourhood_view(false, 0, 2_048.0))
 }

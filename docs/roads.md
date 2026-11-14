@@ -13879,6 +13879,91 @@ no allocation.
   `cargo test --lib` 2,728 passed / 0 failed / 230 ignored, `./run.sh --test` PASS (nextest
   2,732 / 2,732, 231 skipped; godot-main, godot-vehicle PASS; 0 SCRIPT ERROR). No timing.
 
+### Footprint hue (round HU)
+
+Built 2026-11-14 on branch `roadtools-hu` (`dev` `8fb818e1`) after the user's decision (about
+23:10, after a review and the user's answers): while dragging, the lagging preview terrain's grass
+can cover the preview road (T27 (d)); a translucent hue marks the draft's footprint as a
+**stopgap**. It marks the footprint and does not fix the lag; T27 (d) and `TERRAIN-14` (the real
+fix) are unchanged, and round GB's trial (pushing the draft's tiles behind) stays dropped. The
+user's change: a bridge's hue lies on the ground under the bridge, not on the deck. What players
+see is under "Drawing and placement" (Footprint hue).
+
+- **Rust** (`nodes/sim/road_tool/hue.rs`, `FootprintHue`): the draft's strokes, in drawing order,
+  joined into one path (a joint between strokes once) and widened by the road's half width
+  (`ghost_half_width_m`: lanes, median, parking and sidewalks) with round G1's mitred offsets, so
+  the mesh is one non-overlapping triangle list whatever the preview road's pieces do. Per
+  segment its stroke's kind (`HueKind::of(profile, prepared class)`), cut into cells of at most
+  2 m along and 4 m across: ground and cut strokes at the higher of the road (linear along the
+  segment) and `DraftGround` (the ground the segmentation reads) plus 5 cm; a bridge (a bridge
+  stroke or an inferred bridge class) at the ground under it plus 5 cm; a tunnel stroke a closed
+  outline strip, each edge cut every 2 m and lifted as the fill, no fill. The user's revision
+  (2026-11-14, after the first stills): one depth-tested draw in place of two draws of which one
+  ignored the depth, so the hue never shows through hills, trees or buildings. The
+  fill is padded with collapsed triangles to a power-of-two count (at least 64), so a drag
+  rewrites it in place. State (`HueState`): the single stroke's preview as the preview road's tint
+  reads it (pending: checking, valid, refused); a batch pose checking while tier 1 passes every
+  stroke and tier 2 runs, refused when tier 1 refuses one, then valid or refused as tier 2 ends;
+  a commit the core refused turns it refused. Source: the preview's prepared points (a refused
+  pose too, which draws no road), tier 1's prepared strokes for a batch, the drawn stroke at its
+  grade line for a refused segmentation (`cut_too_deep`) or a batch over the caps. A revision
+  changes with the mesh or the state; `road_tool_frame` sends only `hue_revision` and
+  `road_tool_hue()` the mesh (fill bytes as uploaded, the outline as line quads in looks 8-10).
+  `FootprintHue::follow` hides it when the frame has no draft and none waits for its
+  acknowledgement. Cost: built once per new pose (never per pointer move), `O(path points +
+  footprint area / 8 m²)` vertices with one `DraftGround` query (`O(pieces in its cell)`) each;
+  buffers reused. The ground read is the source terrain and the grounded carriageways, not the
+  graded surface: where a committed road's graded cut or fill differs from the source terrain,
+  or once the draft's own preview tiles dig its cut, the hue sits at the source terrain's height
+  there (a published graded surface query exists, `SurfaceView::surface_height_at`, but per
+  vertex per pose it was not measured).
+- **Godot** (`road_tool_hue.gd`; `road_tool.gd` only routes): one `ArrayMesh` surface, material
+  `road_tool_hue.gdshader`: unshaded, translucent (alpha 0.30), the normal depth test, no depth
+  write, no fog, render priority 8 (above water, below the ghost's fill 9, the lines 10 and the
+  handles 11), each vertex pulled towards the camera along its ray by 5 cm plus 0.2 % of its
+  distance (the screen position stays), so the rendered terrain's own triangles and levels do not
+  cover it while a hill in front still does; a refusal hatched in 12 px diagonal screen stripes.
+  Tunnel outlines draw with `road_tool_line_depth.gdshader` (the line shader's body moved to
+  `road_tool_line.gdshaderinc`; the depth variant keeps the depth test with the same pull; the
+  gizmos' own lines unchanged). Colours and the alpha in the gizmos' `PALETTE` (`hue`,
+  `hue_alpha`, line looks 8-10, solid). The commit's hue moves with its preview
+  into the hold and is freed in `_release_swapped_preview`, the frame the hold releases; a cancel,
+  the tool going inactive or another world clears it.
+- **Fresh checks** (the final tree, one depth-tested draw): Rust `road_tool/hue/tests.rs` (8): a
+  straight, a 90 degree arc and a draft onto the neighbourhood's street as the preview prepares it
+  each covered exactly once (every sample of a 0.37 m lattice more than 5 cm inside the footprint
+  in one triangle, outside in none) with the area within 1 % of length times width; every vertex
+  at the higher of the road and the ground plus the lift within 1 mm (a straight above flat
+  ground; a level road across a valley, in a cut at its ends and on a fill in the middle); a
+  bridge between two ground strokes over a valley with every bridge vertex within 1 cm of the
+  ground plus the lift; a tunnel stroke with no fill and one closed outline on the ground over
+  the bore; the state per preview (valid / checking / refused) and per revision, a refused graded
+  draft at its grade line; no hue after a cancel or an acknowledged commit, kept while the sent
+  stroke waits. Kuopio drag probe 78/78 and gameplay fixtures 17/17 EQUAL in every product
+  (request, graph, state, mesh, mesh without signs, graded; probe PASS, 0 failures) against round
+  CT2's records of `dev` `8fb818e1` (library sha `526c3cd6`); branch library sha `0761c4aa`.
+  Allocation (heaptrack `--record-only`, session bench 30k, every mode): n=0
+  2,442,872 / 2,442,904, n=20 2,442,881, n=200 2,442,848 calls: none per pointer move (the hue is
+  built in the bridge's frame, once per new pose, never on a pointer move). Hue + gizmo + label upload per frame (once, no control, the final library, gamescope
+  headless 1920x1080, 120-frame drags, load 3.2-3.9): curve end p50 0.091 / p95 0.173 / max
+  0.256 ms; S-curve end 0.052 / 0.076 / 0.149; freeform handle 0.094 / 0.196 / 0.269: p95 within
+  the 0.2 ms bar in every mode (the freeform handle by 0.004 ms), maxima above it. In that run the
+  parts the round did not touch (chip placement p95 0.068, wording 0.027 on the freeform handle)
+  read about twice round H2's single run (0.032, 0.010), so the margin is uncertain. Stills
+  (gamescope headless, `road_height_capture.gd` set `hue`): a 4.5 m cut on flat ground (top,
+  low: the hue on the grass over the cut), a draft behind a 30 m hill (hidden by it), a bridge
+  across a 12 m valley (top, low, night), a bridge then a tunnel (the tunnel outlined on the
+  ground), a junction onto a road (trees in front hide it), a refused draft joining a road at 6
+  degrees (`junction_arm_angle`, red hatched; top, low, each also through a deuteranopia filter),
+  a bridge across a lake. Gates (final tree): clippy `--all-targets` set equal to the branch point's (`asset_document.rs:15` only; baseline round CT2's record of the same code), `cargo doc` missing_docs 0, debug `cargo test --lib` 2,736 passed / 0 failed / 230 ignored, `./run.sh --test` PASS (nextest 2,740 / 2,740, 231 skipped; godot-main, godot-vehicle PASS; 0 SCRIPT ERROR; no 'is a relative path'). No timing session.
+- **Look choices for review**: blue `(0.35, 0.65, 1.0)` valid, the chips' amber checking, the
+  refusal red; one alpha 0.30; 12 px hatching at 30 % / 170 % of the alpha; 5 cm lift plus the
+  pull towards the camera (5 cm + 0.2 % of the distance); cells 2 m along, 4 m across; tunnel
+  outlines solid, 2 px, in the state's colour, depth-tested. Across water the bridge's hue lies on
+  the lake bed (the ground the segmentation reads), under the water surface; the water surface
+  would be the alternative. Grass blades in front of the hue partly cover it (it lies 5 cm over
+  the ground they stand on).
+
 ### Decisions (user, 2026-11-12, all as recommended)
 
 - U1 simple curve = three clicks, free control point, exact arc plus a straight lead.
@@ -14099,7 +14184,7 @@ the clicks, the mode buttons and the acknowledgement and draws what `road_tool_f
   magnet is gone.
 - **Gizmos** (`road_tool_gizmos.gd`, round V's look; one reused mesh, drawn over the terrain and
   the roads with no depth test, so the path stays visible where the lagging preview terrain's
-  grass covers the preview road; no preview hue): lines are quads Rust builds from the frame's
+  grass covers the preview road; the footprint hue below marks the road's width): lines are quads Rust builds from the frame's
   strips and `road_tool_line.gdshader` widens to a constant on-screen width. Two looks, one
   palette (`PALETTE`, from the UI theme): the stroke's centreline solid, 4 px, white at 82 %;
   every guide line (alignment guides, the angle ray, tangent legs, control polygons and handle
@@ -14110,6 +14195,26 @@ the clicks, the mode buttons and the acknowledgement and draws what `road_tool_f
   anchor. Handles are filled round points with a dark rim: the placed start and the live end
   white (14 and 16 px), a control point and a joint lavender, the chain's start green, a
   Bezier or arc handle pale (10 px).
+- **Footprint hue** (round HU, the user's decision 2026-11-14; a **stopgap**): while a draft has
+  a footprint, a translucent hue marks the ground its road takes (carriageway plus sidewalks), so
+  the draft reads as a preview where the lagging preview terrain's grass covers the preview road
+  (`terrain.md` T27 (d)). It marks the footprint and does not fix the lag: T27 (d) stands and the
+  real fix is `TERRAIN-14`. The preview road itself is unchanged (geometry, materials, depth test,
+  its placement tint). One non-overlapping mesh of the whole draft (its strokes joined, mitred
+  joints), so its alpha never stacks at a junction or where pieces overlap. It is drawn once
+  with the normal depth test (the user, 2026-11-14: it must **not** show through hills, trees
+  or buildings), so it lies 5 cm over the higher of the road and the ground (the ground the
+  segmentation reads: the highest grounded carriageway, else the terrain), sampled every 2 m
+  along and 4 m across: over a cut or a buried road on the grass above it, over a fill on the
+  road; hills, trees and buildings in front hide it. A bridge's hue lies **on the ground under
+  the deck**; a tunnel stroke is outlined (solid edges on the ground over the bore, depth-tested,
+  no fill). Unshaded, translucent at 30 %, no depth write; above water, below the tool's lines
+  and chips. States from the palette: blue valid, amber checking (a batch's tier 2
+  still running, a pending preview), red refused and hatched with diagonal screen stripes (not
+  colour only), beside the red chip. A refused pose (which draws no road) shows its prepared
+  stroke's footprint; a refused segmentation (`cut_too_deep`) the drawn stroke at its grade line.
+  It goes at a cancel and, after a commit, in the frame the commit's hold releases its preview;
+  never on committed roads. A batch draft's hue follows the ghost's strokes.
 - **Zoning-depth guide** (round V): for a type that zones, a circle around the stroke's start and
   end and the stroke offset to either side, all at the depth its cells reach: the kerb (half the
   carriageway width plus the sidewalk) plus six 10 m rows (65 m for the two-lane road). A road
