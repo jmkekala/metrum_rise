@@ -746,30 +746,39 @@ impl RoadToolSession {
         }
     }
 
-    // The guide line or angle ray that took the cursor, as a gizmo strip.
+    // The constraints that took the cursor, as gizmo strips: the angle lock's ray from the anchor
+    // through the cursor and on past it by the guides' radius, the guide line through the cursor
+    // either way (with the ray where the two meet).
     fn push_constraint_line(&mut self, cursor: Cursor) {
         let anchor = self.placed[self.placed_len - 1];
-        match cursor.snapped.kind {
-            SnapKind::Angle | SnapKind::AngleEdge | SnapKind::AngleGuide | SnapKind::AngleGrid => {
-                self.frame
-                    .gizmos
-                    .push_line(GizmoLineClass::Angle, [anchor, cursor.position]);
-            }
-            SnapKind::Guide | SnapKind::GuideCorner => {
-                if let Some(guide) = nearest_guide(&self.scratch.guides, cursor.snapped.xz) {
-                    let at = |offset: f64| {
-                        let p = guide.origin
-                            + guide.dir
-                                * ((cursor.snapped.xz - guide.origin).dot(guide.dir) + offset);
-                        Vector3::new(p.x as f32, cursor.position.y, p.y as f32)
-                    };
-                    let reach = super::snap::GUIDE_RADIUS_M;
-                    self.frame
-                        .gizmos
-                        .push_line(GizmoLineClass::Guide, [at(-reach), at(reach)]);
-                }
-            }
-            _ => {}
+        let reach = super::snap::GUIDE_RADIUS_M;
+        if matches!(
+            cursor.snapped.kind,
+            SnapKind::Angle | SnapKind::AngleEdge | SnapKind::AngleGuide | SnapKind::AngleGrid
+        ) {
+            let beyond = (cursor.snapped.xz - xz_of(anchor))
+                .try_normalize()
+                .map_or(cursor.position, |dir| {
+                    let p = cursor.snapped.xz + dir * reach;
+                    Vector3::new(p.x as f32, cursor.position.y, p.y as f32)
+                });
+            self.frame
+                .gizmos
+                .push_line(GizmoLineClass::Angle, [anchor, cursor.position, beyond]);
+        }
+        if matches!(
+            cursor.snapped.kind,
+            SnapKind::Guide | SnapKind::GuideCorner | SnapKind::AngleGuide
+        ) && let Some(guide) = nearest_guide(&self.scratch.guides, cursor.snapped.xz)
+        {
+            let at = |offset: f64| {
+                let p = guide.origin
+                    + guide.dir * ((cursor.snapped.xz - guide.origin).dot(guide.dir) + offset);
+                Vector3::new(p.x as f32, cursor.position.y, p.y as f32)
+            };
+            self.frame
+                .gizmos
+                .push_line(GizmoLineClass::Guide, [at(-reach), at(reach)]);
         }
     }
 }

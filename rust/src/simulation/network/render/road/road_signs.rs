@@ -520,7 +520,7 @@ fn hazards(
                 graph.edge(measurement_span(spans, canonical(station), &mut window_index).edge_id);
             RADIUS_WINDOW_HALF_WIDTHS * visual_roadbed_half_width_m(edge)
         },
-        |station, radius, turn, measured| {
+        |station, radius, _, turn, measured| {
             let edge =
                 graph.edge(measurement_span(spans, canonical(station), &mut radius_index).edge_id);
             // Never accept a radius from a truncated window, or one looking into a mouth.

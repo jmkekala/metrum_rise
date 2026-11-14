@@ -303,11 +303,19 @@ pub fn validate_edge(
             limits.horizontal_radius_design_lateral_friction,
         ),
     };
-    if let Some((limit, tier)) = lower_violation(smallest_radius.0, &radius_bounds) {
+    // Illegal only when the reading plus its rounding bound is under the limit (so a curve at
+    // the limit never reads under it through `f32` rounding); the design tier reads the radius.
+    let (radius, rounding, station_m) = smallest_radius;
+    let violation = if radius + rounding < radius_bounds.illegal {
+        Some((radius_bounds.illegal, RoadGeometryTier::Illegal))
+    } else {
+        (radius < radius_bounds.design).then_some((radius_bounds.design, RoadGeometryTier::Design))
+    };
+    if let Some((limit, tier)) = violation {
         output.push(RoadGeometryViolation::HorizontalRadius {
             edge_id,
-            station_m: smallest_radius.1,
-            measured: smallest_radius.0,
+            station_m,
+            measured: radius,
             limit,
             tier,
         });
@@ -373,42 +381,91 @@ pub(crate) fn design_radius(speed_ms: f32, lateral_friction: f32) -> f32 {
     speed_kmh * speed_kmh / (SPEED_RADIUS_CONVERSION * lateral_friction)
 }
 
-// Smallest radius of the centreline's turning, as `(radius, station)`, where the radius over a
-// stretch is its horizontal length over its net signed turn. A polyline corner has no radius of
-// its own, and a densely sampled one would read as a tiny radius vertex by vertex, so each vertex
+// Smallest radius of the centreline's turning, as `(radius, rounding, station)`, where the
+// radius over a stretch is its horizontal length over its net signed turn, each chord of a
+// flattened arc read as its arc (`visit_turning_radii`). A polyline corner has no radius of its
+// own, and a densely sampled one would read as a tiny radius vertex by vertex, so each vertex
 // measures the turning across a window of `window_m` of road starting half a segment before it:
 // a hairpin turns back on itself inside the window, a corner of a straight-tool road does not.
-// Segments shorter than `MIN_SEGMENT_RUN_M` end a window. O(points * window segments), no
-// allocation.
-fn smallest_turning_radius(points: &[Vector3], window_m: f32) -> (f32, f32) {
-    let mut smallest = (f32::INFINITY, 0.0);
+// Segments shorter than `MIN_SEGMENT_RUN_M` end a window. The window kept is the one whose
+// reading plus rounding bound is smallest: only what the stored `f32` points prove too tight is
+// illegal. O(points * window segments), no allocation.
+fn smallest_turning_radius(points: &[Vector3], window_m: f32) -> (f32, f32, f32) {
+    let mut smallest = (f32::INFINITY, 0.0, 0.0);
     visit_turning_radii(
         points,
         |_| window_m,
-        |station, radius, _, _| {
-            if radius < smallest.0 {
-                smallest = (radius, station);
+        |station, radius, rounding, _, _| {
+            if radius + rounding < smallest.0 + smallest.1 {
+                smallest = (radius, rounding, station);
             }
         },
     );
     smallest
 }
 
-/// Visits vertex station, window radius and signed vertex turn (positive toward +Z from +X).
-/// Windows use horizontal length/net turn, ending at degenerate segments. The final callback
-/// argument gives the measured three-dimensional station interval for a complete window, or
-/// `None` when the chain/degenerate segment ends before the requested horizontal run.
-/// O(points * window segments), no allocation; the caller supplies each station's window size.
+// A chord is read as an arc's only while its sag on that arc stays within twice the guide
+// kernel's flattening sag (`c * sin(phi / 2) <= 4 * sag` is the kernel's own step rule
+// `c <= sqrt(8 R sag)` for the circle through the chord with the turn `phi`; the factor two
+// keeps a kernel chord at exactly the rule's step an arc chord through `f32` rounding). A longer
+// or sharper chord is a corner's leg and keeps its chord length.
+const ARC_CHORD_SAG_LIMIT_M: f64 = 2.0 * crate::simulation::network::guide::FLATTEN_MAX_SAG_M;
+
+/// Visits vertex station, window radius, its rounding bound and signed vertex turn (positive
+/// toward +Z from +X). A window's radius is its horizontal length over its net turn, ending at
+/// degenerate segments, with each chord of a flattened arc counted as the arc it stands for, so
+/// a polyline inscribed in a circle reads the circle's radius exactly: a chord turning `phi`
+/// over its own length (from the turns at its two ends: `phi` at both inside an arc, `phi / 2`
+/// where a tangent lead meets the arc and `phi` at the next vertex, the one turn it has at a
+/// polyline end) counts `run * (phi / 2) / sin(phi / 2)`. A chord meeting a straight neighbour
+/// (no turn at that end), a turn reversal, or a chord too long or too sharp for a flattened arc
+/// (`ARC_CHORD_SAG_LIMIT_M`) counts its run, so a straight-tool corner reads as its chords
+/// exactly as before. The rounding bound covers the stored `f32` points (half an ulp of the
+/// window's largest coordinate per axis, through the two end headings and every chord); the
+/// arithmetic is `f64`. The final callback argument gives the measured three-dimensional
+/// station interval for a complete window, or `None` when the chain/degenerate segment ends
+/// before the requested horizontal run. O(points * window segments), no allocation; the caller
+/// supplies each station's window size.
 pub(crate) fn visit_turning_radii(
     points: &[Vector3],
     mut window: impl FnMut(f32) -> f32,
-    mut visit: impl FnMut(f32, f32, f32, Option<(f32, f32)>),
+    mut visit: impl FnMut(f32, f32, f32, f32, Option<(f32, f32)>),
 ) {
+    let min_run_m = f64::from(MIN_SEGMENT_RUN_M);
+    // Heading and horizontal run of segment `i`, `None` when it is degenerate or absent.
     let segment = |i: usize| {
-        let delta = points[i + 1] - points[i];
-        let run_m = delta.x.hypot(delta.z);
-        (run_m >= MIN_SEGMENT_RUN_M).then(|| (delta.z.atan2(delta.x), run_m))
+        if i + 1 >= points.len() {
+            return None;
+        }
+        let dx = f64::from(points[i + 1].x) - f64::from(points[i].x);
+        let dz = f64::from(points[i + 1].z) - f64::from(points[i].z);
+        let run_m = dx.hypot(dz);
+        (run_m >= min_run_m).then(|| (dz.atan2(dx), run_m))
     };
+    let turn_between = |from: f64, to: f64| {
+        (to - from + std::f64::consts::PI).rem_euclid(std::f64::consts::TAU) - std::f64::consts::PI
+    };
+    // A segment's horizontal run read as the arc it flattens (see above) from the turns at its
+    // start and end (`None` at a polyline end or a degenerate neighbour), with the factor's slope
+    // `d/dphi ((phi / 2) / sin(phi / 2))` for the rounding bound.
+    let arc_run = |run_m: f64, turn_in: Option<f64>, turn_out: Option<f64>| {
+        let phi = match (turn_in, turn_out) {
+            (Some(a), Some(b)) if a * b > 0.0 => {
+                let (a, b) = (a.abs(), b.abs());
+                (2.0 * a.min(b)).min(a.max(b))
+            }
+            (Some(a), None) | (None, Some(a)) => a.abs(),
+            _ => 0.0,
+        };
+        let half = 0.5 * phi;
+        if half > 0.0 && run_m * half.sin() <= 4.0 * ARC_CHORD_SAG_LIMIT_M {
+            let (sin, cos) = half.sin_cos();
+            (run_m * half / sin, 0.5 * (sin - half * cos) / (sin * sin))
+        } else {
+            (run_m, 0.0)
+        }
+    };
+    let magnitude = |i: usize| f64::from(points[i].x.abs().max(points[i].z.abs()));
     // Station of the vertex after segment `first`, in three-dimensional metres.
     let mut vertex_station_m = 0.0;
     for first in 0..points.len().saturating_sub(2) {
@@ -417,41 +474,69 @@ pub(crate) fn visit_turning_radii(
         let Some((mut heading, first_run_m)) = segment(first) else {
             continue;
         };
-        let window_m = window(vertex_station_m);
+        let window_m = f64::from(window(vertex_station_m));
         let mut vertex_turn = 0.0;
-        let (mut arc_m, mut turn) = (0.5 * first_run_m, 0.0f32);
+        // One segment of lookahead: each step reads one new segment.
+        let mut ahead = segment(first + 1);
+        let first_in = first
+            .checked_sub(1)
+            .and_then(segment)
+            .map(|(previous, _)| turn_between(previous, heading));
+        let first_out = ahead.map(|(next, _)| turn_between(heading, next));
+        let (first_arc_m, first_slope) = arc_run(first_run_m, first_in, first_out);
+        let (mut arc_m, mut turn) = (0.5 * first_arc_m, 0.0f64);
+        // For the rounding bound: the largest coordinate, the turning and the factors' slopes.
+        let mut largest = magnitude(first).max(magnitude(first + 1));
+        let (mut turning, mut slopes, mut last_run_m) = (0.0, first_slope, first_run_m);
         let window_start_m = vertex_station_m - 0.5 * first_length_m;
         let mut window_end_m = vertex_station_m;
         let mut next = first + 1;
         while next + 1 < points.len() {
-            let Some((next_heading, run_m)) = segment(next) else {
+            let Some((next_heading, run_m)) = ahead else {
                 break;
             };
-            let step = (next_heading - heading + std::f32::consts::PI)
-                .rem_euclid(std::f32::consts::TAU)
-                - std::f32::consts::PI;
+            ahead = segment(next + 1);
+            let step = turn_between(heading, next_heading);
             if next == first + 1 {
-                vertex_turn = step;
+                vertex_turn = step as f32;
             }
             turn += step;
             heading = next_heading;
-            if arc_m + 0.5 * run_m >= window_m {
-                arc_m += 0.5 * run_m;
+            let turn_out = ahead.map(|(after, _)| turn_between(next_heading, after));
+            let (arc_run_m, slope) = arc_run(run_m, Some(step), turn_out);
+            largest = largest.max(magnitude(next + 1));
+            (turning, slopes, last_run_m) = (turning + step.abs(), slopes + slope, run_m);
+            if arc_m + 0.5 * arc_run_m >= window_m {
+                arc_m += 0.5 * arc_run_m;
                 window_end_m += 0.5 * points[next].distance_to(points[next + 1]);
                 break;
             }
-            arc_m += run_m;
+            arc_m += arc_run_m;
             window_end_m += points[next].distance_to(points[next + 1]);
             next += 1;
         }
-        let radius = if turn.abs() > 0.0 {
-            arc_m / turn.abs()
+        let (radius, rounding) = if turn.abs() > 0.0 {
+            // Each stored point lies within `r = u / sqrt(2)` of its true place (half an ulp `u`
+            // of the window's largest coordinate on each axis), to first order: the net turn
+            // depends on the first and last headings only, each off by at most `2 r / run`; the
+            // chord sum moves by at most `r` at each end of the window and `r |turn|` at each
+            // vertex between (`|t_in - t_out| = 2 sin(|turn| / 2)`), times the largest arc factor
+            // (under 1.6); each chord's factor moves by its slope times its turn's error
+            // (`4 r / run`), so by `4 r slope` over its run. `f64` arithmetic and the final `f32`
+            // radius add a relative `f32::EPSILON`.
+            let r = largest * f64::from(f32::EPSILON) * std::f64::consts::FRAC_1_SQRT_2;
+            let arc_bound_m = r * (1.6 * (2.0 + turning) + 4.0 * slopes);
+            let turn_bound = 2.0 * r * (1.0 / first_run_m + 1.0 / last_run_m);
+            let radius = arc_m / turn.abs();
+            let rounding = (arc_bound_m + radius * turn_bound) / turn.abs();
+            (radius, rounding + radius * f64::from(f32::EPSILON))
         } else {
-            f32::INFINITY
+            (f64::INFINITY, 0.0)
         };
         visit(
             vertex_station_m,
-            radius,
+            radius as f32,
+            rounding as f32,
             vertex_turn,
             (arc_m >= window_m).then_some((window_start_m, window_end_m)),
         );

@@ -167,8 +167,7 @@ impl SimulationNode {
     /// ""), `hud`
     /// (`length_m`, `bearing_deg`, `start_angle_deg` and `end_angle_deg` (-1 for none),
     /// `radius_m` (the smallest arc radius, -1 for a straight draft), `design_speed_kmh` (-1
-    /// for none), `design_speed_warning`, `illegal_radius_m`, `flattened_radius_m` (what the radius
-    /// check reads on the flattened arcs, -1 for none), `tight_radius`, `build_cost` and
+    /// for none), `design_speed_warning`, `illegal_radius_m`, `tight_radius`, `build_cost` and
     /// `upkeep_per_day` of the drawn road type), and the gizmos as packed arrays:
     /// `gizmo_line_points` with `gizmo_line_starts` (each strip's first point) and
     /// `gizmo_line_classes` (0 draft centreline, 1 guide line, 2 angle ray, 3 tangent leg),
@@ -232,7 +231,6 @@ impl SimulationNode {
                 "design_speed_kmh": hud.design_speed_kmh.unwrap_or(-1.0),
                 "design_speed_warning": hud.design_speed_warning,
                 "illegal_radius_m": hud.illegal_radius_m,
-                "flattened_radius_m": hud.flattened_radius_m.unwrap_or(-1.0),
                 "tight_radius": hud.tight_radius,
                 "build_cost": hud.build_cost,
                 "upkeep_per_day": hud.upkeep_per_day,

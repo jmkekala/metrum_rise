@@ -500,3 +500,90 @@ fn a_densely_sampled_street_corner_is_not_a_tight_curve() {
         edge_violations(&graph, id)
     );
 }
+
+// The guide kernel's simple curve from `(x0, z0)` along +X: a straight lead of `lead` metres,
+// then an arc of `radius` turning `deflection`, flattened by the kernel's rule and stored as
+// `f32` points (a stroke request).
+fn flattened_fillet(x0: f64, z0: f64, radius: f64, deflection: f64, lead: f64) -> Vec<Vector3> {
+    use crate::simulation::network::guide::{DVec2, GuidePath};
+    let tangent = radius * (0.5 * deflection).tan();
+    let a = DVec2::new(x0, z0);
+    let c = a + DVec2::new(lead + tangent, 0.0);
+    let b = c + DVec2::new(deflection.cos(), deflection.sin()) * tangent;
+    let mut path = GuidePath::new();
+    path.set_fillet(a, c, b).expect("a fillet");
+    let mut flat = Vec::new();
+    path.flatten_into(&mut flat);
+    flat.iter()
+        .map(|p| Vector3::new(p.x as f32, 0.0, p.y as f32))
+        .collect()
+}
+
+// `ROAD-112` round E: a chord of a flattened arc counts as its arc, so the guide kernel's
+// flattening of an exact arc reads its true radius (before: `2 R sin(theta / 2) / theta`, up to
+// 0.3 % low at the tightest legal radius), with or without tangent leads, from tight to wide
+// radii, at the origin and a few hundred metres out (`f32` points).
+#[test]
+fn a_flattened_arc_reads_its_true_radius() {
+    for (x0, z0) in [(0.0, 0.0), (-280.0, 220.0)] {
+        for radius in [3.75, 6.25, 20.0, 100.0] {
+            for lead in [0.0, 0.3, 7.0] {
+                let points = flattened_fillet(x0, z0, radius, 170f64.to_radians(), lead);
+                // A window shorter than the arc, as the check's (2.4 illegal radii), so windows
+                // inside the arc decide.
+                let (read, rounding, _) = smallest_turning_radius(&points, 2.4 * radius as f32);
+                let error = (f64::from(read) - radius) / radius;
+                assert!(
+                    error.abs() < 1e-4,
+                    "R {radius} lead {lead} at ({x0}, {z0}): read {read} ({error:e})"
+                );
+                assert!(f64::from(read + rounding) >= radius, "{read} + {rounding} < {radius}");
+            }
+        }
+    }
+}
+
+// The bar of `ROAD-112` round E: an arc at the illegal radius, or up to 1e-6 relative above it,
+// is never refused by the radius check; one longer than the check's window and below it by more
+// than the reading's rounding bound always is. Quarter turns (the arc shorter than the window)
+// and 170 degree turns (longer), with and without a lead.
+#[test]
+fn the_radius_check_never_refuses_an_arc_at_its_limit() {
+    let probe = single_edge(vec![Vector3::ZERO, Vector3::new(10.0, 0.0, 0.0)]);
+    let limit = f64::from(
+        crate::simulation::network::roadbed::visual_roadbed_half_width_m(probe.0.edge(probe.1))
+            * ILLEGAL_RADIUS_HALF_WIDTH_FACTOR,
+    );
+    let tight = |points: Vec<Vector3>| {
+        let (graph, id) = single_edge(points);
+        edge_violations(&graph, id).iter().any(|v| {
+            matches!(
+                v,
+                RoadGeometryViolation::HorizontalRadius {
+                    tier: RoadGeometryTier::Illegal,
+                    ..
+                }
+            )
+        })
+    };
+    for (x0, z0) in [(0.0, 0.0), (-280.0, 220.0)] {
+        for deflection_deg in [90.0f64, 170.0] {
+            for lead in [0.0, 0.3, 7.0] {
+                let fillet =
+                    |radius| flattened_fillet(x0, z0, radius, deflection_deg.to_radians(), lead);
+                let case = format!("{deflection_deg} degrees, lead {lead}, at ({x0}, {z0})");
+                for radius in [limit, limit * (1.0 + 1e-6), limit + 1e-3, limit + 0.02] {
+                    assert!(!tight(fillet(radius)), "{case}: R {radius} refused");
+                }
+                // Below: refused where the arc is longer than the window. A shorter one is read
+                // over its whole length with the half chords or leads at its ends, above its
+                // radius (as before round E): the road tool refuses those itself.
+                if deflection_deg > 150.0 {
+                    for radius in [limit - 1e-3, limit - 0.5] {
+                        assert!(tight(fillet(radius)), "{case}: R {radius} allowed");
+                    }
+                }
+            }
+        }
+    }
+}

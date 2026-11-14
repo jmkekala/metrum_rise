@@ -12,8 +12,22 @@ extends RefCounted
 
 ## The products after a commit's edit installed: `request`, `graph`, `state`, `mesh` (the network's
 ## road chunk meshes, `get_road_mesh_data`'s full snapshot), `graded` (sha256 hex digests) and the
-## counts behind them.
+## counts behind them. Also, so a change of the curve warning signs alone can be told apart
+## (`ROAD-112` round E): `mesh_without_signs` (the same snapshot with every chunk's `road_signs`
+## cleared) and `curve_signs`, every curve warning sign as `kind x z` (sign kinds 7..10).
 static func record(simulation: Node, terrain: Node, request: PackedVector3Array) -> Dictionary:
+	var mesh: Dictionary = simulation.get_road_mesh_data(true)
+	var curve_signs := PackedStringArray()
+	var without_signs := mesh.duplicate(true)
+	for chunk: Dictionary in without_signs.get("chunks", []):
+		var signs: PackedFloat32Array = chunk.get("road_signs", PackedFloat32Array())
+		# Five floats a sign: x, y, z, yaw, kind.
+		for index in range(0, signs.size(), 5):
+			var kind := int(signs[index + 4])
+			if kind >= 7 and kind <= 10:
+				curve_signs.append("%d %.3f %.3f" % [kind, signs[index], signs[index + 2]])
+		chunk["road_signs"] = PackedFloat32Array()
+	curve_signs.sort()
 	var state: Dictionary = simulation.get_road_benchmark_state()
 	var edges := PackedStringArray()
 	for edge in int(state.get("edge_slots", 0)):
@@ -28,7 +42,9 @@ static func record(simulation: Node, terrain: Node, request: PackedVector3Array)
 		"request_points": request.size(),
 		"graph": _sha("\n".join(edges).to_utf8_buffer()),
 		"state": ",".join(counters),
-		"mesh": _sha(var_to_bytes(simulation.get_road_mesh_data(true))),
+		"mesh": _sha(var_to_bytes(mesh)),
+		"mesh_without_signs": _sha(var_to_bytes(without_signs)),
+		"curve_signs": curve_signs,
 		"graded": _sha("\n".join(graded).to_utf8_buffer()),
 		"graded_tiles": graded.size(),
 	}

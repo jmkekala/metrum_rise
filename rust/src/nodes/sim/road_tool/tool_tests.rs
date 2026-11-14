@@ -872,12 +872,12 @@ fn drawn_curve_reports_its_constructed_radius() {
     assert!(!frame.hud.tight_radius);
 }
 
-// The radius rule (plan section 5, `road_tight_curve`): the tool refuses exactly the drafts the
-// radius check would refuse, and the check never refuses a draft the tool sends. The check reads
-// the flattened arc's chord radius `2 R sin(theta / 2) / theta` (the HUD's `flattened_radius_m`),
-// so any curve below the illegal radius is refused, and a curve at most 0.3 % above it with an
-// arc longer than the check's window is refused too (decision D3). Quarter turns (shorter than
-// the window) and 170 degree turns (longer), from 1 mm to 0.5 m on either side of the limit.
+// The radius rule (plan section 5, `road_tight_curve`): the tool refuses a draft exactly when its
+// arc's radius is under the illegal radius, and the radius check, which reads a flattened arc's
+// radius exactly since round E, never refuses a draft the tool sends. Quarter turns (shorter
+// than the check's window) and 170 degree turns (longer), with and without a lead, from 0.5 m
+// below the limit to 0.5 m above it. The clicks are `f32`, so the drawn radius is the limit plus
+// the offset within about 1e-5 relative: the HUD's radius decides.
 #[test]
 fn tight_curve_refusal_follows_the_radius_check() {
     use super::measure::{RoadTypeSpec, illegal_radius_m};
@@ -888,58 +888,59 @@ fn tight_curve_refusal_follows_the_radius_check() {
     let (x0, z0) = (-280.0, 220.0);
     for deflection_deg in [90.0f64, 170.0] {
         let deflection = deflection_deg.to_radians();
-        for offset in [-0.5, -1e-3, 1e-3, 0.02, 0.5] {
-            let radius = limit + offset;
-            // Equal legs `T`, so no lead: `R = T / tan(delta / 2)`.
-            let leg = radius * (0.5 * deflection).tan();
-            let c = (x0 + leg, z0);
-            let b = (c.0 + leg * deflection.cos(), c.1 + leg * deflection.sin());
-            let tool = scripted_simple_curve((x0, z0), c, b);
-            let frame = tool.frame();
-            let hud = frame.hud;
-            let hud_radius = hud.radius_m.expect("an arc");
-            assert!(
-                (hud_radius - radius).abs() < 1e-3,
-                "{hud_radius} vs {radius}"
-            );
-            let flattened = hud.flattened_radius_m.expect("an arc");
-            assert!(flattened <= hud_radius && hud_radius - flattened < 3e-3 * hud_radius);
-            assert_eq!(hud.illegal_radius_m, limit);
-            let case = format!(
-                "{deflection_deg} degrees, radius {radius} (flattened {flattened}, limit {limit})"
-            );
-            if offset < 0.0 {
+        for lead in [0.0, 3.0] {
+            for offset in [-0.5, -1e-3, 0.0, 1e-6 * limit, 1e-3, 0.02, 0.5] {
+                let radius = limit + offset;
+                // Legs `T` and `T + lead`: `R = T / tan(delta / 2)`.
+                let leg = radius * (0.5 * deflection).tan();
+                let c = (x0 + leg + lead, z0);
+                let b = (c.0 + leg * deflection.cos(), c.1 + leg * deflection.sin());
+                let tool = scripted_simple_curve((x0, z0), c, b);
+                let frame = tool.frame();
+                let hud = frame.hud;
+                let hud_radius = hud.radius_m.expect("an arc");
                 assert!(
-                    hud.tight_radius,
-                    "{case}: below the limit is always refused"
+                    (hud_radius - radius).abs() < 1e-4 * radius,
+                    "{hud_radius} vs {radius}"
+                );
+                assert_eq!(hud.illegal_radius_m, limit);
+                let case = format!(
+                    "{deflection_deg} degrees, lead {lead}, radius {radius} (drawn {hud_radius}, \
+                     limit {limit})"
+                );
+                assert_eq!(hud.tight_radius, hud_radius < limit, "{case}");
+                if offset < -1e-4 * limit {
+                    assert!(hud.tight_radius, "{case}: below the limit is always refused");
+                }
+                if hud.tight_radius {
+                    assert_eq!(
+                        frame.state.refusal,
+                        Some(DraftRefusal::TightCurve),
+                        "{case}"
+                    );
+                    assert!(frame.stroke.points.is_empty(), "{case}");
+                    continue;
+                }
+                assert_eq!(frame.state.refusal, None, "{case}");
+                let (_, validation, _) = plan_road_edit(
+                    &frame.stroke.points,
+                    spec.fwd_lanes,
+                    spec.bkw_lanes,
+                    (spec.median, spec.parking, spec.attributes),
+                    &view().terrain,
+                    &view().region_graph,
+                    &view().roadbed,
+                    frame.stroke.snap_to_existing_roads,
+                    false,
+                );
+                assert!(
+                    validation.is_valid,
+                    "{case}: {} measured {} limit {}",
+                    validation.invalid_reason,
+                    validation.geometry_measured,
+                    validation.geometry_limit
                 );
             }
-            if hud.tight_radius {
-                assert_eq!(
-                    frame.state.refusal,
-                    Some(DraftRefusal::TightCurve),
-                    "{case}"
-                );
-                assert!(frame.stroke.points.is_empty(), "{case}");
-                continue;
-            }
-            assert_eq!(frame.state.refusal, None, "{case}");
-            let (_, validation, _) = plan_road_edit(
-                &frame.stroke.points,
-                spec.fwd_lanes,
-                spec.bkw_lanes,
-                (spec.median, spec.parking, spec.attributes),
-                &view().terrain,
-                &view().region_graph,
-                &view().roadbed,
-                frame.stroke.snap_to_existing_roads,
-                false,
-            );
-            assert!(
-                validation.is_valid,
-                "{case}: {} measured {} limit {}",
-                validation.invalid_reason, validation.geometry_measured, validation.geometry_limit
-            );
         }
     }
 }
@@ -1024,4 +1025,127 @@ fn continuous_simple_curve_holds_the_control_on_the_tangent() {
         RoadToolEvent::Action(RoadToolAction::ModeSimpleCurve),
     );
     assert_eq!(tool.frame().state.phase, Phase::Placing { placed: 2 });
+}
+
+// Round E: each snapping toggle, as the options row sends it, removes its constraint on the next
+// pose and puts it back when switched on again. Network snap: an edge mid-span. Guide lines: the
+// spur's dead-end extension, 1 m off it. Zoning grid: a stroke 0.7 m off its start's east axis on
+// open ground (no road in reach: the grid's cardinal steps). Angle lock: a stroke 6.8 degrees off
+// east from its start (`0` = free, as the UI sends).
+// Length step: a free end 52.5 m from the start (`0` = off). Off, the cursor is the raw pick.
+#[test]
+fn each_snapping_toggle_off_removes_its_constraint() {
+    use super::frame::GizmoLineClass;
+    let posed = |options: &[RoadToolOption], start: Option<Pointer>, at: Pointer| {
+        let mut tool = session();
+        for option in options {
+            tool.set_option(*option);
+        }
+        if let Some(start) = start {
+            click(&mut tool, start);
+        }
+        move_to(&mut tool, at);
+        tool
+    };
+    let raw = |at: Pointer| {
+        let Pointer::Ray { origin, .. } = at else {
+            unreachable!()
+        };
+        (origin.x, origin.z)
+    };
+    let xz = |p: Vector3| (p.x, p.z);
+    let (edge, open) = (ray(150.4, 1.0), ray(-247.3, 251.9));
+    let guide = ray(-18.8 + 0.707, 221.2 - 0.707);
+    let (aim, far) = (ray(-197.3, 257.9), ray(-207.6, 289.0));
+    let near_east = ray(-197.3, 252.6);
+    let cases: [(RoadToolOption, RoadToolOption, Option<Pointer>, Pointer, SnapKind); 5] = [
+        (
+            RoadToolOption::NetworkSnap(true),
+            RoadToolOption::NetworkSnap(false),
+            None,
+            edge,
+            SnapKind::Edge,
+        ),
+        (
+            RoadToolOption::GuideLines(true),
+            RoadToolOption::GuideLines(false),
+            Some(ray(-250.0, 150.0)),
+            guide,
+            SnapKind::Guide,
+        ),
+        (
+            RoadToolOption::ZoningGrid(true),
+            RoadToolOption::ZoningGrid(false),
+            Some(open),
+            near_east,
+            SnapKind::Grid,
+        ),
+        (
+            RoadToolOption::AngleStepDeg(Some(15.0)),
+            RoadToolOption::AngleStepDeg(Some(0.0)),
+            Some(open),
+            aim,
+            SnapKind::Angle,
+        ),
+        (
+            RoadToolOption::LengthStepM(Some(5.0)),
+            RoadToolOption::LengthStepM(Some(0.0)),
+            Some(open),
+            far,
+            SnapKind::Free,
+        ),
+    ];
+    for (on, off, start, at, kind) in cases {
+        // The grid is the last line constraint: with the guides on, the start's own east-west
+        // guide would take this cursor first.
+        let base = match on {
+            RoadToolOption::ZoningGrid(_) => RoadToolOption::GuideLines(false),
+            _ => RoadToolOption::GuideLines(true),
+        };
+        let pose = |options: &[RoadToolOption], start, at| {
+            let mut all = vec![base];
+            all.extend_from_slice(options);
+            posed(&all, start, at)
+        };
+        let tool = pose(&[on], start, at);
+        let cursor = tool.frame().cursor;
+        assert_eq!(cursor.snap, kind, "{on:?}");
+        assert_ne!(xz(cursor.position), raw(at), "{on:?} moves the cursor");
+        if let RoadToolOption::LengthStepM(_) = on {
+            assert!(cursor.stepped, "{on:?}");
+            let from = tool.frame().stroke.points[0];
+            let length = f64::from((cursor.position - from).length());
+            assert!((length / 5.0 - (length / 5.0).round()).abs() < 1e-4, "{length}");
+        }
+        // Switched off (after on, as a toggle does), the pick is the raw cursor.
+        let tool = pose(&[on, off], start, at);
+        let cursor = tool.frame().cursor;
+        assert_eq!(cursor.snap, SnapKind::Free, "{off:?}");
+        assert!(!cursor.stepped, "{off:?}");
+        assert_eq!(xz(cursor.position), raw(at), "{off:?}");
+        // On again.
+        assert_eq!(pose(&[on, off, on], start, at).frame().cursor.snap, kind);
+    }
+    // The gizmos draw what took the cursor: the angle lock's ray from the start through the
+    // cursor and on past it; the guide line through the cursor.
+    let locked = posed(&[RoadToolOption::AngleStepDeg(Some(15.0))], Some(open), aim);
+    let gizmos = &locked.frame().gizmos;
+    let ray_strip = gizmos
+        .line_classes
+        .iter()
+        .position(|class| *class == GizmoLineClass::Angle)
+        .expect("the angle ray");
+    let ray_start = gizmos.line_starts[ray_strip] as usize;
+    let cursor = locked.frame().cursor.position;
+    let strip = &gizmos.line_points[ray_start..ray_start + 3];
+    assert_eq!(strip[1], cursor);
+    assert!(strip[2].x > cursor.x + 60.0 && (strip[2].z - cursor.z).abs() < 1e-3);
+    let guided = posed(&[], Some(ray(-250.0, 150.0)), guide);
+    assert!(
+        guided
+            .frame()
+            .gizmos
+            .line_classes
+            .contains(&GizmoLineClass::Guide)
+    );
 }

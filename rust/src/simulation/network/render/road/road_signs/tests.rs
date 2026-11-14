@@ -864,14 +864,16 @@ fn shared_radius_windows_report_complete_travelled_station_extents() {
     visit_turning_radii(
         &points,
         |_| 4.0,
-        |station, _, _, measured| samples.push((station, measured)),
+        |station, _, _, _, measured| samples.push((station, measured)),
     );
     assert_eq!(samples, [(5.0, Some((2.5, 7.0))), (9.0, Some((7.0, 11.5)))]);
     visit_turning_radii(
         &points,
         |_| 100.0,
-        |_, radius, _, measured| {
-            assert!(radius.is_finite()); // Placement validation still measures partial windows.
+        |_, radius, _, _, measured| {
+            // Placement validation still measures partial windows (this one turns back to its
+            // start heading: an infinite radius).
+            assert!(!radius.is_nan());
             assert!(measured.is_none());
         },
     );

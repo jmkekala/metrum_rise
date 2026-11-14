@@ -12274,7 +12274,7 @@ grade.
 
 ## Road tools (`ROAD-112`, `ROAD-113`)
 
-**Status: in progress.** Planned 2026-11-12; round A (the guide kernel) and round B (the session core, not wired) built 2026-11-13, round B landed 2026-11-14; round F (batch commit, grouped undo, undo refund) built 2026-11-13, held for its batch bar until fix round F2 (2026-11-14), which meets it, landed 2026-11-14; round C (the wiring: straight strokes run on the session) built and landed 2026-11-14; round H (the stroke profile field, the held-ground profile and the automatic bridge/tunnel segmentation, Rust only) built 2026-11-14 on branch `roadtools-h`, for review; round D (curves, continuous, gizmos and the HUD on the session, the GDScript curve path deleted) built 2026-11-14 on branch `roadtools-d`, for review. The user asked for a complete refactor of the
+**Status: in progress.** Planned 2026-11-12; round A (the guide kernel) and round B (the session core, not wired) built 2026-11-13, round B landed 2026-11-14; round F (batch commit, grouped undo, undo refund) built 2026-11-13, held for its batch bar until fix round F2 (2026-11-14), which meets it, landed 2026-11-14; round C (the wiring: straight strokes run on the session) built and landed 2026-11-14; round H (the stroke profile field, the held-ground profile and the automatic bridge/tunnel segmentation, Rust only) built 2026-11-14 on branch `roadtools-h`, for review; round D (curves, continuous, gizmos and the HUD on the session, the GDScript curve path deleted) built 2026-11-14 on branch `roadtools-d`, for review; round E (the snapping options row, and the radius check reading a flattened arc's radius exactly) built 2026-11-14 on branch `roadtools-e`, for review. The user asked for a complete refactor of the
 road tool, Rust-first: the current straight mode and the GDScript `Curve3D` "curve" (a cubic
 Bezier whose handles are the raw vectors to the control point, so its curvature, radius and
 length are not exact) are replaced. Mechanics follow the genre (city builders' straight, curve,
@@ -12327,7 +12327,8 @@ since round D).
   it) and the commit's request id (0 when the preview refused it: the bridge logs the tool's
   refusal and the stroke stays editable; after the core refused a commit, the unchanged stroke
   on the same context stays refused as `road_commit_rejected`, today's rule). `road_tool_set_option(name, value)`: `lanes`, the
-  snapping toggles and steps, `continuous`, `altitude_offset_m` (PageUp/PageDown until round I);
+  snapping toggles and steps (`network_snap`, `guide_lines`, `zoning_grid`; `angle_step_deg`
+  15, 30, 45 or 90 and `length_step_m`, any other step, 0 included, off), `continuous`, `altitude_offset_m` (PageUp/PageDown until round I);
   the median, parking and attributes stay with `set_road_tool_median` / `_parking` /
   `_attributes`, which now also set the session's road type, so the session's requests and HUD
   price the selected type (B9). `road_tool_frame()` once a frame: phase, cursor and what took it,
@@ -12339,8 +12340,8 @@ since round D).
   calls and replays use. GDScript keeps input forwarding, the preview display, the commit's
   holds and graded epochs, the HUD label and the external-connection prompt; preview holds come
   from `RENDER-32`'s single Rust hold rule. Round D adds to the frame `mode`, `continuous`, the
-  HUD's `radius_m`, `design_speed_kmh`, `design_speed_warning`, `illegal_radius_m`,
-  `flattened_radius_m` and `tight_radius`, and the gizmos as packed arrays
+  HUD's `radius_m`, `design_speed_kmh`, `design_speed_warning`, `illegal_radius_m` and
+  `tight_radius` (round D's `flattened_radius_m` went in round E), and the gizmos as packed arrays
   (`gizmo_line_points` with `gizmo_line_starts` and `gizmo_line_classes`: 0 centreline, 1 guide
   line, 2 angle ray, 3 tangent leg; `gizmo_handles` with `gizmo_handle_kinds`: 0 placed end,
   1 control point, 2 chain start, 3 live end), one copy each once a frame; `road_tool_event`
@@ -12940,6 +12941,69 @@ The GDScript keeps the Godot objects. Its call sites change after round E (round
   cancel calls `chunks.holds.drop_preview()`.
 - `network_tool.gd`: none (its holds left with the chunk renderer).
 
+### Snapping options and the radius reading (round E)
+
+Built 2026-11-14 on branch `roadtools-e` (`dev` `2783c90a`, rebased onto `90f5409d` after round
+G2 landed; control: round G2's release library of that code). What changed for players is under
+"Drawing and placement" (Snapping, Gizmos, Tight curves).
+
+- **The options row**: `main_ui.gd` builds the Snapping row (Roads, Guides, Zoning grid) and
+  a Steps row (Angle: Free / 15° / 30° / 45° / 90°; Length: a checkbox and metres, 10 m at
+  first) in `_build_snapping_rows`; `road_tool.gd` holds `network_snap_enabled`,
+  `guide_lines_enabled`, `angle_step_deg` and `length_step_m`, sends each through
+  `_send_option` under Rust's name and re-sends all of them in `reassert_intent()`. The session
+  draws the angle lock's ray on past the cursor and the guide line where an angle meets one
+  (`push_constraint_line`); no new Rust option or snap rule.
+- **The radius reading**: `visit_turning_radii` as under "Tight curves", `O(points * window
+  segments)` with one segment of lookahead (one new heading per step), no allocation. The
+  session's `tight_radius` is the arc radius against the limit; `measure::flattened_radius_m`
+  and the frame's `flattened_radius_m` went (the refused HUD reads `radius_m`).
+- **Tests** (Rust): `a_flattened_arc_reads_its_true_radius` (the kernel's 170° fillets of
+  3.75, 6.25, 20 and 100 m, leads 0, 0.3 and 7 m, at the origin and at (-280, 220): the reading
+  within 1e-4 relative, and reading plus bound never under the radius);
+  `the_radius_check_never_refuses_an_arc_at_its_limit` (the default road's limit: at the limit,
+  +1e-6 relative, +1 mm and +2 cm never refused, quarter and 170° turns, with and without a lead;
+  the 170° arcs at -1 mm and -0.5 m always refused; a quarter turn shorter than the window reads
+  above its radius, as before, and the tool refuses it); `tight_curve_refusal_follows_the_radius_check`
+  (the tool's drafts from -0.5 m to +0.5 m, with a lead: refused exactly when the HUD's radius is
+  under the limit, every draft it sends planned without a refusal);
+  `each_snapping_toggle_off_removes_its_constraint` (network snap, guide lines, zoning grid,
+  angle lock and length step: on takes the cursor, off leaves the raw pick, on again takes it;
+  the angle ray's and the guide line's gizmos). Straight-tool corners keep their reading
+  (`radius_design_limit_converts_metres_per_second_to_kmh`, a three-point right angle read as
+  `20 / (pi / 2)` within 1e-5; the densely sampled street corner). Godot:
+  `_test_snapping_options_row` in `network_tool_chunk_renderer_test.gd` on the real node (each
+  control reaches the session, read back through what takes a camera ray's cursor; a tool
+  switched off and on again re-sends the row over options changed behind it).
+- **Stills for review** (`$ARTIFACTS/stills`, `road_tool_capture.gd` with
+  `METRUM_ROAD_TOOL_CAPTURE_SET=snapping`, gamescope's headless backend 1920x1080):
+  `snapping_guide_line.png` (the row at its defaults, a dead end's extension taking the cursor),
+  `snapping_angle_lock.png` (the 15° lock).
+- **Straight parity, bitwise** (`commit_products.gd`, which now also records the curve warning
+  signs and the meshes without them; control `90f5409d`'s library and scripts with that
+  recorder; branch library built before the final lookahead step, which reads the same headings
+  in the same order): Kuopio's 39 strokes, 78 commits, and the gameplay benchmark's 17 fixture
+  commits (headless): request, graph, counters, meshes and graded tiles equal at every commit.
+  No commit on either side carries a curve warning sign, so no sign moved: a sign can change
+  only on a curve whose reading crosses its design-radius threshold, which these sets do not
+  draw (the sign tests in `road_signs/tests.rs` pass unchanged).
+- **Gates** (fresh, final tree on `90f5409d`): debug `cargo test --lib` 2,662 passed, 0 failed,
+  228 ignored; `cargo clippy --all-targets` the branch point's one warning
+  (`asset_document.rs:15`); `./run.sh --test` PASS (nextest 2,666 of 2,666, 229 skipped; both
+  Godot chains PASS, no script skipped, no script error). No timing session (the user's
+  reduction of 2026-11-14): no bar of this round is a time; a window step still reads one new
+  heading and adds a `sin` and a `sin_cos` for the chord's arc.
+- **Decisions under the user's delegation (for review)**: E1 the radius check reads arcs exactly
+  (option (b) of D3) with corners told apart by the flattening's sag (twice the kernel's 5 cm),
+  and its illegal tier allows the reading's `f32` rounding bound: an arc at the limit read
+  through `f32` points scatters about 1e-6 either side of it, so without the bound "never
+  refused at the limit" could not hold; E2 the session refuses on the exact arc radius, so no
+  band of legal curves is refused; E3 controls: "Roads" for the network snap, a separate Steps
+  row, the angle steps as a list (the session takes only 15 / 30 / 45 / 90), the length step 1-100
+  m defaulting to the zoning cell, the row labels 84 px wide (were 92) and "Guides" so the
+  Roads row still fits 1,280 px with 13 custom types (`road_types_test`); E4 the angle ray
+  drawn 64 m past the cursor, the guide line as well where an angle meets it.
+
 ### Decisions (user, 2026-11-12, all as recommended)
 
 - U1 simple curve = three clicks, free control point, exact arc plus a straight lead.
@@ -13108,13 +13172,19 @@ the clicks, the mode buttons and the acknowledgement and draws what `road_tool_f
   at its acknowledgement, `check_border_candidate` on the stroke's ends, and ends the chain).
   A refused commit keeps the stroke editable.
 - **Snapping** is the session's (the precedence under "Snapping precedence" above: network
-  node, then edge, guide line or zoning grid, map edge and self snap), in every mode; the
-  zoning-grid checkbox now applies to curves too. Guide lines are on and the angle lock off by
-  default (U2); Shift frees the cursor of the lock, guides and grid. The soft 45° magnet is
-  gone. Snapping toggles and steps come to the UI in round E.
+  node, then edge, guide line or zoning grid, map edge and self snap), in every mode. The
+  options panel (round E) has a **Snapping** row of three checkboxes, **Roads** (the network
+  snap: junctions, ends and centrelines), **Guides** (guide lines) and **Zoning grid**, and a **Steps**
+  row with the **Angle** lock (Free, 15°, 30°, 45°, 90°) and a **Length** step (a checkbox and
+  metres, 1-100 in 0.5 m steps, 10 m, the zoning cell, at first). Defaults are U2's: roads and
+  guide lines on, grid, angle lock and length step off. Each goes to the session under its
+  option name and is re-sent whenever the tool is switched on. Shift frees the cursor of the
+  lock, guides, grid and length step while held; the network snap stays (B5). The soft 45°
+  magnet is gone.
 - **Gizmos** (`road_tool_gizmos.gd`, from the frame's packed arrays, one reused mesh): the
-  draft's centreline (white), a curve's tangent legs (amber), the guide line or angle ray that
-  took the cursor (blue), and handles as screen-sized points: the placed start (white), a
+  draft's centreline (white), a curve's tangent legs (amber), what took the cursor (blue): the
+  angle lock's ray from the stroke's last point through the cursor and 64 m on past it, a guide
+  line 64 m either side of the cursor (both where an angle meets a guide), and handles as screen-sized points: the placed start (white), a
   control point (amber), a chained stroke's start (green) and the live end (blue). Drawn over
   the road, unshaded.
 - **HUD** (`road_tool_hud.gd`, a label above-right of the stroke's end, the same pixel size at
@@ -13126,15 +13196,26 @@ the clicks, the mode buttons and the acknowledgement and draws what `road_tool_f
   red with the reason when refused. Rust sends only numbers and keys; `road_reason_text.gd`
   words refusals, including the session's draft refusals (a curve folding back, an S-curve
   without a solution, a curve too tight).
-- **Tight curves**: the session refuses a draft whose flattened arc the radius check would
-  refuse (`road_tight_curve`, worded "Curve too tight: radius r m, needs l m"), before any
-  preview. The check (`validate.rs`) reads a polyline's radius as its horizontal chord length
-  over net turn in a window of three roadbed half-widths; on a flattened arc of radius `R` in
-  `n` equal steps that is `2 R sin(theta / 2) / theta` with `theta = sweep / n`, at most 0.3 %
-  under `R` at the tightest legal radius. The session compares that flattened radius (the
-  HUD's `flattened_radius_m`) with the illegal radius, 1.25 roadbed half-widths of the type
-  (`illegal_radius_m`, computed when the type changes), so a curve it sends is never refused as
-  too tight and one below the limit never reaches the preview (decision D3 below).
+- **Tight curves**: the session refuses a draft whose smallest arc radius is under the type's
+  illegal radius, 1.25 roadbed half-widths (`illegal_radius_m`, computed when the type
+  changes), as `road_tight_curve` ("Curve too tight: radius r m, needs l m") before any
+  preview. The radius check (`validate.rs` `visit_turning_radii`, round E) reads that radius
+  exactly on the flattened arc, so every curve below the limit is refused and every curve the
+  tool sends passes it. The check reads each window as its horizontal length over its net turn,
+  with each chord of a flattened arc counted as the arc it stands for: a chord turning `phi`
+  over its own length counts `run * (phi / 2) / sin(phi / 2)`, `phi` taken from the turns at its
+  two ends (`phi` at both inside an arc; `phi / 2` where a tangent lead meets the arc and `phi`
+  at the next vertex, so `min(2 min, max)` of the two; the one turn it has at a polyline end).
+  A polyline inscribed in a circle reads the circle's radius (before round E the chord radius
+  `2 R sin(theta / 2) / theta`, up to 0.3 % low at the tightest legal radius). A chord meeting
+  a straight neighbour (no turn at that end), a turn reversal, or a chord too long or too sharp
+  for a flattened arc (its sag on the circle through it over twice the kernel's 5 cm) counts its
+  plain run, so a straight-tool corner reads as before. The arithmetic is `f64`; the illegal
+  tier compares the reading plus its rounding bound (the stored `f32` points, half an ulp of the
+  window's largest coordinate per axis, through the window's end headings and its chords: about
+  4e-5 of the tightest radius a few hundred metres from the origin, about 1e-3 at 10 km), so an
+  arc at the limit is never refused through `f32` rounding; the design tier and the curve
+  warning signs read the radius itself.
 - The road tool sends its whole intent (lanes, snapping, continuous, height offset, tunnel,
   median, parking, attributes) to Rust again whenever it is switched on, so a debug replay
   that set Rust's intent directly never outlasts the tool's own readout.

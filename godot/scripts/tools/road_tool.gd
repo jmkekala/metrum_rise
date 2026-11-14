@@ -22,8 +22,9 @@
 ## shown until the committed generation's chunks are installed, then both swap in one call. The
 ## preview's graded terrain tiles (`TERRAIN-07-E`) show on the terrain renderer's graded tiles
 ## from the frame that staged them; frames without a new pose stage the pose's rest, and the
-## commit's edit replaces them with the committed tiles in one frame. Also checkbox-controlled
-## zoning-grid snapping (Shift draws free) and the tunnel toggle (`ROAD-61`; T or the options
+## commit's edit replaces them with the committed tiles in one frame. Also the snapping options
+## (network snap, guide lines, zoning grid, angle lock step, length step; Shift draws free of all
+## but the network, B5) and the tunnel toggle (`ROAD-61`; T or the options
 ## checkbox: Rust keeps the drawn profile through the ground, the covered stretch becomes a
 ## tunnel and its open ends approaches). The next stroke's lanes, median, kerbside parking and
 ## attributes come from a road type (`ROAD-101`, `PARK-05`): `set_road_type` reads the type's
@@ -100,6 +101,27 @@ var zoning_grid_snap_enabled: bool = false:
 	set(enabled):
 		zoning_grid_snap_enabled = enabled
 		_send_option("zoning_grid", enabled)
+# The other snapping options of the options row's Snapping row (`ROAD-112` round E), sent under
+# Rust's names; their defaults are the session's (U2: network snap and guide lines on, the angle
+# lock and the length step off). 0 turns a step off.
+var network_snap_enabled: bool = true:
+	set(enabled):
+		network_snap_enabled = enabled
+		_send_option("network_snap", enabled)
+var guide_lines_enabled: bool = true:
+	set(enabled):
+		guide_lines_enabled = enabled
+		_send_option("guide_lines", enabled)
+## Angle lock step in degrees: 0 (free), 15, 30, 45 or 90.
+var angle_step_deg: float = 0.0:
+	set(step):
+		angle_step_deg = step
+		_send_option("angle_step_deg", step)
+## Length step in metres, 0 for off.
+var length_step_m: float = 0.0:
+	set(step):
+		length_step_m = step
+		_send_option("length_step_m", step)
 # The tunnel intent, held by Rust for every preview, commit and refusal; the T toggle's state.
 var tunnel_enabled: bool = false
 signal tunnel_toggled(enabled: bool)
@@ -223,15 +245,19 @@ func _ready():
 	_info_label = hud.label
 	reassert_intent()
 
-## Sends the tool's whole intent to Rust's session: lanes, snapping, continuous, the height
-## offset, tunnel, median, parking and attributes, as this script reads them out. Called when
-## the tool is switched on, so whatever set Rust's intent directly meanwhile (the debug replay)
-## is undone before the next stroke.
+## Sends the tool's whole intent to Rust's session: lanes, every snapping option, continuous,
+## the height offset, tunnel, median, parking and attributes, as this script reads them out.
+## Called when the tool is switched on, so whatever set Rust's intent directly meanwhile (the
+## debug replay) is undone before the next stroke.
 func reassert_intent() -> void:
 	if not _has_session():
 		return
 	_send_lanes()
+	_send_option("network_snap", network_snap_enabled)
+	_send_option("guide_lines", guide_lines_enabled)
 	_send_option("zoning_grid", zoning_grid_snap_enabled)
+	_send_option("angle_step_deg", angle_step_deg)
+	_send_option("length_step_m", length_step_m)
 	_send_option("continuous", continuous)
 	_send_option("altitude_offset_m", altitude_offset)
 	simulation_node.set_road_tool_tunnel(tunnel_enabled)
@@ -320,7 +346,7 @@ func _show_draft_refusal(refusal: String, cursor: Vector3) -> void:
 	var refused := {
 		"is_valid": false,
 		"invalid_reason": refusal,
-		"geometry_measured": float(_session_hud.get("flattened_radius_m", 0.0)),
+		"geometry_measured": float(_session_hud.get("radius_m", 0.0)),
 		"geometry_limit": float(_session_hud.get("illegal_radius_m", 0.0)),
 	}
 	RoadToolHud.write_label(_info_label, _session_hud, refused, _session_snap, false)

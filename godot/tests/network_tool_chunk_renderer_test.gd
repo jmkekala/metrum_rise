@@ -798,6 +798,7 @@ func _test_native_road_cursor_contract() -> void:
 	var rejected: Dictionary = await _await_road_commit(simulation, request)
 	_expect(not rejected.get("committed", true) and simulation.get_road_benchmark_state()["live_edges"] == 1, "native rejection must acknowledge that no topology was added")
 	await _test_session_strokes(simulation)
+	_test_snapping_options_row(simulation)
 	host.free()
 
 func _await_road_commit(simulation: SimulationNode, request: int) -> Dictionary:
@@ -990,6 +991,73 @@ func _test_session_strokes(simulation: SimulationNode) -> void:
 	_expect(not tool.is_drawing() and not tool.active, "Escape ends the stroke and the tool")
 	tool.draw_mode = RoadToolScript.DrawMode.STRAIGHT
 	manager.free()
+	tool.free()
+
+# The options row's Snapping and Steps rows (`ROAD-112` round E) on the real node: each control
+# reaches Rust's session under its option name (read back through what takes a camera ray's
+# cursor beside the first test road's dead end at (60, 32) and on open ground), and a tool
+# switched off and on again re-sends them over whatever set Rust's options meanwhile (the debug
+# replay).
+func _test_snapping_options_row(simulation: SimulationNode) -> void:
+	var tool := _session_road_tool(simulation)
+	var manager = preload("res://scripts/core/input_manager.gd").new()
+	var vegetation = preload("res://scripts/tools/vegetation_tool.gd").new()
+	manager.vegetation_tool = vegetation
+	var ui = preload("res://scripts/ui/main_ui.gd").new()
+	ui.input_manager = manager
+	ui.simulation_node = simulation
+	ui.road_tool = tool
+	ui._build_ui()
+	var snap_at := func(x: float, z: float) -> String:
+		simulation.road_tool_pointer(Vector3(x, 100.0, z), Vector3.DOWN, false)
+		return String(simulation.road_tool_frame().get("snap", ""))
+	_expect(ui.network_snap_check.button_pressed and ui.guide_lines_check.button_pressed and ui.angle_step_option.selected == 0 and not ui.length_step_check.button_pressed, "the row starts at the session's defaults")
+	_expect(snap_at.call(60.5, 32.5) == "node", "network snap on: the dead end's node")
+	# 20 m out along the extension: clear of the node's reach and the perpendicular's corner.
+	var extension: String = snap_at.call(80.0, 32.5)
+	_expect(extension == "guide", "the dead end's extension: %s" % extension)
+	ui.network_snap_check.button_pressed = false
+	_expect(not tool.network_snap_enabled and snap_at.call(60.5, 32.5) != "node", "network snap off: the node does not take the cursor")
+	ui.guide_lines_check.button_pressed = false
+	_expect(not tool.guide_lines_enabled and snap_at.call(80.0, 32.5) == "free" and snap_at.call(60.5, 32.5) == "free", "guide lines off: the cursor is free")
+	# The angle lock from a start on open ground: 6.8 degrees off east locks to east at 15.
+	simulation.road_tool_pointer(Vector3(40.0, 100.0, -100.0), Vector3.DOWN, false)
+	simulation.road_tool_event("press")
+	ui.angle_step_option.select(1)
+	ui.angle_step_option.item_selected.emit(1)
+	_expect(tool.angle_step_deg == 15.0 and snap_at.call(75.0, -95.8) == "angle", "a 15 degree step locks the stroke's direction")
+	ui.angle_step_option.select(0)
+	ui.angle_step_option.item_selected.emit(0)
+	_expect(tool.angle_step_deg == 0.0 and snap_at.call(75.0, -95.8) == "free", "Free drops the angle lock")
+	# The length step rounds a free end's distance from the start (32.2 m to 30 m at 10 m).
+	ui.length_step_check.button_pressed = true
+	var stepped: Variant = simulation.road_tool_pointer(Vector3(65.3, 100.0, -80.1), Vector3.DOWN, false)
+	_expect(tool.length_step_m == ui.length_step_spin.value and ui.length_step_spin.value == 10.0, "the length step defaults to the zoning cell")
+	_expect(stepped is Vector3 and absf(Vector2(stepped.x - 40.0, stepped.z + 100.0).length() - 30.0) < 0.001, "the length step rounds the stroke: %s" % [stepped])
+	# A scripted value (like `select`) emits nothing outside the tree; a player's edit does.
+	ui.length_step_spin.value = 5.0
+	ui.length_step_spin.value_changed.emit(5.0)
+	stepped = simulation.road_tool_pointer(Vector3(65.3, 100.0, -80.1), Vector3.DOWN, false)
+	_expect(stepped is Vector3 and absf(Vector2(stepped.x - 40.0, stepped.z + 100.0).length() - 30.0) < 0.001 and tool.length_step_m == 5.0, "a 5 m step rounds 32.2 m to 30 m: %s, step %s" % [stepped, tool.length_step_m])
+	ui.length_step_check.button_pressed = false
+	stepped = simulation.road_tool_pointer(Vector3(65.3, 100.0, -80.1), Vector3.DOWN, false)
+	_expect(tool.length_step_m == 0.0 and stepped is Vector3 and absf(stepped.x - 65.3) < 0.001, "the length step off leaves the cursor")
+	simulation.road_tool_event("cancel")
+	# Something sets Rust's options directly; the tool's next activation re-sends the row's.
+	simulation.road_tool_set_option("network_snap", true)
+	simulation.road_tool_set_option("guide_lines", true)
+	_expect(snap_at.call(60.5, 32.5) == "node", "Rust's options were changed behind the tool")
+	tool.active = false
+	_road_frame(tool)
+	tool.active = true
+	_road_frame(tool)
+	_expect(snap_at.call(60.5, 32.5) == "free", "a re-activated tool re-sends the row's options")
+	ui.network_snap_check.button_pressed = true
+	ui.guide_lines_check.button_pressed = true
+	_expect(snap_at.call(60.5, 32.5) == "node", "both back on: the node again")
+	ui.free()
+	manager.free()
+	vegetation.free()
 	tool.free()
 
 func _test_road_preview_process_phases() -> void:

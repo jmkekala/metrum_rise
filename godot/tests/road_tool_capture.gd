@@ -5,6 +5,8 @@
 ## writes a gameplay save. `METRUM_ROAD_TOOL_CAPTURE_DIR` names the output directory; needs a
 ## rendering device (gamescope's headless backend). Writes `<mode>.png` stills and
 ## `gizmo_upload.json` (milliseconds per upload while a curve is dragged).
+## `METRUM_ROAD_TOOL_CAPTURE_SET=snapping` writes round E's stills instead: the options panel's
+## Snapping and Steps rows, a guide line and the angle lock taking the cursor.
 extends SceneTree
 
 const RoadToolScript := preload("res://scripts/tools/road_tool.gd")
@@ -58,6 +60,12 @@ func _run() -> void:
 	_tool.set_road_type(_tool.DEFAULT_ROAD_TYPE)
 	_tool.active = true
 	_tool.begin_preview_measurement()
+	if OS.get_environment("METRUM_ROAD_TOOL_CAPTURE_SET") == "snapping":
+		await _capture_snapping()
+		_main.queue_free()
+		await process_frame
+		quit(0 if _failures == 0 else 1)
+		return
 	# An existing road for the strokes to start from.
 	_tool.draw_mode = RoadToolScript.DrawMode.STRAIGHT
 	_tool._begin_stroke(Vector3(-120.0, 0.0, 40.0))
@@ -145,6 +153,50 @@ func _run() -> void:
 	_main.queue_free()
 	await process_frame
 	quit(0 if _failures == 0 else 1)
+
+# Round E: the options panel's rows with the session's defaults, then a stroke from open ground
+# whose cursor a dead end's extension takes (a guide line), then the 15 degree angle lock. The
+# cursor goes by vertical camera rays (a scripted pointer takes no snap), the tool's own pointer
+# stopped so the mouse does not move it.
+func _capture_snapping() -> void:
+	_tool.draw_mode = RoadToolScript.DrawMode.STRAIGHT
+	_tool._begin_stroke(Vector3(200.0, 0.0, 0.0))
+	_tool.set_scripted_pointer(true, Vector3(260.0, 0.0, 0.0))
+	await _frames(3)
+	_expect(_tool._commit_segment(Vector3(260.0, 0.0, 0.0)), "the dead-end road commits")
+	await _ack()
+	_tool.cancel_road()
+	_camera.position = Vector3(290.0, 110.0, 110.0)
+	_camera.look_at(Vector3(290.0, 0.0, 25.0))
+	var ui: CanvasLayer = _main.get_node("MainUI")
+	ui.visible = true
+	ui.road_combined_hbox.visible = true
+	ui.get_meta("options_panel").visible = true
+	ui.get_meta("road_sep").visible = true
+	_tool.set_process(false)
+	_tool.set_scripted_pointer(false)
+	_ray(Vector3(280.0, 0.0, 50.0))
+	_tool._read_press(_simulation.road_tool_event("press"))
+	_ray(Vector3(310.0, 0.0, 0.8))
+	_expect(String(_simulation.road_tool_frame()["snap"]) == "guide", "the dead end's extension takes the cursor")
+	_ray(Vector3(310.0, 0.0, 0.8))
+	await _capture("snapping_guide_line")
+	ui.angle_step_option.select(1)
+	ui.angle_step_option.item_selected.emit(1)
+	_ray(Vector3(340.0, 0.0, 35.0))
+	_expect(String(_simulation.road_tool_frame()["snap"]) == "angle", "the 15 degree lock takes the cursor")
+	_ray(Vector3(340.0, 0.0, 35.0))
+	await _capture("snapping_angle_lock")
+	ui.angle_step_option.select(0)
+	ui.angle_step_option.item_selected.emit(0)
+	_tool.cancel_road()
+	_tool.set_process(true)
+
+# The session's cursor for a vertical camera ray onto `at`, then one frame of the tool's drawing.
+func _ray(at: Vector3) -> void:
+	_simulation.road_tool_pointer(Vector3(at.x, 200.0, at.z), Vector3.DOWN, false)
+	_tool._session_frame(true)
+	_tool._place_label()
 
 func _frames(count: int) -> void:
 	for frame in count:

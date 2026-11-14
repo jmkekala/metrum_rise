@@ -20,6 +20,10 @@ const UIStyle = preload("res://scripts/ui/ui_style.gd")
 
 const InputManager = preload("res://scripts/core/input_manager.gd")
 const VegetationTool = preload("res://scripts/tools/vegetation_tool.gd")
+# The road tool's angle lock steps (the session's, plan section 3); 0 is free.
+const ANGLE_STEPS_DEG := [0, 15, 30, 45, 90]
+# The length step offered first: the zoning cell (`WorldConfig`'s zone_cell_m, 10 m).
+const LENGTH_STEP_DEFAULT_M := 10.0
 
 @onready var input_manager = $"../InputManager"
 @onready var road_tool = $"../RoadTool"
@@ -59,6 +63,11 @@ var straight_btn: Button
 var curve_btn: Button
 var continuous_check: CheckBox
 var zoning_grid_snap_check: CheckBox
+var network_snap_check: CheckBox
+var guide_lines_check: CheckBox
+var angle_step_option: OptionButton
+var length_step_check: CheckBox
+var length_step_spin: SpinBox
 var tunnel_check: CheckBox
 var zoning_combined_hbox: VBoxContainer
 var zoning_mode_menu: HBoxContainer
@@ -220,7 +229,7 @@ func _build_ui():
 	var mode_row := HBoxContainer.new()
 	var mode_label := Label.new()
 	mode_label.text = "Tool mode"
-	mode_label.custom_minimum_size.x = 92.0
+	mode_label.custom_minimum_size.x = 84.0
 	mode_row.add_child(mode_label)
 	road_options_menu.add_child(mode_row)
 	straight_btn = Button.new()
@@ -246,23 +255,12 @@ func _build_ui():
 	continuous_check.toggled.connect(func(enabled: bool): road_tool.continuous = enabled)
 	mode_row.add_child(continuous_check)
 	
-	var snap_row := HBoxContainer.new()
-	var snap_label := Label.new()
-	snap_label.text = "Snapping"
-	snap_label.custom_minimum_size.x = 92.0
-	snap_row.add_child(snap_label)
-	zoning_grid_snap_check = CheckBox.new()
-	zoning_grid_snap_check.text = "Snap to zoning grid"
-	zoning_grid_snap_check.focus_mode = Control.FOCUS_NONE
-	zoning_grid_snap_check.tooltip_text = "Snap near parallel or perpendicular cell lines; draw other angles freely. Accounts for road widths. Existing road connections take priority."
-	zoning_grid_snap_check.toggled.connect(func(enabled: bool): road_tool.zoning_grid_snap_enabled = enabled)
-	snap_row.add_child(zoning_grid_snap_check)
-	road_options_menu.add_child(snap_row)
+	_build_snapping_rows()
 
 	var tunnel_row := HBoxContainer.new()
 	var tunnel_label := Label.new()
 	tunnel_label.text = "Structure"
-	tunnel_label.custom_minimum_size.x = 92.0
+	tunnel_label.custom_minimum_size.x = 84.0
 	tunnel_row.add_child(tunnel_label)
 	tunnel_check = CheckBox.new()
 	tunnel_check.text = "Tunnel (T)"
@@ -279,7 +277,7 @@ func _build_ui():
 	roundabout_row.visible = false
 	var diameter_label := Label.new()
 	diameter_label.text = "Diameter"
-	diameter_label.custom_minimum_size.x = 92.0
+	diameter_label.custom_minimum_size.x = 84.0
 	roundabout_row.add_child(diameter_label)
 	roundabout_slider = HSlider.new()
 	roundabout_slider.step = 1.0
@@ -993,6 +991,70 @@ func _on_road_types_changed(created_id: String) -> void:
 		_select_road_type(created_id, false)
 
 # The mode buttons send the session's mode action (Rust's `mode_straight` / `mode_simple_curve`).
+# The Snapping and Steps rows (`ROAD-112` round E): the session's snapping toggles and steps,
+# each sent to Rust by the road tool under its option name. The controls start at the tool's
+# values (the session's defaults: network snap and guide lines on, grid, angle lock and length
+# step off). Shift frees the cursor of all but the network while held.
+func _build_snapping_rows() -> void:
+	var snap_row := _options_row("Snapping")
+	network_snap_check = _option_check(snap_row, "Roads", "Snap to road junctions, ends and centrelines.")
+	network_snap_check.button_pressed = road_tool.network_snap_enabled if road_tool else true
+	network_snap_check.toggled.connect(func(enabled: bool): road_tool.network_snap_enabled = enabled)
+	guide_lines_check = _option_check(snap_row, "Guides", "Snap to the extensions of dead ends, square to nearby junctions and to the stroke's start.")
+	guide_lines_check.button_pressed = road_tool.guide_lines_enabled if road_tool else true
+	guide_lines_check.toggled.connect(func(enabled: bool): road_tool.guide_lines_enabled = enabled)
+	zoning_grid_snap_check = _option_check(snap_row, "Zoning grid", "Snap near parallel or perpendicular cell lines; draw other angles freely. Accounts for road widths. Existing road connections take priority.")
+	zoning_grid_snap_check.toggled.connect(func(enabled: bool): road_tool.zoning_grid_snap_enabled = enabled)
+
+	var step_row := _options_row("Steps")
+	var angle_label := Label.new()
+	angle_label.text = "Angle"
+	step_row.add_child(angle_label)
+	angle_step_option = OptionButton.new()
+	angle_step_option.focus_mode = Control.FOCUS_NONE
+	angle_step_option.tooltip_text = "Lock the stroke's direction to steps from the road it leaves (east on open ground). Shift draws free."
+	for step in ANGLE_STEPS_DEG:
+		angle_step_option.add_item("Free" if step == 0 else "%d°" % step)
+	var angle_step := int(road_tool.angle_step_deg) if road_tool else 0
+	angle_step_option.select(maxi(ANGLE_STEPS_DEG.find(angle_step), 0))
+	angle_step_option.item_selected.connect(func(index: int): road_tool.angle_step_deg = float(ANGLE_STEPS_DEG[index]))
+	step_row.add_child(angle_step_option)
+	length_step_check = _option_check(step_row, "Length", "Round the stroke's length to steps. Shift draws free.")
+	length_step_spin = SpinBox.new()
+	length_step_spin.min_value = 1.0
+	length_step_spin.max_value = 100.0
+	length_step_spin.step = 0.5
+	length_step_spin.suffix = "m"
+	var length_step: float = road_tool.length_step_m if road_tool else 0.0
+	length_step_spin.value = length_step if length_step > 0.0 else LENGTH_STEP_DEFAULT_M
+	length_step_spin.editable = length_step > 0.0
+	length_step_check.button_pressed = length_step > 0.0
+	length_step_check.toggled.connect(func(_enabled: bool): _send_length_step())
+	length_step_spin.value_changed.connect(func(_value: float): _send_length_step())
+	step_row.add_child(length_step_spin)
+
+func _send_length_step() -> void:
+	length_step_spin.editable = length_step_check.button_pressed
+	road_tool.length_step_m = length_step_spin.value if length_step_check.button_pressed else 0.0
+
+# One labelled row of the road options panel.
+func _options_row(title: String) -> HBoxContainer:
+	var row := HBoxContainer.new()
+	var label := Label.new()
+	label.text = title
+	label.custom_minimum_size.x = 84.0
+	row.add_child(label)
+	road_options_menu.add_child(row)
+	return row
+
+func _option_check(row: HBoxContainer, text: String, tooltip: String) -> CheckBox:
+	var check := CheckBox.new()
+	check.text = text
+	check.focus_mode = Control.FOCUS_NONE
+	check.tooltip_text = tooltip
+	row.add_child(check)
+	return check
+
 func _set_draw_mode(mode: int):
 	straight_btn.button_pressed = (mode == 0)
 	curve_btn.button_pressed = (mode == 1)
