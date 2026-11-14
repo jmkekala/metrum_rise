@@ -1930,7 +1930,11 @@ takes the single commit's path unchanged.
   pieces while the batch's chain holds (`DryRunStroke::rebased`: the live roadbed generation and
   terrain are the dry run's for that stroke and its plan's sources are live; the plan is
   restamped with the live surface generation), so the dry run replaces the cores' own plan and
-  compile; a stroke that recompiled breaks the chain and the later strokes plan afresh. A stroke
+  compile; a core that installs its dry run's pieces also takes their plotted verdict
+  (`RoadLandTake::in_core_judged`: the zoned take alone, since a batch changes no plotted
+  reservation; debug builds judge again), and the dry run judges only that verdict
+  (`first_plotted_overlap`, round F2). A stroke that recompiled breaks the chain and the later
+  strokes plan afresh. A stroke
   the dry run accepted cannot refuse in the commit (debug builds assert it; release builds undo
   the batch's strokes so far and refuse).
 - **One undo step.** `SimulationSnapshot` carries `group`: every record takes a fresh group
@@ -12264,7 +12268,7 @@ grade.
 
 ## Road tools (`ROAD-112`, `ROAD-113`)
 
-**Status: in progress.** Planned 2026-11-12; round A (the guide kernel) and round B (the session core, not wired) built 2026-11-13, round B landed 2026-11-14; round F (batch commit, grouped undo, undo refund) built 2026-11-13, held for its batch bar until fix round F2. The user asked for a complete refactor of the
+**Status: in progress.** Planned 2026-11-12; round A (the guide kernel) and round B (the session core, not wired) built 2026-11-13, round B landed 2026-11-14; round F (batch commit, grouped undo, undo refund) built 2026-11-13, held for its batch bar until fix round F2 (2026-11-14), which meets it: ready to land. The user asked for a complete refactor of the
 road tool, Rust-first: the current straight mode and the GDScript `Curve3D` "curve" (a cubic
 Bezier whose handles are the raw vectors to the control point, so its curvature, radius and
 length are not exact) are replaced. Mechanics follow the genre (city builders' straight, curve,
@@ -12477,7 +12481,8 @@ Criterion at 30k (mean, 95% interval): control 122.52 us (122.22-122.82), sessio
 
 ### Batch commit, grouped undo and undo refund (round F)
 
-Built 2026-11-13 on branch `roadtools-f` (`dev` `d10c2404` plus the round), for review; the
+Built 2026-11-13 on branch `roadtools-f` (`dev` `d10c2404` plus the round); held for its batch
+bar, fixed and measured again by round F2 (below), ready to land on branch `roadtools-f2`. The
 contract is in ["Preview, commit, undo and load"](#preview-commit-undo-and-load) ("Batch commit").
 New `core/road_batch.rs`; `road_commit.rs` split into `commit_stroke_core` and `commit_tail`;
 `undo.rs` restores groups and refunds; bridge `add_road_batch`, no tool UI.
@@ -12531,6 +12536,74 @@ METRUM_LOCALITY_TIERS=0,1000,10000,30000 ... benchmark_batch_locality --ignored 
   30k 32x level on mean, p99 and p99.9 after one rerun of the four rows (the first set read +1.4 %
   on a 1.4 % tolerance); the worst unpreempted frame read +9 to +22 % on single frames, for review:
   no frame path runs changed code.
+
+**Round F2** (2026-11-14, branch `roadtools-f2`: round F rebased on `dev` `58d79a53`, round B
+landed). The user kept exact one-by-one lots (option (a), 2026-11-14), so the bar became "the
+per-stroke cores, the intermediate strokes' lot plans and the batch's one tail, within 10 %".
+Round LBF read it as the batch's own cores plus its tail and found 1.09-1.13x, the excess put on
+the dry run and a tail about three times a single commit's. F2 measured every part first
+(`RoadBatchTimes` now carries the dry run's stages, each core's stages and the tail's; the
+`road_batch` line on the `road` channel prints them):
+
+- **The cores did not repeat the dry run's plan and compile.** Round F's cores already install
+  the dry run's plan and pieces (all eight reused): the batch's cores spend 0.006 ms planning
+  against 2.9-3.1 ms for the eight single commits, and 5.8-6.0 against 8.6-8.8 ms installing
+  pieces. Of the dry run's 5.6-5.7 ms, 4.3-4.4 ms is that plan (2.3-2.4) and compile (2.0), the
+  cores' own work moved before the verdict, which needs every stroke's pieces before any land is
+  taken. LBF's reading left it out of the cores and counted it as excess. The dry run's own work
+  is about 1.25 ms for eight strokes: the graph apply and restore (0.2), the install into its
+  roadbed copy (0.77-0.80), the checks (0.14) and the plotted verdict (0.07).
+- **The land judgement was the one repeat:** the dry run computed the whole take to read its
+  plotted verdict and the core computed it again. Now the dry run judges the verdict alone
+  (`first_plotted_overlap`, 0.23 to 0.07 ms) and a core installing its dry run's pieces takes the
+  zoned part alone (`RoadLandTake::in_core_judged`; a batch changes no plotted reservation, debug
+  builds judge again and the tests run them). Products stay bitwise equal: the new test
+  `a_batch_reusing_its_dry_run_equals_one_planned_afresh` commits the same draft with the cores
+  planning, compiling and judging every stroke themselves (`commit_road_batch_without_reuse`).
+- **The tail is the union of the strokes' chunks.** Its mesh precompute is 4.4-4.5 ms and its
+  publication 0.5 ms (routing schedule and lot spawn under 0.03 ms): the first single commit on
+  the same city takes 3.8-4.0 ms of mesh (its branch splits the long border trunk; the later ones
+  0.8-1.4 ms). Against that first commit's tail (4.1-4.5 ms) the batch's adds about 0.6-0.9 ms
+  for the other seven strokes' chunks; no per-stroke work, publication or graph copy is repeated.
+  LBF's "1.75-1.9 ms" single tail is the mean of the eight commits' tails, most of them on small
+  chunk sets.
+
+Measured fresh 2026-11-14, release test binaries, same commands as round F, eight workers pinned
+to the performance cores, under the run and exclusive timing locks, against a same-session
+control built from `58d79a53`. Batch of eight at 30k, three rounds:
+
+| round | batch | single cores | intermediate lot plans | batch tail | bar | batch / bar | with a single's mean tail | LBF's reading |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 0 | 73.3 | 34.7 | 36.7 | 5.1 | 76.5 | 0.96 | 1.00 (1.77) | 1.08 |
+| 1 | 74.8 | 33.6 | 37.9 | 5.0 | 76.4 | 0.98 | 1.02 (1.64) | 1.08 |
+| 2 | 73.7 | 34.6 | 37.3 | 5.0 | 76.9 | 0.96 | 1.00 (1.65) | 1.08 |
+
+(milliseconds; the bar is the eight single commits' cores plus the batch's intermediate lot plans
+plus its tail; LBF's reading is the batch's cores plus its tail, 67.7-69.1 ms.) **The bar is met
+in every round under every reading**, the batch's graph, pieces, cells and parcels equal the
+one-by-one run's, and all eight strokes reused their dry run. Eight single commits take
+46.7-48.9 ms of commit wall time without their deferred lot plans.
+
+- **Locality** (two passes; the second ends with 0 again): products bitwise equal at every tier
+  and to round F's (`894d70ae6e856f9c`), all eight strokes reused; batch 160.7 / 163.0 / 163.9 /
+  175.8 ms and 163.0 / 185.6 / 165.0 / 163.2 / 151.2 ms at 0 / 1k / 10k / 30k (/ 0) background
+  sites, dry run 16.4-17.8 ms and tail 9.0-12.1 ms flat. The spread is the intermediate lot plans
+  (90-119 ms of the cores, the high reading at 30k in the first pass and at 1k in the second),
+  not the background.
+- **Single commit (K22 30k, C B):** commit 12.57 / 6.46 / 4.76 ms on the control, 12.47 / 6.87 /
+  4.54 ms on the branch (means 7.93 and 7.96 ms, +0.4 %, one sample each): not slower;
+  `COMMIT_PRODUCTS` identical. Second session below.
+- **Frames (timing level F):** the first session read the 30k 1x worst unpreempted frame +23.8 %
+  (+14.3 % after a rerun of the three 1x rows), a spawn frame at minute 364, as round F's session
+  had (+15.7 %). The cause is the control's city, not the branch: round F's test `mod` line in
+  `populated_city.rs` changes the snapshot key, so the branch timed a city its own binary
+  generated while the control loaded one generated on 2026-11-10, and the two days differ
+  (`TOOLS-23`). A second session with both cities generated fresh (`--control-cache`,
+  `--branch-cache`): the control's and the branch's day records are equal, every 30k 1x and 32x
+  metric is level (1x mean -0.8 %, worst unpreempted +0.1 %; 32x mean -0.7 %) and every 1x row
+  passes its acceptance. K22 in that session: 12.63 / 6.59 / 4.63 against 12.92 / 6.75 / 4.85 ms
+  (means 7.95 and 8.17, +2.8 %, one sample each; +0.4 % in the first session, -1.4 % in round
+  F's): level, products identical; F2 does not change the single commit's work.
 
 ### Decisions (user, 2026-11-12, all as recommended)
 

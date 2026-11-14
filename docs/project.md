@@ -177,13 +177,13 @@ run over the 4 ms budget, single engine stalls in one lamp batch node (CB2c, 202
 built hidden in the load call, and no 30k load frame's road work passes 4.0 ms (five of five runs,
 max 1.8-4.0 ms). Kuopio's first commits no longer make the lamp and sign models in one
 frame; a mesh ledger shows the hydration's server meshes freed; edits still build in GDScript ([record](terrain.md#the-road-chunk-renderers-rust-half-render-52-round-cb-part-2-2026-11-13)).
-Several road strokes can commit as one transaction (`ROAD-112` round F, 2026-11-13, for review;
-no tool uses it yet): every stroke is judged before any land is taken, a refused stroke changes
-nothing, one undo takes the batch back, and undo now refunds what a road edit charged (strokes,
-widenings, pockets, roundabouts). A batch equals its strokes committed one by one, bitwise; at 30k
-eight strokes take 77-82 ms against the 35 ms bar of eight cores plus one tail, the lot plans
-between strokes being most of the gap (open decision,
-[record](roads.md#batch-commit-grouped-undo-and-undo-refund-round-f)).
+Several road strokes can commit as one transaction (`ROAD-112` rounds F and F2, 2026-11-13/14,
+ready to land; no tool uses it yet): every stroke is judged before any land is taken, a refused
+stroke changes nothing, one undo takes the batch back, and undo now refunds what a road edit
+charged (strokes, widenings, pockets, roundabouts). A batch equals its strokes committed one by
+one, bitwise (the user kept exact lots, 2026-11-14); at 30k eight strokes take 73-75 ms, 0.96-0.98
+of the bar of eight single cores, the lot plans between strokes and one tail
+([record](roads.md#batch-commit-grouped-undo-and-undo-refund-round-f)).
 `RENDER-32-N` (2026-11-13, for review) measured how many frames a chunk that comes into view
 waits before it draws, per layer, on 0.5 s turns, a far zoom-out to 40 km and a zoom from there to
 the street: terrain, water, graded ground and buildings draw within three frames; the vegetation
