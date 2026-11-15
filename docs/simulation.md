@@ -1226,6 +1226,38 @@ moves its entities between the tiers' phase buckets.
   run, also kept in the report (`perf07_table`). The gate's "no worse" limits stay on the raw
   maximum and p99. The threshold and the overhead are measured in the part 7 results.
 
+- **Minute-4 frames (`PERF-25`, measured 2026-11-16, diagnostic).** Method: `dev` `e27680a4`,
+  a release `$TEST_BINARY` with temporary timing points on the `perf` channel (not committed),
+  the prepared 30k city, two full 1× days and one 32× day, `RAYON_NUM_THREADS=8`, pinned to the
+  performance cores, both locks; the control's unmodified binary for the 32× rows. The worst
+  unpreempted frames of every day sit at minute 4 of an hour (slot 64, `REMOVAL_WINDOW_START`).
+  There is **no spawn batch**: queued demand spawns start one a game minute
+  (`DEMAND_SPAWN_ACTIONS_PER_MINUTE` is 1), the hour's first at minute 4's first slot, after the
+  actions slot of minute 3; the fixture city places 4-5 a day, all industrial, at most one an
+  hour. A spawn frame runs **one** spawn:
+  - placement 0.13-0.17 ms (slot resolution 0.02, support solve 0.07-0.10, commit 0.01; the
+    zone index and the entrance cache take the building by append, never a rebuild);
+  - the graded site edit 0.36-0.49 ms (`record_graded_site_edit`);
+  - the **parking site publication** (`publish_parking_sites`) 1.6-3.2 ms: the lot's bays
+    0.09-0.19, the doors within reach 0.13-0.17 (1,271-1,448 doors), the access of the bays round
+    the new door 0.16-0.38, then the new door's whole list (foot graph 0.44-1.92, place table
+    0.34-1.58) in parallel with the near doors' edits (0.8-1.3 ms alone; 218-265 lists change),
+    0.9-2.4 ms together, and the lists' ends 0.20-0.41;
+  - in the snapshot after it (1.65-2.9 ms against a 1.05 ms mean): the parked chunks round the
+    site re-posed 0.75-0.85 (the graded edit invalidates their ground), the frame queries'
+    terrain payload 0.15-0.58 and the agents' pose 0.9-1.5.
+
+  With the agent tick (0.9-1.5 ms) that is 5.6-8.6 ms at 1×. The removal window's first slot
+  without a spawn (minutes 64, 424, 784, 1324) runs the same parking publication for the removed
+  buildings' bays (no new door; near doors 0.8-1.3, ends up to 0.63) at 0.97-2.16 ms, plus the
+  graded edit 0.38-0.45 ms: 4.9-6.5 ms frames at 1×. At 32× (two control days) the minute-4
+  frames are the day's worst: spawn frames 7.25-10.52 ms (the removal slot's publication shares
+  the frame), removal frames 7.77-9.81 ms, 7-9 frames over 8 ms a day (`PERF-17`). Spreading the
+  spawns cannot help (there is one a frame already); moving the publication to a later frame
+  needs its pending changes in the save (agents read the lists every frame) and still leaves a
+  frame of about 2.2 + 3.1 + 0.8 ms. What would meet `PERF-25`'s 6 ms is a cheaper (or split)
+  parking site publication, which every minute-4 frame shares; see the row for the next step.
+
 - **`PERF-09`, not measured (history, attributed 2026-10-28).** No 100k tier is measured since
   2026-11-09, so nothing gates this regression; the record stays as history. 100k 1× no longer met the
   acceptance on `road`: on `d456913e` a full day measures a 6.32 ms mean frame (agent tick 5.04,
