@@ -794,13 +794,12 @@ Godot's own crash handler, which faulted again while unwinding through the unmap
 extension installs no signal handlers; its only hooks are Rust panic hooks, which only the
 library's own code calls.
 
-Every thread the extension starts now ends before the library unloads:
+Every thread the extension starts now ends before the library unloads (the road-preview worker,
+its pool and its reclaim thread are gone with the asynchronous preview, `ROAD-68-A`):
 
 | Thread | Stopped by | Joined by |
 |--------|------------|-----------|
 | Simulation thread | `SimCommand::Stop`, sent when the node is freed; it runs the commands queued before it | `SimulationNode`'s drop |
-| Road-preview worker | Its request channel disconnecting when the node is freed; it finishes the running request | `SimulationNode`'s drop |
-| Preview Rayon pool (`road-preview-N`) and reclaim thread (`road-preview-reclaim`) | The worker returning; the reclaim thread frees what is queued first | The worker, before it returns |
 | Terrain and water payload jobs and water-mesh jobs | They run to completion | `SimulationNode`'s drop waits for them |
 | Shared and background Rayon pools (`metrum-N`, `metrum-bg-N`) | The Scene-level deinit hook (`thread_pools::stop`), the shared pool first, each once its running and spawned work is done | The same hook |
 | Hang watchdog (`metrum-hang-watchdog`) | The Scene-level deinit hook (`debug::shutdown`) | The same hook |
@@ -826,11 +825,11 @@ test binaries alike:
   commit or an undo never waits behind a routing rebuild (`TERRAIN-07-E` round 3).
 - The functions that do the parallel work enter the pool themselves, not the `#[func]` bodies:
   the frame step, the render snapshot, cell-chunk preparation, the road commit, undo and
-  bulldoze, loads and world resets, the routing rebuild, and leaf rebuilds such as the entrance
-  cache, site index, admission order, compile work, overlay images and car smoothing. Every caller,
-  tests and benchmarks included, takes the same path. The simulation thread keeps the core lock
-  while the work runs on a worker; a pool worker never waits for the core (`SIM-01`).
-- The road-preview worker keeps its own joined pool (`ROAD-38`).
+  bulldoze, the in-place road edits' land take (`CODE-33`), loads and world resets, the routing
+  rebuild, and leaf rebuilds such as the entrance cache, site index, admission order, compile
+  work, overlay images and car smoothing. Every caller, tests and benchmarks included, takes the
+  same path. The simulation thread keeps the core lock while the work runs on a worker; a pool
+  worker never waits for the core (`SIM-01`).
 - When the library loads (the Core init stage), `thread_pools::disable_global_pool` spends
   Rayon's one-time global initialization on a pool that cannot start. Any Rayon call outside the
   shared pool then panics at its call site with "The global thread pool has not been
@@ -844,8 +843,7 @@ Two checks find a call that bypasses the pool. A panicked `#[func]` returns a de
 GDScript errors exit 0, so grep the Godot test logs for `global thread pool has not been
 initialized`. `bridge_entry_points_never_use_the_global_pool` re-runs the library test binary as a
 child process that disables its global pool and then drives a town's tools, a day of growth,
-saves and loads, world resets, a bulk-loaded city, the simulation thread, the preview worker and
-spawned jobs.
+saves and loads, world resets, a bulk-loaded city, the simulation thread and spawned jobs.
 
 ## Console
 

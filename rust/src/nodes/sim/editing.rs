@@ -266,7 +266,9 @@ impl SimCore {
     // unpainted ones and hands their paint on to the cells it lays over them. Lot regions around
     // the removed lots and covered cells are queued for that plan. O(the take's buildings, lots
     // and cells + reserved cells in the envelopes) plus one parallel agent scan per batch
-    // (`demolish_for_road`).
+    // (`demolish_for_road`). Runs in the shared pool: the in-place edits (cross-section,
+    // pocket, roundabout, class, crossing) call it on Godot's main thread, and the
+    // demolition's remaps are parallel (CODE-17); a caller already in the pool runs it inline.
     pub(super) fn take_land_for_edit(
         &mut self,
         take: RoadLandTake,
@@ -279,6 +281,14 @@ impl SimCore {
         {
             return None;
         }
+        crate::thread_pools::install(|| self.take_land_for_edit_in_pool(take, regeneration))
+    }
+
+    fn take_land_for_edit_in_pool(
+        &mut self,
+        take: RoadLandTake,
+        regeneration: Option<&[CellBounds]>,
+    ) -> Option<CellPaintUndo> {
         let start = Instant::now();
         let [removals_ms, sites_ms] = self.demolish_for_road(&take.buildings);
         // A removed authored parcel's halo is regenerated (`remove_parcels_under_road`), so it

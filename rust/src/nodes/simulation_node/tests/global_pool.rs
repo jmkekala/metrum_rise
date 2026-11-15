@@ -7,13 +7,15 @@
 //! pool, because most tests call Rayon code from their own thread, and Rayon can disable it
 //! only once per process. The check therefore re-runs this binary as a child process that
 //! disables the pool first and then drives, from its main thread, the core functions that
-//! Godot's main thread calls, the simulation thread, the road-preview worker and spawned jobs.
+//! Godot's main thread calls, the simulation thread and spawned jobs.
 
 use super::*;
 use crate::assets::scan_pack_dir;
 use crate::nodes::sim::core::{RoadCommitAck, RoadCommitRequest};
 use crate::nodes::sim::render::car_visual::CarVisualSmoother;
 use crate::simulation::economy::fiscal::POLICY_COMMERCIAL_PROPERTY_TAX;
+use crate::simulation::network::graph::RoadParking;
+use crate::simulation::network::road_types::RoadAttributes;
 use crate::simulation::zoning::ZoneType;
 use crate::simulation::zoning::cells::CellSelectionShape;
 use crate::simulation::zoning::profiles::ZoneDensity;
@@ -287,6 +289,45 @@ fn editing_a_town(e: &mut Entries, core: &mut SimCore) {
         core.set_vehicle_frontage_access_internal(edge, 1);
         core.set_edge_class_internal(edge, 1);
         core.set_edge_class_internal(edge, 0);
+        core.build_snapshot();
+    });
+    // The Road properties window's parking toggle: a widening whose take demolishes the
+    // buildings its new kerbs cover. A taken shipment endpoint removes the shipment's carrier,
+    // and the agent remap after it scans every agent in parallel.
+    e.run("parking widening that takes a shipment endpoint", || {
+        let carried = |core: &SimCore| {
+            let agents = &core.agents;
+            core.logistics
+                .shipments
+                .iter()
+                .filter(|shipment| {
+                    agents
+                        .resolve_agent(shipment.carrier)
+                        .is_some_and(|carrier| agents.freight_carrier_matches(carrier, shipment.id))
+                })
+                .count()
+        };
+        let before = carried(core);
+        let mut edges: Vec<usize> = core
+            .logistics
+            .shipments
+            .iter()
+            .flat_map(|shipment| [shipment.source, shipment.destination])
+            .filter_map(|endpoint| endpoint.building_id())
+            .map(|building| core.allocator.buildings[building].edge_idx)
+            .collect();
+        edges.sort_unstable();
+        edges.dedup();
+        let took = edges.into_iter().any(|edge| {
+            let road = core.region_graph.edge(edge);
+            let (fwd, bkw, median) = (road.fwd_lanes, road.bkw_lanes, road.median);
+            let attributes = RoadAttributes::of_edge(road);
+            let both = RoadParking::from_code(3).unwrap();
+            core.set_edge_cross_section_internal(edge as i32, fwd, bkw, median, both, attributes)
+                && carried(core) < before
+        });
+        assert!(took, "a parking widening took a carried shipment's endpoint");
+        core.finalize_network_render_products();
         core.build_snapshot();
     });
     e.run("terrain tools", || {
