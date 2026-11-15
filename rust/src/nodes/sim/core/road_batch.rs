@@ -42,6 +42,7 @@ use crate::nodes::sim::benchmark::road_edit::RoadEditMetrics;
 use crate::nodes::sim::road_tool::validate_road_candidate_against_water;
 use crate::simulation::network::graph::RegionGraphUndoDelta;
 use crate::simulation::network::road_edit::validate_road_candidate_fast;
+use crate::simulation::network::road_types::RoadTypePockets;
 use crate::simulation::network::roadbed::{RoadbedDelta, RoadbedSystem};
 
 /// An ordered list of strokes committed as one transaction and undone as one step.
@@ -280,8 +281,15 @@ impl SimCore {
             } else {
                 StrokePlan::Preview(None)
             };
-            let mut core =
-                self.commit_stroke_core(stroke, plan, index + 1 == count, road_total, metrics);
+            // Graded strokes cut into ground, bridge and tunnel parts take no type pockets.
+            let mut core = self.commit_stroke_core(
+                stroke,
+                plan,
+                RoadTypePockets::default(),
+                index + 1 == count,
+                road_total,
+                metrics,
+            );
             core_ms.push(core_start.elapsed().as_secs_f64() * 1000.0);
             parts.push(core_parts(&core.metrics));
             if !core.committed {
@@ -363,6 +371,7 @@ impl SimCore {
         let tail = self.commit_tail(false, None, Vec::new(), &mut edit_metrics);
         let core = super::road_commit::StrokeCore {
             committed: false,
+            pocket_refusals: Vec::new(),
             deferred_lots: None,
             kept_tiles: None,
             metrics: edit_metrics,

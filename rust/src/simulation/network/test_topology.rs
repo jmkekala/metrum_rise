@@ -35,6 +35,7 @@ mod tests {
                 asset_set: None,
                 tags: vec![],
                 thumbnail: None,
+                icon: None,
                 lods: vec![],
                 mesh_parts: vec![MeshPart::single_lod0("main", "lod0.glb")],
                 anchors: vec![],

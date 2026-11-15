@@ -255,6 +255,38 @@ pub(crate) struct RegionGraphUndoDelta {
 }
 
 impl RegionGraphUndoDelta {
+    /// Combines chronological local edits, keeping the earliest record for each original id.
+    /// Appended records disappear at the first checkpoint's counts. O(records log records).
+    pub(crate) fn combine(mut first: Self, later: impl IntoIterator<Item = Self>) -> Self {
+        for delta in later {
+            first.nodes.extend(
+                delta
+                    .nodes
+                    .into_iter()
+                    .filter(|(id, _)| (*id as usize) < first.original_node_count),
+            );
+            first.edges.extend(
+                delta
+                    .edges
+                    .into_iter()
+                    .filter(|(id, _)| *id < first.original_edge_count),
+            );
+            first.aliases.extend(
+                delta
+                    .aliases
+                    .into_iter()
+                    .filter(|(id, _)| (*id as usize) < first.original_node_count),
+            );
+        }
+        first.nodes.sort_by_key(|(id, _)| *id);
+        first.nodes.dedup_by_key(|(id, _)| *id);
+        first.edges.sort_by_key(|(id, _)| *id);
+        first.edges.dedup_by_key(|(id, _)| *id);
+        first.aliases.sort_by_key(|(id, _)| *id);
+        first.aliases.dedup_by_key(|(id, _)| *id);
+        first
+    }
+
     /// The live roads this inverse keeps, each with the sidewalks it would give them back: what
     /// an undo must check against the doors on them (`ROAD-109`). O(records).
     pub(crate) fn restored_sidewalks(&self) -> impl Iterator<Item = (usize, SidewalkSides)> + '_ {

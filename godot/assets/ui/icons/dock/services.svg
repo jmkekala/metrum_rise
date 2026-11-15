@@ -1,0 +1,22 @@
+<!-- SPDX-License-Identifier: GPL-2.0-only -->
+<svg xmlns="http://www.w3.org/2000/svg" width="96" height="96" viewBox="0 0 64 64">
+  <defs>
+    <linearGradient id="chrome" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#f6f8f9"/><stop offset=".45" stop-color="#b9c1c7"/><stop offset=".55" stop-color="#8d969d"/><stop offset="1" stop-color="#d7dde1"/></linearGradient>
+    <mask id="wrenchCut" maskUnits="userSpaceOnUse" x="0" y="0" width="64" height="64">
+      <rect width="64" height="64" fill="#fff"/>
+      <rect x="51" y="27.6" width="14" height="8.8" fill="#000"/>
+      <circle cx="51" cy="32" r="4.4" fill="#000"/>
+      <circle cx="12" cy="32" r="4" fill="#000"/>
+    </mask>
+  </defs>
+  <g transform="translate(32 32) scale(1.22) translate(-32 -32) rotate(-45 32 32)">
+    <g mask="url(#wrenchCut)" transform="translate(0,1.6)" fill="#3a4045" opacity=".55">
+      <rect x="14" y="28" width="36" height="8" rx="3"/><circle cx="52" cy="32" r="10.5"/><circle cx="12" cy="32" r="8"/>
+    </g>
+    <g mask="url(#wrenchCut)" fill="url(#chrome)" stroke="#5b636a" stroke-width=".7">
+      <rect x="14" y="28" width="36" height="8" rx="3"/><circle cx="52" cy="32" r="10.5"/><circle cx="12" cy="32" r="8"/>
+    </g>
+    <rect x="20" y="30.5" width="24" height="3" rx="1.5" fill="#7d868d" opacity=".55"/>
+    <path d="M16 28.8 H48" stroke="#fff" stroke-width=".9" opacity=".8"/>
+  </g>
+</svg>

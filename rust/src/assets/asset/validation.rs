@@ -37,6 +37,15 @@ impl AssetManifest {
             )));
         }
 
+        if let Some(icon) = &self.icon
+            && (icon.contains('.') || !is_valid_asset_id(icon))
+        {
+            return Err(ManifestError::Validation(format!(
+                "asset_id '{}': icon '{icon}' must be lowercase letters, digits and underscores",
+                self.asset_id
+            )));
+        }
+
         // Enforce exactly one class section.
         let _ = self.class()?;
 

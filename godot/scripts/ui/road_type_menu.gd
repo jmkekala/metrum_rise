@@ -1,16 +1,17 @@
 # SPDX-License-Identifier: GPL-2.0-only
 
-## The Roads menu's road-type row (`ROAD-101`): one toggle button per usable built-in type in
+## The Roads menu's thumbnail grid (`ROAD-101`): one toggle tile per usable built-in type in
 ## Rust's `get_road_types` order, then one "Custom roads" drop-down listing the player's usable
 ## custom types, a separator and "Road builder..." (it only emits `road_builder_requested`; the
 ## builder window connects to it). The drop-down keeps one fixed width however many types the
 ## library holds, so the row fits the bottom toolbar at 1280 x 720. The road tool's current type
-## is marked: its built-in button pressed, or, for a custom type, the drop-down showing its name
+## is marked: its built-in button pressed, or, for a custom type, the drop-down showing its layout
 ## in the pressed style with the item checked. A view: a pick emits `type_picked`, and the host
 ## activates the tool and calls `RoadTool.set_road_type`. `refresh` rebuilds the row from Rust
-## after a library edit; unusable entries are never listed (the builder lists them). Each type's
-## tooltip gives its layout, speed, its sidewalk side ("sidewalk on the left", "no sidewalks"),
-## "No zoning" (the flag, or no sidewalks), the one building side and Rust's cost per metre.
+## after a library edit; unusable entries are never listed (the builder lists them). A tile's
+## hover card is `RoadTypeCard` (speed sign, symbol chips, cost); the custom roads key shows the
+## card briefly on the type it lands on. The drop-down's items keep a text tooltip: layout,
+## speed, sidewalk side, "No zoning", the one building side and Rust's cost per metre.
 ## Rust methods called: get_road_types().
 extends HBoxContainer
 
@@ -20,6 +21,9 @@ signal type_picked(id: String, walkway: bool)
 signal road_builder_requested
 
 const MedianControls = preload("res://scripts/ui/median_controls.gd")
+const HudIcons = preload("res://scripts/ui/hud_icons.gd")
+const HudTooltip = preload("res://scripts/ui/hud_tooltip.gd")
+const RoadTypeCard = preload("res://scripts/ui/road_type_card.gd")
 ## The drop-down's text while the tool draws a built-in type.
 ## Rust's sidewalk side codes (`ROAD-107`), in a road's forward direction: a road type's and a
 ## road's `sidewalks`, and what the road tool and an in-place edit send.
@@ -30,8 +34,8 @@ const SIDEWALKS_BOTH := 3
 const CUSTOM_ROADS := "Custom roads"
 ## The drop-down item id of "Road builder..."; custom type `i` is item id `i + 1`.
 const BUILDER_ITEM := 0
-# Wide enough for "Custom roads" and a short name; a longer name is trimmed with an ellipsis.
-const CUSTOM_BUTTON_WIDTH := 150.0
+# The custom library stays a single square, irrespective of name length or library size.
+const CUSTOM_BUTTON_WIDTH := HudIcons.TILE_SIZE
 
 ## The drop-down of custom types and "Road builder...".
 var custom_menu: MenuButton
@@ -45,16 +49,20 @@ var _buttons: Dictionary = {}
 # Type id -> its get_road_types entry, for every listed type.
 var _types: Dictionary = {}
 var _marked_id := ""
+var _grid := GridContainer.new()
+var _builder: Button
 
 func _init() -> void:
 	add_theme_constant_override("separation", 10)
-	custom_menu = MenuButton.new()
-	custom_menu.text = CUSTOM_ROADS
-	custom_menu.flat = false
-	custom_menu.clip_text = true
-	custom_menu.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
-	custom_menu.custom_minimum_size.x = CUSTOM_BUTTON_WIDTH
-	custom_menu.focus_mode = Control.FOCUS_NONE
+	_grid.columns = 5
+	_grid.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	_grid.add_theme_constant_override("h_separation", 6)
+	_grid.add_theme_constant_override("v_separation", 6)
+	add_child(_grid)
+	_builder = HudIcons.icon_button("plus", "New custom road", "", HudIcons.TILE_SIZE)
+	_builder.pressed.connect(func(): road_builder_requested.emit())
+	add_child(_builder)
+	custom_menu = HudIcons.menu_tile(CUSTOM_ROADS, "")
 	custom_menu.get_popup().id_pressed.connect(_on_custom_item)
 	add_child(custom_menu)
 
@@ -66,7 +74,7 @@ func setup(simulation_node: Node) -> void:
 ## Rebuilds the row from Rust's current list, keeping the mark on the same type id.
 func refresh() -> void:
 	for button: Button in _buttons.values():
-		remove_child(button)
+		_grid.remove_child(button)
 		button.queue_free()
 	_buttons.clear()
 	_types.clear()
@@ -85,15 +93,11 @@ func refresh() -> void:
 			popup.add_radio_check_item(String(type.get("name", id)), custom_ids.size())
 			popup.set_item_tooltip(popup.item_count - 1, tooltip(type))
 			continue
-		var button := Button.new()
-		button.text = String(type.get("name", id))
-		button.toggle_mode = true
+		var button := HudIcons.road_tile(type, tooltip(type))
+		set_card(button, type)
 		button.button_group = _group
-		button.focus_mode = Control.FOCUS_NONE
-		button.tooltip_text = tooltip(type)
 		button.pressed.connect(func(): type_picked.emit(id, _is_walkway(type)))
-		add_child(button)
-		move_child(button, _buttons.size())
+		_grid.add_child(button)
 		_buttons[id] = button
 	if not custom_ids.is_empty():
 		popup.add_separator()
@@ -101,8 +105,8 @@ func refresh() -> void:
 	popup.set_item_tooltip(popup.item_count - 1, "Build, edit and delete custom road types")
 	mark(_marked_id)
 
-## Marks type `id` as the road tool's: its built-in button pressed, or the drop-down showing the
-## custom type's name in the pressed style (nothing marked when the row does not list `id`).
+## Marks type `id` as the road tool's: its built-in tile pressed, or the custom tile accented
+## with its layout and name on hover (nothing marked when the row does not list `id`).
 func mark(id: String) -> void:
 	_marked_id = id
 	for type_id: String in _buttons:
@@ -114,15 +118,14 @@ func mark(id: String) -> void:
 	if custom >= 0:
 		custom_menu.text = String(_types[id].get("name", id))
 		custom_menu.tooltip_text = tooltip(_types[id])
-		for state in ["normal", "hover"]:
-			custom_menu.add_theme_stylebox_override(state, custom_menu.get_theme_stylebox("pressed"))
-		custom_menu.add_theme_color_override("font_color", custom_menu.get_theme_color("font_pressed_color"))
+		set_card(custom_menu, _types[id])
+		HudIcons.set_road(custom_menu, _types[id])
 	else:
 		custom_menu.text = CUSTOM_ROADS
 		custom_menu.tooltip_text = "Your road types and the road builder"
-		for state in ["normal", "hover"]:
-			custom_menu.remove_theme_stylebox_override(state)
-		custom_menu.remove_theme_color_override("font_color")
+		set_card(custom_menu, {})
+		HudIcons.set_road(custom_menu, {})
+	HudIcons.mark(custom_menu, custom >= 0)
 
 ## Whether the drop-down reads as selected (the tool's type is a custom one).
 func custom_marked() -> bool:
@@ -145,6 +148,37 @@ func pick(id: String) -> void:
 		_buttons[id].pressed.emit()
 	elif custom_ids.has(id):
 		custom_menu.get_popup().id_pressed.emit(custom_ids.find(id) + 1)
+
+## The row's tiles in order, for number keys: built-in types, "New custom road", custom roads.
+func number_tiles() -> Array[Button]:
+	var tiles: Array[Button] = []
+	tiles.assign(_buttons.values())
+	tiles.append(_builder)
+	tiles.append(custom_menu)
+	return tiles
+
+## The "New custom road" tile.
+func builder_tile() -> Button:
+	return _builder
+
+## Picks the custom type after the marked one, wrapping (the first when a built-in is marked);
+## with no custom types, opens the drop-down, which offers the road builder.
+func pick_next_custom() -> void:
+	if custom_ids.is_empty():
+		custom_menu.show_popup()
+		return
+	pick(custom_ids[(custom_ids.find(_marked_id) + 1) % custom_ids.size()])
+	# A custom type's art is dense; its card names the type the key landed on. Deferred: the
+	# host marks the pick after `type_picked`.
+	HudIcons.flash_tooltip.call_deferred(custom_menu)
+
+## Gives `button`'s hover card the road type card of `type`; an empty `type` keeps the plain one.
+static func set_card(button: Control, type: Dictionary) -> void:
+	if type.is_empty():
+		if button.has_meta(HudTooltip.CARD_META):
+			button.remove_meta(HudTooltip.CARD_META)
+	else:
+		button.set_meta(HudTooltip.CARD_META, func(): return RoadTypeCard.build(type, cost_values(type)))
 
 func _on_custom_item(item_id: int) -> void:
 	if item_id == BUILDER_ITEM:
@@ -175,8 +209,8 @@ const PARKING_TEXT: Array[String] = ["", ", parking left", ", parking right", ",
 ## 17.0 m wide" ("sidewalk on the left" or "... right" for a road with one; or "Footpath, 2.0 m
 ## wide") from Rust's figures for a `get_road_types` entry, a
 ## `check_road_layout` verdict or a road's `get_edge_cross_section`; `with_width` false leaves
-## the width out. A footpath has no speed.
-static func describe(type: Dictionary, with_width: bool = true) -> String:
+## the width out, `with_speed` false the speed (shown as its sign instead). A footpath has no speed.
+static func describe(type: Dictionary, with_width: bool = true, with_speed: bool = true) -> String:
 	var fwd := int(type.get("fwd_lanes", 0))
 	var bkw := int(type.get("bkw_lanes", 0))
 	var text := "Footpath" if fwd + bkw == 0 else "%d + %d lanes" % [fwd, bkw]
@@ -184,8 +218,12 @@ static func describe(type: Dictionary, with_width: bool = true) -> String:
 	if style > 0 and style < MedianControls.MEDIAN_STYLE_NAMES.size():
 		text += ", %s %.1f m" % [MedianControls.MEDIAN_STYLE_NAMES[style], float(type.get("median_width", 0.0))]
 	text += PARKING_TEXT[int(type.get("parking", 0)) & 3]
+	var pockets: Dictionary = type.get("pockets", {})
+	var turns := ("↰" if bool(pockets.get("left", false)) else "") + ("↱" if bool(pockets.get("right", false)) else "")
+	if fwd + bkw > 0 and not turns.is_empty():
+		text += ", turn pockets %s %d m" % [turns, int(pockets.get("body_m", 0.0))]
 	if fwd + bkw > 0:
-		if int(type.get("speed_kmh", 0)) > 0:
+		if with_speed and int(type.get("speed_kmh", 0)) > 0:
 			text += ", %d km/h" % int(type.get("speed_kmh", 0))
 		text += _sidewalk_text(int(type.get("sidewalks", SIDEWALKS_BOTH)))
 	if not bool(type.get("street_lights", true)):
@@ -208,10 +246,16 @@ static func _sidewalk_text(sides: int) -> String:
 ## Rust's cost of a type per metre on the ground, "15 / m, upkeep 0.10 / m / day", from its
 ## `build_per_m` and `upkeep_per_m_day` (`get_road_types`, `check_road_layout`).
 static func cost_text(type: Dictionary) -> String:
-	return "%s / m, upkeep %s / m / day" % [
+	var values := cost_values(type)
+	return "%s / m, upkeep %s / m / day" % [values[0], values[1]]
+
+## Rust's build cost per metre and upkeep per metre and day of `type` (or a layout check), as
+## shown: "15" and "0.10".
+static func cost_values(type: Dictionary) -> PackedStringArray:
+	return PackedStringArray([
 		_decimals(float(type.get("build_per_m", 0.0)), 2, 0),
 		_decimals(float(type.get("upkeep_per_m_day", 0.0)), 3, 2),
-	]
+	])
 
 # `value` with at most `most` decimals, trailing zeros dropped down to `least`: 15, 19.2, 3.75;
 # 0.10, 0.128, 0.025.

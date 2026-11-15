@@ -11,6 +11,7 @@
 ## per-pack Verify / Show folder / Remove buttons go through pack_actions.gd.
 extends VBoxContainer
 
+const OptionsRows = preload("res://scripts/ui/options_rows.gd")
 const UIStyle = preload("res://scripts/ui/ui_style.gd")
 const ModPackConfig = preload("res://scripts/core/mod_pack_config.gd")
 const PackImport = preload("res://scripts/ui/pack_import.gd")
@@ -25,6 +26,8 @@ var _checks: Dictionary = {}   # pack_id -> CheckBox
 var _initial_enabled: Array = []
 var _list: VBoxContainer
 var _status_label: Label
+## Options is open over a running city, whose enabled packs must stay as they are.
+var in_game := false
 var importer: PackImport
 var actions: PackActions
 
@@ -34,52 +37,43 @@ func _ready() -> void:
 
 func _build_ui() -> void:
 	size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	size_flags_vertical = Control.SIZE_EXPAND_FILL
-	add_theme_constant_override("separation", 10)
+	add_theme_constant_override("separation", 8)
 
 	var header := HBoxContainer.new()
 	add_child(header)
-	var title_lbl := Label.new()
-	title_lbl.text = "Installed Packs"
-	title_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	UIStyle.set_font_size(title_lbl, 18)
-	title_lbl.add_theme_color_override("font_color", UIStyle.TEXT_PRIMARY)
-	header.add_child(title_lbl)
+	var title := OptionsRows.heading("Installed packs")
+	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	header.add_child(title)
 	importer = PackImport.new(self)
 	importer.pack_in_use = _pack_in_use
 	importer.installed.connect(_on_pack_installed)
 	actions = PackActions.new(self)
 	actions.pack_in_use = _pack_in_use
 	actions.removed.connect(_on_pack_removed)
-	var import_btn := Button.new()
+	var import_btn := UIStyle.menu_text_button("Import pack…", 12, false)
 	import_btn.name = "ImportPack"
-	import_btn.text = "Import pack…"
+	import_btn.size_flags_vertical = Control.SIZE_SHRINK_END
 	import_btn.pressed.connect(importer.pick)
 	header.add_child(import_btn)
-
-	var restart_lbl := Label.new()
-	restart_lbl.text = "Pack selection takes effect after restarting the game."
-	restart_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	restart_lbl.add_theme_color_override("font_color", UIStyle.TEXT_DIM)
-	UIStyle.set_font_size(restart_lbl, 12)
-	add_child(restart_lbl)
-
-	var scroll := ScrollContainer.new()
-	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	add_child(scroll)
 
 	_list = VBoxContainer.new()
 	_list.name = "PackList"
 	_list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_list.add_theme_constant_override("separation", 6)
-	scroll.add_child(_list)
+	_list.add_theme_constant_override("separation", 0)
+	add_child(_list)
 
 	_status_label = Label.new()
 	_status_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_status_label.add_theme_color_override("font_color", UIStyle.TEXT_DIM)
 	UIStyle.set_font_size(_status_label, 12)
 	add_child(_status_label)
+
+	var restart_lbl := Label.new()
+	restart_lbl.text = "Pack changes take effect after restarting the game."
+	restart_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	restart_lbl.add_theme_color_override("font_color", UIStyle.TEXT_DIM)
+	UIStyle.set_font_size(restart_lbl, 12)
+	add_child(restart_lbl)
 
 func refresh() -> void:
 	if not _list:
@@ -182,26 +176,15 @@ func _forget_enabled(pack_id: String) -> Error:
 
 # A running city has loaded its enabled packs; their files must not change underneath it.
 func _pack_in_use(pack_id: String) -> bool:
-	return str(get_window().get("context")) == "gameplay" and pack_id in _load_enabled_packs()
+	return in_game and pack_id in _load_enabled_packs()
 
 func _add_pack_row(list: VBoxContainer, pack_id: String, meta: Dictionary, enabled: bool) -> void:
-	var panel := PanelContainer.new()
-	panel.name = pack_id
-	var style := StyleBoxFlat.new()
-	style.bg_color = Color(0.15, 0.15, 0.15, 1.0)
-	style.set_corner_radius_all(6)
-	panel.add_theme_stylebox_override("panel", style)
-	list.add_child(panel)
-
 	var hbox := HBoxContainer.new()
-	hbox.add_theme_constant_override("separation", 10)
-	var pad := MarginContainer.new()
-	pad.add_theme_constant_override("margin_left", 10)
-	pad.add_theme_constant_override("margin_right", 10)
-	pad.add_theme_constant_override("margin_top", 8)
-	pad.add_theme_constant_override("margin_bottom", 8)
-	pad.add_child(hbox)
-	panel.add_child(pad)
+	hbox.add_theme_constant_override("separation", 12)
+	var panel := OptionsRows.frame(hbox)
+	panel.name = pack_id
+	panel.custom_minimum_size.y = UIStyle.scaled_px(52)
+	list.add_child(panel)
 
 	var chk := CheckBox.new()
 	chk.button_pressed = enabled
@@ -213,17 +196,19 @@ func _add_pack_row(list: VBoxContainer, pack_id: String, meta: Dictionary, enabl
 	info.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	hbox.add_child(info)
 
+	info.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	info.add_theme_constant_override("separation", 0)
 	var name_lbl := Label.new()
 	name_lbl.text = meta.get("display_name", pack_id)
-	UIStyle.set_font_size(name_lbl, 14)
+	UIStyle.set_font_size(name_lbl, 15)
 	info.add_child(name_lbl)
 
 	var detail := Label.new()
 	var author: String = meta.get("author", "")
 	var version: String = meta.get("version", "")
-	detail.text = "ID: %s  |  Author: %s  |  v%s" % [pack_id, author, version]
-	detail.add_theme_color_override("font_color", Color(0.7, 0.7, 0.7))
-	UIStyle.set_font_size(detail, 11)
+	detail.text = "%s  ·  %s  ·  v%s" % [pack_id, author, version]
+	detail.add_theme_color_override("font_color", UIStyle.TEXT_DIM)
+	UIStyle.set_font_size(detail, 12)
 	info.add_child(detail)
 
 	var verify := _row_button(hbox, "Verify", "Verify", "Check the files against the checksums saved when the pack was imported.")
@@ -238,9 +223,8 @@ func _add_pack_row(list: VBoxContainer, pack_id: String, meta: Dictionary, enabl
 	remove.pressed.connect(func(): actions.remove_dialog(pack_id, func(text: String): _status_label.text = text))
 
 func _row_button(row: HBoxContainer, node_name: String, text: String, tooltip: String) -> Button:
-	var button := Button.new()
+	var button := UIStyle.menu_text_button(text, 12, false)
 	button.name = node_name
-	button.text = text
 	button.tooltip_text = tooltip
 	button.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	row.add_child(button)

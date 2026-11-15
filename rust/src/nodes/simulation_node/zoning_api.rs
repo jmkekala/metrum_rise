@@ -279,7 +279,8 @@ impl SimulationNode {
             .unwrap_or(0.0)
     }
 
-    /// Returns explicit service-building assets available for the Services toolbar.
+    /// Returns explicit service-building assets available for the Services toolbar, each with
+    /// its manifest `icon` when it names one.
     #[func]
     pub fn get_service_building_assets(&self) -> VarArray {
         let core = self.lock_core();
@@ -315,6 +316,9 @@ impl SimulationNode {
                 GString::from(entry.manifest.display_name.as_str()),
             );
             dict.set("service_class", GString::from(service_class));
+            if let Some(icon) = &entry.manifest.icon {
+                dict.set("icon", GString::from(icon.as_str()));
+            }
             dict.set("lot_width_cells", i64::from(building.lot_width_cells));
             dict.set("lot_depth_cells", i64::from(building.lot_depth_cells));
             dict.set("worker_capacity", i64::from(worker_capacity));

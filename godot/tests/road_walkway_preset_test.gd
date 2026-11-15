@@ -59,7 +59,7 @@ func _run() -> void:
 	var created: Dictionary = _simulation.create_road_type("Grass Avenue", [
 		{"kind": "sidewalk"}, {"kind": "car_lane", "forward": false},
 		{"kind": "median", "style": 2, "width_m": 3.5},
-		{"kind": "car_lane", "forward": true}, {"kind": "sidewalk"}], 50, true, true)
+		{"kind": "car_lane", "forward": true}, {"kind": "sidewalk"}], 50, true, true, {})
 	var avenue := String(created.get("id", ""))
 	_expect(not avenue.is_empty(), "the divided type is created: %s" % created)
 
@@ -94,8 +94,10 @@ func _run() -> void:
 	_expect(_main.get_node_or_null("MoveTool") == null, "the scene has no move tool")
 	var toolbar: Array = []
 	for button in _main.get_node("MainUI").main_toolbar.get_children():
-		toolbar.append(String(button.text))
-	_expect(toolbar == ["Roads", "Zoning", "Services", "Industry", "Terrain", "Inspect"], "the toolbar: %s" % [toolbar])
+		if button is Button:
+			toolbar.append(String(button.text))
+	# The icon HUD: Edit roads lives in the Roads row; Bulldoze follows a separator.
+	_expect(toolbar == ["Roads", "Zoning", "Services", "Industry", "Terrain", "Bulldoze"], "the toolbar: %s" % [toolbar])
 	_press(input_manager, KEY_M)
 	_expect(input_manager.current_tool == input_manager.Tool.ROAD, "M picks no tool")
 	_expect(_simulation.delete_road_type(avenue).is_empty(), "the fixture type is deleted")

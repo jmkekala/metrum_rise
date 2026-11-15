@@ -277,12 +277,12 @@ fn the_builtins_build_todays_roads_menu() {
 }
 
 #[test]
-fn speeds_are_checked_on_the_10_kmh_grid() {
+fn speeds_are_the_posted_limits() {
     let road = check_layout(&[S, B, F, S]).unwrap();
-    for speed in [20, 50, 80, 120] {
+    for speed in [20, 50, 70, 80, 100, 120] {
         assert_eq!(check_speed_kmh(road, speed), Ok(speed as u16));
     }
-    for speed in [0, 10, 15, 125, 130, -20, 65_556] {
+    for speed in [0, 10, 15, 90, 110, 125, 130, -20, 65_556] {
         assert_eq!(check_speed_kmh(road, speed), Err("speed_out_of_range"));
     }
     assert_eq!(check_speed_kmh(RoadCrossSection::WALKWAY, 999), Ok(0));
@@ -315,30 +315,107 @@ fn names_are_trimmed_bounded_and_compared_ignoring_case() {
 fn suggested_names_describe_the_layout_and_skip_taken_ones() {
     let section = |parts: &[RoadPart]| check_layout(parts).unwrap();
     let divided = section(&[S, B, B, grass(3.0), F, F, S]);
-    assert_eq!(suggested_name(divided, |_| false), "2+2 Grass 3 m");
-    let painted = section(&[S, B, median(MedianStyle::Painted, 1.5), F, S]);
-    assert_eq!(suggested_name(painted, |_| false), "1+1 Painted 1.5 m");
-    assert_eq!(suggested_name(section(&[S, F, F, S]), |_| false), "2+0");
-    // A road with one sidewalk names its side (`ROAD-107`).
-    assert_eq!(suggested_name(section(&[S, B, F]), |_| false), "1+1 L");
-    assert_eq!(suggested_name(section(&[F, S]), |_| false), "1+0 R");
     assert_eq!(
-        suggested_name(section(&[B, grass(3.0), F, S]), |_| false),
+        suggested_name(divided, Default::default(), |_| false),
+        "2+2 Grass 3 m"
+    );
+    let painted = section(&[S, B, median(MedianStyle::Painted, 1.5), F, S]);
+    assert_eq!(
+        suggested_name(painted, Default::default(), |_| false),
+        "1+1 Painted 1.5 m"
+    );
+    assert_eq!(
+        suggested_name(section(&[S, F, F, S]), Default::default(), |_| false),
+        "2+0"
+    );
+    // A road with one sidewalk names its side (`ROAD-107`).
+    assert_eq!(
+        suggested_name(section(&[S, B, F]), Default::default(), |_| false),
+        "1+1 L"
+    );
+    assert_eq!(
+        suggested_name(section(&[F, S]), Default::default(), |_| false),
+        "1+0 R"
+    );
+    assert_eq!(
+        suggested_name(section(&[B, grass(3.0), F, S]), Default::default(), |_| {
+            false
+        }),
         "1+1 R Grass 3 m"
     );
     assert_eq!(
-        suggested_name(section(&[S, P, B, F, P, S]), |_| false),
+        suggested_name(section(&[S, P, B, F, P, S]), Default::default(), |_| false),
         "1+1 Parking"
     );
     assert_eq!(
-        suggested_name(section(&[S, B, F, P, S]), |_| false),
+        suggested_name(section(&[S, B, F, P, S]), Default::default(), |_| false),
         "1+1 Parking R"
     );
     let taken = ["2+2 grass 3 m", "2+2 Grass 3 m (2)"];
     let is_taken = |name: &str| taken.iter().any(|taken| same_name(taken, name));
-    assert_eq!(suggested_name(divided, is_taken), "2+2 Grass 3 m (3)");
     assert_eq!(
-        suggested_name(RoadCrossSection::WALKWAY, |name| same_name(name, "Walkway")),
+        suggested_name(divided, Default::default(), is_taken),
+        "2+2 Grass 3 m (3)"
+    );
+    assert_eq!(
+        suggested_name(RoadCrossSection::WALKWAY, Default::default(), |name| {
+            same_name(name, "Walkway")
+        }),
         "Walkway (2)"
     );
+    // Turn pockets follow the layout (`ROAD-119`).
+    let pockets = |left, right| RoadTypePockets {
+        left,
+        right,
+        ..Default::default()
+    };
+    let two_lane = section(&[S, B, F, S]);
+    assert_eq!(
+        suggested_name(two_lane, pockets(true, true), |_| false),
+        "1+1 Pockets"
+    );
+    assert_eq!(
+        suggested_name(two_lane, pockets(false, true), |_| false),
+        "1+1 Pocket R"
+    );
+    assert_eq!(
+        suggested_name(two_lane, pockets(true, false), |name| {
+            name == "1+1 Pocket L"
+        }),
+        "1+1 Pocket L (2)"
+    );
+    assert_eq!(
+        suggested_name(two_lane, pockets(false, false), |_| false),
+        "1+1"
+    );
+}
+
+#[test]
+fn pockets_fit_the_layout_they_are_saved_with() {
+    // A left pocket on a divided two-way road takes a lane's width out of a raised median and
+    // leaves its kerb stub (`ROAD-119`); right pockets and undivided roads always have room.
+    let road = |fwd_lanes, bkw_lanes, style, width_m| RoadCrossSection {
+        fwd_lanes,
+        bkw_lanes,
+        median: RoadMedian::from_tool(style, width_m).unwrap(),
+        parking: RoadParking::NONE,
+        sidewalks: SidewalkSides::BOTH,
+    };
+    let pockets = |left, right| RoadTypePockets {
+        left,
+        right,
+        body_m: 60.0,
+    };
+    let left = Err("pocket_requires_wide_median");
+    assert_eq!(pockets(true, true).fits(&road(1, 1, 0, 0.0)), Ok(()));
+    assert_eq!(pockets(true, true).fits(&road(1, 1, 2, 3.0)), left);
+    assert_eq!(pockets(true, false).fits(&road(1, 1, 1, 1.0)), left);
+    assert_eq!(pockets(true, true).fits(&road(1, 1, 2, 4.0)), Ok(()));
+    assert_eq!(pockets(false, true).fits(&road(1, 1, 2, 3.0)), Ok(()));
+    assert_eq!(pockets(true, false).fits(&road(2, 0, 0, 0.0)), Ok(()));
+    assert_eq!(
+        pockets(true, true).fits(&road(3, 3, 0, 0.0)),
+        Err("pocket_lane_limit")
+    );
+    assert_eq!(pockets(false, true).fits(&road(3, 3, 0, 0.0)), Ok(()));
 }

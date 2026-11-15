@@ -26,10 +26,14 @@ const UIStyle := preload("res://scripts/ui/ui_style.gd")
 class BuildingInspectorStub extends Node:
 	var clicks := 0
 	var last := {}
-	func try_inspect(world_pos: Vector3, screen_pos: Vector2, toggle := true) -> bool:
+	func try_inspect(world_pos: Vector3, screen_pos: Vector2, toggle := true, _click := true) -> bool:
 		clicks += 1
 		last = {"world_pos": world_pos, "screen_pos": screen_pos, "toggle": toggle}
 		return false
+	func is_inspecting() -> bool:
+		return false
+	func close_window() -> void:
+		pass
 
 var _failures := 0
 

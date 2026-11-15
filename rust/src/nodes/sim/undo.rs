@@ -18,6 +18,42 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 const UNDO_GROUP_CAP: usize = 30;
 
 impl SimCore {
+    /// Stores a stroke and its optional pockets as one local inverse (`ROAD-119`).
+    /// The graph and paint journals keep pre-stroke values; dependent migrations undo in reverse.
+    /// O(journal records log journal records), with no city scan or snapshot.
+    pub(crate) fn push_stroke_pocket_undo(&mut self, mut records: Vec<SimulationSnapshot>) {
+        if records.len() == 1 {
+            self.push_undo_snapshot(records.pop().unwrap());
+            return;
+        }
+        let mut records = records.into_iter();
+        let mut first = records
+            .next()
+            .expect("a committed stroke has an undo record");
+        let mut graphs = Vec::new();
+        let mut paints: Vec<_> = first.cells.take().into_iter().collect();
+        let mut dependents = Vec::new();
+        for record in records {
+            graphs.extend(record.trans_graph);
+            paints.extend(record.cells);
+            if let Some(SimulationRuntimeSnapshot::RoadDependents(edit)) = record.runtime {
+                dependents.push(edit);
+            }
+        }
+        first.trans_graph = Some(RegionGraphUndoDelta::combine(
+            first.trans_graph.take().unwrap(),
+            graphs,
+        ));
+        first.cells = CellPaintUndo::combine(paints);
+        first.runtime = Some(SimulationRuntimeSnapshot::RoadDependents(
+            crate::simulation::network::pockets::PocketDependentsUndo::combine(dependents),
+        ));
+        // These caches describe the plain stroke only. Undo recompiles the combined local scope.
+        first.roadbed = None;
+        first.graded = None;
+        self.push_undo_snapshot(first);
+    }
+
     /// Adds one local paint inverse after a completed cell gesture; cancellation adds no entry.
     pub(crate) fn push_cell_zoning_undo(
         &mut self,

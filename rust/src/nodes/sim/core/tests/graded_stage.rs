@@ -403,6 +403,23 @@ pub(crate) fn drag(
     [fwd_lanes, bkw_lanes]: [i32; 2],
     converge: bool,
 ) -> Drag {
+    drag_with_pockets(
+        context,
+        poses,
+        [fwd_lanes, bkw_lanes],
+        converge,
+        Default::default(),
+    )
+}
+
+/// The same bounded drag harness with the selected road type's pocket settings.
+pub(crate) fn drag_with_pockets(
+    context: &mut RoadPreviewContext,
+    poses: &[Vec<Vector3>],
+    [fwd_lanes, bkw_lanes]: [i32; 2],
+    converge: bool,
+    pockets: crate::simulation::network::road_types::RoadTypePockets,
+) -> Drag {
     use crate::thread_pools::spans::ms;
     let span =
         |start: std::time::Instant| serde_json::json!([ms(start), ms(std::time::Instant::now())]);
@@ -425,17 +442,20 @@ pub(crate) fn drag(
         frame(context);
         let surface_generation = context.view.surface_generation;
         let called = std::time::Instant::now();
-        let preview = context.preview_road(RoadPreviewRequest {
-            surface_generation,
-            points: points.clone(),
-            fwd_lanes,
-            bkw_lanes,
-            snap_to_existing_roads: true,
-            profile: crate::simulation::network::road_edit::RoadProfile::FollowGround,
-            median: None,
-            parking: crate::simulation::network::graph::RoadParking::NONE,
-            attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
-        });
+        let preview = context.preview_road_with_pockets(
+            RoadPreviewRequest {
+                surface_generation,
+                points: points.clone(),
+                fwd_lanes,
+                bkw_lanes,
+                snap_to_existing_roads: true,
+                profile: crate::simulation::network::road_edit::RoadProfile::FollowGround,
+                median: None,
+                parking: crate::simulation::network::graph::RoadParking::NONE,
+                attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
+            },
+            pockets,
+        );
         let span = span(called);
         let displayed = context.graded.displayed().len();
         frames.push(match preview.pieces.as_ref() {

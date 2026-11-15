@@ -342,7 +342,7 @@ impl TransitNetwork {
     /// As [`Self::add_road`], the road meeting the roads it reaches by `grade` (`ROAD-99`): a
     /// road-tool stroke's, whose bridge ends at its support join roads mid-span, with the
     /// stroke's `median` (`ROAD-80`), kerbside `parking` (`PARK-05`) and road-type attributes
-    /// (`ROAD-101`).
+    /// (`ROAD-101`). Returns only the new stroke's surviving descendants, in id order.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn add_road_graded(
         &mut self,
@@ -355,11 +355,11 @@ impl TransitNetwork {
         grade: topology::StrokeGrade,
         zoning: &mut crate::simulation::zoning::ZoningSystem,
         allocator: &mut crate::simulation::buildings::allocator::BuildingAllocator,
-    ) {
+    ) -> Vec<usize> {
         let mut physical_points = points;
         let count = physical_points.len();
         if count < 2 {
-            return;
+            return Vec::new();
         }
 
         // Robust Snapping
@@ -378,6 +378,9 @@ impl TransitNetwork {
         physical_points[0] = graph.node(start_id).pos;
         physical_points[count - 1] = graph.node(end_id).pos;
 
+        let root = graph.edge_count();
+        let owns_splits = self.recorded_road_splits.is_none();
+        let split_start = self.recorded_road_splits.get_or_insert_with(Vec::new).len();
         // Create a single edge from start to end with the solved dense physical profile.
         {
             let last_idx = physical_points.len() - 1;
@@ -396,6 +399,21 @@ impl TransitNetwork {
                 allocator,
             );
         }
+        let mut descendants = HashSet::from([root]);
+        for split in &self.recorded_road_splits.as_ref().unwrap()[split_start..] {
+            if descendants.contains(&split.edge_id) {
+                descendants.insert(split.new_edge_id);
+            }
+        }
+        if owns_splits {
+            self.recorded_road_splits = None;
+        }
+        let mut edges: Vec<_> = descendants
+            .into_iter()
+            .filter(|&id| graph.get_edge(id).is_some_and(|edge| !edge.deleted))
+            .collect();
+        edges.sort_unstable();
+        edges
     }
 
     /// Helper to consistently add a road edge and handle its side effects

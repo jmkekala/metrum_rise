@@ -6,15 +6,18 @@
 extends Control
 
 const NewGameDialog = preload("res://scripts/ui/new_game_dialog.gd")
-const OptionsWindow = preload("res://scripts/ui/options_window.gd")
+const OptionsMenu = preload("res://scripts/ui/options_menu.gd")
+const OptionsRows = preload("res://scripts/ui/options_rows.gd")
+const SaveBrowser = preload("res://scripts/ui/save_browser.gd")
 const UIStyle = preload("res://scripts/ui/ui_style.gd")
 const GameSettings = preload("res://scripts/core/game_settings.gd")
 const MenuPipelinePrewarm = preload("res://scripts/core/menu_pipeline_prewarm.gd")
 
 const WORLDS_DIR := "user://worlds"
 const SAVES_DIR := "user://saves"
+const BACKGROUND := Color(0.055, 0.065, 0.085)
 
-var _options_window = null
+var _options_menu = null
 var _new_game_dialog: Window = null
 var _prewarm: Node = null
 # The benchmark's menu (`RENDER-43`): the last frame's start, for its longest frame.
@@ -63,67 +66,53 @@ func _note_benchmark_frame() -> void:
 	report.longest_frame_ms = maxf(float(report.longest_frame_ms), float(now - _benchmark_frame_us) / 1000.0)
 	_benchmark_frame_us = now
 
+# Plain text entries down the left side over a flat dark fill: no card, no button boxes. (A
+# gradient this dark bands visibly in 8-bit colour.)
 func _build_ui() -> void:
 	set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 
 	var background := ColorRect.new()
+	background.color = BACKGROUND
 	background.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	background.color = Color(0.05, 0.06, 0.08, 1.0)
 	add_child(background)
 
-	var center := CenterContainer.new()
-	center.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	add_child(center)
-
-	var shell := PanelContainer.new()
-	shell.custom_minimum_size = Vector2(540.0, 420.0)
-	shell.add_theme_stylebox_override("panel", UIStyle.window_body_style())
-	center.add_child(shell)
-
-	var margin := MarginContainer.new()
-	margin.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	margin.add_theme_constant_override("margin_left", 28)
-	margin.add_theme_constant_override("margin_right", 28)
-	margin.add_theme_constant_override("margin_top", 24)
-	margin.add_theme_constant_override("margin_bottom", 24)
-	shell.add_child(margin)
-
+	var frame := MarginContainer.new()
+	frame.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	frame.add_theme_constant_override("margin_left", int(UIStyle.scaled_px(96)))
+	add_child(frame)
 	var content := VBoxContainer.new()
-	content.add_theme_constant_override("separation", 18)
-	margin.add_child(content)
+	content.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
+	content.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	content.add_theme_constant_override("separation", int(UIStyle.scaled_px(4)))
+	content.add_to_group(OptionsRows.COVERED_GROUP)
+	frame.add_child(content)
 
+	# Inset by the entries' text margin, so the title lines up with their text.
+	var heading := VBoxContainer.new()
+	heading.add_theme_constant_override("separation", 6)
+	var inset := MarginContainer.new()
+	inset.add_theme_constant_override("margin_left", 14)
+	inset.add_child(heading)
+	content.add_child(inset)
 	var title := Label.new()
-	title.text = "Metrum Rise"
-	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	UIStyle.set_font_size(title, 40)
+	title.text = "METRUM RISE"
+	UIStyle.set_font_size(title, 44)
 	title.add_theme_color_override("font_color", UIStyle.TEXT_PRIMARY)
-	content.add_child(title)
+	heading.add_child(title)
+	var rule := ColorRect.new()
+	rule.color = UIStyle.HUD_ACCENT
+	rule.custom_minimum_size = Vector2(UIStyle.scaled_px(56), 3)
+	rule.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
+	heading.add_child(rule)
+	var gap := Control.new()
+	gap.custom_minimum_size.y = UIStyle.scaled_px(36)
+	content.add_child(gap)
 
-	var subtitle := Label.new()
-	subtitle.text = "Choose a world or save before entering gameplay."
-	subtitle.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	subtitle.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	UIStyle.set_font_size(subtitle, 16)
-	subtitle.add_theme_color_override("font_color", UIStyle.TEXT_DIM)
-	content.add_child(subtitle)
-
-	var buttons := VBoxContainer.new()
-	buttons.add_theme_constant_override("separation", 12)
-	content.add_child(buttons)
-
-	buttons.add_child(_make_main_button("New Game", _on_new_game_pressed))
-	buttons.add_child(_make_main_button("Load Game", _on_load_game_pressed))
-	buttons.add_child(_make_main_button("World Editor", _on_world_editor_pressed))
-	buttons.add_child(_make_main_button("Options", _on_options_pressed))
-	buttons.add_child(_make_main_button("Quit", _on_quit_pressed))
-
-	var footer := Label.new()
-	footer.text = "New Game loads worlds from user://worlds/\nLoad Game loads saves from user://saves/"
-	footer.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	footer.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	UIStyle.set_font_size(footer, 13)
-	footer.add_theme_color_override("font_color", UIStyle.TEXT_DIM)
-	content.add_child(footer)
+	content.add_child(_make_main_button("New Game", _on_new_game_pressed))
+	content.add_child(_make_main_button("Load Game", _on_load_game_pressed))
+	content.add_child(_make_main_button("World Editor", _on_world_editor_pressed))
+	content.add_child(_make_main_button("Options", _on_options_pressed))
+	content.add_child(_make_main_button("Quit", _on_quit_pressed))
 
 	# Release builds carry the version CI stamps into the project (docs/release.md); a checkout has none.
 	var version := str(ProjectSettings.get_setting("application/config/version", ""))
@@ -135,37 +124,16 @@ func _build_ui() -> void:
 	content.add_child(version_label)
 
 func _make_main_button(label: String, callback: Callable) -> Button:
-	var button := Button.new()
-	button.text = label
-	button.custom_minimum_size = Vector2(320.0, 58.0)
-	button.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
-	UIStyle.set_font_size(button, 16)
+	var button := UIStyle.menu_text_button(label, 20)
+	button.custom_minimum_size.y = UIStyle.scaled_px(44)
 	button.pressed.connect(callback)
 	return button
 
 func _on_new_game_pressed() -> void:
-	_ensure_dir(WORLDS_DIR)
-	var dialog := FileDialog.new()
-	dialog.access = FileDialog.ACCESS_FILESYSTEM
-	dialog.file_mode = FileDialog.FILE_MODE_OPEN_FILE
-	dialog.filters = PackedStringArray(["*.sqlite ; WorldDefinition Files"])
-	dialog.current_dir = ProjectSettings.globalize_path(WORLDS_DIR)
-	dialog.file_selected.connect(func(path: String): _on_new_game_selected(path, dialog))
-	dialog.canceled.connect(dialog.queue_free)
-	add_child(dialog)
-	dialog.popup_centered(Vector2i(880, 620))
+	SaveBrowser.open(self, SaveBrowser.MODE_WORLD, WORLDS_DIR, _open_new_game_options)
 
 func _on_load_game_pressed() -> void:
-	_ensure_dir(SAVES_DIR)
-	var dialog := FileDialog.new()
-	dialog.access = FileDialog.ACCESS_FILESYSTEM
-	dialog.file_mode = FileDialog.FILE_MODE_OPEN_FILE
-	dialog.filters = PackedStringArray(["*.sqlite ; Save Files"])
-	dialog.current_dir = ProjectSettings.globalize_path(SAVES_DIR)
-	dialog.file_selected.connect(func(path: String): _on_load_game_selected(path, dialog))
-	dialog.canceled.connect(dialog.queue_free)
-	add_child(dialog)
-	dialog.popup_centered(Vector2i(880, 620))
+	SaveBrowser.open(self, SaveBrowser.MODE_LOAD, SAVES_DIR, _finish_load_game_selection)
 
 func _on_world_editor_pressed() -> void:
 	var pid := OS.create_instance(["--", "--world-editor"])
@@ -173,19 +141,13 @@ func _on_world_editor_pressed() -> void:
 		push_error("Failed to launch world editor.")
 
 func _on_options_pressed() -> void:
-	if not _options_window:
-		_options_window = OptionsWindow.new()
-		add_child(_options_window)
-	_options_window.popup_options(OptionsWindow.CONTEXT_MAIN_MENU)
+	if not _options_menu:
+		_options_menu = OptionsMenu.new()
+		add_child(_options_menu)
+	_options_menu.popup_options(OptionsMenu.CONTEXT_MAIN_MENU)
 
 func _on_quit_pressed() -> void:
 	get_tree().quit()
-
-func _on_new_game_selected(path: String, dialog: FileDialog) -> void:
-	dialog.hide()
-	dialog.call_deferred("queue_free")
-	# Deferred so the file dialog is gone before the options dialog takes exclusive focus.
-	call_deferred("_open_new_game_options", path)
 
 func _open_new_game_options(path: String) -> void:
 	if _new_game_dialog == null:
@@ -194,11 +156,6 @@ func _open_new_game_options(path: String) -> void:
 		add_child(_new_game_dialog)
 	_new_game_dialog.popup_for_world(path)
 
-func _on_load_game_selected(path: String, dialog: FileDialog) -> void:
-	dialog.hide()
-	dialog.call_deferred("queue_free")
-	call_deferred("_finish_load_game_selection", path)
-
 func _finish_new_game_selection(path: String, vegetation: Dictionary) -> void:
 	LaunchState.queue_new_game(path, vegetation)
 	get_tree().change_scene_to_file("res://scenes/Main.tscn")
@@ -206,6 +163,3 @@ func _finish_new_game_selection(path: String, vegetation: Dictionary) -> void:
 func _finish_load_game_selection(path: String) -> void:
 	LaunchState.queue_load_game(path)
 	get_tree().change_scene_to_file("res://scenes/Main.tscn")
-
-func _ensure_dir(path: String) -> void:
-	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(path))

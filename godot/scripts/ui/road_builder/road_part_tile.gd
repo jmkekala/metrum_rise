@@ -18,19 +18,22 @@ var part: Dictionary
 func _init(tile_part: Dictionary) -> void:
 	part = tile_part
 	text = RoadPartGlyph.part_name(part)
-	tooltip_text = "%s\n%s\nClick to add it at the selected +, or drag it into the road" % [
-		text, RoadPartGlyph.part_hint(part)]
 	focus_mode = Control.FOCUS_NONE
 	alignment = HORIZONTAL_ALIGNMENT_LEFT
-	custom_minimum_size = Vector2(0.0, 36.0)
+	# The name wraps ("Painted / median"), so six tiles share one row of a narrow editor.
+	autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	custom_minimum_size = Vector2(0.0, 42.0)
 	# Room on the left for the glyph.
 	add_theme_constant_override("h_separation", 0)
 	for state in ["normal", "hover", "pressed", "disabled", "focus"]:
 		var style := get_theme_stylebox(state).duplicate() as StyleBox
 		if style:
 			style.content_margin_left = GLYPH_SIZE + 12.0
+			style.content_margin_top = 2.0
+			style.content_margin_bottom = 2.0
 			add_theme_stylebox_override(state, style)
-	UIStyle.set_font_size(self, 13)
+	UIStyle.set_font_size(self, 12)
 	pressed.connect(func(): picked.emit(part.duplicate()))
 
 func _draw() -> void:

@@ -9,6 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::Instant;
 
+use crate::simulation::network::road_types::{RoadAttributes, RoadTypePockets};
 use godot::prelude::Vector3;
 
 use super::graded_stage::{GradedPose, GradedPreview};
@@ -25,7 +26,6 @@ use crate::nodes::sim::road_tool::hue::{HueState, OffFrameHue};
 use crate::nodes::sim::road_tool::validate_road_candidate_against_water;
 use crate::simulation::network::graph::{Edge, RegionGraph, RoadMedian, RoadParking};
 use crate::simulation::network::render::RoadChunkMap;
-use crate::simulation::network::road_types::RoadAttributes;
 use crate::simulation::network::render::road::{PreviewChunk, RoadRenderer};
 use crate::simulation::network::road_edit::{
     DraftGround, PreparedRoadInput, RoadPreviewValidation, RoadProfile, prepare_road_input_for_tool,
@@ -438,6 +438,8 @@ pub(crate) struct RoadPreviewPieces {
 /// One synchronous road preview: the plan the click submits, the pieces the commit installs and
 /// the fingerprint that decides whether it may (`ROAD-68-E`).
 pub(crate) struct RoadPreview {
+    /// Pocket configuration used to compile this pose.
+    pub(crate) pockets: RoadTypePockets,
     pub(crate) plan: RoadEditPlan,
     /// The plan's validation with the water check.
     pub(crate) validation: RoadPreviewValidation,
@@ -478,7 +480,7 @@ impl RoadPreviewContext {
     /// [`Self::preview_road_with_hue`] without a hue (tests).
     #[cfg(test)]
     pub(crate) fn preview_road(&mut self, request: RoadPreviewRequest) -> RoadPreview {
-        self.preview_road_with_hue(request, None)
+        self.preview_road_with_hue(request, RoadTypePockets::default(), None)
     }
 
     /// `preview_road(context, stroke)`: plans the stroke on the context, applies the plan to the
@@ -487,6 +489,10 @@ impl RoadPreviewContext {
     /// compile are the commit's own functions, so a commit with a current fingerprint installs
     /// these pieces bitwise. No core lock; cost
     /// `O(stroke + local excerpt + closure pieces)`, independent of the city.
+    ///
+    /// With `pockets` (the drawn road type's), each new approach of the stroke into a junction
+    /// also takes those pockets right after the stroke's compile, as the commit applies them
+    /// (`compile_pose_pockets`); the default asks for none and leaves the pose untouched.
     ///
     /// With `hue` (the hue and the road's half width), also launches the stroke's footprint hue
     /// of this preview on the context's view off the calling thread (`ROAD-123` round HF2,
@@ -498,6 +504,7 @@ impl RoadPreviewContext {
     pub(crate) fn preview_road_with_hue(
         &mut self,
         request: RoadPreviewRequest,
+        pockets: RoadTypePockets,
         mut hue: Option<(&mut OffFrameHue, f32)>,
     ) -> RoadPreview {
         let plan_start = Instant::now();
@@ -534,7 +541,7 @@ impl RoadPreviewContext {
             .is_valid
             .then(|| {
                 let hue = hue.as_mut().map(|(hue, half_width_m)| (&mut **hue, *half_width_m));
-                self.compile_plan_pieces(&plan, &mut times, hue, &mut launched, &mut marks)
+                self.compile_plan_pieces(&plan, pockets, &mut times, hue, &mut launched, &mut marks)
             })
             .flatten();
         let plotted = pieces.as_ref().and_then(|pieces| pieces.take.plotted);
@@ -559,6 +566,7 @@ impl RoadPreviewContext {
             self.overlap_marks(&plan, &validation, &mut marks);
         }
         RoadPreview {
+            pockets,
             plan,
             validation,
             fingerprint,
@@ -594,7 +602,7 @@ impl RoadPreviewContext {
         plan: &RoadEditPlan,
         check: impl FnOnce(StrokePieces<'_>) -> T,
     ) -> Option<T> {
-        let compiled = self.compile_on_replica(plan)?;
+        let compiled = self.compile_on_replica(plan, RoadTypePockets::default())?;
         let before: Vec<_> = compiled.restore.replaced_pieces().collect();
         let installed: Vec<_> = compiled
             .roadbed
@@ -642,7 +650,11 @@ impl RoadPreviewContext {
     // Applies the plan's topology to the replica and compiles what it dirtied into an `O(1)`
     // copy of the view's roadbed with the delta installed. The caller restores the replica from
     // the returned checkpoint, the one the commit's undo record captures.
-    fn compile_on_replica(&mut self, plan: &RoadEditPlan) -> Option<CompiledPose> {
+    fn compile_on_replica(
+        &mut self,
+        plan: &RoadEditPlan,
+        pockets: RoadTypePockets,
+    ) -> Option<CompiledPose> {
         let topology = plan.topology_for(&self.replica)?;
         let (edges, nodes) = topology.source_topology_ids();
         let checkpoint = self.replica.capture_undo_for_local_topology(edges, nodes);
@@ -654,7 +666,7 @@ impl RoadPreviewContext {
         applied.mark_pieces(&mut roadbed);
         let delta = roadbed.compile_delta_with(&self.replica, &mut self.roadbed_scratch);
         let (changed_chunks, restore) = roadbed.install(&delta);
-        Some(CompiledPose {
+        let pose = CompiledPose {
             stroke_ends: applied.stroke_ends,
             passes: applied.passes,
             checkpoint,
@@ -662,7 +674,87 @@ impl RoadPreviewContext {
             roadbed,
             changed_chunks,
             restore,
-        })
+        };
+        Some(self.compile_pose_pockets(pose, &applied.stroke_edges, pockets))
+    }
+
+    // Each accepted pocket is the next one's roadbed, exactly as on commit. Only plotted
+    // reservations refuse an edit, and a road never removes those; the immutable land view
+    // therefore gives the same refusals without simulating zoning inheritance during hover.
+    fn compile_pose_pockets(
+        &mut self,
+        mut pose: CompiledPose,
+        edges: &[usize],
+        pockets: RoadTypePockets,
+    ) -> CompiledPose {
+        use super::road_edit_site::RoadEditSite;
+        use crate::simulation::network::graph::RegionGraphUndoDelta;
+        use crate::simulation::network::pockets::StrokePocketTargets;
+        let mut targets = StrokePocketTargets::new(&self.replica, edges, pockets);
+        let mut checkpoints = Vec::new();
+        while let Some((original, _, request)) = targets.next(&self.replica) {
+            let before = self.replica.edge_count();
+            let mut site = RoadEditSite::staged(
+                &mut self.replica,
+                &pose.roadbed,
+                &self.view.terrain,
+                &self.view.water,
+                ViewLand {
+                    land: &self.land,
+                    cells: &self.view.cells,
+                },
+            );
+            let Ok(tried) = site.try_pocket_edit(request) else {
+                continue;
+            };
+            let (applied, changed) = site.apply_pocket_plan(&tried.plan, &tried.nodes);
+            let affected: std::collections::HashSet<_> = tried
+                .edges
+                .into_iter()
+                .chain(changed)
+                .chain(applied.edges())
+                .collect();
+            let nodes: std::collections::HashSet<_> =
+                tried.nodes.into_iter().chain(applied.transition).collect();
+            checkpoints.push(tried.checkpoint);
+            targets.record(original, before..self.replica.edge_count());
+            for edge in affected {
+                pose.roadbed.mark_edge_dirty(edge);
+            }
+            for node in nodes {
+                pose.roadbed.mark_node_dirty(node);
+            }
+            let delta = pose
+                .roadbed
+                .compile_delta_with(&self.replica, &mut self.roadbed_scratch);
+            pose.roadbed.install(&delta);
+        }
+        if checkpoints.is_empty() {
+            return pose;
+        }
+        let checkpoint = RegionGraphUndoDelta::combine(pose.checkpoint, checkpoints);
+        let (edges, nodes) =
+            checkpoint.affected_topology_ids(self.replica.node_count(), self.replica.edge_count());
+        // Publish one delta relative to the live view, so overlay eviction and graded owners
+        // include all accepted pockets, and restoring the replica covers the complete edit.
+        let mut roadbed = self.view.roadbed.snapshot();
+        for edge in edges {
+            roadbed.mark_edge_dirty(edge);
+        }
+        for node in nodes {
+            roadbed.mark_node_dirty(node);
+        }
+        let delta = roadbed.compile_delta_with(&self.replica, &mut self.roadbed_scratch);
+        let (changed_chunks, restore) = roadbed.install(&delta);
+        CompiledPose {
+            checkpoint,
+            delta,
+            roadbed,
+            changed_chunks,
+            restore,
+            stroke_ends: pose.stroke_ends,
+            passes: pose.passes,
+        }
     }
 
     // Applies the plan's topology to the replica, compiles what it dirtied, emits the changed
@@ -673,6 +765,7 @@ impl RoadPreviewContext {
     fn compile_plan_pieces(
         &mut self,
         plan: &RoadEditPlan,
+        pockets: RoadTypePockets,
         times: &mut RoadPreviewTimes,
         hue: Option<(&mut OffFrameHue, f32)>,
         launched: &mut bool,
@@ -687,7 +780,7 @@ impl RoadPreviewContext {
             restore,
             stroke_ends,
             passes,
-        } = self.compile_on_replica(plan)?;
+        } = self.compile_on_replica(plan, pockets)?;
         if let Some((hue, half_width_m)) = hue {
             hue.launch(plan, Some(&delta), &self.view, half_width_m);
             *launched = true;

@@ -23,10 +23,17 @@ const BG_SUBMENU := Color(0.15, 0.15, 0.15, 0.70)
 const BG_HUD_SHELL := Color(0.07, 0.07, 0.07, 0.72)
 const BG_HUD_GROUP := Color(0.07, 0.07, 0.07, 0.56)
 const BORDER_ACCENT := Color(0.30, 0.30, 0.45, 0.60)
+const HUD_ACCENT := Color(0.38, 0.80, 0.88)
 const TEXT_PRIMARY := Color.WHITE
 const TEXT_DIM := Color(0.72, 0.72, 0.72)
 const TEXT_SECTION := Color(0.65, 0.65, 0.90)
-const TEXT_ALERT := Color(1.00, 0.40, 0.30)
+# Finnish traffic sign colours, used with the signs' own meanings so the HUD and the street
+# signs agree: yellow warns, red forbids or removes.
+const SIGN_YELLOW := Color(1.00, 0.808, 0.020)
+const SIGN_RED := Color(0.886, 0.118, 0.184)
+const SIGN_BLACK := Color(0.07, 0.07, 0.07)
+# Sign red lifted for small text on the dark panels, where the plate red reads too dark.
+const TEXT_ALERT := Color(0.96, 0.36, 0.40)
 const HUD_TEXT_SIZE := 16
 const ZONE_RESIDENTIAL := Color(0.20, 0.45, 0.25, 0.75)
 const ZONE_COMMERCIAL := Color(0.20, 0.34, 0.62, 0.75)
@@ -40,6 +47,9 @@ const PAD_WINDOW := 12
 const PAD_PANEL := 15
 const PAD_INNER := 8
 const CURSOR_WINDOW_GAP := 40.0
+# The space a window placed or kept on screen leaves above it (the HUD's top bar) and below it.
+const WINDOW_TOP_MARGIN := 40.0
+const WINDOW_BOTTOM_MARGIN := 12.0
 const HUD_STRIP_HEIGHT := 60.0
 const HUD_BUTTON_HEIGHT := 60.0
 const HUD_BOTTOM_MARGIN := 20.0
@@ -51,6 +61,33 @@ const HUD_SHELL_PAD_Y := 10
 const WINDOW_REFERENCE_VIEWPORT := Vector2(1920.0, 1080.0)
 const MAX_WINDOW_LAYOUT_SCALE := 2.0
 const WINDOW_MAX_VIEWPORT_COVERAGE := 0.92
+
+## Consistent title/section typography for the road and building inspectors.
+static func inspector_heading(text: String, section: bool = false) -> Label:
+	var label := Label.new()
+	label.text = text
+	label.add_theme_color_override("font_color", TEXT_SECTION if section else TEXT_PRIMARY)
+	set_font_size(label, 13 if section else 16)
+	return label
+
+## Accent action style for inspector commits; keeps disabled state visibly muted.
+static func style_primary_button(button: Button) -> void:
+	set_font_size(button, 14)
+	button.focus_mode = Control.FOCUS_NONE
+	for state in ["normal", "hover", "pressed", "disabled"]:
+		var color := HUD_ACCENT.darkened(0.55)
+		if state == "hover":
+			color = color.lightened(0.12)
+		elif state == "pressed":
+			color = color.darkened(0.12)
+		elif state == "disabled":
+			color = BG_SUBMENU
+		var style := panel_style(color, CORNER_SUB, Color.TRANSPARENT, 0)
+		style.content_margin_left = 14
+		style.content_margin_right = 14
+		style.content_margin_top = 8
+		style.content_margin_bottom = 8
+		button.add_theme_stylebox_override(state, style)
 
 static func ui_scale() -> float:
 	return GameSettings.get_ui_scale()
@@ -162,8 +199,8 @@ static func place_window_near_cursor(window: Window, screen_pos: Vector2, viewpo
 	var viewport_size := viewport.get_visible_rect().size
 	var window_size := Vector2(window.size)
 	var padding := CURSOR_WINDOW_GAP
-	var top_margin := 40.0
-	var bottom_margin := 12.0
+	var top_margin := WINDOW_TOP_MARGIN
+	var bottom_margin := WINDOW_BOTTOM_MARGIN
 	var x := screen_pos.x + padding
 	if x + window_size.x > viewport_size.x - padding:
 		x = screen_pos.x - window_size.x - padding
@@ -173,6 +210,20 @@ static func place_window_near_cursor(window: Window, screen_pos: Vector2, viewpo
 	var max_y := maxf(top_margin, viewport_size.y - window_size.y - bottom_margin)
 	y = clampf(y, top_margin, max_y)
 	window.position = Vector2i(int(round(x)), int(round(y)))
+
+## The mouse's back (thumb) button pressed: a menu takes it as Esc, as a browser takes it as Back.
+static func is_mouse_back(event: InputEvent) -> bool:
+	var button := event as InputEventMouseButton
+	return button != null and button.pressed and button.button_index == MOUSE_BUTTON_XBUTTON1
+
+## Moves `window` up when it hangs off the bottom of the screen (a window that grew to its
+## content), keeping the same top and bottom margins as `place_window_near_cursor`.
+static func keep_window_bottom_on_screen(window: Window, viewport: Viewport) -> void:
+	if window == null or viewport == null:
+		return
+	var viewport_height := viewport.get_visible_rect().size.y
+	if window.position.y + window.size.y > viewport_height - WINDOW_BOTTOM_MARGIN:
+		window.position.y = maxi(int(WINDOW_TOP_MARGIN), int(viewport_height - WINDOW_BOTTOM_MARGIN) - window.size.y)
 
 static func set_window_base_size(
 	window: Window,
@@ -392,3 +443,33 @@ static func hud_group_style() -> StyleBoxFlat:
 
 static func hud_clear_style() -> StyleBoxFlat:
 	return panel_style(Color(0.0, 0.0, 0.0, 0.0), HUD_SHELL_CORNER, BORDER_ACCENT, 0)
+
+## A menu entry drawn as plain uppercase text (main menu, pause menu, Options tabs and
+## footer): dim at rest, white under the mouse, with an accent bar at the left edge when `bar`.
+## A pressed toggle shows in the accent colour.
+static func menu_text_button(text: String, font_size: int, bar: bool = true) -> Button:
+	var button := Button.new()
+	button.text = text.to_upper()
+	button.alignment = HORIZONTAL_ALIGNMENT_LEFT
+	button.focus_mode = Control.FOCUS_NONE
+	set_font_size(button, font_size)
+	var idle := StyleBoxFlat.new()
+	idle.bg_color = Color.TRANSPARENT
+	idle.content_margin_left = 14 if bar else 0
+	idle.content_margin_right = 14 if bar else 0
+	idle.content_margin_top = 4
+	idle.content_margin_bottom = 4
+	var lit: StyleBoxFlat = idle.duplicate()
+	if bar:
+		lit.border_width_left = 3
+		lit.border_color = HUD_ACCENT
+	for state in ["normal", "focus", "disabled", "pressed"]:
+		button.add_theme_stylebox_override(state, idle)
+	for state in ["hover", "hover_pressed"]:
+		button.add_theme_stylebox_override(state, lit)
+	button.add_theme_color_override("font_color", TEXT_DIM)
+	button.add_theme_color_override("font_hover_color", TEXT_PRIMARY)
+	button.add_theme_color_override("font_pressed_color", HUD_ACCENT)
+	button.add_theme_color_override("font_hover_pressed_color", HUD_ACCENT)
+	button.add_theme_color_override("font_disabled_color", Color(TEXT_DIM, 0.35))
+	return button

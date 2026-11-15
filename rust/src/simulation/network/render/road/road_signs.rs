@@ -83,6 +83,14 @@ pub(crate) enum RoadSignKind {
     /// E1-1 over B5 over D2: a ring entry with a zebra carries its crossing sign on the entry's
     /// pole, as Finnish roundabouts do (`ROAD-62`).
     RoundaboutEntryCrossing,
+    /// C32-20.
+    Speed20,
+    /// C32-70.
+    Speed70,
+    /// C32-100.
+    Speed100,
+    /// C32-120.
+    Speed120,
 }
 
 /// Pole-base pose, with yaw rotating the model's +Z front toward approaching traffic.
@@ -705,12 +713,17 @@ fn speed_kind(speed_ms: f32) -> Option<RoadSignKind> {
         return None;
     }
     let speed = speed_ms * 3.6;
+    // Every road type speed (`road_types::SPEEDS_KMH`) has its sign.
     let choices = [
+        (20.0, RoadSignKind::Speed20),
         (30.0, RoadSignKind::Speed30),
         (40.0, RoadSignKind::Speed40),
         (50.0, RoadSignKind::Speed50),
         (60.0, RoadSignKind::Speed60),
+        (70.0, RoadSignKind::Speed70),
         (80.0, RoadSignKind::Speed80),
+        (100.0, RoadSignKind::Speed100),
+        (120.0, RoadSignKind::Speed120),
     ];
     // Lower value wins an exact tie.
     let &(limit, kind) = choices

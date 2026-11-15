@@ -1,5 +1,6 @@
 asset_id = "building.parking.medium_lot"
 display_name = "Parking lot (20 bays)"
+icon = "parking_lot"
 
 [building]
 placement_mode = "explicit"

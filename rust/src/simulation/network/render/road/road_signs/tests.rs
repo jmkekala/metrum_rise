@@ -377,6 +377,13 @@ fn signs_keep_two_metres_from_every_light_and_shift_away_from_junction() {
 }
 
 #[test]
+fn every_road_type_speed_has_its_sign() {
+    for kmh in crate::simulation::network::road_types::SPEEDS_KMH {
+        assert!(speed_kind(f32::from(kmh) / 3.6).is_some(), "{kmh} km/h");
+    }
+}
+
+#[test]
 fn speed_mapping_is_bounded_and_ties_choose_lower_value() {
     for (kmh, expected) in [
         (30.0, Some(RoadSignKind::Speed30)),
@@ -384,8 +391,14 @@ fn speed_mapping_is_bounded_and_ties_choose_lower_value() {
         (44.0, Some(RoadSignKind::Speed40)),
         (60.0, Some(RoadSignKind::Speed60)),
         (80.0, Some(RoadSignKind::Speed80)),
-        (70.0, None),
-        (100.0, None),
+        (20.0, Some(RoadSignKind::Speed20)),
+        (70.0, Some(RoadSignKind::Speed70)),
+        (100.0, Some(RoadSignKind::Speed100)),
+        (120.0, Some(RoadSignKind::Speed120)),
+        // Finland posts no 90 or 110: an older road at either has no sign.
+        (90.0, None),
+        (110.0, None),
+        (10.0, None),
     ] {
         assert_eq!(speed_kind(kmh / 3.6), expected, "{kmh}");
     }

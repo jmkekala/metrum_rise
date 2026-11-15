@@ -6,7 +6,8 @@
 ## (the same lanes and no median through `add_road_with_snap`); the custom type draws its lanes
 ## and median, read back from the graph; editing the type changes the next stroke only (the
 ## first edge keeps its layout); Road Properties changes a 1 + 1 road to the divided type and
-## Ctrl+Z restores it, and refuses walkway -> road with its text; the drawing panel has no lane
+## Ctrl+Z restores it, and refuses walkway -> road with its text; opened low, unfolding its road types
+## keeps it on screen; the drawing panel has no lane
 ## or median rows; the row fits 1280 x 720 with thirteen custom types in its "Custom roads"
 ## drop-down. Attributes (`ROAD-101`): every built-in sends dev's (50 km/h, sidewalks, zoning,
 ## street lights); a type without sidewalks or street lights at 80 km/h draws an edge with
@@ -103,6 +104,19 @@ func _labels(node: Node, into: Array) -> Array:
 		_labels(child, into)
 	return into
 
+func _press(keycode: int) -> void:
+	var event := InputEventKey.new()
+	event.keycode = keycode
+	event.pressed = true
+	_input._unhandled_input(event)
+
+# `tile`'s tooltip while it shows its card, or null.
+func _shown_tooltip(tile: Control) -> Node:
+	for child in tile.get_children():
+		if "_card" in child and is_instance_valid(child._card) and child._card.visible:
+			return child
+	return null
+
 func _press_ctrl_z() -> void:
 	var event := InputEventKey.new()
 	event.keycode = KEY_Z
@@ -151,7 +165,7 @@ func _run() -> void:
 	for builtin in BUILTINS:
 		var button: Button = menu.button_for(builtin[0])
 		_expect(button != null and button.text == builtin[1], "the %s button: %s" % [builtin[1], button.text if button else "missing"])
-	var created: Dictionary = _simulation.create_road_type("Menu Test Avenue", AVENUE, 50, true, true)
+	var created: Dictionary = _simulation.create_road_type("Menu Test Avenue", AVENUE, 50, true, true, {})
 	var avenue := String(created.get("id", ""))
 	_expect(not avenue.is_empty(), "the custom type is created: %s" % created)
 	_expect(not menu.listed_ids().has(avenue), "the row lists the library as it was read")
@@ -196,10 +210,34 @@ func _run() -> void:
 		"the custom type picks the Road tool and the drop-down shows it")
 	for other in builtin_ids:
 		_expect(not menu.button_for(other).button_pressed, "a custom type unmarks %s" % other)
+	# Its hover card is the road card: name, speed sign, chips and cost (`ROAD-119` polish).
+	var card_builder = menu.custom_menu.get_meta(&"hud_tooltip_card", null)
+	_expect(card_builder is Callable, "the custom tile carries the road type card")
+	if card_builder is Callable:
+		var card: Control = card_builder.call()
+		_expect("Menu Test Avenue" in _labels(card, []) and card.find_children("*", "HFlowContainer", true, false).size() == 1,
+			"the card names the type and lists its chips")
+		card.free()
+	# R then 7 in one frame: the card flashed for the custom tile follows it once the freshly
+	# opened row is laid out, above the tile rather than over the row.
+	# The builder the drop-down's last entry opened above has the keyboard; close it as Esc would.
+	_ui.road_builder.close()
+	_input._toggle_tool(_input.Tool.SELECT)
+	for _frame in 2:
+		await process_frame
+	_press(KEY_R)
+	_press(KEY_7)
+	for _frame in 3:
+		await process_frame
+	var tooltip := _shown_tooltip(menu.custom_menu)
+	var tile_rect: Rect2 = menu.custom_menu.get_global_rect()
+	_expect(tooltip != null and tooltip._anchor == tile_rect,
+		"key 7 right after R places the card against the laid-out tile: %s, tile %s" % [tooltip._anchor if tooltip else null, tile_rect])
+	_expect(_input.current_tool == _input.Tool.ROAD and menu.custom_menu.text == "Menu Test Avenue", "R then 7 picks the custom type")
 	var first := await _draw(z)
 	_expect(_layout(first) == [2, 2, 2, 3.0, 17.0], "the custom type draws 2 + 2 with a 3 m grass median: %s" % [_layout(first)])
 	_expect(String(_simulation.get_edge_cross_section(first).get("road_type", "")) == avenue, "the road reads back as the custom type")
-	_expect(_simulation.update_road_type(avenue, "Menu Test Avenue", AVENUE_EDITED, 50, true, true).is_empty(), "the custom type is edited")
+	_expect(_simulation.update_road_type(avenue, "Menu Test Avenue", AVENUE_EDITED, 50, true, true, {}).is_empty(), "the custom type is edited")
 	_ui.refresh_road_types()
 	_expect(_tool.intent().road_type_id == avenue and _tool.intent().fwd_lanes == 1 and _tool.intent().median_style == 1, "the tool draws the edited type: %d + %d, median %d" % [_tool.intent().fwd_lanes, _tool.intent().bkw_lanes, _tool.intent().median_style])
 	var second := await _draw(z + 50.0)
@@ -209,7 +247,7 @@ func _run() -> void:
 
 	# A type without sidewalks or street lights at 80 km/h: the tool sends its attributes, the
 	# edge reads them back (street lights cost nothing: the rural cost as before).
-	var rural := String(_simulation.create_road_type("Menu Test Rural", RURAL, 80, true, false).get("id", ""))
+	var rural := String(_simulation.create_road_type("Menu Test Rural", RURAL, 80, true, false, {}).get("id", ""))
 	_expect(not rural.is_empty(), "the rural type is created")
 	_ui.refresh_road_types()
 	menu.pick(rural)
@@ -235,6 +273,21 @@ func _run() -> void:
 	_input.select_tool.selected_edges = selection
 	_ui.show_road_properties_multi(selection)
 	var window = _ui.road_properties_panel
+	# Opened low on a 1280 x 720 screen, unfolding the road types grows the window, and it moves up
+	# to stay on screen.
+	var unfold_screen := root.size
+	root.size = Vector2i(1280, 720)
+	var screen_height := 720
+	window._show_change(false)
+	await process_frame
+	await process_frame
+	window._window.position.y = screen_height - window._window.size.y - 20
+	window._show_change(true)
+	await process_frame
+	await process_frame
+	_expect(window._window.position.y + window._window.size.y <= screen_height,
+		"the unfolded window stays on screen: bottom %d of %d" % [window._window.position.y + window._window.size.y, screen_height])
+	root.size = unfold_screen
 	var picker: OptionButton = window._type_picker
 	_expect(picker.get_item_text(picker.selected) == "2-Lane Road (50 km/h, 15 / m)", "the window shows the road's type: %s" % picker.get_item_text(picker.selected))
 	var avenue_index := -1
@@ -250,7 +303,9 @@ func _run() -> void:
 	_expect(_layout(road) == [1, 1, 1, 1.5, 8.5], "Apply gives the road the divided type: %s" % [_layout(road)])
 	_expect(await _await_generation(generation), "the type change publishes")
 	# A focused tool window keeps the HUD keys (InputManager._ui_has_modal_popup): the player's
-	# Ctrl+Z reaches the game once the window is closed or the map has focus.
+	# Ctrl+Z reaches the game once the window is closed or the map has focus. Road Properties
+	# never takes the keyboard, so the Road Builder opened above must close first.
+	_ui.road_builder.close()
 	_ui.hide_road_properties()
 	generation = _simulation.get_network_render_generation()
 	_press_ctrl_z()
@@ -273,7 +328,7 @@ func _run() -> void:
 	var many: Array[String] = []
 	for n in 12:
 		var name := "Overflow Test Road %02d" % n if n < 11 else "Overflow Test Road With 40 Chars In Name"
-		var made: Dictionary = _simulation.create_road_type(name, AVENUE_EDITED, 50, true, true)
+		var made: Dictionary = _simulation.create_road_type(name, AVENUE_EDITED, 50, true, true, {})
 		_expect(made.has("id"), "overflow type %d is created: %s" % [n, made])
 		many.append(String(made.get("id", "")))
 	_ui.refresh_road_types()
@@ -299,7 +354,21 @@ func _run() -> void:
 	_expect(_simulation.delete_road_type(avenue).is_empty(), "the fixture type is deleted")
 	_ui.refresh_road_types()
 	_expect(not menu.listed_ids().has(avenue), "a deleted type leaves the row")
+
+	# The Road tool switched on with the palette closed (R) opens the drawing options with it;
+	# Select, which draws nothing, hides them.
+	while _ui.close_open_panel():
+		pass
+	_input._cancel_active_tool()
+	await process_frame
+	_input._toggle_tool(_input.Tool.ROAD)
+	await process_frame
+	_expect(_ui.road_combined_hbox.visible and _ui.get_meta("options_panel").visible,
+		"the Road tool opens the palette with its drawing options")
 	_input._toggle_tool(_input.Tool.SELECT)
+	await process_frame
+	_expect(_ui.road_combined_hbox.visible and not _ui.get_meta("options_panel").visible,
+		"Select keeps the palette without the drawing options")
 	_main.queue_free()
 	await process_frame
 	if _failures == 0:

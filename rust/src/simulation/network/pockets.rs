@@ -19,7 +19,7 @@ use super::roadbed::{
     medians_line_up,
 };
 use super::topology::{self, RoadSplitDependentsUndo, SplitHalves};
-use super::types::NodeType;
+use super::types::{NodeType, TransitFlags};
 use crate::simulation::buildings::allocator::{BuildingAllocator, EdgeOccupancy};
 use godot::prelude::Vector3;
 
@@ -585,6 +585,13 @@ enum DependentsEntry {
 }
 
 impl PocketDependentsUndo {
+    /// Composes chronological pocket migrations; restore still runs in reverse order.
+    pub(crate) fn combine(edits: impl IntoIterator<Item = Self>) -> Self {
+        Self {
+            entries: edits.into_iter().flat_map(|edit| edit.entries).collect(),
+        }
+    }
+
     /// Puts the buildings and occupancy back as they were before the edit, entries in reverse.
     /// O(rows + occupancy cells).
     pub(crate) fn restore(self, allocator: &mut BuildingAllocator) {
@@ -761,4 +768,94 @@ fn join_split_dependents(
         head.right.extend_from_slice(&tail.right);
     }
     DependentsEntry::Join { rows, occupancy }
+}
+
+/// Stable new-stroke approach traversal shared by hover and commit (`ROAD-119`).
+/// Stores only stroke descendants; each next request resolves through one junction's incidence.
+pub(crate) struct StrokePocketTargets {
+    approaches: std::vec::IntoIter<(usize, u32)>,
+    descendants: std::collections::HashMap<usize, usize>,
+    setting: super::road_types::RoadTypePockets,
+}
+
+impl StrokePocketTargets {
+    /// Captures incoming car approaches, in edge order then start/end order. O(edges * degree).
+    pub(crate) fn new(
+        graph: &RegionGraph,
+        edges: &[usize],
+        setting: super::road_types::RoadTypePockets,
+    ) -> Self {
+        let mut approaches = Vec::new();
+        if setting.left || setting.right {
+            for &id in edges {
+                let edge = graph.edge(id);
+                if edge.allowed_types & TransitFlags::CAR == 0 {
+                    continue;
+                }
+                for (node, incoming) in [
+                    (edge.start_node, edge.bkw_lanes),
+                    (edge.end_node, edge.fwd_lanes),
+                ] {
+                    let node = graph.get_valid_node(node);
+                    if incoming > 0
+                        && !graph.is_lane_transition(node)
+                        && graph
+                            .node_adjacency(node)
+                            .iter()
+                            .filter(|&&id| !graph.edge(id).deleted)
+                            .count()
+                            >= 3
+                    {
+                        approaches.push((id, node));
+                    }
+                }
+            }
+        }
+        Self {
+            descendants: if approaches.is_empty() {
+                Default::default()
+            } else {
+                edges.iter().map(|&id| (id, id)).collect()
+            },
+            approaches: approaches.into_iter(),
+            setting,
+        }
+    }
+
+    /// Whether no approach remains.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.approaches.len() == 0
+    }
+
+    /// The next original edge, junction and request on its current descendant. O(degree).
+    pub(crate) fn next(&mut self, graph: &RegionGraph) -> Option<(usize, u32, PocketRequest)> {
+        let (original, node) = self.approaches.next()?;
+        let edge = graph
+            .node_adjacency(node)
+            .iter()
+            .copied()
+            .find(|id| self.descendants.get(id) == Some(&original) && !graph.edge(*id).deleted)
+            .expect("a pocket split preserves the opposite junction's approach");
+        let end = if graph.get_valid_node(graph.edge(edge).start_node) == node {
+            EdgeEnd::Start
+        } else {
+            EdgeEnd::End
+        };
+        Some((
+            original,
+            node,
+            PocketRequest {
+                edge,
+                end,
+                left: self.setting.left,
+                right: self.setting.right,
+                body_m: self.setting.body_m,
+            },
+        ))
+    }
+
+    /// Records only the new edges appended by this accepted pocket. O(appended edges).
+    pub(crate) fn record(&mut self, original: usize, appended: std::ops::Range<usize>) {
+        self.descendants.extend(appended.map(|id| (id, original)));
+    }
 }

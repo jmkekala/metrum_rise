@@ -89,15 +89,34 @@ impl SimulationNode {
         out
     }
 
+    /// The lot center `Vector2(x, z)` of the building whose footprint holds the point (a direct
+    /// hit: a click on a road beside a building picks nothing), or `null`. Pass the center to
+    /// [`Self::get_building_info_at`] for its details.
+    #[func]
+    pub fn pick_building_at(&self, world_x: f32, world_z: f32) -> Variant {
+        let mut core = self.lock_core();
+        let cell_m = core.config.zone_cell_m;
+        core.allocator
+            .building_idx_containing(world_x, world_z, cell_m)
+            .map_or_else(Variant::nil, |idx| {
+                let b = &core.allocator.buildings[idx];
+                Vector2::new(b.center_x, b.center_y).to_variant()
+            })
+    }
+
     /// Returns a Dictionary of live stats for the building whose centre is closest to
     /// (`world_x`, `world_z`) within a 30 m pick radius.
     ///
-    /// Returns an empty Dictionary when no building is within range.
+    /// Returns an empty Dictionary when no building is within range. A click picks with
+    /// [`Self::pick_building_at`] first: this lookup takes the nearest lot center, which only
+    /// an exact center (the inspector's refresh and edits) answers unambiguously.
     /// Keys: `asset_id`, `zone_type`, `level`, `occupancy`, `worker_count`,
     /// `worker_capacity`, compact business summary fields, `budget_distress`,
     /// `economy_broken`, `broken`, `pending_redevelopment`, `rezone_grace_days`,
     /// `economy_profile`, `center_x`, `center_z`, residential/farm household aggregates,
-    /// extractor reserve fields, and `inventory` (Array of `{name, amount}` Dictionaries).
+    /// extractor reserve fields, `footprint` (the building's outline as world points just above
+    /// its base, the bulldoze highlight's), and `inventory` (Array of `{name, amount}`
+    /// Dictionaries).
     #[func]
     pub fn get_building_info_at(&self, world_x: f32, world_z: f32) -> VarDictionary {
         use crate::simulation::economy::definitions::EconomyProfileRuntimeKind;
@@ -175,6 +194,17 @@ impl SimulationNode {
         let rejected = core.parking_rejections(best_idx);
         dict.set("parking_rejected", PackedStringArray::from_iter(rejected.iter().map(|s| GString::from(s.as_str()))));
         dict.set("building_id", best_idx as i64);
+        // The outline the inspector rings, at the bulldoze highlight's height.
+        if let Some(site) = core.allocator.building_sites.get(best_idx) {
+            let y =
+                site.support_height_m + crate::nodes::sim::editing::BULLDOZE_HIGHLIGHT_Y_OFFSET_M;
+            let footprint = PackedVector3Array::from_iter(
+                site.footprint_world
+                    .iter()
+                    .map(|p| Vector3::new(p.x, y, p.y)),
+            );
+            dict.set("footprint", footprint);
+        }
         let asset_display_name = core
             .allocator
             .registry

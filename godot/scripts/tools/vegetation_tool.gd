@@ -22,34 +22,37 @@ const UIStyle = preload("res://scripts/ui/ui_style.gd")
 # nameable, "conifer" is only an unnamed two-to-one mix of them, and a mix belongs in a mix
 # preset where its ratio is written down.
 #
+# "group" is the terrain menu's category the option is listed under (`terrain_panel.gd`), and
+# "detail" the tooltip line a mix gets, saying what it plants.
+#
 # "ground" marks the presets Rust bounds to a 64 m brush. "line" marks the hedges: a press sets
 # one end of the row, the release the other, and the radius plays no part, so it neither shows
 # nor steps while one is selected.
 const BRUSH_OPTIONS := [
-	{"label": "Pine", "preset": 4},
-	{"label": "Spruce", "preset": 5},
-	{"label": "Birch", "preset": 6},
-	{"label": "Aspen", "preset": 7},
-	{"label": "Lilac", "preset": 11, "ground": true},
-	{"label": "Spirea", "preset": 12, "ground": true},
-	{"label": "Rugosa rose", "preset": 13, "ground": true},
-	{"label": "Cotoneaster", "preset": 14, "ground": true},
-	{"label": "Mountain pine", "preset": 15, "ground": true},
-	{"label": "Juniper", "preset": 16, "ground": true},
-	{"label": "Peony", "preset": 20, "ground": true},
-	{"label": "Lupine", "preset": 21, "ground": true},
-	{"label": "Phlox", "preset": 22, "ground": true},
-	{"label": "Hydrangea", "preset": 23, "ground": true},
-	{"label": "Rhododendron", "preset": 24, "ground": true},
-	{"label": "Summer flowers", "preset": 25, "ground": true},
-	{"label": "Hedge, low", "preset": 17, "line": true},
-	{"label": "Hedge, medium", "preset": 18, "line": true},
-	{"label": "Hedge, tall", "preset": 19, "line": true},
-	{"label": "Bush", "preset": 2, "ground": true},
-	{"label": "Rock", "preset": 3},
-	{"label": "Mixed forest 1", "preset": 8},
-	{"label": "Mixed forest 2", "preset": 9},
-	{"label": "Mixed forest 3", "preset": 10},
+	{"label": "Pine", "preset": 4, "group": "trees"},
+	{"label": "Spruce", "preset": 5, "group": "trees"},
+	{"label": "Birch", "preset": 6, "group": "trees"},
+	{"label": "Aspen", "preset": 7, "group": "trees"},
+	{"label": "Mixed forest", "preset": 8, "group": "trees", "detail": "Pine-led, with spruce, birch and some aspen"},
+	{"label": "Scattered trees", "preset": 9, "group": "trees", "detail": "Broadleaf-led trees standing apart"},
+	{"label": "Young forest", "preset": 10, "group": "trees", "detail": "Small birch and pine"},
+	{"label": "Lilac", "preset": 11, "group": "shrubs", "ground": true},
+	{"label": "Spirea", "preset": 12, "group": "shrubs", "ground": true},
+	{"label": "Rugosa rose", "preset": 13, "group": "shrubs", "ground": true},
+	{"label": "Cotoneaster", "preset": 14, "group": "shrubs", "ground": true},
+	{"label": "Mountain pine", "preset": 15, "group": "shrubs", "ground": true},
+	{"label": "Juniper", "preset": 16, "group": "shrubs", "ground": true},
+	{"label": "Bush", "preset": 2, "group": "shrubs", "ground": true},
+	{"label": "Peony", "preset": 20, "group": "flowers", "ground": true},
+	{"label": "Lupine", "preset": 21, "group": "flowers", "ground": true},
+	{"label": "Phlox", "preset": 22, "group": "flowers", "ground": true},
+	{"label": "Hydrangea", "preset": 23, "group": "flowers", "ground": true},
+	{"label": "Rhododendron", "preset": 24, "group": "flowers", "ground": true},
+	{"label": "Summer flowers", "preset": 25, "group": "flowers", "ground": true},
+	{"label": "Hedge, low", "preset": 17, "group": "hedges", "line": true},
+	{"label": "Hedge, medium", "preset": 18, "group": "hedges", "line": true},
+	{"label": "Hedge, tall", "preset": 19, "group": "hedges", "line": true},
+	{"label": "Rock", "preset": 3, "group": "rocks"},
 ]
 const LABEL_HOLD_SECONDS := 1.0
 const LABEL_FADE_SECONDS := 0.25
@@ -381,9 +384,9 @@ func _update_option_label() -> void:
 	_option_label.transparency = 1.0 - minf(1.0, _label_time_left / LABEL_FADE_SECONDS)
 	_option_label.visible = true
 
-## Steps the radius one geometric notch, up for a positive direction. Public because the species
-## dropdown forwards ctrl and the wheel here: an open popup holds the input grab, so those events
-## never reach `_unhandled_input`.
+## Steps the radius one geometric notch, up for a positive direction. Public so that a control
+## holding the input grab (a popup) can forward ctrl and the wheel, which then never reach
+## `_unhandled_input`.
 func step_radius(direction: int) -> void:
 	if is_line_option():
 		return

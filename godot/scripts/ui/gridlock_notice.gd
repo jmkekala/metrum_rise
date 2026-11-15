@@ -14,7 +14,8 @@ var _label: Label
 
 func _ready() -> void:
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
-	var style := UIStyle.hud_shell_style()
+	# A warning plate, as on the yellow traffic signs: yellow with a red edge and black text.
+	var style := UIStyle.panel_style(UIStyle.SIGN_YELLOW, UIStyle.CORNER_WINDOW, UIStyle.SIGN_RED, 2)
 	style.set_content_margin(SIDE_LEFT, UIStyle.HUD_SHELL_PAD_X)
 	style.set_content_margin(SIDE_RIGHT, UIStyle.HUD_SHELL_PAD_X)
 	style.set_content_margin(SIDE_TOP, UIStyle.HUD_SHELL_PAD_Y)
@@ -26,7 +27,7 @@ func _ready() -> void:
 	offset_top = UIStyle.HUD_BOTTOM_MARGIN + row * (UIStyle.HUD_TEXT_SIZE + 2 * UIStyle.HUD_SHELL_PAD_Y + 8)
 	_label = Label.new()
 	UIStyle.set_font_size(_label, UIStyle.HUD_TEXT_SIZE)
-	_label.add_theme_color_override("font_color", UIStyle.TEXT_ALERT)
+	_label.add_theme_color_override("font_color", UIStyle.SIGN_BLACK)
 	_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	add_child(_label)
 	visible = false

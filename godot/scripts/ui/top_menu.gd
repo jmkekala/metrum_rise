@@ -9,9 +9,11 @@ extends CanvasLayer
 const UIStyle = preload("res://scripts/ui/ui_style.gd")
 const EditorTheme = preload("res://scripts/ui/editor_theme.gd")
 const EconomyOverviewWindow = preload("res://scripts/ui/economy_overview.gd")
-const OptionsWindow = preload("res://scripts/ui/options_window.gd")
+const OptionsMenu = preload("res://scripts/ui/options_menu.gd")
 const DayCycleConfig = preload("res://scripts/core/day_cycle.gd")
 const WindowResizeHandles = preload("res://scripts/ui/window_resize_handles.gd")
+const PauseMenu = preload("res://scripts/ui/pause_menu.gd")
+const SaveBrowser = preload("res://scripts/ui/save_browser.gd")
 
 const BAR_HEIGHT := 28
 
@@ -31,6 +33,7 @@ enum ActionId {
 	FILE_NEW_ASSET = 9,
 	FILE_OPTIONS = 70,
 	FILE_EXPORT_ASSET = 71,
+	FILE_MAIN_MENU = 72,
 	VIEW_TOGGLE_ZONING = 10,
 	VIEW_OVERLAY_NONE = 11,
 	VIEW_OVERLAY_POLLUTION = 12,
@@ -75,7 +78,7 @@ var scene_kind: String = SCENE_GAMEPLAY
 
 var _scene_root: Node
 var _windows: Dictionary = {}
-var _options_window = null
+var _options_menu = null
 var _shell: PanelContainer
 var _bar_margin: MarginContainer
 var _bar_row: HBoxContainer
@@ -85,6 +88,9 @@ var _weather_popup: PopupMenu
 var _theme_switch: CheckButton
 var _theme_mode: String = EditorTheme.MODE_DARK
 var _syncing_theme_switch: bool = false
+var _pause_menu: PauseMenu
+# The simulation speed the pause menu stopped, restored when it closes.
+var _resume_speed := 0.0
 
 func _ready() -> void:
 	layer = 100
@@ -92,6 +98,8 @@ func _ready() -> void:
 	if scene_kind.is_empty():
 		scene_kind = _detect_scene_kind()
 	_build_menu_bar()
+	if scene_kind == SCENE_GAMEPLAY:
+		_build_pause_menu()
 
 func _build_menu_bar() -> void:
 	var root := Control.new()
@@ -185,6 +193,7 @@ func _build_gameplay_menus(menu_bar: MenuBar) -> void:
 	file_popup.add_separator()
 	file_popup.add_item("Options...", ActionId.FILE_OPTIONS)
 	file_popup.add_separator()
+	file_popup.add_item("Main Menu", ActionId.FILE_MAIN_MENU)
 	file_popup.add_item("Quit", ActionId.FILE_QUIT)
 	file_popup.id_pressed.connect(_on_file_menu_pressed)
 
@@ -330,7 +339,10 @@ func _on_file_menu_pressed(id: int) -> void:
 			if _scene_root and _scene_root.has_method("menu_return_to_game"):
 				_scene_root.menu_return_to_game()
 		ActionId.FILE_OPTIONS:
-			_open_options_window()
+			_open_options_menu()
+		ActionId.FILE_MAIN_MENU:
+			if _scene_root and _scene_root.has_method("menu_main_menu"):
+				_scene_root.menu_main_menu()
 		ActionId.FILE_QUIT:
 			if _scene_root and _scene_root.has_method("menu_quit"):
 				_scene_root.menu_quit()
@@ -591,11 +603,56 @@ func _open_window(window: Window) -> void:
 		window.show()
 		window.grab_focus()
 
-func _open_options_window() -> void:
-	if not _options_window:
-		_options_window = OptionsWindow.new()
-		add_child(_options_window)
-	_options_window.popup_options(OptionsWindow.CONTEXT_GAMEPLAY)
+func _build_pause_menu() -> void:
+	_pause_menu = PauseMenu.new()
+	add_child(_pause_menu)
+	_pause_menu.build([
+		["Resume", PauseMenu.RESUME, ""],
+		["Save", ActionId.FILE_SAVE, ""],
+		["Load", ActionId.FILE_LOAD, ""],
+		["Options", ActionId.FILE_OPTIONS, ""],
+		["Main Menu", ActionId.FILE_MAIN_MENU, "Main Menu"],
+		["Quit", ActionId.FILE_QUIT, "Quit"],
+	])
+	_pause_menu.action_requested.connect(_on_pause_action)
+
+## Whether the gameplay pause menu is up; input then takes only Esc.
+func is_pause_menu_open() -> bool:
+	return _pause_menu != null and _pause_menu.visible
+
+## Whether the pause menu, Options or the save browser covers the game; the camera then stays put.
+func is_overlay_open() -> bool:
+	var browser := get_node_or_null(SaveBrowser.NODE_NAME)
+	return (is_pause_menu_open() or (_options_menu != null and _options_menu.is_open())
+		or (browser != null and browser.is_open()))
+
+## Opens the pause menu and stops the clock, or closes it and restarts the clock at its speed.
+func toggle_pause_menu() -> void:
+	if _pause_menu == null:
+		return
+	var input := _scene_root.get_node_or_null("InputManager")
+	if _pause_menu.visible:
+		_pause_menu.hide()
+		if input:
+			input.set_simulation_speed(_resume_speed)
+		return
+	_resume_speed = input.simulation_speed() if input else 0.0
+	if input:
+		input.set_simulation_speed(0.0)
+	_pause_menu.show()
+
+# Save and Options open over the menu; Load replaces the city, so the menu closes first.
+func _on_pause_action(id: int) -> void:
+	if id == PauseMenu.RESUME or id == ActionId.FILE_LOAD:
+		toggle_pause_menu()
+	if id != PauseMenu.RESUME:
+		_on_file_menu_pressed(id)
+
+func _open_options_menu() -> void:
+	if not _options_menu:
+		_options_menu = OptionsMenu.new()
+		add_child(_options_menu)
+	_options_menu.popup_options(OptionsMenu.CONTEXT_GAMEPLAY)
 
 func _detect_scene_kind() -> String:
 	var simulation_node := _scene_root.get_node_or_null("SimulationNode")

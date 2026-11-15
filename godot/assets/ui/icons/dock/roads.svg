@@ -1,0 +1,15 @@
+<!-- SPDX-License-Identifier: GPL-2.0-only -->
+<svg xmlns="http://www.w3.org/2000/svg" width="96" height="96" viewBox="0 0 64 64">
+  <defs>
+    <linearGradient id="asphalt" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#5d6167"/><stop offset="1" stop-color="#34373c"/></linearGradient>
+    <linearGradient id="kerb" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#d9dbdc"/><stop offset="1" stop-color="#9ea2a5"/></linearGradient>
+    <linearGradient id="verge" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#8fb05a"/><stop offset="1" stop-color="#5e7d33"/></linearGradient>
+  </defs>
+  <polygon points="20,5 44,5 63,60 1,60" fill="url(#verge)"/>
+  <polygon points="23,5 41,5 57,60 7,60" fill="url(#kerb)"/>
+  <polygon points="24.5,5 39.5,5 54,60 10,60" fill="url(#asphalt)"/>
+  <polygon points="31.3,8 32.7,8 33,14 31,14" fill="#f4f1e6"/>
+  <polygon points="30.8,20 33.2,20 33.7,30 30.3,30" fill="#f4f1e6"/>
+  <polygon points="30.1,37 33.9,37 34.7,53 29.3,53" fill="#f4f1e6"/>
+  <polygon points="24.5,5 39.5,5 40,7 24,7" fill="#fff" opacity=".18"/>
+</svg>

@@ -32,7 +32,7 @@ use super::super::road_terrain_inputs::RoadTerrainInputs;
 use super::super::state::SimCore;
 use crate::config::HEIGHT_SCALE;
 use crate::nodes::sim::render::building_sites::SiteRows;
-use crate::simulation::economy::demand::GrowthDisplayKey;
+use crate::simulation::economy::demand::{GrowthDisplay, GrowthDisplayKey};
 use crate::simulation::network::roadbed::RoadbedSystem;
 use crate::simulation::terrain::TerrainSystem;
 use crate::simulation::terrain::graded::{GradedSurface, QueryScratch};
@@ -122,7 +122,7 @@ pub(crate) struct FrameQueries {
     /// Revision of the committed coal pit visuals.
     pub(crate) coal_pit_overlay_revision: u64,
     /// The R/C/I growth summary (`DemandSystem::growth_display`).
-    pub(crate) growth: Arc<[(usize, String); 3]>,
+    pub(crate) growth: Arc<[GrowthDisplay; 3]>,
     /// The visible surface; `None` before the first publication.
     pub(crate) surface: Option<Arc<SurfaceView>>,
     /// The construction sites' rows (`RENDER-30`).

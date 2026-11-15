@@ -15,7 +15,7 @@
 //! passes. Nothing here runs per tick.
 
 use super::core::{
-    RoadEditSite, RoadLandTake, RoadRejection, SimCore, SimulationRuntimeSnapshot,
+    RoadEditSite, RoadLandSource, RoadLandTake, RoadRejection, SimCore, SimulationRuntimeSnapshot,
     SimulationSnapshot, TriedGraphEdit,
 };
 use crate::debug_log;
@@ -39,12 +39,12 @@ use std::collections::HashSet;
 /// What an accepted pocket edit charges and takes, for the Junction window's Apply label and
 /// highlight.
 #[derive(Clone, Debug, Default, PartialEq)]
-pub(crate) struct PocketVerdict {
+pub(crate) struct PocketVerdict<B = usize> {
     /// The build cost of the pair after the edit less before it, floored at 0 (D14: the
     /// in-place rule, never refunded).
     pub(crate) cost_delta: f64,
     /// The zoned land the pocket takes (`ZONE-10`): its buildings and lots.
-    pub(crate) take: RoadLandTake,
+    pub(crate) take: RoadLandTake<B>,
 }
 
 /// How far out along an arm the Junction window reads the direction it comes from (round R5c2).
@@ -67,15 +67,18 @@ pub(crate) struct JunctionPocketArm {
     pub(crate) base: (RoadCrossSection, u16, bool),
 }
 
-// One tried edit: its undo checkpoint, the land it takes, the plan, the nodes laid out and the
-// verdict.
-struct TriedPocket {
-    checkpoint: RegionGraphUndoDelta,
-    take: RoadLandTake,
-    plan: PocketPlan,
-    edges: HashSet<usize>,
-    nodes: HashSet<u32>,
-    verdict: PocketVerdict,
+/// A locally tried edit, restored after checking and ready for application.
+pub(crate) struct TriedPocket<B = usize> {
+    /// Original local graph state for rollback and undo.
+    pub(crate) checkpoint: RegionGraphUndoDelta,
+    take: RoadLandTake<B>,
+    /// Validated edit to replay on the authoritative graph.
+    pub(crate) plan: PocketPlan,
+    /// Edges in the checked geometry closure.
+    pub(crate) edges: HashSet<usize>,
+    /// Nodes whose geometry must be laid out again.
+    pub(crate) nodes: HashSet<u32>,
+    verdict: PocketVerdict<B>,
 }
 
 impl SimCore {
@@ -142,6 +145,24 @@ impl SimCore {
     /// ([`Self::finalize_network_render_products`]), as after a crossing toggle. The verdict's
     /// cost is charged outside `benchmark_mode`.
     pub(crate) fn set_road_pocket_internal(&mut self, request: PocketRequest) -> bool {
+        self.apply_road_pocket(request, None)
+    }
+
+    /// Applies one stroke pocket with the existing rules, deferring shared dependent rebuilds.
+    /// Adds its local dirty edges to `dirty`; no graph publication or city membership pass.
+    pub(crate) fn set_stroke_pocket_internal(
+        &mut self,
+        request: PocketRequest,
+        dirty: &mut HashSet<usize>,
+    ) -> bool {
+        self.apply_road_pocket(request, Some(dirty))
+    }
+
+    fn apply_road_pocket(
+        &mut self,
+        request: PocketRequest,
+        batch: Option<&mut HashSet<usize>>,
+    ) -> bool {
         // A commit's deferred lots first: this edit reads or writes them (`ROAD-68-G` part 7).
         self.adopt_pending_cell_lots();
         // The take reads the explicit sites through the site index, as a stroke's commit does.
@@ -198,15 +219,25 @@ impl SimCore {
         // The lanes of the three nodes' arms, the cars on them and the entrances fronting them,
         // as an undo restores them. Godot's main thread runs this edit, and the passes are
         // parallel: shared pool (CODE-17).
-        crate::thread_pools::install(|| self.restore_lanes_locally(&affected, &nodes));
+        let batched = batch.is_some();
+        if let Some(dirty) = batch {
+            dirty.extend(affected);
+        } else {
+            crate::thread_pools::install(|| self.restore_lanes_locally(&affected, &nodes));
+        }
         self.push_pocket_undo(checkpoint, dependents, erased);
         // The record keeps the charge, which undo refunds (U5).
         if verdict.cost_delta > 0.0 {
             self.charge_undoable_build_cost(verdict.cost_delta);
         }
         // Deferred like a commit's (D7, `ROAD-68-G`).
-        self.schedule_cch_rebuild_of_live_graph();
+        if !batched {
+            self.schedule_cch_rebuild_of_live_graph();
+        }
         self.mark_local_network_render_dirty();
+        if batched {
+            self.rebuild_network_surface_terrain_internal_with_entrance_rebuild(false);
+        }
         if erased_paint {
             self.plan_lots_after_erase();
         }
@@ -230,69 +261,7 @@ impl SimCore {
     // profile; a widening pocket's corridor must also keep clear of water and fit its curves.
     // The zoned land it newly covers is its take (`ZONE-10`).
     fn try_pocket_edit(&mut self, request: PocketRequest) -> Result<TriedPocket, RoadRejection> {
-        let plan = PocketPlan::prepare(&self.region_graph, request)
-            .map_err(|reason| RoadRejection::new(reason, format!("{request:?}")))?;
-        let graph = &self.region_graph;
-        // The transition an add appends is the next node id; ids past the graph are skipped
-        // until it exists.
-        let nodes: HashSet<u32> = plan
-            .nodes()
-            .into_iter()
-            .map(|node| graph.get_valid_node(node))
-            .chain([graph.node_count() as u32])
-            .collect();
-        let edges: HashSet<usize> = plan
-            .source_edges()
-            .into_iter()
-            .chain(
-                nodes
-                    .iter()
-                    .filter(|&&node| (node as usize) < graph.node_count())
-                    .flat_map(|&node| graph.node_adjacency(node).iter().copied()),
-            )
-            .filter(|&edge| !graph.edge(edge).deleted)
-            .collect();
-        let mut site = self.road_edit_site();
-        let cost_before = site.build_cost_of(&plan.source_edges());
-        // Any planned pocket is checked: a role added widens the road, a longer body widens more
-        // of it.
-        let widens = plan.pocket().is_some();
-        let mut corridor = None;
-        let mut cost_after = 0.0;
-        let tried = site.try_graph_edit(&edges, &nodes, &[], |site| {
-            let (applied, changed) = site.apply_pocket_plan(&plan, &nodes);
-            let pieces: Vec<usize> = applied
-                .edges()
-                .filter(|&edge| !site.graph.edge(edge).deleted)
-                .collect();
-            cost_after = site.build_cost_of(&pieces);
-            if widens && let Some(pocket_edge) = applied.pocket_edge {
-                corridor = site.pocket_corridor_refusal(pocket_edge);
-            }
-            changed.into_iter().chain(applied.edges()).collect()
-        });
-        let tried = tried.map_err(|rejection| {
-            if rejection.reason == "node_piece_failed" {
-                RoadRejection::new("pocket_road_too_short", rejection.detail)
-            } else {
-                rejection
-            }
-        });
-        if let Some(rejection) = corridor {
-            return Err(rejection);
-        }
-        let TriedGraphEdit { checkpoint, take } = tried?;
-        Ok(TriedPocket {
-            checkpoint,
-            verdict: PocketVerdict {
-                cost_delta: (cost_after - cost_before).max(0.0) * BUILD_COST_PER_M,
-                take: take.clone(),
-            },
-            take,
-            plan,
-            edges,
-            nodes,
-        })
+        self.road_edit_site().try_pocket_edit(request)
     }
 
     // The pocket edit's undo record: the graph checkpoint (whole records; the transition and
@@ -321,10 +290,9 @@ impl SimCore {
 }
 
 impl<L> RoadEditSite<'_, L> {
-    // Applies the plan on the graph and lays out `nodes` and the transition again: their clips
-    // and the profile solve that pins their arms up to them. Returns what the plan changed and
-    // the edges whose profiles the solve changed.
-    fn apply_pocket_plan(
+    /// Applies the checked plan and lays out its local nodes and transition again.
+    /// Returns the topology edit and edges whose profiles changed.
+    pub(crate) fn apply_pocket_plan(
         &mut self,
         plan: &PocketPlan,
         nodes: &HashSet<u32>,
@@ -399,10 +367,9 @@ fn is_car_approach(graph: &RegionGraph, edge: usize, end: EdgeEnd, node: u32) ->
         && graph.get_valid_node(at) == node
 }
 
-// The bearing of `road` (a polyline from the junction outwards) at `ARM_BEARING_RUN_M` along it
-// in XZ (or at its far end), degrees clockwise from north (-Z); 0 for a degenerate road.
-// `O(points)`.
-fn bearing_out(road: &[Vector3]) -> f32 {
+/// Bearing of a junction-outward polyline at the shared arm-label distance, clockwise
+/// from north (-Z); zero for a degenerate road. O(points).
+pub(crate) fn bearing_out(road: &[Vector3]) -> f32 {
     let Some(&origin) = road.first() else {
         return 0.0;
     };
@@ -437,4 +404,76 @@ fn base_section(edge: &Edge) -> (RoadCrossSection, u16, bool) {
         RoadAttributes::speed_kmh_of(edge.speed_limit),
         !edge.no_street_lights,
     )
+}
+
+impl<L: RoadLandSource> RoadEditSite<'_, L> {
+    /// Shared pocket verdict on either the live graph or the road tool's local replica.
+    pub(crate) fn try_pocket_edit(
+        &mut self,
+        request: PocketRequest,
+    ) -> Result<TriedPocket<L::Building>, RoadRejection> {
+        let plan = PocketPlan::prepare(&*self.graph, request)
+            .map_err(|reason| RoadRejection::new(reason, format!("{request:?}")))?;
+        let graph = &*self.graph;
+        // The transition an add appends is the next node id; ids past the graph are skipped
+        // until it exists.
+        let nodes: HashSet<u32> = plan
+            .nodes()
+            .into_iter()
+            .map(|node| graph.get_valid_node(node))
+            .chain([graph.node_count() as u32])
+            .collect();
+        let edges: HashSet<usize> = plan
+            .source_edges()
+            .into_iter()
+            .chain(
+                nodes
+                    .iter()
+                    .filter(|&&node| (node as usize) < graph.node_count())
+                    .flat_map(|&node| graph.node_adjacency(node).iter().copied()),
+            )
+            .filter(|&edge| !graph.edge(edge).deleted)
+            .collect();
+        let site = self;
+        let cost_before = site.build_cost_of(&plan.source_edges());
+        // Any planned pocket is checked: a role added widens the road, a longer body widens more
+        // of it.
+        let widens = plan.pocket().is_some();
+        let mut corridor = None;
+        let mut cost_after = 0.0;
+        let tried = site.try_graph_edit(&edges, &nodes, &[], |site| {
+            let (applied, changed) = site.apply_pocket_plan(&plan, &nodes);
+            let pieces: Vec<usize> = applied
+                .edges()
+                .filter(|&edge| !site.graph.edge(edge).deleted)
+                .collect();
+            cost_after = site.build_cost_of(&pieces);
+            if widens && let Some(pocket_edge) = applied.pocket_edge {
+                corridor = site.pocket_corridor_refusal(pocket_edge);
+            }
+            changed.into_iter().chain(applied.edges()).collect()
+        });
+        let tried = tried.map_err(|rejection| {
+            if rejection.reason == "node_piece_failed" {
+                RoadRejection::new("pocket_road_too_short", rejection.detail)
+            } else {
+                rejection
+            }
+        });
+        if let Some(rejection) = corridor {
+            return Err(rejection);
+        }
+        let TriedGraphEdit { checkpoint, take } = tried?;
+        Ok(TriedPocket {
+            checkpoint,
+            verdict: PocketVerdict {
+                cost_delta: (cost_after - cost_before).max(0.0) * BUILD_COST_PER_M,
+                take: take.clone(),
+            },
+            take,
+            plan,
+            edges,
+            nodes,
+        })
+    }
 }

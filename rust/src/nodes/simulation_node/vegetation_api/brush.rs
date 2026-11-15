@@ -2,7 +2,7 @@
 
 //! Named brush presets: what one stroke plants, how densely, and at what size.
 
-use crate::simulation::vegetation::edits::{VARIANT_COUNTS, VARIANT_FROM_SEED};
+use crate::simulation::vegetation::edits::{AuthoredPlant, VARIANT_COUNTS, VARIANT_FROM_SEED};
 use crate::simulation::vegetation::unit;
 
 /// Instance scale band the generator places every plant in.
@@ -10,6 +10,10 @@ use crate::simulation::vegetation::unit;
 /// A preset that keeps this band returns each plant's scale untouched, so a stroke that does
 /// not dwarf its trees produces the same floats it produced before presets existed.
 pub(super) const DEFAULT_SCALE: (f32, f32) = (0.75, 1.35);
+
+// The hedge modules in a preset's thumbnail sample, and the stream salt its picks use.
+const SAMPLE_HEDGE_MODULES: usize = 4;
+const SAMPLE_SALT: u32 = 0x5A3;
 
 // Two of every three conifer variants are pine and two of every three broadleaf variants are
 // birch; the remaining third are spruce and aspen. The rule lives in tree_species.gd, which
@@ -157,7 +161,8 @@ pub(super) const PRESETS: &[BrushPreset] = &[
             variants: SPRUCE_OR_ASPEN,
         }],
     },
-    // 8, 9 and 10 are the three mixes, which the brush numbers rather than names.
+    // 8, 9 and 10 are the three mixes, which the menu calls Mixed forest, Scattered trees and
+    // Young forest.
     //
     // 8 is a managed stand. The weights are Finnish growing stock: pine leads, spruce follows,
     // birch is most of the rest and aspen is an accent. Its calibrated acceptance targets
@@ -450,6 +455,46 @@ impl BrushPreset {
             return (entry.species, VARIANT_FROM_SEED);
         }
         (entry.species, variant + 1)
+    }
+
+    /// A fixed handful of plants that shows what this preset plants, for its menu thumbnail:
+    /// a hedge as `SAMPLE_HEDGE_MODULES` modules in a row along +X, a one-entry preset as one
+    /// plant, and a mix as a stand of seven (one in the middle, six around it at 1.3 spacings)
+    /// whose species and meshes come from [`Self::plant`]. Positions are metres around the
+    /// origin, at the middle of the preset's size band. Pure and O(1).
+    pub(super) fn sample(&self) -> Vec<AuthoredPlant> {
+        let at = |i: usize, x: f32, z: f32, yaw: f32| {
+            let (species, variant) = self.plant(i as i32 * 7, 3, SAMPLE_SALT);
+            AuthoredPlant {
+                x,
+                z,
+                yaw,
+                scale: self.size((DEFAULT_SCALE.0 + DEFAULT_SCALE.1) * 0.5),
+                species,
+                variant,
+            }
+        };
+        if self.is_hedge() {
+            // Modules sit one metre apart facing along the row, as `plan_row` lays them.
+            let half = (SAMPLE_HEDGE_MODULES - 1) as f32 * 0.5;
+            return (0..SAMPLE_HEDGE_MODULES)
+                .map(|i| AuthoredPlant {
+                    scale: 1.0,
+                    ..at(0, i as f32 - half, 0.0, 0.0)
+                })
+                .collect();
+        }
+        if self.mix.len() == 1 {
+            return vec![at(0, 0.0, 0.0, 0.6)];
+        }
+        let ring = self.class().spacing() * 1.3;
+        (0..7)
+            .map(|i| {
+                let angle = i as f32 * std::f32::consts::TAU / 6.0;
+                let r = if i == 0 { 0.0 } else { ring };
+                at(i, r * angle.cos(), r * angle.sin(), i as f32 * 2.4)
+            })
+            .collect()
     }
 
     /// Maps a generator scale into this preset's band, returning it unchanged at the default.

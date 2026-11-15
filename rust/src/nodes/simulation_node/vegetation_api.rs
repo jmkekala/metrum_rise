@@ -221,6 +221,33 @@ impl SimulationNode {
             decorative_tree_patch(&*core, origin, span, include_understory).as_slice(),
         )
     }
+
+    /// What brush preset `option` plants, for its menu thumbnail: a fixed handful of plants
+    /// around the origin (one for a single kind, a stand of seven for a mix, four modules in a
+    /// row for a hedge), packed 6 floats each like `yard_preview_plants`: x, 0, z, yaw, scale,
+    /// then species | biased variant << 2. Empty for an unknown ordinal. Reads no world state;
+    /// O(1).
+    #[func]
+    pub fn get_vegetation_preset_sample(&self, option: i64) -> PackedFloat32Array {
+        let Some(preset) = preset(option) else {
+            return PackedFloat32Array::new();
+        };
+        let mut packed = PackedFloat32Array::new();
+        for plant in preset.sample() {
+            for value in [
+                plant.x,
+                0.0,
+                plant.z,
+                plant.yaw,
+                plant.scale,
+                pack_species_variant(plant.species, plant.variant),
+            ] {
+                packed.push(value);
+            }
+        }
+        packed
+    }
+
     /// Removes generated and authored plants in a bounded disc, returning the actual count.
     /// Visits O((radius / cell_m + 1)^2) cells per layer, plus their authored edits.
     /// Pass the gesture's own `stroke` id on every stamp of a held drag, so the whole drag

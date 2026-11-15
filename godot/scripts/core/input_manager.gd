@@ -19,6 +19,8 @@ extends Node
 
 ## Emitted when a loaded world is handed over to the player (is_world_ready()).
 signal world_ready
+## Lets HUD views follow keyboard, click and cancellation transitions without polling.
+signal tool_changed(tool: int)
 
 @onready var simulation_node = $"../SimulationNode"
 @onready var terrain_node = $"../Terrain"
@@ -41,7 +43,11 @@ var junction_debug_overlay: Node3D
 var agent_inspector: Node3D
 
 enum Tool { NONE, ROAD, WALKWAY, ZONING, SERVICES, INDUSTRY, AGENT, SCULPT, SELECT, BULLDOZE, VEGETATION, FIELD_EDIT, ROUNDABOUT }
-var current_tool: Tool = Tool.NONE
+var current_tool: Tool = Tool.NONE:
+	set(value):
+		if current_tool != value:
+			current_tool = value
+			tool_changed.emit(value)
 const DEPOSITS_OVERLAY_MODE := 4
 const SAVES_DIR := "user://saves"
 const WORLD_CAMERA_NEAR_CLIP_M := 0.5
@@ -53,6 +59,7 @@ const WORLD_CAMERA_FAR_MARGIN_M := 1000.0
 # LEVEL_END_M); the farther patches stream on within the frame budget.
 const WORLD_READY_RADIUS_M := 2000.0
 const GameSettings := preload("res://scripts/core/game_settings.gd")
+const SaveBrowser := preload("res://scripts/ui/save_browser.gd")
 const CAMERA_INPUT_PROCESS_PRIORITY := -300
 const CAMERA_SETTLE_PROCESS_PRIORITY := -200
 
@@ -232,7 +239,8 @@ func _input(event):
 			get_viewport().set_input_as_handled()
 			return
 		_last_gesture = key
-	if _ui_has_modal_popup():
+	# The pause menu and Options cover the city: the wheel scrolls them, it does not zoom.
+	if _ui_has_modal_popup() or _overlay_open():
 		_cancel_camera_motion()
 		return
 	var camera := get_viewport().get_camera_3d() as CameraNode
@@ -264,9 +272,16 @@ func _input(event):
 	elif event is InputEventMagnifyGesture:
 		camera.zoom(log(event.factor) / log(camera.zoom_speed))
 
+# The pause menu or Options is up over the city.
+func _overlay_open() -> bool:
+	var menu := _top_menu()
+	return menu != null and menu.has_method("is_overlay_open") and menu.is_overlay_open()
+
 func _handle_camera_controls():
 	var camera := get_viewport().get_camera_3d() as CameraNode
 	if not camera: return
+	if _overlay_open():
+		return
 	
 	# WASD Panning
 	var pan_dir = Vector3.ZERO
@@ -283,7 +298,20 @@ func _unhandled_input(event):
 		return
 	if _ui_captures_keyboard_input():
 		return
+	if event is InputEventKey and event.pressed and not event.echo and _pause_menu_open():
+		# The pause menu takes the keyboard: Esc resumes, nothing else reaches the city.
+		if event.keycode == KEY_ESCAPE:
+			_top_menu().toggle_pause_menu()
+		get_viewport().set_input_as_handled()
+		return
 	if event is InputEventKey and event.pressed and not event.echo:
+		# An open Roads, Zoning or Terrain palette takes 1-9 for its numbered tiles.
+		if event.keycode >= KEY_1 and event.keycode <= KEY_9 and not event.ctrl_pressed \
+				and not event.alt_pressed and not event.meta_pressed and main_ui \
+				and main_ui.has_method("handle_number_key") \
+				and main_ui.handle_number_key(event.keycode - KEY_0):
+			get_viewport().set_input_as_handled()
+			return
 		match event.keycode:
 			KEY_R: _toggle_tool(Tool.ROAD)
 			KEY_X: _toggle_tool(Tool.WALKWAY)
@@ -308,9 +336,19 @@ func _unhandled_input(event):
 				if current_tool == Tool.ROAD:
 					road_tool.set_straight_grade(not road_tool.intent()["straight_grade"])
 					get_viewport().set_input_as_handled()
+			KEY_COMMA, KEY_KP_SUBTRACT:
+				step_simulation_speed(-1)
+				get_viewport().set_input_as_handled()
+			KEY_PERIOD, KEY_KP_ADD:
+				step_simulation_speed(1)
+				get_viewport().set_input_as_handled()
 			KEY_SPACE:
 				_toggle_pause()
 				get_viewport().set_input_as_handled()
+			KEY_TAB:
+				if main_ui:
+					main_ui.toggle_city_panel()
+					get_viewport().set_input_as_handled()
 			KEY_L:
 				if event.ctrl_pressed:
 					_handle_load_game()
@@ -378,12 +416,32 @@ func _ui_captures_keyboard_input() -> bool:
 	return _ui_has_modal_popup() or editing_focus
 
 func _handle_escape():
+	if current_tool == Tool.SELECT and select_tool and select_tool.clear_selection():
+		get_viewport().set_input_as_handled()
+		return
+	if building_inspector and building_inspector.is_inspecting():
+		building_inspector.close_window()
+		get_viewport().set_input_as_handled()
+		return
 	if current_tool != Tool.NONE:
 		_cancel_active_tool()
 	elif agent_inspector and agent_inspector.end_inspection():
 		get_viewport().set_input_as_handled()
 	elif junction_debug_overlay and junction_debug_overlay.unfocus():
 		get_viewport().set_input_as_handled()
+	elif main_ui and main_ui.has_method("close_open_panel") and main_ui.close_open_panel():
+		get_viewport().set_input_as_handled()
+	elif _top_menu() and _top_menu().has_method("toggle_pause_menu"):
+		# Nothing left to cancel: the pause menu.
+		_top_menu().toggle_pause_menu()
+		get_viewport().set_input_as_handled()
+
+func _top_menu() -> Node:
+	return get_parent().get_node_or_null("TopMenu")
+
+func _pause_menu_open() -> bool:
+	var menu := _top_menu()
+	return menu != null and menu.has_method("is_pause_menu_open") and menu.is_pause_menu_open()
 
 func _toggle_agent_paths():
 	if agents_node:
@@ -497,9 +555,6 @@ func _default_save_name() -> String:
 		return _current_save_path.get_file()
 	return "savegame.sqlite"
 
-func _ensure_saves_dir() -> void:
-	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(SAVES_DIR))
-
 func _refresh_after_world_load():
 	if road_tool and road_tool.is_drawing():
 		road_tool.cancel_road()
@@ -537,41 +592,15 @@ func _refresh_after_world_load():
 	_await_world_ready()
 
 func _handle_save_game():
-	_ensure_saves_dir()
-	var dialog := FileDialog.new()
-	dialog.access = FileDialog.ACCESS_FILESYSTEM
-	dialog.file_mode = FileDialog.FILE_MODE_SAVE_FILE
-	dialog.exclusive = true
-	dialog.filters = PackedStringArray(["*.sqlite ; Save Files"])
-	dialog.current_dir = ProjectSettings.globalize_path(SAVES_DIR)
-	dialog.current_file = _default_save_name()
-	dialog.file_selected.connect(func(path: String): _on_save_game_selected(path, dialog))
-	dialog.canceled.connect(dialog.queue_free)
-	add_child(dialog)
-	dialog.popup_centered(Vector2i(880, 620))
+	SaveBrowser.open(_browser_parent(), SaveBrowser.MODE_SAVE, SAVES_DIR, _finish_save_game_selection, _default_save_name())
 
 func _handle_load_game():
-	_ensure_saves_dir()
-	var dialog := FileDialog.new()
-	dialog.access = FileDialog.ACCESS_FILESYSTEM
-	dialog.file_mode = FileDialog.FILE_MODE_OPEN_FILE
-	dialog.exclusive = true
-	dialog.filters = PackedStringArray(["*.sqlite ; Save Files"])
-	dialog.current_dir = ProjectSettings.globalize_path(SAVES_DIR)
-	dialog.file_selected.connect(func(path: String): _on_load_game_selected(path, dialog))
-	dialog.canceled.connect(dialog.queue_free)
-	add_child(dialog)
-	dialog.popup_centered(Vector2i(880, 620))
+	SaveBrowser.open(_browser_parent(), SaveBrowser.MODE_LOAD, SAVES_DIR, _finish_load_game_selection)
 
-func _on_save_game_selected(path: String, dialog: FileDialog) -> void:
-	dialog.hide()
-	dialog.call_deferred("queue_free")
-	call_deferred("_finish_save_game_selection", path)
-
-func _on_load_game_selected(path: String, dialog: FileDialog) -> void:
-	dialog.hide()
-	dialog.call_deferred("queue_free")
-	call_deferred("_finish_load_game_selection", path)
+# Under TopMenu the browser counts as an open overlay (no camera input, no shortcuts).
+func _browser_parent() -> Node:
+	var menu := _top_menu()
+	return menu if menu else self
 
 func _finish_save_game_selection(path: String) -> void:
 	if simulation_node.save_game(path):
@@ -586,6 +615,10 @@ func _finish_load_game_selection(path: String) -> void:
 func _toggle_pause():
 	var speed: float = 0.0 if _simulation_speed > 0.0 else 1.0
 	set_simulation_speed(speed)
+
+## The running simulation speed; 0 while paused.
+func simulation_speed() -> float:
+	return _simulation_speed
 
 func set_simulation_speed(speed: float):
 	# The clock stays stopped until the loaded world is handed over.
@@ -715,6 +748,7 @@ func _handle_inspect_click(mouse_pos: Vector2) -> void:
 		true
 	)
 	if pos == null:
+		building_inspector.close_window()
 		return
 	# With the junction overlay on, a click on a junction focuses it instead of inspecting.
 	if junction_debug_overlay and junction_debug_overlay.try_focus_at(pos):
@@ -727,7 +761,7 @@ func _handle_inspect_click(mouse_pos: Vector2) -> void:
 # A home, work or destination link in the agent inspector: open that building, never toggle it.
 func _on_agent_building_requested(world_pos: Vector3, screen_pos: Vector2) -> void:
 	if building_inspector:
-		building_inspector.try_inspect(world_pos, screen_pos, false)
+		building_inspector.try_inspect(world_pos, screen_pos, false, false)
 
 func _handle_right_click():
 	if (current_tool == Tool.ROAD or current_tool == Tool.WALKWAY) and road_tool.is_drawing():

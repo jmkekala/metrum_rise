@@ -1816,3 +1816,28 @@ fn an_authored_plant_takes_a_yards_lawn_but_not_its_walls_or_paving() {
         VegetationLayer::Understory
     ));
 }
+
+#[test]
+fn preset_samples_show_what_each_preset_plants() {
+    let pine = preset(4).unwrap().sample();
+    assert_eq!(pine.len(), 1);
+    assert_eq!(pine[0].species, 0);
+    assert!(brush_variant_is_pine(pine[0].variant));
+    let hedge = preset(brush::HEDGE_LOW_PRESET).unwrap().sample();
+    assert_eq!(hedge.len(), 4);
+    assert!(
+        hedge
+            .iter()
+            .all(|p| brush::hedge_index(p.species, p.variant) == Some(0) && p.z == 0.0)
+    );
+    let forest = preset(8).unwrap().sample();
+    assert_eq!(forest.len(), 7);
+    assert!(forest.iter().all(|p| p.species < 2));
+    assert_eq!(forest, preset(8).unwrap().sample());
+    assert!(preset(99).is_none());
+}
+
+// Pine is the conifer variants the brush's pine set pins, biased by one.
+fn brush_variant_is_pine(variant: u8) -> bool {
+    variant > 0 && [0, 1, 3, 4, 6, 7, 9, 10].contains(&(variant - 1))
+}

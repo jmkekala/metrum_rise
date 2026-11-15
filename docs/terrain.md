@@ -2560,11 +2560,12 @@ radius control from the panel, which leaves a preset choice and a clear. Ctrl an
 step the radius geometrically, because no fixed step serves both a one-tree cursor and a 1 km
 clear-cut, and stepping down clamps on the minimum so the point dispatch stays reachable. The
 camera must not zoom on that combination, so `_handle_zoom_wheel` refuses a ctrl-held wheel.
-Shift and the wheel cycle the tool-owned ordered brush options (Conifer, Broadleaf, Bush, Rock),
-wrapping in both directions and synchronizing the dropdown without firing its selection handler.
-Each option maps a display label to an existing native species ordinal; adding an option requires
-only extending that list. The popup forwards both wheel gestures; Ctrl takes priority when both
-modifiers are held, and Shift also suppresses camera zoom. `E` toggles planting/erasing while the
+Shift and the wheel cycle the tool-owned ordered brush options, wrapping in both directions; the
+Terrain palette (`terrain_panel.gd`) opens the option's category and marks its picture tile. Each
+option maps a display label, a menu category and a tooltip line for a mix to a native preset
+ordinal; adding an option requires only extending that list (its picture comes from Rust's
+`get_vegetation_preset_sample` for the preset). Ctrl takes priority when both modifiers are held,
+and Shift also suppresses camera zoom. `E` toggles planting/erasing while the
 vegetation tool is active, sharing mode state with the Remove toggle. The ring reports footprint
 and mode by size and colour. On option or mode changes, an outlined billboard `Label3D` above its
 centre shows the option name or `Remove`, using `UIStyle.TEXT_PRIMARY` or `TEXT_ALERT`. The label
@@ -2620,14 +2621,14 @@ first four ordinals are the species the brush offered before, unpinned and at fu
 an unpinned preset produces the same plants it produced before the table existed.
 
 The table holds eleven and the brush offers nine. Four are unpinned species, four are the named
-trees (pine, spruce, birch, aspen), and three are mixes. `Mixed forest 1` keeps 0.85 of the
+trees (pine, spruce, birch, aspen), and three are mixes. `Mixed forest` keeps 0.85 of the
 lattice at Finnish growing-stock weights - pine 50, spruce 30, birch 15, aspen 5 - which is
-about 530 stems/ha against the real 400-700 of a managed stand. `Mixed forest 2` keeps 0.10,
+about 530 stems/ha against the real 400-700 of a managed stand. `Scattered trees` keeps 0.10,
 about 62 stems/ha, and widens the scale band to `0.95-1.45` because a tree with room around it
-is larger than one that grew up under a canopy. `Mixed forest 3` keeps 0.35, narrows the mix to
-birch and pine, and lowers the band to `0.45-0.75`. The three are numbered rather than named
-because only the first describes a real stand: the other two move the density dial and the size
-dial without yet reading as any particular place.
+is larger than one that grew up under a canopy. `Young forest` keeps 0.35, narrows the mix to
+birch and pine, and lowers the band to `0.45-0.75`. The menu names them for what the player sees
+(a managed stand, trees standing apart, small trees); only the first describes a real stand, the
+other two move the density dial and the size dial.
 
 The brush does not offer the unpinned conifer and broadleaf. Once pine and spruce are both
 nameable, "conifer" is an unnamed two-to-one mix of them, inherited from how the renderer

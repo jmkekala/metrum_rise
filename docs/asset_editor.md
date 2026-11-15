@@ -2153,6 +2153,7 @@ Required fields for every asset:
 Optional common fields:
 
 - `thumbnail`: relative path to preview image
+- `icon`: the name of one of the game's HUD icons (`godot/assets/ui/icons/<icon>.svg`, lowercase letters, digits and underscores) shown on the asset's build-menu tile, so assets of one service class tell themselves apart (the bundled parking lots use `parking_lot_small` and `parking_lot`). Without it, or when the game has no such icon (logged on the `events` debug channel), the tile shows the class icon. The editor keeps it as authored
 - `asset_set`: lower-case slug for content grouping. For buildings, the current runtime still uses this field name for upgrade-family identity, but the intended clearer building-side concept is `upgrade_family`
 - `tags`: array of strings
 

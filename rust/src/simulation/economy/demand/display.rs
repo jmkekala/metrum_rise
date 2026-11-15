@@ -9,6 +9,19 @@ use super::diagnostics::{
 };
 use super::system::DemandSystem;
 
+/// One zone's growth for the HUD: the figures as numbers for icons, the conditions they cannot
+/// show as sentences, and the whole account as text.
+#[derive(Debug, Default, PartialEq)]
+pub(crate) struct GrowthDisplay {
+    pub(crate) projects: usize,
+    /// (key, value) in display order; empty before the first assessment.
+    pub(crate) figures: Vec<(&'static str, u64)>,
+    /// Constraints and rejections the figures do not show, one sentence each.
+    pub(crate) notes: Vec<String>,
+    /// Figures as sentences, then the notes.
+    pub(crate) text: String,
+}
+
 /// Everything [`DemandSystem::growth_display`] reads: equal keys give equal summaries, so a
 /// publisher rebuilds the strings only when the key moves (`CODE-26`).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -30,7 +43,7 @@ impl DemandSystem {
 
     /// Three R/C/I project counts and explanations from the last hourly assessment.
     /// O(1) in city size. Strings allocate only when the UI requests presentation data.
-    pub(crate) fn growth_display(&self) -> [(usize, String); 3] {
+    pub(crate) fn growth_display(&self) -> [GrowthDisplay; 3] {
         self.last_building_action_diagnostics
             .iter()
             .map(|(use_kind, record)| {
@@ -49,19 +62,33 @@ fn describe_growth(
     admission: &HouseholdAdmissionDiagnostics,
     residential: bool,
     cheat: bool,
-) -> (usize, String) {
+) -> GrowthDisplay {
     if !record.assessed {
-        return (
-            0,
-            "Waiting for the next hourly growth assessment.".to_owned(),
-        );
+        let waiting = "Waiting for the next hourly growth assessment.".to_owned();
+        return GrowthDisplay {
+            projects: 0,
+            figures: Vec::new(),
+            notes: vec![waiting.clone()],
+            text: waiting,
+        };
     }
     let projects = record.spawn_selected + record.queued as usize + record.constructing as usize;
+    let mut figures = vec![
+        ("selected", record.spawn_selected as u64),
+        ("queued", u64::from(record.queued)),
+        ("constructing", u64::from(record.constructing)),
+    ];
+    let mut notes = Vec::new();
     let mut text = format!(
         "Latest hourly assessment\n{} newly selected · {} queued · {} under construction",
         record.spawn_selected, record.queued, record.constructing,
     );
     if residential {
+        figures.extend([
+            ("housing_needed", u64::from(record.housing_needed_slots)),
+            ("vacant_homes", u64::from(admission.vacant_household_slots)),
+            ("job_slots", u64::from(admission.move_in_job_slots)),
+        ]);
         let _ = write!(
             text,
             "\n{} household places needed before selecting homes.",
@@ -73,33 +100,35 @@ fn describe_growth(
             admission.vacant_household_slots, admission.move_in_job_slots
         );
         if admission.connected_border_count == 0 {
-            text.push_str("\nArrivals need an outside road connection.");
+            notes.push("Arrivals need an outside road connection.".to_owned());
         }
         if admission.income_rejections > 0 {
-            let _ = write!(
-                text,
-                "\n{} applicants could not cover household costs from recurring income.",
+            notes.push(format!(
+                "{} applicants could not cover household costs from recurring income.",
                 admission.income_rejections
-            );
+            ));
         }
         if admission.worker_housing_rejections > 0 {
-            let _ = write!(
-                text,
-                "\n{} applicants deferred to preserve homes reserved for workers.",
+            notes.push(format!(
+                "{} applicants deferred to preserve homes reserved for workers.",
                 admission.worker_housing_rejections
-            );
+            ));
         }
         if record.spawn_not_needed > 0 {
-            let _ = write!(
-                text,
-                "\n{} home sites unused: current needs and workplace reservations are covered.",
+            notes.push(format!(
+                "{} home sites unused: current needs and workplace reservations are covered.",
                 record.spawn_not_needed
-            );
+            ));
         }
     }
     if !record.sites.has_assets {
-        text.push_str("\nNo eligible building assets for this use.");
+        notes.push("No eligible building assets for this use.".to_owned());
     }
+    figures.extend([
+        ("free_lots", record.sites.free_lots as u64),
+        ("candidates", record.spawn_candidates as u64),
+    ]);
+    // The free-lot figure shows an empty zone; the sentence stays in the full text.
     if record.sites.free_lots == 0 {
         text.push_str("\nNo free zoned lots for this use.");
     } else {
@@ -132,7 +161,7 @@ fn describe_growth(
         ),
     ] {
         if count > 0 {
-            let _ = write!(text, "\n{count} {reason}.");
+            notes.push(format!("{count} {reason}."));
         }
     }
     if record.spawn_rejected_absorption
@@ -140,12 +169,21 @@ fn describe_growth(
         + record.spawn_rejected_workforce
         > 0
     {
-        text.push_str("\nNo viable alternative was found on the rejected sites.");
+        notes.push("No viable alternative was found on the rejected sites.".to_owned());
     }
     if cheat {
-        text.push_str("\nGrowth cheat enabled: economic entry checks are bypassed.");
+        notes.push("Growth cheat enabled: economic entry checks are bypassed.".to_owned());
     }
-    (projects, text)
+    for note in &notes {
+        text.push('\n');
+        text.push_str(note);
+    }
+    GrowthDisplay {
+        projects,
+        figures,
+        notes,
+        text,
+    }
 }
 
 #[cfg(test)]
@@ -160,7 +198,8 @@ mod tests {
             assessed: true,
             ..Default::default()
         };
-        let (projects, text) = describe_growth(record, &admission, false, false);
+        let GrowthDisplay { projects, text, .. } =
+            describe_growth(record, &admission, false, false);
         assert_eq!(projects, 0);
         assert!(text.contains("No free zoned lots"));
         assert!(text.contains("No eligible building assets"));
@@ -177,7 +216,8 @@ mod tests {
         record.spawn_rejected_absorption = 2;
         record.spawn_rejected_viability = 1;
         record.spawn_rejected_workforce = 2;
-        let (projects, text) = describe_growth(record, &admission, false, false);
+        let GrowthDisplay { projects, text, .. } =
+            describe_growth(record, &admission, false, false);
         assert_eq!(projects, 6);
         for reason in [
             "1 newly selected",
@@ -204,7 +244,7 @@ mod tests {
         };
         assert!(
             describe_growth(record, &admission, true, false)
-                .1
+                .text
                 .contains("Waiting")
         );
         let record = BuildingActionDiagnostics {
@@ -212,7 +252,7 @@ mod tests {
             housing_needed_slots: 7,
             ..record
         };
-        let (_, text) = describe_growth(record, &admission, true, true);
+        let text = describe_growth(record, &admission, true, true).text;
         for reason in [
             "7 household places needed",
             "outside road connection",

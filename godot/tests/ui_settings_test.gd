@@ -44,6 +44,7 @@ func _run() -> void:
 		_test_frame_settings()
 		_test_shadow_quality()
 		_test_single_road_preview_mode()
+		await _test_overlay_swallows_clicks()
 	if had_config:
 		var file := FileAccess.open(Settings.CFG_PATH, FileAccess.WRITE)
 		file.store_buffer(original)
@@ -193,6 +194,40 @@ func _benchmark(style: Script) -> void:
 		samples.sort()
 		print("UI_SCALE_BENCH " + JSON.stringify({"labels": count, "median_us": samples[4], "samples_us": samples}))
 		container.free()
+
+# A click on an Options row (rows pass the mouse up for their hover) must not fall through to
+# the city as unhandled input, where it inspected the building under the menu.
+func _test_overlay_swallows_clicks() -> void:
+	# The headless window is 64 x 64; the row must be on screen for the click to land on it.
+	var window_size := root.size
+	root.size = Vector2i(1600, 900)
+	var probe := ClickProbe.new()
+	root.add_child(probe)
+	var menu = preload("res://scripts/ui/options_menu.gd").new()
+	root.add_child(menu)
+	menu.popup_options("gameplay")
+	await process_frame
+	await process_frame
+	var row: Control = menu._panels["display"][0].get_child(1)
+	var click := InputEventMouseButton.new()
+	click.button_index = MOUSE_BUTTON_LEFT
+	click.position = row.get_global_rect().position + Vector2(20, row.size.y * 0.5)
+	click.global_position = click.position
+	click.pressed = true
+	root.push_input(click)
+	click = click.duplicate()
+	click.pressed = false
+	root.push_input(click)
+	_expect(probe.clicks == 0, "A click on an Options row must not reach the city")
+	menu.free()
+	probe.free()
+	root.size = window_size
+
+class ClickProbe extends Node:
+	var clicks := 0
+	func _unhandled_input(event: InputEvent) -> void:
+		if event is InputEventMouseButton:
+			clicks += 1
 
 func _test_single_road_preview_mode() -> void:
 	# D3 (`ROAD-68-E`): one preview mode, road and terrain together; no setting or menu remains.

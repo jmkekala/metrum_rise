@@ -70,6 +70,7 @@ fn register_test_utility_asset(
             asset_set: None,
             tags: vec![],
             thumbnail: None,
+            icon: None,
             lods: vec![],
             mesh_parts: vec![MeshPart::single_lod0("main", "lod0.glb")],
             anchors: vec![Anchor {
@@ -126,6 +127,7 @@ fn register_explicit_profile_asset(
             asset_set: None,
             tags: vec![],
             thumbnail: None,
+            icon: None,
             lods: vec![],
             mesh_parts: vec![MeshPart::single_lod0("main", "lod0.glb")],
             anchors: vec![Anchor {
@@ -233,6 +235,7 @@ fn register_family_asset_with_economy_profile_and_flat_size(
         asset_set: asset_set.map(str::to_owned),
         tags: vec![],
         thumbnail: None,
+        icon: None,
         lods: vec![],
         mesh_parts: vec![MeshPart::single_lod0("main", "lod0.glb")],
         anchors: vec![Anchor {

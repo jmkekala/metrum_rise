@@ -30,7 +30,7 @@ const KEY_VIEW_DISTANCE := "view_distance"
 const KEY_UI_SCALE := "ui_scale"
 const KEY_HAS_POSITION := "has_position"
 
-const DEFAULT_OPTIONS_CATEGORY := "mods"
+const DEFAULT_OPTIONS_CATEGORY := "display"
 const DEFAULT_OPTIONS_WINDOW_WIDTH := 820
 const DEFAULT_OPTIONS_WINDOW_HEIGHT := 540
 const DEFAULT_FULLSCREEN := false
@@ -285,17 +285,10 @@ static func load_options_window_state() -> Dictionary:
 	}
 	return state
 
-static func save_options_window_state(
-	active_category: String,
-	window_size: Vector2i,
-	window_position: Vector2i
-) -> Error:
+## Remembers the Options tab ("display" or "mods") for the next opening.
+static func save_options_category(category: String) -> Error:
 	var cfg := load_config()
-	cfg.set_value(SECTION_OPTIONS_WINDOW, KEY_ACTIVE_CATEGORY, active_category)
-	cfg.set_value(SECTION_OPTIONS_WINDOW, KEY_WINDOW_WIDTH, window_size.x)
-	cfg.set_value(SECTION_OPTIONS_WINDOW, KEY_WINDOW_HEIGHT, window_size.y)
-	cfg.set_value(SECTION_OPTIONS_WINDOW, KEY_WINDOW_X, window_position.x)
-	cfg.set_value(SECTION_OPTIONS_WINDOW, KEY_WINDOW_Y, window_position.y)
+	cfg.set_value(SECTION_OPTIONS_WINDOW, KEY_ACTIVE_CATEGORY, category)
 	return save_config(cfg)
 
 static func load_window_layout(layout_id: String) -> Dictionary:

@@ -1,18 +1,19 @@
 # SPDX-License-Identifier: GPL-2.0-only
 
-## Floating Junction window for the select tool's junction clicks (`ROAD-95`, round R5c2). It
-## opens beside the click (not over the junction), is movable and resizable like Road
-## Properties, and keeps the game's keyboard (Ctrl+Z undoes with it open). The lane spheres and
-## crosswalk toggles stay in the world (the select tool draws them).
+## The Junction window for the select tool's junction clicks (`ROAD-95`, round R5c2), in the
+## game's card chrome (`inspector_card.gd`, as Road Properties: the header drags it, × closes it).
+## It opens beside the click (not over the junction), fits its rows (scrolling past four) and keeps
+## the game's keyboard (Ctrl+Z undoes with it open). The lane spheres and crosswalk toggles stay in
+## the world (the select tool draws them).
 ## Turn pockets: one row per incoming car road (`junction_pocket_row.gd`), in Rust's order
-## (clockwise from north). Each row's Left / Right / Length ask Rust's verdict on that road end
+## (clockwise from north). Each row's Left / Right / length ask Rust's verdict on that road end
 ## (no geometry preview, D11) and its Apply commits it ("Apply (+N)", Ctrl+Z undoes). The
 ## hovered row's road, else the last changed one's, is highlighted from the junction over the
 ## requested length; the lots a verdict's pocket would take (`ZONE-10`) are outlined with the
 ## bulldoze highlight and its row names the buildings it demolishes. After an edit or an undo
 ## (a new render generation) the window reads the arms again and keeps each unapplied request
-## whose arm is still there. A lane transition
-## node or a node without car roads shows no Turn pockets section, only why.
+## whose arm is still there. A lane transition node or a node without car roads shows no rows,
+## only why.
 ## Lane rules (`ROAD-119`): when the junction's lane rules leave an approach lane without a turn
 ## (Rust's `no_movement` on its lane handle), a warning above the rows counts those lanes and says
 ## how to fix them; the select tool draws their handles orange. A lane rule edit publishes a new
@@ -22,16 +23,18 @@
 extends Node
 
 const UIStyle = preload("res://scripts/ui/ui_style.gd")
-const WindowResizeHandles = preload("res://scripts/ui/window_resize_handles.gd")
+const Card = preload("res://scripts/ui/inspector_card.gd")
+const HudIcons = preload("res://scripts/ui/hud_icons.gd")
 const JunctionPocketRow = preload("res://scripts/ui/junction_pocket_row.gd")
-# Four rows fit without scrolling at the default size; more arms scroll.
-const DEFAULT_SIZE := Vector2i(440, 480)
-const MIN_SIZE := Vector2i(420, 300)
+const SIZE := Vector2i(430, 200)
+# Rows past this many scroll.
+const ROWS_SHOWN := 4
 
 var _simulation_node: Node
 var _select_tool: Node
 
 var _window: Window
+var _body: Control
 var _summary_label: Label
 var _lane_warning: Label
 var _pocket_heading: Label
@@ -55,26 +58,18 @@ func _ready() -> void:
 func _build_window() -> void:
 	_window = Window.new()
 	_window.title = "Junction"
-	_window.unresizable = false
 	_window.exclusive = false
 	_window.visible = false
 	_window.close_requested.connect(close_window)
-	# The size persists; the position follows each click.
-	UIStyle.set_persistent_window_layout(_window, "junction", DEFAULT_SIZE, MIN_SIZE, get_viewport(), false)
 	UIStyle.keep_keyboard_with_game(_window)
-
-	var body := PanelContainer.new()
-	body.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	body.add_theme_stylebox_override("panel", UIStyle.window_body_style())
-	_window.add_child(body)
-	var margin := MarginContainer.new()
-	margin.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	for side in ["margin_left", "margin_right", "margin_top", "margin_bottom"]:
-		margin.add_theme_constant_override(side, UIStyle.PAD_WINDOW)
-	body.add_child(margin)
-	var root_vbox := VBoxContainer.new()
-	root_vbox.add_theme_constant_override("separation", 8)
-	margin.add_child(root_vbox)
+	var parts := Card.build(_window)
+	UIStyle.set_window_base_size(_window, SIZE, SIZE, get_viewport())
+	_body = _window.get_child(0)
+	(parts["eyebrow"] as Label).text = "Junction"
+	(parts["title"] as Label).text = "Turn pockets"
+	(parts["subtitle"] as Label).text = "A lane of its own for turning traffic"
+	HudIcons.set_icon(parts["icon"], "junction")
+	var root_vbox: VBoxContainer = parts["content"]
 
 	# Shown only while the lane rules leave an approach lane without a turn.
 	_lane_warning = Label.new()
@@ -84,20 +79,14 @@ func _build_window() -> void:
 	_lane_warning.visible = false
 	root_vbox.add_child(_lane_warning)
 	# Shown only without rows.
-	_summary_label = Label.new()
-	_summary_label.text = "No turn pockets here: this is a pocket's lane transition or no road comes in. " \
-		+ "Edit a pocket from its junction."
+	_summary_label = Card._label("No turn pockets here: this is a pocket's lane transition or no road comes in. "
+		+ "Edit a pocket from its junction.", 13, UIStyle.TEXT_DIM)
 	_summary_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	UIStyle.set_font_size(_summary_label, 13)
 	root_vbox.add_child(_summary_label)
-	_pocket_heading = Label.new()
-	_pocket_heading.text = "Turn pockets"
-	_pocket_heading.add_theme_color_override("font_color", UIStyle.TEXT_SECTION)
-	UIStyle.set_font_size(_pocket_heading, 14)
+	_pocket_heading = Card.caption("Roads coming in")
 	root_vbox.add_child(_pocket_heading)
 	_scroll = ScrollContainer.new()
 	_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
-	_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	root_vbox.add_child(_scroll)
 	_rows_box = VBoxContainer.new()
 	_rows_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -105,8 +94,17 @@ func _build_window() -> void:
 	_scroll.add_child(_rows_box)
 
 	add_child(_window)
-	WindowResizeHandles.install(_window)
+	_body.minimum_size_changed.connect(_fit_content, CONNECT_DEFERRED)
 	_window.hide()
+
+# The card's height follows its rows, up to ROWS_SHOWN of them; more scroll.
+func _fit_content() -> void:
+	var shown := 0.0
+	for i in mini(_rows.size(), ROWS_SHOWN):
+		shown += _rows[i].get_combined_minimum_size().y + (6.0 if i > 0 else 0.0)
+	_scroll.custom_minimum_size.y = shown
+	_window.size.y = mini(int(_body.get_combined_minimum_size().y), int(get_viewport().get_visible_rect().size.y * 0.9))
+	UIStyle.keep_window_bottom_on_screen(_window, get_viewport())
 
 ## Shows junction `node_id`, clicked at `screen_pos`: opening beside the click, or staying where
 ## the player put it unless it would cover the click.
@@ -118,6 +116,7 @@ func show_for_node(node_id: int, screen_pos: Vector2 = Vector2.ZERO) -> void:
 	_last_changed_key = ""
 	_hovered = -1
 	refresh()
+	_fit_content()
 	var covers := Rect2(Vector2(_window.position), Vector2(_window.size)).has_point(screen_pos)
 	if not _window.visible or covers:
 		UIStyle.place_window_near_cursor(_window, screen_pos, get_viewport())
@@ -128,7 +127,6 @@ func show_for_node(node_id: int, screen_pos: Vector2 = Vector2.ZERO) -> void:
 func close_window() -> void:
 	_node = -1
 	if _window:
-		UIStyle.save_persistent_window_layout(_window)
 		_window.hide()
 	if _select_tool:
 		_select_tool.clear_pocket_end()
@@ -149,6 +147,8 @@ func refresh() -> void:
 		row.apply_pressed.connect(_on_row_apply.bind(index))
 		row.mouse_entered.connect(_on_row_hovered.bind(index, true))
 		row.mouse_exited.connect(_on_row_hovered.bind(index, false))
+		# The scroll hides a row's growth (its verdict line) from the card: refit on it.
+		row.minimum_size_changed.connect(_fit_content, CONNECT_DEFERRED)
 		_rows_box.add_child(row)
 		_rows.append(row)
 		if kept.has(_key(arm)):

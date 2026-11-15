@@ -35,6 +35,10 @@ func _build_ui() -> void:
 	exclusive = true
 	visible = false
 	close_requested.connect(_on_close_requested)
+	window_input.connect(func(event: InputEvent):
+		if UIStyle.is_mouse_back(event):
+			set_input_as_handled()
+			_on_close_requested())
 	# No viewport argument: the helper resolves the parent's, which is the surface this window
 	# opens on. Passing this window would clamp its size against its own current size.
 	UIStyle.set_window_base_size(self, Vector2i(480, 150), Vector2i(400, 140))

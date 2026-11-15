@@ -512,6 +512,7 @@ fn register_test_asset_with_profile(
         asset_set: None,
         tags: vec![],
         thumbnail: None,
+        icon: None,
         lods: vec![],
         mesh_parts: vec![MeshPart::single_lod0("main", "lod0.glb")],
         anchors: vec![Anchor {
@@ -569,6 +570,7 @@ fn register_test_city_service_asset(
         asset_set: None,
         tags: vec![],
         thumbnail: None,
+        icon: None,
         lods: vec![],
         mesh_parts: vec![MeshPart::single_lod0("main", "lod0.glb")],
         anchors: vec![Anchor {
@@ -624,6 +626,7 @@ fn register_test_field_asset(
         asset_set: None,
         tags: vec![],
         thumbnail: None,
+        icon: None,
         lods: vec![],
         mesh_parts: vec![MeshPart::single_lod0("main", "lod0.glb")],
         anchors: vec![Anchor {

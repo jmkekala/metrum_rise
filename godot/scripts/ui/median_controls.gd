@@ -5,6 +5,9 @@
 ## cross-section controls for the road builder's median part (RB2). It holds no rule: Rust
 ## validates every request (a width outside its style's range, a median a layout cannot carry);
 ## the view shows the values and reports changes through `changed`.
+##
+## Compact (the road builder's part popup): one row without labels, the styles as swatches of
+## their surface (the name is the swatch's tooltip) and the width as "- 1.0 m +".
 extends VBoxContainer
 
 ## The player changed a control: the median the controls now show (style 0 is none, 1 painted,
@@ -12,6 +15,27 @@ extends VBoxContainer
 signal changed(median_style: int, median_width: float)
 
 const UIStyle = preload("res://scripts/ui/ui_style.gd")
+const RoadPartGlyph = preload("res://scripts/ui/road_builder/road_part_glyph.gd")
+const SWATCH_SIDE := 30.0
+
+# A style drawn as its surface: the selected one ringed in the accent, a hovered one lit.
+class Swatch extends Button:
+	var style := 0
+
+	func _draw() -> void:
+		var inner := Rect2(Vector2(4.0, 4.0), size - Vector2(8.0, 8.0))
+		if style == 0:
+			draw_rect(inner, RoadPartGlyph.ASPHALT)
+			draw_line(inner.position, inner.end, RoadPartGlyph.MARKING, 1.5, true)
+		else:
+			RoadPartGlyph.draw_surface(self, inner, {"kind": "median", "style": style})
+		var ring := Rect2(Vector2(1.0, 1.0), size - Vector2(2.0, 2.0))
+		if button_pressed:
+			draw_rect(ring, UIStyle.HUD_ACCENT, false, 2.0)
+		elif is_hovered() and not disabled:
+			draw_rect(ring, Color(1, 1, 1, 0.45), false, 1.0)
+		if disabled:
+			draw_rect(inner, Color(0, 0, 0, 0.5))
 const LABEL_WIDTH := 92.0
 ## Median style names by Rust's style code.
 const MEDIAN_STYLE_NAMES: Array[String] = ["None", "Painted", "Grass", "Paving"]
@@ -29,18 +53,26 @@ var _width_buttons: Array[Button] = []
 var _width_label: Label
 var _editable := true
 
-func _init(font_size: int = 14) -> void:
+func _init(font_size: int = 14, compact := false) -> void:
 	add_theme_constant_override("separation", 4)
-	var style_row := _row("Median", font_size)
+	var style_row := _compact_row() if compact else _row("Median", font_size)
 	var group := ButtonGroup.new()
 	for style in MEDIAN_STYLE_NAMES.size():
-		var button := _button(MEDIAN_STYLE_NAMES[style], font_size, _on_style.bind(style))
+		var button: Button
+		if compact:
+			button = _swatch(style)
+		else:
+			button = _button(MEDIAN_STYLE_NAMES[style], font_size, _on_style.bind(style))
+			button.custom_minimum_size.x = 0.0
 		button.toggle_mode = true
 		button.button_group = group
-		button.custom_minimum_size.x = 0.0
 		_style_buttons.append(button)
 		style_row.add_child(button)
-	var width_row := _row("Median width", font_size)
+	var width_row := style_row if compact else _row("Median width", font_size)
+	if compact:
+		var gap := Control.new()
+		gap.custom_minimum_size.x = 6.0
+		width_row.add_child(gap)
 	for step in [-1, 1]:
 		var button := _button("-" if step < 0 else "+", font_size, _on_width_step.bind(step))
 		_width_buttons.append(button)
@@ -50,6 +82,8 @@ func _init(font_size: int = 14) -> void:
 			_width_label.custom_minimum_size.x = 52.0
 			_width_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 			UIStyle.set_font_size(_width_label, font_size)
+			_width_label.tooltip_text = "Median width"
+			_width_label.mouse_filter = Control.MOUSE_FILTER_PASS
 			width_row.add_child(_width_label)
 	_show()
 
@@ -62,6 +96,22 @@ func _row(text: String, font_size: int) -> HBoxContainer:
 	row.add_child(label)
 	add_child(row)
 	return row
+
+func _compact_row() -> HBoxContainer:
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 2)
+	add_child(row)
+	return row
+
+func _swatch(style: int) -> Swatch:
+	var swatch := Swatch.new()
+	swatch.style = style
+	swatch.flat = true
+	swatch.tooltip_text = MEDIAN_STYLE_NAMES[style]
+	swatch.focus_mode = Control.FOCUS_NONE
+	swatch.custom_minimum_size = Vector2.ONE * UIStyle.scaled_px(SWATCH_SIDE)
+	swatch.pressed.connect(_on_style.bind(style))
+	return swatch
 
 func _button(text: String, font_size: int, on_pressed: Callable) -> Button:
 	var button := Button.new()

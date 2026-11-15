@@ -982,3 +982,49 @@ mod edits;
 mod placements;
 mod preview;
 mod relay;
+
+#[test]
+fn road_type_pockets_undo_composes_erased_and_inherited_paint() {
+    let (mut core, _) = street_with_houses();
+    let before = painted(&core);
+    let roads = live_edges(&core);
+    let depth = core.undo_stack.len();
+    core.precompute_road_mesh_data();
+    let outcome = core.commit_road_with_pockets(
+        RoadCommitRequest {
+            points: vec![Vector3::new(0.0, 0.0, -140.0), Vector3::ZERO],
+            fwd_lanes: 1,
+            bkw_lanes: 1,
+            snap_to_existing_roads: true,
+            profile: crate::simulation::network::road_edit::RoadProfile::FollowGround,
+            median: None,
+            parking: Default::default(),
+            attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
+            preview: None,
+        },
+        crate::simulation::network::road_types::RoadTypePockets {
+            left: true,
+            right: true,
+            body_m: 40.0,
+        },
+        std::time::Instant::now(),
+        Default::default(),
+    );
+    assert!(outcome.committed, "{}", outcome.rejection);
+    assert!(
+        outcome.pocket_refusals.is_empty(),
+        "{:?}",
+        outcome
+            .pocket_refusals
+            .iter()
+            .map(|r| &r.reason)
+            .collect::<Vec<_>>()
+    );
+    core.adopt_pending_cell_lots();
+    assert_eq!(core.undo_stack.len(), depth + 1);
+    assert!(core.undo_action_internal());
+    assert_eq!(painted(&core), before);
+    assert_eq!(live_edges(&core), roads);
+    core.prepare_cell_lots_internal();
+    assert_references_consistent(&core);
+}

@@ -187,6 +187,7 @@ pub(super) fn register_test_asset_with_family_level(
         asset_set: asset_set.map(str::to_owned),
         tags: vec![],
         thumbnail: None,
+        icon: None,
         lods: vec![],
         mesh_parts: vec![MeshPart::single_lod0("main", "lod0.glb")],
         anchors: vec![Anchor {
@@ -250,6 +251,7 @@ pub(super) fn register_test_power_service_asset(
         asset_set: None,
         tags: vec![],
         thumbnail: None,
+        icon: None,
         lods: vec![],
         mesh_parts: vec![MeshPart::single_lod0("main", "lod0.glb")],
         anchors: vec![Anchor {

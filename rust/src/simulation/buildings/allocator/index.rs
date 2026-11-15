@@ -217,6 +217,38 @@ impl BuildingAllocator {
         best
     }
 
+    /// The building whose site footprint holds the point: a direct hit, never the nearest one
+    /// beside it. Where footprints overlap, the one with the nearest lot center (then the
+    /// lower index). `O(sites in the point's 64 m site cell)` through `site_cells`.
+    pub(crate) fn building_idx_containing(
+        &mut self,
+        world_x: f32,
+        world_z: f32,
+        zone_cell_m: f32,
+    ) -> Option<usize> {
+        if !world_x.is_finite() || !world_z.is_finite() {
+            return None;
+        }
+        self.prepare_site_query_chunks(zone_cell_m);
+        let point = godot::prelude::Vector2::new(world_x, world_z);
+        let (sites, buildings) = (&self.building_sites, &self.buildings);
+        let mut best: Option<(f32, usize)> = None;
+        self.site_cells
+            .visit([world_x, world_z, world_x, world_z], |idx| {
+                if !sites[idx].contains_point(point) {
+                    return;
+                }
+                let building = &buildings[idx];
+                let dx = building.center_x - world_x;
+                let dz = building.center_y - world_z;
+                let distance_sq = dx * dx + dz * dz;
+                if best.is_none_or(|(d, i)| distance_sq < d || (distance_sq == d && idx < i)) {
+                    best = Some((distance_sq, idx));
+                }
+            });
+        best.map(|(_, idx)| idx)
+    }
+
     /// Repopulates the internal zone and vacancy indices (Bug B16/B16a fix).
     ///
     /// Each building's entries are derived on the pool, then filled in building order, the

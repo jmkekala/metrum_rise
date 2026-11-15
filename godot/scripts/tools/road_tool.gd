@@ -631,6 +631,8 @@ func _draw_commit_answer(answer: Dictionary) -> void:
 		# there, so the dialog never sits over a stroke still following the pointer).
 		if int(answer["border_node"]) >= 0:
 			_prompt_border_connection(int(answer["border_node"]))
+		# The road type's pockets Rust could not build on the committed stroke (`road_pocket_notice.gd`).
+		_show_pocket_refusals(answer.get("pocket_refusals", []))
 		return
 	var graded = _graded_renderer()
 	var epoch := int(answer["graded_epoch"])
@@ -716,3 +718,7 @@ func _log_click_detail(
 			float(Time.get_ticks_usec() - total_start_us) / 1000.0,
 		]
 	)
+
+# Optional pockets never reject the road: each refused junction gets a short fading reason.
+func _show_pocket_refusals(refusals: Array) -> Array:
+	return preload("res://scripts/ui/road_pocket_notice.gd").show_refusals(hud, refusals)

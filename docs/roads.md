@@ -341,6 +341,29 @@ The acceptance (`TRAFFIC-23`) is in [`traffic.md`](traffic.md#advance-lane-choic
 
 ### Turn pockets (`ROAD-95`)
 
+**Road-type defaults (`ROAD-119`).** A custom type can request Left, Right or both, with
+neither selected meaning none. Its body length uses the existing 60 m default and 20–300 m
+range in 10 m steps. On a stroke, only its new incoming car approaches at junctions receive
+these requests, including both endpoints and intermediate crossings/joins. Resident roads
+and their split descendants do not acquire the selected type's pockets. Targets are captured
+in stroke-edge/end order and followed through local split lineage, so the two ends remain
+independent. Every request runs the existing pocket edit's checks, land take and dependent
+migration. A refusal leaves that approach without a pocket, keeps the road, and shows the
+existing Rust reason in a short label over the junction that fades after four seconds.
+The two requested roles are one existing pocket request: if either cannot be offered, that
+approach receives neither. Editing an existing road's type does not apply these drawing defaults: nor does a graded stroke that the
+road tool cuts into ground, bridge and tunnel parts (`ROAD-112` batch commit), whose strokes
+commit without the type's pockets.
+
+The stroke and accepted pockets publish together and have one composed local undo record.
+Graph and paint inverses retain pre-stroke values; dependent migrations restore in reverse.
+As with existing road edits, demolished buildings are not resurrected by undo. Hover runs the
+same pocket checks on its local graph replica and shows the accepted pockets. Final graded
+terrain covers the complete stroke; no intermediate base-road tiles replace the pocket preview.
+Work is O(stroke edges × local junction degree + summed pocket closure work), plus O(M log M)
+for composing M local journal entries. There is no per-pocket city scan, graph copy or routing
+publication; the stroke retains its existing single publication and lane/entrance refresh.
+
 A turn pocket adds a lane for one turn on the last stretch of a road before a junction. Round R5a1
 (2026-11-04, branch `port-r5-pockets`, not landed) built the model, the geometry, the lanes and the
 save; the pocket edit, its API and the tool are rounds R5a2-R5b2 (`PLAN-R5` decisions D1-D17, the
@@ -742,14 +765,16 @@ Properties has no pocket section any more (one way to do it).
 - **The Junction window** (round R5c2; the select tool and `ui/junction_window.gd` are the
   controllers, each row the view `ui/junction_pocket_row.gd`). A junction click in the select tool
   opens it beside the click (`UIStyle.place_window_near_cursor`: right of it, or left near the
-  screen edge; a visible window the player moved stays unless it would cover the click), movable
-  and resizable, its size kept between sessions; the lane spheres, connection arches and
+  screen edge; a visible window the player moved stays unless it would cover the click), in the
+  Building Inspector's card chrome (`inspector_card.gd`), sized to its rows; the lane spheres, connection arches and
   crosswalk toggles stay in the world. The window keeps the game's keyboard
   (`UIStyle.keep_keyboard_with_game`), so Ctrl+Z undoes with it open. The length stepper's arrows
   step it by 10 m and leave the keyboard to the game; a click on its number keeps the window's
-  keyboard for typing until Enter or a click elsewhere (the wheel steps it while typing). Its text
-  stays editable: Godot 4.7's spin box ignores its arrows when its text is not, which left the
-  length stuck at 60 m until the user's play-test (2026-11-05). Its "Turn pockets" section has one compact row per incoming car
+  keyboard for typing until Enter or a click elsewhere (the wheel steps it). The stepper is the
+  row's own (− and + buttons around an editable number, `LengthStepper`), not Godot's spin box,
+  whose arrows stopped when its text was not editable (the user's play-test, 2026-11-05). A
+  junction that opens the window carries a dot while the select tool is on, and a click opens it
+  only on its paved piece (`get_junction_markers`, `pick_road_piece`, see [`ui.md`](ui.md)). Its "Turn pockets" section has one compact row per incoming car
   road, from Rust's `get_junction_pockets(node)`: one entry per car road arm with a lane into the
   junction (an outgoing one-way arm has no approach and no row), clockwise from north by the
   bearing from the junction to the arm's point 20 m out (ties by edge id), each
@@ -758,8 +783,9 @@ Properties has no pocket section any more (one way to do it).
   empty for a custom layout) and that road's `fwd_lanes`, `bkw_lanes`, `median_style`,
   `median_width`; empty for a lane transition node or a node without such an arm.
   `O(degree + arm points)`, reusing `PocketEndView::of` per arm; it reads, never edits. A row:
-  "From west · 2-Lane Road" (eight compass sectors, north = -Z; a custom road reads "2 + 2 lanes,
-  Grass 5.0 m") with what its end has ("Right, 60 m" or "No pocket"); Left and Right check boxes
+  "From west" over "2-Lane Road" (eight compass sectors, north = -Z; a custom road reads "2 + 2
+  lanes, Grass 5.0 m") with what its end has as a pill ("Right, 60 m" or "No pocket"); Left and
+  Right turn-arrow toggles
   (a side the road cannot carry is disabled, its refusal text as the tooltip, unless the pocket
   has it, so it can be removed); a Length stepper, 20-300 m in 10 m steps, default 60 m or the
   pocket's own length, "from the junction"; the verdict line (Rust's refusal through
@@ -767,14 +793,14 @@ Properties has no pocket section any more (one way to do it).
   change") beside "Apply (+N)" with Rust's `cost_delta`. No geometry preview (D11): the verdict is
   the commit's own check (`preview_road_pocket` on each change, `set_road_pocket` on Apply through
   the select tool, which redraws the junction's lanes). The hovered row's road, else the last
-  changed row's, is highlighted from the junction over the requested length (the selection
-  highlight's material, cyan at alpha 0.3, as wide as the road's widest edge), and that row is
+  changed row's, is highlighted from the junction over the requested length (a flat cyan
+  material at alpha 0.3, as wide as the road's widest edge), and that row is
   outlined in the same cyan. After an Apply or an undo (a new network render generation) the
   window reads the arms again: a pocket edit splits and joins the arm, never the junction, so the
   node keeps its id, and each unapplied request whose arm (edge and end) is still there is kept
   with a fresh verdict. A lane transition node or a node without an incoming car road shows no
-  Turn pockets section, only a line saying to edit a pocket from its junction. The window opens at
-  440 x 480 px (minimum 420 x 300): four rows fit without scrolling, more arms scroll.
+  Turn pockets section, only a line saying to edit a pocket from its junction. The card is 430 px
+  wide and as tall as its content: up to four rows show without scrolling, more arms scroll.
 - **Lane handles and lane rules** (`ROAD-119`, 2026-11-16). A junction click draws one handle per
   vehicle lane of each arm end (Rust's `get_node_lanes`, `O(arms + lanes + the node's rules)`), a
   schematic row 5 m out along the arm, 1 m apart, in the order the lanes run across the road: each
@@ -11943,7 +11969,7 @@ Rounds RB3a (Rust model, library and stroke), RB3b and RB3b2 (in place, costs), 
 2026-11-03/04. The user's decisions of 2026-11-03 are binding: sidewalks none or both,
 independent of zoning; speed per type; costs by type; Road Properties changes all three in place.
 
-- **Attributes.** A type has `speed_kmh` (20-120 in steps of 10, `speed_out_of_range` off the
+- **Attributes.** A type has `speed_kmh` (a Finnish posted limit, 20, 30, 40, 50, 60, 70, 80, 100 or 120 km/h, each with its C32 sign; Finland posts no 90 or 110; `speed_out_of_range` off the
   grid; every built-in 50; a walkway has none and lists 0), `sidewalks` (its sides, `ROAD-107`:
   0 none, 1 left, 2 right, 3 both) and `zoning`. A stroke carries them as `RoadAttributes` from `set_road_tool_attributes` through the
   preview, commit, attempt record and plan (`is_for`: preview = commit); the edge gets `FOOT`
@@ -12114,6 +12140,53 @@ D1-D5, D22, D23).
 
 #### The road builder (ROAD-101, round RB2)
 
+**Built-in turn pockets (`ROAD-119`, branch `feat/road-type-pockets`).** The builder has
+independent Left/Right arrow switches and a metre stepper, using Rust's Junction-window limits.
+The cross-section stage annotates the selected arrows and length “at junctions”, because these
+are local approach lanes rather than lanes along the whole type. Neither switch means none;
+the remembered length stays editable when a role is enabled. The controls sit on the speed sign
+row; footpaths hide them. A layout that cannot take its pockets cannot be saved:
+`RoadTypePockets::fits` refuses a left pocket on a two-way road whose median is painted or
+narrower than a lane plus the 0.3 m kerb stub (3.8 m, `pocket_requires_wide_median`), and more
+than four lanes per direction with the pockets (`pocket_lane_limit`). `check_road_layout`
+returns it as `pocket_refusal`, which disables Save and names the reason while the strip still
+draws the layout. Library create and edit enforce it; loading does not, so older types stay usable
+and their approaches are refused at drawing time.
+Creating, editing and duplicating custom types retain the setting. The additive `pockets`
+object (`left`, `right`, `body_m`) lives in `user://road_types.json`, version **2 unchanged**,
+using the library's existing defaulted-field convention. Older entries and built-ins default
+to no pockets; malformed lengths are rejected without rewriting the file. City save format is
+unchanged: placed pockets use the existing edge records. See [Turn pockets](#turn-pockets-road-95)
+for drawing, hover, refusal and undo semantics.
+
+ROAD-119 validation (2026-11-12, Apple M2 Pro, two Rayon workers, unpinned release runs):
+`cargo test --lib road_type` passed 31 tests (2 ignored); `cargo test --lib road_pockets`
+passed 31 (3 ignored). `cargo clippy --all-targets` is clean. `cargo doc --no-deps` succeeds
+with no missing-doc warnings (28 existing private-link warnings). The final `./run.sh --test`
+used Python 3.12 and `METRUM_SKIP_GODOT_IMPORT_REPAIR=1` after a complete import: 2,391 Rust
+tests passed, 12 failed, 218 skipped; every failure also reproduces on pristine `0ddc50bb`.
+These are the walking proof, bulk lane rebuild, six census/plan save-continuation cases,
+byte-identical town saves and three road geometry reference probes. The Godot vehicle/road
+chain passes, including the extended builder; the main chain stops at the unchanged asset
+editor's two Ctrl+click selection assertions. The builder also passes a rendered run with
+actual refused-stroke feedback and undo. No excluded UI source was changed.
+
+`RAYON_NUM_THREADS=2 METRUM_COMMIT_POCKETS=both METRUM_COMMIT_PREVIEW=1 $TEST_BINARY
+benchmark_commit_locality --ignored --nocapture` passed at 0/1k/10k/30k remote agents,
+buildings and parcels (83/108/333/833 graph edges including the fixed neighborhood).
+All local graph/render/graded/land products match across tiers. Median complete stroke times
+were 58.61/70.78/70.73/70.34 ms; the local surface stage was 53.05/64.92/65.05/64.51 ms,
+and snapshot publication 0.10/0.13/0.13/0.29 ms. Setup was separate: neighborhood construction
+0.51 s, background insertion 0.018/0.061/0.531/1.709 s. The original whole-stroke publication
+still has its existing city-dependent snapshot cost; no new per-pocket publication is added.
+
+`RAYON_NUM_THREADS=2 $BENCH_BINARY --bench --noplot pocket_chunk_emit_only`
+(`road_chunk_benchmark`, 20 samples, 1 s warm-up, 3 s measurement, control/branch/branch/control)
+keeps the same local mesh digest. Means of the two runs per build were 346.02 → 345.27 us at
+one occupied chunk and 360.84 → 355.79 us at 1,024 chunks, within the observed run spread.
+The control is pristine `0ddc50bb`; binaries were built separately, copied before switching
+builds, and verified by digest. These are fresh measurements, not historical acceptance.
+
 "Road builder..." (the Roads row's drop-down) opens the **Road Builder** window
 (`ui/road_builder/`: `road_builder_window.gd` the controller; the strip, part tiles, part popup,
 library column and glyphs are views). It is a persistent, movable, resizable, non-exclusive
@@ -12144,8 +12217,8 @@ Opening re-reads the library file and starts a new layout, the 2-Lane Road's.
   None), and for any part Move left / Move right (swaps with an interior neighbour) and Remove.
 - **Attributes** (round RB3c). Under the strip: **Left sidewalk** and **Right sidewalk**
   (`ROAD-107`: one per end, left and right as the road is drawn; a type without one sends no
-  sidewalk part at that end), **Speed** (a stepper on Rust's grid,
-  `get_road_types().speeds`: 20-120 km/h in steps of 10; hidden for a footpath, which has no
+  sidewalk part at that end), **Speed** (Finnish speed limit signs on Rust's grid,
+  `get_road_types().speeds.kmh`: 20, 30, 40, 50, 60, 70, 80, 100 or 120 km/h, so 80 steps to 100; hidden for a footpath, which has no
   speed), **Zoning** and **Street lights** (round RB3e; ticked for a new type). A new type whose
   speed first reaches `no_zoning_from_kmh` (80) gets zoning off once, unless the player set the
   Zoning checkbox; an edited type keeps its own. Under
@@ -12155,8 +12228,9 @@ Opening re-reads the library file and starts a new layout, the 2-Lane Road's.
   right: nothing is built on that side". Create and Save send the
   controls' speed, zoning and street lights: an edited type keeps its own. Zoning is disabled
   with no sidewalk on either side, its value kept (`ROAD-109`).
-- **Name and create.** The footer's name field shows Rust's suggested name ("2+2 Grass 3 m")
-  until the player types one. Create road (Save when editing) is enabled only when the layout
+- **Name and create.** The footer's name field shows Rust's suggested name ("2+2 Grass 3 m";
+  a type with turn pockets adds " Pocket L", " Pocket R" or " Pockets", `ROAD-119`) until the
+  player types one. Create road (Save when editing) is enabled only when the layout
   passes and `check_road_type_name` accepts the name (empty, over 40 characters, control
   characters, or another type's name ignoring case, built-ins included) and the library can be
   written; the line under the strip gives the first reason it is not. Enter creates, Esc and
@@ -19650,13 +19724,15 @@ cosmetic: traffic ignores them.
   Zebras lie on node pieces (`ROAD-68-C` follow-up), so signs stand on the span sections
   extended by the node's section at the zebra's inner edge, where the curb stops curving; the
   sign for traffic leaving the junction is held there, 1.5 m before the crossing centre.
-- **Speed limits (C32-30/40/50/60/80).** As in Finnish towns, where the limit is mostly set for an
+- **Speed limits (C32-20/30/40/50/60/70/80/100/120).** As in Finnish towns, where the limit is mostly set for an
   area, a sign stands only where it tells the driver something: for traffic turning into a street
   at a junction of three or more arms whose limit differs from another road arm there, or, as a
   repeat after the junction, into a street of at least 300 m (120 m for roads of more than two
   lanes). Dead ends and degree-two nodes get none, nor streets under 40 m. The sign stands at least
   25 m past the crossing sign. The value is the nearest C32 to the edge's speed limit, within
-  5 km/h. The first version put a sign at every street start beside the crossing sign, which made
+  5 km/h; every road type speed has its sign, and an older road at 90 or 110 km/h (which Finland
+  does not post) has none. C32-20, -70, -100 and -120 share C32-80's mesh, with their faces in
+  free cells of the same atlas. The first version put a sign at every street start beside the crossing sign, which made
   both unreadable and crowded every corner of a busy junction
   (`screenshots/2026-10-09-roads/signs-zebra-before.png`).
 - **Warnings for awkward roads.** Measured from the edge's physical centreline with the road

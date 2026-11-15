@@ -2,6 +2,7 @@
 
 //! Regression tests for simulation state, snapshots, demand cadence, and budget behavior.
 
+mod border_connection;
 mod building_lod_fixture;
 mod stream_pond_fixture;
 mod building_site_terrain;
@@ -1390,6 +1391,7 @@ fn register_test_asset(
         asset_set: None,
         tags: vec![],
         thumbnail: None,
+        icon: None,
         lods: vec![],
         mesh_parts: vec![MeshPart::single_lod0("main", "lod0.glb")],
         anchors: vec![Anchor {

@@ -29,6 +29,80 @@ use super::roadbed::{FOOTPATH_MIN_WIDTH_M, SHOULDER_BAND_WIDTH_M};
 use super::types::TransitFlags;
 use crate::config;
 
+/// Pockets requested on each new approach into a junction (`ROAD-119`).
+/// Roles are relative to the approaching driver; length uses the Junction window's body grid.
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct RoadTypePockets {
+    /// Add a left-turn lane at the approach.
+    pub left: bool,
+    /// Add a right-turn lane at the approach.
+    pub right: bool,
+    /// Body length measured from the junction, in metres.
+    pub body_m: f32,
+}
+
+impl Default for RoadTypePockets {
+    fn default() -> Self {
+        Self {
+            left: false,
+            right: false,
+            body_m: super::pockets::POCKET_BODY_DEFAULT_M,
+        }
+    }
+}
+
+impl RoadTypePockets {
+    /// The words a suggested name gains for these pockets: " Pocket L", " Pocket R",
+    /// " Pockets" for both, or nothing. Sides are the approaching driver's, as in the builder.
+    pub fn name_suffix(self) -> &'static str {
+        match (self.left, self.right) {
+            (false, false) => "",
+            (true, false) => " Pocket L",
+            (false, true) => " Pocket R",
+            (true, true) => " Pockets",
+        }
+    }
+
+    /// Whether every approach of a road built as `section` can take these pockets, as
+    /// [`Edge::validate_pocket`](super::graph::Edge::validate_pocket) decides per approach: at
+    /// most [`MAX_LANES_PER_DIRECTION`](super::graph::MAX_LANES_PER_DIRECTION) lanes each way
+    /// with the pockets (`pocket_lane_limit`), and a left pocket on a two-way road with a median
+    /// only inside a raised one a lane plus a kerb stub wide (`pocket_requires_wide_median`).
+    /// O(1).
+    pub fn fits(self, section: &RoadCrossSection) -> Result<(), &'static str> {
+        use super::graph::{MAX_LANES_PER_DIRECTION, POCKET_MEDIAN_STUB_M};
+        let pocket_lanes = u8::from(self.left) + u8::from(self.right);
+        if pocket_lanes > 0
+            && section.fwd_lanes.max(section.bkw_lanes) + pocket_lanes > MAX_LANES_PER_DIRECTION
+        {
+            return Err("pocket_lane_limit");
+        }
+        if self.left
+            && section.fwd_lanes > 0
+            && section.bkw_lanes > 0
+            && section.median.is_some_and(|median| {
+                !median.is_raised()
+                    || median.width_m < crate::config::LANE_WIDTH + POCKET_MEDIAN_STUB_M
+            })
+        {
+            return Err("pocket_requires_wide_median");
+        }
+        Ok(())
+    }
+
+    /// Checks the shared pocket length grid, including when both roles are off. O(1).
+    pub fn validate(self) -> Result<(), &'static str> {
+        use super::pockets::{POCKET_BODY_MAX_M, POCKET_BODY_MIN_M, POCKET_BODY_STEP_M};
+        if !self.body_m.is_finite()
+            || !(POCKET_BODY_MIN_M..=POCKET_BODY_MAX_M).contains(&self.body_m)
+            || self.body_m % POCKET_BODY_STEP_M != 0.0
+        {
+            return Err("invalid_pocket_dimensions");
+        }
+        Ok(())
+    }
+}
+
 /// One part of a road layout, as the road builder shows it from the side.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum RoadPart {
@@ -354,27 +428,21 @@ pub fn layout_widths(parts: &[RoadPart]) -> (Vec<f32>, f32, f32) {
     (widths, total - sidewalks, total + shoulders_m)
 }
 
-/// The slowest speed a road type may set, in km/h.
-pub const MIN_SPEED_KMH: u16 = 20;
-/// The fastest speed a road type may set, in km/h.
-pub const MAX_SPEED_KMH: u16 = 120;
-/// The step between a road type's speeds, in km/h.
-pub const SPEED_STEP_KMH: u16 = 10;
+/// The speed limits a road type may set, in km/h, slowest first: the Finnish posted limits, each
+/// with its C32 sign in the world (Finland posts no 90 or 110).
+pub const SPEEDS_KMH: [u16; 9] = [20, 30, 40, 50, 60, 70, 80, 100, 120];
 /// The speed of every built-in car road, in km/h (`config::DEFAULT_URBAN_ROAD_SPEED_MS`).
 pub const DEFAULT_SPEED_KMH: u16 = 50;
 
-/// A road type's speed for `section` in km/h, or `speed_out_of_range` outside
-/// [`MIN_SPEED_KMH`]..=[`MAX_SPEED_KMH`] or off the [`SPEED_STEP_KMH`] grid. A walkway has no
-/// speed: always 0, whatever is asked. `O(1)`.
+/// A road type's speed for `section` in km/h, or `speed_out_of_range` for one not in
+/// [`SPEEDS_KMH`]. A walkway has no speed: always 0, whatever is asked. `O(1)`.
 pub fn check_speed_kmh(section: RoadCrossSection, speed_kmh: i64) -> Result<u16, &'static str> {
     if section.is_walkway() {
         return Ok(0);
     }
     u16::try_from(speed_kmh)
         .ok()
-        .filter(|speed| {
-            (MIN_SPEED_KMH..=MAX_SPEED_KMH).contains(speed) && speed % SPEED_STEP_KMH == 0
-        })
+        .filter(|speed| SPEEDS_KMH.contains(speed))
         .ok_or("speed_out_of_range")
 }
 
@@ -550,8 +618,14 @@ pub fn same_name(a: &str, b: &str) -> bool {
 
 /// The cross-section's [`RoadCrossSection::base_name`], or the first of "<base> (2)",
 /// "<base> (3)", ... that `taken` does not hold. `O(taken names x attempts)` on a UI action.
-pub fn suggested_name(section: RoadCrossSection, taken: impl Fn(&str) -> bool) -> String {
-    let base = section.base_name();
+/// The type's turn pockets follow the layout (`ROAD-119`): "1+1 Pocket L", "1+1 Pocket R",
+/// "1+1 Pockets" for both.
+pub fn suggested_name(
+    section: RoadCrossSection,
+    pockets: RoadTypePockets,
+    taken: impl Fn(&str) -> bool,
+) -> String {
+    let base = section.base_name() + pockets.name_suffix();
     if !taken(&base) {
         return base;
     }
@@ -610,6 +684,8 @@ pub struct RoadType {
     pub street_lights: bool,
     /// What it builds, or why it is unusable (kept in the library file, listed, never drawn).
     pub verdict: Result<RoadCrossSection, RoadTypeRefusal>,
+    /// Optional turn lanes applied when a stroke creates junction approaches.
+    pub pockets: RoadTypePockets,
 }
 
 impl RoadType {
@@ -624,6 +700,7 @@ impl RoadType {
             zoning: true,
             street_lights: true,
             verdict: Ok(builtin.cross_section),
+            pockets: RoadTypePockets::default(),
         }
     }
 

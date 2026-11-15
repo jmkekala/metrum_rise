@@ -1,0 +1,17 @@
+<!-- SPDX-License-Identifier: GPL-2.0-only -->
+<svg xmlns="http://www.w3.org/2000/svg" width="96" height="96" viewBox="0 0 64 64">
+  <defs>
+    <linearGradient id="grassTop" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#a6d06a"/><stop offset="1" stop-color="#5f9636"/></linearGradient>
+    <linearGradient id="soilL" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#946238"/><stop offset="1" stop-color="#6a4222"/></linearGradient>
+    <linearGradient id="soilR" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#7a4f2b"/><stop offset="1" stop-color="#55341a"/></linearGradient>
+    <linearGradient id="spruce" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#3f7a3a"/><stop offset="1" stop-color="#1f4a24"/></linearGradient>
+  </defs>
+  <polygon points="6,32 32,45 32,58 6,45" fill="url(#soilL)"/>
+  <polygon points="32,45 58,32 58,45 32,58" fill="url(#soilR)"/>
+  <polygon points="32,19 58,32 32,45 6,32" fill="url(#grassTop)"/>
+  <polygon points="32,19 58,32 57,32.5 32,20" fill="#fff" opacity=".35"/>
+  <rect x="31" y="30" width="2" height="5" fill="#5a3a1c"/>
+  <polygon points="32,5 25,18 39,18" fill="url(#spruce)"/>
+  <polygon points="32,10 23.5,24 40.5,24" fill="url(#spruce)"/>
+  <polygon points="32,15 22,31 42,31" fill="url(#spruce)"/>
+</svg>

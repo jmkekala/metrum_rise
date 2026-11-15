@@ -416,7 +416,7 @@ pub fn reason_text(reason: &str, facts: &ReasonFacts) -> Option<String> {
         "parking_requires_vehicle_road" => "Only roads with lanes can have parking".into(),
         "parking_code_out_of_range" => "Unknown parking setting".into(),
         "layout_unknown_part" => "Unknown road part".into(),
-        "speed_out_of_range" => "Speed between 20 and 120 km/h, in steps of 10".into(),
+        "speed_out_of_range" => "Speed must be 20, 30, 40, 50, 60, 70, 80, 100 or 120 km/h".into(),
         "name_empty" => "Enter a name".into(),
         "name_too_long" => "At most 40 characters".into(),
         "name_invalid_characters" => "No line breaks or control characters".into(),

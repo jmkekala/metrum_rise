@@ -442,17 +442,21 @@ impl SimulationNode {
                 .expect("road tool context lock poisoned");
             context.land = land;
             let surface_generation = context.view.surface_generation;
-            let preview = Arc::new(context.preview_road_with_hue(RoadPreviewRequest {
-                surface_generation,
-                points: points.to_vec(),
-                fwd_lanes,
-                bkw_lanes,
-                snap_to_existing_roads,
-                profile,
-                median: spec.median,
-                parking: spec.parking,
-                attributes: spec.attributes,
-            }, hue));
+            let preview = Arc::new(context.preview_road_with_hue(
+                RoadPreviewRequest {
+                    surface_generation,
+                    points: points.to_vec(),
+                    fwd_lanes,
+                    bkw_lanes,
+                    snap_to_existing_roads,
+                    profile,
+                    median: spec.median,
+                    parking: spec.parking,
+                    attributes: spec.attributes,
+                },
+                spec.pockets,
+                hue,
+            ));
             context.last_preview = Some(Arc::clone(&preview));
             context
                 .graded

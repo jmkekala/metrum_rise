@@ -19,6 +19,7 @@ use crate::simulation::network::roadbed::EdgeEnd;
 
 pub(super) mod buildings;
 mod cells;
+mod road_types;
 
 // A four-way crossing at the origin of two 300 m roads drawn west to east and north to south
 // (`west_to_east`; else east to west, so the west arm's stored ends swap). Returns the core and

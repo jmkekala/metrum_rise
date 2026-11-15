@@ -22,10 +22,13 @@
 //! reads as 50 km/h with zoning, and the next write stores the file as version 2, its entries as
 //! they were. `street_lights` came later in version 2 (`ROAD-101` RB3e), without a version
 //! change: an entry without it reads as lit and is written back as it was until edited.
+//! `pockets` (`ROAD-119`) is also additive in version 2: `{left, right, body_m}`; absent
+//! means neither role and the shared 60 m default. City save format is unchanged.
 
 use super::{
     BUILTIN_ROAD_TYPES, DEFAULT_SPEED_KMH, LayoutRefusal, RoadCrossSection, RoadPart, RoadType,
-    RoadTypeRefusal, check_layout, check_speed_kmh, clean_name, same_name, suggested_name,
+    RoadTypePockets, RoadTypeRefusal, check_layout, check_speed_kmh, clean_name, same_name,
+    suggested_name,
 };
 use crate::assets::authoring::files::write_atomic;
 use crate::simulation::network::graph::{MedianStyle, RoadMedian};
@@ -74,6 +77,8 @@ struct StoredType {
     // Added within version 2: an entry without it is lit.
     #[serde(default = "default_true")]
     street_lights: bool,
+    #[serde(default)]
+    pockets: RoadTypePockets,
 }
 
 fn default_speed_kmh() -> u16 {
@@ -192,11 +197,15 @@ impl RoadTypeLibrary {
         }
     }
 
-    /// The name a new type of `section` is offered, unique among all types
+    /// The name a new type of `section` with `pockets` is offered, unique among all types
     /// ([`suggested_name`]).
-    pub fn suggested_name(&mut self, section: RoadCrossSection) -> String {
+    pub fn suggested_name(
+        &mut self,
+        section: RoadCrossSection,
+        pockets: RoadTypePockets,
+    ) -> String {
         let types = self.types();
-        suggested_name(section, |name| {
+        suggested_name(section, pockets, |name| {
             types.iter().any(|ty| same_name(&ty.name, name))
         })
     }
@@ -220,7 +229,8 @@ impl RoadTypeLibrary {
     /// Adds a type named `name` (trimmed) with `parts`, `speed_kmh`, `zoning` and
     /// `street_lights`, and returns
     /// its new id. Refused when the file cannot be written, the layout fails [`check_layout`],
-    /// the speed [`check_speed_kmh`] (`speed_out_of_range`), the name breaks a rule
+    /// the speed [`check_speed_kmh`] (`speed_out_of_range`), the pockets do not fit the layout
+    /// ([`RoadTypePockets::fits`]), the name breaks a rule
     /// ([`clean_name`]) or another type has it (`name_taken`), or the write fails
     /// (`library_write_failed`).
     pub fn create(
@@ -230,14 +240,26 @@ impl RoadTypeLibrary {
         speed_kmh: i64,
         zoning: bool,
         street_lights: bool,
+        pockets: RoadTypePockets,
     ) -> Result<String, RoadTypeRefusal> {
         self.reload_for_write()?;
-        let (_, speed_kmh) = check_type(parts, speed_kmh)?;
+        let (section, speed_kmh) = check_type(parts, speed_kmh)?;
+        pockets
+            .validate()
+            .map_err(|reason| RoadTypeRefusal::new(reason, "pocket body"))?;
+        pockets
+            .fits(&section)
+            .map_err(|reason| RoadTypeRefusal::new(reason, "turn pockets"))?;
         let name = self.free_name(name, None)?;
         let id = format!("{CUSTOM_ID_PREFIX}{}", self.next_id);
         self.next_id += 1;
-        self.entries
-            .push(stored(&id, &name, parts, (speed_kmh, zoning, street_lights)));
+        self.entries.push(stored(
+            &id,
+            &name,
+            parts,
+            (speed_kmh, zoning, street_lights),
+            pockets,
+        ));
         self.write()?;
         Ok(id)
     }
@@ -247,6 +269,7 @@ impl RoadTypeLibrary {
     /// built roads keep their own. Refused as [`Self::create`], and for a built-in
     /// (`road_type_builtin`) or an id the file does not hold (`road_type_unknown`). An unusable
     /// entry may be fixed this way.
+    #[allow(clippy::too_many_arguments)]
     pub fn update(
         &mut self,
         id: &str,
@@ -255,12 +278,25 @@ impl RoadTypeLibrary {
         speed_kmh: i64,
         zoning: bool,
         street_lights: bool,
+        pockets: RoadTypePockets,
     ) -> Result<(), RoadTypeRefusal> {
         self.reload_for_write()?;
         let entry = self.entry_index(id)?;
-        let (_, speed_kmh) = check_type(parts, speed_kmh)?;
+        let (section, speed_kmh) = check_type(parts, speed_kmh)?;
+        pockets
+            .validate()
+            .map_err(|reason| RoadTypeRefusal::new(reason, "pocket body"))?;
+        pockets
+            .fits(&section)
+            .map_err(|reason| RoadTypeRefusal::new(reason, "turn pockets"))?;
         let name = self.free_name(name, Some(entry))?;
-        self.entries[entry] = stored(id, &name, parts, (speed_kmh, zoning, street_lights));
+        self.entries[entry] = stored(
+            id,
+            &name,
+            parts,
+            (speed_kmh, zoning, street_lights),
+            pockets,
+        );
         self.write()
     }
 
@@ -416,7 +452,13 @@ pub(crate) fn check_type(
 }
 
 // `attributes`: the speed in km/h, zoning and street lights.
-fn stored(id: &str, name: &str, parts: &[RoadPart], attributes: (u16, bool, bool)) -> Value {
+fn stored(
+    id: &str,
+    name: &str,
+    parts: &[RoadPart],
+    attributes: (u16, bool, bool),
+    pockets: RoadTypePockets,
+) -> Value {
     let (speed_kmh, zoning, street_lights) = attributes;
     let stored = StoredType {
         id: id.to_string(),
@@ -425,6 +467,7 @@ fn stored(id: &str, name: &str, parts: &[RoadPart], attributes: (u16, bool, bool
         speed_kmh,
         zoning,
         street_lights,
+        pockets,
     };
     serde_json::to_value(stored).expect("a road type serialises")
 }
@@ -449,6 +492,7 @@ fn custom_type(entry: &Value, listed: &[RoadType]) -> RoadType {
         zoning: true,
         street_lights: true,
         verdict: Err(refusal),
+        pockets: RoadTypePockets::default(),
     };
     let stored = match StoredType::deserialize(entry) {
         Ok(stored) => stored,
@@ -482,7 +526,13 @@ fn custom_type(entry: &Value, listed: &[RoadType]) -> RoadType {
     } else if listed.iter().any(|ty| same_name(&ty.name, &stored.name)) {
         Err(RoadTypeRefusal::new("name_taken", stored.name.as_str()))
     } else {
-        check_type(&parts, stored.speed_kmh.into()).map_err(RoadTypeRefusal::from)
+        stored
+            .pockets
+            .validate()
+            .map_err(|reason| RoadTypeRefusal::new(reason, "pocket body"))
+            .and_then(|()| {
+                check_type(&parts, stored.speed_kmh.into()).map_err(RoadTypeRefusal::from)
+            })
     };
     // As listed: a walkway's speed is 0, whatever the entry holds.
     let speed_kmh = verdict.as_ref().map_or(stored.speed_kmh, |(_, speed)| *speed);
@@ -495,6 +545,7 @@ fn custom_type(entry: &Value, listed: &[RoadType]) -> RoadType {
         speed_kmh,
         zoning: stored.zoning,
         street_lights: stored.street_lights,
+        pockets: stored.pockets,
         verdict,
     }
 }

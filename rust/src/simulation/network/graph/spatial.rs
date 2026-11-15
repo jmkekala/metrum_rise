@@ -33,6 +33,22 @@ impl RegionGraph {
         Self::get_chunk_coords(self.nodes[node_id as usize].pos)
     }
 
+    /// Every edge the R-tree holds with its envelope, sorted by edge id, for index consistency
+    /// checks against the live edges.
+    #[cfg(test)]
+    pub(crate) fn spatial_edge_entries(&self) -> Vec<(usize, [f32; 4])> {
+        let mut entries: Vec<_> = self
+            .spatial_edge_rt
+            .iter()
+            .map(|entry| {
+                let (low, high) = (entry.envelope.lower(), entry.envelope.upper());
+                (entry.edge_idx, [low[0], low[1], high[0], high[1]])
+            })
+            .collect();
+        entries.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.partial_cmp(&b.1).unwrap()));
+        entries
+    }
+
     /// Inserts an edge into the R-Tree spatial index.
     pub fn add_to_spatial_index(&mut self, edge_idx: usize) {
         let edge = &self.edges[edge_idx];

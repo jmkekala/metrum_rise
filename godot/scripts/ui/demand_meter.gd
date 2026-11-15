@@ -7,6 +7,10 @@
 extends VBoxContainer
 
 const UIStyle = preload("res://scripts/ui/ui_style.gd")
+const Tooltip = preload("res://scripts/ui/hud_tooltip.gd")
+
+## A click opens the city panel, which lists the reasons behind each bar.
+signal pressed
 
 const BAR_ORDER := ["residential", "commercial", "industrial"]
 const BAR_COLORS := {
@@ -18,6 +22,7 @@ const BAR_COLORS := {
 var _chart: Control
 var _baseline: ColorRect
 var _bars: Dictionary = {}
+var _tracks: Array[ColorRect] = []
 var _counts: Dictionary = {}
 var _details: Dictionary = {}
 var _projects := {
@@ -33,6 +38,7 @@ func _ready() -> void:
 	var counts := HBoxContainer.new()
 	counts.add_theme_constant_override("separation", 2)
 	add_child(counts)
+	counts.hide()
 	for key in BAR_ORDER:
 		var label := Label.new()
 		label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -43,31 +49,26 @@ func _ready() -> void:
 		counts.add_child(label)
 		_counts[key] = label
 
-	var chart_shell := PanelContainer.new()
-	chart_shell.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	chart_shell.add_theme_stylebox_override(
-		"panel",
-		UIStyle.panel_style(Color(0.05, 0.05, 0.07, 0.85), 8, Color(0.65, 0.70, 0.80, 0.45))
-	)
-	add_child(chart_shell)
-
-	var chart_margin := MarginContainer.new()
-	chart_margin.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	chart_margin.add_theme_constant_override("margin_left", 6)
-	chart_margin.add_theme_constant_override("margin_right", 6)
-	chart_margin.add_theme_constant_override("margin_top", 5)
-	chart_margin.add_theme_constant_override("margin_bottom", 5)
-	chart_shell.add_child(chart_margin)
-
 	_chart = Control.new()
-	_chart.custom_minimum_size = Vector2(56, 34)
+	_chart.custom_minimum_size = Vector2(48, 22)
 	_chart.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_chart.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_chart.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	chart_margin.add_child(_chart)
+	add_child(_chart)
+	# Empty tracks distinguish a zero assessment from a missing/broken chart.
+	for i in range(3):
+		var track := ColorRect.new()
+		track.color = Color(_meter_bar_color(BAR_ORDER[i]), 0.28)
+		_chart.add_child(track)
+		_tracks.append(track)
+		track.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	# The hover names the meter; the reasons (tooltip_text) live in the Tab city panel.
+	Tooltip.new().attach(self, "City growth")
+	set_meta(Tooltip.BODY_META, "")
+	set_meta(Tooltip.SHORTCUT_META, "Tab")
+	mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
 
 	_baseline = ColorRect.new()
 	_baseline.color = Color(0.82, 0.86, 0.92, 0.55)
+	_baseline.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_chart.add_child(_baseline)
 
 	for key in BAR_ORDER:
@@ -81,6 +82,15 @@ func _ready() -> void:
 
 	_layout_chart()
 	_update_tooltip()
+
+func _gui_input(event: InputEvent) -> void:
+	var click := event as InputEventMouseButton
+	if click and click.pressed and click.button_index == MOUSE_BUTTON_LEFT:
+		pressed.emit()
+		accept_event()
+
+func _get_tooltip(_at_position: Vector2) -> String:
+	return ""
 
 func set_growth(growth: Dictionary) -> void:
 	for key in BAR_ORDER:
@@ -102,7 +112,7 @@ func _layout_chart() -> void:
 	_baseline.position = Vector2(0, baseline_y - 1.0)
 	_baseline.size = Vector2(chart_size.x, 2.0)
 
-	var gap := 6.0
+	var gap := 4.0
 	var bar_width := floorf((chart_size.x - gap * float(BAR_ORDER.size() - 1)) / float(BAR_ORDER.size()))
 	bar_width = maxf(bar_width, 8.0)
 	var used_width := bar_width * float(BAR_ORDER.size()) + gap * float(BAR_ORDER.size() - 1)
@@ -116,6 +126,8 @@ func _layout_chart() -> void:
 		var key: String = BAR_ORDER[i]
 		var bar: ColorRect = _bars[key]
 		var count: int = _projects[key]
+		_tracks[i].position = Vector2(left + float(i) * (bar_width + gap), baseline_y - max_height)
+		_tracks[i].size = Vector2(bar_width, max_height)
 		bar.visible = count > 0
 		var height := max_height * float(count) / float(scale)
 		bar.position = Vector2(left + float(i) * (bar_width + gap), baseline_y - height)

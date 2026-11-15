@@ -20,6 +20,7 @@ use crate::debug_log;
 use crate::nodes::sim::benchmark::road_edit::RoadEditMetrics;
 use crate::simulation::core::pure_job::JobStart;
 use crate::simulation::network::road_edit::{FinalizedRoadGeometry, RoadProfile};
+use crate::simulation::network::road_types::RoadTypePockets;
 use crate::simulation::network::roadbed::RoadbedDelta;
 use crate::simulation::zoning::cells::CellBounds;
 use godot::prelude::Vector3;
@@ -65,6 +66,22 @@ pub(crate) struct RoadCommitAck {
     /// The stroke that refused a batch (`ROAD-112` round F); `None` for a single stroke or a
     /// committed batch.
     pub(crate) refused_stroke: Option<usize>,
+    /// Refused optional pockets, with the junction and approach that could not receive them.
+    pub(crate) pocket_refusals: Vec<StrokePocketRefusal>,
+}
+
+/// One optional approach pocket refused after the road itself committed.
+pub(crate) struct StrokePocketRefusal {
+    /// Junction position for player feedback, independent of edge splitting.
+    pub(crate) position: Vector3,
+    /// Original stroke edge and junction node identify the approach.
+    pub(crate) edge: usize,
+    /// Junction id.
+    pub(crate) node: u32,
+    /// Approach bearing clockwise from north, matching the Junction window.
+    pub(crate) bearing_deg: f32,
+    /// Existing pocket refusal key, translated by RoadReasonText.
+    pub(crate) reason: String,
 }
 
 /// Result and phase timings of [`SimCore::commit_road`].
@@ -84,6 +101,8 @@ pub(crate) struct RoadCommitOutcome {
     pub(crate) snapshot_ms: f64,
     /// The road-tool surface generation after the command.
     pub(crate) generation: u64,
+    /// Refused optional pockets, with the junction and approach that could not receive them.
+    pub(crate) pocket_refusals: Vec<StrokePocketRefusal>,
 }
 
 impl SimCore {
@@ -99,6 +118,22 @@ impl SimCore {
         road_total: Instant,
         edit_metrics: RoadEditMetrics,
     ) -> RoadCommitOutcome {
+        self.commit_road_with_pockets(
+            request,
+            RoadTypePockets::default(),
+            road_total,
+            edit_metrics,
+        )
+    }
+
+    /// Commits a stroke and requests the selected type's pockets only on its new approaches.
+    pub(crate) fn commit_road_with_pockets(
+        &mut self,
+        request: RoadCommitRequest,
+        pockets: RoadTypePockets,
+        road_total: Instant,
+        edit_metrics: RoadEditMetrics,
+    ) -> RoadCommitOutcome {
         // The previous commit's lots first, outside the pool (`ROAD-68-G` part 7): this edit
         // reads and marks them.
         self.adopt_pending_cell_lots();
@@ -106,13 +141,14 @@ impl SimCore {
         record_crash_phase_for_core(self, "add road shared pool wait");
         crate::thread_pools::install(|| {
             record_crash_phase_for_core(self, "add road shared pool entered");
-            self.commit_road_in_pool(request, road_total, edit_metrics)
+            self.commit_road_in_pool(request, pockets, road_total, edit_metrics)
         })
     }
 
     fn commit_road_in_pool(
         &mut self,
         request: RoadCommitRequest,
+        pockets: RoadTypePockets,
         road_total: Instant,
         edit_metrics: RoadEditMetrics,
     ) -> RoadCommitOutcome {
@@ -121,6 +157,7 @@ impl SimCore {
         let mut stroke = self.commit_stroke_core(
             request,
             StrokePlan::Preview(preview),
+            pockets,
             true,
             road_total,
             edit_metrics,
@@ -144,6 +181,7 @@ impl SimCore {
         &mut self,
         request: RoadCommitRequest,
         plan: StrokePlan,
+        pockets: RoadTypePockets,
         defer_lots: bool,
         road_total: Instant,
         mut edit_metrics: RoadEditMetrics,
@@ -170,7 +208,8 @@ impl SimCore {
         let (reused_plan, reused_pieces) = match plan {
             StrokePlan::Preview(preview) => {
                 let preview = preview.filter(|preview| {
-                    preview.fingerprint == live_fingerprint
+                    preview.pockets == pockets
+                        && preview.fingerprint == live_fingerprint
                         && preview.is_for(
                             &points,
                             fwd_lanes,
@@ -239,27 +278,33 @@ impl SimCore {
         let mut surface_ms = 0.0;
         // The lot regions the edit queued and its dirty edges, planned after the publication.
         let mut deferred_lots = None;
+        let mut pocket_refusals = Vec::new();
         if road_add.committed {
             self.transit_network.bulk_load = false;
             record_crash_phase_for_core(self, "add road geometry finalize");
 
             let FinalizedRoadGeometry {
-                dirty_edges: dirty,
+                dirty_edges: mut dirty,
+                stroke_edges,
                 affected_nodes: _affected_nodes,
                 merged_nodes,
                 profile_us: dt_profile_us,
                 clips_us: dt_clips_us,
                 ..
-            } = road_add
-                .finalized_geometry
-                .take()
-                .unwrap_or_else(|| self.finalize_bulk_road_geometry_for_dirty_edges());
-            let dirty_count = dirty.len();
-            edit_metrics.dirty_edges = dirty_count;
+            } = road_add.finalized_geometry.take().unwrap_or_else(|| {
+                let mut geometry = self.finalize_bulk_road_geometry_for_dirty_edges();
+                geometry.stroke_edges = std::mem::take(&mut road_add.stroke_edges);
+                geometry
+            });
+            let roadbed_before =
+                (pockets.left || pockets.right).then(|| self.transit_network.roadbed.snapshot());
             let surface_start = Instant::now();
             record_crash_phase_for_core(self, "add road render validation");
-            // A batch's dry run judged its pieces' plotted land (`ROAD-112` round F2).
+            // A batch's dry run judged its pieces' plotted land (`ROAD-112` round F2). A pocket
+            // preview shows the complete stroke: the base transaction installs only its base
+            // pieces, and accepted pockets follow through the shared checks below.
             let (delta, graded, plotted_judged) = match &reused_pieces {
+                _ if roadbed_before.is_some() => (None, None, false),
                 Some(PiecesSource::Preview(preview)) => match preview.pieces.as_ref() {
                     Some(pieces) => (Some(&pieces.delta), Some(&pieces.graded), false),
                     None => (None, None, false),
@@ -273,9 +318,35 @@ impl SimCore {
                 &road_add.regeneration,
                 plotted_judged,
                 &mut edit_metrics,
+                roadbed_before.is_none(),
             );
             surface_ms = surface_start.elapsed().as_secs_f64() * 1000.0;
             if road_add.committed {
+                pocket_refusals = self.apply_stroke_pockets(&stroke_edges, pockets, &mut dirty);
+                if let Some(before) = roadbed_before {
+                    let graded_start = Instant::now();
+                    let preview_graded = match &reused_pieces {
+                        Some(PiecesSource::Preview(preview)) => {
+                            preview.pieces.as_ref().map(|pieces| &pieces.graded)
+                        }
+                        _ => None,
+                    };
+                    let graded = self.stage_committed_graded_tiles(before, preview_graded);
+                    if !self.benchmark_mode
+                        && let Some(record) = self.undo_stack.back_mut()
+                    {
+                        record.graded = graded;
+                    }
+                    edit_metrics.surface_graded_ms = graded_start.elapsed().as_secs_f64() * 1000.0;
+                    let stats = self.last_graded_stats;
+                    edit_metrics.graded_select_ms = stats.select_ms;
+                    edit_metrics.graded_bake_ms = stats.bake_ms;
+                    edit_metrics.graded_adopted = stats.adopted;
+                    edit_metrics.graded_baked = stats.baked;
+                }
+                surface_ms = surface_start.elapsed().as_secs_f64() * 1000.0;
+                let dirty_count = dirty.len();
+                edit_metrics.dirty_edges = dirty_count;
                 let t_inv = Instant::now();
                 // Invalidate agents BEFORE lane rebuild so old lane IDs are still valid.
                 record_crash_phase_for_core(self, "add road lane invalidation");
@@ -365,6 +436,7 @@ impl SimCore {
         edit_metrics.surface_ms = surface_ms;
         StrokeCore {
             committed: road_add.committed,
+            pocket_refusals,
             deferred_lots,
             kept_tiles,
             metrics: edit_metrics,
@@ -449,6 +521,7 @@ impl SimCore {
     ) -> RoadCommitOutcome {
         let StrokeCore {
             committed,
+            pocket_refusals,
             metrics: mut edit_metrics,
             ..
         } = stroke;
@@ -482,6 +555,7 @@ impl SimCore {
             mesh_ms: tail.mesh_ms,
             snapshot_ms: tail.snapshot_ms,
             generation: self.road_tool_surface_generation,
+            pocket_refusals,
         }
     }
 
@@ -526,6 +600,8 @@ enum PiecesSource {
 pub(super) struct StrokeCore {
     /// Whether the stroke was accepted.
     pub(super) committed: bool,
+    /// Refused optional pockets of an accepted stroke.
+    pub(super) pocket_refusals: Vec<StrokePocketRefusal>,
     /// The lot regions the stroke queued and its dirty edges, for the tail's deferred plan.
     pub(super) deferred_lots: Option<(Vec<CellBounds>, HashSet<usize>)>,
     /// The undo record's kept graded tiles' job, which the tail starts.
@@ -584,6 +660,70 @@ impl SubmittedStroke {
 }
 
 impl SimCore {
+    // O(stroke edges * endpoint degree + sum(pocket closure work)). Stable edge/end order.
+    // Endpoints are captured before splitting; later requests resolve through only that node's
+    // incidence, so a pocket at the other end cannot redirect the request to its transition.
+    fn apply_stroke_pockets(
+        &mut self,
+        edges: &[usize],
+        pockets: RoadTypePockets,
+        dirty: &mut HashSet<usize>,
+    ) -> Vec<StrokePocketRefusal> {
+        use crate::simulation::network::pockets::StrokePocketTargets;
+        let mut targets = StrokePocketTargets::new(&self.region_graph, edges, pockets);
+        if targets.is_empty() {
+            return Vec::new();
+        }
+        // Finish the plain stroke's paint inheritance before a pocket opens another erase.
+        self.plan_lots_after_erase();
+        let mut records = if self.benchmark_mode {
+            Vec::new()
+        } else {
+            vec![self.undo_stack.pop_back().expect("stroke checkpoint")]
+        };
+        let mut refused = Vec::new();
+        let mut terrain = self.last_road_terrain_changes.clone();
+        while let Some((original, node, request)) = targets.next(&self.region_graph) {
+            let before = self.region_graph.edge_count();
+            if self.set_stroke_pocket_internal(request, dirty) {
+                targets.record(original, before..self.region_graph.edge_count());
+                let changed = &self.last_road_terrain_changes;
+                terrain.pieces.extend_from_slice(&changed.pieces);
+                terrain.chains.extend_from_slice(&changed.chains);
+                terrain.segments.extend_from_slice(&changed.segments);
+                terrain.portals.extend_from_slice(&changed.portals);
+                let record = self.undo_stack.pop_back().expect("pocket checkpoint");
+                if !self.benchmark_mode {
+                    records.push(record);
+                }
+            } else {
+                let rejection = self
+                    .last_road_rejection
+                    .take()
+                    .expect("pocket refusal has a reason");
+                let view = crate::simulation::network::pockets::PocketEndView::of(
+                    &self.region_graph,
+                    request.edge,
+                    request.end,
+                )
+                .expect("new approach");
+                let bearing_deg = crate::nodes::sim::road_pockets::bearing_out(&view.road);
+                refused.push(StrokePocketRefusal {
+                    bearing_deg,
+                    position: self.region_graph.node(node).pos,
+                    edge: original,
+                    node,
+                    reason: rejection.reason,
+                });
+            }
+        }
+        self.last_road_terrain_changes = terrain;
+        if !records.is_empty() {
+            self.push_stroke_pocket_undo(records);
+        }
+        refused
+    }
+
     // `rebuild_building_entrances_internal` for a commit that queued no lot region
     // (`ROAD-68-G`): the same lot refresh and attachment repair, but only the entrances whose
     // inputs the edit may have changed are derived again (`repair_commit_entrances`).

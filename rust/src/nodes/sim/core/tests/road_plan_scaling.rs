@@ -40,6 +40,7 @@ enum Measured {
     TypeEdit,
     SideEdit,
     PocketEdit,
+    PocketStroke,
     Conversion,
     RingJoin,
 }
@@ -282,6 +283,18 @@ fn populated_ring_join_scaling() {
     );
 }
 
+#[test]
+#[ignore = "unprofiled ROAD-119 hover locality; run alone with --release --ignored --nocapture"]
+fn populated_road_type_pocket_scaling() {
+    measure_populated_road_plan_scaling(
+        false,
+        false,
+        false,
+        CellScenario::None,
+        Measured::PocketStroke,
+    );
+}
+
 // `ROAD-95` round R5a2: a 40 m right turn pocket on the T's side road at the T.
 #[test]
 #[ignore = "unprofiled turn pocket edit locality; run alone with --release --ignored --nocapture"]
@@ -347,6 +360,7 @@ fn measure_populated_road_plan_scaling(
     let tunnel = measured == Measured::Tunnel;
     let mut memory_phase = 0;
     let mut previous_memory_products = None;
+    let mut previous_pocket_products = None;
     if scenario == CellScenario::Memory {
         memory::calibrate(&mut memory_phase);
     }
@@ -529,7 +543,16 @@ fn measure_populated_road_plan_scaling(
             ],
         );
     }
-    for remote_buildings in [0usize, 1_000, 10_000, 100_000] {
+    for remote_buildings in [
+        0usize,
+        1_000,
+        10_000,
+        if measured == Measured::PocketStroke {
+            30_000
+        } else {
+            100_000
+        },
+    ] {
         // Detached fixture insertion uses indexed graph/parcel mutators. Each remote
         // street fronts a row of 256 lots, outside the measured edit's neighborhood.
         let target_roads = remote_buildings.div_ceil(256);
@@ -562,7 +585,8 @@ fn measure_populated_road_plan_scaling(
             building.facing_dir = Vector2::new(0.0, -1.0);
             building.edge_idx = background_base + index / 256;
             building.frontage_t = ((index % 256) as f32 * 24.0 + 12.0) / 6144.0;
-            building.occupancy = 6;
+            // ROAD-119 holds roughly 30k agents at the largest tier, like commit locality.
+            building.occupancy = if measured == Measured::PocketStroke { 1 } else { 6 };
             if fields {
                 let p = Vector2::new(building.center_x, building.center_y + 12.0);
                 core.allocator.field_clearance_mut().set(
@@ -690,7 +714,7 @@ fn measure_populated_road_plan_scaling(
         let mut preview_samples = Vec::new();
         let generation = core.road_tool_surface_generation;
         let points = match measured {
-            Measured::Ground | Measured::Divided | Measured::OneSided => {
+            Measured::Ground | Measured::Divided | Measured::OneSided | Measured::PocketStroke => {
                 vec![Vector3::new(0.0, 0.0, -80.0), Vector3::new(0.0, 0.0, 0.0)]
             }
             Measured::Dissolve | Measured::StubGoes => {
@@ -749,6 +773,58 @@ fn measure_populated_road_plan_scaling(
                 crate::simulation::network::road_types::RoadAttributes::DEFAULT
             },
         };
+        if measured == Measured::PocketStroke {
+            let capture = Instant::now();
+            let mut context = crate::nodes::sim::core::RoadPreviewContext::capture(snapshot);
+            let capture_ms = capture.elapsed().as_secs_f64() * 1000.0;
+            for iteration in 0..103 {
+                let start = Instant::now();
+                let pose = context.preview_road_with_pockets(
+                    request(),
+                    crate::simulation::network::road_types::RoadTypePockets {
+                        left: false,
+                        right: true,
+                        body_m: 40.0,
+                    },
+                );
+                let elapsed = start.elapsed().as_secs_f64() * 1000.0;
+                assert!(
+                    pose.validation.is_valid,
+                    "{}",
+                    pose.validation.invalid_reason
+                );
+                let pieces = pose.pieces.expect("pocket hover pieces");
+                // Store only geometry: background ids differ, local vertex and triangle bits do not.
+                let mut products: Vec<_> = pieces
+                    .delta
+                    .pieces()
+                    .filter_map(|(_, mesh)| {
+                        mesh.map(|mesh| format!("{:?} {:?}", mesh.positions(), mesh.triangles()))
+                    })
+                    .collect();
+                products.sort();
+                if let Some(previous) = &previous_pocket_products {
+                    assert_eq!(&products, previous);
+                } else {
+                    previous_pocket_products = Some(products);
+                }
+                if iteration >= 3 {
+                    samples.push(elapsed);
+                }
+            }
+            samples.sort_by(f64::total_cmp);
+            eprintln!(
+                "ROAD_TYPE_POCKET_SCALING {}",
+                serde_json::json!({
+                    "remote_buildings": remote_buildings, "remote_roads": background_roads,
+                    "agents": core.agents.len(), "parcels": core.zoning.parcels().len(),
+                    "snapshot_ms": snapshot_ms, "capture_ms": capture_ms,
+                    "p50_ms": (samples[49] + samples[50]) * 0.5, "p95_ms": samples[94],
+                    "samples": samples.len(), "identical_local_products": true,
+                })
+            );
+            continue;
+        }
         for iteration in 0..103 {
             let start = Instant::now();
             let plan = RoadEditPlan::compile(&core, request());

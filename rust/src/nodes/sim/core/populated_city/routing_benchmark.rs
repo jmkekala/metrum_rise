@@ -1317,16 +1317,17 @@ pub(super) fn profile_commits(
         let preview = preview_mode.then(|| {
             use crate::nodes::sim::core::road_preview::road_tool_snapshot_from_core;
             use crate::nodes::sim::core::road_tool_context::RoadPreviewContext;
-            use crate::nodes::sim::core::tests::graded_stage::drag;
+            use crate::nodes::sim::core::tests::graded_stage::drag_with_pockets;
             // Dragged and converged (T27 (d)): the click adopts every tile.
             let poses = branch_poses(core, start, trunk_branch_end(core, start));
             core.refresh_road_terrain_inputs();
             let snapshot = road_tool_snapshot_from_core(core).expect("current roadbed");
-            let drag = drag(
+            let drag = drag_with_pockets(
                 &mut RoadPreviewContext::capture(snapshot),
                 &poses,
                 [1, 1],
                 true,
+                commit_pockets(),
             );
             eprintln!(
                 "COMMIT_POSES {}",
@@ -1712,7 +1713,8 @@ pub(super) fn commit_trunk_branch(
     preview: Option<std::sync::Arc<crate::nodes::sim::core::road_preview::RoadPreview>>,
 ) -> crate::nodes::sim::core::road_commit::RoadCommitOutcome {
     use crate::nodes::sim::core::road_commit::RoadCommitRequest;
-    core.commit_road(
+    let pockets = commit_pockets();
+    let outcome = core.commit_road_with_pockets(
         RoadCommitRequest {
             points: vec![start, trunk_branch_end(core, start)],
             fwd_lanes: 1,
@@ -1724,7 +1726,26 @@ pub(super) fn commit_trunk_branch(
             attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
             preview,
         },
+        pockets,
         road_total,
         Default::default(),
-    )
+    );
+    assert!(
+        outcome.pocket_refusals.is_empty(),
+        "the benchmark approach must get its pockets"
+    );
+    outcome
+}
+
+// Optional built-in pockets for the existing stroke and populated locality fixtures.
+fn commit_pockets() -> crate::simulation::network::road_types::RoadTypePockets {
+    match std::env::var("METRUM_COMMIT_POCKETS").as_deref() {
+        Ok("both") => crate::simulation::network::road_types::RoadTypePockets {
+            left: true,
+            right: true,
+            body_m: 40.0,
+        },
+        Err(_) => Default::default(),
+        Ok(other) => panic!("METRUM_COMMIT_POCKETS must be both, not {other}"),
+    }
 }

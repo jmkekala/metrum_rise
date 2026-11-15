@@ -47,6 +47,13 @@ pub(crate) struct CellEdit {
     pub(crate) revision: u64,
 }
 
+impl CellEdit {
+    /// Keeps source frames needed by a composed road paint inverse. O(later sources).
+    pub(crate) fn append_sources(&mut self, later: &mut Self) {
+        self.sources.append(&mut later.sources);
+    }
+}
+
 impl CellStore {
     /// Computes a gesture from all sampled pointer positions; long segments are swept exactly.
     pub(crate) fn select(&self, shape: CellSelectionShape, path: &[DVec2]) -> CellSelection {

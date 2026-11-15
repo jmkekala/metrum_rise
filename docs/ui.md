@@ -59,8 +59,8 @@ Current deterministic rules:
   enabled; a saved empty enabled-pack list remains an explicit player choice
 - `MainMenu` contains no `SimulationNode`
 - `MainMenu` contains no terrain, water, road, or gameplay HUD surfaces
-- `New Game` opens a file picker rooted at `user://worlds/`
-- `Load Game` opens a file picker rooted at `user://saves/`
+- `New Game` opens the save browser's world list (`user://worlds/`), then the New Game dialog
+- `Load Game` opens the save browser's save list (`user://saves/`)
 - selecting a world or save stores the request in the `LaunchState` autoload and then enters
   `Main.tscn`
 - `Main.tscn` must consume that pending request on startup and load the selected world/save before
@@ -75,7 +75,7 @@ MainMenu v1 actions:
 | New Game | Pick a `WorldDefinition` from `user://worlds/` and enter gameplay |
 | Load Game | Pick a city save from `user://saves/` and enter gameplay |
 | World Editor | Spawn a `--world-editor` instance |
-| Options | Open the shared options window |
+| Options | Open the shared Options overlay |
 | Quit | Exit the application |
 
 ### 1. Top Menu Bar
@@ -97,13 +97,35 @@ discoverable entry point. Shortcut-bearing items are currently rendered as plain
 text in the label itself (for example `Save [Ctrl+S]`) rather than using a separate
 accelerator column.
 
-Gameplay `New Game` still opens a file picker rooted at `user://worlds/` and loads the selected
+Gameplay `New Game` opens the save browser's world list and loads the selected
 `WorldDefinition` into the live scene. It resets the camera to the new world's centre and initial
 orbit, clears the previous city's save filename, and pauses after rebuilding the scene.
 Normal play and debug inspection use the same terrain-anchored focus, initial framing, movement,
 and zoom. Debug only extends the orbit pitch to look upward from beneath terrain; the focus
 continues to follow the ground while the camera may pass below it in that upward view.
-Gameplay `Save` and `Load` open file pickers rooted at `user://saves/`.
+Gameplay `Save` and `Load` (also Ctrl+S, Ctrl+L and the pause menu) open the save browser on
+`user://saves/`.
+
+The save browser (`scripts/ui/save_browser.gd`) replaces Godot's `FileDialog` for saves and
+worlds. It is drawn like Options: the dimmed screen, one centred 760 px column, the menu it opened
+from faded out. It lists one folder's `.sqlite` files only, newest first, each as a row with its
+name without the extension, when it was saved ("Today 08:03", "Yesterday 21:10", else the date)
+and its size. There is no path bar and no folder browsing; `Open folder` shows the folder in the
+file manager. Clicking a column header (Name, Saved, Size) sorts by it, Name A-Z and the others
+largest first; clicking it again reverses it, and the active header shows its arrow. A search
+line sits under the title: in Load and New Game it holds the keyboard from the start, so typing
+filters at once, and it stays barely drawn (a faint magnifier and placeholder) until it holds
+text, then lights with the accent underline. The search is fuzzy (`scripts/ui/fuzzy_match.gd`):
+the typed letters must appear in the name in order, case-insensitive, not necessarily together,
+and matches at word starts and in runs rank higher, so `bigint` finds `big-intersection` first.
+A search lists the best match first, with the matched letters in the accent colour; clicking a
+header then sorts the matches by that column. Esc clears a search before it cancels. Load and
+New Game select the top row, also after each keystroke, so Enter takes the best match; a click
+selects, a double click or Enter confirms, Up/Down move through the shown rows. Save has a `Save as` name field filled with the current save's name:
+clicking a row fills it in, a name that matches an existing save turns the button into `Replace`,
+and an empty name or one with `: / \ ? * " | % < >` disables it with the reason on the status
+line. Esc cancels. While it is open, keys and the wheel stay with it (TopMenu reports it as an
+overlay), and it hands its caller the file's native path.
 City and world-definition saves commit and close an adjacent temporary SQLite file before
 replacing the destination. A failed write leaves the previous save intact.
 Both city-save and world-definition replacement reset the speed display to paused and close
@@ -125,31 +147,54 @@ already includes terrain clearance and is restored without another terrain adjus
 Loading an upward debug view in normal mode clamps its pitch to the normal downward limit.
 
 `top_menu.gd` is attached by each scene root (`Main`, `AssetEditor`, `WorldEditor`).
+The menu is plain uppercase text down the left side over a flat dark fill (a gradient this dark
+banded): the title with a
+short accent rule, then the entries, dim at rest and white with an accent bar at their left
+edge under the mouse (`UIStyle.menu_text_button`). There is no card and no button boxes. The
+pause menu uses the same layout over the dimmed city.
+
+The mouse's back (thumb) button acts as Esc in the menus (`UIStyle.is_mouse_back`): it closes
+Load Game, the New Game world browser and dialog, the in-game Save and Load browsers and Options;
+in the pause menu it dismisses the leave confirmation, else resumes. Outside the menus it does
+nothing.
+
 It is not owned by `main_ui.gd`, because the editor scenes do not use the gameplay HUD.
 
-### Options Window
+### Options
 
-**Node:** draggable Godot `Window`.
-**Script:** `scripts/ui/options_window.gd` *(implemented)*.
+**Node:** `CanvasLayer` overlay (layer 120) drawn in the game's own UI over a dimmed screen.
+**Script:** `scripts/ui/options_menu.gd` *(implemented)*.
 
-The same options window is launched from `MainMenu` and from gameplay `File -> Options...`.
-It uses a left category rail and right content pane with footer-level `Reset Defaults`,
-`Cancel`, and `Apply` actions. General options state is persisted through
-`user://settings.cfg` via `scripts/core/game_settings.gd`; the window currently remembers its
-last active category plus size and position. The same settings file also stores reusable
-`layout/<id>` sections for player-adjusted floating-window sizes, positions where appropriate,
-and split-panel offsets such as Economy Overview's budget/service/policy panes. `Accessibility`
-owns the runtime-safe `UI Scale`
+The same Options overlay opens from `MainMenu`, gameplay `File -> Options...` and the pause
+menu. It is one centred column, 760 px wide at 100% UI scale (at most 92% of the screen),
+with no card around it: the `OPTIONS` title, two text tabs underlined in the accent colour
+while active, `Display` (Screen, Graphics and Interface sections) and `Mods` (installed packs),
+then the active tab's rows, which scroll. Placeholder categories are gone until they have
+settings. Every setting is a row (`options_rows.gd`): its name at the left, its value in a
+fixed 240 px column at the right, a hairline below, the whole row lit with an accent edge under
+the mouse. A hovered row's description shows in a hint line above the footer. Choices are
+`‹ VALUE ›` cyclers: the arrows step back and forth and wrap, clicking the value steps forward,
+and On/Off settings are two-value cyclers, so the overlay opens no drop-down popups. UI scale
+is a short slider with its percentage. The footer is text: `Reset Defaults` (the active tab's
+panels), the status, `Cancel` and `Apply` in the accent colour. Esc and Cancel discard pending
+edits, and the overlay takes the keyboard while open (the camera stays put, and the wheel
+scrolls the page instead of zooming, as under the pause menu). The menu it opened from (main
+menu or pause menu, group `covered_by_options`) fades out while it is open, so its text does
+not show through beside the rows. General options state is persisted through `user://settings.cfg` via
+`scripts/core/game_settings.gd`; Options remembers its last tab. The same settings file also
+stores reusable `layout/<id>` sections for player-adjusted floating-window sizes, positions where
+appropriate, and split-panel offsets such as Economy Overview's budget/service/policy panes.
+Interface (`accessibility_options.gd`) owns the runtime-safe `UI Scale`
 setting, bounded to `80%..200%` in `5%` increments and applied immediately to
 scale-aware procedural UI labels/buttons, including gameplay HUD, Options, Building Inspector,
 and Economy Overview detail surfaces. Scale-aware floating windows also declare base/default
-sizes through `UIStyle`, so window defaults and minimums grow with Accessibility scale and
+sizes through `UIStyle`, so window defaults and minimums grow with the UI scale and
 gently grow on high-resolution viewports while preserving user-resized larger windows and restored
 layout values. They also refit whenever the viewport they open on is resized (`UI-02`): leaving
 fullscreen shrinks the game window, and a window sized for the fullscreen viewport would otherwise
 hang off its edges with its footer out of reach. The refit keeps the player's size where it fits,
 holds it to 92% of the viewport and moves it back inside. `Graphics` owns Apply-based `Fullscreen`, `V-Sync` (default on), `Show FPS`
-(a top-right frame rate and frame time readout, `scripts/core/fps_overlay.gd`), `Max FPS`
+(a frame rate and frame time readout at the right end of the gameplay menu bar, `scripts/core/fps_overlay.gd`), `Max FPS`
 (Unlimited/30/60/120/144; the main menu always holds `120` or the lower player cap, and nothing else sets the cap outside benchmarks: a world starting up once reset it to 60, `UI-06`), `Render scale` (Native, or 77/67/50% upscaled with FSR 2, which
 also turns off the screen-space AA pass), `Shadows` (High, the default; Medium: High's soft
 filter and penumbra over two unblended cascades instead of four, `RENDER-15`; or Low: plain PCF, two
@@ -164,13 +209,11 @@ proposes defaults. Detail uses the shared screen-size LOD policy, not asset-auth
 bands; it changes neither simulation nor visibility. Gameplay benchmarks
 (`--gameplay-road-benchmark`) ignore the player's render settings and measure the defaults.
 These replace the former `METRUM_GFX` preset and its F8-F11 hotkeys.
-`Gameplay` owns `Road construction preview`: `Road only (faster)` (default) or `Road and
-terrain`. It persists `gameplay/road_preview_mode`; Apply updates active road tools immediately,
-Cancel discards pending edits and Reset proposes Road only. Full mode previews ground changes
-at additional runtime cost; both modes place the same final roads/terrain (`ROAD-29`).
 Display settings apply through the Options footer and on boot. `Mods` embeds the content-pack manager from
 `scripts/ui/pack_manager.gd`; pack selection changes are persisted through
-`user://active_packs.cfg` and take effect after restart. The previous gameplay toolbar `Mods`
+`user://active_packs.cfg` and take effect after restart. Packs list as rows in the page's own
+scroll (a nested scroll area there collapsed to zero height); a pack the running city has
+loaded cannot be replaced or removed while Options is open in game. The previous gameplay toolbar `Mods`
 button is intentionally removed so content-pack management lives under global options rather than
 construction tools.
 
@@ -203,34 +246,49 @@ Deterministic rule:
 
 ### 2. Bottom Toolbar
 
-**Nodes:** Procedural bottom-strip layout rooted under a full-screen `Control`. The left
-gameplay HUD is an `HBoxContainer` of fixed-height `PanelContainer` shells. The right-side
-tool menu uses a unified outer group `PanelContainer` plus an inner fixed-height toolbar-row
-shell so the submenu stack can read as one cluster while the actual toolbar row still matches
-the clock / city-status / RCI strip height. The three layers are anchored independently, so
-`_layout_bottom_toolbar()` keeps the toolbar centred only while that clears the side strips: on
-overlap it shifts sideways just enough, and when the gap between the strips is narrower than
-the toolbar (large UI scale, small window, a wide submenu) it rises above them.
+**Nodes:** Procedural layout rooted under a full-screen `Control`. The category row stays
+centred at a fixed bottom inset, with independent submenu panels above it and road options
+to the left. `top_status_bar.gd` places the compact status row at top-left, below the actual
+scaled top menu height. Both surfaces register with `debug_console_keep_clear`; no status
+collision calculation lifts the bottom toolbar.
 **Script:** `scripts/ui/main_ui.gd` (current — stays here).
 
 The toolbar is the primary tool-selection surface. It is always visible during gameplay.
 
-Road guiding lines and the G shortcut are removed. The road-options checkbox controls
+The category row's tiles are 50 px (`HudIcons.dock_button`), their icons filling 74 % of the
+face: painted full-colour pictures for Roads, Zoning, Services (a wrench), Industry (a mine
+cart) and Terrain (`assets/ui/icons/dock/`, never tinted, so selection shows in the tile fill
+and underline only), and Bulldoze as the line bulldozer in the alert red the road builder's
+remove button uses. The `u01` demo slice uses hand-authored white SVG tool icons elsewhere, one
+`UIStyle.HUD_ACCENT`, 72 px road tiles and names on hover. `hud_icons.gd` owns the icon/tile factories and 0.12 s
+ease-out hover/press feedback; `hud_tooltip.gd` shows wrapped name/detail/cost cards after
+150 ms. `hud_road_thumbnail.gd` paints Rust's `parts` and `part_widths_m` through the existing
+road-part glyphs. Built-ins occupy a five-column grid; a `+` tile opens the builder and the
+fixed-width custom menu tile previews the selected custom layout. Round `u02` extends the same
+helpers to zoning family/profile tiles, segmented workflow/shape choices and the parcel gear,
+plus service class and asset tiles (`zoning_panel.gd`, `asset_panel.gd`). Unknown pack classes
+use a generic building glyph. Tooltips show available asset metadata; the asset bridge does
+not currently expose cost/upkeep. `road_options_view.gd` owns the road toggle layout. InputManager emits
+tool transitions for persistent marks; no new per-frame callback is added. Accessibility
+refreshes the fonts and icon ink size; tile footprints remain bounded at 1280×720.
+Godot parse-only checks passed for the changed scripts and affected tests; runtime regressions
+and in-game visual review remain pending. Zoning control sync uses signals instead of polling.
+
+Road guiding lines and the G shortcut are removed. The road-options icon toggle controls
 zoning-grid snapping; road-connection snapping remains available. Distance and angle
 measurements appear only during a placement. See [road interaction](roads.md).
 
 
 | Button  | Activates |
 |---------|-----------|
-| Roads   | Road sub-menu: the usable road types from Rust (`ROAD-101`, `scripts/ui/road_type_menu.gd`: built-ins Walkway, 2-Lane Road, 4-Lane Road, One-Way 1L, One-Way 2L, then one "Custom roads" drop-down listing the player's custom types, a separator and "Road builder..." (opens the Road Builder window); the active type marked; each type's tooltip gives its layout, speed, "no sidewalks" or "sidewalk on the left" / "right", "no street lights", "No zoning" for a type that does not zone or has no sidewalks, "Buildings on the sidewalk side only" with one, and Rust's cost), then the "Roundabout" toggle (key O, `ROAD-62`); with a left-side options panel: Tool mode (Straight / Curve, the simple curve's three clicks / S-curve, four clicks / Freeform, clicked nodes then an edit phase: drag nodes and handles, Ctrl breaks a joint, Enter or a click elsewhere builds, `ROAD-112` round N; and Continuous: start along the road or chain, straight and curve only, round D), Snapping (Snap to zoning grid), Structure (Tunnel) and, while the roundabout tool is on, Diameter (a slider in 1 m steps over the range Rust gives for the site, with the size and lanes read-only, "36 m, 1 lane"; the two keys right of P, `[` `]` on a US layout and Å ¨ on a Nordic one, step 2 m, held at the ends). O opens the Roads menu when it is closed. The tool's outline is blue when it would build, red with the reason when not; see [`roads.md`](roads.md#roundabouts-road-62) |
-| Zoning  | Zoning sub-menu with one always-visible lower row for Rect / Brush plus Residential / Commercial / Industrial family buttons; the profile row above is collapsed by default and opens only after clicking a family button, which also selects that family's first profile |
-| Services | Service-building asset palette for explicit civic / utility placement; beside a road side without a sidewalk the preview turns red and the click is refused with "buildings need a sidewalk on their side of the road" (`ROAD-109`), as in Industry |
+| Roads   | Road sub-menu: the usable road types from Rust (`ROAD-101`, `scripts/ui/road_type_menu.gd`: built-ins Walkway, 2-Lane Road, 4-Lane Road, One-Way 1L, One-Way 2L, then one "Custom roads" drop-down listing the player's custom types, a separator and "Road builder..." (opens the Road Builder window); the active type marked; a tile's hover card (`scripts/ui/road_type_card.gd`) gives the name beside its speed limit sign, symbol chips for the lanes (arrows), width, median swatch, parking sign, turn pockets (arrows and length, accented) and only the unusual sidewalk, street light and zoning cases, then Rust's cost with the money sign; key 7 cycling the custom types flashes the card of the type it lands on; a type with turn pockets shows a turn-arrow badge at its tile's top right; the drop-down items keep a text tooltip with the layout, speed, sidewalk side, street lights, zoning, pockets and Rust's cost), then the Roundabout tile (key O, `ROAD-62`) and Edit roads (`SelectTool`, V: click a built road for Road Properties, a junction for the Junction window; a building opens the Building Inspector); with a left-side icon options panel (`scripts/ui/road_options_view.gd`): Tool mode (Straight / Curve, the simple curve's three clicks / S-curve, four clicks / Freeform, clicked nodes then an edit phase: drag nodes and handles, Ctrl breaks a joint, Enter or a click elsewhere builds, `ROAD-112` round N; then Continuous: each road starts in the direction the last one ended, round CT), Snapping (roads, guide lines, zoning grid), Structure (Straight grade, T: bridges and tunnels where the grade leaves the ground), Steps (angle lock and length step, Shift draws free) and, while the roundabout tool is on, Diameter (a slider in 1 m steps over the range Rust gives for the site, with the size and lanes read-only, "36 m, 1 lane"; the two keys right of P, `[` `]` on a US layout and Å ¨ on a Nordic one, step 2 m, held at the ends). O opens the Roads menu when it is closed. The tool's outline is blue when it would build, red with the reason when not; see [`roads.md`](roads.md#roundabouts-road-62) |
+| Zoning  | Zoning sub-menu in one row: the cell/parcel tool options on the left, then Residential / Commercial / Industrial family tiles; a family's profiles (low, medium and high density each with its own silhouette) open to their right after clicking the family, which also selects its first profile |
+| Services | Service-building asset palette for explicit civic / utility placement (class tiles, then the open class's asset tiles, each with the asset's manifest `icon` or else the class icon; see [`asset_editor.md`](asset_editor.md#v1-common-assettoml-fields)); beside a road side without a sidewalk the preview turns red and the click is refused with "buildings need a sidewalk on their side of the road" (`ROAD-109`), as in Industry |
 | Industry | Explicit resource-extractor asset palette; selecting an extractor temporarily shows the Deposits overlay through building placement and extraction-polygon drawing; placing a mine switches to extraction-polygon drawing with a pale-blue cursor sphere under the mouse and a live filled preview of the current polygon; the first vertex must start within 10 m of the building footprint and becomes a stronger light-blue close marker, edges may not cross, closing only happens by clicking that first vertex again, the committed polygon is still validated against the building link distance, and committed coal pits render as a terrain-shader coal-texture mask |
-| Terrain | Terrain sub-menu for gameplay terrain tools |
-| Inspect | Activates `SelectTool`; clicking a building while `SelectTool` is active opens the Building Inspector window |
+| Terrain | `scripts/ui/terrain_panel.gd`, laid out like Services: one row of category tiles, Raise and lower (the sculpt tool), Trees, Shrubs, Flowers, Hedges and Rocks, then Remove (E, in red, an uprooted sapling so it does not read as the bulldozer), and beside them the open category's planting options as picture tiles. Each picture is a file, `assets/ui/vegetation/<name>.png`, baked offline by `tests/bake_vegetation_pictures.gd` (run headful: `godot --path godot --script res://tests/bake_vegetation_pictures.gd`) from Rust's `get_vegetation_preset_sample` (one plant, a stand of seven for a mix, or a four-module hedge row) drawn with the game's meshes in a private world with fixed light, so weather and wind never show in it; re-bake when a preset or a plant mesh changes, and `vegetation_edit_test` fails on a missing file. A category tile shows one of its options' pictures. Names, and what a mix plants, are in the tooltips. Opening a category plants its first option (or the current one if it is in it); Shift + wheel steps through every option and opens the category it lands in. See [`terrain.md`](terrain.md) |
 
-Bulldoze is intentionally separate from the centered construction toolbar: a bottom-right icon
-button activates `BulldozeTool`. Hover asks Rust for exactly one target, prioritizing building
+Bulldoze sits after a separator at the right end of the category row. Its icon button
+activates `BulldozeTool`. Hover asks Rust for exactly one target, prioritizing building
 footprints before road edges; left click deletes one target; right click or Esc exits the tool.
 A ring is one target (`ROAD-62`): the hover shows the whole ring and names it beside the pointer,
 "Roundabout, 4 arms".
@@ -249,6 +307,7 @@ building(s)" unless noted:
 | --- | --- |
 | Road tool | the HUD measurement line, after the cost |
 | Roundabout tool | the label beside the ring |
+| Road Builder turn pockets (`ROAD-119`) | Roads menu → Road builder | `scripts/ui/road_builder/pocket_controls.gd` | Styled independent Left/Right arrows, a metre stepper using Rust's pocket limits, and a junction-length annotation on the cross-section stage. The controls share the speed sign row; Save stays disabled with Rust's reason while the layout cannot take its pockets. The road tool shows each refused junction's `RoadReasonText` reason in a short fading label over it (`road_pocket_notice.gd`); the road remains built. |
 | Road Properties | the selected roads' widenings outlined; Apply asks "Apply removes N building(s). This cannot be undone." |
 | Junction window | the pocket row's verdict ("..., demolishes N building(s)") and the row's take outlined |
 | Services and Industry building placement | the price label; while the core is busy the hover keeps its last ghost, outline and label |
@@ -265,29 +324,52 @@ resources remain visibly provisional (`terrain preview pending`). Cancelling or 
 paired preview restores the original road and terrain resources without changing simulation state.
 The complete backend and presentation contract is owned by [`roads.md`](roads.md#preview-commit-undo-and-load); `ROAD-68-E` removes the coarse ribbon and provisional older poses.
 
-Sub-menus expand upward above the toolbar row, the same as today. In the current
-implementation the right-side menu cluster has:
-- one outer translucent group wrapper around the whole menu stack
-- one transparent inner layout shell for the actual toolbar row
-- fixed-height bottom HUD shells for the clock, city-status panel, and R/C/I meter
+Sub-menus expand upward above the toolbar row. The menu cluster has:
 
-Gameplay HUD status widgets: the clock / simulation-speed panel remains anchored at bottom-left,
-a compact city-status panel sits immediately to its right, and the R/C/I demand meter sits to
-the right of that. The city-status panel shows current treasury value plus live agent count,
+- one transparent layout wrapper around the menu stack
+- separate translucent panels for the category row and road controls
+- a status row centred inside the menu bar (it joins the bar's layer) for the clock, speed,
+  city status and R/C/I bars
+
+Gameplay HUD status widgets share that row. Speed is pause/resume (Space), slower, the current
+speed ("4x" or "Paused") and faster, stepping through Rust's existing steps with the existing
+handler. Zoning and Services keep one palette row each: opening a zone's profiles or a service
+class widens the row instead of stacking another panel above it. Tooltips name the control and
+show its shortcut as a keycap in a compact label; data tooltips (road types, assets, profiles)
+keep their figures in a wider card. Show FPS draws its readout at the right end of the gameplay
+menu bar. Esc with nothing left to cancel or close opens the pause menu (`pause_menu.gd`,
+owned by TopMenu): it stops the clock and restores the speed on Resume, and offers Save, Load,
+Options, Main Menu and Quit; leaving asks first, as nothing tracks unsaved changes.
+Keyboard tools open their dock panel (R, X, C and V the Roads panel, Y the Terrain panel) and
+switching the tool off closes it. Tab, or a click on the demand bars, slides in the City panel
+from the left: treasury, agents and per zone its project count, Rust's growth figures as icon
+chips (named on hover; zero free lots warns) and the constraint notes the figures cannot show.
+While Roads, Zoning or Terrain is open, 1-9 act on its tiles, each showing its digit in a small disc at
+its bottom-right corner (`HudIcons.set_number`; `MainUI.handle_number_key`); a key press plays
+the tile's click animation (`HudIcons.activate`). Roads: the five built-in types, new
+custom road (6 again closes the builder; digits typed in the builder reach the palette unless a
+text field has focus), the custom-roads tile (each press picks the next custom type), Roundabout, Edit
+roads. Zoning: Residential, Commercial, Industrial (again: that zone's next profile), the
+cells/parcels switch (its digit sits on the workflow it switches to), the four cell shapes,
+Erase. The zone palette sits left of the cell tools so the digits read left to right. Terrain:
+Raise and lower, Trees, Shrubs, Flowers, Hedges, Rocks (again: that category's next option),
+Remove.
+The city-status panel shows a money icon, current treasury value and a small live agent count,
 and refreshes continuously so paused-state edits such as road building still update the value
 immediately. The growth meter shows exact Residential / Commercial / Industrial project counts
 from the last hourly assessment: newly selected, previously queued, and physically constructing.
 The green / blue / yellow bars share a scale whose maximum is the largest current count; they are
-not percentages. Compact colored `R n / C n / I n` labels expose the counts. Each label explains its
-zone; the meter tooltip combines all three. Rust supplies housing need, ready homes, live funded
+not percentages. Three tinted tracks remain visible at zero; the exact counts and all three
+explanations are available in the shared styled tooltip. Rust supplies housing need, ready homes, live funded
 jobs, missing assets, free/unsuitable lots and customer/income/workforce rejections from recorded
 planner decisions. Reading the HUD never runs another city scan or changes a reservation. Until
 the first hourly assessment after creation/load, the tooltip explicitly says it is waiting.
 F12 enables the growth cheat; the tooltip labels bypassed economic checks rather than inventing
 100% demand. `growth_meter_test.gd` covers the bridge, bar scaling, zero counts and explanations.
 
-Zoning interaction rule: `Rect` and `Brush` are shared paint-mode controls, not their own
-submenu. Opening the Zoning tool shows only the lower row. Clicking `Residential`,
+Zoning interaction rule: Cells/Parcels and Cell/Marquee/Fill/Brush are segmented icon choices;
+Erase is an independent toggle. The gear and Free tile only appear in the parcel workflow.
+Opening the Zoning tool shows the controls and zone-family row. Clicking `Residential`,
 `Commercial`, or `Industrial` toggles the profile row for that family above it and
 automatically selects the first profile in that family. Clicking the same family again
 collapses that profile row.
@@ -386,10 +468,13 @@ Current WorldEditor shortcuts:
 | V          | Toggle Select tool |
 | Y          | Toggle Terrain Sculpt |
 | Space      | Pause / unpause |
-| Escape     | Cancel active tool |
+| , / .      | Slower / faster (also keypad - / +) |
+| Escape     | Cancel active tool; then close the open panel; then the pause menu |
 | Ctrl+Z     | Undo |
 | F12        | Add 1,000,000 money and enable the private growth cheat |
-| 7 / 8 / 9 / 0 / - | Overlay modes |
+| 1 / 2 / 3  | Zoning: Residential / Commercial / Industrial (when no palette is open) |
+| 1-9        | The open Roads or Zoning palette's numbered tiles |
+| 7 / 8 / 9 / 0 / - | Overlay modes (7-9 when no Roads or Zoning palette is open) |
 
 **Camera** (owned by `input_manager.gd`):
 
@@ -401,7 +486,7 @@ Current WorldEditor shortcuts:
 | Two-finger scroll (touchpad) | Zoom camera, in fractions of a step |
 | Pinch (touchpad) | Zoom camera by the pinch factor |
 
-W / A / S / D pan only while no embedded window, such as the save dialog or an open menu, is
+W / A / S / D pan only while no embedded window, such as a dialog or an open menu, is
 exclusive or holds focus; that window's own text fields are invisible to the game window's focus
 owner, so typing a save name also panned the camera (`UI-01`).
 
@@ -449,6 +534,41 @@ and matching edge/lane IDs only clear the source when the target handle is incom
 self-loop handle still creates a connection. Clicks use their event position. Each press or drag
 update resolves the terrain hit once, sharing it across control picking.
 
+**Road highlight and hover.** The selected roads are drawn as one ribbon over the road with
+`assets/materials/road_highlight.gdshader` (unshaded, no depth test): a faint fill, a glowing
+outline at both edges and, on each vehicle lane, chevrons drifting the way that lane's traffic
+goes (Rust's `lanes` in `get_edge_cross_section`: each lane's offset and direction), so a two-way
+road shows both directions. Hovering the Road Properties window's parking Left or Right toggle
+lights that half of the road, which names the sides the toggles mean. While `SelectTool` is on, the one road under the cursor (not already selected, no button
+down, no junction selected, the GUI not hovered) gets the same outline without chevrons and the
+cursor turns to a pointing hand, which shows that a click inspects roads. The hover costs one
+non-blocking Rust call per frame (`pick_road_piece`: the roadbed's ray walk and the surface probe
+under a single `try_lock`; `false` while the simulation thread holds the core, when the hover stays as it
+was rather than blinking off), and its one-edge mesh is rebuilt only when the hovered edge
+changes; nothing is drawn over the rest of the network.
+Picking is exact (Rust's `pick_road_piece(origin, direction, wait)`: the roadbed piece the ray
+meets on the visible surface, `Vector2i(road, junction)`), for the hover, the click and a drag
+selection alike: a junction's paved piece picks the junction, a road's span (sidewalks included)
+or the piece of a node with fewer than three roads picks that road, and anything else picks
+nothing, however near a road is. Every junction in view where a click opens the Junction window
+(three or more roads, from Rust's `get_junction_markers(centre, half_extent_m)`: a node-grid
+rectangle query, `O(nodes in the rectangle × degree)`, empty while the core is busy) carries a
+small dot, about 4 px across at any zoom; the hovered and the open junction are outlined around
+their paved area (`footprint_halo.gd` around `get_junction_outline`, the junction piece's kerbs
+closed across its road mouths), exactly where a click opens it. The square read is centred on the
+view, 1.3 × the camera's distance to it (150-900 m; dots are hidden zoomed out past that), and is
+read again only when the view moves a quarter of it, zooms by a quarter or the network changes.
+The open junction's
+lane labels and crosswalk labels ("Zebra on", with "Click to turn off" or the refusal on a second
+line) are white or yellow text in a dark outline at a fixed size on screen.
+
+**Check boxes and switches** (`scripts/ui/check_icons.gd`). `MainUI` sets the CheckBox and
+CheckButton icons on Godot's default theme (again after a UI scale change; a theme on the root
+window would stop at `MainUI`'s CanvasLayer): an unchecked box is
+a light outline, an off switch a light outlined track with its knob at the start, and the on
+states fill with the HUD accent; disabled ones at 40 % opacity. Sizes match Godot's defaults
+(16 x 16, 32 x 16 at scale 1), so layouts measure the same.
+
 `selection_gesture_test.gd` sends real viewport input and verifies command identity/counts,
 consumed releases, tool changes, right-click cancellation, self-loop direction, crosswalk precedence,
 source clearing and continued ordinary edge dragging. Five assertions fail against the old tool;
@@ -479,19 +599,21 @@ button or programmatically.
 Most windows are instantiated on first open and hidden (not freed) on close so state is
 preserved within a session. The Building Inspector is the exception: it creates a fresh window
 for each inspected building and frees it on close. Only one inspector is open at a time, so
-inspecting another building closes the previous window.
+inspecting another building closes the previous window. With Inspect active, Esc clears the
+selection and closes either inspector; a second Esc exits Inspect. V toggles Inspect off,
+empty ground clears the selection, and Road Properties' close button clears its highlight.
+Both inspectors use `UIStyle.keep_keyboard_with_game` and shared title/section/action styles.
 
 | Window | Launcher | Script / status | Content |
 |--------|----------|-----------------|---------|
-| Options | MainMenu `Options` or gameplay `File -> Options...` | `scripts/ui/options_window.gd` *(implemented)* | Shared options shell with category rail, content pane, footer-level apply/reset/cancel actions, and persisted window state through `user://settings.cfg`. |
-| Gameplay | Options → Gameplay | `scripts/ui/gameplay_options.gd` *(implemented)* | Persistent road-only or road-and-terrain construction previews, applied live through the shared footer. |
-| Graphics | Options → Graphics | `scripts/ui/graphics_options.gd` *(implemented)* | Fullscreen, V-Sync, Show FPS, Max FPS, render scale (FSR 2), shadows, view distance and building detail, persisted through `user://settings.cfg` and applied through the Options footer. |
-| Accessibility | Options → Accessibility | `scripts/ui/accessibility_options.gd` *(implemented)* | Embedded UI Scale control, persisted through `user://settings.cfg` and applied immediately to scale-aware procedural UI fonts and eligible floating-window sizes. |
-| Building Inspector | Click building with no active tool or while `SelectTool` is active | `scripts/ui/building_inspector.gd` *(implemented)* | Per-building stats: type, level, occupancy, budget, revenue, inventory, extraction-pit reserve/depletion, alerts. One inspector is open at a time: clicking another building replaces it, clicking the same building again closes it, and the open window refreshes on each in-game hour boundary. Uses Godot's built-in draggable `Window` chrome. It holds the keyboard focus only while a mouse button is down in it, so WASD, zoom and Esc keep moving the camera while it is open. |
+| Options | MainMenu `Options`, gameplay `File -> Options...` or the pause menu | `scripts/ui/options_menu.gd` *(implemented)* | In-UI overlay with Display and Mods tabs, footer-level apply/reset/cancel actions, and the last tab persisted through `user://settings.cfg`. |
+| Graphics | Options → Display | `scripts/ui/graphics_options.gd` *(implemented)* | Fullscreen, V-Sync, Show FPS, Max FPS, render scale (FSR 2), shadows, view distance and building detail, persisted through `user://settings.cfg` and applied through the Options footer. |
+| Interface (UI Scale) | Options → Display | `scripts/ui/accessibility_options.gd` *(implemented)* | Embedded UI Scale control, persisted through `user://settings.cfg` and applied immediately to scale-aware procedural UI fonts and eligible floating-window sizes. |
+| Building Inspector | Click a building's footprint with no active tool or while `SelectTool` is active (a direct hit through Rust's `pick_building_at`; a click on a road or open ground opens nothing, however near a building) | `scripts/ui/building_inspector.gd` *(implemented)*, card chrome in `scripts/ui/inspector_card.gd` | A borderless card (no OS title bar) with a 3 px top stripe in the building's accent (residential green, commercial blue, industrial amber, a utility the HUD accent). Header: the icon well (its utility service, a farm's field, an extractor's pit, else its zone), an uppercase eyebrow (zone, "Power utility", "Farm"), the name, then a chip row: level pips, the business status pill and a business's "Budget $X" (a home's households are a KPI). Then alerts as tinted banners (broken in red; deserted, rezoning and construction in yellow), then KPI tiles with meters: a business's Workers, Output, Stock (or Used power for a plant) and Today's profit (green or red, yesterday in the tooltip); a home's Households, Residents (an age-stacked meter with a children / adults / elders legend), Supplies and Money. Then pill tabs over dense key-value grids (four columns when every value is short, else two): People (a farm's residents, job slots when some are inactive, utility state and plant funding), Money (only what the header and KPIs leave out: profit yesterday, utility revenue, a home's money in all and lowest supplies, a farm household's money and supplies), Site (extraction-pit reserve/depletion or the farm field with Edit Field), Power (a plant's output and staffed capacity, its own use under an "Own use" heading; for any building "Used yesterday", local supply, imports and cost), Stock (inventory with daily input rates) and Parking (valid places and rejected ones; the tab carries a warning icon when any are rejected). Empty tabs are left out, the last tab picked stays picked for the next building in the session, and the window fits its height to the open tab. The header drags the card and × closes it; it is fitted to its content before it is placed beside the cursor (header labels clip with an ellipsis rather than wrap, so the placement sees the real height). One inspector is open at a time: clicking another building replaces it, clicking the same building again closes it, and the open window refreshes on each in-game hour boundary. While its card is open the building is ringed on the map in the card's accent (`scripts/renderers/footprint_halo.gd`: the road selection's band around Rust's `footprint`, depth-tested so the building hides the far side). It holds the keyboard focus only while a mouse button is down in it, so WASD, zoom and Esc keep moving the camera while it is open. |
 | Agent Inspector | Click a car, bike or pedestrian on a road with no active tool | `scripts/ui/agent_inspector_panel.gd` *(implemented)*, controlled by `scripts/renderers/agent_inspector.gd` | The agent's mode, state, speed, activity, buildings, lane, route and latest trip failure (`DEBUG-06`). Home, work and destination link to their buildings. Opens beside the cursor; draggable and resizable `Window` chrome with its size persisted. Like the Building Inspector it holds the keyboard focus only while a mouse button is down in it (`UIStyle.keep_keyboard_with_game`), so camera controls keep working. |
-| Road Builder | "Road builder..." in the Roads row's "Custom roads" drop-down | `scripts/ui/road_builder/road_builder_window.gd` *(implemented)* | Builds, edits, duplicates and deletes custom road types (`ROAD-101`): library column (built-ins, the player's types, unusable entries with reasons, the library error), six part tiles (the sixth a kerbside Parking lane, `PARK-05`), the layout strip to scale (click a + then a tile, or drag and drop), a part popup (median style and width, Move, Remove), the type's attributes (Left sidewalk and Right sidewalk, one per end as the road is drawn, a 0.75 m shoulder band drawn on the strip at an end without one; a Speed stepper on Rust's 20-120 km/h grid in steps of 10, hidden for a footpath; Zoning, off once by default when a new type reaches 80 km/h and disabled with no sidewalk on either side, `ROAD-109`; Street lights, ticked by default), Rust's cost line ("15 / m, upkeep 0.10 / m / day"), the warning with zoning for no sidewalks ("No sidewalks: nothing is built along this road") or per side ("No sidewalk on the right: nothing is built on that side"), `ROAD-109`, the name field with Rust's suggestion, Cancel and Create road / Save. Persistent, resizable, non-exclusive `Window` (960 x 440, min 760 x 400); Esc closes, Enter creates. See [`roads.md`](roads.md#the-road-builder-road-101-round-rb2). |
-| Road Properties | Select one or more road edges with `SelectTool` | `scripts/ui/road_properties_window.gd` *(implemented)* | Edge class (Standard / Bridge / Tunnel), the road type (a picker of the usable types with their speed and Rust's cost per metre, or "Custom layout", matched by sidewalk sides too, left and right as the road was drawn; `ROAD-101`, `ROAD-107`) with Rust's in-place verdict and Apply (`ROAD-80`; "Apply (+1,230)" with the cost difference, and a `ConfirmationDialog` "Apply removes N buildings. This cannot be undone." when the change demolishes: the type's zoning off, or the lots a widening takes, which are outlined (`ZONE-10`); a type that would take a sidewalk from under a building's door is refused with that reason, `ROAD-109`), a Parking lane row with Left and Right boxes, each switching one kerb in place (`PARK-05`; a side without a sidewalk refuses), No Buildings flag (disabled on roads with no sidewalk on either side, `ROAD-109`) and slope warnings for the current selection (turn pockets are edited from the Junction window). Opens at 400 x 540 (minimum 360 x 500) so every row fits. Uses Godot's built-in draggable `Window` chrome. |
-| Junction | Click a junction with `SelectTool` | `scripts/ui/junction_window.gd` *(implemented)*, rows in `scripts/ui/junction_pocket_row.gd` | Opens beside the click (never over the junction; a moved window stays unless it would cover the click), movable and resizable; keeps the game's keyboard so Ctrl+Z undoes with it open; the lane spheres and crosswalk toggles stay in the world. "Turn pockets" (`ROAD-95`): one row per incoming car road from Rust's `get_junction_pockets`, clockwise from north, "From west · 2-Lane Road" with what its end has, Left / Right (a side the road cannot carry disabled with Rust's reason), the length from the junction (20-300 m by 10: arrows, or click the number and type, Enter), Rust's verdict and "Apply (+N)"; the hovered (else last changed) row's road highlighted cyan from the junction over the length (every control in a row passes the mouse on, so the hover holds across the row's check boxes, length box and Apply); after an Apply or an undo the rows are read again, keeping unapplied requests. No pocket section at a pocket's lane transition or a node without incoming car roads. Opens at 440 x 480 (four rows without scrolling); see [`roads.md`](roads.md#the-turn-pocket-tool-round-r5b2). |
+| Road Builder | "Road builder..." in the Roads row's "Custom roads" drop-down | `scripts/ui/road_builder/road_builder_window.gd` *(implemented)* | Builds, edits, duplicates and deletes custom road types (`ROAD-101`) in the game's card chrome: the header is one row, the type's name as an editable field (Rust's suggestion until the player types one, Rust's description as its tooltip) with the first reason the type cannot be created beside it. Below it the library column (built-ins, the player's types, unusable entries with reasons, the library error), the layout strip to scale on a stage that takes the spare height (the road centred between grass verges, a total-width dimension under it and Rust's cost line under that with the money sign before each amount, "15 / m" and "0.10 / m / day" apart, the units telling build cost from upkeep; click a + then a tile, or drag and drop), six part tiles on one row with wrapping names (the sixth a kerbside Parking lane, `PARK-05`), a part popup on one row without a title (a median's style as surface swatches and its width, then move-left and move-right arrows and remove as the bulldozer in red, named by tooltips; a second click on the part closes it; Backspace or Delete removes the part whose popup is open); a part's tooltip on the strip is its name and width; the tiles and the speed signs have none, and the speed signs no label, a check box over each end of the strip: clicking the end turns its sidewalk (left or right as the road is drawn) on or off, a 0.75 m shoulder band drawn at an end without one; the type's attributes on one wrapping row ( Speed as Finnish speed limit signs on Rust's posted limits, 20, 30, 40, 50, 60, 70, 80, 100 or 120 km/h (80 steps to 100; `scripts/ui/speed_sign_picker.gd`: the chosen sign in the middle on a recessed track whose ends, half signs included, fade into the panel; the wheel steps one limit, a click on a side sign picks it; the strip slides and the chosen sign swells by 1.5 % for a moment, and the strip leans a little and eases back when scrolled past 20 or 120), hidden for a footpath; Zoning as an icon toggle, off once by default when a new type reaches 80 km/h and disabled with no sidewalk on either side, `ROAD-109`; Street lights as an icon toggle, on by default) with Cancel and Create road / Save at its right end, the warning with zoning for no sidewalks ("No sidewalks: nothing is built along this road") or per side ("No sidewalk on the right: nothing is built on that side"), `ROAD-109`. Persistent, resizable, non-exclusive `Window` (980 x 600, min 780 x 590); Esc closes, Enter creates. See [`roads.md`](roads.md#the-road-builder-road-101-round-rb2). |
+| Road Properties | Select one or more road edges with `SelectTool` | `scripts/ui/road_properties_window.gd` *(implemented)* | Edge class (Standard / Bridge / Tunnel), the road type (a picker of the usable types with their speed and Rust's cost per metre, or "Custom layout", matched by sidewalk sides too, left and right as the road was drawn; `ROAD-101`, `ROAD-107`) with Rust's in-place verdict and Apply (`ROAD-80`; "Apply (+1,230)" with the cost difference, and a `ConfirmationDialog` "Apply removes N buildings. This cannot be undone." when the change demolishes: the type's zoning off, or the lots a widening takes, which are outlined (`ZONE-10`); a type that would take a sidewalk from under a building's door is refused with that reason, `ROAD-109`), a Parking lane row with Left and Right switches, each switching one kerb in place (`PARK-05`; a side without a sidewalk refuses, with the reason in the warning line), a Speed limit row with the road's limit as its sign (the road builder's `speed_sign_picker.gd`, one whole sign; hidden when only walkways are selected) that changes only the speed of every selected car road, in place, once the picker rests 0.4 s, so a run of wheel steps is one edit and one undo (a refusal shows in the warning line), No Buildings flag (disabled on roads with no sidewalk on either side, `ROAD-109`) and slope warnings for the current selection (turn pockets are edited from the Junction window). Uses the Building Inspector's card chrome (`inspector_card.gd`: borderless, the header drags it, × closes it), content-sized beside the selection: a "Road properties" eyebrow over the selected road (thumbnail in the icon well, name, lanes; the speed is the sign's), segmented class icons with the No buildings toggle, the Parking lane and Speed limit rows, then "▸ Change road type" unfolds a bounded scrollable road-thumbnail grid, the verdict and accent Apply. The native picker remains its selection/metadata model for existing test drivers. |
+| Junction | Click a junction's paved area with `SelectTool` (a dot marks it, above) | `scripts/ui/junction_window.gd` *(implemented)*, rows in `scripts/ui/junction_pocket_row.gd` | The Building Inspector's card chrome (`inspector_card.gd`: borderless, the header drags it, × closes it): a "Junction" eyebrow over "Turn pockets" with the junction icon. Opens beside the click (never over the junction; a moved window stays unless it would cover the click); keeps the game's keyboard so Ctrl+Z undoes with it open; the lane spheres and crosswalk toggles stay in the world. Under "Roads coming in" (`ROAD-95`), one card per incoming car road from Rust's `get_junction_pockets`, clockwise from north: "From west" over the road's type, what its end has as a pill ("No pocket", "Left, 60 m"), Left and Right turn-arrow toggles (a side the road cannot carry disabled with Rust's reason), the length from the junction as a − 60 m + stepper (20-300 m by 10; the wheel steps it, a click on the number types it, Enter), then Rust's verdict and accent "Apply (+N)" only once a request differs; the hovered (else last changed) row's road highlighted cyan from the junction over the length and the row outlined (every control in a row passes the mouse on, so the hover holds across the row). After an Apply or an undo the rows are read again, keeping unapplied requests. No pocket section at a pocket's lane transition or a node without incoming car roads. The card fits its rows, up to four, more scroll; see [`roads.md`](roads.md#the-turn-pocket-tool-round-r5b2). |
 | Mods | Options → Mods | `scripts/ui/pack_manager.gd` *(implemented)* | Embedded content-pack browser / manager panel. |
 | City Statistics | City → City Statistics | inline placeholder in `scripts/ui/top_menu.gd` | Placeholder window for future population, housed/unhoused counts, budget summary, and utility status. |
 | Economy Overview | City → Economy Overview | `scripts/ui/economy_overview.gd` *(implemented)* | Live fiscal budget, services, and policy overview with persisted window layout and split-panel offsets. |
@@ -563,7 +685,8 @@ changes overlapped accepted measurement.
 ### 5. Overlays
 
 Overlays are rendered as shader-driven mesh layers on the terrain. They are toggled via the
-View menu or keyboard shortcuts `7`, `8`, `9`, `0`, and `-`.
+View menu or keyboard shortcuts `7`, `8`, `9`, `0`, and `-` (an open Roads or Zoning palette
+takes `7`-`9` for its tiles).
 
 Current implementation detail: `terrain.gd` exposes five overlay modes through
 `overlay_mode` — `0=None`, `1=Pollution`, `2=Noise`, `3=Desirability`, `4=Deposits`.
@@ -598,8 +721,8 @@ menu until a real renderer path exists.
 
 The debug console is an autoload (`DebugConsole`) available in every scene and build. The key
 left of `1` (`§` on Nordic layouts) slides it down from the top edge, anchored left: a third of
-the window wide by default, below the top menu bar and above the bottom-left strip with the
-clock, money and RCI boxes. Its right edge, bottom edge and bottom-right grip resize it, and the size persists across
+the window wide by default, below the top menu and status bar and above any overlapping
+bottom toolbar/palette. Its right edge, bottom edge and bottom-right grip resize it, and the size persists across
 restarts. It sits above the other surfaces on canvas layer
 120. Gameplay keeps the keyboard until one of the console's two text fields is clicked, and Esc
 returns it. Its Channels tab also holds a Visual modes section, one value picker per renderer
@@ -628,11 +751,20 @@ Color constants
   TEXT_PRIMARY  = Color.WHITE
   TEXT_DIM      = Color(0.72, 0.72, 0.72)
   TEXT_SECTION  = Color(0.65, 0.65, 0.90)        # section headers
-  TEXT_ALERT    = Color(1.00, 0.40, 0.30)
+  TEXT_ALERT    = Color(0.96, 0.36, 0.40)        # errors, broken states (sign red lifted for text)
+  SIGN_YELLOW   = Color(1.00, 0.808, 0.020)      # warnings
+  SIGN_RED      = Color(0.886, 0.118, 0.184)     # removal tools' selected state, warning edges
+  SIGN_BLACK    = Color(0.07, 0.07, 0.07)        # text on a yellow plate
   HUD_TEXT_SIZE = 16
   ZONE_RESIDENTIAL = Color(0.20, 0.45, 0.25, 0.75)
   ZONE_COMMERCIAL  = Color(0.20, 0.34, 0.62, 0.75)
   ZONE_INDUSTRIAL  = Color(0.55, 0.47, 0.14, 0.75)
+
+The `SIGN_*` colours are the Finnish traffic sign colours, used only with the signs' meanings:
+yellow warns (city panel warnings, the yellow alerts in the building inspector, and the gridlock
+and stranded-walker notices as yellow plates with a red edge); red forbids or removes (Bulldoze,
+zoning Erase and Free light red when selected, through `HudIcons.set_accent`, and broken states
+read in `TEXT_ALERT`).
 
 Corner radii
   CORNER_WINDOW = 8     # floating windows
@@ -649,7 +781,7 @@ Padding (MarginContainer constants)
   HUD_SHELL_PAD_Y = 10
 
 Bottom HUD sizing
-  HUD_STRIP_HEIGHT = 60.0   # fixed shell height for clock / city-status / RCI / toolbar row
+  HUD_STRIP_HEIGHT = 60.0   # category toolbar shell height
   HUD_BUTTON_HEIGHT = 60.0  # toolbar button target height before inner-shell clamping
   HUD_BOTTOM_MARGIN = 20.0  # bottom-screen gap
   HUD_PANEL_GAP = 12.0      # gap between bottom-strip shells
@@ -764,9 +896,12 @@ godot/
       city_status_panel.gd        Compact treasury + agent-count HUD panel
       demand_meter.gd             Compact R/C/I HUD demand meter
       top_menu.gd                 MenuBar + PopupMenu tree, menu action dispatch
-      options_window.gd           Shared Options window category shell
-      graphics_options.gd         Embedded Options -> Graphics settings panel
-      accessibility_options.gd    Embedded Options -> Accessibility settings panel
+      options_menu.gd             In-UI Options overlay: Display and Mods tabs
+      options_rows.gd             Options row, heading, value cycler and slider helpers
+      save_browser.gd             In-UI Save / Load / New Game file lists
+      fuzzy_match.gd              Fuzzy subsequence scoring for list search
+      graphics_options.gd         Options -> Display graphics section
+      accessibility_options.gd    Options -> Display interface (UI Scale) section
       pack_manager.gd             Embedded Options -> Mods content-pack panel
       road_properties_window.gd   Floating road-properties editor window
       building_inspector.gd       Floating building stats window manager
@@ -798,7 +933,7 @@ ui/debug_console/        DebugConsole autoload controller, widget view, events L
 core/input_manager.gd   Tool state, keyboard shortcuts, camera, Ctrl+S/L save/load
 editors/world_editor.gd WorldEditor shell, tool UI, world load/save flow, camera policy owner
 editors/world_editor_camera_input.gd  WorldEditor camera input wrapper and UI-capture gating
-SimulationNode.get_growth_overview  Cached hourly project counts and decision explanations; O(1) in city size
+SimulationNode.get_growth_overview  Cached hourly project counts, figures, constraint notes and full text; O(1) in city size
 SimulationNode.get_treasury_balance  HUD treasury source, snapshot-backed for paused-state edits
 SimulationNode.get_agent_count       HUD live-agent source, snapshot-backed
 ```

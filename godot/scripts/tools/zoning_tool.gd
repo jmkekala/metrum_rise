@@ -14,12 +14,22 @@ extends Node3D
 @onready var simulation_node = $"../SimulationNode"
 @onready var zoning_overlay = $"../ZoningOverlay"
 
+signal controls_changed
+
 var active: bool = false
 var current_profile_runtime_id: int = 0
 var workflow_cells := true
-var cell_shape := 0
+var cell_shape := 0:
+	set(value):
+		if cell_shape != value:
+			cell_shape = value
+			controls_changed.emit()
 var cell_brush_radius_m := 20.0
-var cell_erase := false
+var cell_erase := false:
+	set(value):
+		if cell_erase != value:
+			cell_erase = value
+			controls_changed.emit()
 var _cell_tool: Node3D
 var parcel_width_cells: int = 2
 var parcel_depth_cells: int = 2
@@ -160,6 +170,7 @@ func set_cell_workflow(enabled: bool) -> void:
 	_cell_tool.cancel()
 	if enabled and current_profile_runtime_id == 0 and not profiles.is_empty():
 		current_profile_runtime_id = int(profiles[0].get("runtime_id", 0))
+	controls_changed.emit()
 
 func _begin_drag() -> void:
 	drag_start_world = _mouse_world_pos(true)

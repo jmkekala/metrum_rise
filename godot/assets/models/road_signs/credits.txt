@@ -9,6 +9,10 @@ C32-40: Finland_road_sign_C32-40.svg | Public domain |  | https://commons.wikime
 C32-50: Finland_road_sign_C32-50.svg | Public domain |  | https://commons.wikimedia.org/wiki/File:Finland_road_sign_C32-50.svg
 C32-60: Finland_road_sign_C32-60.svg | Public domain |  | https://commons.wikimedia.org/wiki/File:Finland_road_sign_C32-60.svg
 C32-80: Finland_road_sign_C32-80.svg | Public domain |  | https://commons.wikimedia.org/wiki/File:Finland_road_sign_C32-80.svg
+C32-20: Finland_road_sign_C32-20.svg | Public domain |  | https://commons.wikimedia.org/wiki/File:Finland_road_sign_C32-20.svg (rasterised to C32-80's face size, mesh copied from C32-80)
+C32-70: Finland_road_sign_C32-70.svg | Public domain |  | https://commons.wikimedia.org/wiki/File:Finland_road_sign_C32-70.svg (rasterised to C32-80's face size, mesh copied from C32-80)
+C32-100: Finland_road_sign_C32-100.svg | Public domain |  | https://commons.wikimedia.org/wiki/File:Finland_road_sign_C32-100.svg (rasterised to C32-80's face size, mesh copied from C32-80)
+C32-120: Finland_road_sign_C32-120.svg | Public domain |  | https://commons.wikimedia.org/wiki/File:Finland_road_sign_C32-120.svg (rasterised to C32-80's face size, mesh copied from C32-80)
 E1-1: Finland_road_sign_E1-1.svg | Public domain |  | https://commons.wikimedia.org/wiki/File:Finland_road_sign_E1-1.svg
 E1-2: Finland_road_sign_E1-2.svg | Public domain |  | https://commons.wikimedia.org/wiki/File:Finland_road_sign_E1-2.svg
 Geometry and metal swatch: original, CC BY 4.0 (credit as "<sign> model" from Metrum Rise).

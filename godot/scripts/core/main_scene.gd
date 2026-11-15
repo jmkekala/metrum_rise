@@ -8,6 +8,7 @@ extends Node3D
 
 const TopMenu = preload("res://scripts/ui/top_menu.gd")
 const NewGameDialog = preload("res://scripts/ui/new_game_dialog.gd")
+const SaveBrowser = preload("res://scripts/ui/save_browser.gd")
 const GameplayRoadBenchmark = preload("res://scripts/benchmarks/gameplay_road_benchmark.gd")
 const WORLDS_DIR := "user://worlds"
 
@@ -34,20 +35,19 @@ func _attach_top_menu() -> void:
 	add_child(top_menu)
 
 func menu_new_game() -> void:
-	_ensure_worlds_dir()
-	var dialog := FileDialog.new()
-	dialog.access = FileDialog.ACCESS_FILESYSTEM
-	dialog.file_mode = FileDialog.FILE_MODE_OPEN_FILE
-	dialog.filters = PackedStringArray(["*.sqlite ; WorldDefinition Files"])
-	dialog.current_dir = ProjectSettings.globalize_path(WORLDS_DIR)
-	dialog.file_selected.connect(func(path: String): _on_new_game_world_selected(path, dialog))
-	dialog.canceled.connect(dialog.queue_free)
-	add_child(dialog)
-	dialog.popup_centered(Vector2i(880, 620))
+	SaveBrowser.open(_overlay_parent(), SaveBrowser.MODE_WORLD, WORLDS_DIR, _open_new_game_options)
+
+# The save browser lives under TopMenu, which reports it as an open overlay to the camera.
+func _overlay_parent() -> Node:
+	var menu := get_node_or_null("TopMenu")
+	return menu if menu else self
 
 func menu_save() -> void:
 	if input_manager:
 		input_manager.menu_save_game()
+
+func menu_main_menu() -> void:
+	get_tree().change_scene_to_file("res://scenes/MainMenu.tscn")
 
 func menu_load() -> void:
 	if input_manager:
@@ -98,12 +98,6 @@ func _spawn_project_instance(arguments: PackedStringArray) -> void:
 	if pid == -1:
 		push_error("Failed to launch a new project instance.")
 
-func _on_new_game_world_selected(path: String, dialog: FileDialog) -> void:
-	dialog.hide()
-	dialog.call_deferred("queue_free")
-	# Deferred so the file dialog is gone before the options dialog takes exclusive focus.
-	call_deferred("_open_new_game_options", path)
-
 func _open_new_game_options(path: String) -> void:
 	if _new_game_dialog == null:
 		_new_game_dialog = NewGameDialog.new()
@@ -114,9 +108,6 @@ func _open_new_game_options(path: String) -> void:
 func _finish_new_game_world_selection(path: String, vegetation: Dictionary) -> void:
 	if input_manager:
 		input_manager.menu_start_new_game(path, vegetation)
-
-func _ensure_worlds_dir() -> void:
-	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(WORLDS_DIR))
 
 func _handle_pending_launch_request() -> bool:
 	if _should_allow_direct_gameplay_boot():

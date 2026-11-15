@@ -473,6 +473,7 @@ fn running_the_node_threads(e: &mut Entries, core: SimCore) {
             median: None,
             parking: crate::simulation::network::graph::RoadParking::NONE,
             attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
+            pockets: Default::default(),
             enqueued_at: Instant::now(),
             completion: road_done,
             preview: None,

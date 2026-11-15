@@ -1,0 +1,19 @@
+<!-- SPDX-License-Identifier: GPL-2.0-only -->
+<svg xmlns="http://www.w3.org/2000/svg" width="96" height="96" viewBox="0 0 64 64">
+  <defs>
+    <linearGradient id="cart" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#9aa3a9"/><stop offset="1" stop-color="#4f575d"/></linearGradient>
+    <radialGradient id="ore" cx=".35" cy=".3" r=".8"><stop offset="0" stop-color="#6b6f74"/><stop offset="1" stop-color="#1f2225"/></radialGradient>
+    <radialGradient id="wheel" cx=".4" cy=".35" r=".7"><stop offset="0" stop-color="#d5d9dc"/><stop offset="1" stop-color="#5e666c"/></radialGradient>
+  </defs>
+  <g fill="url(#ore)">
+    <circle cx="20" cy="25" r="6.5"/><circle cx="31" cy="21" r="7.5"/><circle cx="42" cy="24" r="6.5"/><circle cx="26" cy="27" r="5"/><circle cx="37" cy="27" r="5"/>
+  </g>
+  <g fill="#f2c14e"><circle cx="29" cy="18" r="1.2"/><circle cx="41" cy="22" r="1"/><circle cx="19" cy="23" r=".9"/></g>
+  <polygon points="8,28 56,28 50,48 14,48" fill="url(#cart)" stroke="#3a4146" stroke-width=".8"/>
+  <rect x="7" y="27" width="50" height="3.4" rx="1.2" fill="#c4cbd0"/>
+  <path d="M18 31 V46 M32 31 V47 M46 31 V46" stroke="#3f464b" stroke-width="1.2" opacity=".6"/>
+  <rect x="2" y="56" width="60" height="2.6" rx="1" fill="#7a5a3a"/>
+  <rect x="2" y="54" width="60" height="1.6" fill="#b9c0c5"/>
+  <g fill="url(#wheel)" stroke="#2c3135" stroke-width=".8"><circle cx="20" cy="50" r="5"/><circle cx="44" cy="50" r="5"/></g>
+  <g fill="#2c3135"><circle cx="20" cy="50" r="1.4"/><circle cx="44" cy="50" r="1.4"/></g>
+</svg>

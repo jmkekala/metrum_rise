@@ -162,6 +162,24 @@ impl<L: RoadLandSource> RoadEditSite<'_, L> {
 }
 
 impl<L> RoadEditSite<'_, L> {
+    /// A graph-only edit site on a staged local roadbed, used by composed stroke previews.
+    pub(crate) fn staged<'a>(
+        graph: &'a mut RegionGraph,
+        roadbed: &'a RoadbedSystem,
+        terrain: &'a TerrainSystem,
+        water: &'a WaterSystem,
+        land: L,
+    ) -> RoadEditSite<'a, L> {
+        RoadEditSite {
+            graph,
+            roadbed,
+            terrain,
+            water,
+            land,
+            scratch: None,
+        }
+    }
+
     /// The build cost of `edges` in units of `BUILD_COST_PER_M`: each one's road weight times
     /// its length (D14). O(edges).
     pub(crate) fn build_cost_of(&self, edges: &[usize]) -> f64 {

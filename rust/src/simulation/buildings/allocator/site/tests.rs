@@ -551,6 +551,7 @@ fn required_support_footprint_keeps_driveway_clear_of_road_boundary() {
         asset_set: None,
         tags: Vec::new(),
         thumbnail: None,
+        icon: None,
         lods: Vec::new(),
         mesh_parts: vec![mesh_part],
         anchors: vec![
@@ -764,4 +765,29 @@ fn imported_support_bounds_apply_scale_yaw_and_pivot_without_padding() {
         );
     }
     assert!((signed_polygon_area(&support).abs() - 48.0).abs() < 0.001);
+}
+
+// A click picks the building whose footprint holds the point, never the nearest one beside it
+// (`building_idx_containing`), unlike the 30 m nearest-center lookup.
+#[test]
+fn building_pick_needs_a_direct_hit_on_the_footprint() {
+    use crate::simulation::zoning::ZoneType;
+    let mut allocator = BuildingAllocator::new();
+    for (index, x) in [0.0, 40.0].into_iter().enumerate() {
+        let mut building = indexed_test_building(String::new(), ZoneType::Industrial, 0);
+        building.center_x = x;
+        building.center_y = 0.0;
+        building.width_cells = 2;
+        building.depth_cells = 2;
+        allocator.buildings.push(building);
+        allocator.push_building_site_client(index, 10.0);
+    }
+    assert_eq!(allocator.building_idx_containing(0.0, 0.0, 10.0), Some(0));
+    assert_eq!(allocator.building_idx_containing(40.0, 0.0, 10.0), Some(1));
+    // Between the lots: the nearest-center lookup still answers, a click picks nothing.
+    assert!(!allocator.building_sites[0].contains_point(Vector2::new(22.0, 0.0)));
+    assert_eq!(allocator.nearest_building_idx_at(22.0, 0.0, 10.0), Some(1));
+    assert_eq!(allocator.building_idx_containing(22.0, 0.0, 10.0), None);
+    assert_eq!(allocator.building_idx_containing(0.0, 25.0, 10.0), None);
+    assert_eq!(allocator.building_idx_containing(f32::NAN, 0.0, 10.0), None);
 }

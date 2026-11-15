@@ -88,10 +88,33 @@ func _click_node(tool: Node, x: float, z: float) -> int:
 	await process_frame
 	return node
 
+# With a camera over the four-way, the select tool marks it with a dot, and the pick is exact: a
+# ray onto the junction's paved area picks the junction, onto the west road that road, and onto
+# the grass beside it nothing. The open junction is outlined.
+func _check_junction_markers(tool: Node, node: int) -> void:
+	var camera := Camera3D.new()
+	root.add_child(camera)
+	camera.look_at_from_position(_ground(0.0, 0.0) + Vector3(0.0, 300.0, 1.0), _ground(0.0, 0.0))
+	camera.make_current()
+	tool._junction_generation = -1
+	# The test drives the tool by hand (its processing is off): one frame's marker update.
+	tool._update_junction_markers()
+	_expect(tool._junction_ids.has(node), "the four-way is marked: %s" % [tool._junction_ids])
+	_expect(tool._junction_mi.mesh != null, "the marked junctions have dots")
+	var pick := func(x: float, z: float) -> Vector2i:
+		return simulation.pick_road_piece(_ground(x, z) + Vector3.UP * 50.0, Vector3.DOWN, true)
+	_expect(pick.call(1.0, 1.0) == Vector2i(-1, node), "a ray onto the junction picks it: %s" % pick.call(1.0, 1.0))
+	var west: int = pick.call(-60.0, 0.0).x
+	_expect(west != -1 and pick.call(-60.0, 0.0).y == -1, "a ray onto the west road picks the road")
+	_expect(pick.call(-60.0, 15.0) == Vector2i(-1, -1), "a ray onto the grass beside it picks nothing: %s" % pick.call(-60.0, 15.0))
+	tool._light_junction(node)
+	_expect(tool._junction_halo.visible, "the junction is outlined")
+	camera.queue_free()
+
 # The row whose name starts with "From <direction>".
 func _row(window: Node, direction: String):
 	for i in range(window.row_count()):
-		if window.row(i)._name_label.text.begins_with("From %s ·" % direction):
+		if window.row(i)._name_label.text == "From %s" % direction:
 			return window.row(i)
 	_expect(false, "a row from %s" % direction)
 	return null
@@ -192,10 +215,11 @@ func _run() -> void:
 
 	# Crossing A: four rows clockwise from north, nothing applied yet.
 	var node := await _click_node(tool, 0.0, 0.0)
+	_check_junction_markers(tool, node)
 	_expect(window._window.visible and window.row_count() == 4, "four rows at a four-way: %d" % window.row_count())
 	var names := []
 	for i in range(window.row_count()):
-		names.append(window.row(i)._name_label.text.get_slice(" ·", 0))
+		names.append(window.row(i)._name_label.text)
 	_expect(names == ["From north", "From east", "From south", "From west"], "rows clockwise from north: %s" % [names])
 	var west = window.row(3)
 	_expect(not west._left_check.disabled, "Left is offered on an undivided two-way road")
@@ -219,13 +243,12 @@ func _run() -> void:
 	await process_frame
 	_expect(_state(west) == "No pocket" and west._apply_button.disabled, "no pocket and nothing to apply yet")
 	_expect(tool._pocket_end_mi.mesh == null, "no road highlighted before a hover or a change")
-	# The scroll area's own minimum height is nil: the window's default height must hold the
-	# rest of the content and the four rows.
-	var content: Control = window._window.get_child(0)
-	var needed := int(content.get_combined_minimum_size().y + window._rows_box.get_combined_minimum_size().y)
-	_expect(window.DEFAULT_SIZE.y >= needed, "four rows fit without scrolling: %d < %d" % [window.DEFAULT_SIZE.y, needed])
-	_expect(window.MIN_SIZE.x >= int(content.get_combined_minimum_size().x),
-		"the minimum width holds every row: %d < %d" % [window.MIN_SIZE.x, int(content.get_combined_minimum_size().x)])
+	# The window fits its content: up to four rows show without scrolling, and it is as wide as
+	# every row needs.
+	_expect(window._scroll.custom_minimum_size.y >= window._rows_box.get_combined_minimum_size().y,
+		"four rows fit without scrolling: %d < %d" % [window._scroll.custom_minimum_size.y, window._rows_box.get_combined_minimum_size().y])
+	_expect(window.SIZE.x >= int(window._body.get_combined_minimum_size().x),
+		"the window's width holds every row: %d < %d" % [window.SIZE.x, int(window._body.get_combined_minimum_size().x)])
 
 	# The highlight follows the hovered row, then the last changed one.
 	window.row(1).mouse_entered.emit()
@@ -305,7 +328,7 @@ func _run() -> void:
 	await _click_node(tool, 0.0, -250.0)
 	names = []
 	for i in range(window.row_count()):
-		names.append(window.row(i)._name_label.text.get_slice(" ·", 0))
+		names.append(window.row(i)._name_label.text)
 	_expect(names == ["From north", "From east", "From west"], "the leaving one-way arm has no row: %s" % [names])
 	north = _row(window, "north")
 	_expect(not north._left_check.disabled and not north._right_check.disabled, "a one-way arm offers Left and Right: %s" % north._left_check.tooltip_text)
@@ -319,8 +342,8 @@ func _run() -> void:
 	await _click_node(tool, 0.0, 250.0)
 	west = _row(window, "west")
 	_expect(not west._left_check.disabled and not west._right_check.disabled, "Left and Right are offered beside a 5 m raised median")
-	_expect(west._name_label.text.ends_with("2 + 2 lanes, Grass 5.0 m") or not String(west.info.road_type).is_empty(),
-		"the divided road's name: %s" % west._name_label.text)
+	_expect(west._type_label.text.ends_with("2 + 2 lanes, Grass 5.0 m") or not String(west.info.road_type).is_empty(),
+		"the divided road's name: %s" % west._type_label.text)
 	_request(west, true, false, 60.0)
 	_expect(_verdict(west) == "Left pocket, 60 m from the junction", "the left pocket's verdict: %s" % _verdict(west))
 	await _apply(west, "the left pocket")
@@ -328,8 +351,8 @@ func _run() -> void:
 	var pocket: Dictionary = simulation.get_edge_cross_section(int(west.info.edge))
 	_expect(is_equal_approx(float(pocket.get("median_width", 0.0)), 1.5), "the median narrows to 1.5 m: %s" % pocket)
 	_expect(_state(west) == "Left, 60 m", "the row shows the left pocket: %s" % _state(west))
-	_expect(west._name_label.text.ends_with("2 + 2 lanes, Grass 5.0 m") or not String(west.info.road_type).is_empty(),
-		"the pocket arm is named by its road without the pocket: %s" % west._name_label.text)
+	_expect(west._type_label.text.ends_with("2 + 2 lanes, Grass 5.0 m") or not String(west.info.road_type).is_empty(),
+		"the pocket arm is named by its road without the pocket: %s" % west._type_label.text)
 	await _undo("the left pocket")
 	_expect(_state(_row(window, "west")) == "No pocket", "undo removes the left pocket: %s" % _state(_row(window, "west")))
 

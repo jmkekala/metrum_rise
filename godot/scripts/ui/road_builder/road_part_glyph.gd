@@ -26,7 +26,7 @@ const KERB := Color(0.78, 0.77, 0.74)
 const INK := Color(0.95, 0.95, 0.95)
 const SIGN_BLUE := Color8(0, 94, 184)  # Väylä sign blue #005EB8
 
-## The part's name for tiles, tooltips and the popup.
+## The part's name for the tiles, the strip's tooltips and the drag preview.
 static func part_name(part: Dictionary) -> String:
 	match String(part.get("kind", "")):
 		"sidewalk":
@@ -48,29 +48,6 @@ static func part_name(part: Dictionary) -> String:
 				PAVING:
 					return "Paving median"
 	return "Unknown part"
-
-## One line on what the part is, for its tooltip.
-static func part_hint(part: Dictionary) -> String:
-	match String(part.get("kind", "")):
-		"sidewalk":
-			return "A sidewalk on this side (the Left sidewalk and Right sidewalk checkboxes)"
-		"parking":
-			return "Cars park along the kerb"
-		"shoulder":
-			return "No sidewalk: a shoulder on this side that walkers do not use"
-		"car_lane":
-			if bool(part.get("forward", true)):
-				return "Traffic runs the way the road is drawn (right of the median)"
-			return "Traffic runs against the way the road is drawn (left of the median)"
-		"median":
-			match int(part.get("style", 0)):
-				PAINTED:
-					return "Painted hatching between the two directions"
-				GRASS:
-					return "A kerbed grass strip between the two directions"
-				PAVING:
-					return "A kerbed paved strip between the two directions"
-	return ""
 
 ## The colour the part's surface is drawn in.
 static func surface_color(part: Dictionary) -> Color:

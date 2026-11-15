@@ -1,0 +1,20 @@
+<!-- SPDX-License-Identifier: GPL-2.0-only -->
+<svg xmlns="http://www.w3.org/2000/svg" width="96" height="96" viewBox="0 0 64 64">
+  <defs>
+    <linearGradient id="resTop" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#8fd27a"/><stop offset="1" stop-color="#4f9c43"/></linearGradient>
+    <linearGradient id="comTop" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#8bbcf0"/><stop offset="1" stop-color="#3f78c4"/></linearGradient>
+    <linearGradient id="indTop" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#f5d27a"/><stop offset="1" stop-color="#c99428"/></linearGradient>
+  </defs>
+  <g transform="translate(0,22)">
+    <polygon points="6,20 32,33 32,38 6,25" fill="#8a6418"/><polygon points="32,33 58,20 58,25 32,38" fill="#a67a1c"/>
+    <polygon points="32,7 58,20 32,33 6,20" fill="url(#indTop)"/>
+  </g>
+  <g transform="translate(0,11)">
+    <polygon points="6,20 32,33 32,38 6,25" fill="#244f86"/><polygon points="32,33 58,20 58,25 32,38" fill="#2f63a4"/>
+    <polygon points="32,7 58,20 32,33 6,20" fill="url(#comTop)"/>
+  </g>
+  <polygon points="6,20 32,33 32,38 6,25" fill="#2f6a2a"/><polygon points="32,33 58,20 58,25 32,38" fill="#3b8034"/>
+  <polygon points="32,7 58,20 32,33 6,20" fill="url(#resTop)"/>
+  <path d="M19 13.5 L45 26.5 M45 13.5 L19 26.5" stroke="#f3fbe9" stroke-width="1.4" opacity=".85"/>
+  <polygon points="32,7 58,20 57,20.5 32,8" fill="#fff" opacity=".5"/>
+</svg>

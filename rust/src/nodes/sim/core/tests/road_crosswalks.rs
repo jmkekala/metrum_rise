@@ -5,6 +5,7 @@
 //! road removed and drawn again, and the overrides surviving a save file.
 
 use super::*;
+use crate::nodes::sim::query::network::RoadPick;
 
 // A T junction: a through road from (-100, 0) to (100, 0) and a side road from its middle to
 // (0, 100). Returns the core, the T node, the side road's edge and the west arm's edge.
@@ -394,4 +395,56 @@ pub(super) fn fully_emitted_chunks(core: &mut SimCore) -> String {
     core.mark_network_render_dirty();
     core.precompute_road_mesh_data();
     published_chunks(core)
+}
+
+// The select tool's junction markers: the T node alone (its road ends have one arm), found only
+// when the rectangle holds it.
+#[test]
+fn junction_markers_mark_the_t_node_inside_the_rectangle() {
+    let (core, node, _, _) = t_junction();
+    let markers = core.junction_markers_internal(
+        Vector3::new(-150.0, 0.0, -150.0),
+        Vector3::new(150.0, 0.0, 150.0),
+    );
+    assert_eq!(markers.len(), 1);
+    let (id, pos) = markers[0];
+    assert_eq!(id, node);
+    assert!(pos.distance_to(Vector3::ZERO) < 0.5, "{pos:?}");
+    let elsewhere = core.junction_markers_internal(
+        Vector3::new(40.0, 0.0, 40.0),
+        Vector3::new(150.0, 0.0, 150.0),
+    );
+    assert!(elsewhere.is_empty());
+}
+
+// The select tool's pick is exact: straight down onto the junction's paved piece picks the
+// junction, onto a road's span (its sidewalk too) picks that road, and just past the road's
+// outer edge picks nothing, however near. The junction's outline encloses its node.
+#[test]
+fn road_pick_takes_only_the_piece_under_the_ray() {
+    let (mut core, node, _, west) = t_junction();
+    let mut pick =
+        |x: f32, z: f32| core.pick_road_piece_internal(Vector3::new(x, 50.0, z), Vector3::DOWN);
+    assert_eq!(pick(0.0, -1.0).junction, Some(node));
+    assert_eq!(pick(-40.0, 0.0).edge, Some(west));
+    let half_width =
+        crate::simulation::network::roadbed::RoadProfile::for_edge(core.region_graph.edge(west))
+            .half_width_m();
+    let mut pick =
+        |x: f32, z: f32| core.pick_road_piece_internal(Vector3::new(x, 50.0, z), Vector3::DOWN);
+    assert_eq!(pick(-40.0, half_width - 0.3).edge, Some(west));
+    assert_eq!(pick(-40.0, half_width + 0.5), RoadPick::default());
+    assert_eq!(pick(-40.0, -30.0), RoadPick::default());
+    let outline = core.junction_outline_internal(node);
+    assert!(outline.len() >= 4, "{outline:?}");
+    let (min_x, max_x) = outline.iter().fold((f32::MAX, f32::MIN), |(lo, hi), p| {
+        (lo.min(p.x), hi.max(p.x))
+    });
+    let (min_z, max_z) = outline.iter().fold((f32::MAX, f32::MIN), |(lo, hi), p| {
+        (lo.min(p.z), hi.max(p.z))
+    });
+    assert!(
+        min_x < 0.0 && max_x > 0.0 && min_z < 0.0 && max_z > 0.0,
+        "{outline:?}"
+    );
 }

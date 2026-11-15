@@ -7,24 +7,23 @@
 extends VBoxContainer
 
 const GameSettings = preload("res://scripts/core/game_settings.gd")
-const UIStyle = preload("res://scripts/ui/ui_style.gd")
+const OptionsRows = preload("res://scripts/ui/options_rows.gd")
 
 signal dirty_changed(has_pending_changes: bool)
 
 const MAX_FPS_LABELS := ["Unlimited", "30", "60", "120", "144"]
 const RENDER_SCALE_LABELS := ["Native", "77% (FSR 2)", "67% (FSR 2)", "50% (FSR 2)"]
+const ON_OFF := ["Off", "On"]
+const TOGGLES := [GameSettings.KEY_FULLSCREEN, GameSettings.KEY_VSYNC, GameSettings.KEY_SHOW_FPS]
 
 var _initial := {}
 var _pending := {}
 var _syncing := false
-var _fullscreen_check: CheckBox
-var _vsync_check: CheckBox
-var _show_fps_check: CheckBox
-var _max_fps: OptionButton
-var _render_scale: OptionButton
-var _shadow_quality: OptionButton
-var _view_distance: OptionButton
-var _lod_quality: OptionButton
+# Setting key -> its value cycler.
+var _choices: Dictionary = {}
+var _max_fps: OptionsRows.Cycler
+var _shadow_quality: OptionsRows.Cycler
+var _lod_quality: OptionsRows.Cycler
 
 func _ready() -> void:
 	_build_ui()
@@ -32,58 +31,36 @@ func _ready() -> void:
 
 func _build_ui() -> void:
 	size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	size_flags_vertical = Control.SIZE_EXPAND_FILL
-	add_theme_constant_override("separation", 14)
+	add_theme_constant_override("separation", 0)
 
-	var title := Label.new()
-	title.text = "Graphics"
-	UIStyle.set_font_size(title, 18)
-	title.add_theme_color_override("font_color", UIStyle.TEXT_PRIMARY)
-	add_child(title)
-
-	_fullscreen_check = _add_check("Fullscreen", GameSettings.KEY_FULLSCREEN, "")
-	_vsync_check = _add_check("V-Sync", GameSettings.KEY_VSYNC,
+	add_child(OptionsRows.heading("Screen"))
+	_add_choice("Fullscreen", GameSettings.KEY_FULLSCREEN, ON_OFF, "")
+	_add_choice("V-Sync", GameSettings.KEY_VSYNC, ON_OFF,
 		"Waits for the display refresh before showing a frame, which prevents tearing.")
-	_show_fps_check = _add_check("Show FPS", GameSettings.KEY_SHOW_FPS,
-		"Shows frames per second and frame time in the top-right corner.")
-
-	var grid := GridContainer.new()
-	grid.columns = 2
-	grid.add_theme_constant_override("h_separation", 16)
-	grid.add_theme_constant_override("v_separation", 10)
-	add_child(grid)
-	_max_fps = _add_choice(grid, "Max FPS", GameSettings.KEY_MAX_FPS, MAX_FPS_LABELS,
+	_max_fps = _add_choice("Max FPS", GameSettings.KEY_MAX_FPS, MAX_FPS_LABELS,
 		"Caps the frame rate. With V-Sync on, the display refresh rate also caps it.")
-	_render_scale = _add_choice(grid, "Render scale", GameSettings.KEY_RENDER_SCALE, RENDER_SCALE_LABELS,
+	_add_choice("Show FPS", GameSettings.KEY_SHOW_FPS, ON_OFF,
+		"Shows frames per second and frame time at the right end of the menu bar.")
+
+	add_child(OptionsRows.heading("Graphics"))
+	_add_choice("Render scale", GameSettings.KEY_RENDER_SCALE, RENDER_SCALE_LABELS,
 		"Renders the 3D view at a lower resolution and upscales it with FSR 2. The interface stays sharp.")
-	_shadow_quality = _add_choice(grid, "Shadows", GameSettings.KEY_SHADOW_QUALITY, ["High", "Medium", "Low"],
+	_shadow_quality = _add_choice("Shadows", GameSettings.KEY_SHADOW_QUALITY, ["High", "Medium", "Low"],
 		"Medium keeps soft shadows but draws them in two cascades instead of four, so distant shadows are coarser.\nLow also makes them hard-edged.")
-	_view_distance = _add_choice(grid, "View distance", GameSettings.KEY_VIEW_DISTANCE, ["Full", "Reduced"],
+	_add_choice("View distance", GameSettings.KEY_VIEW_DISTANCE, ["Full", "Reduced"],
 		"Reduced stops drawing the world beyond about 3 km from the camera, unless zoomed far out.")
-	_lod_quality = _add_choice(grid, "Building detail", GameSettings.KEY_BUILDING_LOD_QUALITY,
+	_lod_quality = _add_choice("Building detail", GameSettings.KEY_BUILDING_LOD_QUALITY,
 		["Performance", "Balanced", "Quality"],
 		"Controls when buildings switch to simpler meshes. Does not affect simulation or remove distant buildings.")
 
-func _add_check(text: String, key: String, tooltip: String) -> CheckBox:
-	var check := CheckBox.new()
-	check.text = text
-	check.tooltip_text = tooltip
-	UIStyle.set_font_size(check, 14)
-	check.toggled.connect(func(enabled: bool): _set_pending(key, enabled))
-	add_child(check)
-	return check
-
-func _add_choice(grid: GridContainer, text: String, key: String, labels: Array, tooltip: String) -> OptionButton:
-	var label := Label.new()
-	label.text = text
-	grid.add_child(label)
-	var option := OptionButton.new()
+func _add_choice(text: String, key: String, labels: Array, hint: String) -> OptionsRows.Cycler:
+	var cycler := OptionsRows.Cycler.new()
 	for item in labels:
-		option.add_item(item)
-	option.tooltip_text = tooltip
-	option.item_selected.connect(func(index: int): _set_pending(key, _value_for_index(key, index)))
-	grid.add_child(option)
-	return option
+		cycler.add_item(item)
+	cycler.item_selected.connect(func(index: int): _set_pending(key, _value_for_index(key, index)))
+	add_child(OptionsRows.row(text, cycler, hint))
+	_choices[key] = cycler
+	return cycler
 
 func refresh() -> void:
 	_initial = _persisted_values()
@@ -139,8 +116,10 @@ func _persisted_values() -> Dictionary:
 		GameSettings.KEY_BUILDING_LOD_QUALITY: GameSettings.get_building_lod_quality(),
 	}
 
-# Option indices are stored directly except where the setting is a value from a choice list.
+# Option indices are stored directly except for On/Off toggles and values from a choice list.
 func _value_for_index(key: String, index: int) -> Variant:
+	if key in TOGGLES:
+		return index == 1
 	match key:
 		GameSettings.KEY_MAX_FPS:
 			return GameSettings.MAX_FPS_CHOICES[index]
@@ -151,6 +130,8 @@ func _value_for_index(key: String, index: int) -> Variant:
 	return index
 
 func _index_for_value(key: String, value: Variant) -> int:
+	if key in TOGGLES:
+		return 1 if value else 0
 	match key:
 		GameSettings.KEY_MAX_FPS:
 			return GameSettings.MAX_FPS_CHOICES.find(value)
@@ -167,20 +148,11 @@ func _set_pending(key: String, value: Variant) -> void:
 	_emit_dirty_state()
 
 func _sync_controls() -> void:
-	if not _fullscreen_check:
+	if _choices.is_empty():
 		return
 	_syncing = true
-	_fullscreen_check.button_pressed = _pending[GameSettings.KEY_FULLSCREEN]
-	_vsync_check.button_pressed = _pending[GameSettings.KEY_VSYNC]
-	_show_fps_check.button_pressed = _pending[GameSettings.KEY_SHOW_FPS]
-	for pair in [
-		[_max_fps, GameSettings.KEY_MAX_FPS],
-		[_render_scale, GameSettings.KEY_RENDER_SCALE],
-		[_shadow_quality, GameSettings.KEY_SHADOW_QUALITY],
-		[_view_distance, GameSettings.KEY_VIEW_DISTANCE],
-		[_lod_quality, GameSettings.KEY_BUILDING_LOD_QUALITY],
-	]:
-		(pair[0] as OptionButton).select(_index_for_value(pair[1], _pending[pair[1]]))
+	for key in _choices:
+		(_choices[key] as OptionsRows.Cycler).select(_index_for_value(key, _pending[key]))
 	_syncing = false
 
 func _emit_dirty_state() -> void:

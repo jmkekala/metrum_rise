@@ -72,7 +72,14 @@ fn a_missing_file_lists_the_builtins_and_is_created_by_the_first_write() {
     assert_eq!(library.error(), None);
     assert!(!fixture.path().exists(), "listing never creates the file");
     assert_eq!(
-        library.create(" Boulevard ", &[S, B, grass(3.0), F, S], 50, true, true),
+        library.create(
+            " Boulevard ",
+            &[S, B, grass(3.0), F, S],
+            50,
+            true,
+            true,
+            RoadTypePockets::default()
+        ),
         Ok("custom:1".into())
     );
     assert!(fixture.path().exists());
@@ -83,10 +90,40 @@ fn types_round_trip_through_the_file() {
     let fixture = Fixture::new();
     let mut library = fixture.library();
     let divided = [S, B, B, grass(3.5), F, F, S];
-    assert_eq!(library.create("Boulevard", &divided, 50, true, true), Ok("custom:1".into()));
-    assert_eq!(library.create("Lane", &[S, F, S], 50, true, true), Ok("custom:2".into()));
+    assert_eq!(
+        library.create(
+            "Boulevard",
+            &divided,
+            50,
+            true,
+            true,
+            RoadTypePockets::default()
+        ),
+        Ok("custom:1".into())
+    );
+    assert_eq!(
+        library.create(
+            "Lane",
+            &[S, F, S],
+            50,
+            true,
+            true,
+            RoadTypePockets::default()
+        ),
+        Ok("custom:2".into())
+    );
     let street = [S, RoadPart::Parking, B, F, S];
-    assert_eq!(library.create("Street", &street, 50, true, true), Ok("custom:3".into()));
+    assert_eq!(
+        library.create(
+            "Street",
+            &street,
+            50,
+            true,
+            true,
+            RoadTypePockets::default()
+        ),
+        Ok("custom:3".into())
+    );
     let written = custom(&mut library);
     assert_eq!(written[0].name, "Boulevard");
     assert_eq!(written[0].parts, divided);
@@ -125,35 +162,96 @@ fn edits_follow_the_name_and_layout_rules() {
     let fixture = Fixture::new();
     let mut library = fixture.library();
     let id = library
-        .create("Boulevard", &[S, B, grass(3.0), F, S], 50, true, true)
+        .create(
+            "Boulevard",
+            &[S, B, grass(3.0), F, S],
+            50,
+            true,
+            true,
+            RoadTypePockets::default(),
+        )
         .unwrap();
-    assert_eq!(reason(library.create("  ", &[S, F, S], 50, true, true)), "name_empty");
     assert_eq!(
-        reason(library.create(&"x".repeat(41), &[S, F, S], 50, true, true)),
+        reason(library.create("  ", &[S, F, S], 50, true, true, RoadTypePockets::default())),
+        "name_empty"
+    );
+    assert_eq!(
+        reason(library.create(
+            &"x".repeat(41),
+            &[S, F, S],
+            50,
+            true,
+            true,
+            RoadTypePockets::default()
+        )),
         "name_too_long"
     );
     assert_eq!(
-        reason(library.create("a\tb", &[S, F, S], 50, true, true)),
+        reason(library.create(
+            "a\tb",
+            &[S, F, S],
+            50,
+            true,
+            true,
+            RoadTypePockets::default()
+        )),
         "name_invalid_characters"
     );
     assert_eq!(
-        reason(library.create("2-lane ROAD", &[S, F, S], 50, true, true)),
+        reason(library.create(
+            "2-lane ROAD",
+            &[S, F, S],
+            50,
+            true,
+            true,
+            RoadTypePockets::default()
+        )),
         "name_taken"
     );
     assert_eq!(
-        reason(library.create("BOULEVARD", &[S, F, S], 50, true, true)),
+        reason(library.create(
+            "BOULEVARD",
+            &[S, F, S],
+            50,
+            true,
+            true,
+            RoadTypePockets::default()
+        )),
         "name_taken"
     );
     assert_eq!(
-        reason(library.create("Odd", &[S, F, B, S], 50, true, true)),
+        reason(library.create(
+            "Odd",
+            &[S, F, B, S],
+            50,
+            true,
+            true,
+            RoadTypePockets::default()
+        )),
         "layout_lane_order"
     );
     assert_eq!(
-        reason(library.update(&id, "Odd", &[S, F, grass(3.0), S], 50, true, true)),
+        reason(library.update(
+            &id,
+            "Odd",
+            &[S, F, grass(3.0), S],
+            50,
+            true,
+            true,
+            RoadTypePockets::default()
+        )),
         "median_requires_both_directions"
     );
     assert_eq!(
-        reason(library.update("builtin:road_2l", "X", &[S, F, S], 50, true, true)),
+        reason(library.update(
+            "builtin:road_2l",
+            "X",
+            &[S, F, S],
+            50,
+            true,
+            true,
+            RoadTypePockets::default()
+        )),
         "road_type_builtin"
     );
     assert_eq!(
@@ -161,7 +259,15 @@ fn edits_follow_the_name_and_layout_rules() {
         "road_type_builtin"
     );
     assert_eq!(
-        reason(library.update("custom:9", "X", &[S, F, S], 50, true, true)),
+        reason(library.update(
+            "custom:9",
+            "X",
+            &[S, F, S],
+            50,
+            true,
+            true,
+            RoadTypePockets::default()
+        )),
         "road_type_unknown"
     );
     assert_eq!(reason(library.delete("custom:9")), "road_type_unknown");
@@ -172,14 +278,32 @@ fn edits_follow_the_name_and_layout_rules() {
     assert_eq!(library.check_name("boulevard", &id), Ok(()));
     assert_eq!(library.check_name("Avenue", ""), Ok(()));
     // Another handle's write lists after a reload.
-    let avenue = fixture.library().create("Avenue", &[S, B, F, S], 50, true, true).unwrap();
+    let avenue = fixture
+        .library()
+        .create(
+            "Avenue",
+            &[S, B, F, S],
+            50,
+            true,
+            true,
+            RoadTypePockets::default(),
+        )
+        .unwrap();
     assert_eq!(library.check_name("Avenue", ""), Ok(()));
     library.reload();
     assert_eq!(reason(library.check_name("avenue", "")), "name_taken");
     assert_eq!(library.delete(&avenue), Ok(()));
     // A type may keep its own name in another case; its id stays.
     assert_eq!(
-        library.update(&id, "boulevard", &[S, B, B, grass(4.0), F, F, S], 50, true, true),
+        library.update(
+            &id,
+            "boulevard",
+            &[S, B, B, grass(4.0), F, F, S],
+            50,
+            true,
+            true,
+            RoadTypePockets::default()
+        ),
         Ok(())
     );
     let edited = &custom(&mut library)[0];
@@ -189,12 +313,21 @@ fn edits_follow_the_name_and_layout_rules() {
     );
     assert_eq!(edited.usable().map(|section| section.fwd_lanes), Some(2));
     assert_eq!(
-        library.suggested_name(edited.usable().unwrap()),
+        library.suggested_name(edited.usable().unwrap(), Default::default()),
         "2+2 Grass 4 m"
     );
-    library.create("2+2 Grass 4 m", &[S, B, F, S], 50, true, true).unwrap();
+    library
+        .create(
+            "2+2 Grass 4 m",
+            &[S, B, F, S],
+            50,
+            true,
+            true,
+            RoadTypePockets::default(),
+        )
+        .unwrap();
     assert_eq!(
-        library.suggested_name(edited.usable().unwrap()),
+        library.suggested_name(edited.usable().unwrap(), Default::default()),
         "2+2 Grass 4 m (2)"
     );
     assert_eq!(library.delete(&id), Ok(()));
@@ -206,10 +339,15 @@ fn edits_follow_the_name_and_layout_rules() {
 fn ids_come_from_the_stored_counter_and_are_never_reissued() {
     let fixture = Fixture::new();
     let mut library = fixture.library();
-    assert_eq!(library.create("A", &[S, F, S], 50, true, true), Ok("custom:1".into()));
+    assert_eq!(
+        library.create("A", &[S, F, S], 50, true, true, RoadTypePockets::default()),
+        Ok("custom:1".into())
+    );
     assert_eq!(library.delete("custom:1"), Ok(()));
     assert_eq!(
-        fixture.library().create("B", &[S, F, S], 50, true, true),
+        fixture
+            .library()
+            .create("B", &[S, F, S], 50, true, true, RoadTypePockets::default()),
         Ok("custom:2".into())
     );
     // A hand-edited counter behind the file's ids never reissues one.
@@ -217,7 +355,9 @@ fn ids_come_from_the_stored_counter_and_are_never_reissued() {
     json["next_id"] = 1.into();
     fs::write(fixture.path(), serde_json::to_vec(&json).unwrap()).unwrap();
     assert_eq!(
-        fixture.library().create("C", &[S, F, S], 50, true, true),
+        fixture
+            .library()
+            .create("C", &[S, F, S], 50, true, true, RoadTypePockets::default()),
         Ok("custom:3".into())
     );
 }
@@ -228,10 +368,40 @@ fn two_handles_writing_in_turn_keep_both_entries() {
     let (mut first, mut second) = (fixture.library(), fixture.library());
     assert_eq!(first.types().len(), BUILTIN_ROAD_TYPES.len());
     assert_eq!(second.types().len(), BUILTIN_ROAD_TYPES.len());
-    assert_eq!(first.create("One", &[S, F, S], 50, true, true), Ok("custom:1".into()));
+    assert_eq!(
+        first.create(
+            "One",
+            &[S, F, S],
+            50,
+            true,
+            true,
+            RoadTypePockets::default()
+        ),
+        Ok("custom:1".into())
+    );
     // The second handle re-reads before writing: it sees the first's type and its id.
-    assert_eq!(reason(second.create("ONE", &[S, F, S], 50, true, true)), "name_taken");
-    assert_eq!(second.create("Two", &[S, F, F, S], 50, true, true), Ok("custom:2".into()));
+    assert_eq!(
+        reason(second.create(
+            "ONE",
+            &[S, F, S],
+            50,
+            true,
+            true,
+            RoadTypePockets::default()
+        )),
+        "name_taken"
+    );
+    assert_eq!(
+        second.create(
+            "Two",
+            &[S, F, F, S],
+            50,
+            true,
+            true,
+            RoadTypePockets::default()
+        ),
+        Ok("custom:2".into())
+    );
     assert_eq!(first.delete("custom:2"), Ok(()));
     let names: Vec<String> = custom(&mut fixture.library())
         .into_iter()
@@ -256,11 +426,19 @@ fn an_unparsable_file_is_left_untouched_and_refuses_writes() {
             Some("library_unreadable")
         );
         assert_eq!(
-            reason(library.create("A", &[S, F, S], 50, true, true)),
+            reason(library.create("A", &[S, F, S], 50, true, true, RoadTypePockets::default())),
             "library_unreadable"
         );
         assert_eq!(
-            reason(library.update("custom:1", "A", &[S, F, S], 50, true, true)),
+            reason(library.update(
+                "custom:1",
+                "A",
+                &[S, F, S],
+                50,
+                true,
+                true,
+                RoadTypePockets::default()
+            )),
             "library_unreadable"
         );
         assert_eq!(reason(library.delete("custom:1")), "library_unreadable");
@@ -271,7 +449,10 @@ fn an_unparsable_file_is_left_untouched_and_refuses_writes() {
         );
         // Fixed by hand, it is writable again.
         fs::remove_file(fixture.path()).unwrap();
-        assert_eq!(library.create("A", &[S, F, S], 50, true, true), Ok("custom:1".into()));
+        assert_eq!(
+            library.create("A", &[S, F, S], 50, true, true, RoadTypePockets::default()),
+            Ok("custom:1".into())
+        );
     }
 }
 
@@ -291,11 +472,19 @@ fn a_newer_version_is_read_only() {
     assert_eq!(listed[0].name, "Later");
     assert!(listed[0].usable().is_some(), "its types still draw");
     assert_eq!(
-        reason(library.create("A", &[S, F, S], 50, true, true)),
+        reason(library.create("A", &[S, F, S], 50, true, true, RoadTypePockets::default())),
         "library_newer_version"
     );
     assert_eq!(
-        reason(library.update("custom:1", "A", &[S, F, S], 50, true, true)),
+        reason(library.update(
+            "custom:1",
+            "A",
+            &[S, F, S],
+            50,
+            true,
+            true,
+            RoadTypePockets::default()
+        )),
         "library_newer_version"
     );
     assert_eq!(reason(library.delete("custom:1")), "library_newer_version");
@@ -369,7 +558,17 @@ fn invalid_entries_are_listed_unusable_and_kept_on_write() {
         .collect();
     assert_eq!(reasons, expected);
     // A write keeps every entry as it was, the bad ones included.
-    assert_eq!(library.create("New", &[S, F, F, S], 50, true, true), Ok("custom:10".into()));
+    assert_eq!(
+        library.create(
+            "New",
+            &[S, F, F, S],
+            50,
+            true,
+            true,
+            RoadTypePockets::default()
+        ),
+        Ok("custom:10".into())
+    );
     let json = fixture.json();
     let kept = json["types"].as_array().unwrap();
     assert_eq!(kept.len(), entries.len() + 1);
@@ -379,7 +578,15 @@ fn invalid_entries_are_listed_unusable_and_kept_on_write() {
     );
     // An unusable entry can be fixed in place; its duplicate id resolves to the first entry.
     assert_eq!(
-        library.update("custom:3", "Wrong way", &[S, B, F, S], 50, true, true),
+        library.update(
+            "custom:3",
+            "Wrong way",
+            &[S, B, F, S],
+            50,
+            true,
+            true,
+            RoadTypePockets::default()
+        ),
         Ok(())
     );
     assert!(custom(&mut library)[2].usable().is_some());
@@ -403,11 +610,25 @@ fn speed_zoning_and_sidewalks_round_trip_and_version_1_reads_with_defaults() {
     assert_eq!(old.usable().map(|section| section.sidewalks), Some(SidewalkSides::BOTH));
     // A rural road: no sidewalk parts, 80 km/h, no zoning; a highway-like 120 km/h.
     assert_eq!(
-        library.create("Rural", &[B, F], 80, false, true),
+        library.create(
+            "Rural",
+            &[B, F],
+            80,
+            false,
+            true,
+            RoadTypePockets::default()
+        ),
         Ok("custom:2".into())
     );
     assert_eq!(
-        library.create("Fast", &[B, B, grass(3.0), F, F], 120, false, true),
+        library.create(
+            "Fast",
+            &[B, B, grass(3.0), F, F],
+            120,
+            false,
+            true,
+            RoadTypePockets::default()
+        ),
         Ok("custom:3".into())
     );
     // The write stores version 2 and keeps the version 1 entry as it was.
@@ -436,20 +657,42 @@ fn speed_zoning_and_sidewalks_round_trip_and_version_1_reads_with_defaults() {
         (80.0_f32 * crate::config::KMH_TO_MPS).to_bits()
     );
     assert_eq!(listed[2].speed_kmh, 120);
-    // Speeds off the range or the 10 km/h grid are refused; a walkway's is ignored.
-    for speed in [0, 10, 55, 130, -50, i64::from(u16::MAX) + 50] {
+    // Speeds that are not a posted limit are refused; a walkway's is ignored.
+    for speed in [0, 10, 55, 90, 110, 130, -50, i64::from(u16::MAX) + 50] {
         assert_eq!(
-            reason(library.create("Odd", &[S, F, S], speed, true, true)),
+            reason(library.create(
+                "Odd",
+                &[S, F, S],
+                speed,
+                true,
+                true,
+                RoadTypePockets::default()
+            )),
             "speed_out_of_range",
             "{speed}"
         );
     }
     assert_eq!(
-        reason(library.update("custom:2", "Rural", &[B, F], 125, false, true)),
+        reason(library.update(
+            "custom:2",
+            "Rural",
+            &[B, F],
+            125,
+            false,
+            true,
+            RoadTypePockets::default()
+        )),
         "speed_out_of_range"
     );
     assert_eq!(
-        library.create("Path", &[RoadPart::Footpath], 999, true, true),
+        library.create(
+            "Path",
+            &[RoadPart::Footpath],
+            999,
+            true,
+            true,
+            RoadTypePockets::default()
+        ),
         Ok("custom:4".into())
     );
     assert_eq!(custom(&mut library)[3].speed_kmh, 0);
@@ -464,7 +707,16 @@ fn speed_zoning_and_sidewalks_round_trip_and_version_1_reads_with_defaults() {
         Some("speed_out_of_range")
     );
     assert_eq!(rural.usable(), None);
-    library.create("New", &[S, F, F, S], 50, true, true).unwrap();
+    library
+        .create(
+            "New",
+            &[S, F, F, S],
+            50,
+            true,
+            true,
+            RoadTypePockets::default(),
+        )
+        .unwrap();
     assert_eq!(fixture.json()["types"][1]["speed_kmh"], 45);
 }
 
@@ -485,7 +737,14 @@ fn a_version_2_entry_without_street_lights_reads_lit() {
     assert!(listed.street_lights);
     assert!(library.types().iter().filter(|ty| ty.builtin).all(|ty| ty.street_lights));
     assert_eq!(
-        library.create("Dark", &[B, B, F, F], 100, false, false),
+        library.create(
+            "Dark",
+            &[B, B, F, F],
+            100,
+            false,
+            false,
+            RoadTypePockets::default()
+        ),
         Ok("custom:2".into())
     );
     let json = fixture.json();
@@ -495,9 +754,74 @@ fn a_version_2_entry_without_street_lights_reads_lit() {
     assert_eq!(json["types"][1]["street_lights"], false);
     assert!(!custom(&mut fixture.library())[1].street_lights);
     assert_eq!(
-        library.update("custom:1", "Older", &[B, F], 80, false, false),
+        library.update(
+            "custom:1",
+            "Older",
+            &[B, F],
+            80,
+            false,
+            false,
+            RoadTypePockets::default()
+        ),
         Ok(())
     );
     assert_eq!(fixture.json()["types"][0]["street_lights"], false);
     assert!(!custom(&mut fixture.library())[0].street_lights);
+}
+
+#[test]
+fn pocket_settings_round_trip_and_invalid_lengths_do_not_write() {
+    let fixture = Fixture::new();
+    let mut library = fixture.library();
+    for (index, (left, right)) in [(false, false), (true, false), (false, true), (true, true)]
+        .into_iter()
+        .enumerate()
+    {
+        let pockets = RoadTypePockets {
+            left,
+            right,
+            body_m: 80.0,
+        };
+        let id = library
+            .create(
+                &format!("Pocket {index}"),
+                &[S, B, F, S],
+                50,
+                true,
+                true,
+                pockets,
+            )
+            .unwrap();
+        assert_eq!(
+            fixture
+                .library()
+                .types()
+                .iter()
+                .find(|ty| ty.id == id)
+                .unwrap()
+                .pockets,
+            pockets
+        );
+    }
+    let before = fs::read(fixture.path()).unwrap();
+    for body_m in [0.0, 19.0, 25.0, 310.0, f32::NAN, f32::INFINITY] {
+        let pockets = RoadTypePockets {
+            left: true,
+            right: false,
+            body_m,
+        };
+        assert_eq!(
+            reason(library.update(
+                "custom:1",
+                "Pocket 0",
+                &[S, B, F, S],
+                50,
+                true,
+                true,
+                pockets
+            )),
+            "invalid_pocket_dimensions"
+        );
+        assert_eq!(fs::read(fixture.path()).unwrap(), before);
+    }
 }

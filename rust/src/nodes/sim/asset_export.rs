@@ -130,6 +130,9 @@ pub struct ExportParams {
     /// Existing or generated thumbnail relative to the asset directory.
     #[serde(default)]
     pub thumbnail: Option<String>,
+    /// The asset's build-menu icon, kept as authored (`AssetManifest::icon`).
+    #[serde(default)]
+    pub icon: Option<String>,
     /// Optional grouping set within the pack (e.g. `"suburban"`).
     #[serde(default)]
     pub asset_set: Option<String>,
@@ -275,6 +278,9 @@ fn build_asset_toml(p: &ExportParams) -> Result<String, String> {
     ));
     if let Some(thumbnail) = &p.thumbnail {
         out.push_str(&format!("thumbnail = {}\n", toml_string(thumbnail)));
+    }
+    if let Some(icon) = &p.icon {
+        out.push_str(&format!("icon = {}\n", toml_string(icon)));
     }
 
     if let Some(set) = &p.asset_set
@@ -877,6 +883,7 @@ pub fn get_asset_manifest_json_internal(
         "asset_id": m.asset_id,
         "display_name": m.display_name,
         "thumbnail": m.thumbnail,
+        "icon": m.icon,
         "asset_set": m.asset_set,
         "tags": m.tags,
         "asset_class": m.class().map(|c| format!("{c:?}").to_lowercase()).unwrap_or_default(),
@@ -1115,6 +1122,27 @@ mod tests {
                 validate_asset_params_internal(&data.to_string()).contains("window_brightness")
             );
         }
+    }
+
+    #[test]
+    fn round_trip_keeps_the_menu_icon_and_refuses_a_bad_name() {
+        let mut data: serde_json::Value =
+            serde_json::from_str(&minimal_building_json("building.parking.lot")).unwrap();
+        data["icon"] = serde_json::json!("parking_lot");
+        let params: ExportParams = serde_json::from_value(data.clone()).unwrap();
+        let (toml, _) = validated_tomls(&params).unwrap();
+        let manifest = AssetManifest::from_str(&toml).unwrap();
+        assert_eq!(manifest.icon.as_deref(), Some("parking_lot"));
+        let mut registry = crate::assets::registry::AssetRegistry::new();
+        registry.register("test-pack", manifest, String::new());
+        let loaded: serde_json::Value = serde_json::from_str(&get_asset_manifest_json_internal(
+            &registry,
+            "test-pack:building.parking.lot",
+        ))
+        .unwrap();
+        assert_eq!(loaded["icon"], "parking_lot");
+        data["icon"] = serde_json::json!("../lot.svg");
+        assert!(validate_asset_params_internal(&data.to_string()).contains("icon"));
     }
 
     #[test]

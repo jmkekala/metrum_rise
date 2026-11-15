@@ -10,7 +10,7 @@ pub mod rebuild;
 /// Chunk-based spatial index for fast distance and AABB queries.
 pub mod spatial;
 
-pub(crate) use cross_section::MAX_LANES_PER_DIRECTION;
+pub(crate) use cross_section::{MAX_LANES_PER_DIRECTION, POCKET_MEDIAN_STUB_M};
 pub use cross_section::{
     MedianStyle, PARKING_LANE_WIDTH_M, RoadMedian, RoadParking, RoadPocket, RoundaboutRing,
     SidewalkSides,

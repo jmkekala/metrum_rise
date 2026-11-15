@@ -17,6 +17,7 @@ const MODELS: Array[String] = [
 	# Descents (A3.2: the car points down the slope), then ascents (A3.1).
 	"A3.2-8", "A3.2-10", "A3.2-12", "A3.2-14", "A3.2-16", "A3.2-18",
 	"A3.1-8", "A3.1-10", "A3.1-12", "A3.1-14", "A3.1-16", "A3.1-18", "A9", "B5-D2", "E1-B5-D2",
+	"C32-20", "C32-70", "C32-100", "C32-120",
 ]
 # E1-B5-D2: E1-1's plate (2.0-2.6 m in its GLB) is raised to stand 6 cm above B5's triangle top
 # (2.789 m), and E1-1's pole base moves up to B5's pole top (2.671 m), so one pole runs through.

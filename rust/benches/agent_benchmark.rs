@@ -126,6 +126,7 @@ fn register_test_asset(
         mesh_parts: vec![MeshPart::single_lod0("main", "lod0.glb")],
         site_surfaces: vec![],
         thumbnail: None,
+        icon: None,
         lods: vec![LodEntry {
             file: "lod0.glb".to_owned(),
             distance_min_m: 0.0,

@@ -5,7 +5,7 @@
 extends RefCounted
 
 const TreeSpecies = preload("res://scripts/renderers/tree_species.gd")
-const Vegetation = preload("res://scripts/renderers/vegetation.gd")
+const VegetationPlacements = preload("res://scripts/renderers/vegetation_placements.gd")
 
 var active := false
 var placements := PackedFloat32Array()
@@ -64,33 +64,9 @@ func _clear_instances() -> void:
 
 func _render() -> void:
 	_clear_instances()
-	_root = Node3D.new()
-	_root.name = "YardVegetationPreview"
-	_editor._preview.add_child(_root)
 	if _meshes.is_empty():
 		_meshes = TreeSpecies.build_meshes()
-	# The game's own near level: Rust builds the seed, variant, proportions and tint of every
-	# plant exactly as a vegetation patch does, here at the lot's origin with open stands. The
-	# helper renderer never enters the tree, so it starts no world streaming or processing.
-	var appearance := Vegetation.new()
-	appearance.meshes = _meshes
-	var product: Dictionary = SimulationNode.build_vegetation_product(placements, {},
-		PackedFloat32Array(), Vector2.ZERO, true, false, appearance._product_settings(),
-		appearance._product_catalogue())
-	appearance.free()
-	var batches: PackedInt32Array = product.get("batches", PackedInt32Array())
-	var buffers: Array = product.get("buffers", [])
-	for at in range(0, batches.size(), 8):
-		# Only the near level; the distant impostors are for a patch seen from afar.
-		if batches[at + 1] != 0:
-			continue
-		var mm := MultiMesh.new()
-		mm.transform_format = MultiMesh.TRANSFORM_3D
-		mm.use_colors = true
-		mm.use_custom_data = batches[at + 6] == 1
-		mm.mesh = _meshes[batches[at]][batches[at + 2]][0]
-		mm.instance_count = batches[at + 4]
-		mm.buffer = buffers[batches[at + 7]]
-		var instance := MultiMeshInstance3D.new()
-		instance.multimesh = mm
-		_root.add_child(instance)
+	# The game's cosmetic seed, variant, proportions and tint, as well as its meshes.
+	_root = VegetationPlacements.instances(placements, _meshes)
+	_root.name = "YardVegetationPreview"
+	_editor._preview.add_child(_root)

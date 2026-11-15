@@ -12,16 +12,16 @@
 //! "width_m": float}`, `{"kind": "parking"}` (a kerbside parking lane, `PARK-05`) or
 //! `{"kind": "footpath"}` (a walkway's single part). A car road has a sidewalk part at either
 //! end, at both or at none (`ROAD-107`); a listed type or checked layout gives the sides as
-//! `sidewalks` (0 none, 1 left, 2 right, 3 both). A type also has `speed_kmh` (20 to 120 in steps
-//! of 10; 0 for a walkway), `zoning` and `street_lights`.
+//! `sidewalks` (0 none, 1 left, 2 right, 3 both). A type also has `speed_kmh` (one of
+//! `SPEEDS_KMH`, the Finnish posted limits; 0 for a walkway), `zoning` and `street_lights`.
 
 use super::super::*;
 use crate::simulation::network::graph::{MedianStyle, RoadMedian};
 use crate::simulation::network::road_types::cost as road_cost;
 use crate::simulation::network::road_types::library::{RoadTypeLibrary, check_type};
 use crate::simulation::network::road_types::{
-    DEFAULT_SPEED_KMH, MAX_SPEED_KMH, MIN_SPEED_KMH, RoadAttributes, RoadCrossSection, RoadPart,
-    RoadType, RoadTypeRefusal, SPEED_STEP_KMH, layout_widths, type_of,
+    DEFAULT_SPEED_KMH, RoadAttributes, RoadCrossSection, RoadPart, RoadType, RoadTypePockets,
+    RoadTypeRefusal, SPEEDS_KMH, layout_widths, type_of,
 };
 use crate::simulation::network::types::EdgeClass;
 use godot::classes::ProjectSettings;
@@ -89,11 +89,12 @@ impl SimulationNode {
     /// `builtin`, `usable`, `parts` (see the module docs), `speed_kmh` (0 for a walkway),
     /// `zoning`, `street_lights` and the fields of [`Self::check_road_layout`] but `suggested_name` (so also
     /// `build_per_m` and `upkeep_per_m_day`, 0 for an unusable type): an unusable
-    /// type (kept in the file, never drawn) carries its `invalid_reason`. `speeds` is the speed
-    /// grid every car road type takes, for the road builder's stepper: `min_kmh`, `max_kmh`,
-    /// `step_kmh`, `default_kmh` (the built-ins') and `no_zoning_from_kmh` (80: the builder
+    /// type (kept in the file, never drawn) carries its `invalid_reason`. `speeds` holds the
+    /// speeds every car road type takes, for the road builder's signs: `kmh` (slowest first),
+    /// `default_kmh` (the built-ins') and `no_zoning_from_kmh` (80: the builder
     /// suggests zoning off once a new type reaches it; the type's flag decides). `O(types x
-    /// parts)`; the file is read once.
+    /// parts)`; the file is read once. Each type includes `pockets` (`left`, `right`, `body_m`);
+    /// `pocket_lengths` gives the shared default/min/max/step metre grid.
     #[func]
     pub fn get_road_types(&self) -> VarDictionary {
         self.with_road_types(|library| {
@@ -103,9 +104,7 @@ impl SimulationNode {
             }
             let error = library.error();
             let speeds = vdict! {
-                "min_kmh": i64::from(MIN_SPEED_KMH),
-                "max_kmh": i64::from(MAX_SPEED_KMH),
-                "step_kmh": i64::from(SPEED_STEP_KMH),
+                "kmh": PackedInt32Array::from_iter(SPEEDS_KMH.map(i32::from)),
                 "default_kmh": i64::from(DEFAULT_SPEED_KMH),
                 "no_zoning_from_kmh": i64::from(RoadAttributes::speed_kmh_of(
                     crate::config::HIGH_SPEED_ROAD_THRESHOLD_MS,
@@ -114,6 +113,12 @@ impl SimulationNode {
             vdict! {
                 "types": types,
                 "speeds": speeds,
+                "pocket_lengths": vdict! {
+                    "default_m": crate::simulation::network::pockets::POCKET_BODY_DEFAULT_M,
+                    "min_m": crate::simulation::network::pockets::POCKET_BODY_MIN_M,
+                    "max_m": crate::simulation::network::pockets::POCKET_BODY_MAX_M,
+                    "step_m": crate::simulation::network::pockets::POCKET_BODY_STEP_M,
+                },
                 "error": error.as_ref().map_or("", |error| error.reason),
                 "error_detail": error.as_ref().map_or("", |error| error.detail.as_str()),
             }
@@ -125,7 +130,7 @@ impl SimulationNode {
     /// `is_valid`;
     /// `invalid_reason` and `detail` (`part <index>`) when refused (`layout_unknown_part` for a
     /// dictionary that is not a part, else the layout check's keys, then `speed_out_of_range`
-    /// outside 20 to 120 km/h in steps of 10; a walkway's speed is not checked); the
+    /// for a speed not in `SPEEDS_KMH`; a walkway's speed is not checked); the
     /// cross-section a valid layout builds as `fwd_lanes`, `bkw_lanes`, `median_style` (0 none),
     /// `median_width`, `parking` (bit 0 left, bit 1 right) and `sidewalks` (the sides, 0 none,
     /// 1 left, 2 right, 3 both; 0 when refused); `speed_kmh` (as checked; 0 for a walkway),
@@ -135,7 +140,9 @@ impl SimulationNode {
     /// without one, included); `build_per_m` and `upkeep_per_m_day`, the valid type's cost per
     /// metre on the ground (`ROAD-101`: 15 and 0.1 for the 2-Lane Road; a bridge costs three
     /// times, a tunnel five; 0 when refused); and `suggested_name`, a free name for a new type
-    /// of a valid layout ("2+2 Grass 3 m", with " (2)" when taken), else empty. `O(parts)` plus
+    /// of a valid layout with `pockets` (`{left, right, body_m}`, `ROAD-119`): "2+2 Grass 3 m",
+    /// "1+1 Pockets", with " (2)" when taken; else empty; and `pocket_refusal`, why a valid
+    /// layout cannot take `pockets` (`RoadTypePockets::fits`), else empty. `O(parts)` plus
     /// the name lookup's `O(types)`.
     #[func]
     pub fn check_road_layout(
@@ -144,6 +151,7 @@ impl SimulationNode {
         speed_kmh: i32,
         zoning: bool,
         street_lights: bool,
+        pockets: VarDictionary,
     ) -> VarDictionary {
         let parts = match parts_from_variant(&parts) {
             Ok(parts) => parts,
@@ -169,9 +177,16 @@ impl SimulationNode {
         result.set("street_lights", street_lights);
         set_cost(&mut result, checked.as_ref().ok().copied());
         result.set("is_valid", verdict.is_ok());
+        let pockets = pockets_from_variant(&pockets);
+        // A layout that cannot take its pockets is still a layout: the strip keeps drawing it.
+        let pocket_refusal = verdict
+            .as_ref()
+            .ok()
+            .and_then(|section| pockets.fits(section).err());
+        result.set("pocket_refusal", pocket_refusal.unwrap_or(""));
         let name = verdict.map_or_else(
             |_| String::new(),
-            |section| self.with_road_types(|library| library.suggested_name(section)),
+            |section| self.with_road_types(|library| library.suggested_name(section, pockets)),
         );
         result.set("suggested_name", name.as_str());
         result
@@ -191,6 +206,7 @@ impl SimulationNode {
         speed_kmh: i32,
         zoning: bool,
         street_lights: bool,
+        pockets: VarDictionary,
     ) -> VarDictionary {
         let created = parts_from_variant(&parts).and_then(|parts| {
             self.with_road_types(|library| {
@@ -200,6 +216,7 @@ impl SimulationNode {
                     speed_kmh.into(),
                     zoning,
                     street_lights,
+                    pockets_from_variant(&pockets),
                 )
             })
         });
@@ -234,6 +251,7 @@ impl SimulationNode {
     /// written, else the refusal key: those of [`Self::create_road_type`],
     /// `road_type_builtin` or `road_type_unknown`. Roads already built keep their own layout.
     #[func]
+    #[allow(clippy::too_many_arguments)]
     pub fn update_road_type(
         &self,
         id: GString,
@@ -242,6 +260,7 @@ impl SimulationNode {
         speed_kmh: i32,
         zoning: bool,
         street_lights: bool,
+        pockets: VarDictionary,
     ) -> GString {
         let updated = parts_from_variant(&parts).and_then(|parts| {
             self.with_road_types(|library| {
@@ -252,6 +271,7 @@ impl SimulationNode {
                     speed_kmh.into(),
                     zoning,
                     street_lights,
+                    pockets_from_variant(&pockets),
                 )
             })
         });
@@ -287,7 +307,14 @@ fn type_to_variant(ty: &RoadType) -> VarDictionary {
     result.set("speed_kmh", i64::from(ty.speed_kmh));
     result.set("zoning", ty.zoning);
     result.set("street_lights", ty.street_lights);
-    set_cost(&mut result, ty.usable().map(|section| (section, ty.speed_kmh)));
+    result.set(
+        "pockets",
+        vdict! { "left": ty.pockets.left, "right": ty.pockets.right, "body_m": ty.pockets.body_m },
+    );
+    set_cost(
+        &mut result,
+        ty.usable().map(|section| (section, ty.speed_kmh)),
+    );
     let mut parts = VarArray::new();
     for part in &ty.parts {
         parts.push(&part_to_variant(*part).to_variant());
@@ -386,5 +413,23 @@ fn part_from_variant(part: &Variant) -> Result<RoadPart, &'static str> {
             Ok(RoadPart::Median(RoadMedian { style, width_m }))
         }
         _ => Err(UNKNOWN),
+    }
+}
+
+/// The builder and road tool share this configuration; omitted fields mean the defaults.
+pub(super) fn pockets_from_variant(value: &VarDictionary) -> RoadTypePockets {
+    RoadTypePockets {
+        left: value
+            .get("left")
+            .and_then(|v| v.try_to::<bool>().ok())
+            .unwrap_or(false),
+        right: value
+            .get("right")
+            .and_then(|v| v.try_to::<bool>().ok())
+            .unwrap_or(false),
+        body_m: value
+            .get("body_m")
+            .and_then(|v| v.try_to::<f32>().ok())
+            .unwrap_or(crate::simulation::network::pockets::POCKET_BODY_DEFAULT_M),
     }
 }
