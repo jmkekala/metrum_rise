@@ -2208,6 +2208,14 @@ restore the original recorded choices. Selection matches with one and four Rayon
 Marking a road end as a border connection, which moves that end `BORDER_EXTENSION_M` outward,
 refreshes the road's alignment the same way (`SAVE-02`); before that fix the save wrote the stale
 source and its load was rejected.
+Every road edit refreshes alignments on the graph it leaves. Bulldozing a road was the exception
+until `SAVE-05`: it refreshed before marking the road deleted, so a pocket piece beside the
+removed road kept the record of their joined [frontage line](#turn-pocket-pieces--road-95-round-r5d1),
+and the save it allowed failed to load. Removal now deletes the road, re-lays its ends and then
+marks the zoning, as ring removal does; its undo record is the checkpoint the edit's trial
+captured. Debug builds and tests also refuse a save holding a record the load would reject
+(`CellStore::unloadable_road_alignment`, the load's own check, O(records x line points) per
+save); release builds skip it.
 
 The release library suite passes **1,971 tests** (73 timing fixtures ignored). All three Godot
 bridge suites pass with the rebuilt extension, and warning-free Rustdoc passes. The real Forward+

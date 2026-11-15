@@ -404,6 +404,106 @@ fn the_users_pocketed_crossing_keeps_its_grid_through_a_save_and_removal() {
     assert_eq!(removed, control, "removed");
 }
 
+// Saves `core`, loads the save into a fresh core and returns the loaded cells near the origin,
+// or the load's error.
+fn cells_after_a_save_and_load(core: &mut SimCore) -> Result<BTreeSet<Cell>, String> {
+    let path = temp_save_path("pocket_partner");
+    core.save_game_settled(path.to_str().unwrap(), None)
+        .map_err(|err| format!("save: {err}"))?;
+    let mut loaded = test_core();
+    let result = loaded.load_game_internal(path.to_str().unwrap());
+    let _ = std::fs::remove_file(&path);
+    result.map_err(|err| format!("load: {err}"))?;
+    Ok(zoning(&mut loaded, DVec2::ZERO).cells)
+}
+
+// A city and the pieces of its pocketed road, each with its case name.
+type PocketedRoad = (SimCore, Vec<(&'static str, usize)>);
+
+// The four-way's west arm with a right pocket, and its pocket edge and base piece.
+fn pocketed_arm() -> PocketedRoad {
+    let (mut core, node) = four_way(1, 0.0);
+    let (west, end) = arm_end(&core, node, Vector3::new(-200.0, 0.0, 0.0));
+    assert_eq!(
+        pocket_edit(&mut core, request(west, end, (false, true), 60.0)),
+        ""
+    );
+    let (pocket, base) = pieces(&core, west, end);
+    (core, vec![("arm's pocket", pocket), ("arm's base", base)])
+}
+
+// A road between two crossings with a right pocket at each end, and its three pieces: one
+// frontage line.
+fn pocketed_middle_road() -> PocketedRoad {
+    let mut core = test_core();
+    core.treasury.balance = 1.0e7;
+    for points in [
+        [(-150.0, 0.0), (150.0, 0.0)],
+        [(-150.0, -100.0), (-150.0, 100.0)],
+        [(150.0, -100.0), (150.0, 100.0)],
+    ] {
+        let points = points.map(|(x, z)| Vector3::new(x, 0.0, z)).to_vec();
+        assert!(core.add_road_internal(points, 1, 1).committed);
+    }
+    core.precompute_road_mesh_data();
+    let mut found = Vec::new();
+    for (x, name) in [(-150.0, "west pocket"), (150.0, "east pocket")] {
+        let node = core
+            .region_graph
+            .find_node_within(Vector3::new(x, 0.0, 0.0), 0.5)
+            .unwrap();
+        let (road, end) = arm_end(&core, node, Vector3::ZERO);
+        assert_eq!(
+            pocket_edit(&mut core, request(road, end, (false, true), 60.0)),
+            ""
+        );
+        found.push((name, pieces(&core, road, end).0));
+    }
+    let west = core.region_graph.edge(found[0].1);
+    let transition = if live_arms(&core, west.start_node).len() == 2 {
+        west.start_node
+    } else {
+        west.end_node
+    };
+    let middle = live_arms(&core, transition)
+        .into_iter()
+        .find(|&edge| edge != found[0].1)
+        .unwrap();
+    found.insert(1, ("middle piece", middle));
+    (core, found)
+}
+
+// `SAVE-05`, found on the player's Kuopio save: bulldozing a turn pocket's partner piece left
+// the pocket edge's road grid alignment naming the pair's line, so the game saved without error
+// and the load refused it ("invalid or duplicate road grid alignment"). The removal refreshed
+// the alignments while the bulldozed road still stood. Each removal of a piece of a pocketed
+// line (an arm's pocket edge or base piece; any piece of a road with a pocket at each end) now
+// saves a city that loads with its live cells, and its undo gives the frames back and saves too.
+#[test]
+fn removing_a_piece_of_a_pocketed_road_saves_a_city_that_loads() {
+    for setup in [pocketed_arm as fn() -> PocketedRoad, pocketed_middle_road] {
+        for index in 0..setup().1.len() {
+            let (mut core, pieces) = setup();
+            let (case, piece) = pieces[index];
+            let before = zoning(&mut core, DVec2::ZERO);
+            assert!(core.bulldoze_road_edge_for_test(piece), "{case}");
+            let live = zoning(&mut core, DVec2::ZERO).cells;
+            let loaded = cells_after_a_save_and_load(&mut core)
+                .unwrap_or_else(|err| panic!("{case}: {err}"));
+            assert!(loaded == live, "{case}: the loaded cells differ");
+            assert!(core.undo_action_internal(), "{case}: undo");
+            let undone = zoning(&mut core, DVec2::ZERO);
+            assert_eq!(undone.frames, before.frames, "{case}: undo");
+            let loaded = cells_after_a_save_and_load(&mut core)
+                .unwrap_or_else(|err| panic!("{case}: undo: {err}"));
+            assert!(
+                loaded == undone.cells,
+                "{case}: undo: the loaded cells differ"
+            );
+        }
+    }
+}
+
 // The user's crossing (`METRUM_R5D1_DUMP`): their dump, a copy with its crossing's alignment
 // records dropped (written by the pre-R5d1 rules, which the load now refuses, so the frames start
 // from the network as an older save's do), or a control save this test wrote from it. A dump's

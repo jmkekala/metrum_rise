@@ -370,6 +370,17 @@ pub(crate) fn save_to_sqlite(path: &Path, view: SaveGameView<'_>) -> SaveLoadRes
     if let Some(camera) = view.camera {
         camera.validate()?;
     }
+    // A record the load would refuse fails the save in debug builds and tests (`SAVE-05`).
+    #[cfg(debug_assertions)]
+    if let Some(edge) = view
+        .zoning
+        .cells
+        .unloadable_road_alignment(view.graph, &view.zoning.config)
+    {
+        return Err(SaveLoadError::custom(format!(
+            "the road grid alignment of edge {edge} would not load"
+        )));
+    }
     let maps = build_snapshot_maps(view.graph, view.allocator, view.agents)?;
     sqlite::write_sqlite_snapshot(path, SCHEMA, |tx| write_snapshot(tx, view, &maps))
 }

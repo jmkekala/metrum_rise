@@ -1116,8 +1116,9 @@ impl SimCore {
                 HashSet::new()
             },
         );
-        let take = match tried {
-            Ok(TriedGraphEdit { take, .. }) => take,
+        // The checkpoint holds the closure as it stands: the removal's undo record.
+        let (checkpoint, take) = match tried {
+            Ok(TriedGraphEdit { checkpoint, take }) => (checkpoint, take),
             Err(rejection) => {
                 debug_log!(
                     "road",
@@ -1130,29 +1131,12 @@ impl SimCore {
                 return false;
             }
         };
-        // The region the removal regenerates, marked before the take releases its paint
-        // (`ZONE-14`): the removed road's rows lose their frontage.
-        let regeneration = self
-            .zoning
-            .mark_cell_lots_for_roads(&self.region_graph, affected_edges.iter().copied());
-        // The zoned land the re-laid ends newly cover (`ZONE-10`), before the removed road's
-        // parcels are captured, so its undo never restores a taken lot onto erased paint, and
-        // while the lanes the evacuation reads are valid.
-        let erased = self.take_land_for_edit(take, Some(&regeneration));
-        let erased_paint = erased.is_some();
-        self.push_road_removal_undo(affected_edges.clone(), affected_nodes.clone(), edge_idx);
-        if let Some(record) = self.undo_stack.back_mut() {
-            record.cells = erased;
-        }
-        self.transit_network
-            .mark_surface_dirty_from_sets(&affected_edges, &affected_nodes);
-        for point in &edge_points {
-            self.transit_network.mark_point_dirty(*point);
-        }
 
+        // The road goes before the zoning marks, as in every other road edit: the alignment
+        // refresh reads the lines the removal leaves. Marked earlier, a pocket piece beside the
+        // removed road kept the record of their joined line, which the load refuses (`SAVE-05`).
         self.region_graph.remove_from_spatial_index(edge_idx);
         self.region_graph.edge_mut(edge_idx).deleted = true;
-        self.zoning.remove_parcels_attached_to_edge(edge_idx);
         self.region_graph.rebuild_adjacency_list();
         // A pocket pair's transition left with one arm is a road end (`ROAD-95`).
         self.region_graph
@@ -1168,6 +1152,24 @@ impl SimCore {
             &mut changed,
         );
         debug_assert!(changed.is_subset(&affected_edges));
+        // The region the removal regenerates, marked before the take releases its paint
+        // (`ZONE-14`): the removed road's rows lose their frontage.
+        let regeneration = self
+            .zoning
+            .mark_cell_lots_for_roads(&self.region_graph, affected_edges.iter().copied());
+        // The zoned land the re-laid ends newly cover (`ZONE-10`), before the removed road's
+        // parcels are captured, so its undo never restores a taken lot onto erased paint, and
+        // while the lanes the evacuation reads are valid.
+        let erased = self.take_land_for_edit(take, Some(&regeneration));
+        let erased_paint = erased.is_some();
+        let parcels = self.zoning.capture_parcel_removal_undo(edge_idx);
+        self.push_network_undo_delta(checkpoint, (!parcels.is_empty()).then_some(parcels), erased);
+        self.zoning.remove_parcels_attached_to_edge(edge_idx);
+        self.transit_network
+            .mark_surface_dirty_from_sets(&affected_edges, &affected_nodes);
+        for point in &edge_points {
+            self.transit_network.mark_point_dirty(*point);
+        }
         for chunk in old_chunks {
             self.transit_network.cch_dirty_chunks.insert(chunk);
         }

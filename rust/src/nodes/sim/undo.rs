@@ -122,20 +122,6 @@ impl SimCore {
         self.push_network_undo_delta(graph, None, None);
     }
 
-    /// Captures a local road-removal inverse plus only parcels attached to that road.
-    pub(crate) fn push_road_removal_undo(
-        &mut self,
-        edge_ids: HashSet<usize>,
-        node_ids: HashSet<u32>,
-        removed_edge_idx: usize,
-    ) {
-        let graph = self
-            .region_graph
-            .capture_undo_for_local_topology(edge_ids, node_ids);
-        let zoning = self.zoning.capture_parcel_removal_undo(removed_edge_idx);
-        self.push_network_undo_delta(graph, (!zoning.is_empty()).then_some(zoning), None);
-    }
-
     /// Pushes a graph edit's undo record: its local graph checkpoint, the parcels it removed and
     /// the paint its land take erased (`ZONE-10`).
     pub(crate) fn push_network_undo_delta(

@@ -52,6 +52,33 @@ impl RoadCellAlignment {
             .then(|| frames_for_edge(graph, id, self.frames))
     }
 
+    // Whether this record names `road`'s current line and both its curb phases lie on the
+    // line's curbs: what a load accepts.
+    fn fits(self, road: &StraightRoad, config: &WorldConfig) -> bool {
+        if self.source != road.source
+            || self
+                .frames
+                .iter()
+                .any(|frame| !frame.is_valid() || frame.cell_m() != f64::from(config.zone_cell_m))
+            || self.frames[0].at_origin(DVec2::ZERO) != self.frames[1].at_origin(DVec2::ZERO)
+            || !road.fits_basis(self.frames[0])
+        {
+            return false;
+        }
+        let delta = road.points[road.points.len() - 1] - road.points[0];
+        let (u, v) = self.frames[0].axes();
+        let along = usize::from(delta.dot(v).abs() > delta.dot(u).abs());
+        let tangent = [u, v][along] * delta.dot([u, v][along]).signum();
+        let normal = DVec2::new(tangent.y, -tangent.x);
+        let width = f64::from(f32::from_bits(self.source[4])) * 0.5
+            + f64::from(crate::config::SIDEWALK_WIDTH);
+        !self.frames.into_iter().enumerate().any(|(side, frame)| {
+            let point =
+                frame.local(road.points[0] + normal * width * if side == 0 { -1.0 } else { 1.0 });
+            (point[1 - along] - point[1 - along].round()).abs() * frame.cell_m() > road.precision
+        })
+    }
+
     /// Test-only: the directed left and right curb frames.
     #[cfg(test)]
     pub(crate) fn frames(self) -> [GridFrame; 2] {
@@ -216,35 +243,33 @@ impl<M: CellMaps> CellStore<M> {
         let Some(road) = StraightRoad::new(graph, id, f64::from(config.zone_cell_m)) else {
             return false;
         };
-        if self.road_alignments.contains_key(&id)
-            || value.source != road.source
-            || value
-                .frames
-                .iter()
-                .any(|frame| !frame.is_valid() || frame.cell_m() != f64::from(config.zone_cell_m))
-            || value.frames[0].at_origin(DVec2::ZERO) != value.frames[1].at_origin(DVec2::ZERO)
-            || !road.fits_basis(value.frames[0])
-        {
+        if self.road_alignments.contains_key(&id) || !value.fits(&road, config) {
             return false;
-        }
-        let delta = road.points[road.points.len() - 1] - road.points[0];
-        let (u, v) = value.frames[0].axes();
-        let along = usize::from(delta.dot(v).abs() > delta.dot(u).abs());
-        let tangent = [u, v][along] * delta.dot([u, v][along]).signum();
-        let normal = DVec2::new(tangent.y, -tangent.x);
-        let width = f64::from(f32::from_bits(value.source[4])) * 0.5
-            + f64::from(crate::config::SIDEWALK_WIDTH);
-        for (side, frame) in value.frames.into_iter().enumerate() {
-            let point =
-                frame.local(road.points[0] + normal * width * if side == 0 { -1.0 } else { 1.0 });
-            if (point[1 - along] - point[1 - along].round()).abs() * frame.cell_m() > road.precision
-            {
-                return false;
-            }
         }
         value.nodes = road.nodes;
         self.road_alignments.insert(id, value);
         true
+    }
+
+    /// Debug builds: the lowest live road whose alignment record a load of this store's save
+    /// would refuse ([`Self::restore_road_alignment`]), so the save fails instead of writing a
+    /// city that cannot load (`SAVE-05`). A road edit refreshes the records of its closure on
+    /// the graph it leaves, so none is expected. O(records * their lines' points).
+    #[cfg(debug_assertions)]
+    pub(crate) fn unloadable_road_alignment(
+        &self,
+        graph: &RegionGraph,
+        config: &WorldConfig,
+    ) -> Option<usize> {
+        let cell_m = f64::from(config.zone_cell_m);
+        self.road_alignments
+            .iter()
+            .filter(|&(&id, _)| graph.get_edge(id).is_some_and(|edge| !edge.deleted))
+            .filter(|&(&id, value)| {
+                StraightRoad::new(graph, id, cell_m).is_none_or(|road| !value.fits(&road, config))
+            })
+            .map(|(&id, _)| id)
+            .min()
     }
 
     /// Returns a prepared frame pair only for the exact current source geometry address.
