@@ -1293,7 +1293,7 @@ Use this exact rule:
 9. Candidate evaluation uses only the latest cached `lane.live_frontage_delay_s`. It must not inspect raw live IDM neighbors, gap state, or leader-follower chains during planning.
 10. `network_path_time_s` remains the exact CCH or accepted flow-field node-path cost in seconds with no dynamic congestion multiplier.
 
-This keeps dynamic traffic influence cheap and stable: full-network routing stays free-flow and deterministic, while building-adjacent car choices still see a low-frequency congestion signal.
+This keeps dynamic traffic influence cheap and stable: full-network pricing stays free-flow and deterministic, while building-adjacent car choices still see a low-frequency congestion signal. A car's chosen route itself reads the separate car-congestion metric (`TRAFFIC-17`, [`traffic.md`](traffic.md#congestion-aware-car-routing-traffic-17)); no price does.
 
 Economy prices use a second scalar, `lane.frontage_delay_penalty_s`, with the same frontage
 formulas. Freight, customer and construction quotes read it. `TransitNetwork::publish_frontage_prices`
@@ -1460,7 +1460,7 @@ physical occupants with the existing street-handoff routine before deleting the 
 zero employment slots do not prove physical vacancy. Route targets and building-index remaps must
 remain valid together, so a displaced worker can return home and become a household shopper.
 
-This keeps the road graph unchanged while still planning with exact building access costs. Full node-path routing stays free-flow, while only car frontage segments receive the low-frequency cached congestion penalty defined above.
+This keeps the road graph unchanged while still planning with exact building access costs. Full node-path pricing stays free-flow (car routes read the `TRAFFIC-17` congestion metric only when materialized), while only car frontage segments receive the low-frequency cached congestion penalty defined above.
 
 The exact total-cost formula for one legal candidate is:
 

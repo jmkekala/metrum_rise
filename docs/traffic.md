@@ -1512,7 +1512,7 @@ view is on.
 Cars route on a second car metric that adds measured lane delay to the free-flow edge cost.
 Everything the economy prices stays on the free-flow metric and its revisions
 ([`entrance_and_exit.md`](entrance_and_exit.md#cch-routing-performance-track-net-02net-05)), so
-a new congestion metric reprices nothing. Branch `traffic-17` (round T1, 2026-11-15); not landed.
+a new congestion metric reprices nothing. Round T1, landed on `dev` 2026-11-15 with every reviewed parameter as built (user decision).
 
 **Signal.** The frontage pass's per-second lane aggregation (car speeds summed per lane in agent
 order, worker-independent) also updates `Lane::route_delay_s`: raw = observed lane time at the
@@ -1624,8 +1624,16 @@ committed format-118 Kuopio fixture keeps loading in its own tests.
   frame cost of the code is below the noise at 30k 1×; the miss on the branch's own fixture is
   the busier city its 12 prepared days of congested routing produce. The first frame after the
   load customizes the congestion metric in its pathing stage (`max_pathing_ms` 2.57 against
-  0.33), once. Whether the fixture city's workload change is accepted is the user's decision;
-  until then the 30k 1× row on the branch's own fixture blocks landing.
+  0.33), once. The user accepted the fixture city's workload change on 2026-11-15 as a
+  recorded exception ([`TRAFFIC-17`](roadmap.md)).
+- Landing verification (2026-11-15, rebased onto `dev` 4b5ba460 with `CODE-33`): the SIM-02
+  envelope and determinism gate is identical to the pre-rebase tip's in every day fingerprint
+  and day record; L session `$ARTIFACTS/art-land-timing`: 30k 32× level (+1.0%), 30k 1× on the
+  own fixture +3.2% mean on a noisy evening (the control's own worst unpreempted frame 8.16 ms);
+  matched city against `dev` (`$ARTIFACTS/art-land-samecity`) +2.0% mean, and against the
+  pre-rebase tip on the same city (`$ARTIFACTS/art-land-prepost`) -2.1%, so the rebase moved no
+  frame cost. The rebased build loads the 30k city 1.15 s slower from an inlining change in the
+  load's serial reservation check (`PERF-26`).
 
 ## Junction Speeds
 

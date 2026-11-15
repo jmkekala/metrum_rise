@@ -887,7 +887,7 @@ lesson). If the job has not finished by its apply slot, the sim thread waits: re
 depend on completion time. Mutating passes are never pure jobs. Candidates: distance tables,
 field diffusion and other read-only precomputation.
 
-**Implemented in `TRAFFIC-17` (round T1, 2026-11-15, branch `traffic-17`): the car-congestion
+**Implemented in `TRAFFIC-17` (round T1, landed on `dev` 2026-11-15): the car-congestion
 metric**, the first declared `PureJob` kind ([`traffic.md`](traffic.md#congestion-aware-car-routing-traffic-17)).
 Its launch slot snapshots one weight per edge direction and starts the customization on the
 background pool; its adoption slot, 80 slots later, swaps the result in. The frame's caller
