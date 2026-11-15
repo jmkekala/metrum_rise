@@ -21,12 +21,16 @@
 //! query per lattice point of each cell holding a fragment; every buffer is reused.
 
 use crate::simulation::network::roadbed::{PieceMesh, RoadVec3};
+use crate::simulation::terrain::graded::{GradedSurface, QueryScratch};
 
 /// The cell the hue's fill is cut into, metres: the terrain's 2 m cells.
 pub(crate) const SURFACE_CELL_M: f64 = 2.0;
 /// The drawn ground's lattice spacing, metres: the graded surface's `GL0` lattice, on whose
 /// triangles the rendered ground is linear.
 pub(crate) const GROUND_LATTICE_M: f64 = 0.5;
+// The block one graded gather prepares for the drawn ground's reads, metres: four cells a side,
+// so a gather lists only the seams near the pose's own cells, never a long draft's whole window.
+const GATHER_BLOCK_M: f64 = 4.0 * SURFACE_CELL_M;
 // Lattice points along one cell's side.
 const CELL_POINTS: usize = (SURFACE_CELL_M / GROUND_LATTICE_M) as usize + 1;
 // Plan positions closer than this share one rise (the same point cut from two fragments).
@@ -247,6 +251,30 @@ impl PieceSurface {
             }
             fragment.deficit = deficit;
         }
+    }
+}
+
+/// The drawn graded ground (`GradedSurface::ground_height_near`, bitwise the point query) as
+/// the hue's `drawn` reader (round HU3): one gather per [`GATHER_BLOCK_M`] block, which the
+/// cell-ordered reads of [`PieceSurface::build`] meet in runs. Through the view's shared query
+/// index a pose's read costs `O(blocks x local seams + lattice points x listed seams)`, about
+/// 0.2 ms for a 290 m street (release probe, round HU3); allocation-free once the scratch is warm.
+pub(crate) fn graded_ground<'a>(
+    surface: &'a GradedSurface<'a>,
+    scratch: &'a mut QueryScratch,
+) -> impl FnMut(f64, f64) -> f64 + 'a {
+    let mut gathered: Option<[f64; 2]> = None;
+    move |x, z| {
+        let inside = gathered.is_some_and(|[x0, z0]| {
+            (x0..=x0 + GATHER_BLOCK_M).contains(&x) && (z0..=z0 + GATHER_BLOCK_M).contains(&z)
+        });
+        if !inside {
+            let [x0, z0] = [x, z].map(|value| (value / GATHER_BLOCK_M).floor() * GATHER_BLOCK_M);
+            let half = GATHER_BLOCK_M * 0.5;
+            surface.gather_near(x0 + half, z0 + half, half, scratch);
+            gathered = Some([x0, z0]);
+        }
+        surface.ground_height_near(x, z, scratch)
     }
 }
 

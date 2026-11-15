@@ -272,6 +272,36 @@ func _capture_hue() -> void:
 	_tool.cancel_road()
 	_tool.set_straight_grade(false)
 
+	# Round HU3: a road on flat ground with its start raised 1 m (a held fill) and its end
+	# lowered 4.5 m (a held cut), then a draft on the ground beside it and a draft crossing its
+	# fill: the hue over the graded slopes of the cut and the fill, not under them.
+	_tool._begin_stroke(Vector3(-540.0, 0.0, -450.0))
+	_tool.set_scripted_pointer(true, Vector3(-240.0, 0.0, -450.0))
+	await _frames(2)
+	await _drag_start(Vector3(-540.0, 0.0, -450.0), 1.0)
+	_tool.step_height(-9)
+	await _settle()
+	_log_hue("fill_then_cut_road")
+	_expect(_profiles() == [1], "the road is one held fill then cut, got %s" % [_profiles()])
+	_expect(_tool._commit_segment(Vector3(-240.0, 0.0, -450.0)), "the fill-then-cut road commits")
+	await _ack()
+	_tool.cancel_road()
+	_tool.step_height(9)
+	_tool._begin_stroke(Vector3(-540.0, 0.0, -436.0))
+	_tool.set_scripted_pointer(true, Vector3(-240.0, 0.0, -436.0))
+	await _settle()
+	_log_hue("beside_cut_fill")
+	await _capture_pair("hue_beside_cut", Vector3(-270.0, -2.0, -440.0), Vector3(-250.0, 6.0, -400.0))
+	_look(Vector3(-520.0, 0.5, -443.0), Vector3(-500.0, 6.0, -405.0))
+	await _capture("hue_beside_fill_low")
+	_tool.cancel_road()
+	_tool._begin_stroke(Vector3(-510.0, 0.0, -500.0))
+	_tool.set_scripted_pointer(true, Vector3(-510.0, 0.0, -400.0))
+	await _settle()
+	_log_hue("across_fill")
+	await _capture_pair("hue_across_fill", Vector3(-510.0, 0.5, -450.0), Vector3(-475.0, 6.0, -425.0))
+	_tool.cancel_road()
+
 # Sculpts `centre` by `height_m` (a hill up, a valley down) with the sculpt tool's brush.
 func _raise(centre: Vector2, radius: float, height_m: float) -> void:
 	for step in 120:

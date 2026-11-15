@@ -22,7 +22,9 @@
 //! Round HU2: where the preview draws road pieces, a ground or cut stroke's fill is those pieces
 //! themselves ([`surface`]): their top triangles and curb faces (carriageway, kerbs, sidewalks,
 //! junction corners, end caps), each point at least the lift above both the piece and the drawn
-//! ground the caller reads there (the session reads the source terrain, decision HU2-1). The path's widened strip above stays the fill of
+//! ground the caller reads there. Round HU3 (decision HU2-1 (a)): the session reads the drawn
+//! graded surface ([`graded_ground`], through the view's shared query index), so the hue stays
+//! above existing roads' cuts and fills too. The path's widened strip above stays the fill of
 //! a draft the preview draws no pieces for (a refused or pending pose) and of bridges.
 //!
 //! Rust builds the mesh and decides its state and when it shows; `road_tool_hue.gd` draws it.
@@ -414,5 +416,6 @@ fn push_edge(
 }
 
 mod surface;
+pub(crate) use surface::graded_ground;
 #[cfg(test)]
 mod tests;

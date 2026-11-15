@@ -13,7 +13,8 @@ use super::sites::{SiteBuffer, SiteSource};
 use super::tile::{TILE_M, TileKey, grown};
 use crate::simulation::buildings::allocator::{BuildingAllocator, SiteChange};
 use crate::simulation::network::roadbed::{PieceId, RoadbedSystem, TerrainChanges};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 // Scratch is thread-local and outlives individual simulation cores. Generations are local to an
@@ -63,9 +64,13 @@ impl QueryTileInputs {
 ///
 /// A lookup is `O(log active tiles)`. Rebuilding is `O(changed tiles * local road/site inputs)`;
 /// full rebuild is `O(active input bounds * tiles in their cap reach + local inputs)`. Entries
-/// and their vectors allocate only on rebuild, never on the query path.
+/// and their vectors allocate only on rebuild, never on the query path. A clone shares every
+/// entry (a persistent map of shared entries, `O(1)`): the road tool's published view keeps the
+/// index of its publication so (`ROAD-112` round HU3), and a later local rebuild copies only
+/// the map nodes on the paths to the tiles it replaces.
+#[derive(Clone)]
 pub(crate) struct TerrainQueryIndex {
-    tiles: BTreeMap<TileKey, QueryTileInputs>,
+    tiles: imbl::OrdMap<TileKey, Arc<QueryTileInputs>>,
     ready: bool,
     identity: u64,
     generation: u64,
@@ -78,7 +83,7 @@ pub(crate) struct TerrainQueryIndex {
 impl Default for TerrainQueryIndex {
     fn default() -> Self {
         Self {
-            tiles: BTreeMap::new(),
+            tiles: imbl::OrdMap::new(),
             ready: true,
             identity: NEXT_IDENTITY.fetch_add(1, Ordering::Relaxed),
             generation: 1,
@@ -139,11 +144,13 @@ impl TerrainQueryIndex {
     /// ([`Self::ready_for`]). `O(tiles in rect x log active tiles + their inputs)`.
     pub(crate) fn window(&self, rect: [f64; 4]) -> Self {
         let (low, high) = (TileKey::at(rect[0], rect[1]), TileKey::at(rect[2], rect[3]));
-        let mut tiles = BTreeMap::new();
+        let mut tiles = imbl::OrdMap::new();
         if self.ready {
             for x in low.x..=high.x {
                 let row = TileKey { x, z: low.z }..=TileKey { x, z: high.z };
-                tiles.extend(self.tiles.range(row).map(|(key, inputs)| (*key, inputs.clone())));
+                for (key, inputs) in self.tiles.range(row) {
+                    tiles.insert(*key, Arc::clone(inputs));
+                }
             }
         }
         Self {
@@ -295,12 +302,12 @@ impl TerrainQueryIndex {
         if inputs.is_empty() && !has_sites {
             self.tiles.remove(&key);
         } else {
-            self.tiles.insert(key, inputs);
+            self.tiles.insert(key, Arc::new(inputs));
         }
     }
 
     /// Active tile count and retained bytes, including vector capacities and a conservative
-    /// per-entry allowance for the `BTreeMap` keys, links and partially filled nodes.
+    /// per-entry allowance for the map's keys, links and partially filled nodes.
     #[cfg(test)]
     pub(crate) fn memory(&self) -> (usize, usize) {
         (

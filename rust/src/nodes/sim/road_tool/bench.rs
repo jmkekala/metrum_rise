@@ -370,6 +370,9 @@ pub(crate) fn neighbourhood_view(
         core.transit_network
             .roadbed
             .compile_dirty(&core.region_graph);
+        // The compiles' terrain changes reach the graded query index the view shares, as every
+        // canonical roadbed publisher's do (round HU3).
+        core.publish_roadbed_terrain_changes();
     }
     // The view as the simulation publishes it to the road tool.
     core.publish_road_tool_view()

@@ -13996,7 +13996,8 @@ it in a jagged pattern (2 m x 4 m cells interpolated under the drawn surface).
   ground, so it is not read: beside a committed road's graded cut or fill the hue can still sit
   under that grading. Options: (a) give the snapshot the persistent terrain query index, then
   read the graded surface (recommended); (b) keep the source terrain; (c) read the graded surface
-  only at 2 m points (no guarantee between them).
+  only at 2 m points (no guarantee between them). The user chose (a) (2026-11-15), built in
+  [round HU3](#the-hue-reads-the-drawn-graded-surface-round-hu3).
 - **Shader**: the pull towards the camera is now only a z-fighting guard, 1 cm plus 0.05 % of the
   distance (was 5 cm plus 0.2 %); the geometry keeps the hue on top. Tunnel outlines keep the line
   shader's pull.
@@ -14020,6 +14021,57 @@ it in a jagged pattern (2 m x 4 m cells interpolated under the drawn surface).
   point's (`asset_document.rs:15` only), `cargo doc` missing_docs 0, debug `cargo test --lib`
   2,740 passed / 0 failed / 230 ignored, `./run.sh --test` PASS (nextest 2,744 / 2,744, 231
   skipped; godot-main, godot-vehicle PASS; 0 SCRIPT ERROR). No timing session.
+
+### The hue reads the drawn graded surface (round HU3)
+
+Built 2026-11-15 on branch `roadtools-hu3` (over `dev` `86aab24d`), the user's decision HU2-1
+(a): beside a committed road's cut or fill the hue sat at the source terrain, under that grading
+(the user's picture 16).
+
+- **The view shares the simulation's index** (`RoadToolQuerySnapshot::terrain_query_index`): each
+  publication of the road tool's view clones the live `TerrainQueryIndex` (`terrain.md`, "The
+  index shared with the road tool's view"), whose tiles are now a persistent map of shared
+  entries, so the clone is `O(1)` and nothing is rebuilt or copied per pose. Every graded query of
+  the view (pick, cursor, the hue) goes through it; its answers are the index-free path's bitwise
+  (the debug builds' sampled comparison checks them).
+- **The ground read**: the session's hue reads the published graded surface at the `GL0` lattice
+  points (`hue::graded_ground`): `ground_height_near` after one gather per 8 m block, which the
+  builder's cell-ordered reads meet in runs, so a gather lists only the seams near the pose's own
+  cells, never a long or diagonal draft's whole window. Height rule and mesh unchanged.
+- **Measured first** (release test probe on the neighbourhood's 300 m street, 6,312 hue
+  triangles, 23,850 lattice reads, median of 5, one session, temporary code removed): constant
+  ground 1.26-1.72 ms; through the index per point 4.00 ms, one gather per 2 m cell 1.62, per
+  8 m block 1.54, per 16 m block 1.56, one gather over the bounds 1.48; index-free over the
+  bounds (round HU2's path) 1,439 ms. Every indexed variant's mesh is bitwise the index-free
+  one's. The read adds about 0.2-0.3 ms a pose.
+- **Fixture**: the road tool bench's neighbourhood view now publishes its compiles' terrain
+  changes (`publish_roadbed_terrain_changes`) as every canonical roadbed publisher does; it
+  compiled the roadbed directly, so the live index never saw its roads and the debug comparison
+  caught the view's indexed answers differing.
+- **Fresh checks** (the final tree): Rust `hue/tests.rs` 13 (round HU2's 12 plus
+  `hu3_hue_lies_above_a_neighbours_cut_and_fill`: a level held-ground road committed through a
+  3 m bump and over a 3 m dip, a draft previewed 14 m beside it, its hue built through the session's graded
+  reader; every hue vertex and every lattice point inside a hue triangle at least the lift above
+  the graded surface, where the graded ground rises more than 0.3 m above the source). Kuopio
+  drag probe 78/78 and gameplay fixtures 17/17 EQUAL in every product against round HU2's
+  records of `dev` `86aab24d`'s library (probe PASS, 0 failures). Allocation (heaptrack
+  `--record-only`, session bench 30k, whose picks now read the index): n=0 2,369,113 /
+  2,369,079, n=20 2,369,126, n=200 2,369,102 calls: none per pointer move. Hue + gizmo + label
+  upload (once, gamescope headless 1920x1080, load 1.5-3.4, no control): curve end p50 0.054 /
+  p95 0.131 / max 0.260 ms, S-curve end 0.059 / 0.105 / 0.175, freeform handle 0.084 / 0.191 /
+  0.240: p95 at most 0.2 ms in every mode. Stills (`road_height_capture.gd` set `hue`, 0
+  failures): round HU2's set re-shot unchanged against a same-session run of round HU2's library
+  (at most 4 pixels differ; the across-water pair differs from round HU2's own stills on both
+  libraries alike: no lake surface shows this session), plus a road on flat ground with its
+  start raised 1 m (a held fill) and its end lowered 4.5 m (a held cut), a draft beside it (cut
+  top and low, fill low) and a draft crossing its fill (top and low): the hue lies over the
+  neighbour's fill where the crossing climbs it. On round HU2's library the new cases differ by
+  at most 102 pixels (a 1 m fill and a 5 m cut keep their slopes narrow, so the drafts lie
+  mostly beyond them); the Rust test carries the graded case.
+  Gates: clippy `--all-targets` set equal to the branch point's (`asset_document.rs:15` only),
+  `cargo doc` missing_docs 0, debug `cargo test --lib` 2,741 passed / 0 failed / 230 ignored,
+  `./run.sh --test` PASS (nextest 2,745 / 2,745, 231 skipped; godot-main, godot-vehicle PASS; 0
+  SCRIPT ERROR). No timing session.
 
 ### Decisions (user, 2026-11-12, all as recommended)
 
@@ -14263,10 +14315,10 @@ the clicks, the mode buttons and the acknowledgement and draws what `road_tool_f
   or buildings). Where the preview draws road (round HU2), the hue is the preview's own pieces
   the draft runs over: carriageway, kerbs, sidewalks, junction corners and end caps, never an
   existing road's span the edit only rebuilds; every point of it lies at least 5 cm above both
-  that drawn road (its camber and raised sidewalks included) and the ground there (the source
-  terrain for now; a committed road's grading beside it is not read yet, decision HU2-1), so
-  neither the asphalt nor the kerbs draw over it, nor the terrain away from that grading:
-  over a cut or a buried road on the grass above it, over a fill on the road. A draft the
+  that drawn road (its camber and raised sidewalks included) and the drawn ground there (the
+  published graded surface, existing roads' cuts and fills included, round HU3), so neither the
+  asphalt, the kerbs nor the terrain draw over it: over a cut or a buried road on the grass above
+  it, over a fill on the road, beside a neighbour's cut or fill on its slope. A draft the
   preview draws no road for (refused, pending, a batch's tier 1) keeps the prepared footprint
   (its strokes widened, 5 cm over the higher of the road and the segmentation's ground, sampled
   every 2 m along and 4 m across). Hills, trees and buildings in front hide it. A bridge's hue lies **on the ground under

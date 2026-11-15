@@ -27,7 +27,7 @@ use crate::nodes::sim::road_tool::frame::{
 };
 use crate::nodes::sim::road_tool::height::draft_batch;
 use crate::nodes::sim::road_tool::height::ground_marks::push_height_labels;
-use crate::nodes::sim::road_tool::hue::{FootprintHue, HueKind, HueState};
+use crate::nodes::sim::road_tool::hue::{FootprintHue, HueKind, HueState, graded_ground};
 use crate::nodes::sim::road_tool::labels::{
     LabelKind, LabelTone, PreviewFacts, apply_preview, middle_label, place_chips,
 };
@@ -905,22 +905,17 @@ impl SimulationNode {
                     .filter(|mesh| mesh.grounded() && !mesh.buried()),
             );
         }
-        // The drawn ground under the pieces, read at the `GL0` lattice points: the source
-        // terrain (the graded surface's base). The published graded surface itself costs up to
-        // about a second a pose through this snapshot's index-free queries in a city (round HU2,
-        // decision HU2-1), so it is not read here yet.
-        let terrain = &view.terrain;
-        hue.finish(
-            ghost_half_width_m(request),
-            |x, z| ground.height_at(x, z),
-            |x, z| {
-                f64::from(
-                    terrain.sample_height_world(x as f32, z as f32)
-                        * crate::config::HEIGHT_SCALE,
-                )
-            },
-            state,
-        );
+        // The drawn ground under the pieces, read at the `GL0` lattice points: the published
+        // graded surface, existing roads' cuts and fills included, through the view's shared
+        // query index (round HU3, decision HU2-1 (a)).
+        view.with_graded_surface(|surface, scratch| {
+            hue.finish(
+                ghost_half_width_m(request),
+                |x, z| ground.height_at(x, z),
+                graded_ground(surface, scratch),
+                state,
+            );
+        });
     }
 
     // The hue of a refused graded draft that has no prepared stroke (its segmentation refused

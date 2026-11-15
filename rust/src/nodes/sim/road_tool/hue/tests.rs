@@ -652,3 +652,129 @@ mod drawn {
         assert!(sidewalk, "some hue lies on a raised sidewalk");
     }
 }
+
+
+// Round HU3: beside a committed level road that cuts through a bump and fills over a dip, a
+// draft's hue (its preview's pieces, read through the session's graded reader and the view's
+// shared index) lies at least the lift above the drawn graded surface: every vertex and every
+// `GL0` lattice point inside a hue triangle, the neighbour's cut and fill slopes included.
+#[test]
+fn hu3_hue_lies_above_a_neighbours_cut_and_fill() {
+    use crate::nodes::sim::core::{
+        CityTreasury, RoadCommitRequest, RoadPreviewContext, RoadPreviewRequest, SimCore,
+    };
+    use crate::simulation::core::config::WorldConfig;
+    use crate::simulation::network::TransitNetwork;
+    use crate::simulation::network::graph::RoadParking;
+    use crate::simulation::network::road_edit::RoadProfile;
+    use crate::simulation::network::road_types::RoadAttributes;
+    use crate::simulation::terrain::TerrainSystem;
+    let mut core = SimCore {
+        treasury: CityTreasury::new(1.0e9),
+        ..SimCore::new(WorldConfig::new(256.0, 256.0, 40.0, 10.0))
+    };
+    core.heightmap = TerrainSystem::with_chunking(257, 257, 1.0, 129, 0.0);
+    core.transit_network = TransitNetwork::new_with_surface_chunk_span(64.0);
+    // A dip 3 m deep at x = -40 and a bump 3 m high at x = 40, each 40 m long, across z.
+    for z in 0..257 {
+        for x in 0..257 {
+            let wx = x as f32 - 128.0;
+            let bump = |centre: f32| (std::f32::consts::PI * (wx - centre + 20.0) / 40.0).sin();
+            let height = match wx {
+                -60.0..=-20.0 => -3.0 * bump(-40.0),
+                20.0..=60.0 => 3.0 * bump(40.0),
+                _ => 0.0,
+            };
+            core.heightmap.set_height(x, z, height / crate::config::HEIGHT_SCALE);
+        }
+    }
+    core.precompute_road_mesh_data();
+    let request = |points: Vec<Vector3>, profile| RoadCommitRequest {
+        points,
+        fwd_lanes: 1,
+        bkw_lanes: 1,
+        snap_to_existing_roads: true,
+        profile,
+        median: None,
+        parking: RoadParking::NONE,
+        attributes: RoadAttributes::DEFAULT,
+        preview: None,
+    };
+    let level = vec![Vector3::new(-100.0, 0.0, 0.0), Vector3::new(100.0, 0.0, 0.0)];
+    let outcome = core.commit_road(
+        request(level, RoadProfile::HeldGround),
+        std::time::Instant::now(),
+        Default::default(),
+    );
+    assert!(outcome.committed, "{}", outcome.rejection);
+    let view = core.publish_road_tool_view().expect("a current roadbed").view;
+    // The draft beside it, following the source ground.
+    let path = [-90.0f32, 90.0].map(|x| {
+        let y = core.heightmap.sample_height_world(x, 14.0) * crate::config::HEIGHT_SCALE;
+        Vector3::new(x, y, 14.0)
+    });
+    let mut context = RoadPreviewContext::capture(view.clone());
+    let preview = context.preview_road(RoadPreviewRequest {
+        surface_generation: view.surface_generation,
+        points: path.to_vec(),
+        fwd_lanes: 1,
+        bkw_lanes: 1,
+        snap_to_existing_roads: true,
+        profile: RoadProfile::FollowGround,
+        median: None,
+        parking: RoadParking::NONE,
+        attributes: RoadAttributes::DEFAULT,
+    });
+    let pieces = preview.pieces.as_ref().expect("the draft is valid");
+    let mut hue = FootprintHue::default();
+    hue.begin();
+    hue.push_stroke(&preview.plan.prepared().points, HueKind::Road);
+    hue.push_pieces(
+        (pieces.delta.pieces())
+            .filter_map(|(_, mesh)| mesh)
+            .filter(|mesh| mesh.grounded() && !mesh.buried()),
+    );
+    view.with_graded_surface(|surface, scratch| {
+        hue.finish(5.0, flat, super::graded_ground(surface, scratch), HueState::Valid);
+    });
+    let lift = f64::from(HUE_LIFT_M);
+    let (mut checked, mut raised) = (0, 0.0f64);
+    view.with_graded_surface(|surface, scratch| {
+        let mut check = |x: f64, z: f64, h: f64| {
+            let ground = surface.ground_height_at(x, z, scratch);
+            assert!(h >= ground + lift - 2.0e-3, "hue {h} under the graded {ground} at ({x}, {z})");
+            let source = f64::from(
+                core.heightmap.sample_height_world(x as f32, z as f32) * crate::config::HEIGHT_SCALE,
+            );
+            raised = raised.max(ground - source);
+            checked += 1;
+        };
+        for t in hue.filled().chunks(3) {
+            let [a, b, c] = [t[0], t[1], t[2]].map(|p| [f64::from(p.x), f64::from(p.y), f64::from(p.z)]);
+            for p in [a, b, c] {
+                check(p[0], p[2], p[1]);
+            }
+            let det = (b[0] - a[0]) * (c[2] - a[2]) - (b[2] - a[2]) * (c[0] - a[0]);
+            if det.abs() < 1.0e-6 {
+                continue;
+            }
+            let step = surface::GROUND_LATTICE_M;
+            let [x0, x1] = [a[0].min(b[0]).min(c[0]), a[0].max(b[0]).max(c[0])];
+            let [z0, z1] = [a[2].min(b[2]).min(c[2]), a[2].max(b[2]).max(c[2])];
+            for i in (x0 / step).ceil() as i64..=(x1 / step).floor() as i64 {
+                for j in (z0 / step).ceil() as i64..=(z1 / step).floor() as i64 {
+                    let (x, z) = (i as f64 * step, j as f64 * step);
+                    let u = ((x - a[0]) * (c[2] - a[2]) - (z - a[2]) * (c[0] - a[0])) / det;
+                    let v = ((b[0] - a[0]) * (z - a[2]) - (b[2] - a[2]) * (x - a[0])) / det;
+                    if u < -1.0e-6 || v < -1.0e-6 || u + v > 1.0 + 1.0e-6 {
+                        continue;
+                    }
+                    check(x, z, a[1] + u * (b[1] - a[1]) + v * (c[1] - a[1]));
+                }
+            }
+        }
+    });
+    assert!(checked > 1000, "{checked} points checked");
+    // The neighbour's fill reaches under the draft: the source terrain alone would not do.
+    assert!(raised > 0.3, "the graded ground rises {raised} m above the source under the hue");
+}

@@ -219,6 +219,7 @@ impl SimCore {
                     terrain_inputs,
                     cells,
                     surface_generation: self.road_tool_surface_generation,
+                    terrain_query_index: self.terrain_query_index.clone(),
                 };
                 (view, replica)
             }

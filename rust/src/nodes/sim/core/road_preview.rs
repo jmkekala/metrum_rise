@@ -32,7 +32,7 @@ use crate::simulation::network::roadbed::{
     PieceMesh, RoadbedDelta, RoadbedRestore, RoadbedSystem, SurfaceChunkKey,
 };
 use crate::simulation::terrain::TerrainSystem;
-use crate::simulation::terrain::graded::{GradedSurface, QueryScratch};
+use crate::simulation::terrain::graded::{GradedSurface, QueryScratch, TerrainQueryIndex};
 use crate::simulation::water::WaterSystem;
 
 /// One road-tool stroke submitted for preview or commit planning.
@@ -189,12 +189,16 @@ pub(crate) struct RoadToolQuerySnapshot {
     pub(crate) cells:
         crate::simulation::zoning::cells::CellStore<crate::simulation::zoning::cells::SharedMaps>,
     pub(crate) surface_generation: u64,
+    /// The simulation's graded query index as of this publication, shared in `O(1)`
+    /// (`ROAD-112` round HU3): the view's graded queries read it as the simulation's do, with
+    /// bitwise the index-free answers, at a road tool pose's cost rather than a city gather's.
+    pub(crate) terrain_query_index: TerrainQueryIndex,
 }
 
 impl RoadToolQuerySnapshot {
     /// Runs a query against the preview snapshot's canonical graded surface, reusing one
-    /// scratch buffer per road-tool thread. The snapshot has no persistent query index, so the
-    /// bounded source gathers read its captured roadbed and site patches directly.
+    /// scratch buffer per road-tool thread: the captured roadbed and site patches through the
+    /// publication's shared query index.
     pub(crate) fn with_graded_surface<T>(
         &self,
         query: impl FnOnce(&GradedSurface<'_>, &mut QueryScratch) -> T,
@@ -207,7 +211,7 @@ impl RoadToolQuerySnapshot {
             terrain: &self.terrain,
             roadbed: &self.roadbed,
             sites: &sites,
-            query_index: None,
+            query_index: Some(&self.terrain_query_index),
         };
         SCRATCH.with_borrow_mut(|scratch| query(&surface, scratch))
     }
@@ -273,6 +277,7 @@ pub(crate) fn road_tool_snapshot_from_core(core: &SimCore) -> Option<RoadToolQue
         terrain_inputs: core.road_terrain_inputs.current(),
         cells: crate::simulation::zoning::cells::CellStore::copy_of(&core.zoning.cells),
         surface_generation: core.road_tool_surface_generation,
+        terrain_query_index: core.terrain_query_index.clone(),
     })
 }
 

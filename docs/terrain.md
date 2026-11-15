@@ -4694,6 +4694,15 @@ bilinear base, 9 um apart on the user's save, and the debug build's sampled comp
 on load (vegetation land cover). The index now applies the gather's predicate; regression
 `graded_queries::a_road_beyond_the_cap_off_a_tiles_corner_leaves_it_on_its_base`.
 
+**The index shared with the road tool's view (`ROAD-112` round HU3, 2026-11-15).** The index's
+tiles are a persistent map (`imbl::OrdMap`) of shared entries (`Arc<QueryTileInputs>`): a clone
+is `O(1)`, and a local rebuild copies only the map nodes on the paths to the tiles it replaces.
+Each publication of the road tool's view clones the live index, so the view's graded queries
+(pick, cursor, the footprint hue's drawn ground) read the index of their own publication instead
+of the index-free gathers (about a second for a 290 m draft's hue in round HU2, 1.5 ms through
+the index). Lookups stay `O(log active tiles)`; a window copy (`TerrainQueryIndex::window`, the
+vegetation snapshot) now shares its entries instead of cloning their vectors.
+
 **The ground over a tunnel bore (`ROAD-61`, rounds R2b and R8).** A tunnel span is never on the
 visible surface: over a bore the surface is the graded ground, which past a portal row is the hill
 (below). The roadbed marks a buried piece in its query index and answers the exposed pieces' top
