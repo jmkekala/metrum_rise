@@ -1616,8 +1616,16 @@ committed format-118 Kuopio fixture keeps loading in its own tests.
   that minute. The branch's prepared city differs from the control's (its 12 days ran with
   congested routing): 20,900 employed against 20,538 (+1.8%), so the frames carry more cars;
   the render snapshot, which no part of this change touches, grows +2.2-3.4% with the agent
-  tick. The 30k 1× row fails and blocks landing until a matched-city run separates the city's
-  workload from the code's cost.
+  tick. Matched city (`$ARTIFACTS/art-t1-samecity`, 18:39-18:49): the branch binary on the
+  control's own 30k city (its format-118 snapshot given the branch's schema and key, so the
+  congestion metric starts at free flow and its first adoption comes at minute 7 of the first
+  quarter hour): control 2.246 ms mean, branch 2.223 / 2.213 (-1.3%, level), agent -1.5%,
+  snapshot -0.9%, p99 -0.3%, worst unpreempted 7.88 against 7.79 / 7.54 ms: both pass. The
+  frame cost of the code is below the noise at 30k 1×; the miss on the branch's own fixture is
+  the busier city its 12 prepared days of congested routing produce. The first frame after the
+  load customizes the congestion metric in its pathing stage (`max_pathing_ms` 2.57 against
+  0.33), once. Whether the fixture city's workload change is accepted is the user's decision;
+  until then the 30k 1× row on the branch's own fixture blocks landing.
 
 ## Junction Speeds
 
