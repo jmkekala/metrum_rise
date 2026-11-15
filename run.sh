@@ -840,8 +840,135 @@ godot_import_metadata_has_missing_outputs() {
     return 1
 }
 
+# Sets godot_import_recorded_md5 to the md5 Godot recorded for the source at its last import
+# (`source_md5` in `.godot/imported/<name>-<md5 of the res:// path>.md5`, the hash read from the
+# .import's first output path), to "keep" for a keep or skip importer (Godot never imports those),
+# or to "" when there is no record. Builtins only.
+godot_import_recorded_source_md5() {
+    local source_file="$1" import_file="$2"
+    local name="${source_file##*/}"
+    local marker="res://.godot/imported/$name-"
+    local line hash=""
+    godot_import_recorded_md5=""
+    {
+        while IFS= read -r line || [ -n "$line" ]; do
+            case "$line" in
+                'importer="keep"'|'importer="skip"')
+                    godot_import_recorded_md5="keep"
+                    return
+                    ;;
+                *"$marker"*)
+                    line="${line#*"$marker"}"
+                    hash="${line:0:32}"
+                    break
+                    ;;
+            esac
+        done < "$import_file"
+    } 2>/dev/null
+    local md5_file="$GODOT_DIR/.godot/imported/$name-$hash.md5"
+    if [ -z "$hash" ]; then
+        # A failed import (valid=false) names no output; its record is the only
+        # `<name>-<32 hex>.md5`. Two sources of one name leave it ambiguous: no record.
+        local match
+        md5_file=""
+        for match in "$GODOT_DIR/.godot/imported/$name-"*.md5; do
+            hash="${match##*/"$name"-}"
+            hash="${hash%.md5}"
+            case "$hash" in
+                *[!0-9a-f]*) continue ;;
+            esac
+            if [ "${#hash}" -ne 32 ] || [ ! -f "$match" ]; then
+                continue
+            fi
+            if [ -n "$md5_file" ]; then
+                return
+            fi
+            md5_file="$match"
+        done
+        if [ -z "$md5_file" ]; then
+            return
+        fi
+    else
+        case "$hash" in
+            *[!0-9a-f]*) return ;;
+        esac
+        if [ "${#hash}" -ne 32 ] || [ ! -f "$md5_file" ]; then
+            return
+        fi
+    fi
+    {
+        while IFS= read -r line || [ -n "$line" ]; do
+            case "$line" in
+                source_md5=\"*\")
+                    line="${line#source_md5=\"}"
+                    line="${line%\"}"
+                    case "$line" in
+                        *[!0-9a-f]*) ;;
+                        *) [ "${#line}" -eq 32 ] && godot_import_recorded_md5="$line" ;;
+                    esac
+                    return
+                    ;;
+            esac
+        done < "$md5_file"
+    } 2>/dev/null
+}
+
+# Arguments: "<recorded md5> <relative path>" per touched source, in find order. Hashes them all
+# in one batch (one command substitution, at most four process creations) and prints the stale
+# message for the first whose content differs from Godot's record; returns 1 when all match.
+# Without an md5 tool, or when a source cannot be hashed, the mtime decides as before.
+godot_import_report_changed_source() {
+    if [ $# -eq 0 ]; then
+        return 1
+    fi
+    local entry tool=() files=()
+    for entry in "$@"; do
+        files+=("${entry:33}")
+    done
+    if command -v md5sum >/dev/null 2>&1; then
+        tool=(md5sum)
+    elif command -v md5 >/dev/null 2>&1; then
+        tool=(md5 -r)
+    fi
+    local sums=""
+    if [ ${#tool[@]} -gt 0 ]; then
+        sums="$(cd "$GODOT_DIR" && printf '%s\0' "${files[@]}" | xargs -0 "${tool[@]}" 2>/dev/null)"
+    fi
+    # One line per source: "<md5> <path>" (GNU md5sum prefixes a "\" to an escaped name).
+    local noglob_was_set=0
+    case "$-" in
+        *f*) noglob_was_set=1 ;;
+    esac
+    local IFS=$'\n'
+    set -f
+    local lines=($sums)
+    if [ "$noglob_was_set" -eq 0 ]; then
+        set +f
+    fi
+    if [ ${#lines[@]} -ne $# ]; then
+        echo "Godot import metadata stale for ${1:33}"
+        return 0
+    fi
+    local index=0 line
+    for entry in "$@"; do
+        line="${lines[$index]#\\}"
+        if [ "${line:0:32}" != "${entry:0:32}" ]; then
+            echo "Godot import metadata stale for ${entry:33}"
+            return 0
+        fi
+        index=$((index + 1))
+    done
+    return 1
+}
+
+# A source newer than its .import is stale only when its content differs from the md5 Godot
+# recorded at its last import: Godot settles a touched but unchanged source in its own filesystem
+# cache and never rewrites the .import (TOOLS-26). Such sources are deferred and hashed in one
+# batch, before any later defect is reported and at the end, so the first defect in find order
+# still wins.
 godot_import_cache_needs_repair() {
-    local root
+    local root godot_import_recorded_md5
+    local touched=()
     for root in "$GODOT_DIR/assets" "$GODOT_DIR/bootstrap"; do
         if [ ! -d "$root" ]; then
             continue
@@ -850,15 +977,25 @@ godot_import_cache_needs_repair() {
             local import_file="${source_file}.import"
             local relative_path="${source_file#"$GODOT_DIR"/}"
             if [ ! -f "$import_file" ]; then
-                echo "Godot import metadata missing for $relative_path"
+                godot_import_report_changed_source "${touched[@]}" \
+                    || echo "Godot import metadata missing for $relative_path"
                 return 0
             fi
             if [ "$source_file" -nt "$import_file" ]; then
-                echo "Godot import metadata stale for $relative_path"
-                return 0
+                godot_import_recorded_source_md5 "$source_file" "$import_file"
+                case "$godot_import_recorded_md5" in
+                    keep) ;;
+                    "")
+                        godot_import_report_changed_source "${touched[@]}" \
+                            || echo "Godot import metadata stale for $relative_path"
+                        return 0
+                        ;;
+                    *) touched+=("$godot_import_recorded_md5 $relative_path") ;;
+                esac
             fi
             if godot_import_metadata_has_missing_outputs "$import_file"; then
-                echo "Godot imported output missing for $relative_path"
+                godot_import_report_changed_source "${touched[@]}" \
+                    || echo "Godot imported output missing for $relative_path"
                 return 0
             fi
         done < <(
@@ -869,7 +1006,7 @@ godot_import_cache_needs_repair() {
                 -print0
         )
     done
-    return 1
+    godot_import_report_changed_source "${touched[@]}"
 }
 
 godot_import_repair_signature() {

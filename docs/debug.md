@@ -1218,8 +1218,24 @@ Removed debug aliases:
 
 Before Godot starts, every launch mode checks the import cache of each source image and model
 under `godot/assets` and `godot/bootstrap` (`png`, `jpg`, `jpeg`, `exr`, `hdr`, `glb`, `gltf`).
-The first asset in `find` order whose `.import` is missing, older than the source, or names a
-`res://.godot/imported/...` output that is not a file triggers one `godot --headless --import`.
+The first asset in `find` order whose `.import` is missing, whose content changed since Godot
+imported it, or whose `.import` names a `res://.godot/imported/...` output that is not a file
+triggers one `godot --headless --import`.
+
+A source newer than its `.import` is not stale by its mtime alone: Godot settles a touched but
+unchanged source (`touch`, a checkout or branch switch that only rewrites files) in its own
+filesystem cache and never rewrites the `.import` (`TOOLS-26`). The check compares such a source
+with the `source_md5` Godot recorded at its last import, in
+`.godot/imported/<name>-<md5 of the res:// path>.md5` (the hash read from the `.import`'s first
+output path; a failed import that names no output uses the one `<name>-<32 hex>.md5`). It defers
+every newer source that has a record and hashes them in one batch (`md5sum`, or BSD and macOS
+`md5 -r`, through `printf '%s\0' ... | xargs -0`), before it reports any later defect and at the
+end, so the first defect in `find` order still decides. Only a changed source is stale; a newer
+source with no record is stale as before, and without an md5 tool, or when a source cannot be
+hashed, the mtime decides. Sources with the `keep` or `skip` importer are never stale: Godot does
+not import them. The batch adds at most four process creations, and only when some source is
+newer than its `.import`.
+
 A stamp in `godot/.godot/import_repair_attempt.sha256` (the hash of every source's path, mtime
 and size) stops the same incomplete cache from re-importing on every launch;
 `METRUM_FORCE_GODOT_IMPORT_REPAIR=1` repairs anyway and `METRUM_SKIP_GODOT_IMPORT_REPAIR=1`
