@@ -14072,6 +14072,34 @@ Built 2026-11-15 on branch `roadtools-hu3` (over `dev` `86aab24d`), the user's d
   `cargo doc` missing_docs 0, debug `cargo test --lib` 2,741 passed / 0 failed / 230 ignored,
   `./run.sh --test` PASS (nextest 2,745 / 2,745, 231 skipped; godot-main, godot-vehicle PASS; 0
   SCRIPT ERROR). No timing session.
+- **Timing (round HT, decision HU3-1)**, 2026-11-15 02:19-02:22, level R by the brief (the path
+  rule reads F: `simulation/terrain/graded/query_index.rs` and the session are unlisted paths).
+  Control `dev` `86aab24d`, branch `24927738`; both release lib test binaries built fresh
+  (`a39ecec8be799fd5` / `1c9d105397a4d61f`), both snapshot caches generated fresh by them
+  (`TOOLS-23`: 30k baseline and K22 commit city, key `d8d6a12a59cd72be` on both sides). Eight
+  workers on the performance cores, the runner's run and exclusive timing locks around every timed
+  row, the desktop idle; pre- and postcheck found no cargo, rustc, Godot or restic.
+
+  ```bash
+  ./run.sh --timing --level R --control <the control's $TEST_BINARY> --branch "$TEST_BINARY" --base 86aab24d \
+      --bench 'simulation::terrain::graded::tests::benchmark_graded_point_queries;RAYON_NUM_THREADS=1;cpus=one' \
+      --control-cache "$ARTIFACTS/cache-ctl" --branch-cache "$ARTIFACTS/cache-br" --artifacts "$ARTIFACTS/timing"
+  ```
+
+  `PERF-07` 30k 32× C B B C: every compared metric is level. Mean 4.396 / 4.377 ms (-0.4 %,
+  tolerance 1.4 %), p99 6.91 / 6.83, p99.9 9.39 / 8.67 (-7.6 %, tolerance 8 %), worst
+  unpreempted frame 9.85 / 10.11 ms (+2.7 %, tolerance 6 %); agent 1.879 / 1.873, snapshot 1.437 /
+  1.434, slot 1.026 / 1.016 ms; `load_s` 7.50 / 7.55 s (+0.8 %). No row was noisy (72-104
+  preempted frames). The acceptance misses on all four rows are `PERF-17`'s known exception (worst
+  unpreempted 9.46-10.69 ms). K22 30k (one run a side): click-to-ack 6.83 / 6.68 ms, commit 6.80 /
+  6.65 ms. `benchmark_graded_point_queries` (3 alternated rounds a side, sums over its 7 fixtures
+  of the per-query medians, µs, control / branch): ground 12.42 / 12.50, surface 9.04 / 9.04, mask
+  3.41 / 3.46, normal 10.24 / 10.62 (+3.7 %), base 0.385 / 0.449, near4 249.4 / 248.2. This
+  benchmark builds its surface with `query_index: None`, so it never reads the changed map: its
+  normal and base shifts lie outside each side's spread but are code layout, not the container.
+  No benchmark times the indexed point query alone; the frame's indexed reads are inside the
+  `PERF-07` rows above (this round did not check how many vehicle ground reads its headless 32×
+  day makes).
 
 ### Decisions (user, 2026-11-12, all as recommended)
 
