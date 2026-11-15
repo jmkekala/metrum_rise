@@ -12360,22 +12360,40 @@ since round D).
   (lines, labels, HUD wording) is the next round's restyle; round N draws with round D's code.
 - **Snapping precedence** (round B, `road_tool/snap.rs`, pure `resolve` over one pose's
   candidates): a network **node** wins outright (an angle lock that was on is reported broken);
-  else the direction constraint `D` (the angle lock: the step multiple of the reference nearest
-  the cursor, as a ray from the last placed point; the reference is the stroke's start tangent,
-  the last placed leg, else world east) and the line constraint `L` (a network **edge** in
-  reach, its centreline's local segment; else the nearest **guide line** within 2 m; else the
-  **zoning grid**, `RoadGridSnap::snap_road_cursor`, whose line is its axis through the stroke's
-  start). `D` and `L`: their intersection ahead of the anchor when it lies within `L`'s reach of
-  the raw cursor (an edge 5 m, a guide 2 m, the grid any), otherwise an edge wins over the angle
-  and the angle over a guide or grid line. Two crossing guide lines in reach and no `D`: their
-  corner. One alone: its projection (the grid's own point). With the zoning grid on and no `D`,
-  an edge in reach combines with the grid (round GS, kind `grid_edge`): a first point on the road
-  the grid aligns to (`RoadGridSnap::snap_road_cursor_on` reports the road whose centreline holds
-  its point, within 5 m) takes the grid's point, on that road's centreline across it and with a
-  branch's curb on a cell line along it (the old cursor's rule); a stroke's end takes the grid's
-  axis through its start where it crosses the edge's centreline, within the edge's 5 m reach;
-  otherwise (another road holds the grid, or the grid gave no axis) the edge snap as before. A
-  node still wins; grid off, the frames are `dev` `73173102`'s bit for bit
+  else the **zoning grid** where it captured the cursor (below); else the direction constraint
+  `D` (the angle lock: the step multiple of the reference nearest the cursor, as a ray from the
+  last placed point; the reference is the stroke's start tangent, the last placed leg, else world
+  east) and the line constraint `L` (a network **edge** in reach, its centreline's local segment;
+  else the nearest **guide line** within 2 m). `D` and `L`: their intersection ahead of the anchor
+  when it lies within `L`'s reach of the raw cursor (an edge 5 m, a guide 2 m), otherwise an edge
+  wins over the angle and the angle over a guide line. Two crossing guide lines in reach and no
+  `D`: their corner. One alone: its projection. The **zoning grid** has one rule (rounds GS and
+  GS2, `snap.rs` `grid_rule`, inside `resolve`): the grid's math is `RoadGridSnap::snap_road_cursor_on`
+  (the stroke's start is its first placed point, whatever it is on), and it takes a pose only
+  where that moved the cursor ("captured": a first point on an aligned road's lattice or
+  centreline, a stroke's end within 5 degrees and half a cell of an axis through its start);
+  elsewhere the pose is the grid-off one. Where it captured:
+
+  | Pose (grid on, no Shift) | Result |
+  | --- | --- |
+  | A node in reach | the node (`node`), as with the grid off |
+  | An edge in reach, no lock: a first point on the road the grid aligns to | the grid's point on its centreline (`grid_edge`) |
+  | An edge in reach, no lock: a stroke's end | where the start's grid axis crosses the centreline within 5 m (`grid_edge`), else the edge |
+  | An edge in reach, the lock on | the lock's edge rules (`angle_edge` / `edge`) |
+  | Open ground, no lock | the grid's point (`grid`), before any guide line |
+  | Open ground, the lock on | the grid's point where the lock's ray runs along the grid axis through the start, else their meeting ahead of the anchor (`angle_grid`), else the lock's rules |
+  | Not captured (other angles, no aligned road near a first point) | as with the grid off (`free`, `guide`, `angle`, ...) |
+  | Shift held | as with the grid off and Shift |
+
+  So the start does not matter: a stroke started in a cell, on a road (`grid_edge`), on a node
+  or chained on gets the same end for the same cursor (`grid_rule_over_every_start_and_drag`).
+  Before round GS2 the grid came after guide lines, and a start on a road, node or chain brings
+  guides along and across that road through the start (the grid's own axes), so their unrounded
+  projection took the end within 2 m of the axis: within 5 degrees that is every end nearer
+  than 23 m and part of the farther ones, which read as "snaps now and then"
+  (`grid_snap_from_a_road_start_matches_a_cell_start`, 132 of 150 swept poses before, 0 after);
+  and the lock's ray along the grid's axis never met it, so a locked stroke never took cells.
+  A node still wins; grid off, the frames are `dev` `73173102`'s bit for bit
   (`grid_off_frames_are_unchanged`). `O(1)` more a pose, no allocation. Map-edge snap (25 m) and self snap
   (2.5 m to a placed point) only when nothing above took the cursor. The **length step** last
   rounds the distance from the anchor of a free or angle result, and of a guide result along the
@@ -12754,7 +12772,8 @@ placement".
   bookkeeping, `get_world_mouse_pos`'s curve query, the label's angle math and the mirrored
   lane keys; the bridge's `get_road_tool_cursor_pos` and `get_road_tool_start_direction` (with
   their result encoder). `pick::road_tool_cursor` stays as the frozen reference the session is
-  measured against (the session benchmark's control and the straight-parity tests). New:
+  measured against (the session benchmark's control and the straight-parity tests; both run it
+  with the zoning snap off, so round GS2 removed its unused zoning branch and lane fields). New:
   `road_tool_gizmos.gd` (104 lines), `road_tool_hud.gd` (93), the opt-in capture
   `tests/road_tool_capture.gd`. `network_tool.gd` keeps its blueprint mesh: the roundabout tool
   draws its ring there.
@@ -14318,9 +14337,10 @@ the clicks, the mode buttons and the acknowledgement and draws what `road_tool_f
   at its acknowledgement, `check_border_candidate` on the stroke's ends, and ends the chain).
   A refused commit keeps the stroke editable.
 - **Snapping** is the session's (the precedence under "Snapping precedence" above: network
-  node, then edge, guide line or zoning grid, map edge and self snap), in every mode. With the
-  zoning grid on, a cursor over an existing road stays on its centreline and steps along it to the
-  grid's positions, where a branch's curb lands on a cell line (round GS). The
+  node, then the zoning grid where it captured, then edge or guide line, map edge and self snap),
+  in every mode. With the zoning grid on, a cursor over an existing road stays on its centreline
+  and steps along it to the grid's positions, where a branch's curb lands on a cell line (round
+  GS), and a stroke's end takes whole cells the same from any start (round GS2). The
   options panel (round E) has a **Snapping** row of three checkboxes, **Roads** (the network
   snap: junctions, ends and centrelines), **Guides** (guide lines) and **Zoning grid**, and a **Steps**
   row with the **Angle** lock (Free, 15°, 30°, 45°, 90°) and a **Length** step (a checkbox and

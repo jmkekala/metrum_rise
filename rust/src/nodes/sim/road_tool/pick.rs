@@ -43,12 +43,6 @@ pub struct CursorQuery {
     pub start_pos: Vector3,
     /// The curve's control point (the start while none is placed).
     pub control_pos: Vector3,
-    /// The "Snap to zoning grid" checkbox.
-    pub zoning_snap_enabled: bool,
-    /// Forward lanes of the drawn type.
-    pub fwd_lanes: i32,
-    /// Backward lanes of the drawn type.
-    pub bkw_lanes: i32,
     /// Map-edge snap distance in metres (25 m today).
     pub border_snap_dist_m: f32,
     /// The previous result's network target and the generation it was taken at.
@@ -94,8 +88,9 @@ pub enum SurfacePick {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Structure(pub(crate) StructureHit);
 
-/// `get_road_tool_cursor_pos` without the dictionary: pick, zoning snap, sticky network snap, the
-/// 45 degree magnet, map-edge snap and self snap, in today's order. `None` where the bridge
+/// `get_road_tool_cursor_pos` without the dictionary, zoning snap off (its only use; the
+/// session's `snap.rs` owns the zoning grid, round GS2): pick, sticky network snap, the 45
+/// degree magnet, map-edge snap and self snap, in today's order. `None` where the bridge
 /// returns `null` (the ray misses every surface and points up). Allocates where today's does
 /// (the network snap's edge candidate list).
 pub(crate) fn road_tool_cursor(
@@ -124,34 +119,6 @@ pub(crate) fn road_tool_cursor(
     let level_height_at =
         |x: f32, z: f32| level_height(query, x, z, hit_road, hit_m, q.altitude_offset_m);
 
-    if q.zoning_snap_enabled {
-        let raw_snap = cursor_network_snap(
-            &query.region_graph,
-            pos,
-            structure_hit,
-            q.previous_snap,
-            query.surface_generation,
-            q.sticky_release_dist_m,
-        );
-        // Existing junctions remain exact connection targets.
-        if let Some(snap) =
-            raw_snap.filter(|snap| matches!(snap.target, NetworkSnapTarget::Node(_)))
-        {
-            pos = snap.position;
-        } else {
-            let xz = |point: Vector3| glam::DVec2::new(f64::from(point.x), f64::from(point.z));
-            let snapped = query.zoning_grid.snap_road_cursor(
-                &query.region_graph,
-                xz(pos),
-                (q.active && q.current_state != 0).then_some(xz(q.start_pos)),
-                f64::from(lane_width_m(q.fwd_lanes, q.bkw_lanes)),
-            );
-            pos.x = snapped.x as f32;
-            pos.z = snapped.y as f32;
-        }
-        pos.y = level_height_at(pos.x, pos.z);
-    }
-
     if let Some(snap) = cursor_network_snap(
         &query.region_graph,
         pos,
@@ -166,7 +133,6 @@ pub(crate) fn road_tool_cursor(
 
     if q.active
         && q.current_state == 2
-        && !q.zoning_snap_enabled
         && let Some(mut snapped) = snap_stroke_angle(
             q.start_pos,
             pos,

@@ -29,6 +29,8 @@ impl RoadGridSnap {
     /// Uses the edge R-tree and prepared alignment lookup: O(log E + K log A), no allocations,
     /// for K nearby edges and A alignment entries (persistent hash-trie lookups). An active stroke keeps its start fixed and snaps only near a grid axis.
     /// Without a nearby straight road, the first stroke uses cardinal steps with room for two same-width corners.
+    /// Tests only: the road tool takes [`Self::snap_road_cursor_on`] (round GS2).
+    #[cfg(test)]
     pub(crate) fn snap_road_cursor(
         &self,
         graph: &RegionGraph,
@@ -40,7 +42,8 @@ impl RoadGridSnap {
             .0
     }
 
-    /// [`Self::snap_road_cursor`] and the road whose centreline holds the result: `Some` only
+    /// The cursor snapped to curb-compatible centreline coordinates (an active stroke keeps its
+    /// start fixed and snaps only near a grid axis) and the road whose centreline holds it: `Some` only
     /// for a first point within 5 m of its nearest aligned road, which then lies on that road's
     /// centreline across it and on the branch's curb-compatible coordinate along it. Same cost.
     pub(crate) fn snap_road_cursor_on(

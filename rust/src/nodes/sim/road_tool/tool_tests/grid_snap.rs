@@ -3,7 +3,8 @@
 //! Round GS (`ROAD-112`) tests: with the zoning grid on, a cursor on an existing road keeps the
 //! road's centreline across it and takes `RoadGridSnap`'s grid-aligned position along it (a
 //! branch's curbs on cell lines); a node still wins; grid off, the frames `dev` `73173102` gave
-//! (a digest recorded there).
+//! (a digest recorded there). Round GS2: the grid's one rule (`snap.rs` `grid_rule`) over every
+//! start and drag, a road start's drag equal to a cell start's.
 
 use super::labels::zoned_straight_road;
 use super::{ack, click, move_to, ray, session, view};
@@ -11,7 +12,7 @@ use crate::nodes::sim::road_tool::frame::GizmoLineClass;
 use crate::nodes::sim::road_tool::guides::grid_curb_offset_m;
 use crate::nodes::sim::road_tool::measure::RoadTypeSpec;
 use crate::nodes::sim::road_tool::pick::lane_width_m;
-use crate::nodes::sim::road_tool::session::{RoadToolOption, RoadToolSession};
+use crate::nodes::sim::road_tool::session::{RoadToolEvent, RoadToolOption, RoadToolSession};
 use crate::nodes::sim::road_tool::snap::{
     SnapInput, SnapKind, SnapOptions, SnapScratch, edge_direction_at, network_snap, resolve, xz_of,
 };
@@ -248,4 +249,275 @@ fn grid_off_frames_are_unchanged() {
         (frames.len(), frames_digest(&frames)),
         (36, 0xa963_164f_3707_3a24)
     );
+}
+
+// Round GS2: with the grid on and the default options (guide lines on), a stroke started on the
+// road along z = 0 snaps its end exactly as one started in a cell beside it at the same x. A
+// sweep on both sides: perpendicular, inside the grid's 5 degree capture, and oblique (10-80
+// degrees) and along the road. Wherever `RoadGridSnap` captures the end (the cell start's rule:
+// the start's axis, the terminating corner on the lattice), the session's end is that point
+// (kind `Grid`, 1 mm), and from either start the snapped end lies on the same lattice row.
+#[test]
+fn grid_snap_from_a_road_start_matches_a_cell_start() {
+    let width = f64::from(lane_width_m(1, 1));
+    let graph = &view().region_graph;
+    let grid = &view().zoning_grid;
+    let xz = |p: Vector3| DVec2::new(f64::from(p.x), f64::from(p.z));
+    let start_at = |x: f64, z: f64| {
+        let mut tool = session();
+        tool.set_option(RoadToolOption::ZoningGrid(true));
+        click(&mut tool, ray(x as f32, z as f32));
+        let cursor = tool.frame().cursor;
+        (tool, xz(cursor.position), cursor.snap)
+    };
+    let mut misses = Vec::new();
+    let mut captured = 0;
+    for x in [150.4, 183.7, 216.2] {
+        for side in [1.0, -1.0] {
+            let (mut road, start, kind) = start_at(x, 0.6 * side);
+            assert_eq!(kind, SnapKind::GridEdge, "road start at {x}");
+            assert!(start.y.abs() < MM, "{start:?}");
+            let (mut cell, cell_start, kind) = start_at(start.x, 15.3 * side);
+            assert_eq!(kind, SnapKind::Grid, "cell start at {x}");
+            assert!(
+                (cell_start.x - start.x).abs() < MM,
+                "{cell_start:?} {start:?}"
+            );
+            for distance in [12.2, 17.9, 24.6, 33.1, 44.7] {
+                for degrees in [
+                    0.0, 1.3, -2.2, 3.4, -4.6, 10.0, -20.0, 35.0, -45.0, 60.0, -80.0, 90.0,
+                ] {
+                    let angle = f64::to_radians(degrees);
+                    let raw = start + DVec2::new(angle.sin(), side * angle.cos()) * distance;
+                    if raw.y * side > 50.0 {
+                        continue;
+                    }
+                    let label = format!("x {x} side {side} at {distance} m, {degrees} deg");
+                    let from_road = grid.snap_road_cursor(graph, raw, Some(start), width);
+                    move_to(&mut road, ray(raw.x as f32, raw.y as f32));
+                    let end = road.frame().cursor;
+                    if from_road.distance(raw) > 0.0 && raw.y * side > 8.0 {
+                        captured += 1;
+                        if end.snap != SnapKind::Grid || xz(end.position).distance(from_road) > MM {
+                            misses.push(format!("{label}: {:?} at {:?}", end.snap, end.position));
+                        }
+                        assert!((from_road.x - start.x).abs() < MM, "{label}");
+                    }
+                    // The cell start's own rule on the same cursor: the same lattice row.
+                    let from_cell = grid.snap_road_cursor(graph, raw, Some(cell_start), width);
+                    move_to(&mut cell, ray(raw.x as f32, raw.y as f32));
+                    let cell_end = cell.frame().cursor;
+                    if from_cell.distance(raw) > 0.0 && (raw.y - cell_start.y) * side > 8.0 {
+                        assert_eq!(cell_end.snap, SnapKind::Grid, "cell {label}");
+                        assert!(
+                            xz(cell_end.position).distance(from_cell) < MM,
+                            "cell {label}"
+                        );
+                        if from_road.distance(raw) > 0.0 {
+                            assert!((from_road.y - from_cell.y).abs() < MM, "{label}");
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert!(captured > 40, "{captured}");
+    assert!(
+        misses.is_empty(),
+        "{} of {captured} missed:\n{}",
+        misses.len(),
+        misses.join("\n")
+    );
+}
+
+// Where a GS2 case starts: in a cell beside the road along z = 0, on that road, on its dead-end
+// node (300, 0), or chained on from a committed stroke drawn off the road.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Start {
+    Cell,
+    Road,
+    Node,
+    Chain,
+}
+
+// Where a GS2 case drags: 0.9 m off the start's perpendicular out to z = 41.3 on the start's
+// side (open ground), 30 degrees off it (open ground), onto the road along z = -60, and the same
+// perpendicular with the angle lock (15 degrees) or with Shift.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Drag {
+    Perpendicular,
+    Oblique,
+    OntoRoad,
+    Locked,
+    Shift,
+}
+
+// A GS2 case's expected end.
+#[derive(Clone, Copy, Debug)]
+enum Expect {
+    // `RoadGridSnap`'s end for the stroke's start (whole cells, the terminating corner), on the
+    // start's axis, of this kind.
+    Grid(SnapKind),
+    // The road along z = -60 where the start's axis crosses it.
+    GridEdge,
+    // This kind; with the grid on, exactly the result with it off for the drag.
+    Kind(SnapKind),
+}
+
+// Runs one GS2 case, the grid set to `grid` for the start and to `drag_grid` for the drag: the
+// session at its end pose, the stroke's start and the raw end.
+fn grid_case(
+    start: Start,
+    side: f64,
+    drag: Drag,
+    grid: bool,
+    drag_grid: bool,
+) -> (RoadToolSession, DVec2, DVec2) {
+    let xz = |p: Vector3| DVec2::new(f64::from(p.x), f64::from(p.z));
+    let mut tool = session();
+    tool.set_option(RoadToolOption::ZoningGrid(grid));
+    if drag == Drag::Locked {
+        tool.set_option(RoadToolOption::AngleStepDeg(Some(15.0)));
+    }
+    // The road start's column (the grid's position along the road, or the raw x with it off).
+    let road_x = {
+        let mut probe = session();
+        probe.set_option(RoadToolOption::ZoningGrid(true));
+        move_to(&mut probe, ray(183.7, (0.6 * side) as f32));
+        probe.frame().cursor.position.x
+    };
+    match start {
+        Start::Cell => click(&mut tool, ray(road_x, (15.3 * side) as f32)),
+        Start::Road => click(&mut tool, ray(183.7, (0.6 * side) as f32)),
+        Start::Node => click(&mut tool, ray(300.3, 0.4)),
+        Start::Chain => {
+            click(&mut tool, ray(183.7, (0.6 * side) as f32));
+            click(&mut tool, ray(road_x + 0.4, (21.7 * side) as f32));
+        }
+    }
+    // The stroke's start: the last click's cursor (a chain's start is the committed end).
+    let from = xz(tool.frame().cursor.position);
+    if start == Start::Chain {
+        tool.take_commit().expect("the first stroke commits");
+        ack(&mut tool, true);
+    }
+    tool.set_option(RoadToolOption::ZoningGrid(drag_grid));
+    let raw = match drag {
+        Drag::Oblique => from + DVec2::new(12.5, side * 21.65),
+        Drag::OntoRoad => DVec2::new(from.x + 0.9, -59.1),
+        _ => DVec2::new(from.x + 0.9, side * 41.3),
+    };
+    tool.handle_event(
+        view(),
+        RoadToolEvent::Pointer {
+            pointer: ray(raw.x as f32, raw.y as f32),
+            shift: drag == Drag::Shift,
+            ctrl: false,
+        },
+    );
+    let first = tool.frame().stroke.points[0];
+    assert!(xz(first).distance(from) < MM, "{first:?} {from:?}");
+    (tool, from, raw)
+}
+
+// Round GS2: the zoning grid's one rule over every start (cell, road, node, chained) and drag
+// (open ground on the start's axis and oblique, onto a road, onto a node, the angle lock, Shift),
+// grid on and off, guide lines on (the default). Grid on: on the start's axis the end is
+// `RoadGridSnap`'s, from every start (a lock's ray along that axis keeps it); onto a road, where
+// the start's axis crosses it; a node wins; oblique and with Shift exactly the grid-off result.
+// A road start and a cell start in the same column give the same ends (1 mm).
+#[test]
+fn grid_rule_over_every_start_and_drag() {
+    use Expect::{Grid, GridEdge, Kind};
+    use SnapKind as K;
+    let width = f64::from(lane_width_m(1, 1));
+    let graph = &view().region_graph;
+    let starts = [Start::Cell, Start::Road, Start::Node, Start::Chain];
+    // (drag, grid, expected for each start).
+    let cases = [
+        (Drag::Perpendicular, true, [Grid(K::Grid); 4]),
+        (
+            Drag::Perpendicular,
+            false,
+            [Kind(K::Free), Kind(K::Guide), Kind(K::Guide), Kind(K::Free)],
+        ),
+        (Drag::Oblique, true, [Kind(K::Free); 4]),
+        (Drag::Oblique, false, [Kind(K::Free); 4]),
+        (
+            Drag::OntoRoad,
+            true,
+            [GridEdge, GridEdge, Kind(K::Node), GridEdge],
+        ),
+        (
+            Drag::OntoRoad,
+            false,
+            [Kind(K::Edge), Kind(K::Edge), Kind(K::Node), Kind(K::Edge)],
+        ),
+        (Drag::Locked, true, [Grid(K::AngleGrid); 4]),
+        (Drag::Locked, false, [Kind(K::Angle); 4]),
+        (Drag::Shift, true, [Kind(K::Free); 4]),
+        (Drag::Shift, false, [Kind(K::Free); 4]),
+    ];
+    let xz = |p: Vector3| DVec2::new(f64::from(p.x), f64::from(p.z));
+    for (drag, grid, expected) in cases {
+        for (start, expect) in starts.into_iter().zip(expected) {
+            // South only onto the road along z = -60.
+            let sides: &[f64] = if drag == Drag::OntoRoad {
+                &[-1.0]
+            } else {
+                &[1.0, -1.0]
+            };
+            for &side in sides {
+                let (tool, from, raw) = grid_case(start, side, drag, grid, grid);
+                let end = tool.frame().cursor;
+                let at = xz(end.position);
+                let label =
+                    format!("{start:?} side {side} {drag:?} grid {grid}: {end:?} from {from:?}");
+                match expect {
+                    Grid(kind) => {
+                        assert_eq!(end.snap, kind, "{label}");
+                        let rule =
+                            view()
+                                .zoning_grid
+                                .snap_road_cursor(graph, raw, Some(from), width);
+                        assert!(rule.distance(raw) > MM, "the grid captures: {label}");
+                        assert!(at.distance(rule) < MM, "{rule:?}: {label}");
+                        assert!((at.x - from.x).abs() < MM, "on the start's axis: {label}");
+                    }
+                    GridEdge => {
+                        assert_eq!(end.snap, K::GridEdge, "{label}");
+                        assert!(at.distance(DVec2::new(from.x, -60.0)) < MM, "{label}");
+                    }
+                    Kind(kind) => {
+                        assert_eq!(end.snap, kind, "{label}");
+                        if grid {
+                            // From the same start, the grid off for the drag.
+                            let off = grid_case(start, side, drag, true, false).0.frame().cursor;
+                            assert_eq!(end, off, "{label}");
+                        }
+                    }
+                }
+                if drag == Drag::Shift {
+                    assert!(at.distance(raw) < MM, "{label}");
+                }
+            }
+        }
+    }
+    // A road start and a cell start in the same column: the same ends.
+    for drag in [Drag::Perpendicular, Drag::OntoRoad, Drag::Locked] {
+        for side in [1.0, -1.0] {
+            if drag == Drag::OntoRoad && side > 0.0 {
+                continue;
+            }
+            let [road, cell] = [Start::Road, Start::Cell].map(|start| {
+                let (tool, from, _) = grid_case(start, side, drag, true, true);
+                (from.x, xz(tool.frame().cursor.position))
+            });
+            assert!((road.0 - cell.0).abs() < MM, "{drag:?} {side}");
+            assert!(
+                road.1.distance(cell.1) < MM,
+                "{drag:?} {side}: {road:?} {cell:?}"
+            );
+        }
+    }
 }

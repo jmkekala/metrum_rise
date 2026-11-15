@@ -212,7 +212,8 @@ fn precedence_row_5_single_constraints() {
     );
 }
 
-// Row 2's order: an edge in reach is the line constraint before a guide, a guide before the grid.
+// Row 2's order: an edge in reach before the grid where it captured the cursor (round GS2),
+// the grid before a guide; a grid that left the cursor where it was is no constraint.
 #[test]
 fn precedence_row_2_line_order() {
     let guide = [GuideLine {
@@ -228,8 +229,10 @@ fn precedence_row_2_line_order() {
     pose.grid = Some((d(24.0, 12.0), None));
     assert_eq!(resolve(&pose, &options, &guide).kind, SnapKind::Edge);
     pose.network = None;
+    assert_eq!(resolve(&pose, &options, &guide).kind, SnapKind::Grid);
+    pose.grid = Some((pose.raw, None));
     assert_eq!(resolve(&pose, &options, &guide).kind, SnapKind::Guide);
-    assert_eq!(resolve(&pose, &options, &[]).kind, SnapKind::Grid);
+    assert_eq!(resolve(&pose, &options, &[]).kind, SnapKind::Free);
 }
 
 // Row 6: the length step rounds a free, angle or guide result from the anchor; a node, an edge
@@ -425,9 +428,6 @@ fn today(pointer: Pointer, start: Option<Vector3>, angle: Vector3) -> Vector3 {
             current_state: if start.is_some() { 2 } else { 0 },
             start_pos,
             control_pos: start_pos,
-            zoning_snap_enabled: false,
-            fwd_lanes: 1,
-            bkw_lanes: 1,
             border_snap_dist_m: BORDER_SNAP_M,
             previous_snap: None,
             sticky_release_dist_m: SNAP_RELEASE_M,
@@ -1093,8 +1093,8 @@ fn each_snapping_toggle_off_removes_its_constraint() {
         ),
     ];
     for (on, off, start, at, kind) in cases {
-        // The grid is the last line constraint: with the guides on, the start's own east-west
-        // guide would take this cursor first.
+        // The grid's row turns the guides off: on, the grid takes this cursor before the start's
+        // own east-west guide (round GS2), but switched off that guide would take it.
         let base = match on {
             RoadToolOption::ZoningGrid(_) => RoadToolOption::GuideLines(false),
             _ => RoadToolOption::GuideLines(true),
