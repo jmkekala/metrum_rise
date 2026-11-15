@@ -1,0 +1,140 @@
+# Functions with Rayon entries outside the extension's pools (`CODE-33`): one `count key` line
+# each, the key `file::Type::function` under rust/src, sorted. Read by the `entry_gate` test
+# (rust/src/thread_pools/entry_gate.rs); see docs/debug.md#shutdown.
+#
+# Each listed function relies on its callers already running inside one of the extension's pools.
+# A caller outside them (Godot's main thread, the simulation thread, a test thread) makes it panic
+# with "The global thread pool has not been initialized." Rounds P3 and P4 of `CODE-33` make each
+# enter the pool itself (`crate::thread_pools::install`), which costs nothing on a pool worker.
+#
+# Shrink-only: the gate fails when a function is missing here, when its count rose, and when its
+# count fell or reached zero without its line being lowered or removed in the same change. A
+# function that is only ever called from inside a pool may stay, with that reason in a comment
+# line above it.
+2 nodes/sim/core/snapshot/agents.rs::SimCore::build_agent_instances
+3 nodes/sim/core/snapshot/agents.rs::bucket_posed_agents
+1 nodes/sim/core/snapshot/agents.rs::par_for_each_bucket
+3 nodes/sim/render/mist.rs::build_mist_map
+1 nodes/sim/render/water.rs::SimCore::build_water_patch_mesh_cache_entries
+1 nodes/sim/undo.rs::SimCore::restore_lanes_locally
+1 nodes/simulation_node/vegetation_api.rs::disc_cells
+1 simulation/buildings/allocator/entrance.rs::BuildingAllocator::derive_entrances_of
+1 simulation/buildings/allocator/entrance.rs::BuildingAllocator::rebuild_loaded_entrance_cache
+1 simulation/buildings/allocator/lifecycle.rs::BorderArrivalCosts::sweep
+1 simulation/buildings/allocator/placement.rs::BuildingAllocator::collect_demand_spawn_candidates_from_assets
+1 simulation/economy/accessibility.rs::ReachableBucketIndex::enable_reservations
+1 simulation/economy/accessibility.rs::ReachableBucketIndex::enable_spatial_bounds
+1 simulation/economy/accessibility.rs::ReachableBucketIndex::from_entries
+1 simulation/economy/accessibility.rs::max_speed_for_modes
+1 simulation/economy/agents/daily.rs::AgentSystem::daily_update
+1 simulation/economy/agents/remap.rs::AgentSystem::clear_routes_with_illegal_turns
+2 simulation/economy/agents/remap.rs::AgentSystem::remap_building_indices
+1 simulation/economy/agents/remap.rs::AgentSystem::remap_household_indices
+1 simulation/economy/agents/remap.rs::scan_agents
+2 simulation/economy/agents/tick/claims.rs::AgentSystem::prepare_lane_claims
+5 simulation/economy/agents/tick/frontage.rs::AgentSystem::update_frontage_delay_cache
+4 simulation/economy/agents/tick/gridlock.rs::AgentSystem::find_wait_for_cycles
+9 simulation/economy/agents/tick/lane_buckets/occupancy.rs::AgentSystem::fill_lane_buckets
+1 simulation/economy/agents/tick/lane_buckets/occupancy.rs::AgentSystem::reset_lane_claims
+2 simulation/economy/agents/tick/movement_pass.rs::AgentSystem::prepare_movement_scratch
+2 simulation/economy/agents/tick/parking/candidates.rs::AgentSystem::rebuild_parking_lists
+2 simulation/economy/agents/tick/parking/prepared.rs::AgentSystem::prepare_parking_answers
+1 simulation/economy/agents/tick/planning/reachability.rs::PedestrianReachability::build
+1 simulation/economy/agents/tick/runtime.rs::dispatch_agents
+1 simulation/economy/agents/tick/runtime.rs::dispatch_agents_with_owned_scratch
+1 simulation/economy/customers.rs::ConsumerBudgets::reset_claim_funds
+1 simulation/economy/customers/business/routing.rs::BusinessMarket::append_live_buyers
+1 simulation/economy/customers/business/routing.rs::BusinessMarket::claim_reachable_for
+1 simulation/economy/customers/business/routing.rs::BusinessMarket::layout_access
+1 simulation/economy/customers/business/routing.rs::BusinessMarket::prepare_possible_buyers
+1 simulation/economy/customers/business/routing.rs::BusinessMarket::publish_financing
+2 simulation/economy/customers/business/routing.rs::PortIndices::all_mut
+1 simulation/economy/customers/business/routing/finance_masks.rs::BusinessMarket::reset_finance_masks
+1 simulation/economy/customers/business/routing/sites.rs::BusinessMarket::build_index_resources
+1 simulation/economy/customers/business/routing/sites.rs::BusinessMarket::prepare_sites
+1 simulation/economy/customers/business/routing/sites.rs::BusinessMarket::reset_site_ports
+1 simulation/economy/customers/routing.rs::ConsumerMarket::begin_refresh
+2 simulation/economy/customers/routing.rs::ConsumerMarket::build_refreshed_modes
+1 simulation/economy/customers/routing.rs::ConsumerMarket::claim_reachable
+1 simulation/economy/customers/routing.rs::ConsumerMarket::copy_refreshed_categories
+1 simulation/economy/customers/routing.rs::ConsumerMarket::refresh_access
+1 simulation/economy/customers/routing.rs::ConsumerMarket::refresh_index_entries
+1 simulation/economy/customers/routing.rs::ConsumerMarket::refresh_reservations
+1 simulation/economy/customers/routing.rs::ConsumerMarket::reset_claim_availability
+1 simulation/economy/demand/building_actions.rs::DemandSystem::collect_existing_actions
+1 simulation/economy/demand/building_actions.rs::DemandSystem::scan_with
+1 simulation/economy/demand/setup.rs::DemandSystem::prepare_planning_setup
+5 simulation/economy/demand/snapshot.rs::WorkforceView::count_live
+1 simulation/economy/demand/supply.rs::ProjectReservations::prepare_pass_rows
+2 simulation/economy/demand/supply.rs::ProjectReservations::reset_owner_slots
+1 simulation/economy/demand/supply.rs::SiteSupply::new
+2 simulation/economy/demand/supply.rs::SiteSupply::prepare_project_market
+1 simulation/economy/demand/supply.rs::par_collect_rows
+1 simulation/economy/demand/supply/replacements.rs::ProjectReservations::reset_sites
+1 simulation/economy/demand/system.rs::DemandSystem::run_planning_slot
+1 simulation/economy/demand/workforce.rs::WorkforceReservations::scan_free_places
+3 simulation/economy/hiring/closure.rs::JobFunding::prove_business_customers
+1 simulation/economy/hiring/inputs.rs::CensusInputs::copy_changed_rows
+1 simulation/economy/hiring/inputs.rs::CensusInputs::copy_deferred_rows
+1 simulation/economy/hiring/inputs.rs::CensusInputs::copy_now
+1 simulation/economy/hiring/inputs.rs::Rows::copy_all_again
+1 simulation/economy/hiring/steps.rs::JobFunding::census_ceilings
+7 simulation/economy/hiring/steps.rs::JobFunding::census_import_funding
+2 simulation/economy/hiring/steps.rs::JobFunding::census_market_chunks
+1 simulation/economy/hiring/steps.rs::JobFunding::census_market_end
+1 simulation/economy/hiring/steps.rs::JobFunding::census_setup_finish
+2 simulation/economy/households/data.rs::HouseholdSystem::remap_building_indices
+1 simulation/economy/households/destinations.rs::DestinationFold::fold_all
+2 simulation/economy/households/employment.rs::HouseholdSystem::prepare_job_search_scratch
+1 simulation/economy/households/employment.rs::HouseholdSystem::publish_funded_job_capacities
+1 simulation/economy/households/employment.rs::HouseholdSystem::search_jobs
+1 simulation/economy/households/employment.rs::JobSupplySnapshot::build
+1 simulation/economy/households/employment.rs::JobSupplySnapshot::prepare_targets
+6 simulation/economy/households/employment.rs::build_home_job_options
+1 simulation/economy/households/employment.rs::collect_home_job_option_keys
+1 simulation/economy/households/job_board.rs::fold_all
+1 simulation/economy/households/membership.rs::HouseholdSystem::debug_validate_agent_household_refs
+1 simulation/economy/households/replenishment.rs::HouseholdSystem::plan_and_reserve_restocks
+1 simulation/economy/households/service_visits.rs::HouseholdSystem::plan_and_hold_visits
+2 simulation/economy/logistics/recurring_supply.rs::RecurringSupply::begin_reset
+1 simulation/economy/logistics/recurring_supply.rs::RecurringSupply::has_overclaims
+1 simulation/economy/logistics/recurring_supply.rs::RecurringSupply::reset_entries
+1 simulation/economy/logistics/recurring_supply.rs::fill_production_rates
+2 simulation/economy/logistics/recurring_supply/projected.rs::RecurringSupply::prepare_projected_sources
+3 simulation/economy/logistics/route_cache.rs::FreightRouteCache::clear
+1 simulation/economy/logistics/route_cache.rs::FreightRouteCache::prepare_access_in
+1 simulation/economy/logistics/route_cache.rs::FreightRouteCache::prepare_border_minimum
+2 simulation/economy/logistics/route_cache.rs::resize_in_parallel
+1 simulation/economy/logistics/supplier_index.rs::DispatchFold::fold_all
+2 simulation/economy/logistics/supplier_index.rs::SupplierCandidateIndex::collect_filtered
+1 simulation/economy/logistics/supplier_index.rs::SupplierCandidateIndex::from_entries
+1 simulation/economy/logistics/working_capital.rs::ShipmentSystem::write_border_carrier_quotes_in
+1 simulation/economy/reduction.rs::ordered_fold
+1 simulation/grid/desirability.rs::compose_rows
+1 simulation/grid/mod.rs::diffuse_emissions!
+1 simulation/network/mod.rs::TransitNetwork::publish_frontage_prices
+2 simulation/network/validate.rs::audit_graph
+1 simulation/parking/candidates.rs::ParkingSystem::door_lists
+1 simulation/parking/candidates.rs::ParkingSystem::refresh_chunk_access
+1 simulation/parking/candidates/table.rs::ParkingSystem::place_table
+3 simulation/parking/candidates/update.rs::ParkingSystem::read_list_ends
+2 simulation/parking/candidates/walk.rs::FootGraph::around
+4 simulation/pathing/cch.rs::CchGraph::customize_in_pool
+3 simulation/pathing/cch/bounds.rs::CchCarCostBounds::prepare
+1 simulation/pathing/cch/layout.rs::VehicleTurns::build
+1 simulation/pathing/cch/order.rs::dissect_points::dissect
+2 simulation/pathing/cch/query/buckets.rs::CchBuckets::build
+1 simulation/pathing/cch/sweep.rs::CchGraph::costs_from_each
+1 simulation/pathing/flow_field.rs::FlowFieldSystem::rebuild_dirty
+2 simulation/save/cell_zoning.rs::validate_reservations
+1 simulation/terrain/graded/behind.rs::rises_above_a_seam
+2 simulation/terrain/graded/coverage.rs::rasterize
+1 simulation/terrain/graded/extras.rs::square_extras
+8 simulation/terrain/graded/tile.rs::bake_tile
+9 simulation/zoning/cells/generation.rs::CellStore::generate_in_pool
+1 simulation/zoning/cells/generation/continuity.rs::frame_candidates
+1 simulation/zoning/cells/generation/continuity.rs::pinned_candidates
+1 simulation/zoning/cells/generation/curves.rs::pinned_candidates
+1 simulation/zoning/system/cell_lots/derivation.rs::CellLotPlanner::derive_cell_lots_in_pool
+1 simulation/zoning/system/cell_lots/derivation.rs::CellLotPlanner::refresh_existing_cell_lots
+2 utils/storage.rs::fill_rows

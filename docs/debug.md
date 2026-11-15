@@ -845,6 +845,40 @@ initialized`. `bridge_entry_points_never_use_the_global_pool` re-runs the librar
 child process that disables its global pool and then drives a town's tools, a day of growth,
 saves and loads, world resets, a bulk-loaded city, the simulation thread and spawned jobs.
 
+Both see only the paths they execute. The gate test
+`thread_pools::entry_gate::rayon_entries_stay_inside_the_extension_pools` (`CODE-33`, in the lib
+suite of `./run.sh --test`, under 0.1 s) reads all of the crate's non-test source instead:
+
+- It walks the `mod` declarations from `lib.rs` and skips every item and module that a non-test
+  build leaves out (`#[cfg(test)]`, `#[cfg(all(test, ..))]`, `#[test]`). `thread_pools.rs` itself
+  is the pool implementation and is not scanned.
+- A Rayon entry is a `.par_*` method or `.into_par_iter()`, or one of the `rayon::` free functions
+  that use the current registry (`join`, `scope`, `spawn`, `broadcast`, `current_num_threads`, their
+  variants, the `rayon::iter` constructors). Each counts once where it is written. An unknown
+  `rayon::` path, or a `use` that imports an entry, fails until the gate classifies it.
+- An entry is pooled when it lies lexically inside the argument list of
+  `thread_pools::install`, `install_background` or `spawn`, or of the wrappers that run their work
+  in a pool (`PureJob::spawn`, `PureJob::unstarted`, `async_jobs.spawn`).
+- Other entries are bare and counted per function (`file::Type::function`, under `rust/src`).
+  [`bare_entries.txt`](../rust/src/thread_pools/bare_entries.txt) lists the functions that had
+  them when the gate landed (127 functions, 210 entries); each relies on every caller already
+  being in a pool. Three sites that branch on whether they run in a pool by design are counted
+  waivers in the test, each with its reason (`RegionGraph::clone_on_pool`, `Chunk::update_due`,
+  `splice_chunks`).
+
+A failure lists each problem with its file and lines. A function that is not listed, or whose
+count rose, gets its parallel region wrapped in `crate::thread_pools::install(|| ..)`
+(`install_background` for background work), which runs inline on a pool worker; never add it to
+the list. The list is shrink-only: when a listed function loses entries, the same change lowers
+or removes its line, and the failure names the line to write. A listed function that is only
+ever called from inside a pool may stay, with that reason in a comment above its line. Rounds P3
+and P4 of `CODE-33` empty the list.
+
+The scan is lexical, so it does not see a parallel iterator or closure built inside a pool-entry
+closure and driven outside it, trait-object or closure dispatch, or where a crate `macro_rules!`
+expands (its body counts once at the definition). A closure built outside a pool-entry closure
+and passed into it by name reads as bare.
+
 ## Console
 
 `DebugConsole` is an autoload

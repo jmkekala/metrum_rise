@@ -307,6 +307,9 @@ pub(crate) fn disable_global_pool() -> bool {
 }
 
 #[cfg(test)]
+mod entry_gate;
+
+#[cfg(test)]
 mod tests {
     use super::{JoinedPool, Role, SharedPool};
     use rayon::ThreadPoolBuilder;
