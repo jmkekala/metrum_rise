@@ -1582,11 +1582,9 @@ committed format-118 Kuopio fixture keeps loading in its own tests.
 
 - Customize (one car metric, median of 21 into a displaced metric): the 30k fixture's graph (713
   nodes, 1,342 edges, 57,481 filled arcs) 1.46 ms (max 2.86); the player's Kuopio save (139
-  nodes, 194 edges) 0.03 ms. Synthetic grids toward 1M (`benchmark_congestion_customize_scaling`,
-  every open node a turn-restricted state): 2,209 nodes (the 100k city's count) 10.9 ms, 10,000
-  nodes 120 ms, 22,500 nodes (about a 1M city) 458 ms, 245 M triangles. At 32× a quarter hour is
-  0.47 s of real time and the latency 0.16 s: a 1M city would wait for its job each adoption.
-  The levers are a parallel customization (elimination-tree levels) and `NET-09`.
+  nodes, 194 edges) 0.03 ms. The bound stays O(base arcs + triangles) a job, one job a quarter
+  hour; 1M customize scaling is deferred by the user (2026-11-15): the largest real city is a
+  few thousand agents.
 - `NET-09` partial customization, evaluated (`congestion_statistics_on_a_saved_city`, the 30k
   fixture at 32× for 6 game hours, 24 adoptions): of 2,684 edge directions 2,651-2,670 change
   bitwise between adoptions (the smoothed delays decay continuously), 666-858 by more than
