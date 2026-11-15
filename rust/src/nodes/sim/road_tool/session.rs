@@ -1024,12 +1024,12 @@ impl RoadToolSession {
                 i32::from(self.spec.fwd_lanes),
                 i32::from(self.spec.bkw_lanes),
             );
-            let point = view
-                .zoning_grid
-                .snap_road_cursor(graph, raw_xz, start, f64::from(width));
+            let (point, on) =
+                view.zoning_grid
+                    .snap_road_cursor_on(graph, raw_xz, start, f64::from(width));
             // With a start the grid snaps along an axis through it: that axis is the line.
             let dir = start.and_then(|start| (point - start).try_normalize());
-            (point, dir)
+            (point, dir, on)
         });
         if constrained && self.snap.guides {
             let first_axis = (self.steps() >= 2).then(|| {
@@ -1055,7 +1055,8 @@ impl RoadToolSession {
             reference,
             free: self.shift,
             network,
-            grid,
+            grid: grid.map(|(point, dir, _)| (point, dir)),
+            grid_edge: grid.and_then(|(_, _, on)| on),
         };
         let mut snapped = resolve(&input, &self.snap, &self.scratch.guides);
         if snapped.kind == SnapKind::Free {

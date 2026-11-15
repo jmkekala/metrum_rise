@@ -7,7 +7,8 @@
 ## `gizmo_upload.json` (milliseconds per upload while a curve is dragged).
 ## `METRUM_ROAD_TOOL_CAPTURE_SET=snapping` writes round E's stills instead: the options panel's
 ## Snapping and Steps rows, a guide line and the angle lock taking the cursor, then the zoning
-## grid holding it beside the dead end (the grid snap's curbs, round V2).
+## grid holding it beside the dead end (the grid snap's curbs, round V2), then on the dead end's
+## centreline and a branch drawn from there (round GS).
 ## `METRUM_ROAD_TOOL_CAPTURE_SET=scurve_freeform` writes round N's: an S-curve mid-draw, a
 ## freeform draft in its edit phase, the committed freeform road, and
 ## `gizmo_upload_scurve_freeform.json` (uploads while an S-curve's end and a freeform handle are
@@ -237,6 +238,18 @@ func _capture_snapping() -> void:
 	_expect(grid_snap in ["grid", "angle_grid"], "the zoning grid takes the cursor (%s)" % grid_snap)
 	_ray(Vector3(243.0, 0.0, 27.0))
 	await _capture("snapping_grid_curbs")
+	# Round GS: with the grid on, the cursor over the dead-end road takes its centreline at the
+	# grid's position along it; a branch drawn from there shows its curbs on the cell lines.
+	_tool.cancel_road()
+	_ray(Vector3(231.3, 0.0, 0.9))
+	var on_road := String(_simulation.road_tool_frame()["snap"])
+	_expect(on_road == "grid_edge", "the grid holds the cursor on the road (%s)" % on_road)
+	_tool._read_press(_simulation.road_tool_event("press"))
+	_ray(Vector3(232.1, 0.0, 41.0))
+	var branch := String(_simulation.road_tool_frame()["snap"])
+	_expect(branch == "grid", "the grid takes the branch's end (%s)" % branch)
+	_ray(Vector3(232.1, 0.0, 41.0))
+	await _capture("snapping_grid_on_road")
 	_tool.zoning_grid_snap_enabled = false
 	_tool.cancel_road()
 	_tool.set_process(true)

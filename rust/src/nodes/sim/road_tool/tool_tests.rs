@@ -27,6 +27,7 @@ use godot::prelude::Vector3;
 use std::sync::OnceLock;
 
 mod continuous_chain;
+mod grid_snap;
 mod ground_marks;
 mod heights;
 mod labels;
@@ -51,6 +52,7 @@ fn input(raw: DVec2) -> SnapInput {
         free: false,
         network: None,
         grid: None,
+        grid_edge: None,
     }
 }
 

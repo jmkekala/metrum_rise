@@ -10,7 +10,9 @@
 //! or grid line; two guide lines in reach and no `D` meet at their corner; one constraint alone
 //! projects; map-edge and self snap keep today's place when nothing above took the cursor; the
 //! length step rounds last, except on a node, an edge or an intersection. Ties go to the lower
-//! candidate in the fixed order (edges ascending by id).
+//! candidate in the fixed order (edges ascending by id). With the zoning grid on and no `D`, an
+//! edge alone combines with the grid (round GS): across the road the cursor keeps its centreline,
+//! along it the grid's position ([`SnapKind::GridEdge`]).
 //!
 //! The candidates come from the existing indices only: the network snap from the 16 m node grid
 //! and the edge R-tree ([`network_snap`], today's acquisition with a reused candidate buffer),
@@ -89,6 +91,10 @@ pub enum SnapKind {
     AngleGuide,
     /// The angle lock's ray where it meets a zoning grid line.
     AngleGrid,
+    /// A network edge's centreline at the zoning grid's position along it: the grid's own point
+    /// for a first point on the road it aligns to, else the grid's axis through the stroke's
+    /// start where it crosses the centreline.
+    GridEdge,
     /// The map edge.
     Border,
     /// The stroke's own start or control point.
@@ -142,6 +148,8 @@ pub struct SnapInput {
     /// The zoning grid's snapped point and, when the grid gives a line through the anchor, its
     /// direction.
     pub grid: Option<(DVec2, Option<DVec2>)>,
+    /// The edge whose centreline holds the grid's point (`RoadGridSnap::snap_road_cursor_on`).
+    pub grid_edge: Option<usize>,
 }
 
 /// The resolved cursor in XZ and what took it.
@@ -254,8 +262,11 @@ pub fn resolve(input: &SnapInput, options: &SnapOptions, guides: &[GuideLine]) -
                 || Snapped::at(first.project(input.raw), SnapKind::Guide),
                 |corner| Snapped::at(corner, SnapKind::GuideCorner),
             ),
-        // 5. One line alone: its projection (the grid's own point).
-        (None, Some(LineConstraint::Edge(snap, _))) => edge_snap(snap),
+        // 5. One line alone: its projection (the grid's own point); an edge with the grid on
+        // takes the grid's position along it.
+        (None, Some(LineConstraint::Edge(snap, edge))) => {
+            grid_on_edge(input, options, snap, &edge).unwrap_or_else(|| edge_snap(snap))
+        }
         (None, Some(LineConstraint::Grid(point, _))) => Snapped::at(point, SnapKind::Grid),
         (None, None) => match input.network {
             // An edge snap with no usable direction still snaps.
@@ -332,6 +343,37 @@ fn nearest_guides(guides: &[GuideLine], raw: DVec2) -> [Option<(f64, GuideLine)>
         nearest(&|guide| first.dir.perp_dot(guide.dir).abs() > PARALLEL_SIN)
     });
     [first, second]
+}
+
+// Round GS: the edge snap with the zoning grid on. A first point on the road the grid aligns to
+// takes the grid's point, which lies on that road's centreline (`RoadGridSnap`'s branch rule);
+// a stroke's end takes the grid's axis through its start where it crosses the edge's centreline,
+// within the edge's reach of the raw cursor. `None` (the plain edge snap) when the grid is off,
+// held by another road, or gave no axis (it returns the raw cursor itself then). `O(1)`.
+fn grid_on_edge(
+    input: &SnapInput,
+    options: &SnapOptions,
+    snap: NetworkSnap,
+    edge: &GuideLine,
+) -> Option<Snapped> {
+    let (point, axis) = input.grid.filter(|_| !input.free && options.grid)?;
+    let NetworkSnapTarget::Edge(id) = snap.target else {
+        return None;
+    };
+    let xz = if input.grid_edge == Some(id) {
+        point
+    } else {
+        let axis = GuideLine {
+            origin: point,
+            dir: axis.filter(|_| point != input.raw)?,
+        };
+        axis.meet(edge)
+            .filter(|meet| meet.distance(input.raw) <= EDGE_REACH_M)?
+    };
+    Some(Snapped {
+        target: Some(snap.target),
+        ..Snapped::at(xz, SnapKind::GridEdge)
+    })
 }
 
 fn edge_snap(snap: NetworkSnap) -> Snapped {

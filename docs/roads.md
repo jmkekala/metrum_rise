@@ -12368,7 +12368,15 @@ since round D).
   start). `D` and `L`: their intersection ahead of the anchor when it lies within `L`'s reach of
   the raw cursor (an edge 5 m, a guide 2 m, the grid any), otherwise an edge wins over the angle
   and the angle over a guide or grid line. Two crossing guide lines in reach and no `D`: their
-  corner. One alone: its projection (the grid's own point). Map-edge snap (25 m) and self snap
+  corner. One alone: its projection (the grid's own point). With the zoning grid on and no `D`,
+  an edge in reach combines with the grid (round GS, kind `grid_edge`): a first point on the road
+  the grid aligns to (`RoadGridSnap::snap_road_cursor_on` reports the road whose centreline holds
+  its point, within 5 m) takes the grid's point, on that road's centreline across it and with a
+  branch's curb on a cell line along it (the old cursor's rule); a stroke's end takes the grid's
+  axis through its start where it crosses the edge's centreline, within the edge's 5 m reach;
+  otherwise (another road holds the grid, or the grid gave no axis) the edge snap as before. A
+  node still wins; grid off, the frames are `dev` `73173102`'s bit for bit
+  (`grid_off_frames_are_unchanged`). `O(1)` more a pose, no allocation. Map-edge snap (25 m) and self snap
   (2.5 m to a placed point) only when nothing above took the cursor. The **length step** last
   rounds the distance from the anchor of a free or angle result, and of a guide result along the
   guide from the anchor's foot; a node, edge, intersection or grid point keeps its place. Shift
@@ -14310,7 +14318,9 @@ the clicks, the mode buttons and the acknowledgement and draws what `road_tool_f
   at its acknowledgement, `check_border_candidate` on the stroke's ends, and ends the chain).
   A refused commit keeps the stroke editable.
 - **Snapping** is the session's (the precedence under "Snapping precedence" above: network
-  node, then edge, guide line or zoning grid, map edge and self snap), in every mode. The
+  node, then edge, guide line or zoning grid, map edge and self snap), in every mode. With the
+  zoning grid on, a cursor over an existing road stays on its centreline and steps along it to the
+  grid's positions, where a branch's curb lands on a cell line (round GS). The
   options panel (round E) has a **Snapping** row of three checkboxes, **Roads** (the network
   snap: junctions, ends and centrelines), **Guides** (guide lines) and **Zoning grid**, and a **Steps**
   row with the **Angle** lock (Free, 15°, 30°, 45°, 90°) and a **Length** step (a checkbox and

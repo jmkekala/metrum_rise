@@ -350,7 +350,10 @@ fn zoning_depth_matches_generated_cells() {
 
 // A straight road of `spec` from (0, 0) to (120, 0) and the cells it generates: kerbs at
 // z = +-5 m for the default road, so cell lines at x = 10 k and z = 5 + 10 k.
-fn zoned_straight_road(spec: &RoadTypeSpec, config: &WorldConfig) -> (RegionGraph, CellStore) {
+pub(super) fn zoned_straight_road(
+    spec: &RoadTypeSpec,
+    config: &WorldConfig,
+) -> (RegionGraph, CellStore) {
     let mut graph = RegionGraph::new();
     let a = graph.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
     let b = graph.add_node(Vector3::new(120.0, 0.0, 0.0), NodeType::Junction);
