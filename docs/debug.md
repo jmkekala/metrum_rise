@@ -861,8 +861,8 @@ suite of `./run.sh --test`, under 0.1 s) reads all of the crate's non-test sourc
   in a pool (`PureJob::spawn`, `PureJob::unstarted`, `async_jobs.spawn`).
 - Other entries are bare and counted per function (`file::Type::function`, under `rust/src`).
   [`bare_entries.txt`](../rust/src/thread_pools/bare_entries.txt) lists the functions that had
-  them when the gate landed (127 functions, 210 entries); each relies on every caller already
-  being in a pool. Three sites that branch on whether they run in a pool by design are counted
+  them when the gate landed (127 functions, 210 entries; 103 and 175 after round P3); each
+  relies on every caller already being in a pool. Three sites that branch on whether they run in a pool by design are counted
   waivers in the test, each with its reason (`RegionGraph::clone_on_pool`, `Chunk::update_due`,
   `splice_chunks`).
 
@@ -870,9 +870,11 @@ A failure lists each problem with its file and lines. A function that is not lis
 count rose, gets its parallel region wrapped in `crate::thread_pools::install(|| ..)`
 (`install_background` for background work), which runs inline on a pool worker; never add it to
 the list. The list is shrink-only: when a listed function loses entries, the same change lowers
-or removes its line, and the failure names the line to write. A listed function that is only
-ever called from inside a pool may stay, with that reason in a comment above its line. Rounds P3
-and P4 of `CODE-33` empty the list.
+or removes its line, and the failure names the line to write. A listed function whose every
+caller, tests included, runs inside a pool may stay, with that reason in a `#` comment above its
+line naming the callers (the inner half of a self-installing entry such as
+`CellStore::generate_in_pool`, a helper under one, `bake_tile`); a function with any caller outside
+a pool enters the pool itself. Rounds P3 and P4 of `CODE-33` leave only such lines.
 
 The scan is lexical, so it does not see a parallel iterator or closure built inside a pool-entry
 closure and driven outside it, trait-object or closure dispatch, or where a crate `macro_rules!`
