@@ -71,6 +71,7 @@ impl CchGraph {
                     target,
                     edge: edge_id,
                     flags,
+                    forward,
                 });
             }
         }
@@ -91,6 +92,8 @@ impl CchGraph {
         order.sort_unstable_by_key(|&node| states[node as usize].iter().max().copied());
         let mut neighbors = vec![BTreeSet::new(); incoming.len()];
         let mut arc_ids = HashMap::new();
+        let mut base_arcs = Vec::new();
+        let mut triangles = Vec::new();
         fn ensure_arc(
             from: u32,
             to: u32,
@@ -131,11 +134,12 @@ impl CchGraph {
                         &mut arc_ids,
                         &mut neighbors,
                     );
-                    result.base_arcs.push(BaseArc {
+                    base_arcs.push(BaseArc {
                         arc,
                         edge: departure.edge,
                         flags: departure.flags,
                         vehicle_turn,
+                        forward: departure.forward,
                     });
                 }
             }
@@ -149,11 +153,7 @@ impl CchGraph {
                 for &w in &higher[i + 1..] {
                     let vw =
                         ensure_arc(v, w, &mut result.shortcuts, &mut arc_ids, &mut neighbors) / 2;
-                    result.triangles.push([
-                        arc_ids[&(low as u32, v)],
-                        arc_ids[&(low as u32, w)],
-                        vw,
-                    ]);
+                    triangles.push([arc_ids[&(low as u32, v)], arc_ids[&(low as u32, w)], vw]);
                 }
             }
             result
@@ -189,19 +189,25 @@ impl CchGraph {
             } else {
                 let id = signatures.len();
                 signatures.push(signature);
-                result.profiles.push(Metric {
-                    mask,
-                    costs: vec![f32::INFINITY; result.shortcuts.len() * 2],
-                    distances: vec![0.0; result.shortcuts.len() * 2],
-                    witnesses: vec![Witness::default(); result.shortcuts.len() * 2],
-                });
+                result
+                    .profiles
+                    .push(Metric::empty(mask, result.shortcuts.len() * 2));
                 id
             };
             result.profile_for_mask[mask as usize] = profile as u8;
         }
         result.shortcuts.shrink_to_fit();
-        result.base_arcs.shrink_to_fit();
-        result.triangles.shrink_to_fit();
+        base_arcs.shrink_to_fit();
+        triangles.shrink_to_fit();
+        result.inputs = std::sync::Arc::new(CustomizeInputs {
+            base_arcs,
+            triangles,
+            lengths: graph
+                .edges()
+                .iter()
+                .map(|edge| edge.physical_length)
+                .collect(),
+        });
         result.base_metric.resize(graph.edge_count(), (0.0, 0.0));
         result.base_walk.resize(graph.edge_count(), 0.0);
         result.customize(graph);

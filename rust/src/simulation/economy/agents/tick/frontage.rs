@@ -11,12 +11,23 @@ use rayon::prelude::*;
 
 const FRONTAGE_DELAY_UPDATE_S: f32 = 1.0;
 
+/// Cap on one lane's raw routing delay in seconds (`TRAFFIC-17`): long jammed roads stay finite
+/// to the router and a detour around one lane is bounded. The 1 m/s speed floor already bounds
+/// a lane's raw delay by its length in seconds.
+pub(crate) const ROUTE_DELAY_CAP_S: f32 = 120.0;
+
+// Share of a lane's routing delay kept per simulated second: 15/16, exact in f32, a time
+// constant of about 15.5 s, so a car's route reacts to a queue that lasts, not to one stop.
+const ROUTE_DELAY_RETAIN: f32 = 15.0 / 16.0;
+
 impl AgentSystem {
-    /// Updates each lane's live frontage delay from aggregated live lane speeds.
+    /// Updates each lane's live frontage delay, and its routing delay (`TRAFFIC-17`), from
+    /// aggregated live lane speeds.
     ///
     /// Runs at fixed cadence rather than every tick so planner-visible congestion stays stable
     /// and cheap to maintain. Economy prices read the hourly copy published by
-    /// [`TransitNetwork::publish_frontage_prices`]. O(agents) per worker plus O(lanes / p).
+    /// [`TransitNetwork::publish_frontage_prices`]; no economy price reads the routing delay.
+    /// O(agents) per worker plus O(lanes / p).
     pub fn update_frontage_delay_cache(
         &mut self,
         transit_network: &mut TransitNetwork,
@@ -65,6 +76,8 @@ impl AgentSystem {
         let speeds = &self.agents.speed;
         let smoothing_retain = 0.75_f32.powi(update_steps);
         let smoothing_gain = 1.0 - smoothing_retain;
+        let route_retain = ROUTE_DELAY_RETAIN.powi(update_steps);
+        let route_gain = 1.0 - route_retain;
         crate::thread_pools::install(|| {
             let span = lane_count
                 .div_ceil(rayon::current_num_threads().max(1))
@@ -91,17 +104,19 @@ impl AgentSystem {
                         }
                     }
                     for (offset, lane) in lanes.iter_mut().enumerate() {
-                        lane.live_frontage_delay_s = if lane.lane_type != LaneType::Vehicle
+                        (lane.live_frontage_delay_s, lane.route_delay_s) = if lane.lane_type
+                            != LaneType::Vehicle
                             || lane.edge_id == usize::MAX
                             || lane.edge_id >= graph.edge_count()
                         {
-                            0.0
+                            (0.0, 0.0)
                         } else {
                             let edge = graph.edge(lane.edge_id);
                             if edge.speed_limit <= 1e-6 || lane.length <= 1e-6 {
-                                0.0
+                                (0.0, 0.0)
                             } else {
-                                let raw_lane_delay_penalty_s = if vehicle_count[offset] == 0 {
+                                // Observed minus free-flow lane time: 0 with no car on the lane.
+                                let observed_delay_s = if vehicle_count[offset] == 0 {
                                     0.0
                                 } else {
                                     let lane_mean_speed =
@@ -110,10 +125,17 @@ impl AgentSystem {
                                         lane_mean_speed.clamp(1.0, edge.speed_limit);
                                     let free_flow_lane_time = lane.length / edge.speed_limit;
                                     let observed_lane_time = lane.length / observed_speed;
-                                    (observed_lane_time - free_flow_lane_time).clamp(0.0, 30.0)
+                                    observed_lane_time - free_flow_lane_time
                                 };
-                                smoothing_retain * lane.live_frontage_delay_s
-                                    + smoothing_gain * raw_lane_delay_penalty_s
+                                let raw_lane_delay_penalty_s = observed_delay_s.clamp(0.0, 30.0);
+                                let raw_route_delay_s =
+                                    observed_delay_s.clamp(0.0, ROUTE_DELAY_CAP_S);
+                                (
+                                    smoothing_retain * lane.live_frontage_delay_s
+                                        + smoothing_gain * raw_lane_delay_penalty_s,
+                                    route_retain * lane.route_delay_s
+                                        + route_gain * raw_route_delay_s,
+                                )
                             }
                         };
                     }

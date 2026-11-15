@@ -4,7 +4,7 @@
 
 use super::super::super::lane_nav::vehicle_lane_reaches_edge;
 use super::*;
-use crate::simulation::pathing::cch::{CchBucketSource, CchBuckets, CchPathScratch};
+use crate::simulation::pathing::cch::{CchBucketSource, CchBuckets, CchPathScratch, RouteMetric};
 use std::hash::BuildHasher;
 
 thread_local! {
@@ -762,6 +762,7 @@ impl TripQueryScratch {
                 to_edge,
                 graph,
                 transit_flags_for_mode(mode),
+                route_metric(mode),
                 &mut self.cch,
                 None,
             )
@@ -808,6 +809,7 @@ impl TripQueryScratch {
                 lane_edge(detach, network),
                 graph,
                 transit_flags_for_mode(mode),
+                route_metric(mode),
                 &mut self.cch,
                 first_hop,
             )
@@ -1188,6 +1190,7 @@ impl TripQueryScratch {
             exit,
             graph,
             flags,
+            RouteMetric::FreeFlow,
             &mut self.cch,
             None,
         )?;
@@ -1254,6 +1257,17 @@ impl TripQueryScratch {
 }
 
 // Road edge of a lane, or `usize::MAX` for a missing lane or a junction connector.
+// The metric a materialized route reads: cars route on measured congestion (`TRAFFIC-17`), so
+// trip paths, replans, parking legs and the gridlock detour avoid queues the free-flow quotes
+// cannot see; walkers and every cost-only quote stay free flow.
+fn route_metric(mode: u8) -> RouteMetric {
+    if mode == MODE_CAR {
+        RouteMetric::Congested
+    } else {
+        RouteMetric::FreeFlow
+    }
+}
+
 fn lane_edge(lane: usize, network: &TransitNetwork) -> usize {
     network
         .lane_system

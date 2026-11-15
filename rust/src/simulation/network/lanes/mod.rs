@@ -119,6 +119,11 @@ pub struct Lane {
     /// Smoothed frontage congestion penalty in seconds, updated once per simulated second from
     /// live lane speeds. Agent trip planning reads it directly.
     pub live_frontage_delay_s: f32,
+    /// Smoothed delay in seconds over this road lane's free-flow time, for car routing
+    /// (`TRAFFIC-17`): updated with `live_frontage_delay_s` from the same per-second speed sums,
+    /// with a longer time constant and a larger cap. Congestion snapshots average it per edge
+    /// direction; no economy price reads it.
+    pub route_delay_s: f32,
     /// Cumulative distance at each geometry vertex: `cum_dist[i]` = distance from `geometry[0]` to `geometry[i]`.
     /// Used for O(log N) position interpolation via binary search.
     pub cum_dist: Vec<f32>,
@@ -161,6 +166,7 @@ impl Default for Lane {
             length: 0.0,
             frontage_delay_penalty_s: 0.0,
             live_frontage_delay_s: 0.0,
+            route_delay_s: 0.0,
             cum_dist: Vec::new(),
             lane_type: LaneType::Vehicle,
             next_lanes: LaneSuccessors::default(),

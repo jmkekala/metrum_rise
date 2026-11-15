@@ -1299,13 +1299,16 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         current.households.households[0].replenishment_offset_hours,
         23
     );
-    // `SIM-02` cut over the format: a save of any other version must not load.
-    conn.execute("UPDATE save_meta SET version = ?1", [SAVE_VERSION - 1])
-        .unwrap();
-    assert!(
-        load_from_sqlite(&path, &allocator.registry).is_err(),
-        "an older save must not load"
-    );
+    // `SIM-02` cut over the format: a save of any other version must not load, but for format
+    // 118 before the congestion state (`PRE_CONGESTION_SAVE_VERSION`, `TRAFFIC-17`).
+    for version in [PRE_CONGESTION_SAVE_VERSION - 1, SAVE_VERSION + 1] {
+        conn.execute("UPDATE save_meta SET version = ?1", [version])
+            .unwrap();
+        assert!(
+            load_from_sqlite(&path, &allocator.registry).is_err(),
+            "a format-{version} save must not load"
+        );
+    }
     drop(conn);
     fs::remove_file(&path).ok();
 

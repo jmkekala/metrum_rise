@@ -14,12 +14,15 @@ use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap};
 
 mod bounds;
+mod congestion;
 mod layout;
 mod order;
 mod query;
 mod sweep;
 mod topology;
 pub(crate) use bounds::CchCarCostBounds;
+pub(crate) use congestion::{CongestionMetric, RouteMetric};
+use congestion::{CustomizeInputs, Selected};
 use layout::{NodeSlices, VehicleTurns};
 pub(crate) use query::buckets::{CchBucketSource, CchBuckets};
 #[cfg(test)]
@@ -47,12 +50,15 @@ struct Departure {
     target: u32,
     edge: usize,
     flags: u8,
+    // Along the edge's geometry (start to end): which directed weight a congested seed reads.
+    forward: bool,
 }
 struct BaseArc {
     arc: usize,
     edge: usize,
     flags: u8,
     vehicle_turn: bool,
+    forward: bool,
 }
 #[derive(Clone, Copy)]
 struct Witness {
@@ -75,6 +81,56 @@ struct Metric {
     distances: Vec<f32>,
     witnesses: Vec<Witness>,
 }
+impl Metric {
+    fn empty(mask: u8, arcs: usize) -> Self {
+        Self {
+            mask,
+            costs: vec![f32::INFINITY; arcs],
+            distances: vec![0.0; arcs],
+            witnesses: vec![Witness::default(); arcs],
+        }
+    }
+
+    // Base transitions, then lower triangles in their fixed order: every metric, free flow or
+    // congested, customizes through here, so equal base costs give equal bits. `base` gives a
+    // transition's cost and physical distance. O(base arcs + triangles); allocation-free.
+    fn customize(&mut self, inputs: &CustomizeInputs, base: impl Fn(&BaseArc) -> (f32, f32)) {
+        self.costs.fill(f32::INFINITY);
+        self.distances.fill(0.0);
+        self.witnesses.fill(Witness::default());
+        for arc in &inputs.base_arcs {
+            if arc.flags & self.mask == 0 || (!arc.vehicle_turn && self.mask != TransitFlags::FOOT)
+            {
+                continue;
+            }
+            let (cost, distance) = base(arc);
+            if cost < self.costs[arc.arc] {
+                self.costs[arc.arc] = cost;
+                self.distances[arc.arc] = distance;
+                self.witnesses[arc.arc].edge = arc.edge;
+            }
+        }
+        // For u < v < w, update v→w via v→u→w, and w→v via w→u→v.
+        // Children have lower low-endpoint ranks and cannot change after this step.
+        for &[uv, uw, vw] in &inputs.triangles {
+            for (target, left, right) in [
+                (vw * 2, uv * 2 + 1, uw * 2),
+                (vw * 2 + 1, uw * 2 + 1, uv * 2),
+            ] {
+                let cost = self.costs[left] + self.costs[right];
+                if cost < self.costs[target] {
+                    self.costs[target] = cost;
+                    self.distances[target] = self.distances[left] + self.distances[right];
+                    self.witnesses[target] = Witness {
+                        left,
+                        right,
+                        edge: usize::MAX,
+                    };
+                }
+            }
+        }
+    }
+}
 
 /// A hierarchy over road nodes and explicit arrival states at restricted junctions.
 /// Unrestricted arrivals are equivalent: their future legal transitions are identical.
@@ -86,6 +142,9 @@ pub struct CchGraph {
     pub build_generation: u32,
     /// Changes after customization, invalidating cached network costs.
     pub(crate) metric_revision: u64,
+    /// Changes when a car-congestion metric is adopted (`TRAFFIC-17`). Only retained route
+    /// sweeps read it; no economy cache does.
+    pub(crate) congestion_revision: u64,
     up: NodeSlices<(u32, usize)>,
     parent: Vec<u32>,
     states: NodeSlices<u32>,
@@ -93,12 +152,13 @@ pub struct CchGraph {
     arrival_edges: Vec<usize>,
     departures: NodeSlices<Departure>,
     turns: VehicleTurns,
-    base_arcs: Vec<BaseArc>,
+    inputs: std::sync::Arc<CustomizeInputs>,
     base_metric: Vec<(f32, f32)>,
     // Walking-pace cost per base edge, for walkers' departures from restricted junctions.
     base_walk: Vec<f32>,
-    triangles: Vec<[usize; 3]>,
     profiles: Vec<Metric>,
+    // The adopted car-congestion metric (`TRAFFIC-17`, `congestion`), if any.
+    congested: Option<CongestionMetric>,
     profile_for_mask: [u8; 256],
     node_order: Vec<u32>,
 }
@@ -110,17 +170,22 @@ impl CchGraph {
             shortcuts: Vec::new(),
             build_generation: 0,
             metric_revision: 0,
+            congestion_revision: 0,
             up: NodeSlices::empty(0),
             parent: Vec::new(),
             states: NodeSlices::empty(nodes),
             arrival_edges: Vec::new(),
             departures: NodeSlices::empty(nodes),
             turns: VehicleTurns::empty(nodes),
-            base_arcs: Vec::new(),
+            inputs: std::sync::Arc::new(CustomizeInputs {
+                base_arcs: Vec::new(),
+                triangles: Vec::new(),
+                lengths: Vec::new(),
+            }),
             base_metric: Vec::new(),
             base_walk: Vec::new(),
-            triangles: Vec::new(),
             profiles: Vec::new(),
+            congested: None,
             profile_for_mask: [0; 256],
             node_order: Vec::new(),
         }
@@ -143,48 +208,19 @@ impl CchGraph {
                 *metric = (edge.base_cost, edge.physical_length);
                 *walk = CostCalculator::walk_cost_s(edge);
             });
+        let (inputs, base_walk) = (&*self.inputs, &self.base_walk);
         self.profiles.par_iter_mut().for_each(|metric| {
-            metric.costs.fill(f32::INFINITY);
-            metric.distances.fill(0.0);
-            metric.witnesses.fill(Witness::default());
-            for base in &self.base_arcs {
-                if base.flags & metric.mask == 0
-                    || (!base.vehicle_turn && metric.mask != TransitFlags::FOOT)
-                {
-                    continue;
-                }
+            // Walkers go at walking pace whatever the road's speed limit (TRAFFIC-05).
+            let walk = metric.mask == TransitFlags::FOOT;
+            metric.customize(inputs, |base| {
                 let edge = graph.edge(base.edge);
-                // Walkers go at walking pace whatever the road's speed limit (TRAFFIC-05).
-                let cost = if metric.mask == TransitFlags::FOOT {
-                    self.base_walk[base.edge]
+                let cost = if walk {
+                    base_walk[base.edge]
                 } else {
                     edge.base_cost
                 };
-                if cost < metric.costs[base.arc] {
-                    metric.costs[base.arc] = cost;
-                    metric.distances[base.arc] = edge.physical_length;
-                    metric.witnesses[base.arc].edge = base.edge;
-                }
-            }
-            // For u < v < w, update v→w via v→u→w, and w→v via w→u→v.
-            // Children have lower low-endpoint ranks and cannot change after this step.
-            for &[uv, uw, vw] in &self.triangles {
-                for (target, left, right) in [
-                    (vw * 2, uv * 2 + 1, uw * 2),
-                    (vw * 2 + 1, uw * 2 + 1, uv * 2),
-                ] {
-                    let cost = metric.costs[left] + metric.costs[right];
-                    if cost < metric.costs[target] {
-                        metric.costs[target] = cost;
-                        metric.distances[target] = metric.distances[left] + metric.distances[right];
-                        metric.witnesses[target] = Witness {
-                            left,
-                            right,
-                            edge: usize::MAX,
-                        };
-                    }
-                }
-            }
+                (cost, edge.physical_length)
+            });
         });
     }
 
@@ -327,6 +363,8 @@ impl PartialOrd for CchState {
     }
 }
 
+#[cfg(test)]
+mod metric_tests;
 #[cfg(test)]
 mod ordering_tests;
 #[cfg(test)]

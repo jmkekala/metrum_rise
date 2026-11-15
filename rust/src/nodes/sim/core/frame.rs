@@ -108,6 +108,11 @@ pub(crate) struct FrameStepReport {
     pub(crate) daily_ms: f64,
     /// Gridlock checks (`TRAFFIC-14`), part of `minute_ms`.
     pub(crate) gridlock_ms: f64,
+    /// Congestion routing snapshots and adoptions (`TRAFFIC-17`), part of `minute_ms`.
+    pub(crate) congestion_ms: f64,
+    /// Wall-clock milliseconds the frame waited, outside the pools, for a congestion
+    /// customization it adopts (`TRAFFIC-17`); zero when none was late.
+    pub(crate) congestion_wait_ms: f64,
     /// Authored minutes the clock crossed.
     pub(crate) elapsed_minutes: u16,
     /// Queued demand spawns placed.
@@ -241,6 +246,18 @@ impl SimCore {
         }
         let lots_wait_ms = lots_start.elapsed().as_secs_f64() * 1000.0;
         let lots = self.adopt_pending_cell_lots();
+        // `TRAFFIC-17`: a congestion customization this frame's slots adopt is finished here,
+        // outside the pools, from a copy of the clock advanced as the frame will advance it.
+        let congestion_start = Instant::now();
+        let mut clock = self.time.clone();
+        let frame_end_slot = clock.process_delta(frame_dt_s).end_slot;
+        if let Some(completion) = self
+            .transit_network
+            .congestion_adoption_completion(frame_end_slot)
+        {
+            completion.wait();
+        }
+        let congestion_wait_ms = congestion_start.elapsed().as_secs_f64() * 1000.0;
         let adoption_start = Instant::now();
         if let Some(completion) = self.transit_network.cch_adoption_completion() {
             completion.wait();
@@ -249,6 +266,7 @@ impl SimCore {
         let mut report = crate::thread_pools::install(|| {
             self.step_frame_in_pool(frame_dt_s, observer, adoption_start)
         });
+        report.congestion_wait_ms = congestion_wait_ms;
         if lots.adopted {
             report.lots_wait_ms = lots_wait_ms;
         }
@@ -295,6 +313,9 @@ impl SimCore {
         record_crash_phase_for_core(self, "pathing rebuild");
         self.transit_network
             .rebuild_pathing_if_dirty(&mut self.region_graph);
+        // A hierarchy installed since the last running frame gets its congestion metric from
+        // the lanes' current delays (`TRAFFIC-17`); O(1) otherwise.
+        self.transit_network.refresh_congestion(&self.region_graph);
         self.repair_flow_field_sources();
         self.mark_changed_zone_flow_fields();
         {
@@ -345,11 +366,13 @@ impl SimCore {
         // pool worker runs this frame: each worker's own scratch cost about 8 ms at 100k to
         // prepare the first time it ran a slot (`SIM-02-K`). Scratch never changes a result.
         let mut route_scratch = std::mem::take(&mut self.slot_route_scratch);
+        self.frame_end_slot = time_advance.end_slot;
         TripQueryScratch::with_owned(&mut route_scratch, || {
             for slot in time_advance.crossed_slots() {
                 self.step_slot(slot, &mut report, observer);
             }
         });
+        self.frame_end_slot = u64::MAX;
         self.slot_route_scratch = route_scratch;
         report.minute_ms = minute_start.elapsed().as_secs_f64() * 1000.0;
         report

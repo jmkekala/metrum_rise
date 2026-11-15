@@ -46,6 +46,7 @@ pub mod agents;
 mod camera;
 mod cell_zoning;
 mod census_inputs;
+mod congestion;
 mod demand_queues;
 pub(crate) mod gridlock;
 mod handles;
@@ -509,6 +510,7 @@ fn write_snapshot(
     tx.execute("INSERT INTO parking_state VALUES (1,?1)", [parking])?;
     agents::save_agents(tx, view.agents, view.graph, view.network, maps)?;
     gridlock::save(tx, view.agents, view.graph, view.network, maps)?;
+    congestion::save(tx, view.network, maps)?;
     workplace_quotes::save(tx, view.households, view.allocator, view.network, maps)?;
     census_inputs::save(
         tx,
@@ -559,8 +561,10 @@ pub(crate) fn load_from_sqlite(
     let version: i64 = conn.query_row("SELECT version FROM save_meta LIMIT 1", [], |row| {
         row.get(0)
     })?;
-    // `SIM-02` cut over the save format: only the current version loads.
-    if version != SAVE_VERSION {
+    // `SIM-02` cut over the save format: only the current version loads, and format 118
+    // without congestion state (`PRE_CONGESTION_SAVE_VERSION`, `TRAFFIC-17`).
+    let congestion_saved = version == SAVE_VERSION;
+    if !congestion_saved && version != PRE_CONGESTION_SAVE_VERSION {
         return Err(SaveLoadError::custom("version mismatch"));
     }
     let camera = camera::load_camera_state(&conn)?;
@@ -782,8 +786,13 @@ pub(crate) fn load_from_sqlite(
 
     allocator.recompute_derived_transforms(&graph, &zoning)?;
     allocator.rebuild_loaded_entrance_cache(&graph, &transit_network.lane_system, registry);
-    let lane_remap =
-        agents::restore_lane_references(&conn, &mut agents, &graph, &mut transit_network)?;
+    let lane_remap = agents::restore_lane_references(
+        &conn,
+        &mut agents,
+        &graph,
+        &mut transit_network,
+        congestion_saved,
+    )?;
     gridlock::load(&conn, &mut agents, &lane_remap)?;
     world::repaint_building_occupancy(&mut zoning, &allocator)?;
     cell_zoning::validate_reservations(
@@ -795,6 +804,9 @@ pub(crate) fn load_from_sqlite(
     allocator.rebuild_zone_index();
     allocator.dirty = true;
     transit_network.cch_graph = CchGraph::build(&graph);
+    if congestion_saved {
+        congestion::load(&conn, &graph, &mut transit_network)?;
+    }
     agents::validate_loaded_agents(&mut agents, &graph, &allocator)?;
     agents.clear_routes_with_illegal_turns(&transit_network.lane_system, &graph);
     workplace_quotes::load(

@@ -173,7 +173,7 @@ fn snapshot_remaps_all_lane_roles_after_incremental_rebuild_and_edge_compaction(
     assert_eq!(new_graph.node_count(), graph.node_count() - 1);
     let mut new_network = TransitNetwork::new();
     new_network.lane_system.rebuild(&mut new_graph);
-    restore_lane_references(&conn, &mut restored, &new_graph, &mut new_network).unwrap();
+    restore_lane_references(&conn, &mut restored, &new_graph, &mut new_network, true).unwrap();
     assert_eq!(
         network.frontage_delay_elapsed_s,
         new_network.frontage_delay_elapsed_s
@@ -278,8 +278,8 @@ fn snapshot_rejects_walker_on_vehicle_lane_on_write_and_restore() {
     tx.commit().unwrap();
     let mut restored_graph = crate::simulation::save::network::load_graph(&conn).unwrap();
     network.lane_system.rebuild(&mut restored_graph);
-    let error =
-        restore_lane_references(&conn, &mut loaded, &restored_graph, &mut network).unwrap_err();
+    let error = restore_lane_references(&conn, &mut loaded, &restored_graph, &mut network, true)
+        .unwrap_err();
     assert!(
         error
             .to_string()
@@ -394,7 +394,7 @@ fn stale_junction_lane_from_an_older_save_is_sent_to_replan_instead_of_failing_t
     graph = crate::simulation::save::network::load_graph(&conn).unwrap();
     let mut new_network = TransitNetwork::new();
     new_network.lane_system.rebuild(&mut graph);
-    restore_lane_references(&conn, &mut restored, &graph, &mut new_network).unwrap();
+    restore_lane_references(&conn, &mut restored, &graph, &mut new_network, true).unwrap();
 
     assert_ne!(restored.current_lane_id[healthy], usize::MAX);
     assert_eq!(restored.transit[healthy], TRANSIT_INTERSECTION);
@@ -438,7 +438,7 @@ fn connector_the_rebuild_now_links_straight_through_is_dropped_and_its_agent_rep
             .collect();
         new_lanes[id].next_lanes = direct.into();
     }
-    restore_lane_references(&conn, &mut restored, &graph, &mut new_network).unwrap();
+    restore_lane_references(&conn, &mut restored, &graph, &mut new_network, true).unwrap();
 
     assert_eq!(restored.current_lane_id[on_connector], usize::MAX);
     assert_eq!(restored.transit[on_connector], TRANSIT_NETWORK);
@@ -479,7 +479,7 @@ fn pedestrian_route_the_layout_no_longer_has_is_dropped_and_its_walker_replans()
     }
     let mut new_network = TransitNetwork::new();
     new_network.lane_system.rebuild(&mut graph);
-    restore_lane_references(&conn, &mut restored, &graph, &mut new_network).unwrap();
+    restore_lane_references(&conn, &mut restored, &graph, &mut new_network, true).unwrap();
 
     assert_eq!(restored.current_lane_id[walker], usize::MAX);
     assert_eq!(restored.transit[walker], TRANSIT_NETWORK);

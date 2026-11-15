@@ -23,6 +23,7 @@ pub mod interaction;
 /// Physical lane geometry and connectivity system.
 pub mod lanes;
 pub(crate) mod cch_adoption;
+mod congestion;
 pub(crate) mod pockets;
 pub(crate) mod road_edit;
 pub(crate) mod road_types;
@@ -180,6 +181,8 @@ pub struct TransitNetwork {
     pub roadbed: RoadbedSystem,
     // Routing rebuild waiting for its adoption frame (`ROAD-68-G`, `cch_adoption`).
     pending_cch: Option<cch_adoption::PendingCch>,
+    // The car-congestion metric's pending customization (`TRAFFIC-17`, `congestion`).
+    congestion: congestion::CongestionRouting,
     #[cfg(test)]
     cch_job_prelude: Option<cch_adoption::CchJobPrelude>,
 }
@@ -235,6 +238,7 @@ impl TransitNetwork {
                 chunk_origin_z_m,
             ),
             pending_cch: None,
+            congestion: Default::default(),
             #[cfg(test)]
             cch_job_prelude: None,
         }
@@ -274,6 +278,7 @@ impl TransitNetwork {
         self.cch_dirty_chunks.clear();
         self.metric_dirty = false;
         self.pending_cch = None;
+        self.congestion = Default::default();
         self.lane_system.clear();
         self.frontage_delay_elapsed_s = 0.0;
         self.frontage_delay_revision = self.frontage_delay_revision.wrapping_add(1);

@@ -595,10 +595,14 @@ pub(super) fn build_exact_path_for_candidate(
     }
 
     TripQueryScratch::with_routes(|scratch| {
-        let flow_field = if candidate.mode == MODE_CAR {
+        // Car fields are free flow: once a congestion metric is adopted, cars take the
+        // congested CCH route instead (`TRAFFIC-17`).
+        let flow_field = if candidate.mode != MODE_CAR {
+            transit_network.flow_fields.foot(target_zone)
+        } else if transit_network.cch_graph.congestion_weights().is_none() {
             transit_network.flow_fields.car(target_zone)
         } else {
-            transit_network.flow_fields.foot(target_zone)
+            None
         };
         if let Some(field) = flow_field
             && field

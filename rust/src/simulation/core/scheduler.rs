@@ -146,6 +146,8 @@ impl MinuteLeveler {
 pub(crate) enum Period {
     /// One game minute, `SLOTS_PER_MINUTE` slots (`TRAFFIC-14`'s gridlock check).
     Minute,
+    /// Fifteen game minutes (`TRAFFIC-17`'s congestion routing).
+    QuarterHour,
     Hour,
     Day,
 }
@@ -154,6 +156,7 @@ impl Period {
     pub(crate) fn slots(self) -> u64 {
         match self {
             Self::Minute => SLOTS_PER_MINUTE,
+            Self::QuarterHour => SLOTS_PER_HOUR / 4,
             Self::Hour => SLOTS_PER_HOUR,
             Self::Day => SLOTS_PER_DAY,
         }
@@ -179,6 +182,15 @@ pub(crate) enum SystemKind {
     /// One chunk per slot of a sum or grid sweep over the whole city that finishes once per
     /// `period` (`docs/simulation.md#snapshots`).
     Rolling { period: Period },
+    /// A [pure job](../../../docs/simulation.md#pure-jobs): launched from a snapshot at slot
+    /// `offset` of every `period` and adopted `latency` slots later, before the next launch
+    /// (`0 < latency < period`). The call adopts in an adoption slot and launches in a launch
+    /// slot.
+    PureJob {
+        period: Period,
+        offset: u64,
+        latency: u64,
+    },
 }
 
 impl SystemKind {
@@ -188,15 +200,16 @@ impl SystemKind {
         match self {
             Self::Events => 0,
             Self::FixedSlot { .. } => 1,
-            // `Schedule::new` rejects minute-long entity phases.
+            // `Schedule::new` rejects entity phases shorter than an hour.
             Self::EntityPhase {
-                period: Period::Minute | Period::Hour,
+                period: Period::Minute | Period::QuarterHour | Period::Hour,
             } => 2,
             Self::EntityPhase {
                 period: Period::Day,
             } => 3,
             Self::Queue { .. } => 4,
             Self::Rolling { .. } => 5,
+            Self::PureJob { .. } => 6,
         }
     }
 
@@ -207,7 +220,19 @@ impl SystemKind {
                 true
             }
             Self::FixedSlot { period, offset } => slot % period.slots() == offset,
+            Self::PureJob { .. } => self.launches(slot) || self.adopts(slot),
         }
+    }
+
+    /// Whether a pure job launches in `slot`.
+    pub(crate) fn launches(self, slot: u64) -> bool {
+        matches!(self, Self::PureJob { period, offset, .. } if slot % period.slots() == offset)
+    }
+
+    /// Whether a pure job launched `latency` slots earlier is adopted in `slot`.
+    pub(crate) fn adopts(self, slot: u64) -> bool {
+        matches!(self, Self::PureJob { period, offset, latency }
+            if slot >= latency && (slot - latency) % period.slots() == offset)
     }
 }
 
@@ -343,9 +368,8 @@ impl<S: Copy> Schedule<S> {
                     declaration.name
                 ),
                 SystemKind::EntityPhase { period } => {
-                    assert_ne!(
-                        period,
-                        Period::Minute,
+                    assert!(
+                        matches!(period, Period::Hour | Period::Day),
                         "{}: entity phases are hourly or daily",
                         declaration.name
                     );
@@ -371,6 +395,22 @@ impl<S: Copy> Schedule<S> {
                     "{} must cost one chunk",
                     declaration.name
                 ),
+                SystemKind::PureJob {
+                    period,
+                    offset,
+                    latency,
+                } => {
+                    assert!(
+                        offset < period.slots() && latency > 0 && latency < period.slots(),
+                        "{} must launch inside its period and adopt before the next launch",
+                        declaration.name
+                    );
+                    assert!(
+                        matches!(declaration.cost, Cost::CityScan | Cost::Constant),
+                        "{} must state its snapshot's bound",
+                        declaration.name
+                    );
+                }
             }
             assert!(
                 (declaration.reads | declaration.writes) & !state::ALL == 0,
@@ -529,9 +569,50 @@ mod tests {
                 SystemKind::EntityPhase { .. } => Cost::Phase,
                 SystemKind::Queue { .. } => Cost::Quota,
                 SystemKind::Rolling { .. } => Cost::Chunk,
+                SystemKind::PureJob { .. } => Cost::CityScan,
             },
             tier: Tier::Full,
         }
+    }
+
+    #[test]
+    fn a_pure_job_launches_at_its_offset_adopts_its_latency_later_and_runs_last() {
+        let kind = SystemKind::PureJob {
+            period: Period::QuarterHour,
+            offset: 124,
+            latency: 80,
+        };
+        let quarter = Period::QuarterHour.slots();
+        assert_eq!(quarter, SLOTS_PER_HOUR / 4);
+        for slot in 0..3 * quarter {
+            assert_eq!(kind.launches(slot), slot % quarter == 124);
+            assert_eq!(kind.adopts(slot), slot % quarter == 204);
+            assert_eq!(kind.due(slot), kind.launches(slot) || kind.adopts(slot));
+        }
+        let schedule = Schedule::new(vec![
+            declaration(1, kind),
+            declaration(
+                2,
+                SystemKind::Rolling {
+                    period: Period::Hour,
+                },
+            ),
+        ]);
+        let order: Vec<_> = schedule.declarations().iter().map(|d| d.system).collect();
+        assert_eq!(order, [2, 1]);
+    }
+
+    #[test]
+    #[should_panic(expected = "adopt before the next launch")]
+    fn a_pure_job_adopts_before_its_next_launch() {
+        Schedule::new(vec![declaration(
+            1,
+            SystemKind::PureJob {
+                period: Period::QuarterHour,
+                offset: 0,
+                latency: SLOTS_PER_HOUR / 4,
+            },
+        )]);
     }
 
     #[test]

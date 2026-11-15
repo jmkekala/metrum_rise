@@ -330,10 +330,12 @@ A declaration names:
   - `Events` — consumes this slot's [timed events](#deadlines-and-timed-events).
   - `Queue { quota }` — serves up to `quota` [requests](#request-queues) per slot.
   - `Rolling { period, chunks }` — advances one chunk of a [rolling snapshot](#snapshots).
-  - `PureJob { latency }` — see [pure jobs](#pure-jobs). The two pure jobs so far, the routing
-    rebuild after a road edit (`ROAD-68-G`) and a commit's cell lots (`ROAD-68-G` part 7), are
-    not a declared kind: an edit starts them between frames and the frame adopts them, as
-    [pure jobs](#pure-jobs) records.
+  - `PureJob { period, offset, latency }` — see [pure jobs](#pure-jobs): launched from a
+    snapshot at slot `offset` of every `period`, adopted `latency` slots later, before the next
+    launch. The first declared one is `congestion routing` (`TRAFFIC-17`, period a quarter
+    hour, `Period::QuarterHour`). The routing rebuild after a road edit (`ROAD-68-G`) and a
+    commit's cell lots (`ROAD-68-G` part 7) are not a declared kind: an edit starts them between
+    frames and the frame adopts them, as [pure jobs](#pure-jobs) records.
 - **Reads and writes**: the state it touches, so ordering conflicts are visible and independent
   systems can later run together.
 - **Cost bound** per slot, in entities or cells.
@@ -884,6 +886,15 @@ starve per-frame movement (the `ROAD-38` lesson), and it never touches `SimCore`
 lesson). If the job has not finished by its apply slot, the sim thread waits: results never
 depend on completion time. Mutating passes are never pure jobs. Candidates: distance tables,
 field diffusion and other read-only precomputation.
+
+**Implemented in `TRAFFIC-17` (round T1, 2026-11-15, branch `traffic-17`): the car-congestion
+metric**, the first declared `PureJob` kind ([`traffic.md`](traffic.md#congestion-aware-car-routing-traffic-17)).
+Its launch slot snapshots one weight per edge direction and starts the customization on the
+background pool; its adoption slot, 80 slots later, swaps the result in. The frame's caller
+advances a copy of the clock to the frame's last slot and waits outside the pools for a job the
+frame adopts; a launch whose adoption the same frame reaches, or a slot stepped outside a frame
+(`SimCore::frame_end_slot` is `u64::MAX` there), customizes in its slot. The pending snapshot is
+saved and customized again at load (format 119).
 
 **Implemented in `ROAD-68-G` (2026-10-24): the routing rebuild after a road edit**
 ([`roads.md`](roads.md) D7, routing contract in

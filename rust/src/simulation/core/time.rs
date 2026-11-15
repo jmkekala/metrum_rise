@@ -101,6 +101,7 @@ impl Iterator for TimeAdvanceIter {
 }
 
 /// Manages the progression of simulation time on the shared operational clock.
+#[derive(Clone)]
 pub struct TimeSystem {
     /// Seconds accumulated inside the current authored minute.
     pub time_elapsed: f64,

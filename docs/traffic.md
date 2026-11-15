@@ -1507,6 +1507,76 @@ The `junction_connectors` debug view's stall detector (`agents/junction_stalls.r
 observer: it reports single cars that stand on a connector, not cycles, and runs only while the
 view is on.
 
+### Congestion-aware car routing (`TRAFFIC-17`)
+
+Cars route on a second car metric that adds measured lane delay to the free-flow edge cost.
+Everything the economy prices stays on the free-flow metric and its revisions
+([`entrance_and_exit.md`](entrance_and_exit.md#cch-routing-performance-track-net-02net-05)), so
+a new congestion metric reprices nothing. Branch `traffic-17` (round T1, 2026-11-15); not landed.
+
+**Signal.** The frontage pass's per-second lane aggregation (car speeds summed per lane in agent
+order, worker-independent) also updates `Lane::route_delay_s`: raw = observed lane time at the
+mean car speed (floored at 1 m/s) minus the free-flow lane time, clamped to
+`ROUTE_DELAY_CAP_S` (120 s), 0 with no car on the lane; smoothed with 15/16 kept per simulated
+second (time constant about 15.5 s). Foot lanes, connectors and degenerate lanes read 0. The
+frontage delay keeps its own rule (retain 0.75, cap 30 s). One more multiply-add per lane per
+second, no new pass.
+
+**Weights.** One per edge direction: the edge's `base_cost` plus the mean `route_delay_s` of its
+live vehicle lanes in that direction (`LaneSystem::edge_lanes`), `base_cost` alone without
+lanes. Edges in id order, O((edges + lanes) / p), into a reused buffer. With every delay 0 the
+congestion metric equals the free-flow car profile bit for bit.
+
+**Metric.** `CchGraph` keeps one more car metric (`congested`), customized through the same
+function as the free-flow profiles (base transitions, then lower triangles, serial,
+O(base arcs + triangles), allocation-free into a displaced metric's storage) from the directed
+weights. The inputs fixed for a build (base arcs with their road direction, triangles, edge
+lengths) are shared with jobs through one `Arc`. Adoption advances only `congestion_revision`,
+which only the retained route sweeps (`CchQueryScratch`) read; `metric_revision`,
+`build_generation`, the frontage revisions and every economy cache key are untouched.
+
+**Readers.** Only car route materialization reads it (`RouteMetric::Congested` through
+`TripQueryScratch::network_path` and `cch_cost`): trip paths, border and immigration trips,
+network replans, freight carriers' border replans, parking legs and the gridlock detour, which
+calls the replan planners. Candidate pricing (`combine`, shared with commute quotes and
+`SharedNetworkQuotes`), freight and customer quotes, supplier and door tables, border sweeps,
+commute bounds, bucket joins, flow fields and demand planning read free flow. A replan compares
+its doors on congested costs; a new trip picks doors and mode on free-flow quotes and routes the
+chosen pair on congested costs. Once a congestion metric is adopted, car trips no longer take the
+free-flow car flow-field shortcut (one CCH point query instead); walkers keep it. Walking routes
+never read the car metric.
+
+**Cadence (SIM-02 pure job).** `congestion routing` is the first declared `PureJob` kind:
+`period` a quarter hour, launch at minute 7 slot 12 of each quarter (`CONGESTION_LAUNCH_SLOT`:
+hour minutes 7, 22, 37, 52), adoption 80 slots (5 game minutes) later
+(`CONGESTION_LATENCY`). The launch snapshots the weights and starts the customization on the
+background pool; the adoption swaps it in (O(1)). Before a frame enters the pools it advances a
+copy of the clock to its last slot and, when a pending job is adopted in that range, waits for
+it there (`FrameStepReport::congestion_wait_ms`); a launch whose adoption slot the same frame
+reaches, or a slot stepped outside a frame, customizes in the slot. Both are the same pure
+function: no result depends on the worker count, the job's speed or the frame split.
+Adoption triggers no replan; cars replan only on their existing events.
+
+**Rebuilds.** A routing rebuild (the D7 job, a frame's dirty chunks, an editor rebuild) leaves
+the new hierarchy without a congestion metric, and a job launched on the old one is dropped at
+its adoption (build generation). The first running frame after it customizes one
+synchronously from the lanes' current delays (`TransitNetwork::refresh_congestion`, after the
+frame's pathing rebuild), so edited roads' new lanes read 0 and unchanged roads keep their
+measured delay. A new game gets its first metric the same way.
+
+**Save (format 119).** `saved_lanes.route_delay_s` keeps the smoother; one `congestion_routing`
+row keeps the adopted metric's weights and, while a job is pending, its snapshot and adoption
+slot (f32 little-endian, two per saved edge). A load customizes both again; the loaded game
+adopts at the same slot and routes bit for bit like the saved one. Format 118, the format
+before it, still loads by the user's request (2026-11-15, `PRE_CONGESTION_SAVE_VERSION`, one
+version branch in the loader): every lane's `route_delay_s` is 0 and there is no congestion
+state, so the first running frame customizes a metric equal to free flow and the first
+periodic adoption brings measured delays. Tests: a played starter town stored as format 118
+continues identically for 1 and 8 workers (`a_format_118_save_loads_on_free_flow_and_continues_alike_for_one_and_eight_workers`);
+the ignored `a_format_118_save_of_the_pre_change_build_loads_and_continues`
+(`METRUM_LEGACY_SAVE`, a copy) passed on the Kuopio reference city saved by `dev` 46aea5b1; the
+committed format-118 Kuopio fixture keeps loading in its own tests.
+
 ## Junction Speeds
 
 Junction movement uses a cap separate from the parent road speed:

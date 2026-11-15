@@ -800,10 +800,11 @@ fn benchmark_cch_build_storage() {
             + vec_bytes(&warm.turns.restricted)
             + vec_bytes(&warm.turns.allowed.offsets)
             + vec_bytes(&warm.turns.allowed.values)
-            + vec_bytes(&warm.base_arcs)
+            + vec_bytes(&warm.inputs.base_arcs)
             + vec_bytes(&warm.base_metric)
             + vec_bytes(&warm.base_walk)
-            + vec_bytes(&warm.triangles)
+            + vec_bytes(&warm.inputs.triangles)
+            + vec_bytes(&warm.inputs.lengths)
             + vec_bytes(&warm.node_order)
             + vec_bytes(&warm.profiles)
             + warm
@@ -904,6 +905,7 @@ fn prepared_cost_queries_match_paths_without_growing_search_storage() {
                             usize::MAX,
                             &graph,
                             mode,
+                            RouteMetric::FreeFlow,
                             &mut paths,
                             None,
                         ),
@@ -1029,6 +1031,7 @@ fn cost_only_queries_match_paths_on_random_restricted_graphs() {
                                     usize::MAX,
                                     &graph,
                                     mode,
+                                    RouteMetric::FreeFlow,
                                     &mut paths,
                                     None,
                                 )

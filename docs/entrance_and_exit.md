@@ -1309,11 +1309,17 @@ lanes. The smoothing history and clock are continuation state: recreating them a
 traffic sampling and therefore freight quotes even when road geometry and current traffic agree.
 Older saves lack this history and initialize it to zero. Save/load remains O(live lanes).
 Save format 85 stores the live and published delays separately; formats 75–84 load both from the
-single saved delay. Publication advances the quote revision only when a published value changes,
+single saved delay. Save format 119 also stores each lane's routing delay (`route_delay_s`,
+`TRAFFIC-17`); format 118 loads it as 0. Publication advances the quote revision only when a published value changes,
 without another traffic scan or allocation. Hiring refreshes its border quotes on that revision.
 
 CCH customization uses `edge.base_cost` alone, matching flow-field costs and the free-flow
-contract above. Freight caches border sweeps and node-to-node costs. Complete quotes carry the
+contract above. `TRAFFIC-17` adds one car metric beside the free-flow profiles: customized from
+`base_cost` plus each edge direction's measured lane delay as a quarter-hourly pure job, with its
+own `congestion_revision`, and read only when a car's route is materialized (trip paths,
+replans, parking legs, the gridlock detour). Every quote, sweep, bucket join and bound in this
+section reads the free-flow metric and `metric_revision`, which an adoption never moves
+([`traffic.md`](traffic.md#congestion-aware-car-routing-traffic-17)). Freight caches border sweeps and node-to-node costs. Complete quotes carry the
 traffic revision at which they were priced: unchanged traffic reuses them in expected O(1), while
 a changed revision lazily reprices only requested quotes, without clearing or reallocating the
 whole cache. A warmed cache and a cache rebuilt after load therefore price the same current

@@ -86,9 +86,11 @@ pub(crate) struct CchQueryScratch {
     bwd_data: SearchData,
     // The two sweeps depend on only one endpoint each. Retain their exact labels and
     // witnesses until that endpoint, turn context, mode or frozen metric changes.
-    fwd_key: Option<(u64, u8, u32, usize)>,
-    bwd_key: Option<(u64, u8, u32, usize)>,
+    fwd_key: Option<SweepKey>,
+    bwd_key: Option<SweepKey>,
 }
+// The metric's (congested, revision) key, the mode, the endpoint and its turn context.
+type SweepKey = ((bool, u64), u8, u32, usize);
 impl Clone for CchQueryScratch {
     fn clone(&self) -> Self {
         Self {
@@ -150,6 +152,7 @@ impl CchPathScratch {
 impl CchGraph {
     // `first_hop` restricts the edges a route may leave `start` on (a car's lane reaches only
     // some of them): the origin is then seeded per accepted departure, as a restricted origin.
+    // `weights`, a congested query's directed edge weights, price those departures.
     fn seed_source(
         &self,
         start: u32,
@@ -157,6 +160,7 @@ impl CchGraph {
         mask: u8,
         data: &mut SearchData,
         first_hop: Option<&dyn Fn(usize) -> bool>,
+        weights: Option<&[f32]>,
     ) {
         if first_hop.is_none() && !self.turns.restricted[start as usize] {
             data.seed(
@@ -175,6 +179,8 @@ impl CchGraph {
                     let (mut cost, distance) = self.base_metric[departure.edge];
                     if mask == TransitFlags::FOOT {
                         cost = self.base_walk[departure.edge];
+                    } else if let Some(weights) = weights {
+                        cost = weights[2 * departure.edge + usize::from(!departure.forward)];
                     }
                     data.seed(
                         departure.target,
@@ -239,6 +245,7 @@ impl CchGraph {
         outgoing: usize,
         graph: &RegionGraph,
         mask: u8,
+        route: RouteMetric,
         scratch: &mut CchQueryScratch,
         first_hop: Option<&dyn Fn(usize) -> bool>,
     ) -> Option<(f32, u32)> {
@@ -247,21 +254,25 @@ impl CchGraph {
             return None;
         }
         scratch.prepare(self, graph);
+        let Selected {
+            metric,
+            key,
+            weights,
+        } = self.selected(mask, route);
         // A first-hop restriction is never retained: its forward sweep is not the origin's.
         let fwd_key = first_hop.is_none().then_some((
-            self.metric_revision,
+            key,
             mask,
             start,
             self.source_context(start, incoming, mask),
         ));
         let target = self.target_context(end, outgoing, mask);
-        let bwd_key = Some((self.metric_revision, mask, end, target));
+        let bwd_key = Some((key, mask, end, target));
         let forward = &mut scratch.fwd_data;
         let backward = &mut scratch.bwd_data;
-        let metric = &self.profiles[self.profile_for_mask[mask as usize] as usize];
         if fwd_key.is_none() || scratch.fwd_key != fwd_key {
             forward.clear();
-            self.seed_source(start, incoming, mask, forward, first_hop);
+            self.seed_source(start, incoming, mask, forward, first_hop, weights);
             self.sweep_up(metric, forward, false);
             scratch.fwd_key = fwd_key;
         }
@@ -298,8 +309,18 @@ impl CchGraph {
         mask: u8,
     ) -> Option<(f32, f32, Vec<u32>)> {
         OWNED_PATH_SCRATCH.with_borrow_mut(|scratch| {
-            self.find_path_in(start, end, incoming, outgoing, graph, mask, scratch, None)
-                .map(|(cost, distance, nodes)| (cost, distance, nodes.to_vec()))
+            self.find_path_in(
+                start,
+                end,
+                incoming,
+                outgoing,
+                graph,
+                mask,
+                RouteMetric::FreeFlow,
+                scratch,
+                None,
+            )
+            .map(|(cost, distance, nodes)| (cost, distance, nodes.to_vec()))
         })
     }
 
@@ -387,8 +408,18 @@ impl CchGraph {
         if start == end && self.turns_in_place(start, incoming, outgoing, mask) {
             return Some(0.0);
         }
-        self.search(start, end, incoming, outgoing, graph, mask, scratch, None)
-            .map(|(cost, _)| cost)
+        self.search(
+            start,
+            end,
+            incoming,
+            outgoing,
+            graph,
+            mask,
+            RouteMetric::FreeFlow,
+            scratch,
+            None,
+        )
+        .map(|(cost, _)| cost)
     }
 
     /// Materializes the same selected route into prepared caller-owned storage. With
@@ -396,6 +427,8 @@ impl CchGraph {
     /// only some of the node's exits: the lane-aware replan after a missed turn); the origin is
     /// then seeded per accepted departure and that forward sweep is never retained, so a later
     /// unrestricted query from the same origin is unchanged. One predicate call per departure.
+    /// `route` picks the metric: [`RouteMetric::Congested`] reads the adopted car-congestion
+    /// metric for a car mask (`TRAFFIC-17`), free flow otherwise.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn find_path_in<'s>(
         &self,
@@ -405,6 +438,7 @@ impl CchGraph {
         outgoing: usize,
         graph: &RegionGraph,
         mask: u8,
+        route: RouteMetric,
         scratch: &'s mut CchPathScratch,
         first_hop: Option<&dyn Fn(usize) -> bool>,
     ) -> Option<(f32, f32, &'s [u32])> {
@@ -426,10 +460,11 @@ impl CchGraph {
             outgoing,
             graph,
             mask,
+            route,
             &mut scratch.query,
             first_hop,
         )?;
-        let metric = &self.profiles[self.profile_for_mask[mask as usize] as usize];
+        let metric = self.selected(mask, route).metric;
         let forward = &scratch.query.fwd_data.records;
         let backward = &scratch.query.bwd_data.records;
         let distance = forward[meeting as usize].distance + backward[meeting as usize].distance;
@@ -477,7 +512,7 @@ impl CchGraph {
         let mut data = SearchData::default();
         data.prepare(self.parent.len());
         data.clear();
-        self.seed_source(start, usize::MAX, mask, &mut data, None);
+        self.seed_source(start, usize::MAX, mask, &mut data, None, None);
         let metric = &self.profiles[self.profile_for_mask[mask as usize] as usize];
         self.sweep_up(metric, &mut data, false);
         let mut costs = vec![f32::INFINITY; self.parent.len()];
@@ -622,6 +657,7 @@ mod endpoint_tests {
                         usize::MAX,
                         &graph,
                         mode,
+                        RouteMetric::FreeFlow,
                         &mut scratch,
                         None,
                     )
@@ -637,6 +673,7 @@ mod endpoint_tests {
                         usize::MAX,
                         &graph,
                         mode,
+                        RouteMetric::FreeFlow,
                         &mut fresh,
                         None,
                     )

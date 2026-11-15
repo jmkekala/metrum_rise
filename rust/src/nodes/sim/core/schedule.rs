@@ -194,6 +194,9 @@ pub(crate) enum SimSystem {
     CensusInputs,
     /// The funding census's share of its steps over the hour's second half (`SIM-02-I`).
     Census,
+    /// The car-congestion metric's pure job (`TRAFFIC-17`): adopts the customization launched
+    /// `CONGESTION_LATENCY` slots ago and launches the next from the lanes' routing delays.
+    CongestionRouting,
 }
 
 /// Something that must happen at a given slot.
@@ -233,6 +236,15 @@ impl SimEvent {
 /// falls on it: the planning setups and plans, the census preparation and the removal window's
 /// first slot sit at a minute's slots 0, 8, 9 and 13.
 pub(crate) const GRIDLOCK_CHECK_SLOT: u64 = 4;
+
+/// Slot of each quarter hour the `congestion routing` job launches in (`TRAFFIC-17`): minute 7,
+/// slot 12 (minutes 7, 22, 37 and 52 of the hour), away from the planning setups and plans,
+/// census preparation, the removal window's start and the gridlock check.
+pub(crate) const CONGESTION_LAUNCH_SLOT: u64 = 7 * SLOTS_PER_MINUTE + 12;
+
+/// Slots from a `congestion routing` launch to its adoption (`TRAFFIC-17`): five game minutes,
+/// about 0.16 s of real time at 32×, ample for the background customize (a few ms at 30k).
+pub(crate) const CONGESTION_LATENCY: u64 = 5 * SLOTS_PER_MINUTE;
 
 /// Dirty cell-lot regions the `cell lots` queue regenerates per slot (`SIM-02-H`).
 pub(super) const CELL_LOT_QUOTA: u32 = 1;
@@ -742,6 +754,24 @@ pub(crate) fn simulation_schedule() -> Schedule<SimSystem> {
             cost: Cost::Chunk,
             tier: Tier::Full,
         },
+        // Four times a game hour: adopts the car-congestion metric customized from the
+        // snapshot five minutes earlier (O(1)), and at the launch slot snapshots one weight per
+        // edge direction, O((edges + lanes) / p), and starts the next customization,
+        // O(base arcs + triangles), on the background pool (`TRAFFIC-17`,
+        // `docs/traffic.md#congestion-aware-car-routing-traffic-17`).
+        Declaration {
+            system: SimSystem::CongestionRouting,
+            name: "congestion routing",
+            kind: SystemKind::PureJob {
+                period: Period::QuarterHour,
+                offset: CONGESTION_LAUNCH_SLOT,
+                latency: CONGESTION_LATENCY,
+            },
+            reads: state::NETWORK,
+            writes: state::NETWORK,
+            cost: Cost::CityScan,
+            tier: Tier::Full,
+        },
     ])
 }
 
@@ -915,9 +945,34 @@ impl SimCore {
                 SimSystem::CityHour => self.advance_city_hour(slot),
                 SimSystem::CensusInputs => self.advance_census_inputs(slot),
                 SimSystem::Census => self.advance_census(slot),
+                SimSystem::CongestionRouting => {
+                    let start = Instant::now();
+                    record_crash_phase_for_core(self, "congestion routing");
+                    run_sim_phase("congestion routing", || {
+                        self.step_congestion_routing(slot, declaration.kind)
+                    });
+                    report.congestion_ms += start.elapsed().as_secs_f64() * 1000.0;
+                }
             }
         }
         self.schedule_construction_completions();
+    }
+
+    // The car-congestion job's slot (`TRAFFIC-17`): adopt, then launch. A launch whose adoption
+    // slot this frame also reaches customizes here, as does one outside a frame, so no pool
+    // worker ever waits for the job; the result is the same.
+    fn step_congestion_routing(&mut self, slot: u64, kind: SystemKind) {
+        if kind.adopts(slot) {
+            self.transit_network.adopt_congestion(slot);
+        }
+        if kind.launches(slot) {
+            let adopt_slot = slot + CONGESTION_LATENCY;
+            self.transit_network.launch_congestion(
+                &self.region_graph,
+                adopt_slot,
+                adopt_slot <= self.frame_end_slot,
+            );
+        }
     }
 
     // One share of queue `system`'s work in `slot`: its quota of requests, or one slot of its

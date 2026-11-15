@@ -166,6 +166,7 @@ fn exit_constrained_routes_match_dijkstra_in_point_and_bucket_queries() {
                                 outgoing,
                                 &graph,
                                 mask,
+                                RouteMetric::FreeFlow,
                                 &mut scratch,
                                 None,
                             )
@@ -345,6 +346,7 @@ fn fractional_multimode_routes_match_independent_dijkstra_and_edge_witnesses() {
                                     usize::MAX,
                                     &graph,
                                     mask,
+                                    RouteMetric::FreeFlow,
                                     &mut scratch,
                                     None,
                                 )
@@ -358,6 +360,7 @@ fn fractional_multimode_routes_match_independent_dijkstra_and_edge_witnesses() {
                                     usize::MAX,
                                     &graph,
                                     mask,
+                                    RouteMetric::FreeFlow,
                                     &mut fresh,
                                     None,
                                 )
@@ -403,6 +406,7 @@ fn fractional_multimode_routes_match_independent_dijkstra_and_edge_witnesses() {
                                     usize::MAX,
                                     &graph,
                                     mask,
+                                    RouteMetric::FreeFlow,
                                     &mut batch_path,
                                     None,
                                 )
@@ -517,6 +521,7 @@ fn first_hop_restriction_reroutes_exactly_and_is_never_retained() {
             usize::MAX,
             &graph,
             TransitFlags::CAR,
+            RouteMetric::FreeFlow,
             scratch,
             first_hop,
         )

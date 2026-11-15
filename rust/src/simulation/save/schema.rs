@@ -5,8 +5,15 @@
 use super::SaveLoadError;
 use crate::simulation::network::types::{EdgeClass, NodeType, TransitType, VehicleFrontageAccess};
 
-/// Current save format version, also the only one that loads (`SIM-02` broke older saves).
-pub const SAVE_VERSION: i64 = 118;
+/// Current save format version (`SIM-02` broke older saves).
+pub const SAVE_VERSION: i64 = 119;
+
+/// The one older format that still loads, by the user's request (`TRAFFIC-17`, 2026-11-15):
+/// format 118, saved before the car-congestion metric. It has no routing delay per lane and no
+/// congestion state, so it loads with every lane's `route_delay_s` 0 and no congestion metric:
+/// cars route on free flow until the first running frame customizes one from those zero delays
+/// (equal to free flow) and the first periodic adoption brings measured delays.
+pub const PRE_CONGESTION_SAVE_VERSION: i64 = 118;
 
 /// Sentinel for an absent reference column.
 pub const NONE_REF: i64 = -1;
@@ -39,7 +46,14 @@ CREATE TABLE saved_lanes(
     from_lane_id INTEGER NOT NULL,
     to_lane_id INTEGER NOT NULL,
     frontage_delay_penalty_s REAL NOT NULL,
-    live_frontage_delay_s REAL NOT NULL
+    live_frontage_delay_s REAL NOT NULL,
+    route_delay_s REAL NOT NULL
+);
+CREATE TABLE congestion_routing(
+    singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+    adopted BLOB,
+    pending BLOB,
+    adopt_slot INTEGER
 );
 CREATE TABLE network_runtime_state(
     singleton INTEGER PRIMARY KEY CHECK(singleton = 1),

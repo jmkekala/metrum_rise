@@ -6,7 +6,7 @@ use super::PopulatedCity;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::types::TransitFlags;
 use crate::simulation::pathing::cch::{
-    CchBucketSource, CchBuckets, CchGraph, CchPathScratch, CchQueryScratch,
+    CchBucketSource, CchBuckets, CchGraph, CchPathScratch, CchQueryScratch, RouteMetric,
 };
 use rand::{Rng, SeedableRng, rngs::StdRng};
 use std::hint::black_box;
@@ -56,6 +56,29 @@ fn profile_cch(label: &str, header: &str, graph: &RegionGraph, cch: &CchGraph) {
         serde_json::json!({ "label": label, "nodes": graph.node_count(),
             "edges": graph.edge_count(), "states": states, "arcs": arcs, "build_ms": build_ms })
     );
+    // The car-congestion customization a quarter-hour job runs (`TRAFFIC-17`), into the
+    // displaced metric's storage as the game does; weights built outside timing.
+    let customizer = cch.congestion_customizer().unwrap();
+    let weights: Vec<f32> = graph
+        .edges()
+        .iter()
+        .enumerate()
+        .flat_map(|(id, edge)| [edge.base_cost + (id % 7) as f32, edge.base_cost])
+        .collect();
+    let (mut spare, mut customize_ms) = (None, Vec::new());
+    for _ in 0..21 {
+        let weights = weights.clone();
+        let begin = Instant::now();
+        let metric = black_box(customizer.customize(weights, spare.take()));
+        customize_ms.push(begin.elapsed().as_secs_f64() * 1e3);
+        spare = Some(metric);
+    }
+    customize_ms.sort_by(f64::total_cmp);
+    eprintln!(
+        "CCH_CONGESTION {}",
+        serde_json::json!({ "label": label, "customize_ms_median": customize_ms[10],
+            "customize_ms_min": customize_ms[0], "customize_ms_max": customize_ms[20] })
+    );
     let mut rng = StdRng::seed_from_u64(0x4e45_542d_3032);
     let queries: Vec<_> = (0..4096)
         .map(|i| {
@@ -83,7 +106,17 @@ fn profile_cch(label: &str, header: &str, graph: &RegionGraph, cch: &CchGraph) {
     writeln!(report, "{header}").unwrap();
     for &(start, end, edge, mode) in &queries {
         let cost = cch.find_cost(start, end, edge, usize::MAX, graph, mode, &mut costs);
-        let path = cch.find_path_in(start, end, edge, usize::MAX, graph, mode, &mut paths, None);
+        let path = cch.find_path_in(
+            start,
+            end,
+            edge,
+            usize::MAX,
+            graph,
+            mode,
+            RouteMetric::FreeFlow,
+            &mut paths,
+            None,
+        );
         assert_eq!(cost.map(f32::to_bits), path.as_ref().map(|p| p.0.to_bits()));
         writeln!(
             report,
@@ -108,6 +141,7 @@ fn profile_cch(label: &str, header: &str, graph: &RegionGraph, cch: &CchGraph) {
                         usize::MAX,
                         graph,
                         mode,
+                        RouteMetric::FreeFlow,
                         &mut paths,
                         None,
                     ));
