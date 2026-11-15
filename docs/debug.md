@@ -1214,6 +1214,24 @@ Removed debug aliases:
 
 - `--debug road-geometry` is intentionally rejected; use `--debug road`
 
+### Import Cache Check
+
+Before Godot starts, every launch mode checks the import cache of each source image and model
+under `godot/assets` and `godot/bootstrap` (`png`, `jpg`, `jpeg`, `exr`, `hdr`, `glb`, `gltf`).
+The first asset in `find` order whose `.import` is missing, older than the source, or names a
+`res://.godot/imported/...` output that is not a file triggers one `godot --headless --import`.
+A stamp in `godot/.godot/import_repair_attempt.sha256` (the hash of every source's path, mtime
+and size) stops the same incomplete cache from re-importing on every launch;
+`METRUM_FORCE_GODOT_IMPORT_REPAIR=1` repairs anyway and `METRUM_SKIP_GODOT_IMPORT_REPAIR=1`
+skips the check.
+
+`run.sh` must run on macOS's `/bin/bash` 3.2, so the per-asset check reads each `.import` with
+builtins only: no fork and no process substitution (`< <(...)`) in a function that runs once per
+item. Bash 3.2 keeps a process substitution's descriptor open inside a function, one per call,
+and past 255 of them overruns its own table and corrupts the heap (`TOOLS-25`: launches died
+with exit 133 or 134 before Godot started). The stamp's records come from one `find ... -exec
+stat {} +` (GNU `stat -c`, BSD and macOS `stat -f`).
+
 ### Terrain Grass Visual Modes
 
 Values of the `terrain_grass` visual mode: `visual terrain_grass <mode>` in the console, or

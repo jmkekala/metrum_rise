@@ -210,31 +210,37 @@ hash_stdin() {
     printf '%s\n' "$digest"
 }
 
-asset_modification_state() {
-    if [ "$METRUM_PLATFORM" = "linux" ]; then
-        stat -c '%Y:%s' "$1"
-    else
-        stat -f '%m:%z' "$1"
-    fi
-}
-
+# One `relative/path<TAB>mtime:size` record per import source, from one stat per batch of
+# sources rather than a fork per asset (TOOLS-25). Paths print raw; asset names need no quoting.
 godot_import_signature_records() {
-    while IFS= read -r -d '' source_file; do
-        local relative_path="${source_file#"$GODOT_DIR"/}"
-        local modification_state
-        if ! modification_state="$(asset_modification_state "$source_file")"; then
-            echo "Error: could not read modification state for $relative_path." >&2
-            return 1
+    local roots=()
+    local root
+    for root in assets bootstrap; do
+        if [ -d "$GODOT_DIR/$root" ]; then
+            roots+=("$root")
         fi
-        # %q keeps each record single-line even for unusual source paths.
-        printf '%q\t%s\n' "$relative_path" "$modification_state"
-    done < <(
-        find "$GODOT_DIR/assets" "$GODOT_DIR/bootstrap" -type f \
+    done
+    if [ ${#roots[@]} -eq 0 ]; then
+        return 0
+    fi
+    # GNU stat answers --version; BSD and macOS stat reject it. Testing the tool rather than the
+    # platform also covers GNU coreutils first on PATH on macOS.
+    local format
+    if stat --version >/dev/null 2>&1; then
+        format=(-c "%n"$'\t'"%Y:%s")
+    else
+        format=(-f "%N"$'\t'"%m:%z")
+    fi
+    if ! (
+        cd "$GODOT_DIR" && find "${roots[@]}" -type f \
             \( -iname '*.png' -o -iname '*.jpg' -o -iname '*.jpeg' \
             -o -iname '*.exr' -o -iname '*.hdr' \
             -o -iname '*.glb' -o -iname '*.gltf' \) \
-            -print0
-    )
+            -exec stat "${format[@]}" {} +
+    ); then
+        echo "Error: could not read the modification state of the Godot import sources." >&2
+        return 1
+    fi
 }
 
 deploy_native_library() {
@@ -809,15 +815,28 @@ report_test_stages() {
     return 1
 }
 
+# Import-cache helpers run once per asset: no process substitution (`< <(...)`) and no fork in
+# them. bash 3.2 (macOS /bin/bash) never closes a process substitution's descriptor inside a
+# function, so one leaked per asset until, past 255 descriptors, bash overran its own table and
+# corrupted the heap; ./run.sh then died before Godot started (TOOLS-25).
+
+# True when any `res://.godot/imported/...` path (up to the next quote; several may share a line)
+# in the .import file is not a regular file. Builtins only.
 godot_import_metadata_has_missing_outputs() {
     local import_file="$1"
-    local dest
-    while IFS= read -r dest; do
-        local native_path="$GODOT_DIR/${dest#res://}"
-        if [ ! -f "$native_path" ]; then
-            return 0
-        fi
-    done < <(grep -o 'res://\.godot/imported/[^"]*' "$import_file" || true)
+    local marker='res://.godot/imported/'
+    local line rest dest
+    while IFS= read -r line || [ -n "$line" ]; do
+        rest="$line"
+        while [ "$rest" != "${rest#*"$marker"}" ]; do
+            rest="${rest#*"$marker"}"
+            dest="${rest%%\"*}"
+            rest="${rest#"$dest"}"
+            if [ ! -f "$GODOT_DIR/.godot/imported/$dest" ]; then
+                return 0
+            fi
+        done
+    done < "$import_file"
     return 1
 }
 
