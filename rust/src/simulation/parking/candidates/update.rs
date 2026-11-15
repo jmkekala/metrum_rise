@@ -10,7 +10,7 @@
 
 use super::super::*;
 use super::table::{EconomyRow, FootRow, finish_economy_ends, within_door_reach};
-use super::walk::{FootEnds, FootGraph, WALK_LIMIT_S, WalkField};
+use super::walk::{ESTIMATE_MARGIN_S, FootEnds, FootGraph, WALK_LIMIT_S, WalkField};
 use super::{DestinationCandidates, ParkingCandidate, ParkingEconomyEnds};
 use crate::simulation::buildings::allocator::{
     BuildingAllocator, BuildingEntrance, BuildingEntranceKey,
@@ -27,12 +27,16 @@ pub(in crate::simulation::parking) struct PlaceChange {
     pub position: [f32; 2],
     // Its access when it last counted as supply; the default for a new bay.
     pub access: BuildingEntrance,
+    // Whether it was usable supply at the last publication, so that a door's list may hold it.
+    // A bay added or reactivated since is on no list: lists hold only usable bays.
+    pub listed: bool,
 }
 
 // One changed bay as a publication reads it.
 struct ChangedPlace {
     place: Handle<Place>,
     position: [f32; 2],
+    listed: bool,
     // The ends a door loses with it, and the edge those ends name.
     lost: EconomyRow,
     lost_edge: usize,
@@ -41,29 +45,42 @@ struct ChangedPlace {
     economy: EconomyRow,
 }
 
-// Far past the rounding between a walk summed from one end and the same walk from the other.
-const ESTIMATE_MARGIN_S: f32 = 0.25;
-
 // The usable changed bays' side of the doors' searches: the lanes round them, and one search from
-// all of them at once, which tells the doors it cannot reach from those it must measure.
+// all of them at once, which tells the doors it cannot reach from those it must measure. The
+// searches from their lanes' ends and to their lanes' starts bound each door's own two searches.
 struct ChangedReach {
     foot: FootGraph,
     from_bays: WalkField,
+    from_lane_ends: WalkField,
+    to_lane_starts: WalkField,
+    // One bit per slot index modulo 64 of each changed bay a list may hold: an entry whose bit
+    // is clear is none of them, so a door's list is read without a search per entry.
+    slots: u64,
 }
 
-// One door's new list; `whole_economy` when its ends must be read off every entry.
+#[inline]
+fn slot_bit(place: Handle<Place>) -> u64 {
+    1 << (place.index() % 64)
+}
+
+// One door's new list.
 struct DoorEdit {
-    building: usize,
     handle: u64,
     door: [f32; 2],
     list: DestinationCandidates,
-    whole_economy: bool,
 }
 
+// The component labels and target pairs a door's list no longer gives.
+type GoneEnds = (Vec<u32>, Vec<(u32, usize)>);
+
 impl ParkingSystem {
-    /// Journals one bay's change for the next publication. O(1), allocation-free while the
-    /// journal's capacity lasts.
-    pub(in crate::simulation::parking) fn journal_place(&mut self, place: Handle<Place>) {
+    /// Journals one bay's change for the next publication; `listed` when it is usable supply
+    /// that has been published. O(1), allocation-free while the journal's capacity lasts.
+    pub(in crate::simulation::parking) fn journal_place(
+        &mut self,
+        place: Handle<Place>,
+        listed: bool,
+    ) {
         let Some(p) = self.place_handles.resolve(place) else {
             return;
         };
@@ -72,6 +89,7 @@ impl ParkingSystem {
             place,
             position: [x, z],
             access: self.places.access[p].clone(),
+            listed,
         });
     }
 
@@ -97,18 +115,26 @@ impl ParkingSystem {
             self.follow_host_doors(hosts, allocator, network, graph);
             let mut changed = self.changed_places(allocator, network, graph, components);
             let (chunks, bounds) = self.door_neighbourhood(own, allocator);
-            self.refresh_chunk_access(&chunks, bounds, allocator, network, graph);
+            // The lanes round the own doors and round the changed bays read neither the bays'
+            // access nor the lists, so they are found while the access is refreshed.
+            let ((), (foot, reach)) = rayon::join(
+                || self.refresh_chunk_access(&chunks, bounds, allocator, network, graph),
+                || {
+                    rayon::join(
+                        || super::door_foot_graph(own, allocator, network, graph),
+                        || changed_reach(&mut changed, network, graph),
+                    )
+                },
+            );
             // The changed buildings' own doors and every other door touch different lists, and
             // neither stage fills the pool alone: one door's table is a few chunks of work.
             let this = &*self;
-            let (mut built, mut edits) = rayon::join(
+            let (mut built, edits) = rayon::join(
                 || {
-                    let foot = super::door_foot_graph(own, allocator, network, graph);
                     let table = this.place_table(foot, &chunks, bounds, network, graph, None);
                     this.door_lists(own, &table, false, allocator, network, graph)
                 },
                 || {
-                    let reach = changed_reach(&mut changed, network, graph);
                     near.par_iter()
                         .filter(|b| own.binary_search(b).is_err())
                         .filter_map(|&b| {
@@ -127,12 +153,6 @@ impl ParkingSystem {
                         .resolve(Handle::from_bits(*handle))?;
                     Some((b, list))
                 })
-                .chain(
-                    edits
-                        .iter_mut()
-                        .filter(|edit| edit.whole_economy)
-                        .map(|edit| (edit.building, &mut edit.list)),
-                )
                 .collect();
             this.read_list_ends(&mut lists, allocator, network, graph, components);
             let mut doors = self.publish_door_lists(built, false);
@@ -192,7 +212,7 @@ impl ParkingSystem {
                     && BuildingEntranceKey::new(&access)
                         != BuildingEntranceKey::new(&self.places.access[p])
                 {
-                    self.journal_place(place);
+                    self.journal_place(place, true);
                 }
             }
         }
@@ -224,6 +244,7 @@ impl ParkingSystem {
             changed.push(ChangedPlace {
                 place: change.place,
                 position: change.position,
+                listed: change.listed,
                 lost: EconomyRow::at(&old, components, network, graph),
                 lost_edge: old.edge_idx,
                 row: access
@@ -264,19 +285,32 @@ impl ParkingSystem {
         }
         let old = self.candidates.get(&handle);
         let entries = old.map_or(&[][..], |c| &c.entries[..]);
-        let lost = |place| changed.binary_search_by_key(&place, |c: &ChangedPlace| c.place);
-        let gone = entries.iter().filter(|e| lost(e.place).is_ok()).count();
+        let lost = |place: Handle<Place>| {
+            (reach.slots & slot_bit(place) != 0)
+                .then(|| changed.binary_search_by_key(&place, |c| c.place).ok())
+                .flatten()
+        };
+        // A list holds none of the changed bays when none of them was published supply.
+        let gone = if reach.slots == 0 {
+            0
+        } else {
+            entries.iter().filter(|e| lost(e.place).is_some()).count()
+        };
         let bays = changed.iter().filter_map(|c| {
             c.row
                 .as_ref()
                 .filter(|row| in_reach(row.position))
                 .map(|row| (c.place, row))
         });
-        let ends = FootEnds::of(entrance, network, graph).on(&reach.foot);
-        let found = if bays.clone().next().is_some()
-            && reach.from_bays.time_at(&ends) <= WALK_LIMIT_S + ESTIMATE_MARGIN_S
-        {
-            super::table::door_rows(ends, bays, &reach.foot)
+        // Only a door a usable bay may enter needs its own walking ends.
+        let found = if bays.clone().next().is_some() {
+            let ends = FootEnds::of(entrance, network, graph).on(&reach.foot);
+            if reach.from_bays.time_at(&ends) <= WALK_LIMIT_S + ESTIMATE_MARGIN_S {
+                let bounds = [&reach.from_lane_ends, &reach.to_lane_starts];
+                super::table::door_rows(ends, bays, bounds, &reach.foot)
+            } else {
+                Vec::new()
+            }
         } else {
             Vec::new()
         };
@@ -285,7 +319,7 @@ impl ParkingSystem {
         }
         let mut merged = Vec::with_capacity(entries.len() - gone + found.len());
         let mut found_at = found.iter().peekable();
-        for &entry in entries.iter().filter(|e| lost(e.place).is_err()) {
+        for &entry in entries.iter().filter(|e| lost(e.place).is_none()) {
             while let Some(&&next) = found_at.peek() {
                 if !self.sorts_before(next, entry) {
                     break;
@@ -300,35 +334,40 @@ impl ParkingSystem {
         let centre = [centre.center_x, centre.center_y];
         let empty = ParkingEconomyEnds::default();
         let ends = old.map_or(&empty, |c| &c.economy);
-        // Bays of one edit share an edge and its ends, so each pair is proved once.
+        // The list's ends are the ends of its bays. Bays of one edit share an edge and its ends,
+        // so each pair is proved once; an end of a lost bay that no bay left gives is dropped.
         let mut proved: Vec<(&EconomyRow, usize)> = Vec::new();
-        let whole_economy = entries.iter().filter_map(|e| lost(e.place).ok()).any(|i| {
+        let mut gone_ends = GoneEnds::default();
+        // The list holds exactly `gone` of them: no scan once the last is found.
+        for i in entries.iter().filter_map(|e| lost(e.place)).take(gone) {
             let bay = &changed[i];
             let pair = (&bay.lost, bay.lost_edge);
             if proved.contains(&pair) {
-                return false;
+                continue;
             }
             proved.push(pair);
-            !self.still_ends(pair.0, pair.1, &merged, network, graph, components)
+            if !self.still_ends(pair.0, pair.1, &merged, network, graph, components) {
+                let out = &mut gone_ends;
+                self.gone_ends(pair.0, pair.1, &merged, network, graph, components, out);
+            }
+        }
+        let added = found.iter().map(|c| {
+            let i = changed.binary_search_by_key(&c.place, |c| c.place);
+            &changed[i.expect("found among the changed bays")].economy
         });
-        let economy = if whole_economy {
-            ParkingEconomyEnds::default()
-        } else {
-            let added = found.iter().map(|c| {
-                let i = lost(c.place).expect("found among the changed bays");
-                &changed[i].economy
-            });
+        let economy = if gone_ends.0.is_empty() && gone_ends.1.is_empty() {
             ends.with_rows(added, centre, graph)
+        } else {
+            ends.without(&gone_ends, centre, graph)
+                .with_rows(added, centre, graph)
         };
         Some(DoorEdit {
-            building,
             handle,
             door,
             list: DestinationCandidates {
                 entries: merged,
                 economy,
             },
-            whole_economy,
         })
     }
 
@@ -345,7 +384,7 @@ impl ParkingSystem {
     }
 
     // Whether the bays left on `edge` still give every end of `row`. A target names its frontage
-    // edge, so no other bay can; a false answer only means the door must read its whole list.
+    // edge, so no other bay can; a false answer only means the door must look for each end.
     fn still_ends(
         &self,
         row: &EconomyRow,
@@ -367,6 +406,43 @@ impl ParkingSystem {
                     EconomyRow::at(&access, components, network, graph).covers(row)
                 })
         })
+    }
+
+    // Adds to `gone` the ends of `row`, a lost bay's on `edge`, that no bay of `entries` gives. A
+    // target names its frontage edge, so only a bay on `edge` can give it; a component any bay.
+    // O(entries × trip ends) at worst; the first bays usually give the components.
+    #[allow(clippy::too_many_arguments)]
+    fn gone_ends(
+        &self,
+        row: &EconomyRow,
+        edge: usize,
+        entries: &[ParkingCandidate],
+        network: &TransitNetwork,
+        graph: &RegionGraph,
+        components: &ModeComponentIndex,
+        gone: &mut GoneEnds,
+    ) {
+        let mut labels = row.components().to_vec();
+        let mut targets: Vec<_> = row.targets().collect();
+        for entry in entries {
+            if labels.is_empty() && targets.is_empty() {
+                break;
+            }
+            let Some(p) = self.place_handles.resolve(entry.place) else {
+                continue;
+            };
+            if labels.is_empty() && self.places.access[p].edge_idx != edge {
+                continue;
+            }
+            let Some(access) = self.live_access(entry.place, network, graph) else {
+                continue;
+            };
+            let given = EconomyRow::at(&access, components, network, graph);
+            labels.retain(|label| !given.components().contains(label));
+            targets.retain(|&target| given.targets().all(|own| own != target));
+        }
+        gone.0.extend(labels);
+        gone.1.extend(targets);
     }
 
     // Reads each list's ends off its bays, each bay's ends once however many lists share it.
@@ -430,12 +506,52 @@ fn changed_reach(
         row.foot = row.foot.on(&foot);
         seeds.push(row.foot);
     }
+    let lanes: Vec<_> = seeds.iter().map(|seed| seed.whole_lanes()).collect();
     let mut from_bays = WalkField::default();
-    from_bays.search(&seeds, false, &foot);
-    ChangedReach { foot, from_bays }
+    let mut from_lane_ends = WalkField::default();
+    let mut to_lane_starts = WalkField::default();
+    crate::thread_pools::install(|| {
+        rayon::join(
+            || from_bays.search(&seeds, false, &foot),
+            || {
+                rayon::join(
+                    || from_lane_ends.search(&lanes, false, &foot),
+                    || to_lane_starts.search(&lanes, true, &foot),
+                )
+            },
+        )
+    });
+    let slots = changed
+        .iter()
+        .filter(|c| c.listed)
+        .fold(0, |slots, c| slots | slot_bit(c.place));
+    ChangedReach {
+        foot,
+        from_bays,
+        from_lane_ends,
+        to_lane_starts,
+        slots,
+    }
 }
 
 impl ParkingEconomyEnds {
+    // These ends less `gone`, measured again from `centre`. O(ends × gone + ends log ends).
+    fn without(&self, gone: &GoneEnds, centre: [f32; 2], graph: &RegionGraph) -> Self {
+        let components = self
+            .components
+            .iter()
+            .copied()
+            .filter(|label| !gone.0.contains(label))
+            .collect();
+        let targets = self
+            .targets
+            .iter()
+            .copied()
+            .filter(|target| !gone.1.contains(target))
+            .collect();
+        finish_economy_ends(components, targets, centre, graph)
+    }
+
     // These ends with `rows` added: the same ends, shared, when they already hold every value.
     fn with_rows<'a>(
         &self,

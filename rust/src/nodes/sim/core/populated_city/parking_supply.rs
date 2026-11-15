@@ -61,3 +61,34 @@ fn the_fixture_parks_on_its_cross_streets_and_in_lots_along_its_rows() {
     let _ = std::fs::remove_file(&path);
     assert_eq!(core.parking.counts().0, bays);
 }
+
+// A site edit publishes only the doors whose lists change, each door's searches bounded by the
+// changed bays (`PERF-25`): a lot bulldozed, then built again, leaves every door's list what a
+// rebuild from scratch gives, bit for bit, in a city wider than a door's walk.
+#[test]
+fn a_removed_and_a_new_lot_leave_every_list_a_rebuild_gives() {
+    let mut core = zoned_city(2.0 * CROSS_SPACING_M);
+    let lot = (0..core.allocator.buildings.len())
+        .filter(|&i| core.allocator.buildings[i].asset_id.ends_with("small_lot"))
+        .min_by(|&a, &b| {
+            let from_centre = |i: usize| {
+                let building = &core.allocator.buildings[i];
+                building.center_x.hypot(building.center_y)
+            };
+            from_centre(a).total_cmp(&from_centre(b))
+        })
+        .expect("a lot");
+    let building = &core.allocator.buildings[lot];
+    let (asset, x, z) = (building.asset_id.clone(), building.center_x, building.center_y);
+    let bays = core.parking.counts().0;
+    assert!(core.transit_network.cch_current(), "a site edit's own publication");
+    assert!(core.bulldoze_building(lot));
+    let left = core.parking.counts().0;
+    assert!(left < bays);
+    core.audit_every_parking_catchment();
+    core.place_service_building_internal(&asset, x, z)
+        .unwrap_or_else(|error| panic!("lot at ({x}, {z}): {error:?}"));
+    core.publish_pending_building_site_changes();
+    assert!(core.parking.counts().0 > left, "the new lot has bays");
+    core.audit_every_parking_catchment();
+}

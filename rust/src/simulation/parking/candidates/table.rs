@@ -241,11 +241,14 @@ impl ParkingSystem {
 }
 
 /// The candidates among `bays` for one door, sorted as its list is. The searches stop once the
-/// bays' lanes have settled, and the outward one runs only for bays in reach. O(searches + bays
-/// log bays), allocating only the result.
+/// bays' lanes have settled, and the outward one runs only for bays in reach. `bounds` are the
+/// searches of [`FootEnds::whole_lanes`] seeds at the bays' lanes (forward, then reverse) that
+/// bound the inward and the outward search: neither goes past a lane on no walk within the limit
+/// between the door and a bay's lane. O(searches + bays log bays), allocating only the result.
 pub(super) fn door_rows<'a>(
     door: FootEnds,
     bays: impl Iterator<Item = (Handle<Place>, &'a FootRow)> + Clone,
+    bounds: [&WalkField; 2],
     foot: &FootGraph,
 ) -> Vec<ParkingCandidate> {
     SCRATCH.with_borrow_mut(|scratch| {
@@ -255,7 +258,7 @@ pub(super) fn door_rows<'a>(
         lanes.extend(bays.clone().flat_map(|(_, row)| row.foot.lanes()));
         lanes.sort_unstable();
         lanes.dedup();
-        reverse.search_to(&[door], true, lanes, foot);
+        reverse.search_to(&[door], true, lanes, Some(bounds[0]), foot);
         let mut found: Vec<_> = bays
             .filter_map(|(place, row)| {
                 let walk_s = reverse.time_at(&row.foot);
@@ -269,7 +272,7 @@ pub(super) fn door_rows<'a>(
         lanes.extend(found.iter().flat_map(|(_, row, _)| row.foot.lanes()));
         lanes.sort_unstable();
         lanes.dedup();
-        forward.search_to(&[door], false, lanes, foot);
+        forward.search_to(&[door], false, lanes, Some(bounds[1]), foot);
         found.sort_unstable_by(|a, b| {
             a.2.total_cmp(&b.2)
                 .then(a.1.maneuver_s.total_cmp(&b.1.maneuver_s))

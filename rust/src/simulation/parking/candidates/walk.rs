@@ -17,6 +17,9 @@ use std::collections::{BinaryHeap, HashMap};
 
 pub(super) const WALK_LIMIT_S: f32 = 400.0 / AGENT_WALK_SPEED_MS;
 
+/// Far past the rounding between a walk summed from one end and the same walk from the other.
+pub(super) const ESTIMATE_MARGIN_S: f32 = 0.25;
+
 // A position on one pedestrian lane, with the two walking times along it. `lane` is `usize::MAX`
 // when the entrance has no such lane in reach.
 #[derive(Clone, Copy, Debug)]
@@ -63,6 +66,22 @@ impl FootEnds {
             .iter()
             .map(|end| end.lane)
             .filter(|&lane| lane != usize::MAX)
+    }
+
+    /// These ends moved to their lanes' far ends, with no walk to the door: seeds whose labels
+    /// are the walks between whole lanes and these lanes, a bound for [`WalkField::search_to`].
+    /// A forward search labels the lanes after these lanes' ends, a reverse one the lanes before
+    /// their starts. O(1).
+    pub(super) fn whole_lanes(self) -> Self {
+        Self {
+            ends: self.ends.map(|end| FootEnd {
+                lane: end.lane,
+                along_m: 0.0,
+                from_start_s: 0.0,
+                to_end_s: 0.0,
+            }),
+            local_s: 0.0,
+        }
     }
 
     /// These ends on `foot`'s lane numbers. A lane outside it is out of every search's reach, so
@@ -203,7 +222,7 @@ fn flood(
 /// the per-junction predecessor scan and the wide lane rows stay out of those searches.
 #[derive(Default)]
 pub(super) struct FootGraph {
-    ids: HashMap<usize, u32>,
+    ids: HashMap<usize, u32, foldhash::fast::FixedState>,
     // Walking time of each lane, and each lane's neighbours by direction.
     walk_s: Vec<f32>,
     adjacent: [Adjacency; 2],
@@ -240,7 +259,7 @@ impl FootGraph {
         lanes.extend(backward);
         lanes.sort_unstable();
         lanes.dedup();
-        let ids: HashMap<usize, u32> = lanes
+        let ids: HashMap<usize, u32, _> = lanes
             .iter()
             .enumerate()
             .map(|(i, &lane)| (lane, i as u32))
@@ -312,16 +331,22 @@ impl WalkField {
     /// Labels every lane within the walking limit of `seeds`. O(L log L + adjacency), L lanes in
     /// reach; allocation-free once the field has seen as many lanes and as long a queue.
     pub(super) fn search(&mut self, seeds: &[FootEnds], reverse: bool, foot: &FootGraph) {
-        self.search_to(seeds, reverse, &[], foot);
+        self.search_to(seeds, reverse, &[], None, foot);
     }
 
     /// [`Self::search`], stopping once every lane of `wanted` (sorted) has settled. Only those
-    /// lanes' labels may be read after that.
+    /// lanes' labels may be read after that, and with a `bound` only those within the walking
+    /// limit. `bound` holds, per lane, a lower bound of the rest of the walk from it to the
+    /// wanted lanes: a search of [`FootEnds::whole_lanes`] seeds at them in the other direction.
+    /// A lane whose label, length and bound exceed the limit by more than the rounding between
+    /// the two directions lies on no walk to a wanted lane within the limit, so the search does
+    /// not go past it: every label it would change is longer than the limit.
     pub(super) fn search_to(
         &mut self,
         seeds: &[FootEnds],
         reverse: bool,
         wanted: &[usize],
+        bound: Option<&WalkField>,
         foot: &FootGraph,
     ) {
         let mut unsettled = wanted.len();
@@ -355,6 +380,11 @@ impl WalkField {
             }
             let next_cost = cost + foot.walk_s[id];
             if next_cost > WALK_LIMIT_S {
+                continue;
+            }
+            // A lane the bound's search never reached is the limit or more from the wanted lanes.
+            let rest = bound.map_or(0.0, |b| b.labels.get(id).unwrap_or(WALK_LIMIT_S));
+            if next_cost + rest > WALK_LIMIT_S + ESTIMATE_MARGIN_S {
                 continue;
             }
             for &next in foot.neighbours(id, reverse) {

@@ -245,7 +245,9 @@ impl ParkingSystem {
     /// O(sum(C log C)) for C parked cars per dirty chunk, empty bays never visited, plus Q, the
     /// ground solve, only for a car on a place with no pose for its model: a new or moved-ground
     /// place, or a car of another model arrived since the last solve. The log is the sort: the
-    /// list is in no order, and the payload's order is bay handle order within each bucket.
+    /// list is in no order, and the payload's order is bay handle order within each bucket. The
+    /// solves of every dirty chunk run as one parallel loop before the payloads: a site edit
+    /// unsolves the bays round it, most of them in one chunk, and each solve is independent.
     pub(crate) fn solve_dirty_chunks(
         &self,
         jobs: &mut [ChunkJob],
@@ -253,18 +255,41 @@ impl ParkingSystem {
     ) {
         let jobs = &mut jobs[..self.dirty.len()];
         crate::thread_pools::install(|| {
+            jobs.par_iter_mut().for_each(|job| self.unsolved_places(job));
             jobs.par_iter_mut()
-                .for_each(|job| self.build_chunk(job, &pose));
+                .flat_map(|job| job.solved.par_iter_mut())
+                .for_each(|(p, model, solved)| {
+                    let p = *p;
+                    *solved = pose(
+                        *model,
+                        self.places.source[p],
+                        self.places.position[p],
+                        self.places.heading[p],
+                    );
+                });
+            jobs.par_iter_mut().for_each(|job| self.build_chunk(job));
         });
     }
 
-    fn build_chunk(
-        &self,
-        job: &mut ChunkJob,
-        pose: &(impl Fn(u8, PlaceSource, [f32; 3], f32) -> [f32; 12] + Sync),
-    ) {
+    // Lists the chunk's parked cars whose place has no pose for their model, by place row, each
+    // with a pose still to solve. O(C + S log S), S of them.
+    fn unsolved_places(&self, job: &mut ChunkJob) {
+        for &handle in &self.chunks[&job.key].parked {
+            let p = self.place_handles.resolve(handle).expect("parked bay");
+            let v = self
+                .vehicle_handles
+                .resolve(self.places.occupant[p])
+                .expect("parked car");
+            let model = self.vehicles.model[v];
+            if self.places.ground_model[p] != model {
+                job.solved.push((p, model, [0.0; 12]));
+            }
+        }
+        job.solved.sort_unstable_by_key(|&(p, ..)| p);
+    }
+
+    fn build_chunk(&self, job: &mut ChunkJob) {
         let chunk = &self.chunks[&job.key];
-        // Taken, not borrowed: a ground solve must stay free to run Rayon work on this thread.
         let mut parked = PARKED_ORDER.take();
         parked.clear();
         parked.extend(chunk.parked.iter().map(|&handle| {
@@ -285,14 +310,8 @@ impl ParkingSystem {
             let grounded = if self.places.ground_model[p] == model {
                 self.places.ground[p]
             } else {
-                let solved = pose(
-                    model,
-                    self.places.source[p],
-                    self.places.position[p],
-                    self.places.heading[p],
-                );
-                job.solved.push((p, model, solved));
-                solved
+                let i = job.solved.binary_search_by_key(&p, |&(p, ..)| p);
+                job.solved[i.expect("a solved pose")].2
             };
             let identity = self.places.occupant[p].to_bits() | (1_u64 << 62);
             payload.push(bucket, &grounded, identity);
