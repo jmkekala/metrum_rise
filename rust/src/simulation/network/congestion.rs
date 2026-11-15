@@ -58,28 +58,30 @@ impl TransitNetwork {
     pub(crate) fn congestion_weights_into(&self, graph: &RegionGraph, weights: &mut Vec<f32>) {
         weights.resize(graph.edge_count() * 2, 0.0);
         let lanes = &self.lane_system;
-        weights
-            .par_chunks_mut(2)
-            .zip(graph.edges().par_iter())
-            .enumerate()
-            .for_each(|(id, (pair, edge))| {
-                let mut sums = [(0.0_f32, 0_u32); 2];
-                for &lane in lanes.edge_lanes.get(&id).into_iter().flatten() {
-                    let lane = &lanes.lanes[lane];
-                    if lane.lane_type == LaneType::Vehicle {
-                        let sum = &mut sums[usize::from(!lane.is_fwd)];
-                        sum.0 += lane.route_delay_s;
-                        sum.1 += 1;
+        crate::thread_pools::install(|| {
+            weights
+                .par_chunks_mut(2)
+                .zip(graph.edges().par_iter())
+                .enumerate()
+                .for_each(|(id, (pair, edge))| {
+                    let mut sums = [(0.0_f32, 0_u32); 2];
+                    for &lane in lanes.edge_lanes.get(&id).into_iter().flatten() {
+                        let lane = &lanes.lanes[lane];
+                        if lane.lane_type == LaneType::Vehicle {
+                            let sum = &mut sums[usize::from(!lane.is_fwd)];
+                            sum.0 += lane.route_delay_s;
+                            sum.1 += 1;
+                        }
                     }
-                }
-                for (weight, (delay, count)) in pair.iter_mut().zip(sums) {
-                    *weight = if count == 0 {
-                        edge.base_cost
-                    } else {
-                        edge.base_cost + delay / count as f32
-                    };
-                }
-            });
+                    for (weight, (delay, count)) in pair.iter_mut().zip(sums) {
+                        *weight = if count == 0 {
+                            edge.base_cost
+                        } else {
+                            edge.base_cost + delay / count as f32
+                        };
+                    }
+                });
+        });
     }
 
     /// Snapshots the congestion weights and starts customizing them, to be adopted at
