@@ -1608,7 +1608,16 @@ committed format-118 Kuopio fixture keeps loading in its own tests.
   (both days): a demand spawn (3.7 ms) beside a 3.1-3.3 ms render snapshot, with 0.4 ms of other
   slot work; the control's worst is the same kind (minute 364, 3.4 + 2.6 ms). Congested routing
   changes the city's course, so the spawn falls on another frame; the congestion code itself is
-  not in that frame. For review.
+  not in that frame. The 1× rows again on a quiet machine (`--rerun`, 18:25-18:36, after the
+  backup window): control 2.230 ms mean, branch 2.285 / 2.298 (+2.7%, tolerance 1.7%, worse),
+  p99 +0.9% and p99.9 -0.5% (level), agent +3.3% (tolerance 3.1%, worse), snapshot +2.2%
+  (level); worst unpreempted 7.51 against 8.25 / 8.35 ms, again day 12 minute 844, where the
+  branch's spawn costs 3.4 ms and its snapshot 3.1 ms against the control's 1.3 and 2.4 ms at
+  that minute. The branch's prepared city differs from the control's (its 12 days ran with
+  congested routing): 20,900 employed against 20,538 (+1.8%), so the frames carry more cars;
+  the render snapshot, which no part of this change touches, grows +2.2-3.4% with the agent
+  tick. The 30k 1× row fails and blocks landing until a matched-city run separates the city's
+  workload from the code's cost.
 
 ## Junction Speeds
 
