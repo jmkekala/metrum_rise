@@ -1577,6 +1577,35 @@ the ignored `a_format_118_save_of_the_pre_change_build_loads_and_continues`
 (`METRUM_LEGACY_SAVE`, a copy) passed on the Kuopio reference city saved by `dev` 46aea5b1; the
 committed format-118 Kuopio fixture keeps loading in its own tests.
 
+**Measurements (round T1, 2026-11-15, freshly run).** Release test binaries of `dev` 46aea5b1
+(control) and round T1 (`9d6e66d4`), eight workers on the performance cores.
+
+- Customize (one car metric, median of 21 into a displaced metric): the 30k fixture's graph (713
+  nodes, 1,342 edges, 57,481 filled arcs) 1.46 ms (max 2.86); the player's Kuopio save (139
+  nodes, 194 edges) 0.03 ms. Synthetic grids toward 1M (`benchmark_congestion_customize_scaling`,
+  every open node a turn-restricted state): 2,209 nodes (the 100k city's count) 10.9 ms, 10,000
+  nodes 120 ms, 22,500 nodes (about a 1M city) 458 ms, 245 M triangles. At 32× a quarter hour is
+  0.47 s of real time and the latency 0.16 s: a 1M city would wait for its job each adoption.
+  The levers are a parallel customization (elimination-tree levels) and `NET-09`.
+- `NET-09` partial customization, evaluated (`congestion_statistics_on_a_saved_city`, the 30k
+  fixture at 32× for 6 game hours, 24 adoptions): of 2,684 edge directions 2,651-2,670 change
+  bitwise between adoptions (the smoothed delays decay continuously), 666-858 by more than
+  0.5 s and 151-279 by more than 2 s; 1,432-1,866 carry more than 0.5 s of delay and some
+  reach the 120 s cap. Partial customization helps only with quantized weights, and the
+  changed arcs are spread over the city. Not built.
+- Frame cost at 30k 32× (same probe): 48 slot calls, median 0.042 ms, max 0.25 ms; no frame
+  waited for a job.
+- `PERF-07` session (`./run.sh --timing --level F`, `$ARTIFACTS/art-t1-timing`): 30k 32× C B B
+  C means 4.373 / 4.463 ms (+2.1%, tolerance 2.8%), p99 +2.7%, components level; the known
+  `PERF-17` exception on both sides. 30k 1× (control one day, branch two): mean 2.202 / 2.282
+  ms (+3.6%, tolerance 3.4%, the first branch day noisy), p99 +7.1% (level), agent +3.9% and
+  snapshot +3.4% (level); the branch misses the 8 ms acceptance on the worst unpreempted frame,
+  8.34 and 8.38 ms on both days, against the control's 7.62. That frame is day 12 minute 844
+  (both days): a demand spawn (3.7 ms) beside a 3.1-3.3 ms render snapshot, with 0.4 ms of other
+  slot work; the control's worst is the same kind (minute 364, 3.4 + 2.6 ms). Congested routing
+  changes the city's course, so the spawn falls on another frame; the congestion code itself is
+  not in that frame. For review.
+
 ## Junction Speeds
 
 Junction movement uses a cap separate from the parent road speed:

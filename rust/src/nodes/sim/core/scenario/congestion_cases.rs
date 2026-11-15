@@ -181,17 +181,9 @@ fn a_format_118_save_of_the_pre_change_build_loads_and_continues() {
     // A populated-city snapshot the `dev` 46aea5b1 binary prepared, or any format-118 save of
     // bootstrap assets; opened read-only by the load.
     let path = PathBuf::from(std::env::var("METRUM_LEGACY_SAVE").expect("METRUM_LEGACY_SAVE"));
-    // As the populated-city snapshots load (`populated_city/snapshot.rs`).
-    let fresh = || {
-        let mut core = SimCore {
-            benchmark_mode: true,
-            ..SimCore::new(WorldConfig::new(2048.0, 2048.0, 40.0, 10.0))
-        };
-        install_bootstrap_assets(&mut core);
-        core
-    };
     let speed = SIMULATION_SPEED_STEPS[SIMULATION_SPEED_STEPS.len() - 1];
-    let saves = [1, 8].map(|workers| continue_in_pool(workers, &path, fresh, speed, "legacy"));
+    let saves =
+        [1, 8].map(|workers| continue_in_pool(workers, &path, populated_core, speed, "legacy"));
     assert_same_saves(
         &saves[0],
         &saves[1],
@@ -200,4 +192,79 @@ fn a_format_118_save_of_the_pre_change_build_loads_and_continues() {
     for path in saves {
         std::fs::remove_file(path).unwrap();
     }
+}
+
+// A core to load a populated-city snapshot into, as `populated_city/snapshot.rs` loads them.
+fn populated_core() -> SimCore {
+    let mut core = SimCore {
+        benchmark_mode: true,
+        ..SimCore::new(WorldConfig::new(2048.0, 2048.0, 40.0, 10.0))
+    };
+    install_bootstrap_assets(&mut core);
+    core
+}
+
+#[test]
+#[ignore = "release congestion statistics on a saved city (METRUM_CONGESTION_SAVE, a copy)"]
+fn congestion_statistics_on_a_saved_city() {
+    // Per adoption: how many directed weights changed (the `NET-09` partial-customization
+    // question), and the frames' snapshot and wait times, at the fastest speed.
+    let path = std::env::var("METRUM_CONGESTION_SAVE").expect("METRUM_CONGESTION_SAVE");
+    let hours: u64 =
+        std::env::var("METRUM_CONGESTION_HOURS").map_or(4, |hours| hours.parse().unwrap());
+    let mut core = populated_core();
+    core.load_game_internal(&path).unwrap();
+    core.time.speed_multiplier = SIMULATION_SPEED_STEPS[SIMULATION_SPEED_STEPS.len() - 1];
+    let end = core.time.absolute_slot() + hours * SLOTS_PER_HOUR;
+    let mut revision = core.transit_network.cch_graph.congestion_revision;
+    let mut previous: Option<Vec<f32>> = None;
+    let (mut slot_ms, mut wait_ms) = (Vec::new(), Vec::new());
+    while core.time.absolute_slot() < end {
+        let report = core.step_frame(FRAME_DT_S);
+        if report.congestion_ms > 0.0 {
+            slot_ms.push(report.congestion_ms);
+        }
+        if report.congestion_wait_ms > 0.01 {
+            wait_ms.push(report.congestion_wait_ms);
+        }
+        let network = &core.transit_network;
+        if network.cch_graph.congestion_revision == revision {
+            continue;
+        }
+        revision = network.cch_graph.congestion_revision;
+        let weights = network.cch_graph.congestion_weights().unwrap().to_vec();
+        let graph = &core.region_graph;
+        let live: Vec<_> = (0..graph.edge_count())
+            .filter(|&id| !graph.edge(id).deleted)
+            .flat_map(|id| [2 * id, 2 * id + 1])
+            .collect();
+        let delayed = live
+            .iter()
+            .filter(|&&at| weights[at] > graph.edge(at / 2).base_cost + 0.5)
+            .count();
+        let changed = |tolerance: f32| {
+            previous.as_ref().map(|previous| {
+                live.iter()
+                    .filter(|&&at| (weights[at] - previous[at]).abs() > tolerance)
+                    .count()
+            })
+        };
+        eprintln!(
+            "CONGESTION_ADOPTION {}",
+            serde_json::json!({ "slot": core.time.absolute_slot(), "directions": live.len(),
+                "delayed_over_0_5_s": delayed, "changed": changed(0.0),
+                "changed_over_0_5_s": changed(0.5), "changed_over_2_s": changed(2.0),
+                "max_delay_s": live.iter().map(|&at| weights[at] - graph.edge(at / 2).base_cost)
+                    .fold(0.0_f32, f32::max) })
+        );
+        previous = Some(weights);
+    }
+    slot_ms.sort_by(f64::total_cmp);
+    wait_ms.sort_by(f64::total_cmp);
+    eprintln!(
+        "CONGESTION_FRAMES {}",
+        serde_json::json!({ "slot_calls": slot_ms.len(),
+            "slot_ms_median": slot_ms.get(slot_ms.len() / 2), "slot_ms_max": slot_ms.last(),
+            "waits": wait_ms.len(), "wait_ms_max": wait_ms.last() })
+    );
 }
