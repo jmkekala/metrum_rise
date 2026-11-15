@@ -1593,6 +1593,12 @@ committed format-118 Kuopio fixture keeps loading in its own tests.
   changed arcs are spread over the city. Not built.
 - Frame cost at 30k 32× (same probe): 48 slot calls, median 0.042 ms, max 0.25 ms; no frame
   waited for a job.
+- SIM-02 envelope and determinism gate (`tools/sim02_gate.py envelope determinism`, both
+  binaries): the branch passes with no note (the control keeps its `fiscal_stress-10000` final
+  employment note); determinism has no difference on reload, repeat, 1 and 3 threads. Car routes
+  change by design, so every day fingerprint downstream of car trips differs from the control's.
+  Against the control: 30k baseline net income +3.5%, deliveries +1.0%, employment +0.7%,
+  bankruptcies -15%, out of stock -1.9%; 10k baseline deliveries +0.6%, the rest within 0.1%.
 - `PERF-07` session (`./run.sh --timing --level F`, `$ARTIFACTS/art-t1-timing`): 30k 32× C B B
   C means 4.373 / 4.463 ms (+2.1%, tolerance 2.8%), p99 +2.7%, components level; the known
   `PERF-17` exception on both sides. 30k 1× (control one day, branch two): mean 2.202 / 2.282
