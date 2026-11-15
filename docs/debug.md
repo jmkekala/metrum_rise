@@ -861,7 +861,8 @@ suite of `./run.sh --test`, under 0.1 s) reads all of the crate's non-test sourc
   in a pool (`PureJob::spawn`, `PureJob::unstarted`, `async_jobs.spawn`).
 - Other entries are bare and counted per function (`file::Type::function`, under `rust/src`).
   [`bare_entries.txt`](../rust/src/thread_pools/bare_entries.txt) lists the functions that had
-  them when the gate landed (127 functions, 210 entries; 103 and 175 after round P3); each
+  them when the gate landed (127 functions, 210 entries; 103 and 175 after round P3, 21 and 46
+  after round P4, every remaining line one of the in-pool-only kind below); each
   relies on every caller already being in a pool. Three sites that branch on whether they run in a pool by design are counted
   waivers in the test, each with its reason (`RegionGraph::clone_on_pool`, `Chunk::update_due`,
   `splice_chunks`).
