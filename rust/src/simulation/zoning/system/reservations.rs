@@ -4,7 +4,9 @@
 
 use super::ZoningSystem;
 use crate::simulation::agriculture::PolygonFootprint;
-use crate::simulation::network::roadbed::{PieceMesh, RoadVec3};
+use crate::simulation::network::roadbed::PieceMesh;
+#[cfg(test)]
+use crate::simulation::network::roadbed::RoadVec3;
 use crate::simulation::zoning::cells::{
     CellBounds, CellKey, CellMaps, CellStore, road_contact_interior,
 };
@@ -94,12 +96,50 @@ impl ZoningSystem {
         })
     }
 
-    /// Whether a road surface polygon given by its world points overlaps reserved cells.
+    /// Whether a road surface polygon given by its world points overlaps reserved cells. The
+    /// per-triangle form of [`Self::cells_overlap_road_piece`], its reference in tests.
+    #[cfg(test)]
     pub(crate) fn cells_overlap_road_points_world(&self, points: &[RoadVec3]) -> bool {
         if !self.cells.has_reservations() {
             return false;
         }
         self.cells_overlap_road_points(points.iter().map(|p| [p.x, p.z]))
+    }
+
+    /// Whether a top triangle of the road piece `mesh` overlaps the road-contact interior of a
+    /// reserved cell with positive area: the load check of a saved road (`PERF-26`). Visits the
+    /// reserved cells in the piece's bounds once through the cell chunk/mask index and each
+    /// cell's candidate triangles through the piece's own query grid, the `ROAD-66` method,
+    /// where the per-triangle form (`cells_overlap_road_points_world`, now test-only) ran one cell
+    /// query, with its scan of the touched chunks' blocks, per triangle and grid cell. Each
+    /// triangle-cell pair is decided as there: a pair whose bounds meet takes the same exact
+    /// test, so the answer is the same for every piece inside the cell index's coordinate range.
+    /// O(reserved blocks in the chunks the piece's bounds touch + reserved cells in those
+    /// bounds * triangles in their grid cells), allocation-free outside the exact test.
+    pub(crate) fn cells_overlap_road_piece(&self, mesh: &PieceMesh) -> bool {
+        if !self.cells.has_reservations() {
+            return false;
+        }
+        let mut overlaps = false;
+        self.cells
+            .visit_reserved_footprints_in_bounds(piece_bounds(mesh), |_, corners| {
+                if overlaps {
+                    return;
+                }
+                let cell = CellBounds::from_points(corners);
+                let interior = road_contact_interior(&corners).map(|p| [p.x, p.y]);
+                let query = [cell.min.x, cell.min.y, cell.max.x, cell.max.y];
+                overlaps = mesh.any_top_triangle_in_bounds(query, |triangle| {
+                    let points = mesh.triangle_points(triangle).map(|p| [p.x, p.z]);
+                    // The per-triangle cell query's candidate filter, then its exact test.
+                    let bounds = CellBounds::from_points(points.map(DVec2::from_array));
+                    bounds.is_valid()
+                        && bounds.intersects(cell)
+                        && PolygonFootprint::from_precise_slice(&points)
+                            .overlaps_precise_points(&interior)
+                });
+            });
+        overlaps
     }
 
     /// Every reserved cell of `cells` that one of `pieces` newly covers, sorted by key and
@@ -133,6 +173,7 @@ impl ZoningSystem {
         covered
     }
 
+    #[cfg(test)]
     fn cells_overlap_road_points(&self, points: impl Iterator<Item = [f64; 2]> + Clone) -> bool {
         let bounds = CellBounds::from_points(points.clone().map(DVec2::from_array));
         let mut footprint = None;

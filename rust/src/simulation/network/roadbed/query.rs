@@ -624,6 +624,9 @@ impl RoadbedSystem {
     }
 
     /// [`Self::any_top_triangle_in_bounds`] over the pieces on or above the ground (`ROAD-61`).
+    /// The triangle-major form of the load check of saved roads against reserved cells, which
+    /// now runs per piece (`PERF-26`); tests keep it as that check's reference.
+    #[cfg(test)]
     pub fn any_exposed_top_triangle_in_bounds(
         &self,
         bounds_xz: [f64; 4],
@@ -635,8 +638,17 @@ impl RoadbedSystem {
         })
     }
 
+    /// The meshes of the pieces on or above the ground, in ascending piece order: the pieces
+    /// whose top triangles [`Self::any_exposed_top_triangle_points_in_bounds`] visits, without
+    /// a spatial query, for a pass over the whole map (`PERF-26`). `O(pieces)`.
+    pub fn exposed_pieces(&self) -> impl Iterator<Item = &PieceMesh> + '_ {
+        self.pieces
+            .values()
+            .filter(|published| !published.buried())
+            .map(|published| published.mesh())
+    }
+
     // Visits the top triangles of the pieces' grid cells touching `bounds_xz`, as in
-    // `any_top_triangle_in_bounds`.
     // `any_top_triangle_in_bounds`, leaving out the buried pieces with `exposed_only`.
     fn any_top_triangle_of_pieces_in_bounds(
         &self,

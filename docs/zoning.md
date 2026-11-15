@@ -1862,6 +1862,22 @@ chunks and candidate blocks, and exact local overlap work. It does not compare e
 every external owner or add per-tick work. The runtime site query retains the existing allocator
 index and its local candidate bound.
 
+Saved roads are checked per piece (`PERF-26`), the `ROAD-66` method. Each piece on or above the
+ground visits the reserved cells in its bounds once through the cell chunk/mask index. Each cell
+then finds its candidate top triangles through the piece's own query grid. The pieces run in
+parallel in the shared pool; the answer is a plain any, so the order does not matter. A
+triangle-cell pair whose bounds meet takes the same exact test as before: each cell's road-contact
+interior against the triangle, shared edges legal. Before, one cell query ran per visible top
+triangle and per piece-grid cell it lies in. Each query listed every reserved block of the 512 m
+chunk it touched and derived each block's corners, so cost grew with triangles times the reserved
+blocks per chunk, `O(T * B)`. The new cost is `O(sum over pieces of (B_P + C_P * t))`, divided over
+the workers. `B_P` is the reserved blocks in the chunks the piece's bounds touch, `C_P` the
+reserved cells in those bounds, and `t` the triangles in a cell's grid cells. On the 30k fixture
+city the check took about 6.4 s of the serial load (8.7 s on `dev` ca21b852, 7.6 s on `dev`
+4b5ba460, where code generation kept it cheaper). It now takes 4.7 ms for 2,055 pieces, and the
+city loads in 2.3 s. A test compares the two forms cell by cell beside a compiled road: four frame
+angles, cells touching its edge and cells a millimetre across.
+
 Fresh release verification passes 1,945 library tests, including mixed rotated saves, completely
 erased occupied lots, field boundary contact/intrusion, explicit-site and road conflicts, orphan
 unpainted saved cells, no-build restoration and the precise runtime boundary checks. The

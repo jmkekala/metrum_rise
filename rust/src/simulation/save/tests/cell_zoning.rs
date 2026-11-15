@@ -422,6 +422,79 @@ fn load_checks_explicit_sites_and_compiled_roads_against_cell_reservations() {
 }
 
 #[test]
+fn road_piece_reservation_check_matches_the_triangle_walk() {
+    use crate::simulation::zoning::cells::{CellKey, GridFrame};
+
+    let (graph, zoning, allocator) = fixture(0.0, false);
+    let path = temp_path("cell_road_piece_check");
+    write_snapshot(&path, &graph, &zoning, &allocator);
+    let loaded = load_from_sqlite(&path, &allocator.registry).unwrap();
+    fs::remove_file(path).unwrap();
+    let roads = &loaded.transit_network.roadbed;
+    // The check before `PERF-26`: one cell query per visible top triangle.
+    let world = [
+        f64::NEG_INFINITY,
+        f64::NEG_INFINITY,
+        f64::INFINITY,
+        f64::INFINITY,
+    ];
+    let by_triangle = |zoning: &ZoningSystem| {
+        roads.any_exposed_top_triangle_in_bounds(world, |triangle, _| {
+            zoning.cells_overlap_road_points_world(&triangle)
+        })
+    };
+    let by_piece = |zoning: &ZoningSystem| {
+        roads
+            .exposed_pieces()
+            .any(|mesh| zoning.cells_overlap_road_piece(mesh))
+    };
+    assert!(!by_triangle(&loaded.zoning));
+    assert!(!by_piece(&loaded.zoning));
+    // The road's +z edge away from its end pieces: cells beside it touch it, cells past it
+    // intrude (`docs/zoning.md`, loaded reservations and boundary precision).
+    let edge = roads
+        .exposed_pieces()
+        .flat_map(|mesh| (0..mesh.top_triangle_count()).flat_map(|t| mesh.triangle_points(t)))
+        .filter(|point| point.x.abs() <= 40.0)
+        .map(|point| point.z)
+        .fold(f64::NEG_INFINITY, f64::max);
+    let mut outcomes = [0; 2];
+    for angle in [0.0_f64, 0.35, -0.55, 1.2] {
+        for x in [-20.0, 55.0] {
+            for offset in [-2.0, -0.01, -0.001, 0.0, 0.001, 0.5] {
+                let origin = DVec2::new(x, edge + offset);
+                let frame =
+                    GridFrame::new(origin, DVec2::new(angle.cos(), angle.sin()), 10.0).unwrap();
+                let base = frame.local(origin).floor();
+                for (dx, dy) in [(0, 0), (-1, 0), (0, -1), (-1, -1)] {
+                    let mut zoning = ZoningSystem::new(&WorldConfig::default());
+                    let grid = zoning.cells.register_frame(frame);
+                    let key = CellKey {
+                        grid,
+                        x: base.x as i32 + dx,
+                        y: base.y as i32 + dy,
+                    };
+                    assert!(zoning.cells.restore_saved_cell(key, 1));
+                    let expected = by_triangle(&zoning);
+                    assert_eq!(
+                        by_piece(&zoning),
+                        expected,
+                        "angle {angle} x {x} offset {offset} cell ({dx}, {dy})"
+                    );
+                    if angle == 0.0 && x < 0.0 && dy == 0 {
+                        // A cell on the edge touches it; a millimetre across, it intrudes.
+                        assert_eq!(expected, offset < 0.0, "offset {offset} cell ({dx}, 0)");
+                    }
+                    outcomes[usize::from(expected)] += 1;
+                }
+            }
+        }
+    }
+    // Both answers occur, the exact boundary cases among them.
+    assert!(outcomes.iter().all(|&count| count > 0), "{outcomes:?}");
+}
+
+#[test]
 #[ignore = "isolated release timing of load reservation checks, excluding hydration and index setup"]
 fn benchmark_cell_load_reservations() {
     use crate::simulation::zoning::cells::{CellKey, GridFrame};

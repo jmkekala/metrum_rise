@@ -277,17 +277,23 @@ pub(super) fn validate_reservations(
             "saved explicit site overlaps reserved zoning cells",
         ));
     }
-    // One-time load pass over every visible road triangle.
-    let world = [
-        f64::NEG_INFINITY,
-        f64::NEG_INFINITY,
-        f64::INFINITY,
-        f64::INFINITY,
-    ];
-    // A tunnel bore lies under the cells over it (`ROAD-61` round R8h).
-    if roads.any_exposed_top_triangle_in_bounds(world, |triangle, _| {
-        zoning.cells_overlap_road_points_world(&triangle)
-    }) {
+    // One-time load pass over every visible road piece, in parallel: each meets the reserved
+    // cells in its bounds once and their candidate triangles through its own query grid
+    // (`PERF-26`). A tunnel bore lies under the cells over it (`ROAD-61` round R8h).
+    let start = std::time::Instant::now();
+    let pieces: Vec<_> = roads.exposed_pieces().collect();
+    let overlaps = crate::thread_pools::install(|| {
+        pieces
+            .par_iter()
+            .any(|mesh| zoning.cells_overlap_road_piece(mesh))
+    });
+    crate::debug_log!(
+        "perf",
+        "[LOAD] road reservation check: {} pieces in {:.3} ms",
+        pieces.len(),
+        start.elapsed().as_secs_f64() * 1e3
+    );
+    if overlaps {
         return Err(SaveLoadError::custom(
             "saved road overlaps reserved zoning cells",
         ));
