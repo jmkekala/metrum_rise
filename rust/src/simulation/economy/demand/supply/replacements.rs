@@ -100,12 +100,14 @@ impl ProjectReservations {
         tuning: &RuntimeEconomyTuning,
         minute: u16,
     ) {
-        self.sites[..allocator.buildings.len()]
-            .par_iter_mut()
-            .enumerate()
-            .for_each(|(owner, site)| {
-                *site = Self::site_row(allocator, catalog, tuning, minute, owner);
-            });
+        crate::thread_pools::install(|| {
+            self.sites[..allocator.buildings.len()]
+                .par_iter_mut()
+                .enumerate()
+                .for_each(|(owner, site)| {
+                    *site = Self::site_row(allocator, catalog, tuning, minute, owner);
+                })
+        });
         self.prepare_site_scratch(funding);
     }
 

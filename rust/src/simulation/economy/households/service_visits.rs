@@ -418,47 +418,49 @@ impl HouseholdSystem {
         let (households, customers) = (&self.households, &self.job_funding.customers);
         let shared_agents = &*agents;
         let shared_allocator = &*allocator;
-        let plans: Vec<_> = batch
-            .par_iter()
-            .map_init(
-                || {
-                    crate::simulation::economy::agents::tick::TripQueryScratch::prepare_thread(transit_network, graph);
-                    Vec::with_capacity(SERVICE_VISIT_SEARCH_CANDIDATES)
-                },
-                |candidates, &household_id| {
-                    let mut diagnostics = ServiceVisitDiagnostics::default();
-                    let visitor = first_eligible_shopper(
-                        shared_agents,
-                        household_id,
-                        &households[household_id],
-                    );
-                    let plan = if visitor == usize::MAX {
-                        diagnostics.failed_no_shopper += 1;
-                        None
-                    } else if !service_index.has_any() {
-                        diagnostics.failed_no_service_candidates += 1;
-                        None
-                    } else {
-                        plan_visible_service_visit(
-                            household_id,
-                            visitor,
+        let plans: Vec<_> = crate::thread_pools::install(|| {
+            batch
+                .par_iter()
+                .map_init(
+                    || {
+                        crate::simulation::economy::agents::tick::TripQueryScratch::prepare_thread(transit_network, graph);
+                        Vec::with_capacity(SERVICE_VISIT_SEARCH_CANDIDATES)
+                    },
+                    |candidates, &household_id| {
+                        let mut diagnostics = ServiceVisitDiagnostics::default();
+                        let visitor = first_eligible_shopper(
                             shared_agents,
-                            shared_allocator,
-                            &service_index,
-                            customers,
-                            transit_network,
-                            graph,
-                            foot_components,
-                            car_components,
-                            candidates,
-                            &mut diagnostics,
-                            parking,
-                        )
-                    };
-                    (plan, diagnostics)
-                },
-            )
-            .collect();
+                            household_id,
+                            &households[household_id],
+                        );
+                        let plan = if visitor == usize::MAX {
+                            diagnostics.failed_no_shopper += 1;
+                            None
+                        } else if !service_index.has_any() {
+                            diagnostics.failed_no_service_candidates += 1;
+                            None
+                        } else {
+                            plan_visible_service_visit(
+                                household_id,
+                                visitor,
+                                shared_agents,
+                                shared_allocator,
+                                &service_index,
+                                customers,
+                                transit_network,
+                                graph,
+                                foot_components,
+                                car_components,
+                                candidates,
+                                &mut diagnostics,
+                                parking,
+                            )
+                        };
+                        (plan, diagnostics)
+                    },
+                )
+                .collect()
+        });
         for (plan, plan_diagnostics) in plans {
             diagnostics.merge(plan_diagnostics);
             let Some(plan) = plan else {

@@ -379,7 +379,7 @@ impl ReachableBucketIndex {
         entries.retain(|entry| entry.component != NO_COMPONENT);
         // Equal entries are identical, so the parallel sort orders them as the serial one.
         if entries.len() >= PARALLEL_SORT_ENTRIES {
-            entries.par_sort_unstable();
+            crate::thread_pools::install(|| entries.par_sort_unstable());
         } else {
             entries.sort_unstable();
         }
@@ -556,9 +556,12 @@ impl ReachableBucketIndex {
     /// Enables allocation-free availability updates for finite reservation users.
     /// Immutable indices retain their existing flat traversal without tree overhead.
     pub(crate) fn enable_reservations(&mut self) {
-        self.buckets
-            .par_iter_mut()
-            .for_each(BucketItems::enable_reservations);
+        let buckets = &mut self.buckets;
+        crate::thread_pools::install(|| {
+            buckets
+                .par_iter_mut()
+                .for_each(BucketItems::enable_reservations)
+        });
     }
 
     /// Adds door bounds for [`Self::scan_nearest_bounded`] in O(indexed entries). Requires
@@ -567,9 +570,12 @@ impl ReachableBucketIndex {
         &mut self,
         door: impl Fn(usize) -> Option<[f32; 2]> + Sync,
     ) {
-        self.buckets
-            .par_iter_mut()
-            .for_each(|items| items.enable_bounds(&door));
+        let buckets = &mut self.buckets;
+        crate::thread_pools::install(|| {
+            buckets
+                .par_iter_mut()
+                .for_each(|items| items.enable_bounds(&door))
+        });
     }
 
     /// Prepares caller-defined eligibility classes in O(entries), retaining tree storage.
@@ -1055,12 +1061,14 @@ pub(crate) fn max_speed_for_modes(graph: &RegionGraph, transit_flags: u8) -> f32
     if transit_flags == TransitFlags::FOOT {
         return crate::config::AGENT_WALK_SPEED_MS;
     }
-    graph
-        .edges()
-        .par_iter()
-        .filter(|edge| !edge.deleted && (edge.allowed_types & transit_flags) != 0)
-        .map(|edge| edge.speed_limit.max(crate::config::MIN_ROUTE_SPEED_MS))
-        .reduce(|| crate::config::AGENT_WALK_SPEED_MS, f32::max)
+    crate::thread_pools::install(|| {
+        graph
+            .edges()
+            .par_iter()
+            .filter(|edge| !edge.deleted && (edge.allowed_types & transit_flags) != 0)
+            .map(|edge| edge.speed_limit.max(crate::config::MIN_ROUTE_SPEED_MS))
+            .reduce(|| crate::config::AGENT_WALK_SPEED_MS, f32::max)
+    })
 }
 
 fn entrance_supports_mode(

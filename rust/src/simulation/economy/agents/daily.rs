@@ -16,20 +16,23 @@ impl AgentSystem {
         config: &crate::simulation::core::config::WorldConfig,
     ) {
         let agents = &mut self.agents;
-        (
-            &mut agents.happiness,
-            &agents.pos_x,
-            &agents.pos_y,
-            &agents.transit,
-            &agents.activity,
-        )
-            .into_par_iter()
-            // Daily work per agent is small; keep contiguous runs large enough to amortize dispatch.
-            .with_min_len(8_192)
-            .for_each(|(happiness, &x, &z, &transit, &activity)| {
-                *happiness =
-                    daily_happiness(*happiness, x, z, transit, activity, pollution, config);
-            });
+        crate::thread_pools::install(|| {
+            (
+                &mut agents.happiness,
+                &agents.pos_x,
+                &agents.pos_y,
+                &agents.transit,
+                &agents.activity,
+            )
+                .into_par_iter()
+                // Daily work per agent is small; keep contiguous runs large enough to amortize
+                // dispatch.
+                .with_min_len(8_192)
+                .for_each(|(happiness, &x, &z, &transit, &activity)| {
+                    *happiness =
+                        daily_happiness(*happiness, x, z, transit, activity, pollution, config);
+                })
+        });
     }
 
     /// Agent `agent_idx`'s daily state at its daily phase (`SIM-02-G`): a bonus for being home

@@ -428,15 +428,17 @@ impl ConsumerMarket {
             .budgets
             .begin_budgets(households.len(), catalog, treasury);
         self.query.prepare(&network.cch_graph, graph);
-        let output_ports = allocator
-            .buildings
-            .par_iter()
-            .map(|building| {
-                catalog
-                    .profile_by_runtime_id(building.economy_profile_runtime_id)
-                    .map_or(0, |profile| profile.outputs.len())
-            })
-            .sum();
+        let output_ports = crate::thread_pools::install(|| {
+            allocator
+                .buildings
+                .par_iter()
+                .map(|building| {
+                    catalog
+                        .profile_by_runtime_id(building.economy_profile_runtime_id)
+                        .map_or(0, |profile| profile.outputs.len())
+                })
+                .sum()
+        });
         let revision = (
             allocator.building_ref_revision(),
             allocator.entrance_ref_revision(),
@@ -515,93 +517,95 @@ impl ConsumerMarket {
             ..
         } = *state;
         let components = self.components.as_ref().unwrap();
-        let (access_changed, membership_changed, resamples) = self.access[range.clone()]
-            .par_iter_mut()
-            .zip(&mut self.access_entrances[range.clone()])
-            .zip(&households[range])
-            .map(|((access, sampled_entrance), household)| {
-                let can_shop = household.adult_count > 0 || household.elder_count > 0;
-                if !changed
-                    && access.home == household.home_building_id
-                    && access.has_car == household.shopping_has_car
-                    && access.can_shop == can_shop
-                {
-                    return (false, false, 0);
-                }
-                let home = household.home_building_id;
-                let building = can_shop.then(|| allocator.buildings.get(home)).flatten();
-                let entrance = building
-                    .and_then(|_| allocator.entrances.get(home))
-                    .map(BuildingEntranceKey::new);
-                let chunk = building.map_or((0, 0), |building| {
-                    chunk_for_point(building.center_x, building.center_y)
-                });
-                // A global building revision usually changes only a few homes. Existing
-                // access is exact while this household, door, chunk and lane graph match.
-                // Keep the dependency key separate from Access: a moved door can still
-                // produce the same walking proof and retain the same household claim book.
-                if !walking_changed
-                    && access.home == home
-                    && access.can_shop == can_shop
-                    && access.chunk == chunk
-                    && *sampled_entrance == entrance
-                {
-                    if access.has_car == household.shopping_has_car {
+        let (access_changed, membership_changed, resamples) = crate::thread_pools::install(|| {
+            self.access[range.clone()]
+                .par_iter_mut()
+                .zip(&mut self.access_entrances[range.clone()])
+                .zip(&households[range])
+                .map(|((access, sampled_entrance), household)| {
+                    let can_shop = household.adult_count > 0 || household.elder_count > 0;
+                    if !changed
+                        && access.home == household.home_building_id
+                        && access.has_car == household.shopping_has_car
+                        && access.can_shop == can_shop
+                    {
                         return (false, false, 0);
                     }
-                    // Physical component membership survives a car leaving or returning.
-                    // Resetting account eligibility below applies the current car flag.
-                    access.has_car = household.shopping_has_car;
-                    return (true, false, 0);
-                }
-                *sampled_entrance = entrance;
-                let mut next = Access {
-                    home: household.home_building_id,
-                    has_car: household.shopping_has_car,
-                    can_shop,
-                    ..Default::default()
-                };
-                if can_shop && let Some(building) = allocator.buildings.get(next.home) {
-                    if let Some(edge) = allocator
-                        .entrances
-                        .get(next.home)
-                        .and_then(|entrance| graph.get_edge(entrance.edge_idx))
+                    let home = household.home_building_id;
+                    let building = can_shop.then(|| allocator.buildings.get(home)).flatten();
+                    let entrance = building
+                        .and_then(|_| allocator.entrances.get(home))
+                        .map(BuildingEntranceKey::new);
+                    let chunk = building.map_or((0, 0), |building| {
+                        chunk_for_point(building.center_x, building.center_y)
+                    });
+                    // A global building revision usually changes only a few homes. Existing
+                    // access is exact while this household, door, chunk and lane graph match.
+                    // Keep the dependency key separate from Access: a moved door can still
+                    // produce the same walking proof and retain the same household claim book.
+                    if !walking_changed
+                        && access.home == home
+                        && access.can_shop == can_shop
+                        && access.chunk == chunk
+                        && *sampled_entrance == entrance
                     {
-                        next.walk_nodes = [edge.start_node, edge.end_node];
+                        if access.has_car == household.shopping_has_car {
+                            return (false, false, 0);
+                        }
+                        // Physical component membership survives a car leaving or returning.
+                        // Resetting account eligibility below applies the current car flag.
+                        access.has_car = household.shopping_has_car;
+                        return (true, false, 0);
                     }
-                    let [origin, destination] =
-                        BuildingTripEnds::walking_pair(next.home, allocator, network, graph);
-                    next.walk_origins = origin.walking_groups(&self.walking);
-                    next.walk_destinations = destination.walking_groups(&self.walking);
-                    next.chunk = chunk_for_point(building.center_x, building.center_y);
-                    next.components[0] = components[0].building_components(
-                        allocator,
-                        graph,
-                        next.home,
-                        TransitFlags::FOOT,
-                    );
-                    next.components[1] = components[1].building_components(
-                        allocator,
-                        graph,
-                        next.home,
-                        TransitFlags::CAR,
-                    );
-                }
-                let membership_changed =
-                    access.chunk != next.chunk || access.components != next.components;
-                // Reservation positions depend only on indexed household/component/chunk
-                // membership, not on unrelated building additions or entrance revisions.
-                if !membership_changed {
-                    next.reservations = access.reservations;
-                }
-                let access_changed = *access != next;
-                *access = next;
-                (access_changed, membership_changed, 1)
-            })
-            .reduce(
-                || (false, false, 0),
-                |a, b| (a.0 | b.0, a.1 | b.1, a.2 + b.2),
-            );
+                    *sampled_entrance = entrance;
+                    let mut next = Access {
+                        home: household.home_building_id,
+                        has_car: household.shopping_has_car,
+                        can_shop,
+                        ..Default::default()
+                    };
+                    if can_shop && let Some(building) = allocator.buildings.get(next.home) {
+                        if let Some(edge) = allocator
+                            .entrances
+                            .get(next.home)
+                            .and_then(|entrance| graph.get_edge(entrance.edge_idx))
+                        {
+                            next.walk_nodes = [edge.start_node, edge.end_node];
+                        }
+                        let [origin, destination] =
+                            BuildingTripEnds::walking_pair(next.home, allocator, network, graph);
+                        next.walk_origins = origin.walking_groups(&self.walking);
+                        next.walk_destinations = destination.walking_groups(&self.walking);
+                        next.chunk = chunk_for_point(building.center_x, building.center_y);
+                        next.components[0] = components[0].building_components(
+                            allocator,
+                            graph,
+                            next.home,
+                            TransitFlags::FOOT,
+                        );
+                        next.components[1] = components[1].building_components(
+                            allocator,
+                            graph,
+                            next.home,
+                            TransitFlags::CAR,
+                        );
+                    }
+                    let membership_changed =
+                        access.chunk != next.chunk || access.components != next.components;
+                    // Reservation positions depend only on indexed household/component/chunk
+                    // membership, not on unrelated building additions or entrance revisions.
+                    if !membership_changed {
+                        next.reservations = access.reservations;
+                    }
+                    let access_changed = *access != next;
+                    *access = next;
+                    (access_changed, membership_changed, 1)
+                })
+                .reduce(
+                    || (false, false, 0),
+                    |a, b| (a.0 | b.0, a.1 | b.1, a.2 + b.2),
+                )
+        });
         state.access_changed |= access_changed;
         state.membership_changed |= membership_changed;
         state.resamples += resamples;
@@ -646,7 +650,7 @@ impl ConsumerMarket {
                 );
             }
         };
-        rayon::join(|| append(foot, 0), || append(car, 1));
+        crate::thread_pools::install(|| rayon::join(|| append(foot, 0), || append(car, 1)));
     }
 
     /// Builds modes `modes` (0 foot, 1 car) of the first category's indices from the collected
@@ -669,16 +673,19 @@ impl ConsumerMarket {
         let Some(first) = self.indices.first_mut() else {
             return;
         };
-        first[modes.clone()]
-            .par_iter_mut()
-            .zip(&mut self.index_entries[modes])
-            .for_each(|(index, entries)| {
-                // Sorting here leaves `from_entries` an already sorted run, which it checks
-                // in O(entries); sorted output is unique, so the index is the same.
-                entries.par_sort_unstable();
-                *index = ReachableBucketIndex::from_entries(std::mem::take(entries));
-                index.enable_reservations();
-            });
+        let entries = &mut self.index_entries[modes.clone()];
+        crate::thread_pools::install(|| {
+            first[modes]
+                .par_iter_mut()
+                .zip(entries)
+                .for_each(|(index, entries)| {
+                    // Sorting here leaves `from_entries` an already sorted run, which it checks
+                    // in O(entries); sorted output is unique, so the index is the same.
+                    entries.par_sort_unstable();
+                    *index = ReachableBucketIndex::from_entries(std::mem::take(entries));
+                    index.enable_reservations();
+                })
+        });
     }
 
     /// Copies the refresh makes after its build: one for each category after the first.
@@ -699,9 +706,11 @@ impl ConsumerMarket {
         }
         if let Some((first, rest)) = self.indices.split_first_mut() {
             let first = &*first;
-            rest[copies]
-                .par_iter_mut()
-                .for_each(|indices| indices.clone_from(first));
+            let rest = &mut rest[copies];
+            crate::thread_pools::install(|| {
+                rest.par_iter_mut()
+                    .for_each(|indices| indices.clone_from(first))
+            });
         }
     }
 
@@ -719,26 +728,27 @@ impl ConsumerMarket {
         // Availability differs, so only the immutable positions are shared across them.
         if let Some(indices) = self.indices.first() {
             let first = range.start;
-            self.access[range]
-                .par_iter_mut()
-                .enumerate()
-                .for_each(|(offset, access)| {
-                    let household = first + offset;
-                    access.reservations = std::array::from_fn(|mode| {
-                        std::array::from_fn(|rank| {
-                            access.components[mode]
-                                .as_slice()
-                                .get(rank)
-                                .and_then(|&component| {
-                                    indices[mode].reservation(ReachableBucketEntry::new(
-                                        component,
-                                        access.chunk,
-                                        household,
-                                    ))
-                                })
-                        })
-                    });
-                });
+            crate::thread_pools::install(|| {
+                self.access[range]
+                    .par_iter_mut()
+                    .enumerate()
+                    .for_each(|(offset, access)| {
+                        let household = first + offset;
+                        access.reservations = std::array::from_fn(|mode| {
+                            std::array::from_fn(|rank| {
+                                access.components[mode].as_slice().get(rank).and_then(
+                                    |&component| {
+                                        indices[mode].reservation(ReachableBucketEntry::new(
+                                            component,
+                                            access.chunk,
+                                            household,
+                                        ))
+                                    },
+                                )
+                            })
+                        });
+                    })
+            });
         }
     }
 
@@ -882,18 +892,21 @@ impl ConsumerMarket {
         let first = range.start;
         let budgets = &self.budgets;
         let access = &self.access;
-        self.indices.as_flattened_mut()[range]
-            .par_iter_mut()
-            .enumerate()
-            .for_each(|(offset, index)| {
-                let (category, mode) = ((first + offset) / 2, (first + offset) % 2);
-                index.reset_available(|household| {
-                    let funds = budgets.funds[household * count + category];
-                    funds.units > 0.0
-                        && funds.gross_spending > 0.0
-                        && (mode == 0 || access[household].has_car)
-                });
-            });
+        let indices = &mut self.indices.as_flattened_mut()[range];
+        crate::thread_pools::install(|| {
+            indices
+                .par_iter_mut()
+                .enumerate()
+                .for_each(|(offset, index)| {
+                    let (category, mode) = ((first + offset) / 2, (first + offset) % 2);
+                    index.reset_available(|household| {
+                        let funds = budgets.funds[household * count + category];
+                        funds.units > 0.0
+                            && funds.gross_spending > 0.0
+                            && (mode == 0 || access[household].has_car)
+                    });
+                })
+        });
     }
 
     /// Whether the authored household basket consumes this resource, in O(1).
@@ -1141,7 +1154,8 @@ impl ConsumerMarket {
         }
         self.visit = self.visit.wrapping_add(1);
         if self.visit == 0 {
-            self.visited.par_iter_mut().for_each(|value| *value = 0);
+            let visited = &mut self.visited;
+            crate::thread_pools::install(|| visited.par_iter_mut().for_each(|value| *value = 0));
             self.visit = 1;
         }
         let [origin, destination] =

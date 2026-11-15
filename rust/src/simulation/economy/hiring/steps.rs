@@ -1298,55 +1298,59 @@ impl JobFunding {
         let catalog = ctx.catalog;
         let count = allocator.buildings.len();
         let resources = catalog.resource_count() + 1;
-        self.market_chunks[chunks.start * resources..chunks.end * resources]
-            .par_chunks_mut(resources)
-            .zip(
-                self.potential_customers.counted
-                    [chunks.start * MARKET_CHUNK..(chunks.end * MARKET_CHUNK).min(count)]
-                    .par_chunks_mut(MARKET_CHUNK),
-            )
-            .enumerate()
-            .for_each(|(offset, (totals, counted))| {
-                let chunk = chunks.start + offset;
-                if !self.market_dirty_chunks[chunk] {
-                    return;
-                }
-                totals.fill([0.0; 2]);
-                let first = chunk * MARKET_CHUNK;
-                for (building, counted) in allocator.buildings
-                    [first..(first + MARKET_CHUNK).min(count)]
-                    .iter()
-                    .zip(counted)
-                {
-                    *counted = false;
-                    if !live(building) {
-                        continue;
+        crate::thread_pools::install(|| {
+            self.market_chunks[chunks.start * resources..chunks.end * resources]
+                .par_chunks_mut(resources)
+                .zip(
+                    self.potential_customers.counted
+                        [chunks.start * MARKET_CHUNK..(chunks.end * MARKET_CHUNK).min(count)]
+                        .par_chunks_mut(MARKET_CHUNK),
+                )
+                .enumerate()
+                .for_each(|(offset, (totals, counted))| {
+                    let chunk = chunks.start + offset;
+                    if !self.market_dirty_chunks[chunk] {
+                        return;
                     }
-                    let Some(profile) =
-                        catalog.profile_by_runtime_id(building.economy_profile_runtime_id)
-                    else {
-                        continue;
-                    };
-                    let area = output_area_scale_for_building(building, profile);
-                    let physical = physical_worker_capacity_for_profile(building, profile);
-                    let activity = (building.worker_count as f32 / physical.max(1) as f32).min(1.0);
-                    *counted =
-                        building.worker_count > 0 && physical > 0 && !profile.inputs.is_empty();
-                    for output in &profile.outputs {
-                        totals[output.resource_runtime_id as usize][0] +=
-                            f64::from(profile.net_output_units_per_day(output) * area);
+                    totals.fill([0.0; 2]);
+                    let first = chunk * MARKET_CHUNK;
+                    for (building, counted) in allocator.buildings
+                        [first..(first + MARKET_CHUNK).min(count)]
+                        .iter()
+                        .zip(counted)
+                    {
+                        *counted = false;
+                        if !live(building) {
+                            continue;
+                        }
+                        let Some(profile) =
+                            catalog.profile_by_runtime_id(building.economy_profile_runtime_id)
+                        else {
+                            continue;
+                        };
+                        let area = output_area_scale_for_building(building, profile);
+                        let physical = physical_worker_capacity_for_profile(building, profile);
+                        let activity =
+                            (building.worker_count as f32 / physical.max(1) as f32).min(1.0);
+                        *counted =
+                            building.worker_count > 0 && physical > 0 && !profile.inputs.is_empty();
+                        for output in &profile.outputs {
+                            totals[output.resource_runtime_id as usize][0] +=
+                                f64::from(profile.net_output_units_per_day(output) * area);
+                        }
+                        // Existing staffed buyers supply input demand. A proposed job cannot
+                        // justify its own revenue by promising another unfunded employer's purchases.
+                        for input in &profile.inputs {
+                            let internal = profile
+                                .output_port(input.resource_runtime_id)
+                                .map_or(0.0, |port| port.units_per_day);
+                            totals[input.resource_runtime_id as usize][1] += f64::from(
+                                (input.units_per_day - internal).max(0.0) * area * activity,
+                            );
+                        }
                     }
-                    // Existing staffed buyers supply input demand. A proposed job cannot
-                    // justify its own revenue by promising another unfunded employer's purchases.
-                    for input in &profile.inputs {
-                        let internal = profile
-                            .output_port(input.resource_runtime_id)
-                            .map_or(0.0, |port| port.units_per_day);
-                        totals[input.resource_runtime_id as usize][1] +=
-                            f64::from((input.units_per_day - internal).max(0.0) * area * activity);
-                    }
-                }
-            });
+                })
+        });
     }
 
     fn census_market_end<F>(&mut self, ctx: &CensusContext<'_, F>, progress: &CensusProgress) {
@@ -1359,15 +1363,17 @@ impl JobFunding {
         if !progress.reuse_market {
             self.market_catalog = Some(catalog.cache_identity().clone());
         }
-        self.market
-            .par_iter_mut()
-            .enumerate()
-            .for_each(|(resource, total)| {
-                for chunk in self.market_chunks.chunks(resources) {
-                    total[0] += chunk[resource][0];
-                    total[1] += chunk[resource][1];
-                }
-            });
+        crate::thread_pools::install(|| {
+            self.market
+                .par_iter_mut()
+                .enumerate()
+                .for_each(|(resource, total)| {
+                    for chunk in self.market_chunks.chunks(resources) {
+                        total[0] += chunk[resource][0];
+                        total[1] += chunk[resource][1];
+                    }
+                })
+        });
     }
 
     fn census_customers<F>(&mut self, ctx: &CensusContext<'_, F>, progress: &mut CensusProgress) {
@@ -1546,14 +1552,16 @@ impl JobFunding {
             progress.retained_customers,
         );
         self.household_production.resize(ports, 0.0);
-        self.customer_units
-            .par_iter_mut()
-            .zip(&mut self.household_production)
-            .with_min_len(MARKET_CHUNK)
-            .for_each(|(units, production)| {
-                *units = -1.0;
-                *production = 0.0;
-            });
+        crate::thread_pools::install(|| {
+            self.customer_units
+                .par_iter_mut()
+                .zip(&mut self.household_production)
+                .with_min_len(MARKET_CHUNK)
+                .for_each(|(units, production)| {
+                    *units = -1.0;
+                    *production = 0.0;
+                })
+        });
         self.closure_ceilings.resize(count, 0);
         self.closure_activity.resize(count, 1.0);
         self.import_memos.resize(count, Default::default());
@@ -1572,41 +1580,46 @@ impl JobFunding {
         let profit_proof = !self.potential_customers.disabled;
         #[cfg(not(test))]
         let profit_proof = true;
-        self.closure_ceilings[rows.clone()]
-            .par_iter_mut()
-            .zip(&mut self.closure_activity[rows.clone()])
-            .zip(&mut self.offered_activity[rows.clone()])
-            .zip(&mut self.service_flags[rows.clone()])
-            .zip(&allocator.buildings[rows.clone()])
-            .zip(&self.freight_capital[rows.clone()])
-            .zip(&self.carrier_quotes[rows])
-            .with_min_len(MARKET_CHUNK)
-            .for_each(
-                |((((((ceiling, activity), offered), service), building), &cargo), &carrier)| {
-                    *service = allocator.is_city_service_building(building);
-                    *ceiling = catalog
-                        .profile_by_runtime_id(building.economy_profile_runtime_id)
-                        .filter(|profile| {
-                            *service
-                                || !(cannot_fund_one_worker(building, profile, cargo)
-                                    || (profit_proof
-                                        && cannot_profit_at_best_prices(
-                                            building,
-                                            profile,
-                                            catalog,
-                                            tuning,
-                                            carrier,
-                                            minute_of_day,
-                                        )))
-                        })
-                        .map_or(0, |profile| {
-                            physical_worker_capacity_for_profile(building, profile)
-                        });
-                    *activity = 1.0;
-                    // A proven zero ceiling never produces, so buyers never stage its output.
-                    *offered = if *ceiling == 0 { 0.0 } else { 1.0 };
-                },
-            );
+        crate::thread_pools::install(|| {
+            self.closure_ceilings[rows.clone()]
+                .par_iter_mut()
+                .zip(&mut self.closure_activity[rows.clone()])
+                .zip(&mut self.offered_activity[rows.clone()])
+                .zip(&mut self.service_flags[rows.clone()])
+                .zip(&allocator.buildings[rows.clone()])
+                .zip(&self.freight_capital[rows.clone()])
+                .zip(&self.carrier_quotes[rows])
+                .with_min_len(MARKET_CHUNK)
+                .for_each(
+                    |(
+                        (((((ceiling, activity), offered), service), building), &cargo),
+                        &carrier,
+                    )| {
+                        *service = allocator.is_city_service_building(building);
+                        *ceiling = catalog
+                            .profile_by_runtime_id(building.economy_profile_runtime_id)
+                            .filter(|profile| {
+                                *service
+                                    || !(cannot_fund_one_worker(building, profile, cargo)
+                                        || (profit_proof
+                                            && cannot_profit_at_best_prices(
+                                                building,
+                                                profile,
+                                                catalog,
+                                                tuning,
+                                                carrier,
+                                                minute_of_day,
+                                            )))
+                            })
+                            .map_or(0, |profile| {
+                                physical_worker_capacity_for_profile(building, profile)
+                            });
+                        *activity = 1.0;
+                        // A proven zero ceiling never produces, so buyers never stage its output.
+                        *offered = if *ceiling == 0 { 0.0 } else { 1.0 };
+                    },
+                )
+        });
     }
 
     fn census_import_funding<F>(&mut self, ctx: &CensusContext<'_, F>, rows: Range<usize>)
@@ -1623,140 +1636,143 @@ impl JobFunding {
         let import_replay_disabled = self.import_quote_replay_disabled;
         #[cfg(test)]
         let import_replays = std::sync::atomic::AtomicUsize::new(0);
-        self.capacities[rows.clone()]
-            .par_iter_mut()
-            .zip(self.service_capacities[rows.clone()].par_iter_mut())
-            .zip(self.activities[rows.clone()].par_iter_mut())
-            .zip(self.headroom[rows.clone()].par_iter_mut())
-            .zip(self.local_input_backing[rows.clone()].par_iter_mut())
-            .zip(self.import_memos[rows.clone()].par_iter_mut())
-            .zip(self.import_plans.rows[rows.clone()].par_iter_mut())
-            .enumerate()
-            .for_each(
-                |(
-                    offset,
-                    ((((((capacity, service), activity), headroom), local_backing), memo), row),
-                )| {
-                    let index = rows.start + offset;
-                    *capacity = 0;
-                    *service = 0;
-                    *activity = 0.0;
-                    *headroom = [0.0; 2];
-                    *local_backing = false;
-                    let building = &allocator.buildings[index];
-                    let Some(profile) =
-                        catalog.profile_by_runtime_id(building.economy_profile_runtime_id)
-                    else {
-                        return;
-                    };
-                    let physical = physical_worker_capacity_for_profile(building, profile);
-                    let goods_multiplier = freight_goods_multiplier(
-                        profile,
-                        building.zone_type,
-                        tuning,
-                        minute_of_day,
-                    );
-                    let prices = OperationPrices {
-                        utilities,
-                        property_tax: daily_property_tax(
+        crate::thread_pools::install(|| {
+            self.capacities[rows.clone()]
+                .par_iter_mut()
+                .zip(self.service_capacities[rows.clone()].par_iter_mut())
+                .zip(self.activities[rows.clone()].par_iter_mut())
+                .zip(self.headroom[rows.clone()].par_iter_mut())
+                .zip(self.local_input_backing[rows.clone()].par_iter_mut())
+                .zip(self.import_memos[rows.clone()].par_iter_mut())
+                .zip(self.import_plans.rows[rows.clone()].par_iter_mut())
+                .enumerate()
+                .for_each(
+                    |(
+                        offset,
+                        ((((((capacity, service), activity), headroom), local_backing), memo), row),
+                    )| {
+                        let index = rows.start + offset;
+                        *capacity = 0;
+                        *service = 0;
+                        *activity = 0.0;
+                        *headroom = [0.0; 2];
+                        *local_backing = false;
+                        let building = &allocator.buildings[index];
+                        let Some(profile) =
+                            catalog.profile_by_runtime_id(building.economy_profile_runtime_id)
+                        else {
+                            return;
+                        };
+                        let physical = physical_worker_capacity_for_profile(building, profile);
+                        let goods_multiplier = freight_goods_multiplier(
+                            profile,
                             building.zone_type,
-                            building.level,
-                            fiscal,
-                        ),
-                        imports: tuning.owa_import_price_multiplier
-                            * if goods_multiplier.is_finite() {
-                                goods_multiplier
-                            } else {
-                                1.0
-                            },
-                        carrier_quote: self.carrier_quotes[index]
-                            .filter(|_| goods_multiplier.is_finite())
-                            .unwrap_or(f32::INFINITY),
-                        truck_payload: tuning.logistics.truck_payload_kg,
-                    };
-                    if self.service_flags[index] {
-                        *service = (ctx.service_capacity)(index, physical, profile).min(physical);
-                        if live(building) {
-                            *capacity = *service;
-                            let planned = *service as f32 / physical.max(1) as f32;
-                            let costs = OperatingCosts::for_plan(
-                                profile,
-                                catalog,
-                                OperationPlan {
-                                    workers: *service,
-                                    activity: planned,
-                                    area: output_area_scale_for_building(building, profile),
+                            tuning,
+                            minute_of_day,
+                        );
+                        let prices = OperationPrices {
+                            utilities,
+                            property_tax: daily_property_tax(
+                                building.zone_type,
+                                building.level,
+                                fiscal,
+                            ),
+                            imports: tuning.owa_import_price_multiplier
+                                * if goods_multiplier.is_finite() {
+                                    goods_multiplier
+                                } else {
+                                    1.0
                                 },
-                                prices,
-                                |_, _| 0.0,
-                            );
-                            if costs.inputs.is_finite() && costs.freight.is_finite() {
-                                *activity = planned;
+                            carrier_quote: self.carrier_quotes[index]
+                                .filter(|_| goods_multiplier.is_finite())
+                                .unwrap_or(f32::INFINITY),
+                            truck_payload: tuning.logistics.truck_payload_kg,
+                        };
+                        if self.service_flags[index] {
+                            *service =
+                                (ctx.service_capacity)(index, physical, profile).min(physical);
+                            if live(building) {
+                                *capacity = *service;
+                                let planned = *service as f32 / physical.max(1) as f32;
+                                let costs = OperatingCosts::for_plan(
+                                    profile,
+                                    catalog,
+                                    OperationPlan {
+                                        workers: *service,
+                                        activity: planned,
+                                        area: output_area_scale_for_building(building, profile),
+                                    },
+                                    prices,
+                                    |_, _| 0.0,
+                                );
+                                if costs.inputs.is_finite() && costs.freight.is_finite() {
+                                    *activity = planned;
+                                }
                             }
+                            return;
                         }
-                        return;
-                    }
-                    if !live(building) || physical == 0 || self.closure_ceilings[index] == 0 {
-                        return;
-                    }
-                    // Finite family claims commit serially below. Independent non-consumer
-                    // firms and public funding retain the parallel import-ceiling pass.
-                    if profile
-                        .outputs
-                        .iter()
-                        .any(|port| self.customers.consumes(port.resource_runtime_id))
-                    {
-                        return;
-                    }
-                    let exports = building_outputs_can_export_to_owa(building, profile)
-                        && self.carrier_quotes[index].is_some()
-                        && tuning.owa_export_price_multiplier > 0.0;
-                    let memo_activity = self.closure_activity[index];
-                    #[cfg(test)]
-                    let replay_enabled = !import_replay_disabled;
-                    #[cfg(not(test))]
-                    let replay_enabled = true;
-                    if replay_enabled
-                        && memo.matches(self.closure_ceilings[index], memo_activity, &[], &[])
-                    {
-                        (*capacity, *activity, *headroom) = memo.result();
+                        if !live(building) || physical == 0 || self.closure_ceilings[index] == 0 {
+                            return;
+                        }
+                        // Finite family claims commit serially below. Independent non-consumer
+                        // firms and public funding retain the parallel import-ceiling pass.
+                        if profile
+                            .outputs
+                            .iter()
+                            .any(|port| self.customers.consumes(port.resource_runtime_id))
+                        {
+                            return;
+                        }
+                        let exports = building_outputs_can_export_to_owa(building, profile)
+                            && self.carrier_quotes[index].is_some()
+                            && tuning.owa_export_price_multiplier > 0.0;
+                        let memo_activity = self.closure_activity[index];
                         #[cfg(test)]
-                        import_replays.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        return;
-                    }
-                    let operation = funded_private_operation(
-                        building,
-                        profile,
-                        catalog,
-                        physical,
-                        prices,
-                        &self.market,
-                        exports.then_some(tuning.owa_export_price_multiplier),
-                        self.freight_capital[index],
-                        None,
-                        None,
-                        headroom,
-                        self.closure_ceilings[index],
-                        self.closure_activity[index],
-                        Some(ImportPlanRecord {
-                            row,
-                            shares: &self.import_plans.shares
-                                [self.customer_offsets[index]..self.customer_offsets[index + 1]],
-                            previous: ctx
-                                .previous
-                                .and_then(|funding| funding.import_plans.get(index, catalog)),
-                        }),
-                    );
-                    *capacity = operation.0;
-                    *activity = operation.1;
-                    memo.remember(
-                        self.closure_ceilings[index],
-                        memo_activity,
-                        operation,
-                        *headroom,
-                    );
-                },
-            );
+                        let replay_enabled = !import_replay_disabled;
+                        #[cfg(not(test))]
+                        let replay_enabled = true;
+                        if replay_enabled
+                            && memo.matches(self.closure_ceilings[index], memo_activity, &[], &[])
+                        {
+                            (*capacity, *activity, *headroom) = memo.result();
+                            #[cfg(test)]
+                            import_replays.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            return;
+                        }
+                        let operation = funded_private_operation(
+                            building,
+                            profile,
+                            catalog,
+                            physical,
+                            prices,
+                            &self.market,
+                            exports.then_some(tuning.owa_export_price_multiplier),
+                            self.freight_capital[index],
+                            None,
+                            None,
+                            headroom,
+                            self.closure_ceilings[index],
+                            self.closure_activity[index],
+                            Some(ImportPlanRecord {
+                                row,
+                                shares: &self.import_plans.shares[self.customer_offsets[index]
+                                    ..self.customer_offsets[index + 1]],
+                                previous: ctx
+                                    .previous
+                                    .and_then(|funding| funding.import_plans.get(index, catalog)),
+                            }),
+                        );
+                        *capacity = operation.0;
+                        *activity = operation.1;
+                        memo.remember(
+                            self.closure_ceilings[index],
+                            memo_activity,
+                            operation,
+                            *headroom,
+                        );
+                    },
+                )
+        });
         #[cfg(test)]
         {
             self.import_quote_replays += import_replays.load(std::sync::atomic::Ordering::Relaxed);

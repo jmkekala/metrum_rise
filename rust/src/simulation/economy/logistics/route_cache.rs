@@ -160,7 +160,9 @@ fn frontage_prices(
 // the workers (`SIM-02-K`). O(new rows / workers).
 fn resize_in_parallel<T: Clone + Send>(rows: &mut Vec<T>, len: usize, value: T) {
     match len.checked_sub(rows.len()) {
-        Some(new) => rows.par_extend(rayon::iter::repeat_n(value, new)),
+        Some(new) => {
+            crate::thread_pools::install(|| rows.par_extend(rayon::iter::repeat_n(value, new)))
+        }
         None => rows.truncate(len),
     }
 }
@@ -219,24 +221,26 @@ impl FreightRouteCache {
     ) {
         let generation = self.building_generation;
         let first = range.start;
-        self.access[range]
-            .par_iter_mut()
-            .enumerate()
-            .map(|(offset, slot)| (first + offset, slot))
-            .for_each(|(index, slot)| {
-                if slot
-                    .as_ref()
-                    .is_some_and(|cached| cached.checked == generation)
-                    || !wanted(index)
-                {
-                    return;
-                }
-                if let Some(entrance) = allocator.entrances.get(index) {
-                    *slot = Some(BuildingAccess::refresh(
-                        *slot, generation, entrance, network, graph,
-                    ));
-                }
-            });
+        crate::thread_pools::install(|| {
+            self.access[range]
+                .par_iter_mut()
+                .enumerate()
+                .map(|(offset, slot)| (first + offset, slot))
+                .for_each(|(index, slot)| {
+                    if slot
+                        .as_ref()
+                        .is_some_and(|cached| cached.checked == generation)
+                        || !wanted(index)
+                    {
+                        return;
+                    }
+                    if let Some(entrance) = allocator.entrances.get(index) {
+                        *slot = Some(BuildingAccess::refresh(
+                            *slot, generation, entrance, network, graph,
+                        ));
+                    }
+                })
+        });
     }
 
     fn building_access(
@@ -403,23 +407,25 @@ impl FreightRouteCache {
             self.minimum_borders.extend_from_slice(borders);
             self.minimum_border_costs
                 .resize(graph.node_count(), f32::MAX);
-            self.minimum_border_costs
-                .par_iter_mut()
-                .enumerate()
-                .for_each(|(node, cost)| {
-                    *cost = borders
-                        .iter()
-                        .filter_map(|border| {
-                            // The original entrance quote treats a source equal to its arrival as zero.
-                            if *border == node as u32 {
-                                Some(0.0)
-                            } else {
-                                self.border_costs.get(border)?.cost_to(node as u32)
-                            }
-                        })
-                        .min_by(f32::total_cmp)
-                        .unwrap_or(f32::MAX);
-                });
+            crate::thread_pools::install(|| {
+                self.minimum_border_costs
+                    .par_iter_mut()
+                    .enumerate()
+                    .for_each(|(node, cost)| {
+                        *cost = borders
+                            .iter()
+                            .filter_map(|border| {
+                                // The original entrance quote treats a source equal to its arrival as zero.
+                                if *border == node as u32 {
+                                    Some(0.0)
+                                } else {
+                                    self.border_costs.get(border)?.cost_to(node as u32)
+                                }
+                            })
+                            .min_by(f32::total_cmp)
+                            .unwrap_or(f32::MAX);
+                    })
+            });
         }
     }
 
@@ -472,16 +478,22 @@ impl FreightRouteCache {
 
     pub(super) fn clear(&mut self) {
         // The tables hold megabytes at city scale; fill them in parallel (`SIM-02-K`).
-        self.node_to_node
-            .par_iter_mut()
-            .for_each(|entries| *entries = [None; 2]);
+        let node_to_node = &mut self.node_to_node;
+        crate::thread_pools::install(|| {
+            node_to_node
+                .par_iter_mut()
+                .for_each(|entries| *entries = [None; 2])
+        });
         self.clear_buildings();
         // Network/customization changes can alter projected access and every route even
         // when door inputs match. Only building-only invalidation may retain these proofs.
-        self.access.par_iter_mut().for_each(|access| *access = None);
-        self.building_to_building
-            .par_iter_mut()
-            .for_each(|entries| *entries = [None; 2]);
+        let (access, building_to_building) = (&mut self.access, &mut self.building_to_building);
+        crate::thread_pools::install(|| {
+            access.par_iter_mut().for_each(|access| *access = None);
+            building_to_building
+                .par_iter_mut()
+                .for_each(|entries| *entries = [None; 2]);
+        });
         self.border_costs.clear();
         self.minimum_borders.clear();
         self.minimum_border_costs.clear();

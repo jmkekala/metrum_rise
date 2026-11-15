@@ -105,18 +105,20 @@ impl DispatchFold<'_> {
     /// slot order. O(handles × outputs).
     pub(super) fn fold_all(&self) -> Vec<SupplierEntry> {
         let handles = self.allocator.building_handles.capacity();
-        (0..handles.div_ceil(HANDLES_PER_TASK))
-            .into_par_iter()
-            .flat_map_iter(|task| {
-                let start = task * HANDLES_PER_TASK;
-                let mut entries = Vec::new();
-                self.fold(
-                    start..(start + HANDLES_PER_TASK).min(handles),
-                    |resource, entry| entries.push((resource, entry)),
-                );
-                entries
-            })
-            .collect()
+        crate::thread_pools::install(|| {
+            (0..handles.div_ceil(HANDLES_PER_TASK))
+                .into_par_iter()
+                .flat_map_iter(|task| {
+                    let start = task * HANDLES_PER_TASK;
+                    let mut entries = Vec::new();
+                    self.fold(
+                        start..(start + HANDLES_PER_TASK).min(handles),
+                        |resource, entry| entries.push((resource, entry)),
+                    );
+                    entries
+                })
+                .collect()
+        })
     }
 }
 
@@ -221,38 +223,40 @@ impl SupplierCandidateIndex {
         entries: &mut Vec<SupplierEntry>,
     ) {
         entries.clear();
-        entries.par_extend(
-            (0..allocator.buildings.len())
-                .into_par_iter()
-                .filter_map(|idx| {
-                    supplier_site(
-                        allocator,
-                        graph,
-                        catalog,
-                        freight_components,
-                        idx,
-                        operational_only,
-                    )
-                    .map(|(chunk, components, profile)| (idx, chunk, components, profile))
-                })
-                .flat_map_iter(|(idx, chunk, components, profile)| {
-                    let (component_values, component_count) = components.raw_parts();
-                    let eligible = &eligible;
-                    profile
-                        .outputs
-                        .iter()
-                        .filter(move |output| eligible(idx, output.resource_runtime_id))
-                        .flat_map(move |output| {
-                            (0..component_count).map(move |component_idx| {
-                                let component = component_values[component_idx];
-                                (
-                                    output.resource_runtime_id,
-                                    ReachableBucketEntry::new(component, chunk, idx),
-                                )
+        crate::thread_pools::install(|| {
+            entries.par_extend(
+                (0..allocator.buildings.len())
+                    .into_par_iter()
+                    .filter_map(|idx| {
+                        supplier_site(
+                            allocator,
+                            graph,
+                            catalog,
+                            freight_components,
+                            idx,
+                            operational_only,
+                        )
+                        .map(|(chunk, components, profile)| (idx, chunk, components, profile))
+                    })
+                    .flat_map_iter(|(idx, chunk, components, profile)| {
+                        let (component_values, component_count) = components.raw_parts();
+                        let eligible = &eligible;
+                        profile
+                            .outputs
+                            .iter()
+                            .filter(move |output| eligible(idx, output.resource_runtime_id))
+                            .flat_map(move |output| {
+                                (0..component_count).map(move |component_idx| {
+                                    let component = component_values[component_idx];
+                                    (
+                                        output.resource_runtime_id,
+                                        ReachableBucketEntry::new(component, chunk, idx),
+                                    )
+                                })
                             })
-                        })
-                }),
-        );
+                    }),
+            )
+        });
     }
 
     /// Drops every resource's buckets, keeping the map for [`Self::insert`] (`SIM-02-K`).
@@ -277,17 +281,20 @@ impl SupplierCandidateIndex {
 
         // Each resource's buckets follow from its own entries alone, so they build on the pool
         // and enter the map as the serial loop entered them (`SIM-02-K`).
-        let built: Vec<(ResourceRuntimeId, ReachableBucketIndex)> = grouped
-            .into_iter()
-            .collect::<Vec<_>>()
-            .into_par_iter()
-            .map(|(resource_runtime_id, entries)| {
-                (
-                    resource_runtime_id,
-                    ReachableBucketIndex::from_entries(entries),
-                )
-            })
-            .collect();
+        let built: Vec<(ResourceRuntimeId, ReachableBucketIndex)> =
+            crate::thread_pools::install(|| {
+                grouped
+                    .into_iter()
+                    .collect::<Vec<_>>()
+                    .into_par_iter()
+                    .map(|(resource_runtime_id, entries)| {
+                        (
+                            resource_runtime_id,
+                            ReachableBucketIndex::from_entries(entries),
+                        )
+                    })
+                    .collect()
+            });
 
         Self {
             by_resource: built.into_iter().collect(),

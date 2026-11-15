@@ -408,14 +408,13 @@ impl RecurringSupply {
         self.releasing_owner = None;
         self.owner_receipts
             .resize(allocator.buildings.len(), usize::MAX);
-        self.owner_receipts
-            .par_iter_mut()
-            .for_each(|head| *head = usize::MAX);
         self.owner_tails
             .resize(allocator.buildings.len(), usize::MAX);
-        self.owner_tails
-            .par_iter_mut()
-            .for_each(|tail| *tail = usize::MAX);
+        let (receipts, tails) = (&mut self.owner_receipts, &mut self.owner_tails);
+        crate::thread_pools::install(|| {
+            receipts.par_iter_mut().for_each(|head| *head = usize::MAX);
+            tails.par_iter_mut().for_each(|tail| *tail = usize::MAX);
+        });
         self.free_receipt = usize::MAX;
         self.prices.clear();
         self.offers.clear();
@@ -510,7 +509,8 @@ impl RecurringSupply {
         );
         // Sorted entries split into one run per resource; each run builds the index that
         // resource's own sorted entries give (`SIM-02-K`).
-        self.index_entries.par_sort_unstable();
+        let entries = &mut self.index_entries;
+        crate::thread_pools::install(|| entries.par_sort_unstable());
         let mut start = 0;
         for run in self.index_entries.chunk_by(|left, right| left.0 == right.0) {
             self.index_runs.push((run[0].0, start, start + run.len()));
@@ -685,7 +685,7 @@ impl RecurringSupply {
 
     /// Whether any provisional owner inputs exceed the finally financed staffed source rate.
     pub(crate) fn has_overclaims(&self) -> bool {
-        self.remaining.par_iter().any(|remaining| *remaining < 0.0)
+        crate::thread_pools::install(|| self.remaining.par_iter().any(|remaining| *remaining < 0.0))
     }
 
     /// Withdraws only excess deliveries, newest first, retaining earlier buyers and prices.
@@ -1681,10 +1681,12 @@ fn fill_production_rates(
     if end - first > 256 {
         let middle = first + (end - first) / 2;
         let (left, right) = remaining.split_at_mut(offsets[middle] - offsets[first]);
-        rayon::join(
-            || fill_production_rates(allocator, catalog, funded, offsets, first, middle, left),
-            || fill_production_rates(allocator, catalog, funded, offsets, middle, end, right),
-        );
+        crate::thread_pools::install(|| {
+            rayon::join(
+                || fill_production_rates(allocator, catalog, funded, offsets, first, middle, left),
+                || fill_production_rates(allocator, catalog, funded, offsets, middle, end, right),
+            )
+        });
         return;
     }
     for index in first..end {

@@ -220,7 +220,7 @@ impl WorkforceReservations {
         snapshot: &DailyDemandSnapshot,
     ) -> FreePlaceScan {
         let places = FreePlaces::for_snapshot(snapshot, tuning);
-        FreePlaceScan(
+        FreePlaceScan(crate::thread_pools::install(|| {
             allocator
                 .buildings
                 .par_iter()
@@ -229,8 +229,8 @@ impl WorkforceReservations {
                     scan.add_free_places(allocator, places, idx, building);
                     scan
                 })
-                .reduce(BuildingHours::default, BuildingHours::merge),
-        )
+                .reduce(BuildingHours::default, BuildingHours::merge)
+        }))
     }
 
     /// [`Self::reset`] on a scan [`Self::scan_free_places`] took of the same buildings and

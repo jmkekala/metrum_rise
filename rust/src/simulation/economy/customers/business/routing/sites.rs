@@ -137,20 +137,22 @@ impl BusinessMarket {
                 .for_each(|site| site.access = None);
             self.sites.access_topology = topology;
         }
-        self.sites
-            .entries
-            .par_iter_mut()
-            .filter(|site| site.access.is_none())
-            .for_each(|site| {
-                site.access = Some(Access {
-                    chunk: chunk_for_point(site.entrance.door_pos.x, site.entrance.door_pos.y),
-                    components: components.entrance_components(
-                        &site.entrance,
-                        graph,
-                        TransitFlags::CAR,
-                    ),
-                });
-            });
+        let entries = &mut self.sites.entries;
+        crate::thread_pools::install(|| {
+            entries
+                .par_iter_mut()
+                .filter(|site| site.access.is_none())
+                .for_each(|site| {
+                    site.access = Some(Access {
+                        chunk: chunk_for_point(site.entrance.door_pos.x, site.entrance.door_pos.y),
+                        components: components.entrance_components(
+                            &site.entrance,
+                            graph,
+                            TransitFlags::CAR,
+                        ),
+                    });
+                })
+        });
         let live_ports = self.buyer_ports.last().map_or(0, |ports| ports.end);
         self.identities.truncate(live_ports);
         self.port_access.truncate(live_ports);
@@ -206,9 +208,12 @@ impl BusinessMarket {
                 .iter()
                 .all(|&port| port < live_ports || port == usize::MAX)
         );
-        self.indices.sites.par_iter_mut().for_each(|index| {
-            index.reset_available(|_| false);
-            index.reset_query_masks(|_| 0);
+        let sites = &mut self.indices.sites;
+        crate::thread_pools::install(|| {
+            sites.par_iter_mut().for_each(|index| {
+                index.reset_available(|_| false);
+                index.reset_query_masks(|_| 0);
+            })
         });
     }
 
@@ -300,13 +305,16 @@ impl BusinessMarket {
         } else {
             &mut self.indices.live
         };
-        indices[range.clone()]
-            .par_iter_mut()
-            .zip(&mut self.index_entries[range])
-            .for_each(|(index, entries)| {
-                *index = ReachableBucketIndex::from_entries(std::mem::take(entries));
-                index.enable_reservations();
-            });
+        let entries = &mut self.index_entries[range.clone()];
+        crate::thread_pools::install(|| {
+            indices[range]
+                .par_iter_mut()
+                .zip(entries)
+                .for_each(|(index, entries)| {
+                    *index = ReachableBucketIndex::from_entries(std::mem::take(entries));
+                    index.enable_reservations();
+                })
+        });
     }
 
     /// Snapshots only overwritten mappings; appended rows disappear with account rollback.

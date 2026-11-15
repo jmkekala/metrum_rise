@@ -128,15 +128,18 @@ impl AgentSystem {
                 *mode = classify_agent_claims(agents, start + offset, &preparation);
             }
         };
-        if n <= CLAIM_CLASSIFICATION_CHUNK || rayon::current_num_threads() == 1 {
-            classify((0, &mut self.movement_claim_modes));
-        } else {
-            // The commutative minimum selects the same owner regardless of worker scheduling.
-            self.movement_claim_modes
-                .par_chunks_mut(CLAIM_CLASSIFICATION_CHUNK)
-                .enumerate()
-                .for_each(classify);
-        }
+        let modes = &mut self.movement_claim_modes;
+        crate::thread_pools::install(|| {
+            if n <= CLAIM_CLASSIFICATION_CHUNK || rayon::current_num_threads() == 1 {
+                classify((0, modes));
+            } else {
+                // The commutative minimum selects the same owner regardless of worker scheduling.
+                modes
+                    .par_chunks_mut(CLAIM_CLASSIFICATION_CHUNK)
+                    .enumerate()
+                    .for_each(classify);
+            }
+        });
         #[cfg(test)]
         super::contract::add(super::contract::Phase::ClaimAgents, n);
     }

@@ -80,7 +80,8 @@ impl AgentSystem {
             }
         };
         if self.lane_claim_owner.len() >= PAR_CLAIM_RESET_LANES {
-            self.lane_claim_owner.par_chunks(KEY_CHUNK).for_each(reset);
+            let owners = &self.lane_claim_owner;
+            crate::thread_pools::install(|| owners.par_chunks(KEY_CHUNK).for_each(reset));
         } else {
             reset(&self.lane_claim_owner);
         }
@@ -186,7 +187,7 @@ impl AgentSystem {
         let parallel = n >= PAR_THRESHOLD;
         let bucket_len = self.lane_buckets.len();
         let range_count = if parallel {
-            2 * rayon::current_num_threads()
+            2 * crate::thread_pools::install(rayon::current_num_threads)
         } else {
             1
         };
@@ -208,23 +209,25 @@ impl AgentSystem {
         let modes = &self.agents.transit_mode[..n];
         let flags = &self.agents.access_flags[..n];
         let live = if parallel {
-            groups
-                .par_chunks_mut(range_count)
-                .zip(transit.par_chunks(KEY_CHUNK))
-                .zip(lanes.par_chunks(KEY_CHUNK))
-                .zip(modes.par_chunks(KEY_CHUNK))
-                .zip(flags.par_chunks(KEY_CHUNK))
-                .enumerate()
-                .map(|(chunk, ((((out, transit), lanes), modes), flags))| {
-                    let columns = AgentColumns {
-                        transit,
-                        lanes,
-                        modes,
-                        flags,
-                    };
-                    group_lane_agents(chunk, out, columns, lane_count, range_len)
-                })
-                .sum()
+            crate::thread_pools::install(|| {
+                groups
+                    .par_chunks_mut(range_count)
+                    .zip(transit.par_chunks(KEY_CHUNK))
+                    .zip(lanes.par_chunks(KEY_CHUNK))
+                    .zip(modes.par_chunks(KEY_CHUNK))
+                    .zip(flags.par_chunks(KEY_CHUNK))
+                    .enumerate()
+                    .map(|(chunk, ((((out, transit), lanes), modes), flags))| {
+                        let columns = AgentColumns {
+                            transit,
+                            lanes,
+                            modes,
+                            flags,
+                        };
+                        group_lane_agents(chunk, out, columns, lane_count, range_len)
+                    })
+                    .sum()
+            })
         } else {
             groups
                 .chunks_mut(range_count)
@@ -257,14 +260,17 @@ impl AgentSystem {
         };
         let ranges = &mut scratch.ranges[..range_count];
         if parallel {
-            self.lane_buckets
-                .par_chunks_mut(range_len)
-                .zip(self.lane_is_dirty.par_chunks_mut(range_len))
-                .zip(ranges.par_iter_mut())
-                .enumerate()
-                .for_each(|(r, ((buckets, flags), range))| {
-                    fill_lane_range(r, r * range_len, buckets, flags, range, &input);
-                });
+            let (buckets, dirty) = (&mut self.lane_buckets, &mut self.lane_is_dirty);
+            crate::thread_pools::install(|| {
+                buckets
+                    .par_chunks_mut(range_len)
+                    .zip(dirty.par_chunks_mut(range_len))
+                    .zip(ranges.par_iter_mut())
+                    .enumerate()
+                    .for_each(|(r, ((buckets, flags), range))| {
+                        fill_lane_range(r, r * range_len, buckets, flags, range, &input);
+                    })
+            });
         } else {
             for (r, ((buckets, flags), range)) in self
                 .lane_buckets

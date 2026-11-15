@@ -280,24 +280,26 @@ fn scatter(core: &SimCore, canopy: bool) -> Vec<f32> {
 
 fn first_candidate(core: &SimCore, accepted: bool) -> Plant {
     let (cell_m, salt) = grid(core, VegetationLayer::Canopy);
-    disc_cells(Vector2::ZERO, 128.0, cell_m, VegetationLayer::Canopy)
-        .find_first(|cell| evaluate_cell(core, *cell, cell_m, salt).is_some() == accepted)
-        .map(|cell| {
-            // An accepted cell reports the species the generator picked, so a caller can paint
-            // that same species back. A rejected cell holds no plant and has no species.
-            evaluate_cell(core, cell, cell_m, salt).unwrap_or_else(|| {
-                let [x, z, yaw, scale] = candidate(cell.x, cell.z, cell_m, salt);
-                Plant {
-                    x,
-                    z,
-                    yaw,
-                    scale,
-                    species: 0,
-                    variant: VARIANT_FROM_SEED,
-                }
-            })
+    crate::thread_pools::install(|| {
+        disc_cells(Vector2::ZERO, 128.0, cell_m, VegetationLayer::Canopy)
+            .find_first(|cell| evaluate_cell(core, *cell, cell_m, salt).is_some() == accepted)
+    })
+    .map(|cell| {
+        // An accepted cell reports the species the generator picked, so a caller can paint
+        // that same species back. A rejected cell holds no plant and has no species.
+        evaluate_cell(core, cell, cell_m, salt).unwrap_or_else(|| {
+            let [x, z, yaw, scale] = candidate(cell.x, cell.z, cell_m, salt);
+            Plant {
+                x,
+                z,
+                yaw,
+                scale,
+                species: 0,
+                variant: VARIANT_FROM_SEED,
+            }
         })
-        .unwrap()
+    })
+    .unwrap()
 }
 
 #[test]

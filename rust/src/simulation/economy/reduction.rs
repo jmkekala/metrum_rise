@@ -23,17 +23,19 @@ where
     Fold: Fn(&mut T, usize, &I) + Send + Sync,
     Merge: Fn(T, T) -> T,
 {
-    input
-        .par_chunks(chunk_size)
-        .enumerate()
-        .map(|(chunk_idx, chunk)| {
-            let mut total = identity();
-            for (offset, item) in chunk.iter().enumerate() {
-                fold(&mut total, chunk_idx * chunk_size + offset, item);
-            }
-            total
-        })
-        .collect::<Vec<_>>()
-        .into_iter()
-        .fold(identity(), merge)
+    crate::thread_pools::install(|| {
+        input
+            .par_chunks(chunk_size)
+            .enumerate()
+            .map(|(chunk_idx, chunk)| {
+                let mut total = identity();
+                for (offset, item) in chunk.iter().enumerate() {
+                    fold(&mut total, chunk_idx * chunk_size + offset, item);
+                }
+                total
+            })
+            .collect::<Vec<_>>()
+    })
+    .into_iter()
+    .fold(identity(), merge)
 }

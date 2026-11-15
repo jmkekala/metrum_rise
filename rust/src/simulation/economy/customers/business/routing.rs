@@ -398,13 +398,15 @@ impl BusinessMarket {
     /// Publishes the completed joint sales proof as each buyer's financing limit.
     pub(crate) fn publish_financing(&mut self, headroom: &[[f64; 2]]) {
         debug_assert!(!self.budgets.revalidation.is_active());
-        self.budgets
-            .finance
-            .par_iter_mut()
-            .zip(headroom)
-            .for_each(|(finance, &actual)| {
-                *finance = actual;
-            });
+        let finance = &mut self.budgets.finance;
+        crate::thread_pools::install(|| {
+            finance
+                .par_iter_mut()
+                .zip(headroom)
+                .for_each(|(finance, &actual)| {
+                    *finance = actual;
+                })
+        });
         for buyer in 0..self.budgets.finance.len() {
             self.mark_finance_dirty(buyer);
         }
@@ -542,23 +544,26 @@ impl BusinessMarket {
             return;
         }
         let first = range.start;
-        self.access[range]
-            .par_iter_mut()
-            .enumerate()
-            .for_each(|(offset, access)| {
-                let buyer = first + offset;
-                *access = Access {
-                    chunk: allocator.entrances.get(buyer).map_or((0, 0), |entrance| {
-                        chunk_for_point(entrance.door_pos.x, entrance.door_pos.y)
-                    }),
-                    components: components.building_components(
-                        allocator,
-                        graph,
-                        buyer,
-                        TransitFlags::CAR,
-                    ),
-                };
-            });
+        let access = &mut self.access[range];
+        crate::thread_pools::install(|| {
+            access
+                .par_iter_mut()
+                .enumerate()
+                .for_each(|(offset, access)| {
+                    let buyer = first + offset;
+                    *access = Access {
+                        chunk: allocator.entrances.get(buyer).map_or((0, 0), |entrance| {
+                            chunk_for_point(entrance.door_pos.x, entrance.door_pos.y)
+                        }),
+                        components: components.building_components(
+                            allocator,
+                            graph,
+                            buyer,
+                            TransitFlags::CAR,
+                        ),
+                    };
+                })
+        });
     }
 
     /// The recipe ports of buyers `range`, the next ones, in buyer order, after a layout
@@ -677,10 +682,13 @@ impl BusinessMarket {
         possible: impl Fn(usize, u16) -> Option<f64> + Sync,
     ) {
         let identities = &self.identities;
-        self.indices.live.par_iter_mut().for_each(|index| {
-            index.reset_member_counts(|port| {
-                let (owner, resource) = identities[port];
-                possible(owner, resource)
+        let live = &mut self.indices.live;
+        crate::thread_pools::install(|| {
+            live.par_iter_mut().for_each(|index| {
+                index.reset_member_counts(|port| {
+                    let (owner, resource) = identities[port];
+                    possible(owner, resource)
+                })
             })
         });
     }
@@ -790,9 +798,12 @@ impl BusinessMarket {
             self.account_available[slot] = available;
             self.port_available[port] += usize::from(available);
         }
-        self.indices
-            .all_mut()
-            .for_each(|index| index.reset_available(|port| self.port_available[port] > 0));
+        let (indices, port_available) = (&mut self.indices, &self.port_available);
+        crate::thread_pools::install(|| {
+            indices
+                .all_mut()
+                .for_each(|index| index.reset_available(|port| port_available[port] > 0))
+        });
         self.visited.resize(self.identities.len(), 0);
         self.reset_finance_masks();
     }
@@ -893,7 +904,8 @@ impl BusinessMarket {
         let indices = &both[..1 + usize::from(site.is_some())];
         self.visit = self.visit.wrapping_add(1);
         if self.visit == 0 {
-            self.visited.par_iter_mut().for_each(|visit| *visit = 0);
+            let visited = &mut self.visited;
+            crate::thread_pools::install(|| visited.par_iter_mut().for_each(|visit| *visit = 0));
             self.visit = 1;
         }
         let reached = components.entrance_components(entrance, graph, TransitFlags::CAR);
@@ -1366,9 +1378,12 @@ impl BusinessMarket {
         let census = std::mem::take(&mut self.indices.live);
         self.rebuild_indices(catalog.resource_count() + 1, false);
         let (available, masks) = (&self.port_available, &self.port_masks);
-        self.indices.live.par_iter_mut().for_each(|index| {
-            index.reset_available(|port| available[port] > 0);
-            index.reset_query_masks(|port| masks[port]);
+        let live = &mut self.indices.live;
+        crate::thread_pools::install(|| {
+            live.par_iter_mut().for_each(|index| {
+                index.reset_available(|port| available[port] > 0);
+                index.reset_query_masks(|port| masks[port]);
+            })
         });
         self.census_buyers = Some(CensusBuyers {
             buyers,

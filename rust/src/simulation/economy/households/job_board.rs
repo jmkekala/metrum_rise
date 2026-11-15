@@ -181,20 +181,22 @@ fn fold_all(
     catalog: &RuntimeEconomyCatalog,
 ) -> Vec<Handle<Building>> {
     let handles = allocator.building_handles.capacity();
-    let parts: Vec<Vec<Handle<Building>>> = (0..handles.div_ceil(HANDLES_PER_TASK))
-        .into_par_iter()
-        .map(|task| {
-            let start = task * HANDLES_PER_TASK;
-            let mut members = Vec::new();
-            fold(
-                start..(start + HANDLES_PER_TASK).min(handles),
-                allocator,
-                catalog,
-                &mut members,
-            );
-            members
-        })
-        .collect();
+    let parts: Vec<Vec<Handle<Building>>> = crate::thread_pools::install(|| {
+        (0..handles.div_ceil(HANDLES_PER_TASK))
+            .into_par_iter()
+            .map(|task| {
+                let start = task * HANDLES_PER_TASK;
+                let mut members = Vec::new();
+                fold(
+                    start..(start + HANDLES_PER_TASK).min(handles),
+                    allocator,
+                    catalog,
+                    &mut members,
+                );
+                members
+            })
+            .collect()
+    });
     parts.concat()
 }
 

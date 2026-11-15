@@ -27,13 +27,13 @@ impl AgentSystem {
         transit_network: &TransitNetwork,
         graph: &RegionGraph,
     ) {
-        self.movement_query_shards
-            .resize_with(rayon::current_num_threads(), Default::default);
-        self.movement_query_shards
-            .par_iter_mut()
-            .for_each(|scratch| {
+        let shards = &mut self.movement_query_shards;
+        crate::thread_pools::install(|| {
+            shards.resize_with(rayon::current_num_threads(), Default::default);
+            shards.par_iter_mut().for_each(|scratch| {
                 scratch.prepare_routes(transit_network, graph);
-            });
+            })
+        });
         self.movement_serial_query
             .prepare_routes(transit_network, graph);
         self.parking_work.quotes.sync(transit_network);

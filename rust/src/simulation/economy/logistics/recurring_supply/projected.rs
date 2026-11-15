@@ -180,16 +180,22 @@ impl RecurringSupply {
                     .for_each(|source| source.access = None);
                 projected.access_topology = topology;
             }
-            projected
-                .sources
-                .par_iter_mut()
-                .filter(|source| source.access.is_none())
-                .for_each(|source| {
-                    source.access = Some((
-                        chunk_for_point(source.entrance.door_pos.x, source.entrance.door_pos.y),
-                        components.entrance_components(&source.entrance, graph, TransitFlags::CAR),
-                    ));
-                });
+            crate::thread_pools::install(|| {
+                projected
+                    .sources
+                    .par_iter_mut()
+                    .filter(|source| source.access.is_none())
+                    .for_each(|source| {
+                        source.access = Some((
+                            chunk_for_point(source.entrance.door_pos.x, source.entrance.door_pos.y),
+                            components.entrance_components(
+                                &source.entrance,
+                                graph,
+                                TransitFlags::CAR,
+                            ),
+                        ));
+                    })
+            });
             projected.offsets.clear();
             projected.offsets.reserve(projected.sources.len() + 1);
             projected.offsets.push(first_slot);
@@ -211,26 +217,32 @@ impl RecurringSupply {
                 }
                 range.end = index + 1;
             }
-            let entries = projected
-                .sources
-                .par_iter()
-                .enumerate()
-                .flat_map_iter(|(index, source)| {
-                    let (chunk, access) = source.access.unwrap();
-                    let (values, count) = access.raw_parts();
-                    let outputs = catalog
-                        .profile_by_runtime_id(source.profile)
-                        .map_or(&[][..], |p| p.outputs.as_slice());
-                    outputs.iter().flat_map(move |output| {
-                        (0..count).map(move |component| {
-                            (
-                                output.resource_runtime_id,
-                                ReachableBucketEntry::new(values[component], chunk, base + index),
-                            )
+            let entries = crate::thread_pools::install(|| {
+                projected
+                    .sources
+                    .par_iter()
+                    .enumerate()
+                    .flat_map_iter(|(index, source)| {
+                        let (chunk, access) = source.access.unwrap();
+                        let (values, count) = access.raw_parts();
+                        let outputs = catalog
+                            .profile_by_runtime_id(source.profile)
+                            .map_or(&[][..], |p| p.outputs.as_slice());
+                        outputs.iter().flat_map(move |output| {
+                            (0..count).map(move |component| {
+                                (
+                                    output.resource_runtime_id,
+                                    ReachableBucketEntry::new(
+                                        values[component],
+                                        chunk,
+                                        base + index,
+                                    ),
+                                )
+                            })
                         })
                     })
-                })
-                .collect();
+                    .collect()
+            });
             projected.index = SupplierCandidateIndex::from_entries(entries);
             projected.index.enable_reservations();
             projected.layout = Some(layout);

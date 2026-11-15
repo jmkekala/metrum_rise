@@ -23,25 +23,27 @@ impl HouseholdSystem {
             let households = &self.households;
             let pending_household_size = &agents.agents.pending_household_size;
             let home_building = &agents.agents.home_building;
-            agents
-                .agents
-                .household_id
-                .par_iter()
-                .enumerate()
-                .for_each(|(i, &household_id)| {
-                    if pending_household_size[i] > 0 || household_id == usize::MAX {
-                        return;
-                    }
-                    assert!(
-                        household_id < household_count,
-                        "agent {i} references missing household {household_id}"
-                    );
-                    let home = home_building[i];
-                    assert_eq!(
-                        households[household_id].home_building_id, home,
-                        "agent {i} household/home mismatch"
-                    );
-                });
+            crate::thread_pools::install(|| {
+                agents
+                    .agents
+                    .household_id
+                    .par_iter()
+                    .enumerate()
+                    .for_each(|(i, &household_id)| {
+                        if pending_household_size[i] > 0 || household_id == usize::MAX {
+                            return;
+                        }
+                        assert!(
+                            household_id < household_count,
+                            "agent {i} references missing household {household_id}"
+                        );
+                        let home = home_building[i];
+                        assert_eq!(
+                            households[household_id].home_building_id, home,
+                            "agent {i} household/home mismatch"
+                        );
+                    })
+            });
         }
     }
 

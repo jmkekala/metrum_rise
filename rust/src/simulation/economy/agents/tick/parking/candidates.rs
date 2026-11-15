@@ -218,14 +218,17 @@ impl AgentSystem {
         self.parking_work.rebuild = false;
         let handles = &self.handles;
         let ages = &self.agents.age_group;
-        self.agents
-            .has_car
-            .par_iter_mut()
-            .zip(self.agents.parking_trip.par_iter())
-            .enumerate()
-            .for_each(|(i, (flag, trip))| {
-                *flag = ages[i] != AGE_CHILD && parking.available_to(trip.vehicle, handles.handle(i));
-            });
+        crate::thread_pools::install(|| {
+            self.agents
+                .has_car
+                .par_iter_mut()
+                .zip(self.agents.parking_trip.par_iter())
+                .enumerate()
+                .for_each(|(i, (flag, trip))| {
+                    *flag = ages[i] != AGE_CHILD
+                        && parking.available_to(trip.vehicle, handles.handle(i));
+                })
+        });
         for i in 0..self.agents.len() {
             let trip = self.agents.parking_trip[i];
             if !on_a_car_leg(&trip) {

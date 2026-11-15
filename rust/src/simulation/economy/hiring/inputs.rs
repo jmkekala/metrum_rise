@@ -150,10 +150,13 @@ impl<T: Clone + Send + Sync> Rows<T> {
     // Copies every row of the prefix again. O(len), parallel.
     fn copy_all_again(&mut self, live: &[T]) {
         let len = self.len;
-        self.items[..len]
-            .par_iter_mut()
-            .zip(&live[..len])
-            .for_each(|(row, live)| row.clone_from(live));
+        let items = &mut self.items[..len];
+        crate::thread_pools::install(|| {
+            items
+                .par_iter_mut()
+                .zip(&live[..len])
+                .for_each(|(row, live)| row.clone_from(live))
+        });
     }
 
     // Hands the prefix over as `target`, exactly sized, and keeps `target`'s old rows as storage.
@@ -480,10 +483,13 @@ impl CensusInputs {
                 self.back.buildings.copy_all_again(&live.buildings);
             }
             if front {
-                self.front.allocator.buildings[..]
-                    .par_iter_mut()
-                    .zip(&live.buildings[..])
-                    .for_each(|(row, live)| row.clone_from(live));
+                let buildings = &mut self.front.allocator.buildings[..];
+                crate::thread_pools::install(|| {
+                    buildings
+                        .par_iter_mut()
+                        .zip(&live.buildings[..])
+                        .for_each(|(row, live)| row.clone_from(live))
+                });
             }
         } else if self.active() {
             for &row in &changes.rows {
@@ -510,10 +516,12 @@ impl CensusInputs {
         let deferred = std::mem::take(&mut self.deferred);
         let buildings = &mut self.front.allocator.buildings;
         if deferred.all {
-            buildings
-                .par_iter_mut()
-                .zip(&live.buildings[..])
-                .for_each(|(row, live)| row.clone_from(live));
+            crate::thread_pools::install(|| {
+                buildings
+                    .par_iter_mut()
+                    .zip(&live.buildings[..])
+                    .for_each(|(row, live)| row.clone_from(live))
+            });
         } else {
             for &row in &deferred.rows {
                 if let (Some(copy), Some(live)) = (buildings.get_mut(row), live.buildings.get(row))
@@ -666,10 +674,12 @@ impl CensusInputs {
         let buildings = &mut front.allocator.buildings;
         buildings.truncate(live.buildings.len());
         let kept = buildings.len();
-        buildings
-            .par_iter_mut()
-            .zip(&live.buildings[..kept])
-            .for_each(|(row, live)| row.clone_from(live));
+        crate::thread_pools::install(|| {
+            buildings
+                .par_iter_mut()
+                .zip(&live.buildings[..kept])
+                .for_each(|(row, live)| row.clone_from(live))
+        });
         buildings.extend_from_slice(&live.buildings[kept..]);
         front.households.clear();
         front.households.extend_from_slice(households);

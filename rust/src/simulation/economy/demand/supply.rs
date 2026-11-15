@@ -433,10 +433,13 @@ impl ProjectReservations {
                 }
             }
             None => {
-                self.operations[..live]
-                    .par_iter_mut()
-                    .enumerate()
-                    .for_each(|(index, operation)| *operation = operation_row(index));
+                let operations = &mut self.operations[..live];
+                crate::thread_pools::install(|| {
+                    operations
+                        .par_iter_mut()
+                        .enumerate()
+                        .for_each(|(index, operation)| *operation = operation_row(index))
+                });
                 self.reset_sites(funding, allocator, catalog, tuning, minute);
             }
         }
@@ -488,12 +491,12 @@ impl ProjectReservations {
             self.sites[owner] = None;
         }
         if live < self.live_owners {
-            self.operations[live..self.live_owners]
-                .par_iter_mut()
-                .for_each(|row| *row = None);
-            self.sites[live..self.live_owners]
-                .par_iter_mut()
-                .for_each(|row| *row = None);
+            let operations = &mut self.operations[live..self.live_owners];
+            let sites = &mut self.sites[live..self.live_owners];
+            crate::thread_pools::install(|| {
+                operations.par_iter_mut().for_each(|row| *row = None);
+                sites.par_iter_mut().for_each(|row| *row = None);
+            });
         }
         crate::utils::storage::grow_rows(&mut self.operations, live, None);
         crate::utils::storage::grow_rows(&mut self.sites, live, None);
@@ -617,11 +620,13 @@ impl<'a> SiteSupply<'a> {
             let project_owners = match reservations.free_lot_estimate {
                 Some((key, count)) if key == parcels => count,
                 _ => {
-                    let count = 2 * zoning
-                        .parcels()
-                        .par_iter()
-                        .filter(|parcel| parcel.is_available())
-                        .count();
+                    let count = crate::thread_pools::install(|| {
+                        2 * zoning
+                            .parcels()
+                            .par_iter()
+                            .filter(|parcel| parcel.is_available())
+                            .count()
+                    });
                     reservations.free_lot_estimate = Some((parcels, count));
                     count
                 }
@@ -1065,11 +1070,15 @@ impl<'a> SiteSupply<'a> {
         let allocator = self.allocator;
         let mut rows = std::mem::take(&mut self.reservations.constructing);
         rows.clear();
-        rows.par_extend(
-            (0..allocator.buildings.len())
-                .into_par_iter()
-                .filter(|&index| constructing(&allocator.buildings[index], census_complete(index))),
-        );
+        crate::thread_pools::install(|| {
+            rows.par_extend(
+                (0..allocator.buildings.len())
+                    .into_par_iter()
+                    .filter(|&index| {
+                        constructing(&allocator.buildings[index], census_complete(index))
+                    }),
+            )
+        });
         // Ordered capacity updates share resource totals, like the subsequent finite claims.
         for &index in &rows {
             let building = &allocator.buildings[index];
@@ -1610,16 +1619,18 @@ fn collect_rows<T>(fill: impl FnOnce(&mut Vec<T>)) -> Vec<T> {
 
 // Full rebuild over `owners`, one buffer per Rayon split rather than per owner.
 fn par_collect_rows<T: Send>(owners: usize, fill: impl Fn(usize, &mut Vec<T>) + Sync) -> Vec<T> {
-    (0..owners)
-        .into_par_iter()
-        .fold(Vec::new, |mut rows, owner| {
-            fill(owner, &mut rows);
-            rows
-        })
-        .reduce(Vec::new, |mut rows, mut more| {
-            rows.append(&mut more);
-            rows
-        })
+    crate::thread_pools::install(|| {
+        (0..owners)
+            .into_par_iter()
+            .fold(Vec::new, |mut rows, owner| {
+                fill(owner, &mut rows);
+                rows
+            })
+            .reduce(Vec::new, |mut rows, mut more| {
+                rows.append(&mut more);
+                rows
+            })
+    })
 }
 
 // Every field of an operation row, as bits, for test builds' kept-row checks.

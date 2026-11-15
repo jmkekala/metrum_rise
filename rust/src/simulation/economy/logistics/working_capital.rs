@@ -325,32 +325,34 @@ impl ShipmentSystem {
     ) {
         debug_assert_eq!(quotes.len(), range.len());
         let first = range.start;
-        quotes
-            .par_iter_mut()
-            .enumerate()
-            .map(|(offset, quote)| (first + offset, quote))
-            .for_each(|(index, quote)| {
-                *quote = None;
-                let building = &allocator.buildings[index];
-                // Include unfinished/inactive sites: completing construction or recovering
-                // a business does not change its cached physical route.
-                if !catalog
-                    .profile_by_runtime_id(building.economy_profile_runtime_id)
-                    .is_some_and(|profile| profile.worker_capacity > 0)
-                {
-                    return;
-                }
-                *quote = self
-                    .freight_route_cache
-                    .minimum_border_eta(index, allocator, network, graph)
-                    .map(|seconds| {
-                        super::timing::freight_cost(
-                            seconds,
-                            tuning.operational_clock.seconds_per_day,
-                            &tuning.logistics,
-                        )
-                    });
-            });
+        crate::thread_pools::install(|| {
+            quotes
+                .par_iter_mut()
+                .enumerate()
+                .map(|(offset, quote)| (first + offset, quote))
+                .for_each(|(index, quote)| {
+                    *quote = None;
+                    let building = &allocator.buildings[index];
+                    // Include unfinished/inactive sites: completing construction or recovering
+                    // a business does not change its cached physical route.
+                    if !catalog
+                        .profile_by_runtime_id(building.economy_profile_runtime_id)
+                        .is_some_and(|profile| profile.worker_capacity > 0)
+                    {
+                        return;
+                    }
+                    *quote = self
+                        .freight_route_cache
+                        .minimum_border_eta(index, allocator, network, graph)
+                        .map(|seconds| {
+                            super::timing::freight_cost(
+                                seconds,
+                                tuning.operational_clock.seconds_per_day,
+                                &tuning.logistics,
+                            )
+                        });
+                })
+        });
     }
 
     /// Writes paid inbound goods and dispatched sales receivables, excluding carrier charges.

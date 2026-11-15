@@ -102,35 +102,37 @@ impl PedestrianReachability {
                     })
             })
         };
-        let outgoing: Vec<Vec<usize>> = lanes
-            .par_iter()
-            .enumerate()
-            .map(|(index, lane)| {
-                if !valid(index) {
-                    return Vec::new();
-                }
-                let Some(node) = lane_terminal_node(index, network, graph) else {
-                    return Vec::new();
-                };
-                lane.next_lanes
-                    .iter()
-                    .filter_map(|&connector| {
-                        let connector = lanes.get(connector)?;
-                        if connector.edge_id != usize::MAX
-                            || connector.lane_type != LaneType::Foot
-                            || !connector.length.is_finite()
-                        {
-                            return None;
-                        }
-                        let &target = connector.next_lanes.first()?;
-                        (valid(target)
-                            && lane_origin_node(target, network, graph) == Some(node)
-                            && lane_terminal_node(target, network, graph).is_some())
-                        .then_some(target)
-                    })
-                    .collect()
-            })
-            .collect();
+        let outgoing: Vec<Vec<usize>> = crate::thread_pools::install(|| {
+            lanes
+                .par_iter()
+                .enumerate()
+                .map(|(index, lane)| {
+                    if !valid(index) {
+                        return Vec::new();
+                    }
+                    let Some(node) = lane_terminal_node(index, network, graph) else {
+                        return Vec::new();
+                    };
+                    lane.next_lanes
+                        .iter()
+                        .filter_map(|&connector| {
+                            let connector = lanes.get(connector)?;
+                            if connector.edge_id != usize::MAX
+                                || connector.lane_type != LaneType::Foot
+                                || !connector.length.is_finite()
+                            {
+                                return None;
+                            }
+                            let &target = connector.next_lanes.first()?;
+                            (valid(target)
+                                && lane_origin_node(target, network, graph) == Some(node)
+                                && lane_terminal_node(target, network, graph).is_some())
+                            .then_some(target)
+                        })
+                        .collect()
+                })
+                .collect()
+        });
         let mut incoming = vec![Vec::new(); lanes.len()];
         for (source, targets) in outgoing.iter().enumerate() {
             for &target in targets {

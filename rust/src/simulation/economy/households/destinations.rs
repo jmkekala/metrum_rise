@@ -318,15 +318,17 @@ impl DestinationFold<'_> {
     // order. O(handles × outputs).
     fn fold_all(&self) -> [Vec<DestinationEntry>; 2] {
         let handles = self.allocator.building_handles.capacity();
-        let parts: Vec<[Vec<DestinationEntry>; 2]> = (0..handles.div_ceil(HANDLES_PER_TASK))
-            .into_par_iter()
-            .map(|task| {
-                let start = task * HANDLES_PER_TASK;
-                let mut back = [Vec::new(), Vec::new()];
-                self.fold(start..(start + HANDLES_PER_TASK).min(handles), &mut back);
-                back
-            })
-            .collect();
+        let parts: Vec<[Vec<DestinationEntry>; 2]> = crate::thread_pools::install(|| {
+            (0..handles.div_ceil(HANDLES_PER_TASK))
+                .into_par_iter()
+                .map(|task| {
+                    let start = task * HANDLES_PER_TASK;
+                    let mut back = [Vec::new(), Vec::new()];
+                    self.fold(start..(start + HANDLES_PER_TASK).min(handles), &mut back);
+                    back
+                })
+                .collect()
+        });
         let mut all = [Vec::new(), Vec::new()];
         for part in parts {
             for (kind, entries) in part.into_iter().enumerate() {

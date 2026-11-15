@@ -302,31 +302,33 @@ impl ConsumerBudgets {
     fn reset_claim_funds(&mut self, range: std::ops::Range<usize>) {
         let count = self.categories.len();
         if count > 0 {
-            self.funds[range.start * count..range.end * count]
-                .par_chunks_mut(count)
-                .zip(&self.households[range])
-                .for_each(|(accounts, &(members, spending))| {
-                    let mut remainder = spending;
-                    for (index, (account, category)) in
-                        accounts.iter_mut().zip(&self.categories).enumerate()
-                    {
-                        let budget = if index + 1 == count {
-                            remainder
-                        } else {
-                            (spending * category.budget_share).min(remainder)
-                        };
-                        remainder -= budget;
-                        *account = Funds {
-                            // Match the physical f32 consumption product before keeping
-                            // an f64 reservation ledger. Promoting the authored rate first
-                            // can turn 1000 * 0.1 into 100.00000149 and an extra employee.
-                            units: f64::from(
-                                f32::from(members) * category.units_per_resident as f32,
-                            ),
-                            gross_spending: budget,
-                        };
-                    }
-                });
+            crate::thread_pools::install(|| {
+                self.funds[range.start * count..range.end * count]
+                    .par_chunks_mut(count)
+                    .zip(&self.households[range])
+                    .for_each(|(accounts, &(members, spending))| {
+                        let mut remainder = spending;
+                        for (index, (account, category)) in
+                            accounts.iter_mut().zip(&self.categories).enumerate()
+                        {
+                            let budget = if index + 1 == count {
+                                remainder
+                            } else {
+                                (spending * category.budget_share).min(remainder)
+                            };
+                            remainder -= budget;
+                            *account = Funds {
+                                // Match the physical f32 consumption product before keeping
+                                // an f64 reservation ledger. Promoting the authored rate first
+                                // can turn 1000 * 0.1 into 100.00000149 and an extra employee.
+                                units: f64::from(
+                                    f32::from(members) * category.units_per_resident as f32,
+                                ),
+                                gross_spending: budget,
+                            };
+                        }
+                    });
+            });
         }
     }
 

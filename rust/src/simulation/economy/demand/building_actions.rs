@@ -1135,29 +1135,31 @@ impl DemandSystem {
             Some(use_kind) => {
                 let zone_type = use_kind.zone_type();
                 // Independent read-only scans of the lots and the buildings, side by side.
-                let (mut by_use, existing) = rayon::join(
-                    || {
-                        allocator.collect_demand_spawn_candidates_from_assets(
-                            zoning,
-                            graph,
-                            catalog,
-                            priorities,
-                            environment,
-                            spawn_assets,
-                            Some(zone_type),
-                        )
-                    },
-                    || {
-                        self.collect_existing_actions(
-                            allocator,
-                            catalog,
-                            economy_tuning,
-                            residential_occupants,
-                            Some(zone_type),
-                            ExistingActions::ZONE_SLOT,
-                        )
-                    },
-                );
+                let (mut by_use, existing) = crate::thread_pools::install(|| {
+                    rayon::join(
+                        || {
+                            allocator.collect_demand_spawn_candidates_from_assets(
+                                zoning,
+                                graph,
+                                catalog,
+                                priorities,
+                                environment,
+                                spawn_assets,
+                                Some(zone_type),
+                            )
+                        },
+                        || {
+                            self.collect_existing_actions(
+                                allocator,
+                                catalog,
+                                economy_tuning,
+                                residential_occupants,
+                                Some(zone_type),
+                                ExistingActions::ZONE_SLOT,
+                            )
+                        },
+                    )
+                });
                 scans.spawns = by_use.take_zone_type(zone_type);
                 scans.availability = by_use.availability[use_kind as usize];
                 scans.existing = existing;
@@ -1309,97 +1311,109 @@ impl DemandSystem {
         zone_type: Option<ZoneType>,
         kinds: ExistingActions,
     ) -> ExistingBuildingCandidates {
-        let mut candidates = allocator
-            .buildings
-            .par_iter()
-            .enumerate()
-            .flat_map_iter(|(building_idx, building)| {
-                let mut result = [None, None];
-                if zone_type.is_some_and(|zone_type| building.zone_type != zone_type)
-                    || building.broken
-                    || building.economy_broken
-                    || building.pending_redevelopment
-                    || building.is_under_construction()
-                {
-                    return result;
-                }
-                let Some(asset_building) = allocator
-                    .registry
-                    .get(&building.asset_id)
-                    .and_then(|entry| entry.manifest.building.as_ref())
-                else {
-                    return result;
-                };
-                if !asset_building.is_zoned_private() {
-                    return result;
-                }
-                if building.is_deserted {
-                    if kinds.despawns && building.occupancy == 0 && building.worker_count == 0 {
-                        result[0] = Some(CollectedExistingBuildingCandidate::Despawn(
-                            DespawnCandidate {
-                                action: demand_building_action_key(building),
+        let mut candidates = crate::thread_pools::install(|| {
+            allocator
+                .buildings
+                .par_iter()
+                .enumerate()
+                .flat_map_iter(|(building_idx, building)| {
+                    let mut result = [None, None];
+                    if zone_type.is_some_and(|zone_type| building.zone_type != zone_type)
+                        || building.broken
+                        || building.economy_broken
+                        || building.pending_redevelopment
+                        || building.is_under_construction()
+                    {
+                        return result;
+                    }
+                    let Some(asset_building) = allocator
+                        .registry
+                        .get(&building.asset_id)
+                        .and_then(|entry| entry.manifest.building.as_ref())
+                    else {
+                        return result;
+                    };
+                    if !asset_building.is_zoned_private() {
+                        return result;
+                    }
+                    if building.is_deserted {
+                        if kinds.despawns && building.occupancy == 0 && building.worker_count == 0 {
+                            result[0] = Some(CollectedExistingBuildingCandidate::Despawn(
+                                DespawnCandidate {
+                                    action: demand_building_action_key(building),
+                                    building_idx,
+                                },
+                            ));
+                        }
+                        return result;
+                    }
+                    if kinds.downgrades
+                        && let Some(target_asset_id) = allocator.downgrade_target(building)
+                        && level_change_is_compatible(
+                            allocator,
+                            catalog,
+                            building_idx,
+                            target_asset_id,
+                        )
+                        && building_is_viable_for_downgrade(
+                            allocator,
+                            economy_tuning,
+                            residential_occupants,
+                            building_idx,
+                        )
+                    {
+                        result[0] = Some(CollectedExistingBuildingCandidate::Downgrade(
+                            LevelChangeCandidate {
+                                action: DemandLevelChangeAction {
+                                    building: demand_building_action_key(building),
+                                    target_asset_id: target_asset_id.to_owned(),
+                                },
                                 building_idx,
                             },
                         ));
                     }
-                    return result;
-                }
-                if kinds.downgrades
-                    && let Some(target_asset_id) = allocator.downgrade_target(building)
-                    && level_change_is_compatible(allocator, catalog, building_idx, target_asset_id)
-                    && building_is_viable_for_downgrade(
-                        allocator,
-                        economy_tuning,
-                        residential_occupants,
-                        building_idx,
-                    )
-                {
-                    result[0] = Some(CollectedExistingBuildingCandidate::Downgrade(
-                        LevelChangeCandidate {
-                            action: DemandLevelChangeAction {
-                                building: demand_building_action_key(building),
-                                target_asset_id: target_asset_id.to_owned(),
-                            },
+                    if kinds.upgrades
+                        && let Some(target_asset_id) = allocator.upgrade_target(building)
+                        && level_change_is_compatible(
+                            allocator,
+                            catalog,
                             building_idx,
-                        },
-                    ));
-                }
-                if kinds.upgrades
-                    && let Some(target_asset_id) = allocator.upgrade_target(building)
-                    && level_change_is_compatible(allocator, catalog, building_idx, target_asset_id)
-                    && building_is_viable_for_upgrade(
-                        allocator,
-                        catalog,
-                        economy_tuning,
-                        residential_occupants,
-                        building_idx,
-                        target_asset_id,
-                    )
-                {
-                    result[1] = Some(CollectedExistingBuildingCandidate::Upgrade(
-                        LevelChangeCandidate {
-                            action: DemandLevelChangeAction {
-                                building: demand_building_action_key(building),
-                                target_asset_id: target_asset_id.to_owned(),
-                            },
+                            target_asset_id,
+                        )
+                        && building_is_viable_for_upgrade(
+                            allocator,
+                            catalog,
+                            economy_tuning,
+                            residential_occupants,
                             building_idx,
-                        },
-                    ));
-                }
-                result
-            })
-            .filter_map(|candidate| candidate)
-            .fold(
-                ExistingBuildingCandidates::default,
-                |mut candidates, candidate| {
-                    candidates.push(candidate);
-                    candidates
-                },
-            )
-            .reduce(ExistingBuildingCandidates::default, |mut left, right| {
-                left.extend(right);
-                left
-            });
+                            target_asset_id,
+                        )
+                    {
+                        result[1] = Some(CollectedExistingBuildingCandidate::Upgrade(
+                            LevelChangeCandidate {
+                                action: DemandLevelChangeAction {
+                                    building: demand_building_action_key(building),
+                                    target_asset_id: target_asset_id.to_owned(),
+                                },
+                                building_idx,
+                            },
+                        ));
+                    }
+                    result
+                })
+                .filter_map(|candidate| candidate)
+                .fold(
+                    ExistingBuildingCandidates::default,
+                    |mut candidates, candidate| {
+                        candidates.push(candidate);
+                        candidates
+                    },
+                )
+                .reduce(ExistingBuildingCandidates::default, |mut left, right| {
+                    left.extend(right);
+                    left
+                })
+        });
 
         candidates.sort_by_attachment_order();
         candidates.despawns.sort_unstable_by(|left, right| {

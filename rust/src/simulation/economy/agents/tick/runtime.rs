@@ -17,7 +17,7 @@ pub(super) const PAR_THRESHOLD: usize = 500;
 /// Dispatches `f` over `0..n`, using Rayon only when the agent count is large enough.
 pub(super) fn dispatch_agents<F: Fn(usize) + Send + Sync>(n: usize, f: F) {
     if n >= PAR_THRESHOLD {
-        (0..n).into_par_iter().for_each(f);
+        crate::thread_pools::install(|| (0..n).into_par_iter().for_each(f));
     } else {
         (0..n).for_each(f);
     }
@@ -47,12 +47,17 @@ pub(super) fn dispatch_agents_with_owned_scratch<F: Fn(usize) + Send + Sync>(
 
     let chunk_count = n.div_ceil(MOVEMENT_CHUNK);
     let shard_count = shards.len().min(chunk_count).max(1);
-    shards[..shard_count]
-        .par_iter_mut()
-        .enumerate()
-        .for_each(|(shard_idx, scratch)| {
-            TripQueryScratch::with_owned(scratch, || visit_shard(shard_idx, shard_count, n, &f));
-        });
+    let shards = &mut shards[..shard_count];
+    crate::thread_pools::install(|| {
+        shards
+            .par_iter_mut()
+            .enumerate()
+            .for_each(|(shard_idx, scratch)| {
+                TripQueryScratch::with_owned(scratch, || {
+                    visit_shard(shard_idx, shard_count, n, &f)
+                });
+            })
+    });
 }
 
 // Visits shard `shard_idx`'s chunks in index order.

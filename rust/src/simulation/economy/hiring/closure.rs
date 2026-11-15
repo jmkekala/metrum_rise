@@ -892,158 +892,161 @@ impl JobFunding {
     ) -> bool {
         let utilities = local_utility_service_costs(catalog)
             .map(|price| price * tuning.owa_import_price_multiplier);
-        self.headroom[rows.clone()]
-            .par_iter_mut()
-            .zip(self.closure_ceilings[rows.clone()].par_iter_mut())
-            .zip(self.closure_activity[rows.clone()].par_iter_mut())
-            .enumerate()
-            .map(|(offset, ((headroom, ceiling), activity_ceiling))| {
-                let index = rows.start + offset;
-                let building = &allocator.buildings[index];
-                if self.service_flags[index] {
-                    *headroom = [f64::INFINITY; 2];
-                    return false;
-                }
-                // A provisional customer shortage is not a permanent staffing limit:
-                // another rejected firm can return those customers during this census.
-                // Retain only limits imposed by a failed joint proof, not ordinary quotes.
-                let previous = self.capacities[index];
-                if self.capacities[index] == 0 {
-                    return false;
-                }
-                let Some(profile) =
-                    catalog.profile_by_runtime_id(building.economy_profile_runtime_id)
-                else {
-                    return false;
-                };
-                let physical = physical_worker_capacity_for_profile(building, profile);
-                let area = output_area_scale_for_building(building, profile);
-                let exports = building_outputs_can_export_to_owa(building, profile)
-                    && self.carrier_quotes[index].is_some()
-                    && tuning.owa_export_price_multiplier > 0.0;
-                let export_price = |resource| {
-                    if exports {
-                        catalog.unit_price_for_resource(resource).unwrap_or(0.0)
-                            * tuning.owa_export_price_multiplier
-                    } else {
-                        0.0
+        crate::thread_pools::install(|| {
+            self.headroom[rows.clone()]
+                .par_iter_mut()
+                .zip(self.closure_ceilings[rows.clone()].par_iter_mut())
+                .zip(self.closure_activity[rows.clone()].par_iter_mut())
+                .enumerate()
+                .map(|(offset, ((headroom, ceiling), activity_ceiling))| {
+                    let index = rows.start + offset;
+                    let building = &allocator.buildings[index];
+                    if self.service_flags[index] {
+                        *headroom = [f64::INFINITY; 2];
+                        return false;
                     }
-                };
-                let quotas = &self.customer_units
-                    [self.customer_offsets[index]..self.customer_offsets[index + 1]];
-                let before_share = |resource| {
-                    provisional_local_share(profile, area, resource, Some(quotas), &self.market)
-                };
-                let actual_local = |resource, full: f32| {
-                    let port = profile
-                        .outputs
-                        .iter()
-                        .position(|output| output.resource_runtime_id == resource)
-                        .unwrap();
-                    let household = (quotas[port].max(0.0) as f32).min(full);
-                    let sales = self.business.sales(
-                        index,
-                        resource,
-                        f64::from((full - household).max(0.0)),
-                    );
-                    (
-                        household + sales.units as f32,
-                        f64::from(household) * f64::from(profile.unit_price_currency)
-                            + sales.revenue,
-                    )
-                };
-                let mut old_revenue = 0.0_f64;
-                let mut revenue = 0.0_f64;
-                let mut capital_change = 0.0_f64;
-                let mut demand_activity = 0.0_f32;
-                for output in &profile.outputs {
-                    let resource = output.resource_runtime_id;
-                    let full = profile.net_output_units_per_day(output) * area;
-                    let units = full * self.activities[index];
-                    let before = (full * before_share(resource)).min(units);
-                    old_revenue += f64::from(before) * f64::from(profile.unit_price_currency)
-                        + f64::from(units - before) * f64::from(export_price(resource));
-                    let (local, goods) = actual_local(resource, units);
-                    revenue += goods + f64::from(units - local) * f64::from(export_price(resource));
-                    let (quota, full_goods) = actual_local(resource, full);
-                    let share = if full > 0.0 { quota / full } else { 0.0 };
-                    demand_activity = demand_activity.max(share);
-                    if profile.input_port(resource).is_none() {
-                        let old_price = f64::from(profile.unit_price_currency)
-                            * f64::from(before_share(resource))
-                            + f64::from(export_price(resource))
-                                * f64::from(1.0 - before_share(resource));
-                        let new_price = if full > 0.0 {
-                            full_goods / f64::from(full)
+                    // A provisional customer shortage is not a permanent staffing limit:
+                    // another rejected firm can return those customers during this census.
+                    // Retain only limits imposed by a failed joint proof, not ordinary quotes.
+                    let previous = self.capacities[index];
+                    if self.capacities[index] == 0 {
+                        return false;
+                    }
+                    let Some(profile) =
+                        catalog.profile_by_runtime_id(building.economy_profile_runtime_id)
+                    else {
+                        return false;
+                    };
+                    let physical = physical_worker_capacity_for_profile(building, profile);
+                    let area = output_area_scale_for_building(building, profile);
+                    let exports = building_outputs_can_export_to_owa(building, profile)
+                        && self.carrier_quotes[index].is_some()
+                        && tuning.owa_export_price_multiplier > 0.0;
+                    let export_price = |resource| {
+                        if exports {
+                            catalog.unit_price_for_resource(resource).unwrap_or(0.0)
+                                * tuning.owa_export_price_multiplier
                         } else {
                             0.0
-                        } + f64::from(export_price(resource))
-                            * f64::from(1.0 - share);
-                        let inventory = building.inventory_units(resource);
-                        capital_change +=
-                            f64::from(inventory) * new_price - f64::from(inventory) * old_price;
-                    }
-                }
-                let multiplier =
-                    freight_goods_multiplier(profile, building.zone_type, tuning, minute);
-                let prices = operation_prices(
-                    building,
-                    self.carrier_quotes[index],
-                    multiplier,
-                    utilities,
-                    tuning,
-                    fiscal,
-                );
-                let plan = OperationPlan {
-                    workers: self.capacities[index],
-                    activity: self.activities[index],
-                    area,
-                };
-                let freight = |actual: bool| {
-                    OperatingCosts::for_plan_with_input_quotes(
-                        profile,
-                        plan,
-                        prices,
-                        |resource, units| {
-                            if exports {
-                                let local = if actual {
-                                    actual_local(resource, units).0
-                                } else {
-                                    let full = profile.net_output_units_per_day(
-                                        profile.output_port(resource).unwrap(),
-                                    ) * area;
-                                    (full * before_share(resource)).min(units)
-                                };
-                                units - local
+                        }
+                    };
+                    let quotas = &self.customer_units
+                        [self.customer_offsets[index]..self.customer_offsets[index + 1]];
+                    let before_share = |resource| {
+                        provisional_local_share(profile, area, resource, Some(quotas), &self.market)
+                    };
+                    let actual_local = |resource, full: f32| {
+                        let port = profile
+                            .outputs
+                            .iter()
+                            .position(|output| output.resource_runtime_id == resource)
+                            .unwrap();
+                        let household = (quotas[port].max(0.0) as f32).min(full);
+                        let sales = self.business.sales(
+                            index,
+                            resource,
+                            f64::from((full - household).max(0.0)),
+                        );
+                        (
+                            household + sales.units as f32,
+                            f64::from(household) * f64::from(profile.unit_price_currency)
+                                + sales.revenue,
+                        )
+                    };
+                    let mut old_revenue = 0.0_f64;
+                    let mut revenue = 0.0_f64;
+                    let mut capital_change = 0.0_f64;
+                    let mut demand_activity = 0.0_f32;
+                    for output in &profile.outputs {
+                        let resource = output.resource_runtime_id;
+                        let full = profile.net_output_units_per_day(output) * area;
+                        let units = full * self.activities[index];
+                        let before = (full * before_share(resource)).min(units);
+                        old_revenue += f64::from(before) * f64::from(profile.unit_price_currency)
+                            + f64::from(units - before) * f64::from(export_price(resource));
+                        let (local, goods) = actual_local(resource, units);
+                        revenue +=
+                            goods + f64::from(units - local) * f64::from(export_price(resource));
+                        let (quota, full_goods) = actual_local(resource, full);
+                        let share = if full > 0.0 { quota / full } else { 0.0 };
+                        demand_activity = demand_activity.max(share);
+                        if profile.input_port(resource).is_none() {
+                            let old_price = f64::from(profile.unit_price_currency)
+                                * f64::from(before_share(resource))
+                                + f64::from(export_price(resource))
+                                    * f64::from(1.0 - before_share(resource));
+                            let new_price = if full > 0.0 {
+                                full_goods / f64::from(full)
                             } else {
                                 0.0
-                            }
-                        },
-                        |_| Default::default(),
-                    )
-                    .freight
-                };
-                let freight_change = freight(true) - freight(false);
-                let financed = self.business.financing(index);
-                *headroom = [
-                    financed[0] + revenue - old_revenue - freight_change,
-                    financed[1] + capital_change - freight_change,
-                ];
-                if !exports && demand_activity < self.activities[index] {
-                    *ceiling = (*ceiling).min(operation_crew(
+                            } + f64::from(export_price(resource))
+                                * f64::from(1.0 - share);
+                            let inventory = building.inventory_units(resource);
+                            capital_change +=
+                                f64::from(inventory) * new_price - f64::from(inventory) * old_price;
+                        }
+                    }
+                    let multiplier =
+                        freight_goods_multiplier(profile, building.zone_type, tuning, minute);
+                    let prices = operation_prices(
                         building,
-                        profile,
-                        physical,
-                        demand_activity,
-                    ));
-                    *activity_ceiling = (*activity_ceiling).min(demand_activity);
-                }
-                if !(headroom[0] > 0.0 && headroom[1] >= 0.0) {
-                    *ceiling = (*ceiling).min(self.capacities[index] - 1);
-                }
-                *ceiling < previous || *activity_ceiling < self.activities[index]
-            })
-            .reduce(|| false, |a, b| a | b)
+                        self.carrier_quotes[index],
+                        multiplier,
+                        utilities,
+                        tuning,
+                        fiscal,
+                    );
+                    let plan = OperationPlan {
+                        workers: self.capacities[index],
+                        activity: self.activities[index],
+                        area,
+                    };
+                    let freight = |actual: bool| {
+                        OperatingCosts::for_plan_with_input_quotes(
+                            profile,
+                            plan,
+                            prices,
+                            |resource, units| {
+                                if exports {
+                                    let local = if actual {
+                                        actual_local(resource, units).0
+                                    } else {
+                                        let full = profile.net_output_units_per_day(
+                                            profile.output_port(resource).unwrap(),
+                                        ) * area;
+                                        (full * before_share(resource)).min(units)
+                                    };
+                                    units - local
+                                } else {
+                                    0.0
+                                }
+                            },
+                            |_| Default::default(),
+                        )
+                        .freight
+                    };
+                    let freight_change = freight(true) - freight(false);
+                    let financed = self.business.financing(index);
+                    *headroom = [
+                        financed[0] + revenue - old_revenue - freight_change,
+                        financed[1] + capital_change - freight_change,
+                    ];
+                    if !exports && demand_activity < self.activities[index] {
+                        *ceiling = (*ceiling).min(operation_crew(
+                            building,
+                            profile,
+                            physical,
+                            demand_activity,
+                        ));
+                        *activity_ceiling = (*activity_ceiling).min(demand_activity);
+                    }
+                    if !(headroom[0] > 0.0 && headroom[1] >= 0.0) {
+                        *ceiling = (*ceiling).min(self.capacities[index] - 1);
+                    }
+                    *ceiling < previous || *activity_ceiling < self.activities[index]
+                })
+                .reduce(|| false, |a, b| a | b)
+        })
     }
 
     /// Publishes the proven financing to the business book, after every proof slice.

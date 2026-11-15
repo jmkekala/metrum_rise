@@ -515,11 +515,13 @@ impl HouseholdSystem {
         graph: &RegionGraph,
     ) {
         self.workplace_network_quotes.sync(transit_network);
-        self.workplace_query_shards
-            .resize_with(rayon::current_num_threads(), WorkplaceQueryShard::default);
-        self.workplace_query_shards
-            .par_iter_mut()
-            .for_each(|shard| shard.query.prepare(transit_network, graph));
+        let shards = &mut self.workplace_query_shards;
+        crate::thread_pools::install(|| {
+            shards.resize_with(rayon::current_num_threads(), WorkplaceQueryShard::default);
+            shards
+                .par_iter_mut()
+                .for_each(|shard| shard.query.prepare(transit_network, graph))
+        });
     }
 
     /// Whether [`Self::prepare_job_search_scratch`] left its storage current for `network`.
@@ -669,24 +671,26 @@ impl HouseholdSystem {
             essentials: HouseholdEssentials::new(&catalog, &tuning, fiscal.household_vat_rate),
             fiscal,
         };
-        let mut plans: Vec<_> = batch
-            .par_iter()
-            .filter_map(|&agent_idx| {
-                plan_agent_workplace(
-                    agent_idx,
-                    agents,
-                    &allocator.buildings,
-                    carry,
-                    &catalog,
-                    &tuning,
-                    target_days,
-                    &self.households,
-                    &home_job_options,
-                    &current_job_options,
-                    parking,
-                )
-            })
-            .collect();
+        let mut plans: Vec<_> = crate::thread_pools::install(|| {
+            batch
+                .par_iter()
+                .filter_map(|&agent_idx| {
+                    plan_agent_workplace(
+                        agent_idx,
+                        agents,
+                        &allocator.buildings,
+                        carry,
+                        &catalog,
+                        &tuning,
+                        target_days,
+                        &self.households,
+                        &home_job_options,
+                        &current_job_options,
+                        parking,
+                    )
+                })
+                .collect()
+        });
         // Resolve resident workers first when their best available job is at home.
         plans.sort_unstable_by_key(|plan| {
             (
@@ -830,14 +834,17 @@ impl HouseholdSystem {
     pub(super) fn publish_funded_job_capacities(&self, allocator: &mut BuildingAllocator) {
         let capacities = &self.job_funding.capacities;
         let activities = self.job_funding.activities();
-        allocator
-            .buildings
-            .par_iter_mut()
-            .enumerate()
-            .for_each(|(building_idx, building)| {
-                building.funded_job_capacity = capacities.get(building_idx).copied().unwrap_or(0);
-                building.funded_activity = activities.get(building_idx).copied().unwrap_or(0.0);
-            });
+        crate::thread_pools::install(|| {
+            allocator
+                .buildings
+                .par_iter_mut()
+                .enumerate()
+                .for_each(|(building_idx, building)| {
+                    building.funded_job_capacity =
+                        capacities.get(building_idx).copied().unwrap_or(0);
+                    building.funded_activity = activities.get(building_idx).copied().unwrap_or(0.0);
+                })
+        });
     }
 
     /// Settles agent `agent_idx`'s workday at its daily phase (`SIM-02-G`, `ECON-17`). An
@@ -1506,42 +1513,48 @@ impl JobSupplySnapshot {
         [max_walk_commute_speed, max_car_commute_speed]: [f32; 2],
         parking: Option<&ParkingSystem>,
     ) -> Self {
-        let entries: Vec<_> = members
-            .par_iter()
-            .filter_map(|&building| {
-                let idx = allocator.building_handles.resolve(building)?;
-                let entrance = allocator.entrances.get(idx).map(BuildingEntranceKey::new);
-                let foot_components =
-                    topology
-                        .foot()
-                        .building_components(allocator, graph, idx, TransitFlags::FOOT);
-                let car_components =
-                    topology
-                        .car()
-                        .building_components(allocator, graph, idx, TransitFlags::CAR);
-                if foot_components.as_slice().is_empty()
-                    && car_components.as_slice().is_empty()
-                    && parking.and_then(|p| p.economy_ends(building.to_bits())).is_none_or(|ends| ends.components.is_empty())
-                    && allocator.household_capacity(idx) == 0
-                {
-                    return None;
-                }
-                let center = &allocator.buildings[idx];
-                Some(JobSupplyEntry {
-                    building,
-                    entrance,
-                    chunk: chunk_for_point(center.center_x, center.center_y),
-                    foot_components,
-                    car_components,
-                    trip_ends: BuildingTripEnds::destination(
-                        idx,
+        let entries: Vec<_> = crate::thread_pools::install(|| {
+            members
+                .par_iter()
+                .filter_map(|&building| {
+                    let idx = allocator.building_handles.resolve(building)?;
+                    let entrance = allocator.entrances.get(idx).map(BuildingEntranceKey::new);
+                    let foot_components = topology.foot().building_components(
                         allocator,
-                        transit_network,
                         graph,
-                    ),
+                        idx,
+                        TransitFlags::FOOT,
+                    );
+                    let car_components = topology.car().building_components(
+                        allocator,
+                        graph,
+                        idx,
+                        TransitFlags::CAR,
+                    );
+                    if foot_components.as_slice().is_empty()
+                        && car_components.as_slice().is_empty()
+                        && parking.and_then(|p| p.economy_ends(building.to_bits())).is_none_or(|ends| ends.components.is_empty())
+                        && allocator.household_capacity(idx) == 0
+                    {
+                        return None;
+                    }
+                    let center = &allocator.buildings[idx];
+                    Some(JobSupplyEntry {
+                        building,
+                        entrance,
+                        chunk: chunk_for_point(center.center_x, center.center_y),
+                        foot_components,
+                        car_components,
+                        trip_ends: BuildingTripEnds::destination(
+                            idx,
+                            allocator,
+                            transit_network,
+                            graph,
+                        ),
+                    })
                 })
-            })
-            .collect();
+                .collect()
+        });
         let parking_slack = parking.map_or(0.0, |parking| entries.iter().filter_map(|entry| parking.economy_ends(entry.building.to_bits())).map(|ends| ends.node_slack_m).fold(0.0, f32::max));
         let node_slack_m = entries
             .iter()
@@ -1602,8 +1615,10 @@ impl JobSupplySnapshot {
     // Prepares the members' arrival targets in the shared network quotes; returns the backward
     // target searches it ran.
     fn prepare_targets(&self, quotes: &mut SharedNetworkQuotes, network: &TransitNetwork, parking: Option<&ParkingSystem>) -> usize {
-        let mut targets: [Vec<(u32, usize)>; 2] = std::array::from_fn(|mode| {
-            self.entries.par_iter().flat_map_iter(|entry| entry.trip_ends.network_targets(mode as u8).into_iter().flatten()).collect()
+        let mut targets: [Vec<(u32, usize)>; 2] = crate::thread_pools::install(|| {
+            std::array::from_fn(|mode| {
+                self.entries.par_iter().flat_map_iter(|entry| entry.trip_ends.network_targets(mode as u8).into_iter().flatten()).collect()
+            })
         });
         if let Some(parking) = parking {
             targets[usize::from(crate::simulation::economy::agents::MODE_CAR)].clear();
@@ -1648,18 +1663,20 @@ fn collect_home_job_option_keys(
     household_count: usize,
     parking: Option<&ParkingSystem>,
 ) -> (Vec<HomeJobOptionsKey>, Vec<CurrentJobOptionKey>) {
-    let requests: Vec<_> = batch
-        .par_iter()
-        .filter_map(|&i| {
-            if !job_search_due(agents, i, building_count, household_count) {
-                return None;
-            }
-            let old_job = agents.work_building[i];
-            let key = home_job_key(agents, i, parking);
-            let current_job_key = (old_job < building_count).then_some((key, old_job));
-            Some((key, current_job_key))
-        })
-        .collect();
+    let requests: Vec<_> = crate::thread_pools::install(|| {
+        batch
+            .par_iter()
+            .filter_map(|&i| {
+                if !job_search_due(agents, i, building_count, household_count) {
+                    return None;
+                }
+                let old_job = agents.work_building[i];
+                let key = home_job_key(agents, i, parking);
+                let current_job_key = (old_job < building_count).then_some((key, old_job));
+                Some((key, current_job_key))
+            })
+            .collect()
+    });
     let mut keys: Vec<_> = requests.iter().map(|(key, _)| *key).collect();
     keys.sort_unstable();
     keys.dedup();
@@ -1698,62 +1715,67 @@ fn build_home_job_options(
     let exact_entrance_cache_available = allocator.entrances.len() == allocator.buildings.len();
     // Preparation is outside the per-key loops. Storage is bounded by worker count and
     // graph size; result buffers grow only when the corresponding sorted key slice grows.
-    shards.resize_with(rayon::current_num_threads(), WorkplaceQueryShard::default);
-    let home_chunk = keys.len().div_ceil(shards.len()).max(1);
-    let current_chunk = current_job_keys.len().div_ceil(shards.len()).max(1);
-    shards.par_iter_mut().for_each(|shard| {
-        shard
-            .query
-            .prepare_deferred_quotes(transit_network, graph, network_quotes);
-        shard.home.clear();
-        shard.home.reserve(home_chunk);
-        shard.current.clear();
-        shard.current.reserve(current_chunk);
+    let (home_chunk, current_chunk) = crate::thread_pools::install(|| {
+        shards.resize_with(rayon::current_num_threads(), WorkplaceQueryShard::default);
+        let home_chunk = keys.len().div_ceil(shards.len()).max(1);
+        let current_chunk = current_job_keys.len().div_ceil(shards.len()).max(1);
+        shards.par_iter_mut().for_each(|shard| {
+            shard
+                .query
+                .prepare_deferred_quotes(transit_network, graph, network_quotes);
+            shard.home.clear();
+            shard.home.reserve(home_chunk);
+            shard.current.clear();
+            shard.current.reserve(current_chunk);
+        });
+        (home_chunk, current_chunk)
     });
     let shared = &*network_quotes;
-    shards
-        .par_iter_mut()
-        .zip(keys.par_chunks(home_chunk))
-        .for_each(|(shard, keys)| {
-            CandidateVisits::with(|scratch| {
-                scratch.begin_query(job_supply.entries.len());
-                for &key in keys {
-                    let mut route_entries =
-                        [EMPTY_WORKPLACE_ROUTE_ENTRY; JOB_ROUTE_SCAN_CANDIDATES];
-                    let mut route_entry_count = 0usize;
-                    let options = build_home_job_options_for_key(
-                        key,
-                        job_supply,
-                        foot_components,
-                        car_components,
-                        allocator,
-                        transit_network,
-                        graph,
-                        catalog,
-                        route_cache,
-                        shared,
-                        pathfind_count,
-                        exact_entrance_cache_available,
-                        if key.has_car {
-                            job_supply.max_car_commute_speed
-                        } else {
-                            job_supply.max_walk_commute_speed
-                        },
-                        scratch,
-                        &mut shard.query,
-                        &mut route_entries,
-                        &mut route_entry_count,
-                        parking,
-                    );
-                    shard.home.push(HomeJobOptionsBuild {
-                        key,
-                        options,
-                        route_entry_count: route_entry_count as u8,
-                        route_entries,
-                    });
-                }
-            });
-        });
+    crate::thread_pools::install(|| {
+        shards
+            .par_iter_mut()
+            .zip(keys.par_chunks(home_chunk))
+            .for_each(|(shard, keys)| {
+                CandidateVisits::with(|scratch| {
+                    scratch.begin_query(job_supply.entries.len());
+                    for &key in keys {
+                        let mut route_entries =
+                            [EMPTY_WORKPLACE_ROUTE_ENTRY; JOB_ROUTE_SCAN_CANDIDATES];
+                        let mut route_entry_count = 0usize;
+                        let options = build_home_job_options_for_key(
+                            key,
+                            job_supply,
+                            foot_components,
+                            car_components,
+                            allocator,
+                            transit_network,
+                            graph,
+                            catalog,
+                            route_cache,
+                            shared,
+                            pathfind_count,
+                            exact_entrance_cache_available,
+                            if key.has_car {
+                                job_supply.max_car_commute_speed
+                            } else {
+                                job_supply.max_walk_commute_speed
+                            },
+                            scratch,
+                            &mut shard.query,
+                            &mut route_entries,
+                            &mut route_entry_count,
+                            parking,
+                        );
+                        shard.home.push(HomeJobOptionsBuild {
+                            key,
+                            options,
+                            route_entry_count: route_entry_count as u8,
+                            route_entries,
+                        });
+                    }
+                });
+            })
+    });
     for shard in shards.iter_mut() {
         shard.query.publish_quotes(network_quotes);
     }
@@ -1774,36 +1796,39 @@ fn build_home_job_options(
     }
 
     let shared = &*network_quotes;
-    shards
-        .par_iter_mut()
-        .zip(current_job_keys.par_chunks(current_chunk))
-        .for_each(|(shard, keys)| {
-            for &key in keys {
-                let mut route_entries = [EMPTY_WORKPLACE_ROUTE_ENTRY; JOB_ROUTE_SCAN_CANDIDATES];
-                let mut route_entry_count = 0usize;
-                let option = build_current_job_option_for_key(
-                    key,
-                    allocator,
-                    transit_network,
-                    graph,
-                    catalog,
-                    route_cache,
-                    shared,
-                    pathfind_count,
-                    exact_entrance_cache_available,
-                    &mut shard.query,
-                    &mut route_entries,
-                    &mut route_entry_count,
-                    parking,
-                );
-                shard.current.push(CurrentJobOptionBuild {
-                    key,
-                    option,
-                    route_entry_count: route_entry_count as u8,
-                    route_entries,
-                });
-            }
-        });
+    crate::thread_pools::install(|| {
+        shards
+            .par_iter_mut()
+            .zip(current_job_keys.par_chunks(current_chunk))
+            .for_each(|(shard, keys)| {
+                for &key in keys {
+                    let mut route_entries =
+                        [EMPTY_WORKPLACE_ROUTE_ENTRY; JOB_ROUTE_SCAN_CANDIDATES];
+                    let mut route_entry_count = 0usize;
+                    let option = build_current_job_option_for_key(
+                        key,
+                        allocator,
+                        transit_network,
+                        graph,
+                        catalog,
+                        route_cache,
+                        shared,
+                        pathfind_count,
+                        exact_entrance_cache_available,
+                        &mut shard.query,
+                        &mut route_entries,
+                        &mut route_entry_count,
+                        parking,
+                    );
+                    shard.current.push(CurrentJobOptionBuild {
+                        key,
+                        option,
+                        route_entry_count: route_entry_count as u8,
+                        route_entries,
+                    });
+                }
+            })
+    });
     for shard in shards.iter_mut() {
         shard.query.publish_quotes(network_quotes);
     }

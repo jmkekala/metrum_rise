@@ -389,30 +389,32 @@ impl AgentSystem {
         let buckets = &self.lane_buckets;
         let handles = &self.handles;
         let checker = &mut self.gridlock;
-        checker
-            .out
-            .par_chunks_mut(SCAN_CHUNK)
-            .zip(checker.head.par_chunks_mut(SCAN_CHUNK))
-            .zip(checker.head_check.par_chunks_mut(SCAN_CHUNK))
-            .zip(checker.head_since.par_chunks_mut(SCAN_CHUNK))
-            .enumerate()
-            .for_each(|(chunk, (((out, head), head_check), head_since))| {
-                for offset in 0..out.len() {
-                    let lane = chunk * SCAN_CHUNK + offset;
-                    out[offset] = waited_for(agents, lane, network, graph, buckets);
-                    if out[offset] == NONE {
-                        continue;
+        crate::thread_pools::install(|| {
+            checker
+                .out
+                .par_chunks_mut(SCAN_CHUNK)
+                .zip(checker.head.par_chunks_mut(SCAN_CHUNK))
+                .zip(checker.head_check.par_chunks_mut(SCAN_CHUNK))
+                .zip(checker.head_since.par_chunks_mut(SCAN_CHUNK))
+                .enumerate()
+                .for_each(|(chunk, (((out, head), head_check), head_since))| {
+                    for offset in 0..out.len() {
+                        let lane = chunk * SCAN_CHUNK + offset;
+                        out[offset] = waited_for(agents, lane, network, graph, buckets);
+                        if out[offset] == NONE {
+                            continue;
+                        }
+                        // A waiting lane has a head; its stamp carries while the same car waits.
+                        let car = buckets[lane].last().map_or(usize::MAX, |entry| entry.1);
+                        let bits = handles.handle(car).to_bits();
+                        if !(check > 1 && head_check[offset] == check - 1 && head[offset] == bits) {
+                            head_since[offset] = now;
+                        }
+                        head[offset] = bits;
+                        head_check[offset] = check;
                     }
-                    // A waiting lane has a head; its stamp carries while the same car waits.
-                    let car = buckets[lane].last().map_or(usize::MAX, |entry| entry.1);
-                    let bits = handles.handle(car).to_bits();
-                    if !(check > 1 && head_check[offset] == check - 1 && head[offset] == bits) {
-                        head_since[offset] = now;
-                    }
-                    head[offset] = bits;
-                    head_check[offset] = check;
-                }
-            });
+                })
+        });
 
         let mut waiting = 0;
         checker.cycles.clear();

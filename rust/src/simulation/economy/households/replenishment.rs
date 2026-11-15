@@ -808,42 +808,44 @@ impl HouseholdSystem {
         let (households, customers) = (&self.households, &self.job_funding.customers);
         let shared_agents = &*agents;
         let shared_allocator = &*allocator;
-        let plans: Vec<_> = batch
-            .par_iter()
-            .map_init(
-                || {
-                    crate::simulation::economy::agents::tick::TripQueryScratch::prepare_thread(transit_network, graph);
-                    Vec::with_capacity(GROCERY_SEARCH_CANDIDATES)
-                },
-                |candidates, &(queued_slot, hid)| {
-                    let household = &households[hid];
-                    let mut diagnostics = ReplenishmentDiagnostics::default();
-                    let plan = plan_household_replenishment(
-                        hid,
-                        household,
-                        first_eligible_shopper(shared_agents, hid, household),
-                        shared_agents,
-                        shared_allocator,
-                        &store_index,
-                        customers,
-                        transit_network,
-                        graph,
-                        foot_components,
-                        car_components,
-                        walking,
-                        (queued_slot / SLOTS_PER_HOUR) as u32,
-                        check_interval,
-                        stores_exist,
-                        target_days,
-                        trigger_days,
-                        candidates,
-                        &mut diagnostics,
-                        parking,
-                    );
-                    (plan, diagnostics)
-                },
-            )
-            .collect();
+        let plans: Vec<_> = crate::thread_pools::install(|| {
+            batch
+                .par_iter()
+                .map_init(
+                    || {
+                        crate::simulation::economy::agents::tick::TripQueryScratch::prepare_thread(transit_network, graph);
+                        Vec::with_capacity(GROCERY_SEARCH_CANDIDATES)
+                    },
+                    |candidates, &(queued_slot, hid)| {
+                        let household = &households[hid];
+                        let mut diagnostics = ReplenishmentDiagnostics::default();
+                        let plan = plan_household_replenishment(
+                            hid,
+                            household,
+                            first_eligible_shopper(shared_agents, hid, household),
+                            shared_agents,
+                            shared_allocator,
+                            &store_index,
+                            customers,
+                            transit_network,
+                            graph,
+                            foot_components,
+                            car_components,
+                            walking,
+                            (queued_slot / SLOTS_PER_HOUR) as u32,
+                            check_interval,
+                            stores_exist,
+                            target_days,
+                            trigger_days,
+                            candidates,
+                            &mut diagnostics,
+                            parking,
+                        );
+                        (plan, diagnostics)
+                    },
+                )
+                .collect()
+        });
         self.ensure_daily_ledger_len();
         self.handles.register_appended(self.households.len());
         let mut diagnostics = std::mem::take(&mut self.replenishment_hour);

@@ -73,20 +73,23 @@ impl BusinessMarket {
     pub(super) fn reset_finance_masks(&mut self) {
         self.prepare_finance_mask_storage();
         self.account_masks.resize(self.budgets.accounts.len(), 0);
-        self.account_masks
-            .par_iter_mut()
-            .enumerate()
-            .for_each(|(slot, mask)| {
-                *mask = account_mask(&self.budgets, &self.price_classes, slot);
+        crate::thread_pools::install(|| {
+            self.account_masks
+                .par_iter_mut()
+                .enumerate()
+                .for_each(|(slot, mask)| {
+                    *mask = account_mask(&self.budgets, &self.price_classes, slot);
+                });
+            self.port_masks.resize(self.identities.len(), 0);
+            self.port_masks.fill(0);
+            // Account tranches share recipe ports; their OR reduction retains deterministic
+            // order.
+            for (slot, &mask) in self.account_masks.iter().enumerate() {
+                self.port_masks[self.account_ports[slot]] |= mask;
+            }
+            self.indices.all_mut().for_each(|index| {
+                index.reset_query_masks(|port| self.port_masks[port]);
             });
-        self.port_masks.resize(self.identities.len(), 0);
-        self.port_masks.fill(0);
-        // Account tranches share recipe ports; their OR reduction retains deterministic order.
-        for (slot, &mask) in self.account_masks.iter().enumerate() {
-            self.port_masks[self.account_ports[slot]] |= mask;
-        }
-        self.indices.all_mut().for_each(|index| {
-            index.reset_query_masks(|port| self.port_masks[port]);
         });
         self.dirty_buyers.clear();
         self.buyer_dirty.fill(false);

@@ -88,30 +88,32 @@ impl DemandSystem {
             // which `compose` and the queue derive without the workforce, so they run beside
             // the count on a snapshot composed without one (`SIM-02-K`).
             let mut workforce = WorkforceView::default();
-            let ((), scans) = rayon::join(
-                || {
-                    workforce.count_live(
-                        allocator,
-                        households,
-                        &catalog,
-                        &tuning,
-                        fiscal_policy.income_tax_rate,
-                    )
-                },
-                || {
-                    self.scan_for_planning(
-                        slot,
-                        allocator,
-                        graph,
-                        zoning,
-                        &compose(&WorkforceView::default()),
-                        &catalog,
-                        &tuning,
-                        &front.occupants,
-                        environment,
-                    )
-                },
-            );
+            let ((), scans) = crate::thread_pools::install(|| {
+                rayon::join(
+                    || {
+                        workforce.count_live(
+                            allocator,
+                            households,
+                            &catalog,
+                            &tuning,
+                            fiscal_policy.income_tax_rate,
+                        )
+                    },
+                    || {
+                        self.scan_for_planning(
+                            slot,
+                            allocator,
+                            graph,
+                            zoning,
+                            &compose(&WorkforceView::default()),
+                            &catalog,
+                            &tuning,
+                            &front.occupants,
+                            environment,
+                        )
+                    },
+                )
+            });
             // Test builds: the counted workforce's snapshot ranks the lots alike.
             #[cfg(test)]
             if crate::debug::work::city_checks() {

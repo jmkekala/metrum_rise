@@ -287,20 +287,22 @@ impl AgentSystem {
             });
         } else {
             let next = AtomicUsize::new(0);
-            shards
-                .par_iter_mut()
-                .zip(answers.shards.par_iter_mut())
-                .for_each(|(scratch, shard)| {
-                    TripQueryScratch::with_owned(scratch, || {
-                        loop {
-                            let k = next.fetch_add(1, Ordering::Relaxed);
-                            let Some(&i) = candidates.get(k) else {
-                                break;
-                            };
-                            answer(k, i, shard);
-                        }
-                    });
-                });
+            crate::thread_pools::install(|| {
+                shards
+                    .par_iter_mut()
+                    .zip(answers.shards.par_iter_mut())
+                    .for_each(|(scratch, shard)| {
+                        TripQueryScratch::with_owned(scratch, || {
+                            loop {
+                                let k = next.fetch_add(1, Ordering::Relaxed);
+                                let Some(&i) = candidates.get(k) else {
+                                    break;
+                                };
+                                answer(k, i, shard);
+                            }
+                        });
+                    })
+            });
         }
         self.movement_query_shards = shards;
         self.movement_serial_query = serial;
