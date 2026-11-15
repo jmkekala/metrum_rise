@@ -21,18 +21,20 @@ impl CchCostsFrom {
 }
 impl CchGraph {
     /// Computes all target costs per source in O(states + filled arcs), plus the upward query.
-    /// Sources execute independently with Rayon; each source owns its output and scratch.
+    /// Sources execute independently on the shared pool; each source owns its output and scratch.
     pub fn costs_from_each(
         &self,
         starts: &[u32],
         graph: &RegionGraph,
         mask: u8,
     ) -> Vec<CchCostsFrom> {
-        starts
-            .par_iter()
-            .map(|&start| CchCostsFrom {
-                cost: self.all_costs(start, graph, mask),
-            })
-            .collect()
+        crate::thread_pools::install(|| {
+            starts
+                .par_iter()
+                .map(|&start| CchCostsFrom {
+                    cost: self.all_costs(start, graph, mask),
+                })
+                .collect()
+        })
     }
 }

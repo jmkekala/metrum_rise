@@ -89,7 +89,7 @@ fn fill_rows<T: Clone + Send>(rows: &mut Vec<T>, len: usize, value: T) {
     let appended = len.saturating_sub(rows.len());
     if appended >= PARALLEL_FILL_ROWS {
         use rayon::prelude::*;
-        rows.par_extend(rayon::iter::repeat_n(value, appended));
+        crate::thread_pools::install(|| rows.par_extend(rayon::iter::repeat_n(value, appended)));
     } else {
         rows.resize(len, value);
     }

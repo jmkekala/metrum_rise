@@ -65,21 +65,23 @@ fn compose_rows(
     }
     let w = target.width;
     let first = rows.start;
-    target.data[rows.start * w..rows.end * w]
-        .par_chunks_mut(w)
-        .enumerate()
-        .for_each(|(offset, row)| {
-            let y = first + offset;
-            for (x, cell) in row.iter_mut().enumerate() {
-                let mut land_value = 50.0_f32;
+    crate::thread_pools::install(|| {
+        target.data[rows.start * w..rows.end * w]
+            .par_chunks_mut(w)
+            .enumerate()
+            .for_each(|(offset, row)| {
+                let y = first + offset;
+                for (x, cell) in row.iter_mut().enumerate() {
+                    let mut land_value = 50.0_f32;
 
-                let pol = *p_grid.get(x, y).unwrap_or(&0.0);
-                let nse = *n_grid.get(x, y).unwrap_or(&0.0);
+                    let pol = *p_grid.get(x, y).unwrap_or(&0.0);
+                    let nse = *n_grid.get(x, y).unwrap_or(&0.0);
 
-                land_value -= pol * 2.0;
-                land_value -= nse * 1.5;
+                    land_value -= pol * 2.0;
+                    land_value -= nse * 1.5;
 
-                *cell = land_value.clamp(0.0, 100.0);
-            }
-        });
+                    *cell = land_value.clamp(0.0, 100.0);
+                }
+            })
+    });
 }

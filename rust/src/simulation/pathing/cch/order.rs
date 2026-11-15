@@ -96,10 +96,12 @@ pub(super) fn dissect_points(positions: &[[f32; 2]], adjacency: &[Vec<u32>]) -> 
         let (_, a, b, separator) = best.unwrap();
         // Independent subgraphs may build in parallel; output order never depends on scheduling.
         let (mut a, b) = if nodes.len() >= 256 {
-            rayon::join(
-                || dissect(a, positions, adjacency),
-                || dissect(b, positions, adjacency),
-            )
+            crate::thread_pools::install(|| {
+                rayon::join(
+                    || dissect(a, positions, adjacency),
+                    || dissect(b, positions, adjacency),
+                )
+            })
         } else {
             (
                 dissect(a, positions, adjacency),

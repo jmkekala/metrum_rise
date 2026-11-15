@@ -252,25 +252,27 @@ pub(super) fn validate_reservations(
     // Extraction areas are not owners here: saves hold painted cells under areas drawn before
     // they blocked zoning (`ZONE-11`); those keep their paint until erased or taken by the next
     // edit of the area, and the unpainted ones fall out at regeneration.
-    if agriculture
-        .sites()
-        .par_iter()
-        .any(|site| zoning.cells_overlap_site(&PolygonFootprint::new(&site.polygon_world)))
-    {
+    if crate::thread_pools::install(|| {
+        agriculture
+            .sites()
+            .par_iter()
+            .any(|site| zoning.cells_overlap_site(&PolygonFootprint::new(&site.polygon_world)))
+    }) {
         return Err(SaveLoadError::custom(
             "saved field overlaps reserved zoning cells",
         ));
     }
-    if allocator
-        .buildings
-        .par_iter()
-        .zip(&allocator.building_sites)
-        .any(|(building, site)| {
-            building.parcel_id == 0
-                && building.zone_type == ZoneType::None
-                && zoning.cells_overlap_site(&PolygonFootprint::new(&site.lot_footprint_world))
-        })
-    {
+    if crate::thread_pools::install(|| {
+        allocator
+            .buildings
+            .par_iter()
+            .zip(&allocator.building_sites)
+            .any(|(building, site)| {
+                building.parcel_id == 0
+                    && building.zone_type == ZoneType::None
+                    && zoning.cells_overlap_site(&PolygonFootprint::new(&site.lot_footprint_world))
+            })
+    }) {
         return Err(SaveLoadError::custom(
             "saved explicit site overlaps reserved zoning cells",
         ));

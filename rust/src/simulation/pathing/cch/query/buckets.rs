@@ -84,42 +84,44 @@ impl CchBuckets {
         static NEXT_ID: AtomicU64 = AtomicU64::new(0);
         let mut targets = targets.to_vec();
         Self::canonical_targets(cch, &mut targets, mask);
-        let rows: Vec<Vec<TargetRecord>> = targets
-            .par_iter()
-            .with_min_len(targets.len().div_ceil(rayon::current_num_threads()).max(1))
-            .map_init(
-                || {
-                    let mut scratch = SearchData::default();
-                    scratch.prepare(cch.parent.len());
-                    scratch
-                },
-                |scratch, &(target, context)| {
-                    scratch.clear();
-                    if target as usize >= cch.states.len() || cch.parent.is_empty() {
-                        return Vec::new();
-                    }
-                    cch.seed_target(target, context, scratch);
-                    cch.sweep_up(
-                        &cch.profiles[cch.profile_for_mask[mask as usize] as usize],
-                        scratch,
-                        true,
-                    );
-                    scratch
-                        .order
-                        .iter()
-                        .filter_map(|&state| {
-                            let label = scratch.records[state as usize];
-                            (label.cost < f32::MAX).then_some(TargetRecord {
-                                state,
-                                cost: label.cost,
-                                arc: label.arc,
-                                previous: label.previous,
+        let rows: Vec<Vec<TargetRecord>> = crate::thread_pools::install(|| {
+            targets
+                .par_iter()
+                .with_min_len(targets.len().div_ceil(rayon::current_num_threads()).max(1))
+                .map_init(
+                    || {
+                        let mut scratch = SearchData::default();
+                        scratch.prepare(cch.parent.len());
+                        scratch
+                    },
+                    |scratch, &(target, context)| {
+                        scratch.clear();
+                        if target as usize >= cch.states.len() || cch.parent.is_empty() {
+                            return Vec::new();
+                        }
+                        cch.seed_target(target, context, scratch);
+                        cch.sweep_up(
+                            &cch.profiles[cch.profile_for_mask[mask as usize] as usize],
+                            scratch,
+                            true,
+                        );
+                        scratch
+                            .order
+                            .iter()
+                            .filter_map(|&state| {
+                                let label = scratch.records[state as usize];
+                                (label.cost < f32::MAX).then_some(TargetRecord {
+                                    state,
+                                    cost: label.cost,
+                                    arc: label.arc,
+                                    previous: label.previous,
+                                })
                             })
-                        })
-                        .collect()
-                },
-            )
-            .collect();
+                            .collect()
+                    },
+                )
+                .collect()
+        });
         let mut buckets = vec![Vec::new(); cch.parent.len()];
         for (target, labels) in rows.iter().enumerate() {
             for label in labels {

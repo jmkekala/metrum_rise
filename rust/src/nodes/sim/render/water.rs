@@ -82,14 +82,16 @@ pub(crate) struct WaterPatchMeshBuildInput {
 }
 
 impl SimCore {
-    /// Builds water mesh cache entries in parallel.
+    /// Builds water mesh cache entries in parallel on the shared pool.
     pub(crate) fn build_water_patch_mesh_cache_entries(
         inputs: Vec<WaterPatchMeshBuildInput>,
     ) -> Vec<CachedWaterPatchMesh> {
-        let mut entries = inputs
-            .into_par_iter()
-            .map(build_water_patch_mesh)
-            .collect::<Vec<_>>();
+        let mut entries = crate::thread_pools::install(|| {
+            inputs
+                .into_par_iter()
+                .map(build_water_patch_mesh)
+                .collect::<Vec<_>>()
+        });
         entries.sort_by_key(|entry| (entry.key.patch_z, entry.key.patch_x, entry.key.lod_step));
         entries
     }

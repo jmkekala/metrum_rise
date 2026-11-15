@@ -721,10 +721,12 @@ impl SimCore {
             let closure =
                 LaneSystem::incremental_rebuild_edge_closure(&self.region_graph, edge_ids);
             let buildings = &allocator.buildings;
-            let changed: Vec<usize> = (0..buildings.len())
-                .into_par_iter()
-                .filter(|&index| closure.contains(&buildings[index].edge_idx))
-                .collect();
+            let changed: Vec<usize> = crate::thread_pools::install(|| {
+                (0..buildings.len())
+                    .into_par_iter()
+                    .filter(|&index| closure.contains(&buildings[index].edge_idx))
+                    .collect()
+            });
             allocator.rebuild_entrances_of(&changed, &self.region_graph, lanes);
         }
     }

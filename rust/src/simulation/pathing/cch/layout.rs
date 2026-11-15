@@ -82,27 +82,29 @@ impl VehicleTurns {
         // Only pedestrian sources (`RegionGraph::is_vehicle_turn_rule`: sidewalk lane ±100 or a
         // footpath edge) are skipped. Preserve target lane semantics,
         // nonincident edge IDs, duplicate lane entries and empty vehicle whitelists exactly.
-        let rows: Vec<_> = (0..graph.node_count())
-            .into_par_iter()
-            .map(|id| {
-                let node = graph.node(id as u32);
-                let whitelisted = CchGraph::node_has_vehicle_whitelist(graph, id as u32);
-                let mut pairs: Vec<_> = node
-                    .lane_connections
-                    .iter()
-                    .filter(|&(&(edge, lane), _)| graph.is_vehicle_turn_rule(edge, lane))
-                    .flat_map(|(&(incoming, _), targets)| {
-                        targets
-                            .iter()
-                            .map(move |&(outgoing, _)| (incoming, outgoing))
-                    })
-                    .collect();
-                pairs.sort_unstable();
-                pairs.dedup();
-                let restricted = whitelisted || !graph.open_node_allows_u_turn(id as u32);
-                (restricted, whitelisted, pairs)
-            })
-            .collect();
+        let rows: Vec<_> = crate::thread_pools::install(|| {
+            (0..graph.node_count())
+                .into_par_iter()
+                .map(|id| {
+                    let node = graph.node(id as u32);
+                    let whitelisted = CchGraph::node_has_vehicle_whitelist(graph, id as u32);
+                    let mut pairs: Vec<_> = node
+                        .lane_connections
+                        .iter()
+                        .filter(|&(&(edge, lane), _)| graph.is_vehicle_turn_rule(edge, lane))
+                        .flat_map(|(&(incoming, _), targets)| {
+                            targets
+                                .iter()
+                                .map(move |&(outgoing, _)| (incoming, outgoing))
+                        })
+                        .collect();
+                    pairs.sort_unstable();
+                    pairs.dedup();
+                    let restricted = whitelisted || !graph.open_node_allows_u_turn(id as u32);
+                    (restricted, whitelisted, pairs)
+                })
+                .collect()
+        });
         let mut allowed = NodeSlices::empty(graph.node_count());
         for (node, (_, _, pairs)) in rows.iter().enumerate() {
             allowed.offsets[node + 1] = allowed.offsets[node] + pairs.len();

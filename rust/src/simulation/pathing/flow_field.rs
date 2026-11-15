@@ -444,31 +444,36 @@ impl FlowFieldSystem {
         // only on a change; slots share nothing but the adjacency, so the order they run in
         // changes no result.
         let adjacency = &self.adjacency;
-        self.slots
-            .as_mut_slice()
-            .par_iter_mut()
-            .enumerate()
-            .filter(|(index, _)| dirty[index / 2])
-            .for_each(|(index, slot)| {
-                slot.collected.clear();
-                sources_fn(
-                    FLOW_FIELD_ZONES[index / 2],
-                    FLOW_FIELD_MODES[index % 2],
-                    &mut slot.collected,
-                );
-                if slot.current && slot.collected == slot.sources {
-                    crate::debug::work::add(crate::debug::work::Work::FlowFieldsSkipped, 1);
-                    return;
-                }
-                std::mem::swap(&mut slot.collected, &mut slot.sources);
-                slot.current = true;
-                slot.present = !slot.sources.is_empty();
-                if slot.present {
-                    crate::debug::work::add(crate::debug::work::Work::FlowFieldsBuilt, 1);
-                    slot.field
-                        .build_on(&slot.sources, &adjacency[index % 2], &mut slot.scratch);
-                }
-            });
+        crate::thread_pools::install(|| {
+            self.slots
+                .as_mut_slice()
+                .par_iter_mut()
+                .enumerate()
+                .filter(|(index, _)| dirty[index / 2])
+                .for_each(|(index, slot)| {
+                    slot.collected.clear();
+                    sources_fn(
+                        FLOW_FIELD_ZONES[index / 2],
+                        FLOW_FIELD_MODES[index % 2],
+                        &mut slot.collected,
+                    );
+                    if slot.current && slot.collected == slot.sources {
+                        crate::debug::work::add(crate::debug::work::Work::FlowFieldsSkipped, 1);
+                        return;
+                    }
+                    std::mem::swap(&mut slot.collected, &mut slot.sources);
+                    slot.current = true;
+                    slot.present = !slot.sources.is_empty();
+                    if slot.present {
+                        crate::debug::work::add(crate::debug::work::Work::FlowFieldsBuilt, 1);
+                        slot.field.build_on(
+                            &slot.sources,
+                            &adjacency[index % 2],
+                            &mut slot.scratch,
+                        );
+                    }
+                });
+        });
     }
 
     /// Returns the car flow field for `zone`, or `None` if not yet built or zone has no buildings.

@@ -60,48 +60,52 @@ impl AgentSystem {
         if mapping.is_empty() {
             return;
         }
-        self.agents
-            .household_id
-            .par_iter_mut()
-            .for_each(|household_id| {
+        let household_ids = &mut self.agents.household_id;
+        crate::thread_pools::install(|| {
+            household_ids.par_iter_mut().for_each(|household_id| {
                 if let Some(&new_id) = mapping.get(household_id) {
                     *household_id = new_id;
                 }
-            });
+            })
+        });
         self.remap_household_members(mapping);
     }
 
-    /// Remaps building indices after a `swap_remove` in `BuildingAllocator`. O(A).
+    /// Remaps building indices after a `swap_remove` in `BuildingAllocator`. O(A), on the
+    /// shared pool from any thread: Godot's main thread reached it bare once (`CODE-33`).
     pub fn remap_building_indices(&mut self, mapping: &HashMap<usize, usize>) {
         if mapping.is_empty() {
             return;
         }
-        for column in [
-            &mut self.agents.home_building,
-            &mut self.agents.work_building,
-            &mut self.agents.current_building,
-            &mut self.agents.target_building,
-            &mut self.agents.planned_target_building,
-            &mut self.agents.next_departure_origin_building,
-            &mut self.agents.next_departure_target_building,
-            &mut self.agents.cached_schedule_work_building,
-        ] {
-            // A swap removal moves exactly one ID. Compare it directly instead of hashing
-            // eight mostly unchanged references per agent. Columns are independent and
-            // retain simultaneous-map semantics, including cycles in larger remaps.
-            if mapping.len() == 1 {
-                let (&old, &new) = mapping.iter().next().unwrap();
-                column.par_iter_mut().for_each(|value| {
-                    if *value == old {
-                        *value = new;
-                    }
-                });
-            } else {
-                column
-                    .par_iter_mut()
-                    .for_each(|value| remap_usize(value, mapping));
+        let agents = &mut self.agents;
+        crate::thread_pools::install(|| {
+            for column in [
+                &mut agents.home_building,
+                &mut agents.work_building,
+                &mut agents.current_building,
+                &mut agents.target_building,
+                &mut agents.planned_target_building,
+                &mut agents.next_departure_origin_building,
+                &mut agents.next_departure_target_building,
+                &mut agents.cached_schedule_work_building,
+            ] {
+                // A swap removal moves exactly one ID. Compare it directly instead of hashing
+                // eight mostly unchanged references per agent. Columns are independent and
+                // retain simultaneous-map semantics, including cycles in larger remaps.
+                if mapping.len() == 1 {
+                    let (&old, &new) = mapping.iter().next().unwrap();
+                    column.par_iter_mut().for_each(|value| {
+                        if *value == old {
+                            *value = new;
+                        }
+                    });
+                } else {
+                    column
+                        .par_iter_mut()
+                        .for_each(|value| remap_usize(value, mapping));
+                }
             }
-        }
+        });
     }
 
     /// [`Self::remap_building_indices`] for one swap-remove moving building `old` to `new`, over
@@ -491,10 +495,12 @@ impl AgentSystem {
         lane_system: &LaneSystem,
         graph: &RegionGraph,
     ) {
-        let illegal: Vec<_> = (0..self.agents.len())
-            .into_par_iter()
-            .filter(|&i| !self.route_turns_are_legal(i, lane_system, graph))
-            .collect();
+        let illegal: Vec<_> = crate::thread_pools::install(|| {
+            (0..self.agents.len())
+                .into_par_iter()
+                .filter(|&i| !self.route_turns_are_legal(i, lane_system, graph))
+                .collect()
+        });
         for i in illegal {
             self.clear_route_plan_after_road_edit(i, lane_system);
         }

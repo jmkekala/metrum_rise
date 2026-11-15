@@ -120,97 +120,100 @@ impl BuildingAllocator {
             zoning.parcels().len() as u64,
         );
         self.prune_site_feasibility(zoning);
-        let candidates = zoning
-            .parcels()
-            .par_iter()
-            .fold(
-                DemandSpawnCandidateSortBuckets::default,
-                |mut candidates, parcel| {
-                    if !parcel.is_available() {
-                        return candidates;
-                    }
-                    let profile_runtime_id = parcel.zone_profile_runtime_id();
-                    let Some(profile) = zoning.profiles.profile_by_runtime_id(profile_runtime_id)
-                    else {
-                        return candidates;
-                    };
-                    let zone_type = profile.zone_type;
-                    // A zone's planning slot resolves only its own zone's lots (`SIM-02-I`).
-                    if only.is_some_and(|only| only != zone_type) {
-                        return candidates;
-                    }
-                    let Some(index) = private_zone_index(zone_type) else {
-                        return candidates;
-                    };
-                    let availability = &mut candidates.availability[index];
-                    availability.free_lots += 1;
-                    let Some(profile_candidates) = asset_candidates_by_profile
-                        .get(&profile_runtime_id)
-                        .filter(|assets| !assets.candidates.is_empty())
-                    else {
-                        availability.missing_asset_lots += 1;
-                        return candidates;
-                    };
-                    let edge_idx = parcel.edge_idx();
-                    let Some(edge) = graph.get_edge(edge_idx) else {
-                        availability.unusable_lots += 1;
-                        return candidates;
-                    };
-                    if !graph.takes_buildings(edge_idx, parcel.side())
-                        || edge.physical_length < 0.1
-                        || edge.physical_geometry.len() < 2
-                    {
-                        availability.unusable_lots += 1;
-                        return candidates;
-                    }
+        let candidates = crate::thread_pools::install(|| {
+            zoning
+                .parcels()
+                .par_iter()
+                .fold(
+                    DemandSpawnCandidateSortBuckets::default,
+                    |mut candidates, parcel| {
+                        if !parcel.is_available() {
+                            return candidates;
+                        }
+                        let profile_runtime_id = parcel.zone_profile_runtime_id();
+                        let Some(profile) =
+                            zoning.profiles.profile_by_runtime_id(profile_runtime_id)
+                        else {
+                            return candidates;
+                        };
+                        let zone_type = profile.zone_type;
+                        // A zone's planning slot resolves only its own zone's lots (`SIM-02-I`).
+                        if only.is_some_and(|only| only != zone_type) {
+                            return candidates;
+                        }
+                        let Some(index) = private_zone_index(zone_type) else {
+                            return candidates;
+                        };
+                        let availability = &mut candidates.availability[index];
+                        availability.free_lots += 1;
+                        let Some(profile_candidates) = asset_candidates_by_profile
+                            .get(&profile_runtime_id)
+                            .filter(|assets| !assets.candidates.is_empty())
+                        else {
+                            availability.missing_asset_lots += 1;
+                            return candidates;
+                        };
+                        let edge_idx = parcel.edge_idx();
+                        let Some(edge) = graph.get_edge(edge_idx) else {
+                            availability.unusable_lots += 1;
+                            return candidates;
+                        };
+                        if !graph.takes_buildings(edge_idx, parcel.side())
+                            || edge.physical_length < 0.1
+                            || edge.physical_geometry.len() < 2
+                        {
+                            availability.unusable_lots += 1;
+                            return candidates;
+                        }
 
-                    let resolved = if zone_type == ZoneType::Commercial {
-                        self.select_deterministic_fresh_commercial_spawn_asset(
-                            profile_candidates,
-                            parcel,
-                            zoning,
-                            graph,
-                            catalog,
-                            commercial_spawn_resource_priorities,
-                            environment,
-                            |_| true,
-                        )
-                    } else {
-                        self.select_deterministic_fresh_spawn_asset(
-                            profile_candidates,
-                            parcel,
-                            zoning,
-                            graph,
-                            environment,
-                            |_| Some(0),
-                        )
-                    };
-                    let Some(resolved) = resolved else {
-                        candidates.availability[index].unusable_lots += 1;
-                        return candidates;
-                    };
+                        let resolved = if zone_type == ZoneType::Commercial {
+                            self.select_deterministic_fresh_commercial_spawn_asset(
+                                profile_candidates,
+                                parcel,
+                                zoning,
+                                graph,
+                                catalog,
+                                commercial_spawn_resource_priorities,
+                                environment,
+                                |_| true,
+                            )
+                        } else {
+                            self.select_deterministic_fresh_spawn_asset(
+                                profile_candidates,
+                                parcel,
+                                zoning,
+                                graph,
+                                environment,
+                                |_| Some(0),
+                            )
+                        };
+                        let Some(resolved) = resolved else {
+                            candidates.availability[index].unusable_lots += 1;
+                            return candidates;
+                        };
 
-                    let sort_key = DemandSpawnCandidateSortKey::from_resolved(&resolved);
-                    candidates.push_zone_type(
-                        zone_type,
-                        sort_key,
-                        DemandSpawnCandidate {
-                            action: DemandSpawnAction {
-                                parcel_id: parcel.id().raw(),
-                                asset_id: resolved.asset_id,
+                        let sort_key = DemandSpawnCandidateSortKey::from_resolved(&resolved);
+                        candidates.push_zone_type(
+                            zone_type,
+                            sort_key,
+                            DemandSpawnCandidate {
+                                action: DemandSpawnAction {
+                                    parcel_id: parcel.id().raw(),
+                                    asset_id: resolved.asset_id,
+                                },
                             },
-                        },
-                    );
-                    candidates
-                },
-            )
-            .reduce(
-                DemandSpawnCandidateSortBuckets::default,
-                |mut left, right| {
-                    left.extend(right);
-                    left
-                },
-            );
+                        );
+                        candidates
+                    },
+                )
+                .reduce(
+                    DemandSpawnCandidateSortBuckets::default,
+                    |mut left, right| {
+                        left.extend(right);
+                        left
+                    },
+                )
+        });
 
         let mut candidates = candidates.finish();
         for (profile_id, assets) in asset_candidates_by_profile {

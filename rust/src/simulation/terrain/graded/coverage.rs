@@ -72,17 +72,19 @@ pub(super) fn rasterize(
         [min_z, max_z]
     }));
     let spans = &spans[..];
-    road.par_chunks_mut(RASTER_ROWS * xs.len())
-        .zip(zs.par_chunks(RASTER_ROWS))
-        .for_each(|(out, rows)| {
-            // A triangle holds a point of these rows only if its extent meets theirs.
-            let (first, last) = (rows[0], rows[rows.len() - 1]);
-            for (triangle, &[min_z, max_z]) in triangles.iter().zip(spans) {
-                if max_z >= first && min_z <= last {
-                    raise_covered(triangle, xs, rows, out);
+    crate::thread_pools::install(|| {
+        road.par_chunks_mut(RASTER_ROWS * xs.len())
+            .zip(zs.par_chunks(RASTER_ROWS))
+            .for_each(|(out, rows)| {
+                // A triangle holds a point of these rows only if its extent meets theirs.
+                let (first, last) = (rows[0], rows[rows.len() - 1]);
+                for (triangle, &[min_z, max_z]) in triangles.iter().zip(spans) {
+                    if max_z >= first && min_z <= last {
+                        raise_covered(triangle, xs, rows, out);
+                    }
                 }
-            }
-        });
+            });
+    });
 }
 
 // The rectangle whose triangles the coverage of a lattice visits: its closed box grown by the

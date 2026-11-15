@@ -291,16 +291,17 @@ impl TransitNetwork {
     /// when some published price changes. O(lanes), parallel and allocation-free.
     pub fn publish_frontage_prices(&mut self) {
         use rayon::prelude::*;
-        let changed = self
-            .lane_system
-            .lanes
-            .par_iter_mut()
-            .map(|lane| {
-                let changed = lane.frontage_delay_penalty_s != lane.live_frontage_delay_s;
-                lane.frontage_delay_penalty_s = lane.live_frontage_delay_s;
-                changed
-            })
-            .reduce(|| false, |a, b| a | b);
+        let lanes = &mut self.lane_system.lanes;
+        let changed = crate::thread_pools::install(|| {
+            lanes
+                .par_iter_mut()
+                .map(|lane| {
+                    let changed = lane.frontage_delay_penalty_s != lane.live_frontage_delay_s;
+                    lane.frontage_delay_penalty_s = lane.live_frontage_delay_s;
+                    changed
+                })
+                .reduce(|| false, |a, b| a | b)
+        });
         self.frontage_delay_revision = self
             .frontage_delay_revision
             .wrapping_add(u64::from(changed));

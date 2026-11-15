@@ -30,55 +30,57 @@ impl CchCarCostBounds {
         }
         self.revision = revision;
         self.valid = false;
-        self.coordinates.resize(graph.node_count(), [0; 2]);
-        let coordinates_valid =
-            self.coordinates
-                .par_iter_mut()
-                .enumerate()
-                .all(|(index, target)| {
-                    let pos = graph.node(index as u32).pos;
-                    let point = [f64::from(pos.x).floor(), f64::from(pos.z).floor()];
-                    if point.iter().any(|&value| {
-                        !value.is_finite()
-                            || value < f64::from(i32::MIN)
-                            || value > f64::from(i32::MAX)
-                    }) {
-                        return false;
+        crate::thread_pools::install(|| {
+            self.coordinates.resize(graph.node_count(), [0; 2]);
+            let coordinates_valid =
+                self.coordinates
+                    .par_iter_mut()
+                    .enumerate()
+                    .all(|(index, target)| {
+                        let pos = graph.node(index as u32).pos;
+                        let point = [f64::from(pos.x).floor(), f64::from(pos.z).floor()];
+                        if point.iter().any(|&value| {
+                            !value.is_finite()
+                                || value < f64::from(i32::MIN)
+                                || value > f64::from(i32::MAX)
+                        }) {
+                            return false;
+                        }
+                        *target = point.map(|value| value as i32);
+                        true
+                    });
+            if !coordinates_valid
+                || cch.base_metric.len() != graph.edge_count()
+                || !cch.base_metric.par_iter().all(|&(cost, _)| cost >= 0.0)
+            {
+                return;
+            }
+            self.unit_cost = graph
+                .edges()
+                .par_iter()
+                .zip(&cch.base_metric)
+                .map(|(edge, &(cost, _))| {
+                    if edge.deleted
+                        || edge.allowed_types & TransitFlags::CAR == 0
+                        || cost == f32::INFINITY
+                    {
+                        return [f32::INFINITY; 2];
                     }
-                    *target = point.map(|value| value as i32);
-                    true
-                });
-        if !coordinates_valid
-            || cch.base_metric.len() != graph.edge_count()
-            || !cch.base_metric.par_iter().all(|&(cost, _)| cost >= 0.0)
-        {
-            return;
-        }
-        self.unit_cost = graph
-            .edges()
-            .par_iter()
-            .zip(&cch.base_metric)
-            .map(|(edge, &(cost, _))| {
-                if edge.deleted
-                    || edge.allowed_types & TransitFlags::CAR == 0
-                    || cost == f32::INFINITY
-                {
-                    return [f32::INFINITY; 2];
-                }
-                let Some(from) = self.coordinates.get(edge.start_node as usize) else {
-                    return [0.0; 2];
-                };
-                let Some(to) = self.coordinates.get(edge.end_node as usize) else {
-                    return [0.0; 2];
-                };
-                std::array::from_fn(|axis| unit_cost(cost, from[axis].abs_diff(to[axis])))
-            })
-            .reduce(
-                || [f32::INFINITY; 2],
-                |a, b| [a[0].min(b[0]), a[1].min(b[1])],
-            )
-            .map(|cost| if cost.is_finite() { cost } else { 0.0 });
-        self.valid = true;
+                    let Some(from) = self.coordinates.get(edge.start_node as usize) else {
+                        return [0.0; 2];
+                    };
+                    let Some(to) = self.coordinates.get(edge.end_node as usize) else {
+                        return [0.0; 2];
+                    };
+                    std::array::from_fn(|axis| unit_cost(cost, from[axis].abs_diff(to[axis])))
+                })
+                .reduce(
+                    || [f32::INFINITY; 2],
+                    |a, b| [a[0].min(b[0]), a[1].min(b[1])],
+                )
+                .map(|cost| if cost.is_finite() { cost } else { 0.0 });
+            self.valid = true;
+        });
     }
 
     /// Bounds any finite car query, including its exact f32 shortcut/meeting additions.

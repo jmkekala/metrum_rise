@@ -339,10 +339,13 @@ impl BuildingAllocator {
         registry: &crate::assets::AssetRegistry,
     ) {
         reserve_entrance_rows(&mut self.entrances, self.buildings.len());
-        self.buildings
-            .par_iter()
-            .map(|building| Self::derive_building_entrance(building, graph, lanes, registry))
-            .collect_into_vec(&mut self.entrances);
+        let (buildings, entrances) = (&self.buildings, &mut self.entrances);
+        crate::thread_pools::install(|| {
+            buildings
+                .par_iter()
+                .map(|building| Self::derive_building_entrance(building, graph, lanes, registry))
+                .collect_into_vec(entrances)
+        });
         self.entrances_dirty = false;
         self.bump_entrance_ref_revision();
     }
@@ -357,10 +360,12 @@ impl BuildingAllocator {
         registry: &crate::assets::AssetRegistry,
         out: &mut Vec<BuildingEntrance>,
     ) {
-        buildings
-            .par_iter()
-            .map(|building| Self::derive_building_entrance(building, graph, lanes, registry))
-            .collect_into_vec(out);
+        crate::thread_pools::install(|| {
+            buildings
+                .par_iter()
+                .map(|building| Self::derive_building_entrance(building, graph, lanes, registry))
+                .collect_into_vec(out)
+        });
     }
 
     /// Appends the derived entrance for a newly appended building to a clean cache.

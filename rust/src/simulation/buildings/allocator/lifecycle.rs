@@ -163,18 +163,20 @@ impl BorderArrivalCosts {
     }
 
     fn sweep(transit_network: &TransitNetwork, graph: &RegionGraph) -> Self {
-        let borders: Vec<u32> = (0..graph.node_count() as u32)
-            .into_par_iter()
-            .filter(|&node| {
-                graph.node(node).node_type == NodeType::Border
-                    && graph.node_adjacency(node).iter().any(|&edge_idx| {
-                        let edge = graph.edge(edge_idx);
-                        !edge.deleted
-                            && edge.primary_type == TransitType::Road
-                            && (edge.allowed_types & TransitFlags::CAR) != 0
-                    })
-            })
-            .collect();
+        let borders: Vec<u32> = crate::thread_pools::install(|| {
+            (0..graph.node_count() as u32)
+                .into_par_iter()
+                .filter(|&node| {
+                    graph.node(node).node_type == NodeType::Border
+                        && graph.node_adjacency(node).iter().any(|&edge_idx| {
+                            let edge = graph.edge(edge_idx);
+                            !edge.deleted
+                                && edge.primary_type == TransitType::Road
+                                && (edge.allowed_types & TransitFlags::CAR) != 0
+                        })
+                })
+                .collect()
+        });
         let costs = transit_network
             .cch_graph
             .costs_from_each(&borders, graph, TransitFlags::CAR);

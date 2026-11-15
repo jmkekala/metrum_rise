@@ -11,25 +11,22 @@
 # count fell or reached zero without its line being lowered or removed in the same change. A
 # function that is only ever called from inside a pool may stay, with that reason in a comment
 # line above it.
+# In a pool only: called by build_snapshot_in_pool and the test agent_instances_both_ways,
+# each inside install.
 2 nodes/sim/core/snapshot/agents.rs::SimCore::build_agent_instances
+# In a pool only: called by build_agent_instances alone.
 3 nodes/sim/core/snapshot/agents.rs::bucket_posed_agents
+# In a pool only: called by ground_off_lane_cars and fill_buckets, both under build_agent_instances.
 1 nodes/sim/core/snapshot/agents.rs::par_for_each_bucket
-3 nodes/sim/render/mist.rs::build_mist_map
-1 nodes/sim/render/water.rs::SimCore::build_water_patch_mesh_cache_entries
-1 nodes/sim/undo.rs::SimCore::restore_lanes_locally
+# Enters no pool: returns a lazy parallel iterator, which the game drives only inside install
+# (vegetation_api.rs, placement.rs).
 1 nodes/simulation_node/vegetation_api.rs::disc_cells
-1 simulation/buildings/allocator/entrance.rs::BuildingAllocator::derive_entrances_of
-1 simulation/buildings/allocator/entrance.rs::BuildingAllocator::rebuild_loaded_entrance_cache
-1 simulation/buildings/allocator/lifecycle.rs::BorderArrivalCosts::sweep
-1 simulation/buildings/allocator/placement.rs::BuildingAllocator::collect_demand_spawn_candidates_from_assets
 1 simulation/economy/accessibility.rs::ReachableBucketIndex::enable_reservations
 1 simulation/economy/accessibility.rs::ReachableBucketIndex::enable_spatial_bounds
 1 simulation/economy/accessibility.rs::ReachableBucketIndex::from_entries
 1 simulation/economy/accessibility.rs::max_speed_for_modes
 1 simulation/economy/agents/daily.rs::AgentSystem::daily_update
-1 simulation/economy/agents/remap.rs::AgentSystem::clear_routes_with_illegal_turns
-2 simulation/economy/agents/remap.rs::AgentSystem::remap_building_indices
-1 simulation/economy/agents/remap.rs::AgentSystem::remap_household_indices
+# In a pool only: its three callers in remap.rs call it inside install.
 1 simulation/economy/agents/remap.rs::scan_agents
 2 simulation/economy/agents/tick/claims.rs::AgentSystem::prepare_lane_claims
 5 simulation/economy/agents/tick/frontage.rs::AgentSystem::update_frontage_delay_cache
@@ -83,7 +80,6 @@
 2 simulation/economy/hiring/steps.rs::JobFunding::census_market_chunks
 1 simulation/economy/hiring/steps.rs::JobFunding::census_market_end
 1 simulation/economy/hiring/steps.rs::JobFunding::census_setup_finish
-2 simulation/economy/households/data.rs::HouseholdSystem::remap_building_indices
 1 simulation/economy/households/destinations.rs::DestinationFold::fold_all
 2 simulation/economy/households/employment.rs::HouseholdSystem::prepare_job_search_scratch
 1 simulation/economy/households/employment.rs::HouseholdSystem::publish_funded_job_capacities
@@ -110,31 +106,36 @@
 1 simulation/economy/logistics/supplier_index.rs::SupplierCandidateIndex::from_entries
 1 simulation/economy/logistics/working_capital.rs::ShipmentSystem::write_border_carrier_quotes_in
 1 simulation/economy/reduction.rs::ordered_fold
-1 simulation/grid/desirability.rs::compose_rows
-1 simulation/grid/mod.rs::diffuse_emissions!
-1 simulation/network/mod.rs::TransitNetwork::publish_frontage_prices
-2 simulation/network/validate.rs::audit_graph
+# In a pool only: called by rebuild_doors (under rebuild_candidates' install) and inside
+# publish_place_changes' install.
 1 simulation/parking/candidates.rs::ParkingSystem::door_lists
+# In a pool only: called by rebuild_doors (under rebuild_candidates' install) and inside
+# publish_place_changes' install.
 1 simulation/parking/candidates.rs::ParkingSystem::refresh_chunk_access
+# In a pool only: called by rebuild_doors and inside the installs of publish_place_changes,
+# refresh_economy_metadata and audit_parking_doors (tests).
 1 simulation/parking/candidates/table.rs::ParkingSystem::place_table
+# In a pool only: called inside publish_place_changes' install alone.
 3 simulation/parking/candidates/update.rs::ParkingSystem::read_list_ends
+# In a pool only: called by door_foot_graph and changed_reach, under the parking candidate installs.
 2 simulation/parking/candidates/walk.rs::FootGraph::around
+# In a pool only: the inner half of CchGraph::customize, called inside its install alone.
 4 simulation/pathing/cch.rs::CchGraph::customize_in_pool
-3 simulation/pathing/cch/bounds.rs::CchCarCostBounds::prepare
-1 simulation/pathing/cch/layout.rs::VehicleTurns::build
-1 simulation/pathing/cch/order.rs::dissect_points::dissect
-2 simulation/pathing/cch/query/buckets.rs::CchBuckets::build
-1 simulation/pathing/cch/sweep.rs::CchGraph::costs_from_each
-1 simulation/pathing/flow_field.rs::FlowFieldSystem::rebuild_dirty
-2 simulation/save/cell_zoning.rs::validate_reservations
+# In a pool only: called by bake_tile alone.
 1 simulation/terrain/graded/behind.rs::rises_above_a_seam
-2 simulation/terrain/graded/coverage.rs::rasterize
+# In a pool only: called by bake_tile alone.
 1 simulation/terrain/graded/extras.rs::square_extras
+# In a pool only: called per tile inside the installs of bake_tiles_with and bake_unless_held.
 8 simulation/terrain/graded/tile.rs::bake_tile
+# In a pool only: the inner half of CellStore::generate, called inside its install alone.
 9 simulation/zoning/cells/generation.rs::CellStore::generate_in_pool
+# In a pool only: called inside continuity::pinned_candidates' parallel iterator alone.
 1 simulation/zoning/cells/generation/continuity.rs::frame_candidates
+# In a pool only: called by generate_in_pool alone.
 1 simulation/zoning/cells/generation/continuity.rs::pinned_candidates
+# In a pool only: called by generate_in_pool alone.
 1 simulation/zoning/cells/generation/curves.rs::pinned_candidates
+# In a pool only: the inner half of CellLotPlanner::derive, called inside its install alone.
 1 simulation/zoning/system/cell_lots/derivation.rs::CellLotPlanner::derive_cell_lots_in_pool
+# In a pool only: called by derive_cell_lots_in_pool alone.
 1 simulation/zoning/system/cell_lots/derivation.rs::CellLotPlanner::refresh_existing_cell_lots
-2 utils/storage.rs::fill_rows

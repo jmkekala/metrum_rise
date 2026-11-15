@@ -29,41 +29,43 @@ macro_rules! diffuse_emissions {
         let h = target.height;
         let first = rows.start;
         if !rows.is_empty() {
-            target.data[rows.start * w..rows.end * w]
-                .par_chunks_mut(w)
-                .enumerate()
-                .for_each(|(offset, row)| {
-                    let y = first + offset;
-                    for x in 0..w {
-                        let current = *previous.get(x, y).unwrap_or(&0.0);
-                        let mut neighbor_sum = 0.0;
-                        let mut count = 0.0;
-                        if x > 0 {
-                            neighbor_sum += *previous.get(x - 1, y).unwrap_or(&0.0);
-                            count += 1.0;
+            crate::thread_pools::install(|| {
+                target.data[rows.start * w..rows.end * w]
+                    .par_chunks_mut(w)
+                    .enumerate()
+                    .for_each(|(offset, row)| {
+                        let y = first + offset;
+                        for x in 0..w {
+                            let current = *previous.get(x, y).unwrap_or(&0.0);
+                            let mut neighbor_sum = 0.0;
+                            let mut count = 0.0;
+                            if x > 0 {
+                                neighbor_sum += *previous.get(x - 1, y).unwrap_or(&0.0);
+                                count += 1.0;
+                            }
+                            if x < w - 1 {
+                                neighbor_sum += *previous.get(x + 1, y).unwrap_or(&0.0);
+                                count += 1.0;
+                            }
+                            if y > 0 {
+                                neighbor_sum += *previous.get(x, y - 1).unwrap_or(&0.0);
+                                count += 1.0;
+                            }
+                            if y < h - 1 {
+                                neighbor_sum += *previous.get(x, y + 1).unwrap_or(&0.0);
+                                count += 1.0;
+                            }
+                            let average = if count > 0.0 {
+                                neighbor_sum / count
+                            } else {
+                                0.0
+                            };
+                            let propagated =
+                                (current * $own_weight + average * $neighbor_weight) * $retention;
+                            row[x] = (row[x] + propagated).min(100.0).max(0.0);
                         }
-                        if x < w - 1 {
-                            neighbor_sum += *previous.get(x + 1, y).unwrap_or(&0.0);
-                            count += 1.0;
-                        }
-                        if y > 0 {
-                            neighbor_sum += *previous.get(x, y - 1).unwrap_or(&0.0);
-                            count += 1.0;
-                        }
-                        if y < h - 1 {
-                            neighbor_sum += *previous.get(x, y + 1).unwrap_or(&0.0);
-                            count += 1.0;
-                        }
-                        let average = if count > 0.0 {
-                            neighbor_sum / count
-                        } else {
-                            0.0
-                        };
-                        let propagated =
-                            (current * $own_weight + average * $neighbor_weight) * $retention;
-                        row[x] = (row[x] + propagated).min(100.0).max(0.0);
-                    }
-                });
+                    });
+            });
         }
     }};
 }

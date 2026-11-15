@@ -70,102 +70,104 @@ impl SimCore {
 
 /// Builds the map from the visible water and the base terrain its depth is measured on. O(cells x reach² / cell²):
 /// one depth and height sample per cell, then a bounded search of the nearby cells for the
-/// nearest water, in parallel rows.
+/// nearest water, in parallel rows on the shared pool.
 pub(crate) fn build_mist_map(water: &WaterSystem, terrain: &TerrainSystem) -> MistMap {
-    let (world_w, world_h) = water.world_size();
-    let width = (world_w / MIST_CELL_M).ceil() as usize + 1;
-    let height = (world_h / MIST_CELL_M).ceil() as usize + 1;
-    let origin = [-world_w * 0.5, -world_h * 0.5];
-    let position = |x: usize, z: usize| {
-        (
-            origin[0] + x as f32 * MIST_CELL_M,
-            origin[1] + z as f32 * MIST_CELL_M,
-        )
-    };
-    // The water level over each open-water cell, or NaN where there is none.
-    let mut level = vec![f32::NAN; width * height];
-    level
-        .par_chunks_mut(width)
-        .enumerate()
-        .for_each(|(z, row)| {
-            for (x, cell) in row.iter_mut().enumerate() {
-                let (wx, wz) = position(x, z);
-                let depth = water.visible_depth_world(wx, wz);
-                if depth > MIN_WATER_DEPTH_M {
-                    // Water depth is on the base (`TERRAIN-07` T13 (a)), so its surface is the
-                    // base plus the depth, whatever the graded ground does there.
-                    *cell = terrain.sample_height_world(wx, wz) * HEIGHT_SCALE + depth;
+    crate::thread_pools::install(|| {
+        let (world_w, world_h) = water.world_size();
+        let width = (world_w / MIST_CELL_M).ceil() as usize + 1;
+        let height = (world_h / MIST_CELL_M).ceil() as usize + 1;
+        let origin = [-world_w * 0.5, -world_h * 0.5];
+        let position = |x: usize, z: usize| {
+            (
+                origin[0] + x as f32 * MIST_CELL_M,
+                origin[1] + z as f32 * MIST_CELL_M,
+            )
+        };
+        // The water level over each open-water cell, or NaN where there is none.
+        let mut level = vec![f32::NAN; width * height];
+        level
+            .par_chunks_mut(width)
+            .enumerate()
+            .for_each(|(z, row)| {
+                for (x, cell) in row.iter_mut().enumerate() {
+                    let (wx, wz) = position(x, z);
+                    let depth = water.visible_depth_world(wx, wz);
+                    if depth > MIN_WATER_DEPTH_M {
+                        // Water depth is on the base (`TERRAIN-07` T13 (a)), so its surface is the
+                        // base plus the depth, whatever the graded ground does there.
+                        *cell = terrain.sample_height_world(wx, wz) * HEIGHT_SCALE + depth;
+                    }
                 }
-            }
-        });
-    // A lake's surface is flat, but its depth is interpolated, so a cell straddling the shoreline
-    // reads the surface too low. Each water cell takes the highest level among its open-water
-    // neighbours, which is the surface itself.
-    let surface: Vec<f32> = (0..width * height)
-        .into_par_iter()
-        .map(|i| {
-            let here = level[i];
-            if here.is_nan() {
-                return here;
-            }
-            let (x, z) = ((i % width) as isize, (i / width) as isize);
-            let mut top = here;
-            for dz in -1..=1 {
-                for dx in -1..=1 {
-                    let (nx, nz) = (x + dx, z + dz);
-                    if nx >= 0 && nz >= 0 && nx < width as isize && nz < height as isize {
-                        let neighbour = level[nz as usize * width + nx as usize];
-                        if neighbour > top {
-                            top = neighbour;
+            });
+        // A lake's surface is flat, but its depth is interpolated, so a cell straddling the
+        // shoreline reads the surface too low. Each water cell takes the highest level among its
+        // open-water neighbours, which is the surface itself.
+        let surface: Vec<f32> = (0..width * height)
+            .into_par_iter()
+            .map(|i| {
+                let here = level[i];
+                if here.is_nan() {
+                    return here;
+                }
+                let (x, z) = ((i % width) as isize, (i / width) as isize);
+                let mut top = here;
+                for dz in -1..=1 {
+                    for dx in -1..=1 {
+                        let (nx, nz) = (x + dx, z + dz);
+                        if nx >= 0 && nz >= 0 && nx < width as isize && nz < height as isize {
+                            let neighbour = level[nz as usize * width + nx as usize];
+                            if neighbour > top {
+                                top = neighbour;
+                            }
                         }
                     }
                 }
-            }
-            top
-        })
-        .collect();
-    let level = surface;
-    let reach = (SHORE_REACH_M / MIST_CELL_M).ceil() as isize;
-    let mut data = vec![0.0; width * height * 2];
-    data.par_chunks_mut(width * 2)
-        .enumerate()
-        .for_each(|(z, row)| {
-            for x in 0..width {
-                // The nearest open-water cell within reach; ties keep the first in scan order.
-                let mut nearest: Option<(f32, f32)> = None;
-                for dz in -reach..=reach {
-                    let nz = z as isize + dz;
-                    if nz < 0 || nz >= height as isize {
-                        continue;
-                    }
-                    for dx in -reach..=reach {
-                        let nx = x as isize + dx;
-                        if nx < 0 || nx >= width as isize {
+                top
+            })
+            .collect();
+        let level = surface;
+        let reach = (SHORE_REACH_M / MIST_CELL_M).ceil() as isize;
+        let mut data = vec![0.0; width * height * 2];
+        data.par_chunks_mut(width * 2)
+            .enumerate()
+            .for_each(|(z, row)| {
+                for x in 0..width {
+                    // The nearest open-water cell within reach; ties keep the first in scan order.
+                    let mut nearest: Option<(f32, f32)> = None;
+                    for dz in -reach..=reach {
+                        let nz = z as isize + dz;
+                        if nz < 0 || nz >= height as isize {
                             continue;
                         }
-                        let water_level = level[nz as usize * width + nx as usize];
-                        if water_level.is_nan() {
-                            continue;
-                        }
-                        let distance = ((dx * dx + dz * dz) as f32).sqrt() * MIST_CELL_M;
-                        if nearest.is_none_or(|(best, _)| distance < best) {
-                            nearest = Some((distance, water_level));
+                        for dx in -reach..=reach {
+                            let nx = x as isize + dx;
+                            if nx < 0 || nx >= width as isize {
+                                continue;
+                            }
+                            let water_level = level[nz as usize * width + nx as usize];
+                            if water_level.is_nan() {
+                                continue;
+                            }
+                            let distance = ((dx * dx + dz * dz) as f32).sqrt() * MIST_CELL_M;
+                            if nearest.is_none_or(|(best, _)| distance < best) {
+                                nearest = Some((distance, water_level));
+                            }
                         }
                     }
+                    if let Some((distance, water_level)) = nearest {
+                        let t = (1.0 - distance / SHORE_REACH_M).clamp(0.0, 1.0);
+                        row[x * 2] = t * t * (3.0 - 2.0 * t);
+                        row[x * 2 + 1] = water_level;
+                    }
                 }
-                if let Some((distance, water_level)) = nearest {
-                    let t = (1.0 - distance / SHORE_REACH_M).clamp(0.0, 1.0);
-                    row[x * 2] = t * t * (3.0 - 2.0 * t);
-                    row[x * 2 + 1] = water_level;
-                }
-            }
-        });
-    MistMap {
-        width,
-        height,
-        origin,
-        data,
-    }
+            });
+        MistMap {
+            width,
+            height,
+            origin,
+            data,
+        }
+    })
 }
 
 #[cfg(test)]

@@ -685,7 +685,7 @@ pub fn validate_node(
     }
 }
 
-/// Audits graph IDs with Rayon and returns deterministic kind-then-ID ordering.
+/// Audits graph IDs on the shared pool and returns deterministic kind-then-ID ordering.
 ///
 /// Uses worker-local output buffers, not one allocation per edge. Total work is
 /// O(points + sum(degree log degree) + violations log violations), plus graph-slot
@@ -695,24 +695,27 @@ pub fn audit_graph(graph: &RegionGraph, limits: &RoadGeometryLimits) -> Vec<Road
         a.append(&mut b);
         a
     };
-    let mut output = graph
-        .edges()
-        .par_iter()
-        .enumerate()
-        .fold(Vec::new, |mut out, (id, _)| {
-            validate_edge(graph, id, limits, &mut out);
-            out
-        })
-        .reduce(Vec::new, merge);
-    let mut node_output = graph
-        .nodes()
-        .par_iter()
-        .enumerate()
-        .fold(Vec::new, |mut out, (id, _)| {
-            validate_node(graph, id as u32, limits, &mut out);
-            out
-        })
-        .reduce(Vec::new, merge);
+    let (mut output, mut node_output) = crate::thread_pools::install(|| {
+        let edges = graph
+            .edges()
+            .par_iter()
+            .enumerate()
+            .fold(Vec::new, |mut out, (id, _)| {
+                validate_edge(graph, id, limits, &mut out);
+                out
+            })
+            .reduce(Vec::new, merge);
+        let nodes = graph
+            .nodes()
+            .par_iter()
+            .enumerate()
+            .fold(Vec::new, |mut out, (id, _)| {
+                validate_node(graph, id as u32, limits, &mut out);
+                out
+            })
+            .reduce(Vec::new, merge);
+        (edges, nodes)
+    });
     output.append(&mut node_output);
     output.sort_unstable_by_key(RoadGeometryViolation::sort_key);
     output

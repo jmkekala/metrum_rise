@@ -665,26 +665,33 @@ impl HouseholdSystem {
         self.job_funding.remap_buildings(mapping);
         self.census_inputs.remap_buildings(mapping);
         self.ensure_daily_ledger_len();
-        if mapping.len() == 1 {
-            let (&old, &new) = mapping.iter().next().unwrap();
-            self.households.par_iter_mut().for_each(|household| {
-                if household.home_building_id == old {
-                    household.home_building_id = new;
-                }
-                if household.reserved_store_building_id == old {
-                    household.reserved_store_building_id = new;
-                }
-            });
-        } else if !mapping.is_empty() {
-            self.households.par_iter_mut().for_each(|household| {
-                if let Some(&new_id) = mapping.get(&household.home_building_id) {
-                    household.home_building_id = new_id;
-                }
-                if let Some(&new_id) = mapping.get(&household.reserved_store_building_id) {
-                    household.reserved_store_building_id = new_id;
-                }
-            });
+        if mapping.is_empty() {
+            return;
         }
+        // On the shared pool from any thread, as the agents' remap beside it (`CODE-33`).
+        let households = &mut self.households;
+        crate::thread_pools::install(|| {
+            if mapping.len() == 1 {
+                let (&old, &new) = mapping.iter().next().unwrap();
+                households.par_iter_mut().for_each(|household| {
+                    if household.home_building_id == old {
+                        household.home_building_id = new;
+                    }
+                    if household.reserved_store_building_id == old {
+                        household.reserved_store_building_id = new;
+                    }
+                });
+            } else {
+                households.par_iter_mut().for_each(|household| {
+                    if let Some(&new_id) = mapping.get(&household.home_building_id) {
+                        household.home_building_id = new_id;
+                    }
+                    if let Some(&new_id) = mapping.get(&household.reserved_store_building_id) {
+                        household.reserved_store_building_id = new_id;
+                    }
+                });
+            }
+        });
     }
 
     /// Invalidates references to a building that is being removed.
