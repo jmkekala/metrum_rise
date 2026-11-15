@@ -5,8 +5,8 @@
 use super::data::AgentSystem;
 use super::tick::lane_attach_slot_clear;
 use super::{
-    ACCESS_FREIGHT_BORDER_DESTINATION, ACCESS_PLAN_VALID, MODE_CAR, MODE_WALK, TRANSIT_IN_BUILDING,
-    TRANSIT_INTERSECTION, TRANSIT_NETWORK,
+    ACCESS_FREIGHT_BORDER_DESTINATION, ACCESS_LANE_ATTACH_PENDING, ACCESS_PLAN_VALID, MODE_CAR,
+    MODE_WALK, TRANSIT_IN_BUILDING, TRANSIT_INTERSECTION, TRANSIT_NETWORK,
 };
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::network::graph::RegionGraph;
@@ -292,6 +292,8 @@ impl AgentSystem {
         // is taken waits there for an attach gap instead of stacking (`TRAFFIC-11`).
         // O(reattached × log) per edit.
         let mut reattached: HashMap<usize, Vec<(f32, usize)>> = HashMap::new();
+        // Detached agents with no lane in reach whose edge the edit removed (`SAVE-04`).
+        let mut stranded = Vec::new();
         for (i, candidate) in detached {
             let old_edge = self.agents.current_edge[i];
             let old_node = self.agents.current_node[i];
@@ -312,6 +314,9 @@ impl AgentSystem {
                         old_pos_y,
                         LANE_REATTACH_MAX_DIST_M,
                     );
+                }
+                if graph.get_edge(old_edge).is_none_or(|edge| edge.deleted) {
+                    stranded.push(i);
                 }
                 continue;
             };
@@ -398,6 +403,19 @@ impl AgentSystem {
                 log_agent_route_clear_after_road_edit(self, i);
             }
             self.clear_route_plan_after_road_edit(i, lane_system);
+        }
+        // `current_edge` is `usize::MAX` or a live edge after every edit (`SAVE-04`): an agent
+        // left with no lane on a removed edge keeps its node and position, as a load leaves it,
+        // and replans from the node. A car held for a lane of that edge loses the hold with it.
+        // After the route scan, which finds these agents by their edge; each was cleared there.
+        // O(1) per stranded agent.
+        for i in stranded {
+            self.agents.current_edge[i] = usize::MAX;
+            if self.agents.pending_lane_attach(i).is_some() {
+                self.agents.access_flags[i] &= !ACCESS_LANE_ATTACH_PENDING;
+                self.agents.planned_attach_lane_id[i] = u32::MAX;
+                self.agents.planned_attach_lane_d[i] = 0.0;
+            }
         }
         self.invalidate_lane_bucket_snapshot();
     }
@@ -1477,6 +1495,65 @@ mod tests {
             old_pos.distance_to(new_pos) < 0.5,
             "reattach moved the car too far: old={old_pos:?} new={new_pos:?}",
         );
+    }
+
+    #[test]
+    fn a_car_with_no_lane_left_in_reach_drops_its_removed_edge() {
+        // `SAVE-04`: the road under two cars goes and the nearest lane left is over 30 m away.
+        // Both stand where they were, at their node, and name no edge; the one held for a lane
+        // of that road loses the hold. Before, both kept the removed edge and every save failed.
+        let (mut graph, mut lane_system) = make_simple_lane_system();
+        let lane = lane_system.edge_lanes[&1]
+            .iter()
+            .copied()
+            .find(|&id| {
+                let lane = &lane_system.lanes[id];
+                lane.lane_type == LaneType::Vehicle && lane.is_fwd
+            })
+            .expect("forward vehicle lane on edge 1");
+        let node = lane_origin_node_for(&lane_system.lanes[lane], &graph).unwrap();
+        let mut sys = AgentSystem::new();
+        for (d, held) in [(75.0, false), (60.0, true)] {
+            let pos = sample_lane_position_xz(&lane_system.lanes[lane], d).unwrap();
+            let i = sys.spawn_border_arrival_agent(usize::MAX, node, pos.x, pos.y);
+            sys.agents.transit_mode[i] = MODE_CAR;
+            if held {
+                sys.agents
+                    .hold_for_lane_attach(i, &lane_system, lane, d, node);
+                assert!(sys.agents.pending_lane_attach(i).is_some());
+            } else {
+                sys.agents.enter_lane(i, &lane_system, lane, d, node);
+            }
+            assert_eq!(sys.agents.current_edge[i], 1);
+        }
+        let before: Vec<_> = (0..2)
+            .map(|i| {
+                (
+                    sys.agents.current_node[i],
+                    sys.agents.pos_x[i],
+                    sys.agents.pos_y[i],
+                )
+            })
+            .collect();
+
+        graph.edge_mut(1).deleted = true;
+        graph.rebuild_adjacency_list();
+        let affected = HashSet::from([1usize]);
+        sys.invalidate_lane_ids_for_edges(&affected, &lane_system, &graph);
+        lane_system.rebuild_edges_incremental(&mut graph, &affected);
+        sys.reattach_invalidated_lanes_for_edges(&affected, &lane_system, &graph);
+
+        let a = &sys.agents;
+        for (i, &(node, x, z)) in before.iter().enumerate() {
+            assert_eq!(
+                (a.current_lane_id[i], a.current_edge[i], a.transit[i]),
+                (usize::MAX, usize::MAX, TRANSIT_NETWORK),
+                "car {i}"
+            );
+            assert_eq!((a.current_node[i], a.pos_x[i], a.pos_y[i]), (node, x, z));
+            assert_eq!(a.pending_lane_attach(i), None);
+            assert_eq!(a.planned_attach_lane_id[i], u32::MAX);
+        }
     }
 
     #[test]

@@ -2531,7 +2531,10 @@ Recovery (`drive_cut_off`) now releases the booking and:
   wait in the parking retry wheel), and is the recovery again from the lane's end, by these same
   rules: with the road home back it drives home. While it waits out the backoff with no plan
   (`waits_out_cut_off`) no replan gate plans it, and a load keeps its step (`loaded_cut_off_backoff`,
-  as the running game keeps it). A node with no road out leaves it standing there.
+  as the running game keeps it). A node with no road out leaves it standing there. It names no
+  edge there: every road edit leaves an agent's `current_edge` `usize::MAX` or a live edge, so one
+  left with no lane within reach on a removed road keeps its node and position, as a load leaves
+  it, and drops the edge (`SAVE-04`; before, it kept the removed edge and every save failed).
 
 It never stands in a junction while a road leads out and is never moved. The search asks the
 router once per distinct exit lane (an exit lane the router has found unreachable from this start,

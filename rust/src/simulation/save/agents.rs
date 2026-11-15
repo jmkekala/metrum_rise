@@ -145,7 +145,13 @@ pub(super) fn save_agents(
             agents.planned_detach_lane_d[i],
             i64::from(agents.access_flags[i]),
             agents.next_replan_time[i],
-            optional_edge_to_db(agents.current_edge[i], maps)?,
+            optional_edge_to_db(agents.current_edge[i], maps).map_err(|_| {
+                SaveLoadError::custom(format!(
+                    "missing edge map: agent row {i} names edge {}, which is not in the saved \
+                     network",
+                    agents.current_edge[i]
+                ))
+            })?,
             if agents.current_lane_id[i] != usize::MAX {
                 Some(usize_to_i64(agents.current_lane_id[i])?)
             } else {

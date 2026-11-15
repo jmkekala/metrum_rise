@@ -514,3 +514,74 @@ fn a_car_with_no_bay_in_reach_and_no_way_home_waits_at_a_lane_end_and_retries() 
         lines[0]
     );
 }
+
+// `SAVE-04`: the road under a driving car goes with no lane left within reach, then every road at
+// the node it came from, so it stands at a node with no road out (`TRAFFIC-34` (c)). No agent
+// names a removed edge, and the game saves and loads and runs on alike. Before, the car kept the
+// removed edge and every save failed with "missing edge map".
+#[test]
+fn a_car_stranded_by_removed_roads_names_no_edge_and_the_game_saves() {
+    let mut t = Commute::on_roads(&pieces());
+    let (agent, side) = (t.agent, t.side());
+    let edge =
+        t.c.region_graph
+            .get_edge_between_nodes(node_at(&t.c, side * -300.0), node_at(&t.c, side * -200.0))
+            .unwrap();
+    t.tick_until("drove to the middle of a piece", |c, i| {
+        let lanes = &c.transit_network.lane_system.lanes;
+        lanes
+            .get(c.agents.current_lane_id[i])
+            .is_some_and(|lane| lane.edge_id == edge)
+            && (c.agents.pos_x[i] + side * 250.0).abs() < 5.0
+    });
+    t.cut(-300.0, -200.0);
+    let node = t.c.agents.current_node[agent];
+    assert_eq!(
+        t.c.agents.current_lane_id[agent],
+        usize::MAX,
+        "no lane in reach"
+    );
+    let graph = &t.c.region_graph;
+    let rest: Vec<usize> = graph
+        .node_adjacency(node)
+        .iter()
+        .copied()
+        .filter(|&edge| !graph.edge(edge).deleted)
+        .collect();
+    assert!(!rest.is_empty());
+    for edge in rest {
+        assert!(t.c.bulldoze_road_edge_for_test(edge));
+    }
+    t.c.transit_network.settle_cch();
+    assert!(!t.c.region_graph.node_has_live_incident_edge(node));
+    let names_no_removed_edge = |c: &SimCore| {
+        let graph = &c.region_graph;
+        let stale: Vec<usize> = (0..c.agents.len())
+            .filter(|&i| {
+                let edge = c.agents.current_edge[i];
+                edge != usize::MAX && graph.get_edge(edge).is_none_or(|edge| edge.deleted)
+            })
+            .collect();
+        assert!(
+            stale.is_empty(),
+            "agent rows naming a removed edge: {stale:?}"
+        );
+    };
+    names_no_removed_edge(&t.c);
+    for _ in 0..600 {
+        t.tick();
+    }
+    names_no_removed_edge(&t.c);
+    let a = &t.c.agents;
+    assert_eq!(
+        (
+            a.transit[agent],
+            a.current_node[agent],
+            a.current_lane_id[agent]
+        ),
+        (TRANSIT_NETWORK, node, usize::MAX),
+        "it stands at its node"
+    );
+    t.continues_across_a_save("stranded-at-a-roadless-node", 50);
+    names_no_removed_edge(&t.c);
+}

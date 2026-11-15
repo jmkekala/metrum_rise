@@ -915,8 +915,8 @@ impl AgentSystem {
             .find(|&lane_id| lane_id < transit_network.lane_system.lanes.len());
             if let Some(lane_id) = lane_id {
                 let lane = &transit_network.lane_system.lanes[lane_id];
-                if lane.edge_id < graph.edge_count() {
-                    let edge = graph.edge(lane.edge_id);
+                // A stale entrance may name a lane of a removed road (`SAVE-04`).
+                if let Some(edge) = graph.get_edge(lane.edge_id).filter(|edge| !edge.deleted) {
                     self.agents.current_node[agent_idx] = if lane.is_fwd {
                         edge.start_node
                     } else {
