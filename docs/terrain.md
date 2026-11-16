@@ -2440,8 +2440,10 @@ selected candidate stands in Rust, and the terrain shader had no land-cover inpu
 previous roadmap statement about a shipped water/slope-gated shader mirror was stale.
 The following contract supersedes the historical ground-mask experiments below.
 
-`get_vegetation_land_cover` publishes derived R8 bytes and world bounds for each terrain
-patch. The world-aligned texel size is **8 m**, independent of saved `canopy_cell_m`.
+Each terrain patch's land cover is derived R8 bytes and world bounds (`PatchLandCover`: built
+with the patch's terrain payload on the payload worker, or by the land cover jobs on the
+background pool when it went stale since; the bridge's synchronous `get_vegetation_land_cover`
+was removed by `RENDER-40`). The world-aligned texel size is **8 m**, independent of saved `canopy_cell_m`.
 A full 510 m patch carries 66–67 texels per axis including a one-texel filter border
 (4356–4489 bytes). Neighboring patches publish identical samples where their borders overlap,
 so the shader's single bilinear texture fetch is continuous across patch edges.
@@ -17939,6 +17941,164 @@ review. The 100k load (diagnosis, one run): lights parts 0.04-0.07 ms; 2 of 158 
 A second series (`$ARTIFACTS` art-cb3/series2): only the `post_load` maximum repeats (+107 ms over a spread of
 73); 30k `far_zoom_out` is +0.5 ms again but within its spread (0.6), with the same draw calls and
 primitives as the control (a review item); none of the Kuopio flags repeats.
+
+### The stale land cover off the main thread, and the border skirt kept (`RENDER-40`, round R40, 2026-11-16)
+
+Round R40 (`RENDER-40`'s rest, after `RENDER-32-Q` and C26): the main thread no longer builds a
+terrain patch's land cover. Before it, `terrain.gd` called `get_vegetation_land_cover` whenever a
+patch's land cover had gone stale: the land cover sync (every neighbour of an edited patch, one a
+frame while the terrain was clean), a dirty stage whose payload's land cover a later revision had
+overtaken, and a build whose payload carried none. The call took a blocking `lock_core`, readied
+the site queries and built the coverage with a Rayon `install` on the shared pool, so at the
+hourly pass it waited 22-67 ms behind the simulation's frame. It is the last blocking core wait on
+a frame path (the main-thread audit), and the bridge no longer has it: the owner's decision of
+2026-11-16 removed the `#[func]`; `Coverage::build` over the live core stays as the tests' oracle.
+The round's attribution then found the rest of the edit's terrain script in the border skirt
+(below), kept since while its loop is unchanged.
+
+**The land cover jobs** (`vegetation_api/land_cover_jobs.rs`, `SimulationNode::request_vegetation_land_cover`,
+`poll_vegetation_land_covers`, `cancel_vegetation_land_cover`, `clear_vegetation_land_covers`). A
+stale patch is asked for by key; a key asked already is not asked again. One snapshot taker on the
+background pool takes the asked patches' `PatchLandCover` inputs (the payload worker's, `RENDER-32-M`)
+under `try_lock` in one hold of the core and bakes them after releasing it, sequentially; a busy
+core puts the batch back and the next request or poll tries again (nothing waits, nothing spins);
+a key whose roadbed or site index is not ready waits the same way. The renderer's poll (once a
+frame while anything is asked) hands over the results current by the published revisions
+(`FrameQueries`, `CODE-26`), never the core: a result whose revisions equal the publication's is
+delivered; an unequal one is behind when the publication is newer than its take (the taker notes
+the core's publication sequence with the inputs, and a newer publication saw the core at or after
+the take) and its key waits for the next snapshot without a round trip; otherwise it is ahead of
+the publication and waits for the next one. So a stale patch is asked once while its job is out,
+and handed over once, current. A world load and the renderer's reset clear the jobs; a removed
+patch cancels its key. Cost: a request `O(1)`, the poll `O(landed)`, the taker's snapshots and
+builds off the main thread; no work in a frame with nothing asked.
+
+**`terrain.gd`.** `_stage_patch_land_cover` never queries: it uses the patch's current land cover,
+the payload's (current, or as it is for a build), a handed-over one while current, or asks and
+returns nothing yet. The sync walks the built patches once per land cover epoch (not every frame)
+and asks for every stale one; handed-over land covers upload under the frame's install ledger, the
+first of a frame always (`LAND_COVER_STAGE_US` 60 us predicted). A patch built without any land
+cover draws none (a shared 1x1 black texture) until its own lands, and one built with a stale
+payload land cover asks at its build. Pending land covers count as render work, so a settle waits
+for them. Two latent faults go with the change: a kept dirty stage whose land cover went stale
+after staging failed the commit check every frame until a new payload replaced it, and a patch
+built with a stale payload land cover after its epoch's walk was not synced until the next
+revision moved.
+
+**Atomicity (decision for review).** A dirty patch whose payload's land cover is stale waits for
+the fresh one: the batch commits heights, masks and land covers current at the commit frame, as
+`_terrain_patch_stage_matches_target` checked before, and the terrain-and-road pair is unchanged.
+The height stage is kept while the land cover is out (the standalone path), and the network pair's
+prepare resolves land covers before it stages any height, so a wait stages nothing twice. The case
+is narrow (a 3x3 revision moved after the payload was taken, most often a neighbour dirty in the
+same batch, whose payload the batch waits for anyway); committing heights first would draw a land
+cover that disagrees with the terrain beside it for frames and needs a second commit path and a
+weaker commit check. Its cost, measured below: at 30k 1x the dirty commit waited for a land cover
+in 1-3 frames of the 60 s still, at 32x in 299-457 (the patches committed were about as many as
+the control's).
+
+**The border skirt.** With the land cover gone, an instrumented attribution run (timers on the
+dirty stage's parts, branch library, `$ARTIFACTS` attr) put nearly all of the remaining edit work
+in one place: a dirty batch with any patch in the world's outermost patch row or column rebuilt the
+whole border skirt (`_stage_terrain_border_update`: the loop's finite check walked in GDScript, the
+quads and `generate_tangents`), 4.8-5.8 ms a batch at 30k, and the water then rebuilt its border on
+the revision; the stage of a patch itself (height image and texture, mask, mesh, land cover) was
+0.01-0.03 ms. An edit inside a border patch leaves the loop as it is, so a dirty batch now stages
+the border only when the published loop differs from the committed one (a native array compare);
+the skirt drawn is the same either way, and the border revision moves only when it changes.
+
+**Tests.** `snapshot_tests.rs`
+`terrain_land_cover_from_the_jobs_equals_the_live_query_and_follows_publications`: through the
+jobs (request, taker under `try_lock`, bake, poll against the publication) every patch of the
+populated fixture gets the live `Coverage::build`'s bytes and revisions bit for bit; a key outside
+the world ends unanswered; a result made stale by a published edit goes back to wait, and one taken
+after an edit no publication carries yet is held and delivered once one does. Lane unit tests:
+one request a key, cancel, clear (an older world's batch dropped), a busy batch back in order with
+no retry of its own. `vegetation_land_cover_test.gd` through the jobs (no synchronous query on the
+main thread, `get_vegetation_main_thread_queries` unchanged). The stream benchmark's settle points
+add every built patch's land cover by digest and how many are stale (`patch_digests`
+`land_cover`, compared by `tools/stream_benchmark.py digests`).
+
+**Measured** (fresh, 2026-11-16; release libraries, control `dev` `019f16df` with its scripts
+against the branch: `58e71271` (the land cover jobs) and `efeaec92` (with the border kept: the same
+library, its scripts); Godot 4.7.2 Forward+, gamescope headless at 1000 Hz, 1920x1080,
+P-cores, eight workers, isolated profile; PL1's play rows, instrumented, two runs a side in one
+session (control and `58e71271` C B B C; `efeaec92` two runs after them in the same boot, against
+the same control runs); the 30k timing-cache city with PL1's 20 s settle cap on both sides):
+
+```bash
+tools/stream_benchmark.py run --label <row>-<side> --out "$ARTIFACTS/play" --library <.so> \
+    [--scripts <control scripts>] --save <city> --speed 1|32 --settle-cap-s 20 --phases still,turns \
+    --turns 1 --still-s 60 --detail --timeout 900 --settle-timeout 300
+```
+
+"Terrain > 2 ms" counts frames whose whole terrain script (graded tiles included) took over 2 ms;
+"edit work" is the dirty commit's prepare and commit, or in a frame without one the land cover
+staging (the control's query, the branch's upload). "Land cover queries" are the blocking
+`get_vegetation_land_cover` calls (`core_locks`) and their wait. Each cell: run 1 / run 2.
+
+| Row | side | phase | frame p50 | frame p99 | > 33.3 ms | terrain > 2 ms | edit work > 2 ms (max) | core waits ms a frame | land cover queries (wait ms) |
+|---|---|---|---:|---:|---:|---:|---:|---:|---:|
+| 30k 1x | control | still 60 s | 7.8 / 7.3 | 15.4 / 14.7 | 0 / 0 | 269 / 277 | 176 / 191 (19.5 / 12.5) | 0.04 / 0.03 | 734 / 737 (261 / 249) |
+| 30k 1x | control | 1 s turns | 11.0 / 10.9 | 19.2 / 21.0 | 1 / 1 | 10 / 20 | 6 / 13 (8.3 / 11.3) | 0.02 / 0.17 | 17 / 29 (5 / 45) |
+| 30k 1x | land cover jobs | still 60 s | 7.7 / 7.3 | 13.7 / 13.8 | 0 / 0 | 72 / 73 | 72 / 73 (6.5 / 9.6) | 0.00 / 0.00 | 0 / 0 (0 / 0) |
+| 30k 1x | land cover jobs | 1 s turns | 10.5 / 9.9 | 17.2 / 16.4 | 0 / 0 | 4 / 4 | 2 / 3 (7.2 / 7.5) | 0.00 / 0.00 | 0 / 0 (0 / 0) |
+| 30k 1x | and border kept | still 60 s | 6.7 / 6.8 | 9.8 / 9.8 | 0 / 0 | 0 / 0 | 0 / 0 (0.5 / 0.6) | 0.00 / 0.00 | 0 / 0 (0 / 0) |
+| 30k 1x | and border kept | 1 s turns | 9.8 / 9.4 | 16.5 / 13.9 | 0 / 0 | 2 / 2 | 0 / 0 (1.7 / 1.6) | 0.00 / 0.00 | 0 / 0 (0 / 0) |
+| 30k 32x | control | still 60 s | 9.1 / 9.2 | 19.1 / 20.9 | 6 / 7 | 424 / 555 | 373 / 500 (50.2 / 53.4) | 0.25 / 0.32 | 714 / 949 (1564 / 1906) |
+| 30k 32x | control | 1 s turns | 12.4 / 11.3 | 24.9 / 19.0 | 0 / 0 | 16 / 8 | 9 / 4 (19.0 / 12.7) | 0.21 / 0.10 | 16 / 10 (49 / 27) |
+| 30k 32x | land cover jobs | still 60 s | 8.8 / 8.7 | 15.2 / 14.8 | 0 / 1 | 25 / 37 | 9 / 21 (7.7 / 8.2) | 0.00 / 0.00 | 0 / 0 (0 / 0) |
+| 30k 32x | land cover jobs | 1 s turns | 11.5 / 11.2 | 18.0 / 19.2 | 0 / 0 | 0 / 0 | 0 / 0 (0.2 / 0.3) | 0.00 / 0.00 | 0 / 0 (0 / 0) |
+| 30k 32x | and border kept | still 60 s | 7.9 / 7.8 | 13.8 / 13.8 | 0 / 0 | 31 / 33 | 8 / 7 (2.5 / 2.4) | 0.00 / 0.00 | 0 / 0 (0 / 0) |
+| 30k 32x | and border kept | 1 s turns | 9.9 / 10.1 | 14.2 / 14.8 | 0 / 0 | 1 / 1 | 0 / 0 (0.3 / 0.3) | 0.00 / 0.00 | 0 / 0 (0 / 0) |
+
+- The land cover's core waits are gone: no blocking `lock_core` on a frame path in any row (the
+  control's 714-949 queries a minute at 32x waited 1.6-1.9 s, at 1x 734-737 waited 0.25 s). Every
+  frame over 33.3 ms of the control's 30k 32x still (6 and 7) was this wait (25-53 ms); the land
+  cover jobs leave none in run 1 and one in run 2 (34.3 ms, no core wait: a 41-patch batch's commit
+  frame with the border skirt's rebuild in it, terrain 11.4 ms), with the border kept none in
+  either. Bar met.
+- Terrain script frames over 2 ms. 30k 1x: still 269-277 to 72-73 with the jobs (every one the
+  border skirt's rebuild, 5.2-5.6 ms) and to 0 with the border kept (terrain at most 1.5-1.6 ms);
+  turns 10-20 to 2 (the turn's 42-patch batch commit, 1.2 ms, beside the graded tiles' 2.0, the
+  edit's own work at most 1.7 ms). 30k 32x: still 424-555 to 25-37 and with the border kept to
+  31-33, of which the edit's own work exceeds 2 ms in 7-8 (at most 2.5 ms): the atomic commit of a
+  39-50-patch batch (commit 1.0-1.5 ms, the kept stages' check 0.5, beside the water's texture sync
+  of those patches 0.4 and the graded tiles' 1.6); turns 0-1. Bar met at 1x; at 32x the large
+  batches' atomic commit is left (the commit is the ledger's named exception, `RENDER-32-Q`;
+  splitting it changes the batch's atomicity, a decision for the owner, `RENDER-56` proposed).
+- The dirty commit waited for a land cover in 1-3 frames of the 60 s still at 1x and 299-457 at
+  32x, and committed about as many patches as the control (1x 187-219 against 212-250, 32x
+  881-1,128 against 739-1,094; the simulation's edits differ from run to run).
+- Jobs: 743-780 land covers asked and handed over in the 60 s still at 1x, 927-1,262 at 32x; no patch was
+  built without a land cover (`land_cover_built_empty` 0).
+- The `efeaec92` runs' frame times (1x still p50 6.7-6.8 ms and p99 9.8 against 7.3-7.8 and
+  13.7-15.4) had no control run beside them (the control ran 50-60 minutes earlier in the boot):
+  not claimed; the counts above are per-frame script work, not session-dependent.
+Rows and products (fresh, same boot; `58e71271` unless named):
+
+- Stream series C B B C, 30k, paused (`tools/stream_benchmark.py series --input-label 30k`): level
+  or better in 18 of 23 phases; flags on `turn_back 1s` and `turn_repeat 1s` p50 (+1.0 and +0.7 ms,
+  spreads 0.7 and 0.2), `zoom_in 1.5s` and `far_to_ground` p50 (+0.3, +0.1) and `jump`'s maximum
+  (+1.7). Read as noise, not rerun: an instrumented paused pair (one run a side, `$ARTIFACTS`
+  attr) shows no land cover asked, built or uploaded and no patch built on the paused still or
+  turns, where the branch's turns ran 8.2-8.3 ms at p50 against the control's 8.5-9.1.
+- Level F (`./run.sh --timing --level F --control $TEST_BINARY ... --base 019f16df`): `PERF-07` 30k
+  32x level in every metric (`PERF-17` both sides); 30k 1x PASS on both sides and level in every
+  metric after the runner's one rerun of a noisy branch row (`--rerun p07-6-br`: 9,552 preempted
+  frames against the control's 2,775; mean +0.0 %, p99.9 +10.6 % within a 19.6 % tolerance). No
+  simulation code changed.
+- Digests at the settle points (`--digests`, 30k post-load, still and turns; Kuopio still, turns,
+  pan and zoom): graded, buildings, roads, parked cars, vegetation, terrain and water patches and
+  the new land cover family equal at every point (30k 4 of 4, Kuopio 8 of 8), no land cover stale
+  at any point on either side.
+- Stills: Kuopio `close`, `mid`, `forest_low` byte-identical; 30k `city` and `city_low`
+  byte-identical in all four pairs (two with `efeaec92`'s scripts), `saved` 0-3 px of delta 1 (the
+  `RENDER-45` residue; control against control 1 px, no systematic difference).
+- Gates (`efeaec92`; `58e71271` before it the same): `cargo clippy --all-targets` adds no warning
+  in a changed file; `cargo doc` no missing docs; debug `cargo test --lib` 2,803 passed, 0 failed,
+  232 ignored (`58e71271`; `efeaec92` changes one script); `./run.sh --test` PASS (nextest 2,807 passed, 233 skipped; godot-main, godot-vehicle
+  PASS, no SCRIPT ERROR).
 
 ## Implemented Runtime Contract
 

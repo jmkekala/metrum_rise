@@ -163,6 +163,7 @@ one snapshot are prepared while the frame before is drawn, and the main thread o
 only those within reach of the shadow range (`RENDER-15`'s `agents_near`, the owner's pick): the
 30k city's shadow pass draws 23 M instead of 53 M primitives and takes 1.24 instead of 2.16 ms (the
 100k city's 1.22 instead of 2.99 ms), 0.9 and 1.7 ms of GPU a frame by day, with stills identical ([record](terrain.md#car-smoothing-a-frame-ahead-and-near-only-agent-shadow-casters-render-47-render-15-round-r47-2026-11-13)).
+The terrain no longer builds a land cover on the main thread (`RENDER-40`, round R40, 2026-11-16, for review): a patch whose land cover went stale after a growth edit gets it from a job on the background pool, and the bridge's synchronous query is gone, so no frame waits for the simulation core any more; a dirty batch with a patch on the world's border no longer rebuilds the border skirt when the border is unchanged. With the simulation running at 30k, the 32x still's frames over 33.3 ms fall from 6-7 to 0 and frames of terrain script over 2 ms from 269-277 to none at 1x and from 424-555 to 31-33 at 32x, the rest being large atomic batch commits at 32x ([record](terrain.md#the-stale-land-cover-off-the-main-thread-and-the-border-skirt-kept-render-40-round-r40-2026-11-16)).
 The road tool's base class no longer draws the committed road chunks: `RENDER-52`'s first part
 (round CB, 2026-11-13, for review) moved the chunk renderer (resident set, staging, holds,
 validation, build, lights and signs) into `road_chunk_renderer.gd`, the road tool's child, with
