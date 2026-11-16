@@ -443,6 +443,16 @@ nearest valid border node. Border terminals accept every load at once. There is 
 limit or queue, so road traffic is the only throughput limit (the former four-job cap was removed
 on 2026-10-09). Utility fallback is a service purchase, not freight.
 
+A border with no road left loses its trade at once (`SAVE-06`). Every edit that can take a
+border node's last road, merge the node into another or drop it (the bulldoze, a ring's build
+and removal, a road commit and undo) settles the shipments that name it, as a building's removal
+settles its own: an open import refunds its buyer, a loaded export's cargo goes back to its
+source, their carriers leave, and closed shipments naming the node leave the list. A shipment is
+not moved to another border; later requests plan over the borders left. Undoing the edit brings
+the road back, not the shipments: trade over the border starts again with new requests. The
+check is `O(shipments)` per such edit. The save refuses a shipment that names a node it does not
+keep, naming the shipment and node.
+
 ### Freight pricing
 
 Each accepted contract stores a carrier quote:
@@ -838,8 +848,9 @@ freight.
   - the planning slot loads the stock into the shipment at its end; the carrier leaves near a
     target slot in the hour ahead, levelled per minute (`SIM-02-J`), and the seller is paid only
     on delivery;
-  - failure, expiry, cancellation or building removal releases both sides deterministically,
-    refunding buyers (or the treasury for city services);
+  - failure, expiry, cancellation, building removal or the loss of a border's last road
+    (`SAVE-06`) releases both sides deterministically, refunding buyers (or the treasury for
+    city services);
   - a delivered shipment stays settled when an endpoint is removed.
 - **Carriers:** one truck agent per shipment. It goes source → destination, then returns empty
   to its origin; the return leg holds no reservation. Delivery and return are settled when the
