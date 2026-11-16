@@ -4703,6 +4703,15 @@ of the index-free gathers (about a second for a 290 m draft's hue in round HU2, 
 the index). Lookups stay `O(log active tiles)`; a window copy (`TerrainQueryIndex::window`, the
 vegetation snapshot) now shares its entries instead of cloning their vectors.
 
+**One tile per apron, sorted listings only (`ROAD-116`, 2026-11-16).** A query rectangle inside
+one present tile's apron (a ray's tile grown by its lattice apron, a point's cell) reads that
+tile's inputs alone, not the up to nine tiles the rectangle touches: the tile's lists already
+reach the cap and window pad around its apron, and every gather filters against the query's own
+bounds, so the prepared inputs are unchanged. The indexed preparation sorts only the seams it
+lists (the same order, the same duplicates dropped); the rest keeps piece order, as the
+index-free gather leaves it. The road tool's pick halved
+([record](roads.md#the-picks-graded-preparation-halved-round-pb-road-116)).
+
 **The ground over a tunnel bore (`ROAD-61`, rounds R2b and R8).** A tunnel span is never on the
 visible surface: over a bore the surface is the graded ground, which past a portal row is the hill
 (below). The roadbed marks a buried piece in its query index and answers the exposed pieces' top

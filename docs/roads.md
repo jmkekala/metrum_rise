@@ -12727,7 +12727,83 @@ cursor 217.43 us (216.83-218.06); branch straight 238.35 us (237.69-238.99), cur
   state, mesh, graded), the drag probe PASS; the gameplay fixtures 17 of 17 EQUAL, 0 SCRIPT
   ERROR.
 
-### Batch commit, grouped undo and undo refund (round F)
+### The pick's graded preparation halved (round PB, `ROAD-116`)
+
+Round PB of `ROAD-112` (branch `roadtools-pb`, R2-7 on `dev` `75523322`). **Bisect.** The
+session bench's locality mode at the 30k tier (20 trails, 10,240 moves a row), each commit's own
+bench binary, alternated in one session (C B B C over the four, 2026-11-16 18:16-18:17, run and
+exclusive timing locks, `taskset -c 0,2,4,6,8,10,12,14`, no Godot process running, load 2.8-6.6).
+The commits before R2-7 still carry the frozen cursor as the `control` row, the same code at
+every commit, so it compares like with like across the range; the session rows grew with the
+rounds' features and are shown beside it.
+
+| Commit | Control p50 / p99 | Straight p50 / p99 | Curve p50 / p99 |
+| --- | --- | --- | --- |
+| `c8132ac9` (round B) | 113.5-113.8 / 165.9-166.0 | 120.3-121.5 / 173.5-178.9 | 121.6-123.0 / 173.4-175.8 |
+| `86aab24d` (round HU2) | 114.5-114.6 / 168.1-169.5 | 124.5-124.6 / 178.7-178.9 | 135.7-135.9 / 190.3-190.7 |
+| `24927738` (round HU3) | 220.7-221.7 / 268.0-273.7 | 236.6-236.8 / 282.3-284.0 | 248.4-248.5 / 297.0-297.8 |
+| `75523322` (`dev`, before R2-7) | 220.8-223.6 / 267.6-270.5 | 240.9-241.9 / 287.5-288.0 | 251.8-252.9 / 294.6-296.9 |
+
+(Microseconds, the range of the two runs a side.) **Round HU3 doubled the pick**, and nothing
+else between rounds B and R2-7 moved it. Not its container (`imbl::OrdMap` lookups are under
+2 % of the profile): HU3 gave the road tool's view the shared graded query index, so the pick's
+graded queries left the index-free gathers for the indexed preparation, and that preparation
+was the slower one for a ray (perf, one pinned core, 40 trails at 30k, HU2 against HU3: sorting
+the seams 27 % of HU3's samples, `RoadbedSystem::grounded_seams_from_pieces` 7 %, the piece
+map's lookups 6 %, none of them in HU2's top entries). Two causes, both in
+`GradedSurface::prepare`'s indexed branch:
+
+- It listed every grounded seam in the 196 m window (the tile, its apron, the cap and the window
+  pad) and sorted them all by key, where the index-free gather sorts only the seams it lists.
+- A ray prepares each 64 m tile it crosses grown by its lattice apron (0.5 m), and
+  `TerrainQueryIndex::gather` read every tile that rectangle touches: nine, whose piece lists
+  reach about 320 m.
+
+**Fix.** The indexed branch visits the pieces' seams unsorted
+(`RoadbedSystem::for_each_grounded_seam_from_pieces`), lists the binding ones and sorts only
+those, by the same order with the same duplicates dropped (a seam's listing reads its geometry
+alone, so a segment two pieces share is listed for both or for neither); the rest stays in
+piece order, as the index-free gather leaves it, and its readers (the cones' maximum and
+minimum, the ray's highest seam, emptiness) do not see order or repeats. `gather` reads only the
+centre tile when the rectangle lies inside that tile's apron and the tile is present: its lists
+were gathered over the apron grown by the cap and window pad (coverage by 0.02 m against the
+query's 0.01 m), and every gather filters its inputs against the query's own bounds, so the
+prepared seams, walls, portals and coverage equal the nine tiles'; an absent centre tile keeps
+the full range. Bounds: a ray tile's preparation `O(P + S + L log L)` for the one tile's `P`
+pieces, the `S` segments of their blocks in the window and the `L` it lists, against
+`O(P_9 + S log S)` before. No allocation added. Test
+`graded_queries::single_tile_reads_answer_as_the_index_free_gather` (576 rays over the sloped
+reference T, whose roads cross the tile corner at the origin, and points on both sides of three
+tile lines, bitwise the index-free answers through one reused scratch).
+
+**Measured** (2026-11-16 18:39-18:49, same locks and cores, tiers 0, 1k, 10k, 30k, C B B C: the
+branch tip without the fix `d5dbc704` (`$BENCH_BINARY` `fee08ce381a0efdf`), the sort alone
+(`58038b5be1bff1ca`), the sort and the single tile (`aa5c03faf947b507`); no Godot process;
+the last two runs followed another session's test suite, load 13.0 and 9.6 at their start):
+
+| Background | Base straight | Sort only straight | Fix straight | Base curve | Fix curve |
+| --- | --- | --- | --- | --- | --- |
+| 0 | 233.1-233.9 / 295.7-301.4 | 117.5-118.0 / 170.3-172.4 | 99.4-101.7 / 134.7-137.4 | 244.4-245.1 / 291.3-292.3 | 109.9-112.8 / 144.8-154.0 |
+| 30,000 | 238.8-240.8 / 284.3-313.0 | 124.7-127.2 / 172.2-200.3 | 103.4-105.1 / 141.0-158.0 | 250.7-256.2 / 296.5-312.3 | 113.3-115.6 / 149.7-151.6 |
+
+- **p99 at most 0.25 ms at 30k: met** (straight 141.0-158.0 us, curve 149.7-151.6 us).
+- **Frame digests equal:** `32cb9b4b11dccf75` / `61e6255c7cd0574f` at every tier on all three
+  binaries.
+- **`ROAD-116`'s locality (p50 within 5 % from 0 to 30k): met in both runs**, straight +4.0 %
+  and +3.3 %, curve +3.1 % and +2.5 %.
+- **Allocation probe: met** (`METRUM_ROAD_TOOL_ALLOC_PROBE` at 30k, every mode, `heaptrack
+  --record-only`): n = 0 2,375,558 / 2,375,560, n = 20 2,375,610, n = 200 2,375,576 calls.
+- **Products bitwise** (`commit_products.gd` on the fix's release library against round R2-7's
+  branch products, which equalled `dev` `17207c94`'s): Kuopio's 78 commits EQUAL in every product
+  (request, graph, state, mesh, graded), the drag probe PASS; the gameplay fixtures 17 of 17
+  EQUAL, 0 SCRIPT ERROR.
+- Gates on the final tree: `cargo clippy --all-targets` warning set equal to `dev` `75523322`'s
+  (14), `cargo doc` missing_docs 0, debug `cargo test --lib` 2,792 passed / 0 failed / 232
+  ignored, `./run.sh --test` PASS (nextest 2,796 / 2,796, 233 skipped; godot-main, godot-vehicle
+  PASS). The new test fails when the gather reads the tile at the rectangle's corner instead.
+  The production graded queries (vehicles, vegetation, rendering) share this path; no timing
+  session ran for them (their answers are unchanged; the next landing's timing covers them).
+
 
 Built 2026-11-13 on branch `roadtools-f` (`dev` `d10c2404` plus the round); held for its batch
 bar, fixed and measured again by round F2 (below), landed on `dev` 2026-11-14 from branch `roadtools-f2`. The
