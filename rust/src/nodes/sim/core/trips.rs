@@ -179,6 +179,27 @@ impl SimCore {
         }
     }
 
+    /// Settles the freight of every border a topology edit left without a road (`SAVE-06`):
+    /// its shipments are cancelled with refunds and their carriers removed, as a removed
+    /// building's are, so none names a node the save drops. Every edit that can delete a
+    /// border's last edge, alias its node or drop it calls this after its graph change: the
+    /// bulldoze, the ring's build and removal, the road commit and undo. O(S) over the
+    /// shipments; the trip events of the cancelled ones find nothing when they fire.
+    pub(crate) fn settle_freight_of_unreachable_borders(&mut self) {
+        let cancelled = self.logistics.invalidate_unreachable_borders(
+            &self.region_graph,
+            &mut self.allocator,
+            &mut self.agents,
+            &mut self.treasury.balance,
+        );
+        if cancelled > 0 {
+            crate::debug_log!(
+                "economy",
+                "freight of an unreachable border settled: {cancelled} shipments cancelled or dropped"
+            );
+        }
+    }
+
     /// Paces the departures of the arrival carriers admission launched, evenly over the hour
     /// after `slot`, in the order admission listed them. The `admissions` queue creates the
     /// hour's admitted households over the hour and calls this in each slot that created one

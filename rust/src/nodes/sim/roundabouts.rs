@@ -188,6 +188,8 @@ impl SimCore {
                 lanes.retire_node_lanes([old as usize]);
             }
         });
+        // A ring built on a border retires its node: the border's freight settles (`SAVE-06`).
+        self.settle_freight_of_unreachable_borders();
         self.push_pocket_undo(checkpoint, dependents, erased);
         // The record keeps the charge, which undo refunds (U5).
         if verdict.cost > 0.0 {
@@ -305,6 +307,8 @@ impl SimCore {
             let lanes = &mut self.transit_network.lane_system;
             lanes.retire_node_lanes(bare);
         });
+        // A border on the ring keeps no road: its freight settles (`SAVE-06`).
+        self.settle_freight_of_unreachable_borders();
         // Deferred like a commit's (D7, `ROAD-68-G`); the road tool's view shares its graph
         // copy (`ROAD-68-E`).
         let routing_graph = self.schedule_cch_rebuild_of_live_graph();

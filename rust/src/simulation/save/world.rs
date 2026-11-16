@@ -58,7 +58,10 @@ const SHIPMENT_ENDPOINT_BUILDING: i64 = 0;
 const SHIPMENT_ENDPOINT_OWA_BORDER: i64 = 1;
 const RESOURCE_DEPOSIT_CHUNK_SIZE_SAMPLES: usize = 64;
 
+// A border endpoint names a node the save keeps: a border road's removal settles the freight
+// of its border (`SAVE-06`), so a missing one is an error naming the shipment and node.
 fn shipment_endpoint_to_db(
+    shipment_id: u64,
     endpoint: ShipmentEndpoint,
     maps: &SnapshotMaps,
 ) -> SaveLoadResult<(i64, i64, i64)> {
@@ -75,7 +78,11 @@ fn shipment_endpoint_to_db(
                 .node_old_to_new
                 .get(&border_node)
                 .copied()
-                .ok_or_else(|| SaveLoadError::custom("missing shipment border-node mapping"))?;
+                .ok_or_else(|| {
+                    SaveLoadError::custom(format!(
+                        "missing shipment border-node mapping: shipment {shipment_id} names border node {border_node}, which the save does not keep"
+                    ))
+                })?;
             Ok((
                 SHIPMENT_ENDPOINT_OWA_BORDER,
                 NONE_REF,
@@ -568,9 +575,9 @@ pub(super) fn save_world(
     let mut shipment_stmt = tx.prepare("INSERT INTO shipments(shipment_id, resource_runtime_id, amount, source_endpoint_kind, source_building_id, source_border_node, destination_endpoint_kind, destination_building_id, destination_border_node, carrier_class, status, carrier_slot, total_cost, eta_hours, leg_started_hour, freight_cost, carrier_generation, cargo_loaded, trip_event_slot) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)")?;
     for shipment in &logistics.shipments {
         let (source_kind, source_building_id, source_border_node) =
-            shipment_endpoint_to_db(shipment.source, maps)?;
+            shipment_endpoint_to_db(shipment.id, shipment.source, maps)?;
         let (destination_kind, destination_building_id, destination_border_node) =
-            shipment_endpoint_to_db(shipment.destination, maps)?;
+            shipment_endpoint_to_db(shipment.id, shipment.destination, maps)?;
         shipment_stmt.execute(params![
             u64_to_i64(shipment.id)?,
             i64::from(shipment.resource_runtime_id),

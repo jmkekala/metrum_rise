@@ -296,6 +296,8 @@ impl SimCore {
                     &self.transit_network.lane_system,
                     &self.region_graph,
                 );
+                // A border the commit cut off or merged settles its freight (`SAVE-06`).
+                self.settle_freight_of_unreachable_borders();
                 let dt_lanes_us = t_lanes.elapsed().as_micros();
                 edit_metrics.lanes_and_reattach_ms = dt_lanes_us as f64 / 1000.0;
                 let buildings_start = Instant::now();

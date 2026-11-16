@@ -646,6 +646,9 @@ impl SimCore {
                 }
                 _ => self.rebuild_all_lanes_keeping_agents(restored_topology_scope.as_ref()),
             }
+            // Undoing the road to a border, or the node it ends at, cuts the border's trade:
+            // its freight settles (`SAVE-06`).
+            self.settle_freight_of_unreachable_borders();
         }
         // Deferred like a commit's (D7, `ROAD-68-G`); it supersedes a pending one. The road
         // tool's view shares its graph copy (`ROAD-68-E`). A group schedules it once, with its

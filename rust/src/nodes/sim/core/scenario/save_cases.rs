@@ -95,3 +95,225 @@ fn a_town_saves_the_same_bytes_twice_and_after_a_load() {
         std::fs::remove_file(path).unwrap();
     }
 }
+
+// `SAVE-06`: bulldozing a town's only border road while freight is on its way in and out cuts
+// the border's trade. Its shipments settle at the edit as a removed building's do: an import
+// in transit refunds its buyer, a loaded export's cargo goes back to its source, the carriers
+// leave and closed shipments drop, so no shipment names the border node, which the save no
+// longer keeps. The town saves and loads, and the loaded game's freight runs on as the live
+// game's; an undo brings the road back, trade over it resumes and the town saves and loads
+// again. Before, closed and open shipments kept the border node and every save failed with
+// "missing shipment border-node mapping" once no agent stood on the node.
+#[test]
+fn bulldozing_the_border_road_settles_its_freight_and_the_town_saves() {
+    use super::super::frame::FRAME_DT_S;
+    use crate::simulation::economy::logistics::{Shipment, ShipmentEndpoint, ShipmentStatus};
+    use crate::simulation::network::types::NodeType;
+
+    let path = |name: &str| -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "metrum-save06-{name}-{}.sqlite",
+            std::process::id()
+        ))
+    };
+    let mut town = busy_town();
+    let core = &mut town.core;
+    // A side road splits the trunk 400 m short of the town, so the border's road fronts no
+    // building: a building on a removed road keeps its edge (`SAVE-07`).
+    super::commit_road(core, (-600.0, -60.0), (-600.0, 60.0));
+    let graph = &core.region_graph;
+    let border = (0..graph.node_count() as u32)
+        .find(|&node| {
+            graph.node(node).node_type == NodeType::Border
+                && graph.node_has_live_incident_edge(node)
+        })
+        .unwrap();
+    let at_border = ShipmentEndpoint::OwaBorder(border);
+    let names_border =
+        |shipment: &Shipment| shipment.source == at_border || shipment.destination == at_border;
+    // An open shipment into (`inbound`) or out of the town over the border; `loaded` asks for
+    // one whose cargo is under way.
+    let open = |core: &SimCore, inbound: bool, loaded: bool| {
+        core.logistics.shipments.iter().any(|shipment| {
+            shipment.status.is_open()
+                && (!loaded
+                    || shipment.status == ShipmentStatus::InTransit && shipment.cargo_loaded)
+                && if inbound {
+                    shipment.source == at_border
+                } else {
+                    shipment.destination == at_border
+                }
+        })
+    };
+    let end = core.time.day_index + 3;
+    let both = |core: &SimCore| open(core, true, true) && open(core, false, true);
+    while !both(core) && core.time.day_index < end {
+        core.step_frame(FRAME_DT_S);
+    }
+    assert!(both(core), "imports and exports under way");
+    let graph = &core.region_graph;
+    let road: Vec<usize> = graph
+        .node_adjacency(border)
+        .iter()
+        .copied()
+        .filter(|&edge| !graph.edge(edge).deleted)
+        .collect();
+    assert_eq!(road.len(), 1, "one road reaches the border");
+    assert!(
+        core.allocator
+            .buildings
+            .iter()
+            .all(|building| building.edge_idx != road[0]),
+        "no building fronts the border's road"
+    );
+
+    // What the settlement owes: each import buyer's reserved payment, each loaded export's cargo.
+    let touched: Vec<Shipment> = core
+        .logistics
+        .shipments
+        .iter()
+        .filter(|shipment| names_border(shipment))
+        .cloned()
+        .collect();
+    let mut owed_budget = std::collections::BTreeMap::<usize, f64>::new();
+    let mut owed_cargo = std::collections::BTreeMap::<(usize, u16), f64>::new();
+    for shipment in &touched {
+        match (shipment.source, shipment.destination) {
+            (ShipmentEndpoint::OwaBorder(_), ShipmentEndpoint::Building(buyer))
+                if shipment.status == ShipmentStatus::InTransit =>
+            {
+                *owed_budget.entry(buyer).or_default() += f64::from(shipment.total_cost);
+            }
+            (ShipmentEndpoint::Building(seller), ShipmentEndpoint::OwaBorder(_))
+                if shipment.status == ShipmentStatus::InTransit && shipment.cargo_loaded =>
+            {
+                *owed_cargo
+                    .entry((seller, shipment.resource_runtime_id))
+                    .or_default() += f64::from(shipment.amount);
+            }
+            _ => {}
+        }
+    }
+    let allocator = &core.allocator;
+    assert!(
+        owed_budget
+            .keys()
+            .all(|&buyer| !allocator.is_city_service_building(&allocator.buildings[buyer])),
+        "the buyers pay from their own budgets"
+    );
+    let budget =
+        |core: &SimCore, buyer: usize| f64::from(core.allocator.buildings[buyer].operating_budget);
+    let cargo = |core: &SimCore, (seller, resource): (usize, u16)| {
+        f64::from(core.allocator.buildings[seller].inventory_units(resource))
+    };
+    let budgets: Vec<f64> = owed_budget
+        .keys()
+        .map(|&buyer| budget(core, buyer))
+        .collect();
+    let cargoes: Vec<f64> = owed_cargo.keys().map(|&key| cargo(core, key)).collect();
+    let buildings = core.allocator.buildings.len();
+
+    assert!(core.bulldoze_road_edge_for_test(road[0]));
+    assert!(!core.region_graph.node_has_live_incident_edge(border));
+    assert_eq!(core.allocator.buildings.len(), buildings);
+    let names_no_cut_border = |core: &SimCore| {
+        let left: Vec<u64> = core
+            .logistics
+            .shipments
+            .iter()
+            .filter(|shipment| names_border(shipment))
+            .map(|shipment| shipment.id)
+            .collect();
+        assert!(left.is_empty(), "shipments naming the cut border: {left:?}");
+    };
+    names_no_cut_border(core);
+    assert!(
+        (0..core.agents.len()).all(|i| touched
+            .iter()
+            .all(|shipment| !core.agents.freight_carrier_matches(i, shipment.id))),
+        "the settled shipments' carriers left"
+    );
+    for ((&buyer, &owed), before) in owed_budget.iter().zip(budgets) {
+        assert!(
+            (budget(core, buyer) - before - owed).abs() < 1e-2,
+            "buyer {buyer} is refunded {owed}"
+        );
+    }
+    for ((&key, &owed), before) in owed_cargo.iter().zip(cargoes) {
+        assert!(
+            (cargo(core, key) - before - owed).abs() < 1e-3,
+            "seller {key:?} has its {owed} back"
+        );
+    }
+
+    // The town saves at once and after it ran on. The game loaded from the first save runs its
+    // freight as the live game does, frame by frame, and both save the same freight rows. (The
+    // whole state does not continue alike after this edit: `SAVE-08`, `SAVE-09`.)
+    let (cut, ran, reloaded) = (path("cut"), path("ran"), path("reloaded"));
+    save(core, &cut);
+    let mut loaded = GrowthScenario::starter_town();
+    loaded
+        .core
+        .load_game_internal(cut.to_str().unwrap())
+        .unwrap();
+    loaded.core.time.speed_multiplier = core.time.speed_multiplier;
+    type Freight = (Vec<String>, Vec<(usize, u16, u16, bool)>, u64, u64);
+    let freight = |core: &SimCore| -> Freight {
+        let logistics = &core.logistics;
+        (
+            logistics
+                .shipments
+                .iter()
+                .map(|shipment| format!("{shipment:?}"))
+                .collect(),
+            logistics
+                .request_failures
+                .iter()
+                .map(|(key, failure)| {
+                    let (building, resource) =
+                        (key.destination_building_id, key.resource_runtime_id);
+                    (building, resource, failure.failures, failure.terminal)
+                })
+                .collect(),
+            logistics.next_shipment_id,
+            core.treasury.balance.to_bits(),
+        )
+    };
+    for frame in 0..600 {
+        core.step_frame(FRAME_DT_S);
+        loaded.core.step_frame(FRAME_DT_S);
+        assert_eq!(
+            freight(core),
+            freight(&loaded.core),
+            "frame {frame} after the load"
+        );
+    }
+    names_no_cut_border(core);
+    save(core, &ran);
+    save(&mut loaded.core, &reloaded);
+    let freight_tables = differing_tables(&ran, &reloaded);
+    assert!(
+        ["shipments", "freight_request_failures", "freight_requests"]
+            .iter()
+            .all(|table| !freight_tables.iter().any(|differing| differing == table)),
+        "{freight_tables:?}"
+    );
+
+    // Undo brings the road back; imports cross the border again and the town saves and loads.
+    assert!(core.undo_action_internal());
+    assert!(core.region_graph.node_has_live_incident_edge(border));
+    let end = core.time.day_index + 2;
+    while !open(core, true, false) && core.time.day_index < end {
+        core.step_frame(FRAME_DT_S);
+    }
+    assert!(open(core, true, false), "imports cross the restored border");
+    let restored = path("restored");
+    save(core, &restored);
+    GrowthScenario::starter_town()
+        .core
+        .load_game_internal(restored.to_str().unwrap())
+        .unwrap();
+    for path in [cut, ran, reloaded, restored] {
+        std::fs::remove_file(path).unwrap();
+    }
+}

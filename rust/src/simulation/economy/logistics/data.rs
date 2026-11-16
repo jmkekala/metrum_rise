@@ -8,6 +8,7 @@ use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::core::scheduler::MinuteLeveler;
 use crate::simulation::economy::agents::{AgentHandle, AgentSystem};
 use crate::simulation::economy::definitions::{ResourceRuntimeId, load_runtime_economy_tuning};
+use crate::simulation::network::graph::RegionGraph;
 
 use super::planning::FreightTopology;
 use super::requests::{FreightRequest, FreightRequestStats, event_cooldown_until};
@@ -435,6 +436,57 @@ impl ShipmentSystem {
         agents: &mut AgentSystem,
         treasury_balance: &mut f64,
     ) {
+        self.cancel_shipments_touching(
+            |endpoint| endpoint.touches_building(removed_building),
+            allocator,
+            agents,
+            treasury_balance,
+        );
+        self.request_failures
+            .retain(|key, _| key.destination_building_id != removed_building);
+        self.invalidate_route_cache();
+    }
+
+    /// Settles every shipment with a border endpoint that `graph` no longer reaches by any road
+    /// (`SAVE-06`): a node with no live edge, an alias of another node or one an undo dropped.
+    /// The border's trade is cut, so its shipments are cancelled as a removed building's are:
+    /// open ones refund the buyer and return loaded export cargo to its source, every carrier
+    /// is removed, and closed ones leave the list. The save can only write a border endpoint
+    /// at a node it saves. O(S), plus the cancellation when a shipment names such a node.
+    pub(crate) fn invalidate_unreachable_borders(
+        &mut self,
+        graph: &RegionGraph,
+        allocator: &mut BuildingAllocator,
+        agents: &mut AgentSystem,
+        treasury_balance: &mut f64,
+    ) -> usize {
+        let cut = |endpoint: ShipmentEndpoint| match endpoint {
+            ShipmentEndpoint::OwaBorder(node) => !graph.is_live_canonical_node(node),
+            ShipmentEndpoint::Building(_) => false,
+        };
+        if !self
+            .shipments
+            .iter()
+            .any(|shipment| cut(shipment.source) || cut(shipment.destination))
+        {
+            return 0;
+        }
+        // The route cache and the request failures follow the edit's new routing generation.
+        let before = self.shipments.len();
+        self.cancel_shipments_touching(cut, allocator, agents, treasury_balance);
+        before - self.shipments.len()
+    }
+
+    // Cancels every shipment with an endpoint `removed` names: the buyer of an open order is
+    // refunded, loaded cargo bound for a removed destination goes back to a source that stays,
+    // and the carriers are removed after the list, in descending dense order. O(S).
+    fn cancel_shipments_touching(
+        &mut self,
+        removed: impl Fn(ShipmentEndpoint) -> bool,
+        allocator: &mut BuildingAllocator,
+        agents: &mut AgentSystem,
+        treasury_balance: &mut f64,
+    ) {
         let mut carriers_to_remove = Vec::new();
         let retry_cooldown_hours = load_runtime_economy_tuning()
             .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"))
@@ -443,10 +495,7 @@ impl ShipmentSystem {
         // Endpoints retry from their first phase after this slot's (`event_cooldown_until`).
         let retry_from = allocator.now_slot + 1;
         self.shipments.retain(|shipment| {
-            let touches_removed = shipment.source.touches_building(removed_building)
-                || shipment.destination.touches_building(removed_building);
-
-            if !touches_removed {
+            if !removed(shipment.source) && !removed(shipment.destination) {
                 return true;
             }
             Self::forget_shipment_reservations(&mut self.reservations, shipment);
@@ -469,12 +518,12 @@ impl ShipmentSystem {
                         retry_cooldown_hours,
                     );
             }
-            if shipment.destination.touches_building(removed_building)
+            if removed(shipment.destination)
                 && shipment.status == ShipmentStatus::InTransit
                 && shipment.cargo_loaded
+                && !removed(shipment.source)
                 && let ShipmentEndpoint::Building(source_id) = shipment.source
                 && source_id < allocator.buildings.len()
-                && source_id != removed_building
             {
                 allocator.buildings[source_id]
                     .add_inventory_units(shipment.resource_runtime_id, shipment.amount);
@@ -495,10 +544,6 @@ impl ShipmentSystem {
         for (carrier, shipment_id) in carriers_to_remove.into_iter().rev() {
             agents.remove_freight_carrier(carrier, shipment_id);
         }
-
-        self.request_failures
-            .retain(|key, _| key.destination_building_id != removed_building);
-        self.invalidate_route_cache();
     }
 
     // The slot that starts the current logistics hour, for test drivers that step logistics

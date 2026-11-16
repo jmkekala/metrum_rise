@@ -1198,6 +1198,8 @@ impl SimCore {
             &self.transit_network.lane_system,
             &self.region_graph,
         );
+        // A border road's removal cuts the border's trade: its freight settles (`SAVE-06`).
+        self.settle_freight_of_unreachable_borders();
         self.rebuild_building_entrances_internal();
         self.transit_network
             .roadbed
