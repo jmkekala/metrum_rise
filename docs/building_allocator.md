@@ -42,7 +42,8 @@ Daily settlement passes one elapsed day. Immediate no-building road edits pass z
 invalid attachments immediately without consuming unrelated buildings' rezoning grace. The first
 incompatible-zone detection starts three full grace days; subsequent daily calls consume one each.
 Restoring compatible zoning clears the pending state even when no day has elapsed. Missing assets,
-parcels, deleted roads and roads that disallow buildings remain immediate-removal conditions.
+parcels, deleted roads and roads that disallow buildings remain immediate-removal conditions;
+an edit that deletes a road removes its buildings itself ([below](#stale-building-cleanup), `SAVE-07`).
 
 Important ownership note:
 
@@ -352,6 +353,24 @@ Removal order is important and currently deterministic:
    undo applies the inverse update after restoring the building records (`AUDIT-01-Z2`)
 4. `swap_remove` from `buildings`
 5. mark indices and entrance cache dirty
+
+**Road edits remove their buildings at once (`SAVE-07`).** A building whose road is removed
+does not wait for its daily phase: every edit that deletes edges (the bulldoze, a ring's removal,
+a road commit and its deferred lot adoption, undo) runs its attachment repair first, which
+reattaches a building a live road can take (a cell lot that another road supplies, an authored
+parcel or explicit site within the repair's reach), then removes each building still naming a
+deleted or absent edge through the same removal (`SimCore::remove_buildings_of_removed_roads`,
+`BuildingAllocator::buildings_on_removed_roads`): occupants evicted, households, freight and
+electricity settled, the swap remapped, then once the building revision, the entrance cache and
+the site publication. After every edit no building names a removed edge, which the save requires
+(its error names the building and edge). Road undo brings back the road and its paint, not the
+buildings, as for a road's take (`ZONE-09`). The candidates are the buildings in the 512 m chunks
+within a lot's reach of the removed edges (the commit's and undo's are its repair's visits),
+`O(candidates / P)`; the whole city, `O(B / P)`, while the chunk index is stale; test builds check
+the candidates against the whole city. A removal adds one entrance rebuild, `O(B)`, as the cleanup
+does. A ring's build deletes no edge and a ring's edges take no buildings (`ROAD-62`). Decided by
+the coordinator under the user's delegation 2026-11-16, for review: removal, not a building undo
+record (the cleanup's outcome, now; `ZONE-09` already keeps buildings out of road undo).
 
 Important invariant:
 

@@ -555,6 +555,8 @@ impl SimCore {
         let mut sync_trans_graph = false;
         let mut restored_topology_scope = None;
         let mut fronting = Vec::new();
+        // Whether `fronting` came from a stale chunk index, which names no candidates.
+        let mut fronting_stale = false;
 
         if let Some(t_data) = terrain {
             self.heightmap
@@ -578,15 +580,14 @@ impl SimCore {
                 self.zoning
                     .mark_cell_lots_for_roads(&self.region_graph, edge_ids.iter().copied());
                 // Read while the edges the restore takes away still have their geometry.
-                fronting = self
-                    .allocator
-                    .attachment_repair_candidates(
-                        &self.region_graph,
-                        edge_ids,
-                        [],
-                        self.config.zone_cell_m,
-                    )
-                    .unwrap_or_default();
+                let candidates = self.allocator.attachment_repair_candidates(
+                    &self.region_graph,
+                    edge_ids,
+                    [],
+                    self.config.zone_cell_m,
+                );
+                fronting_stale = candidates.is_none();
+                fronting = candidates.unwrap_or_default();
             }
             // `O(delta records * log edges)`; the same records as the full restore.
             self.region_graph.restore_undo_delta_local(&tr_graph);
@@ -672,6 +673,12 @@ impl SimCore {
                     Some(&fronting),
                 );
             }
+            // A restore that repaired no attachment (dense terrain, or a roadbed left to its
+            // deferred compile) still leaves no building on an edge it took away (`SAVE-07`);
+            // after the repair this finds none.
+            self.remove_buildings_of_removed_roads(
+                (!fronting_stale).then_some(fronting.as_slice()),
+            );
         }
         if charged > 0.0 {
             self.treasury.refund_build_cost(charged);

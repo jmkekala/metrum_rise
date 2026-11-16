@@ -429,6 +429,61 @@ impl SimCore {
             sites_start.elapsed().as_secs_f64() * 1000.0,
         ]
     }
+
+    /// Removes every building among `candidates` (ascending; the whole city with `None`) whose
+    /// road an edit removed (`SAVE-07`), as the stale building cleanup removes it at its next
+    /// daily phase, but now: the cleanup's removal (`remove_incompatible_building`: occupants
+    /// evicted, households, freight and electricity settled, the swap remapped through every
+    /// store), in descending order so no swap moves a building still to be removed, then once
+    /// the building revision, the entrance cache and the site publication. Every edit that
+    /// deletes edges calls it after its attachment repair, which reattaches the buildings a live
+    /// road takes, so after the edit no building names a removed edge; road undo does not bring
+    /// them back (`ZONE-09`). Returns whether it removed any. `O(candidates / P)`; a removal adds
+    /// its parallel remaps and one entrance rebuild, `O(B)`, as the cleanup's.
+    pub(crate) fn remove_buildings_of_removed_roads(
+        &mut self,
+        candidates: Option<&[usize]>,
+    ) -> bool {
+        let stale = self
+            .allocator
+            .buildings_on_removed_roads(&self.region_graph, candidates);
+        // Test builds prove the edit's candidates hold every such building of the city.
+        #[cfg(test)]
+        if candidates.is_some() && crate::debug::work::city_checks() {
+            assert_eq!(
+                stale,
+                self.allocator
+                    .buildings_on_removed_roads(&self.region_graph, None),
+                "the edit's candidates hold every building naming a removed road"
+            );
+        }
+        if stale.is_empty() {
+            return false;
+        }
+        debug_log!(
+            "economy",
+            "buildings of removed roads removed at the edit: {:?}",
+            stale
+        );
+        crate::thread_pools::install(|| {
+            for &building_idx in stale.iter().rev() {
+                self.allocator.remove_incompatible_building(
+                    building_idx,
+                    &mut self.zoning,
+                    &mut self.agents,
+                    &mut self.households,
+                    &mut self.logistics,
+                    &mut self.treasury.balance,
+                );
+            }
+            self.allocator.bump_building_ref_revision();
+            self.allocator
+                .rebuild_entrance_cache(&self.region_graph, &self.transit_network.lane_system);
+        });
+        self.publish_pending_building_site_changes();
+        self.mark_changed_zone_flow_fields();
+        true
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1201,6 +1256,15 @@ impl SimCore {
         // A border road's removal cuts the border's trade: its freight settles (`SAVE-06`).
         self.settle_freight_of_unreachable_borders();
         self.rebuild_building_entrances_internal();
+        // The buildings the repair could not reattach go with their road (`SAVE-07`): those
+        // within a lot's reach of it, through the 512 m chunk index (the city when stale).
+        let fronting = self.allocator.attachment_repair_candidates(
+            &self.region_graph,
+            &HashSet::from([edge_idx]),
+            [],
+            self.config.zone_cell_m,
+        );
+        self.remove_buildings_of_removed_roads(fronting.as_deref());
         self.transit_network
             .roadbed
             .compile_dirty(&self.region_graph);
@@ -3647,11 +3711,12 @@ mod tests {
         assert_eq!(core.allocator.buildings[0].rezone_grace_days_remaining, 11);
     }
 
-    // The occupied lot keeps its claim and paint through the bulldoze and its undo; the free
-    // paint loses its road column with the road and goes (`ZONE-14`, D-removal), and the undo
-    // gives it back.
+    // The occupied lot keeps its claim and paint until its building goes, which the bulldoze
+    // now does in the same edit (`SAVE-07`); the free paint loses its road column with the road
+    // and goes (`ZONE-14`, D-removal), and the undo gives the paint back, not the building
+    // (`ZONE-09`).
     #[test]
-    fn curved_road_bulldoze_and_undo_keep_occupied_cell_claims_until_building_removal() {
+    fn curved_road_bulldoze_removes_its_building_and_undo_returns_the_paint() {
         use crate::simulation::zoning::cells::{CellBounds, CellLotSize, CellSelectionShape};
         use glam::DVec2;
 
@@ -3702,7 +3767,6 @@ mod tests {
             building.edge_idx = parcel.edge_idx();
             building.side = parcel.side();
             building.frontage_t = parcel.frontage_center_t();
-            let pose = (building.center_x, building.center_y, building.facing_dir);
             core.allocator.buildings.push(building);
             assert!(core.zoning.occupy_parcel(id.raw(), 0));
             core.allocator
@@ -3716,46 +3780,31 @@ mod tests {
                 core.zoning.paint_cells(&selection, 0, |_| false).unwrap();
             }
             let paint = core.zoning.cells.saved_cells();
-            let claimed: Vec<_> = paint
-                .iter()
-                .copied()
-                .filter(|&(key, _)| lot.cells().any(|cell| cell == key))
-                .collect();
             assert!(core.bulldoze_road_edge(0));
             assert!(core.region_graph.edge(0).deleted);
-            for undo in [false, true] {
-                if undo {
-                    assert!(core.undo_action_internal(), "angle={angle} erased={erased}");
-                    core.rebuild_network_surface_terrain_internal();
-                }
-                let parcel = core
-                    .zoning
-                    .parcels
-                    .get(id)
-                    .expect("occupied lot stays reserved");
-                assert_eq!(parcel.occupied_building(), Some(0));
-                assert_eq!(parcel.cell_lot(), Some(lot));
-                assert!(
-                    lot.cells()
-                        .all(|key| core.zoning.cells.lot(key) == Some(id.raw()))
-                );
-                let expected = if undo { &paint } else { &claimed };
-                assert_eq!(&core.zoning.cells.saved_cells(), expected);
-                let building = &core.allocator.buildings[0];
-                assert_eq!(
-                    (building.center_x, building.center_y, building.facing_dir),
-                    pose
-                );
-            }
-            assert!(core.bulldoze_road_edge(0));
-            core.run_building_allocator_maintenance_internal();
-            assert!(core.allocator.buildings.is_empty());
+            assert!(
+                core.allocator.buildings.is_empty(),
+                "the building goes with its road"
+            );
             core.prepare_cell_lots_internal();
             assert!(core.zoning.parcels.get(id).is_none());
             assert!(
                 lot.cells()
                     .all(|key| core.zoning.cells.lot(key).is_none_or(|id| id == 0))
             );
+            assert!(core.undo_action_internal(), "angle={angle} erased={erased}");
+            core.rebuild_network_surface_terrain_internal();
+            assert!(!core.region_graph.edge(0).deleted);
+            assert!(core.allocator.buildings.is_empty());
+            // The painted cells come back; an erased cell the lot's claim kept is no paint
+            // once the claim is gone.
+            let painted = |cells: Vec<_>| -> Vec<_> {
+                cells
+                    .into_iter()
+                    .filter(|&(_, profile)| profile != 0)
+                    .collect()
+            };
+            assert_eq!(painted(core.zoning.cells.saved_cells()), painted(paint));
         }
     }
 

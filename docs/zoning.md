@@ -2280,6 +2280,11 @@ lot keeps its claims, `SIM-02-K`), so intact paint cannot leave an empty lot
 attached to a deleted road indefinitely. Existing manual-parcel removal behavior is unchanged.
 The added removal predicate costs O(1) per visited parcel; it does not change the existing
 parcel-removal scan's complexity. This is not full bulldoze locality acceptance.
+Since `SAVE-07` the allocator clears that occupant within the removal itself, after its
+attachment repair ([`building_allocator.md`](building_allocator.md#stale-building-cleanup)), so
+the claim lasts only to the end of the edit and the next lot refresh drops the lot; the road's
+undo returns the paint, not the building (`ZONE-09`). The regression below now checks that order
+(`curved_road_bulldoze_removes_its_building_and_undo_returns_the_paint`).
 
 The native deletion regression covers cardinal and rotated curves, intact and erased paint,
 immediate road undo, then a second deletion followed by building maintenance. Pose, lot identity,

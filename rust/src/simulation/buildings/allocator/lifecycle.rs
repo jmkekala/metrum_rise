@@ -296,6 +296,31 @@ impl BuildingAllocator {
         }
     }
 
+    /// The buildings among `candidates` (the whole city with `None`) whose road is gone: their
+    /// edge is deleted or no longer exists, the attachment [`Self::compatibility_expired`] removes
+    /// a building for with no grace (`SAVE-07`). Ascending when `candidates` is.
+    /// `O(candidates / P)`, `O(B / P)` for the whole city.
+    pub(crate) fn buildings_on_removed_roads(
+        &self,
+        graph: &RegionGraph,
+        candidates: Option<&[usize]>,
+    ) -> Vec<usize> {
+        let gone = |&index: &usize| {
+            self.buildings.get(index).is_some_and(|building| {
+                graph
+                    .get_edge(building.edge_idx)
+                    .is_none_or(|edge| edge.deleted)
+            })
+        };
+        crate::thread_pools::install(|| match candidates {
+            Some(candidates) => candidates.par_iter().copied().filter(gone).collect(),
+            None => (0..self.buildings.len())
+                .into_par_iter()
+                .filter(gone)
+                .collect(),
+        })
+    }
+
     /// Checks building `i`'s attachment and zoning compatibility, advancing an incompatible
     /// building's grace by `elapsed_days`, and swap-removes it when its attachment is gone or
     /// its grace has run out. Editing paths call it through [`Self::maintain`]; the caller then

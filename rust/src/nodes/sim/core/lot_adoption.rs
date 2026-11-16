@@ -253,6 +253,21 @@ impl SimCore {
             candidates.as_deref(),
             |building| closure.contains(&building.edge_idx),
         );
+        // The visited buildings hold every one of an edge the edit removed (the closure holds
+        // the edit's edges), with an undo's `fronting` those of edges it took away; those the
+        // repair left on it go now (`SAVE-07`), and their removal rebuilt every entrance.
+        let removed = if fronting.is_empty() {
+            self.remove_buildings_of_removed_roads(Some(&changed))
+        } else {
+            let mut candidates = changed.clone();
+            candidates.extend_from_slice(fronting);
+            candidates.sort_unstable();
+            candidates.dedup();
+            self.remove_buildings_of_removed_roads(Some(&candidates))
+        };
+        if removed {
+            return;
+        }
         let lanes = &self.transit_network.lane_system;
         if !cache_current {
             self.allocator

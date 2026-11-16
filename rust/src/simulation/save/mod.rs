@@ -1037,11 +1037,14 @@ fn build_snapshot_maps(
         .enumerate()
         .map(|(n, o)| (o, n as u32))
         .collect();
-    for b in &allocator.buildings {
+    for (index, b) in allocator.buildings.iter().enumerate() {
         if !edge_old_to_new.contains_key(&b.edge_idx)
             && !(b.parcel_id == 0 && b.zone_type == crate::simulation::zoning::ZoneType::None)
         {
-            return Err(SaveLoadError::custom("bld edge missing"));
+            return Err(SaveLoadError::custom(format!(
+                "bld edge missing: building {index} names edge {}",
+                b.edge_idx
+            )));
         }
     }
     Ok(SnapshotMaps {

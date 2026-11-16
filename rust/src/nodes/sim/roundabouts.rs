@@ -309,6 +309,15 @@ impl SimCore {
         });
         // A border on the ring keeps no road: its freight settles (`SAVE-06`).
         self.settle_freight_of_unreachable_borders();
+        // A ring never zones (`ROAD-62`), so this finds no building on a removed ring edge; it
+        // keeps the removal's invariant all the same (`SAVE-07`).
+        let fronting = self.allocator.attachment_repair_candidates(
+            &self.region_graph,
+            &ring.iter().copied().collect(),
+            [],
+            self.config.zone_cell_m,
+        );
+        self.remove_buildings_of_removed_roads(fronting.as_deref());
         // Deferred like a commit's (D7, `ROAD-68-G`); the road tool's view shares its graph
         // copy (`ROAD-68-E`).
         let routing_graph = self.schedule_cch_rebuild_of_live_graph();

@@ -317,3 +317,99 @@ fn bulldozing_the_border_road_settles_its_freight_and_the_town_saves() {
         std::fs::remove_file(path).unwrap();
     }
 }
+
+// `SAVE-07`: bulldozing a road that buildings front removes them in the same edit, as the stale
+// building cleanup would at their next daily phase, so no building names the removed edge and
+// the town saves at once, after a few frames and after an undo, and every save loads. The undo
+// brings the road back but not the buildings (a road undo returns paint, never buildings,
+// `ZONE-09`). Before, the buildings kept the removed edge until their daily phase and a save
+// in between failed with "bld edge missing".
+#[test]
+fn bulldozing_a_road_buildings_front_removes_them_and_the_town_saves() {
+    use super::super::frame::FRAME_DT_S;
+
+    let path = |name: &str| -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "metrum-save07-{name}-{}.sqlite",
+            std::process::id()
+        ))
+    };
+    let mut town = busy_town();
+    let core = &mut town.core;
+    // The road most buildings front, the lowest id on a tie.
+    let fronting = |core: &SimCore, edge: usize| {
+        core.allocator
+            .buildings
+            .iter()
+            .filter(|building| building.edge_idx == edge)
+            .count()
+    };
+    let graph = &core.region_graph;
+    let road = (0..graph.edge_count())
+        .filter(|&edge| !graph.edge(edge).deleted)
+        .max_by_key(|&edge| (fronting(core, edge), std::cmp::Reverse(edge)))
+        .unwrap();
+    let fronted = fronting(core, road);
+    assert!(fronted > 0, "a road buildings front");
+    let buildings = core.allocator.buildings.len();
+    let no_removed_edge = |core: &SimCore| {
+        let graph = &core.region_graph;
+        let stale: Vec<(usize, usize)> = core
+            .allocator
+            .buildings
+            .iter()
+            .enumerate()
+            .filter(|(_, building)| {
+                graph
+                    .get_edge(building.edge_idx)
+                    .is_none_or(|edge| edge.deleted)
+            })
+            .map(|(index, building)| (index, building.edge_idx))
+            .collect();
+        assert!(
+            stale.is_empty(),
+            "buildings naming a removed edge: {stale:?}"
+        );
+    };
+
+    assert!(core.bulldoze_road_edge_for_test(road));
+    assert!(core.region_graph.edge(road).deleted);
+    no_removed_edge(core);
+    let left = core.allocator.buildings.len();
+    assert!(left < buildings, "the road's buildings go with it");
+    assert!(left >= buildings - fronted);
+
+    // The town saves at once and a few frames on; each save loads with the same buildings.
+    let loads = |core: &SimCore, saved: &Path| {
+        let mut loaded = GrowthScenario::starter_town();
+        loaded
+            .core
+            .load_game_internal(saved.to_str().unwrap())
+            .unwrap();
+        assert_eq!(
+            loaded.core.allocator.buildings.len(),
+            core.allocator.buildings.len()
+        );
+        no_removed_edge(&loaded.core);
+    };
+    let (cut, ran, restored) = (path("cut"), path("ran"), path("restored"));
+    save(core, &cut);
+    loads(core, &cut);
+    for _ in 0..5 {
+        core.step_frame(FRAME_DT_S);
+    }
+    no_removed_edge(core);
+    save(core, &ran);
+    loads(core, &ran);
+
+    // Undo brings the road back, not its buildings; the town saves and loads.
+    assert!(core.undo_action_internal());
+    assert!(!core.region_graph.edge(road).deleted);
+    no_removed_edge(core);
+    assert_eq!(core.allocator.buildings.len(), left);
+    save(core, &restored);
+    loads(core, &restored);
+    for path in [cut, ran, restored] {
+        std::fs::remove_file(path).unwrap();
+    }
+}
