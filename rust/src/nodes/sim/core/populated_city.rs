@@ -780,4 +780,5 @@ fn fill_lots(core: &mut SimCore) {
         }
     }
     core.allocator.complete_all_construction();
+    core.publish_parking_sites();
 }

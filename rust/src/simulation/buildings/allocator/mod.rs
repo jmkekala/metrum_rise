@@ -544,7 +544,8 @@ pub struct BuildingAllocator {
     /// The graded terrain's site-change outbox (`TERRAIN-07-C`), filled with the legacy one
     /// above: one record per site before or after each change, with its support height.
     pub(crate) graded_site_changes: Vec<SiteChange>,
-    /// Stable owners changed by the site journal; consumed by physical parking publication.
+    /// Stable owners changed by the site journal or completed; consumed by physical parking
+    /// publication.
     pub(crate) parking_site_changes: Vec<Handle<Building>>,
     /// Separate explicit-site exclusion edits; ordinary parcel buildings do not block cells.
     /// Keeping envelopes separate avoids treating untouched land between sites as edited.
@@ -1131,8 +1132,9 @@ impl BuildingAllocator {
     }
 
     /// Finishes construction at its deadline (`SIM-02-D`): the building becomes live economy
-    /// capacity and joins clean indices in place. O(log B) plus one sorted insert; a stale
-    /// index is left for its next reader to rebuild.
+    /// capacity and joins clean indices in place, and its lot is journaled for the parking
+    /// publication, which makes it supply only now (`PERF-25`). O(log B) plus one sorted insert;
+    /// a stale index is left for its next reader to rebuild.
     pub(crate) fn complete_construction(&mut self, building_idx: usize) {
         let building = &mut self.buildings[building_idx];
         if !building.is_under_construction() {
@@ -1140,6 +1142,9 @@ impl BuildingAllocator {
         }
         building.construction_complete_slot = 0;
         building.construction_total_hours = 0;
+        self.parking_site_changes
+            .push(self.building_handles.handle(building_idx));
+        let building = &self.buildings[building_idx];
         debug_log!(
             "economy",
             "building construction complete: asset={} zone={:?} level={}",
@@ -1159,15 +1164,18 @@ impl BuildingAllocator {
     }
 
     /// Completes every construction site at once and rebuilds the indices, for fixtures that
-    /// need a finished city. O(B).
+    /// need a finished city; their lots wait in the parking journal, as one completion's do.
+    /// O(B).
     pub(crate) fn complete_all_construction(&mut self) {
-        for building in &mut self.buildings {
+        for (idx, building) in self.buildings.iter_mut().enumerate() {
             if building.is_under_construction() {
                 building.construction_complete_slot = 0;
                 building.construction_total_hours = 0;
                 if let Some(zone_idx) = baseline_private_zone_slot(building.zone_type) {
                     self.dirty_zones[zone_idx] = true;
                 }
+                self.parking_site_changes
+                    .push(self.building_handles.handle(idx));
             }
         }
         self.pending_construction.clear();

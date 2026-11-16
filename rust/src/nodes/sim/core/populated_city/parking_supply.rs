@@ -92,3 +92,65 @@ fn a_removed_and_a_new_lot_leave_every_list_a_rebuild_gives() {
     assert!(core.parking.counts().0 > left, "the new lot has bays");
     core.audit_every_parking_catchment();
 }
+
+// A construction site's lot is no supply and its door holds no list until completion
+// (`PERF-25`): a lot-bearing building bulldozed and spawned again leaves every door's list what a
+// rebuild from scratch gives while it is a site, the site's none, and again once completion
+// publishes its bays and its list.
+#[test]
+fn a_construction_site_and_its_completion_leave_every_list_a_rebuild_gives() {
+    use crate::simulation::economy::demand::DemandSpawnAction;
+    let mut core = zoned_city(2.0 * CROSS_SPACING_M);
+    let lot_bearing = |core: &super::SimCore, i: usize| {
+        let building = &core.allocator.buildings[i];
+        building.zone_type != crate::simulation::zoning::ZoneType::None
+            && core
+                .parking
+                .building_place_count(core.allocator.building_handles.handle(i).to_bits())
+                > 0
+    };
+    let built = (0..core.allocator.buildings.len())
+        .filter(|&i| lot_bearing(&core, i))
+        .min_by(|&a, &b| {
+            let from_centre = |i: usize| {
+                let building = &core.allocator.buildings[i];
+                building.center_x.hypot(building.center_y)
+            };
+            from_centre(a).total_cmp(&from_centre(b))
+        })
+        .expect("a zoned building with a lot");
+    let building = &core.allocator.buildings[built];
+    let zone = building.zone_type;
+    let action = DemandSpawnAction {
+        parcel_id: building.parcel_id,
+        asset_id: building.asset_id.clone(),
+    };
+    assert!(core.bulldoze_building(built));
+    let sites = core.allocator.buildings.len();
+    core.transit_network.roadbed.compile_dirty(&core.region_graph);
+    core.allocator.execute_single_demand_spawn_action(
+        zone,
+        &action,
+        None,
+        &mut core.zoning,
+        &core.region_graph,
+        &core.transit_network.lane_system,
+        &core.transit_network.roadbed,
+        &core.heightmap,
+        core.demand.runtime_catalog(),
+        core.demand.runtime_tuning(),
+    );
+    assert_eq!(core.allocator.buildings.len(), sites + 1, "{action:?} spawns again");
+    core.publish_pending_building_site_changes();
+    let site = sites;
+    assert!(core.allocator.buildings[site].is_under_construction());
+    let handle = core.allocator.building_handles.handle(site).to_bits();
+    // Its driveways and bay entries keep the kerb clear from the start; its bays wait.
+    assert_eq!(core.parking.building_place_count(handle), 0, "the site's bays are supply");
+    assert!(core.parking.candidate_products(handle).is_empty(), "the site's door has a list");
+    core.audit_every_parking_catchment();
+    core.complete_construction_site(site);
+    assert!(core.parking.building_place_count(handle) > 0, "completion publishes the lot");
+    assert!(!core.parking.candidate_products(handle).is_empty());
+    core.audit_every_parking_catchment();
+}

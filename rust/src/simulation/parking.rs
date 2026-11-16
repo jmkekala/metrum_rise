@@ -29,6 +29,14 @@ pub(crate) use render::ParkedPublication;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+/// Whether a building has parking: bays on its lot that count as supply, and a list at its door.
+/// A site under construction has neither: its lot is no supply before the building is finished
+/// (the user's decision of 2026-11-16, `PERF-25`), and nobody's trip ends at it, so completion
+/// publishes both. O(1).
+pub(crate) fn holds_parking(building: &crate::simulation::buildings::allocator::Building) -> bool {
+    building.is_operational()
+}
+
 /// SoA parking stores and existing 512 m world-chunk convention. No per-tick iteration.
 #[derive(Default, Debug)]
 pub(crate) struct ParkingSystem {

@@ -93,8 +93,8 @@ impl ParkingSystem {
         });
     }
 
-    /// Publishes the bay changes of a site edit. `own` are the doors of the changed buildings,
-    /// rebuilt whole; `hosts` are those buildings, whose bays follow their doors; `near` are the
+    /// Publishes the bay changes of a site edit. `own` are the doors of the changed buildings
+    /// that hold a list ([`holds_parking`]), rebuilt whole; `hosts` are those buildings, whose bays follow their doors; `near` are the
     /// doors any changed bay could reach. O(own full rebuilds + H bays of the hosts + D doors ×
     /// changed bays + R × (searches cut at the changed bays + list length)), R the doors a bay
     /// actually enters or leaves, parallel by door. The caller needs current routing: without it
@@ -274,7 +274,7 @@ impl ParkingSystem {
     ) -> Option<DoorEdit> {
         let entrance = allocator.entrances.get(building)?;
         let handle = allocator.building_handles.handle(building);
-        if handle.is_none() {
+        if handle.is_none() || !super::lists_door(allocator, building) {
             return None;
         }
         let handle = handle.to_bits();

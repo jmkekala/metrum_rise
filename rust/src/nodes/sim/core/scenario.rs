@@ -21,6 +21,8 @@ mod census_cases;
 #[cfg(test)]
 mod congestion_cases;
 #[cfg(test)]
+mod construction_cases;
+#[cfg(test)]
 mod graded_cases;
 #[cfg(test)]
 mod query_cases;

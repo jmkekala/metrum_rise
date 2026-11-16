@@ -51,6 +51,7 @@ impl ParkingSystem {
     /// Rebuilds specified door catchments at publication time. O(Bₗ × ((Lₗ + Cₗ) log Lₗ
     /// plus Pₗ log Pₗ)), visiting only lanes within 400 m walking time and at most nine supply
     /// chunks per door; independent doors use Rayon. Occupancy changes never rebuild lists.
+    /// A door without parking ([`holds_parking`]) is left without a list.
     /// Returns the doors whose list of places changed, for the caller to wake waiting cars:
     /// an edit is new supply for those homes, a load's reconstruction is not.
     pub(crate) fn rebuild_candidates(
@@ -61,9 +62,14 @@ impl ParkingSystem {
         graph: &RegionGraph,
         car_components: Option<&ModeComponentIndex>,
     ) -> Vec<[f32; 2]> {
+        let buildings: Vec<_> = buildings
+            .iter()
+            .copied()
+            .filter(|&b| lists_door(allocator, b))
+            .collect();
         crate::thread_pools::install(|| {
             self.place_changes.clear();
-            self.rebuild_doors(buildings, allocator, network, graph, car_components)
+            self.rebuild_doors(&buildings, allocator, network, graph, car_components)
         })
     }
 
@@ -305,6 +311,13 @@ impl ParkingSystem {
                 continue;
             };
             let handle = allocator.building_handles.handle(b).to_bits();
+            if !lists_door(allocator, b) {
+                assert!(
+                    !self.candidates.contains_key(&handle),
+                    "building {b} under construction holds a list",
+                );
+                continue;
+            }
             let centre = &allocator.buildings[b];
             let scratch = table.door_candidates(
                 entrance,
@@ -632,6 +645,11 @@ impl ParkingSystem {
                     / crate::config::AGENT_DRIVEWAY_SPEED_MS
             })
     }
+}
+
+// Whether building `b`'s door holds a list ([`holds_parking`]). O(1).
+fn lists_door(allocator: &BuildingAllocator, b: usize) -> bool {
+    allocator.buildings.get(b).is_some_and(holds_parking)
 }
 
 // The lanes every search from these doors can touch. O(lanes in their reach).

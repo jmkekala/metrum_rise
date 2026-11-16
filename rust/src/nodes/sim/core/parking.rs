@@ -5,8 +5,8 @@
 use super::SimCore;
 use crate::simulation::core::handles::Handle;
 use crate::simulation::network::types::EdgeClass;
-use crate::simulation::parking::kerb::{kerb_bays, kerb_blockers};
-use crate::simulation::parking::{ParkedPublication, PlaceSource};
+use crate::simulation::parking::kerb::{KerbBlocker, kerb_bays, kerb_blockers};
+use crate::simulation::parking::{Bay, ParkedPublication, PlaceSource, holds_parking};
 use crate::simulation::parking::lots::lot_bays;
 use rayon::prelude::*;
 use std::collections::{BTreeSet, HashMap};
@@ -71,13 +71,7 @@ impl SimCore {
                     if handle.is_none() {
                         return None;
                     }
-                    let (bays, issues) = lot_bays(
-                        &self.allocator,
-                        index,
-                        &self.region_graph,
-                        &self.transit_network.roadbed,
-                    );
-                    let blockers = kerb_blockers(&self.allocator, index, &self.region_graph, &bays);
+                    let (bays, issues, blockers) = self.site_lot(index);
                     Some((handle, bays, issues, blockers))
                 })
                 .collect()
@@ -91,7 +85,7 @@ impl SimCore {
             points.extend(self.parking.source_points(handle.to_bits()));
             points.extend(bays.iter().map(|(_, b)| [b.position[0], b.position[2]]));
             if let Some(b) = self.allocator.building_handles.resolve(handle) {
-                if let Some(e) = self.allocator.entrances.get(b) {
+                if let Some(e) = self.allocator.entrances.get(b).filter(|_| self.holds_parking(b)) {
                     points.push([e.door_pos.x, e.door_pos.y]);
                 }
             } else {
@@ -153,6 +147,29 @@ impl SimCore {
         }
     }
 
+    // Building `index`'s lot: the bays it offers as supply, its validation issues, and the kerb
+    // blockers of its whole layout. A site under construction offers no bay and its door holds
+    // no list until completion publishes both (`PERF-25`, the user's decision of 2026-11-16);
+    // its driveways and bay entries keep the kerb clear from the start, so completion moves no
+    // kerbside bay. O(`lot_bays`).
+    fn site_lot(&self, index: usize) -> (Vec<(u32, Bay)>, Vec<String>, Vec<KerbBlocker>) {
+        let (mut bays, issues) = lot_bays(
+            &self.allocator,
+            index,
+            &self.region_graph,
+            &self.transit_network.roadbed,
+        );
+        let blockers = kerb_blockers(&self.allocator, index, &self.region_graph, &bays);
+        if !self.holds_parking(index) {
+            bays.clear();
+        }
+        (bays, issues, blockers)
+    }
+
+    fn holds_parking(&self, index: usize) -> bool {
+        holds_parking(&self.allocator.buildings[index])
+    }
+
     /// O(changed buildings × lot validation), consuming the allocator's
     /// stable-handle site journal. Removed handles remove their old source lists even after swaps.
     pub(crate) fn publish_parking_sites(&mut self) {
@@ -171,13 +188,7 @@ impl SimCore {
                     let Some(i) = self.allocator.building_handles.resolve(handle) else {
                         return (handle, Vec::new(), Vec::new(), Vec::new());
                     };
-                    let (bays, issues) = lot_bays(
-                        &self.allocator,
-                        i,
-                        &self.region_graph,
-                        &self.transit_network.roadbed,
-                    );
-                    let blockers = kerb_blockers(&self.allocator, i, &self.region_graph, &bays);
+                    let (bays, issues, blockers) = self.site_lot(i);
                     (handle, bays, issues, blockers)
                 })
                 .collect()
@@ -192,7 +203,7 @@ impl SimCore {
             points.extend(self.parking.source_points(handle.to_bits()));
             points.extend(bays.iter().map(|(_, b)| [b.position[0], b.position[2]]));
             if let Some(b) = self.allocator.building_handles.resolve(handle) {
-                if let Some(e) = self.allocator.entrances.get(b) {
+                if let Some(e) = self.allocator.entrances.get(b).filter(|_| self.holds_parking(b)) {
                     points.push([e.door_pos.x, e.door_pos.y]);
                 }
             } else {
@@ -225,6 +236,7 @@ impl SimCore {
         let mut own: Vec<_> = hosts
             .iter()
             .filter_map(|&host| self.allocator.building_handles.resolve(Handle::from_bits(host)))
+            .filter(|&b| self.holds_parking(b))
             .collect();
         own.sort_unstable();
         self.households

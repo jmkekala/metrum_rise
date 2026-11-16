@@ -1043,7 +1043,7 @@ impl SimCore {
                     if let Some(building_idx) = self.allocator.building_handles.resolve(building)
                         && self.allocator.buildings[building_idx].is_under_construction()
                     {
-                        self.allocator.complete_construction(building_idx);
+                        self.complete_construction_site(building_idx);
                         observer.buildings_changed(self);
                     }
                 }
@@ -1051,6 +1051,15 @@ impl SimCore {
             }
         }
         self.due_events = due;
+    }
+
+    /// Finishes construction site `building_idx` at its deadline: the allocator's completion,
+    /// then its lot's parking, which a site has none of (`PERF-25`), so the finished building has
+    /// its bays and its door its list before anything reads it. O(the completion + one site's
+    /// parking publication).
+    pub(crate) fn complete_construction_site(&mut self, building_idx: usize) {
+        self.allocator.complete_construction(building_idx);
+        self.publish_parking_sites();
     }
 
     /// Schedules the completion of every construction site placed since the last call, in
