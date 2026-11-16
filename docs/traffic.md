@@ -2149,8 +2149,13 @@ undo returns them.
 A building's driveways and its street-entered lot bays cut a gap of their half width plus 1 m each
 side on their own kerb; a building without driveway anchors keeps a 3 m drive clear opposite its
 main entrance, where its deliveries and drop-offs pull in, so parked cars never wall off a
-frontage (`KerbBlocker`, indexed per building and per edge, derived and rebuilt by the load
-reconcile). Cars park facing the traffic beside them: a two-way road's left kerb faces backward,
+frontage (`KerbBlocker`, indexed per building and per edge, derived and unsaved). Every kerb
+re-lay reads an edge's blockers whole, so the load rebuilds those of every building on a road with
+a parking lane from its lot layout (`rebuild_loaded_kerb_blockers`, `PARK-15`), a site's whole
+layout as its edits do; a road without one lays no kerb, and the edit that adds its lane
+revalidates the buildings along it first. Before, a load left none, and the first site edit
+beside a parking lane laid that kerb from the edited building's blockers alone, so bays filled
+the other driveways. Cars park facing the traffic beside them: a two-way road's left kerb faces backward,
 and a one-way road's lanes serve both kerbs. Access is the bay's own side (`SameSideOnly`) when
 its direction has lanes, both sides otherwise, entered from the lane beside the bay's rear along
 the bay's swept path. Pull-out and pull-in are those of a lot bay, [below](#the-itinerary-park-02).
@@ -2690,8 +2695,9 @@ places, cars, occupancy and reservations, ownership, custody, trip phases, claim
 household and release events, endpoint recovery links, quote stamps, rolling destination
 memberships and the arrival decisions, with no migration. Edge parking is
 `network_edges.parking` (bit 0 left, bit 1 right). Load validates reciprocal custody and building
-owners, and rebuilds the source, chunk, waiting and render indices, the catchments, the access
-endpoints and the route buffers' saved logical budgets; allocator spare capacity cannot change a
+owners, and rebuilds the source, chunk, waiting and render indices, the kerb blockers
+along roads with a parking lane (`PARK-15`, O(buildings) plus those buildings' lot validation,
+parallel), the catchments, the access endpoints and the route buffers' saved logical budgets; allocator spare capacity cannot change a
 departure. `households.shopping_has_car` is stored, not rebuilt from the agents: the flag changes
 only at the hourly recount, while car custody changes every tick. So a loaded game saves the same
 bytes and continues the same census as the uninterrupted one. SQLite stores opaque event payloads
