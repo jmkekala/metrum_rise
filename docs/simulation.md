@@ -1257,6 +1257,39 @@ moves its entities between the tiers' phase buckets.
   needs its pending changes in the save (agents read the lists every frame) and still leaves a
   frame of about 2.2 + 3.1 + 0.8 ms. What would meet `PERF-25`'s 6 ms is a cheaper (or split)
   parking site publication, which every minute-4 frame shares; see the row for the next step.
+- **Cheaper site publication (`PERF-25` part (b), 2026-11-16).** Every list, bay state and
+  parked pose stays bit-identical (the SIM-02 envelope and determinism match `dev`; every catchment
+  is audited against a rebuild from scratch in the parking tests). What changed, and why each is
+  exact:
+  - a bay added or reactivated since the last publication is on no door's list (lists hold only
+    usable bays), so the journal marks it and a spawn's near doors no longer scan their lists for
+    it; the bays a list may hold are tested with a 64-bit filter on their slot indices before the
+    search;
+  - each near door's two walking searches stop extending a lane whose label, length and a lower
+    bound of the rest of the walk to a changed bay's lane exceed the limit by more than the
+    rounding margin (`ESTIMATE_MARGIN_S`): a label within the limit lies on no such lane. The
+    bounds are one search from the changed bays' lane ends and one to their lane starts;
+  - a door whose lost bay was the last to give an end drops that end (a target names its frontage
+    edge, so only a bay on that edge can give it) instead of reading its whole list's ends again;
+  - a door reads its own walking ends only when a usable bay may enter its list;
+  - the foot graphs round the own door and round the changed bays are found while the bays'
+    access is refreshed (they read neither), and their lane ids use the `foldhash` map;
+  - the ground solves of every dirty parked chunk run as one parallel loop; a site edit used to
+    solve its 15-56 cars in one chunk on one thread.
+
+  Diagnostic re-measurement (same timing points as above, `dev` against the branch, one 30k 1×
+  day each, same boot): spawn publications 2.3-4.0 → 1.8-2.9 ms; their parking publication
+  1.6-3.2 → 1.1-2.0 ms (the near doors' searches 4.2-5.0 → 2.0-2.4 ms of worker time, their
+  edits 0.9-1.5 → 0.6-0.7 ms); removal publications 1.2-2.0 → 0.8-1.0 ms (the 31-37 doors whose
+  lists lost an end no longer read whole lists: 0.5-1.0 ms after the edits → none); the parked
+  re-pose after a site edit 0.48-0.86 → 0.19-0.43 ms. A diagnostic 32× day: worst unpreempted
+  frame 10.15-10.52 → 8.68 ms, frames over 8 ms 7-10 → 3. What remains in a spawn frame is the
+  own door's whole list (foot graph 0.5-0.7 ms beside the near doors' foot graph and bounds, its
+  table and the bays' access refresh 0.2-0.4 ms), the graded site edit 0.4 ms, the frame queries'
+  terrain payload 0.6 ms in the snapshot, and the agents' tick and pose (1-2 ms each, varying).
+  L timing (2026-11-16, control `dev` `321da360`, same session): 30k 1× max unpreempted 8.35 →
+  7.24 and 6.64 ms, every frame but the spawns at minutes 844 and 124 under 5.1 ms; 30k 32×
+  9.87/10.55 → 8.67/9.11 ms, unpreempted frames over 8 ms 8/6 → 1/1. Means level at both speeds.
 
 - **`PERF-09`, not measured (history, attributed 2026-10-28).** No 100k tier is measured since
   2026-11-09, so nothing gates this regression; the record stays as history. 100k 1× no longer met the
