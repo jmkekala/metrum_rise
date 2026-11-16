@@ -2698,7 +2698,18 @@ memberships and the arrival decisions, with no migration. Edge parking is
 owners, and rebuilds the source, chunk, waiting and render indices, the kerb blockers
 along roads with a parking lane (`PARK-15`, O(buildings) plus those buildings' lot validation,
 parallel), the catchments, the access endpoints and the route buffers' saved logical budgets; allocator spare capacity cannot change a
-departure. `households.shopping_has_car` is stored, not rebuilt from the agents: the flag changes
+departure. The lot validation reasons (`ParkingSystem::diagnostics`, inspection only) are neither
+saved nor rebuilt (`PARK-17`): rebuilding them would validate most lots, since most stock assets
+reject an anchor on every site (`PARK-07`; 1,029 of the populated fixture's 1,091 buildings), at
+about the cost `PARK-15` measured for all buildings, a tenth of `load_s`. The inspector's
+`parking_rejected` and the panel's `diagnostics` read the reasons through
+`SimCore::parking_rejections` and `parking_rejection_lines`, which validate a lot the map lacks
+when its saved supply shows a rejection: each parking anchor of a validated lot publishes one bay
+or adds one issue, and only that validation activates a place, so an operational building with an
+active place for every parking anchor had no issue; a site under construction publishes no bay, so
+a site with parking anchors is validated. The inspector pays one lot validation; the panel, a
+typed debug command, O(buildings) plus one per such lot, in parallel. Decided by the coordinator
+under the user's delegation 2026-11-16, for review: derive on demand rather than at load. `households.shopping_has_car` is stored, not rebuilt from the agents: the flag changes
 only at the hourly recount, while car custody changes every tick. So a loaded game saves the same
 bytes and continues the same census as the uninterrupted one. SQLite stores opaque event payloads
 as signed bit patterns, so negative chunk coordinates round-trip. The JSON columns are `PARK-06`.

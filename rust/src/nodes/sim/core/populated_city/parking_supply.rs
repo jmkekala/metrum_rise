@@ -3,6 +3,7 @@
 //! The populated fixture's parking supply (`PARK-02`, F8): kerbside lanes on the cross streets,
 //! none on the rows or the trunk, small lots along the rows, and every door with bays to walk to.
 
+use super::super::state::SimCore;
 use super::{CROSS_SPACING_M, ROW_BLOCKS_PER_LOT, zoned_city};
 use crate::simulation::network::graph::{RoadParking, SidewalkSides};
 use crate::simulation::parking::PlaceSource;
@@ -53,13 +54,24 @@ fn the_fixture_parks_on_its_cross_streets_and_in_lots_along_its_rows() {
             building.center_y
         );
     }
-    // The supply survives a save: the wider cross streets' curb frames among it.
+    // The supply survives a save: the wider cross streets' curb frames among it. So do the
+    // rejected lots' reasons, which the load keeps none of: the queries validate the lots whose
+    // saved supply shows a rejection (`PARK-17`).
+    let reasons = |core: &SimCore| {
+        let lots = 0..core.allocator.buildings.len();
+        let lots: Vec<_> = lots.map(|i| core.parking_rejections(i).into_owned()).collect();
+        (lots, core.parking_rejection_lines())
+    };
+    let rejected = reasons(&core);
     let path = std::env::temp_dir().join(format!("metrum_supply_{}.sqlite", std::process::id()));
     let path_text = path.to_str().expect("a temporary path");
     core.save_game_settled_at(path_text, None, 0).expect("the fixture saves");
     core.load_game_internal(path_text).expect("the fixture loads");
     let _ = std::fs::remove_file(&path);
     assert_eq!(core.parking.counts().0, bays);
+    assert!(core.parking.diagnostics.is_empty());
+    assert!(!rejected.1.is_empty());
+    assert_eq!(reasons(&core), rejected);
 }
 
 // A site edit publishes only the doors whose lists change, each door's searches bounded by the

@@ -254,6 +254,57 @@ fn parking_invalid_anchor_sweep_reports_diagnostic_and_tows_on_reload() {
     crate::simulation::parking::ParkingSystem::load_json(&json).unwrap();
 }
 
+// `PARK-17`: the lot validation diagnostics are derived and unsaved, and a load rebuilt none, so
+// the inspector and the parking panel showed nothing for a rejected lot until an edit revisited
+// it. A lot with one anchor its sweep rejects stands beside a whole lot; after a save and a load
+// both views list the unbroken game's reasons, validated on demand.
+#[test]
+fn a_loaded_game_shows_the_rejected_lot_reasons_of_the_unbroken_one() {
+    let register = |core: &mut SimCore| {
+        let whole = register_lot(core);
+        let mut manifest = core.allocator.registry.get(&whole).unwrap().manifest.clone();
+        manifest.asset_id = "building.parking.test_rejecting_lot".into();
+        let anchor = manifest
+            .anchors
+            .iter_mut()
+            .find(|a| a.anchor_type == AnchorType::Parking)
+            .unwrap();
+        anchor.position = [0.0, 0.0, -8.0];
+        let rejecting = manifest.qualified_id("parking");
+        core.allocator
+            .registry
+            .register("parking", manifest, String::new());
+        (whole, rejecting)
+    };
+    let mut c = core();
+    let (whole, rejecting) = register(&mut c);
+    let whole = c.place_service_building_internal(&whole, -60.0, -30.0).unwrap();
+    let rejecting = c
+        .place_service_building_internal(&rejecting, 60.0, -30.0)
+        .unwrap();
+    c.publish_pending_building_site_changes();
+    let views = |c: &SimCore| {
+        let lines = c.parking_rejection_lines();
+        let reasons = |index| c.parking_rejections(index).into_owned();
+        (reasons(whole), reasons(rejecting), lines)
+    };
+    let live = views(&c);
+    assert!(live.0.is_empty(), "{live:?}");
+    assert!(!live.1.is_empty() && live.2.len() == live.1.len(), "{live:?}");
+    let handle = c.allocator.building_handles.handle(rejecting).to_bits();
+    let bays = c.parking.building_place_count(handle);
+    assert!(bays > 0 && bays < LOT_BAYS, "{bays} of the rejecting lot's bays published");
+    let path = temp_save_path("parking-lot-diagnostics-load");
+    c.save_game_settled_at(path.to_str().unwrap(), None, 0)
+        .unwrap();
+    let mut l = core();
+    register(&mut l);
+    l.load_game_internal(path.to_str().unwrap()).unwrap();
+    std::fs::remove_file(path).unwrap();
+    assert!(l.parking.diagnostics.is_empty(), "the load keeps no reasons");
+    assert_eq!(views(&l), live);
+}
+
 #[test]
 fn parking_road_demolition_also_retires_its_lot_driveway_supply() {
     let mut c = core();

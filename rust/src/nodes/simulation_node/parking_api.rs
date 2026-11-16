@@ -5,7 +5,6 @@
 //! takes the core lock for them (`PARK-02`).
 
 use super::*;
-use crate::simulation::core::handles::Handle;
 use crate::simulation::parking::stats::DepartureOutcome;
 
 #[godot_api(secondary)]
@@ -96,18 +95,11 @@ impl SimulationNode {
         result.set("resident_cars_in_buildings", indoor as i64);
         result.set(
             "diagnostics",
-            PackedStringArray::from_iter(core.parking.diagnostics.iter().flat_map(
-                |(&building, issues)| {
-                    let id = core
-                        .allocator
-                        .building_handles
-                        .resolve(Handle::from_bits(building))
-                        .map_or(-1, |index| index as i64);
-                    issues
-                        .iter()
-                        .map(move |issue| GString::from(format!("building {id}: {issue}").as_str()))
-                },
-            )),
+            PackedStringArray::from_iter(
+                core.parking_rejection_lines()
+                    .iter()
+                    .map(|line| GString::from(line.as_str())),
+            ),
         );
         result
     }

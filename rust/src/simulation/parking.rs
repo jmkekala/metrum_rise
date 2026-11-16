@@ -70,6 +70,9 @@ pub(crate) struct ParkingSystem {
     #[cfg(test)]
     buffer_creations: usize,
     // Only off-map cars are indexed here. Parking release never scans sleeping vehicles.
+    // Each validated lot's issues, for inspection only: written by the site publication and the
+    // road reconcile, not saved; the load leaves it empty and the inspection queries validate
+    // the lots it lacks (`SimCore::parking_rejections`, `PARK-17`).
     pub(crate) diagnostics: std::collections::BTreeMap<u64, Vec<String>>,
     building_sources: HashMap<u64, Vec<PlaceSource>>,
     // Derived at every reconcile and site publication; not saved. The load rebuilds those of

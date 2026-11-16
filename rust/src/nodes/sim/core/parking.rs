@@ -3,13 +3,15 @@
 //! Local physical parking publication at existing road and site edit boundaries.
 
 use super::SimCore;
+use crate::assets::AnchorType;
 use crate::simulation::core::handles::Handle;
 use crate::simulation::network::types::EdgeClass;
 use crate::simulation::parking::kerb::{KerbBlocker, kerb_bays, kerb_blockers};
 use crate::simulation::parking::{Bay, ParkedPublication, PlaceSource, holds_parking};
 use crate::simulation::parking::lots::lot_bays;
 use rayon::prelude::*;
-use std::collections::{BTreeSet, HashMap};
+use std::borrow::Cow;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 impl SimCore {
     /// O(affected edges' geometry + local candidates × lot validation), never a city-wide supply rebuild.
@@ -197,6 +199,84 @@ impl SimCore {
 
     fn holds_parking(&self, index: usize) -> bool {
         holds_parking(&self.allocator.buildings[index])
+    }
+
+    /// The reasons building `index`'s lot layout was rejected, as the building inspector shows
+    /// them (`parking_rejected`); empty for a valid lot or a building without one. The live map
+    /// holds those of every lot an edit validated; a load leaves it empty (`PARK-17`), so a lot
+    /// it lacks is validated here when its supply shows a rejection. O(its anchors), plus one lot
+    /// validation for such a lot.
+    pub(crate) fn parking_rejections(&self, index: usize) -> Cow<'_, [String]> {
+        let handle = self.allocator.building_handles.handle(index).to_bits();
+        match self.parking.diagnostics.get(&handle) {
+            Some(issues) => Cow::Borrowed(issues),
+            None => Cow::Owned(self.unrecorded_rejections(index, handle)),
+        }
+    }
+
+    /// Every rejected lot's reasons as the parking panel lists them, `building <index>: <reason>`
+    /// in building-handle order, the lots the live map lacks validated as in
+    /// [`Self::parking_rejections`]. O(buildings' parking anchors), plus one lot validation per
+    /// such lot, parallel: a typed debug command, never a frame's work.
+    pub(crate) fn parking_rejection_lines(&self) -> Vec<String> {
+        let unrecorded: Vec<_> = crate::thread_pools::install(|| {
+            (0..self.allocator.buildings.len())
+                .into_par_iter()
+                .filter_map(|index| {
+                    let handle = self.allocator.building_handles.handle(index).to_bits();
+                    if self.parking.diagnostics.contains_key(&handle) {
+                        return None;
+                    }
+                    let issues = self.unrecorded_rejections(index, handle);
+                    (!issues.is_empty()).then_some((handle, issues))
+                })
+                .collect()
+        });
+        let mut lots: BTreeMap<u64, &[String]> = self
+            .parking
+            .diagnostics
+            .iter()
+            .map(|(&handle, issues)| (handle, issues.as_slice()))
+            .collect();
+        lots.extend(unrecorded.iter().map(|(handle, issues)| (*handle, issues.as_slice())));
+        lots.into_iter()
+            .flat_map(|(building, issues)| {
+                let id = self
+                    .allocator
+                    .building_handles
+                    .resolve(Handle::from_bits(building))
+                    .map_or(-1, |index| index as i64);
+                issues.iter().map(move |issue| format!("building {id}: {issue}"))
+            })
+            .collect()
+    }
+
+    // The rejection reasons of a lot the live map lacks: a load keeps none (rebuilding them all
+    // would cost about a tenth of the load, as most stock lots reject an anchor, `PARK-07`), so
+    // they come from the saved supply. Each parking anchor of a validated lot publishes one bay
+    // or adds one issue (the walkway check: one issue, no bay), and only that validation
+    // activates a building's place, so an operational building with an active place for every
+    // parking anchor had no issue, and one with fewer is validated again for its reasons. A site
+    // under construction publishes no bay whatever its lot (`holds_parking`), so a site with
+    // parking anchors is validated. O(the asset's anchors), plus one lot validation.
+    fn unrecorded_rejections(&self, index: usize, handle: u64) -> Vec<String> {
+        let building = &self.allocator.buildings[index];
+        let anchors = self.allocator.registry.get(&building.asset_id).map_or(0, |asset| {
+            let anchors = asset.manifest.anchors.iter();
+            anchors.filter(|a| a.anchor_type == AnchorType::Parking).count()
+        });
+        let published =
+            self.holds_parking(index) && self.parking.building_place_count(handle) >= anchors;
+        if anchors == 0 || published {
+            return Vec::new();
+        }
+        lot_bays(
+            &self.allocator,
+            index,
+            &self.region_graph,
+            &self.transit_network.roadbed,
+        )
+        .1
     }
 
     /// O(changed buildings × lot validation), consuming the allocator's
