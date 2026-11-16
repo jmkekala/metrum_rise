@@ -2235,6 +2235,29 @@ the driveway, which debug builds stop on ("resident/move-in car leg must end at 
 door") and release builds skip, seating the driver at the door with its leg still a pull-in.
 Latent on `dev` too: `a_road_edit_under_a_pull_in_ends_it_in_its_bay` fails on `6d09be0c`.
 
+### Construction sites (`PERF-25`)
+
+A building under construction has no parking (the user's decision of 2026-11-16): its lot is not
+parking supply and its door holds no list until the building is finished. One predicate,
+`holds_parking` (the building is operational), decides both halves. The site's lot is still laid
+out for its kerb blockers, so its driveways and bay entries keep the kerb clear from the placement
+on and completion moves no kerbside bay; its bays are never added, so no car reserves, parks in or
+is towed to one and no door's list holds one. Nothing needs the site's own list: a site has no
+household capacity and no job, is neither a shop nor a service, and freight and planning skip it.
+Completion (`complete_construction`) journals the lot, and the `ConstructionComplete` event
+publishes it at once (`complete_construction_site`) through the ordinary site publication: the
+bays, the door's list and the near doors' gains, before anything reads the finished building. A
+site bulldozed before completion leaves only its kerb blockers to remove. A save holds no bay of a
+site; the load rebuilds every list but the sites', and the completion, rescheduled from the site's
+deadline, publishes the lot as in the unbroken game. The building inspector shows a site's valid
+place count as 0.
+
+Every spawn's frame is cheaper for it: the new door's walking searches and table, its bays'
+access and the near doors' additions move to the completion's frame, one game hour or more later.
+A site completes half a game minute after its whole construction hours
+(`CONSTRUCTION_COMPLETE_DELAY_SLOTS`): on the hour it would complete in the slot of that hour's
+first construction start, and both publications would share a frame.
+
 ### Parked-car rendering (`PARK-01`, `PARK-02`)
 
 Dirty chunks publish immutable versioned model and colour buffers, stable car IDs and 12-float

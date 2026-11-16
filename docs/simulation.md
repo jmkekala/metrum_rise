@@ -516,7 +516,9 @@ the rolling chunks. The first is `cell lots`, quota 1 ([request queues](#request
     building's phase and ending at its next hourly phase
     ([Request queues](#request-queues)). The job lock stays a day deadline.
   - Construction completes at `construction_complete_slot`: its start slot plus its duration ×
-    960. Placement stamps the deadline from `BuildingAllocator::now_slot` (the slot in progress)
+    960, plus 8 slots (`CONSTRUCTION_COMPLETE_DELAY_SLOTS`, `PERF-25`), so it never fires in the
+    slot of that hour's first construction start. The completion publishes the finished lot's
+    parking at once ([`traffic.md`](traffic.md#construction-sites-perf-25)). Placement stamps the deadline from `BuildingAllocator::now_slot` (the slot in progress)
     and lists `(handle, slot)`. The simulation turns that list into `ConstructionComplete
     { building }` events after each slot and before each frame; a save includes any not yet
     turned. The event finishes the building in place, with no zone-index rebuild: when the
@@ -1290,6 +1292,33 @@ moves its entities between the tiers' phase buckets.
   L timing (2026-11-16, control `dev` `321da360`, same session): 30k 1× max unpreempted 8.35 →
   7.24 and 6.64 ms, every frame but the spawns at minutes 844 and 124 under 5.1 ms; 30k 32×
   9.87/10.55 → 8.67/9.11 ms, unpreempted frames over 8 ms 8/6 → 1/1. Means level at both speeds.
+
+- **Construction sites without parking (`PERF-25` part (a), 2026-11-16).** The user's decision of
+  2026-11-16: a construction site's lot is not parking supply before the building is finished.
+  So a spawn publishes no bay and no list of its own (its kerb blockers only); completion
+  publishes the lot, its door's list and the near doors' gains
+  ([`traffic.md`](traffic.md#construction-sites-perf-25)). Construction lasts whole hours from a
+  start at minute 4 of the hour, so every completion fell in the slot of a later hour's first
+  construction start: in the fixture two of a day's three completions shared that frame with a
+  spawn. A completion now trails its whole hours by half a game minute
+  (`CONSTRUCTION_COMPLETE_DELAY_SLOTS`), a slot of its own in the same hour. Diagnostic
+  re-measurement (the timing points above plus one on the completion, release builds, one 30k 1×
+  day each, same boot, `dev` `e9eb47dd` against the branch): a spawn's own work 1.9-2.8 →
+  0.67-0.90 ms (its parking publication 1.4-2.2 → 0.11-0.27 ms: the lot's geometry and the kerb);
+  a lone spawn frame 5.2-5.9 → 3.6-4.7 ms; a completion 0.003 → 1.15-2.19 ms (the finished
+  door's foot graph and table, its bays' access, the near doors' gains). Without the delay the
+  frames where a completion met a spawn stayed the day's worst (minute 844: 6.89 → 7.04 ms); with
+  it minute 844 splits into a 5.11 ms spawn frame and a 5.14 ms completion frame (a site saved
+  by an older build keeps its saved deadline). L timing (2026-11-16 06:27, control `dev`
+  `e9eb47dd`'s binary, its 1× day, K22 and contract rows reused from the same boot's 04:48
+  session after the runner's calibration, pinned, 8 workers; each binary on its own prepared
+  city, the fixture revision now v9): 30k 1× max unpreempted 7.24 → 4.99 and 5.21 ms (p99.9
+  4.20 → 4.19/4.15, means level), the worst still minute 844's spawn frame (2.8 ms of it the
+  snapshot) and next minute 1324's removal frame, 4.9 ms; 30k 32× 8.74/8.82 → 8.68/8.73 ms, p99.9 8.47 → 7.67, frames over 8 ms
+  5 → 1 in two days each; K22 30k click-to-ack 6.62 → 6.68 ms; economy contract hour means level
+  (30k 3.23 → 3.25 ms, fiscal 13.89 → 13.92 ms) with the same five work-count limit failures
+  (`PERF-04`/`PERF-05`). Without the delay (same session, before it): 7.12 and 7.33 ms, minute
+  844's spawn and completion together.
 
 - **`PERF-09`, not measured (history, attributed 2026-10-28).** No 100k tier is measured since
   2026-11-09, so nothing gates this regression; the record stays as history. 100k 1× no longer met the

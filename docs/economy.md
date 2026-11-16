@@ -868,11 +868,15 @@ freight.
 
 Demand-selected private buildings enter the world as construction sites. The record exists at
 once, so the parcel is claimed and the site renders, but it supplies no homes, jobs, production,
-shopping or utilities until completion.
+shopping, utilities or parking until completion (its lot's bays and its door's parking list are
+published then, [`traffic.md`](traffic.md#construction-sites-perf-25)).
 
 - **Durations** (`runtime_tuning.construction`): 6/12/18 hours for residential, 8/16/24 for
-  commercial, 12/24/36 for industrial, by level. A site completes exactly its duration after it
-  starts, at its own slot (`SIM-02-D`), not on the hour.
+  commercial, 12/24/36 for industrial, by level. A site completes its duration and half a game
+  minute after it starts, at its own slot (`SIM-02-D`), not on the hour. The half minute
+  (`CONSTRUCTION_COMPLETE_DELAY_SLOTS`, `PERF-25`) keeps a completion out of the slot of that
+  hour's first construction start, so their parking publications never share a frame; it never
+  moves a completion into another hour or across the census window's start.
 - **Committed capacity:** demand counts constructing and queued projects as committed, so no
   duplicate is started.
 - **Instant changes:** upgrades and downgrades are instant replacements; only fresh spawns build.
