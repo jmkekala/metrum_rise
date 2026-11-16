@@ -789,8 +789,16 @@ Properties has no pocket section any more (one way to do it).
   through it fails ("no turn from lane"). Rust flags such a lane (`no_movement` on its handle,
   `lanes::approach_lane_lacks_movement`, `O(the lane's rules)`); the select tool draws it orange
   and labelled "e*N* no turn", and the Junction window shows a warning above its rows with the count
-  and the fix (drag a turn from each, or right-click to clear the junction's rules). A lane rule edit publishes no render generation (`ROAD-120`), so the select tool redraws the
-  handles itself and signals `lane_rules_changed`, on which the window counts again. The handle
+  and the fix (drag a turn from each, or right-click to clear the junction's rules). A lane rule edit (`set_lane_connection`,
+  `clear_lane_source`, `clear_lane_connections`) publishes before it returns, as a crossing toggle
+  does (`ROAD-120`, 2026-11-16): the bridge's `publish_road_edit` runs the edit, then
+  `finalize_network_render_products` (the node closure's chunks with the repainted arrows and
+  approach zones, the road tool view) and installs the snapshot with its new render generation.
+  Until then nothing advanced the generation on a paused world, so the arrows waited for the next
+  road edit or undo. The window reads the lane warning again with its rows on each new generation
+  (an undo's too); the select tool redraws its handles right after its own lane edit, as after a
+  pocket edit, since the window polls only while open. Undo of a lane edit publishes on the
+  simulation thread. The handle
   query walks the node's arms instead of every edge of the graph and skips deleted edges. Tests:
   `nodes::sim::query::lanes::tests::lane_handles_run_across_the_road_in_lane_order_at_both_edge_ends`
   (handle order against `vehicle_lane_offset` and the built lanes' ends, 2+2, 3+1 and 1+3 arms of a

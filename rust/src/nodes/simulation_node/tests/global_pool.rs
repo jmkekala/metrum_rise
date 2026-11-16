@@ -291,6 +291,28 @@ fn editing_a_town(e: &mut Entries, core: &mut SimCore) {
         core.set_edge_class_internal(edge, 0);
         core.build_snapshot();
     });
+    // The junction lane editor: each rule edit publishes its arms' paint at once (`ROAD-120`).
+    e.run("lane rules", || {
+        let graph = &core.region_graph;
+        let live_arms = |node: u32| -> Vec<i32> {
+            let arms = graph.node_adjacency(node).iter();
+            arms.filter(|&&edge| !graph.edge(edge).deleted)
+                .map(|&edge| edge as i32)
+                .collect()
+        };
+        let (node, arms) = (0..graph.node_count() as u32)
+            .map(|node| (node, live_arms(node)))
+            .find(|(_, arms)| arms.len() >= 3)
+            .unwrap();
+        core.set_lane_connection_internal(node, arms[0], 0, arms[1], 0);
+        core.finalize_network_render_products();
+        core.clear_lane_source_internal(node, arms[0], 0);
+        core.finalize_network_render_products();
+        core.set_lane_connection_internal(node, arms[0], 0, arms[2], 0);
+        core.clear_lane_connections_internal(node);
+        core.finalize_network_render_products();
+        core.build_snapshot();
+    });
     // The Road properties window's parking toggle: a widening whose take demolishes the
     // buildings its new kerbs cover. A taken shipment endpoint removes the shipment's carrier,
     // and the agent remap after it scans every agent in parallel.

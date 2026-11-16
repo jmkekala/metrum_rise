@@ -14,7 +14,9 @@
 ## Lane rules (`ROAD-119`): the divided arm's lane handles run across the road in lane order
 ## (inner lane nearest the centre line); one rule whitelists the junction, and the approach lanes
 ## it leaves without a turn are flagged on their handles and counted in the window's warning,
-## which clearing the rules lifts.
+## which clearing the rules lifts. Each lane rule edit (a rule, a source lane's clear, clearing the
+## junction, and an undo) publishes a new render generation at once on the paused world, its
+## chunks repainted (the arrows), and the window reads its warning again on it (`ROAD-120`).
 ## Ported from Veeti's road-chain snapshot `efd58129` (`road_pockets_test.gd`: the pocket edit
 ## through the tool, add, resize, remove), adapted to the Junction window.
 extends SceneTree
@@ -116,6 +118,22 @@ func _undo(what: String) -> void:
 	_expect(await _await_generation(generation), "%s: undo publishes" % what)
 	await process_frame
 	await process_frame
+
+# Runs lane rule edit `edit`, which publishes a new render generation before it returns
+# (`ROAD-120`); two frames let the window read the junction again.
+func _lane_edit(what: String, edit: Callable) -> void:
+	var generation := simulation.get_network_render_generation()
+	edit.call()
+	_expect(simulation.get_network_render_generation() > generation, "%s publishes a new render generation at once" % what)
+	await process_frame
+	await process_frame
+
+# The published road chunks' marking vertices (lane lines, arrows), all chunks.
+func _marking_vertices() -> int:
+	var count := 0
+	for chunk: Dictionary in simulation.get_road_mesh_data(true).chunks:
+		count += chunk.marking_vertices.size()
+	return count
 
 func _state(row) -> String:
 	return row._state_label.text
@@ -314,7 +332,7 @@ func _run() -> void:
 	camera.position = _ground(0.0, 250.0) + Vector3(0.0, 60.0, 0.01)
 	camera.look_at(_ground(0.0, 250.0))
 	camera.current = true
-	await _click_node(tool, 0.0, 250.0)
+	var node_b := await _click_node(tool, 0.0, 250.0)
 	var west_arm := int(_row(window, "west").info.edge)
 	var east_arm := int(_row(window, "east").info.edge)
 	var approach := {}
@@ -332,7 +350,9 @@ func _run() -> void:
 		_expect(absf(approach[inner].pos.z - 250.0) < absf(approach[outer].pos.z - 250.0),
 			"the inner lane's handle is nearer the centre line: %s / %s" % [approach[inner].pos, approach[outer].pos])
 	_expect(window.lane_warning() == "", "no warning without lane rules: %s" % window.lane_warning())
-	tool.set_lane_rule(west_arm, inner, east_arm, east_exit)
+	var paint := _marking_vertices()
+	await _lane_edit("a lane rule", func(): tool.set_lane_rule(west_arm, inner, east_arm, east_exit))
+	_expect(_marking_vertices() != paint, "the rule repaints its arms: %d marking vertices" % paint)
 	var flagged := []
 	for s in tool.lane_spheres:
 		if s.no_movement:
@@ -341,7 +361,15 @@ func _run() -> void:
 		"the four approach lanes without a turn are flagged: %s" % [flagged])
 	_expect(window.lane_warning().begins_with("Lane rules leave 4 approach lanes without a turn"),
 		"the window warns: %s" % window.lane_warning())
-	tool.clear_lane_rules()
+	# A source lane's clear through the bridge alone: the window follows the new generation.
+	await _lane_edit("a source lane's clear", func(): simulation.clear_lane_source(node_b, west_arm, inner))
+	_expect(_marking_vertices() == paint, "the clear repaints the arms as they were")
+	_expect(window.lane_warning() == "", "the source lane's clear lifts the warning: %s" % window.lane_warning())
+	await _undo("the source lane's clear")
+	_expect(window.lane_warning().begins_with("Lane rules leave 4"), "undo brings the warning back: %s" % window.lane_warning())
+	_expect(_marking_vertices() != paint, "undo repaints the rule's arrows")
+	await _lane_edit("clearing the junction's rules", func(): tool.clear_lane_rules())
+	_expect(_marking_vertices() == paint, "clearing the rules repaints the arms as they were")
 	_expect(window.lane_warning() == "", "clearing the rules lifts the warning: %s" % window.lane_warning())
 	for s in tool.lane_spheres:
 		_expect(not s.no_movement, "no handle is flagged after clearing")

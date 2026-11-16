@@ -15,7 +15,8 @@
 ## node or a node without car roads shows no Turn pockets section, only why.
 ## Lane rules (`ROAD-119`): when the junction's lane rules leave an approach lane without a turn
 ## (Rust's `no_movement` on its lane handle), a warning above the rows counts those lanes and says
-## how to fix them; the select tool draws their handles orange and signals each lane rule edit.
+## how to fix them; the select tool draws their handles orange. A lane rule edit publishes a new
+## render generation (`ROAD-120`), on which the warning is read again with the rows.
 ## Rust methods called: get_junction_pockets(), preview_road_pocket(), get_node_lanes(),
 ## get_network_render_generation(); through the select tool set_road_pocket().
 extends Node
@@ -47,9 +48,6 @@ var _last_changed_key := ""
 func setup(simulation_node: Node, select_tool: Node) -> void:
 	_simulation_node = simulation_node
 	_select_tool = select_tool
-	# A lane rule edit publishes no render generation (`ROAD-120`): the tool says so itself.
-	if select_tool and select_tool.has_signal("lane_rules_changed"):
-		select_tool.lane_rules_changed.connect(_on_lane_rules_changed)
 
 func _ready() -> void:
 	_build_window()
@@ -161,10 +159,6 @@ func refresh() -> void:
 	_summary_label.visible = _rows.is_empty()
 	_show_lane_warning()
 	_update_highlight()
-
-func _on_lane_rules_changed(node: int) -> void:
-	if node == _node and _window.visible:
-		_show_lane_warning()
 
 # Counts the approach lanes Rust flags as left without a turn by the lane rules.
 func _show_lane_warning() -> void:

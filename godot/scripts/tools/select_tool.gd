@@ -15,11 +15,11 @@
 ## while that verdict is shown.
 ## Lane handles (Rust's `get_node_lanes`) sit across each arm in its lanes' order; an approach
 ## lane the junction's lane rules leave without a turn (Rust's `no_movement`, `ROAD-119`) is drawn
-## orange and labelled "no turn", and the Junction window says why.
+## orange and labelled "no turn", and the Junction window says why. A lane rule edit publishes
+## its arms' paint and a new render generation at once (`ROAD-120`), on which the Junction window
+## reads its lane warning again; the tool redraws the handles after its own edit, as after a
+## pocket edit.
 extends Node3D
-
-## Emitted after a lane rule edit at junction `node` (the Junction window's lane warning reads it).
-signal lane_rules_changed(node: int)
 
 const HighlightMesh := preload("res://scripts/renderers/highlight_mesh.gd")
 
@@ -183,7 +183,7 @@ func _unhandled_input(event: InputEvent) -> void:
 						simulation_node.clear_lane_source(selected_node, _drag_source.edge_id, _drag_source.lane_id)
 					elif not target_lane.is_incoming:
 						simulation_node.set_lane_connection(selected_node, _drag_source.edge_id, _drag_source.lane_id, target_lane.edge_id, target_lane.lane_id)
-					_lane_rules_edited()
+					refresh_junction_visuals()
 			_cancel_gesture()
 
 	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_RIGHT and event.pressed:
@@ -668,19 +668,13 @@ func set_junction_pocket(edge: int, end: int, left: bool, right: bool, length_m:
 ## the selected junction (Rust's `set_lane_connection`), as a drag between two handles does.
 func set_lane_rule(from_edge: int, from_lane: int, to_edge: int, to_lane: int) -> void:
 	simulation_node.set_lane_connection(selected_node, from_edge, from_lane, to_edge, to_lane)
-	_lane_rules_edited()
+	refresh_junction_visuals()
 
 ## Clears the selected junction's lane rules (Rust's `clear_lane_connections`), as a right click
 ## does.
 func clear_lane_rules() -> void:
 	simulation_node.clear_lane_connections(selected_node)
-	_lane_rules_edited()
-
-# A lane rule edit publishes no render generation (`ROAD-120`), so the handles and the Junction
-# window's lane warning are redrawn here rather than on the generation poll.
-func _lane_rules_edited() -> void:
-	_build_node_visuals(selected_node)
-	lane_rules_changed.emit(selected_node)
+	refresh_junction_visuals()
 
 ## Redraws the selected junction's lane spheres and crosswalk toggles (after an edit or an undo).
 func refresh_junction_visuals() -> void:

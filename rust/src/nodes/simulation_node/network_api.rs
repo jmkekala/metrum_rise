@@ -521,7 +521,9 @@ impl SimulationNode {
         PackedVector3Array::from_iter(self.snapshot.read().unwrap().node_positions.iter().copied())
     }
 
-    /// Configures a lane connection rule at a junction.
+    /// Configures a lane connection rule at a junction, with an undo record. Its node's repainted
+    /// arms (turn arrows, solid approach zones) publish at once with a new render generation, as
+    /// a crossing toggle's do (`ROAD-120`).
     #[func]
     pub fn set_lane_connection(
         &mut self,
@@ -531,14 +533,20 @@ impl SimulationNode {
         to_edge: i32,
         to_lane: i32,
     ) {
-        self.lock_core()
-            .set_lane_connection_internal(node_id, from_edge, from_lane, to_edge, to_lane);
+        self.publish_road_edit(|core| {
+            core.set_lane_connection_internal(node_id, from_edge, from_lane, to_edge, to_lane);
+            true
+        });
     }
 
-    /// Clears all lane rules at a junction node.
+    /// Clears all lane rules at a junction node, with an undo record; its arms' paint publishes
+    /// at once, as [`Self::set_lane_connection`]'s does.
     #[func]
     pub fn clear_lane_connections(&mut self, node_id: u32) {
-        self.lock_core().clear_lane_connections_internal(node_id);
+        self.publish_road_edit(|core| {
+            core.clear_lane_connections_internal(node_id);
+            true
+        });
     }
 
     /// Turns the crossing of road arm `edge_id` at `node_id` on or off (`ROAD-74`), with an undo
@@ -546,21 +554,11 @@ impl SimulationNode {
     /// applied: a refused toggle (see [`Self::preview_crosswalk`]) changes nothing.
     #[func]
     pub fn set_crosswalk_override(&mut self, node_id: u32, edge_id: i32, enabled: bool) -> bool {
-        let (snapshot, publication) = {
-            let mut core = self.lock_core();
-            if !core.set_crosswalk_override_internal(node_id, edge_id, enabled) {
-                return false;
-            }
-            // The toggle's pieces publish now, as a removal's do on the simulation thread, so
-            // the renderer's next poll sees the new generation with its chunks (`ROAD-74`).
-            let publication = core.finalize_network_render_products();
-            (core.build_snapshot(), publication)
-        };
-        snapshot.install(&self.snapshot);
-        if let Some(publication) = publication {
-            self.road_tool.publish(publication);
-        }
-        true
+        // The toggle's pieces publish now, as a removal's do on the simulation thread, so the
+        // renderer's next poll sees the new generation with its chunks (`ROAD-74`).
+        self.publish_road_edit(|core| {
+            core.set_crosswalk_override_internal(node_id, edge_id, enabled)
+        })
     }
 
     /// The commit's verdict on turning arm `edge_id`'s crossing at `node_id` on or off, without
@@ -729,26 +727,16 @@ impl SimulationNode {
         else {
             return false;
         };
-        let (snapshot, publication) = {
-            let mut core = self.lock_core();
-            if !core.set_edge_cross_section_internal(
+        self.publish_road_edit(|core| {
+            core.set_edge_cross_section_internal(
                 edge_id,
                 lanes_u8(fwd),
                 lanes_u8(bkw),
                 median,
                 parking,
                 attributes,
-            ) {
-                return false;
-            }
-            let publication = core.finalize_network_render_products();
-            (core.build_snapshot(), publication)
-        };
-        snapshot.install(&self.snapshot);
-        if let Some(publication) = publication {
-            self.road_tool.publish(publication);
-        }
-        true
+            )
+        })
     }
 
     /// The turn pocket at end `end` (0 start, 1 end) of road `edge_id`, or reached through its
@@ -880,19 +868,7 @@ impl SimulationNode {
         let Some(request) = pocket_request(edge_id, end, left, right, length_m) else {
             return false;
         };
-        let (snapshot, publication) = {
-            let mut core = self.lock_core();
-            if !core.set_road_pocket_internal(request) {
-                return false;
-            }
-            let publication = core.finalize_network_render_products();
-            (core.build_snapshot(), publication)
-        };
-        snapshot.install(&self.snapshot);
-        if let Some(publication) = publication {
-            self.road_tool.publish(publication);
-        }
-        true
+        self.publish_road_edit(|core| core.set_road_pocket_internal(request))
     }
 
     /// Whether road arm `edge_id` at `node_id` can cross, so the select tool offers its
@@ -928,11 +904,14 @@ impl SimulationNode {
             .get_lane_connections_array_internal(node_id)
     }
 
-    /// Clears lane rules for a specific source lane.
+    /// Clears lane rules for a specific source lane, with an undo record; its arms' paint
+    /// publishes at once, as [`Self::set_lane_connection`]'s does.
     #[func]
     pub fn clear_lane_source(&mut self, node_id: u32, from_edge: i32, from_lane: i32) {
-        self.lock_core()
-            .clear_lane_source_internal(node_id, from_edge, from_lane);
+        self.publish_road_edit(|core| {
+            core.clear_lane_source_internal(node_id, from_edge, from_lane);
+            true
+        });
     }
 }
 
@@ -1027,6 +1006,27 @@ fn cross_section_spec(
 }
 
 impl SimulationNode {
+    // Runs a road edit Godot's main thread applies directly (`edit`: whether it applied) and
+    // publishes its rebuilt pieces at once: the dirty roadbed closure's chunks, the road tool's
+    // view and a snapshot carrying the new render generation, as the simulation thread does
+    // after its own commands. A refused edit publishes nothing. O(the edit's closure) plus the
+    // publication's graph copy when the graph changed.
+    fn publish_road_edit(&mut self, edit: impl FnOnce(&mut SimCore) -> bool) -> bool {
+        let (snapshot, publication) = {
+            let mut core = self.lock_core();
+            if !edit(&mut core) {
+                return false;
+            }
+            let publication = core.finalize_network_render_products();
+            (core.build_snapshot(), publication)
+        };
+        snapshot.install(&self.snapshot);
+        if let Some(publication) = publication {
+            self.road_tool.publish(publication);
+        }
+        true
+    }
+
     // The road tool's options as a draft's shared section (`ROAD-112` round H).
     fn road_draft_section(
         &self,

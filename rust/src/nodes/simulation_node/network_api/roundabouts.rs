@@ -107,23 +107,13 @@ impl SimulationNode {
     /// applied: a refused edit changes nothing.
     #[func]
     pub fn place_roundabout(&mut self, point: Vector3, diameter_m: f32, lanes: i32) -> bool {
-        let (snapshot, publication) = {
-            let mut core = self.lock_core();
+        self.publish_road_edit(|core| {
             let view = core.roundabout_site_at(point, type_lanes(lanes));
             let request = RoundaboutRequest {
                 site: view.site,
                 diameter_m,
             };
-            if !core.place_roundabout_internal(request) {
-                return false;
-            }
-            let publication = core.finalize_network_render_products();
-            (core.build_snapshot(), publication)
-        };
-        snapshot.install(&self.snapshot);
-        if let Some(publication) = publication {
-            self.road_tool.publish(publication);
-        }
-        true
+            core.place_roundabout_internal(request)
+        })
     }
 }

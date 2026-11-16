@@ -1376,6 +1376,57 @@ fn a_lane_rule_edit_repaints_the_arrows_of_its_arms() {
     assert_eq!(painted(&mut core), centre_lines, "undo takes the arrow off");
 }
 
+// `ROAD-120`: the renderer's path for a lane rule edit. The edit alone leaves the render snapshot
+// on its old generation (the bridge stopped there, so the arrow waited for the next road edit);
+// the bridge now publishes it as a crossing toggle (`SimulationNode::publish_road_edit`: the
+// edit, `finalize_network_render_products`, the snapshot), and the snapshot's new generation
+// carries chunks with the arrow, which equal a full emission bitwise and are the road tool
+// view's. The undo, which the simulation thread finalizes when the generation moved, publishes
+// the arrow off again under another generation.
+#[test]
+fn a_lane_rule_edit_publishes_a_new_generation_with_its_arrow() {
+    use super::road_crosswalks::{fully_emitted_chunks, published_chunks};
+    let (mut core, node, side, west) = super::road_crosswalks::t_junction();
+    core.benchmark_mode = false;
+    core.finalize_network_render_products();
+    let marking = |core: &SimCore| -> usize {
+        let chunks = core.cached_road_mesh_chunks.values();
+        chunks.map(|mesh| mesh.marking_vertices.len()).sum()
+    };
+    let drawn = published_chunks(&core);
+    let centre_lines = marking(&core);
+    let generation = core.build_snapshot().network_generation;
+    let graph = &core.region_graph;
+    let approach = if graph.edge(side).end_node == node { 0 } else { -1 };
+    let leave = if graph.edge(west).start_node == node { 0 } else { -1 };
+
+    core.set_lane_connection_internal(node, side as i32, approach, west as i32, leave);
+    assert_eq!(
+        core.build_snapshot().network_generation,
+        generation,
+        "the edit alone publishes nothing"
+    );
+    let publication = core
+        .finalize_network_render_products()
+        .expect("current roadbed");
+    let ruled_generation = core.build_snapshot().network_generation;
+    assert!(ruled_generation > generation, "a new render generation");
+    assert_eq!(publication.view.road_mesh_surface_generation, ruled_generation);
+    assert!(marking(&core) > centre_lines, "the published chunks carry the arrow");
+    let ruled = published_chunks(&core);
+    assert_ne!(ruled, drawn);
+    assert_eq!(fully_emitted_chunks(&mut core), ruled);
+
+    let before_undo = core.road_tool_surface_generation;
+    assert!(core.undo_action_internal());
+    assert_ne!(core.road_tool_surface_generation, before_undo, "the thread finalizes it");
+    core.finalize_network_render_products()
+        .expect("current roadbed");
+    assert!(core.build_snapshot().network_generation > ruled_generation);
+    assert_eq!(marking(&core), centre_lines, "undo publishes the arrow off");
+    assert_eq!(published_chunks(&core), drawn);
+}
+
 // The hover check reads the stroke's kerbside parking (`PARK-05`) as the preview's plan does
 // (found by `ROAD-112` round C, fixed in round H): its prepared input carries the parking, so
 // the cost the bridge derives from it counts the parking lanes, and a stroke parking on a side
