@@ -1630,7 +1630,9 @@ mod tests {
         sys.reattach_invalidated_lanes_for_edges(&dirty, &lanes, &graph);
         for (i, &old_id) in old_ids.iter().enumerate() {
             let id = sys.current_lane_id[i];
-            assert_ne!(id, old_id);
+            // The walkers' sidewalks are rebuilt with their identities and keep their ids
+            // (`PERF-28`).
+            assert!(lanes.edge_lanes[&0].contains(&old_id));
             let lane = super::super::lane_state::lane_for_mode(&lanes, id, MODE_WALK).unwrap();
             assert_eq!(lane.edge_id, 0);
             super::super::lane_state::validate_lane_owner(
@@ -1893,9 +1895,14 @@ mod tests {
     }
 
     // An agent inside a junction, with an earlier incremental rebuild leaving tombstones so the
-    // full rebuild renumbers its connector (as terrain edits and undo do in the live game).
+    // full rebuild renumbers its connector (as terrain edits and undo do in the live game): the
+    // north road loses its sidewalks, whose lanes and crossings retire (the connector keeps its
+    // identity and id, `PERF-28`).
     fn agent_in_renumbered_connector() -> (TurnConnectorFixture, AgentSystem, usize, usize) {
         let mut fixture = make_turn_connector_lane_system();
+        let north = fixture.graph.edge_mut(fixture.north_edge);
+        north.allowed_types = TransitFlags::CAR;
+        north.sidewalks = crate::simulation::network::graph::SidewalkSides::NONE;
         fixture
             .lane_system
             .rebuild_edges_incremental(&mut fixture.graph, &HashSet::from([fixture.north_edge]));

@@ -39,6 +39,14 @@ impl LaneSuccessors {
         };
     }
 
+    /// Replaces every successor id with `map(id)`, in place and in order.
+    pub(crate) fn map_ids(&mut self, map: impl Fn(usize) -> usize) {
+        match &mut self.0 {
+            Storage::One(id) => *id = map(*id),
+            Storage::Many(ids) => ids.iter_mut().for_each(|id| *id = map(*id)),
+        }
+    }
+
     /// Removes every successor and frees the list.
     pub fn clear(&mut self) {
         *self = Self::default();

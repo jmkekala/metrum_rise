@@ -1432,3 +1432,75 @@ fn the_walking_proof_holds_after_local_lane_rebuilds_as_after_a_whole_one() {
     assert!(proof(&core.transit_network, &core.region_graph), "after its undo");
     assert!(whole(&core));
 }
+
+// Every live lane's identity by id: its road, direction and index, or its node and the road
+// lanes it joins (as a load matches them, `SAVE-11`).
+fn live_lane_identities(
+    core: &SimCore,
+) -> std::collections::HashMap<usize, crate::simulation::network::lanes::LaneIdentity> {
+    let lanes = &core.transit_network.lane_system;
+    let live = lanes
+        .edge_lanes
+        .values()
+        .chain(lanes.node_lanes.values())
+        .flatten()
+        .copied()
+        .collect();
+    lanes.lane_identities(&live)
+}
+
+// `PERF-28`: a local lane rebuild gives each rebuilt lane the id of the retired lane with its
+// identity. A speed change in place rebuilds the side road's lane closure with every identity
+// kept, and so do its undo and a class change's undo, so none grows the lane array and every lane
+// keeps its id; before, each appended the whole closure again.
+#[test]
+fn an_in_place_edit_and_its_undo_keep_the_lane_count_and_every_lane_id() {
+    let (mut core, side) = older_side_road();
+    let count = core.transit_network.lane_system.lanes.len();
+    let identities = live_lane_identities(&core);
+    let unchanged = |core: &SimCore, what: &str| {
+        assert_eq!(core.transit_network.lane_system.lanes.len(), count, "{what}");
+        assert_eq!(live_lane_identities(core), identities, "{what}");
+    };
+    let fast = RoadAttributes::new(100, SidewalkSides::BOTH, true);
+    assert_eq!(edit(&mut core, side, (1, 1, None), fast), "");
+    unchanged(&core, "after the speed change");
+    assert!(core.undo_action_internal());
+    unchanged(&core, "after its undo");
+    assert!(core.set_edge_class_internal(side as i32, 1));
+    assert_eq!(core.region_graph.edge(side).class, EdgeClass::Bridge);
+    assert!(core.undo_action_internal());
+    unchanged(&core, "after a class change and its undo");
+}
+
+// `PERF-28`: a commit at the side road's dead end rebuilds the side road's lanes (its end is now a
+// junction) with their identities, so they keep their ids, and no lane id names another lane
+// afterwards: every lane live before and after has the identity it had. Only the new road's lanes
+// and connectors are appended; before, the whole closure was.
+#[test]
+fn a_commit_keeps_the_ids_of_the_lanes_it_rebuilds_unchanged() {
+    let (mut core, side) = older_side_road();
+    let side_lanes = core.transit_network.lane_system.edge_lanes[&side].clone();
+    let before = live_lane_identities(&core);
+    let count = core.transit_network.lane_system.lanes.len();
+    let points = vec![Vector3::new(0.0, 0.0, 130.0), Vector3::new(60.0, 0.0, 130.0)];
+    assert!(core.add_road_internal(points, 1, 1).committed);
+    let new_road = core.get_hovered_edge_internal(30.0, 130.0);
+    assert!(new_road >= 0);
+    let lanes = &core.transit_network.lane_system;
+    assert_eq!(lanes.edge_lanes[&side], side_lanes, "the side road's lanes keep their ids");
+    let after = live_lane_identities(&core);
+    for (id, identity) in &before {
+        if let Some(now) = after.get(id) {
+            assert_eq!(now, identity, "lane {id} names the lane it named");
+        }
+    }
+    // Appended: the new road's lanes and connectors; every older road's lanes kept their ids.
+    for (id, lane) in lanes.lanes.iter().enumerate().skip(count) {
+        let edge = lane.edge_id;
+        assert!(
+            edge == usize::MAX || edge == new_road as usize,
+            "lane {id} of edge {edge} appended"
+        );
+    }
+}

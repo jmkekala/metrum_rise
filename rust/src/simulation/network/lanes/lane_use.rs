@@ -814,10 +814,16 @@ mod junction_tests {
                     assert_eq!(connections.len(), 1);
                     assert_eq!(approach_group(&graph, 0, center, 1), None);
                     // The incremental rebuild re-flags every lane it rebuilds and unflags the
-                    // lanes it retires.
-                    let retired = lanes.edge_lanes[&0].clone();
+                    // lanes it retires; a lane rebuilt with its identity keeps its id
+                    // (`PERF-28`).
+                    let before = lanes.edge_lanes[&0].clone();
                     lanes.rebuild_edges_incremental(&mut graph, &HashSet::from([0]));
-                    assert!(retired.iter().all(|&id| !lanes.needs_turn_preparation(id)));
+                    assert!(
+                        before
+                            .iter()
+                            .filter(|&id| !lanes.edge_lanes[&0].contains(id))
+                            .all(|&id| !lanes.needs_turn_preparation(id))
+                    );
                     for from in 0..arms {
                         assert_eq!(approach_needs_lane_choice(&graph, from, center), count > 1);
                         for &id in &lanes.edge_lanes[&from] {

@@ -128,9 +128,27 @@ fn snapshot_keeps_every_lane_id_after_incremental_rebuild_and_edge_deletion() {
         graph.edge(0).deleted,
         "fixture must contain a deleted edge to exercise the holes"
     );
+    // The rebuilt edge loses its sidewalks and gains a forward lane, so the local rebuild retires
+    // lanes (holes), gives the lanes that keep their identity their ids and appends the new
+    // ones (`PERF-28`).
+    let edge = graph.edge_mut(1);
+    edge.allowed_types = TransitFlags::CAR;
+    edge.sidewalks = crate::simulation::network::graph::SidewalkSides::NONE;
+    edge.fwd_lanes = 2;
+    let count = network.lane_system.lanes.len();
+    let kept = network.lane_system.edge_lanes[&2].clone();
     network
         .lane_system
         .rebuild_edges_incremental(&mut graph, &HashSet::from([1]));
+    let lanes = &network.lane_system;
+    assert_eq!(lanes.edge_lanes[&2], kept, "the unchanged edge's lanes keep their ids");
+    assert!(lanes.lanes.len() > count, "the new lane is appended");
+    assert!(
+        lanes.lanes[..count]
+            .iter()
+            .any(|lane| lane.edge_id == usize::MAX && lane.node_id == usize::MAX),
+        "the sidewalks are retired"
+    );
     let mut ids = network
         .lane_system
         .edge_lanes

@@ -1555,11 +1555,29 @@ fn incremental_rebuild_repairs_connectors_at_expanded_edge_far_end() {
             .iter()
             .any(|&lane_id| lanes.crosswalk(lane_id).is_some())
     );
+    // Every lane the rebuild replaces is marked; a rebuilt lane starts unmarked.
+    let replaced: HashSet<usize> = old_center_connectors
+        .iter()
+        .chain(&old_expanded_lanes)
+        .copied()
+        .collect();
+    let identities = lanes.lane_identities(&replaced);
+    for &lane_id in &replaced {
+        lanes.lanes[lane_id].frontage_delay_penalty_s = 1.0;
+    }
 
     lanes.rebuild_edges_incremental(&mut graph, &HashSet::from([changed_edge]));
 
+    // A rebuilt lane takes the id of the retired lane with its identity (`PERF-28`); the
+    // others are tombstones.
+    let rebuilt = lanes.lane_identities(&replaced);
     for lane_id in old_center_connectors {
         let lane = &lanes.lanes[lane_id];
+        if let Some(identity) = rebuilt.get(&lane_id) {
+            assert_eq!(Some(identity), identities.get(&lane_id), "connector {lane_id}");
+            assert_eq!(lane.frontage_delay_penalty_s, 0.0, "connector {lane_id} rebuilt");
+            continue;
+        }
         assert!(
             lane.geometry.capacity() == 0
                 && lane.cum_dist.capacity() == 0
@@ -1577,9 +1595,11 @@ fn incremental_rebuild_repairs_connectors_at_expanded_edge_far_end() {
     assert!(
         current_expanded_lanes
             .iter()
-            .all(|lane_id| !old_expanded_lanes.contains(lane_id)),
+            .all(|&lane_id| lanes.lanes[lane_id].frontage_delay_penalty_s == 0.0),
         "the incident arm must be part of the physical-lane rebuild closure"
     );
+    // Its lanes are rebuilt unchanged, so they keep their ids (`PERF-28`).
+    assert_eq!(current_expanded_lanes, &old_expanded_lanes);
     let expanded_target = lanes.lanes[preserved_inbound]
         .next_lanes
         .iter()

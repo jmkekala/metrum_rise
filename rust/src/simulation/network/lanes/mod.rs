@@ -193,13 +193,20 @@ pub struct LaneSystem {
     revision: u64,
     // Render-cull boxes derived from `lanes`, keyed by `revision` (`SIM-02-K`).
     planar_bounds: bounds::LanePlanarBounds,
-    // Lanes below this id already sit on the visible road surface. Rebuilds only append lanes
-    // (old ids become tombstones), so every lane at or above it still has flat build heights.
+    // Lanes below this id already sit on the visible road surface, except those in
+    // `unlifted_reused`. A whole rebuild appends every lane and a local one appends the lanes it
+    // gives no retired id (`PERF-28`), so every lane at or above it still has flat build heights.
     surface_synced_len: usize,
-    // `(first, generation)`: every lane from `first` up to `surface_synced_len` was lifted onto
-    // roadbed generation `generation`, and only lifts and tombstoning write lane geometry, so
-    // lifting such a lane again while the roadbed is at that generation changes nothing.
+    // Ascending ids below `surface_synced_len` that a local rebuild gave to rebuilt lanes, still
+    // at flat build heights until the next lift.
+    unlifted_reused: Vec<usize>,
+    // `(first, generation)`: every lane from `first` up to `surface_synced_len`, and every id in
+    // `lifted_reused`, was lifted onto roadbed generation `generation` (save the ids in
+    // `unlifted_reused`), and only lifts, rebuilds and tombstoning write lane geometry, so lifting
+    // such a lane again while the roadbed is at that generation changes nothing.
     lifted_since: Option<(usize, u64)>,
+    // Ascending reused ids below `lifted_since`'s first lane lifted onto its generation.
+    lifted_reused: Vec<usize>,
 }
 
 impl Default for LaneSystem {
@@ -220,7 +227,9 @@ impl LaneSystem {
             revision: 0,
             planar_bounds: Default::default(),
             surface_synced_len: 0,
+            unlifted_reused: Vec::new(),
             lifted_since: None,
+            lifted_reused: Vec::new(),
         }
     }
 
@@ -240,8 +249,15 @@ impl LaneSystem {
         self.node_lanes.clear();
         self.crosswalks.clear();
         self.ring_entries.clear();
+        self.forget_lifts();
+    }
+
+    // No lane is known to be lifted: the next sync lifts every lane.
+    fn forget_lifts(&mut self) {
         self.surface_synced_len = 0;
+        self.unlifted_reused.clear();
         self.lifted_since = None;
+        self.lifted_reused.clear();
     }
 
     /// Whether road lane `lane_id` approaches a node where its lanes serve different movements
@@ -281,7 +297,9 @@ impl LaneSystem {
             sync_lane_height_to_visible_surface(lane, crossing, graph, roadbed);
         }
         self.surface_synced_len = self.lanes.len();
+        self.unlifted_reused.clear();
         self.lifted_since = Some((0, roadbed.generation()));
+        self.lifted_reused.clear();
     }
 
     /// Live lanes (an edge's or a node's) whose points a full surface sync would still move:
@@ -303,12 +321,25 @@ impl LaneSystem {
             .count()
     }
 
-    /// True when a rebuild appended lanes that still carry flat build heights.
+    /// True when a rebuild appended or reused lanes that still carry flat build heights.
     pub(crate) fn has_unsynced_lanes(&self) -> bool {
-        self.surface_synced_len < self.lanes.len()
+        self.surface_synced_len < self.lanes.len() || !self.unlifted_reused.is_empty()
     }
 
-    /// Lifts every lane appended since the last sync onto the visible road surface.
+    // Marks ids a local rebuild gave to rebuilt lanes as flat (`PERF-28`); those at or above
+    // `surface_synced_len` are lifted with the appended lanes. O((reused + unlifted) log).
+    fn mark_reused_unlifted(&mut self, reused: impl IntoIterator<Item = usize>) {
+        let synced = self.surface_synced_len;
+        let before = self.unlifted_reused.len();
+        self.unlifted_reused
+            .extend(reused.into_iter().filter(|&id| id < synced));
+        if self.unlifted_reused.len() > before {
+            self.unlifted_reused.sort_unstable();
+            self.unlifted_reused.dedup();
+        }
+    }
+
+    /// Lifts every lane appended or reused since the last sync onto the visible road surface.
     ///
     /// Lane length feeds agent motion and route costs, so this runs at fixed points of the
     /// simulation (frame start and road commits) rather than only when a chunk is drawn. Each
@@ -321,6 +352,12 @@ impl LaneSystem {
     ) {
         use rayon::prelude::*;
         let start = self.surface_synced_len.min(self.lanes.len());
+        let reused = std::mem::take(&mut self.unlifted_reused);
+        // Reused lanes lie below `start`, scattered: they are lifted out of place.
+        let mut lifted: Vec<(usize, Lane)> = reused
+            .iter()
+            .map(|&id| (id, std::mem::take(&mut self.lanes[id])))
+            .collect();
         let new_lanes = &mut self.lanes[start..];
         let crosswalks = &self.crosswalks;
         // The frame and the commit call this inside the shared pool; other callers are not.
@@ -328,24 +365,43 @@ impl LaneSystem {
             new_lanes
                 .par_iter_mut()
                 .enumerate()
-                .for_each(|(offset, lane)| {
-                    let crossing = crosswalks.get(&(start + offset)).copied();
+                .map(|(offset, lane)| (start + offset, lane))
+                .chain(lifted.par_iter_mut().map(|(id, lane)| (*id, lane)))
+                .for_each(|(lane_id, lane)| {
+                    let crossing = crosswalks.get(&lane_id).copied();
                     sync_lane_height_to_visible_surface(lane, crossing, graph, roadbed);
                 });
         });
+        for (id, lane) in lifted {
+            self.lanes[id] = lane;
+        }
         self.surface_synced_len = self.lanes.len();
         let generation = roadbed.generation();
-        self.lifted_since = Some(match self.lifted_since {
-            Some((first, lifted)) if lifted == generation => (first, generation),
-            _ => (start, generation),
-        });
+        let first = match self.lifted_since {
+            Some((first, lifted)) if lifted == generation => first,
+            _ => {
+                self.lifted_reused.clear();
+                start
+            }
+        };
+        self.lifted_since = Some((first, generation));
+        // Both lists ascend; ids at or above `first` are in its range already.
+        let below_first = &reused[..reused.partition_point(|&id| id < first)];
+        if !below_first.is_empty() {
+            self.lifted_reused.extend_from_slice(below_first);
+            self.lifted_reused.sort_unstable();
+            self.lifted_reused.dedup();
+        }
     }
 
     // Whether `lane_id` was lifted onto the roadbed generation it is at now
     // (`sync_new_lanes_to_visible_surface`), so lifting it again would change nothing.
     fn lifted_onto(&self, lane_id: usize, roadbed: &RoadbedSystem) -> bool {
         self.lifted_since.is_some_and(|(first, generation)| {
-            generation == roadbed.generation() && (first..self.surface_synced_len).contains(&lane_id)
+            generation == roadbed.generation()
+                && self.unlifted_reused.binary_search(&lane_id).is_err()
+                && ((first..self.surface_synced_len).contains(&lane_id)
+                    || self.lifted_reused.binary_search(&lane_id).is_ok())
         })
     }
 

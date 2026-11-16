@@ -840,7 +840,7 @@ fn an_arms_connectors_onto_a_ring_give_way_to_the_ring() {
 }
 
 #[test]
-fn give_way_survives_an_incremental_rebuild_and_retires_with_its_connectors() {
+fn give_way_survives_an_incremental_rebuild_under_its_connectors_ids() {
     let (mut graph, applied) = converted_ring(36.0, &equal(4), (1, 1), false).unwrap();
     let mut lanes = LaneSystem::new();
     lanes.rebuild(&mut graph);
@@ -852,6 +852,7 @@ fn give_way_survives_an_incremental_rebuild_and_retires_with_its_connectors() {
     assert_ring_entries(&graph, &lanes, &applied.nodes);
     let live = (0..lanes.lanes.len()).filter(|&id| lanes.ring_entry(id).is_some());
     assert_eq!(live.count(), 4);
-    // The arm's rebuild retired its node's connectors and every ring node next to it.
-    assert!(old.iter().any(|&id| lanes.ring_entry(id).is_none()));
+    // The arm's rebuild rebuilt its node's connectors and every ring node next to it, each with
+    // its identity, so each keeps its id (`PERF-28`) and its give-way.
+    assert!(old.iter().all(|&id| lanes.ring_entry(id).is_some()));
 }

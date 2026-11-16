@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
-//! Lane identities that survive a full [`LaneSystem::rebuild`], which renumbers every lane.
+//! Lane identities that survive a full [`LaneSystem::rebuild`], which renumbers every lane, and
+//! a local one, which gives a rebuilt lane the id of the retired lane it shares one with.
 
-use super::LaneSystem;
+use super::{Lane, LaneSystem};
 use std::collections::{HashMap, HashSet};
 
 /// A road lane by its owning edge, direction and lane index.
@@ -26,6 +27,17 @@ pub(crate) enum LaneIdentity {
     },
 }
 
+impl RoadLaneKey {
+    // The key of road lane `lane`, live or about to be retired (its fields are still set).
+    pub(super) fn of(lane: &Lane) -> Self {
+        Self {
+            edge_id: lane.edge_id,
+            is_fwd: lane.is_fwd,
+            lane_idx: lane.lane_idx,
+        }
+    }
+}
+
 impl LaneSystem {
     fn road_lane_key(&self, lane_id: usize) -> Option<RoadLaneKey> {
         let lane = self.lanes.get(lane_id)?;
@@ -33,11 +45,7 @@ impl LaneSystem {
         self.edge_lanes
             .get(&lane.edge_id)?
             .contains(&lane_id)
-            .then_some(RoadLaneKey {
-                edge_id: lane.edge_id,
-                is_fwd: lane.is_fwd,
-                lane_idx: lane.lane_idx,
-            })
+            .then_some(RoadLaneKey::of(lane))
     }
 
     /// Returns the identity of each live lane in `lane_ids`; dead or unknown ids are omitted.
