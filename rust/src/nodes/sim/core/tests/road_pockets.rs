@@ -732,6 +732,9 @@ fn buildings_on_the_pair_repartition_on_resize_and_return_on_undo() {
         pocket_edit(&mut core, request(west, end, (false, true), 60.0)),
         ""
     );
+    // Each edit publishes, as Godot's does: its entrance rebuild repairs the attachments, and
+    // an undo repairs them before its parking publication (`PARK-16`).
+    core.finalize_network_render_products();
     let state = core.get_road_pocket_internal(west as i32, end).unwrap();
     assert_eq!(
         core.allocator.buildings[house].edge_idx, west,
@@ -742,6 +745,7 @@ fn buildings_on_the_pair_repartition_on_resize_and_return_on_undo() {
         pocket_edit(&mut core, request(west, end, (false, true), 100.0)),
         ""
     );
+    core.finalize_network_render_products();
     assert_eq!(
         core.allocator.buildings[house].edge_idx, state.edge,
         "the longer pocket reaches it"

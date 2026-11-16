@@ -296,6 +296,11 @@ impl SimCore {
                     &self.transit_network.lane_system,
                     &self.region_graph,
                 );
+                // The rebuilt lanes stand on the roadbed the commit installed before the
+                // entrances sample their kerbs on them, here or at the lot plan's adoption
+                // (`PARK-16`); the tail's mesh precompute then finds them lifted.
+                self.transit_network
+                    .sync_new_lane_heights(&self.region_graph);
                 // A border the commit cut off or merged settles its freight (`SAVE-06`).
                 self.settle_freight_of_unreachable_borders();
                 let dt_lanes_us = t_lanes.elapsed().as_micros();

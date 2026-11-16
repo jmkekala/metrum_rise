@@ -2414,13 +2414,31 @@ heights: a lane's length is its 3D length, and the kerb is sampled along it. A r
 lanes at flat build heights, and lifting them onto the roadbed
 (`TransitNetwork::sync_new_lane_heights`) changes their lengths on graded or curved roads. Every
 derivation a load makes reads lifted lanes, so an edit lifts its new lanes before it derives the
-entrances along them or publishes a door's list. A commit lifts them in its mesh precompute
-before its deferred publication; a road bulldoze lifts them right after its lane rebuild. Before
-that fix the bulldoze published lists from unlifted lanes, which went stale at the next running
-frame's lift (or, in the game, the command's own publication rebuilt them, but the entrances
-stayed derived from unlifted lanes, and the next building removal's entrance cache rebuild moved
-a kerb by a rounding under an unchanged list). An undo of a road edit still derives its entrances
-before the lift (`PARK-16`).
+entrances along them or publishes a door's list. A commit and a road bulldoze lift them right
+after their lane rebuilds (the commit's roadbed is installed by then, the bulldoze compiles its
+own). Before that fix the bulldoze published lists from unlifted lanes, which went stale at the
+next running frame's lift (or, in the game, the command's own publication rebuilt them, but the
+entrances stayed derived from unlifted lanes, and the next building removal's entrance cache
+rebuild moved a kerb by a rounding under an unchanged list). The other edit paths keep the same
+order (`PARK-16`):
+
+- An undo of a road edit restores its lanes first, then the roadbed: the pieces its record kept,
+  or, when it kept none (a bulldoze's or an in-place edit's record) or they were rebuilt since,
+  the restored owners compiled and published at once instead of at the command's publication.
+  Then it lifts the restored lanes, derives the entrances along them, repairs the attachments
+  and publishes the doors' lists. Its publication then compiles and lifts nothing, so the undo
+  is exact with or without it.
+- The in-place edits that rebuild lanes (cross-section, pocket, roundabout, crossing, lane
+  rules) mark their roadbed dirty and leave its compile to their publication, which Godot runs
+  under the same lock (`publish_road_edit`): the publication lifts the new lanes right after it
+  installs the roadbed and before its entrance rebuild, then its road tool view publishes the
+  lists. The entrances an edit derives before that are replaced by the publication's.
+- An undo that restores dense terrain rebuilds every lane and clears the roadbed; its
+  publication compiles it, lifts the lanes, rebuilds the entrances and publishes every edge's
+  lists, in that order. Without that publication (tests) the next frame lifts the lanes before
+  it rebuilds the dirty entrance cache, and the lists wait for a publication.
+- A border connection rebuilds every lane: it lifts them and rebuilds the entrance cache (the
+  rebuild renumbered every lane) before it publishes the lists (`ROAD-122` makes both local).
 
 | Operation | Bound / retained storage |
 | --- | --- |

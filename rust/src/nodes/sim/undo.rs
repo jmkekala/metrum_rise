@@ -642,8 +642,10 @@ impl SimCore {
 
         if sync_trans_graph {
             match &restored_topology_scope {
+                // The entrances along them follow once they stand on the restored roadbed
+                // (`reset_local_network_render_state`, `PARK-16`).
                 Some((edge_ids, node_ids)) if !restored_dense_terrain => {
-                    self.restore_lanes_locally(edge_ids, node_ids);
+                    self.rebuild_lanes_locally(edge_ids, node_ids);
                 }
                 _ => self.rebuild_all_lanes_keeping_agents(restored_topology_scope.as_ref()),
             }
@@ -673,9 +675,8 @@ impl SimCore {
                     Some(&fronting),
                 );
             }
-            // A restore that repaired no attachment (dense terrain, or a roadbed left to its
-            // deferred compile) still leaves no building on an edge it took away (`SAVE-07`);
-            // after the repair this finds none.
+            // A restore that repaired no attachment (dense terrain) still leaves no building on
+            // an edge it took away (`SAVE-07`); after the repair this finds none.
             self.remove_buildings_of_removed_roads(
                 (!fronting_stale).then_some(fronting.as_slice()),
             );
@@ -690,12 +691,20 @@ impl SimCore {
     // cross-section edit (`ROAD-80`): the agents on the edges' lanes are detached, those edges'
     // lane closure is rebuilt on the graph, the connection lanes of nodes the edit dropped are
     // retired, and the agents reattach. `O(restored records + their lane closure)`, independent
-    // of the city.
+    // of the city. The in-place edits mark their roadbed dirty and leave its compile, and the
+    // lift onto it, to their publication, whose entrance rebuild follows the lift (`PARK-16`);
+    // an undo derives the entrances only after that lift.
     pub(super) fn restore_lanes_locally(
         &mut self,
         edge_ids: &HashSet<usize>,
         node_ids: &HashSet<u32>,
     ) {
+        self.rebuild_lanes_locally(edge_ids, node_ids);
+        self.derive_entrances_along(edge_ids);
+    }
+
+    // [`Self::restore_lanes_locally`]'s lanes and agents, without the entrances.
+    fn rebuild_lanes_locally(&mut self, edge_ids: &HashSet<usize>, node_ids: &HashSet<u32>) {
         let lanes = &mut self.transit_network.lane_system;
         self.agents
             .invalidate_lane_ids_for_edges(edge_ids, lanes, &self.region_graph);
@@ -709,9 +718,14 @@ impl SimCore {
         lanes.rebuild_edges_incremental(&mut self.region_graph, edge_ids);
         self.agents
             .reattach_invalidated_lanes_for_edges(edge_ids, lanes, &self.region_graph);
-        // The rebuilt lanes have new ids, so the entrances fronting them are derived again, as
-        // the commit derives its own; a cache that was already stale waits for the next
-        // frame's repair. `O(buildings / P)` for the scan, `O(changed / P)` for the derivation.
+    }
+
+    // The rebuilt lanes of `edge_ids`' closure have new ids, so the entrances fronting them are
+    // derived again, as the commit derives its own; a cache that was already stale waits for
+    // the next frame's repair. `O(buildings / P)` for the scan, `O(changed / P)` for the
+    // derivation.
+    fn derive_entrances_along(&mut self, edge_ids: &HashSet<usize>) {
+        let lanes = &self.transit_network.lane_system;
         let allocator = &mut self.allocator;
         if !allocator.entrances_dirty && allocator.entrances.len() == allocator.buildings.len() {
             let closure =
@@ -764,7 +778,10 @@ impl SimCore {
     // otherwise it rebuilds the restored owners' pieces from the restored graph. With the edit's
     // graded record the restored roadbed is published now and the graded tiles staged from the
     // kept ones (`TERRAIN-07-E`). `fronting` is an undo's: the buildings that fronted the edges
-    // it restored. A staged rollback has none, its journal having put them back already.
+    // it restored. An undo publishes a rebuilt roadbed now, lifts its restored lanes onto it,
+    // then derives their entrances, repairs the attachments and publishes the doors' lists
+    // (`PARK-16`). A staged rollback has no `fronting`, its journal having put the buildings
+    // back already, and rebuilt no lane.
     fn reset_local_network_render_state(
         &mut self,
         edge_ids: &HashSet<usize>,
@@ -787,16 +804,28 @@ impl SimCore {
             self.publish_network_surface(false, None);
             self.restage_graded_tiles_for_undo(&before, graded);
         }
-        // A cached surface restore can reconcile now. A dirty owner fallback keeps its
-        // existing deferred compile contract; the road-tool publication reconciles its bays.
-        if self.transit_network.roadbed.is_current() {
+        if let Some(fronting) = fronting {
+            // An undo publishes the restored roadbed now when it rebuilt the pieces (its record
+            // kept none, or they were rebuilt since), and lifts the lanes it restored onto it
+            // before the entrances sample their kerbs on them and the doors' lists walk them: a
+            // later derivation (a removal's entrance cache rebuild, a load) reads them lifted
+            // (`PARK-16`). The undo command's publication then compiles and lifts nothing.
+            if !self.transit_network.roadbed.is_current() {
+                self.publish_network_surface(false, None);
+            }
+            self.transit_network
+                .sync_new_lane_heights(&self.region_graph);
+            self.derive_entrances_along(edge_ids);
             // Buildings first: a split moved them onto an edge the restore took away, and their
             // lots, kerb blockers and door lists are read from that attachment (`PARK-10`).
-            if let Some(fronting) = fronting {
-                let cache_current = self.entrance_cache_current();
-                let lots = self.prepare_cell_lots_internal();
-                self.repair_commit_entrances(edge_ids, cache_current, &lots, fronting);
-            }
+            let cache_current = self.entrance_cache_current();
+            let lots = self.prepare_cell_lots_internal();
+            self.repair_commit_entrances(edge_ids, cache_current, &lots, fronting);
+            self.reconcile_parking_frontages(&edge_ids.iter().copied().collect());
+        } else if self.transit_network.roadbed.is_current() {
+            // A staged rollback's cached surface restore reconciles now; its dirty fallback is
+            // compiled by the rollback's surface publication and its bays reconciled by the
+            // road tool's publication.
             self.reconcile_parking_frontages(&edge_ids.iter().copied().collect());
         }
         self.terrain_dirty = true;

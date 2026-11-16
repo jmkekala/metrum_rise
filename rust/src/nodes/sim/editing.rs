@@ -2995,6 +2995,11 @@ impl SimCore {
 
         let entrances_start = road_debug.then(Instant::now);
         if rebuild_entrances {
+            // The edit's rebuilt lanes stand on the roadbed just published before the entrances
+            // sample their kerbs on them; the mesh precompute after this finds them lifted
+            // (`PARK-16`).
+            self.transit_network
+                .sync_new_lane_heights(&self.region_graph);
             self.rebuild_building_entrances_internal();
         }
         let entrances_ms = entrances_start
@@ -3212,6 +3217,17 @@ impl SimCore {
                 new_pos.y,
                 new_pos.z
             );
+        }
+        // The roadbed compiles and the rebuilt lanes stand on it before the entrances sample
+        // their kerbs on them and the doors' lists walk them (`PARK-16`). The whole rebuild
+        // renumbered every lane, so every entrance is derived again (`O(B / P)`, as the
+        // publication after this repeats with its attachment repair; `ROAD-122` makes both
+        // local).
+        self.transit_network
+            .sync_new_lane_heights(&self.region_graph);
+        if rebuild_needed {
+            self.allocator
+                .rebuild_entrance_cache(&self.region_graph, &self.transit_network.lane_system);
         }
         self.transit_network
             .roadbed
@@ -4678,14 +4694,12 @@ mod tests {
             core.region_graph.node(start).pos,
             Vector3::new(-24.0, 0.0, 0.0)
         );
+        // The undo recompiles the owners itself, so its lanes stand on them before its doors
+        // and lists are derived (`PARK-16`).
         assert!(
-            !core.transit_network.roadbed.is_current()
-                && core.transit_network.roadbed.dirty_nodes().contains(&start),
-            "undo must queue the bounded owner recompile"
+            core.transit_network.roadbed.is_current(),
+            "undo must run the bounded owner recompile"
         );
-        core.transit_network
-            .roadbed
-            .compile_dirty(&core.region_graph);
         assert_eq!(
             core.transit_network.roadbed.sections(edge_idx),
             Some(before.as_slice()),

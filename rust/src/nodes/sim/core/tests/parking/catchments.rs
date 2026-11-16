@@ -290,13 +290,10 @@ fn a_save_in_the_hold_publishes_the_road_edit_first() {
     c.audit_every_parking_catchment();
 }
 
-// A road removal lifts the lanes it rebuilds onto the roadbed before it derives the entrances
-// along them and publishes their doors' lists (`PARK-14`). On a graded curve a lane's lift
-// changes its length: published before it, the doors' lists went stale at the frame that lifted
-// the lanes. A door's kerb is sampled along its lane too, so an entrance derived before the lift
-// could differ from a later cache rebuild's by a rounding (the Kuopio save's building 252).
-#[test]
-fn a_road_removal_on_a_graded_curve_leaves_every_door_and_list_a_rebuild_gives() {
+// Graded terrain and a street bending round four lots, with a cross street from its apex placed
+// before the lots (`cross_first`) or not at all: on it a lane's lift onto the roadbed changes the
+// lane's length (`PARK-14`).
+fn graded_curve_with_lots(cross_first: bool) -> SimCore {
     let mut c = SimCore::new(
         WorldConfig::new(512.0, 512.0, 16.0, 10.0)
             .with_chunking(128.0, 0.0)
@@ -322,7 +319,9 @@ fn a_road_removal_on_a_graded_curve_leaves_every_door_and_list_a_rebuild_gives()
         .collect();
     commit_points_before_its_frame(&mut c, curve, BOTH);
     c.publish_deferred_parking_frontages();
-    commit_with(&mut c, (0.0, 40.0), (0.0, 160.0), BOTH);
+    if cross_first {
+        commit_with(&mut c, (0.0, 40.0), (0.0, 160.0), BOTH);
+    }
     settle(&mut c);
     let id = register_lot(&mut c);
     for x in [-100.0, -40.0, 40.0, 100.0] {
@@ -331,15 +330,54 @@ fn a_road_removal_on_a_graded_curve_leaves_every_door_and_list_a_rebuild_gives()
     }
     c.publish_pending_building_site_changes();
     settle(&mut c);
-    let derived = |c: &SimCore| {
-        let a = &c.allocator;
-        (0..a.buildings.len()).all(|b| {
-            a.entrances[b] == a.derived_entrance(b, &c.region_graph, &c.transit_network.lane_system)
-        })
-    };
-    assert!(derived(&c));
+    assert_doors_on_the_roadbed(&mut c, "the fixture");
+    c
+}
+
+// Every live lane stands on the roadbed, every entrance is what a derivation gives and every
+// door's list what a rebuild gives (`audit_every_parking_catchment`).
+fn assert_doors_on_the_roadbed(c: &mut SimCore, when: &str) {
+    let network = &c.transit_network;
+    let lanes = &network.lane_system;
+    assert_eq!(
+        lanes.lanes_off_surface(&c.region_graph, &network.roadbed),
+        0,
+        "{when}: lanes off the roadbed"
+    );
+    assert_entrances_derived(c, when);
+    c.audit_every_parking_catchment();
+}
+
+fn assert_entrances_derived(c: &SimCore, when: &str) {
+    let a = &c.allocator;
+    let lanes = &c.transit_network.lane_system;
+    for b in 0..a.buildings.len() {
+        let derived = a.derived_entrance(b, &c.region_graph, lanes);
+        assert!(
+            a.entrances[b] == derived,
+            "{when}: building {b}'s entrance is not a derivation's: {:?} != {derived:?}",
+            a.entrances[b]
+        );
+    }
+}
+
+// Running frames, which lift any lane left off the roadbed, then the edit command's own
+// publication: neither may move a lane a door's list or kerb was derived from.
+fn assert_frames_and_publication_move_no_door(c: &mut SimCore, edit: &str) {
+    c.time.speed_multiplier = 1.0;
+    for frame in 0..3 {
+        c.step_frame(1.0 / 60.0);
+        assert_entrances_derived(c, &format!("{edit}, frame {frame}"));
+        c.audit_every_parking_catchment();
+    }
+    c.finalize_network_render_products();
+    assert_doors_on_the_roadbed(c, &format!("{edit}, publication"));
+}
+
+// The cross street of [`graded_curve_with_lots`].
+fn cross_street(c: &SimCore) -> usize {
     let graph = &c.region_graph;
-    let cross = (0..graph.edge_count())
+    (0..graph.edge_count())
         .find(|&e| {
             let edge = graph.edge(e);
             let (a, b) = (
@@ -348,25 +386,120 @@ fn a_road_removal_on_a_graded_curve_leaves_every_door_and_list_a_rebuild_gives()
             );
             !edge.deleted && a.x.abs() < 1.0 && b.x.abs() < 1.0
         })
-        .expect("the cross street");
+        .expect("the cross street")
+}
+
+// A road removal lifts the lanes it rebuilds onto the roadbed before it derives the entrances
+// along them and publishes their doors' lists (`PARK-14`). On a graded curve a lane's lift
+// changes its length: published before it, the doors' lists went stale at the frame that lifted
+// the lanes. A door's kerb is sampled along its lane too, so an entrance derived before the lift
+// could differ from a later cache rebuild's by a rounding (the Kuopio save's building 252). Its
+// undo lifts the lanes it restores onto the roadbed it restores before it derives the entrances
+// and lists the same way (`PARK-16`).
+#[test]
+fn a_road_removal_on_a_graded_curve_leaves_every_door_and_list_a_rebuild_gives() {
+    let mut c = graded_curve_with_lots(true);
+    let cross = cross_street(&c);
     assert!(c.bulldoze_road_edge_for_test(cross));
-    let network = &c.transit_network;
-    let lanes = &network.lane_system;
-    assert_eq!(
-        lanes.lanes_off_surface(&c.region_graph, &network.roadbed),
-        0
-    );
-    assert!(derived(&c));
-    c.audit_every_parking_catchment();
-    // Running frames, which lift any lane left off the roadbed, then the bulldoze command's own
-    // publication: neither may move a lane a door's list or kerb was derived from.
-    c.time.speed_multiplier = 1.0;
-    for frame in 0..3 {
-        c.step_frame(1.0 / 60.0);
-        assert!(derived(&c), "frame {frame}");
-        c.audit_every_parking_catchment();
+    assert_doors_on_the_roadbed(&mut c, "the removal");
+    assert_frames_and_publication_move_no_door(&mut c, "the removal");
+    // The undo alone (as tests call it), then the undo command's publication.
+    assert!(c.undo_action_internal());
+    assert!(!c.region_graph.edge(cross).deleted);
+    assert_doors_on_the_roadbed(&mut c, "the undo");
+    assert_frames_and_publication_move_no_door(&mut c, "the undo");
+}
+
+// A commit lifts the lanes it rebuilds before it derives the entrances along them
+// (`PARK-16`): the new street splits the cross street, so the lots on its halves re-derive
+// theirs. Both forms: the lot plan deferred to the next frame, and planned in the commit (a
+// batch's earlier strokes), whose entrances are derived before the commit's tail.
+#[test]
+fn a_road_commit_on_a_graded_curve_derives_its_doors_on_lifted_lanes() {
+    for in_commit in [false, true] {
+        let mut c = graded_curve_with_lots(true);
+        let id = register_lot(&mut c);
+        for (x, z) in [(-22.0, 90.0), (22.0, 90.0), (-22.0, 140.0), (22.0, 140.0)] {
+            c.place_service_building_internal(&id, x, z).unwrap();
+        }
+        c.publish_pending_building_site_changes();
+        settle(&mut c);
+        assert_doors_on_the_roadbed(&mut c, "the lots");
+        c.cell_lot_hooks.in_commit = in_commit;
+        commit_before_its_frame(&mut c, (-80.0, 115.0), (80.0, 115.0), BOTH);
+        assert_entrances_derived(&c, &format!("the commit (in_commit {in_commit})"));
+        c.publish_deferred_parking_frontages();
+        assert_doors_on_the_roadbed(&mut c, "the commit's parking");
+        assert_frames_and_publication_move_no_door(&mut c, "the commit");
     }
+}
+
+// An in-place edit's publication lifts the lanes the edit rebuilt before it derives the
+// entrances (`PARK-16`); its undo, whose record keeps no roadbed, publishes the restored
+// roadbed and lifts the lanes before its doors and lists.
+#[test]
+fn a_cross_section_edit_on_a_graded_curve_and_its_undo_leave_every_door_a_rebuild_gives() {
+    let mut c = graded_curve_with_lots(true);
+    let graph = &c.region_graph;
+    let curve = (0..graph.edge_count())
+        .find(|&e| {
+            let edge = graph.edge(e);
+            !edge.deleted && graph.node(edge.start_node).pos.x < -100.0
+        })
+        .expect("the curve's west half");
+    let attributes = crate::simulation::network::road_types::RoadAttributes::DEFAULT;
+    assert!(c.set_edge_cross_section_internal(
+        curve as i32,
+        1,
+        1,
+        None,
+        RoadParking::NONE,
+        attributes
+    ));
     c.finalize_network_render_products();
-    assert!(derived(&c));
-    c.audit_every_parking_catchment();
+    assert_doors_on_the_roadbed(&mut c, "the edit");
+    assert_frames_and_publication_move_no_door(&mut c, "the edit");
+    assert!(c.undo_action_internal());
+    assert_doors_on_the_roadbed(&mut c, "the undo");
+    assert_frames_and_publication_move_no_door(&mut c, "the undo");
+}
+
+// A border connection rebuilds every lane: it lifts them before it publishes the doors' lists
+// (`PARK-16`, `ROAD-122`).
+#[test]
+fn a_border_connection_on_graded_ground_lists_doors_on_lifted_lanes() {
+    let mut c = graded_curve_with_lots(true);
+    let (half_x, _) = c.heightmap.half_world_extents();
+    commit_with(&mut c, (120.0, 0.0), (half_x - 1.0, 0.0), BOTH);
+    settle(&mut c);
+    let border = (0..c.region_graph.node_count() as u32)
+        .find(|&node| c.region_graph.node(node).pos.x > half_x - 3.0)
+        .expect("the road ends at the world edge");
+    let pos = c.region_graph.node(border).pos;
+    assert_eq!(c.check_border_candidate_internal(pos), i64::from(border));
+    c.set_border_connection_internal(border as i32);
+    assert_doors_on_the_roadbed(&mut c, "the border connection");
+    assert_frames_and_publication_move_no_door(&mut c, "the border connection");
+}
+
+// A terrain stroke's undo restores the dense terrain and rebuilds every lane, and leaves the
+// roadbed to the undo command's publication, which lifts the lanes before it derives the
+// entrances and publishes the lists (`PARK-16`).
+#[test]
+fn a_terrain_stroke_undo_on_a_graded_curve_publishes_doors_on_lifted_lanes() {
+    let mut c = graded_curve_with_lots(true);
+    c.benchmark_mode = false;
+    c.start_terrain_stroke_internal();
+    c.sculpt_terrain_stroke_step_internal(
+        godot::prelude::Vector2::new(0.0, 60.0),
+        80.0,
+        2.0 / crate::config::HEIGHT_SCALE,
+    );
+    assert!(c.end_terrain_stroke_internal(), "the stroke is accepted");
+    c.finalize_network_render_products();
+    assert_doors_on_the_roadbed(&mut c, "the stroke");
+    assert!(c.undo_action_internal());
+    c.finalize_network_render_products();
+    assert_doors_on_the_roadbed(&mut c, "the undo");
+    assert_frames_and_publication_move_no_door(&mut c, "the undo");
 }
