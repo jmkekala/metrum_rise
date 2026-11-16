@@ -721,8 +721,8 @@ func _prepare_staged_terrain_visual_update() -> Dictionary:
 		return {}
 	var border_stage: Dictionary = {}
 	if _dirty_patch_keys_touch_border(dirty_keys):
-		border_stage = _stage_terrain_border_update()
-		if not bool(border_stage.get("valid", false)):
+		border_stage = _stage_dirty_border_update()
+		if not border_stage.is_empty() and not bool(border_stage.get("valid", false)):
 			return {}
 	return {
 		"dirty_states": dirty_states,
@@ -762,8 +762,8 @@ func prepare_terrain_visual_update(poll_ready: bool = true) -> Dictionary:
 		return {}
 	var border_stage: Dictionary = {}
 	if _dirty_patch_keys_touch_border(dirty_keys):
-		border_stage = _stage_terrain_border_update()
-		if not bool(border_stage.get("valid", false)):
+		border_stage = _stage_dirty_border_update()
+		if not border_stage.is_empty() and not bool(border_stage.get("valid", false)):
 			return {}
 	return {
 		"dirty_states": dirty_states,
@@ -2744,8 +2744,19 @@ func _rebuild_border_skirt() -> void:
 	if bool(stage.get("valid", false)):
 		_commit_terrain_border_stage(stage)
 
-func _stage_terrain_border_update() -> Dictionary:
+# The border stage of a dirty batch with a patch on the world's border: none while the border loop
+# is the committed one, as an edit inside a border patch leaves it (`RENDER-40`: rebuilding the
+# whole skirt then, its validation walk and tangents, cost 5.2-5.6 ms a batch at 30k, and the
+# water's border followed the revision). The loop's compare is native, O(border samples).
+func _stage_dirty_border_update() -> Dictionary:
 	var positions: PackedVector3Array = simulation_node.get_terrain_border_loop()
+	if border_skirt_instance != null and positions == border_loop_positions:
+		return {}
+	return _stage_terrain_border_update(positions)
+
+func _stage_terrain_border_update(positions: PackedVector3Array = PackedVector3Array()) -> Dictionary:
+	if positions.is_empty():
+		positions = simulation_node.get_terrain_border_loop()
 	for position in positions:
 		if not is_finite(position.x) or not is_finite(position.y) or not is_finite(position.z):
 			return {"valid": false}
