@@ -13021,6 +13021,38 @@ game's font scale covers it). Rust decides every point and value; GDScript keeps
   `ui1_corner_arc_oblique` (60 degrees), `ui1_guide_faint` (8 m off a dead end's extension, the
   faint guide) and `ui1_guide_captured` (3 m off, captured).
 
+### Right-angle square (round UI2)
+
+Round UI2 (`ROAD-112`, 2026-11-16, branch `roadtools-ui2` on `dev` `436ab4dc`, for review; the
+user's picture of a school right angle, a small square in the corner): a corner whose chip reads
+90 degrees draws the square in place of the arc ("Drawing and placement" above). Rust gives every
+point; GDScript draws the strip as before.
+
+- **Rule** (`guides.rs` `Corner::shown_deg`, `Corner::is_square`, `Corner::push_mark`): the
+  chip's rounding, `f64::round` half away from zero, decides both the chip's text and the
+  square, so the square shows exactly when the chip reads "90°" (`89.5` up to below `90.5`).
+  Side `s` = radius / sqrt 2 (8.49 m at `CORNER_ARC_M` 12 m): at exactly 90 degrees the outer
+  corner is the arc's old middle, the chip's old anchor. The chip is anchored at the outer corner
+  and pushed out along the bisector (round V's rule: its near edge a gap beyond the anchor), the
+  square lying wholly behind it. Strip class `CornerArc`, the arc's look (the user: one palette).
+  `O(1)`: three points and no chord into the reused gizmo buffers.
+- **Tests** (`tool_tests/ui_guides.rs`): the square's three points and the chip's anchor and side
+  at 90 degrees on both sides, through a road and out of a dead end; 60 and 120 keep the arc;
+  89.6 and 90.4 show the square and 89.4 ("89°") and 90.6 ("91°") the arc, each agreeing with
+  the chip's text from `wording.rs`, and the edges 89.5 / 90.5 half away from zero; a chained
+  start in the session: the square's strip has three points, the arc's at 60 degrees at least 13,
+  and the gizmo buffers' capacities do not change over the later poses. **Digests:** GS's grid-off
+  digest (`grid_off_frames_are_unchanged`) re-recorded as `0x8020_4597_a6ca_e6bd`: its strokes
+  meet roads square, so those corners draw the square (with `is_square` forced off it equals the
+  old record, so drawing only); CT's chain digest and SC's stroke digest unchanged. No product
+  code changed, so no Kuopio or fixtures run.
+- **Fresh results** (2026-11-16, tip `b4a9a1e2`): clippy warning set equal to `436ab4dc`'s (14),
+  missing_docs 0, debug `cargo test --lib` 2,804 / 0 / 232, `./run.sh --test` PASS (nextest
+  2,808 / 2,808, 233 skipped; godot-main and godot-vehicle PASS, 0 SCRIPT ERROR).
+- **Stills** (`road_tool_capture.gd` set `ui1`, gamescope headless 1920x1080, 0 SCRIPT ERROR):
+  `ui1_square_lock` (the branch held square: the square, chip "90°" past its corner) and
+  `ui1_corner_arc_oblique` (60 degrees: the arc).
+
 ### Wiring record (round C)
 
 Fresh, 2026-11-14, branch `roadtools-c` on `dev` `58d79a53` (control: the release build of
@@ -14716,7 +14748,16 @@ the clicks, the mode buttons and the acknowledgement and draws what `road_tool_f
   point the smaller corner, whose acute angle the chip reads as before; a square join's two equal
   corners take the one on the right of the new road seen from above with north up
   (`leaving.perp()`'s side). One arc reads better than two: the second corner is the first's
-  supplement and two chips crowd the junction. Handles are filled round points with a dark rim: the placed start and the live end
+  supplement and two chips crowd the junction. **Right-angle square** (round UI2, the user's
+  2026-11-16 picture of a school right angle): a corner whose chip reads 90 degrees (the chip's
+  own rounding, `Corner::shown_deg`, half away from zero: `89.5..90.5`; `Corner::is_square`) draws
+  the square in place of the arc, an open L from the draft at side `s` to the corner
+  `joint + (leaving + road) * s` to the road at `s`, with `s` the arc radius over the square root
+  of 2 (`guides.rs` `SQUARE_SIDE_FRACTION`; 8.49 m at the 12 m radius), so at exactly 90 degrees
+  the square's outer corner lies where the arc's middle was. The chip is anchored at that outer
+  corner and pushed out along the bisector by the placement rule, so it sits past the corner,
+  clear of the square. The square is drawn in the arc's strip class and look (`CornerArc`, the
+  user's choice: one palette). Three points, no chord; every other angle keeps the arc. Handles are filled round points with a dark rim: the placed start and the live end
   white (14 and 16 px), a control point and a joint lavender, the chain's start green, a
   Bezier or arc handle pale (10 px).
 - **Footprint hue** (round HU, the user's decision 2026-11-14; a **stopgap**): while a draft has
