@@ -155,10 +155,11 @@ fn kerbside_bays_keep_their_cars_through_a_save_and_go_with_their_road() {
     std::fs::remove_file(path).unwrap();
 }
 
-// A save drops deleted edges and renumbers the rest, so a kerb bay's edge is renumbered with them;
-// a bay that kept its live number named a missing edge, and the save would not load.
+// A kerb bay names its edge by id, which a save keeps since format 121, the deleted edge below it a
+// hole (`SAVE-11`); before, the save renumbered edges past the deleted one, and a bay that kept
+// its live number named a missing edge, so the save would not load.
 #[test]
-fn kerbside_bays_follow_their_road_when_a_save_renumbers_it() {
+fn kerbside_bays_keep_their_road_past_a_deleted_one_across_a_save() {
     let (mut c, gone) = kerb_core(RoadParking::NONE);
     assert!(c.bulldoze_road_edge_for_test(gone));
     let right = RoadParking {
@@ -180,7 +181,8 @@ fn kerbside_bays_follow_their_road_when_a_save_renumbers_it() {
     let saved = (0..c.region_graph.edge_count())
         .find(|&e| c.region_graph.get_edge(e).is_some_and(|e| !e.deleted))
         .unwrap();
-    assert_eq!(saved, 0);
+    // A save keeps edge ids, the deleted one a hole (`SAVE-11`).
+    assert_eq!(saved, edge);
     assert_eq!(side(&c, saved, true), bays);
     assert_eq!(c.parking.counts().0, bays.len());
 }

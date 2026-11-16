@@ -1673,10 +1673,11 @@ fn a_save_after_the_actions_slot_before_the_first_start_continues_identically() 
     });
 }
 
-// A save renumbers edges past a deleted one and a load rebuilds lanes compactly, while the
-// session tombstones and appends: after a road split and a bulldozed stub far from town, the
-// loaded game numbers the town's edges and lanes differently, and every queued permit still
-// matches its door, so the game continues identically (`SIM-02-I`).
+// After a road split and a bulldozed stub far from town, which leave a deleted edge and retired
+// lanes, every queued permit still matches its door after a load, so the game continues
+// identically (`SIM-02-I`). Before format 121 a save renumbered edges past the deleted one and a
+// load rebuilt lanes compactly; ids are saved state since (`SAVE-11`), and the loaded game keeps
+// the running game's lane count.
 #[test]
 fn queued_business_permits_survive_edge_and_lane_renumbering_across_a_save() {
     let mut source = town_with_a_queued_business_permit();
@@ -1705,10 +1706,10 @@ fn queued_business_permits_survive_edge_and_lane_renumbering_across_a_save() {
         source,
         "renumbered-permits",
         |source, loaded| {
-            assert_ne!(
+            assert_eq!(
                 source.transit_network.lane_system.lanes.len(),
                 loaded.transit_network.lane_system.lanes.len(),
-                "the loaded game numbers its lanes compactly"
+                "the loaded game keeps the lane ids"
             );
             assert!(business_permit_queued(loaded));
         },

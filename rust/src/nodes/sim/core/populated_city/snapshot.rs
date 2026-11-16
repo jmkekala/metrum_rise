@@ -536,38 +536,18 @@ fn snapshot_revision_rejects_changed_economy_demand_and_assets() {
     fs::remove_dir_all(root).unwrap();
 }
 
+// The street grid's lanes, built by the fixture's local rebuilds, equal a loaded game's lanes:
+// the load's whole rebuild and height fit, placed at the saved lane ids (`SAVE-11`), give every
+// lane the same geometry, length and distances bit for bit (`assert_same_network`).
 #[test]
 fn bulk_fixture_lane_geometry_matches_loaded_rebuild() {
     let (mut core, _, _) = super::street_grid(400.0);
-    let geometry = |core: &SimCore| {
-        core.transit_network
-            .lane_system
-            .lanes
-            .iter()
-            .map(|lane| {
-                (
-                    lane.length.to_bits(),
-                    lane.geometry
-                        .iter()
-                        .map(|point| (point.x.to_bits(), point.y.to_bits(), point.z.to_bits()))
-                        .collect::<Vec<_>>(),
-                    lane.cum_dist
-                        .iter()
-                        .map(|value| value.to_bits())
-                        .collect::<Vec<_>>(),
-                )
-            })
-            .collect::<Vec<_>>()
-    };
-    let before = geometry(&core);
-    // Match ordinary loading's lane rebuild and height fit without populating a city.
-    core.transit_network
-        .lane_system
-        .rebuild(&mut core.region_graph);
-    core.transit_network
-        .lane_system
-        .sync_heights_to_visible_surface(&core.region_graph, &core.transit_network.roadbed);
-    assert_eq!(before, geometry(&core));
+    let path = std::env::temp_dir().join(format!(
+        "metrum-bulk-lane-geometry-{}.sqlite",
+        std::process::id()
+    ));
+    crate::nodes::sim::core::scenario::save_cases::save_and_load(&mut core, &path);
+    fs::remove_file(path).unwrap();
 }
 
 #[test]

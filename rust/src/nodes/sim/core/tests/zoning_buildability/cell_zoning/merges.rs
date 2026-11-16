@@ -142,9 +142,11 @@ fn occupied_cells_survive_native_node_merge_regeneration_and_undo() {
         for key in lot.cell_lot().unwrap().cells() {
             assert_eq!(loaded.zoning.cells.lot(key), Some(before.parcel_id));
         }
+        // A save keeps node ids and the merge aliases (`SAVE-11`).
         assert!(
-            (0..loaded.region_graph.node_count() as u32)
-                .all(|id| loaded.region_graph.get_valid_node(id) == id)
+            (0..loaded.region_graph.node_count() as u32).all(|id| {
+                loaded.region_graph.get_valid_node(id) == core.region_graph.get_valid_node(id)
+            })
         );
 
         for undo in [false, true] {

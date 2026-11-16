@@ -1875,10 +1875,15 @@ mod tests {
             .expect("live connector")
     }
 
-    // The live west-to-north connector; the west edge keeps its id across rebuilds.
+    // The live west-to-north connector; the west edge keeps its id across rebuilds. The fixture's
+    // inbound lane may be retired by then, a tombstone naming no edge (`SAVE-11`), so the west
+    // edge is the one between the west and centre nodes.
     fn west_to_north_connector(fixture: &TurnConnectorFixture) -> usize {
         let lanes = &fixture.lane_system;
-        let west_edge = lanes.lanes[fixture.inbound_lane].edge_id;
+        let west_edge = fixture
+            .graph
+            .get_edge_between_nodes(fixture.n_west, fixture.n_center)
+            .expect("west edge");
         let inbound = lanes.edge_lanes[&west_edge]
             .iter()
             .copied()
