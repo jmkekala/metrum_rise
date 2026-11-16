@@ -263,6 +263,9 @@ town after a trunk split, the bulldozed border road with the lowest node left wi
 in-place class change and its undo, and a new border connection: the loaded network equals the
 running one in memory, and both games run two game hours with every agent, lane ids included,
 equal each frame and raw saves byte-equal every 300 frames),
+`a_grid_continues_across_a_save_after_road_edits_as_the_running_game` (the 2k street grid, where
+equal-cost routes break ties by id: a trunk split, the lowest road bulldozed, a class change and its
+undo, then 1,800 frames the same way),
 `snapshot_keeps_every_lane_id_after_incremental_rebuild_and_edge_deletion` (lane arrays after a
 load) and `the_walking_proof_holds_after_local_lane_rebuilds_as_after_a_whole_one` (`PERF-27`).
 The starter town and the populated city no longer renumber their lanes as a load does
@@ -395,7 +398,8 @@ Save format 121 (`SAVE-11`, round S2, 2026-11-16) makes node, edge and lane ids 
 ([Ids are saved state](#ids-are-saved-state-save-11)): new tables `network_id_counts` and
 `network_node_aliases`, node and edge rows at their ids with holes between them, every reference
 written as it is, and the column `zoning_parcels.storage_index`. Format 120 (`PRE_SAVED_IDS_SAVE_VERSION`), 119 and 118 load as before, their
-ids compacted.
+ids compacted. A game that is never loaded runs as before: the `SIM-02` envelope fingerprints (four
+workloads, 14 days) and determinism products equal `dev`'s (2026-11-16, fresh, both binaries).
 
 ## Scheduler
 
