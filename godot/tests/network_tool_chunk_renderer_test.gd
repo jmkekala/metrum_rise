@@ -106,10 +106,6 @@ class MockSimulation:
 	func get_road_tool_surface_generation() -> int:
 		return generation
 
-	func get_vegetation_land_cover(_key: Vector2i) -> Dictionary:
-		return {"width": 1, "height": 1, "bytes": PackedByteArray([0]),
-			"world_bounds": Vector3.ZERO, "generations": PackedInt64Array([generation])}
-
 	func is_vegetation_land_cover_current(_key: Vector2i, revisions: PackedInt64Array) -> bool:
 		return revisions == PackedInt64Array([generation])
 

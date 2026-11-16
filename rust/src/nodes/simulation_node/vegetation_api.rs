@@ -98,28 +98,10 @@ fn clear_footprint(
 
 #[godot_api(secondary)]
 impl SimulationNode {
-    /// Publishes an R8 forest-floor texture on a fixed 8 m world grid, including a filter border.
-    /// The payload contains world bounds, dimensions, bytes and the existing terrain/vegetation
-    /// revisions of the nine contributing patches. This is derived data, never saved or ticked.
-    /// Waits for the core: the terrain renderer asks for land covers through
-    /// [`Self::request_vegetation_land_cover`] instead (`RENDER-40`), so this is counted with the
-    /// synchronous queries (`get_vegetation_main_thread_queries`).
-    #[func]
-    pub fn get_vegetation_land_cover(&self, key: Vector2i) -> VarDictionary {
-        jobs::count_main_thread_query();
-        let mut core = self.lock_core();
-        let layout = PatchLayout::new(&core);
-        let Some(origin) = layout.origin(key) else {
-            return VarDictionary::new();
-        };
-        core.prepare_site_queries();
-        land_cover::Coverage::build(&*core, origin, layout.span)
-            .payload(land_cover::generations(&core, key))
-    }
-
     /// Asks for terrain patch `key`'s land cover, built on the background pool (`RENDER-40`) and
     /// handed over by [`Self::poll_vegetation_land_covers`] once current; false when it is asked
-    /// already. Never waits for the core. `O(1)`.
+    /// already. Never waits for the core. `O(1)`. The bridge has no synchronous land cover query:
+    /// a patch's land cover comes with its terrain payload or from these jobs.
     #[func]
     pub fn request_vegetation_land_cover(&self, key: Vector2i) -> bool {
         let asked = self.land_cover_jobs.lock().unwrap().request(key);
@@ -127,9 +109,11 @@ impl SimulationNode {
         asked
     }
 
-    /// The asked land covers that are current by the published revisions, at most `max`: each
-    /// [`Self::get_vegetation_land_cover`]'s dictionary with its patch `key`, the same bytes and
-    /// revisions. A result made stale since its snapshot is rebuilt without being asked again.
+    /// The asked land covers that are current by the published revisions, at most `max`: each an
+    /// R8 forest-floor texture on the fixed 8 m world grid with a filter border (`width`,
+    /// `height`, `bytes`, `world_bounds`), the revisions of the nine contributing patches
+    /// (`generations`) and its patch `key`; the terrain payload's `land_cover` has the same form.
+    /// A result made stale since its snapshot is rebuilt without being asked again.
     /// Starts the next snapshot when keys wait. Never waits for the core; `O(landed)`.
     #[func]
     pub fn poll_vegetation_land_covers(&self, max: i32) -> VarArray {
@@ -398,9 +382,8 @@ impl SimulationNode {
     }
 
     /// Synchronous vegetation queries (`get_decorative_tree_patch`, `get_vegetation_stand_cover`,
-    /// `get_vegetation_hedge_runs`, `get_vegetation_land_cover`) asked since the extension
-    /// loaded. The renderers ask none (`RENDER-32-D`, `RENDER-40`); the stream benchmark records
-    /// the count each frame.
+    /// `get_vegetation_hedge_runs`) asked since the extension loaded. The renderer asks none
+    /// (`RENDER-32-D`); the stream benchmark records the count each frame.
     #[func]
     pub fn get_vegetation_main_thread_queries(&self) -> i64 {
         jobs::main_thread_queries() as i64

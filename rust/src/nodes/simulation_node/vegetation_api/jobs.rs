@@ -38,8 +38,8 @@ const SPARE_PRODUCTS: usize = MAX_IN_FLIGHT;
 const MAX_RUNNING: usize = 4;
 
 /// Calls of the synchronous vegetation queries (`get_decorative_tree_patch`,
-/// `get_vegetation_stand_cover`, `get_vegetation_hedge_runs`, `get_vegetation_land_cover`) since
-/// the extension loaded: the renderers ask none of them, so a benchmark frame that moves it ran a query on the main
+/// `get_vegetation_stand_cover`, `get_vegetation_hedge_runs`) since the extension loaded: the
+/// renderer asks none of them, so a benchmark frame that moves it ran a query on the main
 /// thread.
 pub(super) static MAIN_THREAD_QUERIES: AtomicU64 = AtomicU64::new(0);
 

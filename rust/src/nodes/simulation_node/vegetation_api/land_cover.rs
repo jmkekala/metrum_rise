@@ -203,8 +203,9 @@ impl Coverage {
 /// A terrain patch's land cover prepared off the main thread (`RENDER-32-M`): the inputs and the
 /// revisions are taken with the patch's payload under the core lock ([`Self::take`]), the
 /// coverage is built on the payload worker ([`Self::bake`]) from the same snapshot the vegetation
-/// jobs query, bit for bit the main-thread query's (`get_vegetation_land_cover`), and the bridge
-/// dictionary is made at the poll ([`Self::payload`]).
+/// jobs query, bit for bit `Coverage::build` over the live core (the tests' oracle), and the
+/// bridge dictionary is made at the poll ([`Self::payload`]). The land cover jobs (`RENDER-40`)
+/// take and bake it the same way for a patch whose land cover went stale.
 pub(crate) struct PatchLandCover {
     inputs: Option<super::world::VegetationPatchInputs>,
     origin: Vector2,
@@ -254,7 +255,7 @@ impl PatchLandCover {
         self.coverage.as_ref().map(Coverage::bytes).unwrap_or_default()
     }
 
-    /// The bridge dictionary of `get_vegetation_land_cover`, once baked.
+    /// The bridge dictionary (dimensions, bytes, world bounds, revisions), once baked.
     pub(crate) fn payload(&self) -> Option<VarDictionary> {
         self.coverage
             .as_ref()

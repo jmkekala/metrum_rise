@@ -47,8 +47,7 @@
 ## Every settle point also records the building LOD batches in `building_digests` (per batch its
 ## chunk, group, count and rows), whichever side draws them (`RENDER-32-L`), and the terrain's and
 ## water's resident patches with their mesh steps in `patch_digests` (`RENDER-32-M`; with every
-## built terrain patch's land cover by digest, its staleness and its equality with the core's
-## query, `RENDER-40`: those queries count in `queries_total`), and the road
+## built terrain patch's land cover by digest and how many are stale, `RENDER-40`), and the road
 ## chunks drawn (per chunk its key, place and every surface's arrays) in `road_digests` and the
 ## parked cars drawn (per chunk and bucket its rows) in `parked_digests` (`RENDER-32-P`), and the
 ## vegetation patches drawn (per visible installed patch its key, bands, detail and every batch's
@@ -679,12 +678,12 @@ func _record_patch_digest() -> void:
 # The built terrain patches' land covers at a settle point (`RENDER-40`): per patch its key, the
 # bytes' digest and its revisions, from the script's own book, so a control's main-thread query
 # and the land cover jobs compare by digest; `stale` counts those not current by the published
-# revisions and `unequal` those whose bytes or revisions differ from the core's query now.
+# revisions. Read from the book only: asking the land cover jobs here would take the renderer's
+# own requests and hand-overs, which are one per key.
 func _land_cover_digest() -> Dictionary:
 	var simulation: Node = _terrain.simulation_node
 	var lines := PackedStringArray()
 	var stale := 0
-	var unequal := 0
 	for key: Vector2i in _terrain.patches:
 		var cover: Dictionary = (_terrain.patches[key] as Dictionary).get("land_cover", {})
 		var image: Image = cover.get("image", null)
@@ -693,11 +692,8 @@ func _land_cover_digest() -> Dictionary:
 		lines.append("%d,%d,%s,%s" % [key.x, key.y, _sha(bytes), str(revisions)])
 		if not simulation.is_vegetation_land_cover_current(key, revisions):
 			stale += 1
-		var live: Dictionary = simulation.get_vegetation_land_cover(key)
-		if live.get("bytes", PackedByteArray()) != bytes or live.get("generations", PackedInt64Array()) != revisions:
-			unequal += 1
 	lines.sort()
-	return {"patches": lines.size(), "stale": stale, "unequal": unequal,
+	return {"patches": lines.size(), "stale": stale,
 		"digest": _sha("\n".join(lines).to_utf8_buffer()), "lines": lines}
 
 # The road chunks by key: the chunk renderer's (`RENDER-52`), or a control's road tool's index.
