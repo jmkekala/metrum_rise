@@ -251,12 +251,28 @@ the loaded game's ids differ (`SAVE-09`'s five causes, of which this removes the
   none for a merged node); with no such node the order is unchanged.
 - **Bounds.** Save: O(nodes + edges + aliases log aliases + lanes + references), no hashing of
   ids; load: O(saved rows + holes) for the graph, plus O(lanes + connections) to place the lanes
-  after the whole rebuild and its identity match. Per edit and per frame: unchanged (the scrub
-  replaces the fields a retirement cleared before; the hierarchy's dead-state test is O(degree)
-  per node in a build).
-- **Not done (round S3).** The running game still never reuses an id (holes accumulate over a
-  long session, in memory and as save counts); id reuse in local rebuilds and a compaction
-  are tracked separately.
+  after the whole rebuild and its identity match. Per frame: unchanged (the hierarchy's
+  dead-state test is O(degree) per node in a build). Per edit: the scrub replaces the fields a
+  retirement cleared before; the id reuse below adds O(the rebuilt lanes and their successors).
+- **A local rebuild reuses retired lane ids (`PERF-28`, round S3).** A rebuilt lane takes the id
+  of a lane the same rebuild retires when their identities are equal: the same edge, direction
+  and lane index for a road lane, the same node and the same road lanes joined for a connector,
+  the identity a load matches by. Ids of one identity go lowest first in build order, so
+  connectors that join the same pair of lanes keep the order of their road lane's successors
+  that a load's match assumes. Every other rebuilt lane is appended after the lanes there are, in
+  build order. Ids are therefore a function of the edits alone, and a reused id never names
+  another lane: a reference held across the rebuild (an agent's lane, an entrance, a door list)
+  names the same lane or a retired one. The rebuild moves the lanes it appended into the reused
+  ids and remaps the references the lane system holds (successors, the edges' and nodes' lists,
+  crossings, new ring entries); reused lanes are lifted onto the roadbed with the appended ones.
+  Cost: O(the rebuilt lanes and the successors of the lanes arriving at the rebuilt nodes), on
+  top of the rebuild's own: 8 µs more on the lane rebuild locality benchmark's three-road closure
+  (0.040 against 0.032 ms), flat from 0 to 100,000 background roads ([`PERF-28`](roadmap.md)). The save format is unchanged (121): a load already places each lane
+  at its saved id by the same identity.
+- **Not reused.** Retired ids whose identity no later rebuild of the same edit makes stay holes:
+  a removed road's lanes (an undo appends them again), the connectors of a junction a split or a
+  join changes, lanes a lane-count edit drops. Edge and node holes are never reused. A
+  compaction (renumber every id at a defined point and remap every reference) is `PERF-29`.
 
 Tests: `a_town_continues_across_a_save_after_road_edits_as_the_running_game` (the busy starter
 town after a trunk split, the bulldozed border road with the lowest node left without a road, an
