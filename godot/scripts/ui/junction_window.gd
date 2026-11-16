@@ -13,7 +13,10 @@
 ## (a new render generation) the window reads the arms again and keeps each unapplied request
 ## whose arm is still there. A lane transition
 ## node or a node without car roads shows no Turn pockets section, only why.
-## Rust methods called: get_junction_pockets(), preview_road_pocket(),
+## Lane rules (`ROAD-119`): when the junction's lane rules leave an approach lane without a turn
+## (Rust's `no_movement` on its lane handle), a warning above the rows counts those lanes and says
+## how to fix them; the select tool draws their handles orange and signals each lane rule edit.
+## Rust methods called: get_junction_pockets(), preview_road_pocket(), get_node_lanes(),
 ## get_network_render_generation(); through the select tool set_road_pocket().
 extends Node
 
@@ -29,6 +32,7 @@ var _select_tool: Node
 
 var _window: Window
 var _summary_label: Label
+var _lane_warning: Label
 var _pocket_heading: Label
 var _scroll: ScrollContainer
 var _rows_box: VBoxContainer
@@ -43,6 +47,9 @@ var _last_changed_key := ""
 func setup(simulation_node: Node, select_tool: Node) -> void:
 	_simulation_node = simulation_node
 	_select_tool = select_tool
+	# A lane rule edit publishes no render generation (`ROAD-120`): the tool says so itself.
+	if select_tool and select_tool.has_signal("lane_rules_changed"):
+		select_tool.lane_rules_changed.connect(_on_lane_rules_changed)
 
 func _ready() -> void:
 	_build_window()
@@ -71,6 +78,13 @@ func _build_window() -> void:
 	root_vbox.add_theme_constant_override("separation", 8)
 	margin.add_child(root_vbox)
 
+	# Shown only while the lane rules leave an approach lane without a turn.
+	_lane_warning = Label.new()
+	_lane_warning.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_lane_warning.add_theme_color_override("font_color", UIStyle.TEXT_ALERT)
+	UIStyle.set_font_size(_lane_warning, 13)
+	_lane_warning.visible = false
+	root_vbox.add_child(_lane_warning)
 	# Shown only without rows.
 	_summary_label = Label.new()
 	_summary_label.text = "No turn pockets here: this is a pocket's lane transition or no road comes in. " \
@@ -145,7 +159,26 @@ func refresh() -> void:
 	_pocket_heading.visible = not _rows.is_empty()
 	_scroll.visible = not _rows.is_empty()
 	_summary_label.visible = _rows.is_empty()
+	_show_lane_warning()
 	_update_highlight()
+
+func _on_lane_rules_changed(node: int) -> void:
+	if node == _node and _window.visible:
+		_show_lane_warning()
+
+# Counts the approach lanes Rust flags as left without a turn by the lane rules.
+func _show_lane_warning() -> void:
+	var stranded := 0
+	for lane: Dictionary in _simulation_node.get_node_lanes(_node):
+		if lane.get("no_movement", false):
+			stranded += 1
+	_lane_warning.visible = stranded > 0
+	_lane_warning.text = "Lane rules leave %d approach lane%s without a turn (orange, \"no turn\"): " % [stranded, "" if stranded == 1 else "s"] \
+		+ "traffic on %s cannot go on. Drag a turn from each, or right-click to clear this junction's rules." % ("it" if stranded == 1 else "them")
+
+## Whether the lane rule warning is shown, and its text (for the tests).
+func lane_warning() -> String:
+	return _lane_warning.text if _lane_warning.visible else ""
 
 # Drops every row, returning the unapplied requests by arm key.
 func _clear_rows() -> Dictionary:

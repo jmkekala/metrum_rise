@@ -11,6 +11,10 @@
 ## On a divided 2 + 2 road (5 m grass) Left and Right are both offered and a left pocket narrows
 ## the median. Road Properties no longer has a pocket section. Left is offered on an undivided
 ## two-way road too (round R5c1).
+## Lane rules (`ROAD-119`): the divided arm's lane handles run across the road in lane order
+## (inner lane nearest the centre line); one rule whitelists the junction, and the approach lanes
+## it leaves without a turn are flagged on their handles and counted in the window's warning,
+## which clearing the rules lifts.
 ## Ported from Veeti's road-chain snapshot `efd58129` (`road_pockets_test.gd`: the pocket edit
 ## through the tool, add, resize, remove), adapted to the Junction window.
 extends SceneTree
@@ -303,6 +307,44 @@ func _run() -> void:
 		"the pocket arm is named by its road without the pocket: %s" % west._name_label.text)
 	await _undo("the left pocket")
 	_expect(_state(_row(window, "west")) == "No pocket", "undo removes the left pocket: %s" % _state(_row(window, "west")))
+
+	# Lane rules at crossing B (`ROAD-119`). The connection arches face the camera.
+	var camera := Camera3D.new()
+	scene.add_child(camera)
+	camera.position = _ground(0.0, 250.0) + Vector3(0.0, 60.0, 0.01)
+	camera.look_at(_ground(0.0, 250.0))
+	camera.current = true
+	await _click_node(tool, 0.0, 250.0)
+	var west_arm := int(_row(window, "west").info.edge)
+	var east_arm := int(_row(window, "east").info.edge)
+	var approach := {}
+	var east_exit := 0
+	for s in tool.lane_spheres:
+		if int(s.edge_id) == west_arm and s.is_incoming:
+			approach[int(s.lane_id)] = s
+		elif int(s.edge_id) == east_arm and not s.is_incoming:
+			east_exit = int(s.lane_id)
+	_expect(approach.size() == 2, "the divided arm has two approach handles: %s" % [approach.keys()])
+	# The approach lanes' indices, inner (0 or -1) and outer (1 or -2), whichever way it is stored.
+	var inner := 0 if approach.has(0) else -1
+	var outer := 1 if approach.has(1) else -2
+	if approach.has(inner) and approach.has(outer):
+		_expect(absf(approach[inner].pos.z - 250.0) < absf(approach[outer].pos.z - 250.0),
+			"the inner lane's handle is nearer the centre line: %s / %s" % [approach[inner].pos, approach[outer].pos])
+	_expect(window.lane_warning() == "", "no warning without lane rules: %s" % window.lane_warning())
+	tool.set_lane_rule(west_arm, inner, east_arm, east_exit)
+	var flagged := []
+	for s in tool.lane_spheres:
+		if s.no_movement:
+			flagged.append([int(s.edge_id), int(s.lane_id)])
+	_expect(flagged.size() == 4 and flagged.has([west_arm, outer]) and not flagged.has([west_arm, inner]),
+		"the four approach lanes without a turn are flagged: %s" % [flagged])
+	_expect(window.lane_warning().begins_with("Lane rules leave 4 approach lanes without a turn"),
+		"the window warns: %s" % window.lane_warning())
+	tool.clear_lane_rules()
+	_expect(window.lane_warning() == "", "clearing the rules lifts the warning: %s" % window.lane_warning())
+	for s in tool.lane_spheres:
+		_expect(not s.no_movement, "no handle is flagged after clearing")
 
 	# Road Properties has no pocket section any more.
 	var properties = RoadPropertiesWindow.new()

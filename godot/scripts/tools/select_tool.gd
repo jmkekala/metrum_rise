@@ -13,7 +13,13 @@
 ## junction's lanes after an edit or an undo. The lots a widening or a pocket would take
 ## (`ZONE-10`, Rust's `demolish_lots` in each verdict) are outlined with the bulldoze highlight
 ## while that verdict is shown.
+## Lane handles (Rust's `get_node_lanes`) sit across each arm in its lanes' order; an approach
+## lane the junction's lane rules leave without a turn (Rust's `no_movement`, `ROAD-119`) is drawn
+## orange and labelled "no turn", and the Junction window says why.
 extends Node3D
+
+## Emitted after a lane rule edit at junction `node` (the Junction window's lane warning reads it).
+signal lane_rules_changed(node: int)
 
 const HighlightMesh := preload("res://scripts/renderers/highlight_mesh.gd")
 
@@ -50,6 +56,8 @@ var _highlight_tween: Tween = null
 # drawn with the selection highlight's material in its own colour.
 var _pocket_end_mi: MeshInstance3D = null
 const POCKET_END_COLOR := Color(0.2, 0.9, 1.0, 0.3)
+# An approach lane handle the lane rules leave without a turn (`ROAD-119`).
+const NO_MOVEMENT_COLOR := Color(1.0, 0.55, 0.0)
 # The lots the shown verdict takes (`ZONE-10`), in the bulldoze highlight.
 var _demolish_mi: MeshInstance3D = null
 
@@ -175,14 +183,13 @@ func _unhandled_input(event: InputEvent) -> void:
 						simulation_node.clear_lane_source(selected_node, _drag_source.edge_id, _drag_source.lane_id)
 					elif not target_lane.is_incoming:
 						simulation_node.set_lane_connection(selected_node, _drag_source.edge_id, _drag_source.lane_id, target_lane.edge_id, target_lane.lane_id)
-					_build_node_visuals(selected_node)
+					_lane_rules_edited()
 			_cancel_gesture()
 
 	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_RIGHT and event.pressed:
 		_cancel_gesture()
 		if selected_node != -1:
-			simulation_node.clear_lane_connections(selected_node)
-			_build_node_visuals(selected_node)
+			clear_lane_rules()
 
 func _process(_delta):
 	if not active: return
@@ -227,6 +234,7 @@ func _build_node_visuals(node_id: int):
 		var lane_id = lane["lane_id"]
 		var is_inc = lane["is_incoming"]
 		var pos = lane["pos"]
+		var no_movement: bool = lane.get("no_movement", false)
 		
 		# Find rough center point of edge boundary for crosswalk toggles
 		if not unique_edges.has(edge_id):
@@ -243,14 +251,17 @@ func _build_node_visuals(node_id: int):
 		mesh_inst.global_position = pos
 		
 		var mat = StandardMaterial3D.new()
-		mat.albedo_color = Color(0.2, 1.0, 0.2) if is_inc else Color(1.0, 0.2, 0.2)
+		if no_movement:
+			mat.albedo_color = NO_MOVEMENT_COLOR
+		else:
+			mat.albedo_color = Color(0.2, 1.0, 0.2) if is_inc else Color(1.0, 0.2, 0.2)
 		mat.emission_enabled = true
 		mat.emission = mat.albedo_color
 		mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 		mesh_inst.material_override = mat
 
 		var label = Label3D.new()
-		label.text = "e%d" % edge_id
+		label.text = ("e%d no turn" if no_movement else "e%d") % edge_id
 		label.font_size = 64
 		label.pixel_size = 0.015
 		label.no_depth_test = true
@@ -263,6 +274,7 @@ func _build_node_visuals(node_id: int):
 			"edge_id": edge_id,
 			"lane_id": lane_id,
 			"is_incoming": is_inc,
+			"no_movement": no_movement,
 			"pos": pos,
 			"mesh_inst": mesh_inst,
 			"label_inst": label
@@ -651,6 +663,24 @@ func set_junction_pocket(edge: int, end: int, left: bool, right: bool, length_m:
 		return false
 	refresh_junction_visuals()
 	return true
+
+## Adds the lane rule from approach lane `from_lane` of `from_edge` to `to_lane` of `to_edge` at
+## the selected junction (Rust's `set_lane_connection`), as a drag between two handles does.
+func set_lane_rule(from_edge: int, from_lane: int, to_edge: int, to_lane: int) -> void:
+	simulation_node.set_lane_connection(selected_node, from_edge, from_lane, to_edge, to_lane)
+	_lane_rules_edited()
+
+## Clears the selected junction's lane rules (Rust's `clear_lane_connections`), as a right click
+## does.
+func clear_lane_rules() -> void:
+	simulation_node.clear_lane_connections(selected_node)
+	_lane_rules_edited()
+
+# A lane rule edit publishes no render generation (`ROAD-120`), so the handles and the Junction
+# window's lane warning are redrawn here rather than on the generation poll.
+func _lane_rules_edited() -> void:
+	_build_node_visuals(selected_node)
+	lane_rules_changed.emit(selected_node)
 
 ## Redraws the selected junction's lane spheres and crosswalk toggles (after an edit or an undo).
 func refresh_junction_visuals() -> void:

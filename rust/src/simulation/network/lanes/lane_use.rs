@@ -489,6 +489,33 @@ pub(crate) fn approach_arrow_masks(
     }
 }
 
+/// Whether approach lane `lane_idx` of `edge` into `node` is left without a movement by the
+/// node's vehicle lane rules (`ROAD-119`). A node with any vehicle rule
+/// ([`super::vehicle_junctions::node_whitelists_vehicle_turns`]) gives each approach lane only
+/// its listed connections, so a lane with no listed connection to a lane leaving the node (its own
+/// road's included: a listed U-turn is a movement) gets no connector, and every route through the
+/// lane fails. `false` at an open node, where the default lane use serves every lane. The caller
+/// passes the node's whitelist state, read once per node. O(the lane's listed connections), no
+/// allocation.
+pub(crate) fn approach_lane_lacks_movement(
+    graph: &RegionGraph,
+    node: u32,
+    whitelisted: bool,
+    edge: usize,
+    lane_idx: i8,
+) -> bool {
+    whitelisted
+        && graph
+            .node(node)
+            .lane_connections
+            .get(&(edge, lane_idx))
+            .is_none_or(|targets| {
+                !targets
+                    .iter()
+                    .any(|&(out_edge, out_lane)| lane_leaves(graph, out_edge, out_lane, node))
+            })
+}
+
 // Whether lane `lane_idx` of `edge` exists and leaves `node`, as the connector builder's outbound
 // lanes do: forward lanes leave an edge's start, backward lanes its end.
 fn lane_leaves(graph: &RegionGraph, edge: usize, lane_idx: i8, node: u32) -> bool {

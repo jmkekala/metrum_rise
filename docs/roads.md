@@ -774,6 +774,41 @@ Properties has no pocket section any more (one way to do it).
   with a fresh verdict. A lane transition node or a node without an incoming car road shows no
   Turn pockets section, only a line saying to edit a pocket from its junction. The window opens at
   440 x 480 px (minimum 420 x 300): four rows fit without scrolling, more arms scroll.
+- **Lane handles and lane rules** (`ROAD-119`, 2026-11-16). A junction click draws one handle per
+  vehicle lane of each arm end (Rust's `get_node_lanes`, `O(arms + lanes + the node's rules)`), a
+  schematic row 5 m out along the arm, 1 m apart, in the order the lanes run across the road: each
+  handle's slot is its lane's rank by `vehicle_lane_offset` in the edge's forward frame, the frame
+  the lane geometry is offset in, at both edge ends. Until then the row put forward lane 0
+  outermost while the lanes put it innermost (backward lanes were right), so on every arm arriving
+  on forward lanes a drag from the left-hand handle edited the right-hand lane. Rules are stored
+  by lane index (`RegionGraph::lane_connections`, saved as `from_lane` / `to_lane`) and the
+  connector builder and router read them so: saved rules keep their meaning, only the editor drew
+  them mirrored, so a junction edited before the fix shows its crossed rules as crossed now. One
+  vehicle rule puts the whole node in whitelist mode, and an approach lane without a listed
+  connection to a lane leaving the node (a listed U-turn counts) gets no connector, so every route
+  through it fails ("no turn from lane"). Rust flags such a lane (`no_movement` on its handle,
+  `lanes::approach_lane_lacks_movement`, `O(the lane's rules)`); the select tool draws it orange
+  and labelled "e*N* no turn", and the Junction window shows a warning above its rows with the count
+  and the fix (drag a turn from each, or right-click to clear the junction's rules). A lane rule edit publishes no render generation (`ROAD-120`), so the select tool redraws the
+  handles itself and signals `lane_rules_changed`, on which the window counts again. The handle
+  query walks the node's arms instead of every edge of the graph and skips deleted edges. Tests:
+  `nodes::sim::query::lanes::tests::lane_handles_run_across_the_road_in_lane_order_at_both_edge_ends`
+  (handle order against `vehicle_lane_offset` and the built lanes' ends, 2+2, 3+1 and 1+3 arms of a
+  T, at edge starts and ends; fails on the mirrored row),
+  `..::approach_lanes_without_a_movement_are_flagged_as_the_connectors_leave_them` (open node
+  none; one rule flags exactly the approach lanes the builder leaves without a connector; a rule
+  to an arriving lane is no movement, a listed U-turn is one) and the Junction window's bridge
+  test `godot/tests/road_pocket_test.gd` (the divided arm's inner lane handle nearest the centre
+  line; one rule flags four lanes and the warning counts them; clearing lifts it). Timing level F
+  (the path rule's: `simulation/network/lanes` is a per-frame path, `nodes/sim/query` unlisted; no
+  frame runs the new code), FRESH 2026-11-16 09:03-09:11, one boot, eight workers on the
+  performance cores, control `dev` `c07f6aa0` (the `SAVE-07` binary, same code), branch
+  `road-119`: 30k 1x day level on every compared metric (mean 2.295 / 2.288 ms, p99 3.83 / 3.83,
+  p99.9 4.16 / 4.18, max unpreempted 5.29 / 5.03, `load_s` 2.27 / 2.27; acceptance passes on
+  both); 30k 32x C B B C level on mean (4.48 / 4.49 ms), p99 (6.96 / 6.87) and max unpreempted
+  (8.24 / 7.99). Its p99.9 reads "better" (9.43 / 7.51 ms) only from one control run's 11.09 ms
+  (the other 7.77, the branch 7.52 and 7.49): noise, not a gain. The control's cached 1x day
+  failed calibration on that same run's p99.9 (+38.8%), so its 1x day was timed afresh.
 - **Removed with it** (round R5c2): Road Properties' Turn pocket section and its select-tool
   wiring (the end highlight on road selection, the stored click point, `selected_pocket_end`,
   `follow_click_selection`) and the Rust query only it used, `nearest_road_pocket_end`
