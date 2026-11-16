@@ -237,3 +237,58 @@ fn a_road_beyond_the_cap_off_a_tiles_corner_leaves_it_on_its_base() {
         }
     }
 }
+
+// `ROAD-116`: a query rectangle inside one tile's apron (a ray's tile grown by its lattice
+// apron, a point's cell) reads that tile's inputs alone, and the indexed preparation sorts only
+// the seams it lists. On the sloped reference T, whose roads cross the tile corner at the
+// origin, rays over every tile around it and points along the tile lines answer bitwise as the
+// index-free gather does, through one scratch reused across queries as the road tool's pick
+// reuses its own.
+#[test]
+fn single_tile_reads_answer_as_the_index_free_gather() {
+    let (_, strokes, order) = reference_fixtures().swap_remove(0);
+    let mut core = committed(&strokes, &order, false);
+    reset_and_commit(&mut core, 0, 20.48);
+    let cell_m = core.config.zone_cell_m;
+    core.allocator.prepare_building_site_query_index(cell_m);
+    let surface = GradedSurface {
+        terrain: &core.heightmap,
+        roadbed: &core.transit_network.roadbed,
+        sites: &core.allocator,
+        query_index: Some(&core.terrain_query_index),
+    };
+    let reference = GradedSurface {
+        query_index: None,
+        ..surface
+    };
+    let mut scratch = QueryScratch::default();
+    let mut hits = 0;
+    for i in 0..24 {
+        for j in 0..24 {
+            let origin = [-150.0 + 13.1 * f64::from(i), 90.0, -150.0 + 12.7 * f64::from(j)];
+            let direction = [0.45 - 0.04 * f64::from(j), -0.6, 0.4 - 0.035 * f64::from(i)];
+            let indexed = surface.raycast_surface(origin, direction, &mut scratch);
+            let expected =
+                reference.raycast_surface(origin, direction, &mut QueryScratch::default());
+            assert_eq!(
+                indexed.map(|hit| hit.map(f64::to_bits)),
+                expected.map(|hit| hit.map(f64::to_bits)),
+                "ray from {origin:?} along {direction:?}"
+            );
+            hits += usize::from(indexed.is_some());
+        }
+    }
+    assert!(hits > 400, "{hits} rays hit the surface");
+    for line in [-64.0, 0.0, 64.0] {
+        for k in 0..80 {
+            let along = -100.0 + 2.53 * f64::from(k);
+            for offset in [-0.6, -0.5, -0.2, 0.0, 0.3, 0.5, 0.7] {
+                for (x, z) in [(line + offset, along), (along, line + offset)] {
+                    let indexed = surface.ground_height_at(x, z, &mut scratch);
+                    let expected = reference.ground_height_at(x, z, &mut QueryScratch::default());
+                    assert_eq!(indexed.to_bits(), expected.to_bits(), "({x}, {z})");
+                }
+            }
+        }
+    }
+}

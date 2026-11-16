@@ -93,9 +93,10 @@ impl Default for TerrainQueryIndex {
 }
 
 impl TerrainQueryIndex {
-    /// Collects the canonical owner ids from every indexed tile `rect` touches. A point reads
-    /// one tile; a prepared vehicle-support window may read up to four. Duplicate owners at a
-    /// tile boundary collapse back to the roadbed gather's ascending piece order.
+    /// Collects the canonical owner ids from every indexed tile `rect` touches, or from the one
+    /// present tile whose apron holds `rect`. A point reads one tile; a prepared vehicle-support
+    /// window may read up to four. Duplicate owners at a tile boundary collapse back to the
+    /// roadbed gather's ascending piece order.
     pub(super) fn gather(
         &self,
         rect: [f64; 4],
@@ -107,8 +108,23 @@ impl TerrainQueryIndex {
         if !self.ready {
             return false;
         }
-        let first = TileKey::at(rect[0], rect[1]);
-        let last = TileKey::at(rect[2], rect[3]);
+        // A rectangle inside one present tile's apron reads that tile alone (`ROAD-116`: a
+        // ray's tile, grown by its lattice apron, touches nine). Its lists already hold every
+        // input of such a query: they were gathered over the apron grown by the cap and the
+        // window pad, and its coverage over the apron grown by 0.02 m, against the query's
+        // 0.01 m, and the gathers below filter each input against the query's own bounds, so
+        // the prepared seams, walls, portals and coverage equal the whole range's bitwise.
+        let centre = TileKey::at(0.5 * (rect[0] + rect[2]), 0.5 * (rect[1] + rect[3]));
+        let apron = tile_apron(centre);
+        let inside = apron[0] <= rect[0]
+            && apron[1] <= rect[1]
+            && rect[2] <= apron[2]
+            && rect[3] <= apron[3];
+        let (first, last) = if inside && self.tiles.contains_key(&centre) {
+            (centre, centre)
+        } else {
+            (TileKey::at(rect[0], rect[1]), TileKey::at(rect[2], rect[3]))
+        };
         let mut found = false;
         for x in first.x..=last.x {
             for z in first.z..=last.z {
@@ -274,8 +290,7 @@ impl TerrainQueryIndex {
     }
 
     fn rebuild_tile(&mut self, key: TileKey, roadbed: &RoadbedSystem, sites: &BuildingAllocator) {
-        let [x, z] = key.origin();
-        let rect = grown([x, z, x + TILE_M, z + TILE_M], QUERY_APRON_M);
+        let rect = tile_apron(key);
         let window = grown(rect, CAP_M + WINDOW_PAD_M);
         let mut inputs = QueryTileInputs::default();
         roadbed.grounded_pieces_in_bounds(window, &mut inputs.road_pieces);
@@ -370,6 +385,13 @@ impl TerrainQueryIndex {
         }
         "unknown".into()
     }
+}
+
+// A tile grown by the query apron: the rectangle its inputs answer, one expression for the
+// rebuild and the gather's single-tile test.
+fn tile_apron(key: TileKey) -> [f64; 4] {
+    let [x, z] = key.origin();
+    grown([x, z, x + TILE_M, z + TILE_M], QUERY_APRON_M)
 }
 
 fn push_tiles([min_x, min_z, max_x, max_z]: [f64; 4], out: &mut BTreeSet<TileKey>) {

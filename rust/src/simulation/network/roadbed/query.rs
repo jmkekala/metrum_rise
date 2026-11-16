@@ -711,6 +711,26 @@ impl RoadbedSystem {
         out: &mut Vec<([RoadVec3; 2], bool)>,
     ) {
         out.clear();
+        self.for_each_grounded_seam_from_pieces(bounds_xz, pieces, |segment, retained| {
+            out.push((segment, retained))
+        });
+        let key = |([a, b], retained): &([RoadVec3; 2], bool)| {
+            ([a.x, a.y, a.z, b.x, b.y, b.z].map(f64::to_bits), *retained)
+        };
+        out.sort_unstable_by_key(key);
+        out.dedup_by_key(|segment| key(segment).0);
+    }
+
+    /// [`Self::grounded_seams_from_pieces`] unsorted, in piece and chain order: a segment two
+    /// pieces share is visited twice (`ROAD-116`: a caller that keeps a few of them sorts only
+    /// those). `O(V / 8 + S)` for the pieces' seam blocks and the `S` segments of the blocks
+    /// that meet the bounds.
+    pub(crate) fn for_each_grounded_seam_from_pieces(
+        &self,
+        bounds_xz: [f64; 4],
+        pieces: &[PieceId],
+        mut visit: impl FnMut([RoadVec3; 2], bool),
+    ) {
         for id in pieces {
             let Some(published) = self.pieces.get(id).filter(|piece| piece.grounded()) else {
                 continue;
@@ -726,16 +746,11 @@ impl RoadbedSystem {
                     let [a, b] = [pair[0], pair[1]].map(|v| mesh.positions()[v as usize]);
                     let segment = [a.x.min(b.x), a.z.min(b.z), a.x.max(b.x), a.z.max(b.z)];
                     if bounds_intersect(segment, bounds_xz) {
-                        out.push(([a, b], mesh.retained()));
+                        visit([a, b], mesh.retained());
                     }
                 }
             }
         }
-        let key = |([a, b], retained): &([RoadVec3; 2], bool)| {
-            ([a.x, a.y, a.z, b.x, b.y, b.z].map(f64::to_bits), *retained)
-        };
-        out.sort_unstable_by_key(key);
-        out.dedup_by_key(|segment| key(segment).0);
     }
 
     /// [`Self::grounded_seams_in_bounds`] unsorted, in piece and chain order, each segment with

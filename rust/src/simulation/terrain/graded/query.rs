@@ -83,7 +83,6 @@ pub struct QueryScratch {
     pieces: Vec<PieceId>,
     indexed_road_pieces: Vec<PieceId>,
     indexed_coverage_pieces: Vec<PieceId>,
-    road_segments: Vec<([RoadVec3; 2], bool)>,
     wall_segments: Vec<WallSegment>,
     walls: Vec<Seam>,
     sites: SiteBuffer,
@@ -587,11 +586,38 @@ impl GradedSurface<'_> {
                     &mut scratch.coverage,
                 );
                 scratch.sites.gather_unordered(self.sites, window);
-                self.roadbed.grounded_seams_from_pieces(
+                // Only the listed seams are sorted (`ROAD-116`): the window's road seams come
+                // out in the order and with the duplicates dropped exactly as from the sorted
+                // gather (a seam's listing reads its geometry alone, so a segment two pieces
+                // share is listed for both or for neither). The rest stays in piece order, as
+                // the index-free gather leaves it: its readers take minima, maxima and
+                // emptiness only.
+                let QueryScratch {
+                    window: listed,
+                    rest,
+                    indexed_road_pieces,
+                    ..
+                } = &mut *scratch;
+                self.roadbed.for_each_grounded_seam_from_pieces(
                     window,
-                    &scratch.indexed_road_pieces,
-                    &mut scratch.road_segments,
+                    indexed_road_pieces,
+                    |[a, b], retained| {
+                        let seam = Seam {
+                            retained,
+                            ..road_seam(a, b)
+                        };
+                        if binds(&seam, band) {
+                            listed.push(seam);
+                        } else {
+                            let distance = box_distance(seam.box_xz(), rect);
+                            if distance <= CAP_M + WINDOW_PAD_M {
+                                rest.push((seam, distance));
+                            }
+                        }
+                    },
                 );
+                listed.sort_unstable_by_key(Seam::order);
+                listed.dedup_by_key(|seam| seam.key());
                 scratch.walls.clear();
                 self.roadbed.wall_seams_in_bounds(
                     window,
@@ -610,20 +636,6 @@ impl GradedSurface<'_> {
                 scratch
                     .portals
                     .gather(self.roadbed, rect, &scratch.indexed_road_pieces);
-                for &([a, b], retained) in &scratch.road_segments {
-                    let seam = Seam {
-                        retained,
-                        ..road_seam(a, b)
-                    };
-                    if binds(&seam, band) {
-                        scratch.window.push(seam);
-                    } else {
-                        let distance = box_distance(seam.box_xz(), rect);
-                        if distance <= CAP_M + WINDOW_PAD_M {
-                            scratch.rest.push((seam, distance));
-                        }
-                    }
-                }
                 let roads = scratch.window.len();
                 scratch.sites.for_each_pad_seam_where(
                     |bounds, _| meets(bounds, window),
