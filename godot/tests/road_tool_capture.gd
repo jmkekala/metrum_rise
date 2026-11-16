@@ -301,9 +301,10 @@ func _capture_ui1() -> void:
 	_expect(String(frame["snap"]) == "guide" and absf(frame["cursor"].x - start.x) < 0.01, "the square lock holds a branch 6 degrees off (%s)" % frame["snap"])
 	_ray(near_square)
 	await _capture("ui1_square_lock")
-	_ray(Vector3(270.0, 0.0, 30.0))
+	# 60 degrees off the road, 30 off square: free.
+	_ray(Vector3(255.0, 0.0, 43.3))
 	_expect(String(_simulation.road_tool_frame()["snap"]) == "free", "an oblique branch is free")
-	_ray(Vector3(270.0, 0.0, 30.0))
+	_ray(Vector3(255.0, 0.0, 43.3))
 	await _capture("ui1_corner_arc_oblique")
 	_tool.cancel_road()
 	_camera.position = Vector3(290.0, 110.0, 110.0)
