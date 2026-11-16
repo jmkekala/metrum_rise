@@ -141,7 +141,7 @@ fn curve_warnings_and_refusals() {
 }
 
 // A chained stroke's start angle against the stroke before it: 180 straight on, 90 square, as
-// whole degrees.
+// whole degrees; round UI1: the chip at the middle of the corner's 12 m arc about the joint.
 #[test]
 fn chained_start_angle() {
     for (end, expected) in [((-120.0, 200.0), 180.0), ((-200.0, 280.0), 90.0)] {
@@ -153,7 +153,14 @@ fn chained_start_angle() {
         let angles = labels_of(tool.frame(), LabelKind::Angle);
         assert_eq!(angles.len(), 1, "{:?}", kinds(tool.frame()));
         assert_eq!(angles[0].value, expected);
-        assert_eq!(angles[0].anchor.x, -200.0);
+        let anchor = d(f64::from(angles[0].anchor.x), f64::from(angles[0].anchor.z));
+        assert!(((anchor - d(-200.0, 200.0)).length() - 12.0).abs() < 1e-3);
+        assert!(
+            tool.frame()
+                .gizmos
+                .line_classes
+                .contains(&GizmoLineClass::CornerArc)
+        );
     }
 }
 

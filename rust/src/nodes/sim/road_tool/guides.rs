@@ -19,7 +19,12 @@
 //! class changes, at the crossing found by bisection, so the two sets meet without a gap.
 //!
 //! Alignment: a guide line that holds the cursor is drawn from where it comes from (the dead
-//! end, node or anchor it is anchored on) through the snapped point and [`GUIDE_PAST_M`] past it.
+//! end, node or anchor it is anchored on) through the snapped point and [`GUIDE_PAST_M`] past it;
+//! the guide lines near the cursor that have not taken it are drawn faint the same way through
+//! the cursor's foot on them (round UI1).
+//!
+//! Corners (round UI1): where the draft meets a road at an end, an arc about the joint spans the
+//! corner between the draft and the road ([`Corner`]) and the angle chip sits at its middle.
 //!
 //! Grid curbs (round V item 8): the zoning-grid snap (`RoadGridSnap`) puts the road's curbs,
 //! sidewalks included, on cell lines: [`grid_curb_offset_m`] from the centreline, of the same
@@ -29,7 +34,7 @@
 //! a road past its last full cell line).
 
 use super::frame::{GizmoLineClass, Gizmos};
-use super::measure::RoadTypeSpec;
+use super::measure::{EndRoad, RoadTypeSpec};
 use super::pick::lane_width_m;
 use super::snap::GuideLine;
 use crate::config::SIDEWALK_WIDTH;
@@ -40,6 +45,8 @@ use godot::prelude::Vector3;
 
 /// Metres an alignment guide runs on past the snapped point.
 pub const GUIDE_PAST_M: f64 = 12.0;
+/// Degrees of a corner arc per chord (round UI1).
+pub const ARC_STEP_DEG: f64 = 5.0;
 // Chords of a zoning-depth circle.
 const CIRCLE_CHORDS: usize = 64;
 // Half the length of a grid curb's tick, in metres.
@@ -255,11 +262,121 @@ fn distance_below(line: &[DVec2], boxes: &[(DVec2, DVec2)], p: DVec2, limit: f64
 /// origin (the road end, node or anchor it comes from) through `snapped` and [`GUIDE_PAST_M`]
 /// on. `O(1)`.
 pub fn push_alignment_guide(gizmos: &mut Gizmos, guide: GuideLine, snapped: DVec2, y: f32) {
-    let along = (snapped - guide.origin).dot(guide.dir);
+    push_guide_line(gizmos, GizmoLineClass::Guide, guide, snapped, y);
+}
+
+/// Pushes a faint guide line near the cursor `raw` that has not taken it (round UI1,
+/// `snap::near_guides`): from its origin through the cursor's foot on it and [`GUIDE_PAST_M`]
+/// on. `O(1)`.
+pub fn push_near_guide(gizmos: &mut Gizmos, guide: GuideLine, raw: DVec2, y: f32) {
+    push_guide_line(
+        gizmos,
+        GizmoLineClass::GuideNear,
+        guide,
+        guide.project(raw),
+        y,
+    );
+}
+
+// A guide line from its origin through `through` (on it) and `GUIDE_PAST_M` on.
+fn push_guide_line(
+    gizmos: &mut Gizmos,
+    class: GizmoLineClass,
+    guide: GuideLine,
+    through: DVec2,
+    y: f32,
+) {
+    let along = (through - guide.origin).dot(guide.dir);
     // The guide runs both ways from its origin: draw the half the cursor is on.
     let dir = if along < 0.0 { -guide.dir } else { guide.dir };
     let past = guide.origin + dir * (along.abs() + GUIDE_PAST_M);
-    gizmos.push_line(GizmoLineClass::Guide, [at(guide.origin, y), at(past, y)]);
+    gizmos.push_line(class, [at(guide.origin, y), at(past, y)]);
+}
+
+/// The corner where a draft meets a road at one of its ends (round UI1): the joint, the arc's
+/// radius, the draft's unit direction leaving the joint and the road's ray from it that bounds
+/// the corner, and the corner's angle in degrees (`0..=180`, unrounded).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Corner {
+    /// The joint in XZ.
+    pub joint: DVec2,
+    /// The draft's unit direction leaving the joint.
+    pub leaving: DVec2,
+    /// The road's unit ray from the joint on the corner's other side.
+    pub road: DVec2,
+    /// The angle between `leaving` and `road` in degrees.
+    pub angle_deg: f64,
+}
+
+impl Corner {
+    /// The corner between a draft leaving `joint` along `leaving` and `road`: out of a dead end
+    /// (`Continue`) the road's ray back into it; against a road through the point (`Along`) the
+    /// sense of the road nearer to the draft, the smaller corner (the acute angle the chip
+    /// showed before). When both corners read the same whole degree (a square join)
+    /// the one on `leaving.perp()`'s side: the right of the new road seen from above with north
+    /// up. `None` without a direction. `O(1)`.
+    pub fn new(joint: DVec2, leaving: DVec2, road: EndRoad) -> Option<Self> {
+        let leaving = leaving.try_normalize()?;
+        let angle = |ray: DVec2| {
+            leaving
+                .perp_dot(ray)
+                .abs()
+                .atan2(leaving.dot(ray))
+                .to_degrees()
+        };
+        let road = match road {
+            EndRoad::Continue(direction) => -direction.try_normalize()?,
+            EndRoad::Along(direction) => {
+                let direction = direction.try_normalize()?;
+                let (forward, backward) = (angle(direction), angle(-direction));
+                if forward.round() == backward.round() {
+                    if leaving.perp_dot(direction) > 0.0 {
+                        direction
+                    } else {
+                        -direction
+                    }
+                } else if forward < backward {
+                    direction
+                } else {
+                    -direction
+                }
+            }
+        };
+        Some(Self {
+            joint,
+            leaving,
+            road,
+            angle_deg: angle(road),
+        })
+    }
+
+    // The unit direction at `fraction` of the turn from `leaving` to `road`.
+    fn direction_at(&self, fraction: f64) -> DVec2 {
+        let sense = if self.leaving.perp_dot(self.road) < 0.0 {
+            -1.0
+        } else {
+            1.0
+        };
+        DVec2::from_angle(sense * (self.angle_deg * fraction).to_radians()).rotate(self.leaving)
+    }
+
+    /// Pushes the corner's arc of `radius` metres about the joint at height `y`, from the draft
+    /// to the road, one chord per [`ARC_STEP_DEG`] (at least one), unless the corner is under
+    /// half a degree; returns the chip's anchor (the arc's middle) and the unit side it is pushed
+    /// to (the corner's bisector, away from the joint). `O(chords)`.
+    pub fn push_arc(&self, gizmos: &mut Gizmos, radius: f64, y: f32) -> (Vector3, DVec2) {
+        if self.angle_deg >= 0.5 {
+            // A hair over a whole step (90 degrees read as 90 + 1e-14) takes no extra chord.
+            let chords = (self.angle_deg / ARC_STEP_DEG - 1e-9).ceil().max(1.0) as usize;
+            gizmos.begin_line(GizmoLineClass::CornerArc);
+            for index in 0..=chords {
+                let dir = self.direction_at(index as f64 / chords as f64);
+                gizmos.push_point(at(self.joint + dir * radius, y));
+            }
+        }
+        let middle = self.direction_at(0.5);
+        (at(self.joint + middle * radius, y), middle)
+    }
 }
 
 fn xz(p: Vector3) -> DVec2 {

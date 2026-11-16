@@ -23,6 +23,9 @@
 ## `METRUM_ROAD_TOOL_CAPTURE_SET=continuous_chains` writes round CT's: with Continuous on, a built
 ## S-curve and the chained one previewed from its end, then a built freeform draft and the
 ## chained one in its edit phase.
+## `METRUM_ROAD_TOOL_CAPTURE_SET=ui1` writes round UI1's: the zoning-depth guide on grass, a branch
+## from a road held square (the corner arc at 90 degrees), an oblique branch's corner arc, and the
+## alignment guide of a dead end shown faint near the cursor before it captures, then captured.
 extends SceneTree
 
 const RoadToolScript := preload("res://scripts/tools/road_tool.gd")
@@ -79,9 +82,11 @@ func _run() -> void:
 	_tool.active = true
 	_tool.begin_preview_measurement()
 	var capture_set := OS.get_environment("METRUM_ROAD_TOOL_CAPTURE_SET")
-	if capture_set in ["snapping", "scurve_freeform", "restyle", "batch_ghost", "scurve_steps", "continuous_chains"]:
+	if capture_set in ["snapping", "scurve_freeform", "restyle", "batch_ghost", "scurve_steps", "continuous_chains", "ui1"]:
 		if capture_set == "snapping":
 			await _capture_snapping()
+		elif capture_set == "ui1":
+			await _capture_ui1()
 		elif capture_set == "continuous_chains":
 			await _capture_continuous_chains()
 		elif capture_set == "scurve_steps":
@@ -261,6 +266,58 @@ func _capture_snapping() -> void:
 	_ray(near)
 	await _capture("snapping_grid_from_road")
 	_tool.zoning_grid_snap_enabled = false
+	_tool.cancel_road()
+	_tool.set_process(true)
+
+# Round UI1: a road along x from (200, 0) to (260, 0); a branch from its middle 6 degrees off
+# square (the square lock holds it, the corner arc reads 90), then oblique; a stroke towards the
+# dead end's extension, 8 m off it (faint), then 3 m off it (captured). Vertical camera rays, as
+# in round E's set.
+func _capture_ui1() -> void:
+	_tool.draw_mode = RoadToolScript.DrawMode.STRAIGHT
+	_tool._begin_stroke(Vector3(200.0, 0.0, 0.0))
+	_tool.set_scripted_pointer(true, Vector3(260.0, 0.0, 0.0))
+	await _frames(3)
+	_expect(_tool._commit_segment(Vector3(260.0, 0.0, 0.0)), "the dead-end road commits")
+	await _ack()
+	_tool.cancel_road()
+	# The zoning-depth guide on grass: a free stroke in open ground.
+	_camera.position = Vector3(150.0, 120.0, 150.0)
+	_camera.look_at(Vector3(150.0, 0.0, 70.0))
+	_tool._begin_stroke(Vector3(110.0, 0.0, 60.0))
+	_tool.set_scripted_pointer(true, Vector3(190.0, 0.0, 80.0))
+	await _capture("ui1_zoning_guide")
+	_tool.cancel_road()
+	_camera.position = Vector3(240.0, 110.0, 110.0)
+	_camera.look_at(Vector3(240.0, 0.0, 25.0))
+	_tool.set_process(false)
+	_tool.set_scripted_pointer(false)
+	_ray(Vector3(230.0, 0.0, 0.5))
+	_tool._read_press(_simulation.road_tool_event("press"))
+	var start: Vector3 = _simulation.road_tool_frame()["cursor"]
+	var near_square := Vector3(230.0 + 50.0 * sin(deg_to_rad(6.0)), 0.0, 50.0 * cos(deg_to_rad(6.0)))
+	_ray(near_square)
+	var frame: Dictionary = _simulation.road_tool_frame()
+	_expect(String(frame["snap"]) == "guide" and absf(frame["cursor"].x - start.x) < 0.01, "the square lock holds a branch 6 degrees off (%s)" % frame["snap"])
+	_ray(near_square)
+	await _capture("ui1_square_lock")
+	_ray(Vector3(270.0, 0.0, 30.0))
+	_expect(String(_simulation.road_tool_frame()["snap"]) == "free", "an oblique branch is free")
+	_ray(Vector3(270.0, 0.0, 30.0))
+	await _capture("ui1_corner_arc_oblique")
+	_tool.cancel_road()
+	_camera.position = Vector3(290.0, 110.0, 110.0)
+	_camera.look_at(Vector3(290.0, 0.0, 25.0))
+	_ray(Vector3(280.0, 0.0, 50.0))
+	_tool._read_press(_simulation.road_tool_event("press"))
+	_ray(Vector3(310.0, 0.0, 8.0))
+	_expect(String(_simulation.road_tool_frame()["snap"]) == "free", "8 m off the dead end's extension the cursor is free")
+	_ray(Vector3(310.0, 0.0, 8.0))
+	await _capture("ui1_guide_faint")
+	_ray(Vector3(310.0, 0.0, 3.0))
+	_expect(String(_simulation.road_tool_frame()["snap"]) == "guide", "3 m off the dead end's extension the guide takes the cursor")
+	_ray(Vector3(310.0, 0.0, 3.0))
+	await _capture("ui1_guide_captured")
 	_tool.cancel_road()
 	_tool.set_process(true)
 

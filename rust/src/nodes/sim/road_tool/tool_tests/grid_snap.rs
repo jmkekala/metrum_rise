@@ -125,6 +125,7 @@ fn grid_snap_on_a_road_takes_the_centreline_at_the_grid_position() {
             network: Some((snap, direction)),
             grid: Some((point, None)),
             grid_edge: on,
+            square: None,
         }
     };
     for spec in branch_types() {
@@ -234,7 +235,11 @@ fn session_grid_snap_on_a_road() {
     assert!((f64::from(end.position.z) + 60.0).abs() < MM, "{end:?}");
 }
 
-// Grid off (the default, and with an angle lock): the frames `dev` `73173102` gave.
+// Grid off (the default, and with an angle lock): the frames `dev` `73173102` gave, re-recorded
+// by round UI1 (the round's four changes off, the old digest held): its strokes start and end on
+// roads, so the frames gain the corner arcs and faint guides and the angle chips move to the
+// arcs; with those drawing changes off too the digest still differs, as the 4 m guide reach and
+// the square lock snap some of the trail's ends.
 #[test]
 fn grid_off_frames_are_unchanged() {
     let mut frames = Vec::new();
@@ -247,7 +252,7 @@ fn grid_off_frames_are_unchanged() {
     assert!(frames.iter().any(|frame| frame.contains("snap: Node")));
     assert_eq!(
         (frames.len(), frames_digest(&frames)),
-        (36, 0xa963_164f_3707_3a24)
+        (36, 0x9600_a727_6994_283d)
     );
 }
 
@@ -436,10 +441,18 @@ fn grid_rule_over_every_start_and_drag() {
     // (drag, grid, expected for each start).
     let cases = [
         (Drag::Perpendicular, true, [Grid(K::Grid); 4]),
+        // Round UI1: the chain's first stroke ends 3.3 m off the road start's perpendicular, in
+        // the guide's 4 m reach, so the chain runs along it and its drag 0.9 m off its axis
+        // takes the axis (a guide, the square lock) as a road start's does.
         (
             Drag::Perpendicular,
             false,
-            [Kind(K::Free), Kind(K::Guide), Kind(K::Guide), Kind(K::Free)],
+            [
+                Kind(K::Free),
+                Kind(K::Guide),
+                Kind(K::Guide),
+                Kind(K::Guide),
+            ],
         ),
         (Drag::Oblique, true, [Kind(K::Free); 4]),
         (Drag::Oblique, false, [Kind(K::Free); 4]),

@@ -10,13 +10,15 @@
 //! the plan length of each straight or Bezier piece at its middle, the radius at each arc's
 //! middle, the total plan length at the path's middle when there is more than one piece (or the
 //! only piece is an arc), the angle where the stroke meets a road at either end (180 degrees is
-//! straight on out of a dead end; a road through the point reads its acute angle) or bends at a
-//! freeform joint, and near the end the cost, the bearing and the design speed (amber below the
+//! straight on out of a dead end; a road through the point reads its acute angle; round UI1: at
+//! the middle of the corner's arc, [`Corner`]) or bends at a freeform joint, and near the end the cost, the bearing and the design speed (amber below the
 //! road's speed limit). The bridge adds what the preview knows ([`apply_preview`]): the class
 //! priced cost, the steepest grade (from 0.5 %) and one notice for a refusal or a warning.
 //! There is no upkeep chip (the user, 2026-11-14). Each end off its ground gets a height chip
 //! (round H2, [`super::height::ground_marks::push_height_labels`]).
 
+use super::frame::Gizmos;
+use super::guides::Corner;
 use super::measure::{EndRoad, HudValues};
 use super::modes::DrawMode;
 use crate::simulation::network::guide::{DVec2, GuidePath, GuideSegment};
@@ -24,6 +26,8 @@ use godot::prelude::{Vector2, Vector3};
 
 // A freeform joint bending more than this many degrees gets an angle chip.
 const BEND_MIN_DEG: f64 = 0.5;
+/// The radius of an end's corner arc in metres (round UI1), at most half the draft's plan length.
+pub const CORNER_ARC_M: f64 = 12.0;
 /// The steepest grade the slope chip shows, as a fraction (0.5 %).
 pub const SLOPE_MIN_GRADE: f64 = 0.005;
 // Rows a chip may step through before it stays at its last candidate.
@@ -199,8 +203,10 @@ pub struct PreviewFacts {
 
 /// Appends the chips of a draft: `path` is its guide, `stroke` its stroke request's points,
 /// `hud` its numbers, `start_road` and `end_road` the roads met at its ends, `refused` whether
-/// the session refuses it (a notice chip at the end). `O(pieces)`, no allocation beyond growing
-/// `out`.
+/// the session refuses it (a notice chip at the end). Each end on a road also pushes its corner
+/// arc into `gizmos` (round UI1, [`Corner`]), its angle chip at the arc's middle.
+/// `O(pieces + arc chords)`, no allocation beyond growing `out` and the gizmo buffers.
+#[allow(clippy::too_many_arguments)]
 pub fn push_draft_labels(
     path: &GuidePath,
     stroke: &[Vector3],
@@ -209,6 +215,7 @@ pub fn push_draft_labels(
     end_road: Option<EndRoad>,
     refused: bool,
     out: &mut Vec<ToolLabel>,
+    gizmos: &mut Gizmos,
 ) {
     let (Some(first), Some(last)) = (stroke.first(), stroke.last()) else {
         return;
@@ -299,22 +306,23 @@ pub fn push_draft_labels(
         ));
     }
     let start_tangent = path.start_tangent().unwrap_or(DVec2::X);
-    if let Some(road) = start_road {
-        // Behind the start: the draft leaves forward.
+    let first_xz = DVec2::new(f64::from(first.x), f64::from(first.z));
+    // Round UI1: each end on a road gets the arc in its corner, the chip at the arc's middle.
+    // Arriving at a dead end straight on runs against its outward direction.
+    let radius = CORNER_ARC_M.min(total * 0.5);
+    for (joint, leaving, road, y) in [
+        (first_xz, start_tangent, start_road, first.y),
+        (end_xz, -end_tangent, end_road, last.y),
+    ] {
+        let Some(corner) = road.and_then(|road| Corner::new(joint, leaving, road)) else {
+            continue;
+        };
+        let (anchor, side) = corner.push_arc(gizmos, radius, y);
         out.push(label(
             LabelKind::Angle,
-            road_angle_deg(start_tangent, road),
-            *first,
-            -start_tangent,
-        ));
-    }
-    if let Some(road) = end_road {
-        // Arriving at a dead end straight on runs against its outward direction.
-        out.push(label(
-            LabelKind::Angle,
-            road_angle_deg(-end_tangent, road),
-            at(total, end_xz),
-            end_tangent,
+            corner.angle_deg.round(),
+            anchor,
+            side,
         ));
     }
 }
@@ -456,17 +464,4 @@ fn segment_at(segments: &[GuideSegment], mut s: f64) -> (&GuideSegment, f64) {
 // Degrees between two unit directions, `0..=180`.
 fn deflection_deg(a: DVec2, b: DVec2) -> f64 {
     a.perp_dot(b).abs().atan2(a.dot(b)).to_degrees()
-}
-
-/// The angle a chip shows where the draft, leaving the joint along `leaving`, meets `road`:
-/// out of a dead end the angle between the two roads (180 straight on), against a road through
-/// the point the acute angle (`0..=90`), whole degrees.
-pub fn road_angle_deg(leaving: DVec2, road: EndRoad) -> f64 {
-    match road {
-        EndRoad::Continue(direction) => (180.0 - deflection_deg(leaving, direction)).round(),
-        EndRoad::Along(direction) => {
-            let angle = deflection_deg(leaving, direction);
-            angle.min(180.0 - angle).round()
-        }
-    }
 }

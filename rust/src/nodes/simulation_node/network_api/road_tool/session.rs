@@ -1214,6 +1214,8 @@ fn set_gizmos(dict: &mut VarDictionary, gizmos: &Gizmos) {
         GizmoLineClass::ZoningInside => 5,
         GizmoLineClass::GridCurb => 6,
         GizmoLineClass::GroundMarker => 7,
+        GizmoLineClass::GuideNear => 8,
+        GizmoLineClass::CornerArc => 9,
     };
     let handle_kind = |kind: &GizmoHandleKind| match kind {
         GizmoHandleKind::Endpoint => 0,
@@ -1296,7 +1298,9 @@ const LINE_ATTRIBUTES: usize = 5;
 pub(super) enum LineStyle {
     /// The draft's centreline.
     Stroke = 0,
-    /// Every guide line in one look (round V item 6; a height handle's stem too, round V2).
+    /// Every guide line in one look (round V item 6; a height handle's stem too, round V2); since
+    /// round UI1 the tangent legs, control polygons and stems, the alignment guides having
+    /// their own.
     Guide = 1,
     /// The zoning guide's outside (item 9).
     ZoningOutside = 2,
@@ -1316,16 +1320,23 @@ pub(super) enum LineStyle {
     HueOutlineChecking = 9,
     /// The same, the draft refused.
     HueOutlineRefused = 10,
+    /// The alignment guide that took the cursor and the angle lock's ray (round UI1: thicker and
+    /// more opaque than the shared guide look).
+    Alignment = 11,
+    /// A guide line near the cursor that has not taken it (round UI1), faint.
+    GuideNear = 12,
+    /// An end's corner arc (round UI1).
+    CornerArc = 13,
 }
 
 // A strip class's look.
 fn line_style(class: GizmoLineClass) -> LineStyle {
     match class {
         GizmoLineClass::Draft => LineStyle::Stroke,
-        GizmoLineClass::Guide
-        | GizmoLineClass::Angle
-        | GizmoLineClass::Tangent
-        | GizmoLineClass::HeightStem => LineStyle::Guide,
+        GizmoLineClass::Guide | GizmoLineClass::Angle => LineStyle::Alignment,
+        GizmoLineClass::GuideNear => LineStyle::GuideNear,
+        GizmoLineClass::CornerArc => LineStyle::CornerArc,
+        GizmoLineClass::Tangent | GizmoLineClass::HeightStem => LineStyle::Guide,
         GizmoLineClass::ZoningOutside => LineStyle::ZoningOutside,
         GizmoLineClass::ZoningInside => LineStyle::ZoningInside,
         GizmoLineClass::GridCurb => LineStyle::GridCurb,

@@ -332,7 +332,10 @@ enum Step {
 
 // Continuous off: chains in every mode, mode changes at a chained start, freeform placing and
 // cancels give the frames `dev` `8855c25f` gave (digest recorded there); Continuous on, a
-// straight chain likewise (the simple curve's now leaves along the tangent exactly).
+// straight chain likewise (the simple curve's now leaves along the tangent exactly). Re-recorded
+// by round UI1 (the round's changes off, the old digest held; its drawing changes alone off, the
+// 4 m reach and the square lock on, it held too): the chained starts gain their corner arcs and
+// faint guides and the angle chips move to the arcs; no snapped point changed.
 #[test]
 fn continuous_off_and_straight_curve_chains_are_unchanged() {
     use RoadToolAction::{Cancel, Confirm, ModeComplexCurve, ModeFreeform, ModeSimpleCurve};
@@ -379,6 +382,6 @@ fn continuous_off_and_straight_curve_chains_are_unchanged() {
     run_script(&mut tool, &on, &mut frames);
     assert_eq!(
         (frames.len(), frames_digest(&frames)),
-        (58, 0x2259_b84d_6713_cfb6)
+        (58, 0x59a9_8956_2034_85fa)
     );
 }

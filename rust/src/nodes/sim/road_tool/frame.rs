@@ -83,6 +83,12 @@ pub enum GizmoLineClass {
     Draft,
     /// The guide line that took the cursor.
     Guide,
+    /// A guide line near the cursor that has not taken it (round UI1), drawn faint so the player
+    /// can find it.
+    GuideNear,
+    /// The arc in the corner where the draft meets a road at an end (round UI1), its angle chip
+    /// at the arc's middle.
+    CornerArc,
     /// The angle lock's ray.
     Angle,
     /// A curve's tangent leg (start to control point, control point to end), the S-curve's

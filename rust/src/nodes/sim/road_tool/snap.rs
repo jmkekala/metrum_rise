@@ -7,8 +7,9 @@
 //! the zoning grid where it captured the cursor (one rule, `grid_rule`, rounds GS and GS2: with
 //! no `D` an edge in reach combines with it as [`SnapKind::GridEdge`], across the road its
 //! centreline, along it the grid's position; else the grid's point, before any guide line); else
-//! the angle lock `D` and the line `L` (a network edge in reach, else the nearest guide line
-//! within [`GUIDE_REACH_M`]) meet at their intersection when it lies within `L`'s reach of the
+//! the angle lock `D` and the line `L` (a network edge in reach, else the square guide the
+//! session's lock holds ([`square_lock`], round UI1), else the nearest guide line within
+//! [`GUIDE_REACH_M`]) meet at their intersection when it lies within `L`'s reach of the
 //! raw cursor, otherwise an edge wins over the angle and the angle over a guide line; two guide
 //! lines in reach and no `D` meet at their corner; one constraint alone projects; map-edge and
 //! self snap keep today's place when nothing above took the cursor; the length step rounds last,
@@ -30,8 +31,23 @@ use crate::simulation::network::interaction::{
 use glam::DVec2;
 use godot::prelude::Vector3;
 
-/// A guide line takes the cursor within this many metres of it.
-pub const GUIDE_REACH_M: f64 = 2.0;
+/// A guide line takes the cursor within this many metres of it (round UI1: 4 m, from 2 m). About
+/// a lane's width (3.5 m) and a margin, so a cursor anywhere over the lane next to the guide finds
+/// it; under the network snap's 5 m reach ([`super::pick::NETWORK_SNAP_REACH_M`]), whose edge
+/// keeps precedence over a guide line anyway.
+pub const GUIDE_REACH_M: f64 = 4.0;
+/// Guide lines within this many metres of the cursor that do not hold it are drawn faint (round
+/// UI1), so the player can find them before they capture: three times the reach.
+pub const GUIDE_NEAR_M: f64 = 12.0;
+/// At most this many faint guide lines are drawn ([`near_guides`]).
+pub const GUIDE_NEAR_MAX: usize = 2;
+/// The square lock (round UI1): a stroke's first leg from a road or node takes the line across the
+/// road through its start (or the road's own axis) when its direction from the start is within
+/// this many degrees of it.
+pub const SQUARE_CAPTURE_DEG: f64 = 8.0;
+/// Once taken, the square lock holds until the leg's direction is more than this many degrees off
+/// the line (hysteresis).
+pub const SQUARE_RELEASE_DEG: f64 = 12.0;
 /// Guide lines are gathered from roads and nodes within this many metres of the cursor.
 pub const GUIDE_RADIUS_M: f64 = 64.0;
 // An edge-and-angle intersection is taken within this many metres of the raw cursor: the
@@ -115,12 +131,18 @@ pub struct GuideLine {
 }
 
 impl GuideLine {
-    fn project(&self, p: DVec2) -> DVec2 {
+    /// The foot of `p` on the line.
+    pub fn project(&self, p: DVec2) -> DVec2 {
         self.origin + self.dir * (p - self.origin).dot(self.dir)
     }
 
     fn distance(&self, p: DVec2) -> f64 {
         self.dir.perp_dot(p - self.origin).abs()
+    }
+
+    // Whether `other` is the same line (parallel, either sense, through this line's origin).
+    fn same_line(&self, other: &GuideLine) -> bool {
+        self.dir.perp_dot(other.dir).abs() <= PARALLEL_SIN && other.distance(self.origin) <= 1e-9
     }
 
     // Where this line meets `other`, `None` when they are parallel.
@@ -154,6 +176,9 @@ pub struct SnapInput {
     pub grid: Option<(DVec2, Option<DVec2>)>,
     /// The edge whose centreline holds the grid's point (`RoadGridSnap::snap_road_cursor_on`).
     pub grid_edge: Option<usize>,
+    /// The square guide the session's lock holds ([`square_lock`]): it takes the cursor as the
+    /// line `L` after an edge, before any other guide line.
+    pub square: Option<GuideLine>,
 }
 
 /// The resolved cursor in XZ and what took it.
@@ -220,11 +245,15 @@ pub fn resolve(input: &SnapInput, options: &SnapOptions, guides: &[GuideLine]) -
     if let Some(snapped) = grid_rule(input, options, direction, edge) {
         return snapped;
     }
-    // The line constraint.
-    let nearest_guide = if constrained && options.guides {
-        nearest_guides(guides, input.raw)
-    } else {
-        [None; 2]
+    // The line constraint: the held square guide stands first, with the nearest guide crossing
+    // it beside it (their corner is taken near the cursor's foot on the square guide).
+    let guided = constrained && options.guides;
+    let square = input.square.filter(|_| guided);
+    let at = square.map_or(input.raw, |square| square.project(input.raw));
+    let nearest_guide = match (guided, square) {
+        (false, _) => [None; 2],
+        (true, Some(square)) => [Some((0.0, square)), nearest_crossing(guides, at, square)],
+        (true, None) => nearest_guides(guides, input.raw),
     };
     let line = edge
         .map(|(snap, guide)| LineConstraint::Edge(snap, guide))
@@ -254,7 +283,7 @@ pub fn resolve(input: &SnapInput, options: &SnapOptions, guides: &[GuideLine]) -
         // 4. Two guide lines and no direction: their corner.
         (None, Some(LineConstraint::Guide(first))) => nearest_guide[1]
             .and_then(|(_, second)| first.meet(&second))
-            .filter(|corner| corner.distance(input.raw) <= GUIDE_REACH_M)
+            .filter(|corner| corner.distance(at) <= GUIDE_REACH_M)
             .map_or_else(
                 || Snapped::at(first.project(input.raw), SnapKind::Guide),
                 |corner| Snapped::at(corner, SnapKind::GuideCorner),
@@ -321,21 +350,120 @@ pub fn holding_guides(guides: &[GuideLine], xz: DVec2) -> [Option<GuideLine>; 2]
 // The nearest guide line within reach and the nearest one in reach that crosses it (a corner
 // needs two directions); on equal distance the earlier candidate. Two passes, `O(guides)`.
 fn nearest_guides(guides: &[GuideLine], raw: DVec2) -> [Option<(f64, GuideLine)>; 2] {
-    let nearest = |accept: &dyn Fn(&GuideLine) -> bool| {
+    let first = nearest_within(guides, raw, |_| true);
+    let second = first.and_then(|(_, first)| nearest_crossing(guides, raw, first));
+    [first, second]
+}
+
+// The nearest guide line within reach of `raw` that crosses `line`. `O(guides)`.
+fn nearest_crossing(guides: &[GuideLine], raw: DVec2, line: GuideLine) -> Option<(f64, GuideLine)> {
+    nearest_within(guides, raw, |guide| {
+        line.dir.perp_dot(guide.dir).abs() > PARALLEL_SIN
+    })
+}
+
+// The nearest accepted guide line within reach of `raw`; on equal distance the earlier one.
+fn nearest_within(
+    guides: &[GuideLine],
+    raw: DVec2,
+    accept: impl Fn(&GuideLine) -> bool,
+) -> Option<(f64, GuideLine)> {
+    let mut best: Option<(f64, GuideLine)> = None;
+    for guide in guides.iter().filter(|guide| accept(guide)) {
+        let distance = guide.distance(raw);
+        if distance <= GUIDE_REACH_M && best.is_none_or(|(old, _)| distance < old) {
+            best = Some((distance, *guide));
+        }
+    }
+    best
+}
+
+/// The guide lines drawn faint (round UI1): up to [`GUIDE_NEAR_MAX`] within [`GUIDE_NEAR_M`] of
+/// the raw cursor, nearest first (on equal distance the earlier candidate), leaving out the lines
+/// in `holding` (drawn as the guides that took the cursor) and any line already chosen (two
+/// candidates on one line, such as the perpendiculars of a straight road's two arms at a node).
+/// `O(guides * GUIDE_NEAR_MAX)`, no allocation.
+pub fn near_guides(
+    guides: &[GuideLine],
+    raw: DVec2,
+    holding: [Option<GuideLine>; 2],
+) -> [Option<GuideLine>; GUIDE_NEAR_MAX] {
+    let mut near = [None; GUIDE_NEAR_MAX];
+    for slot in 0..GUIDE_NEAR_MAX {
+        let taken = |guide: &GuideLine| {
+            holding
+                .iter()
+                .chain(&near[..slot])
+                .flatten()
+                .any(|other| other.same_line(guide))
+        };
         let mut best: Option<(f64, GuideLine)> = None;
-        for guide in guides.iter().filter(|guide| accept(guide)) {
+        for guide in guides.iter().filter(|guide| !taken(guide)) {
             let distance = guide.distance(raw);
-            if distance <= GUIDE_REACH_M && best.is_none_or(|(old, _)| distance < old) {
+            if distance <= GUIDE_NEAR_M && best.is_none_or(|(old, _)| distance < old) {
                 best = Some((distance, *guide));
             }
         }
-        best
+        let Some((_, guide)) = best else {
+            break;
+        };
+        near[slot] = Some(guide);
+    }
+    near
+}
+
+/// Which line of the square lock holds a stroke's first leg ([`square_lock`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SquareAxis {
+    /// Across the road at the start: the square branch.
+    Across,
+    /// Along the road's own axis (a dead end's extension, a chain's straight continuation).
+    Along,
+}
+
+/// The square lock of round UI1: a stroke's first leg from a road or node (`reference` the road's
+/// direction at `anchor`, the start) takes the line across the road through the start, or the
+/// road's own axis, when the leg's direction from the start to `raw` is within
+/// [`SQUARE_CAPTURE_DEG`] of it (the nearer line first, across on a tie); the line `held` last
+/// pose keeps it until the direction is more than [`SQUARE_RELEASE_DEG`] off. `None` at the start
+/// itself. Returns the axis (the session keeps it for the next pose) and its guide line, the same
+/// line [`collect_guides`] gathers at the anchor. `O(1)`.
+pub fn square_lock(
+    anchor: DVec2,
+    reference: DVec2,
+    raw: DVec2,
+    held: Option<SquareAxis>,
+) -> Option<(SquareAxis, GuideLine)> {
+    let offset = raw - anchor;
+    let reference = reference.try_normalize()?;
+    if offset.length_squared() < 1e-6 {
+        return None;
+    }
+    let line = |axis| GuideLine {
+        origin: anchor,
+        dir: match axis {
+            SquareAxis::Across => reference.perp(),
+            SquareAxis::Along => reference,
+        },
     };
-    let first = nearest(&|_| true);
-    let second = first.and_then(|(_, first)| {
-        nearest(&|guide| first.dir.perp_dot(guide.dir).abs() > PARALLEL_SIN)
-    });
-    [first, second]
+    // Degrees between the leg and a full line (either sense), `0..=90`.
+    let off = |axis| {
+        let dir = line(axis).dir;
+        dir.perp_dot(offset)
+            .abs()
+            .atan2(dir.dot(offset).abs())
+            .to_degrees()
+    };
+    if let Some(axis) = held.filter(|&axis| off(axis) <= SQUARE_RELEASE_DEG) {
+        return Some((axis, line(axis)));
+    }
+    let (across, along) = (off(SquareAxis::Across), off(SquareAxis::Along));
+    let axis = if across <= along {
+        SquareAxis::Across
+    } else {
+        SquareAxis::Along
+    };
+    (across.min(along) <= SQUARE_CAPTURE_DEG).then(|| (axis, line(axis)))
 }
 
 // The zoning grid's one rule (rounds GS, GS2), after a node (which wins outright) and before

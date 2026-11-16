@@ -44,8 +44,8 @@ use super::height::handles::{
 };
 use super::height::{DraftSection, apply_grade_line, segment_draft};
 use super::guides::{
-    ZoningScratch, grid_curb_offset_m, push_alignment_guide, push_grid_curbs, push_zoning_guide,
-    zoning_depth_m,
+    ZoningScratch, grid_curb_offset_m, push_alignment_guide, push_grid_curbs, push_near_guide,
+    push_zoning_guide, zoning_depth_m,
 };
 use super::labels::{draft_hint, push_draft_labels, push_freeform_labels, push_hint};
 use super::measure::{EndRoad, RoadTypeSpec, illegal_radius_m, measure};
@@ -56,8 +56,9 @@ use super::pick::{
     level_height, pick_surface, snap_to_border,
 };
 use super::snap::{
-    GuideLine, SnapInput, SnapKind, SnapOptions, SnapScratch, Snapped, apply_length_step,
-    collect_guides, edge_direction_at, holding_guides, nearest_guide, network_snap, resolve, xz_of,
+    GuideLine, SnapInput, SnapKind, SnapOptions, SnapScratch, Snapped, SquareAxis,
+    apply_length_step, collect_guides, edge_direction_at, holding_guides, near_guides,
+    nearest_guide, network_snap, resolve, square_lock, xz_of,
 };
 use crate::nodes::sim::core::RoadToolQuerySnapshot;
 use crate::simulation::network::guide::{DVec2, GuideError, GuidePath, GuideSegment};
@@ -253,6 +254,8 @@ pub struct RoadToolSession {
     carried_aim: Option<DVec2>,
     // The retained network target and the view generation it was taken at.
     sticky: Option<(NetworkSnapTarget, u64)>,
+    // The square lock's line held last pose (round UI1, `snap::square_lock`).
+    square: Option<SquareAxis>,
     cursor: Option<Cursor>,
     shift: bool,
     ctrl: bool,
@@ -291,6 +294,7 @@ impl RoadToolSession {
             chained: false,
             carried_aim: None,
             sticky: None,
+            square: None,
             cursor: None,
             shift: false,
             ctrl: false,
@@ -971,6 +975,7 @@ impl RoadToolSession {
             Pointer::World(position) => (position, false, StructureHit::Any),
             Pointer::Scripted(position) => {
                 self.sticky = None;
+                self.square = None;
                 return Some(Cursor {
                     position,
                     raw: xz_of(position),
@@ -1049,6 +1054,19 @@ impl RoadToolSession {
         } else {
             self.scratch.guides.clear();
         }
+        // Round UI1: a first leg from a road or node takes the square lock, held across poses.
+        let square = match (anchor, reference) {
+            (Some(anchor), Some(reference))
+                if constrained
+                    && self.snap.guides
+                    && self.placed_len == 1
+                    && self.start_road.is_some() =>
+            {
+                square_lock(anchor, reference, raw_xz, self.square)
+            }
+            _ => None,
+        };
+        self.square = square.map(|(axis, _)| axis);
         let input = SnapInput {
             raw: raw_xz,
             anchor,
@@ -1057,6 +1075,7 @@ impl RoadToolSession {
             network,
             grid: grid.map(|(point, dir, _)| (point, dir)),
             grid_edge: grid.and_then(|(_, _, on)| on),
+            square: square.map(|(_, line)| line),
         };
         let mut snapped = resolve(&input, &self.snap, &self.scratch.guides);
         if snapped.kind == SnapKind::Free {
@@ -1064,7 +1083,11 @@ impl RoadToolSession {
         }
         if constrained {
             let guide = (snapped.kind == SnapKind::Guide)
-                .then(|| nearest_guide(&self.scratch.guides, raw_xz))
+                .then(|| {
+                    input
+                        .square
+                        .or_else(|| nearest_guide(&self.scratch.guides, raw_xz))
+                })
                 .flatten();
             apply_length_step(&mut snapped, anchor, self.snap.length_step_m, guide);
         }
@@ -1328,6 +1351,7 @@ impl RoadToolSession {
             end_road,
             frame.hud.tight_radius,
             &mut frame.labels,
+            &mut frame.gizmos,
         );
         frame.zoning_depth_m = zoning_depth_m(&self.spec, view.zoning_grid.cell_m());
         if let Some(depth) = frame.zoning_depth_m {
@@ -1512,7 +1536,8 @@ impl RoadToolSession {
 
     // The constraints that took the cursor, as gizmo strips: the angle lock's ray from the anchor
     // through the cursor and on past it, the guide line (both at a corner) from where it comes
-    // from through the cursor and on past it.
+    // from through the cursor and on past it; then the guide lines near the cursor that did not
+    // take it, faint (round UI1; none with guide lines off, whose candidates are empty).
     fn push_constraint_line(&mut self, cursor: Cursor) {
         let anchor = self.placed[self.placed_len - 1];
         let y = cursor.position.y;
@@ -1538,15 +1563,23 @@ impl RoadToolSession {
                 *line = GizmoLineClass::Angle;
             }
         }
+        let mut holding = [None; 2];
         if matches!(
             cursor.snapped.kind,
             SnapKind::Guide | SnapKind::GuideCorner | SnapKind::AngleGuide
         ) {
             let [first, second] = holding_guides(&self.scratch.guides, cursor.snapped.xz);
             let corner = cursor.snapped.kind == SnapKind::GuideCorner;
-            for guide in [first, second.filter(|_| corner)].into_iter().flatten() {
+            holding = [first, second.filter(|_| corner)];
+            for guide in holding.into_iter().flatten() {
                 push_alignment_guide(&mut self.frame.gizmos, guide, cursor.snapped.xz, y);
             }
+        }
+        for guide in near_guides(&self.scratch.guides, cursor.raw, holding)
+            .into_iter()
+            .flatten()
+        {
+            push_near_guide(&mut self.frame.gizmos, guide, cursor.raw, y);
         }
     }
 }

@@ -5,8 +5,10 @@
 ## stays visible where the preview terrain's grass covers the preview road. One line surface of
 ## quads Rust built (`gizmo_line_*`, each vertex carrying its look, round V2), widened to a
 ## constant on-screen width by `road_tool_line.gdshader`: the
-## stroke's centreline, solid and thick; every guide line in one look (alignment guides, the
-## angle ray, tangent legs, control polygons and handle stems), dashed and thinner; the
+## stroke's centreline, solid and thick; the alignment guide that took the cursor and the
+## angle ray dashed and strong, a guide near the cursor that has not taken it dashed and faint
+## (round UI1); tangent legs, control polygons and handle stems in one guide look, dashed and
+## thinner; an end's corner arc solid (round UI1); the
 ## zoning-depth guide's outside (and the grid snap's curbs) solid and strong, its inside solid and
 ## faint (round V item 9); the grid snap's curbs solid in their own colour (item 8). Handles (`gizmo_handles`) draw as
 ## filled round points of a constant size, all in one surface whose per-point kind (round V2)
@@ -24,9 +26,10 @@ const LineDepthShader := preload("res://scripts/shaders/road_tool_line_depth.gds
 const HandleShader := preload("res://scripts/shaders/road_tool_handle.gdshader")
 
 ## The gizmos' one palette: the line looks in the order Rust numbers them (`LineStyle`: the
-## stroke's centreline; every guide line in one colour, width and dash; the zoning guide's
-## outside and inside; the grid curbs; the batch ghost's edges, accepted and refused; an end's
-## ground marker; the footprint hue's tunnel outlines by state), the footprint hue, the batch
+## stroke's centreline; the guide look of tangent legs, control polygons and stems; the zoning
+## guide's outside and inside; the grid curbs; the batch ghost's edges, accepted and refused; an
+## end's ground marker; the footprint hue's tunnel outlines by state; the alignment guide that
+## took the cursor, a faint guide near it, an end's corner arc), the footprint hue, the batch
 ## ghost's fills, and the handles by kind (placed end, control point, chain start, live end,
 ## joint, handle).
 const PALETTE := {
@@ -35,9 +38,9 @@ const PALETTE := {
 		[Color(1.0, 1.0, 1.0, 0.82), 4.0, 0.0, 0.0],
 		[Color(0.72, 0.74, 1.0, 0.72), 2.0, 9.0, 6.0],
 		# The zoning-depth guide (round V item 9): its outside solid and strong, its inside solid
-		# and faint.
-		[Color(0.72, 0.74, 1.0, 0.9), 3.0, 0.0, 0.0],
-		[Color(0.72, 0.74, 1.0, 0.4), 2.0, 0.0, 0.0],
+		# and fainter. Round UI1: thicker and more opaque, so both read on grass.
+		[Color(0.72, 0.74, 1.0, 1.0), 5.0, 0.0, 0.0],
+		[Color(0.72, 0.74, 1.0, 0.65), 3.0, 0.0, 0.0],
 		# The grid snap's curbs (item 8): solid, in a colour that stands out on the preview road's
 		# light edges.
 		[Color(0.35, 0.82, 1.0, 0.95), 3.0, 0.0, 0.0],
@@ -53,6 +56,12 @@ const PALETTE := {
 		[Color(0.35, 0.65, 1.0, 0.85), 2.0, 0.0, 0.0],
 		[Color(1.0, 0.76, 0.18, 0.85), 2.0, 0.0, 0.0],
 		[Color(1.0, 0.40, 0.30, 0.9), 2.0, 0.0, 0.0],
+		# Round UI1: the alignment guide that took the cursor and the angle lock's ray, thicker and
+		# more opaque than the shared guide look; a guide near the cursor that has not taken it,
+		# fainter than that look; an end's corner arc, solid in the stroke's white.
+		[Color(0.72, 0.74, 1.0, 0.95), 3.5, 12.0, 5.0],
+		[Color(0.72, 0.74, 1.0, 0.45), 2.0, 9.0, 6.0],
+		[Color(1.0, 1.0, 1.0, 0.9), 2.5, 0.0, 0.0],
 	],
 	# The footprint hue's fill (round HU, `road_tool_hue.gd`) by state: valid blue, checking the
 	# chips' warning amber, refused the HUD's refusal red (also hatched); one alpha, depth-tested.

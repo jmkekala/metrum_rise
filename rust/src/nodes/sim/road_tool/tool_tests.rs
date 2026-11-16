@@ -31,6 +31,7 @@ mod heights;
 mod labels;
 mod scurve_freeform;
 mod scurve_steps;
+mod ui_guides;
 
 // One small world shared by the scripted tests: the bench neighbourhood, no background.
 pub(super) fn view() -> &'static RoadToolQuerySnapshot {
@@ -51,6 +52,7 @@ fn input(raw: DVec2) -> SnapInput {
         network: None,
         grid: None,
         grid_edge: None,
+        square: None,
     }
 }
 
@@ -133,8 +135,9 @@ fn precedence_row_3_angle_and_guide() {
     let near = resolve(&input(d(31.5, 0.5)), &locked(45.0), &guide);
     assert_eq!(near.kind, SnapKind::AngleGuide);
     assert!(close(near.xz, d(30.0, 0.0)));
-    // 1.5 m from the guide (in its reach) but the intersection 2.2 m away: the angle wins.
-    let far = resolve(&input(d(31.5, 1.6)), &locked(45.0), &guide);
+    // 1.5 m from the guide (in its reach) but the intersection 4.7 m away (round UI1's 4 m
+    // reach): the angle wins.
+    let far = resolve(&input(d(31.5, 4.5)), &locked(45.0), &guide);
     assert_eq!(far.kind, SnapKind::Angle);
     assert!(close(far.xz, d(31.5, 0.0)));
 }
@@ -456,9 +459,10 @@ fn straight_mode_sends_the_recorded_two_point_request() {
 }
 
 // The old soft 45 degree magnet goes under U2: a stroke 3 degrees off a dead end's direction
-// stays where the pointer is with the lock off (the recorded raw point; the magnet snapped it),
-// and the 45 degree lock gives the magnet's direction (its point recorded on `dev` `17207c94`
-// from the old cursor query, round R2-7).
+// stays where the pointer is with the lock and guide lines off (the recorded raw point; the
+// magnet snapped it; round UI1's square lock takes it onto the dead end's axis with guide lines
+// on), and the 45 degree lock gives the magnet's direction (its point recorded on `dev`
+// `17207c94` from the old cursor query, round R2-7).
 #[test]
 fn straight_mode_magnet_cases_under_u2() {
     const RAW: [u32; 3] = [0x41587cb4, 0x00000000, 0x4381b9ce];
@@ -469,7 +473,17 @@ fn straight_mode_magnet_cases_under_u2() {
         ray(-40.0 + 80.0 * angle.cos(), 200.0 + 80.0 * angle.sin())
     };
     let off = aim(3.0);
+    let mut square = session();
+    click(&mut square, start_ray);
+    move_to(&mut square, off);
+    assert_eq!(square.frame().cursor.snap, SnapKind::Guide);
+    let held = square.frame().cursor.position;
+    let axis = DVec2::new(1.0, 1.0).normalize();
+    let first = square.frame().stroke.points[0];
+    let along = DVec2::new(f64::from(held.x - first.x), f64::from(held.z - first.z));
+    assert!(along.perp_dot(axis).abs() < 0.05, "{along:?}");
     let mut tool = session();
+    tool.set_option(RoadToolOption::GuideLines(false));
     click(&mut tool, start_ray);
     move_to(&mut tool, off);
     let start = tool.frame().stroke.points[0];
@@ -969,7 +983,9 @@ fn gizmos_name_the_handles_and_legs() {
         [GizmoHandleKind::ChainStart, GizmoHandleKind::Cursor]
     );
     assert_eq!(gizmos.line_classes[0], GizmoLineClass::Draft);
-    assert!(gizmos.line_classes[1..].iter().all(|class| matches!(
+    // Round UI1: the chained start's corner arc, then the zoning guide.
+    assert_eq!(gizmos.line_classes[1], GizmoLineClass::CornerArc);
+    assert!(gizmos.line_classes[2..].iter().all(|class| matches!(
         class,
         GizmoLineClass::ZoningOutside | GizmoLineClass::ZoningInside
     )));
