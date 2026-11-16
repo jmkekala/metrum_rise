@@ -39,6 +39,10 @@ pub(crate) struct SavedScheduler {
     /// Rolling environment sweep (`SIM-02-H`) with live edge indices; `save` stores them as
     /// indices into the saved edges, which leave out deleted ones.
     pub(crate) environment: EnvironmentSweep,
+    /// Whether the freight route cache was valid for the saved topology
+    /// ([`crate::simulation::economy::logistics::ShipmentSystem::route_cache_validity`],
+    /// `SAVE-08`); 0 for a format-119 save.
+    pub(crate) freight_route_validity: u8,
     /// Rolling demand snapshot (`SIM-02-I`); its buffers are encoded by the demand system.
     pub(crate) demand_snapshot: SavedDemandSnapshot,
     /// `(slot, seq, kind, a)` per pending event, in firing order; `kind` and `a` are owned by
@@ -67,7 +71,7 @@ pub(super) fn save(
         None => (-1, None),
     };
     tx.execute(
-        "INSERT INTO scheduler_state(singleton, next_slot, next_event_seq, next_spawn_id, logistics_hour_ticks, agent_settlement_days, road_upkeep_front_m, road_upkeep_back_mm, road_upkeep_edges, road_upkeep_next_edge, road_upkeep_measured, environment_building_handles, environment_edges, environment_next_edge, environment_next_chunk, demand_snapshot_front, demand_snapshot_next_chunk, demand_snapshot_back, logistics_next_shipment_id, freight_departure_first_minute, freight_departure_counts) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
+        "INSERT INTO scheduler_state(singleton, next_slot, next_event_seq, next_spawn_id, logistics_hour_ticks, agent_settlement_days, road_upkeep_front_m, road_upkeep_back_mm, road_upkeep_edges, road_upkeep_next_edge, road_upkeep_measured, environment_building_handles, environment_edges, environment_next_edge, environment_next_chunk, demand_snapshot_front, demand_snapshot_next_chunk, demand_snapshot_back, logistics_next_shipment_id, freight_departure_first_minute, freight_departure_counts, freight_route_validity) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)",
         params![
             u64_to_i64(scheduler.next_slot)?,
             u64_to_i64(scheduler.next_event_seq)?,
@@ -92,6 +96,7 @@ pub(super) fn save(
             u64_to_i64(scheduler.logistics_next_shipment_id)?,
             u64_to_i64(scheduler.freight_departures.saved().0)?,
             pack_u16_slice(scheduler.freight_departures.saved().1),
+            i64::from(scheduler.freight_route_validity),
         ],
     )?;
     let mut events =
@@ -111,7 +116,25 @@ pub(super) fn save(
 // front_m, back_mm, frozen edges (-1 before a sweep), next edge, measured.
 type SavedRoadUpkeepRow = (f64, i64, i64, i64, i64);
 
-pub(super) fn load(conn: &Connection) -> SaveLoadResult<SavedScheduler> {
+/// Loads the scheduler row; `route_validity_saved` is false for a format-119 save, which has no
+/// freight route validity (`PRE_CONTINUATION_SAVE_VERSION`).
+pub(super) fn load(
+    conn: &Connection,
+    route_validity_saved: bool,
+) -> SaveLoadResult<SavedScheduler> {
+    let freight_route_validity = if route_validity_saved {
+        let validity: i64 = conn.query_row(
+            "SELECT freight_route_validity FROM scheduler_state WHERE singleton = 1",
+            [],
+            |row| row.get(0),
+        )?;
+        u8::try_from(validity)
+            .ok()
+            .filter(|&validity| validity <= 2)
+            .ok_or_else(|| SaveLoadError::custom("freight route validity out of range"))?
+    } else {
+        0
+    };
     // Clock and event counters, then the road-upkeep sweep columns.
     let row: (i64, i64, i64, i64, i64, SavedRoadUpkeepRow, i64) = conn.query_row(
         "SELECT next_slot, next_event_seq, next_spawn_id, logistics_hour_ticks, agent_settlement_days, road_upkeep_front_m, road_upkeep_back_mm, road_upkeep_edges, road_upkeep_next_edge, road_upkeep_measured, logistics_next_shipment_id FROM scheduler_state WHERE singleton = 1",
@@ -154,6 +177,7 @@ pub(super) fn load(conn: &Connection) -> SaveLoadResult<SavedScheduler> {
         ),
         freight_departures: load_freight_departures(conn)?,
         environment: load_environment(conn)?,
+        freight_route_validity,
         demand_snapshot: load_demand_snapshot(conn)?,
         events: Vec::new(),
     };

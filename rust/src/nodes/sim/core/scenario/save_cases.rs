@@ -248,7 +248,7 @@ fn bulldozing_the_border_road_settles_its_freight_and_the_town_saves() {
 
     // The town saves at once and after it ran on. The game loaded from the first save runs its
     // freight as the live game does, frame by frame, and both save the same freight rows. (The
-    // whole state does not continue alike after this edit: `SAVE-08`, `SAVE-09`.)
+    // whole state does not continue alike after this edit: `SAVE-11`.)
     let (cut, ran, reloaded) = (path("cut"), path("ran"), path("reloaded"));
     save(core, &cut);
     let mut loaded = GrowthScenario::starter_town();
@@ -468,4 +468,188 @@ fn bulldozing_a_road_buildings_front_removes_them_and_the_town_saves() {
     for path in [cut, ran, restored] {
         std::fs::remove_file(path).unwrap();
     }
+}
+
+// The saved request failures as rows: building, resource, failures, terminal.
+fn request_failures(core: &SimCore) -> Vec<(usize, u16, u16, bool)> {
+    core.logistics
+        .request_failures
+        .iter()
+        .map(|(key, failure)| {
+            let (building, resource) = (key.destination_building_id, key.resource_runtime_id);
+            (building, resource, failure.failures, failure.terminal)
+        })
+        .collect()
+}
+
+// `SAVE-08`: a town whose border road is gone fails freight requests; a save keeps the failures
+// and whether the freight route cache was valid, so the game loaded from it keeps them through
+// its first route refresh (the load's own), as the running game does until a real routing
+// change, and saves them again. Before, the load restored no cache revisions, so its first
+// refresh took the load for a topology change and cleared the failures.
+#[test]
+fn freight_request_failures_survive_a_save_and_load() {
+    use super::super::frame::FRAME_DT_S;
+    use crate::simulation::network::types::NodeType;
+
+    let path = |name: &str| -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "metrum-save08-{name}-{}.sqlite",
+            std::process::id()
+        ))
+    };
+    let mut town = busy_town();
+    let core = &mut town.core;
+    // The border road keeps no building (`SAVE-07`).
+    super::commit_road(core, (-600.0, -60.0), (-600.0, 60.0));
+    let graph = &core.region_graph;
+    let border = (0..graph.node_count() as u32)
+        .find(|&node| {
+            graph.node(node).node_type == NodeType::Border
+                && graph.node_has_live_incident_edge(node)
+        })
+        .unwrap();
+    let road = graph
+        .node_adjacency(border)
+        .iter()
+        .copied()
+        .find(|&edge| !graph.edge(edge).deleted)
+        .unwrap();
+    assert!(core.bulldoze_road_edge_for_test(road));
+    let end = core.time.day_index + 2;
+    while core.logistics.request_failures.is_empty() && core.time.day_index < end {
+        core.step_frame(FRAME_DT_S);
+    }
+    let failures = request_failures(core);
+    assert!(!failures.is_empty(), "a request failed without a border");
+    assert_ne!(
+        core.logistics
+            .route_cache_validity(&core.allocator, &core.transit_network),
+        0,
+        "the running game's next refresh keeps its failures"
+    );
+
+    let (saved, resaved) = (path("saved"), path("resaved"));
+    save(core, &saved);
+    let mut loaded = GrowthScenario::starter_town();
+    loaded
+        .core
+        .load_game_internal(saved.to_str().unwrap())
+        .unwrap();
+    loaded.core.time.speed_multiplier = core.time.speed_multiplier;
+    assert_eq!(request_failures(&loaded.core), failures, "at the load");
+    save(&mut loaded.core, &resaved);
+    let differing = differing_tables(&saved, &resaved);
+    assert!(
+        !differing
+            .iter()
+            .any(|table| table == "freight_request_failures"),
+        "{differing:?}"
+    );
+    // Both games' freight refreshes keep the failures alike while their routing is unchanged.
+    for frame in 0..120 {
+        core.step_frame(FRAME_DT_S);
+        loaded.core.step_frame(FRAME_DT_S);
+        assert_eq!(
+            request_failures(&loaded.core),
+            request_failures(core),
+            "frame {frame} after the load"
+        );
+    }
+    for path in [saved, resaved] {
+        std::fs::remove_file(path).unwrap();
+    }
+}
+
+// `SAVE-09`: the day's construction before a save and the buildings' daily input telemetry,
+// which the census copies, continue in the game loaded from it: the next ledger entry charges the
+// same construction and every building keeps its day's input values. Before, the load took the
+// loaded lifetime build cost as the ledger's baseline and zeroed the telemetry. A format-119
+// save, which has neither, loads as before.
+#[test]
+fn the_days_construction_and_input_telemetry_survive_a_save_and_load() {
+    use crate::simulation::save::schema::PRE_CONTINUATION_SAVE_VERSION;
+
+    let path = |name: &str| -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "metrum-save09-{name}-{}.sqlite",
+            std::process::id()
+        ))
+    };
+    let mut town = busy_town();
+    let core = &mut town.core;
+    super::commit_road(core, (-600.0, -60.0), (-600.0, 60.0));
+    assert!(
+        core.treasury.lifetime_build_cost > core.treasury.ledger_build_cost,
+        "the road is the day's construction"
+    );
+    let telemetry = |core: &SimCore| -> Vec<(u32, u32)> {
+        core.allocator
+            .buildings
+            .iter()
+            .map(|building| {
+                (
+                    building.daily_owa_input_value.to_bits(),
+                    building.daily_local_input_value.to_bits(),
+                )
+            })
+            .collect()
+    };
+    let inputs = telemetry(core);
+    assert!(
+        inputs.iter().any(|&(owa, local)| owa != 0 || local != 0),
+        "the day's input purchases"
+    );
+
+    let saved = path("saved");
+    save(core, &saved);
+    let mut loaded = GrowthScenario::starter_town();
+    loaded
+        .core
+        .load_game_internal(saved.to_str().unwrap())
+        .unwrap();
+    assert_eq!(
+        loaded.core.treasury.ledger_build_cost.to_bits(),
+        core.treasury.ledger_build_cost.to_bits()
+    );
+    assert_eq!(telemetry(&loaded.core), inputs);
+    // The next entry, as the day's close records it.
+    let day = core.time.day_index;
+    let construction = |core: &mut SimCore| {
+        core.record_daily_budget_ledger(day);
+        core.budget_history
+            .back()
+            .unwrap()
+            .construction_service_costs
+    };
+    let running = construction(core);
+    assert_eq!(construction(&mut loaded.core).to_bits(), running.to_bits());
+
+    // The same save in format 119: the ledger starts at the load and the telemetry at zero.
+    rusqlite::Connection::open(&saved)
+        .unwrap()
+        .execute_batch(&format!(
+            "ALTER TABLE city_treasury DROP COLUMN ledger_build_cost;
+             ALTER TABLE buildings DROP COLUMN daily_owa_input_value;
+             ALTER TABLE buildings DROP COLUMN daily_local_input_value;
+             ALTER TABLE scheduler_state DROP COLUMN freight_route_validity;
+             UPDATE save_meta SET version = {PRE_CONTINUATION_SAVE_VERSION};"
+        ))
+        .unwrap();
+    let mut legacy = GrowthScenario::starter_town();
+    legacy
+        .core
+        .load_game_internal(saved.to_str().unwrap())
+        .unwrap();
+    let treasury = &legacy.core.treasury;
+    assert_eq!(
+        treasury.ledger_build_cost.to_bits(),
+        treasury.lifetime_build_cost.to_bits()
+    );
+    assert!(
+        telemetry(&legacy.core)
+            .iter()
+            .all(|&values| values == (0, 0))
+    );
+    std::fs::remove_file(saved).unwrap();
 }

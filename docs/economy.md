@@ -873,7 +873,10 @@ freight.
 - **Retries:** failures enter a cooldown that ends at the building's next hourly phase (one
   hour for a failure the building's own plan made) and escalate to a visible terminal state
   after 3 attempts. Terminal states never block recovery after cooldown, budget, supplier or road
-  changes.
+  changes. A route topology change (a building, entrance or CCH revision) clears the failures;
+  a metric change keeps them. A save keeps the failures and whether the freight route cache was
+  current (`scheduler_state.freight_route_validity`, save format 120, `SAVE-08`), so the loaded
+  game keeps them until a real routing change, as the running game does.
 
 ## Private construction
 

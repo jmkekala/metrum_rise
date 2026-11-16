@@ -252,8 +252,6 @@ pub struct SimCore {
     pub(crate) fiscal_policy: CityFiscalPolicy,
     /// Completed daily budget ledger entries for overview windows and trend graphs.
     pub(crate) budget_history: VecDeque<DailyBudgetLedgerEntry>,
-    /// Lifetime build cost observed when the most recent budget ledger entry was recorded.
-    pub(crate) budget_last_lifetime_build_cost: f64,
     /// Runtime-only economy debug counter reset after each daily diagnostic line.
     pub(crate) debug_household_admissions_since_daily: u32,
     /// Undo history stack — kept in SimCore so all mutations are co-located.
@@ -456,7 +454,6 @@ impl SimCore {
             service_policy: Default::default(),
             fiscal_policy: Default::default(),
             budget_history: VecDeque::new(),
-            budget_last_lifetime_build_cost: 0.0,
             debug_household_admissions_since_daily: 0,
             undo_stack: VecDeque::new(),
             undo_group_counter: 0,

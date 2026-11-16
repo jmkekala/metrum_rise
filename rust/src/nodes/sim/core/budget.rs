@@ -263,6 +263,11 @@ pub struct CityTreasury {
     pub pending_commercial_property_tax: f64,
     /// Industrial property tax collected since the last daily fiscal finalization.
     pub pending_industrial_property_tax: f64,
+    /// `lifetime_build_cost` when the last daily budget ledger entry was recorded; the next
+    /// entry's construction cost is the difference. Saved (format 120, `SAVE-09`): a load that
+    /// took the loaded lifetime cost dropped the day's construction before the save from its
+    /// ledger.
+    pub ledger_build_cost: f64,
 }
 
 impl Default for CityTreasury {
@@ -296,6 +301,7 @@ impl CityTreasury {
             pending_residential_property_tax: 0.0,
             pending_commercial_property_tax: 0.0,
             pending_industrial_property_tax: 0.0,
+            ledger_build_cost: 0.0,
         }
     }
 
@@ -718,8 +724,8 @@ impl SimCore {
 
     pub(super) fn record_daily_budget_ledger(&mut self, day_index: u32) {
         let construction_delta =
-            (self.treasury.lifetime_build_cost - self.budget_last_lifetime_build_cost).max(0.0);
-        self.budget_last_lifetime_build_cost = self.treasury.lifetime_build_cost;
+            (self.treasury.lifetime_build_cost - self.treasury.ledger_build_cost).max(0.0);
+        self.treasury.ledger_build_cost = self.treasury.lifetime_build_cost;
 
         let entry = self.build_budget_ledger_entry(day_index, construction_delta);
         self.budget_history.push_back(entry);

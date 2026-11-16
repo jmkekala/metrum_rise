@@ -422,7 +422,7 @@ fn write_snapshot(
     weather::save_weather_state(tx, view.weather)?;
     tx.execute("INSERT INTO time_state(time_elapsed, speed_multiplier, day_index, minute_of_day, seconds_per_day, agent_sim_time) VALUES (?1, ?2, ?3, ?4, ?5, ?6)", params![view.time.time_elapsed, view.time.speed_multiplier, i64::from(view.time.day_index), i64::from(view.time.minute_of_day), view.time.seconds_per_day, view.agents.sim_time])?;
     tx.execute(
-        "INSERT INTO city_treasury(balance, lifetime_build_cost, lifetime_tax_revenue, last_daily_upkeep, last_daily_income_tax, last_daily_household_vat, last_daily_business_profit_tax, last_daily_property_tax, last_daily_residential_property_tax, last_daily_commercial_property_tax, last_daily_industrial_property_tax, pending_income_tax, pending_household_vat, pending_business_profit_tax, pending_property_tax, pending_residential_property_tax, pending_commercial_property_tax, pending_industrial_property_tax) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
+        "INSERT INTO city_treasury(balance, lifetime_build_cost, lifetime_tax_revenue, last_daily_upkeep, last_daily_income_tax, last_daily_household_vat, last_daily_business_profit_tax, last_daily_property_tax, last_daily_residential_property_tax, last_daily_commercial_property_tax, last_daily_industrial_property_tax, pending_income_tax, pending_household_vat, pending_business_profit_tax, pending_property_tax, pending_residential_property_tax, pending_commercial_property_tax, pending_industrial_property_tax, ledger_build_cost) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
         params![
             view.treasury.balance,
             view.treasury.lifetime_build_cost,
@@ -442,6 +442,7 @@ fn write_snapshot(
             view.treasury.pending_residential_property_tax,
             view.treasury.pending_commercial_property_tax,
             view.treasury.pending_industrial_property_tax,
+            view.treasury.ledger_build_cost,
         ],
     )?;
     tx.execute(
@@ -572,9 +573,12 @@ pub(crate) fn load_from_sqlite(
     let version: i64 = conn.query_row("SELECT version FROM save_meta LIMIT 1", [], |row| {
         row.get(0)
     })?;
-    // `SIM-02` cut over the save format: only the current version loads, and format 118
-    // without congestion state (`PRE_CONGESTION_SAVE_VERSION`, `TRAFFIC-17`).
-    let congestion_saved = version == SAVE_VERSION;
+    // `SIM-02` cut over the save format: only the current version loads, format 119 without the
+    // freight route validity, ledger baseline and input telemetry (`PRE_CONTINUATION_SAVE_VERSION`,
+    // `SAVE-08`, `SAVE-09`) and format 118 without congestion state either
+    // (`PRE_CONGESTION_SAVE_VERSION`, `TRAFFIC-17`).
+    let continuation_saved = version == SAVE_VERSION;
+    let congestion_saved = continuation_saved || version == PRE_CONTINUATION_SAVE_VERSION;
     if !congestion_saved && version != PRE_CONGESTION_SAVE_VERSION {
         return Err(SaveLoadError::custom("version mismatch"));
     }
@@ -662,7 +666,7 @@ pub(crate) fn load_from_sqlite(
         )
         .optional()?;
     let mut pending_demand_spawns = world::load_pending_demand_spawns(&conn)?;
-    let scheduler = scheduler::load(&conn)?;
+    let scheduler = scheduler::load(&conn, continuation_saved)?;
     demand
         .restore_snapshot_sweep(&scheduler.demand_snapshot)
         .map_err(SaveLoadError::custom)?;
@@ -671,7 +675,8 @@ pub(crate) fn load_from_sqlite(
 
     let mut graph = network::load_graph(&conn)?;
     let (mut zoning, quarantined_parcels) = world::load_zoning(&conn, &config, &graph)?;
-    let mut allocator = world::load_buildings(&conn, registry, &zoning.profiles)?;
+    let mut allocator =
+        world::load_buildings(&conn, registry, &zoning.profiles, continuation_saved)?;
     let vacancy_order = world::load_vacancy_order(&conn, allocator.buildings.len())?;
     let mut households = world::load_households(&conn)?;
     let mut logistics = world::load_shipments(&conn)?;
@@ -767,6 +772,14 @@ pub(crate) fn load_from_sqlite(
         pending_residential_property_tax: treasury_row.15,
         pending_commercial_property_tax: treasury_row.16,
         pending_industrial_property_tax: treasury_row.17,
+        // A save before format 120 starts the day's ledger at the load, as before (`SAVE-09`).
+        ledger_build_cost: if continuation_saved {
+            conn.query_row("SELECT ledger_build_cost FROM city_treasury LIMIT 1", [], |row| {
+                row.get(0)
+            })?
+        } else {
+            treasury_row.1
+        },
     };
 
     world::repair_quarantined_loaded_parcels(

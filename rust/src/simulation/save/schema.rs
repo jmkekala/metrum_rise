@@ -6,7 +6,13 @@ use super::SaveLoadError;
 use crate::simulation::network::types::{EdgeClass, NodeType, TransitType, VehicleFrontageAccess};
 
 /// Current save format version (`SIM-02` broke older saves).
-pub const SAVE_VERSION: i64 = 119;
+pub const SAVE_VERSION: i64 = 120;
+
+/// Format 119, saved before a save kept the freight route cache's validity (`SAVE-08`), the
+/// daily budget ledger's build-cost baseline and the daily input telemetry (`SAVE-09`). It loads
+/// as before: the request failures clear at the first freight refresh, and the ledger baseline
+/// and the telemetry start at the load.
+pub const PRE_CONTINUATION_SAVE_VERSION: i64 = 119;
 
 /// The one older format that still loads, by the user's request (`TRAFFIC-17`, 2026-11-15):
 /// format 118, saved before the car-congestion metric. It has no routing delay per lane and no
@@ -214,7 +220,8 @@ CREATE TABLE scheduler_state(
     demand_snapshot_back BLOB,
     logistics_next_shipment_id INTEGER NOT NULL,
     freight_departure_first_minute INTEGER NOT NULL,
-    freight_departure_counts BLOB NOT NULL
+    freight_departure_counts BLOB NOT NULL,
+    freight_route_validity INTEGER NOT NULL
 );
 CREATE TABLE gridlock_state(
     singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
@@ -398,7 +405,9 @@ CREATE TABLE buildings(
     service_sales_capacity REAL NOT NULL,
     service_sales_profile_runtime_id INTEGER NOT NULL,
     funded_activity REAL NOT NULL,
-    applicant_seed INTEGER NOT NULL
+    applicant_seed INTEGER NOT NULL,
+    daily_owa_input_value REAL NOT NULL,
+    daily_local_input_value REAL NOT NULL
 );
 CREATE TABLE building_seed_state(
     singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
@@ -614,7 +623,8 @@ CREATE TABLE city_treasury(
     pending_property_tax REAL NOT NULL,
     pending_residential_property_tax REAL NOT NULL,
     pending_commercial_property_tax REAL NOT NULL,
-    pending_industrial_property_tax REAL NOT NULL
+    pending_industrial_property_tax REAL NOT NULL,
+    ledger_build_cost REAL NOT NULL
 );
 CREATE TABLE city_service_policy(
     electricity_funding REAL NOT NULL

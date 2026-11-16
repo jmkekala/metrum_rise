@@ -297,7 +297,7 @@ pub(super) fn save_world(
     super::cell_zoning::save(tx, zoning, maps)?;
 
     // Buildings
-    let mut bld_stmt = tx.prepare("INSERT INTO buildings(building_id, parcel_id, edge_id, frontage_t, side, cell_x, cell_y, profile_runtime_id, occupancy, worker_count, service_funding_override, revenue, operating_budget, profit_tax_budget_baseline, last_day_profit, shipment_cooldown_until_slot, width, depth, asset_id, level, construction_total_hours, construction_complete_slot, broken, pending_redevelopment, rezone_grace_days_remaining, is_deserted, budget_distress, daily_household_sales_value, daily_power_service_units, daily_power_served_units, recent_power_service_units, recent_power_served_units, recent_household_sales_value, support_height_m, build_generation, electricity_usage, hourly_economy_activity, commercial_activity_floor_scale, paid_workers_in_window, funded_job_capacity, unpaid_cash_wages_in_window, service_sales_capacity, service_sales_profile_runtime_id, funded_activity, applicant_seed) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41, ?42, ?43, ?44, ?45)")?;
+    let mut bld_stmt = tx.prepare("INSERT INTO buildings(building_id, parcel_id, edge_id, frontage_t, side, cell_x, cell_y, profile_runtime_id, occupancy, worker_count, service_funding_override, revenue, operating_budget, profit_tax_budget_baseline, last_day_profit, shipment_cooldown_until_slot, width, depth, asset_id, level, construction_total_hours, construction_complete_slot, broken, pending_redevelopment, rezone_grace_days_remaining, is_deserted, budget_distress, daily_household_sales_value, daily_power_service_units, daily_power_served_units, recent_power_service_units, recent_power_served_units, recent_household_sales_value, support_height_m, build_generation, electricity_usage, hourly_economy_activity, commercial_activity_floor_scale, paid_workers_in_window, funded_job_capacity, unpaid_cash_wages_in_window, service_sales_capacity, service_sales_profile_runtime_id, funded_activity, applicant_seed, daily_owa_input_value, daily_local_input_value) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41, ?42, ?43, ?44, ?45, ?46, ?47)")?;
     let mut inventory_stmt = tx.prepare(
         "INSERT INTO building_inventories(building_id, resource_runtime_id, amount) VALUES (?1, ?2, ?3)",
     )?;
@@ -407,6 +407,8 @@ pub(super) fn save_world(
             i64::from(b.service_sales_profile_runtime_id),
             b.funded_activity,
             u64_to_i64(b.applicant_seed)?,
+            b.daily_owa_input_value,
+            b.daily_local_input_value,
         ])?;
         for (slot, amount) in b.resource_inventory.iter().enumerate() {
             if *amount <= 0.0 {
@@ -1538,10 +1540,13 @@ pub(super) fn load_zoning(
     Ok((zoning, quarantined_parcels))
 }
 
+/// Loads the buildings; `input_telemetry` is false for a save before format 120, which has no
+/// daily input values (they start at zero, as before `SAVE-09`).
 pub(super) fn load_buildings(
     conn: &Connection,
     registry: &crate::assets::AssetRegistry,
     profiles: &crate::simulation::zoning::profiles::ZoningProfileRegistry,
+    input_telemetry: bool,
 ) -> SaveLoadResult<BuildingAllocator> {
     let mut allocator = BuildingAllocator::new();
     let catalog = load_runtime_economy_catalog().map_err(SaveLoadError::custom)?;
@@ -1559,12 +1564,18 @@ pub(super) fn load_buildings(
     //      37=commercial_activity_floor_scale 38=paid_workers_in_window 39=funded_job_capacity
     //      40=unpaid_cash_wages_in_window 41=service_sales_capacity
     //      42=service_sales_profile_runtime_id 43=funded_activity 44=applicant_seed
+    //      45=daily_owa_input_value 46=daily_local_input_value
     allocator.next_applicant_seed = i64_to_u64(conn.query_row(
         "SELECT next_applicant_seed FROM building_seed_state WHERE singleton = 1",
         [],
         |row| row.get(0),
     )?)?;
-    let mut stmt = conn.prepare("SELECT building_id, parcel_id, edge_id, frontage_t, side, cell_x, cell_y, profile_runtime_id, occupancy, worker_count, service_funding_override, revenue, operating_budget, profit_tax_budget_baseline, last_day_profit, shipment_cooldown_until_slot, width, depth, asset_id, level, construction_total_hours, construction_complete_slot, broken, pending_redevelopment, rezone_grace_days_remaining, is_deserted, budget_distress, daily_household_sales_value, daily_power_service_units, daily_power_served_units, recent_power_service_units, recent_power_served_units, recent_household_sales_value, support_height_m, build_generation, electricity_usage, hourly_economy_activity, commercial_activity_floor_scale, paid_workers_in_window, funded_job_capacity, unpaid_cash_wages_in_window, service_sales_capacity, service_sales_profile_runtime_id, funded_activity, applicant_seed FROM buildings ORDER BY building_id")?;
+    let telemetry = if input_telemetry {
+        "daily_owa_input_value, daily_local_input_value"
+    } else {
+        "0.0, 0.0"
+    };
+    let mut stmt = conn.prepare(&format!("SELECT building_id, parcel_id, edge_id, frontage_t, side, cell_x, cell_y, profile_runtime_id, occupancy, worker_count, service_funding_override, revenue, operating_budget, profit_tax_budget_baseline, last_day_profit, shipment_cooldown_until_slot, width, depth, asset_id, level, construction_total_hours, construction_complete_slot, broken, pending_redevelopment, rezone_grace_days_remaining, is_deserted, budget_distress, daily_household_sales_value, daily_power_service_units, daily_power_served_units, recent_power_service_units, recent_power_served_units, recent_household_sales_value, support_height_m, build_generation, electricity_usage, hourly_economy_activity, commercial_activity_floor_scale, paid_workers_in_window, funded_job_capacity, unpaid_cash_wages_in_window, service_sales_capacity, service_sales_profile_runtime_id, funded_activity, applicant_seed, {telemetry} FROM buildings ORDER BY building_id"))?;
     let mut rows = stmt.query([])?;
     while let Some(row) = rows.next()? {
         let bid = i64_to_usize(row.get(0)?)?;
@@ -1643,9 +1654,9 @@ pub(super) fn load_buildings(
             economy_profile_runtime_id: economy_binding.runtime_id,
             economy_broken: economy_binding.economy_broken,
             resource_inventory: vec![0.0; resource_count],
-            // Input dependency telemetry is daily-only and starts fresh each session.
-            daily_owa_input_value: 0.0,
-            daily_local_input_value: 0.0,
+            // Input telemetry for the building's day, which the census copies (`SAVE-09`).
+            daily_owa_input_value: row.get(45)?,
+            daily_local_input_value: row.get(46)?,
             daily_city_funded_input_cost: electricity_usage.2,
             daily_household_sales_value: row.get(27)?,
             daily_power_service_units: row.get::<_, f32>(28)?,

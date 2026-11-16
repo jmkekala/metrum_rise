@@ -274,7 +274,7 @@ impl GrowthReport {
                 + f64::from(core.households.day_totals.city_service_wages.total),
             previous_build_cost: core.treasury.lifetime_build_cost,
             unrecorded_opening_build_cost: core.treasury.lifetime_build_cost
-                - core.budget_last_lifetime_build_cost,
+                - core.treasury.ledger_build_cost,
             support_days: core.demand.runtime_tuning().unemployment_max_days,
             stranded_members: String::new(),
             stranded_today: String::new(),

@@ -308,6 +308,33 @@ version, the `WRC3` header row, the four new columns and two new tables, `parkin
 every other table's rows unchanged, `parking_state` 1 row, `building_detached_poses` 0 rows;
 `placements.json` is re-pinned.
 
+Save format 120 (`SAVE-08`, `SAVE-09` round S1, 2026-11-16) saves three pieces of state a load
+used to start afresh, so the loaded game continues as the running one in them; nothing else
+changes and a game that is never loaded runs exactly as on format 119 (the `SIM-02` fingerprints
+equal `dev`'s):
+
+- `scheduler_state.freight_route_validity`: whether the freight route cache was valid for the
+  saved topology (0 no, 1 except its metric, 2 yes). The load takes its own revisions as the
+  cache's before any refresh, so the saved request failures survive the load's refreshes
+  ([`economy.md`](economy.md#logistics-model)); before, the first refresh took the load for a
+  topology change and cleared them.
+- `city_treasury.ledger_build_cost`: the lifetime build cost at the last daily budget ledger
+  entry (`SimCore::budget_last_lifetime_build_cost` before, now `CityTreasury`'s), so the next
+  entry charges the day's construction before the save; before, the load set it to the loaded
+  lifetime cost.
+- `buildings.daily_owa_input_value` / `daily_local_input_value`: the day's input telemetry, which
+  the census copies; before, it started at zero.
+
+Formats 119 (`PRE_CONTINUATION_SAVE_VERSION`) and 118 load as before: the failures clear at the
+first refresh, the ledger baseline is the loaded lifetime cost and the telemetry starts at zero.
+The committed Kuopio fixture (format 118) is not re-recorded. Tests:
+`freight_request_failures_survive_a_save_and_load` and
+`the_days_construction_and_input_telemetry_survive_a_save_and_load` (which also loads the save
+rewritten as format 119). The id-dependent divergences `SAVE-09` found after a road removal (tie
+breaks by node, edge or lane ids, the edge sweeps' positions, the workplace quote key) are not
+fixed here: the save contract becomes "ids are saved state" (`SAVE-11`, round S2), which also
+brings the whole-state continuation test.
+
 ## Scheduler
 
 Every system registers a declaration. The dispatcher runs declarations in one fixed order per

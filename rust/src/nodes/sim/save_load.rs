@@ -113,6 +113,9 @@ impl SimCore {
                         )
                     },
                     environment: self.environment_sweep,
+                    freight_route_validity: self
+                        .logistics
+                        .route_cache_validity(&self.allocator, &self.transit_network),
                     demand_snapshot: self.demand.saved_snapshot_sweep(),
                     events: events
                         .pending()
@@ -209,6 +212,14 @@ impl SimCore {
         self.households = loaded.households;
         self.logistics = loaded.logistics;
         self.logistics.hour_ticks = loaded.scheduler.logistics_hour_ticks;
+        // The freight route cache is as valid as the saved game's (`SAVE-08`), before the job
+        // funding and planning refreshes below read it; the graph, lanes and buildings are
+        // loaded, so the topology revisions are final.
+        self.logistics.restore_route_cache_validity(
+            loaded.scheduler.freight_route_validity,
+            &self.allocator,
+            &self.transit_network,
+        );
         self.logistics.departure_minutes = loaded.scheduler.freight_departures.clone();
         // The saved supplier index labels components as the loaded graph does (`SIM-02-I`).
         self.logistics
@@ -238,7 +249,6 @@ impl SimCore {
         self.refresh_demand_construction_queue(self.time.day_index, self.time.minute_of_day);
         self.refresh_loaded_demand_state_and_log();
         self.budget_history = loaded.budget_history;
-        self.budget_last_lifetime_build_cost = self.treasury.lifetime_build_cost;
         self.debug_household_admissions_since_daily = 0;
         self.time.speed_multiplier = 0.0;
         self.transit_network.flow_fields.mark_all_dirty();
