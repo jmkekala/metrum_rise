@@ -178,6 +178,8 @@ fn starting_a_town(e: &mut Entries) -> SimCore {
         let border_y = core.heightmap.sample_height_world(border_x, 0.0);
         let border = core.check_border_candidate_internal(Vector3::new(border_x, border_y, 0.0));
         core.set_border_connection_internal(border as i32);
+        // The bridge publishes the lengthened road at once (`ROAD-121`).
+        core.finalize_network_render_products();
         core.fit_lanes_to_road_surface();
     });
     e.run("cell paint", || {
@@ -287,8 +289,11 @@ fn editing_a_town(e: &mut Entries, core: &mut SimCore) {
         core.set_no_building_spawn_internal(edge, true);
         core.set_no_building_spawn_internal(edge, false);
         core.set_vehicle_frontage_access_internal(edge, 1);
+        // Each class change publishes its road's pieces at once (`ROAD-121`).
         core.set_edge_class_internal(edge, 1);
+        core.finalize_network_render_products();
         core.set_edge_class_internal(edge, 0);
+        core.finalize_network_render_products();
         core.build_snapshot();
     });
     // The junction lane editor: each rule edit publishes its arms' paint at once (`ROAD-120`).

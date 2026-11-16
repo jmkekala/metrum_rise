@@ -512,11 +512,12 @@ func _hide_properties_panel() -> void:
 func _get_building_inspector():
 	return get_node_or_null("../BuildingInspector")
 
+## Gives every selected road class `class_int` (0 ground, 1 bridge, 2 tunnel), each with its undo
+## record; Rust refuses a road it cannot change. Each change publishes its chunks and a new render
+## generation before the call returns (`ROAD-121`), which the network renderer draws.
 func set_selected_edge_class(class_int: int) -> void:
 	for idx in selected_edges:
 		simulation_node.set_edge_class(idx, class_int)
-	if get_node_or_null("../RoadTool"):
-		get_node("../RoadTool").chunks.update()
 
 ## Rust's verdict on giving every selected road `fwd` + `bkw` lanes, the median `median_style`
 ## of `median_width` metres (`ROAD-80`), kerbside `parking` (`PARK-05`: bit 0 left, bit 1 right)

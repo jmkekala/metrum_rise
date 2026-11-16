@@ -17,6 +17,9 @@
 ## which clearing the rules lifts. Each lane rule edit (a rule, a source lane's clear, clearing the
 ## junction, and an undo) publishes a new render generation at once on the paused world, its
 ## chunks repainted (the arrows), and the window reads its warning again on it (`ROAD-120`).
+## Road Properties' Bridge button does the same (`ROAD-121`): the bridge's chunks and a new
+## render generation are published before the press returns, and Ctrl+Z puts the ground road's
+## chunks back.
 ## Ported from Veeti's road-chain snapshot `efd58129` (`road_pockets_test.gd`: the pocket edit
 ## through the tool, add, resize, remove), adapted to the Junction window.
 extends SceneTree
@@ -119,9 +122,9 @@ func _undo(what: String) -> void:
 	await process_frame
 	await process_frame
 
-# Runs lane rule edit `edit`, which publishes a new render generation before it returns
-# (`ROAD-120`); two frames let the window read the junction again.
-func _lane_edit(what: String, edit: Callable) -> void:
+# Runs main-thread road edit `edit` (a lane rule, `ROAD-120`; a class change, `ROAD-121`), which
+# publishes a new render generation before it returns; two frames let the windows read again.
+func _edit_at_once(what: String, edit: Callable) -> void:
 	var generation := simulation.get_network_render_generation()
 	edit.call()
 	_expect(simulation.get_network_render_generation() > generation, "%s publishes a new render generation at once" % what)
@@ -134,6 +137,10 @@ func _marking_vertices() -> int:
 	for chunk: Dictionary in simulation.get_road_mesh_data(true).chunks:
 		count += chunk.marking_vertices.size()
 	return count
+
+# A digest of every published road chunk's geometry.
+func _chunks_digest() -> int:
+	return hash(simulation.get_road_mesh_data(true).chunks)
 
 func _state(row) -> String:
 	return row._state_label.text
@@ -351,7 +358,7 @@ func _run() -> void:
 			"the inner lane's handle is nearer the centre line: %s / %s" % [approach[inner].pos, approach[outer].pos])
 	_expect(window.lane_warning() == "", "no warning without lane rules: %s" % window.lane_warning())
 	var paint := _marking_vertices()
-	await _lane_edit("a lane rule", func(): tool.set_lane_rule(west_arm, inner, east_arm, east_exit))
+	await _edit_at_once("a lane rule", func(): tool.set_lane_rule(west_arm, inner, east_arm, east_exit))
 	_expect(_marking_vertices() != paint, "the rule repaints its arms: %d marking vertices" % paint)
 	var flagged := []
 	for s in tool.lane_spheres:
@@ -362,13 +369,13 @@ func _run() -> void:
 	_expect(window.lane_warning().begins_with("Lane rules leave 4 approach lanes without a turn"),
 		"the window warns: %s" % window.lane_warning())
 	# A source lane's clear through the bridge alone: the window follows the new generation.
-	await _lane_edit("a source lane's clear", func(): simulation.clear_lane_source(node_b, west_arm, inner))
+	await _edit_at_once("a source lane's clear", func(): simulation.clear_lane_source(node_b, west_arm, inner))
 	_expect(_marking_vertices() == paint, "the clear repaints the arms as they were")
 	_expect(window.lane_warning() == "", "the source lane's clear lifts the warning: %s" % window.lane_warning())
 	await _undo("the source lane's clear")
 	_expect(window.lane_warning().begins_with("Lane rules leave 4"), "undo brings the warning back: %s" % window.lane_warning())
 	_expect(_marking_vertices() != paint, "undo repaints the rule's arrows")
-	await _lane_edit("clearing the junction's rules", func(): tool.clear_lane_rules())
+	await _edit_at_once("clearing the junction's rules", func(): tool.clear_lane_rules())
 	_expect(_marking_vertices() == paint, "clearing the rules repaints the arms as they were")
 	_expect(window.lane_warning() == "", "clearing the rules lifts the warning: %s" % window.lane_warning())
 	for s in tool.lane_spheres:
@@ -389,6 +396,16 @@ func _run() -> void:
 			texts.append(item.text)
 		stack.append_array(item.get_children())
 	_expect(not " ".join(texts).to_lower().contains("pocket"), "Road Properties shows no pocket section: %s" % [texts])
+	# The Bridge button on the paused world (`ROAD-121`): published at once, and undone.
+	tool._set_selection(selection)
+	var ground := _chunks_digest()
+	await _edit_at_once("a class change", func(): properties._class_buttons[1].pressed.emit())
+	_expect(simulation.get_edge_class(selection[0]) == 1 and properties._class_buttons[1].button_pressed,
+		"the road is a bridge, and the window shows it")
+	_expect(_chunks_digest() != ground, "the bridge's chunks are published")
+	await _undo("the class change")
+	_expect(simulation.get_edge_class(selection[0]) == 0, "undo brings the ground road back")
+	_expect(_chunks_digest() == ground, "undo publishes the ground road's chunks")
 	properties.close_window()
 
 	# Leaving the junction closes the window and its highlight.

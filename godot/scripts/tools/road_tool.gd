@@ -894,7 +894,6 @@ func _prompt_border_connection(node_id: int) -> void:
 	add_child(dialog)
 	dialog.confirmed.connect(func() -> void:
 		simulation_node.set_border_connection(node_id)
-		chunks.update()
 		dialog.queue_free()
 	)
 	dialog.canceled.connect(func() -> void: dialog.queue_free())

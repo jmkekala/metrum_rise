@@ -11651,6 +11651,26 @@ fascias, slab and piers (the concrete layer holds bridge edges only, in order). 
 edit next to an older bridge publishes through that splice; the class change, the lane edit and
 their undos are tested against a full emission (`road_in_place`).
 
+**Class change and border connection publication (`ROAD-121`, 2026-11-16).** Road Properties'
+Ground / Bridge / Tunnel buttons (`set_edge_class`) and the border connection dialog
+(`set_border_connection`, which lengthens a dead end's road by `BORDER_EXTENSION_M`) ran their
+edit on Godot's main thread and returned: neither marked a render generation
+(`mark_local_network_render_dirty`) nor published, so the new bridge, tunnel or lengthened road
+was drawn at the next road edit (the select tool's `RoadTool.chunks.update()` read the unchanged
+snapshot). Both now mark a new generation and run through the bridge's `publish_road_edit`, as the
+crossing toggle, the lane rule edits and the cross-section, pocket and roundabout edits do: the
+chunks and the snapshot with the new generation are published before the call returns, also on a
+paused world. `set_edge_class` returns whether the change applied (a refusal publishes nothing);
+the GDScript `chunks.update()` calls after both edits are gone. The bridge's other edge setters
+need no publication: the no-build flag (`set_no_building_spawn`) and vehicle frontage access
+(`set_vehicle_frontage_access`) change no road chunk (the no-build lines are read directly, the
+zoning cells regenerate on the simulation thread's frames); speed and road type go through
+`set_edge_cross_section`. Tests: `road_in_place::a_class_change_publishes_a_new_generation_with_its_bridge`,
+`..::a_border_connection_publishes_its_lengthened_road` (the edit alone leaves the generation, the
+publication carries a newer one whose chunks equal a full emission) and `road_pocket_test.gd`
+(the Bridge button on the paused world: a new generation before the press returns, the chunks
+change, and undo publishes the ground road's chunks again).
+
 ### Medians (`ROAD-80`)
 
 A road may carry a median between its two lane groups (round R3b1 of the road-feature port: the

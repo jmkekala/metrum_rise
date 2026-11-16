@@ -1481,12 +1481,17 @@ impl SimCore {
         self.rebuild_building_entrances_internal();
     }
 
-    /// Sets the classification of an edge by integer class code.
-    pub fn set_edge_class_internal(&mut self, edge_idx: i32, class_int: u8) {
+    /// Sets the classification of an edge by integer class code (0 Standard, 1 Bridge, 2 Tunnel).
+    /// Returns whether the change was applied, with an undo record and a new render generation
+    /// marked; the caller publishes the rebuilt pieces
+    /// ([`Self::finalize_network_render_products`]), as a crossing toggle's are (`ROAD-121`). A
+    /// refused change (a ring, a pocket, water under a grounded road, a closure that would not
+    /// compile or would cover plotted land) changes nothing. O(the road's two node closures).
+    pub fn set_edge_class_internal(&mut self, edge_idx: i32, class_int: u8) -> bool {
         // A commit's deferred lots first: this edit reads or writes them (`ROAD-68-G` part 7).
         self.adopt_pending_cell_lots();
         if edge_idx < 0 || edge_idx as usize >= self.region_graph.edge_count() {
-            return;
+            return false;
         }
         let edge_idx = edge_idx as usize;
 
@@ -1502,7 +1507,7 @@ impl SimCore {
                 "edge_class_change_rejected edge={} reason=roundabout_fixed",
                 edge_idx
             );
-            return;
+            return false;
         }
         // A turn pocket stays on the ground (`ROAD-95`, `pocket_requires_surface_road`): its
         // pocket is removed first.
@@ -1514,7 +1519,7 @@ impl SimCore {
                 "edge_class_change_rejected edge={} reason=pocket_edit_first",
                 edge_idx
             );
-            return;
+            return false;
         }
         if class == crate::simulation::network::types::EdgeClass::Standard {
             let edge = self.region_graph.edge(edge_idx);
@@ -1533,7 +1538,7 @@ impl SimCore {
                     "edge_class_change_rejected edge={} reason=water_requires_bridge",
                     edge_idx
                 );
-                return;
+                return false;
             }
         }
 
@@ -1569,7 +1574,7 @@ impl SimCore {
                     rejection.reason
                 );
                 self.last_road_rejection = Some(rejection);
-                return;
+                return false;
             }
         };
         self.region_graph.edge_mut(edge_idx).class = class;
@@ -1591,6 +1596,9 @@ impl SimCore {
         self.push_network_undo_delta(checkpoint, None, erased);
         self.transit_network
             .mark_surface_dirty_for_nodes(&self.region_graph, &affected_nodes);
+        // A new render generation, so the renderer fetches the closure's chunks once their pieces
+        // publish (`ROAD-121`).
+        self.mark_local_network_render_dirty();
 
         self.rebuild_building_entrances_internal();
         // Deferred like a commit's (D7, `ROAD-68-G`); it supersedes a pending one.
@@ -1598,6 +1606,7 @@ impl SimCore {
         if erased_paint {
             self.plan_lots_after_erase();
         }
+        true
     }
 
     /// Adds a new road segment to the transit network.
@@ -3073,6 +3082,9 @@ impl SimCore {
     ///
     /// Marks the node as [`Border`](crate::simulation::network::types::NodeType::Border),
     /// making a live connected road eligible for demand-driven household arrivals and external trips.
+    /// A dead end's road is lengthened by [`config::BORDER_EXTENSION_M`] with a new render
+    /// generation marked; the caller publishes its rebuilt pieces
+    /// ([`Self::finalize_network_render_products`], `ROAD-121`).
     pub fn set_border_connection_internal(&mut self, node_id: i32) {
         // A commit's deferred lots first: this edit reads or writes them (`ROAD-68-G` part 7).
         self.adopt_pending_cell_lots();
@@ -3179,6 +3191,9 @@ impl SimCore {
             }
             self.transit_network
                 .mark_surface_dirty_from_sets(&affected_edges, &affected_nodes);
+            // A new render generation for the lengthened road's chunks; the caller publishes
+            // them (`ROAD-121`).
+            self.mark_local_network_render_dirty();
             // The moved end changes the road's grid alignment source; a stale one fails to load.
             self.zoning
                 .mark_cell_lots_for_roads(&self.region_graph, affected_edges.iter().copied());

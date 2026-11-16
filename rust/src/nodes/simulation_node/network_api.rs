@@ -319,10 +319,14 @@ impl SimulationNode {
         self.lock_core().check_border_candidate_internal(pos)
     }
 
-    /// Marks the node at `node_id` as an external border connection.
+    /// Marks the node at `node_id` as an external border connection. A dead end's lengthened
+    /// road publishes at once with a new render generation (`ROAD-121`).
     #[func]
     pub fn set_border_connection(&mut self, node_id: i32) {
-        self.lock_core().set_border_connection_internal(node_id);
+        self.publish_road_edit(|core| {
+            core.set_border_connection_internal(node_id);
+            true
+        });
     }
 
     /// Returns the world-space positions of all active border nodes as a flat float array.
@@ -346,11 +350,13 @@ impl SimulationNode {
         }
     }
 
-    /// Sets the classification of an edge (Standard, Bridge, Tunnel).
+    /// Sets the classification of an edge (0 Standard, 1 Bridge, 2 Tunnel), with an undo record,
+    /// and returns whether it was applied: a refused change changes nothing. The road's rebuilt
+    /// pieces publish at once with a new render generation, as a crossing toggle's do
+    /// (`ROAD-121`).
     #[func]
-    pub fn set_edge_class(&mut self, edge_idx: i32, class_int: u8) {
-        self.lock_core()
-            .set_edge_class_internal(edge_idx, class_int);
+    pub fn set_edge_class(&mut self, edge_idx: i32, class_int: u8) -> bool {
+        self.publish_road_edit(|core| core.set_edge_class_internal(edge_idx, class_int))
     }
 
     /// Sets or clears the no-building-spawn flag on an edge. When true the building

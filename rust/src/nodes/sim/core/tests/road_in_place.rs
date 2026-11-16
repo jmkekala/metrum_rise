@@ -7,7 +7,7 @@
 //! routing, zoning off with its demolitions, the corridor check and the charge.
 
 use super::road_crosswalks::{
-    arm_towards, fully_emitted_chunks, products, published_chunks, t_junction_with_side,
+    arm_towards, fully_emitted_chunks, live_arms, products, published_chunks, t_junction_with_side,
 };
 use super::*;
 use crate::simulation::network::graph::{RoadMedian, SidewalkSides};
@@ -72,6 +72,71 @@ fn a_class_change_publishes_the_chunks_a_full_emission_draws_and_undoes() {
     assert_eq!(published_chunks(&core), drawn);
     assert_eq!(fully_emitted_chunks(&mut core), drawn);
     assert_eq!(products(&mut core), before);
+}
+
+// `ROAD-121`: the renderer's path for a class change. The bridge publishes it as a crossing
+// toggle (`SimulationNode::publish_road_edit`: the edit, `finalize_network_render_products`, the
+// snapshot); the edit alone leaves the snapshot on its generation, and the publication carries a
+// newer one whose chunks hold the bridge, equal a full emission and are the road tool view's.
+// Before the fix the change marked no generation, so its chunks were emitted under the old one
+// and the renderer, which fetches only a newer generation, drew them at the next road edit.
+#[test]
+fn a_class_change_publishes_a_new_generation_with_its_bridge() {
+    let (mut core, side) = older_side_road();
+    core.benchmark_mode = false;
+    core.finalize_network_render_products();
+    let drawn = published_chunks(&core);
+    let generation = core.build_snapshot().network_generation;
+
+    assert!(core.set_edge_class_internal(side as i32, 1), "the change applies");
+    assert_eq!(
+        core.build_snapshot().network_generation,
+        generation,
+        "the edit alone publishes nothing"
+    );
+    let publication = core
+        .finalize_network_render_products()
+        .expect("current roadbed");
+    let bridge_generation = core.build_snapshot().network_generation;
+    assert!(bridge_generation > generation, "a new render generation");
+    assert_eq!(publication.view.road_mesh_surface_generation, bridge_generation);
+    let bridge = published_chunks(&core);
+    assert_ne!(bridge, drawn, "the published chunks carry the bridge");
+    assert_eq!(fully_emitted_chunks(&mut core), bridge);
+}
+
+// `ROAD-121`: the border connection lengthens a dead end's road by `BORDER_EXTENSION_M`; the
+// bridge publishes it at once under a new render generation, whose chunks equal a full emission.
+// Before the fix the lengthened road was drawn at the next road edit.
+#[test]
+fn a_border_connection_publishes_its_lengthened_road() {
+    let (mut core, side) = older_side_road();
+    core.benchmark_mode = false;
+    core.finalize_network_render_products();
+    let drawn = published_chunks(&core);
+    let generation = core.build_snapshot().network_generation;
+    let edge = core.region_graph.edge(side);
+    let dead_end = [edge.start_node, edge.end_node]
+        .into_iter()
+        .find(|&node| live_arms(&core, node).len() == 1)
+        .expect("the side road's far end");
+    let length = core.region_graph.edge(side).physical_length;
+
+    core.set_border_connection_internal(dead_end as i32);
+    let lengthened = core.region_graph.edge(side).physical_length;
+    assert!(
+        (lengthened - length - crate::config::BORDER_EXTENSION_M).abs() < 1.0e-3,
+        "the road is lengthened: {length} -> {lengthened}"
+    );
+    let publication = core
+        .finalize_network_render_products()
+        .expect("current roadbed");
+    let border_generation = core.build_snapshot().network_generation;
+    assert!(border_generation > generation, "a new render generation");
+    assert_eq!(publication.view.road_mesh_surface_generation, border_generation);
+    let border = published_chunks(&core);
+    assert_ne!(border, drawn, "the published chunks carry the lengthened road");
+    assert_eq!(fully_emitted_chunks(&mut core), border);
 }
 
 // The in-place edit's verdict and its commit on the full spec: `""` when applied, else the
