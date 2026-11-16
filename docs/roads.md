@@ -12459,10 +12459,19 @@ since round D).
   `D` (the angle lock: the step multiple of the reference nearest the cursor, as a ray from the
   last placed point; the reference is the stroke's start tangent, the last placed leg, else world
   east) and the line constraint `L` (a network **edge** in reach, its centreline's local segment;
-  else the nearest **guide line** within 2 m). `D` and `L`: their intersection ahead of the anchor
-  when it lies within `L`'s reach of the raw cursor (an edge 5 m, a guide 2 m), otherwise an edge
-  wins over the angle and the angle over a guide line. Two crossing guide lines in reach and no
-  `D`: their corner. One alone: its projection. The **zoning grid** has one rule (rounds GS and
+  else the **square lock**'s line below; else the nearest **guide line** within 4 m, 2 m before
+  round UI1). `D` and `L`: their intersection ahead of the anchor when it lies within `L`'s reach
+  of the raw cursor (an edge 5 m, a guide 4 m), otherwise an edge wins over the angle and the
+  angle over a guide line. Two crossing guide lines in reach and no `D`: their corner. One alone:
+  its projection. **Square lock** (round UI1, `snap.rs` `square_lock`): a stroke's first leg from
+  a road or node (the start on an edge, a node or a chain) takes the line across the road through
+  its start, or the road's own axis, when the leg's direction is within 8 degrees of it
+  (`SQUARE_CAPTURE_DEG`), and keeps it until the direction is more than 12 degrees off
+  (`SQUARE_RELEASE_DEG`, hysteresis kept by the session across poses); it is a guide line (off
+  with the Guides checkbox and under Shift), after a node, the grid where it captured and an edge,
+  before any other guide line, and a guide crossing it within 4 m of the cursor's foot on it makes
+  a corner. Before, the anchor's perpendicular was an ordinary guide line, which took the cursor
+  only within 2 m of it: 2.3 degrees at 50 m. The **zoning grid** has one rule (rounds GS and
   GS2, `snap.rs` `grid_rule`, inside `resolve`): the grid's math is `RoadGridSnap::snap_road_cursor_on`
   (the stroke's start is its first placed point, whatever it is on), and it takes a pose only
   where that moved the cursor ("captured": a first point on an aligned road's lattice or
@@ -12803,6 +12812,23 @@ the last two runs followed another session's test suite, load 13.0 and 9.6 at th
   PASS). The new test fails when the gather reads the tile at the rectangle's corner instead.
   The production graded queries (vehicles, vegetation, rendering) share this path; no timing
   session ran for them (their answers are unchanged; the next landing's timing covers them).
+- **Landing check** (round UI1 part 0, 2026-11-16: `eaf15bc1` and `94dc73ce` cherry-picked onto
+  `dev` `d97ccc12` as `b164d7f9` and `8924b3f7`, no conflict). Gates on `8924b3f7`: clippy warning
+  set equal to `d97ccc12`'s (14), missing_docs 0, debug `cargo test --lib` 2,794 / 0 / 232,
+  `./run.sh --test` PASS (nextest 2,798 / 2,798, 233 skipped; godot-main and godot-vehicle PASS,
+  0 SCRIPT ERROR). Timing level R (`./run.sh --timing --level R`, control `d97ccc12`'s release
+  `$TEST_BINARY`, both 30k cities generated fresh by their own binaries, `TOOLS-23`; 19:30-19:31,
+  no Godot, Cargo or rustc running): `PERF-07` 30k 32x C B B C every metric level or better, the
+  shared graded point queries' gain showing: mean 4.516 / 4.267 ms (-5.5 %), p99 7.19 / 6.37,
+  p99.9 9.25 / 7.36, worst unpreempted 9.06 / 8.55 (level), mean snapshot component 1.455 /
+  1.237 ms (-15.0 %), agent, slot, pathing and `load_s` level; acceptance the known exception
+  `PERF-17` on both sides (one branch run passes outright); K22 click-to-ack 6.75 / 6.60 ms.
+  The session bench (`$BENCH_BINARY` of each side, 30k locality, C B B C, run and exclusive
+  locks, P-cores): control straight 241.7 / 288.6 and 241.7 / 285.4 us (p50 / p99), branch
+  102.8 / 138.3 and 102.9 / 138.6 us, p99 under the 0.25 ms bar, digests equal. The last two
+  rows started right after a test run (1-min load 14 and 13) and were rerun once: control 242.5 /
+  289.7 us (level), branch 168.1 / 229.6 us with another Godot process running throughout
+  (overlapped, not a reading; still under the bar).
 
 
 Built 2026-11-13 on branch `roadtools-f` (`dev` `d10c2404` plus the round); held for its batch
@@ -12928,6 +12954,72 @@ one-by-one run's, and all eight strokes reused their dry run. Eight single commi
   passes its acceptance. K22 in that session: 12.63 / 6.59 / 4.63 against 12.92 / 6.75 / 4.85 ms
   (means 7.95 and 8.17, +2.8 %, one sample each; +0.4 % in the first session, -1.4 % in round
   F's): level, products identical; F2 does not change the single commit's work.
+
+### Road tool UI feedback (round UI1)
+
+Round UI1 (`ROAD-112`, 2026-11-16, branch `roadtools-ui1` on `dev` `d97ccc12` with round PB's fix,
+for review) builds the user's in-game feedback of 2026-11-15/16 (the font-size item dropped: the
+game's font scale covers it). Rust decides every point and value; GDScript keeps drawing.
+
+- **Zoning-depth guide** (item 1): outside 5 px at 100 %, inside 3 px at 65 % (were 3 px at 90 %
+  and 2 px at 40 %), same lavender, one palette (`road_tool_gizmos.gd` `PALETTE`).
+- **Square lock** (item 3, `snap.rs` `square_lock`): a stroke's first leg from a road, node or
+  chain takes the line across the road through its start, or the road's own axis, within 8
+  degrees (`SQUARE_CAPTURE_DEG`) and holds it until the leg is more than 12 degrees off
+  (`SQUARE_RELEASE_DEG`); the session keeps the held line across poses. It enters `resolve` as
+  the line constraint after an edge and before any other guide (a node and the grid's
+  `grid_rule` still first: GS2's case table passes); a guide crossing it within 4 m of the
+  cursor's foot on it makes a corner; Shift and the Guides checkbox drop it. `O(1)` a pose.
+- **Corner arcs** (item 4, `guides.rs` `Corner`): where the draft starts or ends on a road, an
+  arc about the joint (12 m, `labels.rs` `CORNER_ARC_M`, at most half the draft's plan length; a
+  chord per 5 degrees) spans one corner, its angle chip (`wording.rs` text) at the arc's middle,
+  pushed out along the bisector by round V's placement rule; it replaces the chip behind the
+  start or past the end. The corner: out of a dead end, against the road's ray back into it;
+  against a road through the point, the smaller corner (the acute angle the chip read before);
+  a square join's equal corners take the right of the new road seen from above with north up.
+  One arc, not both: the second is the first's supplement and two chips crowd the junction.
+  `O(chords)`, at most 36.
+- **Alignment guides** (item 5): the guide that took the cursor and the angle ray in their own
+  look, 3.5 px at 95 %, dashed 12 px on and 5 px off (were the shared 2 px at 72 %, 9 on 6 off;
+  tangent legs, control polygons and stems keep that look); `GUIDE_REACH_M` 4 m (was 2): a
+  lane's width and a margin, so a cursor over the lane beside a guide finds it, still under the
+  network snap's 5 m reach; the two nearest guides within 12 m (`GUIDE_NEAR_M`, three reaches)
+  that do not hold the cursor drawn faint (2 px at 45 %, `snap.rs` `near_guides`, one line once)
+  from their source through the cursor's foot, reversing round V's V4. The Guides checkbox off
+  hides guides, faint guides and the square lock (tested). `O(guides)` a pose, no allocation.
+- **Tests** (`tool_tests/ui_guides.rs`): capture at 7.9 and not 8.1 degrees, held to 11.9 and
+  released at 12.1, both sides and both lines; the precedence (node, edge, grid first; a nearer
+  guide does not take a held square; the corner; Shift, Guides off); a branch from the road
+  along z = 0 at 7, 11, 13, 10 and 7.5 degrees (held, held, released, faint and free, held);
+  the 4 m reach; the faint set; arcs at 90, 60 and 120 degrees on both sides, through a road and
+  out of a dead end (points on the circle, first along the draft, last along the road, swept
+  angle, chip on the bisector). **Digests:** with the four changes off (a local patch, not
+  committed) the GS grid-off digest (`grid_off_frames_are_unchanged`) and CT's
+  (`continuous_off_and_straight_curve_chains_are_unchanged`) equal their records, so the code
+  around them is unchanged. Re-recorded: GS (`0x9600_a727_6994_283d`; its strokes start and end
+  on roads, so arcs, faint guides and moved chips, and with the drawing changes alone off it
+  still differs: the reach and the square lock snap some of its ends), CT
+  (`0x59a9_8956_2034_85fa`; drawing only: with the drawing changes alone off it equals the old
+  record). GS2's table: the chain's perpendicular drag is now a guide (its first stroke ends
+  3.3 m off the road start's perpendicular, inside the 4 m reach, so the chain runs square). The
+  U2 magnet case keeps its raw bits with Guides off; with them on the square lock holds the dead
+  end's axis.
+- **Fresh results** (2026-11-16, tip `7ae7da57`): clippy warning set equal to `d97ccc12`'s (14),
+  missing_docs 0, debug `cargo test --lib` 2,800 / 0 / 232, `./run.sh --test` PASS (nextest
+  2,804 / 2,804, 233 skipped; godot-main and godot-vehicle PASS, 0 SCRIPT ERROR). Products on the
+  branch's release library against round PB's branch records: Kuopio's 78 commits and the
+  gameplay fixtures' 17 EQUAL in every product (request, graph, state, mesh, graded), 0 SCRIPT
+  ERROR. Allocation probe (`METRUM_ROAD_TOOL_ALLOC_PROBE` at 30k, every snap on, the trail
+  starting at a junction, so arcs, the square lock and faint guides run; `heaptrack
+  --record-only`): n = 0 2,375,547 / 2,375,531, n = 20 2,375,544, n = 200 2,375,545 calls, none
+  a pointer move. Gizmo plus label upload a frame (the default capture set once, gamescope
+  headless 1920x1080, run and exclusive locks, no other Godot, 1-min load 5.5): p50 0.078 ms,
+  p95 0.187 ms (bar 0.2), max 0.255; parts at p95: gizmos 0.131, chip wording 0.021, placement
+  0.033 ms.
+- **Stills** (`road_tool_capture.gd` set `ui1`, gamescope headless 1920x1080): `ui1_zoning_guide`,
+  `ui1_square_lock` (a branch 6 degrees off square, held; the 90 degree arc),
+  `ui1_corner_arc_oblique` (60 degrees), `ui1_guide_faint` (8 m off a dead end's extension, the
+  faint guide) and `ui1_guide_captured` (3 m off, captured).
 
 ### Wiring record (round C)
 
@@ -13914,7 +14006,8 @@ under "Drawing and placement" (Gizmos, Zoning-depth guide, Grid curbs, HUD, Free
   3D build length's. V3 angle chips read 180 straight on out of a dead end (the angle between
   the roads), the acute angle against a road through the point. V4 no fainter "nearest guide in
   reach" line: with the zoning guide and the held guides drawn, a further faint line read as
-  clutter in the stills; easy to add (the scratch holds the candidates). V5 guides and the angle
+  clutter in the stills; easy to add (the scratch holds the candidates). (Reversed by round UI1
+  at the user's request: the two nearest within 12 m are drawn faint.) V5 guides and the angle
   ray end 12 m past the cursor (round E drew 64 m both ways). V6 the grid curbs only in straight
   mode (the grid snaps a straight leg through the start); a type with a sidewalk on one side
   still shows both zoning outlines. V7 (done in round SC) no hint chip for the S-curve and the simple curve yet: their
@@ -14590,7 +14683,8 @@ the clicks, the mode buttons and the acknowledgement and draws what `road_tool_f
   and steps along it to the grid's positions, where a branch's curb lands on a cell line (round
   GS), and a stroke's end takes whole cells the same from any start (round GS2). The
   options panel (round E) has a **Snapping** row of three checkboxes, **Roads** (the network
-  snap: junctions, ends and centrelines), **Guides** (guide lines) and **Zoning grid**, and a **Steps**
+  snap: junctions, ends and centrelines), **Guides** (guide lines, the square lock and the faint
+  guides near the cursor, round UI1) and **Zoning grid**, and a **Steps**
   row with the **Angle** lock (Free, 15°, 30°, 45°, 90°) and a **Length** step (a checkbox and
   metres, 1-100 in 0.5 m steps, 10 m, the zoning cell, at first). Defaults are U2's: roads and
   guide lines on, grid, angle lock and length step off. Each goes to the session under its
@@ -14600,14 +14694,29 @@ the clicks, the mode buttons and the acknowledgement and draws what `road_tool_f
 - **Gizmos** (`road_tool_gizmos.gd`, round V's look; one reused mesh, drawn over the terrain and
   the roads with no depth test, so the path stays visible where the lagging preview terrain's
   grass covers the preview road; the footprint hue below marks the road's width): lines are quads Rust builds from the frame's
-  strips and `road_tool_line.gdshader` widens to a constant on-screen width. Two looks, one
-  palette (`PALETTE`, from the UI theme): the stroke's centreline solid, 4 px, white at 82 %;
-  every guide line (alignment guides, the angle ray, tangent legs, control polygons and handle
-  stems) dashed 9 px on, 6 px off at the cursor's depth, 2 px, pale lavender at 72 %; the
-  zoning-depth guide solid in the same lavender, its outside 3 px at 90 %, its inside 2 px at
-  40 % (item 9, the user's exception to the one look); the grid curbs solid, 3 px, light blue. Alignment guides run from their source (the dead end, node or anchor)
-  through the snapped point and 12 m on (both at a guide corner); the angle ray likewise from the
-  anchor. Handles are filled round points with a dark rim: the placed start and the live end
+  strips and `road_tool_line.gdshader` widens to a constant on-screen width. One palette
+  (`PALETTE`, from the UI theme): the stroke's centreline solid, 4 px, white at 82 %; tangent
+  legs, control polygons and handle stems dashed 9 px on, 6 px off at the cursor's depth, 2 px,
+  pale lavender at 72 %; the alignment guide that took the cursor and the angle ray in the same
+  lavender, 3.5 px at 95 %, dashed 12 px on, 5 px off (round UI1, from the 2 px look); the guide
+  lines near the cursor that have not taken it, within 12 m of it (`GUIDE_NEAR_M`, at most two,
+  `snap.rs` `near_guides`), in the old guide look at 45 % (round UI1, reversing round V's V4: the
+  player finds a guide before it captures; none with the Guides checkbox off); the zoning-depth
+  guide solid in the same lavender, its outside 5 px at 100 % and its inside 3 px at 65 % (round
+  UI1, from 3 px at 90 % and 2 px at 40 %: it read faint on grass); the grid curbs solid, 3 px,
+  light blue; an end's corner arc solid, 2.5 px, white at 90 % (round UI1). Alignment and faint
+  guides run from their source (the dead end, node or anchor) through the snapped point (a faint
+  one through the cursor's foot on it) and 12 m on (both at a guide corner); the angle ray
+  likewise from the anchor. **Corner arcs** (round UI1, `guides.rs` `Corner`): where the draft
+  starts or ends on a road, a 12 m arc about the joint (at most half the draft's plan length;
+  one chord per 5 degrees) spans the corner between the draft and the road, and the end's angle
+  chip sits at the arc's middle, pushed out along the corner's bisector by round V's placement
+  rule (before, the chip sat behind the start or past the end). One corner: out of a dead end
+  the one against the road's ray back into it (180 straight on); against a road through the
+  point the smaller corner, whose acute angle the chip reads as before; a square join's two equal
+  corners take the one on the right of the new road seen from above with north up
+  (`leaving.perp()`'s side). One arc reads better than two: the second corner is the first's
+  supplement and two chips crowd the junction. Handles are filled round points with a dark rim: the placed start and the live end
   white (14 and 16 px), a control point and a joint lavender, the chain's start green, a
   Bezier or arc handle pale (10 px).
 - **Footprint hue** (round HU, the user's decision 2026-11-14; a **stopgap**): while a draft has
