@@ -1255,6 +1255,12 @@ impl SimCore {
         );
         // A border road's removal cuts the border's trade: its freight settles (`SAVE-06`).
         self.settle_freight_of_unreachable_borders();
+        // The rebuilt lanes stand on the roadbed before the entrances sample their kerbs on them
+        // and the door lists walk them: a later derivation (any removal's cache rebuild, a load)
+        // reads them lifted, and a door whose kerb moved by a rounding kept a stale list
+        // (`PARK-14`).
+        self.transit_network
+            .sync_new_lane_heights(&self.region_graph);
         self.rebuild_building_entrances_internal();
         // The buildings the repair could not reattach go with their road (`SAVE-07`): those
         // within a lot's reach of it, through the 512 m chunk index (the city when stale).

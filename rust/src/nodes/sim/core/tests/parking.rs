@@ -44,12 +44,22 @@ fn commit_before_its_frame(
     b: (f32, f32),
     parking: crate::simulation::network::graph::RoadParking,
 ) {
+    let points = vec![Vector3::new(a.0, 0.0, a.1), Vector3::new(b.0, 0.0, b.1)];
+    commit_points_before_its_frame(core, points, parking);
+}
+
+// [`commit_before_its_frame`] of a road through `points`.
+fn commit_points_before_its_frame(
+    core: &mut SimCore,
+    points: Vec<Vector3>,
+    parking: crate::simulation::network::graph::RoadParking,
+) {
     core.precompute_road_mesh_data();
     core.allocator
         .prepare_building_site_query_index(core.config.zone_cell_m);
     let outcome = core.commit_road(
         RoadCommitRequest {
-            points: vec![Vector3::new(a.0, 0.0, a.1), Vector3::new(b.0, 0.0, b.1)],
+            points,
             fwd_lanes: 1,
             bkw_lanes: 1,
             snap_to_existing_roads: true,

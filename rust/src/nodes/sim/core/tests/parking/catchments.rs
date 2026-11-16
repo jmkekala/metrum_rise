@@ -289,3 +289,84 @@ fn a_save_in_the_hold_publishes_the_road_edit_first() {
     assert!(!c.parking.frontages_deferred());
     c.audit_every_parking_catchment();
 }
+
+// A road removal lifts the lanes it rebuilds onto the roadbed before it derives the entrances
+// along them and publishes their doors' lists (`PARK-14`). On a graded curve a lane's lift
+// changes its length: published before it, the doors' lists went stale at the frame that lifted
+// the lanes. A door's kerb is sampled along its lane too, so an entrance derived before the lift
+// could differ from a later cache rebuild's by a rounding (the Kuopio save's building 252).
+#[test]
+fn a_road_removal_on_a_graded_curve_leaves_every_door_and_list_a_rebuild_gives() {
+    let mut c = SimCore::new(
+        WorldConfig::new(512.0, 512.0, 16.0, 10.0)
+            .with_chunking(128.0, 0.0)
+            .with_terrain_resolution(2.0),
+    );
+    c.treasury.balance = 1_000_000.0;
+    let (half_x, half_z) = c.heightmap.half_world_extents();
+    let cell = c.heightmap.cell_size_m();
+    for z in 0..c.heightmap.height {
+        for x in 0..c.heightmap.width {
+            let (wx, wz) = (x as f32 * cell - half_x, z as f32 * cell - half_z);
+            let height = 30.0 + 0.08 * wx + 3.0 * (wx / 17.0).sin() + 2.0 * (wz / 13.0).sin();
+            c.heightmap
+                .set_height(x, z, height / crate::config::HEIGHT_SCALE);
+        }
+    }
+    // The street bends round the lots, so its sidewalks are not its centre line's offsets.
+    let curve: Vec<_> = (0..=8)
+        .map(|i| {
+            let x = -120.0 + 30.0 * i as f32;
+            Vector3::new(x, 0.0, 40.0 * (1.0 - (x / 120.0).powi(2)))
+        })
+        .collect();
+    commit_points_before_its_frame(&mut c, curve, BOTH);
+    c.publish_deferred_parking_frontages();
+    commit_with(&mut c, (0.0, 40.0), (0.0, 160.0), BOTH);
+    settle(&mut c);
+    let id = register_lot(&mut c);
+    for x in [-100.0, -40.0, 40.0, 100.0] {
+        let z = 40.0 * (1.0 - (x / 120.0_f32).powi(2)) - 22.0;
+        c.place_service_building_internal(&id, x, z).unwrap();
+    }
+    c.publish_pending_building_site_changes();
+    settle(&mut c);
+    let derived = |c: &SimCore| {
+        let a = &c.allocator;
+        (0..a.buildings.len()).all(|b| {
+            a.entrances[b] == a.derived_entrance(b, &c.region_graph, &c.transit_network.lane_system)
+        })
+    };
+    assert!(derived(&c));
+    let graph = &c.region_graph;
+    let cross = (0..graph.edge_count())
+        .find(|&e| {
+            let edge = graph.edge(e);
+            let (a, b) = (
+                graph.node(edge.start_node).pos,
+                graph.node(edge.end_node).pos,
+            );
+            !edge.deleted && a.x.abs() < 1.0 && b.x.abs() < 1.0
+        })
+        .expect("the cross street");
+    assert!(c.bulldoze_road_edge_for_test(cross));
+    let network = &c.transit_network;
+    let lanes = &network.lane_system;
+    assert_eq!(
+        lanes.lanes_off_surface(&c.region_graph, &network.roadbed),
+        0
+    );
+    assert!(derived(&c));
+    c.audit_every_parking_catchment();
+    // Running frames, which lift any lane left off the roadbed, then the bulldoze command's own
+    // publication: neither may move a lane a door's list or kerb was derived from.
+    c.time.speed_multiplier = 1.0;
+    for frame in 0..3 {
+        c.step_frame(1.0 / 60.0);
+        assert!(derived(&c), "frame {frame}");
+        c.audit_every_parking_catchment();
+    }
+    c.finalize_network_render_products();
+    assert!(derived(&c));
+    c.audit_every_parking_catchment();
+}

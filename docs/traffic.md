@@ -2409,6 +2409,19 @@ left lists a rebuild from scratch disagreed with until the next edit nearby. A p
 save before that frame reconciles the edges first. A road bulldoze and an undo still publish
 inline; a stale routing hierarchy leaves the economy ends to the adoption as before.
 
+**Lanes on the roadbed first** (`PARK-14`). A walk's seconds and a door's kerb depend on lane
+heights: a lane's length is its 3D length, and the kerb is sampled along it. A rebuild appends
+lanes at flat build heights, and lifting them onto the roadbed
+(`TransitNetwork::sync_new_lane_heights`) changes their lengths on graded or curved roads. Every
+derivation a load makes reads lifted lanes, so an edit lifts its new lanes before it derives the
+entrances along them or publishes a door's list. A commit lifts them in its mesh precompute
+before its deferred publication; a road bulldoze lifts them right after its lane rebuild. Before
+that fix the bulldoze published lists from unlifted lanes, which went stale at the next running
+frame's lift (or, in the game, the command's own publication rebuilt them, but the entrances
+stayed derived from unlifted lanes, and the next building removal's entrance cache rebuild moved
+a kerb by a rounding under an unchanged list). An undo of a road edit still derives its entrances
+before the lift (`PARK-16`).
+
 | Operation | Bound / retained storage |
 | --- | --- |
 | Catchment rebuild (a road edit, a load) | O(local lanes log local lanes + local adjacency + local bays × trip ends + local doors × (reached lanes log reached lanes + bays of nine chunks + reached bays log reached bays)); the table, the adjacency and the doors use Rayon, the two floods run side by side |
