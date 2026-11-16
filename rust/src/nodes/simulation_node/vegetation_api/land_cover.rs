@@ -219,17 +219,7 @@ impl PatchLandCover {
     /// the window's sites, index tiles, fields and edited cells.
     pub(crate) fn take(core: &mut SimCore, key: Vector2i) -> Option<Self> {
         let layout = super::PatchLayout::new(core);
-        if key.x < 0
-            || key.y < 0
-            || key.x as f32 * layout.span >= layout.half_w * 2.0
-            || key.y as f32 * layout.span >= layout.half_h * 2.0
-        {
-            return None;
-        }
-        let origin = Vector2::new(
-            key.x as f32 * layout.span - layout.half_w,
-            key.y as f32 * layout.span - layout.half_h,
-        );
+        let origin = layout.origin(key)?;
         let inputs = super::world::VegetationPatchInputs::take(core, origin, layout.span)?;
         Some(Self {
             inputs: Some(inputs),
@@ -238,6 +228,17 @@ impl PatchLandCover {
             generations: generations(core, key),
             coverage: None,
         })
+    }
+
+    /// Whether patch `key` lies in the world, where [`Self::take`] answers once the roadbed and
+    /// the site index are ready. `O(1)`.
+    pub(crate) fn in_world(core: &SimCore, key: Vector2i) -> bool {
+        super::PatchLayout::new(core).origin(key).is_some()
+    }
+
+    /// The revisions taken with the inputs: the nine (terrain payload, vegetation) pairs.
+    pub(crate) fn generations(&self) -> &[i64; 18] {
+        &self.generations
     }
 
     /// Builds the coverage from the taken inputs and drops them. Off the main thread.

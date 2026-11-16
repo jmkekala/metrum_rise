@@ -13,11 +13,13 @@ use brush::preset;
 use world::VegetationWorld;
 pub(crate) use jobs::VegetationJobs;
 pub(crate) use land_cover::PatchLandCover;
+pub(crate) use land_cover_jobs::LandCoverJobs;
 
 mod brush;
 mod hedge_runs;
 pub(crate) mod jobs;
 mod land_cover;
+mod land_cover_jobs;
 
 // Texels on each side of the square a tree's stand closure averages over; see
 // get_vegetation_stand_cover.
@@ -99,24 +101,71 @@ impl SimulationNode {
     /// Publishes an R8 forest-floor texture on a fixed 8 m world grid, including a filter border.
     /// The payload contains world bounds, dimensions, bytes and the existing terrain/vegetation
     /// revisions of the nine contributing patches. This is derived data, never saved or ticked.
+    /// Waits for the core: the terrain renderer asks for land covers through
+    /// [`Self::request_vegetation_land_cover`] instead (`RENDER-40`), so this is counted with the
+    /// synchronous queries (`get_vegetation_main_thread_queries`).
     #[func]
     pub fn get_vegetation_land_cover(&self, key: Vector2i) -> VarDictionary {
+        jobs::count_main_thread_query();
         let mut core = self.lock_core();
         let layout = PatchLayout::new(&core);
-        if key.x < 0
-            || key.y < 0
-            || key.x as f32 * layout.span >= layout.half_w * 2.0
-            || key.y as f32 * layout.span >= layout.half_h * 2.0
-        {
+        let Some(origin) = layout.origin(key) else {
             return VarDictionary::new();
-        }
+        };
         core.prepare_site_queries();
-        let origin = Vector2::new(
-            key.x as f32 * layout.span - layout.half_w,
-            key.y as f32 * layout.span - layout.half_h,
-        );
         land_cover::Coverage::build(&*core, origin, layout.span)
             .payload(land_cover::generations(&core, key))
+    }
+
+    /// Asks for terrain patch `key`'s land cover, built on the background pool (`RENDER-40`) and
+    /// handed over by [`Self::poll_vegetation_land_covers`] once current; false when it is asked
+    /// already. Never waits for the core. `O(1)`.
+    #[func]
+    pub fn request_vegetation_land_cover(&self, key: Vector2i) -> bool {
+        let asked = self.land_cover_jobs.lock().unwrap().request(key);
+        land_cover_jobs::pump(&self.land_cover_spawner());
+        asked
+    }
+
+    /// The asked land covers that are current by the published revisions, at most `max`: each
+    /// [`Self::get_vegetation_land_cover`]'s dictionary with its patch `key`, the same bytes and
+    /// revisions. A result made stale since its snapshot is rebuilt without being asked again.
+    /// Starts the next snapshot when keys wait. Never waits for the core; `O(landed)`.
+    #[func]
+    pub fn poll_vegetation_land_covers(&self, max: i32) -> VarArray {
+        let published = self.frame_queries();
+        let delivered = self
+            .land_cover_jobs
+            .lock()
+            .unwrap()
+            .deliver(&published, usize::try_from(max).unwrap_or(0));
+        land_cover_jobs::pump(&self.land_cover_spawner());
+        let mut covers = VarArray::new();
+        for (key, cover) in delivered {
+            if let Some(mut data) = cover.payload() {
+                data.set("key", key);
+                covers.push(&data.to_variant());
+            }
+        }
+        covers
+    }
+
+    /// Drops patch `key`'s land cover request: nothing is handed over for it.
+    #[func]
+    pub fn cancel_vegetation_land_cover(&self, key: Vector2i) {
+        self.land_cover_jobs.lock().unwrap().cancel(key);
+    }
+
+    /// Drops every land cover request (the terrain renderer's reset; a world load does it too).
+    #[func]
+    pub fn clear_vegetation_land_covers(&self) {
+        self.land_cover_jobs.lock().unwrap().clear();
+    }
+
+    /// Land cover requests not yet handed over: waiting, being built or built.
+    #[func]
+    pub fn get_vegetation_land_covers_asked(&self) -> i64 {
+        self.land_cover_jobs.lock().unwrap().asked() as i64
     }
 
     /// Crown coverage averaged over the `40 m` square around each `8 m` texel of a world
@@ -349,8 +398,9 @@ impl SimulationNode {
     }
 
     /// Synchronous vegetation queries (`get_decorative_tree_patch`, `get_vegetation_stand_cover`,
-    /// `get_vegetation_hedge_runs`) asked since the extension loaded. The renderer asks none
-    /// (`RENDER-32-D`); the stream benchmark records the count each frame.
+    /// `get_vegetation_hedge_runs`, `get_vegetation_land_cover`) asked since the extension
+    /// loaded. The renderers ask none (`RENDER-32-D`, `RENDER-40`); the stream benchmark records
+    /// the count each frame.
     #[func]
     pub fn get_vegetation_main_thread_queries(&self) -> i64 {
         jobs::main_thread_queries() as i64
@@ -366,6 +416,15 @@ impl SimulationNode {
 }
 
 impl SimulationNode {
+    // What the land cover jobs need to start their snapshot taker (`RENDER-40`).
+    fn land_cover_spawner(&self) -> land_cover_jobs::LandCoverSpawner {
+        land_cover_jobs::LandCoverSpawner {
+            core: Arc::clone(&self.core),
+            jobs: Arc::clone(&self.land_cover_jobs),
+            async_jobs: Arc::clone(&self.async_jobs),
+        }
+    }
+
     /// What the vegetation jobs need to start one another; the stream node pulls finished
     /// products through it (`RENDER-32-E`).
     pub(crate) fn vegetation_spawner(&self) -> jobs::Spawner {
@@ -463,6 +522,20 @@ impl PatchLayout {
             half_w: w * 0.5,
             half_h: h * 0.5,
         }
+    }
+
+    // Patch `key`'s minimum corner, or `None` outside the world.
+    fn origin(&self, key: Vector2i) -> Option<Vector2> {
+        let inside = key.x >= 0
+            && key.y >= 0
+            && (key.x as f32 * self.span) < self.half_w * 2.0
+            && (key.y as f32 * self.span) < self.half_h * 2.0;
+        inside.then(|| {
+            Vector2::new(
+                key.x as f32 * self.span - self.half_w,
+                key.y as f32 * self.span - self.half_h,
+            )
+        })
     }
 
     fn key(&self, x: f32, z: f32) -> i64 {

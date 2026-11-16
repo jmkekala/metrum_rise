@@ -579,3 +579,84 @@ fn terrain_land_cover_from_the_payload_snapshot_equals_the_live_query() {
     assert!(covered > 100, "{covered} covered texels");
     assert!(super::PatchLandCover::take(&mut core, Vector2i::new(cols, 0)).is_none());
 }
+
+// The land cover jobs' path (`RENDER-40`: request, the snapshot taker under `try_lock`, the bake
+// off the core, the poll against the published revisions) hands over the main-thread query's land
+// cover, texel for texel and revision for revision, on every patch of the populated fixture; a
+// result made stale by an edit after its take goes back to wait, and one taken after an edit
+// not yet published waits for the publication.
+#[test]
+fn terrain_land_cover_from_the_jobs_equals_the_live_query_and_follows_publications() {
+    use super::land_cover_jobs::take_and_bake;
+    use std::sync::{Arc, Mutex};
+    let core = Arc::new(Mutex::new(populated()));
+    let publish = |core: &Mutex<SimCore>| {
+        let mut core = core.lock().unwrap();
+        core.refresh_frame_queries();
+        core.frame_queries().clone()
+    };
+    let layout = super::PatchLayout::new(&core.lock().unwrap());
+    let (cols, rows) = (
+        (layout.half_w * 2.0 / layout.span).ceil() as i32,
+        (layout.half_h * 2.0 / layout.span).ceil() as i32,
+    );
+    let keys: Vec<_> = (0..rows)
+        .flat_map(|z| (0..cols).map(move |x| Vector2i::new(x, z)))
+        .collect();
+    let mut jobs = LandCoverJobs::default();
+    for &key in &keys {
+        assert!(jobs.request(key));
+    }
+    // Outside the world: the request ends unanswered instead of waiting forever.
+    assert!(jobs.request(Vector2i::new(cols, 0)));
+    let published = publish(&core);
+    let (world, batch) = jobs.start().unwrap();
+    assert!(!jobs.land(take_and_bake(&core, world, batch)));
+    let mut delivered = jobs.deliver(&published, usize::MAX);
+    assert_eq!(delivered.len(), keys.len());
+    delivered.sort_by_key(|(key, _)| (key.y, key.x));
+    let mut covered = 0;
+    {
+        let mut core = core.lock().unwrap();
+        core.prepare_site_queries();
+        for (key, cover) in &delivered {
+            let origin = layout.origin(*key).unwrap();
+            let live = Coverage::build(&*core, origin, layout.span).bytes();
+            assert_eq!(cover.coverage_bytes(), live, "land cover of {key:?}");
+            assert_eq!(*cover.generations(), land_cover::generations(&core, *key));
+            covered += live.iter().filter(|&&byte| byte > 0).count();
+        }
+    }
+    assert!(covered > 100, "{covered} covered texels");
+    assert_eq!(jobs.asked(), 1, "only the outside key is still asked");
+
+    // Behind: taken, then an edit is published before the poll.
+    // Open ground clear of the fixture's streets, path and yards.
+    let centre = Vector2::new(-150.0, -30.0);
+    let key = Vector2i::new(
+        ((centre.x + layout.half_w) / layout.span).floor() as i32,
+        ((centre.y + layout.half_h) / layout.span).floor() as i32,
+    );
+    let mut jobs = LandCoverJobs::default();
+    jobs.request(key);
+    let (world, batch) = jobs.start().unwrap();
+    jobs.land(take_and_bake(&core, world, batch));
+    assert!(remove_at(&mut core.lock().unwrap(), centre, 30.0, 0) > 0);
+    let published = publish(&core);
+    assert!(jobs.deliver(&published, usize::MAX).is_empty());
+    let (world, batch) = jobs.start().expect("the stale key waits again");
+    assert_eq!(batch, [key]);
+    // Ahead: taken after an edit no publication carries yet; delivered once one does.
+    assert!(add_at(&mut core.lock().unwrap(), centre, 0));
+    jobs.land(take_and_bake(&core, world, batch));
+    assert!(jobs.deliver(&published, usize::MAX).is_empty());
+    assert!(jobs.start().is_none(), "an ahead result is held, not taken again");
+    let published = publish(&core);
+    let delivered = jobs.deliver(&published, usize::MAX);
+    assert_eq!(delivered.len(), 1);
+    let mut live_core = core.lock().unwrap();
+    live_core.prepare_site_queries();
+    let live = Coverage::build(&*live_core, layout.origin(key).unwrap(), layout.span).bytes();
+    assert_eq!(delivered[0].1.coverage_bytes(), live);
+    assert_eq!(jobs.asked(), 0);
+}

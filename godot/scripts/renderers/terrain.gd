@@ -92,6 +92,11 @@ const PATCH_WATER_TEXTURE_SYNC_BUDGET_MS := 1.0
 # A dirty patch's stage (height and mask images, its land cover from the payload) as the install
 # ledger predicts it, microseconds; the first of a frame always stages.
 const DIRTY_STAGE_US := 300.0
+# A handed-over land cover's upload (its image and texture) as the install ledger predicts it,
+# microseconds (`RENDER-40`); the first of a frame always uploads.
+const LAND_COVER_STAGE_US := 60.0
+# Land covers taken from the land cover jobs a frame at most.
+const LAND_COVER_POLL_BUDGET := 32
 const FIELD_OVERLAY_TEXTURE_TILE_M := 12.0
 const FIELD_OVERLAY_STRENGTH := 0.84
 const FIELD_OVERLAY_GRAIN_TINT := Color(0.98, 1.02, 0.90, 1.0)
@@ -168,8 +173,20 @@ var patch_mesh_cache: Dictionary = {}
 var patch_resource_pool: Array[Dictionary] = []
 # Count of payload commits over all patches. See get_surface_commit_revision.
 var _surface_commit_revision := 0
-# Land cover epoch at which every built patch was last found current, or -1 for none.
+# Land cover epoch at which every built patch whose land cover was stale was last asked for, or
+# -1 for none.
 var _land_cover_clean_epoch := -1
+# Land covers asked of the land cover jobs (`RENDER-40`, built on the background pool): key ->
+# true until handed over or cancelled, so a stale patch is asked once while its job is out.
+var _land_cover_asked := {}
+# Land covers handed over and not yet uploaded: key -> the bridge dictionary, current when it
+# was handed over.
+var _land_cover_landed := {}
+# What a patch built without any land cover draws until its own lands: no coverage.
+var _empty_land_cover := {}
+# The perf channel's land cover counts since the last record: asked, handed over, frames a dirty
+# commit waited for one, built patches drawing the empty one.
+var _land_cover_perf := PackedInt64Array([0, 0, 0, 0])
 var water_texture_sync_queue: Array[Vector2i] = []
 var water_texture_sync_lookup: Dictionary = {}
 var cached_overlay_mode: int = -1
@@ -329,6 +346,8 @@ func _process(delta: float) -> void:
 	var network_refresh_pending: bool = simulation_node.is_network_dirty()
 	var payload_poll_start_us := Time.get_ticks_usec()
 	var payload_poll_count := _poll_ready_terrain_patch_payloads(PATCH_PAYLOAD_POLL_BUDGET_PER_FRAME)
+	if not _land_cover_asked.is_empty():
+		_poll_land_covers()
 	var payload_poll_elapsed_ms := float(Time.get_ticks_usec() - payload_poll_start_us) / 1000.0
 	network_refresh_pending = network_refresh_pending or simulation_node.is_network_dirty()
 	var upload_elapsed_ms := 0.0
@@ -412,6 +431,11 @@ func _process(delta: float) -> void:
 			"upload_dirty_patches": dirty_patch_count,
 			"upload_prepare_ms": _commit_us[0] / 1000.0, "upload_commit_ms": _commit_us[1] / 1000.0,
 			"upload_committed_patches": int(_commit_us[2]),
+			# The land cover jobs (`RENDER-40`): asked, handed over, frames the dirty commit
+			# waited for one, patches built drawing none yet, and asked now.
+			"land_cover_asked": _land_cover_perf[0], "land_cover_landed": _land_cover_perf[1],
+			"land_cover_commit_waits": _land_cover_perf[2], "land_cover_built_empty": _land_cover_perf[3],
+			"land_cover_out": _land_cover_asked.size(),
 			"border": border_elapsed_ms,
 			"water_sync": water_sync_elapsed_ms,
 		}
@@ -436,6 +460,7 @@ func _process(delta: float) -> void:
 				perf_details["graded_" + part] = float(graded_parts[part])
 		PerfDebug.record("terrain", elapsed_ms, perf_details)
 		_commit_us.fill(0.0)
+		_land_cover_perf.fill(0)
 		_reset_terrain_resource_pool_perf_counters()
 
 # The graded tile renderer's frame, with the camera's height above the ground under it, from which
@@ -492,6 +517,8 @@ func get_pending_render_work_counts() -> Dictionary:
 		"pending_ack": int(pending_terrain_ack_states.size() / 3),
 		"water_texture_sync": water_texture_sync_queue.size(),
 		"refused": patch_payload_refused.size(),
+		"land_cover_asked": _land_cover_asked.size(),
+		"land_cover_landed": _land_cover_landed.size(),
 	}
 	counts.merge(_stream.get_terrain_patch_counts())
 	return counts
@@ -503,11 +530,14 @@ func has_blocked_dirty_patch_failure() -> bool:
 	return false
 
 ## Payloads requested (prewarm's only with the background cache), an acknowledgement or water
-## texture sync waiting, or the streaming core's patches missing, leaving or queued for a level
-## check; with the background cache also payloads held for a later build.
+## texture sync waiting, land covers asked or handed over and not uploaded, or the streaming
+## core's patches missing, leaving or queued for a level check; with the background cache also
+## payloads held for a later build.
 func has_pending_render_work(include_background_cache: bool = true) -> bool:
 	return (
 		patch_payload_requested.size() > _prewarm_requests.size()
+		or not _land_cover_asked.is_empty()
+		or not _land_cover_landed.is_empty()
 		or not pending_terrain_ack_states.is_empty()
 		or not water_texture_sync_queue.is_empty()
 		or _stream.has_terrain_pending_work()
@@ -650,34 +680,43 @@ func _prepare_staged_terrain_visual_update() -> Dictionary:
 		if not patches.has(key):
 			continue
 		var patch_data: Dictionary = patch_payload_ready[key] as Dictionary
-		var kept: Dictionary = _dirty_stages.get(key, {})
+		var stage: Dictionary = _dirty_stages.get(key, {})
 		# A kept stage holds while its payload is the one ready and no other commit took the
 		# patch's spare resources since.
 		if (
-			not kept.is_empty()
-			and is_same(kept["patch_data"], patch_data)
-			and is_same(kept["height_texture"], (patches[key] as Dictionary).get("spare_height_texture"))
+			stage.is_empty()
+			or not is_same(stage["patch_data"], patch_data)
+			or not is_same(stage["height_texture"], (patches[key] as Dictionary).get("spare_height_texture"))
 		):
-			stages[key] = kept
-			continue
-		if staged_this_frame > 0 and _stream != null and _stream.get_install_room_us() < DIRTY_STAGE_US:
-			complete = false
-			continue
-		var start_us := Time.get_ticks_usec()
-		var stage := _stage_terrain_patch_update(
-			key,
-			patch_data,
-			int(dirty_patch_payload_generations.get(key, -1)),
-			_terrain_patch_payload_render_step_mm(key)
-		)
-		if _stream != null:
-			_stream.charge_install(0, float(Time.get_ticks_usec() - start_us))
-		if stage.is_empty():
-			_dirty_stages.clear()
-			return {}
-		staged_this_frame += 1
+			if staged_this_frame > 0 and _stream != null and _stream.get_install_room_us() < DIRTY_STAGE_US:
+				complete = false
+				continue
+			var start_us := Time.get_ticks_usec()
+			stage = _stage_terrain_patch_update(
+				key,
+				patch_data,
+				int(dirty_patch_payload_generations.get(key, -1)),
+				_terrain_patch_payload_render_step_mm(key)
+			)
+			if _stream != null:
+				_stream.charge_install(0, float(Time.get_ticks_usec() - start_us))
+			if stage.is_empty():
+				_dirty_stages.clear()
+				return {}
+			staged_this_frame += 1
+		# The land cover alone is staged again when it is missing or went stale since (a 3x3
+		# revision moved): the batch waits for the land cover jobs' current one (`RENDER-40`),
+		# the rest of the stage kept.
+		if not _land_cover_current(key, stage["land_cover"]):
+			stage["land_cover"] = _stage_patch_land_cover(
+				key, patches[key], false, patch_data.get("land_cover", {}) as Dictionary
+			)
+			if (stage["land_cover"] as Dictionary).is_empty():
+				complete = false
 		stages[key] = stage
 	_dirty_stages = stages
+	if not complete and _build_perf:
+		_land_cover_perf[2] += 1
 	if not complete:
 		return {}
 	var border_stage: Dictionary = {}
@@ -907,6 +946,10 @@ func _create_patch(key: Vector2i, initial_lod_step: int, allow_async: bool = tru
 		patches[key],
 		_stage_patch_land_cover(key, patches[key], true, patch_data.get("land_cover", {}) as Dictionary)
 	)
+	# A build draws its payload's land cover even when a revision moved since; the current one
+	# is asked for here, as the epoch's walk may have passed before the build (`RENDER-40`).
+	if not _land_cover_current(key, patches[key]["land_cover"]):
+		_request_land_cover(key)
 	if _build_perf:
 		var end_us := Time.get_ticks_usec()
 		var marks := [build_start_us, resources_us, height_us, node_us, masks_us, params_us, end_us]
@@ -949,11 +992,14 @@ func _upload_patch(key: Vector2i, allow_async: bool = false) -> bool:
 	_commit_staged_patch_data(key, stage, total_start_us, fetch_ms)
 	return true
 
+## `land_cover`: the patch's land cover stage when the caller staged it already; else it is
+## staged here, and is `{}` while the land cover jobs build it (`RENDER-40`).
 func _stage_terrain_patch_update(
 	key: Vector2i,
 	patch_data: Dictionary,
 	expected_generation: int,
-	expected_render_step_mm: int
+	expected_render_step_mm: int,
+	land_cover: Dictionary = {}
 ) -> Dictionary:
 	if not _terrain_patch_payload_is_stageable(
 		key,
@@ -1016,13 +1062,15 @@ func _stage_terrain_patch_update(
 	if terrain_mesh == null:
 		return {}
 	var mesh_ms := float(Time.get_ticks_usec() - mesh_start_us) / 1000.0
+	if land_cover.is_empty():
+		land_cover = _stage_patch_land_cover(key, patch, false, patch_data.get("land_cover", {}) as Dictionary)
 	return {
 		"valid": true,
 		"patch_node_id": (patch["node"] as MeshInstance3D).get_instance_id(),
 		"patch_data": patch_data,
-		# The payload's land cover (built on the payload worker) when it is current, so the
-		# stage queries the core for it no more (`RENDER-40`).
-		"land_cover": _stage_patch_land_cover(key, patch, false, patch_data.get("land_cover", {}) as Dictionary),
+		# The payload's land cover (built on the payload worker) when it is current, else the land
+		# cover jobs' (`RENDER-40`): never a query of the core.
+		"land_cover": land_cover,
 		"height_image": height_image,
 		"height_texture": height_texture,
 		"mask_image": mask_image,
@@ -1239,6 +1287,9 @@ func _remove_patch(key: Vector2i) -> void:
 	_release_terrain_patch_resources(patch)
 	patches.erase(key)
 	resident_patch_lookup.erase(key)
+	_land_cover_landed.erase(key)
+	if _land_cover_asked.erase(key):
+		simulation_node.cancel_vegetation_land_cover(key)
 	_push_surface_generation(key)
 	_graded_patch_changed(key)
 	# The streaming core wants it again as a hole when it was resident.
@@ -1267,6 +1318,9 @@ func _clear_patches() -> void:
 	_prewarm_requests.clear()
 	# A load restarts both epoch counters, so an old value could match a new world.
 	_land_cover_clean_epoch = -1
+	_land_cover_asked.clear()
+	_land_cover_landed.clear()
+	simulation_node.clear_vegetation_land_covers()
 	water_texture_sync_queue.clear()
 	water_texture_sync_lookup.clear()
 	_stream.revise_terrain_residency()
@@ -1423,28 +1477,37 @@ func _terrain_default_patch_texture_size() -> Vector2i:
 
 # A coverage upload uses the same active/spare ownership as the height texture. Building a
 # terrain stage cannot mutate the currently displayed texture; commit swaps both products.
-## `prepared` is the land cover the patch's payload carried (`RENDER-32-M`: built on the payload
-## worker, the same bytes and revisions as the query); empty, the core is queried here.
+## The patch's land cover stage: its current one while current; else `prepared`, the land cover
+## its payload carried (`RENDER-32-M`: built on the payload worker), while current or when
+## `force`d (a build); else one the land cover jobs handed over, while current; else `{}` after
+## asking the jobs for it once (`RENDER-40`), or for a forced build the empty land cover. Never
+## a query of the core: the main thread does not wait for it.
 func _stage_patch_land_cover(
 	key: Vector2i, patch: Dictionary, force: bool = false, prepared: Dictionary = {}
 ) -> Dictionary:
 	var current: Dictionary = patch.get("land_cover", {})
-	if not force and not current.is_empty() and simulation_node.is_vegetation_land_cover_current(key, current["generations"]):
+	if not force and _land_cover_current(key, current):
 		return current
-	var query_us := Time.get_ticks_usec() if _build_perf else 0
-	# Forced (a build), the payload's land cover as it is; otherwise only while it is current.
+	var stage_us := Time.get_ticks_usec() if _build_perf else 0
 	var data: Dictionary = prepared
-	if data.is_empty() or (not force and not simulation_node.is_vegetation_land_cover_current(key, data["generations"])):
-		data = simulation_node.get_vegetation_land_cover(key)
-	if _build_perf:
-		_build_us[8] += float(Time.get_ticks_usec() - query_us)
-		_build_us[9] += 0.0 if prepared.is_empty() else 1.0
+	if data.is_empty() or (not force and not _land_cover_current(key, data)):
+		data = _land_cover_landed.get(key, {})
+		if not _land_cover_current(key, data):
+			_land_cover_landed.erase(key)
+			_request_land_cover(key)
+			if not force:
+				return {}
+			if _build_perf:
+				_land_cover_perf[3] += 1
+			return _empty_land_cover_stage()
 	var spare: Dictionary = patch.get("spare_land_cover", {})
 	var image: Image = spare.get("image", null) as Image
-	if image == null:
+	var owned := image != null
+	if not owned:
 		image = Image.new()
 	image.set_data(int(data["width"]), int(data["height"]), false, Image.FORMAT_R8, data["bytes"])
-	var texture: ImageTexture = spare.get("texture", null) as ImageTexture
+	# The empty land cover's texture is shared: only a spare with its own image is written.
+	var texture: ImageTexture = spare.get("texture", null) as ImageTexture if owned else null
 	if texture != null and texture.get_width() == image.get_width() and texture.get_height() == image.get_height():
 		texture.update(image)
 	else:
@@ -1452,7 +1515,40 @@ func _stage_patch_land_cover(
 	spare = {"image": image, "texture": texture,
 		"world_bounds": data["world_bounds"], "generations": data["generations"]}
 	patch["spare_land_cover"] = spare
+	if _build_perf:
+		_build_us[8] += float(Time.get_ticks_usec() - stage_us)
+		_build_us[9] += 0.0 if prepared.is_empty() else 1.0
 	return spare
+
+# Whether a land cover stage or bridge dictionary carries the published revisions. O(1).
+func _land_cover_current(key: Vector2i, cover: Dictionary) -> bool:
+	return cover.has("generations") and simulation_node.is_vegetation_land_cover_current(key, cover["generations"])
+
+# Asks the land cover jobs for `key`'s land cover once while it is out (`RENDER-40`).
+func _request_land_cover(key: Vector2i) -> void:
+	if _land_cover_asked.has(key):
+		return
+	_land_cover_asked[key] = true
+	simulation_node.request_vegetation_land_cover(key)
+	_land_cover_perf[0] += 1
+
+# Takes the land covers the jobs built that are current, for the built patches. O(handed over).
+func _poll_land_covers() -> void:
+	for data: Dictionary in simulation_node.poll_vegetation_land_covers(LAND_COVER_POLL_BUDGET):
+		var key: Vector2i = data["key"]
+		_land_cover_asked.erase(key)
+		_land_cover_perf[1] += 1
+		if patches.has(key):
+			_land_cover_landed[key] = data
+
+# A patch built without any land cover draws none (a 1x1 black texture shared by every such
+# patch, never written) until its own lands; its empty revisions are never current.
+func _empty_land_cover_stage() -> Dictionary:
+	if _empty_land_cover.is_empty():
+		var image := Image.create_from_data(1, 1, false, Image.FORMAT_R8, PackedByteArray([0]))
+		_empty_land_cover = {"texture": ImageTexture.create_from_image(image),
+			"world_bounds": Vector4(0.0, 0.0, 1.0, 1.0), "generations": PackedInt64Array()}
+	return _empty_land_cover
 
 func _commit_patch_land_cover(patch: Dictionary, stage: Dictionary) -> void:
 	_graded_material_changed(patch.get("key"))
@@ -1465,20 +1561,33 @@ func _commit_patch_land_cover(patch: Dictionary, stage: Dictionary) -> void:
 	material.set_shader_parameter("land_cover_world_bounds", stage["world_bounds"])
 
 func _sync_land_cover() -> void:
-	# O(1) while no revision moved: the epoch advances with either stream, and a patch built
-	# since the last walk stamped the generations current at its build. Otherwise O(built
-	# patches), nine pairs of existing revisions per patch, one upload per frame.
+	# O(1) while no revision moved: the epoch advances with either stream. When it moved, one walk
+	# over the built patches, nine pairs of existing revisions each, asks the land cover jobs for
+	# every stale one once (`RENDER-40`); a patch built later asked at its build.
 	var epoch: int = simulation_node.get_land_cover_epoch()
-	if epoch == _land_cover_clean_epoch:
-		return
-	for key: Vector2i in patches:
-		var patch: Dictionary = patches[key]
-		var current: Dictionary = patch["land_cover"]
-		if not simulation_node.is_vegetation_land_cover_current(key, current["generations"]):
-			_commit_patch_land_cover(patch, _stage_patch_land_cover(key, patch))
+	if epoch != _land_cover_clean_epoch:
+		for key: Vector2i in patches:
+			if not _land_cover_current(key, patches[key]["land_cover"]):
+				_request_land_cover(key)
+		# Read before the walk, so a revision that moved during it is walked again next frame.
+		_land_cover_clean_epoch = epoch
+	# The handed-over land covers upload under the frame's install ledger, the first always.
+	# O(handed over) a frame.
+	var uploaded := 0
+	for key: Vector2i in _land_cover_landed.keys():
+		if uploaded > 0 and _stream != null and _stream.get_install_room_us() < LAND_COVER_STAGE_US:
 			return
-	# Read before the walk, so a revision that moved during it is walked again next frame.
-	_land_cover_clean_epoch = epoch
+		var start_us := Time.get_ticks_usec()
+		var patch: Dictionary = patches.get(key, {})
+		if not patch.is_empty():
+			# A stale one is asked for again and nothing changes.
+			var stage := _stage_patch_land_cover(key, patch)
+			if not stage.is_empty():
+				_commit_patch_land_cover(patch, stage)
+		_land_cover_landed.erase(key)
+		uploaded += 1
+		if _stream != null:
+			_stream.charge_install(0, float(Time.get_ticks_usec() - start_us))
 
 func _upload_terrain_patch_height_texture(
 	resources: Dictionary,
@@ -1788,6 +1897,20 @@ func _dirty_patch_payloads_renderable_for_atomic_upload(keys: Array[Vector2i]) -
 	return true
 
 func _stage_dirty_patch_payloads_for_atomic_commit(keys: Array[Vector2i]) -> Dictionary:
+	# The land covers first: while one waits for the land cover jobs (`RENDER-40`) nothing else is
+	# staged, so a retry next frame stages no height twice.
+	var land_covers: Dictionary = {}
+	var waiting := false
+	for key in keys:
+		if not patches.has(key):
+			continue
+		var prepared: Dictionary = (patch_payload_ready[key] as Dictionary).get("land_cover", {})
+		land_covers[key] = _stage_patch_land_cover(key, patches[key], false, prepared)
+		waiting = waiting or (land_covers[key] as Dictionary).is_empty()
+	if waiting:
+		if _build_perf:
+			_land_cover_perf[2] += 1
+		return {"valid": false, "stages": {}}
 	var stages: Dictionary = {}
 	for key in keys:
 		if not patches.has(key):
@@ -1798,7 +1921,8 @@ func _stage_dirty_patch_payloads_for_atomic_commit(keys: Array[Vector2i]) -> Dic
 			key,
 			patch_data,
 			expected_generation,
-			_terrain_patch_payload_render_step_mm(key)
+			_terrain_patch_payload_render_step_mm(key),
+			land_covers[key]
 		)
 		if stage.is_empty():
 			return {"valid": false, "stages": {}}

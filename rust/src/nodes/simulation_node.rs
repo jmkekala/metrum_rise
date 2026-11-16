@@ -263,6 +263,8 @@ pub struct SimulationNode {
     graded_jobs: Arc<Mutex<graded_tiles_api::GradedResidencyJobs>>,
     /// Vegetation patch products prepared on the background pool (`RENDER-32-D`).
     vegetation_jobs: Arc<Mutex<vegetation_api::VegetationJobs>>,
+    /// Stale terrain land covers rebuilt on the background pool (`RENDER-40`).
+    land_cover_jobs: Arc<Mutex<vegetation_api::LandCoverJobs>>,
     /// The graded edit journal's latest serial (`T61 (2)`), read without the core lock.
     graded_edit_serial: Arc<std::sync::atomic::AtomicU64>,
     water_patch_payload_jobs: Arc<Mutex<WaterPatchPayloadAsyncState>>,
@@ -594,6 +596,7 @@ impl INode3D for SimulationNode {
             terrain_patch_payload_jobs,
             graded_jobs: Default::default(),
             vegetation_jobs: Default::default(),
+            land_cover_jobs: Default::default(),
             graded_edit_serial,
             water_patch_payload_jobs,
             async_jobs: Default::default(),
