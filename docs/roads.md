@@ -12772,6 +12772,121 @@ moves. This is the baseline the later rounds' whole-tick probe must beat.
 - Every rows comparison reports the main thread's clock beside the share: below 17 ms the
   share follows the governor's clock as much as the work.
 
+### The hue's build bounded by its footprint (round HF, `ROAD-123`)
+
+Round HF (2026-11-16, branch `roadtools-hf` on `dev` `48689fbe`, for review). The footprint
+hue's build (`road_tool_hue_of_preview`, round HU3's) took 5.5 ms a pose on the T, branch and dense
+preview rows and 10.9 ms on the two cross rows in round R2-0's profile.
+
+- **The rows in Rust** (`nodes/sim/road_tool/hue/rows.rs`): round L1's preview cases
+  (`road_preview_replay.gd`: the 512 m blank world with 8 m cells, the slope, the roads committed
+  through the gameplay path), 48 poses a row evenly over one sweep or orbit, each pose's preview
+  made outside timing, the hue built as the session builds it. `benchmark_hue_rows` times the
+  build per pose (9 rounds, p50 / p99 / max), once reading the drawn graded surface and once over
+  a constant ground (the build without its read), and prints a digest of the hue's vertex bytes.
+  `METRUM_HUE_ROWS` and `METRUM_HUE_ROUNDS` select rows and rounds for a profile.
+- **The cause** (perf on the bench, base `dev`): the build read the drawn ground as point
+  queries, and the hue's own steps were linear where they need not be.
+  1. Every read was `ground_height_near` at a `GL0` lattice point, which interpolates the point's
+     `GL0` triangle and so evaluates three lattice vertices, and a 2 m cell's 25 reads share 16
+     points with their neighbours: about 4.7 vertex evaluations a point.
+  2. Each vertex evaluation scanned every coverage triangle of the prepared window
+     (`covered_height_in`; `RoadbedSystem::top_triangle_height_at` alone was 29 % of the profile).
+  3. Reads followed the fragments' cell order (`x` first), so a draft running along `z` (the T
+     rows) met each 8 m gather block once per 2 m column and prepared its window four times.
+  4. Every output vertex binary-searched a rise list of all fragment points (27,500 on a cross
+     pose, sorted per pose), though only fragments the ground lifts rise; the clip pushed into
+     vectors and took a modulo per point.
+  The cross rows' drafts are three times the T rows' (four junctions: 2,400 top triangles, 7,460
+  fragments, 13,000 hue triangles against 4,400-4,800), hence 10.9 against 5.5 ms. Round HU3's
+  0.2-0.3 ms was the read's share on its own fixture: its build over a constant ground alone was
+  1.26-1.72 ms.
+- **The fix**, the mesh unchanged: `GradedSurface::ground_at_lattice` with a fixed-size
+  `LatticeBlock` (`simulation/terrain/graded/query.rs`) answers `ground_height_near` at lattice
+  points bitwise, 8 m block by block: one window per block through the shared query index, the
+  block's coverage raised once by `CoverageTriangle::for_each_held_in_row` (each triangle only
+  over its span of each row, bit for bit the predicate), each lattice vertex evaluated once and
+  each read cached; the index's quiet-tile answer kept per tile. The hue (`hue/surface.rs`) reads
+  the cells block by block and only the lattice points its fragments' bounds name; only lifted
+  fragments enter the rise list, and a vertex searches it only beside a lifted cell (two points
+  share a key only within 0.1 mm); the clip works on a stack polygon; fragments sort as compact
+  keys. No new spatial structure: the block is the read's cache, its window the existing index's.
+  No existing graded query changed (vehicles, vegetation, picking and the terrain keep theirs), so
+  the shared path is untouched and no level R timing applies.
+- **The bound per pose**: `O(C + F log F + 25 F + V + L log L)` for the hue (the cells the top
+  triangles' boxes meet, the fragments, the output vertices, the lifted fragments' points) plus,
+  for the read, per 8 m block under the pieces one window (`O(P + V / 8 + K log K)`, as
+  `gather_near`) and its coverage (`O(T x 18 + H)`), and `O(K)` per lattice point a fragment
+  names, each evaluated once: the draft's own footprint, never its window or the city. No
+  allocation per pose (fixed arrays and reused buffers).
+- **Bitwise**: the digests of the hue's vertices over each row's 48 poses are equal on the base
+  and the branch (sloped_t `26fac535530341fe`, sloped_branch `da1b19a5fe5605b9`, flat_cross
+  `093060ecf329939b`, sloped_cross `c51f99827fe25713`, dense `5d65d730adc9b860`); test
+  `the_lattice_reader_builds_hu3s_hue_bitwise_on_the_rows` asserts the session's hue equals the
+  one built through round HU3's reader on 16 poses a row (and the debug builds' sampled
+  index-free reference checks the new read); the hue tests pass unchanged. No product path
+  changed (the hue is drawn only), so Kuopio's commits and the fixtures were not rerun.
+- **Bench** (fresh, release, `taskset -c 0,2,4,6,8,10,12,14`, run and exclusive timing locks, one
+  C B B C pass base `dev` + the bench against the branch; ms a pose, p50 / p99, the two runs a
+  side; the read is the graded build less the constant-ground one):
+
+  | Row | Base p50 / p99 | Branch p50 / p99 | Branch, constant ground | Branch read (p50) |
+  | --- | --- | --- | --- | --- |
+  | sloped_t | 2.95 / 3.96, 2.95 / 3.87 | 1.08 / 1.41, 1.09 / 1.40 | 0.44 / 0.57 | 0.65 |
+  | sloped_branch | 5.38 / 5.69, 5.61 / 6.13 | 1.18 / 1.43, 1.17 / 1.26 | 0.38 / 0.42-0.62 | 0.79 |
+  | flat_cross | 11.46 / 12.45, 12.01 / 13.28 | 3.04 / 3.49, 3.01 / 3.26 | 1.19-1.21 / 1.28-1.48 | 1.82 |
+  | sloped_cross | 11.53 / 12.41, 11.84 / 13.54 | 3.45 / 3.90, 3.41 / 3.74 | 1.21 / 1.32-1.54 | 2.20 |
+  | dense | 2.92 / 3.87, 3.06 / 5.18 | 0.87 / 1.23, 0.87 / 1.14 | 0.41 / 0.53-0.63 | 0.46 |
+
+  Libraries' test binaries `9c135d74d1efa2db` (base) and `154f8379c31ce1e6` (branch), 2026-11-16
+  23:52-23:53, load 3.3-5.4; `$TEST_BINARY --ignored --nocapture --exact
+  nodes::sim::road_tool::hue::rows::benchmark_hue_rows`. The build is 2.8x (T) to 4.5x (branch)
+  faster at p99; an earlier pass under another session's test load (23:08) read the same within
+  0.1 ms on the branch.
+
+  The brief's bar (HU3's 0.3 ms p99 on the T, branch and dense rows, 0.6 ms on the cross rows) is
+  **missed**: it was the read's share in round HU3, not the build. The read is now 0.46-0.79 ms a
+  pose (T, branch, dense) and 1.8-2.2 ms (cross); the rest is the hue's own cut and mesh
+  (0.4 / 1.2 ms), whose size the bitwise mesh fixes (decision HF-1).
+- **The paused preview rows** (round R2-0's `rows.sh` and scripts, profiled the same way; one
+  pass pred / base / branch / branch / base / pred, gamescope headless 1920x1080, four workers,
+  100 samples after 8 warm-ups; the main thread's clock from the profile beside the share):
+
+  | Rows | Side | Poses | p50 ms | p90 ms | <= 16.5 | <= 16.7 | <= 17 | <= 18 | <= 20 | Clock (on time / late) | Main thread a pose | Hue build |
+  | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+  | the two cross rows | pred | 1,411 | 16.668 | 23.257 | 41.1 % | 51.6 % | 61.3 % | 70.6 % | 79.3 % | 2.50 GHz (3.27 / 1.99) | 9,571 us | - |
+  | the two cross rows | base | 1,276 | 20.613 | 22.065 | 0.1 % | 0.1 % | 0.1 % | 0.1 % | 26.3 % | 4.86 GHz (4.92 / 4.86) | 17,311 us | 11,130 us |
+  | the two cross rows | branch | 1,314 | 16.326 | 22.516 | 55.3 % | 61.6 % | 66.5 % | 72.6 % | 82.9 % | 3.58 GHz (4.02 / 3.00) | 10,763 us | 4,066 us |
+  | T, branch, dense | pred | 1,998 | 16.608 | 23.430 | 45.6 % | 53.2 % | 59.7 % | 69.4 % | 78.6 % | 1.69 GHz (2.25 / 1.31) | 9,400 us | - |
+  | T, branch, dense | base | 2,127 | 16.563 | 20.703 | 44.2 % | 62.3 % | 76.0 % | 83.3 % | 88.5 % | 3.45 GHz (3.96 / 2.86) | 10,732 us | 5,464 us |
+  | T, branch, dense | branch | 1,927 | 16.520 | 23.965 | 49.6 % | 56.0 % | 62.5 % | 71.4 % | 80.0 % | 2.15 GHz (2.77 / 1.69) | 10,403 us | 2,630 us |
+  | all | pred | 3,409 | 16.637 | 23.391 | 43.8 % | 52.5 % | 60.3 % | 69.9 % | 78.9 % | | | |
+  | all | base | 3,403 | 17.320 | 21.748 | 27.7 % | 39.0 % | 47.5 % | 52.1 % | 65.2 % | | | |
+  | all | branch | 3,241 | 16.430 | 23.500 | 51.9 % | 58.3 % | 64.1 % | 71.9 % | 81.1 % | | | |
+
+  Fresh, 2026-11-16 23:36-23:44, libraries pred `85b3d2e78ea3302c` (round R2-0's), base `dev`
+  `48689fbe` `0abd16f1d536384a`, branch `ee00a433f63484e6`; each run waited for no Godot,
+  gamescope, rustc or test binary and a load under 6 (an earlier pass at 23:09, overlapped by
+  another session's test suite, was stopped and discarded); no run overlapped. Clocks and times
+  per pose from `attrib.py` (main thread, unhalted at the 3.2 GHz reference rate; the hue build is
+  `road_tool_hue_of_preview`'s bucket), grouped by `$ARTIFACTS/scripts/groups.py`. In the game
+  the hue build is 4.1 ms a cross pose and 2.6 ms a T pose at the main thread's 2.2-3.6 GHz (the
+  bench's 1.1-3.4 ms ran at turbo clocks).
+
+  **The cross rows are back within the pre-D library's distribution**, above it at every cutoff
+  (61.6 against 51.6 % within 16.7 ms, 82.9 against 79.3 % within 20 ms). The T, branch and dense
+  rows are above pred at every cutoff and below the base from 16.7 to 20 ms: the base's 5.5 ms hue kept
+  its main thread at 3.45 GHz, the branch's ran at 2.15 GHz and its late poses at 1.69 GHz (round
+  R2-0's finding: below 17 ms the share follows the governor's clock as much as the work).
+
+- **Decision HF-1** (for the user): the rows' bar is met and the bench's is not, by 3-5x. (a)
+  accept this round and start R2-1 against the cross rows' new distribution; (b) build the hue on the preview worker with the preview it
+  belongs to, off the frame entirely (the build reads only the preview's pieces and the view's
+  graded surface, both on the worker; recommended); (c) the build on the shared pool (cut per
+  triangle, read per block with a scratch a worker, about 3-4x on the performance cores); (d) a
+  coarser mesh where the ground cannot lift a triangle (round HU2's suggestion; the mesh changes,
+  so not bitwise).
+
 ### The frozen cursor removed (round R2-7)
 
 Round R2-7 of `ROAD-112` (branch `roadtools-r27` on `dev` `17207c94`). **Removed:** the frozen
