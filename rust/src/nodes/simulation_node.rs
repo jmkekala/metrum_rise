@@ -74,14 +74,12 @@
 //! | | `get_network_render_generation` | `network_renderer.gd` |
 //! | | `acknowledge_network_render` | `network_renderer.gd` |
 //! | | `get_road_mesh_data` | `network_tool.gd` (coordinated by `network_renderer.gd`) |
-//! | | `validate_road_candidate` | `road_tool.gd` |
 //! | | `request_preview_road_surface` | `road_tool.gd` |
 //! | | `get_preview_road_surface_result` | `road_tool.gd` |
 //! | | `get_road_surface_debug_data` | `network_tool.gd` |
 //! | | `get_road_surface_probe_debug` | `network_tool.gd` |
 //! | | `road_tool_pointer`, `road_tool_pointer_at` | `road_tool.gd` |
 //! | | `road_tool_event`, `road_tool_set_option`, `road_tool_frame` | `road_tool.gd` |
-//! | | `get_closest_network_point` | `road_tool.gd`, `zoning_tool.gd` |
 //! | | `check_border_candidate` | `road_tool.gd` |
 //! | | `set_border_connection` | `road_tool.gd` |
 //! | | `get_bulldoze_target_at` | `bulldoze_tool.gd` |

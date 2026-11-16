@@ -2,9 +2,9 @@
 
 ## Base class for the road-network editing tools (RoadTool, RoundaboutTool).
 ##
-## Rust methods called: add_road(), get_closest_network_point(), get_closest_node(),
+## Rust methods called: add_road(), get_closest_node(),
 ##   get_network_nodes(), get_node_pos(), get_world_surface_height(),
-##   intersect_world_surface(), hover_world_surface(),
+##   intersect_world_surface(),
 ##   get_road_surface_debug_data()
 ## Owns the shared blueprint mesh (the roundabout tool's ring; the road tool draws its preview as
 ## road chunks and its gizmos itself) and the node snapping MultiMesh. The committed
@@ -192,8 +192,8 @@ func _update_blueprint_visuals():
 
 
 # The world point under the pointer, null for none. A click passes `click` and waits for the
-# core (`CODE-25`); a `hover` query answers false while the simulation thread holds it.
-func get_terrain_interaction(click := false, hover := false):
+# core (`CODE-25`).
+func get_terrain_interaction(click := false):
 	var mouse_pos = get_viewport().get_mouse_position()
 	var camera = get_viewport().get_camera_3d()
 	if not camera: return null
@@ -202,36 +202,13 @@ func get_terrain_interaction(click := false, hover := false):
 	var ray_dir = camera.project_ray_normal(mouse_pos)
 	
 	# Combined world-surface raycast: compiled roadbed where owned, otherwise visual terrain.
-	if hover:
-		return simulation_node.hover_world_surface(ray_origin, ray_dir)
 	return simulation_node.intersect_world_surface(ray_origin, ray_dir, click)
 
+# The pointer's world position, sent once per frame by `_process`. Each tool resolves its own
+# (the road tool through its session, the roundabout tool on the ground); a bare base keeps the
+# last one.
 func get_world_mouse_pos() -> Vector3:
-	var pos_variant = get_terrain_interaction(false, true)
-	# The simulation thread holds the core: the cursor keeps its last position.
-	if pos_variant is bool and _has_last_world_mouse_pos:
-		return _last_world_mouse_pos
-	if pos_variant == null or pos_variant is bool:
-		is_valid = false
-		return Vector3.ZERO
-	
-	var pos: Vector3 = pos_variant
-	
-	# 1. Snap to existing network (High priority)
-	# Enlarged from 2.5m to 5.0m to visibly catch strokes hovering over the 3.5m asphalt mesh radius!
-	var snapped_pos = simulation_node.get_closest_network_point(pos, 5.0)
-	if snapped_pos != null:
-		is_valid = true
-		return snapped_pos
-	
-	# 2. Dead Zone Check (Too close but not snapped)
-	var too_close_pos = simulation_node.get_closest_network_point(pos, 8.0)
-	if too_close_pos != null:
-		is_valid = false
-		return pos
-	
-	is_valid = true
-	return pos
+	return _last_world_mouse_pos
 
 func _update_surface_debug_overlay(delta: float) -> void:
 	if surface_debug_mesh == null:

@@ -76,8 +76,6 @@ func _stream_fixture(fixture: Dictionary) -> Dictionary:
 	tool.make_chunks()
 	tool.blueprint_mesh = MeshInstance3D.new()
 	tool.add_child(tool.blueprint_mesh)
-	tool._road_preview_material = WorldMaterialsScript.road_preview_material()
-	tool.blueprint_mesh.material_override = tool._road_preview_material
 	# Manually drive the real process path at a fixed input cadence, without debug/node overlays.
 	tool.active = true
 	tool.fwd_lanes = fixture.forward

@@ -9,7 +9,6 @@
 extends SceneTree
 
 const RoadToolScript := preload("res://scripts/tools/road_tool.gd")
-const WorldMaterialsScript := preload("res://scripts/renderers/world_materials.gd")
 const RoadReasonText := preload("res://scripts/ui/road_reason_text.gd")
 const RoadToolHudScript := preload("res://scripts/ui/road_tool_hud.gd")
 const PARKING_LOT := "parking:building.parking.small_lot"
@@ -79,8 +78,6 @@ func _road_tool() -> Node3D:
 	tool.blueprint_mesh = MeshInstance3D.new()
 	tool.add_child(tool.blueprint_mesh)
 	tool.attach_hud(RoadToolHudScript.new())
-	tool._road_preview_material = WorldMaterialsScript.road_preview_material()
-	tool.blueprint_mesh.material_override = tool._road_preview_material
 	tool.fwd_lanes = 1
 	tool.bkw_lanes = 1
 	tool.active = true

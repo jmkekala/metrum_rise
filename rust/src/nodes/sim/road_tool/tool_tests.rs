@@ -1,18 +1,16 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
 //! Round B (`ROAD-112`) tests: the snapping precedence of plan section 3 (one test per row and
-//! per tie, on the pure resolver), the allocation-free network snap against today's, scripted
-//! event sequences against the road tool's published view (straight parity with today's
-//! two-point request, the curve modes, chain rules) and determinism.
+//! per tie, on the pure resolver), the allocation-free network snap against the acquisition,
+//! scripted event sequences against the road tool's published view (the straight two-point
+//! request's recorded bits, the curve modes, chain rules) and determinism.
 
 use super::bench::{NEIGHBOURHOOD, neighbourhood_view};
 use super::frame::{DraftRefusal, Phase};
 use super::measure::{bearing_deg, design_speed_kmh};
 use super::modes::DrawMode;
-use super::pick::{CursorQuery, road_tool_cursor};
 use super::session::{
-    BORDER_SNAP_M, Pointer, PointerButton, RoadToolAction, RoadToolEvent, RoadToolOption,
-    RoadToolSession, SNAP_RELEASE_M,
+    Pointer, PointerButton, RoadToolAction, RoadToolEvent, RoadToolOption, RoadToolSession,
 };
 use super::snap::{
     GuideLine, SnapInput, SnapKind, SnapOptions, SnapScratch, Snapped, apply_length_step,
@@ -320,10 +318,11 @@ fn tie_angle_half_step_is_fixed() {
     assert!(close(a.xz, d(0.0, 10.0)));
 }
 
-// The session's network snap equals today's acquisition bitwise (including the lowest-id tie
-// rule and node priority), over a lattice of probe points around the neighbourhood.
+// The session's network snap equals the acquisition (`get_closest_network_snap_at_hit`) bitwise
+// (including the lowest-id tie rule and node priority), over a lattice of probe points around the
+// neighbourhood.
 #[test]
-fn network_snap_matches_todays_acquisition() {
+fn network_snap_matches_the_acquisition() {
     let graph = &view().region_graph;
     let mut scratch = SnapScratch::default();
     let mut snapped = 0;
@@ -340,9 +339,9 @@ fn network_snap_matches_todays_acquisition() {
                 5.0,
                 &mut scratch,
             );
-            let today = get_closest_network_snap_at_hit(graph, at, 5.0, StructureHit::Ground);
-            assert_eq!(ours.map(bits), today.map(bits), "at {at:?}");
-            snapped += usize::from(today.is_some());
+            let theirs = get_closest_network_snap_at_hit(graph, at, 5.0, StructureHit::Ground);
+            assert_eq!(ours.map(bits), theirs.map(bits), "at {at:?}");
+            snapped += usize::from(theirs.is_some());
         }
     }
     assert!(snapped > 100, "the lattice must meet the roads ({snapped})");
@@ -411,38 +410,12 @@ fn ack(session: &mut RoadToolSession, committed: bool) {
     session.handle_event(view(), RoadToolEvent::CommitAck { committed });
 }
 
-// Today's cursor for the same ray: idle (start) or placing a straight end from `start`, no
-// zoning snap, the magnet's reference `angle` (zero: off), no retained snap.
-fn today(pointer: Pointer, start: Option<Vector3>, angle: Vector3) -> Vector3 {
-    let Pointer::Ray { origin, dir } = pointer else {
-        unreachable!()
-    };
-    let start_pos = start.unwrap_or(Vector3::ZERO);
-    road_tool_cursor(
-        view(),
-        &CursorQuery {
-            ray_origin: origin,
-            ray_dir: dir,
-            altitude_offset_m: 0.0,
-            active: start.is_some(),
-            current_state: if start.is_some() { 2 } else { 0 },
-            start_pos,
-            control_pos: start_pos,
-            border_snap_dist_m: BORDER_SNAP_M,
-            previous_snap: None,
-            sticky_release_dist_m: SNAP_RELEASE_M,
-            angle_snap: angle,
-        },
-    )
-    .expect("the ray meets the ground")
-    .position
-}
-
-// Straight parity: for clicks where no snap differs (open ground, a junction node, an edge
-// mid-span, a dead end) the session sends exactly today's two points, bit for bit, and those are
-// the bits recorded here (round R2-7, before today's cursor goes).
+// The straight two-point request, recorded (round R2-7): for clicks where no snap differs (open
+// ground, a junction node, an edge mid-span, a dead end) the session sends exactly these bits.
+// Recorded on `dev` `17207c94`, where they equalled the old cursor query's (`road_tool_cursor`,
+// removed in R2-7) two points bit for bit.
 #[test]
-fn straight_mode_sends_todays_two_point_request() {
+fn straight_mode_sends_the_recorded_two_point_request() {
     const SENT: [[[u32; 3]; 2]; 4] = [
         [
             [0xc3480000, 0x00000000, 0x43160000],
@@ -472,28 +445,24 @@ fn straight_mode_sends_todays_two_point_request() {
         click(&mut tool, a);
         click(&mut tool, b);
         let commit = tool.take_commit().expect("a stroke");
-        let start = today(a, None, Vector3::ZERO);
-        let end = today(b, Some(start), Vector3::ZERO);
         let as_bits = |p: &[Vector3]| {
             p.iter()
                 .map(|v| [v.x, v.y, v.z].map(f32::to_bits))
                 .collect::<Vec<_>>()
         };
-        assert_eq!(as_bits(&commit.points), sent, "{a:?} -> {b:?}: recorded");
-        assert_eq!(
-            as_bits(&commit.points),
-            as_bits(&[start, end]),
-            "{a:?} -> {b:?}"
-        );
+        assert_eq!(as_bits(&commit.points), sent, "{a:?} -> {b:?}");
         assert_eq!(tool.frame().state.phase, Phase::AwaitingAck);
     }
 }
 
-// Today's soft 45 degree magnet goes under U2: a stroke 3 degrees off a dead end's direction
-// stays where the pointer is with the lock off (today snaps it), and the 45 degree lock gives
-// today's magnet direction.
+// The old soft 45 degree magnet goes under U2: a stroke 3 degrees off a dead end's direction
+// stays where the pointer is with the lock off (the recorded raw point; the magnet snapped it),
+// and the 45 degree lock gives the magnet's direction (its point recorded on `dev` `17207c94`
+// from the old cursor query, round R2-7).
 #[test]
 fn straight_mode_magnet_cases_under_u2() {
+    const RAW: [u32; 3] = [0x41587cb4, 0x00000000, 0x4381b9ce];
+    const MAGNET: [u32; 3] = [0x41848c62, 0x00000000, 0x438048c6];
     let start_ray = ray(-41.0, 199.0); // the spur's dead end, continuing north-east
     let aim = |degrees: f32| {
         let angle = (45.0_f32 + degrees).to_radians();
@@ -505,16 +474,13 @@ fn straight_mode_magnet_cases_under_u2() {
     move_to(&mut tool, off);
     let start = tool.frame().stroke.points[0];
     let free = tool.frame().cursor.position;
-    let raw = today(off, Some(start), Vector3::ZERO);
-    assert_eq!(free, raw, "lock off: the raw cursor");
-    // Recorded (round R2-7, before today's cursor goes): the raw point and today's magnet.
-    assert_eq!([raw.x, raw.y, raw.z].map(f32::to_bits), [0x41587cb4, 0x00000000, 0x4381b9ce]);
-    let magnet = today(off, Some(start), Vector3::new(1.0, 0.0, 1.0).normalized());
     assert_eq!(
-        [magnet.x, magnet.y, magnet.z].map(f32::to_bits),
-        [0x41848c62, 0x00000000, 0x438048c6]
+        [free.x, free.y, free.z].map(f32::to_bits),
+        RAW,
+        "lock off: the raw cursor"
     );
-    assert_ne!(magnet, raw, "today's magnet moves it");
+    let [x, y, z] = MAGNET.map(f32::from_bits);
+    let magnet = Vector3::new(x, y, z);
     tool.set_option(RoadToolOption::AngleStepDeg(Some(45.0)));
     move_to(&mut tool, off);
     let locked = tool.frame().cursor.position;

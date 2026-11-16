@@ -41,7 +41,6 @@ const GRADED_CAMERA := Vector3(0.0, 90.0, 0.0)
 const GRADED_FIELDS := ["level", "step", "samples_x", "samples_z", "graded", "seam_count", "edge_count", "wall_count", "texels", "rows", "walls"]
 
 const RoadToolScript := preload("res://scripts/tools/road_tool.gd")
-const WorldMaterialsScript := preload("res://scripts/renderers/world_materials.gd")
 const TerrainScript := preload("res://scripts/renderers/terrain.gd")
 const ZoningToolScript := preload("res://scripts/tools/zoning_tool.gd")
 const RoadToolHudScript := preload("res://scripts/ui/road_tool_hud.gd")
@@ -166,8 +165,6 @@ func _fixture(fixture: Dictionary) -> void:
 	tool.blueprint_mesh = MeshInstance3D.new()
 	tool.add_child(tool.blueprint_mesh)
 	tool.attach_hud(RoadToolHudScript.new())
-	tool._road_preview_material = WorldMaterialsScript.road_preview_material()
-	tool.blueprint_mesh.material_override = tool._road_preview_material
 	tool.fwd_lanes = fixture["forward"]
 	tool.bkw_lanes = fixture["backward"]
 	tool.active = true

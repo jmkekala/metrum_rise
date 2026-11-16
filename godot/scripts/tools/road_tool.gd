@@ -208,7 +208,6 @@ var _swap_display = null
 var _commit_request_id: int = 0
 var _commit_points := PackedVector3Array()
 var _commit_validation: Dictionary = {}
-var _road_preview_material: ShaderMaterial
 # The outlines of the lots the previewed stroke removes (`ZONE-09`), made on first use.
 var _demolish_mesh: MeshInstance3D = null
 # The latest pose's graded tiles still to stage (`TERRAIN-07-E`, T27 (d)): each frame without a
@@ -221,9 +220,8 @@ var _graded_commit_epoch := -1
 var _was_active := false
 
 # The session's last frame: its phase (0 idle, 1 placing, 2 waiting for the acknowledgement),
-# what took the cursor, the HUD numbers and the stroke.
+# the HUD numbers and the stroke.
 var _session_phase := 0
-var _session_snap := "free"
 var _session_hud: Dictionary = {}
 var _session_points := PackedVector3Array()
 
@@ -261,9 +259,6 @@ func _ready():
 	make_chunks()
 	super._ready()
 	process_priority = PREVIEW_SAMPLE_PROCESS_PRIORITY
-	if blueprint_mesh:
-		_road_preview_material = WorldMaterials.road_preview_material()
-		blueprint_mesh.material_override = _road_preview_material
 	if MetrumDebug.is_enabled("perf"):
 		begin_preview_measurement()
 	attach_hud(RoadToolHud.new())
@@ -337,9 +332,6 @@ func _place_labels(gizmo_ms: float) -> void:
 		gizmo_part_ms["label_words"].append(_label_word_ms)
 		gizmo_part_ms["label_place"].append(label_ms)
 
-func _snap_to_roads_enabled() -> bool:
-	return true
-
 func _has_session() -> bool:
 	return is_instance_valid(simulation_node) and simulation_node.has_method("road_tool_frame")
 
@@ -402,7 +394,6 @@ func _show_batch_ghost(frame: Dictionary) -> void:
 
 func _read_session_frame(frame: Dictionary) -> void:
 	_session_phase = int(frame.get("phase", 0))
-	_session_snap = String(frame.get("snap", "free"))
 	_session_hud = frame.get("hud", {})
 	_session_points = frame.get("points", PackedVector3Array())
 	_draw_mode = int(frame.get("mode", _draw_mode))
@@ -440,9 +431,6 @@ func _adopt_session_preview(preview: Dictionary, points: PackedVector3Array, sta
 	preview["sequence"] = _preview_sequence
 	_preview = preview
 	_preview_points = points
-
-func _zoning_snap_enabled() -> bool:
-	return zoning_grid_snap_enabled
 
 ## Sets the next stroke's lanes (0..4 each; 0 + 0 is a walkway).
 func set_lanes(fwd: int, bkw: int) -> void:
@@ -588,12 +576,11 @@ func _handle_click():
 		var press_start_us := Time.get_ticks_usec()
 		_session_press()
 		commit_ms = float(Time.get_ticks_usec() - press_start_us) / 1000.0
-	_log_click_detail(state_before, is_valid, mouse_ms, 0.0, 0.0, commit_ms, total_start_us)
+	_log_click_detail(state_before, is_valid, mouse_ms, commit_ms, total_start_us)
 
 # Shows the latest preview's chunks in this frame; an invalid stroke shows only its reason.
 func _show_preview(_points: PackedVector3Array) -> void:
 	is_valid = bool(_preview.get("is_valid", false))
-	_update_road_preview_material(_preview)
 	var sequence := int(_preview.get("sequence", 0))
 	if sequence != _preview_drawn_sequence:
 		if preview_metrics != null:
@@ -725,17 +712,10 @@ func _queue_preview_update() -> void:
 	# Coalesce input bursts; the frame previews once in _process.
 	_preview_update_pending = true
 
+# The road tool draws no blueprint mesh (its preview is road chunks): no per-frame writes to the
+# base's blueprint material.
 func _update_blueprint_visuals() -> void:
-	# Road status is applied with its matching geometry, after this frame's validation.
 	pass
-
-func _update_road_preview_material(preview: Dictionary) -> void:
-	if _road_preview_material == null:
-		return
-	_road_preview_material.set_shader_parameter("forward_lanes", fwd_lanes)
-	_road_preview_material.set_shader_parameter("backward_lanes", bkw_lanes)
-	var state := 1 if bool(preview.get("is_pending", false)) else (0 if bool(preview.get("is_valid", false)) else 2)
-	_road_preview_material.set_shader_parameter("placement_state", state)
 
 # A press (or Enter's `confirm`) on the session: places a point, grabs a freeform grip, or sends
 # the stroke. True when a commit was queued.
@@ -931,8 +911,6 @@ func _log_click_detail(
 	state_before: int,
 	valid_after: bool,
 	mouse_ms: float,
-	tangent_ms: float,
-	path_ms: float,
 	commit_ms: float,
 	total_start_us: int
 ) -> void:
@@ -940,13 +918,11 @@ func _log_click_detail(
 		return
 	MetrumDebug.log(
 		"road",
-		"road_click_detail state=%d valid=%s mouse_ms=%.3f tangent_ms=%.3f path_ms=%.3f commit_ms=%.3f total_ms=%.3f"
+		"road_click_detail state=%d valid=%s mouse_ms=%.3f commit_ms=%.3f total_ms=%.3f"
 		% [
 			state_before,
 			str(valid_after),
 			mouse_ms,
-			tangent_ms,
-			path_ms,
 			commit_ms,
 			float(Time.get_ticks_usec() - total_start_us) / 1000.0,
 		]

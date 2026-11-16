@@ -4,9 +4,32 @@
 
 use super::*;
 use crate::nodes::sim::road_tool::pick::{
-    closest_cursor_hit, cursor_network_snap, is_near_border, structure_hit,
+    NETWORK_SNAP_REACH_M, closest_cursor_hit, is_near_border, structure_hit,
 };
-use crate::simulation::network::interaction::{NetworkSnapTarget, StructureHit};
+use crate::nodes::sim::road_tool::snap::{SnapScratch, network_snap};
+use crate::simulation::network::graph::RegionGraph;
+use crate::simulation::network::interaction::{NetworkSnap, NetworkSnapTarget, StructureHit};
+
+// The session's retained network snap (`snap::network_snap`) at the session's reach.
+fn session_snap(
+    graph: &RegionGraph,
+    cursor_pos: Vector3,
+    structure_hit: StructureHit,
+    previous: Option<(NetworkSnapTarget, u64)>,
+    surface_generation: u64,
+    release_dist_m: f32,
+) -> Option<NetworkSnap> {
+    network_snap(
+        graph,
+        cursor_pos,
+        structure_hit,
+        previous,
+        surface_generation,
+        release_dist_m,
+        NETWORK_SNAP_REACH_M,
+        &mut SnapScratch::default(),
+    )
+}
 
 #[test]
 fn road_tool_cursor_classifies_closer_road_hit_as_absolute_height() {
@@ -47,7 +70,7 @@ fn road_tool_sticky_network_snap_slides_inside_release_radius() {
     let graph = test_snap_graph();
     for step in 0..40 {
         let x = 6.0 + step as f32 * 0.2;
-        let snap = cursor_network_snap(
+        let snap = session_snap(
             &graph,
             Vector3::new(x, 40.0, 7.9),
             StructureHit::Ground,
@@ -82,7 +105,7 @@ fn road_tool_sticky_network_snap_releases_outside_release_radius() {
 fn road_tool_sticky_network_snap_rejects_stale_generation() {
     let graph = test_snap_graph();
     let position = Vector3::new(7.0, 0.0, 0.0);
-    let retained = cursor_network_snap(
+    let retained = session_snap(
         &graph,
         position,
         StructureHit::Ground,
@@ -92,7 +115,7 @@ fn road_tool_sticky_network_snap_rejects_stale_generation() {
     )
     .unwrap();
     assert_eq!(retained.target, NetworkSnapTarget::Node(0));
-    let fresh = cursor_network_snap(
+    let fresh = session_snap(
         &graph,
         position,
         StructureHit::Ground,
@@ -173,7 +196,7 @@ fn road_tool_cursor_snaps_only_to_the_structure_its_ray_hit() {
             Some((road_hit, _)) if hit != StructureHit::Ground => road_hit,
             _ => terrain,
         };
-        let snap = cursor_network_snap(graph, at, hit, None, 0, 8.0);
+        let snap = session_snap(graph, at, hit, None, 0, 8.0);
         (hit, at, snap)
     };
 

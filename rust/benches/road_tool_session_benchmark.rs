@@ -1,16 +1,17 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
-//! Road tool session benchmark (`ROAD-112` round B): one pointer move of the session (pick,
-//! snap, shape, measure; no preview) against the control, today's `get_road_tool_cursor_pos`
-//! logic for the same ray, on the fixture of `nodes::sim::road_tool::bench` at the 30k
-//! background.
+//! Road tool session benchmark (`ROAD-112` round B; the session alone since round R2-7): one
+//! pointer move of the session (pick, snap, shape, measure; no preview) on the fixture of
+//! `nodes::sim::road_tool::bench` at the 30k background. Its bars are absolute (`docs/roads.md`,
+//! "Session benchmark"): per move at 30k p99 at most 0.25 ms, p50 within 5 % of the previous
+//! commit's binary in the same session.
 //!
 //! Modes besides Criterion, each exiting before it starts:
 //! - `METRUM_ROAD_TOOL_LOCALITY=0,1000,10000,30000`: per tier, builds the fixture (outside
 //!   timing), warms one trail, then times every move of `METRUM_ROAD_TOOL_ROUNDS` (default 20)
-//!   trails one by one for the control, the straight session and the simple-curve session,
-//!   printing one `ROAD_TOOL_LOCALITY` JSON line per tier with p50/p99/max in microseconds and the
-//!   trail's frame digest; panics when a tier's digest differs from the first tier's.
+//!   trails one by one for the straight session and the simple-curve session, printing one
+//!   `ROAD_TOOL_LOCALITY` JSON line per tier with p50/p99/max in microseconds and the trails'
+//!   frame digests; panics when a tier's digests differ from the first tier's.
 //! - `METRUM_ROAD_TOOL_ALLOC_PROBE=<n>`: builds the tier `METRUM_ROAD_TOOL_TIER` (default 30000),
 //!   warms every session mode (the S-curve's first two steps, a freeform drag, a graded stroke, a height grip drag and the continuous chain's S-curve and freeform) over one
 //!   trail, runs `n` more trails of each
@@ -74,7 +75,6 @@ fn locality(tiers: &str) -> ! {
         let started = Instant::now();
         let mut bench = RoadToolBench::build(tier);
         let setup_s = started.elapsed().as_secs_f64();
-        let control = per_move_us(&mut bench, rounds, RoadToolBench::cursor_move);
         bench.restart(DrawMode::Straight);
         let straight_digest = trail_digest(&mut bench);
         let straight = per_move_us(&mut bench, rounds, RoadToolBench::session_move);
@@ -86,7 +86,7 @@ fn locality(tiers: &str) -> ! {
             "ROAD_TOOL_LOCALITY {}",
             serde_json::json!({
                 "background": tier, "edges": bench.edges(), "setup_s": setup_s,
-                "moves": control.len(), "control_us": quantiles(&control),
+                "moves": straight.len(),
                 "straight_us": quantiles(&straight), "curve_us": quantiles(&curve),
                 "digests": [format!("{:016x}", digests.0), format!("{:016x}", digests.1)],
             })
@@ -143,12 +143,6 @@ fn bench_session(c: &mut Criterion) {
     let moves = bench.moves();
     let mut group = c.benchmark_group("road_tool_session_30k");
     let mut index = 0;
-    group.bench_function("control_cursor", |b| {
-        b.iter(|| {
-            index += 1;
-            black_box(bench.cursor_move(index % moves))
-        })
-    });
     for (name, mode) in [
         ("session_straight", DrawMode::Straight),
         ("session_curve", DrawMode::SimpleCurve),

@@ -17,14 +17,9 @@
 //! outside timing. The scripted tests use the smaller [`NEIGHBOURHOOD`] instead.
 
 use super::modes::DrawMode;
-use super::pick::{CursorQuery, road_tool_cursor};
-use super::session::{
-    BORDER_SNAP_M, Pointer, PointerButton, RoadToolEvent, RoadToolOption, RoadToolSession,
-    SNAP_RELEASE_M,
-};
+use super::session::{Pointer, PointerButton, RoadToolEvent, RoadToolOption, RoadToolSession};
 use crate::nodes::sim::core::{CityTreasury, RoadToolQuerySnapshot, SimCore};
 use crate::simulation::core::config::WorldConfig;
-use crate::simulation::network::interaction::NetworkSnapTarget;
 use godot::prelude::Vector3;
 
 const WORLD_M: f32 = 12_288.0;
@@ -35,12 +30,10 @@ const START: Vector3 = Vector3::new(0.0, 0.0, 0.0);
 const CAMERA_HEIGHT_M: f32 = 400.0;
 const CAMERA_BACK_M: f32 = 250.0;
 
-/// The fixture: the view, a session with a stroke started at the junction, the control cursor's
-/// retained snap and the pointer trail.
+/// The fixture: the view, a session with a stroke started at the junction and the pointer trail.
 pub struct RoadToolBench {
     view: RoadToolQuerySnapshot,
     session: RoadToolSession,
-    previous: Option<(NetworkSnapTarget, u64)>,
     rays: Vec<(Vector3, Vector3)>,
     edges: usize,
 }
@@ -55,7 +48,6 @@ impl RoadToolBench {
         let mut bench = Self {
             view,
             session: RoadToolSession::new(),
-            previous: None,
             rays: trail(),
             edges,
         };
@@ -220,31 +212,6 @@ impl RoadToolBench {
             ctrl: false,
         });
         self.session.frame().cursor.position.x
-    }
-
-    /// One control move: today's `get_road_tool_cursor_pos` logic (copied in `pick.rs`) for the
-    /// same ray, placing the end of a straight stroke from the junction with the 45 degree
-    /// magnet referenced east, the retained snap carried. Returns the cursor's x.
-    pub fn cursor_move(&mut self, index: usize) -> f32 {
-        let (ray_origin, ray_dir) = self.rays[index % self.rays.len()];
-        let result = road_tool_cursor(
-            &self.view,
-            &CursorQuery {
-                ray_origin,
-                ray_dir,
-                altitude_offset_m: 0.0,
-                active: true,
-                current_state: 2,
-                start_pos: START,
-                control_pos: START,
-                border_snap_dist_m: BORDER_SNAP_M,
-                previous_snap: self.previous,
-                sticky_release_dist_m: SNAP_RELEASE_M,
-                angle_snap: Vector3::new(1.0, 0.0, 0.0),
-            },
-        );
-        self.previous = result.and_then(|r| r.target.map(|t| (t, r.surface_generation)));
-        result.map_or(0.0, |r| r.position.x)
     }
 
     /// A digest of the frame's bits (cursor, snap kind, stroke points, HUD), FNV-1a, for the

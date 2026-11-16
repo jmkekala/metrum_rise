@@ -15,7 +15,6 @@ const MATERIAL_CONCRETE := "concrete"
 const GRASS_ALBEDO := "res://assets/textures/general/grass/Grass002_2K_Runtime/grass002_2k_albedo.jpg"
 const GRASS_HEIGHT := "res://assets/textures/general/grass/Grass002_2K_Runtime/grass002_2k_height.jpg"
 
-const ROAD_ASPHALT_DIFF := "res://assets/textures/road/clean_asphalt/clean_asphalt_diff_4k.jpg"
 const ROAD_ASPHALT_NORMAL := "res://assets/textures/road/clean_asphalt/clean_asphalt_nor_gl_4k.png"
 const ROAD_ASPHALT_ROUGH := "res://assets/textures/road/clean_asphalt/clean_asphalt_rough_4k.png"
 
@@ -36,7 +35,6 @@ const ROAD_MARKING_SHADER := "res://scripts/shaders/road_marking.gdshader"
 const ROAD_PATH_SHADER := "res://assets/materials/road_path.gdshader"
 # Procedural aggregate detail for road_surface_finnish.gdshaderinc: R aggregate, GB slopes, A relief.
 const ROAD_AGGREGATE_DETAIL := "res://assets/textures/road/finnish/aggregate_packed.png"
-const ROAD_PREVIEW_SHADER := "res://scripts/shaders/road_preview.gdshader"
 const ROAD_FACE_SHADER := "res://scripts/shaders/road_sidewalk_face.gdshader"
 const CONCRETE_SHADER := "res://assets/materials/concrete.gdshader"
 const TUNNEL_LINING_SHADOW_SHADER := "res://assets/materials/tunnel_lining_shadow.gdshader"
@@ -68,15 +66,6 @@ static func prewarm_road_materials() -> void:
 	road_sidewalk_face_material()
 	road_skirt_material()
 	road_concrete_material()
-
-static func road_preview_material() -> ShaderMaterial:
-	# Per-tool status/lane uniforms; the large texture resources remain shared with committed roads.
-	var material := ShaderMaterial.new()
-	material.shader = _load_shader(ROAD_PREVIEW_SHADER)
-	material.render_priority = 5
-	material.set_shader_parameter("asphalt_tex", load_texture(ROAD_ASPHALT_DIFF))
-	material.set_shader_parameter("sidewalk_tex", load_texture(SIDEWALK_ASPHALT_DIFF))
-	return material
 
 static func road_asphalt_material() -> ShaderMaterial:
 	if _road_asphalt_material == null:

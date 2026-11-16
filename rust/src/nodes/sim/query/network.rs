@@ -15,15 +15,6 @@ impl SimCore {
             .map_or(-1, |id| id as i32)
     }
 
-    /// Returns the closest network point (node/edge) within range.
-    pub fn get_closest_network_point_internal(
-        &self,
-        world_pos: Vector3,
-        max_dist: f32,
-    ) -> Option<Vector3> {
-        interaction::get_closest_point_xz(&self.region_graph, world_pos, max_dist)
-    }
-
     /// Returns the ID of the closest network node.
     pub fn get_closest_node_internal(&self, world_pos: Vector3, max_dist: f32) -> i32 {
         interaction::get_closest_node_xz(&self.region_graph, world_pos, max_dist)

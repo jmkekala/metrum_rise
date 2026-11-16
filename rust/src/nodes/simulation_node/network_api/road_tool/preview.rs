@@ -98,17 +98,6 @@ impl SimulationNode {
         styles
     }
 
-    /// [`Self::validate_road_candidate_with_snap`] with snapping to existing roads.
-    #[func]
-    pub fn validate_road_candidate(
-        &self,
-        points: PackedVector3Array,
-        fwd_lanes: i32,
-        bkw_lanes: i32,
-    ) -> Variant {
-        self.validate_road_candidate_with_snap(points, fwd_lanes, bkw_lanes, true)
-    }
-
     /// Checks a road-tool stroke once: the hover checks (profile, endpoints, water) on the road
     /// tool's published view, then a valid stroke's corridor against the live parcels and field
     /// reservations, waiting for the core for that (`ROAD-102`). Returns the prepared points and

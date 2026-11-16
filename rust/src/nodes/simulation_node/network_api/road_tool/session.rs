@@ -122,9 +122,8 @@ fn unproject(view_projection: &Projection, viewport: Vector2, near: f32, point: 
     })
 }
 
-// The inputs a preview depends on, as today's `_preview_is_for` compared them: the stroke, its
-// cross-section, the snap flag, the grade line (round I) and the context generation the preview
-// was made on.
+// The inputs a preview depends on: the stroke, its cross-section, the snap flag, the grade line
+// (round I) and the context generation the preview was made on.
 #[derive(Clone, Debug, PartialEq)]
 struct PreviewKey {
     points: Vec<Vector3>,

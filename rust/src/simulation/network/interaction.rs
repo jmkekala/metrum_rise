@@ -113,15 +113,6 @@ pub(crate) struct NetworkSnap {
     pub(crate) target: NetworkSnapTarget,
 }
 
-/// Finds the closest network point using only XZ distance for snap eligibility and scoring.
-pub(crate) fn get_closest_point_xz(
-    graph: &RegionGraph,
-    world_pos: Vector3,
-    max_dist: f32,
-) -> Option<Vector3> {
-    get_closest_network_snap_xz(graph, world_pos, max_dist).map(|snap| snap.position)
-}
-
 /// Reprojects one retained target, with no allocation or resident-network scan.
 /// Edge work is O(its polyline segments); endpoint acquisition keeps existing node priority.
 pub(crate) fn retained_network_snap_xz(
@@ -198,7 +189,10 @@ pub(crate) fn retained_network_snap_xz(
 /// where both have one, the snap whose graph height stands nearer the cursor's (`world_pos.y`,
 /// the level its ray hit) wins, the ground on a tie. With one level near the cursor this is that
 /// level's snap. The snap reports its graph height: a node's, an edge's profile at the
-/// projection. Same candidates and bound as one level; one profile read per level.
+/// projection. Same candidates and bound as one level; one profile read per level. Tests only
+/// since the road tool's frozen cursor went (`ROAD-112` R2-7): the reference the tests compare
+/// the session's [`closest_network_snap_at_hit_into`] with.
+#[cfg(test)]
 pub(crate) fn get_closest_network_snap_xz(
     graph: &RegionGraph,
     world_pos: Vector3,
@@ -211,7 +205,9 @@ pub(crate) fn get_closest_network_snap_xz(
 /// structures' level takes only the structure the ray hit, so a cursor on the ground beside or
 /// under a bridge, or on a hill over a tunnel, never snaps to it. The ground's level is as
 /// before, bitwise. Adds an `O(degree)` test per structure candidate. Allocates the edge
-/// candidate list; a per-move caller keeps one with [`closest_network_snap_at_hit_into`].
+/// candidate list; a per-move caller keeps one with [`closest_network_snap_at_hit_into`]. Tests
+/// only, as [`get_closest_network_snap_xz`].
+#[cfg(test)]
 pub(crate) fn get_closest_network_snap_at_hit(
     graph: &RegionGraph,
     world_pos: Vector3,
@@ -595,44 +591,11 @@ pub(crate) fn road_start_direction(
     }
 }
 
-/// Rotates the stroke `start -> cursor` onto the nearest 45-degree multiple from `reference`
-/// (unit XZ) when it lies within `tolerance_rad` of it, keeping its horizontal length. Returns the
-/// snapped XZ position (y from `cursor`; the caller samples the surface), or None when the stroke
-/// is free or too short to have a direction.
-pub(crate) fn snap_stroke_angle(
-    start: Vector3,
-    cursor: Vector3,
-    reference: Vector3,
-    tolerance_rad: f32,
-) -> Option<Vector3> {
-    let d = Vector3::new(cursor.x - start.x, 0.0, cursor.z - start.z);
-    let length = d.length();
-    if length < 1.0 || reference.length_squared() < 1e-6 {
-        return None;
-    }
-    let reference = Vector3::new(reference.x, 0.0, reference.z).normalized();
-    let base = reference.z.atan2(reference.x);
-    let relative = d.z.atan2(d.x) - base;
-    let step_rad = std::f32::consts::FRAC_PI_4;
-    let snapped = (relative / step_rad).round() * step_rad;
-    let off = (relative - snapped).rem_euclid(std::f32::consts::TAU);
-    if off.min(std::f32::consts::TAU - off) > tolerance_rad {
-        return None;
-    }
-    let angle = base + snapped;
-    Some(Vector3::new(
-        start.x + angle.cos() * length,
-        cursor.y,
-        start.z + angle.sin() * length,
-    ))
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
         NetworkSnapTarget, StructureHit, find_intersection_2d, get_closest_network_snap_at_hit,
-        get_closest_network_snap_xz, get_closest_point_xz, get_edge_snap_point,
-        retained_network_snap_xz,
+        get_closest_network_snap_xz, get_edge_snap_point, retained_network_snap_xz,
     };
     use crate::simulation::network::graph::{Edge, RegionGraph};
     use crate::simulation::network::types::{EdgeClass, NodeType};
@@ -1005,7 +968,9 @@ mod tests {
         graph.add_edge(test_edge(keep, far));
         graph.unite_nodes(keep, remove);
 
-        let snapped = get_closest_point_xz(&graph, Vector3::new(0.8, 0.0, 0.0), 5.0).unwrap();
+        let snapped = get_closest_network_snap_xz(&graph, Vector3::new(0.8, 0.0, 0.0), 5.0)
+            .unwrap()
+            .position;
         assert!(snapped.distance_to(Vector3::ZERO) <= 0.001);
     }
 
@@ -1016,7 +981,9 @@ mod tests {
         let end = graph.add_node(Vector3::new(0.0, 0.0, 20.0), NodeType::Junction);
         graph.add_edge(test_edge(start, end));
 
-        let snapped = get_closest_point_xz(&graph, Vector3::new(0.1, 20.0, 0.1), 5.0).unwrap();
+        let snapped = get_closest_network_snap_xz(&graph, Vector3::new(0.1, 20.0, 0.1), 5.0)
+            .unwrap()
+            .position;
         assert!(snapped.distance_to(Vector3::ZERO) <= 0.001);
     }
 
@@ -1062,55 +1029,6 @@ mod tests {
 
         assert!((t - 0.5).abs() < 0.0001);
         assert!((u - 0.5).abs() < 0.0001);
-    }
-
-    #[test]
-    fn stroke_angle_snaps_within_tolerance_and_keeps_length() {
-        use super::snap_stroke_angle;
-        let start = Vector3::new(10.0, 0.0, 10.0);
-        let east = Vector3::new(1.0, 0.0, 0.0);
-        // 3 degrees off the reference snaps straight on, same length.
-        let a = 3f32.to_radians();
-        let cursor = start + Vector3::new(a.cos(), 0.0, a.sin()) * 20.0;
-        let snapped = snap_stroke_angle(start, cursor, east, 4f32.to_radians()).unwrap();
-        assert!((snapped - Vector3::new(30.0, 0.0, 10.0)).length() < 1e-3);
-        // 88 degrees snaps to the perpendicular.
-        let a = 88f32.to_radians();
-        let cursor = start + Vector3::new(a.cos(), 0.0, a.sin()) * 20.0;
-        let snapped = snap_stroke_angle(start, cursor, east, 4f32.to_radians()).unwrap();
-        assert!((snapped - Vector3::new(10.0, 0.0, 30.0)).length() < 1e-3);
-        // 20 degrees is free.
-        let a = 20f32.to_radians();
-        let cursor = start + Vector3::new(a.cos(), 0.0, a.sin()) * 20.0;
-        assert!(snap_stroke_angle(start, cursor, east, 4f32.to_radians()).is_none());
-    }
-
-    #[test]
-    fn stroke_angle_uses_45_degree_steps_relative_to_the_reference() {
-        use super::snap_stroke_angle;
-        let start = Vector3::new(10.0, 2.0, -10.0);
-        let base = 30f32.to_radians();
-        let reference = Vector3::new(base.cos(), 0.0, base.sin());
-        let tolerance = 4f32.to_radians();
-        for turn in [-135.0_f32, -45.0, 45.0, 180.0] {
-            let angle = base + (turn + 3.0).to_radians();
-            let cursor = start + Vector3::new(angle.cos() * 20.0, 5.0, angle.sin() * 20.0);
-            let snapped = snap_stroke_angle(start, cursor, reference, tolerance).unwrap();
-            let expected_angle = base + turn.to_radians();
-            let expected = start
-                + Vector3::new(
-                    expected_angle.cos() * 20.0,
-                    5.0,
-                    expected_angle.sin() * 20.0,
-                );
-            assert!((snapped - expected).length() < 1e-3);
-        }
-        // The removed arc chord step must not snap a straight stroke at 22.5 degrees.
-        let angle = base + 22.5f32.to_radians();
-        let cursor = start + Vector3::new(angle.cos(), 0.0, angle.sin()) * 20.0;
-        assert!(snap_stroke_angle(start, cursor, reference, tolerance).is_none());
-        assert!(snap_stroke_angle(start, cursor, Vector3::ZERO, tolerance).is_none());
-        assert!(snap_stroke_angle(start, start + reference * 0.5, reference, tolerance).is_none());
     }
 
     #[test]

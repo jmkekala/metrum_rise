@@ -1,10 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
-//! Road-tool session, preview, cursor snapping, and surface-debug Godot API methods.
+//! Road-tool session, preview and surface-debug Godot API methods.
 
 mod batch;
-mod cursor;
-mod ghost;
 mod preview;
 mod session;
 pub(in crate::nodes::simulation_node) use session::RoadToolBridge;

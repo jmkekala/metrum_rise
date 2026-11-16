@@ -720,7 +720,7 @@ rule for game code (`CODE-25`):
   pointer helper.
 - **One-shot input waits.** A click, a release, a stroke's start or a commit passes `wait` to
   the per-frame query it reads (`intersect_world_surface`, `intersect_terrain`,
-  `get_closest_network_point`, `get_bulldoze_target_at`, `bulldoze_at`,
+  `get_bulldoze_target_at`, `bulldoze_at`,
   `poll_graded_tile_results`), or calls one that always waits. It resolves the pointer itself
   instead of reading the last hover, which may be older. The road tool's cursor, preview and
   commit read the road tool's published view and need no core. Its one-shot stroke checks

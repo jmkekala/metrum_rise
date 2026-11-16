@@ -12650,6 +12650,83 @@ Criterion at 30k (mean, 95% interval): control 122.52 us (122.22-122.82), sessio
   metric `level` (mean 4.470 -> 4.472 ms), K22 6.88 / 6.68 ms. The path rule says F (the
   `[[bench]]` entry in `Cargo.toml`); timed at R as briefed.
 
+### The frozen cursor removed (round R2-7)
+
+Round R2-7 of `ROAD-112` (branch `roadtools-r27` on `dev` `17207c94`). **Removed:** the frozen
+reference cursor (`pick::road_tool_cursor`, `CursorQuery`, `CursorResult`,
+`ANGLE_SNAP_TOLERANCE_DEG`, `cursor_network_snap`) with the old 45 degree magnet
+(`interaction::snap_stroke_angle` and its two tests) and `RoadToolBench::cursor_move`; the
+bridge's `get_closest_network_point` (`cursor.rs`, with `get_closest_network_point_internal` and
+`interaction::get_closest_point_xz`), `validate_road_candidate` and `get_road_edge_polylines`
+(`ghost.rs` and `sim/bridge/network.rs`); the base network tool's cursor query
+(`get_world_mouse_pos` now returns the last pointer; both tools override it) and its hover branch;
+the road tool's blueprint shader material (`_road_preview_material`, `road_preview.gdshader` and
+`WorldMaterials.road_preview_material`), `_snap_to_roads_enabled`, `_zoning_snap_enabled`,
+`_session_snap` and the click log's two zero timings. The road tool keeps its empty
+`_update_blueprint_visuals` override: it is not dead, it keeps the base from writing its blueprint
+material every frame. `interaction::get_closest_network_snap_xz` and
+`get_closest_network_snap_at_hit` have no caller outside tests any more and are `#[cfg(test)]`:
+the tests' allocating reference for the session's `closest_network_snap_at_hit_into`.
+
+**Tests moved.** The straight parity tests assert bit patterns recorded on the base before the
+deletion (commit `c017b293` asserts them beside the old cursor and passes on the base's code;
+the old cursor and the session agreed bit for bit there):
+`straight_mode_sends_the_recorded_two_point_request` (four click pairs, each sent point as `u32`
+triples) and `straight_mode_magnet_cases_under_u2` (the lock-off raw point and the old magnet's
+point, whose direction the 45 degree lock must give within 1e-5).
+`network_snap_matches_the_acquisition` keeps comparing the session's snap with the acquisition
+(its name lost "today"). The bridge tests of `cursor_network_snap` (the sticky slide, the stale
+generation, the structure the ray hit) run the session's own retained snap (`snap::network_snap`
+at the session's 5 m reach) on the same fixtures; the release test was already on
+`retained_network_snap_xz`.
+
+**Session benchmark, from this round on.** `road_tool_session_benchmark` times the session alone
+(the round B fixture and trail, straight and simple curve); the locality line has no
+`control_us`, Criterion no `control_cursor`. Its bars are absolute: **per move at 30k p99 at most
+0.25 ms; p50 within 5 % of the previous commit's bench binary in the same session (alternated);
+the trail's frame digests equal at every tier and on both binaries; the allocation probe at
+zero.**
+
+Fresh, 2026-11-16, level R: the base's bench binary (`dev` `17207c94`, SHA-256
+`a154909feeb9d252`) and the branch's (`df25a13fc8b95d5a`), release bench profile, `taskset -c
+0,2,4,6,8,10,12,14`, under the run and exclusive timing locks, C B B C in locality mode (20
+trails, 10,240 moves a row), then Criterion once a side.
+
+```bash
+METRUM_ROAD_TOOL_LOCALITY=0,1000,10000,30000 METRUM_ROAD_TOOL_ROUNDS=20 \
+  taskset -c 0,2,4,6,8,10,12,14 "$BENCH_BINARY" --bench
+```
+
+| Background | Straight, base (C) | Straight, branch (B) | Curve, base (C) | Curve, branch (B) |
+| --- | --- | --- | --- | --- |
+| 0 | 230.8-237.5 / 275.2-343.0 | 232.9-235.2 / 280.1-281.7 | 241.8-242.7 / 285.5-290.2 | 243.4-246.3 / 287.3-291.0 |
+| 1,000 | 231.2-234.0 / 274.2-298.6 | 232.9-236.4 / 278.5-286.3 | 242.3-242.9 / 286.8-287.2 | 244.0-247.2 / 288.5-296.5 |
+| 10,000 | 235.6-236.3 / 280.9-284.5 | 237.5-240.1 / 284.9-287.3 | 246.7-247.9 / 289.1-309.0 | 249.0-251.3 / 297.3-298.5 |
+| 30,000 | 237.2-237.5 / 281.5-282.7 | 239.3-242.0 / 285.4-287.4 | 248.5 / 293.4-294.3 | 249.8-252.8 / 294.5-299.3 |
+
+(p50 / p99 in microseconds, the range of the two runs a side.) Criterion at 30k (mean, 95 %
+interval): base straight 238.55 us (237.73-239.61), curve 249.96 us (249.05-250.89), the old
+cursor 217.43 us (216.83-218.06); branch straight 238.35 us (237.69-238.99), curve 250.10 us
+(249.13-251.06).
+
+- **p50 within 5 % of the base: met.** At 30k straight +0.8 to +2.0 %, curve +0.5 to +1.7 %.
+- **Frame digests: met.** `32cb9b4b11dccf75` (straight) and `61e6255c7cd0574f` (curve) at
+  every tier on both binaries: the session's frames are bitwise the base's.
+- **Allocation probe: met.** `METRUM_ROAD_TOOL_ALLOC_PROBE` at 30k, every mode, `heaptrack
+  --record-only`: n = 0 2,375,531 / 2,375,571, n = 20 2,375,561, n = 200 2,375,597 calls:
+  none per move.
+- **p99 at most 0.25 ms at 30k: missed, on the base as on the branch** (281.5-282.7 us base,
+  285.4-287.4 us branch). The plan's "today 0.19-0.20 ms" is round B's number; on `dev`
+  `17207c94` the whole move costs about twice round B's (p50 237 us against 127 us; the old
+  cursor 217 us against 122 us), so the cost grew between rounds B and R2-7 in the shared pick,
+  not in this round. A profile of 1 and 20 trails puts the growth in the graded pick's
+  preparation (`RoadbedSystem::grounded_top_triangles_from_pieces`, `grounded_seams_from_pieces`
+  sorting its seams, `GradedSurface::prepare`); recorded on `ROAD-116`. The bar is not relaxed.
+- **Products bitwise** (`commit_products.gd`, against the base's library and scripts, both
+  sides fresh): Kuopio's 39 strokes (78 commits) EQUAL in every product (request, graph,
+  state, mesh, graded), the drag probe PASS; the gameplay fixtures 17 of 17 EQUAL, 0 SCRIPT
+  ERROR.
+
 ### Batch commit, grouped undo and undo refund (round F)
 
 Built 2026-11-13 on branch `roadtools-f` (`dev` `d10c2404` plus the round); held for its batch

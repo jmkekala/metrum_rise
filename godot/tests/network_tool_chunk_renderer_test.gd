@@ -10,7 +10,6 @@ const TerrainRendererScript := preload("res://scripts/renderers/terrain.gd")
 const RoadToolScript := preload("res://scripts/tools/road_tool.gd")
 const RoadToolHudScript := preload("res://scripts/ui/road_tool_hud.gd")
 const InputManagerScript := preload("res://scripts/core/input_manager.gd")
-const WorldMaterialsScript := preload("res://scripts/renderers/world_materials.gd")
 const LAYERS := ["skirt", "curb", "raised_step", "sidewalk", "road", "marking", "concrete", "lining"]
 const CHUNK_SPAN_M := 510.0
 const CHUNK_ORIGIN_X_M := 125.5
@@ -757,10 +756,10 @@ func _test_native_road_cursor_contract() -> void:
 	ui._build_ui()
 	_expect(ui.get_meta("options_panel").get_index() < ui.road_sub_menu.get_parent().get_parent().get_index(), "road options must sit to the left of road types")
 	ui.zoning_grid_snap_check.button_pressed = true
-	_expect(modes._zoning_snap_enabled(), "the actual checkbox must enable zoning snap")
+	_expect(modes.zoning_grid_snap_enabled, "the actual checkbox must enable zoning snap")
 	ui._set_draw_mode(1)
 	_expect(modes.draw_mode == 1 and ui.curve_btn.button_pressed and not ui.straight_btn.button_pressed, "the Curve button picks the simple curve")
-	_expect(not ui.zoning_grid_snap_check.disabled and modes._zoning_snap_enabled(), "the session snaps to the zoning grid in every mode")
+	_expect(not ui.zoning_grid_snap_check.disabled and modes.zoning_grid_snap_enabled, "the session snaps to the zoning grid in every mode")
 	ui.continuous_check.button_pressed = true
 	_expect(modes.continuous, "the Continuous checkbox sets the tool's continuous option")
 	ui._set_draw_mode(2)
@@ -773,10 +772,7 @@ func _test_native_road_cursor_contract() -> void:
 	ui.free()
 	manager.free()
 	vegetation.free()
-	_expect(not modes._zoning_snap_enabled(), "zoning snapping starts disabled")
-	modes.zoning_grid_snap_enabled = true
-	_expect(modes._zoning_snap_enabled(), "checkbox enables the zoning snap path")
-	modes.zoning_grid_snap_enabled = false
+	_expect(not modes.zoning_grid_snap_enabled, "zoning snapping starts disabled")
 	modes.blueprint_mesh = MeshInstance3D.new()
 	modes.add_child(modes.blueprint_mesh)
 	var shift := InputEventKey.new()
@@ -785,14 +781,14 @@ func _test_native_road_cursor_contract() -> void:
 	shift.shift_pressed = true
 	Input.parse_input_event(shift)
 	Input.flush_buffered_events()
-	_expect(not modes._zoning_snap_enabled() and modes._snap_to_roads_enabled(), "Shift must not enable zoning snap or disable road connections")
+	_expect(not modes.zoning_grid_snap_enabled, "Shift must not enable zoning snap")
 	modes.zoning_grid_snap_enabled = true
-	_expect(modes._zoning_snap_enabled(), "checkbox controls zoning snap while Shift is held")
+	_expect(modes.zoning_grid_snap_enabled, "checkbox controls zoning snap while Shift is held")
 	shift = InputEventKey.new()
 	shift.keycode = KEY_SHIFT
 	Input.parse_input_event(shift)
 	Input.flush_buffered_events()
-	_expect(modes._zoning_snap_enabled(), "releasing Shift must not change the checkbox setting")
+	_expect(modes.zoning_grid_snap_enabled, "releasing Shift must not change the checkbox setting")
 	modes.cancel_road()
 	modes.free()
 	var invalid := PackedVector3Array([Vector3.ZERO])
@@ -828,8 +824,6 @@ func _test_native_road_preview_contract(simulation: SimulationNode) -> void:
 	_expect(tool.chunks.update(generation) == generation, "isolated preview must hydrate the empty committed chunk grid")
 	tool.blueprint_mesh = MeshInstance3D.new()
 	tool.add_child(tool.blueprint_mesh)
-	tool._road_preview_material = WorldMaterialsScript.road_preview_material()
-	tool.blueprint_mesh.material_override = tool._road_preview_material
 	var points := PackedVector3Array([Vector3(-40.0, 0.0, -8.0), Vector3(0.0, 0.0, 8.0), Vector3(40.0, 0.0, -8.0)])
 	for lanes in [Vector2i(1, 1), Vector2i(3, 1), Vector2i(1, 0), Vector2i(0, 0)]:
 		var preview: Dictionary = simulation.preview_road(points, lanes.x, lanes.y, false)
@@ -862,10 +856,6 @@ func _test_native_road_preview_contract(simulation: SimulationNode) -> void:
 	tool._queue_preview_update()
 	tool._process(1.0 / 60.0)
 	_expect(tool._preview_sequence == calls and tool._preview_display._instances == instances, "an unchanged stroke neither previews nor uploads again")
-	for state in [{"is_valid": true}, {"is_pending": true}, {"is_valid": false}]:
-		tool._update_road_preview_material(state)
-		var expected := 1 if state.has("is_pending") else (0 if state["is_valid"] else 2)
-		_expect(tool._road_preview_material.get_shader_parameter("placement_state") == expected, "road material must distinguish valid, checking, and rejected placement")
 	var malformed: Dictionary = tool._preview.duplicate(true)
 	malformed["road_chunks"][0]["road_normals"] = PackedVector3Array()
 	_expect(not tool._preview_display.show(tool.chunks, malformed, tool._preview_sequence + 1), "incomplete mesh batches must fail atomically")
@@ -879,7 +869,6 @@ func _test_native_road_preview_contract(simulation: SimulationNode) -> void:
 	_expect(tool._preview_display.sequence == 0 and tool._preview_display._instances.is_empty(), "a rejected stroke shows no road")
 	var notice: String = RoadWording.reason_text(rejected, RoadWording.default_refusal())
 	_expect(notice.contains("terrain boundary"), "terrain rejection must retain an explanatory notice: '%s'" % notice)
-	_expect(tool._road_preview_material.get_shader_parameter("placement_state") == 2, "rejected placement must be red")
 	if OS.get_environment("METRUM_ROAD_PREVIEW_TIMING") == "1":
 		for lane_count in [1, 4]:
 			var timings: Array[int] = []
