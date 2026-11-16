@@ -44,7 +44,7 @@ use crate::assets::{AssetRegistry, ZoneClass};
 use crate::debug_log;
 use crate::simulation::agriculture::FieldClearanceIndex;
 use crate::simulation::core::handles::{Handle, HandleTable};
-use crate::simulation::core::scheduler::SLOTS_PER_HOUR;
+use crate::simulation::core::scheduler::{SLOTS_PER_HOUR, SLOTS_PER_MINUTE};
 use crate::simulation::economy::definitions::{
     EconomyProfileRuntime, ResourceRuntimeId, RuntimeEconomyCatalog, load_runtime_economy_catalog,
 };
@@ -143,6 +143,15 @@ pub(crate) enum ExplicitServicePlacementRejection {
 /// The applicant seeds of buildings placed outside the demand queue (`SIM-02-I`): this bit
 /// and the city counter. Queued spawn ids, the seeds of demand-placed buildings, stay below it.
 pub(crate) const CITY_APPLICANT_SEEDS: u64 = 1 << 62;
+
+/// Slots a construction site's completion trails its whole construction hours (`PERF-25`): half
+/// a game minute. Construction starts fire at a minute's first slot or the one after
+/// (`event_slot`), so a site finished on the hour would complete in the slot of that hour's
+/// first construction start, and the two parking publications (the finished lot's whole list,
+/// the new site's kerb) would share a frame. Half a minute later it has a slot of its own, before
+/// the next minute's start and in the same hour, so `construction_hours_left` and the census
+/// window see every completion as before.
+pub(crate) const CONSTRUCTION_COMPLETE_DELAY_SLOTS: u64 = SLOTS_PER_MINUTE / 2;
 
 /// A placed building occupying one authored parcel or an explicit non-zoned site.
 pub struct Building {
@@ -1121,13 +1130,14 @@ impl BuildingAllocator {
         ) as u32
     }
 
-    /// Slot at which construction of `hours` operational hours started now completes; `0`
-    /// (complete) for none.
+    /// Slot at which construction of `hours` operational hours started now completes, half a
+    /// game minute past the whole hours ([`CONSTRUCTION_COMPLETE_DELAY_SLOTS`]); `0` (complete)
+    /// for none.
     pub(crate) fn construction_complete_slot_after(&self, hours: u16) -> u64 {
         if hours == 0 {
             0
         } else {
-            self.now_slot + u64::from(hours) * SLOTS_PER_HOUR
+            self.now_slot + u64::from(hours) * SLOTS_PER_HOUR + CONSTRUCTION_COMPLETE_DELAY_SLOTS
         }
     }
 
