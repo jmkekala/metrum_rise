@@ -72,7 +72,8 @@ pub(crate) struct ParkingSystem {
     // Only off-map cars are indexed here. Parking release never scans sleeping vehicles.
     pub(crate) diagnostics: std::collections::BTreeMap<u64, Vec<String>>,
     building_sources: HashMap<u64, Vec<PlaceSource>>,
-    // Derived at every reconcile, rebuilt by the load-time reconcile of every edge; not saved.
+    // Derived at every reconcile and site publication; not saved. The load rebuilds those of
+    // the buildings on roads with a parking lane (`SimCore::rebuild_loaded_kerb_blockers`).
     kerb_blockers: HashMap<u64, Vec<kerb::KerbBlocker>>,
     edge_blockers: HashMap<u32, Vec<u64>>,
     stored: HashMap<(i32, i32), std::collections::BTreeSet<Handle<Vehicle>>>,

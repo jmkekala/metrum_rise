@@ -166,6 +166,35 @@ impl SimCore {
         (bays, issues, blockers)
     }
 
+    /// The kerb blockers a load leaves out (`PARK-15`): they are derived and unsaved, and every
+    /// kerb re-lay reads an edge's blockers whole, so without them the next site edit beside a
+    /// parking lane laid its kerb from the edited building's blockers alone. Rebuilds those of
+    /// every building on a road with a parking lane, from the same `site_lot` the edits use, so
+    /// each such road holds the unbroken game's blockers. A road without one lays no kerb: the
+    /// edit that adds its lane revalidates the buildings along it first (8 m of its geometry,
+    /// as in the unbroken game). Lays no bay: the saved kerbs stand on these blockers already.
+    /// O(buildings + those buildings × lot validation), parallel, load only.
+    pub(crate) fn rebuild_loaded_kerb_blockers(&mut self) {
+        let kerbed = |index: usize| {
+            let edge = self.allocator.buildings[index].edge_idx;
+            self.region_graph
+                .get_edge(edge)
+                .is_some_and(|e| !e.deleted && (e.parking.left || e.parking.right))
+        };
+        let blockers: Vec<_> = crate::thread_pools::install(|| {
+            (0..self.allocator.buildings.len())
+                .into_par_iter()
+                .filter(|&i| kerbed(i))
+                .map(|i| (self.allocator.building_handles.handle(i), self.site_lot(i).2))
+                .collect()
+        });
+        let mut laid = BTreeSet::new();
+        for (handle, blockers) in blockers {
+            self.parking
+                .set_kerb_blockers(handle.to_bits(), blockers, &mut laid);
+        }
+    }
+
     fn holds_parking(&self, index: usize) -> bool {
         holds_parking(&self.allocator.buildings[index])
     }

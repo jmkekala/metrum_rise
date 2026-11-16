@@ -275,6 +275,8 @@ impl SimCore {
         // And the first agent tick's scrub and lane buckets.
         self.agents.parking_retries.reserve(self.agents.len());
         self.prepare_loaded_parking_routes();
+        // The kerb blockers are derived and unsaved like the catchments (`PARK-15`).
+        self.rebuild_loaded_kerb_blockers();
         let buildings: Vec<_> = (0..self.allocator.buildings.len()).collect();
         self.parking.refresh_retired_access(&self.transit_network, &self.region_graph);
         // Catchments are derived and unsaved: rebuilding them is not new supply, so no

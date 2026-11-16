@@ -468,3 +468,89 @@ fn a_pocket_added_later_takes_the_bays_along_it_and_undo_returns_them() {
     c.finalize_network_render_products();
     assert_eq!(c.parking.counts().0, bays_before);
 }
+
+// `PARK-15`: the kerb blockers are derived and unsaved. A load rebuilt none, so the first site
+// edit after it laid the street's kerb from the edited building's blockers alone and filled the
+// earlier lot's driveway gap (36 bays against the unbroken game's 34). The load now rebuilds them.
+// Returns the unbroken game with a lot at x = -60 m and its twin loaded from its save.
+fn kerb_twins(parking: RoadParking) -> (SimCore, SimCore, usize, String) {
+    let (mut c, edge) = kerb_core(parking);
+    let id = register_lot(&mut c);
+    c.place_service_building_internal(&id, -60.0, -30.0).unwrap();
+    c.publish_pending_building_site_changes();
+    let path = temp_save_path("parking-kerb-blockers-load");
+    c.save_game_settled_at(path.to_str().unwrap(), None, 0)
+        .unwrap();
+    let mut l = kerb_core(parking).0;
+    register_lot(&mut l);
+    l.load_game_internal(path.to_str().unwrap()).unwrap();
+    std::fs::remove_file(path).unwrap();
+    assert_same_kerb(&c, &l, edge, "after the load");
+    (c, l, edge, id)
+}
+
+// The loaded game lays the kerb, holds its blockers and saves its parking as the unbroken one.
+fn assert_same_kerb(c: &SimCore, l: &SimCore, edge: usize, step: &str) {
+    let kerb = |c: &SimCore| [side(c, edge, false), side(c, edge, true)];
+    assert_eq!(kerb(c), kerb(l), "kerb bays {step}");
+    assert_eq!(
+        c.parking.edge_kerb_blockers(edge),
+        l.parking.edge_kerb_blockers(edge),
+        "kerb blockers {step}"
+    );
+    assert_eq!(
+        c.parking.save_json(|s| s).unwrap(),
+        l.parking.save_json(|s| s).unwrap(),
+        "saved parking {step}"
+    );
+}
+
+#[test]
+fn a_loaded_game_lays_the_kerb_of_a_site_edit_as_the_unbroken_one() {
+    let (mut c, mut l, edge, id) = kerb_twins(RoadParking {
+        left: true,
+        right: true,
+    });
+    assert!(!c.parking.edge_kerb_blockers(edge).is_empty());
+    let first = c.allocator.building_handles.handle(0);
+    for core in [&mut c, &mut l] {
+        core.place_service_building_internal(&id, 60.0, -30.0).unwrap();
+        core.publish_pending_building_site_changes();
+    }
+    assert_same_kerb(&c, &l, edge, "after a second lot");
+    for core in [&mut c, &mut l] {
+        let index = core.allocator.building_handles.resolve(first).unwrap();
+        assert!(core.bulldoze_building(index));
+        core.publish_pending_building_site_changes();
+    }
+    assert_same_kerb(&c, &l, edge, "after the first lot's removal");
+}
+
+// A road edit's re-lay after the load: the far kerb's parking lane taken off in place re-lays the
+// road's kerbs beside the saved lot.
+#[test]
+fn a_loaded_game_lays_the_kerb_of_a_road_edit_as_the_unbroken_one() {
+    let (mut c, mut l, edge, _) = kerb_twins(RoadParking {
+        left: true,
+        right: true,
+    });
+    let lot_right = c.parking.edge_kerb_blockers(edge)[0].right;
+    let lot_kerb = RoadParking {
+        left: !lot_right,
+        right: lot_right,
+    };
+    for core in [&mut c, &mut l] {
+        assert!(core.set_edge_cross_section_internal(
+            edge as i32,
+            1,
+            1,
+            None,
+            lot_kerb,
+            crate::simulation::network::road_types::RoadAttributes::DEFAULT,
+        ));
+        core.finalize_network_render_products();
+    }
+    assert!(side(&c, edge, !lot_right).is_empty());
+    assert!(!side(&c, edge, lot_right).is_empty());
+    assert_same_kerb(&c, &l, edge, "after the road edit");
+}
