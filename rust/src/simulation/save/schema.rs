@@ -6,7 +6,12 @@ use super::SaveLoadError;
 use crate::simulation::network::types::{EdgeClass, NodeType, TransitType, VehicleFrontageAccess};
 
 /// Current save format version (`SIM-02` broke older saves).
-pub const SAVE_VERSION: i64 = 120;
+pub const SAVE_VERSION: i64 = 121;
+
+/// Format 120, saved before node, edge and lane ids were saved state (`SAVE-11`): its ids are
+/// contiguous (the save compacted nodes and edges, and a load numbers lanes anew). It loads as
+/// before, with the loaded game's ids compacted.
+pub const PRE_SAVED_IDS_SAVE_VERSION: i64 = 120;
 
 /// Format 119, saved before a save kept the freight route cache's validity (`SAVE-08`), the
 /// daily budget ledger's build-cost baseline and the daily input telemetry (`SAVE-09`). It loads
@@ -257,6 +262,16 @@ CREATE TABLE noise_state(
     grid_blob_f32_le BLOB NOT NULL,
     back_blob_f32_le BLOB NOT NULL
 );
+CREATE TABLE network_id_counts(
+    singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+    node_count INTEGER NOT NULL,
+    edge_count INTEGER NOT NULL,
+    lane_count INTEGER NOT NULL
+);
+CREATE TABLE network_node_aliases(
+    node_id INTEGER PRIMARY KEY,
+    canonical INTEGER NOT NULL
+);
 CREATE TABLE network_nodes(
     node_id INTEGER PRIMARY KEY,
     x REAL NOT NULL,
@@ -325,7 +340,8 @@ CREATE TABLE zoning_parcels(
     frontage_m REAL NOT NULL,
     depth_m REAL NOT NULL,
     profile_runtime_id INTEGER NOT NULL,
-    build_generation INTEGER NOT NULL DEFAULT 0
+    build_generation INTEGER NOT NULL DEFAULT 0,
+    storage_index INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE zoning_cell_frames(
     grid_id INTEGER PRIMARY KEY,

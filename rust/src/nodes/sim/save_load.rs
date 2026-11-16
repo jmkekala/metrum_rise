@@ -101,17 +101,14 @@ impl SimCore {
                     logistics_next_shipment_id: self.logistics.next_shipment_id,
                     freight_departures: self.logistics.departure_minutes.clone(),
                     agent_settlement_days: self.agents.settlement_days,
-                    road_upkeep: {
-                        let (edges, next_edge) =
-                            self.road_upkeep.saved_positions(&self.region_graph);
-                        (
-                            self.road_upkeep.front_m,
-                            self.road_upkeep.back_mm,
-                            edges,
-                            next_edge,
-                            self.road_upkeep.measured,
-                        )
-                    },
+                    // Edge positions as they are: a save keeps edge ids (`SAVE-11`).
+                    road_upkeep: (
+                        self.road_upkeep.front_m,
+                        self.road_upkeep.back_mm,
+                        self.road_upkeep.sweep_edges,
+                        self.road_upkeep.next_edge,
+                        self.road_upkeep.measured,
+                    ),
                     environment: self.environment_sweep,
                     freight_route_validity: self
                         .logistics

@@ -211,6 +211,62 @@ load:
   and the game loaded from it once, and compares the files byte for byte; on a difference it
   names the tables whose rows differ in storage order. Before the fix it failed on
   `lane_connections` alone.
+- Ids are saved state (`SAVE-11`, format 121): see [Ids are saved state](#ids-are-saved-state-save-11).
+
+### Ids are saved state (`SAVE-11`)
+
+Node, edge and lane ids are part of the game's state, written as they are, so a loaded game has
+the running game's ids exactly and every choice that breaks a tie by id (walk witnesses, the
+gridlock check's cycles, parking recovery, agent remaps, the edge sweeps' positions, the
+workplace quote key) continues as in the running game. Before format 121 the save compacted node
+and edge ids past the deleted ones and a load numbered every lane anew, while the running game
+retires lanes in place and appends their replacements; any road edit since the last load made
+the loaded game's ids differ (`SAVE-09`'s five causes, of which this removes the three id ones).
+
+- **What the save writes.** `network_id_counts` (node, edge and lane counts); every live edge at
+  its id; every canonical node at its id, including one whose roads were all removed (a new road
+  still snaps to it, so it is live state); `network_node_aliases` (each merged node and the node
+  it was merged into); `saved_lanes` with the live lane ids, as before; every other node, edge or
+  lane reference as it is (agents, paths, gridlock junctions, admissions, shipment borders, kerb
+  bays, congestion weights per edge slot, zero for a deleted edge, the road upkeep and
+  environment sweeps' edge positions); and `zoning_parcels.storage_index`, the parcels' storage
+  order, which a load keeps (demand numbers its project owners by parcel storage index, and a
+  road edit's swap-removal leaves that order other than id order). The save-time renumbering
+  maps (`SnapshotMaps::node_old_to_new` / `edge_old_to_new`) are gone; a reference is checked
+  against its slot (O(1)) instead of hashed.
+- **What a load rebuilds.** A deleted edge is a hole (`Edge { deleted: true, .. }`, in no index)
+  and a merged node a hole with its alias (no position, in no index); the load refuses an edge
+  naming a hole, an alias that is not a hole or that ends at no saved node, and a hole without
+  an alias. The lanes are rebuilt whole as before, matched to the saved lanes by identity (each
+  rebuilt lane once) and moved to their saved ids (`LaneSystem::place_at_ids`); every other id
+  below the saved count is a retired lane. A rebuilt lane no saved lane matches, which a save of
+  this build never has, is appended after them. Agents' lane ids then load as they are.
+- **Tombstones carry no state.** A retired lane is `Lane::default()` in the running game too: a
+  local rebuild (every commit, bulldoze, undo and in-place edit) scrubs the lanes it retires,
+  road lanes and connectors alike, so nothing reads a retired lane as live (it names no edge and
+  no node). The walking planner's whole-network proof therefore counts only live lanes and holds
+  after local rebuilds exactly as after a whole one (`PERF-27`). The routing hierarchy ranks the
+  state of a node without a live road (a merged node, or one whose roads were all removed) after
+  every other state, in id order, so the contraction order never reads its position (a load has
+  none for a merged node); with no such node the order is unchanged.
+- **Bounds.** Save: O(nodes + edges + aliases log aliases + lanes + references), no hashing of
+  ids; load: O(saved rows + holes) for the graph, plus O(lanes + connections) to place the lanes
+  after the whole rebuild and its identity match. Per edit and per frame: unchanged (the scrub
+  replaces the fields a retirement cleared before; the hierarchy's dead-state test is O(degree)
+  per node in a build).
+- **Not done (round S3).** The running game still never reuses an id (holes accumulate over a
+  long session, in memory and as save counts); id reuse in local rebuilds and a compaction
+  are tracked separately.
+
+Tests: `a_town_continues_across_a_save_after_road_edits_as_the_running_game` (the busy starter
+town after a trunk split, the bulldozed border road with the lowest node left without a road, an
+in-place class change and its undo, and a new border connection: the loaded network equals the
+running one in memory, and both games run two game hours with every agent, lane ids included,
+equal each frame and raw saves byte-equal every 300 frames),
+`snapshot_keeps_every_lane_id_after_incremental_rebuild_and_edge_deletion` (lane arrays after a
+load) and `the_walking_proof_holds_after_local_lane_rebuilds_as_after_a_whole_one` (`PERF-27`).
+The starter town and the populated city no longer renumber their lanes as a load does
+(`SimCore::number_lanes_as_a_load_does`, `ROAD-122`, removed).
 
 Save format 108 (`ROAD-68-K22`, 2026-10-26) keeps the pending arrivals in
 `household_queue_state` (`pending_households`, `pending_adults`, `pending_elders`,
@@ -334,6 +390,12 @@ rewritten as format 119). The id-dependent divergences `SAVE-09` found after a r
 breaks by node, edge or lane ids, the edge sweeps' positions, the workplace quote key) are not
 fixed here: the save contract becomes "ids are saved state" (`SAVE-11`, round S2), which also
 brings the whole-state continuation test.
+
+Save format 121 (`SAVE-11`, round S2, 2026-11-16) makes node, edge and lane ids saved state
+([Ids are saved state](#ids-are-saved-state-save-11)): new tables `network_id_counts` and
+`network_node_aliases`, node and edge rows at their ids with holes between them, every reference
+written as it is, and the column `zoning_parcels.storage_index`. Format 120 (`PRE_SAVED_IDS_SAVE_VERSION`), 119 and 118 load as before, their
+ids compacted.
 
 ## Scheduler
 
@@ -6571,8 +6633,8 @@ alternatives and the evidence. The user reviews these on return.
   are at the load, and a home whose lot disappeared mid-hour would otherwise void in the running
   game only. Projects and permits are matched by spawn id. Alternative: reject voided spawns (a
   failed home then cancelled every business spawn still queued for its hour).
-- **`SIM-02-I` — door digests use save-stable identities.** A save renumbers edges past a deleted
-  one and a load rebuilds lanes compactly, while the session tombstones and appends, so a digest
+- **`SIM-02-I` — door digests use save-stable identities.** A save renumbered edges past a deleted
+  one and a load rebuilt lanes compactly (before format 121, `SAVE-11`), while the session tombstones and appends, so a digest
   of edge and lane indices would reject queued spawns after a reload. The digest covers the door
   and curb positions, the frontage offset, side, access and flags, the frontage edge by its end
   nodes' ground positions, and each door lane by its direction, lane index and kind.

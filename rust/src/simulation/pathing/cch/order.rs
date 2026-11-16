@@ -36,7 +36,19 @@ pub(super) fn nested_dissection(graph: &RegionGraph) -> (Vec<u32>, Vec<u32>) {
 /// Orders vertices with planar `positions` and symmetric `adjacency` for contraction:
 /// balanced disconnected halves before their separating vertices, recursively.
 /// Construction takes O((V log V + A) log V); it does not approximate route costs.
+#[cfg(test)]
 pub(super) fn dissect_points(positions: &[[f32; 2]], adjacency: &[Vec<u32>]) -> Vec<u32> {
+    dissect_points_of((0..positions.len() as u32).collect(), positions, adjacency)
+}
+
+/// Orders the vertices `vertices` with planar `positions` and symmetric `adjacency` as
+/// `dissect_points` orders all of them, which no vertex outside them is adjacent
+/// to: the order of `vertices` reads no other vertex's position.
+pub(super) fn dissect_points_of(
+    vertices: Vec<u32>,
+    positions: &[[f32; 2]],
+    adjacency: &[Vec<u32>],
+) -> Vec<u32> {
     fn dissect(mut nodes: Vec<u32>, positions: &[[f32; 2]], adjacency: &[Vec<u32>]) -> Vec<u32> {
         if nodes.len() <= 8 {
             nodes.sort_unstable_by_key(|&n| (adjacency[n as usize].len(), n));
@@ -112,7 +124,7 @@ pub(super) fn dissect_points(positions: &[[f32; 2]], adjacency: &[Vec<u32>]) -> 
         a.extend(dissect(separator, positions, adjacency));
         a
     }
-    dissect((0..positions.len() as u32).collect(), positions, adjacency)
+    dissect(vertices, positions, adjacency)
 }
 
 // Smallest vertex set touching every link between the two halves, from a maximum matching of

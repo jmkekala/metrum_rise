@@ -6,7 +6,7 @@
 //! saved in order, so a loaded game serves the same requests at the same slots.
 
 use super::{
-    NONE_REF, SaveLoadError, SaveLoadResult, SnapshotMaps, handle_from_db, handle_to_db,
+    NONE_REF, SaveLoadError, SaveLoadResult, handle_from_db, handle_to_db,
     i64_to_u16, i64_to_u32, i64_to_u64, u64_to_i64, usize_to_i64,
 };
 use crate::simulation::buildings::allocator::{
@@ -24,7 +24,6 @@ pub(super) fn save(
     households: &HouseholdSystem,
     demand: &DemandSystem,
     graph: &RegionGraph,
-    maps: &SnapshotMaps,
 ) -> SaveLoadResult<()> {
     let mut stmt = tx.prepare(
         "INSERT INTO level_change_requests(sequence, slot, building_slot, building_generation, target_asset_id, permit) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
@@ -53,17 +52,18 @@ pub(super) fn save(
             request.kind.to_saved(),
         ])?;
     }
-    // A border no saved road reaches any more is saved as none; the loaded game then drops
-    // the admission at its creation, as the running game finds the border without a road.
+    // The border node is saved as it is (`SAVE-11`); one no road reaches any more drops the
+    // admission at its creation, in the loaded game as in the running one.
     let mut stmt = tx.prepare(
         "INSERT INTO admission_requests(sequence, home_slot, home_generation, household_size, child_count, adult_count, elder_count, border_node) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
     )?;
     for (sequence, admission) in households.admission_requests.iter().enumerate() {
         let (slot, generation) = handle_to_db(admission.home);
-        let border = ((admission.border_node as usize) < graph.node_count())
-            .then(|| graph.get_valid_node(admission.border_node))
-            .and_then(|node| maps.node_old_to_new.get(&node))
-            .map_or(NONE_REF, |&saved| i64::from(saved));
+        let border = if (admission.border_node as usize) < graph.node_count() {
+            i64::from(admission.border_node)
+        } else {
+            NONE_REF
+        };
         let composition = admission.composition;
         stmt.execute(params![
             usize_to_i64(sequence)?,

@@ -10,7 +10,6 @@ use super::{
 use crate::simulation::core::scheduler::{LEVELER_MINUTES, MinuteLeveler, SLOTS_PER_DAY};
 use crate::simulation::economy::demand::SavedDemandSnapshot;
 use crate::simulation::grid::sweep::{EnvironmentSweep, SweepCapacities};
-use crate::simulation::network::graph::RegionGraph;
 use rusqlite::{Connection, Transaction, params};
 
 /// The timing wheel and its counters as saved.
@@ -33,11 +32,11 @@ pub(crate) struct SavedScheduler {
     pub(crate) agent_settlement_days: u32,
     /// Rolling cost-weighted road length for daily upkeep (`SIM-02-G`, `ROAD-101`): last
     /// finished sweep in 2-lane-equivalent metres, current sweep in equivalent millimetres,
-    /// edges frozen for it (saved as -1 before the first sweep) and the next edge, both in saved
-    /// edge numbering, and whether a sweep has finished.
+    /// edges frozen for it (saved as -1 before the first sweep) and the next edge, both edge ids
+    /// (saved as they are since format 121, `SAVE-11`), and whether a sweep has finished.
     pub(crate) road_upkeep: (f64, i64, Option<u64>, u64, bool),
-    /// Rolling environment sweep (`SIM-02-H`) with live edge indices; `save` stores them as
-    /// indices into the saved edges, which leave out deleted ones.
+    /// Rolling environment sweep (`SIM-02-H`) with edge indices, saved as they are (format 121,
+    /// `SAVE-11`).
     pub(crate) environment: EnvironmentSweep,
     /// Whether the freight route cache was valid for the saved topology
     /// ([`crate::simulation::economy::logistics::ShipmentSystem::route_cache_validity`],
@@ -50,18 +49,13 @@ pub(crate) struct SavedScheduler {
     pub(crate) events: Vec<(u64, u64, u16, u64)>,
 }
 
-pub(super) fn save(
-    tx: &Transaction,
-    scheduler: &SavedScheduler,
-    graph: &RegionGraph,
-) -> SaveLoadResult<()> {
+pub(super) fn save(tx: &Transaction, scheduler: &SavedScheduler) -> SaveLoadResult<()> {
+    // Edge positions are saved as they are: a save keeps edge ids (`SAVE-11`).
     let environment = scheduler.environment;
-    let saved_edge =
-        |index| compacted_edge_index(graph.edges().iter().map(|edge| edge.deleted), index);
     let (environment_handles, environment_edges) = match environment.frozen {
         Some(frozen) => (
             u64_to_i64(frozen.building_handles)?,
-            u64_to_i64(saved_edge(frozen.edges))?,
+            u64_to_i64(frozen.edges)?,
         ),
         None => (-1, 0),
     };
@@ -88,7 +82,7 @@ pub(super) fn save(
             i64::from(scheduler.road_upkeep.4),
             environment_handles,
             environment_edges,
-            u64_to_i64(saved_edge(environment.next_edge))?,
+            u64_to_i64(environment.next_edge)?,
             u64_to_i64(environment.next_chunk)?,
             demand.front,
             demand_next_chunk,
@@ -231,13 +225,6 @@ fn load_demand_snapshot(conn: &Connection) -> SaveLoadResult<SavedDemandSnapshot
         (next_chunk, Some(back)) => Some((i64_to_u64(next_chunk)?, back)),
     };
     Ok(SavedDemandSnapshot { front, sweep })
-}
-
-// Index of live edge `index` among the saved edges, which leave out deleted ones; an index past
-// the live edges shifts by the same amount, so edges added after loading keep their order.
-pub(super) fn compacted_edge_index(deleted: impl Iterator<Item = bool>, index: u64) -> u64 {
-    let deleted_below = deleted.take(index as usize).filter(|&flag| flag).count();
-    index - deleted_below as u64
 }
 
 fn load_environment(conn: &Connection) -> SaveLoadResult<EnvironmentSweep> {

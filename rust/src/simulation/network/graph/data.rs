@@ -746,6 +746,49 @@ impl RegionGraph {
         self.edges.iter_mut()
     }
 
+    /// Every merge alias as `(alias, canonical)` in alias order: the alias table a save writes
+    /// (`SAVE-11`). O(aliases log aliases).
+    pub(crate) fn node_alias_rows(&self) -> Vec<(u32, u32)> {
+        let mut rows: Vec<_> = self
+            .node_aliases
+            .iter()
+            .map(|(&alias, &canonical)| (alias, canonical))
+            .collect();
+        rows.sort_unstable();
+        rows
+    }
+
+    /// Appends a node slot that a load recreates as a hole (`SAVE-11`): a merged node's slot,
+    /// which the alias table names. It has no position anyone reads, no roads, and is in no
+    /// spatial index. `O(1)`.
+    pub(crate) fn push_node_hole(&mut self) -> u32 {
+        let id = self.nodes.len() as u32;
+        self.nodes.push(Node {
+            pos: Vector3::ZERO,
+            node_type: NodeType::default(),
+            lane_connections: HashMap::new(),
+            crosswalk_overrides: HashMap::new(),
+        });
+        self.adjacency.push(Vec::new());
+        id
+    }
+
+    /// Appends an edge slot that a load recreates as a hole (`SAVE-11`): a deleted edge, in no
+    /// adjacency list or spatial index. `O(1)`.
+    pub(crate) fn push_edge_hole(&mut self) -> usize {
+        self.edges.push(Edge {
+            deleted: true,
+            ..Edge::default()
+        });
+        self.edges.len() - 1
+    }
+
+    /// Restores a saved merge alias (`SAVE-11`). The caller checks both ids and that the
+    /// aliases end at canonical nodes. `O(1)`.
+    pub(crate) fn restore_node_alias(&mut self, alias: u32, canonical: u32) {
+        self.node_aliases.insert(alias, canonical);
+    }
+
     /// Clears all runtime-only caches (node aliases, spatial indices) and rebuilds them from
     /// the current node and edge lists. Call this after bulk-loading nodes/edges from save data.
     pub fn rebuild_all_indices(&mut self) {

@@ -87,21 +87,6 @@ impl RoadUpkeepRoll {
         }
     }
 
-    /// The frozen edge count and the next edge as a save stores them: saving drops deleted
-    /// edges and keeps the rest in order, so each position loses the deleted edges below it
-    /// and the sweep resumes on the same live edges. O(edges), at save.
-    pub(crate) fn saved_positions(
-        &self,
-        graph: &crate::simulation::network::graph::RegionGraph,
-    ) -> (Option<u64>, u64) {
-        let edges = graph.edges();
-        let compact = |position: u64| {
-            let below = &edges[..(position as usize).min(edges.len())];
-            position - below.iter().filter(|edge| edge.deleted).count() as u64
-        };
-        (self.sweep_edges.map(compact), compact(self.next_edge))
-    }
-
     /// The last finished equivalent length; a world without one measures its network once.
     /// O(1), or O(edges) at a world's first close.
     pub(crate) fn equivalent_m(
@@ -1608,7 +1593,8 @@ mod tests {
                 ..Edge::default()
             }
         };
-        // Saving drops deleted edges and renumbers the rest in order.
+        // A save keeps edge ids, deleted edges as holes (`SAVE-11`), so a loaded sweep resumes
+        // at the same positions on the same edge slots.
         let graph = |lengths: &[(usize, f32, bool)]| {
             let mut graph = RegionGraph::new();
             let a = graph.add_node(Vector3::ZERO, NodeType::Junction);
@@ -1627,24 +1613,13 @@ mod tests {
             .map(|i| (i, 10.0 + i as f32 * 1.375, i == 1 || i == 7))
             .collect();
         let live = graph(&lengths);
-        let saved = graph(
-            &lengths
-                .iter()
-                .filter(|(_, _, deleted)| !deleted)
-                .copied()
-                .collect::<Vec<_>>(),
-        );
+        let saved = graph(&lengths);
         let mut straight = super::RoadUpkeepRoll::default();
         let half = SLOTS_PER_DAY / 2;
         for slot in 0..half {
             straight.advance(slot, &live);
         }
-        let (sweep_edges, next_edge) = straight.saved_positions(&live);
-        let mut resumed = super::RoadUpkeepRoll {
-            sweep_edges,
-            next_edge,
-            ..straight
-        };
+        let mut resumed = straight;
         for slot in half..SLOTS_PER_DAY {
             straight.advance(slot, &live);
             resumed.advance(slot, &saved);

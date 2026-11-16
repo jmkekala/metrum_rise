@@ -30,9 +30,7 @@ pub(super) fn save(
     // A copied row may name an edge deleted since its copy; the copy refreshes that row
     // before reading it, so its saved edge is a placeholder.
     let edge = |edge| {
-        maps.edge_old_to_new
-            .get(&edge)
-            .map_or(u64::MAX, |&saved| saved as u64)
+        maps.edge(edge).map_or(u64::MAX, |saved| saved as u64)
     };
     let inputs = &households.census_inputs;
     let saved = inputs.save(&allocator.census_copy_changes, edge);

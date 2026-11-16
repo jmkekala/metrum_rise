@@ -2,8 +2,8 @@
 
 //! The car-congestion metric's state (`TRAFFIC-17`, save format 119): one `congestion_routing`
 //! row with the adopted metric's directed weights and, while a customization is pending, its
-//! snapshot weights and adoption slot. Weights are packed little-endian f32, two per saved edge
-//! (forward, backward) in saved edge order. A load customizes both again, pure functions of
+//! snapshot weights and adoption slot. Weights are packed little-endian f32, two per edge
+//! (forward, backward) in saved edge id order. A load customizes both again, pure functions of
 //! the weights, so the loaded game routes cars and adopts at the same slot as the saved one.
 //! The lanes' smoothed routing delays are saved with the lanes (`saved_lanes.route_delay_s`).
 //!
@@ -17,23 +17,23 @@ use rusqlite::{Connection, OptionalExtension, Transaction, params};
 // The saved row: adopted weights, pending weights and the pending adoption slot.
 type SavedCongestion = (Option<Vec<u8>>, Option<Vec<u8>>, Option<i64>);
 
-// Directed weights indexed by live edge id, packed in saved edge order.
-fn pack(weights: &[f32], maps: &SnapshotMaps) -> SaveLoadResult<Vec<u8>> {
-    let mut saved = vec![0.0_f32; maps.edge_old_to_new.len() * 2];
-    for (&old, &new) in &maps.edge_old_to_new {
-        let (Some(from), Some(to)) = (
-            weights.get(2 * old..2 * old + 2),
-            saved.get_mut(2 * new..2 * new + 2),
-        ) else {
-            return Err(SaveLoadError::custom(
-                "congestion weights do not cover the edges",
-            ));
-        };
-        to.copy_from_slice(from);
+// Directed weights indexed by edge id, packed in edge id order (`SAVE-11`: ids are saved
+// state); a deleted edge's pair is written as zero, as its hole loads.
+fn pack(weights: &[f32], maps: &SnapshotMaps, edge_count: usize) -> SaveLoadResult<Vec<u8>> {
+    if weights.len() != edge_count * 2 {
+        return Err(SaveLoadError::custom(
+            "congestion weights do not cover the edges",
+        ));
     }
-    Ok(saved
+    Ok(weights
+        .as_chunks::<2>()
+        .0
         .iter()
-        .flat_map(|weight| weight.to_le_bytes())
+        .enumerate()
+        .flat_map(|(edge, pair)| {
+            let pair = if maps.edge(edge).is_some() { *pair } else { [0.0; 2] };
+            pair.into_iter().flat_map(f32::to_le_bytes)
+        })
         .collect())
 }
 
@@ -56,17 +56,21 @@ fn unpack(blob: &[u8], graph: &RegionGraph) -> SaveLoadResult<Vec<f32>> {
 
 pub(super) fn save(
     tx: &Transaction,
+    graph: &RegionGraph,
     network: &TransitNetwork,
     maps: &SnapshotMaps,
 ) -> SaveLoadResult<()> {
+    let edges = graph.edge_count();
     let adopted = network
         .cch_graph
         .congestion_weights()
-        .map(|weights| pack(weights, maps))
+        .map(|weights| pack(weights, maps, edges))
         .transpose()?;
     let pending = network
         .pending_congestion()
-        .map(|(weights, slot)| Ok::<_, SaveLoadError>((pack(weights, maps)?, u64_to_i64(slot)?)))
+        .map(|(weights, slot)| {
+            Ok::<_, SaveLoadError>((pack(weights, maps, edges)?, u64_to_i64(slot)?))
+        })
         .transpose()?;
     tx.execute(
         "INSERT INTO congestion_routing(singleton, adopted, pending, adopt_slot) VALUES (1, ?1, ?2, ?3)",

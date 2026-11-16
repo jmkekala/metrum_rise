@@ -653,3 +653,242 @@ fn the_days_construction_and_input_telemetry_survive_a_save_and_load() {
     );
     std::fs::remove_file(saved).unwrap();
 }
+
+// The road graph and lanes of a loaded game equal the saved game's in memory (`SAVE-11`): node,
+// edge and lane ids are saved state. Every node slot resolves to the same node and every
+// canonical one with a road has its position and type; every edge slot is live or a hole in
+// both, a live one with its whole record; every lane slot is a lane of the same owner with the
+// same geometry, successors, delays and ring entry, or a retired lane in both. Positions of
+// merged nodes and the records of deleted edges are no state anyone reads, and not compared.
+pub(in crate::nodes::sim::core) fn assert_same_network(live: &SimCore, loaded: &SimCore, what: &str) {
+    let (a, b) = (&live.region_graph, &loaded.region_graph);
+    assert_eq!(a.node_count(), b.node_count(), "{what}: node count");
+    assert_eq!(a.edge_count(), b.edge_count(), "{what}: edge count");
+    for node in 0..a.node_count() as u32 {
+        let canonical = a.get_valid_node(node);
+        assert_eq!(canonical, b.get_valid_node(node), "{what}: node {node}'s canonical node");
+        if canonical == node {
+            let (x, y) = (a.node(node), b.node(node));
+            assert_eq!(
+                (x.pos, x.node_type, &x.crosswalk_overrides),
+                (y.pos, y.node_type, &y.crosswalk_overrides),
+                "{what}: node {node}"
+            );
+            assert_eq!(
+                a.node_adjacency(node),
+                b.node_adjacency(node),
+                "{what}: node {node}'s roads"
+            );
+        }
+    }
+    for edge in 0..a.edge_count() {
+        let (x, y) = (a.edge(edge), b.edge(edge));
+        assert_eq!(x.deleted, y.deleted, "{what}: edge {edge} deleted");
+        if x.deleted {
+            continue;
+        }
+        let record = |e: &crate::simulation::network::graph::Edge| {
+            format!(
+                "{} {} {:?} {} {:?} {} {} {} {} {} {} {} {} {:?} {:?} {} {} {:?} {:?} {:?} {:?} {:?} {:?}",
+                e.start_node,
+                e.end_node,
+                e.primary_type,
+                e.allowed_types,
+                e.class,
+                e.width.to_bits(),
+                e.fwd_lanes,
+                e.bkw_lanes,
+                e.speed_limit.to_bits(),
+                e.base_cost.to_bits(),
+                e.physical_length.to_bits(),
+                e.start_clip.to_bits(),
+                e.end_clip.to_bits(),
+                e.geometry,
+                e.physical_geometry,
+                e.no_building_spawn,
+                e.no_street_lights,
+                e.vehicle_frontage_access,
+                e.median,
+                e.parking,
+                e.pocket,
+                e.sidewalks,
+                e.roundabout,
+            )
+        };
+        assert_eq!(record(x), record(y), "{what}: edge {edge}");
+    }
+    let (a, b) = (
+        &live.transit_network.lane_system,
+        &loaded.transit_network.lane_system,
+    );
+    assert_eq!(a.lanes.len(), b.lanes.len(), "{what}: lane count");
+    assert_eq!(a.edge_lanes, b.edge_lanes, "{what}: road lanes");
+    assert_eq!(a.node_lanes, b.node_lanes, "{what}: connectors");
+    for id in 0..a.lanes.len() {
+        let lane = |lanes: &crate::simulation::network::lanes::LaneSystem| {
+            let l = &lanes.lanes[id];
+            format!(
+                "{} {} {} {} {:?} {:?} {:?} {:?} {} {} {} {} {} {:?}",
+                l.edge_id,
+                l.node_id,
+                l.is_fwd,
+                l.lane_idx,
+                l.lane_type,
+                &*l.next_lanes,
+                l.geometry,
+                l.cum_dist,
+                l.length.to_bits(),
+                l.frontage_delay_penalty_s.to_bits(),
+                l.live_frontage_delay_s.to_bits(),
+                l.route_delay_s.to_bits(),
+                l.solid_zone_m.to_bits(),
+                lanes.ring_entry(id),
+            )
+        };
+        assert_eq!(lane(a), lane(b), "{what}: lane {id}");
+    }
+}
+
+// Every agent's movement state, its lane ids included, as bits.
+fn agent_states(core: &SimCore) -> Vec<[u64; 12]> {
+    let a = &core.agents.agents;
+    (0..a.len())
+        .map(|i| {
+            [
+                u64::from(a.pos_x[i].to_bits()),
+                u64::from(a.pos_y[i].to_bits()),
+                u64::from(a.speed[i].to_bits()),
+                u64::from(a.lane_distance[i].to_bits()),
+                u64::from(a.activity[i]),
+                u64::from(a.transit[i]),
+                a.current_lane_id[i] as u64,
+                a.current_edge[i] as u64,
+                u64::from(a.current_node[i]),
+                u64::from(a.lane_change_from_lane_id[i]),
+                u64::from(a.planned_attach_lane_id[i]),
+                u64::from(a.planned_detach_lane_id[i]),
+            ]
+        })
+        .collect()
+}
+
+// Saves `core`, loads the save into a fresh starter town and checks the loaded network equals
+// the saved one in memory; the loaded game runs at the saved game's speed.
+pub(in crate::nodes::sim::core) fn save_and_load(core: &mut SimCore, path: &Path) -> SimCore {
+    save(core, path);
+    let mut loaded = GrowthScenario::starter_town();
+    loaded
+        .core
+        .load_game_internal(path.to_str().unwrap())
+        .unwrap();
+    loaded.core.time.speed_multiplier = core.time.speed_multiplier;
+    assert_same_network(core, &loaded.core, "at the load");
+    loaded.core
+}
+
+// Steps the saved and the loaded game together for `frames` frames: every agent's state, lane
+// ids included, equal after every frame, and the two games' raw saves byte-equal every 300
+// frames (no canonicalising load between them).
+pub(in crate::nodes::sim::core) fn run_alike(
+    live: &mut SimCore,
+    loaded: &mut SimCore,
+    frames: u32,
+    name: &str,
+) {
+    use super::super::frame::FRAME_DT_S;
+    let path = |game: &str| -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "metrum-save11-{name}-{game}-{}.sqlite",
+            std::process::id()
+        ))
+    };
+    let (running, resumed) = (path("running"), path("loaded"));
+    for frame in 1..=frames {
+        live.step_frame(FRAME_DT_S);
+        loaded.step_frame(FRAME_DT_S);
+        let (a, b) = (agent_states(live), agent_states(loaded));
+        assert_eq!(a.len(), b.len(), "frame {frame}: agent count");
+        if let Some(agent) = (0..a.len()).find(|&i| a[i] != b[i]) {
+            panic!(
+                "frame {frame}: agent {agent} {:?} in the running game, {:?} loaded",
+                a[agent], b[agent]
+            );
+        }
+        if frame % 300 == 0 {
+            save(live, &running);
+            save(loaded, &resumed);
+            assert_same_bytes(&running, &resumed, &format!("frame {frame}"));
+        }
+    }
+    for path in [running, resumed] {
+        std::fs::remove_file(path).unwrap();
+    }
+}
+
+// `SAVE-11` (round S2): node, edge and lane ids are saved state, so a game saved after road
+// edits loads with the running game's ids exactly and continues as it. The busy starter town
+// takes the edits that renumbered a load before: a commit that splits the trunk's border piece,
+// the bulldozing of the lowest road (the border road, leaving the lowest node without a road),
+// an in-place class change and its undo, and a new road connected to the world's edge. The
+// loaded network equals the running one in memory, and both games then run two game hours
+// with every agent alike each frame and byte-equal saves every 300 frames. Before, the save
+// compacted nodes and edges and a load numbered lanes anew: the loaded game's walkers broke
+// ties on other ids (`SAVE-09`) and its saves wrote other lane ids.
+#[test]
+fn a_town_continues_across_a_save_after_road_edits_as_the_running_game() {
+    use crate::simulation::network::types::NodeType;
+    use godot::prelude::Vector3;
+
+    let mut town = busy_town();
+    let core = &mut town.core;
+    let (nodes, edges) = (core.region_graph.node_count(), core.region_graph.edge_count());
+    // A street across the trunk's border piece splits it.
+    super::commit_road(core, (-600.0, -60.0), (-600.0, 60.0));
+    let graph = &core.region_graph;
+    let border = (0..graph.node_count() as u32)
+        .find(|&node| {
+            graph.node(node).node_type == NodeType::Border && graph.node_has_live_incident_edge(node)
+        })
+        .unwrap();
+    let road = graph
+        .node_adjacency(border)
+        .iter()
+        .copied()
+        .find(|&edge| !graph.edge(edge).deleted)
+        .unwrap();
+    assert_eq!((border, road), (0, 0), "the lowest node and edge");
+    assert!(core.bulldoze_road_edge_for_test(road));
+    assert!(!core.region_graph.node_has_live_incident_edge(border));
+    // An in-place class change on the new street's north half, then its undo.
+    let north = core.get_hovered_edge_internal(-600.0, 40.0);
+    assert!(north >= 0);
+    assert!(core.set_edge_class_internal(north, 1));
+    assert!(core.undo_action_internal());
+    // A new road to the world's north edge, connected there.
+    let (_, half_z) = core.heightmap.half_world_extents();
+    let edge_z = half_z - 1.0;
+    super::commit_road(core, (-600.0, 60.0), (-600.0, edge_z));
+    let y = core.heightmap.sample_height_world(-600.0, edge_z);
+    let end = core.check_border_candidate_internal(Vector3::new(-600.0, y, edge_z));
+    assert!(end >= 0, "the new road ends at the world's edge");
+    core.set_border_connection_internal(end as i32);
+    let graph = &core.region_graph;
+    assert!(graph.node_count() > nodes && graph.edge_count() > edges);
+    let lanes = &core.transit_network.lane_system;
+    assert!(
+        lanes
+            .lanes
+            .iter()
+            .any(|lane| lane.edge_id == usize::MAX && lane.node_id == usize::MAX),
+        "the edits retired lanes"
+    );
+
+    let path = std::env::temp_dir().join(format!("metrum-save11-town-{}.sqlite", std::process::id()));
+    let mut loaded = save_and_load(core, &path);
+    std::fs::remove_file(path).unwrap();
+    let start = core.time.absolute_slot();
+    run_alike(core, &mut loaded, 2 * 7_200, "town");
+    let hours = (core.time.absolute_slot() - start) as f64
+        / crate::simulation::core::scheduler::SLOTS_PER_HOUR as f64;
+    assert!(hours >= 2.0, "{hours} game hours");
+}

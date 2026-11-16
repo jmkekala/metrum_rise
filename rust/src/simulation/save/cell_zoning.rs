@@ -29,7 +29,7 @@ pub(super) fn save(
     let mut alignment_stmt =
         tx.prepare("INSERT INTO zoning_cell_road_alignments VALUES (?1, ?2)")?;
     for (id, alignment) in zoning.cells.saved_road_alignments() {
-        if let Some(&saved_id) = maps.edge_old_to_new.get(&id) {
+        if let Some(saved_id) = maps.edge(id) {
             let json = serde_json::to_string(&alignment)
                 .map_err(|err| SaveLoadError::custom(err.to_string()))?;
             alignment_stmt.execute(params![usize_to_i64(saved_id)?, json])?;

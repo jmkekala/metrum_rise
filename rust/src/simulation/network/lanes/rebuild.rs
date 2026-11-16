@@ -396,12 +396,13 @@ impl LaneSystem {
         layout_nodes.dedup();
         let walkways = collect_walkways(graph, &layout_nodes, false);
 
-        // Retire old physical-lane ownership before appending replacements. A retired lane
-        // approaches no node any more.
+        // Retire old physical lanes before appending replacements. A retired lane keeps its id
+        // and no state (`SAVE-11`): it is the lane a load recreates at a saved hole, owned by
+        // no edge or node, so nothing reads it as a live lane (`PERF-27`).
         for &e_id in &rebuild_edges {
             for lane_id in self.edge_lanes.remove(&e_id).into_iter().flatten() {
                 if let Some(lane) = self.lanes.get_mut(lane_id) {
-                    lane.solid_zone_m = 0.0;
+                    *lane = super::Lane::default();
                 }
             }
         }
@@ -447,6 +448,40 @@ impl LaneSystem {
         }
     }
 
+    /// Moves every lane to the id `target` gives it and leaves the other ids of `len` as
+    /// retired lanes ([`Lane::default`]): a load placing the lanes its whole rebuild made at the
+    /// saved game's ids (`SAVE-11`). `target` holds one distinct id below `len` per lane. Every
+    /// lane id the system holds (successors, owners' lists, crossings, ring entries) moves
+    /// with it. O(lanes + connections); load only.
+    ///
+    /// [`Lane::default`]: super::Lane
+    pub(crate) fn place_at_ids(&mut self, target: &[usize], len: usize) {
+        debug_assert_eq!(target.len(), self.lanes.len());
+        self.revision = self.revision.wrapping_add(1);
+        let mut lanes = vec![super::Lane::default(); len];
+        for (old, mut lane) in std::mem::take(&mut self.lanes).into_iter().enumerate() {
+            let next: Vec<usize> = lane.next_lanes.iter().map(|&id| target[id]).collect();
+            lane.next_lanes = next.into();
+            lanes[target[old]] = lane;
+        }
+        self.lanes = lanes;
+        for ids in self.edge_lanes.values_mut().chain(self.node_lanes.values_mut()) {
+            for id in ids {
+                *id = target[*id];
+            }
+        }
+        self.crosswalks = std::mem::take(&mut self.crosswalks)
+            .into_iter()
+            .map(|(id, crosswalk)| (target[id], crosswalk))
+            .collect();
+        for entry in &mut self.ring_entries {
+            entry.circulating = target[entry.circulating as usize] as u32;
+            entry.ring_in = target[entry.ring_in as usize] as u32;
+        }
+        self.surface_synced_len = 0;
+        self.lifted_since = None;
+    }
+
     /// Tombstones the connection lanes of nodes that no longer exist, such as the nodes an undo
     /// drops past the restored node count (`ROAD-68-E`). Their incident edges are rebuilt by
     /// [`Self::rebuild_edges_incremental`]; this only retires what no surviving owner rebuilds.
@@ -462,7 +497,8 @@ impl LaneSystem {
     }
 
     // Tombstones old connection lanes at a node so the renderer skips them, and frees their
-    // buffers: ids are never reused, so tombstones stay in `lanes`. False if it had none.
+    // buffers: ids are never reused, so tombstones stay in `lanes`, each a retired lane with no
+    // state ([`Lane::default`], as a load recreates it, `SAVE-11`). False if it had none.
     fn tombstone_node_lanes(&mut self, node_id: usize) -> bool {
         let Some(old_ids) = self.node_lanes.remove(&node_id) else {
             return false;
@@ -470,10 +506,7 @@ impl LaneSystem {
         for lid in old_ids {
             if let Some(lane) = self.lanes.get_mut(lid) {
                 self.crosswalks.remove(&lid);
-                lane.geometry = Vec::new();
-                lane.cum_dist = Vec::new();
-                lane.next_lanes.clear();
-                lane.ring_entry = None;
+                *lane = super::Lane::default();
             }
         }
         true

@@ -5,6 +5,7 @@
 use super::*;
 use crate::simulation::economy::agents::lane_state::lane_for_mode;
 use crate::simulation::network::lanes::{LaneSystem, LaneType};
+use std::collections::HashSet;
 
 #[cfg(test)]
 mod tests;
@@ -56,7 +57,7 @@ pub(super) fn save_lane_references(
                     -1_i64,
                     conn.is_fwd,
                     conn.lane_idx,
-                    optional_node_to_db(graph, conn.node_id as u32, maps)?,
+                    optional_node_to_db(graph, conn.node_id as u32)?,
                     usize_to_i64(id)?,
                     usize_to_i64(to_id)?,
                     conn.frontage_delay_penalty_s,
@@ -69,17 +70,11 @@ pub(super) fn save_lane_references(
     Ok(())
 }
 
-/// Restores current and planned IDs after rebuilding lanes and building entrances. Returns the
-/// map from saved lane ids to rebuilt ones, for the other saved lane references. Without
-/// `route_delays` (a format-118 save) every lane's routing delay stays 0.
-pub(in crate::simulation::save) fn restore_lane_references(
-    conn: &Connection,
-    agents: &mut AgentSystem,
-    graph: &RegionGraph,
-    network: &mut TransitNetwork,
-    route_delays: bool,
-) -> SaveLoadResult<HashMap<usize, usize>> {
-    let lanes = &network.lane_system;
+// Matches the saved lanes to the rebuilt ones by identity: a road lane by its edge, direction
+// and index, a connector by its node and the road lanes it joins, each rebuilt lane matched
+// once. Saved connectors from older builds that the rebuild does not make are omitted (agents on
+// them replan). O(saved lanes x local lane lists).
+fn match_saved_lanes(conn: &Connection, lanes: &LaneSystem) -> SaveLoadResult<HashMap<usize, usize>> {
     let mut remap = HashMap::new();
     let mut roads = conn.prepare("SELECT lane_id, edge_id, is_fwd, lane_idx FROM saved_lanes WHERE edge_id != -1 ORDER BY lane_id")?;
     let mut rows = roads.query([])?;
@@ -102,6 +97,7 @@ pub(in crate::simulation::save) fn restore_lane_references(
             })?;
         remap.insert(old, id);
     }
+    let mut matched: HashSet<usize> = remap.values().copied().collect();
     let mut connectors = conn.prepare("SELECT lane_id, node_id, from_lane_id, to_lane_id FROM saved_lanes WHERE edge_id = -1 ORDER BY lane_id")?;
     let mut rows = connectors.query([])?;
     while let Some(row) = rows.next()? {
@@ -120,11 +116,12 @@ pub(in crate::simulation::save) fn restore_lane_references(
         let id = ends.and_then(|(&from, &to)| {
             lanes.lanes[from].next_lanes.iter().copied().find(|&id| {
                 let lane = &lanes.lanes[id];
-                lane.node_id == node && lane.next_lanes.first() == Some(&to)
+                lane.node_id == node && lane.next_lanes.first() == Some(&to) && !matched.contains(&id)
             })
         });
         match (id, ends) {
             (Some(id), _) => {
+                matched.insert(id);
                 remap.insert(old, id);
             }
             // Pedestrian routes follow the junction layouts since `ROAD-68-C`: saves from before
@@ -139,6 +136,72 @@ pub(in crate::simulation::save) fn restore_lane_references(
             }
         }
     }
+    Ok(remap)
+}
+
+/// Places the lanes a load's whole rebuild made at their saved ids (`SAVE-11`, format 121): a
+/// lane matched to a saved lane takes its id, every other id below the saved lane count is a
+/// retired lane, and a rebuilt lane no saved lane matches (none, for a save of this build) is
+/// appended after them. The loaded lanes then have the saved game's ids, and every saved lane
+/// reference loads as it is. Returns the identity map of the placed saved ids, for
+/// [`restore_lane_references`]. O(lanes + connections) after the match.
+pub(in crate::simulation::save) fn place_lanes_at_saved_ids(
+    conn: &Connection,
+    network: &mut TransitNetwork,
+) -> SaveLoadResult<HashMap<usize, usize>> {
+    let saved_count = i64_to_usize(conn.query_row(
+        "SELECT lane_count FROM network_id_counts WHERE singleton = 1",
+        [],
+        |row| row.get(0),
+    )?)?;
+    let lanes = &mut network.lane_system;
+    let remap = match_saved_lanes(conn, lanes)?;
+    let mut target = vec![usize::MAX; lanes.lanes.len()];
+    for (&saved, &rebuilt) in &remap {
+        if saved >= saved_count {
+            return Err(SaveLoadError::custom(format!(
+                "saved lane {saved} is beyond the saved lane count {saved_count}"
+            )));
+        }
+        target[rebuilt] = saved;
+    }
+    let mut len = saved_count;
+    let mut unsaved = 0;
+    for id in &mut target {
+        if *id == usize::MAX {
+            *id = len;
+            len += 1;
+            unsaved += 1;
+        }
+    }
+    if unsaved > 0 {
+        crate::debug_log!(
+            "save",
+            "loaded_lanes_unsaved lanes={unsaved}: appended after the saved lane ids"
+        );
+    }
+    lanes.place_at_ids(&target, len);
+    Ok(remap.into_keys().map(|saved| (saved, saved)).collect())
+}
+
+/// Restores current and planned IDs after rebuilding lanes and building entrances. Returns the
+/// map from saved lane ids to rebuilt ones, for the other saved lane references: `placed`, the
+/// identity map of a format-121 load whose lanes are at their saved ids already, or else a
+/// match by identity. Without `route_delays` (a format-118 save) every lane's routing delay
+/// stays 0.
+pub(in crate::simulation::save) fn restore_lane_references(
+    conn: &Connection,
+    agents: &mut AgentSystem,
+    graph: &RegionGraph,
+    network: &mut TransitNetwork,
+    route_delays: bool,
+    placed: Option<HashMap<usize, usize>>,
+) -> SaveLoadResult<HashMap<usize, usize>> {
+    let remap = match placed {
+        Some(remap) => remap,
+        None => match_saved_lanes(conn, &network.lane_system)?,
+    };
+    let lanes = &network.lane_system;
     // Saves written before ROAD-65 can hold lane ids a terrain edit or undo had renumbered:
     // a lane the save no longer lists, or one of the agent's mode owned by another edge or
     // junction. Such an agent is taken off the network to replan rather than refusing the

@@ -23,22 +23,36 @@ pub(super) fn save_network(
     tx: &Transaction,
     graph: &RegionGraph,
     maps: &SnapshotMaps,
+    lane_count: usize,
 ) -> SaveLoadResult<()> {
-    // 1. Nodes
+    // 0. Id counts and merge aliases (`SAVE-11`, format 121): ids are saved state, so a load
+    // recreates the holes, deleted edges, merged nodes and retired lanes, at their ids.
+    tx.execute(
+        "INSERT INTO network_id_counts(singleton, node_count, edge_count, lane_count) VALUES (1, ?1, ?2, ?3)",
+        params![
+            usize_to_i64(graph.node_count())?,
+            usize_to_i64(graph.edge_count())?,
+            usize_to_i64(lane_count)?
+        ],
+    )?;
     {
-        let mut node_rows: Vec<(u32, u32)> = maps
-            .node_old_to_new
-            .iter()
-            .map(|(&old, &new)| (new, old))
-            .collect();
-        node_rows.sort_by_key(|&(new, _)| new);
+        let mut stmt =
+            tx.prepare("INSERT INTO network_node_aliases(node_id, canonical) VALUES (?1, ?2)")?;
+        for (alias, canonical) in graph.node_alias_rows() {
+            stmt.execute(params![i64::from(alias), i64::from(canonical)])?;
+        }
+    }
+
+    // 1. Nodes: every canonical node at its id, including one whose roads were all removed (a
+    // new road still snaps to it).
+    {
         let mut stmt = tx.prepare(
             "INSERT INTO network_nodes(node_id, x, y, z, node_type) VALUES (?1, ?2, ?3, ?4, ?5)",
         )?;
-        for (saved_id, old_id) in node_rows {
-            let node = graph.node(old_id);
+        for id in (0..graph.node_count() as u32).filter(|&id| maps.node(id).is_some()) {
+            let node = graph.node(id);
             stmt.execute(params![
-                i64::from(saved_id),
+                i64::from(id),
                 node.pos.x,
                 node.pos.y,
                 node.pos.z,
@@ -47,23 +61,19 @@ pub(super) fn save_network(
         }
     }
 
-    // 2. Edges
+    // 2. Edges: every live edge at its id.
     {
         let mut stmt = tx.prepare("INSERT INTO network_edges(edge_id, start_node, end_node, primary_type, allowed_types, class, width, fwd_lanes, bkw_lanes, speed_limit, base_cost, physical_length, start_clip, end_clip, no_building_spawn, vehicle_frontage_access, median_style, median_width, no_street_lights, pocket_end, pocket_roles, sidewalks, parking) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)")?;
-        for (old_id, edge) in graph.edges().iter().enumerate() {
-            let Some(&saved_id) = maps.edge_old_to_new.get(&old_id) else {
+        for (saved_id, edge) in graph.edges().iter().enumerate() {
+            if edge.deleted {
                 continue;
+            }
+            let row_node = |node: u32| {
+                maps.node(node)
+                    .ok_or_else(|| SaveLoadError::custom("edge names a merged node"))
             };
-            let start = maps
-                .node_old_to_new
-                .get(&canonical_existing_node(graph, edge.start_node)?)
-                .copied()
-                .ok_or_else(|| SaveLoadError::custom("missing saved start node"))?;
-            let end = maps
-                .node_old_to_new
-                .get(&canonical_existing_node(graph, edge.end_node)?)
-                .copied()
-                .ok_or_else(|| SaveLoadError::custom("missing saved end node"))?;
+            let start = row_node(edge.start_node)?;
+            let end = row_node(edge.end_node)?;
             let (pocket_end, pocket_roles) = RoadPocket::codes(edge.pocket);
             stmt.execute(params![
                 usize_to_i64(saved_id)?,
@@ -99,9 +109,7 @@ pub(super) fn save_network(
             "INSERT INTO roundabout_edges(edge_id, centre_x, centre_z, radius_m) VALUES (?1, ?2, ?3, ?4)",
         )?;
         for (old_id, edge) in graph.edges().iter().enumerate() {
-            let (Some(ring), Some(&saved_id)) =
-                (edge.roundabout, maps.edge_old_to_new.get(&old_id))
-            else {
+            let (Some(ring), Some(saved_id)) = (edge.roundabout, maps.edge(old_id)) else {
                 continue;
             };
             stmt.execute(params![
@@ -117,7 +125,7 @@ pub(super) fn save_network(
     {
         let mut stmt = tx.prepare("INSERT INTO network_edge_geometry(edge_id, point_index, x, y, z, physical) VALUES (?1, ?2, ?3, ?4, ?5, ?6)")?;
         for (old_id, edge) in graph.edges().iter().enumerate() {
-            let Some(&saved_id) = maps.edge_old_to_new.get(&old_id) else {
+            let Some(saved_id) = maps.edge(old_id) else {
                 continue;
             };
             for (idx, p) in edge.geometry.iter().enumerate() {
@@ -148,14 +156,14 @@ pub(super) fn save_network(
     // after a load, so rows written in it made the same city save different bytes.
     {
         let mut rows = Vec::new();
-        for (&old_node, &saved_node) in &maps.node_old_to_new {
-            let node = graph.node(old_node);
+        for saved_node in (0..graph.node_count() as u32).filter_map(|id| maps.node(id)) {
+            let node = graph.node(saved_node);
             for (&(from_e, from_l), targets) in &node.lane_connections {
-                let Some(&saved_from) = maps.edge_old_to_new.get(&from_e) else {
+                let Some(saved_from) = maps.edge(from_e) else {
                     continue;
                 };
                 for &(to_e, to_l) in targets {
-                    let Some(&saved_to) = maps.edge_old_to_new.get(&to_e) else {
+                    let Some(saved_to) = maps.edge(to_e) else {
                         continue;
                     };
                     rows.push((saved_node, saved_from, from_l, saved_to, to_l));
@@ -182,15 +190,15 @@ pub(super) fn save_network(
 // are not saved. O(saved nodes x degree).
 fn save_crosswalks(tx: &Transaction, graph: &RegionGraph, maps: &SnapshotMaps) -> SaveLoadResult<()> {
     let mut rows = Vec::new();
-    for (&old_node, &saved_node) in &maps.node_old_to_new {
-        for (&edge, &marked) in &graph.node(old_node).crosswalk_overrides {
-            let Some(&saved_edge) = maps.edge_old_to_new.get(&edge) else {
+    for saved_node in (0..graph.node_count() as u32).filter_map(|id| maps.node(id)) {
+        for (&edge, &marked) in &graph.node(saved_node).crosswalk_overrides {
+            let Some(saved_edge) = maps.edge(edge) else {
                 continue;
             };
             let arm = graph.edge(edge);
             let incident = [arm.start_node, arm.end_node]
                 .into_iter()
-                .any(|end| graph.get_valid_node(end) == old_node);
+                .any(|end| graph.get_valid_node(end) == saved_node);
             if incident {
                 rows.push((saved_node, saved_edge, marked));
             }
@@ -205,17 +213,41 @@ fn save_crosswalks(tx: &Transaction, graph: &RegionGraph, maps: &SnapshotMaps) -
     Ok(())
 }
 
-pub(super) fn load_graph(conn: &Connection) -> SaveLoadResult<RegionGraph> {
+/// Loads the road graph. With `saved_ids` (format 121, `SAVE-11`) the rows keep their ids and
+/// the holes between them, merged nodes and deleted edges, are recreated at theirs from the
+/// saved counts and alias table, so the loaded graph has the saved game's ids; an older save's
+/// ids are contiguous. O(saved nodes + edges + aliases + geometry points).
+pub(super) fn load_graph(conn: &Connection, saved_ids: bool) -> SaveLoadResult<RegionGraph> {
     let mut graph = RegionGraph::new();
+    let counts = if saved_ids {
+        let (nodes, edges): (i64, i64) = conn.query_row(
+            "SELECT node_count, edge_count FROM network_id_counts WHERE singleton = 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        Some((i64_to_usize(nodes)?, i64_to_usize(edges)?))
+    } else {
+        None
+    };
+    // Whether each node slot is a saved row rather than a hole.
+    let mut row_nodes = Vec::new();
     {
         let mut stmt =
             conn.prepare("SELECT node_id, x, y, z, node_type FROM network_nodes ORDER BY node_id")?;
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
             let node_id = i64_to_u32(row.get(0)?)?;
+            if let Some((node_count, _)) = counts
+                && (node_id as usize) < node_count
+            {
+                while graph.node_count() < node_id as usize {
+                    graph.push_node_hole();
+                    row_nodes.push(false);
+                }
+            }
             if node_id != graph.node_count() as u32 {
                 return Err(SaveLoadError::custom(format!(
-                    "network node ids must be contiguous; found {} after {} nodes",
+                    "network node ids must be ascending and within the saved count; found {} after {} nodes",
                     node_id,
                     graph.node_count()
                 )));
@@ -224,7 +256,15 @@ pub(super) fn load_graph(conn: &Connection) -> SaveLoadResult<RegionGraph> {
                 Vector3::new(row.get(1)?, row.get(2)?, row.get(3)?),
                 node_type_from_i64(row.get(4)?)?,
             );
+            row_nodes.push(true);
         }
+    }
+    if let Some((node_count, _)) = counts {
+        while graph.node_count() < node_count {
+            graph.push_node_hole();
+            row_nodes.push(false);
+        }
+        load_node_aliases(conn, &mut graph, &row_nodes)?;
     }
 
     let (mut geometry, mut physical_geometry) = (HashMap::new(), HashMap::new());
@@ -251,9 +291,16 @@ pub(super) fn load_graph(conn: &Connection) -> SaveLoadResult<RegionGraph> {
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
             let eid = i64_to_usize(row.get(0)?)?;
+            if let Some((_, edge_count)) = counts
+                && eid < edge_count
+            {
+                while graph.edge_count() < eid {
+                    graph.push_edge_hole();
+                }
+            }
             if eid != graph.edge_count() {
                 return Err(SaveLoadError::custom(format!(
-                    "network edge ids must be contiguous; found {} after {} edges",
+                    "network edge ids must be ascending and within the saved count; found {} after {} edges",
                     eid,
                     graph.edge_count()
                 )));
@@ -294,9 +341,12 @@ pub(super) fn load_graph(conn: &Connection) -> SaveLoadResult<RegionGraph> {
                 .map_err(|reason| {
                     SaveLoadError::custom(format!("edge {eid} has invalid parking ({reason})"))
                 })?;
-            if start_node as usize >= graph.node_count() || end_node as usize >= graph.node_count()
+            if !(row_nodes.get(start_node as usize) == Some(&true)
+                && row_nodes.get(end_node as usize) == Some(&true))
             {
-                return Err(SaveLoadError::custom("edge references out-of-range node"));
+                return Err(SaveLoadError::custom(
+                    "edge references an out-of-range or merged node",
+                ));
             }
             let edge = Edge {
                 start_node,
@@ -337,6 +387,11 @@ pub(super) fn load_graph(conn: &Connection) -> SaveLoadResult<RegionGraph> {
             })?;
             graph.add_edge(edge);
         }
+        if let Some((_, edge_count)) = counts {
+            while graph.edge_count() < edge_count {
+                graph.push_edge_hole();
+            }
+        }
     }
 
     // A ring edge loads only as a roundabout edit could have built it (`ROAD-62`), once every
@@ -349,7 +404,7 @@ pub(super) fn load_graph(conn: &Connection) -> SaveLoadResult<RegionGraph> {
         let mut ring_edges = Vec::new();
         while let Some(row) = rows.next()? {
             let eid = i64_to_usize(row.get(0)?)?;
-            if eid >= graph.edge_count() {
+            if graph.get_edge(eid).is_none_or(|edge| edge.deleted) {
                 return Err(SaveLoadError::custom("ring row names no edge"));
             }
             graph.edge_mut(eid).roundabout = Some(RoundaboutRing {
@@ -374,9 +429,9 @@ pub(super) fn load_graph(conn: &Connection) -> SaveLoadResult<RegionGraph> {
             let fl = i64_to_i8(row.get(2)?)?;
             let te = i64_to_usize(row.get(3)?)?;
             let tl = i64_to_i8(row.get(4)?)?;
-            if nid as usize >= graph.node_count()
-                || fe >= graph.edge_count()
-                || te >= graph.edge_count()
+            if row_nodes.get(nid as usize) != Some(&true)
+                || graph.get_edge(fe).is_none_or(|edge| edge.deleted)
+                || graph.get_edge(te).is_none_or(|edge| edge.deleted)
             {
                 return Err(SaveLoadError::custom(
                     "lane connection references out-of-range node or edge",
@@ -394,10 +449,10 @@ pub(super) fn load_graph(conn: &Connection) -> SaveLoadResult<RegionGraph> {
             let node = i64_to_u32(row.get(0)?)?;
             let edge = i64_to_usize(row.get(1)?)?;
             let marked: bool = row.get(2)?;
-            if node as usize >= graph.node_count()
-                || !graph
-                    .get_edge(edge)
-                    .is_some_and(|arm| arm.start_node == node || arm.end_node == node)
+            if row_nodes.get(node as usize) != Some(&true)
+                || !graph.get_edge(edge).is_some_and(|arm| {
+                    !arm.deleted && (arm.start_node == node || arm.end_node == node)
+                })
             {
                 return Err(SaveLoadError::custom(
                     "crosswalk override names an edge that is not an arm of its node",
@@ -411,6 +466,51 @@ pub(super) fn load_graph(conn: &Connection) -> SaveLoadResult<RegionGraph> {
     }
     // add_node/add_edge already maintained adjacency and both spatial indices.
     Ok(graph)
+}
+
+// The saved merge aliases (`SAVE-11`): every hole is an alias and every alias a hole, and each
+// chain ends at a saved node. O(aliases x chain length), chains bounded by the node count.
+fn load_node_aliases(
+    conn: &Connection,
+    graph: &mut RegionGraph,
+    row_nodes: &[bool],
+) -> SaveLoadResult<()> {
+    let mut stmt =
+        conn.prepare("SELECT node_id, canonical FROM network_node_aliases ORDER BY node_id")?;
+    let mut rows = stmt.query([])?;
+    let mut aliases = HashMap::new();
+    while let Some(row) = rows.next()? {
+        let alias = i64_to_u32(row.get(0)?)?;
+        let canonical = i64_to_u32(row.get(1)?)?;
+        if row_nodes.get(alias as usize) != Some(&false)
+            || (canonical as usize) >= row_nodes.len()
+            || alias == canonical
+        {
+            return Err(SaveLoadError::custom(format!(
+                "node alias {alias} -> {canonical} names no merged node"
+            )));
+        }
+        aliases.insert(alias, canonical);
+    }
+    if aliases.len() != row_nodes.iter().filter(|&&row| !row).count() {
+        return Err(SaveLoadError::custom("a merged node has no saved alias"));
+    }
+    for (&alias, &canonical) in &aliases {
+        let mut node = canonical;
+        for _ in 0..row_nodes.len() {
+            match aliases.get(&node) {
+                Some(&next) => node = next,
+                None => break,
+            }
+        }
+        if !row_nodes[node as usize] {
+            return Err(SaveLoadError::custom(format!(
+                "node alias {alias} does not end at a saved node"
+            )));
+        }
+        graph.restore_node_alias(alias, canonical);
+    }
+    Ok(())
 }
 
 pub(super) fn rebuild_loaded_graph_runtime(

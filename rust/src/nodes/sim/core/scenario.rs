@@ -27,7 +27,7 @@ mod graded_cases;
 #[cfg(test)]
 mod query_cases;
 #[cfg(test)]
-mod save_cases;
+pub(super) mod save_cases;
 mod diagnostics;
 pub use diagnostics::{GrowthBusinessCashFlow, GrowthBusinessOutcome, GrowthReport};
 
@@ -136,8 +136,6 @@ impl GrowthScenario {
         let border = core.check_border_candidate_internal(Vector3::new(border_x, border_y, 0.0));
         assert!(border >= 0, "the trunk must end at the world edge");
         core.set_border_connection_internal(border as i32);
-        // The town's lanes numbered as a load numbers them, and lifted (`ROAD-122`).
-        core.number_lanes_as_a_load_does();
 
         let [residential_west, residential_center, industrial_east] =
             CROSS_STREET_X_M.map(f64::from);

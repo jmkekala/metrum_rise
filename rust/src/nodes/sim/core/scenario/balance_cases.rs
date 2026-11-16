@@ -922,7 +922,6 @@ fn assert_continues_identically_after_prepared_reload(
         "household destinations"
     );
     loaded.core.time.speed_multiplier = source.core.time.speed_multiplier;
-    let nodes = SavedNodes::of(&source.core, &loaded.core);
     assert_same_demand_queues(&source.core, &loaded.core, "at load");
     check(&source.core, &loaded.core);
     let target_day = source.core.time.day_index + 1;
@@ -964,7 +963,7 @@ fn assert_continues_identically_after_prepared_reload(
         loaded.core.step_frame(FRAME_DT_S);
         let when = (source.core.time.day_index, source.core.time.minute_of_day);
         assert_eq!(serde_json::to_value(&source.core.agents.parking_trip).unwrap(), serde_json::to_value(&loaded.core.agents.parking_trip).unwrap(), "parking continuation at {when:?}");
-        assert_same_flow_fields(&source.core, &loaded.core, &nodes, when);
+        assert_same_flow_fields(&source.core, &loaded.core, when);
         assert_same_demand_queues(&source.core, &loaded.core, &format!("{when:?}"));
         // In the hour's planning slots both games lend the published books, or skip, alike.
         if source.core.time.absolute_slot() % crate::simulation::core::scheduler::SLOTS_PER_HOUR
@@ -1485,68 +1484,12 @@ fn hour_plan(core: &SimCore) -> Vec<PlanRow> {
     rows
 }
 
-// How a save renumbered the saved game's road nodes: the loaded game's id of each node the save
-// kept, and both games' node counts at the load, past which both append the same nodes in the
-// same order.
-struct SavedNodes {
-    saved: std::collections::HashMap<u32, u32>,
-    source_count: usize,
-    loaded_count: usize,
-}
-
-impl SavedNodes {
-    fn of(source: &SimCore, loaded: &SimCore) -> Self {
-        let saved = crate::simulation::save::saved_node_numbering(
-            &source.region_graph,
-            &source.allocator,
-            &source.agents,
-        );
-        assert_eq!(
-            saved.len(),
-            loaded.region_graph.node_count(),
-            "the loaded graph holds exactly the saved nodes"
-        );
-        Self {
-            saved,
-            source_count: source.region_graph.node_count(),
-            loaded_count: loaded.region_graph.node_count(),
-        }
-    }
-
-    // The loaded game's id of the saved game's node `node`; `None` for a node the save dropped.
-    fn loaded(&self, node: u32) -> Option<u32> {
-        match (node as usize).checked_sub(self.source_count) {
-            Some(appended) => Some((self.loaded_count + appended) as u32),
-            None => self.saved.get(&node).copied(),
-        }
-    }
-}
-
 // The flow fields both games route on, car and foot, for every private zone (`SIM-02-I`). A
-// field names nodes, so the saved game's are translated through the save's numbering: each
-// node the save kept has the loaded node's next node and nearest building, and a node the save
-// dropped (one no live edge or agent names) is unreachable.
-fn assert_same_flow_fields(a: &SimCore, b: &SimCore, nodes: &SavedNodes, when: (u32, u16)) {
+// field names nodes, and a save keeps node ids (`SAVE-11`), so both games' fields are equal.
+fn assert_same_flow_fields(a: &SimCore, b: &SimCore, when: (u32, u16)) {
     use crate::simulation::pathing::flow_field::FlowField;
     let same = |x: &FlowField, y: &FlowField| {
-        let mut kept = 0;
-        for (node, (&next, &building)) in x.next_node.iter().zip(&x.nearest_building).enumerate() {
-            let Some(loaded) = nodes.loaded(node as u32) else {
-                if (next, building) != (u32::MAX, usize::MAX) {
-                    return false;
-                }
-                continue;
-            };
-            kept += 1;
-            let next = (next != u32::MAX).then(|| nodes.loaded(next)).flatten();
-            let loaded = loaded as usize;
-            if y.next_node.get(loaded).copied() != Some(next.unwrap_or(u32::MAX))
-                || y.nearest_building.get(loaded) != Some(&building)
-            {
-                return false;
-            }
-        }
-        kept == y.next_node.len() && y.nearest_building.len() == y.next_node.len()
+        x.next_node == y.next_node && x.nearest_building == y.nearest_building
     };
     let (a, b) = (
         &a.transit_network.flow_fields,

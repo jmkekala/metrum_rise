@@ -273,7 +273,26 @@ impl CchGraph {
             neighbors.sort_unstable();
             neighbors.dedup();
         }
-        let order = order::dissect_points(&positions, &adjacency);
+        // The state of a node without a live road (a merged node's slot, or one whose roads were
+        // all removed) takes part in no route, and its position is not live state: a load
+        // recreates a merged node as a hole without one (`SAVE-11`). Such states are ranked
+        // after the others, in id order, so the order of the rest never reads their positions.
+        let dead: Vec<bool> = states
+            .iter()
+            .enumerate()
+            .flat_map(|(node, node_states)| {
+                let dead = !graph.is_live_canonical_node(node as u32);
+                node_states.iter().map(move |_| dead)
+            })
+            .collect();
+        let mut order = order::dissect_points_of(
+            (0..incoming.len() as u32)
+                .filter(|&state| !dead[state as usize])
+                .collect(),
+            &positions,
+            &adjacency,
+        );
+        order.extend((0..incoming.len() as u32).filter(|&state| dead[state as usize]));
         let mut rank = vec![0; order.len()];
         for (position, &state) in order.iter().enumerate() {
             rank[state as usize] = position as u32;

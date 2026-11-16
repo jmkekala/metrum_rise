@@ -3,7 +3,7 @@
 //! Agent SoA and path serialization.
 
 mod lanes;
-pub(super) use lanes::restore_lane_references;
+pub(super) use lanes::{place_lanes_at_saved_ids, restore_lane_references};
 
 use crate::config::DEFAULT_URBAN_ROAD_SPEED_MS;
 use crate::simulation::buildings::allocator::BuildingAllocator;
@@ -100,26 +100,9 @@ pub(super) fn save_agents(
                 &network.lane_system,
             )?;
         }
-        let span = if agents.planned_attach_node[i] != u32::MAX {
-            let canon =
-                super::network::canonical_existing_node(graph, agents.planned_attach_node[i])?;
-            maps.node_old_to_new
-                .get(&canon)
-                .copied()
-                .ok_or_else(|| SaveLoadError::custom("missing planned attach node"))?
-        } else {
-            u32::MAX
-        };
-        let spdn = if agents.planned_detach_node[i] != u32::MAX {
-            let canon =
-                super::network::canonical_existing_node(graph, agents.planned_detach_node[i])?;
-            maps.node_old_to_new
-                .get(&canon)
-                .copied()
-                .ok_or_else(|| SaveLoadError::custom("missing planned detach node"))?
-        } else {
-            u32::MAX
-        };
+        // Node ids are saved as they are (`SAVE-11`).
+        let span = optional_node_to_db(graph, agents.planned_attach_node[i])?;
+        let spdn = optional_node_to_db(graph, agents.planned_detach_node[i])?;
 
         stmt.execute(params![
             usize_to_i64(i)?,
@@ -135,10 +118,10 @@ pub(super) fn save_agents(
             optional_building_to_db(agents.work_building[i], maps)?,
             optional_building_to_db(agents.current_building[i], maps)?,
             optional_building_to_db(agents.target_building[i], maps)?,
-            optional_node_to_db(graph, agents.freight_target_border_node[i], maps)?,
-            optional_node_to_db(graph, agents.current_node[i], maps)?,
-            i64::from(span),
-            i64::from(spdn),
+            optional_node_to_db(graph, agents.freight_target_border_node[i])?,
+            optional_node_to_db(graph, agents.current_node[i])?,
+            if span == super::NONE_REF { i64::from(u32::MAX) } else { span },
+            if spdn == super::NONE_REF { i64::from(u32::MAX) } else { spdn },
             i64::from(agents.planned_attach_lane_id[i]),
             i64::from(agents.planned_detach_lane_id[i]),
             agents.planned_attach_lane_d[i],
@@ -195,16 +178,10 @@ pub(super) fn save_agents(
         ])?;
 
         for (idx, &nid) in agents.current_path[i].iter().enumerate() {
-            let canon = super::network::canonical_existing_node(graph, nid)?;
-            let snid = maps
-                .node_old_to_new
-                .get(&canon)
-                .copied()
-                .ok_or_else(|| SaveLoadError::custom("missing path node"))?;
             path_stmt.execute(params![
                 usize_to_i64(i)?,
                 usize_to_i64(idx)?,
-                i64::from(snid)
+                optional_node_to_db(graph, nid)?
             ])?;
         }
     }

@@ -31,7 +31,7 @@ use crate::simulation::vegetation::{VegetationConfig, edits::VegetationEdits};
 use crate::simulation::water::WaterSystem;
 use crate::simulation::zoning::ZoningSystem;
 use rusqlite::{Connection, OptionalExtension, params};
-use std::collections::{BTreeSet, HashMap, VecDeque};
+use std::collections::VecDeque;
 use std::fmt::{Display, Formatter};
 use std::path::Path;
 
@@ -355,11 +355,31 @@ impl From<String> for SaveLoadError {
     }
 }
 
-pub(super) struct SnapshotMaps {
-    pub node_old_to_new: HashMap<u32, u32>,
-    pub edge_old_to_new: HashMap<usize, usize>,
+// The save's view of the city's ids (`SAVE-11`, format 121): node, edge and lane ids are saved
+// state, written as they are. A live edge is written at its id and a deleted one is a hole; a
+// canonical node (one no merge aliases) is written at its id, its live edges or none, and an
+// aliased one is a hole the alias table resolves. Bounds checks only: O(1) per reference.
+pub(super) struct SnapshotMaps<'a> {
+    graph: &'a RegionGraph,
     /// Bounds for building references; storage order is preserved without ID remapping.
     pub building_count: usize,
+}
+
+impl SnapshotMaps<'_> {
+    // The saved id of edge `edge`: itself when the save writes it (a live edge), else `None`.
+    pub(super) fn edge(&self, edge: usize) -> Option<usize> {
+        self.graph
+            .get_edge(edge)
+            .is_some_and(|value| !value.deleted)
+            .then_some(edge)
+    }
+
+    // The saved id of node `node`'s row: itself when the save writes one (a canonical node),
+    // else `None` (out of bounds or merged into another).
+    pub(super) fn node(&self, node: u32) -> Option<u32> {
+        ((node as usize) < self.graph.node_count() && self.graph.get_valid_node(node) == node)
+            .then_some(node)
+    }
 }
 
 /// Entry point to save the live simulation state to a SQLite database.
@@ -381,7 +401,7 @@ pub(crate) fn save_to_sqlite(path: &Path, view: SaveGameView<'_>) -> SaveLoadRes
             "the road grid alignment of edge {edge} would not load"
         )));
     }
-    let maps = build_snapshot_maps(view.graph, view.allocator, view.agents)?;
+    let maps = build_snapshot_maps(view.graph, view.allocator)?;
     sqlite::write_sqlite_snapshot(path, SCHEMA, |tx| write_snapshot(tx, view, &maps))
 }
 
@@ -497,32 +517,23 @@ fn write_snapshot(
         view.households,
         view.demand,
         view.graph,
+    )?;
+    network::save_network(
+        tx,
+        view.graph,
         maps,
+        view.network.lane_system.lanes.len(),
     )?;
-    network::save_network(tx, view.graph, maps)?;
-    // Kerb bays name live edges, and the save renumbers edges past the deleted ones. A retired
-    // bay can outlive its deleted edge for its borrower; it takes a placeholder edge that no
-    // saved edge has, and load validation skips inactive bays.
-    use crate::simulation::parking::PlaceSource;
-    let kerb_edge = |edge: u32| {
-        maps.edge_old_to_new
-            .get(&(edge as usize))
-            .map_or(u32::MAX, |&saved| saved as u32)
-    };
-    let parking = view.parking.save_json_with_households(
-        |source| match source {
-            PlaceSource::Kerb { edge, right } => PlaceSource::Kerb {
-                edge: kerb_edge(edge),
-                right,
-            },
-            building => building,
-        },
-        &view.households.parking_changes,
-    )?;
+    // Kerb bays name their edges by id, which the save keeps (`SAVE-11`). A retired bay can
+    // outlive its deleted edge for its borrower; that edge is a hole in the loaded graph, and
+    // load validation skips inactive bays.
+    let parking = view
+        .parking
+        .save_json_with_households(|source| source, &view.households.parking_changes)?;
     tx.execute("INSERT INTO parking_state VALUES (1,?1)", [parking])?;
     agents::save_agents(tx, view.agents, view.graph, view.network, maps)?;
-    gridlock::save(tx, view.agents, view.graph, view.network, maps)?;
-    congestion::save(tx, view.network, maps)?;
+    gridlock::save(tx, view.agents, view.graph, view.network)?;
+    congestion::save(tx, view.graph, view.network, maps)?;
     workplace_quotes::save(tx, view.households, view.allocator, view.network, maps)?;
     census_inputs::save(
         tx,
@@ -532,7 +543,7 @@ fn write_snapshot(
         view.time,
         maps,
     )?;
-    scheduler::save(tx, &view.scheduler, view.graph)?;
+    scheduler::save(tx, &view.scheduler)?;
     handles::save(
         tx,
         handles::HandleKind::Buildings,
@@ -559,7 +570,10 @@ fn write_snapshot(
 #[cfg(test)]
 pub(crate) fn load_road_graph(path: &Path) -> SaveLoadResult<RegionGraph> {
     let conn = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
-    let mut graph = network::load_graph(&conn)?;
+    let version: i64 = conn.query_row("SELECT version FROM save_meta LIMIT 1", [], |row| {
+        row.get(0)
+    })?;
+    let mut graph = network::load_graph(&conn, version == SAVE_VERSION)?;
     graph.rebuild_adjacency_list();
     Ok(graph)
 }
@@ -577,7 +591,10 @@ pub(crate) fn load_from_sqlite(
     // freight route validity, ledger baseline and input telemetry (`PRE_CONTINUATION_SAVE_VERSION`,
     // `SAVE-08`, `SAVE-09`) and format 118 without congestion state either
     // (`PRE_CONGESTION_SAVE_VERSION`, `TRAFFIC-17`).
-    let continuation_saved = version == SAVE_VERSION;
+    // Format 121 saves node, edge and lane ids as they are (`SAVE-11`); older formats compacted
+    // them.
+    let ids_saved = version == SAVE_VERSION;
+    let continuation_saved = ids_saved || version == PRE_SAVED_IDS_SAVE_VERSION;
     let congestion_saved = continuation_saved || version == PRE_CONTINUATION_SAVE_VERSION;
     if !congestion_saved && version != PRE_CONGESTION_SAVE_VERSION {
         return Err(SaveLoadError::custom("version mismatch"));
@@ -673,8 +690,8 @@ pub(crate) fn load_from_sqlite(
     let pollution = world::load_grid_system::<PollutionSystem>(&conn, &config, "pollution_state")?;
     let noise = world::load_grid_system::<NoiseSystem>(&conn, &config, "noise_state")?;
 
-    let mut graph = network::load_graph(&conn)?;
-    let (mut zoning, quarantined_parcels) = world::load_zoning(&conn, &config, &graph)?;
+    let mut graph = network::load_graph(&conn, ids_saved)?;
+    let (mut zoning, quarantined_parcels) = world::load_zoning(&conn, &config, &graph, ids_saved)?;
     let mut allocator =
         world::load_buildings(&conn, registry, &zoning.profiles, continuation_saved)?;
     let vacancy_order = world::load_vacancy_order(&conn, allocator.buildings.len())?;
@@ -804,6 +821,11 @@ pub(crate) fn load_from_sqlite(
     let mut transit_network = TransitNetwork::new_for_world(&config);
     network::rebuild_loaded_graph_runtime(&graph, &mut transit_network)?;
     transit_network.lane_system.rebuild(&mut graph);
+    // A format-121 save's lanes go to their saved ids before anything derives from them
+    // (`SAVE-11`).
+    let placed_lanes = ids_saved
+        .then(|| agents::place_lanes_at_saved_ids(&conn, &mut transit_network))
+        .transpose()?;
     transit_network
         .lane_system
         .sync_heights_to_visible_surface(&graph, &transit_network.roadbed);
@@ -816,6 +838,7 @@ pub(crate) fn load_from_sqlite(
         &graph,
         &mut transit_network,
         congestion_saved,
+        placed_lanes,
     )?;
     gridlock::load(&conn, &mut agents, &lane_remap)?;
     world::repaint_building_occupancy(&mut zoning, &allocator)?;
@@ -988,70 +1011,18 @@ fn load_fiscal_policy(conn: &Connection) -> SaveLoadResult<CityFiscalPolicy> {
     Ok(policy)
 }
 
-/// The node numbering a save of this game writes: the saved id of each canonical node the save
-/// keeps, those that a live edge or an agent names. For tests that compare a game with the game
-/// loaded from its save.
-#[cfg(test)]
-pub(crate) fn saved_node_numbering(
-    graph: &RegionGraph,
+// The save's id view, after checking that every building names a live edge (or is the unzoned
+// placeholder). O(buildings).
+fn build_snapshot_maps<'a>(
+    graph: &'a RegionGraph,
     allocator: &BuildingAllocator,
-    agents: &AgentSystem,
-) -> HashMap<u32, u32> {
-    build_snapshot_maps(graph, allocator, agents)
-        .expect("a saveable game")
-        .node_old_to_new
-}
-
-fn build_snapshot_maps(
-    graph: &RegionGraph,
-    allocator: &BuildingAllocator,
-    agents: &AgentSystem,
-) -> SaveLoadResult<SnapshotMaps> {
-    let mut edge_old_to_new = HashMap::new();
-    for (old, edge) in graph.edges().iter().enumerate() {
-        if !edge.deleted {
-            let nid = edge_old_to_new.len();
-            edge_old_to_new.insert(old, nid);
-        }
-    }
-    let mut saved_nodes = BTreeSet::new();
-    for edge in graph.edges() {
-        if edge.deleted {
-            continue;
-        }
-        saved_nodes.insert(network::canonical_existing_node(graph, edge.start_node)?);
-        saved_nodes.insert(network::canonical_existing_node(graph, edge.end_node)?);
-    }
-    for i in 0..agents.len() {
-        if agents.current_node[i] != u32::MAX {
-            saved_nodes.insert(network::canonical_existing_node(
-                graph,
-                agents.current_node[i],
-            )?);
-        }
-        if agents.planned_attach_node[i] != u32::MAX {
-            saved_nodes.insert(network::canonical_existing_node(
-                graph,
-                agents.planned_attach_node[i],
-            )?);
-        }
-        if agents.planned_detach_node[i] != u32::MAX {
-            saved_nodes.insert(network::canonical_existing_node(
-                graph,
-                agents.planned_detach_node[i],
-            )?);
-        }
-        for &nid in &agents.current_path[i] {
-            saved_nodes.insert(network::canonical_existing_node(graph, nid)?);
-        }
-    }
-    let node_old_to_new = saved_nodes
-        .into_iter()
-        .enumerate()
-        .map(|(n, o)| (o, n as u32))
-        .collect();
+) -> SaveLoadResult<SnapshotMaps<'a>> {
+    let maps = SnapshotMaps {
+        graph,
+        building_count: allocator.buildings.len(),
+    };
     for (index, b) in allocator.buildings.iter().enumerate() {
-        if !edge_old_to_new.contains_key(&b.edge_idx)
+        if maps.edge(b.edge_idx).is_none()
             && !(b.parcel_id == 0 && b.zone_type == crate::simulation::zoning::ZoneType::None)
         {
             return Err(SaveLoadError::custom(format!(
@@ -1060,11 +1031,7 @@ fn build_snapshot_maps(
             )));
         }
     }
-    Ok(SnapshotMaps {
-        node_old_to_new,
-        edge_old_to_new,
-        building_count: allocator.buildings.len(),
-    })
+    Ok(maps)
 }
 
 pub(super) fn pack_f32_slice(v: &[f32]) -> Vec<u8> {
@@ -1115,27 +1082,18 @@ pub(super) fn optional_edge_to_db(v: usize, m: &SnapshotMaps) -> SaveLoadResult<
         Ok(NONE_REF)
     } else {
         usize_to_i64(
-            m.edge_old_to_new
-                .get(&v)
-                .copied()
+            m.edge(v)
                 .ok_or_else(|| SaveLoadError::custom("missing edge map"))?,
         )
     }
 }
-pub(super) fn optional_node_to_db(
-    graph: &RegionGraph,
-    v: u32,
-    m: &SnapshotMaps,
-) -> SaveLoadResult<i64> {
+// A node reference is written as it is (`SAVE-11`): a merged node's id loads with its alias.
+pub(super) fn optional_node_to_db(graph: &RegionGraph, v: u32) -> SaveLoadResult<i64> {
     if v == u32::MAX {
         Ok(NONE_REF)
     } else {
-        Ok(i64::from(
-            m.node_old_to_new
-                .get(&network::canonical_existing_node(graph, v)?)
-                .copied()
-                .ok_or_else(|| SaveLoadError::custom("missing node map"))?,
-        ))
+        network::canonical_existing_node(graph, v)?;
+        Ok(i64::from(v))
     }
 }
 pub(super) fn db_to_optional_usize(v: i64) -> SaveLoadResult<usize> {

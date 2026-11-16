@@ -789,25 +789,6 @@ impl SimCore {
             .sync_heights_to_visible_surface(&self.region_graph, &self.transit_network.roadbed);
     }
 
-    /// Numbers every lane as a load does ([`LaneSystem::rebuild`], agents' lane ids carried by
-    /// identity), lifts them onto the roadbed and derives the entrances again: for a fixture that
-    /// stands for a loaded city once its roads are built. A road edit's local lane rebuild
-    /// retires lanes in place and appends their replacements, so the live numbering differs from
-    /// a load's (`SAVE-11`) and the retired lanes leave the walking proof incomplete
-    /// (`PERF-27`); the border connection's whole rebuild used to do this for the fixtures as a
-    /// side effect (`ROAD-122`). O(lanes + agents + buildings / P).
-    ///
-    /// [`LaneSystem::rebuild`]: crate::simulation::network::lanes::LaneSystem::rebuild
-    pub(crate) fn number_lanes_as_a_load_does(&mut self) {
-        let lanes = &mut self.transit_network.lane_system;
-        let identities = self.agents.capture_lane_identities(lanes);
-        lanes.rebuild(&mut self.region_graph);
-        self.agents.restore_lane_identities(&identities, lanes);
-        self.fit_lanes_to_road_surface();
-        self.allocator
-            .rebuild_entrance_cache(&self.region_graph, &self.transit_network.lane_system);
-    }
-
     /// Rebuilds derived queue promises after planning or loading persisted pending actions.
     pub(crate) fn refresh_demand_construction_queue(&mut self, day_index: u32, minute_of_day: u16) {
         let now = absolute_operational_minute(day_index, minute_of_day);

@@ -1394,3 +1394,41 @@ fn a_ring_edge_refuses_every_in_place_edit() {
 
     assert_eq!(core.region_graph.edge(edge).sidewalks, SidewalkSides::RIGHT);
 }
+
+// `PERF-27`: the walking planner's whole-network proof counts only live lanes, so it holds after
+// local lane rebuilds exactly as a whole rebuild of the same graph makes it hold. The four
+// commits retire lanes in place (a retired lane is a stateless tombstone, `SAVE-11`), and so do
+// the in-place edit and its undo; before, each retired foot lane still counted as leaving its
+// old origin node, so no junction's arrivals reached every counted lane and the proof was false.
+#[test]
+fn the_walking_proof_holds_after_local_lane_rebuilds_as_after_a_whole_one() {
+    use crate::simulation::economy::agents::tick::TripQueryScratch;
+    let proof = |network: &crate::simulation::network::TransitNetwork, graph: &crate::simulation::network::graph::RegionGraph| {
+        let mut scratch = TripQueryScratch::default();
+        scratch.prepare(network, graph);
+        scratch.walking_proof_complete_for_test()
+    };
+    let whole = |core: &SimCore| {
+        let mut graph = core.region_graph.clone();
+        let mut network = crate::simulation::network::TransitNetwork::new();
+        network.lane_system.rebuild(&mut graph);
+        network.cch_graph = crate::simulation::pathing::cch::CchGraph::build(&graph);
+        proof(&network, &graph)
+    };
+    let (mut core, side) = older_side_road();
+    let lanes = &core.transit_network.lane_system;
+    let retired = (0..lanes.lanes.len())
+        .filter(|&id| {
+            let lane = &lanes.lanes[id];
+            lane.edge_id == usize::MAX && lane.node_id == usize::MAX
+        })
+        .count();
+    assert!(retired > 0, "the commits retired lanes");
+    assert!(whole(&core));
+    assert!(proof(&core.transit_network, &core.region_graph));
+    assert!(core.set_edge_class_internal(side as i32, 1));
+    assert!(proof(&core.transit_network, &core.region_graph), "after the edit");
+    assert!(core.undo_action_internal());
+    assert!(proof(&core.transit_network, &core.region_graph), "after its undo");
+    assert!(whole(&core));
+}

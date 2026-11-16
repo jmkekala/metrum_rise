@@ -9,7 +9,7 @@
 //! O(heads + cycle lanes + cycle cars), one lane-remap lookup per saved lane.
 
 use super::{
-    SaveLoadError, SaveLoadResult, SnapshotMaps, i64_to_u32, i64_to_u64, optional_node_to_db,
+    SaveLoadError, SaveLoadResult, i64_to_u32, i64_to_u64, optional_node_to_db,
     u64_to_i64,
 };
 use crate::simulation::economy::agents::AgentSystem;
@@ -64,12 +64,11 @@ pub(super) fn save(
     agents: &AgentSystem,
     graph: &RegionGraph,
     network: &TransitNetwork,
-    maps: &SnapshotMaps,
 ) -> SaveLoadResult<()> {
     let mut saved = agents.gridlock.save(network);
     let junctions = &mut saved.report.junctions;
     for node in junctions.iter_mut() {
-        *node = i64_to_u32(optional_node_to_db(graph, *node, maps)?)?;
+        *node = i64_to_u32(optional_node_to_db(graph, *node)?)?;
     }
     junctions.sort_unstable();
     junctions.dedup();

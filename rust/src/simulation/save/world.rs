@@ -75,9 +75,7 @@ fn shipment_endpoint_to_db(
         }
         ShipmentEndpoint::OwaBorder(border_node) => {
             let saved_node = maps
-                .node_old_to_new
-                .get(&border_node)
-                .copied()
+                .node(border_node)
                 .ok_or_else(|| {
                     SaveLoadError::custom(format!(
                         "missing shipment border-node mapping: shipment {shipment_id} names border node {border_node}, which the save does not keep"
@@ -273,12 +271,12 @@ pub(super) fn save_world(
 
     // Zoning parcels
     {
-        let mut parcel_stmt = tx.prepare("INSERT INTO zoning_parcels(parcel_id, edge_id, side, frontage_t, frontage_m, depth_m, profile_runtime_id, build_generation) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)")?;
-        for parcel in zoning.parcels() {
+        // In storage order, which a format-121 load keeps (`SAVE-11`): demand's project owners
+        // are numbered by parcel storage index, as agents' lanes by lane id.
+        let mut parcel_stmt = tx.prepare("INSERT INTO zoning_parcels(parcel_id, edge_id, side, frontage_t, frontage_m, depth_m, profile_runtime_id, build_generation, storage_index) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)")?;
+        for (storage_index, parcel) in zoning.parcels().iter().enumerate() {
             let saved_eid = maps
-                .edge_old_to_new
-                .get(&parcel.edge_idx())
-                .copied()
+                .edge(parcel.edge_idx())
                 .ok_or_else(|| SaveLoadError::custom("missing parcel edge mapping"))?;
             parcel_stmt.execute(params![
                 i64::try_from(parcel.id().raw())
@@ -290,6 +288,7 @@ pub(super) fn save_world(
                 parcel.depth_m(),
                 i64::from(parcel.zone_profile_runtime_id()),
                 i64::from(parcel.build_generation()),
+                usize_to_i64(storage_index)?,
             ])?;
         }
     }
@@ -317,9 +316,7 @@ pub(super) fn save_world(
         }
         let saved_bid_db = usize_to_i64(saved_bid)?;
         let saved_eid = maps
-            .edge_old_to_new
-            .get(&b.edge_idx)
-            .copied()
+            .edge(b.edge_idx)
             .map(usize_to_i64)
             .transpose()?;
         if saved_eid.is_none() {
@@ -1315,8 +1312,8 @@ fn save_demand_hour_plan(
                    key: &DemandBuildingActionKey,
                    target: &str|
      -> SaveLoadResult<()> {
-        let edge = match maps.edge_old_to_new.get(&key.edge_idx) {
-            Some(&edge) => usize_to_i64(edge)?,
+        let edge = match maps.edge(key.edge_idx) {
+            Some(edge) => usize_to_i64(edge)?,
             None if key.edge_idx == usize::MAX => NONE_REF,
             None => return Ok(()),
         };
@@ -1454,6 +1451,7 @@ pub(super) fn load_zoning(
     conn: &Connection,
     config: &WorldConfig,
     graph: &RegionGraph,
+    storage_order: bool,
 ) -> SaveLoadResult<(ZoningSystem, Vec<u64>)> {
     let mut zoning = ZoningSystem::new(config);
     let mut cell_lots = super::cell_zoning::load(conn, &mut zoning, graph)?;
@@ -1461,9 +1459,12 @@ pub(super) fn load_zoning(
     let mut road_overlap_count = 0usize;
     let mut existing_overlap_count = 0usize;
     let mut frontage_out_of_bounds_count = 0usize;
-    let mut stmt = conn.prepare(
-        "SELECT parcel_id, edge_id, side, frontage_t, frontage_m, depth_m, profile_runtime_id, build_generation FROM zoning_parcels ORDER BY parcel_id",
-    )?;
+    // A format-121 save keeps the parcels' storage order (`SAVE-11`); older ones load by id.
+    let mut stmt = conn.prepare(if storage_order {
+        "SELECT parcel_id, edge_id, side, frontage_t, frontage_m, depth_m, profile_runtime_id, build_generation FROM zoning_parcels ORDER BY storage_index, parcel_id"
+    } else {
+        "SELECT parcel_id, edge_id, side, frontage_t, frontage_m, depth_m, profile_runtime_id, build_generation FROM zoning_parcels ORDER BY parcel_id"
+    })?;
     let mut rows = stmt.query([])?;
     while let Some(row) = rows.next()? {
         let parcel_id = i64_to_usize(row.get(0)?)? as u64;

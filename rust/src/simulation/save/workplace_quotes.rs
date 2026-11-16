@@ -328,8 +328,7 @@ mod tests {
             6,
         );
         let maps = SnapshotMaps {
-            node_old_to_new: Default::default(),
-            edge_old_to_new: Default::default(),
+            graph: &crate::simulation::network::graph::RegionGraph::new(),
             building_count: 2,
         };
         let tx = conn.transaction().unwrap();
@@ -388,8 +387,7 @@ mod tests {
             0,
         );
         let maps = SnapshotMaps {
-            node_old_to_new: Default::default(),
-            edge_old_to_new: Default::default(),
+            graph: &crate::simulation::network::graph::RegionGraph::new(),
             building_count: 2,
         };
         let tx = conn.transaction().unwrap();
@@ -455,8 +453,7 @@ mod tests {
         let allocator = BuildingAllocator::new();
         let network = TransitNetwork::new();
         let maps = SnapshotMaps {
-            node_old_to_new: Default::default(),
-            edge_old_to_new: Default::default(),
+            graph: &crate::simulation::network::graph::RegionGraph::new(),
             building_count: 1,
         };
         let tx = conn.transaction().unwrap();
@@ -503,8 +500,7 @@ mod tests {
             0,
         );
         let maps = SnapshotMaps {
-            node_old_to_new: Default::default(),
-            edge_old_to_new: Default::default(),
+            graph: &crate::simulation::network::graph::RegionGraph::new(),
             building_count: 2,
         };
         let tx = conn.transaction().unwrap();
