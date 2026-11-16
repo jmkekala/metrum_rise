@@ -12659,6 +12659,119 @@ Criterion at 30k (mean, 95% interval): control 122.52 us (122.22-122.82), sessio
   metric `level` (mean 4.470 -> 4.472 ms), K22 6.88 / 6.68 ms. The path rule says F (the
   `[[bench]]` entry in `Cargo.toml`); timed at R as briefed.
 
+### The tool's frame profiled (round R2-0)
+
+Round R2-0 of `ROAD-112` R2 (branch `roadtools-r20` on `dev` `019f16df`; profile only, no
+product code). Sides: **pred**, round D's control library (`dev` `05915359`, before rounds D, E,
+G2 and the hue rounds; SHA-256 `85b3d2e78ea3302c`) with that tree's scripts, and **dev**, `dev`
+`019f16df`'s release library (`9d58639083e09a5b`) and scripts. Fresh, 2026-11-16 21:12-21:19, one
+C B B C pass (pred dev dev pred) of round L1's paused preview rows (`sloped_t`+`sloped_branch`,
+`flat_cross`+`sloped_cross`, `dense`; gamescope headless 1920x1080, `RAYON_NUM_THREADS=4`, 100
+samples after 8 warm-ups, no FPS cap, `taskset -c 0,2,4,6,8,10,12,14`, run and exclusive timing
+locks), every run under `perf record -k CLOCK_MONOTONIC_RAW -e '{cpu_core/ref-cycles/,cpu_core/cycles/}:S'
+--call-graph lbr -c 500000` (LBR call stacks: neither binary has frame pointers; Godot resolved
+through its debug file by build ID). No run overlapped a build, a Godot or restic; the first run
+started right after another session's builds (load 20.6) and its main thread ran at 4.9 GHz
+against 1.3-2.2 GHz in the other pred runs (below). Scripts under `$ARTIFACTS/art-r20`
+(`rows.sh`, the wrapper `perf.sh`, `scripts/attrib.py`, `dist.py`, `aggregate.py`, `parts.py`,
+`heap.sh`, `heap_buckets.py`). The findings named below are the R2 audit's (2026-11-15, read-only,
+against `dev` `0c959531`): F1 the frame dictionary built every frame, F2 the chips re-read out of
+the bridge's own preview dictionary, F4 GDScript reading the frame back key by key and comparing
+its arrays, F7 the preview overlay built by GDScript, F8 the gizmo and hue uploads copied twice,
+F9 the chip placement and the canvas redraw.
+
+**Sample-to-frame distribution** (moving phase, every exact pose, `sample_to_frame_ms`):
+
+| Rows | Side | Poses | p50 ms | p90 ms | <= 16.5 | <= 16.7 | <= 17 | <= 18 | <= 20 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| all | pred | 3,542 | 16.571 | 22.223 | 42.3 % | 61.7 % | 72.2 % | 79.7 % | 85.4 % |
+| all | dev | 3,320 | 18.076 | 21.574 | 29.4 % | 39.6 % | 46.0 % | 49.9 % | 67.2 % |
+| the two cross rows | pred | 1,418 | 16.582 | 23.581 | 42.7 % | 57.3 % | 67.6 % | 75.0 % | 80.8 % |
+| the two cross rows | dev | 1,294 | 20.339 | 21.811 | 0.2 % | 0.2 % | 0.2 % | 0.2 % | 35.6 % |
+| T, branch, dense | pred | 2,124 | 16.568 | 20.622 | 42.1 % | 64.5 % | 75.3 % | 82.8 % | 88.4 % |
+| T, branch, dense, without run 1 | pred | 1,410 | 16.603 | 22.627 | 45.2 % | 54.7 % | 63.3 % | 74.1 % | 82.6 % |
+| T, branch, dense | dev | 2,026 | 16.523 | 20.780 | 48.0 % | 64.9 % | 75.3 % | 81.6 % | 87.3 % |
+
+**Where the main thread's time goes** (per exact pose, its sample to its exact frame; unhalted
+time at the 3.2 GHz reference rate, so a busier thread at a higher clock reads fewer
+microseconds for the same work; buckets by the innermost anchor of the LBR stack: the Rust
+preview call (`preview_stroke`, the batch tiers, the chunk updates), the rest of `road_tool_frame`
+and the tool's other bridge calls, GDScript (`GDScriptFunction::call` with no inner anchor), the
+engine's mesh conversion and region updates, the canvas update, the rest):
+
+| Side, rows | Clock | Main thread a pose | Hue build | Rust preview | GDScript | Conversion | Canvas | Rest |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| pred, all | 2.82 GHz | 8,061 us (22.7 M cycles) | - | 2,237 us | 2,053 us | 1,186 us | 212 us | 2,228 us |
+| dev, all | 4.01 GHz | 13,348 us (53.5 M cycles) | 7,633 us | 1,601 us | 1,410 us | 693 us | 307 us | 1,516 us |
+| dev, cross rows | 4.88 GHz | 17,115 us (83.5 M) | 10,936 us | 2,010 us | 1,287 us | 982 us | - | - |
+| dev, T, branch, dense | 3.45 GHz | 10,942 us (37.8 M) | 5,524 us | 1,339 us | 1,488 us | 509 us | - | - |
+
+In cycles the preview call (6.3 / 6.4 M), GDScript (5.8 / 5.7 M) and the conversion (3.3 /
+2.8 M) are level between pred and dev; the whole difference, about 31 M cycles a pose, is the
+footprint hue's build (`road_tool_hue_of_preview`: `FootprintHue::finish` reading the drawn
+graded surface, `RoadbedSystem::top_triangle_height_at`, `covered_height_in`, the base window's
+stops, `triangle_height_at_xz` and the clip); round HU3 recorded its graded read as adding about
+0.2-0.3 ms a pose on its own fixture. On the cross rows it is 10.9 ms a pose, the Rust frame
+call 15.5 ms at p50 (pred 6.2 ms on time, 11.4 ms late) and every frame 20.2 ms: the pose misses
+the 16.7 ms frame by construction.
+
+**So the slip is the tool's path, and it is not in F1-F24.** Since the pre-D library the hue rounds
+(HU, HU2, HU3) added the hue build, and on the cross rows it takes the share
+within 16.7 ms from 57 % to 0 %. Elsewhere the dev rows read level or better than pred, but for
+a second reason: pacing. A pred pose's main thread runs at 1.3-2.2 GHz (the governor's idle clock
+between short frames) and its late poses are the slow-clock ones (pred late poses 2.00 GHz, on
+time 3.51 GHz); the hue's extra work keeps dev's thread at 3.5-4.9 GHz, and pred's first run,
+started with the machine busy, ran at 4.9 GHz and reached 84 % within 16.7 ms on the T rows
+against 54 % in its repeat. Below 17 ms the share follows the clock as much as the work.
+
+**The measured cost of F1, F2, F4, F7, F8, F9** on dev, a frame (the moving phase, 3,692 frames,
+nearly every one a pose) and a pose. Rust parts from the profile (at the dev clock, 3.5-4.9 GHz);
+GDScript parts from one extra, unprofiled dev pass with an instrumented copy of the scripts
+(`Time.get_ticks_usec()` brackets, `$ARTIFACTS/art-r20/inst-scripts`, 1,853 moving frames, 1,653
+with a pose; not part of the C B B C), wall time on the main thread:
+
+| Finding | What was measured | A frame (mean) | A pose (mean) |
+| --- | --- | --- | --- |
+| F1 | `road_tool_frame`'s record, gizmo keys, quads and heights (Rust, profile; addr2line splits the inlined parts) | 34 us | 32 us |
+| F2 | `road_tool_set_labels` (Rust, inlined) | 15 us | 16 us |
+| F4 | the frame read back (6 us), the chips' compare (7 us), the gizmos' compare (5 us), GDScript | 18 us | 19 us |
+| F7 | `_show_preview` (the display's GDScript and the engine's conversion it drives; graded tiles 0) | 1,110 us (p95 1,758) | 1,245 us (p95 1,802) |
+| F7, engine part | `_surface_set_data`, `octahedron_encode`, `add_surface_from_arrays` (profile) | 608 us | 677 us |
+| F8 | gizmo upload 29 us (its engine region updates 14 us); the hue 59 us (Rust `road_tool_hue` 34 us) | 88 us | 98 us |
+| F9 | chip placement 24 us (Rust `road_tool_place_chips` 1 us) and the chips' draw callback 183 us (p95 308); canvas bucket of the profile 280 us a frame (pred 195 us at its lower clock) | 207 us | 231 us |
+| not a finding | the footprint hue's build (Rust, inside the frame call) | 6,859 us | 7,633 us |
+| harness | `_adopt_session_preview`: the benchmark's `preview_metrics.poll` sizes the payload | 261 us | 292 us |
+
+The tool's own frame work beside the preview and the hue is about 0.36 ms a frame (F1, F2, F4,
+F8, F9), of which the chips' canvas draw is half; the plan's estimate was 0.15-0.35 ms with the
+canvas unmeasured. F7 stays the largest per-pose part the tool owns after the hue.
+
+**Allocations a frame** (one capture set, dev library and scripts plus a drag overlay
+`r20_heap_drag.gd`, the Godot process under `heaptrack --record-only`, gamescope headless; a
+blank flat world, a straight stroke from (-100, 0) whose end turns around the start, a new pose
+every frame; 30 warm-up frames, then 0 or 240 frames; a frame = (capture(240) - capture(0)) /
+240): **2,673 a frame at 50 m, 3,359 at 200 m.** By the innermost anchor of each stack
+(`heaptrack_print --flamegraph-cost-type allocations`; these stack counts total 1.39 times
+heaptrack's call count, so read them as shares), 50 m / 200 m: the Rust preview call 740 / 971,
+`road_tool_frame`'s record 221 / 221, `road_tool_hue` 19 / 19, the hue build 5 / 5, chip
+placement 1 / 1, Godot (GDScript and engine together: Godot's executable is stripped and
+heaptrack does not read its debug file) 2,734 / 3,489. The frame record's 221 is the
+dictionary R2-2 removes; the Godot part, growing with the stroke, is mostly the overlay R2-4a
+moves. This is the baseline the later rounds' whole-tick probe must beat.
+
+**What it changes for R2** (for the user):
+- The hue build goes first, before R2-1: `ROAD-123`. While it costs 5-11 ms a pose no R2 round
+  can meet U-R2-1's bar, and none of R2-1 to R2-8 touches it. The landing's on-time comparison is
+  meaningful only after it.
+- R2-5 takes the chips' canvas draw (183 us a frame, about half of the tool's frame work), not
+  only the placement: the HUD redraws every pose because the anchors move. U-R2-3 (chips drawn by
+  GDScript) still holds; the draw must happen only when a chip's text or corner changed.
+- R2-4a stays the largest GDScript cost after the hue (F7 1.1-1.2 ms a pose); R2-2 and R2-3
+  (F1, F2, F4, F8 together about 0.15 ms a frame and 221 allocations) are rule fixes more than
+  frame time.
+- Every rows comparison reports the main thread's clock beside the share: below 17 ms the
+  share follows the governor's clock as much as the work.
+
 ### The frozen cursor removed (round R2-7)
 
 Round R2-7 of `ROAD-112` (branch `roadtools-r27` on `dev` `17207c94`). **Removed:** the frozen
