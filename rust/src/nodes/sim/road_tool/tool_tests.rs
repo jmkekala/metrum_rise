@@ -439,16 +439,35 @@ fn today(pointer: Pointer, start: Option<Vector3>, angle: Vector3) -> Vector3 {
 }
 
 // Straight parity: for clicks where no snap differs (open ground, a junction node, an edge
-// mid-span, a dead end) the session sends exactly today's two points, bit for bit.
+// mid-span, a dead end) the session sends exactly today's two points, bit for bit, and those are
+// the bits recorded here (round R2-7, before today's cursor goes).
 #[test]
 fn straight_mode_sends_todays_two_point_request() {
+    const SENT: [[[u32; 3]; 2]; 4] = [
+        [
+            [0xc3480000, 0x00000000, 0x43160000],
+            [0xc3160000, 0x00000000, 0x43820000],
+        ],
+        [
+            [0x00000000, 0x00000000, 0x00000000],
+            [0xc2a00000, 0x00000000, 0x42b40000],
+        ],
+        [
+            [0xc3520000, 0x00000000, 0x42f00000],
+            [0x43166666, 0x00000000, 0x00000000],
+        ],
+        [
+            [0xc3480000, 0x00000000, 0x437a0000],
+            [0xc2200000, 0x00000000, 0x43480000],
+        ],
+    ];
     let cases = [
         (ray(-200.0, 150.0), ray(-150.0, 260.0)), // free -> free
         (ray(0.5, 0.5), ray(-80.0, 90.0)),        // junction node -> free
         (ray(-210.0, 120.0), ray(150.4, 1.0)),    // free -> edge mid-span
         (ray(-200.0, 250.0), ray(-41.0, 199.0)),  // free -> the spur's dead end
     ];
-    for (a, b) in cases {
+    for ((a, b), sent) in cases.into_iter().zip(SENT) {
         let mut tool = session();
         click(&mut tool, a);
         click(&mut tool, b);
@@ -460,6 +479,7 @@ fn straight_mode_sends_todays_two_point_request() {
                 .map(|v| [v.x, v.y, v.z].map(f32::to_bits))
                 .collect::<Vec<_>>()
         };
+        assert_eq!(as_bits(&commit.points), sent, "{a:?} -> {b:?}: recorded");
         assert_eq!(
             as_bits(&commit.points),
             as_bits(&[start, end]),
@@ -487,7 +507,13 @@ fn straight_mode_magnet_cases_under_u2() {
     let free = tool.frame().cursor.position;
     let raw = today(off, Some(start), Vector3::ZERO);
     assert_eq!(free, raw, "lock off: the raw cursor");
+    // Recorded (round R2-7, before today's cursor goes): the raw point and today's magnet.
+    assert_eq!([raw.x, raw.y, raw.z].map(f32::to_bits), [0x41587cb4, 0x00000000, 0x4381b9ce]);
     let magnet = today(off, Some(start), Vector3::new(1.0, 0.0, 1.0).normalized());
+    assert_eq!(
+        [magnet.x, magnet.y, magnet.z].map(f32::to_bits),
+        [0x41848c62, 0x00000000, 0x438048c6]
+    );
     assert_ne!(magnet, raw, "today's magnet moves it");
     tool.set_option(RoadToolOption::AngleStepDeg(Some(45.0)));
     move_to(&mut tool, off);
