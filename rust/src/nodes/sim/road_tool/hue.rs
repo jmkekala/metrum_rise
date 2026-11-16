@@ -418,4 +418,6 @@ fn push_edge(
 mod surface;
 pub(crate) use surface::graded_ground;
 #[cfg(test)]
+mod rows;
+#[cfg(test)]
 mod tests;

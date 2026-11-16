@@ -29,7 +29,8 @@ use super::sites::{NO_SITE, SiteBuffer, SiteSource};
 use super::tile::{Level, TILE_M, grown, meets};
 use crate::assets::SiteSurfaceMaterial;
 use crate::simulation::network::roadbed::{
-    GroundedPieceScratch, LocalSurfaceQuery, PieceId, RoadVec3, RoadbedSystem, WallSegment,
+    CoverageTriangle, GroundedPieceScratch, LocalSurfaceQuery, PieceId, RoadVec3, RoadbedSystem,
+    WallSegment,
 };
 use crate::simulation::terrain::TerrainSystem;
 use godot::prelude::Vector3;
@@ -283,6 +284,161 @@ impl GradedSurface<'_> {
             return scratch.base.at(x, z);
         }
         self.ground_prepared(&cell, scratch)
+    }
+
+    /// [`Self::ground_height_near`] at the `GL0` lattice point `(i, j)` (`(0.5 i, 0.5 j)` m),
+    /// bitwise, for many lattice points read in runs (`ROAD-123`, the road tool's footprint hue).
+    /// The point's 8 m block of the lattice is prepared once while the reads stay in it: one
+    /// window through the shared query index, its coverage triangles raised over the block's
+    /// points once, and each lattice point's rendered value evaluated at most once however many
+    /// reads and triangle corners name it. A block costs `O(P + V / 8 + K log K)` for its window
+    /// (as [`Self::gather_near`]), `O(T x R + H)` for its coverage (the `T` triangles meeting it,
+    /// each over its `R <= 18` rows of the block, `O(log 18)` a row to its span, and the `H` points
+    /// held), and `O(K)` a point read; a repeated read is `O(1)`. Without a ready index the read is [`Self::ground_height_near`]'s own.
+    /// Allocation-free once the scratch is warm.
+    pub(crate) fn ground_at_lattice(
+        &self,
+        [i, j]: [i64; 2],
+        block: &mut LatticeBlock,
+        scratch: &mut QueryScratch,
+    ) -> f64 {
+        // A block answers its cells' points, its last row and column included (so a 2 m cell's
+        // points never straddle two blocks); a point outside it starts the block holding it.
+        let held = block.origin.is_some_and(|origin| {
+            (0..=BLOCK_CELLS).contains(&(i - origin[0]))
+                && (0..=BLOCK_CELLS).contains(&(j - origin[1]))
+        });
+        if !held {
+            let origin = [i, j].map(|index| index.div_euclid(BLOCK_CELLS) * BLOCK_CELLS);
+            self.prepare_block(origin, block, scratch);
+        }
+        let origin = block.origin.expect("a prepared block");
+        let (x, z) = (i as f64 * GL0_M, j as f64 * GL0_M);
+        if !block.indexed {
+            return self.ground_height_near(x, z, scratch);
+        }
+        let read = LatticeBlock::slot(origin, [i, j]);
+        if !block.ground[read].is_nan() {
+            return block.ground[read];
+        }
+        // Another query between two reads may have prepared the scratch elsewhere; preparing
+        // the same rectangle again returns at once.
+        self.prepare(block.rect, scratch);
+        let answer = self.lattice_ground(x, z, block, scratch);
+        block.ground[read] = answer;
+        self.debug_reference(x, z, answer, scratch, |surface, reference| {
+            surface.ground_height_at_unchecked(x, z, reference)
+        });
+        answer
+    }
+
+    // [`Self::ground_height_near_unchecked`] at a lattice point of the prepared block, its
+    // triangle's vertices from the block.
+    fn lattice_ground(
+        &self,
+        x: f64,
+        z: f64,
+        block: &mut LatticeBlock,
+        scratch: &mut QueryScratch,
+    ) -> f64 {
+        let [tx, tz] = [x, z].map(|value| (value / TILE_M).floor() * TILE_M);
+        // The index answers per tile, so the block keeps its last tile's answer.
+        let quiet = match block.quiet_tile {
+            Some((tile, quiet)) if tile == [tx, tz] => quiet,
+            _ => match self.query_index.and_then(|index| index.tile_is_quiet(x, z)) {
+                Some(quiet) => {
+                    block.quiet_tile = Some(([tx, tz], quiet));
+                    quiet
+                }
+                None => {
+                    let tile = grown([tx, tz, tx + TILE_M, tz + TILE_M], GL0_M);
+                    self.quiet_for(tile, x, z, scratch)
+                }
+            },
+        };
+        if quiet {
+            return scratch.base.at(x, z);
+        }
+        let cell = Cell::at(x, z);
+        let [w0, w1, w2] = cell.weights();
+        let [v0, v1, v2] = cell.vertices();
+        w0 * self.block_vertex(v0, block, scratch)
+            + w1 * self.block_vertex(v1, block, scratch)
+            + w2 * self.block_vertex(v2, block, scratch)
+    }
+
+    // [`Self::vertex`] of a point of the prepared block, its coverage from the block's raster;
+    // evaluated once.
+    fn block_vertex(
+        &self,
+        [i, j]: [i64; 2],
+        block: &mut LatticeBlock,
+        scratch: &mut QueryScratch,
+    ) -> f64 {
+        let origin = block.origin.expect("a prepared block");
+        let slot = LatticeBlock::slot(origin, [i, j]);
+        if block.vertex[slot].is_nan() {
+            let (x, z) = (i as f64 * GL0_M, j as f64 * GL0_M);
+            let road = (block.road[slot] > f32::NEG_INFINITY).then_some(block.road[slot]);
+            let base = scratch.base.at(x, z);
+            let delta = f64::from((self.evaluate(x, z, base, road, scratch) - base) as f32);
+            block.vertex[slot] = base + delta;
+        }
+        block.vertex[slot]
+    }
+
+    // Prepares the block whose first lattice point is `origin`: the window of its points and the
+    // next row and column (a lattice point's `GL0` triangle reads them), as
+    // [`Self::ground_height_near`] would prepare a cell inside it, and the coverage raster
+    // [`covered_height_in`] gives each point. Not indexed when the index is not ready for it.
+    fn prepare_block(
+        &self,
+        origin: [i64; 2],
+        block: &mut LatticeBlock,
+        scratch: &mut QueryScratch,
+    ) {
+        let last = origin.map(|index| index + BLOCK_POINTS as i64 - 1);
+        let rect = [
+            origin[0] as f64 * GL0_M,
+            origin[1] as f64 * GL0_M,
+            last[0] as f64 * GL0_M,
+            last[1] as f64 * GL0_M,
+        ];
+        block.origin = Some(origin);
+        block.rect = rect;
+        block.quiet_tile = None;
+        block.vertex.fill(f64::NAN);
+        block.ground.fill(f64::NAN);
+        block.indexed = self.query_index.is_some_and(|index| index.ready_for(rect));
+        if !block.indexed {
+            return;
+        }
+        self.prepare(rect, scratch);
+        // The raster: per point the highest holding triangle's height, `+ 0.0` as in
+        // `covered_height_in`, whose maximum takes the same triangles in any order. Each
+        // triangle scans only its span of each row ([`CoverageTriangle::for_each_held_in_row`],
+        // bit for bit the predicate `covered_height_in` asks).
+        block.road.fill(f32::NEG_INFINITY);
+        let xs: [f64; BLOCK_POINTS] =
+            std::array::from_fn(|k| (origin[0] + k as i64) as f64 * GL0_M);
+        for triangle in &scratch.coverage {
+            let Some(prepared) = CoverageTriangle::new(triangle) else {
+                continue;
+            };
+            let (min_z, max_z) = triangle
+                .iter()
+                .fold((f64::INFINITY, f64::NEG_INFINITY), |(low, high), p| {
+                    (low.min(p.z), high.max(p.z))
+                });
+            let first = ((min_z / GL0_M).floor() as i64).max(origin[1]);
+            for j in first..=((max_z / GL0_M).ceil() as i64).min(last[1]) {
+                prepared.for_each_held_in_row(&xs, j as f64 * GL0_M, |k, height| {
+                    let road =
+                        &mut block.road[LatticeBlock::slot(origin, [origin[0] + k as i64, j])];
+                    *road = road.max(height + 0.0);
+                });
+            }
+        }
     }
 
     /// [`Self::mask_at`] from the last [`Self::gather_near`], equal to it; a point outside the
@@ -1091,6 +1247,49 @@ impl Cell {
         } else {
             [1.0 - fz, fz - fx, fx]
         }
+    }
+}
+
+// `GL0` cells a side of a [`LatticeBlock`]: 8 m.
+const BLOCK_CELLS: i64 = 16;
+// Lattice points a side of a block's arrays: its cells' points and the next row and column.
+const BLOCK_POINTS: usize = BLOCK_CELLS as usize + 2;
+
+/// One 8 m block of the `GL0` lattice read by [`GradedSurface::ground_at_lattice`]: its
+/// coverage raster and the values read so far (`NaN` while unread). Fixed-size, so a reader
+/// holds it without allocating; reused from block to block.
+pub(crate) struct LatticeBlock {
+    // The block's first lattice point; `None` before the first read.
+    origin: Option<[i64; 2]>,
+    // Whether the block's window was prepared through the shared query index, and its
+    // rectangle.
+    indexed: bool,
+    rect: [f64; 4],
+    // The last tile's corner the index called quiet or not.
+    quiet_tile: Option<([f64; 2], bool)>,
+    road: [f32; BLOCK_POINTS * BLOCK_POINTS],
+    vertex: [f64; BLOCK_POINTS * BLOCK_POINTS],
+    ground: [f64; BLOCK_POINTS * BLOCK_POINTS],
+}
+
+impl Default for LatticeBlock {
+    fn default() -> Self {
+        Self {
+            origin: None,
+            indexed: false,
+            rect: [0.0; 4],
+            quiet_tile: None,
+            road: [f32::NEG_INFINITY; BLOCK_POINTS * BLOCK_POINTS],
+            vertex: [f64::NAN; BLOCK_POINTS * BLOCK_POINTS],
+            ground: [f64::NAN; BLOCK_POINTS * BLOCK_POINTS],
+        }
+    }
+}
+
+impl LatticeBlock {
+    // The slot of lattice point `(i, j)` of the block at `origin`.
+    fn slot(origin: [i64; 2], [i, j]: [i64; 2]) -> usize {
+        (i - origin[0]) as usize * BLOCK_POINTS + (j - origin[1]) as usize
     }
 }
 

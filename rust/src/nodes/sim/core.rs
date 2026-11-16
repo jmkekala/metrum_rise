@@ -64,6 +64,8 @@ pub(crate) use road_preview::{
     RoadCorridorClearance, RoadPreviewRequest, RoadPreviewTimes, RoadToolQuerySnapshot,
     StrokePieces,
 };
+#[cfg(test)]
+pub(crate) use road_preview::RoadPreview;
 pub(crate) use road_terrain_inputs::RoadTerrainInputsLog;
 pub(crate) use road_tool_context::{RoadPreviewContext, RoadToolPublisher, RoadToolShared};
 pub(crate) use snapshot::{

@@ -17,20 +17,25 @@
 //! closed and each fragment rises by at least its own deficit: `hue >= max(H, G) + lift` at every
 //! point, not only at the vertices. Curb faces take their corners' rises.
 //!
-//! Cost per pose: `O(top triangles' cells + fragments x 25 + vertices log vertices)`, one ground
-//! query per lattice point of each cell holding a fragment; every buffer is reused.
+//! Cost per pose (`ROAD-123`): `O(C + F log F + F x 25 + V + L log L + R)` for the `C` cells the
+//! top triangles' boxes meet, the `F` fragments, the `V` output vertices, the `L` points of
+//! lifted fragments (a vertex searches them only beside a lifted cell) and the drawn ground's
+//! reads `R`: one per lattice point a fragment's bounds name in its cell, made 8 m block by block
+//! (the graded reader prepares each block once and evaluates each lattice point once). Nothing
+//! outside the draft's pieces is read; every buffer is reused, so a pose allocates nothing once
+//! they have grown.
 
 use crate::simulation::network::roadbed::{PieceMesh, RoadVec3};
-use crate::simulation::terrain::graded::{GradedSurface, QueryScratch};
+use crate::simulation::terrain::graded::{GradedSurface, LatticeBlock, QueryScratch};
 
 /// The cell the hue's fill is cut into, metres: the terrain's 2 m cells.
 pub(crate) const SURFACE_CELL_M: f64 = 2.0;
 /// The drawn ground's lattice spacing, metres: the graded surface's `GL0` lattice, on whose
 /// triangles the rendered ground is linear.
 pub(crate) const GROUND_LATTICE_M: f64 = 0.5;
-// The block one graded gather prepares for the drawn ground's reads, metres: four cells a side,
-// so a gather lists only the seams near the pose's own cells, never a long draft's whole window.
-const GATHER_BLOCK_M: f64 = 4.0 * SURFACE_CELL_M;
+// Cells a side of the graded surface's lattice block (`LatticeBlock`, 8 m): the drawn ground is
+// read block by block, so a block's window is prepared once a pose.
+const BLOCK_CELLS: i64 = 4;
 // Lattice points along one cell's side.
 const CELL_POINTS: usize = (SURFACE_CELL_M / GROUND_LATTICE_M) as usize + 1;
 // Plan positions closer than this share one rise (the same point cut from two fragments).
@@ -39,7 +44,9 @@ const KEY_M: f64 = 1.0e-4;
 const SAMPLE_M: f64 = 1.0;
 
 // One fragment: a convex polygon of `len` points from `start` in `points`, inside `cell`, on
-// the plane `y = plane[0] + plane[1] x + plane[2] z`.
+// the plane `y = plane[0] + plane[1] x + plane[2] z`; `span` the first and last lattice column
+// and row of its cell's lattice (`CELL_POINTS` a side) that the `GL0` cells meeting its bounds
+// name.
 #[derive(Clone, Copy, Debug)]
 struct Fragment {
     cell: [i64; 2],
@@ -47,6 +54,23 @@ struct Fragment {
     len: u32,
     plane: [f64; 3],
     deficit: f64,
+    span: [u8; 4],
+}
+
+// A triangle clipped by a cell's four sides: at most seven points.
+const POLYGON_MAX: usize = 7;
+
+// A convex polygon of `len` points, on the stack.
+#[derive(Clone, Copy)]
+struct Polygon {
+    len: usize,
+    points: [[f64; 2]; POLYGON_MAX],
+}
+
+impl Polygon {
+    fn points(&self) -> &[[f64; 2]] {
+        &self.points[..self.len]
+    }
 }
 
 /// The draft's drawn road surface and the scratch that builds its hue; reused across poses.
@@ -55,12 +79,22 @@ pub(crate) struct PieceSurface {
     // The draft's pieces' top triangles and curb faces.
     tops: Vec<[RoadVec3; 3]>,
     curbs: Vec<[RoadVec3; 3]>,
-    // Scratch: the polygon being clipped, the fragments' plan points, the fragments and the
+    // Scratch: the fragments' plan points, the fragments and the
     // rises by plan key.
-    polygon: Vec<[f64; 2]>,
-    clipped: Vec<[f64; 2]>,
     points: Vec<[f64; 2]>,
     fragments: Vec<Fragment>,
+    // The fragments' sort: compact keys, and the fragments before it.
+    sorted: Vec<(u64, u32)>,
+    unsorted: Vec<Fragment>,
+    // The cells holding fragments, in cell order; their read order by 8 m block (key, cell
+    // slot); each cell's drawn ground at its lattice points.
+    cells: Vec<[i64; 2]>,
+    masks: Vec<u32>,
+    blocks: Vec<(u64, u32)>,
+    // Per cell: whether a lifted fragment lies in it or a neighbour (only then can its points
+    // share a key with a rise).
+    near_lift: Vec<bool>,
+    lattices: Vec<[[f64; CELL_POINTS]; CELL_POINTS]>,
     rises: Vec<(u64, f64)>,
 }
 
@@ -123,8 +157,15 @@ impl PieceSurface {
     ) {
         self.cut();
         self.deficits(&mut ground);
+        // Only the fragments the ground lifts name a rise: a point no lifted fragment shares
+        // rises by nothing, the largest deficit of its fragments (all zero), and a lift-free pose
+        // sorts and searches nothing (`ROAD-123`).
         self.rises.clear();
-        for fragment in &self.fragments {
+        for fragment in self
+            .fragments
+            .iter()
+            .filter(|fragment| fragment.deficit > 0.0)
+        {
             let points = &self.points[fragment.start as usize..][..fragment.len as usize];
             self.rises
                 .extend(points.iter().map(|&point| (key(point), fragment.deficit)));
@@ -137,28 +178,61 @@ impl PieceSurface {
             }
             same
         });
+        // Two points share a key only within 0.1 mm, so a point's rise can come only from a
+        // lifted fragment in its own cell or a neighbour; elsewhere no search is made.
+        self.near_lift.clear();
+        self.near_lift.resize(self.cells.len(), false);
+        let mut lifted = None;
+        for fragment in self
+            .fragments
+            .iter()
+            .filter(|fragment| fragment.deficit > 0.0)
+        {
+            if lifted == Some(fragment.cell) {
+                continue;
+            }
+            lifted = Some(fragment.cell);
+            let [i, j] = fragment.cell;
+            for di in -1..=1 {
+                for dj in -1..=1 {
+                    let near = cell_key([i + di, j + dj]);
+                    if let Ok(slot) = self.cells.binary_search_by_key(&near, |&c| cell_key(c)) {
+                        self.near_lift[slot] = true;
+                    }
+                }
+            }
+        }
         let rises = &self.rises;
         let rise = |point: [f64; 2]| {
+            if rises.is_empty() {
+                return 0.0;
+            }
             rises
                 .binary_search_by(|probe| probe.0.cmp(&key(point)))
                 .map_or(0.0, |index| rises[index].1)
         };
-        let vertex = |point: [f64; 2], height: f64| {
+        let vertex = |point: [f64; 2], height: f64, near: bool| {
+            let rise = if near { rise(point) } else { 0.0 };
             godot::prelude::Vector3::new(
                 point[0] as f32,
-                (height + rise(point) + lift) as f32,
+                (height + rise + lift) as f32,
                 point[1] as f32,
             )
         };
-        for fragment in &self.fragments {
+        let mut slot = 0;
+        for (index, fragment) in self.fragments.iter().enumerate() {
+            if index > 0 && self.cells[slot] != fragment.cell {
+                slot += 1;
+            }
+            let near = self.near_lift[slot];
             let points = &self.points[fragment.start as usize..][..fragment.len as usize];
-            let at = |point: [f64; 2]| vertex(point, on_plane(fragment.plane, point));
+            let at = |point: [f64; 2]| vertex(point, on_plane(fragment.plane, point), near);
             for pair in points[1..].windows(2) {
                 out.extend([at(points[0]), at(pair[0]), at(pair[1])]);
             }
         }
         for face in &self.curbs {
-            out.extend(face.map(|corner| vertex([corner.x, corner.z], corner.y)));
+            out.extend(face.map(|corner| vertex([corner.x, corner.z], corner.y, true)));
         }
     }
 
@@ -179,8 +253,13 @@ impl PieceSurface {
             };
             for i in cells(min_x, max_x) {
                 for j in cells(min_z, max_z) {
-                    self.polygon.clear();
-                    self.polygon.extend(triangle.iter().map(|p| [p.x, p.z]));
+                    let mut polygon = Polygon {
+                        len: 3,
+                        points: [[0.0; 2]; POLYGON_MAX],
+                    };
+                    for (point, corner) in polygon.points.iter_mut().zip(triangle) {
+                        *point = [corner.x, corner.z];
+                    }
                     let (x0, z0) = (i as f64 * SURFACE_CELL_M, j as f64 * SURFACE_CELL_M);
                     for (axis, bound, above) in [
                         (0, x0, true),
@@ -188,60 +267,111 @@ impl PieceSurface {
                         (1, z0, true),
                         (1, z0 + SURFACE_CELL_M, false),
                     ] {
-                        clip(&self.polygon, &mut self.clipped, axis, bound, above);
-                        std::mem::swap(&mut self.polygon, &mut self.clipped);
+                        // A side that keeps every point clips nothing: the polygon as it is.
+                        let kept = |point: &[f64; 2]| {
+                            if above {
+                                point[axis] >= bound
+                            } else {
+                                point[axis] <= bound
+                            }
+                        };
+                        if polygon.points().iter().all(kept) {
+                            continue;
+                        }
+                        polygon = clip(&polygon, axis, bound, above);
                     }
-                    if self.polygon.len() < 3 || plan_area(&self.polygon) <= 1.0e-9 {
+                    let points = polygon.points();
+                    if points.len() < 3 || plan_area(points) <= 1.0e-9 {
                         continue;
                     }
                     self.fragments.push(Fragment {
                         cell: [i, j],
                         start: self.points.len() as u32,
-                        len: self.polygon.len() as u32,
+                        len: points.len() as u32,
                         plane,
                         deficit: 0.0,
+                        span: lattice_span(points, [x0, z0]),
                     });
-                    self.points.extend_from_slice(&self.polygon);
+                    self.points.extend_from_slice(points);
                 }
             }
         }
-        // Cell order, so each cell's lattice is read once; ties keep the triangles' order.
-        self.fragments
-            .sort_unstable_by_key(|fragment| (fragment.cell, fragment.start));
+        // Cell order, so each cell's lattice is read once; ties keep the triangles' order
+        // (`start` grows with the fragments' order). Sorted as compact keys, then moved once.
+        self.sorted.clear();
+        self.sorted.extend(
+            (self.fragments.iter().enumerate())
+                .map(|(index, fragment)| (cell_key(fragment.cell), index as u32)),
+        );
+        self.sorted.sort_unstable();
+        self.unsorted.clear();
+        self.unsorted.append(&mut self.fragments);
+        self.fragments.extend(
+            self.sorted
+                .iter()
+                .map(|&(_, index)| self.unsorted[index as usize]),
+        );
     }
 
     // Each fragment's deficit over the drawn ground: per cell its lattice read once, then per
-    // fragment the lattice points of the `GL0` cells meeting its bounds.
+    // fragment the lattice points of the `GL0` cells meeting its bounds. Cells are visited block
+    // by block (`ROAD-123`): in cell order a draft running along `z` met each block once per
+    // 2 m column, and each visit prepared the block's graded window again.
     fn deficits(&mut self, ground: &mut impl FnMut(f64, f64) -> f64) {
-        let mut lattice = [[0.0; CELL_POINTS]; CELL_POINTS];
-        let mut cell = None;
-        for fragment in &mut self.fragments {
-            let [x0, z0] = fragment.cell.map(|c| c as f64 * SURFACE_CELL_M);
-            if cell != Some(fragment.cell) {
-                cell = Some(fragment.cell);
-                for (i, row) in lattice.iter_mut().enumerate() {
-                    for (j, value) in row.iter_mut().enumerate() {
-                        let (x, z) = (
+        // The cells holding fragments (in cell order) and the lattice points their fragments'
+        // bounds name (a bit each); the points read by 8 m block; then the fragments' deficits
+        // in their own order.
+        self.cells.clear();
+        self.masks.clear();
+        for fragment in &self.fragments {
+            if self.cells.last() != Some(&fragment.cell) {
+                self.cells.push(fragment.cell);
+                self.masks.push(0);
+            }
+            let (columns, rows) = spans(fragment);
+            let mask = self.masks.last_mut().expect("the fragment's cell");
+            for i in columns {
+                for j in rows.clone() {
+                    *mask |= 1 << (i * CELL_POINTS + j);
+                }
+            }
+        }
+        self.blocks.clear();
+        self.blocks
+            .extend((self.cells.iter().enumerate()).map(|(slot, cell)| {
+                (
+                    cell_key(cell.map(|c| c.div_euclid(BLOCK_CELLS))),
+                    slot as u32,
+                )
+            }));
+        self.blocks.sort_unstable();
+        self.lattices
+            .resize(self.cells.len(), [[0.0; CELL_POINTS]; CELL_POINTS]);
+        for &(_, slot) in &self.blocks {
+            let [x0, z0] = self.cells[slot as usize].map(|c| c as f64 * SURFACE_CELL_M);
+            let mask = self.masks[slot as usize];
+            for (i, row) in self.lattices[slot as usize].iter_mut().enumerate() {
+                for (j, value) in row.iter_mut().enumerate() {
+                    if mask & (1 << (i * CELL_POINTS + j)) != 0 {
+                        *value = ground(
                             x0 + i as f64 * GROUND_LATTICE_M,
                             z0 + j as f64 * GROUND_LATTICE_M,
                         );
-                        *value = ground(x, z);
                     }
                 }
             }
-            let points = &self.points[fragment.start as usize..][..fragment.len as usize];
-            let [min_x, min_z, max_x, max_z] = points.iter().fold(
-                [f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY],
-                |b, p| [b[0].min(p[0]), b[1].min(p[1]), b[2].max(p[0]), b[3].max(p[1])],
-            );
-            let span = |min: f64, max: f64, origin: f64| {
-                let first = ((min - origin) / GROUND_LATTICE_M).floor().max(0.0) as usize;
-                let last = ((max - origin) / GROUND_LATTICE_M).ceil() as usize;
-                first.min(CELL_POINTS - 1)..=last.min(CELL_POINTS - 1)
-            };
+        }
+        let mut slot = 0;
+        for (index, fragment) in self.fragments.iter_mut().enumerate() {
+            if index > 0 && self.cells[slot] != fragment.cell {
+                slot += 1;
+            }
+            let lattice = &self.lattices[slot];
+            let [x0, z0] = fragment.cell.map(|c| c as f64 * SURFACE_CELL_M);
+            let (columns, rows) = spans(fragment);
             let mut deficit = 0.0_f64;
-            for i in span(min_x, max_x, x0) {
-                for j in span(min_z, max_z, z0) {
+            for i in columns {
+                for j in rows.clone() {
                     let point = [
                         x0 + i as f64 * GROUND_LATTICE_M,
                         z0 + j as f64 * GROUND_LATTICE_M,
@@ -254,27 +384,56 @@ impl PieceSurface {
     }
 }
 
+// The first and last lattice column and row (of the cell at `[x0, z0]`) of the `GL0` cells
+// meeting a fragment's bounds.
+fn lattice_span(points: &[[f64; 2]], [x0, z0]: [f64; 2]) -> [u8; 4] {
+    let [min_x, min_z, max_x, max_z] = points.iter().fold(
+        [f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY],
+        |b, p| [b[0].min(p[0]), b[1].min(p[1]), b[2].max(p[0]), b[3].max(p[1])],
+    );
+    let span = |min: f64, max: f64, origin: f64| {
+        let first = ((min - origin) / GROUND_LATTICE_M).floor().max(0.0) as usize;
+        let last = ((max - origin) / GROUND_LATTICE_M).ceil() as usize;
+        [
+            first.min(CELL_POINTS - 1) as u8,
+            last.min(CELL_POINTS - 1) as u8,
+        ]
+    };
+    let ([first_i, last_i], [first_j, last_j]) = (span(min_x, max_x, x0), span(min_z, max_z, z0));
+    [first_i, last_i, first_j, last_j]
+}
+
+// A fragment's lattice columns and rows ([`lattice_span`]).
+fn spans(
+    fragment: &Fragment,
+) -> (
+    std::ops::RangeInclusive<usize>,
+    std::ops::RangeInclusive<usize>,
+) {
+    let [first_i, last_i, first_j, last_j] = fragment.span.map(usize::from);
+    (first_i..=last_i, first_j..=last_j)
+}
+
 /// The drawn graded ground (`GradedSurface::ground_height_near`, bitwise the point query) as
-/// the hue's `drawn` reader (round HU3): one gather per [`GATHER_BLOCK_M`] block, which the
-/// cell-ordered reads of [`PieceSurface::build`] meet in runs. Through the view's shared query
-/// index a pose's read costs `O(blocks x local seams + lattice points x listed seams)`, about
-/// 0.2 ms for a 290 m street (release probe, round HU3); allocation-free once the scratch is warm.
+/// the hue's `drawn` reader (round HU3), read at the `GL0` lattice points through
+/// `GradedSurface::ground_at_lattice` (`ROAD-123`): the block-ordered reads of
+/// [`PieceSurface::build`] prepare each 8 m block of the footprint once, raise its coverage
+/// once and evaluate each lattice point once, so a pose's read costs
+/// `O(blocks x (local pieces and seams + coverage triangles) + lattice points x listed seams)`
+/// for the blocks and points under the draft's pieces, never its whole window.
+/// Allocation-free once the scratch is warm (the block is a fixed-size array).
 pub(crate) fn graded_ground<'a>(
     surface: &'a GradedSurface<'a>,
     scratch: &'a mut QueryScratch,
 ) -> impl FnMut(f64, f64) -> f64 + 'a {
-    let mut gathered: Option<[f64; 2]> = None;
+    let mut block = LatticeBlock::default();
     move |x, z| {
-        let inside = gathered.is_some_and(|[x0, z0]| {
-            (x0..=x0 + GATHER_BLOCK_M).contains(&x) && (z0..=z0 + GATHER_BLOCK_M).contains(&z)
-        });
-        if !inside {
-            let [x0, z0] = [x, z].map(|value| (value / GATHER_BLOCK_M).floor() * GATHER_BLOCK_M);
-            let half = GATHER_BLOCK_M * 0.5;
-            surface.gather_near(x0 + half, z0 + half, half, scratch);
-            gathered = Some([x0, z0]);
+        let [i, j] = [x, z].map(|value| (value / GROUND_LATTICE_M).round() as i64);
+        if i as f64 * GROUND_LATTICE_M == x && j as f64 * GROUND_LATTICE_M == z {
+            surface.ground_at_lattice([i, j], &mut block, scratch)
+        } else {
+            surface.ground_height_at(x, z, scratch)
         }
-        surface.ground_height_near(x, z, scratch)
     }
 }
 
@@ -340,10 +499,17 @@ fn plan_area(polygon: &[[f64; 2]]) -> f64 {
 }
 
 // One Sutherland-Hodgman step: the part of `input` on the kept side of `axis = bound` (at or
-// above it when `above`) into `out`. A crossing is computed from its edge's ends in a fixed
+// above it when `above`), returned. A crossing is computed from its edge's ends in a fixed
 // order, so an edge two polygons share is cut at bitwise the same point from both.
-fn clip(input: &[[f64; 2]], out: &mut Vec<[f64; 2]>, axis: usize, bound: f64, above: bool) {
-    out.clear();
+fn clip(input: &Polygon, axis: usize, bound: f64, above: bool) -> Polygon {
+    let mut out = Polygon {
+        len: 0,
+        points: [[0.0; 2]; POLYGON_MAX],
+    };
+    let mut push = |point: [f64; 2]| {
+        out.points[out.len] = point;
+        out.len += 1;
+    };
     let kept = |point: [f64; 2]| {
         if above {
             point[axis] >= bound
@@ -351,8 +517,12 @@ fn clip(input: &[[f64; 2]], out: &mut Vec<[f64; 2]>, axis: usize, bound: f64, ab
             point[axis] <= bound
         }
     };
-    for (index, &current) in input.iter().enumerate() {
-        let previous = input[(index + input.len() - 1) % input.len()];
+    let input = input.points();
+    let Some(&last) = input.last() else {
+        return out;
+    };
+    let mut previous = last;
+    for &current in input {
         if kept(current) != kept(previous) {
             let (a, b) = if (previous[0], previous[1]) <= (current[0], current[1]) {
                 (previous, current)
@@ -362,12 +532,21 @@ fn clip(input: &[[f64; 2]], out: &mut Vec<[f64; 2]>, axis: usize, bound: f64, ab
             let t = (bound - a[axis]) / (b[axis] - a[axis]);
             let mut crossing = [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
             crossing[axis] = bound;
-            out.push(crossing);
+            push(crossing);
         }
         if kept(current) {
-            out.push(current);
+            push(current);
         }
+        previous = current;
     }
+    out
+}
+
+// An order-preserving key of a cell (or block) index pair: `(i, j)` in lexicographic order, for
+// indices within `i32` (world coordinates over 2 m).
+fn cell_key([i, j]: [i64; 2]) -> u64 {
+    let half = |index: i64| u64::from(index as i32 as u32 ^ 0x8000_0000);
+    (half(i) << 32) | half(j)
 }
 
 // A plan position's key, quantized to `KEY_M`.
