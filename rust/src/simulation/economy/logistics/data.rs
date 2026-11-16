@@ -9,6 +9,7 @@ use crate::simulation::core::scheduler::MinuteLeveler;
 use crate::simulation::economy::agents::{AgentHandle, AgentSystem};
 use crate::simulation::economy::definitions::{ResourceRuntimeId, load_runtime_economy_tuning};
 use crate::simulation::network::graph::RegionGraph;
+use crate::simulation::network::types::NodeType;
 
 use super::planning::FreightTopology;
 use super::requests::{FreightRequest, FreightRequestStats, event_cooldown_until};
@@ -448,10 +449,11 @@ impl ShipmentSystem {
     }
 
     /// Settles every shipment with a border endpoint that `graph` no longer reaches by any road
-    /// (`SAVE-06`): a node with no live edge, an alias of another node or one an undo dropped.
-    /// The border's trade is cut, so its shipments are cancelled as a removed building's are:
-    /// open ones refund the buyer and return loaded export cargo to its source, every carrier
-    /// is removed, and closed ones leave the list. The save can only write a border endpoint
+    /// (`SAVE-06`): a node with no live edge, an alias of another node or one an undo dropped,
+    /// or one that is no border any more (`ROAD-122`). The border's trade is cut, so its
+    /// shipments are cancelled as a removed building's are: open ones refund the buyer and
+    /// return loaded export cargo to its source, every carrier is removed, and closed ones leave
+    /// the list. The save can only write a border endpoint
     /// at a node it saves. O(S), plus the cancellation when a shipment names such a node.
     pub(crate) fn invalidate_unreachable_borders(
         &mut self,
@@ -461,7 +463,11 @@ impl ShipmentSystem {
         treasury_balance: &mut f64,
     ) -> usize {
         let cut = |endpoint: ShipmentEndpoint| match endpoint {
-            ShipmentEndpoint::OwaBorder(node) => !graph.is_live_canonical_node(node),
+            // A node no longer a border (its connection undone, `ROAD-122`) trades no more.
+            ShipmentEndpoint::OwaBorder(node) => {
+                !graph.is_live_canonical_node(node)
+                    || graph.node(node).node_type != NodeType::Border
+            }
             ShipmentEndpoint::Building(_) => false,
         };
         if !self

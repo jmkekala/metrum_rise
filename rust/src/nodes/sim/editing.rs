@@ -3095,8 +3095,13 @@ impl SimCore {
     /// making a live connected road eligible for demand-driven household arrivals and external trips.
     /// A dead end's road is lengthened by [`config::BORDER_EXTENSION_M`] with a new render
     /// generation marked; the caller publishes its rebuilt pieces
-    /// ([`Self::finalize_network_render_products`], `ROAD-121`).
+    /// ([`Self::finalize_network_render_products`], `ROAD-121`). The connection has an undo
+    /// record (the node's and the road's records with their junction ring), and the lengthened
+    /// road's lanes, entrances and doors' lists are rebuilt locally, as an in-place edit's and
+    /// its undo's are (`ROAD-122`): `O(the road's lane closure)` plus the undo's parallel
+    /// `O(A / P + B / P)` membership passes. A node that is already a border changes nothing.
     pub fn set_border_connection_internal(&mut self, node_id: i32) {
+        use crate::simulation::network::types::NodeType;
         // A commit's deferred lots first: this edit reads or writes them (`ROAD-68-G` part 7).
         self.adopt_pending_cell_lots();
         if node_id < 0 || (node_id as usize) >= self.region_graph.node_count() {
@@ -3107,12 +3112,25 @@ impl SimCore {
             );
             return;
         }
-        let old_pos = self.region_graph.node(node_id as u32).pos;
-
-        self.region_graph.set_node_type(
-            node_id as u32,
-            crate::simulation::network::types::NodeType::Border,
-        );
+        let node = node_id as u32;
+        let old_pos = self.region_graph.node(node).pos;
+        // A second connection would lengthen the road again and push an empty record.
+        if self.region_graph.node(node).node_type == NodeType::Border {
+            debug_log!(
+                "economy",
+                "set_border_connection ignored for node_id={}: already a border",
+                node_id
+            );
+            return;
+        }
+        // Lengthened so agents spawn visually off-screen.
+        let extension = self.border_extension(node);
+        let edges: HashSet<usize> = extension.iter().map(|&(edge, _)| edge).collect();
+        let checkpoint = self
+            .region_graph
+            .capture_undo_for_local_topology(edges.clone(), HashSet::from([node]));
+        self.push_network_undo_delta(checkpoint, None, None);
+        self.region_graph.set_node_type(node, NodeType::Border);
         debug_log!(
             "economy",
             "border connection created at node_id={} pos=({:.1}, {:.1}, {:.1})",
@@ -3121,118 +3139,63 @@ impl SimCore {
             old_pos.y,
             old_pos.z
         );
-
-        // Auto-extend it 10 meters further from the connecting road so agents spawn visually off-screen
-        let mut rebuild_needed = false;
-        let adj: Vec<usize> = self.region_graph.node_adjacency(node_id as u32).to_vec();
-        {
-            let mut valid_edges = Vec::new();
-            for &e_idx in &adj {
-                if !self.region_graph.edge(e_idx).deleted {
-                    valid_edges.push(e_idx);
-                }
-            }
-            if valid_edges.len() == 1 {
-                let e_idx = valid_edges[0];
-                let is_end = self.region_graph.edge(e_idx).end_node == (node_id as u32);
-                let other_node = if is_end {
-                    self.region_graph.edge(e_idx).start_node
-                } else {
-                    self.region_graph.edge(e_idx).end_node
-                };
-
-                let p1 = self.region_graph.node(other_node).pos;
-                let p2 = self.region_graph.node(node_id as u32).pos;
-
-                let dir_vec = p2 - p1;
-                if dir_vec.length_squared() > 0.001 {
-                    let dir = dir_vec.normalized();
-                    let new_p2 = p2 + dir * crate::config::BORDER_EXTENSION_M;
-                    self.region_graph.set_node_pos(node_id as u32, new_p2);
-
-                    let edge = self.region_graph.edge_mut(e_idx);
-                    if is_end {
-                        if let Some(last) = edge.geometry.last_mut() {
-                            *last = new_p2;
-                        }
-                        if let Some(last) = edge.physical_geometry.last_mut() {
-                            *last = new_p2;
-                        }
-                    } else {
-                        if let Some(first) = edge.geometry.first_mut() {
-                            *first = new_p2;
-                        }
-                        if let Some(first) = edge.physical_geometry.first_mut() {
-                            *first = new_p2;
-                        }
-                    }
-
-                    // Recalculate length and cost
-                    let mut new_len = 0.0;
-                    for i in 0..edge.physical_geometry.len() - 1 {
-                        let pa = edge.physical_geometry[i];
-                        let pb = edge.physical_geometry[i + 1];
-                        let dx = pb.x - pa.x;
-                        let dz = pb.z - pa.z;
-                        new_len += (dx * dx + dz * dz).sqrt();
-                    }
-                    edge.physical_length = new_len;
-                    edge.base_cost =
-                        crate::simulation::pathing::cost::CostCalculator::calculate_costs(edge).0;
-                    rebuild_needed = true;
-                }
-            }
-        }
-
-        if rebuild_needed {
-            self.transit_network
-                .lane_system
-                .rebuild(&mut self.region_graph);
-            // Deferred like a commit's (D7, `ROAD-68-G`); it supersedes a pending one.
-            self.schedule_cch_rebuild_of_live_graph();
-            let mut affected_nodes = HashSet::from([node_id as u32]);
-            let mut affected_edges = HashSet::new();
-            for &edge_idx in &adj {
-                if !self.region_graph.edge(edge_idx).deleted {
-                    let edge = self.region_graph.edge(edge_idx);
-                    affected_nodes.insert(edge.start_node);
-                    affected_nodes.insert(edge.end_node);
-                    affected_edges.insert(edge_idx);
-                }
-            }
-            self.transit_network
-                .mark_surface_dirty_from_sets(&affected_edges, &affected_nodes);
-            // A new render generation for the lengthened road's chunks; the caller publishes
-            // them (`ROAD-121`).
-            self.mark_local_network_render_dirty();
-            // The moved end changes the road's grid alignment source; a stale one fails to load.
-            self.zoning
-                .mark_cell_lots_for_roads(&self.region_graph, affected_edges.iter().copied());
-            let new_pos = self.region_graph.node(node_id as u32).pos;
-            debug_log!(
-                "economy",
-                "border connection lane/CCH rebuild complete for node_id={} new_pos=({:.1}, {:.1}, {:.1})",
-                node_id,
-                new_pos.x,
-                new_pos.y,
-                new_pos.z
-            );
-        }
-        // The roadbed compiles and the rebuilt lanes stand on it before the entrances sample
-        // their kerbs on them and the doors' lists walk them (`PARK-16`). The whole rebuild
-        // renumbered every lane, so every entrance is derived again (`O(B / P)`, as the
-        // publication after this repeats with its attachment repair; `ROAD-122` makes both
-        // local).
+        let Some((edge, new_pos)) = extension else {
+            return;
+        };
+        self.region_graph.move_dead_end(node, edge, new_pos);
+        // Deferred like a commit's (D7, `ROAD-68-G`); it supersedes a pending one.
+        self.schedule_cch_rebuild_of_live_graph();
+        let record = self.region_graph.edge(edge);
+        let nodes = HashSet::from([record.start_node, record.end_node]);
+        // The moved end changes the road's grid alignment source; a stale one fails to load.
+        self.zoning
+            .mark_cell_lots_for_roads(&self.region_graph, [edge]);
         self.transit_network
-            .sync_new_lane_heights(&self.region_graph);
-        if rebuild_needed {
-            self.allocator
-                .rebuild_entrance_cache(&self.region_graph, &self.transit_network.lane_system);
-        }
-        self.transit_network
-            .roadbed
-            .compile_dirty(&self.region_graph);
-        self.reconcile_parking_frontages(&adj.into_iter().collect());
+            .mark_surface_dirty_from_sets(&edges, &nodes);
+        // A new render generation for the lengthened road's chunks; the caller publishes them
+        // (`ROAD-121`).
+        self.mark_local_network_render_dirty();
+        // The lanes of the road's closure with the agents on them, then, on the compiled
+        // roadbed, the entrances along them, the attachments and the doors' lists (`PARK-16`).
+        // Godot's main thread runs this edit, and the passes are parallel: shared pool (CODE-17).
+        crate::thread_pools::install(|| self.rebuild_in_place_edit_locally(&edges, &nodes));
+        debug_log!(
+            "economy",
+            "border connection lane/CCH rebuild complete for node_id={} new_pos=({:.1}, {:.1}, {:.1})",
+            node_id,
+            new_pos.x,
+            new_pos.y,
+            new_pos.z
+        );
+    }
+
+    // The road a border connection at `node` lengthens and the node's new place: a dead end's
+    // one live road, `BORDER_EXTENSION_M` further along the line from its other end. `None` for
+    // a node with more or fewer roads, or one standing on its other end.
+    fn border_extension(&self, node: u32) -> Option<(usize, Vector3)> {
+        let graph = &self.region_graph;
+        let mut live = graph
+            .node_adjacency(node)
+            .iter()
+            .copied()
+            .filter(|&edge| !graph.edge(edge).deleted);
+        let (Some(edge), None) = (live.next(), live.next()) else {
+            return None;
+        };
+        let record = graph.edge(edge);
+        let other = if record.end_node == node {
+            record.start_node
+        } else {
+            record.end_node
+        };
+        let at = graph.node(node).pos;
+        let direction = at - graph.node(other).pos;
+        (direction.length_squared() > 0.001).then(|| {
+            (
+                edge,
+                at + direction.normalized() * crate::config::BORDER_EXTENSION_M,
+            )
+        })
     }
 }
 

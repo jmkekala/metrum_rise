@@ -448,6 +448,40 @@ impl RegionGraph {
             self.add_to_spatial_index(i);
         }
     }
+
+    /// Moves dead end `node` of its one road `edge` to `pos`: the node and the road's end point
+    /// in both polylines move, the rest of the road stays (the border connection's lengthening,
+    /// `ROAD-122`). The road's horizontal length and routing cost follow, and so do both spatial
+    /// indices (the 16 m node grid and the edge R-tree). O(the road's points + log edges).
+    pub(crate) fn move_dead_end(&mut self, node: u32, edge: usize, pos: Vector3) {
+        self.remove_node_from_spatial_index(node, self.node(node).pos);
+        self.nodes[node as usize].pos = pos;
+        self.add_node_to_spatial_index(node);
+        self.remove_from_spatial_index(edge);
+        let record = &mut self.edges[edge];
+        let at_end = record.end_node == node;
+        for points in [&mut record.geometry, &mut record.physical_geometry] {
+            let end = if at_end {
+                points.last_mut()
+            } else {
+                points.first_mut()
+            };
+            if let Some(point) = end {
+                *point = pos;
+            }
+        }
+        record.physical_length = record
+            .physical_geometry
+            .windows(2)
+            .map(|pair| {
+                let (dx, dz) = (pair[1].x - pair[0].x, pair[1].z - pair[0].z);
+                (dx * dx + dz * dz).sqrt()
+            })
+            .fold(0.0, |length, piece| length + piece);
+        record.base_cost =
+            crate::simulation::pathing::cost::CostCalculator::calculate_costs(record).0;
+        self.add_to_spatial_index(edge);
+    }
 }
 
 fn find_or_add_intersection_node(graph: &mut RegionGraph, pos: Vector3) -> u32 {

@@ -136,8 +136,6 @@ func _unhandled_input(event: InputEvent) -> void:
 				if clicked_cw != null:
 					if _preview_crosswalk(clicked_cw).get("is_valid", false) and simulation_node.set_crosswalk_override(selected_node, clicked_cw.edge_id, not clicked_cw.has_cw):
 						_build_node_visuals(selected_node)
-						if get_node_or_null("../RoadTool"):
-							get_node("../RoadTool").chunks.update()
 					return
 						
 				var clicked_lane = _get_hovered_lane_sphere(pos)

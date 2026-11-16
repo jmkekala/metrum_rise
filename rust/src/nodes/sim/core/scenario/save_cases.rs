@@ -318,6 +318,62 @@ fn bulldozing_the_border_road_settles_its_freight_and_the_town_saves() {
     }
 }
 
+// `ROAD-122`: undoing a border connection cuts the border's trade as removing its road does
+// (`SAVE-06`): the shipments naming it settle in the undo, none names it while the town runs on,
+// and the town saves and loads. The town's own connection was made in its setup, under later
+// records; the test makes it again on top of the history, with its freight under way.
+#[test]
+fn undoing_a_border_connection_settles_its_freight_and_the_town_saves() {
+    use super::super::frame::FRAME_DT_S;
+    use crate::simulation::economy::logistics::ShipmentEndpoint;
+    use crate::simulation::network::types::NodeType;
+
+    let mut town = busy_town();
+    let core = &mut town.core;
+    let graph = &core.region_graph;
+    let border = (0..graph.node_count() as u32)
+        .find(|&node| {
+            graph.node(node).node_type == NodeType::Border
+                && graph.node_has_live_incident_edge(node)
+        })
+        .unwrap();
+    let at_border = ShipmentEndpoint::OwaBorder(border);
+    let named = |core: &SimCore| {
+        core.logistics
+            .shipments
+            .iter()
+            .filter(|shipment| shipment.source == at_border || shipment.destination == at_border)
+            .count()
+    };
+    let end = core.time.day_index + 3;
+    while named(core) == 0 && core.time.day_index < end {
+        core.step_frame(FRAME_DT_S);
+    }
+    assert!(named(core) > 0, "freight crosses the border");
+    core.region_graph.set_node_type(border, NodeType::Junction);
+    core.set_border_connection_internal(border as i32);
+    assert_eq!(core.region_graph.node(border).node_type, NodeType::Border);
+    assert!(named(core) > 0, "the connection settles nothing");
+
+    assert!(core.undo_action_internal());
+    assert_eq!(core.region_graph.node(border).node_type, NodeType::Junction);
+    assert_eq!(named(core), 0, "the undo settles the border's freight");
+    for _ in 0..600 {
+        core.step_frame(FRAME_DT_S);
+    }
+    assert_eq!(named(core), 0, "no new freight crosses the former border");
+    let path = std::env::temp_dir().join(format!(
+        "metrum-road122-border-undo-{}.sqlite",
+        std::process::id()
+    ));
+    save(core, &path);
+    GrowthScenario::starter_town()
+        .core
+        .load_game_internal(path.to_str().unwrap())
+        .unwrap();
+    std::fs::remove_file(path).unwrap();
+}
+
 // `SAVE-07`: bulldozing a road that buildings front removes them in the same edit, as the stale
 // building cleanup would at their next daily phase, so no building names the removed edge and
 // the town saves at once, after a few frames and after an undo, and every save loads. The undo

@@ -11671,6 +11671,38 @@ publication carries a newer one whose chunks equal a full emission) and `road_po
 (the Bridge button on the paused world: a new generation before the press returns, the chunks
 change, and undo publishes the ground road's chunks again).
 
+**Border connection: undo and a local rebuild (`ROAD-122`, 2026-11-16).** The border connection
+(`set_border_connection_internal`) is an in-place edit like the others. It pushes an undo record
+before it changes anything: the node's and the road's whole records with their junction ring
+(`capture_undo_for_local_topology`), so Ctrl+Z takes back the `Border` role and the
+`BORDER_EXTENSION_M` lengthening, and the undo's local restore rebuilds everything derived from
+them. The lengthening moves the dead end and the road's end point in both polylines
+(`RegionGraph::move_dead_end`), keeping the 16 m node grid and the edge R-tree in step; before,
+neither index moved, so a query near the new end missed the road until a load rebuilt the
+index (the test's save and load differed), and an undo's index repair would have looked for the
+lengthened road's entry, found none and left the old one beside the restored one. The lanes are rebuilt for the road's closure only
+(`rebuild_edges_incremental`, as an undo restores them: agents on the closure's lanes detach and
+reattach, every other lane keeps its id), then the roadbed compiles in the lift and the edit
+derives the closure's entrances, repairs attachments and reconciles the doors' lists on the
+lifted lanes (`place_doors_on_lifted_lanes`, `PARK-16`'s order, shared with the undo). Before, it
+rebuilt every lane (`LaneSystem::rebuild`, O(all edges) on Godot's main thread), which renumbers
+them, carried no agent's lane id across (a car on any other road then named some other lane), and
+rebuilt the whole entrance cache. Cost: O(the road's lane closure) plus the undo's parallel
+`O(A / P + B / P)` membership passes; the bridge's publication is the one every in-place edit
+pays. An undo that takes a node's `Border` role away moves the graph's role revision, which the
+border consumers (freight topology, arrival costs, the road tool view) key on, and settles the
+freight naming that node (`SAVE-06`'s settlement: an `OWA` endpoint at a node that is no border
+any more is cut). A node that is already a border is left as it is (no second lengthening, no
+empty record). Tests: `road_in_place::a_border_connection_keeps_the_lanes_of_agents_elsewhere`,
+`..::a_border_connection_undoes_to_the_road_it_lengthened` (products bitwise before and after the
+undo, a save and load of each state), `parking::catchments::a_border_connection_on_graded_ground_lists_doors_on_lifted_lanes`
+(with the undo: every door back in place) and
+`scenario::save_cases::undoing_a_border_connection_settles_its_freight_and_the_town_saves`.
+The starter town and the populated city, whose last road edit was the connection, relied on its
+whole rebuild for a load's lane numbering; they now number their lanes as a load does after
+their connections (`SimCore::number_lanes_as_a_load_does`; the live numbering differs after any
+local rebuild, `SAVE-11`, and its retired lanes break the walking proof, `PERF-27`).
+
 ### Medians (`ROAD-80`)
 
 A road may carry a median between its two lane groups (round R3b1 of the road-feature port: the

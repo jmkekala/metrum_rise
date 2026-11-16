@@ -464,8 +464,30 @@ fn a_cross_section_edit_on_a_graded_curve_and_its_undo_leave_every_door_a_rebuil
     assert_frames_and_publication_move_no_door(&mut c, "the undo");
 }
 
-// A border connection rebuilds every lane: it lifts them before it publishes the doors' lists
-// (`PARK-16`, `ROAD-122`).
+// Every door's place, kerb and frontage, without the lane ids a local rebuild renumbers.
+fn door_places(c: &SimCore) -> Vec<String> {
+    c.allocator
+        .entrances
+        .iter()
+        .map(|e| {
+            format!(
+                "{} {} {:?} {} {:?} {:?} {}",
+                e.edge_idx,
+                e.side,
+                e.vehicle_frontage_access,
+                e.entrance_s_m.to_bits(),
+                e.door_pos,
+                e.curb_pos,
+                e.flags
+            )
+        })
+        .collect()
+}
+
+// A border connection rebuilds the lanes of its lengthened road's closure (the curve's east end
+// meets it): it lifts them before it derives the entrances along them and publishes the doors'
+// lists (`PARK-16`, `ROAD-122`). Its undo restores the road, and with it every door's place and
+// list as they were.
 #[test]
 fn a_border_connection_on_graded_ground_lists_doors_on_lifted_lanes() {
     let mut c = graded_curve_with_lots(true);
@@ -477,9 +499,16 @@ fn a_border_connection_on_graded_ground_lists_doors_on_lifted_lanes() {
         .expect("the road ends at the world edge");
     let pos = c.region_graph.node(border).pos;
     assert_eq!(c.check_border_candidate_internal(pos), i64::from(border));
+    c.finalize_network_render_products();
+    let doors = door_places(&c);
     c.set_border_connection_internal(border as i32);
     assert_doors_on_the_roadbed(&mut c, "the border connection");
     assert_frames_and_publication_move_no_door(&mut c, "the border connection");
+    assert!(c.undo_action_internal(), "the connection is undone");
+    assert_eq!(c.region_graph.node(border).pos, pos);
+    assert_doors_on_the_roadbed(&mut c, "the undo");
+    assert_frames_and_publication_move_no_door(&mut c, "the undo");
+    assert_eq!(door_places(&c), doors, "every door is back in its place");
 }
 
 // A terrain stroke's undo restores the dense terrain and rebuilds every lane, and leaves the

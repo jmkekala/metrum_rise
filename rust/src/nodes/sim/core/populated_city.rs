@@ -523,6 +523,8 @@ fn street_grid_in_world(
         assert!(border >= 0, "trunk {k} must end at the world edge");
         core.set_border_connection_internal(border as i32);
     }
+    // The grid's lanes numbered as a load numbers them (`ROAD-122`).
+    core.number_lanes_as_a_load_does();
     // The grid's lanes, routing and roadbed settle below, with the pockets' pieces.
     #[cfg(test)]
     add_perf_pockets(&mut core);

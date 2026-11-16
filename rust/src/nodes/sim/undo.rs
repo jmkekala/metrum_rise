@@ -741,6 +741,37 @@ impl SimCore {
         }
     }
 
+    // An in-place edit that moves a road without taking one away (the border connection's
+    // lengthening, `ROAD-122`), in its undo's order: the lanes of `edge_ids`' closure rebuilt
+    // with the agents on them carried, then the doors on the lifted lanes. The roadbed compiles
+    // in the lift; its terrain changes are left to the edit's publication.
+    pub(super) fn rebuild_in_place_edit_locally(
+        &mut self,
+        edge_ids: &HashSet<usize>,
+        node_ids: &HashSet<u32>,
+    ) {
+        self.rebuild_lanes_locally(edge_ids, node_ids);
+        self.place_doors_on_lifted_lanes(edge_ids, &[]);
+    }
+
+    // Lifts the rebuilt lanes onto the roadbed (compiling it when it is dirty) before the
+    // entrances sample their kerbs on them and the doors' lists walk them: a later derivation
+    // (a removal's entrance cache rebuild, a load) reads them lifted (`PARK-16`). Then the
+    // entrances along `edge_ids`' closure, the attachments (with `fronting`, the buildings of
+    // edges an undo took away) and the doors' lists. The command's publication then compiles
+    // and lifts nothing.
+    fn place_doors_on_lifted_lanes(&mut self, edge_ids: &HashSet<usize>, fronting: &[usize]) {
+        self.transit_network
+            .sync_new_lane_heights(&self.region_graph);
+        self.derive_entrances_along(edge_ids);
+        // Buildings first: a split moved them onto an edge the restore took away, and their
+        // lots, kerb blockers and door lists are read from that attachment (`PARK-10`).
+        let cache_current = self.entrance_cache_current();
+        let lots = self.prepare_cell_lots_internal();
+        self.repair_commit_entrances(edge_ids, cache_current, &lots, fronting);
+        self.reconcile_parking_frontages(&edge_ids.iter().copied().collect());
+    }
+
     // A dense terrain restore resets every road product, so its lanes rebuild whole. The rebuild
     // renumbers every lane, so agents' lane ids are carried over by identity.
     fn rebuild_all_lanes_keeping_agents(
@@ -806,22 +837,12 @@ impl SimCore {
         }
         if let Some(fronting) = fronting {
             // An undo publishes the restored roadbed now when it rebuilt the pieces (its record
-            // kept none, or they were rebuilt since), and lifts the lanes it restored onto it
-            // before the entrances sample their kerbs on them and the doors' lists walk them: a
-            // later derivation (a removal's entrance cache rebuild, a load) reads them lifted
-            // (`PARK-16`). The undo command's publication then compiles and lifts nothing.
+            // kept none, or they were rebuilt since), then places the doors on the lanes it
+            // restored, lifted onto it (`PARK-16`).
             if !self.transit_network.roadbed.is_current() {
                 self.publish_network_surface(false, None);
             }
-            self.transit_network
-                .sync_new_lane_heights(&self.region_graph);
-            self.derive_entrances_along(edge_ids);
-            // Buildings first: a split moved them onto an edge the restore took away, and their
-            // lots, kerb blockers and door lists are read from that attachment (`PARK-10`).
-            let cache_current = self.entrance_cache_current();
-            let lots = self.prepare_cell_lots_internal();
-            self.repair_commit_entrances(edge_ids, cache_current, &lots, fronting);
-            self.reconcile_parking_frontages(&edge_ids.iter().copied().collect());
+            self.place_doors_on_lifted_lanes(edge_ids, fronting);
         } else if self.transit_network.roadbed.is_current() {
             // A staged rollback's cached surface restore reconciles now; its dirty fallback is
             // compiled by the rollback's surface publication and its bays reconciled by the

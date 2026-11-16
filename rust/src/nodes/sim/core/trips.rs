@@ -179,7 +179,8 @@ impl SimCore {
         }
     }
 
-    /// Settles the freight of every border a topology edit left without a road (`SAVE-06`):
+    /// Settles the freight of every border a topology edit left without a road (`SAVE-06`), or
+    /// whose connection an undo took back (`ROAD-122`):
     /// its shipments are cancelled with refunds and their carriers removed, as a removed
     /// building's are, so none names a node the save drops. Every edit that can delete a
     /// border's last edge, alias its node or drop it calls this after its graph change: the

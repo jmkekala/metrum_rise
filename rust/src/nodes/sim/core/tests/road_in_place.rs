@@ -139,6 +139,167 @@ fn a_border_connection_publishes_its_lengthened_road() {
     assert_eq!(fully_emitted_chunks(&mut core), border);
 }
 
+// The side road of [`older_side_road`] and its dead end.
+fn side_road_dead_end(core: &SimCore, side: usize) -> u32 {
+    let edge = core.region_graph.edge(side);
+    [edge.start_node, edge.end_node]
+        .into_iter()
+        .find(|&node| live_arms(core, node).len() == 1)
+        .expect("the side road's far end")
+}
+
+// What names a lane apart from its id: its road, direction, index, kind and geometry, bitwise.
+fn lane_identity(core: &SimCore, lane_id: usize) -> String {
+    let lane = &core.transit_network.lane_system.lanes[lane_id];
+    format!(
+        "{} {} {} {:?} {:?}",
+        lane.edge_id, lane.is_fwd, lane.lane_idx, lane.lane_type, lane.geometry
+    )
+}
+
+// `ROAD-122` (3): a car and a walker on a road the border connection does not touch keep their
+// lanes, by id, and their places on them. Before the fix the connection rebuilt every lane, which
+// renumbers them, and carried no agent's lane id across: both named some other lane afterwards.
+#[test]
+fn a_border_connection_keeps_the_lanes_of_agents_elsewhere() {
+    use crate::simulation::economy::agents::MODE_WALK;
+    let (mut core, side) = older_side_road();
+    let dead_end = side_road_dead_end(&core, side);
+    let far = core.get_hovered_edge_internal(60.0, 50.0);
+    assert!(far >= 0 && far as usize != side);
+    let far = far as usize;
+    let road = core.region_graph.edge(far);
+    let (start, end) = (road.start_node, road.end_node);
+    let lane_of = |core: &SimCore, kind: LaneType| {
+        let lanes = &core.transit_network.lane_system;
+        lanes.edge_lanes[&far]
+            .iter()
+            .copied()
+            .find(|&id| lanes.lanes[id].lane_type == kind && lanes.lanes[id].is_fwd)
+            .expect("a forward lane of the kind")
+    };
+    let car_lane = lane_of(&core, LaneType::Vehicle);
+    let at = core.transit_network.lane_system.lanes[car_lane].geometry[0];
+    let core_ref = &mut core;
+    let car = core_ref.agents.spawn_debug_car(
+        vec![start, end],
+        &core_ref.transit_network.lane_system,
+        car_lane,
+        godot::prelude::Vector2::new(at.x, at.z),
+    );
+    let walk_lane = lane_of(&core, LaneType::Foot);
+    let walker = core.agents.spawn_housed_agent(usize::MAX, at.x, at.z);
+    core.agents.agents.transit_mode[walker] = MODE_WALK;
+    core.agents.agents.enter_lane(
+        walker,
+        &core.transit_network.lane_system,
+        walk_lane,
+        20.0,
+        start,
+    );
+    let before: Vec<_> = [car, walker]
+        .map(|agent| {
+            let a = &core.agents.agents;
+            (
+                a.current_lane_id[agent],
+                lane_identity(&core, a.current_lane_id[agent]),
+                a.lane_distance[agent].to_bits(),
+            )
+        })
+        .into();
+
+    core.set_border_connection_internal(dead_end as i32);
+    for (agent, (lane, identity, distance)) in [car, walker].into_iter().zip(before) {
+        let a = &core.agents.agents;
+        assert_eq!(
+            a.current_lane_id[agent], lane,
+            "agent {agent} keeps its lane id"
+        );
+        assert_eq!(
+            lane_identity(&core, lane),
+            identity,
+            "the id names the same lane"
+        );
+        assert_eq!(
+            a.lane_distance[agent].to_bits(),
+            distance,
+            "agent {agent} keeps its place"
+        );
+    }
+}
+
+// Graph, lanes, clips, pieces and paint, with the border flag and the road's record.
+fn border_products(core: &mut SimCore, node: u32, side: usize) -> String {
+    // The R-tree's order is unspecified: the edges near the node, sorted.
+    let mut near = core
+        .region_graph
+        .get_edges_near_point(core.region_graph.node(node).pos, 1.0);
+    near.sort_unstable();
+    let edge = core.region_graph.edge(side);
+    let record = format!(
+        "{:?} {:?} {:?} {} {} {:?}\n",
+        core.region_graph.node(node).node_type,
+        core.region_graph.node(node).pos,
+        edge.geometry,
+        edge.physical_length.to_bits(),
+        edge.base_cost.to_bits(),
+        near,
+    );
+    record + &products(core)
+}
+
+// The products of `core` saved and loaded again.
+fn border_products_after_load(core: &mut SimCore, node: u32, side: usize, name: &str) -> String {
+    let path = temp_save_path(name);
+    core.save_game_settled_at(path.to_str().unwrap(), None, 0)
+        .unwrap();
+    let mut loaded = test_core();
+    loaded.load_game_internal(path.to_str().unwrap()).unwrap();
+    let _ = std::fs::remove_file(&path);
+    border_products(&mut loaded, node, side)
+}
+
+// `ROAD-122` (1): the border connection has an undo record. Undo puts back the road's length, the
+// node's role and everything derived from them (clips, pieces, lanes, the spatial index), bitwise,
+// and a save of either state loads as it stands.
+#[test]
+fn a_border_connection_undoes_to_the_road_it_lengthened() {
+    use crate::simulation::network::types::NodeType;
+    let (mut core, side) = older_side_road();
+    core.benchmark_mode = false;
+    core.finalize_network_render_products();
+    let dead_end = side_road_dead_end(&core, side);
+    let before = border_products(&mut core, dead_end, side);
+    let undo_depth = core.undo_stack.len();
+
+    core.set_border_connection_internal(dead_end as i32);
+    assert_eq!(core.undo_stack.len(), undo_depth + 1, "an undo record");
+    assert_eq!(core.region_graph.node(dead_end).node_type, NodeType::Border);
+    core.finalize_network_render_products();
+    let border = border_products(&mut core, dead_end, side);
+    assert_ne!(border, before);
+    assert_eq!(
+        border_products_after_load(&mut core, dead_end, side, "border_connection"),
+        border
+    );
+
+    // The consumers of the border list (freight, arrivals, the road tool view) follow the
+    // role revision.
+    let roles = core.region_graph.node_role_revision();
+    assert!(core.undo_action_internal());
+    assert!(
+        core.region_graph.node_role_revision() > roles,
+        "the node's role changed"
+    );
+    assert_eq!(core.undo_stack.len(), undo_depth);
+    core.finalize_network_render_products();
+    assert_eq!(border_products(&mut core, dead_end, side), before);
+    assert_eq!(
+        border_products_after_load(&mut core, dead_end, side, "border_connection_undo"),
+        before
+    );
+}
+
 // The in-place edit's verdict and its commit on the full spec: `""` when applied, else the
 // refusal's reason. The preview must give the same verdict, and a refusal must change nothing.
 fn edit(

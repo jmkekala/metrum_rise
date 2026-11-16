@@ -459,9 +459,17 @@ impl RegionGraph {
     /// indices for the records it touches only (`ROAD-68-E`): the records the
     /// checkpoint captured, in `O(delta records * log edges)`. A checkpoint captured
     /// from another graph replicates that graph's records here; it must then cover every record
-    /// past this graph's counts.
+    /// past this graph's counts. A node whose role the restore changes (a border connection's
+    /// undo, `ROAD-122`) moves the role revision, as [`Self::set_node_type`] does.
     pub(crate) fn restore_undo_delta_local(&mut self, delta: &RegionGraphUndoDelta) {
         let (edge_count, node_count) = (delta.original_edge_count, delta.original_node_count);
+        if delta.nodes.iter().any(|(node_id, node)| {
+            self.nodes
+                .get(*node_id as usize)
+                .is_some_and(|live| live.node_type != node.node_type)
+        }) {
+            self.node_role_revision += 1;
+        }
         // Detach every record whose slot is replaced or dropped, from its current state.
         let replaced_edges: HashSet<usize> = delta
             .edges
