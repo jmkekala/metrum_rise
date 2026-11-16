@@ -403,6 +403,117 @@ fn undo_of_a_demolishing_road_restores_cells_and_paint_not_buildings() {
     }
 }
 
+// The ways a split's undo meets the roadbed (`SAVE-10`).
+#[derive(Clone, Copy, Debug)]
+enum SplitUndo {
+    // Straight after the commit: the record's pieces swap back.
+    Current,
+    // Another road's piece is left to its deferred compile: the undo recompiles the restored
+    // owners itself.
+    DirtyRoadbed,
+    // As `DirtyRoadbed` with a record that keeps no graded tiles, as an in-place edit's: before
+    // `PARK-16` only the graded restage's publication made such an undo's roadbed current and
+    // let it repair the attachments.
+    DirtyRoadbedUngradedRecord,
+    // A terrain stroke and its undo (the dense-terrain restore) in between rebuilt every piece,
+    // so the commit's record cannot swap its own back: the owner recompile again.
+    TerrainStrokeUndone,
+}
+
+// `SAVE-10`: a side street from the north splits the street without taking a house, moving the
+// houses on one half onto the new piece. Its undo takes that piece away, through each way it
+// meets the roadbed, and moves those houses back onto the restored street: none is removed, the
+// entrances are current and the town saves.
+#[test]
+fn undo_of_a_split_returns_its_houses_to_the_restored_street() {
+    const NORTH: [Vector3; 2] = [Vector3::new(0.0, 0.0, 70.0), Vector3::new(0.0, 0.0, 0.0)];
+    for way in [
+        SplitUndo::Current,
+        SplitUndo::DirtyRoadbed,
+        SplitUndo::DirtyRoadbedUngradedRecord,
+        SplitUndo::TerrainStrokeUndone,
+    ] {
+        let (mut core, houses) = street_with_houses();
+        let street = core.allocator.buildings[houses[0]].edge_idx;
+        assert!(
+            houses
+                .iter()
+                .all(|&house| core.allocator.buildings[house].edge_idx == street),
+            "{way:?}: the houses front the street"
+        );
+        let buildings = core.allocator.buildings.len();
+        let edges_before = core.region_graph.edge_count();
+        assert_eq!(commit(&mut core, &NORTH), "", "{way:?}");
+        core.adopt_pending_cell_lots();
+        core.finalize_network_render_products();
+        assert_eq!(core.allocator.buildings.len(), buildings, "{way:?}");
+        assert!(
+            houses
+                .iter()
+                .any(|&house| core.allocator.buildings[house].edge_idx >= edges_before),
+            "{way:?}: the split moved houses onto its new piece"
+        );
+        let edges_after = core.region_graph.edge_count();
+
+        match way {
+            SplitUndo::Current => {}
+            SplitUndo::DirtyRoadbed | SplitUndo::DirtyRoadbedUngradedRecord => {
+                if matches!(way, SplitUndo::DirtyRoadbedUngradedRecord) {
+                    let record = core.undo_stack.back_mut().expect("the commit's record");
+                    assert!(record.graded.is_some(), "a commit keeps its graded tiles");
+                    record.graded = None;
+                }
+                let side = (0..core.region_graph.edge_count())
+                    .find(|&edge| edge != street && !core.region_graph.edge(edge).deleted)
+                    .expect("another road");
+                core.transit_network.roadbed.mark_edge_dirty(side);
+            }
+            SplitUndo::TerrainStrokeUndone => {
+                let depth = core.undo_stack.len();
+                core.sculpt_terrain_internal(Vector2::new(0.0, -300.0), 20.0, 0.2);
+                assert_eq!(core.undo_stack.len(), depth + 1, "the stroke was recorded");
+                assert!(core.undo_action_internal(), "the stroke's undo");
+                core.finalize_network_render_products();
+                assert_eq!(core.undo_stack.len(), depth);
+                // The dense restore takes no edge away: the moved houses stand on their piece.
+                assert_eq!(core.region_graph.edge_count(), edges_after, "{way:?}");
+                assert_eq!(core.allocator.buildings.len(), buildings, "{way:?}");
+            }
+        }
+        let record = core.undo_stack.back().expect("the commit's record");
+        let swaps_back = record
+            .roadbed
+            .as_ref()
+            .is_some_and(|restore| core.transit_network.roadbed.can_restore(restore));
+        assert_eq!(
+            swaps_back,
+            matches!(way, SplitUndo::Current),
+            "{way:?}: the undo's roadbed path"
+        );
+
+        assert!(core.undo_action_internal(), "{way:?}");
+        core.finalize_network_render_products();
+        assert_eq!(core.region_graph.edge_count(), edges_before, "{way:?}");
+        assert_eq!(
+            core.allocator.buildings.len(),
+            buildings,
+            "{way:?}: no house is removed"
+        );
+        for &house in &houses {
+            assert_eq!(
+                core.allocator.buildings[house].edge_idx, street,
+                "{way:?}: house {house} is back on the restored street"
+            );
+        }
+        assert!(core.entrance_cache_current(), "{way:?}");
+        assert_references_consistent(&core);
+        let path = temp_save_path("save10-split-undo");
+        core.save_game_settled_at(path.to_str().unwrap(), None, 0)
+            .unwrap_or_else(|error| panic!("{way:?}: {error}"));
+        std::fs::remove_file(path).unwrap();
+    }
+}
+
 // Decision D5: while a plotted reservation (here a field) holds land an erased cell would take
 // back, the road's undo is refused whole and changes nothing; once the land is free, it runs.
 #[test]
