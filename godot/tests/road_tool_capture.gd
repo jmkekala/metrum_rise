@@ -24,8 +24,9 @@
 ## S-curve and the chained one previewed from its end, then a built freeform draft and the
 ## chained one in its edit phase.
 ## `METRUM_ROAD_TOOL_CAPTURE_SET=ui1` writes round UI1's: the zoning-depth guide on grass, a branch
-## from a road held square (the corner arc at 90 degrees), an oblique branch's corner arc, and the
-## alignment guide of a dead end shown faint near the cursor before it captures, then captured.
+## from a road held square (round UI2: the right-angle square), an oblique branch's corner arc,
+## and the alignment guide of a dead end shown faint near the cursor before it captures, then
+## captured.
 extends SceneTree
 
 const RoadToolScript := preload("res://scripts/tools/road_tool.gd")

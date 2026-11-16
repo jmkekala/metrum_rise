@@ -141,7 +141,8 @@ fn curve_warnings_and_refusals() {
 }
 
 // A chained stroke's start angle against the stroke before it: 180 straight on, 90 square, as
-// whole degrees; round UI1: the chip at the middle of the corner's 12 m arc about the joint.
+// whole degrees; round UI1: the chip at the middle of the corner's 12 m arc about the joint
+// (round UI2: at 90 degrees past the square's outer corner, where the arc's middle was).
 #[test]
 fn chained_start_angle() {
     for (end, expected) in [((-120.0, 200.0), 180.0), ((-200.0, 280.0), 90.0)] {

@@ -25,6 +25,8 @@
 //!
 //! Corners (round UI1): where the draft meets a road at an end, an arc about the joint spans the
 //! corner between the draft and the road ([`Corner`]) and the angle chip sits at its middle.
+//! Round UI2: a corner whose chip reads 90 degrees shows the right-angle square in place of the
+//! arc, its outer corner where the arc's middle was and the chip just past it.
 //!
 //! Grid curbs (round V item 8): the zoning-grid snap (`RoadGridSnap`) puts the road's curbs,
 //! sidewalks included, on cell lines: [`grid_curb_offset_m`] from the centreline, of the same
@@ -47,6 +49,10 @@ use godot::prelude::Vector3;
 pub const GUIDE_PAST_M: f64 = 12.0;
 /// Degrees of a corner arc per chord (round UI1).
 pub const ARC_STEP_DEG: f64 = 5.0;
+/// The side of a right-angle corner's square as a fraction of the arc's radius (round UI2):
+/// `1 / sqrt 2`, so at exactly 90 degrees the square's outer corner lies on the arc's circle at
+/// its middle, where the chip was anchored.
+pub const SQUARE_SIDE_FRACTION: f64 = std::f64::consts::FRAC_1_SQRT_2;
 // Chords of a zoning-depth circle.
 const CIRCLE_CHORDS: usize = 64;
 // Half the length of a grid curb's tick, in metres.
@@ -360,11 +366,43 @@ impl Corner {
         DVec2::from_angle(sense * (self.angle_deg * fraction).to_radians()).rotate(self.leaving)
     }
 
-    /// Pushes the corner's arc of `radius` metres about the joint at height `y`, from the draft
-    /// to the road, one chord per [`ARC_STEP_DEG`] (at least one), unless the corner is under
-    /// half a degree; returns the chip's anchor (the arc's middle) and the unit side it is pushed
-    /// to (the corner's bisector, away from the joint). `O(chords)`.
-    pub fn push_arc(&self, gizmos: &mut Gizmos, radius: f64, y: f32) -> (Vector3, DVec2) {
+    /// The angle the corner's chip shows, in whole degrees: `f64::round` (half away from zero),
+    /// so `89.5..90.5` reads 90. The square ([`Self::is_square`]) uses the same rounding, so it
+    /// and the chip's "90°" always agree. `O(1)`.
+    pub fn shown_deg(&self) -> f64 {
+        self.angle_deg.round()
+    }
+
+    /// Whether the corner shows as a right angle (round UI2): its chip reads 90. `O(1)`.
+    pub fn is_square(&self) -> bool {
+        self.shown_deg() == 90.0
+    }
+
+    /// Pushes the corner's mark at height `y` for an arc of `radius` metres and returns the
+    /// chip's anchor and the unit side it is pushed to (the corner's bisector, away from the
+    /// joint). A right angle ([`Self::is_square`], round UI2) draws the square: an open L from
+    /// the draft at side `s = radius * SQUARE_SIDE_FRACTION`, to the corner
+    /// `joint + (leaving + road) * s`, to the road at `s`, the chip anchored at that outer
+    /// corner (the placement rule keeps the chip's near edge a gap beyond it along the bisector,
+    /// clear of the square, which lies behind it). Every other corner draws the arc about the
+    /// joint from the draft to the road, one chord per [`ARC_STEP_DEG`] (at least one), unless
+    /// the corner is under half a degree, the chip at its middle. `O(chords)`; the square adds
+    /// three points and no chord.
+    pub fn push_mark(&self, gizmos: &mut Gizmos, radius: f64, y: f32) -> (Vector3, DVec2) {
+        let middle = self.direction_at(0.5);
+        if self.is_square() {
+            let side = radius * SQUARE_SIDE_FRACTION;
+            let outer = self.joint + (self.leaving + self.road) * side;
+            gizmos.push_line(
+                GizmoLineClass::CornerArc,
+                [
+                    at(self.joint + self.leaving * side, y),
+                    at(outer, y),
+                    at(self.joint + self.road * side, y),
+                ],
+            );
+            return (at(outer, y), middle);
+        }
         if self.angle_deg >= 0.5 {
             // A hair over a whole step (90 degrees read as 90 + 1e-14) takes no extra chord.
             let chords = (self.angle_deg / ARC_STEP_DEG - 1e-9).ceil().max(1.0) as usize;
@@ -374,7 +412,6 @@ impl Corner {
                 gizmos.push_point(at(self.joint + dir * radius, y));
             }
         }
-        let middle = self.direction_at(0.5);
         (at(self.joint + middle * radius, y), middle)
     }
 }

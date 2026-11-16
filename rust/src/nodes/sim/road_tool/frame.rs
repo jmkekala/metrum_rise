@@ -87,7 +87,8 @@ pub enum GizmoLineClass {
     /// can find it.
     GuideNear,
     /// The arc in the corner where the draft meets a road at an end (round UI1), its angle chip
-    /// at the arc's middle.
+    /// at the arc's middle; at a right angle the square in its place (round UI2), in the same
+    /// look.
     CornerArc,
     /// The angle lock's ray.
     Angle,

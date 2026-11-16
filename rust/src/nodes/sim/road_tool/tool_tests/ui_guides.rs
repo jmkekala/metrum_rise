@@ -4,17 +4,23 @@
 //! its place in the precedence (a node, an edge and the zoning grid where it captured still
 //! first), the corner arc's geometry and chip for 90, 60 and 120 degree joins on both sides, the
 //! guide lines' 4 m reach, the faint guides near the cursor, and the Guides option hiding both.
+//! Round UI2: the right-angle square in place of the arc where the chip reads 90 degrees.
 
-use super::{click, d, edge_snap, input, move_to, node_snap, ray, session};
+use super::{ack, click, d, edge_snap, ground_at, input, move_to, node_snap, ray, session, view};
 use crate::nodes::sim::road_tool::frame::{GizmoLineClass, Gizmos, RoadToolFrame};
-use crate::nodes::sim::road_tool::guides::Corner;
+use crate::nodes::sim::road_tool::guides::{Corner, SQUARE_SIDE_FRACTION};
+use crate::nodes::sim::road_tool::labels::{LabelKind, LabelTone, ToolLabel};
 use crate::nodes::sim::road_tool::measure::EndRoad;
-use crate::nodes::sim::road_tool::session::{RoadToolOption, RoadToolSession};
+use crate::nodes::sim::road_tool::session::{
+    Pointer, RoadToolEvent, RoadToolOption, RoadToolSession,
+};
 use crate::nodes::sim::road_tool::snap::{
     GUIDE_NEAR_M, GUIDE_REACH_M, GuideLine, SQUARE_CAPTURE_DEG, SQUARE_RELEASE_DEG, SnapKind,
     SnapOptions, SquareAxis, near_guides, resolve, square_lock,
 };
+use crate::nodes::sim::road_tool::wording::{NoticeFacts, label_text};
 use crate::simulation::network::guide::DVec2;
+use godot::prelude::Vector3;
 
 // The unit direction `deg` degrees counter-clockwise (in plan x, z) from `from`.
 fn turned(from: DVec2, deg: f64) -> DVec2 {
@@ -258,28 +264,50 @@ fn near_guides_are_the_nearest_lines_in_reach_not_holding() {
     assert_eq!(near_guides(&[line(13.0)], raw, [None; 2]), [None; 2]);
 }
 
-// The arc's corner for a draft leaving `leaving` against `road`: the angle and the ray chosen,
-// the arc's points on the circle from the draft to the road, the chip at its middle pushed out
-// along the bisector.
+// The corner's mark for a draft leaving `leaving` against `road`: the angle and the ray chosen;
+// round UI2: a corner reading 90 degrees draws the square (`check_square`), every other one the
+// arc (`check_arc`).
 fn check_corner(leaving: DVec2, road: EndRoad, angle: f64, ray: DVec2) {
     let joint = d(10.0, -4.0);
     let corner = Corner::new(joint, leaving, road).expect("a corner");
     assert!((corner.angle_deg - angle).abs() < 1e-9, "{corner:?}");
     assert!((corner.road - ray).length() < 1e-9, "{corner:?} {ray:?}");
-    let mut gizmos = Gizmos::default();
-    let (anchor, side) = corner.push_arc(&mut gizmos, 12.0, 2.0);
-    assert_eq!(gizmos.line_classes, [GizmoLineClass::CornerArc]);
-    let points: Vec<DVec2> = gizmos
-        .line_points
+    assert_eq!(corner.is_square(), angle.round() == 90.0, "{corner:?}");
+    if corner.is_square() {
+        check_square(&corner);
+    } else {
+        check_arc(&corner);
+    }
+}
+
+fn plan(points: &[Vector3]) -> Vec<DVec2> {
+    points
         .iter()
         .map(|p| d(f64::from(p.x), f64::from(p.z)))
-        .collect();
-    assert_eq!(points.len(), (angle / 5.0).ceil() as usize + 1);
+        .collect()
+}
+
+// Half the corner each side of the chip's side: the bisector.
+fn check_bisector(corner: &Corner, side: DVec2) {
+    let half = |a: DVec2, b: DVec2| a.perp_dot(b).abs().atan2(a.dot(b)).to_degrees();
+    assert!((half(corner.leaving, side) - corner.angle_deg / 2.0).abs() < 1e-6);
+    assert!((half(side, corner.road) - corner.angle_deg / 2.0).abs() < 1e-6);
+}
+
+// The arc's points on the 12 m circle from the draft to the road, the chip at its middle pushed
+// out along the bisector.
+fn check_arc(corner: &Corner) {
+    let (joint, angle) = (corner.joint, corner.angle_deg);
+    let mut gizmos = Gizmos::default();
+    let (anchor, side) = corner.push_mark(&mut gizmos, 12.0, 2.0);
+    assert_eq!(gizmos.line_classes, [GizmoLineClass::CornerArc]);
+    let points = plan(&gizmos.line_points);
+    assert_eq!(points.len(), (angle / 5.0 - 1e-9).ceil() as usize + 1);
     for point in &points {
         assert!(((*point - joint).length() - 12.0).abs() < 1e-4);
     }
-    assert!((points[0] - (joint + leaving * 12.0)).length() < 1e-4);
-    assert!((points[points.len() - 1] - (joint + ray * 12.0)).length() < 1e-4);
+    assert!((points[0] - (joint + corner.leaving * 12.0)).length() < 1e-4);
+    assert!((points[points.len() - 1] - (joint + corner.road * 12.0)).length() < 1e-4);
     // Monotone: each point turns the same way, no wider than the corner.
     let swept: f64 = points
         .windows(2)
@@ -289,16 +317,48 @@ fn check_corner(leaving: DVec2, road: EndRoad, angle: f64, ray: DVec2) {
         })
         .sum();
     assert!((swept.abs() - angle).abs() < 1e-3, "{swept} {angle}");
-    let half = |a: DVec2, b: DVec2| a.perp_dot(b).abs().atan2(a.dot(b)).to_degrees();
-    assert!((half(leaving, side) - angle / 2.0).abs() < 1e-6);
-    assert!((half(side, ray) - angle / 2.0).abs() < 1e-6);
+    check_bisector(corner, side);
     let anchor = d(f64::from(anchor.x), f64::from(anchor.z));
     assert!((anchor - (joint + side * 12.0)).length() < 1e-4);
     assert_eq!(gizmos.line_points[0].y, 2.0);
 }
 
+// Round UI2: the square's open L, three points and no chord, side 12 / sqrt 2 m: on the draft,
+// the outer corner `joint + (leaving + road) * s`, on the road; the chip anchored at the outer
+// corner and pushed out along the bisector, so it sits past the square.
+fn check_square(corner: &Corner) {
+    let joint = corner.joint;
+    let s = 12.0 * SQUARE_SIDE_FRACTION;
+    assert!((s - 12.0 / 2f64.sqrt()).abs() < 1e-12);
+    let mut gizmos = Gizmos::default();
+    let (anchor, side) = corner.push_mark(&mut gizmos, 12.0, 2.0);
+    assert_eq!(gizmos.line_classes, [GizmoLineClass::CornerArc]);
+    assert_eq!(gizmos.line_starts, [0]);
+    let points = plan(&gizmos.line_points);
+    let outer = joint + (corner.leaving + corner.road) * s;
+    let expected = [joint + corner.leaving * s, outer, joint + corner.road * s];
+    assert_eq!(points.len(), 3);
+    for (point, expected) in points.iter().zip(expected) {
+        assert!(
+            (*point - expected).length() < 1e-4,
+            "{point:?} {expected:?}"
+        );
+    }
+    assert!(gizmos.line_points.iter().all(|p| p.y == 2.0));
+    check_bisector(corner, side);
+    let anchor = d(f64::from(anchor.x), f64::from(anchor.z));
+    assert!((anchor - outer).length() < 1e-4);
+    // The outer corner on the bisector, within a hair of where the arc's middle was (exactly
+    // there at 90 degrees); the whole square lies behind it along the side.
+    assert!((anchor - joint).normalize().dot(side) > 1.0 - 1e-9);
+    assert!(((anchor - joint).length() - 12.0).abs() < 0.1);
+    for point in [expected[0], expected[2]] {
+        assert!((point - joint).dot(side) < (anchor - joint).dot(side));
+    }
+}
+
 #[test]
-fn corner_arcs_for_90_60_and_120_degree_joins_on_both_sides() {
+fn corner_marks_for_90_60_and_120_degree_joins_on_both_sides() {
     for sense in [1.0, -1.0] {
         let leaving = |deg: f64| turned(DVec2::X, sense * deg);
         // A road through the point: the smaller corner, against the road's nearer sense; square,
@@ -326,4 +386,131 @@ fn corner_arcs_for_90_60_and_120_degree_joins_on_both_sides() {
         }
     }
     assert!(Corner::new(DVec2::ZERO, DVec2::ZERO, EndRoad::Along(DVec2::X)).is_none());
+}
+
+// Round UI2: the square shows exactly where the chip reads "90°", by the chip's own rounding
+// (`f64::round`, half away from zero: 89.5 up to below 90.5). So 89.6 and 90.4 show the square,
+// 89.4 ("89°") and 90.6 ("91°") the arc, on both sides, out of a dead end and (below 90, the
+// smaller corner) against a road through the point.
+#[test]
+fn the_square_shows_where_the_chip_reads_90() {
+    let text = |corner: &Corner| {
+        let label = ToolLabel {
+            kind: LabelKind::Angle,
+            value: corner.shown_deg(),
+            anchor: Vector3::ZERO,
+            side: DVec2::X,
+            tone: LabelTone::Normal,
+        };
+        let mut out = String::new();
+        label_text(&label, &NoticeFacts::default(), &mut out);
+        out
+    };
+    for sense in [1.0, -1.0] {
+        for (deg, square) in [(89.4, false), (89.6, true), (90.4, true), (90.6, false)] {
+            let leaving = turned(-DVec2::X, sense * deg);
+            let dead_end = Corner::new(DVec2::ZERO, leaving, EndRoad::Continue(DVec2::X)).unwrap();
+            let mut corners = vec![dead_end];
+            if deg < 90.0 {
+                let along = turned(DVec2::X, sense * deg);
+                corners.push(Corner::new(DVec2::ZERO, along, EndRoad::Along(DVec2::X)).unwrap());
+            }
+            for corner in corners {
+                // Against a road through the point a tie (both corners read 90) takes either.
+                let other = 180.0 - deg;
+                assert!(
+                    (corner.angle_deg - deg).abs() < 1e-9
+                        || (corner.angle_deg - other).abs() < 1e-9,
+                    "{corner:?}"
+                );
+                assert_eq!(corner.is_square(), square, "{deg} {corner:?}");
+                assert_eq!(text(&corner) == "90°", square, "{deg} {}", text(&corner));
+                if square {
+                    check_square(&corner);
+                } else {
+                    check_arc(&corner);
+                }
+            }
+        }
+    }
+    // The rounding's edges, half away from zero.
+    let at = |angle_deg| Corner {
+        joint: DVec2::ZERO,
+        leaving: DVec2::X,
+        road: DVec2::Y,
+        angle_deg,
+    };
+    for (deg, square) in [
+        (89.5, true),
+        (89.499_999, false),
+        (90.499_999, true),
+        (90.5, false),
+    ] {
+        assert_eq!(at(deg).is_square(), square, "{deg}");
+    }
+}
+
+// A chained start square to the stroke before it (Shift: off-square poses stay free): the
+// square in the frame, three points in its strip and no chord, its chip "90°"; the arc at
+// 60 degrees; and over the poses the gizmo buffers do not grow once they have (the square
+// pushes into the reused buffers).
+#[test]
+fn a_chained_start_shows_the_square_and_reuses_the_buffers() {
+    let scripted = |x: f64, z: f64| {
+        Pointer::Scripted(Vector3::new(
+            x as f32,
+            ground_at(x as f32, z as f32),
+            z as f32,
+        ))
+    };
+    let mut tool = session();
+    click(&mut tool, scripted(-280.0, 200.0));
+    click(&mut tool, scripted(-200.0, 200.0));
+    ack(&mut tool, true);
+    // The corner against the ray back along -x: 180 - `deg` from +x.
+    let pose = |tool: &mut RoadToolSession, deg: f64| {
+        let leg = turned(DVec2::X, 180.0 - deg) * 80.0;
+        tool.handle_event(
+            view(),
+            RoadToolEvent::Pointer {
+                pointer: scripted(-200.0 + leg.x, 200.0 + leg.y),
+                shift: true,
+                ctrl: false,
+            },
+        );
+        let frame = tool.frame();
+        let gizmos = &frame.gizmos;
+        let strip = gizmos
+            .line_classes
+            .iter()
+            .position(|class| *class == GizmoLineClass::CornerArc)
+            .expect("a corner strip");
+        let first = gizmos.line_starts[strip] as usize;
+        let end = gizmos
+            .line_starts
+            .get(strip + 1)
+            .map_or(gizmos.line_points.len(), |next| *next as usize);
+        let angles: Vec<_> = frame
+            .labels
+            .iter()
+            .filter(|label| label.kind == LabelKind::Angle)
+            .collect();
+        assert_eq!(angles.len(), 1);
+        let capacities = (
+            gizmos.line_points.capacity(),
+            gizmos.line_starts.capacity(),
+            gizmos.line_classes.capacity(),
+        );
+        (end - first, angles[0].value, capacities)
+    };
+    for deg in [89.6, 90.4] {
+        assert_eq!(pose(&mut tool, deg).0, 3, "{deg}");
+        assert_eq!(pose(&mut tool, deg).1, 90.0, "{deg}");
+    }
+    let (arc, value, _) = pose(&mut tool, 60.0);
+    assert!(arc >= 13 && value == 60.0, "{arc} {value}");
+    let (_, _, grown) = pose(&mut tool, 89.6);
+    for deg in [90.4, 60.0, 89.6, 90.0] {
+        assert_eq!(pose(&mut tool, deg).2, grown, "{deg}");
+    }
 }

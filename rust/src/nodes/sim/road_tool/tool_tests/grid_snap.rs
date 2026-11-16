@@ -239,7 +239,9 @@ fn session_grid_snap_on_a_road() {
 // by round UI1 (the round's four changes off, the old digest held): its strokes start and end on
 // roads, so the frames gain the corner arcs and faint guides and the angle chips move to the
 // arcs; with those drawing changes off too the digest still differs, as the 4 m guide reach and
-// the square lock snap some of the trail's ends.
+// the square lock snap some of the trail's ends. Re-recorded by round UI2 (with the square forced
+// off the old digest `0x9600_a727_6994_283d` held): its 90 degree corners draw the right-angle
+// square in place of the arc, drawing only.
 #[test]
 fn grid_off_frames_are_unchanged() {
     let mut frames = Vec::new();
@@ -252,7 +254,7 @@ fn grid_off_frames_are_unchanged() {
     assert!(frames.iter().any(|frame| frame.contains("snap: Node")));
     assert_eq!(
         (frames.len(), frames_digest(&frames)),
-        (36, 0x9600_a727_6994_283d)
+        (36, 0x8020_4597_a6ca_e6bd)
     );
 }
 

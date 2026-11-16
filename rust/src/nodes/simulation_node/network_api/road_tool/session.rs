@@ -1325,7 +1325,7 @@ pub(super) enum LineStyle {
     Alignment = 11,
     /// A guide line near the cursor that has not taken it (round UI1), faint.
     GuideNear = 12,
-    /// An end's corner arc (round UI1).
+    /// An end's corner arc (round UI1), or its square at a right angle (round UI2).
     CornerArc = 13,
 }
 

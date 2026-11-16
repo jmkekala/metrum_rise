@@ -11,7 +11,9 @@
 //! middle, the total plan length at the path's middle when there is more than one piece (or the
 //! only piece is an arc), the angle where the stroke meets a road at either end (180 degrees is
 //! straight on out of a dead end; a road through the point reads its acute angle; round UI1: at
-//! the middle of the corner's arc, [`Corner`]) or bends at a freeform joint, and near the end the cost, the bearing and the design speed (amber below the
+//! the middle of the corner's arc, or past the square's outer corner where it reads 90 degrees,
+//! round UI2, [`Corner`]) or bends at a freeform joint, and near the end the cost, the bearing
+//! and the design speed (amber below the
 //! road's speed limit). The bridge adds what the preview knows ([`apply_preview`]): the class
 //! priced cost, the steepest grade (from 0.5 %) and one notice for a refusal or a warning.
 //! There is no upkeep chip (the user, 2026-11-14). Each end off its ground gets a height chip
@@ -204,7 +206,8 @@ pub struct PreviewFacts {
 /// Appends the chips of a draft: `path` is its guide, `stroke` its stroke request's points,
 /// `hud` its numbers, `start_road` and `end_road` the roads met at its ends, `refused` whether
 /// the session refuses it (a notice chip at the end). Each end on a road also pushes its corner
-/// arc into `gizmos` (round UI1, [`Corner`]), its angle chip at the arc's middle.
+/// mark into `gizmos` (round UI1, [`Corner`]: the arc, the square at a right angle since round
+/// UI2), its angle chip at the arc's middle or past the square's outer corner.
 /// `O(pieces + arc chords)`, no allocation beyond growing `out` and the gizmo buffers.
 #[allow(clippy::too_many_arguments)]
 pub fn push_draft_labels(
@@ -307,7 +310,8 @@ pub fn push_draft_labels(
     }
     let start_tangent = path.start_tangent().unwrap_or(DVec2::X);
     let first_xz = DVec2::new(f64::from(first.x), f64::from(first.z));
-    // Round UI1: each end on a road gets the arc in its corner, the chip at the arc's middle.
+    // Round UI1: each end on a road gets the arc in its corner, the chip at the arc's middle;
+    // round UI2: the square at a right angle, the chip past its outer corner.
     // Arriving at a dead end straight on runs against its outward direction.
     let radius = CORNER_ARC_M.min(total * 0.5);
     for (joint, leaving, road, y) in [
@@ -317,13 +321,8 @@ pub fn push_draft_labels(
         let Some(corner) = road.and_then(|road| Corner::new(joint, leaving, road)) else {
             continue;
         };
-        let (anchor, side) = corner.push_arc(gizmos, radius, y);
-        out.push(label(
-            LabelKind::Angle,
-            corner.angle_deg.round(),
-            anchor,
-            side,
-        ));
+        let (anchor, side) = corner.push_mark(gizmos, radius, y);
+        out.push(label(LabelKind::Angle, corner.shown_deg(), anchor, side));
     }
 }
 

@@ -8,7 +8,7 @@
 ## stroke's centreline, solid and thick; the alignment guide that took the cursor and the
 ## angle ray dashed and strong, a guide near the cursor that has not taken it dashed and faint
 ## (round UI1); tangent legs, control polygons and handle stems in one guide look, dashed and
-## thinner; an end's corner arc solid (round UI1); the
+## thinner; an end's corner arc solid (round UI1; at a right angle its square, round UI2); the
 ## zoning-depth guide's outside (and the grid snap's curbs) solid and strong, its inside solid and
 ## faint (round V item 9); the grid snap's curbs solid in their own colour (item 8). Handles (`gizmo_handles`) draw as
 ## filled round points of a constant size, all in one surface whose per-point kind (round V2)
@@ -58,7 +58,7 @@ const PALETTE := {
 		[Color(1.0, 0.40, 0.30, 0.9), 2.0, 0.0, 0.0],
 		# Round UI1: the alignment guide that took the cursor and the angle lock's ray, thicker and
 		# more opaque than the shared guide look; a guide near the cursor that has not taken it,
-		# fainter than that look; an end's corner arc, solid in the stroke's white.
+		# fainter than that look; an end's corner arc or square (UI2), solid in the stroke's white.
 		[Color(0.72, 0.74, 1.0, 0.95), 3.5, 12.0, 5.0],
 		[Color(0.72, 0.74, 1.0, 0.45), 2.0, 9.0, 6.0],
 		[Color(1.0, 1.0, 1.0, 0.9), 2.5, 0.0, 0.0],
