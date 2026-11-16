@@ -196,18 +196,26 @@ impl SiteRectQuery {
     }
 
     fn holds(&self, site: &BuildingSiteClient) -> bool {
-        self.holds_parts(site_lot_center(site), site.bounds())
+        self.holds_parts(site_lot_center(site), || site.bounds())
     }
 
     // Every footprint, surface and planting corner lies within the maximum site radius of its
     // lot centre, so a lot centre farther from the rectangle (plus the polygon test's slack)
     // rules the site out before its polygons are read, as `site_at` does; the rest are the
-    // sites whose footprint and surface bounds meet it.
-    fn holds_parts(&self, centre: Vector2, bounds: (f32, f32, f32, f32)) -> bool {
+    // sites whose footprint and surface bounds meet it. `bounds` walks the polygons, so it runs
+    // only for a site within reach (`RENDER-46` R46b: the per-frame surface queries walked every
+    // captured site's polygons first).
+    fn holds_parts(
+        &self,
+        centre: Vector2,
+        bounds: impl FnOnce() -> (f32, f32, f32, f32),
+    ) -> bool {
+        if !self.reaches(centre) {
+            return false;
+        }
         let [min_x, min_z, max_x, max_z] = self.rect;
-        let (site_min_x, site_min_z, site_max_x, site_max_z) = bounds;
-        self.reaches(centre)
-            && site_min_x <= max_x
+        let (site_min_x, site_min_z, site_max_x, site_max_z) = bounds();
+        site_min_x <= max_x
             && site_max_x >= min_x
             && site_min_z <= max_z
             && site_max_z >= min_z
@@ -243,10 +251,9 @@ impl BuildingSiteTerrainSnapshot {
                         .iter()
                         .enumerate()
                         .filter(|(_, site)| {
-                            query.holds_parts(
-                                site.lot_center,
-                                site_surface_bounds(&site.footprint_world, &site.surfaces),
-                            )
+                            query.holds_parts(site.lot_center, || {
+                                site_surface_bounds(&site.footprint_world, &site.surfaces)
+                            })
                         })
                         .map(|(site, _)| (index as u32, site as u32)),
                 );
@@ -998,4 +1005,32 @@ fn clip_projected_ray_axis(
     *entry_t = entry_t.max(t0.min(t1));
     *exit_t = exit_t.min(t0.max(t1));
     Some(())
+}
+
+#[cfg(test)]
+mod reach_tests {
+    use super::SiteRectQuery;
+    use godot::prelude::Vector2;
+    use std::cell::Cell;
+
+    // `RENDER-46` R46b: a site out of reach is refused before its polygons are walked; within
+    // reach the bounds decide, as before.
+    #[test]
+    fn a_site_out_of_reach_is_refused_before_its_bounds_are_read() {
+        let query = SiteRectQuery::new([0.0, 0.0, 10.0, 10.0], 20.0);
+        let walked = &Cell::new(0);
+        let bounds = |value| {
+            move || {
+                walked.set(walked.get() + 1);
+                value
+            }
+        };
+        let far = Vector2::new(100.0, 5.0);
+        assert!(!query.holds_parts(far, bounds((95.0, 0.0, 105.0, 10.0))));
+        assert_eq!(walked.get(), 0);
+        let near = Vector2::new(15.0, 5.0);
+        assert!(query.holds_parts(near, bounds((9.0, 0.0, 21.0, 10.0))));
+        assert!(!query.holds_parts(near, bounds((11.0, 0.0, 21.0, 10.0))));
+        assert_eq!(walked.get(), 2);
+    }
 }
