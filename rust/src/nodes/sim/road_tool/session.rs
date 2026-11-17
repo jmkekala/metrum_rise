@@ -318,6 +318,16 @@ impl RoadToolSession {
         self.spec
     }
 
+    /// The snapping toggles and steps.
+    pub fn snap_options(&self) -> SnapOptions {
+        self.snap
+    }
+
+    /// Whether straight grade is on (U3).
+    pub fn straight_grade(&self) -> bool {
+        self.heights.straight_grade
+    }
+
     /// The drawing mode.
     pub fn mode(&self) -> DrawMode {
         self.mode

@@ -78,8 +78,7 @@ func _road_tool() -> Node3D:
 	tool.blueprint_mesh = MeshInstance3D.new()
 	tool.add_child(tool.blueprint_mesh)
 	tool.attach_hud(RoadToolHudScript.new())
-	tool.fwd_lanes = 1
-	tool.bkw_lanes = 1
+	tool.set_lanes(1, 1)
 	tool.active = true
 	var generation := simulation.get_network_render_generation()
 	_expect(tool.chunks.update(generation) == generation, "the resident chunks hydrate before the preview")

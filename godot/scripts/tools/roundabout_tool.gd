@@ -113,7 +113,10 @@ func _step_diameter(step_m: float) -> void:
 
 func _type_lanes() -> int:
 	var road: Node = get_node_or_null("../RoadTool")
-	return maxi(road.fwd_lanes, road.bkw_lanes) if road != null else 1
+	if road == null:
+		return 1
+	var intent: Dictionary = road.intent()
+	return maxi(intent["fwd_lanes"], intent["bkw_lanes"])
 
 # The commit's verdict at the pointer, asked again only when something it reads changed.
 func _update_preview() -> void:

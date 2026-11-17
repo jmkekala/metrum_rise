@@ -174,10 +174,10 @@ func _run() -> void:
 		menu.button_for(builtin[0]).pressed.emit()
 		var tool_kind = _input.Tool.WALKWAY if builtin[2] else _input.Tool.ROAD
 		_expect(_input.current_tool == tool_kind, "%s picks its tool" % builtin[1])
-		_expect(_tool.road_type_id == builtin[0] and _tool.fwd_lanes == builtin[3] and _tool.bkw_lanes == builtin[4] and _tool.median_style == 0,
-			"%s gives dev's button arguments: %d + %d, median %d" % [builtin[1], _tool.fwd_lanes, _tool.bkw_lanes, _tool.median_style])
-		_expect(_tool.speed_kmh == 50 and _tool.sidewalks and _tool.zoning and _tool.street_lights,
-			"%s sends dev's attributes: %d %s %s %s" % [builtin[1], _tool.speed_kmh, _tool.sidewalks, _tool.zoning, _tool.street_lights])
+		_expect(_tool.intent().road_type_id == builtin[0] and _tool.intent().fwd_lanes == builtin[3] and _tool.intent().bkw_lanes == builtin[4] and _tool.intent().median_style == 0,
+			"%s gives dev's button arguments: %d + %d, median %d" % [builtin[1], _tool.intent().fwd_lanes, _tool.intent().bkw_lanes, _tool.intent().median_style])
+		_expect(_tool.intent().speed_kmh == 50 and _tool.intent().sidewalks and _tool.intent().zoning and _tool.intent().street_lights,
+			"%s sends dev's attributes: %d %s %s %s" % [builtin[1], _tool.intent().speed_kmh, _tool.intent().sidewalks, _tool.intent().zoning, _tool.intent().street_lights])
 		for other in builtin_ids:
 			_expect(menu.button_for(other).button_pressed == (other == builtin[0]), "%s is marked alone (%s)" % [builtin[1], other])
 		_expect(not menu.custom_marked() and menu.custom_menu.text == "Custom roads", "%s leaves the drop-down unmarked" % builtin[1])
@@ -201,7 +201,7 @@ func _run() -> void:
 	_expect(String(_simulation.get_edge_cross_section(first).get("road_type", "")) == avenue, "the road reads back as the custom type")
 	_expect(_simulation.update_road_type(avenue, "Menu Test Avenue", AVENUE_EDITED, 50, true, true).is_empty(), "the custom type is edited")
 	_ui.refresh_road_types()
-	_expect(_tool.road_type_id == avenue and _tool.fwd_lanes == 1 and _tool.median_style == 1, "the tool draws the edited type: %d + %d, median %d" % [_tool.fwd_lanes, _tool.bkw_lanes, _tool.median_style])
+	_expect(_tool.intent().road_type_id == avenue and _tool.intent().fwd_lanes == 1 and _tool.intent().median_style == 1, "the tool draws the edited type: %d + %d, median %d" % [_tool.intent().fwd_lanes, _tool.intent().bkw_lanes, _tool.intent().median_style])
 	var second := await _draw(z + 50.0)
 	_expect(_layout(second) == [1, 1, 1, 1.5, 8.5], "the second stroke has the new layout: %s" % [_layout(second)])
 	_expect(_layout(first) == [2, 2, 2, 3.0, 17.0], "the first edge keeps its layout: %s" % [_layout(first)])
@@ -213,8 +213,8 @@ func _run() -> void:
 	_expect(not rural.is_empty(), "the rural type is created")
 	_ui.refresh_road_types()
 	menu.pick(rural)
-	_expect(_tool.road_type_id == rural and _tool.speed_kmh == 80 and not _tool.sidewalks and _tool.zoning and not _tool.street_lights,
-		"the tool draws the rural type's attributes: %d %s %s %s" % [_tool.speed_kmh, _tool.sidewalks, _tool.zoning, _tool.street_lights])
+	_expect(_tool.intent().road_type_id == rural and _tool.intent().speed_kmh == 80 and not _tool.intent().sidewalks and _tool.intent().zoning and not _tool.intent().street_lights,
+		"the tool draws the rural type's attributes: %d %s %s %s" % [_tool.intent().speed_kmh, _tool.intent().sidewalks, _tool.intent().zoning, _tool.intent().street_lights])
 	_expect(menu.custom_menu.tooltip_text == "1 + 1 lanes, 80 km/h, no sidewalks, no street lights, 8.5 m wide\nNo zoning: nothing is built along it\n19.2 / m, upkeep 0.128 / m / day",
 		"its tooltip: %s" % menu.custom_menu.tooltip_text)
 	var rural_edge := await _draw(z + 100.0)

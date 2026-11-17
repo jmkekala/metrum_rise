@@ -46,8 +46,7 @@ func _run() -> void:
 	_expect(input_manager._world_ready, "the world must become ready")
 	var tool: Node = main.get_node("RoadTool")
 	tool.active = true
-	tool.fwd_lanes = 1
-	tool.bkw_lanes = 1
+	tool.set_lanes(1, 1)
 	input_manager.current_tool = input_manager.Tool.ROAD
 
 	var start := _ground(START)

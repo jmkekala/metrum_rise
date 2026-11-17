@@ -165,8 +165,7 @@ func _fixture(fixture: Dictionary) -> void:
 	tool.blueprint_mesh = MeshInstance3D.new()
 	tool.add_child(tool.blueprint_mesh)
 	tool.attach_hud(RoadToolHudScript.new())
-	tool.fwd_lanes = fixture["forward"]
-	tool.bkw_lanes = fixture["backward"]
+	tool.set_lanes(fixture["forward"], fixture["backward"])
 	tool.active = true
 	var generation := simulation.get_network_render_generation()
 	_expect(tool.chunks.update(generation) == generation, "original chunks must hydrate before preview")

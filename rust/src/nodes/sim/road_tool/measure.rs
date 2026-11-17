@@ -37,6 +37,13 @@ pub struct RoadTypeSpec {
     pub attributes: RoadAttributes,
 }
 
+impl RoadTypeSpec {
+    /// The stroke's median, parking and attributes, as the edit plan and the commit take them.
+    pub fn stroke(self) -> (Option<RoadMedian>, RoadParking, RoadAttributes) {
+        (self.median, self.parking, self.attributes)
+    }
+}
+
 impl Default for RoadTypeSpec {
     /// The default two-lane road (`builtin:road_2l`).
     fn default() -> Self {

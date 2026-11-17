@@ -10,6 +10,7 @@ pub mod frame;
 pub mod guides;
 pub mod height;
 pub mod hue;
+pub mod intent;
 pub mod labels;
 pub mod measure;
 pub mod modes;

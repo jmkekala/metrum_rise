@@ -16,6 +16,9 @@ const TIMEOUT_MS := 20000
 class RoadToolStub extends Node3D:
 	var fwd_lanes := 1
 	var bkw_lanes := 1
+	# The road tool's `intent()` as the roundabout tool reads it: the lanes only.
+	func intent() -> Dictionary:
+		return {"fwd_lanes": fwd_lanes, "bkw_lanes": bkw_lanes}
 	func mark_network_topology_dirty() -> void:
 		pass
 

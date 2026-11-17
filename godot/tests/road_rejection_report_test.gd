@@ -2,7 +2,8 @@
 
 ## Refused road strokes are explained on `events` with their exact inputs, the console dump names
 ## its save and road generation, and a replay against that save reproduces each refusal. A record
-## carries the road type's sidewalk sides (`ROAD-107`), and a replay sets them back in Rust.
+## carries the road type's sidewalk sides (`ROAD-107`); a replay draws with them in its own call
+## and leaves the road tool's intent as the player set it (`ROAD-112` round R2-6).
 extends SceneTree
 
 const DebugConsoleScript := preload("res://scripts/ui/debug_console/debug_console.gd")
@@ -94,6 +95,9 @@ func _run() -> void:
 	var replay := SimulationNode.new()
 	replay_host.add_child(replay)
 	_expect(replay.load_game(parsed["save_path"]), "the dumped save must load")
+	# The player's intent on the replaying node: right-hand sidewalk only, unlike every record.
+	_expect(replay.set_road_tool_attributes(50, 2, true, true).is_empty(), "the player's sides are set")
+	var intent: Dictionary = replay.road_tool_intent()
 	var verdicts: Array[Dictionary] = []
 	for attempt in parsed["attempts"]:
 		var outcome: Dictionary = await Replay.replay_attempt(replay, self, attempt)
@@ -112,11 +116,12 @@ func _run() -> void:
 		_expect(not verdict["reproduced"] and verdict["line"].contains("NOT reproduced: refused by tool for too_short"), "a different reason must not count as reproduced: %s" % verdict["line"])
 		# ROAD-53: the click check now refuses what the commit refuses.
 		_expect(verdicts[2]["line"].contains("reproduced, refused by tool"), "the short stroke must be refused at the click: %s" % verdicts[2]["line"])
-		# The replay left the record's sides in Rust: the next stroke is drawn with them.
+		# The replays left the player's intent whole: the next stroke is drawn with its sides.
+		_expect(replay.road_tool_intent() == intent, "a replay must leave the intent as it was: %s" % replay.road_tool_intent())
 		var next := await _commit(replay, ROAD_AFTER_REPLAY, 1, 1, true)
 		_expect(next.get("committed", false), "the road after the replay must commit: %s" % next)
 		var drawn: Dictionary = replay.get_edge_cross_section(replay.get_hovered_edge(ROAD_AFTER_REPLAY[0].x + 50.0, ROAD_AFTER_REPLAY[0].z))
-		_expect(int(drawn.get("sidewalks", -1)) == 1, "a replay must set the record's sides: %s" % drawn)
+		_expect(int(drawn.get("sidewalks", -1)) == 2, "the road after a replay must have the player's sides: %s" % drawn)
 	replay_host.queue_free()
 	await process_frame
 	print("Road rejection report tests: %d failures" % _failures)

@@ -61,9 +61,23 @@ impl SimulationNode {
         bkw_lanes: i32,
         snap_to_existing_roads: bool,
     ) -> i64 {
-        // Send to the background thread so the Godot main thread is never blocked
-        // by lane rebuilding and zoning work. The command wakes the existing simulation thread
-        // without waiting for, or advancing, its next movement tick.
+        let stroke = self.road_tool_spec().stroke();
+        self.add_road_with_section(points, (fwd_lanes, bkw_lanes), snap_to_existing_roads, stroke)
+    }
+
+    // Queues one follow-ground stroke with `stroke`'s median, parking and attributes (the road
+    // tool's, or a replayed record's) and returns its completion identity. Sent to the
+    // background thread so the Godot main thread is never blocked by lane rebuilding and zoning
+    // work: the command wakes the existing simulation thread without waiting for, or advancing,
+    // its next movement tick.
+    fn add_road_with_section(
+        &mut self,
+        points: PackedVector3Array,
+        lanes: (i32, i32),
+        snap_to_existing_roads: bool,
+        stroke: (Option<RoadMedian>, RoadParking, RoadAttributes),
+    ) -> i64 {
+        let ((fwd_lanes, bkw_lanes), (median, parking, attributes)) = (lanes, stroke);
         let road_debug = crate::debug::Channel::Road.enabled();
         let total_start = road_debug.then(Instant::now);
         let point_count = points.len();
@@ -78,11 +92,7 @@ impl SimulationNode {
             bkw_lanes,
             snap_to_existing_roads,
             RoadProfile::FollowGround,
-            (
-                self.road_tool_median,
-                self.road_tool_parking,
-                self.road_tool_attributes,
-            ),
+            (median, parking, attributes),
         );
         let send_start = road_debug.then(Instant::now);
         let (completion, result) = std::sync::mpsc::sync_channel(1);
@@ -96,9 +106,9 @@ impl SimulationNode {
                 bkw_lanes,
                 snap_to_existing_roads,
                 profile: RoadProfile::FollowGround,
-                median: self.road_tool_median,
-                parking: self.road_tool_parking,
-                attributes: self.road_tool_attributes,
+                median,
+                parking,
+                attributes,
                 enqueued_at: Instant::now(),
                 completion,
                 preview,
@@ -140,6 +150,7 @@ impl SimulationNode {
         bkw_lanes: i32,
         snap_to_existing_roads: bool,
     ) -> i64 {
+        let spec = self.road_tool_spec();
         let strokes = strokes
             .iter_shared()
             .map(|stroke| crate::nodes::sim::core::RoadCommitRequest {
@@ -151,9 +162,9 @@ impl SimulationNode {
                 bkw_lanes,
                 snap_to_existing_roads,
                 profile: RoadProfile::FollowGround,
-                median: self.road_tool_median,
-                parking: self.road_tool_parking,
-                attributes: self.road_tool_attributes,
+                median: spec.median,
+                parking: spec.parking,
+                attributes: spec.attributes,
                 preview: None,
             })
             .collect();
@@ -1040,13 +1051,14 @@ impl SimulationNode {
         bkw_lanes: i32,
         snap_to_existing_roads: bool,
     ) -> DraftSection {
+        let spec = self.road_tool_spec();
         DraftSection {
             fwd_lanes,
             bkw_lanes,
             snap_to_existing_roads,
-            median: self.road_tool_median,
-            parking: self.road_tool_parking,
-            attributes: self.road_tool_attributes,
+            median: spec.median,
+            parking: spec.parking,
+            attributes: spec.attributes,
         }
     }
 

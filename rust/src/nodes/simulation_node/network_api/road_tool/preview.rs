@@ -4,7 +4,11 @@
 
 use super::super::super::*;
 use crate::nodes::sim::core::RoadCorridorClearance;
+use crate::nodes::sim::road_tool::height::{DraftSection, DraftStroke, draft_batch};
+use crate::nodes::sim::road_tool::measure::RoadTypeSpec;
+use crate::simulation::network::graph::{RoadMedian, RoadParking};
 use crate::simulation::network::road_edit::{PreparedRoadInput, RoadProfile, plan_road_edit};
+use crate::simulation::network::road_types::RoadAttributes;
 use crate::simulation::network::road_types::cost as road_cost;
 use crate::simulation::network::types::EdgeClass;
 
@@ -25,8 +29,10 @@ impl SimulationNode {
     pub fn set_road_tool_median(&mut self, style: i32, width_m: f32) -> GString {
         match crate::simulation::network::graph::RoadMedian::from_tool(style, width_m) {
             Ok(median) => {
-                self.road_tool_median = median;
-                self.sync_road_tool_spec();
+                self.set_road_tool_spec(RoadTypeSpec {
+                    median,
+                    ..self.road_tool_spec()
+                });
                 GString::new()
             }
             Err(reason) => reason.into(),
@@ -42,8 +48,10 @@ impl SimulationNode {
     pub fn set_road_tool_parking(&mut self, code: i32) -> GString {
         match crate::simulation::network::graph::RoadParking::from_code(code) {
             Some(parking) => {
-                self.road_tool_parking = parking;
-                self.sync_road_tool_spec();
+                self.set_road_tool_spec(RoadTypeSpec {
+                    parking,
+                    ..self.road_tool_spec()
+                });
                 GString::new()
             }
             None => "parking_code_out_of_range".into(),
@@ -67,11 +75,12 @@ impl SimulationNode {
         zoning: bool,
         street_lights: bool,
     ) -> GString {
-        use crate::simulation::network::road_types::RoadAttributes;
         match RoadAttributes::from_tool(speed_kmh.into(), sidewalks.into(), zoning, street_lights) {
             Ok(attributes) => {
-                self.road_tool_attributes = attributes;
-                self.sync_road_tool_spec();
+                self.set_road_tool_spec(RoadTypeSpec {
+                    attributes,
+                    ..self.road_tool_spec()
+                });
                 GString::new()
             }
             Err(reason) => reason.into(),
@@ -113,6 +122,7 @@ impl SimulationNode {
     ) -> Variant {
         let road_debug = crate::debug::Channel::Road.enabled();
         let total_start = road_debug.then(Instant::now);
+        let spec = self.road_tool_spec();
         let point_count = points.len();
         let (surface_generation, (prepared, validation)) = {
             let query = self.road_tool.view.read().unwrap();
@@ -123,9 +133,9 @@ impl SimulationNode {
                 bkw_lanes,
                 snap_to_existing_roads,
                 profile: RoadProfile::FollowGround,
-                median: self.road_tool_median,
-                parking: self.road_tool_parking,
-                attributes: self.road_tool_attributes,
+                median: spec.median,
+                parking: spec.parking,
+                attributes: spec.attributes,
             });
             (query.surface_generation, validated)
         };
@@ -163,9 +173,9 @@ impl SimulationNode {
                 bkw_lanes,
                 snap_to_existing_roads,
                 profile: RoadProfile::FollowGround,
-                median: self.road_tool_median,
-                parking: self.road_tool_parking,
-                attributes: self.road_tool_attributes,
+                median: spec.median,
+                parking: spec.parking,
+                attributes: spec.attributes,
             },
         );
         let mut dict = result.to::<VarDictionary>();
@@ -191,34 +201,13 @@ impl SimulationNode {
         let total_start = road_debug.then(Instant::now);
         let point_count = points.len();
         let points = points.to_vec();
-        let fwd_lanes_u8 = fwd_lanes.clamp(0, i32::from(u8::MAX)) as u8;
-        let bkw_lanes_u8 = bkw_lanes.clamp(0, i32::from(u8::MAX)) as u8;
-        let (prepared_input, validation, surface_generation) = {
-            let query = self.road_tool.view.read().unwrap();
-            let (prepared_input, validation, _) = plan_road_edit(
-                &points,
-                fwd_lanes_u8,
-                bkw_lanes_u8,
-                (
-                    self.road_tool_median,
-                    self.road_tool_parking,
-                    self.road_tool_attributes,
-                ),
-                &query.terrain,
-                &query.region_graph,
-                &query.roadbed,
-                snap_to_existing_roads,
-                RoadProfile::FollowGround,
-            );
-            let validation = crate::nodes::sim::road_tool::validate_road_candidate_against_water(
-                &prepared_input,
-                fwd_lanes_u8,
-                bkw_lanes_u8,
-                &query.water,
-                validation,
-            );
-            (prepared_input, validation, query.surface_generation)
-        };
+        let spec = self.road_tool_spec();
+        let (prepared_input, validation, surface_generation) = self.plan_commit_check(
+            &points,
+            (fwd_lanes, bkw_lanes),
+            spec.stroke(),
+            snap_to_existing_roads,
+        );
         let class = prepared_input.class;
         let prepared_points = prepared_input.points;
         if road_debug {
@@ -254,9 +243,9 @@ impl SimulationNode {
                     bkw_lanes,
                     snap_to_existing_roads,
                     profile: RoadProfile::FollowGround,
-                    median: self.road_tool_median,
-                    parking: self.road_tool_parking,
-                    attributes: self.road_tool_attributes,
+                    median: spec.median,
+                    parking: spec.parking,
+                    attributes: spec.attributes,
                 },
             )
             .to::<VarDictionary>();
@@ -265,6 +254,28 @@ impl SimulationNode {
             i64::try_from(surface_generation).unwrap_or(i64::MAX),
         );
         dict.to_variant()
+    }
+
+    /// Replays one refused stroke's `road_attempt` record (the debug console's replay,
+    /// `road_attempt_replay.gd`) with the record's own lanes, snapping, profile, median, parking
+    /// and road-type attributes; the road tool's intent stays as it is (`ROAD-112` round R2-6).
+    /// A follow-ground stroke takes the tool's click check first, which waits for the core for
+    /// its corridor clearance, so it always answers (`ROAD-102`); a stroke of a segmented draft
+    /// (held ground, bridge or tunnel) goes to the commit alone, since the click check knows only
+    /// the follow-ground profile. A field an older record lacks replays its default: one lane
+    /// each way, snapping on, the tunnel flag of `ROAD-61` for the profile, no median, no
+    /// parking, the built-ins' 50 km/h road with sidewalks on both sides, zoning and street
+    /// lights. Returns `reason`, the key that refused the stroke before the commit (`too_short`
+    /// under two points, the section's own refusal, `road_profile_unknown`, else the click
+    /// check's), empty when queued, and `request_id`, the commit to poll with
+    /// `get_road_commit_result` (0 when refused before).
+    #[func]
+    pub fn replay_road_attempt(&mut self, attempt: VarDictionary) -> VarDictionary {
+        let (reason, request_id) = match self.replay_attempt(&attempt) {
+            Ok(request_id) => ("", request_id),
+            Err(reason) => (reason, 0),
+        };
+        vdict! { "reason": reason, "request_id": request_id }
     }
 
     /// Logs the road tool's refusal of a clicked stroke on `events`, from the validation the tool
@@ -324,6 +335,7 @@ impl SimulationNode {
         ) {
             rejection = rejection.with_note(format!("{count} parcels, first {first}"));
         }
+        let spec = self.road_tool_spec();
         let points = points.to_vec();
         let attempt = rejection.report(
             RejectedBy::Tool,
@@ -333,9 +345,9 @@ impl SimulationNode {
                 bkw_lanes,
                 snap: snap_to_existing_roads,
                 profile,
-                median: self.road_tool_median,
-                parking: self.road_tool_parking,
-                attributes: self.road_tool_attributes,
+                median: spec.median,
+                parking: spec.parking,
+                attributes: spec.attributes,
             },
             int("surface_generation").map_or(0, |generation| generation.max(0) as u64),
         );
@@ -385,6 +397,7 @@ impl SimulationNode {
         let mut graded_tiles = Vec::new();
         let mut graded_removed = Vec::new();
         let mut graded_cut = Vec::new();
+        let spec = self.road_tool_spec();
         let land = self.road_tool.land();
         let (
             preview,
@@ -409,9 +422,9 @@ impl SimulationNode {
                 bkw_lanes,
                 snap_to_existing_roads,
                 profile,
-                median: self.road_tool_median,
-                parking: self.road_tool_parking,
-                attributes: self.road_tool_attributes,
+                median: spec.median,
+                parking: spec.parking,
+                attributes: spec.attributes,
             }, hue));
             context.last_preview = Some(Arc::clone(&preview));
             context
@@ -711,14 +724,29 @@ impl SimulationNode {
         let (fwd_lanes, bkw_lanes) = lanes;
         let weight = road_cost::stroke_weight(
             (lanes_u8(fwd_lanes), lanes_u8(bkw_lanes)),
-            self.road_tool_median,
-            self.road_tool_parking,
-            self.road_tool_attributes,
+            request.median,
+            request.parking,
+            request.attributes,
             class,
         );
         let mut dict =
             Self::road_candidate_validation_to_dictionary(validation, prepared_points, weight);
         if validation.is_valid {
+            let clearance = self.corridor_clearance(prepared_points, lanes, request);
+            Self::apply_corridor_clearance(&mut dict, &clearance);
+        }
+        dict.to_variant()
+    }
+
+    // A valid stroke's corridor against the live parcels and field reservations, with the
+    // section `request` carries.
+    fn corridor_clearance(
+        &self,
+        prepared_points: &[Vector3],
+        lanes: (i32, i32),
+        request: RoadPreviewRequest,
+    ) -> RoadCorridorClearance {
+        {
             // Query the existing parcel chunk index locally; never copy city-wide zoning into a
             // preview snapshot. Every caller asks once (tests, the road benchmark's fixture
             // search, the debug replay), so the check waits for the core: with `try_lock` it
@@ -728,11 +756,7 @@ impl SimulationNode {
             // as its preview compiles them, so a bridge's deck refuses nothing its commit
             // accepts (`ZONE-09` decisions D2, D8). The context is locked before the core, as
             // everywhere (the simulation publishes to it without the core).
-            let stroke = (
-                self.road_tool_median,
-                self.road_tool_parking,
-                self.road_tool_attributes,
-            );
+            let stroke = (request.median, request.parking, request.attributes);
             let evaluate = |pieces: Option<crate::nodes::sim::core::StrokePieces<'_>>| {
                 RoadCorridorClearance::evaluate(
                     &self.lock_core(),
@@ -757,22 +781,14 @@ impl SimulationNode {
                 .with_plan_pieces(&plan, |pieces| evaluate(Some(pieces)))
                 .unwrap_or_else(|| evaluate(None));
             drop(context);
-            Self::apply_corridor_clearance(&mut dict, &clearance);
+            clearance
         }
-        dict.to_variant()
     }
 
     // Plotted reservations refuse the stroke; parcels are reported only, since the commit
     // takes zoned land (`ZONE-09`, decision D8).
     fn apply_corridor_clearance(dict: &mut VarDictionary, clearance: &RoadCorridorClearance) {
-        let refusal = [
-            (clearance.field_overlap, "field_overlap"),
-            (clearance.extraction_overlap, "extraction_area_overlap"),
-            (clearance.plotted_overlap, "plotted_building_overlap"),
-        ]
-        .into_iter()
-        .find_map(|(overlap, reason)| overlap.then_some(reason));
-        if let Some(reason) = refusal {
+        if let Some(reason) = Self::corridor_refusal(clearance) {
             dict.set("is_valid", false);
             dict.set("invalid_reason", reason);
         }
@@ -791,6 +807,50 @@ impl SimulationNode {
                 i64::try_from(first).unwrap_or(i64::MAX),
             );
         }
+    }
+
+    // The reservation a stroke's corridor overlaps, as its refusal key.
+    fn corridor_refusal(clearance: &RoadCorridorClearance) -> Option<&'static str> {
+        [
+            (clearance.field_overlap, "field_overlap"),
+            (clearance.extraction_overlap, "extraction_area_overlap"),
+            (clearance.plotted_overlap, "plotted_building_overlap"),
+        ]
+        .into_iter()
+        .find_map(|(overlap, reason)| overlap.then_some(reason))
+    }
+
+    // The commit check of `points` with `lanes` and `stroke`'s median, parking and attributes on
+    // the road tool's published view: the local edit plan's validation, then water. Returns the
+    // prepared input, the validation and the view's surface generation.
+    fn plan_commit_check(
+        &self,
+        points: &[Vector3],
+        lanes: (i32, i32),
+        stroke: (Option<RoadMedian>, RoadParking, RoadAttributes),
+        snap_to_existing_roads: bool,
+    ) -> (PreparedRoadInput, RoadPreviewValidation, u64) {
+        let (fwd_lanes, bkw_lanes) = (lanes_u8(lanes.0), lanes_u8(lanes.1));
+        let query = self.road_tool.view.read().unwrap();
+        let (prepared_input, validation, _) = plan_road_edit(
+            points,
+            fwd_lanes,
+            bkw_lanes,
+            stroke,
+            &query.terrain,
+            &query.region_graph,
+            &query.roadbed,
+            snap_to_existing_roads,
+            RoadProfile::FollowGround,
+        );
+        let validation = crate::nodes::sim::road_tool::validate_road_candidate_against_water(
+            &prepared_input,
+            fwd_lanes,
+            bkw_lanes,
+            &query.water,
+            validation,
+        );
+        (prepared_input, validation, query.surface_generation)
     }
 
     // The validation with the prepared points, the stroke's build length and its cost at the
@@ -1005,4 +1065,106 @@ pub(crate) fn core_lot_outlines(
             Some(core.zoning.parcel_by_raw_id(lot)?.corners())
         })
     })
+}
+
+impl SimulationNode {
+    // `replay_road_attempt`'s check and commit of one record.
+    fn replay_attempt(&mut self, attempt: &VarDictionary) -> Result<i64, &'static str> {
+        // JSON numbers arrive as floats; a missing or mistyped field takes its default.
+        let number = |key: &str, default: f64| {
+            attempt
+                .get(key)
+                .and_then(|value| value.try_to::<f64>().ok())
+                .unwrap_or(default)
+        };
+        let flag = |key: &str, default: bool| {
+            attempt
+                .get(key)
+                .and_then(|value| value.try_to::<bool>().ok())
+                .unwrap_or(default)
+        };
+        let points: PackedVector3Array = attempt
+            .get("points")
+            .and_then(|points| points.try_to::<VarArray>().ok())
+            .map(|points| {
+                points
+                    .iter_shared()
+                    .map(|point| {
+                        let point = point.try_to::<VarArray>().unwrap_or_default();
+                        let coordinate = |index: usize| {
+                            point
+                                .get(index)
+                                .and_then(|value| value.try_to::<f64>().ok())
+                                .unwrap_or(0.0) as f32
+                        };
+                        Vector3::new(coordinate(0), coordinate(1), coordinate(2))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let lanes = (number("fwd_lanes", 1.0) as i32, number("bkw_lanes", 1.0) as i32);
+        let snap = flag("snap", true);
+        let tunnel = if flag("tunnel", false) { 3.0 } else { 0.0 };
+        let profile = number("profile", tunnel) as i32;
+        let stroke = (
+            RoadMedian::from_tool(
+                number("median_style", 0.0) as i32,
+                number("median_width", 0.0) as f32,
+            )?,
+            RoadParking::from_code(number("parking", 0.0) as i32)
+                .ok_or("parking_code_out_of_range")?,
+            RoadAttributes::from_tool(
+                number("speed_kmh", 50.0) as i64,
+                number("sidewalks", 3.0) as i64,
+                flag("zoning", true),
+                flag("street_lights", true),
+            )?,
+        );
+        if points.len() < 2 {
+            return Err("too_short");
+        }
+        let profile = RoadProfile::from_code(profile).ok_or("road_profile_unknown")?;
+        if profile != RoadProfile::FollowGround {
+            let (median, parking, attributes) = stroke;
+            let section = DraftSection {
+                fwd_lanes: lanes.0,
+                bkw_lanes: lanes.1,
+                snap_to_existing_roads: snap,
+                median,
+                parking,
+                attributes,
+            };
+            let stroke = DraftStroke {
+                points: points.to_vec(),
+                profile,
+            };
+            return Ok(self.send_road_batch(draft_batch(vec![stroke], section)));
+        }
+        let points_vec = points.to_vec();
+        let (prepared, validation, surface_generation) =
+            self.plan_commit_check(&points_vec, lanes, stroke, snap);
+        if !validation.is_valid {
+            return Err(validation.invalid_reason);
+        }
+        let (median, parking, attributes) = stroke;
+        let clearance = self.corridor_clearance(
+            &prepared.points,
+            lanes,
+            RoadPreviewRequest {
+                surface_generation,
+                points: points_vec,
+                fwd_lanes: lanes.0,
+                bkw_lanes: lanes.1,
+                snap_to_existing_roads: snap,
+                profile,
+                median,
+                parking,
+                attributes,
+            },
+        );
+        if let Some(reason) = Self::corridor_refusal(&clearance) {
+            return Err(reason);
+        }
+        Ok(self.add_road_with_section(points, lanes, snap, stroke))
+    }
 }

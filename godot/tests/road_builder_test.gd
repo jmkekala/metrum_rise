@@ -313,7 +313,7 @@ func _run() -> void:
 	_expect(not _builder.is_open() and not boulevard.is_empty(), "Create writes %s and closes" % suggested)
 	_expect(_changes == [boulevard], "road_types_changed carries the new id: %s" % [_changes])
 	_expect(_ui.road_type_menu.custom_ids.has(boulevard) and _ui.road_type_menu.custom_marked(), "the Roads row lists and marks it")
-	_expect(_input.current_tool == _input.Tool.ROAD and _tool.road_type_id == boulevard, "the road tool draws it")
+	_expect(_input.current_tool == _input.Tool.ROAD and _tool.intent().road_type_id == boulevard, "the road tool draws it")
 	var edge := await _draw(-150.0)
 	_expect(_layout(edge) == [1, 1, 2, grass_m, 7.0 + grass_m], "the new type draws its layout: %s" % [_layout(edge)])
 
@@ -370,7 +370,7 @@ func _run() -> void:
 	_builder.create_button.pressed.emit()
 	await process_frame
 	_expect(is_equal_approx(float(_type(avenue).median_width), wider) and _type(avenue).name == "Builder Test Avenue", "Save writes the edit: %s" % _type(avenue).median_width)
-	_expect(_changes == [""] and is_equal_approx(_tool.median_width, wider) and _tool.road_type_id == avenue, "the tool re-picks the edited type")
+	_expect(_changes == [""] and is_equal_approx(_tool.intent().median_width, wider) and _tool.intent().road_type_id == avenue, "the tool re-picks the edited type")
 
 	# Duplicate: a custom type and a built-in start new types; the walkway cannot be duplicated.
 	await _open()
@@ -458,8 +458,8 @@ func _run() -> void:
 	_expect(int(highway.get("speed_kmh", 0)) == 100 and not bool(highway.get("zoning", true)) and not bool(highway.get("sidewalks", true))
 		and not bool(highway.get("street_lights", true)) and highway.get("parts", []) == [BACK, AHEAD], "the created type: %s" % highway)
 	var highway_id := String(highway.get("id", ""))
-	_expect(_tool.road_type_id == highway_id and _tool.speed_kmh == 100 and not _tool.sidewalks and not _tool.zoning and not _tool.street_lights,
-		"the road tool draws its attributes: %d %s %s %s" % [_tool.speed_kmh, _tool.sidewalks, _tool.zoning, _tool.street_lights])
+	_expect(_tool.intent().road_type_id == highway_id and _tool.intent().speed_kmh == 100 and not _tool.intent().sidewalks and not _tool.intent().zoning and not _tool.intent().street_lights,
+		"the road tool draws its attributes: %d %s %s %s" % [_tool.intent().speed_kmh, _tool.intent().sidewalks, _tool.intent().zoning, _tool.intent().street_lights])
 	var rural := await _draw(-100.0)
 	var rural_section: Dictionary = _simulation.get_edge_cross_section(rural)
 	_expect(int(rural_section.get("speed_kmh", 0)) == 100 and not bool(rural_section.get("sidewalks", true))
@@ -530,8 +530,8 @@ func _run() -> void:
 	var left_id := String(left_type.get("id", ""))
 	_expect(bool(left_type.get("usable", false)) and int(left_type.get("sidewalks", -1)) == 1 and left_type.get("parts", []) == [SW, BACK, AHEAD],
 		"the left-only type is usable: %s" % left_type)
-	_expect(_ui.road_type_menu.custom_ids.has(left_id) and _tool.road_type_id == left_id and _tool.sidewalks == 1,
-		"the Roads row lists it and the tool draws it: %s" % _tool.sidewalks)
+	_expect(_ui.road_type_menu.custom_ids.has(left_id) and _tool.intent().road_type_id == left_id and _tool.intent().sidewalks == 1,
+		"the Roads row lists it and the tool draws it: %s" % _tool.intent().sidewalks)
 	_expect(_ui.road_type_menu.custom_menu.tooltip_text.contains("sidewalk on the left"), "the Roads row's tooltip names the side: %s" % _ui.road_type_menu.custom_menu.tooltip_text)
 	_expect(_ui.road_type_menu.custom_menu.tooltip_text.contains("Buildings on the sidewalk side only"), "the tooltip says where it builds: %s" % _ui.road_type_menu.custom_menu.tooltip_text)
 	var left_road := await _draw(-50.0)

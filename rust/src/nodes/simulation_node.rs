@@ -211,17 +211,11 @@ pub struct SimulationNode {
     /// context, both read without locking SimCore (`ROAD-68-E`).
     pub(crate) road_tool: Arc<RoadToolShared>,
     /// The road tool session (`ROAD-112`): cursor, stroke, chain and commit of the drawing modes
-    /// it drives, and the preview the bridge ran for its stroke. Main thread only.
+    /// it drives, the tool's intent (road type, lanes, median, parking, attributes, options; the
+    /// one copy, round R2-6) and the preview the bridge ran for its stroke. Main thread only.
     pub(crate) road_tool_session: network_api::road_tool::RoadToolBridge,
     /// The roundabout tool's node markers' buffers (`ROAD-112` R2-8). Main thread only.
     node_markers: network_api::NodeMarkers,
-    /// The road tool's median (`ROAD-80`), copied into every request the tool sends.
-    pub(crate) road_tool_median: Option<crate::simulation::network::graph::RoadMedian>,
-    /// The road tool's kerbside parking (`PARK-05`), copied into every request the tool sends.
-    pub(crate) road_tool_parking: crate::simulation::network::graph::RoadParking,
-    /// The road tool's road-type attributes (`ROAD-101`: speed, sidewalks, zoning), copied into
-    /// every request the tool sends; the built-ins' until a type sets others.
-    pub(crate) road_tool_attributes: crate::simulation::network::road_types::RoadAttributes,
     /// The player's road types (`ROAD-101`), read from `user://road_types.json` on first use:
     /// tool configuration, never in `SimCore`, a save or the undo stack.
     pub(crate) road_types:
@@ -576,9 +570,6 @@ impl INode3D for SimulationNode {
             road_tool,
             road_tool_session: Default::default(),
             node_markers: Default::default(),
-            road_tool_median: None,
-            road_tool_parking: Default::default(),
-            road_tool_attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
             road_types: Mutex::new(None),
             water_patch_mesh_jobs,
             building_lods: Default::default(),

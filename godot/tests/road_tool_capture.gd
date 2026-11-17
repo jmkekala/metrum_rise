@@ -79,7 +79,7 @@ func _run() -> void:
 	_main.get_node("SceneLighting").pin_hour_of_day(12.0)
 	root.set_disable_input(true)
 	_tool = _main.get_node("RoadTool")
-	_tool.set_road_type(_tool.DEFAULT_ROAD_TYPE)
+	_tool.set_road_type("builtin:road_2l")
 	_tool.active = true
 	_tool.begin_preview_measurement()
 	var capture_set := OS.get_environment("METRUM_ROAD_TOOL_CAPTURE_SET")
@@ -154,7 +154,7 @@ func _run() -> void:
 	await _capture("curve_committed")
 	# Continuous chain: the next stroke leaves along the curve's end as an arc.
 	_tool.cancel_road()
-	_tool.continuous = true
+	_tool.set_option("continuous", true)
 	_tool.draw_mode = RoadToolScript.DrawMode.STRAIGHT
 	# Started by a camera ray on the base road's dead end, so the session reads its direction.
 	_tool.set_scripted_pointer(false)
@@ -166,7 +166,7 @@ func _run() -> void:
 	await _ack()
 	_tool.set_scripted_pointer(true, Vector3(30.0, 0.0, -20.0))
 	await _capture("continuous_chain")
-	_tool.continuous = false
+	_tool.set_option("continuous", false)
 	# HUD warnings: a 20 m radius designs for 20 km/h, under the road's 50; a 4 m radius is
 	# refused before any preview.
 	_tool.cancel_road()
@@ -239,7 +239,7 @@ func _capture_snapping() -> void:
 	# Round V2: the zoning-grid snap on, the cursor over the dead end's cells near the start's
 	# east-west axis, so the grid holds it and the road's curbs show on the cell lines (round GS2:
 	# 0.9 m off the axis; the 32 degree pose before was outside the capture and only labelled grid).
-	_tool.zoning_grid_snap_enabled = true
+	_tool.set_option("zoning_grid", true)
 	_ray(Vector3(243.0, 0.0, 50.9))
 	var grid_snap := String(_simulation.road_tool_frame()["snap"])
 	_expect(grid_snap in ["grid", "angle_grid"], "the zoning grid takes the cursor (%s)" % grid_snap)
@@ -266,7 +266,7 @@ func _capture_snapping() -> void:
 	_expect(branch == "grid", "the grid takes a near end from a road start (%s)" % branch)
 	_ray(near)
 	await _capture("snapping_grid_from_road")
-	_tool.zoning_grid_snap_enabled = false
+	_tool.set_option("zoning_grid", false)
 	_tool.cancel_road()
 	_tool.set_process(true)
 
@@ -346,7 +346,7 @@ func _capture_scurve_steps() -> void:
 # previewed to its end; a freeform draft built, the chained draft (its start handle locked to the
 # carried direction) in its edit phase.
 func _capture_continuous_chains() -> void:
-	_tool.continuous = true
+	_tool.set_option("continuous", true)
 	_tool.draw_mode = RoadToolScript.DrawMode.COMPLEX_CURVE
 	_tool._begin_stroke(Vector3(-90.0, 0.0, 40.0))
 	_tool._commit_segment(Vector3(-70.0, 0.0, 40.0))
@@ -381,7 +381,7 @@ func _capture_continuous_chains() -> void:
 	_tool._session_press("confirm")
 	await _ack()
 	_tool.cancel_road()
-	_tool.continuous = false
+	_tool.set_option("continuous", false)
 
 # Round N: an S-curve mid-draw (its end dragged round a circle for the upload record), then a
 # freeform draft placed, taken into its edit phase, one handle dragged (round a circle too), and
@@ -472,7 +472,7 @@ func _capture_restyle() -> void:
 	_expect(_tool._commit_segment(Vector3(140.0, 0.0, 40.0)), "the grid's base road commits")
 	await _ack()
 	_tool.cancel_road()
-	_tool.zoning_grid_snap_enabled = true
+	_tool.set_option("zoning_grid", true)
 	_tool.set_process(false)
 	_tool.set_scripted_pointer(false)
 	for type_id in ["builtin:road_2l", "builtin:road_4l", "builtin:walkway", "builtin:one_way_1l"]:
@@ -485,8 +485,8 @@ func _capture_restyle() -> void:
 		_ray(Vector3(47.0, 0.0, 104.0))
 		await _capture("grid_curbs_" + type_id.trim_prefix("builtin:"))
 		_tool.cancel_road()
-	_tool.zoning_grid_snap_enabled = false
-	_tool.set_road_type(_tool.DEFAULT_ROAD_TYPE)
+	_tool.set_option("zoning_grid", false)
+	_tool.set_road_type("builtin:road_2l")
 	_tool.set_process(true)
 
 # Round V2: a valley sculpted 12 m deep under a level 400 m draft (as `road_batch_preview_test`),

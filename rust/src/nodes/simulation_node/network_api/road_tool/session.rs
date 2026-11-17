@@ -27,13 +27,16 @@ use crate::nodes::sim::road_tool::frame::{
 };
 use crate::nodes::sim::road_tool::height::draft_batch;
 use crate::nodes::sim::road_tool::hue::{HueState, OffFrameHue};
+use crate::nodes::sim::road_tool::intent::RoadTypePick;
 use crate::nodes::sim::road_tool::measure::RoadTypeSpec;
 use crate::nodes::sim::road_tool::modes::DrawMode;
 use crate::nodes::sim::road_tool::session::{
     Pointer, PointerButton, RoadToolAction, RoadToolEvent, RoadToolOption, RoadToolSession,
 };
 use crate::nodes::sim::road_tool::snap::SnapKind;
+use crate::simulation::network::graph::RoadMedian;
 use crate::simulation::network::road_edit::RoadProfile;
+use crate::simulation::network::road_types::RoadAttributes;
 use labels::Chips;
 
 mod labels;
@@ -60,6 +63,8 @@ pub(crate) struct RoadToolBridge {
     // The HUD's label chips (rounds V2, R2-5): their font, this frame's and the HUD's copy, and
     // their placement (`labels.rs`).
     chips: Chips,
+    // The road type the next stroke draws and the one R draws again (round R2-6).
+    road_type: RoadTypePick,
 }
 
 
@@ -175,10 +180,10 @@ impl SimulationNode {
     /// snapping toggles `network_snap`, `guide_lines`, `zoning_grid` (bool), `angle_step_deg`
     /// (15, 30, 45 or 90; anything else turns the lock off), `length_step_m` (0 turns it off),
     /// `continuous` (bool), `straight_grade` (bool, U3: the grade line between the ends' heights
-    /// even with both handles on their supports). The
-    /// median, parking and attributes come from `set_road_tool_median`, `set_road_tool_parking`
-    /// and `set_road_tool_attributes`. Returns "" when set, else `road_tool_option_unknown` or
-    /// `road_tool_option_value`.
+    /// even with both handles on their supports). A road type sets the lanes with the median,
+    /// parking and attributes (`road_tool_set_road_type`); `set_road_tool_median`,
+    /// `set_road_tool_parking` and `set_road_tool_attributes` set one each. Returns "" when set,
+    /// else `road_tool_option_unknown` or `road_tool_option_value`.
     #[func]
     pub fn road_tool_set_option(&mut self, name: GString, value: Variant) -> GString {
         let float = || value.try_to::<f64>().ok();
@@ -207,6 +212,83 @@ impl SimulationNode {
         };
         self.road_tool_session.session.set_option(option);
         GString::new()
+    }
+
+    /// Draws the next strokes with road type `id` (`ROAD-101`): the type's lanes, median,
+    /// kerbside parking, speed, sidewalk sides, zoning and street lights as the library lists
+    /// them, set at once (a walkway takes the built-ins' speed and sides). Picking any type but
+    /// the Walkway also makes it the one R draws again. Returns "" when picked, else the refusal
+    /// key: `road_type_unknown` when no type has `id`, the type's `invalid_reason` when it is
+    /// unusable; a refused pick changes nothing of the intent (round R2-6). `O(types)` on a UI
+    /// action.
+    #[func]
+    pub fn road_tool_set_road_type(&mut self, id: GString) -> GString {
+        let id = id.to_string();
+        let mut pick = self.road_tool_session.road_type.clone();
+        match self.with_road_types(|library| pick.pick(library.types(), &id)) {
+            Ok(spec) => {
+                self.road_tool_session.road_type = pick;
+                self.set_road_tool_spec(spec);
+                GString::new()
+            }
+            Err(reason) => reason.into(),
+        }
+    }
+
+    /// Picks the road tool's type again after the library changed (`ROAD-101`): an edited
+    /// type's new layout draws from the next stroke on (built roads keep theirs). A type that is
+    /// gone or no longer usable falls back to the last type R draws, and that one to the 2-Lane
+    /// Road (the Walkway stays the Walkway). Returns the id now drawn, "" before the first pick.
+    /// `O(types)`.
+    #[func]
+    pub fn road_tool_reload_road_type(&mut self) -> GString {
+        let mut pick = self.road_tool_session.road_type.clone();
+        let reloaded = self.with_road_types(|library| pick.reload(library.types()));
+        self.road_tool_session.road_type = pick;
+        if let Some(Ok(spec)) = reloaded {
+            self.set_road_tool_spec(spec);
+        }
+        self.road_tool_session
+            .road_type
+            .current
+            .as_deref()
+            .unwrap_or_default()
+            .into()
+    }
+
+    /// The road tool's intent as the UI shows it (round R2-6; read when a menu opens or a key
+    /// acts, never per frame): `road_type_id` ("" before the first pick), `last_road_type_id`
+    /// (the type R draws), `fwd_lanes`, `bkw_lanes`, `median_style` (0 none, 1 painted, 2 kerbed
+    /// grass, 3 kerbed paving), `median_width` (metres, 0 without), `parking` (bit 0 the left
+    /// kerb, bit 1 the right), `speed_kmh`, `sidewalks` (0 none, 1 left, 2 right, 3 both),
+    /// `zoning`, `street_lights`, the snapping options `network_snap`, `guide_lines`,
+    /// `zoning_grid`, `angle_step_deg` and `length_step_m` (0 for off), `continuous` and
+    /// `straight_grade`.
+    #[func]
+    pub fn road_tool_intent(&self) -> VarDictionary {
+        let session = &self.road_tool_session.session;
+        let (spec, snap) = (session.spec(), session.snap_options());
+        let pick = &self.road_tool_session.road_type;
+        vdict! {
+            "road_type_id": pick.current.as_deref().unwrap_or_default(),
+            "last_road_type_id": pick.last.as_str(),
+            "fwd_lanes": i64::from(spec.fwd_lanes),
+            "bkw_lanes": i64::from(spec.bkw_lanes),
+            "median_style": RoadMedian::style_code(spec.median),
+            "median_width": spec.median.map_or(0.0, |median| median.width_m),
+            "parking": spec.parking.code(),
+            "speed_kmh": i64::from(RoadAttributes::speed_kmh_of(spec.attributes.speed_ms)),
+            "sidewalks": i64::from(spec.attributes.sidewalks.bits()),
+            "zoning": spec.attributes.zoning,
+            "street_lights": spec.attributes.street_lights,
+            "network_snap": snap.network,
+            "guide_lines": snap.guides,
+            "zoning_grid": snap.grid,
+            "angle_step_deg": snap.angle_step_deg.unwrap_or(0.0),
+            "length_step_m": snap.length_step_m.unwrap_or(0.0),
+            "continuous": session.continuous(),
+            "straight_grade": session.straight_grade(),
+        }
     }
 
     /// The road tool's frame, called once a frame while the tool is active: `phase` (0 idle,
@@ -424,15 +506,14 @@ impl SimulationNode {
         self.road_tool_session.preview = Some(rejected);
     }
 
-    // The median, parking and attributes the bridge's setters hold, into the session's road type
-    // (its stroke requests and HUD price the selected type, B9). Lanes stay the session's.
-    pub(super) fn sync_road_tool_spec(&mut self) {
-        let spec = RoadTypeSpec {
-            median: self.road_tool_median,
-            parking: self.road_tool_parking,
-            attributes: self.road_tool_attributes,
-            ..self.road_tool_session.session.spec()
-        };
+    // The road tool's road type as the session holds it: lanes, median, parking and attributes
+    // (the one copy of the intent, round R2-6); every request the tool sends reads it here.
+    pub(in super::super) fn road_tool_spec(&self) -> RoadTypeSpec {
+        self.road_tool_session.session.spec()
+    }
+
+    // Sets the session's road type in one option (its stroke requests and HUD price it, B9).
+    pub(super) fn set_road_tool_spec(&mut self, spec: RoadTypeSpec) {
         self.road_tool_session
             .session
             .set_option(RoadToolOption::RoadType(spec));

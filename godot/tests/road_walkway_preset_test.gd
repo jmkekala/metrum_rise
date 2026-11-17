@@ -64,12 +64,12 @@ func _run() -> void:
 	_expect(not avenue.is_empty(), "the divided type is created: %s" % created)
 
 	input_manager._toggle_tool(input_manager.Tool.ROAD)
-	_expect(tool.fwd_lanes == 1 and tool.bkw_lanes == 1 and tool.median_style == 0, "the Road tool starts as the 2-Lane Road")
+	_expect(tool.intent().fwd_lanes == 1 and tool.intent().bkw_lanes == 1 and tool.intent().median_style == 0, "the Road tool starts as the 2-Lane Road")
 	_expect(tool.set_road_type(avenue).is_empty(), "the divided type is picked")
-	_expect(tool.median_style == 2 and is_equal_approx(tool.median_width, 3.5), "the type carries grass at 3.5 m: %d %.1f" % [tool.median_style, tool.median_width])
+	_expect(tool.intent().median_style == 2 and is_equal_approx(tool.intent().median_width, 3.5), "the type carries grass at 3.5 m: %d %.1f" % [tool.intent().median_style, tool.intent().median_width])
 	for key in [KEY_BRACKETRIGHT, KEY_BRACKETLEFT, KEY_UP, KEY_DOWN, KEY_PERIOD, KEY_COMMA, KEY_N, KEY_SEMICOLON, KEY_APOSTROPHE]:
 		_press(input_manager, key)
-	_expect(tool.fwd_lanes == 1 and tool.bkw_lanes == 1 and tool.median_style == 2 and is_equal_approx(tool.median_width, 3.5), "the removed lane and median keys change nothing")
+	_expect(tool.intent().fwd_lanes == 1 and tool.intent().bkw_lanes == 1 and tool.intent().median_style == 2 and is_equal_approx(tool.intent().median_width, 3.5), "the removed lane and median keys change nothing")
 
 	# Rust guards the walkway: a 0 + 0 stroke carrying the tool's median is refused.
 	var points := PackedVector3Array([_ground(-80.0, 40.0), _ground(80.0, 40.0)])
@@ -78,15 +78,15 @@ func _run() -> void:
 
 	_press(input_manager, KEY_X)
 	_expect(input_manager.current_tool == input_manager.Tool.WALKWAY, "X picks the Walkway tool")
-	_expect(tool.road_type_id == tool.WALKWAY_ROAD_TYPE, "X picks the Walkway type")
-	_expect(tool.fwd_lanes == 0 and tool.bkw_lanes == 0, "the Walkway type is 0 + 0")
-	_expect(tool.median_style == 0, "the Walkway type clears the median")
+	_expect(tool.intent().road_type_id == tool.WALKWAY_ROAD_TYPE, "X picks the Walkway type")
+	_expect(tool.intent().fwd_lanes == 0 and tool.intent().bkw_lanes == 0, "the Walkway type is 0 + 0")
+	_expect(tool.intent().median_style == 0, "the Walkway type clears the median")
 	var walkway: Dictionary = _simulation.validate_road_candidate_with_snap(points, 0, 0, true)
 	_expect(bool(walkway.get("is_valid", false)), "the walkway stroke is valid without the median: %s" % walkway.get("invalid_reason", ""))
 
 	_press(input_manager, KEY_R)
 	_expect(input_manager.current_tool == input_manager.Tool.ROAD, "R picks the Road tool")
-	_expect(tool.road_type_id == avenue and tool.median_style == 2, "R draws the last road type again: %s %d" % [tool.road_type_id, tool.median_style])
+	_expect(tool.intent().road_type_id == avenue and tool.intent().median_style == 2, "R draws the last road type again: %s %d" % [tool.intent().road_type_id, tool.intent().median_style])
 
 	# No node move tool (`ROAD-111`).
 	var tools: Array = input_manager.Tool.keys()

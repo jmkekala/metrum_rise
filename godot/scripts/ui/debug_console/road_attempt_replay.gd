@@ -4,9 +4,10 @@
 ##
 ## Every refusal logs a `road_attempt {json}` line on `events` with the exact stroke. A replay
 ## sends each stroke along the player's path: the road tool's click check, then, if that passes,
-## the simulation commit. The attempt reproduces when it is refused for the same reason. The
-## dump's `dump save=<path> road_generation=<n>` line says which attempts were made on the saved
-## road network; for older attempts the network has changed since, so their result only hints.
+## the simulation commit, with the record's own section in one Rust call. The attempt
+## reproduces when it is refused for the same reason. The dump's `dump save=<path>
+## road_generation=<n>` line says which attempts were made on the saved road network; for older
+## attempts the network has changed since, so their result only hints.
 extends RefCounted
 
 # Frames to wait for a queued commit before giving up on one attempt.
@@ -36,39 +37,16 @@ static func parse_dump(text: String) -> Dictionary:
 	return {"attempts": attempts, "save_path": save_path, "save_generation": save_generation}
 
 ## Replays one attempt. Returns `by` (`tool` or `commit`) and `reason`, empty when the road was
-## built. A built road stays in the loaded world, so later attempts see it.
+## built. Rust's `replay_road_attempt` reads the record's stroke and section (lanes, snapping,
+## profile, median, parking, attributes) in its own call and checks the stroke as the road
+## tool's click does, or sends a segmented draft's stroke to the commit alone; the road tool's
+## intent stays as the player set it (`ROAD-112` round R2-6). A built road stays in the loaded
+## world, so later attempts see it.
 static func replay_attempt(simulation: Node, tree: SceneTree, attempt: Dictionary) -> Dictionary:
-	var points := PackedVector3Array()
-	for point in attempt.get("points", []):
-		points.append(Vector3(point[0], point[1], point[2]))
-	var fwd := int(attempt.get("fwd_lanes", 1))
-	var bkw := int(attempt.get("bkw_lanes", 1))
-	var snap := bool(attempt.get("snap", true))
-	# The attempt's stroke profile (`ROAD-112` round H, `RoadProfile::code`: 0 follow ground,
-	# 1 held ground, 2 bridge, 3 tunnel); a record from before it has the tunnel flag
-	# (`ROAD-61`).
-	var profile := int(attempt.get("profile", 3 if bool(attempt.get("tunnel", false)) else 0))
-	# Its median (`ROAD-80`), re-asserted by the road tool per preview the same way.
-	simulation.set_road_tool_median(int(attempt.get("median_style", 0)), float(attempt.get("median_width", 0.0)))
-	simulation.set_road_tool_parking(int(attempt.get("parking", 0)))
-	# Its road-type attributes (`ROAD-101`), the sidewalks as Rust's side code (`ROAD-107`); a dump
-	# from before them replays the built-ins' 50 km/h road with sidewalks, zoning and street lights.
-	simulation.set_road_tool_attributes(int(attempt.get("speed_kmh", 50)), int(attempt.get("sidewalks", 3)),
-		bool(attempt.get("zoning", true)), bool(attempt.get("street_lights", true)))
-	if points.size() < 2:
-		return {"by": "tool", "reason": "too_short"}
-	var request := 0
-	if profile != 0:
-		# A stroke of a segmented draft (held ground, bridge or tunnel): the tool's click check
-		# knows only the follow-ground profile, so the commit alone judges it.
-		request = simulation.add_road_with_profile(points, fwd, bkw, snap, profile)
-	else:
-		# The check waits for the core for its parcel clearance, so it always answers (`ROAD-102`).
-		var checked: Variant = simulation.validate_road_candidate_for_commit_with_snap(points, fwd, bkw, snap)
-		var validation: Dictionary = checked if checked is Dictionary else {}
-		if not validation.get("is_valid", false):
-			return {"by": "tool", "reason": String(validation.get("invalid_reason", "validation_unavailable"))}
-		request = simulation.add_road_with_snap(points, fwd, bkw, snap)
+	var sent: Dictionary = simulation.replay_road_attempt(attempt)
+	if not String(sent["reason"]).is_empty():
+		return {"by": "tool", "reason": String(sent["reason"])}
+	var request := int(sent["request_id"])
 	for frame in POLL_FRAMES:
 		var result: Variant = simulation.get_road_commit_result(request)
 		if result is Dictionary:

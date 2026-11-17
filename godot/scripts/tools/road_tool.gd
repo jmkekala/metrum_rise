@@ -37,24 +37,22 @@
 ## the same step. A handle off the ground, or straight grade (T or the options checkbox), gives
 ## the stroke a grade line that Rust cuts into ground, bridge and tunnel strokes: one previews
 ## as any stroke, several as a batch (the ghost while the pointer moves, the exact pieces once
-## the pose rests) and commit as one undo step. The next stroke's lanes, median, kerbside parking and
-## attributes come from a road type (`ROAD-101`, `PARK-05`): `set_road_type` reads the type's
-## cross-section from Rust's `get_road_types` and sets the lanes, the median through
-## `set_road_tool_median`, the parking through `set_road_tool_parking`, and the type's speed,
-## sidewalks, zoning and street lights through `set_road_tool_attributes` (a walkway, which has
-## no speed, sends the built-ins' defaults); Rust holds them for every later preview and commit.
-## R keeps the last road type picked (2-Lane Road at first), X picks the Walkway. `set_lanes`
-## and `set_median` stay the two low-level setters (benchmarks and probes write them). The tool
-## sends its whole intent to Rust again whenever it is switched on (`reassert_intent`), so
-## whatever set Rust's intent directly meanwhile (the debug replay) never outlasts the tool's
-## readout. Rust stays the guard: the stroke's check refuses a median its lanes cannot carry.
+## the pose rests) and commit as one undo step. The tool's intent (round R2-6: the road type,
+## lanes, median, kerbside parking, attributes, the snapping options, continuous and straight
+## grade) lives in Rust's session only; this script holds no copy. `set_road_type` hands Rust a
+## road type id (`ROAD-101`, `PARK-05`) and Rust looks it up and sets all its settings at once
+## (a walkway, which has no speed, takes the built-ins' defaults); R draws the last road type
+## picked (2-Lane Road at first), X picks the Walkway. `set_lanes`, `set_straight_grade` and
+## `set_option` forward one setting; the UI reads them back through `intent()` when a menu opens
+## or a key acts. Rust stays the guard: the stroke's check refuses a median its lanes cannot
+## carry.
 ## A stroke over zoned land takes it (`ZONE-09`): the preview outlines the lots Rust says the
 ## stroke removes (`demolish_lots`) with the bulldoze tool's highlight and the HUD names the
 ## buildings it demolishes (`demolish_count`); plotted land refuses with its reason.
 ## Rust methods called: road_tool_pointer(), road_tool_pointer_at(), road_tool_event(),
-## road_tool_set_option(), road_tool_frame(), set_road_tool_median(),
-## set_road_tool_parking(), set_road_tool_attributes(), get_road_types(),
-## advance_road_preview_terrain(), release_road_preview_terrain(), get_road_commit_result(),
+## road_tool_set_option(), road_tool_frame(), road_tool_set_road_type(),
+## road_tool_reload_road_type(), road_tool_intent(), advance_road_preview_terrain(),
+## release_road_preview_terrain(), get_road_commit_result(),
 ## check_border_candidate(), set_border_connection(), get_road_tool_surface_generation().
 ## Placement stays pending until Rust acknowledges acceptance; rejection retains the editable
 ## stroke. Drawing is continuous: an accepted road starts the next one at its end until
@@ -68,7 +66,6 @@ const RoadToolGizmos := preload("res://scripts/renderers/road_tool_gizmos.gd")
 const RoadToolHue := preload("res://scripts/renderers/road_tool_hue.gd")
 const RoadToolHud := preload("res://scripts/ui/road_tool_hud.gd")
 const RoadReasonText := preload("res://scripts/ui/road_reason_text.gd")
-const RoadTypeMenu := preload("res://scripts/ui/road_type_menu.gd")
 const HighlightMesh := preload("res://scripts/renderers/highlight_mesh.gd")
 # Early, so the preview of this frame's pointer is staged before the frame renders.
 const PREVIEW_SAMPLE_PROCESS_PRIORITY := -100
@@ -81,16 +78,6 @@ const _MODE_EVENTS := ["mode_straight", "mode_simple_curve", "mode_complex_curve
 const PHASE_IDLE := 0
 const PHASE_PLACING := 1
 const PHASE_EDITING := 3
-
-# The next stroke's lanes; Rust's session holds them too (`lanes`).
-var fwd_lanes: int = 1:
-	set(count):
-		fwd_lanes = count
-		_send_lanes()
-var bkw_lanes: int = 1:
-	set(count):
-		bkw_lanes = count
-		_send_lanes()
 
 ## The drawing mode (`DrawMode`), the session's: setting it sends the mode action, which drops
 ## the stroke and ends the chain when the mode changes (the session's own mode is what counts:
@@ -107,62 +94,10 @@ var draw_mode: int:
 				_clear_preview_cache()
 		_draw_mode = mode
 var _draw_mode: int = DrawMode.STRAIGHT
-## Continuous: a stroke leaves along the road or the chain it starts on (the session's tangent
-## constraint: straight strokes and simple curves; a chain's S-curve and freeform, round CT).
-var continuous: bool = false:
-	set(enabled):
-		continuous = enabled
-		_send_option("continuous", enabled)
-var zoning_grid_snap_enabled: bool = false:
-	set(enabled):
-		zoning_grid_snap_enabled = enabled
-		_send_option("zoning_grid", enabled)
-# The other snapping options of the options row's Snapping row (`ROAD-112` round E), sent under
-# Rust's names; their defaults are the session's (U2: network snap and guide lines on, the angle
-# lock and the length step off). 0 turns a step off.
-var network_snap_enabled: bool = true:
-	set(enabled):
-		network_snap_enabled = enabled
-		_send_option("network_snap", enabled)
-var guide_lines_enabled: bool = true:
-	set(enabled):
-		guide_lines_enabled = enabled
-		_send_option("guide_lines", enabled)
-## Angle lock step in degrees: 0 (free), 15, 30, 45 or 90.
-var angle_step_deg: float = 0.0:
-	set(step):
-		angle_step_deg = step
-		_send_option("angle_step_deg", step)
-## Length step in metres, 0 for off.
-var length_step_m: float = 0.0:
-	set(step):
-		length_step_m = step
-		_send_option("length_step_m", step)
-## Straight grade (U3): the grade line between the ends' heights even with both handles on the
-## ground; the T toggle's and the checkbox's state, held by Rust's session.
-var straight_grade: bool = false
+## Straight grade (U3, T or the options checkbox) was turned on or off.
 signal straight_grade_toggled(enabled: bool)
-# The next stroke's median (`ROAD-80`) as last set in Rust: style 0 none, 1 painted, 2 kerbed
-# grass, 3 kerbed paving, and its width with kerbs, in metres.
-var median_style: int = 0
-var median_width: float = 0.0
-# The next stroke's kerbside parking (`PARK-05`) as last set in Rust: bit 0 the left kerb, bit 1
-# the right, looking along the stroke.
-var parking: int = 0
-# The next stroke's road-type attributes (`ROAD-101`) as last set in Rust: the speed limit in km/h, the sides with a sidewalk in the stroke's direction (Rust's code, 0 none,
-# 1 left, 2 right, 3 both; a shoulder on a side without), zoning and street lights.
-var speed_kmh: int = 50
-var sidewalks: int = RoadTypeMenu.SIDEWALKS_BOTH
-var zoning: bool = true
-var street_lights: bool = true
-## The built-in type R starts with and falls back to when the picked type is gone.
-const DEFAULT_ROAD_TYPE := "builtin:road_2l"
 ## The built-in Walkway type, X's pick.
 const WALKWAY_ROAD_TYPE := "builtin:walkway"
-## The road type the next stroke draws (`ROAD-101`), "" before the first pick.
-var road_type_id: String = ""
-## The last car road type picked: R draws it again.
-var last_road_type_id: String = DEFAULT_ROAD_TYPE
 ## The next stroke's road type changed (the Roads menu marks it).
 signal road_type_changed(id: String)
 
@@ -215,8 +150,6 @@ var _graded_pending := 0
 # The preview epoch a queued commit adopted: its graded tiles show until the commit's edit
 # installs the committed ones, or until the commit is refused.
 var _graded_commit_epoch := -1
-# Whether the tool was active last frame (switching it on re-asserts the intent).
-var _was_active := false
 
 # The session's last frame: its phase (0 idle, 1 placing, 2 waiting for the acknowledgement),
 # the HUD numbers and the stroke.
@@ -261,7 +194,6 @@ func _ready():
 	if MetrumDebug.is_enabled("perf"):
 		begin_preview_measurement()
 	attach_hud(RoadToolHud.new())
-	reassert_intent()
 
 ## Makes `new_hud` (`road_tool_hud.gd`) the tool's HUD, a child of the tool: its Build chip
 ## builds an open freeform draft (Enter's `confirm`), its Cancel chip drops it.
@@ -274,33 +206,11 @@ func attach_hud(new_hud) -> void:
 	if is_instance_valid(simulation_node):
 		hud.simulation_node = simulation_node
 
-## Sends the tool's whole intent to Rust's session: lanes, every snapping option, continuous,
-## straight grade, median, parking and attributes, as this script reads them out.
-## Called when the tool is switched on, so whatever set Rust's intent directly meanwhile (the
-## debug replay) is undone before the next stroke.
-func reassert_intent() -> void:
-	if not _has_session():
-		return
-	_send_lanes()
-	_send_option("network_snap", network_snap_enabled)
-	_send_option("guide_lines", guide_lines_enabled)
-	_send_option("zoning_grid", zoning_grid_snap_enabled)
-	_send_option("angle_step_deg", angle_step_deg)
-	_send_option("length_step_m", length_step_m)
-	_send_option("continuous", continuous)
-	_send_option("straight_grade", straight_grade)
-	simulation_node.set_road_tool_median(median_style, median_width)
-	simulation_node.set_road_tool_parking(parking)
-	simulation_node.set_road_tool_attributes(speed_kmh, sidewalks, zoning, street_lights)
-
 func _process(delta):
 	if preview_metrics != null and DisplayServer.get_name() == "headless":
 		preview_metrics.frame(_preview_drawn_sequence, false)
 	_poll_road_commit_result()
 	_release_swapped_preview()
-	if active and not _was_active:
-		reassert_intent()
-	_was_active = active
 	var previous_mouse_pos := _last_world_mouse_pos
 	var had_mouse_pos := _has_last_world_mouse_pos
 	super._process(delta)
@@ -331,12 +241,18 @@ func _place_labels(gizmo_ms: float) -> void:
 func _has_session() -> bool:
 	return is_instance_valid(simulation_node) and simulation_node.has_method("road_tool_frame")
 
-func _send_option(option: String, value: Variant) -> void:
-	if _has_session():
-		simulation_node.road_tool_set_option(option, value)
+## The tool's intent as Rust's session holds it (`road_tool_intent`, round R2-6): the road type
+## ids, lanes, median, parking, attributes, the snapping options, continuous and straight grade.
+## Read when a menu opens or a key acts, never per frame.
+func intent() -> Dictionary:
+	return simulation_node.road_tool_intent() if _has_session() else {}
 
-func _send_lanes() -> void:
-	_send_option("lanes", Vector2i(fwd_lanes, bkw_lanes))
+## Sets one session option under Rust's name (`road_tool_set_option`: `continuous`,
+## `network_snap`, `guide_lines`, `zoning_grid`, `angle_step_deg`, `length_step_m`; the lanes and
+## straight grade through `set_lanes` and `set_straight_grade`). Returns Rust's refusal key, ""
+## when set.
+func set_option(option: String, value: Variant) -> String:
+	return simulation_node.road_tool_set_option(option, value) if _has_session() else ""
 
 ## Whether a stroke is being drawn: a point is placed, or a sent stroke awaits its answer.
 func is_drawing() -> bool:
@@ -430,18 +346,14 @@ func _adopt_session_preview(preview: Dictionary, points: PackedVector3Array, sta
 	_preview = preview
 	_preview_points = points
 
-## Sets the next stroke's lanes (0..4 each; 0 + 0 is a walkway).
+## Sets the next stroke's lanes (Rust clamps them to 0..4 each; 0 + 0 is a walkway).
 func set_lanes(fwd: int, bkw: int) -> void:
-	fwd_lanes = clamp(fwd, 0, 4)
-	bkw_lanes = clamp(bkw, 0, 4)
+	set_option("lanes", Vector2i(fwd, bkw))
 	_queue_preview_update()
 
 ## Turns straight grade on or off (T, the options checkbox).
 func set_straight_grade(enabled: bool) -> void:
-	if enabled == straight_grade:
-		return
-	straight_grade = enabled
-	_send_option("straight_grade", enabled)
+	set_option("straight_grade", enabled)
 	straight_grade_toggled.emit(enabled)
 	_intent_changed()
 
@@ -454,88 +366,28 @@ func step_height(steps: int) -> void:
 		_read_press(simulation_node.road_tool_event("raise_handle" if steps > 0 else "lower_handle"))
 	_queue_preview_update()
 
-## Sets the next stroke's median through Rust and returns its refusal key ("" when set). A
-## refused median leaves the tool's median as it was.
-func set_median(style: int, width: float) -> String:
-	if style == 0:
-		width = 0.0
-	var reason: String = simulation_node.set_road_tool_median(style, width)
-	if not reason.is_empty():
-		return reason
-	median_style = style
-	median_width = width
-	_intent_changed()
-	return ""
-
-## Sets the next stroke's kerbside parking through Rust (`PARK-05`) and returns its refusal key
-## ("" when set). A refused code leaves the tool's parking as it was.
-func set_parking(code: int) -> String:
-	var reason: String = simulation_node.set_road_tool_parking(code)
-	if not reason.is_empty():
-		return reason
-	parking = code
-	_intent_changed()
-	return ""
-
-## Sets the next stroke's speed limit, sidewalk sides, zoning and street lights through Rust and
-## returns its refusal key ("" when set; `speed_out_of_range` off Rust's grid or
-## `sidewalks_out_of_range`, keeping the tool's attributes).
-func set_attributes(speed: int, with_sidewalks: int, with_zoning: bool, with_lights: bool) -> String:
-	var reason: String = simulation_node.set_road_tool_attributes(speed, with_sidewalks, with_zoning, with_lights)
-	if not reason.is_empty():
-		return reason
-	speed_kmh = speed
-	sidewalks = with_sidewalks
-	zoning = with_zoning
-	street_lights = with_lights
-	_intent_changed()
-	return ""
-
-## Draws the next strokes with road type `id` (`ROAD-101`): its lanes, median, parking, speed,
-## sidewalks, zoning and street lights as Rust's `get_road_types` lists them. Returns "" when
-## picked, else the refusal key: the type's `invalid_reason` when it is unusable,
-## `road_type_unknown` when no type has `id`; a refused pick leaves the tool as it was (a usable
-## type's median, parking and speed always pass). `O(types x parts)` on a UI action.
+## Draws the next strokes with road type `id` (`ROAD-101`): Rust looks the type up and sets its
+## lanes, median, parking, speed, sidewalks, zoning and street lights at once
+## (`road_tool_set_road_type`). Returns "" when picked, else Rust's refusal key; a refused pick
+## leaves the intent as it was.
 func set_road_type(id: String) -> String:
-	var library: Dictionary = simulation_node.get_road_types()
-	var type := _road_type(id, library)
-	if type.is_empty():
-		return "road_type_unknown"
-	if not bool(type.get("usable", false)):
-		return String(type.get("invalid_reason", "road_type_unknown"))
-	var attributes := RoadTypeMenu.tool_attributes(type, library.get("speeds", {}))
-	var reason := set_attributes(attributes[0], attributes[1], attributes[2], attributes[3])
-	if not reason.is_empty():
-		return reason
-	reason = set_median(int(type.get("median_style", 0)), float(type.get("median_width", 0.0)))
+	var reason: String = simulation_node.road_tool_set_road_type(id)
 	if reason.is_empty():
-		reason = set_parking(int(type.get("parking", 0)))
-	if not reason.is_empty():
-		return reason
-	set_lanes(int(type.get("fwd_lanes", 0)), int(type.get("bkw_lanes", 0)))
-	road_type_id = id
-	if id != WALKWAY_ROAD_TYPE:
-		last_road_type_id = id
-	road_type_changed.emit(id)
-	return ""
+		road_type_changed.emit(id)
+		_intent_changed()
+	return reason
 
-## Picks the current type again after the library changed (`ROAD-101`): an edited type's new
-## layout draws from the next stroke on; built roads keep theirs. A type that is gone or no longer
-## usable falls back to the 2-Lane Road (the Walkway stays the Walkway).
+## Picks the current type again after the library changed (`ROAD-101`, Rust's
+## `road_tool_reload_road_type`): an edited type's new layout draws from the next stroke on; a
+## type that is gone or no longer usable falls back as Rust says.
 func reload_road_type() -> void:
-	if not bool(_road_type(last_road_type_id, simulation_node.get_road_types()).get("usable", false)):
-		last_road_type_id = DEFAULT_ROAD_TYPE
-	if not road_type_id.is_empty() and not set_road_type(road_type_id).is_empty():
-		set_road_type(last_road_type_id)
+	var id: String = simulation_node.road_tool_reload_road_type()
+	if not id.is_empty():
+		road_type_changed.emit(id)
+		_intent_changed()
 
-func _road_type(id: String, library: Dictionary) -> Dictionary:
-	for type in library.get("types", []):
-		if String(type.get("id", "")) == id:
-			return type
-	return {}
-
-# Rust's straight grade, median, parking or attributes changed: the stroke previews again (the
-# session compares them itself).
+# Rust's straight grade or road type changed: the stroke previews again (the session compares
+# them itself).
 func _intent_changed() -> void:
 	_queue_preview_update()
 

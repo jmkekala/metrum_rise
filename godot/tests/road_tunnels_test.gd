@@ -61,11 +61,10 @@ func _run() -> void:
 	var tool: Node = _main.get_node("RoadTool")
 	var ui: Node = _main.get_node_or_null("MainUI")
 	tool.active = true
-	tool.fwd_lanes = 1
-	tool.bkw_lanes = 1
+	tool.set_lanes(1, 1)
 	input_manager.current_tool = input_manager.Tool.ROAD
 	_press_t(input_manager)
-	_expect(tool.straight_grade, "T must turn straight grade on")
+	_expect(tool.intent().straight_grade, "T must turn straight grade on")
 	if ui != null and ui.straight_grade_check != null:
 		_expect(ui.straight_grade_check.button_pressed, "the checkbox must follow the T key")
 
@@ -105,7 +104,7 @@ func _run() -> void:
 
 	await _drive_through()
 	_press_t(input_manager)
-	_expect(not tool.straight_grade, "T must turn straight grade off")
+	_expect(not tool.intent().straight_grade, "T must turn straight grade off")
 
 	var screenshot := OS.get_environment("METRUM_ROAD61_SCREENSHOT")
 	if OS.get_environment("METRUM_ROAD61_SKY_TEST") == "1":

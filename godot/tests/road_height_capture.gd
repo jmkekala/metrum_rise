@@ -59,7 +59,7 @@ func _run() -> void:
 	_main.get_node("SceneLighting").pin_hour_of_day(12.0)
 	root.set_disable_input(true)
 	_tool = _main.get_node("RoadTool")
-	_tool.set_road_type(_tool.DEFAULT_ROAD_TYPE)
+	_tool.set_road_type("builtin:road_2l")
 	_tool.active = true
 	if OS.get_environment("METRUM_ROAD_HEIGHT_CAPTURE_SET") == "hue":
 		await _capture_hue()
@@ -128,7 +128,7 @@ func _run() -> void:
 	_expect(_tool._commit_segment(Vector3(60.0, 0.0, 200.0)), "the lower road commits")
 	await _ack()
 	_tool.cancel_road()
-	_tool.network_snap_enabled = false
+	_tool.set_option("network_snap", false)
 	_tool._begin_stroke(Vector3(0.0, 0.0, 140.0))
 	_tool.set_scripted_pointer(true, Vector3(0.0, 0.0, 200.0))
 	await _frames(1)
@@ -138,7 +138,7 @@ func _run() -> void:
 	await _capture_pair("end_over_lower_road", Vector3(0.0, 3.0, 185.0), Vector3(45.0, 6.0, 230.0))
 	_tool.cancel_road()
 	_tool.step_height(-16)
-	_tool.network_snap_enabled = true
+	_tool.set_option("network_snap", true)
 
 	# A bridge then a tunnel in one draft: the start raised 5 m, the end lowered 8 m (a batch);
 	# a height chip at each end.

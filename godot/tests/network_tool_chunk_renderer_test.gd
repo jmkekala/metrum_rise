@@ -734,6 +734,10 @@ func _test_native_road_cursor_contract() -> void:
 	_expect(end_cursor is Vector3 and Vector2(end_cursor.x, end_cursor.z).distance_to(Vector2(60.0, 32.0)) < 0.01, "the cursor snaps onto the dead end")
 	_expect(String(simulation.road_tool_frame().get("snap", "")) == "node", "the dead end's node takes the cursor")
 	var modes := RoadToolScript.new()
+	# The options live in Rust's session (round R2-6): a node of its own, so the modes and
+	# options set here stay out of the fixture's session.
+	var modes_simulation := SimulationNode.new()
+	modes.simulation_node = modes_simulation
 	var ui = preload("res://scripts/ui/main_ui.gd").new()
 	var manager = preload("res://scripts/core/input_manager.gd").new()
 	var vegetation = preload("res://scripts/tools/vegetation_tool.gd").new()
@@ -744,12 +748,12 @@ func _test_native_road_cursor_contract() -> void:
 	ui._build_ui()
 	_expect(ui.get_meta("options_panel").get_index() < ui.road_sub_menu.get_parent().get_parent().get_index(), "road options must sit to the left of road types")
 	ui.zoning_grid_snap_check.button_pressed = true
-	_expect(modes.zoning_grid_snap_enabled, "the actual checkbox must enable zoning snap")
+	_expect(modes.intent().zoning_grid, "the actual checkbox must enable zoning snap")
 	ui._set_draw_mode(1)
 	_expect(modes.draw_mode == 1 and ui.curve_btn.button_pressed and not ui.straight_btn.button_pressed, "the Curve button picks the simple curve")
-	_expect(not ui.zoning_grid_snap_check.disabled and modes.zoning_grid_snap_enabled, "the session snaps to the zoning grid in every mode")
+	_expect(not ui.zoning_grid_snap_check.disabled and modes.intent().zoning_grid, "the session snaps to the zoning grid in every mode")
 	ui.continuous_check.button_pressed = true
-	_expect(modes.continuous, "the Continuous checkbox sets the tool's continuous option")
+	_expect(modes.intent().continuous, "the Continuous checkbox sets the tool's continuous option")
 	ui._set_draw_mode(2)
 	_expect(modes.draw_mode == 2 and ui.s_curve_btn.button_pressed and not ui.curve_btn.button_pressed, "the S-curve button picks the complex curve")
 	ui._set_draw_mode(3)
@@ -760,7 +764,7 @@ func _test_native_road_cursor_contract() -> void:
 	ui.free()
 	manager.free()
 	vegetation.free()
-	_expect(not modes.zoning_grid_snap_enabled, "zoning snapping starts disabled")
+	_expect(not modes.intent().zoning_grid, "zoning snapping starts disabled")
 	modes.blueprint_mesh = MeshInstance3D.new()
 	modes.add_child(modes.blueprint_mesh)
 	var shift := InputEventKey.new()
@@ -769,16 +773,17 @@ func _test_native_road_cursor_contract() -> void:
 	shift.shift_pressed = true
 	Input.parse_input_event(shift)
 	Input.flush_buffered_events()
-	_expect(not modes.zoning_grid_snap_enabled, "Shift must not enable zoning snap")
-	modes.zoning_grid_snap_enabled = true
-	_expect(modes.zoning_grid_snap_enabled, "checkbox controls zoning snap while Shift is held")
+	_expect(not modes.intent().zoning_grid, "Shift must not enable zoning snap")
+	modes.set_option("zoning_grid", true)
+	_expect(modes.intent().zoning_grid, "checkbox controls zoning snap while Shift is held")
 	shift = InputEventKey.new()
 	shift.keycode = KEY_SHIFT
 	Input.parse_input_event(shift)
 	Input.flush_buffered_events()
-	_expect(modes.zoning_grid_snap_enabled, "releasing Shift must not change the checkbox setting")
+	_expect(modes.intent().zoning_grid, "releasing Shift must not change the checkbox setting")
 	modes.cancel_road()
 	modes.free()
+	modes_simulation.free()
 	var invalid := PackedVector3Array([Vector3.ZERO])
 	var abandoned := simulation.add_road_with_snap(invalid, 1, 1, true)
 	request = simulation.add_road_with_snap(invalid, 1, 1, true)
@@ -829,8 +834,7 @@ func _test_native_road_preview_contract(simulation: SimulationNode) -> void:
 	# The check waits for the core for its corridor clearance, so it never answers pending.
 	var hover: Dictionary = simulation.validate_road_candidate_with_snap(points, 1, 1, false)
 	_expect(hover.get("is_valid", false), "hover validation keeps its prepared profile: %s" % hover.get("invalid_reason", ""))
-	tool.fwd_lanes = 2
-	tool.bkw_lanes = 1
+	tool.set_lanes(2, 1)
 	tool.active = true
 	tool._begin_stroke(points[0])
 	tool.set_scripted_pointer(true, points[-1])
@@ -866,6 +870,8 @@ func _test_native_road_preview_contract(simulation: SimulationNode) -> void:
 					timings.append(Time.get_ticks_usec() - start)
 			timings.sort()
 			print("ROAD_PREVIEW_TIMING lanes=%d samples=%d preview_road_p50_us=%d p95_us=%d" % [lane_count * 2, timings.size(), timings[100], timings[190]])
+	# The lanes live in the node's session (round R2-6): the next tests draw the default road.
+	tool.set_lanes(1, 1)
 	tool.cancel_road()
 	tool.free()
 
@@ -1108,7 +1114,7 @@ func _test_s_curve_and_freeform(simulation: SimulationNode) -> void:
 func _test_continuous_chains(simulation: SimulationNode) -> void:
 	var tool := _session_road_tool(simulation)
 	tool.cancel_road()
-	tool.continuous = true
+	tool.set_option("continuous", true)
 	tool.draw_mode = RoadToolScript.DrawMode.COMPLEX_CURVE
 	tool._begin_stroke(Vector3(-45.0, 0.0, 48.0))
 	tool._commit_segment(Vector3(-35.0, 0.0, 48.0))
@@ -1152,7 +1158,7 @@ func _test_continuous_chains(simulation: SimulationNode) -> void:
 		await _await_ack(tool)
 		_expect(int(simulation.get_road_benchmark_state()["live_edges"]) > edges, "the chained freeform draft is built")
 	tool.cancel_road()
-	tool.continuous = false
+	tool.set_option("continuous", false)
 	tool.draw_mode = RoadToolScript.DrawMode.STRAIGHT
 	tool.free()
 
@@ -1252,41 +1258,39 @@ func _test_snapping_options_row(simulation: SimulationNode) -> void:
 	var extension: String = snap_at.call(80.0, 32.5)
 	_expect(extension == "guide", "the dead end's extension: %s" % extension)
 	ui.network_snap_check.button_pressed = false
-	_expect(not tool.network_snap_enabled and snap_at.call(60.5, 32.5) != "node", "network snap off: the node does not take the cursor")
+	_expect(not tool.intent().network_snap and snap_at.call(60.5, 32.5) != "node", "network snap off: the node does not take the cursor")
 	ui.guide_lines_check.button_pressed = false
-	_expect(not tool.guide_lines_enabled and snap_at.call(80.0, 32.5) == "free" and snap_at.call(60.5, 32.5) == "free", "guide lines off: the cursor is free")
+	_expect(not tool.intent().guide_lines and snap_at.call(80.0, 32.5) == "free" and snap_at.call(60.5, 32.5) == "free", "guide lines off: the cursor is free")
 	# The angle lock from a start on open ground: 6.8 degrees off east locks to east at 15.
 	simulation.road_tool_pointer(Vector3(40.0, 100.0, -100.0), Vector3.DOWN, false)
 	simulation.road_tool_event("press")
 	ui.angle_step_option.select(1)
 	ui.angle_step_option.item_selected.emit(1)
-	_expect(tool.angle_step_deg == 15.0 and snap_at.call(75.0, -95.8) == "angle", "a 15 degree step locks the stroke's direction")
+	_expect(tool.intent().angle_step_deg == 15.0 and snap_at.call(75.0, -95.8) == "angle", "a 15 degree step locks the stroke's direction")
 	ui.angle_step_option.select(0)
 	ui.angle_step_option.item_selected.emit(0)
-	_expect(tool.angle_step_deg == 0.0 and snap_at.call(75.0, -95.8) == "free", "Free drops the angle lock")
+	_expect(tool.intent().angle_step_deg == 0.0 and snap_at.call(75.0, -95.8) == "free", "Free drops the angle lock")
 	# The length step rounds a free end's distance from the start (32.2 m to 30 m at 10 m).
 	ui.length_step_check.button_pressed = true
 	var stepped: Variant = simulation.road_tool_pointer(Vector3(65.3, 100.0, -80.1), Vector3.DOWN, false)
-	_expect(tool.length_step_m == ui.length_step_spin.value and ui.length_step_spin.value == 10.0, "the length step defaults to the zoning cell")
+	_expect(tool.intent().length_step_m == ui.length_step_spin.value and ui.length_step_spin.value == 10.0, "the length step defaults to the zoning cell")
 	_expect(stepped is Vector3 and absf(Vector2(stepped.x - 40.0, stepped.z + 100.0).length() - 30.0) < 0.001, "the length step rounds the stroke: %s" % [stepped])
 	# A scripted value (like `select`) emits nothing outside the tree; a player's edit does.
 	ui.length_step_spin.value = 5.0
 	ui.length_step_spin.value_changed.emit(5.0)
 	stepped = simulation.road_tool_pointer(Vector3(65.3, 100.0, -80.1), Vector3.DOWN, false)
-	_expect(stepped is Vector3 and absf(Vector2(stepped.x - 40.0, stepped.z + 100.0).length() - 30.0) < 0.001 and tool.length_step_m == 5.0, "a 5 m step rounds 32.2 m to 30 m: %s, step %s" % [stepped, tool.length_step_m])
+	_expect(stepped is Vector3 and absf(Vector2(stepped.x - 40.0, stepped.z + 100.0).length() - 30.0) < 0.001 and tool.intent().length_step_m == 5.0, "a 5 m step rounds 32.2 m to 30 m: %s, step %s" % [stepped, tool.intent().length_step_m])
 	ui.length_step_check.button_pressed = false
 	stepped = simulation.road_tool_pointer(Vector3(65.3, 100.0, -80.1), Vector3.DOWN, false)
-	_expect(tool.length_step_m == 0.0 and stepped is Vector3 and absf(stepped.x - 65.3) < 0.001, "the length step off leaves the cursor")
+	_expect(tool.intent().length_step_m == 0.0 and stepped is Vector3 and absf(stepped.x - 65.3) < 0.001, "the length step off leaves the cursor")
 	simulation.road_tool_event("cancel")
-	# Something sets Rust's options directly; the tool's next activation re-sends the row's.
-	simulation.road_tool_set_option("network_snap", true)
-	simulation.road_tool_set_option("guide_lines", true)
-	_expect(snap_at.call(60.5, 32.5) == "node", "Rust's options were changed behind the tool")
+	# The options live in Rust's session only (round R2-6): switching the tool off and on keeps
+	# them, and the row's controls set them back.
 	tool.active = false
 	_road_frame(tool)
 	tool.active = true
 	_road_frame(tool)
-	_expect(snap_at.call(60.5, 32.5) == "free", "a re-activated tool re-sends the row's options")
+	_expect(snap_at.call(60.5, 32.5) == "free" and not tool.intent().network_snap, "a re-activated tool keeps Rust's options")
 	ui.network_snap_check.button_pressed = true
 	ui.guide_lines_check.button_pressed = true
 	_expect(snap_at.call(60.5, 32.5) == "node", "both back on: the node again")

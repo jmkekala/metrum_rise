@@ -1091,8 +1091,7 @@ func _begin_scripted_road(
 	road_tool.cancel_road()
 	road_tool.active = true
 	road_tool.draw_mode = int(segment["draw_mode"])
-	road_tool.fwd_lanes = int(segment["fwd_lanes"])
-	road_tool.bkw_lanes = int(segment["bkw_lanes"])
+	road_tool.set_lanes(int(segment["fwd_lanes"]), int(segment["bkw_lanes"]))
 	# Every mode is the road tool session's (`ROAD-112` rounds C, D): a scripted start, a curve's
 	# scripted control point, then the scripted pointer at the end.
 	road_tool._begin_stroke(start_pos)

@@ -78,7 +78,7 @@ func _stream_fixture(fixture: Dictionary) -> Dictionary:
 	tool.add_child(tool.blueprint_mesh)
 	# Manually drive the real process path at a fixed input cadence, without debug/node overlays.
 	tool.active = true
-	tool.fwd_lanes = fixture.forward
+	tool.set_lanes(fixture.forward, 1)
 	tool.draw_mode = 1 if fixture.get("curve", false) else 0
 	var start := _stream_point(fixture, 0.0, 0.0 if endpoint_join else -48.0)
 	var control := _stream_point(fixture, 0.0, -24.0)

@@ -3,9 +3,9 @@
 //! Road-type Godot API methods (`ROAD-101`): the road types the Roads menu, Road Properties and
 //! the road builder list, the layout check the builder asks on every edit, and the player's
 //! library edits. The library is `user://road_types.json`, read on first use (the tests' isolated
-//! profile moves `user://` with it). The tool draws a type through the existing calls: GDScript
-//! passes the listed type's lanes per call and its median to `set_road_tool_median`, and Road
-//! Properties applies it through `preview_edge_cross_section` / `set_edge_cross_section`.
+//! profile moves `user://` with it). The road tool draws a type by its id
+//! (`road_tool_set_road_type`, which looks it up here, round R2-6), and Road Properties applies
+//! one through `preview_edge_cross_section` / `set_edge_cross_section`.
 //!
 //! A part crosses the bridge as a dictionary: `{"kind": "sidewalk"}`, `{"kind": "car_lane",
 //! "forward": bool}`, `{"kind": "median", "style": 1 painted | 2 kerbed grass | 3 kerbed paving,
@@ -13,8 +13,7 @@
 //! `{"kind": "footpath"}` (a walkway's single part). A car road has a sidewalk part at either
 //! end, at both or at none (`ROAD-107`); a listed type or checked layout gives the sides as
 //! `sidewalks` (0 none, 1 left, 2 right, 3 both). A type also has `speed_kmh` (20 to 120 in steps
-//! of 10; 0 for a walkway), `zoning` and `street_lights`; the tool draws them through
-//! `set_road_tool_attributes`, and its parking through `set_road_tool_parking`.
+//! of 10; 0 for a walkway), `zoning` and `street_lights`.
 
 use super::super::*;
 use crate::simulation::network::graph::{MedianStyle, RoadMedian};
@@ -31,7 +30,7 @@ const LIBRARY_PATH: &str = "user://road_types.json";
 
 impl SimulationNode {
     // Runs `f` on the library, creating its handle (no file access) on first use.
-    fn with_road_types<R>(&self, f: impl FnOnce(&mut RoadTypeLibrary) -> R) -> R {
+    pub(super) fn with_road_types<R>(&self, f: impl FnOnce(&mut RoadTypeLibrary) -> R) -> R {
         let mut library = self
             .road_types
             .lock()

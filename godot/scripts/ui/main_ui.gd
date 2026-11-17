@@ -269,7 +269,7 @@ func _build_ui():
 	continuous_check.text = "Continuous"
 	continuous_check.focus_mode = Control.FOCUS_NONE
 	continuous_check.tooltip_text = "Continue each new road in the direction the last one ended."
-	continuous_check.toggled.connect(func(enabled: bool): road_tool.continuous = enabled)
+	continuous_check.toggled.connect(func(enabled: bool): road_tool.set_option("continuous", enabled))
 	# Its own row under the modes, so the panel keeps its width with four mode buttons.
 	var continuous_row := HBoxContainer.new()
 	var continuous_indent := Label.new()
@@ -1022,14 +1022,15 @@ func _on_road_types_changed(created_id: String) -> void:
 # step off). Shift frees the cursor of all but the network while held.
 func _build_snapping_rows() -> void:
 	var snap_row := _options_row("Snapping")
+	var intent: Dictionary = road_tool.intent() if road_tool else {}
 	network_snap_check = _option_check(snap_row, "Roads", "Snap to road junctions, ends and centrelines.")
-	network_snap_check.button_pressed = road_tool.network_snap_enabled if road_tool else true
-	network_snap_check.toggled.connect(func(enabled: bool): road_tool.network_snap_enabled = enabled)
+	network_snap_check.button_pressed = intent.get("network_snap", true)
+	network_snap_check.toggled.connect(func(enabled: bool): road_tool.set_option("network_snap", enabled))
 	guide_lines_check = _option_check(snap_row, "Guides", "Snap to the extensions of dead ends, square to nearby junctions and to the stroke's start.")
-	guide_lines_check.button_pressed = road_tool.guide_lines_enabled if road_tool else true
-	guide_lines_check.toggled.connect(func(enabled: bool): road_tool.guide_lines_enabled = enabled)
+	guide_lines_check.button_pressed = intent.get("guide_lines", true)
+	guide_lines_check.toggled.connect(func(enabled: bool): road_tool.set_option("guide_lines", enabled))
 	zoning_grid_snap_check = _option_check(snap_row, "Zoning grid", "Snap near parallel or perpendicular cell lines; draw other angles freely. Accounts for road widths. Existing road connections take priority.")
-	zoning_grid_snap_check.toggled.connect(func(enabled: bool): road_tool.zoning_grid_snap_enabled = enabled)
+	zoning_grid_snap_check.toggled.connect(func(enabled: bool): road_tool.set_option("zoning_grid", enabled))
 
 	var step_row := _options_row("Steps")
 	var angle_label := Label.new()
@@ -1040,9 +1041,9 @@ func _build_snapping_rows() -> void:
 	angle_step_option.tooltip_text = "Lock the stroke's direction to steps from the road it leaves (east on open ground). Shift draws free."
 	for step in ANGLE_STEPS_DEG:
 		angle_step_option.add_item("Free" if step == 0 else "%d°" % step)
-	var angle_step := int(road_tool.angle_step_deg) if road_tool else 0
+	var angle_step := int(intent.get("angle_step_deg", 0.0))
 	angle_step_option.select(maxi(ANGLE_STEPS_DEG.find(angle_step), 0))
-	angle_step_option.item_selected.connect(func(index: int): road_tool.angle_step_deg = float(ANGLE_STEPS_DEG[index]))
+	angle_step_option.item_selected.connect(func(index: int): road_tool.set_option("angle_step_deg", float(ANGLE_STEPS_DEG[index])))
 	step_row.add_child(angle_step_option)
 	length_step_check = _option_check(step_row, "Length", "Round the stroke's length to steps. Shift draws free.")
 	length_step_spin = SpinBox.new()
@@ -1050,7 +1051,7 @@ func _build_snapping_rows() -> void:
 	length_step_spin.max_value = 100.0
 	length_step_spin.step = 0.5
 	length_step_spin.suffix = "m"
-	var length_step: float = road_tool.length_step_m if road_tool else 0.0
+	var length_step: float = intent.get("length_step_m", 0.0)
 	length_step_spin.value = length_step if length_step > 0.0 else LENGTH_STEP_DEFAULT_M
 	length_step_spin.editable = length_step > 0.0
 	length_step_check.button_pressed = length_step > 0.0
@@ -1060,7 +1061,7 @@ func _build_snapping_rows() -> void:
 
 func _send_length_step() -> void:
 	length_step_spin.editable = length_step_check.button_pressed
-	road_tool.length_step_m = length_step_spin.value if length_step_check.button_pressed else 0.0
+	road_tool.set_option("length_step_m", length_step_spin.value if length_step_check.button_pressed else 0.0)
 
 # One labelled row of the road options panel.
 func _options_row(title: String) -> HBoxContainer:

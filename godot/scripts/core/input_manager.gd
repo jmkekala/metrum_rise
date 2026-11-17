@@ -306,7 +306,7 @@ func _unhandled_input(event):
 			KEY_P: _toggle_agent_paths()
 			KEY_T:
 				if current_tool == Tool.ROAD:
-					road_tool.set_straight_grade(not road_tool.straight_grade)
+					road_tool.set_straight_grade(not road_tool.intent()["straight_grade"])
 					get_viewport().set_input_as_handled()
 			KEY_SPACE:
 				_toggle_pause()
@@ -436,7 +436,7 @@ func _activate_tool_logic(tool_type: Tool, enabled: bool):
 				road_tool.active = enabled
 				if enabled:
 					# R draws the last road type picked (`ROAD-101`).
-					road_tool.set_road_type(road_tool.last_road_type_id)
+					road_tool.set_road_type(road_tool.intent()["last_road_type_id"])
 					road_tool.mark_network_topology_dirty()
 		Tool.WALKWAY: 
 			if zoning_overlay: zoning_overlay.set_tool_active(enabled)
