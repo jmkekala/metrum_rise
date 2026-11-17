@@ -13049,6 +13049,81 @@ R2-2's typed tick and its timing ring do not exist yet, so the gate sits beside 
   0, debug lib tests 2,812 passed / 0 failed / 233 ignored, `./run.sh --test` PASS (2,816 Rust
   tests, 234 skipped; both Godot chains, 0 SCRIPT ERROR).
 
+### The node markers (round R2-8)
+
+Round R2-8 of `ROAD-112` R2 (branch `roadtools-r28` on `dev` `9fa212ec`; finding F11; decision
+U-R2-4: the user removed the node markers from the road tool, whose session's snap handle already
+marks the node under the cursor). **Before:** the base network tool kept a MultiMesh of every live
+node. Whenever it was dirty (each install of committed chunks, each topology change) and a network
+tool was active, `_update_node_visuals` copied every node position (`get_network_nodes`, a list the
+simulation thread rebuilt `O(nodes)` into the render snapshot after each topology change) and set
+one instance transform a node in GDScript: `O(nodes)` on the main thread after every commit.
+
+- **Removed:** the MultiMesh, `_update_node_visuals` and `mark_network_nodes_dirty` from
+  `network_tool.gd`; the chunk renderer's call to its host and the `invalidate_nodes` flag of
+  `install` and of the hydration's `commit`; the snapshot's `node_positions` with the core's
+  cached list and its dirty flag (`SimCore` no longer rebuilds it after a topology change).
+- **Who drew the markers** (every script grepped): the road tool and the roundabout tool, both
+  through the base class. The select tool's junction handles (`_build_node_visuals`) are its own
+  and unchanged; no other tool or view used them.
+- **The roundabout tool keeps them, filled by Rust:** `roundabout_node_markers(multimesh, point)`
+  takes the live canonical nodes within 160 m of the pointer (`roundabouts::node_markers_near`
+  through the 16 m node grid of the road tool's context replica: `O(cells of the reach's square +
+  their nodes + k log k)`, no core lock) and writes their transforms into the tool's MultiMesh in
+  one buffer upload, reallocating it only when the count outgrows it. The tool calls it when its
+  preview key changes (the pointer moved 0.5 m, the network or an overlay changed); its script
+  only makes the MultiMesh, mesh and material once.
+- **`get_network_nodes` stays for one caller**, the preview replay's populated site lookup
+  (benchmark setup): it now reads the core when asked, `O(nodes)`, and no tool calls it.
+- **Tests:** `node_markers_take_the_live_nodes_within_the_reach_and_none_past_it` (Rust: 159.9 m
+  in, 160 m on the edge in, 160.5 m out, a corner of the query's square out, a node without a road
+  out; a metre west swaps them); `road_roundabouts_test.gd` marks the crossing's five nodes from
+  beside it and none from bare ground 300 m away; the chunk renderer test's publication-order
+  checks count the tool's topology refreshes, which its marker count stood in for.
+
+**Fresh, 2026-11-17 04:41-05:22** (base `dev` `9fa212ec`'s release library `b269a5b62d88e619`
+with its scripts, branch `d11f01894fdaea9e`):
+
+- **A commit on the 30k city** (the K22 commit city, 713 live nodes, rendered in gamescope's
+  headless backend, one pass a side, run and exclusive timing locks; a measurement script outside
+  the repository loads it, commits four T branches off the west border trunk through the road
+  tool's commit path and stamps each frame's process step from a node that processes first to one
+  that processes last). The base's marker loop timed directly on this city: **0.14 ms** (0.142-0.174
+  ms, five runs), once after every commit's install and every topology change; `O(nodes)`, so about
+  20 ms at 100k nodes. The branch has no such step. The commit frames are level: the process step's
+  worst frame from the click to the settle, base / branch, 18.9 / 18.9, 6.7 / 7.1, 2.4 / 2.7 and
+  2.7 / 2.6 ms; p50 0.59-0.70 ms on both (single runs: the marker's 0.14 ms is below their spread).
+- **The roundabout tool's still** at the second branch's junction: base (every node marked) and
+  branch (the nodes within 160 m) mark the same nodes in that view; the stills differ only in one
+  car's 61 pixels.
+- **Grep:** no script under `godot/scripts/tools`, `renderers`, `ui` or `core` calls
+  `get_network_nodes` or loops over the network's nodes; the one remaining caller is the
+  benchmark replay's setup.
+- **Level R** (the session benchmark's 30k locality mode, the base's and the branch's bench
+  binaries C B B C, pinned, run and exclusive locks): straight p50 102.5 / 102.4 / 100.5 / 102.3 us,
+  p99 137.7 / 135.1 / 132.7 / 137.1 us; curve p50 113.0 / 112.9 / 110.7 / 113.1 us; frame digests
+  `32cb9b4b11dccf75` and `ca3e8f6d742b48b2` on all four. The Kuopio drag probe PASS on both
+  sides. No product path changed (the markers were display only), so no product run.
+- **Timing, level F** (the path rule's: the snapshot and core state files; the brief's level was
+  R), `./run.sh --timing --level F --k22 --control <the base's $TEST_BINARY> --branch
+  "$TEST_BINARY" --base 9fa212ec --artifacts "$ARTIFACTS/timing"`, control `6cb4d3e6eadf8af3`,
+  branch `24bb597bc3379c01`, 05:04-05:15, the 1x control day timed (no cached row this boot).
+  **K22 30k click-to-ack 6.75 / 6.63 ms** (commit 6.72 / 6.59). 30k 1x: mean 2.076 / 2.086 and
+  2.058 ms, p99 3.30 / 3.53 and 3.26 ms; the first branch day missed acceptance on p99.9 (8.36 ms,
+  48 frames over 8 ms, the agent component's worst frame 13.4 ms) and the second passed (3.71 ms).
+  30k 32x C B B C: mean 4.283 / 4.313 ms, p99 level, max unpreempted 7.43 / 8.65 ms (WORSE by the
+  runner, the `PERF-17` rows). The rerun of the missed day and the 32x set (05:18-05:22; the
+  machine's load 17 at its start, another session's build just ended; the day marked noisy): the
+  day passes (p99.9 6.37 ms, mean 2.096), 32x mean level, p99 and p99.9 worse on both sides'
+  spread (the control's own p99.9 8.61 and 10.95 ms). Means and the snapshot component are level
+  in every comparison. The removed code is the snapshot's node list rebuild after a topology
+  change: a `PERF-07` day edits nothing after its load, so it ran neither on the base nor on the
+  branch there, and its tail deltas are machine noise; the K22 commit, which does edit, is level
+  (one run a side).
+- **Gates** (fresh on `e6518b57`'s tree): clippy's warning set equal to the base's (14 = 14), missing docs
+  0, debug lib tests 2,812 passed / 0 failed / 233 ignored, `./run.sh --test` PASS (2,816 Rust
+  tests, 234 skipped; both Godot chains, 0 SCRIPT ERROR).
+
 ### The pick's graded preparation halved (round PB, `ROAD-116`)
 
 Round PB of `ROAD-112` (branch `roadtools-pb`, R2-7 on `dev` `75523322`). **Bisect.** The
@@ -14907,8 +14982,8 @@ hydration's parts `install_built`, `install_lights`, `build_lights_part`, `light
 `hydration_materials`, `is_holding`, and for the preview display `chunks`, `new_chunk_node`,
 `fill_chunk_mesh`, `place_chunk`, `chunk_root`; read-only state `generation`, `span_m`,
 `origin_x_m`, `origin_z_m`, `holds` (the Rust hold rule, `RoadDrawHolds`; round N), `street_lights`, `road_signs`. It tells its host (the
-road tool) `mark_network_nodes_dirty`, `road_chunks_installed(generation)` and
-`road_chunks_released()`. Chunks are `MeshInstance3D` nodes. Since CB part 2 (2026-11-13) a
+road tool) `road_chunks_installed(generation)` and `road_chunks_released()` (round R2-8 removed
+`mark_network_nodes_dirty` with the node markers). Chunks are `MeshInstance3D` nodes. Since CB part 2 (2026-11-13) a
 load's hydration builds them in Rust: each chunk's surfaces are encoded in Godot's own layout on
 the background pool (`stream/layers/roads/surfaces.rs`, bitwise equal to
 `add_surface_from_arrays`), added a surface a part to a hidden `ArrayMesh` through
