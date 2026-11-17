@@ -647,15 +647,23 @@ func _placement(origin: Vector2, span: float, understory: bool, near_band: bool)
 
 # How many trunks stand inside a visible road chunk's triangles: the road drawn, an install's held
 # chunks (T61 (2)) included and its hidden ones not; with `preview` the preview's overlays instead
-# (road_preview_display.gd names them RoadPreview_<x>_<z>).
+# (Rust's since `ROAD-112` round R2-4a, `road_tool_overlay_chunks`; a pooled mesh is refilled
+# by each preview, so its cells are keyed by the preview's number too).
 func _on_road(trunks: PackedVector2Array, preview: bool) -> int:
 	var binned: Array[Dictionary] = []
-	for chunk in _bench.road_tool.chunks.chunk_root.get_children():
-		if not chunk is MeshInstance3D or not chunk.visible or String(chunk.name).begins_with("RoadPreview_") != preview:
-			continue
-		var id: int = chunk.get_instance_id()
+	var sources: Array = []
+	if preview:
+		var shown: int = _bench.road_tool._preview_drawn_sequence
+		for overlay in _bench.road_tool.simulation_node.road_tool_overlay_chunks():
+			sources.append([overlay["mesh"], overlay["origin"], "%s/%d/%s" % [overlay["mesh"], shown, overlay["held"]]])
+	else:
+		for chunk in _bench.road_tool.chunks.chunk_root.get_children():
+			if chunk is MeshInstance3D and chunk.visible:
+				sources.append([chunk.mesh.get_rid(), chunk.position, chunk.get_instance_id()])
+	for source in sources:
+		var id: Variant = source[2]
 		if not _veg_roads.has(id):
-			_veg_roads[id] = _road_cells(chunk)
+			_veg_roads[id] = _road_cells(source[0], source[1])
 		if not (_veg_roads[id] as Dictionary).is_empty():
 			binned.append(_veg_roads[id])
 	var count := 0
@@ -681,11 +689,12 @@ func _on_road(trunks: PackedVector2Array, preview: bool) -> int:
 
 # A road chunk's triangles meeting the stroke's region, in world xz, binned by VEG_CELL_M cell;
 # vertical faces cover no ground and are left out. Once per chunk node.
-func _road_cells(chunk: MeshInstance3D) -> Dictionary:
+func _road_cells(mesh: RID, shift: Vector3) -> Dictionary:
 	var out := {}
-	var shift := chunk.position
-	# The server's surfaces: a hydrated chunk's are only there (`RENDER-52` part 2).
-	for surface in RoadChunkRenderer.server_surfaces(chunk.mesh):
+	# The server's surfaces: a hydrated chunk's and an overlay's are only there (`RENDER-52`
+	# part 2, `ROAD-112` round R2-4a).
+	for index in RenderingServer.mesh_get_surface_count(mesh):
+		var surface := RenderingServer.mesh_get_surface(mesh, index)
 		var box: AABB = surface["aabb"]
 		if not Rect2(Vector2(box.position.x + shift.x, box.position.z + shift.z), Vector2(box.size.x, box.size.z)).intersects(_veg_region):
 			continue

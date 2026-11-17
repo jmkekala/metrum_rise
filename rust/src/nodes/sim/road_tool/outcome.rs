@@ -8,9 +8,11 @@
 //! logged, a refused commit stays refused) reads this, never a dictionary key.
 
 use std::borrow::Cow;
+use std::sync::Arc;
 
 use godot::builtin::Vector3;
 
+use super::draw::chunks::PreviewOverlay;
 use super::labels::PreviewFacts;
 use super::wording::ReasonFacts;
 use crate::simulation::network::road_edit::RoadPreviewValidation;
@@ -70,6 +72,9 @@ pub(crate) struct PreviewOutcome {
     pub(crate) prepared: Vec<Vector3>,
     /// The buildings the stroke demolishes.
     pub(crate) demolish_count: i64,
+    /// The changed chunks' overlays encoded for the server (round R2-4a), shared with the
+    /// preview's pieces; `None` without them.
+    pub(crate) overlay: Option<Arc<PreviewOverlay>>,
 }
 
 impl PreviewOutcome {

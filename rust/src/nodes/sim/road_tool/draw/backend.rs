@@ -5,6 +5,8 @@
 //! draws mesh surfaces. [`super::engine::GodotBackend`] calls the `RenderingServer`; the
 //! recorder (tests) keeps the commands and the state they leave. Main thread only.
 
+use crate::nodes::sim::render::stream::layers::roads::surfaces::RoadSurface;
+
 /// A backend object: a `RenderingServer` RID's id, or a recorder's number.
 pub(crate) type Handle = u64;
 
@@ -103,6 +105,15 @@ pub(crate) trait DrawBackend {
     fn mesh_update_region(&mut self, mesh: Handle, surface: u32, region: Region, bytes: &[u8]);
     /// Sets the material of `mesh`'s surface `surface`.
     fn mesh_set_material(&mut self, mesh: Handle, surface: u32, material: Handle);
+    /// An instance of `mesh` as a road chunk's node draws it (round R2-4a, the preview's
+    /// overlay chunks): hidden, casting no shadow (the roads' receiver-only policy), culled by
+    /// its mesh's bounds.
+    fn instance_create_plain(&mut self, mesh: Handle) -> Handle;
+    /// Appends a road chunk layer's encoded surface (`surfaces.rs`) to `mesh`, drawn with
+    /// `material`.
+    fn mesh_add_road_surface(&mut self, mesh: Handle, surface: &RoadSurface, material: Handle);
+    /// Places `instance` at `origin` (identity basis).
+    fn instance_set_origin(&mut self, instance: Handle, origin: [f32; 3]);
     /// Shows or hides `instance`.
     fn instance_set_visible(&mut self, instance: Handle, visible: bool);
     /// Where the line material's dashes keep their on-screen length (`dash_focus`).

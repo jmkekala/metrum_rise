@@ -808,6 +808,31 @@ func _await_road_commit(simulation: SimulationNode, request: int) -> Dictionary:
 	_expect(false, "native road completion must finish")
 	return {}
 
+# Rust's overlay chunks (round R2-4a: encoded in the preview's payload stage, added with
+# `mesh_add_surface`) read back from the server equal, byte for byte, the surfaces
+# `fill_chunk_mesh` builds from the same preview's payload: format, buffers, count, bounds and
+# each layer's material.
+func _expect_overlays_as_filled(tool: Node3D, simulation: SimulationNode, overlays: Array) -> void:
+	var payload := {}
+	for chunk in simulation.road_tool_preview_chunks():
+		payload[Vector2i(chunk["chunk_x"], chunk["chunk_z"])] = chunk
+	for overlay in overlays:
+		var key := Vector2i(overlay["chunk_x"], overlay["chunk_z"])
+		_expect(payload.has(key), "an overlay chunk %s is the preview's" % key)
+		if not payload.has(key):
+			continue
+		var filled := ArrayMesh.new()
+		_expect(tool.chunks.fill_chunk_mesh(filled, payload[key]), "the payload of %s fills" % key)
+		var rid: RID = overlay["mesh"]
+		var count := RenderingServer.mesh_get_surface_count(rid)
+		_expect(count == filled.get_surface_count() and count == int(overlay["surfaces"]), "%s: one surface a non-empty layer (%d, filled %d)" % [key, count, filled.get_surface_count()])
+		for surface in mini(count, filled.get_surface_count()):
+			var ours: Dictionary = RenderingServer.mesh_get_surface(rid, surface)
+			var theirs: Dictionary = RenderingServer.mesh_get_surface(filled.get_rid(), surface)
+			for field in ["format", "vertex_count", "vertex_data", "attribute_data", "aabb", "index_count"]:
+				_expect(ours.get(field) == theirs.get(field), "%s surface %d: %s equal to fill_chunk_mesh's" % [key, surface, field])
+			_expect(RenderingServer.mesh_surface_get_material(rid, surface) == filled.surface_get_material(surface).get_rid(), "%s surface %d: the layer's material" % [key, surface])
+
 func _test_native_road_preview_contract(simulation: SimulationNode) -> void:
 	var tool := RoadToolScript.new()
 	tool.name = "RoadTool"
@@ -840,23 +865,27 @@ func _test_native_road_preview_contract(simulation: SimulationNode) -> void:
 	tool.set_scripted_pointer(true, points[-1])
 	tool._process(1.0 / 60.0)
 	_expect(tool._preview_display.sequence > 0, "one frame previews and shows the stroke's chunks")
-	var instances: Array = tool._preview_display._instances.duplicate()
-	_expect(not instances.is_empty() and tool.blueprint_mesh.mesh == null, "the preview shows compiled chunks, never a ribbon")
+	var overlays: Array = simulation.road_tool_overlay_chunks()
+	_expect(not overlays.is_empty() and tool.blueprint_mesh.mesh == null, "the preview shows compiled chunks, never a ribbon")
+	_expect(not tool._preview.has("road_chunks"), "the tool's preview hands its chunks to Rust, not the script")
+	_expect_overlays_as_filled(tool, simulation, overlays)
+	var counts: PackedInt64Array = simulation.road_tool_overlay_counts()
 	var calls := tool._preview_sequence
 	tool._queue_preview_update()
 	tool._process(1.0 / 60.0)
-	_expect(tool._preview_sequence == calls and tool._preview_display._instances == instances, "an unchanged stroke neither previews nor uploads again")
-	var malformed: Dictionary = tool._preview.duplicate(true)
-	malformed["road_chunks"][0]["road_normals"] = PackedVector3Array()
-	_expect(not tool._preview_display.show(tool.chunks, malformed, tool._preview_sequence + 1), "incomplete mesh batches must fail atomically")
-	_expect(tool._preview_display._instances == instances, "failed staging must preserve the complete previous preview")
+	_expect(tool._preview_sequence == calls and simulation.road_tool_overlay_counts() == counts, "an unchanged stroke neither previews nor uploads again")
+	# Rust shows only the overlays of the preview it handed out last.
+	_expect(not simulation.road_tool_show_overlay(tool._preview_sequence + 1), "an unknown preview shows nothing")
+	var stale: Dictionary = tool._preview.duplicate(true)
+	_expect(not tool._preview_display.show(tool.chunks, stale, tool._preview_sequence + 1), "a preview Rust has no overlays of fails atomically")
+	_expect(simulation.road_tool_overlay_counts() == counts and tool._preview_display.sequence == calls, "failed staging must preserve the complete previous preview")
 	var rejected: Dictionary = tool._preview.duplicate(false)
 	rejected["is_valid"] = false
 	rejected["invalid_reason"] = "terrain_clip_missing_outer_boundary_owner"
 	rejected["sequence"] = tool._preview_sequence + 1
 	tool._preview = rejected
 	tool._show_preview()
-	_expect(tool._preview_display.sequence == 0 and tool._preview_display._instances.is_empty(), "a rejected stroke shows no road")
+	_expect(tool._preview_display.sequence == 0 and simulation.road_tool_overlay_chunks().is_empty(), "a rejected stroke shows no road")
 	var notice: String = RoadWording.reason_text(rejected, RoadWording.default_refusal())
 	_expect(notice.contains("terrain boundary"), "terrain rejection must retain an explanatory notice: '%s'" % notice)
 	if OS.get_environment("METRUM_ROAD_PREVIEW_TIMING") == "1":

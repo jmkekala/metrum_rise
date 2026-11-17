@@ -387,14 +387,25 @@ impl SimulationNode {
         bkw_lanes: i32,
         snap_to_existing_roads: bool,
     ) -> VarDictionary {
-        self.preview_stroke(
+        let mut dict = self.preview_stroke(
             points.as_slice(),
             [fwd_lanes, bkw_lanes],
             snap_to_existing_roads,
             RoadProfile::FollowGround,
             None,
             &mut PreviewOutcome::default(),
-        )
+        );
+        dict.set("road_chunks", self.road_tool_last_preview_chunks());
+        dict
+    }
+
+    /// The last single-stroke preview's `road_chunks` (tests that read a payload): the
+    /// chunks' overlays in the committed publication's mesh format, with their hidden runs,
+    /// as `preview_road` returns them; empty without chunks. Built on demand: the road tool's
+    /// own previews hand their chunks to the draw module, not to the script (round R2-4a).
+    #[func]
+    pub fn road_tool_preview_chunks(&self) -> VarArray {
+        self.road_tool_last_preview_chunks()
     }
 
     // [`Self::preview_road`] for a stroke already in Rust (the road tool session's), with its
@@ -529,15 +540,16 @@ impl SimulationNode {
         }
         let packing_start = std::time::Instant::now();
         let mut chunks = PackedInt32Array::new();
-        let mut road_chunks = VarArray::new();
+        outcome.overlay = None;
         if let Some(pieces) = &preview.pieces {
             for &(x, z) in &pieces.changed_chunks {
                 chunks.push(x);
                 chunks.push(z);
             }
-            if let Some(meshes) = &pieces.chunks {
-                road_chunks = Self::preview_road_chunk_updates(meshes);
-            }
+            Self::set_preview_runs(&mut dict, pieces.chunks.as_ref());
+            outcome.overlay = pieces.overlay.clone();
+        } else {
+            Self::set_preview_runs(&mut dict, None);
         }
         let cell_m = f64::from(view_terrain.cell_size_m());
         Self::set_graded_preview_changes(
@@ -555,7 +567,6 @@ impl SimulationNode {
             .as_ref()
             .is_some_and(|pieces| pieces.chunks.is_some());
         dict.set("has_road_chunks", has_road_chunks);
-        dict.set("road_chunks", road_chunks);
         dict.set("road_mesh_generation", generation(road_mesh_generation));
         dict.set("chunk_span_m", span_m);
         dict.set("chunk_origin_x_m", origin.0);
@@ -708,6 +719,48 @@ impl SimulationNode {
             "graded_pack_ms",
             pack_start.elapsed().as_secs_f64() * 1000.0,
         );
+    }
+
+    // The resident runs a preview's chunks hide (`ROAD-68-H` round 3), what the display
+    // collapses while the draw module shows the overlays (round R2-4a): `overlay_chunks` four
+    // ints a chunk in key order (x, z, the end of its triples in `overlay_hidden`, the end of
+    // its positions in `overlay_hidden_positions`), `overlay_hidden` flat `[layer, start, end]`
+    // vertex ranges of the resident chunk and `overlay_hidden_positions` their published
+    // positions. Empty arrays without chunks. `O(chunks + hidden vertices)`.
+    pub(super) fn set_preview_runs(
+        dict: &mut VarDictionary,
+        chunks: Option<
+            &std::collections::BTreeMap<
+                crate::simulation::network::roadbed::SurfaceChunkKey,
+                crate::simulation::network::render::road::PreviewChunk,
+            >,
+        >,
+    ) {
+        let mut table = PackedInt32Array::new();
+        let mut hidden = PackedInt32Array::new();
+        let mut positions = PackedVector3Array::new();
+        for (chunk, preview) in chunks.into_iter().flatten() {
+            hidden.extend(preview.hidden.iter().flatten().map(|&value| value as i32));
+            positions.extend(preview.hidden_positions.iter().copied());
+            table.extend([chunk.0, chunk.1, hidden.len() as i32, positions.len() as i32]);
+        }
+        dict.set("overlay_chunks", table);
+        dict.set("overlay_hidden", hidden);
+        dict.set("overlay_hidden_positions", positions);
+    }
+
+    // `road_tool_preview_chunks`: the context's last preview's chunks as `road_chunks`.
+    fn road_tool_last_preview_chunks(&self) -> VarArray {
+        let context = self
+            .road_tool
+            .context
+            .lock()
+            .expect("road tool context lock poisoned");
+        (context.last_preview.as_ref())
+            .and_then(|preview| preview.pieces.as_ref())
+            .and_then(|pieces| pieces.chunks.as_ref())
+            .map(Self::preview_road_chunk_updates)
+            .unwrap_or_default()
     }
 
     // The preview's chunks below the chunk (`ROAD-68-H` round 3): each overlay in the committed

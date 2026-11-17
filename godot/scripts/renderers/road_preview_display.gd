@@ -1,14 +1,16 @@
 # SPDX-License-Identifier: GPL-2.0-only
 
 ## Reversible render-only road preview for the road tool's synchronous preview (`ROAD-68-E`),
-## below the chunk since `ROAD-68-H` round 3 (`docs/roads.md`). Rust sends, for each chunk a
-## stroke changes, an overlay of the rebuilt pieces and the runs of the resident chunk they
-## replace. The resident chunk stays drawn with those runs collapsed in its vertex buffer (three
-## equal positions draw nothing), the overlays draw the rebuilt pieces, and a run shown again gets
-## its published positions back. Everything is staged before anything visible changes. Replaced
-## overlay nodes and their ArrayMeshes are recycled as detached spares. A resident chunk's runs
-## are read from its mesh's layer metas and written through the RenderingServer on the mesh's
-## RID, so a chunk a hydration built in Rust (`RENDER-52` part 2) collapses as one built here.
+## below the chunk since `ROAD-68-H` round 3 (`docs/roads.md`). For each chunk a stroke changes,
+## Rust draws an overlay of the rebuilt pieces (`ROAD-112` round R2-4a: encoded in the preview's
+## payload stage and added to pooled meshes by the tool's draw module, `road_tool_show_overlay`)
+## and the preview names the runs of the resident chunk they replace. The resident chunk stays
+## drawn with those runs collapsed in its vertex buffer (three equal positions draw nothing), and
+## a run shown again gets its published positions back. The runs are checked against the resident
+## chunks before anything visible changes; Rust stages and swaps its overlays in one call. A
+## resident chunk's runs are read from its mesh's layer metas and written through the
+## RenderingServer on the mesh's RID, so a chunk a hydration built in Rust (`RENDER-52` part 2)
+## collapses as one built here. The runs' bookkeeping moves to Rust in round R2-4b.
 extends RefCounted
 
 # A surface's positions are their own f32 stream ahead of its normals (Godot 4.7, checked on the
@@ -17,7 +19,12 @@ const POSITION_BYTES := 12
 
 # Preview sequence of the displayed overlays; 0 when none is shown.
 var sequence: int = 0
-var _instances: Array[MeshInstance3D] = []
+## An accepted commit's display, held until its chunks install: Rust holds its overlays with the
+## commit's hue and releases them with it (`road_tool_release_held`), so clearing it leaves
+## Rust's current overlays alone.
+var held := false
+# The simulation node whose overlays this display shows (set by the first `show`).
+var _simulation: Object = null
 # The chunk keys the displayed preview changes.
 var _keys: Array[Vector2i] = []
 # Collapsed runs by chunk key: {"instance": the resident MeshInstance3D, "runs":
@@ -29,20 +36,12 @@ var _pending: Dictionary = {}
 var _pending_sequence: int = 0
 # The shown preview, re-shown when an install replaces the resident chunks it indexes.
 var _shown: Dictionary = {}
-# Never displayed. Staging fills only these, so a failed batch cannot touch the visible one.
-# Trimmed to the displayed count on install: the pool is one staging set, not cursor history.
-var _spare: Array[MeshInstance3D] = []
 
-func _notification(what: int) -> void:
-	if what == NOTIFICATION_PREDELETE:
-		# Detached spares have no SceneTree owner; free them with the helper.
-		for instance in _spare:
-			if is_instance_valid(instance) and instance.get_parent() == null:
-				instance.free()
-
-## Shows a preview's `road_chunks` over the resident chunks with the same keys. False, with the
-## previous display unchanged, when the payload does not fit the resident chunks. A preview of a
-## road mesh generation not installed yet shows no road until `resident_installed`.
+## Shows a preview's chunks (`overlay_chunks`, `overlay_hidden`, `overlay_hidden_positions`, and
+## Rust's overlays of `preview_sequence`) over the resident chunks with the same keys. False,
+## with the previous display unchanged, when the runs do not fit the resident chunks or Rust has
+## no overlays of that number. A preview of a road mesh generation not installed yet shows no road
+## until `resident_installed`.
 func show(renderer: Node3D, preview: Dictionary, preview_sequence: int) -> bool:
 	if preview_sequence == sequence and sequence > 0:
 		return true
@@ -51,8 +50,11 @@ func show(renderer: Node3D, preview: Dictionary, preview_sequence: int) -> bool:
 	var origin_z := float(preview.get("chunk_origin_z_m", 0.0))
 	if renderer.generation >= 0 and (span != renderer.span_m or origin_x != renderer.origin_x_m or origin_z != renderer.origin_z_m):
 		return false
-	var chunks: Variant = preview.get("road_chunks")
-	if not chunks is Array or chunks.is_empty():
+	# Four ints a chunk: x, z, the end of its triples in `hidden`, the end of its positions.
+	var table: Variant = preview.get("overlay_chunks")
+	var hidden: Variant = preview.get("overlay_hidden")
+	var positions: Variant = preview.get("overlay_hidden_positions")
+	if not table is PackedInt32Array or table.is_empty() or table.size() % 4 != 0 or not hidden is PackedInt32Array or not positions is PackedVector3Array:
 		return false
 	# The hidden runs index the resident chunks of exactly this generation.
 	# Held chunks (T61 (2)) are not drawn yet: wait for them as for an install.
@@ -62,48 +64,34 @@ func show(renderer: Node3D, preview: Dictionary, preview_sequence: int) -> bool:
 		_pending_sequence = preview_sequence
 		return true
 	var keys: Array[Vector2i] = []
-	var staged: Array[MeshInstance3D] = []
 	var targets := {}
-	for chunk in chunks:
-		if not chunk is Dictionary or not chunk.has("chunk_x") or not chunk.has("chunk_z"):
-			_recycle(staged)
-			return false
-		var key := Vector2i(chunk["chunk_x"], chunk["chunk_z"])
+	var hidden_from := 0
+	var positions_from := 0
+	for at in range(0, table.size(), 4):
+		var key := Vector2i(table[at], table[at + 1])
 		if key in keys:
-			_recycle(staged)
 			return false
 		keys.append(key)
-		var target = _resident_target(renderer, key, chunk)
+		var target = _resident_target(renderer, key, hidden, Vector2i(hidden_from, table[at + 2]), positions, Vector2i(positions_from, table[at + 3]))
 		if target == null:
-			_recycle(staged)
 			return false
 		if not target.is_empty():
 			targets[key] = target
-		if not _has_overlay(chunk):
-			continue
-		var instance: MeshInstance3D = _spare.pop_back() if not _spare.is_empty() else renderer.new_chunk_node()
-		# Spares are detached and hidden from the display, so clearing their surfaces is safe.
-		instance.mesh.clear_surfaces()
-		staged.append(instance)
-		if not renderer.fill_chunk_mesh(instance.mesh, chunk):
-			_recycle(staged)
-			return false
-		instance.name = "RoadPreview_%d_%d" % [key.x, key.y]
-		renderer.place_chunk(instance, key, span, origin_x, origin_z)
-	# Everything is staged before the visible state changes: the runs collapse and restore and the
-	# overlays swap in this call, so no frame shows a replaced run beside its rebuilt piece or
-	# neither.
+		hidden_from = table[at + 2]
+		positions_from = table[at + 3]
+	if hidden_from != hidden.size() or positions_from != positions.size():
+		return false
+	# Rust stages the overlays and swaps them for the shown ones in this call, and the runs
+	# collapse and restore in this call too, so no frame shows a replaced run beside its rebuilt
+	# piece or neither.
+	_simulation = renderer.simulation_node
+	if not _simulation.road_tool_show_overlay(preview_sequence):
+		return false
 	_pending = {}
 	_apply_runs(targets)
-	_recycle(_instances)
-	for instance in staged:
-		renderer.chunk_root.add_child(instance)
-	_instances = staged
 	_keys = keys
 	_shown = preview
 	sequence = preview_sequence
-	while _spare.size() > _instances.size():
-		_spare.pop_back().free()
 	return true
 
 ## After the chunk renderer installed resident chunks: shows the preview that waited for them, or
@@ -120,34 +108,31 @@ func resident_installed(renderer: Node3D) -> void:
 	if not show(renderer, preview, preview_sequence):
 		clear()
 
-## Restores every collapsed run and removes the overlays.
+## Restores every collapsed run and hides the overlays (a held display's go with the commit's
+## hue, `road_tool_release_held`).
 func clear() -> void:
 	_apply_runs({})
 	_keys.clear()
-	_recycle(_instances)
+	if sequence > 0 and not held and is_instance_valid(_simulation):
+		_simulation.road_tool_clear_overlay()
 	_pending = {}
 	_pending_sequence = 0
 	_shown = {}
 	sequence = 0
 
-## Releases every preview-owned node, including spares. Use when the preview session ends.
+## Ends the display. Use when the preview session ends.
 func reset() -> void:
 	clear()
-	for instance in _spare:
-		if is_instance_valid(instance):
-			instance.queue_free()
-	_spare.clear()
 
-# The resident runs a chunk's payload hides: {"instance", "positions", "runs": {Vector3i(layer,
-# start, end): Vector2i(first position, count)}}; empty when it hides none; null when the payload
-# does not fit the resident chunk.
-func _resident_target(renderer: Node3D, key: Vector2i, chunk: Dictionary) -> Variant:
-	var hidden: Variant = chunk.get("hidden")
-	var positions: Variant = chunk.get("hidden_positions")
-	if not hidden is PackedInt32Array or hidden.size() % 3 != 0 or not positions is PackedVector3Array:
+# The resident runs a chunk's preview hides: {"instance", "positions", "runs": {Vector3i(layer,
+# start, end): Vector2i(first position, count)}}; empty when it hides none; null when they do not
+# fit the resident chunk. `span` and `position_span` are the chunk's [from, to) in the preview's
+# flat `hidden` triples and `positions`.
+func _resident_target(renderer: Node3D, key: Vector2i, hidden: PackedInt32Array, span: Vector2i, positions: PackedVector3Array, position_span: Vector2i) -> Variant:
+	if span.y < span.x or span.y > hidden.size() or (span.y - span.x) % 3 != 0 or position_span.y < position_span.x or position_span.y > positions.size():
 		return null
-	if hidden.is_empty():
-		return {}
+	if span.y == span.x:
+		return {} if position_span.y == position_span.x else null
 	if not renderer.chunks.has(key):
 		return null
 	var instance: MeshInstance3D = renderer.chunks[key]
@@ -158,8 +143,8 @@ func _resident_target(renderer: Node3D, key: Vector2i, chunk: Dictionary) -> Var
 	if not surfaces is PackedInt32Array or not counts is PackedInt32Array or not formats is PackedInt64Array:
 		return null
 	var runs := {}
-	var first := 0
-	for index in range(0, hidden.size(), 3):
+	var first := position_span.x
+	for index in range(span.x, span.y, 3):
 		var layer: int = hidden[index]
 		var start: int = hidden[index + 1]
 		var end: int = hidden[index + 2]
@@ -170,7 +155,7 @@ func _resident_target(renderer: Node3D, key: Vector2i, chunk: Dictionary) -> Var
 			return null
 		runs[Vector3i(layer, start, end)] = Vector2i(first, end - start)
 		first += end - start
-	if first != positions.size():
+	if first != position_span.y:
 		return null
 	return {"instance": instance, "positions": positions, "runs": runs}
 
@@ -212,20 +197,3 @@ func _apply_runs(targets: Dictionary) -> void:
 func _write_positions(mesh: ArrayMesh, run: Vector3i, bytes: PackedByteArray) -> void:
 	var surfaces: PackedInt32Array = mesh.get_meta("road_layer_surfaces")
 	RenderingServer.mesh_surface_update_vertex_region(mesh.get_rid(), surfaces[run.x], run.y * POSITION_BYTES, bytes)
-
-# True when a chunk payload carries any overlay triangle.
-static func _has_overlay(chunk: Dictionary) -> bool:
-	for layer in ["skirt", "curb", "raised_step", "sidewalk", "road", "marking", "concrete", "lining", "median_grass"]:
-		var vertices: Variant = chunk.get(layer + "_vertices")
-		if vertices is PackedVector3Array and not vertices.is_empty():
-			return true
-	return false
-
-# Returns replaced or failed staging nodes to the detached spare set.
-func _recycle(instances: Array[MeshInstance3D]) -> void:
-	for instance in instances:
-		if is_instance_valid(instance):
-			if instance.get_parent() != null:
-				instance.get_parent().remove_child(instance)
-			_spare.append(instance)
-	instances.clear()

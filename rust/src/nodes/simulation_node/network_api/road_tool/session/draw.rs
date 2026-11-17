@@ -88,13 +88,14 @@ impl SimulationNode {
         state
     }
 
-    /// The held commit's hue goes (`road_tool.gd` released the commit's preview: its chunks
-    /// installed, or the preview was reset).
+    /// The held commit's hue and overlay chunks go (`road_tool.gd` released the commit's
+    /// preview: its chunks installed, or the preview was reset).
     #[func]
-    pub fn road_tool_release_held_hue(&mut self) {
+    pub fn road_tool_release_held(&mut self) {
         if let Some(draw) = &mut self.road_tool_session.draw {
             draw.release_held_hue();
         }
+        self.road_tool_release_held_overlay();
     }
 
     /// Draws (`show`) or hides the last tier 1's batch ghost (tests and captures; the tick draws
@@ -136,12 +137,13 @@ impl SimulationNode {
 }
 
 impl SimulationNode {
-    // An accepted commit's hue stays drawn until its preview's hold releases
-    // (`road_tool_release_held_hue`); the next tick hands the hue over again.
+    // An accepted commit's hue and overlay chunks stay drawn until its preview's hold releases
+    // (`road_tool_release_held`); the next tick hands the hue over again.
     pub(super) fn road_tool_hold_hue(&mut self) {
         if let Some(draw) = &mut self.road_tool_session.draw {
             draw.hold_hue();
         }
+        self.road_tool_hold_overlay();
         self.road_tool_forget_drawn(TICK_HUE);
     }
 }

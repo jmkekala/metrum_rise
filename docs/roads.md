@@ -13787,6 +13787,285 @@ number below is `0bf9dc9b`'s):
   failed / 233 ignored, `./run.sh --test` PASS (2,848 Rust tests, 234 skipped; both Godot chains, no
   Godot script skipped, 0 SCRIPT ERROR).
 
+### The preview overlay built by Rust (round R2-4a)
+
+Round R2-4a of `ROAD-112` R2 (branch `roadtools-r24a` on `land-r23` `8e583431`, `dev` with round
+R2-3 squashed; finding F7's overlay part). **Before:** each pose's dictionary carried
+`road_chunks`, an array of one dictionary a changed chunk with up to nine layers of four or five
+packed arrays (the overlay in the committed publication's mesh format) and the resident runs it
+replaces; `road_preview_display.gd` checked them key by key, filled a pooled `MeshInstance3D`'s
+`ArrayMesh` per chunk with `road_chunk_renderer.gd`'s `fill_chunk_mesh`
+(`add_surface_from_arrays`: the engine converted every array, `_surface_set_data`,
+`octahedron_encode`), parented the nodes under the chunk root and kept detached spares. Round
+R2-0 measured the display's `_show_preview` at 1,245 us a pose (mean, p95 1,802), 677 us of it the
+engine's conversion.
+
+- **The encoding** moves into the preview's payload stage: `PoseStages::run` (a stroke's pose)
+  and the batch's last tier-2 frame (`step_batch`, the accepted batch's overlay) encode each
+  changed chunk with overlay triangles by `surfaces.rs` (`RoadChunkSurfaces::encode_layers`: the
+  layers alone, no lining shadow caster, which the display never drew) into a `PreviewOverlay`
+  (`nodes/sim/road_tool/draw/chunks.rs`, with the chunk grid's span and origin), kept by `Arc` in
+  the pieces (`RoadPreviewPieces::overlay`, `BatchPreviewPieces::overlay`) and in the typed
+  outcome. `O(overlay vertices)`, serial (a pose changes a few chunks; the stage already runs
+  inside the preview call), one allocation a surface buffer, counted with the preview.
+- **The draw** (`ChunkOverlays`, `draw/chunks.rs`, over round R2-3's backend trait with three new
+  calls: a plain instance, a road surface added from finished bytes, an origin): one pooled mesh
+  and instance a slot; a preview is staged into spare (hidden) slots, `mesh_add_surface` per
+  layer with the layer's material, the instance placed at the chunk's centre (the GDScript
+  `chunk_frame_centre` sum in `f64`), and swapped in for the shown slots by visibility in the same
+  call; spares beyond the shown count are freed (one staging set, as the node pool was). An
+  accepted commit's chunks are held with its hue (`road_tool_hold_hue` holds both) and released
+  with it (`road_tool_release_held`, which replaces `road_tool_release_held_hue`). The instances
+  are the roads' receiver-only policy (no shadow cast, a 2 m extra cull margin) and culled by
+  their meshes' bounds. `O(the overlay's bytes + chunks)` a shown preview; nothing when its number
+  is already shown; the Rust side reuses its two upload arrays and one surface dictionary (the
+  engine's own surface buffers are its allocations).
+- **The bridge** (`network_api/road_tool/session/overlay.rs`): `road_tool_attach_overlay(scenario,
+  materials)` once from `road_tool.gd` `make_chunks` with the chunk renderer's
+  `hydration_materials()` (a tool outside the tree attaches with no scenario: its meshes draw
+  nowhere and a test copies them), `road_tool_detach_overlay()` when the tool is freed;
+  `road_tool_hand_preview` makes the handed-out preview's overlay the source of its number, and
+  `road_tool_show_overlay(sequence)` shows that source (false, nothing changed, for any other
+  number or without a pool); `road_tool_clear_overlay()`; `road_tool_overlay_chunks()` and
+  `road_tool_overlay_counts()` for tests and probes. The tick ring gains `overlay_ms` (the show,
+  after the tick).
+- **The payload:** the tool's preview dictionary no longer carries `road_chunks`. The display gets
+  the runs it collapses as three packed arrays (`overlay_chunks`: x, z and the ends of the
+  chunk's share of `overlay_hidden` and `overlay_hidden_positions`). `road_chunks` stays where
+  tests read payloads: `preview_road`, `preview_road_draft`'s accepting frame and
+  `road_tool_preview_chunks()` (the context's last stroke preview, built on demand).
+- **GDScript:** `road_preview_display.gd` checks the runs against the resident chunks first, then
+  asks Rust to show its overlays, then collapses and restores the runs, so a failure leaves the
+  display unchanged; its node pool, spares, `_has_overlay` and the `fill_chunk_mesh` call are gone
+  (the collapsed runs stay until round R2-4b). A held display (`held`) leaves Rust's current
+  overlays alone when cleared. `graded_drag_probe.gd` reads the preview's overlays from Rust.
+
+- **The encoder's cost** (found by the round's first pass, `c6df1088`): encoded serially the
+  overlay added 1.25 ms a pose to the payload stage on the paused preview rows (payload 2.75
+  against the base's 1.51 ms, profiled), nearly all the display's saving (the pose's sample to
+  installed only 0.26 ms lower). So each (chunk, layer) is a job on the shared pool, and a vertex
+  whose normal repeats the previous one's (a triangle's mostly do) reuses its eight encoded bytes
+  (bit-identical, `a_repeated_normal_encodes_as_its_first_vertex`).
+
+**Fresh, 2026-11-17 17:59-19:26** (base `land-r23` `8e583431`: release library
+`68312063b01a8a9f`, release lib test binary `ef20e7ee70df1283`, session bench binary
+`d719b4f53ad27068`, built in the base worktree's own cargo target directory; branch
+`roadtools-r24a` `15ea0031`: release library `2326f4fbbfc83bd8`, release lib test binary
+`4000846fb721004e`, session bench binary `c52e31782613ab99`, built in the branch worktree's own
+directory; every hash differs from the base's. Other sessions loaded the machine to 10-60 during
+the untimed steps; every timed run waited for no Godot, gamescope, cargo or restic and a load
+under 6):
+
+- **Tests:** Rust `draw::chunks::tests` (recorder: a preview is the encoder's bytes with each
+  layer's material at its chunk's centre; an unchanged preview uploads nothing; a new preview
+  swaps in one call and the pool stays one staging set; a commit's chunks hold until released;
+  the drop frees every object made; the encoding leaves out chunks without an overlay),
+  `surfaces::tests` (`encode_layers` is `encode` less the shadow caster; the repeated normal).
+  Godot: `network_tool_chunk_renderer_test` reads every overlay chunk's surfaces back from the
+  server (`mesh_get_surface`) and compares them with `fill_chunk_mesh`'s on the same preview's
+  payload (`road_tool_preview_chunks`): format, vertex count, vertex and attribute data, AABB,
+  index count and each layer's material **equal byte for byte**; it and
+  `road_junction_preview_test` check through Rust that an unchanged stroke uploads nothing and
+  that a display whose runs do not fit, or whose number Rust has no overlays of, fails with the
+  shown preview unchanged; the tool's other Godot tests pass (`road_preview_stream_test`,
+  `road_batch_preview_test`, `road_height_handles_test`, `road_tunnels_test`,
+  `road_preview_metrics_test`, `zoning_road_tool_test`, `road_roundabouts_test`,
+  `road_rejection_report_test`, and in `./run.sh --test` the rest).
+- **The 43 junction preview captures** (`road_junction_preview_test.gd` with
+  `METRUM_JUNCTION_PREVIEW_CAPTURE`, gamescope headless; every fixture before, previewed and
+  cancelled; the branch copies Rust's overlays into the capture's world as the base copied its
+  overlay nodes): **43 of 43 pixel-identical** to the base's. The tool's default (7) and
+  scurve_freeform (3) stills: 9 of 10 identical; `scurve_mid_draw` differs in 3,941 px (max
+  delta 6) in this run, made at a load of 54-60 (another session's builds and the 18:00 backup);
+  the round's first build read all 10 identical at a load of 10-16. Not rerun quiet (time).
+- **The whole-tick allocation probe** (round R2-2's, heaptrack `--record-only`, (capture(200) -
+  capture(20)) / 180): outside `RoadToolContext::preview_road` and its payload **0.00 a tick** in
+  still, hover and pose. The overlay's show (`road_tool_show_overlay`, after the tick) allocates
+  273 a pose: 229 inside the engine's `mesh_add_surface` (its own surface buffers) and 44 on the
+  Rust side (the surface dictionary's Variant wraps of the two upload arrays and their resizes).
+  Against the base's pose tick (same probe, base library and scripts): process-wide 655 against
+  998 calls a pose tick; inside the preview call 469 against 747 (no `road_chunks` dictionary);
+  Godot (GDScript and the engine outside Rust calls) 106 against 434.
+- **Products bitwise** (the base library and scripts against the branch's): Kuopio's 78 commits
+  EQUAL in every field, the gameplay fixtures 17 of 17 EQUAL; the Kuopio drag probe PASS on both
+  sides.
+- **Level R** (the session benchmark's 30k locality mode, pinned, run and exclusive locks, load
+  2.9-3.5; p50 / p99 us) C B B C at 18:32-18:47: straight 104.4 / 140.2, 103.8 / 146.4, 105.0 /
+  147.6, 103.8 / 150.1; curve p50 115.3, 114.5, 115.5, 114.2; frame digests `32cb9b4b11dccf75`
+  and `ca3e8f6d742b48b2` on every row. Level.
+- **Level F** (`./run.sh --timing --level F --k22`, the release lib test binaries above, 8 workers
+  on the P-cores, `$ARTIFACTS/timing`, 19:02-19:09, three sessions' timing runs queued on the
+  locks). The runner's calibration **failed**: the first control row read +10.8 % mean, +16.3 %
+  p99 and +32.2 % p99.9 against the calibrated control of 17:04 (1,710 preempted ticks against
+  181), so the 32x rows are noise-bound: mean 4.568 / 4.620 ms (+1.1 %, level), p99 -6.2 % and
+  p99.9 -20.1 % (better), the unpreempted maximum 7.44 / 9.17 ms (+23.2 %, tolerance 12.0 %:
+  **WORSE**), `mean_snapshot_ms` +1.0 % (level), every 32x row the known `PERF-17` exception on
+  both sides. 30k 1x day: mean 2.050 / 2.061 (+0.5 %), p99, p99.9, the unpreempted maximum and
+  `mean_snapshot_ms` (+0.8 %) level, the PERF-07 acceptance PASS on both. **K22 30k
+  click-to-ack** 6.76 / 6.84 ms (commit 6.73 / 6.81). The round's first build (`c6df1088`, the
+  same simulation code; it differs from the final one only in the overlay's encoding) read a
+  quiet session at 17:04-17:12 (load 2.5-4): 32x mean +0.8 %, p99 +1.5 %, p99.9 +4.5 %, all
+  level, the unpreempted maximum -14.6 % (better), `mean_snapshot_ms` +1.8 % (level); 1x day
+  level (p99.9 better), snapshot -0.7 %; K22 6.86 / 6.76 ms. No simulation code on the timed
+  paths changed in this round.
+- **The paused preview rows** (round R2-0's rows: sloped T + branch, flat + sloped cross, dense;
+  gamescope headless 1920x1080, four workers, no FPS cap; one profiled pass pred base br br base
+  pred at 19:17-19:26, load 2.8-5.9 at the runs' starts, no Godot, gamescope or build at any
+  start; pred is round D's control library, U-R2-1's pre-D side). The moving phase's exact poses,
+  sample to frame, the share within 16.5 / 16.7 / 17 / 18 / 20 ms:
+
+  | side | group | poses | 16.5 | 16.7 | 17 | 18 | 20 |
+  | --- | --- | --- | --- | --- | --- | --- | --- |
+  | pred | cross | 1,350 | 46.4 % | 54.7 % | 62.7 % | 70.9 % | 79.9 % |
+  | pred | T, branch, dense | 2,009 | 46.4 % | 54.4 % | 61.8 % | 72.1 % | 79.6 % |
+  | base | cross | 1,350 | 51.9 % | 63.1 % | 72.1 % | 80.8 % | 88.0 % |
+  | base | T, branch, dense | 2,094 | 48.7 % | 56.9 % | 65.1 % | 77.2 % | 85.1 % |
+  | branch | cross | 1,313 | 57.6 % | 70.4 % | 77.8 % | 83.5 % | 88.9 % |
+  | branch | T, branch, dense | 2,135 | 50.1 % | 58.2 % | 67.1 % | 79.4 % | 87.6 % |
+
+  Against U-R2-1 (the pre-D library) **both groups pass** at every cut; against the base the
+  branch reads 0.9-7.3 points better at every cut in both groups. The main-thread clock was not
+  read: the pass's perf attribution (35 min) did not fit the round's time and its captures were
+  deleted (disk at 94 %).
+- **The pose's main-thread time, sample to installed** (the tick's start, the ring's `start_us`,
+  to the display's installed stamp; every moving pose of the same pass, mean / p50 / p95 ms):
+  base 9.891 / 9.187 / 17.244, branch **9.002 / 8.504 / 15.928**: **0.889 ms lower at the mean,
+  0.683 at the median** (cross 0.990 / 0.975, T, branch and dense 0.794 / 0.572). The display's
+  own part (`stage_install_ms`: road chunks, graded tiles, demolition) fell from 2.102 to 0.735 ms
+  (1.367 ms); the preview call grew by the encoding (payload stage 1.534 to 1.962 ms mean). Against
+  round R2-0's measure of the display's `fill_chunk_mesh` path (`_show_preview` 1,245 us a pose,
+  677 us of it the engine's conversion, so 568 us GDScript): the reduction exceeds the GDScript
+  share (0.568 ms) and falls short of the whole path with its engine conversion (1.245 ms), the
+  encoding having moved into the preview call.
+- **The tick ring** (the same pass, profiled, the ticks with a new preview, p50 / p95 / max ms):
+  the overlay chunks' show (`overlay_ms`, after the tick) 0.437 mean, p95 0.796, max 1.362; R2-2's
+  carried bar, the tick less its preview call, base 0.063 / 0.115, branch 0.067 / 0.122 (bar 0.05:
+  **missed on both sides**, as in rounds R2-2 and R2-3; this round changes nothing inside the tick
+  but the source hand-over); round R2-3's drawing a preview tick (gizmos, hue, ghost) p95 base
+  0.145, branch 0.144. **New cost:** the hue's join waits p95 0.880 ms on the branch (base 0.002;
+  the pose's `hue_wait_ms` p95 0.877 against 0.001). Unprofiled rows were not run (time). The
+  finish below found the cause and halved the wait.
+- **The overlay a drag frame** (round R2-3's carried bar, the tool's default and scurve_freeform
+  stills' three 120-frame drags, the ticks whose gizmos changed; the overlay = gizmos + the hue's
+  draw + the ghost, which this round does not change): p95 0.080 (curve end), 0.107 (S-curve),
+  0.129 ms (freeform) at a load of 54-60; the round's first build at a load of 10-16 read 0.102
+  (S-curve) to 0.199, and the base beside it 0.091 to 0.165. Not measured quiet (time): the bar
+  (at most 0.10 ms, R2-3 0.070 / 0.0996 / 0.073 at load 4-6) is **not shown met**.
+- **Gates** (fresh on `15ea0031`, the branch worktree's own target directory): clippy's warning
+  set equal to the base's own-directory set (14 = 14; `2ded4321` had one new warning,
+  `chunks_exact_mut` with a constant size, fixed), missing docs 0, debug lib tests 2,856 passed / 0 failed /
+  234 ignored, `./run.sh --test` PASS (2,860 Rust tests, 235 skipped; both Godot chains, 0 SCRIPT
+  ERROR).
+
+**The finish (round R2-4aF, 2026-11-17 19:30-22:30).** The branch rebased onto `dev` `0160a807`
+(JS3, `ROAD-124`; JS4a's landing `f39e2d36` came after the builds and merges without conflict).
+Base `0160a807`: release library `d1509dd8bbbc6077`, release lib test binary `49651a706d26059e`,
+session bench binary `b7b5d436f5be6b26`; branch `461f9c34`: `81c7893ef3a5f3db`,
+`779b8aedc7f99ecc`, `e40f3ba3a715f2a4`; each built in its worktree's own target directory, every
+hash differs from the base's.
+
+- **The hue's join wait, its cause.** Not the encoding's jobs: the first build's serial encoding
+  (`c6df1088`) and the parallel one read the same hue build on its worker (mean 4.63 and 4.70 ms
+  against their bases' 4.17 and 4.22), and the build reads level with the base in the finish's
+  pass (4.49 against 4.54). The frame's own work between the hue's launch and its join shrank:
+  the display's part fell from 2.10 to 0.74 ms, so a cross pose's build (p50 6.4 ms, p99 13.7 on
+  its worker, four workers) now outlasts the frame's path to the join; the T, branch and dense
+  rows' (p50 3.0, p99 7.2) never wait.
+- **The fix:** `road_tool.gd` joins and draws the hue at the end of the frame's process step (a
+  deferred call: still before the frame draws, so the hue and its preview show together;
+  dropped drawings cancel it), so the other nodes' frame work runs beside the build. No Rust
+  change. On the unprofiled pass (below): the join waits p95 **0.397 ms** (mean 0.051; the cross
+  rows' preview ticks 0.680, the T, branch and dense rows' 0.002) against the base's 0.002: the
+  bar (at most 0.01) is **missed on the cross rows**. The pose's main thread, sample to
+  installed, mean / p50 / p95: base 9.931 / 9.250 / 17.496, branch **8.302 / 8.063 / 14.521 ms**
+  (1.629 ms lower at the mean; the round's profiled pass read 0.889).
+- **Tried and rejected:** the hue's drawn-ground read (more than half of its build) 8 m block by
+  block on the shared pool, each block its own reader on its thread's scratch (bitwise; the
+  hue's bitwise tests pass): the join's wait p95 0.002 ms, but sample to installed 10.321 against
+  the base's 9.465 ms (+0.86) on a base br br base check, the graded stage 3.69 against 2.59 ms:
+  the read's jobs take the workers the frame's graded stage waits on. The encoding on the
+  background pool: rejected by design (the pools are split so that a pose never waits behind
+  background work, `TERRAIN-07-E` round 3), and the encoding does not delay the hue. A serial
+  encoding: +1.25 ms a pose on the frame (the first build). What would meet the bar: a cheaper
+  cross-pose hue (decision HF-1's scope) or its read on workers the frame's stages do not use.
+- **The paused preview rows, unprofiled** (one pass pred base br br base pred, 19:59-20:09, load
+  3.3-5.9 at the runs' starts, no Godot, gamescope, build or test binary at any start; moving
+  phase's exact poses, sample to frame, the share within 16.5 / 16.7 / 17 / 18 / 20 ms):
+
+  | side | group | poses | 16.5 | 16.7 | 17 | 18 | 20 |
+  | --- | --- | --- | --- | --- | --- | --- | --- |
+  | pred | cross | 1,364 | 42.4 % | 50.5 % | 59.0 % | 67.4 % | 76.2 % |
+  | pred | T, branch, dense | 2,119 | 46.5 % | 58.8 % | 67.9 % | 78.2 % | 85.6 % |
+  | base | cross | 1,284 | 55.8 % | 64.7 % | 71.6 % | 78.7 % | 85.8 % |
+  | base | T, branch, dense | 2,091 | 47.5 % | 59.1 % | 68.3 % | 79.1 % | 86.8 % |
+  | branch | cross | 1,377 | 52.7 % | 69.3 % | 80.4 % | 88.0 % | 92.7 % |
+  | branch | T, branch, dense | 2,121 | 50.3 % | 65.8 % | 76.3 % | 86.8 % | 92.8 % |
+
+  **U-R2-1 passes in both groups** at every cut; against the base the branch reads better at
+  every cut but the cross rows' 16.5 ms (-3.1 points).
+- **The tick ring** (the same unprofiled pass, the ticks with a new preview, p50 / p95 ms):
+  R2-2's carried bar, the tick less its preview call, base 0.066 / 0.118, branch 0.069 / 0.120
+  (bar 0.05: **missed on both sides**; owned by round R2-9); the overlay chunks' show p50 0.419,
+  p95 0.738; R2-3's drawing a preview tick (gizmos, hue draw, ghost) p95 base 0.150, branch 0.151.
+- **Level R** (the session benchmark's 30k locality mode, pinned, run and exclusive locks, load
+  1.3-1.5; p50 / p99 us) C B B C at 21:12-21:13: straight 102.9 / 139.6, 102.3 / 137.7, 102.6 /
+  138.5, 103.1 / 139.4; curve p50 113.7, 113.1, 113.2, 113.6; frame digests `32cb9b4b11dccf75` and
+  `ca3e8f6d742b48b2` on every row. Level.
+- **Level F** (`./run.sh --timing --level F --k22`, the release lib test binaries above, 8 workers
+  on the P-cores, the shared keyed snapshot cache (three new keys, none replaced),
+  `$ARTIFACTS/timing`, 21:19-21:27, load 2.9 at the start, no Godot, cargo or restic): 30k 1x day
+  mean 2.109 / 2.077 ms (-1.5 %), p99 -2.9 %, p99.9 -6.0 %, the unpreempted maximum +3.7 %,
+  `mean_snapshot_ms` -2.2 %: every metric level, the PERF-07 acceptance PASS on both sides; 30k
+  32x mean 4.236 / 4.277 (+1.0 %), p99 +2.6 %, the unpreempted maximum 8.66 / 8.77 (+1.3 %),
+  `mean_snapshot_ms` +1.3 %: level, but p99.9 7.31 / 8.45 ms (+15.7 %, tolerance 8.0 %:
+  **WORSE**), every 32x row the known `PERF-17` exception on both sides. Its four 32x rows rerun once at
+  21:51-21:52 (C B B C, load 3.2): mean 4.312 / 4.252 (-1.4 %), p99 -1.2 %, p99.9 8.86 / 8.75
+  (-1.3 %), the unpreempted maximum 7.69 / 8.51 (+10.7 %, within its tolerance, doubled for a
+  noisy control row of 642 preempted frames), `mean_snapshot_ms` -0.9 %: **every metric level**. **K22 30k
+  click-to-ack** 6.71 / 6.79 ms (commit 6.67 / 6.75). No simulation code changed in the round.
+- **The paused preview rows, profiled** (one pass pred base br br base pred under perf,
+  21:27-21:41, load 2.9-5.8 at the runs' starts, no overlap): sample to frame within 16.5 / 16.7 /
+  17 / 18 / 20 ms, cross pred 49.9 / 56.4 / 60.9 / 68.7 / 78.4 %, base 57.4 / 65.1 / 72.5 / 80.1
+  / 86.7 %, branch 56.9 / 67.9 / 74.9 / 81.1 / 88.6 %; T, branch and dense pred 43.9 / 53.4 / 61.1
+  / 73.0 / 82.6 %, base 52.5 / 60.0 / 66.7 / 75.9 / 84.6 %, branch 49.1 / 57.8 / 65.2 / 75.7 /
+  85.1 %: U-R2-1 passes in both groups; the T, branch and dense rows read 3.4 / 2.2 / 1.5 points
+  under the base at 16.5 / 16.7 / 17 ms. Sample to installed, mean / p50 / p95: base 10.101 /
+  9.482 / 17.581, branch 9.405 / 8.939 / 16.352 ms (0.696 lower at the mean: the code before the
+  installed stamp is the round's own, so against the round's profiled 0.889 this is the
+  sessions' spread, as the unprofiled 1.629 shows); the hue's join p95 0.203 ms on the preview
+  ticks (cross 0.406). The main thread's clock and time a pose (perf attribution, pose-weighted;
+  pred / base / branch): cross 2.46 / 2.92 / 2.53 GHz, 9,975 / 8,838 / 7,172 us; T, branch and
+  dense 1.87 / 1.83 / 1.63 GHz, 9,136 / 9,238 / 8,118 us: the branch's lighter frame runs at a
+  lower clock, and its shares pass U-R2-1 at a clock under pred's.
+- **The overlay a drag frame** (R2-3's carried bar; the tool's default and scurve_freeform
+  stills, quiet at 21:41-21:43, load 2.5-3.3; p95 ms): branch 0.082 (curve end), **0.111
+  (S-curve), 0.190 (freeform)**, the base beside it 0.072, 0.094 and 0.275: the bar (at most
+  0.10) is **missed** in two drags; the round changed none of the overlay's parts (gizmos, the
+  hue's draw, the ghost), and the base reads the freeform drag higher still. The stills (7 + 3)
+  are **pixel-identical** to the base's.
+- **The session heap probe** (`METRUM_ROAD_TOOL_ALLOC_PROBE`, 30k, heaptrack `--record-only`):
+  n = 0 2,403,840, n = 20 2,403,818, n = 200 2,403,896 calls: flat.
+- **Unchanged checks, fresh:** the 43 junction preview captures pixel-identical to the base's;
+  Kuopio's 78 commits and the 17 gameplay fixtures EQUAL in every product; the Kuopio drag probe
+  PASS on both sides (the base's first run, beside `./run.sh --test`, failed its first undo's
+  one-frame install; rerun alone it passed); R2-2's whole-tick allocation probe 0.00 a tick outside the
+  preview in still, hover and pose (the overlay's show 273 a pose; the pose tick 655 process-wide).
+- **Gates** (fresh on `461f9c34`, own target directory): clippy's warning set equal to the base's
+  (14 = 14), missing docs 0, debug lib tests 2,870 passed / 0 failed / 236 ignored, `./run.sh
+  --test` PASS (2,874 Rust tests, 237 skipped; both Godot chains, 0 SCRIPT ERROR).
+
+- **Landing decision** (2026-11-17 night; the user delegated difficult decisions to a Fable
+  analysis and its recommendation): land. The plan's R2-4a bars are met (sample to installed
+  9.931 -> 8.302 ms mean, p95 17.496 -> 14.521). Two misses stay missed and are owned: the hue
+  join wait (p95 0.397 ms against the finisher's at most 0.01; cross rows 0.680) is a part the
+  faster install exposed, not a frame regression (cross rows 11.311 -> 9.553 ms mean), owned by
+  `ROAD-123` round HF3 (a cheaper bitwise cross-pose build, then its read on workers the graded
+  stage does not wait on; bars: the wait at most 0.01 ms p95 in every row group, sample to
+  installed no worse than 8.302 / cross 9.553 ms), before R2-L, which adds the wait as a landing
+  bar; the overlay bar (at most 0.10 ms p95) is a `dev`-wide miss (the base beside the branch
+  0.072 / 0.094 / 0.275, rows level at 0.1496 / 0.1512), owned by R2-9 (three runs a case, the
+  freeform case explained first). R2-4b and R2-9 report the wait and are not judged on it.
+
 ### The pick's graded preparation halved (round PB, `ROAD-116`)
 
 Round PB of `ROAD-112` (branch `roadtools-pb`, R2-7 on `dev` `75523322`). **Bisect.** The
@@ -15642,8 +15921,8 @@ so the tree order of chunks, lights and signs is the old one); `network_tool.gd`
 only. Its calls: `update(expected_generation, stage_only)`, `commit_staged`, `discard_staged`,
 `release_held`, `needs_hydration`, `reset`, `install`, `build_chunk`, and for the
 hydration's parts `install_built`, `install_lights`, `build_lights_part`, `lights_building` and
-`hydration_materials`, `is_holding`, and for the preview display `chunks`, `new_chunk_node`,
-`fill_chunk_mesh`, `place_chunk`, `chunk_root`; read-only state `generation`, `span_m`,
+`hydration_materials` (also the road tool's, for Rust's preview overlays since `ROAD-112` round
+R2-4a), `is_holding`, and for the preview display `chunks`; read-only state `generation`, `span_m`,
 `origin_x_m`, `origin_z_m`, `holds` (the Rust hold rule, `RoadDrawHolds`; round N), `street_lights`, `road_signs`. It tells its host (the
 road tool) `road_chunks_installed(generation)` and `road_chunks_released()` (round R2-8 removed
 `mark_network_nodes_dirty` with the node markers). Chunks are `MeshInstance3D` nodes. Since CB part 2 (2026-11-13) a
@@ -15653,8 +15932,10 @@ the background pool (`stream/layers/roads/surfaces.rs`, bitwise equal to
 `RenderingServer.mesh_add_surface`, the chunk's street lights draw (`street_lights.gd`
 `begin_chunk`/`build_chunk_part`: since CB3 their batches were built hidden in the load call and
 the part shows them), and the swap installs the finished mesh
-through `install_built` (holds unchanged). Edits (`update`, `commit_staged`) and the preview's
-overlays still build in GDScript (`build_chunk`, `fill_chunk_mesh`). Every chunk mesh carries the
+through `install_built` (holds unchanged). Edits (`update`, `commit_staged`) still build in
+GDScript (`build_chunk`, `fill_chunk_mesh`); the preview's overlays are encoded by the same
+`surfaces.rs` in the preview's payload stage and drawn by the road tool's draw module since
+`ROAD-112` round R2-4a. Every chunk mesh carries the
 `road_layer_surfaces`, `road_layer_counts` and `road_layer_formats` metas; the preview display
 collapses runs through `RenderingServer.mesh_surface_update_vertex_region` on the mesh RID, and
 readers of a chunk's surfaces read the server's (`server_surfaces`, `surface_positions`), since a

@@ -7,17 +7,23 @@
 //! nor a rebuild allocates on this side once a length has been met. Main thread only.
 
 use super::backend::{DrawBackend, Handle, Region, Surface, SurfaceKind};
+use crate::nodes::sim::render::stream::layers::roads::surfaces::RoadSurface;
 use godot::classes::rendering_server::ShadowCastingSetting;
 use godot::classes::{Material, RenderingServer, ShaderMaterial};
 use godot::obj::Singleton;
 use godot::prelude::{
-    Aabb, Gd, PackedByteArray, Rid, StringName, ToGodot, VarDictionary, Variant, Vector3, Vector4,
+    Aabb, Basis, Gd, PackedByteArray, Rid, StringName, ToGodot, Transform3D, VarDictionary,
+    Variant, Vector3, Vector4,
 };
 
 /// `RenderingServer.PRIMITIVE_POINTS`.
 const PRIMITIVE_POINTS: i64 = 0;
 /// `RenderingServer.PRIMITIVE_TRIANGLES`.
 const PRIMITIVE_TRIANGLES: i64 = 3;
+
+/// The extra cull margin of a shadow receiver (`scene_lighting.gd`
+/// `RECEIVER_EXTRA_CULL_MARGIN_M`), which a road chunk's node is.
+const RECEIVER_EXTRA_CULL_MARGIN_M: f32 = 2.0;
 
 /// The bounds every tool mesh and instance is given: vertices move in place without the
 /// engine's bounds following, so the tool's drawing is never culled (as the nodes' `custom_aabb`
@@ -33,9 +39,10 @@ fn never_culled() -> Aabb {
 pub(crate) struct GodotBackend {
     server: Gd<RenderingServer>,
     scenario: Rid,
-    // The materials, kept alive; the line material also takes the dash focus.
+    // The materials, kept alive; the line material (none for the preview's chunks) also takes
+    // the dash focus.
     _materials: Vec<Gd<Material>>,
-    line: Gd<ShaderMaterial>,
+    line: Option<Gd<ShaderMaterial>>,
     dash_focus: StringName,
     // Upload arrays by length: vertex buffers, attribute buffers, index buffers.
     vertices: Uploads,
@@ -44,6 +51,11 @@ pub(crate) struct GodotBackend {
     // `mesh_add_surface`'s dictionary per surface kind (lines, points, fill) and its keys.
     surfaces: [Option<VarDictionary>; 3],
     keys: SurfaceKeys,
+    // A road chunk layer's upload arrays, resized to each surface (the engine reallocates only
+    // across a power of two), and its dictionary.
+    road_vertices: PackedByteArray,
+    road_attributes: PackedByteArray,
+    road: Option<VarDictionary>,
 }
 
 // `mesh_add_surface`'s keys, made once (a `&str` key is a new string each call).
@@ -53,6 +65,8 @@ struct SurfaceKeys {
     index_data: Variant,
     vertex_count: Variant,
     index_count: Variant,
+    format: Variant,
+    aabb: Variant,
 }
 
 // The upload arrays of one buffer kind by length, at most `UPLOADS_KEPT`, the oldest dropped: a
@@ -89,6 +103,21 @@ impl GodotBackend {
     /// A backend drawing into `scenario` with `materials` (kept alive) and the line material
     /// `line`, whose `dash_focus` it sets.
     pub(crate) fn new(scenario: Rid, line: Gd<ShaderMaterial>, materials: Vec<Gd<Material>>) -> Self {
+        Self::with_line(scenario, Some(line), materials)
+    }
+
+    /// A backend drawing into `scenario` (none: the instances draw nowhere until a caller
+    /// copies their meshes, as tests do) with `materials` (kept alive) and no line material:
+    /// the preview's chunks (round R2-4a).
+    pub(crate) fn plain(scenario: Rid, materials: Vec<Gd<Material>>) -> Self {
+        Self::with_line(scenario, None, materials)
+    }
+
+    fn with_line(
+        scenario: Rid,
+        line: Option<Gd<ShaderMaterial>>,
+        materials: Vec<Gd<Material>>,
+    ) -> Self {
         Self {
             server: RenderingServer::singleton(),
             scenario,
@@ -105,9 +134,20 @@ impl GodotBackend {
                 index_data: "index_data".to_variant(),
                 vertex_count: "vertex_count".to_variant(),
                 index_count: "index_count".to_variant(),
+                format: "format".to_variant(),
+                aabb: "aabb".to_variant(),
             },
+            road_vertices: PackedByteArray::new(),
+            road_attributes: PackedByteArray::new(),
+            road: None,
         }
     }
+}
+
+// `array` resized to `bytes` and holding them. `O(bytes)`.
+fn fill(array: &mut PackedByteArray, bytes: &[u8]) {
+    array.resize(bytes.len());
+    array.as_mut_slice().copy_from_slice(bytes);
 }
 
 // A surface kind's dictionary with its constant entries.
@@ -160,6 +200,58 @@ impl DrawBackend for GodotBackend {
         }
     }
 
+    fn instance_create_plain(&mut self, mesh: Handle) -> Handle {
+        let instance = self.server.instance_create2(Rid::new(mesh), self.scenario);
+        self.server
+            .instance_geometry_set_cast_shadows_setting(instance, ShadowCastingSetting::OFF);
+        self.server
+            .instance_set_extra_visibility_margin(instance, RECEIVER_EXTRA_CULL_MARGIN_M);
+        self.server.instance_set_visible(instance, false);
+        instance.to_u64()
+    }
+
+    fn mesh_add_road_surface(&mut self, mesh: Handle, surface: &RoadSurface, material: Handle) {
+        let keys = &self.keys;
+        let dict = self.road.get_or_insert_with(|| {
+            let mut dict = VarDictionary::new();
+            dict.set("primitive", PRIMITIVE_TRIANGLES);
+            dict.set("uv_scale", Vector4::ZERO);
+            dict
+        });
+        fill(&mut self.road_vertices, &surface.vertex_data);
+        dict.set(keys.vertex_data.clone(), self.road_vertices.clone());
+        if surface.attribute_data.is_empty() {
+            dict.remove(keys.attribute_data.clone());
+        } else {
+            fill(&mut self.road_attributes, &surface.attribute_data);
+            dict.set(keys.attribute_data.clone(), self.road_attributes.clone());
+        }
+        dict.set(keys.format.clone(), surface.format as i64);
+        dict.set(keys.vertex_count.clone(), i64::from(surface.vertex_count));
+        let [x, y, z, w, h, d] = surface.aabb;
+        dict.set(
+            keys.aabb.clone(),
+            Aabb::new(Vector3::new(x, y, z), Vector3::new(w, h, d)),
+        );
+        let mesh = Rid::new(mesh);
+        let index = self.server.mesh_get_surface_count(mesh);
+        self.server.mesh_add_surface(mesh, &*dict);
+        self.server
+            .mesh_surface_set_material(mesh, index, Rid::new(material));
+        // The arrays go back unshared, so the next fill does not copy them.
+        for key in [&keys.vertex_data, &keys.attribute_data] {
+            if dict.contains_key(key.clone()) {
+                dict.set(key.clone(), Variant::nil());
+            }
+        }
+    }
+
+    fn instance_set_origin(&mut self, instance: Handle, origin: [f32; 3]) {
+        let transform = Transform3D::new(Basis::IDENTITY, Vector3::from_array(origin));
+        self.server
+            .instance_set_transform(Rid::new(instance), transform);
+    }
+
     fn mesh_clear(&mut self, mesh: Handle) {
         self.server.mesh_clear(Rid::new(mesh));
     }
@@ -189,8 +281,10 @@ impl DrawBackend for GodotBackend {
     }
 
     fn set_dash_focus(&mut self, focus: [f32; 3]) {
-        let value: Variant = Vector3::from_array(focus).to_variant();
-        self.line.set_shader_parameter(&self.dash_focus, &value);
+        if let Some(line) = &mut self.line {
+            let value: Variant = Vector3::from_array(focus).to_variant();
+            line.set_shader_parameter(&self.dash_focus, &value);
+        }
     }
 
     fn free(&mut self, handle: Handle) {

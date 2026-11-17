@@ -17,6 +17,7 @@ use crate::nodes::sim::road_tool::batch::{
     draft_requests, ghost_half_width_m, push_ghost_edges, push_ghost_ribbon,
 };
 use crate::nodes::sim::road_tool::draw::Ghost;
+use crate::nodes::sim::road_tool::draw::chunks::PreviewOverlay;
 use crate::nodes::sim::road_tool::draw::lines::LineStyle;
 use crate::nodes::sim::road_tool::height::segment_draft;
 use crate::nodes::sim::road_tool::hue::{FootprintHue, HueKind, HueState};
@@ -113,7 +114,21 @@ impl SimulationNode {
             dict.set("tier2_done", 0_i64);
             return;
         }
-        self.preview_road_batch_tier2(requests, dict);
+        let step = self.preview_road_batch_tier2(requests, dict);
+        if step.overlay.is_some() {
+            // `preview_road_draft`'s callers (tests) read the accepted batch's payload.
+            let context = self
+                .road_tool
+                .context
+                .lock()
+                .expect("road tool context lock poisoned");
+            let chunks = (context.batch())
+                .and_then(|batch| batch.pieces.as_ref())
+                .and_then(|pieces| pieces.chunks.as_ref())
+                .map(Self::preview_road_chunk_updates)
+                .unwrap_or_default();
+            dict.set("road_chunks", chunks);
+        }
     }
 
     // Tier 1 of a batch pose: the strokes' hover verdicts, costs, lengths and the ghost into
@@ -254,7 +269,7 @@ impl SimulationNode {
         let mut step = Self::set_tier2(dict, batch, frame.unwrap_or_default());
         // The exact preview goes once, on the frame that completed the accepted batch's overlay.
         if frame.is_some() && batch.pieces.is_some() {
-            step.demolish_count = Self::set_batch_pieces(&mut context, dict);
+            (step.demolish_count, step.overlay) = Self::set_batch_pieces(&mut context, dict);
         }
         step
     }
@@ -298,15 +313,16 @@ impl SimulationNode {
             },
             stroke,
             demolish_count: 0,
+            overlay: None,
         }
     }
 
     // The accepted batch's exact preview into `dict`, keyed as `preview_road` keys a stroke's;
-    // returns the buildings it demolishes.
+    // returns the buildings it demolishes and its overlay chunks encoded for the draw module.
     fn set_batch_pieces(
         context: &mut crate::nodes::sim::core::RoadPreviewContext,
         dict: &mut VarDictionary,
-    ) -> i64 {
+    ) -> (i64, Option<std::sync::Arc<PreviewOverlay>>) {
         let (mut tiles, mut removed) = (Vec::new(), Vec::new());
         context.graded.take_shown_changes(&mut tiles, &mut removed);
         let cell_m = f64::from(context.view.terrain.cell_size_m());
@@ -314,14 +330,7 @@ impl SimulationNode {
         let batch = context.batch().expect("an accepted batch");
         let pieces = batch.pieces.as_ref().expect("an accepted batch's pieces");
         dict.set("has_road_chunks", pieces.chunks.is_some());
-        dict.set(
-            "road_chunks",
-            pieces
-                .chunks
-                .as_ref()
-                .map(Self::preview_road_chunk_updates)
-                .unwrap_or_default(),
-        );
+        Self::set_preview_runs(dict, pieces.chunks.as_ref());
         let mut changed = PackedInt32Array::new();
         let mut demolish_count = 0;
         let mut demolish_lots = PackedVector3Array::new();
@@ -347,7 +356,7 @@ impl SimulationNode {
         dict.set("chunk_span_m", roadbed.chunk_span_m());
         dict.set("chunk_origin_x_m", origin_x);
         dict.set("chunk_origin_z_m", origin_z);
-        demolish_count as i64
+        (demolish_count as i64, pieces.overlay.clone())
     }
 }
 
@@ -366,4 +375,6 @@ pub(super) struct Tier2Step {
     pub(super) reason: Cow<'static, str>,
     pub(super) stroke: Option<usize>,
     pub(super) demolish_count: i64,
+    // The accepted batch's overlay chunks, on the frame that completed them.
+    pub(super) overlay: Option<std::sync::Arc<PreviewOverlay>>,
 }

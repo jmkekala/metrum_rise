@@ -5,6 +5,7 @@
 //! is tested without Godot.
 
 use super::backend::{DrawBackend, Handle, Region, Surface, SurfaceKind};
+use crate::nodes::sim::render::stream::layers::roads::surfaces::RoadSurface;
 use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
@@ -15,6 +16,8 @@ pub(crate) enum Command {
     MeshCreate(Handle),
     InstanceCreate(Handle, Handle),
     AddSurface(Handle, SurfaceKind, u32),
+    AddRoadSurface(Handle, u64, u32, Handle),
+    Origin(Handle, [f32; 3]),
     Clear(Handle),
     Update(Handle, u32, Region, usize),
     Material(Handle, u32, Handle),
@@ -39,6 +42,8 @@ pub(crate) struct Recorder {
     pub(crate) commands: Vec<Command>,
     pub(crate) meshes: BTreeMap<Handle, Vec<RecordedSurface>>,
     pub(crate) instances: BTreeMap<Handle, (Handle, bool)>,
+    // Road chunk layers' surfaces by mesh: the encoded surface and its material.
+    pub(crate) road_meshes: BTreeMap<Handle, Vec<(RoadSurface, Handle)>>,
     // Objects made and not freed, shared so a test reads it after the drawing dropped.
     pub(crate) live: Rc<Cell<i64>>,
 }
@@ -92,9 +97,33 @@ impl DrawBackend for Recorder {
         });
     }
 
+    fn instance_create_plain(&mut self, mesh: Handle) -> Handle {
+        self.instance_create(mesh)
+    }
+
+    fn mesh_add_road_surface(&mut self, mesh: Handle, surface: &RoadSurface, material: Handle) {
+        assert!(self.meshes.contains_key(&mesh), "a live mesh");
+        self.commands.push(Command::AddRoadSurface(
+            mesh,
+            surface.format,
+            surface.vertex_count,
+            material,
+        ));
+        self.road_meshes
+            .entry(mesh)
+            .or_default()
+            .push((surface.clone(), material));
+    }
+
+    fn instance_set_origin(&mut self, instance: Handle, origin: [f32; 3]) {
+        assert!(self.instances.contains_key(&instance), "a live instance");
+        self.commands.push(Command::Origin(instance, origin));
+    }
+
     fn mesh_clear(&mut self, mesh: Handle) {
         self.commands.push(Command::Clear(mesh));
         self.meshes.get_mut(&mesh).expect("a live mesh").clear();
+        self.road_meshes.remove(&mesh);
     }
 
     fn mesh_update_region(&mut self, mesh: Handle, surface: u32, region: Region, bytes: &[u8]) {
@@ -125,6 +154,7 @@ impl DrawBackend for Recorder {
 
     fn free(&mut self, handle: Handle) {
         self.commands.push(Command::Free(handle));
+        self.road_meshes.remove(&handle);
         let mesh = self.meshes.remove(&handle).is_some();
         let instance = self.instances.remove(&handle).is_some();
         assert!(mesh || instance, "frees a live object once");

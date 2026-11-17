@@ -163,6 +163,7 @@ struct TickSample {
     hue_us: f32,
     hue_draw_us: f32,
     ghost_us: f32,
+    overlay_us: f32,
     flags: i32,
 }
 
@@ -349,7 +350,8 @@ impl SimulationNode {
     /// pose's preview, a batch's tier), `chips_ms` (the chips' words and placement, with the HUD's
     /// fetch that followed the tick), `gizmos_ms` (the gizmos' comparison, bytes and upload),
     /// `hue_ms` (the hue's join after the tick), `hue_draw_ms` (its bytes and upload),
-    /// `ghost_ms` (the batch ghost's split, bytes and upload) and `flags`. `clear` empties the ring after reading it.
+    /// `ghost_ms` (the batch ghost's split, bytes and upload), `overlay_ms` (the preview's overlay
+    /// chunks staged and swapped, `road_tool_show_overlay` after the tick) and `flags`. `clear` empties the ring after reading it.
     #[func]
     pub fn road_tool_timings(&mut self, clear: bool) -> VarDictionary {
         let ring = &mut self.road_tool_session.tick.ring;
@@ -367,6 +369,7 @@ impl SimulationNode {
             "hue_ms": column(|sample| sample.hue_us),
             "hue_draw_ms": column(|sample| sample.hue_draw_us),
             "ghost_ms": column(|sample| sample.ghost_us),
+            "overlay_ms": column(|sample| sample.overlay_us),
             "flags": ring.ordered().map(|sample| sample.flags).collect::<PackedInt32Array>(),
         };
         if clear {
@@ -485,13 +488,18 @@ impl SimulationNode {
         flags
     }
 
-    // Numbers the standing preview as the next one handed to the script (`sequence`).
+    // Numbers the standing preview as the next one handed to the script (`sequence`); its
+    // overlay chunks become the source the display shows by that number.
     pub(super) fn road_tool_hand_preview(&mut self) {
         let bridge = &mut self.road_tool_session;
         bridge.tick.sequence += 1;
+        let sequence = bridge.tick.sequence;
+        let mut overlay = None;
         if let Some(standing) = &mut bridge.preview {
-            standing.dictionary.set("sequence", bridge.tick.sequence);
+            standing.dictionary.set("sequence", sequence);
+            overlay = standing.outcome.overlay.clone();
         }
+        self.road_tool_set_overlay_source(sequence, overlay);
     }
 
     // What the frame draws, against what was last drawn (`TickState::compare_drawn`): the gizmos
@@ -526,6 +534,13 @@ impl SimulationNode {
         } else {
             tick.phase = now;
             TICK_PHASE
+        }
+    }
+
+    // The overlay chunks' show, which follows the tick, adds its time to the tick's sample.
+    pub(super) fn road_tool_tick_add_overlay(&mut self, overlay_us: f32) {
+        if let Some(sample) = self.road_tool_session.tick.ring.last_mut() {
+            sample.overlay_us += overlay_us;
         }
     }
 

@@ -193,7 +193,10 @@ func _fixture(fixture: Dictionary) -> void:
 	tool._begin_stroke(points[0])
 	tool.set_scripted_pointer(true, points[-1])
 	tool._process(1.0 / 60.0)
-	var preview: Dictionary = tool._preview
+	# The tool's preview hands its chunks to Rust's draw module (round R2-4a); the payload the
+	# checks below read comes from the same preview.
+	var preview: Dictionary = tool._preview.duplicate()
+	preview["road_chunks"] = simulation.road_tool_preview_chunks()
 	_expect(preview.get("is_valid", false), "%s synchronous preview must validate: %s" % [fixture["name"], preview.get("invalid_reason", "missing")])
 	if not preview.get("is_valid", false):
 		tool.free()
@@ -219,20 +222,23 @@ func _fixture(fixture: Dictionary) -> void:
 	_expect(tool._preview_display._collapsed.size() == collapsed_expected, "only chunks with hidden runs are collapsed")
 	for key in originals:
 		_expect(originals[key].visible, "resident chunks stay drawn")
-	for instance in tool._preview_display._instances:
-		_expect(instance.position.y == 0.0, "preview must not lift roads away from terrain cutouts")
-	var instances: Array = tool._preview_display._instances.duplicate()
+	var overlays: Array = simulation.road_tool_overlay_chunks()
+	_expect(overlays.size() == _overlay_count(preview), "Rust draws every chunk with overlay triangles")
+	for overlay in overlays:
+		_expect((overlay["origin"] as Vector3).y == 0.0, "preview must not lift roads away from terrain cutouts")
+	var counts: PackedInt64Array = simulation.road_tool_overlay_counts()
 	var sequence: int = tool._preview_sequence
 	tool._queue_preview_update()
 	tool._process(1.0 / 60.0)
-	_expect(tool._preview_sequence == sequence and instances == tool._preview_display._instances, "an unchanged stroke must not preview or upload again")
+	_expect(tool._preview_sequence == sequence and simulation.road_tool_overlay_counts() == counts, "an unchanged stroke must not preview or upload again")
+	# A run the resident chunk does not have fails the whole display before anything changes.
 	var malformed := preview.duplicate(true)
-	for chunk in malformed["road_chunks"]:
-		if not chunk.get("road_vertices", PackedVector3Array()).is_empty():
-			chunk["road_normals"] = PackedVector3Array()
-			break
-	_expect(not tool._preview_display.show(tool.chunks, malformed, sequence + 1), "incomplete mesh batches must fail atomically")
-	_expect(instances == tool._preview_display._instances, "failed staging must preserve the complete previous preview")
+	var hidden: PackedInt32Array = malformed["overlay_hidden"]
+	if not hidden.is_empty():
+		hidden[0] = 99
+		malformed["overlay_hidden"] = hidden
+		_expect(not tool._preview_display.show(tool.chunks, malformed, sequence + 1), "runs that do not fit must fail atomically")
+		_expect(simulation.road_tool_overlay_counts() == counts and tool._preview_display.sequence == sequence, "failed staging must preserve the complete previous preview")
 	# A scripted pointer moves without a motion event; queue the update as input would.
 	tool.set_scripted_pointer(true, points[-1] + Vector3(1.0, 0.0, 0.0))
 	tool._queue_preview_update()
@@ -249,7 +255,7 @@ func _fixture(fixture: Dictionary) -> void:
 	tool.cancel_road()
 	for original in originals.values():
 		_expect(original.visible, "cancel must restore original road instances")
-	_expect(tool._preview_display._instances.is_empty() and tool._preview_display._collapsed.is_empty(), "cancel must remove the overlays and restore every collapsed run")
+	_expect(simulation.road_tool_overlay_chunks().is_empty() and tool._preview_display._collapsed.is_empty(), "cancel must remove the overlays and restore every collapsed run")
 	if not OS.get_environment("METRUM_JUNCTION_PREVIEW_CAPTURE").is_empty():
 		await _capture(tool.chunks.chunk_root, fixture["name"] + "_cancelled")
 	await _commit_previewed(tool, points, preview, resident, not isolated, fixture["name"])
@@ -285,7 +291,7 @@ func _commit_previewed(tool: Node3D, points: PackedVector3Array, preview: Dictio
 		await process_frame
 	_expect(tool._commit_request_id == 0 and simulation.get_network_render_generation() > generation, "the commit must finish")
 	_expect(simulation.get_road_benchmark_state()["command"].get("preview_plan_reused", false), "a current preview is the commit's plan")
-	_expect(tool._swap_display == held and not held._instances.is_empty(), "the preview stays shown until the committed chunks are installed")
+	_expect(tool._swap_display == held and _held_overlays() > 0, "the preview stays shown until the committed chunks are installed")
 	# The next stroke previews on the committed context before its chunks are installed.
 	tool.cancel_road()
 	tool._begin_stroke(_ground_point(-48.0, 40.0))
@@ -297,7 +303,7 @@ func _commit_previewed(tool: Node3D, points: PackedVector3Array, preview: Dictio
 		_expect(tool._preview_display.sequence == 0 and not tool._preview_display._pending.is_empty(), "the next stroke waits for the chunks its runs index")
 	generation = simulation.get_network_render_generation()
 	_expect(tool.chunks.update(generation) == generation, "committed chunks must replace the source generation")
-	_expect(tool._swap_display == null and held._instances.is_empty() and held._collapsed.is_empty(), "installing the committed chunks ends the preview in the same call")
+	_expect(tool._swap_display == null and _held_overlays() == 0 and held._collapsed.is_empty(), "installing the committed chunks ends the preview in the same call")
 	_expect(tool._preview_display.sequence > 0 or not next_shows, "the install shows the next stroke's preview in the same call")
 	for key in tool._preview_display._collapsed:
 		_expect(tool._preview_display._collapsed[key]["instance"] == tool.chunks.chunks.get(key), "the next stroke collapses runs of exactly the installed chunks")
@@ -434,6 +440,37 @@ static func _add_triangles(triangles: Dictionary, chunk: Dictionary, hidden: Pac
 			var key := var_to_bytes([layer, vertices.slice(vertex, vertex + 3), normals.slice(vertex, vertex + 3), uvs.slice(vertex, vertex + 3), colors.slice(vertex, vertex + 3), crossings.slice(vertex * 4, vertex * 4 + 12)])
 			triangles[key] = int(triangles.get(key, 0)) + 1
 
+# The chunks of a preview's payload with any overlay triangle (Rust draws those).
+static func _overlay_count(preview: Dictionary) -> int:
+	var count := 0
+	for chunk in preview["road_chunks"]:
+		for layer in LAYERS:
+			if not (chunk.get(layer + "_vertices", PackedVector3Array()) as PackedVector3Array).is_empty():
+				count += 1
+				break
+	return count
+
+# The overlay chunks Rust holds for an accepted commit.
+func _held_overlays() -> int:
+	var count := 0
+	for overlay in simulation.road_tool_overlay_chunks():
+		if overlay["held"]:
+			count += 1
+	return count
+
+# Rust's overlay chunk as a node of its own (a copy of its server surfaces, materials included) at
+# its chunk's centre, as a capture copies the resident chunks' nodes.
+static func _overlay_node(overlay: Dictionary) -> MeshInstance3D:
+	var source: RID = overlay["mesh"]
+	var mesh := ArrayMesh.new()
+	for surface in RenderingServer.mesh_get_surface_count(source):
+		RenderingServer.mesh_add_surface(mesh.get_rid(), RenderingServer.mesh_get_surface(source, surface))
+		RenderingServer.mesh_surface_set_material(mesh.get_rid(), surface, RenderingServer.mesh_surface_get_material(source, surface))
+	var instance := MeshInstance3D.new()
+	instance.mesh = mesh
+	instance.position = overlay["origin"]
+	return instance
+
 func _ground_point(x: float, z: float) -> Vector3:
 	return Vector3(x, simulation.get_world_surface_height(Vector2(x, z)), z)
 
@@ -512,6 +549,10 @@ func _capture(mesh_root: Node3D, label: String, baseline: bool = false, staged_t
 			instance.mesh = source.mesh
 			instance.transform = source.transform
 			viewport.add_child(instance)
+	# The preview's overlays are Rust's (round R2-4a), drawn after the resident chunks as their
+	# nodes were.
+	for overlay in simulation.road_tool_overlay_chunks():
+		viewport.add_child(_overlay_node(overlay))
 	if staged_terrain == null:
 		viewport.add_child(await _capture_terrain())
 	else:

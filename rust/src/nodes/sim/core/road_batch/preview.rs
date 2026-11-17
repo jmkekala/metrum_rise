@@ -31,6 +31,7 @@
 //! [`BATCH_TOO_LARGE_REASON`] before any tier runs, never trimmed.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 use std::time::Instant;
 
 use godot::prelude::Vector3;
@@ -43,6 +44,7 @@ use super::super::road_preview::{
 };
 use super::super::road_tool_context::RoadPreviewContext;
 use super::super::road_tool_land::ViewLand;
+use crate::nodes::sim::road_tool::draw::chunks::PreviewOverlay;
 use crate::nodes::sim::road_tool::validate_road_candidate_against_water;
 use crate::simulation::network::graph::RegionGraphUndoDelta;
 use crate::simulation::network::render::road::{PreviewChunk, PreviewOverlayParts};
@@ -127,6 +129,9 @@ pub(crate) enum BatchVerdict {
 pub(crate) struct BatchPreviewPieces {
     /// Every changed render chunk's overlay, as a single stroke's `RoadPreviewPieces::chunks`.
     pub(crate) chunks: Option<BTreeMap<SurfaceChunkKey, PreviewChunk>>,
+    /// `chunks`' overlays encoded for the server (`ROAD-112` round R2-4a), as a stroke's
+    /// `RoadPreviewPieces::overlay`.
+    pub(crate) overlay: Option<Arc<PreviewOverlay>>,
 }
 
 /// Tier 2's state on the road tool's context: the batch being previewed and how far it got.
@@ -312,7 +317,14 @@ impl RoadPreviewContext {
             if built.is_none() || parts.is_done() {
                 let parts = batch.payload.take().expect("the parts being built");
                 let chunks = built.map(|()| parts.finish());
-                batch.pieces = Some(BatchPreviewPieces { chunks });
+                let overlay = chunks.as_ref().map(|chunks| {
+                    Arc::new(PreviewOverlay::encode(
+                        chunks,
+                        self.view.roadbed.chunk_span_m(),
+                        self.view.roadbed.chunk_origin_m(),
+                    ))
+                });
+                batch.pieces = Some(BatchPreviewPieces { chunks, overlay });
             }
             times.payload_ms = payload_start.elapsed().as_secs_f64() * 1000.0;
         } else {
@@ -494,7 +506,10 @@ impl RoadPreviewContext {
         times.graded_ms = graded_start.elapsed().as_secs_f64() * 1000.0;
         // The overlay composes over the published chunks only while they are the view's.
         if self.view.road_mesh_generation != Some(self.view.roadbed.generation()) {
-            batch.pieces = Some(BatchPreviewPieces { chunks: None });
+            batch.pieces = Some(BatchPreviewPieces {
+                chunks: None,
+                overlay: None,
+            });
             return;
         }
         let target = batch

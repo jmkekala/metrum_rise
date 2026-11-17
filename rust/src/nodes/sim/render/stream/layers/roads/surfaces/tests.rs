@@ -53,6 +53,21 @@ fn a_layer_is_the_bytes_godot_stores() {
 }
 
 #[test]
+fn a_repeated_normal_encodes_as_its_first_vertex() {
+    // Round R2-4a reuses the last vertex's normal bytes when its normal bits repeat.
+    let (vertices, normals, uvs, colors, _) = probe_arrays();
+    let order = [0, 0, 3, 3, 3, 1];
+    let pick = |at: &[usize]| at.iter().map(|&i| normals[i]).collect::<Vec<_>>();
+    let repeated = encode_layer(&vertices, &pick(&order), &uvs, &colors, None);
+    let probe = hex(PROBE_VERTEX_DATA);
+    for (vertex, &source) in order.iter().enumerate() {
+        let at = 72 + 8 * vertex;
+        let from = 72 + 8 * source;
+        assert_eq!(repeated.vertex_data[at..at + 8], probe[from..from + 8]);
+    }
+}
+
+#[test]
 fn the_road_layer_carries_custom0_as_four_floats() {
     let (vertices, normals, uvs, colors, custom) = probe_arrays();
     let surface = encode_layer(&vertices, &normals, &uvs, &colors, Some(&custom));
@@ -137,4 +152,8 @@ fn a_chunk_lists_its_non_empty_layers_and_the_lining_caster() {
     assert!(shadow.attribute_data.is_empty());
     let bytes: usize = surfaces.layers.iter().map(|(_, surface)| surface.bytes()).sum();
     assert_eq!(bytes + shadow.bytes(), 120 * 3 + 72 + 168 + 72 + 72);
+    // The road tool's preview overlay (round R2-4a): the same layers, no shadow caster.
+    let layers_only = RoadChunkSurfaces::encode_layers(&mesh);
+    assert_eq!(layers_only.layers, surfaces.layers);
+    assert!(layers_only.lining_shadow.is_none());
 }

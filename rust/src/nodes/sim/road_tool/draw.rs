@@ -15,10 +15,14 @@
 //! (a rebuild hands the engine fresh arrays).
 //!
 //! Behind [`backend::DrawBackend`]: [`engine::GodotBackend`] for the game, a recorder in tests.
+//! The preview's road chunks (round R2-4a) are drawn by [`chunks::ChunkOverlays`], a pool of
+//! its own over the same backend, attached with the chunk renderer's layer materials.
+//!
 //! The palette and the materials stay `road_tool_gizmos.gd`'s (looks belong to the theme); Rust
 //! gets them at attach. Main thread only.
 
 pub(crate) mod backend;
+pub(crate) mod chunks;
 pub(crate) mod engine;
 pub(crate) mod lines;
 #[cfg(test)]

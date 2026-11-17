@@ -8,8 +8,9 @@
 ##
 ## Callers: NetworkRenderer (`update`, `commit_staged`, `discard_staged`, `release_held`,
 ## `needs_hydration`), `road_chunk_hydration.gd` (`install`, `install_built`,
-## `hydration_materials`, `street_lights`, `road_signs`), the road tool's preview display (`chunks`, `new_chunk_node`, `fill_chunk_mesh`,
-## `place_chunk`, `chunk_root`), tools that change the network outside a stroke (`update`).
+## `hydration_materials`, `street_lights`, `road_signs`), the road tool (`hydration_materials` for
+## Rust's preview overlays, `ROAD-112` round R2-4a), its preview display (`chunks`, `generation`,
+## the grid, `is_holding`), tools that change the network outside a stroke (`update`).
 ##
 ## Rust methods called: get_road_mesh_data(full_snapshot), is_network_dirty(),
 ##   get_network_render_generation(), get_graded_edit_serial()

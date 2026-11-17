@@ -19,6 +19,7 @@ use super::road_tool_land::ViewLand;
 use super::road_terrain_inputs::RoadTerrainInputs;
 use super::road_tool_context::RoadPreviewContext;
 use super::state::SimCore;
+use crate::nodes::sim::road_tool::draw::chunks::PreviewOverlay;
 use crate::nodes::sim::road_tool::hue::{HueState, OffFrameHue};
 use crate::nodes::sim::road_tool::validate_road_candidate_against_water;
 use crate::simulation::network::graph::{Edge, RegionGraph, RoadMedian, RoadParking};
@@ -400,6 +401,9 @@ pub(crate) struct RoadPreviewPieces {
     /// nothing Godot shows. `None` if the view's chunks are not of its roadbed's generation or
     /// a published run has no owner.
     pub(crate) chunks: Option<BTreeMap<SurfaceChunkKey, PreviewChunk>>,
+    /// `chunks`' overlays encoded for the server in the payload stage (`ROAD-112` round R2-4a):
+    /// what the road tool's draw module shows. `Some` exactly when `chunks` is.
+    pub(crate) overlay: Option<Arc<PreviewOverlay>>,
     /// The land the delta's pieces take (`ZONE-09`), by the commit's own rules against the
     /// view's cells and the road tool's land: a plotted reservation refuses the stroke, else the
     /// lots it removes and the buildings (by handle) it demolishes.
@@ -625,7 +629,8 @@ impl RoadPreviewContext {
             changed_chunks: &changed_chunks,
             restore: &restore,
         };
-        let ((take, graded, chunks), stage_times) = stages.run(&mut self.graded, &mut roadbed);
+        let ((take, graded, chunks, overlay), stage_times) =
+            stages.run(&mut self.graded, &mut roadbed);
         times.roadbed_ms = compile_ms + stage_times.roadbed_ms;
         times.graded_ms = stage_times.graded_ms;
         times.payload_ms = stage_times.payload_ms;
@@ -638,6 +643,7 @@ impl RoadPreviewContext {
             changed_chunks,
             graded,
             chunks,
+            overlay,
             take,
         })
     }
@@ -655,11 +661,13 @@ struct PoseStages<'a> {
     restore: &'a RoadbedRestore,
 }
 
-// A pose's land take, staged graded tiles and changed chunks' overlays.
+// A pose's land take, staged graded tiles and changed chunks' overlays, with the overlays
+// encoded for the server.
 type StagedPose = (
     RoadLandTake<u64>,
     GradedPose,
     Option<BTreeMap<SurfaceChunkKey, PreviewChunk>>,
+    Option<Arc<PreviewOverlay>>,
 );
 
 impl PoseStages<'_> {
@@ -735,8 +743,16 @@ impl PoseStages<'_> {
                 )
             })
             .flatten();
+        // The overlays in the server's layout (round R2-4a), so the frame only hands buffers over.
+        let overlay = chunks.as_ref().map(|chunks| {
+            Arc::new(PreviewOverlay::encode(
+                chunks,
+                view.roadbed.chunk_span_m(),
+                view.roadbed.chunk_origin_m(),
+            ))
+        });
         times.payload_ms = payload_start.elapsed().as_secs_f64() * 1000.0;
-        ((take, graded, chunks), times)
+        ((take, graded, chunks, overlay), times)
     }
 }
 

@@ -85,7 +85,8 @@ impl SimulationNode {
             } => {
                 result.set("generation", i64::try_from(generation).unwrap_or(i64::MAX));
                 result.set("border_node", border_node.unwrap_or(-1));
-                // The commit's hue stays with its preview until the hold releases (round R2-3).
+                // The commit's hue and overlay chunks stay with its preview until the hold
+                // releases (rounds R2-3, R2-4a).
                 self.road_tool_hold_hue();
             }
             CommitStep::Refused {

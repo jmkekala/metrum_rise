@@ -83,21 +83,36 @@ pub(crate) struct RoadChunkSurfaces {
 impl RoadChunkSurfaces {
     /// Encodes every layer of `mesh`. `O(vertices)`.
     pub(crate) fn encode(mesh: &NetworkMeshData) -> Self {
-        let mut layers = Vec::new();
-        for layer in 0..LAYER_COUNT {
-            let (vertices, normals, uvs, colors) = layer_arrays(mesh, layer);
-            if vertices.is_empty() {
-                continue;
-            }
-            let custom = (layer == ROAD_LAYER).then_some(mesh.road_crossings.as_slice());
-            layers.push((layer, encode_layer(vertices, normals, uvs, colors, custom)));
-        }
         let lining_shadow =
             (!mesh.lining_vertices.is_empty()).then(|| encode_positions(&mesh.lining_vertices));
         Self {
-            layers,
             lining_shadow,
+            ..Self::encode_layers(mesh)
         }
+    }
+
+    /// Encodes `mesh`'s layers alone, without the lining's shadow caster: the road tool's
+    /// preview overlay (`ROAD-112` round R2-4a), which `fill_chunk_mesh` built without one.
+    /// `O(vertices)`.
+    pub(crate) fn encode_layers(mesh: &NetworkMeshData) -> Self {
+        let layers = (0..LAYER_COUNT)
+            .filter_map(|layer| Some((layer, Self::encode_layer(mesh, layer)?)))
+            .collect();
+        Self {
+            layers,
+            lining_shadow: None,
+        }
+    }
+
+    /// Encodes `mesh`'s layer `layer` (payload order), `None` when it has no vertices: one
+    /// independent job of a parallel encoding. `O(the layer's vertices)`.
+    pub(crate) fn encode_layer(mesh: &NetworkMeshData, layer: usize) -> Option<RoadSurface> {
+        let (vertices, normals, uvs, colors) = layer_arrays(mesh, layer);
+        if vertices.is_empty() {
+            return None;
+        }
+        let custom = (layer == ROAD_LAYER).then_some(mesh.road_crossings.as_slice());
+        Some(encode_layer(vertices, normals, uvs, colors, custom))
     }
 }
 
@@ -161,17 +176,19 @@ fn encode_layer(
     let count = vertices.len();
     let mut vertex_data = Vec::with_capacity(count * 20);
     write_positions(&mut vertex_data, vertices);
+    // A triangle's vertices mostly share their normal: the last one's eight bytes are reused.
+    let mut last: Option<([u32; 3], [u8; 8])> = None;
     for normal in normals {
-        let [nx, ny] = octahedron_encode(*normal);
-        let [tx, ty] = octahedron_tangent_encode(generated_tangent(*normal));
-        let mut tangent = [unorm16(tx), unorm16(ty)];
-        // (0, 1) and (1, 1) decode alike; the engine keeps (0, 1) out of its compression test.
-        if tangent == [0, u16::MAX] {
-            tangent[0] = u16::MAX;
-        }
-        for value in [unorm16(nx), unorm16(ny), tangent[0], tangent[1]] {
-            vertex_data.extend_from_slice(&value.to_le_bytes());
-        }
+        let bits = [normal.x.to_bits(), normal.y.to_bits(), normal.z.to_bits()];
+        let bytes = match last {
+            Some((seen, bytes)) if seen == bits => bytes,
+            _ => {
+                let bytes = normal_tangent_bytes(*normal);
+                last = Some((bits, bytes));
+                bytes
+            }
+        };
+        vertex_data.extend_from_slice(&bytes);
     }
     let stride = if custom.is_some() { 28 } else { 12 };
     let mut attribute_data = Vec::with_capacity(count * stride);
@@ -201,6 +218,24 @@ fn encode_layer(
         attribute_data,
         aabb: bounds(vertices),
     }
+}
+
+// A normal and the tangent the engine generates from it, octahedral-encoded: 8 bytes.
+fn normal_tangent_bytes(normal: Vector3) -> [u8; 8] {
+    let [nx, ny] = octahedron_encode(normal);
+    let [tx, ty] = octahedron_tangent_encode(generated_tangent(normal));
+    let mut tangent = [unorm16(tx), unorm16(ty)];
+    // (0, 1) and (1, 1) decode alike; the engine keeps (0, 1) out of its compression test.
+    if tangent == [0, u16::MAX] {
+        tangent[0] = u16::MAX;
+    }
+    let mut bytes = [0; 8];
+    for (chunk, value) in (bytes.as_chunks_mut::<2>().0.iter_mut())
+        .zip([unorm16(nx), unorm16(ny), tangent[0], tangent[1]])
+    {
+        chunk.copy_from_slice(&value.to_le_bytes());
+    }
+    bytes
 }
 
 // A vertex-only surface (the lining's shadow caster).

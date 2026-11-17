@@ -51,6 +51,7 @@ use tick::TickState;
 mod commit;
 mod draw;
 mod labels;
+mod overlay;
 mod tick;
 
 /// The road tool session of one `SimulationNode` and the preview the bridge last ran for it.
@@ -89,6 +90,8 @@ pub(crate) struct RoadToolBridge {
     // whose copy shows a refusal (round R2-1, `commit.rs`).
     commit: CommitSequence,
     commit_preview: Option<VarDictionary>,
+    // The preview's overlay chunks and their source (round R2-4a, `overlay.rs`).
+    chunks: overlay::PreviewChunks,
 }
 
 // The standing preview: its typed outcome, which every decision on it reads, and the dictionary
@@ -766,6 +769,7 @@ impl SimulationNode {
         outcome.reason = step.reason;
         outcome.draft_stroke = step.stroke;
         outcome.demolish_count = step.demolish_count;
+        outcome.overlay = step.overlay;
         preview.set("is_valid", accepted);
         preview.set("is_pending", false);
         preview.set("invalid_reason", outcome.reason.as_ref());
