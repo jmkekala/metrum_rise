@@ -1759,18 +1759,22 @@ impl SimCore {
             fast_validation,
         );
         let mut validation = fast_validation.clone();
+        // A plan-less caller's plan, kept when it dissolves a joint (`ROAD-118` round JS2): only
+        // the plan joins the roads, so the commit adopts it.
+        let mut dissolving_plan = None;
         if validation.is_valid {
             if let Some(plan) = edit_plan.filter(|_| planned_input.is_some()) {
                 validation = plan.validation().clone();
             } else {
                 let full_validation_start = Instant::now();
-                let (full_validation, _) = validate_road_edit(
+                let (full_validation, full_plan) = validate_road_edit(
                     prepared_input,
                     fwd_lanes_u8,
                     bkw_lanes_u8,
                     &self.heightmap,
                     &self.region_graph,
                 );
+                dissolving_plan = full_plan.filter(|plan| plan.dissolves_joints());
                 let full_validation = validate_road_candidate_against_water(
                     prepared_input,
                     fwd_lanes_u8,
@@ -1900,7 +1904,8 @@ impl SimCore {
         let t_undo = Instant::now();
         let topology_plan = edit_plan
             .filter(|_| planned_input.is_some())
-            .and_then(|plan| plan.topology_for(&self.region_graph));
+            .and_then(|plan| plan.topology_for(&self.region_graph))
+            .or(dissolving_plan.as_ref());
         if !self.benchmark_mode || self.transit_network.road_edit_is_staged() {
             if let Some(plan) = topology_plan {
                 let (edges, nodes) = plan.source_topology_ids();

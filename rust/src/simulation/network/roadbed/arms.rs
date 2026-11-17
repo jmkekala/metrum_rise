@@ -34,8 +34,8 @@ use super::mesh::{SpanEnd, StripKind};
 use super::profile::{Level, MedianEdges, PocketNarrowing, ProfileBand, RoadProfile};
 use super::span::{PASS_THROUGH_DOT_THRESHOLD, edge_points, incident_direction, is_surface_edge};
 use super::{BandKind, RoadVec2};
-use crate::simulation::network::graph::{Edge, RegionGraph};
-use crate::simulation::network::types::{EdgeClass, TransitFlags, TransitType};
+use crate::simulation::network::graph::{Edge, RegionGraph, RoadParking, SidewalkSides};
+use crate::simulation::network::types::{EdgeClass, NodeType, TransitFlags, TransitType};
 use godot::prelude::Vector3;
 use std::ops::Range;
 
@@ -532,6 +532,93 @@ pub(crate) fn directions_pass_through(a: RoadVec2, b: RoadVec2) -> bool {
 /// pass-through rule of node layouts, span ends and the profile solve.
 pub(crate) fn edges_pass_through(a: (&Edge, RoadVec2), b: (&Edge, RoadVec2)) -> bool {
     directions_pass_through(a.1, b.1) && RoadProfile::for_edge(a.0) == RoadProfile::for_edge(b.0)
+}
+
+/// The two arms of `node` when it is an empty joint (`ROAD-118` round JS2), in key order: a
+/// plain node ([`NodeType::Junction`], no crossing override, no vehicle turn rule) of two pass-through
+/// arms ([`edges_pass_through`]) on standard car roads, neither a ring's nor a pocket's, that
+/// agree in every authored attribute read in one direction ([`one_road`]). Such a joint has no
+/// piece the player sees, so it makes way for a junction beside it by dissolving: its two edges
+/// join into one. Anything else is occupied and keeps its place. The turn rules are this graph's
+/// (the validation excerpt carries none, so its caller also asks the live node). `O(degree)`.
+pub(crate) fn empty_joint(graph: &RegionGraph, node: u32) -> Option<[ArmKey; 2]> {
+    let record = graph.node(node);
+    if record.node_type != NodeType::Junction
+        || !record.crosswalk_overrides.is_empty()
+        || has_vehicle_turn_rules(graph, node)
+    {
+        return None;
+    }
+    let incidents = node_incidents(graph, node)?;
+    let [(a, _), (b, _)] = incidents[..] else {
+        return None;
+    };
+    let plain = |key: ArmKey| {
+        let edge = graph.edge(key.edge);
+        edge.class == EdgeClass::Standard
+            && edge.primary_type == TransitType::Road
+            && edge.roundabout.is_none()
+            && edge.pocket.is_none()
+    };
+    (a.edge != b.edge
+        && plain(a)
+        && plain(b)
+        && passes_through(graph, &incidents)
+        && one_road((graph.edge(a.edge), a.end), (graph.edge(b.edge), b.end)))
+    .then_some([a, b])
+}
+
+/// Whether `node` holds a vehicle turn rule ([`RegionGraph::is_vehicle_turn_rule`]): one the
+/// player authored, where the lanes' own pedestrian routes are derived. `O(rules at the node)`.
+pub(crate) fn has_vehicle_turn_rules(graph: &RegionGraph, node: u32) -> bool {
+    graph
+        .node(node)
+        .lane_connections
+        .keys()
+        .any(|&(edge, lane)| graph.is_vehicle_turn_rule(edge, lane))
+}
+
+// Whether two edges meeting at a node, at ends `a.1` and `b.1`, read as one road through it
+// (`ROAD-118`): equal in every authored attribute once `a` is turned to run on into `b` (its
+// lanes, sidewalks and parking sides swap when both edges start or both end there). Geometry,
+// clips and costs are not compared. `O(1)`.
+fn one_road((a, a_end): (&Edge, EdgeEnd), (b, b_end): (&Edge, EdgeEnd)) -> bool {
+    // Running on from `a` into `b`, `a` ends where `b` starts; otherwise `a` is read backwards.
+    let turned = a_end == b_end;
+    let (fwd, bkw) = if turned {
+        (a.bkw_lanes, a.fwd_lanes)
+    } else {
+        (a.fwd_lanes, a.bkw_lanes)
+    };
+    let sidewalks = if turned {
+        SidewalkSides::of_ends(a.sidewalks.right(), a.sidewalks.left())
+    } else {
+        a.sidewalks
+    };
+    let parking = if turned {
+        RoadParking {
+            left: a.parking.right,
+            right: a.parking.left,
+        }
+    } else {
+        a.parking
+    };
+    a.primary_type == b.primary_type
+        && a.allowed_types == b.allowed_types
+        && a.class == b.class
+        && a.width == b.width
+        && (fwd, bkw) == (b.fwd_lanes, b.bkw_lanes)
+        && a.speed_limit == b.speed_limit
+        && a.no_building_spawn == b.no_building_spawn
+        && a.no_street_lights == b.no_street_lights
+        && a.vehicle_frontage_access == b.vehicle_frontage_access
+        && a.median == b.median
+        && parking == b.parking
+        && a.pocket.is_none()
+        && b.pocket.is_none()
+        && sidewalks == b.sidewalks
+        && a.roundabout.is_none()
+        && b.roundabout.is_none()
 }
 
 /// How the span of `edge_idx` closes its end row at `node` (`TERRAIN-07-C`, `docs/terrain.md`

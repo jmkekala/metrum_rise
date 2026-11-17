@@ -5,6 +5,7 @@
 use super::graph::{Edge, RegionGraph};
 use super::roadbed::{PieceId, RoadbedSystem};
 use super::types::NodeType;
+use super::topology::JointDissolve;
 use super::{TransitNetwork, topology};
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::terrain::TerrainSystem;
@@ -72,6 +73,9 @@ struct PlannedNode {
     // Crossing overrides on the excerpt's arms, local edge ids ascending, after its splits and
     // merges carried them (`ROAD-74`).
     crosswalk_overrides: Vec<(usize, bool)>,
+    // A dissolved joint (`ROAD-118` round JS2): merged into its junction and gone from the node
+    // index, where a stroke's end would otherwise find it.
+    dissolved: bool,
 }
 
 struct PlannedEdge {
@@ -93,6 +97,8 @@ pub(crate) struct RoadTopologyPlan {
     affected_nodes: HashSet<u32>,
     // Canonical local nodes at the stroke's first and last point.
     stroke_ends: [u32; 2],
+    // The joints the edit dissolved (`ROAD-118` round JS2), in local ids, in the order done.
+    dissolves: Vec<JointDissolve>,
 }
 
 impl std::fmt::Debug for RoadTopologyPlan {
@@ -116,6 +122,7 @@ impl RoadTopologyPlan {
         finalized: FinalizedRoadGeometry,
         splits: Vec<PlannedRoadSplit>,
         stroke_ends: [u32; 2],
+        dissolves: Vec<JointDissolve>,
     ) -> Option<Self> {
         let mut nodes = local
             .nodes()
@@ -136,8 +143,12 @@ impl RoadTopologyPlan {
                     overrides.sort_unstable();
                     overrides
                 },
+                dissolved: false,
             })
             .collect::<Vec<_>>();
+        for dissolve in &dissolves {
+            nodes[dissolve.joint as usize].dissolved = true;
+        }
         for (&source_id, &local_id) in source_nodes {
             let node = &mut nodes[local_id as usize];
             node.source = Some(source_id);
@@ -212,7 +223,13 @@ impl RoadTopologyPlan {
             dirty_edges,
             affected_nodes: finalized.affected_nodes,
             stroke_ends: stroke_ends.map(|end| local.get_valid_node(end)),
+            dissolves,
         })
+    }
+
+    /// Whether the plan dissolves a joint (`ROAD-118` round JS2). O(1).
+    pub(crate) fn dissolves_joints(&self) -> bool {
+        !self.dissolves.is_empty()
     }
 
     /// The live pieces this plan rebuilds, the ones [`AppliedRoadTopology::mark_pieces`] marks
@@ -247,11 +264,15 @@ impl RoadTopologyPlan {
             .iter()
             .filter_map(|split| source_root(split.edge_id))
             .collect();
+        // The canonical node's own source first: a dissolved joint merges into a junction with a
+        // higher id (`ROAD-118`).
         let joined_ends = self.stroke_ends.map(|end| {
-            self.nodes
-                .iter()
-                .filter(|node| node.canonical == end)
-                .find_map(|node| node.source)
+            self.nodes[end as usize].source.or_else(|| {
+                self.nodes
+                    .iter()
+                    .filter(|node| node.canonical == end)
+                    .find_map(|node| node.source)
+            })
         });
         RebuiltPieces::new(spans.chain(nodes).collect(), crossed, joined_ends)
     }
@@ -335,6 +356,24 @@ impl TransitNetwork {
                 &mut self.road_edit_split_undo,
             );
         }
+        // After the splits moved theirs, a dissolved joint's piece takes its dependents along.
+        for dissolve in &plan.dissolves {
+            let dissolve = JointDissolve {
+                joint: applied.node_ids[dissolve.joint as usize],
+                junction: applied.node_ids[dissolve.junction as usize],
+                into: edge_ids[dissolve.into],
+                from: edge_ids[dissolve.from],
+                dropped: edge_ids[dissolve.dropped],
+                ..*dissolve
+            };
+            topology::migrate_dissolve_dependents(
+                graph,
+                &dissolve,
+                zoning,
+                allocator,
+                &mut self.road_edit_split_undo,
+            );
+        }
         let changed_edges = plan
             .edges
             .iter()
@@ -385,7 +424,8 @@ impl RoadTopologyPlan {
 
 /// Where a plan's records went in a graph, and what the edit dirtied there.
 pub(crate) struct AppliedRoadTopology {
-    // Live id of each local edge.
+    // Live id of each local node and edge.
+    node_ids: Vec<u32>,
     edge_ids: Vec<usize>,
     /// Edges whose geometry changed, in live ids.
     pub(crate) dirty_edges: HashSet<usize>,
@@ -434,7 +474,9 @@ impl RoadTopologyPlan {
                 graph.nodes[id as usize].pos = node.position;
                 graph.nodes[id as usize].node_type = node.kind;
                 graph.nodes[id as usize].lane_connections.clear();
-                graph.add_node_to_spatial_index(id);
+                if !node.dissolved {
+                    graph.add_node_to_spatial_index(id);
+                }
             }
         }
         let mut merged_nodes = Vec::new();
@@ -531,6 +573,7 @@ impl RoadTopologyPlan {
             .map(|id| node_ids[*id as usize])
             .collect();
         Some(AppliedRoadTopology {
+            node_ids,
             edge_ids,
             dirty_edges,
             affected_nodes,

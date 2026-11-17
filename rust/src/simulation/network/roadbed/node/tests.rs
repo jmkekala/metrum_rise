@@ -775,3 +775,67 @@ fn a_stub_to_a_road_end_takes_all_but_the_cap() {
     let needed_m = needed_m.expect("a length fits");
     assert!((16.99..=17.001).contains(&needed_m), "{needed_m}");
 }
+
+// `ROAD-118` round JS2: a straight joint of two roads that read as one is empty, either way each
+// road runs; anything a player authored or another rule owns there makes it occupied: a
+// crossing override, a vehicle turn rule, a different speed or lane split, a bridge on one side,
+// a turn pocket's transition or a ring edge.
+#[test]
+fn an_empty_joint_is_a_straight_joint_of_one_road() {
+    use crate::simulation::network::graph::{RoadPocket, RoundaboutRing};
+    use crate::simulation::network::roadbed::{EdgeEnd, empty_joint};
+    use crate::simulation::network::types::EdgeClass;
+    // West to joint to east, each road in the direction given (true: towards the east).
+    let joint = |west_east: bool, east_east: bool, edit: &dyn Fn(&mut RegionGraph)| {
+        let mut graph = RegionGraph::new();
+        let west = graph.add_node(point(-40.0, 0.0, false), NodeType::Junction);
+        let joint = graph.add_node(point(0.0, 0.0, false), NodeType::Junction);
+        let east = graph.add_node(point(40.0, 0.0, false), NodeType::Junction);
+        for (a, b, eastward) in [(west, joint, west_east), (joint, east, east_east)] {
+            let (a, b) = if eastward { (a, b) } else { (b, a) };
+            let edge = connect(&mut graph, a, b, 7.0, false);
+            let edge = graph.edge_mut(edge);
+            edge.fwd_lanes = 1;
+            edge.bkw_lanes = 1;
+        }
+        edit(&mut graph);
+        empty_joint(&graph, joint)
+    };
+    for (west_east, east_east) in [(true, true), (true, false), (false, true), (false, false)] {
+        assert!(joint(west_east, east_east, &|_| {}).is_some());
+    }
+    let occupied: [(&str, &dyn Fn(&mut RegionGraph)); 8] = [
+        ("crossing", &|graph| graph.set_crosswalk_override(1, 0, false)),
+        ("turn rule", &|graph| graph.add_lane_connection(1, 0, 0, 1, 0)),
+        ("speed", &|graph| graph.edge_mut(1).speed_limit *= 0.8),
+        ("lanes", &|graph| graph.edge_mut(1).fwd_lanes = 2),
+        ("bridge", &|graph| graph.edge_mut(1).class = EdgeClass::Bridge),
+        ("transition", &|graph| {
+            graph.nodes[1].node_type = NodeType::LaneTransition
+        }),
+        ("pocket", &|graph| {
+            graph.edge_mut(1).pocket = Some(RoadPocket {
+                end: EdgeEnd::End,
+                left: true,
+                right: false,
+            })
+        }),
+        ("ring", &|graph| {
+            graph.edge_mut(1).roundabout = Some(RoundaboutRing {
+                centre: godot::prelude::Vector2::new(0.0, 60.0),
+                radius_m: 60.0,
+            })
+        }),
+    ];
+    for (name, edit) in occupied {
+        assert_eq!(joint(true, true, edit), None, "{name}");
+    }
+    // A one-way pair reads as one road only where both run the same way.
+    let one_way = |graph: &mut RegionGraph| {
+        for edge in [0, 1] {
+            graph.edge_mut(edge).bkw_lanes = 0;
+        }
+    };
+    assert!(joint(true, true, &one_way).is_some());
+    assert_eq!(joint(true, false, &one_way), None);
+}

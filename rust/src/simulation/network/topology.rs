@@ -97,12 +97,21 @@ impl StrokeGrade {
     }
 }
 
-/// Inverse of the dependent records changed by one staged edge split.
-pub(super) struct RoadSplitDependentsUndo {
-    edge_id: usize,
-    new_edge_id: usize,
-    buildings: Vec<(usize, usize, usize, f32)>,
-    occupancy: Option<crate::simulation::buildings::allocator::EdgeOccupancy>,
+/// Inverse of the dependent records changed by one staged edge split, or by one dissolved
+/// joint's transfer (`ROAD-118` round JS2).
+pub(super) enum RoadSplitDependentsUndo {
+    Split {
+        edge_id: usize,
+        new_edge_id: usize,
+        buildings: Vec<(usize, usize, usize, f32)>,
+        occupancy: Option<crate::simulation::buildings::allocator::EdgeOccupancy>,
+    },
+    Dissolve {
+        // Each moved building's previous edge, cell, frontage and side.
+        buildings: Vec<(usize, usize, usize, f32, i8)>,
+        // Both edges' occupancy before the transfer.
+        occupancy: [(usize, Option<crate::simulation::buildings::allocator::EdgeOccupancy>); 2],
+    },
 }
 
 impl TransitNetwork {
@@ -136,17 +145,39 @@ impl TransitNetwork {
 }
 
 impl RoadSplitDependentsUndo {
-    /// Puts back the buildings and occupancy of the split this entry journaled. O(rows).
+    /// Puts back the buildings and occupancy of the split or transfer this entry journaled.
+    /// O(rows).
     pub(super) fn restore(
         self,
         allocator: &mut crate::simulation::buildings::allocator::BuildingAllocator,
     ) {
-        allocator.restore_split_frontages(&self.buildings);
-        allocator.edge_occupancy.remove(&self.new_edge_id);
-        if let Some(occupancy) = self.occupancy {
-            allocator.edge_occupancy.insert(self.edge_id, occupancy);
-        } else {
-            allocator.edge_occupancy.remove(&self.edge_id);
+        match self {
+            Self::Split {
+                edge_id,
+                new_edge_id,
+                buildings,
+                occupancy,
+            } => {
+                allocator.restore_split_frontages(&buildings);
+                allocator.edge_occupancy.remove(&new_edge_id);
+                if let Some(occupancy) = occupancy {
+                    allocator.edge_occupancy.insert(edge_id, occupancy);
+                } else {
+                    allocator.edge_occupancy.remove(&edge_id);
+                }
+            }
+            Self::Dissolve {
+                buildings,
+                occupancy,
+            } => {
+                allocator.restore_dissolve_frontages(&buildings);
+                for (edge, cells) in occupancy {
+                    match cells {
+                        Some(cells) => allocator.edge_occupancy.insert(edge, cells),
+                        None => allocator.edge_occupancy.remove(&edge),
+                    };
+                }
+            }
         }
     }
 }
@@ -854,11 +885,11 @@ pub(super) fn migrate_split_dependents(
     allocator: &mut crate::simulation::buildings::allocator::BuildingAllocator,
     journal: &mut Option<Vec<RoadSplitDependentsUndo>>,
 ) {
-    let mut undo = journal.as_ref().map(|_| RoadSplitDependentsUndo {
-        edge_id,
-        new_edge_id,
-        buildings: Vec::new(),
-        occupancy: allocator.edge_occupancy.get(&edge_id).cloned(),
+    let mut undo = journal.as_ref().map(|_| {
+        (
+            Vec::new(),
+            allocator.edge_occupancy.get(&edge_id).cloned(),
+        )
     });
     let traffic_debug = crate::debug::Channel::Traffic.enabled();
     let old_occ_cells = allocator
@@ -874,7 +905,7 @@ pub(super) fn migrate_split_dependents(
         split_x,
         [new_len_first, new_len_second],
         zoning.config.zone_cell_m,
-        undo.as_mut().map(|undo| &mut undo.buildings),
+        undo.as_mut().map(|(buildings, _)| buildings),
     );
 
     // Migrate edge occupancy
@@ -900,8 +931,13 @@ pub(super) fn migrate_split_dependents(
             );
         }
     }
-    if let (Some(journal), Some(undo)) = (journal, undo) {
-        journal.push(undo);
+    if let (Some(journal), Some((buildings, occupancy))) = (journal, undo) {
+        journal.push(RoadSplitDependentsUndo::Split {
+            edge_id,
+            new_edge_id,
+            buildings,
+            occupancy,
+        });
     }
     if traffic_debug {
         crate::traffic_log!(
@@ -915,6 +951,89 @@ pub(super) fn migrate_split_dependents(
             buildings_part1,
             buildings_part2,
         );
+    }
+}
+
+/// Moves the dependents of a dissolved joint (`ROAD-118` round JS2), journaled like a split's:
+/// the mirror of [`migrate_split_dependents`]. The buildings move by
+/// [`BuildingAllocator::migrate_dissolve_frontages`](crate::simulation::buildings::allocator::BuildingAllocator::migrate_dissolve_frontages);
+/// the piece's occupancy columns (the whole piece, or the split road's head in whole cells) join
+/// the taking edge's before or after its own, turned with their sides where the piece runs
+/// against it. Runs after the edit's splits moved theirs. `O(the two edges' buildings +
+/// occupancy cells)`, plus the chunk candidates' test.
+pub(super) fn migrate_dissolve_dependents(
+    graph: &RegionGraph,
+    dissolve: &JointDissolve,
+    zoning: &crate::simulation::zoning::ZoningSystem,
+    allocator: &mut crate::simulation::buildings::allocator::BuildingAllocator,
+    journal: &mut Option<Vec<RoadSplitDependentsUndo>>,
+) {
+    use crate::simulation::buildings::allocator::EdgeOccupancy;
+    let cell_m = zoning.config.zone_cell_m;
+    let (from, into) = (dissolve.from, dissolve.into);
+    let occupancy = [from, into].map(|edge| (edge, allocator.edge_occupancy.get(&edge).cloned()));
+    let mut buildings = Vec::new();
+    allocator.migrate_dissolve_frontages(graph, dissolve, cell_m, &mut buildings);
+    let cells = |metres: f32| (metres / cell_m).floor() as usize;
+    let piece_cells = cells(dissolve.piece_m);
+    // The piece's columns in the joined road's direction: the source's, else free ones.
+    let piece = match allocator.edge_occupancy.remove(&from) {
+        Some(source) => {
+            let taken = if dissolve.trim {
+                piece_cells.min(source.cells_long)
+            } else {
+                source.cells_long
+            };
+            if dissolve.trim {
+                allocator.edge_occupancy.insert(
+                    from,
+                    EdgeOccupancy {
+                        cells_long: source.cells_long - taken,
+                        left: source.left[taken..].to_vec(),
+                        right: source.right[taken..].to_vec(),
+                    },
+                );
+            }
+            let (mut left, mut right) =
+                (source.left[..taken].to_vec(), source.right[..taken].to_vec());
+            if !dissolve.along {
+                left.reverse();
+                right.reverse();
+                std::mem::swap(&mut left, &mut right);
+            }
+            Some((left, right))
+        }
+        None => allocator
+            .edge_occupancy
+            .contains_key(&into)
+            .then(|| (vec![false; piece_cells], vec![false; piece_cells])),
+    };
+    if let Some((mut left, mut right)) = piece {
+        let own = cells(dissolve.into_length_m);
+        let target = allocator
+            .edge_occupancy
+            .entry(into)
+            .or_insert_with(|| EdgeOccupancy {
+                cells_long: own,
+                left: vec![false; own],
+                right: vec![false; own],
+            });
+        if dissolve.prepend {
+            left.extend_from_slice(&target.left);
+            right.extend_from_slice(&target.right);
+            target.left = left;
+            target.right = right;
+        } else {
+            target.left.extend_from_slice(&left);
+            target.right.extend_from_slice(&right);
+        }
+        target.cells_long = target.left.len();
+    }
+    if let Some(journal) = journal {
+        journal.push(RoadSplitDependentsUndo::Dissolve {
+            buildings,
+            occupancy,
+        });
     }
 }
 
@@ -1377,6 +1496,187 @@ pub(crate) fn split_edge_graph(
         far_node: (!self_loop).then_some(old_end_node),
         first_length_m: graph.edge(edge_id).physical_length,
         second_length_m: graph.edge(new_edge_id).physical_length,
+    })
+}
+
+/// What [`dissolve_joint_graph`] did (`ROAD-118` round JS2): which edge took the piece, where it
+/// came from and how the stations map, for the dependents' transfer
+/// ([`migrate_dissolve_dependents`]).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct JointDissolve {
+    /// The joint, now an alias of `junction`.
+    pub(crate) joint: u32,
+    /// The node at the piece's far end, where the joined road now ends.
+    pub(crate) junction: u32,
+    /// The joint's other arm, which took the piece; it keeps its id and its direction.
+    pub(crate) into: usize,
+    /// The edge the piece came from: the deleted piece itself, or the split road whose head it
+    /// was, which keeps its id on the rest (`trim`).
+    pub(crate) from: usize,
+    /// The slot the dissolve deleted: the piece, or the split's second half that `from` took.
+    pub(crate) dropped: usize,
+    /// The piece's physical length, metres.
+    pub(crate) piece_m: f32,
+    /// `from`'s physical length before the edit: the piece, or the piece and the rest.
+    pub(crate) from_length_m: f32,
+    /// `into`'s physical length before the edit.
+    pub(crate) into_length_m: f32,
+    /// Whether the piece went before `into`'s start (else after its end).
+    pub(crate) prepend: bool,
+    /// Whether the piece runs `into`'s way (else its stations and sides turn).
+    pub(crate) along: bool,
+    /// Whether `from` keeps a rest beyond the piece.
+    pub(crate) trim: bool,
+}
+
+/// Dissolves empty joint `joint` (`ROAD-118` round JS2, [`super::roadbed::empty_joint`]) on a
+/// graph that has no turn rules (the validation excerpt): the piece `piece`, from the joint to a
+/// junction, joins the joint's other arm, which keeps its id and direction and now runs on to
+/// that junction; the joint becomes an alias of the junction and leaves the node index. A piece
+/// that is the head of a split road (`rest`: the split's second half, from the junction on) is
+/// taken off it instead of deleted: the road keeps its id on the rest and the second half's slot
+/// is deleted, with the crossing override at the road's far end moved back to it. `None`, with
+/// nothing changed, when the arms are not that shape, the joined road would close a loop, or it
+/// would double a road the junction already has. O(points + degree).
+pub(crate) fn dissolve_joint_graph(
+    graph: &mut RegionGraph,
+    joint: u32,
+    piece: usize,
+    rest: Option<usize>,
+) -> Option<JointDissolve> {
+    let live = |graph: &RegionGraph, id: usize| graph.get_edge(id).is_some_and(|e| !e.deleted);
+    let arms: Vec<usize> = graph
+        .node_adjacency(joint)
+        .iter()
+        .copied()
+        .filter(|&id| live(graph, id))
+        .collect();
+    let [a, b] = arms[..] else {
+        return None;
+    };
+    let into = if a == piece { b } else if b == piece { a } else { return None };
+    let piece_edge = graph.edge(piece).clone();
+    let piece_starts = piece_edge.start_node == joint;
+    let junction = if piece_starts {
+        piece_edge.end_node
+    } else {
+        piece_edge.start_node
+    };
+    let into_edge = graph.edge(into);
+    let prepend = into_edge.start_node == joint;
+    let into_far = if prepend {
+        into_edge.end_node
+    } else {
+        into_edge.start_node
+    };
+    if junction == joint
+        || junction == into_far
+        || graph.get_edge_between_nodes(junction, into_far).is_some()
+    {
+        return None;
+    }
+    if let Some(rest) = rest {
+        let rest_edge = graph.get_edge(rest).filter(|_| live(graph, rest))?;
+        if !piece_starts || rest_edge.start_node != junction {
+            return None;
+        }
+    }
+    let into_length_m = into_edge.physical_length;
+    let piece_m = piece_edge.physical_length;
+    // The piece from the joint out to the junction, in both polylines.
+    let outward = |points: &[Vector3]| -> Vec<Vector3> {
+        let mut points = points.to_vec();
+        if !piece_starts {
+            points.reverse();
+        }
+        points
+    };
+    let (geometry, physical) = (
+        outward(&piece_edge.geometry),
+        outward(&piece_edge.physical_geometry),
+    );
+    let joined = |into: &[Vector3], piece: Vec<Vector3>| -> Vec<Vector3> {
+        if prepend {
+            let mut points: Vec<Vector3> = piece.into_iter().rev().collect();
+            points.extend_from_slice(&into[1..]);
+            points
+        } else {
+            let mut points = into.to_vec();
+            points.extend_from_slice(&piece[1..]);
+            points
+        }
+    };
+    for id in [Some(piece), Some(into), rest].into_iter().flatten() {
+        graph.remove_from_spatial_index(id);
+    }
+    let into_record = &mut graph.edges[into];
+    into_record.geometry = joined(&into_record.geometry, geometry);
+    into_record.physical_geometry = joined(&into_record.physical_geometry, physical);
+    if prepend {
+        into_record.start_node = junction;
+        into_record.start_clip = 0.0;
+    } else {
+        into_record.end_node = junction;
+        into_record.end_clip = 0.0;
+    }
+    (into_record.base_cost, into_record.physical_length) =
+        crate::simulation::pathing::cost::CostCalculator::calculate_costs(into_record);
+    let (from, dropped, from_length_m) = match rest {
+        Some(rest) => {
+            // The road keeps its id on the rest: the second half's record moves into its slot.
+            let rest_record = graph.edges[rest].clone();
+            let far = rest_record.end_node;
+            let from_length_m = piece_m + rest_record.physical_length;
+            graph.edges[piece] = rest_record;
+            graph.edges[rest].deleted = true;
+            let far_arms = &mut graph.adjacency[far as usize];
+            far_arms.retain(|&id| id != rest);
+            far_arms.push(piece);
+            far_arms.sort_unstable();
+            graph.adjacency[junction as usize].retain(|&id| id != rest);
+            let overrides = &mut graph.nodes[far as usize].crosswalk_overrides;
+            if let Some(marked) = overrides.remove(&rest) {
+                overrides.insert(piece, marked);
+            }
+            graph.add_to_spatial_index(piece);
+            (piece, rest, from_length_m)
+        }
+        None => {
+            graph.edges[piece].deleted = true;
+            graph.adjacency[junction as usize].retain(|&id| id != piece);
+            (piece, piece, piece_m)
+        }
+    };
+    let junction_arms = &mut graph.adjacency[junction as usize];
+    junction_arms.push(into);
+    junction_arms.sort_unstable();
+    // The piece's arm at the junction is now `into`'s and the rest's is the road's, each with its
+    // crossing.
+    let overrides = &mut graph.nodes[junction as usize].crosswalk_overrides;
+    let piece_marked = overrides.remove(&piece);
+    if let Some(marked) = rest.and_then(|rest| overrides.remove(&rest)) {
+        overrides.insert(piece, marked);
+    }
+    if let Some(marked) = piece_marked {
+        overrides.insert(into, marked);
+    }
+    graph.add_to_spatial_index(into);
+    graph.adjacency[joint as usize].clear();
+    graph.remove_node_from_spatial_index(joint, graph.node(joint).pos);
+    graph.node_aliases.insert(joint, junction);
+    Some(JointDissolve {
+        joint,
+        junction,
+        into,
+        from,
+        dropped,
+        piece_m,
+        from_length_m,
+        into_length_m,
+        prepend,
+        // Prepended, the joined road runs junction -> joint; appended, joint -> junction.
+        along: if prepend { !piece_starts } else { piece_starts },
+        trim: rest.is_some(),
     })
 }
 

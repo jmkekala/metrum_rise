@@ -1192,6 +1192,111 @@ impl BuildingAllocator {
         moved
     }
 
+    /// The buildings of a dissolved joint's edges (`ROAD-118` round JS2,
+    /// [`crate::simulation::network::topology::dissolve_joint_graph`]): those fronting the piece
+    /// front the edge that took it, at the piece's stations there (turned, side and all, where the
+    /// piece runs against it); those beyond the piece on a split road stay, their stations less
+    /// the piece; the taking edge's own move on by the piece when it went before them. Each takes
+    /// its frontage parameter by its frontage centre's station along its edge's new length, and
+    /// its leading cell by the whole cells the piece shifts it. `undo` receives each row's previous
+    /// edge, cell, frontage and side. The rows are found among the 512 m chunk candidates of both
+    /// edges' geometry in `graph` (the piece's deleted record included), as the split's are;
+    /// `O(candidates log candidates)`, `O(B)` while the chunk index is stale.
+    pub(crate) fn migrate_dissolve_frontages(
+        &mut self,
+        graph: &RegionGraph,
+        dissolve: &crate::simulation::network::topology::JointDissolve,
+        cell_m: f32,
+        undo: &mut Vec<(usize, usize, usize, f32, i8)>,
+    ) {
+        let (from, into) = (dissolve.from, dissolve.into);
+        let edges = std::collections::HashSet::from([from, into]);
+        let fronting: Vec<usize> =
+            match self.attachment_repair_candidates(graph, &edges, [], cell_m) {
+                Some(candidates) => candidates
+                    .into_iter()
+                    .filter(|&idx| edges.contains(&self.buildings[idx].edge_idx))
+                    .collect(),
+                None => (0..self.buildings.len())
+                    .filter(|&idx| edges.contains(&self.buildings[idx].edge_idx))
+                    .collect(),
+            };
+        debug_assert!(
+            self.buildings
+                .iter()
+                .enumerate()
+                .filter(|(_, b)| edges.contains(&b.edge_idx))
+                .map(|(idx, _)| idx)
+                .eq(fronting.iter().copied()),
+            "the dissolve's chunk candidates hold every building fronting edges {from} and {into}"
+        );
+        let cells = |metres: f32| (metres / cell_m).floor() as usize;
+        let piece_cells = cells(dissolve.piece_m);
+        let joined_m = dissolve.into_length_m + dissolve.piece_m;
+        let rest_m = dissolve.from_length_m - dissolve.piece_m;
+        for &building_idx in &fronting {
+            let b = &mut self.buildings[building_idx];
+            undo.push((building_idx, b.edge_idx, b.cell_x, b.frontage_t, b.side));
+            let width_cells = usize::from(b.width_cells);
+            if b.edge_idx == into {
+                let station_m = b.frontage_t * dissolve.into_length_m;
+                let (station_m, cell_x) = if dissolve.prepend {
+                    (station_m + dissolve.piece_m, b.cell_x + piece_cells)
+                } else {
+                    (station_m, b.cell_x)
+                };
+                b.cell_x = cell_x;
+                b.frontage_t = station_m / joined_m.max(0.001);
+                continue;
+            }
+            let station_m = b.frontage_t * dissolve.from_length_m;
+            if dissolve.trim && station_m >= dissolve.piece_m {
+                b.cell_x = b.cell_x.saturating_sub(piece_cells);
+                b.frontage_t = (station_m - dissolve.piece_m) / rest_m.max(0.001);
+                continue;
+            }
+            // On the piece: its stations from the piece's start, turned where it runs against
+            // the joined road, then placed before or after `into`'s own.
+            let (on_piece_m, on_piece_cell) = if dissolve.along {
+                (station_m, b.cell_x)
+            } else {
+                (
+                    dissolve.piece_m - station_m,
+                    piece_cells.saturating_sub(b.cell_x + width_cells),
+                )
+            };
+            let (offset_m, offset_cells) = if dissolve.prepend {
+                (0.0, 0)
+            } else {
+                (dissolve.into_length_m, cells(dissolve.into_length_m))
+            };
+            if !dissolve.along {
+                b.side = -b.side;
+            }
+            b.edge_idx = into;
+            b.cell_x = offset_cells + on_piece_cell;
+            b.frontage_t = (offset_m + on_piece_m) / joined_m.max(0.001);
+        }
+        if !fronting.is_empty() {
+            self.record_building_changes(fronting);
+        }
+    }
+
+    /// Puts back the rows [`Self::migrate_dissolve_frontages`] moved, from its `undo` entries,
+    /// and records them. O(rows).
+    pub(crate) fn restore_dissolve_frontages(&mut self, rows: &[(usize, usize, usize, f32, i8)]) {
+        for &(index, edge_idx, cell_x, frontage_t, side) in rows {
+            let building = &mut self.buildings[index];
+            building.edge_idx = edge_idx;
+            building.cell_x = cell_x;
+            building.frontage_t = frontage_t;
+            building.side = side;
+        }
+        if !rows.is_empty() {
+            self.record_building_changes(rows.iter().map(|row| row.0));
+        }
+    }
+
     /// The buildings fronting `edge` after a roundabout cut the arm to `length_m` (`ROAD-62`):
     /// their cells shift down by the `dropped_cells` the cut took off its start and each takes
     /// its frontage along the shorter arm. `undo` receives each row's previous edge, cell and

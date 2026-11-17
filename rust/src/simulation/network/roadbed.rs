@@ -26,8 +26,8 @@ mod walkways;
 
 pub use arms::NodeRole;
 pub(crate) use arms::{
-    NodeArms, arm_edge_needed_m, crossing_arm_eligible, directions_pass_through,
-    edges_pass_through, is_tunnel_approach, medians_line_up, node_role,
+    NodeArms, arm_edge_needed_m, crossing_arm_eligible, directions_pass_through, empty_joint,
+    edges_pass_through, has_vehicle_turn_rules, is_tunnel_approach, medians_line_up, node_role,
     painted_median_continues, road_end_neighbours, road_ends_among,
 };
 pub(crate) use layout::CROSSWALK_DEPTH_M;

@@ -57,9 +57,10 @@ fn curb(edge: &Edge, point: Vector2) -> (f32, f32) {
     RoadProfile::for_edge(edge).side_half_widths_m(positive)
 }
 
-// Paints the frontage row along `edge`'s curb on the side `sign` (+1 the positive lateral side)
-// over `xs` (world x; the arms run west to east), prepares the lots and grows a house on each one
-// that fronts that curb. Returns the buildings grown, in growth order.
+// Paints the frontage row along `edge`'s curb on the side `sign` (+1 north, +z: the positive
+// lateral side of a road running east) over `xs` (world x; the arms run west or east), prepares
+// the lots and grows a house on each one that fronts that curb. Returns the buildings grown, in
+// growth order.
 pub(in crate::nodes::sim::core::tests) fn grow(
     core: &mut SimCore,
     edge: usize,
@@ -103,7 +104,7 @@ pub(in crate::nodes::sim::core::tests) fn grow(
         let front = parcel.front_center();
         if parcel.edge_idx() != edge
             || !parcel.is_available()
-            || lateral(&road, front).0 * sign <= 0.0
+            || front.y * sign <= 0.0
             || front.x < xs[0]
             || front.x > xs[1]
         {

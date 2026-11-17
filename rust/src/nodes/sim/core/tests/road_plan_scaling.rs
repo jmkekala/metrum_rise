@@ -16,10 +16,12 @@ mod memory;
 // (`ROAD-99` follow-up B1), or the T's side road with a 3 m kerbed grass median (`ROAD-80`) or
 // with its one sidewalk on the left (`ROAD-107`); or no stroke: the T's side road, drawn, widened
 // in place or given that median in place (`ROAD-80`), or that one side in place; or a stroke
-// joined to a bare ring south of the T (`ROAD-62` round R7d).
+// joined to a bare ring south of the T (`ROAD-62` round R7d); or a side road into the street 5 m
+// from an empty joint, which dissolves (`ROAD-118` round JS2).
 #[derive(Clone, Copy, PartialEq)]
 enum Measured {
     Ground,
+    Dissolve,
     Tunnel,
     OverTunnel,
     UnderBridge,
@@ -59,6 +61,20 @@ enum CellScenario {
 #[ignore = "unprofiled scaling measurement; run alone with --release --ignored --nocapture"]
 fn populated_road_plan_scaling() {
     measure_populated_road_plan_scaling(false, false, false, CellScenario::None, Measured::Ground);
+}
+
+// `ROAD-118` round JS2 locality: a side road into the street 5 m from the joint where the street
+// runs on, refused as drawn and planned again with the joint dissolved, as the remote city grows.
+#[test]
+#[ignore = "unprofiled dissolving-joint planning locality; run alone with --release --ignored --nocapture"]
+fn populated_dissolving_road_plan_scaling() {
+    measure_populated_road_plan_scaling(
+        false,
+        false,
+        false,
+        CellScenario::None,
+        Measured::Dissolve,
+    );
 }
 
 // `ROAD-61` locality: a tunnel stroke through a hill beside the measured T, planned as the
@@ -307,6 +323,14 @@ fn measure_populated_road_plan_scaling(
         &mut core,
         vec![Vector3::new(-96.0, 0.0, 0.0), Vector3::new(96.0, 0.0, 0.0)],
     );
+    if measured == Measured::Dissolve {
+        // The street runs on east of its end: an empty joint at x 96.
+        road_terrain_plan::commit_ready(
+            &mut core,
+            vec![Vector3::new(96.0, 0.0, 0.0), Vector3::new(150.0, 0.0, 0.0)],
+        );
+        core.precompute_road_mesh_data();
+    }
     let in_place = matches!(
         measured,
         Measured::LaneEdit
@@ -400,6 +424,12 @@ fn measure_populated_road_plan_scaling(
         insert_populated_site(&mut core, building);
     }
     let edge_template = core.region_graph.edge(0).clone();
+    // The first remote street's id: after the street's extension where it has one.
+    let background_base = if measured == Measured::Dissolve {
+        core.region_graph.edge_count()
+    } else {
+        1
+    };
     let mut background_roads = 0;
     let mut previous_preview: Option<Vec<Vector3>> = None;
     let mut initial_site_solves = None;
@@ -473,7 +503,7 @@ fn measure_populated_road_plan_scaling(
             building.width_cells = 1;
             building.depth_cells = 1;
             building.facing_dir = Vector2::new(0.0, -1.0);
-            building.edge_idx = 1 + index / 256;
+            building.edge_idx = background_base + index / 256;
             building.frontage_t = ((index % 256) as f32 * 24.0 + 12.0) / 6144.0;
             building.occupancy = 6;
             if fields {
@@ -606,6 +636,9 @@ fn measure_populated_road_plan_scaling(
             Measured::Ground | Measured::Divided | Measured::OneSided => {
                 vec![Vector3::new(0.0, 0.0, -80.0), Vector3::new(0.0, 0.0, 0.0)]
             }
+            Measured::Dissolve => {
+                vec![Vector3::new(91.0, 0.0, -80.0), Vector3::new(91.0, 0.0, 0.0)]
+            }
             Measured::Tunnel => vec![
                 Vector3::new(0.0, 0.0, -320.0),
                 Vector3::new(0.0, 0.0, -80.0),
@@ -659,6 +692,11 @@ fn measure_populated_road_plan_scaling(
                 plan.prepared().joined_spans[1].is_some(),
                 measured == Measured::JoinBridge
             );
+            assert_eq!(
+                plan.topology_for(&core.region_graph)
+                    .is_some_and(|topology| topology.dissolves_joints()),
+                measured == Measured::Dissolve
+            );
             let preview_start = Instant::now();
             let (prepared, validation) = snapshot.validate(&request());
             let prepared_points = prepared.points;
@@ -689,6 +727,7 @@ fn measure_populated_road_plan_scaling(
                 "over_tunnel": measured == Measured::OverTunnel,
                 "under_bridge": measured == Measured::UnderBridge,
                 "join_bridge": measured == Measured::JoinBridge,
+                "dissolve": measured == Measured::Dissolve,
                 "divided": measured == Measured::Divided,
                 "one_sided": measured == Measured::OneSided,
                 "cell_reservations": cells, "remote_painted_cells": background_cells,

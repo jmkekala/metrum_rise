@@ -18,13 +18,15 @@ use super::tunnel::{
     portal_splits, section_cover_m, tunnel_bore, tunnel_section_half_width_m,
 };
 use super::{FinalizedRoadGeometry, PlannedRoadSplit, RoadTopologyPlan};
+use crate::simulation::network::roadbed;
+use crate::simulation::network::topology::JointDissolve;
 use crate::config;
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::core::config::WorldConfig;
 use crate::simulation::network::graph::{Edge, RegionGraph, RoadMedian, RoadParking};
 use crate::simulation::network::road_types::RoadAttributes;
 use crate::simulation::network::roadbed::{
-    EdgeEnd, LayoutError, NodeError, NodeRole, arm_edge_needed_m, check_node, node_role,
+    ArmKey, EdgeEnd, LayoutError, NodeError, NodeRole, arm_edge_needed_m, check_node, node_role,
     preview_candidate_roadbed_half_width_m,
 };
 use crate::simulation::network::types::{EdgeClass, NodeType, TransitFlags};
@@ -82,6 +84,8 @@ struct ValidationGraph {
     splits: Vec<PlannedRoadSplit>,
     // Local nodes at the stroke's first and last point.
     stroke_ends: [u32; 2],
+    // The joints dissolved (`ROAD-118` round JS2), in the order done.
+    dissolves: Vec<JointDissolve>,
 }
 
 /// Machine-readable road-placement validation state shared by the UI and commit guard.
@@ -685,107 +689,58 @@ fn validate_against_graph(
             None,
         );
     }
-    let ValidationGraph {
-        graph: validation_graph,
-        new_edge_idx,
-        required_edge_ids,
-        source_node_ids,
-        source_edge_ids,
-        finalized,
-        splits,
-        stroke_ends,
-    } = match build_validation_graph(
-        prepared_points,
-        prepared_input.class,
-        prepared_input.grade(bore),
-        (
-            fwd_lanes,
-            bkw_lanes,
-            prepared_input.median,
-            prepared_input.parking,
-            prepared_input.attributes,
-        ),
-        existing_graph,
-        prepared_input.endpoint_snap_enabled,
-        terrain,
-        bore,
-    ) {
-        Ok(graph) => graph,
-        Err(reason) => return (validation.with_invalid_reason(reason), None),
-    };
-    if new_edge_idx >= validation_graph.edge_count()
-        || validation_graph.edge(new_edge_idx).deleted
-        || required_edge_ids.is_empty()
-    {
-        // The rule is the graph's; a road doubling a ring edge only gets its own words (D9).
-        let reason = validation_graph
-            .edges()
-            .get(new_edge_idx)
-            .filter(|edge| {
-                roundabouts::ring_neighbours(&validation_graph, edge.start_node, edge.end_node)
-            })
-            .map_or(PREVIEW_SURFACE_GEOMETRY_REASON, |_| {
-                ROUNDABOUT_NEIGHBOUR_NODES_REASON
-            });
-        return (validation.with_invalid_reason(reason), None);
-    }
-    if stroke_splits_pocket(
-        &validation_graph,
-        existing_graph,
-        &source_node_ids,
-        &source_edge_ids,
-    ) {
-        return (
-            validation.with_invalid_reason(STROKE_SPLITS_POCKET_REASON),
-            None,
-        );
-    }
-    let (stroke, rederived) = edit_profiles(
-        &validation_graph,
-        new_edge_idx,
-        &splits,
-        &required_edge_ids,
-        &source_edge_ids,
-    );
-    if let Some(reason) = ring_join_refusal(&validation_graph, &stroke) {
-        return (validation.with_invalid_reason(reason), None);
-    }
-    if let Some(refused) = edit_geometry_violation(
-        &validation_graph,
-        existing_graph,
-        &stroke,
-        &rederived,
-        &source_node_ids,
-    ) {
-        return (refuse_geometry(validation, &refused), None);
-    }
-    // A junction in a tunnel approach's trench (`ROAD-61` round R8f), its depth below the ground
-    // as the measurement; the lowest node id reports.
-    let mut affected: Vec<u32> = finalized.affected_nodes.iter().copied().collect();
-    affected.sort_unstable();
-    if let Some(depth) = affected
-        .into_iter()
-        .find_map(|node| junction_in_trench(&validation_graph, node, terrain))
-    {
-        let mut validation = validation.with_invalid_reason(JUNCTION_IN_TRENCH_REASON);
-        validation.geometry_measured = depth;
-        return (validation, None);
-    }
-    if let Some(refusal) = junction_rejection(&validation_graph, &finalized.affected_nodes) {
-        let place = refusal.place(
-            &validation_graph,
-            &source_node_ids,
-            &source_edge_ids,
-            &splits,
-        );
-        let mut validation = validation.with_invalid_reason(refusal.reason);
-        if let Some((place, length_m, needed_m)) = place {
-            validation.junction_place = Some(place);
-            validation.geometry_measured = length_m;
-            validation.geometry_limit = needed_m;
+    // A junction that does not fit beside an empty joint takes the joint's place (`ROAD-118`
+    // round JS2): the plan is built again with the joint dissolved, at most
+    // `MAX_PLAN_BUILDS` builds, only for a pose the first build refuses.
+    let mut yields: Vec<JointYield> = Vec::new();
+    let mut refused_before = None;
+    let mut builds = 0;
+    let excerpt = loop {
+        builds += 1;
+        let excerpt = match solve_excerpt(
+            prepared_input,
+            (fwd_lanes, bkw_lanes),
+            terrain,
+            existing_graph,
+            bore,
+            &yields,
+            &validation,
+        ) {
+            Ok(excerpt) => excerpt,
+            // A dissolve that leads to another refusal leaves the junction's refusal standing.
+            Err(refused) => return (refused_before.unwrap_or(refused), None),
+        };
+        let Some(refusal) = &excerpt.refusal else {
+            break excerpt;
+        };
+        let refused = refuse_junction(validation.clone(), refusal, &excerpt.graph);
+        let more = if prepared_input.tunnel || builds >= MAX_PLAN_BUILDS {
+            Vec::new()
+        } else {
+            joint_yields(&excerpt.graph, existing_graph, &yields)
+        };
+        if more.is_empty() {
+            return (refused, None);
         }
-        return (validation, None);
-    }
+        yields.extend(more);
+        refused_before = Some(refused);
+    };
+    let Excerpt {
+        graph:
+            ValidationGraph {
+                graph: validation_graph,
+                source_node_ids,
+                source_edge_ids,
+                finalized,
+                splits,
+                stroke_ends,
+                dissolves,
+                ..
+            },
+        stroke,
+        rederived,
+        refusal: _,
+    } = excerpt;
     let mut validation = refuse_close_crossing(
         validation,
         prepared_input,
@@ -812,8 +767,278 @@ fn validate_against_graph(
         finalized,
         splits,
         stroke_ends,
+        dissolves,
     );
     (validation, topology_plan)
+}
+
+// The most plans one pose builds (`ROAD-118` round JS2): the plan as drawn and up to two rounds
+// of joints dissolving for the junctions it refuses.
+const MAX_PLAN_BUILDS: usize = 3;
+
+// A joint that makes way (`ROAD-118` round JS2), in the excerpt's local ids, which every build of
+// one pose numbers alike up to the dissolves: the joint, the piece between it and the junction
+// that does not fit, and, where that piece is the head of a split road, the split's second half,
+// on which the road keeps its id.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct JointYield {
+    joint: u32,
+    piece: usize,
+    rest: Option<usize>,
+}
+
+// One build of the post-edit excerpt with its checks up to the junction rules: the drawn road's
+// pieces, the profiles it re-derives, and the first junction refusal.
+struct Excerpt {
+    graph: ValidationGraph,
+    stroke: Vec<usize>,
+    rederived: Vec<(usize, Option<usize>)>,
+    refusal: Option<JunctionRefusal>,
+}
+
+// Builds the excerpt with the `yields` dissolved and runs the checks the plan runs before its
+// junctions: an `Err` is the refused validation. O(stroke points + local excerpt records).
+fn solve_excerpt(
+    prepared_input: &PreparedRoadInput,
+    (fwd_lanes, bkw_lanes): (u8, u8),
+    terrain: &TerrainSystem,
+    existing_graph: &RegionGraph,
+    bore: Option<[usize; 2]>,
+    yields: &[JointYield],
+    validation: &RoadPreviewValidation,
+) -> Result<Excerpt, RoadPreviewValidation> {
+    let refuse = |reason| validation.clone().with_invalid_reason(reason);
+    let excerpt = build_validation_graph(
+        &prepared_input.points,
+        prepared_input.class,
+        prepared_input.grade(bore),
+        (
+            fwd_lanes,
+            bkw_lanes,
+            prepared_input.median,
+            prepared_input.parking,
+            prepared_input.attributes,
+        ),
+        existing_graph,
+        prepared_input.endpoint_snap_enabled,
+        terrain,
+        bore,
+        yields,
+    )
+    .map_err(refuse)?;
+    let ValidationGraph {
+        graph: validation_graph,
+        new_edge_idx,
+        required_edge_ids,
+        source_node_ids,
+        source_edge_ids,
+        finalized,
+        splits,
+        stroke_ends,
+        dissolves,
+    } = &excerpt;
+    // A dissolved joint's piece may be the stroke itself, which then runs on in the road it joins.
+    let absorbed = dissolves.iter().any(|dissolve| dissolve.dropped == *new_edge_idx);
+    if *new_edge_idx >= validation_graph.edge_count()
+        || (validation_graph.edge(*new_edge_idx).deleted && !absorbed)
+        || required_edge_ids.is_empty()
+    {
+        // The rule is the graph's; a road doubling a ring edge only gets its own words (D9).
+        let reason = validation_graph
+            .edges()
+            .get(*new_edge_idx)
+            .filter(|edge| {
+                roundabouts::ring_neighbours(validation_graph, edge.start_node, edge.end_node)
+            })
+            .map_or(PREVIEW_SURFACE_GEOMETRY_REASON, |_| {
+                ROUNDABOUT_NEIGHBOUR_NODES_REASON
+            });
+        return Err(refuse(reason));
+    }
+    if stroke_splits_pocket(
+        validation_graph,
+        existing_graph,
+        source_node_ids,
+        source_edge_ids,
+    ) {
+        return Err(refuse(STROKE_SPLITS_POCKET_REASON));
+    }
+    let (stroke, rederived) = edit_profiles(
+        validation_graph,
+        *new_edge_idx,
+        splits,
+        required_edge_ids,
+        source_edge_ids,
+    );
+    if let Some(reason) = ring_join_refusal(validation_graph, &stroke) {
+        return Err(refuse(reason));
+    }
+    if let Some(refused) = edit_geometry_violation(
+        validation_graph,
+        existing_graph,
+        (&stroke, *stroke_ends),
+        &rederived,
+        source_node_ids,
+    ) {
+        return Err(refuse_geometry(validation.clone(), &refused));
+    }
+    // A junction in a tunnel approach's trench (`ROAD-61` round R8f), its depth below the ground
+    // as the measurement; the lowest node id reports.
+    let mut affected: Vec<u32> = finalized.affected_nodes.iter().copied().collect();
+    affected.sort_unstable();
+    if let Some(depth) = affected
+        .into_iter()
+        .find_map(|node| junction_in_trench(validation_graph, node, terrain))
+    {
+        let mut validation = refuse(JUNCTION_IN_TRENCH_REASON);
+        validation.geometry_measured = depth;
+        return Err(validation);
+    }
+    let refusal = junction_rejection(validation_graph, &finalized.affected_nodes);
+    Ok(Excerpt {
+        graph: excerpt,
+        stroke,
+        rederived,
+        refusal,
+    })
+}
+
+// A junction refusal with the place it names (`ROAD-118` round JS1).
+fn refuse_junction(
+    validation: RoadPreviewValidation,
+    refusal: &JunctionRefusal,
+    excerpt: &ValidationGraph,
+) -> RoadPreviewValidation {
+    let place = refusal.place(
+        &excerpt.graph,
+        &excerpt.source_node_ids,
+        &excerpt.source_edge_ids,
+        &excerpt.splits,
+    );
+    let mut validation = validation.with_invalid_reason(refusal.reason);
+    if let Some((place, length_m, needed_m)) = place {
+        validation.junction_place = Some(place);
+        validation.geometry_measured = length_m;
+        validation.geometry_limit = needed_m;
+    }
+    validation
+}
+
+// The joints that make way for the junctions this excerpt refuses (`ROAD-118` round JS2): for
+// each affected node in id order whose layout fails on an arm (`CornerDoesNotFit`,
+// `ArmTooShort`), each of its arms, in key order, that is too short for the node as its other arms
+// stand (the layout's own answer, `roadbed::arm_edge_needed_m`, longer than the arm's road) and
+// whose far node is an empty joint (`roadbed::empty_joint`, with no vehicle turn rule on the live
+// node either), when the arm's piece is the edit's own: a piece of the stroke or of a split, never
+// a whole existing road (that would retire a live edge id). Not those already in `done`.
+// Refusals only: O(affected nodes x degree x the need's bisection).
+fn joint_yields(
+    excerpt: &ValidationGraph,
+    existing_graph: &RegionGraph,
+    done: &[JointYield],
+) -> Vec<JointYield> {
+    let local = &excerpt.graph;
+    let mut nodes: Vec<u32> = excerpt
+        .finalized
+        .affected_nodes
+        .iter()
+        .copied()
+        .filter(|&node| local.get_valid_node(node) == node)
+        .collect();
+    nodes.sort_unstable();
+    let mut yields: Vec<JointYield> = Vec::new();
+    for node in nodes {
+        if !matches!(
+            check_node(local, node),
+            Err(NodeError::Layout(
+                LayoutError::CornerDoesNotFit { .. } | LayoutError::ArmTooShort { .. }
+            ))
+        ) {
+            continue;
+        }
+        let mut arms: Vec<ArmKey> = local
+            .node_adjacency(node)
+            .iter()
+            .filter_map(|&edge| {
+                let record = local.get_edge(edge).filter(|record| !record.deleted)?;
+                let (start, end) = (
+                    local.get_valid_node(record.start_node),
+                    local.get_valid_node(record.end_node),
+                );
+                match (start == node, end == node) {
+                    (true, false) => Some(ArmKey {
+                        edge,
+                        end: EdgeEnd::Start,
+                    }),
+                    (false, true) => Some(ArmKey {
+                        edge,
+                        end: EdgeEnd::End,
+                    }),
+                    _ => None,
+                }
+            })
+            .collect();
+        arms.sort_unstable();
+        arms.dedup();
+        for arm in arms {
+            if let Some(found) = joint_yield(excerpt, existing_graph, node, arm)
+                && !done.iter().chain(&yields).any(|other| other.joint == found.joint)
+            {
+                yields.push(found);
+            }
+        }
+    }
+    yields
+}
+
+// Arm `arm` of failing node `node` as a yield of [`joint_yields`], or `None`.
+fn joint_yield(
+    excerpt: &ValidationGraph,
+    existing_graph: &RegionGraph,
+    node: u32,
+    arm: ArmKey,
+) -> Option<JointYield> {
+    let local = &excerpt.graph;
+    let piece = local.edge(arm.edge);
+    let joint = local.get_valid_node(match arm.end {
+        EdgeEnd::Start => piece.end_node,
+        EdgeEnd::End => piece.start_node,
+    });
+    if joint == node || roadbed::empty_joint(local, joint).is_none() {
+        return None;
+    }
+    let live_rules = excerpt
+        .source_node_ids
+        .iter()
+        .find(|&(_, &copy)| copy == joint)
+        .is_some_and(|(&source, _)| roadbed::has_vehicle_turn_rules(existing_graph, source));
+    if live_rules {
+        return None;
+    }
+    // A copied road's head, cut off it by the edit's last split of it, comes away with the
+    // road's id kept on the rest; an edge of the edit's own goes whole.
+    let copied = excerpt
+        .source_edge_ids
+        .values()
+        .any(|&copy| copy == arm.edge);
+    let rest = if copied {
+        let split = excerpt
+            .splits
+            .iter()
+            .rev()
+            .find(|split| split.edge_id == arm.edge)
+            .filter(|_| local.get_valid_node(piece.start_node) == joint)?;
+        Some(split.new_edge_id)
+    } else {
+        None
+    };
+    // The arm is one the node cannot lay out on, as its other arms stand.
+    let needed_m = arm_edge_needed_m(local, node, arm)?;
+    (needed_m > horizontal_length_m(&piece.geometry)).then_some(JointYield {
+        joint,
+        piece: arm.edge,
+        rest,
+    })
 }
 
 // D9 (`ROAD-62`): the drawn road `stroke` joins a ring at one point. Two of its pieces at a ring
@@ -912,6 +1137,7 @@ fn build_validation_graph(
     endpoint_snap_enabled: bool,
     terrain: &TerrainSystem,
     bore: Option<[usize; 2]>,
+    yields: &[JointYield],
 ) -> Result<ValidationGraph, &'static str> {
     if prepared_points.len() < 2 {
         return Err(PREVIEW_SURFACE_GEOMETRY_REASON);
@@ -1033,13 +1259,14 @@ fn build_validation_graph(
         );
     validation_graph.edge_mut(new_edge_idx).base_cost = base_cost;
     validation_graph.edge_mut(new_edge_idx).physical_length = physical_length;
-    let (finalized, stroke_splits) = process_validation_graph_intersections(
+    let (finalized, stroke_splits, dissolves) = process_validation_graph_intersections(
         &mut validation_graph,
         new_edge_idx,
         grade,
         terrain,
         portals.as_ref(),
         &ring_edges,
+        yields,
     )?;
     // The bare nodes a join inserted split the ring before the stroke's own splits ran.
     let splits: Vec<PlannedRoadSplit> = ring_splits
@@ -1105,6 +1332,7 @@ fn build_validation_graph(
         finalized,
         splits,
         stroke_ends: [start_node, end_node],
+        dissolves,
     })
 }
 
@@ -1210,7 +1438,10 @@ fn push_incident_validation_edges(
 }
 
 // A tunnel stroke's `portals` (its portal nodes and their splits of the new edge) split it with
-// its crossings, and its edges are classed before the profiles are solved.
+// its crossings, and its edges are classed before the profiles are solved. The `yields` dissolve
+// after the topology and before the solve (`ROAD-118` round JS2), so the solve lays out the
+// joined roads.
+#[allow(clippy::type_complexity)]
 fn process_validation_graph_intersections(
     validation_graph: &mut RegionGraph,
     new_edge_idx: usize,
@@ -1218,7 +1449,8 @@ fn process_validation_graph_intersections(
     terrain: &TerrainSystem,
     portals: Option<&Portals>,
     moved_ring_edges: &[usize],
-) -> Result<(FinalizedRoadGeometry, Vec<PlannedRoadSplit>), &'static str> {
+    yields: &[JointYield],
+) -> Result<(FinalizedRoadGeometry, Vec<PlannedRoadSplit>, Vec<JointDissolve>), &'static str> {
     let mut network = TransitNetwork::new();
     let world_config = WorldConfig::default();
     let mut zoning = ZoningSystem::new(&world_config);
@@ -1264,10 +1496,49 @@ fn process_validation_graph_intersections(
     // A joined road end's neighbour lays out again (`ROAD-118`); the excerpt's second ring of
     // incidence holds its arms and their far ends.
     surface_dirty_nodes.extend(joined_road_ends);
+    let mut splits = network.recorded_road_splits.take().unwrap();
+    let dissolves = dissolve_joints(validation_graph, yields, &mut splits);
+    for dissolve in &dissolves {
+        // Both roads' far ends lay out again on their new lengths.
+        network
+            .bulk_dirty_edges
+            .extend([dissolve.into, dissolve.from, dissolve.dropped]);
+        surface_dirty_nodes.insert(dissolve.junction);
+    }
+    // A merged node lays out as its survivor.
+    let surface_dirty_nodes: HashSet<u32> = surface_dirty_nodes
+        .into_iter()
+        .map(|node| validation_graph.get_valid_node(node))
+        .collect();
     network.mark_surface_dirty_for_nodes(validation_graph, &surface_dirty_nodes);
 
     let finalized = network.finalize_road_geometry(validation_graph, Some(terrain));
-    Ok((finalized, network.recorded_road_splits.take().unwrap()))
+    Ok((finalized, splits, dissolves))
+}
+
+// Dissolves the `yields` that are still empty joints with their pieces in place, in order
+// (`ROAD-118` round JS2). A head cut off a copied road drops the split that cut it: the road keeps
+// its id on the rest, and no dependents or turn rules move to the second half's slot.
+// O(yields x (points + degree + splits)).
+fn dissolve_joints(
+    graph: &mut RegionGraph,
+    yields: &[JointYield],
+    splits: &mut Vec<PlannedRoadSplit>,
+) -> Vec<JointDissolve> {
+    let mut dissolves = Vec::with_capacity(yields.len());
+    for &JointYield { joint, piece, rest } in yields {
+        if graph.get_valid_node(joint) != joint || roadbed::empty_joint(graph, joint).is_none() {
+            continue;
+        }
+        let Some(dissolve) = topology::dissolve_joint_graph(graph, joint, piece, rest) else {
+            continue;
+        };
+        if let Some(rest) = rest {
+            splits.retain(|split| !(split.edge_id == piece && split.new_edge_id == rest));
+        }
+        dissolves.push(dissolve);
+    }
+    dissolves
 }
 
 fn cleanup_validation_duplicate_edges(graph: &mut RegionGraph) {
@@ -1432,12 +1703,13 @@ fn edit_profiles(
 }
 
 // The illegal geometry this edit adds (`validate::edit_violation`) on the drawn road `stroke`
-// and the profiles it re-derives. Its endpoints are judged against what the same nodes were
+// and the profiles it re-derives. Its endpoints, and the stroke's ends where a dissolved joint's
+// road took the piece that reached them (`ROAD-118`), are judged against what the same nodes were
 // before. O(stroke points + re-derived points + endpoint incidence).
 fn edit_geometry_violation(
     validation_graph: &RegionGraph,
     existing_graph: &RegionGraph,
-    stroke: &[usize],
+    (stroke, stroke_ends): (&[usize], [u32; 2]),
     rederived: &[(usize, Option<usize>)],
     source_node_ids: &HashMap<u32, u32>,
 ) -> Option<RoadGeometryViolation> {
@@ -1451,6 +1723,7 @@ fn edit_geometry_violation(
             let edge = validation_graph.edge(id);
             [edge.start_node, edge.end_node]
         })
+        .chain(stroke_ends)
         .map(|node| {
             let node = validation_graph.get_valid_node(node);
             (node, source_of.get(&node).copied())

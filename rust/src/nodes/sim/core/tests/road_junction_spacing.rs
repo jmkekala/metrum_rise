@@ -4,6 +4,8 @@
 //! roads, laid flat): a road end reserves only its cap, so a T beside one builds (the dump's
 //! attempts 6 and the end of 5); the preview is the commit and undo restores the graph. Making
 //! the road end a bend brings the T back into the edit, which then refuses with the place named.
+//! Round JS2: an empty joint beside a junction that does not fit dissolves, its two roads joined
+//! into one (the dump's attempts 1 to 4 and the start of 5); an occupied joint keeps its place.
 
 use super::road_edit_order::{Stroke, committed_on};
 use super::road_preview::{assert_preview_composes_committed, context, preview};
@@ -314,4 +316,223 @@ fn facts(validation: &RoadPreviewValidation) -> ReasonFacts {
         junction_roles: validation.junction_place.map(|place| place.roles),
         ..ReasonFacts::default()
     }
+}
+
+// The dump's junction on the line of roads 8-11-9, where edge 5 continued straight on from its
+// dead end meets that line 10 m on.
+const JUNCTION: usize = 11;
+
+// The dump's strokes 1 to 5 (`ROAD-118` round JS2): from the dead end straight on to the junction
+// 10 m away; the same 30 m on, across the line of roads; from the junction back to the dead end;
+// from the joint's road 5 m from the joint to edge 5 10 m from its dead end.
+fn attempts() -> [(&'static str, [Vector2; 2]); 4] {
+    let along = (at(DEAD_END) - at(5)).normalized();
+    [
+        ("attempt 1", [at(DEAD_END), at(DEAD_END) + along * 10.0]),
+        ("attempt 2", [at(DEAD_END), at(DEAD_END) + along * 30.0]),
+        ("attempts 3 and 4", [at(JUNCTION), at(DEAD_END)]),
+        (
+            "attempt 5",
+            [
+                at(JOINT) + (at(8) - at(JOINT)).normalized() * 5.0,
+                on_edge_5(10.0),
+            ],
+        ),
+    ]
+}
+
+// Whether a live node stands within half a metre of `point`.
+fn node_stands_at(core: &SimCore, point: Vector2) -> bool {
+    let graph = &core.region_graph;
+    (0..graph.node_count() as u32).any(|node| {
+        let pos = graph.node(node).pos;
+        graph.get_valid_node(node) == node
+            && degree(core, node) > 0
+            && Vector2::new(pos.x, pos.z).distance_to(point) < 0.5
+    }) || graph
+        .find_node_within(
+            Vector3::new(point.x, core.get_world_surface_height_internal(point), point.y),
+            0.5,
+        )
+        .is_some_and(|node| {
+            let pos = graph.node(node).pos;
+            Vector2::new(pos.x, pos.z).distance_to(point) < 0.5
+        })
+}
+
+// The dump's attempts 1 to 5, each on a fresh copy of the network: refused before JS2, each now
+// builds. The preview is the commit; the joint is gone (no node there, none found there); edge 5
+// keeps its id and runs to the junction (1 to 4); the joint of edges 0 and 6 dissolves into the
+// new T (5). Undo restores the graph and the roadbed bit for bit, and the stroke committed again
+// builds the same graph and roadbed.
+#[test]
+fn the_dumps_attempts_1_to_5_dissolve_the_joint_beside_the_junction() {
+    for (label, ends) in attempts() {
+        let mut core = dump_city();
+        let before = (graph_hash(&core), roadbed_digest(&core));
+        let points = stroke(&core, ends);
+        let mut context = context(&mut core);
+        let view_chunks = context.view.road_mesh_chunks.clone();
+        let preview = Arc::new(preview(&mut context, &points));
+        assert!(
+            preview.validation.is_valid,
+            "{label}: {}",
+            preview.validation.invalid_reason
+        );
+        let pieces = preview.pieces.as_ref().expect("a valid stroke compiles");
+        let outcome = commit(&mut core, &points, Some(Arc::clone(&preview)));
+        assert!(
+            outcome.committed,
+            "{label}: {} {}",
+            outcome.rejection_reason, outcome.rejection
+        );
+        assert_preview_composes_committed(&core, &view_chunks, pieces, label);
+        assert!(core.transit_network.roadbed.failed_nodes().is_empty(), "{label}");
+        let graph = &core.region_graph;
+        if label == "attempt 5" {
+            assert!(!node_stands_at(&core, at(JOINT)), "{label}: the joint is gone");
+            let (t, _) = node_at(&core, ends[0]);
+            assert_eq!(degree(&core, t), 3, "{label}: a T on the joint's line");
+            assert!(!graph.edge(0).deleted && !graph.edge(6).deleted, "{label}: ids kept");
+            assert!(
+                [graph.edge(0).start_node, graph.edge(0).end_node].contains(&t)
+                    && [graph.edge(6).start_node, graph.edge(6).end_node].contains(&t),
+                "{label}: edge 0 runs on to the T, edge 6 from it"
+            );
+        } else {
+            assert!(!node_stands_at(&core, at(DEAD_END)), "{label}: the joint is gone");
+            let (junction, _) = node_at(&core, at(JUNCTION));
+            let edge = graph.edge(5);
+            assert!(!edge.deleted, "{label}: edge 5 keeps its id");
+            assert_eq!(edge.end_node, junction, "{label}: edge 5 runs to node 11");
+            assert_eq!(degree(&core, junction), 4, "{label}: a crossroads");
+        }
+        let after = (graph_hash(&core), roadbed_digest(&core));
+        assert!(core.undo_action_internal(), "{label}");
+        core.precompute_road_mesh_data();
+        assert_eq!(
+            (graph_hash(&core), roadbed_digest(&core)),
+            before,
+            "{label}: undo restores the graph and the roadbed"
+        );
+        assert!(node_stands_at(&core, at(DEAD_END)) && node_stands_at(&core, at(JOINT)));
+        let outcome = commit(&mut core, &points, None);
+        assert!(outcome.committed, "{label}: again");
+        core.precompute_road_mesh_data();
+        assert_eq!(
+            (graph_hash(&core), roadbed_digest(&core)),
+            after,
+            "{label}: committed again, the same graph and roadbed"
+        );
+    }
+}
+
+// Joints that are not empty keep their place, and the junction beside them is refused as before
+// with its place named: an authored crossing at the joint, or the joint's two roads at different
+// speeds (attempt 5's start).
+#[test]
+fn occupied_joints_keep_their_place() {
+    let start = at(JOINT) + (at(8) - at(JOINT)).normalized() * 5.0;
+    let side = start + Vector2::new(0.0, -30.0);
+    for occupied in ["crossing", "speed"] {
+        let mut core = dump_city();
+        let applied = match occupied {
+            "crossing" => core.set_crosswalk_override_internal(JOINT as u32, 0, false),
+            // The joint's road on one side at 40 km/h, in place.
+            _ => core.set_edge_cross_section_internal(
+                0,
+                1,
+                1,
+                None,
+                Default::default(),
+                crate::simulation::network::road_types::RoadAttributes::new(
+                    40,
+                    crate::simulation::network::graph::SidewalkSides::BOTH,
+                    true,
+                ),
+            ),
+        };
+        assert!(applied, "{occupied}");
+        let _ = core.finalize_network_render_products();
+        let points = stroke(&core, [side, start]);
+        let mut view = context(&mut core);
+        let refused = preview(&mut view, &points).validation;
+        assert!(!refused.is_valid, "{occupied}");
+        let place = refused.junction_place.expect("the refusal names its place");
+        let mut roles = place.roles;
+        roles.sort_by_key(|role| role.code());
+        assert_eq!(roles, [NodeRole::Junction, NodeRole::Joint], "{occupied}");
+        assert!(!commit(&mut core, &points, None).committed, "{occupied}");
+        assert!(node_stands_at(&core, at(JOINT)), "{occupied}");
+    }
+}
+
+// Every edge's and node's published piece.
+fn roadbed_digest(core: &SimCore) -> u64 {
+    use crate::simulation::network::roadbed::PieceId;
+    let roadbed = &core.transit_network.roadbed;
+    let spans: Vec<_> = (0..core.region_graph.edge_count())
+        .filter(|&edge| !core.region_graph.edge(edge).deleted)
+        .map(|edge| roadbed.piece_mesh(PieceId::Span(edge)))
+        .collect();
+    let nodes: Vec<_> = (0..core.region_graph.node_count() as u32)
+        .filter(|&node| core.region_graph.get_valid_node(node) == node)
+        .map(|node| roadbed.piece_mesh(PieceId::Node(node)))
+        .collect();
+    crate::debug::work::debug_hash(&(spans, nodes))
+}
+
+// Attempts 1 and 5 as one batch: both joints dissolve, the batch leaves the graph and roadbed as
+// the two strokes committed one by one, its records share one undo group, and one undo restores
+// the network bit for bit.
+#[test]
+fn a_batch_of_dissolving_strokes_is_one_undo_group() {
+    use crate::nodes::sim::core::RoadBatchRequest;
+    let [(_, first), _, _, (_, fifth)] = attempts();
+    let mut single = dump_city();
+    let strokes = [first, fifth].map(|ends| stroke(&single, ends));
+    for points in &strokes {
+        single.precompute_road_mesh_data();
+        assert!(commit(&mut single, points, None).committed);
+    }
+    single.precompute_road_mesh_data();
+
+    let mut core = dump_city();
+    core.precompute_road_mesh_data();
+    let before = (graph_hash(&core), roadbed_digest(&core));
+    let depth = core.undo_stack.len();
+    let request = |points: &Vec<Vector3>| RoadCommitRequest {
+        parking: Default::default(),
+        points: points.clone(),
+        fwd_lanes: 1,
+        bkw_lanes: 1,
+        snap_to_existing_roads: true,
+        profile: crate::simulation::network::road_edit::RoadProfile::FollowGround,
+        median: None,
+        attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
+        preview: None,
+    };
+    let batch = core.commit_road_batch(
+        RoadBatchRequest {
+            strokes: strokes.iter().map(request).collect(),
+            preview: None,
+        },
+        std::time::Instant::now(),
+        Default::default(),
+    );
+    assert!(batch.outcome.committed, "{}", batch.outcome.rejection_reason);
+    assert!(!node_stands_at(&core, at(DEAD_END)) && !node_stands_at(&core, at(JOINT)));
+    core.precompute_road_mesh_data();
+    assert_eq!(
+        (graph_hash(&core), roadbed_digest(&core)),
+        (graph_hash(&single), roadbed_digest(&single)),
+        "the batch is its strokes one by one"
+    );
+    let groups: Vec<u64> = core.undo_stack.iter().skip(depth).map(|record| record.group).collect();
+    assert_eq!(groups.len(), 2);
+    assert_eq!(groups[0], groups[1], "one undo group");
+    assert!(core.undo_action_internal());
+    assert_eq!(core.undo_stack.len(), depth);
+    core.precompute_road_mesh_data();
+    assert_eq!((graph_hash(&core), roadbed_digest(&core)), before);
 }
