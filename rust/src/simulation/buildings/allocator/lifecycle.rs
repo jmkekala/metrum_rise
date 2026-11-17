@@ -1282,6 +1282,46 @@ impl BuildingAllocator {
         }
     }
 
+    /// The buildings of a road whose head stub went (`ROAD-118` round JS3,
+    /// [`crate::simulation::network::topology::remove_stub_graph`]): each keeps its road, its
+    /// frontage parameter taken by its frontage centre's station less the stub along the rest,
+    /// its leading cell less the stub's whole cells. No building fronts the stub (the plan's
+    /// guard). `undo` receives each row's previous edge, cell and frontage. The rows are found as
+    /// the split's are: `O(candidates log candidates)`, `O(B)` while the chunk index is stale.
+    pub(crate) fn migrate_stub_frontages(
+        &mut self,
+        graph: &RegionGraph,
+        edge: usize,
+        stub_m: f32,
+        from_length_m: f32,
+        cell_m: f32,
+        undo: &mut Vec<(usize, usize, usize, f32)>,
+    ) {
+        let edges = std::collections::HashSet::from([edge]);
+        let fronting: Vec<usize> =
+            match self.attachment_repair_candidates(graph, &edges, [], cell_m) {
+                Some(candidates) => candidates
+                    .into_iter()
+                    .filter(|&idx| self.buildings[idx].edge_idx == edge)
+                    .collect(),
+                None => (0..self.buildings.len())
+                    .filter(|&idx| self.buildings[idx].edge_idx == edge)
+                    .collect(),
+            };
+        let stub_cells = (stub_m / cell_m).floor() as usize;
+        let rest_m = from_length_m - stub_m;
+        for &building_idx in &fronting {
+            let b = &mut self.buildings[building_idx];
+            undo.push((building_idx, b.edge_idx, b.cell_x, b.frontage_t));
+            let station_m = b.frontage_t * from_length_m;
+            b.cell_x = b.cell_x.saturating_sub(stub_cells);
+            b.frontage_t = ((station_m - stub_m) / rest_m.max(0.001)).max(0.0);
+        }
+        if !fronting.is_empty() {
+            self.record_building_changes(fronting);
+        }
+    }
+
     /// Puts back the rows [`Self::migrate_dissolve_frontages`] moved, from its `undo` entries,
     /// and records them. O(rows).
     pub(crate) fn restore_dissolve_frontages(&mut self, rows: &[(usize, usize, usize, f32, i8)]) {

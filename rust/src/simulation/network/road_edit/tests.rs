@@ -5,7 +5,7 @@
 use super::*;
 use crate::config::HEIGHT_SCALE;
 use crate::simulation::core::config::WorldConfig;
-use crate::simulation::network::road_edit::PreparedRoadInput;
+use crate::simulation::network::road_edit::{NoFrontages, PreparedRoadInput};
 use crate::simulation::network::roadbed::{NodeArms, PieceId, RoadbedSystem};
 use crate::simulation::network::roundabouts::{
     self, RoundaboutLayout, RoundaboutRequest, RoundaboutSite,
@@ -56,7 +56,7 @@ impl Fixture {
             true,
             crate::simulation::network::road_edit::RoadProfile::FollowGround,
         );
-        let (validation, plan) = validate_road_edit(&prepared, 1, 1, &self.terrain, &self.graph);
+        let (validation, plan) = validate_road_edit(&prepared, 1, 1, &self.terrain, &self.graph, &NoFrontages);
         assert!(validation.is_valid, "{validation:?}");
         (
             prepared,
@@ -396,7 +396,7 @@ fn node_merge_adoption_clears_survivor_restrictions_and_rejects_open_frontier() 
             },
             vec![],
             [0, 3],
-            vec![],
+            (vec![], vec![]),
         )
         .is_none(),
         "an unmoved profile-solve node also requires complete source incidence"
@@ -414,7 +414,7 @@ fn node_merge_adoption_clears_survivor_restrictions_and_rejects_open_frontier() 
         finalized.clone(),
         vec![],
         [0, 3],
-        vec![],
+        (vec![], vec![]),
     )
     .unwrap();
     assert!(plan.nodes[1].changed);
@@ -427,7 +427,7 @@ fn node_merge_adoption_clears_survivor_restrictions_and_rejects_open_frontier() 
             finalized,
             vec![],
             [0, 3],
-            vec![],
+            (vec![], vec![]),
         )
         .is_none(),
         "a merged source node cannot omit live incident edges"
@@ -579,7 +579,14 @@ impl Fixture {
     }
 
     fn verdict(&self, raw: &[Vector3]) -> &'static str {
-        validate_road_edit(&self.prepared(raw), 1, 1, &self.terrain, &self.graph)
+        validate_road_edit(
+            &self.prepared(raw),
+            1,
+            1,
+            &self.terrain,
+            &self.graph,
+            &NoFrontages,
+        )
             .0
             .invalid_reason
     }

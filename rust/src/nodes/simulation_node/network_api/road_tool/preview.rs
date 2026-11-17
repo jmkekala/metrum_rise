@@ -812,6 +812,7 @@ impl SimulationNode {
                 &context.view.terrain,
                 &context.replica,
                 &context.view.roadbed,
+                &*context.land,
                 request,
             );
             let clearance = context
@@ -869,6 +870,7 @@ impl SimulationNode {
     ) -> (PreparedRoadInput, RoadPreviewValidation, u64) {
         let (fwd_lanes, bkw_lanes) = (lanes_u8(lanes.0), lanes_u8(lanes.1));
         let query = self.road_tool.view.read().unwrap();
+        let land = self.road_tool.land();
         let (prepared_input, validation, _) = plan_road_edit(
             points,
             fwd_lanes,
@@ -877,6 +879,7 @@ impl SimulationNode {
             &query.terrain,
             &query.region_graph,
             &query.roadbed,
+            &*land,
             snap_to_existing_roads,
             RoadProfile::FollowGround,
         );
@@ -956,6 +959,7 @@ impl SimulationNode {
         RoadPreviewValidation {
             junction_place,
             endpoint_edges,
+            joined_nodes: [None; 2],
             is_valid: false,
             invalid_reason: "",
             max_grade: number("max_grade"),

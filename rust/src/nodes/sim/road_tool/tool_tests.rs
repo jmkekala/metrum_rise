@@ -744,6 +744,7 @@ fn hud_prices_the_selected_type_as_the_preview() {
         &view().terrain,
         &view().region_graph,
         &view().roadbed,
+        &crate::simulation::network::road_edit::NoFrontages,
         frame.stroke.snap_to_existing_roads,
         crate::simulation::network::road_edit::RoadProfile::FollowGround,
     );
@@ -913,6 +914,7 @@ fn tight_curve_refusal_follows_the_radius_check() {
                     &view().terrain,
                     &view().region_graph,
                     &view().roadbed,
+                    &crate::simulation::network::road_edit::NoFrontages,
                     frame.stroke.snap_to_existing_roads,
                     crate::simulation::network::road_edit::RoadProfile::FollowGround,
                 );

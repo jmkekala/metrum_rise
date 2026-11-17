@@ -455,6 +455,7 @@ impl SimCore {
                     &self.heightmap,
                     &self.region_graph,
                     roadbed,
+                    &*self.zoning.parcels,
                     RoadPreviewRequest {
                         surface_generation: self.road_tool_surface_generation,
                         points: stroke.points.clone(),

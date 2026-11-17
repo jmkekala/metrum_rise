@@ -5,7 +5,7 @@
 use super::graph::{Edge, RegionGraph};
 use super::roadbed::{PieceId, RoadbedSystem};
 use super::types::NodeType;
-use super::topology::JointDissolve;
+use super::topology::{JointDissolve, StubRemoval};
 use super::{TransitNetwork, topology};
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::terrain::TerrainSystem;
@@ -28,9 +28,30 @@ pub(crate) use input::{
 pub(crate) use support::{DraftGround, RebuiltPieces, plan_road_edit};
 pub(crate) use tunnel::tunnel_run_reaches_cover;
 pub(crate) use validation::{
-    JunctionPlace, PREVIEW_MIN_ENDPOINT_SEGMENT_M, RoadPreviewValidation,
+    JunctionPlace, PREVIEW_MIN_ENDPOINT_SEGMENT_M, RoadPreviewValidation, joined_stroke,
     validate_road_candidate_fast, validate_road_edit,
 };
+
+/// What a road plan reads of the land beside the roads (`ROAD-118` round JS3): whether a
+/// building fronts a stretch of a live road, which keeps a short stub from being removed. The
+/// live core and the road tool's view answer from the same parcels, so a preview and its commit
+/// plan alike.
+pub(crate) trait RoadFrontages {
+    /// Whether an occupied parcel fronts live road `edge` of `graph` with its frontage meeting
+    /// `stations_m`, physical metres from the road's start node.
+    fn fronted(&self, graph: &RegionGraph, edge: usize, stations_m: [f32; 2]) -> bool;
+}
+
+/// Land with no buildings: a plan on a bare graph in tests.
+#[cfg(test)]
+pub(crate) struct NoFrontages;
+
+#[cfg(test)]
+impl RoadFrontages for NoFrontages {
+    fn fronted(&self, _graph: &RegionGraph, _edge: usize, _stations_m: [f32; 2]) -> bool {
+        false
+    }
+}
 
 /// Local dependency scope and timings from the shared junction/profile finalizer.
 #[derive(Clone, Debug, Default)]
@@ -73,8 +94,9 @@ struct PlannedNode {
     // Crossing overrides on the excerpt's arms, local edge ids ascending, after its splits and
     // merges carried them (`ROAD-74`).
     crosswalk_overrides: Vec<(usize, bool)>,
-    // A dissolved joint (`ROAD-118` round JS2): merged into its junction and gone from the node
-    // index, where a stroke's end would otherwise find it.
+    // A dissolved joint (`ROAD-118` round JS2) or a removed stub's road end (round JS3): merged
+    // into its junction and gone from the node index, where a stroke's end would otherwise find
+    // it.
     dissolved: bool,
 }
 
@@ -99,6 +121,8 @@ pub(crate) struct RoadTopologyPlan {
     stroke_ends: [u32; 2],
     // The joints the edit dissolved (`ROAD-118` round JS2), in local ids, in the order done.
     dissolves: Vec<JointDissolve>,
+    // The stubs the edit removed (`ROAD-118` round JS3), in local ids, in the order done.
+    stubs: Vec<StubRemoval>,
 }
 
 impl std::fmt::Debug for RoadTopologyPlan {
@@ -123,7 +147,7 @@ impl RoadTopologyPlan {
         finalized: FinalizedRoadGeometry,
         splits: Vec<PlannedRoadSplit>,
         stroke_ends: [u32; 2],
-        dissolves: Vec<JointDissolve>,
+        (dissolves, stubs): (Vec<JointDissolve>, Vec<StubRemoval>),
     ) -> Option<Self> {
         let mut nodes = local
             .nodes()
@@ -147,8 +171,12 @@ impl RoadTopologyPlan {
                 dissolved: false,
             })
             .collect::<Vec<_>>();
-        for dissolve in &dissolves {
-            nodes[dissolve.joint as usize].dissolved = true;
+        for joint in dissolves
+            .iter()
+            .map(|dissolve| dissolve.joint)
+            .chain(stubs.iter().map(|stub| stub.end))
+        {
+            nodes[joint as usize].dissolved = true;
         }
         for (&source_id, &local_id) in source_nodes {
             let node = &mut nodes[local_id as usize];
@@ -225,12 +253,14 @@ impl RoadTopologyPlan {
             affected_nodes: finalized.affected_nodes,
             stroke_ends: stroke_ends.map(|end| local.get_valid_node(end)),
             dissolves,
+            stubs,
         })
     }
 
-    /// Whether the plan dissolves a joint (`ROAD-118` round JS2). O(1).
+    /// Whether the plan joins or removes roads beyond the stroke: a dissolved joint (`ROAD-118`
+    /// round JS2) or a removed stub (round JS3). O(1).
     pub(crate) fn dissolves_joints(&self) -> bool {
-        !self.dissolves.is_empty()
+        !self.dissolves.is_empty() || !self.stubs.is_empty()
     }
 
     /// The live pieces this plan rebuilds, the ones [`AppliedRoadTopology::mark_pieces`] marks
@@ -370,6 +400,23 @@ impl TransitNetwork {
             topology::migrate_dissolve_dependents(
                 graph,
                 &dissolve,
+                zoning,
+                allocator,
+                &mut self.road_edit_split_undo,
+            );
+        }
+        // A removed head stub's road keeps its id on the rest; its buildings move along.
+        for stub in &plan.stubs {
+            let stub = StubRemoval {
+                end: applied.node_ids[stub.end as usize],
+                junction: applied.node_ids[stub.junction as usize],
+                from: edge_ids[stub.from],
+                dropped: edge_ids[stub.dropped],
+                ..*stub
+            };
+            topology::migrate_stub_dependents(
+                graph,
+                &stub,
                 zoning,
                 allocator,
                 &mut self.road_edit_split_undo,

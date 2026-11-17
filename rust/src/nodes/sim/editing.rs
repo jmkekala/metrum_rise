@@ -1728,6 +1728,7 @@ impl SimCore {
                 &self.heightmap,
                 &self.region_graph,
                 &self.transit_network.roadbed,
+                &*self.zoning.parcels,
                 snap_to_existing_roads,
                 crate::simulation::network::road_edit::RoadProfile::FollowGround,
             )
@@ -1773,6 +1774,7 @@ impl SimCore {
                     bkw_lanes_u8,
                     &self.heightmap,
                     &self.region_graph,
+                    &*self.zoning.parcels,
                 );
                 dissolving_plan = full_plan.filter(|plan| plan.dissolves_joints());
                 let full_validation = validate_road_candidate_against_water(

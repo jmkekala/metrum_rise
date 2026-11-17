@@ -17,11 +17,14 @@ mod memory;
 // with its one sidewalk on the left (`ROAD-107`); or no stroke: the T's side road, drawn, widened
 // in place or given that median in place (`ROAD-80`), or that one side in place; or a stroke
 // joined to a bare ring south of the T (`ROAD-62` round R7d); or a side road into the street 5 m
-// from an empty joint, which dissolves (`ROAD-118` round JS2).
+// from an empty joint, which dissolves (`ROAD-118` round JS2); or a side road into the street 5 m
+// short of its dead end, whose stub goes, or 6 m from a T, which it joins (round JS3).
 #[derive(Clone, Copy, PartialEq)]
 enum Measured {
     Ground,
     Dissolve,
+    StubGoes,
+    EndJoin,
     Tunnel,
     OverTunnel,
     UnderBridge,
@@ -75,6 +78,22 @@ fn populated_dissolving_road_plan_scaling() {
         CellScenario::None,
         Measured::Dissolve,
     );
+}
+
+// `ROAD-118` round JS3 locality: a side road into the street 5 m short of its dead end, refused
+// as drawn and planned again with the stub removed, as the remote city grows.
+#[test]
+#[ignore = "unprofiled stub-removal planning locality; run alone with --release --ignored --nocapture"]
+fn populated_stub_road_plan_scaling() {
+    measure_populated_road_plan_scaling(false, false, false, CellScenario::None, Measured::StubGoes);
+}
+
+// `ROAD-118` round JS3 locality: a side road into the street 6 m east of a T, refused as drawn
+// and planned again with its end joined to the T, as the remote city grows.
+#[test]
+#[ignore = "unprofiled end-join planning locality; run alone with --release --ignored --nocapture"]
+fn populated_joining_road_plan_scaling() {
+    measure_populated_road_plan_scaling(false, false, false, CellScenario::None, Measured::EndJoin);
 }
 
 // `ROAD-61` locality: a tunnel stroke through a hill beside the measured T, planned as the
@@ -331,6 +350,14 @@ fn measure_populated_road_plan_scaling(
         );
         core.precompute_road_mesh_data();
     }
+    if measured == Measured::EndJoin {
+        // A T at x 60, its side street north.
+        road_terrain_plan::commit_ready(
+            &mut core,
+            vec![Vector3::new(60.0, 0.0, 0.0), Vector3::new(60.0, 0.0, 60.0)],
+        );
+        core.precompute_road_mesh_data();
+    }
     let in_place = matches!(
         measured,
         Measured::LaneEdit
@@ -425,7 +452,7 @@ fn measure_populated_road_plan_scaling(
     }
     let edge_template = core.region_graph.edge(0).clone();
     // The first remote street's id: after the street's extension where it has one.
-    let background_base = if measured == Measured::Dissolve {
+    let background_base = if matches!(measured, Measured::Dissolve | Measured::EndJoin) {
         core.region_graph.edge_count()
     } else {
         1
@@ -636,8 +663,11 @@ fn measure_populated_road_plan_scaling(
             Measured::Ground | Measured::Divided | Measured::OneSided => {
                 vec![Vector3::new(0.0, 0.0, -80.0), Vector3::new(0.0, 0.0, 0.0)]
             }
-            Measured::Dissolve => {
+            Measured::Dissolve | Measured::StubGoes => {
                 vec![Vector3::new(91.0, 0.0, -80.0), Vector3::new(91.0, 0.0, 0.0)]
+            }
+            Measured::EndJoin => {
+                vec![Vector3::new(66.0, 0.0, -80.0), Vector3::new(66.0, 0.0, 0.0)]
             }
             Measured::Tunnel => vec![
                 Vector3::new(0.0, 0.0, -320.0),
@@ -695,7 +725,11 @@ fn measure_populated_road_plan_scaling(
             assert_eq!(
                 plan.topology_for(&core.region_graph)
                     .is_some_and(|topology| topology.dissolves_joints()),
-                measured == Measured::Dissolve
+                matches!(measured, Measured::Dissolve | Measured::StubGoes)
+            );
+            assert_eq!(
+                plan.validation().joined_nodes[1].is_some(),
+                measured == Measured::EndJoin
             );
             let preview_start = Instant::now();
             let (prepared, validation) = snapshot.validate(&request());
@@ -728,6 +762,8 @@ fn measure_populated_road_plan_scaling(
                 "under_bridge": measured == Measured::UnderBridge,
                 "join_bridge": measured == Measured::JoinBridge,
                 "dissolve": measured == Measured::Dissolve,
+                "stub_goes": measured == Measured::StubGoes,
+                "end_join": measured == Measured::EndJoin,
                 "divided": measured == Measured::Divided,
                 "one_sided": measured == Measured::OneSided,
                 "cell_reservations": cells, "remote_painted_cells": background_cells,

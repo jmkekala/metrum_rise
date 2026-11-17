@@ -92,14 +92,28 @@ impl PreviewOutcome {
         }
     }
 
-    /// What the chips show of it; `pending` while the sent stroke waits.
-    pub(crate) fn chip_facts(&self, pending: bool) -> PreviewFacts {
+    /// What the chips show of it; `pending` while the sent stroke waits. `drawn` is the stroke's
+    /// drawn points: an end the plan joined to a node (`ROAD-118` round JS3) shows where the
+    /// prepared (joined) stroke ends instead.
+    pub(crate) fn chip_facts(&self, pending: bool, drawn: &[Vector3]) -> PreviewFacts {
+        let joined_nodes = self
+            .validation
+            .as_ref()
+            .filter(|_| self.valid)
+            .map_or([None; 2], |validation| validation.joined_nodes);
+        let ends = |points: &[Vector3]| [points.first().copied(), points.last().copied()];
+        let (drawn, prepared) = (ends(drawn), ends(&self.prepared));
+        let joined: [Option<(Vector3, Vector3)>; 2] = std::array::from_fn(|end| {
+            joined_nodes[end].and(drawn[end].zip(prepared[end]))
+        });
         PreviewFacts {
             refused: !self.valid,
             pending,
             build_cost: Some(self.build_cost),
             max_grade: self.validation.as_ref().map(|v| f64::from(v.max_grade)),
             warning: !self.warning_reason().is_empty() || self.demolish_count > 0,
+            joined,
+            joined_length_m: joined.iter().any(Option::is_some).then_some(self.length_m),
         }
     }
 
@@ -157,7 +171,7 @@ mod tests {
         assert!(!outcome.valid && !outcome.pending);
         assert_eq!(outcome.reason, COMMIT_REJECTED_REASON);
         assert_eq!((outcome.pose, outcome.build_cost), (7, 120.0));
-        let facts = outcome.chip_facts(false);
+        let facts = outcome.chip_facts(false, &[]);
         assert!(facts.refused);
         assert_eq!(facts.max_grade, Some(f64::from(0.04_f32)));
     }
@@ -169,7 +183,7 @@ mod tests {
         assert_eq!(numbers.allowed_grade, 0.0);
         assert_eq!(numbers.start_endpoint_snapped_node_id, -1);
         assert_eq!(outcome.reason_facts(), ReasonFacts::default());
-        assert_eq!(outcome.chip_facts(true).max_grade, None);
+        assert_eq!(outcome.chip_facts(true, &[]).max_grade, None);
     }
 
     // `ROAD-118` round JS1: the chips' refusal names the junction's place from the outcome.

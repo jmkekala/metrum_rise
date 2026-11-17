@@ -201,6 +201,11 @@ pub struct PreviewFacts {
     pub max_grade: Option<f64>,
     /// The preview warns (a steep grade, demolitions, a plan still being checked).
     pub warning: bool,
+    /// Each stroke end, start then end, that the plan carried onto a node (`ROAD-118` round
+    /// JS3): where it was drawn and where the built road ends.
+    pub joined: [Option<(Vector3, Vector3)>; 2],
+    /// The joined stroke's built length in metres, when an end joined.
+    pub joined_length_m: Option<f64>,
 }
 
 /// Appends the chips of a draft: `path` is its guide, `stroke` its stroke request's points,
@@ -370,6 +375,44 @@ pub fn apply_preview(labels: &mut Vec<ToolLabel>, facts: PreviewFacts, middle: O
             side: -middle.side,
             ..middle
         });
+    }
+    show_joined_stroke(labels, &facts);
+}
+
+// The chips of a stroke whose ends the plan joined to nodes (`ROAD-118` round JS3): the chips at
+// a drawn end move to where the road ends, its angle chip goes (the drawn angle is not the
+// built one), and the length is the built road's. `O(labels)`, no allocation.
+fn show_joined_stroke(labels: &mut Vec<ToolLabel>, facts: &PreviewFacts) {
+    let Some(length_m) = facts.joined_length_m else {
+        return;
+    };
+    let at = |anchor: Vector3, point: Vector3| (anchor.x - point.x).hypot(anchor.z - point.z) < 0.01;
+    let moved = |anchor: Vector3| {
+        facts
+            .joined
+            .iter()
+            .flatten()
+            .find(|&&(drawn, _)| at(anchor, drawn))
+            .map(|&(_, joined)| joined)
+    };
+    labels.retain(|label| label.kind != LabelKind::Angle || moved(label.anchor).is_none());
+    let pieces = labels
+        .iter()
+        .filter(|label| label.kind == LabelKind::PieceLength)
+        .count();
+    let total = labels.iter().any(|label| label.kind == LabelKind::TotalLength);
+    for label in labels.iter_mut() {
+        if let Some(joined) = moved(label.anchor) {
+            label.anchor = joined;
+        }
+        let length = match label.kind {
+            LabelKind::TotalLength => true,
+            LabelKind::PieceLength => !total && pieces == 1,
+            _ => false,
+        };
+        if length {
+            label.value = length_m;
+        }
     }
 }
 

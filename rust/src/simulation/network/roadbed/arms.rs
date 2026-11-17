@@ -968,7 +968,7 @@ fn degree_two_crossings(
 /// and half the edge at any other node. A pass-through far end keeps the half, so a crossing strip
 /// on its span (D8, [`degree_two_crossings`]) still has its room and no layout depends on another
 /// layout. Never below half: budgets only grow. `O(1)`.
-pub(super) fn arm_max_station_m(edge_m: f64, far_road_end: bool) -> f64 {
+pub(crate) fn arm_max_station_m(edge_m: f64, far_road_end: bool) -> f64 {
     let half_m = 0.5 * edge_m;
     if far_road_end {
         (edge_m - MIN_MOUTH_STATION_M).max(half_m)
@@ -981,7 +981,7 @@ pub(super) fn arm_max_station_m(edge_m: f64, far_road_end: bool) -> f64 {
 /// standard edge, which no other live surface edge meets (a self-loop meets its node twice). The
 /// one input of a layout beyond its own arms ([`arm_max_station_m`]). `O(far degree)`, allocation
 /// free.
-pub(super) fn far_end_is_road_end(graph: &RegionGraph, key: ArmKey) -> bool {
+pub(crate) fn far_end_is_road_end(graph: &RegionGraph, key: ArmKey) -> bool {
     let edge = graph.edge(key.edge);
     let far = match key.end {
         EdgeEnd::Start => edge.end_node,

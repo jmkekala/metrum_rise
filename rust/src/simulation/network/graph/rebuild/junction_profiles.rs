@@ -5,8 +5,8 @@
 use super::super::data::{Edge, RegionGraph};
 use crate::simulation::network::grade::GradeScratch;
 use crate::simulation::network::roadbed::{
-    CURB_STEP_HEIGHT_M, EdgeEnd, RoadVec2, directions_pass_through, edges_pass_through,
-    incident_direction, terminal_plane,
+    ArmKey, CURB_STEP_HEIGHT_M, EdgeEnd, RoadVec2, arm_max_station_m, directions_pass_through,
+    edges_pass_through, far_end_is_road_end, incident_direction, terminal_plane,
 };
 use crate::simulation::network::types::{EdgeClass, TransitType};
 use crate::simulation::terrain::TerrainSystem;
@@ -816,9 +816,11 @@ impl RegionGraph {
     }
 
     // Each incident's control-profile point 12 m along it, or at its mouth station where that
-    // lies farther (the clip, current before the solve), at most half its edge: the plane then
-    // meets the control profile no nearer than where the pin ends, so a wide mouth on a hill's
-    // knee does not carry the near grade past it (`ROAD-68` open question 31). Into `samples`, in
+    // lies farther (the clip, current before the solve), at most the station its layout may use
+    // (`arm_max_station_m`: half its edge, or all but a road end's cap, `ROAD-118`): the plane
+    // then meets the control profile no nearer than where the pin ends, so a wide mouth on a
+    // hill's knee does not carry the near grade past it (`ROAD-68` open question 31), also on a
+    // stub whose mouth lies past its middle. Into `samples`, in
     // incident order; false when an incident's edge is too short for a sample at least 1 m from
     // the node.
     fn junction_profile_incident_samples(
@@ -843,10 +845,8 @@ impl RegionGraph {
         incident: &JunctionProfileIncident,
     ) -> Option<JunctionProfileIncidentSample> {
         let edge = self.edges.get(incident.edge_idx)?;
-        let total_length_m = Self::edge_profile_length_m(edge);
-        let sample_distance_m = JUNCTION_PROFILE_SOLVE_SAMPLE_M
-            .max(self.junction_profile_hard_zone_m(incident.edge_idx, incident.at_start))
-            .min(total_length_m * 0.5);
+        let sample_distance_m =
+            self.junction_profile_sample_distance_m(incident.edge_idx, incident.at_start);
         if sample_distance_m < JUNCTION_PROFILE_MIN_SAMPLE_M {
             return None;
         }
@@ -860,6 +860,22 @@ impl RegionGraph {
                 dz,
                 dy: sample.y - origin.y,
             })
+    }
+
+    // How far along edge `edge_idx` from its end at the node its plane sample lies (see
+    // `junction_profile_incident_samples`): 12 m or the mouth station, at most the station the
+    // arm's layout may use. `O(far degree)`.
+    pub(super) fn junction_profile_sample_distance_m(&self, edge_idx: usize, at_start: bool) -> f32 {
+        let total_length_m = Self::edge_profile_length_m(&self.edges[edge_idx]);
+        let key = ArmKey {
+            edge: edge_idx,
+            end: if at_start { EdgeEnd::Start } else { EdgeEnd::End },
+        };
+        let budget_m =
+            arm_max_station_m(f64::from(total_length_m), far_end_is_road_end(self, key)) as f32;
+        JUNCTION_PROFILE_SOLVE_SAMPLE_M
+            .max(self.junction_profile_hard_zone_m(edge_idx, at_start))
+            .min(budget_m)
     }
 
     // The best corridor (an opposite enough arm pair), in `f64` by one lexicographic rule

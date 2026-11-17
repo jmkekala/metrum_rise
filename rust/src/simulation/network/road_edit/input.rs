@@ -120,6 +120,10 @@ pub(crate) struct PreparedRoadInput {
     /// span is split there and the end joins it at a junction on the deck; a tunnel's is refused
     /// (`tunnel_join`). `None` for an end at a node or on no structure's level.
     pub(crate) joined_spans: [Option<usize>; 2],
+    /// The live nodes a plan carried the ends onto, start then end (`ROAD-118` round JS3,
+    /// [`super::joined_stroke`]): the ends stand on them whatever the snap. The preparers leave
+    /// `None`.
+    pub(crate) joined_nodes: [Option<u32>; 2],
     /// The stroke's median (`ROAD-80`), which its edge carries and its corridor checks widen
     /// by. Preparation never reads it: the preparers leave it `None` and
     /// [`super::plan_road_edit`] and the road tool's checks set the tool's.
@@ -257,6 +261,7 @@ fn prepare_snapped_road_input_to_visible_surface(
         forced_grade: forced_grade.filter(|_| class == EdgeClass::Standard),
         elevated_ends,
         joined_spans,
+        joined_nodes: [None; 2],
     }
 }
 
@@ -368,6 +373,7 @@ pub(super) fn prepare_road_input_excluding(
         forced_grade,
         elevated_ends,
         joined_spans: [None; 2],
+        joined_nodes: [None; 2],
     };
     (prepared, Vec::new())
 }

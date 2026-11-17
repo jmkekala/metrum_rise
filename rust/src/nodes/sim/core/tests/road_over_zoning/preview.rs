@@ -65,6 +65,7 @@ fn commit_take(
         &context.view.terrain,
         &context.replica,
         &context.view.roadbed,
+        &*context.land.clone(),
         request(context, points),
     );
     context
@@ -248,6 +249,7 @@ fn the_one_shot_check_follows_a_bridge_decks_pieces() {
             &context.view.terrain,
             &context.replica,
             &context.view.roadbed,
+            &*context.land.clone(),
             request(context, points),
         );
         let stroke = (None, RoadParking::NONE, RoadAttributes::DEFAULT);

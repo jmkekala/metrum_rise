@@ -23,7 +23,9 @@ use crate::simulation::agriculture::FieldClearanceIndex;
 use crate::simulation::buildings::allocator::ExplicitSiteSnapshot;
 use crate::simulation::network::roadbed::PieceMesh;
 use crate::simulation::zoning::cells::{CellStore, SharedMaps};
-use crate::simulation::zoning::parcels::{ZoningParcel, chunk_key};
+use crate::simulation::network::graph::RegionGraph;
+use crate::simulation::network::road_edit::RoadFrontages;
+use crate::simulation::zoning::parcels::{self, ZoningParcel, chunk_key};
 
 /// One parcel as the road tool's land holds it.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -36,6 +38,9 @@ struct LandParcel {
     authored: bool,
     // The occupant's building handle bits.
     occupant: Option<u64>,
+    // The road it fronts, its frontage centre as a share of the road's physical length and its
+    // frontage width: the stub guard's facts (`ROAD-118` round JS3).
+    frontage: (usize, f32, f32),
 }
 
 /// The parcels one parcel chunk lists, ascending by id, at the chunk's revision.
@@ -155,6 +160,33 @@ impl RoadLandSource for ViewLand<'_> {
 
     fn occupant(&self, lot: u64, at: DVec2) -> Option<u64> {
         self.land.parcel(lot, at)?.occupant
+    }
+}
+
+impl RoadFrontages for RoadToolLand {
+    // The published parcels the stretch's chunks hold, as the parcel store answers it
+    // ([`crate::simulation::zoning::parcels::ParcelStore`]'s `fronted`). `O(stretch segments +
+    // parcels in the chunks)`; refused poses only.
+    fn fronted(&self, graph: &RegionGraph, edge_idx: usize, stations_m: [f32; 2]) -> bool {
+        let Some(edge) = graph.get_edge(edge_idx).filter(|edge| !edge.deleted) else {
+            return false;
+        };
+        let mut fronted = false;
+        parcels::road_span_chunks(edge, stations_m, |chunk| {
+            fronted = fronted
+                || self.chunks.get(&chunk).is_some_and(|chunk| {
+                    chunk.parcels.iter().any(|parcel| {
+                        parcel.occupant.is_some()
+                            && parcels::frontage_meets(
+                                parcel.frontage,
+                                edge_idx,
+                                edge.physical_length,
+                                stations_m,
+                            )
+                    })
+                });
+        });
+        fronted
     }
 }
 
@@ -300,5 +332,10 @@ fn land_parcel(
                 handle.to_bits()
             }
         }),
+        frontage: (
+            parcel.edge_idx(),
+            parcel.frontage_center_t(),
+            parcel.frontage_m(),
+        ),
     }
 }

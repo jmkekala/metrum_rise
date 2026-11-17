@@ -415,7 +415,11 @@ impl SimulationNode {
         // Round R2-1: the standing preview's typed outcome, read in place.
         if let Some(preview) = preview {
             let middle = middle_label(&next.labels);
-            apply_preview(&mut next.labels, preview.chip_facts(pending), middle);
+            apply_preview(
+                &mut next.labels,
+                preview.chip_facts(pending, &frame.stroke.points),
+                middle,
+            );
             notice.preview_reason = &preview.reason;
             notice.preview = preview.reason_facts();
             notice.steep = preview.steep();

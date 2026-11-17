@@ -345,6 +345,38 @@ fn partial_clip_rebuild_matches_full_rebuild_and_preserves_unrelated_edges() {
     assert_eq!(partial.edge(remote_edge_idx).end_clip, 4.0);
 }
 
+// `ROAD-118` round JS3: a T's 10 m stub to a road end has its mouth past the stub's middle (the
+// road end reserves only its cap, round JS1). The plane sample on it lies at the mouth or beyond,
+// never inside the pinned stretch, and short of the road end's cap; a long arm keeps its 12 m.
+#[test]
+fn junction_profile_sample_on_a_stub_lies_past_its_mouth() {
+    let mut graph = RegionGraph::new();
+    let center = graph.add_node(Vector3::ZERO, NodeType::Junction);
+    let mut arms = Vec::new();
+    for end in [
+        Vector3::new(-40.0, 0.0, 0.0),
+        Vector3::new(40.0, 0.0, 0.0),
+        Vector3::new(0.0, 0.0, -10.0),
+    ] {
+        let node = graph.add_node(end, NodeType::Junction);
+        let mut edge = profile_test_edge(vec![Vector3::ZERO, end]);
+        edge.start_node = center;
+        edge.end_node = node;
+        arms.push(graph.add_edge(edge));
+    }
+    graph.rebuild_intersection_clips_for_nodes(&HashSet::from([center]));
+    let stub = arms[2];
+    let mouth_m = graph.edge(stub).start_clip;
+    assert!(mouth_m > 5.0, "the stub's mouth lies past its middle: {mouth_m}");
+    let sample_m = graph.junction_profile_sample_distance_m(stub, true);
+    assert!(sample_m >= mouth_m, "{sample_m} inside the mouth {mouth_m}");
+    assert!(sample_m <= 9.0 + 1e-4, "{sample_m} inside the road end's cap");
+    assert_eq!(
+        graph.junction_profile_sample_distance_m(arms[0], true),
+        JUNCTION_PROFILE_SOLVE_SAMPLE_M.max(graph.edge(arms[0]).start_clip)
+    );
+}
+
 #[test]
 fn junction_profile_sampling_uses_requested_distance_from_edge_end() {
     let edge = profile_test_edge(vec![

@@ -458,6 +458,7 @@ mod tests {
 
     fn validation() -> RoadPreviewValidation {
         RoadPreviewValidation {
+            joined_nodes: [None; 2],
             is_valid: false,
             invalid_reason: "bridge_clearance",
             max_grade: 0.0,

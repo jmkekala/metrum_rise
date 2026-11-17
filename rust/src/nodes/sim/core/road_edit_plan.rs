@@ -10,7 +10,8 @@ use crate::simulation::buildings::allocator::{
 };
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::road_edit::{
-    PreparedRoadInput, RoadPreviewValidation, RoadProfile, RoadTopologyPlan, plan_road_edit,
+    PreparedRoadInput, RoadFrontages, RoadPreviewValidation, RoadProfile, RoadTopologyPlan,
+    plan_road_edit,
 };
 use crate::simulation::network::roadbed::{PieceMesh, RoadbedSystem};
 use crate::simulation::terrain::TerrainSystem;
@@ -534,6 +535,7 @@ impl RoadEditPlan {
             &core.heightmap,
             &core.region_graph,
             &core.transit_network.roadbed,
+            &*core.zoning.parcels,
             request,
         )
     }
@@ -541,12 +543,14 @@ impl RoadEditPlan {
     /// Builds the local road solution from one generation's terrain, graph and roadbed: the
     /// live core's at commit, the road tool's context in a preview (`ROAD-68-E`), through the
     /// same preparation and validation, so the stroke reads no piece its edit rebuilds (`ROAD-68`
-    /// open question 16). The request's profile (`ROAD-112` round H) decides the preparation.
+    /// open question 16). The request's profile (`ROAD-112` round H) decides the preparation;
+    /// `frontages` (the live parcels, or the view's published land) guards stubs (`ROAD-118`).
     /// O(passes * (stroke points + local excerpt records)), one or two passes.
     pub(crate) fn compile_from(
         terrain: &TerrainSystem,
         graph: &RegionGraph,
         roadbed: &RoadbedSystem,
+        frontages: &dyn RoadFrontages,
         request: RoadPreviewRequest,
     ) -> Self {
         let (prepared, validation, topology) = plan_road_edit(
@@ -557,6 +561,7 @@ impl RoadEditPlan {
             terrain,
             graph,
             roadbed,
+            frontages,
             request.snap_to_existing_roads,
             request.profile,
         );

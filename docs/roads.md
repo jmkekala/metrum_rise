@@ -1453,7 +1453,8 @@ is never below half, so no valid network becomes invalid. A 2-lane T so fits bes
 with a 9.5 m stub (at its minimum corner radius), not 17 m. An empty joint takes no room at all
 (round JS2, [below](#empty-joints-dissolve-round-js2)): where a junction an edit makes does not
 fit beside one, the joint dissolves and its two roads join into one, so the arm runs on to the
-next real node.
+next real node. A stub to a road end too short for its junction goes, and a stroke end too close
+to a real junction or bend joins it (round JS3, [below](#stubs-go-and-stroke-ends-join-round-js3)).
 
 - If a corner does not fit, `R` is reduced towards `R_min`. If it still does not fit, layout
   returns `LayoutError::CornerDoesNotFit { arm }`.
@@ -15859,6 +15860,113 @@ exclusive timing locks, the machine shared with another session's timed rows):
   `simulation/network`, the brief R, as in JS1): `PERF-07` 30k 32x C B B C mean 4.223 / 4.258 ms
   (+0.8 %, tolerance 1.4 %), p99 -0.3 %, p99.9 -0.9 %, every component level; acceptance rows the
   known exception `PERF-17` (one branch row passes outright). K22 30k click-to-ack 7.01 / 6.80 ms.
+
+#### Stubs go and stroke ends join (round JS3)
+
+Branch `roadtools-js3` off `dev` `8dda0110` (JS2 landed). The user's decisions of 2026-11-15:
+short stubs are removed; a stroke end joins a near occupied node even up to 8.5 m off the grid.
+
+- **Stubs go.** Where a junction the edit makes does not fit and one of its arms (node of three
+  arms or more, failing arms in `(node id, arm key)` order) is too short for it
+  (`arm_edge_needed_m` longer than the arm's road) with a **road end** of a plain standard road at
+  its far end, the stub yields like an empty joint (`validation/spacing.rs`, `stub_yields`): the
+  plan is built again with the stub removed (`topology::remove_stub_graph`, on the excerpt) and
+  the road end merged into the junction (an alias, out of the node index, the plan's
+  `merged_nodes` path), which becomes a bend or a smaller junction. The stub is always the edit's
+  own: the stroke's end beyond its last node (never the stroke's only piece), the tail a split
+  cut off a live road (the split's second half: its record stays, so the dependents beyond the
+  split follow it there as in any split), or a live road's head cut by the edit's last split of
+  it (the road keeps its id on the rest, the split record is dropped, and
+  `topology::migrate_stub_dependents` moves the road's buildings back by the stub and drops the
+  stub's whole occupancy cells, journaled as `RoadSplitDependentsUndo::Stub`). A whole live edge
+  never goes (it would retire a live id). No edgeless node is left: the road end is an alias of
+  the junction, saved as one (`SAVE-11`), so a save and a load find no node there (`ROAD-124`).
+- **The guard.** A stub of a live road stays where an occupied parcel fronts it (its frontage,
+  centre `frontage_center_t` of the road's physical length plus or minus half `frontage_m`, meets
+  the stub's stations; `road_edit::RoadFrontages`), or its road end holds a vehicle turn rule.
+  The live core answers from the parcel store (`ParcelStore::fronted`, the chunks
+  `road_span_chunks` walks beside the stretch, as `attached_to_road_span` does), the road tool's
+  view from its published land (`RoadToolLand::fronted`, the same chunks and parcels, the
+  parcel's road and frontage now published with it), so a preview and its commit decide alike.
+  A guarded stub's road end is then an occupied node. Player-placed buildings without a parcel
+  are not a guard (attachment repair moves them as for any edit); recorded for review.
+- **Ends join.** Where no joint or stub makes way, a stroke end too close to an **occupied** node
+  (a junction, a real bend, a guarded road end, an occupied joint) joins it: among the failing
+  arms on a live road between a node the stroke's end makes on that road and a live node of it,
+  the nearest within `MAX_END_JOIN_M` = 8.5 m (a 2-lane arm's least mouth station), ties by
+  `(node, arm)` order, never the stroke's other end, each end once (`end_join`); an end snapped
+  onto a structure's span or above the ground joins no node (`ROAD-99`: only ground meets
+  ground), so a mid-span join beside a bridge's bend stays refused. The stroke is
+  carried onto the node (`joined_stroke`, `join_stroke_end`): every point moves by the end's
+  displacement times its share of the stroke's horizontal length from the other end, so a
+  straight stroke stays straight, a curve stays smooth and the end lands on the node bit for bit;
+  the joined end stands on its node whatever the snap (`PreparedRoadInput::joined_nodes`). The
+  joined stroke is built afresh (its excerpt numbers anew, so the drawn stroke's yields go), and
+  if it fails (an arm under 25 degrees, `ROAD-54`; a corner), the drawn stroke's junction
+  refusal stands with its place. `RoadPreviewValidation::joined_nodes` names the nodes;
+  `plan_road_edit` returns the joined stroke as the prepared one, so cost, length, water and
+  land checks read the road it builds. A stroke that crosses a road too close to an occupied
+  node is refused (its crossing cannot move), naming both junctions.
+- **Builds.** `MAX_PLAN_BUILDS` = 4: as drawn, a round of yields (joints and stubs), a join and a
+  round of yields on the joined stroke; refused-as-drawn poses only, an accepted pose builds once.
+  Per pose O(builds x (stroke points + local excerpt records)) plus, on refusals, the failing
+  arms' bisections and a stub's frontage query (`O(stretch segments + parcels in its chunks)`);
+  the join and the removal `O(points + degree)`. Independent of the city; no new spatial
+  structure, no per-tick work.
+- **Plane sample on a stub** (JS1's open item). The profile solve's plane sample on an arm lay at
+  `max(12 m, mouth station)` capped at half the edge, so on a stub to a road end, whose mouth may
+  lie past its middle since JS1, it fell inside the pinned stretch. It is now capped at the arm's
+  layout budget (`arm_max_station_m`: half the edge, or all but a road end's cap), so it lies at
+  the mouth or beyond (`junction_profile_sample_distance_m`).
+- **Chips.** The road tool's chips read the joined stroke from the preview's outcome
+  (`PreviewOutcome::chip_facts`, `labels::apply_preview`): the chips at a drawn end move to the
+  built end, its angle chip goes, and the length chip reads the built length. The draft line
+  still follows the cursor; the preview's pieces show the joined road.
+- **Tests:** `road_junction_spacing::stubs_and_joins` on small flat cities (preview then commit
+  with the preview, preview chunks composing the committed ones): a T 6 m from a T becomes a
+  crossroads and a T 6 m from a quarter-turn bend a T at the bend, undo restoring the graph; a
+  join that would meet the street at 24 degrees is refused with the drawn stroke's junction
+  refusal and its place (its report reads "end edge ... at 6.0 m"); a stroke crossing the street
+  6 m from the T is refused as "Junctions only 6.0 m apart"; a 5 m stub goes with the street
+  drawn either way (tail and head), the street keeping its id, the dead end merged, no edgeless
+  node also after a save and a load, undo restoring the stub, and a stroke ending 5 m past a
+  street loses that end; a 12 m stub left by a 2 + 2 stroke goes, and with a house fronting it
+  stays and the stroke is refused (live parcels and published land agree); a stub removal and a
+  join as one batch equal one by one, one undo group. JS1's 6 m stub on edge 3 now builds (the
+  dead end merged); JS2's `occupied_joints_keep_their_place` now joins the occupied joint (a T).
+  `junction_profile_sample_on_a_stub_lies_past_its_mouth`; `preview_facts_show_the_joined_stroke`;
+  locality `populated_stub_road_plan_scaling` and `populated_joining_road_plan_scaling`.
+
+**Fresh, 2026-11-17** (base `dev` `8dda0110`, release library `e42846fd3f44ab32` with its
+scripts; branch `68649a02`, library `8aac86898f9c4173`; release test binaries `d452d6a2` and
+`55005b57`; session bench binaries `5ebe0131` and `97869dab`; pinned to the performance cores,
+eight workers, run and exclusive timing locks, the machine shared with other sessions):
+
+- **Gates.** Clippy warning set equal to the base's; debug `cargo test --lib` 2,852 passed, 0
+  failed, 236 ignored; missing docs 0; `./run.sh --test` passes (Rust 2,856 passed, 237 skipped;
+  both Godot chains pass, no script error, no skipped script).
+- **Products.** Kuopio's 78 drag-probe commits and the 17 gameplay fixtures: graph, state, mesh,
+  mesh without signs and graded equal on every commit, bitwise. No stroke there leaves a short
+  stub or ends beside an occupied node, and the plane sample's new cap changes no profile there.
+- **Per move and pose.** Session bench, 30k locality, C B B C: straight p50 104.5 / 103.7 /
+  103.7 / 102.1 us, curve p50 115.1 / 114.3 / 114.2 / 113.0 us, digests equal. Allocation probe
+  (heaptrack `--record-only`): base n = 0 / 20 / 200 2,403,895 / 2,403,877 / 2,403,800, branch
+  2,403,841 / 2,403,844 / 2,403,837: zero per move on both. `benchmark_road_preview_stages` C B B
+  C: plan p50 0.40-0.87 ms base, 0.45-1.07 ms branch, interleaved under load (accepted poses build
+  once). `populated_road_plan_scaling` and the dissolving pose C B: identical local products,
+  flat (the dissolving pose 0.49-0.56 ms on the branch, which finds the failing arms once per
+  refused build). `populated_stub_road_plan_scaling`: compile p50 0.49 / 0.51 / 0.91 / 0.74 ms and
+  `populated_joining_road_plan_scaling` 0.54 / 0.61 / 0.96 / 0.77 ms at 0 / 1k / 10k / 100k
+  remote buildings (to 600,024 agents), identical local products at every tier, no trend with the
+  city; the hover check 0.03-0.05 ms.
+- **Level F timing** (`./run.sh --timing --level F --k22`, the path rule's level): `PERF-07` 30k
+  32x C B B C (the noisy branch row rerun once) mean 4.251 / 4.252 ms, p99 -0.1 %, p99.9 +0.5 %,
+  max unpreempted +0.9 %, every component level, acceptance rows the known exception `PERF-17`;
+  30k 1x (the control's day of the same boot reused after calibration) mean 2.056 / 2.088 ms
+  (+1.6 %, tolerance 2.0 %), p99 +1.5 %, p99.9 +0.6 %, max unpreempted 4.76 / 4.94 ms, both
+  pass. An earlier branch build (`f1bebb5e`) read 4.76 / 5.21 ms there (+9.4 %, one day each,
+  both far under the 8 ms bar; the code differs only in refused poses). K22 30k click-to-ack
+  6.78 / 6.55 ms.
 
 ### Moving and reshaping built roads (`ROAD-113`)
 

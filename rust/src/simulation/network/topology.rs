@@ -15,6 +15,10 @@ use godot::prelude::*;
 use std::collections::HashMap;
 
 mod node_geometry;
+mod stub;
+
+pub(crate) use stub::{StubRemoval, remove_stub_graph};
+pub(super) use stub::migrate_stub_dependents;
 
 const INTERSECTION_NODE_CAPTURE_EPSILON: f32 = 0.05;
 
@@ -97,8 +101,8 @@ impl StrokeGrade {
     }
 }
 
-/// Inverse of the dependent records changed by one staged edge split, or by one dissolved
-/// joint's transfer (`ROAD-118` round JS2).
+/// Inverse of the dependent records changed by one staged edge split, by one dissolved joint's
+/// transfer (`ROAD-118` round JS2), or by one removed stub's (round JS3).
 pub(super) enum RoadSplitDependentsUndo {
     Split {
         edge_id: usize,
@@ -111,6 +115,13 @@ pub(super) enum RoadSplitDependentsUndo {
         buildings: Vec<(usize, usize, usize, f32, i8)>,
         // Both edges' occupancy before the transfer.
         occupancy: [(usize, Option<crate::simulation::buildings::allocator::EdgeOccupancy>); 2],
+    },
+    // A removed stub's road that kept its id on the rest (`ROAD-118` round JS3).
+    Stub {
+        edge: usize,
+        // Each moved building's previous edge, cell and frontage.
+        buildings: Vec<(usize, usize, usize, f32)>,
+        occupancy: Option<crate::simulation::buildings::allocator::EdgeOccupancy>,
     },
 }
 
@@ -177,6 +188,17 @@ impl RoadSplitDependentsUndo {
                         None => allocator.edge_occupancy.remove(&edge),
                     };
                 }
+            }
+            Self::Stub {
+                edge,
+                buildings,
+                occupancy,
+            } => {
+                allocator.restore_split_frontages(&buildings);
+                match occupancy {
+                    Some(cells) => allocator.edge_occupancy.insert(edge, cells),
+                    None => allocator.edge_occupancy.remove(&edge),
+                };
             }
         }
     }

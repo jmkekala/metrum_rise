@@ -478,6 +478,7 @@ impl RoadPreviewContext {
             &self.view.terrain,
             &self.replica,
             &self.view.roadbed,
+            &*self.land,
             request,
         );
         let validation = {

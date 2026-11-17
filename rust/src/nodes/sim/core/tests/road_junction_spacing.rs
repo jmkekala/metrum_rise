@@ -274,40 +274,20 @@ fn a_t_10_m_from_a_road_end_builds_and_the_road_end_then_keeps_its_place() {
     let outcome = commit(&mut core, &points, None);
     assert!(!outcome.committed, "the commit refuses it too");
 
-    // A T 6 m from the dead end of edge 3 is a road end too close; the report names the road
-    // the stroke ends on, where it used to say open terrain.
+    // A T 6 m from the dead end of edge 3 was a road end too close; since round JS3 its 6 m stub
+    // goes and the dead end merges into the stroke's end, a bend (`stubs_and_joins`).
     let (near, far) = (at(4), at(3));
     let end = near + (far - near).normalized() * 6.0;
     // Square to edge 3, from the north.
     let along = (far - near).normalized();
     let north = Vector2::new(-along.y, along.x) * along.x.signum();
     let points = stroke(&core, [end + north * 30.0, end]);
-    let mut view = context(&mut core);
-    let refused = preview(&mut view, &points).validation;
-    assert!(!refused.is_valid);
-    let place = refused.junction_place.expect("the refusal names its place");
-    assert_eq!(place.roles, [NodeRole::Junction, NodeRole::RoadEnd]);
-    assert_eq!(place.node, None, "the stroke's new T");
-    assert_eq!(place.arm_edge, Some(3), "the stub lies on edge 3");
-    assert_eq!(
-        reason_text(refused.invalid_reason, &facts(&refused)).as_deref(),
-        Some("Road end only 6.0 m from the junction; needs 9.5 m")
-    );
-    let rejection = RoadRejection::from_validation(refused.invalid_reason, &refused, &points);
-    let station_m = near.distance_to(far) - 6.0;
-    assert!(
-        rejection
-            .ends
-            .contains(&format!("end edge 3 at {station_m:.1} m")),
-        "{}",
-        rejection.ends
-    );
-    assert!(
-        rejection.detail.contains("road end"),
-        "{}",
-        rejection.detail
-    );
+    let outcome = commit(&mut core, &points, None);
+    assert!(outcome.committed, "{}", outcome.rejection_reason);
+    assert!(!node_stands_at(&core, near), "the dead end merged into the bend");
 }
+
+mod stubs_and_joins;
 
 fn facts(validation: &RoadPreviewValidation) -> ReasonFacts {
     ReasonFacts {
@@ -427,9 +407,10 @@ fn the_dumps_attempts_1_to_5_dissolve_the_joint_beside_the_junction() {
     }
 }
 
-// Joints that are not empty keep their place, and the junction beside them is refused as before
-// with its place named: an authored crossing at the joint, or the joint's two roads at different
-// speeds (attempt 5's start).
+// Joints that are not empty keep their place: an authored crossing at the joint, or the joint's
+// two roads at different speeds (attempt 5's start). The junction beside them was refused with
+// its place named; since round JS3 the stroke's end, 5 m from the occupied joint, joins it, which
+// becomes a T.
 #[test]
 fn occupied_joints_keep_their_place() {
     let start = at(JOINT) + (at(8) - at(JOINT)).normalized() * 5.0;
@@ -456,14 +437,13 @@ fn occupied_joints_keep_their_place() {
         let _ = core.finalize_network_render_products();
         let points = stroke(&core, [side, start]);
         let mut view = context(&mut core);
-        let refused = preview(&mut view, &points).validation;
-        assert!(!refused.is_valid, "{occupied}");
-        let place = refused.junction_place.expect("the refusal names its place");
-        let mut roles = place.roles;
-        roles.sort_by_key(|role| role.code());
-        assert_eq!(roles, [NodeRole::Junction, NodeRole::Joint], "{occupied}");
-        assert!(!commit(&mut core, &points, None).committed, "{occupied}");
+        let joined = preview(&mut view, &points).validation;
+        assert!(joined.is_valid, "{occupied}: {}", joined.invalid_reason);
+        assert_eq!(joined.joined_nodes, [None, Some(JOINT as u32)], "{occupied}");
+        assert!(commit(&mut core, &points, None).committed, "{occupied}");
         assert!(node_stands_at(&core, at(JOINT)), "{occupied}");
+        assert_eq!(degree(&core, JOINT as u32), 3, "{occupied}: a T at the joint");
+        assert!(!node_stands_at(&core, start), "{occupied}");
     }
 }
 

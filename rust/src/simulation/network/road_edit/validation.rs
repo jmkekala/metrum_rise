@@ -17,9 +17,9 @@ use super::tunnel::{
     classify_tunnel_stroke, deck_over_tunnels_m, grounded_decks_near, junction_in_trench,
     portal_splits, section_cover_m, tunnel_bore, tunnel_section_half_width_m,
 };
-use super::{FinalizedRoadGeometry, PlannedRoadSplit, RoadTopologyPlan};
+use super::{FinalizedRoadGeometry, PlannedRoadSplit, RoadFrontages, RoadTopologyPlan};
 use crate::simulation::network::roadbed;
-use crate::simulation::network::topology::JointDissolve;
+use crate::simulation::network::topology::{JointDissolve, StubRemoval};
 use crate::config;
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::core::config::WorldConfig;
@@ -42,6 +42,11 @@ use crate::simulation::terrain::TerrainSystem;
 use crate::simulation::zoning::ZoningSystem;
 use godot::prelude::Vector3;
 use std::collections::{HashMap, HashSet};
+
+mod spacing;
+
+pub(crate) use spacing::joined_stroke;
+use spacing::{StubYield, end_join, failing_arms, remove_stubs, stub_yields};
 
 const PREVIEW_VALID_REASON: &str = "";
 const PREVIEW_BRIDGE_CLEARANCE_REASON: &str = "bridge_clearance";
@@ -86,6 +91,8 @@ struct ValidationGraph {
     stroke_ends: [u32; 2],
     // The joints dissolved (`ROAD-118` round JS2), in the order done.
     dissolves: Vec<JointDissolve>,
+    // The stubs removed (`ROAD-118` round JS3), in the order done.
+    stubs: Vec<StubRemoval>,
 }
 
 /// Machine-readable road-placement validation state shared by the UI and commit guard.
@@ -160,6 +167,10 @@ pub(crate) struct RoadPreviewValidation {
     /// end: the live edge id and the end's station along it from its start node, horizontal
     /// metres. `None` at a node, on open terrain and on accepted strokes.
     pub(crate) endpoint_edges: [Option<(usize, f32)>; 2],
+    /// The live nodes an accepted plan carried the stroke's ends onto, start then end
+    /// (`ROAD-118` round JS3, [`joined_stroke`]): the stroke it builds runs to them. `None` for
+    /// an end where it was drawn.
+    pub(crate) joined_nodes: [Option<u32>; 2],
 }
 
 /// Where a junction refusal happened (`ROAD-118` round JS1), in the committed graph's ids where
@@ -211,6 +222,7 @@ impl RoadPreviewValidation {
             geometry_limit: 0.0,
             junction_place: None,
             endpoint_edges: [None; 2],
+            joined_nodes: [None; 2],
         }
     }
 
@@ -252,13 +264,16 @@ pub(crate) fn validate_road_candidate_fast(
 
 /// Validates a prepared stroke against the committed graph and solves its local post-edit
 /// topology. The plan is `None` when validation fails or the excerpt's mutation frontier is
-/// incomplete. O(stroke points + local excerpt records), independent of distant roads.
+/// incomplete. `frontages` answers the stub guard (`ROAD-118` round JS3). A plan that carries
+/// the stroke's ends onto nodes names them in `joined_nodes`; it builds [`joined_stroke`].
+/// O(stroke points + local excerpt records), independent of distant roads.
 pub(crate) fn validate_road_edit(
     prepared_input: &PreparedRoadInput,
     fwd_lanes: u8,
     bkw_lanes: u8,
     terrain: &TerrainSystem,
     existing_graph: &RegionGraph,
+    frontages: &dyn RoadFrontages,
 ) -> (RoadPreviewValidation, Option<RoadTopologyPlan>) {
     let new_edge_validation = profile_validation(
         prepared_input,
@@ -278,7 +293,7 @@ pub(crate) fn validate_road_edit(
         fwd_lanes,
         bkw_lanes,
         terrain,
-        existing_graph,
+        (existing_graph, frontages),
         new_edge_validation,
     );
     if !validation.is_valid {
@@ -640,7 +655,7 @@ fn validate_against_graph(
     fwd_lanes: u8,
     bkw_lanes: u8,
     terrain: &TerrainSystem,
-    existing_graph: &RegionGraph,
+    (existing_graph, frontages): (&RegionGraph, &dyn RoadFrontages),
     mut validation: RoadPreviewValidation,
 ) -> (RoadPreviewValidation, Option<RoadTopologyPlan>) {
     let prepared_points = &prepared_input.points;
@@ -690,22 +705,28 @@ fn validate_against_graph(
         );
     }
     // A junction that does not fit beside an empty joint takes the joint's place (`ROAD-118`
-    // round JS2): the plan is built again with the joint dissolved, at most
+    // round JS2), and a short stub to a road end goes (round JS3): the plan is built again with
+    // the joint dissolved or the stub removed. Where neither answers, a stroke end too close to
+    // an occupied node joins it (round JS3), and the joined stroke is built afresh. At most
     // `MAX_PLAN_BUILDS` builds, only for a pose the first build refuses.
     let mut yields: Vec<JointYield> = Vec::new();
+    let mut stubs: Vec<StubYield> = Vec::new();
+    // The stroke with its joined ends, once an end joined.
+    let mut joined: Option<PreparedRoadInput> = None;
     // The build a dissolve answered, whose junction refusal stands if the next build fails; its
     // place (a bisection of layouts) is only worked out when it is the answer.
     let mut refused_before: Option<Excerpt> = None;
     let mut builds = 0;
     let excerpt = loop {
         builds += 1;
+        let input = joined.as_ref().unwrap_or(prepared_input);
         let excerpt = match solve_excerpt(
-            prepared_input,
+            input,
             (fwd_lanes, bkw_lanes),
             terrain,
             existing_graph,
             bore,
-            &yields,
+            (&yields, &stubs),
             &validation,
         ) {
             Ok(excerpt) => excerpt,
@@ -721,17 +742,56 @@ fn validate_against_graph(
         if excerpt.refusal.is_none() {
             break excerpt;
         }
-        let more = if prepared_input.tunnel || builds >= MAX_PLAN_BUILDS {
-            Vec::new()
-        } else {
-            joint_yields(&excerpt.graph, existing_graph, &yields)
-        };
-        if more.is_empty() {
+        if prepared_input.tunnel || builds >= MAX_PLAN_BUILDS {
             return (excerpt.refused(validation), None);
         }
-        yields.extend(more);
+        // The failing arms, once per refused build, for the joints, the stubs and the joins.
+        let failing = failing_arms(&excerpt.graph);
+        let more = joint_yields(&excerpt.graph, existing_graph, &failing, &yields);
+        let more_stubs = stub_yields(
+            &excerpt.graph,
+            existing_graph,
+            (&failing, &excerpt.stroke),
+            frontages,
+            (&stubs, &yields),
+        );
+        if !more.is_empty() || !more_stubs.is_empty() {
+            yields.extend(more);
+            stubs.extend(more_stubs);
+            refused_before = Some(excerpt);
+            continue;
+        }
+        // An end already joined, snapped onto a structure's span or above the ground joins no
+        // node: only ground meets ground (`ROAD-99`).
+        let ends: [bool; 2] = std::array::from_fn(|end| {
+            input.joined_nodes[end].is_some()
+                || input.joined_spans[end].is_some()
+                || input.elevated_ends[end]
+        });
+        let Some((end, node)) = end_join(&excerpt.graph, &failing, ends) else {
+            return (excerpt.refused(validation), None);
+        };
+        // The joined stroke numbers its excerpt afresh: the yields found on the drawn one go.
+        let mut nodes = input.joined_nodes;
+        nodes[end] = Some(node);
+        joined = Some(joined_stroke(prepared_input, nodes, existing_graph));
+        yields.clear();
+        stubs.clear();
         refused_before = Some(excerpt);
     };
+    let prepared_input = joined.as_ref().unwrap_or(prepared_input);
+    validation.joined_nodes = prepared_input.joined_nodes;
+    for (snapped, node) in [
+        &mut validation.start_endpoint_snapped_node_id,
+        &mut validation.end_endpoint_snapped_node_id,
+    ]
+    .into_iter()
+    .zip(prepared_input.joined_nodes)
+    {
+        if let Some(node) = node {
+            *snapped = node as i32;
+        }
+    }
     let Excerpt {
         graph:
             ValidationGraph {
@@ -742,6 +802,7 @@ fn validate_against_graph(
                 splits,
                 stroke_ends,
                 dissolves,
+                stubs,
                 ..
             },
         stroke,
@@ -774,14 +835,15 @@ fn validate_against_graph(
         finalized,
         splits,
         stroke_ends,
-        dissolves,
+        (dissolves, stubs),
     );
     (validation, topology_plan)
 }
 
-// The most plans one pose builds (`ROAD-118` round JS2): the plan as drawn and up to two rounds
-// of joints dissolving for the junctions it refuses.
-const MAX_PLAN_BUILDS: usize = 3;
+// The most plans one pose builds (`ROAD-118`): the plan as drawn, a round of joints dissolving
+// and stubs going for the junctions it refuses (round JS2, JS3), a stroke end joining a node and
+// a round of yields on the joined stroke (round JS3).
+const MAX_PLAN_BUILDS: usize = 4;
 
 // A joint that makes way (`ROAD-118` round JS2), in the excerpt's local ids, which every build of
 // one pose numbers alike up to the dissolves: the joint, the piece between it and the junction
@@ -811,7 +873,7 @@ fn solve_excerpt(
     terrain: &TerrainSystem,
     existing_graph: &RegionGraph,
     bore: Option<[usize; 2]>,
-    yields: &[JointYield],
+    (yields, stubs): (&[JointYield], &[StubYield]),
     validation: &RoadPreviewValidation,
 ) -> Result<Excerpt, Box<RoadPreviewValidation>> {
     let refuse = |reason| Box::new(validation.clone().with_invalid_reason(reason));
@@ -827,10 +889,10 @@ fn solve_excerpt(
             prepared_input.attributes,
         ),
         existing_graph,
-        prepared_input.endpoint_snap_enabled,
+        (prepared_input.endpoint_snap_enabled, prepared_input.joined_nodes),
         terrain,
         bore,
-        yields,
+        (yields, stubs),
     )
     .map_err(refuse)?;
     let ValidationGraph {
@@ -843,9 +905,12 @@ fn solve_excerpt(
         splits,
         stroke_ends,
         dissolves,
+        stubs,
     } = &excerpt;
-    // A dissolved joint's piece may be the stroke itself, which then runs on in the road it joins.
-    let absorbed = dissolves.iter().any(|dissolve| dissolve.dropped == *new_edge_idx);
+    // A dissolved joint's piece may be the stroke itself, which then runs on in the road it joins,
+    // and a removed stub may be the stroke's first piece.
+    let absorbed = dissolves.iter().any(|dissolve| dissolve.dropped == *new_edge_idx)
+        || stubs.iter().any(|stub| stub.dropped == *new_edge_idx);
     if *new_edge_idx >= validation_graph.edge_count()
         || (validation_graph.edge(*new_edge_idx).deleted && !absorbed)
         || required_edge_ids.is_empty()
@@ -945,57 +1010,15 @@ impl Excerpt {
 fn joint_yields(
     excerpt: &ValidationGraph,
     existing_graph: &RegionGraph,
+    failing: &[(u32, ArmKey)],
     done: &[JointYield],
 ) -> Vec<JointYield> {
-    let local = &excerpt.graph;
-    let mut nodes: Vec<u32> = excerpt
-        .finalized
-        .affected_nodes
-        .iter()
-        .copied()
-        .filter(|&node| local.get_valid_node(node) == node)
-        .collect();
-    nodes.sort_unstable();
     let mut yields: Vec<JointYield> = Vec::new();
-    for node in nodes {
-        if !matches!(
-            check_node(local, node),
-            Err(NodeError::Layout(
-                LayoutError::CornerDoesNotFit { .. } | LayoutError::ArmTooShort { .. }
-            ))
-        ) {
-            continue;
-        }
-        let mut arms: Vec<ArmKey> = local
-            .node_adjacency(node)
-            .iter()
-            .filter_map(|&edge| {
-                let record = local.get_edge(edge).filter(|record| !record.deleted)?;
-                let (start, end) = (
-                    local.get_valid_node(record.start_node),
-                    local.get_valid_node(record.end_node),
-                );
-                match (start == node, end == node) {
-                    (true, false) => Some(ArmKey {
-                        edge,
-                        end: EdgeEnd::Start,
-                    }),
-                    (false, true) => Some(ArmKey {
-                        edge,
-                        end: EdgeEnd::End,
-                    }),
-                    _ => None,
-                }
-            })
-            .collect();
-        arms.sort_unstable();
-        arms.dedup();
-        for arm in arms {
-            if let Some(found) = joint_yield(excerpt, existing_graph, node, arm)
-                && !done.iter().chain(&yields).any(|other| other.joint == found.joint)
-            {
-                yields.push(found);
-            }
+    for &(node, arm) in failing {
+        if let Some(found) = joint_yield(excerpt, existing_graph, node, arm)
+            && !done.iter().chain(&yields).any(|other| other.joint == found.joint)
+        {
+            yields.push(found);
         }
     }
     yields
@@ -1144,10 +1167,10 @@ fn build_validation_graph(
         RoadAttributes,
     ),
     existing_graph: &RegionGraph,
-    endpoint_snap_enabled: bool,
+    (endpoint_snap_enabled, joined_nodes): (bool, [Option<u32>; 2]),
     terrain: &TerrainSystem,
     bore: Option<[usize; 2]>,
-    yields: &[JointYield],
+    (yields, stubs): (&[JointYield], &[StubYield]),
 ) -> Result<ValidationGraph, &'static str> {
     if prepared_points.len() < 2 {
         return Err(PREVIEW_SURFACE_GEOMETRY_REASON);
@@ -1156,16 +1179,17 @@ fn build_validation_graph(
     let mut validation_graph = RegionGraph::new();
     let mut node_map = HashMap::new();
     let mut copied_edges = HashMap::new();
-    let start_existing = endpoint_existing_node(
-        prepared_points[0],
-        existing_graph,
-        endpoint_snap_enabled,
-    );
-    let end_existing = endpoint_existing_node(
-        *prepared_points.last().unwrap(),
-        existing_graph,
-        endpoint_snap_enabled,
-    );
+    // A joined end (`ROAD-118` round JS3) stands on its node whatever the snap.
+    let start_existing = joined_nodes[0].or_else(|| {
+        endpoint_existing_node(prepared_points[0], existing_graph, endpoint_snap_enabled)
+    });
+    let end_existing = joined_nodes[1].or_else(|| {
+        endpoint_existing_node(
+            *prepared_points.last().unwrap(),
+            existing_graph,
+            endpoint_snap_enabled,
+        )
+    });
 
     let existing_edge_ids = candidate_existing_edge_ids(
         prepared_points,
@@ -1269,15 +1293,16 @@ fn build_validation_graph(
         );
     validation_graph.edge_mut(new_edge_idx).base_cost = base_cost;
     validation_graph.edge_mut(new_edge_idx).physical_length = physical_length;
-    let (finalized, stroke_splits, dissolves) = process_validation_graph_intersections(
-        &mut validation_graph,
-        new_edge_idx,
-        grade,
-        terrain,
-        portals.as_ref(),
-        &ring_edges,
-        yields,
-    )?;
+    let (finalized, stroke_splits, (dissolves, stub_removals)) =
+        process_validation_graph_intersections(
+            &mut validation_graph,
+            new_edge_idx,
+            grade,
+            terrain,
+            portals.as_ref(),
+            &ring_edges,
+            (yields, stubs),
+        )?;
     // The bare nodes a join inserted split the ring before the stroke's own splits ran.
     let splits: Vec<PlannedRoadSplit> = ring_splits
         .into_iter()
@@ -1343,6 +1368,7 @@ fn build_validation_graph(
         splits,
         stroke_ends: [start_node, end_node],
         dissolves,
+        stubs: stub_removals,
     })
 }
 
@@ -1459,8 +1485,15 @@ fn process_validation_graph_intersections(
     terrain: &TerrainSystem,
     portals: Option<&Portals>,
     moved_ring_edges: &[usize],
-    yields: &[JointYield],
-) -> Result<(FinalizedRoadGeometry, Vec<PlannedRoadSplit>, Vec<JointDissolve>), &'static str> {
+    (yields, stubs): (&[JointYield], &[StubYield]),
+) -> Result<
+    (
+        FinalizedRoadGeometry,
+        Vec<PlannedRoadSplit>,
+        (Vec<JointDissolve>, Vec<StubRemoval>),
+    ),
+    &'static str,
+> {
     let mut network = TransitNetwork::new();
     let world_config = WorldConfig::default();
     let mut zoning = ZoningSystem::new(&world_config);
@@ -1515,8 +1548,17 @@ fn process_validation_graph_intersections(
             .extend([dissolve.into, dissolve.from, dissolve.dropped]);
         surface_dirty_nodes.insert(dissolve.junction);
     }
-    // A dissolved joint lays out as its junction.
-    if !dissolves.is_empty() {
+    // A removed stub's road ends at its junction, which lays out again as a bend or a smaller
+    // junction (`ROAD-118` round JS3).
+    let removals = remove_stubs(validation_graph, stubs, &mut splits);
+    for removal in &removals {
+        network
+            .bulk_dirty_edges
+            .extend([removal.from, removal.dropped]);
+        surface_dirty_nodes.insert(removal.junction);
+    }
+    // A dissolved joint or a removed stub's end lays out as its junction.
+    if !dissolves.is_empty() || !removals.is_empty() {
         surface_dirty_nodes = surface_dirty_nodes
             .into_iter()
             .map(|node| validation_graph.get_valid_node(node))
@@ -1525,7 +1567,7 @@ fn process_validation_graph_intersections(
     network.mark_surface_dirty_for_nodes(validation_graph, &surface_dirty_nodes);
 
     let finalized = network.finalize_road_geometry(validation_graph, Some(terrain));
-    Ok((finalized, splits, dissolves))
+    Ok((finalized, splits, (dissolves, removals)))
 }
 
 // Dissolves the `yields` that are still empty joints with their pieces in place, in order

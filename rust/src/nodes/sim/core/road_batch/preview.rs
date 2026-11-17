@@ -362,6 +362,7 @@ impl RoadPreviewContext {
             &self.view.terrain,
             &self.replica,
             &batch.roadbed,
+            &*self.land,
             batch.requests[index].clone(),
         );
         let validation = {
