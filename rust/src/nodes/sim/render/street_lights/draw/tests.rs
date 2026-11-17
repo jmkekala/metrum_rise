@@ -230,3 +230,27 @@ fn a_prebuilt_chunk_only_shows_when_its_batches_come() {
     draw.free_all(&mut backend);
     assert!(backend.instances.is_empty() && backend.multimeshes.is_empty());
 }
+
+#[test]
+fn with_motion_vectors_a_changed_level_batch_takes_fresh_storage() {
+    let origin = [768.0, 0.0, -768.0];
+    let mut backend = Recorder::new();
+    let mut draw = draw();
+    draw.set_fresh(true);
+    draw.begin(&mut backend, (1, -2), origin, batches(origin));
+    assert!(draw.build_part(&mut backend, (1, -2), f64::INFINITY));
+    let commands = backend.commands.len();
+    assert!(select(&mut draw, &mut backend, [768.0, 300.0, -768.0]) > 0);
+    // Every buffer written has fresh storage first: no motion from another pole's transform.
+    let mut fresh = std::collections::BTreeSet::new();
+    for command in &backend.commands[commands..] {
+        match *command {
+            Command::MultimeshReallocate(multimesh, _) => {
+                fresh.insert(multimesh);
+            }
+            Command::MultimeshBuffer(multimesh, ..) => assert!(fresh.contains(&multimesh)),
+            _ => {}
+        }
+    }
+    assert!(!fresh.is_empty());
+}

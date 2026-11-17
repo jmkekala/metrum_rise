@@ -385,7 +385,7 @@ impl LampDraw {
                 let count = (self.rows.len() / STRIDE) as u32;
                 if count > 0 {
                     self.pool
-                        .fill(backend, id, &self.rows, count, Aabb::default());
+                        .refill(backend, id, &self.rows, count, Aabb::default());
                 }
                 self.pool.set_visible(backend, id, Role::Main, count > 0);
                 filled += 1;

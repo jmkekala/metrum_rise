@@ -548,6 +548,30 @@ impl SlotPool {
         write_rows(backend, slot, rows, count, multimesh_aabb);
     }
 
+    /// [`SlotPool::fill`] for a slot whose instances now stand for other objects than its last
+    /// rows did (a batch's members changed, the street lights' level batches, `RENDER-46`): for
+    /// a viewport that draws motion vectors the slot first gets fresh storage, so the engine
+    /// draws no motion from one object's last transform to another's.
+    pub(crate) fn refill(
+        &mut self,
+        backend: &mut impl RenderBackend,
+        id: SlotId,
+        rows: &[f32],
+        count: u32,
+        multimesh_aabb: Aabb,
+    ) {
+        let fresh = self.fresh;
+        let slot = self.slot_mut(id);
+        if fresh {
+            let kind = slot.kind;
+            backend.multimesh_reallocate(slot.multimesh, slot.capacity, kind.colors, kind.custom);
+            slot.count = None;
+            slot.multimesh_aabb = None;
+        }
+        slot.kept.clear();
+        write_rows(backend, slot, rows, count, multimesh_aabb);
+    }
+
     /// [`SlotPool::fill`], keeping a copy of `rows` in the slot for [`SlotPool::swap_mesh`]
     /// (`RENDER-37`). The copy reuses the slot's storage once it has grown. `O(rows)`.
     pub(crate) fn fill_kept(
