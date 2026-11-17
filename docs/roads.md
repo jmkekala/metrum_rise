@@ -12964,6 +12964,91 @@ cursor 217.43 us (216.83-218.06); branch straight 238.35 us (237.69-238.99), cur
   state, mesh, graded), the drag probe PASS; the gameplay fixtures 17 of 17 EQUAL, 0 SCRIPT
   ERROR.
 
+### The chips change-gated (round R2-5)
+
+Round R2-5 of `ROAD-112` R2 (branch `roadtools-r25` on `dev` `b40368b2`; the plan's R2-5 plus the
+chips' canvas draw, which round R2-0 found to be half of the tool's frame work beside the preview).
+R2-2's typed tick and its timing ring do not exist yet, so the gate sits beside today's frame call.
+
+- **Rust** (`network_api/road_tool/session/labels.rs`, split out of `session.rs`): every
+  `road_tool_frame` builds the chips (kind, tone, text, size in the HUD's font) into reused buffers
+  and compares them with the last frame's, `O(chips + handles)`; a revision moves when the content
+  changes, a placement revision when the content, the anchors, the sides or the handles do. The
+  frame record no longer carries the `label_*` arrays. `road_tool_chips_update(camera, ...)` runs
+  once a frame after it: it reads the camera's projection, transform, near plane and viewport in
+  Rust (the view projection computed in Godot's own order of operations, so the corners stay bit
+  for bit the HUD script's former expression), places the chips only when the placement revision
+  or the view changed (`labels::place_chips`), and returns 1 (the chips changed:
+  `road_tool_chips`, corners and the panels to redraw included), 2 (only the corners:
+  `road_tool_chip_corners`) or 0. A still frame is `O(1)` and allocates nothing.
+- **Why the draw cost what it did** (a draw benchmark of the base HUD's callback, eight typical
+  chips, gamescope headless, 2 x 240 frames per variant, interleaved, unpinned, a slow clock, so read the parts as shares): the whole callback
+  p50 563 us; the icons alone 578 (antialiased arcs and polylines, a `PackedVector2Array` literal
+  per call), the style boxes 114 (an antialiased rounded panel built per call), the texts 95 with
+  unchanged strings (the font's shaped-text cache hits) and 400 when every string is new (shaping).
+  Every pose redrew all of it, because the anchors move.
+- **GDScript** (`road_tool_hud.gd`, still the only drawer, U-R2-3): each chip's panel and icon is
+  its own `Node2D`, redrawn only when its kind, tone or size changes and otherwise only moved to
+  its corner; the texts are drawn together above the panels whenever a text or a corner changed,
+  at the corner itself (the font snaps its glyphs to the pixel grid, so text in a moved canvas
+  item would blur). The HUD fetches nothing and draws nothing on a frame whose flags are 0; no
+  array compare in GDScript. A Godot test (`network_tool_chunk_renderer_test.gd`) counts draws:
+  three still frames draw nothing, a camera move draws once (the texts).
+
+**Fresh, 2026-11-17 02:44-04:20** (`$ARTIFACTS/art-r25`; base `dev` `b40368b2`'s release library
+`9acfb2f1888a068e` with its scripts, branch `85f5474544604e9d`, pred round R2-0's pre-D library):
+
+- **Texts and corners**: `road_tool_capture.gd`'s sets `default`, `scurve_freeform`, `restyle`,
+  `ui1`, `continuous_chains` and `scurve_steps` on both sides with an instrumented overlay that
+  records every change of the HUD's texts and corners: 410 states, equal in order, the corners bit
+  for bit. The stills: 7 of 28 byte-identical, the rest 2-10 pixels apart by 1/255 (the panels'
+  antialiased edges, now drawn through a moved canvas item).
+- **The chips' canvas draw** (instrumented pass on R2-0's rows, inst-base inst-br inst-br
+  inst-base, every frame the tool was active; draw callbacks a frame):
+
+| Rows | Side | Pose frames | Draw p50 | Draw p95 | Mean | Frames without a pose: draw |
+| --- | --- | --- | --- | --- | --- | --- |
+| cross | base | 1,816 | 204 us | 314 us | 212 us | 0 (221 frames) |
+| cross | branch | 1,719 | 72 us | 160 us | 78 us | 0 (320 frames) |
+| T, branch, dense | base | 2,748 | 193 us | 398 us | 226 us | 0 (310 frames) |
+| T, branch, dense | branch | 2,721 | 77 us | 174 us | 88 us | 0 (336 frames) |
+
+  The profiled pass's canvas bucket a pose (the draw callbacks plus the canvas renderer and text
+  shaping): T, branch, dense **158 us** against the pre-D library's 214 us this session (236 us in
+  round HF2) and the base's 384 us; cross 138 / 232 / 309 us.
+- **The chips' part**: Rust, from the profile a pose: the labels 10-14 us and the chips' bridge
+  calls 10-12 us (means). The update call alone (a split pass over the T, branch and dense rows,
+  1,374 frames with a change): p50 11 us, p95 23 us. The GDScript step around it on pose frames
+  (fetch, panels moved, texts queued): p50 41-43 us, p95 62-85 us (base, wording compare plus
+  placement: p50 33-34, p95 48-64); on frames without a pose p95 13-18 us (base 20-27). The split:
+  the fetch (the dictionary, a `GString` a chip) p95 30 us and the panel moves p95 24 us. R2-2's
+  ring does not exist; on this reading the Rust part is within 0.05 ms p95 and the step with its
+  GDScript fetch and moves is not. A typed fetch (R2-2) and panel moves from Rust would cut it.
+- **Paused preview rows** (R2-0's script, one profiled pass pred base br br base pred,
+  02:44-02:55; `9-br-dense` overlapped another session's Godot and was rerun alone, the overlapped
+  run kept apart). Share of exact poses within 16.7 / 17 / 18 / 20 ms, and the main thread's clock:
+
+| Rows | Side | Poses | <= 16.7 | <= 17 | <= 18 | <= 20 | Clock | Main thread a pose |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| cross | pred | 1,308 | 55.0 % | 62.6 % | 69.7 % | 78.2 % | 2.62 GHz | 9,500 us |
+| cross | base | 1,393 | 61.1 % | 71.0 % | 76.5 % | 84.1 % | 3.68 GHz | 10,556 us |
+| cross | branch | 1,508 | 62.8 % | 77.6 % | 84.0 % | 90.0 % | 3.93 GHz | 10,339 us |
+| T, branch, dense | pred | 2,004 | 63.4 % | 72.1 % | 79.5 % | 85.9 % | 2.73 GHz | 7,790 us |
+| T, branch, dense | base | 1,954 | 55.6 % | 62.5 % | 72.0 % | 80.6 % | 2.13 GHz | 9,741 us |
+| T, branch, dense | branch | 2,096 | 62.2 % | 72.6 % | 80.4 % | 86.4 % | 2.73 GHz | 8,832 us |
+
+  Against U-R2-1 (the pre-D library): the cross rows pass at every cutoff; the T, branch and dense
+  rows are above pred at 17, 18 and 20 ms and 1.2 points under it at 16.7 ms, at the same clock;
+  their main thread still spends 1,042 us a pose more than pred's, 2,214 us of it the footprint
+  hue's build (`ROAD-123`, round HF2 not on `dev`).
+- **Level R**: the session benchmark's 30k locality mode, base and branch bench binaries C B B C
+  (02:44, pinned, run and exclusive locks): straight p50 105.6 / 105.2 / 103.4 / 105.2 us, p99
+  143.6 / 141.3 / 141.9 / 151.2 us, digests equal; the Kuopio drag probe PASS on both sides. No
+  product path changed (the chips are the HUD's only), so no product run.
+- **Gates** (fresh on `97b7c080`): clippy's warning set equal to the base's (14 = 14), missing docs
+  0, debug lib tests 2,812 passed / 0 failed / 233 ignored, `./run.sh --test` PASS (2,816 Rust
+  tests, 234 skipped; both Godot chains, 0 SCRIPT ERROR).
+
 ### The pick's graded preparation halved (round PB, `ROAD-116`)
 
 Round PB of `ROAD-112` (branch `roadtools-pb`, R2-7 on `dev` `75523322`). **Bisect.** The
@@ -15039,9 +15124,10 @@ the clicks, the mode buttons and the acknowledgement and draws what `road_tool_f
   end the cost (the preview's, class-priced), the bearing and the design speed (amber under the
   type's limit). No upkeep (user, 2026-11-14). One notice chip near the end: red with the
   refusal, amber for a steep grade, demolitions, a plan being checked or a stroke being sent.
-  `SimulationNode.road_tool_place_chips` projects the anchors and handles with the camera's
-  matrices and places the chips (`labels::place_chips`; round V2, sized in the font the HUD sends
-  once, `road_tool_set_chip_font`): each goes out
+  `SimulationNode.road_tool_chips_update` reads the camera, projects the anchors and handles
+  and places the chips (`labels::place_chips`; round V2, sized in the font the HUD sends once,
+  `road_tool_set_chip_font`) only when the chips or the view changed, and tells the HUD whether
+  to fetch them (round R2-5: a still frame draws nothing): each goes out
   along its side from its anchor, then while it overlaps an earlier chip or a handle steps by its
   own height, alternately down and up, so chips sharing an anchor stack in a column beside it;
   deterministic, no physics.
