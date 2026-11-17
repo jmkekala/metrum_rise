@@ -280,32 +280,6 @@ pub(crate) struct SimulationSnapshot {
     pub(crate) charged: f64,
 }
 
-impl SimCore {
-    fn network_node_positions_snapshot(&mut self) -> Arc<Vec<Vector3>> {
-        if self.cached_network_node_positions_dirty
-            && self.cached_road_mesh_generation == self.road_tool_surface_generation
-        {
-            self.cached_network_node_positions = Arc::new(self.build_network_node_positions());
-            self.cached_network_node_positions_dirty = false;
-        }
-        Arc::clone(&self.cached_network_node_positions)
-    }
-
-    fn build_network_node_positions(&self) -> Vec<Vector3> {
-        self.region_graph
-            .nodes()
-            .iter()
-            .enumerate()
-            .filter(|(i, _)| {
-                let node_id = *i as u32;
-                self.region_graph.get_valid_node(node_id) == node_id
-                    && self.region_graph.node_has_live_incident_edge(node_id)
-            })
-            .map(|(_, n)| n.pos)
-            .collect()
-    }
-}
-
 /// Pre-computed rendering data written by the sim thread and read by the render thread.
 ///
 /// Contains only pure Rust types so the struct is `Send + Sync` without unsafe.
@@ -430,10 +404,6 @@ pub struct RenderSnapshot {
     /// What Godot's per-frame queries read (`CODE-26`): land cover revisions, the coal pit
     /// revision, the growth summary and the visible surface, never older than this snapshot.
     pub(crate) queries: FrameQueries,
-    /// World-space positions of all live canonical network nodes.
-    /// Pre-computed here so `get_network_nodes()` reads the snapshot (RwLock)
-    /// instead of locking SimCore — avoids main-thread stalls during road placement.
-    pub node_positions: Arc<Vec<godot::prelude::Vector3>>,
 }
 
 impl Default for RenderSnapshot {
@@ -491,7 +461,6 @@ impl Default for RenderSnapshot {
             zoning_overlay_occupancy_revision: 0,
             agriculture_field_revision: 0,
             queries: FrameQueries::default(),
-            node_positions: Arc::new(Vec::new()),
             heightmap_height: 0,
         }
     }
@@ -599,8 +568,6 @@ impl SimCore {
             u64::from(self.vehicle_ground_full_detail_m.to_bits()),
         ];
 
-        let node_positions = self.network_node_positions_snapshot();
-
         let (terrain_world_w, terrain_world_h) = self.heightmap.world_size();
 
         snapshot.terrain_dirty = self.terrain_dirty;
@@ -647,7 +614,6 @@ impl SimCore {
             self.transit_network.roadbed.chunk_origin_m();
         snapshot.road_mesh_chunk_origin_x_m = road_chunk_origin_x_m;
         snapshot.road_mesh_chunk_origin_z_m = road_chunk_origin_z_m;
-        snapshot.node_positions = node_positions;
         snapshot.current_day = self.time.day_index;
         snapshot.current_minute_of_day = self.time.minute_of_day;
         snapshot.current_day_fraction = self.time.day_fraction();

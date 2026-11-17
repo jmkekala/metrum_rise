@@ -72,9 +72,6 @@ class BenchmarkRoadTool:
 	func reset_main_mesh_chunks() -> void:
 		chunks.reset()
 
-	func mark_network_nodes_dirty() -> void:
-		pass
-
 	func road_chunks_installed(_generation: int) -> void:
 		pass
 

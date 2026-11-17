@@ -71,7 +71,6 @@ func _run():
 	tool.blueprint_mesh = MeshInstance3D.new()
 	tool.add_child(tool.blueprint_mesh)
 	tool.attach_hud(RoadToolHudScript.new())
-	tool._node_visuals_visible = true
 	network = Network.new()
 	network.simulation_node = sim
 	network.terrain = terrain
@@ -92,7 +91,6 @@ func _run():
 		camera.position = b + Vector3(0, 25 if i % 3 != 0 else 150, 30)
 		camera.look_at(b)
 		tool.active = true
-		tool._node_visuals_dirty = false
 		tool._begin_stroke(a)
 		tool.set_scripted_pointer(true, b)
 		for frame in 5:

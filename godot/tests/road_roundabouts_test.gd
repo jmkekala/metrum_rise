@@ -5,7 +5,8 @@
 ## 36 m (arms trimmed, zebras on the arms, none on the ring), refused at 12 m and beside a road
 ## with red and the reason, the keys' 2 m steps clamped at the range, 45 and 50 m both reachable
 ## on two lanes. Bulldozing a ring piece removes the ring and leaves four road ends, named on
-## hover, with one undo. A bare ring takes an ordinary crossroads: four compass strokes.
+## hover, with one undo. A bare ring takes an ordinary crossroads: four compass strokes. The
+## node markers (`ROAD-112` R2-8) show the crossing's five nodes near it and none 300 m away.
 ## Ported from Veeti's road-chain snapshot `efd58129` (`road_roundabouts_test.gd`), adapted to
 ## the verdict and outline preview.
 extends SceneTree
@@ -185,6 +186,8 @@ func _conversion_and_bulldoze(tool: Node) -> void:
 	_expect(bool(tool._preview.get("is_valid", false)), "the crossing converts: %s" % tool._preview)
 	var arms: Array = tool._preview.arms
 	_expect(arms.size() == 4, "four arms: %s" % [arms])
+	var markers: int = tool._markers.multimesh.visible_instance_count
+	_expect(markers == 5, "the crossing's centre and four ends are marked: %d" % markers)
 	await _click(tool, "the conversion")
 	_expect(simulation.get_closest_node(_ground(0.0, 0.0), 8.0) < 0, "the junction is gone")
 	for arm: Dictionary in arms:
@@ -220,6 +223,8 @@ func _conversion_and_bulldoze(tool: Node) -> void:
 
 func _crossroads_on_a_bare_ring(tool: Node) -> void:
 	_hover(tool, -300.0, 300.0)
+	var markers: int = tool._markers.multimesh.visible_instance_count
+	_expect(markers == 0, "no node within the markers' reach of bare ground: %d" % markers)
 	await _click(tool, "the bare ring")
 	var centre := Vector2(-300.0, 300.0)
 	for direction: Vector2 in [Vector2.RIGHT, Vector2.DOWN, Vector2.LEFT, Vector2.UP]:

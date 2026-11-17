@@ -844,7 +844,6 @@ func reset_main_mesh_chunks() -> void:
 	_queue_preview_update()
 
 func mark_network_topology_dirty() -> void:
-	mark_network_nodes_dirty()
 	_queue_preview_update()
 
 ## Shows a dialog asking whether to make this road endpoint an external connection.

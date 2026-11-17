@@ -60,7 +60,7 @@ func prepare(generation: int) -> bool:
 
 ## Replaces the renderer's chunks by none at the prepared generation and hands the chunks to the
 ## streaming core. Returns the generation, or -1 without a prepared hydration.
-func commit(invalidate_nodes: bool) -> int:
+func commit() -> int:
 	if _plan.is_empty():
 		return -1
 	var plan := _plan
@@ -68,7 +68,7 @@ func commit(invalidate_nodes: bool) -> int:
 	var generation: int = plan["surface_generation"]
 	_span = float(plan["chunk_span_m"])
 	_origin = Vector2(float(plan["chunk_origin_x_m"]), float(plan["chunk_origin_z_m"]))
-	chunks.install(generation, true, _span, _origin.x, _origin.y, [], {}, invalidate_nodes)
+	chunks.install(generation, true, _span, _origin.x, _origin.y, [], {})
 	var keys: PackedInt32Array = plan["keys"]
 	if not keys.is_empty():
 		simulation_node.set_road_hydration_materials(chunks.hydration_materials())

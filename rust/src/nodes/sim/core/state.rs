@@ -353,10 +353,6 @@ pub struct SimCore {
     /// the next publication lifts only the lanes of pieces built after it. `None` before the
     /// first publication and after a world reset, when every covered piece's lanes are lifted.
     pub(crate) road_mesh_lane_generation: Option<u64>,
-    /// Cached world-space positions of live canonical network nodes for render snapshots.
-    pub(crate) cached_network_node_positions: Arc<Vec<Vector3>>,
-    /// True when network topology changed and the cached node-position snapshot must rebuild.
-    pub(crate) cached_network_node_positions_dirty: bool,
     /// Monotonic stamp for road-tool terrain/surface snapshots.
     pub(crate) road_tool_surface_generation: u64,
     /// What the road tool's context last received (`ROAD-68-E`); derived, never saved.
@@ -496,8 +492,6 @@ impl SimCore {
             road_mesh_full_replace: true,
             cached_road_mesh_generation: 0,
             road_mesh_lane_generation: None,
-            cached_network_node_positions: Arc::new(Vec::new()),
-            cached_network_node_positions_dirty: true,
             road_tool_surface_generation: 1,
             road_tool_publisher: Default::default(),
             pending_cell_lots: None,
@@ -658,7 +652,6 @@ impl SimCore {
     fn mark_network_visuals_dirty(&mut self) {
         self.bump_road_tool_query_generation();
         self.network_dirty = true;
-        self.cached_network_node_positions_dirty = true;
     }
 
     /// Marks network visuals and every terrain payload dirty after a world-wide reset.

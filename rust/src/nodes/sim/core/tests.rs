@@ -478,14 +478,11 @@ fn local_network_render_invalidation_preserves_unrelated_terrain_generation() {
     .into_iter()
     .collect();
     core.cached_road_mesh_generation = core.road_tool_surface_generation;
-    core.cached_network_node_positions = std::sync::Arc::new(vec![Vector3::new(12.0, 3.0, -8.0)]);
-    core.cached_network_node_positions_dirty = false;
     let previous_mesh = std::sync::Arc::clone(
         core.cached_road_mesh_chunks
             .get(&(0, 0))
             .expect("seeded road mesh chunk"),
     );
-    let previous_node_positions = std::sync::Arc::clone(&core.cached_network_node_positions);
     let unchanged_generation = core.terrain_payload_generation_for_patch(9, 9);
     let road_query_generation = core.road_tool_surface_generation;
 
@@ -514,37 +511,12 @@ fn local_network_render_invalidation_preserves_unrelated_terrain_generation() {
         snapshot.network_generation, road_query_generation,
         "a retained mesh must keep its last-successful generation token"
     );
-    assert!(
-        std::sync::Arc::ptr_eq(&snapshot.node_positions, &previous_node_positions),
-        "a failed-generation snapshot must retain node positions matching the last-good mesh"
-    );
 
     core.mark_network_render_dirty();
     assert!(
         core.cached_road_mesh_chunks.is_empty() && core.road_mesh_full_replace,
         "world-wide invalidation must discard a mesh from the previous world generation"
     );
-}
-
-#[test]
-fn build_snapshot_reuses_cached_network_nodes_until_network_dirty() {
-    let mut core = test_core();
-    add_test_border_road(&mut core);
-    core.mark_network_render_dirty();
-    core.precompute_road_mesh_data();
-
-    let first = core.build_snapshot();
-    assert_eq!(first.node_positions.len(), 2);
-    let first_nodes = std::sync::Arc::clone(&first.node_positions);
-
-    let second = core.build_snapshot();
-    assert!(std::sync::Arc::ptr_eq(&first_nodes, &second.node_positions));
-
-    core.mark_network_render_dirty();
-    core.precompute_road_mesh_data();
-    let third = core.build_snapshot();
-    assert_eq!(third.node_positions.len(), 2);
-    assert!(!std::sync::Arc::ptr_eq(&first_nodes, &third.node_positions));
 }
 
 #[test]
@@ -641,7 +613,6 @@ fn failed_junction_publishes_a_gap_not_its_previous_mesh() {
         "the flat four-way junction must publish a baseline mesh"
     );
     let published_generation = core.cached_road_mesh_generation;
-    let published_node_positions = core.build_snapshot().node_positions;
     assert!(
         road_tool_snapshot_from_core(&core).is_some(),
         "the baseline road-tool source must be publishable"
@@ -715,10 +686,6 @@ fn failed_junction_publishes_a_gap_not_its_previous_mesh() {
     assert!(std::sync::Arc::ptr_eq(
         &failed_snapshot.road_mesh_chunks,
         &core.published_road_mesh_chunks
-    ));
-    assert!(!std::sync::Arc::ptr_eq(
-        &failed_snapshot.node_positions,
-        &published_node_positions
     ));
 }
 

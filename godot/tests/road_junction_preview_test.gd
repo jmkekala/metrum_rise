@@ -171,8 +171,6 @@ func _fixture(fixture: Dictionary) -> void:
 	var generation := simulation.get_network_render_generation()
 	_expect(tool.chunks.update(generation) == generation, "original chunks must hydrate before preview")
 	# Drive the real process path without node overlays.
-	tool._node_visuals_dirty = false
-	tool._node_visuals_visible = true
 	var originals: Dictionary = tool.chunks.chunks.duplicate()
 	# The resident chunks' payloads, which the preview's hidden runs index.
 	var resident := {}

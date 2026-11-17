@@ -8,9 +8,12 @@
 ## verdict and the transaction: this script draws the ring outline and arm cuts `preview_roundabout`
 ## returns, blue when it would build, red with `road_reason_text` when not, and sends the click.
 ## The lots the ring and its island would take (`ZONE-10`) are outlined with the bulldoze
-## highlight and the label names the buildings it demolishes. The hover's queries read the road
-## tool's context, never waiting for the simulation (`CODE-25`); the click asks again.
+## highlight and the label names the buildings it demolishes. The network's nodes near the pointer
+## show as markers, the ones a click could replace; Rust fills their MultiMesh in one call
+## (`ROAD-112` R2-8). The hover's queries read the road tool's context, never waiting for the
+## simulation (`CODE-25`); the click asks again.
 ## Rust methods called: get_roundabout_site(), preview_roundabout(), place_roundabout(),
+## roundabout_node_markers(),
 ## get_road_tool_surface_generation(), get_zoning_overlay_revision(),
 ## get_agriculture_field_overlay_revision().
 extends "res://scripts/tools/network_tool.gd"
@@ -42,6 +45,7 @@ var _key: Array = []
 var _point := Vector3.ZERO
 var _label: Label
 var _demolish_mesh: MeshInstance3D
+var _markers: MultiMeshInstance3D
 
 func _ready() -> void:
 	super._ready()
@@ -55,12 +59,15 @@ func _ready() -> void:
 	canvas.add_child(_label)
 	_demolish_mesh = HighlightMesh.instance()
 	add_child(_demolish_mesh)
+	_markers = _node_markers()
+	add_child(_markers)
 
 ## Switches the tool on or off.
 func set_tool_active(enabled: bool) -> void:
 	active = enabled
 	_key = []
 	_label.visible = enabled
+	_markers.visible = enabled
 	if not enabled:
 		_clear()
 	active_changed.emit(enabled)
@@ -127,6 +134,7 @@ func _update_preview() -> void:
 	_key = key
 	_point = pointer
 	_preview = simulation_node.preview_roundabout(_point, diameter, lanes)
+	simulation_node.roundabout_node_markers(_markers.multimesh, pointer)
 	is_valid = bool(_preview.get("is_valid", false))
 	_show_outline()
 	_label.text = _text(diameter)
@@ -168,8 +176,29 @@ func _place() -> void:
 		var road: Node = get_node_or_null("../RoadTool")
 		if road != null:
 			road.mark_network_topology_dirty()
-		mark_network_nodes_dirty()
 	_key = []
+
+# The node markers' MultiMesh: flat light blue discs; Rust sets their count and transforms.
+static func _node_markers() -> MultiMeshInstance3D:
+	var markers := MultiMeshInstance3D.new()
+	SceneLightingConfig.apply_shadow_policy(markers, SceneLightingConfig.SHADOW_DEBUG_OVERLAY, "roads")
+	var disc := SphereMesh.new()
+	disc.radius = 1.0
+	disc.height = 0.2
+	var material := StandardMaterial3D.new()
+	material.albedo_color = Color(0.3, 0.8, 1.0, 0.5)
+	material.emission_enabled = true
+	material.emission = Color(0.1, 0.5, 0.8)
+	material.transparency = StandardMaterial3D.TRANSPARENCY_ALPHA
+	material.shading_mode = StandardMaterial3D.SHADING_MODE_UNSHADED
+	material.cull_mode = StandardMaterial3D.CULL_DISABLED
+	disc.surface_set_material(0, material)
+	var multimesh := MultiMesh.new()
+	multimesh.transform_format = MultiMesh.TRANSFORM_3D
+	multimesh.mesh = disc
+	markers.multimesh = multimesh
+	markers.visible = false
+	return markers
 
 func _clear() -> void:
 	_preview = {}

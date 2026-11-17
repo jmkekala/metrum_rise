@@ -60,7 +60,7 @@ func _process(_delta: float) -> void:
 	if not simulation_node.is_network_dirty():
 		if road_tool.chunks.needs_hydration():
 			var generation := _current_road_surface_generation()
-			if _road_hydration().prepare(generation) and _hydration.commit(true) == generation:
+			if _road_hydration().prepare(generation) and _hydration.commit() == generation:
 				road_tool.mark_network_topology_dirty()
 		_road_mesh_refreshed_surface_generation = -1
 		if perf_enabled:
@@ -138,7 +138,7 @@ func _process(_delta: float) -> void:
 	if road_mesh_staged:
 		var road_commit_start_us := Time.get_ticks_usec()
 		var rendered_generation: int = (
-			_road_hydration().commit(false) if road_hydration
+			_road_hydration().commit() if road_hydration
 			else road_tool.chunks.commit_staged(surface_generation)
 		)
 		if rendered_generation != surface_generation:

@@ -14,6 +14,7 @@ mod road_holds;
 pub(super) mod road_tool;
 mod road_types;
 mod roundabouts;
+pub(super) use roundabouts::NodeMarkers;
 
 #[godot_api(secondary)]
 impl SimulationNode {
@@ -518,13 +519,12 @@ impl SimulationNode {
         self.lock_core().get_node_connection_count_internal(node_id)
     }
 
-    /// Returns all junction node positions, read from the pre-computed snapshot.
-    ///
-    /// Reading from the snapshot (RwLock) avoids acquiring the SimCore mutex, which
-    /// would stall the Godot main thread while `add_road_internal` holds the lock.
+    /// Returns the positions of every live canonical node, in node id order. For benchmark
+    /// setup only (`road_preview_replay.gd` finds its populated site): it waits for the core
+    /// and is `O(nodes)`, so no tool calls it (`ROAD-112` R2-8).
     #[func]
     pub fn get_network_nodes(&self) -> PackedVector3Array {
-        PackedVector3Array::from_iter(self.snapshot.read().unwrap().node_positions.iter().copied())
+        self.lock_core().get_network_nodes_internal()
     }
 
     /// Configures a lane connection rule at a junction, with an undo record. Its node's repainted

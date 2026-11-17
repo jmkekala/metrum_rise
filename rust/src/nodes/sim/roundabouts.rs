@@ -32,6 +32,11 @@ use std::collections::HashSet;
 /// How near a node the tool's point must be to replace it, the select tool's reach (D13).
 const SITE_NODE_REACH_M: f32 = 8.0;
 
+/// How far from the tool's point its node markers reach (`ROAD-112` R2-8): the nodes around the
+/// pointer, never the whole network. Fixed, so a query visits at most the 16 m node grid's cells
+/// of its square (21 x 21).
+pub(crate) const NODE_MARKER_REACH_M: f32 = 160.0;
+
 /// What the roundabout tool reads under its point (D12): the site the point means, the ring's
 /// lanes there and the diameters it takes.
 #[derive(Clone, Copy, Debug)]
@@ -111,6 +116,25 @@ pub(crate) fn roundabout_site_at(
         max_diameter_m,
         default_diameter_m: default_diameter_m(lanes).clamp(min_diameter_m, max_diameter_m),
     }
+}
+
+/// The live canonical nodes of `graph` within [`NODE_MARKER_REACH_M`] of `point` in XZ (the
+/// edge included), by id, into `out` (cleared): the roundabout tool's node markers. Through the
+/// 16 m node grid: `O(cells of the reach's square + their nodes + k log k)` for `k` markers; no
+/// allocation once `out` has grown.
+pub(crate) fn node_markers_near(graph: &RegionGraph, point: Vector3, out: &mut Vec<u32>) {
+    out.clear();
+    let reach = Vector3::new(NODE_MARKER_REACH_M, 0.0, NODE_MARKER_REACH_M);
+    let reach_sq = NODE_MARKER_REACH_M * NODE_MARKER_REACH_M;
+    graph.visit_nodes_near_aabb(point - reach, point + reach, |node| {
+        let pos = graph.node(node).pos;
+        let (dx, dz) = (pos.x - point.x, pos.z - point.z);
+        if dx * dx + dz * dz <= reach_sq && graph.is_live_canonical_node(node) {
+            out.push(node);
+        }
+    });
+    out.sort_unstable();
+    out.dedup();
 }
 
 impl SimCore {
@@ -481,4 +505,52 @@ fn ring_corner_refusal(graph: &RegionGraph, applied: &RoundaboutApplied) -> Opti
         .iter()
         .any(corner)
         .then_some("roundabout_arms_too_close")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::simulation::network::graph::Edge;
+    use crate::simulation::network::types::NodeType;
+
+    #[test]
+    fn node_markers_take_the_live_nodes_within_the_reach_and_none_past_it() {
+        let point = Vector3::new(1000.0, 4.0, -500.0);
+        let mut graph = RegionGraph::new();
+        let mut add = |dx: f32, dz: f32| {
+            graph.add_node(
+                Vector3::new(point.x + dx, 0.0, point.z + dz),
+                NodeType::Junction,
+            )
+        };
+        let reach = NODE_MARKER_REACH_M;
+        let inside = add(reach - 0.1, 0.0);
+        let on_edge = add(0.0, reach);
+        let past_edge = add(-(reach + 0.5), 0.0);
+        // In the query's square, outside its circle.
+        let corner = add(0.95 * reach, -0.95 * reach);
+        // At the point, with no road: no marker.
+        let orphan = add(0.0, 0.0);
+        for (start_node, end_node) in [(inside, on_edge), (past_edge, corner)] {
+            let points = vec![graph.node(start_node).pos, graph.node(end_node).pos];
+            graph.add_edge(Edge {
+                start_node,
+                end_node,
+                geometry: points.clone(),
+                physical_geometry: points,
+                ..Default::default()
+            });
+        }
+        graph.rebuild_adjacency_list();
+        assert!(graph.is_live_canonical_node(past_edge) && graph.is_live_canonical_node(corner));
+        assert!(!graph.is_live_canonical_node(orphan));
+
+        let mut markers = vec![u32::MAX];
+        node_markers_near(&graph, point, &mut markers);
+        assert_eq!(markers, [inside, on_edge]);
+
+        // A metre west: the node 160.5 m away comes in at 159.5 m, the two others leave.
+        node_markers_near(&graph, point + Vector3::new(-1.0, 0.0, 0.0), &mut markers);
+        assert_eq!(markers, [past_edge]);
+    }
 }

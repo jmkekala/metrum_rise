@@ -1,17 +1,33 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
 //! The roundabout tool's Godot API (`ROAD-62`, D11-D14): what stands under its point, the commit's
-//! verdict with the outline the tool draws, and the commit. The hover's two queries read the road
-//! tool's context (`ZONE-10`, round RZ10b): they never wait for the core.
+//! verdict with the outline the tool draws, the node markers around its point, and the commit.
+//! The hover's queries read the road tool's context (`ZONE-10`, round RZ10b): they never wait for
+//! the core.
 
 use super::*;
-use crate::nodes::sim::roundabouts::{RoundaboutSiteView, roundabout_site_at};
+use crate::nodes::sim::roundabouts::{RoundaboutSiteView, node_markers_near, roundabout_site_at};
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::roundabouts::{RoundaboutRequest, RoundaboutSite, circle_outline};
+use godot::classes::MultiMesh;
 
 // A road type's lanes per direction, what a ring on empty ground is sized by.
 fn type_lanes(lanes: i32) -> u8 {
     lanes.clamp(1, i32::from(u8::MAX)) as u8
+}
+
+// How high a node marker floats over its node: above the 0.15 m asphalt and the kerb.
+const MARKER_LIFT_M: f32 = 0.35;
+// A `TRANSFORM_3D` MultiMesh's floats an instance: the basis rows with the origin after each.
+const MARKER_STRIDE: usize = 12;
+
+/// The roundabout tool's node markers' reused buffers (`ROAD-112` R2-8). Main thread only.
+#[derive(Default)]
+pub(crate) struct NodeMarkers {
+    // The marked nodes, by id.
+    ids: Vec<u32>,
+    // The MultiMesh's whole buffer, `MARKER_STRIDE` floats an instance it holds.
+    buffer: PackedFloat32Array,
 }
 
 // The site's centre and whether it replaces a junction, -1 on empty ground.
@@ -100,6 +116,41 @@ impl SimulationNode {
                 }
             }
         }
+    }
+
+    /// Fills the roundabout tool's node markers (`ROAD-112` R2-8): each live node within
+    /// [`NODE_MARKER_REACH_M`](crate::nodes::sim::roundabouts::NODE_MARKER_REACH_M) of `point` becomes one instance of `markers` (a `TRANSFORM_3D`
+    /// MultiMesh the tool made, its mesh and material the tool's), floating over its node, in one
+    /// buffer upload; returns the count. Read on the road tool's context: no core lock
+    /// (`CODE-25`). `O(cells of the reach's square + their nodes + k log k)` for `k` markers; the
+    /// MultiMesh is reallocated only when `k` outgrows it (to the next power of two), so the
+    /// upload is the instances it holds, never the network's.
+    #[func]
+    pub fn roundabout_node_markers(&mut self, mut markers: Gd<MultiMesh>, point: Vector3) -> i64 {
+        let context = self
+            .road_tool
+            .context
+            .lock()
+            .expect("road tool context lock poisoned");
+        let graph = &context.replica;
+        let NodeMarkers { ids, buffer } = &mut self.node_markers;
+        node_markers_near(graph, point, ids);
+        let count = ids.len();
+        let mut capacity = usize::try_from(markers.get_instance_count()).unwrap_or(0);
+        if count > capacity {
+            capacity = count.next_power_of_two();
+            markers.set_instance_count(capacity as i32);
+        }
+        buffer.resize(capacity * MARKER_STRIDE);
+        let (rows, _) = buffer.as_mut_slice().as_chunks_mut::<MARKER_STRIDE>();
+        for (row, &node) in rows.iter_mut().zip(ids.iter()) {
+            let p = graph.node(node).pos;
+            let y = p.y + MARKER_LIFT_M;
+            *row = [1.0, 0.0, 0.0, p.x, 0.0, 1.0, 0.0, y, 0.0, 0.0, 1.0, p.z];
+        }
+        markers.set_buffer(buffer);
+        markers.set_visible_instance_count(count as i32);
+        count as i64
     }
 
     /// Builds the ring [`Self::preview_roundabout`] checks, with one undo record; its pieces

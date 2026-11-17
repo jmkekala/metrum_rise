@@ -83,8 +83,6 @@ func _road_tool() -> Node3D:
 	tool.active = true
 	var generation := simulation.get_network_render_generation()
 	_expect(tool.chunks.update(generation) == generation, "the resident chunks hydrate before the preview")
-	tool._node_visuals_dirty = false
-	tool._node_visuals_visible = true
 	return tool
 
 # Previews `points` until `done` holds for the preview: the road tool's land follows the city

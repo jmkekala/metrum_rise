@@ -199,7 +199,6 @@ class TestRoadTool:
 
 	var chunks: TestChunks
 	var topology_dirty_count: int = 0
-	var nodes_dirty_count: int = 0
 
 	func _init() -> void:
 		chunks = TestChunks.new()
@@ -216,12 +215,8 @@ class TestRoadTool:
 	func road_chunks_released() -> void:
 		pass
 
-	func mark_network_nodes_dirty() -> void:
-		nodes_dirty_count += 1
-
 	func mark_network_topology_dirty() -> void:
 		topology_dirty_count += 1
-		mark_network_nodes_dirty()
 
 # A road tool whose pointer is a scripted world point sent to the session exactly, counting the
 # pointer queries and the previews it shows.
@@ -236,9 +231,6 @@ class PointerRoadTool:
 		is_valid = true
 		simulation_node.road_tool_pointer_at(pointer)
 		return pointer
-
-	func _update_node_visuals() -> void:
-		pass
 
 	func _show_preview(points: PackedVector3Array) -> void:
 		draws += 1
@@ -432,7 +424,7 @@ func _run() -> void:
 
 	var atomic_previous_instance: MeshInstance3D = road_tool.chunks.chunks[sentinel_key]
 	var atomic_previous_generation := road_tool.chunks.generation
-	var atomic_previous_nodes_dirty_count := road_tool.nodes_dirty_count
+	var atomic_previous_topology_dirty_count := road_tool.topology_dirty_count
 	simulation.generation = 9
 	simulation.response = _batch(
 		9,
@@ -459,8 +451,8 @@ func _run() -> void:
 		"an unprepared terrain batch must not acknowledge the network"
 	)
 	_expect(
-		road_tool.nodes_dirty_count == atomic_previous_nodes_dirty_count,
-		"terrain preparation must not invalidate node visuals before publication"
+		road_tool.topology_dirty_count == atomic_previous_topology_dirty_count,
+		"terrain preparation must not dirty the tool's topology before publication"
 	)
 
 	terrain.prepare_ready = true
@@ -483,8 +475,8 @@ func _run() -> void:
 		"a rejected terrain commit must not acknowledge the network"
 	)
 	_expect(
-		road_tool.nodes_dirty_count == atomic_previous_nodes_dirty_count,
-		"a rejected terrain commit must not invalidate node visuals"
+		road_tool.topology_dirty_count == atomic_previous_topology_dirty_count,
+		"a rejected terrain commit must not dirty the tool's topology"
 	)
 
 	terrain.commit_ready = true
@@ -503,8 +495,8 @@ func _run() -> void:
 		"a stale staged road batch must release its detached instances"
 	)
 	_expect(
-		road_tool.nodes_dirty_count == atomic_previous_nodes_dirty_count,
-		"a stale staged road batch must not invalidate node visuals"
+		road_tool.topology_dirty_count == atomic_previous_topology_dirty_count,
+		"a stale staged road batch must not dirty the tool's topology"
 	)
 	_expect(
 		simulation.acknowledged_generations.is_empty(),
@@ -532,8 +524,8 @@ func _run() -> void:
 	_expect(water.refresh_count == 0, "water clipping must wait when the exact acknowledgement fails")
 	_expect(zoning_overlay.dirty_count == 0, "zoning visuals must wait when the exact acknowledgement fails")
 	_expect(
-		road_tool.nodes_dirty_count == atomic_previous_nodes_dirty_count,
-		"node visuals must wait when the exact acknowledgement fails"
+		road_tool.topology_dirty_count == atomic_previous_topology_dirty_count,
+		"the tool's topology must wait when the exact acknowledgement fails"
 	)
 
 	simulation.reject_acknowledgement = false
@@ -543,8 +535,8 @@ func _run() -> void:
 	_expect(water.refresh_count == 1, "water clipping must refresh after exact acknowledgement")
 	_expect(zoning_overlay.dirty_count == 1, "zoning visuals must refresh after exact acknowledgement")
 	_expect(
-		road_tool.nodes_dirty_count == atomic_previous_nodes_dirty_count + 1,
-		"node visuals must invalidate exactly once after exact acknowledgement"
+		road_tool.topology_dirty_count == atomic_previous_topology_dirty_count + 1,
+		"the tool's topology must be dirtied exactly once after exact acknowledgement"
 	)
 
 	host.queue_free()
@@ -840,8 +832,6 @@ func _test_native_road_preview_contract(simulation: SimulationNode) -> void:
 	tool.fwd_lanes = 2
 	tool.bkw_lanes = 1
 	tool.active = true
-	tool._node_visuals_dirty = false
-	tool._node_visuals_visible = true
 	tool._begin_stroke(points[0])
 	tool.set_scripted_pointer(true, points[-1])
 	tool._process(1.0 / 60.0)
@@ -888,8 +878,6 @@ func _session_road_tool(simulation: SimulationNode) -> PointerRoadTool:
 	tool.make_chunks()
 	tool.chunks.update(simulation.get_network_render_generation())
 	tool.attach_hud(RoadToolHudScript.new())
-	tool._node_visuals_dirty = false
-	tool._node_visuals_visible = true
 	tool.active = true
 	return tool
 

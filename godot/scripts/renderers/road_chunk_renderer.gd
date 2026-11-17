@@ -4,7 +4,7 @@
 ## set, staged updates, the holds of T61 (2), payload validation and the chunk build, with the
 ## chunks' street lights and road signs. Split out of the road tool's base class; the road tool
 ## owns one as its child `chunks` (its first, where the chunk root was) and hears it through
-## `host` (`mark_network_nodes_dirty`, `road_chunks_installed`, `road_chunks_released`).
+## `host` (`road_chunks_installed`, `road_chunks_released`).
 ##
 ## Callers: NetworkRenderer (`update`, `commit_staged`, `discard_staged`, `release_held`,
 ## `needs_hydration`), `road_chunk_hydration.gd` (`install`, `install_built`,
@@ -237,8 +237,7 @@ func commit_staged(expected_generation: int) -> int:
 		float(staged["chunk_origin_x_m"]),
 		float(staged["chunk_origin_z_m"]),
 		staged["validated_updates"] as Array,
-		staged["staged_instances"] as Dictionary,
-		false
+		staged["staged_instances"] as Dictionary
 	)
 
 ## Drops a staged batch, if any.
@@ -259,11 +258,8 @@ func install(
 	chunk_origin_x_m: float,
 	chunk_origin_z_m: float,
 	validated_updates: Array,
-	staged_instances: Dictionary,
-	invalidate_nodes: bool = true
+	staged_instances: Dictionary
 ) -> int:
-	if invalidate_nodes and host != null:
-		host.mark_network_nodes_dirty()
 	var hold: int = holds.hold_install(full_replace, _journal_serial(), _installed_serial())
 	if hold < 0:
 		release_held(true)
@@ -445,7 +441,7 @@ func install_built(surface_generation: int, key: Vector2i, data: Dictionary) -> 
 	if lining is ArrayMesh:
 		instance.add_child(_lining_caster(lining))
 	place_chunk(instance, key, span_m, origin_x_m, origin_z_m)
-	return install(surface_generation, false, span_m, origin_x_m, origin_z_m, [data], {key: instance}, false)
+	return install(surface_generation, false, span_m, origin_x_m, origin_z_m, [data], {key: instance})
 
 ## Starts chunk `key`'s street lights on the installed grid ahead of its mesh and makes their
 ## nodes for `budget_us` (a hydration's parts, `RENDER-52` part 2: a lamp's nodes cost about

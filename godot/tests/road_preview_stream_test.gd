@@ -88,8 +88,6 @@ func _stream_fixture(fixture: Dictionary) -> Dictionary:
 		_expect(not tool._commit_segment(control), "a curve's control-point click sends nothing")
 	var generation := simulation.get_network_render_generation()
 	_expect(tool.chunks.update(generation) == generation, "stream source meshes must hydrate")
-	tool._node_visuals_dirty = false
-	tool._node_visuals_visible = true
 	var before := simulation.get_road_benchmark_state()
 	var samples := []
 	var process_times := []
