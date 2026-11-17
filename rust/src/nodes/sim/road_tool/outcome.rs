@@ -112,6 +112,9 @@ impl PreviewOutcome {
                 required_clearance_m: f64::from(v.required_clearance_m),
                 geometry_measured: Some(f64::from(v.geometry_measured)),
                 geometry_limit: f64::from(v.geometry_limit),
+                // The junction place's roles (`ROAD-118` round JS1), as the verdict dictionary's
+                // `junction_roles` names them.
+                junction_roles: v.junction_place.map(|place| place.roles),
             })
     }
 
@@ -167,5 +170,27 @@ mod tests {
         assert_eq!(numbers.start_endpoint_snapped_node_id, -1);
         assert_eq!(outcome.reason_facts(), ReasonFacts::default());
         assert_eq!(outcome.chip_facts(true).max_grade, None);
+    }
+
+    // `ROAD-118` round JS1: the chips' refusal names the junction's place from the outcome.
+    #[test]
+    fn a_junction_refusal_carries_its_roles_to_the_chips() {
+        use crate::simulation::network::road_edit::JunctionPlace;
+        use crate::simulation::network::roadbed::NodeRole;
+        let mut validation = RoadPreviewValidation::valid(0.0);
+        validation.junction_place = Some(JunctionPlace {
+            node: Some(4),
+            position: Vector3::ZERO,
+            arm_edge: Some(2),
+            roles: [NodeRole::Junction, NodeRole::Bend],
+        });
+        let outcome = PreviewOutcome {
+            validation: Some(validation),
+            ..PreviewOutcome::default()
+        };
+        assert_eq!(
+            outcome.reason_facts().junction_roles,
+            Some([NodeRole::Junction, NodeRole::Bend])
+        );
     }
 }
