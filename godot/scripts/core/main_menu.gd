@@ -33,11 +33,15 @@ func _ready() -> void:
 		_leave_after_benchmark_dwell()
 
 # A benchmark's menu (`tools/stream_benchmark.py --menu-dwell`): the menu stays its dwell from the
-# launch, then the benchmark's world scene runs as from the router.
+# launch, and at least until the prewarm view has rendered once (its surfaces are created at that
+# draw: a player's click comes later), then the benchmark's world scene runs as from the router.
 func _leave_after_benchmark_dwell() -> void:
+	LaunchState.benchmark_menu_ms[0] = Time.get_ticks_msec()
+	await RenderingServer.frame_post_draw
 	var left := LaunchState.benchmark_menu_dwell_s - Time.get_ticks_msec() / 1000.0
 	if left > 0.0:
 		await get_tree().create_timer(left).timeout
+	LaunchState.benchmark_menu_ms[1] = Time.get_ticks_msec()
 	get_tree().change_scene_to_file("res://scenes/Main.tscn")
 
 func _build_ui() -> void:

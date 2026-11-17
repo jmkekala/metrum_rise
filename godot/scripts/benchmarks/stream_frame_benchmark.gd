@@ -282,6 +282,8 @@ func run(bench: Node) -> void:
 		# Godot's pipeline compilations (`_pipelines`) at the load call's start, its return and the
 		# settled base pose (`RENDER-43`).
 		"pipelines": [pipelines_at_load, pipelines_after_call, _pipelines()],
+		# The menu's prewarm start and exit (ms from the launch) when launched through the menu.
+		"menu_ms": LaunchState.get("benchmark_menu_ms") if LaunchState.get("benchmark_menu_ms") != null else [],
 		# The node renderers' casters by shadow policy category at the settled base pose, with
 		# their instances and those within the sun's shadow range of the camera (`RENDER-15`).
 		"node_casters": ShadowVariants.node_casters(main, bench.get_viewport().get_camera_3d().global_position,

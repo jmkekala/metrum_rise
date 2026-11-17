@@ -12,6 +12,8 @@ var pending_vegetation := {}
 # A benchmark launched through the menu (`METRUM_STREAM_MENU_DWELL_S`, `RENDER-43`): seconds
 # from the launch the menu shows before the benchmark's world scene; negative without one.
 var benchmark_menu_dwell_s := -1.0
+# Its prewarm's start and the menu's exit, milliseconds from the launch (the benchmark's report).
+var benchmark_menu_ms := [-1, -1]
 
 func queue_new_game(world_definition_path: String, vegetation: Dictionary) -> void:
 	pending_world_definition_path = world_definition_path
