@@ -61,7 +61,7 @@ pub(crate) use budget::{
     SERVICE_POLICY_ELECTRICITY,
 };
 pub(crate) use road_preview::{
-    RoadCorridorClearance, RoadPreviewRequest, RoadPreviewTimes, RoadToolQuerySnapshot,
+    RoadCorridorClearance, RoadPreviewRequest, RoadPreviewTimes, RoadToolQuerySnapshot, ViewGround,
     StrokePieces,
 };
 #[cfg(test)]

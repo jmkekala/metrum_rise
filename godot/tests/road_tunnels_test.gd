@@ -134,10 +134,17 @@ func _preview(tool: Node, points: PackedVector3Array) -> Dictionary:
 	for frame in 400:
 		tool._process(1.0 / 60.0)
 		var shown: Dictionary = tool._preview
+		_expect_hue_with_preview(shown)
 		if not shown.get("is_valid", false) or shown.get("has_road_chunks", false):
 			break
 	_draft_profiles = Array(_simulation.road_tool_heights().get("draft_profiles", PackedInt32Array()))
 	return tool._preview
+
+# `ROAD-123` round HF2: the hue shown was built with the standing preview's pose (a graded
+# draft's single stroke, a batch pose pending, settled or refused), never another pose's.
+func _expect_hue_with_preview(shown: Dictionary) -> void:
+	var hue: Dictionary = _simulation.road_tool_hue()
+	_expect(int(hue["pose"]) == int(shown.get("pose", -1)), "the hue is the shown preview's pose's: %d against %d" % [int(hue["pose"]), int(shown.get("pose", -1))])
 
 # A debug car from the west approach to the east one passes the bore under the hill's top.
 func _drive_through() -> void:

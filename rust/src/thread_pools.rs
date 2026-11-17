@@ -224,6 +224,13 @@ pub(crate) fn spawn(op: impl FnOnce() + Send + 'static) {
     BACKGROUND.spawn(op);
 }
 
+/// Queues `op` on the shared pool without waiting for it: work whose owner joins it later in the
+/// same frame, off the frame's own thread meanwhile (the road tool's footprint hue, `ROAD-123`
+/// round HF2), so it must not wait behind the background pool's long jobs. [`stop`] waits for it.
+pub(crate) fn spawn_shared(op: impl FnOnce() + Send + 'static) {
+    SHARED.spawn(op);
+}
+
 /// When each spawned job ran, for benchmarks that place a frame's stall against the background
 /// work beside it (`TERRAIN-07-E` round 3). Off until a benchmark turns it on.
 #[cfg(test)]

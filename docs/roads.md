@@ -12887,6 +12887,130 @@ preview rows and 10.9 ms on the two cross rows in round R2-0's profile.
   coarser mesh where the ground cannot lift a triangle (round HU2's suggestion; the mesh changes,
   so not bitwise).
 
+### The hue built off the frame with its preview (round HF2, `ROAD-123`)
+
+Round HF2 (2026-11-17, branch `roadtools-hf2` on `dev` `626d4a9e`, round HF landed; for review):
+decision HF-1 (b) as the coordinator's night call, for the user's review.
+
+- **Where the preview is built.** A single stroke's preview has no worker: `road_tool_frame` runs
+  it synchronously on the main thread (`preview_stroke`, `RoadPreviewContext::preview_road` under
+  the context lock: plan, compile, land take, graded stage, payload), and it is never pending
+  (`is_pending` is true only for a batch pose while its tier 2 steps one stroke a resting frame,
+  also on the main thread). Round HF's hue was built right after it in the same call
+  (`road_tool_hue_of_preview`, 2.6 ms a T pose and 4.1 ms a cross pose in the game).
+- **Where the hue is built now** (`nodes/sim/road_tool/hue/off_frame.rs`, `OffFrameHue`): right
+  after the preview's compile (`preview_road_with_hue`), the main thread pushes the stroke and
+  copies the grounded pieces' triangles (`FootprintHue::push_preview`), then the build runs on a
+  shared-pool worker (`thread_pools::spawn_shared`) reading owned parts of the view the preview
+  read (`ViewGround`: the terrain and roadbed `Arc`s, the site patches and the graded query index,
+  persistent maps cloned in `O(1)`; no live borrow crosses threads). It overlaps the preview's land
+  take, graded stage and payload and the frame's work after them (packing, the overlay's upload);
+  the frame joins it in `road_tool_hue`, where it uploads the hue. The frame announces the
+  revision the build will have and every read of the hue joins first, so the hue and its preview
+  arrive in the same frame, as before; the preview's verdict (valid, or refused) is set when it is
+  known and shown at the join. Batch poses and the refused graded draft without a prepared stroke
+  keep their strip hue on the frame (no ground read). The preview dictionary and the hue carry the
+  pose's number (`pose`); `network_tool_chunk_renderer_test` and `road_tunnels_test` (graded single
+  strokes, batch poses pending, settled and refused) assert they are equal on every frame.
+- **Allocation**: the hue's buffers move to the worker and back, reused pose to pose; the worker's
+  graded scratch is per thread. On the frame side the hue's two allocations a pose (round HF's
+  request copy for the half width) are gone and one is new: Rayon's box for the spawned job. The
+  first commit of the round built the hue inside the preview with a `rayon::join` beside the land
+  take, graded stage and payload (no allocation), but the join still waited 1.3-1.9 ms at p50 on a
+  cross pose (bench below): those stages are shorter than the cross hue.
+- **Bitwise**: the hue's digests over each row's 48 poses equal round HF's (sloped_t
+  `26fac535530341fe`, sloped_branch `da1b19a5fe5605b9`, flat_cross `093060ecf329939b`,
+  sloped_cross `c51f99827fe25713`, dense `5d65d730adc9b860`); test
+  `the_preview_builds_its_hue_bitwise_with_it` asserts the joined hue equals round HF's build after
+  the preview (fill, outline, state and the announced revision) on six poses a row, a hidden and a
+  refused pose, and held-ground and bridge single strokes, and that the preview's verdict and
+  changed chunks equal a preview made without a hue. Kuopio's 78 commits and the 17 gameplay
+  fixtures EQUAL in every product against the base (`commit_products.gd`), the drag probe PASS.
+- **Bench** (`benchmark_hue_rows`, release, `RAYON_NUM_THREADS=4`, `taskset -c
+  0,2,4,6,8,10,12,14`, run and exclusive timing locks, two runs 2026-11-17 01:09-01:11, load
+  3.3-5.8, test binary `f6b17eff7123b413`; each round runs one variant over every pose in order;
+  ms, p50 / p99 of both runs): the preview alone 2.8-3.4 / 4.9-5.8 (T, branch, dense) and 4.6-5.1
+  / 7.9-12.9 (cross); with round HF's hue after it (the base's frame) 6.3-7.8 / 12.2-18.1 and
+  8.1-9.1 / 17.3-21.5; with the hue off the thread joined right after the preview (its overlap
+  then only the preview's later stages) 2.7-3.2 / 5.6-8.3 and 4.8-5.2 / 5.8-7.7. The build on its
+  worker 0.95-1.19 / 2.3-3.4 and 2.9-3.4 / 3.8-5.2; the join's wait 0.000 / 0.000-0.065 (T,
+  branch, dense), 0.14-0.18 / 0.65-0.68 (flat cross), 0.77-0.78 / 1.22-1.29 (sloped cross). The
+  first commit's join inside the preview (same bench, 00:53) waited 0.15-0.29 / 0.39-0.79 and
+  1.29-1.88 / 1.60-3.75.
+- **The paused preview rows** (round R2-0's `rows.sh` and scripts, profiled as round HF; one pass
+  pred / base / branch / branch / base / pred 2026-11-17 01:12-01:21, no overlap; libraries pred
+  `85b3d2e78ea3302c`, base `dev` `626d4a9e` `52bae89b118ec123`, branch `ccb23943159ef36e`; the
+  hue's times per moving pose from the instrumented `road_preview_metrics.gd`: `hue_frame_ms`
+  the frame's whole hue step, the join, the dictionary and the upload; `hue_wait_ms` the join;
+  `hue_ms` the build on its worker):
+
+  | Rows | Side | Poses | p50 ms | p90 ms | <= 16.5 | <= 16.7 | <= 17 | <= 18 | <= 20 | Clock (on time / late) | Main thread a pose | Hue step p50 / p99 | Hue build p50 / p99 |
+  | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+  | the two cross rows | pred | 1,371 | 16.606 | 23.813 | 45.0 % | 54.0 % | 61.9 % | 69.8 % | 78.3 % | 2.46 GHz (3.22 / 1.91) | 9,676 us | - | - |
+  | the two cross rows | base | 1,318 | 16.440 | 22.274 | 52.4 % | 63.7 % | 71.6 % | 76.5 % | 83.4 % | 3.76 GHz (4.33 / 3.03) | 11,134 us | 0.083 / 0.162 | in the frame, 4,190 us |
+  | the two cross rows | branch | 1,358 | 16.483 | 19.476 | 51.7 % | 65.8 % | 77.5 % | 85.0 % | 91.3 % | 3.07 GHz (3.47 / 2.49) | 8,663 us | 0.092 / 0.186 | 5.357 / 11.997 ms off the frame |
+  | T, branch, dense | pred | 2,078 | 16.570 | 22.591 | 46.6 % | 56.7 % | 64.5 % | 75.1 % | 82.5 % | 1.76 GHz (2.23 / 1.37) | 9,017 us | - | - |
+  | T, branch, dense | base | 2,004 | 16.546 | 22.702 | 47.4 % | 57.5 % | 66.5 % | 75.3 % | 82.7 % | 2.24 GHz (2.80 / 1.78) | 9,841 us | 0.060 / 0.219 | in the frame, 2,419 us |
+  | T, branch, dense | branch | 1,961 | 16.544 | 22.297 | 48.3 % | 55.6 % | 62.6 % | 72.6 % | 81.6 % | 1.84 GHz (2.33 / 1.46) | 9,353 us | 0.081 / 0.236 | 2.809 / 7.159 ms off the frame |
+  | all | pred | 3,449 | 16.584 | 23.045 | 46.0 % | 55.6 % | 63.5 % | 73.0 % | 80.8 % | 2.04 GHz | 9,279 us | - | - |
+  | all | base | 3,322 | 16.506 | 22.526 | 49.3 % | 60.0 % | 68.5 % | 75.8 % | 83.0 % | 2.85 GHz | 10,354 us | 0.075 / 0.199 | in the frame |
+  | all | branch | 3,319 | 16.509 | 21.536 | 49.7 % | 59.8 % | 68.7 % | 77.6 % | 85.6 % | 2.34 GHz | 9,071 us | 0.088 / 0.226 | 3.886 / 10.594 ms off the frame |
+
+  Shares and hue stages from `$ARTIFACTS/scripts/hf2_dist.py`; clocks and main-thread times a
+  pose (unhalted at the 3.2 GHz reference rate) from `attrib.py`, grouped by `groups.py` and
+  `aggregate.py`; the base's in-frame hue build is `road_tool_hue_of_preview`'s bucket (us a pose
+  of main-thread time), the branch's is `hue_ms` on its worker (wall time). Each run waited for no
+  Godot, gamescope, rustc or other test binary and a load under 6 (none had to wait; loads
+  2.3-5.7 at the runs' starts and ends). A first pass at 00:54 is void (its scripts were edited
+  during it) and not cited.
+
+  Frame-side hue: the join waits 0.000-0.001 ms at p50 and at most 0.002 ms at p99 on every row
+  group; the frame's whole hue step is 0.08-0.09 ms at p50 and 0.19-0.24 ms at p99 (the base's
+  same step without the build, its dictionary and upload, 0.06-0.08 / 0.16-0.22). The build on
+  its worker is 2.8 ms (T, branch, dense) and 5.4 ms (cross) at p50 and 7.2 / 12.0 ms at p99,
+  beside the main thread. Frames from a pose change to its hue shown: 0 at p50 and p99 before and
+  after (every moving pose's hue was recorded with its own preview, 3,319 of 3,319 on the
+  branch; the base builds it inside the frame call).
+
+- **Verdict against the brief's bars.** Met: the hue's mesh bitwise (digests, the test above),
+  products EQUAL (Kuopio 78, fixtures 17) and the drag probe PASS; the hue always with its preview
+  (the pose keys equal on every delivered frame in both Godot tests, 0 frames from a pose change
+  to its hue at p50 and p99); the synchronous preview shows its hue the same frame; the hue's
+  reads on the preview's own view. The frame-side hue at most 0.1 ms a pose is met at p50 on every
+  row group (instrumented pass, 0.08-0.09 ms) and not at p99 (0.19-0.24 ms), where the base's
+  same step without any build reads 0.16-0.22: the dictionary and upload path, round R2-0's F8,
+  not the build. **Missed:** no allocation a pose on the frame side (one remains, Rayon's job
+  box), and U-R2-1 on the T, branch and dense rows: the branch is below pred by 1.1, 1.9, 2.5 and
+  0.9 points within 16.7, 17, 18 and 20 ms (the cross rows pass, above pred by 11.8-15.6 points
+  from 16.7 to 20 ms, with the branch's main thread at a higher clock than pred's, 3.07 against
+  2.46 GHz, and 8,663 against 9,676 us a pose).
+- **The clock does not explain the T, branch and dense miss.** The branch's main thread ran at
+  about pred's clock (1.84 GHz, on time 2.33 / late 1.46, against 1.76, 2.23 / 1.37) and did more
+  a pose (9,353 against 9,017 us, 17.2 against 15.8 M cycles). By the profile's buckets the
+  difference is the chips' canvas draw (519 against 236 us a pose) and the tool's frame calls in
+  Rust (343 against 188 us: the hue's dictionary, the frame record, labels, gizmos), parts of
+  round R2-0's list that the base carries too (403 and 267 us); the preview, GDScript, conversion
+  and the rest are within 0.1 ms of pred's, and the hue's build is no longer on the main thread
+  (its bucket 0 us; the join waits at most 0.002 ms). Against the base the branch ran at a lower
+  clock (1.84 against 2.24 GHz) with less work (17.2 against 22.1 M cycles) and reads 1.1-3.9
+  points below it from 16.7 to 20 ms (round R2-0's finding: below 17 ms the share follows the clock as much as the
+  work).
+- **Decision HF2-1** (the user, 2026-11-17: **(a)**, landed with the job allocation as a recorded
+  exception; it is `O(1)` a player input, not per tick or per agent, and stays until Rayon offers a
+  reusable job or a profile shows it matters). The options were: (a) land `b93ebef0` and accept the one job allocation a pose
+  as a recorded exception (at most one a frame, only while the pointer moves a single stroke;
+  round HF's two a pose are gone, beside round R2-0's 2,673-3,359 allocations a frame in the
+  tool's frame), the T, branch and dense rows' miss carried by `ROAD-112` R2-1, whose rounds own
+  the canvas and frame parts above; recommended; (b) go back to `4c26cfe2`'s join inside the
+  preview (no allocation; the frame waits 1.3-1.9 ms at p50 on a cross pose, the bench above);
+  (c) a reusable job, a long-lived pool task fed per pose: not feasible within Rayon without
+  `unsafe` and without holding a pool thread, from reading rayon-core 1.13: `spawn` and
+  `Scope::spawn` box every job (`HeapJob`); a task kept alive between poses must block on its
+  queue (holding a pool thread) or poll `yield_now` (occupying it and spinning); the
+  allocation-free forms (`join`, `install`, a scope's stack job) make the caller wait for the
+  job, which is (b); reusing one job's box would need rayon-core's `JobRef`, private to that
+  crate.
+
 ### The frozen cursor removed (round R2-7)
 
 Round R2-7 of `ROAD-112` (branch `roadtools-r27` on `dev` `17207c94`). **Removed:** the frozen

@@ -366,11 +366,13 @@ impl SimulationNode {
             bkw_lanes,
             snap_to_existing_roads,
             RoadProfile::FollowGround,
+            None,
         )
     }
 
     // [`Self::preview_road`] for a stroke already in Rust (the road tool session's), with its
-    // `profile`.
+    // `profile`; with `hue`, the stroke's footprint hue built with the preview
+    // (`RoadPreviewContext::preview_road_with_hue`, `ROAD-123` round HF2).
     pub(super) fn preview_stroke(
         &self,
         points: Vec<Vector3>,
@@ -378,6 +380,7 @@ impl SimulationNode {
         bkw_lanes: i32,
         snap_to_existing_roads: bool,
         profile: RoadProfile,
+        hue: Option<(&mut crate::nodes::sim::road_tool::hue::OffFrameHue, f32)>,
     ) -> VarDictionary {
         let mut graded_tiles = Vec::new();
         let mut graded_removed = Vec::new();
@@ -399,7 +402,7 @@ impl SimulationNode {
                 .expect("road tool context lock poisoned");
             context.land = land;
             let surface_generation = context.view.surface_generation;
-            let preview = Arc::new(context.preview_road(RoadPreviewRequest {
+            let preview = Arc::new(context.preview_road_with_hue(RoadPreviewRequest {
                 surface_generation,
                 points,
                 fwd_lanes,
@@ -409,7 +412,7 @@ impl SimulationNode {
                 median: self.road_tool_median,
                 parking: self.road_tool_parking,
                 attributes: self.road_tool_attributes,
-            }));
+            }, hue));
             context.last_preview = Some(Arc::clone(&preview));
             context
                 .graded

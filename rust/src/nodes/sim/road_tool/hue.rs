@@ -35,8 +35,9 @@
 use super::batch::{plan_normal, ribbon_offset};
 use super::frame::{Phase, RoadToolFrame};
 use super::height::apply_grade_line;
-use crate::simulation::network::roadbed::PieceMesh;
-use crate::simulation::network::road_edit::RoadProfile;
+use crate::nodes::sim::core::ViewGround;
+use crate::simulation::network::road_edit::{PreparedRoadInput, RoadProfile};
+use crate::simulation::network::roadbed::{PieceMesh, RoadbedDelta};
 use crate::simulation::network::types::EdgeClass;
 use godot::prelude::Vector3;
 
@@ -199,10 +200,78 @@ impl FootprintHue {
     pub(crate) fn finish(
         &mut self,
         half_width_m: f32,
-        mut ground: impl FnMut(f32, f32) -> f32,
+        ground: impl FnMut(f32, f32) -> f32,
         drawn: impl FnMut(f64, f64) -> f64,
         state: HueState,
     ) {
+        if self.build(half_width_m, ground, drawn) {
+            self.show(state);
+        }
+    }
+
+    /// Pushes the stroke a preview made of `prepared` with `profile` and, for a ground or cut
+    /// stroke, the preview's grounded pieces among `delta` (round HU2: a bridge's hue stays on
+    /// the ground under the deck, a tunnel's is an outline): the preview's part of
+    /// [`Self::build_on`]. Reads only the preview; `O(points + delta's pieces' samples)`; the
+    /// pieces' triangles are copied, so the build needs nothing of the preview after it.
+    pub(crate) fn push_preview(
+        &mut self,
+        prepared: &PreparedRoadInput,
+        profile: RoadProfile,
+        delta: Option<&RoadbedDelta>,
+    ) {
+        let kind = HueKind::of(profile, prepared.class);
+        self.begin();
+        self.push_stroke(&prepared.points, kind);
+        if kind == HueKind::Road
+            && let Some(delta) = delta
+        {
+            self.push_pieces(
+                (delta.pieces())
+                    .filter_map(|(_, mesh)| mesh)
+                    .filter(|mesh| mesh.grounded() && !mesh.buried()),
+            );
+        }
+    }
+
+    /// Builds the pushed hue's mesh on `view` (owned parts of the snapshot its preview read):
+    /// the strip's ground the segmentation's (`DraftGround`), the drawn ground under the pieces
+    /// the published graded surface through the view's shared query index (round HU3, decision
+    /// HU2-1 (a); `ROAD-123`'s lattice reader). The state is set apart ([`Self::conclude`]),
+    /// once the preview's verdict is known (`ROAD-123` round HF2: the mesh is built off the
+    /// frame). False when the hue has nothing to show (and is hidden).
+    pub(crate) fn build_on(&mut self, view: &ViewGround, half_width_m: f32) -> bool {
+        view.with_ground(|ground, surface, scratch| {
+            self.build(
+                half_width_m,
+                |x, z| ground.height_at(x, z),
+                graded_ground(surface, scratch),
+            )
+        })
+    }
+
+    /// Ends a build launched at revision `from`: shows the mesh in `state` when `shown`, else
+    /// stays hidden; either way the revision is `from + 1`, as announced while it was built.
+    pub(crate) fn conclude(&mut self, from: u64, shown: bool, state: HueState) {
+        if shown {
+            self.state = Some(state);
+        }
+        self.revision = from + 1;
+    }
+
+    // Shows the built mesh in `state`: a new revision.
+    fn show(&mut self, state: HueState) {
+        self.state = Some(state);
+        self.revision += 1;
+    }
+
+    // [`Self::finish`]'s mesh: false (the hue hidden) when it has nothing to show.
+    fn build(
+        &mut self,
+        half_width_m: f32,
+        mut ground: impl FnMut(f32, f32) -> f32,
+        drawn: impl FnMut(f64, f64) -> f64,
+    ) -> bool {
         self.fill.clear();
         self.outline.clear();
         self.outline_starts.clear();
@@ -258,7 +327,7 @@ impl FootprintHue {
         self.fill_used = self.fill.len() / 3;
         if self.fill_used == 0 && self.outline.is_empty() {
             self.clear();
-            return;
+            return false;
         }
         if self.fill_used > 0 {
             let padded = self.fill_used.max(FILL_TRIANGLES_MIN).next_power_of_two();
@@ -271,8 +340,7 @@ impl FootprintHue {
                 self.fill_bytes.extend_from_slice(&coordinate.to_le_bytes());
             }
         }
-        self.state = Some(state);
-        self.revision += 1;
+        true
     }
 
     /// Shows the same footprint in `state` (a batch's tier 2 settling, a commit refused). Nothing
@@ -415,7 +483,9 @@ fn push_edge(
     }
 }
 
+mod off_frame;
 mod surface;
+pub(crate) use off_frame::OffFrameHue;
 pub(crate) use surface::graded_ground;
 #[cfg(test)]
 mod rows;

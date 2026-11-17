@@ -109,6 +109,17 @@ func poll(id: int, elapsed_us: int, payload: Variant) -> void:
 			worker_service_ms += row.native.worker_ms - row.native.core_wait_ms
 			worker_wait_ms += row.native.core_wait_ms
 
+## The footprint hue of request `id`'s pose (`ROAD-123` round HF2), into its stages: its build
+## off the frame (`hue_ms`), the frame's wait for it at the upload (`hue_wait_ms`) and the frame's
+## whole hue step (`hue_frame_ms`: the wait, the dictionary and the upload).
+func hue(id: int, hue_dict: Dictionary, frame_ms: float) -> void:
+	if not _requests.has(id) or not _requests[id].has("stages"):
+		return
+	var stages: Dictionary = _requests[id]["stages"]
+	stages["hue_ms"] = float(hue_dict.get("build_ms", 0.0))
+	stages["hue_wait_ms"] = float(hue_dict.get("wait_ms", 0.0))
+	stages["hue_frame_ms"] = frame_ms
+
 func forget(id: int) -> void:
 	# A displaced or retired request will never be installed.
 	if _requests.has(id):

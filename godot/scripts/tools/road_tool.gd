@@ -407,7 +407,13 @@ func _show_hue(frame: Dictionary) -> float:
 	if _hue == null:
 		_hue = RoadToolHue.new(gizmos)
 		add_child(_hue)
-	return _hue.show_hue(simulation_node.road_tool_hue())
+	# Rust joins the hue's build here (`ROAD-123` round HF2): the frame's one wait for it.
+	var start_us := Time.get_ticks_usec()
+	var hue: Dictionary = simulation_node.road_tool_hue()
+	var upload_ms: float = _hue.show_hue(hue)
+	if preview_metrics != null:
+		preview_metrics.hue(_preview_sequence, hue, float(Time.get_ticks_usec() - start_us) / 1000.0)
+	return upload_ms
 
 func _clear_hue() -> void:
 	if _hue != null:

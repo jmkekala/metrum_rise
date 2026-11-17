@@ -11,7 +11,7 @@ use std::time::Instant;
 
 use godot::prelude::Vector3;
 
-use super::graded_stage::GradedPose;
+use super::graded_stage::{GradedPose, GradedPreview};
 use super::road_edit_plan::{
     CoreLand, PlottedOverlap, RoadEditPlan, RoadLandTake, first_plotted_overlap,
 };
@@ -19,13 +19,14 @@ use super::road_tool_land::ViewLand;
 use super::road_terrain_inputs::RoadTerrainInputs;
 use super::road_tool_context::RoadPreviewContext;
 use super::state::SimCore;
+use crate::nodes::sim::road_tool::hue::{HueState, OffFrameHue};
 use crate::nodes::sim::road_tool::validate_road_candidate_against_water;
 use crate::simulation::network::graph::{Edge, RegionGraph, RoadMedian, RoadParking};
 use crate::simulation::network::render::RoadChunkMap;
 use crate::simulation::network::road_types::RoadAttributes;
 use crate::simulation::network::render::road::{PreviewChunk, RoadRenderer};
 use crate::simulation::network::road_edit::{
-    PreparedRoadInput, RoadPreviewValidation, RoadProfile, prepare_road_input_for_tool,
+    DraftGround, PreparedRoadInput, RoadPreviewValidation, RoadProfile, prepare_road_input_for_tool,
     validate_road_candidate_fast,
 };
 use crate::simulation::network::roadbed::{
@@ -160,6 +161,64 @@ fn corridor_overlaps_explicit_site(core: &SimCore, points: &[Vector3], half_widt
     })
 }
 
+// The canonical graded surface of a terrain and roadbed with their site patches and shared query
+// index, with one scratch buffer per thread that reads it.
+fn graded_surface_of<T>(
+    (terrain, roadbed): (&TerrainSystem, &RoadbedSystem),
+    terrain_inputs: &RoadTerrainInputs,
+    query_index: &TerrainQueryIndex,
+    query: impl FnOnce(&GradedSurface<'_>, &mut QueryScratch) -> T,
+) -> T {
+    thread_local! {
+        static SCRATCH: RefCell<QueryScratch> = RefCell::default();
+    }
+    let sites = super::graded_stage::PreviewSites::new(terrain, terrain_inputs);
+    let surface = GradedSurface {
+        terrain,
+        roadbed,
+        sites: &sites,
+        query_index: Some(query_index),
+    };
+    SCRATCH.with_borrow_mut(|scratch| query(&surface, scratch))
+}
+
+/// What the footprint hue reads of a view, owned (`ROAD-123` round HF2): the terrain, the
+/// roadbed, the site patches and the graded query index of one publication, shared in `O(1)`
+/// without allocation (two `Arc`s and two persistent maps), so the hue's build reads that
+/// snapshot on another thread and never a live borrow.
+pub(crate) struct ViewGround {
+    terrain: Arc<TerrainSystem>,
+    roadbed: Arc<RoadbedSystem>,
+    terrain_inputs: RoadTerrainInputs,
+    query_index: TerrainQueryIndex,
+}
+
+impl ViewGround {
+    /// `view`'s parts. `O(1)`.
+    pub(crate) fn of(view: &RoadToolQuerySnapshot) -> Self {
+        Self {
+            terrain: Arc::clone(&view.terrain),
+            roadbed: Arc::clone(&view.roadbed),
+            terrain_inputs: view.terrain_inputs.clone(),
+            query_index: view.terrain_query_index.clone(),
+        }
+    }
+
+    /// The segmentation's ground (`DraftGround`) and the graded surface, to `query`.
+    pub(crate) fn with_ground<T>(
+        &self,
+        query: impl FnOnce(&DraftGround<'_>, &GradedSurface<'_>, &mut QueryScratch) -> T,
+    ) -> T {
+        let ground = DraftGround::new(&self.terrain, &self.roadbed);
+        graded_surface_of(
+            (&self.terrain, &self.roadbed),
+            &self.terrain_inputs,
+            &self.query_index,
+            |surface, scratch| query(&ground, surface, scratch),
+        )
+    }
+}
+
 /// Immutable road-tool inputs from one published simulation generation.
 #[derive(Clone)]
 pub(crate) struct RoadToolQuerySnapshot {
@@ -203,17 +262,12 @@ impl RoadToolQuerySnapshot {
         &self,
         query: impl FnOnce(&GradedSurface<'_>, &mut QueryScratch) -> T,
     ) -> T {
-        thread_local! {
-            static SCRATCH: RefCell<QueryScratch> = RefCell::default();
-        }
-        let sites = super::graded_stage::PreviewSites::new(&self.terrain, &self.terrain_inputs);
-        let surface = GradedSurface {
-            terrain: &self.terrain,
-            roadbed: &self.roadbed,
-            sites: &sites,
-            query_index: Some(&self.terrain_query_index),
-        };
-        SCRATCH.with_borrow_mut(|scratch| query(&surface, scratch))
+        graded_surface_of(
+            (&self.terrain, &self.roadbed),
+            &self.terrain_inputs,
+            &self.terrain_query_index,
+            query,
+        )
     }
 
     /// Prepares and validates one stroke against this snapshot: the profile, endpoint and water
@@ -389,13 +443,31 @@ impl RoadPreview {
 }
 
 impl RoadPreviewContext {
+    /// [`Self::preview_road_with_hue`] without a hue (tests).
+    #[cfg(test)]
+    pub(crate) fn preview_road(&mut self, request: RoadPreviewRequest) -> RoadPreview {
+        self.preview_road_with_hue(request, None)
+    }
+
     /// `preview_road(context, stroke)`: plans the stroke on the context, applies the plan to the
     /// replica, compiles the dirty closure into an `O(1)` copy of the published roadbed, stages
     /// the frame's share of its graded tiles and restores the replica. The plan, marks and
     /// compile are the commit's own functions, so a commit with a current fingerprint installs
     /// these pieces bitwise. No core lock; cost
     /// `O(stroke + local excerpt + closure pieces)`, independent of the city.
-    pub(crate) fn preview_road(&mut self, request: RoadPreviewRequest) -> RoadPreview {
+    ///
+    /// With `hue` (the hue and the road's half width), also launches the stroke's footprint hue
+    /// of this preview on the context's view off the calling thread (`ROAD-123` round HF2,
+    /// [`OffFrameHue`]): a pose that compiles pieces right after its compile, before its land
+    /// take, graded stage and payload; any other pose (refused, or no complete topology: the
+    /// prepared strip only) after its plan. The hue shows in the preview's final state (valid,
+    /// or refused: a single stroke's preview is never pending) once joined. The preview itself
+    /// is unchanged.
+    pub(crate) fn preview_road_with_hue(
+        &mut self,
+        request: RoadPreviewRequest,
+        mut hue: Option<(&mut OffFrameHue, f32)>,
+    ) -> RoadPreview {
         let plan_start = Instant::now();
         let fingerprint = RoadPreviewFingerprint::of(
             self.view.surface_generation,
@@ -423,9 +495,13 @@ impl RoadPreviewContext {
             plan_ms,
             ..Default::default()
         };
+        let mut launched = false;
         let pieces = validation
             .is_valid
-            .then(|| self.compile_plan_pieces(&plan, &mut times))
+            .then(|| {
+                let hue = hue.as_mut().map(|(hue, half_width_m)| (&mut **hue, *half_width_m));
+                self.compile_plan_pieces(&plan, &mut times, hue, &mut launched)
+            })
             .flatten();
         let plotted = pieces.as_ref().and_then(|pieces| pieces.take.plotted);
         if pieces.is_none() || plotted.is_some() {
@@ -438,6 +514,12 @@ impl RoadPreviewContext {
             Some(plotted) => validation.with_invalid_reason(plotted.reason()),
             None => validation,
         };
+        if let Some((hue, half_width_m)) = hue {
+            if !launched {
+                hue.launch(&plan, None, &self.view, half_width_m);
+            }
+            hue.set_verdict(HueState::of_preview(validation.is_valid, false));
+        }
         RoadPreview {
             plan,
             validation,
@@ -510,11 +592,15 @@ impl RoadPreviewContext {
 
     // Applies the plan's topology to the replica, compiles what it dirtied, emits the changed
     // chunks on the edited replica and restores it from the same local checkpoint the commit's
-    // undo record captures.
+    // undo record captures. With `hue`, the stroke's hue is launched from the delta right after
+    // the compile (`ROAD-123` round HF2), so its build runs beside the land take, the graded
+    // stage, the payload and the frame's work after them; `launched` records it.
     fn compile_plan_pieces(
         &mut self,
         plan: &RoadEditPlan,
         times: &mut RoadPreviewTimes,
+        hue: Option<(&mut OffFrameHue, f32)>,
+        launched: &mut bool,
     ) -> Option<RoadPreviewPieces> {
         let roadbed_start = Instant::now();
         let CompiledPose {
@@ -524,18 +610,78 @@ impl RoadPreviewContext {
             changed_chunks,
             restore,
         } = self.compile_on_replica(plan)?;
-        // The commit's land take on the same installed and replaced pieces.
-        let before: Vec<_> = restore.replaced_pieces().collect();
-        let installed: Vec<_> = roadbed.installed_pieces(&restore).collect();
-        let take = ViewLand {
+        if let Some((hue, half_width_m)) = hue {
+            hue.launch(plan, Some(&delta), &self.view, half_width_m);
+            *launched = true;
+        }
+        let compile_ms = roadbed_start.elapsed().as_secs_f64() * 1000.0;
+        let stages = PoseStages {
+            view: &self.view,
+            replica: &self.replica,
             land: &self.land,
-            cells: &self.view.cells,
+            plan,
+            delta: &delta,
+            changed_chunks: &changed_chunks,
+            restore: &restore,
+        };
+        let ((take, graded, chunks), stage_times) = stages.run(&mut self.graded, &mut roadbed);
+        times.roadbed_ms = compile_ms + stage_times.roadbed_ms;
+        times.graded_ms = stage_times.graded_ms;
+        times.payload_ms = stage_times.payload_ms;
+        let restore_start = Instant::now();
+        self.replica.restore_undo_delta_local(&checkpoint);
+        times.roadbed_ms += restore_start.elapsed().as_secs_f64() * 1000.0;
+        Some(RoadPreviewPieces {
+            delta,
+            roadbed,
+            changed_chunks,
+            graded,
+            chunks,
+            take,
+        })
+    }
+}
+
+// What a pose's stages after its compile read: the context's view, replica and land, and the
+// compiled pose.
+struct PoseStages<'a> {
+    view: &'a RoadToolQuerySnapshot,
+    replica: &'a RegionGraph,
+    land: &'a Arc<super::road_tool_land::RoadToolLand>,
+    plan: &'a RoadEditPlan,
+    delta: &'a RoadbedDelta,
+    changed_chunks: &'a [SurfaceChunkKey],
+    restore: &'a RoadbedRestore,
+}
+
+// A pose's land take, staged graded tiles and changed chunks' overlays.
+type StagedPose = (
+    RoadLandTake<u64>,
+    GradedPose,
+    Option<BTreeMap<SurfaceChunkKey, PreviewChunk>>,
+);
+
+impl PoseStages<'_> {
+    // The commit's land take on the installed and replaced pieces, the pose's graded tiles on
+    // `graded` and the changed chunks' overlays emitted on the edited replica, with their
+    // times (`roadbed_ms` the take's).
+    fn run(&self, graded: &mut GradedPreview, roadbed: &mut RoadbedSystem) -> (StagedPose, RoadPreviewTimes) {
+        let mut times = RoadPreviewTimes::default();
+        let (view, delta) = (self.view, self.delta);
+        let take_start = Instant::now();
+        // The commit's land take on the same installed and replaced pieces.
+        let before: Vec<_> = self.restore.replaced_pieces().collect();
+        let installed: Vec<_> = roadbed.installed_pieces(self.restore).collect();
+        let take = ViewLand {
+            land: self.land,
+            cells: &view.cells,
         }
         .take(&installed, &before);
-        times.roadbed_ms = roadbed_start.elapsed().as_secs_f64() * 1000.0;
+        times.roadbed_ms = take_start.elapsed().as_secs_f64() * 1000.0;
         let terrain_changes = roadbed.take_terrain_changes();
         let graded_start = Instant::now();
-        let end = plan
+        let end = self
+            .plan
             .request()
             .points
             .last()
@@ -546,24 +692,24 @@ impl RoadPreviewContext {
                 .failed_nodes()
                 .map(|(node, _)| crate::simulation::network::roadbed::PieceId::Node(node)),
         );
-        let graded = self.graded.stage_pose(
-            &self.view.terrain,
-            &self.view.roadbed,
-            &roadbed,
-            &self.view.terrain_inputs,
+        let graded = graded.stage_pose(
+            &view.terrain,
+            &view.roadbed,
+            roadbed,
+            &view.terrain_inputs,
             &terrain_changes,
             owners,
             end,
         );
         times.graded_ms = graded_start.elapsed().as_secs_f64() * 1000.0;
         let payload_start = Instant::now();
-        let target_chunks: BTreeSet<_> = changed_chunks.iter().copied().collect();
-        let built_after = self.view.roadbed.generation();
-        let chunks = (self.view.road_mesh_generation == Some(built_after))
+        let target_chunks: BTreeSet<_> = self.changed_chunks.iter().copied().collect();
+        let built_after = view.roadbed.generation();
+        let chunks = (view.road_mesh_generation == Some(built_after))
             .then(|| {
                 let sites = super::graded_stage::PreviewSites::new(
-                    &self.view.terrain,
-                    &self.view.terrain_inputs,
+                    &view.terrain,
+                    &view.terrain_inputs,
                 );
                 // Every owner the delta covers, with whether it built a piece: a failed node's
                 // published piece goes too.
@@ -577,29 +723,19 @@ impl RoadPreviewContext {
                     )
                     .collect();
                 RoadRenderer.generate_preview_overlay(
-                    &self.replica,
-                    &self.view.terrain,
+                    self.replica,
+                    &view.terrain,
                     &sites,
-                    &roadbed,
+                    roadbed,
                     &target_chunks,
                     &closure,
                     built_after,
-                    &self.view.road_mesh_chunks,
+                    &view.road_mesh_chunks,
                 )
             })
             .flatten();
         times.payload_ms = payload_start.elapsed().as_secs_f64() * 1000.0;
-        let restore_start = Instant::now();
-        self.replica.restore_undo_delta_local(&checkpoint);
-        times.roadbed_ms += restore_start.elapsed().as_secs_f64() * 1000.0;
-        Some(RoadPreviewPieces {
-            delta,
-            roadbed,
-            changed_chunks,
-            graded,
-            chunks,
-            take,
-        })
+        ((take, graded, chunks), times)
     }
 }
 

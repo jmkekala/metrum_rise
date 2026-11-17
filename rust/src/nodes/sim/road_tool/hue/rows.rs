@@ -10,8 +10,8 @@
 
 use super::*;
 use crate::nodes::sim::core::{
-    CityTreasury, RoadCommitRequest, RoadPreview, RoadPreviewContext, RoadPreviewRequest,
-    RoadToolQuerySnapshot, SimCore,
+    CityTreasury, RoadCommitRequest, RoadPreview, RoadPreviewContext,
+    RoadPreviewRequest, RoadToolQuerySnapshot, SimCore,
 };
 use crate::simulation::core::config::WorldConfig;
 use crate::simulation::network::graph::RoadParking;
@@ -143,6 +143,21 @@ impl RowWorld {
     }
 }
 
+// The rows' stroke request: one lane each way, snapping, the default road.
+fn request(world: &RowWorld, points: Vec<Vector3>, profile: RoadProfile) -> RoadPreviewRequest {
+    RoadPreviewRequest {
+        surface_generation: world.view.surface_generation,
+        points,
+        fwd_lanes: 1,
+        bkw_lanes: 1,
+        snap_to_existing_roads: true,
+        profile,
+        median: None,
+        parking: RoadParking::NONE,
+        attributes: RoadAttributes::DEFAULT,
+    }
+}
+
 fn surface_point(core: &SimCore, p: Vector2) -> Vector3 {
     let y = core.heightmap.sample_height_world(p.x, p.y) * crate::config::HEIGHT_SCALE;
     Vector3::new(p.x, y, p.y)
@@ -159,37 +174,29 @@ impl PoseHue {
             surface_point(&world.core, row.start),
             surface_point(&world.core, row.pointer.at(u)),
         ];
-        let preview = context.preview_road(RoadPreviewRequest {
-            surface_generation: world.view.surface_generation,
-            points,
-            fwd_lanes: 1,
-            bkw_lanes: 1,
-            snap_to_existing_roads: true,
-            profile: RoadProfile::FollowGround,
-            median: None,
-            parking: RoadParking::NONE,
-            attributes: RoadAttributes::DEFAULT,
-        });
+        let preview = context.preview_road(request(world, points, RoadProfile::FollowGround));
         Self { preview }
     }
 
-    // `road_tool_hue_of_preview`'s build; with `graded` off the drawn ground is a constant
-    // below everything (the build without its read).
+    // Round HF's build after the preview (`road_tool_hue_of_preview`), in the preview's state;
+    // with `graded` off the drawn ground is a constant below everything (the build without its
+    // read).
     fn build(&self, world: &RowWorld, hue: &mut FootprintHue, graded: bool) {
+        let state = HueState::of_preview(self.preview.validation.is_valid, false);
         self.build_with(world, hue, |surface, scratch, hue, ground| {
             if graded {
                 hue.finish(
                     HALF_WIDTH_M,
                     |x, z| ground.height_at(x, z),
                     graded_ground(surface, scratch),
-                    HueState::Valid,
+                    state,
                 );
             } else {
                 hue.finish(
                     HALF_WIDTH_M,
                     |x, z| ground.height_at(x, z),
                     |_, _| -1.0e3,
-                    HueState::Valid,
+                    state,
                 );
             }
         });
@@ -207,21 +214,13 @@ impl PoseHue {
             &DraftGround<'_>,
         ),
     ) {
-        let prepared = self.preview.plan.prepared();
         let view = &world.view;
         let ground = DraftGround::new(&view.terrain, &view.roadbed);
-        let kind = HueKind::of(RoadProfile::FollowGround, prepared.class);
-        hue.begin();
-        hue.push_stroke(&prepared.points, kind);
-        if kind == HueKind::Road
-            && let Some(pieces) = &self.preview.pieces
-        {
-            hue.push_pieces(
-                (pieces.delta.pieces())
-                    .filter_map(|(_, mesh)| mesh)
-                    .filter(|mesh| mesh.grounded() && !mesh.buried()),
-            );
-        }
+        hue.push_preview(
+            self.preview.plan.prepared(),
+            self.preview.plan.profile(),
+            self.preview.pieces.as_ref().map(|pieces| &pieces.delta),
+        );
         view.with_graded_surface(|surface, scratch| finish(surface, scratch, hue, &ground));
     }
 }
@@ -293,6 +292,74 @@ fn the_lattice_reader_builds_hu3s_hue_bitwise_on_the_rows() {
     }
 }
 
+// `ROAD-123` round HF2: the hue the preview launches off the thread, once joined, is bitwise
+// round HF's hue built after it from the same preview (fill bytes, outline, state), and has the
+// revision announced while it was in flight (what the frame sends), on every row's
+// poses (pieces read through the drawn ground), on refused poses (the prepared strip), and on a
+// graded draft's single strokes (held ground and a bridge, `ROAD-112` round I); the preview's
+// own products are unchanged by it (its validation, pieces and overlays equal a preview made
+// without a hue on an identical context).
+#[test]
+fn the_preview_builds_its_hue_bitwise_with_it() {
+    let (mut joined, mut after) = (OffFrameHue::default(), FootprintHue::default());
+    let mut states = Vec::new();
+    for row in rows() {
+        let world = RowWorld::build(&row);
+        let mut context = RoadPreviewContext::capture(world.view.clone());
+        let mut plain = RoadPreviewContext::capture(world.view.clone());
+        let start = surface_point(&world.core, row.start);
+        let mut requests: Vec<_> = (0..6)
+            .map(|k| {
+                let end = surface_point(&world.core, row.pointer.at((k as f32 + 0.5) / 6.0));
+                request(&world, vec![start, end], RoadProfile::FollowGround)
+            })
+            .collect();
+        // A stroke too short to show (hidden), and one too steep to build: refused, its strip.
+        let short = start + Vector3::new(0.5, 0.0, 0.0);
+        requests.push(request(&world, vec![start, short], RoadProfile::FollowGround));
+        let steep = start + Vector3::new(0.0, 40.0, 40.0);
+        requests.push(request(&world, vec![start, steep], RoadProfile::Bridge));
+        if row.sloped {
+            // A graded draft's single strokes: held ground and a bridge above the slope.
+            let end = surface_point(&world.core, row.pointer.at(0.5));
+            let lift = Vector3::new(0.0, 8.0, 0.0);
+            requests.push(request(&world, vec![start, end], RoadProfile::HeldGround));
+            requests.push(request(&world, vec![start + lift, end + lift], RoadProfile::Bridge));
+        }
+        for (k, stroke) in requests.into_iter().enumerate() {
+            let preview =
+                context.preview_road_with_hue(stroke.clone(), Some((&mut joined, HALF_WIDTH_M)));
+            let announced = joined.revision();
+            let reference = plain.preview_road(stroke);
+            assert_eq!(
+                preview.validation.invalid_reason, reference.validation.invalid_reason,
+                "{} pose {k}",
+                row.name
+            );
+            assert_eq!(
+                preview.pieces.as_ref().map(|pieces| pieces.changed_chunks.clone()),
+                reference.pieces.as_ref().map(|pieces| pieces.changed_chunks.clone()),
+                "{} pose {k}",
+                row.name
+            );
+            let pose = PoseHue { preview };
+            pose.build(&world, &mut after, true);
+            let joined = joined.hue();
+            assert_eq!(joined.revision(), announced, "{} pose {k}", row.name);
+            assert_eq!(joined.fill_bytes, after.fill_bytes, "{} pose {k}", row.name);
+            assert_eq!(joined.outline, after.outline, "{} pose {k}", row.name);
+            assert_eq!(joined.state(), after.state(), "{} pose {k}", row.name);
+            states.push((pose.preview.plan.profile(), joined.state()));
+        }
+    }
+    for wanted in [Some(HueState::Valid), Some(HueState::Refused)] {
+        assert!(states.iter().any(|&(_, state)| state == wanted), "{wanted:?}: {states:?}");
+    }
+    for profile in [RoadProfile::HeldGround, RoadProfile::Bridge] {
+        assert!(states.iter().any(|&(p, _)| p == profile), "{profile:?}");
+    }
+}
+
 // FNV-1a over the hue's fill bytes (padding included) and its outline's bits.
 fn digest(hue: &FootprintHue, mut hash: u64) -> u64 {
     let mut eat = |byte: u8| {
@@ -309,7 +376,7 @@ fn digest(hue: &FootprintHue, mut hash: u64) -> u64 {
     hash
 }
 
-fn rows_with_poses() -> Vec<(Row, RowWorld, Vec<PoseHue>)> {
+fn rows_with_poses() -> Vec<(Row, RowWorld, RoadPreviewContext, Vec<PoseHue>)> {
     // `METRUM_HUE_ROWS` (comma-separated names) keeps only those rows, for a profile.
     let only = std::env::var("METRUM_HUE_ROWS").unwrap_or_default();
     rows()
@@ -321,7 +388,7 @@ fn rows_with_poses() -> Vec<(Row, RowWorld, Vec<PoseHue>)> {
             let poses = (0..POSES)
                 .map(|k| PoseHue::of(&world, &mut context, &row, (k as f32 + 0.5) / POSES as f32))
                 .collect();
-            (row, world, poses)
+            (row, world, context, poses)
         })
         .collect()
 }
@@ -338,7 +405,7 @@ fn benchmark_hue_rows() {
         .and_then(|value| value.parse().ok())
         .unwrap_or(9);
     let mut hue = FootprintHue::default();
-    for (row, world, poses) in rows_with_poses() {
+    for (row, world, mut context, poses) in rows_with_poses() {
         let mut hash = 0xcbf2_9ce4_8422_2325;
         let (mut with_pieces, mut triangles) = (0, 0);
         for pose in &poses {
@@ -373,6 +440,60 @@ fn benchmark_hue_rows() {
             with_pieces,
             triangles / poses.len(),
             hash,
+        );
+        // Round HF2: the preview's wall time alone, with round HF's hue built after it (the
+        // base's frame), and with its hue launched off the thread and joined at once after the
+        // preview (the hue overlapping only the preview's later stages; the frame overlaps it
+        // with its own work after the preview too), with the hue's build on its worker and the
+        // join's wait. Each round runs one variant over every
+        // pose in order (a drag: each pose changes the last one's graded stage), the variants
+        // in turn; the joined hues' digest equals the one above.
+        let requests: Vec<_> = poses.iter().map(|pose| pose.preview.plan.request().clone()).collect();
+        let mut joined_hash = 0xcbf2_9ce4_8422_2325;
+        let mut offframe = OffFrameHue::default();
+        for stroke in &requests {
+            context.preview_road_with_hue(stroke.clone(), Some((&mut offframe, HALF_WIDTH_M)));
+            joined_hash = digest(offframe.hue(), joined_hash);
+        }
+        let mut series: [Vec<f64>; 5] = Default::default();
+        for _ in 0..rounds {
+            for variant in 0..3 {
+                for stroke in &requests {
+                    let stroke = stroke.clone();
+                    let start = Instant::now();
+                    match variant {
+                        0 => {
+                            std::hint::black_box(context.preview_road(stroke));
+                            series[0].push(start.elapsed().as_secs_f64() * 1.0e3);
+                        }
+                        1 => {
+                            let pose = PoseHue { preview: context.preview_road(stroke) };
+                            pose.build(&world, &mut hue, true);
+                            series[4].push(start.elapsed().as_secs_f64() * 1.0e3);
+                        }
+                        _ => {
+                            let with = Some((&mut offframe, HALF_WIDTH_M));
+                            std::hint::black_box(context.preview_road_with_hue(stroke, with));
+                            offframe.join();
+                            series[1].push(start.elapsed().as_secs_f64() * 1.0e3);
+                            let (built, waited) = offframe.last_times();
+                            series[2].push(built);
+                            series[3].push(waited);
+                        }
+                    }
+                }
+            }
+        }
+        let quantiles = |times: &mut Vec<f64>| {
+            times.sort_by(f64::total_cmp);
+            let at = |q: f64| times[((times.len() - 1) as f64 * q).round() as usize];
+            format!("p50 {:.3} p99 {:.3}", at(0.5), at(0.99))
+        };
+        let [alone, with, built, wait, after] = series.each_mut().map(quantiles);
+        println!(
+            "hue-preview {:<14} digest {:016x} preview alone {alone} | hue after it (base) {after} | hue off the thread, joined after the preview {with} | hue build {built} | join wait {wait} ms",
+            row.name,
+            joined_hash,
         );
     }
 }

@@ -910,6 +910,8 @@ func _test_session_strokes(simulation: SimulationNode) -> void:
 		tool.pointer.x += 0.25
 		_road_frame(tool)
 	_expect(tool._preview_sequence == shown + 5, "every moved pose is previewed in its own frame")
+	# `ROAD-123` round HF2: the hue arrives with its preview, in the same frame.
+	_expect(int(simulation.road_tool_hue()["pose"]) == int(tool._preview.get("pose", -1)), "the hue is the frame's preview's pose's")
 	_road_frame(tool)
 	_expect(tool._preview_sequence == shown + 5, "an unchanged stroke is not previewed again")
 	tool.set_lanes(2, 1)
