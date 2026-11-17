@@ -4,7 +4,9 @@
 //! lamp cell grid the lit materials read, the far light map, the pool of real lights, and each
 //! road chunk's instance buffers, over the lamps Rust places with the chunk (five floats a
 //! light: chunk-local pole base, yaw, model kind). Render-consumer state, never saved; GDScript
-//! hands every chunk over as it installs it and uploads what this builds.
+//! hands every chunk over as it installs it and uploads what this builds. The chunks' batches
+//! draw on pooled server slots (`street_lights/draw.rs`), the poles at the levels each 64 m cell
+//! drew at (`street_lights/poles.rs`, `RENDER-46`).
 //!
 //! Every product is bit for bit what `street_lamp_grid.gd` and `street_lights.gd` built (Godot
 //! 4.7, `real_t` single precision, no fused multiply-add): single precision where the engine
@@ -33,8 +35,9 @@
 //! few comparisons. No allocation once the scratch buffers reached their size.
 
 use super::stream::backend::GodotBackend;
-use super::vegetation_product::godot_math::{Basis, basis_axis_angle};
+use super::vegetation_product::godot_math::{Aabb, Basis, basis_axis_angle};
 use draw::LampDraw;
+use godot::classes::Mesh;
 use godot::prelude::*;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap};
@@ -42,6 +45,7 @@ use std::collections::{BTreeMap, HashMap};
 type Map<K, V> = HashMap<K, V, foldhash::fast::FixedState>;
 
 mod draw;
+mod poles;
 
 /// Lamp grid cell side in metres.
 pub(crate) const CELL_M: f32 = 16.0;
@@ -455,6 +459,11 @@ impl LampBook {
             self.grid_edits.clear();
             self.far_built = false;
         }
+    }
+
+    /// The road chunk grid: the keys' span and origin.
+    pub(crate) fn chunk_grid(&self) -> (f32, [f32; 2]) {
+        (self.span_m, self.chunk_origin)
     }
 
     /// Sets the lamp colours (sRGB, for the glow), their linear values (for the far map's light)
@@ -1086,10 +1095,10 @@ impl StreetLightBook {
     /// Draws the chunks' batches in `scenario` from now on (`street_lights.gd`, once its lamp
     /// meshes exist; a second call keeps the draw): `meshes` holds every kind's three levels of
     /// detail (kind-major, `KINDS * 3`) then the glow quad, `material` the lamps' material
-    /// override. Makes a spare slot of every mesh ([`LampDraw::prewarm`]). False on a malformed
-    /// catalogue.
+    /// override. The level meshes' bounds place each cell's centre (`RENDER-46`). Makes a spare
+    /// slot of every mesh ([`LampDraw::prewarm`]). False on a malformed catalogue.
     #[func]
-    pub fn attach_draw(&mut self, scenario: Rid, meshes: Array<Rid>, material: Rid) -> bool {
+    pub fn attach_draw(&mut self, scenario: Rid, meshes: Array<Gd<Mesh>>, material: Rid) -> bool {
         if self.draw.is_some() {
             return true;
         }
@@ -1097,9 +1106,21 @@ impl StreetLightBook {
             godot_error!("attach_draw: malformed lamp catalogue");
             return false;
         }
+        let meshes: Vec<Gd<Mesh>> = meshes.iter_shared().collect();
+        let bounds = std::array::from_fn(|kind| {
+            std::array::from_fn(|lod| {
+                let aabb = meshes[kind * draw::LODS + lod].get_aabb();
+                Some(Aabb::new(aabb.position.to_array(), aabb.size.to_array()))
+            })
+        });
         let mut backend = GodotBackend::new(scenario);
-        backend.set_catalogue(meshes.iter_shared().collect(), vec![material], Vec::new());
+        backend.set_catalogue(
+            meshes.iter().map(|mesh| mesh.get_rid()).collect(),
+            vec![material],
+            Vec::new(),
+        );
         let mut draw = LampDraw::default();
+        draw.set_mesh_bounds(bounds);
         draw.prewarm(&mut backend);
         self.draw = Some((backend, draw));
         true
@@ -1223,6 +1244,65 @@ impl StreetLightBook {
             .as_ref()
             .map_or((0, 0), |(_, draw)| draw.drawn_instances((key.x, key.y)));
         Vector2i::new(lods as i32, glow as i32)
+    }
+
+    /// A drawn frame from the main camera at `eye` (`street_lights.gd` calls it from
+    /// `frame_pre_draw`, so the camera stands where Godot draws from): the pole batches whose
+    /// cells changed level are written or hidden (`RENDER-46`). Returns the batches changed;
+    /// nothing while the camera and the chunks hold still.
+    #[func]
+    pub fn draw_poles(&mut self, eye: Vector3) -> i64 {
+        let (span_m, origin) = self.book.chunk_grid();
+        self.draw.as_mut().map_or(0, |(backend, draw)| {
+            i64::from(draw.select(backend, [eye.x, eye.y, eye.z], span_m, origin))
+        })
+    }
+
+    /// The transforms (12 floats a pole) drawn chunk `key`'s batch of pole slot `slot` and
+    /// level `lod` holds now. For tests.
+    #[func]
+    pub fn pole_batch(&self, key: Vector2i, slot: i64, lod: i64) -> PackedFloat32Array {
+        let mut rows = Vec::new();
+        if let Some((_, draw)) = self.draw.as_ref() {
+            draw.pole_batch((key.x, key.y), slot as usize, lod as usize, &mut rows);
+        }
+        PackedFloat32Array::from(rows.as_slice())
+    }
+
+    /// Drawn chunk `key`'s poles: `{kinds: PackedByteArray}` the kind of each slot (a batch a
+    /// slot and level), `centres: PackedVector3Array` the centre each level of each 64 m cell
+    /// measures from, `LODS` a cell in the cells' order (`set_chunk`'s batches). For tests (the
+    /// engine's own bounds of the cell batches).
+    #[func]
+    pub fn pole_cells(&self, key: Vector2i) -> VarDictionary {
+        let (kinds, centres) = self
+            .draw
+            .as_ref()
+            .map(|(_, draw)| draw.pole_cells((key.x, key.y)))
+            .unwrap_or_default();
+        let mut out = VarDictionary::new();
+        out.set("kinds", PackedByteArray::from(kinds.as_slice()));
+        out.set(
+            "centres",
+            centres
+                .iter()
+                .map(|c| Vector3::from_array(*c))
+                .collect::<PackedVector3Array>(),
+        );
+        out
+    }
+
+    /// Levels of detail a pole.
+    #[func]
+    pub fn pole_lods() -> i64 {
+        draw::LODS as i64
+    }
+
+    /// The instances a pooled slot of a `count`-instance batch holds: its buffer is padded to it
+    /// with copies of the first instance. For tests (the engine's bounds of a padded buffer).
+    #[func]
+    pub fn slot_capacity(count: i64) -> i64 {
+        i64::from(super::stream::backend::capacity_class(count.max(0) as u32).1)
     }
 
     /// A day frame of `delta_s`: true when the pool's lights were on and must hide.

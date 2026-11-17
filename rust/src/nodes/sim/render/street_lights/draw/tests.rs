@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
 //! The lamp draw against the recording backend: a chunk's batches draw with the settings the
-//! batch nodes had, only once all are made, and every slot is freed by a reset.
+//! batch nodes had, a batch a pole kind and level holding its cells at their levels, only once
+//! all are made, and every slot is freed by a reset.
 
 use super::*;
 use crate::nodes::sim::render::stream::backend::Scenario;
 use crate::nodes::sim::render::stream::backend::recorder::{Command, Recorder};
 use crate::nodes::sim::render::street_lights::LampBook;
+use crate::nodes::sim::render::vegetation_product::godot_math::Aabb;
 
 // Forty lights over every kind in one 512 m chunk (the GDScript test's fixture).
 fn lights() -> Vec<f32> {
@@ -30,60 +32,105 @@ fn batches(origin: [f32; 3]) -> ChunkBatches {
     book.set_chunk((1, -2), origin, &lights(), &mut far)
 }
 
+const MESH: Aabb = Aabb {
+    position: [-0.5, 0.0, -0.5],
+    size: [2.0, 9.0, 1.0],
+};
+const SPAN: f32 = 512.0;
+
+fn draw() -> LampDraw {
+    let mut draw = LampDraw::default();
+    draw.set_mesh_bounds([[Some(MESH); LODS]; KINDS]);
+    draw
+}
+
+fn select(draw: &mut LampDraw, backend: &mut Recorder, eye: [f32; 3]) -> u32 {
+    draw.select(backend, eye, SPAN, [0.0, 0.0])
+}
+
 #[test]
-fn a_chunk_draws_its_batches_as_the_nodes_did() {
+fn a_chunk_draws_a_batch_a_kind_and_level_holding_its_cells_levels() {
     let origin = [768.0, 0.0, -768.0];
     let expected = batches(origin);
     let mut backend = Recorder::new();
-    let mut draw = LampDraw::default();
+    let mut draw = draw();
     draw.begin(&mut backend, (1, -2), origin, batches(origin));
-    // One batch a part: nothing draws until the last.
+    // One kind a part: nothing draws until the last.
     while !draw.build_part(&mut backend, (1, -2), 0.0) {
         assert_eq!(backend.visible(Scenario::Main).count(), 0);
         assert!(draw.is_building((1, -2)));
     }
-    let drawn: Vec<_> = backend.visible(Scenario::Main).collect();
-    assert_eq!(drawn.len(), expected.kinds.len() * LODS + 1);
-    let mut lod_rows = 0;
-    for (_, instance) in &drawn {
+    // The glow draws at once, the level batches from the first selection.
+    assert_eq!(draw.drawn_instances((1, -2)), (0, 48));
+    let mut kinds = expected.kinds.clone();
+    kinds.sort_unstable();
+    kinds.dedup();
+    let slots = draw.drawn[&(1, -2)].clone();
+    assert_eq!(slots.len(), kinds.len() * LODS + 1);
+    for (batch, &id) in slots.iter().enumerate() {
+        let slot = draw.pool.slot(id);
+        let instance = &backend.instances[&slot.instance(Role::Main).unwrap()];
         assert_eq!(instance.origin, origin);
         let multimesh = &backend.multimeshes[&instance.base];
-        let mesh = multimesh.mesh.expect("a mesh");
-        if mesh == GLOW_MESH {
+        if batch == kinds.len() * LODS {
+            assert_eq!(multimesh.mesh, Some(GLOW_MESH));
             assert_eq!(multimesh.rows, expected.glow);
-            assert!(multimesh.colors);
+            assert!(multimesh.colors && instance.visible);
             assert_eq!((instance.material, instance.shadow), (None, Shadow::Off));
             assert_eq!(instance.extra_margin, RECEIVER_MARGIN_M);
-            assert_eq!(instance.range, [0.0; 2]);
             continue;
         }
-        let lod = mesh as usize % LODS;
+        let lod = batch % LODS;
+        let kind = u32::from(draw.poles.chunk((1, -2)).unwrap().kinds()[batch / LODS]);
+        assert_eq!(multimesh.mesh, Some(kind * LODS as u32 + lod as u32));
         assert_eq!(instance.material, Some(LAMP_MATERIAL));
-        assert_eq!(instance.range, LOD_RANGES[lod]);
-        let begin = if lod > 0 { LOD_HYSTERESIS_M } else { 0.0 };
-        assert_eq!(instance.range_margins, [begin, LOD_HYSTERESIS_M]);
+        // No range of their own: the cells' levels are the selection's.
+        assert_eq!(instance.range, [0.0; 2]);
         let (shadow, margin) = if lod < 2 {
             (Shadow::On, CASTER_MARGIN_M)
         } else {
             (Shadow::Off, RECEIVER_MARGIN_M)
         };
         assert_eq!((instance.shadow, instance.extra_margin), (shadow, margin));
-        assert_eq!(
-            multimesh.visible_count,
-            Some((multimesh.rows.len() / STRIDE) as u32)
-        );
-        lod_rows += multimesh.rows.len();
+        assert!(!instance.visible);
     }
-    let lamp_floats: usize = expected.transforms.iter().map(Vec::len).sum();
-    assert_eq!(lod_rows, lamp_floats * LODS);
-    assert_eq!(draw.drawn_instances((1, -2)), (40 * 3, 48));
+    // From a camera above the chunk: each batch holds its kind's poles at that level, shown
+    // when it holds any.
+    let check = |draw: &LampDraw, backend: &Recorder| {
+        let mut held = 0;
+        for (batch, &id) in slots[..kinds.len() * LODS].iter().enumerate() {
+            let mut rows = Vec::new();
+            draw.pole_batch((1, -2), batch / LODS, batch % LODS, &mut rows);
+            let slot = draw.pool.slot(id);
+            let instance = &backend.instances[&slot.instance(Role::Main).unwrap()];
+            assert_eq!(instance.visible, !rows.is_empty(), "batch {batch}");
+            if !rows.is_empty() {
+                let multimesh = &backend.multimeshes[&instance.base];
+                assert_eq!(multimesh.rows, rows);
+                assert_eq!(multimesh.visible_count, Some((rows.len() / STRIDE) as u32));
+                held += rows.len() / STRIDE;
+            }
+        }
+        held
+    };
+    assert!(select(&mut draw, &mut backend, [768.0, 300.0, -768.0]) > 0);
+    let near = check(&draw, &backend);
+    assert!(near > 0);
+    assert_eq!(draw.drawn_instances((1, -2)), (near as u32, 48));
+    // A still camera writes nothing; a far one hides every level batch.
+    let commands = backend.commands.len();
+    assert_eq!(select(&mut draw, &mut backend, [768.0, 300.0, -768.0]), 0);
+    assert_eq!(backend.commands.len(), commands);
+    select(&mut draw, &mut backend, [768.0, 300.0, 4000.0]);
+    assert_eq!(check(&draw, &backend), 0);
+    assert_eq!(draw.drawn_instances((1, -2)), (0, 48));
 }
 
 #[test]
 fn prewarmed_spares_serve_the_first_batches_and_a_reset_frees_every_slot() {
     let origin = [768.0, 0.0, -768.0];
     let mut backend = Recorder::new();
-    let mut draw = LampDraw::default();
+    let mut draw = draw();
     draw.prewarm(&mut backend);
     let warm = draw.ledger();
     assert_eq!(
@@ -122,28 +169,26 @@ fn prewarmed_spares_serve_the_first_batches_and_a_reset_frees_every_slot() {
 fn the_shadow_toggle_reaches_drawn_casters_only() {
     let origin = [0.0; 3];
     let mut backend = Recorder::new();
-    let mut draw = LampDraw::default();
+    let mut draw = draw();
     draw.begin(&mut backend, (1, -2), origin, batches(origin));
     assert!(draw.build_part(&mut backend, (1, -2), f64::INFINITY));
     draw.set_cast_shadows(&mut backend, false);
-    assert!(
-        backend
-            .visible(Scenario::Main)
-            .all(|(_, i)| i.shadow == Shadow::Off)
-    );
+    assert!(backend.instances.values().all(|i| i.shadow == Shadow::Off));
     draw.set_cast_shadows(&mut backend, true);
     let casting = backend
-        .visible(Scenario::Main)
-        .filter(|(_, i)| i.shadow == Shadow::On)
+        .instances
+        .values()
+        .filter(|i| i.shadow == Shadow::On)
         .count();
-    assert_eq!(casting, batches(origin).kinds.len() * 2);
+    // A batch a kind and level: the first two levels cast.
+    assert_eq!(casting, draw.poles.chunk((1, -2)).unwrap().kinds().len() * 2);
 }
 
 #[test]
 fn a_prebuilt_chunk_only_shows_when_its_batches_come() {
     let origin = [768.0, 0.0, -768.0];
     let mut backend = Recorder::new();
-    let mut draw = LampDraw::default();
+    let mut draw = draw();
     let made = draw.prebuild(
         &mut backend,
         [((1, -2), origin, batches(origin))].into_iter(),
@@ -152,7 +197,8 @@ fn a_prebuilt_chunk_only_shows_when_its_batches_come() {
     assert_eq!(made + MESHES as u64, draw.ledger().made);
     assert_eq!(backend.visible(Scenario::Main).count(), 0);
     let commands = backend.commands.len();
-    // The same batches: one part shows them, nothing made or written.
+    // The same batches: one part shows the glow, nothing made or written; the first selection
+    // writes the level batches.
     draw.begin(&mut backend, (1, -2), origin, batches(origin));
     assert!(draw.build_part(&mut backend, (1, -2), 0.0));
     assert_eq!(draw.ledger().made, made + MESHES as u64);
@@ -161,7 +207,10 @@ fn a_prebuilt_chunk_only_shows_when_its_batches_come() {
             .iter()
             .all(|command| matches!(command, Command::InstanceVisible(_, true)))
     );
-    assert_eq!(draw.drawn_instances((1, -2)), (40 * 3, 48));
+    assert_eq!(draw.drawn_instances((1, -2)), (0, 48));
+    assert!(select(&mut draw, &mut backend, [768.0, 300.0, -768.0]) > 0);
+    assert_eq!(draw.ledger().made, made + MESHES as u64);
+    assert!(draw.drawn_instances((1, -2)).0 > 0);
     // Another world's prebuild releases what is not drawn and frees the spares.
     let other = [0.0, 0.0, 0.0];
     draw.prebuild(&mut backend, [((0, 0), other, batches(other))].into_iter());

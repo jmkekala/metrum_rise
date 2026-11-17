@@ -3,10 +3,12 @@
 ## Headless lamp grid coverage, packing, deterministic overflow, far-map splat and chunk-edit
 ## regression through the Rust `StreetLightBook` (`RENDER-32-H`), and the chunk batches against
 ## the transforms GDScript builds, drawn on the book's slots and freed by a reset (`RENDER-52`
-## part 2); no scene or assets.
+## part 2), each pole at the level Godot's visibility range gave its 64 m cell (`RENDER-46`); no
+## scene.
 extends SceneTree
 
 const StreetLights := preload("res://scripts/renderers/street_lights.gd")
+const SceneLighting := preload("res://scripts/core/scene_lighting.gd")
 const SIDE := StreetLightBook.SIDE
 const CAPACITY := StreetLightBook.CAPACITY
 const CELL_M := 16.0
@@ -149,8 +151,12 @@ func _test_far_edits() -> void:
 	_expect(worst < 1e-4, "removing every chunk empties the far map: %f" % worst)
 	lights.free()
 
-# The chunk's batches carry the transforms GDScript builds from the same lights, bit for bit, and
-# the glow batch one quad a lamp head; the book draws them on its slots and frees every slot.
+# The chunk's pole batches carry the transforms GDScript builds from the same lights, bit for bit,
+# each pole at the level its own 64 m cell's batch drew under Godot's visibility range
+# (`RENDER-46`): the cells' centres equal the engine's bounds of those batches on their pooled
+# slots, and along a camera path in and out through every band the batches hold exactly the cells
+# the engine's rule shows. The glow batch holds one quad a lamp head; the book draws them on its
+# slots and frees every slot.
 func _test_batches() -> void:
 	var lights: Node3D = StreetLights.new()
 	# In the tree: the book draws in its world.
@@ -159,33 +165,107 @@ func _test_batches() -> void:
 	for i in 40:
 		raw.append_array([-250.0 + float(i) * 12.31, 3.7 + float(i) * 0.05, 240.0 - float(i) * 11.77,
 			-3.1 + float(i) * 0.157, float(i % 5)])
-	lights.set_chunk(Vector2i(1, -2), Vector3(768.0, 0.0, -768.0), raw)
+	var key := Vector2i(1, -2)
+	var origin := Vector3(768.0, 0.0, -768.0)
+	lights.set_chunk(key, origin, raw)
+	var drawing: StreetLightBook = lights.get("_book")
 	var expected := {}
 	for i in range(0, raw.size(), 5):
 		var t := Transform3D(Basis(Vector3.UP, raw[i + 3]), Vector3(raw[i], raw[i + 1], raw[i + 2]))
 		expected[PackedFloat32Array([t.basis.x.x, t.basis.y.x, t.basis.z.x, t.origin.x, t.basis.x.y,
 			t.basis.y.y, t.basis.z.y, t.origin.y, t.basis.x.z, t.basis.y.z, t.basis.z.z, t.origin.z]).to_byte_array().hex_encode()] = true
-	var seen := 0
-	var drawn: Vector2i = (lights.get("_book") as StreetLightBook).get_drawn_instances(Vector2i(1, -2))
-	var nodes := drawn.x
-	var glow := drawn.y
-	# The same lights through a book of its own: its buffers, as the nodes received them.
+	_expect(drawing.get_drawn_instances(key) == Vector2i(0, 48),
+		"one glow quad a head, no pole before a frame: %s" % drawing.get_drawn_instances(key))
+	# The 64 m cell batches the control drew, through a book of its own: per cell its kind and
+	# transforms.
 	var book := StreetLightBook.new()
 	book.set_kinds(PackedColorArray(StreetLights.LAMP_COLORS), PackedColorArray(StreetLights.LAMP_COLORS),
 		PackedByteArray([1, 1, 1, 1, 1]))
-	var batches := book.set_chunk(Vector2i(1, -2), Vector3(768.0, 0.0, -768.0), raw)
-	for buffer: PackedFloat32Array in batches["transforms"]:
+	var cells := book.set_chunk(key, origin, raw)
+	var cell_kinds: PackedByteArray = cells["kinds"]
+	var cell_rows: Array = cells["transforms"]
+	var seen := 0
+	for buffer: PackedFloat32Array in cell_rows:
 		for index in range(0, buffer.size(), 12):
-			var bytes := buffer.slice(index, index + 12).to_byte_array().hex_encode()
-			_expect(expected.has(bytes), "batch transform %s is a light's" % bytes)
-			seen += 3
-	_expect(nodes == seen, "the slots draw the book's batches: %d of %d" % [nodes, seen])
-	# Three levels of detail a light; the median pole has two heads.
-	_expect(seen == 3 * 40, "every light in three level-of-detail batches: %d" % seen)
-	_expect(glow == 48, "one glow quad a head: %d" % glow)
+			_expect(expected.has(buffer.slice(index, index + 12).to_byte_array().hex_encode()), "a cell transform is a light's")
+			seen += 1
+	_expect(seen == 40, "every light in a cell batch: %d" % seen)
+	# Per cell and level, the centre of the batch's bounds as the engine measured it: the mesh
+	# bounds through each instance of the slot's buffer (padded to its capacity with the first),
+	# merged in order, grown by the level's extra cull margin, in the chunk's frame.
+	var lods := StreetLightBook.pole_lods()
+	var margins: Array[float] = [SceneLighting.STATIC_CASTER_EXTRA_CULL_MARGIN_M,
+		SceneLighting.STATIC_CASTER_EXTRA_CULL_MARGIN_M, SceneLighting.RECEIVER_EXTRA_CULL_MARGIN_M]
+	var meshes: Array = lights.get("_meshes")
+	var engine := PackedVector3Array()
+	for cell in cell_kinds.size():
+		var rows: PackedFloat32Array = cell_rows[cell]
+		var capacity := StreetLightBook.slot_capacity(rows.size() / 12)
+		for lod in lods:
+			var mesh_aabb: AABB = (meshes[cell_kinds[cell]][lod] as ArrayMesh).get_aabb()
+			var bounds := AABB()
+			for instance in capacity:
+				var at := (instance if instance < rows.size() / 12 else 0) * 12
+				var t := Transform3D(Basis(Vector3(rows[at], rows[at + 4], rows[at + 8]),
+					Vector3(rows[at + 1], rows[at + 5], rows[at + 9]),
+					Vector3(rows[at + 2], rows[at + 6], rows[at + 10])), Vector3(rows[at + 3], rows[at + 7], rows[at + 11]))
+				bounds = t * mesh_aabb if instance == 0 else bounds.merge(t * mesh_aabb)
+			engine.append((Transform3D(Basis(), origin) * bounds.grow(margins[lod])).get_center())
+	var poles := drawing.pole_cells(key)
+	var centres: PackedVector3Array = poles["centres"]
+	_expect(centres.size() == cell_kinds.size() * lods, "a centre per cell and level: %d" % centres.size())
+	_expect(centres.to_byte_array() == engine.to_byte_array(), "cell centres are the engine's, bit for bit")
+	# The slots' kinds: a kind's batches in its first cell's order.
+	var slots := PackedByteArray()
+	for kind in cell_kinds:
+		if not slots.has(kind):
+			slots.append(kind)
+	_expect(poles["kinds"] == slots, "a batch per kind and level: %s" % poles["kinds"])
+	# Camera path: from the chunk out to 1,600 m and back, 3 m steps, a little above the poles.
+	var levels: Array[Vector2] = StreetLights.LOD_RANGES
+	var shown := PackedByteArray()
+	shown.resize(centres.size())
+	var path: Array[float] = []
+	for step in 534:
+		path.append(float(step) * 3.0)
+	for step in 534:
+		path.append(1599.0 - float(step) * 3.0)
+	var mismatches := 0
+	var levels_seen := {}
+	for distance in path:
+		var eye := origin + Vector3(distance * 0.8, 6.5, distance * 0.6)
+		drawing.draw_poles(eye)
+		# The engine's rule (fade disabled): a shown batch keeps the range widened by its margins.
+		var drawn := 0
+		for index in centres.size():
+			var lod := index % lods
+			var band: Vector2 = levels[lod]
+			var begin_margin := 10.0 if lod > 0 else 0.0
+			var end_margin := 10.0
+			var was := shown[index] != 0
+			var begin_offset := -begin_margin if was else begin_margin
+			var end_offset := end_margin if was else -end_margin
+			var d := eye.distance_to(centres[index])
+			var now := not (band.y > 0.0 and d > band.y + end_offset) and not (band.x > 0.0 and d < band.x + begin_offset)
+			shown[index] = 1 if now else 0
+			if now:
+				levels_seen[lod] = true
+		for slot in slots.size():
+			for lod in lods:
+				var want := PackedFloat32Array()
+				for cell in cell_kinds.size():
+					if cell_kinds[cell] == slots[slot] and shown[cell * lods + lod] != 0:
+						want.append_array(cell_rows[cell])
+				var held := drawing.pole_batch(key, slot, lod)
+				if held != want:
+					mismatches += 1
+				drawn += held.size() / 12
+		if drawing.get_drawn_instances(key).x != drawn:
+			mismatches += 1
+	_expect(mismatches == 0, "the batches hold the cells the engine's range shows: %d mismatches" % mismatches)
+	_expect(levels_seen.size() == lods, "the path crosses every level: %s" % levels_seen)
 	# A reset keeps the slots as spares; leaving the tree frees them all.
 	lights.clear()
-	var drawing: StreetLightBook = lights.get("_book")
 	var ledger: Dictionary = drawing.get_draw_ledger()
 	_expect(int(ledger["made"]) > 0 and ledger["live"] == 0
 		and int(ledger["made"]) - int(ledger["freed"]) == int(ledger["spares"]), "a reset keeps spares: %s" % ledger)

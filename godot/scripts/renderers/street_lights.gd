@@ -2,10 +2,12 @@
 
 ## Street lights along roads and footpaths (`ROAD-59`). Rust places them with each road chunk
 ## (`street_lights` in the chunk data: five floats per light, chunk-local pole base x, y, z, yaw,
-## model kind); a chunk's lights draw as one MultiMesh per 64 m cell, model and level of detail,
-## on the Rust book's pooled RenderingServer slots (`RENDER-52` part 2: no node or resource a
-## batch); this hands the book the merged meshes, material and world. Each model is merged into a
-## single surface, so a batch is one draw call. At night the
+## model kind); a chunk's lights draw as one MultiMesh per model and level of detail, on the Rust
+## book's pooled RenderingServer slots (`RENDER-52` part 2: no node or resource a batch); this
+## hands the book the merged meshes, material and world. Each pole keeps the level its 64 m cell's
+## own batch drew under Godot's visibility range: the book picks the cells from the main camera
+## just before each frame draws (`draw_poles`, `RENDER-46`). Each model is merged into a single
+## surface, so a batch is one draw call. At night the
 ## lamp grid, far light map and pool of real lights follow the camera; Rust builds them and the
 ## chunks' instance buffers (`StreetLightBook`, `RENDER-32-H`), this uploads the two textures and
 ## places the pool's lights.
@@ -26,8 +28,8 @@ const LAMP_COLORS: Array[Color] = [
 	Color(0.96, 0.92, 0.86),
 	Color(1.0, 0.82, 0.62),
 ]
-# Distance bands from each cell's centre, one per level of detail (the GLBs' _LOD0.._LOD2); the
-# Rust draw (`street_lights/draw.rs`) gives the batches these with 10 m of hysteresis.
+# Distance bands from each 64 m cell's centre, one per level of detail (the GLBs' _LOD0.._LOD2);
+# the Rust draw (`street_lights/draw.rs`) picks each cell's level by these with 10 m of hysteresis.
 const LOD_RANGES: Array[Vector2] = [Vector2(0.0, 140.0), Vector2(140.0, 420.0), Vector2(420.0, 1400.0)]
 const PART_ALPHA := {"pole": 0.0, "housing": 0.5, "lamp": 1.0}
 # Lamps light up below this sun elevation (matches street_light.gdshader).
@@ -54,7 +56,14 @@ var _far_texture: ImageTexture
 func configure_chunks(span_m: float, origin: Vector2) -> void:
 	_book.configure_chunks(span_m, origin)
 
+func _enter_tree() -> void:
+	# The pole levels follow the camera Godot draws from: after every script moved it.
+	if not RenderingServer.frame_pre_draw.is_connected(_before_draw):
+		RenderingServer.frame_pre_draw.connect(_before_draw)
+
 func _exit_tree() -> void:
+	if RenderingServer.frame_pre_draw.is_connected(_before_draw):
+		RenderingServer.frame_pre_draw.disconnect(_before_draw)
 	RenderingServer.global_shader_parameter_set("street_lamp_window", Vector4.ZERO)
 	# The batches' slots are no node's: freed here, before the meshes they name.
 	_book.release_draw()
@@ -99,19 +108,19 @@ func prewarm(keys := PackedInt32Array(), origins := PackedVector3Array(), lights
 	_attach_draw()
 	_book.prebuild_draw(keys, origins, lights)
 
-# Hands the book the meshes (every kind's three levels, then the glow quad), the lamp material
-# and this node's world. The book makes a hidden spare slot of every mesh as it attaches, so each
+# Hands the book the meshes (every kind's three levels, then the glow quad; their bounds place
+# the cells' level centres), the lamp material and this node's world. The book makes a hidden spare slot of every mesh as it attaches, so each
 # mesh's first-use costs fall in the load call's prewarm, not in a load frame's lights part
 # (4-9 ms at 30k, `RENDER-52` part 2). Outside the tree (tests) only the book's passes run.
 func _attach_draw() -> void:
 	if _draw_attached or not is_inside_tree():
 		return
-	var meshes: Array[RID] = []
+	var meshes: Array[Mesh] = []
 	for lods: Array in _meshes:
 		for lod in LOD_RANGES.size():
 			# A kind without its model draws nothing (the book skips its lights): a stand-in.
-			meshes.append((lods[lod] as ArrayMesh).get_rid() if not lods.is_empty() else _glow_mesh.get_rid())
-	meshes.append(_glow_mesh.get_rid())
+			meshes.append(lods[lod] as ArrayMesh if not lods.is_empty() else _glow_mesh)
+	meshes.append(_glow_mesh)
 	_draw_attached = _book.attach_draw(get_world_3d().scenario, meshes, _material.get_rid())
 
 func _upload(texture: ImageTexture, width: int, height: int, data: PackedByteArray, parameter: String) -> ImageTexture:
@@ -200,6 +209,20 @@ func _place_pool() -> void:
 		# Use the same range sphere as the material lamp.
 		light.spot_range = ranges[kind]
 		light.visible = true
+
+func _before_draw() -> void:
+	if not _draw_attached:
+		return
+	var camera := get_viewport().get_camera_3d()
+	if camera == null:
+		return
+	if not PerfDebug.is_enabled():
+		_book.draw_poles(camera.get_camera_transform().origin)
+		return
+	var start_us := Time.get_ticks_usec()
+	var changed := _book.draw_poles(camera.get_camera_transform().origin)
+	PerfDebug.record("street_light_poles", float(Time.get_ticks_usec() - start_us) / 1000.0,
+		{"batches_changed": changed})
 
 func set_chunk(key: Vector2i, origin: Vector3, lights: PackedFloat32Array) -> void:
 	begin_chunk(key, origin, lights)
