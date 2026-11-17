@@ -10,7 +10,8 @@
 use crate::debug_log;
 use crate::simulation::network::graph::RoadMedian;
 use crate::simulation::network::road_types::RoadAttributes;
-use crate::simulation::network::road_edit::{RoadPreviewValidation, RoadProfile};
+use crate::simulation::network::road_edit::{JunctionPlace, RoadPreviewValidation, RoadProfile};
+use crate::simulation::network::roadbed::NodeRole;
 use godot::prelude::Vector3;
 use serde::Serialize;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -62,7 +63,8 @@ pub(crate) struct RoadRejection {
     pub(crate) detail: String,
     /// World position the failed check measured, when it measured one.
     pub(crate) at: Option<Vector3>,
-    /// Prepared stroke ends: snapped node or open terrain, road and terrain heights.
+    /// Prepared stroke ends: snapped node, the road an end lands on with its station, or open
+    /// terrain; road and terrain heights.
     pub(crate) ends: String,
 }
 
@@ -184,6 +186,11 @@ fn validation_detail(
     validation: &RoadPreviewValidation,
     prepared: &[Vector3],
 ) -> (String, Option<Vector3>) {
+    if matches!(reason, "junction_corner_does_not_fit" | "junction_arm_too_short")
+        && let Some(place) = validation.junction_place
+    {
+        return (junction_place_text(reason, &place, validation), Some(place.position));
+    }
     match reason {
         "bridge_clearance" if validation.required_clearance_m <= 0.0 => (
             format!(
@@ -271,7 +278,7 @@ fn validation_detail(
             None,
         ),
         "junction_corner_does_not_fit" => (
-            "a junction corner does not fit within half of an arm, even at its minimum radius"
+            "a junction corner does not fit within its arm's room, even at its minimum radius"
                 .to_owned(),
             None,
         ),
@@ -355,24 +362,65 @@ fn validation_detail(
     }
 }
 
+// A junction that does not fit, by its place (`ROAD-118` round JS1): the failing node, the road
+// its short arm lies on, what stands across it, that road's length and the shortest that fits.
+fn junction_place_text(
+    reason: &str,
+    place: &JunctionPlace,
+    validation: &RoadPreviewValidation,
+) -> String {
+    let role = |role: NodeRole| match role {
+        NodeRole::Junction => "junction",
+        NodeRole::Bend => "bend",
+        NodeRole::RoadEnd => "road end",
+        NodeRole::Joint => "pass-through joint",
+    };
+    let node = match place.node {
+        Some(node) => format!("{} node {node}", role(place.roles[0])),
+        None => format!("the stroke's new {}", role(place.roles[0])),
+    };
+    let arm = match place.arm_edge {
+        Some(edge) => format!("edge {edge}"),
+        None => "the new road".to_owned(),
+    };
+    let what = match reason {
+        "junction_arm_too_short" => "is too short for the arm",
+        _ => "has no room for the corner",
+    };
+    let mut text = format!(
+        "{node} {what} along {arm}: {:.1} m to a {}",
+        validation.geometry_measured,
+        role(place.roles[1])
+    );
+    if validation.geometry_limit > 0.0 {
+        text.push_str(&format!(", the shortest that fits is {:.1} m", validation.geometry_limit));
+    } else {
+        text.push_str(", no length fits");
+    }
+    text
+}
+
 fn ends_text(validation: &RoadPreviewValidation) -> String {
-    let end = |node: i32, height: f32, terrain: f32| {
-        let at = if node >= 0 {
-            format!("node {node}")
-        } else {
-            "open terrain".to_owned()
+    let end = |node: i32, edge: Option<(usize, f32)>, height: f32, terrain: f32| {
+        let at = match (node, edge) {
+            (0.., _) => format!("node {node}"),
+            (_, Some((edge, station_m))) => format!("edge {edge} at {station_m:.1} m"),
+            _ => "open terrain".to_owned(),
         };
         format!("{at}, road y {height:.2}, terrain y {terrain:.2}")
     };
+    let [start_edge, end_edge] = validation.endpoint_edges;
     format!(
         "start {}; end {}",
         end(
             validation.start_endpoint_snapped_node_id,
+            start_edge,
             validation.start_endpoint_height_m,
             validation.start_endpoint_terrain_height_m
         ),
         end(
             validation.end_endpoint_snapped_node_id,
+            end_edge,
             validation.end_endpoint_height_m,
             validation.end_endpoint_terrain_height_m
         )
@@ -438,6 +486,8 @@ mod tests {
             required_clearance_m: 4.5,
             geometry_measured: 0.0,
             geometry_limit: 0.0,
+            junction_place: None,
+            endpoint_edges: [None; 2],
         }
     }
 

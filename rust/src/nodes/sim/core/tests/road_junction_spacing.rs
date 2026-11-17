@@ -1,0 +1,317 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
+//! `ROAD-118` round JS1 on the user's network of `dump-2026-11-15_11-27-06` (15 nodes, 16 1 + 1
+//! roads, laid flat): a road end reserves only its cap, so a T beside one builds (the dump's
+//! attempts 6 and the end of 5); the preview is the commit and undo restores the graph. Making
+//! the road end a bend brings the T back into the edit, which then refuses with the place named.
+
+use super::road_edit_order::{Stroke, committed_on};
+use super::road_preview::{assert_preview_composes_committed, context, preview};
+use super::*;
+use crate::nodes::sim::core::road_commit::{RoadCommitOutcome, RoadCommitRequest};
+use crate::nodes::sim::core::road_preview::RoadPreview;
+use crate::nodes::sim::core::road_rejection::RoadRejection;
+use crate::nodes::sim::road_tool::wording::{ReasonFacts, reason_text};
+use crate::simulation::network::road_edit::RoadPreviewValidation;
+use crate::simulation::network::roadbed::{NodeArms, NodeRole};
+use godot::prelude::Vector2;
+use std::sync::Arc;
+
+// The dump's node positions (XZ, rounded to the millimetre) and its edges, in edge order.
+const NODES: [(f32, f32); 15] = [
+    (-39.403, 1.762),
+    (88.580, 10.611),
+    (5.490, 4.866),
+    (9.628, -54.991),
+    (79.461, -50.163),
+    (1.351, 64.723),
+    (-58.506, 60.585),
+    (-94.272, -2.032),
+    (-64.344, 0.038),
+    (-71.241, 99.800),
+    (84.442, 70.468),
+    (-68.482, 59.895),
+    (-98.411, 57.826),
+    (-96.342, 27.897),
+    (-156.199, 23.758),
+];
+const EDGES: [(usize, usize); 16] = [
+    (0, 2),
+    (2, 3),
+    (2, 1),
+    (3, 4),
+    (2, 5),
+    (5, 6),
+    (0, 8),
+    (8, 11),
+    (8, 7),
+    (1, 10),
+    (5, 10),
+    (11, 12),
+    (11, 9),
+    (12, 13),
+    (13, 14),
+    (13, 7),
+];
+// The dead end of edge 5 and the joint of edges 0 and 6.
+const DEAD_END: usize = 6;
+const JOINT: usize = 0;
+
+fn at(node: usize) -> Vector2 {
+    Vector2::new(NODES[node].0, NODES[node].1)
+}
+
+fn dump_city() -> SimCore {
+    let strokes: Vec<Stroke> = EDGES.iter().map(|&(a, b)| ([at(a), at(b)], 1)).collect();
+    let order: Vec<usize> = (0..strokes.len()).collect();
+    let mut core = committed_on(512.0, &strokes, &order, false);
+    // Edits record their undo.
+    core.benchmark_mode = false;
+    assert_eq!(live_edges(&core), 16, "the dump's roads");
+    core
+}
+
+fn live_edges(core: &SimCore) -> usize {
+    core.region_graph
+        .edges()
+        .iter()
+        .filter(|edge| !edge.deleted)
+        .count()
+}
+
+// The point on edge 5 `from_end_m` from its dead end.
+fn on_edge_5(from_end_m: f32) -> Vector2 {
+    at(DEAD_END) + (at(5) - at(DEAD_END)).normalized() * from_end_m
+}
+
+fn stroke(core: &SimCore, ends: [Vector2; 2]) -> Vec<Vector3> {
+    ends.map(|point| {
+        Vector3::new(
+            point.x,
+            core.get_world_surface_height_internal(point),
+            point.y,
+        )
+    })
+    .to_vec()
+}
+
+fn commit(
+    core: &mut SimCore,
+    points: &[Vector3],
+    preview: Option<Arc<RoadPreview>>,
+) -> RoadCommitOutcome {
+    core.commit_road(
+        RoadCommitRequest {
+            parking: Default::default(),
+            points: points.to_vec(),
+            fwd_lanes: 1,
+            bkw_lanes: 1,
+            snap_to_existing_roads: true,
+            profile: crate::simulation::network::road_edit::RoadProfile::FollowGround,
+            median: None,
+            attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
+            preview,
+        },
+        std::time::Instant::now(),
+        Default::default(),
+    )
+}
+
+// Every live node and edge record, bit for bit: positions, aliases, ends, both polylines, clips.
+fn graph_hash(core: &SimCore) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let graph = &core.region_graph;
+    let mut hasher = std::hash::DefaultHasher::new();
+    let bits = |point: &Vector3| point.to_array().map(f32::to_bits);
+    for id in 0..graph.node_count() as u32 {
+        (graph.get_valid_node(id), bits(&graph.node(id).pos)).hash(&mut hasher);
+    }
+    for edge in graph.edges().iter().filter(|edge| !edge.deleted) {
+        (edge.start_node, edge.end_node).hash(&mut hasher);
+        edge.geometry
+            .iter()
+            .map(bits)
+            .for_each(|point| point.hash(&mut hasher));
+        edge.physical_geometry
+            .iter()
+            .map(bits)
+            .for_each(|point| point.hash(&mut hasher));
+        [edge.start_clip, edge.end_clip]
+            .map(f32::to_bits)
+            .hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
+// The node at `point`, and its smallest corner radius.
+fn node_at(core: &SimCore, point: Vector2) -> (u32, f64) {
+    let node = core
+        .region_graph
+        .find_node_within(Vector3::new(point.x, 0.0, point.y), 0.5)
+        .or_else(|| {
+            let height = core.get_world_surface_height_internal(point);
+            core.region_graph
+                .find_node_within(Vector3::new(point.x, height, point.y), 0.5)
+        })
+        .expect("a node there");
+    let layout = NodeArms::collect(&core.region_graph, node)
+        .expect("the node has arms")
+        .layout()
+        .expect("the node lays out");
+    let radius = layout
+        .sectors
+        .iter()
+        .filter_map(|sector| sector.corner.map(|corner| corner.radius_m))
+        .fold(f64::INFINITY, f64::min);
+    (node, radius)
+}
+
+fn degree(core: &SimCore, node: u32) -> usize {
+    core.region_graph
+        .node_adjacency(node)
+        .iter()
+        .filter(|&&edge| !core.region_graph.edge(edge).deleted)
+        .count()
+}
+
+// The dump's attempt 6: from the joint at node 0 to the point on edge 5 15 m from its dead end.
+// Refused before (a 7.5 m budget for an 8.5 m mouth), it builds a T with a 15 m stub at its full
+// radius; node 0 becomes a T too. The preview is the commit, and undo restores the graph.
+#[test]
+fn the_dumps_attempt_6_builds_a_t_with_its_15_m_stub() {
+    let mut core = dump_city();
+    let before = graph_hash(&core);
+    let points = stroke(&core, [at(JOINT), on_edge_5(15.0)]);
+    let mut context = context(&mut core);
+    let view_chunks = context.view.road_mesh_chunks.clone();
+    let preview = Arc::new(preview(&mut context, &points));
+    assert!(
+        preview.validation.is_valid,
+        "{}",
+        preview.validation.invalid_reason
+    );
+    let pieces = preview.pieces.as_ref().expect("a valid stroke compiles");
+    let outcome = commit(&mut core, &points, Some(Arc::clone(&preview)));
+    assert!(
+        outcome.committed,
+        "{} {}",
+        outcome.rejection_reason, outcome.rejection
+    );
+    assert_preview_composes_committed(&core, &view_chunks, pieces, "attempt 6");
+    assert!(core.transit_network.roadbed.failed_nodes().is_empty());
+    let (t, radius) = node_at(&core, on_edge_5(15.0));
+    assert_eq!(degree(&core, t), 3, "a T on edge 5");
+    assert_eq!(radius, 3.5, "the 15 m stub leaves the full radius");
+    assert_eq!(degree(&core, JOINT as u32), 3, "the joint became a T");
+    let stub = core
+        .region_graph
+        .node_adjacency(t)
+        .iter()
+        .map(|&edge| core.region_graph.edge(edge))
+        .find(|edge| [edge.start_node, edge.end_node].contains(&(DEAD_END as u32)))
+        .expect("the stub to the dead end");
+    let length_m = core.region_graph.calculate_length(&stub.geometry);
+    assert!((length_m - 15.0).abs() < 0.05, "{length_m}");
+    assert!(core.undo_action_internal());
+    assert_eq!(graph_hash(&core), before, "undo restores the graph");
+}
+
+// The end of the dump's attempt 5 alone: a T 10 m from the dead end builds at a reduced radius.
+// Then the dead end extended sideways is a bend 10 m from the T, which needs 17 m: the edit lays
+// the T out again and refuses, naming the place; a T 6 m from the dead end is refused as a road
+// end too close, and the report names the road the stroke ends on.
+#[test]
+fn a_t_10_m_from_a_road_end_builds_and_the_road_end_then_keeps_its_place() {
+    let mut core = dump_city();
+    // Along attempt 5's line, square to edge 5, from 30 m short of the road.
+    let back = (Vector2::new(-44.391, 1.417) - Vector2::new(-48.530, 61.274)).normalized();
+    let start = on_edge_5(10.0) + back * 30.0;
+    let points = stroke(&core, [start, on_edge_5(10.0)]);
+    let outcome = commit(&mut core, &points, None);
+    assert!(
+        outcome.committed,
+        "{} {}",
+        outcome.rejection_reason, outcome.rejection
+    );
+    let (t, radius) = node_at(&core, on_edge_5(10.0));
+    assert_eq!(degree(&core, t), 3);
+    assert!((2.0..3.5).contains(&radius), "a reduced radius: {radius}");
+
+    // Sideways off the dead end, a quarter turn from edge 5.
+    let along = (at(5) - at(DEAD_END)).normalized();
+    let sideways = at(DEAD_END) + Vector2::new(along.y, -along.x) * 30.0;
+    let sideways = if sideways.y < at(DEAD_END).y {
+        at(DEAD_END) - Vector2::new(along.y, -along.x) * 30.0
+    } else {
+        sideways
+    };
+    let points = stroke(&core, [at(DEAD_END), sideways]);
+    let mut view = context(&mut core);
+    let refused = preview(&mut view, &points).validation;
+    assert!(!refused.is_valid);
+    assert!(
+        matches!(
+            refused.invalid_reason,
+            "junction_corner_does_not_fit" | "junction_arm_too_short"
+        ),
+        "{}",
+        refused.invalid_reason
+    );
+    let place = refused.junction_place.expect("the refusal names its place");
+    let mut roles = place.roles;
+    roles.sort_by_key(|role| role.code());
+    assert_eq!(roles, [NodeRole::Junction, NodeRole::Bend]);
+    assert!((refused.geometry_measured - 10.0).abs() < 0.05);
+    assert_eq!(refused.geometry_limit, 17.0);
+    let text = reason_text(refused.invalid_reason, &facts(&refused)).unwrap();
+    assert!(
+        text == "Junction only 10.0 m from the bend; needs 17.0 m"
+            || text == "Bend only 10.0 m from the junction; needs 17.0 m",
+        "{text}"
+    );
+    let outcome = commit(&mut core, &points, None);
+    assert!(!outcome.committed, "the commit refuses it too");
+
+    // A T 6 m from the dead end of edge 3 is a road end too close; the report names the road
+    // the stroke ends on, where it used to say open terrain.
+    let (near, far) = (at(4), at(3));
+    let end = near + (far - near).normalized() * 6.0;
+    // Square to edge 3, from the north.
+    let along = (far - near).normalized();
+    let north = Vector2::new(-along.y, along.x) * along.x.signum();
+    let points = stroke(&core, [end + north * 30.0, end]);
+    let mut view = context(&mut core);
+    let refused = preview(&mut view, &points).validation;
+    assert!(!refused.is_valid);
+    let place = refused.junction_place.expect("the refusal names its place");
+    assert_eq!(place.roles, [NodeRole::Junction, NodeRole::RoadEnd]);
+    assert_eq!(place.node, None, "the stroke's new T");
+    assert_eq!(place.arm_edge, Some(3), "the stub lies on edge 3");
+    assert_eq!(
+        reason_text(refused.invalid_reason, &facts(&refused)).as_deref(),
+        Some("Road end only 6.0 m from the junction; needs 9.5 m")
+    );
+    let rejection = RoadRejection::from_validation(refused.invalid_reason, &refused, &points);
+    let station_m = near.distance_to(far) - 6.0;
+    assert!(
+        rejection
+            .ends
+            .contains(&format!("end edge 3 at {station_m:.1} m")),
+        "{}",
+        rejection.ends
+    );
+    assert!(
+        rejection.detail.contains("road end"),
+        "{}",
+        rejection.detail
+    );
+}
+
+fn facts(validation: &RoadPreviewValidation) -> ReasonFacts {
+    ReasonFacts {
+        geometry_measured: Some(f64::from(validation.geometry_measured)),
+        geometry_limit: f64::from(validation.geometry_limit),
+        junction_roles: validation.junction_place.map(|place| place.roles),
+        ..ReasonFacts::default()
+    }
+}

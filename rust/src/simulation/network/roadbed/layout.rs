@@ -99,7 +99,7 @@ const CURB_RETURN_CLEARANCE_M: f64 = 0.5;
 pub(crate) const CROSSWALK_DEPTH_M: f64 = 3.0;
 // s_min: every node piece reaches at least this far along each arm, so a mouth never sits on the
 // node's lateral line where round joins start.
-const MIN_MOUTH_STATION_M: f64 = 1.0;
+pub(super) const MIN_MOUTH_STATION_M: f64 = 1.0;
 // eps: sectors within one degree of a half turn are straight. That covers the direction noise of
 // a straight road split at a junction anywhere in a 20 km world (f32 knots, below about 1e-3 rad
 // over the first metre) and treats visually straight continuations as straight, so a width change
@@ -185,7 +185,8 @@ pub struct ArmInput<'a> {
     pub left: ArmSide<'a>,
     /// Bands on the right of the outward direction.
     pub right: ArmSide<'a>,
-    /// Furthest station this end may use, half the edge length; at most the last knot station.
+    /// Furthest station this end may use: the edge length less what the far end needs, half the
+    /// edge or a road end's cap (`ROAD-118`); at most the last knot station.
     pub max_station_m: f64,
     /// Whether the mouth carries a crosswalk (D8).
     pub crossable: bool,

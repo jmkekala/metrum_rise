@@ -24,9 +24,11 @@ mod system;
 mod terrain;
 mod walkways;
 
+pub use arms::NodeRole;
 pub(crate) use arms::{
-    NodeArms, crossing_arm_eligible, directions_pass_through, edges_pass_through,
-    is_tunnel_approach, medians_line_up, painted_median_continues,
+    NodeArms, arm_edge_needed_m, crossing_arm_eligible, directions_pass_through,
+    edges_pass_through, is_tunnel_approach, medians_line_up, node_role,
+    painted_median_continues, road_end_neighbours, road_ends_among,
 };
 pub(crate) use layout::CROSSWALK_DEPTH_M;
 pub(crate) use span::NOSE_CLEARANCE_M;

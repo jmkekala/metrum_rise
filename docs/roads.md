@@ -1445,7 +1445,12 @@ with one ground-level band per side, laid out by the corner and round-join rules
 straight pair of footpaths is a pass-through pair, but a footpath continuing a road end
 straight on attaches to its cap.
 
-**Fitting.** Each end may use at most half of its edge's length.
+**Fitting.** Each end may use its edge's length less what the far end needs (`ROAD-118` round
+JS1): a road end (a node where only this standard edge meets) needs only its cap's
+`MIN_MOUTH_STATION_M` (1 m), any other node half the edge. A pass-through far end keeps the half,
+so its span's crossing strip keeps its room and no layout depends on another layout; the budget
+is never below half, so no valid network becomes invalid. A 2-lane T so fits beside a road end
+with a 9.5 m stub (at its minimum corner radius), not 17 m.
 
 - If a corner does not fit, `R` is reduced towards `R_min`. If it still does not fit, layout
   returns `LayoutError::CornerDoesNotFit { arm }`.
@@ -1755,7 +1760,11 @@ An edit's dirty closure is:
 - every edge incident to those nodes, because their mouths may move
 
 Node pieces are rebuilt for those nodes and spans for those edges. The far end of an incident edge
-is unaffected unless the edge itself changed, because a layout reads only its own arms.
+is unaffected unless the edge itself changed, because a layout reads only its own arms and
+whether each arm's far end is a road end (Fitting). An edit that joins a road end therefore
+brings the node one hop beyond it into its affected set (`topology::process_intersections_splitting_at`
+returns them, `roadbed::road_end_neighbours`, `O(candidates x degree)`); a road removal already
+takes the far ends of both its nodes' edges.
 
 Render chunks keep the existing terrain-aligned grid. A changed piece rebuilds the sorted union of
 its old and new chunks. A triangle inside one chunk goes there whole; one crossing chunk lines is

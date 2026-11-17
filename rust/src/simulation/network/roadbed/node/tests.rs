@@ -712,3 +712,66 @@ mod families;
 mod footpaths;
 mod probe;
 mod rings;
+
+// `ROAD-118` round JS1: an arm whose far end is a road end may use its whole edge but the cap's
+// metre. A 2-lane T fits with a 9.5 m stub to a road end at its minimum corner radius and with
+// 11 m and 15 m at its full one, and refuses 9.4 m; a far end that is a bend still leaves the arm
+// half its edge, and the shortest stub that fits is the layout's own answer.
+#[test]
+fn a_stub_to_a_road_end_takes_all_but_the_cap() {
+    use crate::simulation::network::roadbed::{ArmKey, EdgeEnd, arm_edge_needed_m};
+    // The T's smallest corner radius with a south stub of `stub_m`, and the stub's need; a bend
+    // at the stub's end with `bend`.
+    let t_with_stub = |stub_m: f32, bend: bool| {
+        let mut graph = RegionGraph::new();
+        let centre = graph.add_node(point(0.0, 0.0, false), NodeType::Junction);
+        let west = graph.add_node(point(-60.0, 0.0, false), NodeType::Junction);
+        let east = graph.add_node(point(60.0, 0.0, false), NodeType::Junction);
+        let south = graph.add_node(point(0.0, stub_m, false), NodeType::Junction);
+        let mut pairs = vec![(west, centre), (centre, east), (south, centre)];
+        if bend {
+            let beyond = graph.add_node(point(60.0, stub_m, false), NodeType::Junction);
+            pairs.push((south, beyond));
+        }
+        for (a, b) in pairs {
+            let edge = connect(&mut graph, a, b, 7.0, false);
+            let edge = graph.edge_mut(edge);
+            edge.fwd_lanes = 1;
+            edge.bkw_lanes = 1;
+        }
+        let stub = ArmKey {
+            edge: 2,
+            end: EdgeEnd::End,
+        };
+        let radius = NodeArms::collect(&graph, centre)
+            .unwrap()
+            .layout()
+            .map(|layout| {
+                layout
+                    .sectors
+                    .iter()
+                    .filter_map(|sector| sector.corner.map(|corner| corner.radius_m))
+                    .fold(f64::INFINITY, f64::min)
+            });
+        (radius, arm_edge_needed_m(&graph, centre, stub))
+    };
+    let (full_m, min_m) = (3.5, 2.0);
+    let (at_minimum, needed_m) = t_with_stub(9.5, false);
+    let at_minimum = at_minimum.expect("9.5 m fits");
+    assert!((at_minimum - min_m).abs() < 0.05, "{at_minimum}");
+    let needed_m = needed_m.expect("a stub length fits");
+    assert!((9.49..=9.501).contains(&needed_m), "{needed_m}");
+    for stub_m in [11.0, 15.0] {
+        assert_eq!(t_with_stub(stub_m, false).0, Ok(full_m), "{stub_m} m");
+    }
+    assert!(matches!(
+        t_with_stub(9.4, false).0,
+        Err(LayoutError::CornerDoesNotFit { .. } | LayoutError::ArmTooShort { .. })
+    ));
+    // A bend at the stub's end keeps the half rule: 15 m leaves 7.5 m, and the road between
+    // them needs twice the T's minimum mouth.
+    let (beside_bend, needed_m) = t_with_stub(15.0, true);
+    assert!(beside_bend.is_err(), "{beside_bend:?}");
+    let needed_m = needed_m.expect("a length fits");
+    assert!((16.99..=17.001).contains(&needed_m), "{needed_m}");
+}

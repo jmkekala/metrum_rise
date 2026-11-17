@@ -15,6 +15,12 @@
 //! edge's [`RoadProfile`]: for an arm leaving from its edge's start, the layout's left is the
 //! profile's positive lateral side; at the edge's end both the axis and the sides swap.
 //!
+//! An arm may use its edge up to what the far end needs (`ROAD-118` round JS1,
+//! [`arm_max_station_m`]): a road end needs only its cap's `MIN_MOUTH_STATION_M`, any other node
+//! half the edge. A layout so reads one node beyond its own: whether each arm's far end is a road
+//! end ([`far_end_is_road_end`]), which edits that make or unmake a road end bring into their
+//! affected set ([`road_end_neighbours`]).
+//!
 //! Collection is `O(degree * arm points)`. [`NodeArms::collect`] and [`NodeArms::layout`]
 //! allocate the returned buffers; collecting and laying out again in reused arms, layout and
 //! `ArmsScratch` (`NodeArms::collect_into`, `NodeArms::layout_into`) allocates nothing once
@@ -22,7 +28,7 @@
 
 use super::layout::{
     ArmBand, ArmInput, ArmKey, ArmKnot, ArmSide, CROSSWALK_DEPTH_M, EdgeEnd, JunctionLayout,
-    LayoutError, LayoutScratch,
+    LayoutError, LayoutScratch, MIN_MOUTH_STATION_M,
 };
 use super::mesh::{SpanEnd, StripKind};
 use super::profile::{Level, MedianEdges, PocketNarrowing, ProfileBand, RoadProfile};
@@ -119,7 +125,7 @@ impl NodeArms {
             position: RoadVec2::new(f64::from(pos.x), f64::from(pos.z)),
             ..Self::default()
         };
-        arms.push_arm(key, graph.edge(key.edge), false, false);
+        arms.push_arm(graph, key, false, false);
         (arms.knots.len() >= 2 && arms.centreline.len() >= 2).then_some(arms)
     }
 
@@ -180,12 +186,13 @@ impl NodeArms {
                 None => junction_arm_crosses(graph, node, road_incidents, road),
             });
             let attached = road.is_none() && !roads.is_empty();
-            self.push_arm(key, graph.edge(key.edge), crossable, attached);
+            self.push_arm(graph, key, crossable, attached);
         }
         true
     }
 
-    fn push_arm(&mut self, key: ArmKey, edge: &Edge, crossable: bool, attached: bool) {
+    fn push_arm(&mut self, graph: &RegionGraph, key: ArmKey, crossable: bool, attached: bool) {
+        let edge = graph.edge(key.edge);
         let knots_start = self.knots.len();
         let mut station_m = 0.0;
         for (_, point) in walk_away(&edge.geometry, key.end) {
@@ -225,7 +232,7 @@ impl NodeArms {
             knots,
             centreline: centreline_start..self.centreline.len(),
             sides,
-            max_station_m: 0.5 * station_m,
+            max_station_m: arm_max_station_m(station_m, far_end_is_road_end(graph, key)),
             crossable,
             attached,
             structure: edge.class != EdgeClass::Standard,
@@ -867,6 +874,211 @@ fn degree_two_crossings(
         .filter(|&from| !span_owned && crosses[from] && free(from) && eligible(1 - from))
         .map(|from| (from, free(1 - from).then_some(1 - from)));
     DegreeTwoCrossings { crosses, fallback }
+}
+
+/// The furthest station an arm of `edge_m` horizontal metres may use (`ROAD-118` round JS1): the
+/// edge less what its far end needs, `MIN_MOUTH_STATION_M` at a road end (its cap's mouth, D2)
+/// and half the edge at any other node. A pass-through far end keeps the half, so a crossing strip
+/// on its span (D8, [`degree_two_crossings`]) still has its room and no layout depends on another
+/// layout. Never below half: budgets only grow. `O(1)`.
+pub(super) fn arm_max_station_m(edge_m: f64, far_road_end: bool) -> f64 {
+    let half_m = 0.5 * edge_m;
+    if far_road_end {
+        (edge_m - MIN_MOUTH_STATION_M).max(half_m)
+    } else {
+        half_m
+    }
+}
+
+/// Whether arm `key`'s far end is a road end (`ROAD-118`): the node at the other end of a
+/// standard edge, which no other live surface edge meets (a self-loop meets its node twice). The
+/// one input of a layout beyond its own arms ([`arm_max_station_m`]). `O(far degree)`, allocation
+/// free.
+pub(super) fn far_end_is_road_end(graph: &RegionGraph, key: ArmKey) -> bool {
+    let edge = graph.edge(key.edge);
+    let far = match key.end {
+        EdgeEnd::Start => edge.end_node,
+        EdgeEnd::End => edge.start_node,
+    };
+    edge.class == EdgeClass::Standard
+        && sole_edge(graph, graph.get_valid_node(far), None) == Some(key.edge)
+}
+
+// The one live surface edge end at valid node `node`, `ignore` aside, or `None` where none or
+// more than one meet it. `O(degree)`.
+fn sole_edge(graph: &RegionGraph, node: u32, ignore: Option<usize>) -> Option<usize> {
+    if node as usize >= graph.node_adjacency_count() {
+        return None;
+    }
+    let mut sole = None;
+    let mut ends = 0;
+    for &edge_idx in graph.node_adjacency(node) {
+        let Some(edge) = graph
+            .get_edge(edge_idx)
+            .filter(|edge| Some(edge_idx) != ignore && is_surface_edge(edge))
+        else {
+            continue;
+        };
+        let meets = [edge.start_node, edge.end_node]
+            .into_iter()
+            .filter(|&end| graph.get_valid_node(end) == node)
+            .count();
+        if meets > 0 && sole != Some(edge_idx) {
+            ends += meets;
+            sole = Some(edge_idx);
+        }
+    }
+    sole.filter(|_| ends == 1)
+}
+
+/// The road ends among `nodes` (`ROAD-118`), each with its one edge, as an edit that may add
+/// edges there finds them before it does; `ignore` is an edge already added and not yet part of
+/// the network (the stroke). Feed them to [`road_end_neighbours`] after the edit. `O(nodes x
+/// degree)`.
+pub(crate) fn road_ends_among(
+    graph: &RegionGraph,
+    nodes: impl IntoIterator<Item = u32>,
+    ignore: Option<usize>,
+    out: &mut Vec<(u32, usize)>,
+) {
+    for node in nodes {
+        let node = graph.get_valid_node(node);
+        if let Some(edge) = sole_edge(graph, node, ignore)
+            .filter(|&edge| graph.edge(edge).class == EdgeClass::Standard)
+        {
+            out.push((node, edge));
+        }
+    }
+    out.sort_unstable();
+    out.dedup();
+}
+
+/// The far nodes whose layouts change with a road end the edit unmade (`ROAD-118`): for each
+/// `(node, edge)` [`road_ends_among`] listed, when `node` no longer ends `edge` alone, the node at
+/// the other end of `edge`, whose arm along it now leaves the far end half the edge
+/// ([`arm_max_station_m`]). One hop, `O(listed x degree)`.
+pub(crate) fn road_end_neighbours(
+    graph: &RegionGraph,
+    road_ends: &[(u32, usize)],
+) -> impl Iterator<Item = u32> {
+    road_ends.iter().filter_map(|&(node, edge_idx)| {
+        let node = graph.get_valid_node(node);
+        let edge = graph.get_edge(edge_idx).filter(|edge| is_surface_edge(edge))?;
+        let (start, end) = (
+            graph.get_valid_node(edge.start_node),
+            graph.get_valid_node(edge.end_node),
+        );
+        let still = edge.class == EdgeClass::Standard && sole_edge(graph, node, None) == Some(edge_idx);
+        match (still, start == node, end == node) {
+            (false, true, false) => Some(end),
+            (false, false, true) => Some(start),
+            _ => None,
+        }
+    })
+}
+
+/// What a node is to the road between it and a neighbour (`ROAD-118`): the places a junction
+/// refusal names, in the player's words.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NodeRole {
+    /// Three or more arms.
+    Junction,
+    /// Two arms that do not pass through: a turn, or a change of road type.
+    Bend,
+    /// One arm, closed by its cap.
+    RoadEnd,
+    /// Two arms of one profile in a straight line: a joint the player does not see.
+    Joint,
+}
+
+impl NodeRole {
+    /// The role's code in a verdict dictionary (`junction_roles`).
+    pub fn code(self) -> i32 {
+        match self {
+            Self::Junction => 0,
+            Self::Bend => 1,
+            Self::RoadEnd => 2,
+            Self::Joint => 3,
+        }
+    }
+
+    /// The role of [`Self::code`] `code`.
+    pub fn from_code(code: i64) -> Option<Self> {
+        Some(match code {
+            0 => Self::Junction,
+            1 => Self::Bend,
+            2 => Self::RoadEnd,
+            3 => Self::Joint,
+            _ => return None,
+        })
+    }
+}
+
+/// The role of `node`, `None` for a node merged into another or with no surface arm.
+/// `O(degree)`; it allocates, for refusals only.
+pub(crate) fn node_role(graph: &RegionGraph, node: u32) -> Option<NodeRole> {
+    let incidents = node_incidents(graph, graph.get_valid_node(node))?;
+    Some(match incidents.len() {
+        0 => return None,
+        1 => NodeRole::RoadEnd,
+        2 if passes_through(graph, &incidents) => NodeRole::Joint,
+        2 => NodeRole::Bend,
+        _ => NodeRole::Junction,
+    })
+}
+
+// How far the arm whose need is sought runs on straight past its edge's end, so a need longer
+// than the edge is still the layout's answer.
+const NEED_EXTENSION_M: f64 = 40.0;
+// Bisection steps for the need: 2^-18 of the searched interval, under a millimetre for edges up
+// to 200 m.
+const NEED_BISECTION_STEPS: usize = 18;
+
+/// The shortest edge on which arm `key` of `node` lays out (`ROAD-118` round JS1): the least
+/// station budget at which the node's layout succeeds, the arm running on straight past its edge's
+/// end and every other arm as it is, plus what the far end reserves ([`arm_max_station_m`]: a road
+/// end's cap, else the same again). `None` when the node does not lay out at any budget (another
+/// arm or another rule fails it). The layout's own answer, by bisection: for refusals only,
+/// `O(NEED_BISECTION_STEPS x (degree x arm points + layout))`.
+pub(crate) fn arm_edge_needed_m(graph: &RegionGraph, node: u32, key: ArmKey) -> Option<f64> {
+    let node = graph.get_valid_node(node);
+    let mut arms = NodeArms::default();
+    let mut scratch = ArmsScratch::default();
+    let mut layout = JunctionLayout::empty();
+    let mut lays_out = |budget_m: f64| {
+        if !arms.collect_into(graph, node, &mut scratch) {
+            return None;
+        }
+        let index = arms.arms.iter().position(|arm| arm.key == key)?;
+        let knots = arms.arms[index].knots.clone();
+        if knots.len() < 2 {
+            return None;
+        }
+        let [before, last] = [knots.end - 2, knots.end - 1].map(|knot| arms.knots[knot]);
+        let along = (last.position - before.position).normalize_or_zero();
+        arms.knots[knots.end - 1].position += along * NEED_EXTENSION_M;
+        arms.knots[knots.end - 1].station_m += NEED_EXTENSION_M;
+        arms.arms[index].max_station_m = budget_m;
+        Some(arms.layout_into(&mut layout, &mut scratch).is_ok())
+    };
+    let edge_m = horizontal_length_m(&graph.edge(key.edge).geometry);
+    let (mut fails, mut fits) = (0.0, edge_m + NEED_EXTENSION_M);
+    if !lays_out(fits)? {
+        return None;
+    }
+    for _ in 0..NEED_BISECTION_STEPS {
+        let budget_m = 0.5 * (fails + fits);
+        if lays_out(budget_m)? {
+            fits = budget_m;
+        } else {
+            fails = budget_m;
+        }
+    }
+    Some(if far_end_is_road_end(graph, key) {
+        fits + MIN_MOUTH_STATION_M
+    } else {
+        2.0 * fits
+    })
 }
 
 fn is_road(graph: &RegionGraph, key: ArmKey) -> bool {

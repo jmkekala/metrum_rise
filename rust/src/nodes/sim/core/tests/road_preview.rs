@@ -65,12 +65,12 @@ fn stroke(core: &SimCore, ends: [Vector2; 2]) -> Vec<Vector3> {
 }
 
 // The road tool's context as a publication leaves it: terrain inputs rebuilt first.
-fn context(core: &mut SimCore) -> RoadPreviewContext {
+pub(super) fn context(core: &mut SimCore) -> RoadPreviewContext {
     core.refresh_road_terrain_inputs();
     RoadPreviewContext::capture(road_tool_snapshot_from_core(core).expect("current roadbed"))
 }
 
-fn preview(context: &mut RoadPreviewContext, points: &[Vector3]) -> RoadPreview {
+pub(super) fn preview(context: &mut RoadPreviewContext, points: &[Vector3]) -> RoadPreview {
     preview_with(context, points, None)
 }
 
@@ -393,7 +393,7 @@ fn undo_rebuilds_lanes_locally_as_a_full_rebuild_would() {
 // runs dropped, its overlay merged) against the chunks the commit then published: layers,
 // crossing frames and owner runs bitwise (`ROAD-68-H` round 3). The overlays carry no lights or
 // signs. Returns whether an overlay paints a crossing.
-fn assert_preview_composes_committed(
+pub(super) fn assert_preview_composes_committed(
     core: &SimCore,
     view_chunks: &crate::simulation::network::render::RoadChunkMap,
     pieces: &crate::nodes::sim::core::road_preview::RoadPreviewPieces,

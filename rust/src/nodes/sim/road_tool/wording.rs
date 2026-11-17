@@ -11,6 +11,7 @@
 use std::fmt::Write;
 
 use super::labels::{EndPart, HintStep, LabelKind, LabelTone, ToolLabel};
+use crate::simulation::network::roadbed::NodeRole;
 
 /// The numbers a refusal's text quotes, as the stroke preview's dictionary carries them
 /// (`clearance_m`, `required_clearance_m`, `geometry_measured`, `geometry_limit`; 0 when absent).
@@ -24,6 +25,10 @@ pub struct ReasonFacts {
     pub geometry_measured: Option<f64>,
     /// The rule's limit for it.
     pub geometry_limit: f64,
+    /// A junction that does not fit (`ROAD-118`): the failing node's role and the role of the
+    /// node across its short arm (`junction_roles`), with that road's length as measured and the
+    /// shortest that fits as the limit (0 when none does).
+    pub junction_roles: Option<[NodeRole; 2]>,
 }
 
 /// What a notice chip words: the draft's own refusal, else the standing preview's verdict.
@@ -179,10 +184,52 @@ fn push_notice(tone: LabelTone, notice: &NoticeFacts, out: &mut String) {
 /// The text for a refusal the preview names without one of its own.
 pub const DEFAULT_REFUSAL: &str = "Road cannot be placed";
 
+// A junction that does not fit, by the place (`ROAD-118` round JS1): the two nodes across the
+// short road, its length and the shortest that fits. "Junction only 10.0 m from the bend; needs
+// 17.0 m", "Road end only 6.0 m from the junction; needs 9.5 m". `None` without the place.
+fn spacing_text(facts: &ReasonFacts) -> Option<String> {
+    let [node, far] = facts.junction_roles?;
+    let length_m = facts.geometry_measured?;
+    let name = |role: NodeRole| match role {
+        NodeRole::Junction => "junction",
+        NodeRole::Bend => "bend",
+        NodeRole::RoadEnd => "road end",
+        NodeRole::Joint => "joint in the road",
+    };
+    // The road end is what stands too close; two junctions are apart.
+    let (subject, object) = if far == NodeRole::RoadEnd { (far, node) } else { (node, far) };
+    let mut text = if subject == object {
+        format!("{}s only {length_m:.1} m apart", capitalized(name(subject)))
+    } else {
+        format!(
+            "{} only {length_m:.1} m from the {}",
+            capitalized(name(subject)),
+            name(object)
+        )
+    };
+    if facts.geometry_limit > 0.0 {
+        let _ = write!(text, "; needs {:.1} m", facts.geometry_limit);
+    }
+    Some(text)
+}
+
+fn capitalized(word: &str) -> String {
+    let mut chars = word.chars();
+    chars
+        .next()
+        .map(|first| first.to_ascii_uppercase().to_string() + chars.as_str())
+        .unwrap_or_default()
+}
+
 /// The player's text for Rust's road refusal key `reason` with the numbers it quotes, `None`
 /// for a key without one (the caller's fallback).
 pub fn reason_text(reason: &str, facts: &ReasonFacts) -> Option<String> {
     let measured = facts.geometry_measured.unwrap_or(0.0);
+    if matches!(reason, "junction_corner_does_not_fit" | "junction_arm_too_short")
+        && let Some(text) = spacing_text(facts)
+    {
+        return Some(text);
+    }
     Some(match reason {
         "bridge_clearance" => format!("Bridge clearance {:.1} m / {:.1} m", facts.clearance_m, facts.required_clearance_m),
         "tunnel_cover" => format!("Tunnel cover {:.1} m / {:.1} m: draw the ends outside the hill", facts.clearance_m, facts.required_clearance_m),
@@ -214,7 +261,7 @@ pub fn reason_text(reason: &str, facts: &ReasonFacts) -> Option<String> {
         },
         "road_tight_curve" => format!("Curve too tight: radius {:.1} m, needs {:.1} m", measured, facts.geometry_limit),
         "junction_arm_angle" => format!("Roads meet at {:.0}°; junction arms need {:.0}°", measured, facts.geometry_limit),
-        "junction_corner_does_not_fit" => "Junction corner does not fit; lengthen the roads between junctions".into(),
+        "junction_corner_does_not_fit" => "Junction corner does not fit here".into(),
         "junction_core_not_simple" => "Junction roads overlap; widen the angle between them".into(),
         "junction_band_mismatch" => "These road types cannot meet at a junction yet".into(),
         "junction_arm_too_short" => "Road too short for its junction".into(),
@@ -431,6 +478,7 @@ mod tests {
             required_clearance_m: 4.5,
             geometry_measured: Some(7.0),
             geometry_limit: 6.0,
+            junction_roles: None,
         };
         let say = |reason| reason_text(reason, &facts);
         assert_eq!(
@@ -455,5 +503,43 @@ mod tests {
         );
         assert_eq!(say("no_such_key"), None);
         assert_eq!(say(""), None);
+    }
+
+    // A junction that does not fit names the place: the two nodes across the short road, its
+    // length and the shortest that fits (`ROAD-118` round JS1).
+    #[test]
+    fn spacing_texts_name_the_place() {
+        let facts = |roles, measured, limit| ReasonFacts {
+            geometry_measured: Some(measured),
+            geometry_limit: limit,
+            junction_roles: Some(roles),
+            ..ReasonFacts::default()
+        };
+        let say = |reason, roles, measured, limit| {
+            reason_text(reason, &facts(roles, measured, limit)).unwrap()
+        };
+        use NodeRole::*;
+        let corner = "junction_corner_does_not_fit";
+        assert_eq!(
+            say(corner, [Junction, Bend], 10.04, 17.0),
+            "Junction only 10.0 m from the bend; needs 17.0 m"
+        );
+        assert_eq!(
+            say("junction_arm_too_short", [Junction, RoadEnd], 6.0, 9.5),
+            "Road end only 6.0 m from the junction; needs 9.5 m"
+        );
+        assert_eq!(
+            say(corner, [Junction, Junction], 12.0, 17.0),
+            "Junctions only 12.0 m apart; needs 17.0 m"
+        );
+        assert_eq!(
+            say(corner, [Bend, Joint], 5.0, 0.0),
+            "Bend only 5.0 m from the joint in the road"
+        );
+        // Without the place, the key's own words, which ask nothing of the player.
+        assert_eq!(
+            reason_text(corner, &ReasonFacts::default()).as_deref(),
+            Some("Junction corner does not fit here")
+        );
     }
 }

@@ -946,7 +946,11 @@ impl SimulationNode {
                 .and_then(|value| value.try_to::<i64>().ok())
                 .map_or(-1, |id| i32::try_from(id).unwrap_or(-1))
         };
+        let (junction_place, endpoint_edges) =
+            crate::nodes::road_wording::read_refusal_places(dict);
         RoadPreviewValidation {
+            junction_place,
+            endpoint_edges,
             is_valid: false,
             invalid_reason: "",
             max_grade: number("max_grade"),
@@ -1050,6 +1054,7 @@ impl SimulationNode {
         );
         dict.set("clearance_m", validation.clearance_m);
         dict.set("required_clearance_m", validation.required_clearance_m);
+        crate::nodes::road_wording::write_refusal_places(validation, &mut dict);
         dict
     }
 }

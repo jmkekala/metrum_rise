@@ -7,7 +7,7 @@
 
 use super::TransitNetwork;
 use super::graph::{Edge, Node, RegionGraph, RoadPocket};
-use super::roadbed::EdgeEnd;
+use super::roadbed::{self, EdgeEnd};
 use super::interaction;
 use super::types::*;
 use crate::config;
@@ -1021,7 +1021,10 @@ pub fn process_intersections(
 /// As [`process_intersections`], the edge meeting other roads by `grade` (`ROAD-99`), and also
 /// splitting `edge_id` at `extra`: `(geometry factor, node)` pairs of nodes the caller placed on
 /// the edge, such as a tunnel's portals (`ROAD-61`), applied with the crossings in the same
-/// ordered pass.
+/// ordered pass. Returns the nodes one hop beyond the road ends the edge joined (`ROAD-118`,
+/// [`roadbed::road_end_neighbours`]), whose layouts the caller adds to the edit's affected set:
+/// a joined road end no longer leaves its neighbour's arm all but its cap.
+/// `O(candidates x degree)` beyond the splits.
 pub(crate) fn process_intersections_splitting_at(
     network: &mut TransitNetwork,
     graph: &mut RegionGraph,
@@ -1030,11 +1033,22 @@ pub(crate) fn process_intersections_splitting_at(
     extra: &[(f32, u32)],
     zoning: &mut crate::simulation::zoning::ZoningSystem,
     allocator: &mut crate::simulation::buildings::allocator::BuildingAllocator,
-) {
+) -> Vec<u32> {
     let t0 = std::time::Instant::now();
 
     // 1. Scan for candidates
     let candidates = scan_intersection_candidates(graph, edge_id);
+    // The road ends the edge may join, before it does: its own ends and every candidate's.
+    let mut road_ends = Vec::new();
+    let ends = |edge: &Edge| [edge.start_node, edge.end_node];
+    roadbed::road_ends_among(
+        graph,
+        ends(graph.edge(edge_id))
+            .into_iter()
+            .chain(candidates.iter().flat_map(|&id| ends(graph.edge(id)))),
+        Some(edge_id),
+        &mut road_ends,
+    );
     let mut all_splits: HashMap<usize, Vec<(f32, u32)>> = HashMap::new();
 
     // 2. Collect all splits: geometric crossings, endpoint snaps, interior-node snaps.
@@ -1079,6 +1093,7 @@ pub(crate) fn process_intersections_splitting_at(
 
     // 4. Apply splits to the graph and dependent systems
     apply_splits(all_splits, network, graph, zoning, allocator);
+    let joined_road_ends = roadbed::road_end_neighbours(graph, &road_ends).collect();
 
     let dt_total_us = t0.elapsed().as_micros();
     crate::debug_log!(
@@ -1088,6 +1103,7 @@ pub(crate) fn process_intersections_splitting_at(
         candidates.len(),
         dt_total_us
     );
+    joined_road_ends
 }
 
 // Knots closer than this to a split junction merge into it (see `split_edge`): the distance

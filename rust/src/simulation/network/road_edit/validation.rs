@@ -24,7 +24,8 @@ use crate::simulation::core::config::WorldConfig;
 use crate::simulation::network::graph::{Edge, RegionGraph, RoadMedian, RoadParking};
 use crate::simulation::network::road_types::RoadAttributes;
 use crate::simulation::network::roadbed::{
-    LayoutError, NodeError, check_node, preview_candidate_roadbed_half_width_m,
+    EdgeEnd, LayoutError, NodeError, NodeRole, arm_edge_needed_m, check_node, node_role,
+    preview_candidate_roadbed_half_width_m,
 };
 use crate::simulation::network::types::{EdgeClass, NodeType, TransitFlags};
 use crate::simulation::network::grade::{ROAD_GRADE_MAX, SteepestGrade, steepest_grade};
@@ -145,8 +146,31 @@ pub(crate) struct RoadPreviewValidation {
     /// change per metre, curve radius in metres, junction arm angle in degrees or junction arm
     /// count.
     pub(crate) geometry_measured: f32,
-    /// The limit that measurement broke, in the same unit.
+    /// The limit that measurement broke, in the same unit. For a junction that does not fit
+    /// (`ROAD-118`), the failing arm's road length as measured and the shortest that fits as the
+    /// limit (0 when no length fits), rounded up to 0.1 m.
     pub(crate) geometry_limit: f32,
+    /// The place a junction refusal names (`ROAD-118` round JS1); `None` for any other verdict.
+    pub(crate) junction_place: Option<JunctionPlace>,
+    /// Each stroke end's road where a refused stroke ends on one between its nodes, start then
+    /// end: the live edge id and the end's station along it from its start node, horizontal
+    /// metres. `None` at a node, on open terrain and on accepted strokes.
+    pub(crate) endpoint_edges: [Option<(usize, f32)>; 2],
+}
+
+/// Where a junction refusal happened (`ROAD-118` round JS1), in the committed graph's ids where
+/// the edit keeps them.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct JunctionPlace {
+    /// The node whose layout fails: its live id, `None` for a node the stroke makes.
+    pub(crate) node: Option<u32>,
+    /// Where that node stands.
+    pub(crate) position: Vector3,
+    /// The road the failing arm lies on: its live id (a split piece names the road it splits),
+    /// `None` for a piece of the stroke.
+    pub(crate) arm_edge: Option<usize>,
+    /// The failing node's role and the role of the node across the failing arm, after the edit.
+    pub(crate) roles: [NodeRole; 2],
 }
 
 impl RoadPreviewValidation {
@@ -181,6 +205,8 @@ impl RoadPreviewValidation {
             required_clearance_m: 0.0,
             geometry_measured: 0.0,
             geometry_limit: 0.0,
+            junction_place: None,
+            endpoint_edges: [None; 2],
         }
     }
 
@@ -243,14 +269,85 @@ pub(crate) fn validate_road_edit(
             None,
         );
     }
-    validate_against_graph(
+    let (mut validation, plan) = validate_against_graph(
         prepared_input,
         fwd_lanes,
         bkw_lanes,
         terrain,
         existing_graph,
         new_edge_validation,
-    )
+    );
+    if !validation.is_valid {
+        record_endpoint_edges(&mut validation, &prepared_input.points, existing_graph);
+    }
+    (validation, plan)
+}
+
+// Where a refused stroke's ends stand on a road between its nodes (`ROAD-118`): the road the
+// topology's end join takes, the nearest centreline within `INTERSECTION_TOLERANCE` (lowest id
+// on a tie), and the station of the nearest point along it. For the refusal report only.
+// O(log edges + nearby edges x points).
+fn record_endpoint_edges(
+    validation: &mut RoadPreviewValidation,
+    prepared_points: &[Vector3],
+    existing_graph: &RegionGraph,
+) {
+    let (Some(&start), Some(&end)) = (prepared_points.first(), prepared_points.last()) else {
+        return;
+    };
+    let nodes = [
+        validation.start_endpoint_snapped_node_id,
+        validation.end_endpoint_snapped_node_id,
+    ];
+    for (index, point) in [start, end].into_iter().enumerate() {
+        if nodes[index] >= 0 {
+            continue;
+        }
+        let reach = Vector3::new(
+            config::INTERSECTION_TOLERANCE,
+            0.0,
+            config::INTERSECTION_TOLERANCE,
+        );
+        let mut best: Option<(f32, usize, f32)> = None;
+        for edge_idx in existing_graph.get_edges_near_aabb(point - reach, point + reach) {
+            let edge = existing_graph.edge(edge_idx);
+            if !is_surface_edge(edge) {
+                continue;
+            }
+            let Some((distance, station)) = horizontal_projection(&edge.geometry, point) else {
+                continue;
+            };
+            if distance <= config::INTERSECTION_TOLERANCE
+                && best.is_none_or(|(d, id, _)| (distance, edge_idx) < (d, id))
+            {
+                best = Some((distance, edge_idx, station));
+            }
+        }
+        validation.endpoint_edges[index] = best.map(|(_, edge_idx, station)| (edge_idx, station));
+    }
+}
+
+// The horizontal distance from `point` to a polyline and the station of the nearest point along
+// it. O(points).
+fn horizontal_projection(points: &[Vector3], point: Vector3) -> Option<(f32, f32)> {
+    let mut station = 0.0;
+    let mut best: Option<(f32, f32)> = None;
+    for pair in points.windows(2) {
+        let (a, b) = (pair[0], pair[1]);
+        let (dx, dz) = (b.x - a.x, b.z - a.z);
+        let length = dx.hypot(dz);
+        let t = if length > 0.0 {
+            (((point.x - a.x) * dx + (point.z - a.z) * dz) / (length * length)).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let distance = (a.x + t * dx - point.x).hypot(a.z + t * dz - point.z);
+        if best.is_none_or(|(d, _)| distance < d) {
+            best = Some((distance, station + t * length));
+        }
+        station += length;
+    }
+    best
 }
 
 // The one road length rule: fewer than two points, or a horizontal length, ignoring
@@ -674,8 +771,20 @@ fn validate_against_graph(
         validation.geometry_measured = depth;
         return (validation, None);
     }
-    if let Some(reason) = junction_rejection(&validation_graph, &finalized.affected_nodes) {
-        return (validation.with_invalid_reason(reason), None);
+    if let Some(refusal) = junction_rejection(&validation_graph, &finalized.affected_nodes) {
+        let place = refusal.place(
+            &validation_graph,
+            &source_node_ids,
+            &source_edge_ids,
+            &splits,
+        );
+        let mut validation = validation.with_invalid_reason(refusal.reason);
+        if let Some((place, length_m, needed_m)) = place {
+            validation.junction_place = Some(place);
+            validation.geometry_measured = length_m;
+            validation.geometry_limit = needed_m;
+        }
+        return (validation, None);
     }
     let mut validation = refuse_close_crossing(
         validation,
@@ -1124,7 +1233,7 @@ fn process_validation_graph_intersections(
     network.recorded_road_splits = Some(Vec::new());
     network.bulk_dirty_edges.insert(new_edge_idx);
     network.bulk_dirty_edges.extend(moved_ring_edges);
-    topology::process_intersections_splitting_at(
+    let joined_road_ends = topology::process_intersections_splitting_at(
         &mut network,
         validation_graph,
         new_edge_idx,
@@ -1144,7 +1253,7 @@ fn process_validation_graph_intersections(
         )?;
     }
 
-    let surface_dirty_nodes = road_insert_surface_dirty_nodes(
+    let mut surface_dirty_nodes = road_insert_surface_dirty_nodes(
         validation_graph,
         start_node,
         end_node,
@@ -1152,6 +1261,9 @@ fn process_validation_graph_intersections(
         node_count_before,
         edge_count_before,
     );
+    // A joined road end's neighbour lays out again (`ROAD-118`); the excerpt's second ring of
+    // incidence holds its arms and their far ends.
+    surface_dirty_nodes.extend(joined_road_ends);
     network.mark_surface_dirty_for_nodes(validation_graph, &surface_dirty_nodes);
 
     let finalized = network.finalize_road_geometry(validation_graph, Some(terrain));
@@ -1402,15 +1514,83 @@ fn record_edit_grade(
     }
 }
 
+// A node whose junction layout or mouth heights fail, with its error and refusal key.
+struct JunctionRefusal {
+    node: u32,
+    error: NodeError,
+    reason: &'static str,
+}
+
+impl JunctionRefusal {
+    // The place it names (`ROAD-118` round JS1) with the failing arm's road length and the
+    // shortest that fits, rounded up to 0.1 m (0 when none does): `None` for an error that names
+    // no arm. Refusals only: O(local records + the need's bisection, `arm_edge_needed_m`).
+    fn place(
+        &self,
+        local: &RegionGraph,
+        source_nodes: &HashMap<u32, u32>,
+        source_edges: &HashMap<usize, usize>,
+        splits: &[PlannedRoadSplit],
+    ) -> Option<(JunctionPlace, f32, f32)> {
+        let arm = match self.error {
+            NodeError::Layout(
+                LayoutError::CornerDoesNotFit { arm } | LayoutError::ArmTooShort { arm },
+            ) => arm,
+            _ => return None,
+        };
+        let edge = local.get_edge(arm.edge)?;
+        let far = local.get_valid_node(match arm.end {
+            EdgeEnd::Start => edge.end_node,
+            EdgeEnd::End => edge.start_node,
+        });
+        let roles = [node_role(local, self.node)?, node_role(local, far)?];
+        let source_node = source_nodes
+            .iter()
+            .find(|&(_, &local_id)| local_id == self.node)
+            .map(|(&source, _)| source);
+        // A split piece lies on the road its chain of splits started from.
+        let mut root = arm.edge;
+        let source_edge = loop {
+            if let Some((&source, _)) = source_edges.iter().find(|&(_, &local_id)| local_id == root)
+            {
+                break Some(source);
+            }
+            match splits.iter().find(|split| split.new_edge_id == root) {
+                Some(split) => root = split.edge_id,
+                None => break None,
+            }
+        };
+        let length_m = horizontal_length_m(&edge.geometry);
+        let needed_m = arm_edge_needed_m(local, self.node, arm)
+            // Up to 0.1 m, past the bisection's sub-millimetre overshoot.
+            .map_or(0.0, |needed_m| (needed_m * 10.0 - 0.01).ceil() / 10.0);
+        let place = JunctionPlace {
+            node: source_node,
+            position: local.node(self.node).pos,
+            arm_edge: source_edge,
+            roles,
+        };
+        Some((place, length_m as f32, needed_m as f32))
+    }
+}
+
+// Horizontal length of a control polyline, metres.
+fn horizontal_length_m(points: &[Vector3]) -> f64 {
+    points
+        .windows(2)
+        .map(|pair| f64::from((pair[1].x - pair[0].x).hypot(pair[1].z - pair[0].z)))
+        .sum()
+}
+
 // The first node, in id order, whose junction layout or mouth heights fail (`ROAD-68-C`). The
 // excerpt holds every affected node's full incidence. O(affected degree * arm points).
-fn junction_rejection(graph: &RegionGraph, affected_nodes: &HashSet<u32>) -> Option<&'static str> {
+fn junction_rejection(graph: &RegionGraph, affected_nodes: &HashSet<u32>) -> Option<JunctionRefusal> {
     let mut nodes: Vec<u32> = affected_nodes.iter().copied().collect();
     nodes.sort_unstable();
     let (node, error) = nodes
         .into_iter()
         .find_map(|node| check_node(graph, node).err().map(|error| (node, error)))?;
-    Some(match error {
+    let reason = match error {
         // Bare nodes make way for a join (D9), so a ring's corner fails on arm against arm.
         NodeError::Layout(LayoutError::CornerDoesNotFit { .. })
             if roundabouts::ring_at(graph, node).is_some() =>
@@ -1425,6 +1605,11 @@ fn junction_rejection(graph: &RegionGraph, affected_nodes: &HashSet<u32>) -> Opt
         NodeError::Layout(LayoutError::ArmTooShort { .. }) => PREVIEW_JUNCTION_ARM_REASON,
         NodeError::Layout(_) | NodeError::MouthVertex { .. } => PREVIEW_JUNCTION_LAYOUT_REASON,
         NodeError::NoPlane | NodeError::MouthOffPlane { .. } => PREVIEW_JUNCTION_PROFILE_REASON,
+    };
+    Some(JunctionRefusal {
+        node,
+        error,
+        reason,
     })
 }
 

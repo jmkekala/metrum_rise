@@ -443,7 +443,7 @@ impl TransitNetwork {
 
         let node_count_before = graph.node_count();
         let edges_before = graph.edge_count();
-        topology::process_intersections_splitting_at(
+        let joined_road_ends = topology::process_intersections_splitting_at(
             self,
             graph,
             edge_id,
@@ -454,7 +454,7 @@ impl TransitNetwork {
         );
         self.cleanup_duplicate_edges(graph); // Clean edge_id if it's dup
 
-        let surface_dirty_nodes = road_insert_surface_dirty_nodes(
+        let mut surface_dirty_nodes = road_insert_surface_dirty_nodes(
             graph,
             start,
             end,
@@ -462,6 +462,8 @@ impl TransitNetwork {
             node_count_before,
             edges_before,
         );
+        // A joined road end's neighbour lays out again (`ROAD-118`).
+        surface_dirty_nodes.extend(joined_road_ends.iter().copied());
         self.mark_surface_dirty_for_nodes(graph, &surface_dirty_nodes);
 
         if !self.bulk_load {
@@ -474,6 +476,7 @@ impl TransitNetwork {
                 affected_nodes.insert(graph.get_valid_node(graph.edge(edge_id).end_node));
                 affected_edges.insert(edge_id);
             }
+            affected_nodes.extend(joined_road_ends);
             // Junction nodes and split-half edges created during intersection processing.
             for new_nid in node_count_before as u32..graph.node_count() as u32 {
                 affected_nodes.insert(graph.get_valid_node(new_nid));
