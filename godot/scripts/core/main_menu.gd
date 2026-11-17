@@ -9,6 +9,7 @@ const NewGameDialog = preload("res://scripts/ui/new_game_dialog.gd")
 const OptionsWindow = preload("res://scripts/ui/options_window.gd")
 const UIStyle = preload("res://scripts/ui/ui_style.gd")
 const GameSettings = preload("res://scripts/core/game_settings.gd")
+const MenuPipelinePrewarm = preload("res://scripts/core/menu_pipeline_prewarm.gd")
 
 const WORLDS_DIR := "user://worlds"
 const SAVES_DIR := "user://saves"
@@ -24,6 +25,20 @@ func _exit_tree() -> void:
 
 func _ready() -> void:
 	_build_ui()
+	# The first load's pipelines compile while the menu shows (`RENDER-43`), from its second
+	# frame: the first shows the menu at once.
+	await get_tree().process_frame
+	add_child(MenuPipelinePrewarm.new())
+	if LaunchState.benchmark_menu_dwell_s >= 0.0:
+		_leave_after_benchmark_dwell()
+
+# A benchmark's menu (`tools/stream_benchmark.py --menu-dwell`): the menu stays its dwell from the
+# launch, then the benchmark's world scene runs as from the router.
+func _leave_after_benchmark_dwell() -> void:
+	var left := LaunchState.benchmark_menu_dwell_s - Time.get_ticks_msec() / 1000.0
+	if left > 0.0:
+		await get_tree().create_timer(left).timeout
+	get_tree().change_scene_to_file("res://scenes/Main.tscn")
 
 func _build_ui() -> void:
 	set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)

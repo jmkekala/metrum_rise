@@ -232,12 +232,6 @@ func run(bench: Node) -> void:
 	var pipelines_at_load := _pipelines()
 	var load_start := Time.get_ticks_usec()
 	print("[STREAM] LOAD_BEGIN save=%s world=%s" % [_report.save_path, bench.world_path])
-	# The launch's pipeline prewarm (`RENDER-43`: two frames before the load call, as the game's
-	# launch runs them), counted in the load's time; a build without it loads at once.
-	var prewarm_ms := 0.0
-	if bench.input_manager.has_method("prewarm_pipelines"):
-		await bench.input_manager.prewarm_pipelines()
-		prewarm_ms = bench._elapsed_ms(load_start)
 	var loaded: bool
 	if not str(_report.save_path).is_empty():
 		loaded = bench.input_manager.menu_load_game_from_path(str(_report.save_path))
@@ -285,10 +279,9 @@ func run(bench: Node) -> void:
 		"load_call_ms": load_call_ms, "elapsed_ms": bench._elapsed_ms(load_start),
 		"agent_count": int(perf_stats.get("agent_count", -1)), "saved_view": Array(saved_view),
 		"world_size": [world.x, world.y], "streams": _streams(),
-		# Godot's pipeline compilations (`_pipelines`) at the load's start, the load call's return
-		# and the settled base pose, and the launch's prewarm frames inside `load_call_ms`
-		# (`RENDER-43`).
-		"pipelines": [pipelines_at_load, pipelines_after_call, _pipelines()], "prewarm_ms": prewarm_ms,
+		# Godot's pipeline compilations (`_pipelines`) at the load call's start, its return and the
+		# settled base pose (`RENDER-43`).
+		"pipelines": [pipelines_at_load, pipelines_after_call, _pipelines()],
 		# The node renderers' casters by shadow policy category at the settled base pose, with
 		# their instances and those within the sun's shadow range of the camera (`RENDER-15`).
 		"node_casters": ShadowVariants.node_casters(main, bench.get_viewport().get_camera_3d().global_position,

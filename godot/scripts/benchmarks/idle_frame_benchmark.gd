@@ -114,9 +114,6 @@ func run(bench: Node) -> void:
 	var save_path := OS.get_environment("METRUM_IDLE_BENCH_SAVE_PATH")
 	# Canopy stems per hectare for a new game on the pinned world, as the new-game dialog sets it.
 	var canopy_density := OS.get_environment("METRUM_IDLE_BENCH_CANOPY_DENSITY")
-	# The launch's pipeline prewarm, as the game's launch runs it (`RENDER-43`).
-	if bench.input_manager.has_method("prewarm_pipelines"):
-		await bench.input_manager.prewarm_pipelines()
 	var loaded: bool
 	if not save_path.is_empty():
 		loaded = bench.input_manager.menu_load_game_from_path(save_path)

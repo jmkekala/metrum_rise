@@ -9,6 +9,9 @@ var pending_world_definition_path := ""
 var pending_save_path := ""
 # Vegetation parameters chosen in the new-game dialog, keyed as the Rust config fields are.
 var pending_vegetation := {}
+# A benchmark launched through the menu (`METRUM_STREAM_MENU_DWELL_S`, `RENDER-43`): seconds
+# from the launch the menu shows before the benchmark's world scene; negative without one.
+var benchmark_menu_dwell_s := -1.0
 
 func queue_new_game(world_definition_path: String, vegetation: Dictionary) -> void:
 	pending_world_definition_path = world_definition_path

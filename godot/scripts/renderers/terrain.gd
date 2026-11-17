@@ -253,10 +253,10 @@ func _exit_tree() -> void:
 		graded_tiles.dispose()
 		graded_tiles = null
 
-## The (mesh, material) templates the load's pipeline prewarm puts into the world
+## The (mesh, material) templates the menu's pipeline prewarm puts into its world
 ## (`pipeline_prewarm.gd`, `RENDER-43`): a patch's PlaneMesh with the terrain shader and the
 ## graded tiles' own. The vertex format and the shader are what a pipeline depends on.
-func pipeline_prewarm_surfaces() -> Array:
+static func pipeline_prewarm_surfaces() -> Array:
 	var material := ShaderMaterial.new()
 	material.shader = TERRAIN_SHADER
 	var pairs := [[PlaneMesh.new(), material]]

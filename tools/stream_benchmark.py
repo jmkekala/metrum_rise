@@ -179,6 +179,7 @@ def run_row(args, settings, out, label, library, scripts, shadows, cache_key):
             "phases": args.phases, "drawn": args.drawn, "still_s": args.still_s, "settle_cap_s": args.settle_cap_s, "shadows": shadows, "gpu_profile": args.gpu_profile,
             "cpus": settings.get("cpus", ""), "workers": WORKERS,
             "shader_cache": str(store) if store is not None else "", "shader_cache_warm": bool(store and store.is_dir()),
+            "menu_dwell_s": args.menu_dwell,
             "locked": os.environ.get(LOCKED_ENV) == "1" or not settings.get("timed_wrapper"),
         }
         width, height = args.resolution.split("x")
@@ -200,6 +201,7 @@ def run_row(args, settings, out, label, library, scripts, shadows, cache_key):
             "METRUM_STREAM_CENSUS_DIR": str(out / f"{label}.census"),
             "METRUM_STREAM_CENSUS_HOLD": os.environ.get("METRUM_STREAM_CENSUS_HOLD", "0"),
             "METRUM_STREAM_DRAWN": "1" if args.drawn else "0",
+            "METRUM_STREAM_MENU_DWELL_S": "" if args.menu_dwell is None else str(args.menu_dwell),
         })
         command = ["timeout", "--kill-after=10s", str(args.timeout)]
         if settings.get("cpus"):
@@ -800,6 +802,8 @@ def add_run_options(parser, series):
     parser.add_argument("--drawn", action="store_true", help="the drawn probe (instrumented: entered-to-drawn, holes)")
     parser.add_argument("--shader-cache", help="keep the shader and pipeline caches in <dir>/<label or side> across "
                         "runs: seeded from it when present (warm), saved back after a passed run (RENDER-43)")
+    parser.add_argument("--menu-dwell", type=float, help="METRUM_STREAM_MENU_DWELL_S: launch through the main menu, "
+                        "which stays this many seconds from the launch before the benchmark's world (RENDER-43)")
     parser.add_argument("--settle-timeout", type=int, default=180)
     parser.add_argument("--timeout", type=int, default=600)
 

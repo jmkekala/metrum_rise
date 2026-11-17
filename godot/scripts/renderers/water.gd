@@ -134,9 +134,9 @@ var _water_debug_border_rebuilds: int = 0
 func _ready() -> void:
 	rebuild_from_simulation_state()
 
-## The load's pipeline prewarm template (`RENDER-43`): a patch mesh's vertex format (positions,
+## The menu's pipeline prewarm template (`RENDER-43`): a patch mesh's vertex format (positions,
 ## normals, UVs, indices; `_baked_water_patch_mesh`) with the water shader.
-func pipeline_prewarm_surfaces() -> Array:
+static func pipeline_prewarm_surfaces() -> Array:
 	var arrays := []
 	arrays.resize(Mesh.ARRAY_MAX)
 	arrays[Mesh.ARRAY_VERTEX] = PackedVector3Array([Vector3.ZERO, Vector3.RIGHT, Vector3.BACK])

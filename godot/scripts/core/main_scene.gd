@@ -131,9 +131,6 @@ func _handle_pending_launch_request() -> bool:
 	return true
 
 func _apply_launch_request(request: Dictionary) -> void:
-	# The first load's pipelines compile while its load call runs (`RENDER-43`).
-	if input_manager:
-		await input_manager.prewarm_pipelines()
 	var save_path := str(request.get("save_path", ""))
 	if not save_path.is_empty():
 		if input_manager:

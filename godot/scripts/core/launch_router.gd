@@ -22,6 +22,13 @@ func _ready() -> void:
 		or "--huge-map" in args
 		or "--gameplay-road-benchmark" in args
 	):
-		get_tree().change_scene_to_file.call_deferred("res://scenes/Main.tscn")
+		# A benchmark may pass through the menu for a dwell first (`RENDER-43`, the menu's
+		# pipeline prewarm); the menu then opens the world scene.
+		var dwell := OS.get_environment("METRUM_STREAM_MENU_DWELL_S")
+		if dwell.is_valid_float():
+			LaunchState.benchmark_menu_dwell_s = float(dwell)
+			get_tree().change_scene_to_file.call_deferred("res://scenes/MainMenu.tscn")
+		else:
+			get_tree().change_scene_to_file.call_deferred("res://scenes/Main.tscn")
 	else:
 		get_tree().change_scene_to_file.call_deferred("res://scenes/MainMenu.tscn")
