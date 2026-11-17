@@ -282,8 +282,9 @@ func run(bench: Node) -> void:
 		# Godot's pipeline compilations (`_pipelines`) at the load call's start, its return and the
 		# settled base pose (`RENDER-43`).
 		"pipelines": [pipelines_at_load, pipelines_after_call, _pipelines()],
-		# The menu's prewarm start and exit (ms from the launch) when launched through the menu.
-		"menu_ms": LaunchState.get("benchmark_menu_ms") if LaunchState.get("benchmark_menu_ms") != null else [],
+		# The menu's prewarm start and exit (ms from the launch) when launched through the menu; by
+		# path, as a test runs this script without the autoloads.
+		"menu_ms": _menu_ms(bench),
 		# The node renderers' casters by shadow policy category at the settled base pose, with
 		# their instances and those within the sun's shadow range of the camera (`RENDER-15`).
 		"node_casters": ShadowVariants.node_casters(main, bench.get_viewport().get_camera_3d().global_position,
@@ -1028,6 +1029,12 @@ func _on_post_draw() -> void:
 # Godot's pipeline compilations since the start, by source: canvas, mesh, surface (queued in the
 # background at a surface's creation), draw (a draw that waited for its pipeline) and
 # specialization (queued in the background by a draw that took the ubershader) (`RENDER-43`).
+# `LaunchState.benchmark_menu_ms`, or none without the autoload or a build without the menu's.
+static func _menu_ms(bench: Node) -> Array:
+	var state := bench.get_node_or_null("/root/LaunchState")
+	var times = state.get("benchmark_menu_ms") if state != null else null
+	return times if times is Array else []
+
 static func _pipelines() -> Array:
 	return [RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_PIPELINE_COMPILATIONS_CANVAS),
 		RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_PIPELINE_COMPILATIONS_MESH),
