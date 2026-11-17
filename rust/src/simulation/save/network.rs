@@ -70,7 +70,7 @@ pub(super) fn save_network(
             }
             let row_node = |node: u32| {
                 maps.node(node)
-                    .ok_or_else(|| SaveLoadError::custom("edge names a merged node"))
+                    .ok_or_else(|| SaveLoadError::custom("edge names a merged or retired node"))
             };
             let start = row_node(edge.start_node)?;
             let end = row_node(edge.end_node)?;
@@ -216,8 +216,14 @@ fn save_crosswalks(tx: &Transaction, graph: &RegionGraph, maps: &SnapshotMaps) -
 /// Loads the road graph. With `saved_ids` (format 121, `SAVE-11`) the rows keep their ids and
 /// the holes between them, merged nodes and deleted edges, are recreated at theirs from the
 /// saved counts and alias table, so the loaded graph has the saved game's ids; an older save's
-/// ids are contiguous. O(saved nodes + edges + aliases + geometry points).
-pub(super) fn load_graph(conn: &Connection, saved_ids: bool) -> SaveLoadResult<RegionGraph> {
+/// ids are contiguous. With `retired_holes` (format 122, `ROAD-124`) a node hole without an
+/// alias is a retired node; format 121 refuses one. O(saved nodes + edges + aliases + geometry
+/// points).
+pub(super) fn load_graph(
+    conn: &Connection,
+    saved_ids: bool,
+    retired_holes: bool,
+) -> SaveLoadResult<RegionGraph> {
     let mut graph = RegionGraph::new();
     let counts = if saved_ids {
         let (nodes, edges): (i64, i64) = conn.query_row(
@@ -264,7 +270,7 @@ pub(super) fn load_graph(conn: &Connection, saved_ids: bool) -> SaveLoadResult<R
             graph.push_node_hole();
             row_nodes.push(false);
         }
-        load_node_aliases(conn, &mut graph, &row_nodes)?;
+        load_node_aliases(conn, &mut graph, &row_nodes, retired_holes)?;
     }
 
     let (mut geometry, mut physical_geometry) = (HashMap::new(), HashMap::new());
@@ -468,12 +474,14 @@ pub(super) fn load_graph(conn: &Connection, saved_ids: bool) -> SaveLoadResult<R
     Ok(graph)
 }
 
-// The saved merge aliases (`SAVE-11`): every hole is an alias and every alias a hole, and each
-// chain ends at a saved node. O(aliases x chain length), chains bounded by the node count.
+// The saved merge aliases (`SAVE-11`): every alias is a hole, and each chain ends at a saved
+// node. A hole without an alias is a retired node (`ROAD-124`) with `retired_holes`, else
+// refused. O(holes + aliases x chain length), chains bounded by the node count.
 fn load_node_aliases(
     conn: &Connection,
     graph: &mut RegionGraph,
     row_nodes: &[bool],
+    retired_holes: bool,
 ) -> SaveLoadResult<()> {
     let mut stmt =
         conn.prepare("SELECT node_id, canonical FROM network_node_aliases ORDER BY node_id")?;
@@ -492,7 +500,7 @@ fn load_node_aliases(
         }
         aliases.insert(alias, canonical);
     }
-    if aliases.len() != row_nodes.iter().filter(|&&row| !row).count() {
+    if !retired_holes && aliases.len() != row_nodes.iter().filter(|&&row| !row).count() {
         return Err(SaveLoadError::custom("a merged node has no saved alias"));
     }
     for (&alias, &canonical) in &aliases {
@@ -509,6 +517,15 @@ fn load_node_aliases(
             )));
         }
         graph.restore_node_alias(alias, canonical);
+    }
+    if retired_holes {
+        for (node, _) in row_nodes
+            .iter()
+            .enumerate()
+            .filter(|&(node, &row)| !row && !aliases.contains_key(&(node as u32)))
+        {
+            graph.retire_node(node as u32);
+        }
     }
     Ok(())
 }

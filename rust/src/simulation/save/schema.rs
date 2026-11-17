@@ -6,7 +6,14 @@ use super::SaveLoadError;
 use crate::simulation::network::types::{EdgeClass, NodeType, TransitType, VehicleFrontageAccess};
 
 /// Current save format version (`SIM-02` broke older saves).
-pub const SAVE_VERSION: i64 = 121;
+pub const SAVE_VERSION: i64 = 122;
+
+/// Format 121, saved before a tool's own node left without a road was retired (`ROAD-124`):
+/// every hole is a merged node with its alias. It loads as before; a node such a game left
+/// without a road (a removed pocket's transition, the junction a ring replaced, a removed ring's
+/// node without an arm) loads as a node without a road, as that game saved it, since a load
+/// cannot tell it from a player's road end.
+pub const PRE_RETIRED_NODES_SAVE_VERSION: i64 = 121;
 
 /// Format 120, saved before node, edge and lane ids were saved state (`SAVE-11`): its ids are
 /// contiguous (the save compacted nodes and edges, and a load numbers lanes anew). It loads as

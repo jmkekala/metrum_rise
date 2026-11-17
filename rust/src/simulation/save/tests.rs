@@ -1903,7 +1903,7 @@ fn sqlite_graph_rejects_malformed_references_before_publication() {
             [],
         )
         .unwrap();
-        if network::load_graph(&conn, true).is_ok() {
+        if network::load_graph(&conn, true, true).is_ok() {
             accepted_corruptions.push(format!("{column} overflow"));
         }
         conn.execute(
@@ -1917,7 +1917,7 @@ fn sqlite_graph_rejects_malformed_references_before_publication() {
         [],
     )
     .unwrap();
-    if network::load_graph(&conn, true).is_ok() {
+    if network::load_graph(&conn, true, true).is_ok() {
         accepted_corruptions.push("geometry sequence gap".to_owned());
     }
     conn.execute(
@@ -1930,7 +1930,7 @@ fn sqlite_graph_rejects_malformed_references_before_publication() {
         [],
     )
     .unwrap();
-    if network::load_graph(&conn, true).is_ok() {
+    if network::load_graph(&conn, true, true).is_ok() {
         accepted_corruptions.push("orphan geometry".to_owned());
     }
     conn.execute("DELETE FROM network_edge_geometry WHERE edge_id = 10", [])
@@ -1939,7 +1939,7 @@ fn sqlite_graph_rejects_malformed_references_before_publication() {
     conn.execute("UPDATE network_edges SET end_node = 100", [])
         .unwrap();
     let invalid_endpoint =
-        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| network::load_graph(&conn, true)));
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| network::load_graph(&conn, true, true)));
     assert!(
         matches!(invalid_endpoint, Ok(Err(_))),
         "bad endpoint must return a load error"
@@ -1983,7 +1983,7 @@ fn benchmark_sqlite_graph_loading() {
         network::save_network(&tx, &graph, &maps, 0).unwrap();
         tx.commit().unwrap();
         // Verify the load's indexed products independently of the timed repetitions.
-        let loaded = network::load_graph(&conn, true).unwrap();
+        let loaded = network::load_graph(&conn, true, true).unwrap();
         assert_eq!(loaded.node_count(), count * 2);
         assert_eq!(loaded.edge_count(), count);
         let index = count / 2;
@@ -1999,7 +1999,7 @@ fn benchmark_sqlite_graph_loading() {
         for sample in 0..14 {
             let start = Instant::now();
             for _ in 0..3 {
-                black_box(network::load_graph(black_box(&conn), true).unwrap());
+                black_box(network::load_graph(black_box(&conn), true, true).unwrap());
             }
             if sample >= 3 {
                 samples.push(start.elapsed().as_secs_f64() * 1000.0 / 3.0);
@@ -2054,7 +2054,7 @@ fn a_bend_whose_crossing_moved_to_its_second_arm_loads() {
     let tx = conn.transaction().unwrap();
     network::save_network(&tx, &graph, &maps, 0).unwrap();
     tx.commit().unwrap();
-    let loaded = network::load_graph(&conn, true).unwrap();
+    let loaded = network::load_graph(&conn, true, true).unwrap();
     let mut transit = TransitNetwork::new();
     network::rebuild_loaded_graph_runtime(&loaded, &mut transit).unwrap();
     assert!(transit.roadbed.failed_nodes().is_empty());
@@ -2098,7 +2098,7 @@ fn a_saved_junction_a_commit_would_reject_fails_the_load() {
         let tx = conn.transaction().unwrap();
         network::save_network(&tx, &graph, &maps, 0).unwrap();
         tx.commit().unwrap();
-        let loaded = network::load_graph(&conn, true).unwrap();
+        let loaded = network::load_graph(&conn, true, true).unwrap();
         let mut transit = TransitNetwork::new();
         let error = network::rebuild_loaded_graph_runtime(&loaded, &mut transit)
             .expect_err("the junction fails the load")
@@ -2139,7 +2139,7 @@ fn a_saved_road_steeper_than_one_in_three_fails_the_load() {
         let tx = conn.transaction().unwrap();
         network::save_network(&tx, &graph, &maps, 0).unwrap();
         tx.commit().unwrap();
-        let loaded = network::load_graph(&conn, true).unwrap();
+        let loaded = network::load_graph(&conn, true, true).unwrap();
         let mut transit = TransitNetwork::new();
         let result = network::rebuild_loaded_graph_runtime(&loaded, &mut transit);
         if refused {
@@ -2176,13 +2176,43 @@ fn crosswalk_overrides_round_trip_through_their_table() {
         .query_row("SELECT count(*) FROM road_crosswalks", [], |row| row.get(0))
         .unwrap();
     assert_eq!(rows, 2);
-    let loaded = network::load_graph(&conn, true).unwrap();
+    let loaded = network::load_graph(&conn, true, true).unwrap();
     assert_eq!(loaded.node(0).crosswalk_overrides.get(&0), Some(&true));
     assert_eq!(loaded.node(1).crosswalk_overrides.get(&0), Some(&false));
     assert_eq!(loaded.node(1).crosswalk_overrides.len(), 1);
     conn.execute_batch("UPDATE road_crosswalks SET edge_id = 999")
         .unwrap();
-    assert!(network::load_graph(&conn, true).is_err());
+    assert!(network::load_graph(&conn, true, true).is_err());
+}
+
+// `ROAD-124`, save format 122: a retired node is a hole without an alias. The save writes no row
+// for it, the load retires the hole again (out of the node grid, never found), and format 121,
+// whose every hole is a merged node, refuses it.
+#[test]
+fn a_retired_node_round_trips_as_a_hole_without_an_alias() {
+    let (mut graph, _) = snapshot_test_graph();
+    let retired = graph.add_node(Vector3::new(0.0, 0.0, 60.0), NodeType::Junction);
+    let last = graph.add_node(Vector3::new(0.0, 0.0, 90.0), NodeType::Junction);
+    graph.retire_node(retired);
+    assert_eq!(graph.find_node_within(Vector3::new(0.0, 0.0, 60.0), 1.0), None);
+    let maps = build_snapshot_maps(&graph, &BuildingAllocator::new()).unwrap();
+    let mut conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch(SCHEMA).unwrap();
+    let tx = conn.transaction().unwrap();
+    network::save_network(&tx, &graph, &maps, 0).unwrap();
+    tx.commit().unwrap();
+    let rows = |table: &str| -> i64 {
+        conn.query_row(&format!("SELECT count(*) FROM {table}"), [], |row| row.get(0))
+            .unwrap()
+    };
+    assert_eq!((rows("network_nodes"), rows("network_node_aliases")), (3, 0));
+    let loaded = network::load_graph(&conn, true, true).unwrap();
+    assert_eq!(loaded.node_count(), graph.node_count());
+    assert!(loaded.is_retired_node(retired) && !loaded.is_retired_node(last));
+    assert_eq!(loaded.get_valid_node(retired), retired);
+    assert_eq!(loaded.node_grid_cells(), graph.node_grid_cells());
+    assert_eq!(loaded.find_node_within(Vector3::new(0.0, 0.0, 60.0), 1.0), None);
+    assert!(network::load_graph(&conn, true, false).is_err(), "format 121");
 }
 
 // `ROAD-80`, save format 111: a median round-trips through `network_edges`' two columns, a road
@@ -2209,13 +2239,13 @@ fn medians_round_trip_through_the_edge_table() {
         )
         .unwrap();
     assert_eq!(columns, (0, 0.0));
-    assert_eq!(network::load_graph(&conn, true).unwrap().edge(edge).median, None);
+    assert_eq!(network::load_graph(&conn, true, true).unwrap().edge(edge).median, None);
     for (style, width) in [(1, 1.5), (2, 6.0), (3, 2.0)] {
         let median = crate::simulation::network::graph::RoadMedian::from_tool(style, width)
             .unwrap();
         graph.edge_mut(edge).median = median;
         let conn = save(&graph);
-        assert_eq!(network::load_graph(&conn, true).unwrap().edge(edge).median, median);
+        assert_eq!(network::load_graph(&conn, true, true).unwrap().edge(edge).median, median);
         for bad in [
             "UPDATE network_edges SET median_style = 9",
             "UPDATE network_edges SET median_width = 40.0",
@@ -2223,7 +2253,7 @@ fn medians_round_trip_through_the_edge_table() {
         ] {
             let conn = save(&graph);
             conn.execute_batch(bad).unwrap();
-            assert!(network::load_graph(&conn, true).is_err(), "{bad} loaded");
+            assert!(network::load_graph(&conn, true, true).is_err(), "{bad} loaded");
         }
     }
 }
@@ -2263,7 +2293,7 @@ fn pockets_round_trip_through_the_edge_table() {
         })
         .unwrap();
     assert_eq!(node_type, 6);
-    let mut loaded = network::load_graph(&conn, true).unwrap();
+    let mut loaded = network::load_graph(&conn, true, true).unwrap();
     assert_eq!(
         loaded.edge(1).pocket,
         Some(RoadPocket {
@@ -2300,14 +2330,14 @@ fn pockets_round_trip_through_the_edge_table() {
     ] {
         let conn = save(&graph);
         conn.execute_batch(bad).unwrap();
-        assert!(network::load_graph(&conn, true).is_err(), "{bad} loaded");
+        assert!(network::load_graph(&conn, true, true).is_err(), "{bad} loaded");
     }
     // Round R5c1: a left role on the undivided two-way road loads (a kerb pocket, as a right one).
     let conn = save(&graph);
     conn.execute_batch("UPDATE network_edges SET pocket_roles = 1 WHERE edge_id = 1")
         .unwrap();
     assert_eq!(
-        network::load_graph(&conn, true).unwrap().edge(1).pocket,
+        network::load_graph(&conn, true, true).unwrap().edge(1).pocket,
         Some(RoadPocket {
             end: EdgeEnd::End,
             left: true,
@@ -2320,7 +2350,7 @@ fn pockets_round_trip_through_the_edge_table() {
     // not have had, or a left pocket without a raised median, fails the file.
     let graph = crate::simulation::network::roadbed::fixtures::four_way_2x2_left_pocket();
     let conn = save(&graph);
-    let mut loaded = network::load_graph(&conn, true).unwrap();
+    let mut loaded = network::load_graph(&conn, true, true).unwrap();
     assert_eq!(loaded.edge(1).median, graph.edge(1).median);
     assert_eq!(loaded.edge(1).pocket, graph.edge(1).pocket);
     let (mut graph, mut lanes, mut loaded_lanes) = (graph, LaneSystem::new(), LaneSystem::new());
@@ -2337,7 +2367,7 @@ fn pockets_round_trip_through_the_edge_table() {
     ] {
         let conn = save(&graph);
         conn.execute_batch(bad).unwrap();
-        assert!(network::load_graph(&conn, true).is_err(), "{bad} loaded");
+        assert!(network::load_graph(&conn, true, true).is_err(), "{bad} loaded");
     }
 }
 
@@ -2373,7 +2403,7 @@ fn sidewalk_sides_round_trip_through_the_edge_table() {
         .collect::<Result<_, _>>()
         .unwrap();
     assert_eq!(column, [1, 2, 0]);
-    let mut loaded = network::load_graph(&conn, true).unwrap();
+    let mut loaded = network::load_graph(&conn, true, true).unwrap();
     for edge in 0..3 {
         assert_eq!(loaded.edge(edge).sidewalks, graph.edge(edge).sidewalks);
         assert_eq!(loaded.edge(edge).allowed_types, graph.edge(edge).allowed_types);
@@ -2395,7 +2425,7 @@ fn sidewalk_sides_round_trip_through_the_edge_table() {
     ] {
         let conn = save(&graph);
         conn.execute_batch(bad).unwrap();
-        assert!(network::load_graph(&conn, true).is_err(), "{bad} loaded");
+        assert!(network::load_graph(&conn, true, true).is_err(), "{bad} loaded");
     }
     // A walkway has no sidewalk: its footpath is not one.
     let (_, paths) = footpath_fixtures(false).swap_remove(0);
@@ -2407,7 +2437,7 @@ fn sidewalk_sides_round_trip_through_the_edge_table() {
         "UPDATE network_edges SET sidewalks = 1 WHERE edge_id = {path}"
     ))
     .unwrap();
-    assert!(network::load_graph(&conn, true).is_err());
+    assert!(network::load_graph(&conn, true, true).is_err());
 }
 
 // `PARK-05`, save format 118: parking and a turn pocket are independent fields of one edge.
@@ -2427,7 +2457,7 @@ fn parking_and_pocket_round_trip_together() {
         let tx = conn.transaction().unwrap();
         network::save_network(&tx, &graph, &maps, 0).unwrap();
         tx.commit().unwrap();
-        let loaded = network::load_graph(&conn, true).unwrap();
+        let loaded = network::load_graph(&conn, true, true).unwrap();
         assert_eq!(loaded.edge(1).parking, graph.edge(1).parking);
         assert_eq!(loaded.edge(1).pocket, graph.edge(1).pocket);
         assert_eq!(loaded.edge(1).width, graph.edge(1).width);
@@ -2458,7 +2488,7 @@ fn roundabout_rings_round_trip_through_their_table() {
         })
         .unwrap();
     assert_eq!(rows, 4, "ring edges only");
-    let loaded = network::load_graph(&conn, true).unwrap();
+    let loaded = network::load_graph(&conn, true, true).unwrap();
     for &id in &applied.ring {
         // Edge ids are saved as they are (`SAVE-11`).
         let (edge, back) = (graph.edge(id), loaded.edge(id));
@@ -2486,7 +2516,7 @@ fn roundabout_rings_round_trip_through_their_table() {
     ] {
         let conn = save(&graph);
         conn.execute_batch(sql).unwrap();
-        assert!(network::load_graph(&conn, true).is_err(), "{name}");
+        assert!(network::load_graph(&conn, true, true).is_err(), "{name}");
     }
 }
 
@@ -2508,6 +2538,6 @@ fn street_lights_round_trip_through_the_edge_table() {
             })
             .unwrap();
         assert_eq!(column, i64::from(dark));
-        assert_eq!(network::load_graph(&conn, true).unwrap().edge(edge).no_street_lights, dark);
+        assert_eq!(network::load_graph(&conn, true, true).unwrap().edge(edge).no_street_lights, dark);
     }
 }

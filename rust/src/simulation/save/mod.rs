@@ -357,8 +357,9 @@ impl From<String> for SaveLoadError {
 
 // The save's view of the city's ids (`SAVE-11`, format 121): node, edge and lane ids are saved
 // state, written as they are. A live edge is written at its id and a deleted one is a hole; a
-// canonical node (one no merge aliases) is written at its id, its live edges or none, and an
-// aliased one is a hole the alias table resolves. Bounds checks only: O(1) per reference.
+// canonical node (one no merge aliases) is written at its id, its live edges or none, an
+// aliased one is a hole the alias table resolves, and a retired one (`ROAD-124`, format 122) a
+// hole without an alias. Bounds checks only: O(1) per reference.
 pub(super) struct SnapshotMaps<'a> {
     graph: &'a RegionGraph,
     /// Bounds for building references; storage order is preserved without ID remapping.
@@ -374,11 +375,13 @@ impl SnapshotMaps<'_> {
             .then_some(edge)
     }
 
-    // The saved id of node `node`'s row: itself when the save writes one (a canonical node),
-    // else `None` (out of bounds or merged into another).
+    // The saved id of node `node`'s row: itself when the save writes one (a canonical node
+    // not retired), else `None` (out of bounds, merged into another or retired).
     pub(super) fn node(&self, node: u32) -> Option<u32> {
-        ((node as usize) < self.graph.node_count() && self.graph.get_valid_node(node) == node)
-            .then_some(node)
+        ((node as usize) < self.graph.node_count()
+            && self.graph.get_valid_node(node) == node
+            && !self.graph.is_retired_node(node))
+        .then_some(node)
     }
 }
 
@@ -573,7 +576,8 @@ pub(crate) fn load_road_graph(path: &Path) -> SaveLoadResult<RegionGraph> {
     let version: i64 = conn.query_row("SELECT version FROM save_meta LIMIT 1", [], |row| {
         row.get(0)
     })?;
-    let mut graph = network::load_graph(&conn, version == SAVE_VERSION)?;
+    let saved_ids = version == SAVE_VERSION || version == PRE_RETIRED_NODES_SAVE_VERSION;
+    let mut graph = network::load_graph(&conn, saved_ids, version == SAVE_VERSION)?;
     graph.rebuild_adjacency_list();
     Ok(graph)
 }
@@ -592,8 +596,9 @@ pub(crate) fn load_from_sqlite(
     // `SAVE-08`, `SAVE-09`) and format 118 without congestion state either
     // (`PRE_CONGESTION_SAVE_VERSION`, `TRAFFIC-17`).
     // Format 121 saves node, edge and lane ids as they are (`SAVE-11`); older formats compacted
-    // them.
-    let ids_saved = version == SAVE_VERSION;
+    // them. Format 122 also saves retired nodes as holes without an alias (`ROAD-124`).
+    let retired_holes = version == SAVE_VERSION;
+    let ids_saved = retired_holes || version == PRE_RETIRED_NODES_SAVE_VERSION;
     let continuation_saved = ids_saved || version == PRE_SAVED_IDS_SAVE_VERSION;
     let congestion_saved = continuation_saved || version == PRE_CONTINUATION_SAVE_VERSION;
     if !congestion_saved && version != PRE_CONGESTION_SAVE_VERSION {
@@ -690,7 +695,7 @@ pub(crate) fn load_from_sqlite(
     let pollution = world::load_grid_system::<PollutionSystem>(&conn, &config, "pollution_state")?;
     let noise = world::load_grid_system::<NoiseSystem>(&conn, &config, "noise_state")?;
 
-    let mut graph = network::load_graph(&conn, ids_saved)?;
+    let mut graph = network::load_graph(&conn, ids_saved, retired_holes)?;
     let (mut zoning, quarantined_parcels) = world::load_zoning(&conn, &config, &graph, ids_saved)?;
     let mut allocator =
         world::load_buildings(&conn, registry, &zoning.profiles, continuation_saved)?;

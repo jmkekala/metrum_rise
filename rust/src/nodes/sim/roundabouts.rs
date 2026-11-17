@@ -329,8 +329,14 @@ impl SimCore {
         crate::thread_pools::install(|| {
             self.restore_lanes_locally(&edges, &nodes);
             let lanes = &mut self.transit_network.lane_system;
-            lanes.retire_node_lanes(bare);
+            lanes.retire_node_lanes(bare.iter().copied());
         });
+        // A ring node without an arm was the tool's own: it goes with the ring, a hole that
+        // nothing finds, live and loaded alike (`ROAD-124`). The arms' ring nodes stay as their
+        // road ends.
+        for &node in &bare {
+            self.region_graph.retire_node(node as u32);
+        }
         // A border on the ring keeps no road: its freight settles (`SAVE-06`).
         self.settle_freight_of_unreachable_borders();
         // A ring never zones (`ROAD-62`), so this finds no building on a removed ring edge; it

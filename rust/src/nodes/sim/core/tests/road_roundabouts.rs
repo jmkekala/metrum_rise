@@ -9,6 +9,7 @@
 
 use super::road_crosswalks::{live_arms, products};
 use super::road_in_place::house_fronting;
+use crate::nodes::sim::core::scenario::save_cases::assert_same_network;
 use super::*;
 use crate::simulation::economy::agents::MODE_WALK;
 use crate::simulation::network::lanes::LaneType;
@@ -513,6 +514,71 @@ fn bulldozing_a_ring_piece_removes_the_ring_and_leaves_the_arms_as_road_ends() {
     assert!(core.undo_action_internal());
     assert_eq!(graph_state(&core), state);
     assert_eq!(products(&mut core), before);
+}
+
+// `ROAD-124`: the junction a ring replaces is retired, the tool's own node: no road, out of the
+// node grid, saved as a hole the load retires again (the loaded network equals the running one).
+// Bulldozing a bare ring retires its three nodes the same way; a stroke drawn across their old
+// places builds alike live and loaded, finding none of them. Undo restores each node bit for
+// bit, and each edit again retires them alike.
+#[test]
+fn a_rings_retired_nodes_are_holes_live_and_loaded() {
+    let (mut core, node) = crossing(1);
+    core.benchmark_mode = false;
+    let before = (network_record(&core), products(&mut core));
+    assert_eq!(ring_edit(&mut core, junction(node, 36.0)), "");
+    assert!(core.region_graph.is_retired_node(node));
+    let after = (network_record(&core), products(&mut core));
+    let loaded = saved_and_loaded(&mut core, "ring_conversion");
+    for game in [&core, &loaded] {
+        assert!(game.region_graph.is_retired_node(node));
+        assert_eq!(snapped_node(game, Vector3::ZERO), None);
+        assert!(roadless_nodes(game).is_empty());
+    }
+    assert!(core.undo_action_internal());
+    let now = (network_record(&core), products(&mut core));
+    assert_same_record(&now.0, &before.0, "before 1");
+    assert_eq!(now.1, before.1, "before 1");
+    assert_eq!(ring_edit(&mut core, junction(node, 36.0)), "");
+    let now = (network_record(&core), products(&mut core));
+    assert_same_record(&now.0, &after.0, "after 2");
+    assert_eq!(now.1, after.1, "after 2");
+
+    let mut core = test_core();
+    core.benchmark_mode = false;
+    core.treasury.balance = 1.0e7;
+    assert!(core.place_roundabout_internal(ground(Vector3::new(40.0, 0.0, 60.0), 1, 36.0)));
+    let ring = ring_edges(&core);
+    let bare: Vec<u32> = ring.iter().map(|&id| core.region_graph.edge(id).start_node).collect();
+    let places: Vec<Vector3> = bare.iter().map(|&id| core.region_graph.node(id).pos).collect();
+    let before = (network_record(&core), products(&mut core));
+    assert!(core.bulldoze_road_edge_for_test(ring[0]));
+    let after = (network_record(&core), products(&mut core));
+    let mut loaded = saved_and_loaded(&mut core, "bare_ring_removal");
+    for (game, label) in [(&mut core, "running"), (&mut loaded, "loaded")] {
+        for (&id, &at) in bare.iter().zip(&places) {
+            assert!(game.region_graph.is_retired_node(id), "{label}: node {id}");
+            assert_eq!(snapped_node(game, at), None, "{label}: node {id}");
+        }
+        assert!(roadless_nodes(game).is_empty(), "{label}");
+        let stroke = vec![places[0] + Vector3::new(-80.0, 0.0, 0.0), places[0]];
+        assert!(game.add_road_internal(stroke, 1, 1).committed, "{label}");
+        let graph = &game.region_graph;
+        assert!(bare.iter().all(|&id| graph.is_retired_node(id)), "{label}");
+    }
+    assert_same_network(&core, &loaded, "after the stroke");
+    assert!(core.undo_action_internal(), "the stroke");
+    let now = (network_record(&core), products(&mut core));
+    assert_same_record(&now.0, &after.0, "after 3");
+    assert_eq!(now.1, after.1, "after 3");
+    assert!(core.undo_action_internal(), "the ring's removal");
+    let now = (network_record(&core), products(&mut core));
+    assert_same_record(&now.0, &before.0, "before 4");
+    assert_eq!(now.1, before.1, "before 4");
+    assert!(core.bulldoze_road_edge_for_test(ring[0]));
+    let now = (network_record(&core), products(&mut core));
+    assert_same_record(&now.0, &after.0, "after 5");
+    assert_eq!(now.1, after.1, "after 5");
 }
 
 // Give-way is rebuilt with the lanes on a load, never saved (`ROAD-62`, round R7c): each entry

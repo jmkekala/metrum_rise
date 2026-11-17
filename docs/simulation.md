@@ -211,7 +211,7 @@ load:
   and the game loaded from it once, and compares the files byte for byte; on a difference it
   names the tables whose rows differ in storage order. Before the fix it failed on
   `lane_connections` alone.
-- Ids are saved state (`SAVE-11`, format 121): see [Ids are saved state](#ids-are-saved-state-save-11).
+- Ids are saved state (`SAVE-11`, format 121; retired nodes `ROAD-124`, format 122): see [Ids are saved state](#ids-are-saved-state-save-11).
 
 ### Ids are saved state (`SAVE-11`)
 
@@ -249,6 +249,24 @@ the loaded game's ids differ (`SAVE-09`'s five causes, of which this removes the
   state of a node without a live road (a merged node, or one whose roads were all removed) after
   every other state, in id order, so the contraction order never reads its position (a load has
   none for a merged node); with no such node the order is unchanged.
+- **A tool's own node left without a road is a hole (`ROAD-124`, format 122).** A node whose
+  roads were all removed stays a node, saved and snapped to, when the player placed it (a road
+  end the player bulldozed to). A node the player never placed goes with the edit that leaves it
+  without a road, so the running game and a load agree that nothing is there: one merged into
+  another node is an alias (a dissolved joint, `ROAD-118` JS2, a removed stub's road end, JS3);
+  one with no node to merge into is **retired** (`Node::retired`, `RegionGraph::retire_node`): a
+  removed pocket's transition, the junction a ring replaces, a removed ring's node without an
+  arm. A retired node leaves the adjacency and the 16 m node grid (a stroke end finds the road or
+  nothing, never it; `add_node_to_spatial_index` keeps it out, so an undo's re-index does too),
+  its record stays as it was, read by no one but an undo, and the routing hierarchy ranks it
+  with the other nodes without a road. The save writes it as a hole without an alias row; a
+  format 122 load retires such a hole again, and format 121, whose every hole is merged, refuses
+  one. Format 121 saves load as before: their orphans of these three kinds load as the nodes
+  without a road that game saved, because a load cannot tell them from a player's road end. Before
+  this the transition and a removed ring's nodes stayed in the node grid, and the junction a ring
+  replaced left it live but came back into it on a load, where a stroke end could snap to it.
+  Bounds: retiring is O(nodes in its grid cell) per node, on the edits that already touch it; the
+  save's row test and the load's hole pass are O(1) per slot.
 - **Bounds.** Save: O(nodes + edges + aliases log aliases + lanes + references), no hashing of
   ids; load: O(saved rows + holes) for the graph, plus O(lanes + connections) to place the lanes
   after the whole rebuild and its identity match. Per frame: unchanged (the hierarchy's
@@ -286,6 +304,16 @@ undo, then 1,800 frames the same way),
 load) and `the_walking_proof_holds_after_local_lane_rebuilds_as_after_a_whole_one` (`PERF-27`).
 The starter town and the populated city no longer renumber their lanes as a load does
 (`SimCore::number_lanes_as_a_load_does`, `ROAD-122`, removed).
+`ROAD-124` tests (the comparison of the running and the loaded network, `assert_same_network`,
+now also checks that each node slot is retired in both or neither and that the 16 m node grid
+holds the same nodes in the same cells): `a_removed_pockets_transition_is_a_hole_live_and_loaded`,
+`a_rings_retired_nodes_are_holes_live_and_loaded` (a conversion's junction, a bare ring's three
+nodes), `a_dissolved_joint_is_a_hole_live_and_loaded` (JS2's attempts 1 and 5): each retired or
+merged node is out of the grid, not snapped to, and a hole after the load; a stroke drawn to its
+place builds alike in both games; undo restores every node and edge record and the node grid
+bit for bit, and the edit again gives the same records. `a_bulldozed_road_end_stays_saved_and_snapped_to`
+keeps the player's road ends (`SAVE-11`), and `a_retired_node_round_trips_as_a_hole_without_an_alias`
+the table form.
 
 Save format 108 (`ROAD-68-K22`, 2026-10-26) keeps the pending arrivals in
 `household_queue_state` (`pending_households`, `pending_adults`, `pending_elders`,

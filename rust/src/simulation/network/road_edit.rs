@@ -530,9 +530,13 @@ impl RoadTopologyPlan {
         let mut merged_nodes = Vec::new();
         for (local, node) in self.nodes.iter().enumerate() {
             if node.canonical != local as u32 {
+                let merged = node_ids[local];
                 graph
                     .node_aliases
-                    .insert(node_ids[local], node_ids[node.canonical as usize]);
+                    .insert(merged, node_ids[node.canonical as usize]);
+                // A merged node is a hole in no index, as a load rebuilds it (`ROAD-124`): one
+                // the plan added, or re-indexed above, leaves the node grid again.
+                graph.remove_node_from_spatial_index(merged, graph.node(merged).pos);
                 // The final solve scope contains canonical IDs only. Explicitly evict the
                 // removed node's old ownership/coverage before publishing its survivor.
                 merged_nodes.push(node_ids[local]);

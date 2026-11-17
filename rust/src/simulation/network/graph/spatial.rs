@@ -84,9 +84,10 @@ impl RegionGraph {
         self.spatial_edge_rt.remove(&entry);
     }
 
-    /// Registers a canonical node in the chunked node lookup grid.
+    /// Registers a canonical node in the chunked node lookup grid; a retired one stays out
+    /// (`ROAD-124`).
     pub fn add_node_to_spatial_index(&mut self, node_id: u32) {
-        if self.get_valid_node(node_id) != node_id {
+        if self.get_valid_node(node_id) != node_id || self.nodes[node_id as usize].retired {
             return;
         }
         let pos = self.nodes[node_id as usize].pos;
@@ -95,6 +96,24 @@ impl RegionGraph {
         if !chunk.contains(&node_id) {
             chunk.push(node_id);
         }
+    }
+
+    /// The 16 m node grid's cells with their nodes, both ascending, empty cells left out: what a
+    /// loaded graph must rebuild exactly (`ROAD-124`). Tests only.
+    #[cfg(test)]
+    pub(crate) fn node_grid_cells(&self) -> Vec<((i32, i32), Vec<u32>)> {
+        let mut cells: Vec<_> = self
+            .spatial_node_grid
+            .iter()
+            .filter(|(_, nodes)| !nodes.is_empty())
+            .map(|(&cell, nodes)| {
+                let mut nodes = nodes.clone();
+                nodes.sort_unstable();
+                (cell, nodes)
+            })
+            .collect();
+        cells.sort_unstable();
+        cells
     }
 
     /// Removes a node from the chunked node lookup grid.

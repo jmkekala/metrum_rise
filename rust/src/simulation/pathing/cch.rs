@@ -387,24 +387,28 @@ mod tests {
                 node_type: NodeType::Junction,
                 lane_connections: HashMap::new(),
                 crosswalk_overrides: HashMap::new(),
+                retired: false,
             },
             Node {
                 pos: Vector3::new(600.0, 0.0, 0.0),
                 node_type: NodeType::Junction,
                 lane_connections: HashMap::new(),
                 crosswalk_overrides: HashMap::new(),
+                retired: false,
             },
             Node {
                 pos: Vector3::new(1200.0, 0.0, 0.0),
                 node_type: NodeType::Junction,
                 lane_connections: HashMap::new(),
                 crosswalk_overrides: HashMap::new(),
+                retired: false,
             },
             Node {
                 pos: Vector3::new(600.0, 0.0, 600.0),
                 node_type: NodeType::Junction,
                 lane_connections: HashMap::new(),
                 crosswalk_overrides: HashMap::new(),
+                retired: false,
             },
         ];
 

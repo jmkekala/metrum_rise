@@ -10,6 +10,7 @@
 use super::road_edit_order::{Stroke, committed_on};
 use super::road_preview::{assert_preview_composes_committed, context, preview};
 use super::*;
+use crate::nodes::sim::core::scenario::save_cases::assert_same_network;
 use crate::nodes::sim::core::road_commit::{RoadCommitOutcome, RoadCommitRequest};
 use crate::nodes::sim::core::road_preview::RoadPreview;
 use crate::nodes::sim::core::road_rejection::RoadRejection;
@@ -404,6 +405,34 @@ fn the_dumps_attempts_1_to_5_dissolve_the_joint_beside_the_junction() {
             after,
             "{label}: committed again, the same graph and roadbed"
         );
+    }
+}
+
+// `ROAD-124`: a dissolved joint is merged into its junction, a hole with its alias, so a save
+// and a load find the running game's network (ids, holes, aliases, node grid): no node stands
+// at the joint's place and none is left without a road, and a stroke drawn to that place builds
+// (or is refused) alike in both games, finding the road, not the joint. Attempt 5's game does
+// not save: its joined road's grid alignment would not load (`ROAD-125`).
+#[test]
+fn a_dissolved_joint_is_a_hole_live_and_loaded() {
+    for (label, ends) in attempts().into_iter().take(3) {
+        let mut core = dump_city();
+        let joint = DEAD_END;
+        let points = stroke(&core, ends);
+        assert!(commit(&mut core, &points, None).committed, "{label}");
+        let graph = &core.region_graph;
+        assert_ne!(graph.get_valid_node(joint as u32), joint as u32, "{label}: merged");
+        let mut loaded = saved_and_loaded(&mut core, "dissolved_joint");
+        let place = at(joint);
+        let to = stroke(&core, [place + Vector2::new(0.0, -50.0), place]);
+        let mut outcomes = Vec::new();
+        for game in [&mut core, &mut loaded] {
+            assert!(!node_stands_at(game, place), "{label}");
+            assert!(roadless_nodes(game).is_empty(), "{label}");
+            outcomes.push(commit(game, &to, None).committed);
+        }
+        assert_eq!(outcomes[0], outcomes[1], "{label}");
+        assert_same_network(&core, &loaded, label);
     }
 }
 

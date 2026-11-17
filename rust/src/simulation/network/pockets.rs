@@ -110,7 +110,7 @@ pub(crate) struct PocketApplied {
     pub(crate) joined: Option<usize>,
     /// The split, unless the pocket was removed.
     pub(crate) split: Option<SplitHalves>,
-    /// The transition node: kept, moved, added, or left without arms by a removal.
+    /// The transition node: kept, moved, added, or retired by a removal (`ROAD-124`).
     pub(crate) transition: Option<u32>,
     /// The pocket edge, unless the pocket was removed.
     pub(crate) pocket_edge: Option<usize>,
@@ -463,8 +463,9 @@ impl PocketPlan {
         };
         let Some(cut) = self.cut else {
             if let Some(transition) = applied.transition {
-                // An orphan, not a hidden node; not a border role (decision 5 of round R5a1).
-                graph.nodes[transition as usize].node_type = NodeType::Junction;
+                // The transition was the tool's own node: it goes with the pocket, a hole that
+                // nothing finds, live and loaded alike (`ROAD-124`).
+                graph.retire_node(transition);
             }
             return applied;
         };

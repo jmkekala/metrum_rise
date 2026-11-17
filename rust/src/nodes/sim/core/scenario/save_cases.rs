@@ -655,11 +655,12 @@ fn the_days_construction_and_input_telemetry_survive_a_save_and_load() {
 }
 
 // The road graph and lanes of a loaded game equal the saved game's in memory (`SAVE-11`): node,
-// edge and lane ids are saved state. Every node slot resolves to the same node and every
-// canonical one with a road has its position and type; every edge slot is live or a hole in
-// both, a live one with its whole record; every lane slot is a lane of the same owner with the
-// same geometry, successors, delays and ring entry, or a retired lane in both. Positions of
-// merged nodes and the records of deleted edges are no state anyone reads, and not compared.
+// edge and lane ids are saved state. Every node slot resolves to the same node, is retired in
+// both or neither (`ROAD-124`), and every canonical one not retired has its position and type;
+// the 16 m node grid holds the same nodes in the same cells; every edge slot is live or a hole
+// in both, a live one with its whole record; every lane slot is a lane of the same owner with
+// the same geometry, successors, delays and ring entry, or a retired lane in both. Records of
+// merged and retired nodes and of deleted edges are no state anyone reads, and not compared.
 pub(in crate::nodes::sim::core) fn assert_same_network(live: &SimCore, loaded: &SimCore, what: &str) {
     let (a, b) = (&live.region_graph, &loaded.region_graph);
     assert_eq!(a.node_count(), b.node_count(), "{what}: node count");
@@ -667,7 +668,9 @@ pub(in crate::nodes::sim::core) fn assert_same_network(live: &SimCore, loaded: &
     for node in 0..a.node_count() as u32 {
         let canonical = a.get_valid_node(node);
         assert_eq!(canonical, b.get_valid_node(node), "{what}: node {node}'s canonical node");
-        if canonical == node {
+        let retired = a.is_retired_node(node);
+        assert_eq!(retired, b.is_retired_node(node), "{what}: node {node} retired");
+        if canonical == node && !retired {
             let (x, y) = (a.node(node), b.node(node));
             assert_eq!(
                 (x.pos, x.node_type, &x.crosswalk_overrides),
@@ -681,6 +684,7 @@ pub(in crate::nodes::sim::core) fn assert_same_network(live: &SimCore, loaded: &
             );
         }
     }
+    assert_eq!(a.node_grid_cells(), b.node_grid_cells(), "{what}: the node grid");
     for edge in 0..a.edge_count() {
         let (x, y) = (a.edge(edge), b.edge(edge));
         assert_eq!(x.deleted, y.deleted, "{what}: edge {edge} deleted");

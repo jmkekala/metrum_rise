@@ -81,6 +81,121 @@ fn temp_save_path(name: &str) -> std::path::PathBuf {
     ))
 }
 
+// Saves `core` and loads the save into a test core whose network equals the running one
+// (`SAVE-11`, `ROAD-124`): ids, merged and retired holes, aliases, the node grid and the lanes.
+fn saved_and_loaded(core: &mut SimCore, name: &str) -> SimCore {
+    let path = temp_save_path(name);
+    core.save_game_settled_at(path.to_str().unwrap(), None, 0)
+        .expect("save");
+    let mut loaded = test_core();
+    loaded.load_game_internal(path.to_str().unwrap()).unwrap();
+    let _ = std::fs::remove_file(&path);
+    super::scenario::save_cases::assert_same_network(core, &loaded, name);
+    loaded
+}
+
+// Canonical nodes without a road that are not retired holes: a player's road ends, saved and
+// snapped to (`SAVE-11`); a tool's own node never stays one (`ROAD-124`).
+fn roadless_nodes(core: &SimCore) -> Vec<u32> {
+    let graph = &core.region_graph;
+    (0..graph.node_count() as u32)
+        .filter(|&node| {
+            graph.get_valid_node(node) == node
+                && !graph.is_retired_node(node)
+                && !graph.node_has_live_incident_edge(node)
+        })
+        .collect()
+}
+
+// Every node and edge slot bit for bit, holes included (a hole's whole record, which only an
+// undo reads), with the aliases, the adjacency and the node grid: an undo's and a repeated
+// edit's comparison (`ROAD-124`).
+fn network_record(core: &SimCore) -> String {
+    let graph = &core.region_graph;
+    let mut out = String::new();
+    for (id, node) in graph.nodes().iter().enumerate() {
+        let id = id as u32;
+        let mut overrides: Vec<_> = node.crosswalk_overrides.iter().collect();
+        overrides.sort();
+        // The turn rules as sets: a lane rebuild re-derives the pedestrian ones in its own order.
+        let mut rules: Vec<_> = node
+            .lane_connections
+            .iter()
+            .map(|(from, to)| {
+                let mut to = to.clone();
+                to.sort_unstable();
+                (from, to)
+            })
+            .collect();
+        rules.sort();
+        // Undo restores adjacency ascending, as a load builds it.
+        let mut arms = graph.node_adjacency(id).to_vec();
+        arms.sort_unstable();
+        out += &format!(
+            "{id} {} {:?} {:?} {} {overrides:?} {rules:?} {arms:?}\n",
+            graph.get_valid_node(id),
+            node.pos.to_array().map(f32::to_bits),
+            node.node_type,
+            node.retired,
+        );
+    }
+    for (id, edge) in graph.edges().iter().enumerate() {
+        out += &format!(
+            "{id} {} {} {} {:?} {:?}\n",
+            edge.deleted,
+            edge.start_node,
+            edge.end_node,
+            edge.geometry,
+            edge.physical_geometry
+        );
+    }
+    out + &format!("{:?}", graph.node_grid_cells())
+}
+
+// `a == b` for two `network_record`s, naming the first slot that differs.
+fn assert_same_record(a: &str, b: &str, what: &str) {
+    if let Some((x, y)) = a.lines().zip(b.lines()).find(|(x, y)| x != y) {
+        panic!("{what}: {x}\n  against {y}");
+    }
+    assert_eq!(a.lines().count(), b.lines().count(), "{what}: slot count");
+}
+
+// A road end found where a stroke's end snaps (`road_edit::input`), if any.
+fn snapped_node(core: &SimCore, at: Vector3) -> Option<u32> {
+    core.region_graph
+        .find_node_within(at, crate::config::SNAP_TOLERANCE)
+}
+
+// `SAVE-11`, `ROAD-124`: a bulldozed road's ends are the player's road ends, kept on purpose:
+// saved at their ids and still snapped to, live and after a load, where a new stroke ending
+// there takes the same node.
+#[test]
+fn a_bulldozed_road_end_stays_saved_and_snapped_to() {
+    let mut core = test_core();
+    core.treasury.balance = 1.0e7;
+    let (a, b) = (Vector3::new(-60.0, 0.0, 0.0), Vector3::new(60.0, 0.0, 0.0));
+    assert!(core.add_road_internal(vec![a, b], 1, 1).committed);
+    let road = (0..core.region_graph.edge_count())
+        .find(|&edge| !core.region_graph.edge(edge).deleted)
+        .unwrap();
+    let ends = {
+        let edge = core.region_graph.edge(road);
+        [edge.start_node, edge.end_node]
+    };
+    assert!(core.bulldoze_road_edge_for_test(road));
+    assert_eq!(roadless_nodes(&core), ends.to_vec());
+    let mut loaded = saved_and_loaded(&mut core, "bulldozed_road_end");
+    let stroke = vec![Vector3::new(-60.0, 0.0, 80.0), a];
+    for (game, label) in [(&mut core, "running"), (&mut loaded, "loaded")] {
+        assert_eq!(roadless_nodes(game), ends.to_vec(), "{label}");
+        assert_eq!(snapped_node(game, a), Some(ends[0]), "{label}");
+        assert!(game.add_road_internal(stroke.clone(), 1, 1).committed, "{label}");
+        let graph = &game.region_graph;
+        assert!(graph.node_has_live_incident_edge(ends[0]), "{label}: the stroke took the end");
+    }
+    super::scenario::save_cases::assert_same_network(&core, &loaded, "after the stroke");
+}
+
 // The first slot of the hour after the clock's.
 fn next_hour_slot(core: &SimCore) -> u64 {
     (core.time.absolute_slot() / SLOTS_PER_HOUR + 1) * SLOTS_PER_HOUR

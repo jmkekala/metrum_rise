@@ -443,9 +443,10 @@ impl RoundaboutLayout {
             arms.push(id);
         }
         if let Some(old) = self.old_node {
-            graph.adjacency[old as usize].clear();
             graph.nodes[old as usize].crosswalk_overrides.clear();
-            graph.remove_node_from_spatial_index(old, graph.node(old).pos);
+            // Its arms are the ring nodes' now: the junction is a hole, live and loaded alike
+            // (`ROAD-124`).
+            graph.retire_node(old);
         }
         let mut ring = Vec::with_capacity(self.ring.len());
         for (i, edge) in self.ring.iter().enumerate() {

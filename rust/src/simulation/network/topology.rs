@@ -319,6 +319,7 @@ impl RegionGraph {
             node_type,
             lane_connections: std::collections::HashMap::new(),
             crosswalk_overrides: std::collections::HashMap::new(),
+            retired: false,
         });
         self.adjacency.push(Vec::new());
         self.add_node_to_spatial_index(id);

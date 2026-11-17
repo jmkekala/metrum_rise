@@ -436,8 +436,9 @@ pocket, its Godot calls and its undo; the Road Properties section is round R5b2.
   on the graph alone: the join (the far node's turn rules and crossing overrides move back to
   `first`), then the split through `topology::split_edge_graph` (the graph half of `split_edge`,
   the dependents' migration a separate call), the second half in the pair's old slot and the
-  transition moved, so a resize adds no node or edge (D8). A removal leaves the transition
-  without arms, typed `Junction`.
+  transition moved, so a resize adds no node or edge (D8). A removal retires the transition
+  (`ROAD-124`): the tool's own node, it leaves the node grid and saves as a hole without an
+  alias, so no stroke end finds it, live or loaded.
 - **Refusals**, each the preview's and the commit's, each changing nothing: `invalid_road`, the
   model's (`pocket_requires_surface_road`, `pocket_lane_limit`, `pocket_requires_wide_median`,
   `invalid_pocket_dimensions`; `pocket_requires_one_way` until round R5c1), `pocket_median_gap` (since round R5b1a: the pair's medians would
@@ -1155,7 +1156,9 @@ stand on the outer sidewalk, never on the island (D20).
 
 **Conversion.** In place of a junction (`RoundaboutSite::Junction`, degree 3 to 6, at most 60 m so
 everything inside stays within the 30 m lane reattach reach, D14), the centre is the node, each arm is
-cut where it leaves the circle and keeps its id, far node, lanes and attributes, and the node retires.
+cut where it leaves the circle and keeps its id, far node, lanes and attributes, and the node retires
+(`RegionGraph::retire_node`, `ROAD-124`: out of the node grid, a hole without an alias in a save, so a
+load does not bring it back where a stroke end could find it).
 The ring has two lanes when an arm enters with two or more, else one. Refusals, nothing touched:
 `invalid_roundabout_junction`, `invalid_roundabout_dimensions`,
 `roundabout_requires_three_to_six_arms`, `roundabout_has_lane_restrictions`,
@@ -1283,7 +1286,8 @@ the user tries this.
 
 **Bulldoze** (D15, `bulldoze_ring`). A bulldoze target on a ring edge is the whole ring: the hover
 shows it and names it, "Roundabout, 4 arms". The ring edges go in one `try_graph_edit`, the arms stay
-with their ring nodes as road ends on the old ring line, one undo record.
+with their ring nodes as road ends on the old ring line, one undo record. A ring node without an arm
+retires (`ROAD-124`), as the junction a conversion replaces does.
 
 **Fixed.** A ring keeps its section, class, pocket-free state and zoning:
 `validate_cross_section` and `validate_pocket` refuse with `roundabout_fixed`, the class
@@ -15795,7 +15799,9 @@ Branch `roadtools-js2` off `dev` `6f953cc5` (JS1 landed).
   refusal. The joint becomes an alias of the junction (the plan's `merged_nodes` path, its piece
   and default zebra dropped) and leaves the node index, live and excerpt alike, so a later stroke
   end there finds the road, not a node. The live graph sees one longer edge, one shorter or
-  replaced edge, one new deleted slot and one alias; the undo record restores the joint, both
+  replaced edge, one new deleted slot and one alias, saved as one (`SAVE-11`), so a save and a
+  load find no node there either (`ROAD-124`; JS2's note that a load drops it was wrong for
+  format 121, which saves the aliases); the undo record restores the joint, both
   roads' ids and geometry and the zebra bit for bit. Both roads' far ends lay out again (their
   edges are dirty); the junction's incidence and the far ends' must be complete in the excerpt,
   else the junction's refusal stands.

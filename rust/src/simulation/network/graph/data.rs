@@ -55,6 +55,12 @@ pub struct Node {
     /// Manually enforced crosswalks: Key `edge_id` -> bool override (true = force, false = disable).
     /// If an edge ID is missing, default procedural generation decides.
     pub crosswalk_overrides: HashMap<usize, bool>,
+    /// Whether an edit retired this node (`ROAD-124`): a node the player never placed, left
+    /// without a road by its tool (a removed pocket's transition, the junction a ring replaced,
+    /// a removed ring's node without an arm). It is a hole, as a merged node is but without an
+    /// alias: in no index, never snapped to, its other fields read by no one, saved as no row
+    /// and loaded as a retired hole. Ids are never reused, so only an undo brings it back.
+    pub(crate) retired: bool,
 }
 
 /// A directed road segment connecting two [`Node`]s.
@@ -504,6 +510,7 @@ impl RegionGraph {
             node_type: NodeType::default(),
             lane_connections: HashMap::new(),
             crosswalk_overrides: HashMap::new(),
+            retired: false,
         };
         self.nodes.resize_with(node_count, placeholder);
         self.adjacency.resize_with(node_count, Vec::new);
@@ -768,6 +775,7 @@ impl RegionGraph {
             node_type: NodeType::default(),
             lane_connections: HashMap::new(),
             crosswalk_overrides: HashMap::new(),
+            retired: false,
         });
         self.adjacency.push(Vec::new());
         id
@@ -781,6 +789,22 @@ impl RegionGraph {
             ..Edge::default()
         });
         self.edges.len() - 1
+    }
+
+    /// Retires `node` (`ROAD-124`, [`Node::retired`]): its tool has moved or deleted every road
+    /// at it, and no merge names another node for it. It leaves the adjacency and the 16 m node
+    /// grid, so nothing finds it, and the save writes it as a hole. Its other fields stay as
+    /// they were, read by no one, for an undo restoring the record. `O(nodes in its grid cell)`.
+    pub(crate) fn retire_node(&mut self, node: u32) {
+        debug_assert_eq!(self.get_valid_node(node), node, "a merged node is a hole already");
+        self.adjacency[node as usize].clear();
+        self.remove_node_from_spatial_index(node, self.nodes[node as usize].pos);
+        self.nodes[node as usize].retired = true;
+    }
+
+    /// Whether `node` is a retired hole ([`Node::retired`]). `O(1)`.
+    pub(crate) fn is_retired_node(&self, node: u32) -> bool {
+        self.nodes[node as usize].retired
     }
 
     /// Restores a saved merge alias (`SAVE-11`). The caller checks both ids and that the

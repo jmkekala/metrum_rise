@@ -11,6 +11,7 @@ use super::road_crosswalks::{
     arm_towards, fully_emitted_chunks, live_arms, products, published_chunks,
 };
 use super::road_in_place::house_fronting;
+use crate::nodes::sim::core::scenario::save_cases::assert_same_network;
 use super::*;
 use crate::simulation::network::lanes::LaneType;
 use crate::simulation::network::pockets::PocketRequest;
@@ -593,10 +594,7 @@ fn pocket_roles_resize_remove_and_preview_cover_both_stored_directions() {
         assert_eq!((joined.fwd_lanes, joined.bkw_lanes), (fwd, bkw));
         assert!(joined.pocket.is_none());
         assert!(!core.region_graph.node_has_live_incident_edge(transition));
-        assert_eq!(
-            core.region_graph.node(transition).node_type,
-            NodeType::Junction
-        );
+        assert!(core.region_graph.is_retired_node(transition), "a hole (`ROAD-124`)");
         assert!(core.get_road_pocket_internal(west as i32, end).is_none());
         assert!(core.undo_action_internal());
         let restored = core.get_road_pocket_internal(west as i32, end).unwrap();
@@ -951,6 +949,56 @@ fn bulldozing_a_pocket_pair_resets_its_transition() {
         core.region_graph.node(transition).node_type,
         NodeType::LaneTransition
     );
+}
+
+// `ROAD-124`: a removal retires the pocket's transition, the tool's own node: no road, out of the
+// node grid, so a stroke end there finds the road instead, and the save writes it as a hole the
+// load retires again (the loaded network equals the running one). A stroke ending there builds
+// the same T live and loaded. Undo restores the transition bit for bit; the removal again
+// retires it alike.
+#[test]
+fn a_removed_pockets_transition_is_a_hole_live_and_loaded() {
+    let (mut core, node) = crossing(true);
+    // The stroke records its undo too.
+    core.benchmark_mode = false;
+    let (west, end) = arm_end(&core, node, Vector3::new(-150.0, 0.0, 0.0));
+    assert_eq!(
+        pocket_edit(&mut core, request(west, end, (false, true), 60.0)),
+        ""
+    );
+    let state = core.get_road_pocket_internal(west as i32, end).unwrap();
+    let transition = core.region_graph.edge(state.edge).start_node;
+    let at = core.region_graph.node(transition).pos;
+    assert_eq!(snapped_node(&core, at), Some(transition));
+    let before = (network_record(&core), products(&mut core));
+    let removal = request(west, end, (false, false), 60.0);
+    assert_eq!(pocket_edit(&mut core, removal), "");
+    assert!(core.region_graph.is_retired_node(transition));
+    let after = (network_record(&core), products(&mut core));
+    let mut loaded = saved_and_loaded(&mut core, "pocket_removal");
+    let stroke = vec![Vector3::new(at.x, 0.0, -100.0), Vector3::new(at.x, 0.0, at.z)];
+    for (game, label) in [(&mut core, "running"), (&mut loaded, "loaded")] {
+        assert!(game.region_graph.is_retired_node(transition), "{label}");
+        assert_eq!(snapped_node(game, at), None, "{label}");
+        assert!(roadless_nodes(game).is_empty(), "{label}");
+        assert!(game.add_road_internal(stroke.clone(), 1, 1).committed, "{label}");
+        assert!(game.region_graph.is_retired_node(transition), "{label}");
+    }
+    assert_same_network(&core, &loaded, "after the stroke");
+    assert!(core.undo_action_internal(), "the stroke");
+    let now = (network_record(&core), products(&mut core));
+    assert_same_record(&now.0, &after.0, "after 1");
+    assert_eq!(now.1, after.1, "after 1");
+    assert!(core.undo_action_internal(), "the removal");
+    let now = (network_record(&core), products(&mut core));
+    assert_same_record(&now.0, &before.0, "before 2");
+    assert_eq!(now.1, before.1, "before 2");
+    assert!(!core.region_graph.is_retired_node(transition));
+    assert_eq!(snapped_node(&core, at), Some(transition));
+    assert_eq!(pocket_edit(&mut core, removal), "");
+    let now = (network_record(&core), products(&mut core));
+    assert_same_record(&now.0, &after.0, "after 3");
+    assert_eq!(now.1, after.1, "after 3");
 }
 
 // D17: the pocket widens its carriageway on one side only: it takes a parcel 2 m beyond the base
