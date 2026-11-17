@@ -3,7 +3,7 @@
 ## The road tool's footprint hue (`ROAD-112` round HU): a translucent mark of the ground a
 ## draft's road takes, so a draft reads as a preview where the preview terrain's grass still
 ## covers the preview road (T27 (d)). A stopgap: it marks the footprint and does not fix the lag
-## (`TERRAIN-14`). Rust builds the mesh and decides its state (`road_tool_hue`: the fill on the
+## (`TERRAIN-14`). Rust builds the mesh and decides its state (`road_tool_hue_join`: the fill on the
 ## road, a bridge's on the ground under it; a tunnel's outline as line quads); this node only
 ## uploads it, in place while the padded fill keeps its size. The fill draws once, unshaded and
 ## translucent without writing depth, with the normal depth test (the user, 2026-11-14): Rust
@@ -38,23 +38,22 @@ func _init(gizmos: Node) -> void:
 	_fill.render_priority = RENDER_PRIORITY
 	visible = false
 
-## Draws `hue` (`road_tool_hue`'s dictionary); returns the upload's milliseconds.
-func show_hue(hue: Dictionary) -> float:
-	var start_us := Time.get_ticks_usec()
-	var state := int(hue.get("state", -1))
+## Draws the hue `simulation` joined (`joined`: `road_tool_hue_join`'s state, fill vertex count
+## and outline vertex count), fetching its buffers (`road_tool_hue_fill`, `road_tool_hue_outline`).
+func show_hue(simulation: Object, joined: Vector3i) -> void:
+	var state := joined.x
 	if state < 0:
 		clear()
-		return float(Time.get_ticks_usec() - start_us) / 1000.0
+		return
 	if state != _state:
 		_state = state
 		var color: Color = RoadToolGizmos.PALETTE["hue"][state]
 		_fill.set_shader_parameter("hue_color", color)
 		_fill.set_shader_parameter("hatched", state == 2)
-	var count := int(hue.get("fill_vertices", 0))
-	var fill: PackedByteArray = hue.get("fill_bytes", PackedByteArray())
-	var outline: PackedVector3Array = hue.get("outline_vertices", PackedVector3Array())
-	if outline.is_empty() and count == _fill_size and _mesh.get_surface_count() == 1:
-		RenderingServer.mesh_surface_update_vertex_region(_mesh.get_rid(), 0, 0, fill)
+	var count := joined.y
+	var outlined := joined.z > 0
+	if not outlined and count == _fill_size and _mesh.get_surface_count() == 1:
+		RenderingServer.mesh_surface_update_vertex_region(_mesh.get_rid(), 0, 0, simulation.road_tool_hue_fill())
 	else:
 		_mesh.clear_surfaces()
 		_fill_size = -1
@@ -67,14 +66,13 @@ func show_hue(hue: Dictionary) -> float:
 			arrays[Mesh.ARRAY_VERTEX] = placeholder
 			_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
 			_mesh.surface_set_material(0, _fill)
-			RenderingServer.mesh_surface_update_vertex_region(_mesh.get_rid(), 0, 0, fill)
-			if outline.is_empty():
+			RenderingServer.mesh_surface_update_vertex_region(_mesh.get_rid(), 0, 0, simulation.road_tool_hue_fill())
+			if not outlined:
 				_fill_size = count
-		if not outline.is_empty():
-			_gizmos.add_line_surface(_mesh, outline, hue.get("outline_attributes", PackedFloat32Array()))
+		if outlined:
+			_gizmos.add_line_surface(_mesh, simulation.road_tool_hue_outline(0), simulation.road_tool_hue_outline(1))
 			_mesh.surface_set_material(_mesh.get_surface_count() - 1, _gizmos.depth_line_material())
 	visible = _mesh.get_surface_count() > 0
-	return float(Time.get_ticks_usec() - start_us) / 1000.0
 
 ## Hides the hue.
 func clear() -> void:

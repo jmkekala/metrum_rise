@@ -365,6 +365,15 @@ impl GradedPreview {
         Some(self.advance(CATCH_UP_FRAME_TILES, 0.0, Instant::now()))
     }
 
+    /// The latest pose's tiles still to stage (0 once the shown tiles are the pose's).
+    pub(crate) fn pending_tiles(&self) -> usize {
+        if self.pending.is_some() {
+            self.order.len() - self.next
+        } else {
+            0
+        }
+    }
+
     /// Drops the latest pose's unstaged tiles: a newer pose that draws no road (no pieces, or
     /// invalid), or a publication that replaced the view, supersedes them. The shown tiles stay
     /// for adoption, but the renderer is handed none (T60: a pose without a drawn road shows no

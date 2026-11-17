@@ -263,7 +263,7 @@ pub struct ToolState {
     pub refusal: Option<DraftRefusal>,
 }
 
-/// One `road_tool_frame` record.
+/// One road tool frame record (`road_tool_snapshot`).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct RoadToolFrame {
     /// The draft's stroke request for this pose (what the preview will be called with); empty

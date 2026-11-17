@@ -59,7 +59,7 @@ const PARALLEL_SIN: f64 = 1e-9;
 // to the `f32` precision of the stored start and road geometry.
 const GRID_ON_RAY_M: f64 = 1e-3;
 
-/// The snapping toggles and steps (plan 2.3 `road_tool_set_option`). Defaults per U2: network
+/// The snapping toggles and steps (plan 2.3; the bridge's typed setters). Defaults per U2: network
 /// snap on, guide lines on, zoning grid off, angle lock off, no length step.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SnapOptions {

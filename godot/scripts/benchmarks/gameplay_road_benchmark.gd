@@ -766,7 +766,7 @@ func _segment_surface_points(anchor: Vector2, segment: Dictionary) -> PackedVect
 	road_tool._begin_stroke(start_pos)
 	road_tool._commit_segment(_surface_point(anchor + segment["control_offset"]))
 	simulation_node.road_tool_pointer_at(end_pos)
-	var points: PackedVector3Array = simulation_node.road_tool_frame().get("points", PackedVector3Array())
+	var points: PackedVector3Array = simulation_node.road_tool_points()
 	road_tool.cancel_road()
 	road_tool.draw_mode = previous_draw_mode
 	road_tool.active = was_active

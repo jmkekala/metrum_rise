@@ -110,15 +110,15 @@ func poll(id: int, elapsed_us: int, payload: Variant) -> void:
 			worker_wait_ms += row.native.core_wait_ms
 
 ## The footprint hue of request `id`'s pose (`ROAD-123` round HF2), into its stages: its build
-## off the frame (`hue_ms`), the frame's wait for it at the upload (`hue_wait_ms`) and the frame's
-## whole hue step (`hue_frame_ms`: the wait, the dictionary and the upload).
-func hue(id: int, hue_dict: Dictionary, frame_ms: float) -> void:
+## off the frame (`hue_ms`) and the frame's wait for it at the upload (`hue_wait_ms`), as Rust
+## reports them (`road_tool_hue_times`: `x` and `y`). The frame's whole hue step is in Rust's
+## tick ring (round R2-2, `road_tool_timings`).
+func hue(id: int, times: Vector2) -> void:
 	if not _requests.has(id) or not _requests[id].has("stages"):
 		return
 	var stages: Dictionary = _requests[id]["stages"]
-	stages["hue_ms"] = float(hue_dict.get("build_ms", 0.0))
-	stages["hue_wait_ms"] = float(hue_dict.get("wait_ms", 0.0))
-	stages["hue_frame_ms"] = frame_ms
+	stages["hue_ms"] = times.x
+	stages["hue_wait_ms"] = times.y
 
 func forget(id: int) -> void:
 	# A displaced or retired request will never be installed.

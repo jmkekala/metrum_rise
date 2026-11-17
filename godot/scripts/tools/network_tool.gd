@@ -105,14 +105,7 @@ func _setup_visuals():
 
 func _process(delta):
 	if active:
-		var pos = _scripted_pointer_position if _scripted_pointer_enabled else get_world_mouse_pos()
-		_last_world_mouse_pos = pos
-		_has_last_world_mouse_pos = true
-		if cursor_mesh:
-			cursor_mesh.global_position = pos
-			cursor_mesh.global_position.y += 0.35 # Float above road geometries
-			cursor_mesh.visible = is_valid
-
+		_update_pointer()
 		_update_blueprint_visuals()
 		_update_surface_debug_overlay(delta)
 		_update_surface_probe_debug(delta)
@@ -122,6 +115,17 @@ func _process(delta):
 			cursor_mesh.visible = false
 		if surface_debug_mesh:
 			surface_debug_mesh.visible = false
+
+# Resolves this frame's pointer and places the hover cursor on it (the roundabout tool's; the road
+# tool resolves its pointer in its own tick, `ROAD-112` round R2-2).
+func _update_pointer() -> void:
+	var pos = _scripted_pointer_position if _scripted_pointer_enabled else get_world_mouse_pos()
+	_last_world_mouse_pos = pos
+	_has_last_world_mouse_pos = true
+	if cursor_mesh:
+		cursor_mesh.global_position = pos
+		cursor_mesh.global_position.y += 0.35 # Float above road geometries
+		cursor_mesh.visible = is_valid
 
 func set_scripted_pointer(enabled: bool, world_position: Vector3 = Vector3.ZERO) -> void:
 	_scripted_pointer_enabled = enabled
@@ -152,9 +156,9 @@ func get_terrain_interaction(click := false):
 	# Combined world-surface raycast: compiled roadbed where owned, otherwise visual terrain.
 	return simulation_node.intersect_world_surface(ray_origin, ray_dir, click)
 
-# The pointer's world position, sent once per frame by `_process`. Each tool resolves its own
-# (the road tool through its session, the roundabout tool on the ground); a bare base keeps the
-# last one.
+# The pointer's world position, resolved once per frame by `_update_pointer` (the roundabout tool
+# resolves it on the ground; the road tool's tick resolves its own); a bare base keeps the last
+# one.
 func get_world_mouse_pos() -> Vector3:
 	return _last_world_mouse_pos
 

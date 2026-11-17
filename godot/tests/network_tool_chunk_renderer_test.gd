@@ -218,23 +218,23 @@ class TestRoadTool:
 	func mark_network_topology_dirty() -> void:
 		topology_dirty_count += 1
 
-# A road tool whose pointer is a scripted world point sent to the session exactly, counting the
-# pointer queries and the previews it shows.
+# A road tool whose pointer is a scripted world point its tick sends to the session exactly,
+# counting the ticks and the previews it shows; `camera` places the chips while the tool is outside
+# the tree.
 class PointerRoadTool:
 	extends RoadToolScript
 	var pointer: Vector3 = Vector3.ZERO
 	var pointer_queries: int = 0
 	var draws: int = 0
+	var camera: Camera3D = null
 
-	func get_world_mouse_pos() -> Vector3:
+	func _tick_once(tree_camera: Camera3D) -> int:
 		pointer_queries += 1
-		is_valid = true
-		simulation_node.road_tool_pointer_at(pointer)
-		return pointer
+		return simulation_node.road_tool_tick_at(camera if camera != null else tree_camera, pointer, false)
 
-	func _show_preview(points: PackedVector3Array) -> void:
+	func _show_preview() -> void:
 		draws += 1
-		super._show_preview(points)
+		super._show_preview()
 
 class ProcessPhaseProbe:
 	extends Node
@@ -723,7 +723,7 @@ func _test_native_road_cursor_contract() -> void:
 		var x := 30.0 + index * 0.1
 		var cursor: Variant = simulation.road_tool_pointer(Vector3(x, 100.0, 20.0), Vector3.DOWN, false)
 		_expect(cursor is Vector3 and absf(cursor.x - x) < 0.0001 and absf(cursor.z - 20.0) < 0.0001, "free cursor motion must remain continuous through the session")
-		_expect(String(simulation.road_tool_frame().get("snap", "")) == "free", "free terrain takes no snap")
+		_expect(String(simulation.road_tool_snapshot().get("snap", "")) == "free", "free terrain takes no snap")
 	await _test_native_road_preview_contract(simulation)
 	var points := PackedVector3Array([Vector3(-60.0, 0.0, 32.0), Vector3(60.0, 0.0, 32.0)])
 	var request := simulation.add_road_with_snap(points, 1, 1, true)
@@ -732,7 +732,7 @@ func _test_native_road_cursor_contract() -> void:
 	# Near the committed road's dead end the session's cursor takes its node.
 	var end_cursor: Variant = simulation.road_tool_pointer(Vector3(60.5, 100.0, 32.5), Vector3.DOWN, false)
 	_expect(end_cursor is Vector3 and Vector2(end_cursor.x, end_cursor.z).distance_to(Vector2(60.0, 32.0)) < 0.01, "the cursor snaps onto the dead end")
-	_expect(String(simulation.road_tool_frame().get("snap", "")) == "node", "the dead end's node takes the cursor")
+	_expect(String(simulation.road_tool_snapshot().get("snap", "")) == "node", "the dead end's node takes the cursor")
 	var modes := RoadToolScript.new()
 	# The options live in Rust's session (round R2-6): a node of its own, so the modes and
 	# options set here stay out of the fixture's session.
@@ -855,7 +855,7 @@ func _test_native_road_preview_contract(simulation: SimulationNode) -> void:
 	rejected["invalid_reason"] = "terrain_clip_missing_outer_boundary_owner"
 	rejected["sequence"] = tool._preview_sequence + 1
 	tool._preview = rejected
-	tool._show_preview(points)
+	tool._show_preview()
 	_expect(tool._preview_display.sequence == 0 and tool._preview_display._instances.is_empty(), "a rejected stroke shows no road")
 	var notice: String = RoadWording.reason_text(rejected, RoadWording.default_refusal())
 	_expect(notice.contains("terrain boundary"), "terrain rejection must retain an explanatory notice: '%s'" % notice)
@@ -911,7 +911,7 @@ func _test_session_strokes(simulation: SimulationNode) -> void:
 	var shown := tool._preview_sequence
 	_road_frame(tool)
 	_expect(tool.pointer_queries == 1 and tool._preview_sequence == shown + 1 and tool.draws == 1, "32 queued updates coalesce into one synchronous preview")
-	_expect(tool._session_points[-1] == tool.pointer and tool.stroke_preview_current(), "the frame previews this frame's pointer")
+	_expect(simulation.road_tool_points()[-1] == tool.pointer and tool.stroke_preview_current(), "the frame previews this frame's pointer")
 	for index in range(4):
 		tool.pointer.x += 0.25
 		_road_frame(tool)
@@ -925,7 +925,7 @@ func _test_session_strokes(simulation: SimulationNode) -> void:
 	_expect(tool._preview_sequence == shown + 6, "a lane change previews the new width")
 	tool.set_lanes(1, 1)
 	_road_frame(tool)
-	var gizmo_kinds: PackedInt32Array = tool.gizmos._handle_kinds
+	var gizmo_kinds: PackedInt32Array = PackedInt32Array(simulation.road_tool_snapshot()["gizmo_handle_kinds"])
 	# The free start's height grip draws as a handle (5) on a stem in the guide look (rounds I, V2).
 	_expect(gizmo_kinds == PackedInt32Array([0, 3, 5]), "a straight stroke shows its start, live end and the start's height grip: %s" % gizmo_kinds)
 	_expect(tool.hud.text().contains("$") and tool.hud.text().contains(" m") and not tool.hud.text().contains("/day"), "the HUD's chips show the stroke's numbers, no upkeep: '%s'" % tool.hud.text())
@@ -935,7 +935,7 @@ func _test_session_strokes(simulation: SimulationNode) -> void:
 	_expect(not tool._commit_segment(end) and tool.is_drawing(), "a pending placement blocks another")
 	await _await_ack(tool)
 	_road_frame(tool)
-	var frame: Dictionary = simulation.road_tool_frame()
+	var frame: Dictionary = simulation.road_tool_snapshot()
 	_expect(int(frame["phase"]) == 1 and int(frame["placed"]) == 1, "an accepted stroke starts the next at its end")
 	_expect(PackedInt32Array(frame["gizmo_handle_kinds"])[0] == 2, "the chained stroke's start is the chain start")
 	_expect(tool.chunks.holds.held_preview() >= 0 or tool._swap_display == null, "the committed preview is held or already swapped")
@@ -953,25 +953,25 @@ func _test_session_strokes(simulation: SimulationNode) -> void:
 	tool._begin_stroke(Vector3(-100.0, 0.0, 60.0))
 	var requests := tool._commit_request_id
 	_expect(not tool._commit_segment(Vector3(-60.0, 0.0, 60.0)) and tool._commit_request_id == requests, "a control-point click commits nothing")
-	_expect(int(simulation.road_tool_frame()["placed"]) == 2, "the control point is placed")
+	_expect(int(simulation.road_tool_snapshot()["placed"]) == 2, "the control point is placed")
 	tool.pointer = Vector3(-60.0, 0.0, 100.0)
 	_road_frame(tool)
-	var points := tool._session_points
+	var points := simulation.road_tool_points()
 	_expect(points.size() > 3 and points[0] == Vector3(-100.0, 0.0, 60.0) and points[-1] == tool.pointer, "the curve runs from the start to the cursor through the arc")
-	_expect(tool.gizmos._handle_kinds == PackedInt32Array([0, 1, 3, 5]) and tool.gizmos._line_classes.slice(0, 2) == PackedInt32Array([3, 0]) and tool.gizmos._line_classes.count(3) == 2 and tool.gizmos._line_classes.has(4), "a curve shows its start, control point, live end, tangent legs, centreline, zoning guides and the start's height grip on its stem")
-	_expect(absf(float(tool._session_hud["radius_m"]) - 40.0) < 0.001, "the HUD's radius is the fillet's: %s" % tool._session_hud.get("radius_m"))
+	_expect(PackedInt32Array(simulation.road_tool_snapshot()["gizmo_handle_kinds"]) == PackedInt32Array([0, 1, 3, 5]) and PackedInt32Array(simulation.road_tool_snapshot()["gizmo_line_classes"]).slice(0, 2) == PackedInt32Array([3, 0]) and PackedInt32Array(simulation.road_tool_snapshot()["gizmo_line_classes"]).count(3) == 2 and PackedInt32Array(simulation.road_tool_snapshot()["gizmo_line_classes"]).has(4), "a curve shows its start, control point, live end, tangent legs, centreline, zoning guides and the start's height grip on its stem")
+	_expect(absf(float(simulation.road_tool_snapshot()["hud"]["radius_m"]) - 40.0) < 0.001, "the HUD's radius is the fillet's: %s" % simulation.road_tool_snapshot()["hud"].get("radius_m"))
 	_expect(tool.hud.text().contains("R 40.0 m"), "the HUD names the radius: '%s'" % tool.hud.text())
 	_expect(tool._commit_segment(tool.pointer), "the end click sends the curve")
 	await _await_ack(tool)
 	_road_frame(tool)
-	_expect(int(simulation.road_tool_frame()["placed"]) == 1, "an accepted curve chains at its end with a free control point next")
+	_expect(int(simulation.road_tool_snapshot()["placed"]) == 1, "an accepted curve chains at its end with a free control point next")
 	# A curve tighter than the road type allows is refused before any preview.
 	tool.cancel_road()
 	tool._begin_stroke(Vector3(-100.0, 0.0, -100.0))
 	tool._commit_segment(Vector3(-96.0, 0.0, -100.0))
 	tool.pointer = Vector3(-96.0, 0.0, -96.0)
 	_road_frame(tool)
-	frame = simulation.road_tool_frame()
+	frame = simulation.road_tool_snapshot()
 	_expect(String(frame["refusal"]) == "road_tight_curve" and PackedVector3Array(frame["points"]).is_empty(), "a 4 m radius is refused as too tight")
 	_expect(tool.hud.text().contains("Curve too tight"), "the HUD words the tight curve: '%s'" % tool.hud.text())
 	_expect(not tool._commit_segment(tool.pointer), "a refused draft is not sent")
@@ -984,9 +984,12 @@ func _test_session_strokes(simulation: SimulationNode) -> void:
 # The gizmo handles of `kind` (`road_tool_gizmos.gd`'s last upload), in frame order.
 func _gizmo_handles(tool: PointerRoadTool, kind: int) -> PackedVector3Array:
 	var found := PackedVector3Array()
-	for index in tool.gizmos._handles.size():
-		if tool.gizmos._handle_kinds[index] == kind:
-			found.append(tool.gizmos._handles[index])
+	var snapshot: Dictionary = tool.simulation_node.road_tool_snapshot()
+	var handles: PackedVector3Array = snapshot["gizmo_handles"]
+	var kinds: PackedInt32Array = snapshot["gizmo_handle_kinds"]
+	for index in handles.size():
+		if kinds[index] == kind:
+			found.append(handles[index])
 	return found
 
 # Whether the handle points `a` and `b` lie on one line through `node`, on opposite sides.
@@ -1010,26 +1013,26 @@ func _test_s_curve_and_freeform(simulation: SimulationNode) -> void:
 	# Round SC: the road is previewed from the first click, with a hint chip a step.
 	tool.pointer = Vector3(15.0, 0.0, -30.0)
 	_road_frame(tool)
-	_expect(tool.stroke_preview_current() and tool._session_points == PackedVector3Array([Vector3(0.0, 0.0, -30.0), tool.pointer]), "after the first click the leg is previewed as road: %s" % tool._session_points)
+	_expect(tool.stroke_preview_current() and simulation.road_tool_points() == PackedVector3Array([Vector3(0.0, 0.0, -30.0), tool.pointer]), "after the first click the leg is previewed as road: %s" % simulation.road_tool_points())
 	_expect(tool.hud.text().contains("Click to set the start direction"), "the first step's hint: %s" % tool.hud.text())
 	_expect(not tool._commit_segment(Vector3(15.0, 0.0, -30.0)), "the start aim point commits nothing")
 	tool.pointer = Vector3(45.0, 0.0, -10.0)
 	_road_frame(tool)
-	_expect(tool.stroke_preview_current() and tool._session_points.size() > 3, "after the second click the curve through the start aim is previewed")
+	_expect(tool.stroke_preview_current() and simulation.road_tool_points().size() > 3, "after the second click the curve through the start aim is previewed")
 	_expect(tool.hud.text().contains("Click to set the end direction") and not tool.hud.text().contains("start direction"), "the second step's hint: %s" % tool.hud.text())
-	_expect(3 in tool.gizmos._line_classes and 0 in tool.gizmos._line_classes, "the aim legs stay tangent gizmos over the draft's centreline")
+	_expect(3 in PackedInt32Array(simulation.road_tool_snapshot()["gizmo_line_classes"]) and 0 in PackedInt32Array(simulation.road_tool_snapshot()["gizmo_line_classes"]), "the aim legs stay tangent gizmos over the draft's centreline")
 	_expect(not tool._commit_segment(tool.pointer), "the end aim point commits nothing")
 	tool.pointer = Vector3(60.0, 0.0, -10.0)
 	_road_frame(tool)
 	_expect(tool.hud.text().contains("Click to place the end"), "the last step's hint: %s" % tool.hud.text())
-	var points := tool._session_points
+	var points := simulation.road_tool_points()
 	_expect(points.size() > 3 and points[0] == Vector3(0.0, 0.0, -30.0) and points[-1] == tool.pointer, "the S-curve runs from the start to the cursor")
 	_expect(_gizmo_handles(tool, 4).size() == 1 and _gizmo_handles(tool, 5).size() == 3, "the S-curve shows its joint, both arcs' control points and the start's height grip")
-	var radius := float(tool._session_hud.get("radius_m", -1.0))
-	var other := float(tool._session_hud.get("other_radius_m", -1.0))
+	var radius := float(simulation.road_tool_snapshot()["hud"].get("radius_m", -1.0))
+	var other := float(simulation.road_tool_snapshot()["hud"].get("other_radius_m", -1.0))
 	_expect(radius > 0.0 and other >= radius, "the HUD gives both radii, the tighter first: %s, %s" % [radius, other])
-	var lengths := PackedFloat64Array(simulation.road_tool_frame()["piece_lengths_m"])
-	_expect(lengths.size() == 2 and absf(lengths[0] + lengths[1] - float(tool._session_hud["length_m"])) < 0.5, "the frame gives each arc's length: %s" % lengths)
+	var lengths := PackedFloat64Array(simulation.road_tool_snapshot()["piece_lengths_m"])
+	_expect(lengths.size() == 2 and absf(lengths[0] + lengths[1] - float(simulation.road_tool_snapshot()["hud"]["length_m"])) < 0.5, "the frame gives each arc's length: %s" % lengths)
 	var edges := int(simulation.get_road_benchmark_state()["live_edges"])
 	_expect(tool._commit_segment(tool.pointer), "the end click sends the S-curve")
 	await _await_ack(tool)
@@ -1043,11 +1046,11 @@ func _test_s_curve_and_freeform(simulation: SimulationNode) -> void:
 		_expect(not tool._commit_segment(node), "a freeform node commits nothing")
 	tool.pointer = Vector3(-10.0, 0.0, -20.0)
 	_road_frame(tool)
-	_expect(tool._session_points.size() > 4 and tool._session_points[-1] == tool.pointer and tool.stroke_preview_current(), "the live node is previewed as the draft's end")
+	_expect(simulation.road_tool_points().size() > 4 and simulation.road_tool_points()[-1] == tool.pointer and tool.stroke_preview_current(), "the live node is previewed as the draft's end")
 	_expect(not tool._commit_segment(tool.pointer), "the fourth node commits nothing")
 	manager._handle_confirm()
 	_road_frame(tool)
-	var frame: Dictionary = simulation.road_tool_frame()
+	var frame: Dictionary = simulation.road_tool_snapshot()
 	_expect(int(frame["phase"]) == 3 and int(frame["placed"]) == 4, "Enter starts the edit phase: %s" % frame["phase"])
 	var handles := _gizmo_handles(tool, 5)
 	# Six Bezier handles, then the two ends' height grips (round I).
@@ -1087,7 +1090,7 @@ func _test_s_curve_and_freeform(simulation: SimulationNode) -> void:
 	await _await_ack(tool)
 	_expect(int(simulation.get_road_benchmark_state()["live_edges"]) > edges, "the freeform road is built")
 	_road_frame(tool)
-	frame = simulation.road_tool_frame()
+	frame = simulation.road_tool_snapshot()
 	_expect(int(frame["phase"]) == 1 and int(frame["placed"]) == 1, "an accepted freeform road chains at its end")
 	# Escape on a draft in its edit phase leaves nothing.
 	tool.cancel_road()
@@ -1095,11 +1098,11 @@ func _test_s_curve_and_freeform(simulation: SimulationNode) -> void:
 	tool._commit_segment(Vector3(-60.0, 0.0, 20.0))
 	manager._handle_confirm()
 	_road_frame(tool)
-	_expect(int(simulation.road_tool_frame()["phase"]) == 3, "a two-node draft takes Enter into its edit phase")
+	_expect(int(simulation.road_tool_snapshot()["phase"]) == 3, "a two-node draft takes Enter into its edit phase")
 	edges = int(simulation.get_road_benchmark_state()["live_edges"])
 	manager._handle_escape()
 	_road_frame(tool)
-	frame = simulation.road_tool_frame()
+	frame = simulation.road_tool_snapshot()
 	_expect(int(frame["phase"]) == 0 and PackedVector3Array(frame["points"]).is_empty() and PackedVector3Array(frame["gizmo_handles"]).is_empty(), "Escape drops the draft")
 	_expect(not tool.gizmos.visible and tool._preview.is_empty() and int(simulation.get_road_benchmark_state()["live_edges"]) == edges, "Escape leaves nothing")
 	await _test_freeform_chips(simulation, tool)
@@ -1128,10 +1131,10 @@ func _test_continuous_chains(simulation: SimulationNode) -> void:
 	# The chained S-curve: its start direction is set, so its first hint is the end direction's.
 	tool.pointer = Vector3(-5.0, 0.0, 60.0)
 	_road_frame(tool)
-	var frame: Dictionary = simulation.road_tool_frame()
+	var frame: Dictionary = simulation.road_tool_snapshot()
 	var hints := [tool.hud.text()]
 	_expect(int(frame["phase"]) == 1 and int(frame["placed"]) == 2, "the chained S-curve starts with its start direction set: %s" % frame["placed"])
-	_expect(tool.stroke_preview_current() and tool._session_points[0] == Vector3(-15.0, 0.0, 56.0), "the chained S-curve is previewed from the chain's end")
+	_expect(tool.stroke_preview_current() and simulation.road_tool_points()[0] == Vector3(-15.0, 0.0, 56.0), "the chained S-curve is previewed from the chain's end")
 	_expect(not tool._commit_segment(Vector3(0.0, 0.0, 62.0)), "the end aim commits nothing")
 	tool.pointer = Vector3(8.0, 0.0, 62.0)
 	_road_frame(tool)
@@ -1145,13 +1148,13 @@ func _test_continuous_chains(simulation: SimulationNode) -> void:
 	tool.draw_mode = RoadToolScript.DrawMode.FREEFORM
 	for nodes in [[Vector3(25.0, 0.0, 58.0), Vector3(40.0, 0.0, 52.0)], [Vector3(55.0, 0.0, 50.0), Vector3(70.0, 0.0, 55.0)]]:
 		_road_frame(tool)
-		frame = simulation.road_tool_frame()
+		frame = simulation.road_tool_snapshot()
 		_expect(int(frame["phase"]) == 1 and int(frame["placed"]) == 1, "the freeform draft starts at the chain's end")
 		for node in nodes:
 			_expect(not tool._commit_segment(node), "a freeform node commits nothing")
 		tool.confirm_road()
 		_road_frame(tool)
-		_expect(int(simulation.road_tool_frame()["phase"]) == 3, "Enter starts the chained draft's edit phase")
+		_expect(int(simulation.road_tool_snapshot()["phase"]) == 3, "Enter starts the chained draft's edit phase")
 		edges = int(simulation.get_road_benchmark_state()["live_edges"])
 		tool.confirm_road()
 		_expect(tool._commit_request_id > 0, "Enter sends the chained freeform draft")
@@ -1180,20 +1183,24 @@ func _test_freeform_chips(simulation: SimulationNode, tool: PointerRoadTool) -> 
 	tool.pointer = Vector3(60.0, 0.0, 95.0)
 	_road_frame(tool)
 	_expect(hud.text().contains("Click to add a node"), "a placing draft hints how to go on: '%s'" % hud.text())
-	# Round R2-5: a still frame fetches and draws no chip; a camera move redraws the texts only
-	# (the panels move).
-	hud.place(camera)
+	# Rounds R2-5, R2-2: a still frame fetches and draws no chip (its tick reports no chip); a
+	# camera move redraws the texts only (the panels move).
+	tool.camera = camera
+	_road_frame(tool)
 	await process_frame
 	await process_frame
 	var draws: int = hud.draws
 	_expect(draws > 0, "the chips are drawn")
 	for still in 3:
-		simulation.road_tool_frame()
-		_expect(hud.place(camera) == 0.0, "a still frame updates no chip")
+		var flags: int = simulation.road_tool_tick_at(camera, tool.pointer, false)
+		_expect(flags & (RoadToolScript.TICK_CHIPS | RoadToolScript.TICK_CORNERS) == 0, "a still frame updates no chip: flags %d" % flags)
+		_road_frame(tool)
 		await process_frame
 	_expect(hud.draws == draws, "a still frame draws no chip: %d draws against %d" % [hud.draws, draws])
 	camera.position.x += 1.0
-	_expect(hud.place(camera) > 0.0, "a camera move places the chips again")
+	var corners: PackedVector2Array = hud._corners
+	_road_frame(tool)
+	_expect(hud._corners != corners, "a camera move places the chips again")
 	await process_frame
 	await process_frame
 	_expect(hud.draws == draws + 1, "a camera move redraws the texts only: %d draws against %d" % [hud.draws, draws])
@@ -1205,9 +1212,8 @@ func _test_freeform_chips(simulation: SimulationNode, tool: PointerRoadTool) -> 
 		tool._commit_segment(Vector3(90.0, 0.0, 85.0))
 		tool.confirm_road()
 		_road_frame(tool)
-		_expect(int(simulation.road_tool_frame()["phase"]) == 3, "the draft is in its edit phase")
+		_expect(int(simulation.road_tool_snapshot()["phase"]) == 3, "the draft is in its edit phase")
 		_expect(hud.text().contains("Enter or click to build") and hud.text().contains("Build") and hud.text().contains("Cancel"), "the edit phase hints and offers Build and Cancel: '%s'" % hud.text())
-		hud.place(camera)
 		var rect: Rect2 = hud.chip_rect(hud.Kind.BUILD if action == "build" else hud.Kind.CANCEL)
 		_expect(rect.has_area(), "the %s chip is placed" % action)
 		var edges := int(simulation.get_road_benchmark_state()["live_edges"])
@@ -1227,10 +1233,11 @@ func _test_freeform_chips(simulation: SimulationNode, tool: PointerRoadTool) -> 
 			_expect(int(simulation.get_road_benchmark_state()["live_edges"]) > edges, "the Build chip builds the freeform road")
 		else:
 			_road_frame(tool)
-			var frame: Dictionary = simulation.road_tool_frame()
+			var frame: Dictionary = simulation.road_tool_snapshot()
 			_expect(int(frame["phase"]) == 0 and PackedVector3Array(frame["points"]).is_empty(), "the Cancel chip drops the draft")
 			_expect(int(simulation.get_road_benchmark_state()["live_edges"]) == edges and hud.text().is_empty(), "the Cancel chip leaves nothing")
 	tool.cancel_road()
+	tool.camera = null
 	hud.reparent(tool)
 	camera.free()
 
@@ -1251,7 +1258,7 @@ func _test_snapping_options_row(simulation: SimulationNode) -> void:
 	ui._build_ui()
 	var snap_at := func(x: float, z: float) -> String:
 		simulation.road_tool_pointer(Vector3(x, 100.0, z), Vector3.DOWN, false)
-		return String(simulation.road_tool_frame().get("snap", ""))
+		return String(simulation.road_tool_snapshot().get("snap", ""))
 	_expect(ui.network_snap_check.button_pressed and ui.guide_lines_check.button_pressed and ui.angle_step_option.selected == 0 and not ui.length_step_check.button_pressed, "the row starts at the session's defaults")
 	_expect(snap_at.call(60.5, 32.5) == "node", "network snap on: the dead end's node")
 	# 20 m out along the extension: clear of the node's reach and the perpendicular's corner.
@@ -1263,7 +1270,7 @@ func _test_snapping_options_row(simulation: SimulationNode) -> void:
 	_expect(not tool.intent().guide_lines and snap_at.call(80.0, 32.5) == "free" and snap_at.call(60.5, 32.5) == "free", "guide lines off: the cursor is free")
 	# The angle lock from a start on open ground: 6.8 degrees off east locks to east at 15.
 	simulation.road_tool_pointer(Vector3(40.0, 100.0, -100.0), Vector3.DOWN, false)
-	simulation.road_tool_event("press")
+	simulation.road_tool_press(0)
 	ui.angle_step_option.select(1)
 	ui.angle_step_option.item_selected.emit(1)
 	_expect(tool.intent().angle_step_deg == 15.0 and snap_at.call(75.0, -95.8) == "angle", "a 15 degree step locks the stroke's direction")
@@ -1283,7 +1290,7 @@ func _test_snapping_options_row(simulation: SimulationNode) -> void:
 	ui.length_step_check.button_pressed = false
 	stepped = simulation.road_tool_pointer(Vector3(65.3, 100.0, -80.1), Vector3.DOWN, false)
 	_expect(tool.intent().length_step_m == 0.0 and stepped is Vector3 and absf(stepped.x - 65.3) < 0.001, "the length step off leaves the cursor")
-	simulation.road_tool_event("cancel")
+	simulation.road_tool_action(RoadToolScript.ACTION_CANCEL)
 	# The options live in Rust's session only (round R2-6): switching the tool off and on keeps
 	# them, and the row's controls set them back.
 	tool.active = false

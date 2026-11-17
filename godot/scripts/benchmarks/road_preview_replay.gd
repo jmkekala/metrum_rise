@@ -145,6 +145,8 @@ func _case(bench: Node, name: String, mode: int) -> Dictionary:
 		result.stationary.append(trace.last_rendered.duplicate(true))
 	var stationary_count: int = trace.rows.size()
 	var moving_service_start: float = trace.worker_service_ms
+	# The tool's tick ring (round R2-2) from here: the moving phase's stage times.
+	sim.road_tool_timings(true)
 	var move_start := Time.get_ticks_usec()
 	# Absolute deadlines avoid relative timers drifting to alternate-frame input at 60 FPS.
 	# Late frames coalesce overdue samples, matching the tool's latest-input contract.
@@ -170,6 +172,9 @@ func _case(bench: Node, name: String, mode: int) -> Dictionary:
 	result["input_lateness_ms"] = Metrics.distribution(input_lateness_ms)
 	var stop_us := Time.get_ticks_usec()
 	trace.finish_scheduled_inputs(stop_us)
+	# Every tick of the moving phase: its whole, the preview call, the chips (their words, their
+	# placement and the HUD's fetch), the gizmos, the hue's join, the flags (`road_tool_timings`).
+	result["tick_ring"] = sim.road_tool_timings(true)
 	var observed_service_ms: float = trace.worker_service_ms - moving_service_start
 	_set_pointer(bench, _pose(scenario, 9.0 / 16.0))
 	if not await _wait_exact(bench):

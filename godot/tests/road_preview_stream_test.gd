@@ -115,17 +115,17 @@ func _stream_fixture(fixture: Dictionary) -> Dictionary:
 		if tool.draw_mode == 1:
 			# The session's simple curve: the exact fillet arc from the start to this frame's pointer
 			# whose radius is T / tan(delta / 2) for the legs start -> control -> pointer.
-			final_points = tool._preview_points
+			final_points = tool.simulation_node.road_tool_points()
 			_expect(tool.stroke_preview_current() and final_points[0] == start and final_points[-1] == point, "every frame previews its own pose: fixture=%s frame=%d" % [fixture.name, index])
 			var leg_in := Vector2(control.x - start.x, control.z - start.z)
 			var leg_out := Vector2(point.x - control.x, point.z - control.z)
 			var deflection := absf(leg_in.angle_to(leg_out))
 			if deflection > 0.001:
 				var expected_radius := minf(leg_in.length(), leg_out.length()) / tan(0.5 * deflection)
-				_expect(absf(float(tool._session_hud.get("radius_m", -1.0)) - expected_radius) < 0.01, "the curve is the fillet arc of its clicks: fixture=%s frame=%d" % [fixture.name, index])
+				_expect(absf(float(tool.simulation_node.road_tool_snapshot()["hud"].get("radius_m", -1.0)) - expected_radius) < 0.01, "the curve is the fillet arc of its clicks: fixture=%s frame=%d" % [fixture.name, index])
 		else:
 			# The session's straight stroke: the start and this frame's scripted pointer exactly.
-			final_points = tool._preview_points
+			final_points = tool.simulation_node.road_tool_points()
 			_expect(final_points.size() == 2 and final_points[1] == point, "every frame previews its own pose: fixture=%s frame=%d" % [fixture.name, index])
 		var valid: bool = preview.get("is_valid", false)
 		var shown: bool = tool._preview_display.sequence == int(preview.get("sequence", -1))

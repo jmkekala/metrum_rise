@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
-//! The road tool's label chips on the bridge (`ROAD-112` rounds V2 and R2-5): each frame builds
-//! the chips (kind, tone, text in `road_tool::wording`, size in the HUD's font) into reused
-//! buffers and compares them with the last frame's; `road_tool_chips_update` reads the camera,
-//! places the chips when they or the view changed and says what the HUD must fetch, so a frame
-//! with nothing new crosses no array and redraws nothing. `road_tool_hud.gd` only draws.
+//! The road tool's label chips on the bridge (`ROAD-112` rounds V2, R2-5 and R2-2): each tick
+//! builds the chips (kind, tone, text in `road_tool::wording`, size in the HUD's font) into
+//! reused buffers, compares them with the last tick's, places them for the tick's camera when
+//! they or the view changed and says in the tick's flags what the HUD must fetch (typed, round
+//! R2-2), so a frame with nothing new crosses no array and redraws nothing. `road_tool_hud.gd`
+//! only draws.
 
 use super::*;
 use crate::nodes::sim::road_tool::height::ground_marks::push_height_labels;
@@ -16,11 +17,11 @@ use crate::nodes::sim::road_tool::wording::{
 };
 use godot::classes::Camera3D;
 
-/// `road_tool_chips_update`'s flag: the chips' kinds, tones, texts or sizes changed since the
-/// HUD last fetched them (`road_tool_chips`).
-const CHIPS_CHANGED: i64 = 1;
-/// `road_tool_chips_update`'s flag: only the chips' corners changed (`road_tool_chip_corners`).
-const CORNERS_CHANGED: i64 = 2;
+/// `Chips::update`'s answer: the chips' kinds, tones, texts or sizes changed since the HUD last
+/// fetched them (`road_tool_chips_fetch`).
+pub(super) const CHIPS_CHANGED: i64 = 1;
+/// `Chips::update`'s answer: only the chips' corners changed (`road_tool_chip_corners`).
+pub(super) const CORNERS_CHANGED: i64 = 2;
 
 /// The bridge's chips: the font they are sized in, this frame's, the HUD's copy and the
 /// placement.
@@ -112,7 +113,7 @@ impl ChipSet {
 // The view the chips are placed for: the camera's projection and transform, its near plane and
 // the viewport's size. Equal views place equal corners.
 #[derive(Clone, Copy, PartialEq)]
-struct ChipView {
+pub(super) struct ChipView {
     projection: Projection,
     transform: Transform3D,
     near: f32,
@@ -120,7 +121,7 @@ struct ChipView {
 }
 
 impl ChipView {
-    fn of(camera: &Gd<Camera3D>) -> Option<Self> {
+    pub(super) fn of(camera: &Gd<Camera3D>) -> Option<Self> {
         let viewport = camera.get_viewport()?.get_visible_rect().size;
         Some(Self {
             projection: camera.get_camera_projection(),
@@ -189,6 +190,9 @@ struct ChipFont {
     // The panel's width beside the text (padding, icon and gap) and its height.
     extra_px: f32,
     height_px: f32,
+    // The square kept clear about each handle and the gap between chips, in pixels.
+    obstacle_px: f32,
+    gap_px: f32,
 }
 
 impl ChipFont {
@@ -285,12 +289,13 @@ impl Chips {
     }
 
     // Places this frame's chips for `view` unless they and the view are as last placed; returns
-    // `road_tool_chips_update`'s flags. `O(chips (chips + handles) steps)` when it places
-    // (`labels::place_chips`), `O(1)` otherwise; allocates nothing once the buffers have grown.
-    fn update(&mut self, view: Option<ChipView>, obstacle_px: f32, gap: f32) -> i64 {
+    // what the HUD must fetch: `CHIPS_CHANGED`, `CORNERS_CHANGED` or 0. `O(chips (chips +
+    // handles) steps)` when it places (`labels::place_chips`), `O(1)` otherwise; allocates
+    // nothing once the buffers have grown.
+    pub(super) fn update(&mut self, view: Option<ChipView>) -> i64 {
         if self.placed != Some((self.placement, view)) {
             self.placed = Some((self.placement, view));
-            self.place(view, obstacle_px, gap);
+            self.place(view, self.font.obstacle_px, self.font.gap_px);
             let scratch = &mut self.scratch;
             let same =
                 scratch.corners.len() == self.corners.len()
@@ -439,7 +444,8 @@ impl SimulationNode {
 
     /// Sets the HUD's chip font (round V2): `advances[i]` pixels for the `i`th character of
     /// `characters`, and the chip's panel: `extra_px` beside the text (padding, icon, gap) and
-    /// `height_px`. The chips' sizes follow from these from the next `road_tool_frame`.
+    /// `height_px`; and their placement (round R2-2): the square of `obstacle_px` kept clear
+    /// about each handle and `gap_px` between chips. The chips follow from the next tick.
     #[func]
     pub fn road_tool_set_chip_font(
         &mut self,
@@ -447,6 +453,8 @@ impl SimulationNode {
         advances: PackedFloat32Array,
         extra_px: f32,
         height_px: f32,
+        obstacle_px: f32,
+        gap_px: f32,
     ) {
         let font = &mut self.road_tool_session.chips.font;
         font.ascii.clear();
@@ -460,6 +468,8 @@ impl SimulationNode {
         }
         font.extra_px = extra_px;
         font.height_px = height_px;
+        font.obstacle_px = obstacle_px;
+        font.gap_px = gap_px;
     }
 
     /// The characters the chips' texts use, for `road_tool_set_chip_font`: printable ASCII and
@@ -471,57 +481,81 @@ impl SimulationNode {
         characters.as_str().into()
     }
 
-    /// Once a frame after `road_tool_frame` (round R2-5): places the last frame's chips for
-    /// `camera` (its projection and transform, near plane and viewport; no camera: no corners)
-    /// when the chips' anchors, sides, sizes, the handles or the view changed since they were
-    /// last placed (`labels::place_chips`, `obstacle_px` squares about the handles, `gap`), and
-    /// returns what the HUD must fetch: 1 the chips changed (`road_tool_chips`, corners
-    /// included), 2 only their corners did (`road_tool_chip_corners`), 0 nothing (a still
-    /// frame: the HUD draws nothing). Allocates nothing; `O(1)` on a frame that places nothing.
+    /// The chips on the tick's chips flag (rounds R2-5, R2-2): the HUD takes them as its copy
+    /// and this returns the chips whose panel it must redraw (their kind, tone or size differs
+    /// from its last copy's, or it did not have them); then it reads `road_tool_chip_kinds`
+    /// (0 piece length, 1 total length, 2 radius, 3 angle, 4 slope, 5 cost, 6 bearing, 7 design
+    /// speed, 8 notice, 9 hint, 10 Build, 11 Cancel, 12 an end's height above its ground with its
+    /// part), `road_tool_chip_tones` (0 normal, 1 warning, 2 refused), `road_tool_chip_texts`
+    /// (each chip's text as shown, from `road_tool::wording`), `road_tool_chip_sizes` (each
+    /// chip's pixels in the HUD's font) and `road_tool_chip_corners`. The fetch's time goes into
+    /// the tick's sample (`road_tool_timings`' `chips_ms`).
     #[func]
-    pub fn road_tool_chips_update(
-        &mut self,
-        camera: Option<Gd<Camera3D>>,
-        obstacle_px: f32,
-        gap: f32,
-    ) -> i64 {
-        let view = camera.as_ref().and_then(ChipView::of);
-        self.road_tool_session.chips.update(view, obstacle_px, gap)
-    }
-
-    /// The last frame's chips for the HUD to draw (round R2-5): `kinds` (0 piece length, 1 total
-    /// length, 2 radius, 3 angle, 4 slope, 5 cost, 6 bearing, 7 design speed, 8 notice, 9 hint,
-    /// 10 Build, 11 Cancel, 12 an end's height above its ground with its part), `tones` (0
-    /// normal, 1 warning, 2 refused), `texts` (each chip's text as shown, from
-    /// `road_tool::wording`), `sizes` (each chip's pixels in the HUD's font), `corners` (each
-    /// chip's top-left corner, NaN behind the camera; as of the last `road_tool_chips_update`)
-    /// and `redraw` (the chips whose kind, tone or size differs from the last fetch's, or that
-    /// it did not have). Call it when `road_tool_chips_update` returns 1.
-    #[func]
-    pub fn road_tool_chips(&mut self) -> VarDictionary {
+    pub fn road_tool_chips_fetch(&mut self) -> PackedInt32Array {
+        let start = Instant::now();
         let chips = &mut self.road_tool_session.chips;
         chips.deliver();
-        let shown = &chips.shown;
-        let texts: PackedStringArray = (0..shown.kinds.len())
-            .map(|index| GString::from(shown.text_of(index)))
-            .collect();
-        vdict! {
-            "kinds": PackedInt32Array::from(shown.kinds.as_slice()),
-            "tones": PackedInt32Array::from(shown.tones.as_slice()),
-            "texts": texts,
-            "sizes": PackedVector2Array::from(shown.sizes.as_slice()),
-            "corners": PackedVector2Array::from(chips.corners.as_slice()),
-            "redraw": PackedInt32Array::from(chips.redraw.as_slice()),
-        }
+        let redraw = PackedInt32Array::from(chips.redraw.as_slice());
+        self.road_tool_chips_timed(start);
+        redraw
     }
 
-    /// The chips' corners as of the last `road_tool_chips_update` (round R2-5), for the HUD when
-    /// it returned 2: each chip's top-left corner, NaN behind the camera, empty without one.
+    /// The fetched chips' kinds (`road_tool_chips_fetch`).
+    #[func]
+    pub fn road_tool_chip_kinds(&mut self) -> PackedInt32Array {
+        let start = Instant::now();
+        let kinds = PackedInt32Array::from(self.road_tool_session.chips.delivered.kinds.as_slice());
+        self.road_tool_chips_timed(start);
+        kinds
+    }
+
+    /// The fetched chips' tones (`road_tool_chips_fetch`).
+    #[func]
+    pub fn road_tool_chip_tones(&mut self) -> PackedInt32Array {
+        let start = Instant::now();
+        let tones = PackedInt32Array::from(self.road_tool_session.chips.delivered.tones.as_slice());
+        self.road_tool_chips_timed(start);
+        tones
+    }
+
+    /// The fetched chips' texts (`road_tool_chips_fetch`).
+    #[func]
+    pub fn road_tool_chip_texts(&mut self) -> PackedStringArray {
+        let start = Instant::now();
+        let delivered = &self.road_tool_session.chips.delivered;
+        let texts = (0..delivered.kinds.len())
+            .map(|index| GString::from(delivered.text_of(index)))
+            .collect();
+        self.road_tool_chips_timed(start);
+        texts
+    }
+
+    /// The fetched chips' sizes in pixels (`road_tool_chips_fetch`).
+    #[func]
+    pub fn road_tool_chip_sizes(&mut self) -> PackedVector2Array {
+        let start = Instant::now();
+        let sizes =
+            PackedVector2Array::from(self.road_tool_session.chips.delivered.sizes.as_slice());
+        self.road_tool_chips_timed(start);
+        sizes
+    }
+
+    // A chip fetch's time into the tick's sample.
+    fn road_tool_chips_timed(&mut self, start: Instant) {
+        let elapsed = Self::road_tool_tick_elapsed(start);
+        self.road_tool_tick_add(elapsed, 0.0);
+    }
+
+    /// The chips' corners as of the last tick (round R2-5), for the HUD on the tick's chips or
+    /// corners flag: each chip's top-left corner, NaN behind the camera, empty without one.
     #[func]
     pub fn road_tool_chip_corners(&mut self) -> PackedVector2Array {
+        let start = Instant::now();
         let chips = &mut self.road_tool_session.chips;
         chips.corners_pending = false;
-        PackedVector2Array::from(chips.corners.as_slice())
+        let corners = PackedVector2Array::from(chips.corners.as_slice());
+        self.road_tool_chips_timed(start);
+        corners
     }
 }
 
@@ -567,31 +601,33 @@ mod tests {
     #[test]
     fn chips_change_gated() {
         let mut chips = Chips::default();
+        chips.font.obstacle_px = 18.0;
+        chips.font.gap_px = 6.0;
         let anchor = Vector3::new(0.0, 0.0, 0.0);
         frame(&mut chips, anchor, "12.0 m");
-        assert_eq!(chips.update(view(0.0), 18.0, 6.0), CHIPS_CHANGED);
+        assert_eq!(chips.update(view(0.0)), CHIPS_CHANGED);
         chips.deliver();
         assert_eq!(chips.redraw, [0]);
         for _ in 0..3 {
             frame(&mut chips, anchor, "12.0 m");
             assert_eq!(
-                chips.update(view(0.0), 18.0, 6.0),
+                chips.update(view(0.0)),
                 0,
                 "a still frame fetches nothing"
             );
         }
         frame(&mut chips, anchor, "12.1 m");
-        assert_eq!(chips.update(view(0.0), 18.0, 6.0), CHIPS_CHANGED);
+        assert_eq!(chips.update(view(0.0)), CHIPS_CHANGED);
         chips.deliver();
         assert!(chips.redraw.is_empty(), "a new text redraws no panel");
-        assert_eq!(chips.update(view(3.0), 18.0, 6.0), CORNERS_CHANGED);
+        assert_eq!(chips.update(view(3.0)), CORNERS_CHANGED);
         chips.corners_pending = false;
         frame(&mut chips, Vector3::new(1.0, 0.0, 0.0), "12.1 m");
-        assert_eq!(chips.update(view(3.0), 18.0, 6.0), CORNERS_CHANGED);
+        assert_eq!(chips.update(view(3.0)), CORNERS_CHANGED);
         chips.corners_pending = false;
-        assert_eq!(chips.update(view(3.0), 18.0, 6.0), 0);
+        assert_eq!(chips.update(view(3.0)), 0);
         assert_eq!(
-            chips.update(None, 18.0, 6.0),
+            chips.update(None),
             CORNERS_CHANGED,
             "no camera: no corners"
         );

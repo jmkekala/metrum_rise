@@ -128,7 +128,7 @@ pub enum RoadToolAction {
     LowerHandle,
 }
 
-/// One input event (plan 2.3 `road_tool_event`).
+/// One input event (plan 2.3; the bridge's `road_tool_press` and `road_tool_action`).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum RoadToolEvent {
     /// The pointer moved.
@@ -153,7 +153,7 @@ pub enum RoadToolEvent {
     },
 }
 
-/// One option (plan 2.3 `road_tool_set_option`).
+/// One option (plan 2.3; the bridge's typed setters).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum RoadToolOption {
     /// The drawn road type.
@@ -664,7 +664,7 @@ impl RoadToolSession {
     }
 
     /// Brings the frame's draft report ([`RoadToolFrame::draft`]) up to date with the pose on
-    /// `view`, once a frame (the bridge's `road_tool_frame`; never on a pointer move, since the
+    /// `view`, once a frame (the bridge's `road_tool_tick`; never on a pointer move, since the
     /// segmentation allocates): a graded stroke's segmentation (`height::segment_draft`: its
     /// strokes or its refusal) and the runs' classes, lengths and slopes; a follow-ground
     /// stroke's one run. Returns whether the report changed (a new stroke, grade, road type,

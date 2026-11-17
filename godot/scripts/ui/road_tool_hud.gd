@@ -5,9 +5,9 @@
 ## Rust's frame decides which chips exist, their texts (values with their units, the hint, the
 ## notice's warning or refusal: `road_tool::wording`), tones, world anchors and the side each is
 ## pushed to, and their sizes in the font this script sends it once (`road_tool_set_chip_font`);
-## `SimulationNode.road_tool_chips_update` places them for the camera without overlap (one
-## deterministic rule) and says whether anything changed (round R2-5): this script fetches and
-## draws only then, so a still frame draws nothing. Each chip's panel and icon is its own canvas
+## the road tool's tick places them for the camera without overlap (one deterministic rule) and
+## says whether anything changed (rounds R2-5, R2-2): this script fetches them (typed) and draws
+## only then, so a still frame draws nothing. Each chip's panel and icon is its own canvas
 ## item, redrawn only when its kind, tone or size changes and otherwise only moved; the texts are
 ## drawn together above the panels whenever a text or a corner changed (drawn at the corner
 ## itself, as the font snaps its glyphs to the pixel grid). A notice chip is red for a refusal,
@@ -46,19 +46,13 @@ const GAP_PX := 6.0
 const HANDLE_CLEAR_PX := 18.0
 const BUTTON_BG := Color(0.16, 0.16, 0.24, 0.92)
 
-## The node whose road tool frame the chips come from: it sizes them in the font this HUD sends
-## it (`road_tool_set_chip_font`) and places them (`road_tool_chips_update`); without one no chip
-## shows.
+## The node whose road tool the chips come from: it sizes them in the font this HUD sends it
+## (`road_tool_set_chip_font`) and places them in its tick; without one no chip shows.
 var simulation_node: Object = null:
 	set(node):
 		if node != simulation_node:
 			simulation_node = node
 			_send_font()
-
-## `road_tool_chips_update`'s flags: the chips changed (fetch them, corners included), or only
-## their corners did.
-const CHIPS_CHANGED := 1
-const CORNERS_CHANGED := 2
 
 ## Chip draws so far: a panel's or the texts' draw callback each (tests count them).
 var draws := 0
@@ -76,8 +70,9 @@ var _sizes := PackedVector2Array()
 var _corners := PackedVector2Array()
 # Chip `i`'s panel and icon, made on first use and kept; hidden while no chip `i` shows.
 var _panels: Array[Node2D] = []
-# Nothing fetched since the chips were cleared: the next frame fetches them whatever Rust says.
-var _stale := true
+## Nothing fetched since the chips were cleared: the tool fetches them on its next frame whatever
+## Rust says.
+var stale := true
 # The chips' font size (`UiStyle.scaled_font_size` reads the settings: taken again, and the font
 # sent to Rust again, whenever the chips are cleared, not every frame).
 var _font_size := 0
@@ -131,13 +126,13 @@ func _send_font() -> void:
 	advances.resize(characters.length())
 	for index in characters.length():
 		advances[index] = _font.get_char_size(characters.unicode_at(index), _font_size).x
-	simulation_node.road_tool_set_chip_font(characters, advances, PAD_X * 2.0 + ICON_PX + ICON_GAP, maxf(_font.get_height(_font_size), ICON_PX) + PAD_Y * 2.0)
+	simulation_node.road_tool_set_chip_font(characters, advances, PAD_X * 2.0 + ICON_PX + ICON_GAP, maxf(_font.get_height(_font_size), ICON_PX) + PAD_Y * 2.0, HANDLE_CLEAR_PX, GAP_PX)
 
 ## Removes every chip; nothing to do when none was fetched since the last clear.
 func clear() -> void:
-	if _stale:
+	if stale:
 		return
-	_stale = true
+	stale = true
 	_kinds = PackedInt32Array()
 	_tones = PackedInt32Array()
 	_texts = PackedStringArray()
@@ -154,39 +149,29 @@ func clear() -> void:
 func text() -> String:
 	return "  ".join(_texts)
 
-## Once a frame after the tool's frame: Rust places the chips for `camera` (null: none placed)
-## and says what changed; only then are the chips or their corners fetched, the changed panels
-## redrawn, the panels moved and the texts redrawn. Returns the milliseconds it took (0 on a frame
-## with no change).
-func place(camera: Camera3D) -> float:
+## On the tick's chips or corners flag (or while `stale`): fetches the chips when they changed
+## (`all`, or nothing fetched since the last clear) and their corners, redraws the changed panels,
+## moves the panels and redraws the texts.
+func show_chips(all: bool) -> void:
 	if simulation_node == null:
-		return 0.0
-	var start_us := Time.get_ticks_usec()
+		return
 	if _font_size == 0:
 		_send_font()
-	var flags: int = simulation_node.road_tool_chips_update(camera, HANDLE_CLEAR_PX, GAP_PX)
-	if _stale:
-		flags |= CHIPS_CHANGED
-	if flags == 0:
-		return 0.0
-	_stale = false
-	if flags & CHIPS_CHANGED:
-		var chips: Dictionary = simulation_node.road_tool_chips()
-		_kinds = chips["kinds"]
-		_tones = chips["tones"]
-		_texts = chips["texts"]
-		_sizes = chips["sizes"]
-		_corners = chips["corners"]
-		for index in PackedInt32Array(chips["redraw"]):
+	if all or stale:
+		stale = false
+		var redraw: PackedInt32Array = simulation_node.road_tool_chips_fetch()
+		_kinds = simulation_node.road_tool_chip_kinds()
+		_tones = simulation_node.road_tool_chip_tones()
+		_texts = simulation_node.road_tool_chip_texts()
+		_sizes = simulation_node.road_tool_chip_sizes()
+		for index in redraw:
 			_panel(index).queue_redraw()
-	else:
-		_corners = simulation_node.road_tool_chip_corners()
+	_corners = simulation_node.road_tool_chip_corners()
 	_place_panels()
 	if _kinds.has(Kind.BUILD) or _kinds.has(Kind.CANCEL) or _build_hit.visible or _cancel_hit.visible:
 		_place_hit(_build_hit, Kind.BUILD)
 		_place_hit(_cancel_hit, Kind.CANCEL)
 	_canvas.queue_redraw()
-	return float(Time.get_ticks_usec() - start_us) / 1000.0
 
 # Chip `index`'s panel, made (and drawn on its first frame) when first needed.
 func _panel(index: int) -> Node2D:

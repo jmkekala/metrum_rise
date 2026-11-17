@@ -79,7 +79,7 @@
 //! | | `get_road_surface_debug_data` | `network_tool.gd` |
 //! | | `get_road_surface_probe_debug` | `network_tool.gd` |
 //! | | `road_tool_pointer`, `road_tool_pointer_at` | `road_tool.gd` |
-//! | | `road_tool_event`, `road_tool_set_option`, `road_tool_frame` | `road_tool.gd` |
+//! | | `road_tool_tick`, `road_tool_press`, `road_tool_action`, `road_tool_set_flag` | `road_tool.gd` |
 //! | | `check_border_candidate` | `road_tool.gd` |
 //! | | `set_border_connection` | `road_tool.gd` |
 //! | | `get_bulldoze_target_at` | `bulldoze_tool.gd` |

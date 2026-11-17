@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-2.0-only
 
-## The road tool's gizmos (`ROAD-112` rounds D and V): what `road_tool_frame` sends, drawn into
+## The road tool's gizmos (`ROAD-112` rounds D and V): what Rust's tick built, drawn into
 ## one reused `ArrayMesh` over the terrain and the roads (no depth test), so the stroke's path
 ## stays visible where the preview terrain's grass covers the preview road. One line surface of
 ## quads Rust built (`gizmo_line_*`, each vertex carrying its look, round V2), widened to a
@@ -15,9 +15,10 @@
 ## picks the colour and size: a placed end, a control point, the chain's start, the live end (or
 ## the grabbed freeform grip), a joint and a handle (a height grip too). The
 ## palette is defined once (`PALETTE`), from the UI theme's colours (`ui_style.gd`). Rust
-## decides every point; this script only uploads them, and only when they changed: in place
-## while the surfaces' layout holds (Rust pads the quads to power-of-two counts), rebuilt when it
-## changes. The batch ghost (rounds G1 and V2) draws in the same palette and line look.
+## decides every point and builds the buffers in the server's layout; this script only uploads
+## them, and only on the tick's gizmo flag (round R2-2: no compare here): in place while the
+## surfaces' layout holds (Rust pads the quads to power-of-two counts), the surfaces rebuilt with
+## placeholders of the new layout when it changes. The batch ghost (rounds G1 and V2) draws in the same palette and line look.
 extends MeshInstance3D
 
 const SceneLightingConfig := preload("res://scripts/core/scene_lighting.gd")
@@ -88,14 +89,9 @@ var _line_material := ShaderMaterial.new()
 var _handle_material := ShaderMaterial.new()
 # `depth_line_material`, made on first use.
 var _depth_line_material: ShaderMaterial = null
-# The arrays last uploaded: an unchanged frame uploads nothing.
-var _line_points := PackedVector3Array()
-var _line_classes := PackedInt32Array()
-var _handles := PackedVector3Array()
-var _handle_kinds := PackedInt32Array()
 # The surfaces' layout (the line surface's vertex count, the handles' count): while it holds, a
 # new pose rewrites the buffers in place instead of rebuilding the surfaces.
-var _layout := PackedInt32Array()
+var _layout := Vector2i(-1, -1)
 # Quad index buffers by vertex count (two triangles a quad), made once per count.
 var _quad_indices := {}
 
@@ -125,64 +121,57 @@ func _init() -> void:
 	_handle_material.set_shader_parameter("sizes_px", PackedFloat32Array(PALETTE["handle_sizes_px"]))
 	_handle_material.render_priority = 11
 
-## Uploads the frame's gizmos when they differ from the last ones; returns the milliseconds the
-## upload took (0 when nothing changed).
-func show_frame(frame: Dictionary) -> float:
-	var line_points: PackedVector3Array = frame.get("gizmo_line_points", PackedVector3Array())
-	var line_classes: PackedInt32Array = frame.get("gizmo_line_classes", PackedInt32Array())
-	var handles: PackedVector3Array = frame.get("gizmo_handles", PackedVector3Array())
-	var handle_kinds: PackedInt32Array = frame.get("gizmo_handle_kinds", PackedInt32Array())
-	if line_points == _line_points and handles == _handles and line_classes == _line_classes and handle_kinds == _handle_kinds:
-		return 0.0
-	var start_us := Time.get_ticks_usec()
-	_line_points = line_points
-	_line_classes = line_classes
-	_handles = handles
-	_handle_kinds = handle_kinds
+## Uploads the gizmos `simulation` built in its last tick (`road_tool_gizmo_layout`,
+## `road_tool_gizmo_bytes`), on the tick's gizmo flag.
+func show_gizmos(simulation: Object) -> void:
+	var layout: Vector2i = simulation.road_tool_gizmo_layout()
 	# The dashes keep their length on screen at the cursor's depth.
-	_line_material.set_shader_parameter("dash_focus", frame.get("cursor", Vector3.ZERO))
-	var vertices: PackedVector3Array = frame.get("gizmo_line_vertices", PackedVector3Array())
-	var attributes: PackedFloat32Array = frame.get("gizmo_line_attributes", PackedFloat32Array())
-	var layout := PackedInt32Array([vertices.size(), handles.size()])
-	var rid := _mesh.get_rid()
-	if layout == _layout and _mesh.get_surface_count() > 0:
-		# The same layout: positions (12 bytes a vertex) and attributes rewritten in place, the
-		# line surface first.
-		var surface := 0
-		if not vertices.is_empty():
-			RenderingServer.mesh_surface_update_vertex_region(rid, 0, 0, vertices.to_byte_array())
-			RenderingServer.mesh_surface_update_attribute_region(rid, 0, 0, attributes.to_byte_array())
-			surface = 1
-		if not handles.is_empty():
-			RenderingServer.mesh_surface_update_vertex_region(rid, surface, 0, handles.to_byte_array())
-			# A handle can change kind in place (the live end becoming a placed end).
-			var kinds: PackedFloat32Array = frame.get("gizmo_handle_attributes", PackedFloat32Array())
-			RenderingServer.mesh_surface_update_attribute_region(rid, surface, 0, kinds.to_byte_array())
-	else:
+	_line_material.set_shader_parameter("dash_focus", simulation.road_tool_gizmo_focus())
+	if layout != _layout or _mesh.get_surface_count() == 0:
 		_layout = layout
 		_mesh.clear_surfaces()
-		if not vertices.is_empty():
-			add_line_surface(_mesh, vertices, attributes)
-		if not handles.is_empty():
+		if layout.x > 0:
+			_add_line_placeholder(_mesh, layout.x)
+		if layout.y > 0:
 			var arrays := []
 			arrays.resize(Mesh.ARRAY_MAX)
-			arrays[Mesh.ARRAY_VERTEX] = handles
+			var points := PackedVector3Array()
+			points.resize(layout.y)
+			arrays[Mesh.ARRAY_VERTEX] = points
 			# A placeholder of the right size: the kinds go in below in one write.
 			var uv := PackedVector2Array()
-			uv.resize(handles.size())
+			uv.resize(layout.y)
 			arrays[Mesh.ARRAY_TEX_UV] = uv
 			_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_POINTS, arrays)
-			var surface := _mesh.get_surface_count() - 1
-			_mesh.surface_set_material(surface, _handle_material)
-			var kinds: PackedFloat32Array = frame.get("gizmo_handle_attributes", PackedFloat32Array())
-			RenderingServer.mesh_surface_update_attribute_region(rid, surface, 0, kinds.to_byte_array())
+			_mesh.surface_set_material(_mesh.get_surface_count() - 1, _handle_material)
+	# Positions (12 bytes a vertex) and attributes in place, the line surface first; a handle
+	# can change kind in place (the live end becoming a placed end).
+	var rid := _mesh.get_rid()
+	var surface := 0
+	if layout.x > 0:
+		RenderingServer.mesh_surface_update_vertex_region(rid, 0, 0, simulation.road_tool_gizmo_bytes(0))
+		RenderingServer.mesh_surface_update_attribute_region(rid, 0, 0, simulation.road_tool_gizmo_bytes(1))
+		surface = 1
+	if layout.y > 0:
+		RenderingServer.mesh_surface_update_vertex_region(rid, surface, 0, simulation.road_tool_gizmo_bytes(2))
+		RenderingServer.mesh_surface_update_attribute_region(rid, surface, 0, simulation.road_tool_gizmo_bytes(3))
 	visible = _mesh.get_surface_count() > 0
-	return float(Time.get_ticks_usec() - start_us) / 1000.0
 
 ## Appends a line surface of quads (`road_tool_line.gdshader`) to `mesh`: placeholders of the
 ## right size for UV, UV2 and the look, then Rust's interleaved attributes in one write (the
 ## batch ghost and the footprint hue's tunnel outlines draw their edges with it too).
 func add_line_surface(mesh: ArrayMesh, vertices: PackedVector3Array, attributes: PackedFloat32Array) -> void:
+	_add_line_surface_arrays(mesh, vertices)
+	RenderingServer.mesh_surface_update_attribute_region(mesh.get_rid(), mesh.get_surface_count() - 1, 0, attributes.to_byte_array())
+
+# A line surface of `count` vertices whose positions and attributes are written after it.
+func _add_line_placeholder(mesh: ArrayMesh, count: int) -> void:
+	var vertices := PackedVector3Array()
+	vertices.resize(count)
+	_add_line_surface_arrays(mesh, vertices)
+
+# A line surface of quads at `vertices`, with placeholders for UV, UV2 and the look.
+func _add_line_surface_arrays(mesh: ArrayMesh, vertices: PackedVector3Array) -> void:
 	var count := vertices.size()
 	var arrays := []
 	arrays.resize(Mesh.ARRAY_MAX)
@@ -196,9 +185,7 @@ func add_line_surface(mesh: ArrayMesh, vertices: PackedVector3Array, attributes:
 	arrays[Mesh.ARRAY_CUSTOM0] = looks
 	arrays[Mesh.ARRAY_INDEX] = _indices(count)
 	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays, [], {}, LINE_FORMAT)
-	var surface := mesh.get_surface_count() - 1
-	mesh.surface_set_material(surface, _line_material)
-	RenderingServer.mesh_surface_update_attribute_region(mesh.get_rid(), surface, 0, attributes.to_byte_array())
+	mesh.surface_set_material(mesh.get_surface_count() - 1, _line_material)
 
 ## The line material with the normal depth test (`road_tool_line_depth.gdshader`, the same
 ## palette): the footprint hue's tunnel outlines, which hills, trees and buildings hide.
@@ -213,9 +200,7 @@ func depth_line_material() -> ShaderMaterial:
 func clear() -> void:
 	if _mesh.get_surface_count() > 0:
 		_mesh.clear_surfaces()
-	_line_points = PackedVector3Array()
-	_handles = PackedVector3Array()
-	_layout = PackedInt32Array()
+	_layout = Vector2i(-1, -1)
 	visible = false
 
 # Two triangles per quad of four vertices (`a+, a-, b+, b-`), made once per vertex count.
@@ -247,9 +232,7 @@ var _ghost_fills: Array[StandardMaterial3D] = []
 
 ## Draws tier 1's ghost of a batch pose (`preview_road_draft`'s `ghost`, `ghost_starts`, `valid`
 ## and the edges' `ghost_line_*` quads): per verdict one fill surface, and one edge surface.
-## Returns the upload's milliseconds.
-func show_batch_ghost(result: Dictionary) -> float:
-	var start_us := Time.get_ticks_usec()
+func show_batch_ghost(result: Dictionary) -> void:
 	if _ghost == null:
 		_ghost = MeshInstance3D.new()
 		_ghost.mesh = ArrayMesh.new()
@@ -281,7 +264,6 @@ func show_batch_ghost(result: Dictionary) -> float:
 	if not edges.is_empty():
 		add_line_surface(mesh, edges, result.get("ghost_line_attributes", PackedFloat32Array()))
 	_ghost.visible = mesh.get_surface_count() > 0
-	return float(Time.get_ticks_usec() - start_us) / 1000.0
 
 ## Removes the batch ghost.
 func clear_batch_ghost() -> void:

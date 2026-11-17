@@ -15,25 +15,30 @@ use crate::nodes::sim::road_tool::outcome::COMMIT_REJECTED_REASON;
 
 #[godot_api(secondary)]
 impl SimulationNode {
-    /// Once a frame while a sent stroke waits (the tool's phase 2): nil until the core answers
-    /// it, then the answer, once: `committed`, `phase` and `placed` (the session's, after it),
+    /// The sent stroke's answer (the tick asks once a frame while one waits and hands it over as
+    /// `road_tool_commit_answer`; `road_tool.gd` asks too when chunks install, as the answer may
+    /// arrive in their frame): nil until the core answers it, then the answer, once: `committed`, `phase` and `placed` (the session's, after it),
     /// and for an accepted stroke `generation` (the render generation whose road chunks replace
     /// the preview: it holds until they are installed) and `border_node` (the external
     /// connection candidate at an end, -1 for none; the chain ended there), for a refused one
     /// `graded_epoch` (the preview tiles the commit had adopted, for the renderer to drop) and,
     /// when the stroke is editable again, `rejected` (the dictionary the sent stroke's preview
     /// shows the refusal with: `road_commit_rejected`, its graded tiles handed over at the click
-    /// left out) with `points` (the stroke it is for). Nil at once when nothing waits; allocates
-    /// nothing until the answer.
+    /// left out, numbered as the next preview's `sequence`) with `points` (the stroke it is
+    /// for). Nil at once when nothing waits; allocates nothing until the answer.
     #[func]
     pub fn road_tool_commit_poll(&mut self) -> Variant {
+        self.road_tool_take_commit_answer()
+            .map_or_else(Variant::nil, |answer| answer.to_variant())
+    }
+
+    // `road_tool_commit_poll`'s answer, `None` until it arrives.
+    pub(super) fn road_tool_take_commit_answer(&mut self) -> Option<VarDictionary> {
         let request_id = self.road_tool_session.commit.request_id();
         if request_id == 0 {
-            return Variant::nil();
+            return None;
         }
-        let Some(answer) = self.take_road_commit_answer(request_id) else {
-            return Variant::nil();
-        };
+        let answer = self.take_road_commit_answer(request_id)?;
         let (committed, generation, detail) = match &answer {
             Ok(ack) => (ack.committed, ack.generation, ack.detail.as_str()),
             Err(reason) => (false, 0, *reason),
@@ -67,7 +72,7 @@ impl SimulationNode {
             )
         };
         let sent = self.road_tool_session.commit_preview.take();
-        let (phase, placed) = self.road_tool_phase();
+        let (phase, placed) = self.road_tool_phase_placed();
         let mut result = vdict! {
             "committed": committed,
             "phase": phase,
@@ -93,12 +98,16 @@ impl SimulationNode {
                 }
                 result.set("graded_epoch", graded_epoch);
                 if let Some(sent) = sent.filter(|_| rejected) {
-                    result.set("rejected", self.road_tool_rejected_preview(&sent));
+                    let mut display = self.road_tool_rejected_preview(&sent);
+                    let tick = &mut self.road_tool_session.tick;
+                    tick.sequence += 1;
+                    display.set("sequence", tick.sequence);
+                    result.set("rejected", display);
                     result.set("points", points);
                 }
             }
         }
-        result.to_variant()
+        Some(result)
     }
 
     /// The sent stroke's commit waiting for its answer (`road_tool_commit_poll`), 0 for none.
@@ -125,11 +134,16 @@ impl SimulationNode {
     // the commit adopts this epoch's graded preview tiles), else the refusal's log line and the
     // session's refusal (the stroke stays editable).
     pub(super) fn road_tool_submit(&mut self, stroke: StrokeRequest) -> VarDictionary {
-        let fresh = !self.road_tool_preview_current();
-        let preview = match &self.road_tool_session.preview {
-            Some(standing) if !fresh => standing.dictionary.clone(),
-            _ => self.road_tool_run_preview(None),
-        };
+        let fresh = !self.road_tool_preview_is_current();
+        if fresh {
+            // A batch pose's ghost from here is not drawn: the stroke is sent.
+            self.road_tool_run_preview();
+            self.road_tool_hand_preview();
+        }
+        let preview = (self.road_tool_session.preview.as_ref())
+            .expect("a standing preview")
+            .dictionary
+            .clone();
         let valid = self.road_tool_standing_outcome().valid;
         if !valid {
             self.road_tool_log_refusal(&stroke);

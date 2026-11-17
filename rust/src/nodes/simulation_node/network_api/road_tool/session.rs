@@ -1,23 +1,22 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
 //! Road tool session Godot API (`ROAD-112` round C, plan 2.3 and 2.4): `road_tool.gd` forwards
-//! the pointer, clicks and keys, sets options, and draws what `road_tool_frame` returns. The
-//! session (`nodes::sim::road_tool::session`) decides the cursor, the stroke, the chain and the
+//! the clicks and keys as typed calls, sets options, ticks once a frame (`tick.rs`, round R2-2)
+//! and draws what the tick's flags say changed. The session (`nodes::sim::road_tool::session`) decides the cursor, the stroke, the chain and the
 //! commit; this bridge runs the existing preview (`preview_road`) for the session's stroke when
 //! it changed, keeps its typed outcome (round R2-1, `PreviewOutcome`), sends the confirmed
 //! stroke with `add_road_with_snap` and answers its commit (`commit.rs`). One session per
 //! `SimulationNode`, used from the main thread only.
 //!
 //! Every drawing mode runs on the session (round D: the simple and complex curves and continuous
-//! too); the frame carries the gizmos and the HUD numbers `road_tool.gd` draws. The pointer
-//! calls take typed arguments, so a pointer move allocates nothing once the session's buffers
-//! have grown (the frame and the preview allocate, once a frame).
+//! too). The pointer and the tick take typed arguments, so a pointer move allocates nothing once
+//! the session's buffers have grown, outside the preview of a changed stroke.
 //!
 //! A graded stroke (round I: a height handle off its support, or straight grade) previews and
 //! commits through its segmentation (`RoadToolSession::update_draft`, once a frame): one stroke
 //! previews alone with its profile and commits as a batch of one (`add_road_with_profile`'s
 //! path); several preview as a batch (round G1: tier 1 on each new pose, a tier-2 stroke on each
-//! frame the pose rests, the exact overlay once accepted) and commit as one batch, one undo step,
+//! tick the pose rests, the exact overlay once accepted) and commit as one batch, one undo step,
 //! with tier 2's plans when it finished; a refused segmentation (`cut_too_deep`) is the preview's
 //! refusal.
 
@@ -42,9 +41,11 @@ use crate::simulation::network::graph::RoadMedian;
 use crate::simulation::network::road_edit::RoadProfile;
 use crate::simulation::network::road_types::RoadAttributes;
 use labels::Chips;
+use tick::TickState;
 
 mod commit;
 mod labels;
+mod tick;
 
 /// The road tool session of one `SimulationNode` and the preview the bridge last ran for it.
 #[derive(Default)]
@@ -61,6 +62,8 @@ pub(crate) struct RoadToolBridge {
     batch_requests: Vec<RoadPreviewRequest>,
     // A batch ghost is drawn (`road_tool_gizmos.gd`'s `show_batch_ghost`).
     batch_ghost: bool,
+    // What the tick keeps between frames (round R2-2, `tick.rs`).
+    tick: TickState,
     // The draft's footprint hue (round HU), built with each preview of a new pose, off the
     // frame's thread until the frame uploads it (`ROAD-123` round HF2).
     hue: OffFrameHue,
@@ -80,7 +83,7 @@ pub(crate) struct RoadToolBridge {
 }
 
 // The standing preview: its typed outcome, which every decision on it reads, and the dictionary
-// the frame handed `road_tool.gd` to draw (a click returns it; a refused commit's display is a
+// the tick hands `road_tool.gd` to draw (a click returns it; a refused commit's display is a
 // copy of it). The bridge never reads the dictionary.
 struct StandingPreview {
     outcome: PreviewOutcome,
@@ -100,11 +103,11 @@ struct PreviewKey {
 
 #[godot_api(secondary)]
 impl SimulationNode {
-    /// The road tool's pointer moved: a camera ray (`ROAD-112`). Shift frees the cursor of the
-    /// angle lock, guide lines, the zoning grid and the length step; Ctrl breaks the joint of a
-    /// freeform handle being dragged. Returns the resolved cursor, or `null` while no pointer
-    /// has met a surface. Reads the published view only; allocates nothing once the session's
-    /// buffers have grown.
+    /// The road tool's pointer moved: a camera ray (`ROAD-112`; a click's, which can arrive before
+    /// the frame's tick, and tests). Shift frees the cursor of the angle lock, guide lines, the
+    /// zoning grid and the length step; Ctrl breaks the joint of a freeform handle being dragged.
+    /// Returns the resolved cursor, or `null` while no pointer has met a surface. Reads the
+    /// published view only; allocates nothing once the session's buffers have grown.
     #[func]
     pub fn road_tool_pointer(
         &mut self,
@@ -138,92 +141,100 @@ impl SimulationNode {
         self.road_tool_cursor_variant()
     }
 
-    /// One road tool event by name: `press` (left button: places a point; the stroke's last one
-    /// sends it; in freeform's edit phase grabs the node or handle under the pointer, else sends
-    /// the stroke), `right` (right button), `release` (ends a freeform drag), `cancel`,
-    /// `confirm` (freeform: ends the placing, then sends the stroke), `raise_handle` and
-    /// `lower_handle` (PageUp/PageDown: the active height handle by one 0.5 m step, as a drag
-    /// sets it: the live end's while drawing, the hovered or last dragged one in an edit
-    /// phase), `mode_straight`,
-    /// `mode_simple_curve`, `mode_complex_curve`, `mode_freeform`, and `forget_preview`
-    /// (the bridge drops its standing preview, so the next frame previews the stroke afresh:
-    /// measurements and another world). The commit's answer is the bridge's own
-    /// (`road_tool_commit_poll`). Returns `phase` and `placed` (as `road_tool_frame` reports
-    /// them, after the event), and for a click that sent the stroke: `points` (the stroke),
-    /// `preview` (the preview of exactly this stroke, the dictionary `preview_road` returns),
+    /// A press of the road tool's pointer (round R2-2, F19): `button` 0 the left (places a point;
+    /// the stroke's last one sends it; in freeform's edit phase grabs the node or handle under
+    /// the pointer, else sends the stroke), 1 the right. Returns `phase` and `placed` after it,
+    /// and for a click that sent the stroke `points` (the stroke), `preview` (the preview of
+    /// exactly this stroke, the dictionary `preview_road` returns, numbered as `sequence`),
     /// `fresh` (whether the click had to preview it), `request_id` (the commit, which
     /// `road_tool_commit_poll` answers; 0 when the preview refused it: the click is then logged
-    /// on `events` as the tool's refusal and the stroke stays editable). An unknown name returns
-    /// `{"error": "road_tool_event_unknown"}`.
+    /// on `events` as the tool's refusal and the stroke stays editable).
     #[func]
-    pub fn road_tool_event(&mut self, name: GString) -> VarDictionary {
-        let event = match name.to_string().as_str() {
-            "press" => RoadToolEvent::Press(PointerButton::Left),
-            "right" => RoadToolEvent::Press(PointerButton::Right),
-            "release" => RoadToolEvent::Release(PointerButton::Left),
-            "cancel" => RoadToolEvent::Action(RoadToolAction::Cancel),
-            "confirm" => RoadToolEvent::Action(RoadToolAction::Confirm),
-            "mode_straight" => RoadToolEvent::Action(RoadToolAction::ModeStraight),
-            "mode_simple_curve" => RoadToolEvent::Action(RoadToolAction::ModeSimpleCurve),
-            "mode_complex_curve" => RoadToolEvent::Action(RoadToolAction::ModeComplexCurve),
-            "mode_freeform" => RoadToolEvent::Action(RoadToolAction::ModeFreeform),
-            "raise_handle" => RoadToolEvent::Action(RoadToolAction::RaiseHandle),
-            "lower_handle" => RoadToolEvent::Action(RoadToolAction::LowerHandle),
-            "forget_preview" => {
-                self.road_tool_session.previewed = None;
-                self.road_tool_session.preview = None;
-                self.road_tool_session.batch_running = false;
-                return vdict! { "phase": self.road_tool_phase().0 };
-            }
-            _ => return vdict! { "error": "road_tool_event_unknown" },
+    pub fn road_tool_press(&mut self, button: i64) -> VarDictionary {
+        let button = if button == 1 {
+            PointerButton::Right
+        } else {
+            PointerButton::Left
         };
-        self.road_tool_handle(event);
-        let mut result = match self.road_tool_session.session.take_commit() {
-            Some(stroke) => self.road_tool_submit(stroke),
-            None => VarDictionary::new(),
-        };
-        let (phase, placed) = self.road_tool_phase();
-        result.set("phase", phase);
-        result.set("placed", placed);
-        result
+        self.road_tool_input(RoadToolEvent::Press(button))
     }
 
-    /// Sets one road tool option: `lanes` (`Vector2i` forward, backward: 0..4 each), and the
-    /// snapping toggles `network_snap`, `guide_lines`, `zoning_grid` (bool), `angle_step_deg`
-    /// (15, 30, 45 or 90; anything else turns the lock off), `length_step_m` (0 turns it off),
-    /// `continuous` (bool), `straight_grade` (bool, U3: the grade line between the ends' heights
-    /// even with both handles on their supports). A road type sets the lanes with the median,
-    /// parking and attributes (`road_tool_set_road_type`); `set_road_tool_median`,
-    /// `set_road_tool_parking` and `set_road_tool_attributes` set one each. Returns "" when set,
-    /// else `road_tool_option_unknown` or `road_tool_option_value`.
+    /// The left button's release: ends a freeform drag.
     #[func]
-    pub fn road_tool_set_option(&mut self, name: GString, value: Variant) -> GString {
-        let float = || value.try_to::<f64>().ok();
-        let flag = || value.try_to::<bool>().ok();
-        let option = match name.to_string().as_str() {
-            "lanes" => {
-                let Ok(lanes) = value.try_to::<Vector2i>() else {
-                    return "road_tool_option_value".into();
-                };
-                let mut spec = self.road_tool_session.session.spec();
-                spec.fwd_lanes = lanes.x.clamp(0, 4) as u8;
-                spec.bkw_lanes = lanes.y.clamp(0, 4) as u8;
-                Some(RoadToolOption::RoadType(spec))
+    pub fn road_tool_release(&mut self) {
+        self.road_tool_handle(RoadToolEvent::Release(PointerButton::Left));
+    }
+
+    /// One road tool action by code (round R2-2, F19): 0 cancel, 1 confirm (freeform: ends the
+    /// placing, then sends the stroke; the click modes place the next point at the cursor), 2-5
+    /// the modes straight, simple curve, complex curve and freeform, 6 and 7 raise and lower the
+    /// active height handle by one 0.5 m step (PageUp/PageDown, as a drag sets it: the live
+    /// end's while drawing, the hovered or last dragged one in an edit phase), 8 forget the
+    /// standing preview (the next tick previews the stroke afresh: measurements and another
+    /// world). Returns what `road_tool_press` returns (a confirm can send the stroke); an unknown
+    /// code does nothing.
+    #[func]
+    pub fn road_tool_action(&mut self, code: i64) -> VarDictionary {
+        let action = match code {
+            0 => RoadToolAction::Cancel,
+            1 => RoadToolAction::Confirm,
+            2 => RoadToolAction::ModeStraight,
+            3 => RoadToolAction::ModeSimpleCurve,
+            4 => RoadToolAction::ModeComplexCurve,
+            5 => RoadToolAction::ModeFreeform,
+            6 => RoadToolAction::RaiseHandle,
+            7 => RoadToolAction::LowerHandle,
+            8 => {
+                let bridge = &mut self.road_tool_session;
+                bridge.previewed = None;
+                bridge.preview = None;
+                bridge.batch_running = false;
+                return VarDictionary::new();
             }
-            "network_snap" => flag().map(RoadToolOption::NetworkSnap),
-            "guide_lines" => flag().map(RoadToolOption::GuideLines),
-            "zoning_grid" => flag().map(RoadToolOption::ZoningGrid),
-            "continuous" => flag().map(RoadToolOption::Continuous),
-            "angle_step_deg" => float().map(|step| RoadToolOption::AngleStepDeg(Some(step))),
-            "length_step_m" => float().map(|step| RoadToolOption::LengthStepM(Some(step))),
-            "straight_grade" => flag().map(RoadToolOption::StraightGrade),
-            _ => return "road_tool_option_unknown".into(),
+            _ => return VarDictionary::new(),
         };
-        let Some(option) = option else {
-            return "road_tool_option_value".into();
+        self.road_tool_input(RoadToolEvent::Action(action))
+    }
+
+    /// Sets the next strokes' lanes, forward and backward (0..4 each; 0 + 0 is a walkway). A
+    /// road type sets them with the median, parking and attributes (`road_tool_set_road_type`).
+    #[func]
+    pub fn road_tool_set_lanes(&mut self, fwd: i64, bkw: i64) {
+        let mut spec = self.road_tool_session.session.spec();
+        spec.fwd_lanes = fwd.clamp(0, 4) as u8;
+        spec.bkw_lanes = bkw.clamp(0, 4) as u8;
+        self.set_road_tool_spec(spec);
+    }
+
+    /// Turns one road tool option on or off by code (round R2-2, F19): 0 network snap, 1 guide
+    /// lines, 2 the zoning grid, 3 continuous, 4 straight grade (U3: the grade line between the
+    /// ends' heights even with both handles on their supports). False for an unknown code.
+    #[func]
+    pub fn road_tool_set_flag(&mut self, code: i64, enabled: bool) -> bool {
+        let option = match code {
+            0 => RoadToolOption::NetworkSnap(enabled),
+            1 => RoadToolOption::GuideLines(enabled),
+            2 => RoadToolOption::ZoningGrid(enabled),
+            3 => RoadToolOption::Continuous(enabled),
+            4 => RoadToolOption::StraightGrade(enabled),
+            _ => return false,
         };
         self.road_tool_session.session.set_option(option);
-        GString::new()
+        true
+    }
+
+    /// Sets one of the road tool's steps by code (round R2-2, F19): 0 the angle lock's step in
+    /// degrees (15, 30, 45 or 90; anything else turns the lock off), 1 the length step in metres
+    /// (0 turns it off). False for an unknown code.
+    #[func]
+    pub fn road_tool_set_step(&mut self, code: i64, value: f64) -> bool {
+        let option = match code {
+            0 => RoadToolOption::AngleStepDeg(Some(value)),
+            1 => RoadToolOption::LengthStepM(Some(value)),
+            _ => return false,
+        };
+        self.road_tool_session.session.set_option(option);
+        true
     }
 
     /// Draws the next strokes with road type `id` (`ROAD-101`): the type's lanes, median,
@@ -303,19 +314,19 @@ impl SimulationNode {
         }
     }
 
-    /// The road tool's frame, called once a frame while the tool is active: `phase` (0 idle,
-    /// 1 placing, 2 waiting for the commit's acknowledgement, 3 a freeform draft's edit phase),
-    /// `placed` (points down), `mode` (0 straight, 1 simple curve, 2 complex curve, 3 freeform),
-    /// `continuous`, `cursor` and
+    /// The road tool's frame record on demand (round R2-2: tests and probes; the tool's frame is
+    /// `road_tool_tick`, which builds none of it): brings the draft up to date with the published
+    /// view and previews nothing. `phase` (0 idle, 1 placing, 2 waiting for the commit's
+    /// acknowledgement, 3 a freeform draft's edit phase), `placed` (points down), `mode` (0
+    /// straight, 1 simple curve, 2 complex curve, 3 freeform), `continuous`, `cursor` and
     /// `cursor_valid`, `snap` (what took the cursor: `free`, `node`, `edge`, `guide`,
     /// `guide_corner`, `grid`, `angle`, `angle_edge`, `angle_guide`, `angle_grid`, `border`,
     /// `self`), `points` (the stroke of this pose, empty without one), `refusal` (why the draft
     /// has no stroke: `too_short`, `fold_back`, `full_turn`, `no_biarc`, `road_tight_curve`, else
-    /// ""), `hud`
-    /// (`length_m`, `bearing_deg`, `start_angle_deg` and `end_angle_deg` (-1 for none),
-    /// `radius_m` (the smallest arc radius, -1 for a straight draft), `other_radius_m` (an
-    /// S-curve's other arc radius, -1 for any other draft), `design_speed_kmh` (-1
-    /// for none), `design_speed_warning`, `illegal_radius_m`, `tight_radius`, `build_cost` and
+    /// ""), `hud` (`length_m`, `bearing_deg`, `start_angle_deg` and `end_angle_deg` (-1 for
+    /// none), `radius_m` (the smallest arc radius, -1 for a straight draft), `other_radius_m` (an
+    /// S-curve's other arc radius, -1 for any other draft), `design_speed_kmh` (-1 for none),
+    /// `design_speed_warning`, `illegal_radius_m`, `tight_radius`, `build_cost` and
     /// `upkeep_per_day` of the drawn road type), `piece_lengths_m` and `piece_radii_m` (each
     /// guide piece's length and smallest radius, -1 for a straight piece: a curve's lead and
     /// arc, an S-curve's two arcs, a freeform draft's spans), and the gizmos as packed arrays:
@@ -331,66 +342,22 @@ impl SimulationNode {
     /// 3 the live end or the grabbed freeform grip, 4 a joint: the S-curve's or a freeform inner
     /// node, 5 a handle: an S-curve arc's control point, a freeform Bezier handle or a height
     /// handle's grip, whose stem is a guide strip; `gizmo_handle_attributes`: the kinds as the
-    /// one handle surface's UVs) and `zoning_depth_m` (-1 for a type that does not zone).
-    /// Heights (round I): `grade` (the grade line's two end heights, empty when the stroke follows the ground), `height_handles`
-    /// (one dictionary per end that has one: `end` 0 start or 1 end, `support`, `height_m`,
-    /// `offset_m`, `grip`, `locked`, `active`), the HUD's `start_height_m`, `end_height_m`
-    /// (above the support; a locked end's above the terrain) and `slope_percent` (-1000 for
-    /// none), `piece_slopes_percent` (per guide piece), and the draft's runs: `draft_profiles`
-    /// (`RoadProfile::code` each: 0 follow ground, 1 held ground, 2 bridge, 3 tunnel),
-    /// `draft_lengths_m`, `draft_slopes_percent`, and `draft_reason` (the segmentation's
-    /// refusal, else ""). When the stroke, its type, its grade or the context changed since the
-    /// last preview, the frame previews it: `preview` holds `preview_road`'s dictionary (a batch
-    /// pose's: `is_valid`, `is_pending`, `invalid_reason`, `build_cost`, `length_m`, then on the
-    /// frame tier 2 accepts it the exact overlay with `preview_road`'s keys, or its refusal),
-    /// with `pose`, the pose's number, which the hue built with it carries
-    /// ([`Self::road_tool_hue`]'s `pose`, `ROAD-123` round HF2); `batch` holds a new batch pose's tier 1 (`preview_road_draft`'s keys: the ghost) and
-    /// `batch_cleared` is true when the ghost should go; `preview_cleared` is true when the
-    /// stroke went away. No preview while a sent stroke waits for its acknowledgement. The
-    /// frame also builds the label chips, which the HUD fetches only when they changed
-    /// (`road_tool_chips_update`, round R2-5).
+    /// one handle surface's UVs) and `zoning_depth_m` (-1 for a type that does not zone),
+    /// `hue_revision` (the footprint hue's), and the heights (`road_tool_heights`' keys).
     #[func]
-    pub fn road_tool_frame(&mut self) -> VarDictionary {
+    pub fn road_tool_snapshot(&mut self) -> VarDictionary {
         self.road_tool_update_draft();
         let mut dict = self.road_tool_frame_record();
-        let frame = self.road_tool_session.session.frame();
-        let (awaiting, has_stroke) = (
-            frame.state.phase == Phase::AwaitingAck,
-            frame.stroke.points.len() >= 2,
-        );
-        // No preview while the sent stroke waits; its chips show it pending.
-        if !awaiting {
-            if !has_stroke {
-                if self.road_tool_session.previewed.take().is_some() {
-                    self.road_tool_session.preview = None;
-                    dict.set("preview_cleared", true);
-                }
-                self.road_tool_session.batch_running = false;
-                self.road_tool_clear_batch_ghost(&mut dict);
-            } else if !self.road_tool_preview_current() {
-                let preview = self.road_tool_run_preview(Some(&mut dict));
-                dict.set("preview", preview);
-            } else if self.road_tool_session.batch_running
-                && let Some(preview) = self.road_tool_step_batch(&mut dict)
-            {
-                dict.set("preview", preview);
-            }
-        }
-        // A hue in flight stays in flight: its stroke stands, so `follow` would keep it.
-        let bridge = &mut self.road_tool_session;
-        if !(has_stroke || awaiting) {
-            bridge.hue.hue().follow(bridge.session.frame());
-        }
+        let bridge = &self.road_tool_session;
         dict.set("hue_revision", bridge.hue.revision() as i64);
         dict.set("zoning_depth_m", bridge.session.frame().zoning_depth_m.unwrap_or(-1.0));
-        self.road_tool_set_labels(awaiting && has_stroke);
         dict
     }
 
     /// The draft's footprint hue (`ROAD-112` round HU; a stopgap marking the footprint while the
-    /// preview terrain lags, T27 (d)), as of the last `road_tool_frame`, whose `hue_revision`
-    /// changes whenever it does: `revision`, `pose` (the pose of the preview it was built with,
-    /// in the same frame: the frame's `preview`'s `pose`), `state` (-1 hidden, 0 valid, 1 checking, 2
+    /// preview terrain lags, T27 (d)), as of the last tick, whose hue flag says when it changed
+    /// (tests and probes; the tool draws it through `road_tool_hue_join`): `revision`, `pose`
+    /// (the pose of the preview it was built with, in the same frame: that preview's `pose`), `state` (-1 hidden, 0 valid, 1 checking, 2
     /// refused, drawn hatched), the fill (a triangle list on the road, a bridge's on the ground
     /// under it, padded with collapsed triangles to a power-of-two count so a drag uploads in
     /// place) as `fill_vertices` (its count) and `fill_bytes` (the vertex buffer's bytes, three
@@ -398,7 +365,7 @@ impl SimulationNode {
     /// `road_tool_line.gdshader` quads (`outline_vertices`, `outline_attributes`, looks 8 to 10
     /// by state; empty without a tunnel), with `build_ms` (its build on its worker, off this
     /// thread) and `wait_ms` (what this call waited for it). Joins the hue's build when it is
-    /// still running (`ROAD-123` round HF2: the frame's one wait for it, at its upload).
+    /// still running (`ROAD-123` round HF2).
     #[func]
     pub fn road_tool_hue(&mut self) -> VarDictionary {
         let (hue_pose, offframe) = (self.road_tool_session.hue_pose, &mut self.road_tool_session.hue);
@@ -425,10 +392,64 @@ impl SimulationNode {
         }
     }
 
-    /// The heights part of the session's last frame record (`road_tool_frame`'s round I keys:
+    /// The hue on the tick's hue flag, after the frame showed its preview (round R2-2; `ROAD-123`
+    /// round HF2: the frame's one wait for the build, which overlaps the preview's display):
+    /// joins the build and returns `x` the state (-1 hidden, 0 valid, 1 checking, 2 refused,
+    /// drawn hatched), `y` the fill's vertex count (`road_tool_hue_fill`) and `z` the tunnel
+    /// outlines' quad vertex count (`road_tool_hue_outline`, zero without a tunnel). Its time goes
+    /// into the tick's sample (`road_tool_timings`' `hue_ms`).
+    #[func]
+    pub fn road_tool_hue_join(&mut self) -> Vector3i {
+        let start = Instant::now();
+        let offframe = &mut self.road_tool_session.hue;
+        offframe.join();
+        let hue = &*offframe.hue();
+        let state = hue.state().map_or(-1, |state| state as i32);
+        let fill = hue.fill.len() as i32;
+        let outline = strip_quad_count(&hue.outline, &hue.outline_starts) as i32 * 4;
+        let joined = Self::road_tool_tick_elapsed(start);
+        self.road_tool_tick_add(0.0, joined);
+        Vector3i::new(state, fill, outline)
+    }
+
+    /// The joined hue's fill vertex buffer (three little-endian `f32` a vertex, padded with
+    /// collapsed triangles to a power-of-two count so a drag uploads in place), uploaded as it is.
+    #[func]
+    pub fn road_tool_hue_fill(&mut self) -> PackedByteArray {
+        PackedByteArray::from(self.road_tool_session.hue.hue().fill_bytes.as_slice())
+    }
+
+    /// The joined hue's tunnel outlines as `road_tool_line.gdshader` quads: `part` 0 the
+    /// vertices, 1 the attributes (looks 8 to 10 by state), as `road_tool_hue`'s
+    /// `outline_vertices` and `outline_attributes`.
+    #[func]
+    pub fn road_tool_hue_outline(&mut self, part: i64) -> Variant {
+        let hue = &*self.road_tool_session.hue.hue();
+        let style = match hue.state() {
+            Some(HueState::Checking) => LineStyle::HueOutlineChecking,
+            Some(HueState::Refused) => LineStyle::HueOutlineRefused,
+            _ => LineStyle::HueOutlineValid,
+        };
+        let outline = strip_quads(&hue.outline, &hue.outline_starts, |_| style);
+        if part == 0 {
+            outline.vertices.to_variant()
+        } else {
+            outline.attributes.to_variant()
+        }
+    }
+
+    /// The joined hue's build on its worker and this frame's wait for it, in milliseconds
+    /// (`x`, `y`; the preview metrics).
+    #[func]
+    pub fn road_tool_hue_times(&self) -> Vector2 {
+        let (build_ms, wait_ms) = self.road_tool_session.hue.last_times();
+        Vector2::new(build_ms as f32, wait_ms as f32)
+    }
+
+    /// The heights part of the session's frame record (`road_tool_snapshot`'s round I keys:
     /// `grade`, `height_handles`, the HUD's heights and slopes, `piece_slopes_percent` and the
-    /// draft's runs) as of the last `road_tool_frame`; previews nothing (tests and probes read
-    /// it between the tool's frames).
+    /// draft's runs) as of the last tick; previews nothing (tests and probes read it between the
+    /// tool's frames).
     #[func]
     pub fn road_tool_heights(&self) -> VarDictionary {
         let mut dict = VarDictionary::new();
@@ -439,7 +460,7 @@ impl SimulationNode {
     // The road tool's frame record without the preview.
     fn road_tool_frame_record(&self) -> VarDictionary {
         let frame = self.road_tool_session.session.frame();
-        let phase = self.road_tool_phase();
+        let phase = self.road_tool_phase_placed();
         let hud = frame.hud;
         let angle = |angle: Option<f64>| angle.unwrap_or(-1.0);
         let mut dict = VarDictionary::new();
@@ -489,8 +510,9 @@ impl SimulationNode {
         dict
     }
 
-    // The phase code (0 idle, 1 placing, 2 waiting for the acknowledgement) and points placed.
-    fn road_tool_phase(&self) -> (i64, i64) {
+    // The phase code (0 idle, 1 placing, 2 waiting for the acknowledgement, 3 editing) and the
+    // points placed.
+    fn road_tool_phase_placed(&self) -> (i64, i64) {
         match self.road_tool_session.session.frame().state.phase {
             Phase::Idle => (0, 0),
             Phase::Placing { placed } => (1, i64::from(placed)),
@@ -518,6 +540,19 @@ impl SimulationNode {
         self.road_tool_session.session.handle_event(&view, event);
     }
 
+    // A press or an action, then the commit when it sent the stroke: `road_tool_press`'s result.
+    fn road_tool_input(&mut self, event: RoadToolEvent) -> VarDictionary {
+        self.road_tool_handle(event);
+        let mut result = match self.road_tool_session.session.take_commit() {
+            Some(stroke) => self.road_tool_submit(stroke),
+            None => VarDictionary::new(),
+        };
+        let (phase, placed) = self.road_tool_phase_placed();
+        result.set("phase", phase);
+        result.set("placed", placed);
+        result
+    }
+
     fn road_tool_cursor_variant(&self) -> Variant {
         let cursor = self.road_tool_session.session.frame().cursor;
         if cursor.valid {
@@ -529,7 +564,7 @@ impl SimulationNode {
 
     // Whether the standing preview is for the session's stroke as it is now, on the current
     // context. Compares in place: no allocation.
-    fn road_tool_preview_current(&self) -> bool {
+    fn road_tool_preview_is_current(&self) -> bool {
         let bridge = &self.road_tool_session;
         let stroke = &bridge.session.frame().stroke;
         bridge.previewed.as_ref().is_some_and(|key| {
@@ -577,10 +612,10 @@ impl SimulationNode {
     // Previews the session's stroke as it stands, with the session's road type, and keeps the
     // result as the standing preview (its outcome typed, round R2-1): a follow-ground stroke as
     // today; a graded one through its segmentation (one stroke alone with its profile, several
-    // as a batch pose, a refusal as the preview's refusal). A batch pose's tier 1 goes into
-    // `frame` as `batch` (the ghost) when given, and an earlier ghost is cleared. Returns the
-    // preview's dictionary. The last outcome's and key's buffers are reused.
-    fn road_tool_run_preview(&mut self, frame: Option<&mut VarDictionary>) -> VarDictionary {
+    // as a batch pose, a refusal as the preview's refusal; its dictionary stands with it).
+    // Returns a batch pose's tier 1 (the ghost), `None` for any other pose. The last outcome's
+    // and key's buffers are reused.
+    fn road_tool_run_preview(&mut self) -> Option<VarDictionary> {
         self.road_tool_update_draft();
         self.road_tool_session.pose += 1;
         self.road_tool_session.batch_running = false;
@@ -617,15 +652,6 @@ impl SimulationNode {
                 preview
             }
         };
-        if let Some(frame) = frame {
-            match tier1 {
-                Some(pose) => {
-                    frame.set("batch", pose);
-                    self.road_tool_session.batch_ghost = true;
-                }
-                None => self.road_tool_clear_batch_ghost(frame),
-            }
-        }
         let bridge = &mut self.road_tool_session;
         outcome.pose = bridge.pose;
         preview.set("pose", outcome.pose);
@@ -639,9 +665,9 @@ impl SimulationNode {
         key.generation = outcome.surface_generation;
         bridge.preview = Some(StandingPreview {
             outcome,
-            dictionary: preview.clone(),
+            dictionary: preview,
         });
-        preview
+        tier1
     }
 
     // `preview_stroke` of one stroke (the session's, else the graded draft's single stroke of
@@ -749,8 +775,9 @@ impl SimulationNode {
     // A resting frame of a running batch: one tier-2 step on the pose's requests. On the frame
     // tier 2 accepts the batch (its overlay whole) the exact preview, keyed as `preview_road`'s,
     // replaces the standing pending one and the ghost goes; on a refusal the refusal does. The
-    // pose's cost, length, generation and number stay. `None` while it runs.
-    fn road_tool_step_batch(&mut self, frame: &mut VarDictionary) -> Option<VarDictionary> {
+    // pose's cost, length, generation and number stay. `None` while it runs, else the tick's
+    // ghost-cleared flag (0 when no ghost goes).
+    fn road_tool_step_batch(&mut self) -> Option<i64> {
         let requests = std::mem::take(&mut self.road_tool_session.batch_requests);
         let mut preview = VarDictionary::new();
         let step = self.preview_road_batch_tier2(&requests, &mut preview);
@@ -786,19 +813,24 @@ impl SimulationNode {
             "draft_stroke",
             step.stroke.map_or(-1, |stroke| stroke as i64),
         );
-        if accepted {
-            self.road_tool_clear_batch_ghost(frame);
-        }
+        let cleared = if accepted {
+            self.road_tool_clear_batch_ghost()
+        } else {
+            0
+        };
         self.road_tool_session.preview = Some(StandingPreview {
             outcome,
-            dictionary: preview.clone(),
+            dictionary: preview,
         });
-        Some(preview)
+        Some(cleared)
     }
 
-    fn road_tool_clear_batch_ghost(&mut self, frame: &mut VarDictionary) {
+    // The tick's ghost-cleared flag when a ghost is drawn, which goes.
+    fn road_tool_clear_batch_ghost(&mut self) -> i64 {
         if std::mem::take(&mut self.road_tool_session.batch_ghost) {
-            frame.set("batch_cleared", true);
+            tick::TICK_BATCH_CLEARED
+        } else {
+            0
         }
     }
 }
@@ -811,7 +843,7 @@ enum Pose {
     Batch,
 }
 
-// The frame's heights (`road_tool_frame`'s round I keys).
+// The frame's heights (`road_tool_snapshot`'s round I keys).
 fn set_heights(dict: &mut VarDictionary, frame: &RoadToolFrame) {
     dict.set(
         "grade",
@@ -892,15 +924,6 @@ fn set_gizmos(dict: &mut VarDictionary, gizmos: &Gizmos) {
         GizmoLineClass::GuideNear => 8,
         GizmoLineClass::CornerArc => 9,
     };
-    let handle_kind = |kind: &GizmoHandleKind| match kind {
-        GizmoHandleKind::Endpoint => 0,
-        GizmoHandleKind::Control => 1,
-        GizmoHandleKind::ChainStart => 2,
-        GizmoHandleKind::Cursor => 3,
-        GizmoHandleKind::Joint => 4,
-        // A height grip draws as a handle, in round V's look (rounds I, V2).
-        GizmoHandleKind::Handle | GizmoHandleKind::HeightGrip => 5,
-    };
     dict.set(
         "gizmo_line_points",
         PackedVector3Array::from(gizmos.line_points.as_slice()),
@@ -933,7 +956,7 @@ fn set_gizmos(dict: &mut VarDictionary, gizmos: &Gizmos) {
         gizmos
             .handle_kinds
             .iter()
-            .map(handle_kind)
+            .map(|&kind| handle_kind_code(kind))
             .collect::<PackedInt32Array>(),
     );
     // One point surface for every handle (round V2): each point's kind as its UV, the
@@ -943,7 +966,7 @@ fn set_gizmos(dict: &mut VarDictionary, gizmos: &Gizmos) {
         gizmos
             .handle_kinds
             .iter()
-            .flat_map(|kind| [handle_kind(kind) as f32, 0.0])
+            .flat_map(|&kind| [handle_kind_code(kind) as f32, 0.0])
             .collect::<PackedFloat32Array>(),
     );
 }
@@ -1026,64 +1049,110 @@ fn line_quads(gizmos: &Gizmos) -> LineQuads {
     })
 }
 
+// A handle kind's code: the handle surface's UV (`road_tool_handle.gdshader`'s palette index).
+fn handle_kind_code(kind: GizmoHandleKind) -> i32 {
+    match kind {
+        GizmoHandleKind::Endpoint => 0,
+        GizmoHandleKind::Control => 1,
+        GizmoHandleKind::ChainStart => 2,
+        GizmoHandleKind::Cursor => 3,
+        GizmoHandleKind::Joint => 4,
+        // A height grip draws as a handle, in round V's look (rounds I, V2).
+        GizmoHandleKind::Handle | GizmoHandleKind::HeightGrip => 5,
+    }
+}
+
 // Strips (`points` back to back, `starts` each strip's first point) as quads, each strip in the
-// look `style_of` its index; the batch ghost's edges use it too. `O(points)`.
+// look `style_of` its index, as packed arrays (snapshots, the hue's outlines, the batch ghost's
+// edges). `O(points)`.
 pub(super) fn strip_quads(
     points: &[Vector3],
     starts: &[u32],
     style_of: impl Fn(usize) -> LineStyle,
 ) -> LineQuads {
-    let strip = |index: usize| {
-        let start = starts[index] as usize;
-        let end = starts
-            .get(index + 1)
-            .map_or(points.len(), |&end| end as usize);
-        &points[start..end]
-    };
-    let segments: usize = (0..starts.len())
-        .map(|index| strip(index).len().saturating_sub(1))
-        .sum();
-    // Without strips no quads (the surface is left out).
-    let capacity = if segments == 0 {
+    let mut buffers = LineQuadBuffers::default();
+    buffers.fill(points, starts, style_of);
+    LineQuads {
+        vertices: PackedVector3Array::from(buffers.vertices.as_slice()),
+        attributes: PackedFloat32Array::from(buffers.attributes.as_slice()),
+    }
+}
+
+// The quads' segment count before padding.
+fn strip_segments(points: &[Vector3], starts: &[u32]) -> usize {
+    (0..starts.len())
+        .map(|index| strip(points, starts, index).len().saturating_sub(1))
+        .sum()
+}
+
+// The padded quad count of strips (`LineQuads`): none without segments.
+fn strip_quad_count(points: &[Vector3], starts: &[u32]) -> usize {
+    let segments = strip_segments(points, starts);
+    if segments == 0 {
         0
     } else {
         segments.max(LINE_QUADS_MIN).next_power_of_two()
-    };
-    let mut quads = LineQuads::default();
-    quads.vertices.resize(capacity * 4);
-    quads.attributes.resize(capacity * 4 * LINE_ATTRIBUTES);
-    let (vertices, attributes) = (
-        quads.vertices.as_mut_slice(),
-        quads.attributes.as_mut_slice(),
-    );
-    let mut quad = 0;
-    for index in 0..starts.len() {
-        let style = style_of(index) as u8 as f32;
-        let mut dash = 0.0;
-        for pair in strip(index).windows(2) {
-            let (a, b) = (pair[0], pair[1]);
-            let length = a.distance_to(b);
-            // Each end twice, one vertex per side; the side's sign is taken from the start's
-            // view, so it flips at the far end (whose other end points back).
-            for (corner, (point, other, side, at)) in [
-                (a, b, 1.0, dash),
-                (a, b, -1.0, dash),
-                (b, a, -1.0, dash + length),
-                (b, a, 1.0, dash + length),
-            ]
-            .into_iter()
-            .enumerate()
-            {
-                let vertex = quad * 4 + corner;
-                vertices[vertex] = point;
-                attributes[vertex * LINE_ATTRIBUTES..(vertex + 1) * LINE_ATTRIBUTES]
-                    .copy_from_slice(&[other.x, other.y, other.z, side * (at + 1.0), style]);
+    }
+}
+
+// Strip `index`'s points.
+fn strip<'a>(points: &'a [Vector3], starts: &[u32], index: usize) -> &'a [Vector3] {
+    let start = starts[index] as usize;
+    let end = starts
+        .get(index + 1)
+        .map_or(points.len(), |&end| end as usize);
+    &points[start..end]
+}
+
+// `LineQuads` in reused buffers (the tick's gizmo bytes, round R2-2).
+#[derive(Default)]
+pub(super) struct LineQuadBuffers {
+    pub(super) vertices: Vec<Vector3>,
+    pub(super) attributes: Vec<f32>,
+}
+
+impl LineQuadBuffers {
+    // The strips' quads into the buffers (see `LineQuads`). `O(points)`; allocates nothing once
+    // the buffers have grown.
+    pub(super) fn fill(
+        &mut self,
+        points: &[Vector3],
+        starts: &[u32],
+        style_of: impl Fn(usize) -> LineStyle,
+    ) {
+        let capacity = strip_quad_count(points, starts);
+        self.vertices.clear();
+        self.vertices.resize(capacity * 4, Vector3::ZERO);
+        self.attributes.clear();
+        self.attributes.resize(capacity * 4 * LINE_ATTRIBUTES, 0.0);
+        let mut quad = 0;
+        for index in 0..starts.len() {
+            let style = style_of(index) as u8 as f32;
+            let mut dash = 0.0;
+            for pair in strip(points, starts, index).windows(2) {
+                let (a, b) = (pair[0], pair[1]);
+                let length = a.distance_to(b);
+                // Each end twice, one vertex per side; the side's sign is taken from the start's
+                // view, so it flips at the far end (whose other end points back).
+                for (corner, (point, other, side, at)) in [
+                    (a, b, 1.0, dash),
+                    (a, b, -1.0, dash),
+                    (b, a, -1.0, dash + length),
+                    (b, a, 1.0, dash + length),
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    let vertex = quad * 4 + corner;
+                    self.vertices[vertex] = point;
+                    self.attributes[vertex * LINE_ATTRIBUTES..(vertex + 1) * LINE_ATTRIBUTES]
+                        .copy_from_slice(&[other.x, other.y, other.z, side * (at + 1.0), style]);
+                }
+                dash += length;
+                quad += 1;
             }
-            dash += length;
-            quad += 1;
         }
     }
-    quads
 }
 
 fn mode_code(mode: DrawMode) -> i64 {

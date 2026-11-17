@@ -292,7 +292,7 @@ func _commit_previewed(tool: Node3D, points: PackedVector3Array, preview: Dictio
 	tool.set_scripted_pointer(true, _ground_point(48.0, 40.0))
 	tool._process(1.0 / 60.0)
 	# A next stroke the tool refuses (one crossing the cross's arm by its end) shows nothing.
-	var next_shows: bool = tool.is_valid and bool(tool._preview.get("has_road_chunks", false))
+	var next_shows: bool = bool(tool._preview.get("is_valid", false)) and bool(tool._preview.get("has_road_chunks", false))
 	if next_shows:
 		_expect(tool._preview_display.sequence == 0 and not tool._preview_display._pending.is_empty(), "the next stroke waits for the chunks its runs index")
 	generation = simulation.get_network_render_generation()

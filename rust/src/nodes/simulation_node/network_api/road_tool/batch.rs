@@ -36,7 +36,7 @@ impl SimulationNode {
     /// stroke's exact build cost and prepared length), `build_cost` and `length_m` (their sums),
     /// `ghost` (a triangle list: every stroke's ribbon at its road's width) with `ghost_starts`
     /// (each stroke's first vertex), the ribbons' edges as `road_tool_line.gdshader` quads
-    /// (round V2; as `road_tool_frame`'s `gizmo_line_*`, looks 5 accepted and 6 refused)
+    /// (round V2; as `road_tool_snapshot`'s `gizmo_line_*`, looks 5 accepted and 6 refused)
     /// `ghost_line_vertices` and `ghost_line_attributes`,
     /// `tier1_ms`; and `tier2_done` (strokes tier 2 finished),
     /// `tier2_state` (`running`, `accepted` or `refused`), `tier2_reason` and `tier2_stroke` (a

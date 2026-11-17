@@ -599,7 +599,12 @@ impl SimulationNode {
     /// as `preview_road` returns them. Takes the context lock only.
     #[func]
     pub fn advance_road_preview_terrain(&self) -> VarDictionary {
-        let mut dict = VarDictionary::new();
+        self.road_preview_terrain_step().unwrap_or_default()
+    }
+
+    // `advance_road_preview_terrain`'s step, `None` (no allocation) once the shown tiles are the
+    // pose's: the road tool's tick stages through it (round R2-2).
+    pub(super) fn road_preview_terrain_step(&self) -> Option<VarDictionary> {
         let mut tiles = Vec::new();
         let mut removed = Vec::new();
         let (pose, epoch, cell_m) = {
@@ -615,14 +620,14 @@ impl SimulationNode {
             let cell_m = f64::from(context.view.terrain.cell_size_m());
             (pose, context.graded.epoch(), cell_m)
         };
-        if let Some(pose) = pose {
-            dict.set("graded_ms", pose.frame_ms);
-            dict.set("graded_adopted", pose.stats.adopted as i64);
-            dict.set("graded_baked", pose.stats.baked as i64);
-            dict.set("graded_pending", pose.pending as i64);
-            Self::set_graded_preview_changes(&mut dict, &tiles, &removed, epoch, cell_m);
-        }
-        dict
+        let pose = pose?;
+        let mut dict = VarDictionary::new();
+        dict.set("graded_ms", pose.frame_ms);
+        dict.set("graded_adopted", pose.stats.adopted as i64);
+        dict.set("graded_baked", pose.stats.baked as i64);
+        dict.set("graded_pending", pose.pending as i64);
+        Self::set_graded_preview_changes(&mut dict, &tiles, &removed, epoch, cell_m);
+        Some(dict)
     }
 
     /// The graded terrain renderer's view (`TERRAIN-07-E`, T42): `camera` (XZ, with its height

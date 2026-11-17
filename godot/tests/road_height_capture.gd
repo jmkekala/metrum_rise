@@ -323,10 +323,10 @@ func _drag_start(start: Vector3, rise_m: float) -> void:
 	var grip := start + Vector3(0.0, STEM_M, 0.0)
 	_tool.set_scripted_pointer(true, grip)
 	await _frames(1)
-	_simulation.road_tool_event("press")
+	_simulation.road_tool_press(0)
 	_tool.set_scripted_pointer(true, grip + Vector3(0.0, rise_m, 0.0))
 	await _frames(1)
-	_simulation.road_tool_event("release")
+	_simulation.road_tool_release()
 	_tool.set_scripted_pointer(true, live)
 	await _frames(1)
 

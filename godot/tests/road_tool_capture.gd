@@ -121,29 +121,22 @@ func _run() -> void:
 	_tool._commit_segment(Vector3(20.0, 0.0, 60.0))
 	_tool.set_scripted_pointer(true, Vector3(40.0, 0.0, 10.0))
 	await _capture("curve_mid_draw")
-	# The gizmo upload while the curve's end is dragged (every frame a new pose).
-	_tool.gizmo_upload_ms = PackedFloat32Array()
-	for key in _tool.gizmo_part_ms:
-		_tool.gizmo_part_ms[key] = PackedFloat32Array()
-	for index in 120:
-		var turn := float(index) / 120.0 * TAU
-		_tool.set_scripted_pointer(true, Vector3(40.0 + 12.0 * cos(turn), 0.0, 10.0 + 12.0 * sin(turn)))
-		await process_frame
-	_upload_order = _tool.gizmo_upload_ms.duplicate()
-	_last_parts = _parts()
+	# The gizmo work while the curve's end is dragged (every frame a new pose), from the tool's
+	# tick ring (round R2-2).
+	_upload_order = PackedFloat32Array(await _drag_record(Vector3(40.0, 0.0, 10.0), func(at: Vector3): _tool.set_scripted_pointer(true, at)))
 	# The drag rewrote the vertex buffers in place: the server's copy is this frame's draft.
 	var gizmo_mesh: ArrayMesh = _tool.gizmos.mesh
 	var drawn: Array = RenderingServer.mesh_surface_get_arrays(gizmo_mesh.get_rid(), 0)
-	var expected: PackedVector3Array = _simulation.road_tool_frame()["gizmo_line_vertices"]
+	var expected: PackedVector3Array = _simulation.road_tool_snapshot()["gizmo_line_vertices"]
 	_expect(not drawn.is_empty() and PackedVector3Array(drawn[Mesh.ARRAY_VERTEX]) == expected, "the in-place gizmo upload leaves the lines' quads on the server")
 	# The interleaved attributes went into the attribute buffer as UV, UV2 and the look (rounds V,
 	# V2: five floats a vertex).
-	var attributes: PackedFloat32Array = _simulation.road_tool_frame()["gizmo_line_attributes"]
+	var attributes: PackedFloat32Array = _simulation.road_tool_snapshot()["gizmo_line_attributes"]
 	var uv: PackedVector2Array = drawn[Mesh.ARRAY_TEX_UV]
 	var uv2: PackedVector2Array = drawn[Mesh.ARRAY_TEX_UV2]
 	var looks: PackedFloat32Array = drawn[Mesh.ARRAY_CUSTOM0]
 	_expect(uv.size() * 5 == attributes.size() and uv[1] == Vector2(attributes[5], attributes[6]) and uv2[1] == Vector2(attributes[7], attributes[8]) and looks[1] == attributes[9], "the lines' attributes are their other ends, sides and looks on the server")
-	var uploads: Array = Array(_tool.gizmo_upload_ms)
+	var uploads: Array = Array(_upload_order)
 	uploads.sort()
 	_tool.set_scripted_pointer(true, Vector3(40.0, 0.0, 10.0))
 	await _frames(3)
@@ -159,7 +152,7 @@ func _run() -> void:
 	# Started by a camera ray on the base road's dead end, so the session reads its direction.
 	_tool.set_scripted_pointer(false)
 	_simulation.road_tool_pointer(Vector3(-60.0, 100.0, 40.0), Vector3.DOWN, false)
-	_tool._read_press(_simulation.road_tool_event("press"))
+	_simulation.road_tool_press(0)
 	_tool.set_scripted_pointer(true, Vector3(-20.0, 0.0, 0.0))
 	await _capture("continuous_from_dead_end")
 	_expect(_tool._commit_segment(Vector3(-20.0, 0.0, 0.0)), "the continuous stroke commits")
@@ -186,10 +179,10 @@ func _run() -> void:
 		"engine": Engine.get_version_info(),
 		"adapter": RenderingServer.get_video_adapter_name(),
 		"gizmo_uploads": uploads.size(),
-		"gizmo_upload_ms_p50": p50,
-		"gizmo_upload_ms_p95": p95,
-		"gizmo_upload_ms_max": uploads[-1] if not uploads.is_empty() else -1.0,
-		"gizmo_upload_ms_in_order": Array(_upload_order),
+		"gizmo_ms_p50": p50,
+		"gizmo_ms_p95": p95,
+		"gizmo_ms_max": uploads[-1] if not uploads.is_empty() else -1.0,
+		"gizmo_ms_in_order": Array(_upload_order),
 		"parts": _last_parts,
 		"failures": _failures,
 	}
@@ -223,15 +216,15 @@ func _capture_snapping() -> void:
 	_tool.set_process(false)
 	_tool.set_scripted_pointer(false)
 	_ray(Vector3(280.0, 0.0, 50.0))
-	_tool._read_press(_simulation.road_tool_event("press"))
+	_simulation.road_tool_press(0)
 	_ray(Vector3(310.0, 0.0, 0.8))
-	_expect(String(_simulation.road_tool_frame()["snap"]) == "guide", "the dead end's extension takes the cursor")
+	_expect(String(_simulation.road_tool_snapshot()["snap"]) == "guide", "the dead end's extension takes the cursor")
 	_ray(Vector3(310.0, 0.0, 0.8))
 	await _capture("snapping_guide_line")
 	ui.angle_step_option.select(1)
 	ui.angle_step_option.item_selected.emit(1)
 	_ray(Vector3(340.0, 0.0, 35.0))
-	_expect(String(_simulation.road_tool_frame()["snap"]) == "angle", "the 15 degree lock takes the cursor")
+	_expect(String(_simulation.road_tool_snapshot()["snap"]) == "angle", "the 15 degree lock takes the cursor")
 	_ray(Vector3(340.0, 0.0, 35.0))
 	await _capture("snapping_angle_lock")
 	ui.angle_step_option.select(0)
@@ -241,7 +234,7 @@ func _capture_snapping() -> void:
 	# 0.9 m off the axis; the 32 degree pose before was outside the capture and only labelled grid).
 	_tool.set_option("zoning_grid", true)
 	_ray(Vector3(243.0, 0.0, 50.9))
-	var grid_snap := String(_simulation.road_tool_frame()["snap"])
+	var grid_snap := String(_simulation.road_tool_snapshot()["snap"])
 	_expect(grid_snap in ["grid", "angle_grid"], "the zoning grid takes the cursor (%s)" % grid_snap)
 	_ray(Vector3(243.0, 0.0, 50.9))
 	await _capture("snapping_grid_curbs")
@@ -249,12 +242,12 @@ func _capture_snapping() -> void:
 	# grid's position along it; a branch drawn from there shows its curbs on the cell lines.
 	_tool.cancel_road()
 	_ray(Vector3(231.3, 0.0, 0.9))
-	var on_road := String(_simulation.road_tool_frame()["snap"])
+	var on_road := String(_simulation.road_tool_snapshot()["snap"])
 	_expect(on_road == "grid_edge", "the grid holds the cursor on the road (%s)" % on_road)
-	_tool._read_press(_simulation.road_tool_event("press"))
-	var road_start: Vector3 = _simulation.road_tool_frame()["cursor"]
+	_simulation.road_tool_press(0)
+	var road_start: Vector3 = _simulation.road_tool_snapshot()["cursor"]
 	_ray(Vector3(232.1, 0.0, 41.0))
-	var branch := String(_simulation.road_tool_frame()["snap"])
+	var branch := String(_simulation.road_tool_snapshot()["snap"])
 	_expect(branch == "grid", "the grid takes the branch's end (%s)" % branch)
 	_ray(Vector3(232.1, 0.0, 41.0))
 	await _capture("snapping_grid_on_road")
@@ -262,7 +255,7 @@ func _capture_snapping() -> void:
 	# before, the end still takes whole cells, curbs on the cell lines.
 	var near := Vector3(road_start.x + 0.9, 0.0, 19.3)
 	_ray(near)
-	branch = String(_simulation.road_tool_frame()["snap"])
+	branch = String(_simulation.road_tool_snapshot()["snap"])
 	_expect(branch == "grid", "the grid takes a near end from a road start (%s)" % branch)
 	_ray(near)
 	await _capture("snapping_grid_from_road")
@@ -294,30 +287,30 @@ func _capture_ui1() -> void:
 	_tool.set_process(false)
 	_tool.set_scripted_pointer(false)
 	_ray(Vector3(230.0, 0.0, 0.5))
-	_tool._read_press(_simulation.road_tool_event("press"))
-	var start: Vector3 = _simulation.road_tool_frame()["cursor"]
+	_simulation.road_tool_press(0)
+	var start: Vector3 = _simulation.road_tool_snapshot()["cursor"]
 	var near_square := Vector3(230.0 + 50.0 * sin(deg_to_rad(6.0)), 0.0, 50.0 * cos(deg_to_rad(6.0)))
 	_ray(near_square)
-	var frame: Dictionary = _simulation.road_tool_frame()
+	var frame: Dictionary = _simulation.road_tool_snapshot()
 	_expect(String(frame["snap"]) == "guide" and absf(frame["cursor"].x - start.x) < 0.01, "the square lock holds a branch 6 degrees off (%s)" % frame["snap"])
 	_ray(near_square)
 	await _capture("ui1_square_lock")
 	# 60 degrees off the road, 30 off square: free.
 	_ray(Vector3(255.0, 0.0, 43.3))
-	_expect(String(_simulation.road_tool_frame()["snap"]) == "free", "an oblique branch is free")
+	_expect(String(_simulation.road_tool_snapshot()["snap"]) == "free", "an oblique branch is free")
 	_ray(Vector3(255.0, 0.0, 43.3))
 	await _capture("ui1_corner_arc_oblique")
 	_tool.cancel_road()
 	_camera.position = Vector3(290.0, 110.0, 110.0)
 	_camera.look_at(Vector3(290.0, 0.0, 25.0))
 	_ray(Vector3(280.0, 0.0, 50.0))
-	_tool._read_press(_simulation.road_tool_event("press"))
+	_simulation.road_tool_press(0)
 	_ray(Vector3(310.0, 0.0, 8.0))
-	_expect(String(_simulation.road_tool_frame()["snap"]) == "free", "8 m off the dead end's extension the cursor is free")
+	_expect(String(_simulation.road_tool_snapshot()["snap"]) == "free", "8 m off the dead end's extension the cursor is free")
 	_ray(Vector3(310.0, 0.0, 8.0))
 	await _capture("ui1_guide_faint")
 	_ray(Vector3(310.0, 0.0, 3.0))
-	_expect(String(_simulation.road_tool_frame()["snap"]) == "guide", "3 m off the dead end's extension the guide takes the cursor")
+	_expect(String(_simulation.road_tool_snapshot()["snap"]) == "guide", "3 m off the dead end's extension the guide takes the cursor")
 	_ray(Vector3(310.0, 0.0, 3.0))
 	await _capture("ui1_guide_captured")
 	_tool.cancel_road()
@@ -355,7 +348,7 @@ func _capture_continuous_chains() -> void:
 	await _frames(3)
 	_expect(_tool._commit_segment(Vector3(-30.0, 0.0, 20.0)), "the first S-curve is sent")
 	await _ack()
-	_expect(int(_simulation.road_tool_frame()["placed"]) == 2, "the chained S-curve has its start direction")
+	_expect(int(_simulation.road_tool_snapshot()["placed"]) == 2, "the chained S-curve has its start direction")
 	_tool._commit_segment(Vector3(0.0, 0.0, 40.0))
 	_tool.set_scripted_pointer(true, Vector3(25.0, 0.0, 40.0))
 	await _capture("chained_scurve_pair")
@@ -367,18 +360,18 @@ func _capture_continuous_chains() -> void:
 	_tool._begin_stroke(Vector3(-90.0, 0.0, -30.0))
 	for node in [Vector3(-60.0, 0.0, -10.0), Vector3(-30.0, 0.0, -30.0)]:
 		_tool._commit_segment(node)
-	_tool._session_press("confirm")
+	_tool._session_press(true)
 	await _frames(3)
-	_tool._session_press("confirm")
+	_tool._session_press(true)
 	_expect(_tool._commit_request_id > 0, "the first freeform draft is sent")
 	await _ack()
 	for node in [Vector3(0.0, 0.0, -40.0), Vector3(30.0, 0.0, -20.0)]:
 		_tool._commit_segment(node)
-	_tool._session_press("confirm")
+	_tool._session_press(true)
 	await _frames(3)
-	_expect(int(_simulation.road_tool_frame()["phase"]) == 3, "the chained draft is in its edit phase")
+	_expect(int(_simulation.road_tool_snapshot()["phase"]) == 3, "the chained draft is in its edit phase")
 	await _capture("chained_freeform_pair")
-	_tool._session_press("confirm")
+	_tool._session_press(true)
 	await _ack()
 	_tool.cancel_road()
 	_tool.set_option("continuous", false)
@@ -392,11 +385,11 @@ func _capture_scurve_freeform() -> void:
 	_tool._begin_stroke(Vector3(-70.0, 0.0, 60.0))
 	_tool._commit_segment(Vector3(-40.0, 0.0, 60.0))
 	_tool._commit_segment(Vector3(30.0, 0.0, 10.0))
-	# The process's first gizmo upload (new surfaces and materials) apart from the drag's.
-	_tool.gizmo_upload_ms = PackedFloat32Array()
+	# The process's first gizmo work (new surfaces and materials) apart from the drag's.
+	_simulation.road_tool_timings(true)
 	_tool.set_scripted_pointer(true, Vector3(72.0, 0.0, 10.0))
 	await _frames(3)
-	var first_upload := Array(_tool.gizmo_upload_ms)
+	var first_upload := _ring_part("gizmos_ms", 16)
 	uploads["scurve"] = await _drag_record(Vector3(60.0, 0.0, 10.0), func(at: Vector3): _tool.set_scripted_pointer(true, at))
 	var parts := {"scurve": _last_parts}
 	_tool.set_scripted_pointer(true, Vector3(60.0, 0.0, 10.0))
@@ -409,14 +402,16 @@ func _capture_scurve_freeform() -> void:
 	_tool.set_scripted_pointer(true, Vector3(60.0, 0.0, 30.0))
 	await _frames(3)
 	_tool._commit_segment(Vector3(60.0, 0.0, 30.0))
-	_tool._session_press("confirm")
+	_tool._session_press(true)
 	await _frames(3)
-	_expect(int(_simulation.road_tool_frame()["phase"]) == 3, "the draft is in its edit phase")
+	_expect(int(_simulation.road_tool_snapshot()["phase"]) == 3, "the draft is in its edit phase")
 	# Node 1's outward handle (handles in frame order: node 0 out, node 1 in, node 1 out, ...).
 	var handles := PackedVector3Array()
-	for index in _tool.gizmos._handles.size():
-		if _tool.gizmos._handle_kinds[index] == 5:
-			handles.append(_tool.gizmos._handles[index])
+	var snapshot: Dictionary = _simulation.road_tool_snapshot()
+	var kinds: PackedInt32Array = snapshot["gizmo_handle_kinds"]
+	for index in kinds.size():
+		if kinds[index] == 5:
+			handles.append(PackedVector3Array(snapshot["gizmo_handles"])[index])
 	_tool.set_scripted_pointer(true, handles[2])
 	await _frames(2)
 	_tool._session_press()
@@ -425,9 +420,9 @@ func _capture_scurve_freeform() -> void:
 	parts["freeform_handle"] = _last_parts
 	_tool.set_scripted_pointer(true, grip)
 	await _frames(2)
-	_simulation.road_tool_event("release")
+	_simulation.road_tool_release()
 	await _capture("freeform_edit_phase")
-	_tool._session_press("confirm")
+	_tool._session_press(true)
 	_expect(_tool._commit_request_id > 0, "the freeform draft is sent")
 	await _ack()
 	_tool.cancel_road()
@@ -478,9 +473,9 @@ func _capture_restyle() -> void:
 	for type_id in ["builtin:road_2l", "builtin:road_4l", "builtin:walkway", "builtin:one_way_1l"]:
 		_tool.set_road_type(type_id)
 		_ray(Vector3(-43.0, 0.0, 103.0))
-		_tool._read_press(_simulation.road_tool_event("press"))
+		_simulation.road_tool_press(0)
 		_ray(Vector3(47.0, 0.0, 104.0))
-		var snap := String(_simulation.road_tool_frame()["snap"])
+		var snap := String(_simulation.road_tool_snapshot()["snap"])
 		_expect(snap == "grid", "%s: the grid takes the cursor (%s)" % [type_id, snap])
 		_ray(Vector3(47.0, 0.0, 104.0))
 		await _capture("grid_curbs_" + type_id.trim_prefix("builtin:"))
@@ -503,40 +498,50 @@ func _capture_batch_ghost() -> void:
 	var path := PackedVector3Array([Vector3(-200.0, 0.0, 10.0), Vector3(200.0, 0.0, 10.0)])
 	var pose: Dictionary = _simulation.preview_road_draft(path, 0.0, 0.0, 1, 1, true, false)
 	_expect(int(pose.get("stroke_count", 0)) >= 3 and PackedInt32Array(pose.get("profiles", PackedInt32Array())).has(2), "the draft segments with a bridge: %s" % [pose.get("profiles", [])])
-	if _tool.gizmos == null:
-		_tool._show_gizmos({})
-	_tool.gizmos.show_batch_ghost(pose)
+	_tool._gizmos().show_batch_ghost(pose)
 	await _capture("batch_ghost")
 	_tool.gizmos.clear_batch_ghost()
 
-# The recorded frames' parts (gizmo upload, chip wording, chip placement): p50, p95 and max each.
+# The recorded ticks' parts from the tool's tick ring (round R2-2): the gizmos' comparison and
+# bytes, the chips (their words, placement and the HUD's fetch) and the whole tick, p50, p95 and
+# max each, over the ticks whose gizmos changed.
 func _parts() -> Dictionary:
 	var parts := {}
-	for key in _tool.gizmo_part_ms:
-		var times := Array(_tool.gizmo_part_ms[key])
+	var ring: Dictionary = _simulation.road_tool_timings(false)
+	for key in ["gizmos_ms", "chips_ms", "total_ms"]:
+		var times := _ring_part(key, 16, ring)
 		times.sort()
 		parts[key] = [times[times.size() / 2], times[int(times.size() * 0.95)], times[-1]] if not times.is_empty() else []
 	return parts
 
+# The tick ring's `key` (ms) over the ticks with any of `flags` set, in order.
+func _ring_part(key: String, flags: int, ring: Dictionary = {}) -> Array:
+	if ring.is_empty():
+		ring = _simulation.road_tool_timings(false)
+	var times := []
+	var all_flags: PackedInt32Array = ring["flags"]
+	var values: PackedFloat64Array = ring[key]
+	for index in all_flags.size():
+		if all_flags[index] & flags:
+			times.append(values[index])
+	return times
+
 # Moves the pointer round a 12 m circle about `centre` for 120 frames through `move` and returns
-# the gizmo uploads those frames recorded (ms each).
+# the gizmo work those frames' ticks recorded (ms each, the ticks whose gizmos changed).
 func _drag_record(centre: Vector3, move: Callable) -> Array:
-	_tool.gizmo_upload_ms = PackedFloat32Array()
-	for key in _tool.gizmo_part_ms:
-		_tool.gizmo_part_ms[key] = PackedFloat32Array()
-	for key in _tool.gizmo_part_ms:
-		_tool.gizmo_part_ms[key] = PackedFloat32Array()
+	_simulation.road_tool_timings(true)
 	for index in 120:
 		var turn := float(index) / 120.0 * TAU
 		move.call(centre + Vector3(12.0 * cos(turn), 0.0, 12.0 * sin(turn)))
 		await process_frame
 	_last_parts = _parts()
-	return Array(_tool.gizmo_upload_ms)
+	return _ring_part("gizmos_ms", 16)
 
-# The session's cursor for a vertical camera ray onto `at`, then one frame of the tool's drawing.
+# The session's cursor for a vertical camera ray onto `at`, then one tick of the tool's drawing
+# without a pointer of its own.
 func _ray(at: Vector3) -> void:
 	_simulation.road_tool_pointer(Vector3(at.x, 200.0, at.z), Vector3.DOWN, false)
-	_tool._place_labels(_tool._session_frame(true))
+	_tool._draw_tick(_simulation.road_tool_tick(null, Vector2.ZERO, false, false))
 
 func _frames(count: int) -> void:
 	for frame in count:
