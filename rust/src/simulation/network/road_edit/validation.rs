@@ -1505,11 +1505,13 @@ fn process_validation_graph_intersections(
             .extend([dissolve.into, dissolve.from, dissolve.dropped]);
         surface_dirty_nodes.insert(dissolve.junction);
     }
-    // A merged node lays out as its survivor.
-    let surface_dirty_nodes: HashSet<u32> = surface_dirty_nodes
-        .into_iter()
-        .map(|node| validation_graph.get_valid_node(node))
-        .collect();
+    // A dissolved joint lays out as its junction.
+    if !dissolves.is_empty() {
+        surface_dirty_nodes = surface_dirty_nodes
+            .into_iter()
+            .map(|node| validation_graph.get_valid_node(node))
+            .collect();
+    }
     network.mark_surface_dirty_for_nodes(validation_graph, &surface_dirty_nodes);
 
     let finalized = network.finalize_road_geometry(validation_graph, Some(terrain));
