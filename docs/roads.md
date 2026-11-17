@@ -13624,6 +13624,162 @@ own):
   2,827 passed / 0 failed / 233 ignored, `./run.sh --test` PASS (2,831 Rust tests, 234 skipped;
   both Godot chains, 0 SCRIPT ERROR).
 
+### Gizmos, hue and ghost drawn by Rust (round R2-3)
+
+Round R2-3 of `ROAD-112` R2 (branch `roadtools-r23` on `dev` `91b16533`, round R2-2 landed;
+finding F10, F8's upload part, and the held hue of F5). **Before:** the tick built the gizmos'
+upload bytes and the script fetched them (`road_tool_gizmo_layout`, `road_tool_gizmo_bytes`,
+`road_tool_gizmo_focus`) into its own `ArrayMesh` (`road_tool_gizmos.gd`: placeholders of a new
+layout, then four region writes, each a packed array copied again by GDScript); the hue had its
+own node (`road_tool_hue.gd`) fetching `road_tool_hue_join`, `_fill` and `_outline` (the
+outline's quads built anew a draw); a batch pose handed the script tier 1's dictionary, which
+split the ribbon by verdict with `slice` and `append_array` (F10) and rebuilt the ghost's mesh;
+an accepted commit moved the hue node to `_held_hue` and a new node took the next hue.
+
+- **The draw module** (`nodes/sim/road_tool/draw.rs`, `draw/`): `ToolDraw` over a small
+  backend trait (`draw/backend.rs`: create a mesh and an instance, add a surface from finished
+  bytes, write a vertex or attribute region in place, set a surface's material, show or hide,
+  the line material's dash focus, free), the `RenderingServer` backend (`draw/engine.rs`, one
+  kept upload array) and a recorder for tests (`draw/recorder.rs`), the pattern of the streaming
+  core's backend. One mesh and one instance each for the gizmos, the ghost and two hues (the
+  current one and a commit's held one), made once at `road_tool_attach_draw(scenario, line,
+  depth_line, handle, hue[3], ghost_fills[2])` and freed at `road_tool_detach_draw` or when the
+  drawing drops (the recorder counts creates against frees). Each overlay keeps its surfaces'
+  layout (vertex counts): the same layout writes the kept buffers in place, a new one rebuilds
+  the surfaces from bytes with `mesh_add_surface` (no array conversion); a draw allocates
+  nothing once the buffers have grown, unless the layout changed. The surfaces are the layout
+  `add_surface_from_arrays` stored before (lines: indexed quads, positions, then UV, UV2 and
+  `CUSTOM0` as one float; handles: points with the kind as UV; fills: positions alone);
+  `road_tool_capture.gd` reads the server's copy back against the engine's own surface for the
+  same arrays (format, buffers, indices). The line encoders (`LineStyle`, `LineQuadBuffers`)
+  moved from the bridge into `draw/lines.rs`.
+- **The tick draws** the gizmos when they changed (`TickState::compare_drawn`, `O(gizmo
+  points)`) and the batch ghost on a new batch pose (tier 1 fills a typed `Ghost`, reused pose to
+  pose; the draw splits the ribbon by verdict, F10; `preview_road_draft` encodes its dictionary
+  keys from the same `Ghost`, and the tick's tier 1 builds no dictionary). The hue keeps round
+  HF2's pairing: on the hue flag the script shows its preview, then `road_tool_draw_hue()` joins
+  the build and draws it (the frame's one wait, off the tick). An accepted commit's answer holds
+  the current hue in Rust (`hold_hue`: it becomes the held overlay, the next draw starts the
+  other); `road_tool.gd` releases it where it releases the commit's preview
+  (`road_tool_release_held_hue`, a forward until R2-4b moves that display into Rust).
+  `road_tool_forget_drawn` hides what it names. `road_tool_drawn()` reports the overlays'
+  meshes, visibility and surfaces (tests); `road_tool_draw_batch_ghost(show)` draws the last
+  tier 1's ghost (the batch preview test and the captures). `road_tool_hue()` stays the tests'
+  snapshot.
+- **GDScript:** `road_tool_gizmos.gd` is the palette and the materials, made once and attached
+  on entering the tree (a `Node3D` that draws nothing); `road_tool_hue.gd` is gone; `road_tool.gd`
+  makes the setup before its first tick and calls `road_tool_draw_hue()` on the hue flag.
+- **The ring:** `gizmos_ms` now holds the gizmos' comparison, bytes and upload; new columns
+  `hue_draw_ms` (the hue's bytes and upload, after the tick) and `ghost_ms`.
+
+**Fresh, 2026-11-17 13:27-15:27** (base `dev` `91b16533`: release library `6b38c7f7635d45cf`,
+release lib test binary `9072d0a776fd651d`, session bench binary `ff57d0d21e172d0e`, built in the
+base worktree's own cargo target directory; branch `roadtools-r23` `0bf9dc9b`: release library
+`7baeecb57f500b3a`, release lib test binary `1a837de09086bfb1`, session bench binary
+`cd3188a787be7cb7`, built in the branch worktree's own directory; every hash differs from the
+base's. An earlier branch build `9fdace87` (library `ed10110a0bca27bf`) read 3.00 allocations a
+pose tick outside the preview in the whole-tick probe: one upload array resized between buffer
+lengths, and a rebuild's dictionary keys and arrays made anew; the backend now keeps its upload
+arrays by length and one surface dictionary per kind with its keys made once; every branch
+number below is `0bf9dc9b`'s):
+
+- **Tests:** Rust `draw::tests` (recorder: the same layout writes in place and only in place, the
+  server's copy being the encoders' bytes and 16-bit quad indices; a layout change rebuilds; a
+  clear hides and a later draw rebuilds; the hue changes state in place and holds with a commit;
+  the ghost splits by verdict; the drop frees every object made) and
+  `tick::tests::unchanged_pointer_bumps_no_revision` (now with a recorder drawing: an unchanged
+  pose uploads nothing). Godot: `road_batch_preview_test` and `road_height_handles_test` read the
+  ghost's surfaces from Rust (`road_tool_drawn`); `road_tool_capture.gd` reads the gizmo mesh's
+  server copy back against the snapshot's quads and against the engine's own surface for the same
+  arrays (format, vertex, attribute and index data, both surfaces: 0 failures); the tool's tests
+  (`network_tool_chunk_renderer_test`, `road_tunnels_test`, `road_junction_preview_test`,
+  `road_preview_stream_test`, `road_rejection_report_test`, `road_preview_metrics_test`,
+  `zoning_road_tool_test`, `road_roundabouts_test`) pass.
+- **Stills** (gamescope headless 1920x1080; base with the base tree's scripts): the tool's default
+  (7), `scurve_freeform` (3) and `restyle` (7) sets pixel-identical; `road_height_capture.gd`'s
+  default (11) and `hue` (23) sets identical but for 5 and 9 stills that differ between two runs
+  of the base library too (the same stills, low and close views over the horizon's vegetation,
+  water and portals; a second base pass read the same differing set); `batch_ghost` differs as
+  intended: the base's still shows no ghost at all (its ghost was a child of the gizmos node,
+  which an earlier cancel had hidden), the branch's shows it (its own instance).
+- **The overlay a drag frame** (the ring's ticks whose gizmos changed, 120-frame drags, the
+  captures above, one run each, load 4-6, `overlay_ms` = gizmos + the hue's draw + the ghost's;
+  p50 / p95 / max ms): curve end 0.032 / 0.070 / 0.101 (gizmos 0.025, hue 0.050 at p95), S-curve
+  end 0.051 / 0.100 / 0.163 (gizmos 0.043, hue 0.058), freeform handle 0.036 / 0.073 / 0.076
+  (gizmos 0.024, hue 0.050): **p95 at most 0.10 ms in all three** (the S-curve by 0.0004 ms),
+  against round D's 0.13-0.20 ms for the GDScript part alone. The hue's upload is the larger part:
+  its fill is padded to 3,072-24,576 vertices (36-288 KB a pose, `road_height_capture.gd`'s
+  drafts), rewritten whole each pose because the padding collapses at the first vertex, which
+  moves. The first pass (`9fdace87`, load 4.7-7.6) read 0.096-0.22 ms p95.
+- **The whole-tick allocation probe** (round R2-2's, heaptrack `--record-only`, (capture(200) -
+  capture(20)) / 180): outside `RoadToolContext::preview_road` and its payload **0.00 a tick** in
+  every mode (still, hover, pose; the pose's preview 747.16 a tick); the script's calls after the
+  tick (`road_tool_draw_hue`) 0.00. The process-wide count of a still tick read 190 and then 276
+  in two passes of this session, the difference in the engine and other nodes' frames (Rust
+  `rust_other` 155 in both).
+- **No allocation per pointer move at 30k** (`METRUM_ROAD_TOOL_ALLOC_PROBE`, the session bench):
+  n = 0 2,403,789 / 2,403,780, n = 20 2,403,876, n = 200 2,403,882 calls.
+- **Products bitwise** (base library and scripts against the branch's): Kuopio's 78 commits EQUAL
+  in every field, the gameplay fixtures 17 of 17 EQUAL; the Kuopio drag probe PASS on both sides.
+- **Level R** (the session benchmark's 30k locality mode, pinned, run and exclusive locks, no
+  Godot, load 2.0-2.5; p50 / p99 us) C B B C at 14:48: straight 104.8 / 140.4, 102.7 / 137.9,
+  104.7 / 140.8, 101.9 / 135.8; curve 115.2 / 150.8, 113.2 / 147.6, 115.0 / 150.0, 112.8 / 148.7;
+  frame digests `32cb9b4b11dccf75` and `ca3e8f6d742b48b2` on every row. Level.
+- **Level F** (`./run.sh --timing --level F --k22`, the release lib test binaries above, 8 workers
+  on the P-cores, `$ARTIFACTS/timing`, 14:50-14:58, load 5-7 at its start, no cargo or Godot).
+  30k 32x C B B C: mean 4.208 / 4.245 / 4.255 / 4.238 ms (+0.6 %), p99 +0.3 %, p99.9 7.45 / 7.60 /
+  7.56 / 7.69 (+0.1 %), all level (round R2-2's +8 % p99.9 does not recur); the unpreempted
+  maximum 8.57 / 8.74 / 8.71 / 7.07 ms reads +11.6 % (tolerance 6.0 %: WORSE; three rows on both
+  sides are the known `PERF-17` exception and one control row was low); `mean_snapshot_ms`
+  1.196 / 1.243 (+3.9 %, tolerance 2.5 %: WORSE). 30k 1x day (fresh control): mean 2.050 / 2.076
+  (+1.2 %), p99, p99.9 and the unpreempted maximum level, the PERF-07 acceptance PASS on both;
+  `mean_snapshot_ms` 0.806 / 0.847 (+5.1 %, tolerance 3.5 %: WORSE). **K22 30k click-to-ack**
+  6.79 / 6.56 ms (commit 6.76 / 6.53). The round changes no simulation code (the tool's draw
+  module, its bridge and scripts); the snapshot delta in both modes is unexplained (layout of the
+  test binary is the likely cause, not shown): the landing's level L session settles it.
+- **The paused preview rows** (round R2-0's rows: sloped T + branch, flat + sloped cross, dense;
+  gamescope headless 1920x1080, four workers, no FPS cap; no Godot, gamescope or build at any run's
+  start, no overlap; pred is round D's control library, U-R2-1's pre-D side). One profiled pass
+  pred base br br base pred at 15:03-15:12 (every run under `perf record`) and one unprofiled pass
+  base br br base at 15:21-15:27; the moving phase's exact poses, sample to frame, the share within
+  16.7 / 17 / 18 / 20 ms:
+
+  | pass | side | group | poses | 16.7 | 17 | 18 | 20 | main-thread clock |
+  | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+  | profiled | pred | cross | 1,399 | 51.0 % | 61.2 % | 69.8 % | 78.5 % | 2.42 GHz |
+  | profiled | pred | T, branch, dense | 2,075 | 55.0 % | 64.1 % | 73.9 % | 81.9 % | 1.69 GHz |
+  | profiled | base | cross | 1,359 | 66.8 % | 76.3 % | 82.9 % | 89.2 % | 2.92 GHz |
+  | profiled | base | T, branch, dense | 2,089 | 57.7 % | 67.1 % | 78.1 % | 86.7 % | 1.80 GHz |
+  | profiled | branch | cross | 1,299 | 68.3 % | 77.6 % | 83.2 % | 88.8 % | 2.89 GHz |
+  | profiled | branch | T, branch, dense | 1,996 | 57.4 % | 65.7 % | 74.8 % | 84.1 % | 1.79 GHz |
+  | unprofiled | base | cross | 1,277 | 67.8 % | 75.5 % | 82.1 % | 88.4 % | not profiled |
+  | unprofiled | base | T, branch, dense | 2,054 | 57.9 % | 66.9 % | 77.5 % | 85.7 % | not profiled |
+  | unprofiled | branch | cross | 1,320 | 70.2 % | 79.2 % | 85.2 % | 90.4 % | not profiled |
+  | unprofiled | branch | T, branch, dense | 2,147 | 58.5 % | 69.3 % | 79.1 % | 88.9 % | not profiled |
+
+  Against U-R2-1 (the pre-D library) **both groups pass** at every cut. Against the base the
+  profiled pass reads the cross rows level to 1.5 points better and the T, branch and dense rows
+  0.3-3.3 points lower at 16.7-20 ms, its main thread clocked about the same (1.79 against 1.80
+  GHz; 8.92 against 8.83 ms of main-thread time a pose, profiled; round R2-2 read the same 1-3
+  points in its one pass); the
+  unprofiled pass reads the branch better in both groups (0.6-3.7 points).
+- **R2-2's carried bar, the tick less the preview call** (the tick ring of the moving phases, the
+  ticks with a new preview; p95 ms, unprofiled / profiled): base 0.086 / 0.082, branch 0.108 /
+  0.109. **Missed on both sides** (bar 0.05, round R2-0's estimate). Made of, branch unprofiled
+  p95: the gizmos' comparison, bytes and now their upload 0.044 (base 0.017 without the upload, which
+  the script did after the tick), the chips' words and placement with the HUD's fetch 0.030, the
+  rest of the tick (the pointer event, the draft brought up to date, the phase, the ring) 0.037,
+  the ghost 0.0003. Less the drawing (the gizmos and the ghost) the tick reads 0.065 on the branch
+  against the base's 0.070: the tick's own work is unchanged by this round, and the drawing it took
+  over is bounded by the overlay bar above. No remaining R2 round (R2-4a and R2-4b: the preview's
+  overlay; R2-7: dead code) works on the pointer and draft part; see the hand-back.
+- **The overlay in the rows** (the same ring, preview ticks, unprofiled p95): 0.136 ms (cross
+  0.129, T, branch and dense 0.140), the hue's upload the larger part (the cross rows' fills).
+- **Gates** (fresh on `0bf9dc9b`, the branch worktree's own target directory): clippy's warning set
+  equal to the base's own-directory set (14 = 14), missing docs 0, debug lib tests 2,844 passed / 0
+  failed / 233 ignored, `./run.sh --test` PASS (2,848 Rust tests, 234 skipped; both Godot chains, no
+  Godot script skipped, 0 SCRIPT ERROR).
+
 ### The pick's graded preparation halved (round PB, `ROAD-116`)
 
 Round PB of `ROAD-112` (branch `roadtools-pb`, R2-7 on `dev` `75523322`). **Bisect.** The

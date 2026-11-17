@@ -13,11 +13,13 @@
 ## the chain it starts on), and a continuous chain carries its direction into the S-curve and
 ## freeform too (round CT). The script ticks Rust once a frame (`road_tool_tick` with the camera,
 ## the mouse, Shift and Ctrl, or `road_tool_tick_at` for a scripted pointer; round R2-2) and acts
-## only on the flags it returns: the preview, the gizmos (`road_tool_gizmos.gd`: centreline,
-## tangent legs, guide and angle lines, handles), the draft's footprint hue (`road_tool_hue.gd`,
-## round HU, a stopgap for the lagging preview terrain), the HUD's chips (`road_tool_hud.gd`,
+## only on the flags it returns: the preview, the draft's footprint hue (round HU, a stopgap for
+## the lagging preview terrain; Rust draws it when asked after the preview shows,
+## `road_tool_draw_hue`), the HUD's chips (`road_tool_hud.gd`,
 ## from Rust's numbers only), the hover cursor and the sent stroke's answer; a frame that changed
-## nothing does nothing. Clicks, releases, Enter and the mode actions are typed calls
+## nothing does nothing. The tick draws the gizmos (centreline, tangent legs, guide and angle
+## lines, handles) and the batch ghost itself (round R2-3), with the palette and materials
+## `road_tool_gizmos.gd` hands it once. Clicks, releases, Enter and the mode actions are typed calls
 ## (`road_tool_press`, `road_tool_release`, `road_tool_action`), the options too. Rust resolves
 ## the cursor and its snapping, keeps the stroke, the chain, the phase and the mode, previews the
 ## stroke when it changed, sends the confirmed stroke and answers its commit (round R2-1, drawn
@@ -53,9 +55,9 @@
 ## Rust methods called: road_tool_tick(), road_tool_tick_at(), road_tool_pointer(),
 ## road_tool_pointer_at(), road_tool_press(), road_tool_release(), road_tool_action(),
 ## road_tool_set_lanes(), road_tool_set_flag(), road_tool_set_step(), road_tool_preview(),
-## road_tool_preview_current(), road_tool_preview_sequence(), road_tool_batch_ghost(),
-## road_tool_graded_changes(), road_tool_commit_answer(), road_tool_phase(), road_tool_mode(),
-## road_tool_cursor(), road_tool_points(), road_tool_hue_join(), road_tool_hue_times(),
+## road_tool_preview_current(), road_tool_preview_sequence(), road_tool_graded_changes(),
+## road_tool_commit_answer(), road_tool_phase(), road_tool_mode(), road_tool_cursor(),
+## road_tool_points(), road_tool_draw_hue(), road_tool_hue_times(), road_tool_release_held_hue(),
 ## road_tool_forget_drawn(), road_tool_set_road_type(), road_tool_reload_road_type(),
 ## road_tool_intent(), release_road_preview_terrain(), road_tool_commit_poll(),
 ## road_tool_commit_request_id(), road_tool_commit_points(), road_tool_commit_graded_epoch(),
@@ -69,7 +71,6 @@ extends "res://scripts/tools/network_tool.gd"
 const PreviewDisplay := preload("res://scripts/renderers/road_preview_display.gd")
 const RoadChunkRenderer := preload("res://scripts/renderers/road_chunk_renderer.gd")
 const RoadToolGizmos := preload("res://scripts/renderers/road_tool_gizmos.gd")
-const RoadToolHue := preload("res://scripts/renderers/road_tool_hue.gd")
 const RoadToolHud := preload("res://scripts/ui/road_tool_hud.gd")
 const RoadReasonText := preload("res://scripts/ui/road_reason_text.gd")
 const HighlightMesh := preload("res://scripts/renderers/highlight_mesh.gd")
@@ -131,12 +132,9 @@ signal road_type_changed(id: String)
 # The HUD (`road_tool_hud.gd`): the label chips, fetched and drawn when the tick says they
 # changed (tests assemble a tool with a HUD of their own).
 var hud = null
-# The tool's gizmos (`road_tool_gizmos.gd`), made on first use.
+# The tool's drawing setup (`road_tool_gizmos.gd`: the palette and materials Rust draws the
+# gizmos, the hue and the batch ghost with), made before the first tick.
 var gizmos = null
-# The draft's footprint hue (`road_tool_hue.gd`, round HU), made on first use. A commit's hue
-# moves to `_held_hue` with its preview and goes in the frame the commit's hold releases.
-var _hue = null
-var _held_hue = null
 
 var preview_metrics: RefCounted
 # The latest input's time, only while the preview is measured.
@@ -256,6 +254,7 @@ func _update_pointer() -> void:
 # stroke stops the tick: it is drawn, then the frame ticks again.
 func _tick() -> void:
 	_ticked = true
+	_gizmos()
 	var camera: Camera3D = get_viewport().get_camera_3d() if is_inside_tree() else null
 	var start_us := Time.get_ticks_usec() if preview_metrics != null else 0
 	var flags := _tick_once(camera)
@@ -282,14 +281,8 @@ func _draw_tick(flags: int, start_us := 0) -> void:
 	elif flags & TICK_GRADED:
 		# A frame without a new pose staged the next share of the pose's graded tiles.
 		_show_graded(simulation_node.road_tool_graded_changes())
-	if flags & TICK_GIZMOS:
-		_gizmos().show_gizmos(simulation_node)
 	if flags & TICK_HUE:
 		_show_hue()
-	if flags & TICK_BATCH:
-		_gizmos().show_batch_ghost(simulation_node.road_tool_batch_ghost())
-	elif flags & TICK_BATCH_CLEARED:
-		_gizmos().clear_batch_ghost()
 	if hud != null and (flags & (TICK_CHIPS | TICK_CORNERS) or hud.stale):
 		hud.simulation_node = simulation_node
 		hud.show_chips(flags & TICK_CHIPS != 0)
@@ -321,15 +314,12 @@ func _measure_preview(start_us: int) -> void:
 	preview_metrics.dispatch(sequence, start_us, now, true)
 	preview_metrics.poll(sequence, 0, _preview)
 
-# Drops the gizmos, the hue and the chips, and tells Rust they are gone (another tool, a cancel).
+# Drops the gizmos, the hue and the chips (another tool, a cancel).
 func _clear_drawn() -> void:
 	if hud != null:
 		hud.clear()
-	if gizmos != null:
-		gizmos.clear()
-	_clear_hue()
 	if _has_session():
-		simulation_node.road_tool_forget_drawn(TICK_GIZMOS | TICK_CURSOR)
+		simulation_node.road_tool_forget_drawn(TICK_GIZMOS | TICK_HUE | TICK_CURSOR)
 
 func _has_session() -> bool:
 	return is_instance_valid(simulation_node) and simulation_node.has_method("road_tool_tick")
@@ -361,28 +351,19 @@ func set_option(option: String, value: Variant) -> String:
 func is_drawing() -> bool:
 	return _has_session() and simulation_node.road_tool_phase() != PHASE_IDLE
 
-# The tool's gizmos, made on first use.
+# The tool's drawing setup, made (and attached to Rust) on first use.
 func _gizmos():
 	if gizmos == null:
-		gizmos = RoadToolGizmos.new()
+		gizmos = RoadToolGizmos.new(simulation_node)
 		add_child(gizmos)
 	return gizmos
 
 # Draws the draft's footprint hue on the tick's hue flag, after the frame showed its preview:
-# Rust joins the hue's build here (`ROAD-123` round HF2: the frame's one wait for it).
+# Rust joins the hue's build and draws it (`ROAD-123` round HF2: the frame's one wait for it).
 func _show_hue() -> void:
-	if _hue == null:
-		_hue = RoadToolHue.new(_gizmos())
-		add_child(_hue)
-	_hue.show_hue(simulation_node, simulation_node.road_tool_hue_join())
+	simulation_node.road_tool_draw_hue()
 	if preview_metrics != null:
 		preview_metrics.hue(_preview_sequence, simulation_node.road_tool_hue_times())
-
-func _clear_hue() -> void:
-	if _hue != null:
-		_hue.clear()
-	if _has_session():
-		simulation_node.road_tool_forget_drawn(TICK_HUE)
 
 ## Sets the next stroke's lanes (Rust clamps them to 0..4 each; 0 + 0 is a walkway).
 func set_lanes(fwd: int, bkw: int) -> void:
@@ -547,12 +528,7 @@ func _hold_preview_until(generation: int) -> void:
 	if _swap_display != null:
 		_swap_display.reset()
 	_swap_display = _preview_display
-	# The commit's hue stays with its preview until the hold releases.
-	_drop_held_hue()
-	_held_hue = _hue
-	_hue = null
-	# The next tick hands the hue over again, into a new node.
-	simulation_node.road_tool_forget_drawn(TICK_HUE)
+	# Rust held the commit's hue with its answer (round R2-3); it goes with this preview.
 	chunks.holds.hold_preview(generation)
 	_preview_display = PreviewDisplay.new()
 	_preview_drawn_sequence = 0
@@ -565,10 +541,10 @@ func _release_swapped_preview() -> void:
 		_swap_display = null
 		_drop_held_hue()
 
+# The held commit's hue goes with its preview.
 func _drop_held_hue() -> void:
-	if _held_hue != null:
-		_held_hue.queue_free()
-		_held_hue = null
+	if _has_session():
+		simulation_node.road_tool_release_held_hue()
 
 ## The chunk renderer swapped the chunks it held for a graded edit (T61 (2)) for the installed
 ## ones; a held commit's preview (`_release_swapped_preview`) goes with them.

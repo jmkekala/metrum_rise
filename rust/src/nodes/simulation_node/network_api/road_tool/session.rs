@@ -24,8 +24,13 @@ use super::super::super::*;
 use crate::nodes::sim::core::BATCH_TOO_LARGE_REASON;
 use crate::nodes::sim::road_tool::batch::{draft_requests, section_half_width_m};
 use crate::nodes::sim::road_tool::commit::CommitSequence;
+use crate::nodes::sim::road_tool::draw::engine::GodotBackend;
+use crate::nodes::sim::road_tool::draw::lines::{
+    LineQuadBuffers, LineStyle, handle_kind_code, line_style,
+};
+use crate::nodes::sim::road_tool::draw::{Ghost, ToolDraw};
 use crate::nodes::sim::road_tool::frame::{
-    DraftRefusal, GizmoHandleKind, GizmoLineClass, Gizmos, Phase, RoadToolFrame, StrokeRequest,
+    DraftRefusal, GizmoLineClass, Gizmos, Phase, RoadToolFrame, StrokeRequest,
 };
 use crate::nodes::sim::road_tool::height::draft_batch;
 use crate::nodes::sim::road_tool::hue::{HueState, OffFrameHue};
@@ -44,6 +49,7 @@ use labels::Chips;
 use tick::TickState;
 
 mod commit;
+mod draw;
 mod labels;
 mod tick;
 
@@ -60,8 +66,11 @@ pub(crate) struct RoadToolBridge {
     // them instead of making them again).
     batch_running: bool,
     batch_requests: Vec<RoadPreviewRequest>,
-    // A batch ghost is drawn (`road_tool_gizmos.gd`'s `show_batch_ghost`).
+    // A batch ghost is drawn, and the last tier 1's ghost (round R2-3: drawn by `draw`).
     batch_ghost: bool,
+    pub(super) ghost: Ghost,
+    // The tool's drawing (round R2-3, `nodes::sim::road_tool::draw`), once its setup attached.
+    draw: Option<ToolDraw<GodotBackend>>,
     // What the tick keeps between frames (round R2-2, `tick.rs`).
     tick: TickState,
     // The draft's footprint hue (round HU), built with each preview of a new pose, off the
@@ -356,7 +365,7 @@ impl SimulationNode {
 
     /// The draft's footprint hue (`ROAD-112` round HU; a stopgap marking the footprint while the
     /// preview terrain lags, T27 (d)), as of the last tick, whose hue flag says when it changed
-    /// (tests and probes; the tool draws it through `road_tool_hue_join`): `revision`, `pose`
+    /// (tests and probes; the tool draws it through `road_tool_draw_hue`): `revision`, `pose`
     /// (the pose of the preview it was built with, in the same frame: that preview's `pose`), `state` (-1 hidden, 0 valid, 1 checking, 2
     /// refused, drawn hatched), the fill (a triangle list on the road, a bridge's on the ground
     /// under it, padded with collapsed triangles to a power-of-two count so a drag uploads in
@@ -389,52 +398,6 @@ impl SimulationNode {
             "fill_bytes": PackedByteArray::from(hue.fill_bytes.as_slice()),
             "outline_vertices": outline.vertices,
             "outline_attributes": outline.attributes,
-        }
-    }
-
-    /// The hue on the tick's hue flag, after the frame showed its preview (round R2-2; `ROAD-123`
-    /// round HF2: the frame's one wait for the build, which overlaps the preview's display):
-    /// joins the build and returns `x` the state (-1 hidden, 0 valid, 1 checking, 2 refused,
-    /// drawn hatched), `y` the fill's vertex count (`road_tool_hue_fill`) and `z` the tunnel
-    /// outlines' quad vertex count (`road_tool_hue_outline`, zero without a tunnel). Its time goes
-    /// into the tick's sample (`road_tool_timings`' `hue_ms`).
-    #[func]
-    pub fn road_tool_hue_join(&mut self) -> Vector3i {
-        let start = Instant::now();
-        let offframe = &mut self.road_tool_session.hue;
-        offframe.join();
-        let hue = &*offframe.hue();
-        let state = hue.state().map_or(-1, |state| state as i32);
-        let fill = hue.fill.len() as i32;
-        let outline = strip_quad_count(&hue.outline, &hue.outline_starts) as i32 * 4;
-        let joined = Self::road_tool_tick_elapsed(start);
-        self.road_tool_tick_add(0.0, joined);
-        Vector3i::new(state, fill, outline)
-    }
-
-    /// The joined hue's fill vertex buffer (three little-endian `f32` a vertex, padded with
-    /// collapsed triangles to a power-of-two count so a drag uploads in place), uploaded as it is.
-    #[func]
-    pub fn road_tool_hue_fill(&mut self) -> PackedByteArray {
-        PackedByteArray::from(self.road_tool_session.hue.hue().fill_bytes.as_slice())
-    }
-
-    /// The joined hue's tunnel outlines as `road_tool_line.gdshader` quads: `part` 0 the
-    /// vertices, 1 the attributes (looks 8 to 10 by state), as `road_tool_hue`'s
-    /// `outline_vertices` and `outline_attributes`.
-    #[func]
-    pub fn road_tool_hue_outline(&mut self, part: i64) -> Variant {
-        let hue = &*self.road_tool_session.hue.hue();
-        let style = match hue.state() {
-            Some(HueState::Checking) => LineStyle::HueOutlineChecking,
-            Some(HueState::Refused) => LineStyle::HueOutlineRefused,
-            _ => LineStyle::HueOutlineValid,
-        };
-        let outline = strip_quads(&hue.outline, &hue.outline_starts, |_| style);
-        if part == 0 {
-            outline.vertices.to_variant()
-        } else {
-            outline.attributes.to_variant()
         }
     }
 
@@ -613,9 +576,9 @@ impl SimulationNode {
     // result as the standing preview (its outcome typed, round R2-1): a follow-ground stroke as
     // today; a graded one through its segmentation (one stroke alone with its profile, several
     // as a batch pose, a refusal as the preview's refusal; its dictionary stands with it).
-    // Returns a batch pose's tier 1 (the ghost), `None` for any other pose. The last outcome's
-    // and key's buffers are reused.
-    fn road_tool_run_preview(&mut self) -> Option<VarDictionary> {
+    // Returns whether the pose is a batch's (its tier 1 ghost stands in `ghost`). The last
+    // outcome's and key's buffers are reused.
+    fn road_tool_run_preview(&mut self) -> bool {
         self.road_tool_update_draft();
         self.road_tool_session.pose += 1;
         self.road_tool_session.batch_running = false;
@@ -631,7 +594,7 @@ impl SimulationNode {
             (Some(_), None, [single]) => Pose::Stroke(Some(single.profile)),
             (Some(_), None, _) => Pose::Batch,
         };
-        let mut tier1 = None;
+        let mut tier1 = false;
         let mut preview = match pose {
             Pose::Stroke(profile) => self.road_tool_preview_with_hue(profile, &mut outcome),
             Pose::Refused(reason) => {
@@ -647,9 +610,8 @@ impl SimulationNode {
                 }
             }
             Pose::Batch => {
-                let (preview, pose) = self.road_tool_batch_pose(&mut outcome);
-                tier1 = Some(pose);
-                preview
+                tier1 = true;
+                self.road_tool_batch_pose(&mut outcome)
             }
         };
         let bridge = &mut self.road_tool_session;
@@ -725,20 +687,18 @@ impl SimulationNode {
         section_half_width_m(&self.road_tool_draft_section(self.road_tool_session.session.frame()))
     }
 
-    // A new batch pose: tier 1 (`preview_road_draft`'s keys, the ghost) and the standing preview
+    // A new batch pose: tier 1 (the ghost, typed in `ghost`) and the standing preview
     // it gives into `outcome`, pending while every stroke passes (tier 2 then runs on the
     // resting frames, on the requests kept here), else the first refusal with its stroke
     // (`draft_stroke`). The hue takes tier 1's prepared strokes (checking while tier 2 runs), or
     // the drawn stroke's over the caps.
-    fn road_tool_batch_pose(
-        &mut self,
-        outcome: &mut PreviewOutcome,
-    ) -> (VarDictionary, VarDictionary) {
-        let mut pose = VarDictionary::new();
+    fn road_tool_batch_pose(&mut self, outcome: &mut PreviewOutcome) -> VarDictionary {
         let requests = self.road_tool_draft_requests();
         let mut hue = std::mem::take(self.road_tool_session.hue.hue());
-        let tier1 = self.preview_road_batch_tier1(&requests, &mut pose, Some(&mut hue));
+        let mut ghost = std::mem::take(&mut self.road_tool_session.ghost);
+        let tier1 = self.preview_road_batch_tier1(&requests, None, Some(&mut hue), &mut ghost);
         *self.road_tool_session.hue.hue() = hue;
+        self.road_tool_session.ghost = ghost;
         self.road_tool_session.hue_pose = self.road_tool_session.pose;
         if tier1.is_none() {
             self.road_tool_hue_of_stroke();
@@ -769,7 +729,7 @@ impl SimulationNode {
             "length_m": outcome.length_m,
             "surface_generation": outcome.surface_generation,
         };
-        (preview, pose)
+        preview
     }
 
     // A resting frame of a running batch: one tier-2 step on the pose's requests. On the frame
@@ -971,75 +931,12 @@ fn set_gizmos(dict: &mut VarDictionary, gizmos: &Gizmos) {
     );
 }
 
-// The quads of the road tool's lines (`road_tool_line.gdshader` widens them on the screen, as
-// `route_ribbon.gdshader` does): four vertices a segment, the vertex buffer's positions and the
-// attribute buffer's interleaved `[other end x, y, z, side * (dash metres + 1), style]` (UV, UV2
-// and CUSTOM0's red, 20 bytes a vertex; the side is the sign, the dash station the magnitude less
-// one; the style picks the shader's colour, width and dash: `LineStyle`), padded with collapsed
-// quads to a power-of-two segment count (at least 16; none without strips) so a drag keeps the
-// surface's layout and uploads in place. Every style in one surface (round V2: one upload a
-// frame instead of one a style).
+// The road tool's line quads as packed arrays (snapshots and tests; the layout is
+// `draw::lines`').
 #[derive(Default)]
 pub(super) struct LineQuads {
     pub(super) vertices: PackedVector3Array,
     pub(super) attributes: PackedFloat32Array,
-}
-
-// Minimum quads a line surface holds.
-const LINE_QUADS_MIN: usize = 16;
-// Floats a vertex's attributes take.
-const LINE_ATTRIBUTES: usize = 5;
-
-/// The line looks `road_tool_line.gdshader` draws, as the attributes number them (its palette
-/// arrays in `road_tool_gizmos.gd`'s `PALETTE` follow this order).
-#[derive(Clone, Copy)]
-pub(super) enum LineStyle {
-    /// The draft's centreline.
-    Stroke = 0,
-    /// Every guide line in one look (round V item 6; a height handle's stem too, round V2); since
-    /// round UI1 the tangent legs, control polygons and stems, the alignment guides having
-    /// their own.
-    Guide = 1,
-    /// The zoning guide's outside (item 9).
-    ZoningOutside = 2,
-    /// Its inside.
-    ZoningInside = 3,
-    /// The grid curbs (item 8, drawn to stand out on the preview road's own edges).
-    GridCurb = 4,
-    /// A batch ghost's edges, tier 1 accepting the stroke (round V2).
-    GhostEdge = 5,
-    /// A batch ghost's edges, tier 1 refusing the stroke.
-    GhostRefusedEdge = 6,
-    /// An end's ground marker: its vertical line and its ring on the ground (round H2).
-    GroundMarker = 7,
-    /// A tunnel run's outline in the footprint hue (round HU), the draft accepted.
-    HueOutlineValid = 8,
-    /// The same, the draft still checked.
-    HueOutlineChecking = 9,
-    /// The same, the draft refused.
-    HueOutlineRefused = 10,
-    /// The alignment guide that took the cursor and the angle lock's ray (round UI1: thicker and
-    /// more opaque than the shared guide look).
-    Alignment = 11,
-    /// A guide line near the cursor that has not taken it (round UI1), faint.
-    GuideNear = 12,
-    /// An end's corner arc (round UI1), or its square at a right angle (round UI2).
-    CornerArc = 13,
-}
-
-// A strip class's look.
-fn line_style(class: GizmoLineClass) -> LineStyle {
-    match class {
-        GizmoLineClass::Draft => LineStyle::Stroke,
-        GizmoLineClass::Guide | GizmoLineClass::Angle => LineStyle::Alignment,
-        GizmoLineClass::GuideNear => LineStyle::GuideNear,
-        GizmoLineClass::CornerArc => LineStyle::CornerArc,
-        GizmoLineClass::Tangent | GizmoLineClass::HeightStem => LineStyle::Guide,
-        GizmoLineClass::ZoningOutside => LineStyle::ZoningOutside,
-        GizmoLineClass::ZoningInside => LineStyle::ZoningInside,
-        GizmoLineClass::GridCurb => LineStyle::GridCurb,
-        GizmoLineClass::GroundMarker => LineStyle::GroundMarker,
-    }
 }
 
 // The gizmo strips as quads. `O(strip points)`.
@@ -1047,19 +944,6 @@ fn line_quads(gizmos: &Gizmos) -> LineQuads {
     strip_quads(&gizmos.line_points, &gizmos.line_starts, |strip| {
         line_style(gizmos.line_classes[strip])
     })
-}
-
-// A handle kind's code: the handle surface's UV (`road_tool_handle.gdshader`'s palette index).
-fn handle_kind_code(kind: GizmoHandleKind) -> i32 {
-    match kind {
-        GizmoHandleKind::Endpoint => 0,
-        GizmoHandleKind::Control => 1,
-        GizmoHandleKind::ChainStart => 2,
-        GizmoHandleKind::Cursor => 3,
-        GizmoHandleKind::Joint => 4,
-        // A height grip draws as a handle, in round V's look (rounds I, V2).
-        GizmoHandleKind::Handle | GizmoHandleKind::HeightGrip => 5,
-    }
 }
 
 // Strips (`points` back to back, `starts` each strip's first point) as quads, each strip in the
@@ -1075,83 +959,6 @@ pub(super) fn strip_quads(
     LineQuads {
         vertices: PackedVector3Array::from(buffers.vertices.as_slice()),
         attributes: PackedFloat32Array::from(buffers.attributes.as_slice()),
-    }
-}
-
-// The quads' segment count before padding.
-fn strip_segments(points: &[Vector3], starts: &[u32]) -> usize {
-    (0..starts.len())
-        .map(|index| strip(points, starts, index).len().saturating_sub(1))
-        .sum()
-}
-
-// The padded quad count of strips (`LineQuads`): none without segments.
-fn strip_quad_count(points: &[Vector3], starts: &[u32]) -> usize {
-    let segments = strip_segments(points, starts);
-    if segments == 0 {
-        0
-    } else {
-        segments.max(LINE_QUADS_MIN).next_power_of_two()
-    }
-}
-
-// Strip `index`'s points.
-fn strip<'a>(points: &'a [Vector3], starts: &[u32], index: usize) -> &'a [Vector3] {
-    let start = starts[index] as usize;
-    let end = starts
-        .get(index + 1)
-        .map_or(points.len(), |&end| end as usize);
-    &points[start..end]
-}
-
-// `LineQuads` in reused buffers (the tick's gizmo bytes, round R2-2).
-#[derive(Default)]
-pub(super) struct LineQuadBuffers {
-    pub(super) vertices: Vec<Vector3>,
-    pub(super) attributes: Vec<f32>,
-}
-
-impl LineQuadBuffers {
-    // The strips' quads into the buffers (see `LineQuads`). `O(points)`; allocates nothing once
-    // the buffers have grown.
-    pub(super) fn fill(
-        &mut self,
-        points: &[Vector3],
-        starts: &[u32],
-        style_of: impl Fn(usize) -> LineStyle,
-    ) {
-        let capacity = strip_quad_count(points, starts);
-        self.vertices.clear();
-        self.vertices.resize(capacity * 4, Vector3::ZERO);
-        self.attributes.clear();
-        self.attributes.resize(capacity * 4 * LINE_ATTRIBUTES, 0.0);
-        let mut quad = 0;
-        for index in 0..starts.len() {
-            let style = style_of(index) as u8 as f32;
-            let mut dash = 0.0;
-            for pair in strip(points, starts, index).windows(2) {
-                let (a, b) = (pair[0], pair[1]);
-                let length = a.distance_to(b);
-                // Each end twice, one vertex per side; the side's sign is taken from the start's
-                // view, so it flips at the far end (whose other end points back).
-                for (corner, (point, other, side, at)) in [
-                    (a, b, 1.0, dash),
-                    (a, b, -1.0, dash),
-                    (b, a, -1.0, dash + length),
-                    (b, a, 1.0, dash + length),
-                ]
-                .into_iter()
-                .enumerate()
-                {
-                    let vertex = quad * 4 + corner;
-                    self.vertices[vertex] = point;
-                    self.attributes[vertex * LINE_ATTRIBUTES..(vertex + 1) * LINE_ATTRIBUTES]
-                        .copy_from_slice(&[other.x, other.y, other.z, side * (at + 1.0), style]);
-                }
-                dash += length;
-                quad += 1;
-            }
-        }
     }
 }
 

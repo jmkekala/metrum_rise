@@ -7,6 +7,7 @@
 pub mod batch;
 pub mod bench;
 pub mod commit;
+pub mod draw;
 pub mod frame;
 pub mod guides;
 pub mod height;

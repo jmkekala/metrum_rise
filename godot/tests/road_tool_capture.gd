@@ -125,8 +125,8 @@ func _run() -> void:
 	# tick ring (round R2-2).
 	_upload_order = PackedFloat32Array(await _drag_record(Vector3(40.0, 0.0, 10.0), func(at: Vector3): _tool.set_scripted_pointer(true, at)))
 	# The drag rewrote the vertex buffers in place: the server's copy is this frame's draft.
-	var gizmo_mesh: ArrayMesh = _tool.gizmos.mesh
-	var drawn: Array = RenderingServer.mesh_surface_get_arrays(gizmo_mesh.get_rid(), 0)
+	var gizmo_mesh: RID = _simulation.road_tool_drawn()["gizmos_mesh"]
+	var drawn: Array = RenderingServer.mesh_surface_get_arrays(gizmo_mesh, 0)
 	var expected: PackedVector3Array = _simulation.road_tool_snapshot()["gizmo_line_vertices"]
 	_expect(not drawn.is_empty() and PackedVector3Array(drawn[Mesh.ARRAY_VERTEX]) == expected, "the in-place gizmo upload leaves the lines' quads on the server")
 	# The interleaved attributes went into the attribute buffer as UV, UV2 and the look (rounds V,
@@ -136,6 +136,13 @@ func _run() -> void:
 	var uv2: PackedVector2Array = drawn[Mesh.ARRAY_TEX_UV2]
 	var looks: PackedFloat32Array = drawn[Mesh.ARRAY_CUSTOM0]
 	_expect(uv.size() * 5 == attributes.size() and uv[1] == Vector2(attributes[5], attributes[6]) and uv2[1] == Vector2(attributes[7], attributes[8]) and looks[1] == attributes[9], "the lines' attributes are their other ends, sides and looks on the server")
+	# Round R2-3: Rust adds the surfaces from finished bytes; the server's copy is what
+	# `add_surface_from_arrays` stores for the same arrays (format, buffers, indices).
+	var line_format := Mesh.ARRAY_CUSTOM_R_FLOAT << Mesh.ARRAY_FORMAT_CUSTOM0_SHIFT
+	var differs := _surface_differs(gizmo_mesh, 0, drawn, Mesh.PRIMITIVE_TRIANGLES, line_format)
+	_expect(differs.is_empty(), "the lines' surface is the engine's own layout, differs in %s" % [differs])
+	differs = _surface_differs(gizmo_mesh, 1, RenderingServer.mesh_surface_get_arrays(gizmo_mesh, 1), Mesh.PRIMITIVE_POINTS)
+	_expect(differs.is_empty(), "the handles' surface is the engine's own layout, differs in %s" % [differs])
 	var uploads: Array = Array(_upload_order)
 	uploads.sort()
 	_tool.set_scripted_pointer(true, Vector3(40.0, 0.0, 10.0))
@@ -498,18 +505,27 @@ func _capture_batch_ghost() -> void:
 	var path := PackedVector3Array([Vector3(-200.0, 0.0, 10.0), Vector3(200.0, 0.0, 10.0)])
 	var pose: Dictionary = _simulation.preview_road_draft(path, 0.0, 0.0, 1, 1, true, false)
 	_expect(int(pose.get("stroke_count", 0)) >= 3 and PackedInt32Array(pose.get("profiles", PackedInt32Array())).has(2), "the draft segments with a bridge: %s" % [pose.get("profiles", [])])
-	_tool._gizmos().show_batch_ghost(pose)
+	_tool._gizmos()
+	_simulation.road_tool_draw_batch_ghost(true)
 	await _capture("batch_ghost")
-	_tool.gizmos.clear_batch_ghost()
+	_simulation.road_tool_draw_batch_ghost(false)
 
-# The recorded ticks' parts from the tool's tick ring (round R2-2): the gizmos' comparison and
-# bytes, the chips (their words, placement and the HUD's fetch) and the whole tick, p50, p95 and
-# max each, over the ticks whose gizmos changed.
+# The recorded ticks' parts from the tool's tick ring (round R2-2): the gizmos' comparison, bytes
+# and upload (round R2-3: Rust draws them), the hue's bytes and upload, the ghost's, the overlay
+# (those three summed a tick), the chips (their words, placement and the HUD's fetch) and the
+# whole tick, p50, p95 and max each, over the ticks whose gizmos changed.
 func _parts() -> Dictionary:
 	var parts := {}
 	var ring: Dictionary = _simulation.road_tool_timings(false)
-	for key in ["gizmos_ms", "chips_ms", "total_ms"]:
-		var times := _ring_part(key, 16, ring)
+	var overlay := []
+	for index in (ring["flags"] as PackedInt32Array).size():
+		if ring["flags"][index] & 16:
+			overlay.append(ring["gizmos_ms"][index] + ring["hue_draw_ms"][index] + ring["ghost_ms"][index])
+	var columns := {"overlay_ms": overlay}
+	for key in ["gizmos_ms", "hue_draw_ms", "ghost_ms", "chips_ms", "total_ms"]:
+		columns[key] = _ring_part(key, 16, ring)
+	for key in columns:
+		var times: Array = columns[key]
 		times.sort()
 		parts[key] = [times[times.size() / 2], times[int(times.size() * 0.95)], times[-1]] if not times.is_empty() else []
 	return parts
@@ -536,6 +552,19 @@ func _drag_record(centre: Vector3, move: Callable) -> Array:
 		await process_frame
 	_last_parts = _parts()
 	return _ring_part("gizmos_ms", 16)
+
+# The keys in which `mesh`'s surface `surface` differs from the surface the engine stores for
+# `arrays` (round R2-3).
+func _surface_differs(mesh: RID, surface: int, arrays: Array, primitive: int, format := 0) -> Array:
+	var reference := ArrayMesh.new()
+	reference.add_surface_from_arrays(primitive, arrays, [], {}, format)
+	var ours: Dictionary = RenderingServer.mesh_get_surface(mesh, surface)
+	var engine: Dictionary = RenderingServer.mesh_get_surface(reference.get_rid(), 0)
+	var differs := []
+	for key in ["format", "primitive", "vertex_count", "vertex_data", "attribute_data", "index_count", "index_data"]:
+		if ours.get(key) != engine.get(key):
+			differs.append(key)
+	return differs
 
 # The session's cursor for a vertical camera ray onto `at`, then one tick of the tool's drawing
 # without a pointer of its own.

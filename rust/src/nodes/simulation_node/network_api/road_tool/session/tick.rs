@@ -14,6 +14,7 @@
 use super::labels::ChipView;
 use super::*;
 use crate::nodes::sim::road_tool::frame::DraftRun;
+use crate::nodes::sim::road_tool::draw::backend::DrawBackend;
 use godot::classes::{Camera3D, Time};
 
 /// Tick flag: a new preview stands (`road_tool_preview`): a new pose's, or a batch's exact
@@ -21,13 +22,13 @@ use godot::classes::{Camera3D, Time};
 pub(super) const TICK_PREVIEW: i64 = 1;
 /// Tick flag: the stroke went away; its preview is dropped.
 pub(super) const TICK_PREVIEW_CLEARED: i64 = 1 << 1;
-/// Tick flag: a new batch pose's tier 1 (`road_tool_batch_ghost`), the ghost.
+/// Tick flag: a new batch pose's tier 1: its ghost (drawn by the tick, round R2-3).
 pub(super) const TICK_BATCH: i64 = 1 << 2;
 /// Tick flag: the batch ghost goes.
 pub(super) const TICK_BATCH_CLEARED: i64 = 1 << 3;
-/// Tick flag: the gizmos changed (`road_tool_gizmo_layout`, `road_tool_gizmo_bytes`).
+/// Tick flag: the gizmos changed (drawn by the tick, round R2-3).
 pub(super) const TICK_GIZMOS: i64 = 1 << 4;
-/// Tick flag: the footprint hue's revision moved (`road_tool_hue_join`, after the preview shows:
+/// Tick flag: the footprint hue's revision moved (`road_tool_draw_hue`, after the preview shows:
 /// round HF2's pairing).
 pub(super) const TICK_HUE: i64 = 1 << 5;
 /// Tick flag: the chips changed (`road_tool_chip_*`, corners included).
@@ -49,17 +50,14 @@ pub(super) const TICK_CURSOR: i64 = 1 << 12;
 
 // Ticks the ring holds; older ones are overwritten.
 const RING_TICKS: usize = 4096;
-// The bytes of a position in the vertex buffer.
-const VERTEX_BYTES: usize = 12;
 
 /// What the tick keeps between frames: what the script last drew, the buffers it uploads, what
 /// the tick left for the script to fetch, and the stage ring.
 #[derive(Default)]
 pub(super) struct TickState {
-    // The gizmos as the script last drew them (`None` until the first draw, and after the script
-    // dropped its drawing), and their upload buffers (`road_tool_gizmo_bytes`).
+    // The gizmos as last drawn (`None` until the first draw, and after the drawing was dropped;
+    // round R2-3: the tick draws them, `draw`).
     drawn: Option<Gizmos>,
-    gizmo_bytes: GizmoBytes,
     // The heights last reported.
     heights: Option<HeightsRecord>,
     // The hue revision last reported.
@@ -70,24 +68,31 @@ pub(super) struct TickState {
     // The previews handed to the script (a pose, a batch's settled overlay, a click's fresh
     // preview, a refused commit's display): each dictionary carries its number as `sequence`.
     pub(super) sequence: i64,
-    // What the last tick left for the script: the batch ghost, the graded share, the answer.
-    batch_ghost: Option<VarDictionary>,
+    // What the last tick left for the script: the graded share, the answer.
     graded: Option<VarDictionary>,
     answer: Option<VarDictionary>,
     ring: TickRing,
 }
 
 impl TickState {
-    // The frame's gizmos (their bytes rebuilt on a change), heights, the hue's revision and the
-    // cursor against what was last reported; the flags of those that changed. `O(gizmo points)`;
-    // allocates nothing once the buffers have grown.
-    fn compare_drawn(&mut self, frame: &RoadToolFrame, hue_revision: u64) -> i64 {
+    // The frame's gizmos (drawn by `draw` on a change, round R2-3), heights, the hue's revision
+    // and the cursor against what was last reported; the flags of those that changed.
+    // `O(gizmo points)`; allocates nothing once the buffers have grown, unless the gizmos'
+    // padded layout changed.
+    fn compare_drawn<B: DrawBackend>(
+        &mut self,
+        frame: &RoadToolFrame,
+        hue_revision: u64,
+        draw: Option<&mut ToolDraw<B>>,
+    ) -> i64 {
         let mut flags = 0;
         if self.drawn.as_ref() != Some(&frame.gizmos) {
             self.drawn
                 .get_or_insert_with(Gizmos::default)
                 .clone_from(&frame.gizmos);
-            self.gizmo_bytes.fill(&frame.gizmos);
+            if let Some(draw) = draw {
+                draw.draw_gizmos(&frame.gizmos, frame.cursor.position);
+            }
             flags |= TICK_GIZMOS;
         }
         if !self.heights.as_ref().is_some_and(|heights| heights.same(frame)) {
@@ -104,63 +109,6 @@ impl TickState {
             flags |= TICK_CURSOR;
         }
         flags
-    }
-}
-
-// The gizmos' upload buffers in the server's layout: the line quads' positions and attributes
-// (`strip_quads`), the handles' positions and their kinds as UVs, in reused buffers.
-#[derive(Default)]
-struct GizmoBytes {
-    quads: LineQuadBuffers,
-    line_vertices: Vec<u8>,
-    line_attributes: Vec<u8>,
-    handles: Vec<u8>,
-    handle_attributes: Vec<u8>,
-    // The line surface's vertex count and the handles' count.
-    layout: Vector2i,
-}
-
-impl GizmoBytes {
-    // The gizmos' bytes into the kept buffers. `O(gizmo points)`; allocates nothing once the
-    // buffers have grown.
-    fn fill(&mut self, gizmos: &Gizmos) {
-        self.quads.fill(&gizmos.line_points, &gizmos.line_starts, |strip| {
-            line_style(gizmos.line_classes[strip])
-        });
-        write_vectors(&mut self.line_vertices, &self.quads.vertices);
-        write_floats(&mut self.line_attributes, &self.quads.attributes);
-        write_vectors(&mut self.handles, &gizmos.handles);
-        // One point surface for every handle (round V2): each point's kind as its UV.
-        let bytes = &mut self.handle_attributes;
-        bytes.clear();
-        bytes.resize(gizmos.handle_kinds.len() * 8, 0);
-        for (chunk, kind) in bytes.as_chunks_mut::<8>().0.iter_mut().zip(&gizmos.handle_kinds) {
-            chunk[..4].copy_from_slice(&(handle_kind_code(*kind) as f32).to_le_bytes());
-            chunk[4..].copy_from_slice(&0.0f32.to_le_bytes());
-        }
-        self.layout = Vector2i::new(
-            self.quads.vertices.len() as i32,
-            gizmos.handles.len() as i32,
-        );
-    }
-}
-
-// Positions as the vertex buffer holds them: three little-endian `f32` each.
-fn write_vectors(bytes: &mut Vec<u8>, vectors: &[Vector3]) {
-    bytes.clear();
-    bytes.resize(vectors.len() * VERTEX_BYTES, 0);
-    for (chunk, vector) in bytes.as_chunks_mut::<VERTEX_BYTES>().0.iter_mut().zip(vectors) {
-        chunk[..4].copy_from_slice(&vector.x.to_le_bytes());
-        chunk[4..8].copy_from_slice(&vector.y.to_le_bytes());
-        chunk[8..].copy_from_slice(&vector.z.to_le_bytes());
-    }
-}
-
-fn write_floats(bytes: &mut Vec<u8>, floats: &[f32]) {
-    bytes.clear();
-    bytes.resize(floats.len() * 4, 0);
-    for (chunk, float) in bytes.as_chunks_mut::<4>().0.iter_mut().zip(floats) {
-        *chunk = float.to_le_bytes();
     }
 }
 
@@ -203,7 +151,8 @@ impl HeightsRecord {
 
 // One tick's stage times: its start on Godot's ticks clock, its whole, the preview call (a
 // pose's `preview_stroke` or the batch's tiers), the chips (their words and placement, and the
-// HUD's fetch when it follows), the gizmos' comparison and bytes, the hue's join, and its flags.
+// HUD's fetch when it follows), the gizmos' comparison and drawing, the hue's join and drawing
+// (`road_tool_draw_hue` after the tick), the batch ghost's drawing, and its flags.
 #[derive(Clone, Copy, Default)]
 struct TickSample {
     start_us: i64,
@@ -212,6 +161,8 @@ struct TickSample {
     chips_us: f32,
     gizmos_us: f32,
     hue_us: f32,
+    hue_draw_us: f32,
+    ghost_us: f32,
     flags: i32,
 }
 
@@ -321,13 +272,6 @@ impl SimulationNode {
         self.road_tool_session.tick.sequence
     }
 
-    /// The last batch pose's tier 1 (`preview_road_draft`'s keys: the ghost), fetched on the
-    /// tick's batch flag; `{}` once fetched.
-    #[func]
-    pub fn road_tool_batch_ghost(&mut self) -> VarDictionary {
-        self.road_tool_session.tick.batch_ghost.take().unwrap_or_default()
-    }
-
     /// The share of the pose's graded tiles the last tick staged (`advance_road_preview_terrain`'s
     /// keys), fetched on the tick's graded flag; `{}` once fetched.
     #[func]
@@ -375,48 +319,25 @@ impl SimulationNode {
         PackedVector3Array::from(self.road_tool_session.session.frame().stroke.points.as_slice())
     }
 
-    /// The gizmos' surfaces as of the last tick: the line surface's vertex count (`x`) and the
-    /// handles' count (`y`); the script rebuilds its surfaces when they differ from its own.
-    #[func]
-    pub fn road_tool_gizmo_layout(&self) -> Vector2i {
-        self.road_tool_session.tick.gizmo_bytes.layout
-    }
-
-    /// Where the gizmos' dashes keep their on-screen length (`road_tool_line.gdshader`'s
-    /// `dash_focus`): the cursor's position as of the last tick, met or not.
-    #[func]
-    pub fn road_tool_gizmo_focus(&self) -> Vector3 {
-        self.road_tool_session.session.frame().cursor.position
-    }
-
-    /// One of the gizmos' upload buffers as of the last tick, in the server's layout: `part` 0
-    /// the line quads' positions (12 bytes a vertex), 1 their attributes for
-    /// `road_tool_line.gdshader` (20 bytes a vertex: the other end, the side and dash, the look;
-    /// `strip_quads`), 2 the handles' positions, 3 the handles' kinds as UVs (8 bytes a handle:
-    /// 0 placed end, 1 control point, 2 chain start, 3 the live end or grabbed grip, 4 a joint, 5
-    /// a handle).
-    #[func]
-    pub fn road_tool_gizmo_bytes(&self, part: i64) -> PackedByteArray {
-        let bytes = &self.road_tool_session.tick.gizmo_bytes;
-        PackedByteArray::from(match part {
-            0 => bytes.line_vertices.as_slice(),
-            1 => bytes.line_attributes.as_slice(),
-            2 => bytes.handles.as_slice(),
-            _ => bytes.handle_attributes.as_slice(),
-        })
-    }
-
-    /// The script dropped what it drew (`parts`: the tick's flags of the gizmos, the hue and the
-    /// cursor; another tool, a cancel, a held commit's hue): the next tick reports them changed.
-    /// The HUD forces its own fetch after it dropped its chips.
+    /// Drops what the tool drew (`parts`: the tick's flags of the gizmos, the hue and the
+    /// cursor; another tool, a cancel): the gizmos and the hue are hidden, and the next tick
+    /// reports them changed and draws them again. The HUD forces its own fetch after it dropped
+    /// its chips.
     #[func]
     pub fn road_tool_forget_drawn(&mut self, parts: i64) {
-        let tick = &mut self.road_tool_session.tick;
+        let bridge = &mut self.road_tool_session;
+        let tick = &mut bridge.tick;
         if parts & TICK_GIZMOS != 0 {
             tick.drawn = None;
+            if let Some(draw) = &mut bridge.draw {
+                draw.clear_gizmos();
+            }
         }
         if parts & TICK_HUE != 0 {
             tick.hue = None;
+            if let Some(draw) = &mut bridge.draw {
+                draw.clear_hue();
+            }
         }
         if parts & TICK_CURSOR != 0 {
             tick.cursor = None;
@@ -426,8 +347,9 @@ impl SimulationNode {
     /// The tick ring's samples, oldest first (benchmarks, once at the end of a run): `start_us`
     /// (Godot's ticks clock), `total_ms` (the whole tick), `preview_ms` (the preview call: a
     /// pose's preview, a batch's tier), `chips_ms` (the chips' words and placement, with the HUD's
-    /// fetch that followed the tick), `gizmos_ms` (the gizmos' comparison and bytes), `hue_ms`
-    /// (the hue's join after the tick) and `flags`. `clear` empties the ring after reading it.
+    /// fetch that followed the tick), `gizmos_ms` (the gizmos' comparison, bytes and upload),
+    /// `hue_ms` (the hue's join after the tick), `hue_draw_ms` (its bytes and upload),
+    /// `ghost_ms` (the batch ghost's split, bytes and upload) and `flags`. `clear` empties the ring after reading it.
     #[func]
     pub fn road_tool_timings(&mut self, clear: bool) -> VarDictionary {
         let ring = &mut self.road_tool_session.tick.ring;
@@ -443,6 +365,8 @@ impl SimulationNode {
             "chips_ms": column(|sample| sample.chips_us),
             "gizmos_ms": column(|sample| sample.gizmos_us),
             "hue_ms": column(|sample| sample.hue_us),
+            "hue_draw_ms": column(|sample| sample.hue_draw_us),
+            "ghost_ms": column(|sample| sample.ghost_us),
             "flags": ring.ordered().map(|sample| sample.flags).collect::<PackedInt32Array>(),
         };
         if clear {
@@ -490,6 +414,9 @@ impl SimulationNode {
             let gizmos_start = Instant::now();
             flags |= self.road_tool_tick_drawn();
             sample.gizmos_us = elapsed_us(gizmos_start);
+            let ghost_start = Instant::now();
+            self.road_tool_tick_ghost(flags);
+            sample.ghost_us = elapsed_us(ghost_start);
             let chips_start = Instant::now();
             let frame = self.road_tool_session.session.frame();
             let pending = frame.state.phase == Phase::AwaitingAck && frame.stroke.points.len() >= 2;
@@ -527,17 +454,14 @@ impl SimulationNode {
                 self.road_tool_session.batch_running = false;
                 flags |= self.road_tool_clear_batch_ghost();
             } else if !self.road_tool_preview_is_current() {
-                let tier1 = self.road_tool_run_preview();
+                let ghost = self.road_tool_run_preview();
                 self.road_tool_hand_preview();
                 flags |= TICK_PREVIEW;
-                match tier1 {
-                    Some(ghost) => {
-                        let bridge = &mut self.road_tool_session;
-                        bridge.batch_ghost = true;
-                        bridge.tick.batch_ghost = Some(ghost);
-                        flags |= TICK_BATCH;
-                    }
-                    None => flags |= self.road_tool_clear_batch_ghost(),
+                if ghost {
+                    self.road_tool_session.batch_ghost = true;
+                    flags |= TICK_BATCH;
+                } else {
+                    flags |= self.road_tool_clear_batch_ghost();
                 }
             } else if self.road_tool_session.batch_running
                 && let Some(cleared) = self.road_tool_step_batch()
@@ -570,11 +494,26 @@ impl SimulationNode {
         }
     }
 
-    // What the script draws, against what it last drew (`TickState::compare_drawn`).
+    // What the frame draws, against what was last drawn (`TickState::compare_drawn`): the gizmos
+    // drawn here.
     fn road_tool_tick_drawn(&mut self) -> i64 {
         let bridge = &mut self.road_tool_session;
         let revision = bridge.hue.revision();
-        bridge.tick.compare_drawn(bridge.session.frame(), revision)
+        (bridge.tick).compare_drawn(bridge.session.frame(), revision, bridge.draw.as_mut())
+    }
+
+    // The batch ghost on the tick's flags: a new pose's tier 1 drawn (`draw_ghost`, split by
+    // verdict, F10), or the ghost gone. `O(ghost points)`.
+    fn road_tool_tick_ghost(&mut self, flags: i64) {
+        let bridge = &mut self.road_tool_session;
+        let Some(draw) = &mut bridge.draw else {
+            return;
+        };
+        if flags & TICK_BATCH != 0 {
+            draw.draw_ghost(&bridge.ghost);
+        } else if flags & TICK_BATCH_CLEARED != 0 {
+            draw.clear_ghost();
+        }
     }
 
     // The phase flag when the phase or the mode moved since the last report.
@@ -590,12 +529,13 @@ impl SimulationNode {
         }
     }
 
-    // A fetch that follows the tick (the chips', the hue's join) adds its time to the tick's
-    // sample.
-    pub(super) fn road_tool_tick_add(&mut self, chips_us: f32, hue_us: f32) {
+    // A call that follows the tick (the chips' fetch, the hue's join and drawing) adds its time
+    // to the tick's sample.
+    pub(super) fn road_tool_tick_add(&mut self, chips_us: f32, hue_us: f32, hue_draw_us: f32) {
         if let Some(sample) = self.road_tool_session.tick.ring.last_mut() {
             sample.chips_us += chips_us;
             sample.hue_us += hue_us;
+            sample.hue_draw_us += hue_draw_us;
         }
     }
 
@@ -608,6 +548,8 @@ impl SimulationNode {
 mod tests {
     use super::*;
     use crate::nodes::sim::road_tool::bench::neighbourhood_view;
+    use crate::nodes::sim::road_tool::draw::DrawMaterials;
+    use crate::nodes::sim::road_tool::draw::recorder::Recorder;
 
     // Round R2-2: two ticks with an unchanged pointer bump no revision. A real session on the
     // bench neighbourhood: hover, then one point placed with the pointer moving (straight mode);
@@ -618,6 +560,7 @@ mod tests {
         let view = neighbourhood_view(false, 0, 2_048.0);
         let mut session = RoadToolSession::default();
         let mut tick = TickState::default();
+        let mut draw = ToolDraw::new(Recorder::default(), DrawMaterials::default());
         let point = |session: &mut RoadToolSession, at: Vector3| {
             session.handle_event(
                 &view,
@@ -631,34 +574,42 @@ mod tests {
         };
         let hover = Vector3::new(-300.0, 0.0, -300.0);
         point(&mut session, hover);
-        let first = tick.compare_drawn(session.frame(), 0);
+        let first = tick.compare_drawn(session.frame(), 0, Some(&mut draw));
         assert_ne!(first & TICK_CURSOR, 0, "the first pointer reports the cursor");
         point(&mut session, hover);
-        assert_eq!(tick.compare_drawn(session.frame(), 0), 0, "a still hover reports nothing");
+        assert_eq!(
+            tick.compare_drawn(session.frame(), 0, Some(&mut draw)),
+            0,
+            "a still hover reports nothing"
+        );
         session.handle_event(&view, RoadToolEvent::Press(PointerButton::Left));
         for step in 1..4 {
             let at = hover + Vector3::new(20.0 * step as f32, 0.0, 5.0);
             point(&mut session, at);
-            let moved = tick.compare_drawn(session.frame(), 0);
+            let moved = tick.compare_drawn(session.frame(), 0, Some(&mut draw));
             assert_ne!(moved & TICK_GIZMOS, 0, "a moved live end reports the gizmos");
             assert_ne!(moved & TICK_CURSOR, 0);
+            assert!(draw.state()[0].visible, "and draws them");
             let drawn = tick.drawn.clone();
-            let bytes = tick.gizmo_bytes.line_vertices.clone();
+            let commands = draw.backend().commands.len();
             point(&mut session, at);
             assert_eq!(
-                tick.compare_drawn(session.frame(), 0),
+                tick.compare_drawn(session.frame(), 0, Some(&mut draw)),
                 0,
                 "the same pointer again reports nothing"
             );
             assert_eq!(tick.drawn, drawn);
-            assert_eq!(tick.gizmo_bytes.line_vertices, bytes);
+            assert_eq!(
+                draw.backend().commands.len(),
+                commands,
+                "an unchanged pose uploads nothing"
+            );
         }
-        assert_eq!(tick.compare_drawn(session.frame(), 1), TICK_HUE, "a new hue revision alone");
-        let layout = tick.gizmo_bytes.layout;
-        assert_eq!(tick.gizmo_bytes.line_vertices.len(), layout.x as usize * 12);
-        assert_eq!(tick.gizmo_bytes.line_attributes.len(), layout.x as usize * 20);
-        assert_eq!(tick.gizmo_bytes.handles.len(), layout.y as usize * 12);
-        assert_eq!(tick.gizmo_bytes.handle_attributes.len(), layout.y as usize * 8);
+        assert_eq!(
+            tick.compare_drawn(session.frame(), 1, Some(&mut draw)),
+            TICK_HUE,
+            "a new hue revision alone"
+        );
     }
 
     // The ring keeps the last `RING_TICKS` samples in order.

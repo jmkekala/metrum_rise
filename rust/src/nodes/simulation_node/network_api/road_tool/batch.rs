@@ -16,6 +16,8 @@ use crate::nodes::sim::core::{
 use crate::nodes::sim::road_tool::batch::{
     draft_requests, ghost_half_width_m, push_ghost_edges, push_ghost_ribbon,
 };
+use crate::nodes::sim::road_tool::draw::Ghost;
+use crate::nodes::sim::road_tool::draw::lines::LineStyle;
 use crate::nodes::sim::road_tool::height::segment_draft;
 use crate::nodes::sim::road_tool::hue::{FootprintHue, HueKind, HueState};
 use crate::nodes::sim::road_tool::outcome::Tier2State;
@@ -51,7 +53,7 @@ impl SimulationNode {
     #[func]
     #[allow(clippy::too_many_arguments)]
     pub fn preview_road_draft(
-        &self,
+        &mut self,
         path: PackedVector3Array,
         start_m: f32,
         end_m: f32,
@@ -74,10 +76,18 @@ impl SimulationNode {
             )
             .map(|strokes| draft_requests(&strokes, section, view.surface_generation))
         };
+        // The ghost stands as the tool's last tier 1 (`road_tool_draw_batch_ghost` draws it).
+        let mut ghost = std::mem::take(&mut self.road_tool_session.ghost);
         match requests {
-            Ok(requests) => self.preview_road_batch_requests(&requests, resting, &mut dict),
-            Err(reason) => dict.set("reason", reason),
+            Ok(requests) => {
+                self.preview_road_batch_requests(&requests, resting, &mut dict, &mut ghost)
+            }
+            Err(reason) => {
+                ghost.clear();
+                dict.set("reason", reason);
+            }
         }
+        self.road_tool_session.ghost = ghost;
         dict
     }
 
@@ -87,8 +97,9 @@ impl SimulationNode {
         requests: &[RoadPreviewRequest],
         resting: bool,
         dict: &mut VarDictionary,
+        ghost: &mut Ghost,
     ) {
-        if self.preview_road_batch_tier1(requests, dict, None).is_none() {
+        if (self.preview_road_batch_tier1(requests, Some(&mut *dict), None, ghost)).is_none() {
             return;
         }
         if !resting {
@@ -105,22 +116,28 @@ impl SimulationNode {
         self.preview_road_batch_tier2(requests, dict);
     }
 
-    // Tier 1 of a batch pose into `dict`: `reason`, the strokes' hover verdicts, costs, lengths
-    // and the ghost; with `hue`, the strokes' footprint hue (round HU: checking while every
-    // stroke passes, else refused). Returns its verdict typed (round R2-1); `None` (tier 2
-    // dropped) over the caps, the hue untouched.
+    // Tier 1 of a batch pose: the strokes' hover verdicts, costs, lengths and the ghost into
+    // `ghost` (round R2-3: typed, drawn by the tool's drawing), and with `dict` its keys
+    // (`reason`, the verdicts, costs, lengths and the ghost as `preview_road_draft` returns
+    // them); with `hue`, the strokes' footprint hue (round HU: checking while every stroke
+    // passes, else refused). Returns its verdict typed (round R2-1); `None` (tier 2 dropped, the
+    // ghost empty) over the caps, the hue untouched.
     pub(super) fn preview_road_batch_tier1(
         &self,
         requests: &[RoadPreviewRequest],
-        dict: &mut VarDictionary,
+        dict: Option<&mut VarDictionary>,
         hue: Option<&mut FootprintHue>,
+        ghost: &mut Ghost,
     ) -> Option<Tier1> {
         let tier1_start = std::time::Instant::now();
+        ghost.clear();
         let view = self.road_tool.view.read().unwrap();
         let hover = view.validate_batch(requests);
         let Some(hover) = hover else {
             drop(view);
-            dict.set("reason", BATCH_TOO_LARGE_REASON);
+            if let Some(dict) = dict {
+                dict.set("reason", BATCH_TOO_LARGE_REASON);
+            }
             self.road_tool
                 .context
                 .lock()
@@ -128,26 +145,24 @@ impl SimulationNode {
                 .clear_batch();
             return None;
         };
-        let mut ghost = Vec::new();
-        let mut ghost_starts = PackedInt32Array::new();
-        let (mut edges, mut edge_starts) = (Vec::new(), Vec::new());
         let (mut costs, mut lengths) = (PackedFloat64Array::new(), PackedFloat64Array::new());
-        let mut valid = PackedInt32Array::new();
         let mut reasons = PackedStringArray::new();
         let mut profiles = PackedInt32Array::new();
         // The first stroke with a refusal key, and that key.
         let mut refusal = None;
+        let (mut build_cost, mut total_length_m) = (0.0, 0.0);
         for (stroke, (request, (prepared, validation))) in requests.iter().zip(&hover).enumerate() {
-            ghost_starts.push(ghost.len() as i32);
+            ghost.starts.push(ghost.ribbon.len() as u32);
             let half_width_m = ghost_half_width_m(request);
-            push_ghost_ribbon(prepared, half_width_m, &mut ghost);
-            push_ghost_edges(&prepared.points, half_width_m, &mut edges, &mut edge_starts);
+            push_ghost_ribbon(prepared, half_width_m, &mut ghost.ribbon);
+            push_ghost_edges(&prepared.points, half_width_m, &mut ghost.edges, &mut ghost.edge_starts);
             let weight =
                 Self::stroke_cost_weight((request.fwd_lanes, request.bkw_lanes), prepared);
             let length_m = polyline_length_m(&prepared.points);
-            costs.push(length_m * road_cost::build_per_m(weight));
-            lengths.push(length_m);
-            valid.push(i32::from(validation.is_valid));
+            let cost = length_m * road_cost::build_per_m(weight);
+            build_cost += cost;
+            total_length_m += length_m;
+            ghost.valid.push(validation.is_valid);
             let reason = if validation.is_valid {
                 ""
             } else {
@@ -156,8 +171,12 @@ impl SimulationNode {
             if refusal.is_none() && !reason.is_empty() {
                 refusal = Some((stroke, reason));
             }
-            reasons.push(reason);
-            profiles.push(request.profile.code());
+            if dict.is_some() {
+                costs.push(cost);
+                lengths.push(length_m);
+                reasons.push(reason);
+                profiles.push(request.profile.code());
+            }
         }
         if let (Some(hue), Some(first)) = (hue, requests.first()) {
             let ground = DraftGround::new(&view.terrain, &view.roadbed);
@@ -168,7 +187,7 @@ impl SimulationNode {
                     HueKind::of(request.profile, prepared.class),
                 );
             }
-            let state = if valid.as_slice().iter().all(|&valid| valid != 0) {
+            let state = if ghost.valid.iter().all(|&valid| valid) {
                 HueState::Checking
             } else {
                 HueState::Refused
@@ -183,34 +202,37 @@ impl SimulationNode {
             );
         }
         drop(view);
-        // Two edge strips a stroke, in the ghost's look by tier 1's verdict.
-        let verdicts = valid.as_slice();
-        let edge_quads = super::session::strip_quads(&edges, &edge_starts, |strip| {
-            if verdicts[strip / 2] == 0 {
-                super::session::LineStyle::GhostRefusedEdge
-            } else {
-                super::session::LineStyle::GhostEdge
-            }
-        });
-        dict.set("ghost_line_vertices", edge_quads.vertices);
-        dict.set("ghost_line_attributes", edge_quads.attributes);
         let tier1 = Tier1 {
             refusal,
-            build_cost: costs.as_slice().iter().sum::<f64>(),
-            length_m: lengths.as_slice().iter().sum::<f64>(),
+            build_cost,
+            length_m: total_length_m,
         };
-        dict.set("reason", "");
-        dict.set("stroke_count", requests.len() as i64);
-        dict.set("build_cost", tier1.build_cost);
-        dict.set("length_m", tier1.length_m);
-        dict.set("costs", costs);
-        dict.set("lengths_m", lengths);
-        dict.set("valid", valid);
-        dict.set("reasons", reasons);
-        dict.set("profiles", profiles);
-        dict.set("ghost", PackedVector3Array::from(ghost.as_slice()));
-        dict.set("ghost_starts", ghost_starts);
-        dict.set("tier1_ms", tier1_start.elapsed().as_secs_f64() * 1000.0);
+        if let Some(dict) = dict {
+            // Two edge strips a stroke, in the ghost's look by tier 1's verdict.
+            let edge_quads = super::session::strip_quads(&ghost.edges, &ghost.edge_starts, |strip| {
+                if ghost.valid[strip / 2] {
+                    LineStyle::GhostEdge
+                } else {
+                    LineStyle::GhostRefusedEdge
+                }
+            });
+            dict.set("ghost_line_vertices", edge_quads.vertices);
+            dict.set("ghost_line_attributes", edge_quads.attributes);
+            dict.set("reason", "");
+            dict.set("stroke_count", requests.len() as i64);
+            dict.set("build_cost", tier1.build_cost);
+            dict.set("length_m", tier1.length_m);
+            dict.set("costs", costs);
+            dict.set("lengths_m", lengths);
+            let valid = ghost.valid.iter().map(|&valid| i32::from(valid));
+            dict.set("valid", valid.collect::<PackedInt32Array>());
+            dict.set("reasons", reasons);
+            dict.set("profiles", profiles);
+            dict.set("ghost", PackedVector3Array::from(ghost.ribbon.as_slice()));
+            let starts = ghost.starts.iter().map(|&start| start as i32);
+            dict.set("ghost_starts", starts.collect::<PackedInt32Array>());
+            dict.set("tier1_ms", tier1_start.elapsed().as_secs_f64() * 1000.0);
+        }
         Some(tier1)
     }
 

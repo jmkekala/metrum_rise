@@ -543,7 +543,7 @@ impl SimulationNode {
     // A chip fetch's time into the tick's sample.
     fn road_tool_chips_timed(&mut self, start: Instant) {
         let elapsed = Self::road_tool_tick_elapsed(start);
-        self.road_tool_tick_add(elapsed, 0.0);
+        self.road_tool_tick_add(elapsed, 0.0, 0.0);
     }
 
     /// The chips' corners as of the last tick (round R2-5), for the HUD on the tick's chips or

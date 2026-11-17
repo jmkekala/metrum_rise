@@ -79,7 +79,7 @@ func _run() -> void:
 	tool.step_height(-16)
 	frame = _frames(tool, 1)
 	_expect(Array(frame.get("draft_profiles", [])) == [2, 3], "a bridge then a tunnel, got %s (%s)" % [frame.get("draft_profiles"), frame.get("draft_reason")])
-	_expect(tool.gizmos.batch_ghost_surfaces() > 0, "the batch pose draws its ghost")
+	_expect(int(_simulation.road_tool_drawn().get("ghost_surfaces", 0)) > 0, "the batch pose draws its ghost")
 	_expect(tool._preview.get("is_pending", false), "the batch pose is pending")
 	# Resting: tier 2 accepts the batch and its exact pieces replace the ghost.
 	for rest in 60:
@@ -87,7 +87,7 @@ func _run() -> void:
 			break
 		_frames(tool, 1)
 	_expect(tool._preview.get("is_valid", false) and tool._preview.get("has_road_chunks", false), "the batch must preview its pieces: %s" % tool._preview.get("invalid_reason", "missing"))
-	_expect(tool.gizmos.batch_ghost_surfaces() == 0, "the exact pieces replace the ghost")
+	_expect(int(_simulation.road_tool_drawn().get("ghost_surfaces", -1)) == 0, "the exact pieces replace the ghost")
 
 	# The click builds the draft as one road; one undo takes it back.
 	_expect(tool._commit_segment(end), "the click must queue the draft")

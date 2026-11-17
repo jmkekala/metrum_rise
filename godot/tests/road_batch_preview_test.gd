@@ -60,14 +60,15 @@ func _run() -> void:
 	_expect(starts.size() == count and ghost.size() >= 6 * count, "a ribbon per stroke, got %d vertices" % ghost.size())
 	_expect(float(pose.get("build_cost", 0.0)) > 0.0 and float(pose.get("length_m", 0.0)) > 390.0, "the batch is priced over its length")
 	_expect(pose.get("tier2_state", "") == "running", "a moving pose runs no tier 2")
-	var gizmos: MeshInstance3D = RoadToolGizmos.new()
+	# The tool's drawing (round R2-3: Rust draws the last tier 1's ghost, split by verdict).
+	var gizmos: Node3D = RoadToolGizmos.new(simulation)
 	root.add_child(gizmos)
-	gizmos.show_batch_ghost(pose)
+	simulation.road_tool_draw_batch_ghost(true)
 	# Round V2: the fill and its edges' line quads (two edges a stroke, none refused).
 	var edges: PackedVector3Array = pose.get("ghost_line_vertices", PackedVector3Array())
 	var edge_looks: PackedFloat32Array = pose.get("ghost_line_attributes", PackedFloat32Array())
 	_expect(edges.size() >= 2 * 4 * count and edge_looks.size() == edges.size() * 5 and edge_looks[4] == 5.0, "the valid strokes' edges are line quads in the accepted ghost look, got %d vertices" % edges.size())
-	_expect(gizmos.batch_ghost_surfaces() == 2, "valid strokes draw a fill and an edge surface")
+	_expect(int(simulation.road_tool_drawn().get("ghost_surfaces", 0)) == 2, "valid strokes draw a fill and an edge surface")
 
 	# Tier 2 while the pointer rests: one stroke a frame, then the exact overlay over at most as
 	# many frames (round G1b), shown whole on the frame that completes it.
@@ -98,8 +99,8 @@ func _run() -> void:
 	for edge in int(simulation.get_road_benchmark_state()["edge_slots"]):
 		classes.append(simulation.get_edge_class(edge))
 	_expect(classes.has(1), "the batch commits a bridge, got %s" % [classes])
-	gizmos.clear_batch_ghost()
-	_expect(gizmos.batch_ghost_surfaces() == 0, "the ghost clears")
+	simulation.road_tool_draw_batch_ghost(false)
+	_expect(int(simulation.road_tool_drawn().get("ghost_surfaces", -1)) == 0, "the ghost clears")
 	gizmos.queue_free()
 	_finish()
 

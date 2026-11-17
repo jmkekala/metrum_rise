@@ -1104,7 +1104,7 @@ func _test_s_curve_and_freeform(simulation: SimulationNode) -> void:
 	_road_frame(tool)
 	frame = simulation.road_tool_snapshot()
 	_expect(int(frame["phase"]) == 0 and PackedVector3Array(frame["points"]).is_empty() and PackedVector3Array(frame["gizmo_handles"]).is_empty(), "Escape drops the draft")
-	_expect(not tool.gizmos.visible and tool._preview.is_empty() and int(simulation.get_road_benchmark_state()["live_edges"]) == edges, "Escape leaves nothing")
+	_expect(not bool(simulation.road_tool_drawn().get("gizmos_visible", false)) and tool._preview.is_empty() and int(simulation.get_road_benchmark_state()["live_edges"]) == edges, "Escape leaves nothing")
 	await _test_freeform_chips(simulation, tool)
 	tool.draw_mode = RoadToolScript.DrawMode.STRAIGHT
 	manager.free()
