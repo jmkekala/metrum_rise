@@ -134,7 +134,7 @@ impl GizmoBytes {
         let bytes = &mut self.handle_attributes;
         bytes.clear();
         bytes.resize(gizmos.handle_kinds.len() * 8, 0);
-        for (chunk, kind) in bytes.chunks_exact_mut(8).zip(&gizmos.handle_kinds) {
+        for (chunk, kind) in bytes.as_chunks_mut::<8>().0.iter_mut().zip(&gizmos.handle_kinds) {
             chunk[..4].copy_from_slice(&(handle_kind_code(*kind) as f32).to_le_bytes());
             chunk[4..].copy_from_slice(&0.0f32.to_le_bytes());
         }
@@ -149,7 +149,7 @@ impl GizmoBytes {
 fn write_vectors(bytes: &mut Vec<u8>, vectors: &[Vector3]) {
     bytes.clear();
     bytes.resize(vectors.len() * VERTEX_BYTES, 0);
-    for (chunk, vector) in bytes.chunks_exact_mut(VERTEX_BYTES).zip(vectors) {
+    for (chunk, vector) in bytes.as_chunks_mut::<VERTEX_BYTES>().0.iter_mut().zip(vectors) {
         chunk[..4].copy_from_slice(&vector.x.to_le_bytes());
         chunk[4..8].copy_from_slice(&vector.y.to_le_bytes());
         chunk[8..].copy_from_slice(&vector.z.to_le_bytes());
@@ -159,8 +159,8 @@ fn write_vectors(bytes: &mut Vec<u8>, vectors: &[Vector3]) {
 fn write_floats(bytes: &mut Vec<u8>, floats: &[f32]) {
     bytes.clear();
     bytes.resize(floats.len() * 4, 0);
-    for (chunk, float) in bytes.chunks_exact_mut(4).zip(floats) {
-        chunk.copy_from_slice(&float.to_le_bytes());
+    for (chunk, float) in bytes.as_chunks_mut::<4>().0.iter_mut().zip(floats) {
+        *chunk = float.to_le_bytes();
     }
 }
 

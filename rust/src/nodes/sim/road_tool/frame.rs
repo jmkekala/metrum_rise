@@ -136,7 +136,7 @@ pub enum GizmoHandleKind {
 
 /// Packed gizmos: line strips (`line_points[line_starts[i]..line_starts[i + 1]]`, the last to
 /// the end) with a class each, and handles.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Debug, Default, PartialEq)]
 pub struct Gizmos {
     /// All strip points, strips back to back.
     pub line_points: Vec<Vector3>,
@@ -148,6 +148,28 @@ pub struct Gizmos {
     pub handles: Vec<Vector3>,
     /// Each handle's kind.
     pub handle_kinds: Vec<GizmoHandleKind>,
+}
+
+// By hand for `clone_from`: the tick keeps a copy of the gizmos last drawn and refreshes it in
+// place, so it reuses that copy's buffers (the derived one would allocate them anew).
+impl Clone for Gizmos {
+    fn clone(&self) -> Self {
+        Self {
+            line_points: self.line_points.clone(),
+            line_starts: self.line_starts.clone(),
+            line_classes: self.line_classes.clone(),
+            handles: self.handles.clone(),
+            handle_kinds: self.handle_kinds.clone(),
+        }
+    }
+
+    fn clone_from(&mut self, source: &Self) {
+        self.line_points.clone_from(&source.line_points);
+        self.line_starts.clone_from(&source.line_starts);
+        self.line_classes.clone_from(&source.line_classes);
+        self.handles.clone_from(&source.handles);
+        self.handle_kinds.clone_from(&source.handle_kinds);
+    }
 }
 
 impl Gizmos {
