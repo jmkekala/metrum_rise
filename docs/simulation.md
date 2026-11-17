@@ -264,7 +264,9 @@ the loaded game's ids differ (`SAVE-09`'s five causes, of which this removes the
   one. Format 121 saves load as before: their orphans of these three kinds load as the nodes
   without a road that game saved, because a load cannot tell them from a player's road end. Before
   this the transition and a removed ring's nodes stayed in the node grid, and the junction a ring
-  replaced left it live but came back into it on a load, where a stroke end could snap to it.
+  replaced left it live but came back into it on a load, where a stroke end could snap to it;
+  and a node a commit plan merged stayed in the live node grid when the plan had added or
+  re-indexed it (`RoadTopologyPlan::apply_to_graph` now takes it out, as a load leaves it).
   Bounds: retiring is O(nodes in its grid cell) per node, on the edits that already touch it; the
   save's row test and the load's hole pass are O(1) per slot.
 - **Bounds.** Save: O(nodes + edges + aliases log aliases + lanes + references), no hashing of
