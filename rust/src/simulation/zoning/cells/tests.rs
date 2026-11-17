@@ -48,6 +48,19 @@ fn perpendicular_reversed_and_translated_frames_share_identity() {
     );
 }
 
+// `ROAD-125`: a road a hair off the Z axis (a ring's arm in the roundabout join tests) rounds its
+// direction's second component up to the full scale; the frame it builds is valid, as a load
+// checks it, and stays distinct from the axis itself.
+#[test]
+fn a_direction_a_hair_off_an_axis_builds_a_valid_frame() {
+    let origin = DVec2::new(5.0, 5.0);
+    let hair = GridFrame::new(origin, DVec2::new(4.98e-7, 1.0), 10.0).unwrap();
+    assert!(hair.is_valid());
+    let axis = GridFrame::new(origin, DVec2::Y, 10.0).unwrap();
+    assert!(axis.is_valid());
+    assert_ne!(hair.at_origin(DVec2::ZERO), axis.at_origin(DVec2::ZERO));
+}
+
 #[test]
 fn rotated_squares_share_vertices_without_positive_area_overlap() {
     for axis in [DVec2::X, DVec2::new(0.8, 0.6), DVec2::new(1.0, 1.0)] {

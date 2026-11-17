@@ -11,6 +11,7 @@ use super::*;
 use crate::simulation::core::config::WorldConfig;
 use crate::simulation::network::graph::{Edge, RegionGraph};
 use crate::simulation::network::types::{EdgeClass, NodeType, TransitFlags, TransitType};
+use crate::simulation::zoning::cells::geometry::road_source_precision;
 use crate::simulation::zoning::{ParcelPlacementError, ZoningSystem};
 use godot::prelude::Vector3;
 
@@ -250,6 +251,51 @@ fn extending_a_straight_road_preserves_continuous_grid_on_both_sides() {
             assert_disjoint(&store, extent());
         }
     }
+}
+
+// `ROAD-125`: a road prepended end to end to a slanted line continues it within twice the
+// source precision, but the line's curb phase can then miss the new road's curbs at its first
+// point by more than once that precision, which a load refuses (JS2's attempt 5). The new road
+// takes its own phase there, the line keeps its own, and both records load as they stand.
+#[test]
+fn a_road_prepended_to_a_slanted_line_keeps_records_that_load() {
+    let config = WorldConfig::default();
+    let u = DVec2::new(0.35_f64.cos(), 0.35_f64.sin());
+    let start = DVec2::new(5.49, 4.866);
+    let mut graph = RegionGraph::new();
+    let b = node(&mut graph, start.x as f32, start.y as f32);
+    let end = start + u * 85.0;
+    let c = node(&mut graph, end.x as f32, end.y as f32);
+    let line = road(&mut graph, b, c);
+    let mut store = CellStore::default();
+    store.refresh_road_alignments(&graph, &config, [line]);
+    let before = store.road_alignment(&graph, line).unwrap();
+    // 50 m before the line's start, off it by 1.5 times the new road's source precision.
+    let back = start - u * 50.0;
+    let precision = road_source_precision(
+        CellBounds::from_points([back, start]).expanded(6.0 * f64::from(config.zone_cell_m)),
+    );
+    let first = back + u.perp() * 1.5 * precision;
+    let a = node(&mut graph, first.x as f32, first.y as f32);
+    let prepended = road(&mut graph, a, b);
+    store.refresh_road_alignments(&graph, &config, [prepended]);
+    assert_eq!(store.road_alignment(&graph, line), Some(before));
+    let frames = store.road_alignment(&graph, prepended).unwrap();
+    assert!(
+        frames.iter().any(|frame| !before.contains(frame)),
+        "the line's phase would not load on the prepended road"
+    );
+    let mut loaded = CellStore::default();
+    for (id, alignment) in store.saved_road_alignments() {
+        assert!(
+            loaded.restore_road_alignment(id, alignment, &graph, &config),
+            "road {id}"
+        );
+    }
+    assert_eq!(
+        loaded.saved_road_alignments(),
+        store.saved_road_alignments()
+    );
 }
 
 #[test]

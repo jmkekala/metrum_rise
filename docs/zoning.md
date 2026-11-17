@@ -927,6 +927,28 @@ endpoint references come from the remapped graph. Signed zero is canonicalized b
 REAL does not preserve its sign. Older saves initialize choices once from their network, while
 retaining authoritative paint/claims. Empty generated cells still remain rebuildable caches.
 
+**One curb rule (`ROAD-125`).** A curb frame lies on a road's curb when, at the road's first
+point, the grid line it puts there is within the road's source precision of the curb (half the
+width plus the sidewalk off the centreline), on the road's basis. The load accepts a record by
+this rule (`StraightRoad::holds_curb`, called from the load's check), and a refresh keeps or takes
+a frame for a side only by the same rule: a prior phase it inherits, an old frame at an endpoint
+whose phase matches, or one propagated from a neighbour. A side no candidate holds takes the
+road's own phase, which holds by construction; debug builds assert each refreshed record passes
+the load's check. Before the fix a road continuing a line end to end inherited the line's phase
+within twice the precision (the continuation test, two independently rounded endpoints), while
+the load wants the curb phase within once at the road's first point: a road prepended to a slanted
+line could miss it (JS2's attempt 5: the dissolved joint's road, run on to the T, missed edge 2's
+curb phase by 1.76 times the precision), and the save its release build wrote would not load. Now
+such a side takes its own phase; the line keeps its own. The record format and the load's check
+are unchanged (save format 122). Each candidate costs one more O(1) test, so the refresh bound
+stays O((K + A) log K + K log R + X). The debug assertion found a second record the load refused:
+a road a hair off the Z axis (a ring's arm in the roundabout join tests) builds a frame whose
+direction key rounds its second component up to the full scale, which `GridFrame::is_valid`, the
+load's frame check, excluded; it now accepts exactly the keys `GridFrame::new` builds (the axis
+itself still keys as the first axis). The commit's lanes had a third divergence from a load: a
+dissolved joint kept its connection lanes, as no rebuilt road ends there; the commit now retires a
+merged node's connectors.
+
 The ownership rule retains historical straight strips or curved groups constrained by paint or
 a lot claim, then orders candidates by depth row, canonical frame key and integer cell coordinates.
 Current road candidates establish a square's priority before retained copies are merged, so

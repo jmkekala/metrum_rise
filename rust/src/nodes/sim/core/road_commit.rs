@@ -246,6 +246,7 @@ impl SimCore {
             let FinalizedRoadGeometry {
                 dirty_edges: dirty,
                 affected_nodes: _affected_nodes,
+                merged_nodes,
                 profile_us: dt_profile_us,
                 clips_us: dt_clips_us,
                 ..
@@ -288,6 +289,10 @@ impl SimCore {
 
                 let t_lanes = Instant::now();
                 record_crash_phase_for_core(self, "add road lane rebuild");
+                // A merged node's connectors (a dissolved joint's) go with it (`ROAD-125`).
+                self.transit_network
+                    .lane_system
+                    .retire_node_lanes(merged_nodes.iter().map(|&node| node as usize));
                 self.transit_network
                     .lane_system
                     .rebuild_edges_incremental(&mut self.region_graph, &dirty);

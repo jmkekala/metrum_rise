@@ -412,18 +412,28 @@ fn the_dumps_attempts_1_to_5_dissolve_the_joint_beside_the_junction() {
 // `ROAD-124`: a dissolved joint is merged into its junction, a hole with its alias, so a save
 // and a load find the running game's network (ids, holes, aliases, node grid): no node stands
 // at the joint's place and none is left without a road, and a stroke drawn to that place builds
-// (or is refused) alike in both games, finding the road, not the joint. Attempt 5's game does
-// not save: its joined road's grid alignment would not load (`ROAD-125`).
+// (or is refused) alike in both games, finding the road, not the joint. `ROAD-125`: attempt 5
+// prepends the joint's road, now running to the T, to the slanted line of edge 2; the game saves,
+// its road grid alignments load as the edit left them and the joint keeps no connectors.
 #[test]
 fn a_dissolved_joint_is_a_hole_live_and_loaded() {
-    for (label, ends) in attempts().into_iter().take(3) {
+    for (label, ends) in attempts() {
         let mut core = dump_city();
-        let joint = DEAD_END;
+        let joint = if label == "attempt 5" {
+            JOINT
+        } else {
+            DEAD_END
+        };
         let points = stroke(&core, ends);
         assert!(commit(&mut core, &points, None).committed, "{label}");
         let graph = &core.region_graph;
         assert_ne!(graph.get_valid_node(joint as u32), joint as u32, "{label}: merged");
         let mut loaded = saved_and_loaded(&mut core, "dissolved_joint");
+        assert_eq!(
+            loaded.zoning.cells.saved_road_alignments(),
+            core.zoning.cells.saved_road_alignments(),
+            "{label}"
+        );
         let place = at(joint);
         let to = stroke(&core, [place + Vector2::new(0.0, -50.0), place]);
         let mut outcomes = Vec::new();

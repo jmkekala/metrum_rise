@@ -69,6 +69,10 @@ pub(crate) struct FinalizedRoadGeometry {
     /// The dirty edges whose geometry, clips, endpoints or deletion changed, as an adopted
     /// plan knows them; `None` when every dirty edge may have changed. Cell lots follow these.
     pub(crate) changed_edges: Option<BTreeSet<usize>>,
+    /// Nodes an adopted plan merged into another (a dissolved joint, `ROAD-118` round JS2):
+    /// holes no road ends at any more, so the lane rebuild of the dirty edges does not reach
+    /// them and the commit retires their connection lanes, as a load has none (`ROAD-125`).
+    pub(crate) merged_nodes: Vec<u32>,
 }
 
 /// Ordered split provenance and pre-finalization lengths used by dependent-record migration.
@@ -358,6 +362,7 @@ impl TransitNetwork {
             profile_us,
             clips_us,
             changed_edges: None,
+            merged_nodes: Vec::new(),
         }
     }
 
@@ -437,6 +442,7 @@ impl TransitNetwork {
             dirty_edges: applied.dirty_edges,
             affected_nodes: applied.affected_nodes,
             changed_edges: Some(changed_edges),
+            merged_nodes: applied.merged_nodes,
             ..Default::default()
         })
     }

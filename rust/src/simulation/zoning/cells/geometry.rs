@@ -75,11 +75,14 @@ impl CellBounds {
 }
 
 impl GridFrame {
-    /// Validates serialized integer state before it can enter the frame registry.
+    /// Validates serialized integer state before it can enter the frame registry: exactly the
+    /// keys [`Self::new`] builds. A direction a hair off the second axis rounds its second
+    /// component up to the full scale with a first component of at least one (`ROAD-125`: such
+    /// a road's saved record did not load); the second axis itself is the first.
     pub(crate) fn is_valid(self) -> bool {
         let key = self.key;
         if !(1..=DIRECTION_SCALE as i64).contains(&key.axis[0])
-            || !(0..DIRECTION_SCALE as i64).contains(&key.axis[1])
+            || !(0..=DIRECTION_SCALE as i64).contains(&key.axis[1])
             || !(COORDINATE_SCALE as i64..=1_000 * COORDINATE_SCALE as i64)
                 .contains(&key.cell_micrometres)
             || key

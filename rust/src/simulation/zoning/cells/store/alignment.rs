@@ -53,30 +53,16 @@ impl RoadCellAlignment {
     }
 
     // Whether this record names `road`'s current line and both its curb phases lie on the
-    // line's curbs: what a load accepts.
+    // line's curbs: what a load accepts. A refresh keeps or takes a frame by the same rule
+    // (`StraightRoad::holds_curb`, `ROAD-125`), so it never writes a record this refuses.
     fn fits(self, road: &StraightRoad, config: &WorldConfig) -> bool {
-        if self.source != road.source
-            || self
+        self.source == road.source
+            && self
                 .frames
                 .iter()
-                .any(|frame| !frame.is_valid() || frame.cell_m() != f64::from(config.zone_cell_m))
-            || self.frames[0].at_origin(DVec2::ZERO) != self.frames[1].at_origin(DVec2::ZERO)
-            || !road.fits_basis(self.frames[0])
-        {
-            return false;
-        }
-        let delta = road.points[road.points.len() - 1] - road.points[0];
-        let (u, v) = self.frames[0].axes();
-        let along = usize::from(delta.dot(v).abs() > delta.dot(u).abs());
-        let tangent = [u, v][along] * delta.dot([u, v][along]).signum();
-        let normal = DVec2::new(tangent.y, -tangent.x);
-        let width = f64::from(f32::from_bits(self.source[4])) * 0.5
-            + f64::from(crate::config::SIDEWALK_WIDTH);
-        !self.frames.into_iter().enumerate().any(|(side, frame)| {
-            let point =
-                frame.local(road.points[0] + normal * width * if side == 0 { -1.0 } else { 1.0 });
-            (point[1 - along] - point[1 - along].round()).abs() * frame.cell_m() > road.precision
-        })
+                .all(|frame| frame.is_valid() && frame.cell_m() == f64::from(config.zone_cell_m))
+            && road.fits_basis(self.frames[0])
+            && (0..2).all(|side| road.holds_curb(self.frames[0], self.frames[side], side))
     }
 
     /// Test-only: the directed left and right curb frames.
@@ -144,6 +130,29 @@ impl StraightRoad {
         self.points
             .iter()
             .all(|p| (*p - self.points[0]).perp_dot(tangent).abs() <= 2.0 * self.precision)
+    }
+
+    // Whether `frame`, on lattice `basis`, puts a grid line on this line's `side` curb (0 left,
+    // 1 right of its first-to-last direction) at its first point within the source precision.
+    // The one curb rule (`ROAD-125`): the load accepts a record by it, and a refresh keeps or
+    // takes a frame for a side only by it, so the refresh never writes a record its load
+    // refuses. A frame kept from a shorter road continues it within twice the precision
+    // (`Self::continues`), which a slanted road extended at its first point can exceed here:
+    // that side takes the line's own phase instead. O(1).
+    fn holds_curb(&self, basis: GridFrame, frame: GridFrame, side: usize) -> bool {
+        if frame.at_origin(DVec2::ZERO) != basis.at_origin(DVec2::ZERO) {
+            return false;
+        }
+        let delta = self.points[self.points.len() - 1] - self.points[0];
+        let (u, v) = frame.axes();
+        let along = usize::from(delta.dot(v).abs() > delta.dot(u).abs());
+        let tangent = [u, v][along] * delta.dot([u, v][along]).signum();
+        let normal = DVec2::new(tangent.y, -tangent.x);
+        let width = f64::from(f32::from_bits(self.source[4])) * 0.5
+            + f64::from(crate::config::SIDEWALK_WIDTH);
+        let point =
+            frame.local(self.points[0] + normal * width * if side == 0 { -1.0 } else { 1.0 });
+        (point[1 - along] - point[1 - along].round()).abs() * frame.cell_m() <= self.precision
     }
 
     fn continues(&self, previous: RoadCellAlignment) -> bool {
@@ -330,14 +339,17 @@ impl<M: CellMaps> CellStore<M> {
             }
         }
         for (&id, road) in &roads {
-            self.road_alignments.insert(
-                id,
-                RoadCellAlignment {
-                    source: road.source,
-                    nodes: road.nodes,
-                    frames: [phases[&(id, 0)], phases[&(id, 1)]],
-                },
+            let alignment = RoadCellAlignment {
+                source: road.source,
+                nodes: road.nodes,
+                frames: [phases[&(id, 0)], phases[&(id, 1)]],
+            };
+            // Every frame above passed the load's curb rule, the line's own phase included.
+            debug_assert!(
+                alignment.fits(road, config),
+                "road {id}'s alignment would not load"
             );
+            self.road_alignments.insert(id, alignment);
         }
         before
             .into_iter()
@@ -450,8 +462,9 @@ fn select_phases(
             let direction = road.points[road.points.len() - 1] - road.points[0];
             let reversed = usize::from(direction.dot(previous_direction) < 0.0);
             for (side, (_, fixed)) in raw[&id].iter().enumerate() {
-                if !fixed {
-                    phases.insert((id, side), old.frames[side ^ reversed]);
+                let frame = old.frames[side ^ reversed];
+                if !fixed && road.holds_curb(bases[&id], frame, side) {
+                    phases.insert((id, side), frame);
                 }
             }
         }
@@ -469,7 +482,10 @@ fn select_phases(
                         .flatten()
                 })
                 .flat_map(|&(source, old)| old.frames.into_iter().map(move |frame| (source, frame)))
-                .filter(|(_, frame)| raw_frame.phase_matches(*frame, road.precision))
+                .filter(|(_, frame)| {
+                    raw_frame.phase_matches(*frame, road.precision)
+                        && road.holds_curb(bases[&id], *frame, side)
+                })
                 .min();
             if let Some((_, frame)) = matching {
                 phases.insert((id, side), frame);
@@ -496,6 +512,7 @@ fn select_phases(
                     for (neighbor_side, (neighbor_frame, _)) in raw[&neighbor].iter().enumerate() {
                         if !phases.contains_key(&(neighbor, neighbor_side))
                             && neighbor_frame.phase_matches(frame, road.precision)
+                            && road.holds_curb(bases[&neighbor], frame, neighbor_side)
                         {
                             phases.insert((neighbor, neighbor_side), frame);
                             queue.push_back((neighbor, neighbor_side));
