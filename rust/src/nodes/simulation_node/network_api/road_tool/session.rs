@@ -26,23 +26,17 @@ use crate::nodes::sim::road_tool::frame::{
     DraftRefusal, GizmoHandleKind, GizmoLineClass, Gizmos, Phase, RoadToolFrame, StrokeRequest,
 };
 use crate::nodes::sim::road_tool::height::draft_batch;
-use crate::nodes::sim::road_tool::height::ground_marks::push_height_labels;
 use crate::nodes::sim::road_tool::hue::{FootprintHue, HueKind, HueState, graded_ground};
-use crate::nodes::sim::road_tool::labels::{
-    LabelKind, LabelTone, PreviewFacts, apply_preview, middle_label, place_chips,
-};
 use crate::nodes::sim::road_tool::measure::RoadTypeSpec;
 use crate::nodes::sim::road_tool::modes::DrawMode;
 use crate::nodes::sim::road_tool::session::{
     Pointer, PointerButton, RoadToolAction, RoadToolEvent, RoadToolOption, RoadToolSession,
 };
 use crate::nodes::sim::road_tool::snap::SnapKind;
-use crate::nodes::sim::road_tool::labels::ToolLabel;
-use crate::nodes::sim::road_tool::wording::{
-    CHIP_EXTRA_CHARACTERS, NoticeFacts, ReasonFacts, label_text,
-};
-use crate::nodes::road_wording::reason_facts;
 use crate::simulation::network::road_edit::{DraftGround, RoadProfile};
+use labels::Chips;
+
+mod labels;
 
 /// The road tool session of one `SimulationNode` and the preview the bridge last ran for it.
 #[derive(Default)]
@@ -58,69 +52,11 @@ pub(crate) struct RoadToolBridge {
     batch_ghost: bool,
     // The draft's footprint hue (round HU), built with each preview of a new pose.
     hue: FootprintHue,
-    // The HUD's chip font (round V2): character advances and the chip's padding, so the frame
-    // sizes the chips and `road_tool_place_chips` places them without GDScript work.
-    chip_font: ChipFont,
-    // The last frame's chips (with the preview's facts) and their pixel sizes, for placement.
-    labels: Vec<ToolLabel>,
-    label_sizes: Vec<Vector2>,
-    // Placement scratch: projected anchors, sides, sizes and handles, and the corners.
-    chip_scratch: ChipScratch,
+    // The HUD's label chips (rounds V2, R2-5): their font, this frame's and the HUD's copy, and
+    // their placement (`labels.rs`).
+    chips: Chips,
 }
 
-// The chips' font metrics as `road_tool_hud.gd` measures them (`road_tool_set_chip_font`).
-#[derive(Default)]
-struct ChipFont {
-    // Advances in pixels by character: printable ASCII by code, the rest listed.
-    ascii: Vec<f32>,
-    other: Vec<(char, f32)>,
-    // The panel's width beside the text (padding, icon and gap) and its height.
-    extra_px: f32,
-    height_px: f32,
-}
-
-impl ChipFont {
-    // A text's chip size: the text's advances summed and rounded up, plus the panel.
-    fn chip_size(&self, text: &str) -> Vector2 {
-        let fallback = self.ascii.get(usize::from(b'0')).copied().unwrap_or(0.0);
-        let width: f32 = text
-            .chars()
-            .map(|c| {
-                self.ascii.get(c as usize).copied().unwrap_or_else(|| {
-                    self.other
-                        .iter()
-                        .find(|(other, _)| *other == c)
-                        .map_or(fallback, |&(_, advance)| advance)
-                })
-            })
-            .sum();
-        Vector2::new(width.ceil() + self.extra_px, self.height_px)
-    }
-}
-
-#[derive(Default)]
-struct ChipScratch {
-    anchors: Vec<Vector2>,
-    sides: Vec<Vector2>,
-    sizes: Vec<Vector2>,
-    obstacles: Vec<Vector2>,
-    corners: Vec<Vector2>,
-    // Each chip is in front of the camera.
-    shown: Vec<bool>,
-}
-
-// Godot's `Camera3D.unproject_position` with the camera's `view_projection` (projection times the
-// inverse camera transform) and the viewport's size; `None` behind the near plane `near`.
-fn unproject(view_projection: &Projection, viewport: Vector2, near: f32, point: Vector3) -> Option<Vector2> {
-    let [x, y, z, w] = view_projection.cols;
-    let clip = x * point.x + y * point.y + z * point.z + w;
-    (clip.w >= near).then(|| {
-        Vector2::new(
-            (clip.x / clip.w * 0.5 + 0.5) * viewport.x,
-            (-clip.y / clip.w * 0.5 + 0.5) * viewport.y,
-        )
-    })
-}
 
 // The inputs a preview depends on: the stroke, its cross-section, the snap flag, the grade line
 // (round I) and the context generation the preview was made on.
@@ -296,15 +232,8 @@ impl SimulationNode {
     /// 3 the live end or the grabbed freeform grip, 4 a joint: the S-curve's or a freeform inner
     /// node, 5 a handle: an S-curve arc's control point, a freeform Bezier handle or a height
     /// handle's grip, whose stem is a guide strip; `gizmo_handle_attributes`: the kinds as the
-    /// one handle surface's UVs), the label chips (`label_kinds`: 0 piece
-    /// length, 1 total length, 2 radius, 3 angle, 4 slope, 5 cost, 6 bearing, 7 design speed, 8
-    /// notice, 9 hint, 10 Build, 11 Cancel, 12 an end's height above its ground with its part,
-    /// round H2; `label_values`, `label_anchors`, `label_sides`,
-    /// `label_tones`: 0 normal, 1 warning, 2 refused; `label_texts`, each chip's text as shown,
-    /// from `road_tool::wording`; `label_sizes`, each chip's pixels in the HUD's font,
-    /// `road_tool_set_chip_font`) and
-    /// `zoning_depth_m` (-1 for a type that does not zone). Heights (round I): `grade` (the grade
-    /// line's two end heights, empty when the stroke follows the ground), `height_handles`
+    /// one handle surface's UVs) and `zoning_depth_m` (-1 for a type that does not zone).
+    /// Heights (round I): `grade` (the grade line's two end heights, empty when the stroke follows the ground), `height_handles`
     /// (one dictionary per end that has one: `end` 0 start or 1 end, `support`, `height_m`,
     /// `offset_m`, `grip`, `locked`, `active`), the HUD's `start_height_m`, `end_height_m`
     /// (above the support; a locked end's above the terrain) and `slope_percent` (-1000 for
@@ -317,7 +246,9 @@ impl SimulationNode {
     /// frame tier 2 accepts it the exact overlay with `preview_road`'s keys, or its refusal);
     /// `batch` holds a new batch pose's tier 1 (`preview_road_draft`'s keys: the ghost) and
     /// `batch_cleared` is true when the ghost should go; `preview_cleared` is true when the
-    /// stroke went away. No preview while a sent stroke waits for its acknowledgement.
+    /// stroke went away. No preview while a sent stroke waits for its acknowledgement. The
+    /// frame also builds the label chips, which the HUD fetches only when they changed
+    /// (`road_tool_chips_update`, round R2-5).
     #[func]
     pub fn road_tool_frame(&mut self) -> VarDictionary {
         self.road_tool_update_draft();
@@ -348,7 +279,8 @@ impl SimulationNode {
         let bridge = &mut self.road_tool_session;
         bridge.hue.follow(bridge.session.frame());
         dict.set("hue_revision", bridge.hue.revision() as i64);
-        self.road_tool_set_labels(&mut dict, awaiting && has_stroke);
+        dict.set("zoning_depth_m", bridge.session.frame().zoning_depth_m.unwrap_or(-1.0));
+        self.road_tool_set_labels(awaiting && has_stroke);
         dict
     }
 
@@ -390,247 +322,6 @@ impl SimulationNode {
         let mut dict = VarDictionary::new();
         set_heights(&mut dict, self.road_tool_session.session.frame());
         dict
-    }
-
-    // The frame's label chips with what the standing preview says (the class-priced cost, the
-    // steepest grade, a refusal or a warning; `pending` while the sent stroke waits), as packed
-    // arrays: `label_kinds`, `label_values`, `label_anchors`, `label_sides` (unit XZ, y 0),
-    // `label_tones` and `label_texts` (each chip's text, round V2), with `zoning_depth_m`.
-    fn road_tool_set_labels(&mut self, dict: &mut VarDictionary, pending: bool) {
-        let frame = self.road_tool_session.session.frame();
-        let mut labels = frame.labels.clone();
-        let preview = self
-            .road_tool_session
-            .preview
-            .as_ref()
-            .filter(|_| frame.stroke.points.len() >= 2);
-        let hud = frame.hud;
-        let mut notice = NoticeFacts {
-            refusal: frame.state.refusal.map_or("", refusal_key),
-            draft: ReasonFacts {
-                geometry_measured: Some(hud.radius_m.unwrap_or(-1.0)),
-                geometry_limit: hud.illegal_radius_m,
-                ..ReasonFacts::default()
-            },
-            ..NoticeFacts::default()
-        };
-        let preview_reason;
-        if let Some(preview) = preview {
-            let number = |key: &str| preview.get(key).and_then(|v| v.try_to::<f64>().ok());
-            let text = |key: &str| {
-                preview
-                    .get(key)
-                    .and_then(|v| v.try_to::<GString>().ok())
-                    .map(|v| v.to_string())
-                    .unwrap_or_default()
-            };
-            let valid = preview
-                .get("is_valid")
-                .and_then(|v| v.try_to::<bool>().ok())
-                .unwrap_or(false);
-            let plan_state = text("plan_state");
-            let facts = PreviewFacts {
-                refused: !valid,
-                pending,
-                build_cost: number("build_cost"),
-                max_grade: number("max_grade"),
-                warning: !text("warning_reason").is_empty()
-                    || preview
-                        .get("demolish_count")
-                        .and_then(|v| v.try_to::<i64>().ok())
-                        .is_some_and(|count| count > 0)
-                    || !(plan_state.is_empty() || plan_state == "ready"),
-            };
-            let middle = middle_label(&labels);
-            apply_preview(&mut labels, facts, middle);
-            preview_reason = text("invalid_reason");
-            notice.preview_reason = &preview_reason;
-            notice.preview = reason_facts(preview);
-            notice.steep = (text("warning_reason") == "road_steep").then(|| {
-                (
-                    number("max_grade").unwrap_or(0.0),
-                    number("warning_limit").unwrap_or(0.0),
-                )
-            });
-            notice.demolish_count = preview
-                .get("demolish_count")
-                .and_then(|v| v.try_to::<i64>().ok())
-                .unwrap_or(0);
-            notice.checking = !(plan_state.is_empty() || plan_state == "ready");
-        }
-        // Each marked end's height chip (round H2), after the frame's segmentation named its
-        // part; placed after every other chip.
-        push_height_labels(
-            &frame.ground_marks,
-            &frame.stroke.points,
-            &frame.draft.runs,
-            &mut labels,
-        );
-        let kind = |kind: LabelKind| match kind {
-            LabelKind::PieceLength => 0,
-            LabelKind::TotalLength => 1,
-            LabelKind::Radius => 2,
-            LabelKind::Angle => 3,
-            LabelKind::Slope => 4,
-            LabelKind::Cost => 5,
-            LabelKind::Bearing => 6,
-            LabelKind::DesignSpeed => 7,
-            LabelKind::Notice => 8,
-            LabelKind::Hint(_) => 9,
-            LabelKind::Build => 10,
-            LabelKind::Cancel => 11,
-            LabelKind::EndHeight(_) => 12,
-        };
-        let tone = |tone: LabelTone| match tone {
-            LabelTone::Normal => 0,
-            LabelTone::Warning => 1,
-            LabelTone::Refused => 2,
-        };
-        dict.set(
-            "label_kinds",
-            labels
-                .iter()
-                .map(|l| kind(l.kind))
-                .collect::<PackedInt32Array>(),
-        );
-        dict.set(
-            "label_values",
-            labels
-                .iter()
-                .map(|l| l.value)
-                .collect::<PackedFloat64Array>(),
-        );
-        dict.set(
-            "label_anchors",
-            labels
-                .iter()
-                .map(|l| l.anchor)
-                .collect::<PackedVector3Array>(),
-        );
-        dict.set(
-            "label_sides",
-            labels
-                .iter()
-                .map(|l| Vector3::new(l.side.x as f32, 0.0, l.side.y as f32))
-                .collect::<PackedVector3Array>(),
-        );
-        dict.set(
-            "label_tones",
-            labels
-                .iter()
-                .map(|l| tone(l.tone))
-                .collect::<PackedInt32Array>(),
-        );
-        dict.set("zoning_depth_m", frame.zoning_depth_m.unwrap_or(-1.0));
-        // Each chip's text and its size in the HUD's font (round V2).
-        let mut text = String::new();
-        let mut texts = PackedStringArray::new();
-        let bridge = &mut self.road_tool_session;
-        bridge.label_sizes.clear();
-        for label in &labels {
-            label_text(label, &notice, &mut text);
-            texts.push(&GString::from(text.as_str()));
-            bridge.label_sizes.push(bridge.chip_font.chip_size(&text));
-        }
-        dict.set("label_texts", texts);
-        dict.set(
-            "label_sizes",
-            PackedVector2Array::from(bridge.label_sizes.as_slice()),
-        );
-        bridge.labels.clone_from(&labels);
-    }
-
-    /// Sets the HUD's chip font (round V2): `advances[i]` pixels for the `i`th character of
-    /// `characters`, and the chip's panel: `extra_px` beside the text (padding, icon, gap) and
-    /// `height_px`. The frame's `label_sizes` follow from these.
-    #[func]
-    pub fn road_tool_set_chip_font(
-        &mut self,
-        characters: GString,
-        advances: PackedFloat32Array,
-        extra_px: f32,
-        height_px: f32,
-    ) {
-        let font = &mut self.road_tool_session.chip_font;
-        font.ascii.clear();
-        font.ascii.resize(128, 0.0);
-        font.other.clear();
-        for (c, &advance) in characters.to_string().chars().zip(advances.as_slice()) {
-            match font.ascii.get_mut(c as usize) {
-                Some(slot) => *slot = advance,
-                None => font.other.push((c, advance)),
-            }
-        }
-        font.extra_px = extra_px;
-        font.height_px = height_px;
-    }
-
-    /// The characters the chips' texts use, for `road_tool_set_chip_font`: printable ASCII and
-    /// the few others the wording writes.
-    #[func]
-    pub fn road_tool_chip_characters() -> GString {
-        let mut characters: String = (b' '..=b'~').map(char::from).collect();
-        characters.push_str(CHIP_EXTRA_CHARACTERS);
-        characters.as_str().into()
-    }
-
-    /// Places the last frame's chips on the screen (round V2: the projection in Rust): each
-    /// chip's world anchor and side and the frame's handles projected with `view_projection`
-    /// (the camera's projection times its inverse transform) onto a `viewport` of pixels
-    /// (behind the `near` plane: not shown), then `labels::place_chips` with the frame's sizes,
-    /// `obstacle_px` squares about the handles and `gap`. Returns each chip's top-left corner, NaN
-    /// for a chip behind the camera.
-    #[func]
-    pub fn road_tool_place_chips(
-        &mut self,
-        view_projection: Projection,
-        viewport: Vector2,
-        near: f32,
-        obstacle_px: f32,
-        gap: f32,
-    ) -> PackedVector2Array {
-        let bridge = &mut self.road_tool_session;
-        let scratch = &mut bridge.chip_scratch;
-        scratch.anchors.clear();
-        scratch.sides.clear();
-        scratch.sizes.clear();
-        scratch.shown.clear();
-        for (label, &size) in bridge.labels.iter().zip(&bridge.label_sizes) {
-            let at = unproject(&view_projection, viewport, near, label.anchor);
-            scratch.shown.push(at.is_some());
-            let Some(at) = at else { continue };
-            let side = Vector3::new(label.side.x as f32, 0.0, label.side.y as f32);
-            let toward = unproject(&view_projection, viewport, near, label.anchor + side * 4.0);
-            scratch.anchors.push(at);
-            scratch.sides.push(toward.map_or(Vector2::ZERO, |toward| toward - at));
-            scratch.sizes.push(size);
-        }
-        scratch.obstacles.clear();
-        for &handle in &bridge.session.frame().gizmos.handles {
-            if let Some(at) = unproject(&view_projection, viewport, near, handle) {
-                scratch.obstacles.push(at);
-            }
-        }
-        place_chips(
-            &scratch.anchors,
-            &scratch.sides,
-            &scratch.sizes,
-            &scratch.obstacles,
-            obstacle_px,
-            gap,
-            &mut scratch.corners,
-        );
-        let mut placed = scratch.corners.iter();
-        scratch
-            .shown
-            .iter()
-            .map(|&shown| {
-                shown
-                    .then(|| placed.next().copied())
-                    .flatten()
-                    .unwrap_or(Vector2::new(f32::NAN, f32::NAN))
-            })
-            .collect()
     }
 
     // The road tool's frame record without the preview.

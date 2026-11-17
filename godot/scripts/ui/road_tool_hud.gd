@@ -4,9 +4,14 @@
 ## dark rounded panel with a vector icon and one text, the same pixel size at every zoom.
 ## Rust's frame decides which chips exist, their texts (values with their units, the hint, the
 ## notice's warning or refusal: `road_tool::wording`), tones, world anchors and the side each is
-## pushed to (`label_*`), and their sizes in the font this script sends it once
-## (`road_tool_set_chip_font`); `SimulationNode.road_tool_place_chips` projects and places them
-## without overlap (one deterministic rule). This script only hands over the camera and draws. A notice chip is red for a refusal, amber for a warning or a stroke being sent. An
+## pushed to, and their sizes in the font this script sends it once (`road_tool_set_chip_font`);
+## `SimulationNode.road_tool_chips_update` places them for the camera without overlap (one
+## deterministic rule) and says whether anything changed (round R2-5): this script fetches and
+## draws only then, so a still frame draws nothing. Each chip's panel and icon is its own canvas
+## item, redrawn only when its kind, tone or size changes and otherwise only moved; the texts are
+## drawn together above the panels whenever a text or a corner changed (drawn at the corner
+## itself, as the font snaps its glyphs to the pixel grid). A notice chip is red for a refusal,
+## amber for a warning or a stroke being sent. An
 ## open freeform draft adds a hint chip and, in its edit phase, the clickable Build and Cancel
 ## chips beside its last node: their clicks are the GUI's (they never reach the world),
 ## emitting `build_pressed` and `cancel_pressed`. Chips keep clear of the handles.
@@ -19,9 +24,9 @@ signal cancel_pressed
 
 const UiStyle := preload("res://scripts/ui/ui_style.gd")
 
-## Chip kinds as `road_tool_frame` numbers them (`label_kinds`).
+## Chip kinds as `road_tool_chips` numbers them (`kinds`).
 enum Kind { PIECE_LENGTH, TOTAL_LENGTH, RADIUS, ANGLE, SLOPE, COST, BEARING, DESIGN_SPEED, NOTICE, HINT, BUILD, CANCEL, END_HEIGHT }
-## Chip tones (`label_tones`).
+## Chip tones (`tones`).
 enum Tone { NORMAL, WARNING, REFUSED }
 
 ## The chips' look, from the UI theme (`ui_style.gd`): panel, text and the two alert tones.
@@ -42,7 +47,7 @@ const HANDLE_CLEAR_PX := 18.0
 const BUTTON_BG := Color(0.16, 0.16, 0.24, 0.92)
 
 ## The node whose road tool frame the chips come from: it sizes them in the font this HUD sends
-## it (`road_tool_set_chip_font`) and places them (`road_tool_place_chips`); without one no chip
+## it (`road_tool_set_chip_font`) and places them (`road_tool_chips_update`); without one no chip
 ## shows.
 var simulation_node: Object = null:
 	set(node):
@@ -50,27 +55,32 @@ var simulation_node: Object = null:
 			simulation_node = node
 			_send_font()
 
+## `road_tool_chips_update`'s flags: the chips changed (fetch them, corners included), or only
+## their corners did.
+const CHIPS_CHANGED := 1
+const CORNERS_CHANGED := 2
+
+## Chip draws so far: a panel's or the texts' draw callback each (tests count them).
+var draws := 0
+
+# The panels' parent (drawn first) and the texts' canvas above it.
+var _panel_layer: Node2D
 var _canvas: Control
 var _font: Font
 var _style := StyleBoxFlat.new()
-# This frame's chips: kind, tone, text (Rust's), size, world anchor and side, and their screen
-# corners.
+# The fetched chips: kind, tone, text and size (Rust's), and their screen corners.
 var _kinds := PackedInt32Array()
 var _tones := PackedInt32Array()
 var _texts := PackedStringArray()
 var _sizes := PackedVector2Array()
-var _anchors := PackedVector3Array()
 var _corners := PackedVector2Array()
-# The handles the chips were last placed clear of.
-var _handles := PackedVector3Array()
+# Chip `i`'s panel and icon, made on first use and kept; hidden while no chip `i` shows.
+var _panels: Array[Node2D] = []
+# Nothing fetched since the chips were cleared: the next frame fetches them whatever Rust says.
+var _stale := true
 # The chips' font size (`UiStyle.scaled_font_size` reads the settings: taken again, and the font
 # sent to Rust again, whenever the chips are cleared, not every frame).
 var _font_size := 0
-# What the chips were last placed for (camera and chips): an unchanged frame places nothing.
-var _placed_view := Transform3D()
-var _placed_fov := 0.0
-var _placed_size := Vector2.ZERO
-var _placed_dirty := true
 # The clickable chips' hit areas (GUI controls, so their clicks stop at the GUI).
 var _build_hit: Control
 var _cancel_hit: Control
@@ -78,10 +88,12 @@ var _button_style := StyleBoxFlat.new()
 
 func _init() -> void:
 	layer = 10
+	_panel_layer = Node2D.new()
+	add_child(_panel_layer)
 	_canvas = Control.new()
 	_canvas.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_canvas.set_anchors_preset(Control.PRESET_FULL_RECT)
-	_canvas.draw.connect(_draw_chips)
+	_canvas.draw.connect(_draw_texts)
 	add_child(_canvas)
 	_font = ThemeDB.fallback_font
 	_style.bg_color = CHIP_BG
@@ -108,28 +120,6 @@ func _hit_area(pressed: Signal) -> Control:
 	add_child(hit)
 	return hit
 
-## Takes the frame's chips (the `label_*` arrays: texts and sizes are Rust's). Returns whether
-## there are chips.
-func show_labels(frame: Dictionary) -> bool:
-	var kinds: PackedInt32Array = frame.get("label_kinds", PackedInt32Array())
-	var texts: PackedStringArray = frame.get("label_texts", PackedStringArray())
-	var tones: PackedInt32Array = frame.get("label_tones", PackedInt32Array())
-	var anchors: PackedVector3Array = frame.get("label_anchors", PackedVector3Array())
-	var handles: PackedVector3Array = frame.get("gizmo_handles", PackedVector3Array())
-	# Rounded texts repeat while the geometry moves: the anchors decide a new placement too.
-	if kinds == _kinds and texts == _texts and tones == _tones and handles == _handles and anchors == _anchors:
-		return not kinds.is_empty()
-	_anchors = anchors
-	_handles = handles
-	_kinds = kinds
-	_tones = tones
-	_texts = texts
-	_sizes = frame.get("label_sizes", PackedVector2Array())
-	_placed_dirty = true
-	if _font_size == 0:
-		_send_font()
-	return not kinds.is_empty()
-
 # Sends the chips' font to Rust, which sizes the texts in it: the advance of every character the
 # wording writes, the panel beside the text and its height.
 func _send_font() -> void:
@@ -143,53 +133,82 @@ func _send_font() -> void:
 		advances[index] = _font.get_char_size(characters.unicode_at(index), _font_size).x
 	simulation_node.road_tool_set_chip_font(characters, advances, PAD_X * 2.0 + ICON_PX + ICON_GAP, maxf(_font.get_height(_font_size), ICON_PX) + PAD_Y * 2.0)
 
-## Removes every chip.
+## Removes every chip; nothing to do when none was fetched since the last clear.
 func clear() -> void:
+	if _stale:
+		return
+	_stale = true
 	_kinds = PackedInt32Array()
+	_tones = PackedInt32Array()
 	_texts = PackedStringArray()
 	_sizes = PackedVector2Array()
 	_corners = PackedVector2Array()
-	_placed_dirty = true
 	_font_size = 0
 	_build_hit.visible = false
 	_cancel_hit.visible = false
+	for panel in _panels:
+		panel.visible = false
 	_canvas.queue_redraw()
 
 ## The chips' texts in frame order, joined by two spaces (tests read the HUD this way).
 func text() -> String:
 	return "  ".join(_texts)
 
-## Projects the chips' anchors and sides with `camera` and places them (Rust's rule); returns the
-## milliseconds it took (0 without chips).
+## Once a frame after the tool's frame: Rust places the chips for `camera` (null: none placed)
+## and says what changed; only then are the chips or their corners fetched, the changed panels
+## redrawn, the panels moved and the texts redrawn. Returns the milliseconds it took (0 on a frame
+## with no change).
 func place(camera: Camera3D) -> float:
-	if _kinds.is_empty() or camera == null:
-		_build_hit.visible = false
-		_cancel_hit.visible = false
-		if not _corners.is_empty():
-			_corners = PackedVector2Array()
-			_canvas.queue_redraw()
-		return 0.0
-	var view := camera.global_transform
-	var viewport_size := camera.get_viewport().get_visible_rect().size
-	if not _placed_dirty and view == _placed_view and camera.fov == _placed_fov and viewport_size == _placed_size:
+	if simulation_node == null:
 		return 0.0
 	var start_us := Time.get_ticks_usec()
-	_placed_view = view
-	_placed_fov = camera.fov
-	_placed_size = viewport_size
-	_placed_dirty = false
-	# Rust projects the anchors, their sides and the handles and places the chips (round V2).
-	if simulation_node == null:
-		_corners = PackedVector2Array()
+	if _font_size == 0:
+		_send_font()
+	var flags: int = simulation_node.road_tool_chips_update(camera, HANDLE_CLEAR_PX, GAP_PX)
+	if _stale:
+		flags |= CHIPS_CHANGED
+	if flags == 0:
+		return 0.0
+	_stale = false
+	if flags & CHIPS_CHANGED:
+		var chips: Dictionary = simulation_node.road_tool_chips()
+		_kinds = chips["kinds"]
+		_tones = chips["tones"]
+		_texts = chips["texts"]
+		_sizes = chips["sizes"]
+		_corners = chips["corners"]
+		for index in PackedInt32Array(chips["redraw"]):
+			_panel(index).queue_redraw()
 	else:
-		var view_projection := camera.get_camera_projection() * Projection(camera.get_camera_transform().affine_inverse())
-		# One corner a chip, NaN behind the camera.
-		_corners = simulation_node.road_tool_place_chips(view_projection, viewport_size, camera.near, HANDLE_CLEAR_PX, GAP_PX)
+		_corners = simulation_node.road_tool_chip_corners()
+	_place_panels()
 	if _kinds.has(Kind.BUILD) or _kinds.has(Kind.CANCEL) or _build_hit.visible or _cancel_hit.visible:
 		_place_hit(_build_hit, Kind.BUILD)
 		_place_hit(_cancel_hit, Kind.CANCEL)
 	_canvas.queue_redraw()
 	return float(Time.get_ticks_usec() - start_us) / 1000.0
+
+# Chip `index`'s panel, made (and drawn on its first frame) when first needed.
+func _panel(index: int) -> Node2D:
+	while _panels.size() <= index:
+		var panel := Node2D.new()
+		panel.draw.connect(_draw_panel.bind(panel, _panels.size()))
+		_panel_layer.add_child(panel)
+		_panels.append(panel)
+		panel.queue_redraw()
+	return _panels[index]
+
+# Moves each shown chip's panel to its corner and hides the rest (a chip behind the camera, or
+# none). `O(panels)`, on frames whose chips or corners changed only.
+func _place_panels() -> void:
+	var count := mini(_kinds.size(), _corners.size())
+	for index in count:
+		var panel := _panel(index)
+		panel.visible = not is_nan(_corners[index].x)
+		if panel.visible:
+			panel.position = _corners[index]
+	for index in range(count, _panels.size()):
+		_panels[index].visible = false
 
 ## The screen rectangle of the shown chip of `kind`, or an empty one.
 func chip_rect(kind: int) -> Rect2:
@@ -206,78 +225,93 @@ func _place_hit(hit: Control, kind: int) -> void:
 		hit.position = rect.position
 		hit.size = rect.size
 
-func _draw_chips() -> void:
+# Chip `index`'s panel and icon, in the panel's own coordinates (its corner at the origin).
+func _draw_panel(panel: Node2D, index: int) -> void:
+	if index >= mini(_kinds.size(), _sizes.size()):
+		return
+	draws += 1
+	var size := _sizes[index]
+	var button := _kinds[index] == Kind.BUILD or _kinds[index] == Kind.CANCEL
+	panel.draw_style_box(_button_style if button else _style, Rect2(Vector2.ZERO, size))
+	var tone := _tones[index]
+	var icon := Rect2(Vector2(PAD_X, (size.y - ICON_PX) * 0.5), Vector2(ICON_PX, ICON_PX))
+	_draw_icon(panel, _kinds[index], tone, icon, CHIP_ICON if tone == Tone.NORMAL else TONE_COLORS[tone])
+
+# Every shown chip's text beside its icon.
+func _draw_texts() -> void:
+	var count := mini(_kinds.size(), _corners.size())
+	if count == 0:
+		return
+	draws += 1
 	var font_size := _font_size if _font_size > 0 else UiStyle.scaled_font_size(FONT_SIZE)
-	for index in mini(_kinds.size(), _corners.size()):
+	var ascent := _font.get_ascent(font_size)
+	var descent := _font.get_descent(font_size)
+	for index in count:
 		if is_nan(_corners[index].x):
 			continue
+		# The panel's rectangles as `_draw_panel` lays them out, in screen coordinates.
 		var rect := Rect2(_corners[index], _sizes[index])
-		var button := _kinds[index] == Kind.BUILD or _kinds[index] == Kind.CANCEL
-		_canvas.draw_style_box(_button_style if button else _style, rect)
-		var tone := _tones[index]
-		var color: Color = TONE_COLORS[tone]
 		var icon := Rect2(rect.position + Vector2(PAD_X, (rect.size.y - ICON_PX) * 0.5), Vector2(ICON_PX, ICON_PX))
-		_draw_icon(_kinds[index], tone, icon, CHIP_ICON if tone == Tone.NORMAL else color)
-		var baseline := rect.position.y + (rect.size.y + _font.get_ascent(font_size) - _font.get_descent(font_size)) * 0.5
-		_canvas.draw_string(_font, Vector2(icon.end.x + ICON_GAP, baseline), _texts[index], HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, color)
+		var baseline := rect.position.y + (rect.size.y + ascent - descent) * 0.5
+		_canvas.draw_string(_font, Vector2(icon.end.x + ICON_GAP, baseline), _texts[index], HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, TONE_COLORS[_tones[index]])
 
 # Small vector icons, drawn in `box`: a double arrow (a piece's length; with end bars, the total),
 # an arc and its radius, an angle, a slope, a coin, a compass needle, a speed gauge, a warning
 # triangle or a refusal's crossed circle, an end's height (a vertical double arrow over the ground).
-func _draw_icon(kind: int, tone: int, box: Rect2, color: Color) -> void:
+func _draw_icon(item: CanvasItem, kind: int, tone: int, box: Rect2, color: Color) -> void:
 	var c := box.get_center()
 	var h := box.size.x * 0.5
 	match kind:
 		Kind.PIECE_LENGTH, Kind.TOTAL_LENGTH:
 			var a := c - Vector2(h, 0.0)
 			var b := c + Vector2(h, 0.0)
-			_canvas.draw_line(a, b, color, 1.5, true)
-			_canvas.draw_polyline(PackedVector2Array([a + Vector2(3.5, -3.0), a, a + Vector2(3.5, 3.0)]), color, 1.5, true)
-			_canvas.draw_polyline(PackedVector2Array([b + Vector2(-3.5, -3.0), b, b + Vector2(-3.5, 3.0)]), color, 1.5, true)
+			item.draw_line(a, b, color, 1.5, true)
+			item.draw_polyline(PackedVector2Array([a + Vector2(3.5, -3.0), a, a + Vector2(3.5, 3.0)]), color, 1.5, true)
+			item.draw_polyline(PackedVector2Array([b + Vector2(-3.5, -3.0), b, b + Vector2(-3.5, 3.0)]), color, 1.5, true)
 			if kind == Kind.TOTAL_LENGTH:
-				_canvas.draw_line(a + Vector2(0.0, -h), a + Vector2(0.0, h), color, 1.5, true)
-				_canvas.draw_line(b + Vector2(0.0, -h), b + Vector2(0.0, h), color, 1.5, true)
+				item.draw_line(a + Vector2(0.0, -h), a + Vector2(0.0, h), color, 1.5, true)
+				item.draw_line(b + Vector2(0.0, -h), b + Vector2(0.0, h), color, 1.5, true)
 		Kind.RADIUS:
 			var centre := c + Vector2(-h, h)
-			_canvas.draw_arc(centre, h * 2.0, -PI * 0.5, 0.0, 10, color, 1.5, true)
-			_canvas.draw_line(centre, centre + Vector2(h, -h) * 1.41 * 0.7, color, 1.5, true)
+			item.draw_arc(centre, h * 2.0, -PI * 0.5, 0.0, 10, color, 1.5, true)
+			item.draw_line(centre, centre + Vector2(h, -h) * 1.41 * 0.7, color, 1.5, true)
 		Kind.ANGLE:
 			var corner := c + Vector2(-h, h)
-			_canvas.draw_polyline(PackedVector2Array([c + Vector2(h, -h), corner, c + Vector2(h, h)]), color, 1.5, true)
-			_canvas.draw_arc(corner, h, -PI * 0.25, 0.0, 6, color, 1.2, true)
+			item.draw_polyline(PackedVector2Array([c + Vector2(h, -h), corner, c + Vector2(h, h)]), color, 1.5, true)
+			item.draw_arc(corner, h, -PI * 0.25, 0.0, 6, color, 1.2, true)
 		Kind.SLOPE:
-			_canvas.draw_colored_polygon(PackedVector2Array([c + Vector2(-h, h), c + Vector2(h, h), c + Vector2(h, -h * 0.4)]), color)
+			item.draw_colored_polygon(PackedVector2Array([c + Vector2(-h, h), c + Vector2(h, h), c + Vector2(h, -h * 0.4)]), color)
 		Kind.COST:
-			_canvas.draw_arc(c, h, 0.0, TAU, 16, color, 1.5, true)
-			_canvas.draw_line(c + Vector2(0.0, -h * 0.55), c + Vector2(0.0, h * 0.55), color, 1.5, true)
+			item.draw_arc(c, h, 0.0, TAU, 16, color, 1.5, true)
+			item.draw_line(c + Vector2(0.0, -h * 0.55), c + Vector2(0.0, h * 0.55), color, 1.5, true)
 		Kind.BEARING:
-			_canvas.draw_arc(c, h, 0.0, TAU, 16, color, 1.2, true)
-			_canvas.draw_colored_polygon(PackedVector2Array([c + Vector2(0.0, -h * 0.85), c + Vector2(h * 0.35, 0.0), c + Vector2(-h * 0.35, 0.0)]), color)
+			item.draw_arc(c, h, 0.0, TAU, 16, color, 1.2, true)
+			item.draw_colored_polygon(PackedVector2Array([c + Vector2(0.0, -h * 0.85), c + Vector2(h * 0.35, 0.0), c + Vector2(-h * 0.35, 0.0)]), color)
 		Kind.DESIGN_SPEED:
-			_canvas.draw_arc(c + Vector2(0.0, h * 0.4), h, PI, TAU, 12, color, 1.5, true)
-			_canvas.draw_line(c + Vector2(0.0, h * 0.4), c + Vector2(h * 0.55, -h * 0.35), color, 1.5, true)
+			item.draw_arc(c + Vector2(0.0, h * 0.4), h, PI, TAU, 12, color, 1.5, true)
+			item.draw_line(c + Vector2(0.0, h * 0.4), c + Vector2(h * 0.55, -h * 0.35), color, 1.5, true)
 		Kind.END_HEIGHT:
 			# A vertical double arrow over a ground line: an end's height above its ground.
 			var top := c + Vector2(0.0, -h)
 			var foot := c + Vector2(0.0, h * 0.6)
-			_canvas.draw_line(top, foot, color, 1.5, true)
-			_canvas.draw_polyline(PackedVector2Array([top + Vector2(-3.0, 3.0), top, top + Vector2(3.0, 3.0)]), color, 1.5, true)
-			_canvas.draw_polyline(PackedVector2Array([foot + Vector2(-3.0, -3.0), foot, foot + Vector2(3.0, -3.0)]), color, 1.5, true)
-			_canvas.draw_line(c + Vector2(-h, h), c + Vector2(h, h), color, 1.5, true)
+			item.draw_line(top, foot, color, 1.5, true)
+			item.draw_polyline(PackedVector2Array([top + Vector2(-3.0, 3.0), top, top + Vector2(3.0, 3.0)]), color, 1.5, true)
+			item.draw_polyline(PackedVector2Array([foot + Vector2(-3.0, -3.0), foot, foot + Vector2(3.0, -3.0)]), color, 1.5, true)
+			item.draw_line(c + Vector2(-h, h), c + Vector2(h, h), color, 1.5, true)
 		Kind.HINT:
-			_canvas.draw_arc(c, h, 0.0, TAU, 16, color, 1.5, true)
-			_canvas.draw_line(c + Vector2(0.0, -h * 0.1), c + Vector2(0.0, h * 0.55), color, 1.5, true)
-			_canvas.draw_circle(c + Vector2(0.0, -h * 0.45), 1.2, color)
+			item.draw_arc(c, h, 0.0, TAU, 16, color, 1.5, true)
+			item.draw_line(c + Vector2(0.0, -h * 0.1), c + Vector2(0.0, h * 0.55), color, 1.5, true)
+			item.draw_circle(c + Vector2(0.0, -h * 0.45), 1.2, color)
 		Kind.BUILD:
-			_canvas.draw_polyline(PackedVector2Array([c + Vector2(-h, 0.0), c + Vector2(-h * 0.3, h * 0.7), c + Vector2(h, -h * 0.7)]), Color(0.35, 0.95, 0.55), 2.0, true)
+			item.draw_polyline(PackedVector2Array([c + Vector2(-h, 0.0), c + Vector2(-h * 0.3, h * 0.7), c + Vector2(h, -h * 0.7)]), Color(0.35, 0.95, 0.55), 2.0, true)
 		Kind.CANCEL:
-			_canvas.draw_line(c + Vector2(-h, -h) * 0.75, c + Vector2(h, h) * 0.75, TONE_COLORS[Tone.REFUSED], 2.0, true)
-			_canvas.draw_line(c + Vector2(h, -h) * 0.75, c + Vector2(-h, h) * 0.75, TONE_COLORS[Tone.REFUSED], 2.0, true)
+			item.draw_line(c + Vector2(-h, -h) * 0.75, c + Vector2(h, h) * 0.75, TONE_COLORS[Tone.REFUSED], 2.0, true)
+			item.draw_line(c + Vector2(h, -h) * 0.75, c + Vector2(-h, h) * 0.75, TONE_COLORS[Tone.REFUSED], 2.0, true)
 		Kind.NOTICE:
 			if tone == Tone.REFUSED:
-				_canvas.draw_arc(c, h, 0.0, TAU, 16, color, 1.5, true)
-				_canvas.draw_line(c + Vector2(-h, -h) * 0.45, c + Vector2(h, h) * 0.45, color, 1.5, true)
-				_canvas.draw_line(c + Vector2(h, -h) * 0.45, c + Vector2(-h, h) * 0.45, color, 1.5, true)
+				item.draw_arc(c, h, 0.0, TAU, 16, color, 1.5, true)
+				item.draw_line(c + Vector2(-h, -h) * 0.45, c + Vector2(h, h) * 0.45, color, 1.5, true)
+				item.draw_line(c + Vector2(h, -h) * 0.45, c + Vector2(-h, h) * 0.45, color, 1.5, true)
 			else:
-				_canvas.draw_polyline(PackedVector2Array([c + Vector2(0.0, -h), c + Vector2(h, h), c + Vector2(-h, h), c + Vector2(0.0, -h)]), color, 1.5, true)
-				_canvas.draw_line(c + Vector2(0.0, -h * 0.3), c + Vector2(0.0, h * 0.35), color, 1.5, true)
+				item.draw_polyline(PackedVector2Array([c + Vector2(0.0, -h), c + Vector2(h, h), c + Vector2(-h, h), c + Vector2(0.0, -h)]), color, 1.5, true)
+				item.draw_line(c + Vector2(0.0, -h * 0.3), c + Vector2(0.0, h * 0.35), color, 1.5, true)

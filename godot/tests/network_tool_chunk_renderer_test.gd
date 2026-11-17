@@ -1184,6 +1184,24 @@ func _test_freeform_chips(simulation: SimulationNode, tool: PointerRoadTool) -> 
 	tool.pointer = Vector3(60.0, 0.0, 95.0)
 	_road_frame(tool)
 	_expect(hud.text().contains("Click to add a node"), "a placing draft hints how to go on: '%s'" % hud.text())
+	# Round R2-5: a still frame fetches and draws no chip; a camera move redraws the texts only
+	# (the panels move).
+	hud.place(camera)
+	await process_frame
+	await process_frame
+	var draws: int = hud.draws
+	_expect(draws > 0, "the chips are drawn")
+	for still in 3:
+		simulation.road_tool_frame()
+		_expect(hud.place(camera) == 0.0, "a still frame updates no chip")
+		await process_frame
+	_expect(hud.draws == draws, "a still frame draws no chip: %d draws against %d" % [hud.draws, draws])
+	camera.position.x += 1.0
+	_expect(hud.place(camera) > 0.0, "a camera move places the chips again")
+	await process_frame
+	await process_frame
+	_expect(hud.draws == draws + 1, "a camera move redraws the texts only: %d draws against %d" % [hud.draws, draws])
+	camera.position.x -= 1.0
 	for action in ["build", "cancel"]:
 		tool.cancel_road()
 		tool._begin_stroke(Vector3(30.0, 0.0, 85.0))

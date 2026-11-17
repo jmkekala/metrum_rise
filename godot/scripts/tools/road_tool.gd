@@ -178,13 +178,12 @@ var gizmos = null
 var _hue = null
 var _hue_revision := -1
 var _held_hue = null
-## Each frame's gizmo upload and label placement milliseconds while the preview is measured
+## Each frame's gizmo upload and chip update milliseconds while the preview is measured
 ## (`begin_preview_measurement`).
 var gizmo_upload_ms := PackedFloat32Array()
-## The same frames' parts: the gizmo upload, the chips' wording and their placement.
-var gizmo_part_ms := {"gizmos": PackedFloat32Array(), "label_words": PackedFloat32Array(), "label_place": PackedFloat32Array()}
-# This frame's chip wording milliseconds (`_session_frame`).
-var _label_word_ms := 0.0
+## The same frames' parts: the gizmo upload and the chips' fetch and placement (round R2-5: the
+## chips' wording is part of the Rust frame).
+var gizmo_part_ms := {"gizmos": PackedFloat32Array(), "label_place": PackedFloat32Array()}
 
 var preview_metrics: RefCounted
 var _preview_input_us := 0
@@ -313,23 +312,20 @@ func _process(delta):
 		_clear_hue()
 	# The base tool has now resolved this frame's pointer, including camera-only movement.
 	var moved := _has_last_world_mouse_pos and (not had_mouse_pos or previous_mouse_pos != _last_world_mouse_pos)
-	var gizmo_ms := 0.0
-	_label_word_ms = 0.0
 	if active and _has_session():
-		gizmo_ms = _session_frame(moved)
-	_place_labels(gizmo_ms)
+		_place_labels(_session_frame(moved))
 
-# Projects and places the HUD's chips each frame, so they stay the same pixel size at any zoom;
-# records the frame's gizmo upload plus placement while measured.
+# Hands the HUD this frame's camera (none outside the tree): it fetches and draws the chips only
+# when Rust says they or their corners changed, so they stay the same pixel size at any zoom;
+# records the frame's gizmo upload plus the chips' update while measured.
 func _place_labels(gizmo_ms: float) -> void:
-	if hud == null or not is_inside_tree():
+	if hud == null:
 		return
 	hud.simulation_node = simulation_node
-	var label_ms: float = hud.place(get_viewport().get_camera_3d())
-	if preview_metrics != null and gizmo_ms + _label_word_ms + label_ms > 0.0:
-		gizmo_upload_ms.append(gizmo_ms + _label_word_ms + label_ms)
+	var label_ms: float = hud.place(get_viewport().get_camera_3d() if is_inside_tree() else null)
+	if preview_metrics != null and gizmo_ms + label_ms > 0.0:
+		gizmo_upload_ms.append(gizmo_ms + label_ms)
 		gizmo_part_ms["gizmos"].append(gizmo_ms)
-		gizmo_part_ms["label_words"].append(_label_word_ms)
 		gizmo_part_ms["label_place"].append(label_ms)
 
 func _has_session() -> bool:
@@ -353,7 +349,7 @@ func _is_editable() -> bool:
 
 # One frame of the session: the scripted pointer, then the frame record, its preview when the
 # stroke, its type or the context changed, or the next share of the pose's graded tiles; then
-# the gizmos and the HUD's chips. Returns the gizmo upload's milliseconds.
+# the gizmos (the HUD's chips follow in `_place_labels`). Returns the gizmo upload's milliseconds.
 func _session_frame(moved: bool) -> float:
 	if _scripted_pointer_enabled:
 		simulation_node.road_tool_pointer_at(_scripted_pointer_position)
@@ -376,10 +372,6 @@ func _session_frame(moved: bool) -> float:
 	elif _graded_pending > 0 and _commit_request_id == 0 and _is_editable():
 		# A frame without a new pose stages the next share of the pose's graded tiles.
 		_show_graded(simulation_node.advance_road_preview_terrain())
-	if hud != null:
-		var word_us := Time.get_ticks_usec()
-		if hud.show_labels(frame):
-			_label_word_ms = float(Time.get_ticks_usec() - word_us) / 1000.0
 	var gizmo_ms := _show_gizmos(frame) + _show_hue(frame)
 	_show_batch_ghost(frame)
 	return gizmo_ms
