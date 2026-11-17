@@ -417,7 +417,7 @@ impl SimulationNode {
             let middle = middle_label(&next.labels);
             apply_preview(
                 &mut next.labels,
-                preview.chip_facts(pending, &frame.stroke.points),
+                preview.chip_facts(pending),
                 middle,
             );
             notice.preview_reason = &preview.reason;

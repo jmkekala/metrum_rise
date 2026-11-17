@@ -163,9 +163,10 @@ impl<'a> DraftGround<'a> {
 /// join or crossing usually two. The commit, the preview and the editor's checks all plan here.
 /// The prepared stroke carries `median` (`ROAD-80`), `parking` (`PARK-05`) and the road type's
 /// `attributes` (`ROAD-101`), which preparation does not read. `frontages` answers the stub
-/// guard (`ROAD-118` round JS3); a plan that moves the stroke's ends onto the roads they touch
-/// (round JS4a) or onto nodes returns the stroke it builds ([`built_stroke`]) as the prepared
-/// one, so its cost, water and land checks read the road it builds.
+/// guard (`ROAD-118` round JS3); a plan that joins the stroke's ends to the roads they touch or
+/// to nodes (rounds JS4a, JS5a) returns the stroke it builds, the drawn one with its lead-ins
+/// ([`built_stroke`]), as the prepared one, so its cost, water and land checks read the road it
+/// builds.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn plan_road_edit(
     raw_points: &[Vector3],
@@ -204,10 +205,8 @@ pub(crate) fn plan_road_edit(
             .map(RoadTopologyPlan::rebuilt_pieces)
             .unwrap_or_default();
         if !read.iter().any(|&piece| rebuilt.rebuilds(piece)) {
-            let moved = validation.contacts.iter().any(Option::is_some)
-                || validation.joined_nodes.iter().any(Option::is_some);
-            if validation.is_valid && moved {
-                prepared = built_stroke(&prepared, &validation, graph);
+            if validation.is_valid && validation.lead_ins.iter().any(Option::is_some) {
+                prepared = built_stroke(&prepared, &validation);
             }
             return (prepared, validation, topology);
         }

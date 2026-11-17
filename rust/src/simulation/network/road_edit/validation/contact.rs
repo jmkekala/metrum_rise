@@ -1,32 +1,37 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
-//! Roads that touch join (`ROAD-118` round JS4a): at ground level two roads meet only in a
+//! Roads that touch join (`ROAD-118` rounds JS4a, JS5a): at ground level two roads meet only in a
 //! junction. A stroke end whose footprint, its roadbed's outer band and the round cap of that
-//! radius at the end, touches another car road's footprint is moved onto that road before the
-//! plan is built, so the preview, the labels, the cost and the commit read one stroke:
+//! radius at the end, touches another car road's footprint joins it before the plan is built, so
+//! the preview, the cost and the commit read one stroke. Nothing the player drew moves: the join
+//! adds a lead-in from the drawn end to the node the roads share ([`super::lead_in`]):
 //!
 //! - touching a junction's or a bend's piece (the road's stretch between its node and the arm's
-//!   mouth), or a road end's cap, the end joins that node, carried as a joined end of round JS3
-//!   ([`super::spacing::join_stroke_end`]);
-//! - touching a road's side, the end runs on along its own end tangent to the road's centreline
-//!   and the topology's end join makes a T there: no sideways move, no pull to a grid or node;
-//! - where the tangent meets the road at under the junction arm limit (25 degrees, `ROAD-54`),
-//!   or not within the contact's reach over the sine of that limit, the roads would run on top
-//!   of each other: the stroke is refused as `roads_overlap`.
+//!   mouth), or a road end's cap, the end joins that node;
+//! - touching a road's side, or standing on it (within the topology's 2 m end join, the user's
+//!   decision D4), the stroke's own line runs on to the road's centreline and the topology's end
+//!   join makes a T there: no sideways move, no pull to a grid or node. An end on a road whose
+//!   last stretch reaches or crosses it keeps the topology's own join as before (a crossing's
+//!   stub), as does an end standing on the centreline itself (within the topology's 5 cm node
+//!   capture, where that join keeps the end's own projection: a stroke laid on a road, an end on
+//!   its vertex) whose line runs along it (fix B1);
+//! - where that line meets the road at under the junction arm limit (25 degrees, `ROAD-54`), or
+//!   not within the contact's reach over the sine of that limit, the roads would run on top of
+//!   each other: the stroke is refused as `roads_overlap`.
 //!
 //! A pure function of the graph and the stroke: it never reads the Roads snap toggle, whose one
 //! meaning is the cursor magnet. Ends at a node, above the ground or on a structure's span keep
-//! their place (`ROAD-99`: only ground meets ground), as do ends on a road, within the topology's
-//! own end join (`config::INTERSECTION_TOLERANCE`) of a ground road's centreline (that join and
-//! round JS3 decide them), and ends past a road the stroke crosses just before them (the crossing
-//! joins them, round JS3 removes the stub).
+//! their place (`ROAD-99`: only ground meets ground), as do ends within 2 m of a road no car
+//! meets on the ground (a walkway, a ring: the topology's own end join decides them, as before),
+//! and ends past a road the stroke crosses just before them (the crossing joins them, round JS3
+//! removes the stub).
 
-use super::spacing::join_stroke_end;
 use super::{PREVIEW_ROADS_OVERLAP_REASON, RoadPreviewValidation};
 use crate::config;
 use crate::simulation::network::graph::{Edge, RegionGraph};
 use crate::simulation::network::road_edit::input::{PreparedRoadInput, is_surface_edge};
 use crate::simulation::network::roadbed::visual_roadbed_half_width_m;
+use crate::simulation::network::topology::INTERSECTION_NODE_CAPTURE_EPSILON;
 use crate::simulation::network::types::{EdgeClass, TransitFlags};
 use godot::prelude::Vector3;
 
@@ -38,22 +43,41 @@ pub(crate) const MAX_ROADBED_HALF_WIDTH_M: f32 = 4.0 * config::LANE_WIDTH
     + 6.0
     + config::SIDEWALK_WIDTH;
 
+// The rounding of an end's line meeting a centreline it stands on: an end on the centreline may
+// read its meeting a hair behind it.
+const RUN_ROUNDING_M: f32 = 1.0e-3;
+
 /// The least overlap of two footprints that touch (`ROAD-118` round JS4a): outlines that only
 /// meet, as two roads drawn exactly a cap apart on the grid do (the first dump's dead end stands
 /// 9.9998 m from its junction's arm, two 5 m half widths), are rounding, not an overlap.
 const MIN_OVERLAP_M: f32 = 0.01;
 
 /// The least angle between a stroke's end tangent and the road it runs onto (`ROAD-54`'s
-/// junction arm limit, degrees); under it the two roads overlap instead of meeting.
-const MIN_CONTACT_ANGLE_DEG: f32 = 25.0;
+/// junction arm limit, degrees); under it the two roads overlap instead of meeting. A lead-in
+/// keeps its new arm as far from a node's other arms.
+pub(super) const MIN_CONTACT_ANGLE_DEG: f32 = 25.0;
 
 /// What a stroke end touches (`ROAD-118` round JS4a), in the committed graph's ids.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum EndContact {
     /// A junction's or a bend's piece, or a road end's cap: the end joins the node.
     Node(u32),
-    /// A road's side: the end runs on along its tangent to `point` on the road's centreline.
+    /// A road's side: the stroke's line runs on to `point` on the road's centreline.
     Road(Vector3),
+}
+
+/// A stroke end's contact and its reach (`ROAD-118` round JS5a): the two roadbeds' half widths,
+/// the most of the stroke a lead-in may take (the user's decision D3).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct Touched {
+    pub(super) contact: EndContact,
+    pub(super) reach_m: f32,
+}
+
+// The reach of a stroke end of roadbed half width `half_width_m` onto road `edge`: the two
+// footprints touch when the end lies nearer its centreline (`ROAD-118` round JS4a).
+pub(super) fn reach_m(half_width_m: f32, edge: &Edge) -> f32 {
+    half_width_m + visual_roadbed_half_width_m(edge) - MIN_OVERLAP_M
 }
 
 /// A stroke end that would overlap a road instead of meeting it (`roads_overlap`): the end (0
@@ -90,8 +114,8 @@ struct Touch {
     reach_m: f32,
 }
 
-/// What each end of `prepared` touches, start then end (`ROAD-118` round JS4a; see the module
-/// docs). `half_width_m` is the stroke's roadbed half width; `existing` the live nodes the ends
+/// What each end of `prepared` touches, start then end, and its reach (`ROAD-118` round JS4a;
+/// see the module docs). `half_width_m` is the stroke's roadbed half width; `existing` the live nodes the ends
 /// already stand on. An `Err` names the first overlapping end. Per end: one R-tree query of the
 /// end's reach padded by [`MAX_ROADBED_HALF_WIDTH_M`], then per candidate road a nearest-point
 /// pass, and for the touched one a node's degree, a crossing test over the stroke's last
@@ -102,8 +126,8 @@ pub(super) fn end_contacts(
     half_width_m: f32,
     graph: &RegionGraph,
     existing: [Option<u32>; 2],
-) -> Result<[Option<EndContact>; 2], Overlap> {
-    let mut contacts = [None; 2];
+) -> Result<[Option<Touched>; 2], Overlap> {
+    let mut contacts: [Option<Touched>; 2] = [None; 2];
     let points = &prepared.points;
     if points.len() < 2 || prepared.tunnel || prepared.class != EdgeClass::Standard {
         return Ok(contacts);
@@ -129,16 +153,27 @@ pub(super) fn end_contacts(
         };
         let contact = match touch_node(graph, &touch, tip) {
             Some(node) => EndContact::Node(node),
-            None => carry(graph, &touch, tip, tangent, end)?,
+            None => match carry(graph, &touch, tip, tangent, end) {
+                Ok(contact) => contact,
+                // An end on the centreline itself whose line runs along the road (under the arm
+                // limit, or a stroke laid on the road) keeps the topology's own join, which keeps
+                // the end's projection there: the stroke continues a road or the junction's angle
+                // refuses it. Any other end would be pulled sideways onto the road (fix B1).
+                Err(_) if touch.distance_m <= INTERSECTION_NODE_CAPTURE_EPSILON => continue,
+                Err(overlap) => return Err(overlap),
+            },
         };
         let other = existing[1 - end]
             .map(EndContact::Node)
-            .or(contacts[1 - end]);
+            .or(contacts[1 - end].map(|other| other.contact));
         // Both ends onto one node would close the stroke on itself; the second keeps its place.
         if matches!((contact, other), (EndContact::Node(a), Some(EndContact::Node(b))) if a == b) {
             continue;
         }
-        contacts[end] = Some(contact);
+        contacts[end] = Some(Touched {
+            contact,
+            reach_m: touch.reach_m,
+        });
     }
     Ok(contacts)
 }
@@ -165,9 +200,10 @@ fn end_tangent(points: &[Vector3], end: usize) -> Option<(f32, f32)> {
 
 // The car road on the ground whose footprint the cap of radius `half_width_m` at `tip` touches
 // nearest, by centreline distance and then id, among the roads the stroke does not cross near
-// this end. `None` as well for an end on a road: within `config::INTERSECTION_TOLERANCE` of a
-// ground road's centreline the topology's own end join and round JS3 decide, as before.
-// O(log E + candidates x points).
+// this end; an end on such a road (within `config::INTERSECTION_TOLERANCE` of its centreline)
+// touches it too (round JS5a, D4). `None` for an end within that tolerance of a road no car meets
+// on the ground or of one the stroke's last stretch reaches or crosses: the topology's own end
+// join decides, as before. O(log E + candidates x points).
 fn nearest_touch(
     graph: &RegionGraph,
     points: &[Vector3],
@@ -188,18 +224,21 @@ fn nearest_touch(
         else {
             return;
         };
-        if distance_m <= config::INTERSECTION_TOLERANCE {
-            on_a_road = true;
-            return;
-        }
+        let on = distance_m <= config::INTERSECTION_TOLERANCE;
         if !meets_on_the_ground(record) {
+            on_a_road |= on;
             return;
         }
-        let reach_m = half_width_m + visual_roadbed_half_width_m(record) - MIN_OVERLAP_M;
+        let reach_m = reach_m(half_width_m, record);
         if distance_m >= reach_m
             || best.is_some_and(|best| (best.distance_m, best.edge) < (distance_m, edge))
-            || crosses_near_end(points, end, &record.geometry, reach_m)
         {
+            return;
+        }
+        if crosses_near_end(points, end, &record.geometry, reach_m) {
+            // An end on a road its last stretch reaches or crosses stands on the crossing or
+            // just past it: the topology joins it there, as before.
+            on_a_road |= on;
             return;
         }
         best = Some(Touch {
@@ -263,9 +302,10 @@ fn touch_node(graph: &RegionGraph, touch: &Touch, tip: Vector3) -> Option<u32> {
     None
 }
 
-// The end carried along its tangent onto the touched road's centreline, the nearest crossing
-// within the contact's reach over the sine of the least angle; refused as an overlap where the
-// tangent meets the road under that angle or not within that run. O(road points).
+// Where the end's line meets the touched road's centreline: the nearest crossing ahead within the
+// contact's reach over the sine of the least angle (an end on the centreline meets it where it
+// stands, within `f32` rounding); refused as an overlap where the line meets the road under that
+// angle or not within that run. O(road points).
 fn carry(
     graph: &RegionGraph,
     touch: &Touch,
@@ -287,9 +327,10 @@ fn carry(
         let (ax, az) = (a.x - tip.x, a.z - tip.z);
         let run_m = (ax * dz - az * dx) / denominator;
         let along = (ax * tz - az * tx) / denominator;
-        if !(0.0..=1.0).contains(&along) || !(0.0..=max_run_m).contains(&run_m) {
+        if !(0.0..=1.0).contains(&along) || !(-RUN_ROUNDING_M..=max_run_m).contains(&run_m) {
             continue;
         }
+        let run_m = run_m.max(0.0);
         if hit.is_none_or(|(best_m, ..)| run_m < best_m) {
             let point = Vector3::new(
                 tip.x + tx * run_m,
@@ -384,31 +425,6 @@ fn segments_cross((p, q): (Vector3, Vector3), (a, b): (Vector3, Vector3)) -> boo
     (d1 * d2 <= 0.0) && (d3 * d4 <= 0.0) && !(d1 == 0.0 && d2 == 0.0)
 }
 
-/// `prepared` with the contacts applied (`ROAD-118` round JS4a): an end touching a road's side
-/// runs on to its point there; an end touching a node joins it ([`join_stroke_end`]) and names
-/// it in `joined_nodes`. `O(points)`.
-pub(super) fn contacted_stroke(
-    prepared: &PreparedRoadInput,
-    contacts: [Option<EndContact>; 2],
-    graph: &RegionGraph,
-) -> PreparedRoadInput {
-    let mut contacted = prepared.clone();
-    let last = contacted.points.len() - 1;
-    for (end, contact) in contacts.into_iter().enumerate() {
-        match contact {
-            Some(EndContact::Road(point)) => {
-                contacted.points[if end == 0 { 0 } else { last }] = point
-            }
-            Some(EndContact::Node(node)) => {
-                join_stroke_end(&mut contacted.points, end, graph.node(node).pos);
-                contacted.joined_nodes[end] = Some(node);
-            }
-            None => {}
-        }
-    }
-    contacted
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -430,6 +446,17 @@ mod tests {
         ));
         graph.rebuild_intersection_clips();
         graph
+    }
+
+    // `end_contacts` without the reaches.
+    fn contacts_of(
+        prepared: &PreparedRoadInput,
+        half_width_m: f32,
+        graph: &RegionGraph,
+        existing: [Option<u32>; 2],
+    ) -> Result<[Option<EndContact>; 2], Overlap> {
+        end_contacts(prepared, half_width_m, graph, existing)
+            .map(|touched| touched.map(|touched| touched.map(|touched| touched.contact)))
     }
 
     fn stroke(points: &[(f32, f32)]) -> PreparedRoadInput {
@@ -488,7 +515,7 @@ mod tests {
         let end = (10.0, -4.0);
         let from = (end.0 - 50.0 * dx, end.1 - 50.0 * dz);
         let touching = stroke(&[from, end]);
-        let contacts = end_contacts(&touching, 5.0, &graph, [None; 2]).unwrap();
+        let contacts = contacts_of(&touching, 5.0, &graph, [None; 2]).unwrap();
         let Some(EndContact::Road(at)) = contacts[1] else {
             panic!("{contacts:?}");
         };
@@ -500,13 +527,13 @@ mod tests {
         assert_eq!(contacts[0], None);
 
         let apart = stroke(&[(10.0, -61.0), (10.0, -11.0)]);
-        assert_eq!(end_contacts(&apart, 5.0, &graph, [None; 2]), Ok([None; 2]));
+        assert_eq!(contacts_of(&apart, 5.0, &graph, [None; 2]), Ok([None; 2]));
 
         let flat = stroke(&[
             (-40.0, -4.0 - 50.0 * 10f32.to_radians().tan()),
             (10.0, -4.0),
         ]);
-        let overlap = end_contacts(&flat, 5.0, &graph, [None; 2]).unwrap_err();
+        let overlap = contacts_of(&flat, 5.0, &graph, [None; 2]).unwrap_err();
         assert_eq!((overlap.end, overlap.edge), (1, 0));
         assert!((overlap.angle_deg - 10.0).abs() < 0.01, "{overlap:?}");
         assert!((overlap.station_m - 110.0).abs() < 0.01, "{overlap:?}");
@@ -514,12 +541,12 @@ mod tests {
         let mut elevated = touching.clone();
         elevated.elevated_ends = [false, true];
         assert_eq!(
-            end_contacts(&elevated, 5.0, &graph, [None; 2]),
+            contacts_of(&elevated, 5.0, &graph, [None; 2]),
             Ok([None; 2])
         );
         let mut bridge = touching;
         bridge.class = EdgeClass::Bridge;
-        assert_eq!(end_contacts(&bridge, 5.0, &graph, [None; 2]), Ok([None; 2]));
+        assert_eq!(contacts_of(&bridge, 5.0, &graph, [None; 2]), Ok([None; 2]));
     }
 
     // An end cap over the street's end cap joins the road end; the start's tangent points out of
@@ -528,9 +555,9 @@ mod tests {
     fn a_cap_over_a_road_end_joins_it() {
         let graph = street();
         let along = stroke(&[(108.0, 0.0), (190.0, 0.0)]);
-        let contacts = end_contacts(&along, 5.0, &graph, [None; 2]).unwrap();
+        let contacts = contacts_of(&along, 5.0, &graph, [None; 2]).unwrap();
         assert_eq!(contacts, [Some(EndContact::Node(1)), None]);
         let short = stroke(&[(110.5, 0.0), (190.0, 0.0)]);
-        assert_eq!(end_contacts(&short, 5.0, &graph, [None; 2]), Ok([None; 2]));
+        assert_eq!(contacts_of(&short, 5.0, &graph, [None; 2]), Ok([None; 2]));
     }
 }

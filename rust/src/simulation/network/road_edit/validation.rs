@@ -44,11 +44,13 @@ use godot::prelude::Vector3;
 use std::collections::{HashMap, HashSet};
 
 mod contact;
+mod lead_in;
 mod spacing;
 
 pub(crate) use contact::EndContact;
-pub(crate) use spacing::joined_stroke;
-use contact::{contacted_stroke, end_contacts};
+pub(crate) use lead_in::LeadIn;
+use contact::{Touched, end_contacts};
+use lead_in::NodeArms;
 use spacing::{StubYield, end_join, failing_arms, remove_stubs, stub_yields};
 
 const PREVIEW_VALID_REASON: &str = "";
@@ -171,14 +173,18 @@ pub(crate) struct RoadPreviewValidation {
     /// end: the live edge id and the end's station along it from its start node, horizontal
     /// metres. `None` at a node, on open terrain and on accepted strokes.
     pub(crate) endpoint_edges: [Option<(usize, f32)>; 2],
-    /// The live nodes an accepted plan carried the stroke's ends onto, start then end
-    /// (`ROAD-118` round JS3, [`joined_stroke`]): the stroke it builds runs to them. `None` for
-    /// an end where it was drawn.
+    /// The live nodes an accepted plan joined the stroke's ends to, start then end (`ROAD-118`
+    /// rounds JS3, JS4a): the stroke it builds runs to them through its lead-ins. `None` for an
+    /// end on no existing node.
     pub(crate) joined_nodes: [Option<u32>; 2],
     /// What each end of the drawn stroke touched, start then end (`ROAD-118` round JS4a): the
-    /// node it joined or the point on a road's centreline it ran on to, before any round JS3
-    /// join; [`built_stroke`] replays them. `None` for an end that touched no road.
+    /// node it joined or the point on a road's centreline its line runs on to, before any round
+    /// JS3 join. `None` for an end that touched no road.
     pub(crate) contacts: [Option<EndContact>; 2],
+    /// Each end's lead-in, start then end (`ROAD-118` round JS5a): the junction's piece of
+    /// centreline from the drawn end to the node it forms at, which [`built_stroke`] replays.
+    /// `None` for an end built where it was drawn.
+    pub(crate) lead_ins: [Option<LeadIn>; 2],
 }
 
 /// Where a junction refusal happened (`ROAD-118` round JS1), in the committed graph's ids where
@@ -232,6 +238,7 @@ impl RoadPreviewValidation {
             endpoint_edges: [None; 2],
             joined_nodes: [None; 2],
             contacts: [None; 2],
+            lead_ins: [None; 2],
         }
     }
 
@@ -273,8 +280,8 @@ pub(crate) fn validate_road_candidate_fast(
 
 /// Validates a prepared stroke against the committed graph and solves its local post-edit
 /// topology. The plan is `None` when validation fails or the excerpt's mutation frontier is
-/// incomplete. `frontages` answers the stub guard (`ROAD-118` round JS3). A plan that carries
-/// the stroke's ends onto nodes names them in `joined_nodes`; it builds [`joined_stroke`].
+/// incomplete. `frontages` answers the stub guard (`ROAD-118` round JS3). A plan that joins the
+/// stroke's ends names their lead-ins and nodes; it builds [`built_stroke`].
 /// O(stroke points + local excerpt records), independent of distant roads.
 pub(crate) fn validate_road_edit(
     prepared_input: &PreparedRoadInput,
@@ -684,11 +691,12 @@ fn validate_against_graph(
         );
     }
 
-    // Roads that touch join (`ROAD-118` round JS4a): an end whose footprint touches another car
-    // road is moved onto it before the plan is built, so every check below and the commit read
-    // the stroke it builds; an end that would run on top of a road is refused.
-    let contacts = if fwd_lanes > 0 || bkw_lanes > 0 {
-        let half_width_m = preview_candidate_roadbed_half_width_m(
+    // Roads that touch join (`ROAD-118` rounds JS4a, JS5a): an end whose footprint touches
+    // another car road gets a lead-in to the node the roads share before the plan is built, so
+    // every check below and the commit read the stroke it builds; nothing drawn moves. An end
+    // that would run on top of a road is refused.
+    let half_width_m = if fwd_lanes > 0 || bkw_lanes > 0 {
+        preview_candidate_roadbed_half_width_m(
             prepared_points,
             prepared_input.class,
             fwd_lanes,
@@ -696,20 +704,23 @@ fn validate_against_graph(
             prepared_input.median,
             prepared_input.parking,
             prepared_input.attributes,
-        );
+        )
+    } else {
+        0.0
+    };
+    let touched = if half_width_m > 0.0 {
         let existing = [start_existing, end_existing];
         match end_contacts(prepared_input, half_width_m, existing_graph, existing) {
-            Ok(contacts) => contacts,
+            Ok(touched) => touched,
             Err(overlap) => return (overlap.refuse(validation), None),
         }
     } else {
         [None; 2]
     };
-    validation.contacts = contacts;
-    let contacted = contacts
-        .iter()
-        .any(Option::is_some)
-        .then(|| contacted_stroke(prepared_input, contacts, existing_graph));
+    validation.contacts = touched.map(|touched| touched.map(|touched| touched.contact));
+    let drawn = prepared_input;
+    let mut joins = Joins::touched(drawn, touched, half_width_m, existing_graph);
+    let contacted = joins.any().then(|| joins.stroke(drawn));
     let prepared_input = contacted.as_ref().unwrap_or(prepared_input);
     let prepared_points = &prepared_input.points;
 
@@ -745,8 +756,9 @@ fn validate_against_graph(
     // A junction that does not fit beside an empty joint takes the joint's place (`ROAD-118`
     // round JS2), and a short stub to a road end goes (round JS3): the plan is built again with
     // the joint dissolved or the stub removed. Where neither answers, a stroke end too close to
-    // an occupied node joins it (round JS3), and the joined stroke is built afresh. At most
-    // `MAX_PLAN_BUILDS` builds, only for a pose the first build refuses.
+    // an occupied node joins it through a lead-in from the drawn end (rounds JS3, JS5a), and the
+    // joined stroke is built afresh. At most `MAX_PLAN_BUILDS` builds, only for a pose the first
+    // build refuses.
     let mut yields: Vec<JointYield> = Vec::new();
     let mut stubs: Vec<StubYield> = Vec::new();
     // The stroke with its joined ends, once an end joined.
@@ -799,6 +811,19 @@ fn validate_against_graph(
             refused_before = Some(excerpt);
             continue;
         }
+        // A node whose layout refuses an end's lead-in at its least trim gets the gentlest arc
+        // the reach allows (round JS5a), once per end; the stroke is built afresh.
+        let refused_at = |live: u32| {
+            let local = excerpt.graph.source_node_ids.get(&live);
+            failing.iter().any(|(node, _)| Some(node) == local)
+        };
+        if joins.widen(refused_at) {
+            joined = Some(joins.stroke(drawn));
+            yields.clear();
+            stubs.clear();
+            refused_before = Some(excerpt);
+            continue;
+        }
         // An end already joined, snapped onto a structure's span or above the ground joins no
         // node: only ground meets ground (`ROAD-99`).
         let ends: [bool; 2] = std::array::from_fn(|end| {
@@ -806,19 +831,21 @@ fn validate_against_graph(
                 || input.joined_spans[end].is_some()
                 || input.elevated_ends[end]
         });
-        let Some((end, node)) = end_join(&excerpt.graph, existing_graph, &failing, ends) else {
+        let Some((end, node, road)) = end_join(&excerpt.graph, existing_graph, &failing, ends)
+        else {
             return (excerpt.refused(validation), None);
         };
         // The joined stroke numbers its excerpt afresh: the yields found on the drawn one go.
-        let mut nodes = later_joins(input.joined_nodes, contacts);
-        nodes[end] = Some(node);
-        joined = Some(joined_stroke(prepared_input, nodes, existing_graph));
+        let reach_m = contact::reach_m(half_width_m, existing_graph.edge(road));
+        joins.join(drawn, (end, node, reach_m), half_width_m, existing_graph);
+        joined = Some(joins.stroke(drawn));
         yields.clear();
         stubs.clear();
         refused_before = Some(excerpt);
     };
     let prepared_input = joined.as_ref().unwrap_or(prepared_input);
     validation.joined_nodes = prepared_input.joined_nodes;
+    validation.lead_ins = joins.lead_ins;
     for (snapped, node) in [
         &mut validation.start_endpoint_snapped_node_id,
         &mut validation.end_endpoint_snapped_node_id,
@@ -878,40 +905,138 @@ fn validate_against_graph(
     (validation, topology_plan)
 }
 
-/// The stroke an accepted `validation` of `prepared` builds (`ROAD-118` rounds JS3, JS4a): its
-/// ends moved onto what they touched, then carried onto the nodes a junction refusal joined
-/// them to, in the order the validation built it. `O(points)`.
+/// The stroke an accepted `validation` of `prepared` builds (`ROAD-118` rounds JS3-JS5a): the
+/// drawn stroke with its ends' lead-ins to what they joined, its joined nodes named. Every drawn
+/// point outside the lead-ins stays bit for bit. `O(points + lead-in points)`.
 pub(crate) fn built_stroke(
     prepared: &PreparedRoadInput,
     validation: &RoadPreviewValidation,
-    graph: &RegionGraph,
 ) -> PreparedRoadInput {
-    let contacts = validation.contacts;
-    let contacted = if contacts.iter().any(Option::is_some) {
-        contacted_stroke(prepared, contacts, graph)
-    } else {
-        prepared.clone()
-    };
-    let nodes = later_joins(validation.joined_nodes, contacts);
-    if nodes.iter().any(Option::is_some) {
-        joined_stroke(&contacted, nodes, graph)
-    } else {
-        contacted
+    Joins {
+        lead_ins: validation.lead_ins,
+        nodes: validation.joined_nodes,
+        ..Joins::default()
+    }
+    .stroke(prepared)
+}
+
+// What a stroke's ends join (`ROAD-118` rounds JS4a, JS5a), start then end: each end's lead-in
+// and the live node it joins (`None` for a point on a road's centreline), the most of the
+// stroke it may take and whether it already takes all of it. One lead-in per end: a later join
+// (round JS3) replaces the end's contact.
+#[derive(Default)]
+struct Joins {
+    lead_ins: [Option<LeadIn>; 2],
+    nodes: [Option<u32>; 2],
+    caps_m: [f32; 2],
+    widened: [bool; 2],
+}
+
+impl Joins {
+    // The contacts' lead-ins on the `drawn` stroke, the start before the end. `O(points +
+    // degree^2)`.
+    fn touched(
+        drawn: &PreparedRoadInput,
+        touched: [Option<Touched>; 2],
+        half_width_m: f32,
+        graph: &RegionGraph,
+    ) -> Self {
+        let mut joins = Self::default();
+        for (end, touched) in touched.into_iter().enumerate() {
+            let Some(Touched { contact, reach_m }) = touched else {
+                continue;
+            };
+            let (target, node) = match contact {
+                EndContact::Node(node) => (graph.node(node).pos, Some(node)),
+                EndContact::Road(point) => (point, None),
+            };
+            joins.shape(drawn, end, (target, node, reach_m), half_width_m, graph);
+        }
+        joins
+    }
+
+    // End `end` of the `drawn` stroke joins live node `node` within `reach_m` (round JS3's end
+    // join): its lead-in replaces the end's contact. `O(points + degree^2)`.
+    fn join(
+        &mut self,
+        drawn: &PreparedRoadInput,
+        (end, node, reach_m): (usize, u32, f32),
+        half_width_m: f32,
+        graph: &RegionGraph,
+    ) {
+        let target = graph.node(node).pos;
+        self.shape(drawn, end, (target, Some(node), reach_m), half_width_m, graph);
+    }
+
+    // The lead-in of end `end` to `target` (on `node` where it is one), its trim within the
+    // reach and what the other end's lead-in leaves of the stroke above the least stroke length.
+    fn shape(
+        &mut self,
+        drawn: &PreparedRoadInput,
+        end: usize,
+        (target, node, reach_m): (Vector3, Option<u32>, f32),
+        half_width_m: f32,
+        graph: &RegionGraph,
+    ) {
+        let other_m = self.lead_ins[1 - end].map_or(0.0, |lead_in| lead_in.trim_m);
+        let room_m = horizontal_length_m(&drawn.points) as f32
+            - PREVIEW_MIN_ENDPOINT_SEGMENT_M
+            - other_m;
+        let arms = node.map_or(NodeArms::NONE, |node| NodeArms::of(graph, node));
+        let cap_m = reach_m.min(room_m).max(0.0);
+        self.lead_ins[end] = Some(lead_in::shape(
+            &drawn.points,
+            end,
+            target,
+            &arms,
+            half_width_m,
+            cap_m,
+        ));
+        self.nodes[end] = node;
+        self.caps_m[end] = cap_m;
+        self.widened[end] = false;
+    }
+
+    // The first end, start before end, joining a node whose layout refuses it (`refused_at` its
+    // live id) at less than its whole cap takes the cap: the arc of least turn, whose arm stands
+    // farthest from the arm it turns towards. `false` when no end does. `O(1)`.
+    fn widen(&mut self, refused_at: impl Fn(u32) -> bool) -> bool {
+        for end in 0..2 {
+            let (Some(lead_in), Some(node)) = (&mut self.lead_ins[end], self.nodes[end]) else {
+                continue;
+            };
+            if !self.widened[end] && lead_in.trim_m < self.caps_m[end] && refused_at(node) {
+                lead_in.trim_m = self.caps_m[end];
+                self.widened[end] = true;
+                return true;
+            }
+        }
+        false
+    }
+
+    fn any(&self) -> bool {
+        self.lead_ins.iter().any(Option::is_some)
+    }
+
+    // The `drawn` stroke with the lead-ins (start before end) and the joined nodes: the stroke
+    // the plan builds. One clone of the stroke.
+    fn stroke(&self, drawn: &PreparedRoadInput) -> PreparedRoadInput {
+        let mut built = drawn.clone();
+        for (end, lead_in) in self.lead_ins.into_iter().enumerate() {
+            if let Some(lead_in) = lead_in {
+                lead_in::apply(&mut built.points, end, lead_in);
+                built.joined_nodes[end] = self.nodes[end];
+            }
+        }
+        built
     }
 }
 
-// The joined nodes a junction refusal added (round JS3), without those a contact joined (round
-// JS4a), which the contacted stroke already stands on.
-fn later_joins(joined: [Option<u32>; 2], contacts: [Option<EndContact>; 2]) -> [Option<u32>; 2] {
-    std::array::from_fn(|end| {
-        joined[end].filter(|_| !matches!(contacts[end], Some(EndContact::Node(_))))
-    })
-}
-
 // The most plans one pose builds (`ROAD-118`): the plan as drawn, a round of joints dissolving
-// and stubs going for the junctions it refuses (round JS2, JS3), a stroke end joining a node and
-// a round of yields on the joined stroke (round JS3).
-const MAX_PLAN_BUILDS: usize = 4;
+// and stubs going for the junctions it refuses (round JS2, JS3), a stroke end joining a node, its
+// lead-in widened to the reach (round JS5a) and a round of yields on the joined stroke (round
+// JS3). Refused poses only.
+const MAX_PLAN_BUILDS: usize = 5;
 
 // A joint that makes way (`ROAD-118` round JS2), in the excerpt's local ids, which every build of
 // one pose numbers alike up to the dissolves: the joint, the piece between it and the junction

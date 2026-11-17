@@ -289,6 +289,7 @@ fn a_t_10_m_from_a_road_end_builds_and_the_road_end_then_keeps_its_place() {
 }
 
 mod contacts;
+mod lead_ins;
 mod stubs_and_joins;
 
 fn facts(validation: &RoadPreviewValidation) -> ReasonFacts {
@@ -449,8 +450,10 @@ fn a_dissolved_joint_is_a_hole_live_and_loaded() {
 
 // Joints that are not empty keep their place: an authored crossing at the joint, or the joint's
 // two roads at different speeds (attempt 5's start). The junction beside them was refused with
-// its place named; since round JS3 the stroke's end, 5 m from the occupied joint, joins it, which
-// becomes a T.
+// its place named; round JS3 sheared the stroke onto the joint, a T. Since round JS5a nothing
+// drawn moves: the end, on the road 5 m from the joint, could join it only through an arc whose
+// arm meets the joint's road at 39 degrees or less, a corner that does not fit, so the drawn
+// stroke's refusal stands with its place, and the joint keeps its two roads.
 #[test]
 fn occupied_joints_keep_their_place() {
     let start = at(JOINT) + (at(8) - at(JOINT)).normalized() * 5.0;
@@ -477,13 +480,20 @@ fn occupied_joints_keep_their_place() {
         let _ = core.finalize_network_render_products();
         let points = stroke(&core, [side, start]);
         let mut view = context(&mut core);
-        let joined = preview(&mut view, &points).validation;
-        assert!(joined.is_valid, "{occupied}: {}", joined.invalid_reason);
-        assert_eq!(joined.joined_nodes, [None, Some(JOINT as u32)], "{occupied}");
-        assert!(commit(&mut core, &points, None).committed, "{occupied}");
-        assert!(node_stands_at(&core, at(JOINT)), "{occupied}");
-        assert_eq!(degree(&core, JOINT as u32), 3, "{occupied}: a T at the joint");
-        assert!(!node_stands_at(&core, start), "{occupied}");
+        let refused = preview(&mut view, &points).validation;
+        assert!(!refused.is_valid, "{occupied}");
+        assert!(
+            matches!(
+                refused.invalid_reason,
+                "junction_corner_does_not_fit" | "junction_arm_too_short"
+            ),
+            "{occupied}: {}",
+            refused.invalid_reason
+        );
+        assert!(refused.junction_place.is_some(), "{occupied}: the place is named");
+        assert_eq!(refused.joined_nodes, [None; 2], "{occupied}");
+        assert!(!commit(&mut core, &points, None).committed, "{occupied}");
+        assert_eq!(degree(&core, JOINT as u32), 2, "{occupied}: the joint keeps its place");
     }
 }
 

@@ -1,25 +1,25 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
 //! Junction spacing (`ROAD-118` round JS3): a short stub to a road end goes, and a stroke's end
-//! too close to an occupied node joins that node. Both answer a junction refusal of one build of
-//! the excerpt; the plan is built again with them, as a dissolved joint's (round JS2). Pure
-//! functions of the graph, the stroke and the land's frontages: preview and commit decide alike.
+//! too close to an occupied node joins that node, through a lead-in from the drawn end (round
+//! JS5a, [`super::lead_in`]). Both answer a junction refusal of one build of the excerpt; the plan
+//! is built again with them, as a dissolved joint's (round JS2). Pure functions of the graph, the
+//! stroke and the land's frontages: preview and commit decide alike.
 
 use super::{JointYield, ValidationGraph, horizontal_length_m};
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::road_edit::RoadFrontages;
-use crate::simulation::network::road_edit::input::{PreparedRoadInput, is_surface_edge};
+use crate::simulation::network::road_edit::input::is_surface_edge;
 use crate::simulation::network::road_edit::PlannedRoadSplit;
 use crate::simulation::network::roadbed::{
     self, ArmKey, EdgeEnd, LayoutError, NodeError, arm_edge_needed_m, check_node,
 };
 use crate::simulation::network::topology::{self, StubRemoval};
 use crate::simulation::network::types::EdgeClass;
-use godot::prelude::Vector3;
 
-/// The farthest a stroke's end moves to join an occupied node (`ROAD-118` round JS3, the user's
-/// decision of 2026-11-15): a 2-lane junction arm's least mouth station, so any end too close to
-/// a junction or bend on such a road joins it.
+/// The farthest an occupied node a stroke's end joins may stand from it (`ROAD-118` round JS3,
+/// the user's decision of 2026-11-15): a 2-lane junction arm's least mouth station, so any end
+/// too close to a junction or bend on such a road joins it.
 pub(super) const MAX_END_JOIN_M: f32 = 8.5;
 
 // A stub that makes way (`ROAD-118` round JS3), in the excerpt's local ids: the road end, the
@@ -268,18 +268,18 @@ pub(super) fn remove_stubs(
 // makes on that road and a live node of the road (an occupied node: a joint or a free stub there
 // already made way), the nearest one within [`MAX_END_JOIN_M`] or within the node's piece on that
 // road (the live road's mouth station there, round JS4a: the end's footprint lies on the piece),
-// ties by `(node, arm)` order. Each end moves once (`done`), never onto the stroke's other end.
-// Returns the end (0 start, 1 end) and the live node. Refusals only: O(failing arms x the need's
-// bisection).
+// ties by `(node, arm)` order. Each end joins once (`done`), never the stroke's other end's node.
+// Returns the end (0 start, 1 end), the live node and the live road the end stands on. Refusals
+// only: O(failing arms x the need's bisection).
 pub(super) fn end_join(
     excerpt: &ValidationGraph,
     existing_graph: &RegionGraph,
     failing: &[(u32, ArmKey)],
     done: [bool; 2],
-) -> Option<(usize, u32)> {
+) -> Option<(usize, u32, usize)> {
     let local = &excerpt.graph;
     let ends = excerpt.stroke_ends.map(|end| local.get_valid_node(end));
-    let mut best: Option<(f32, usize, u32)> = None;
+    let mut best: Option<(f32, usize, u32, usize)> = None;
     for &(node, arm) in failing {
         let far = far_node(local, arm);
         let Some(root) = source_root(excerpt, arm.edge) else {
@@ -311,62 +311,9 @@ pub(super) fn end_join(
             };
             let reach = distance_m <= MAX_END_JOIN_M || length_m <= f64::from(mouth_m);
             if reach && best.is_none_or(|(best_m, ..)| distance_m < best_m) {
-                best = Some((distance_m, end, live));
+                best = Some((distance_m, end, live, root));
             }
         }
     }
-    best.map(|(_, end, live)| (end, live))
-}
-
-/// Carries end `end` (0 the start, 1 the end) of stroke `points` onto `target` (`ROAD-118` round
-/// JS3): every point moves by the end's displacement times its share of the stroke's horizontal
-/// length counted from the other end, so a straight stroke stays straight, a curve stays smooth,
-/// the other end stays put and the end lands on `target` bit for bit. `O(points)`, no
-/// allocation.
-pub(super) fn join_stroke_end(points: &mut [Vector3], end: usize, target: Vector3) {
-    let Some(last) = points.len().checked_sub(1).filter(|&last| last > 0) else {
-        return;
-    };
-    let total_m: f32 = points
-        .windows(2)
-        .map(|pair| (pair[1].x - pair[0].x).hypot(pair[1].z - pair[0].z))
-        .sum();
-    let moved = if end == 0 { points[0] } else { points[last] };
-    let shift = target - moved;
-    let mut station_m = 0.0;
-    let mut previous = points[0];
-    for point in points.iter_mut() {
-        station_m += (point.x - previous.x).hypot(point.z - previous.z);
-        previous = *point;
-        let share = if total_m > 0.0 {
-            station_m / total_m
-        } else {
-            1.0
-        };
-        let weight = if end == 0 { 1.0 - share } else { share };
-        *point += shift * weight;
-    }
-    if end == 0 {
-        points[0] = target;
-    } else {
-        points[last] = target;
-    }
-}
-
-/// `prepared` with its ends carried onto the live nodes `nodes` of `graph` (`ROAD-118` round
-/// JS3), the start before the end ([`join_stroke_end`]), and those nodes as its joined ends: the
-/// stroke a plan with joined ends builds. `O(points)`.
-pub(crate) fn joined_stroke(
-    prepared: &PreparedRoadInput,
-    nodes: [Option<u32>; 2],
-    graph: &RegionGraph,
-) -> PreparedRoadInput {
-    let mut joined = prepared.clone();
-    for (end, node) in nodes.into_iter().enumerate() {
-        if let Some(node) = node {
-            join_stroke_end(&mut joined.points, end, graph.node(node).pos);
-            joined.joined_nodes[end] = Some(node);
-        }
-    }
-    joined
+    best.map(|(_, end, live, root)| (end, live, root))
 }

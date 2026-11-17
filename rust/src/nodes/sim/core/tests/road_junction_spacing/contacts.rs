@@ -9,10 +9,12 @@
 //! line, and only just touching at 30 degrees), and ends that stay a footprint short.
 
 use super::super::road_edit_order::committed_on;
+use super::lead_ins::{assert_drawn_kept, drawn_of};
 use super::stubs_and_joins::{edgeless_nodes, node_near};
 use super::*;
 use crate::nodes::sim::core::RoadPreviewRequest;
 use crate::simulation::network::road_edit::EndContact;
+use crate::simulation::network::graph::RoadParking;
 use crate::simulation::network::road_types::RoadAttributes;
 use crate::simulation::network::roadbed::fixtures::road_edge;
 use crate::simulation::network::types::NodeType;
@@ -45,7 +47,7 @@ fn dump_roads() -> Vec<DumpRoad> {
     roads
 }
 
-fn lay(core: &SimCore, points: &[Vector2]) -> Vec<Vector3> {
+pub(super) fn lay(core: &SimCore, points: &[Vector2]) -> Vec<Vector3> {
     points
         .iter()
         .map(|&point| {
@@ -107,8 +109,22 @@ fn dump_city_without(left_out: usize) -> SimCore {
 fn preview_lanes(
     core: &mut SimCore,
     points: &[Vector3],
+    lanes: (u8, u8),
+    snap: bool,
+) -> (
+    Arc<RoadPreview>,
+    crate::simulation::network::render::RoadChunkMap,
+) {
+    preview_parked(core, points, lanes, snap, RoadParking::NONE)
+}
+
+// As `preview_lanes`, with kerbside `parking`.
+pub(super) fn preview_parked(
+    core: &mut SimCore,
+    points: &[Vector3],
     (fwd, bkw): (u8, u8),
     snap: bool,
+    parking: RoadParking,
 ) -> (
     Arc<RoadPreview>,
     crate::simulation::network::render::RoadChunkMap,
@@ -117,7 +133,7 @@ fn preview_lanes(
     let chunks = view.view.road_mesh_chunks.clone();
     let surface_generation = view.view.surface_generation;
     let preview = view.preview_road(RoadPreviewRequest {
-        parking: Default::default(),
+        parking,
         surface_generation,
         points: points.to_vec(),
         fwd_lanes: i32::from(fwd),
@@ -148,6 +164,25 @@ fn commit_lanes(
             median: None,
             attributes: RoadAttributes::DEFAULT,
             preview,
+        },
+        std::time::Instant::now(),
+        Default::default(),
+    )
+}
+
+// A 2-lane road along `points` with kerbside `parking`, committed without a preview.
+pub(super) fn commit_parked(core: &mut SimCore, points: &[Vector3], parking: RoadParking) -> RoadCommitOutcome {
+    core.commit_road(
+        RoadCommitRequest {
+            parking,
+            points: points.to_vec(),
+            fwd_lanes: 1,
+            bkw_lanes: 1,
+            snap_to_existing_roads: false,
+            profile: crate::simulation::network::road_edit::RoadProfile::FollowGround,
+            median: None,
+            attributes: RoadAttributes::DEFAULT,
+            preview: None,
         },
         std::time::Instant::now(),
         Default::default(),
@@ -284,12 +319,12 @@ fn a_start_touching_a_road_joins_it() {
     assert_eq!(degree(&core, t), 3, "a T");
 }
 
-fn v(x: f32, z: f32) -> Vector2 {
+pub(super) fn v(x: f32, z: f32) -> Vector2 {
     Vector2::new(x, z)
 }
 
 // A flat city of roads with `lanes` each way, drawn in order, its edits recording their undo.
-fn city(roads: &[[(f32, f32); 2]], lanes: i32) -> SimCore {
+pub(super) fn city(roads: &[[(f32, f32); 2]], lanes: i32) -> SimCore {
     let strokes: Vec<_> = roads
         .iter()
         .map(|&[a, b]| ([v(a.0, a.1), v(b.0, b.1)], lanes))
@@ -309,8 +344,9 @@ fn build_2_lane(core: &mut SimCore, ends: [Vector2; 2], label: &str) -> RoadPrev
 // A T of 4-lane roads: a 2-lane stroke from the south ends 12 m east of the T's node and 10 m
 // south of the street, its cap inside the T's piece (the street's mouth there lies 13.5 m out),
 // 15.6 m from the node (round JS3 joined ends within 8.5 m only): it joins the T, a crossroads.
-// Undo restores the graph. Ending on the street itself 12 m out, inside the piece, it joins the
-// T as well (round JS3's join, its reach now the piece).
+// Undo restores the graph. Ending on the street itself 12 m out (round JS5a: round JS3 sheared the
+// stroke onto the T), the arc into the T within the reach would meet the street's east arm under
+// 7 degrees: refused with the drawn stroke's junction and its place, nothing joined.
 #[test]
 fn a_cap_inside_a_wide_t_joins_it() {
     let wide_t = [[(-100.0, 0.0), (100.0, 0.0)], [(0.0, 0.0), (0.0, 100.0)]];
@@ -325,10 +361,12 @@ fn a_cap_inside_a_wide_t_joins_it() {
     assert_eq!(graph_hash(&core), before);
 
     let mut core = city(&wide_t, 2);
-    let validation = build_2_lane(&mut core, [v(12.0, -70.0), v(12.0, 0.0)], "on the street");
-    assert_eq!(validation.contacts, [None; 2]);
-    assert_eq!(validation.joined_nodes, [None, Some(t)]);
-    assert_eq!(degree(&core, t), 4, "on the street: a crossroads");
+    let points = lay(&core, &[v(12.0, -70.0), v(12.0, 0.0)]);
+    let (preview, _) = preview_lanes(&mut core, &points, (1, 1), false);
+    let refused = &preview.validation;
+    assert!(!refused.is_valid);
+    assert_eq!(refused.joined_nodes, [None; 2]);
+    assert!(refused.junction_place.is_some(), "{refused:?}");
 }
 
 // A quarter-turn bend of 2-lane roads: a stroke from the south ends 4 m west of the bend and
@@ -403,4 +441,69 @@ fn an_end_a_metre_short_of_touching_stays_separate() {
         .filter(|&edge| !core.region_graph.edge(edge).deleted)
         .count();
     assert_eq!(roads, 2, "the street is not split");
+}
+
+// The user's in-play report of 2026-11-17 (Roads snap off, Straight mode): a 2-lane stroke whose
+// tangent points at a 2-lane road's end, its end node 12, 15 or 20 m from that road end, joined
+// it as a bend. The reach is the two drawn roadbeds' half widths (D5): 10 m for two plain 2-lane
+// roads (5 m caps), 15 m with parking on both sides of both (7.5 m caps). Every approach from 0 to
+// 90 degrees off the road's line, the road drawn either way: ends a footprint apart stay two road
+// ends, ends whose caps overlap join.
+#[test]
+fn ends_a_footprint_short_of_a_road_end_stay_separate() {
+    let both = RoadParking {
+        left: true,
+        right: true,
+    };
+    let mut wrong = Vec::new();
+    for (parking, gaps) in [
+        (RoadParking::NONE, [(9.5f32, true), (12.0, false), (15.0, false), (20.0, false)]),
+        (both, [(9.5, true), (14.5, true), (15.5, false), (20.0, false)]),
+    ] {
+        for flip in [false, true] {
+            for angle in [0.0f32, 10.0, 20.0, 30.0, 45.0, 60.0, 90.0] {
+                for (gap, joins) in gaps {
+                    let street = if flip {
+                        [v(0.0, 0.0), v(-100.0, 0.0)]
+                    } else {
+                        [v(-100.0, 0.0), v(0.0, 0.0)]
+                    };
+                    let mut core = city(&[], 1);
+                    let street = lay(&core, &street);
+                    let outcome = commit_parked(&mut core, &street, parking);
+                    assert!(outcome.committed, "{}", outcome.rejection);
+                    let road_end = node_near(&core, v(0.0, 0.0));
+                    let (dx, dz) = (angle.to_radians().cos(), angle.to_radians().sin());
+                    let ends = [v(90.0 * dx, 90.0 * dz), v(gap * dx, gap * dz)];
+                    let points = lay(&core, &ends);
+                    let drawn = drawn_of(&mut core, &points);
+                    let (preview, _) = preview_parked(&mut core, &points, (1, 1), false, parking);
+                    let validation = &preview.validation;
+                    let label = format!(
+                        "parking {} flip {flip} angle {angle} gap {gap}",
+                        parking.left
+                    );
+                    if joins && validation.is_valid {
+                        // The join runs on from the drawn end: every drawn point stays.
+                        let built = &preview.plan.prepared().points;
+                        assert_drawn_kept(&drawn, built, validation.lead_ins, &label);
+                    }
+                    let expected = joins.then_some(EndContact::Node(road_end));
+                    if validation.contacts != [None, expected]
+                        || !validation.is_valid
+                        || (!joins && validation.joined_nodes != [None; 2])
+                    {
+                        wrong.push(format!(
+                            "{label}: valid {} {} contacts {:?} joined {:?}",
+                            validation.is_valid,
+                            validation.invalid_reason,
+                            validation.contacts,
+                            validation.joined_nodes
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
 }

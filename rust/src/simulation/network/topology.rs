@@ -20,7 +20,11 @@ mod stub;
 pub(crate) use stub::{StubRemoval, remove_stub_graph};
 pub(super) use stub::migrate_stub_dependents;
 
-const INTERSECTION_NODE_CAPTURE_EPSILON: f32 = 0.05;
+/// The distance within which a road end stands on another road's centreline (metres): the end
+/// join keeps the end's own projection there and the split merges a knot this close into the
+/// junction. The road tool's contacts (`ROAD-118` round JS5a, fix B1) leave only such an end to
+/// that join.
+pub(super) const INTERSECTION_NODE_CAPTURE_EPSILON: f32 = 0.05;
 
 /// How a new edge meets the roads it reaches (`ROAD-99`, grade separation by structure): two
 /// roads meet, at a crossing, a mid-span end join or a node the edge passes through, only where

@@ -468,6 +468,7 @@ mod tests {
         RoadPreviewValidation {
             joined_nodes: [None; 2],
             contacts: [None; 2],
+            lead_ins: [None; 2],
             is_valid: false,
             invalid_reason: "bridge_clearance",
             max_grade: 0.0,

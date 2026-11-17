@@ -218,57 +218,6 @@ fn freeform_hint_and_buttons() {
     }
 }
 
-// A preview whose plan joined the stroke's end to a node (`ROAD-118` round JS3): the chips at the
-// drawn end move to the built end, the drawn end's angle chip goes, and the length chip reads the
-// built length; the start's chips stay.
-#[test]
-fn preview_facts_show_the_joined_stroke() {
-    let mut tool = session();
-    click(&mut tool, scripted(-280.0, 200.0));
-    move_to(&mut tool, scripted(-200.0, 260.0));
-    let points = tool.frame().stroke.points.clone();
-    let (start, end) = (points[0], *points.last().unwrap());
-    let mut labels = tool.frame().labels.clone();
-    labels.push(ToolLabel {
-        kind: LabelKind::Angle,
-        value: 80.0,
-        anchor: end,
-        side: Default::default(),
-        tone: LabelTone::Normal,
-    });
-    let at = |anchor: Vector3, point: Vector3| (anchor.x - point.x).hypot(anchor.z - point.z) < 0.01;
-    let at_end = labels.iter().filter(|label| at(label.anchor, end)).count();
-    let at_start = labels.iter().filter(|label| at(label.anchor, start)).count();
-    assert!(at_end >= 2, "the cost and the angle at the end");
-    let joined = end + Vector3::new(6.0, 0.0, 0.0);
-    let middle = middle_label(&labels);
-    apply_preview(
-        &mut labels,
-        PreviewFacts {
-            build_cost: Some(1.0),
-            joined: [None, Some((end, joined))],
-            joined_length_m: Some(77.0),
-            ..PreviewFacts::default()
-        },
-        middle,
-    );
-    assert!(labels.iter().all(|label| !at(label.anchor, end)), "nothing at the drawn end");
-    assert!(labels
-        .iter()
-        .all(|label| label.kind != LabelKind::Angle || !at(label.anchor, joined)));
-    assert_eq!(
-        labels.iter().filter(|label| at(label.anchor, joined)).count(),
-        at_end - 1,
-        "the end's chips but its angle moved"
-    );
-    assert_eq!(labels.iter().filter(|label| at(label.anchor, start)).count(), at_start);
-    let length = labels
-        .iter()
-        .find(|label| matches!(label.kind, LabelKind::TotalLength | LabelKind::PieceLength))
-        .unwrap();
-    assert_eq!(length.value, 77.0);
-}
-
 // The preview's facts: the class-priced cost, a grade from 0.5 % on the middle chip's other
 // side, a warning notice, and a refusal in place of the cost.
 #[test]
