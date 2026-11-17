@@ -18483,7 +18483,9 @@ it reaches the screen.
 
 **Gates** (fresh): `env -u DISPLAY -u WAYLAND_DISPLAY ./run.sh --test` PASS on `1d92083a` (rust
 3m37s, godot-main 3m14s, godot-vehicle 1m35s) and on `645aa787` (the menu prewarm; 3m56s, 3m27s,
-2m02s, under another lane's load) GATE3_PLACEHOLDER; `tools/test_stream_benchmark.py` OK; the targeted lib tests (`graded_edits`,
+2m02s, under another lane's load) and on `15f60ca1` (the branch head before these docs; 3m23s, 2m52s, 1m29s; the run on
+`b6b11aac` failed `road_benchmark_metrics_test`, which runs the stream harness without the
+autoloads, until `15f60ca1` read `LaunchState` by path); `tools/test_stream_benchmark.py` OK; the targeted lib tests (`graded_edits`,
 `building_site_terrain`, `parking`, `asset`) 319 passed, among them the new
 `an_asset_reload_journals_a_reset`; clippy `--all-targets` adds no warning in the changed files.
 Artefacts: `$ARTIFACTS/render43/r43b` (profiles, series, products, the session log).
