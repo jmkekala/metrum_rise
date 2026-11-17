@@ -15678,6 +15678,32 @@ Branch `roadtools-js2` off `dev` `6f953cc5` (JS1 landed).
   by one, one group, one undo restores). `populated_dissolving_road_plan_scaling` (the locality
   check, a T 5 m from a joint as the remote city grows).
 
+**Fresh, 2026-11-17** (base `dev` `6f953cc5`, release library `655a35ca99266a98` with its
+scripts; branch `3fef754f`, library `a1a693000a735a88`; release test binaries `3f606ba3` and
+`ada393bd`, and `15045c4b` for the branch's last commit `cdebd018`, which only defers the refusal
+place a dissolve's rebuild discards; pinned to the performance cores, eight workers, run and
+exclusive timing locks, the machine shared with another session's timed rows):
+
+- **Products.** Kuopio's 78 drag-probe commits and the 17 gameplay fixtures: graph, state, mesh,
+  mesh without signs and graded equal on every commit, bitwise. No stroke there stood beside an
+  empty joint it could not fit, so nothing dissolved.
+- **Per move and pose.** Session bench, 30k locality, C B B C: straight p50 103.0 / 103.0 /
+  102.3 / 103.2 us, curve p50 113.4 / 113.5 / 112.9 / 113.6 us, digests equal. Allocation probe
+  (heaptrack `--record-only`): base n = 0 / 20 / 200 2,403,882 / 2,403,811 / 2,403,832, branch
+  2,403,794 / 2,403,859 / 2,403,863: zero per move on both. `benchmark_road_preview_stages` C B B
+  C: plan p50 0.50-1.06 ms, roadbed 0.39-0.92 ms, both sides interleaved (accepted poses build
+  once). `populated_road_plan_scaling` C B: identical local products, compile p50 0.18-0.22 ms
+  (base) and 0.17-0.22 ms (branch) from 0 to 100,000 remote buildings (600,024 agents).
+  `populated_dissolving_road_plan_scaling` (branch): identical local products at every tier and
+  no trend with the city; compile p50 0.53 / 0.46 / 0.48 / 0.65 ms at 0 / 1k / 10k / 100k remote
+  buildings on `cdebd018` (the pose is refused as drawn and built twice; about 2.5x the ground
+  pose), other rows under another session's load 0.4-3.9 ms with no tier the slowest twice; the
+  hover check (`preview`) 0.03 ms as for the ground pose.
+- **Level R timing** (`./run.sh --timing --level R --k22`; the path rule says F for
+  `simulation/network`, the brief R, as in JS1): `PERF-07` 30k 32x C B B C mean 4.223 / 4.258 ms
+  (+0.8 %, tolerance 1.4 %), p99 -0.3 %, p99.9 -0.9 %, every component level; acceptance rows the
+  known exception `PERF-17` (one branch row passes outright). K22 30k click-to-ack 7.01 / 6.80 ms.
+
 ### Moving and reshaping built roads (`ROAD-113`)
 
 One geometry edit gives a set of edges a new horizontal shape and a set of nodes a new position
