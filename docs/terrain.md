@@ -18449,9 +18449,9 @@ No "Preparing shaders" label (the user asked for one only with an exact "done"):
 counts a pipeline compilation when it is submitted (`PipelineHashMapRD::compile_pipeline`), never
 when it finishes, and exposes no pending count or completion signal. The only exact barrier
 within an unmodified engine is a frame that draws every template (a draw waits for its
-pipeline), which would freeze the menu for the whole cold compile. Not built; options for the
-user: no label; the frozen-frame barrier behind the label; or an upstream API proposal for a
-pending-compilation count.
+pipeline), which would freeze the menu for the whole cold compile. Not built. The user's
+decision (2026-11-17): no label (the other options were the frozen-frame barrier behind the label
+and an upstream API proposal for a pending-compilation count).
 
 **The menu case, timed** (a second batch, 06:38-06:47, after the same quiet check, load 6.2 and
 falling, no perf, cargo or restic process; C B B C; control `dev` `b40368b2`'s library and
