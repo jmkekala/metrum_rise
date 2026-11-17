@@ -86,7 +86,7 @@ impl SimCore {
             .refresh_building_sites_after_asset_reload(self.zoning.config.zone_cell_m);
         self.zoning.invalidate_cell_lot_assets();
         self.rebuild_building_entrances_internal();
-        self.publish_pending_building_site_changes();
+        self.publish_reloaded_building_site_changes();
     }
 }
 

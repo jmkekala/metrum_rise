@@ -1118,7 +1118,7 @@ fn a_resting_car_keeps_a_fresh_solve_until_the_ground_under_it_changes() {
     // Each record of the graded edit journal counts as a change of the ground.
     let generation = core.vehicle_ground_generation;
     core.record_graded_road_edit(&Default::default());
-    core.record_graded_site_edit(&[]);
+    core.record_graded_site_edit(&[], false);
     assert_eq!(core.vehicle_ground_generation, generation + 2);
     // A terrain edit under the car: it is solved again, against the new ground.
     let at = Vector2::new(point.x, point.y);

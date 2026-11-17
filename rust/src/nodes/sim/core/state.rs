@@ -1838,7 +1838,18 @@ impl SimCore {
 
     /// Publishes allocator-owned site changes through one terrain invalidation path for every mode.
     pub(crate) fn publish_pending_building_site_changes(&mut self) {
-        self.publish_pending_site_changes_but_terrain();
+        self.publish_building_site_changes(false);
+    }
+
+    /// [`Self::publish_pending_building_site_changes`] after a whole-catalog asset reload, whose
+    /// changes may move every site: the graded edit journal records them as the world-scale
+    /// reset they are ([`Self::record_graded_site_edit`], `RENDER-43` R43b).
+    pub(crate) fn publish_reloaded_building_site_changes(&mut self) {
+        self.publish_building_site_changes(true);
+    }
+
+    fn publish_building_site_changes(&mut self, every_site: bool) {
+        self.publish_pending_site_changes_but_terrain(every_site);
         let boxes = self.allocator.take_pending_site_dirty_bounds();
         if !boxes.is_empty() {
             self.mark_building_site_terrain_only_boxes(&boxes);
@@ -1853,7 +1864,7 @@ impl SimCore {
     /// refresh recomputes its patches from the live roads and sites, so a later refresh gives
     /// what the next frame's terrain needs. O(changes) now.
     pub(crate) fn publish_pending_building_site_changes_deferring_terrain(&mut self) {
-        self.publish_pending_site_changes_but_terrain();
+        self.publish_pending_site_changes_but_terrain(false);
         let mut boxes = self.allocator.take_pending_site_dirty_bounds();
         self.deferred_site_terrain_boxes.extend(boxes.drain(..));
         self.allocator.return_site_dirty_bounds_storage(boxes);
@@ -1876,15 +1887,16 @@ impl SimCore {
     }
 
     // The production sites, yards and cell-lot dirty marks of the pending site changes, and the
-    // graded terrain's site changes, which replace the last publication's.
-    fn publish_pending_site_changes_but_terrain(&mut self) {
+    // graded terrain's site changes, which replace the last publication's; `every_site` for a
+    // whole-catalog reload's.
+    fn publish_pending_site_changes_but_terrain(&mut self, every_site: bool) {
         self.last_site_terrain_changes.clear();
         std::mem::swap(
             &mut self.last_site_terrain_changes,
             &mut self.allocator.graded_site_changes,
         );
         let changes = std::mem::take(&mut self.last_site_terrain_changes);
-        self.record_graded_site_edit(&changes);
+        self.record_graded_site_edit(&changes, every_site);
         self.last_site_terrain_changes = changes;
         self.publish_parking_sites();
         self.publish_pending_production_site_removals();

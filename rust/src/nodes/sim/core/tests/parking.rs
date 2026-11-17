@@ -14,7 +14,7 @@ mod published;
 mod strand;
 mod taken_trips;
 
-fn core() -> SimCore {
+pub(in crate::nodes::sim::core::tests) fn core() -> SimCore {
     let mut core = SimCore::new(
         WorldConfig::new(512.0, 512.0, 16.0, 10.0)
             .with_chunking(128.0, 0.0)

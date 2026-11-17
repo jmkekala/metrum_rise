@@ -212,7 +212,13 @@ impl SimCore {
     }
 
     /// Records published site changes. Nothing while the journal is off or without changes.
-    pub(crate) fn record_graded_site_edit(&mut self, changes: &[SiteChange]) {
+    /// With `every_site` (a whole-catalog asset reload, which records a change for every site)
+    /// the journal records [`GradedEditKind::All`], a world-scale reset, in `O(1)`: a
+    /// [`GradedEditKind::Sites`] record copies every site and walks each change's site chunk
+    /// candidates, `O(changes x sites per 512 m chunk)` on the simulation lock (1.7 s on the
+    /// 30k city, `RENDER-43` R43b), to select what is nearly every tile. The query index and the
+    /// parked ground follow the changes either way.
+    pub(crate) fn record_graded_site_edit(&mut self, changes: &[SiteChange], every_site: bool) {
         let started = std::time::Instant::now();
         self.terrain_query_index.update_sites(
             &self.transit_network.roadbed,
@@ -225,6 +231,12 @@ impl SimCore {
             GRADED_CHANGE_REACH_M,
         );
         if !self.graded_edits.enabled || changes.is_empty() {
+            return;
+        }
+        if every_site {
+            // Every tile rebakes from the live inputs, as after a load; the roadbed the next
+            // road install accumulates from is unchanged.
+            self.push_graded_edit(GradedEditKind::All);
             return;
         }
         let cell_m = f64::from(self.heightmap.cell_size_m());

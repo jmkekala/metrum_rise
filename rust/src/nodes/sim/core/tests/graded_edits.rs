@@ -172,3 +172,28 @@ fn an_undo_on_the_swap_path_journals_the_commits_tiles_back() {
         );
     }
 }
+
+// `RENDER-43` R43b: a whole-catalog asset reload records a change for every site, and the journal
+// takes it as the world-scale reset it is (a `Sites` record copied every site and walked each
+// change's site chunks, 1.7 s on the 30k city); a placement's site edit stays local.
+#[test]
+fn an_asset_reload_journals_a_reset() {
+    let mut core = super::parking::core();
+    let id = super::parking::register_lot(&mut core);
+    core.take_graded_edits();
+    core.place_service_building_internal(&id, 0.0, -30.0).unwrap();
+    core.publish_pending_building_site_changes();
+    let edits = core.take_graded_edits();
+    assert!(
+        edits.iter().any(|edit| matches!(edit.kind, GradedEditKind::Sites { .. }))
+            && !edits.iter().any(|edit| matches!(edit.kind, GradedEditKind::All)),
+        "a placement journals its site edit"
+    );
+    let manifest = core.allocator.registry.get(&id).unwrap().manifest.clone();
+    core.replace_asset_registry(vec![("parking".to_owned(), manifest, String::new())]);
+    let edits = core.take_graded_edits();
+    assert!(
+        matches!(edits.as_slice(), [edit] if matches!(edit.kind, GradedEditKind::All)),
+        "the reload journals one reset"
+    );
+}
