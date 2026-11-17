@@ -18100,6 +18100,145 @@ Rows and products (fresh, same boot; `58e71271` unless named):
   232 ignored (`58e71271`; `efeaec92` changes one script); `./run.sh --test` PASS (nextest 2,807 passed, 233 skipped; godot-main, godot-vehicle
   PASS, no SCRIPT ERROR).
 
+### Where the camera turn's CPU goes, and the site scan's reach first (`RENDER-46`, round R46b, 2026-11-17)
+
+Round R46b (the user's question about frame drops when turning the camera 180 degrees; decided
+under the user's night delegation, for review). Branch `render-46` on `dev` `bab3151b`; control
+`bab3151b`'s release library with its own scripts. Godot 4.7.2 Forward+, RADV on the RX 7900 XTX,
+gamescope headless at 1920x1080, P-cores, eight workers, isolated profiles, simulation paused
+unless named; the timing cache's 30k city and Kuopio. The stream benchmark's turns already turn
+180 degrees (`TURN_RADIANS`, over 0.5 s and 1 s, out, back and again), so no phase was added.
+
+**Method** (untimed, one run each, control library). PL1's profile of Godot's main thread
+(`perf record -k realtime`, cpu-clock every 250 us, frame pointers, joined to the rows by
+`t_unix`) on a 6 s still and the 1 s and 0.5 s turns; R44's Intel PT call counts on the still and
+two 1 s turns; and a throwaway build (not on the branch) counting every `GodotBackend` call a frame
+by owner. A diagnostic run with one Rayon worker in place of eight.
+
+```bash
+tools/stream_benchmark.py run --label p30 --out "$ARTIFACTS" --save <populated_city_30000.sqlite> \
+    --library <.so> --phases still,turns --turns 1,0.5 --still-s 6
+perf record -k realtime -e cpu-clock/period=250000/ --call-graph fp -t <godot main thread>   # from LOAD_END
+perf record -e intel_pt//u -t <godot main thread> -- sleep 0.12   # 0.3 s into a turn, 1.5 s into the still
+```
+
+**Where the turn's extra goes** (paused 30k, ms a frame; the 1 s turns' frame p50 7.1-7.3 ms
+against the still's 6.6 and a GPU of 6.5):
+
+| | still | 1 s turns | 0.5 s turns |
+|---|---:|---:|---:|
+| Godot's draw (under `RenderingServerDefault::_draw`) | 3.17 | 4.92 | 5.81 |
+| of it the draw lists' recording (`_render_list`) | 1.22 | 1.80 | 1.95 |
+| of it filling the render lists | 0.16 | 0.44 | 0.55 |
+| of it the command replay (`_run_render_commands`), RADV's share | 0.88, 0.53 | 1.31, 0.87 | 1.64, 1.15 |
+| of it our installs' dirty instances (`update_dirty_instances`) | 0.00 | 0.16 | 0.22 |
+| of it the graded page copies in the replay | 0 | 0.02 | 0.04 |
+| Main thread outside the draw | 0.81 | 1.78 | 2.31 |
+| of it GDScript | 0.52 | 0.74 | 0.85 |
+| of it the graded book | 0.01 | 0.27 | 0.43 |
+| of it the frame queries' site scan (`push_graded_sites`) | 0.07 | 0.20 | 0.20 |
+| of it `RenderingServer` calls from Rust | 0 | 0.08 | 0.11 |
+
+Calls a frame (PT, still / turn out / turn back): `RenderingDevice` draws 6,054 / 6,295 / 6,465;
+geometry surfaces rebuilt 0 / 83 / 98 (R44: 0 / 414 / 515); visible-count changes 0 / 72 / 76;
+instance shows and hides 0 / 32 / 35; uniform sets created 0 / 10 / 9; texture updates 0 / 77 /
+80. Our installs a 1 s turn frame by owner: the graded cells 68 texture layer writes, 26 buffers,
+47 count changes; the vegetation 12 hides, 11 shows, 7 buffers, 5 counts, 4 material changes; the
+agents' shadow twins 10 buffers, 9 counts; the building batches about 4 calls (the 0.5 s turns
+about twice each). Kuopio's turns: the vegetation's as at 30k, graded about 3 a frame.
+
+What the measurement says:
+
+- **The turn draws what the still draws and pays more a call.** Draws are up 3-7 %; Godot's
+  draw is up 1.75 ms (0.5 s turns 2.64), and by leaf most of it is the same calls missing memory:
+  RADV +0.47 ms, RID lookups (`get_or_null`) +0.19, the render graph's usage tracking
+  (`add_draw_list_usages`, `reset_if_outdated`) +0.23. With one worker the turn's draw fell to
+  3.9-4.0 ms (still 2.8), but the graded uploads fell from 20-44 to 5-7 a frame and the graded
+  tiles stayed unready: the background bakes and their uploads compete with the draw for the
+  cache, and only less or later content (a visible change) would lower it.
+- **Surface rebuilds are no longer an owner.** CS1's merged car bodies and the rounds since took
+  them from 414-515 to 83-98 a turn frame: 0.10-0.14 ms, with the whole dirty-instance update
+  0.16-0.22. Each comes from an install the turn needs (a count, a reallocation, a mesh or a
+  material); no unchanged object is rebuilt each frame.
+- **Hiding pooled slots by their visible count would cost more, not less.** In Godot 4.7.2
+  `multimesh_set_visible_instances` notifies `DEPENDENCY_CHANGED_MULTIMESH_VISIBLE_INSTANCES`,
+  which the scene cull queues with its dependencies, and that path sets the surface materials and
+  rebuilds every surface of the instance; `instance_set_visible` only leaves the BVH (hide) or
+  queues a bounds update (show), with no rebuild. The PT counts agree (rebuilds follow the count
+  changes, not the shows and hides). Not built.
+- **No node or instance churn on turns**: objects 3,652 on the still, 3,761-3,807 on turns, the
+  content in transit.
+
+**What changed: the site scan's reach first.** `SiteRectQuery::holds_parts` took a site's
+footprint and surface bounds (a walk of its polygons) before the lot-centre reach test that,
+by its own comment, rules a far site out first; the frame queries' surface heights (the camera's
+clearance, the graded eye, grass) run it over every captured site of the patches they touch, every
+frame. The bounds now run only for a site within reach: the same sites, so the same answers bit
+for bit, at `O(captured sites)` reach tests plus `O(polygon corners of the sites in reach)` a
+query, no allocation. The allocator's own graded site query (the bakes) takes the same order. In
+the branch's profile the scan fell from 0.065 to 0.014 ms a still frame and from 0.20 to 0.035 ms
+a turn frame. It is main-thread work in the turn frames, not Godot's draw.
+
+**Timing** (one session, 01:30-02:07; control `bab3151b`'s library and scripts, branch
+`e5c1fa41`'s library; `tools/stream_benchmark.py series` and `compare`, C B B C):
+
+```bash
+tools/stream_benchmark.py series --input-label 30k --out "$ARTIFACTS" --save <populated_city_30000.sqlite> \
+    --ctl-library <control .so> --ctl-scripts <control godot/scripts> --library <branch .so>
+tools/stream_benchmark.py series --input-label kuopio --out "$ARTIFACTS" ...   # same, no save
+./run.sh --timing --level F --control <control $TEST_BINARY> --branch <branch $TEST_BINARY> --base bab3151b \
+    --artifacts "$ARTIFACTS/sess-f"
+```
+
+- The first series (both inputs) shared the machine with another lane's unlocked profile
+  post-processing (five `perf script` processes at 80-90 % CPU): its rows swung by up to 1.3 ms
+  between the two control runs (the 1 s turns 7.8 against 8.6-9.1 ms), so the one rerun took both
+  whole series again once no profiler, compiler or `cargo` had run for 30 s.
+- The rerun, 30k: the 1 s turns better at p50 by 0.1 ms each (7.0 to 6.9, against a same-binary
+  spread of 0.0-0.1), the 0.5 s turns by 0.2-0.4 (two `better`, one level), the night turns
+  better by 0.1; Godot's draw on the turn frames (`render_cpu_ms` p50, rows C1 B1 B2 C2) 3.34,
+  3.23, 3.23, 3.34 on the 1 s turns and 3.78, 3.72, 3.77, 3.78 on the 0.5 s turns, the still's
+  2.22-2.29; still, pans and zooms level. Two flags: `jump` p50 +0.2 against a spread of 0.1
+  (its first series +0.0) and `zoom_in_repeat` max +1.0 against 0.5 (its first series +0.3 p50).
+- The rerun, Kuopio: 0.1 ms flags both ways on 1.8-2.3 ms frames (0.5 s `turn_out` and
+  `turn_back` +0.1 at a spread of 0.0-0.1, `turn_repeat` 0.5 s and the night turn -0.1; maxima
+  of the night still and pan +3.0-3.2); Kuopio has no building sites, so the changed code has
+  nothing to scan there and its rows are the two libraries' run-to-run difference.
+- The 30k 1x play pair (PL1's rows, instrumented, one run a side, in the noisy first window):
+  control 1 s turns p50 13.8 ms at a GPU of 8.9, branch 10.3 at 6.6; the control's GPU moved by
+  2.3 ms, which no CPU change explains, so the pair says nothing either way.
+- `PERF-07` at level F (`sess-f`): 30k 32x level in every metric (max unpreempted -23 %); 30k 1x
+  PASS on both sides, the branch better in mean, p99 and p99.9 (-5.6 %, -6.5 %, -22 %; one row
+  a side).
+
+**Decisions** (the user's night delegation, for review): the measurement supports none of the
+draw-side levers the row left open, so none was built; the site scan's reach-first order is the
+one change, kept because it removes work the code's own comment says it skips, at no visible or
+numeric change. The bar "the 1 s turn p50 lower than control outside the spread" is met in the
+rerun by 0.1 ms; "no row worse after one rerun" is not met by `jump` (+0.2 p50) and
+`zoom_in_repeat` (+1.0 max) at 30k and Kuopio's 0.1 ms flags, on code that only removes work
+from those frames.
+
+**What is left, by size** (each its own decision): the street lights in chunk batches (the
+owner's open look decision, about 630 draws at 30k); the graded book's main-thread work on turns
+(0.27-0.43 ms) and its uploads; GDScript's +0.2-0.3 ms on turns (`RENDER-53`); the background
+bakes' pressure on the cache during a turn (no lever without later content).
+
+**No visible change.** Digests at the settle points (`--digests`, 30k post-load, still and 1 s
+turns; Kuopio still, turns, pan and zoom): graded, buildings, roads, parked cars, vegetation, land
+cover and water equal at every point (30k 4 of 4, Kuopio 8 of 8). Stills: Kuopio `close`, `mid`,
+`forest_low` byte-identical; 30k `city` and `city_low` byte-identical in both pairs, `saved` 1 and
+8 px of delta up to 3 (the `RENDER-45` residue: control against control 7 px, branch against
+branch 2 px; `systematic`: none).
+
+Tests and gates (fresh, on `e5c1fa41`): the new
+`query::reach_tests::a_site_out_of_reach_is_refused_before_its_bounds_are_read` and the frame
+queries' equivalence (`published_frame_queries_follow_every_kind_of_edit`, `graded_queries`)
+pass; `cargo clippy --all-targets` adds no warning in the changed file (the base's set
+elsewhere); no public item added; debug `cargo test --lib` 2,808 passed, 0 failed, 232 ignored;
+`./run.sh --test` PASS (nextest 2,812 passed, 233 skipped; godot-main and godot-vehicle PASS, no
+SCRIPT ERROR).
+
 ## Implemented Runtime Contract
 
 ### 1. `WorldConfig` Is The Authoritative World Metadata
