@@ -272,6 +272,7 @@ pub fn reason_text(reason: &str, facts: &ReasonFacts) -> Option<String> {
             ),
         },
         "road_tight_curve" => format!("Curve too tight: radius {:.1} m, needs {:.1} m", measured, facts.geometry_limit),
+        "roads_overlap" => format!("Roads overlap: they meet at {:.0}°, a junction needs {:.0}°", measured, facts.geometry_limit),
         "junction_arm_angle" => format!("Roads meet at {:.0}°; junction arms need {:.0}°", measured, facts.geometry_limit),
         "junction_corner_does_not_fit" => "Junction corner does not fit here".into(),
         "junction_core_not_simple" => "Junction roads overlap; widen the angle between them".into(),

@@ -93,18 +93,22 @@ impl PreviewOutcome {
     }
 
     /// What the chips show of it; `pending` while the sent stroke waits. `drawn` is the stroke's
-    /// drawn points: an end the plan joined to a node (`ROAD-118` round JS3) shows where the
-    /// prepared (joined) stroke ends instead.
+    /// drawn points: an end the plan joined to a node (`ROAD-118` round JS3) or moved onto a
+    /// road it touched (round JS4a) shows where the prepared (built) stroke ends instead.
     pub(crate) fn chip_facts(&self, pending: bool, drawn: &[Vector3]) -> PreviewFacts {
-        let joined_nodes = self
+        let moved = self
             .validation
             .as_ref()
             .filter(|_| self.valid)
-            .map_or([None; 2], |validation| validation.joined_nodes);
+            .map_or([false; 2], |validation| {
+                std::array::from_fn(|end| {
+                    validation.joined_nodes[end].is_some() || validation.contacts[end].is_some()
+                })
+            });
         let ends = |points: &[Vector3]| [points.first().copied(), points.last().copied()];
         let (drawn, prepared) = (ends(drawn), ends(&self.prepared));
         let joined: [Option<(Vector3, Vector3)>; 2] = std::array::from_fn(|end| {
-            joined_nodes[end].and(drawn[end].zip(prepared[end]))
+            drawn[end].zip(prepared[end]).filter(|_| moved[end])
         });
         PreviewFacts {
             refused: !self.valid,

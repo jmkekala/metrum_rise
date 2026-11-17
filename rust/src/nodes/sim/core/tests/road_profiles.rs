@@ -222,9 +222,11 @@ fn todays_strokes_keep_the_branch_points_products() {
     );
 }
 
-// Recorded on `dev` cd49a275 (see the test above).
+// Recorded on `dev` cd49a275 (see the test above). The follow-ground digest re-recorded by
+// `ROAD-118` round JS4a: the arc's end stands 8.5 m beside the through-hill road, its cap on that
+// road's side, and now runs on to it as a T.
 const BRANCH_POINT_DIGESTS: [u64; 3] = [
-    0x2be9_fab0_5e48_9331,
+    0x9a7d_e29e_1f58_20fb,
     0x6d30_1655_d3ee_62e0,
     0x32c0_e185_fa25_f9d8,
 ];

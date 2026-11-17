@@ -266,11 +266,14 @@ pub(super) fn remove_stubs(
 // The stroke end that joins an occupied node (`ROAD-118` round JS3): among the failing arms
 // ([`failing_arms`]) on a live road, too short for their node, between a node the stroke's end
 // makes on that road and a live node of the road (an occupied node: a joint or a free stub there
-// already made way), the nearest one within [`MAX_END_JOIN_M`], ties by `(node, arm)` order.
-// Each end moves once (`done`), never onto the stroke's other end. Returns the end (0 start, 1
-// end) and the live node. Refusals only: O(failing arms x the need's bisection).
+// already made way), the nearest one within [`MAX_END_JOIN_M`] or within the node's piece on that
+// road (the live road's mouth station there, round JS4a: the end's footprint lies on the piece),
+// ties by `(node, arm)` order. Each end moves once (`done`), never onto the stroke's other end.
+// Returns the end (0 start, 1 end) and the live node. Refusals only: O(failing arms x the need's
+// bisection).
 pub(super) fn end_join(
     excerpt: &ValidationGraph,
+    existing_graph: &RegionGraph,
     failing: &[(u32, ArmKey)],
     done: [bool; 2],
 ) -> Option<(usize, u32)> {
@@ -279,9 +282,9 @@ pub(super) fn end_join(
     let mut best: Option<(f32, usize, u32)> = None;
     for &(node, arm) in failing {
         let far = far_node(local, arm);
-        if source_root(excerpt, arm.edge).is_none() {
+        let Some(root) = source_root(excerpt, arm.edge) else {
             continue;
-        }
+        };
         let length_m = horizontal_length_m(&local.edge(arm.edge).geometry);
         if arm_edge_needed_m(local, node, arm).is_none_or(|needed_m| needed_m <= length_m) {
             continue;
@@ -298,8 +301,16 @@ pub(super) fn end_join(
             };
             let (a, b) = (local.node(near).pos, local.node(target).pos);
             let distance_m = (b.x - a.x).hypot(b.z - a.z);
-            if distance_m <= MAX_END_JOIN_M && best.is_none_or(|(best_m, ..)| distance_m < best_m)
-            {
+            let road = existing_graph.edge(root);
+            let mouth_m = if existing_graph.get_valid_node(road.start_node) == live {
+                road.start_clip
+            } else if existing_graph.get_valid_node(road.end_node) == live {
+                road.end_clip
+            } else {
+                0.0
+            };
+            let reach = distance_m <= MAX_END_JOIN_M || length_m <= f64::from(mouth_m);
+            if reach && best.is_none_or(|(best_m, ..)| distance_m < best_m) {
                 best = Some((distance_m, end, live));
             }
         }

@@ -43,9 +43,12 @@ use crate::simulation::zoning::ZoningSystem;
 use godot::prelude::Vector3;
 use std::collections::{HashMap, HashSet};
 
+mod contact;
 mod spacing;
 
+pub(crate) use contact::EndContact;
 pub(crate) use spacing::joined_stroke;
+use contact::{contacted_stroke, end_contacts};
 use spacing::{StubYield, end_join, failing_arms, remove_stubs, stub_yields};
 
 const PREVIEW_VALID_REASON: &str = "";
@@ -73,6 +76,7 @@ const PREVIEW_JUNCTION_BANDS_REASON: &str = "junction_band_mismatch";
 const PREVIEW_JUNCTION_ARM_REASON: &str = "junction_arm_too_short";
 const PREVIEW_JUNCTION_PROFILE_REASON: &str = "junction_profile_mismatch";
 const PREVIEW_JUNCTION_LAYOUT_REASON: &str = "junction_layout_invalid";
+const PREVIEW_ROADS_OVERLAP_REASON: &str = "roads_overlap";
 /// The shortest stroke the checks accept, metres of horizontal length (`too_short`).
 pub(crate) const PREVIEW_MIN_ENDPOINT_SEGMENT_M: f32 = 2.0;
 const PREVIEW_BRIDGE_GROUND_TOLERANCE_M: f32 = 0.05;
@@ -171,6 +175,10 @@ pub(crate) struct RoadPreviewValidation {
     /// (`ROAD-118` round JS3, [`joined_stroke`]): the stroke it builds runs to them. `None` for
     /// an end where it was drawn.
     pub(crate) joined_nodes: [Option<u32>; 2],
+    /// What each end of the drawn stroke touched, start then end (`ROAD-118` round JS4a): the
+    /// node it joined or the point on a road's centreline it ran on to, before any round JS3
+    /// join; [`built_stroke`] replays them. `None` for an end that touched no road.
+    pub(crate) contacts: [Option<EndContact>; 2],
 }
 
 /// Where a junction refusal happened (`ROAD-118` round JS1), in the committed graph's ids where
@@ -223,6 +231,7 @@ impl RoadPreviewValidation {
             junction_place: None,
             endpoint_edges: [None; 2],
             joined_nodes: [None; 2],
+            contacts: [None; 2],
         }
     }
 
@@ -319,7 +328,7 @@ fn record_endpoint_edges(
         validation.end_endpoint_snapped_node_id,
     ];
     for (index, point) in [start, end].into_iter().enumerate() {
-        if nodes[index] >= 0 {
+        if nodes[index] >= 0 || validation.endpoint_edges[index].is_some() {
             continue;
         }
         let reach = Vector3::new(
@@ -675,6 +684,35 @@ fn validate_against_graph(
         );
     }
 
+    // Roads that touch join (`ROAD-118` round JS4a): an end whose footprint touches another car
+    // road is moved onto it before the plan is built, so every check below and the commit read
+    // the stroke it builds; an end that would run on top of a road is refused.
+    let contacts = if fwd_lanes > 0 || bkw_lanes > 0 {
+        let half_width_m = preview_candidate_roadbed_half_width_m(
+            prepared_points,
+            prepared_input.class,
+            fwd_lanes,
+            bkw_lanes,
+            prepared_input.median,
+            prepared_input.parking,
+            prepared_input.attributes,
+        );
+        let existing = [start_existing, end_existing];
+        match end_contacts(prepared_input, half_width_m, existing_graph, existing) {
+            Ok(contacts) => contacts,
+            Err(overlap) => return (overlap.refuse(validation), None),
+        }
+    } else {
+        [None; 2]
+    };
+    validation.contacts = contacts;
+    let contacted = contacts
+        .iter()
+        .any(Option::is_some)
+        .then(|| contacted_stroke(prepared_input, contacts, existing_graph));
+    let prepared_input = contacted.as_ref().unwrap_or(prepared_input);
+    let prepared_points = &prepared_input.points;
+
     let grounded = prepared_input.class == EdgeClass::Standard && !prepared_input.tunnel;
     if let Some(reason) =
         roundabouts::stroke_ring_refusal(existing_graph, prepared_points, grounded)
@@ -768,11 +806,11 @@ fn validate_against_graph(
                 || input.joined_spans[end].is_some()
                 || input.elevated_ends[end]
         });
-        let Some((end, node)) = end_join(&excerpt.graph, &failing, ends) else {
+        let Some((end, node)) = end_join(&excerpt.graph, existing_graph, &failing, ends) else {
             return (excerpt.refused(validation), None);
         };
         // The joined stroke numbers its excerpt afresh: the yields found on the drawn one go.
-        let mut nodes = input.joined_nodes;
+        let mut nodes = later_joins(input.joined_nodes, contacts);
         nodes[end] = Some(node);
         joined = Some(joined_stroke(prepared_input, nodes, existing_graph));
         yields.clear();
@@ -838,6 +876,36 @@ fn validate_against_graph(
         (dissolves, stubs),
     );
     (validation, topology_plan)
+}
+
+/// The stroke an accepted `validation` of `prepared` builds (`ROAD-118` rounds JS3, JS4a): its
+/// ends moved onto what they touched, then carried onto the nodes a junction refusal joined
+/// them to, in the order the validation built it. `O(points)`.
+pub(crate) fn built_stroke(
+    prepared: &PreparedRoadInput,
+    validation: &RoadPreviewValidation,
+    graph: &RegionGraph,
+) -> PreparedRoadInput {
+    let contacts = validation.contacts;
+    let contacted = if contacts.iter().any(Option::is_some) {
+        contacted_stroke(prepared, contacts, graph)
+    } else {
+        prepared.clone()
+    };
+    let nodes = later_joins(validation.joined_nodes, contacts);
+    if nodes.iter().any(Option::is_some) {
+        joined_stroke(&contacted, nodes, graph)
+    } else {
+        contacted
+    }
+}
+
+// The joined nodes a junction refusal added (round JS3), without those a contact joined (round
+// JS4a), which the contacted stroke already stands on.
+fn later_joins(joined: [Option<u32>; 2], contacts: [Option<EndContact>; 2]) -> [Option<u32>; 2] {
+    std::array::from_fn(|end| {
+        joined[end].filter(|_| !matches!(contacts[end], Some(EndContact::Node(_))))
+    })
 }
 
 // The most plans one pose builds (`ROAD-118`): the plan as drawn, a round of joints dissolving

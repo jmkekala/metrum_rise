@@ -28,9 +28,11 @@ pub(crate) use input::{
 pub(crate) use support::{DraftGround, RebuiltPieces, plan_road_edit};
 pub(crate) use tunnel::tunnel_run_reaches_cover;
 pub(crate) use validation::{
-    JunctionPlace, PREVIEW_MIN_ENDPOINT_SEGMENT_M, RoadPreviewValidation, joined_stroke,
+    JunctionPlace, PREVIEW_MIN_ENDPOINT_SEGMENT_M, RoadPreviewValidation, built_stroke,
     validate_road_candidate_fast, validate_road_edit,
 };
+#[cfg(test)]
+pub(crate) use validation::EndContact;
 
 /// What a road plan reads of the land beside the roads (`ROAD-118` round JS3): whether a
 /// building fronts a stretch of a live road, which keeps a short stub from being removed. The

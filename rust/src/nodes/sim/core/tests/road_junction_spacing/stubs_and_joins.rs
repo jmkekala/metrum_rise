@@ -29,7 +29,7 @@ fn city(roads: &[[(f32, f32); 2]]) -> SimCore {
 }
 
 // The canonical node standing within half a metre of `point` with a road.
-fn node_near(core: &SimCore, point: Vector2) -> u32 {
+pub(super) fn node_near(core: &SimCore, point: Vector2) -> u32 {
     let graph = &core.region_graph;
     (0..graph.node_count() as u32)
         .find(|&node| {
@@ -42,7 +42,7 @@ fn node_near(core: &SimCore, point: Vector2) -> u32 {
 }
 
 // Canonical nodes without a live road.
-fn edgeless_nodes(core: &SimCore) -> usize {
+pub(super) fn edgeless_nodes(core: &SimCore) -> usize {
     let graph = &core.region_graph;
     (0..graph.node_count() as u32)
         .filter(|&node| graph.get_valid_node(node) == node && degree(core, node) == 0)
@@ -143,12 +143,13 @@ fn a_join_under_25_degrees_is_refused() {
 }
 
 // A stroke crossing the street 6 m east of the T cannot move its crossing: refused, naming the
-// two junctions and the 6 m between them.
+// two junctions and the 6 m between them. (It leans away from the side street: an end 6 m beside
+// it would touch it, round JS4a.)
 #[test]
 fn a_crossing_near_a_junction_is_refused_with_the_node_named() {
     let mut core = city(&T_CITY);
     let t = node_near(&core, v(0.0, 0.0));
-    let points = stroke(&core, [v(6.0, -60.0), v(6.0, 60.0)]);
+    let points = stroke(&core, [v(1.0, -60.0), v(11.0, 60.0)]);
     let mut view = context(&mut core);
     let refused = preview(&mut view, &points).validation;
     assert!(!refused.is_valid);

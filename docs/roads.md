@@ -1459,6 +1459,8 @@ with a 9.5 m stub (at its minimum corner radius), not 17 m. An empty joint takes
 fit beside one, the joint dissolves and its two roads join into one, so the arm runs on to the
 next real node. A stub to a road end too short for its junction goes, and a stroke end too close
 to a real junction or bend joins it (round JS3, [below](#stubs-go-and-stroke-ends-join-round-js3)).
+A stroke end whose footprint touches another road joins it before any of this (round JS4a,
+[below](#roads-that-touch-join-round-js4a)): at ground level roads meet only in a junction.
 
 - If a corner does not fit, `R` is reduced towards `R_min`. If it still does not fit, layout
   returns `LayoutError::CornerDoesNotFit { arm }`.
@@ -15685,7 +15687,8 @@ needed 17 m of road to any other node, even to an empty straight joint or a road
 dump's six refusals lacked real room. The user's rule: it must just work, never ask the player.
 Rounds JS1-JS4 (roadmap row): road ends reserve what they use and refusals name the place (JS1);
 empty straight joints dissolve into the neighbouring edge (JS2); a stroke end too close to a real
-junction or bend joins it and a too-short stub goes (JS3); roads that touch join (JS4).
+junction or bend joins it and a too-short stub goes (JS3); roads that touch join (JS4a, the stroke's
+own ends; JS4b, an existing road end and the preview's overlap highlight).
 
 #### Road ends reserve their cap (round JS1)
 
@@ -15974,6 +15977,94 @@ eight workers, run and exclusive timing locks, the machine shared with other ses
   pass. An earlier branch build (`f1bebb5e`) read 4.76 / 5.21 ms there (+9.4 %, one day each,
   both far under the 8 ms bar; the code differs only in refused poses). K22 30k click-to-ack
   6.78 / 6.55 ms.
+
+#### Roads that touch join (round JS4a)
+
+Branch `roadtools-js4a` off `dev` `792e6016` (JS3 landed). Found in the user's second dump
+(`dump-2026-11-15_11-54-18`, 16 roads, no junction anywhere) and in play on `dev` with JS3: a
+stroke end whose cap lay on another road built on top of it. The topology joins a stroke to a
+road only where the centrelines cross or an end lies within `config::INTERSECTION_TOLERANCE`
+(2 m) of the other centreline, and JS3's join answers only a junction that end made, so JS3
+reached an end only when it was placed within 2 m of the centreline (then within 8.5 m of the
+node along the road). A cap is 5 m (2-lane) to 8.5 m (4-lane) round, so any end 2-10 m off the
+road built an overlap. The user's rule: at ground level two roads meet only in a junction, "merge
+into a new junction, no snapping", decided by the footprints touching, not by a distance to a
+node.
+
+- **The rule** (`road_edit/validation/contact.rs`, `end_contacts`, before the plan's first build):
+  a stroke end's footprint is its roadbed's outer half width (`preview_candidate_roadbed_half_width_m`)
+  around the end, the round cap; another road's is its outer band
+  (`visual_roadbed_half_width_m`) along its centreline and the same cap at its road ends. They
+  touch when the end lies nearer the other centreline than the two half widths together, less
+  1 cm (`MIN_OVERLAP_M`: outlines that only meet are rounding; the first dump's dead end stands
+  9.9998 m from its junction's arm, exactly a cap apart) (the reach: 10 m for two 2-lane roads,
+  13.5 m for 2-lane onto 4-lane, 17 m for two 4-lane roads).
+  Among the ground car roads it touches (standard class, off any ring; not footpaths, whose meeting
+  rules are `ROAD-68-F`'s), the nearest centreline wins, ties by lower id, and:
+  - **a road end's cap** (the road's end node has no other road and lies within the reach of the
+    stroke's end): the end joins that node, a straight continuation or a bend;
+  - **a junction's or a bend's piece** (the touched point lies between the node and its arm's
+    mouth, station within the edge's clip): the end joins that node, a T becomes a crossroads, a
+    bend a T, whatever the end's distance to the node;
+  - **a road's side**: the end runs on along its own end tangent to the road's centreline and the
+    topology's end join splits the road there into a T: no sideways move, no pull to a grid or a
+    node. Then section 3's spacing rules apply to that T (JS1 reserves, JS2 joints, JS3 stubs and
+    end joins);
+  - **under 25 degrees** (`ROAD-54`'s arm limit) where the tangent meets the road, or no meeting
+    within the reach over sin 25 degrees: the roads would run on top of each other, and the stroke
+    is refused as `roads_overlap` ("Roads overlap: they meet at 9°, a junction needs 25°"), its
+    report naming the road and the station nearest the end.
+  A joined end moves as JS3's do (`join_stroke_end`, a length-share taper, the other end fixed);
+  a carried end only lengthens the stroke's last segment. Ends at a node (the snap's 2 m), above
+  the ground, on a structure's span, of a tunnel or a bridge stroke, and ends past a road the
+  stroke crosses within that run (the crossing joins them, JS3 removes the stub) keep their place.
+  An end **on a road** (within 2 m of a ground road's centreline) keeps the topology's own end
+  join and JS3's rules, whose end join now reaches the whole node piece too: an end on a road
+  joins a node across a failing arm when it lies within 8.5 m of it or within its mouth on that
+  road (`end_join`; a 4-lane T's mouth lies 13.5 m out). Both ends never join one node. Roads
+  whose footprints do not touch stay apart however near.
+- **One stroke.** The rule reads the graph and the stroke only, never the Roads snap toggle,
+  whose one meaning is the cursor magnet. `RoadPreviewValidation::contacts` records each end's
+  contact; `built_stroke` replays them and then JS3's later joins in the validation's order, so
+  `plan_road_edit`'s prepared stroke, the cost, the land checks, the chips (`chip_facts` moves a
+  touched end's chips like a joined one's) and the commit read the stroke the plan built. One
+  plan, one undo group.
+- **Reach per case** (2-lane roads; why JS3 missed each). JS3 answered only a junction the
+  topology made, so it saw an end only within 2 m of a centreline, and then joined a node within
+  8.5 m along the road. Now: a road's side, centreline nearer than 10 m (was 2 m: the dump's 15
+  ends lay 2.2-8.2 m off); a bend's or junction's piece, the same 10 m to an arm's centreline
+  where the nearest point lies within that arm's mouth, whatever the distance to the node (was an
+  end within 2 m of the centreline and 8.5 m of the node: an end beside a bend made no junction,
+  and a wide T's piece reaches past 8.5 m); a road end, the two ends nearer than 10 m (was the
+  snap's 2 m: a cap beside a road end made no junction, and a road end is no occupied node for
+  JS3). 4-lane roads add 3.5 m per side to each reach.
+- **Bounds.** Per free end: one edge R-tree query of the end's half width plus
+  `MAX_ROADBED_HALF_WIDTH_M` (24 m: four lanes, a parking lane, half a 12 m median, a sidewalk; a
+  test holds the widest road to it), a nearest-point pass over each candidate's points, and for
+  the touched one its node's degree, a crossing test over the stroke's last reach / sin 25 metres
+  and a ray test: `O(log E + candidates x points)`, local, no allocation; a touched end clones the
+  stroke once. Accepted poses that touch nothing pay the query and the passes.
+- **Existing saves.** Overlaps already built stay as they are; loading repairs nothing. A stroke
+  drawn onto them follows the rule.
+- **Walkways stay out** (the user, 2026-11-17): only ground car roads touch and are touched; a
+  walkway's end and a road's end beside a walkway build as before.
+- **Measured** (fresh, release, pinned, under the run and exclusive timing locks):
+  - Level F against `dev` `792e6016`: the 30k 1x acceptance PASS on both sides (branch 4.83 /
+    3.78 ms unpreempted maximum / p99.9, control 5.09 / 3.70); the 30k 32x rows level, the
+    known `PERF-17` exception on both sides.
+  - K22 click-to-ack 7.05 against 7.00 ms.
+  - Session bench 30k C B B C: level (straight p50 105.5 / 104.9 / 104.1 / 105.2 us), equal
+    digests.
+  - Populated locality (24 to 600,024 agents, 0 to 391 background roads): identical local
+    products at every size; the touching pose's compile p50 0.25-0.10 ms, flat.
+  - The accepted poses' plan (`benchmark_road_preview_stages`, four C B B C passes): within the
+    machine's noise of the control, which reached 2x on one binary between passes. The quietest
+    pass read branch 0.30 / 0.28 / 0.32 ms p50 (sloped T, sloped branch, divided T) against base
+    0.30 / 0.29 / 0.33.
+- **Left for JS4b:** an existing road end making way onto a passing stroke, a stroke's side
+  overlapping a road with no end involved. **For JS4c** (after `ROAD-112` R2-4a's draw module):
+  the overlapped stretch highlighted in the preview, and the draft line showing the joined
+  stroke.
 
 ### Moving and reshaping built roads (`ROAD-113`)
 

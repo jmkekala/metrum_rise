@@ -25,6 +25,7 @@ enum Measured {
     Dissolve,
     StubGoes,
     EndJoin,
+    Touching,
     Tunnel,
     OverTunnel,
     UnderBridge,
@@ -94,6 +95,15 @@ fn populated_stub_road_plan_scaling() {
 #[ignore = "unprofiled end-join planning locality; run alone with --release --ignored --nocapture"]
 fn populated_joining_road_plan_scaling() {
     measure_populated_road_plan_scaling(false, false, false, CellScenario::None, Measured::EndJoin);
+}
+
+// `ROAD-118` round JS4a locality: a side road from the south ending 6 m short of the street's
+// centreline, its cap on the street's side, carried on to the street and joined as a T, as the
+// remote city grows.
+#[test]
+#[ignore = "unprofiled touching-end planning locality; run alone with --release --ignored --nocapture"]
+fn populated_touching_road_plan_scaling() {
+    measure_populated_road_plan_scaling(false, false, false, CellScenario::None, Measured::Touching);
 }
 
 // `ROAD-61` locality: a tunnel stroke through a hill beside the measured T, planned as the
@@ -669,6 +679,9 @@ fn measure_populated_road_plan_scaling(
             Measured::EndJoin => {
                 vec![Vector3::new(66.0, 0.0, -80.0), Vector3::new(66.0, 0.0, 0.0)]
             }
+            Measured::Touching => {
+                vec![Vector3::new(30.0, 0.0, -80.0), Vector3::new(30.0, 0.0, -6.0)]
+            }
             Measured::Tunnel => vec![
                 Vector3::new(0.0, 0.0, -320.0),
                 Vector3::new(0.0, 0.0, -80.0),
@@ -731,6 +744,10 @@ fn measure_populated_road_plan_scaling(
                 plan.validation().joined_nodes[1].is_some(),
                 measured == Measured::EndJoin
             );
+            assert_eq!(
+                plan.validation().contacts[1].is_some(),
+                measured == Measured::Touching
+            );
             let preview_start = Instant::now();
             let (prepared, validation) = snapshot.validate(&request());
             let prepared_points = prepared.points;
@@ -764,6 +781,7 @@ fn measure_populated_road_plan_scaling(
                 "dissolve": measured == Measured::Dissolve,
                 "stub_goes": measured == Measured::StubGoes,
                 "end_join": measured == Measured::EndJoin,
+                "touching": measured == Measured::Touching,
                 "divided": measured == Measured::Divided,
                 "one_sided": measured == Measured::OneSided,
                 "cell_reservations": cells, "remote_painted_cells": background_cells,

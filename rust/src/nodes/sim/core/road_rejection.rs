@@ -300,6 +300,14 @@ fn validation_detail(
             "a solved road centreline misses its junction plane by more than 1 mm".to_owned(),
             None,
         ),
+        "roads_overlap" => (
+            format!(
+                "the stroke's end would run on top of a road, meeting it at {:.0} degrees, under \
+                 the {:.0} degrees a junction arm needs (`ROAD-118`)",
+                validation.geometry_measured, validation.geometry_limit
+            ),
+            None,
+        ),
         "stroke_splits_pocket" => (
             "the stroke would split or join a turn pocket or its transition (`ROAD-95`)".to_owned(),
             None,
@@ -459,6 +467,7 @@ mod tests {
     fn validation() -> RoadPreviewValidation {
         RoadPreviewValidation {
             joined_nodes: [None; 2],
+            contacts: [None; 2],
             is_valid: false,
             invalid_reason: "bridge_clearance",
             max_grade: 0.0,
