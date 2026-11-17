@@ -15404,6 +15404,32 @@ Branch `roadtools-js1` off `dev` `4535bce1`.
   beside road ends: the 10 degree bend's corner was budget-limited, the 15 m arm now holds its
   crossing), flat and sloped, re-recorded.
 
+**Fresh, 2026-11-17** (base `dev` `4535bce1`, release library `cb8183400fde70b4` with its
+scripts; branch `2d12b418`, library `1aed3798f013ec52`; release test binaries `93844f32` and
+`fa4c837e`; pinned to the performance cores, eight workers, run and exclusive timing locks, the
+machine shared with other sessions' timed rows):
+
+- **Products.** Kuopio's 78 drag-probe commits and the 17 gameplay fixtures: graph and state
+  equal on every commit; mesh (and graded) differ on `kuopio_11` attempts 30-33 and fixture 6's
+  segments 1-2. A branch build with the fan fallback off (`FAN_MIN_WIDTH_M = 0`) is bitwise
+  equal to the base on all 78 + 17, so every difference is the fan's sliver fallback (node cores
+  whose fan held a triangle under 1 mm), none the reserve: no Kuopio or fixture corner stood
+  beside a road end with a budget-limited radius. K22 30k commit products (generated, graded
+  digests, road vertices) equal.
+- **Per move and pose.** Session bench, 30k locality, C B B C: straight p50 102.6 / 103.4 /
+  102.6 / 102.9 us, curve p50 113.5 / 114.3 / 113.2 / 113.2 us, p99 138-161 us, digests equal.
+  Allocation probe (heaptrack `--record-only`): base n = 0 / 20 / 200 2,375,592 / 2,375,577 /
+  2,375,565, branch 2,403,856 / 2,403,843 / 2,403,880: zero per move; the branch's setup (the
+  city's road inserts) makes about 28,000 more, the road-end list of each insertion.
+  `benchmark_road_preview_stages` C B B C: plan p50 0.30-0.93 ms and roadbed 0.25-0.82 ms on
+  both sides with no ordering (the machine was shared); `populated_road_plan_scaling` C B:
+  identical local products at every tier, compile p50 0.19 / 0.22 ms (base) and 0.26 / 0.22 ms
+  (branch) at 60k and 600k agents.
+- **Level R timing** (`./run.sh --timing --level R --k22`; the path rule says F for
+  `simulation/network`, the brief R): `PERF-07` 30k 32x C B B C, the noisy control row rerun:
+  mean 4.259 / 4.274 ms (+0.3 %), p99 -0.1 %, p99.9 -2.6 %, every component level; acceptance
+  rows the known exception `PERF-17`. K22 30k click-to-ack 6.91 / 7.72 ms, rerun 6.80 / 6.57 ms.
+
 ### Moving and reshaping built roads (`ROAD-113`)
 
 One geometry edit gives a set of edges a new horizontal shape and a set of nodes a new position
