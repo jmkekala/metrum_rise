@@ -12421,8 +12421,9 @@ since round D).
   goes as typed calls so a move allocates nothing: `road_tool_pointer(origin, dir, shift)` (a
   camera ray) and `road_tool_pointer_at(position)` (a scripted point, taken exactly, as
   `set_scripted_pointer` was); both return the resolved cursor. `road_tool_event(name)` takes
-  `press`, `right`, `release`, `cancel`, `confirm`, the three modes, the acknowledgement
-  `committed` / `refused`, and `forget_preview`; it returns the phase and, for the click that
+  `press`, `right`, `release`, `cancel`, `confirm`, the three modes and `forget_preview` (the
+  acknowledgement `committed` / `refused` until round R2-1, which made the commit's answer the
+  bridge's own: `road_tool_commit_poll`); it returns the phase and, for the click that
   sends the stroke, its points, the preview of exactly it (`fresh` when the click had to preview
   it) and the commit's request id (0 when the preview refused it: the bridge logs the tool's
   refusal and the stroke stays editable; after the core refused a commit, the unchanged stroke
@@ -12438,7 +12439,8 @@ since round D).
   `preview_cleared` when the stroke went away; no preview while a sent stroke waits for its
   acknowledgement. `preview_road` and `add_road_with_snap` stay the low-level entries the bridge
   calls and replays use. GDScript keeps input forwarding, the preview display, the commit's
-  holds and graded epochs, the HUD label and the external-connection prompt; preview holds come
+  holds, the HUD label and the external-connection prompt (the commit's request, its graded
+  epoch, its border check and its rejection moved to Rust in round R2-1); preview holds come
   from `RENDER-32`'s single Rust hold rule. Round D adds to the frame `mode`, `continuous`, the
   HUD's `radius_m`, `design_speed_kmh`, `design_speed_warning`, `illegal_radius_m` and
   `tight_radius` (round D's `flattened_radius_m` went in round E), and the gizmos as packed arrays
@@ -13335,6 +13337,106 @@ with its scripts, branch `7be1424db1f23d53` with its own; session bench binaries
   Rust tests, 234 skipped; both Godot chains, 0 SCRIPT ERROR). The products, probes and bench
   ran on the tree before the rebase (dev's `f5ad193a` brought round HF2's hue and `RENDER-46`;
   the rebase's conflicts were imports and one request literal).
+
+### The typed preview outcome and the commit sequence in Rust (round R2-1)
+
+Round R2-1 of `ROAD-112` R2 (branch `roadtools-r21` on `dev` `21ee2525`; findings F2, F3, F5's
+commit half, F6 and F18). **Before:** the bridge's standing preview was the `VarDictionary` it
+handed `road_tool.gd`, and every decision on it read it back by string key: a click's
+validity, the refusal report's reason, numbers and prepared points, a batch pose's reason and
+first refusing stroke (`reason`, `reasons`), tier 2's state (`"running"` / `"accepted"` by string
+compare), the step's carried cost, length, generation and pose, the chips' cost, grade, warning,
+demolitions and refusal numbers (about twelve `get` calls a frame), and the preview key's
+generation. The commit sequence was GDScript state: the request id, the sent points and
+preview, the graded epoch the commit adopted, the poll, the border check, the acknowledgement
+events (`committed`, `refused`, a second `cancel` at a border end), and the rejected-commit
+display, built a second time in GDScript beside Rust's own rejection of its standing preview
+(F6). A pose cloned the session's whole stroke and its points again for the request (F18); a
+batch's resting frames made the draft's request list afresh every frame.
+
+- **The outcome** (`nodes/sim/road_tool/outcome.rs`, plain Rust): `PreviewOutcome` holds
+  validity, pending, the refusal key (`Cow<'static, str>`: owned only for a tier-2 refusal),
+  the refusing batch stroke, cost, length, the surface generation, the pose, a single stroke's
+  `RoadPreviewValidation` (the grade, the warning, a refusal's numbers), its prepared points
+  (a buffer reused from pose to pose) and the demolitions. Tier 2's state is `Tier2State`
+  (`Running`, `Accepted`, `Refused`); tier 1 and tier 2 return their verdicts typed
+  (`Tier1`, `Tier2Step`). **Where it lives and why:** the type sits beside the session in `S/`,
+  not beside `RoadPreview` in the core, because it also covers batch poses and segmentation
+  refusals that never pass through `RoadPreviewContext::preview_road`, and because it must not
+  hold the preview's `Arc`: the context's `last_preview` stays unique so the graded catch-up can
+  update the commit's tiles in place (`Arc::get_mut`); the outcome copies the facts instead. The
+  bridge keeps the standing one in `RoadToolBridge.preview` beside the dictionary it handed the
+  script (`StandingPreview`), which it never reads: the frame still hands the script that
+  dictionary per pose to draw (until R2-4a), a click returns it, and a refused commit's display
+  is a copy of it. `preview_stroke` writes the outcome and returns the dictionary from the same
+  preview; `preview_road` (tests, the replay) keeps its dictionary. The hue's pairing with its
+  preview (round HF2) is unchanged: the outcome carries the same `pose` the dictionary and the
+  hue carry, the hue still builds on its shared-pool worker and joins at its upload.
+- **The commit sequence** (`nodes/sim/road_tool/commit.rs`, plain Rust, with the bridge in
+  `session/commit.rs`): `CommitSequence::click` lets a valid outcome send the stroke and makes a
+  refused one the session's refusal at once; `sent` keeps the request id, the stroke (a reused
+  buffer) and the graded epoch the commit adopted (Rust now ends that epoch at the click, where
+  the script did); `answer` hands the session the core's answer, ends the chain at a border end
+  (`Cancel` after the acceptance), rejects the standing outcome on a refusal
+  (`road_commit_rejected`, one copy) and says whether the stroke shows it (editable again, not
+  after a cancel while it waited). `road_tool_commit_poll()` reads the core's answer typed
+  (`take_road_commit_answer`, `get_road_commit_result`'s internals), runs the border check on the
+  sent ends (moved from GDScript, with its debug line), and returns nil until there is an answer,
+  then once: `committed`, the phase, `generation` and `border_node`, or `graded_epoch` and, when
+  the stroke shows its refusal, `rejected` (the display dictionary) with `points`. The
+  `committed` / `refused` event names are gone. Getters `road_tool_commit_request_id`,
+  `_points` and `_graded_epoch` answer the tests and probes that read the script's old fields,
+  which are now properties forwarding to them.
+- **GDScript:** `_session_press` reads the request id only; `_poll_road_commit_result` asks Rust
+  only while the phase is 2 and draws the answer (the hold, the cleared preview, the border
+  dialog, the graded release, the rejected display); `_border_candidate`, `_commit_validation`
+  and the rejected-dictionary rule are gone. The chips read the outcome (`chip_facts`,
+  `reason_facts`, `steep`); `plan_state`, which nothing ever set, is no longer read.
+- **F18:** the preview takes the stroke by reference (one copy into the request, which the plan
+  keeps); the key reuses its points buffer; the hue's half width is a function of the section
+  (`section_half_width_m`); a batch keeps its pose's requests and its resting frames step on
+  them (`preview_batch_step` takes a slice and copies them only when it restarts).
+- **Behaviour:** none intended. The chip texts read the same values (a missing number read as
+  before: a batch has no grade, no refusal numbers); a draft refusal's dictionary keeps its keys;
+  a step's carries the batch pose's cost, length, generation and pose as before.
+
+**Fresh, 2026-11-17 08:35-09:35** (base `dev` `21ee2525`'s release library `7e02c9b0171bea3b`
+with its scripts, branch `760ea151`'s `d550f26ba663038e` with its own; session bench binaries
+base `fb18ad0de56f9f4c`, branch `d5098ffb1eebd958`; release lib test binaries for K22 base
+`27fc7ed63364ed9a`, branch `970557f456abe692`):
+
+- **Tests:** Rust `commit::tests` (`an_accepted_commit_chains_and_clears`,
+  `a_refused_commit_rejects_the_standing_preview`, `a_refused_stroke_clicked_unchanged_is_refused_again`,
+  `a_border_end_ends_the_chain` with and without a border node, `cancel_while_pending` for an
+  acceptance and a refusal) drive the real session on the bench neighbourhood's view;
+  `outcome::tests` (a rejection keeps the facts; a batch outcome reports no numbers). Godot
+  `network_tool_chunk_renderer_test` (its `_test_session_strokes` and the hue/preview pose check),
+  `road_tunnels_test` (the hue's pose is the shown preview's), `road_rejection_report_test`,
+  `road_tool_demolition_test`, `road_height_handles_test`, `road_junction_preview_test` (reads the
+  commit's graded epoch) and every other road test pass unchanged.
+- **Products bitwise** (`commit_products.gd`): the gameplay fixtures 17 of 17 EQUAL; Kuopio's 78
+  commits EQUAL but one pair: `kuopio_06` #18's graded digest (fast and converged) differed in the
+  first run, whose base side ran at load 100 (another session's builds). `kuopio_06` again on both
+  sides at load 4: every digest equal, #18 at the branch's first-run value, so the base's first
+  value was the outlier. The Kuopio drag probe PASS on both sides, 0 SCRIPT ERROR.
+- **No allocation per pointer move** (`METRUM_ROAD_TOOL_ALLOC_PROBE` at 30k, `heaptrack
+  --record-only`): n = 0 2,375,567 / 2,375,589, n = 20 2,375,600, n = 200 2,375,565 calls.
+- **Level R** (the session benchmark's 30k locality mode, the base's and the branch's bench
+  binaries, pinned, run and exclusive locks, no Godot process at any row's start or end, load
+  2.1-5.4; p50 / p99 in microseconds): C B B C at 09:07-09:22, straight 105.4 / 142.1, 102.6 /
+  138.1, 103.8 / 143.7, 103.3 / 139.9; curve p50 115.9, 113.7, 114.2, 113.8. Frame digests
+  `32cb9b4b11dccf75` and `ca3e8f6d742b48b2` on every row. Level: the branch inside the base's
+  spread (round R2-7's bars, p50 within 5 %, p99 under 0.25 ms, hold). The timing session
+  (`./run.sh --timing --level R --k22`, `$ARTIFACTS/timing`, 09:34-09:35, the release lib test
+  binaries above, 8 workers on the P-cores): 30k 32x C B B C mean 4.260 / 4.273 / 4.293 / 4.294
+  ms, every compared metric level (mean +0.1 %, p99 +0.8 %, p99.9 -3.2 %); **K22 30k
+  click-to-ack 6.79 ms base, 6.80 ms branch** (one run a side; commit 6.75 / 6.77 ms). The K22
+  row commits through the core, not the tool's bridge, so it bounds the commit path this round
+  left alone (`preview_batch_step`'s signature, `take_road_commit_answer`); the tool's own per-pose
+  and per-click work is not timed by it.
+- **Gates** (fresh on `760ea151`): clippy's warning set equal to the base's (14 = 14), missing
+  docs 0, debug lib tests 2,825 passed / 0 failed / 233 ignored, `./run.sh --test` PASS (2,829
+  Rust tests, 234 skipped; both Godot chains, 0 SCRIPT ERROR).
 
 ### The pick's graded preparation halved (round PB, `ROAD-116`)
 
@@ -15248,8 +15350,9 @@ moved.
 
 The road tool (`godot/scripts/tools/road_tool.gd`) is a thin bridge to Rust's road tool session
 (`ROAD-112`, [protocol](#design-road-112)) in every mode since round D: it forwards the pointer,
-the clicks, the mode buttons and the acknowledgement and draws what `road_tool_frame` returns
-(the preview, the gizmos and the HUD). It keeps no stroke geometry of its own: the GDScript
+the clicks and the mode buttons and draws what `road_tool_frame` returns (the preview, the
+gizmos and the HUD) and what Rust's answer to a sent stroke says (`road_tool_commit_poll`,
+round R2-1). It keeps no stroke geometry of its own: the GDScript
 `Curve3D` path, its state machine and the cursor query it used (`get_road_tool_cursor_pos`,
 `get_road_tool_start_direction`) are gone.
 
@@ -15307,7 +15410,7 @@ the clicks, the mode buttons and the acknowledgement and draws what `road_tool_f
 - **Chain**: an accepted road starts the next stroke at its end, carrying its end direction,
   until right-click or Esc, until the road ends on an existing road or junction, or until it
   reaches the map edge (a committed end on the map edge raises the external-connection prompt
-  at its acknowledgement, `check_border_candidate` on the stroke's ends, and ends the chain).
+  at its acknowledgement, the bridge's border check on the stroke's ends, and ends the chain).
   A refused commit keeps the stroke editable.
 - **Snapping** is the session's (the precedence under "Snapping precedence" above: network
   node, then the zoning grid where it captured, then edge or guide line, map edge and self snap),
