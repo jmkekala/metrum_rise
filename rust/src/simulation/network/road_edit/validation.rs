@@ -708,7 +708,7 @@ fn validate_against_graph(
         ) {
             Ok(excerpt) => excerpt,
             // A dissolve that leads to another refusal leaves the junction's refusal standing.
-            Err(refused) => return (refused_before.unwrap_or(refused), None),
+            Err(refused) => return (refused_before.unwrap_or(*refused), None),
         };
         let Some(refusal) = &excerpt.refusal else {
             break excerpt;
@@ -806,8 +806,8 @@ fn solve_excerpt(
     bore: Option<[usize; 2]>,
     yields: &[JointYield],
     validation: &RoadPreviewValidation,
-) -> Result<Excerpt, RoadPreviewValidation> {
-    let refuse = |reason| validation.clone().with_invalid_reason(reason);
+) -> Result<Excerpt, Box<RoadPreviewValidation>> {
+    let refuse = |reason| Box::new(validation.clone().with_invalid_reason(reason));
     let excerpt = build_validation_graph(
         &prepared_input.points,
         prepared_input.class,
@@ -880,7 +880,7 @@ fn solve_excerpt(
         &rederived,
         source_node_ids,
     ) {
-        return Err(refuse_geometry(validation.clone(), &refused));
+        return Err(Box::new(refuse_geometry(validation.clone(), &refused)));
     }
     // A junction in a tunnel approach's trench (`ROAD-61` round R8f), its depth below the ground
     // as the measurement; the lowest node id reports.

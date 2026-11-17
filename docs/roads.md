@@ -1450,7 +1450,10 @@ JS1): a road end (a node where only this standard edge meets) needs only its cap
 `MIN_MOUTH_STATION_M` (1 m), any other node half the edge. A pass-through far end keeps the half,
 so its span's crossing strip keeps its room and no layout depends on another layout; the budget
 is never below half, so no valid network becomes invalid. A 2-lane T so fits beside a road end
-with a 9.5 m stub (at its minimum corner radius), not 17 m.
+with a 9.5 m stub (at its minimum corner radius), not 17 m. An empty joint takes no room at all
+(round JS2, [below](#empty-joints-dissolve-round-js2)): where a junction an edit makes does not
+fit beside one, the joint dissolves and its two roads join into one, so the arm runs on to the
+next real node.
 
 - If a corner does not fit, `R` is reduced towards `R_min`. If it still does not fit, layout
   returns `LayoutError::CornerDoesNotFit { arm }`.
@@ -15603,6 +15606,77 @@ machine shared with other sessions' timed rows):
   `simulation/network`, the brief R): `PERF-07` 30k 32x C B B C, the noisy control row rerun:
   mean 4.259 / 4.274 ms (+0.3 %), p99 -0.1 %, p99.9 -2.6 %, every component level; acceptance
   rows the known exception `PERF-17`. K22 30k click-to-ack 6.91 / 7.72 ms, rerun 6.80 / 6.57 ms.
+
+#### Empty joints dissolve (round JS2)
+
+Branch `roadtools-js2` off `dev` `6f953cc5` (JS1 landed).
+
+- **The rule.** An **empty joint** (`roadbed::empty_joint`, beside `edges_pass_through`) is a
+  plain node (`NodeType::Junction`, no crossing override, no vehicle turn rule:
+  `has_vehicle_turn_rules`; the lanes' own pedestrian routes are derived) of two pass-through arms
+  on standard car roads, neither a ring's nor a pocket's, that read as one road through it: equal
+  lanes, width, speed, median, parking, sidewalks, zoning, lights and frontage access, the one
+  road's lanes and sides read backwards where both edges start or both end there. Anything else is
+  occupied: an authored crossing, a speed change, a pocket's transition, a bridge or tunnel end, a
+  ring. Where a junction an edit makes or changes does not fit (`CornerDoesNotFit`,
+  `ArmTooShort`) and one of its arms is too short for it as the other arms stand (the layout's own
+  answer, `arm_edge_needed_m`, longer than the arm's road) with an empty joint at its far end, the
+  joint yields: the plan is built again with that joint dissolved. At most three builds a pose
+  (`MAX_PLAN_BUILDS`: as drawn, then up to two rounds of yields), only for poses the first build
+  refuses; an accepted pose builds once and costs what it did. Yields are found in `(failing node
+  id, arm key)` order, the lowest id first, from the excerpt alone: the result depends on the
+  graph and the stroke, never on a distance estimate or the session.
+- **The dissolve** (`topology::dissolve_joint_graph`, on the validation excerpt after the
+  topology's splits and before the profile solve, so preview and commit share one
+  `RoadTopologyPlan`). The piece between the joint and the junction joins the joint's other road,
+  which keeps its id and its direction and now runs on to the junction (the piece prepended or
+  appended, turned where it ran the other way). The piece is always the edit's own: a piece of the
+  stroke, the second half of a split, or the head a split cut off an existing road, in which case
+  that road keeps its id on the rest and the split's second-half slot is deleted (the split record
+  is dropped, so no dependent or turn rule moves there). A whole existing road between a junction
+  and an empty joint is not dissolved in JS2 (it would retire a live edge id): that stays a
+  refusal. The joint becomes an alias of the junction (the plan's `merged_nodes` path, its piece
+  and default zebra dropped) and leaves the node index, live and excerpt alike, so a later stroke
+  end there finds the road, not a node. The live graph sees one longer edge, one shorter or
+  replaced edge, one new deleted slot and one alias; the undo record restores the joint, both
+  roads' ids and geometry and the zebra bit for bit. Both roads' far ends lay out again (their
+  edges are dirty); the junction's incidence and the far ends' must be complete in the excerpt,
+  else the junction's refusal stands.
+- **Dependents** (`topology::migrate_dissolve_dependents`, beside `migrate_split_dependents`,
+  run after the splits' migrations at adoption and journaled the same way, so a staged edit's
+  rollback restores them). Buildings fronting the piece front the road that took it at the
+  piece's stations there (turned with their side where the piece runs against it); those beyond
+  the piece on a cut road keep their road, their stations less the piece; the taking road's own
+  move on by the piece when it went before them. Each frontage parameter is its frontage centre's
+  station over the new length (`BuildingAllocator::migrate_dissolve_frontages`); occupancy
+  columns follow in whole cells. Cell lots re-lay from the changed roads as for any edit, and the
+  grid choice keeps its phase (the old record's end node now resolves to the junction).
+- **Plan-less callers** (scripted builders, fixtures: `add_road_internal`) adopt the full
+  validation's plan when it dissolves a joint: only the plan joins the roads.
+- **Complexity.** Yield search: refusals only, `O(affected nodes x degree x the need's
+  bisection)`. Dissolve: `O(points of the two roads + degree)`. Dependents: `O(the two roads'
+  buildings + occupancy cells)` plus the chunk candidates' test. Per pose at most three excerpt
+  builds, each `O(local records + profile points)`; nothing scales with the city, no new spatial
+  structure, no per-tick work.
+- **Tests:** `the_dumps_attempts_1_to_5_dissolve_the_joint_beside_the_junction` on the dump's
+  network (each on a fresh copy, preview then commit with the preview, preview chunks composing
+  the committed ones): attempts 1 and 3/4 make node 11 a crossroads with edge 5 running to it and
+  no node at (-58.5, 60.6); attempt 2 too (on the saved network its last 20 m lie on the road
+  11-12 built after the attempt: the overlap's duplicate goes and the joint it left on that road
+  dissolves as well); attempt 5 dissolves node 0 into the new T, edge 0 running on to it and
+  edge 6 from it, no node at (-39.4, 1.8). Undo restores the graph and roadbed bit for bit and
+  the stroke committed again gives the same graph and roadbed.
+  `occupied_joints_keep_their_place` (attempt 5's start beside an authored crossing at node 0, or
+  with edge 0 at 40 km/h in place: refused, naming the junction and the joint).
+  `an_empty_joint_is_a_straight_joint_of_one_road` (the predicate both ways round and its eight
+  occupied cases: crossing, turn rule, speed, lanes, bridge, transition, pocket, ring; a one-way
+  pair only running one way). `an_empty_joint_between_houses_dissolves_and_its_houses_follow`
+  (a street in two roads with houses on both, a T 12 m from the joint, all four ways the two roads
+  can run: the house on the piece fronts the west road, every house fronts its road at its station
+  and side and keeps its lot, the paint stays; undo and the stroke again bit for bit).
+  `a_batch_of_dissolving_strokes_is_one_undo_group` (attempts 1 and 5 as one batch: equal to one
+  by one, one group, one undo restores). `populated_dissolving_road_plan_scaling` (the locality
+  check, a T 5 m from a joint as the remote city grows).
 
 ### Moving and reshaping built roads (`ROAD-113`)
 

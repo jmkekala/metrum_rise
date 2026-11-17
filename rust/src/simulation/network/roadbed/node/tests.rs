@@ -804,7 +804,8 @@ fn an_empty_joint_is_a_straight_joint_of_one_road() {
     for (west_east, east_east) in [(true, true), (true, false), (false, true), (false, false)] {
         assert!(joint(west_east, east_east, &|_| {}).is_some());
     }
-    let occupied: [(&str, &dyn Fn(&mut RegionGraph)); 8] = [
+    type Edit<'a> = &'a dyn Fn(&mut RegionGraph);
+    let occupied: [(&str, Edit); 8] = [
         ("crossing", &|graph| graph.set_crosswalk_override(1, 0, false)),
         ("turn rule", &|graph| graph.add_lane_connection(1, 0, 0, 1, 0)),
         ("speed", &|graph| graph.edge_mut(1).speed_limit *= 0.8),

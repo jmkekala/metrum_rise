@@ -114,6 +114,7 @@ impl std::fmt::Debug for RoadTopologyPlan {
 impl RoadTopologyPlan {
     /// Captures the already solved validation excerpt in O(local records + profile points).
     /// Incomplete mutation frontiers cannot be adopted; interactive callers must rebuild the plan.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn capture(
         local: &RegionGraph,
         source: &RegionGraph,
