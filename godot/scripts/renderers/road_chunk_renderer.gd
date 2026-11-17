@@ -8,12 +8,15 @@
 ##
 ## Callers: NetworkRenderer (`update`, `commit_staged`, `discard_staged`, `release_held`,
 ## `needs_hydration`), `road_chunk_hydration.gd` (`install`, `install_built`,
-## `hydration_materials`, `street_lights`, `road_signs`), the road tool (`hydration_materials` for
-## Rust's preview overlays, `ROAD-112` round R2-4a), its preview display (`chunks`, `generation`,
-## the grid, `is_holding`), tools that change the network outside a stroke (`update`).
+## `hydration_materials`, `street_lights`, `road_signs`), the road tool (`hydration_materials` and
+## `holds` for Rust's preview display, `ROAD-112` rounds R2-4a, R2-4b), tools that change the
+## network outside a stroke (`update`). The road tool's renderer reports each resident chunk's
+## mesh and layer table on install, its leaving the index and its free, and the installed
+## generation and grid, so Rust's preview display collapses runs without walking the scene.
 ##
 ## Rust methods called: get_road_mesh_data(full_snapshot), is_network_dirty(),
-##   get_network_render_generation(), get_graded_edit_serial()
+##   get_network_render_generation(), get_graded_edit_serial(), road_tool_resident_chunk(),
+##   road_tool_resident_retired(), road_tool_resident_freed(), road_tool_resident_grid()
 extends Node3D
 
 const WorldMaterials = preload("res://scripts/renderers/world_materials.gd")
@@ -304,10 +307,12 @@ func install(
 			_hidden_chunks.append(instance)
 		chunk_root.add_child(instance)
 		chunks[key] = instance
+		_report_resident(key, instance)
 	generation = surface_generation
 	span_m = chunk_span_m
 	origin_x_m = chunk_origin_x_m
 	origin_z_m = chunk_origin_z_m
+	_report_grid()
 	if host != null:
 		host.road_chunks_installed(surface_generation)
 	return surface_generation
@@ -362,6 +367,7 @@ func _retire_chunk(key: Vector2i, hold: bool) -> void:
 		return
 	var instance: MeshInstance3D = chunks[key]
 	chunks.erase(key)
+	_report_retired(key)
 	var hidden := _hidden_chunks.find(instance)
 	if hidden >= 0:
 		_hidden_chunks.remove_at(hidden)
@@ -383,6 +389,7 @@ func reset() -> void:
 	span_m = 0.0
 	origin_x_m = 0.0
 	origin_z_m = 0.0
+	_report_grid()
 
 ## Whether the renderer waits for its whole network (a load, a new game): NetworkRenderer
 ## hydrates it through the streaming core then.
@@ -398,13 +405,38 @@ func _remove_chunk(key: Vector2i) -> void:
 		return
 	var instance: MeshInstance3D = chunks[key]
 	chunks.erase(key)
+	_report_retired(key)
 	_free_chunk_instance(instance)
 
 func _free_chunk_instance(instance: MeshInstance3D) -> void:
 	if is_instance_valid(instance):
+		if _reports() and instance.mesh != null:
+			simulation_node.road_tool_resident_freed(instance.mesh.get_rid())
 		if instance.get_parent() != null:
 			instance.get_parent().remove_child(instance)
 		instance.queue_free()
+
+# Only the road tool's renderer reports its resident chunks to Rust's preview display (round
+# R2-4b); renderers that tests and benchmarks assemble without the tool do not.
+func _reports() -> bool:
+	return host != null and is_instance_valid(simulation_node) and simulation_node.has_method("road_tool_resident_chunk")
+
+# Chunk `key` installed with `instance`: its mesh and layer table (the `road_layer_*` metas).
+func _report_resident(key: Vector2i, instance: MeshInstance3D) -> void:
+	if not _reports():
+		return
+	var mesh := instance.mesh
+	if mesh == null:
+		return
+	simulation_node.road_tool_resident_chunk(key, mesh.get_rid(), mesh.get_meta("road_layer_surfaces", PackedInt32Array()), mesh.get_meta("road_layer_counts", PackedInt32Array()), mesh.get_meta("road_layer_formats", PackedInt64Array()))
+
+func _report_retired(key: Vector2i) -> void:
+	if _reports():
+		simulation_node.road_tool_resident_retired(key)
+
+func _report_grid() -> void:
+	if _reports():
+		simulation_node.road_tool_resident_grid(generation, span_m, origin_x_m, origin_z_m)
 
 ## A detached chunk node for `chunk_data` (a chunk payload of the full snapshot's format), placed
 ## at its chunk's centre, or null when the payload fails validation. The caller owns it until

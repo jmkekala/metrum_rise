@@ -22,6 +22,7 @@ pub(crate) enum Command {
     Update(Handle, u32, Region, usize),
     Material(Handle, u32, Handle),
     Visible(Handle, bool),
+    Write(Handle, u32, u32, usize),
     Focus([f32; 3]),
     Free(Handle),
 }
@@ -44,6 +45,9 @@ pub(crate) struct Recorder {
     pub(crate) instances: BTreeMap<Handle, (Handle, bool)>,
     // Road chunk layers' surfaces by mesh: the encoded surface and its material.
     pub(crate) road_meshes: BTreeMap<Handle, Vec<(RoadSurface, Handle)>>,
+    // Vertex buffers of meshes the recorder did not make (a test's resident chunks), by mesh
+    // and surface: run writes land here (round R2-4b).
+    pub(crate) resident: BTreeMap<(Handle, u32), Vec<u8>>,
     // Objects made and not freed, shared so a test reads it after the drawing dropped.
     pub(crate) live: Rc<Cell<i64>>,
 }
@@ -150,6 +154,18 @@ impl DrawBackend for Recorder {
 
     fn set_dash_focus(&mut self, focus: [f32; 3]) {
         self.commands.push(Command::Focus(focus));
+    }
+
+    fn mesh_write_vertices(&mut self, mesh: Handle, surface: u32, offset: u32, bytes: &[u8]) {
+        self.commands
+            .push(Command::Write(mesh, surface, offset, bytes.len()));
+        let buffer = self
+            .resident
+            .get_mut(&(mesh, surface))
+            .expect("a resident surface");
+        let at = offset as usize;
+        assert!(at + bytes.len() <= buffer.len(), "a run write fits its surface");
+        buffer[at..at + bytes.len()].copy_from_slice(bytes);
     }
 
     fn free(&mut self, handle: Handle) {

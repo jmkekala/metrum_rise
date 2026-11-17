@@ -14,8 +14,9 @@
 ## freeform too (round CT). The script ticks Rust once a frame (`road_tool_tick` with the camera,
 ## the mouse, Shift and Ctrl, or `road_tool_tick_at` for a scripted pointer; round R2-2) and acts
 ## only on the flags it returns: the preview, the draft's footprint hue (round HU, a stopgap for
-## the lagging preview terrain; Rust draws it when asked after the preview shows,
-## `road_tool_draw_hue`), the HUD's chips (`road_tool_hud.gd`,
+## the lagging preview terrain; Rust draws it at the end of the process step that showed the
+## preview, round R2-4b), the preview's road chunks (`road_tool_show_chunks`: Rust draws the
+## overlays and collapses the resident runs they replace, rounds R2-4a, R2-4b), the HUD's chips (`road_tool_hud.gd`,
 ## from Rust's numbers only), the hover cursor and the sent stroke's answer; a frame that changed
 ## nothing does nothing. The tick draws the gizmos (centreline, tangent legs, guide and angle
 ## lines, handles) and the batch ghost itself (round R2-3), with the palette and materials
@@ -57,7 +58,8 @@
 ## road_tool_set_lanes(), road_tool_set_flag(), road_tool_set_step(), road_tool_preview(),
 ## road_tool_preview_current(), road_tool_preview_sequence(), road_tool_graded_changes(),
 ## road_tool_commit_answer(), road_tool_phase(), road_tool_mode(), road_tool_cursor(),
-## road_tool_points(), road_tool_draw_hue(), road_tool_hue_times(), road_tool_release_held(),
+## road_tool_points(), road_tool_hue_times(), road_tool_hue_sequence(), road_tool_show_chunks(),
+## road_tool_clear_chunks(), road_tool_chunks_changed(), road_tool_drop_chunks(),
 ## road_tool_attach_overlay(), road_tool_detach_overlay(), road_tool_forget_drawn(), road_tool_set_road_type(), road_tool_reload_road_type(),
 ## road_tool_intent(), release_road_preview_terrain(), road_tool_commit_poll(),
 ## road_tool_commit_request_id(), road_tool_commit_points(), road_tool_commit_graded_epoch(),
@@ -68,7 +70,6 @@
 ## edge asks about an external connection.
 extends "res://scripts/tools/network_tool.gd"
 
-const PreviewDisplay := preload("res://scripts/renderers/road_preview_display.gd")
 const RoadChunkRenderer := preload("res://scripts/renderers/road_chunk_renderer.gd")
 const RoadToolGizmos := preload("res://scripts/renderers/road_tool_gizmos.gd")
 const RoadToolHud := preload("res://scripts/ui/road_tool_hud.gd")
@@ -155,10 +156,6 @@ var _preview_sequence: int:
 	get:
 		return simulation_node.road_tool_preview_sequence() if _has_session() else 0
 var _preview_drawn_sequence: int = 0
-var _preview_display = PreviewDisplay.new()
-# An accepted commit's preview, held until the chunks of its generation are installed (the hold
-# is `chunks.holds`', Rust's rule).
-var _swap_display = null
 # The sent stroke's commit, its points and the graded preview epoch it adopted, as Rust's commit
 # sequence holds them (round R2-1; tests, benchmarks and probes wait on them): 0, empty and -1
 # while none waits.
@@ -180,8 +177,6 @@ var _graded_pending: int:
 		return simulation_node.road_tool_graded_pending() if _has_session() else 0
 # The tool ticked since its drawings were last dropped.
 var _ticked := false
-# A new hue revision waits for the frame's end to be joined and drawn (`_show_hue`).
-var _hue_queued := false
 
 func _notification(what: int) -> void:
 	if what == NOTIFICATION_PREDELETE:
@@ -200,7 +195,13 @@ func begin_preview_measurement() -> RefCounted:
 
 func _preview_frame_completed() -> void:
 	if preview_metrics != null:
+		_measure_hue()
 		preview_metrics.frame(_preview_drawn_sequence, DisplayServer.get_name() != "headless")
+
+# The hue Rust drew at the end of the last process step, into its pose's row (measured runs).
+func _measure_hue() -> void:
+	if _has_session():
+		preview_metrics.hue(simulation_node.road_tool_hue_sequence(), simulation_node.road_tool_hue_times())
 
 ## The committed network's chunks (`RENDER-52`): resident set, staging, holds, lights and signs.
 var chunks: Node3D
@@ -213,11 +214,12 @@ func make_chunks() -> void:
 	chunks.terrain_node = terrain_node
 	chunks.host = self
 	add_child(chunks)
-	# Rust draws the preview's overlay chunks with the chunks' layer materials (round R2-4a); a
-	# tool outside the tree (tests) gets meshes drawn nowhere, which its captures copy.
+	# Rust draws the preview's overlay chunks with the chunks' layer materials (round R2-4a) and
+	# releases a commit's held display by the chunks' holds (round R2-4b); a tool outside the
+	# tree (tests) gets meshes drawn nowhere, which its captures copy.
 	if _has_session():
 		var scenario := get_world_3d().scenario if is_inside_tree() else RID()
-		simulation_node.road_tool_attach_overlay(scenario, chunks.hydration_materials())
+		simulation_node.road_tool_attach_overlay(scenario, chunks.hydration_materials(), chunks.holds)
 
 func _ready():
 	# Before the base class's visuals: the chunks, lights and signs keep their place in the tree.
@@ -241,8 +243,8 @@ func attach_hud(new_hud) -> void:
 
 func _process(delta):
 	if preview_metrics != null and DisplayServer.get_name() == "headless":
+		_measure_hue()
 		preview_metrics.frame(_preview_drawn_sequence, false)
-	_release_swapped_preview()
 	super._process(delta)
 	if not active:
 		if _ticked:
@@ -290,9 +292,6 @@ func _draw_tick(flags: int, start_us := 0) -> void:
 	elif flags & TICK_GRADED:
 		# A frame without a new pose staged the next share of the pose's graded tiles.
 		_show_graded(simulation_node.road_tool_graded_changes())
-	if flags & TICK_HUE and not _hue_queued:
-		_hue_queued = true
-		_show_hue.call_deferred()
 	if hud != null and (flags & (TICK_CHIPS | TICK_CORNERS) or hud.stale):
 		hud.simulation_node = simulation_node
 		hud.show_chips(flags & TICK_CHIPS != 0)
@@ -326,7 +325,6 @@ func _measure_preview(start_us: int) -> void:
 
 # Drops the gizmos, the hue and the chips (another tool, a cancel).
 func _clear_drawn() -> void:
-	_hue_queued = false
 	if hud != null:
 		hud.clear()
 	if _has_session():
@@ -368,20 +366,6 @@ func _gizmos():
 		gizmos = RoadToolGizmos.new(simulation_node)
 		add_child(gizmos)
 	return gizmos
-
-# Draws the draft's footprint hue on the tick's hue flag, at the end of the frame's process step
-# (a deferred call: still before this frame draws, so the hue and its preview show together).
-# Rust joins the hue's build and draws it (`ROAD-123` round HF2: the frame's one wait for it);
-# the build runs off the frame, so the frame's other nodes run beside it before the join (round
-# R2-4a: the preview's overlay left the tool's own frame work shorter than a cross pose's hue).
-# Nothing is drawn when the drawings were dropped since.
-func _show_hue() -> void:
-	if not _hue_queued or not _has_session():
-		return
-	_hue_queued = false
-	simulation_node.road_tool_draw_hue()
-	if preview_metrics != null:
-		preview_metrics.hue(_preview_sequence, simulation_node.road_tool_hue_times())
 
 ## Sets the next stroke's lanes (Rust clamps them to 0..4 each; 0 + 0 is a walkway).
 func set_lanes(fwd: int, bkw: int) -> void:
@@ -471,20 +455,15 @@ func _handle_click():
 
 # Shows the latest preview's chunks in this frame; an invalid stroke shows only its reason.
 func _show_preview() -> void:
-	var valid := bool(_preview.get("is_valid", false))
 	var sequence := int(_preview.get("sequence", 0))
 	if sequence != _preview_drawn_sequence:
 		if preview_metrics != null:
 			_preview_metric_row = preview_metrics.request(sequence)
 		var stage_us := Time.get_ticks_usec() if preview_metrics != null else 0
-		var shown := false
 		# The pose's graded tiles show in its frame, whatever the road chunks do: Rust handed
-		# them over once.
+		# them over once. Rust shows a valid preview's road chunks, or clears them.
 		var graded_ms := _show_graded(_preview)
-		if valid and bool(_preview.get("has_road_chunks", false)):
-			shown = _preview_display.show(chunks, _preview, sequence)
-		if not shown:
-			_preview_display.clear()
+		simulation_node.road_tool_show_chunks(sequence)
 		_show_demolition(_preview)
 		_preview_drawn_sequence = sequence
 		if preview_metrics != null:
@@ -531,7 +510,8 @@ func _release_graded_preview() -> void:
 		graded.release_preview(epoch, epoch)
 
 func _clear_preview_visual() -> void:
-	_preview_display.clear()
+	if _has_session():
+		simulation_node.road_tool_clear_chunks()
 	_show_demolition({})
 	_release_graded_preview()
 	_preview_drawn_sequence = 0
@@ -540,47 +520,21 @@ func _clear_preview_visual() -> void:
 	if hud != null:
 		hud.clear()
 
-# After an accepted commit the preview stays shown until the committed generation's chunks are
-# installed; `road_chunks_installed` releases it in the same call, so no frame shows neither.
-func _hold_preview_until(generation: int) -> void:
-	if _swap_display != null:
-		_swap_display.reset()
-	_swap_display = _preview_display
-	# Rust held the commit's hue and overlay chunks with its answer (rounds R2-3, R2-4a); they go
-	# with this preview.
-	_swap_display.held = true
-	chunks.holds.hold_preview(generation)
-	_preview_display = PreviewDisplay.new()
-	_preview_drawn_sequence = 0
-	_release_swapped_preview()
-
-func _release_swapped_preview() -> void:
-	# Chunks held for a graded edit (T61 (2)) draw the preview's state with it until they swap.
-	if _swap_display != null and chunks.holds.release_preview(chunks.generation):
-		_swap_display.reset()
-		_swap_display = null
-		_drop_held_hue()
-
-# The held commit's hue and overlay chunks go with its preview.
-func _drop_held_hue() -> void:
-	if _has_session():
-		simulation_node.road_tool_release_held()
-
 ## The chunk renderer swapped the chunks it held for a graded edit (T61 (2)) for the installed
-## ones; a held commit's preview (`_release_swapped_preview`) goes with them.
+## ones: Rust releases a held commit's display with them, then shows a preview that waited for
+## the held chunks on the installed ones.
 func road_chunks_released() -> void:
-	_release_swapped_preview()
-	# A preview that waited for the held chunks shows on the installed ones.
-	_preview_display.resident_installed(chunks)
+	if _has_session():
+		simulation_node.road_tool_chunks_changed()
 
 ## The chunk renderer installed a generation's chunks.
 func road_chunks_installed(_generation: int) -> void:
 	# The acknowledgement may arrive in the same frame as the chunks it names.
 	_poll_road_commit_result()
-	_release_swapped_preview()
-	# A preview made meanwhile (the next stroke of a chain) indexes the chunks just installed:
-	# it shows in this call.
-	_preview_display.resident_installed(chunks)
+	# Rust releases a held commit's display; a preview made meanwhile (the next stroke of a
+	# chain) indexes the chunks just installed: it shows in this call.
+	if _has_session():
+		simulation_node.road_tool_chunks_changed()
 
 # Starts a stroke at exactly `pos` (tests, benchmarks and probes): the session's stroke is
 # cancelled, then a scripted press there.
@@ -653,8 +607,8 @@ func _poll_road_commit_result() -> void:
 # turned the standing preview into its rejection).
 func _draw_commit_answer(answer: Dictionary) -> void:
 	if bool(answer["committed"]):
-		# The preview shows until the commit's own chunks are installed (`ROAD-68-E`).
-		_hold_preview_until(int(answer["generation"]))
+		# The preview shows until the commit's own chunks are installed (`ROAD-68-E`): Rust held
+		# its display and hue with the answer, released by the chunks' holds.
 		_clear_preview_visual()
 		_clear_preview_cache()
 		# A committed end on the map edge asks about an external connection (the chain ended
@@ -685,12 +639,8 @@ func cancel_road():
 ## network.
 func reset_main_mesh_chunks() -> void:
 	_clear_preview_visual()
-	_preview_display.reset()
-	if _swap_display != null:
-		_swap_display.reset()
-		_swap_display = null
-	_drop_held_hue()
-	chunks.holds.drop_preview()
+	if _has_session():
+		simulation_node.road_tool_drop_chunks()
 	_clear_preview_cache()
 	chunks.reset()
 	_queue_preview_update()

@@ -116,6 +116,10 @@ pub(crate) trait DrawBackend {
     fn instance_set_origin(&mut self, instance: Handle, origin: [f32; 3]);
     /// Shows or hides `instance`.
     fn instance_set_visible(&mut self, instance: Handle, visible: bool);
+    /// Rewrites the vertex buffer of `mesh`'s surface `surface` from byte `offset` with `bytes`
+    /// (round R2-4b: a resident road chunk's runs collapsed and restored; the mesh is the chunk
+    /// renderer's).
+    fn mesh_write_vertices(&mut self, mesh: Handle, surface: u32, offset: u32, bytes: &[u8]);
     /// Where the line material's dashes keep their on-screen length (`dash_focus`).
     fn set_dash_focus(&mut self, focus: [f32; 3]);
     /// Frees a mesh or an instance.

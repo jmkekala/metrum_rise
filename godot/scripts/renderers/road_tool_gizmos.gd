@@ -3,7 +3,7 @@
 ## The road tool's drawing setup (`ROAD-112` rounds D, V, HU and R2-3): the palette and the
 ## materials, made once and handed to Rust with this node's world (`road_tool_attach_draw`).
 ## Rust's tick draws the gizmos and the batch ghost through the `RenderingServer` itself, and the
-## footprint hue when the tool asks after showing its preview (`road_tool_draw_hue`); this node
+## footprint hue at the end of the process step that showed the preview (round R2-4b); this node
 ## draws nothing. The looks: one line material for every line look (`road_tool_line.gdshader`,
 ## constant on-screen width, no depth test, so the stroke's path stays visible where the preview
 ## terrain's grass covers the preview road): the stroke's centreline, solid and thick; the

@@ -28,8 +28,8 @@ pub(super) const TICK_BATCH: i64 = 1 << 2;
 pub(super) const TICK_BATCH_CLEARED: i64 = 1 << 3;
 /// Tick flag: the gizmos changed (drawn by the tick, round R2-3).
 pub(super) const TICK_GIZMOS: i64 = 1 << 4;
-/// Tick flag: the footprint hue's revision moved (`road_tool_draw_hue`, after the preview shows:
-/// round HF2's pairing).
+/// Tick flag: the footprint hue's revision moved (the tick queues its draw for the end of the
+/// process step, after the preview shows: round HF2's pairing, `road_tool_queue_hue`).
 pub(super) const TICK_HUE: i64 = 1 << 5;
 /// Tick flag: the chips changed (`road_tool_chip_*`, corners included).
 pub(super) const TICK_CHIPS: i64 = 1 << 6;
@@ -68,6 +68,11 @@ pub(super) struct TickState {
     // The previews handed to the script (a pose, a batch's settled overlay, a click's fresh
     // preview, a refused commit's display): each dictionary carries its number as `sequence`.
     pub(super) sequence: i64,
+    // The hue waits for the end of the process step (`road_tool_queue_hue`), the deferred call
+    // made once, and the preview number of the hue drawn last.
+    pub(super) hue_queued: bool,
+    pub(super) hue_call: Option<Callable>,
+    pub(super) hue_sequence: i64,
     // What the last tick left for the script: the graded share, the answer.
     graded: Option<VarDictionary>,
     answer: Option<VarDictionary>,
@@ -336,6 +341,7 @@ impl SimulationNode {
         }
         if parts & TICK_HUE != 0 {
             tick.hue = None;
+            tick.hue_queued = false;
             if let Some(draw) = &mut bridge.draw {
                 draw.clear_hue();
             }
@@ -350,8 +356,10 @@ impl SimulationNode {
     /// pose's preview, a batch's tier), `chips_ms` (the chips' words and placement, with the HUD's
     /// fetch that followed the tick), `gizmos_ms` (the gizmos' comparison, bytes and upload),
     /// `hue_ms` (the hue's join after the tick), `hue_draw_ms` (its bytes and upload),
-    /// `ghost_ms` (the batch ghost's split, bytes and upload), `overlay_ms` (the preview's overlay
-    /// chunks staged and swapped, `road_tool_show_overlay` after the tick) and `flags`. `clear` empties the ring after reading it.
+    /// `ghost_ms` (the batch ghost's split, bytes and upload), `overlay_ms` (the preview's road
+    /// chunks shown after the tick, `road_tool_show_chunks`: the overlays staged and swapped and,
+    /// since round R2-4b, the resident runs checked, collapsed and restored) and `flags`.
+    /// `clear` empties the ring after reading it.
     #[func]
     pub fn road_tool_timings(&mut self, clear: bool) -> VarDictionary {
         let ring = &mut self.road_tool_session.tick.ring;
@@ -432,6 +440,9 @@ impl SimulationNode {
             };
             sample.chips_us = elapsed_us(chips_start);
             flags |= self.road_tool_tick_phase();
+            if flags & TICK_HUE != 0 {
+                self.road_tool_queue_hue();
+            }
         }
         sample.total_us = elapsed_us(start);
         sample.flags = flags as i32;
@@ -497,7 +508,7 @@ impl SimulationNode {
         let mut overlay = None;
         if let Some(standing) = &mut bridge.preview {
             standing.dictionary.set("sequence", sequence);
-            overlay = standing.outcome.overlay.clone();
+            overlay = (standing.outcome.overlay.clone()).filter(|_| standing.outcome.valid);
         }
         self.road_tool_set_overlay_source(sequence, overlay);
     }

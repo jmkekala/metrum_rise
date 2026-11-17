@@ -39,6 +39,10 @@ fn overlay(keys: &[SurfaceChunkKey]) -> PreviewOverlay {
                 (key, surfaces)
             })
             .collect(),
+        runs: Vec::new(),
+        hidden: Vec::new(),
+        positions: Vec::new(),
+        generation: 0,
         span_m: 256.0,
         origin_m: (-1024.0, -512.0),
     }
@@ -167,11 +171,17 @@ fn the_encoding_leaves_out_chunks_without_an_overlay() {
         hidden_positions: vec![Vector3::ZERO; 3],
     };
     let chunks = BTreeMap::from([((0, 0), with), ((1, 0), without)]);
-    let overlay = PreviewOverlay::encode(&chunks, 256.0, (0.0, 0.0));
+    let overlay = PreviewOverlay::encode(&chunks, 7, 256.0, (0.0, 0.0));
     assert_eq!(overlay.chunks.len(), 1);
     assert_eq!(overlay.chunks[0].0, (0, 0));
     assert_eq!(
         overlay.chunks[0].1,
         RoadChunkSurfaces::encode_layers(&chunks[&(0, 0)].overlay)
     );
+    // The runs keep only the chunk that hides some, with its positions as native bytes.
+    assert_eq!(overlay.generation, 7);
+    assert_eq!(overlay.runs.len(), 1);
+    let (hidden, positions) = overlay.runs_of(&overlay.runs[0]);
+    assert_eq!((overlay.runs[0].key, hidden), ((1, 0), &[[1, 0, 3]][..]));
+    assert_eq!(positions, &[0u8; 36][..]);
 }

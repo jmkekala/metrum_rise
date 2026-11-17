@@ -166,7 +166,11 @@ func _tool_road(from: Vector2, to: Vector2) -> Dictionary:
 		tool._queue_preview_update()
 	for frame in range(10):
 		await _frames(1)
-		collapsed = maxi(collapsed, tool._preview_display._collapsed.size())
+		var current := 0
+		for chunk in tool.simulation_node.road_tool_chunk_display().get("collapsed", []):
+			if not chunk["held"]:
+				current += 1
+		collapsed = maxi(collapsed, current)
 	var out := {"collapsed_chunks": collapsed, "committed": false}
 	if tool._commit_segment(_bench._surface_point(to)):
 		tool.active = false

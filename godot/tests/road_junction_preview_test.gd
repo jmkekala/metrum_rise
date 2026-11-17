@@ -202,7 +202,7 @@ func _fixture(fixture: Dictionary) -> void:
 		tool.free()
 		return
 	_expect(preview.get("has_road_chunks", false), "%s preview must return its compiled chunks" % fixture["name"])
-	_expect(tool._preview_display.sequence == int(preview.get("sequence", -1)), "the frame that sampled the stroke must show its chunks")
+	_expect(_shown_sequence() == int(preview.get("sequence", -1)), "the frame that sampled the stroke must show its chunks")
 	_expect(not tool.hud.text().contains("Placing"), "a synchronous preview is never pending: '%s'" % tool.hud.text())
 	_expect(tool.blueprint_mesh.mesh == null, "the preview shows chunks, never a ribbon")
 	if not isolated and not fixture.get("sloped", false):
@@ -210,16 +210,17 @@ func _fixture(fixture: Dictionary) -> void:
 	# Every resident chunk stays drawn, with exactly the payload's hidden runs collapsed; those
 	# runs are the resident chunk's own old curbs, markings and asphalt.
 	var collapsed_expected := 0
+	var collapsed := _collapsed(false)
 	for chunk in preview["road_chunks"]:
 		var key := Vector2i(chunk["chunk_x"], chunk["chunk_z"])
 		var hidden: PackedInt32Array = chunk["hidden"]
 		if hidden.is_empty():
 			continue
 		collapsed_expected += 1
-		var held: Dictionary = tool._preview_display._collapsed.get(key, {})
-		_expect(held.get("instance") == originals.get(key) and held.get("runs", {}).size() == hidden.size() / 3, "the display collapses exactly the payload's runs of %s" % key)
+		var held: Dictionary = collapsed.get(key, {})
+		_expect(originals.has(key) and held.get("mesh") == originals[key].mesh.get_rid() and held.get("runs", 0) == hidden.size() / 3, "the display collapses exactly the payload's runs of %s" % key)
 		_expect(resident.has(key) and _run_positions(resident[key], hidden) == chunk["hidden_positions"], "the hidden runs are the resident chunk's own geometry")
-	_expect(tool._preview_display._collapsed.size() == collapsed_expected, "only chunks with hidden runs are collapsed")
+	_expect(collapsed.size() == collapsed_expected, "only chunks with hidden runs are collapsed")
 	for key in originals:
 		_expect(originals[key].visible, "resident chunks stay drawn")
 	var overlays: Array = simulation.road_tool_overlay_chunks()
@@ -231,19 +232,13 @@ func _fixture(fixture: Dictionary) -> void:
 	tool._queue_preview_update()
 	tool._process(1.0 / 60.0)
 	_expect(tool._preview_sequence == sequence and simulation.road_tool_overlay_counts() == counts, "an unchanged stroke must not preview or upload again")
-	# A run the resident chunk does not have fails the whole display before anything changes.
-	var malformed := preview.duplicate(true)
-	var hidden: PackedInt32Array = malformed["overlay_hidden"]
-	if not hidden.is_empty():
-		hidden[0] = 99
-		malformed["overlay_hidden"] = hidden
-		_expect(not tool._preview_display.show(tool.chunks, malformed, sequence + 1), "runs that do not fit must fail atomically")
-		_expect(simulation.road_tool_overlay_counts() == counts and tool._preview_display.sequence == sequence, "failed staging must preserve the complete previous preview")
+	# Runs that do not fit the resident chunks fail the whole display before anything changes:
+	# Rust's recorder tests (`draw/chunks/display/tests.rs`, round R2-4b).
 	# A scripted pointer moves without a motion event; queue the update as input would.
 	tool.set_scripted_pointer(true, points[-1] + Vector3(1.0, 0.0, 0.0))
 	tool._queue_preview_update()
 	tool._process(1.0 / 60.0)
-	_expect(tool._preview_sequence == sequence + 1 and tool._preview_display.sequence == sequence + 1, "a moved pointer is previewed and shown in its own frame")
+	_expect(tool._preview_sequence == sequence + 1 and _shown_sequence() == sequence + 1, "a moved pointer is previewed and shown in its own frame")
 	var after := simulation.get_road_benchmark_state()
 	for field in ["generation", "live_edges", "edge_slots", "nodes", "lanes", "agents", "buildings"]:
 		_expect(before[field] == after[field], "preview must not mutate authoritative " + field)
@@ -255,7 +250,7 @@ func _fixture(fixture: Dictionary) -> void:
 	tool.cancel_road()
 	for original in originals.values():
 		_expect(original.visible, "cancel must restore original road instances")
-	_expect(simulation.road_tool_overlay_chunks().is_empty() and tool._preview_display._collapsed.is_empty(), "cancel must remove the overlays and restore every collapsed run")
+	_expect(simulation.road_tool_overlay_chunks().is_empty() and _collapsed(false).is_empty(), "cancel must remove the overlays and restore every collapsed run")
 	if not OS.get_environment("METRUM_JUNCTION_PREVIEW_CAPTURE").is_empty():
 		await _capture(tool.chunks.chunk_root, fixture["name"] + "_cancelled")
 	await _commit_previewed(tool, points, preview, resident, not isolated, fixture["name"])
@@ -284,14 +279,13 @@ func _commit_previewed(tool: Node3D, points: PackedVector3Array, preview: Dictio
 	var generation := simulation.get_network_render_generation()
 	_expect(tool._commit_segment(points[-1]), "the click must queue the previewed stroke")
 	var epoch: int = tool._graded_commit_epoch
-	var held = tool._preview_display
 	var deadline := Time.get_ticks_msec() + 20000
 	while (tool._commit_request_id > 0 or simulation.get_network_render_generation() == generation) and Time.get_ticks_msec() < deadline:
 		tool._process(1.0 / 60.0)
 		await process_frame
 	_expect(tool._commit_request_id == 0 and simulation.get_network_render_generation() > generation, "the commit must finish")
 	_expect(simulation.get_road_benchmark_state()["command"].get("preview_plan_reused", false), "a current preview is the commit's plan")
-	_expect(tool._swap_display == held and _held_overlays() > 0, "the preview stays shown until the committed chunks are installed")
+	_expect(bool(simulation.road_tool_chunk_display().get("held", false)) and _held_overlays() > 0, "the preview stays shown until the committed chunks are installed")
 	# The next stroke previews on the committed context before its chunks are installed.
 	tool.cancel_road()
 	tool._begin_stroke(_ground_point(-48.0, 40.0))
@@ -300,13 +294,14 @@ func _commit_previewed(tool: Node3D, points: PackedVector3Array, preview: Dictio
 	# A next stroke the tool refuses (one crossing the cross's arm by its end) shows nothing.
 	var next_shows: bool = bool(tool._preview.get("is_valid", false)) and bool(tool._preview.get("has_road_chunks", false))
 	if next_shows:
-		_expect(tool._preview_display.sequence == 0 and not tool._preview_display._pending.is_empty(), "the next stroke waits for the chunks its runs index")
+		_expect(_shown_sequence() == 0 and int(simulation.road_tool_chunk_display().get("pending", 0)) > 0, "the next stroke waits for the chunks its runs index")
 	generation = simulation.get_network_render_generation()
 	_expect(tool.chunks.update(generation) == generation, "committed chunks must replace the source generation")
-	_expect(tool._swap_display == null and _held_overlays() == 0 and held._collapsed.is_empty(), "installing the committed chunks ends the preview in the same call")
-	_expect(tool._preview_display.sequence > 0 or not next_shows, "the install shows the next stroke's preview in the same call")
-	for key in tool._preview_display._collapsed:
-		_expect(tool._preview_display._collapsed[key]["instance"] == tool.chunks.chunks.get(key), "the next stroke collapses runs of exactly the installed chunks")
+	_expect(not bool(simulation.road_tool_chunk_display().get("held", true)) and _held_overlays() == 0 and _collapsed(true).is_empty(), "installing the committed chunks ends the preview in the same call")
+	_expect(_shown_sequence() > 0 or not next_shows, "the install shows the next stroke's preview in the same call")
+	var next_collapsed := _collapsed(false)
+	for key in next_collapsed:
+		_expect(tool.chunks.chunks.has(key) and next_collapsed[key]["mesh"] == tool.chunks.chunks[key].mesh.get_rid(), "the next stroke collapses runs of exactly the installed chunks")
 	tool.cancel_road()
 	for instance in tool.chunks.chunks.values():
 		_expect(instance.visible, "the committed generation must be visible")
@@ -451,6 +446,18 @@ static func _overlay_count(preview: Dictionary) -> int:
 	return count
 
 # The overlay chunks Rust holds for an accepted commit.
+# The preview Rust's display shows (0: none).
+func _shown_sequence() -> int:
+	return int(simulation.road_tool_overlay_counts()[1])
+
+# Rust's collapsed chunks by key, the held commit's (`held`) or the current preview's.
+func _collapsed(held: bool) -> Dictionary:
+	var out := {}
+	for chunk in simulation.road_tool_chunk_display().get("collapsed", []):
+		if bool(chunk["held"]) == held:
+			out[Vector2i(chunk["chunk_x"], chunk["chunk_z"])] = chunk
+	return out
+
 func _held_overlays() -> int:
 	var count := 0
 	for overlay in simulation.road_tool_overlay_chunks():

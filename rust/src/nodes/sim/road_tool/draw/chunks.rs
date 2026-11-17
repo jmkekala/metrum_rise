@@ -2,10 +2,11 @@
 
 //! The preview's road chunks drawn by Rust (`ROAD-112` round R2-4a): the overlay of each chunk
 //! a stroke changes (`ROAD-68-H` round 3: the rebuilt pieces drawn over the resident chunk, whose
-//! replaced runs `road_preview_display.gd` collapses) encoded in the `RenderingServer`'s own
-//! layout by `surfaces.rs` in the preview's payload stage ([`PreviewOverlay::encode`]) and added
-//! with `mesh_add_surface` to pooled meshes ([`ChunkOverlays`]) instead of `fill_chunk_mesh`'s
-//! `add_surface_from_arrays` on GDScript-built arrays.
+//! replaced runs the display collapses, [`display`], round R2-4b) encoded in the
+//! `RenderingServer`'s own layout by `surfaces.rs` in the preview's payload stage
+//! ([`PreviewOverlay::encode`]) and added with `mesh_add_surface` to pooled meshes
+//! ([`ChunkOverlays`]) instead of `fill_chunk_mesh`'s `add_surface_from_arrays` on
+//! GDScript-built arrays.
 //!
 //! The pool keeps one mesh and one instance a slot. A preview is staged into spare (hidden)
 //! slots first and swapped in by visibility in the same call, so no frame shows a half-staged
@@ -23,12 +24,26 @@ use crate::simulation::network::roadbed::SurfaceChunkKey;
 use rayon::prelude::*;
 use std::collections::BTreeMap;
 
+pub(crate) mod display;
+
 /// A preview's changed chunks with an overlay, encoded for the server: what [`ChunkOverlays`]
 /// draws. Made once a preview (a stroke's pose or a batch's settled overlay), shared by `Arc`.
 #[derive(Debug, Default, PartialEq)]
 pub(crate) struct PreviewOverlay {
     /// Each chunk with overlay triangles and its surfaces, by chunk key ascending.
     pub(crate) chunks: Vec<(SurfaceChunkKey, RoadChunkSurfaces)>,
+    /// Each chunk with resident runs to collapse (round R2-4b), by chunk key ascending: the
+    /// chunk and its runs' ends in `hidden` and `positions` (each chunk's runs follow the
+    /// previous chunk's).
+    pub(crate) runs: Vec<ChunkRuns>,
+    /// `[layer, start, end]` vertex ranges of the resident chunks the overlays replace
+    /// (`PreviewChunk::hidden`), every chunk's in `runs`' order.
+    pub(crate) hidden: Vec<[u32; 3]>,
+    /// Their published positions, 12 bytes a vertex in the server's own layout (three native
+    /// `f32`s): what a run shown again gets back.
+    pub(crate) positions: Vec<u8>,
+    /// The road mesh generation whose resident chunks `hidden` indexes.
+    pub(crate) generation: i64,
     /// The chunk grid's span, metres.
     pub(crate) span_m: f32,
     /// The corner of chunk (0, 0), metres (x, z).
@@ -36,13 +51,16 @@ pub(crate) struct PreviewOverlay {
 }
 
 impl PreviewOverlay {
-    /// Encodes the overlays of `chunks` (a preview's payload) on the grid of `span_m` and
-    /// `origin_m`; a chunk that only hides runs has no overlay and is left out (the display
-    /// still collapses its runs). Every (chunk, layer) is an independent job on the shared pool
-    /// (the preview's caller waits for it): `O(overlay vertices / workers)` with one allocation
-    /// a surface buffer and two job lists, counted with the preview.
+    /// Encodes the overlays of `chunks` (a preview's payload, indexing the resident chunks of
+    /// road mesh generation `generation`) on the grid of `span_m` and `origin_m`; a chunk that
+    /// only hides runs has no overlay and is left out of `chunks` (the display still collapses
+    /// its runs). Every (chunk, layer) is an independent job on the shared pool (the preview's
+    /// caller waits for it): `O(overlay vertices / workers + hidden vertices)` with one
+    /// allocation a surface buffer, two job lists and the runs' three buffers, counted with the
+    /// preview.
     pub(crate) fn encode(
         chunks: &BTreeMap<SurfaceChunkKey, PreviewChunk>,
+        generation: u64,
         span_m: f32,
         origin_m: (f32, f32),
     ) -> Self {
@@ -74,11 +92,24 @@ impl PreviewOverlay {
                 )),
             }
         }
+        let (runs, hidden, positions) = ChunkRuns::copy(chunks);
         Self {
             chunks: out,
+            runs,
+            hidden,
+            positions,
+            generation: i64::try_from(generation).unwrap_or(i64::MAX),
             span_m,
             origin_m,
         }
+    }
+
+    /// Chunk `runs`' `[layer, start, end]` ranges and their published positions' bytes.
+    pub(crate) fn runs_of(&self, runs: &ChunkRuns) -> (&[[u32; 3]], &[u8]) {
+        (
+            &self.hidden[runs.hidden.clone()],
+            &self.positions[runs.positions.clone()],
+        )
     }
 
     /// Chunk `key`'s centre, the frame its payload is local to (`road_chunk_renderer.gd`
@@ -92,6 +123,47 @@ impl PreviewOverlay {
             0.0,
             along(self.origin_m.1, key.1) as f32,
         ]
+    }
+}
+
+/// One chunk's resident runs in a [`PreviewOverlay`] (round R2-4b).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct ChunkRuns {
+    /// The chunk.
+    pub(crate) key: SurfaceChunkKey,
+    /// Its ranges in the overlay's `hidden`.
+    pub(crate) hidden: std::ops::Range<usize>,
+    /// Its positions' bytes in the overlay's `positions`.
+    pub(crate) positions: std::ops::Range<usize>,
+}
+
+impl ChunkRuns {
+    // Every chunk's hidden runs and their positions (as bytes), the chunks without runs left
+    // out. `O(hidden vertices)`.
+    fn copy(
+        chunks: &BTreeMap<SurfaceChunkKey, PreviewChunk>,
+    ) -> (Vec<ChunkRuns>, Vec<[u32; 3]>, Vec<u8>) {
+        let mut runs = Vec::new();
+        let mut hidden = Vec::new();
+        let mut positions = Vec::new();
+        for (&key, chunk) in chunks {
+            if chunk.hidden.is_empty() && chunk.hidden_positions.is_empty() {
+                continue;
+            }
+            let (from, bytes_from) = (hidden.len(), positions.len());
+            hidden.extend_from_slice(&chunk.hidden);
+            for position in &chunk.hidden_positions {
+                for value in [position.x, position.y, position.z] {
+                    positions.extend_from_slice(&value.to_ne_bytes());
+                }
+            }
+            runs.push(ChunkRuns {
+                key,
+                hidden: from..hidden.len(),
+                positions: bytes_from..positions.len(),
+            });
+        }
+        (runs, hidden, positions)
     }
 }
 
@@ -253,6 +325,11 @@ impl<B: DrawBackend> ChunkOverlays<B> {
     #[cfg(test)]
     pub(crate) fn backend(&self) -> &B {
         &self.backend
+    }
+
+    // The backend, for the display's writes into the resident chunks (round R2-4b).
+    fn backend_mut(&mut self) -> &mut B {
+        &mut self.backend
     }
 
     // Hides set `set`'s slots and returns them to the spares.

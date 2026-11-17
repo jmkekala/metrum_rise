@@ -487,7 +487,8 @@ func _next_frame() -> void:
 	# A preview tile discards its bake's road footprint: it shows only beside its road (the
 	# preview's display, or the held one until the commit's chunks install), outside an edit.
 	var tool: Node = _bench.road_tool
-	var road_drawn: bool = tool._preview_display.sequence > 0 or tool._swap_display != null
+	var simulation: Object = tool.simulation_node
+	var road_drawn: bool = simulation.road_tool_overlay_counts()[1] > 0 or bool(simulation.road_tool_chunk_display().get("held", false))
 	if _kind in ["pose", "catch_up", "sweep"] and int(row["preview_shown"]) > 0 and not road_drawn:
 		_unroaded += 1
 		row["unroaded"] = true

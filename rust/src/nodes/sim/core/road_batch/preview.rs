@@ -320,6 +320,7 @@ impl RoadPreviewContext {
                 let overlay = chunks.as_ref().map(|chunks| {
                     Arc::new(PreviewOverlay::encode(
                         chunks,
+                        self.view.road_mesh_surface_generation,
                         self.view.roadbed.chunk_span_m(),
                         self.view.roadbed.chunk_origin_m(),
                     ))

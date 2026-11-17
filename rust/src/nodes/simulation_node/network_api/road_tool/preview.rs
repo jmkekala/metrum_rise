@@ -546,10 +546,7 @@ impl SimulationNode {
                 chunks.push(x);
                 chunks.push(z);
             }
-            Self::set_preview_runs(&mut dict, pieces.chunks.as_ref());
             outcome.overlay = pieces.overlay.clone();
-        } else {
-            Self::set_preview_runs(&mut dict, None);
         }
         let cell_m = f64::from(view_terrain.cell_size_m());
         Self::set_graded_preview_changes(
@@ -719,34 +716,6 @@ impl SimulationNode {
             "graded_pack_ms",
             pack_start.elapsed().as_secs_f64() * 1000.0,
         );
-    }
-
-    // The resident runs a preview's chunks hide (`ROAD-68-H` round 3), what the display
-    // collapses while the draw module shows the overlays (round R2-4a): `overlay_chunks` four
-    // ints a chunk in key order (x, z, the end of its triples in `overlay_hidden`, the end of
-    // its positions in `overlay_hidden_positions`), `overlay_hidden` flat `[layer, start, end]`
-    // vertex ranges of the resident chunk and `overlay_hidden_positions` their published
-    // positions. Empty arrays without chunks. `O(chunks + hidden vertices)`.
-    pub(super) fn set_preview_runs(
-        dict: &mut VarDictionary,
-        chunks: Option<
-            &std::collections::BTreeMap<
-                crate::simulation::network::roadbed::SurfaceChunkKey,
-                crate::simulation::network::render::road::PreviewChunk,
-            >,
-        >,
-    ) {
-        let mut table = PackedInt32Array::new();
-        let mut hidden = PackedInt32Array::new();
-        let mut positions = PackedVector3Array::new();
-        for (chunk, preview) in chunks.into_iter().flatten() {
-            hidden.extend(preview.hidden.iter().flatten().map(|&value| value as i32));
-            positions.extend(preview.hidden_positions.iter().copied());
-            table.extend([chunk.0, chunk.1, hidden.len() as i32, positions.len() as i32]);
-        }
-        dict.set("overlay_chunks", table);
-        dict.set("overlay_hidden", hidden);
-        dict.set("overlay_hidden_positions", positions);
     }
 
     // `road_tool_preview_chunks`: the context's last preview's chunks as `road_chunks`.

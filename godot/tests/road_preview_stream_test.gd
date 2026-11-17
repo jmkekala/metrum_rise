@@ -128,7 +128,7 @@ func _stream_fixture(fixture: Dictionary) -> Dictionary:
 			final_points = tool.simulation_node.road_tool_points()
 			_expect(final_points.size() == 2 and final_points[1] == point, "every frame previews its own pose: fixture=%s frame=%d" % [fixture.name, index])
 		var valid: bool = preview.get("is_valid", false)
-		var shown: bool = tool._preview_display.sequence == int(preview.get("sequence", -1))
+		var shown: bool = tool.simulation_node.road_tool_overlay_counts()[1] == int(preview.get("sequence", -1))
 		_expect(not valid or shown, "a valid pose is shown in the frame that sampled it: fixture=%s frame=%d" % [fixture.name, index])
 		if valid and shown:
 			shown_frames += 1

@@ -111,8 +111,9 @@ func poll(id: int, elapsed_us: int, payload: Variant) -> void:
 
 ## The footprint hue of request `id`'s pose (`ROAD-123` round HF2), into its stages: its build
 ## off the frame (`hue_ms`) and the frame's wait for it at the upload (`hue_wait_ms`), as Rust
-## reports them (`road_tool_hue_times`: `x` and `y`). The frame's whole hue step is in Rust's
-## tick ring (round R2-2, `road_tool_timings`).
+## reports them (`road_tool_hue_times`: `x` and `y`; the road tool reads them for the pose of
+## `road_tool_hue_sequence` before each frame's row, round R2-4b). Setting them again is
+## harmless. The frame's whole hue step is in Rust's tick ring (round R2-2, `road_tool_timings`).
 func hue(id: int, times: Vector2) -> void:
 	if not _requests.has(id) or not _requests[id].has("stages"):
 		return

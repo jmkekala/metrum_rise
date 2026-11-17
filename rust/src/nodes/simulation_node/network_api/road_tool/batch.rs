@@ -330,7 +330,6 @@ impl SimulationNode {
         let batch = context.batch().expect("an accepted batch");
         let pieces = batch.pieces.as_ref().expect("an accepted batch's pieces");
         dict.set("has_road_chunks", pieces.chunks.is_some());
-        Self::set_preview_runs(dict, pieces.chunks.as_ref());
         let mut changed = PackedInt32Array::new();
         let mut demolish_count = 0;
         let mut demolish_lots = PackedVector3Array::new();

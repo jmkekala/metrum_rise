@@ -2,9 +2,10 @@
 
 //! The road tool's drawing on the bridge (`ROAD-112` round R2-3): `road_tool_gizmos.gd` makes the
 //! palette's materials once and attaches them with its world's scenario; from then on the tick
-//! draws the gizmos and the batch ghost itself (`nodes::sim::road_tool::draw`), the script asks
-//! for the hue after it showed the frame's preview (`road_tool_draw_hue`, round HF2's pairing),
-//! and an accepted commit's hue is held in Rust until the script releases the commit's preview.
+//! draws the gizmos and the batch ghost itself (`nodes::sim::road_tool::draw`), the hue is drawn
+//! at the end of the process step that showed the frame's preview (`road_tool_draw_queued_hue`,
+//! round HF2's pairing, queued by the tick since round R2-4b), and an accepted commit's hue is
+//! held with its road chunks until `RoadDrawHolds` releases them (`session/overlay.rs`).
 
 use super::tick::{TICK_GIZMOS, TICK_HUE};
 use super::*;
@@ -88,14 +89,25 @@ impl SimulationNode {
         state
     }
 
-    /// The held commit's hue and overlay chunks go (`road_tool.gd` released the commit's
-    /// preview: its chunks installed, or the preview was reset).
+    /// The hue queued by the tick (`road_tool_queue_hue`, a deferred call at the end of the
+    /// process step): joined and drawn as `road_tool_draw_hue`, for the preview the tick handed
+    /// out last (`road_tool_hue_sequence`). Nothing when the drawings were dropped since.
     #[func]
-    pub fn road_tool_release_held(&mut self) {
-        if let Some(draw) = &mut self.road_tool_session.draw {
-            draw.release_held_hue();
+    pub fn road_tool_draw_queued_hue(&mut self) {
+        let tick = &mut self.road_tool_session.tick;
+        if !tick.hue_queued {
+            return;
         }
-        self.road_tool_release_held_overlay();
+        tick.hue_queued = false;
+        tick.hue_sequence = tick.sequence;
+        self.road_tool_draw_hue();
+    }
+
+    /// The preview number of the hue drawn last (`road_tool_hue_times`' pose; the preview
+    /// metrics), 0 before any.
+    #[func]
+    pub fn road_tool_hue_sequence(&self) -> i64 {
+        self.road_tool_session.tick.hue_sequence
     }
 
     /// Draws (`show`) or hides the last tier 1's batch ghost (tests and captures; the tick draws
@@ -137,13 +149,33 @@ impl SimulationNode {
 }
 
 impl SimulationNode {
-    // An accepted commit's hue and overlay chunks stay drawn until its preview's hold releases
-    // (`road_tool_release_held`); the next tick hands the hue over again.
-    pub(super) fn road_tool_hold_hue(&mut self) {
+    // An accepted commit's hue and road chunks stay drawn until the chunks of `generation`
+    // install (`road_tool_hold_chunks`, `RoadDrawHolds`' rule); the next tick hands the hue over
+    // again.
+    pub(super) fn road_tool_hold_hue(&mut self, generation: i64) {
         if let Some(draw) = &mut self.road_tool_session.draw {
             draw.hold_hue();
         }
-        self.road_tool_hold_overlay();
         self.road_tool_forget_drawn(TICK_HUE);
+        self.road_tool_hold_chunks(generation);
+    }
+
+    // The tick's hue flag: the hue is joined and drawn at the end of the process step
+    // (`road_tool_draw_queued_hue`, a deferred call: still before this frame draws, so the hue
+    // and its preview show together, round HF2's pairing), once however many ticks raise it;
+    // the build runs off the frame, so the frame's other nodes run beside it before the join
+    // (round R2-4a). The deferred call is made once and reused: `O(1)`, no allocation.
+    pub(super) fn road_tool_queue_hue(&mut self) {
+        if self.road_tool_session.tick.hue_queued {
+            return;
+        }
+        self.road_tool_session.tick.hue_queued = true;
+        if self.road_tool_session.tick.hue_call.is_none() {
+            let call = Callable::from_object_method(&self.to_gd(), "road_tool_draw_queued_hue");
+            self.road_tool_session.tick.hue_call = Some(call);
+        }
+        if let Some(call) = &self.road_tool_session.tick.hue_call {
+            call.call_deferred(&[]);
+        }
     }
 }

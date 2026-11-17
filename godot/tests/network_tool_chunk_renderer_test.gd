@@ -864,7 +864,7 @@ func _test_native_road_preview_contract(simulation: SimulationNode) -> void:
 	tool._begin_stroke(points[0])
 	tool.set_scripted_pointer(true, points[-1])
 	tool._process(1.0 / 60.0)
-	_expect(tool._preview_display.sequence > 0, "one frame previews and shows the stroke's chunks")
+	_expect(simulation.road_tool_overlay_counts()[1] > 0, "one frame previews and shows the stroke's chunks")
 	var overlays: Array = simulation.road_tool_overlay_chunks()
 	_expect(not overlays.is_empty() and tool.blueprint_mesh.mesh == null, "the preview shows compiled chunks, never a ribbon")
 	_expect(not tool._preview.has("road_chunks"), "the tool's preview hands its chunks to Rust, not the script")
@@ -874,18 +874,16 @@ func _test_native_road_preview_contract(simulation: SimulationNode) -> void:
 	tool._queue_preview_update()
 	tool._process(1.0 / 60.0)
 	_expect(tool._preview_sequence == calls and simulation.road_tool_overlay_counts() == counts, "an unchanged stroke neither previews nor uploads again")
-	# Rust shows only the overlays of the preview it handed out last.
-	_expect(not simulation.road_tool_show_overlay(tool._preview_sequence + 1), "an unknown preview shows nothing")
-	var stale: Dictionary = tool._preview.duplicate(true)
-	_expect(not tool._preview_display.show(tool.chunks, stale, tool._preview_sequence + 1), "a preview Rust has no overlays of fails atomically")
-	_expect(simulation.road_tool_overlay_counts() == counts and tool._preview_display.sequence == calls, "failed staging must preserve the complete previous preview")
+	# Rust shows only the last valid preview it handed out; any other number (here a refusal's)
+	# clears the road chunks. Runs that do not fit fail before anything changes: Rust's recorder
+	# tests (`draw/chunks/display/tests.rs`, round R2-4b).
 	var rejected: Dictionary = tool._preview.duplicate(false)
 	rejected["is_valid"] = false
 	rejected["invalid_reason"] = "terrain_clip_missing_outer_boundary_owner"
 	rejected["sequence"] = tool._preview_sequence + 1
 	tool._preview = rejected
 	tool._show_preview()
-	_expect(tool._preview_display.sequence == 0 and simulation.road_tool_overlay_chunks().is_empty(), "a rejected stroke shows no road")
+	_expect(simulation.road_tool_overlay_counts()[1] == 0 and simulation.road_tool_overlay_chunks().is_empty() and simulation.road_tool_chunk_display()["collapsed"].is_empty(), "a rejected stroke shows no road")
 	var notice: String = RoadWording.reason_text(rejected, RoadWording.default_refusal())
 	_expect(notice.contains("terrain boundary"), "terrain rejection must retain an explanatory notice: '%s'" % notice)
 	if OS.get_environment("METRUM_ROAD_PREVIEW_TIMING") == "1":
@@ -967,7 +965,7 @@ func _test_session_strokes(simulation: SimulationNode) -> void:
 	var frame: Dictionary = simulation.road_tool_snapshot()
 	_expect(int(frame["phase"]) == 1 and int(frame["placed"]) == 1, "an accepted stroke starts the next at its end")
 	_expect(PackedInt32Array(frame["gizmo_handle_kinds"])[0] == 2, "the chained stroke's start is the chain start")
-	_expect(tool.chunks.holds.held_preview() >= 0 or tool._swap_display == null, "the committed preview is held or already swapped")
+	_expect(tool.chunks.holds.held_preview() >= 0 or not simulation.road_tool_chunk_display()["held"], "the committed preview is held or already swapped")
 	# Right-click ends the chain and keeps the tool; Escape ends the tool.
 	var manager = preload("res://scripts/core/input_manager.gd").new()
 	manager.road_tool = tool

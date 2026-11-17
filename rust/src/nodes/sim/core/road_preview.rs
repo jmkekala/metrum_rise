@@ -747,6 +747,7 @@ impl PoseStages<'_> {
         let overlay = chunks.as_ref().map(|chunks| {
             Arc::new(PreviewOverlay::encode(
                 chunks,
+                view.road_mesh_surface_generation,
                 view.roadbed.chunk_span_m(),
                 view.roadbed.chunk_origin_m(),
             ))

@@ -14068,6 +14068,170 @@ hash differs from the base's.
   0.072 / 0.094 / 0.275, rows level at 0.1496 / 0.1512), owned by R2-9 (three runs a case, the
   freeform case explained first). R2-4b and R2-9 report the wait and are not judged on it.
 
+### The collapsed-run bookkeeping in Rust (round R2-4b)
+
+Round R2-4b of `ROAD-112` R2 (branch `roadtools-r24b` on `dev` `c5d2a994`, R2-4a landed; finding
+F7's bookkeeping part and decision R2-4a item 6). **Before:** `road_preview_display.gd` kept the
+preview's display: the shown preview and the one waiting for an install (each a dictionary), the
+collapsed runs per resident chunk (a dictionary of `Vector3i` keys to the published positions'
+bytes), the swap display held for an accepted commit (`road_tool.gd`'s `_swap_display`); it read
+each resident chunk's `road_layer_*` metas, checked the runs, sliced and converted the positions
+and wrote them through the `RenderingServer` a pose. `road_tool.gd` kept `_hue_queued` and the
+deferred `_show_hue` (frame state against R2-L bar 5) and forwarded the held hue's release.
+
+- **The display** (`ChunkDisplay`, `nodes/sim/road_tool/draw/chunks/display.rs`) wraps R2-4a's
+  overlay pool: the current preview's and the held commit's collapsed runs (per resident chunk
+  its mesh, each run's layer surface and its published positions, the runs sorted), the shown
+  preview and the one waiting for an install (by `Arc` of their `PreviewOverlay`), and kept
+  buffers (the next set, spent entries, the validated targets, a zero run). A preview's runs are
+  checked against the resident chunks first (the chunk resident, the layer's surface present with
+  a positions-only stream, the run inside the layer, the positions matching); a failure returns
+  false with nothing changed. Then the overlays stage and swap, the runs no longer hidden are
+  restored and the new ones collapsed, in that order, in one call. A preview of a generation not
+  installed yet, or while an install is held (T61 (2)), clears the display and waits; the
+  install shows it (`resident_changed`), and an install that replaced chunks the shown preview
+  indexes shows it again. `hold` turns the current runs and overlays into the held ones,
+  `release_held` restores them on meshes still drawn. A pose is `O(overlay bytes + chunks * log
+  resident + runs * log runs + hidden vertices)`; once the buffers have grown it allocates
+  nothing on the Rust side (the run writes reuse one upload array, resized per run).
+- **The runs' data** moves into `PreviewOverlay` in the payload stage (`ChunkRuns`: each chunk's
+  `[layer, start, end]` ranges and published positions as native bytes, and the road mesh
+  generation they index), so the preview dictionary drops `overlay_chunks`, `overlay_hidden` and
+  `overlay_hidden_positions`.
+- **The resident set** stays `road_chunk_renderer.gd`'s (`RENDER-52`); the road tool's renderer
+  reports each installed chunk's mesh RID and layer table (`road_tool_resident_chunk`, the
+  stride checked once with `mesh_surface_get_format_vertex_stride`), a chunk leaving the index
+  (`road_tool_resident_retired`), a chunk's free (`road_tool_resident_freed`: runs on that mesh
+  are forgotten, never written) and the installed generation and grid
+  (`road_tool_resident_grid`), so Rust never walks the scene. Each report is `O(layers + log
+  resident)` or `O(collapsed chunks)`, made on installs, never a frame.
+- **The holds:** `RoadDrawHolds` stays the rule. `road_tool_attach_overlay` takes the chunk
+  renderer's `holds`; the commit's answer holds the display and hue and sets `hold_preview`
+  (`road_tool_hold_chunks`), and `road_tool_chunks_changed` (the tool's `road_chunks_installed`
+  after polling the answer, and `road_chunks_released`) releases them when `release_preview`
+  says so, then shows a waiting preview: the release and the next preview's show in one call.
+  `road_tool_drop_chunks` (another world) and `road_tool_clear_chunks` (a preview gone).
+- **The hue's frame end** moves into Rust: the tick queues the hue's join and draw on its hue flag
+  with one deferred call made once (`Callable::call_deferred`, no allocation: R2-4a's end of the
+  process step, HF2's pairing), `road_tool_forget_drawn` drops a queued one, and
+  `road_tool_hue_sequence` names the pose the metrics read the hue times for (before each frame's
+  row). The held hue's release is Rust's (no forward).
+- **GDScript:** `road_preview_display.gd` is gone; `road_tool.gd` shows a preview's chunks with
+  one call (`road_tool_show_chunks(sequence)`, which clears them when that number is not the last
+  valid preview with chunks) and holds no display, swap or hue state (-82 / +32 lines, 708);
+  `road_chunk_renderer.gd` +36 for the four reports. Tests read Rust's state
+  (`road_tool_chunk_display()`); the malformed-runs checks moved to the recorder.
+
+**Fresh, 2026-11-17 23:05 to 2026-11-18 01:00** (base `dev` `c5d2a994`: release library
+`76a34e2e03622cf0`, release lib test binary `3c1e4b9c73722151`, session bench binary
+`5943c536516530c0`, built in the base worktree's own cargo target directory; branch
+`roadtools-r24b` `703fa600` (the round's code): release library `8bef3b53f2979a74`, release lib
+test binary `e89c179c3999b23c`, session bench binary `37aa128f69864747`, built in the branch
+worktree's own directory; every hash differs from the base's. Other sessions built and tested
+beside the untimed steps; every timed run waited for no Godot, gamescope, cargo or restic and a
+load under 6):
+
+- **Tests:** Rust `draw::chunks::display::tests` (recorder, seven: a preview collapses exactly its
+  runs; the next preview restores what it no longer hides and writes a kept run never again; a
+  run that moves within a layer ends collapsed; a preview waits for the install of its
+  generation, and while an install is held, and shows in the install's call; an install that
+  replaced its chunk shows the preview again, restoring the still-drawn old mesh and never
+  writing a freed one; a failed stage (a run past the layer, a chunk not resident, an empty run,
+  a layer without a surface, short positions, another grid) leaves the display unchanged, no
+  command recorded; a held commit keeps its runs until released and a freed mesh is released
+  without a write) and `draw::chunks::tests` (the encoding keeps the runs of chunks without an
+  overlay). Godot: `road_junction_preview_test`, `road_preview_stream_test`,
+  `network_tool_chunk_renderer_test` PASS on the branch, reading Rust's display
+  (`road_tool_chunk_display`).
+- **Captures:** the 43 junction preview captures **pixel-identical** to the base's; the tool's
+  stills (default 7, S-curve and freeform 3, batch ghost 1, restyle 7) **pixel-identical**. The
+  height sets (default 11, hue 23) differ run to run on the base itself (a second base run: 5 and
+  4 stills differ, clouds and the terrain's streamed state at a condition-timed capture); against
+  the branch 4 and 5 differ, the same kind (two differ against both base runs: the sky only, and
+  the water case's terrain under the road).
+- **Products:** Kuopio's 78 commits and the 17 gameplay fixtures **EQUAL** in every product
+  (request, graph, state, mesh, graded).
+- **The drag probe** (Kuopio's 39 strokes): **PASS** on both sides; the branch's every terrain
+  install share under 1.0 ms (max 0.938, the fast commits; the base beside it read two over the
+  share, max 3.97, while another session's suite ran).
+- **The whole-tick probe** (R2-2's, heaptrack `--record-only`, n = 20 against 200): **0.00 a tick
+  outside the preview** in still, hover and pose; the road chunks' show 273.08 a pose (R2-4a's
+  overlay show, the same: the runs add none); the pose tick 713 process-wide (R2-4a's branch
+  655, not re-run on this base).
+- **The session heap probe** (`METRUM_ROAD_TOOL_ALLOC_PROBE`, 30k): n = 0 2,416,723, n = 20
+  2,416,718, n = 200 2,416,736 calls: flat.
+- **Session bench** (30k locality, C B B C, pinned, run and exclusive timing locks): straight p50
+  102.0 / 102.9 / 103.0 / 104.4 us, curve p50 112.3 / 113.2 / 113.3 / 115.1 us, p99 under 0.154 ms
+  on every row: level; trail digests equal.
+- **Level F** (30k 32x C B B C, a 30k 1x day, K22; `--branch-cache` its own): every row
+  **level**: 32x mean 4.267 / 4.267 ms, p99.9 7.738 / 8.148 (+5.3 %, tolerance 8.0 %); 1x day
+  mean 2.100 / 2.098 ms, PERF-07 acceptance PASS both; K22 click to ack 7.10 / 6.70 ms.
+- **Gates** (fresh on `703fa600`, own target directory): clippy's warning set equal to the base's
+  (14 = 14), missing docs 0, debug lib tests 2,886 passed / 0 failed / 237 ignored, `./run.sh
+  --test` PASS (2,890 Rust tests, 238 skipped; both Godot chains, 0 SCRIPT ERROR, no Godot script
+  skipped).
+- **The paused preview rows** (unprofiled, gamescope headless 1920x1080, four workers, 100 samples
+  a case, pinned, run and exclusive timing locks, no overlap; pass 1 pred base br br base pred,
+  pass 2 br base pred pred base br, so the branch ran in the middle once and at the ends once;
+  pred is round D's control library):
+
+  | Pass, side | Sample to installed mean / p95 ms (cross) | Display's own part mean ms | Within 16.7 / 17 / 18 / 20 ms: all, cross, T-branch-dense |
+  | --- | --- | --- | --- |
+  | 1 pred | 10.988 / 19.411 (12.573) | 2.578 | 51.4 / 58.0 / 66.8 / 76.7; 47.9 / 54.0 / 62.1 / 70.7; 53.8 / 60.6 / 69.9 / 80.7 |
+  | 1 base | 9.825 / 16.094 (10.853) | 0.778 | 59.1 / 66.2 / 74.6 / 85.0; 65.5 / 73.2 / 78.7 / 87.6; 55.1 / 61.8 / 72.0 / 83.4 |
+  | 1 br | 9.977 / 16.731 (10.968) | 0.599 | 57.7 / 63.0 / 71.3 / 81.0; 64.8 / 70.0 / 75.7 / 82.7; 53.3 / 58.7 / 68.5 / 80.0 |
+  | 2 pred | 11.148 / 19.734 (12.630) | 2.575 | 49.7 / 55.9 / 64.7 / 73.3; 48.2 / 54.0 / 62.1 / 70.0; 50.8 / 57.2 / 66.4 / 75.4 |
+  | 2 base | 9.682 / 16.156 (10.548) | 0.764 | 59.5 / 68.2 / 77.7 / 85.1; 67.1 / 76.3 / 82.2 / 87.8; 54.6 / 63.1 / 74.8 / 83.5 |
+  | 2 br | 9.763 / 15.858 (10.594) | 0.591 | 59.8 / 67.3 / 76.0 / 84.9; 68.9 / 77.0 / 82.3 / 88.6; 53.9 / 61.0 / 71.8 / 82.6 |
+
+  The display's own part (`stage_install_ms`: graded tiles, road chunks, demolition) is 0.17-0.18
+  ms lower a pose on the branch: GDScript's run bookkeeping is gone, and Rust's show
+  (`overlay_ms`, now the runs too) reads p50 0.458 -> 0.503, p95 0.814 -> 0.883 ms. The pose's
+  sample to installed is nonetheless +0.15 ms (pass 1) and +0.08 ms (pass 2) against the base:
+  the preview's native stages read 3-6 % slower on the branch in both passes (plan 1.553 ->
+  1.620 / 1.531 -> 1.578 ms, roadbed, payload, graded alike) and so does the hue's build off the
+  frame on the workers (p50 4.663 -> 4.781 / 4.625 -> 4.752 ms), all code the round did not
+  touch, whichever position the branch ran in: a binary-wide effect, not the display's.
+  **U-R2-1** against pred: pass 2 passes in every group; pass 1 passes in all and cross but not in
+  the T-branch-dense group (53.3 / 58.7 / 68.5 / 80.0 against pred's 53.8 / 60.6 / 69.9 / 80.7),
+  where pred itself read 3-5 points higher than in pass 2. **The bar "sample to installed no worse
+  than R2-4a's (8.302 ms mean, cross 9.553)" is missed in absolute terms** (9.977 / 9.763, cross
+  10.968 / 10.594), and not like for like: the same pred library read 9.975 ms in R2-4a's session
+  and 10.988 / 11.148 in these (its plan and graded stages 10-17 % slower), and the base (R2-4a
+  with JS4a) reads 9.825 / 9.682 here.
+- **Reported, not judged here:** the hue's join wait p95 a preview tick (`ROAD-123` HF3's bar)
+  base 0.177 / 0.178, branch 0.335 / 0.340 ms (cross 0.388 / 0.383 -> 0.640 / 0.539; T, branch
+  and dense 0.002 both): the shorter frame before the join lengthens it, as decision R2-4a
+  foresaw. The tick less its preview call p95 base 0.127 / 0.125, branch 0.130 / 0.128 ms (R2-9's
+  bar 0.05). The overlay a preview tick p95 base 0.157 / 0.153, branch 0.156 / 0.155 ms; the
+  three drags (single runs, R2-9's three-run rule not applied): curve end 0.202 -> 0.196, S-curve
+  0.116 -> 0.091, freeform 0.243 -> 0.219 ms.
+- **The interleaved pass** (2026-11-18 01:11-01:28, the coordinator's check of the two passes'
+  +0.15 / +0.08 ms; the same release libraries `76a34e2e03622cf0` / `8bef3b53f2979a74`, each with
+  its own tree's scripts, pred `85b3d2e78ea3302c`): the same rows, unprofiled, run and exclusive
+  timing locks, pinned, no overlap, in the order pred, base and branch alternating per batch (b B
+  b B b B b B b: five base batches, four branch, each branch batch between two bases), pred. The
+  main thread's clock is counted, not sampled (`perf stat -t` on Godot's main thread, cycles and
+  reference cycles every 100 ms, aligned to each case's moving phase).
+
+  | Group | Base batches, sample to installed mean (spread) | Branch batches (spread) | Branch minus the bases around it, per batch | Pooled mean / p95, base -> branch | Clock base / branch |
+  | --- | --- | --- | --- | --- | --- |
+  | cross | 10.691 10.670 10.229 10.840 10.633 (0.611) | 10.690 10.461 10.325 10.385 (0.365) | +0.010 +0.012 -0.209 -0.352 | 10.608 / 18.213 -> 10.464 / 17.641 | 2.19 / 2.20 GHz |
+  | T, branch, dense | 8.910 9.054 8.857 9.034 8.692 (0.362) | 8.568 8.466 8.566 9.156 (0.690) | -0.414 -0.489 -0.379 +0.293 | 8.904 / 14.505 -> 8.679 / 14.044 | 1.47 / 1.47 GHz |
+  | all | 9.593 9.682 9.401 9.732 9.399 (0.333) | 9.364 9.206 9.226 9.646 (0.440) | -0.274 -0.335 -0.341 +0.080 | 9.558 / 15.776 -> 9.357 / 15.502 | 1.78 / 1.78 GHz |
+
+  **Level:** in no group is the branch slower than the base by more than the batch-to-batch
+  spread; it reads 0.14-0.25 ms lower at the mean (p95 0.38-0.56 lower), at the same clock. The
+  native stages read level too (plan 1.511 / 1.506, roadbed 1.287 / 1.279, graded 3.284 / 3.280
+  ms; payload 2.087 / 2.150, which now carries the runs), and so does the hue build (p50 4.448 /
+  4.372): the 3-6 % of the two earlier passes was the session, not the binary. The display's own
+  part 0.758 -> 0.573 ms. U-R2-1 (the share within 16.7 / 17 / 18 / 20 ms) passes in every
+  group: cross pred 51.4 / 57.6 / 67.4 / 77.2, branch 67.5 / 76.3 / 82.6 / 89.2; T, branch and
+  dense pred 52.6 / 58.9 / 69.0 / 78.5, branch 58.3 / 67.7 / 79.3 / 88.7 (base 66.5 / 74.6 / 82.7
+  / 89.3 and 57.1 / 65.2 / 76.8 / 86.9). Reported: the hue's join p95 a preview tick base 0.157,
+  branch 0.267 ms (cross 0.384 -> 0.499; T, branch and dense 0.002 both). Pred reads 10.736 ms in
+  this session (R2-4a's 9.975).
+
 ### The pick's graded preparation halved (round PB, `ROAD-116`)
 
 Round PB of `ROAD-112` (branch `roadtools-pb`, R2-7 on `dev` `75523322`). **Bisect.** The

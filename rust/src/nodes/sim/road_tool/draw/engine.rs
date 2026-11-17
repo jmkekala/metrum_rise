@@ -56,6 +56,8 @@ pub(crate) struct GodotBackend {
     road_vertices: PackedByteArray,
     road_attributes: PackedByteArray,
     road: Option<VarDictionary>,
+    // A resident chunk's run write, resized to each run (round R2-4b).
+    runs: PackedByteArray,
 }
 
 // `mesh_add_surface`'s keys, made once (a `&str` key is a new string each call).
@@ -139,6 +141,7 @@ impl GodotBackend {
             },
             road_vertices: PackedByteArray::new(),
             road_attributes: PackedByteArray::new(),
+            runs: PackedByteArray::new(),
             road: None,
         }
     }
@@ -278,6 +281,17 @@ impl DrawBackend for GodotBackend {
 
     fn instance_set_visible(&mut self, instance: Handle, visible: bool) {
         self.server.instance_set_visible(Rid::new(instance), visible);
+    }
+
+    fn mesh_write_vertices(&mut self, mesh: Handle, surface: u32, offset: u32, bytes: &[u8]) {
+        // The engine copies the bytes into the GPU buffer during the call.
+        fill(&mut self.runs, bytes);
+        self.server.mesh_surface_update_vertex_region(
+            Rid::new(mesh),
+            surface as i32,
+            offset as i32,
+            &self.runs,
+        );
     }
 
     fn set_dash_focus(&mut self, focus: [f32; 3]) {
