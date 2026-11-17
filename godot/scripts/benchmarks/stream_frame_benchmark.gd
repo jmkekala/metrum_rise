@@ -120,7 +120,7 @@ const CENSUS_MID_PITCH := -0.35
 ## The keys every frame row carries (`scripts` is empty without the perf channel).
 const ROW_KEYS: Array[String] = ["frame", "frame_ms", "process_ms", "render_cpu_ms", "render_gpu_ms",
 	"draw_calls", "objects", "primitives", "video_mem", "shadow_pass", "streams", "stream_delta",
-	"reflection_levels", "scripts"]
+	"reflection_levels", "scripts", "pipelines"]
 const STAT_KEYS: Array[String] = ["mean", "p50", "p95", "p99", "max"]
 
 var _terrain: Node
@@ -229,6 +229,7 @@ func run(bench: Node) -> void:
 		RenderingServer.frame_pre_draw.connect(_on_pre_draw)
 		RenderingServer.frame_post_draw.connect(_on_post_draw)
 	var settled := false
+	var pipelines_at_load := _pipelines()
 	var load_start := Time.get_ticks_usec()
 	print("[STREAM] LOAD_BEGIN save=%s world=%s" % [_report.save_path, bench.world_path])
 	var loaded: bool
@@ -240,6 +241,7 @@ func run(bench: Node) -> void:
 		bench._fail("stream benchmark input failed to load")
 		return
 	var load_call_ms: float = bench._elapsed_ms(load_start)
+	var pipelines_after_call := _pipelines()
 	bench.input_manager.set_simulation_speed(float(_report.simulation_speed))
 	main.menu_set_time_of_day(10.0)
 	if phases.has("post_load"):
@@ -277,6 +279,9 @@ func run(bench: Node) -> void:
 		"load_call_ms": load_call_ms, "elapsed_ms": bench._elapsed_ms(load_start),
 		"agent_count": int(perf_stats.get("agent_count", -1)), "saved_view": Array(saved_view),
 		"world_size": [world.x, world.y], "streams": _streams(),
+		# Godot's pipeline compilations (`_pipelines`) at the load call's start, its return and the
+		# settled base pose (`RENDER-43`).
+		"pipelines": [pipelines_at_load, pipelines_after_call, _pipelines()],
 		# The node renderers' casters by shadow policy category at the settled base pose, with
 		# their instances and those within the sun's shadow range of the camera (`RENDER-15`).
 		"node_casters": ShadowVariants.node_casters(main, bench.get_viewport().get_camera_3d().global_position,
@@ -964,6 +969,7 @@ func _row(index: int) -> Dictionary:
 			_viewport.get_render_info(Viewport.RENDER_INFO_TYPE_SHADOW, Viewport.RENDER_INFO_PRIMITIVES_IN_FRAME)],
 		"streams": streams, "stream_delta": _delta(_previous_streams, streams),
 		"reflection_levels": _reflection_levels(),
+		"pipelines": _pipelines(),
 		# Taken as this frame's process_frame resumes the benchmark: the records of the frame just
 		# timed (its scripts and its pre-draw hooks), not of the one starting.
 		"scripts": PerfDebug.take_frame() if _scripts else {},
@@ -1016,6 +1022,16 @@ func _on_pre_draw() -> void:
 
 func _on_post_draw() -> void:
 	_post_draw_us = Time.get_ticks_usec()
+
+# Godot's pipeline compilations since the start, by source: canvas, mesh, surface (queued in the
+# background at a surface's creation), draw (a draw that waited for its pipeline) and
+# specialization (queued in the background by a draw that took the ubershader) (`RENDER-43`).
+static func _pipelines() -> Array:
+	return [RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_PIPELINE_COMPILATIONS_CANVAS),
+		RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_PIPELINE_COMPILATIONS_MESH),
+		RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_PIPELINE_COMPILATIONS_SURFACE),
+		RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_PIPELINE_COMPILATIONS_DRAW),
+		RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_PIPELINE_COMPILATIONS_SPECIALIZATION)]
 
 # The water reflection's voted plane levels, NaN (no plane) as null.
 func _reflection_levels() -> Array:

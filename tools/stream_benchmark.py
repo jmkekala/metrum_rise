@@ -109,10 +109,10 @@ def rows_of(args):
     library = Path(args.library or godot_dir / "bin/libmetrum_rise.so").resolve()
     scripts = Path(args.scripts).resolve() if args.scripts else None
     if args.command == "run":
-        return [(args.label, library, scripts, args.shadows)]
+        return [(args.label, library, scripts, args.shadows, args.label)]
     control = (Path(args.ctl_library).resolve(), Path(args.ctl_scripts).resolve() if args.ctl_scripts else None, "")
     sides = {"ctl": control, "br": (library, scripts, args.shadows)}
-    return [(f"{args.input_label}-{side}{n}", *sides[side]) for side, n in SERIES]
+    return [(f"{args.input_label}-{side}{n}", *sides[side], side) for side, n in SERIES]
 
 
 def run(args):
@@ -133,20 +133,41 @@ def run(args):
         return subprocess.run(wrapper + [sys.executable, str(Path(__file__).resolve())] + args.argv,
                               env=env).returncode
     status = 0
-    for label, library, scripts, shadows in rows:
-        status = max(status, run_row(args, settings, out, label, library, scripts, shadows))
+    for label, library, scripts, shadows, cache_key in rows:
+        status = max(status, run_row(args, settings, out, label, library, scripts, shadows, cache_key))
     return status
 
 
-def run_row(args, settings, out, label, library, scripts, shadows):
+# The shader and pipeline caches a run keeps across runs (`RENDER-43`): Godot's shader cache and
+# Vulkan pipeline cache in user://, and the cache home (the driver's own shader cache).
+USER_CACHES = ["shader_cache", "vulkan"]
+
+
+def copy_caches(profile, name, store, seed):
+    """`--shader-cache`: with `seed`, copies the caches kept in `store` into a new profile's user://
+    `name` and cache home; otherwise saves the profile's caches into `store`, replacing its own."""
+    places = [(godot_isolated.user_dir(profile, name) / entry, store / entry) for entry in USER_CACHES]
+    places.append((Path(profile) / godot_isolated.XDG_HOMES["XDG_CACHE_HOME"], store / "cache_home"))
+    for live, kept in places:
+        source, target = (kept, live) if seed else (live, kept)
+        if not source.is_dir():
+            continue
+        shutil.rmtree(target, ignore_errors=True)
+        shutil.copytree(source, target, symlinks=True)
+
+
+def run_row(args, settings, out, label, library, scripts, shadows, cache_key):
     godot_dir = Path(args.godot_dir).resolve()
     metrics = out / f"{label}.metrics.json"
     save = str(Path(args.save).resolve()) if args.save else ""
     world = str(Path(args.world).resolve())
-    profile, project, _name, env = godot_isolated.create(
+    profile, project, name, env = godot_isolated.create(
         out, "stream.", godot_dir=godot_dir, library=library, scripts=scripts, mods=player_mods(),
         name_prefix="MetrumStream", own_scripts=BENCH_SCRIPTS)
+    store = Path(args.shader_cache).resolve() / cache_key if args.shader_cache else None
     try:
+        if store is not None:
+            copy_caches(profile, name, store, seed=True)
         identity = {
             "label": label, "library": str(library), "library_sha256": sha256(library),
             "scripts": str(scripts or godot_dir / "scripts"),
@@ -157,6 +178,7 @@ def run_row(args, settings, out, label, library, scripts, shadows):
             "resolution": args.resolution, "speed": args.speed, "detail": args.detail,
             "phases": args.phases, "drawn": args.drawn, "still_s": args.still_s, "settle_cap_s": args.settle_cap_s, "shadows": shadows, "gpu_profile": args.gpu_profile,
             "cpus": settings.get("cpus", ""), "workers": WORKERS,
+            "shader_cache": str(store) if store is not None else "", "shader_cache_warm": bool(store and store.is_dir()),
             "locked": os.environ.get(LOCKED_ENV) == "1" or not settings.get("timed_wrapper"),
         }
         width, height = args.resolution.split("x")
@@ -192,6 +214,8 @@ def run_row(args, settings, out, label, library, scripts, shadows):
         with open(out / f"{label}.out", "w") as log:
             status = subprocess.run(command, env=env, stdout=log, stderr=subprocess.STDOUT).returncode
         identity["end"] = datetime.datetime.now().isoformat(timespec="seconds")
+        if store is not None and status == 0:
+            copy_caches(profile, name, store, seed=False)
         identity["status"] = status
         identity["script_errors"] = (out / f"{label}.out").read_text(errors="replace").count("SCRIPT ERROR")
         (out / f"{label}.identity.json").write_text(json.dumps(identity, indent=1) + "\n")
@@ -774,6 +798,8 @@ def add_run_options(parser, series):
                         "sun-shadow variant sequence, e.g. full,none,none,full")
     parser.add_argument("--gpu-profile", action="store_true", help="Godot's render timestamps per pass (gpu_passes)")
     parser.add_argument("--drawn", action="store_true", help="the drawn probe (instrumented: entered-to-drawn, holes)")
+    parser.add_argument("--shader-cache", help="keep the shader and pipeline caches in <dir>/<label or side> across "
+                        "runs: seeded from it when present (warm), saved back after a passed run (RENDER-43)")
     parser.add_argument("--settle-timeout", type=int, default=180)
     parser.add_argument("--timeout", type=int, default=600)
 

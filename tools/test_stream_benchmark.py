@@ -78,6 +78,33 @@ class ProjectTests(unittest.TestCase):
             self.assertEqual((project / "bin/libmetrum_rise.so").read_text(), "so")
 
 
+class ShaderCacheTests(unittest.TestCase):
+    def test_a_run_saves_its_caches_and_the_next_is_seeded_with_them(self):
+        with tempfile.TemporaryDirectory() as temp:
+            temp = Path(temp)
+            store = temp / "store/ctl"
+            first = temp / "first"
+            user = sb.godot_isolated.user_dir(first, "P1")
+            (user / "shader_cache/x").mkdir(parents=True)
+            (user / "shader_cache/x/a.cache").write_text("spirv")
+            (user / "vulkan").mkdir()
+            (user / "vulkan/pipelines.cache").write_text("pipelines")
+            (first / "cache/mesa_shader_cache_db").mkdir(parents=True)
+            (first / "cache/mesa_shader_cache_db/index").write_text("driver")
+            sb.copy_caches(first, "P1", store, seed=False)
+            second = temp / "second"
+            sb.copy_caches(second, "P2", store, seed=True)
+            user2 = sb.godot_isolated.user_dir(second, "P2")
+            self.assertEqual((user2 / "shader_cache/x/a.cache").read_text(), "spirv")
+            self.assertEqual((user2 / "vulkan/pipelines.cache").read_text(), "pipelines")
+            self.assertEqual((second / "cache/mesa_shader_cache_db/index").read_text(), "driver")
+
+    def test_a_series_keeps_one_cache_a_side(self):
+        args = sb.argparse.Namespace(command="series", godot_dir=".", library="b.so", scripts=None, shadows="",
+                                     ctl_library="c.so", ctl_scripts=None, input_label="30k")
+        self.assertEqual([row[4] for row in sb.rows_of(args)], ["ctl", "br", "br", "ctl"])
+
+
 class SeriesTests(unittest.TestCase):
     def test_a_series_runs_its_quartet_in_one_hold_of_the_locks(self):
         with tempfile.TemporaryDirectory() as temp:
