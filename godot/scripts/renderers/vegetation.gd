@@ -163,6 +163,21 @@ func _register_catalogue() -> void:
 		stream.set_vegetation_reflection_scenario(_reflection_scenario)
 		stream.set_vegetation_cast_shadows(cast_shadows)
 
+## The load's pipeline prewarm pairs (`RENDER-43`): every catalogue mesh with its own surface
+## materials, the impostor quad with the impostor materials and their shadow casters, the hedges.
+func pipeline_prewarm_surfaces() -> Array:
+	var pairs := []
+	for species in range(TreeSpecies.SPECIES_COUNT):
+		for variant in range(TreeSpecies.VARIANT_COUNTS[species]):
+			for mesh: Mesh in meshes[species][variant]:
+				pairs.append([mesh, null])
+	for species in [TreeSpecies.CONIFER, TreeSpecies.BROADLEAF]:
+		pairs.append([TreeSpecies.impostor_mesh(), TreeSpecies.impostor_material(species)])
+		pairs.append([TreeSpecies.impostor_mesh(), TreeSpecies.impostor_shadow_material(species)])
+	for hedge in range(TreeSpecies.HEDGE_VARIANTS):
+		pairs.append([TreeSpecies.hedge_run_mesh(hedge), null])
+	return pairs
+
 ## The water reflection's world, where the stream node also draws the impostors
 ## (`water_reflection.gd`); an invalid RID when it goes away.
 func set_reflection_scenario(scenario: RID) -> void:

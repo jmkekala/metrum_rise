@@ -142,6 +142,22 @@ var residency_settling := false:
 		if _book != null:
 			_book.set_settle(unbudgeted, residency_settling)
 
+## The load's pipeline prewarm templates (`RENDER-43`): the cells' and the walls' vertex format
+## (positions and indices) with the graded, behind and wall shaders.
+static func pipeline_prewarm_surfaces() -> Array:
+	var arrays := []
+	arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = PackedVector3Array([Vector3.ZERO, Vector3.RIGHT, Vector3.BACK])
+	arrays[Mesh.ARRAY_INDEX] = PackedInt32Array([0, 1, 2])
+	var mesh := ArrayMesh.new()
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	var pairs := []
+	for shader: Shader in [GRADED_SHADER, GRADED_BEHIND_SHADER, WALL_SHADER]:
+		var material := ShaderMaterial.new()
+		material.shader = shader
+		pairs.append([mesh, material])
+	return pairs
+
 ## Reads the slot layout, creates the world pages of GL0 and GL1 and prewarms the cell meshes.
 ## `pool_slots` overrides the per-level most slots a page holds (tests use small pages).
 func setup(simulation: Node, cell_m: float, world_size: Vector2, span_m: float, pool_slots: Array = []) -> void:

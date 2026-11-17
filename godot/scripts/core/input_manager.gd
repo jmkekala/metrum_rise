@@ -53,6 +53,7 @@ const WORLD_CAMERA_FAR_MARGIN_M := 1000.0
 # LEVEL_END_M); the farther patches stream on within the frame budget.
 const WORLD_READY_RADIUS_M := 2000.0
 const GameSettings := preload("res://scripts/core/game_settings.gd")
+const PipelinePrewarm := preload("res://scripts/renderers/pipeline_prewarm.gd")
 const CAMERA_INPUT_PROCESS_PRIORITY := -300
 const CAMERA_SETTLE_PROCESS_PRIORITY := -200
 
@@ -61,6 +62,8 @@ var _simulation_speed: float = 0.0
 # False from a world load until the terrain renderer settles: no input, no camera control and no
 # clock (set_simulation_speed refuses a running speed) until then.
 var _world_ready := true
+# The load's pipeline prewarm (`RENDER-43`): hidden instances from the load until the hand-over.
+var _pipeline_prewarm := PipelinePrewarm.new()
 var _selected_industry_resource_id := ""
 var _industry_deposits_overlay_forced := false
 var _industry_previous_overlay_mode := 0
@@ -216,6 +219,7 @@ func _await_world_ready() -> void:
 		return
 	if terrain_node != null:
 		terrain_node.set_load_settling(false)
+	_pipeline_prewarm.end()
 	_world_ready = true
 	world_ready.emit()
 
@@ -536,6 +540,25 @@ func _refresh_after_world_load():
 		terrain_node.set_load_settling(true)
 	_await_world_ready()
 
+## Prepares the first load's pipelines (`RENDER-43`, `pipeline_prewarm.gd`); the launch awaits it
+## before its load call. The layers that first draw after a load (terrain, graded tiles, water,
+## vegetation, the grass masks) put their surfaces into the world hidden, and the next drawn
+## frame creates them: Godot then compiles their pipelines in the background while the load call
+## runs, instead of the first frame each layer draws in waiting for its own. One frame is drawn
+## first, which waits for the pipelines of what the scene already shows (they would otherwise
+## queue behind the hidden ones). Two frames, both drawn as any frame before a load is; the
+## hidden instances are freed at the hand-over (_await_world_ready). Outside a scene tree: no-op.
+func prewarm_pipelines() -> void:
+	if not is_inside_tree():
+		return
+	await get_tree().process_frame
+	var pairs := []
+	for layer: Node in [terrain_node, water_node, get_node_or_null("../Vegetation"), get_node_or_null("../Grass")]:
+		if layer != null and layer.has_method("pipeline_prewarm_surfaces"):
+			pairs.append_array(layer.pipeline_prewarm_surfaces())
+	_pipeline_prewarm.begin(get_viewport().find_world_3d().scenario, pairs)
+	await get_tree().process_frame
+
 func _handle_save_game():
 	_ensure_saves_dir()
 	var dialog := FileDialog.new()
@@ -760,6 +783,7 @@ func menu_load_game_from_path(path: String) -> bool:
 		_refresh_after_world_load()
 		print("Loaded game from: ", path)
 		return true
+	_pipeline_prewarm.end()
 	push_error("Load failed: " + path)
 	return false
 
@@ -771,6 +795,7 @@ func menu_load_world_definition(path: String) -> bool:
 		_refresh_after_world_load()
 		print("Loaded world definition: ", path)
 		return true
+	_pipeline_prewarm.end()
 	push_error("Load world definition failed: " + path)
 	return false
 
@@ -792,6 +817,7 @@ func menu_start_new_game(path: String, vegetation: Dictionary) -> bool:
 		set_simulation_speed(0.0)
 		print("Started new game on world: ", path)
 		return true
+	_pipeline_prewarm.end()
 	push_error("Start new game failed: " + path)
 	return false
 

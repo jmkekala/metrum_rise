@@ -134,6 +134,21 @@ var _water_debug_border_rebuilds: int = 0
 func _ready() -> void:
 	rebuild_from_simulation_state()
 
+## The load's pipeline prewarm template (`RENDER-43`): a patch mesh's vertex format (positions,
+## normals, UVs, indices; `_baked_water_patch_mesh`) with the water shader.
+func pipeline_prewarm_surfaces() -> Array:
+	var arrays := []
+	arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = PackedVector3Array([Vector3.ZERO, Vector3.RIGHT, Vector3.BACK])
+	arrays[Mesh.ARRAY_NORMAL] = PackedVector3Array([Vector3.UP, Vector3.UP, Vector3.UP])
+	arrays[Mesh.ARRAY_TEX_UV] = PackedVector2Array([Vector2.ZERO, Vector2.RIGHT, Vector2.DOWN])
+	arrays[Mesh.ARRAY_INDEX] = PackedInt32Array([0, 1, 2])
+	var mesh := ArrayMesh.new()
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	var material := ShaderMaterial.new()
+	material.shader = WATER_SHADER
+	return [[mesh, material]]
+
 func rebuild_from_simulation_state() -> void:
 	var patch_layout: Dictionary = simulation_node.get_terrain_patch_layout()
 	terrain_world_size = simulation_node.get_terrain_world_size()

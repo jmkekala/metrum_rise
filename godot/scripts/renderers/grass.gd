@@ -211,6 +211,18 @@ func _set_binding(index: int, parameter: StringName, value: Variant) -> void:
 		(_draw_at(index).material_override as ShaderMaterial).set_shader_parameter(parameter, value)
 		_bindings[index][parameter] = value
 
+## The load's pipeline prewarm templates (`RENDER-43`): the masks' surface shader on a terrain
+## patch's PlaneMesh and their graded cells' shader on the cells' vertex format. The masks first
+## draw when a patch comes into a slot, which on a cold driver cache cost a turn a 48 ms frame.
+func pipeline_prewarm_surfaces() -> Array:
+	if not GameSettings.GRASS_ENABLED:
+		return []
+	var surface := ShaderMaterial.new()
+	surface.shader = MASK_SHADER
+	var cells := ShaderMaterial.new()
+	cells.shader = GRADED_MASK_SHADER
+	return [[PlaneMesh.new(), surface], [GradedTiles.pipeline_prewarm_surfaces()[0][0], cells]]
+
 func _create_mask() -> void:
 	var viewport := SubViewport.new()
 	viewport.size = Vector2i(MASK_SIZE, MASK_SIZE)
