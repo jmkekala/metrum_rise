@@ -11839,8 +11839,9 @@ and fields. A stroke takes the in-place edit's median rule (`Edge::validate_medi
 one-way stroke is `median_requires_both_directions`, on a walkway `median_requires_vehicle_road`,
 in the hover check and the plan alike.
 
-The road tool (`road_tool.gd`) keeps the median beside the tunnel intent and re-asserts it before
-each preview. Since `ROAD-101` the player never sets it directly: a road type carries it (below).
+The road tool's session in Rust holds the median with the rest of the tool's intent (`ROAD-112`
+round R2-6; `road_tool.gd` keeps no copy). Since `ROAD-101` the player never sets it directly: a
+road type carries it (below).
 The defaults and ranges are Rust's (`RoadMedian::default_width_m`, `width_range_m`), published by
 `get_median_styles` (per style code `default_m`, `min_m`, `max_m`). `ROAD-92` is now a property
 of the types: the Walkway type has no median, so picking it clears the tool's; Rust still refuses
@@ -11894,15 +11895,18 @@ controls (Tool mode, Snapping and Structure stay), and the lane and median keys 
   a new type with `id` empty or as custom type `id`'s name) and `reload_road_types()` (re-reads
   the file, so a library fixed or edited by hand lists without a restart; writes always re-read
   first).
-- **Road tool**: `RoadTool.set_road_type(id)` (GDScript) reads the type's lanes, median and
-  attributes from `get_road_types()` and sets them through the existing inputs (lanes per call,
-  `set_road_tool_median`, `set_road_tool_attributes`, each re-asserted per preview), so a
-  built-in type sends exactly the arguments the old buttons did (50 km/h, sidewalks, zoning; the
-  Walkway too) and the `road_attempt` record carries the attributes, which its replay sets. There is no Rust "pick type" call. R
-  draws the last road type picked (2-Lane Road at first), X the Walkway. `set_lanes` and
-  `set_median` stay the low-level setters benchmarks, probes and the debug replay write.
-  `MainUI.refresh_road_types()` lists the library again and re-picks the tool's type, so an
-  edited type draws its new layout from the next stroke on.
+- **Road tool**: `RoadTool.set_road_type(id)` forwards the id to Rust's
+  `road_tool_set_road_type(id)` (`ROAD-112` round R2-6), which looks the type up in the library
+  (`nodes/sim/road_tool/intent.rs`) and sets its lanes, median, parking and attributes on the
+  session in one option: an unknown or unusable type changes nothing (`road_type_unknown` or the
+  type's own refusal). A built-in type draws exactly the edge the old buttons did (50 km/h,
+  sidewalks, zoning; the Walkway too), and the `road_attempt` record carries the attributes,
+  which its replay passes in its own call (`replay_road_attempt`). R draws the last road type
+  picked (2-Lane Road at first), X the Walkway. `set_lanes` stays the low-level lanes setter
+  benchmarks and probes write; `set_road_tool_median`, `_parking` and `_attributes` set one part
+  of the session's type (tests). `MainUI.refresh_road_types()` lists the library again and
+  re-picks the tool's type (`road_tool_reload_road_type`), so an edited type draws its new
+  layout from the next stroke on.
 - **Roads menu** (`ui/road_type_menu.gd`): the five built-ins as buttons, then one fixed-width
   "Custom roads" drop-down listing every usable custom type, a separator and "Road builder...".
   The tool's current type is marked: its built-in button
@@ -13248,6 +13252,90 @@ with its scripts, branch `d11f01894fdaea9e`):
   0, debug lib tests 2,812 passed / 0 failed / 233 ignored, `./run.sh --test` PASS (2,816 Rust
   tests, 234 skipped; both Godot chains, 0 SCRIPT ERROR).
 
+### The intent in Rust (round R2-6)
+
+Round R2-6 of `ROAD-112` R2 (branch `roadtools-r26` on `dev` `092d2ce9`, rebased onto `f5ad193a`;
+findings F12 and F23).
+**Before:** the tool's intent lived twice. `road_tool.gd` mirrored the lanes, the six snapping
+options, straight grade, the median, parking, the four attributes and the road type ids;
+`set_road_type` looked the type up in `get_road_types()`'s dictionary with a GDScript loop and
+composed four Rust setters in order (attributes, median, parking, lanes: a later refusal left the
+earlier ones set); and because the debug replay wrote the median, parking and attributes into the
+live tool, the tool re-sent its whole mirror on every activation (`reassert_intent`, ten calls).
+In Rust the bridge held the median, parking and attributes on `SimulationNode` beside the
+session's road type, copied over by every setter.
+
+- **Who owns the intent:** the session (`RoadToolSession`: its `RoadTypeSpec` with the lanes,
+  median, parking and attributes, the snapping options, continuous, straight grade) and the
+  bridge's road type picks (`RoadTypePick`: the type drawn and the one R draws again), the one
+  copy. Every request the tool sends (hover check, preview, commit, batch, draft, refusal report)
+  reads the session's type; the node's three fields are gone.
+- **`road_tool_set_road_type(id) -> String`** looks the type up in the library
+  (`intent::RoadTypePick::pick`, `O(types)` on a UI action) and sets its whole spec in one
+  session option; an unknown type (`road_type_unknown`) or an unusable one (its own refusal)
+  changes neither the spec nor the picks. A walkway takes the built-ins' speed and both sides, as
+  `RoadTypeMenu.tool_attributes` sent before. `road_tool_reload_road_type()` re-picks after a
+  library edit with the old fallbacks (a gone or unusable type to the last, the last to the 2-Lane
+  Road). `road_tool_intent()` returns what the UI shows (the type ids, lanes, median, parking,
+  attributes, options, continuous, straight grade), read when a menu opens or a key acts.
+- **GDScript:** `road_tool.gd` keeps forwards only: `set_road_type`, `reload_road_type`,
+  `set_lanes`, `set_straight_grade`, `set_option(name, value)` and `intent()`. Its mirrors, the
+  type loop, `set_median`, `set_parking`, `set_attributes` (no caller outside the loop) and
+  `reassert_intent` are gone. The writers, grepped: the options row and the Continuous and
+  straight grade checkboxes (`main_ui.gd`, which reads its start values from `intent()`), the T,
+  R and X keys (`input_manager.gd`, reading `intent()` for the current grade and the last type),
+  the roundabout tool's lane count (`intent()`), the road type menu and the road builder (through
+  `set_road_type` / `reload_road_type`), the gameplay benchmark (`set_lanes`) and fourteen test
+  scripts (`set_lanes`, `set_option`, reads through `intent()`).
+- **The replay passes its section in its own call:** `replay_road_attempt(record)` reads the
+  record's lanes, snapping, profile, median, parking and attributes (an older record's defaults
+  as before) and checks and queues the stroke with them, through the same commit check
+  (`plan_commit_check`, the corridor clearance) and commit (`add_road_with_section`,
+  `send_road_batch`) as the tool; the tool's intent is never written.
+  `road_attempt_replay.gd` polls the result only.
+- **Behaviour:** one change: switching the tool on sends nothing, so an option set while it was
+  off stays (nothing but the tool and tests sets it now). The products are unchanged (the same
+  values reach the same requests).
+
+**Fresh, 2026-11-17 05:40-07:21** (base `dev` `092d2ce9`'s release library `c054469bfc93ee87`
+with its scripts, branch `7be1424db1f23d53` with its own; session bench binaries base
+`121c0bc20676c552`, branch `42079d60d1723ef8`):
+
+- **Tests:** Rust `a_valid_pick_sets_every_setting_of_the_type` (a divided 2 + 1 type at 80 km/h
+  with right-hand parking and sidewalk, no zoning, no lights sets every field; the Walkway clears
+  them to the built-ins' and keeps the type R draws; a built-in is bitwise the default spec),
+  `an_unusable_or_unknown_pick_leaves_the_intent_whole` (`too_many_lanes`, `road_type_unknown`:
+  spec and picks unchanged), `a_reload_repicks_the_type_or_falls_back`. Godot
+  `road_rejection_report_test` sets the player's sidewalk side, replays the three records (all
+  reproduce), then reads `road_tool_intent()` unchanged and builds the next road with the
+  player's side, not the records'; `road_types_test`, `road_builder_test`,
+  `road_walkway_preset_test`, `network_tool_chunk_renderer_test`, `road_tunnels_test`,
+  `road_roundabouts_test` and the other touched tests pass headless.
+- **Grep:** no `reassert_intent` anywhere; no GDScript variable holds a lane count, option,
+  median, parking, attribute or road type id of the tool (the two hits are a test's road tool
+  stub); `road_tool.gd` calls `get_road_types()` nowhere; the replay calls no intent setter.
+- **Products bitwise** (`commit_products.gd`, both sides fresh): Kuopio's 39 strokes (78 commits)
+  EQUAL in every product (request, graph, state, mesh, graded), the gameplay fixtures 17 of 17
+  EQUAL, 0 SCRIPT ERROR. The Kuopio drag probe PASS on both sides.
+- **No allocation per pointer move** (`METRUM_ROAD_TOOL_ALLOC_PROBE` at 30k, `heaptrack
+  --record-only`): n = 0 2,375,573 / 2,375,612, n = 20 2,375,569, n = 200 2,375,562 calls.
+- **Level R** (the session benchmark's 30k locality mode, the base's and the branch's bench
+  binaries, pinned, run and exclusive locks; p50 / p99 in microseconds): C B B C at 06:45-06:48,
+  straight 101.2 / 133.3, 103.2 / 147.3, 103.1 / 143.6, 100.4 / 133.8; curve p50 111.6, 113.6,
+  113.1, 110.5. A second pass B C (07:20, quiet) 104.3 / 140.9 and 100.3 / 134.2, curve 114.8 and
+  110.6 (its next control row started at load 14 and is left out). Frame digests
+  `32cb9b4b11dccf75` and `ca3e8f6d742b48b2` on every row. The bars (round R2-7's) hold: p50
+  within 5 % of the base (straight +1.9 to +4.0 %, curve +1.3 to +3.9 %), p99 under 0.25 ms. No
+  code on the session's per-move path changed (two getters and the pick module were added beside
+  it), yet the branch reads 2-4 % slower in every pair; not profiled (a code layout shift of the
+  bench binary is the likely cause), within the bar.
+- **Gates** (fresh, before the rebase on `427db812`'s tree and again after it on `c1d2fec6`'s):
+  clippy's warning set equal to the base's (14 = 14) both times, missing docs 0, debug lib tests
+  2,815 and 2,817 passed / 0 failed / 233 ignored, `./run.sh --test` PASS (after the rebase 2,821
+  Rust tests, 234 skipped; both Godot chains, 0 SCRIPT ERROR). The products, probes and bench
+  ran on the tree before the rebase (dev's `f5ad193a` brought round HF2's hue and `RENDER-46`;
+  the rebase's conflicts were imports and one request literal).
+
 ### The pick's graded preparation halved (round PB, `ROAD-116`)
 
 Round PB of `ROAD-112` (branch `roadtools-pb`, R2-7 on `dev` `75523322`). **Bisect.** The
@@ -13900,9 +13988,9 @@ G2 landed; control: round G2's release library of that code). What changed for p
 
 - **The options row**: `main_ui.gd` builds the Snapping row (Roads, Guides, Zoning grid) and
   a Steps row (Angle: Free / 15° / 30° / 45° / 90°; Length: a checkbox and metres, 10 m at
-  first) in `_build_snapping_rows`; `road_tool.gd` holds `network_snap_enabled`,
-  `guide_lines_enabled`, `angle_step_deg` and `length_step_m`, sends each through
-  `_send_option` under Rust's name and re-sends all of them in `reassert_intent()`. The session
+  first) in `_build_snapping_rows`; each control sends its option through `RoadTool.set_option`
+  under Rust's name, and the row starts at the session's values (`road_tool_intent()`, round
+  R2-6: `road_tool.gd` holds no copy and re-sends nothing). The session
   draws the angle lock's ray on past the cursor and the guide line where an angle meets one
   (`push_constraint_line`); no new Rust option or snap rule.
 - **The radius reading**: `visit_turning_radii` as under "Tight curves", `O(points * window
@@ -15361,9 +15449,10 @@ the clicks, the mode buttons and the acknowledgement and draws what `road_tool_f
   4e-5 of the tightest radius a few hundred metres from the origin, about 1e-3 at 10 km), so an
   arc at the limit is never refused through `f32` rounding; the design tier and the curve
   warning signs read the radius itself.
-- The road tool sends its whole intent (lanes, snapping, continuous, height offset, tunnel,
-  median, parking, attributes) to Rust again whenever it is switched on, so a debug replay
-  that set Rust's intent directly never outlasts the tool's own readout.
+- The road tool's intent (road type, lanes, snapping, continuous, straight grade, median,
+  parking, attributes) lives in Rust's session only (round R2-6): switching the tool on sends
+  nothing, and the debug replay passes its record's section in its own call
+  (`replay_road_attempt`), never through the tool's intent.
 
 Node movement and merging update graph ownership, spatial entries and edge routing metrics in the
 same mutation (`AUDIT-01-A17`). Merges resolve both canonical parents before selecting the lower
