@@ -12426,7 +12426,9 @@ since round D).
   and step bounds, arc length against the closed form within 1e-9, `f32` placement at +-10 km,
   offsets, split, join, reversal and bitwise determinism. Benchmark
   `road_tool_guide_benchmark` (results under "Guide kernel benchmark" below).
-- **Protocol** (as built in round C, bridge `network_api/road_tool/session.rs`). The pointer
+- **Protocol** (as built in round C, bridge `network_api/road_tool/session.rs`; since round R2-2
+  one typed tick a frame, typed events and options and `road_tool_snapshot` for the old frame
+  record: [record](#one-typed-tick-a-frame-round-r2-2); the round C text below is history). The pointer
   goes as typed calls so a move allocates nothing: `road_tool_pointer(origin, dir, shift)` (a
   camera ray) and `road_tool_pointer_at(position)` (a scripted point, taken exactly, as
   `set_scripted_pointer` was); both return the resolved cursor. `road_tool_event(name)` takes
@@ -13446,6 +13448,178 @@ base `fb18ad0de56f9f4c`, branch `d5098ffb1eebd958`; release lib test binaries fo
 - **Gates** (fresh on `760ea151`): clippy's warning set equal to the base's (14 = 14), missing
   docs 0, debug lib tests 2,825 passed / 0 failed / 233 ignored, `./run.sh --test` PASS (2,829
   Rust tests, 234 skipped; both Godot chains, 0 SCRIPT ERROR).
+
+### One typed tick a frame (round R2-2)
+
+Round R2-2 of `ROAD-112` R2 (branch `roadtools-r22` on `dev` `3eea9f2a`, round R2-1 landed;
+findings F1, F4, F13, F14's frame part, F19 and F22, and round R2-5's carried chips bar).
+**Before:** `road_tool.gd`'s `_process` let the base class resolve the pointer
+(`get_world_mouse_pos`, a `road_tool_pointer` call with a ray computed in GDScript), then called
+`road_tool_frame()`, which built a fresh `VarDictionary` every frame the tool was active, moved
+or not (about 40 keys, the nested `hud`, the heights' array of dictionaries and some 25 packed
+arrays, the gizmo quads rebuilt), and the script read it back key by key, compared the gizmos'
+four arrays to decide an upload, mirrored the phase, the mode, the HUD numbers and the stroke
+(`_session_phase`, `_draw_mode`, `_session_hud`, `_session_points`, `_preview_points`), counted
+the previews itself (`_preview_sequence`), kept the graded catch-up's count and called
+`advance_road_preview_terrain` itself, asked the HUD to place the chips in a second call that
+fetched them as a dictionary, and timed every step with `Time.get_ticks_usec()` pairs
+(`gizmo_upload_ms`, `gizmo_part_ms`, the hue and chip steps). Events and options went by name
+(`road_tool_event("press")`, `road_tool_set_option("network_snap", value)`).
+
+- **The tick** (`network_api/road_tool/session/tick.rs`): `road_tool_tick(camera, mouse, shift,
+  ctrl)` and `road_tool_tick_at(camera, position, ctrl)` (the scripted pointer). One call a
+  frame: the sent stroke's answer first (then the tick stops with `TICK_ANSWER`; the script draws
+  it and ticks again in the same frame, the old poll-then-frame order), the pointer (Rust takes
+  the camera's ray), the draft, the preview step (a changed stroke previews, a running batch
+  steps, else the pose's graded share stages while the stroke is editable), then the comparison
+  of what the script draws against what it last drew (`TickState::compare_drawn`: the gizmos
+  against a kept copy, their upload bytes rebuilt in reused buffers only on a change; the
+  heights; the hue's revision; the cursor), the chips' words and their placement for the camera
+  (round R2-5's `Chips`, now placed inside the tick with the HUD's pixels sent once), and the
+  phase. It returns flags: 1 a new preview stands (`road_tool_preview`), 2 the preview went, 4 a
+  batch ghost (`road_tool_batch_ghost`), 8 the ghost goes, 16 the gizmos changed
+  (`road_tool_gizmo_layout`, `road_tool_gizmo_bytes`, `road_tool_gizmo_focus`), 32 the hue's
+  revision moved (`road_tool_hue_join`), 64 the chips changed, 128 only their corners, 256 the
+  heights, 512 a graded share (`road_tool_graded_changes`), 1024 the answer
+  (`road_tool_commit_answer`), 2048 the phase or mode, 4096 the cursor (`road_tool_cursor`). A
+  frame that changed nothing returns 0; `O(gizmo points + chips (chips + handles))` beside the
+  preview. The preview's number (`sequence`) is Rust's (`road_tool_preview_sequence`): a pose, a
+  batch's settled overlay, a click's fresh preview and a refused commit's display each take the
+  next one.
+- **The snapshot:** `road_tool_frame()` is `road_tool_snapshot()`, the same record built on
+  demand (no preview; the draft brought up to date) for tests and probes; the tick never builds
+  it. `road_tool_phase()`, `road_tool_mode()`, `road_tool_points()`, `road_tool_cursor()`,
+  `road_tool_preview_current()` and `road_tool_graded_pending()` answer the few reads the script
+  and the probes kept.
+- **Typed events and options (F19):** `road_tool_press(button)`, `road_tool_release()`,
+  `road_tool_action(code)` (cancel, confirm, the four modes, raise and lower the handle, forget
+  the preview), `road_tool_set_lanes`, `road_tool_set_flag(code, enabled)` and
+  `road_tool_set_step(code, value)`. `road_tool_event` and `road_tool_set_option` are gone; the
+  script maps the UI's option names to codes.
+- **The chips (R2-5's carried bar):** the HUD's dictionary fetch is typed
+  (`road_tool_chips_fetch`, the panels to redraw, then `road_tool_chip_kinds`, `_tones`,
+  `_texts`, `_sizes`, `_corners`), on the tick's chips or corners flag only;
+  `road_tool_chips_update` is gone (the tick places).
+- **The hue (round HF2's pairing kept):** on the hue flag the script draws its preview first,
+  then `road_tool_hue_join()` joins the build (the frame's one wait, after the display as before)
+  and returns the state and the buffers' sizes; the buffers come typed (`road_tool_hue_fill`,
+  `road_tool_hue_outline`). `road_tool_hue()` stays as the snapshot the tests compare poses with.
+- **The ring (F22):** each tick records its start (Godot's ticks clock), its whole, the preview
+  call, the chips (their words, their placement and the HUD's fetch after the tick), the gizmos
+  (comparison and bytes), the hue's join and its flags into a fixed ring of 4,096 ticks
+  (`road_tool_timings(clear)`, read once at the end of a run). The script's frame timers are
+  gone (`gizmo_upload_ms`, `gizmo_part_ms`, the hue and chip steps); the preview metrics' stamps
+  around the tick remain only while a run measures. The preview rows record the ring of their
+  moving phase (`tick_ring`).
+- **GDScript:** `road_tool.gd`'s `_process` ticks and acts on the flags (`_draw_tick`); the
+  mirrored phase, mode, HUD, points and preview points, `_session_frame`, `_read_session_frame`,
+  `_adopt_session_preview`, `_read_press`, `_place_labels` and the graded count are gone;
+  `is_valid` means the cursor only (F13). The base `network_tool.gd` resolves its pointer in
+  `_update_pointer`, which the road tool overrides with nothing (its tick resolves it; F14's frame
+  part; the roundabout tool keeps the base's). `road_tool_gizmos.gd` uploads Rust's bytes on the
+  flag (placeholders of the new layout when it changes, in place otherwise; no array compare);
+  `road_tool_hud.gd`'s `place(camera)` is `show_chips(all)`.
+- **Behaviour:** none intended. The click path still computes its ray in GDScript
+  (`road_tool_pointer(origin, dir, ...)`, which the tests use too).
+- **Allocation fixes found by the probe** (the round's finish): `Gizmos`' derived `clone_from`
+  allocated the five buffers of the tick's kept copy on every changed tick (it is `*self =
+  source.clone()`); it is written by hand, field by field, and reuses them. The chips' money words
+  formatted their digits through `u64::to_string`; they go through a stack buffer.
+
+**Fresh, 2026-11-17 10:20-12:35** (base `dev` `3eea9f2a`: round R2-1's release library
+`d550f26ba663038e` (code identical to `3eea9f2a`, which only adds docs) with its scripts, session
+bench binary `d5098ffb1eebd958` (R2-1's), release lib test binary `fe759b40895f4c7c`; branch
+`roadtools-r22` `219ed5d7`: release library `312c22d5dd2e32f3`, session bench binary
+`4e730e4f2dd3a6b6`, release lib test binary `bdf6c2b5eaecf466`; every branch binary built in the
+branch worktree's own cargo target directory with its sources touched, the base's clippy in its
+own):
+
+- **Void and rerun:** the round first built the base and the branch into one cargo target
+  directory; cargo maps both worktrees' crate to one unit, so a build after the other's took its
+  artifacts as fresh by modification time: the branch's release lib test binary was a byte copy of
+  the base's and both clippy results came from the cache. Those three were rebuilt (sources
+  touched; the base's clippy in its own target directory), and every branch binary measured below
+  is the final code's, rebuilt the same way after the two allocation fixes.
+- **Tests:** Rust `tick::tests::unchanged_pointer_bumps_no_revision` (two ticks of the real
+  session with an unchanged pointer bump no revision) and the ring's test; the tool's Godot tests
+  pass through the kept entry points (`network_tool_chunk_renderer_test`,
+  `road_junction_preview_test`, `road_preview_stream_test`, `road_tunnels_test`,
+  `road_height_handles_test`, `road_batch_preview_test`, `road_rejection_report_test`,
+  `road_preview_metrics_test`, `zoning_road_tool_test`, `road_roundabouts_test`, and in
+  `./run.sh --test` `road_tool_demolition_test`, `road_builder_test`, `road_types_test`).
+- **The whole-tick allocation probe** (a measurement overlay of the gameplay benchmark: a blank
+  flat world, the tool active with a scripted pointer, 30 warm-up ticks then n ticks, `heaptrack
+  --record-only`, four workers; per tick (capture(200) - capture(20)) / 180, split by stack):
+  the tick's own allocations outside `RoadToolContext::preview_road` and its payload **0.00 a
+  tick** in every mode: still (no stroke, the pointer never moves, 0 of 200 ticks changed),
+  hover (the pointer moves every tick, no stroke) and pose (a new pose and its preview every
+  tick: 747 a tick inside the preview and its payload); the script's typed fetches 0.00. Before
+  the two fixes the pose mode read 6.00 a tick outside the preview (the gizmos' kept copy 5, the
+  money words 1). The process-wide count of a still tick, 107-190 a tick between captures, is
+  the other nodes' frame calls (terrain, water, agent frame, building LOD, debug bridges, the
+  asset API: 155 a tick by stack) and the engine; the base library's still tick reads 331
+  process-wide, of which its road tool's `road_tool_frame` dictionary 136 a tick and the script
+  reading it most of the 84 outside Rust.
+- **No allocation per pointer move at 30k** (`METRUM_ROAD_TOOL_ALLOC_PROBE`, the session bench):
+  n = 0 2,375,548 / 2,375,569, n = 20 2,375,557, n = 200 2,375,520 calls.
+- **Products bitwise** (the final library against the base's, each with its scripts): Kuopio's 78
+  commits EQUAL in every field, the gameplay fixtures 17 of 17 EQUAL; the Kuopio drag probe PASS
+  on both sides.
+- **Level R** (the session benchmark's 30k locality mode, pinned, run and exclusive locks, no Godot
+  process at any row's start or end, load 5.0-6.4; p50 / p99 in microseconds): C B B C at
+  10:46-10:51, straight 103.2 / 139.1, 103.3 / 140.0, 105.5 / 141.9, 102.8 / 140.1; curve p50
+  113.8, 113.9, 116.0, 113.5. Frame digests `32cb9b4b11dccf75` and `ca3e8f6d742b48b2` on every
+  row. Level (p50 within 5 %, p99 under 0.25 ms).
+- **The paused preview rows** (round R2-0's rows: sloped T + branch, flat + sloped cross, dense;
+  gamescope headless 1920x1080, four workers, no FPS cap; one pass pred base br br base pred at
+  11:01-11:21, every run under `perf record`, no Godot, gamescope or build at any run's start;
+  pred is round D's control library, U-R2-1's pre-D side; base `dev` `3eea9f2a`): the moving
+  phase's exact poses, sample to frame, the share within 16.7 / 17 / 18 / 20 ms:
+
+  | side | group | poses | 16.7 | 17 | 18 | 20 | main-thread clock |
+  | --- | --- | --- | --- | --- | --- | --- | --- |
+  | pred | cross | 1,301 | 52.1 % | 57.5 % | 64.1 % | 72.9 % | 2.33 GHz |
+  | pred | T, branch, dense | 2,099 | 51.5 % | 59.4 % | 69.7 % | 79.2 % | 1.67 GHz |
+  | base | cross | 1,330 | 67.0 % | 77.9 % | 84.2 % | 91.5 % | 3.02 GHz |
+  | base | T, branch, dense | 2,032 | 58.2 % | 66.1 % | 75.5 % | 85.1 % | 1.79 GHz |
+  | branch | cross | 1,337 | 67.1 % | 77.0 % | 84.6 % | 91.2 % | 2.95 GHz |
+  | branch | T, branch, dense | 1,978 | 57.1 % | 63.1 % | 73.0 % | 81.7 % | 1.76 GHz |
+
+  Against U-R2-1 (the pre-D library) **both groups pass** at every cut. Against the base, the
+  cross group is level and the T, branch and dense group reads 1.1-3.4 points lower at 16.7-20 ms
+  in this one pass, its main thread clocked a little lower (1.76 against 1.79 GHz; 9.33 against
+  9.18 ms of main-thread time a pose, profiled).
+- **The tick ring** (the branch's rows, 3,987 ticks of the moving phases): the **chips' part
+  p95 0.034 ms** (cross 0.023, T, branch and dense 0.037; max 0.33): R2-5's carried bar (at most
+  0.05 ms) **met** (R2-5 measured 62-85 us p95 around the GDScript call). **The tick less the
+  preview call** reads p95 1.53 ms over every tick: on the 672 ticks without a new preview it is
+  the pose's graded share, which the tick stages inside itself (the script called it separately
+  before) and the ring does not count as the preview call (p50 1.28 ms, p95 2.09 ms); on the 3,315
+  ticks with a new preview it is **p95 0.087 ms** (p50 0.046); by part, p95 the chips 0.034, the
+  gizmos' comparison and bytes 0.017, the rest (pointer, draft, phase) 0.039. The bar (at most 0.05
+  ms p95, an estimate set from R2-0) is **missed by 0.037 ms** on the preview ticks as measured
+  under `perf record`; no unprofiled rows were run.
+- **Level F** (`./run.sh --timing --level F --k22`, the release lib test binaries above, 8
+  workers on the P-cores, `$ARTIFACTS/timing` and `$ARTIFACTS/timing2`; two sessions, 10:54-11:01
+  and 11:43-11:58). 30k 32x C B B C: mean 4.204 / 4.243 ms (+0.9 %) and 4.233 / 4.279 ms (+1.1 %),
+  p99 +2.0 % and +2.4 %, all level; **p99.9 +7.8 % (level) and +8.1 % (tolerance 8.0 %: WORSE)**
+  (control rows 7.14, 7.42, 7.08, 7.24 ms; branch 7.88, 7.81, 7.62, 7.87 ms), the unpreempted
+  maximum -10.6 % (better) and +6.5 % (tolerance 6.0 %: WORSE); the PERF-07 acceptance PASS or
+  the known `PERF-17` exception on every row of both sides. 30k 1x day: the first session's
+  branch day read its unpreempted maximum WORSE against one control day (4.96 / 4.49 ms, and 5.49
+  in the second session against the same cached control); a fresh control day and branch day in
+  the same boot (`--rerun`) read 5.98 / 4.76 ms (better), mean 2.065 / 2.069 ms, p99 and p99.9
+  level: the day's maximum is noise, the day level. **K22 30k click-to-ack** 6.80 / 7.37 ms
+  (commit 6.77 / 6.93) in the first session, 6.66 / 6.61 ms (6.63 / 6.55) in the second (one run
+  a side each). The 32x p99.9 reads about 8 % higher on the branch in both sessions, at the
+  tolerance's edge; the round changes no simulation code on the 32x path (the tool's session,
+  its bridge and scripts, one graded-stage accessor), so the delta is unexplained (code layout of
+  the test binary is the likely cause, not shown); the landing's level L session settles it.
+- **Gates** (fresh on `219ed5d7`, the branch worktree's own target directory, sources touched):
+  clippy's warning set equal to the base's own-directory set (14 = 14; the round's first branch
+  set had three new `manual_chunks` warnings in `tick.rs`, fixed), missing docs 0, debug lib tests
+  2,827 passed / 0 failed / 233 ignored, `./run.sh --test` PASS (2,831 Rust tests, 234 skipped;
+  both Godot chains, 0 SCRIPT ERROR).
 
 ### The pick's graded preparation halved (round PB, `ROAD-116`)
 
@@ -15450,9 +15624,9 @@ moved.
 
 The road tool (`godot/scripts/tools/road_tool.gd`) is a thin bridge to Rust's road tool session
 (`ROAD-112`, [protocol](#design-road-112)) in every mode since round D: it forwards the pointer,
-the clicks and the mode buttons and draws what `road_tool_frame` returns (the preview, the
-gizmos and the HUD) and what Rust's answer to a sent stroke says (`road_tool_commit_poll`,
-round R2-1). It keeps no stroke geometry of its own: the GDScript
+the clicks and the mode buttons, ticks Rust once a frame (`road_tool_tick`, round R2-2) and
+draws only what the tick's flags say changed (the preview, the gizmos, the hue and the HUD's
+chips) and what Rust's answer to a sent stroke says (round R2-1). It keeps no stroke geometry of its own: the GDScript
 `Curve3D` path, its state machine and the cursor query it used (`get_road_tool_cursor_pos`,
 `get_road_tool_start_direction`) are gone.
 
@@ -15614,10 +15788,10 @@ round R2-1). It keeps no stroke geometry of its own: the GDScript
   end the cost (the preview's, class-priced), the bearing and the design speed (amber under the
   type's limit). No upkeep (user, 2026-11-14). One notice chip near the end: red with the
   refusal, amber for a steep grade, demolitions, a plan being checked or a stroke being sent.
-  `SimulationNode.road_tool_chips_update` reads the camera, projects the anchors and handles
-  and places the chips (`labels::place_chips`; round V2, sized in the font the HUD sends once,
-  `road_tool_set_chip_font`) only when the chips or the view changed, and tells the HUD whether
-  to fetch them (round R2-5: a still frame draws nothing): each goes out
+  The road tool's tick reads the camera, projects the anchors and handles and places the chips
+  (`labels::place_chips`; round V2, sized in the font the HUD sends once with its placement
+  pixels, `road_tool_set_chip_font`) only when the chips or the view changed, and its flags tell
+  the HUD whether to fetch them, typed (rounds R2-5, R2-2: a still frame draws nothing): each goes out
   along its side from its anchor, then while it overlaps an earlier chip or a handle steps by its
   own height, alternately down and up, so chips sharing an anchor stack in a column beside it;
   deterministic, no physics.
