@@ -693,7 +693,9 @@ fn validate_against_graph(
     // round JS2): the plan is built again with the joint dissolved, at most
     // `MAX_PLAN_BUILDS` builds, only for a pose the first build refuses.
     let mut yields: Vec<JointYield> = Vec::new();
-    let mut refused_before = None;
+    // The build a dissolve answered, whose junction refusal stands if the next build fails; its
+    // place (a bisection of layouts) is only worked out when it is the answer.
+    let mut refused_before: Option<Excerpt> = None;
     let mut builds = 0;
     let excerpt = loop {
         builds += 1;
@@ -708,22 +710,27 @@ fn validate_against_graph(
         ) {
             Ok(excerpt) => excerpt,
             // A dissolve that leads to another refusal leaves the junction's refusal standing.
-            Err(refused) => return (refused_before.unwrap_or(*refused), None),
+            Err(refused) => {
+                let refused = match refused_before {
+                    Some(before) => before.refused(validation),
+                    None => *refused,
+                };
+                return (refused, None);
+            }
         };
-        let Some(refusal) = &excerpt.refusal else {
+        if excerpt.refusal.is_none() {
             break excerpt;
-        };
-        let refused = refuse_junction(validation.clone(), refusal, &excerpt.graph);
+        }
         let more = if prepared_input.tunnel || builds >= MAX_PLAN_BUILDS {
             Vec::new()
         } else {
             joint_yields(&excerpt.graph, existing_graph, &yields)
         };
         if more.is_empty() {
-            return (refused, None);
+            return (excerpt.refused(validation), None);
         }
         yields.extend(more);
-        refused_before = Some(refused);
+        refused_before = Some(excerpt);
     };
     let Excerpt {
         graph:
@@ -903,25 +910,28 @@ fn solve_excerpt(
     })
 }
 
-// A junction refusal with the place it names (`ROAD-118` round JS1).
-fn refuse_junction(
-    validation: RoadPreviewValidation,
-    refusal: &JunctionRefusal,
-    excerpt: &ValidationGraph,
-) -> RoadPreviewValidation {
-    let place = refusal.place(
-        &excerpt.graph,
-        &excerpt.source_node_ids,
-        &excerpt.source_edge_ids,
-        &excerpt.splits,
-    );
-    let mut validation = validation.with_invalid_reason(refusal.reason);
-    if let Some((place, length_m, needed_m)) = place {
-        validation.junction_place = Some(place);
-        validation.geometry_measured = length_m;
-        validation.geometry_limit = needed_m;
+impl Excerpt {
+    // `validation` refused with this build's junction refusal and the place it names (`ROAD-118`
+    // round JS1). Unchanged where the build has none.
+    fn refused(&self, validation: RoadPreviewValidation) -> RoadPreviewValidation {
+        let Some(refusal) = &self.refusal else {
+            return validation;
+        };
+        let excerpt = &self.graph;
+        let place = refusal.place(
+            &excerpt.graph,
+            &excerpt.source_node_ids,
+            &excerpt.source_edge_ids,
+            &excerpt.splits,
+        );
+        let mut validation = validation.with_invalid_reason(refusal.reason);
+        if let Some((place, length_m, needed_m)) = place {
+            validation.junction_place = Some(place);
+            validation.geometry_measured = length_m;
+            validation.geometry_limit = needed_m;
+        }
+        validation
     }
-    validation
 }
 
 // The joints that make way for the junctions this excerpt refuses (`ROAD-118` round JS2): for
