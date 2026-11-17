@@ -18239,6 +18239,120 @@ elsewhere); no public item added; debug `cargo test --lib` 2,808 passed, 0 faile
 `./run.sh --test` PASS (nextest 2,812 passed, 233 skipped; godot-main and godot-vehicle PASS, no
 SCRIPT ERROR).
 
+### First-use pipelines at the load (`RENDER-43`, round R43, 2026-11-17)
+
+Round R43 (night delegation; every decision below is for review). Every stream benchmark load
+stalled 0.5-1.2 s at the first draws of the terrain, the water and the vegetation, on `dev` and
+its control alike. The measurement (Godot 4.7.2 Forward+, RADV, gamescope headless 1920x1080,
+P-cores, eight workers, paused; perf on every Godot thread with context switches) found that
+every one of those runs had **cold caches**: the isolated profile is new each run, so Godot's
+shader cache (`user://shader_cache`), its Vulkan pipeline cache (`user://vulkan`) and the
+driver's shader cache (under the profile's `XDG_CACHE_HOME`) start empty. That is a player's
+first run of a build, and a run after a driver update or a shader change; later runs are warm.
+The stream benchmark now records Godot's pipeline compilation counters by source in every row
+(`pipelines`: canvas, mesh, surface, draw, specialization) and at the load, and
+`tools/stream_benchmark.py --shader-cache <dir>` keeps a run's caches for the next run (one store
+a label, or a series side), so a warm load can be measured.
+
+**Cold against warm on the control** (one run each, untimed):
+
+| | load call | settled after it | start to settled | worst post-load frame | first 0.5 s turn's worst |
+|---|---:|---:|---:|---:|---:|
+| Kuopio cold | 0.95 s | 3.55 s | 4.50 s | 1,168 ms | 48.9 ms |
+| Kuopio warm | 0.85 s | 1.21 s | 2.06 s | 295 ms | 5.3 ms |
+| 30k cold | 5.50 s | 7.11 s | 12.61 s | 1,064 ms | 14.1 ms |
+| 30k warm | 4.85 s | 1.68 s | 6.53 s | 197 ms | 12.3 ms |
+
+- Cold, the stalls are the driver compiling pipelines: 5.7 s of driver CPU in Kuopio's first
+  frame, 1.4 s in the terrain's first frame (829 ms), 2.8 s in the vegetation's (578 ms); the
+  30k city adds the road chunks' (768 ms), the buildings' (1,001 ms) and three graded-tile frames
+  (412-1,064 ms). One terrain ubershader pipeline takes 0.5-0.8 s on one core. Godot's GLSL
+  compiles cost 10 ms a frame, so the shader baker (an export option) would not help.
+- Every compilation is a `surface` one (queued in the background when a surface is created);
+  `draw` compilations are 0: a layer's first frame waits for the ubershader pipelines its own
+  surfaces queued that frame, one layer after another.
+- Warm, no frame waits for a pipeline: the same compilations hit the caches. The warm first
+  frame (295 ms Kuopio, 197 ms 30k) is the night sky bake's image conversion and mipmaps and
+  uniform set creation, not pipelines.
+- The first turn: Kuopio's 0.5 s `turn_out` had one 48.9 ms frame cold (the grass masks' first
+  patch), none warm; the 30k turns had none.
+
+**The change: the first load's pipelines compiled while its load call runs.** The launch
+(`main_scene.gd`, and the stream and idle benchmarks the same way when the build has it) awaits
+`InputManager.prewarm_pipelines()` before its load call: one drawn frame compiles what the scene
+already shows; then the terrain (a PlaneMesh with the terrain shader), the graded tiles (the
+cells' and walls' vertex format with their three shaders), the water (the patch format), the
+vegetation (every catalogue mesh with its own materials, the impostor quad with the impostor
+materials and their shadow casters, the hedges) and the grass masks put one hidden instance of
+each template into the world (`pipeline_prewarm.gd`), and the next frame creates their surfaces:
+Godot then compiles their pipelines in the background while the load call runs, instead of each
+layer's first frame waiting for its own. The instances are freed at the hand-over. A pipeline
+depends on the shader, the vertex format, the primitive and the pass, never on a material's
+parameters, so templates suffice; a hidden instance is never drawn. Godot is unmodified and its
+cache settings are the defaults. Loads after the first in a process need no prewarm: the
+renderers keep their shaders, and the pipelines with them.
+
+Tried and dropped (one cold run each): the hidden instances at the renderers' rebuild, with no
+frame before the load call, queued every pipeline into the first frame after the load (2,165 ms)
+and Kuopio settled no sooner (3.66 s against 3.55): the compile is CPU-bound on the eight
+cores, so only overlapping it with the load call moves time. `RenderingServer.force_draw`
+inside the load call overlapped it as well, but its frame emits `frame_post_draw`, which resumed
+the cloud shape, gust and night sky bakes mid-call: a headless gate test read a null image and
+Kuopio's stills lost their cloud shadows (1.78 M pixels). The road chunks' nine layer formats in
+the prewarm slowed the load call (Kuopio has no roads) more than they saved on the 30k city (its
+640 ms road frame): left out.
+
+**Timing** (`tools/stream_benchmark.py series`, C B B C, phases `post_load`, `still` and the 0.5 s
+and 1 s turns, 2026-11-17 04:22-04:27, after waiting for another lane's unlocked `perf script`
+post-processing to end (load 1.2 at the start); control: `dev` `b40368b2`'s release library with
+its scripts; branch: the same library (no Rust change) with the branch's scripts; cold: fresh
+profiles; warm: each side's caches kept, seeded from a control run; verdicts by the same-binary
+spread). Load: the launch's prewarm and the load call; settled: after the call returns.
+
+| | load s (C / B) | prewarm s | settled s (C / B) | start to settled s (C / B) | worst post-load frame ms (C / B) | first 0.5 s turn's worst ms (C / B) |
+|---|---|---:|---|---|---|---|
+| Kuopio cold | 0.95, 0.97 / 2.48, 2.52 | 0.90 | 3.42, 3.46 / 1.39, 1.34 | 4.37, 4.42 / 3.87, 3.86 (better, -0.53) | 993, 976 / 156, 151 | 51.1, 50.6 / 9.0, 12.7 (better) |
+| 30k cold | 5.15, 5.01 / 7.85, 7.90 | 0.90 | 7.27, 6.97 / 2.59, 3.14 | 12.42, 11.98 / 10.44, 11.03 (better, -1.46) | 1,420, 1,305 / 751, 638 | 16.5, 14.4 / 12.0, 12.1 (better) |
+| Kuopio warm | 0.83, 0.84 / 1.23, 1.11 | 0.25 | 1.14, 1.23 / 1.01, 0.98 | 1.96, 2.07 / 2.24, 2.09 (level, +0.15 on 0.16) | 286, 297 / 126, 123 | 5.5, 5.8 / 5.4, 5.3 (level) |
+| 30k warm | 4.69, 4.72 / 6.71, 6.52 | 0.25 | 1.48, 1.43 / 1.51, 1.34 | 6.17, 6.16 / 8.22, 7.87 (**worse, +1.88**) | 203, 195 / 183, 130 | 15.2, 13.4 / 13.1, 12.2 (level) |
+
+The stream rows of the phases (`compare`): the turns level or better but the 30k cold `turn_out
+1s` maximum (+1.5 ms on a spread of 1.1: 11-12 against 10 ms frames); `still` p50 +0.3 ms on
+Kuopio cold and +0.0 on the 30k cold (spreads 0.1 and 0.0).
+
+**The bar is not met, and the branch is not for landing as it is.** Cold, the stalls are gone from
+the frames after the load (worst 151-156 against 976-993 ms on Kuopio) and the first turn's
+48-51 ms frame is gone; start to settled is 0.5 s (Kuopio) and 1.5 s (30k) shorter. But the load
+call is longer, and on the 30k city the two frames before it cost the call 1.6-1.9 s cold and warm
+alike: warm, the 30k city settles 1.9 s later from the load's start. A run with the two frames and
+no hidden instance (6.52 s) has it too, so the frames, not the pipelines, cost it: the load's
+main thread spends 1.45 s more in the graded site scan (`SiteRectQuery::holds`, every site's
+footprint and surface bounds; 8 ms in the control's load); its caller is not resolved (the
+release library has no frame pointers, so the stacks end in it). With round R46b's site scan fix
+(`RENDER-46` L1, `75edb454`, not landed) under both sides (one warm 30k run each, untimed) the
+penalty halves but stays: load 5.48 s (0.23 s of it the prewarm) against 4.65, start to settled
+6.95 against 6.07 s. The rest of the longer call on the cold loads is the compile competing with
+the load's Rayon work on the same eight cores. Next (for review): find what the two frames before
+the first load leave for the load call to do (the renderers' first frames run before any world is
+loaded; a likely place to look is what they start for the scene's startup state) and remove that
+cost, then time this again; or decide that a first run's 0.5-1.5 s outweighs the later runs'
+loss, which it does not on these numbers.
+
+**Products.** Settle-point digests (`--digests`, one run a side, final scripts): the 30k city's
+post-load, still and turn points and Kuopio's still, turn, pan and zoom points: graded tiles,
+buildings, roads, parked cars, vegetation, land cover and water all equal (4 of 4 and 8 of 8).
+Stills: Kuopio's `close`, `mid` and `forest_low` after 4,000 warm-up frames byte-identical,
+control against branch; the 30k city's `city` and `city_low` byte-identical in every pairing of
+two runs a side, `saved` 2-3 pixels (delta at most 2) control against branch and 2 control
+against control; the one pixel the systematic test gave to the branch's side, (1574, 267), took
+the same value in a third control run (the `RENDER-45` residue).
+
+**Gates** (fresh, branch `818e7724`): `env -u DISPLAY -u WAYLAND_DISPLAY ./run.sh --test` PASS (rust
+3m03s, godot-main 2m53s, godot-vehicle 1m31s); `tools/test_stream_benchmark.py` 27 tests OK (two
+new: the cache store's round trip and one store a series side). No Rust change, so no clippy run
+and no level F: the round adds no per-frame code (two frames before the first load call, and the
+hand-over frees the instances once).
+
 ## Implemented Runtime Contract
 
 ### 1. `WorldConfig` Is The Authoritative World Metadata
