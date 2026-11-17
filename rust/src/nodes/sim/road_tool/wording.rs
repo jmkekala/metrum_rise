@@ -130,13 +130,25 @@ fn end_part_text(part: EndPart) -> &'static str {
 
 // Money in whole units with thousands separators: "$1,234", "-$56".
 fn push_money(value: f64, out: &mut String) {
-    let digits = (value.abs().round() as u64).to_string();
+    // The digits least significant first into a stack buffer (a `u64` has at most 20), so a
+    // changed cost allocates nothing once `out` has grown (the tick rewrites the chips' words).
+    let mut rest = value.abs().round() as u64;
+    let mut digits = [0u8; 20];
+    let mut len = 0;
+    loop {
+        digits[len] = b'0' + (rest % 10) as u8;
+        len += 1;
+        rest /= 10;
+        if rest == 0 {
+            break;
+        }
+    }
     out.push_str(if value < 0.0 { "-$" } else { "$" });
-    for (index, digit) in digits.chars().enumerate() {
-        if index > 0 && (digits.len() - index).is_multiple_of(3) {
+    for index in 0..len {
+        if index > 0 && (len - index).is_multiple_of(3) {
             out.push(',');
         }
-        out.push(digit);
+        out.push(char::from(digits[len - 1 - index]));
     }
 }
 
