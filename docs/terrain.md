@@ -16414,7 +16414,8 @@ therefore depends on when its batch was last inside a frustum; reproducing that 
 reproducing Godot's view and shadow-split culling. What it would save (census, the withdrawn
 build over this branch): 30k still 2,736 to 2,210 main-pass draws and 860 to 757 shadow, 100k
 5,242 to 4,695 and 863 to 741; primitives +0.01 M (off-screen poles inside chunk batches). The
-choice goes to the user (see the roadmap row).
+choice goes to the user (see the roadmap row). Built 2026-11-17 on the user's acceptance (round
+SL1, [record](#street-lights-in-chunk-batches-render-46-lever-5-round-sl1-2026-11-17)).
 
 **Draws and primitives** (Godot's counters at the census poses, main pass / shadow pass; the
 primitives are equal to the digit at every pose on both inputs):
@@ -18489,6 +18490,143 @@ autoloads, until `15f60ca1` read `LaunchState` by path); `tools/test_stream_benc
 `building_site_terrain`, `parking`, `asset`) 319 passed, among them the new
 `an_asset_reload_journals_a_reset`; clippy `--all-targets` adds no warning in the changed files.
 Artefacts: `$ARTIFACTS/render43/r43b` (profiles, series, products, the session log).
+
+### Street lights in chunk batches (`RENDER-46` lever 5, round SL1, 2026-11-17)
+
+Round SL1, the user's decision of 2026-11-17 on CS1's lever 5 ("it is acceptable. i doubt nobody
+notice 605 far pixel difference!"; on the diff image of this round: "it is fine"). Branch
+`street-light-chunks` on `dev` `f5ad193a`; control `f5ad193a`'s release library with its own
+scripts. Godot 4.7.2 Forward+, RADV on the RX 7900 XTX, gamescope headless at 1920x1080, P-cores,
+eight workers, isolated profiles, simulation paused; the timing cache's 30k city and Kuopio.
+
+**What changed.** CS1's build (`stream-cs1-lights` `1a4e730b`) drew with nodes; `dev` has since moved
+the lamps onto the stream backend's pooled slots (`RENDER-52` part 2), so the port is a re-application
+on that draw, Rust-first:
+
+- `street_lights/draw.rs` makes one slot per road chunk, pole kind and level of detail (the
+  lamp material, the casters' shadow and 32 m extra margin on the first two levels, a receiver's
+  2 m on the last), with no visibility range, and the chunk's glow as before. A slot has room for
+  every pole of its kind in the chunk (its capacity class), so a level change never takes another
+  slot. The load call's prebuild and the hydration's time slices still make every slot; a chunk's
+  level batches are written by the first selection after it is drawn.
+- `street_lights/poles.rs` (CS1's, adapted) keeps each 64 m cell's centre as the engine measured its
+  own batch: the mesh bounds through each instance of the cell batch's pooled buffer, padded to its
+  capacity with copies of the first instance (as `stream/backend.rs` writes it), merged in order,
+  grown by the level's extra cull margin, in the chunk's frame. Each drawn frame it applies the
+  engine's range rule with its 10 m hysteresis (`_visibility_range_check`, fade disabled) from the
+  main camera.
+- `street_lights.gd` connects `RenderingServer.frame_pre_draw` and hands the camera's
+  `get_camera_transform().origin` to `StreetLightBook.draw_poles`, so the levels follow the camera
+  Godot draws from, after every script moved it. The book writes or hides only the batches whose
+  cells changed level; a still camera costs one comparison. GDScript only connects and installs.
+- With motion vectors on (TAA, FSR 2) a level batch whose members changed takes fresh storage
+  before its write (`SlotPool::refill`): the same instance index now holds another pole, and the
+  engine would otherwise draw motion from one pole's last transform to another's.
+
+Costs: a selection is `O(cells of the chunks within 1,410 m of the camera and of the chunks with a
+drawn level)` plus `O(poles of the changed batches)` copied, nothing allocated once the scratch rows
+reached their size; nothing while the camera and the chunks hold still. A chunk install adds
+`O(lamps)` (its cells' centres) and makes `kinds x 3 + 1` slots instead of `cells x kinds x 3 + 1`.
+
+What differs from the cell batches, as CS1 found: Godot checks a batch's range only while the batch
+passes a view or shadow-split frustum, so inside the 10 m margins a cell batch's level depended on
+when it was last in a frustum; here it follows the main camera every frame. A pole within 10 m of a
+level's edge may therefore show the other level than the control showed after the same camera path.
+
+Tests: `poles::tests` (the range rule's margins; a chunk batch holds exactly its cells at their
+levels from a camera; a cell keeps its level inside the hysteresis on the way back; a far jump
+releases every drawn level and a reinserted chunk starts hidden; a cell's centre on its padded
+slot), `draw::tests` (a batch a kind and level with the cell batches' settings and no range, the
+glow at once and the levels from the first selection, a still camera writes nothing, a far one hides
+every level batch; spares, prebuild and the shadow toggle as before; fresh storage under motion
+vectors), and `street_lights_test.gd`: the cells' centres equal Godot's own `Transform3D * AABB`,
+`AABB.merge` and `AABB.grow` over the padded buffers bit for bit, and along a 1,068-step camera
+path out to 1,600 m and back every batch holds exactly the cells the engine's range rule shows. Both
+checks fail on a 0.001 m margin change and a 1 m hysteresis change.
+
+**Draws** (Godot's counters at the census poses, main pass / shadow pass; primitives equal to
++0.03 M, the off-screen poles inside chunk batches):
+
+| 30k pose | Control | Branch |
+|---|---:|---:|
+| still | 2,673 / 847 | 2,147 / 744 |
+| mid-turn | 2,663 / 1,003 | 2,112 / 825 |
+| mid height | 2,211 / 878 | 1,645 / 736 |
+| street level (3 views) | 2,010-2,169 / 986-1,082 | 1,467-1,647 / 829-930 |
+
+The 30k still falls by 526 main-pass and 103 shadow-pass draws, what CS1 predicted (526 and 103).
+Kuopio's draws are equal at every pose (its roads carry no street lights).
+
+**Stills and digests.**
+
+- Night (hour 23, the 30k city; C B B C): `saved` 605 px against the control in both branch runs
+  (max delta 138), the same 605 pixels as CS1's build (masks equal) and the branch's two runs
+  identical; the control's two runs identical. The pixels are lamp lenses at the level bands'
+  edges, far ones and a few near clusters in the frame's bottom corners. `city`: identical in one
+  pair, 1 px of delta 3 in the other (the branch's own two runs show it too). The user saw the diff
+  image and accepted it: "it is fine".
+- Day (the 30k city, C B B C): `city_low` identical bytes; `city` 1 px of delta 1 (branch against
+  branch 2 px, control against control 0: the `RENDER-45` residue); `saved` 404-406 px, max delta 50,
+  128 px over 8 (`systematic`: 404 by side), 396 of them within 4 px of the night mask's pixels: the
+  same lamps at the other level, seen by day as a one-pixel pole shadow line (the first two levels
+  cast the sun's shadow, the last does not). Kuopio `close`, `mid`, `forest_low`: identical bytes.
+- Digests (`--digests`, 30k post-load, still and 1 s turns; Kuopio still, turns, pan and zoom):
+  graded, buildings, roads, parked cars, vegetation, land cover and water equal at every point
+  (30k 4 of 4, Kuopio 8 of 8; the lamp textures are night-only).
+
+**Timing** (one session, 09:02-09:22, and its one rerun, 09:22-09:44; control `f5ad193a`'s library
+and scripts, branch `4af83644`'s library; `tools/stream_benchmark.py series` and `compare`, C B B C;
+the runs queued on `.timing.lock` from 08:50, held by other lanes' shared builds and probes until
+09:02; no `perf script` or `addr2line` ran during the rows, sampled every 30 s):
+
+```bash
+tools/stream_benchmark.py series --input-label 30k --out "$ARTIFACTS" --save <populated_city_30000.sqlite> \
+    --ctl-library <control .so> --ctl-scripts <control godot/scripts> --library <branch .so>
+tools/stream_benchmark.py series --input-label kuopio --out "$ARTIFACTS" ...   # same, no save
+./run.sh --timing --level F --control <control $TEST_BINARY> --branch <branch $TEST_BINARY> --base f5ad193a \
+    --artifacts "$ARTIFACTS/sess-f"
+```
+
+Godot's draw on the 30k city (`render_cpu_ms` p50, rows C1 B1 B2 C2; the session, then the rerun):
+
+| Phase | Session | Rerun |
+|---|---|---|
+| still | 2.39, 1.81, 1.90, 2.23 | 2.19, 1.77, 1.87, 2.24 |
+| 0.5 s turns (out) | 3.74, 3.13, 3.09, 3.88 | 3.92, 3.22, 3.21, 3.96 |
+| 1 s turns (out) | 3.30, 2.76, 2.73, 3.21 | 3.26, 2.75, 2.69, 3.20 |
+| pans (out) | 2.17, 1.75, 1.78, 2.13 | |
+| night 1 s turns (out) | 3.10, 2.62, 2.63, 3.03 | |
+
+- Godot's draw falls by 0.4-0.7 ms a frame in every 30k phase, outside the control's spread
+  (0.1-0.2): about 0.4 ms on the still, 0.5 ms on the 1 s turns, 0.6-0.8 ms on the 0.5 s turns.
+- Frames, 30k: the 0.5 s turns better at p50 by 0.5-0.8 ms (rerun 0.7-1.0, 7.2-7.5 against
+  7.9-8.4 ms), the rest level or better by up to 0.2; the still is GPU-bound (6.6 ms at a GPU of
+  6.6) and level. GPU level (the shadow pass's primitives +0.1 M, its draws 845-950 to 740-801).
+  Flags: the session's `turn_out 1s` max +1.2 against a spread of 0.6 (rerun: better p50 and max);
+  the rerun's `jump` max +8.0 against 6.6 (session: max -3.0). The jump's first frame selects every
+  level batch in the new reach at once: 109-111 batches written in 0.31-0.34 ms (an instrumented
+  branch run, `street_light_poles`), with that frame's Godot draw 3.7 ms against 3.0 on the next;
+  the rerun's worst `jump` frame (21.2 ms) is frame 40 of the phase at 1.9 ms of Godot's draw, a
+  process-side spike, not the lamps.
+- Kuopio (no street lights: its draws are equal at every pose, and only the empty per-frame
+  selection runs): 0.1 ms flags both ways on 1.6-2.3 ms frames that move between the session and
+  the rerun (session: maxima of the 0.5 s `turn_repeat`, 1 s `turn_out`, `zoom_in`, the night
+  still and `night_turn_back`, +1.0 to +2.4; rerun: the still's p50 +0.0 at a spread of 0.0 and
+  `night_turn_back` max +1.1 against 0.9).
+- `PERF-07` at level F: the session's 30k 32x and 1x level in every metric but
+  `max_unpreempted_ms` (+13.6 % and +17.3 %, one frame each); in the rerun (noisier: calibration
+  failed, 1,866 preempted frames against 166) 1x level or better in every metric (p99.9 -37.5 %,
+  max unpreempted -6.1 %) and 32x `max_unpreempted_ms` level (+0.6 %) with the means +2.6-2.9 %
+  against 1.4-2.5 %. The simulation binaries differ only in render code these rows never run.
+
+
+Gates (fresh, on `4af83644`): the targeted tests pass (`street_lights` 31, `street_lights_test.gd`);
+`cargo clippy --all-targets` adds no warning in a changed file (the base's 21 elsewhere); debug
+`cargo test --lib` 2,820 passed, 0 failed, 233 ignored; `./run.sh --test` PASS (nextest 2,824
+passed, 234 skipped; godot-main and godot-vehicle PASS, no SCRIPT ERROR). Two earlier runs of the
+gate, on a machine loaded by other lanes' builds (load 20-80), failed one core-busy test each
+(`core_busy_input_test`: the hover found no road; `placement_demolition_test`: "Simulation busy");
+`core_busy_input_test` alone passed three times, and the third gate passed both.
 
 ## Implemented Runtime Contract
 

@@ -145,13 +145,11 @@ draw distance and far meshes (`RENDER-48`), a far building tier (`RENDER-49`), o
 A car mesh's body is one surface since `RENDER-46` (round CS1, 2026-11-13, for review; no
 visible change): the 30k still draws 2,736 instead of 6,009 times in the main pass and 860 instead
 of 2,631 in the shadow pass, Godot's draw costs 1.4 ms less a still frame and 3.1 ms less a turn
-frame, and the 30k 1 s turns run 3.7-4.2 ms faster. Street lights in chunk batches stopped at the
-no-visible-change bar (Godot's level-of-detail hysteresis follows each batch's frustum history); the
-choice is the user's ([record](terrain.md#one-body-surface-per-car-mesh-street-lights-left-in-their-cells-render-46-2026-11-13)).
+frame, and the 30k 1 s turns run 3.7-4.2 ms faster ([record](terrain.md#one-body-surface-per-car-mesh-street-lights-left-in-their-cells-render-46-2026-11-13)).
+Street light poles draw in chunk batches since `RENDER-46` lever 5 (round SL1, 2026-11-17, for review; the look trade-off accepted by the user): a batch per road chunk, kind and level of detail instead of per 64 m cell, each cell at the level its own batch had; the 30k still draws 526 fewer times in the main pass and 103 fewer in the shadow pass, Godot's draw costs 0.4-0.7 ms less a frame and the 0.5 s turns run 0.5-1.0 ms faster ([record](terrain.md#street-lights-in-chunk-batches-render-46-lever-5-round-sl1-2026-11-17)).
 The load's first-use shader stalls are a first-run cost (`RENDER-43`, rounds R43 and R43b,
-2026-11-17, for review, not landed): with warm caches no frame waits for a pipeline. The main menu
-now compiles a first run's terrain, water, vegetation and grass pipelines from the launch (branch
-`render-43`): through the menu, cold loads settle 1.4-1.6 s (Kuopio) and 3.0-3.2 s (30k) sooner,
+2026-11-17, landed, decisions for review): with warm caches no frame waits for a pipeline. The main menu
+now compiles a first run's terrain, water, vegetation and grass pipelines from the launch: through the menu, cold loads settle 1.4-1.6 s (Kuopio) and 3.0-3.2 s (30k) sooner,
 warm loads level. R43b also fixed a load cost it exposed: an asset reload journaled every site's
 change as a graded site edit (1.7 s on the 30k city whenever the graded journal was on, every later
 load in a session too); it now journals a reset
