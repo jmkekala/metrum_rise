@@ -511,12 +511,13 @@ fn crossing_overrides_at_degree_two_nodes_follow_the_legacy_rule() {
 }
 
 // Open question 13: a bend's default crossing that its first arm cannot hold moves to the other
-// arm. A 15 m arm leaves its end 7.5 m: room for the 3.5 m corner (tangent at 7 m) but not for the
-// strip beyond even the smallest one (5.5 m + 3 m).
+// arm. A 9 m arm to a road end leaves its node 8 m (all but the cap's metre, `ROAD-118`): room
+// for the 3.5 m corner (tangent at 7 m) but not for the strip beyond even the smallest one
+// (5.5 m + 3 m).
 #[test]
 fn a_bend_crossing_that_does_not_fit_on_its_first_arm_moves_to_the_other_arm() {
     for sloped in [false, true] {
-        let mut graph = bend(15.0, 120.0, sloped);
+        let mut graph = bend(9.0, 120.0, sloped);
         assert_eq!(legacy_first_edge(&graph), 0);
         let (lanes, roadbed) = built(&mut graph);
         assert_eq!(crossing_edges(&lanes), BTreeSet::from([1]), "{sloped}");
@@ -538,7 +539,7 @@ fn a_bend_crossing_that_does_not_fit_on_its_first_arm_moves_to_the_other_arm() {
 #[test]
 fn a_bend_that_holds_its_crossing_on_neither_arm_is_rejected() {
     for sloped in [false, true] {
-        let mut graph = bend(15.0, 15.0, sloped);
+        let mut graph = bend(9.0, 9.0, sloped);
         let mut roadbed = RoadbedSystem::new(64.0);
         roadbed.compile_dirty(&graph);
         assert_eq!(roadbed.failed_nodes(), [HUB], "{sloped}");

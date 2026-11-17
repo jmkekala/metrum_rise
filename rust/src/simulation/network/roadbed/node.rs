@@ -1151,11 +1151,16 @@ fn median_core(
     Ok(())
 }
 
+// The thinnest fan triangle across its longest side, metres; a thinner one is a sliver.
+const FAN_MIN_WIDTH_M: f64 = 1.0e-3;
+
 // Fans the core ring from the node when the node sees every ring edge strictly from its left
 // (exact orientation), which holds for straight arms. That is an exact triangulation of the same
 // loop without the Delaunay incircle tests, whose exact fallback the cocircular corner samples
 // trigger on every flip. `O(n)`; returns false, emitting nothing, when the node does not see
-// the whole loop.
+// the whole loop, or when a fan triangle would be a sliver, thinner than `FAN_MIN_WIDTH_M`
+// across its longest side: a ring edge a hair long far from the node, such as a mouth that lands
+// a centimetre past an arm knot 80 m out (`ROAD-118`: a mouth beside a road end may lie far out).
 fn fan_core(builder: &mut MeshBuilder<'_>, node: RoadVec2, ring: &[u32], kind: BandKind) -> bool {
     let coord = |point: RoadVec2| robust::Coord {
         x: point.x,
@@ -1167,7 +1172,10 @@ fn fan_core(builder: &mut MeshBuilder<'_>, node: RoadVec2, ring: &[u32], kind: B
     };
     let sees_every_edge = (0..ring.len()).all(|index| {
         let (a, b) = (ring[index], ring[(index + 1) % ring.len()]);
-        robust::orient2d(coord(node), coord(xz(builder, a)), coord(xz(builder, b))) > 0.0
+        let (pa, pb) = (xz(builder, a), xz(builder, b));
+        let longest_m = node.distance(pa).max(node.distance(pb)).max(pa.distance(pb));
+        robust::orient2d(coord(node), coord(pa), coord(pb)) > 0.0
+            && (pa - node).perp_dot(pb - node) >= FAN_MIN_WIDTH_M * longest_m
     });
     if !sees_every_edge {
         return false;

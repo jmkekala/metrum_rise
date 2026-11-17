@@ -2046,7 +2046,7 @@ fn a_loaded_walker_at_a_node_without_an_edge_replans_from_the_node() {
 #[test]
 fn a_bend_whose_crossing_moved_to_its_second_arm_loads() {
     use crate::simulation::network::roadbed::fixtures::bend;
-    let graph = bend(15.0, 120.0, true);
+    let graph = bend(9.0, 120.0, true);
     let maps =
         build_snapshot_maps(&graph, &BuildingAllocator::new()).unwrap();
     let mut conn = Connection::open_in_memory().unwrap();
