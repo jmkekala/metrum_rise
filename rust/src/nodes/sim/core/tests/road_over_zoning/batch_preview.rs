@@ -84,7 +84,7 @@ fn finish_tier_two(context: &mut RoadPreviewContext, strokes: &[[Vector3; 2]]) -
     let view = graph_digest(&context.view.region_graph);
     for _ in 0..=strokes.len() {
         let requests = requests(context, strokes);
-        let (batch, _) = context.preview_batch_step(requests);
+        let (batch, _) = context.preview_batch_step(&requests);
         let verdict = batch.verdict.clone();
         assert_eq!(graph_digest(&context.replica), view, "the replica is restored");
         if let Some(verdict) = verdict {
@@ -182,7 +182,7 @@ fn the_batch_overlay_builds_over_frames_as_one_call_builds_it() {
     );
     let mut frames = 0;
     loop {
-        let (batch, frame) = context.preview_batch_step(requests(&context, &DRAFT));
+        let (batch, frame) = context.preview_batch_step(&requests(&context, &DRAFT));
         let frame = frame.expect("an overlay frame");
         assert_eq!((frame.plan_ms, frame.graded_ms), (0.0, 0.0));
         frames += 1;
@@ -194,7 +194,7 @@ fn the_batch_overlay_builds_over_frames_as_one_call_builds_it() {
         assert!(frames < DRAFT.len(), "at most one frame per stroke");
     }
     assert!(frames > 1, "the overlay is split: {frames} frame(s)");
-    let (_, frame) = context.preview_batch_step(requests(&context, &DRAFT));
+    let (_, frame) = context.preview_batch_step(&requests(&context, &DRAFT));
     assert!(frame.is_none(), "a finished batch takes no frame");
     let one_call = context
         .batch_overlay_in_one_call()
@@ -257,7 +257,7 @@ fn a_new_pose_restarts_tier_two_on_a_restored_replica() {
     let view = graph_digest(&context.view.region_graph);
     for _ in 0..2 {
         let requests = requests(&context, &DRAFT);
-        let (batch, frame) = context.preview_batch_step(requests);
+        let (batch, frame) = context.preview_batch_step(&requests);
         assert!(frame.is_some() && batch.verdict.is_none());
     }
     assert_eq!(context.batch().map(|batch| batch.strokes.len()), Some(2));
@@ -266,7 +266,7 @@ fn a_new_pose_restarts_tier_two_on_a_restored_replica() {
     let mut moved = DRAFT;
     moved[2][0].x = -40.0;
     let requests = requests(&context, &moved);
-    let (batch, _) = context.preview_batch_step(requests);
+    let (batch, _) = context.preview_batch_step(&requests);
     assert_eq!(batch.strokes.len(), 1, "restarted");
     assert_eq!(graph_digest(&context.replica), view);
     assert_eq!(finish_tier_two(&mut context, &moved), BatchVerdict::Accepted);

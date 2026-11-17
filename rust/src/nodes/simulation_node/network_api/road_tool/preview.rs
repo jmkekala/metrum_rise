@@ -6,6 +6,7 @@ use super::super::super::*;
 use crate::nodes::sim::core::RoadCorridorClearance;
 use crate::nodes::sim::road_tool::height::{DraftSection, DraftStroke, draft_batch};
 use crate::nodes::sim::road_tool::measure::RoadTypeSpec;
+use crate::nodes::sim::road_tool::outcome::PreviewOutcome;
 use crate::simulation::network::graph::{RoadMedian, RoadParking};
 use crate::simulation::network::road_edit::{PreparedRoadInput, RoadProfile, plan_road_edit};
 use crate::simulation::network::road_types::RoadAttributes;
@@ -15,6 +16,17 @@ use crate::simulation::network::types::EdgeClass;
 // A lane count from Godot, as the stroke's checks clamp it.
 fn lanes_u8(count: i32) -> u8 {
     count.clamp(0, i32::from(u8::MAX)) as u8
+}
+
+// What a refusal report says of a clicked stroke (`report_road_tool_rejection`): the reason, the
+// validation's numbers and the prepared points it locates them on, a corridor's overlapping
+// parcels (their count and the first's id) and the road tool's surface generation.
+pub(super) struct RejectionFacts<'a> {
+    pub(super) reason: &'a str,
+    pub(super) numbers: RoadPreviewValidation,
+    pub(super) prepared: &'a [Vector3],
+    pub(super) overlapping_parcels: Option<(i64, i64)>,
+    pub(super) surface_generation: i64,
 }
 
 #[godot_api(secondary)]
@@ -291,27 +303,6 @@ impl SimulationNode {
         snap_to_existing_roads: bool,
         validation: VarDictionary,
     ) -> i64 {
-        self.log_road_tool_rejection_as(
-            points,
-            [fwd_lanes, bkw_lanes],
-            snap_to_existing_roads,
-            validation,
-            RoadProfile::FollowGround,
-        )
-    }
-
-    // [`Self::log_road_tool_rejection`] for a stroke of `profile` (a graded draft's stroke,
-    // `ROAD-112` round I).
-    pub(super) fn log_road_tool_rejection_as(
-        &self,
-        points: PackedVector3Array,
-        lanes: [i32; 2],
-        snap_to_existing_roads: bool,
-        validation: VarDictionary,
-        profile: RoadProfile,
-    ) -> i64 {
-        use crate::nodes::sim::core::{RejectedBy, RoadAttempt, RoadRejection};
-        let [fwd_lanes, bkw_lanes] = lanes;
         let int = |key: &str| {
             validation
                 .get(key)
@@ -327,20 +318,44 @@ impl SimulationNode {
             .and_then(|value| value.try_to::<PackedVector3Array>().ok())
             .map(|points| points.to_vec())
             .unwrap_or_default();
-        let numbers = Self::road_preview_validation_from_dictionary(&validation);
-        let mut rejection = RoadRejection::from_validation(&reason, &numbers, &prepared);
-        if let (Some(count), Some(first)) = (
-            int("overlapping_parcel_count"),
-            int("first_overlapping_parcel_id"),
-        ) {
+        self.report_road_tool_rejection(
+            RejectionFacts {
+                reason: &reason,
+                numbers: Self::road_preview_validation_from_dictionary(&validation),
+                prepared: &prepared,
+                overlapping_parcels: int("overlapping_parcel_count")
+                    .zip(int("first_overlapping_parcel_id")),
+                surface_generation: int("surface_generation").unwrap_or(0),
+            },
+            &points.to_vec(),
+            [fwd_lanes, bkw_lanes],
+            snap_to_existing_roads,
+            RoadProfile::FollowGround,
+        )
+    }
+
+    // [`Self::log_road_tool_rejection`] from typed facts (the road tool's standing outcome,
+    // `ROAD-112` round R2-1), for a stroke of `profile` (a graded draft's stroke, round I).
+    pub(super) fn report_road_tool_rejection(
+        &self,
+        facts: RejectionFacts<'_>,
+        points: &[Vector3],
+        lanes: [i32; 2],
+        snap_to_existing_roads: bool,
+        profile: RoadProfile,
+    ) -> i64 {
+        use crate::nodes::sim::core::{RejectedBy, RoadAttempt, RoadRejection};
+        let [fwd_lanes, bkw_lanes] = lanes;
+        let mut rejection =
+            RoadRejection::from_validation(facts.reason, &facts.numbers, facts.prepared);
+        if let Some((count, first)) = facts.overlapping_parcels {
             rejection = rejection.with_note(format!("{count} parcels, first {first}"));
         }
         let spec = self.road_tool_spec();
-        let points = points.to_vec();
         let attempt = rejection.report(
             RejectedBy::Tool,
             RoadAttempt {
-                points: &points,
+                points,
                 fwd_lanes,
                 bkw_lanes,
                 snap: snap_to_existing_roads,
@@ -349,7 +364,7 @@ impl SimulationNode {
                 parking: spec.parking,
                 attributes: spec.attributes,
             },
-            int("surface_generation").map_or(0, |generation| generation.max(0) as u64),
+            facts.surface_generation.max(0) as u64,
         );
         i64::try_from(attempt).unwrap_or(i64::MAX)
     }
@@ -373,27 +388,30 @@ impl SimulationNode {
         snap_to_existing_roads: bool,
     ) -> VarDictionary {
         self.preview_stroke(
-            points.to_vec(),
-            fwd_lanes,
-            bkw_lanes,
+            points.as_slice(),
+            [fwd_lanes, bkw_lanes],
             snap_to_existing_roads,
             RoadProfile::FollowGround,
             None,
+            &mut PreviewOutcome::default(),
         )
     }
 
     // [`Self::preview_road`] for a stroke already in Rust (the road tool session's), with its
     // `profile`; with `hue`, the stroke's footprint hue built with the preview
-    // (`RoadPreviewContext::preview_road_with_hue`, `ROAD-123` round HF2).
+    // (`RoadPreviewContext::preview_road_with_hue`, `ROAD-123` round HF2). Writes the typed
+    // outcome into `outcome` (round R2-1: its prepared-points buffer reused) and returns the
+    // dictionary, both from the same preview.
     pub(super) fn preview_stroke(
         &self,
-        points: Vec<Vector3>,
-        fwd_lanes: i32,
-        bkw_lanes: i32,
+        points: &[Vector3],
+        lanes: [i32; 2],
         snap_to_existing_roads: bool,
         profile: RoadProfile,
         hue: Option<(&mut crate::nodes::sim::road_tool::hue::OffFrameHue, f32)>,
+        outcome: &mut PreviewOutcome,
     ) -> VarDictionary {
+        let [fwd_lanes, bkw_lanes] = lanes;
         let mut graded_tiles = Vec::new();
         let mut graded_removed = Vec::new();
         let mut graded_cut = Vec::new();
@@ -417,7 +435,7 @@ impl SimulationNode {
             let surface_generation = context.view.surface_generation;
             let preview = Arc::new(context.preview_road_with_hue(RoadPreviewRequest {
                 surface_generation,
-                points,
+                points: points.to_vec(),
                 fwd_lanes,
                 bkw_lanes,
                 snap_to_existing_roads,
@@ -460,13 +478,31 @@ impl SimulationNode {
             )
         };
         let prepared = preview.plan.prepared();
+        let weight = Self::stroke_cost_weight((fwd_lanes, bkw_lanes), prepared);
         let mut dict = Self::road_candidate_validation_to_dictionary(
             &preview.validation,
             &prepared.points,
-            Self::stroke_cost_weight((fwd_lanes, bkw_lanes), prepared),
+            weight,
         );
         let generation = |value: u64| i64::try_from(value).unwrap_or(i64::MAX);
         let fingerprint = &preview.fingerprint;
+        let demolish_count = preview
+            .pieces
+            .as_ref()
+            .map_or(0, |pieces| pieces.take.buildings.len() as i64);
+        let validation = &preview.validation;
+        let (build_length_m, build_cost) = Self::stroke_build(&prepared.points, weight);
+        outcome.valid = validation.is_valid;
+        outcome.pending = false;
+        outcome.reason = validation.invalid_reason.into();
+        outcome.draft_stroke = None;
+        outcome.build_cost = build_cost;
+        outcome.length_m = build_length_m;
+        outcome.surface_generation = generation(fingerprint.surface_generation);
+        outcome.validation = Some(validation.clone());
+        outcome.prepared.clear();
+        outcome.prepared.extend_from_slice(&prepared.points);
+        outcome.demolish_count = demolish_count;
         dict.set(
             "surface_generation",
             generation(fingerprint.surface_generation),
@@ -540,11 +576,7 @@ impl SimulationNode {
         dict.set("changed_chunks", chunks);
         // What the stroke takes (`ZONE-09`): the buildings it demolishes and the outlines of
         // the lots it removes, four corners each.
-        let demolish_count = preview
-            .pieces
-            .as_ref()
-            .map_or(0, |pieces| pieces.take.buildings.len());
-        dict.set("demolish_count", demolish_count as i64);
+        dict.set("demolish_count", demolish_count);
         dict.set("demolish_lots", demolish_lots);
         dict
     }
@@ -865,10 +897,16 @@ impl SimulationNode {
             "prepared_points",
             PackedVector3Array::from_iter(prepared_points.iter().copied()),
         );
-        let build_length_m = Self::road_build_length_m(prepared_points);
+        let (build_length_m, build_cost) = Self::stroke_build(prepared_points, weight);
         dict.set("build_length_m", build_length_m);
-        dict.set("build_cost", build_length_m * road_cost::build_per_m(weight));
+        dict.set("build_cost", build_cost);
         dict
+    }
+
+    // A prepared stroke's build length and its cost at the road type's `weight`.
+    fn stroke_build(prepared_points: &[Vector3], weight: f64) -> (f64, f64) {
+        let build_length_m = Self::road_build_length_m(prepared_points);
+        (build_length_m, build_length_m * road_cost::build_per_m(weight))
     }
 
     // A previewed stroke's cost weight: its lanes, and the median, parking, attributes and class

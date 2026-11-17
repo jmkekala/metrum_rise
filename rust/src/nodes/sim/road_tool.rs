@@ -6,6 +6,7 @@
 
 pub mod batch;
 pub mod bench;
+pub mod commit;
 pub mod frame;
 pub mod guides;
 pub mod height;
@@ -14,6 +15,7 @@ pub mod intent;
 pub mod labels;
 pub mod measure;
 pub mod modes;
+pub mod outcome;
 pub mod pick;
 pub mod session;
 pub mod snap;

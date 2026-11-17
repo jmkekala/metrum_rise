@@ -37,7 +37,7 @@ impl RoadWording {
 
 /// The numbers a road verdict dictionary quotes for its refusal (0 when absent; no measured
 /// value when `geometry_measured` is absent).
-pub(crate) fn reason_facts(verdict: &VarDictionary) -> ReasonFacts {
+fn reason_facts(verdict: &VarDictionary) -> ReasonFacts {
     // A number may arrive as a float or an int (a junction's road count).
     let number = |key: &str| {
         verdict.get(key).and_then(|v| {

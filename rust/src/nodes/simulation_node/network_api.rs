@@ -271,36 +271,42 @@ impl SimulationNode {
     /// pending/already consumed; a superseded id or disconnected worker is rejected.
     #[func]
     pub fn get_road_commit_result(&mut self, request_id: i64) -> Variant {
-        if request_id != self.road_commit_request_id {
-            return vdict! {
-                "committed": false,
-                "reason": "road_request_replaced",
-                "detail": "road_request_replaced",
-            }
-            .to_variant();
-        }
-        let Some(receiver) = self.road_commit_result.as_ref() else {
-            return Variant::nil();
-        };
-        let result = match receiver.try_recv() {
-            Ok(ack) => vdict! {
+        match self.take_road_commit_answer(request_id) {
+            None => Variant::nil(),
+            Some(Ok(ack)) => vdict! {
                 "committed": ack.committed,
                 "reason": ack.reason,
                 "detail": ack.detail,
                 "generation": i64::try_from(ack.generation).unwrap_or(i64::MAX),
                 "stroke": ack.refused_stroke.map_or(-1, |stroke| stroke as i64),
-            },
-            Err(std::sync::mpsc::TryRecvError::Empty) => return Variant::nil(),
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                vdict! {
-                    "committed": false,
-                    "reason": "road_command_unavailable",
-                    "detail": "road_command_unavailable",
-                }
             }
+            .to_variant(),
+            Some(Err(reason)) => vdict! {
+                "committed": false,
+                "reason": reason,
+                "detail": reason,
+            }
+            .to_variant(),
+        }
+    }
+
+    // The answer to commit `request_id`, consumed: `None` while it is pending or once taken,
+    // `Err` with the refusal key when a later request superseded it or the worker is gone
+    // (`get_road_commit_result`'s rules; the road tool's commit sequence reads it typed).
+    fn take_road_commit_answer(
+        &mut self,
+        request_id: i64,
+    ) -> Option<Result<crate::nodes::sim::core::RoadCommitAck, &'static str>> {
+        if request_id != self.road_commit_request_id {
+            return Some(Err("road_request_replaced"));
+        }
+        let answer = match self.road_commit_result.as_ref()?.try_recv() {
+            Ok(ack) => Ok(ack),
+            Err(std::sync::mpsc::TryRecvError::Empty) => return None,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => Err("road_command_unavailable"),
         };
         self.road_commit_result = None;
-        result.to_variant()
+        Some(answer)
     }
 
     /// Returns the node ID of the nearest graph node near the border, or -1.

@@ -7,10 +7,9 @@
 //! with nothing new crosses no array and redraws nothing. `road_tool_hud.gd` only draws.
 
 use super::*;
-use crate::nodes::road_wording::reason_facts;
 use crate::nodes::sim::road_tool::height::ground_marks::push_height_labels;
 use crate::nodes::sim::road_tool::labels::{
-    LabelKind, LabelTone, PreviewFacts, ToolLabel, apply_preview, middle_label, place_chips,
+    LabelKind, LabelTone, ToolLabel, apply_preview, middle_label, place_chips,
 };
 use crate::nodes::sim::road_tool::wording::{
     CHIP_EXTRA_CHARACTERS, NoticeFacts, ReasonFacts, label_text,
@@ -395,10 +394,8 @@ impl SimulationNode {
         let next = &mut chips.next;
         next.clear();
         next.labels.extend_from_slice(&frame.labels);
-        let preview = self
-            .road_tool_session
-            .preview
-            .as_ref()
+        let preview = (self.road_tool_session.preview.as_ref())
+            .map(|standing| &standing.outcome)
             .filter(|_| frame.stroke.points.len() >= 2);
         let hud = frame.hud;
         let mut notice = NoticeFacts {
@@ -410,49 +407,14 @@ impl SimulationNode {
             },
             ..NoticeFacts::default()
         };
-        let preview_reason;
+        // Round R2-1: the standing preview's typed outcome, read in place.
         if let Some(preview) = preview {
-            let number = |key: &str| preview.get(key).and_then(|v| v.try_to::<f64>().ok());
-            let text = |key: &str| {
-                preview
-                    .get(key)
-                    .and_then(|v| v.try_to::<GString>().ok())
-                    .map(|v| v.to_string())
-                    .unwrap_or_default()
-            };
-            let valid = preview
-                .get("is_valid")
-                .and_then(|v| v.try_to::<bool>().ok())
-                .unwrap_or(false);
-            let plan_state = text("plan_state");
-            let facts = PreviewFacts {
-                refused: !valid,
-                pending,
-                build_cost: number("build_cost"),
-                max_grade: number("max_grade"),
-                warning: !text("warning_reason").is_empty()
-                    || preview
-                        .get("demolish_count")
-                        .and_then(|v| v.try_to::<i64>().ok())
-                        .is_some_and(|count| count > 0)
-                    || !(plan_state.is_empty() || plan_state == "ready"),
-            };
             let middle = middle_label(&next.labels);
-            apply_preview(&mut next.labels, facts, middle);
-            preview_reason = text("invalid_reason");
-            notice.preview_reason = &preview_reason;
-            notice.preview = reason_facts(preview);
-            notice.steep = (text("warning_reason") == "road_steep").then(|| {
-                (
-                    number("max_grade").unwrap_or(0.0),
-                    number("warning_limit").unwrap_or(0.0),
-                )
-            });
-            notice.demolish_count = preview
-                .get("demolish_count")
-                .and_then(|v| v.try_to::<i64>().ok())
-                .unwrap_or(0);
-            notice.checking = !(plan_state.is_empty() || plan_state == "ready");
+            apply_preview(&mut next.labels, preview.chip_facts(pending), middle);
+            notice.preview_reason = &preview.reason;
+            notice.preview = preview.reason_facts();
+            notice.steep = preview.steep();
+            notice.demolish_count = preview.demolish_count;
         }
         // Each marked end's height chip (round H2), after the frame's segmentation named its
         // part; placed after every other chip.

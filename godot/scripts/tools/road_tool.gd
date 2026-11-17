@@ -13,14 +13,13 @@
 ## the chain it starts on), and a continuous chain carries its direction into the S-curve and
 ## freeform too (round CT). The script forwards the pointer (`road_tool_pointer` with Shift and
 ## Ctrl, or `road_tool_pointer_at` for a scripted pointer), the clicks and releases, Enter
-## (`confirm`), the mode actions and the acknowledgement (`road_tool_event`) and the options
-## (`road_tool_set_option`),
+## (`confirm`) and the mode actions (`road_tool_event`) and the options (`road_tool_set_option`),
 ## and shows what `road_tool_frame` returns once a frame: the preview, the gizmos
 ## (`road_tool_gizmos.gd`: centreline, tangent legs, guide and angle lines, handles), the draft's
 ## footprint hue (`road_tool_hue.gd`, round HU, a stopgap for the lagging preview terrain) and the HUD
 ## (`road_tool_hud.gd`, from Rust's numbers only). Rust resolves the cursor and its snapping,
-## keeps the stroke and the chain, previews the stroke when it changed and sends the confirmed
-## stroke.
+## keeps the stroke and the chain, previews the stroke when it changed, sends the confirmed
+## stroke and answers its commit (round R2-1: `road_tool_commit_poll`, drawn here).
 ##
 ## The synchronous road preview (`ROAD-68-E`): every frame whose stroke changed calls Rust's
 ## `preview_road` (inside `road_tool_frame`), which plans the stroke on the road tool's context
@@ -52,8 +51,8 @@
 ## Rust methods called: road_tool_pointer(), road_tool_pointer_at(), road_tool_event(),
 ## road_tool_set_option(), road_tool_frame(), road_tool_set_road_type(),
 ## road_tool_reload_road_type(), road_tool_intent(), advance_road_preview_terrain(),
-## release_road_preview_terrain(), get_road_commit_result(),
-## check_border_candidate(), set_border_connection(), get_road_tool_surface_generation().
+## release_road_preview_terrain(), road_tool_commit_poll(), road_tool_commit_request_id(),
+## road_tool_commit_points(), road_tool_commit_graded_epoch(), set_border_connection().
 ## Placement stays pending until Rust acknowledges acceptance; rejection retains the editable
 ## stroke. Drawing is continuous: an accepted road starts the next one at its end until
 ## right-click/Esc, a connection to existing roads, or the map edge; a committed end on the map
@@ -77,6 +76,7 @@ const _MODE_EVENTS := ["mode_straight", "mode_simple_curve", "mode_complex_curve
 # acknowledgement, a freeform draft's edit phase.
 const PHASE_IDLE := 0
 const PHASE_PLACING := 1
+const PHASE_AWAITING := 2
 const PHASE_EDITING := 3
 
 ## The drawing mode (`DrawMode`), the session's: setting it sends the mode action, which drops
@@ -139,17 +139,23 @@ var _preview_display = PreviewDisplay.new()
 # An accepted commit's preview, held until the chunks of its generation are installed (the hold
 # is `chunks.holds`', Rust's rule).
 var _swap_display = null
-var _commit_request_id: int = 0
-var _commit_points := PackedVector3Array()
-var _commit_validation: Dictionary = {}
+# The sent stroke's commit, its points and the graded preview epoch it adopted, as Rust's commit
+# sequence holds them (round R2-1; tests, benchmarks and probes wait on them): 0, empty and -1
+# while none waits.
+var _commit_request_id: int:
+	get:
+		return simulation_node.road_tool_commit_request_id() if _has_session() else 0
+var _commit_points: PackedVector3Array:
+	get:
+		return simulation_node.road_tool_commit_points() if _has_session() else PackedVector3Array()
+var _graded_commit_epoch: int:
+	get:
+		return simulation_node.road_tool_commit_graded_epoch() if _has_session() else -1
 # The outlines of the lots the previewed stroke removes (`ZONE-09`), made on first use.
 var _demolish_mesh: MeshInstance3D = null
 # The latest pose's graded tiles still to stage (`TERRAIN-07-E`, T27 (d)): each frame without a
 # new pose stages the next share until none is left.
 var _graded_pending := 0
-# The preview epoch a queued commit adopted: its graded tiles show until the commit's edit
-# installs the committed ones, or until the commit is refused.
-var _graded_commit_epoch := -1
 
 # The session's last frame: its phase (0 idle, 1 placing, 2 waiting for the acknowledgement),
 # the HUD numbers and the stroke.
@@ -285,7 +291,7 @@ func _session_frame(moved: bool) -> float:
 	elif bool(frame.get("preview_cleared", false)):
 		_clear_preview_visual()
 		_clear_preview_cache()
-	elif _graded_pending > 0 and _commit_request_id == 0 and _is_editable():
+	elif _graded_pending > 0 and _is_editable():
 		# A frame without a new pose stages the next share of the pose's graded tiles.
 		_show_graded(simulation_node.advance_road_preview_terrain())
 	var gizmo_ms := _show_gizmos(frame) + _show_hue(frame)
@@ -568,7 +574,7 @@ func _update_blueprint_visuals() -> void:
 	pass
 
 # A press (or Enter's `confirm`) on the session: places a point, grabs a freeform grip, or sends
-# the stroke. True when a commit was queued.
+# the stroke (Rust decides and keeps the commit, round R2-1). True when a commit was queued.
 func _session_press(event_name: String = "press") -> bool:
 	var start_us := Time.get_ticks_usec()
 	var result: Dictionary = simulation_node.road_tool_event(event_name)
@@ -581,20 +587,15 @@ func _session_press(event_name: String = "press") -> bool:
 		if preview_metrics != null:
 			preview_metrics.sample(points, start_us)
 		_adopt_session_preview(validation, points, start_us, Time.get_ticks_usec())
-	var request_id := int(result.get("request_id", 0))
-	if request_id == 0:
+	if int(result.get("request_id", 0)) == 0:
 		# Rust logged the refusal on events; the stroke stays editable and shows why.
 		_show_preview(points)
 		return false
-	# A click that previewed a pose of its own shows that pose's graded tiles first.
+	# A click that previewed a pose of its own shows that pose's graded tiles first; the commit
+	# adopted them (Rust ended their epoch), so none are left to stage.
 	if int(validation.get("sequence", 0)) != _preview_drawn_sequence:
 		_show_graded(validation)
-	_commit_request_id = request_id
-	# The commit adopts this epoch's graded tiles; they show until its edit installs.
-	_graded_commit_epoch = simulation_node.release_road_preview_terrain()
 	_graded_pending = 0
-	_commit_points = points
-	_commit_validation = validation
 	return true
 
 func _read_press(result: Dictionary) -> void:
@@ -611,68 +612,41 @@ func _commit_segment(pos: Vector3) -> bool:
 	simulation_node.road_tool_pointer_at(pos)
 	return _session_press()
 
+# Draws Rust's answer to the sent stroke (`road_tool_commit_poll`, round R2-1: the session heard
+# it, a refusal already turned the standing preview into its rejection). Asks only while a stroke
+# waits.
 func _poll_road_commit_result() -> void:
-	if _commit_request_id == 0:
+	if _session_phase != PHASE_AWAITING or not _has_session():
 		return
-	var result: Variant = simulation_node.get_road_commit_result(_commit_request_id)
-	if not result is Dictionary:
+	var answer: Variant = simulation_node.road_tool_commit_poll()
+	if answer == null:
 		return
-	var committed := bool(result.get("committed", false))
-	if _road_debug_enabled:
-		MetrumDebug.log("road", "road_commit_result request_id=%d committed=%s detail=%s" % [_commit_request_id, committed, result.get("detail", "")])
-	_commit_request_id = 0
-	# A committed end on the map edge asks about an external connection (the road is in the graph
-	# once acknowledged); the chain ends there so the dialog never sits over a stroke still
-	# following the pointer off the map.
-	var border_node := _border_candidate(_commit_points) if committed else -1
-	if not committed:
-		var graded = _graded_renderer()
-		if graded != null and _graded_commit_epoch >= 0:
-			graded.release_preview(_graded_commit_epoch, _graded_commit_epoch)
-	else:
+	_read_press(answer)
+	if bool(answer["committed"]):
 		# The preview shows until the commit's own chunks are installed (`ROAD-68-E`).
-		_hold_preview_until(int(result.get("generation", 0)))
-	_read_press(simulation_node.road_tool_event("committed" if committed else "refused"))
-	if committed:
-		if border_node >= 0:
-			_read_press(simulation_node.road_tool_event("cancel"))
+		_hold_preview_until(int(answer["generation"]))
 		_clear_preview_visual()
 		_clear_preview_cache()
-	elif _is_editable():
-		_show_rejected_commit()
-	if border_node >= 0:
-		_prompt_border_connection(border_node)
-	_commit_points = PackedVector3Array()
-	_commit_validation = {}
-	_graded_commit_epoch = -1
+		# A committed end on the map edge asks about an external connection (the chain ended
+		# there, so the dialog never sits over a stroke still following the pointer).
+		if int(answer["border_node"]) >= 0:
+			_prompt_border_connection(int(answer["border_node"]))
+		return
+	var graded = _graded_renderer()
+	var epoch := int(answer["graded_epoch"])
+	if graded != null and epoch >= 0:
+		graded.release_preview(epoch, epoch)
+	if answer.has("rejected"):
+		_show_rejected_commit(answer["rejected"], answer["points"])
 
-# The rejection stays on the stroke until the pointer or the context moves.
-func _show_rejected_commit() -> void:
-	var rejected := _commit_validation.duplicate(false)
-	rejected["is_valid"] = false
-	rejected["is_pending"] = false
-	rejected["invalid_reason"] = "road_commit_rejected"
-	# Its graded tiles were handed over at the click.
-	for key in ["graded_tiles", "graded_removed", "graded_pending"]:
-		rejected.erase(key)
-	rejected["surface_generation"] = simulation_node.get_road_tool_surface_generation()
-	rejected["sequence"] = _preview_sequence + 1
+# The rejection (Rust's dictionary of it) stays on the stroke until the pointer or the context
+# moves.
+func _show_rejected_commit(rejected: Dictionary, points: PackedVector3Array) -> void:
 	_preview_sequence += 1
+	rejected["sequence"] = _preview_sequence
 	_preview = rejected
-	_preview_points = _commit_points
-	_show_preview(_commit_points)
-
-# The border connection candidate at either end of a committed stroke, -1 for none.
-func _border_candidate(points: PackedVector3Array) -> int:
-	if points.size() < 2:
-		return -1
-	var total_start_us := Time.get_ticks_usec()
-	var candidate: int = simulation_node.check_border_candidate(points[0])
-	if candidate < 0:
-		candidate = simulation_node.check_border_candidate(points[points.size() - 1])
-	if _road_debug_enabled:
-		MetrumDebug.log("road", "border_check_detail candidate=%d total_ms=%.3f" % [candidate, float(Time.get_ticks_usec() - total_start_us) / 1000.0])
-	return candidate
+	_preview_points = points
+	_show_preview(points)
 
 ## Drops the stroke and ends the chain (right-click, Esc, another tool or world).
 func cancel_road():

@@ -4,7 +4,8 @@
 //! the pointer, clicks and keys, sets options, and draws what `road_tool_frame` returns. The
 //! session (`nodes::sim::road_tool::session`) decides the cursor, the stroke, the chain and the
 //! commit; this bridge runs the existing preview (`preview_road`) for the session's stroke when
-//! it changed and sends the confirmed stroke with `add_road_with_snap`. One session per
+//! it changed, keeps its typed outcome (round R2-1, `PreviewOutcome`), sends the confirmed
+//! stroke with `add_road_with_snap` and answers its commit (`commit.rs`). One session per
 //! `SimulationNode`, used from the main thread only.
 //!
 //! Every drawing mode runs on the session (round D: the simple and complex curves and continuous
@@ -21,7 +22,9 @@
 //! refusal.
 
 use super::super::super::*;
-use crate::nodes::sim::road_tool::batch::{draft_requests, ghost_half_width_m};
+use crate::nodes::sim::core::BATCH_TOO_LARGE_REASON;
+use crate::nodes::sim::road_tool::batch::{draft_requests, section_half_width_m};
+use crate::nodes::sim::road_tool::commit::CommitSequence;
 use crate::nodes::sim::road_tool::frame::{
     DraftRefusal, GizmoHandleKind, GizmoLineClass, Gizmos, Phase, RoadToolFrame, StrokeRequest,
 };
@@ -30,6 +33,7 @@ use crate::nodes::sim::road_tool::hue::{HueState, OffFrameHue};
 use crate::nodes::sim::road_tool::intent::RoadTypePick;
 use crate::nodes::sim::road_tool::measure::RoadTypeSpec;
 use crate::nodes::sim::road_tool::modes::DrawMode;
+use crate::nodes::sim::road_tool::outcome::{PreviewOutcome, Tier2State};
 use crate::nodes::sim::road_tool::session::{
     Pointer, PointerButton, RoadToolAction, RoadToolEvent, RoadToolOption, RoadToolSession,
 };
@@ -39,6 +43,7 @@ use crate::simulation::network::road_edit::RoadProfile;
 use crate::simulation::network::road_types::RoadAttributes;
 use labels::Chips;
 
+mod commit;
 mod labels;
 
 /// The road tool session of one `SimulationNode` and the preview the bridge last ran for it.
@@ -47,10 +52,13 @@ pub(crate) struct RoadToolBridge {
     session: RoadToolSession,
     // What the standing preview is for; `None` when none stands.
     previewed: Option<PreviewKey>,
-    // That preview's dictionary: a click on the same stroke submits it.
-    preview: Option<VarDictionary>,
-    // The standing preview is a batch's whose tier 2 still runs (each resting frame steps it).
+    // That preview (round R2-1): a click on the same stroke submits it.
+    preview: Option<StandingPreview>,
+    // The standing preview is a batch's whose tier 2 still runs (each resting frame steps it),
+    // and that batch's preview requests, made at its pose (round R2-1: a resting frame reuses
+    // them instead of making them again).
     batch_running: bool,
+    batch_requests: Vec<RoadPreviewRequest>,
     // A batch ghost is drawn (`road_tool_gizmos.gd`'s `show_batch_ghost`).
     batch_ghost: bool,
     // The draft's footprint hue (round HU), built with each preview of a new pose, off the
@@ -65,12 +73,23 @@ pub(crate) struct RoadToolBridge {
     chips: Chips,
     // The road type the next stroke draws and the one R draws again (round R2-6).
     road_type: RoadTypePick,
+    // The sent stroke waiting for the core's answer and the preview dictionary it was sent with,
+    // whose copy shows a refusal (round R2-1, `commit.rs`).
+    commit: CommitSequence,
+    commit_preview: Option<VarDictionary>,
 }
 
+// The standing preview: its typed outcome, which every decision on it reads, and the dictionary
+// the frame handed `road_tool.gd` to draw (a click returns it; a refused commit's display is a
+// copy of it). The bridge never reads the dictionary.
+struct StandingPreview {
+    outcome: PreviewOutcome,
+    dictionary: VarDictionary,
+}
 
 // The inputs a preview depends on: the stroke, its cross-section, the snap flag, the grade line
 // (round I) and the context generation the preview was made on.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 struct PreviewKey {
     points: Vec<Vector3>,
     spec: RoadTypeSpec,
@@ -126,18 +145,16 @@ impl SimulationNode {
     /// `lower_handle` (PageUp/PageDown: the active height handle by one 0.5 m step, as a drag
     /// sets it: the live end's while drawing, the hovered or last dragged one in an edit
     /// phase), `mode_straight`,
-    /// `mode_simple_curve`, `mode_complex_curve`, `mode_freeform`, and the commit acknowledgement `committed` or
-    /// `refused` (what `get_road_commit_result` said of the sent stroke; after a refusal the
-    /// unchanged stroke on the same context stays refused, `road_commit_rejected`), and
-    /// `forget_preview`
+    /// `mode_simple_curve`, `mode_complex_curve`, `mode_freeform`, and `forget_preview`
     /// (the bridge drops its standing preview, so the next frame previews the stroke afresh:
-    /// measurements and another world). Returns `phase` and `placed` (as
-    /// `road_tool_frame` reports them, after the event), and for a click that sent the stroke:
-    /// `points` (the stroke), `preview` (the preview of exactly this
-    /// stroke, the dictionary `preview_road` returns), `fresh` (whether the click had to preview
-    /// it), `request_id` (the commit to poll, 0 when the preview refused it: the click is then
-    /// logged on `events` as the tool's refusal and the stroke stays editable). An unknown name
-    /// returns `{"error": "road_tool_event_unknown"}`.
+    /// measurements and another world). The commit's answer is the bridge's own
+    /// (`road_tool_commit_poll`). Returns `phase` and `placed` (as `road_tool_frame` reports
+    /// them, after the event), and for a click that sent the stroke: `points` (the stroke),
+    /// `preview` (the preview of exactly this stroke, the dictionary `preview_road` returns),
+    /// `fresh` (whether the click had to preview it), `request_id` (the commit, which
+    /// `road_tool_commit_poll` answers; 0 when the preview refused it: the click is then logged
+    /// on `events` as the tool's refusal and the stroke stays editable). An unknown name returns
+    /// `{"error": "road_tool_event_unknown"}`.
     #[func]
     pub fn road_tool_event(&mut self, name: GString) -> VarDictionary {
         let event = match name.to_string().as_str() {
@@ -152,8 +169,6 @@ impl SimulationNode {
             "mode_freeform" => RoadToolEvent::Action(RoadToolAction::ModeFreeform),
             "raise_handle" => RoadToolEvent::Action(RoadToolAction::RaiseHandle),
             "lower_handle" => RoadToolEvent::Action(RoadToolAction::LowerHandle),
-            "committed" => RoadToolEvent::CommitAck { committed: true },
-            "refused" => RoadToolEvent::CommitAck { committed: false },
             "forget_preview" => {
                 self.road_tool_session.previewed = None;
                 self.road_tool_session.preview = None;
@@ -163,9 +178,6 @@ impl SimulationNode {
             _ => return vdict! { "error": "road_tool_event_unknown" },
         };
         self.road_tool_handle(event);
-        if event == (RoadToolEvent::CommitAck { committed: false }) {
-            self.road_tool_reject_standing_preview();
-        }
         let mut result = match self.road_tool_session.session.take_commit() {
             Some(stroke) => self.road_tool_submit(stroke),
             None => VarDictionary::new(),
@@ -487,25 +499,6 @@ impl SimulationNode {
         }
     }
 
-    // The core refused the sent stroke: its standing preview becomes the refusal
-    // (`road_commit_rejected`, as `road_tool.gd` shows it), so another click on the unchanged
-    // stroke on the same context is refused again instead of sent again (today's rule).
-    fn road_tool_reject_standing_preview(&mut self) {
-        let Some(preview) = &self.road_tool_session.preview else {
-            return;
-        };
-        let mut rejected = preview.duplicate_shallow();
-        rejected.set("is_valid", false);
-        rejected.set("is_pending", false);
-        rejected.set("invalid_reason", "road_commit_rejected");
-        self.road_tool_session.hue.hue().set_state(HueState::Refused);
-        // Its graded tiles were handed over at the click.
-        for key in ["graded_tiles", "graded_removed", "graded_pending"] {
-            rejected.remove(key);
-        }
-        self.road_tool_session.preview = Some(rejected);
-    }
-
     // The road tool's road type as the session holds it: lanes, median, parking and attributes
     // (the one copy of the intent, round R2-6); every request the tool sends reads it here.
     pub(in super::super) fn road_tool_spec(&self) -> RoadTypeSpec {
@@ -581,45 +574,45 @@ impl SimulationNode {
         )
     }
 
-    // Previews the session's stroke as it stands, with the session's lanes and the bridge's
-    // median, parking and attributes, and keeps the result as the standing preview: a
-    // follow-ground stroke as today; a graded one through its segmentation (one stroke alone
-    // with its profile, several as a batch pose, a refusal as the preview's refusal). A batch
-    // pose's tier 1 goes into `frame` as `batch` (the ghost) when given, and an earlier ghost
-    // is cleared.
+    // Previews the session's stroke as it stands, with the session's road type, and keeps the
+    // result as the standing preview (its outcome typed, round R2-1): a follow-ground stroke as
+    // today; a graded one through its segmentation (one stroke alone with its profile, several
+    // as a batch pose, a refusal as the preview's refusal). A batch pose's tier 1 goes into
+    // `frame` as `batch` (the ghost) when given, and an earlier ghost is cleared. Returns the
+    // preview's dictionary. The last outcome's and key's buffers are reused.
     fn road_tool_run_preview(&mut self, frame: Option<&mut VarDictionary>) -> VarDictionary {
         self.road_tool_update_draft();
         self.road_tool_session.pose += 1;
         self.road_tool_session.batch_running = false;
+        let mut outcome = (self.road_tool_session.preview.take())
+            .map_or_else(PreviewOutcome::default, |standing| standing.outcome.recycled());
         let spec = self.road_tool_session.session.spec();
-        let (fwd, bkw) = (i32::from(spec.fwd_lanes), i32::from(spec.bkw_lanes));
-        let stroke = self.road_tool_session.session.frame().stroke.clone();
-        let snap = stroke.snap_to_existing_roads;
+        let stroke = &self.road_tool_session.session.frame().stroke;
+        let (grade, snap) = (stroke.grade, stroke.snap_to_existing_roads);
         let draft = &self.road_tool_session.session.frame().draft;
+        let pose = match (grade, draft.refusal, draft.strokes.as_slice()) {
+            (None, ..) => Pose::Stroke(None),
+            (Some(_), Some(reason), _) => Pose::Refused(reason),
+            (Some(_), None, [single]) => Pose::Stroke(Some(single.profile)),
+            (Some(_), None, _) => Pose::Batch,
+        };
         let mut tier1 = None;
-        let preview = match (stroke.grade, draft.refusal, draft.strokes.as_slice()) {
-            (None, ..) => self.road_tool_preview_with_hue(
-                stroke.points.clone(),
-                [fwd, bkw],
-                snap,
-                RoadProfile::FollowGround,
-            ),
-            (Some(_), Some(reason), _) => {
+        let mut preview = match pose {
+            Pose::Stroke(profile) => self.road_tool_preview_with_hue(profile, &mut outcome),
+            Pose::Refused(reason) => {
                 self.road_tool_hue_of_stroke();
+                outcome.reason = reason.into();
+                outcome.surface_generation = self.road_tool_view_generation();
                 vdict! {
                     "is_valid": false,
                     "is_pending": false,
                     "invalid_reason": reason,
                     "build_cost": 0.0,
-                    "surface_generation": self.road_tool_view_generation(),
+                    "surface_generation": outcome.surface_generation,
                 }
             }
-            (Some(_), None, [single]) => {
-                let (points, profile) = (single.points.clone(), single.profile);
-                self.road_tool_preview_with_hue(points, [fwd, bkw], snap, profile)
-            }
-            (Some(_), None, _) => {
-                let (preview, pose) = self.road_tool_batch_pose();
+            Pose::Batch => {
+                let (preview, pose) = self.road_tool_batch_pose(&mut outcome);
                 tier1 = Some(pose);
                 preview
             }
@@ -633,43 +626,49 @@ impl SimulationNode {
                 None => self.road_tool_clear_batch_ghost(frame),
             }
         }
-        let mut preview = preview;
-        preview.set("pose", self.road_tool_session.pose);
-        let generation = preview
-            .get("surface_generation")
-            .and_then(|value| value.try_to::<i64>().ok())
-            .unwrap_or(-1);
-        self.road_tool_session.previewed = Some(PreviewKey {
-            points: stroke.points,
-            spec,
-            snap,
-            grade: stroke.grade,
-            generation,
+        let bridge = &mut self.road_tool_session;
+        outcome.pose = bridge.pose;
+        preview.set("pose", outcome.pose);
+        let stroke = &bridge.session.frame().stroke;
+        let key = bridge.previewed.get_or_insert_with(PreviewKey::default);
+        key.points.clear();
+        key.points.extend_from_slice(&stroke.points);
+        key.spec = spec;
+        key.snap = snap;
+        key.grade = grade;
+        key.generation = outcome.surface_generation;
+        bridge.preview = Some(StandingPreview {
+            outcome,
+            dictionary: preview.clone(),
         });
-        self.road_tool_session.preview = Some(preview.clone());
         preview
     }
 
-    // `preview_stroke` of one stroke with its footprint hue, launched where the preview is built
-    // (`ROAD-123` round HF2: off this thread, on the snapshot the preview read) and joined where
-    // the frame uploads it (`road_tool_hue`), so the two arrive together in this frame.
+    // `preview_stroke` of one stroke (the session's, else the graded draft's single stroke of
+    // `profile`) with its footprint hue, launched where the preview is built (`ROAD-123` round
+    // HF2: off this thread, on the snapshot the preview read) and joined where the frame uploads
+    // it (`road_tool_hue`), so the two arrive together in this frame. Takes the stroke by
+    // reference (round R2-1, F18).
     fn road_tool_preview_with_hue(
         &mut self,
-        points: Vec<Vector3>,
-        lanes: [i32; 2],
-        snap: bool,
-        profile: RoadProfile,
+        profile: Option<RoadProfile>,
+        outcome: &mut PreviewOutcome,
     ) -> VarDictionary {
-        let [fwd, bkw] = lanes;
+        let spec = self.road_tool_session.session.spec();
         let half_width_m = self.road_tool_hue_half_width_m();
         let mut hue = std::mem::take(&mut self.road_tool_session.hue);
+        let frame = self.road_tool_session.session.frame();
+        let (points, profile) = match profile {
+            None => (&frame.stroke.points, RoadProfile::FollowGround),
+            Some(profile) => (&frame.draft.strokes[0].points, profile),
+        };
         let preview = self.preview_stroke(
             points,
-            fwd,
-            bkw,
-            snap,
+            [i32::from(spec.fwd_lanes), i32::from(spec.bkw_lanes)],
+            frame.stroke.snap_to_existing_roads,
             profile,
             Some((&mut hue, half_width_m)),
+            outcome,
         );
         self.road_tool_session.hue = hue;
         self.road_tool_session.hue_pose = self.road_tool_session.pose;
@@ -695,112 +694,105 @@ impl SimulationNode {
         self.road_tool_session.hue_pose = self.road_tool_session.pose;
     }
 
-    // The hue's half width: the session's section's road (`ghost_half_width_m`), with no
-    // stroke (no allocation).
+    // The hue's half width: the session's section's road, a function of the section alone.
     fn road_tool_hue_half_width_m(&self) -> f32 {
-        let section = self.road_tool_draft_section(self.road_tool_session.session.frame());
-        ghost_half_width_m(&RoadPreviewRequest {
-            surface_generation: 0,
-            points: Vec::new(),
-            fwd_lanes: section.fwd_lanes,
-            bkw_lanes: section.bkw_lanes,
-            snap_to_existing_roads: section.snap_to_existing_roads,
-            profile: RoadProfile::FollowGround,
-            median: section.median,
-            parking: section.parking,
-            attributes: section.attributes,
-        })
+        section_half_width_m(&self.road_tool_draft_section(self.road_tool_session.session.frame()))
     }
 
     // A new batch pose: tier 1 (`preview_road_draft`'s keys, the ghost) and the standing preview
-    // it gives, pending while every stroke passes (tier 2 then runs on the resting frames), else
-    // the first refusal with its stroke (`draft_stroke`). The hue takes tier 1's prepared
-    // strokes (checking while tier 2 runs), or the drawn stroke's over the caps.
-    fn road_tool_batch_pose(&mut self) -> (VarDictionary, VarDictionary) {
+    // it gives into `outcome`, pending while every stroke passes (tier 2 then runs on the
+    // resting frames, on the requests kept here), else the first refusal with its stroke
+    // (`draft_stroke`). The hue takes tier 1's prepared strokes (checking while tier 2 runs), or
+    // the drawn stroke's over the caps.
+    fn road_tool_batch_pose(
+        &mut self,
+        outcome: &mut PreviewOutcome,
+    ) -> (VarDictionary, VarDictionary) {
         let mut pose = VarDictionary::new();
+        let requests = self.road_tool_draft_requests();
         let mut hue = std::mem::take(self.road_tool_session.hue.hue());
-        let within_caps = self.preview_road_batch_tier1(
-            &self.road_tool_draft_requests(),
-            &mut pose,
-            Some(&mut hue),
-        );
+        let tier1 = self.preview_road_batch_tier1(&requests, &mut pose, Some(&mut hue));
         *self.road_tool_session.hue.hue() = hue;
         self.road_tool_session.hue_pose = self.road_tool_session.pose;
-        if !within_caps {
+        if tier1.is_none() {
             self.road_tool_hue_of_stroke();
         }
-        let text = |key: &str| pose.get(key).map(|value| value.to::<GString>().to_string());
-        let mut reason = text("reason").unwrap_or_default();
-        let mut stroke = -1_i64;
-        if reason.is_empty()
-            && let Some(reasons) = pose
-                .get("reasons")
-                .and_then(|value| value.try_to::<PackedStringArray>().ok())
-            && let Some(index) = reasons.as_slice().iter().position(|r| !r.is_empty())
-        {
-            reason = reasons.as_slice()[index].to_string();
-            stroke = index as i64;
-        }
+        let (reason, stroke) = match &tier1 {
+            None => (BATCH_TOO_LARGE_REASON, None),
+            Some(tier1) => tier1
+                .refusal
+                .map_or(("", None), |(stroke, reason)| (reason, Some(stroke))),
+        };
         let valid = reason.is_empty();
         self.road_tool_session.batch_running = valid;
-        let number = |key: &str| {
-            pose.get(key)
-                .and_then(|value| value.try_to::<f64>().ok())
-                .unwrap_or(0.0)
-        };
+        self.road_tool_session.batch_requests = requests;
+        outcome.valid = valid;
+        outcome.pending = valid;
+        outcome.reason = reason.into();
+        outcome.draft_stroke = stroke;
+        (outcome.build_cost, outcome.length_m) = tier1
+            .as_ref()
+            .map_or((0.0, 0.0), |tier1| (tier1.build_cost, tier1.length_m));
+        outcome.surface_generation = self.road_tool_view_generation();
         let preview = vdict! {
             "is_valid": valid,
             "is_pending": valid,
             "invalid_reason": reason,
-            "draft_stroke": stroke,
-            "build_cost": number("build_cost"),
-            "length_m": number("length_m"),
-            "surface_generation": self.road_tool_view_generation(),
+            "draft_stroke": stroke.map_or(-1, |stroke| stroke as i64),
+            "build_cost": outcome.build_cost,
+            "length_m": outcome.length_m,
+            "surface_generation": outcome.surface_generation,
         };
         (preview, pose)
     }
 
-    // A resting frame of a running batch: one tier-2 step. On the frame tier 2 accepts the batch
-    // (its overlay whole) the exact preview, keyed as `preview_road`'s, replaces the standing
-    // pending one and the ghost goes; on a refusal the refusal does. `None` while it runs.
+    // A resting frame of a running batch: one tier-2 step on the pose's requests. On the frame
+    // tier 2 accepts the batch (its overlay whole) the exact preview, keyed as `preview_road`'s,
+    // replaces the standing pending one and the ghost goes; on a refusal the refusal does. The
+    // pose's cost, length, generation and number stay. `None` while it runs.
     fn road_tool_step_batch(&mut self, frame: &mut VarDictionary) -> Option<VarDictionary> {
-        let requests = self.road_tool_draft_requests();
-        let mut step = VarDictionary::new();
-        self.preview_road_batch_tier2(requests, &mut step);
-        let text = |key: &str| {
-            step.get(key)
-                .map(|value| value.to::<GString>().to_string())
-                .unwrap_or_default()
-        };
-        let state = text("tier2_state");
-        if state == "running" {
+        let requests = std::mem::take(&mut self.road_tool_session.batch_requests);
+        let mut preview = VarDictionary::new();
+        let step = self.preview_road_batch_tier2(&requests, &mut preview);
+        self.road_tool_session.batch_requests = requests;
+        if step.state == Tier2State::Running {
             return None;
         }
         self.road_tool_session.batch_running = false;
-        let standing = self.road_tool_session.preview.clone().unwrap_or_default();
-        let mut preview = step.clone();
-        for key in ["build_cost", "length_m", "surface_generation", "pose"] {
-            if let Some(value) = standing.get(key) {
-                preview.set(key, value);
-            }
-        }
-        let accepted = state == "accepted";
+        let accepted = step.state == Tier2State::Accepted;
         self.road_tool_session.hue.hue().set_state(if accepted {
             HueState::Valid
         } else {
             HueState::Refused
         });
+        let standing = self.road_tool_session.preview.take();
+        if let Some(standing) = &standing {
+            let pose = &standing.outcome;
+            preview.set("build_cost", pose.build_cost);
+            preview.set("length_m", pose.length_m);
+            preview.set("surface_generation", pose.surface_generation);
+            preview.set("pose", pose.pose);
+        }
+        let mut outcome = standing.map(|standing| standing.outcome).unwrap_or_default();
+        outcome.valid = accepted;
+        outcome.pending = false;
+        outcome.reason = step.reason;
+        outcome.draft_stroke = step.stroke;
+        outcome.demolish_count = step.demolish_count;
         preview.set("is_valid", accepted);
         preview.set("is_pending", false);
-        preview.set("invalid_reason", text("tier2_reason"));
+        preview.set("invalid_reason", outcome.reason.as_ref());
         preview.set(
             "draft_stroke",
-            step.get("tier2_stroke").unwrap_or((-1_i64).to_variant()),
+            step.stroke.map_or(-1, |stroke| stroke as i64),
         );
         if accepted {
             self.road_tool_clear_batch_ghost(frame);
         }
-        self.road_tool_session.preview = Some(preview.clone());
+        self.road_tool_session.preview = Some(StandingPreview {
+            outcome,
+            dictionary: preview.clone(),
+        });
         Some(preview)
     }
 
@@ -809,95 +801,14 @@ impl SimulationNode {
             frame.set("batch_cleared", true);
         }
     }
+}
 
-    // Sends the confirmed stroke: the preview of exactly it (the standing one, else a fresh one),
-    // then the commit when the preview accepts it (a graded stroke's strokes as one batch), else
-    // the refusal's log line and the session's refusal acknowledgement (the stroke stays
-    // editable).
-    fn road_tool_submit(&mut self, stroke: StrokeRequest) -> VarDictionary {
-        let fresh = !self.road_tool_preview_current();
-        let preview = match &self.road_tool_session.preview {
-            Some(preview) if !fresh => preview.clone(),
-            _ => self.road_tool_run_preview(None),
-        };
-        let points = PackedVector3Array::from(stroke.points.as_slice());
-        let (fwd, bkw) = (
-            i32::from(stroke.spec.fwd_lanes),
-            i32::from(stroke.spec.bkw_lanes),
-        );
-        let snap = stroke.snap_to_existing_roads;
-        let valid = preview
-            .get("is_valid")
-            .and_then(|value| value.try_to::<bool>().ok())
-            .unwrap_or(false);
-        let request_id = match (valid, stroke.grade) {
-            (true, None) => self.add_road_with_snap(points.clone(), fwd, bkw, snap),
-            (true, Some(_)) => self.road_tool_send_draft(),
-            (false, _) => {
-                self.road_tool_log_refusal(&stroke, &preview);
-                self.road_tool_handle(RoadToolEvent::CommitAck { committed: false });
-                0
-            }
-        };
-        vdict! {
-            "points": points,
-            "preview": preview,
-            "fresh": fresh,
-            "request_id": request_id,
-        }
-    }
-
-    // Queues the graded draft's strokes as one batch, one undo step (a single stroke as a batch
-    // of one, `add_road_with_profile`'s path), with tier 2's plans and pieces when it finished
-    // for exactly these strokes (`add_road_draft`'s rule).
-    fn road_tool_send_draft(&mut self) -> i64 {
-        let frame = self.road_tool_session.session.frame();
-        let strokes = frame.draft.strokes.clone();
-        let section = self.road_tool_draft_section(frame);
-        let products = (strokes.len() > 1)
-            .then(|| {
-                let requests = self.road_tool_draft_requests();
-                self.road_tool
-                    .context
-                    .lock()
-                    .expect("road tool context lock poisoned")
-                    .take_batch_products(&requests)
-            })
-            .flatten();
-        let mut batch = draft_batch(strokes, section);
-        batch.preview = products;
-        self.send_road_batch(batch)
-    }
-
-    // The refusal's log line: a follow-ground stroke as today; a graded draft's refusing stroke
-    // with its profile when the preview names one, else the draft as held ground.
-    fn road_tool_log_refusal(&mut self, stroke: &StrokeRequest, preview: &VarDictionary) {
-        let (fwd, bkw) = (
-            i32::from(stroke.spec.fwd_lanes),
-            i32::from(stroke.spec.bkw_lanes),
-        );
-        let snap = stroke.snap_to_existing_roads;
-        let strokes = &self.road_tool_session.session.frame().draft.strokes;
-        let named = preview
-            .get("draft_stroke")
-            .and_then(|value| value.try_to::<i64>().ok())
-            .and_then(|index| usize::try_from(index).ok());
-        let (points, profile) = match (stroke.grade, strokes.as_slice(), named) {
-            (None, ..) => (stroke.points.clone(), RoadProfile::FollowGround),
-            (Some(_), [single], _) => (single.points.clone(), single.profile),
-            (Some(_), parts, Some(index)) if index < parts.len() => {
-                (parts[index].points.clone(), parts[index].profile)
-            }
-            (Some(_), ..) => (stroke.points.clone(), RoadProfile::HeldGround),
-        };
-        self.log_road_tool_rejection_as(
-            PackedVector3Array::from(points.as_slice()),
-            [fwd, bkw],
-            snap,
-            preview.clone(),
-            profile,
-        );
-    }
+// What a new pose previews: one stroke (the session's, or the graded draft's single stroke of
+// its profile), the segmentation's refusal, or a batch.
+enum Pose {
+    Stroke(Option<RoadProfile>),
+    Refused(&'static str),
+    Batch,
 }
 
 // The frame's heights (`road_tool_frame`'s round I keys).

@@ -38,10 +38,23 @@ pub(crate) fn draft_requests(
 /// Half the width a stroke's road covers: its lanes, median and parking, plus its sidewalks (or
 /// shoulders), as the corridor checks measure it.
 pub(crate) fn ghost_half_width_m(request: &RoadPreviewRequest) -> f32 {
+    section_half_width_m(&DraftSection {
+        fwd_lanes: request.fwd_lanes,
+        bkw_lanes: request.bkw_lanes,
+        snap_to_existing_roads: request.snap_to_existing_roads,
+        median: request.median,
+        parking: request.parking,
+        attributes: request.attributes,
+    })
+}
+
+/// [`ghost_half_width_m`] of any stroke of `section` (the footprint hue's width, `ROAD-112`
+/// round R2-1: no stroke needed). `O(1)`.
+pub(crate) fn section_half_width_m(section: &DraftSection) -> f32 {
     let lanes = |count: i32| count.clamp(0, i32::from(u8::MAX)) as u8;
-    let (fwd, bkw) = (lanes(request.fwd_lanes), lanes(request.bkw_lanes));
-    Edge::cross_section_width_m(fwd, bkw, request.median, request.parking) * 0.5
-        + request.attributes.corridor_side_m(fwd == 0 && bkw == 0)
+    let (fwd, bkw) = (lanes(section.fwd_lanes), lanes(section.bkw_lanes));
+    Edge::cross_section_width_m(fwd, bkw, section.median, section.parking) * 0.5
+        + section.attributes.corridor_side_m(fwd == 0 && bkw == 0)
 }
 
 /// Appends tier 1's ghost of one prepared stroke to `out`: a ribbon of `half_width_m` either

@@ -18,6 +18,8 @@ use crate::nodes::sim::road_tool::batch::{
 };
 use crate::nodes::sim::road_tool::height::segment_draft;
 use crate::nodes::sim::road_tool::hue::{FootprintHue, HueKind, HueState};
+use crate::nodes::sim::road_tool::outcome::Tier2State;
+use std::borrow::Cow;
 use crate::simulation::network::road_edit::DraftGround;
 use crate::simulation::network::road_types::cost as road_cost;
 
@@ -73,7 +75,7 @@ impl SimulationNode {
             .map(|strokes| draft_requests(&strokes, section, view.surface_generation))
         };
         match requests {
-            Ok(requests) => self.preview_road_batch_requests(requests, resting, &mut dict),
+            Ok(requests) => self.preview_road_batch_requests(&requests, resting, &mut dict),
             Err(reason) => dict.set("reason", reason),
         }
         dict
@@ -82,11 +84,11 @@ impl SimulationNode {
     // Both tiers of one batch pose into `dict` (`preview_road_draft`'s keys).
     pub(super) fn preview_road_batch_requests(
         &self,
-        requests: Vec<RoadPreviewRequest>,
+        requests: &[RoadPreviewRequest],
         resting: bool,
         dict: &mut VarDictionary,
     ) {
-        if !self.preview_road_batch_tier1(&requests, dict, None) {
+        if self.preview_road_batch_tier1(requests, dict, None).is_none() {
             return;
         }
         if !resting {
@@ -105,13 +107,14 @@ impl SimulationNode {
 
     // Tier 1 of a batch pose into `dict`: `reason`, the strokes' hover verdicts, costs, lengths
     // and the ghost; with `hue`, the strokes' footprint hue (round HU: checking while every
-    // stroke passes, else refused). False (tier 2 dropped) over the caps, the hue untouched.
+    // stroke passes, else refused). Returns its verdict typed (round R2-1); `None` (tier 2
+    // dropped) over the caps, the hue untouched.
     pub(super) fn preview_road_batch_tier1(
         &self,
         requests: &[RoadPreviewRequest],
         dict: &mut VarDictionary,
         hue: Option<&mut FootprintHue>,
-    ) -> bool {
+    ) -> Option<Tier1> {
         let tier1_start = std::time::Instant::now();
         let view = self.road_tool.view.read().unwrap();
         let hover = view.validate_batch(requests);
@@ -123,7 +126,7 @@ impl SimulationNode {
                 .lock()
                 .expect("road tool context lock poisoned")
                 .clear_batch();
-            return false;
+            return None;
         };
         let mut ghost = Vec::new();
         let mut ghost_starts = PackedInt32Array::new();
@@ -132,7 +135,9 @@ impl SimulationNode {
         let mut valid = PackedInt32Array::new();
         let mut reasons = PackedStringArray::new();
         let mut profiles = PackedInt32Array::new();
-        for (request, (prepared, validation)) in requests.iter().zip(&hover) {
+        // The first stroke with a refusal key, and that key.
+        let mut refusal = None;
+        for (stroke, (request, (prepared, validation))) in requests.iter().zip(&hover).enumerate() {
             ghost_starts.push(ghost.len() as i32);
             let half_width_m = ghost_half_width_m(request);
             push_ghost_ribbon(prepared, half_width_m, &mut ghost);
@@ -143,11 +148,15 @@ impl SimulationNode {
             costs.push(length_m * road_cost::build_per_m(weight));
             lengths.push(length_m);
             valid.push(i32::from(validation.is_valid));
-            reasons.push(if validation.is_valid {
+            let reason = if validation.is_valid {
                 ""
             } else {
                 validation.invalid_reason
-            });
+            };
+            if refusal.is_none() && !reason.is_empty() {
+                refusal = Some((stroke, reason));
+            }
+            reasons.push(reason);
             profiles.push(request.profile.code());
         }
         if let (Some(hue), Some(first)) = (hue, requests.first()) {
@@ -185,10 +194,15 @@ impl SimulationNode {
         });
         dict.set("ghost_line_vertices", edge_quads.vertices);
         dict.set("ghost_line_attributes", edge_quads.attributes);
+        let tier1 = Tier1 {
+            refusal,
+            build_cost: costs.as_slice().iter().sum::<f64>(),
+            length_m: lengths.as_slice().iter().sum::<f64>(),
+        };
         dict.set("reason", "");
         dict.set("stroke_count", requests.len() as i64);
-        dict.set("build_cost", costs.as_slice().iter().sum::<f64>());
-        dict.set("length_m", lengths.as_slice().iter().sum::<f64>());
+        dict.set("build_cost", tier1.build_cost);
+        dict.set("length_m", tier1.length_m);
         dict.set("costs", costs);
         dict.set("lengths_m", lengths);
         dict.set("valid", valid);
@@ -197,16 +211,17 @@ impl SimulationNode {
         dict.set("ghost", PackedVector3Array::from(ghost.as_slice()));
         dict.set("ghost_starts", ghost_starts);
         dict.set("tier1_ms", tier1_start.elapsed().as_secs_f64() * 1000.0);
-        true
+        Some(tier1)
     }
 
     // One tier-2 step of a resting batch pose into `dict` (`tier2_*`, and on the frame that
-    // completes an accepted batch's overlay its exact preview).
+    // completes an accepted batch's overlay its exact preview); returns the step typed (round
+    // R2-1).
     pub(super) fn preview_road_batch_tier2(
         &self,
-        requests: Vec<RoadPreviewRequest>,
+        requests: &[RoadPreviewRequest],
         dict: &mut VarDictionary,
-    ) {
+    ) -> Tier2Step {
         let mut context = self
             .road_tool
             .context
@@ -214,33 +229,34 @@ impl SimulationNode {
             .expect("road tool context lock poisoned");
         context.land = self.road_tool.land();
         let (batch, frame) = context.preview_batch_step(requests);
-        Self::set_tier2(dict, batch, frame.unwrap_or_default());
+        let mut step = Self::set_tier2(dict, batch, frame.unwrap_or_default());
         // The exact preview goes once, on the frame that completed the accepted batch's overlay.
         if frame.is_some() && batch.pieces.is_some() {
-            Self::set_batch_pieces(&mut context, dict);
+            step.demolish_count = Self::set_batch_pieces(&mut context, dict);
         }
+        step
     }
 
-    // Tier 2's state and this frame's stages into `dict`.
+    // Tier 2's state and this frame's stages into `dict`, and the state typed.
     fn set_tier2(
         dict: &mut VarDictionary,
         batch: &BatchPreview,
         frame: crate::nodes::sim::core::RoadPreviewTimes,
-    ) {
+    ) -> Tier2Step {
         let (state, reason, stroke) = match &batch.verdict {
             // An accepted batch is shown once its overlay is whole.
-            None => ("running", "", -1),
-            Some(BatchVerdict::Accepted) if batch.pieces.is_none() => ("running", "", -1),
-            Some(BatchVerdict::Accepted) => ("accepted", "", -1),
-            Some(BatchVerdict::Refused { stroke, reason }) => (
-                "refused",
-                reason.as_str(),
-                stroke.map_or(-1, |stroke| stroke as i64),
-            ),
+            None => (Tier2State::Running, "", None),
+            Some(BatchVerdict::Accepted) if batch.pieces.is_none() => {
+                (Tier2State::Running, "", None)
+            }
+            Some(BatchVerdict::Accepted) => (Tier2State::Accepted, "", None),
+            Some(BatchVerdict::Refused { stroke, reason }) => {
+                (Tier2State::Refused, reason.as_str(), *stroke)
+            }
         };
-        dict.set("tier2_state", state);
+        dict.set("tier2_state", state.key());
         dict.set("tier2_reason", reason);
-        dict.set("tier2_stroke", stroke);
+        dict.set("tier2_stroke", stroke.map_or(-1, |stroke| stroke as i64));
         dict.set("tier2_done", batch.strokes.len() as i64);
         dict.set(
             "tier2_ms",
@@ -250,13 +266,25 @@ impl SimulationNode {
         dict.set("tier2_roadbed_ms", frame.roadbed_ms);
         dict.set("tier2_payload_ms", frame.payload_ms);
         dict.set("tier2_graded_ms", frame.graded_ms);
+        Tier2Step {
+            state,
+            // Only a refusal carries a key (one copy, on its frame).
+            reason: if reason.is_empty() {
+                Cow::Borrowed("")
+            } else {
+                Cow::Owned(reason.to_owned())
+            },
+            stroke,
+            demolish_count: 0,
+        }
     }
 
-    // The accepted batch's exact preview into `dict`, keyed as `preview_road` keys a stroke's.
+    // The accepted batch's exact preview into `dict`, keyed as `preview_road` keys a stroke's;
+    // returns the buildings it demolishes.
     fn set_batch_pieces(
         context: &mut crate::nodes::sim::core::RoadPreviewContext,
         dict: &mut VarDictionary,
-    ) {
+    ) -> i64 {
         let (mut tiles, mut removed) = (Vec::new(), Vec::new());
         context.graded.take_shown_changes(&mut tiles, &mut removed);
         let cell_m = f64::from(context.view.terrain.cell_size_m());
@@ -297,5 +325,23 @@ impl SimulationNode {
         dict.set("chunk_span_m", roadbed.chunk_span_m());
         dict.set("chunk_origin_x_m", origin_x);
         dict.set("chunk_origin_z_m", origin_z);
+        demolish_count as i64
     }
+}
+
+// Tier 1's verdict of a batch pose within the caps: the first stroke with a refusal key and
+// that key, and the strokes' summed build cost and length.
+pub(super) struct Tier1 {
+    pub(super) refusal: Option<(usize, &'static str)>,
+    pub(super) build_cost: f64,
+    pub(super) length_m: f64,
+}
+
+// One tier-2 step: its state, a refusal's key and stroke (`None` for the whole batch), and the
+// buildings an accepted batch demolishes.
+pub(super) struct Tier2Step {
+    pub(super) state: Tier2State,
+    pub(super) reason: Cow<'static, str>,
+    pub(super) stroke: Option<usize>,
+    pub(super) demolish_count: i64,
 }

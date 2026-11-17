@@ -213,7 +213,7 @@ impl RoadPreviewContext {
     /// this call advanced tier 2 (`None` once it ended and its overlay is built).
     pub(crate) fn preview_batch_step(
         &mut self,
-        requests: Vec<RoadPreviewRequest>,
+        requests: &[RoadPreviewRequest],
     ) -> (&BatchPreview, Option<RoadPreviewTimes>) {
         let base = RoadPreviewFingerprint::of(
             self.view.surface_generation,
@@ -223,9 +223,9 @@ impl RoadPreviewContext {
         if !self
             .batch
             .as_ref()
-            .is_some_and(|batch| batch.is_for(&requests, base))
+            .is_some_and(|batch| batch.is_for(requests, base))
         {
-            self.restart_batch(requests, base);
+            self.restart_batch(requests.to_vec(), base);
         }
         let mut batch = self.batch.take().expect("a batch was just ensured");
         let frame = batch.pending().then(|| self.step_batch(&mut batch));

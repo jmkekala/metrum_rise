@@ -410,7 +410,7 @@ fn benchmark_populated_batch_preview() {
                 .collect();
             let mut frames = Vec::new();
             let verdict = loop {
-                let (batch, frame) = context.preview_batch_step(requests.clone());
+                let (batch, frame) = context.preview_batch_step(&requests);
                 if let Some(frame) = frame {
                     frames.push([frame.plan_ms, frame.roadbed_ms, frame.payload_ms, frame.graded_ms]);
                 }
@@ -524,7 +524,7 @@ fn benchmark_populated_batch_overlay() {
                 context.clear_batch();
                 let mut index = 0;
                 loop {
-                    let (batch, frame) = context.preview_batch_step(requests.clone());
+                    let (batch, frame) = context.preview_batch_step(&requests);
                     let frame = frame.expect("tier 2 runs to its overlay");
                     if frames.len() == index {
                         frames.push(Default::default());
