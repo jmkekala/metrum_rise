@@ -15889,7 +15889,8 @@ short stubs are removed; a stroke end joins a near occupied node even up to 8.5 
   view from its published land (`RoadToolLand::fronted`, the same chunks and parcels, the
   parcel's road and frontage now published with it), so a preview and its commit decide alike.
   A guarded stub's road end is then an occupied node. Player-placed buildings without a parcel
-  are not a guard (attachment repair moves them as for any edit); recorded for review.
+  are not a guard (attachment repair moves them as for any edit); the user kept this rule on
+  2026-11-17 (parcels only, so a preview and its commit always agree).
 - **Ends join.** Where no joint or stub makes way, a stroke end too close to an **occupied** node
   (a junction, a real bend, a guarded road end, an occupied joint) joins it: among the failing
   arms on a live road between a node the stroke's end makes on that road and a live node of it,
