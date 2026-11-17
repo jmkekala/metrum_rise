@@ -18427,8 +18427,63 @@ acceptance PASS; K22 30k click-to-ack 6.56 / 7.48 ms (one run a side, reported).
 in no per-tick path: the asset reload alone takes it, and the headless days never start the
 journal.
 
-**Gates** (fresh, `1d92083a`): `env -u DISPLAY -u WAYLAND_DISPLAY ./run.sh --test` PASS (rust
-3m37s, godot-main 3m14s, godot-vehicle 1m35s); the targeted lib tests (`graded_edits`,
+**The prewarm moves to the main menu (the user's decision, 2026-11-17 morning; `645aa787`).**
+The launch no longer draws frames before its first load call. The main menu, which a normal
+launch shows first, starts the prewarm from its second frame (`menu_pipeline_prewarm.gd`): a
+64x64 `SubViewport` that is never shown renders a world of its own holding one hidden instance of
+every template (`pipeline_prewarm.gd` `templates()`: the terrain and graded tiles, the water, the
+vegetation catalogue, the grass masks), so Godot compiles their pipelines in the background while
+the menu shows, for whichever city comes next. Godot creates a surface's pipelines only while it
+renders a 3D scene (`_fill_render_list` updates the dirty geometry instances), and which variants
+it compiles follows the 3D features rendered so far (motion vectors, the normal-roughness depth
+pass, MSAA samples, shadow formats), so the view renders with the game's: the root viewport's
+scaling, anti-aliasing and MSAA, the default environment (SSIL) and a shadowed sun. It is freed
+with the menu; compilations already started finish anyway and stay with their shaders and the
+driver's caches. The menu looks as before: the view is in no container and no texture reads it.
+Decided under the user's night delegation, for review: direct-to-load launches (`--load`, the
+benchmarks without `--menu-dwell`) take a first run's cold stall, since the frames before their
+load call cost warm loads 0.12-0.17 s. The stream benchmark launches through the menu with
+`--menu-dwell <seconds from the launch>`.
+
+No "Preparing shaders" label (the user asked for one only with an exact "done"): Godot 4.7.2
+counts a pipeline compilation when it is submitted (`PipelineHashMapRD::compile_pipeline`), never
+when it finishes, and exposes no pending count or completion signal. The only exact barrier
+within an unmodified engine is a frame that draws every template (a draw waits for its
+pipeline), which would freeze the menu for the whole cold compile. Not built; options for the
+user: no label; the frozen-frame barrier behind the label; or an upstream API proposal for a
+pending-compilation count.
+
+**The menu case, timed** (a second batch, 06:38-06:47, after the same quiet check, load 6.2 and
+falling, no perf, cargo or restic process; C B B C; control `dev` `b40368b2`'s library and
+scripts, whose router goes straight to the world; branch `f348cc3e`'s scripts with `1d92083a`'s
+library through the menu). The dwell is counted from the launch: the engine starts in 3.4-3.5 s
+cold and 1.9 s warm, so a 6 s dwell is 2.3-2.4 s of menu, and a 0 s dwell leaves right after the
+view's first draw (0.1 s of menu). At the load's start the branch had submitted 56 surface
+compilations (the control 0).
+
+| | load s (C / B) | settled s (C / B) | start to settled s (C / B) | worst post-load frame ms (C / B) | first 0.5 s turn's worst ms (C / B) |
+|---|---|---|---|---|---|
+| Kuopio cold, 6 s | 0.93, 0.94 / 0.93, 0.93 | 3.61, 3.47 / 1.93, 1.95 | 4.54, 4.41 / 2.86, 2.88 (better, -1.60) | 1,252, 1,124 / 876, 891 | 45.3, 59.1 / 7.0, 7.3 (better) |
+| 30k cold, 6 s | 4.97, 4.92 / 4.78, 4.80 | 6.43, 6.61 / 3.62, 3.67 | 11.40, 11.53 / 8.40, 8.47 (better, -3.03) | 1,163, 1,042 / 1,269, 1,169 (level) | 12.3, 12.5 / 10.8, 10.7 (better) |
+| Kuopio cold, 0 s | 0.95, 0.94 / 0.92, 0.94 | 3.35, 3.34 / 2.00, 1.92 | 4.29, 4.28 / 2.92, 2.86 (better, -1.39) | 941, 987 / 958, 869 (level) | 45.8, 45.7 / 10.4, 6.8 (better) |
+| 30k cold, 0 s | 4.94, 5.06 / 4.85, 4.90 | 6.58, 6.64 / 3.55, 3.51 | 11.52, 11.70 / 8.40, 8.41 (better, -3.20) | 1,417, 1,381 / 1,133, 1,148 | 12.3, 14.0 / 11.9, 12.2 (level) |
+| Kuopio warm, 6 s | 0.81, 0.85 / 0.84, 0.86 | 1.19, 1.22 / 1.18, 1.16 | 2.01, 2.07 / 2.01, 2.02 (level, -0.02) | 293, 304 / 316, 300 | 6.9, 5.3 / 5.5, 5.6 (level) |
+| 30k warm, 6 s | 4.65, 4.62 / 4.80, 4.78 | 1.54, 1.71 / 1.56, 1.43 | 6.19, 6.32 / 6.37, 6.22 (level, +0.03 on 0.15) | 193, 198 / 209, 198 | 11.4, 13.9 / 11.7, 12.5 (level) |
+
+Every input's start to settled is better cold and level warm, and the first turn's worst frame
+better or level; the load call no longer carries the prewarm (level cold; the 30k warm call +0.16
+s on a 0.04 spread, its settle 0.13 s sooner). Still left cold: the first post-load frame's other
+pipelines (70-103 more surface compilations after the load: the sky, buildings, agents, roads,
+not in the templates). The phase rows (`compare`): level or better but small p50 shifts, at most
++0.2 ms on Kuopio's 2 ms turn frames and +0.3-0.9 ms on the 30k `post_load` p50 (whose window
+ends sooner on the branch). Products on the menu path (`--menu-dwell 0`, one run, against R43's
+control digests): the 30k city's 4 of 4 and Kuopio's 8 of 8 settle-point digests equal. The menu
+was not captured as a still: the view is in no container and no texture reads it, so nothing of
+it reaches the screen.
+
+**Gates** (fresh): `env -u DISPLAY -u WAYLAND_DISPLAY ./run.sh --test` PASS on `1d92083a` (rust
+3m37s, godot-main 3m14s, godot-vehicle 1m35s) and on `645aa787` (the menu prewarm; 3m56s, 3m27s,
+2m02s, under another lane's load) GATE3_PLACEHOLDER; `tools/test_stream_benchmark.py` OK; the targeted lib tests (`graded_edits`,
 `building_site_terrain`, `parking`, `asset`) 319 passed, among them the new
 `an_asset_reload_journals_a_reset`; clippy `--all-targets` adds no warning in the changed files.
 Artefacts: `$ARTIFACTS/render43/r43b` (profiles, series, products, the session log).

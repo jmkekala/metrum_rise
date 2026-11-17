@@ -149,12 +149,13 @@ frame, and the 30k 1 s turns run 3.7-4.2 ms faster. Street lights in chunk batch
 no-visible-change bar (Godot's level-of-detail hysteresis follows each batch's frustum history); the
 choice is the user's ([record](terrain.md#one-body-surface-per-car-mesh-street-lights-left-in-their-cells-render-46-2026-11-13)).
 The load's first-use shader stalls are a first-run cost (`RENDER-43`, rounds R43 and R43b,
-2026-11-17, for review, not landed): with warm caches no frame waits for a pipeline. Compiling a
-first run's pipelines during the load call (branch `render-43`) settles Kuopio 0.4 s and the 30k
-city 2.7 s sooner cold, warm loads level. R43b removed the 1.9 s its frames had cost the 30k warm
-load: an asset reload journaled every site's change as a graded site edit (1.7 s on the simulation
-lock whenever the graded journal was on, every later load in a session too); it now journals a
-reset ([record](terrain.md#first-use-pipelines-at-the-load-render-43-round-r43-2026-11-17)).
+2026-11-17, for review, not landed): with warm caches no frame waits for a pipeline. The main menu
+now compiles a first run's terrain, water, vegetation and grass pipelines from the launch (branch
+`render-43`): through the menu, cold loads settle 1.4-1.6 s (Kuopio) and 3.0-3.2 s (30k) sooner,
+warm loads level. R43b also fixed a load cost it exposed: an asset reload journaled every site's
+change as a graded site edit (1.7 s on the 30k city whenever the graded journal was on, every later
+load in a session too); it now journals a reset
+([record](terrain.md#first-use-pipelines-at-the-load-render-43-round-r43-2026-11-17)).
 Parked cars have the moving cars' draw distance since `RENDER-48` (round R48, 2026-11-13, stills
 approved by the owner): they fade out between 2.0 and 2.5 km like the moving cars, and Godot skips a
 parked batch with no car within 2.5 km. The 100k still draws 22 M fewer primitives (99 to 76 M) and
