@@ -15339,6 +15339,71 @@ junction frames to 0 with the moving preview rows not worse than control. Backgr
 [`terrain.md`](terrain.md#terrain-23s-cause-and-the-streaming-audits-graded-findings-render-32-k-part-5-2026-11-12),
 "T65 option (3): what is left".
 
+### Junction spacing (`ROAD-118`)
+
+Found in the user's tests of `ROAD-112` (dump `dump-2026-11-15_11-27-06`): every arm of a node
+layout could use at most half of its edge, whatever stood at the far end, so a 2-lane junction
+needed 17 m of road to any other node, even to an empty straight joint or a road end. None of the
+dump's six refusals lacked real room. The user's rule: it must just work, never ask the player.
+Rounds JS1-JS4 (roadmap row): road ends reserve what they use and refusals name the place (JS1);
+empty straight joints dissolve into the neighbouring edge (JS2); a stroke end too close to a real
+junction or bend joins it and a too-short stub goes (JS3); roads that touch join (JS4).
+
+#### Road ends reserve their cap (round JS1)
+
+Branch `roadtools-js1` off `dev` `4535bce1`.
+
+- **The rule** (Fitting): an arm's budget is its edge less what the far end needs,
+  `roadbed::arms::arm_max_station_m`: the cap's `MIN_MOUTH_STATION_M` (1 m) at a road end (a node
+  where only this standard edge meets, `far_end_is_road_end`, `O(far degree)`, no allocation),
+  half the edge anywhere else, never below half. A 2-lane T (crossing carriageway 3.5 m, curb
+  return 2.0-3.5 m, zebra 3 m: mouth 8.5-10 m) so fits beside a road end with a 9.5 m stub at its
+  minimum radius and with 11 m at its full one; 9.4 m is refused. Pass-through far ends keep the
+  half, so `degree_two_crossings` and every other layout are untouched.
+- **The affected set, one hop.** A layout now reads whether each arm's far end is a road end, so
+  an edit that joins a road end (a stroke from it, or onto it) lays out the node beyond it again:
+  `topology::process_intersections_splitting_at` lists the road ends among the stroke's ends and
+  its candidates' nodes before its splits (`roadbed::road_ends_among`) and returns the far nodes
+  of those no longer road ends after them (`road_end_neighbours`); the validation excerpt and the
+  plan-less insertion add them to the surface-dirty nodes, so validation checks them, the clips
+  and profiles re-solve there, and the plan's pieces and undo record include them. `O(candidates x
+  degree)` per pose. The excerpt's second ring of incidence already holds those nodes' arms and
+  far ends. A road removal already takes the far ends of both its nodes' edges.
+- **Refusals name the place.** A `junction_corner_does_not_fit` or `junction_arm_too_short`
+  carries a `JunctionPlace` (`RoadPreviewValidation::junction_place`): the failing node (live id,
+  or none for the stroke's new node) and position, the road its short arm lies on (a split piece
+  names the road it splits), and the roles of the two nodes across that arm (`NodeRole`:
+  junction, bend, road end, joint). `geometry_measured` is that road's length and
+  `geometry_limit` the shortest that fits, rounded up to 0.1 m: the layout's own answer
+  (`roadbed::arm_edge_needed_m`, a bisection over the arm's budget with the arm run on straight
+  past its end, then the far end's reserve added; 18 layouts of one node, refusals only). The
+  wording (`road_tool/wording.rs`) reads them: "Junction only 10.0 m from the bend; needs 17.0 m",
+  "Road end only 6.0 m from the junction; needs 9.5 m", "Junctions only 12.0 m apart; needs
+  17.0 m"; without the place, "Junction corner does not fit here" (the old text asked the player
+  to lengthen roads). The verdict dictionary carries them as `junction_node`,
+  `junction_position`, `junction_arm_edge`, `junction_roles` (`road_wording.rs`).
+- **The dump.** A refused stroke's end on a road between its nodes now reads "end edge 5 at
+  45.0 m" (the nearest centreline within `INTERSECTION_TOLERANCE`, refusals only), where it read
+  "open terrain", and a junction refusal's detail names the node, the road, what stands across it,
+  the length and the shortest that fits, at the node's position.
+- **Fan slivers.** Beside a road end a mouth may now lie far out: the 10 degree bend fixture's
+  lands 1 cm past an arm knot 80 m from the node, and the core's fan from the node made a 0.45 mm
+  sliver. `fan_core` now falls back to the ring triangulation when a fan triangle would be thinner
+  than 1 mm across its longest side (the slivers test's bar), `O(ring)`.
+- **Tests:** `a_stub_to_a_road_end_takes_all_but_the_cap` (9.5 m at the minimum radius, 11 and
+  15 m at the full one, 9.4 m refused, the need 9.5 m; a bend at the stub's end keeps the half and
+  needs 17 m); `road_junction_spacing` on the dump's network (15 nodes, 16 roads, laid flat): the
+  dump's attempt 6 builds a T with its 15 m stub at the full radius, node 0 a T too, the preview's
+  chunks compose the committed chunks and undo restores the graph bit for bit; attempt 5's end
+  alone builds at a reduced radius; extending that road end sideways is refused, naming a junction
+  and a bend 10.0 m apart that need 17.0 m, and the commit refuses it too; a T 6 m from edge 3's
+  dead end is refused as "Road end only 6.0 m from the junction; needs 9.5 m" and its report reads
+  "end edge 3 at ...". `spacing_texts_name_the_place` for the wording. The bend crossing tests
+  keep their intent with a 9 m arm (8 m budget).
+- **Products.** The roadbed probe changes for `bend_10` and `bend_15_120` only (both corners
+  beside road ends: the 10 degree bend's corner was budget-limited, the 15 m arm now holds its
+  crossing), flat and sloped, re-recorded.
+
 ### Moving and reshaping built roads (`ROAD-113`)
 
 One geometry edit gives a set of edges a new horizontal shape and a set of nodes a new position
