@@ -18353,6 +18353,86 @@ new: the cache store's round trip and one store a series side). No Rust change, 
 and no level F: the round adds no per-frame code (two frames before the first load call, and the
 hand-over frees the instances once).
 
+#### Round R43b: the asset reload's graded site edit (2026-11-17)
+
+Round R43b (night delegation; every decision is for review) found what the two frames before the
+first load leave for the load call. A frame-pointer build of the control's code (a profiling
+build, not committed) and perf on the 30k warm load put the main thread's extra 1.75-1.9 s under
+`SimulationNode::load_asset_packs` -> `SimCore::replace_asset_registry` ->
+`publish_pending_site_changes_but_terrain` -> `record_graded_site_edit` ->
+`BuildingAllocator::graded_site_snapshot` -> `SiteRectQuery::holds` (the load's
+`buildings.reload_asset_packs()`, which `_refresh_after_world_load` runs inside the load call;
+0 ms there in the control's load). The cause:
+
+- The graded edit journal (`graded_edits.rs`) records only once Godot's first graded residency
+  poll has started it. On the control the first load's call runs before any frame, so nothing is
+  recorded; the prewarm's frames poll first, so the journal is on during the load call.
+- A whole-catalog asset reload (`refresh_building_sites_after_asset_reload`) records a change for
+  every site, before and after: 2 x 30k changes on the 30k city. The journal recorded them as one
+  `Sites` edit: a site snapshot over every change's window, each walking its 512 m site chunks'
+  candidates (`O(changes x sites per chunk)`) and copying every site, on the simulation lock, then
+  a dirty-tile selection over every change on a payload worker.
+- So this is not a prewarm cost: every load with the journal on pays it, which is every load
+  after the first in a session (the first world's renderer started the journal), and every asset
+  reload in a running game (asset editor saves, pack toggles).
+
+**The fix (decided under the user's night delegation, for review):** a whole-catalog reload
+publishes its site changes through `publish_reloaded_building_site_changes`, and the journal
+records them as `GradedEditKind::All`, the world-scale reset they are, in `O(1)`: every resident
+tile rebakes from the live inputs, as after a load. The terrain query index and the parked ground
+follow the changes as before (`O(changes x local inputs)`, unchanged). Before: `O(changes x sites
+per 512 m chunk)` plus `O(sites)` copies on the lock and `O(changes x levels)` selection off it;
+after: `O(1)` for the journal. No allocation added. A cost of the choice: an asset reload in a
+running game rebakes every resident tile, including those no site reaches (bounded by
+residency, off the frame), where the `Sites` edit selected only those within reach of a site.
+Not done: the snapshot's per-change chunk walk itself (`TERRAIN-31`, proposed), which a large
+local site publication still pays.
+
+Measured (one untimed warm 30k run, the fix's release library and the branch's scripts): load
+call 4.99 s (0.25 s of it the prewarm) against 7.31 s on the branch before it and 5.25 s on the
+control's code (frame-pointer builds). Products against R43's control products: settle-point
+digests all equal (30k 4 of 4, Kuopio 8 of 8); Kuopio's `close`, `mid` and `forest_low` stills
+byte-identical; the 30k city's `city` and `city_low` byte-identical, `saved` 1 pixel (delta 1)
+against each control run, no systematic difference (control against control 2 pixels, the
+`RENDER-45` residue).
+
+**Timing** (one batched session, 05:41-06:07, after checking the machine was quiet: no perf,
+cargo, Godot or restic process, load 3.6; C B B C as in R43; control `dev` `b40368b2`'s library and
+scripts; branch `1d92083a`'s library and scripts):
+
+| | load s (C / B) | prewarm s | settled s (C / B) | start to settled s (C / B) | worst post-load frame ms (C / B) | first 0.5 s turn's worst ms (C / B) |
+|---|---|---:|---|---|---|---|
+| Kuopio cold | 0.93, 0.95 / 2.50, 2.63 | 0.86-1.08 | 3.36, 3.34 / 1.28, 1.29 | 4.29, 4.29 / 3.78, 3.92 (better, -0.44) | 969, 1,034 / 146, 144 | 48.8, 47.3 / 10.0, 8.5 (better) |
+| 30k cold | 4.93, 5.03 / 6.43, 6.36 | 1.04-1.05 | 6.93, 7.02 / 2.79, 2.92 | 11.86, 12.05 / 9.22, 9.28 (better, -2.70) | 1,356, 1,400 / 756, 716 | 11.7, 12.4 / 13.3, 12.0 (level) |
+| Kuopio warm | 0.83, 0.82 / 1.23, 1.08 | 0.24-0.25 | 1.20, 1.14 / 1.04, 0.97 | 2.03, 1.96 / 2.28, 2.06 (level, +0.17 on 0.22) | 290, 279 / 127, 119 | 5.0, 5.8 / 6.7, 5.5 (level) |
+| 30k warm | 4.72, 4.89 / 5.13, 5.04 | 0.24-0.25 | 1.54, 1.51 / 1.45, 1.29 | 6.26, 6.40 / 6.58, 6.33 (level, +0.12 on 0.25) | 201, 196 / 118, 118 | 14.2, 12.5 / 13.3, 13.8 (level) |
+
+The 30k warm load is level again (+1.88 s in R43); the 30k load call less its prewarm is 4.83 s
+against 4.80. The cold loads settle 0.44 s (Kuopio) and 2.70 s (30k) sooner from the load's
+start. Warm, both inputs are level by the same-binary spread, with means 0.12-0.17 s later: the
+prewarm's two frames (0.25 s) are not a compile overlap when the caches are warm, and the settle
+recovers 0.16 s of them (the first post-load frame's work moved before the call). The phase rows
+(`compare`) are level or better except: Kuopio cold `still` p50 +0.4 ms (1.7 to 2.1 ms, as in
+R43), 30k warm `post_load` p50 +0.2 ms on a 0.1 spread (its max 118 against 199 ms), 30k warm
+`turn_back 0.5s` max +1.6 ms (13 against 11-12 ms frames) and Kuopio warm `turn_out 0.5s` p50
++0.1 ms.
+
+**Level F** (`./run.sh --timing --level F`, the same session, base `b40368b2`, release test
+executables of the control and `1d92083a`): `PERF-07` 30k 32x C B B C level on every compared
+metric (mean 4.275 / 4.251 ms; acceptance PASS, the `PERF-17` known exception on one row a side);
+30k 1x day: the control's 2.038 ms mean against the branch's 2.051 and 2.053, every metric level
+over the two branch days (the first alone gave `max_unpreempted_ms` +8.8% on an 8.5% one-run
+tolerance, 4.94 against 4.54 ms; the second day, the round's one rerun, 4.77: +5.0% on 7.3%),
+acceptance PASS; K22 30k click-to-ack 6.56 / 7.48 ms (one run a side, reported). The change runs
+in no per-tick path: the asset reload alone takes it, and the headless days never start the
+journal.
+
+**Gates** (fresh, `1d92083a`): `env -u DISPLAY -u WAYLAND_DISPLAY ./run.sh --test` PASS (rust
+3m37s, godot-main 3m14s, godot-vehicle 1m35s); the targeted lib tests (`graded_edits`,
+`building_site_terrain`, `parking`, `asset`) 319 passed, among them the new
+`an_asset_reload_journals_a_reset`; clippy `--all-targets` adds no warning in the changed files.
+Artefacts: `$ARTIFACTS/render43/r43b` (profiles, series, products, the session log).
+
 ## Implemented Runtime Contract
 
 ### 1. `WorldConfig` Is The Authoritative World Metadata

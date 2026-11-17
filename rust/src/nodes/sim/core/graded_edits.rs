@@ -68,7 +68,8 @@ pub(crate) enum GradedEditKind {
     },
     /// Base heightmap samples written inside this world rectangle.
     Base([f64; 4]),
-    /// Every tile: a world-scale reset, or a journal past [`MAX_PENDING_EDITS`].
+    /// Every tile: a world-scale reset (a load, a whole-catalog asset reload), or a journal past
+    /// [`MAX_PENDING_EDITS`].
     All,
 }
 
