@@ -78,13 +78,16 @@ var _ray_levels := PackedFloat32Array()
 var _ray_weights := PackedFloat32Array()
 var _ray_directions := PackedVector3Array()
 # The terrain patches the reflection world mirrors, by instance id, to [proxy instance RID,
-# base RID, transform, material]. Meshes are shared; terrain uses a cached clip-material variant.
+# base RID, transform, material, custom AABB, extra cull margin]. Meshes are shared; terrain uses a
+# cached clip-material variant.
 var _proxies := {}
 var _proxy_frame := 0
 var _terrain: Node
 # Reflection variants of terrain materials, by source.
 var _grid_materials := {}
 var _proxy_shaders := {}
+# Per source shader, its material parameters' names, which a refresh compares.
+var _shader_parameters := {}
 var _dirty_terrain_patches := {}
 # The vegetation renderer: the stream node draws its tree impostors in this pass's world too
 # (`RENDER-32-E`), from the frame they install in the scene.
@@ -502,41 +505,73 @@ func _sync_proxy(
 ) -> void:
 	var id := source.get_instance_id()
 	var proxy: Array = proxies.get(id, [])
-	if not proxy.is_empty() and proxy[1] != base:
-		RenderingServer.free_rid(proxy[0])
-		proxy = []
 	if proxy.is_empty():
 		var instance := RenderingServer.instance_create2(base, scenario)
 		RenderingServer.instance_geometry_set_cast_shadows_setting(
 			instance, RenderingServer.SHADOW_CASTING_SETTING_OFF)
 		proxy = [instance, base]
 		proxies[id] = proxy
+	elif proxy[1] != base:
+		# A level change gives the patch a new mesh: the instance takes it as its base and keeps
+		# its scenario, transform, material and bounds, where a new instance (freed and created
+		# again, every patch the level rings swept) cost the camera turn's frames (`RENDER-27`).
+		RenderingServer.instance_set_base(proxy[0], base)
+		proxy[1] = base
 	# Only what changed is sent: pooled patch nodes move and change material, but most syncs
 	# find every proxy as it was, and re-sending hundreds of instances stalled a frame.
 	var instance: RID = proxy[0]
 	var transform := source.global_transform
-	if proxy.size() < 3 or proxy[2] != transform or proxy[3] != material:
+	if (proxy.size() < 3 or proxy[2] != transform or proxy[3] != material
+			or proxy[4] != source.custom_aabb or proxy[5] != source.extra_cull_margin):
 		RenderingServer.instance_set_transform(instance, transform)
 		RenderingServer.instance_geometry_set_material_override(
 			instance, material.get_rid() if material != null else RID())
 		if source.custom_aabb.has_volume():
 			RenderingServer.instance_set_custom_aabb(instance, source.custom_aabb)
 		RenderingServer.instance_set_extra_visibility_margin(instance, source.extra_cull_margin)
-		proxy.resize(4)
+		proxy.resize(6)
 		proxy[2] = transform
 		proxy[3] = material
+		proxy[4] = source.custom_aabb
+		proxy[5] = source.extra_cull_margin
 
 # Use the source geometry and its displacement mode; only the mirror clip and underside
 # shading differ. Cached by source.
 func _proxy_material(source: ShaderMaterial, refresh: bool = false) -> ShaderMaterial:
 	var copy: ShaderMaterial = _grid_materials.get(source)
-	if copy == null or refresh:
-		# Terrain swaps its height texture in-place on the same material. An old duplicate
-		# otherwise keeps the previous patch's shore after streaming, edits or LOD changes.
+	if copy == null:
 		copy = source.duplicate() as ShaderMaterial
 		copy.shader = _proxy_shader(source.shader)
 		_grid_materials[source] = copy
+	elif refresh:
+		# Terrain swaps its height texture in-place on the same material. An old copy otherwise
+		# keeps the previous patch's shore after streaming, edits or LOD changes.
+		_refresh_proxy_material(copy, source)
 	return copy
+
+# Brings `copy` to the parameters `source` holds now, in place: what a new duplicate would hold,
+# without the new material whose new resource and uniform set cost the camera turn's frames
+# (`RENDER-27`). Only the parameters that differ are sent, so a level change (one float) does not
+# rebind the textures. O(the shader's parameters) comparisons.
+func _refresh_proxy_material(copy: ShaderMaterial, source: ShaderMaterial) -> void:
+	var shader := _proxy_shader(source.shader)
+	if copy.shader != shader:
+		copy.shader = shader
+	if copy.render_priority != source.render_priority:
+		copy.render_priority = source.render_priority
+	if copy.next_pass != source.next_pass:
+		copy.next_pass = source.next_pass
+	var names: Array = _shader_parameters.get(source.shader, [])
+	if names.is_empty() and source.shader != null:
+		for entry: Dictionary in source.shader.get_shader_uniform_list():
+			names.append(StringName(entry["name"]))
+		_shader_parameters[source.shader] = names
+	for parameter: StringName in names:
+		var value: Variant = source.get_shader_parameter(parameter)
+		var held: Variant = copy.get_shader_parameter(parameter)
+		# Unlike values of two types do not compare in GDScript: the type first.
+		if typeof(held) != typeof(value) or held != value:
+			copy.set_shader_parameter(parameter, value)
 
 func _proxy_shader(source: Shader) -> Shader:
 	var shader: Shader = _proxy_shaders.get(source)

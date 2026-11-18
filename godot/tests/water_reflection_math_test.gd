@@ -85,15 +85,29 @@ func _run() -> void:
 	var id := source.get_instance_id()
 	_expect(renderer._proxies[id][1] == source.mesh.get_rid(), "mirror must share the displayed terrain geometry")
 	var copy: ShaderMaterial = renderer._grid_materials[material]
-	# A texture/material upload must bypass the round robin and invalidate the old copy.
+	var instance: RID = renderer._proxies[id][0]
+	# A texture/material upload must bypass the round robin and refresh the copy.
 	renderer._proxy_frame = 2
 	source.mesh = PlaneMesh.new()
 	material.set_shader_parameter("height_scale", 12.0)
+	material.set_shader_parameter("heightmap", ImageTexture.create_from_image(
+		Image.create(4, 4, false, Image.FORMAT_RF)))
 	renderer._on_terrain_patch_will_change(Vector2i.ZERO)
 	renderer._sync_proxies()
-	copy = renderer._grid_materials[material]
 	_expect(renderer._proxies[id][1] == source.mesh.get_rid(), "changed shore mesh must sync in the same frame")
 	_expect(copy.get_shader_parameter("height_scale") == 12.0, "changed source parameters must refresh the mirror")
+	# In place (`RENDER-27` WR1b): the same copy and instance, holding what a new duplicate would.
+	_expect(renderer._grid_materials[material] == copy and renderer._proxies[id][0] == instance,
+		"a patch change must refresh the mirror's material and instance in place")
+	material.set_shader_parameter("height_scale", null)
+	renderer._on_terrain_patch_will_change(Vector2i.ZERO)
+	renderer._sync_proxies()
+	var duplicate := material.duplicate() as ShaderMaterial
+	for entry: Dictionary in material.shader.get_shader_uniform_list():
+		var held: Variant = copy.get_shader_parameter(entry["name"])
+		var fresh: Variant = duplicate.get_shader_parameter(entry["name"])
+		_expect(typeof(held) == typeof(fresh) and held == fresh,
+			"refreshed mirror parameter %s must equal a new duplicate's" % entry["name"])
 	var code := FileAccess.get_file_as_string("res://scripts/shaders/vegetation_impostor.gdshader")
 	_expect(code.contains("atlas_sample(sampler2DArray") and not code.contains("exp2(ceil(lod))"),
 		"atlas filtering must blend separately clamped integer mips")
