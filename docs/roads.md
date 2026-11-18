@@ -14867,6 +14867,129 @@ idle clock (15,787 cycles p95 against 16,000: met), as the user put it for D2: "
 keeps the CPU idle, at that point it is fast enough". One more round, R2-10, moves `road_tool.gd`'s
 preview and frame state into Rust (bar 5); R2 is done when it holds.
 
+### `road_tool.gd`'s preview and frame state in Rust (round R2-10)
+
+Round R2-10 of `ROAD-112` R2 (branch `roadtools-r210` on `dev` `d20fd3bf`), after the user's
+decision R2L-1 (b): bar 5, `road_tool.gd` holds no preview, commit or frame state. The script now
+reads every one of them from the session and only executes what Rust decides:
+
+- **The standing preview** (`_preview`): Rust's alone. `StandingPreview` keeps, typed beside its
+  outcome, the number it was handed out with (`sequence`) and the lots it outlines (read once from
+  its dictionary when it is made). A refused commit's display (`road_commit_rejected`) becomes the
+  standing preview's dictionary when its answer comes (it was the script's copy). `_preview` is a
+  getter of `road_tool_preview` (tests, probes, the metrics), no storage; the frame hands the same
+  dictionary, shared and not copied, to the graded renderer, which reads its graded keys.
+- **The show decision** (`_preview_drawn_sequence` and the comparisons at `_show_preview` and in
+  the click path): `road_tool_show_preview` returns the standing preview's `sequence` when the frame
+  shows it whole (its graded tiles, `road_tool_show_chunks(sequence)`, then the lots from
+  `road_tool_preview_lots`: empty for an invalid preview), minus it when only its graded tiles show
+  (a click that sent the stroke and previewed a pose of its own: its commit adopted the tiles),
+  and 0 when the display already shows it or none stands; a whole show becomes the shown number
+  (`road_tool_shown_sequence`), which `road_tool_clear_chunks` and the forget action reset. The
+  script calls it after a tick's preview flag, after a press and after a refused answer, as it
+  compared before. `O(1)`, no allocation.
+- **The pending input** (`_preview_update_pending`): `road_tool_request_preview` sets it, each tick
+  and a cancel clear it, `road_tool_preview_current` answers false while it stands (and with no
+  standing preview); `stroke_preview_current`, the probes and the benchmarks read Rust.
+- **The ticked flag** (`_ticked`): the tick sets it; `road_tool_tick_off`, the off tool's frame,
+  drops the drawings once after the last tick (flag 8192: the HUD drops its chips) and hears a sent
+  stroke's answer (flag 1024), in one call where the off frame made one before
+  (`road_tool_commit_request_id`).
+- **The cursor mirror** (`is_valid`, `_last_world_mouse_pos`, `_has_last_world_mouse_pos`): the
+  road tool writes none. The cursor mesh reads `road_tool_cursor`; `get_world_mouse_pos` and the
+  surface probe read it through `_pointer_point`, which `network_tool.gd` gained for the probe (the
+  base returns its own mirror, so the roundabout tool, the base's other user, behaves as before:
+  its `_update_pointer`, `set_scripted_pointer` and mirror are untouched). The road tool overrides
+  `set_scripted_pointer` to keep only the scripted input its tick sends. One debug-only difference:
+  the `road_probe` startup mode reads Rust's last cursor on the first frame after the tool comes
+  back on, where the mirror had been cleared while off.
+
+**Bar 5 met.** `road_tool.gd`'s remaining members (line numbers at the branch tip):
+
+- No storage, read from Rust each time: `draw_mode` (`:118`), `_road_debug_enabled` (`:151`),
+  `_preview_update_pending` (`:156`), `_preview` (`:160`), `_preview_sequence` (`:165`),
+  `_preview_drawn_sequence` (`:168`), `_commit_request_id` (`:174`), `_commit_points` (`:177`),
+  `_graded_commit_epoch` (`:180`), `_graded_pending` (`:187`).
+- Drawing: `_demolish_mesh` (`:184`), the lots' outline node (its content is Rust's lots).
+- Measurement only: `preview_metrics` (`:145`), `_preview_input_us` (`:147`),
+  `_preview_metric_row` (`:148`).
+- Nodes and setup: `hud` (`:140`), `gizmos` (`:143`), `chunks` (`:217`).
+- From the base class: the scripted pointer's input (`_scripted_pointer_enabled`,
+  `_scripted_pointer_position`: what the tick sends, as the mouse is) and `active`; the base's
+  cursor mirror stays the roundabout tool's, unread and unwritten by the road tool (its inactive
+  frame's reset of `_has_last_world_mouse_pos` is the base's own line).
+
+**Measured** (2026-11-18 14:00-15:41, boot `248ac927`; every library built in its own worktree's
+own cargo target directory, every hash differs): **the base** `dev` `d20fd3bf`, release library
+`3e41cbf539b4eae7`, release test binary `e83c3fda2cf4c58b`, session bench `2145c026aaa7ba9c`;
+**the branch** `2968e38f` (the code; the docs follow it), `c7ca3d83bdb05516`, `ee9c2f046bcec9c8`,
+`78c658893e56b8e1`. R2-L's scripts and split (`$ARTIFACTS/art-r210/scripts`); the base now has
+the tick ring, so both sides of the probe, the drags and the rows read it, each with its own
+tree's scripts (the drags through a measurement copy of each tree's capture script that prints
+each drag's ring, never committed). The gates and the untimed steps ran first under the shared
+lock; every timed step under the run lock and the exclusive timing lock, the load checked inside
+the hold, pinned to the P-cores, outside 18:00-18:15; no run recorded an overlap.
+
+| Bar | Verdict | Measured (branch against the base, fresh) |
+| --- | --- | --- |
+| Bar 5, `road_tool.gd` holds no preview, commit or frame state | **met** | the members above |
+| Products | **met** | Kuopio 78 and fixtures 17 EQUAL against `art-land-js5ef`; drag probe PASS |
+| Tool stills | **met** | default 7 and S-curve/freeform 3 identical (base against branch, branch against branch, base against base), restyle 7 identical; batch ghost identical to the base on one branch run, the other branch run differs from both by at most 5 levels over 133,688 px (branch against branch the same) |
+| Height sets | **as R2-9 and R2-L judged them** | every still that differs base against branch (default 6 of 11, hue 5 of 23: the tunnel portals and built tunnels, the bridge then tunnel batch, the low end over a lower road, the hue across fill and water, the hue junction) differs branch against branch too |
+| Allocation | **met** | 0.00 allocations a tick inside the tick outside the preview in still, hover and pose (heaptrack `--record-only`, 200 ticks less 20); the pose tick 628.4 process-wide, the preview's own 462.8 (R2-L: 627.6, 461.8) |
+| Tick less the preview, at most 160,000 cycles p95 a group | **met** | both passes pooled: cross 157,837 (78.8 us at 1.98 GHz), T, branch and dense 146,685 (100.7 us at 1.43 GHz); the base 152,954 (77.2 us at 1.97) and 147,283 (100.2 us at 1.43) |
+| A still tick, at most 16,000 cycles p95 on the idle-clock ticks (R2L-1) | **met** | 13,612 (12.4 us, 561 of 800 ticks under 2 GHz); the base 13,792 (11.6 us); every tick 29,446 (base 28,671) |
+| The overlay a drag frame, at most 320,000 cycles p95 | **met** | curve end 195,397 (0.135 ms at 1.24-1.36 GHz), S-curve end 270,778 (0.116 ms at 3.11-4.87), freeform handle 192,975 (0.135 ms at 1.39-1.45); every run under the bar (largest 310,005); the base 200,084 / 279,043 / 207,701 |
+| U-R2-1 and sample to installed, no worse than the base | **met** | both passes pooled: cross 57.4 / 63.7 / 72.9 / 82.8 % within 16.7 / 17 / 18 / 20 ms against 56.5 / 63.0 / 72.3 / 82.5, mean 11.130 against 11.173 ms; T, branch and dense 55.3 / 63.1 / 74.6 / 84.8 against 55.3 / 62.6 / 74.2 / 84.7, mean 8.845 against 8.872 |
+| The hue join wait, at most 0.01 ms p95 | **met** | 0.002 ms in both groups, both sides |
+
+- **The interleaved preview rows** (R2-9's pass: gamescope headless 1920x1080, four workers, 100
+  samples a case after 8 warm-ups, no FPS cap; the main thread's clock counted by `perf stat -t`):
+  two passes, the first base first (b B b B b B b B b, 15:00-15:13), the second branch first (B b
+  B b B b B b B, 15:25-15:41) against the session's drift: the first pass read the branch lower in
+  T, branch and dense (55.3 against 56.6 % within 16.7 ms, mean +0.21 ms) and higher in cross
+  (58.3 against 57.5, mean -0.26 ms), the second the reverse (T, branch and dense 55.2 against
+  53.4, mean -0.31; cross 56.7 against 55.1 within 16.7 ms but 80.2 against 82.4 within 20, mean
+  +0.13), every difference inside the base's batch-to-batch spread; pooled over both (above) the
+  branch is no worse at any cutoff in either group, its mean lower in both, its cross p95 0.17 ms
+  higher (18.235 against 18.065, inside the base batches' p95 spread of 1.0-1.8 ms). The second
+  pass lost one base case: its sixth run (sloped T and branch) failed the fixture's commit
+  settlement on the base library (`fixture commit settlement`, 3.5 min, the case left out).
+- **The tick less the preview call** in cycles tick by tick (`cyc.py`): first pass cross 159,587
+  (77.2 us at 2.02 GHz) against the base's 151,488 (77.5 us at 1.97), T, branch and dense 145,768
+  against 151,098; second pass 156,554 against 154,282 and 148,018 against 141,013. Per batch, two
+  branch cross batches of the first pass and one of the second read over 160,000 (166,052,
+  162,871, 167,207), as a base batch did (165,639). The round adds no work inside the tick (two
+  flags set at its start; the show decision and the lots follow it); the branch's time equals the
+  base's (cross p95 77.2 against 77.5 us, then 79.6 against 77.0).
+- **The tick probe** (R2-9's `probe-ring.sh`, C B B C 14:47-14:51, the base as C): still 10.3 /
+  11.7 us p50 / p95 (base 10.1 / 11.2), hover 12.5 / 14.0 (12.0 / 13.4), pose 92.4 / 111.6 (90.5 /
+  108.4) at 1.08-1.35 GHz; per tick in cycles still 29,446, hover 35,337, pose 180,781 (base
+  28,671, 34,099, 182,142). Split by the interval's clock (`still_split.py`): under 2 GHz still
+  13,612, hover 17,670, pose 118,462 (base 13,792, 17,380, 117,964).
+- **The drags** (six runs a side, base br br base x3, 14:51-15:00, each run's own tree's capture
+  copy): above; the pooled p95 in time 0.135 / 0.116 / 0.135 ms against the base's 0.132 / 0.116 /
+  0.135.
+- **Session bench** (the 30k locality mode, 20 trails, 10,240 moves a row, C B B C 14:47; us a
+  move, p50 / p99): straight 101.5 / 137.8, 102.0 / 139.0, 104.5 / 143.7, 104.1 / 141.1; curve
+  112.0 / 149.2, 112.3 / 152.2, 114.0 / 150.4, 114.6 / 151.5; digests `32cb9b4b11dccf75` and
+  `ca3e8f6d742b48b2` on every row: level.
+- **Timing, level F** (`./run.sh --timing --level F --k22`, control the base's release test
+  binary, the branch's with its own snapshot cache, 15:17-15:24, CPUs 0-14 even, eight workers):
+  30k 32x C B B C level in every component (mean 4.193 -> 4.229 ms, p99 6.322 -> 6.365, p99.9
+  7.095 -> 7.164; all four runs the known exception `PERF-17`); 30k 1x C B level, PASS both (mean
+  2.055 -> 2.042, p99.9 3.676 -> 3.818, load 2.301 -> 2.286 s); K22 30k click to acknowledgement
+  6.65 -> 7.25 ms, commit 6.61 -> 7.22 ms (the core's commit, which the round does not touch; R2-L
+  read the same code 7.29 -> 6.95).
+- **Gates** (fresh on the branch): clippy's warning set 14, equal to the base's (diffed); missing
+  docs 0; debug lib tests 2,921 passed / 0 failed / 239 ignored; `./run.sh --test` PASS (2,925 Rust
+  tests, 240 skipped; both Godot chains, 0 SCRIPT ERROR, no Godot script skipped).
+  `network_tool_chunk_renderer_test.gd` reads Rust's request, show and off frame (three
+  assertions), and its refusal check sends the refusal's number to Rust's show instead of writing
+  the script's preview.
+
+**Verdict.** Every bar holds: **R2 is done.**
+
 ### The pick's graded preparation halved (round PB, `ROAD-116`)
 
 Round PB of `ROAD-112` (branch `roadtools-pb`, R2-7 on `dev` `75523322`). **Bisect.** The
