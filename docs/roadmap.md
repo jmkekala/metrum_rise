@@ -29,6 +29,19 @@ Simulation engine: **`SIM-02` is done (2026-10-22)**. Its scheduler remains auth
 the road refactor. `PERF-07` accepts 30k at both speeds and 100k at 1× on unpreempted frames;
 100k at 32× remains `PERF-08`. See the [engine contract](simulation.md#sim-02-scheduler-refactor).
 
+**GDScript to Rust (the user's audit, 2026-11-18):** a read-only audit of every GDScript file
+against the thin-bridge rule found no simulation, economy, routing or agent outcome computed in
+script; about 5,200 of 51,300 script lines (estimate) hold rule copies, gesture decisions or
+renderer bookkeeping that belong in Rust. Order, two independent lanes, each round on the user's
+go:
+- **Tools:** `CODE-31` part 1 (the production area's verdict, the pending placement guarded), part
+  2 (one batch cross-section apply, one undo record), part 3 (sculpt and night value; a visual
+  change shown to the user); then `CODE-34` (zoning gestures, after `ZONE-08`), `CODE-35` (tool and
+  window rule copies), `CODE-36` (asset editor rules).
+- **Renderers:** `RENDER-51` (after `RENDER-40`, widened), `RENDER-58` (water patch book),
+  `RENDER-52`'s edit half (with the signs), `RENDER-30`, `RENDER-53`'s measurement (with the water
+  reflection), `RENDER-59` (one GLB path, last).
+
 **`ROAD-68` — `refactor`, `done`, `P1` (2026-10-23; every gate `A`-`H` closed on branch
 `road68-H` 2026-10-29, `ROAD-68-H` round 6; done 2026-10-30 when `road` took it, on `main` the same day;
 its carried misses are tracked under their own IDs):** replace the legacy road-surface
