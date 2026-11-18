@@ -269,6 +269,10 @@ pub(crate) struct SimulationSnapshot {
     pub(crate) zoning: Option<ZoningParcelRemovalUndo>,
     /// The cell paint a road stroke erased under its pieces (`ZONE-09`); undo restores it.
     pub(crate) cells: Option<crate::simulation::zoning::CellPaintUndo>,
+    /// The roads' curb frames as they stood before a road edit (`ROAD-118` round JS5c): undo puts
+    /// the restored roads' records back before refreshing them, so a road an edit grew and
+    /// rephased reads its old frames again. A persistent map: one `O(1)` shared clone.
+    pub(crate) alignments: Option<crate::simulation::zoning::RoadAlignmentRecords>,
     /// Building/economy runtime state.
     pub(crate) runtime: Option<SimulationRuntimeSnapshot>,
     /// The undo group (`ROAD-112` round F): one undo restores every record of the newest group,

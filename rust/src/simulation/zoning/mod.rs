@@ -31,6 +31,7 @@ pub(crate) use system::{
     road_piece_newly_covers,
 };
 pub use zone_type::ZoneType;
+pub(crate) use cells::RoadAlignmentRecords;
 
 /// Unit tests for the parcel zoning system.
 #[cfg(test)]

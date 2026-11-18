@@ -16750,6 +16750,102 @@ workers, run and exclusive timing locks for timed rows, the machine shared with 
   sides; 30k 1x mean 2.066 / 2.072 ms, every component level, acceptance PASS on both. K22 30k
   click-to-ack 6.83 / 6.85 ms.
 
+#### Road ends make way along their own line (round JS5c)
+
+Branch `roadtools-js5c` off `dev` `83326a0b` (JS5a and `ROAD-125` landed). The user's decision D2
+(a): two road ends whose lines meet make a corner where the lines meet, both roads straight; the
+old end grows a few metres along its own line. JS5a's arc into a road end stays only where the
+lines do not meet so (`validation/corner.rs`).
+
+- **The corner.** A stroke end whose cap touches a road end's cap (JS4a's contact), where the
+  stroke's own line and the old road's line meet **ahead of both ends**: the corner node stands
+  where the lines meet. The stroke runs straight on to it (a straight lead-in, trim 0; up to the
+  reach over the sine of 25 degrees, as a side contact's run) and the old road grows straight on
+  to it along its own last segment's direction, by more than 5 cm and at most the reach (the two
+  roadbed half widths). The two arms at the corner stand at least 25 degrees apart (`ROAD-54`'s
+  arm limit). Nothing drawn moves and no point of the old road moves: it keeps its id, its
+  direction and every point bit for bit, plus one point, the corner. The corner end joins nothing
+  by the topology's 2 m end join (`StrokeGrade::holding_ends`): it is joined through the growth
+  only. Where the lines are parallel, meet behind an end, meet farther than those bounds or under
+  the arm limit, the end keeps JS5a's arc into the road end (`ref-1`: in line with an offset).
+- **The pass.** A stroke whose side passes a road end's cap (the end more than the topology's
+  2 m end join and less than the reach from the stroke's centreline), where the old road's line
+  meets the stroke at 25 degrees or more within the reach and at least 2 m from either end of the
+  stroke: the old road grows straight on to that point and the stroke is split there, a T. A road
+  the stroke crosses or reaches within 2 m anywhere, or that ends at a node the stroke's ends
+  stand on or a corner grows, is left to the topology as before.
+- **How it builds.** The growth is a piece of road the plan lays from the road end with the live
+  road's own record (cross-section, lanes, parking, median, attributes), after the stroke: a
+  corner's to the stroke's end node, a passed end's through the topology like any road drawn from
+  that end (`process_intersections_splitting_at`), whose end on the stroke's centreline splits the
+  stroke. JS2's dissolve then joins the piece to the old road (the road end is an empty joint by
+  construction); a growth that does not dissolve refuses the stroke. One plan, one undo group;
+  the preview is the commit. The corner is recorded per stroke end
+  (`RoadPreviewValidation::growths`, `PreparedRoadInput::growths`) and replayed by `built_stroke`;
+  passes are found per build from the excerpt's roads.
+- **Guards** (as JS3's): a road end grows only when it is a plain joint of one ground car road
+  (`NodeType::Junction`, no authored crossing, no vehicle turn rule, no pocket, ring or structure)
+  that no occupied parcel fronts within the reach of its end (`RoadFrontages::fronted`), and when
+  no other road, walkways included, lies within 2 m of the growth or the lead-in. A guarded end
+  keeps JS5a's arc (a stroke end) or stays as it is (a passed end). A corner whose bend does not
+  lay out gives way to JS5a's arc once (refused poses only, within `MAX_PLAN_BUILDS`).
+- **Still refused** (JS5a's two refusals, DECISION-JS5a's test cases): an end on a 4-lane street
+  12 m from its T and an end on a road 5 m from an occupied joint. Neither touches a road end, so
+  neither the corner nor the pass applies; no arc within the reach fits, and the refusal names the
+  place.
+- **Bounds.** Per touched road end: `O(degree + points)` for the guard and one frontage probe,
+  one edge R-tree query of the growth's and lead-in's box, `O(log E + candidates x points)`.
+  Per build, the pass: over the excerpt's roads (already copied), a road end's nearest distance to
+  the stroke `O(stroke points)`, and for one within reach the road against the stroke `O(road
+  points x stroke points)`; no allocation unless an end is passed. The growth's topology pass is
+  the stroke's own (local). Nothing per city, no new spatial structure.
+- **Tests:** `road_junction_spacing::corners` (`ours-2` at 46 degrees and the 30 and 90 degree
+  caps, `ref-3`'s square corner, differing road types (a 4-lane street and a parked 2-lane
+  stroke), a house and a walkway guarding the end, the pass's T, a corner's game saved and
+  loaded); each built case previews and commits with its preview, keeps every drawn point outside
+  the lead-in and every old road point bit for bit (the grown road plus its one point), leaves no
+  node without a road, and undo and a second commit restore graph, roadbed, zoning alignments and
+  buildings bit for bit. `lead_ins::caps_over_a_road_end_join_it_through_a_lead_in` keeps the
+  in-line case (the arc); its 30, 46 and 90 degree cases moved to the corner test.
+
+**Fresh, 2026-11-18** (base `dev` `83326a0b`, release library `e87fb903667634b0`; branch code
+`85b70b19`, library `b146e79324a87988`; release test binaries `152dc579` and `6711e510`; session
+bench binaries `a9278464` and `58b97d54`; pinned to the performance cores, eight workers, run and
+exclusive timing locks, the machine shared with other sessions):
+
+- **Gates.** Clippy warning set equal to the base's (16 = 16); debug `cargo test --lib` 2,897
+  passed, 0 failed, 239 ignored; missing docs 0; `./run.sh --test` passes (Rust 2,901 passed, 240
+  skipped; both Godot chains pass, no script error). Its first run failed
+  `placement_demolition_test` once (the industry area quote answered `pending` while the core was
+  held, under a load average of 28 from another session); the rerun passed every stage.
+- **Products.** Kuopio's 78 drag-probe commits and the 17 gameplay fixtures equal on every field:
+  no stroke there makes a corner or passes a road end's cap.
+- **Per move.** Allocation probe (heaptrack `--record-only`, n = 0 / 20 / 200): base 2,415,835 /
+  2,414,702 / 2,416,664, branch 2,429,535 / 2,429,603 / 2,429,654: zero per move (the branch's
+  constant is its setup). Session bench, 30k locality, C B B C twice: straight p50 103.2 / 105.5 /
+  104.9 / 102.6 us and 104.6 / 104.7 / 103.4 / 102.5 us, curve p50 113.6 / 115.8 / 115.8 / 113.1 us
+  and 115.5 / 115.1 / 114.2 / 113.2 us, digests equal: level.
+- **Level F timing** with K22 (`./run.sh --timing --level F --k22 --branch-cache ...`; the path rule
+  reads F for the zoning and snapshot files). 30k 1x day: every metric level (mean 2.047 / 2.059 ms,
+  p99.9 3.71 / 3.76, max unpreempted 5.00 / 4.90), acceptance PASS both; K22 30k click-to-ack
+  6.80 / 6.69 ms. 30k 32x C B B C: mean 4.236 / 4.229 ms, p99 and p99.9 level, max unpreempted
+  WORSE (+7.0 % against 6.0 %: 8.45 / 7.47 control, 8.43 / 8.60 branch; three of the four rows the
+  known exception `PERF-17`). Its rerun (one C B B C): mean 4.171 / 4.168 ms, p99.9 and max
+  unpreempted better (-8.5 %, -7.0 %), `load_s` WORSE from one branch row (3.03 s; the other three
+  rows 2.29-2.31 s; the first session's `load_s` level, 2.303 / 2.315 s). The tick runs no road
+  plan and no undo; the one-row outliers read as the shared machine's noise.
+- **Per pose.** `benchmark_road_preview_stages` C B B C twice, plan p50 (sloped T, sloped branch,
+  divided T): base 0.34 / 0.66 / 0.87, 0.30 / 0.55 / 0.92, 0.35 / 0.75 / 0.67 and 0.45 / 0.73 /
+  0.75 ms; branch 0.52 / 0.49 / 0.79, 0.37 / 0.70 / 0.56, 0.42 / 0.61 / 0.82 and 0.32 / 0.41 /
+  0.55 ms: within the spread (spread on one binary up to 1.5x between passes).
+- **Locality** (24 to 600,024 agents, 0 to 391 background roads): identical local products at every
+  size. Compile p50 by size: plain T base 0.54 / 0.18 / 0.20 / 0.21 and 0.19 / 0.18 / 0.19 /
+  0.21 ms, branch 0.18 / 0.19 / 0.21 / 0.19 and 0.18 / 0.19 / 0.21 / 0.23 ms; touching (C B B C)
+  base 0.09-0.12 ms, branch 0.09-0.11 ms throughout; the corner (`populated_corner_road_plan_
+  scaling`) 0.08 / 0.08 / 0.10 / 0.09 and 0.08 / 0.08 / 0.09 / 0.11 ms; the pass
+  (`populated_passing_road_plan_scaling`) 0.42 / 0.13 / 0.14 / 0.16 and 0.15 / 0.19 / 0.18 /
+  0.17 ms: no trend with the city.
+
 ### Moving and reshaping built roads (`ROAD-113`)
 
 One geometry edit gives a set of edges a new horizontal shape and a set of nodes a new position

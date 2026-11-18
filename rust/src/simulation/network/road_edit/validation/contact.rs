@@ -72,6 +72,8 @@ pub(crate) enum EndContact {
 pub(super) struct Touched {
     pub(super) contact: EndContact,
     pub(super) reach_m: f32,
+    // The touched road, whose end a node contact may be (round JS5c's corner).
+    pub(super) road: usize,
 }
 
 // The reach of a stroke end of roadbed half width `half_width_m` onto road `edge`: the two
@@ -137,6 +139,7 @@ pub(super) fn end_contacts(
         let free = existing[end].is_none()
             && prepared.joined_nodes[end].is_none()
             && prepared.joined_spans[end].is_none()
+            && prepared.growths[end].is_none()
             && !prepared.elevated_ends[end];
         if !free {
             continue;
@@ -174,6 +177,7 @@ pub(super) fn end_contacts(
         contacts[end] = Some(Touched {
             contact,
             reach_m: touch.reach_m,
+            road: touch.edge,
         });
     }
     Ok(contacts)
@@ -255,7 +259,7 @@ fn nearest_touch(
 }
 
 // A live car road at ground level, off any roundabout: the roads a stroke end meets by contact.
-fn meets_on_the_ground(edge: &Edge) -> bool {
+pub(super) fn meets_on_the_ground(edge: &Edge) -> bool {
     is_surface_edge(edge)
         && edge.class == EdgeClass::Standard
         && edge.roundabout.is_none()
@@ -470,6 +474,7 @@ mod tests {
             elevated_ends: [false; 2],
             joined_spans: [None; 2],
             joined_nodes: [None; 2],
+            growths: [None; 2],
             median: None,
             parking: RoadParking::NONE,
             attributes: RoadAttributes::DEFAULT,

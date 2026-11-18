@@ -111,7 +111,7 @@ impl NodeArms {
 
 // The unit horizontal direction from the first of `points` to the first that stands apart from
 // it.
-fn leaving<'a>(mut points: impl Iterator<Item = &'a Vector3>) -> Option<DVec2> {
+pub(super) fn leaving<'a>(mut points: impl Iterator<Item = &'a Vector3>) -> Option<DVec2> {
     let first = *points.next()?;
     points.find_map(|point| {
         let d = DVec2::new(f64::from(point.x - first.x), f64::from(point.z - first.z));
@@ -209,7 +209,7 @@ fn rotate(v: DVec2, angle: f64) -> DVec2 {
 
 // End `end`'s point (x, z) and the unit horizontal direction the stroke leaves it in, from the
 // nearest point back that stands apart from it. `None` for a stroke of one place.
-fn end_frame(points: &[Vector3], end: usize) -> Option<(DVec2, DVec2)> {
+pub(super) fn end_frame(points: &[Vector3], end: usize) -> Option<(DVec2, DVec2)> {
     let flat = |point: &Vector3| DVec2::new(f64::from(point.x), f64::from(point.z));
     let tip = flat(if end == 0 { points.first()? } else { points.last()? });
     let away = |point: &Vector3| {

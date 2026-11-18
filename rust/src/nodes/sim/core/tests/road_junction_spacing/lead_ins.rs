@@ -142,20 +142,15 @@ fn join(
 }
 
 // A street ending at the origin from the west. A cap over its end in line 2 m to the side (ref-1:
-// a slight bend), at 30 and 46 degrees (ours-2: the node 5.8 m ahead and 6 m beside the end) with
-// the street running on the side the stroke turns to (the arc arrives along it) and at 90 degrees
-// (the arc's radius stops it 2.4 degrees short): the end joins the road end, one road on, through
-// an arc tangent to the stroke; the drawn points before the trim stay, and the street's.
+// a slight bend): the end joins the road end, one road on, through an arc tangent to the stroke;
+// the drawn points before the trim stay, and the street's. Round JS5c: caps whose line meets the
+// street's ahead of both ends (30, 46 and 90 degrees here before) make a corner instead
+// (`corners::two_road_ends_whose_lines_meet_make_a_corner`).
 #[test]
 fn caps_over_a_road_end_join_it_through_a_lead_in() {
     let street = [[(-100.0, 0.0), (0.0, 0.0)]];
     // (label, the drawn end, the stroke's direction at it, degrees from +x)
-    let cases: [(&str, (f32, f32), f32); 4] = [
-        ("in line, 2 m beside", (6.0, 2.0), 180.0),
-        ("30 degrees", (6.696, -0.402), 150.0),
-        ("46 degrees", (8.345, 0.0), 134.0),
-        ("90 degrees", (6.0, 6.0), 270.0),
-    ];
+    let cases: [(&str, (f32, f32), f32); 1] = [("in line, 2 m beside", (6.0, 2.0), 180.0)];
     for (label, end, heading) in cases {
         let mut core = city(&street);
         let road_end = node_near(&core, v(0.0, 0.0));

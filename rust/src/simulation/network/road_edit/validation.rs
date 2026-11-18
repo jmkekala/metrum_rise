@@ -44,10 +44,12 @@ use godot::prelude::Vector3;
 use std::collections::{HashMap, HashSet};
 
 mod contact;
+mod corner;
 mod lead_in;
 mod spacing;
 
 pub(crate) use contact::EndContact;
+pub(crate) use corner::Growth;
 pub(crate) use lead_in::LeadIn;
 use contact::{Touched, end_contacts};
 use lead_in::NodeArms;
@@ -99,6 +101,8 @@ struct ValidationGraph {
     dissolves: Vec<JointDissolve>,
     // The stubs removed (`ROAD-118` round JS3), in the order done.
     stubs: Vec<StubRemoval>,
+    // Whether road ends the stroke passes grew to it (round JS5c).
+    passed: bool,
 }
 
 /// Machine-readable road-placement validation state shared by the UI and commit guard.
@@ -189,6 +193,10 @@ pub(crate) struct RoadPreviewValidation {
     /// centreline from the drawn end to the node it forms at, which [`built_stroke`] replays.
     /// `None` for an end built where it was drawn.
     pub(crate) lead_ins: [Option<LeadIn>; 2],
+    /// The road end each end's corner grows, start then end (`ROAD-118` round JS5c): the old
+    /// road runs straight on along its own line to the corner its lead-in ends at, which
+    /// [`built_stroke`] replays. `None` for an end with no corner.
+    pub(crate) growths: [Option<Growth>; 2],
 }
 
 /// Where a junction refusal happened (`ROAD-118` round JS1), in the committed graph's ids where
@@ -244,6 +252,7 @@ impl RoadPreviewValidation {
             joined_nodes: [None; 2],
             contacts: [None; 2],
             lead_ins: [None; 2],
+            growths: [None; 2],
         }
     }
 
@@ -724,7 +733,13 @@ fn validate_against_graph(
     };
     validation.contacts = touched.map(|touched| touched.map(|touched| touched.contact));
     let drawn = prepared_input;
-    let mut joins = Joins::touched(drawn, touched, half_width_m, existing_graph);
+    let mut joins = Joins::touched(
+        drawn,
+        touched,
+        half_width_m,
+        (existing_graph, frontages, terrain),
+        [start_existing, end_existing],
+    );
     let contacted = joins.any().then(|| joins.stroke(drawn));
     let prepared_input = contacted.as_ref().unwrap_or(prepared_input);
     let prepared_points = &prepared_input.points;
@@ -771,6 +786,9 @@ fn validate_against_graph(
     // The build a dissolve answered, whose junction refusal stands if the next build fails; its
     // place (a bisection of layouts) is only worked out when it is the answer.
     let mut refused_before: Option<Excerpt> = None;
+    // Whether road ends the stroke passes grow to it (round JS5c); a build they leave refused is
+    // made again without them.
+    let mut passes = true;
     let mut builds = 0;
     let excerpt = loop {
         builds += 1;
@@ -779,9 +797,9 @@ fn validate_against_graph(
             input,
             (fwd_lanes, bkw_lanes),
             terrain,
-            existing_graph,
+            (existing_graph, frontages),
             bore,
-            (&yields, &stubs),
+            (&yields, &stubs, passes),
             &validation,
         ) {
             Ok(excerpt) => excerpt,
@@ -813,6 +831,22 @@ fn validate_against_graph(
         if !more.is_empty() || !more_stubs.is_empty() {
             yields.extend(more);
             stubs.extend(more_stubs);
+            refused_before = Some(excerpt);
+            continue;
+        }
+        // A corner that does not lay out leaves its road end as it stands: the end joins it
+        // through round JS5a's arc instead (round JS5c), and the stroke is built afresh.
+        if passes && excerpt.graph.passed {
+            passes = false;
+            yields.clear();
+            stubs.clear();
+            refused_before = Some(excerpt);
+            continue;
+        }
+        if joins.unturn(drawn, half_width_m, existing_graph) {
+            joined = Some(joins.stroke(drawn));
+            yields.clear();
+            stubs.clear();
             refused_before = Some(excerpt);
             continue;
         }
@@ -851,6 +885,7 @@ fn validate_against_graph(
     let prepared_input = joined.as_ref().unwrap_or(prepared_input);
     validation.joined_nodes = prepared_input.joined_nodes;
     validation.lead_ins = joins.lead_ins;
+    validation.growths = joins.growths;
     for (snapped, node) in [
         &mut validation.start_endpoint_snapped_node_id,
         &mut validation.end_endpoint_snapped_node_id,
@@ -920,6 +955,7 @@ pub(crate) fn built_stroke(
     Joins {
         lead_ins: validation.lead_ins,
         nodes: validation.joined_nodes,
+        growths: validation.growths,
         ..Joins::default()
     }
     .stroke(prepared)
@@ -935,29 +971,76 @@ struct Joins {
     nodes: [Option<u32>; 2],
     caps_m: [f32; 2],
     widened: [bool; 2],
+    // Each end's corner (round JS5c): the road end it grows, and the road end and reach the
+    // end touched, which round JS5a's arc joins where the corner does not lay out.
+    growths: [Option<Growth>; 2],
+    corners: [Option<(u32, f32)>; 2],
 }
 
 impl Joins {
-    // The contacts' lead-ins on the `drawn` stroke, the start before the end. `O(points +
-    // degree^2)`.
+    // The contacts' lead-ins on the `drawn` stroke, the start before the end: a road end's
+    // cap whose line meets the stroke's ahead of both makes a corner (round JS5c), anything
+    // else a lead-in to its node or point. `existing` the live nodes the ends stand on.
+    // `O(points + degree^2)`, and per road end touched `O(log E + candidates x points)` and a
+    // frontage probe.
     fn touched(
         drawn: &PreparedRoadInput,
         touched: [Option<Touched>; 2],
         half_width_m: f32,
-        graph: &RegionGraph,
+        (graph, frontages, terrain): (&RegionGraph, &dyn RoadFrontages, &TerrainSystem),
+        existing: [Option<u32>; 2],
     ) -> Self {
         let mut joins = Self::default();
         for (end, touched) in touched.into_iter().enumerate() {
-            let Some(Touched { contact, reach_m }) = touched else {
+            let Some(Touched {
+                contact,
+                reach_m,
+                road,
+            }) = touched
+            else {
                 continue;
             };
             let (target, node) = match contact {
                 EndContact::Node(node) => (graph.node(node).pos, Some(node)),
                 EndContact::Road(point) => (point, None),
             };
-            joins.shape(drawn, end, (target, node, reach_m), half_width_m, graph);
+            let far = existing[1 - end].or(joins.nodes[1 - end]);
+            let corner = node.and_then(|node| {
+                corner::corner(
+                    graph,
+                    frontages,
+                    (&drawn.points, end, far),
+                    (node, road, reach_m),
+                    |x, z| terrain_height_m(terrain, x, z),
+                )
+            });
+            match (corner, node) {
+                (Some((lead_in, growth)), Some(node)) => {
+                    joins.lead_ins[end] = Some(lead_in);
+                    joins.growths[end] = Some(growth);
+                    joins.corners[end] = Some((node, reach_m));
+                }
+                _ => joins.shape(drawn, end, (target, node, reach_m), half_width_m, graph),
+            }
         }
         joins
+    }
+
+    // The first end, start before end, whose corner stands gives it up for round JS5a's arc into
+    // the road end it touched. `false` when no end has a corner. `O(points + degree^2)`.
+    fn unturn(&mut self, drawn: &PreparedRoadInput, half_width_m: f32, graph: &RegionGraph) -> bool {
+        for end in 0..2 {
+            if self.growths[end].is_none() {
+                continue;
+            }
+            let Some((node, reach_m)) = self.corners[end].take() else {
+                continue;
+            };
+            let target = graph.node(node).pos;
+            self.shape(drawn, end, (target, Some(node), reach_m), half_width_m, graph);
+            return true;
+        }
+        false
     }
 
     // End `end` of the `drawn` stroke joins live node `node` within `reach_m` (round JS3's end
@@ -1000,6 +1083,7 @@ impl Joins {
         self.nodes[end] = node;
         self.caps_m[end] = cap_m;
         self.widened[end] = false;
+        self.growths[end] = None;
     }
 
     // The first end, start before end, joining a node whose layout refuses it (`refused_at` its
@@ -1031,6 +1115,7 @@ impl Joins {
             if let Some(lead_in) = lead_in {
                 lead_in::apply(&mut built.points, end, lead_in);
                 built.joined_nodes[end] = self.nodes[end];
+                built.growths[end] = self.growths[end];
             }
         }
         built
@@ -1069,9 +1154,9 @@ fn solve_excerpt(
     prepared_input: &PreparedRoadInput,
     (fwd_lanes, bkw_lanes): (u8, u8),
     terrain: &TerrainSystem,
-    existing_graph: &RegionGraph,
+    (existing_graph, frontages): (&RegionGraph, &dyn RoadFrontages),
     bore: Option<[usize; 2]>,
-    (yields, stubs): (&[JointYield], &[StubYield]),
+    (yields, stubs, passes): (&[JointYield], &[StubYield], bool),
     validation: &RoadPreviewValidation,
 ) -> Result<Excerpt, Box<RoadPreviewValidation>> {
     let refuse = |reason| Box::new(validation.clone().with_invalid_reason(reason));
@@ -1086,8 +1171,13 @@ fn solve_excerpt(
             prepared_input.parking,
             prepared_input.attributes,
         ),
-        existing_graph,
-        (prepared_input.endpoint_snap_enabled, prepared_input.joined_nodes),
+        (existing_graph, frontages),
+        (
+            prepared_input.endpoint_snap_enabled,
+            prepared_input.joined_nodes,
+            prepared_input.growths,
+            passes,
+        ),
         terrain,
         bore,
         (yields, stubs),
@@ -1104,6 +1194,7 @@ fn solve_excerpt(
         stroke_ends,
         dissolves,
         stubs,
+        passed: _,
     } = &excerpt;
     // A dissolved joint's piece may be the stroke itself, which then runs on in the road it joins,
     // and a removed stub may be the stroke's first piece.
@@ -1364,8 +1455,13 @@ fn build_validation_graph(
         RoadParking,
         RoadAttributes,
     ),
-    existing_graph: &RegionGraph,
-    (endpoint_snap_enabled, joined_nodes): (bool, [Option<u32>; 2]),
+    (existing_graph, frontages): (&RegionGraph, &dyn RoadFrontages),
+    (endpoint_snap_enabled, joined_nodes, growths, passes): (
+        bool,
+        [Option<u32>; 2],
+        [Option<Growth>; 2],
+        bool,
+    ),
     terrain: &TerrainSystem,
     bore: Option<[usize; 2]>,
     (yields, stubs): (&[JointYield], &[StubYield]),
@@ -1394,8 +1490,8 @@ fn build_validation_graph(
         (fwd_lanes, bkw_lanes, median, parking, attributes),
         edge_class,
         existing_graph,
-        start_existing,
-        end_existing,
+        [start_existing, end_existing],
+        growths.map(|growth| growth.map(|growth| growth.node)),
     );
     for edge_idx in existing_edge_ids {
         copy_validation_graph_edge(
@@ -1491,6 +1587,14 @@ fn build_validation_graph(
         );
     validation_graph.edge_mut(new_edge_idx).base_cost = base_cost;
     validation_graph.edge_mut(new_edge_idx).physical_length = physical_length;
+    let grown = local_growths(
+        (existing_graph, frontages),
+        (&node_map, &copied_edges),
+        (prepared_points, edge_class, bore, [start_node, end_node]),
+        (growths, passes),
+        [start_existing, end_existing],
+        (fwd_lanes, bkw_lanes, median, parking, attributes),
+    )?;
     let (finalized, stroke_splits, (dissolves, stub_removals)) =
         process_validation_graph_intersections(
             &mut validation_graph,
@@ -1499,7 +1603,7 @@ fn build_validation_graph(
             terrain,
             portals.as_ref(),
             &ring_edges,
-            (yields, stubs),
+            (yields, stubs, &grown),
         )?;
     // The bare nodes a join inserted split the ring before the stroke's own splits ran.
     let splits: Vec<PlannedRoadSplit> = ring_splits
@@ -1567,6 +1671,7 @@ fn build_validation_graph(
         stroke_ends: [start_node, end_node],
         dissolves,
         stubs: stub_removals,
+        passed: grown.iter().any(|growth| growth.target.is_none()),
     })
 }
 
@@ -1582,8 +1687,8 @@ fn candidate_existing_edge_ids(
     ),
     edge_class: EdgeClass,
     existing_graph: &RegionGraph,
-    start_existing: Option<u32>,
-    end_existing: Option<u32>,
+    [start_existing, end_existing]: [Option<u32>; 2],
+    grown: [Option<u32>; 2],
 ) -> Vec<usize> {
     let mut min_x = f32::MAX;
     let mut max_x = f32::MIN;
@@ -1611,7 +1716,12 @@ fn candidate_existing_edge_ids(
         Vector3::new(min_x - pad, 0.0, min_z - pad),
         Vector3::new(max_x + pad, 0.0, max_z + pad),
     );
-    for existing_node in [start_existing, end_existing].into_iter().flatten() {
+    // The road ends the stroke's corners grow (`ROAD-118` round JS5c) with their roads.
+    for existing_node in [start_existing, end_existing]
+        .into_iter()
+        .chain(grown)
+        .flatten()
+    {
         push_incident_validation_edges(existing_graph, existing_node, &mut edge_ids);
     }
 
@@ -1683,7 +1793,7 @@ fn process_validation_graph_intersections(
     terrain: &TerrainSystem,
     portals: Option<&Portals>,
     moved_ring_edges: &[usize],
-    (yields, stubs): (&[JointYield], &[StubYield]),
+    (yields, stubs, grown): (&[JointYield], &[StubYield], &[LocalGrowth]),
 ) -> Result<
     (
         FinalizedRoadGeometry,
@@ -1716,6 +1826,32 @@ fn process_validation_graph_intersections(
         &mut allocator,
     );
     cleanup_validation_duplicate_edges(validation_graph);
+    // The road ends the edit grows (`ROAD-118` round JS5c), each a piece of its road laid on
+    // after the stroke: a corner's to the stroke's end node, a passed end's through the
+    // topology onto the stroke's centreline, which splits the stroke there.
+    let mut growth_yields = Vec::with_capacity(grown.len());
+    let mut grown_road_ends = Vec::new();
+    for growth in grown {
+        let piece = grow_edge(validation_graph, growth);
+        network.bulk_dirty_edges.insert(piece);
+        if growth.target.is_none() {
+            grown_road_ends.extend(topology::process_intersections_splitting_at(
+                &mut network,
+                validation_graph,
+                piece,
+                StrokeGrade::GROUND,
+                &[],
+                &mut zoning,
+                &mut allocator,
+            ));
+            cleanup_validation_duplicate_edges(validation_graph);
+        }
+        growth_yields.push(JointYield {
+            joint: growth.joint,
+            piece,
+            rest: None,
+        });
+    }
     if let Some(portals) = portals {
         classify_tunnel_stroke(
             validation_graph,
@@ -1737,8 +1873,18 @@ fn process_validation_graph_intersections(
     // A joined road end's neighbour lays out again (`ROAD-118`); the excerpt's second ring of
     // incidence holds its arms and their far ends.
     surface_dirty_nodes.extend(joined_road_ends);
+    surface_dirty_nodes.extend(grown_road_ends);
     let mut splits = network.recorded_road_splits.take().unwrap();
-    let dissolves = dissolve_joints(validation_graph, yields, &mut splits);
+    // The growths dissolve first, each into its road; one that does not stays a refusal.
+    let grown_joints = growth_yields.len();
+    growth_yields.extend_from_slice(yields);
+    let dissolves = dissolve_joints(validation_graph, &growth_yields, &mut splits);
+    if growth_yields[..grown_joints]
+        .iter()
+        .any(|grown| !dissolves.iter().any(|dissolve| dissolve.joint == grown.joint))
+    {
+        return Err(PREVIEW_SURFACE_GEOMETRY_REASON);
+    }
     for dissolve in &dissolves {
         // Both roads' far ends lay out again on their new lengths.
         network
@@ -1791,6 +1937,112 @@ fn dissolve_joints(
         dissolves.push(dissolve);
     }
     dissolves
+}
+
+// A road end the edit grows (`ROAD-118` round JS5c), in the excerpt's local ids: the road end,
+// its road, and the stroke's end node a corner's growth ends on (`None` for a passed road end,
+// whose growth ends at `point` on the stroke's centreline).
+#[derive(Clone, Copy)]
+struct LocalGrowth {
+    joint: u32,
+    road: usize,
+    target: Option<u32>,
+    point: Vector3,
+}
+
+// The road ends this build grows (`ROAD-118` round JS5c), in the excerpt's ids: the stroke's
+// corners (`growths`, ending on the stroke's end nodes `stroke_ends`), then, for a ground car
+// stroke, the road ends among the excerpt's roads whose caps the stroke passes
+// ([`corner::passes`]), by node, unless `passes` is off. `existing` the live nodes the stroke's
+// ends stand on.
+// `O(copied roads x road points x stroke points)`, no allocation where nothing grows.
+#[allow(clippy::type_complexity)]
+fn local_growths(
+    (existing_graph, frontages): (&RegionGraph, &dyn RoadFrontages),
+    (node_map, copied_edges): (&HashMap<u32, u32>, &HashMap<usize, usize>),
+    (points, edge_class, bore, stroke_ends): (&[Vector3], EdgeClass, Option<[usize; 2]>, [u32; 2]),
+    (growths, passes): ([Option<Growth>; 2], bool),
+    existing: [Option<u32>; 2],
+    (fwd_lanes, bkw_lanes, median, parking, attributes): (
+        u8,
+        u8,
+        Option<RoadMedian>,
+        RoadParking,
+        RoadAttributes,
+    ),
+) -> Result<Vec<LocalGrowth>, &'static str> {
+    let local = |growth: Growth, target| match (
+        node_map.get(&growth.node),
+        copied_edges.get(&growth.road),
+    ) {
+        (Some(&joint), Some(&road)) => Ok(LocalGrowth {
+            joint,
+            road,
+            target,
+            point: growth.target,
+        }),
+        _ => Err(PREVIEW_SURFACE_GEOMETRY_REASON),
+    };
+    let mut grown = Vec::new();
+    for (growth, end) in growths.into_iter().zip(stroke_ends) {
+        if let Some(growth) = growth {
+            grown.push(local(growth, Some(end))?);
+        }
+    }
+    if !passes || edge_class != EdgeClass::Standard || bore.is_some() || fwd_lanes + bkw_lanes == 0
+    {
+        return Ok(grown);
+    }
+    let half_width_m = preview_candidate_roadbed_half_width_m(
+        points, edge_class, fwd_lanes, bkw_lanes, median, parking, attributes,
+    );
+    let ends = [
+        existing[0],
+        existing[1],
+        growths[0].map(|growth| growth.node),
+        growths[1].map(|growth| growth.node),
+    ]
+    .map(|node| node.unwrap_or(u32::MAX));
+    let mut passed = Vec::new();
+    corner::passes(
+        existing_graph,
+        frontages,
+        (points, half_width_m, &ends),
+        copied_edges.keys().copied(),
+        &mut passed,
+    );
+    for growth in passed {
+        grown.push(local(growth, None)?);
+    }
+    Ok(grown)
+}
+
+// Lays `growth`'s piece (`ROAD-118` round JS5c): a copy of its road's record, every attribute
+// and the cross-section the road's, from the road end straight on to the corner node or to a new
+// node at the passed point, running the road's way. Returns the piece's id. `O(1)`.
+fn grow_edge(graph: &mut RegionGraph, growth: &LocalGrowth) -> usize {
+    let target = growth.target.unwrap_or_else(|| {
+        graph.add_node(growth.point, NodeType::Junction)
+    });
+    let mut edge = graph.edge(growth.road).clone();
+    let (from, to) = (graph.node(growth.joint).pos, graph.node(target).pos);
+    let (start, end, points) = if graph.get_valid_node(edge.end_node) == growth.joint {
+        (growth.joint, target, vec![from, to])
+    } else {
+        (target, growth.joint, vec![to, from])
+    };
+    edge.start_node = start;
+    edge.end_node = end;
+    edge.geometry = points.clone();
+    edge.physical_geometry = points;
+    edge.start_clip = 0.0;
+    edge.end_clip = 0.0;
+    let piece = graph.add_edge(edge);
+    let (base_cost, physical_length) =
+        crate::simulation::pathing::cost::CostCalculator::calculate_costs(graph.edge(piece));
+    graph.edge_mut(piece).base_cost = base_cost;
+    graph.edge_mut(piece).physical_length = physical_length;
+    piece
 }
 
 fn cleanup_validation_duplicate_edges(graph: &mut RegionGraph) {

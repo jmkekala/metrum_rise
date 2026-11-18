@@ -124,6 +124,11 @@ pub(crate) struct PreparedRoadInput {
     /// [`super::built_stroke`]): the built ends stand on them whatever the snap. The preparers
     /// leave `None`.
     pub(crate) joined_nodes: [Option<u32>; 2],
+    /// The road ends a plan grows to the ends' corners, start then end (`ROAD-118` round JS5c,
+    /// [`super::Growth`]): such an end stands where the stroke's line meets the road's, joins
+    /// that road through its growth and nothing by the topology's end join. The preparers leave
+    /// `None`.
+    pub(crate) growths: [Option<super::Growth>; 2],
     /// The stroke's median (`ROAD-80`), which its edge carries and its corridor checks widen
     /// by. Preparation never reads it: the preparers leave it `None` and
     /// [`super::plan_road_edit`] and the road tool's checks set the tool's.
@@ -154,6 +159,7 @@ impl PreparedRoadInput {
             (None, class) => StrokeGrade::of_class(class),
         }
         .joining_spans(self.joined_spans)
+        .holding_ends(self.growths.map(|growth| growth.is_some()))
     }
 }
 
@@ -262,6 +268,7 @@ fn prepare_snapped_road_input_to_visible_surface(
         elevated_ends,
         joined_spans,
         joined_nodes: [None; 2],
+        growths: [None; 2],
     }
 }
 
@@ -374,6 +381,7 @@ pub(super) fn prepare_road_input_excluding(
         elevated_ends,
         joined_spans: [None; 2],
         joined_nodes: [None; 2],
+        growths: [None; 2],
     };
     (prepared, Vec::new())
 }

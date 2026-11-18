@@ -33,6 +33,7 @@ pub(crate) use validation::{
 };
 #[cfg(test)]
 pub(crate) use validation::{EndContact, LeadIn};
+pub(crate) use validation::Growth;
 
 /// What a road plan reads of the land beside the roads (`ROAD-118` round JS3): whether a
 /// building fronts a stretch of a live road, which keeps a short stub from being removed. The

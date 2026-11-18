@@ -312,6 +312,7 @@ impl SimCore {
             trans_graph: Some(checkpoint),
             zoning: None,
             cells,
+            alignments: None,
             runtime: Some(SimulationRuntimeSnapshot::RoadDependents(dependents)),
             group: 0,
             charged: 0.0,

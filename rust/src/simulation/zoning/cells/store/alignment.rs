@@ -190,6 +190,27 @@ impl StraightRoad {
             || max.abs() <= self.precision
             || (min - length).abs() <= self.precision
     }
+
+    // A road grown along its own line past one end of its own previous record (`ROAD-118` round
+    // JS5c: a road end makes way for a corner or a T; round JS2: a dissolve's piece joins it):
+    // that end stays and the road keeps its record's phase, so its cells do not move, and the
+    // record taken back by an undo (a subdivision of the grown one) reads the phase it had. O(1).
+    fn extends(&self, previous: RoadCellAlignment) -> bool {
+        if self.source[4] != previous.source[4] || !self.continues(previous) {
+            return false;
+        }
+        let values = previous.source.map(|v| f64::from(f32::from_bits(v)));
+        let a = DVec2::new(values[0], values[1]);
+        let b = DVec2::new(values[2], values[3]);
+        let length = a.distance(b);
+        let tangent = (b - a) / length;
+        let stations = [self.points[0], self.points[self.points.len() - 1]]
+            .map(|point| (point - a).dot(tangent));
+        let min = stations[0].min(stations[1]);
+        let max = stations[0].max(stations[1]);
+        (min.abs() <= self.precision && max >= length - self.precision)
+            || (min <= self.precision && (max - length).abs() <= self.precision)
+    }
 }
 
 impl CellStore {
@@ -228,6 +249,30 @@ impl<M: CellMaps> CellStore<M> {
     /// Shares immutable road grid authority in O(1); edits copy only affected map paths.
     pub(crate) fn road_grid_snap(&self, cell_m: f64) -> super::super::snapping::RoadGridSnap {
         super::super::snapping::RoadGridSnap::new(self.road_alignments.clone(), cell_m)
+    }
+
+    /// Every road's curb frames as they stand (`ROAD-118` round JS5c): a road edit's undo record
+    /// keeps them. `O(1)`, shared with this store.
+    pub(crate) fn road_alignment_records(&self) -> RoadAlignmentRecords {
+        self.road_alignments.clone()
+    }
+
+    /// Puts back `records`' curb frames of `edges` and every road at their endpoints (the
+    /// scope [`Self::refresh_road_alignments`] refreshes), a road with none in `records` losing
+    /// its own: an undo restores the frames its edit's refresh changed before refreshing again.
+    /// O(edges + their incidences).
+    pub(crate) fn restore_road_alignments(
+        &mut self,
+        graph: &RegionGraph,
+        records: &RoadAlignmentRecords,
+        edges: &BTreeSet<usize>,
+    ) {
+        for id in CellStore::road_alignment_scope(graph, edges) {
+            match records.get(&id) {
+                Some(&record) => self.road_alignments.insert(id, record),
+                None => self.road_alignments.remove(&id),
+            };
+        }
     }
 
     /// Serializes road choices in stable source order; the save adapter remaps live edge ids.
@@ -453,7 +498,9 @@ fn select_phases(
                     .into_iter()
                     .flatten()
             })
-            .filter(|(_, old)| road.inherits_phase(*old))
+            .filter(|&&(source, old)| {
+                road.inherits_phase(old) || (source == id && road.extends(old))
+            })
             // Its own record first, or a piece's of the same base road (`ROAD-95` round R5d1).
             .min_by_key(|(source, _)| (!road.line.contains(*source), *source));
         if let Some((_, old)) = continuing {

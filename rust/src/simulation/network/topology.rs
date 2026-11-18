@@ -83,6 +83,18 @@ impl StrokeGrade {
         }
     }
 
+    /// This grade with the ends `held` (start, end) joining no road by the end join: a corner a
+    /// road end grows to (`ROAD-118` round JS5c) is joined through that growth only.
+    pub(crate) fn holding_ends(self, held: [bool; 2]) -> Self {
+        Self {
+            ground_ends: [
+                self.ground_ends[0] && !held[0],
+                self.ground_ends[1] && !held[1],
+            ],
+            ..self
+        }
+    }
+
     /// The joined spans renamed by `local` (a committed edge id to its copy in an excerpt).
     pub(crate) fn map_joined_spans(self, local: impl Fn(usize) -> usize) -> Self {
         self.joining_spans(self.joined_spans.map(|span| span.map(&local)))

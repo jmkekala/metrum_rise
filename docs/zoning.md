@@ -949,6 +949,21 @@ itself still keys as the first axis). The commit's lanes had a third divergence 
 dissolved joint kept its connection lanes, as no rebuilt road ends there; the commit now retires a
 merged node's connectors.
 
+**A grown road keeps its frames; undo puts them back (`ROAD-118` round JS5c).** A road end that
+makes way for a corner or a T grows along its own line, and round JS2's dissolve lengthens a road
+the same way. The refresh read such a road, longer than its own record, as a new source and took
+its phases afresh: the side away from the new junction rephased by up to a cell along the whole
+road, and an undo, whose shorter road is a subdivision of the grown record, kept the grown phase.
+Now a road grown past one end of its own previous record, the other end in place
+(`StraightRoad::extends`), inherits that record's frames like a subdivision, by the same curb rule;
+a side a junction's corner fixes still takes the corner's phase. A road edit's undo record keeps
+the curb frames as they stood before the edit (`SimulationSnapshot::alignments`, the store's
+persistent map, an `O(1)` shared clone), and the undo (and a rejected staged commit's rollback)
+puts back the restored roads' records
+(`CellStore::restore_road_alignments`, the refresh's scope) before refreshing them, so the frames
+and the cells derived from them return bit for bit. Bounds unchanged: one more O(1) test per
+candidate, and the restore O(scope).
+
 The ownership rule retains historical straight strips or curved groups constrained by paint or
 a lot claim, then orders candidates by depth row, canonical frame key and integer cell coordinates.
 Current road candidates establish a square's priority before retained copies are merged, so

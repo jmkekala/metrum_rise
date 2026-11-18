@@ -34,6 +34,7 @@ impl SimCore {
             trans_graph: None,
             zoning: None,
             cells: None,
+            alignments: None,
             runtime: Some(SimulationRuntimeSnapshot::CellZoningEdit(edit)),
             group: 0,
             charged: 0.0,
@@ -90,6 +91,7 @@ impl SimCore {
             },
             zoning: None,
             cells: None,
+            alignments: None,
             runtime: if inc_runtime {
                 Some(SimulationRuntimeSnapshot::PendingDemandSpawns(
                     self.pending_demand_spawns.clone(),
@@ -107,7 +109,7 @@ impl SimCore {
         let graph = self
             .region_graph
             .capture_undo_for_polyline(points, margin_m);
-        self.push_network_undo_delta(graph, None, None);
+        self.push_road_edit_undo(graph);
     }
 
     /// Captures a known local graph mutation set plus its incident junction ring.
@@ -119,7 +121,26 @@ impl SimCore {
         let graph = self
             .region_graph
             .capture_undo_for_local_topology(edge_ids, node_ids);
-        self.push_network_undo_delta(graph, None, None);
+        self.push_road_edit_undo(graph);
+    }
+
+    // A road edit's undo record, pushed before the edit changes anything: its graph checkpoint
+    // and the curb frames as they stand (`ROAD-118` round JS5c), which its undo puts back before
+    // refreshing them. `O(1)` beyond the checkpoint: the frames are a shared persistent map.
+    fn push_road_edit_undo(&mut self, graph: RegionGraphUndoDelta) {
+        self.push_undo_snapshot(SimulationSnapshot {
+            roadbed: None,
+            graded: None,
+            terrain: None,
+            water: None,
+            trans_graph: Some(graph),
+            zoning: None,
+            cells: None,
+            alignments: Some(self.zoning.cells.road_alignment_records()),
+            runtime: None,
+            group: 0,
+            charged: 0.0,
+        });
     }
 
     /// Pushes a graph edit's undo record: its local graph checkpoint, the parcels it removed and
@@ -138,6 +159,7 @@ impl SimCore {
             trans_graph: Some(graph),
             zoning,
             cells,
+            alignments: None,
             runtime: None,
             group: 0,
             charged: 0.0,
@@ -172,6 +194,7 @@ impl SimCore {
             trans_graph: None,
             zoning: None,
             cells: None,
+            alignments: None,
             runtime: Some(SimulationRuntimeSnapshot::VegetationEdit(journal)),
             group: 0,
             charged: 0.0,
@@ -261,6 +284,12 @@ impl SimCore {
         self.transit_network
             .rollback_road_edit_dependents(&mut self.allocator);
         self.region_graph.restore_undo_delta_local(&graph);
+        if let Some(alignments) = &state.alignments {
+            let edges = edge_ids.iter().copied().collect();
+            self.zoning
+                .cells
+                .restore_road_alignments(&self.region_graph, alignments, &edges);
+        }
         self.zoning
             .mark_cell_lots_for_roads(&self.region_graph, edge_ids.iter().copied());
         self.transit_network.bulk_dirty_edges.clear();
@@ -291,6 +320,7 @@ impl SimCore {
             trans_graph: None,
             zoning: None,
             cells: None,
+            alignments: None,
             runtime: Some(SimulationRuntimeSnapshot::BuildingRemoval(Box::new(
                 runtime,
             ))),
@@ -547,6 +577,7 @@ impl SimCore {
             graded,
             zoning,
             cells,
+            alignments,
             runtime,
             group: _,
             charged,
@@ -592,6 +623,16 @@ impl SimCore {
             // `O(delta records * log edges)`; the same records as the full restore.
             self.region_graph.restore_undo_delta_local(&tr_graph);
             if let Some((edge_ids, _)) = &restored_topology_scope {
+                // The frames the edit's refresh changed come back first, so the refresh below
+                // reads the roads' own records as they stood (`ROAD-118` round JS5c).
+                if let Some(alignments) = &alignments {
+                    let edges = edge_ids.iter().copied().collect();
+                    self.zoning.cells.restore_road_alignments(
+                        &self.region_graph,
+                        alignments,
+                        &edges,
+                    );
+                }
                 self.zoning
                     .mark_cell_lots_for_roads(&self.region_graph, edge_ids.iter().copied());
             }

@@ -8,6 +8,10 @@ mod maps;
 mod sources;
 
 pub(crate) use alignment::RoadCellAlignment;
+
+/// Every road's curb frames by live edge id: the store's own persistent map, which a road edit's
+/// undo record shares (`ROAD-118` round JS5c).
+pub(crate) type RoadAlignmentRecords = imbl::HashMap<usize, RoadCellAlignment>;
 pub(crate) use maps::{CellMaps, LiveMaps, SharedMaps};
 
 use super::sources::{CellCurveSource, CurveSourceKey};
@@ -101,7 +105,7 @@ pub(crate) struct CellStore<M: CellMaps = LiveMaps> {
     stale_chunks: Vec<(i32, i32)>,
     frontages: M::Map<CellKey, Vec<CellRoadFrontage>>,
     curve_sources: M::Map<CurveSourceKey, Arc<CellCurveSource>>,
-    road_alignments: imbl::HashMap<usize, RoadCellAlignment>,
+    road_alignments: RoadAlignmentRecords,
     journal: CellJournal,
     painted_count: usize,
     claimed_count: usize,

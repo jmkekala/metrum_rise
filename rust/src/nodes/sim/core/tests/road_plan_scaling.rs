@@ -18,7 +18,8 @@ mod memory;
 // in place or given that median in place (`ROAD-80`), or that one side in place; or a stroke
 // joined to a bare ring south of the T (`ROAD-62` round R7d); or a side road into the street 5 m
 // from an empty joint, which dissolves (`ROAD-118` round JS2); or a side road into the street 5 m
-// short of its dead end, whose stub goes, or 6 m from a T, which it joins (round JS3).
+// short of its dead end, whose stub goes, or 6 m from a T, which it joins (round JS3); or a road
+// whose end makes a corner with the street's dead end, or that passes it, a T (round JS5c).
 #[derive(Clone, Copy, PartialEq)]
 enum Measured {
     Ground,
@@ -26,6 +27,8 @@ enum Measured {
     StubGoes,
     EndJoin,
     Touching,
+    Corner,
+    Passing,
     Tunnel,
     OverTunnel,
     UnderBridge,
@@ -104,6 +107,23 @@ fn populated_joining_road_plan_scaling() {
 #[ignore = "unprofiled touching-end planning locality; run alone with --release --ignored --nocapture"]
 fn populated_touching_road_plan_scaling() {
     measure_populated_road_plan_scaling(false, false, false, CellScenario::None, Measured::Touching);
+}
+
+// `ROAD-118` round JS5c locality: a road from the south ending 6 m east of the street's dead end
+// and 6 m south of its line, its cap over the end's: the street grows 6 m on to the corner where
+// the lines meet, as the remote city grows.
+#[test]
+#[ignore = "unprofiled corner planning locality; run alone with --release --ignored --nocapture"]
+fn populated_corner_road_plan_scaling() {
+    measure_populated_road_plan_scaling(false, false, false, CellScenario::None, Measured::Corner);
+}
+
+// `ROAD-118` round JS5c locality: a road running north 6 m east of the street's dead end, its side
+// over the end's cap: the street grows 6 m on to it, a T, as the remote city grows.
+#[test]
+#[ignore = "unprofiled passing planning locality; run alone with --release --ignored --nocapture"]
+fn populated_passing_road_plan_scaling() {
+    measure_populated_road_plan_scaling(false, false, false, CellScenario::None, Measured::Passing);
 }
 
 // `ROAD-61` locality: a tunnel stroke through a hill beside the measured T, planned as the
@@ -682,6 +702,12 @@ fn measure_populated_road_plan_scaling(
             Measured::Touching => {
                 vec![Vector3::new(30.0, 0.0, -80.0), Vector3::new(30.0, 0.0, -6.0)]
             }
+            Measured::Corner => {
+                vec![Vector3::new(102.0, 0.0, -80.0), Vector3::new(102.0, 0.0, -6.0)]
+            }
+            Measured::Passing => {
+                vec![Vector3::new(102.0, 0.0, -80.0), Vector3::new(102.0, 0.0, 60.0)]
+            }
             Measured::Tunnel => vec![
                 Vector3::new(0.0, 0.0, -320.0),
                 Vector3::new(0.0, 0.0, -80.0),
@@ -738,7 +764,10 @@ fn measure_populated_road_plan_scaling(
             assert_eq!(
                 plan.topology_for(&core.region_graph)
                     .is_some_and(|topology| topology.dissolves_joints()),
-                matches!(measured, Measured::Dissolve | Measured::StubGoes)
+                matches!(
+                    measured,
+                    Measured::Dissolve | Measured::StubGoes | Measured::Corner | Measured::Passing
+                )
             );
             assert_eq!(
                 plan.validation().joined_nodes[1].is_some(),
@@ -746,7 +775,11 @@ fn measure_populated_road_plan_scaling(
             );
             assert_eq!(
                 plan.validation().contacts[1].is_some(),
-                measured == Measured::Touching
+                matches!(measured, Measured::Touching | Measured::Corner)
+            );
+            assert_eq!(
+                plan.validation().growths[1].is_some(),
+                measured == Measured::Corner
             );
             let preview_start = Instant::now();
             let (prepared, validation) = snapshot.validate(&request());
@@ -782,6 +815,8 @@ fn measure_populated_road_plan_scaling(
                 "stub_goes": measured == Measured::StubGoes,
                 "end_join": measured == Measured::EndJoin,
                 "touching": measured == Measured::Touching,
+                "corner": measured == Measured::Corner,
+                "passing": measured == Measured::Passing,
                 "divided": measured == Measured::Divided,
                 "one_sided": measured == Measured::OneSided,
                 "cell_reservations": cells, "remote_painted_cells": background_cells,

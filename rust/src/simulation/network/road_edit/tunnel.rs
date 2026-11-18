@@ -103,6 +103,7 @@ pub(super) fn prepare_tunnel_input(
         elevated_ends: [false; 2],
         joined_spans: [None; 2],
         joined_nodes: [None; 2],
+        growths: [None; 2],
     }
 }
 
