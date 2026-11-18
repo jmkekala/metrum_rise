@@ -45,13 +45,11 @@ pub(crate) enum LineStyle {
     GhostRefusedEdge = 6,
     /// An end's ground marker: its vertical line and its ring on the ground (round H2).
     GroundMarker = 7,
-    /// A tunnel run's outline in the footprint hue (round HU), the draft accepted; also the
-    /// preview's junction outline (`ROAD-118` round JS5b, drawn without the depth test).
+    /// A tunnel run's outline in the footprint hue (round HU), the draft accepted.
     HueOutlineValid = 8,
     /// The same, the draft still checked.
     HueOutlineChecking = 9,
-    /// The same, the draft refused; also a `roads_overlap` refusal's overlapped stretch (round
-    /// JS5b, without the depth test).
+    /// The same, the draft refused.
     HueOutlineRefused = 10,
     /// The alignment guide that took the cursor and the angle lock's ray (round UI1: thicker and
     /// more opaque than the shared guide look).
@@ -60,6 +58,12 @@ pub(crate) enum LineStyle {
     GuideNear = 12,
     /// An end's corner arc (round UI1), or its square at a right angle (round UI2).
     CornerArc = 13,
+    /// The preview's junction outline (`ROAD-118` rounds JS5b, JS5e): its own look, thicker and
+    /// lighter than the hue outline so it reads on the hue's fill and on bare ground.
+    JoinOutline = 14,
+    /// A `roads_overlap` refusal's overlapped stretch (rounds JS5b, JS5e): the outline's look in
+    /// a matching red.
+    JoinOverlap = 15,
 }
 
 /// A gizmo strip class's look.

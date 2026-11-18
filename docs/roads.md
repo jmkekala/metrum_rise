@@ -17093,7 +17093,8 @@ read as road appearing beside the cursor. The preview now shows the junction tha
 - **Drawing.** The marks travel in the preview's outcome (`PreviewOutcome::marks`, buffers reused
   pose to pose) and have one overlay in the tool's drawing (`ToolDraw::draw_marks`, one line
   surface, no depth test, the hue outline's looks: valid blue for the outline, refusal red for
-  the stretch; no palette or GDScript change). `road_tool_show_chunks` draws the shown preview's
+  the stretch; no palette or GDScript change; since round JS5e their own looks, "The join marks'
+  own look"). `road_tool_show_chunks` draws the shown preview's
   marks with its chunks; `road_tool_clear_chunks` and `road_tool_drop_chunks` hide them. Change
   gated: marks equal to those drawn last write nothing (`O(mark points)` to compare); a change
   writes in place while the padded layout holds, else rebuilds the surface. A still frame shows
@@ -17365,6 +17366,79 @@ exclusive timing locks, the machine shared with other sessions):
   and 0.09 / 0.10 / 0.09 / 0.12 ms; corner (branch) 0.08-0.11 ms; pass C B B C base 0.19 / 0.28 /
   0.18 / 0.15 and 0.15 / 0.19 / 0.16 / 0.16, branch 0.36 / 0.16 / 0.16 / 0.16 and 0.13 / 0.15 /
   0.16 / 0.17 ms: no trend with the city.
+
+#### The join marks' own look (round JS5e)
+
+Branch `roadtools-js5e` off `dev` `130e32ca` (JS5d landed). The user chose D-JS5b-1 (b): round
+JS5b drew the junction outline and a refusal's overlapped stretch in the hue outline's 2 px line,
+which read faintly on the hue's blue fill. The marks now have a look of their own, after the
+reference images' light cyan. No rule, geometry or drawing-path change.
+
+- **Two line looks** (`LineStyle::JoinOutline` 14 and `JoinOverlap` 15 in
+  `nodes/sim/road_tool/draw/lines.rs`; the shader's `LOOKS` 14 -> 16 in
+  `road_tool_line.gdshaderinc`; two entries in `road_tool_gizmos.gd`'s `PALETTE`): the junction
+  outline light cyan `(0.55, 0.92, 1.0, 0.95)`, the overlapped stretch a saturated red `(1.0, 0.22,
+  0.18, 0.95)`, both 4 px and solid (the hue outline: 2 px, `(0.35, 0.65, 1.0, 0.85)` and `(1.0,
+  0.40, 0.30, 0.9)`). The user's decision D-JS5e-1: keep the cyan; the first red, a light `(1.0,
+  0.62, 0.55)`, read salmon on pale concrete, so the stretch takes a red that reads as a refusal
+  there at noon and at night. Lighter and thicker than the hue's fill and outline, the outline
+  stands apart from the fill and from the guides' lavender; the line shader is unshaded, so the
+  colour holds at night, where the dark ground makes it read more strongly still.
+  `ToolDraw::draw_marks` picks the two looks; the hue's tunnel outlines keep theirs.
+- **Tests:** `draw::tests::join_marks_draw_only_when_they_change` reads the two new looks.
+  `road_tool_capture.gd` takes `METRUM_ROAD_TOOL_CAPTURE_HOUR` (default noon) for the night
+  stills.
+
+**Fresh, 2026-11-18** (base `dev` `130e32ca`, release library `3c063372344747a8`, release lib
+test binary `3d34228f24e82410`, session bench binary `5eb934acb274987d`, built in the base
+worktree's own cargo target directory; branch code `9ec53742`, library `ad9b3ed61adbed5a`, test
+binary `3514319d3298e79f`, bench binary `7737a3f0ea7271c0`, built in the branch worktree's own
+directory; every hash differs from the base's; the final tip adds only docs; pinned to the
+performance cores, run and exclusive timing locks for timed rows, the machine shared with other
+sessions):
+
+- **Gates.** Clippy warning set equal to the base's (16 = 16, diff 0); debug `cargo test --lib`
+  2,915 passed, 0 failed, 239 ignored; missing docs 0; `./run.sh --test` passes (Rust 2,919
+  passed, 240 skipped; both Godot chains, no script error, no skipped script). Its first run, at
+  load ~40 beside the stills' reruns, failed `road_tool_demolition_test` once ("the stroke over
+  the house commits"); the rerun on a quiet machine passed.
+- **Products.** Kuopio's 78 drag-probe commits and the 17 gameplay fixtures EQUAL in every field
+  (base library and scripts against the branch's). A first drag pair under load differed in
+  `graded` at `kuopio_01` #1 alone (the known `TERRAIN-30`); a quiet pair is equal, and the first
+  base run equals the second branch run.
+- **Captures** (gamescope headless 1920x1080; base runs use the base library with the branch
+  tree's scripts less the two look files, so only the look differs). The 43 junction preview
+  captures pixel-identical. Every tool still without a join identical: `restyle` 7/7,
+  `scurve_freeform` 3/3, `scurve_steps` 4/4, `continuous_chains` 2/2, `batch_ghost` 1/1,
+  `snapping_angle_lock`, `snapping_grid_curbs`, `snapping_guide_line` (one branch pass, 1,844 px
+  at max delta 5, is noise: the two branch passes differ more), the default set's six, `ui1`'s
+  three, `road_height_capture.gd`'s default 11/11 (against the second branch pass: the first
+  differed from both in five broad low-delta stills); the height `hue` set's low views keep their
+  known noise (13 of 23 differ between two branch passes). The stills with a join differ by their
+  marks alone: the `joins` set 7/7 at noon and 7/7 at 23:00, `continuous_from_dead_end`,
+  `ui1_square_lock`, `ui1_corner_arc_oblique`, `snapping_grid_on_road`, `snapping_grid_from_road`
+  and `hue_junction_top`, `hue_short_junction_top`, `hue_refused_top`.
+- **The marks' part of the overlay** (the joins set's drag, 120 frames, `marks_ms` and
+  `overlay_ms` p50 / p95 ms, C B B C): marks 0.0035 / 0.0071, 0.0043 / 0.0111, 0.0043 / 0.0095,
+  0.0038 / 0.0094; overlay p95 0.099, 0.110, 0.119, 0.119: level (the look changes no CPU work),
+  the marks about a tenth of the overlay's p95 on a joining drag.
+- **Allocations.** Whole-tick probe (round R2-2's, heaptrack `--record-only`): outside the preview
+  and its payload 0.00 a tick (still, hover, pose); the pose's overlay show 273.08 a tick as on
+  `dev`. Session allocation probe (n = 0 / 20 / 200 moves): base 2,429,614 / - / 2,428,610,
+  branch 2,429,504 / 2,429,522 / 2,429,189: zero per pointer move.
+- **Session bench** 30k locality C B B C: straight p50 105.1 / 103.1 / 102.7 / 103.3 us, curve
+  p50 115.7 / 113.7 / 113.3 / 113.9 us, frame digests `32cb9b4b11dccf75` and `ca3e8f6d742b48b2`
+  on every row: level. No general timing (level R, the round's own bars).
+- **The stronger red** (D-JS5e-1, code `2a09fa85`, one palette entry; the Rust library unchanged,
+  so the stills use the branch library above with the previous scripts against the new): the
+  `joins` set's two refusals differ by their stretch alone, noon and 23:00; every other tool still
+  identical (default 7, snapping 5, scurve_freeform 3, restyle 7, batch_ghost 1, scurve_steps 4,
+  continuous_chains 2, ui1 5, the five cyan-only joins but for a few scattered pixels of render
+  noise, at most 189); the height sets differ only in their known noise (low views, the default
+  set's broad low-delta differences, the two cyan junction tops by 24 and 38 px) and in
+  `hue_refused_top`'s stretch. Gates fresh: clippy set 16 = 16, debug `cargo test --lib` 2,915 /
+  0 / 239, missing docs 0, `./run.sh --test` passes (Rust 2,919 passed, 240 skipped, both Godot
+  chains, no script error). No timing (a colour constant).
 
 ### Moving and reshaping built roads (`ROAD-113`)
 

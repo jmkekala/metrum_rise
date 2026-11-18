@@ -9,7 +9,7 @@
 // terrain and the roads by `road_tool_line.gdshader`; `road_tool_line_depth.gdshader` keeps the
 // depth test (round HU's tunnel outlines).
 
-const int LOOKS = 14;
+const int LOOKS = 16;
 uniform vec4 colors[LOOKS] : source_color;
 // Line width in pixels.
 uniform float widths_px[LOOKS];

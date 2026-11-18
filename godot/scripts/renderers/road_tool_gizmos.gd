@@ -12,14 +12,15 @@
 ## handle stems in one guide look, dashed and thinner; an end's corner arc solid (round UI1; at a
 ## right angle its square, round UI2); the zoning-depth guide's outside solid and strong, its
 ## inside solid and faint (round V item 9); the grid snap's curbs solid in their own colour (item
-## 8); the batch ghost's edges (rounds G1 and V2). The same looks depth-tested
-## (`road_tool_line_depth.gdshader`) outline the hue's tunnel runs. Handles draw as filled round
-## points of a constant size, each point's kind (round V2) picking the colour and size: a placed
-## end, a control point, the chain's start, the live end (or the grabbed freeform grip), a joint
-## and a handle (a height grip too). The footprint hue (round HU) fills the ground a draft's road
-## takes, translucent, depth-tested, one material per state (valid, checking, refused and
-## hatched); the batch ghost's fill one per verdict. The palette comes from the UI theme's
-## colours (`ui_style.gd`).
+## 8); the batch ghost's edges (rounds G1 and V2); the preview's join marks, solid and thick, the
+## junction outline light cyan and an overlapped stretch a saturated red (`ROAD-118` round JS5e).
+## The same looks depth-tested (`road_tool_line_depth.gdshader`) outline the hue's tunnel runs.
+## Handles draw as filled round points of a constant size, each point's kind (round V2) picking the
+## colour and size: a placed end, a control point, the chain's start, the live end (or the grabbed
+## freeform grip), a joint and a handle (a height grip too). The footprint hue (round HU) fills the
+## ground a draft's road takes, translucent, depth-tested, one material per state (valid, checking,
+## refused and hatched); the batch ghost's fill one per verdict. The palette comes from the UI
+## theme's colours (`ui_style.gd`).
 extends Node3D
 
 const LineShader := preload("res://scripts/shaders/road_tool_line.gdshader")
@@ -59,6 +60,12 @@ const PALETTE := {
 		[Color(0.72, 0.74, 1.0, 0.95), 3.5, 12.0, 5.0],
 		[Color(0.72, 0.74, 1.0, 0.45), 2.0, 9.0, 6.0],
 		[Color(1.0, 1.0, 1.0, 0.9), 2.5, 0.0, 0.0],
+		# The preview's join marks (`ROAD-118` round JS5e), solid, drawn over everything: the
+		# junction outline a light cyan, thicker than the hue outline so it reads on the hue's blue
+		# fill and on bare ground; a `roads_overlap` refusal's stretch a saturated red that reads as a
+		# refusal on light concrete (the user's decision D-JS5e-1: a lighter red read salmon).
+		[Color(0.55, 0.92, 1.0, 0.95), 4.0, 0.0, 0.0],
+		[Color(1.0, 0.22, 0.18, 0.95), 4.0, 0.0, 0.0],
 	],
 	# The footprint hue's fill (round HU) by state: valid blue, checking the
 	# chips' warning amber, refused the HUD's refusal red (also hatched); one alpha, depth-tested.

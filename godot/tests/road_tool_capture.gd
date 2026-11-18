@@ -27,6 +27,8 @@
 ## from a road held square (round UI2: the right-angle square), an oblique branch's corner arc,
 ## and the alignment guide of a dead end shown faint near the cursor before it captures, then
 ## captured.
+## `METRUM_ROAD_TOOL_CAPTURE_HOUR` pins another hour of the day than noon (round JS5e's night
+## stills of the join marks).
 ## `METRUM_ROAD_TOOL_CAPTURE_SET=joins` writes round JS5b's (`ROAD-118`): with the Roads snap off,
 ## a stroke ending 4 m short of a road's side (a T forms), one ending in a T's open side (a
 ## crossroads), one whose cap lies over a road end in line 2 m to its side (a bend), each with the
@@ -84,7 +86,8 @@ func _run() -> void:
 	for child in _main.get_children():
 		if child is CanvasLayer:
 			child.visible = false
-	_main.get_node("SceneLighting").pin_hour_of_day(12.0)
+	var hour := OS.get_environment("METRUM_ROAD_TOOL_CAPTURE_HOUR")
+	_main.get_node("SceneLighting").pin_hour_of_day(float(hour) if hour.is_valid_float() else 12.0)
 	root.set_disable_input(true)
 	_tool = _main.get_node("RoadTool")
 	_tool.set_road_type("builtin:road_2l")

@@ -502,8 +502,8 @@ impl<B: DrawBackend> ToolDraw<B> {
     }
 
     /// Draws the preview's join marks (round JS5b) when they differ from those drawn last: one
-    /// line surface (no depth test) in the hue outline's look, valid for the junction outline and
-    /// refused for an overlapped stretch; hidden when empty. Returns whether anything was
+    /// line surface (no depth test) in the marks' own looks (round JS5e), the outline's for the
+    /// junction outline and the overlap's for an overlapped stretch; hidden when empty. Returns whether anything was
     /// written. Unchanged marks (a still frame, an untouched pose after another) write nothing;
     /// `O(mark points)` for the comparison and, on a change, the bytes and their upload in
     /// place while the padded layout holds. Allocates nothing once the buffers have grown,
@@ -518,9 +518,9 @@ impl<B: DrawBackend> ToolDraw<B> {
             return true;
         }
         let style = if marks.refused {
-            LineStyle::HueOutlineRefused
+            LineStyle::JoinOverlap
         } else {
-            LineStyle::HueOutlineValid
+            LineStyle::JoinOutline
         };
         self.mark_lines.fill(&marks.points, &marks.starts, |_| style);
         let lines = self.mark_lines.vertex_count();

@@ -249,8 +249,8 @@ fn every_object_made_is_freed() {
     assert_eq!(live.get(), 0, "the drop frees every object the drawing made");
 }
 
-// `ROAD-118` round JS5b: the preview's join marks draw as one line surface in the hue outline's
-// look (valid for the junction outline, refused for an overlapped stretch), in place while their
+// `ROAD-118` round JS5b: the preview's join marks draw as one line surface in their own looks
+// (round JS5e: the outline's, the overlap's for an overlapped stretch), in place while their
 // padded layout holds, and nothing at all while they are unchanged (a still frame, an untouched
 // pose after another).
 #[test]
@@ -287,7 +287,7 @@ fn join_marks_draw_only_when_they_change() {
     let style = |surface: &recorder::RecordedSurface| {
         f32::from_le_bytes(surface.attributes[16..20].try_into().unwrap())
     };
-    assert_eq!(style(surface), LineStyle::HueOutlineValid as u8 as f32);
+    assert_eq!(style(surface), LineStyle::JoinOutline as u8 as f32);
     // Unchanged: nothing written.
     draw.backend_mut().commands.clear();
     assert!(!draw.draw_marks(&outline.clone()));
@@ -299,13 +299,13 @@ fn join_marks_draw_only_when_they_change() {
         "{:?}",
         draw.backend().commands
     );
-    // A refusal's stretch: the refused look.
+    // A refusal's stretch: the overlap's look.
     let mut stretch = square(12.0);
     stretch.refused = true;
     assert!(draw.draw_marks(&stretch));
     assert_eq!(
         style(&draw.backend().meshes[&mesh][0]),
-        LineStyle::HueOutlineRefused as u8 as f32
+        LineStyle::JoinOverlap as u8 as f32
     );
     // The join goes: hidden once, then nothing.
     draw.backend_mut().commands.clear();
