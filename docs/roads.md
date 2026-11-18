@@ -14862,6 +14862,11 @@ still tick (its ring split further, then the cut), R2 done when both hold, recom
 same round for bar 5 only, the still tick's bar read on the idle-clock ticks (the reading would
 change, the user's call; it would meet at 15,787); (c) close R2 with both recorded as missed.
 
+**The user's decision R2L-1 (2026-11-18): (b).** The still tick's bar is read on the ticks at the
+idle clock (15,787 cycles p95 against 16,000: met), as the user put it for D2: "if the benchmark
+keeps the CPU idle, at that point it is fast enough". One more round, R2-10, moves `road_tool.gd`'s
+preview and frame state into Rust (bar 5); R2 is done when it holds.
+
 ### The pick's graded preparation halved (round PB, `ROAD-116`)
 
 Round PB of `ROAD-112` (branch `roadtools-pb`, R2-7 on `dev` `75523322`). **Bisect.** The
