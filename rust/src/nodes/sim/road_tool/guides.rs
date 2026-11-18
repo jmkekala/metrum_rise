@@ -45,8 +45,9 @@ use crate::simulation::network::guide::{DVec2, GuidePath};
 use crate::simulation::zoning::cells::CELL_DEPTH;
 use godot::prelude::Vector3;
 
-/// Metres an alignment guide runs on past the snapped point.
-pub const GUIDE_PAST_M: f64 = 12.0;
+/// Metres an alignment guide, the angle ray and the grid curbs run on past the snapped point
+/// (the user, 2026-11-18: 40 m, from 12, so a guide reads at building zoom).
+pub const GUIDE_PAST_M: f64 = 40.0;
 /// Degrees of a corner arc per chord (round UI1).
 pub const ARC_STEP_DEG: f64 = 5.0;
 /// The side of a right-angle corner's square as a fraction of the arc's radius (round UI2):

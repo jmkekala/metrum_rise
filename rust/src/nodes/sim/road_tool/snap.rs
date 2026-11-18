@@ -37,8 +37,9 @@ use godot::prelude::Vector3;
 /// keeps precedence over a guide line anyway.
 pub const GUIDE_REACH_M: f64 = 4.0;
 /// Guide lines within this many metres of the cursor that do not hold it are drawn faint (round
-/// UI1), so the player can find them before they capture: three times the reach.
-pub const GUIDE_NEAR_M: f64 = 12.0;
+/// UI1), so the player can find them before they capture: six times the reach (the user,
+/// 2026-11-18: 24 m, from 12, so guides show sooner; the reach that captures stays 4 m).
+pub const GUIDE_NEAR_M: f64 = 24.0;
 /// At most this many faint guide lines are drawn ([`near_guides`]).
 pub const GUIDE_NEAR_MAX: usize = 2;
 /// The square lock (round UI1): a stroke's first leg from a road or node takes the line across the

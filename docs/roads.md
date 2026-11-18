@@ -14990,6 +14990,23 @@ the hold, pinned to the P-cores, outside 18:00-18:15; no run recorded an overlap
 
 **Verdict.** Every bar holds: **R2 is done.**
 
+### Longer guides that show sooner (the user, 2026-11-18)
+
+The user, 2026-11-18: "guiding lines should be a bit longer. also, they should appear more
+sooner/easier". Two constants, world metres as before (no zoom):
+- `guides::GUIDE_PAST_M` 40 m (was 12, round V's V5): an alignment guide, the angle lock's ray and
+  the grid curbs run 40 m past the snapped point.
+- `snap::GUIDE_NEAR_M` 24 m (was 12, round UI1): the two nearest guides that do not hold the
+  cursor are drawn faint from 24 m.
+
+Unchanged by the user's choice: the reach that captures the cursor (`GUIDE_REACH_M` 4 m), the
+radius guides are gathered from (`GUIDE_RADIUS_M` 64 m) and the two faint lines at most
+(`GUIDE_NEAR_MAX`). Cost: the same `O(guides)` a pose and two points a line; no allocation.
+Test `near_guides_are_the_nearest_lines_in_reach_not_holding` reads 24 m; `grid_off_frames_are_unchanged`
+re-recorded (`0xa61a_7aa1_0ae5_fc7d`): drawing only, since the frames without their gizmos hash the
+same under the old and the new lengths (`0xb72e_a82f_7f69_a9a8`, the old digest held with the old
+lengths).
+
 ### The pick's graded preparation halved (round PB, `ROAD-116`)
 
 Round PB of `ROAD-112` (branch `roadtools-pb`, R2-7 on `dev` `75523322`). **Bisect.** The

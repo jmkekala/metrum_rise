@@ -241,7 +241,9 @@ fn session_grid_snap_on_a_road() {
 // arcs; with those drawing changes off too the digest still differs, as the 4 m guide reach and
 // the square lock snap some of the trail's ends. Re-recorded by round UI2 (with the square forced
 // off the old digest `0x9600_a727_6994_283d` held): its 90 degree corners draw the right-angle
-// square in place of the arc, drawing only.
+// square in place of the arc, drawing only. Re-recorded 2026-11-18 (the user: guides 40 m past
+// the cursor, faint from 24 m): drawing only, as the frames without their gizmos hash the same
+// under the old and the new lengths (`0xb72e_a82f_7f69_a9a8`).
 #[test]
 fn grid_off_frames_are_unchanged() {
     let mut frames = Vec::new();
@@ -254,7 +256,7 @@ fn grid_off_frames_are_unchanged() {
     assert!(frames.iter().any(|frame| frame.contains("snap: Node")));
     assert_eq!(
         (frames.len(), frames_digest(&frames)),
-        (36, 0x8020_4597_a6ca_e6bd)
+        (36, 0xa61a_7aa1_0ae5_fc7d)
     );
 }
 

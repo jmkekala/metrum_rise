@@ -230,7 +230,7 @@ fn guide_reach_is_four_metres() {
     );
 }
 
-// The faint set: the nearest two within 12 m that do not hold the cursor, one line once.
+// The faint set: the nearest two within 24 m that do not hold the cursor, one line once.
 #[test]
 fn near_guides_are_the_nearest_lines_in_reach_not_holding() {
     let line = |y: f64| GuideLine {
@@ -239,7 +239,7 @@ fn near_guides_are_the_nearest_lines_in_reach_not_holding() {
     };
     let raw = DVec2::ZERO;
     let guides = [
-        line(13.0),
+        line(25.0),
         line(5.0),
         line(1.0),
         // The 5 m line again from another origin and in the other sense.
@@ -249,19 +249,19 @@ fn near_guides_are_the_nearest_lines_in_reach_not_holding() {
         },
         line(-11.0),
     ];
-    // The faint reach: 12 m.
+    // The faint reach: 24 m.
     assert_eq!(
-        near_guides(&[line(11.99)], raw, [None; 2]),
-        [Some(line(11.99)), None]
+        near_guides(&[line(23.99)], raw, [None; 2]),
+        [Some(line(23.99)), None]
     );
-    assert_eq!(near_guides(&[line(12.01)], raw, [None; 2]), [None; 2]);
-    assert_eq!(GUIDE_NEAR_M, 12.0);
+    assert_eq!(near_guides(&[line(24.01)], raw, [None; 2]), [None; 2]);
+    assert_eq!(GUIDE_NEAR_M, 24.0);
     let near = near_guides(&guides, raw, [Some(line(1.0)), None]);
     assert_eq!(near, [Some(line(5.0)), Some(line(-11.0))]);
     let all = near_guides(&guides, raw, [None; 2]);
     assert_eq!(all, [Some(line(1.0)), Some(line(5.0))]);
     assert_eq!(near_guides(&[], raw, [None; 2]), [None; 2]);
-    assert_eq!(near_guides(&[line(13.0)], raw, [None; 2]), [None; 2]);
+    assert_eq!(near_guides(&[line(25.0)], raw, [None; 2]), [None; 2]);
 }
 
 // The corner's mark for a draft leaving `leaving` against `road`: the angle and the ray chosen;
