@@ -288,6 +288,7 @@ fn a_t_10_m_from_a_road_end_builds_and_the_road_end_then_keeps_its_place() {
     assert!(!node_stands_at(&core, near), "the dead end merged into the bend");
 }
 
+mod alongside;
 mod contacts;
 mod corners;
 mod lead_ins;

@@ -31,7 +31,10 @@
 ## a stroke ending 4 m short of a road's side (a T forms), one ending in a T's open side (a
 ## crossroads), one whose cap lies over a road end in line 2 m to its side (a bend), each with the
 ## outline of the junction that forms, and one meeting a road at 15 degrees 1 m off its centreline
-## (refused: the overlapped stretch outlined in the refusal's look).
+## (refused: the overlapped stretch outlined in the refusal's look). Round JS5d adds round JS5c's
+## corner (a cap over a road end at 46 degrees) and pass (a stroke 6 m beyond a road end: a T),
+## each with its piece's outline, and a stroke crossing a road at 20 degrees (refused: alongside,
+## the overlapped stretch outlined).
 extends SceneTree
 
 const RoadToolScript := preload("res://scripts/tools/road_tool.gd")
@@ -351,6 +354,11 @@ func _capture_joins() -> void:
 		["join_t_open_side", Vector3(62.0, 0.0, 8.0), Vector3(0.0, 0.0, -1.0), false],
 		["join_road_end", Vector3(306.0, 0.0, 102.0), Vector3(-1.0, 0.0, 0.0), false],
 		["join_overlap", Vector3(-30.0, 0.0, 1.0), heading.call(-15.0), true],
+		# Round JS5d: the corner and the pass at the road end (300, 100), and a crossing of the
+		# street at 20 degrees whose ends stay 10.3 m off it.
+		["join_corner", Vector3(308.345, 0.0, 100.0), heading.call(134.0), false],
+		["join_pass", Vector3(306.0, 0.0, 130.0), Vector3(0.0, 0.0, 1.0), false],
+		["join_alongside", Vector3(-40.0, 0.0, 0.0) + heading.call(20.0) * 30.0, heading.call(20.0), true],
 	]
 	for case in cases:
 		var end: Vector3 = case[1]

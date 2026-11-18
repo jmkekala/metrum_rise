@@ -28,8 +28,8 @@ pub(crate) use input::{
 pub(crate) use support::{DraftGround, RebuiltPieces, plan_road_edit};
 pub(crate) use tunnel::tunnel_run_reaches_cover;
 pub(crate) use validation::{
-    JunctionPlace, PREVIEW_MIN_ENDPOINT_SEGMENT_M, RoadPreviewValidation, built_stroke,
-    validate_road_candidate_fast, validate_road_edit,
+    JunctionPlace, MIN_CONTACT_ANGLE_DEG, PREVIEW_MIN_ENDPOINT_SEGMENT_M, RoadPreviewValidation,
+    built_stroke, validate_road_candidate_fast, validate_road_edit,
 };
 #[cfg(test)]
 pub(crate) use validation::{EndContact, LeadIn};
@@ -130,6 +130,8 @@ pub(crate) struct RoadTopologyPlan {
     dissolves: Vec<JointDissolve>,
     // The stubs the edit removed (`ROAD-118` round JS3), in local ids, in the order done.
     stubs: Vec<StubRemoval>,
+    // The road ends the edit grew (`ROAD-118` round JS5c): the first of `dissolves`.
+    grown: usize,
 }
 
 impl std::fmt::Debug for RoadTopologyPlan {
@@ -154,7 +156,7 @@ impl RoadTopologyPlan {
         finalized: FinalizedRoadGeometry,
         splits: Vec<PlannedRoadSplit>,
         stroke_ends: [u32; 2],
-        (dissolves, stubs): (Vec<JointDissolve>, Vec<StubRemoval>),
+        (dissolves, stubs, grown): (Vec<JointDissolve>, Vec<StubRemoval>, usize),
     ) -> Option<Self> {
         let mut nodes = local
             .nodes()
@@ -261,6 +263,7 @@ impl RoadTopologyPlan {
             stroke_ends: stroke_ends.map(|end| local.get_valid_node(end)),
             dissolves,
             stubs,
+            grown,
         })
     }
 
@@ -495,6 +498,10 @@ pub(crate) struct AppliedRoadTopology {
     /// The canonical nodes at the stroke's first and last point, in live ids (the preview's
     /// junction outline, `ROAD-118` round JS5b).
     pub(crate) stroke_ends: [u32; 2],
+    /// The canonical nodes where road ends the stroke passes grew onto it, in live ids, in the
+    /// order grown (the preview's junction outline, `ROAD-118` round JS5d). Empty, unallocated,
+    /// when the edit grows no passed road end.
+    pub(crate) passes: Vec<u32>,
 }
 
 impl AppliedRoadTopology {
@@ -637,8 +644,15 @@ impl RoadTopologyPlan {
             .map(|id| node_ids[*id as usize])
             .collect();
         let stroke_ends = self.stroke_ends.map(|end| node_ids[end as usize]);
+        // A corner's growth ends on a stroke end; a passed road end's on the stroke between.
+        let passes = self.dissolves[..self.grown]
+            .iter()
+            .map(|grown| node_ids[self.nodes[grown.junction as usize].canonical as usize])
+            .filter(|node| !stroke_ends.contains(node))
+            .collect();
         Some(AppliedRoadTopology {
             stroke_ends,
+            passes,
             node_ids,
             edge_ids,
             dirty_edges,

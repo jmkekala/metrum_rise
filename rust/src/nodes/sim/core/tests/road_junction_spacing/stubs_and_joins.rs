@@ -143,13 +143,14 @@ fn a_join_under_25_degrees_is_refused() {
 }
 
 // A stroke crossing the street 6 m east of the T cannot move its crossing: refused, naming the
-// two junctions and the 6 m between them. (It leans away from the side street: an end 6 m beside
-// it would touch it, round JS4a.)
+// two junctions and the 6 m between them. (It leans away from the side street, 31 degrees off
+// it: an end 6 m beside it would touch it, round JS4a, and a side nearer its line would run
+// alongside it, round JS5d.)
 #[test]
 fn a_crossing_near_a_junction_is_refused_with_the_node_named() {
     let mut core = city(&T_CITY);
     let t = node_near(&core, v(0.0, 0.0));
-    let points = stroke(&core, [v(1.0, -60.0), v(11.0, 60.0)]);
+    let points = stroke(&core, [v(-30.0, -60.0), v(42.0, 60.0)]);
     let mut view = context(&mut core);
     let refused = preview(&mut view, &points).validation;
     assert!(!refused.is_valid);

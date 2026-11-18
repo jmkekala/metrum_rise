@@ -52,10 +52,14 @@ const RUN_ROUNDING_M: f32 = 1.0e-3;
 /// 9.9998 m from its junction's arm, two 5 m half widths), are rounding, not an overlap.
 const MIN_OVERLAP_M: f32 = 0.01;
 
+// The rounding of a direction between two `f32` points, degrees: a stroke drawn at the arm limit
+// may read its segments a hair under it (round JS5d).
+const ANGLE_ROUNDING_DEG: f32 = 1.0e-3;
+
 /// The least angle between a stroke's end tangent and the road it runs onto (`ROAD-54`'s
 /// junction arm limit, degrees); under it the two roads overlap instead of meeting. A lead-in
 /// keeps its new arm as far from a node's other arms.
-pub(super) const MIN_CONTACT_ANGLE_DEG: f32 = 25.0;
+pub(crate) const MIN_CONTACT_ANGLE_DEG: f32 = 25.0;
 
 /// What a stroke end touches (`ROAD-118` round JS4a), in the committed graph's ids.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -74,6 +78,9 @@ pub(super) struct Touched {
     pub(super) reach_m: f32,
     // The touched road, whose end a node contact may be (round JS5c's corner).
     pub(super) road: usize,
+    // For an end just past a road its last stretch crosses, the stroke's run back from the end
+    // to the crossing, its `contact` (round JS5d); 0 otherwise.
+    pub(super) back_m: f32,
 }
 
 // The reach of a stroke end of roadbed half width `half_width_m` onto road `edge`: the two
@@ -82,31 +89,64 @@ pub(super) fn reach_m(half_width_m: f32, edge: &Edge) -> f32 {
     half_width_m + visual_roadbed_half_width_m(edge) - MIN_OVERLAP_M
 }
 
-/// A stroke end that would overlap a road instead of meeting it (`roads_overlap`): the end (0
-/// the start, 1 the end), the live road and the station along it nearest the end, and the
-/// angle the end's tangent makes with it there, degrees.
+/// A stroke that would overlap a road instead of meeting it (`roads_overlap`): where (a stroke
+/// end, or the stroke's side), the live road and the station along it nearest the overlap, and
+/// the angle the stroke makes with it there, degrees.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct Overlap {
-    end: usize,
+    place: OverlapPlace,
     edge: usize,
     station_m: f32,
     angle_deg: f32,
 }
 
+// Where an overlap stands: at a stroke end (0 the start, 1 the end; its tangent's angle), or along
+// the stroke's side over the drawn points `[first, last]` (round JS5d; the side's angle).
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum OverlapPlace {
+    End(usize),
+    Side([usize; 2]),
+}
+
+/// A stroke's side running on top of a road (`ROAD-118` round JS5d): the overlapped road (live
+/// id), the station along it nearest the overlap (horizontal metres from its start node), and
+/// the drawn points `[first, last]` of the stroke's stretch beside it, whole segments.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct SideOverlap {
+    /// The overlapped road.
+    pub(crate) road: usize,
+    /// The station along the road nearest the overlap.
+    pub(crate) station_m: f32,
+    /// The first and last drawn point of the stroke's overlapping stretch.
+    pub(crate) points: [usize; 2],
+}
+
 impl Overlap {
-    // `validation` refused as `roads_overlap`: the end's road and station as its place, the
-    // tangent's angle with the road as measured against the least angle.
+    // `validation` refused as `roads_overlap`: the road and station as its place (an end's in its
+    // end's slot), the angle with the road as measured against the least angle.
     pub(super) fn refuse(self, mut validation: RoadPreviewValidation) -> RoadPreviewValidation {
         validation.geometry_measured = self.angle_deg;
         validation.geometry_limit = MIN_CONTACT_ANGLE_DEG;
-        validation.endpoint_edges[self.end] = Some((self.edge, self.station_m));
-        validation.overlap_end = Some(self.end);
+        match self.place {
+            OverlapPlace::End(end) => {
+                validation.endpoint_edges[end] = Some((self.edge, self.station_m));
+                validation.overlap_end = Some(end);
+            }
+            OverlapPlace::Side(points) => {
+                validation.overlap_side = Some(SideOverlap {
+                    road: self.edge,
+                    station_m: self.station_m,
+                    points,
+                });
+            }
+        }
         validation.with_invalid_reason(PREVIEW_ROADS_OVERLAP_REASON)
     }
 }
 
 // A road whose footprint the end's cap touches: its id, its nearest centreline point's
-// distance and station, the segment holding it and its horizontal length.
+// distance and station, the segment holding it and its horizontal length; for an end just past
+// it, the stroke's run back to the crossing and the crossing (round JS5d).
 #[derive(Clone, Copy)]
 struct Touch {
     edge: usize,
@@ -115,6 +155,7 @@ struct Touch {
     segment: usize,
     length_m: f32,
     reach_m: f32,
+    crossed: Option<(f32, Vector3)>,
 }
 
 /// What each end of `prepared` touches, start then end, and its reach (`ROAD-118` round JS4a;
@@ -155,6 +196,15 @@ pub(super) fn end_contacts(
         let Some(touch) = nearest_touch(graph, points, end, tip, half_width_m) else {
             continue;
         };
+        if let Some((back_m, point)) = touch.crossed {
+            contacts[end] = Some(Touched {
+                contact: EndContact::Road(point),
+                reach_m: touch.reach_m,
+                road: touch.edge,
+                back_m,
+            });
+            continue;
+        }
         let contact = match touch_node(graph, &touch, tip) {
             Some(node) => EndContact::Node(node),
             None => match carry(graph, &touch, tip, tangent, end) {
@@ -178,9 +228,274 @@ pub(super) fn end_contacts(
             contact,
             reach_m: touch.reach_m,
             road: touch.edge,
+            back_m: 0.0,
         });
     }
-    Ok(contacts)
+    match side_overlap(points, half_width_m, graph) {
+        Some(overlap) => Err(overlap),
+        None => Ok(contacts),
+    }
+}
+
+// The first place, in the stroke's order, where the stroke's side runs on top of a ground car
+// road (`ROAD-118` round JS5d): a stroke segment and a road segment whose footprints overlap
+// (their centrelines nearer than the reach where they lie beside each other, measured across)
+// and which meet under the arm limit: running alongside, or crossing under 25 degrees. Segments
+// that only meet end to end (a road continued on its line) lie beside each other nowhere. The
+// ends' own meetings are the end rules': a crossing at a stroke end standing on the centreline
+// (the topology joins it; its arm angle judges it), and a stretch beside a road that runs on
+// unbroken within the reach to a stroke end, which then touches that road or stands on its node
+// (a lead-in, a join, a corner, or the topology's join and its arm angle judge it). Road ends'
+// meetings alike are not the side rule's: a road end (a node with no other road) crossing the
+// stroke standing on its centreline, or a stretch beside the stroke running on unbroken within
+// the reach to the road's end (round JS5c's pass at 25 degrees or more; under that, as before).
+// Lowest segment first, then lowest road id and segment. Per stroke segment one edge R-tree query of
+// its bounds padded by the half width and [`MAX_ROADBED_HALF_WIDTH_M`] and an `O(1)` test per
+// candidate road segment; per overlapping pair a walk to the ends, `O(points x road points)`:
+// `O(segments x (log E + candidates x points))`, local, no allocation.
+fn side_overlap(points: &[Vector3], half_width_m: f32, graph: &RegionGraph) -> Option<Overlap> {
+    let pad = half_width_m + MAX_ROADBED_HALF_WIDTH_M;
+    let pad = Vector3::new(pad, 0.0, pad);
+    let last = points.len() - 1;
+    for segment in 0..last {
+        let stroke = (points[segment], points[segment + 1]);
+        let low = Vector3::new(stroke.0.x.min(stroke.1.x), 0.0, stroke.0.z.min(stroke.1.z));
+        let high = Vector3::new(stroke.0.x.max(stroke.1.x), 0.0, stroke.0.z.max(stroke.1.z));
+        // The overlapped road and its segment, and the overlap.
+        let mut found: Option<(usize, usize, Overlap)> = None;
+        graph.visit_edges_near_aabb(low - pad, high + pad, |edge| {
+            let record = graph.edge(edge);
+            if found.is_some_and(|(best, ..)| best < edge) || !meets_on_the_ground(record) {
+                return;
+            }
+            let reach_m = reach_m(half_width_m, record);
+            let geometry = &record.geometry;
+            let near = Vector3::ONE * reach_m;
+            let (near_low, near_high) = (low - near, high + near);
+            for (road_segment, pair) in geometry.windows(2).enumerate() {
+                let road = (pair[0], pair[1]);
+                if found.is_some_and(|(best, best_segment, _)| {
+                    (best, best_segment) < (edge, road_segment)
+                }) {
+                    break;
+                }
+                // Only a road segment whose box meets the stroke segment's padded by the reach
+                // can lie within it.
+                if road.0.x.max(road.1.x) < near_low.x
+                    || road.0.x.min(road.1.x) > near_high.x
+                    || road.0.z.max(road.1.z) < near_low.z
+                    || road.0.z.min(road.1.z) > near_high.z
+                {
+                    continue;
+                }
+                let Some(beside) = beside(stroke, road, reach_m) else {
+                    continue;
+                };
+                let meeting = (beside.crosses, reach_m);
+                if end_meeting(points, segment, geometry, meeting)
+                    || road_end_meeting(graph, edge, road_segment, points, meeting)
+                {
+                    continue;
+                }
+                let within = |point: &Vector3| {
+                    nearest_point(geometry, *point).is_some_and(|(distance, ..)| distance < reach_m)
+                };
+                // The stroke's stretch beside the road: whole segments on from this one while
+                // their points stay within the reach.
+                let mut first = segment;
+                while first > 0 && within(&points[first]) {
+                    first -= 1;
+                }
+                let mut last_point = segment + 1;
+                while last_point < last && within(&points[last_point]) {
+                    last_point += 1;
+                }
+                found = Some((
+                    edge,
+                    road_segment,
+                    Overlap {
+                        place: OverlapPlace::Side([first, last_point]),
+                        edge,
+                        station_m: horizontal_run_m(&geometry[..=road_segment]) + beside.along_m,
+                        angle_deg: beside.angle_deg,
+                    },
+                ));
+                break;
+            }
+        });
+        if let Some((.., overlap)) = found {
+            return Some(overlap);
+        }
+    }
+    None
+}
+
+// A stroke segment beside a road segment: the angle between their lines (degrees, `[0, 90]`),
+// the station along the road segment nearest the middle of where they lie beside each other, and
+// whether they cross.
+struct Beside {
+    angle_deg: f32,
+    along_m: f32,
+    crosses: bool,
+}
+
+// Whether stroke segment `(p, q)` lies beside road segment `(a, b)` within `reach_m` under the arm
+// limit (horizontal): the road segment's shadow on the stroke segment's line overlaps the stroke
+// segment by more than [`MIN_OVERLAP_M`] (segments meeting end to end do not lie beside each
+// other), and over that stretch the two are nearer than the reach. `O(1)`.
+fn beside((p, q): (Vector3, Vector3), (a, b): (Vector3, Vector3), reach_m: f32) -> Option<Beside> {
+    let (sx, sz) = (q.x - p.x, q.z - p.z);
+    let (rx, rz) = (b.x - a.x, b.z - a.z);
+    let (stroke_m, road_m) = (sx.hypot(sz), rx.hypot(rz));
+    if stroke_m <= 0.0 || road_m <= 0.0 {
+        return None;
+    }
+    let (ux, uz) = (sx / stroke_m, sz / stroke_m);
+    let angle_deg = angle_deg((ux, uz), (rx, rz));
+    if angle_deg >= MIN_CONTACT_ANGLE_DEG - ANGLE_ROUNDING_DEG {
+        return None;
+    }
+    // The road segment's shadow on the stroke segment, in metres along it.
+    let shade = |point: Vector3| (point.x - p.x) * ux + (point.z - p.z) * uz;
+    let (ta, tb) = (shade(a), shade(b));
+    let from_m = ta.min(tb).max(0.0);
+    let to_m = ta.max(tb).min(stroke_m);
+    if to_m - from_m <= MIN_OVERLAP_M {
+        return None;
+    }
+    let at = |m: f32| Vector3::new(p.x + ux * m, p.y, p.z + uz * m);
+    let (c, d) = (at(from_m), at(to_m));
+    let crosses = segments_cross((p, q), (a, b));
+    let distance_m = if crosses {
+        0.0
+    } else {
+        segment_distance(c, (a, b))
+            .min(segment_distance(d, (a, b)))
+            .min(segment_distance(a, (c, d)))
+            .min(segment_distance(b, (c, d)))
+    };
+    if distance_m >= reach_m {
+        return None;
+    }
+    let middle = at(0.5 * (from_m + to_m));
+    let t = (((middle.x - a.x) * rx + (middle.z - a.z) * rz) / (road_m * road_m)).clamp(0.0, 1.0);
+    Some(Beside {
+        angle_deg,
+        along_m: t * road_m,
+        crosses,
+    })
+}
+
+// The horizontal length of the polyline `points`. `O(points)`.
+fn horizontal_run_m(points: &[Vector3]) -> f32 {
+    points
+        .windows(2)
+        .map(|pair| (pair[1].x - pair[0].x).hypot(pair[1].z - pair[0].z))
+        .sum()
+}
+
+// The horizontal distance from `point` to segment `(a, b)`.
+fn segment_distance(point: Vector3, (a, b): (Vector3, Vector3)) -> f32 {
+    let (dx, dz) = (b.x - a.x, b.z - a.z);
+    let length_squared = dx * dx + dz * dz;
+    let t = if length_squared > 0.0 {
+        (((point.x - a.x) * dx + (point.z - a.z) * dz) / length_squared).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    (a.x + t * dx - point.x).hypot(a.z + t * dz - point.z)
+}
+
+// Whether segment `segment` of polyline `points`, beside the polyline `other` (whether they
+// cross, and the reach), is an end's meeting with it (see `side_overlap`), the ends `ends` (start,
+// end) being ends that count: crossing it at such an end standing on `other`'s centreline, or
+// not crossing it and with every point from it to such an end within the reach.
+// `O(points x other points)`.
+fn meets_at_an_end(
+    points: &[Vector3],
+    segment: usize,
+    other: &[Vector3],
+    ends: [bool; 2],
+    (crosses, reach_m): (bool, f32),
+) -> bool {
+    let last = points.len() - 1;
+    let distance = |point: &Vector3| {
+        nearest_point(other, *point).map_or(f32::INFINITY, |(distance, ..)| distance)
+    };
+    if crosses {
+        let on = |point: &Vector3| distance(point) <= INTERSECTION_NODE_CAPTURE_EPSILON;
+        return (ends[0] && segment == 0 && on(&points[0]))
+            || (ends[1] && segment + 1 == last && on(&points[last]));
+    }
+    let near = |point: &Vector3| distance(point) < reach_m;
+    (ends[0] && points[..=segment].iter().all(near))
+        || (ends[1] && points[segment + 1..].iter().all(near))
+}
+
+// Whether stroke segment `segment`, beside road `geometry`, is a stroke end's meeting with it
+// ([`meets_at_an_end`]).
+fn end_meeting(
+    points: &[Vector3],
+    segment: usize,
+    geometry: &[Vector3],
+    meeting: (bool, f32),
+) -> bool {
+    meets_at_an_end(points, segment, geometry, [true; 2], meeting)
+}
+
+// Whether segment `road_segment` of road `edge`, beside the stroke, is that road's end meeting
+// the stroke ([`meets_at_an_end`]): a road end (a node with no other road) whose line runs on to
+// the stroke's centreline, round JS5c's pass or an end left as before. A road end running
+// alongside the stroke or away from it meets nothing: the side rule judges that stretch.
+// `O(road points x points)`.
+fn road_end_meeting(
+    graph: &RegionGraph,
+    edge: usize,
+    road_segment: usize,
+    points: &[Vector3],
+    meeting: (bool, f32),
+) -> bool {
+    let record = graph.edge(edge);
+    let road_end = |node: u32| {
+        let node = graph.get_valid_node(node);
+        graph
+            .node_adjacency(node)
+            .iter()
+            .filter(|&&arm| !graph.edge(arm).deleted)
+            .count()
+            == 1
+    };
+    let geometry = &record.geometry;
+    let runs_on = |end: usize| {
+        let tip = if end == 0 {
+            geometry[0]
+        } else {
+            geometry[geometry.len() - 1]
+        };
+        end_tangent(geometry, end).is_some_and(|tangent| ray_meets(points, tip, tangent))
+    };
+    let ends = [
+        road_end(record.start_node) && runs_on(0),
+        road_end(record.end_node) && runs_on(1),
+    ];
+    ends.contains(&true) && meets_at_an_end(geometry, road_segment, points, ends, meeting)
+}
+
+// Whether the ray from `tip` along the unit direction `(tx, tz)` meets the polyline `points`
+// (horizontal; a start on it meets it). `O(points)`.
+fn ray_meets(points: &[Vector3], tip: Vector3, (tx, tz): (f32, f32)) -> bool {
+    points.windows(2).any(|pair| {
+        let (a, b) = (pair[0], pair[1]);
+        let (dx, dz) = (b.x - a.x, b.z - a.z);
+        let denominator = tx * dz - tz * dx;
+        if denominator.abs() <= 1.0e-6 * dx.hypot(dz) {
+            return false;
+        }
+        let (ax, az) = (a.x - tip.x, a.z - tip.z);
+        let run_m = (ax * dz - az * dx) / denominator;
+        let along = (ax * tz - az * tx) / denominator;
+        (0.0..=1.0).contains(&along) && run_m >= -RUN_ROUNDING_M
+    })
 }
 
 // The horizontal unit direction in which end `end` (0 the start, 1 the end) leaves the stroke,
@@ -219,6 +534,7 @@ fn nearest_touch(
     let pad = half_width_m + MAX_ROADBED_HALF_WIDTH_M;
     let reach = Vector3::new(pad, 0.0, pad);
     let mut best: Option<Touch> = None;
+    let mut crossed: Option<Touch> = None;
     let mut on_a_road = false;
     graph.visit_edges_near_aabb(tip - reach, tip + reach, |edge| {
         let record = graph.edge(edge);
@@ -235,27 +551,47 @@ fn nearest_touch(
             return;
         }
         let reach_m = reach_m(half_width_m, record);
-        if distance_m >= reach_m
-            || best.is_some_and(|best| (best.distance_m, best.edge) < (distance_m, edge))
-        {
+        if distance_m >= reach_m {
             return;
         }
-        if crosses_near_end(points, end, &record.geometry, reach_m) {
-            // An end on a road its last stretch reaches or crosses stands on the crossing or
-            // just past it: the topology joins it there, as before.
-            on_a_road |= on;
-            return;
-        }
-        best = Some(Touch {
+        let touch = Touch {
             edge,
             distance_m,
             station_m,
             segment,
             length_m,
             reach_m,
-        });
+            crossed: None,
+        };
+        if crosses_near_end(points, end, &record.geometry, reach_m) {
+            // An end just past a road its last stretch crosses, within the topology's end join
+            // but off the centreline, ends at the crossing on its own line (round JS5d): the
+            // join would move it sideways to its square foot. An end on the crossing, or past
+            // it beyond the join (the stub, round JS3), the topology joins as before.
+            let back = (on && distance_m > INTERSECTION_NODE_CAPTURE_EPSILON)
+                .then(|| crossing_back(points, end, &record.geometry, reach_m))
+                .flatten();
+            match back {
+                Some((back_m, point)) => {
+                    if crossed.is_none_or(|other| {
+                        (other.crossed.map_or(f32::INFINITY, |(m, _)| m), other.edge)
+                            > (back_m, edge)
+                    }) {
+                        crossed = Some(Touch {
+                            crossed: Some((back_m, point)),
+                            ..touch
+                        });
+                    }
+                }
+                None => on_a_road |= on,
+            }
+            return;
+        }
+        if best.is_none_or(|best| (best.distance_m, best.edge) > (distance_m, edge)) {
+            best = Some(touch);
+        }
     });
-    best.filter(|_| !on_a_road)
+    crossed.or(best).filter(|_| !on_a_road)
 }
 
 // A live car road at ground level, off any roundabout: the roads a stroke end meets by contact.
@@ -350,7 +686,7 @@ fn carry(
         _ => {
             let (a, b) = (geometry[touch.segment], geometry[touch.segment + 1]);
             Err(Overlap {
-                end,
+                place: OverlapPlace::End(end),
                 edge: touch.edge,
                 station_m: touch.station_m,
                 angle_deg: angle_deg((tx, tz), (b.x - a.x, b.z - a.z)),
@@ -419,6 +755,54 @@ fn crosses_near_end(points: &[Vector3], end: usize, road: &[Vector3], reach_m: f
         }
     }
     false
+}
+
+// Where the stroke's last `reach_m / sin 25` metres before end `end` cross the polyline `road`
+// nearest that end: the stroke's run back from the end to the crossing and the crossing, on the
+// stroke's segment at the road's height. `None` where they do not cross or only along a shared
+// line. O(those stroke points x road points).
+fn crossing_back(
+    points: &[Vector3],
+    end: usize,
+    road: &[Vector3],
+    reach_m: f32,
+) -> Option<(f32, Vector3)> {
+    let window_m = reach_m / MIN_CONTACT_ANGLE_DEG.to_radians().sin();
+    let last = points.len() - 1;
+    let mut run_m = 0.0;
+    for step in 0..last {
+        let (p, q) = if end == 0 {
+            (points[step], points[step + 1])
+        } else {
+            (points[last - step], points[last - step - 1])
+        };
+        let (dx, dz) = (q.x - p.x, q.z - p.z);
+        let length = dx.hypot(dz);
+        let mut nearest: Option<(f32, Vector3)> = None;
+        for pair in road.windows(2) {
+            let (a, b) = (pair[0], pair[1]);
+            let (rx, rz) = (b.x - a.x, b.z - a.z);
+            let denominator = dx * rz - dz * rx;
+            if !segments_cross((p, q), (a, b)) || denominator.abs() <= 1.0e-6 * length {
+                continue;
+            }
+            let (ax, az) = (a.x - p.x, a.z - p.z);
+            let t = ((ax * rz - az * rx) / denominator).clamp(0.0, 1.0);
+            let along = ((ax * dz - az * dx) / denominator).clamp(0.0, 1.0);
+            if nearest.is_none_or(|(best, _)| t < best) {
+                let point = Vector3::new(p.x + dx * t, a.y + (b.y - a.y) * along, p.z + dz * t);
+                nearest = Some((t, point));
+            }
+        }
+        if let Some((t, point)) = nearest {
+            return Some((run_m + t * length, point));
+        }
+        run_m += length;
+        if run_m >= window_m {
+            break;
+        }
+    }
+    None
 }
 
 // Whether two horizontal segments cross or touch.
@@ -540,7 +924,7 @@ mod tests {
             (10.0, -4.0),
         ]);
         let overlap = contacts_of(&flat, 5.0, &graph, [None; 2]).unwrap_err();
-        assert_eq!((overlap.end, overlap.edge), (1, 0));
+        assert_eq!((overlap.place, overlap.edge), (OverlapPlace::End(1), 0));
         assert!((overlap.angle_deg - 10.0).abs() < 0.01, "{overlap:?}");
         assert!((overlap.station_m - 110.0).abs() < 0.01, "{overlap:?}");
 

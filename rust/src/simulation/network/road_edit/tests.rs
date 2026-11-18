@@ -396,7 +396,7 @@ fn node_merge_adoption_clears_survivor_restrictions_and_rejects_open_frontier() 
             },
             vec![],
             [0, 3],
-            (vec![], vec![]),
+            (vec![], vec![], 0),
         )
         .is_none(),
         "an unmoved profile-solve node also requires complete source incidence"
@@ -414,7 +414,7 @@ fn node_merge_adoption_clears_survivor_restrictions_and_rejects_open_frontier() 
         finalized.clone(),
         vec![],
         [0, 3],
-        (vec![], vec![]),
+        (vec![], vec![], 0),
     )
     .unwrap();
     assert!(plan.nodes[1].changed);
@@ -427,7 +427,7 @@ fn node_merge_adoption_clears_survivor_restrictions_and_rejects_open_frontier() 
             finalized,
             vec![],
             [0, 3],
-            (vec![], vec![]),
+            (vec![], vec![], 0),
         )
         .is_none(),
         "a merged source node cannot omit live incident edges"

@@ -983,6 +983,7 @@ impl SimulationNode {
             junction_place,
             endpoint_edges,
             overlap_end: None,
+            overlap_side: None,
             joined_nodes: [None; 2],
             contacts: [None; 2],
             lead_ins: [None; 2],

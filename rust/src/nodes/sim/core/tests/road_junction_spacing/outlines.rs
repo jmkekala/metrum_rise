@@ -5,7 +5,8 @@
 //! chains of the piece its commit installs (a T on a road's side, a crossroads in a T's open
 //! side, a bend at a road end); a stroke that joins nothing carries none; a `roads_overlap`
 //! refusal carries the overlapped stretch of the road it names; the draft line (the rubber band)
-//! ends on the drawn end, never on the node the join builds to.
+//! ends on the drawn end, never on the node the join builds to. Round JS5d: round JS5c's corner
+//! and pass T carry their pieces' outlines too.
 
 use super::contacts::{lay, preview_parked, v};
 use super::stubs_and_joins::node_near;
@@ -113,6 +114,32 @@ fn the_outline_is_the_committed_pieces_outer_chains() {
         &committed_outline(&core, road_end, "road end"),
         "road end",
     );
+}
+
+// Round JS5c's corner and pass (round JS5d): a cap over a street's road end at 46 degrees
+// (`ours-2`) makes a corner where the two lines meet, and a stroke running north 6 m beyond the
+// street's end grows the street onto it, a T. Each preview's outline equals the outer chains of
+// the piece the commit installs at that node.
+#[test]
+fn the_corner_and_the_pass_outline_their_pieces() {
+    let street = [[(-100.0, 0.0), (0.0, 0.0)]];
+    let (dx, dz) = (134f32.to_radians().cos(), 134f32.to_radians().sin());
+    let end = v(8.345, 0.0);
+    let mut core = city(&street);
+    let preview = preview_and_commit(&mut core, [end - v(dx, dz) * 80.0, end], "corner");
+    let growth = preview.validation.growths[1].expect("a corner");
+    let corner = node_near(&core, v(growth.target.x, growth.target.z));
+    assert_outline(
+        &preview,
+        &committed_outline(&core, corner, "corner"),
+        "corner",
+    );
+
+    let mut core = city(&street);
+    let preview = preview_and_commit(&mut core, [v(6.0, -60.0), v(6.0, 60.0)], "pass");
+    assert_eq!(preview.validation.growths, [None; 2], "pass: no corner");
+    let t = node_near(&core, v(6.0, 0.0));
+    assert_outline(&preview, &committed_outline(&core, t, "pass"), "pass");
 }
 
 // A stroke on open ground, and one whose end stops a footprint short of a road end, join

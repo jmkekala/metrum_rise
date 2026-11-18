@@ -17049,6 +17049,114 @@ exclusive timing locks, the machine shared with other sessions):
   (`populated_passing_road_plan_scaling`) 0.42 / 0.13 / 0.14 / 0.16 and 0.15 / 0.19 / 0.18 /
   0.17 ms: no trend with the city.
 
+#### Roads alongside are refused (round JS5d)
+
+Branch `roadtools-js5d` off `dev` `fd2e6b02` (JS5b and JS5c landed). At ground level two roads
+meet only in a junction; JS4a-JS5c judged where a stroke's **ends** meet roads. A stroke whose
+**side** runs on top of a road, with no end involved, was still built over it, or met it in a
+junction whose arm angle refused it with a junction's reason.
+
+- **The rule** (`validation/contact.rs`, `side_overlap`, after the end rules and before the plan's
+  first build). A segment of the drawn stroke and a segment of a ground car road (standard class,
+  off any ring; walkways stay out) overlap when they lie **beside** each other (the road segment's
+  shadow on the stroke segment's line covers more than 1 cm of it: segments that only meet end to
+  end, a road continued on its line, never do), are nearer than the reach there (the two roadbed
+  half widths, JS4a's), and meet **under 25 degrees** (`ROAD-54`'s arm limit, read with a
+  thousandth of a degree for the rounding of `f32` points). That is a stroke running alongside a
+  road within the footprints, or crossing it under 25 degrees: refused as `roads_overlap` ("Roads
+  overlap: they meet at 0°, a junction needs 25°"). The refusal names the road, the station along
+  it where the footprints first overlap along the stroke and the drawn stretch beside it
+  (`RoadPreviewValidation::overlap_side`; the report reads "the stroke's side would run on top of
+  edge N at S m"). A crossing at 25 degrees or more is a junction, judged by the junction rules.
+- **Ends are the end rules'.** A meeting that belongs to an end is left to the rules that judge
+  ends: a crossing at a stroke end standing on the centreline (the topology joins it; its arm angle
+  judges it, as JS5a's fix B1 keeps), and a stretch beside a road that runs on unbroken within the
+  reach to a stroke end, which then touches that road or stands on one of its nodes (a lead-in, a
+  join, a corner, or the topology's join and its arm angle judge it). A road end alike (a node no
+  other road meets) whose line runs on to the stroke's centreline, over a stretch beside the stroke
+  running on unbroken to that end: JS5c's pass at 25 degrees or more, and under that the road end
+  stays as it stands (the dump's edge 14 ending at 9 degrees beside edge 13, which the dump's ends
+  test redraws). A road end running alongside the stroke or away from it meets nothing: its
+  stretch is the side rule's. B1's refusal of an end within 2 m off a centreline under 25 degrees
+  is the end rule's half of the same rule and stays.
+- **An end just past an oblique crossing** (DECISION-JS5a's open item). An end within the
+  topology's 2 m end join of a road its last stretch crosses was moved by that join sideways to its
+  square foot on the road, shearing the whole stroke (0.35 m at the end of a 45-degree stroke
+  0.5 m past the crossing). Such an end, off the centreline, now ends at the crossing on its own
+  line: its lead-in trims the stroke's last metres back to the crossing (`Touched::back_m`), every
+  drawn point before it stays bit for bit, and the topology finds the end on the centreline, where
+  its join moves nothing (the node stands on the centreline within `f32` rounding of the crossing
+  on the stroke's line). An end standing on the crossing, and an end past it beyond the 2 m join
+  (a stub, JS3's), are joined as before. The candidate roads of an end are now taken in an
+  order-free way (the crossed road no longer depends on the R-tree's visiting order).
+- **The preview.** A side refusal's overlapped stretch is outlined in the refusal's look like an
+  end's (`JoinMarks::overlap_beside`: the road's footprint where its centreline lies within the
+  reach of the drawn stretch the refusal names). JS5c's pass now carries its T's outline like a
+  stroke end's junction (`AppliedRoadTopology::passes`, the nodes where passed road ends grew onto
+  the stroke; the corner is a stroke end and was outlined already). The capture set `joins`
+  (`godot/tests/road_tool_capture.gd`) adds `join_corner`, `join_pass` and `join_alongside` (a
+  20-degree crossing, refused) for review.
+- **Bounds.** Per pose, after the end rules: per drawn segment one edge R-tree query of its box
+  padded by the stroke's half width and `MAX_ROADBED_HALF_WIDTH_M`, and an `O(1)` test per
+  candidate road segment; per overlapping pair a walk to the ends, `O(points x road points)`,
+  only where segments overlap: `O(segments x (log E + candidates x points))`, local, no
+  allocation. An end just past a crossing walks its window once more, `O(window points x road
+  points)`. The pass outline allocates one vector only when a passed road end grows.
+- **Tests:** `road_junction_spacing::alongside` (a stroke 6 m beside a street running past both its
+  ends refused at 0 degrees naming the street, its marks the street's footprint over the whole
+  street; a crossing 5 degrees under the arm limit (20 degrees) refused naming the street, its
+  marks 29.2 m either side of the crossing; the commit refuses both and the graph stays; a
+  crossing at the limit (25 degrees) builds a crossroads; the angles are read from
+  `MIN_CONTACT_ANGLE_DEG`, which the preview's marks now share, so a change of the limit moves
+  them; an end 0.5, 1, 1.5 and 2 m past a 45-degree crossing ends at the crossing with every
+  drawn point before it bit for bit in the committed road; each built case previews and commits
+  with its preview, leaves no node without a road also after a save and a load, and undo and a
+  second commit restore graph and roadbed bit for bit); `outlines::
+  the_corner_and_the_pass_outline_their_pieces` (each outline equals the committed piece's outer
+  chains). Unchanged and passing: the dump's 15 ends, JS5a's lead-in tests, JS5c's corner tests,
+  JS5b's outline tests.
+- **Test changed:** `stubs_and_joins::a_crossing_near_a_junction_is_refused_with_the_node_named`
+  leans its stroke 31 degrees off the side street (it ran 5 degrees off it, its side within 10 m of
+  the side street for 48 m: now `roads_overlap`); the close crossing 6 m from the T is refused as
+  before, naming both junctions.
+
+**Fresh, 2026-11-18** (base `dev` `fd2e6b02`, release library `5a7a7c45d1f183af`; branch code
+`b796b0a1`, library `27498e23989eeff6`, and the final code `e0abf998` (tests read the limit
+constant, which the marks share; library `3c117f1b9d0a788f`) for the gates and the products; release test binaries `7bd0c12b` and `ac37870b`; session
+bench binaries `5f046003` and `e950ab61`; pinned to the performance cores, eight workers, run and
+exclusive timing locks, the machine shared with other sessions):
+
+- **Gates** (on `b796b0a1` and again on `e0abf998`). Clippy warning set equal to the base's (16 =
+  16); debug `cargo test --lib` 2,914 passed, 0 failed, 239 ignored; missing docs 0; `./run.sh
+  --test` passes (Rust 2,918 passed, 240 skipped; both Godot chains pass, no script error, no
+  skipped script).
+- **Products** (both branch libraries). Kuopio's 78 drag-probe commits and the 17 gameplay
+  fixtures equal on every field: no stroke there runs alongside a road or ends just past a
+  crossing.
+- **Per move.** Allocation probe (heaptrack `--record-only`, n = 0 / 20 / 200): base 2,429,606 /
+  2,429,628 / 2,429,655, branch 2,429,631 / 2,429,615 / 2,429,612: zero per move. Session bench,
+  30k locality, C B B C: straight p50 106.1 / 102.4 / 102.6 / 103.5 us, curve p50 116.5 / 112.8 /
+  113.1 / 114.0 us, digests equal: level.
+- **Level F timing** with K22 (`./run.sh --timing --level F --k22 --branch-cache ...`; the path rule
+  reads F). 30k 1x day: every metric level (mean 2.049 / 2.066 ms, p99.9 3.90 / 3.92, max
+  unpreempted 5.01 / 4.82), acceptance PASS both; K22 30k click-to-ack 6.50 / 6.98 ms. 30k 32x C B B
+  C: mean 4.241 / 4.269 ms, p99 and p99.9 level; max unpreempted WORSE (+6.1 % against 6.0 %: 7.24 /
+  8.54 control, 8.42 / 8.33 branch, three of the four rows the known exception `PERF-17`) and
+  `mean_snapshot_ms` WORSE (+3.2 % against 2.5 %). Its rerun (one C B B C, 80 minutes later): every
+  metric level (mean 4.223 / 4.229 ms, max unpreempted +4.5 % within 6.0 %, `mean_snapshot_ms`
+  +1.6 % within 2.5 %). The tick runs no road plan.
+- **Per pose.** `benchmark_road_preview_stages` C B B C twice, plan p50 (sloped T, sloped branch,
+  divided T): base 0.48 / 0.75 / 0.68, 0.39 / 0.76 / 0.46, 0.50 / 0.72 / 0.83 and 0.55 / 0.51 /
+  0.62 ms; branch 0.75 / 0.61 / 0.89, 0.52 / 0.69 / 0.55, 0.36 / 0.73 / 0.69 and 0.38 / 0.53 /
+  0.62 ms: within the spread (one binary varied 2x between passes, the machine shared).
+- **Locality** (24 to 600,024 agents, 0 to 391 background roads): identical local products at
+  every size. Compile p50 by size: plain T base 0.21 / 0.21 / 0.21 / 0.20 and 0.21 / 0.23 / 0.20
+  / 0.21 ms, branch 0.20 / 0.20 / 0.21 / 0.23 and 0.20 / 0.19 / 0.20 / 0.21 ms; touching (C B B C)
+  base 0.71 / 0.09 / 0.11 / 0.09 and 0.09 / 0.11 / 0.12 / 0.12, branch 0.42 / 0.11 / 0.11 / 0.11
+  and 0.09 / 0.10 / 0.09 / 0.12 ms; corner (branch) 0.08-0.11 ms; pass C B B C base 0.19 / 0.28 /
+  0.18 / 0.15 and 0.15 / 0.19 / 0.16 / 0.16, branch 0.36 / 0.16 / 0.16 / 0.16 and 0.13 / 0.15 /
+  0.16 / 0.17 ms: no trend with the city.
+
 ### Moving and reshaping built roads (`ROAD-113`)
 
 One geometry edit gives a set of edges a new horizontal shape and a set of nodes a new position

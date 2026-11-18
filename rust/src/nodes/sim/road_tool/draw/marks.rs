@@ -10,24 +10,28 @@
 //!   next arm's): the piece the commit installs, since the preview's pieces are the commit's.
 //!   The roads stay where they were drawn; the outline shows the junction that forms around
 //!   them. A stroke end on open ground (a road end's cap) or on a straight joint with no piece
-//!   draws none.
+//!   draws none. A road end the stroke passes grows onto it as a T (round JS5c), outlined alike
+//!   (round JS5d).
 //! - **The overlapped stretch** of a `roads_overlap` refusal (round JS4a's `Overlap`: the end,
 //!   its road and station): the stretch of that road's centreline lying within the two roadbed
 //!   half widths of the refused end's last stretch (the contact's own window, its reach over the
 //!   sine of the 25-degree arm limit, whole segments), so where the two footprints overlap,
-//!   measured across; drawn as that stretch of the road's footprint, in the refusal's look.
+//!   measured across; drawn as that stretch of the road's footprint, in the refusal's look. A
+//!   refusal of the stroke's side (round JS5d: alongside a road, or crossing it under 25
+//!   degrees) names the stroke's stretch beside the road instead of an end's.
 //!
 //! Geometry is decided here, in the preview call; the drawing only uploads it. Every buffer is
 //! reused pose to pose.
 
 use crate::simulation::network::graph::RegionGraph;
+use crate::simulation::network::road_edit;
 use crate::simulation::network::roadbed::{PieceMesh, RoadbedSystem, visual_roadbed_half_width_m};
 use glam::DVec2;
 use godot::prelude::Vector3;
 
-// The least angle between a stroke's end and the road it runs onto (`ROAD-54`'s arm limit, as
-// `validation::contact` keeps it): the refused end's window is its reach over this sine.
-const MIN_CONTACT_ANGLE_DEG: f64 = 25.0;
+// The least angle between a stroke's end and the road it runs onto (`ROAD-54`'s arm limit,
+// `validation::contact`'s): the refused end's window is its reach over this sine.
+const MIN_CONTACT_ANGLE_DEG: f64 = road_edit::MIN_CONTACT_ANGLE_DEG as f64;
 
 // A point within this of a footprint's edge counts as on it (the closed-form crossings' rounding).
 const EDGE_ROUNDING_M: f64 = 1.0e-7;
@@ -93,11 +97,19 @@ impl JoinMarks {
 
     /// The junction outline of a valid preview: the closed outline of the node piece at each
     /// stroke end `ends` (live ids on `graph`, the graph with the plan applied) that joins a road
-    /// there (two roads or more meet), from `roadbed` (the view's roadbed with the preview's
-    /// delta installed). An end's piece is drawn once. `O(outline vertices)`.
-    pub(crate) fn outline(&mut self, graph: &RegionGraph, roadbed: &RoadbedSystem, ends: [u32; 2]) {
+    /// there (two roads or more meet), then at each node `passes` where a passed road end grew
+    /// onto the stroke (round JS5d; none of them an end), from `roadbed` (the view's roadbed with
+    /// the preview's delta installed). An end's piece is drawn once. `O(outline vertices)`.
+    pub(crate) fn outline(
+        &mut self,
+        graph: &RegionGraph,
+        roadbed: &RoadbedSystem,
+        ends: [u32; 2],
+        passes: &[u32],
+    ) {
         self.clear();
-        for (index, &node) in ends.iter().enumerate() {
+        let nodes = ends.iter().chain(passes);
+        for (index, &node) in nodes.enumerate() {
             if index == 1 && node == ends[0] {
                 continue;
             }
@@ -142,12 +154,28 @@ impl JoinMarks {
         end: usize,
         stroke_half_width_m: f32,
     ) {
+        let road_half_width_m = visual_roadbed_half_width_m(graph.edge(road));
+        let reach_m = f64::from(stroke_half_width_m) + f64::from(road_half_width_m);
+        let window = end_window(stroke, end, reach_m);
+        self.overlap_beside(graph, road, window, stroke_half_width_m);
+    }
+
+    /// The overlapped stretch of a `roads_overlap` refusal of the stroke's side (round JS5d): as
+    /// [`Self::overlap`], beside the stroke's stretch `window` (the drawn points the refusal
+    /// names) instead of an end's last stretch. `O(road points x window points)`, refused poses
+    /// only.
+    pub(crate) fn overlap_beside(
+        &mut self,
+        graph: &RegionGraph,
+        road: usize,
+        window: &[Vector3],
+        stroke_half_width_m: f32,
+    ) {
         self.clear();
         self.refused = true;
         let edge = graph.edge(road);
         let road_half_width_m = f64::from(visual_roadbed_half_width_m(edge));
         let reach_m = f64::from(stroke_half_width_m) + road_half_width_m;
-        let window = end_window(stroke, end, reach_m);
         let geometry = &edge.geometry;
         let xz = |point: Vector3| DVec2::new(f64::from(point.x), f64::from(point.z));
         let (mut low, mut high) = (DVec2::splat(f64::INFINITY), DVec2::splat(f64::NEG_INFINITY));

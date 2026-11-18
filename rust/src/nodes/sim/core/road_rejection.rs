@@ -301,11 +301,21 @@ fn validation_detail(
             None,
         ),
         "roads_overlap" => (
-            format!(
-                "the stroke's end would run on top of a road, meeting it at {:.0} degrees, under \
-                 the {:.0} degrees a junction arm needs (`ROAD-118`)",
-                validation.geometry_measured, validation.geometry_limit
-            ),
+            match validation.overlap_side {
+                Some(side) => format!(
+                    "the stroke's side would run on top of edge {} at {:.1} m, meeting it at \
+                     {:.0} degrees, under the {:.0} degrees a junction arm needs (`ROAD-118`)",
+                    side.road,
+                    side.station_m,
+                    validation.geometry_measured,
+                    validation.geometry_limit
+                ),
+                None => format!(
+                    "the stroke's end would run on top of a road, meeting it at {:.0} degrees, \
+                     under the {:.0} degrees a junction arm needs (`ROAD-118`)",
+                    validation.geometry_measured, validation.geometry_limit
+                ),
+            },
             None,
         ),
         "stroke_splits_pocket" => (
@@ -467,6 +477,7 @@ mod tests {
     fn validation() -> RoadPreviewValidation {
         RoadPreviewValidation {
             overlap_end: None,
+            overlap_side: None,
             joined_nodes: [None; 2],
             contacts: [None; 2],
             lead_ins: [None; 2],

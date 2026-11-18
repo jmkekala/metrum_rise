@@ -605,21 +605,18 @@ impl RoadPreviewContext {
         Some(result)
     }
 
-    // A `roads_overlap` refusal's overlapped stretch (`ROAD-118` round JS5b) into `marks`: the
-    // refused end's road on the replica (the graph the plan read), against the drawn stroke at
-    // its roadbed half width. Nothing for any other verdict. `O(road points x window points)`.
+    // A `roads_overlap` refusal's overlapped stretch (`ROAD-118` rounds JS5b, JS5d) into `marks`:
+    // the refused end's or side's road on the replica (the graph the plan read), against the
+    // drawn stroke at its roadbed half width. Nothing for any other verdict. `O(road points x window points)`.
     fn overlap_marks(
         &self,
         plan: &RoadEditPlan,
         validation: &RoadPreviewValidation,
         marks: &mut JoinMarks,
     ) {
-        let Some(end) = validation.overlap_end else {
+        if validation.overlap_end.is_none() && validation.overlap_side.is_none() {
             return;
-        };
-        let Some((road, _)) = validation.endpoint_edges[end] else {
-            return;
-        };
+        }
         let prepared = plan.prepared();
         let request = plan.request();
         let half_width_m = preview_candidate_roadbed_half_width_m(
@@ -631,7 +628,15 @@ impl RoadPreviewContext {
             prepared.parking,
             prepared.attributes,
         );
-        marks.overlap(&self.replica, road, &prepared.points, end, half_width_m);
+        if let Some(side) = validation.overlap_side {
+            let [first, last] = side.points;
+            let window = &prepared.points[first..=last];
+            marks.overlap_beside(&self.replica, side.road, window, half_width_m);
+        } else if let Some(end) = validation.overlap_end
+            && let Some((road, _)) = validation.endpoint_edges[end]
+        {
+            marks.overlap(&self.replica, road, &prepared.points, end, half_width_m);
+        }
     }
 
     // Applies the plan's topology to the replica and compiles what it dirtied into an `O(1)`
@@ -651,6 +656,7 @@ impl RoadPreviewContext {
         let (changed_chunks, restore) = roadbed.install(&delta);
         Some(CompiledPose {
             stroke_ends: applied.stroke_ends,
+            passes: applied.passes,
             checkpoint,
             delta,
             roadbed,
@@ -680,6 +686,7 @@ impl RoadPreviewContext {
             changed_chunks,
             restore,
             stroke_ends,
+            passes,
         } = self.compile_on_replica(plan)?;
         if let Some((hue, half_width_m)) = hue {
             hue.launch(plan, Some(&delta), &self.view, half_width_m);
@@ -699,10 +706,10 @@ impl RoadPreviewContext {
             stages.run(&mut self.graded, &mut roadbed);
         times.roadbed_ms = compile_ms + stage_times.roadbed_ms;
         times.graded_ms = stage_times.graded_ms;
-        // The junction outline (`ROAD-118` round JS5b) on the edited replica and the installed
-        // pieces: `O(outline vertices)`.
+        // The junction outline (`ROAD-118` rounds JS5b, JS5d) on the edited replica and the
+        // installed pieces: `O(outline vertices)`.
         let marks_start = Instant::now();
-        marks.outline(&self.replica, &roadbed, stroke_ends);
+        marks.outline(&self.replica, &roadbed, stroke_ends, &passes);
         times.payload_ms = stage_times.payload_ms + marks_start.elapsed().as_secs_f64() * 1000.0;
         let restore_start = Instant::now();
         self.replica.restore_undo_delta_local(&checkpoint);
@@ -835,6 +842,8 @@ struct CompiledPose {
     roadbed: RoadbedSystem,
     changed_chunks: Vec<SurfaceChunkKey>,
     restore: RoadbedRestore,
-    // The stroke's end nodes in the replica's ids (the junction outline, `ROAD-118` round JS5b).
+    // The stroke's end nodes in the replica's ids (the junction outline, `ROAD-118` round JS5b),
+    // and the nodes where passed road ends grew onto it (round JS5d).
     stroke_ends: [u32; 2],
+    passes: Vec<u32>,
 }

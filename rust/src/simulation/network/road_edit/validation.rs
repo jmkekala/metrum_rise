@@ -48,7 +48,7 @@ mod corner;
 mod lead_in;
 mod spacing;
 
-pub(crate) use contact::EndContact;
+pub(crate) use contact::{EndContact, MIN_CONTACT_ANGLE_DEG, SideOverlap};
 pub(crate) use corner::Growth;
 pub(crate) use lead_in::LeadIn;
 use contact::{Touched, end_contacts};
@@ -103,6 +103,8 @@ struct ValidationGraph {
     stubs: Vec<StubRemoval>,
     // Whether road ends the stroke passes grew to it (round JS5c).
     passed: bool,
+    // The road ends grown (round JS5c), the first of `dissolves`.
+    grown: usize,
 }
 
 /// Machine-readable road-placement validation state shared by the UI and commit guard.
@@ -181,6 +183,10 @@ pub(crate) struct RoadPreviewValidation {
     /// the preview outlines its overlapped stretch); its road and station are in
     /// [`Self::endpoint_edges`]. `None` for any other verdict.
     pub(crate) overlap_end: Option<usize>,
+    /// The stroke's side a `roads_overlap` refusal names (`ROAD-118` round JS5d: running alongside
+    /// a road or crossing it under 25 degrees, no end involved): the road, its station and the
+    /// drawn stretch; the preview outlines the overlapped stretch. `None` for any other verdict.
+    pub(crate) overlap_side: Option<SideOverlap>,
     /// The live nodes an accepted plan joined the stroke's ends to, start then end (`ROAD-118`
     /// rounds JS3, JS4a): the stroke it builds runs to them through its lead-ins. `None` for an
     /// end on no existing node.
@@ -249,6 +255,7 @@ impl RoadPreviewValidation {
             junction_place: None,
             endpoint_edges: [None; 2],
             overlap_end: None,
+            overlap_side: None,
             joined_nodes: [None; 2],
             contacts: [None; 2],
             lead_ins: [None; 2],
@@ -908,6 +915,7 @@ fn validate_against_graph(
                 stroke_ends,
                 dissolves,
                 stubs,
+                grown,
                 ..
             },
         stroke,
@@ -940,7 +948,7 @@ fn validate_against_graph(
         finalized,
         splits,
         stroke_ends,
-        (dissolves, stubs),
+        (dissolves, stubs, grown),
     );
     (validation, topology_plan)
 }
@@ -996,6 +1004,7 @@ impl Joins {
                 contact,
                 reach_m,
                 road,
+                back_m,
             }) = touched
             else {
                 continue;
@@ -1004,6 +1013,16 @@ impl Joins {
                 EndContact::Node(node) => (graph.node(node).pos, Some(node)),
                 EndContact::Road(point) => (point, None),
             };
+            // An end just past a road its last stretch crosses ends at the crossing (round
+            // JS5d): the stroke's last `back_m` become junction, every point before stays.
+            if back_m > 0.0 {
+                joins.lead_ins[end] = Some(LeadIn {
+                    target,
+                    trim_m: back_m,
+                });
+                joins.caps_m[end] = back_m;
+                continue;
+            }
             let far = existing[1 - end].or(joins.nodes[1 - end]);
             let corner = node.and_then(|node| {
                 corner::corner(
@@ -1195,6 +1214,7 @@ fn solve_excerpt(
         dissolves,
         stubs,
         passed: _,
+        grown: _,
     } = &excerpt;
     // A dissolved joint's piece may be the stroke itself, which then runs on in the road it joins,
     // and a removed stub may be the stroke's first piece.
@@ -1672,6 +1692,7 @@ fn build_validation_graph(
         dissolves,
         stubs: stub_removals,
         passed: grown.iter().any(|growth| growth.target.is_none()),
+        grown: grown.len(),
     })
 }
 
