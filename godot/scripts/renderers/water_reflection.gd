@@ -244,15 +244,26 @@ func _publish_planes() -> void:
 # mirrored basis is left-handed; negating its x axis makes it a rotation again, which only flips
 # the picture left to right, and the water samples it by projecting through this camera's own
 # matrix, so the flip never shows.
+#
+# The target keeps one size, the largest crop's (the screen and its margins at RESOLUTION_SCALE),
+# and changes only with the screen: resized to each frame's crop, it was freed and made again on
+# every frame of a camera turn, and every material sampling it built its uniform set again
+# (`RENDER-27`). The crop's own texels, the size it would have had alone, are its top left block,
+# the frustum widened right and down over the rest: each of them sees the ray it saw in a target
+# of the crop's size at the same pixel coordinate (the vegetation's dithered crossfades read
+# FRAGCOORD), and the water keeps its fade and clamp to that block (`water_reflection_rect`), so
+# the picture it samples is that one.
 func _place_camera(
 	slot: Array, index: int, main_camera: Camera3D, main_viewport: Viewport, crop: Rect2
 ) -> void:
 	var viewport: SubViewport = slot[0]
 	var camera: Camera3D = slot[1]
 	var screen := Vector2(main_viewport.get_visible_rect().size)
-	var size := Vector2i((screen * crop.size * RESOLUTION_SCALE).round()).max(Vector2i.ONE)
-	if viewport.size != size:
-		viewport.size = size
+	var target := Vector2i((screen * (1.0 + 2.0 * CROP_MARGIN) * RESOLUTION_SCALE).round()).max(
+		Vector2i.ONE)
+	var size := Vector2i((screen * crop.size * RESOLUTION_SCALE).round()).clamp(Vector2i.ONE, target)
+	if viewport.size != target:
+		viewport.size = target
 	var source := main_camera.global_transform
 	var mirror := Vector3(1.0, -1.0, 1.0)
 	var basis := Basis(-source.basis.x * mirror, source.basis.y * mirror, source.basis.z * mirror)
@@ -265,14 +276,21 @@ func _place_camera(
 	RenderingServer.camera_set_transform(camera.get_camera_rid(), camera.global_transform)
 	# A point on the plane has the same camera-space position for both cameras, bar the negated
 	# x axis, so the water's screen rectangle mirrored left to right is where the reflection
-	# camera sees it. An off-axis frustum over that rectangle draws only what the water shows.
+	# camera sees it. An off-axis frustum over that rectangle draws what the water shows, and over
+	# the target's spare texels what it never samples.
 	var height := 2.0 * main_camera.near * tan(deg_to_rad(main_camera.fov) * 0.5)
 	var width := height * screen.x / maxf(screen.y, 1.0)
 	var centre := crop.get_center()
+	# A texel's side on the near plane: the crop's height over its own texel rows (the width
+	# follows the target's aspect, KEEP_HEIGHT). The frustum keeps the crop's left and top edges
+	# and grows by the spare texels to the right and down (the near plane's y points up).
+	var texel := height * crop.size.y / float(size.y)
+	var spare := Vector2(target - size) * texel
 	camera.projection = Camera3D.PROJECTION_FRUSTUM
 	camera.keep_aspect = Camera3D.KEEP_HEIGHT
-	camera.size = height * crop.size.y
-	camera.frustum_offset = Vector2((centre.x - 0.5) * width, (0.5 - centre.y) * height)
+	camera.size = texel * float(target.y)
+	camera.frustum_offset = Vector2((centre.x - 0.5) * width + spare.x * 0.5,
+		(0.5 - centre.y) * height - spare.y * 0.5)
 	camera.near = main_camera.near
 	camera.far = main_camera.far
 	var view_projection: Projection = (
@@ -282,6 +300,10 @@ func _place_camera(
 		"water_reflection_view_projection" if index == 0 else "water_reflection_view_projection_2",
 		view_projection
 	)
+	# The crop's block, which the water's fade and clamp keep to (`water_planar_reflection`).
+	RenderingServer.global_shader_parameter_set(
+		"water_reflection_rect" if index == 0 else "water_reflection_rect_2",
+		Vector4(0.0, 0.0, float(size.x) / float(target.x), float(size.y) / float(target.y)))
 
 # Screen rectangle, in [0, 1], covering the water: the union of the resident water patches laid
 # on the plane at `plane_y`, each clipped to the space in front of the camera.

@@ -470,6 +470,10 @@ global uniform sampler2D water_reflection_map : filter_linear, repeat_disable;
 global uniform mat4 water_reflection_view_projection;
 global uniform sampler2D water_reflection_map_2 : filter_linear, repeat_disable;
 global uniform mat4 water_reflection_view_projection_2;
+// Each mirror's crop, a block of its fixed-size map: origin and size in the map's UV
+// (water_reflection.gd `_place_camera`, `RENDER-27`).
+global uniform vec4 water_reflection_rect;
+global uniform vec4 water_reflection_rect_2;
 
 // Water this far above or below both mirror planes is another lake and keeps the screen march.
 const float REFLECTION_PLANE_TOLERANCE_M = 0.5;
@@ -493,8 +497,14 @@ vec4 water_planar_reflection(vec3 world_pos, vec3 reflected, vec3 reflected_flat
 		return vec4(0.0);
 	}
 	vec2 uv = vec2(0.5, 0.5) + vec2(0.5, -0.5) * clip.xy / clip.w;
+	// The fade and the clamp keep to the crop's block, as when the map was the crop alone: the
+	// clamp stops at its edge texels' centres, where clamping to the edge of a map that size read.
+	vec4 rect = second ? water_reflection_rect_2 : water_reflection_rect;
+	uv = (uv - rect.xy) / rect.zw;
 	vec2 edge = min(uv, vec2(1.0) - uv);
-	uv = clamp(uv, vec2(0.0), vec2(1.0));
+	vec2 half_texel = 0.5 / (rect.zw * vec2(second
+		? textureSize(water_reflection_map_2, 0) : textureSize(water_reflection_map, 0)));
+	uv = rect.xy + clamp(uv, half_texel, vec2(1.0) - half_texel) * rect.zw;
 	vec4 scene = second ? texture(water_reflection_map_2, uv) : texture(water_reflection_map, uv);
 	return vec4(scene.rgb / max(scene.a, 1.0e-4), scene.a * smoothstep(0.0, 0.02, min(edge.x, edge.y)));
 }

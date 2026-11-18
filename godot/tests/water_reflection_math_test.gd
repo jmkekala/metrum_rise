@@ -52,6 +52,7 @@ func _clip_coverage(distance_m: float, pixel_span_m: float) -> float:
 
 func _run() -> void:
 	_test_vote_cache()
+	_test_fixed_target()
 	var terrain_code := FileAccess.get_file_as_string("res://assets/materials/terrain.gdshader")
 	_expect(terrain_code.contains("alpha_to_coverage_and_one, depth_draw_always"),
 		"mirror coverage must write depth on surviving MSAA samples")
@@ -127,6 +128,60 @@ func _run() -> void:
 	print("water_reflection_math_test: %s" % ("PASS" if _failures == 0 else "FAIL"))
 	quit(_failures)
 
+
+# The mirror's target keeps one size across crops (`RENDER-27` WR1a), and every texel of the
+# crop's block, its top left, sees the ray it saw in a target of the crop's own size.
+func _test_fixed_target() -> void:
+	var renderer := Reflection.new()
+	var main := SubViewport.new()
+	main.size = Vector2i(1920, 1080)
+	root.add_child(main)
+	var main_camera := Camera3D.new()
+	main.add_child(main_camera)
+	main_camera.position = Vector3(10.0, 120.0, -30.0)
+	main_camera.rotation = Vector3(-0.4, 0.7, 0.0)
+	var mirror := SubViewport.new()
+	var camera := Camera3D.new()
+	mirror.add_child(camera)
+	root.add_child(mirror)
+	var alone_viewport := SubViewport.new()
+	var alone := Camera3D.new()
+	alone_viewport.add_child(alone)
+	root.add_child(alone_viewport)
+	var screen := Vector2(main.size)
+	var target := Vector2i((screen * (1.0 + 2.0 * Reflection.CROP_MARGIN) * Reflection.RESOLUTION_SCALE).round())
+	var height := 2.0 * main_camera.near * tan(deg_to_rad(main_camera.fov) * 0.5)
+	var width := height * screen.x / screen.y
+	for crop: Rect2 in [Rect2(0.1, 0.4, 0.5, 0.35), Rect2(0.62, 0.55, 0.31, 0.21),
+			Rect2(-0.03, -0.03, 1.06, 1.06), Rect2(0.3, 0.97, 0.001, 0.002)]:
+		renderer._place_camera([mirror, camera, 1.0, true], 0, main_camera, main, crop)
+		_expect(mirror.size == target, "the mirror's target must keep one size across crops")
+		# The crop alone, as a target of its own size placed it before.
+		var size := Vector2i((screen * crop.size * Reflection.RESOLUTION_SCALE).round()).max(Vector2i.ONE)
+		alone_viewport.size = size
+		alone.global_transform = camera.global_transform
+		alone.projection = Camera3D.PROJECTION_FRUSTUM
+		alone.keep_aspect = Camera3D.KEEP_HEIGHT
+		alone.size = height * crop.size.y
+		alone.frustum_offset = Vector2((crop.get_center().x - 0.5) * width, (0.5 - crop.get_center().y) * height)
+		alone.near = camera.near
+		alone.far = camera.far
+		for local: Vector3 in [Vector3(0.0, 0.0, -50.0), Vector3(-20.0, 7.0, -80.0), Vector3(35.0, -12.0, -400.0)]:
+			var point := camera.global_transform * local
+			var texel := _texel(camera, point, Vector2(target))
+			var texel_alone := _texel(alone, point, Vector2(size))
+			_expect(texel.distance_to(texel_alone) < 0.01,
+				"crop %s: texel %s must be the crop-sized target's %s" % [crop, texel, texel_alone])
+	renderer.free()
+	main.free()
+	mirror.free()
+	alone_viewport.free()
+
+# `point`'s position in texels of a target of `size` drawn by `camera`, as the water samples it.
+func _texel(camera: Camera3D, point: Vector3, size: Vector2) -> Vector2:
+	var clip: Vector4 = (camera.get_camera_projection() * Projection(camera.global_transform.affine_inverse())
+		* Vector4(point.x, point.y, point.z, 1.0))
+	return (Vector2(0.5, 0.5) + Vector2(0.5, -0.5) * Vector2(clip.x, clip.y) / clip.w) * size
 
 func _test_vote_cache() -> void:
 	var renderer := Reflection.new()

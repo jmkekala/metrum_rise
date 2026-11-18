@@ -135,6 +135,14 @@ water_reflection_plane={
 "type": "vec4",
 "value": Vector4(0, 0, 0, 0)
 }
+water_reflection_rect={
+"type": "vec4",
+"value": Vector4(0, 0, 1, 1)
+}
+water_reflection_rect_2={
+"type": "vec4",
+"value": Vector4(0, 0, 1, 1)
+}
 scene_celestial_basis={
 "type": "mat3",
 "value": Basis(1, 0, 0, 0, 1, 0, 0, 0, 1)
