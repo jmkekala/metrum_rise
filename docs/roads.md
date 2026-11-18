@@ -14655,6 +14655,13 @@ scaling with it) leave about 0.07 ms on these rows: the bar is not reachable on 
 higher clock or a different reading (D2 recommendation: decide the bar's reading, a fixed P-core
 clock as HF3F-1 (b) or the cycles, before more tick work).
 
+**The user's decision D2 (2026-11-18): cycles at the base clock.** The tick bars are read in
+main-thread cycles at the P-core base clock (3.2 GHz on this machine's i9-12900K, the clock it
+holds under sustained load), so the governor's clock no longer decides them: the tick less the
+preview call at most 160,000 cycles p95 (0.05 ms), a still tick at most 16,000 (0.005 ms). Time is
+still reported beside the cycles. The overlay a drag frame and the frame-share bars (U-R2-1) stay
+in time. `ROAD-112` R2-L judges R2 on them.
+
 ### The pick's graded preparation halved (round PB, `ROAD-116`)
 
 Round PB of `ROAD-112` (branch `roadtools-pb`, R2-7 on `dev` `75523322`). **Bisect.** The
