@@ -18240,6 +18240,177 @@ elsewhere); no public item added; debug `cargo test --lib` 2,808 passed, 0 faile
 `./run.sh --test` PASS (nextest 2,812 passed, 233 skipped; godot-main and godot-vehicle PASS, no
 SCRIPT ERROR).
 
+### The camera turn's frame drops and the water reflection (`RENDER-27`, analysis A1 and round WR1, 2026-11-18)
+
+The user's turn drops (`RENDER-27`, and `RENDER-57`, merged into it) were analysed by Fable (A1,
+read-only, `dev` `e77092c3`) and fixed for their first owner by round WR1. Both were decided under
+the user's night delegation, 2026-11-18, for review. Godot 4.7.2 Forward+, RADV on the RX 7900
+XTX, gamescope headless at 1000 Hz, P-cores, eight workers, isolated profiles, paused unless
+named. Inputs: the 30k city of record, Kuopio's new game, the pond copy of the 30k city, and **the
+Kuopio city**: a copy of the user's Kuopio save (2,600 agents, a lake in view at the benchmark's
+base pose; a local input, never the player's save itself), the benchmark's base pose its turn pose.
+
+**A1's findings.**
+
+- The report reproduces on the Kuopio city. A 180-degree turn at 4K runs 11-18 ms at p50 against
+  a 4.5 ms still, with 15-24 frames over 16.7 ms a turn, at 6.2-6.6 ms of GPU: CPU-bound on
+  Godot's main thread. Unpinned, as the player runs it, 16.5-23.3 ms p50: the report's "about 45
+  fps, GPU half busy". With the reflection off (a diagnostic) the turn is 4.5-4.8 ms p50.
+- Owner 1, the water reflection (`water_reflection.gd`), on any map with a lake in view:
+  - The mirror's `SubViewport` was resized to the water's screen rectangle every turn frame. That
+    freed its texture, and every material sampling it built its uniform set again: 0.74 ms in the
+    resize, 2.3 ms of material updates (1.5 ms of it `uniform_set_create`) and 1.2 ms blocked on a
+    GPU fence, about 4.5 ms a turn frame.
+  - Every terrain patch whose level of detail changed got a new duplicated material and a new
+    instance in the mirror's world: a 1 s turn on the 800 m orbit moves the eye 2.5 km, so the
+    level rings sweep tens of patches a frame. 0.4-1.5 ms of p50 and most of the tail once the
+    resize was gone.
+- Owner 2, as played, the background pool's size, on every map: unpinned with the default pools
+  (24 + 24 workers on this 24-thread CPU) the 30k turn has 7 frames over 16.7 ms a turn and worst
+  frames of 27-34 ms; capped at 4 or 6 background workers, none (p95 9.4-9.5 ms) and no content
+  later, but the load to settled 0.2-0.9 s longer (single runs). The pinned rows never saw it:
+  they run eight workers a pool.
+- Not owners: the far view's GPU (4-9 ms throughout), residency churn (the residency is already
+  a square around the camera, `CODE-12`, so `RENDER-57`'s lever (1) is void; a turn brings tiles in
+  because the orbit moves the eye), and pipeline compiles, which stall cold caches only
+  (`RENDER-43`'s rest: the mirror's pass and the grass masks' variants).
+- The hook after both fixes: 1.9 ms on the CPU a turn frame, 0.37 a still frame (`RENDER-53`); the
+  reflection vote's blocking pool entry 0.45-0.7 ms a turn frame.
+
+**Round WR1** (branch `water-reflection-turns`; GDScript, the water shader and the benchmark, no
+Rust):
+
+- The benchmark first: the stream benchmark's `water_turns` phase (`PERF-23`) turns with the
+  reflection drawing, from the settled base pose when the reflection has a plane there (the
+  Kuopio city), else from the `water` phase's shore pose (the pond). Run on dev, it reproduced
+  A1's rows (4K: 10.7 / 18.3 ms p50 on the 1 s / 0.5 s turns, 26 / 17 frames over 16.7 ms a turn).
+- WR1b, the proxies in place: a patch change refreshes its existing proxy material by comparing
+  every parameter of the source's shader and setting those that differ (`O(the shader's 127
+  parameters)` comparisons a changed patch, about 8 µs measured in GDScript), and the proxy
+  instance takes the new mesh by `instance_set_base`, which keeps its scenario, transform,
+  material and bounds. No `Resource::duplicate` and no new instance on a level change. The first
+  copy of a source is still a duplicate. The bookkeeping is the existing script's, made cheaper,
+  not grown; its move to Rust stays with `RENDER-58` and `RENDER-53`.
+- WR1a, the mirror's target at one size: the largest crop's size (the screen and its 3 % margins at
+  half resolution: 2,035 x 1,145 at 4K, 1,018 x 572 at 1080p), set again only when the screen
+  changes. A whole-screen frustum (A1's knob) moved the mirror's texel grid by a fraction of a texel
+  and changed 350-12,553 pixels a still on the reflected outlines. Instead the crop's own texels,
+  the size the crop would have had alone, are the target's top left block, and the frustum widens
+  right and down over the rest. Each of them sees the same ray at the same pixel coordinate as in a
+  target of the crop's size: a block centred in the target still differed (223-709 pixels), because
+  the vegetation's dithered crossfades read `FRAGCOORD`. The water keeps its edge fade and clamp to
+  that block through the global `water_reflection_rect` (`_2` for the second mirror), as when the
+  map was the crop. `water_reflection_math_test` checks that the target keeps its size and that the
+  block's texels match a crop-sized target's to a hundredth of a texel, and that a refreshed copy
+  holds what a new duplicate would.
+- Video memory: one active mirror holds 67 MB more on the Kuopio city's 4K still (1,605 to
+  1,672 MB) and 18 MB more at 1080p. The turn's peak is lower than dev's (4K 1,908 to 1,862 MB, 1080p
+  1,450 to 1,438), because no target is freed and made again. Two mirrors active hold the full size
+  twice. A1's alternative, the size rounded up to 256 px, held 6 MB more on the still, but it still
+  resizes when a turn crosses a bucket, and a resize is the whole cost. The fixed size was kept:
+  no resize at all and the lower peak.
+
+**Timing** (one session, 2026-11-18 23:45 to 00:01, the series rerun 00:24-00:33; control
+`e77092c3`'s release library (SHA-256 `52013b06`) with dev's own tree, the branch the same library
+with its scripts (WR1b alone on dev's assets, WR1a+b on the branch's), the shader cache warm on
+every side; rows C (a+b) (b) (b) (a+b) C; three turns of a duration pooled;
+`tools/stream_benchmark.py compare` for the verdicts):
+
+| row | still p50 | 1 s turns p50 / p95 / max | >16.7 a turn | 0.5 s turns p50 / p95 / max | >16.7 a turn | video memory still / turn peak MB |
+|---|---:|---:|---:|---:|---:|---:|
+| Kuopio city 4K, dev (2) | 4.49-4.51 | 10.77-10.81 / 23.9 / 32-37 | 26.0-27.3 | 15.37-15.79 / 24.5-29.0 / 33-40 | 15.7 | 1,605 / 1,908 |
+| WR1b (2) | 4.47-4.48 | 10.02-10.09 / 23.1 / 25-26 | 23.7 | 14.08-14.30 / 24.1-24.3 / 26-27 | 15.7 | 1,605 / 1,908 |
+| WR1a+b (2) | 4.57-4.59 | 6.37-6.43 / 10.5-10.6 / 14 | 0 | 8.55-8.63 / 11.5-12.0 / 14-15 | 0 | 1,672 / 1,862 |
+| Kuopio city 1080p, dev (2) | 3.66-3.69 | 8.33-9.02 / 22.1 / 30-33 | 17.7-18.3 | 11.33-11.45 / 25.1-25.4 / 36-41 | 11.3-11.7 | 1,230 / 1,450 |
+| WR1b (2) | 3.74-3.81 | 7.90-8.33 / 20.8-21.8 / 26-27 | 15.0 | 10.72-11.11 / 22.7-24.2 / 25-28 | 10.0 | 1,230 / 1,450 |
+| WR1a+b (2) | 3.69 | 6.53-6.59 / 10.0-10.4 / 12-13 | 0 | 8.40-8.57 / 11.5-12.2 / 14-15 | 0 | 1,248 / 1,438 |
+| Kuopio city 4K 1x, dev / WR1a+b (1 each) | 4.53 / 4.61 | 11.20 / 6.87 p50, max 36.4 / 12.8 | 26.0 / 0 | 18.62 / 8.93 p50, max 41.9 / 14.3 | 16.0 / 0 | 1,605 / 1,673 still |
+| pond 4K (shore pose), dev (2) | 9.14 | 5.51-5.63 / 9.2-9.3 / 14-15 | 0 | 7.83-7.94 / 10.2-10.4 / 13 | 0 | 1,804 / 1,956 |
+| WR1b (2) | 9.16 | 5.43-5.47 / 9.2 / 11-14 | 0 | 7.95-8.04 / 10.2-10.3 / 14-15 | 0 | 1,804 / 1,956-1,961 |
+| WR1a+b (2) | 9.15-9.19 | 5.23-5.33 / 9.2 / 10 | 0 | 5.68-5.79 / 9.3 / 10 | 0 | 1,850 / 1,867-1,871 |
+
+- Bars met for WR1a+b on the Kuopio city: 4K 1 s turns at most 7.5 ms p50 (6.37-6.43) and 12.5 ms
+  p95 (10.5-10.6), 0.5 s turns at most 9.5 ms p50 (8.55-8.63), no frame over 16.7 ms (worst 15.1
+  ms); 1080p at most 7.3 / 9.3 ms (6.53-6.59 / 8.40-8.57), none over 16.7 ms; the 1x pair agrees
+  (6.87 / 8.93 ms, worst 14.3); the pond better (the 0.5 s turns 7.8-7.9 to 5.7-5.8 ms); the turn's
+  video memory peak below dev's. Every water row's turn phase `better` in `compare`.
+- Not met as written: the still at 4K, 4.49-4.51 to 4.57-4.59 ms at p50 (`compare`: worse by 0.1
+  against a spread of 0.0), its GPU level (4.11 ms): the mirror now draws its whole target, the
+  crop's spare texels too, where it drew the crop alone. Level at 1080p (3.66-3.69 against 3.69)
+  and on the pond (9.14 against 9.15-9.19). Decision for review: kept, as the turn's -4.4 to
+  -8.4 ms buys it; a 256 px rounding of the size would draw fewer spare texels but resize again
+  on a turn.
+- WR1b alone does not reach the bars (as A1 expected, it was the tail's half once the resize was
+  gone): the 4K 1 s turns 10.0-10.1 ms p50 against 10.8, frames over 16.7 ms 24 against 26-27 a
+  turn; one 0.5 s phase reads `worse` (`water_turn_out` 18.5-19.2 against 15.4-15.8 ms; the other
+  two `better` and `level`).
+
+**Profile** (untimed, A1's method: `perf record` of the main thread at 4 kHz with frame pointers,
+joined to the rows; Kuopio city 4K, ms on the CPU a frame, 1 s / 0.5 s turns):
+
+| | dev | WR1b | WR1a+b |
+|---|---:|---:|---:|
+| on the CPU | 12.40 / 15.43 | 11.61 / 14.94 | 6.42 / 8.00 |
+| `SubViewport::_internal_set_size` | 0.71 / 1.15 | 0.70 / 1.28 | 0 / 0 |
+| `Resource::duplicate` | 0.50 / 0.64 | 0.03 / 0 | 0.014 / 0 |
+| `update_dirty_resources` | 2.13 / 3.34 | 2.04 / 3.47 | 0.18 / 0.29 |
+| of it `uniform_set_create` | 1.40 / 2.15 | 1.33 / 2.24 | 0.10 / 0.16 |
+
+The `Resource::duplicate` left is a first copy of a terrain material the reflection had not
+met before (a new pool entry streamed in during the turn), not a refresh.
+
+**No visible change.**
+
+- The Kuopio city's lake stills (4K; the base view with the lake ahead, a quarter and a half turn
+  on, the save's own view; pixels below the horizon differing by more than 8 of 255; the clouds
+  above drift between runs). Control against control (the null): 25 / 4 / 3 / 0. WR1a+b
+  against the two controls, two captures: 5-34 / 1-5 / 0-3 / 0, at the null. WR1b against the controls 56-97 /
+  23-56 / 4-18 / 0, and its two captures against each other 78 / 47 / 19 / 0: its own run-to-run
+  spread, inside A1's dev null (11-134). Crops: `$ARTIFACTS/wr1/crops`.
+- Stills of record: Kuopio `close`, `mid`, `forest_low` byte-identical; 30k `city_low`
+  byte-identical, `saved` 2 px of delta 1 and `city` 1 px of delta 2 (the known residue, below).
+- Settle digests (`--digests`): 30k post-load, still and turns equal at 5 of 5 points; Kuopio
+  still, turns, pan and zoom equal at 9 of 9; the Kuopio city's `water_turns` (two runs a side)
+  equal at 5 of 5 points in every family but once the vegetation at the last point. That
+  difference is the control's own (one far patch's band flags after the last turn, its batches
+  and rows equal): the two control runs differ there too, and the second pair is equal at every
+  point.
+
+**The series of record** (30k and Kuopio's new game, 1080p, every phase, C B B C with new caches as
+of record, then the one rerun). The reflection drew in no frame of either input: neither has water
+in view at any of their poses (`water_turns` skipped), so WR1's script paths never ran there.
+- 30k: level or better in 18 of 23 phases; flags (p50 +0.0-0.1 or a maximum +0.8-1.6 ms) on 0.5 s
+  `turn_out` and `turn_repeat`, 1 s `turn_back` and two night turns; in the rerun on 0.5 s
+  `turn_back` (+0.2), `pan_out`'s maximum (+9.2), and p50 +0.0 on `zoom_in_repeat`, `jump` and
+  `night_turn_back` (+0.02-0.04 ms against a spread of 0.00). `night_turn_back` is flagged in both.
+- Kuopio: flags of 0.0-0.2 ms on the still, three turns, `pan_repeat` and `jump`, and the first
+  turn's cold-pipeline maximum (+3.4); in the rerun on `far_to_ground`'s maximum (+4.1),
+  `night_still`'s (+1.1) and `jump` (+0.2 against a spread of 0.1). `jump` is flagged in both.
+- Read as noise: the code that changed does not run on these inputs. Not met as written ("no row
+  worse after one rerun"), recorded for review.
+
+```bash
+# The water rows: dev's own tree (the benchmark script copied in) against the branch, warm caches.
+tools/stream_benchmark.py run --label kc4k-ctl1 --save <Kuopio city copy> --phases water_turns --turns 1,0.5 \
+    --resolution 3840x2160 --library <control .so> --godot-dir <dev godot> --shader-cache "$ARTIFACTS/cache" ...
+tools/stream_benchmark.py compare "$ARTIFACTS/sess" kc4k kc4kb kc1080 kc1080b pond4k pond4kb 30k kuopio
+tools/stream_benchmark.py stills capture --label kc-ctl1 --save <Kuopio city copy> --poses saved \
+    --views "turn0:8095.55,-877.54,-2.012,-0.1,800;turn90:8095.55,-877.54,-0.441,-0.1,800;turn180:8095.55,-877.54,1.130,-0.1,800" \
+    --resolution 3840x2160 --warmup 1500 ...
+```
+
+**Left, by owner:** BG1, the background pool's cap (the user's choice; A1's bars); the easing of
+streaming while the camera moves (a visible trade, clips); the hook's own scans and the vote
+(`RENDER-53`, `RENDER-58`); the mirror's and grass masks' first-use pipelines (`RENDER-43`); an
+as-played guard row in the stream benchmark (`PERF-23`).
+
+**Gates** (fresh, on the branch tip): `water_reflection_math_test` passes its new checks (the
+fixed target, the in-place refresh) and fails only its stale shader-text assertion, as it does on
+`e77092c3` (`WATER-06`'s); `./run.sh --test` PASS (nextest 2,926 passed, 240 skipped; godot-main
+and godot-vehicle PASS, no SCRIPT ERROR). No Rust changed: no clippy run and no level F
+timing (`timing_session.py`'s path rule puts `godot/`, `tools/` and `docs/` at no timing; the
+library is the control's own build), the changed per-frame path timed by the rows above.
+
 ### First-use pipelines at the load (`RENDER-43`, round R43, 2026-11-17)
 
 Round R43 (night delegation; every decision below is for review). Every stream benchmark load
@@ -19243,6 +19414,14 @@ Current deterministic rules:
     also on upward orbits and after a save restores the view: one O(1) surface query per update.
   - Written by GPT-6.1 Sol through Codex; `water_reflection_math_test` and `weather_menu_test`
     pass. Not yet timed.
+- `RENDER-27` the mirror's target and proxies (2026-11-18, round WR1): the mirror's
+  `SubViewport` keeps one size, the largest crop's (the screen and its margins at half resolution),
+  and changes only with the screen; the crop's own texels are its top left block, the frustum
+  widened right and down over the rest, and the water fades and clamps to that block
+  (`water_reflection_rect`). A terrain patch change refreshes its proxy material in place (the
+  parameters that differ from the source's) and gives its proxy instance the new mesh by
+  `instance_set_base`. Resizing the target or duplicating a material on a camera turn's frames is
+  the cost this removed ([record](#the-camera-turns-frame-drops-and-the-water-reflection-render-27-analysis-a1-and-round-wr1-2026-11-18)).
 - terrain grass uses world-space UVs and the Grass002 texture stack
 - the runtime `grass002_2k_albedo.jpg` and `grass002_2k_height.jpg` imports generate complete
   mipmap chains (11 levels below the 2048x2048 base). Their shader samplers already request
