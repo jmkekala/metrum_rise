@@ -6,6 +6,7 @@
 //! recorder (tests) keeps the commands and the state they leave. Main thread only.
 
 use crate::nodes::sim::render::stream::layers::roads::surfaces::RoadSurface;
+use godot::builtin::Vector3;
 
 /// A backend object: a `RenderingServer` RID's id, or a recorder's number.
 pub(crate) type Handle = u64;
@@ -63,16 +64,73 @@ impl SurfaceKind {
     }
 }
 
-/// One surface as the backend adds it: finished buffers in the server's layout.
+/// A buffer's content as the drawing keeps it (round R2-9): finished bytes, or positions or
+/// floats that the backend encodes as little-endian `f32`s straight into its upload array, so
+/// no byte copy is built beside them.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Bytes<'a> {
+    /// Finished bytes.
+    Raw(&'a [u8]),
+    /// Positions, twelve bytes each (a vertex buffer's layout).
+    Vectors(&'a [Vector3]),
+    /// Floats, four bytes each.
+    Floats(&'a [f32]),
+}
+
+impl Bytes<'_> {
+    /// The encoded length in bytes.
+    pub(crate) fn len(&self) -> usize {
+        match self {
+            Self::Raw(bytes) => bytes.len(),
+            Self::Vectors(vectors) => vectors.len() * 12,
+            Self::Floats(floats) => floats.len() * 4,
+        }
+    }
+
+    /// Whether it encodes to no bytes.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Encodes into `out`, exactly [`Self::len`] bytes, every byte written. `O(bytes)`.
+    pub(crate) fn write(&self, out: &mut [u8]) {
+        debug_assert_eq!(out.len(), self.len());
+        match self {
+            Self::Raw(bytes) => out.copy_from_slice(bytes),
+            Self::Vectors(vectors) => {
+                for (chunk, vector) in out.as_chunks_mut::<12>().0.iter_mut().zip(*vectors) {
+                    chunk[..4].copy_from_slice(&vector.x.to_le_bytes());
+                    chunk[4..8].copy_from_slice(&vector.y.to_le_bytes());
+                    chunk[8..].copy_from_slice(&vector.z.to_le_bytes());
+                }
+            }
+            Self::Floats(floats) => {
+                for (chunk, float) in out.as_chunks_mut::<4>().0.iter_mut().zip(*floats) {
+                    *chunk = float.to_le_bytes();
+                }
+            }
+        }
+    }
+
+    /// The encoded bytes (tests).
+    #[cfg(test)]
+    pub(crate) fn to_vec(self) -> Vec<u8> {
+        let mut out = vec![0; self.len()];
+        self.write(&mut out);
+        out
+    }
+}
+
+/// One surface as the backend adds it: its buffers in the server's layout.
 pub(crate) struct Surface<'a> {
     /// Its layout.
     pub(crate) kind: SurfaceKind,
     /// Vertices.
     pub(crate) vertex_count: u32,
     /// The positions.
-    pub(crate) vertices: &'a [u8],
+    pub(crate) vertices: Bytes<'a>,
     /// The attributes (empty for a fill).
-    pub(crate) attributes: &'a [u8],
+    pub(crate) attributes: Bytes<'a>,
     /// The index buffer (two bytes an index up to 65,536 vertices, else four; empty unless
     /// [`SurfaceKind::Lines`]) and its index count.
     pub(crate) indices: &'a [u8],
@@ -102,7 +160,7 @@ pub(crate) trait DrawBackend {
     /// Removes every surface of `mesh`.
     fn mesh_clear(&mut self, mesh: Handle);
     /// Rewrites `region` of `mesh`'s surface `surface` from its start with `bytes`.
-    fn mesh_update_region(&mut self, mesh: Handle, surface: u32, region: Region, bytes: &[u8]);
+    fn mesh_update_region(&mut self, mesh: Handle, surface: u32, region: Region, bytes: Bytes);
     /// Sets the material of `mesh`'s surface `surface`.
     fn mesh_set_material(&mut self, mesh: Handle, surface: u32, material: Handle);
     /// An instance of `mesh` as a road chunk's node draws it (round R2-4a, the preview's

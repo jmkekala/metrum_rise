@@ -64,45 +64,122 @@ const COMPASS: [&str; 8] = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
 pub fn label_text(label: &ToolLabel, notice: &NoticeFacts, out: &mut String) {
     out.clear();
     let value = label.value;
-    // Writing into a `String` cannot fail.
-    let _ = match label.kind {
-        LabelKind::PieceLength | LabelKind::TotalLength if value >= 100.0 => {
-            write!(out, "{value:.0} m")
+    // Round R2-9: the numbers are written without `write_fmt` (the tick rewrites the chips'
+    // words every pose), byte for byte as `{:.0}`, `{:.1}`, `{:+.1}` and `{}` write them.
+    match label.kind {
+        LabelKind::PieceLength | LabelKind::TotalLength => {
+            push_fixed(value, if value >= 100.0 { 0 } else { 1 }, false, out);
+            out.push_str(" m");
         }
-        LabelKind::PieceLength | LabelKind::TotalLength => write!(out, "{value:.1} m"),
-        LabelKind::Radius if value >= 100.0 => write!(out, "R {value:.0} m"),
-        LabelKind::Radius => write!(out, "R {value:.1} m"),
-        LabelKind::Angle => write!(out, "{}°", value as i64),
-        LabelKind::Slope => write!(out, "{value:.1} %"),
-        LabelKind::Cost => {
-            push_money(value, out);
-            Ok(())
+        LabelKind::Radius => {
+            out.push_str("R ");
+            push_fixed(value, if value >= 100.0 { 0 } else { 1 }, false, out);
+            out.push_str(" m");
         }
-        LabelKind::Bearing => write!(
-            out,
-            "{} {}°",
-            COMPASS[((value / 45.0).round() as i64).rem_euclid(8) as usize],
-            (value.round() as i64) % 360
-        ),
-        LabelKind::DesignSpeed => write!(out, "{} km/h", value as i64),
-        LabelKind::Notice => {
-            push_notice(label.tone, notice, out);
-            Ok(())
+        LabelKind::Angle => {
+            push_int(value as i64, out);
+            out.push('°');
         }
-        LabelKind::Hint(step) => {
-            out.push_str(hint_text(step));
-            Ok(())
+        LabelKind::Slope => {
+            push_fixed(value, 1, false, out);
+            out.push_str(" %");
         }
-        LabelKind::Build => {
-            out.push_str("Build");
-            Ok(())
+        LabelKind::Cost => push_money(value, out),
+        LabelKind::Bearing => {
+            out.push_str(COMPASS[((value / 45.0).round() as i64).rem_euclid(8) as usize]);
+            out.push(' ');
+            push_int((value.round() as i64) % 360, out);
+            out.push('°');
         }
-        LabelKind::Cancel => {
-            out.push_str("Cancel");
-            Ok(())
+        LabelKind::DesignSpeed => {
+            push_int(value as i64, out);
+            out.push_str(" km/h");
         }
-        LabelKind::EndHeight(part) => write!(out, "{value:+.1} m {}", end_part_text(part)),
+        LabelKind::Notice => push_notice(label.tone, notice, out),
+        LabelKind::Hint(step) => out.push_str(hint_text(step)),
+        LabelKind::Build => out.push_str("Build"),
+        LabelKind::Cancel => out.push_str("Cancel"),
+        LabelKind::EndHeight(part) => {
+            push_fixed(value, 1, true, out);
+            out.push_str(" m ");
+            out.push_str(end_part_text(part));
+        }
+    }
+}
+
+// The decimal digits of `value` into `out`, most significant first. `O(digits)`.
+fn push_digits(mut value: u128, out: &mut String) {
+    let mut digits = [0u8; 40];
+    let mut len = 0;
+    loop {
+        digits[len] = b'0' + (value % 10) as u8;
+        len += 1;
+        value /= 10;
+        if value == 0 {
+            break;
+        }
+    }
+    out.extend(digits[..len].iter().rev().map(|&digit| char::from(digit)));
+}
+
+// `value` as `{}` writes an `i64`.
+fn push_int(value: i64, out: &mut String) {
+    if value < 0 {
+        out.push('-');
+    }
+    push_digits(u128::from(value.unsigned_abs()), out);
+}
+
+// `value` with `decimals` (0 or 1) fraction digits as `{:.N}` writes it (`{:+.N}` with `plus`):
+// the binary value rounded exactly, a tie to even, a negative value's sign kept (a negative zero
+// and a negative value rounding to zero too). Finite values under 2^63 take the exact integer
+// path: the value is `mantissa * 2^exponent`, so `value * 10^decimals` rounds by its shifted-out
+// bits; the rest (none in a chip) goes through the formatter. `O(digits)`, no allocation once
+// `out` has grown.
+fn push_fixed(value: f64, decimals: u32, plus: bool, out: &mut String) {
+    let bits = value.to_bits();
+    let biased = ((bits >> 52) & 0x7ff) as i32;
+    if biased >= 1023 + 63 {
+        // Writing into a `String` cannot fail.
+        let _ = if plus {
+            write!(out, "{:+.*}", decimals as usize, value)
+        } else {
+            write!(out, "{:.*}", decimals as usize, value)
+        };
+        return;
+    }
+    let fraction = bits & ((1 << 52) - 1);
+    let (mantissa, exponent) = if biased == 0 {
+        (fraction, -1074)
+    } else {
+        (fraction | 1 << 52, biased - 1075)
     };
+    let scale = 10u128.pow(decimals);
+    let scaled = u128::from(mantissa) * scale;
+    let rounded = if exponent >= 0 {
+        scaled << exponent
+    } else if exponent <= -128 {
+        // Under 2^-70: rounds to zero.
+        0
+    } else {
+        let shift = -exponent as u32;
+        let (whole, rest) = (scaled >> shift, scaled & ((1 << shift) - 1));
+        let half = 1u128 << (shift - 1);
+        whole + u128::from(rest > half || (rest == half && whole & 1 == 1))
+    };
+    if bits >> 63 == 1 {
+        out.push('-');
+    } else if plus {
+        out.push('+');
+    }
+    push_digits(rounded / scale, out);
+    if decimals > 0 {
+        out.push('.');
+        let fraction = rounded % scale;
+        for place in (0..decimals).rev() {
+            out.push(char::from(b'0' + (fraction / 10u128.pow(place) % 10) as u8));
+        }
+    }
 }
 
 /// The hint chip's text for an open draft's `step` (round V item 7: freeform; round SC: the
@@ -379,6 +456,61 @@ mod tests {
         let mut out = "stale".to_string();
         label_text(&label, notice, &mut out);
         out
+    }
+
+    // Round R2-9: the numeric chips' words without `write_fmt` are byte for byte what the
+    // formatter wrote before: every numeric kind over values on decimal grids (ties of the
+    // printed digit included), spread bit patterns (subnormals, huge, negative, signed zeros)
+    // and the non-finite ones.
+    #[test]
+    fn chip_numbers_match_the_formatter() {
+        let mut values = vec![0.0, -0.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY, f64::MAX];
+        values.extend([f64::MIN_POSITIVE, 5e-324, -5e-324, 1e-300, 9.2e18, 9.3e18, 1e22]);
+        for step in -40_000..40_000 {
+            values.push(f64::from(step) * 0.05);
+            values.push(f64::from(step) * 0.025);
+            values.push(f64::from(step) * 0.5 + 1e-9);
+        }
+        let mut state = 0x9e37_79b9_7f4a_7c15u64;
+        for _ in 0..200_000 {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            values.push(f64::from_bits(state));
+            values.push(f64::from_bits(state >> 2) % 10_000.0);
+        }
+        let none = NoticeFacts::default();
+        for &value in &values {
+            let short = |v: f64| if v >= 100.0 { format!("{v:.0}") } else { format!("{v:.1}") };
+            let expected = [
+                (LabelKind::PieceLength, format!("{} m", short(value))),
+                (LabelKind::TotalLength, format!("{} m", short(value))),
+                (LabelKind::Radius, format!("R {} m", short(value))),
+                (LabelKind::Angle, format!("{}°", value as i64)),
+                (LabelKind::Slope, format!("{value:.1} %")),
+                (
+                    LabelKind::Bearing,
+                    format!(
+                        "{} {}°",
+                        COMPASS[((value / 45.0).round() as i64).rem_euclid(8) as usize],
+                        (value.round() as i64) % 360
+                    ),
+                ),
+                (LabelKind::DesignSpeed, format!("{} km/h", value as i64)),
+                (
+                    LabelKind::EndHeight(EndPart::Bridge),
+                    format!("{value:+.1} m {}", end_part_text(EndPart::Bridge)),
+                ),
+            ];
+            for (kind, expected) in expected {
+                assert_eq!(
+                    text(kind, value, LabelTone::Normal, &none),
+                    expected,
+                    "{kind:?} {value:e} ({:#x})",
+                    value.to_bits()
+                );
+            }
+        }
     }
 
     // Every chip kind's text: units, rounding by size, truncated whole degrees and km/h, money

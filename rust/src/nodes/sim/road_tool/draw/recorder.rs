@@ -4,7 +4,7 @@
 //! the state they leave (meshes' surfaces and bytes, instances' visibility), so the draw module
 //! is tested without Godot.
 
-use super::backend::{DrawBackend, Handle, Region, Surface, SurfaceKind};
+use super::backend::{Bytes, DrawBackend, Handle, Region, Surface, SurfaceKind};
 use crate::nodes::sim::render::stream::layers::roads::surfaces::RoadSurface;
 use std::cell::Cell;
 use std::collections::BTreeMap;
@@ -130,7 +130,7 @@ impl DrawBackend for Recorder {
         self.road_meshes.remove(&mesh);
     }
 
-    fn mesh_update_region(&mut self, mesh: Handle, surface: u32, region: Region, bytes: &[u8]) {
+    fn mesh_update_region(&mut self, mesh: Handle, surface: u32, region: Region, bytes: Bytes) {
         self.commands
             .push(Command::Update(mesh, surface, region, bytes.len()));
         let target = &mut self.meshes.get_mut(&mesh).expect("a live mesh")[surface as usize];
@@ -139,7 +139,7 @@ impl DrawBackend for Recorder {
             Region::Attributes => &mut target.attributes,
         };
         assert!(bytes.len() <= buffer.len(), "an in-place write fits its surface");
-        buffer[..bytes.len()].copy_from_slice(bytes);
+        bytes.write(&mut buffer[..bytes.len()]);
     }
 
     fn mesh_set_material(&mut self, mesh: Handle, surface: u32, material: Handle) {

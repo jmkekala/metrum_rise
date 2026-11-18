@@ -6,7 +6,7 @@
 //! one surface dictionary per surface kind with its keys made once, so neither an in-place write
 //! nor a rebuild allocates on this side once a length has been met. Main thread only.
 
-use super::backend::{DrawBackend, Handle, Region, Surface, SurfaceKind};
+use super::backend::{Bytes, DrawBackend, Handle, Region, Surface, SurfaceKind};
 use crate::nodes::sim::render::stream::layers::roads::surfaces::RoadSurface;
 use godot::classes::rendering_server::ShadowCastingSetting;
 use godot::classes::{Material, RenderingServer, ShaderMaterial};
@@ -40,9 +40,10 @@ pub(crate) struct GodotBackend {
     server: Gd<RenderingServer>,
     scenario: Rid,
     // The materials, kept alive; the line material (none for the preview's chunks) also takes
-    // the dash focus.
+    // the dash focus, set on its server material directly (round R2-9: the `ShaderMaterial`'s
+    // own copy of `dash_focus` is not kept; nothing reads it).
     _materials: Vec<Gd<Material>>,
-    line: Option<Gd<ShaderMaterial>>,
+    line: Option<Rid>,
     dash_focus: StringName,
     // Upload arrays by length: vertex buffers, attribute buffers, index buffers.
     vertices: Uploads,
@@ -72,18 +73,20 @@ struct SurfaceKeys {
 }
 
 // The upload arrays of one buffer kind by length, at most `UPLOADS_KEPT`, the oldest dropped: a
-// write of a length met before reuses its array's storage.
+// write of a length met before reuses its array's storage. Each array's length is kept beside it
+// (round R2-9: `len()` is an engine call).
 #[derive(Default)]
 struct Uploads {
-    arrays: Vec<PackedByteArray>,
+    arrays: Vec<(usize, PackedByteArray)>,
 }
 
 const UPLOADS_KEPT: usize = 8;
 
 impl Uploads {
-    // An array of `bytes`' length holding `bytes`. `O(bytes + UPLOADS_KEPT)`.
-    fn filled(&mut self, bytes: &[u8]) -> &PackedByteArray {
-        let index = match self.arrays.iter().position(|array| array.len() == bytes.len()) {
+    // An array of `bytes`' length holding `bytes`, encoded straight into it (round R2-9).
+    // `O(bytes + UPLOADS_KEPT)`.
+    fn filled(&mut self, bytes: Bytes) -> &PackedByteArray {
+        let index = match self.arrays.iter().position(|(len, _)| *len == bytes.len()) {
             Some(index) => index,
             None => {
                 if self.arrays.len() == UPLOADS_KEPT {
@@ -91,12 +94,12 @@ impl Uploads {
                 }
                 let mut array = PackedByteArray::new();
                 array.resize(bytes.len());
-                self.arrays.push(array);
+                self.arrays.push((bytes.len(), array));
                 self.arrays.len() - 1
             }
         };
-        let array = &mut self.arrays[index];
-        array.as_mut_slice().copy_from_slice(bytes);
+        let array = &mut self.arrays[index].1;
+        bytes.write(array.as_mut_slice());
         array
     }
 }
@@ -124,7 +127,7 @@ impl GodotBackend {
             server: RenderingServer::singleton(),
             scenario,
             _materials: materials,
-            line,
+            line: line.map(|line| line.get_rid()),
             dash_focus: StringName::from("dash_focus"),
             vertices: Uploads::default(),
             attributes: Uploads::default(),
@@ -187,7 +190,10 @@ impl DrawBackend for GodotBackend {
             dict.set(keys.attribute_data.clone(), self.attributes.filled(surface.attributes).clone());
         }
         if surface.kind == SurfaceKind::Lines {
-            dict.set(keys.index_data.clone(), self.indices.filled(surface.indices).clone());
+            dict.set(
+                keys.index_data.clone(),
+                self.indices.filled(Bytes::Raw(surface.indices)).clone(),
+            );
             dict.set(keys.index_count.clone(), i64::from(surface.index_count));
         }
         let mesh = Rid::new(mesh);
@@ -259,7 +265,7 @@ impl DrawBackend for GodotBackend {
         self.server.mesh_clear(Rid::new(mesh));
     }
 
-    fn mesh_update_region(&mut self, mesh: Handle, surface: u32, region: Region, bytes: &[u8]) {
+    fn mesh_update_region(&mut self, mesh: Handle, surface: u32, region: Region, bytes: Bytes) {
         // The engine copies the bytes into the GPU buffer during the call.
         let (mesh, surface) = (Rid::new(mesh), surface as i32);
         match region {
@@ -295,9 +301,9 @@ impl DrawBackend for GodotBackend {
     }
 
     fn set_dash_focus(&mut self, focus: [f32; 3]) {
-        if let Some(line) = &mut self.line {
+        if let Some(line) = self.line {
             let value: Variant = Vector3::from_array(focus).to_variant();
-            line.set_shader_parameter(&self.dash_focus, &value);
+            self.server.material_set_param(line, &self.dash_focus, &value);
         }
     }
 

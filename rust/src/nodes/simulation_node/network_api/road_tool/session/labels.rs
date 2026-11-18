@@ -271,6 +271,11 @@ fn tone_code(tone: LabelTone) -> i32 {
 }
 
 impl Chips {
+    // Whether this frame has chips to place (round R2-9: without any, the tick reads no camera).
+    pub(super) fn has_chips(&self) -> bool {
+        !self.shown.labels.is_empty()
+    }
+
     // Takes the frame's chips built in `next` (and the frame's handles): the revisions move when
     // the content or the placement's inputs differ from the last frame's. `O(chips + handles)`.
     fn commit_next(&mut self, handles: &[Vector3]) {
@@ -547,7 +552,7 @@ impl SimulationNode {
     // A chip fetch's time into the tick's sample.
     fn road_tool_chips_timed(&mut self, start: Instant) {
         let elapsed = Self::road_tool_tick_elapsed(start);
-        self.road_tool_tick_add(elapsed, 0.0, 0.0);
+        self.road_tool_tick_add_fetch(elapsed);
     }
 
     /// The chips' corners as of the last tick (round R2-5), for the HUD on the tick's chips or

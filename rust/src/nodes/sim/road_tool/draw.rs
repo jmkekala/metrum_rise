@@ -11,8 +11,10 @@
 //! layout its buffers are rewritten in place (`mesh_surface_update_*_region`); a new layout
 //! rebuilds the surfaces from the finished bytes (`mesh_add_surface`, no array conversion). The
 //! gizmos' and the hue's buffers are padded to power-of-two counts, so a drag mostly writes in
-//! place. The bytes are built here in kept buffers: a draw allocates nothing once they have grown
-//! (a rebuild hands the engine fresh arrays).
+//! place. The quads and positions are built here in kept buffers and the backend encodes them
+//! straight into its upload arrays (round R2-9, [`backend::Bytes`]); an in-place draw skips the
+//! handles' kinds when they are as drawn and the dash focus when it did not move. A draw
+//! allocates nothing once the buffers have grown (a rebuild hands the engine fresh arrays).
 //!
 //! The preview's join marks (`ROAD-118` round JS5b: the junction outline, a refusal's overlapped
 //! stretch, [`marks::JoinMarks`]) have an overlay of their own, drawn with each preview the display
@@ -37,13 +39,10 @@ mod tests;
 
 use crate::nodes::sim::road_tool::frame::Gizmos;
 use crate::nodes::sim::road_tool::hue::{FootprintHue, HueState};
-use backend::{DrawBackend, Handle, Region, Surface, SurfaceKind};
+use backend::{Bytes, DrawBackend, Handle, Region, Surface, SurfaceKind};
 use godot::builtin::Vector3;
 use marks::JoinMarks;
-use lines::{
-    LineQuadBuffers, LineStyle, VERTEX_BYTES, handle_kind_code, line_style, write_floats,
-    write_vectors,
-};
+use lines::{LineQuadBuffers, LineStyle, handle_kind_code, line_style};
 
 /// The materials the tool draws with, as backend handles.
 #[derive(Clone, Copy, Debug, Default)]
@@ -115,11 +114,14 @@ struct Overlay {
 }
 
 // A part of an overlay's draw: one surface's buffers, absent while it has no vertices.
+// `attributes_changed` false: the attribute bytes equal the last draw's, so an in-place draw
+// does not write them again (round R2-9: the handles' kinds).
 struct Part<'a> {
     kind: SurfaceKind,
     vertex_count: usize,
-    vertices: &'a [u8],
-    attributes: &'a [u8],
+    vertices: Bytes<'a>,
+    attributes: Bytes<'a>,
+    attributes_changed: bool,
     indices: &'a [u8],
     material: Handle,
 }
@@ -147,7 +149,7 @@ impl Overlay {
             for (surface, (index, part)) in present.enumerate() {
                 let surface = surface as u32;
                 backend.mesh_update_region(self.mesh, surface, Region::Vertices, part.vertices);
-                if !part.attributes.is_empty() {
+                if part.attributes_changed && !part.attributes.is_empty() {
                     backend.mesh_update_region(
                         self.mesh,
                         surface,
@@ -255,24 +257,28 @@ impl QuadIndices {
     }
 }
 
-// Line quads and their bytes, kept.
+// Line quads, kept; the backend encodes them straight into its upload arrays (round R2-9).
 #[derive(Default)]
 struct LineBytes {
     quads: LineQuadBuffers,
-    vertices: Vec<u8>,
-    attributes: Vec<u8>,
 }
 
 impl LineBytes {
     // Strips as quads, each strip in the look `style_of` its index. `O(points)`.
     fn fill(&mut self, points: &[Vector3], starts: &[u32], style_of: impl Fn(usize) -> LineStyle) {
         self.quads.fill(points, starts, style_of);
-        write_vectors(&mut self.vertices, &self.quads.vertices);
-        write_floats(&mut self.attributes, &self.quads.attributes);
     }
 
     fn vertex_count(&self) -> usize {
         self.quads.vertices.len()
+    }
+
+    fn vertices(&self) -> Bytes<'_> {
+        Bytes::Vectors(&self.quads.vertices)
+    }
+
+    fn attributes(&self) -> Bytes<'_> {
+        Bytes::Floats(&self.quads.attributes)
     }
 }
 
@@ -288,12 +294,12 @@ pub(crate) struct ToolDraw<B: DrawBackend> {
     ghost: Overlay,
     indices: QuadIndices,
     gizmo_lines: LineBytes,
-    handles: Vec<u8>,
     handle_kinds: Vec<u8>,
     hue_outline: LineBytes,
     ghost_fills: [Vec<Vector3>; 2],
-    ghost_fill_bytes: [Vec<u8>; 2],
     ghost_edges: LineBytes,
+    // The dash focus last set, bitwise (round R2-9: an equal one is not sent again).
+    focus: Option<[u32; 3]>,
     // The preview's join marks (round JS5b): their overlay, bytes and the marks drawn last.
     marks: Overlay,
     mark_lines: LineBytes,
@@ -316,11 +322,10 @@ impl<B: DrawBackend> ToolDraw<B> {
             ghost,
             indices: QuadIndices::default(),
             gizmo_lines: LineBytes::default(),
-            handles: Vec::new(),
             handle_kinds: Vec::new(),
+            focus: None,
             hue_outline: LineBytes::default(),
             ghost_fills: Default::default(),
-            ghost_fill_bytes: Default::default(),
             ghost_edges: LineBytes::default(),
             marks,
             mark_lines: LineBytes::default(),
@@ -336,31 +341,41 @@ impl<B: DrawBackend> ToolDraw<B> {
             .fill(&gizmos.line_points, &gizmos.line_starts, |strip| {
                 line_style(gizmos.line_classes[strip])
             });
-        write_vectors(&mut self.handles, &gizmos.handles);
-        // Each point's kind as its UV.
+        // Each point's kind as its UV, written over the last draw's bytes: unchanged kinds (a
+        // drag's usual pose) are not uploaded again.
         let kinds = &mut self.handle_kinds;
-        kinds.clear();
+        let mut kinds_changed = kinds.len() != gizmos.handle_kinds.len() * 8;
         kinds.resize(gizmos.handle_kinds.len() * 8, 0);
         for (chunk, kind) in kinds.as_chunks_mut::<8>().0.iter_mut().zip(&gizmos.handle_kinds) {
-            chunk[..4].copy_from_slice(&(handle_kind_code(*kind) as f32).to_le_bytes());
-            chunk[4..].copy_from_slice(&0.0f32.to_le_bytes());
+            let mut bytes = [0; 8];
+            bytes[..4].copy_from_slice(&(handle_kind_code(*kind) as f32).to_le_bytes());
+            if *chunk != bytes {
+                *chunk = bytes;
+                kinds_changed = true;
+            }
         }
-        self.backend.set_dash_focus(focus.to_array());
+        let bits = focus.to_array().map(f32::to_bits);
+        if self.focus != Some(bits) {
+            self.focus = Some(bits);
+            self.backend.set_dash_focus(focus.to_array());
+        }
         let lines = self.gizmo_lines.vertex_count();
         let parts = [
             Part {
                 kind: SurfaceKind::Lines,
                 vertex_count: lines,
-                vertices: &self.gizmo_lines.vertices,
-                attributes: &self.gizmo_lines.attributes,
+                vertices: self.gizmo_lines.vertices(),
+                attributes: self.gizmo_lines.attributes(),
+                attributes_changed: true,
                 indices: self.indices.of(lines),
                 material: self.materials.line,
             },
             Part {
                 kind: SurfaceKind::Points,
                 vertex_count: gizmos.handles.len(),
-                vertices: &self.handles,
-                attributes: &self.handle_kinds,
+                vertices: Bytes::Vectors(&gizmos.handles),
+                attributes: Bytes::Raw(&self.handle_kinds),
+                attributes_changed: kinds_changed,
                 indices: &[],
                 material: self.materials.handle,
             },
@@ -394,16 +409,18 @@ impl<B: DrawBackend> ToolDraw<B> {
             Part {
                 kind: SurfaceKind::Fill,
                 vertex_count: hue.fill.len(),
-                vertices: &hue.fill_bytes,
-                attributes: &[],
+                vertices: Bytes::Raw(&hue.fill_bytes),
+                attributes: Bytes::Raw(&[]),
+                attributes_changed: true,
                 indices: &[],
                 material: self.materials.hue[state as usize],
             },
             Part {
                 kind: SurfaceKind::Lines,
                 vertex_count: outline,
-                vertices: &self.hue_outline.vertices,
-                attributes: &self.hue_outline.attributes,
+                vertices: self.hue_outline.vertices(),
+                attributes: self.hue_outline.attributes(),
+                attributes_changed: true,
                 indices: self.indices.of(outline),
                 material: self.materials.depth_line,
             },
@@ -444,9 +461,6 @@ impl<B: DrawBackend> ToolDraw<B> {
             let refused = !ghost.valid.get(stroke).copied().unwrap_or(false);
             self.ghost_fills[usize::from(refused)].extend_from_slice(&ghost.ribbon[start as usize..end]);
         }
-        for (bytes, fill) in self.ghost_fill_bytes.iter_mut().zip(&self.ghost_fills) {
-            write_vectors(bytes, fill);
-        }
         // Two edge strips a stroke, in the ghost's look by tier 1's verdict.
         self.ghost_edges
             .fill(&ghost.edges, &ghost.edge_starts, |strip| {
@@ -459,9 +473,10 @@ impl<B: DrawBackend> ToolDraw<B> {
         let edges = self.ghost_edges.vertex_count();
         let fill = |verdict: usize| Part {
             kind: SurfaceKind::Fill,
-            vertex_count: self.ghost_fill_bytes[verdict].len() / VERTEX_BYTES,
-            vertices: &self.ghost_fill_bytes[verdict],
-            attributes: &[],
+            vertex_count: self.ghost_fills[verdict].len(),
+            vertices: Bytes::Vectors(&self.ghost_fills[verdict]),
+            attributes: Bytes::Raw(&[]),
+            attributes_changed: true,
             indices: &[],
             material: self.materials.ghost_fill[verdict],
         };
@@ -471,8 +486,9 @@ impl<B: DrawBackend> ToolDraw<B> {
             Part {
                 kind: SurfaceKind::Lines,
                 vertex_count: edges,
-                vertices: &self.ghost_edges.vertices,
-                attributes: &self.ghost_edges.attributes,
+                vertices: self.ghost_edges.vertices(),
+                attributes: self.ghost_edges.attributes(),
+                attributes_changed: true,
                 indices: self.indices.of(edges),
                 material: self.materials.line,
             },
@@ -511,8 +527,9 @@ impl<B: DrawBackend> ToolDraw<B> {
         let parts = [Part {
             kind: SurfaceKind::Lines,
             vertex_count: lines,
-            vertices: &self.mark_lines.vertices,
-            attributes: &self.mark_lines.attributes,
+            vertices: self.mark_lines.vertices(),
+            attributes: self.mark_lines.attributes(),
+            attributes_changed: true,
             indices: self.indices.of(lines),
             material: self.materials.line,
         }];

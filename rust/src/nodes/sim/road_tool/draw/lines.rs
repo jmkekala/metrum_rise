@@ -20,6 +20,7 @@ const LINE_QUADS_MIN: usize = 16;
 /// Floats a line vertex's attributes take.
 pub(crate) const LINE_ATTRIBUTES: usize = 5;
 /// The bytes of a position in a vertex buffer: three little-endian `f32`.
+#[cfg(test)]
 pub(crate) const VERTEX_BYTES: usize = 12;
 
 /// The line looks `road_tool_line.gdshader` draws, as the attributes number them (its palette
@@ -126,8 +127,9 @@ pub(crate) struct LineQuadBuffers {
 }
 
 impl LineQuadBuffers {
-    /// The strips' quads into the buffers, each strip in the look `style_of` its index.
-    /// `O(points)`; allocates nothing once the buffers have grown.
+    /// The strips' quads into the buffers, each strip in the look `style_of` its index, the
+    /// padding collapsed at the origin. `O(points)`; allocates nothing once the buffers have
+    /// grown. Only the padding is zeroed (round R2-9): the quads overwrite the rest.
     pub(crate) fn fill(
         &mut self,
         points: &[Vector3],
@@ -135,9 +137,7 @@ impl LineQuadBuffers {
         style_of: impl Fn(usize) -> LineStyle,
     ) {
         let capacity = strip_quad_count(points, starts);
-        self.vertices.clear();
         self.vertices.resize(capacity * 4, Vector3::ZERO);
-        self.attributes.clear();
         self.attributes.resize(capacity * 4 * LINE_ATTRIBUTES, 0.0);
         let mut quad = 0;
         for index in 0..starts.len() {
@@ -166,13 +166,15 @@ impl LineQuadBuffers {
                 quad += 1;
             }
         }
+        self.vertices[quad * 4..].fill(Vector3::ZERO);
+        self.attributes[quad * 4 * LINE_ATTRIBUTES..].fill(0.0);
     }
 }
 
-/// Positions as a vertex buffer holds them: three little-endian `f32` each. `O(vectors)`;
-/// allocates nothing once `bytes` has grown.
+/// Positions as a vertex buffer holds them: three little-endian `f32` each (the tests' reference
+/// for the backends' own encoding, `backend::Bytes`, round R2-9). `O(vectors)`.
+#[cfg(test)]
 pub(crate) fn write_vectors(bytes: &mut Vec<u8>, vectors: &[Vector3]) {
-    bytes.clear();
     bytes.resize(vectors.len() * VERTEX_BYTES, 0);
     for (chunk, vector) in bytes.as_chunks_mut::<VERTEX_BYTES>().0.iter_mut().zip(vectors) {
         chunk[..4].copy_from_slice(&vector.x.to_le_bytes());
@@ -181,9 +183,9 @@ pub(crate) fn write_vectors(bytes: &mut Vec<u8>, vectors: &[Vector3]) {
     }
 }
 
-/// Floats as little-endian bytes. `O(floats)`; allocates nothing once `bytes` has grown.
+/// Floats as little-endian bytes (the tests' reference, as [`write_vectors`]). `O(floats)`.
+#[cfg(test)]
 pub(crate) fn write_floats(bytes: &mut Vec<u8>, floats: &[f32]) {
-    bytes.clear();
     bytes.resize(floats.len() * 4, 0);
     for (chunk, float) in bytes.as_chunks_mut::<4>().0.iter_mut().zip(floats) {
         *chunk = float.to_le_bytes();

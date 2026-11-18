@@ -66,7 +66,11 @@ use crate::simulation::network::interaction::{
     NetworkSnapTarget, StartDirection, StructureHit, road_start_direction,
 };
 use crate::simulation::network::road_edit::{DraftGround, PREVIEW_CLEARANCE_M, RoadProfile};
+use crate::simulation::network::graph::RegionGraph;
+use crate::simulation::network::roadbed::RoadbedSystem;
+use crate::simulation::terrain::TerrainSystem;
 use godot::prelude::Vector3;
+use std::sync::{Arc, Weak};
 
 /// Today's map-edge snap distance (`MAP_BORDER_SNAP_DIST_M`).
 pub const BORDER_SNAP_M: f32 = 25.0;
@@ -227,6 +231,68 @@ impl DraftKey {
     }
 }
 
+// What `refresh` last rebuilt the frame for, of the state a pointer move changes (round R2-9):
+// the pointer, Shift and Ctrl, the resolved cursor, the retained snap target and square lock,
+// the end heights, the view's generations and the identity of the view's parts `refresh` reads
+// (the terrain, the graph, the roadbed: a later publication can replace them under the same
+// surface generation, a commit's terrain for one). Everything else `refresh` reads changes only in
+// events that always refresh (presses, releases, actions, the commit's answer), in a drag
+// (always refreshed) or in `set_option` (which drops the key). So a pointer move with an equal
+// key would rebuild the frame it already has, and is skipped. The pointer's and the cursor's
+// positions compare bitwise; the rest by `==` (a NaN never matches: it refreshes).
+#[derive(Clone, Copy, Debug)]
+struct PoseKey {
+    pointer: Option<Pointer>,
+    pointer_bits: [u32; 6],
+    shift: bool,
+    ctrl: bool,
+    cursor: Option<Cursor>,
+    cursor_bits: [u64; 5],
+    sticky: Option<(NetworkSnapTarget, u64)>,
+    square: Option<SquareAxis>,
+    heights: ([u32; 2], bool, bool, Option<DraftEnd>, DraftEnd),
+    view: [u64; 3],
+    // The addresses of the view's terrain, graph and roadbed; `PoseView` keeps them from being
+    // reused while the key names them.
+    parts: [usize; 3],
+}
+
+// Weak handles of the view's parts the pose key names: they keep the parts' allocations (not
+// their contents, which the view's retirement frees as before) so no later part can take the
+// same address while the key compares by it.
+#[derive(Debug)]
+struct PoseView {
+    _terrain: Weak<TerrainSystem>,
+    _graph: Weak<RegionGraph>,
+    _roadbed: Weak<RoadbedSystem>,
+}
+
+impl PoseView {
+    fn of(view: &RoadToolQuerySnapshot) -> Self {
+        Self {
+            _terrain: Arc::downgrade(&view.terrain),
+            _graph: Arc::downgrade(&view.region_graph),
+            _roadbed: Arc::downgrade(&view.roadbed),
+        }
+    }
+}
+
+impl PoseKey {
+    fn same(&self, other: &Self) -> bool {
+        self.pointer_bits == other.pointer_bits
+            && self.cursor_bits == other.cursor_bits
+            && self.pointer == other.pointer
+            && self.shift == other.shift
+            && self.ctrl == other.ctrl
+            && self.cursor == other.cursor
+            && self.sticky == other.sticky
+            && self.square == other.square
+            && self.heights == other.heights
+            && self.view == other.view
+            && self.parts == other.parts
+    }
+}
+
 /// The road tool session: options, phase, the stroke's placed points, the draft and the frame.
 #[derive(Debug)]
 pub struct RoadToolSession {
@@ -266,6 +332,11 @@ pub struct RoadToolSession {
     scratch: SnapScratch,
     zoning: ZoningScratch,
     frame: RoadToolFrame,
+    // What the frame was last rebuilt for (`PoseKey`), `None` before the first rebuild and after
+    // an option changed; and the rebuilds so far (`pose_revision`).
+    pose_key: Option<PoseKey>,
+    pose_view: Option<PoseView>,
+    pose_revision: u64,
 }
 
 impl Default for RoadToolSession {
@@ -305,12 +376,22 @@ impl RoadToolSession {
             scratch: SnapScratch::default(),
             zoning: ZoningScratch::default(),
             frame: RoadToolFrame::default(),
+            pose_key: None,
+            pose_view: None,
+            pose_revision: 0,
         }
     }
 
     /// The current frame.
     pub fn frame(&self) -> &RoadToolFrame {
         &self.frame
+    }
+
+    /// The frame's rebuilds so far (round R2-9): it moves whenever an event rebuilt the pose
+    /// (draft, stroke, HUD, gizmos, labels), and stands while pointer moves change nothing the
+    /// pose is built from. The tick draws the gizmos when it moved.
+    pub(crate) fn pose_revision(&self) -> u64 {
+        self.pose_revision
     }
 
     /// The drawn road type.
@@ -358,6 +439,8 @@ impl RoadToolSession {
     /// Sets one option. Snapping changes apply from the next pointer move; a road type change
     /// re-prices the draft at once.
     pub fn set_option(&mut self, option: RoadToolOption) {
+        // The next pointer move rebuilds the pose under the new option.
+        self.pose_key = None;
         match option {
             RoadToolOption::RoadType(spec) => {
                 if spec != self.spec {
@@ -387,8 +470,14 @@ impl RoadToolSession {
         }
     }
 
-    /// Handles one event against the published view and brings the frame up to date.
+    /// Handles one event against the published view and brings the frame up to date. A pointer
+    /// move that changed nothing the pose is built from (the cursor resolved to the same place,
+    /// the same view and heights: `PoseKey`) keeps the frame as it is (round R2-9).
     pub(crate) fn handle_event(&mut self, view: &RoadToolQuerySnapshot, event: RoadToolEvent) {
+        // A drag (a height grip or a freeform grip) moves state outside the key: it rebuilds.
+        let pointer_move = matches!(event, RoadToolEvent::Pointer { .. })
+            && self.heights.grip.is_none()
+            && self.freeform.grip().is_none();
         match event {
             RoadToolEvent::Pointer {
                 pointer,
@@ -436,7 +525,64 @@ impl RoadToolSession {
             RoadToolEvent::Action(RoadToolAction::LowerHandle) => self.step_height(-1),
             RoadToolEvent::CommitAck { committed } => self.acknowledge(view, committed),
         }
+        let key = self.pose_key_of(view);
+        if pointer_move && self.pose_key.is_some_and(|last| last.same(&key)) {
+            return;
+        }
         self.refresh(view);
+        self.pose_key = Some(key);
+        self.pose_view = Some(PoseView::of(view));
+        self.pose_revision += 1;
+    }
+
+    // The state a pointer move changes, as `refresh` reads it (`PoseKey`). `O(1)`.
+    fn pose_key_of(&self, view: &RoadToolQuerySnapshot) -> PoseKey {
+        let mut pointer_bits = [0; 6];
+        match self.pointer {
+            Some(Pointer::Ray { origin, dir }) => {
+                for (bits, value) in pointer_bits.iter_mut().zip([
+                    origin.x, origin.y, origin.z, dir.x, dir.y, dir.z,
+                ]) {
+                    *bits = value.to_bits();
+                }
+            }
+            Some(Pointer::World(at) | Pointer::Scripted(at)) => {
+                pointer_bits[..3].copy_from_slice(&at.to_array().map(f32::to_bits));
+            }
+            None => {}
+        }
+        let cursor_bits = self.cursor.map_or([0; 5], |cursor| {
+            let [x, y, z] = cursor.position.to_array().map(|value| u64::from(value.to_bits()));
+            [x, y, z, cursor.raw.x.to_bits(), cursor.raw.y.to_bits()]
+        });
+        let heights = &self.heights;
+        PoseKey {
+            pointer: self.pointer,
+            pointer_bits,
+            shift: self.shift,
+            ctrl: self.ctrl,
+            cursor: self.cursor,
+            cursor_bits,
+            sticky: self.sticky,
+            square: self.square,
+            heights: (
+                [heights.start_offset_m.to_bits(), heights.end_offset_m.to_bits()],
+                heights.straight_grade,
+                heights.start_locked,
+                heights.grip,
+                heights.active,
+            ),
+            view: [
+                view.surface_generation,
+                view.road_mesh_surface_generation,
+                view.terrain_inputs.revision,
+            ],
+            parts: [
+                Arc::as_ptr(&view.terrain) as usize,
+                Arc::as_ptr(&view.region_graph) as usize,
+                Arc::as_ptr(&view.roadbed) as usize,
+            ],
+        }
     }
 
     // A different mode drops the stroke; the current mode again changes nothing. With Continuous

@@ -6,6 +6,7 @@
 
 use super::recorder::{Command, Recorder};
 use super::*;
+use super::lines::{write_floats, write_vectors};
 use crate::nodes::sim::road_tool::frame::{GizmoHandleKind, GizmoLineClass};
 use crate::nodes::sim::road_tool::hue::HueKind;
 
@@ -67,7 +68,9 @@ fn same_layout_updates_in_place() {
             .all(|command| matches!(command, Command::Update(..) | Command::Focus(_))),
         "only in-place writes: {commands:?}"
     );
-    assert_eq!(commands.iter().filter(|c| matches!(c, Command::Update(..))).count(), 4);
+    // Round R2-9: the handles' kinds are as drawn, so their attributes are not written again.
+    assert_eq!(commands.iter().filter(|c| matches!(c, Command::Update(..))).count(), 3);
+    assert!(!commands.contains(&Command::Update(state.mesh, 1, Region::Attributes, 16)));
     // The server's copy is the encoders' bytes.
     let mut quads = LineQuadBuffers::default();
     quads.fill(&moved, &[0], |_| LineStyle::Stroke);
@@ -83,6 +86,45 @@ fn same_layout_updates_in_place() {
     // Two triangles a quad, 16-bit: 16 quads (the minimum) of 6 indices.
     assert_eq!(surfaces[0].indices.len(), 16 * 6 * 2);
     assert_eq!(&surfaces[0].indices[12..24], &[4, 0, 5, 0, 6, 0, 6, 0, 5, 0, 7, 0]);
+}
+
+// Round R2-9: an in-place draw writes a region only when its bytes may differ: the handles'
+// kinds when one changed (and then the server's copy is the encoders' bytes), and the dash focus
+// only when it moved.
+#[test]
+fn equal_kinds_and_focus_are_not_written() {
+    let mut draw = draw();
+    let focus = Vector3::new(1.0, 2.0, 3.0);
+    draw.draw_gizmos(&gizmos(&line(3, 0.0)), focus);
+    let mesh = draw.state()[0].mesh;
+    draw.backend_mut().commands.clear();
+    draw.draw_gizmos(&gizmos(&line(3, 4.0)), focus);
+    let commands = draw.backend().commands.clone();
+    assert!(!commands.iter().any(|command| matches!(command, Command::Focus(_))));
+    assert!(commands.contains(&Command::Update(mesh, 1, Region::Vertices, 24)));
+    assert!(!commands.contains(&Command::Update(mesh, 1, Region::Attributes, 16)));
+    // A changed kind (the live end's), at the same layout: written, and the server holds it.
+    let mut changed = gizmos(&line(3, 4.0));
+    changed.handle_kinds[1] = GizmoHandleKind::Joint;
+    draw.backend_mut().commands.clear();
+    draw.draw_gizmos(&changed, -focus);
+    let commands = &draw.backend().commands;
+    assert_eq!(commands.iter().filter(|c| matches!(c, Command::Focus(_))).count(), 1);
+    assert!(commands.contains(&Command::Focus((-focus).to_array())));
+    assert!(commands.contains(&Command::Update(mesh, 1, Region::Attributes, 16)));
+    let mut expected = Vec::new();
+    for kind in [GizmoHandleKind::Endpoint, GizmoHandleKind::Joint] {
+        expected.extend((handle_kind_code(kind) as f32).to_le_bytes());
+        expected.extend(0.0f32.to_le_bytes());
+    }
+    assert_eq!(draw.backend().meshes[&mesh][1].attributes, expected);
+    // Back to the first kinds: written again.
+    draw.backend_mut().commands.clear();
+    draw.draw_gizmos(&gizmos(&line(3, 4.0)), -focus);
+    let commands = &draw.backend().commands;
+    assert!(commands.contains(&Command::Update(mesh, 1, Region::Attributes, 16)));
+    assert!(!commands.iter().any(|command| matches!(command, Command::Focus(_))));
+    assert_eq!(&draw.backend().meshes[&mesh][1].attributes[8..12], &3.0f32.to_le_bytes());
 }
 
 #[test]

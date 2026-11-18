@@ -66,6 +66,17 @@ const CHUNK_SEGMENTS: usize = 16;
 // Bisection steps locating a class change between two guide points (2^-20 of a chord).
 const CROSSING_STEPS: usize = 20;
 
+// The end circles' unit points, `CIRCLE_CHORDS + 1` of them (the first again last), computed
+// once by the expression each pose computed before round R2-9, so bit for bit the same.
+static UNIT_CIRCLE: std::sync::LazyLock<[DVec2; CIRCLE_CHORDS + 1]> =
+    std::sync::LazyLock::new(|| {
+        std::array::from_fn(|index| {
+            let angle = std::f64::consts::TAU * index as f64 / CIRCLE_CHORDS as f64;
+            let (sin, cos) = angle.sin_cos();
+            DVec2::new(cos, sin)
+        })
+    });
+
 /// Reused buffers of the zoning-depth guide: the offsets, the stroke in XZ and its chunk boxes.
 #[derive(Debug, Default)]
 pub struct ZoningScratch {
@@ -169,12 +180,9 @@ pub fn push_zoning_guide(
         ),
         (xz(end), end.y, path.end_tangent().unwrap_or(DVec2::X)),
     ];
+    let circle = &*UNIT_CIRCLE;
     for (centre, y, outward) in ends {
-        let point = |index: usize| {
-            let angle = std::f64::consts::TAU * index as f64 / CIRCLE_CHORDS as f64;
-            let (sin, cos) = angle.sin_cos();
-            centre + DVec2::new(cos, sin) * depth
-        };
+        let point = |index: usize| centre + circle[index] * depth;
         let over = |p: DVec2| (p - centre).dot(outward) < 0.0 || inside(p);
         push_split(gizmos, CIRCLE_CHORDS + 1, point, |_| y, &over);
     }

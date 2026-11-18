@@ -172,8 +172,9 @@ func _case(bench: Node, name: String, mode: int) -> Dictionary:
 	result["input_lateness_ms"] = Metrics.distribution(input_lateness_ms)
 	var stop_us := Time.get_ticks_usec()
 	trace.finish_scheduled_inputs(stop_us)
-	# Every tick of the moving phase: its whole, the preview call, the chips (their words, their
-	# placement and the HUD's fetch), the gizmos, the hue's join, the flags (`road_tool_timings`).
+	# Every tick of the moving phase: its whole, the preview call, the graded share staged in the
+	# tick, the chips (their words, their placement and the HUD's fetch, the fetch also on its own;
+	# round R2-9), the gizmos, the hue's join, the flags (`road_tool_timings`).
 	result["tick_ring"] = sim.road_tool_timings(true)
 	var observed_service_ms: float = trace.worker_service_ms - moving_service_start
 	_set_pointer(bench, _pose(scenario, 9.0 / 16.0))

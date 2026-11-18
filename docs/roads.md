@@ -14435,6 +14435,215 @@ load under 6):
   branch 0.267 ms (cross 0.384 -> 0.499; T, branch and dense 0.002 both). Pred reads 10.736 ms in
   this session (R2-4a's 9.975).
 
+### The tick less the preview call (round R2-9)
+
+Round R2-9 of `ROAD-112` R2 (branch `roadtools-r29` on `dev` `fd2e6b02`; PLAN-R2-9's changes 1-8
+and decision D1). **Before:** every tick looked up Godot's `Time` singleton (the engine walks its
+singleton list), rebuilt the pose whole on every pointer event (`refresh`) even when the pointer
+and everything it reads stood still, compared the gizmos against a kept copy, encoded the line
+quads into byte vectors (zero-filled first) and copied them again into the upload arrays (whose
+lengths it asked the engine for), rewrote the handles' kinds every pose, set the line material's
+`dash_focus` through the `ShaderMaterial` every pose, wrote the chips' numbers through
+`write_fmt`, read the camera's view for the chips even with no chip shown, and took 64 `sin_cos`
+per end circle of the zoning guide every pose.
+
+- **The clock** (change 1): the tick keeps the `Time` singleton (`TickState::time`).
+- **The uploads** (change 2): the backend takes `Bytes` (finished bytes, positions or floats) and
+  encodes the line quads and handle positions straight into its kept upload array of that
+  length (`Bytes::write`, every byte written), whose length is kept beside it in Rust; the quad
+  buffers zero only their padding; the handles' kinds are written over the last draw's bytes and
+  an in-place draw skips their attribute region when no kind changed (`Part::attributes_changed`).
+- **The dash focus** (change 3): set only when it moved (bitwise), on the line material's server
+  RID (`material_set_param`); the `ShaderMaterial`'s own copy of `dash_focus` is no longer kept
+  (no reader). Change 3b (an instance uniform) was not tried: the line material is shared by the
+  gizmos, the ghost and the join marks, each would need its own uniform, and the RID path already
+  skips the material's bookkeeping.
+- **The words** (change 4): `label_text` writes lengths, radii, slopes, angles, bearings, design
+  speeds and end heights without `write_fmt` (`push_fixed`: the binary value scaled and rounded
+  exactly, ties to even, a negative value's sign kept, as `{:.N}` and `{:+.N}` write them; the
+  formatter for non-finite values and values of 2^63 and up). A test compares every numeric chip
+  kind with the formatter over decimal grids (ties included), 400,000 spread bit patterns,
+  subnormals, signed zeros and the non-finite values.
+- **The pose key** (change 5): the session keeps what `refresh` last rebuilt the frame for of the
+  state a pointer move changes (`PoseKey`: the pointer and the resolved cursor bitwise, Shift and
+  Ctrl, the retained snap target, the square lock, the end heights, the view's surface, road mesh
+  and terrain-input generations, and the addresses of the view's terrain, graph and roadbed, which
+  `PoseView`'s weak handles keep from reuse while the key names them). A pointer move with an
+  equal key skips `refresh` (the cursor is still resolved before the gate, so the pick's
+  fixed-point question does not arise); presses,
+  releases, actions, the commit's answer and drags always rebuild, and `set_option` drops the
+  key. Each rebuild moves `pose_revision`, which the tick takes as the gizmos' revision: no kept
+  copy of the gizmos, no comparison. An empty pose after an empty draw (a hover without a stroke)
+  is not drawn again: the round's first build (`cdae195f`) drew it, setting the dash focus every
+  move, and its tick probe read the hover's gizmo part 1.4 -> 7.9 us p95; its numbers are
+  superseded (`$ARTIFACTS/art-r29/old-cdae195f`). The view's parts are keyed by identity as well as
+  by generation (the third build; the second, `1c912186`, is superseded too, `old-1c912186`), so
+  the key does not rest on every replacement of a part `refresh` reads moving one of the
+  generations (`O(1)`: three address compares; three weak handles a rebuild).
+- **The chips' view** (change 6): with no chip the tick reads no camera (every view places the
+  same empty corners).
+- **The zoning guide** (change 7, a try, kept): the end circles' unit points come from a table
+  computed once by the same expression (bitwise the same). Its other parts (the unmoved start's
+  handle, ground mark and height kept) were not tried.
+- **The ring** (change 8, D1): `graded_ms` (the pose's graded share staged on a tick without a new
+  preview, inside `total_ms`), `fetch_ms` (the chips' fetch, also inside `chips_ms`), and the
+  tick's clock starts before the camera's ray (the rows script the pointer: no ray there).
+
+**Fresh, 2026-11-18 05:30-09:58** (base `dev` `fd2e6b02`: release library `eb7593c95d273e70`,
+session bench binary `22fa8f5bf0e27cc8`, built in the base worktree's own cargo target directory;
+branch `roadtools-r29` `59b38a91` (the tree built and gated as `97b7692c`; the commit message was
+reworded): release library `031699452fc77171`, session bench binary `825bbc73134c6076`, built in
+the branch worktree's own directory; every hash differs from the base's):
+
+- **Tests:** Rust `draw::tests::equal_kinds_and_focus_are_not_written` (an in-place draw skips
+  unchanged kinds and an unmoved focus, writes a changed kind, the server's copy the encoders'
+  bytes), `same_layout_updates_in_place` (three region writes, the kinds not rewritten),
+  `wording::tests::chip_numbers_match_the_formatter` (every numeric chip kind byte-equal to the
+  formatter), `tick::tests::unchanged_pointer_bumps_no_revision` (a still pointer rebuilds nothing
+  and reports 0; an empty hover after an empty draw draws nothing; a new view generation alone, an
+  option alone and a replaced terrain alone rebuild the pose, to the same gizmos).
+- **Gates** (fresh on the final tree): clippy's warning set equal to the base's own-directory set
+  (14 = 14), missing docs 0, debug lib tests 2,911 passed / 0 failed / 239 ignored, `./run.sh
+  --test` PASS (2,915 Rust tests, 240 skipped; both Godot chains, 0 SCRIPT ERROR, no Godot script
+  skipped).
+- **Products:** Kuopio's 78 commits **EQUAL** in every product against the base's quiet run (both
+  branch runs, 08:11 and 08:19); the base's second run, made under load 21 at 08:05, differed from
+  its own first run (06:15) in `kuopio_06` #18's graded tiles only: `TERRAIN-30` on the unchanged
+  base library. The 17 gameplay fixtures **EQUAL**. The drag probe **PASS** on both sides.
+- **The whole-tick allocation probe** (R2-2's, heaptrack `--record-only`, n = 20 against 200):
+  **0.00 a tick outside the preview** in still, hover and pose; the pose tick 625 process-wide
+  (R2-4b 713); the session heap probe (30k) flat: n = 0 2,429,609, n = 20 2,429,644, n = 200
+  2,429,576 calls.
+- **Session bench** (level R; the 30k locality mode, C B B C, pinned, run and exclusive timing
+  locks; p50 / p99 us): straight 104.2 / 141.8, 103.8 / 148.1, 102.3 / 139.0, 103.5 / 140.5; curve
+  115.1 / 158.1, 112.7 / 152.1, 113.1 / 153.2, 114.2 / 151.9; frame digests `32cb9b4b11dccf75` and
+  `ca3e8f6d742b48b2` on every row: level (p50 within 5 %, p99 under 0.25 ms). Row 3 started after a
+  lock wait at load 27.6 (its quiet check passed before the wait); the C B B C again at 09:53, in
+  one hold of the locks, load 1.6-1.8: straight 103.2 / 139.4, 102.0 / 137.5, 102.6 / 139.1, 103.8 /
+  139.7; curve 114.0 / 153.1, 112.6 / 150.8, 112.7 / 149.3, 114.5 / 152.3, the same digests: the
+  branch 1-2 % lower at p50, level.
+- **The tick probe** (PLAN-R2-9's ring probe: R2-2's tick probe printing its ring, a blank flat
+  world, a scripted pointer, 400 ticks a mode, gamescope headless; C B B C at 09:08-09:15, pinned,
+  run and exclusive timing locks, load 2.2-3.4 at every run's start, no overlap; the main thread
+  counted by `perf stat -t` over the ring's span). The tick less the preview call and the graded
+  share, us:
+
+  | mode | side | p50 | p95 | mean | gizmos p95 | chips p95 | main-thread clock | kcycles a tick (mean x clock) |
+  | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+  | still (nothing changes) | base | 27.1 | 31.9 | 22.8 | 1.8 | 11.5 | 1.32 GHz | 30.2 |
+  | still | branch | 10.6 | 11.9 | 8.8 | 1.1 | 2.4 | 1.33 GHz | 11.7 |
+  | hover (pointer moves, no stroke) | base | 26.2 | 29.9 | 22.3 | 1.4 | 10.7 | 1.29 GHz | 28.7 |
+  | hover | branch | 12.0 | 13.4 | 10.5 | 0.9 | 2.1 | 1.26 GHz | 13.2 |
+  | pose (a new pose a tick) | base | 128.8 | 153.3 | 108.7 | 60.0 | 43.4 | 1.09 GHz | 118.5 |
+  | pose | branch | 89.3 | 105.8 | 76.2 | 38.4 | 22.8 | 1.08 GHz | 82.3 |
+
+  The clock is the governor's idle-paced one (1.1-1.3 GHz): PLAN-R2-9's probe read the base's
+  still tick at 15.2 us p50 on a busier machine. At equal clocks the branch's still tick is 61 %
+  fewer cycles, the hover 54 %, the pose 31 %. **A still tick's bar (at most 0.005 ms p95) is
+  missed**: 11.9 us at 1.33 GHz (the ring splits the gizmos' 1.1 and the chips' 2.4 us p95; the
+  rest, the pointer's handling with the key, the draft's key, the preview step and the phase, is
+  not split).
+- **Stills** (gamescope headless 1920x1080; base with the base tree's scripts): the tool's default
+  (7), S-curve and freeform (3), batch ghost (1) and restyle (7) sets **pixel-identical**, and
+  `road_tool_capture.gd`'s read-back of the gizmo mesh against the engine's own surface for the same
+  arrays 0 failures in every run (the bytes encoded straight into the upload arrays are the
+  engine's). `road_height_capture.gd`'s sets differ run to run on the base itself (a second base
+  run: 8 of the default set's 11 stills and 16 of the hue set's 23 differ, the runs made under load
+  20-69 beside other sessions' suites); against the branch 5 and 16 differ. Four to six of the hue
+  set's stills taken after its first commit (`hue_junction`, `hue_refused`, `hue_short_junction`,
+  top and low) differed from both base runs at the live end and in the refused hue's hatch, a
+  different subset in each of four branch builds. Diagnostic builds
+  (`$ARTIFACTS/art-r29/bin/sums-variants.txt`, hue set only) read: the pose gate off, equal to the
+  base; the gate on with `refresh` still run on a skipped move and any change reported (none was),
+  different; the gate on with the gizmos drawn on every move (the branch's frames exactly, plus
+  redundant uploads of the same bytes), **equal to the base**; the gate on with the base's draw rule
+  (a kept copy), different. Only the variants that keep the tick slower match: the captures are
+  condition-timed, and the hue (built off the frame from the graded surface as it stands) and what
+  is drawn at the live end follow the frame's pacing, as round R2-4b recorded for these sets.
+- **The three drags' overlay** (the tool captures' tick ring, 120-frame drags; six runs a side
+  in two sets, base br br base base br at 09:15-09:24 and br base base br br base at 09:53-09:58,
+  each run under the run and exclusive timing locks, load 1.7-6.0 at the starts; `overlay_ms` = the
+  gizmos + the hue's draw + the ghost, ms; `$ARTIFACTS/art-r29/logs/drags6.txt`):
+
+  | drag | side | p50, the runs' range | p95, each run | median p95: first three, all six | gizmos p95 (median) | hue draw p95 (median) |
+  | --- | --- | --- | --- | --- | --- | --- |
+  | curve end | base | 0.102-0.112 | 0.195 0.214 0.213 0.207 0.215 0.217 | 0.213, 0.213 | 0.088 | 0.133 |
+  | curve end | branch | 0.088-0.100 | 0.185 0.225 0.185 0.160 0.224 0.197 | 0.185, 0.191 | 0.063 | 0.132 |
+  | S-curve end | base | 0.052-0.054 | 0.096 0.108 0.091 0.097 0.097 0.091 | 0.096, 0.096 | 0.041 | 0.061 |
+  | S-curve end | branch | 0.046-0.049 | 0.142 0.083 0.080 0.126 0.133 0.083 | 0.083, 0.105 | 0.039 | 0.063 |
+  | freeform handle | base | 0.110-0.128 | 0.196 0.214 0.224 0.228 0.253 0.205 | 0.214, 0.219 | 0.084 | 0.144 |
+  | freeform handle | branch | 0.087-0.115 | 0.212 0.259 0.224 0.191 0.213 0.198 | 0.224, 0.213 | 0.062 | 0.159 |
+
+  The p50 is lower on the branch in all three drags (the runs' medians 0.109 / 0.095, 0.053 / 0.047,
+  0.115 / 0.108 ms) and the gizmos' part (what this round changed) lower or level; at p95 one drag
+  reads higher in each set, a different one (the freeform handle in the first, +0.010; the S-curve
+  in all six, +0.009, its branch runs either 0.080-0.083 or 0.126-0.142). With 120 frames a run the
+  p95 is six frames: **not shown either way**. The overlay bar (at most 0.10 ms p95) holds only on
+  the S-curve, on the base and on the branch's first set (0.105 over six runs); the curve end and
+  freeform handle miss on both sides (the hue's fill upload, `ROAD-123`).
+- **The interleaved preview rows** (R2-4b's interleaved pass, HF3F's script: the paused preview
+  rows (sloped T + branch, flat + sloped cross, dense; gamescope headless 1920x1080, four workers,
+  100 samples a case, no FPS cap), unprofiled, pinned, run and exclusive timing locks, 09:24-09:41,
+  order pred, base and branch alternating per batch (b B b B b B b B b), pred; 33 runs, no
+  overlap; each base and branch with its own tree's scripts, pred round D's control library
+  `85b3d2e78ea3302c`; the main thread's clock counted by `perf stat -t`). **The tick less the
+  preview call** on the ticks with a new preview (both sides alike: no graded share runs on them),
+  us:
+
+  | group | side | preview ticks | p50 | p95 | mean | gizmos p95 | chips in the tick p95 | rest p95 | clock | kcycles a tick |
+  | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+  | cross | base | 3,244 | 55.6 | 88.4 | 58.8 | 33.8 | 24.7 | 35.2 | 2.23 GHz | 130.9 |
+  | cross | branch | 2,579 | 42.8 | 69.2 | 45.5 | 25.8 | 15.8 | 30.5 | 2.23 GHz | 101.4 |
+  | T, branch, dense | base | 5,391 | 80.6 | 124.9 | 82.3 | 48.5 | 40.3 | 45.6 | 1.47 GHz | 121.0 |
+  | T, branch, dense | branch | 4,234 | 60.5 | 94.4 | 61.8 | 37.4 | 19.9 | 39.8 | 1.46 GHz | 90.5 |
+  | all | base | 8,635 | 69.2 | 119.1 | 73.5 | 45.6 | 37.1 | 43.7 | 1.79 GHz | 131.7 |
+  | all | branch | 6,813 | 53.3 | 90.5 | 55.7 | 35.5 | 19.0 | 38.5 | 1.79 GHz | 99.5 |
+
+  (The base's chips column includes the HUD's fetch after the tick, which its ring does not
+  separate; the branch's excludes it, `chips_ms - fetch_ms`.) **Lower in every group at p50 and
+  p95, and in every batch** (each branch batch below every base batch: all p50 52.6-54.3 against
+  66.0-71.4, p95 86.0-94.2 against 117.0-122.1), at the same clock: 24 % fewer cycles a tick. On
+  every tick less the graded share too (the branch's ring, D1): all p50 48.7 / p95 88.5 us over
+  8,002 ticks. **The bar (at most 0.05 ms p95) is missed**: 0.0905 ms (cross 0.069, T, branch and
+  dense 0.094), p50 0.053; PLAN-R2-9 expected 0.070-0.080 at its profile's clock, these rows run at
+  1.5-2.2 GHz. **The graded share** (D1's column, the 1,189 ticks that staged one): p50 1.58 ms, p95
+  2.70 ms (cross 1.80 / 2.71, T, branch and dense 1.32 / 2.63), the tick's largest part on a tick
+  without a new preview, read beside the preview call as decided.
+
+  **Sample to installed** (the moving poses' mean / p95 ms):
+
+  | group | base batches, mean (spread) | branch batches (spread) | branch minus the bases around it, per batch | pooled base -> branch | clock |
+  | --- | --- | --- | --- | --- | --- |
+  | cross | 10.316 10.614 9.930 10.407 10.314 (0.683) | 10.073 10.532 10.399 10.393 (0.459) | -0.392 +0.260 +0.230 +0.033 | 10.307 / 17.447 -> 10.347 / 17.913 | 2.23 / 2.23 GHz |
+  | T, branch, dense | 8.874 8.612 8.545 8.606 8.603 (0.329) | 8.565 9.016 8.468 8.794 (0.548) | -0.178 +0.438 -0.107 +0.190 | 8.647 / 14.073 -> 8.703 / 14.175 | 1.47 / 1.46 GHz |
+  | all | 9.415 9.337 9.095 9.269 9.244 (0.320) | 9.137 9.590 9.168 9.426 (0.453) | -0.239 +0.374 -0.015 +0.169 | 9.271 / 15.129 -> 9.325 / 15.332 | 1.79 / 1.79 GHz |
+
+  **Level, not lower:** the pooled branch reads +0.04 to +0.06 ms at the mean (+0.10 to +0.47 at
+  p95), inside the base's batch-to-batch spread in every group, the per-batch differences either
+  side of zero, at the same clock; the native stages read the same within 1 % (plan 1.484 / 1.493,
+  roadbed 1.257 / 1.272, payload 2.142 / 2.162, graded 3.253 / 3.279 ms), the hue build p50 4.480 /
+  4.433, the display's part 0.574 / 0.575 ms. The tick's 16 us a pose is under this pass's
+  resolution of the sample to installed. U-R2-1 against pred passes in both groups (cross pred
+  53.9 / 64.4 / 72.9 / 80.5, branch 66.6 / 76.2 / 84.0 / 90.2; T, branch and dense pred 53.7 / 61.6
+  / 72.5 / 81.8, branch 56.6 / 65.6 / 78.2 / 88.5 % within 16.7 / 17 / 18 / 20 ms). The hue's join
+  p95 a preview tick 0.425 / 0.418 ms (`ROAD-123`).
+
+**Against R2-9's landing rule** (the user: a performance benefit lands it): the tick less the
+preview call is lower than the base's in the same interleaved pass at p50 and p95 in every row group
+(gain met); the overlay a drag frame is lower at p50 in all three drags and its changed part lower
+or level, but at p95 not shown no higher in all three (above). No harm: sample to installed level
+within the batch spread (+0.05 ms pooled, not lower), zero allocations a tick, products bitwise,
+drag probe PASS, tool stills pixel-identical (the height sets as above), session bench digests
+equal, p99 under 0.16 ms and p50 1-2 % lower, gates fresh. **Recorded, not relaxed:** the tick less
+the preview 0.0905 ms p95 (p50 0.053) against 0.05, the overlay 0.10 met on the S-curve only, a
+still tick 0.0119 ms p95 against 0.005: missed. **D2 (user):** the two design changes in PLAN-R2-9
+section 4 (the chips' view without engine calls, -6 us; the zoning guide's offset in the line
+shader, -5 to -6 us, a look change at tight curves) take the measured parts above toward the bar;
+the rows' p95 here reads 0.0905 ms at 1.5-2.2 GHz, so even both (about 12 us at the mean, p95
+scaling with it) leave about 0.07 ms on these rows: the bar is not reachable on them without a
+higher clock or a different reading (D2 recommendation: decide the bar's reading, a fixed P-core
+clock as HF3F-1 (b) or the cycles, before more tick work).
+
 ### The pick's graded preparation halved (round PB, `ROAD-116`)
 
 Round PB of `ROAD-112` (branch `roadtools-pb`, R2-7 on `dev` `75523322`). **Bisect.** The

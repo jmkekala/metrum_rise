@@ -55,9 +55,13 @@ const RING_TICKS: usize = 4096;
 /// the tick left for the script to fetch, and the stage ring.
 #[derive(Default)]
 pub(super) struct TickState {
-    // The gizmos as last drawn (`None` until the first draw, and after the drawing was dropped;
-    // round R2-3: the tick draws them, `draw`).
-    drawn: Option<Gizmos>,
+    // The session's pose revision the gizmos were last drawn at (`None` until the first draw,
+    // and after the drawing was dropped; round R2-3: the tick draws them, `draw`; round R2-9:
+    // the revision, not a kept copy of the gizmos).
+    drawn: Option<u64>,
+    // Whether the gizmos last drawn were empty: a rebuilt pose that is empty again (a hover
+    // without a stroke) is not drawn again.
+    drawn_empty: bool,
     // The heights last reported.
     heights: Option<HeightsRecord>,
     // The hue revision last reported.
@@ -77,28 +81,41 @@ pub(super) struct TickState {
     graded: Option<VarDictionary>,
     answer: Option<VarDictionary>,
     ring: TickRing,
+    // Godot's `Time` singleton, looked up once (round R2-9: the engine walks its singleton list
+    // on every lookup).
+    time: Option<Gd<Time>>,
 }
 
 impl TickState {
-    // The frame's gizmos (drawn by `draw` on a change, round R2-3), heights, the hue's revision
-    // and the cursor against what was last reported; the flags of those that changed.
-    // `O(gizmo points)`; allocates nothing once the buffers have grown, unless the gizmos'
-    // padded layout changed.
+    // The frame's gizmos (drawn by `draw` when the session rebuilt the pose since the last draw,
+    // `pose_revision`), heights, the hue's revision and the cursor against what was last
+    // reported; the flags of those that changed. `O(1)` on an unchanged pose, `O(gizmo points)`
+    // on a drawn one; allocates nothing once the buffers have grown, unless the gizmos' padded
+    // layout changed.
     fn compare_drawn<B: DrawBackend>(
         &mut self,
         frame: &RoadToolFrame,
+        pose_revision: u64,
         hue_revision: u64,
         draw: Option<&mut ToolDraw<B>>,
     ) -> i64 {
         let mut flags = 0;
-        if self.drawn.as_ref() != Some(&frame.gizmos) {
-            self.drawn
-                .get_or_insert_with(Gizmos::default)
-                .clone_from(&frame.gizmos);
-            if let Some(draw) = draw {
-                draw.draw_gizmos(&frame.gizmos, frame.cursor.position);
+        if self.drawn != Some(pose_revision) {
+            let gizmos = &frame.gizmos;
+            let empty = gizmos.line_points.is_empty()
+                && gizmos.line_starts.is_empty()
+                && gizmos.line_classes.is_empty()
+                && gizmos.handles.is_empty()
+                && gizmos.handle_kinds.is_empty();
+            let unchanged = self.drawn.is_some() && self.drawn_empty && empty;
+            self.drawn = Some(pose_revision);
+            self.drawn_empty = empty;
+            if !unchanged {
+                if let Some(draw) = draw {
+                    draw.draw_gizmos(gizmos, frame.cursor.position);
+                }
+                flags |= TICK_GIZMOS;
             }
-            flags |= TICK_GIZMOS;
         }
         if !self.heights.as_ref().is_some_and(|heights| heights.same(frame)) {
             self.heights.get_or_insert_with(HeightsRecord::default).copy(frame);
@@ -154,16 +171,20 @@ impl HeightsRecord {
     }
 }
 
-// One tick's stage times: its start on Godot's ticks clock, its whole, the preview call (a
-// pose's `preview_stroke` or the batch's tiers), the chips (their words and placement, and the
-// HUD's fetch when it follows), the gizmos' comparison and drawing, the hue's join and drawing
-// (`road_tool_draw_hue` after the tick), the batch ghost's drawing, and its flags.
+// One tick's stage times: its start on Godot's ticks clock, its whole (from before the camera's
+// ray, round R2-9), the preview call (a pose's `preview_stroke` or the batch's tiers), the pose's
+// graded share staged inside the tick (round R2-9, decision D1), the chips (their words and
+// placement, and the HUD's fetch when it follows; the fetch's part also on its own), the gizmos'
+// comparison and drawing, the hue's join and drawing (`road_tool_draw_hue` after the tick), the
+// batch ghost's drawing, and its flags.
 #[derive(Clone, Copy, Default)]
 struct TickSample {
     start_us: i64,
     total_us: f32,
     preview_us: f32,
+    graded_us: f32,
     chips_us: f32,
+    fetch_us: f32,
     gizmos_us: f32,
     hue_us: f32,
     hue_draw_us: f32,
@@ -235,11 +256,13 @@ impl SimulationNode {
         shift: bool,
         ctrl: bool,
     ) -> i64 {
+        // The tick's clock starts before the ray's two camera calls (round R2-9).
+        let start = Instant::now();
         let pointer = camera.as_ref().map(|camera| Pointer::Ray {
             origin: camera.project_ray_origin(mouse),
             dir: camera.project_ray_normal(mouse),
         });
-        self.road_tool_tick_with(pointer, shift, ctrl, camera.as_ref())
+        self.road_tool_tick_with(start, pointer, shift, ctrl, camera.as_ref())
     }
 
     /// `road_tool_tick` with a scripted pointer at world `position` (tests, benchmarks and
@@ -252,7 +275,14 @@ impl SimulationNode {
         position: Vector3,
         ctrl: bool,
     ) -> i64 {
-        self.road_tool_tick_with(Some(Pointer::Scripted(position)), false, ctrl, camera.as_ref())
+        let start = Instant::now();
+        self.road_tool_tick_with(
+            start,
+            Some(Pointer::Scripted(position)),
+            false,
+            ctrl,
+            camera.as_ref(),
+        )
     }
 
     /// The standing preview's dictionary (`preview_road`'s keys, with `pose` and `sequence`),
@@ -353,9 +383,12 @@ impl SimulationNode {
     }
 
     /// The tick ring's samples, oldest first (benchmarks, once at the end of a run): `start_us`
-    /// (Godot's ticks clock), `total_ms` (the whole tick), `preview_ms` (the preview call: a
-    /// pose's preview, a batch's tier), `chips_ms` (the chips' words and placement, with the HUD's
-    /// fetch that followed the tick), `gizmos_ms` (the gizmos' comparison, bytes and upload),
+    /// (Godot's ticks clock), `total_ms` (the whole tick, since round R2-9 from before the
+    /// camera's ray), `preview_ms` (the preview call: a pose's preview, a batch's tier),
+    /// `graded_ms` (round R2-9: the pose's graded share staged on a tick without a new preview,
+    /// inside `total_ms` and not in `preview_ms`), `chips_ms` (the chips' words and placement,
+    /// with the HUD's fetch that followed the tick), `fetch_ms` (round R2-9: the fetch's part of
+    /// `chips_ms`), `gizmos_ms` (the gizmos' comparison, bytes and upload),
     /// `hue_ms` (the hue's join after the tick), `hue_draw_ms` (its bytes and upload),
     /// `ghost_ms` (the batch ghost's split, bytes and upload), `overlay_ms` (the preview's road
     /// chunks shown after the tick, `road_tool_show_chunks`: the overlays staged and swapped and,
@@ -375,7 +408,9 @@ impl SimulationNode {
             "start_us": ring.ordered().map(|sample| sample.start_us).collect::<PackedInt64Array>(),
             "total_ms": column(|sample| sample.total_us),
             "preview_ms": column(|sample| sample.preview_us),
+            "graded_ms": column(|sample| sample.graded_us),
             "chips_ms": column(|sample| sample.chips_us),
+            "fetch_ms": column(|sample| sample.fetch_us),
             "gizmos_ms": column(|sample| sample.gizmos_us),
             "hue_ms": column(|sample| sample.hue_us),
             "hue_draw_ms": column(|sample| sample.hue_draw_us),
@@ -397,14 +432,15 @@ impl SimulationNode {
     // for the script. See `road_tool_tick`.
     fn road_tool_tick_with(
         &mut self,
+        start: Instant,
         pointer: Option<Pointer>,
         shift: bool,
         ctrl: bool,
         camera: Option<&Gd<Camera3D>>,
     ) -> i64 {
-        let start = Instant::now();
+        let time = (self.road_tool_session.tick.time).get_or_insert_with(Time::singleton);
         let mut sample = TickSample {
-            start_us: Time::singleton().get_ticks_usec() as i64,
+            start_us: time.get_ticks_usec() as i64,
             ..TickSample::default()
         };
         let mut flags = 0;
@@ -422,7 +458,7 @@ impl SimulationNode {
                 });
             }
             let preview_start = Instant::now();
-            flags |= self.road_tool_tick_preview();
+            flags |= self.road_tool_tick_preview(&mut sample);
             if flags & (TICK_PREVIEW | TICK_BATCH) != 0 {
                 sample.preview_us = elapsed_us(preview_start);
             }
@@ -436,7 +472,11 @@ impl SimulationNode {
             let frame = self.road_tool_session.session.frame();
             let pending = frame.state.phase == Phase::AwaitingAck && frame.stroke.points.len() >= 2;
             self.road_tool_set_labels(pending);
-            let view = camera.and_then(ChipView::of);
+            // No chip, nothing to place: the camera is not read (round R2-9; without chips every
+            // view places the same empty corners).
+            let view = camera
+                .filter(|_| self.road_tool_session.chips.has_chips())
+                .and_then(ChipView::of);
             flags |= match self.road_tool_session.chips.update(view) {
                 labels::CHIPS_CHANGED => TICK_CHIPS,
                 labels::CORNERS_CHANGED => TICK_CORNERS,
@@ -456,8 +496,9 @@ impl SimulationNode {
 
     // The frame's preview step (round D's `road_tool_frame`): drop the preview of a stroke that
     // went, preview a changed stroke, step a running batch, else stage the next share of the
-    // pose's graded tiles while the stroke is editable. Nothing while the sent stroke waits.
-    fn road_tool_tick_preview(&mut self) -> i64 {
+    // pose's graded tiles while the stroke is editable (its time into `sample`). Nothing while
+    // the sent stroke waits.
+    fn road_tool_tick_preview(&mut self, sample: &mut TickSample) -> i64 {
         self.road_tool_update_draft();
         let frame = self.road_tool_session.session.frame();
         let phase = frame.state.phase;
@@ -489,10 +530,14 @@ impl SimulationNode {
             }
             if flags & (TICK_PREVIEW | TICK_PREVIEW_CLEARED) == 0
                 && matches!(phase, Phase::Placing { .. } | Phase::Editing)
-                && let Some(graded) = self.road_preview_terrain_step()
             {
-                self.road_tool_session.tick.graded = Some(graded);
-                flags |= TICK_GRADED;
+                let graded_start = Instant::now();
+                let graded = self.road_preview_terrain_step();
+                sample.graded_us = elapsed_us(graded_start);
+                if let Some(graded) = graded {
+                    self.road_tool_session.tick.graded = Some(graded);
+                    flags |= TICK_GRADED;
+                }
             }
         }
         // A hue in flight stays in flight: its stroke stands, so `follow` would keep it.
@@ -522,7 +567,13 @@ impl SimulationNode {
     fn road_tool_tick_drawn(&mut self) -> i64 {
         let bridge = &mut self.road_tool_session;
         let revision = bridge.hue.revision();
-        (bridge.tick).compare_drawn(bridge.session.frame(), revision, bridge.draw.as_mut())
+        let session = &bridge.session;
+        (bridge.tick).compare_drawn(
+            session.frame(),
+            session.pose_revision(),
+            revision,
+            bridge.draw.as_mut(),
+        )
     }
 
     // The batch ghost on the tick's flags: a new pose's tier 1 drawn (`draw_ghost`, split by
@@ -561,6 +612,14 @@ impl SimulationNode {
         }
     }
 
+    // The chips' fetch after the tick: its time into the chips' part and its own column.
+    pub(super) fn road_tool_tick_add_fetch(&mut self, fetch_us: f32) {
+        if let Some(sample) = self.road_tool_session.tick.ring.last_mut() {
+            sample.chips_us += fetch_us;
+            sample.fetch_us += fetch_us;
+        }
+    }
+
     // A call that follows the tick (the chips' fetch, the hue's join and drawing) adds its time
     // to the tick's sample.
     pub(super) fn road_tool_tick_add(&mut self, chips_us: f32, hue_us: f32, hue_draw_us: f32) {
@@ -579,6 +638,7 @@ impl SimulationNode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::nodes::sim::core::RoadToolQuerySnapshot;
     use crate::nodes::sim::road_tool::bench::neighbourhood_view;
     use crate::nodes::sim::road_tool::draw::DrawMaterials;
     use crate::nodes::sim::road_tool::draw::recorder::Recorder;
@@ -586,51 +646,76 @@ mod tests {
     // Round R2-2: two ticks with an unchanged pointer bump no revision. A real session on the
     // bench neighbourhood: hover, then one point placed with the pointer moving (straight mode);
     // each new pointer reports the gizmos, the cursor and (once a point is down) the heights, the
-    // same pointer again reports nothing.
+    // same pointer again reports nothing. Round R2-9: the same pointer does not rebuild the pose
+    // (the session's revision stands), and a new view generation alone rebuilds it.
     #[test]
     fn unchanged_pointer_bumps_no_revision() {
-        let view = neighbourhood_view(false, 0, 2_048.0);
+        let mut view = neighbourhood_view(false, 0, 2_048.0);
         let mut session = RoadToolSession::default();
         let mut tick = TickState::default();
         let mut draw = ToolDraw::new(Recorder::default(), DrawMaterials::default());
-        let point = |session: &mut RoadToolSession, at: Vector3| {
+        let point = |session: &mut RoadToolSession, view: &RoadToolQuerySnapshot, at: Vector3| {
             session.handle_event(
-                &view,
+                view,
                 RoadToolEvent::Pointer {
                     pointer: Pointer::Scripted(at),
                     shift: false,
                     ctrl: false,
                 },
             );
-            session.update_draft(&view);
+            session.update_draft(view);
         };
+        fn compare(
+            tick: &mut TickState,
+            session: &RoadToolSession,
+            draw: &mut ToolDraw<Recorder>,
+            hue: u64,
+        ) -> i64 {
+            tick.compare_drawn(session.frame(), session.pose_revision(), hue, Some(draw))
+        }
         let hover = Vector3::new(-300.0, 0.0, -300.0);
-        point(&mut session, hover);
-        let first = tick.compare_drawn(session.frame(), 0, Some(&mut draw));
+        point(&mut session, &view, hover);
+        let first = compare(&mut tick, &session, &mut draw, 0);
         assert_ne!(first & TICK_CURSOR, 0, "the first pointer reports the cursor");
-        point(&mut session, hover);
+        let revision = session.pose_revision();
+        point(&mut session, &view, hover);
+        assert_eq!(session.pose_revision(), revision, "a still hover rebuilds nothing");
         assert_eq!(
-            tick.compare_drawn(session.frame(), 0, Some(&mut draw)),
+            compare(&mut tick, &session, &mut draw, 0),
             0,
             "a still hover reports nothing"
         );
+        // A hover moved without a stroke rebuilds an empty pose: nothing is drawn over the empty
+        // draw (no gizmos flag, no command), only the cursor and its height handle reported.
+        let gizmos = &session.frame().gizmos;
+        assert!(gizmos.line_points.is_empty() && gizmos.handles.is_empty(), "{gizmos:?}");
+        point(&mut session, &view, hover + Vector3::new(5.0, 0.0, 0.0));
+        assert_ne!(session.pose_revision(), revision);
+        let commands = draw.backend().commands.len();
+        assert_eq!(
+            compare(&mut tick, &session, &mut draw, 0),
+            TICK_CURSOR | TICK_HEIGHTS
+        );
+        assert_eq!(draw.backend().commands.len(), commands, "an empty pose draws nothing");
         session.handle_event(&view, RoadToolEvent::Press(PointerButton::Left));
         for step in 1..4 {
             let at = hover + Vector3::new(20.0 * step as f32, 0.0, 5.0);
-            point(&mut session, at);
-            let moved = tick.compare_drawn(session.frame(), 0, Some(&mut draw));
+            point(&mut session, &view, at);
+            let moved = compare(&mut tick, &session, &mut draw, 0);
             assert_ne!(moved & TICK_GIZMOS, 0, "a moved live end reports the gizmos");
             assert_ne!(moved & TICK_CURSOR, 0);
             assert!(draw.state()[0].visible, "and draws them");
-            let drawn = tick.drawn.clone();
+            let drawn = tick.drawn;
+            let gizmos = session.frame().gizmos.clone();
             let commands = draw.backend().commands.len();
-            point(&mut session, at);
+            point(&mut session, &view, at);
             assert_eq!(
-                tick.compare_drawn(session.frame(), 0, Some(&mut draw)),
+                compare(&mut tick, &session, &mut draw, 0),
                 0,
                 "the same pointer again reports nothing"
             );
             assert_eq!(tick.drawn, drawn);
+            assert_eq!(session.frame().gizmos, gizmos);
             assert_eq!(
                 draw.backend().commands.len(),
                 commands,
@@ -638,10 +723,26 @@ mod tests {
             );
         }
         assert_eq!(
-            tick.compare_drawn(session.frame(), 1, Some(&mut draw)),
+            compare(&mut tick, &session, &mut draw, 1),
             TICK_HUE,
             "a new hue revision alone"
         );
+        // A new view generation alone rebuilds the pose, to the same frame.
+        let (revision, gizmos) = (session.pose_revision(), session.frame().gizmos.clone());
+        let at = hover + Vector3::new(60.0, 0.0, 5.0);
+        view.surface_generation += 1;
+        point(&mut session, &view, at);
+        assert_eq!(session.pose_revision(), revision + 1, "a new view rebuilds the pose");
+        assert_eq!(session.frame().gizmos, gizmos);
+        // An option alone too, at the next pointer move.
+        session.set_option(RoadToolOption::GuideLines(true));
+        point(&mut session, &view, at);
+        assert_eq!(session.pose_revision(), revision + 2, "an option rebuilds the pose");
+        // A view part replaced under the same generations (a later publication's terrain) too.
+        view.terrain = std::sync::Arc::new((*view.terrain).clone());
+        point(&mut session, &view, at);
+        assert_eq!(session.pose_revision(), revision + 3, "a new terrain rebuilds the pose");
+        assert_eq!(session.frame().gizmos, gizmos);
     }
 
     // The ring keeps the last `RING_TICKS` samples in order.
