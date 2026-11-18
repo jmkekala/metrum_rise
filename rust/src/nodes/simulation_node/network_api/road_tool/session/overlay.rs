@@ -70,6 +70,49 @@ impl SimulationNode {
         chunks.holds = None;
     }
 
+    /// What the frame shows of the standing preview (`ROAD-112` round R2-10: the decision is
+    /// Rust's, `road_tool.gd` executes it; after a tick's preview flag, a click's press and a
+    /// refused commit's answer): its `sequence` when the display shows it whole, in this order:
+    /// its graded tiles (the graded renderer reads `road_tool_preview`'s graded keys), its road
+    /// chunks (`road_tool_show_chunks(sequence)`) and its lots' outlines
+    /// (`road_tool_preview_lots`); minus its `sequence` when only its graded tiles show (a click
+    /// that sent the stroke: its commit adopted them, and the preview's road chunks give way to
+    /// the commit's at their install); 0 when the display already shows it or none stands. A
+    /// whole show becomes the shown one (`road_tool_shown_sequence`). `O(1)`, no allocation.
+    #[func]
+    pub fn road_tool_show_preview(&mut self) -> i64 {
+        let bridge = &mut self.road_tool_session;
+        let Some(standing) = &bridge.preview else {
+            return 0;
+        };
+        if standing.sequence == bridge.tick.shown {
+            return 0;
+        }
+        if bridge.commit.request_id() != 0 {
+            return -standing.sequence;
+        }
+        bridge.tick.shown = standing.sequence;
+        standing.sequence
+    }
+
+    /// The preview number the display shows whole (`road_tool_show_preview`), 0 for none: the
+    /// preview metrics, probes and benchmarks.
+    #[func]
+    pub fn road_tool_shown_sequence(&self) -> i64 {
+        self.road_tool_session.tick.shown
+    }
+
+    /// The lots a valid standing preview removes (`ZONE-09`: four corners each, as
+    /// `demolish_lots`), empty for an invalid one or none; the frame outlines them when
+    /// `road_tool_show_preview` shows the preview whole. Shared, not copied.
+    #[func]
+    pub fn road_tool_preview_lots(&self) -> PackedVector3Array {
+        (self.road_tool_session.preview.as_ref())
+            .filter(|standing| standing.outcome.valid)
+            .map(|standing| standing.lots.clone())
+            .unwrap_or_default()
+    }
+
     /// Shows preview `sequence`'s road chunks (`road_tool.gd`, the frame that fetched it): its
     /// overlays staged into the pool's spare meshes and swapped in, and the resident runs they
     /// replace collapsed (the ones no longer replaced restored), in this call; a preview of a
@@ -106,10 +149,12 @@ impl SimulationNode {
     }
 
     /// Restores the current preview's collapsed runs and hides its overlays and join marks
-    /// (the preview went); a held commit's display stays.
+    /// (the preview went: the display shows none, `road_tool_shown_sequence` 0); a held
+    /// commit's display stays.
     #[func]
     pub fn road_tool_clear_chunks(&mut self) {
         let bridge = &mut self.road_tool_session;
+        bridge.tick.shown = 0;
         if let Some(display) = &mut bridge.chunks.display {
             display.clear();
         }

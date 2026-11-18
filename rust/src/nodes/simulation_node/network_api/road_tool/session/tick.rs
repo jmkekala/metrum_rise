@@ -47,6 +47,8 @@ pub(super) const TICK_ANSWER: i64 = 1 << 10;
 pub(super) const TICK_PHASE: i64 = 1 << 11;
 /// Tick flag: the cursor moved, or met or left a surface (`road_tool_cursor`).
 pub(super) const TICK_CURSOR: i64 = 1 << 12;
+/// `road_tool_tick_off`'s flag: the drawings went (the HUD drops its chips).
+pub(super) const TICK_DROPPED: i64 = 1 << 13;
 
 // Ticks the ring holds; older ones are overwritten.
 const RING_TICKS: usize = 4096;
@@ -80,6 +82,13 @@ pub(super) struct TickState {
     // What the last tick left for the script: the graded share, the answer.
     graded: Option<VarDictionary>,
     answer: Option<VarDictionary>,
+    // The preview number the display shows (its road chunks, graded tiles and lots; 0 for none;
+    // round R2-10: `road_tool_show_preview` decides by it), an input asked for a preview since
+    // the last tick (`road_tool_request_preview`), and the tool ticked since its drawings were
+    // last dropped (`road_tool_tick_off`).
+    pub(super) shown: i64,
+    pub(super) preview_requested: bool,
+    ticked: bool,
     ring: TickRing,
     // Godot's `Time` singleton, looked up once (round R2-9: the engine walks its singleton list
     // on every lookup).
@@ -285,8 +294,10 @@ impl SimulationNode {
         )
     }
 
-    /// The standing preview's dictionary (`preview_road`'s keys, with `pose` and `sequence`),
-    /// `{}` without one: fetched on the tick's preview flag.
+    /// The standing preview's dictionary (`preview_road`'s keys, with `pose` and `sequence`; a
+    /// refused commit's display once its answer came), `{}` without one: shared, not copied.
+    /// The frame hands it to the graded renderer, which reads its graded keys, when
+    /// `road_tool_show_preview` says so; tests, probes and the preview metrics read it.
     #[func]
     pub fn road_tool_preview(&self) -> VarDictionary {
         (self.road_tool_session.preview.as_ref())
@@ -295,11 +306,52 @@ impl SimulationNode {
     }
 
     /// Whether the standing preview is for the session's stroke as it stands, on the current
-    /// context (benchmarks and probes wait on it).
+    /// context, and no input asked for another since the last tick (benchmarks and probes wait
+    /// on it).
     #[func]
     pub fn road_tool_preview_current(&self) -> bool {
-        self.road_tool_session.session.frame().stroke.points.len() >= 2
+        let bridge = &self.road_tool_session;
+        !bridge.tick.preview_requested
+            && bridge.preview.is_some()
+            && bridge.session.frame().stroke.points.len() >= 2
             && self.road_tool_preview_is_current()
+    }
+
+    /// An input asked for a preview (`road_tool.gd`: a lane, grade, height or type change, a
+    /// scripted stroke, another network or world): until the next tick (or a cancel) the
+    /// standing preview is not current (`road_tool_preview_current`). Input bursts coalesce; the
+    /// tick previews once a frame.
+    #[func]
+    pub fn road_tool_request_preview(&mut self) {
+        self.road_tool_session.tick.preview_requested = true;
+    }
+
+    /// Whether an input asked for a preview since the last tick (benchmarks and probes).
+    #[func]
+    pub fn road_tool_preview_requested(&self) -> bool {
+        self.road_tool_session.tick.preview_requested
+    }
+
+    /// The road tool's frame while it is off (`road_tool.gd`, each frame it is not active),
+    /// instead of `road_tool_tick`: once after the tool's last tick its drawings go (the gizmos
+    /// and the hue hidden, the cursor reported again at the next tick: `TICK_DROPPED`, 8192;
+    /// the HUD drops its chips), and a stroke sent before the tool went off still hears its
+    /// answer (`TICK_ANSWER`, 1024: fetch it with `road_tool_commit_answer`). 0 otherwise, and
+    /// then it allocates nothing. `O(1)` beside the answer.
+    #[func]
+    pub fn road_tool_tick_off(&mut self) -> i64 {
+        let mut flags = 0;
+        if std::mem::take(&mut self.road_tool_session.tick.ticked) {
+            self.road_tool_forget_drawn(TICK_GIZMOS | TICK_HUE | TICK_CURSOR);
+            flags |= TICK_DROPPED;
+        }
+        if self.road_tool_session.commit.request_id() != 0
+            && let Some(answer) = self.road_tool_take_commit_answer()
+        {
+            self.road_tool_session.tick.answer = Some(answer);
+            flags |= TICK_ANSWER;
+        }
+        flags
     }
 
     /// The previews handed out so far (`sequence`: a pose's, a batch's settled overlay, a
@@ -438,7 +490,11 @@ impl SimulationNode {
         ctrl: bool,
         camera: Option<&Gd<Camera3D>>,
     ) -> i64 {
-        let time = (self.road_tool_session.tick.time).get_or_insert_with(Time::singleton);
+        let tick = &mut self.road_tool_session.tick;
+        // The tick answers every input queued before it (round R2-10).
+        tick.preview_requested = false;
+        tick.ticked = true;
+        let time = tick.time.get_or_insert_with(Time::singleton);
         let mut sample = TickSample {
             start_us: time.get_ticks_usec() as i64,
             ..TickSample::default()
@@ -556,6 +612,7 @@ impl SimulationNode {
         let sequence = bridge.tick.sequence;
         let mut overlay = None;
         if let Some(standing) = &mut bridge.preview {
+            standing.sequence = sequence;
             standing.dictionary.set("sequence", sequence);
             overlay = (standing.outcome.overlay.clone()).filter(|_| standing.outcome.valid);
         }

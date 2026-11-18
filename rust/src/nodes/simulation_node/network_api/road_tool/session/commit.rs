@@ -5,8 +5,8 @@
 //! keeps the request (`nodes::sim::road_tool::commit::CommitSequence`) and answers it itself
 //! once the core does (`road_tool_commit_poll`): the session hears the answer, an accepted
 //! stroke at the map edge ends the chain and names the border node, a refused one turns the
-//! standing preview into `road_commit_rejected` and hands `road_tool.gd` its display. The script
-//! only draws what the answer says.
+//! standing preview into `road_commit_rejected`, its display standing with it (round R2-10). The
+//! script only draws what the answer and `road_tool_show_preview` say.
 
 use super::super::preview::RejectionFacts;
 use super::*;
@@ -24,8 +24,8 @@ impl SimulationNode {
     /// `graded_epoch` (the preview tiles the commit had adopted, for the renderer to drop) and,
     /// when the stroke is editable again, `rejected` (the dictionary the sent stroke's preview
     /// shows the refusal with: `road_commit_rejected`, its graded tiles handed over at the click
-    /// left out, numbered as the next preview's `sequence`) with `points` (the stroke it is
-    /// for). Nil at once when nothing waits; allocates nothing until the answer.
+    /// left out, numbered as the next preview's `sequence`; it becomes the standing preview's
+    /// dictionary, `road_tool_preview`) with `points` (the stroke it is for). Nil at once when nothing waits; allocates nothing until the answer.
     #[func]
     pub fn road_tool_commit_poll(&mut self) -> Variant {
         self.road_tool_take_commit_answer()
@@ -102,11 +102,18 @@ impl SimulationNode {
                 result.set("graded_epoch", graded_epoch);
                 if let Some(sent) = sent.filter(|_| rejected) {
                     let mut display = self.road_tool_rejected_preview(&sent);
-                    let tick = &mut self.road_tool_session.tick;
-                    tick.sequence += 1;
-                    display.set("sequence", tick.sequence);
-                    result.set("rejected", display);
+                    let bridge = &mut self.road_tool_session;
+                    bridge.tick.sequence += 1;
+                    let sequence = bridge.tick.sequence;
+                    display.set("sequence", sequence);
+                    result.set("rejected", display.clone());
                     result.set("points", points);
+                    // The display stands as the preview (round R2-10): the frame shows it
+                    // (`road_tool_show_preview`) until the pointer or the context moves.
+                    if let Some(standing) = &mut bridge.preview {
+                        standing.dictionary = display;
+                        standing.sequence = sequence;
+                    }
                 }
             }
         }

@@ -162,6 +162,11 @@ func get_terrain_interaction(click := false):
 func get_world_mouse_pos() -> Vector3:
 	return _last_world_mouse_pos
 
+# The pointer's last world point, null before one (the surface probe's). The road tool reads its
+# cursor from Rust (`ROAD-112` round R2-10).
+func _pointer_point() -> Variant:
+	return _last_world_mouse_pos if _has_last_world_mouse_pos else null
+
 func _update_surface_debug_overlay(delta: float) -> void:
 	if surface_debug_mesh == null:
 		return
@@ -185,12 +190,15 @@ func _update_surface_debug_overlay(delta: float) -> void:
 	_surface_debug_refresh_elapsed = SURFACE_DEBUG_REFRESH_SEC
 
 func _update_surface_probe_debug(delta: float) -> void:
-	if not _surface_probe_enabled or not _has_last_world_mouse_pos:
+	if not _surface_probe_enabled:
+		return
+	var point: Variant = _pointer_point()
+	if point == null:
 		return
 	_surface_probe_refresh_elapsed = max(_surface_probe_refresh_elapsed - delta, 0.0)
 	if _surface_probe_refresh_elapsed > 0.0:
 		return
-	var dump: String = simulation_node.get_road_surface_probe_debug(_last_world_mouse_pos)
+	var dump: String = simulation_node.get_road_surface_probe_debug(point)
 	if not dump.is_empty():
 		MetrumDebug.log("road", dump)
 	_surface_probe_refresh_elapsed = SURFACE_PROBE_REFRESH_SEC

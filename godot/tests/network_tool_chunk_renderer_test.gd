@@ -876,13 +876,12 @@ func _test_native_road_preview_contract(simulation: SimulationNode) -> void:
 	_expect(tool._preview_sequence == calls and simulation.road_tool_overlay_counts() == counts, "an unchanged stroke neither previews nor uploads again")
 	# Rust shows only the last valid preview it handed out; any other number (here a refusal's)
 	# clears the road chunks. Runs that do not fit fail before anything changes: Rust's recorder
-	# tests (`draw/chunks/display/tests.rs`, round R2-4b).
+	# tests (`draw/chunks/display/tests.rs`, round R2-4b). The preview is Rust's (round R2-10):
+	# the refusal's number goes to Rust's show as the frame would send it.
 	var rejected: Dictionary = tool._preview.duplicate(false)
 	rejected["is_valid"] = false
 	rejected["invalid_reason"] = "terrain_clip_missing_outer_boundary_owner"
-	rejected["sequence"] = tool._preview_sequence + 1
-	tool._preview = rejected
-	tool._show_preview()
+	simulation.road_tool_show_chunks(tool._preview_sequence + 1)
 	_expect(simulation.road_tool_overlay_counts()[1] == 0 and simulation.road_tool_overlay_chunks().is_empty() and simulation.road_tool_chunk_display()["collapsed"].is_empty(), "a rejected stroke shows no road")
 	var notice: String = RoadWording.reason_text(rejected, RoadWording.default_refusal())
 	_expect(notice.contains("terrain boundary"), "terrain rejection must retain an explanatory notice: '%s'" % notice)
@@ -936,8 +935,11 @@ func _test_session_strokes(simulation: SimulationNode) -> void:
 		tool.pointer = Vector3(-20.0 + index, 0.0, -60.0)
 		tool._queue_preview_update()
 	var shown := tool._preview_sequence
+	_expect(simulation.road_tool_preview_requested() and not tool.stroke_preview_current(), "a queued input stands in Rust until the tick")
 	_road_frame(tool)
 	_expect(tool.pointer_queries == 1 and tool._preview_sequence == shown + 1 and tool.draws == 1, "32 queued updates coalesce into one synchronous preview")
+	# Round R2-10: Rust decides the show; the frame showed the preview whole, once.
+	_expect(simulation.road_tool_shown_sequence() == tool._preview_sequence and simulation.road_tool_show_preview() == 0, "Rust shows each preview once")
 	_expect(simulation.road_tool_points()[-1] == tool.pointer and tool.stroke_preview_current(), "the frame previews this frame's pointer")
 	for index in range(4):
 		tool.pointer.x += 0.25
@@ -1322,6 +1324,7 @@ func _test_snapping_options_row(simulation: SimulationNode) -> void:
 	# them, and the row's controls set them back.
 	tool.active = false
 	_road_frame(tool)
+	_expect(simulation.road_tool_tick_off() == 0, "an off tool drops its drawings once (Rust's, round R2-10)")
 	tool.active = true
 	_road_frame(tool)
 	_expect(snap_at.call(60.5, 32.5) == "free" and not tool.intent().network_snap, "a re-activated tool keeps Rust's options")

@@ -94,12 +94,32 @@ pub(crate) struct RoadToolBridge {
     chunks: overlay::PreviewChunks,
 }
 
-// The standing preview: its typed outcome, which every decision on it reads, and the dictionary
-// the tick hands `road_tool.gd` to draw (a click returns it; a refused commit's display is a
-// copy of it). The bridge never reads the dictionary.
+// The standing preview: its typed outcome, which every decision on it reads, the number it was
+// handed out with and the lots it outlines (`ROAD-112` round R2-10: the frame's display reads
+// these, typed), and its dictionary (`road_tool_preview`: tests, probes, the metrics and the
+// graded renderer, which reads its graded keys; a click returns it; a refused commit's display
+// replaces it). The bridge reads the dictionary once, for the lots.
 struct StandingPreview {
     outcome: PreviewOutcome,
     dictionary: VarDictionary,
+    // `sequence` (0 until handed out).
+    sequence: i64,
+    // `demolish_lots`, four corners a lot (`ZONE-09`); empty without.
+    lots: PackedVector3Array,
+}
+
+impl StandingPreview {
+    fn new(outcome: PreviewOutcome, dictionary: VarDictionary) -> Self {
+        let lots = (dictionary.get("demolish_lots"))
+            .and_then(|lots| lots.try_to::<PackedVector3Array>().ok())
+            .unwrap_or_default();
+        Self {
+            outcome,
+            dictionary,
+            sequence: 0,
+            lots,
+        }
+    }
 }
 
 // The inputs a preview depends on: the stroke, its cross-section, the snap flag, the grade line
@@ -182,13 +202,18 @@ impl SimulationNode {
     /// the modes straight, simple curve, complex curve and freeform, 6 and 7 raise and lower the
     /// active height handle by one 0.5 m step (PageUp/PageDown, as a drag sets it: the live
     /// end's while drawing, the hovered or last dragged one in an edit phase), 8 forget the
-    /// standing preview (the next tick previews the stroke afresh: measurements and another
-    /// world). Returns what `road_tool_press` returns (a confirm can send the stroke); an unknown
+    /// standing preview and what the display showed of it (the next tick previews the stroke
+    /// afresh: measurements and another world). A cancel also drops a preview requested since
+    /// the last tick (`road_tool_request_preview`). Returns what `road_tool_press` returns (a confirm can send the stroke); an unknown
     /// code does nothing.
     #[func]
     pub fn road_tool_action(&mut self, code: i64) -> VarDictionary {
         let action = match code {
-            0 => RoadToolAction::Cancel,
+            0 => {
+                // A cancel answers every input queued before it (round R2-10).
+                self.road_tool_session.tick.preview_requested = false;
+                RoadToolAction::Cancel
+            }
             1 => RoadToolAction::Confirm,
             2 => RoadToolAction::ModeStraight,
             3 => RoadToolAction::ModeSimpleCurve,
@@ -201,6 +226,7 @@ impl SimulationNode {
                 bridge.previewed = None;
                 bridge.preview = None;
                 bridge.batch_running = false;
+                bridge.tick.shown = 0;
                 return VarDictionary::new();
             }
             _ => return VarDictionary::new(),
@@ -628,10 +654,7 @@ impl SimulationNode {
         key.snap = snap;
         key.grade = grade;
         key.generation = outcome.surface_generation;
-        bridge.preview = Some(StandingPreview {
-            outcome,
-            dictionary: preview,
-        });
+        bridge.preview = Some(StandingPreview::new(outcome, preview));
         tier1
     }
 
@@ -782,10 +805,7 @@ impl SimulationNode {
         } else {
             0
         };
-        self.road_tool_session.preview = Some(StandingPreview {
-            outcome,
-            dictionary: preview,
-        });
+        self.road_tool_session.preview = Some(StandingPreview::new(outcome, preview));
         Some(cleared)
     }
 

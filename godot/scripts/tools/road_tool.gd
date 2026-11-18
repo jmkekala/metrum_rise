@@ -24,7 +24,9 @@
 ## (`road_tool_press`, `road_tool_release`, `road_tool_action`), the options too. Rust resolves
 ## the cursor and its snapping, keeps the stroke, the chain, the phase and the mode, previews the
 ## stroke when it changed, sends the confirmed stroke and answers its commit (round R2-1, drawn
-## here).
+## here). The script keeps no preview or frame state (round R2-10): Rust holds the standing
+## preview, decides what of it the frame shows (`road_tool_show_preview`), and keeps the queued
+## preview request, whether the tool ticked and the cursor; the script reads them from Rust.
 ##
 ## The synchronous road preview (`ROAD-68-E`): every frame whose stroke changed calls Rust's
 ## `preview_road` (inside `road_tool_tick`), which plans the stroke on the road tool's context
@@ -58,7 +60,9 @@
 ## road_tool_set_lanes(), road_tool_set_flag(), road_tool_set_step(), road_tool_preview(),
 ## road_tool_preview_current(), road_tool_preview_sequence(), road_tool_graded_changes(),
 ## road_tool_commit_answer(), road_tool_phase(), road_tool_mode(), road_tool_cursor(),
-## road_tool_points(), road_tool_hue_times(), road_tool_hue_sequence(), road_tool_show_chunks(),
+## road_tool_points(), road_tool_hue_times(), road_tool_hue_sequence(), road_tool_show_preview(),
+## road_tool_shown_sequence(), road_tool_preview_lots(), road_tool_request_preview(),
+## road_tool_preview_requested(), road_tool_tick_off(), road_tool_show_chunks(),
 ## road_tool_clear_chunks(), road_tool_chunks_changed(), road_tool_drop_chunks(),
 ## road_tool_attach_overlay(), road_tool_detach_overlay(), road_tool_forget_drawn(), road_tool_set_road_type(), road_tool_reload_road_type(),
 ## road_tool_intent(), release_road_preview_terrain(), road_tool_commit_poll(),
@@ -95,7 +99,7 @@ const _FLAG_OPTIONS := {"network_snap": 0, "guide_lines": 1, "zoning_grid": 2, "
 const _STEP_OPTIONS := {"angle_step_deg": 0, "length_step_m": 1}
 # The tick's flags (`road_tool_tick`): a new preview, the preview gone, a batch ghost, the ghost
 # gone, the gizmos, the hue, the chips, only the chips' corners, the pose's graded share, the sent
-# stroke's answer (the tick stopped there), the cursor.
+# stroke's answer (the tick stopped there), the cursor; `road_tool_tick_off`'s drawings dropped.
 const TICK_PREVIEW := 1
 const TICK_PREVIEW_CLEARED := 2
 const TICK_BATCH := 4
@@ -107,6 +111,7 @@ const TICK_CORNERS := 128
 const TICK_GRADED := 512
 const TICK_ANSWER := 1024
 const TICK_CURSOR := 4096
+const TICK_DROPPED := 8192
 
 ## The drawing mode (`DrawMode`), the session's: setting it sends the mode action, which drops
 ## the stroke and ends the chain when the mode changes.
@@ -146,16 +151,23 @@ var _preview_metric_row: Dictionary = {}
 var _road_debug_enabled: bool:
 	get:
 		return MetrumDebug.is_enabled("road")
-# An input asked for a new preview since the last tick (benchmarks and probes wait past it).
-var _preview_update_pending: bool = false
-# The latest synchronous preview the tick handed over (`road_tool_preview`'s dictionary).
-var _preview: Dictionary = {}
+# An input asked for a new preview since the last tick (Rust's; benchmarks and probes wait past
+# it).
+var _preview_update_pending: bool:
+	get:
+		return simulation_node.road_tool_preview_requested() if _has_session() else false
+# The standing preview (`road_tool_preview`'s dictionary, Rust's; tests, probes and the metrics).
+var _preview: Dictionary:
+	get:
+		return simulation_node.road_tool_preview() if _has_session() else {}
 # The previews Rust handed out (`sequence`; tests, benchmarks and the metrics trace) and the one
-# drawn.
+# the display shows (Rust's, round R2-10).
 var _preview_sequence: int:
 	get:
 		return simulation_node.road_tool_preview_sequence() if _has_session() else 0
-var _preview_drawn_sequence: int = 0
+var _preview_drawn_sequence: int:
+	get:
+		return simulation_node.road_tool_shown_sequence() if _has_session() else 0
 # The sent stroke's commit, its points and the graded preview epoch it adopted, as Rust's commit
 # sequence holds them (round R2-1; tests, benchmarks and probes wait on them): 0, empty and -1
 # while none waits.
@@ -175,8 +187,6 @@ var _demolish_mesh: MeshInstance3D = null
 var _graded_pending: int:
 	get:
 		return simulation_node.road_tool_graded_pending() if _has_session() else 0
-# The tool ticked since its drawings were last dropped.
-var _ticked := false
 
 func _notification(what: int) -> void:
 	if what == NOTIFICATION_PREDELETE:
@@ -246,16 +256,18 @@ func _process(delta):
 		_measure_hue()
 		preview_metrics.frame(_preview_drawn_sequence, false)
 	super._process(delta)
-	if not active:
-		if _ticked:
-			_ticked = false
-			_clear_drawn()
-		# A stroke sent before the tool went off still hears its answer.
-		if _commit_request_id > 0:
-			_poll_road_commit_result()
+	if not _has_session():
 		return
-	if _has_session():
+	if active:
 		_tick()
+		return
+	# Off: Rust drops the drawings once after the last tick, and a stroke sent before the tool
+	# went off still hears its answer.
+	var flags: int = simulation_node.road_tool_tick_off()
+	if flags & TICK_DROPPED and hud != null:
+		hud.clear()
+	if flags & TICK_ANSWER:
+		_draw_commit_answer(simulation_node.road_tool_commit_answer())
 
 # The road tool resolves its pointer in its tick, not in the base's frame.
 func _update_pointer() -> void:
@@ -264,7 +276,6 @@ func _update_pointer() -> void:
 # One frame: Rust's tick (`road_tool_tick`), then what its flags say changed. The answer to a sent
 # stroke stops the tick: it is drawn, then the frame ticks again.
 func _tick() -> void:
-	_ticked = true
 	_gizmos()
 	var camera: Camera3D = get_viewport().get_camera_3d() if is_inside_tree() else null
 	var start_us := Time.get_ticks_usec() if preview_metrics != null else 0
@@ -276,13 +287,11 @@ func _tick() -> void:
 
 # Acts on one tick's flags (`start_us`: the frame's start while the preview is measured).
 func _draw_tick(flags: int, start_us := 0) -> void:
-	_preview_update_pending = false
 	if flags & TICK_CURSOR:
 		_show_cursor()
 		if preview_metrics != null and not _scripted_pointer_enabled:
 			_preview_input_us = start_us
 	if flags & TICK_PREVIEW:
-		_preview = simulation_node.road_tool_preview()
 		if preview_metrics != null:
 			_measure_preview(start_us)
 		_show_preview()
@@ -306,22 +315,34 @@ func _tick_once(camera: Camera3D) -> int:
 # The hover cursor on Rust's cursor (hidden while no pointer has met a surface).
 func _show_cursor() -> void:
 	var cursor: Variant = simulation_node.road_tool_cursor()
-	is_valid = cursor != null
-	if is_valid:
-		_last_world_mouse_pos = cursor
-		_has_last_world_mouse_pos = true
 	if cursor_mesh:
-		cursor_mesh.visible = is_valid
-		if is_valid:
+		cursor_mesh.visible = cursor != null
+		if cursor != null:
 			cursor_mesh.global_position = cursor + Vector3(0.0, 0.35, 0.0)
+
+# The cursor is Rust's (`road_tool_cursor`, round R2-10): the base's pointer mirror stays the
+# roundabout tool's. The last resolved cursor, null before one (the surface probe's).
+func _pointer_point() -> Variant:
+	return simulation_node.road_tool_cursor() if _has_session() else null
+
+func get_world_mouse_pos() -> Vector3:
+	var cursor: Variant = _pointer_point()
+	return cursor if cursor != null else Vector3.ZERO
+
+# A scripted pointer (tests, benchmarks and probes) is the tick's input; Rust resolves the cursor
+# from it.
+func set_scripted_pointer(enabled: bool, world_position: Vector3 = Vector3.ZERO) -> void:
+	_scripted_pointer_enabled = enabled
+	_scripted_pointer_position = world_position
 
 # The new preview into the metrics trace (measured runs only): its sample, its tick and payload.
 func _measure_preview(start_us: int) -> void:
 	var now := Time.get_ticks_usec()
-	var sequence := int(_preview.get("sequence", 0))
+	var preview := _preview
+	var sequence := int(preview.get("sequence", 0))
 	preview_metrics.sample(simulation_node.road_tool_points(), _preview_input_us if _preview_input_us > 0 else start_us)
 	preview_metrics.dispatch(sequence, start_us, now, true)
-	preview_metrics.poll(sequence, 0, _preview)
+	preview_metrics.poll(sequence, 0, preview)
 
 # Drops the gizmos, the hue and the chips (another tool, a cancel).
 func _clear_drawn() -> void:
@@ -446,36 +467,39 @@ func _handle_click():
 	var mouse_ms := float(Time.get_ticks_usec() - total_start_us) / 1000.0
 	var commit_ms := 0.0
 	if cursor != null:
-		_last_world_mouse_pos = cursor
-		_has_last_world_mouse_pos = true
 		var press_start_us := Time.get_ticks_usec()
 		_session_press()
 		commit_ms = float(Time.get_ticks_usec() - press_start_us) / 1000.0
 	_log_click_detail(state_before, cursor != null, mouse_ms, commit_ms, total_start_us)
 
-# Shows the latest preview's chunks in this frame; an invalid stroke shows only its reason.
+# Shows what Rust says of the standing preview in this frame (`road_tool_show_preview`, round
+# R2-10): all of it (its graded tiles, its road chunks, its lots; an invalid stroke shows only its
+# reason), only its graded tiles (a click that sent the stroke: its commit adopted them), or
+# nothing.
 func _show_preview() -> void:
-	var sequence := int(_preview.get("sequence", 0))
-	if sequence != _preview_drawn_sequence:
-		if preview_metrics != null:
-			_preview_metric_row = preview_metrics.request(sequence)
-		var stage_us := Time.get_ticks_usec() if preview_metrics != null else 0
-		# The pose's graded tiles show in its frame, whatever the road chunks do: Rust handed
-		# them over once. Rust shows a valid preview's road chunks, or clears them.
-		var graded_ms := _show_graded(_preview)
-		simulation_node.road_tool_show_chunks(sequence)
-		_show_demolition(_preview)
-		_preview_drawn_sequence = sequence
-		if preview_metrics != null:
-			_preview_metric_row["stage_install_ms"] = float(Time.get_ticks_usec() - stage_us) / 1000.0
-			_preview_metric_row["graded_install_ms"] = graded_ms
-			preview_metrics.installed(sequence)
+	var sequence: int = simulation_node.road_tool_show_preview()
+	if sequence == 0:
+		return
+	if sequence < 0:
+		_show_graded(_preview)
+		return
+	if preview_metrics != null:
+		_preview_metric_row = preview_metrics.request(sequence)
+	var stage_us := Time.get_ticks_usec() if preview_metrics != null else 0
+	# The pose's graded tiles show in its frame, whatever the road chunks do: Rust handed them
+	# over once. Rust shows a valid preview's road chunks, or clears them.
+	var graded_ms := _show_graded(_preview)
+	simulation_node.road_tool_show_chunks(sequence)
+	_show_demolition(simulation_node.road_tool_preview_lots())
+	if preview_metrics != null:
+		_preview_metric_row["stage_install_ms"] = float(Time.get_ticks_usec() - stage_us) / 1000.0
+		_preview_metric_row["graded_install_ms"] = graded_ms
+		preview_metrics.installed(sequence)
 
-# Outlines the lots a valid stroke removes (`ZONE-09`), four corners each, as the bulldoze tool
-# outlines what it removes; anything else clears them.
-func _show_demolition(preview: Dictionary) -> void:
-	var lots: PackedVector3Array = preview.get("demolish_lots", PackedVector3Array())
-	var mesh: Mesh = HighlightMesh.polygons(lots, 4) if bool(preview.get("is_valid", false)) else null
+# Outlines `lots` (`ZONE-09`: the lots a valid stroke removes, four corners each, as Rust hands
+# them), as the bulldoze tool outlines what it removes; none clears them.
+func _show_demolition(lots: PackedVector3Array) -> void:
+	var mesh: Mesh = HighlightMesh.polygons(lots, 4)
 	if mesh == null:
 		if _demolish_mesh != null:
 			_demolish_mesh.mesh = null
@@ -512,9 +536,8 @@ func _release_graded_preview() -> void:
 func _clear_preview_visual() -> void:
 	if _has_session():
 		simulation_node.road_tool_clear_chunks()
-	_show_demolition({})
+	_show_demolition(PackedVector3Array())
 	_release_graded_preview()
-	_preview_drawn_sequence = 0
 	if blueprint_mesh:
 		blueprint_mesh.mesh = null
 	if hud != null:
@@ -550,8 +573,9 @@ func _begin_stroke(pos: Vector3) -> void:
 func _queue_preview_update() -> void:
 	if preview_metrics != null:
 		_preview_input_us = Time.get_ticks_usec()
-	# Coalesce input bursts; the tick previews once a frame.
-	_preview_update_pending = true
+	# Rust coalesces input bursts; the tick previews once a frame.
+	if _has_session():
+		simulation_node.road_tool_request_preview()
 
 # The road tool draws no blueprint mesh (its preview is road chunks): no per-frame writes to the
 # base's blueprint material.
@@ -565,24 +589,18 @@ func _session_press(confirm := false) -> bool:
 	var result: Dictionary = simulation_node.road_tool_action(ACTION_CONFIRM) if confirm else simulation_node.road_tool_press(0)
 	if not result.has("points"):
 		return false
-	var validation: Dictionary = result["preview"]
-	if bool(result.get("fresh", false)):
+	if preview_metrics != null and bool(result.get("fresh", false)):
 		# The click previewed the stroke itself (Rust numbered it).
-		_preview = validation
-		if preview_metrics != null:
-			preview_metrics.sample(result["points"], start_us)
-			var sequence := int(validation.get("sequence", 0))
-			preview_metrics.dispatch(sequence, start_us, Time.get_ticks_usec(), true)
-			preview_metrics.poll(sequence, 0, validation)
-	if int(result.get("request_id", 0)) == 0:
-		# Rust logged the refusal on events; the stroke stays editable and shows why.
-		_show_preview()
-		return false
-	# A click that previewed a pose of its own shows that pose's graded tiles first; the commit
-	# adopted them (Rust ended their epoch), so none are left to stage.
-	if int(validation.get("sequence", 0)) != _preview_drawn_sequence:
-		_show_graded(validation)
-	return true
+		var validation: Dictionary = result["preview"]
+		preview_metrics.sample(result["points"], start_us)
+		var sequence := int(validation.get("sequence", 0))
+		preview_metrics.dispatch(sequence, start_us, Time.get_ticks_usec(), true)
+		preview_metrics.poll(sequence, 0, validation)
+	# A refused stroke (Rust logged the refusal on events) stays editable and shows why; a click
+	# that sent the stroke and previewed a pose of its own shows only that pose's graded tiles
+	# (the commit adopted them: Rust ended their epoch, so none are left to stage).
+	_show_preview()
+	return int(result.get("request_id", 0)) != 0
 
 ## A scripted click at exactly `pos` (tests, benchmarks and probes): the session's cursor there,
 ## then a press, which places the stroke's next point (a curve's control point) or sends the
@@ -590,8 +608,6 @@ func _session_press(confirm := false) -> bool:
 func _commit_segment(pos: Vector3) -> bool:
 	if _commit_request_id > 0 or not _has_session():
 		return false
-	_last_world_mouse_pos = pos
-	_has_last_world_mouse_pos = true
 	simulation_node.road_tool_pointer_at(pos)
 	return _session_press()
 
@@ -621,9 +637,8 @@ func _draw_commit_answer(answer: Dictionary) -> void:
 	if graded != null and epoch >= 0:
 		graded.release_preview(epoch, epoch)
 	if answer.has("rejected"):
-		# The rejection (Rust's display of it, numbered) stays on the stroke until the pointer or
-		# the context moves.
-		_preview = answer["rejected"]
+		# The rejection (Rust's display of it, numbered, now the standing preview) stays on the
+		# stroke until the pointer or the context moves.
 		_show_preview()
 
 ## Drops the stroke and ends the chain (right-click, Esc, another tool or world).
@@ -631,7 +646,6 @@ func cancel_road():
 	if _has_session():
 		simulation_node.road_tool_action(ACTION_CANCEL)
 	_clear_preview_visual()
-	_preview_update_pending = false
 	_clear_preview_cache()
 	_clear_drawn()
 
@@ -675,16 +689,12 @@ func _prompt_border_connection(node_id: int) -> void:
 
 ## Whether the latest preview is for the stroke as it stands (benchmarks and probes wait on it).
 func stroke_preview_current() -> bool:
-	if _preview.is_empty() or _preview_update_pending or not _has_session():
-		return false
-	return simulation_node.road_tool_preview_current()
+	return _has_session() and simulation_node.road_tool_preview_current()
 
 func _clear_preview_cache() -> void:
 	# The session's bridge forgets its standing preview too: the next tick previews afresh.
 	if _has_session():
 		simulation_node.road_tool_action(ACTION_FORGET_PREVIEW)
-	_preview = {}
-	_preview_drawn_sequence = 0
 
 func _log_click_detail(
 	state_before: int,
