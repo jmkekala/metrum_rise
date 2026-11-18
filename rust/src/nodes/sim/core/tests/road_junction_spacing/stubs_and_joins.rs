@@ -111,13 +111,14 @@ fn a_t_6_m_from_a_bend_becomes_a_t_at_the_bend() {
     assert_eq!(graph_hash(&core), before);
 }
 
-// The same end from a flat angle: drawn, the stroke meets the street at 26 degrees (allowed);
-// joined to the T it would meet the street's east arm at 24 degrees, under the 25 degree limit
-// (`ROAD-54`), so the end does not join and the junction's own refusal stands, naming its place.
+// The same end from a flat angle: drawn, the stroke meets the street at 21 degrees (allowed);
+// joined to the T it would meet the street's east arm at 19 degrees, under the 20 degree limit
+// (`ROAD-54`, `ROAD-126`), so the end does not join and the junction's own refusal stands, naming
+// its place. (Round JS5f: it was 26 and 24 degrees under the 25 degree limit.)
 #[test]
-fn a_join_under_25_degrees_is_refused() {
+fn a_join_under_20_degrees_is_refused() {
     let mut core = city(&T_CITY);
-    let points = stroke(&core, [v(60.0, -26.5), v(6.0, 0.0)]);
+    let points = stroke(&core, [v(60.0, -20.7), v(6.0, 0.0)]);
     let mut view = context(&mut core);
     let refused = preview(&mut view, &points).validation;
     assert!(!refused.is_valid);

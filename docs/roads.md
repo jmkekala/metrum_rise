@@ -12333,12 +12333,22 @@ screenshots in `screenshots/2026-10-08-roads/`) showed, within 250 m of their ca
 | Grade change per horizontal metre | > 0.018 | > 0.06 |
 | Horizontal radius | < v² / (127 · 0.20), v in km/h | < 1.25 × visual roadbed half-width |
 | Kink at a degree-2 node | > 3° | > 10° |
-| Smallest angle between junction arms | < 60° | < 25° |
+| Smallest angle between junction arms | < 60° | < 20° |
 | Junction degree | > 4 | > 6 |
 
 The illegal tier allows about 20% leeway over common Western design limits, so a city may be a
 little more playful than an engineer would draw it, but not mangled: grade change 0.05 became
-0.06 and the arm angle 30° became 25°. Grade is the user's hill policy
+0.06 and the arm angle 30° became 25°. The arm angle is now 20°, the user's decision of
+2026-11-18 (`ROAD-126`): a Y or a side road may leave as shallow as 20° (the design tier stays
+60°); shallower, ramp-like joins as a lane merge are a later feature (`ROAD-127`). The one
+constant, `validate::ILLEGAL_ARM_ANGLE_DEGREES`, is also the join rules' angle
+(`road_edit::MIN_CONTACT_ANGLE_DEG` names it): the end contacts, the side rule, the lead-ins'
+and corners' arm bound and the preview's overlap window all read it. The arm angle is judged with
+a slack of a thousandth of a degree, `validate::ARM_ANGLE_ROUNDING_DEG`, the one constant the join
+rules read too (the user's decision D-JS5f-1): an angle between directions read from `f32` points
+rounds, so a junction drawn exactly at the limit may read a hair under it (a 20° Y's points read
+19.999998°) and would be refused as "Roads meet at 20°; junction arms need 20°". 19.998° is
+refused; the measurement reported is the angle as read. Grade is the user's hill policy
 ([`ROAD-68` open question 37](#road-68-open-questions), 2026-10-25): 1:3, just under the world's
 steepest streets (about 35%; San Francisco's steepest are 31.5%), with the stroke solve's 16%
 design grade as the warning (it was 10% before; 16% was the illegal tier, never refused).
@@ -12361,7 +12371,8 @@ so it is the same in every quarter turn and mirror of a junction, bit for bit (`
 Before, each arm's own `atan2` and their difference rounded differently in each orientation: the
 reference 25° Y, exactly at the illegal limit, measured 25.000002° to 25.000023° in six of its
 eight orientations and under 25° in the other two, which were refused (on `road` too); it now
-measures 25.0 in all of them. The angle is compared in `f32`, as every validator measurement is.
+measures 25.0 in all of them (and the 20° Y, at today's limit, 20.0: round JS5f's reference
+fixtures `y_20` and `y_20_branches_first`). The angle is compared in `f32`, as every validator measurement is.
 `validate_edge` is `O(points)`, `validate_node` is
 `O(degree log degree)` plus the one-metre prefix, and `audit_graph` runs both over the graph with
 Rayon in a deterministic order.
@@ -17440,6 +17451,103 @@ sessions):
   0 / 239, missing docs 0, `./run.sh --test` passes (Rust 2,919 passed, 240 skipped, both Godot
   chains, no script error). No timing (a colour constant).
 
+#### Junction arms down to 20 degrees (round JS5f)
+
+Branch `roadtools-js5f` off `dev` `130e32ca` (JS5d landed). The user decided on 2026-11-18
+(`ROAD-126`): the smallest legal angle between junction arms and the join rules' angle go from 25
+to 20 degrees (`ROAD-54`'s illegal tier; the design tier stays 60). Shallower ramp-like joins as a
+lane merge are a later feature (`ROAD-127`).
+
+- **One constant.** `validate::ILLEGAL_ARM_ANGLE_DEGREES` (20) is the limit; `contact.rs`
+  re-exports it as `road_edit::MIN_CONTACT_ANGLE_DEG`, the name the join rules, the contact window
+  (reach / sin of the limit: 29.2 m at a 10 m reach, 23.7 m before), the side rule, the lead-ins'
+  and corners' arm bound (limit + 0.01) and the preview's marks already read. It lives in the
+  validator because `ROAD-54` owns the junction's arm limit; the join rules follow it.
+- **The layout at 20 degrees.** A 2-lane Y keeps its full curb return; its inner corner lies
+  (la + R) / tan(angle / 2) out, 39.7 m on the layout fixture (31.6 m at 25), its crossings 3 m
+  past. Nothing else widened: node pieces build watertight flat and sloped, every vehicle connector
+  stays on the carriageway with no backward step, counter-steer or kink, and every crossing stands
+  across its own arm (kerb ends on the carriageway in all eight orientations of the reference Y).
+- **The arm angle's rounding (decision D-JS5f-1, the user's: (a)).** The validator compared the
+  measured angle with the limit exactly, in `f32`: a Y drawn at exactly 20 degrees has `f32` points
+  whose arms measure 19.999998 degrees in some layouts (the reference fixture's, and the stills' T
+  and Y drawn in Godot) and was refused as `junction_arm_angle` ("Roads meet at 20°; junction arms
+  need 20°"); the reference 25 degree Y happened to measure 25.0. The join rules already read the
+  limit less a thousandth of a degree (JS5d's rounding). Now the arm-angle check reads the same
+  thousandth from the same constant, `validate::ARM_ANGLE_ROUNDING_DEG` (`contact.rs` imports it):
+  exactly 20 degrees builds, 19.998 is refused. The reported angle is the one measured.
+
+**Tests.** New `road_junction_spacing::arm_limit`: a Y whose second branch leaves a road end 20
+degrees from the first and a T whose side road ends on a street's centreline 20 degrees off it
+build (preview = commit, no edgeless node also after a save and a load, undo and a second commit
+bit for bit), their connectors and crossings as above; the same 5 degrees under (15) are refused as
+`junction_arm_angle` naming 15° and 20°, the commit refuses too; the reference Y's second branch
+drawn exactly 20 degrees from the first (its points read under 20) builds and at 19.998 degrees is
+refused (`a_y_drawn_exactly_at_the_limit_builds_and_19_998_degrees_is_refused`). Fixtures at 20
+degrees, all drawn exactly: the layout
+test (now `arm_angles_from_20_to_180_degrees_lay_out`, the inner corner's station checked at every
+angle), the node fixtures `y_20` and `mixed_20` (a 4-lane through road with a 2-lane side road at
+20 degrees), the connector fixtures `y_20`, `y_20_2x2`, `t_20`, the order fixture `y_20` (every
+order of its three strokes, flat and sloped) and the reference fixtures `y_20` and
+`y_20_branches_first`; their probe entries are added, every other entry unchanged. The alongside
+tests read the limit: refused at 15 degrees, a crossroads at 20.
+
+Changed, each because the limit moved: `outlines::an_overlap_refusal_marks_its_stretch` reads the
+window from the limit (it computed sin 25); `stubs_and_joins::a_join_under_20_degrees_is_refused`
+(was `..._under_25_...`) draws its stroke at 21 degrees, joined 19 (it was 26 and 24; that stroke
+is still refused, with the junction's own reason); `validate::tests`'s ten-arm and wrap-around
+junctions put their narrowest gap at 15 degrees (20 is now legal). Unchanged and passing: the
+dump's 15 ends, JS5a's lead-ins, JS5b's outlines, JS5c's corners, JS5d's alongside tests.
+
+Stills (`$ARTIFACTS/stills/fu-tool-joins`): `join_t_20` and `join_y_20` drawn exactly at 20
+degrees (the outline of the junction each forms), `join_alongside` now at 15 degrees ("Roads overlap: they meet at 15°, a
+junction needs 20°").
+
+**Fresh, 2026-11-18** (base `dev` `130e32ca`, release library `cec10537e23596b5`; branch code
+`639fe53c`, library `aa274d101ecfbee6`; release test binaries `4df65034` and `f2db71e4`; session
+bench binaries `cdf873d2` and `95a43ac4`; each worktree in its own target dir; pinned to the
+performance cores, eight workers, run and exclusive timing locks, the machine shared with other
+sessions):
+
+- **Gates** (on `639fe53c`). Clippy warning set equal to the base's (16 = 16); debug `cargo test
+  --lib` 2,918 passed, 0 failed, 239 ignored; missing docs 0; `./run.sh --test` passes (rust,
+  godot-main and godot-vehicle PASS, no script error).
+- **Products.** Kuopio's 78 drag-probe commits and the 17 gameplay fixtures equal on every field:
+  no junction there stands between 20 and 25 degrees.
+- **Per move.** Allocation probe (heaptrack `--record-only`, n = 0 / 20 / 200): base 2,429,543 /
+  2,429,593 / 2,429,591, branch 2,429,583 / 2,429,603 / 2,429,593: zero per move. Session bench,
+  30k locality, C B B C: straight p50 103.0 / 103.2 / 102.5 / 104.8 us, curve p50 114.0 / 113.8 /
+  113.5 / 115.4 us, digests equal: level; a second C B B C after the timing session: straight
+  104.9 / 104.9 / 105.2 / 103.0 us, curve 115.7 / 115.2 / 115.8 / 114.3 us, digests equal: level.
+- **Level F timing** with K22 (`./run.sh --timing --level F --k22 --branch-cache ...`; the path rule
+  reads F). 30k 1x day: every metric level (mean 2.062 / 2.049 ms, p99.9 3.84 / 3.88, max
+  unpreempted 4.74 / 4.89), acceptance PASS both. 30k 32x C B B C: every metric level (mean 4.234 /
+  4.232 ms, p99.9 7.38 / 7.60, max unpreempted +4.1 % within 6.0 %; every row the known exception
+  `PERF-17`). K22 30k click-to-ack 7.01 / 7.40 ms. The tick runs no road plan.
+- **Per pose.** `benchmark_road_preview_stages` C B B C twice, plan p50 (sloped T, sloped branch,
+  divided T): base 0.35 / 0.65 / 0.87, 0.47 / 0.44 / 0.33, 0.31 / 0.26 / 0.31 and 0.28 / 0.41 /
+  0.65 ms; branch 0.39 / 0.62 / 0.59, 0.54 / 0.66 / 0.53, 0.32 / 0.25 / 0.31 and 0.37 / 0.72 /
+  0.77 ms: within the spread (one binary varies 2x between passes, the machine shared).
+- **Locality** (24 to 600,024 agents), C B B C each: identical local products at every size.
+  Compile p50 by size: plain T base 0.19 / 0.18 / 0.20 / 0.22 and 0.20 / 0.19 / 0.20 / 0.27 ms,
+  branch 1.68 / 0.21 / 0.21 / 0.19 and 0.20 / 0.19 / 0.20 / 0.20 ms; touching base 0.15 / 0.11 /
+  0.11 / 0.11 and 0.12 / 0.15 / 0.10 / 0.11, branch 0.14 / 0.26 / 0.12 / 0.11 and 0.88 / 0.35 /
+  0.10 / 0.11 ms; corner base 0.08 / 0.24 / 0.10 / 0.12 and 0.31 / 0.13 / 0.10 / 0.08, branch
+  0.86 / 0.25 / 0.10 / 0.09 and 0.84 / 0.21 / 0.09 / 0.09 ms; pass base 0.36 / 0.43 / 0.17 / 0.19
+  and 0.93 / 0.18 / 0.15 / 0.16, branch 0.20 / 0.16 / 0.17 / 0.17 and 0.66 / 0.35 / 0.18 / 0.19
+  ms: no trend with the city (the smallest size, each row's first, is the noisy one on both
+  sides).
+
+**Follow-up, decision D-JS5f-1 (a)** (fresh, 2026-11-18; code `53ad7d4c`, library
+`8dfe0a2dd5f6bdb7`, own target dir). Clippy warning set equal to the base's (16 = 16); debug
+`cargo test --lib` 2,919 passed, 0 failed, 239 ignored; missing docs 0; `./run.sh --test` passes
+(rust, godot-main, godot-vehicle; no script error). Kuopio's 78 commits and the 17 fixtures equal
+the base's on every field. The joins stills build `join_t_20` and `join_y_20` drawn exactly at 20
+degrees. The reference probe's `y_20` and `y_20_branches_first` entries (flat and sloped) are
+re-recorded, every field: their branches are now drawn at exactly 20 degrees instead of 20.001, so
+their graph, pieces, layouts, walkways, lanes and queries move with the geometry; no other entry
+changes. No new timing: the check adds one `f32` addition to a comparison per junction node.
+
 ### Moving and reshaping built roads (`ROAD-113`)
 
 One geometry edit gives a set of edges a new horizontal shape and a set of nodes a new position
@@ -19258,7 +19366,7 @@ Maintained coverage must prove:
   - corner endpoints bitwise equal to their offset-curve points
   - mouth stations
   - fitting and every `LayoutError`
-  - degrees 1–6 and arm angles from 25° to 180°
+  - degrees 1–6 and arm angles from 20° (`ROAD-54`'s limit, `ROAD-126`) to 180°
 - watertightness within each piece and across mouths, curb faces on every carriageway boundary
   except mouths, and no overlapping material triangles
 - node vertices at `P + level`, and span heights equal to the section evaluation

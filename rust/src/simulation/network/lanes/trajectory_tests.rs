@@ -662,6 +662,20 @@ fn fixtures() -> Vec<(String, RegionGraph)> {
             star(&[(0.0, 1), (60.0, 1), (180.0, 1), (240.0, 1)]),
         ),
         ("bend_45".to_string(), star(&[(180.0, 1), (45.0, 1)])),
+        // `ROAD-126`: a Y and a T at `ROAD-54`'s arm limit, 20 degrees between two arms; the Y
+        // also with two lanes each way, its inner corner farthest out.
+        (
+            "y_20".to_string(),
+            star(&[(180.0, 1), (10.0, 1), (350.0, 1)]),
+        ),
+        (
+            "y_20_2x2".to_string(),
+            star(&[(180.0, 2), (10.0, 2), (350.0, 2)]),
+        ),
+        (
+            "t_20".to_string(),
+            star(&[(0.0, 1), (180.0, 1), (200.0, 1)]),
+        ),
         // `ROAD-100`: a one-way through road (west to east) with a two-way side road, and a
         // 2+1 crossroads; their lanes end mid-lane on the mouths, not on the kerb.
         (

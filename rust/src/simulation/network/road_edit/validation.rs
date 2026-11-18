@@ -184,7 +184,7 @@ pub(crate) struct RoadPreviewValidation {
     /// [`Self::endpoint_edges`]. `None` for any other verdict.
     pub(crate) overlap_end: Option<usize>,
     /// The stroke's side a `roads_overlap` refusal names (`ROAD-118` round JS5d: running alongside
-    /// a road or crossing it under 25 degrees, no end involved): the road, its station and the
+    /// a road or crossing it under the arm limit, no end involved): the road, its station and the
     /// drawn stretch; the preview outlines the overlapped stretch. `None` for any other verdict.
     pub(crate) overlap_side: Option<SideOverlap>,
     /// The live nodes an accepted plan joined the stroke's ends to, start then end (`ROAD-118`

@@ -25,15 +25,23 @@ pub(super) fn reference_fixtures() -> Vec<(&'static str, Vec<Stroke>, Vec<usize>
             vec![0, 1],
         ),
     ];
-    for (name, angle_deg) in [("y_25", 25.0_f32), ("y_40", 40.0), ("y_60", 60.0)] {
+    // The Y at `ROAD-54`'s arm limit (20 degrees since `ROAD-126`; its `f32` points read 19.999998
+    // degrees, within the arm angle's rounding) and at the old one, each also drawn branches first:
+    // at the limit in every orientation (`ROAD-68-K23`).
+    for (name, angle_deg, branches_first) in [
+        ("y_20", 20.0_f32, Some("y_20_branches_first")),
+        ("y_25", 25.0, Some("y_25_branches_first")),
+        ("y_40", 40.0, None),
+        ("y_60", 60.0, None),
+    ] {
         let half = (0.5 * angle_deg).to_radians();
         let strokes = vec![
             stem,
             road(Vector2::ZERO, Vector2::from_angle(half) * ARM_M),
             road(Vector2::ZERO, Vector2::from_angle(-half) * ARM_M),
         ];
-        if angle_deg == 25.0 {
-            set.push(("y_25_branches_first", strokes.clone(), vec![1, 2, 0]));
+        if let Some(branches_first) = branches_first {
+            set.push((branches_first, strokes.clone(), vec![1, 2, 0]));
         }
         set.push((name, strokes, vec![0, 1, 2]));
     }
@@ -80,7 +88,7 @@ fn reference_junction_products_match_the_probe() {
 // inside the crossing and below the curb's top a centimetre outside it. Every reference junction,
 // flat and sloped, in each quarter turn and mirror of its strokes: rounding puts the ends a hair
 // on either side of the curb line differently in each, and the surface must not follow it. Each
-// orientation also plans and commits every stroke (`ROAD-68-K23`): the 25° Y, at exactly the
+// orientation also plans and commits every stroke (`ROAD-68-K23`): the 25° Y, then exactly at the
 // illegal arm angle, was refused in two of them when the angle was measured from each arm's own
 // `atan2`.
 #[test]
@@ -190,6 +198,8 @@ fn crossing_kerb_ends_stand_on_the_carriageway_in_every_orientation() {
 // unchanged up to its id: an id-free hash of the live lanes (identity, geometry, lengths,
 // successors by identity, crossings, ring entries and the owners' lists) is equal to `dev`'s in
 // all 20 entries.
+// Round JS5f (`ROAD-126`) adds `y_20` and `y_20_branches_first`, flat and sloped; every other entry
+// is unchanged.
 const EXPECTED: &[(&str, [u64; 7])] = &[
     (
         "t/false",
@@ -213,6 +223,30 @@ const EXPECTED: &[(&str, [u64; 7])] = &[
             0xafee7454c4568380,
             0x0e9e0eb903ac3f15,
             0xd99b058cb0fae1a5,
+        ],
+    ),
+    (
+        "y_20_branches_first/false",
+        [
+            0xf4ddc10ddf95ee62,
+            0xe08fcb5587e66e55,
+            0xfedf5f7663f2638d,
+            0x2c098922da49365f,
+            0xe9752a961bd2274c,
+            0x3b28de6d71923378,
+            0x3273ac56f146a9f6,
+        ],
+    ),
+    (
+        "y_20/false",
+        [
+            0x3ae2d28f0a029bda,
+            0x5a2cca83c21c307d,
+            0x0081d7361ff12349,
+            0x1c99560c08df9f52,
+            0x9a9ca432eaeb1084,
+            0xe7e9a95ab561d926,
+            0x59811538437894f5,
         ],
     ),
     (
@@ -333,6 +367,30 @@ const EXPECTED: &[(&str, [u64; 7])] = &[
             0xc0af058dd2cd34c1,
             0x25dd55bd3883ac71,
             0xd095e221ec6237f7,
+        ],
+    ),
+    (
+        "y_20_branches_first/true",
+        [
+            0xd372ed82bdc1a203,
+            0xc4fbc3398f2044a6,
+            0xfedf5f7663f2638d,
+            0x3c1b5c732b27a0d9,
+            0x950971c68613403b,
+            0x1fadb244498ac21f,
+            0xf04104b8721ac2c1,
+        ],
+    ),
+    (
+        "y_20/true",
+        [
+            0x1629d45e3f5c18e3,
+            0x99a0c42a3f43192a,
+            0x0081d7361ff12349,
+            0x74c57b31738bcbe4,
+            0xf31865c3d6ac4deb,
+            0xdb66344322906e09,
+            0x627ab1e3e36787f5,
         ],
     ),
     (

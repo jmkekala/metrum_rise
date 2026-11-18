@@ -18,7 +18,7 @@ use crate::nodes::sim::road_tool::session::{
     Pointer, PointerButton, RoadToolEvent, RoadToolOption, RoadToolSession,
 };
 use crate::simulation::network::graph::RoadParking;
-use crate::simulation::network::road_edit::{EndContact, RoadProfile};
+use crate::simulation::network::road_edit::{EndContact, MIN_CONTACT_ANGLE_DEG, RoadProfile};
 use crate::simulation::network::road_types::RoadAttributes;
 
 // A flat city of 2-lane roads drawn in order, without parking.
@@ -187,11 +187,11 @@ fn an_overlap_refusal_marks_its_stretch() {
     }
     // The two footprints (5 m half widths) overlap where the street's centreline lies within
     // 10 m of the end's last stretch: the prepared stroke's points back from the end over whole
-    // segments until 10 m / sin 25 is covered, as the contact reads it. Back there the stroke
-    // stands `w` off the centreline, so the stretch starts 10 m from that point; ahead it ends
-    // at x = 10 + sqrt(99), the end's round cap.
+    // segments until 10 m / sin of the arm limit is covered, as the contact reads it. Back there
+    // the stroke stands `w` off the centreline, so the stretch starts 10 m from that point; ahead
+    // it ends at x = 10 + sqrt(99), the end's round cap.
     let prepared = &preview.plan.prepared().points;
-    let window_m = 10.0 / 25f32.to_radians().sin();
+    let window_m = 10.0 / MIN_CONTACT_ANGLE_DEG.to_radians().sin();
     let (mut run, mut back) = (0.0, prepared.len() - 1);
     while back > 0 && run < window_m {
         run += (prepared[back].x - prepared[back - 1].x)

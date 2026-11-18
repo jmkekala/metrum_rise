@@ -2,8 +2,8 @@
 
 //! `ROAD-118` round JS5d: roads alongside are refused, naming the road. On a flat 2-lane street, a
 //! 2-lane stroke whose side runs on top of the street with no end involved (parallel within the
-//! footprint, or crossing it 5 degrees under the arm limit, `MIN_CONTACT_ANGLE_DEG`: 20 degrees
-//! under today's 25) is refused as `roads_overlap` naming the street, its preview marking the
+//! footprint, or crossing it 5 degrees under the arm limit, `MIN_CONTACT_ANGLE_DEG`: 15 degrees
+//! under today's 20) is refused as `roads_overlap` naming the street, its preview marking the
 //! overlapped stretch, and the commit refuses it too; at the limit it crosses. The angles are
 //! read from the limit, so a change of the limit moves them with it. An end up to 2 m past an oblique crossing (DECISION-JS5a): the stroke ends at the
 //! crossing on its own line, every drawn point before it bit for bit, no sideways foot. Each
@@ -117,10 +117,10 @@ fn a_stroke_alongside_a_road_is_refused_naming_it() {
     assert_refused_alongside(ends, (-50.0, 50.0), 0.0, "alongside");
 }
 
-// A straight stroke crossing the street at its middle 5 degrees under the arm limit (20 degrees
-// under 25), both ends 70 m from the crossing (24 m off the street at 20 degrees): refused at
+// A straight stroke crossing the street at its middle 5 degrees under the arm limit (15 degrees
+// under 20), both ends 70 m from the crossing (18 m off the street at 15 degrees): refused at
 // that angle. The footprints overlap where the street's centreline lies within 10 m of the
-// stroke's, up to 10 / sin 20 = 29.2 m either side of the crossing; the street ends 50 m west and
+// stroke's, up to 10 / sin 15 = 38.6 m either side of the crossing; the street ends 50 m west and
 // east of it.
 #[test]
 fn a_crossing_under_the_arm_limit_is_refused_naming_the_road() {
@@ -134,7 +134,16 @@ fn a_crossing_under_the_arm_limit_is_refused_naming_the_road() {
 // The stroke `ends` previewed, committed with its preview and held to the round's bar (module
 // docs). Returns the core after, the preview and the drawn points.
 fn build(ends: [Vector2; 2], label: &str) -> (SimCore, Arc<RoadPreview>, Vec<Vector3>) {
-    let mut core = city(&STREET, 1);
+    build_on(&STREET, ends, label)
+}
+
+// The same on a flat city of the 2-lane `roads` (`ROAD-126`'s cases at the arm limit).
+pub(super) fn build_on(
+    roads: &[[(f32, f32); 2]],
+    ends: [Vector2; 2],
+    label: &str,
+) -> (SimCore, Arc<RoadPreview>, Vec<Vector3>) {
+    let mut core = city(roads, 1);
     let points = lay(&core, &ends);
     let drawn = drawn_of(&mut core, &points);
     let state_before = (graph_hash(&core), roadbed_digest(&core));
@@ -177,7 +186,7 @@ fn build(ends: [Vector2; 2], label: &str) -> (SimCore, Arc<RoadPreview>, Vec<Vec
     (core, preview, drawn)
 }
 
-// The same crossing at the arm limit (25 degrees): it crosses, a crossroads at the middle.
+// The same crossing at the arm limit (20 degrees): it crosses, a crossroads at the middle.
 #[test]
 fn a_crossing_at_the_arm_limit_crosses() {
     let angle = MIN_CONTACT_ANGLE_DEG;

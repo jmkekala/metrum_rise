@@ -339,11 +339,15 @@ func _capture_ui1() -> void:
 # Round JS5b (`ROAD-118`): the preview outlines the junction a join forms, and a `roads_overlap`
 # refusal's overlapped stretch. A street along x through the origin with a side street north
 # from (60, 0), and a road ending at (300, 100) from the west; the Roads snap off, so each end
-# stays where it is drawn and the join forms the junction.
+# stays where it is drawn and the join forms the junction. Round JS5f (`ROAD-126`): a road ending at
+# (700, 100) from the west with a first branch from its end 10 degrees off, for a Y at the arm
+# limit (20 degrees).
 func _capture_joins() -> void:
 	_tool.draw_mode = RoadToolScript.DrawMode.STRAIGHT
 	_tool.set_option("network_snap", false)
-	for road in [[Vector3(-100.0, 0.0, 0.0), Vector3(160.0, 0.0, 0.0)], [Vector3(60.0, 0.0, 0.0), Vector3(60.0, 0.0, -100.0)], [Vector3(200.0, 0.0, 100.0), Vector3(300.0, 0.0, 100.0)]]:
+	var y_node := Vector3(700.0, 0.0, 100.0)
+	var y_branch := Vector3(cos(deg_to_rad(10.0)), 0.0, sin(deg_to_rad(10.0))) * 60.0
+	for road in [[Vector3(-100.0, 0.0, 0.0), Vector3(160.0, 0.0, 0.0)], [Vector3(60.0, 0.0, 0.0), Vector3(60.0, 0.0, -100.0)], [Vector3(200.0, 0.0, 100.0), Vector3(300.0, 0.0, 100.0)], [Vector3(600.0, 0.0, 100.0), y_node], [y_node, y_node + y_branch]]:
 		_tool._begin_stroke(road[0])
 		_tool.set_scripted_pointer(true, road[1])
 		await _frames(3)
@@ -351,21 +355,26 @@ func _capture_joins() -> void:
 		await _ack()
 		_tool.cancel_road()
 	var heading := func(degrees: float) -> Vector3: return Vector3(cos(deg_to_rad(degrees)), 0.0, sin(deg_to_rad(degrees)))
-	# (label, the drawn end, the direction it is drawn in, whether the preview is refused)
+	# (label, the drawn end, the direction it is drawn in, whether the preview is refused[, the
+	# stroke's length, 60 m when not given])
 	var cases := [
 		["join_side_t", Vector3(10.0, 0.0, 4.0), heading.call(-60.0), false],
 		["join_t_open_side", Vector3(62.0, 0.0, 8.0), Vector3(0.0, 0.0, -1.0), false],
 		["join_road_end", Vector3(306.0, 0.0, 102.0), Vector3(-1.0, 0.0, 0.0), false],
 		["join_overlap", Vector3(-30.0, 0.0, 1.0), heading.call(-15.0), true],
 		# Round JS5d: the corner and the pass at the road end (300, 100), and a crossing of the
-		# street at 20 degrees whose ends stay 10.3 m off it.
+		# street under the arm limit (15 degrees since JS5f) whose ends stay 11.6 m off it.
 		["join_corner", Vector3(308.345, 0.0, 100.0), heading.call(134.0), false],
 		["join_pass", Vector3(306.0, 0.0, 130.0), Vector3(0.0, 0.0, 1.0), false],
-		["join_alongside", Vector3(-40.0, 0.0, 0.0) + heading.call(20.0) * 30.0, heading.call(20.0), true],
+		["join_alongside", Vector3(-40.0, 0.0, 0.0) + heading.call(15.0) * 45.0, heading.call(15.0), true, 90.0],
+		# Round JS5f: a T on the street's side and a Y at the road end (700, 100), both at the arm
+		# limit, 20 degrees (their `f32` points read a hair under it, within the arm angle's rounding).
+		["join_t_20", Vector3(-20.0, 0.0, 0.0), heading.call(-20.0), false],
+		["join_y_20", y_node + heading.call(-10.0) * 40.0, heading.call(-10.0), false, 40.0],
 	]
 	for case in cases:
 		var end: Vector3 = case[1]
-		var start: Vector3 = end - (case[2] as Vector3) * 60.0
+		var start: Vector3 = end - (case[2] as Vector3) * (float(case[4]) if case.size() > 4 else 60.0)
 		_camera.position = end + Vector3(0.0, 70.0, 45.0)
 		_camera.look_at(end)
 		_tool._begin_stroke(start)

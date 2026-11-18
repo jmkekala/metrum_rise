@@ -15,10 +15,10 @@
 //! - **The overlapped stretch** of a `roads_overlap` refusal (round JS4a's `Overlap`: the end,
 //!   its road and station): the stretch of that road's centreline lying within the two roadbed
 //!   half widths of the refused end's last stretch (the contact's own window, its reach over the
-//!   sine of the 25-degree arm limit, whole segments), so where the two footprints overlap,
+//!   sine of the arm limit, whole segments), so where the two footprints overlap,
 //!   measured across; drawn as that stretch of the road's footprint, in the refusal's look. A
-//!   refusal of the stroke's side (round JS5d: alongside a road, or crossing it under 25
-//!   degrees) names the stroke's stretch beside the road instead of an end's.
+//!   refusal of the stroke's side (round JS5d: alongside a road, or crossing it under the arm
+//!   limit) names the stroke's stretch beside the road instead of an end's.
 //!
 //! Geometry is decided here, in the preview call; the drawing only uploads it. Every buffer is
 //! reused pose to pose.

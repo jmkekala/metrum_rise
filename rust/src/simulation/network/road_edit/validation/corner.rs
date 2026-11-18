@@ -8,11 +8,11 @@
 //!   and the old road's line meet ahead of both ends: the corner node stands where the lines
 //!   meet; the stroke runs straight on to it (a straight lead-in, [`super::lead_in`]) and the old
 //!   road grows straight on to it, by at most the reach (the two roadbed half widths). The two
-//!   roads meet in a bend whose arms stand at least the junction arm limit (25 degrees,
+//!   roads meet in a bend whose arms stand at least the junction arm limit (20 degrees,
 //!   `ROAD-54`) apart. Lines that do not meet within those bounds keep round JS5a's arc into the
 //!   road end.
 //! - **The pass.** A stroke whose side passes a road end's cap, where the old road's line meets
-//!   the stroke's centreline within the reach at 25 degrees or more: the old road grows straight
+//!   the stroke's centreline within the reach at the arm limit or more: the old road grows straight
 //!   on to that point and the stroke is split there, a T. A road end within the topology's 2 m
 //!   end join of the stroke keeps that join, as before.
 //!

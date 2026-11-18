@@ -133,7 +133,7 @@ fn four_arm_right_angle_junction_is_clean() {
 #[test]
 fn ten_arm_junction_has_illegal_degree_and_arm_angle() {
     let (graph, center) = junction(&[
-        0.0, 20.0, 55.0, 90.0, 125.0, 160.0, 200.0, 240.0, 280.0, 320.0,
+        0.0, 15.0, 55.0, 90.0, 125.0, 160.0, 200.0, 240.0, 280.0, 320.0,
     ]);
     let out = node_violations(&graph, center);
     assert_eq!(out.len(), 2);
@@ -147,7 +147,7 @@ fn ten_arm_junction_has_illegal_degree_and_arm_angle() {
         out.iter()
             .any(|v| matches!(v, RoadGeometryViolation::JunctionArmAngle {
         measured, limit: ILLEGAL_ARM_ANGLE_DEGREES, tier: RoadGeometryTier::Illegal, ..
-    } if (*measured - 20.0).abs() < 1e-4))
+    } if (*measured - 15.0).abs() < 1e-4))
     );
 }
 
@@ -321,11 +321,11 @@ fn arm_direction_averages_tiny_end_segments_in_both_orientations_without_clips()
 
 #[test]
 fn junction_angles_include_wraparound_and_design_tiers() {
-    let (graph, center) = junction(&[10.0, 120.0, 240.0, 350.0]);
+    let (graph, center) = junction(&[10.0, 120.0, 240.0, 355.0]);
     assert!(
         matches!(node_violations(&graph, center).as_slice(), [RoadGeometryViolation::JunctionArmAngle {
         measured, tier: RoadGeometryTier::Illegal, ..
-    }] if (*measured - 20.0).abs() < 1e-4)
+    }] if (*measured - 15.0).abs() < 1e-4)
     );
     let (graph, center) = junction(&[0.0, 45.0, 120.0, 200.0, 280.0]);
     let out = node_violations(&graph, center);
@@ -386,7 +386,7 @@ fn directionless_edges_count_for_degree_and_non_road_modes_are_excluded() {
 #[test]
 fn audit_order_is_kind_then_id_and_independent_of_rayon_worker_count() {
     let (mut graph, _) = junction(&[
-        0.0, 20.0, 55.0, 90.0, 125.0, 160.0, 200.0, 240.0, 280.0, 320.0,
+        0.0, 15.0, 55.0, 90.0, 125.0, 160.0, 200.0, 240.0, 280.0, 320.0,
     ]);
     for id in [0, 3, 9] {
         let edge = graph.edge_mut(id);

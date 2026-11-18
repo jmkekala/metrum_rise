@@ -382,6 +382,8 @@ fn check_abutments(name: &str, graph: &RegionGraph, span: &SpanPiece, edge: usiz
 // the lanes of 67 entries change, all junctions of three or more arms with a multi-lane road, and
 // nothing else. Bends, pass-throughs, road ends and the junctions whose masks and fans are as
 // before (77 entries) hash as before.
+// Round JS5f (`ROAD-126`) adds `y_20` and `mixed_20`, flat and sloped; every other entry is
+// unchanged.
 const EXPECTED: &[(&str, [u64; 7])] = &[
     (
         "t/false",
@@ -429,6 +431,18 @@ const EXPECTED: &[(&str, [u64; 7])] = &[
             0x4c16c6e5467d1837,
             0x599ef67c2f8cde1b,
             0xbcc22e3363b7bc68,
+        ],
+    ),
+    (
+        "y_20/false",
+        [
+            0x99d60de29a2ac00f,
+            0x7392868d0e5339e5,
+            0xdf8554786cd9e9f9,
+            0x08538a7ac3371560,
+            0x7f4c9b0cbc1429ff,
+            0x5c3d5d7bb7aec017,
+            0x5c2323cdec2236b9,
         ],
     ),
     (
@@ -573,6 +587,18 @@ const EXPECTED: &[(&str, [u64; 7])] = &[
             0x45d1503c507ce921,
             0x805918b561a5d495,
             0x07013f89afe6d00e,
+        ],
+    ),
+    (
+        "mixed_20/false",
+        [
+            0x8260de54f6f44c37,
+            0x0226e586661e1ab6,
+            0xd94ac61bf9bf6344,
+            0xd3dadaee6eb2c3a7,
+            0x160d086bd904adec,
+            0x707196331aa78c89,
+            0x44bdea659db03e6b,
         ],
     ),
     (
@@ -1298,6 +1324,18 @@ const EXPECTED: &[(&str, [u64; 7])] = &[
         ],
     ),
     (
+        "y_20/true",
+        [
+            0x918befc81fe6530b,
+            0xad9724e412fc801b,
+            0xdf8554786cd9e9f9,
+            0xc85e0c252859570f,
+            0x87d2e761cc060fdd,
+            0x5809cddc30313329,
+            0x4fee3c5014966c79,
+        ],
+    ),
+    (
         "y_25/true",
         [
             0x25a6eb9dd02d04d1,
@@ -1439,6 +1477,18 @@ const EXPECTED: &[(&str, [u64; 7])] = &[
             0xf68f4cd7462a00ed,
             0x58530be4465e7e92,
             0xb89d564a500e552c,
+        ],
+    ),
+    (
+        "mixed_20/true",
+        [
+            0x0b01e1cd71959258,
+            0x5fdebffa303c15d1,
+            0xd94ac61bf9bf6344,
+            0x1c832a74220f8ac9,
+            0x1502784a32bb5b53,
+            0x0de76490cc72ae9c,
+            0x63a40670bfeff18b,
         ],
     ),
     (
@@ -2525,11 +2575,14 @@ const EXPECTED: &[(&str, [u64; 7])] = &[
 // Re-recorded by `ROAD-61` round R8f: the same six tunnel entries change with the collar in place
 // of the headwall and its wings (and the shell's tops computed as the collar's height in one
 // step, and a bend's node lining without the triangulator's sliver); every other entry is unchanged.
+// Round JS5f (`ROAD-126`) adds `y_20` and `mixed_20`, flat and sloped; every other entry is
+// unchanged.
 const EXPECTED_STRIPS: &[(&str, u64)] = &[
     ("t/false", 0x3a3196117e3f00f3),
     ("four_way/false", 0x694f53237d5dd070),
     ("five_way/false", 0xbd855df09fc104c9),
     ("six_way/false", 0xd06d91b52b42d2ea),
+    ("y_20/false", 0x4597008bd5364053),
     ("y_25/false", 0x77d498d4b7c23609),
     ("y_40/false", 0xcc1ad8c55c4b1d83),
     ("y_60/false", 0x5d157a95ce429b3d),
@@ -2542,6 +2595,7 @@ const EXPECTED_STRIPS: &[(&str, u64)] = &[
     ("bend_130/false", 0xaa216dd22f845740),
     ("bend_150/false", 0xf98f455a8a8d34fc),
     ("bend_160/false", 0x924a6d01e80a5d8e),
+    ("mixed_20/false", 0x72f51931ee2f05b1),
     ("mixed_40/false", 0xf30d9201a629d139),
     ("mixed_60/false", 0x2c6d1fb14386c87d),
     ("mixed_90/false", 0x2c44dad5db28eab7),
@@ -2604,6 +2658,7 @@ const EXPECTED_STRIPS: &[(&str, u64)] = &[
     ("four_way/true", 0xb041eb300213983b),
     ("five_way/true", 0xb83bbda1b7627fae),
     ("six_way/true", 0x43c79827aaaf9977),
+    ("y_20/true", 0xfc376be731825cb6),
     ("y_25/true", 0x45e956ad188e4793),
     ("y_40/true", 0x60c6770b5d7fb8bd),
     ("y_60/true", 0x4c844b6123f65e3f),
@@ -2616,6 +2671,7 @@ const EXPECTED_STRIPS: &[(&str, u64)] = &[
     ("bend_130/true", 0x16f1ce739940280b),
     ("bend_150/true", 0x2e01da7d4d05dc1f),
     ("bend_160/true", 0x531cef57fd8d8083),
+    ("mixed_20/true", 0xed63fa96a5b73691),
     ("mixed_40/true", 0x25f61e35da006bbe),
     ("mixed_60/true", 0x6aa8aeb1d114ac6a),
     ("mixed_90/true", 0xbd1387e3c204942e),

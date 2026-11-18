@@ -342,10 +342,11 @@ fn assert_order_independent(name: &str, strokes: &[Stroke], orders: &[&[usize]],
     }
 }
 
-// The Y fixtures at 25, 40 and 60 degrees: the stem ends at the origin heading +x, the branches
-// leave it at +/- half the angle. Every order of the three strokes.
+// The Y fixtures at 20 (`ROAD-54`'s arm limit since `ROAD-126`; its `f32` points read 19.999998
+// degrees, within the arm angle's rounding), 25, 40 and 60 degrees: the stem ends at the origin
+// heading +x, the branches leave it at +/- half the angle. Every order of the three strokes.
 fn y_junctions(sloped: bool) {
-    for angle_deg in [25.0_f32, 40.0, 60.0] {
+    for angle_deg in [20.0_f32, 25.0, 40.0, 60.0] {
         let half = (0.5 * angle_deg).to_radians();
         let strokes = [
             ([Vector2::new(-ARM_M, 0.0), Vector2::ZERO], 1),

@@ -69,7 +69,8 @@ fn fixtures(sloped: bool) -> Vec<(String, RegionGraph)> {
             ),
         ),
     ];
-    for y_deg in [25.0, 40.0, 60.0] {
+    // The Y at `ROAD-54`'s arm limit (20 degrees since `ROAD-126`) and wider.
+    for y_deg in [20.0, 25.0, 40.0, 60.0] {
         let arms = equal(&[270.0, 90.0 - y_deg * 0.5, 90.0 + y_deg * 0.5]);
         set.push((format!("y_{y_deg}"), star(centre, &arms, sloped)));
     }
@@ -77,7 +78,7 @@ fn fixtures(sloped: bool) -> Vec<(String, RegionGraph)> {
         let arms = equal(&[15.0, 15.0 + bend_deg]);
         set.push((format!("bend_{bend_deg}"), star(centre, &arms, sloped)));
     }
-    for side_deg in [40.0, 60.0, 90.0] {
+    for side_deg in [20.0, 40.0, 60.0, 90.0] {
         let arms = [
             (0.0, FOUR_LANE_M),
             (180.0, FOUR_LANE_M),

@@ -42,9 +42,17 @@ const DESIGN_KINK_DEGREES: f32 = 3.0;
 const ILLEGAL_KINK_DEGREES: f32 = 10.0;
 // Design separation of adjacent junction arms supplied by the specification.
 const DESIGN_ARM_ANGLE_DEGREES: f32 = 60.0;
-// Hard separation of adjacent junction arms: the specification's 30 degrees with the ~20%
-// leeway placement allows over real-world minima.
-const ILLEGAL_ARM_ANGLE_DEGREES: f32 = 25.0;
+/// Hard separation of adjacent junction arms, degrees (`ROAD-54`'s illegal tier): 20 degrees, the
+/// user's decision of 2026-11-18 (`ROAD-126`; it was the specification's 30 with leeway, then 25).
+/// The one arm limit: the join rules (`road_edit::MIN_CONTACT_ANGLE_DEG` is this constant), the
+/// lead-ins and corners they build and the preview's marks all read it.
+pub(crate) const ILLEGAL_ARM_ANGLE_DEGREES: f32 = 20.0;
+
+/// The rounding of an angle between directions read from `f32` points, degrees: a junction or a
+/// join drawn exactly at an arm limit may read a hair under it (a 20 degree Y's points read
+/// 19.999998). The arm-angle check and the join rules both take an angle this close under a limit
+/// as meeting it (the user's decision D-JS5f-1, round JS5f); 19.998 degrees is refused.
+pub(crate) const ARM_ANGLE_ROUNDING_DEG: f32 = 1.0e-3;
 // Conventional four-arm junction design target supplied by the specification.
 const DESIGN_JUNCTION_DEGREE: usize = 4;
 // Hard junction-degree bound supplied by the specification.
@@ -596,7 +604,7 @@ fn counter_clockwise(u: &[f32; 2], v: &[f32; 2]) -> std::cmp::Ordering {
 // The angle from direction `u` counter-clockwise to `v`, in `[0, 2π)`, from their exact cross
 // and dot products, so the same in every quarter turn and mirror of a junction, bit for bit
 // (`ROAD-68-K23`). Each arm's own `atan2` and their difference round differently in each
-// orientation, and so decided by orientation whether a Y at exactly the 25° limit was legal.
+// orientation, and so decided by orientation whether a Y at exactly the arm limit was legal.
 fn counter_clockwise_angle(u: [f32; 2], v: [f32; 2]) -> f64 {
     let (cross, dot) = cross_dot(u, v);
     let angle = cross.atan2(dot) + 0.0;
@@ -671,9 +679,11 @@ pub fn validate_node(
                 smallest = smallest.min(counter_clockwise_angle(pair[0], pair[1]));
             }
             let measured = smallest.to_degrees() as f32;
-            if let Some((limit, tier)) =
-                lower_violation(measured, &limits.junction_arm_angle_degrees)
-            {
+            // Judged with the rounding of `f32` points; the measured angle is reported as read.
+            if let Some((limit, tier)) = lower_violation(
+                measured + ARM_ANGLE_ROUNDING_DEG,
+                &limits.junction_arm_angle_degrees,
+            ) {
                 output.push(RoadGeometryViolation::JunctionArmAngle {
                     node_id,
                     measured,

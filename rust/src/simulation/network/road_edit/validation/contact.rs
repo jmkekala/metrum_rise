@@ -15,7 +15,7 @@
 //!   stub), as does an end standing on the centreline itself (within the topology's 5 cm node
 //!   capture, where that join keeps the end's own projection: a stroke laid on a road, an end on
 //!   its vertex) whose line runs along it (fix B1);
-//! - where that line meets the road at under the junction arm limit (25 degrees, `ROAD-54`), or
+//! - where that line meets the road at under the junction arm limit (20 degrees, `ROAD-54`), or
 //!   not within the contact's reach over the sine of that limit, the roads would run on top of
 //!   each other: the stroke is refused as `roads_overlap`.
 //!
@@ -53,13 +53,14 @@ const RUN_ROUNDING_M: f32 = 1.0e-3;
 const MIN_OVERLAP_M: f32 = 0.01;
 
 // The rounding of a direction between two `f32` points, degrees: a stroke drawn at the arm limit
-// may read its segments a hair under it (round JS5d).
-const ANGLE_ROUNDING_DEG: f32 = 1.0e-3;
+// may read its segments a hair under it (round JS5d); the validator's arm-angle check reads the
+// same constant (round JS5f).
+use crate::simulation::network::validate::ARM_ANGLE_ROUNDING_DEG;
 
-/// The least angle between a stroke's end tangent and the road it runs onto (`ROAD-54`'s
-/// junction arm limit, degrees); under it the two roads overlap instead of meeting. A lead-in
-/// keeps its new arm as far from a node's other arms.
-pub(crate) const MIN_CONTACT_ANGLE_DEG: f32 = 25.0;
+// The least angle between a stroke's end tangent and the road it runs onto, degrees: `ROAD-54`'s
+// junction arm limit itself (`validate::ILLEGAL_ARM_ANGLE_DEGREES`, 20 degrees since `ROAD-126`).
+// Under it the two roads overlap instead of meeting. A lead-in keeps its new arm as far from a node's other arms.
+pub(crate) use crate::simulation::network::validate::ILLEGAL_ARM_ANGLE_DEGREES as MIN_CONTACT_ANGLE_DEG;
 
 /// What a stroke end touches (`ROAD-118` round JS4a), in the committed graph's ids.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -240,7 +241,7 @@ pub(super) fn end_contacts(
 // The first place, in the stroke's order, where the stroke's side runs on top of a ground car
 // road (`ROAD-118` round JS5d): a stroke segment and a road segment whose footprints overlap
 // (their centrelines nearer than the reach where they lie beside each other, measured across)
-// and which meet under the arm limit: running alongside, or crossing under 25 degrees. Segments
+// and which meet under the arm limit: running alongside, or crossing at a shallower angle. Segments
 // that only meet end to end (a road continued on its line) lie beside each other nowhere. The
 // ends' own meetings are the end rules': a crossing at a stroke end standing on the centreline
 // (the topology joins it; its arm angle judges it), and a stretch beside a road that runs on
@@ -248,7 +249,7 @@ pub(super) fn end_contacts(
 // (a lead-in, a join, a corner, or the topology's join and its arm angle judge it). Road ends'
 // meetings alike are not the side rule's: a road end (a node with no other road) crossing the
 // stroke standing on its centreline, or a stretch beside the stroke running on unbroken within
-// the reach to the road's end (round JS5c's pass at 25 degrees or more; under that, as before).
+// the reach to the road's end (round JS5c's pass at the arm limit or more; under that, as before).
 // Lowest segment first, then lowest road id and segment. Per stroke segment one edge R-tree query of
 // its bounds padded by the half width and [`MAX_ROADBED_HALF_WIDTH_M`] and an `O(1)` test per
 // candidate road segment; per overlapping pair a walk to the ends, `O(points x road points)`:
@@ -352,7 +353,7 @@ fn beside((p, q): (Vector3, Vector3), (a, b): (Vector3, Vector3), reach_m: f32) 
     }
     let (ux, uz) = (sx / stroke_m, sz / stroke_m);
     let angle_deg = angle_deg((ux, uz), (rx, rz));
-    if angle_deg >= MIN_CONTACT_ANGLE_DEG - ANGLE_ROUNDING_DEG {
+    if angle_deg >= MIN_CONTACT_ANGLE_DEG - ARM_ANGLE_ROUNDING_DEG {
         return None;
     }
     // The road segment's shadow on the stroke segment, in metres along it.

@@ -105,7 +105,7 @@ pub(super) const MIN_MOUTH_STATION_M: f64 = 1.0;
 // over the first metre) and treats visually straight continuations as straight, so a width change
 // there tapers (D4) rather than needing a corner that cannot exist.
 const STRAIGHT_SECTOR_EPS_RAD: f64 = PI / 180.0;
-// Consecutive arms closer than this are duplicates. ROAD-54 rejects junction arms below 25 degrees
+// Consecutive arms closer than this are duplicates. ROAD-54 rejects junction arms below 20 degrees
 // and bends below 10 degrees long before this.
 const MIN_SECTOR_ANGLE_RAD: f64 = PI / 180.0;
 // Arm direction over the first metre, as `validate.rs` measures it, and the shortest run that

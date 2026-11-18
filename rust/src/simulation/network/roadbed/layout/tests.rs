@@ -564,19 +564,25 @@ fn degrees_one_to_six_lay_out() {
     }
 }
 
+// From `ROAD-54`'s arm limit (20 degrees since `ROAD-126`) to a straight line. Each inner corner
+// keeps its full curb return, touching both arms where the angle puts it, (la + R) / tan(phi / 2):
+// 39.7 m out at 20 degrees (31.6 m at 25).
 #[test]
-fn arm_angles_from_25_to_180_degrees_lay_out() {
+fn arm_angles_from_20_to_180_degrees_lay_out() {
     let node = RoadVec2::new(-77.0, 91.0);
     let mut previous_tangent = f64::INFINITY;
-    for angle in [25.0, 40.0, 60.0, 90.0, 180.0] {
+    for angle in [20.0, 25.0, 40.0, 60.0, 90.0, 180.0] {
         let arms = equal_arms(node, &[0.0, angle, 180.0 + angle / 2.0]);
         let layout = build_checked(node, &arms);
         let sector = sector_from(&layout, 0);
         if angle < 180.0 {
             assert_eq!(sector.kind, SectorKind::Concave);
+            assert_eq!(sector.corner.unwrap().radius_m, CURB_RETURN_RADIUS_M);
             let from = arm_by_key(&layout, 0).left_corner.unwrap().station_m;
             let to = arm_by_key(&layout, 1).right_corner.unwrap().station_m;
             assert_near(from, to, 1e-9);
+            let expected = (TWO_LANE_HALF_M + CURB_RETURN_RADIUS_M) / (angle.to_radians() / 2.0).tan();
+            assert_near(from, expected, 1e-9);
             assert!(from < previous_tangent, "wider arms need shorter corners");
             previous_tangent = from;
         } else {
