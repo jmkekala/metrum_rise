@@ -14659,8 +14659,10 @@ clock as HF3F-1 (b) or the cycles, before more tick work).
 main-thread cycles at the P-core base clock (3.2 GHz on this machine's i9-12900K, the clock it
 holds under sustained load), so the governor's clock no longer decides them: the tick less the
 preview call at most 160,000 cycles p95 (0.05 ms), a still tick at most 16,000 (0.005 ms). Time is
-still reported beside the cycles. The overlay a drag frame and the frame-share bars (U-R2-1) stay
-in time. `ROAD-112` R2-L judges R2 on them.
+still reported beside the cycles. The user, the same day: "if the benchmark keeps the CPU idle, at
+that point it is fast enough", so the overlay a drag frame is read the same way (at most 320,000
+cycles p95, 0.10 ms). The frame-share bars (U-R2-1) and the hue join wait stay in time. `ROAD-112`
+R2-L judges R2 on them.
 
 ### The pick's graded preparation halved (round PB, `ROAD-116`)
 
