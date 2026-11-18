@@ -125,15 +125,16 @@ impl SimulationNode {
     }
 
     /// What the tool's drawing shows (tests and probes): per overlay (`gizmos`, `hue`,
-    /// `held_hue`, `ghost`) its mesh RID (`<name>_mesh`), whether it is shown (`<name>_visible`)
-    /// and its surfaces (`<name>_surfaces`); `{}` while no drawing is attached.
+    /// `held_hue`, `ghost`, and `marks`: the preview's join marks, `ROAD-118` round JS5b) its
+    /// mesh RID (`<name>_mesh`), whether it is shown (`<name>_visible`) and its surfaces
+    /// (`<name>_surfaces`); `{}` while no drawing is attached.
     #[func]
     pub fn road_tool_drawn(&self) -> VarDictionary {
         let mut dict = VarDictionary::new();
         let Some(draw) = &self.road_tool_session.draw else {
             return dict;
         };
-        let names = ["gizmos", "hue", "held_hue", "ghost"];
+        let names = ["gizmos", "hue", "held_hue", "ghost", "marks"];
         for (name, state) in names.into_iter().zip(draw.state()) {
             let OverlayState {
                 mesh,

@@ -144,7 +144,7 @@ fn the_hue_changes_state_in_place_and_holds_with_a_commit() {
     assert_eq!(adds(draw.backend()), 0);
     // The commit holds it; the next hue draws beside it until the release.
     draw.hold_hue();
-    let [_, now, held, _] = draw.state();
+    let [_, now, held, ..] = draw.state();
     assert_eq!(held, current);
     assert!(!now.visible && now.mesh != current.mesh);
     draw.draw_hue(&hue(HueState::Checking, 30.0));
@@ -201,8 +201,76 @@ fn every_object_made_is_freed() {
     draw.draw_hue(&hue(HueState::Valid, 0.0));
     draw.hold_hue();
     let live = draw.backend().live.clone();
-    // Four meshes and four instances: the gizmos, two hues, the ghost.
-    assert_eq!(live.get(), 8);
+    // Five meshes and five instances: the gizmos, two hues, the ghost, the join marks.
+    assert_eq!(live.get(), 10);
     drop(draw);
     assert_eq!(live.get(), 0, "the drop frees every object the drawing made");
+}
+
+// `ROAD-118` round JS5b: the preview's join marks draw as one line surface in the hue outline's
+// look (valid for the junction outline, refused for an overlapped stretch), in place while their
+// padded layout holds, and nothing at all while they are unchanged (a still frame, an untouched
+// pose after another).
+#[test]
+fn join_marks_draw_only_when_they_change() {
+    let mut draw = draw();
+    let square = |size: f32| {
+        let mut marks = marks::JoinMarks::default();
+        marks.starts.push(0);
+        marks.points.extend([
+            Vector3::new(0.0, 0.0, 0.0),
+            Vector3::new(size, 0.0, 0.0),
+            Vector3::new(size, 0.0, size),
+            Vector3::new(0.0, 0.0, size),
+            Vector3::new(0.0, 0.0, 0.0),
+        ]);
+        marks
+    };
+    // Nothing to draw before any join: no command.
+    assert!(!draw.draw_marks(&marks::JoinMarks::default()));
+    assert!(draw.backend().commands.is_empty());
+    let outline = square(10.0);
+    assert!(draw.draw_marks(&outline));
+    let mesh = draw.state()[4].mesh;
+    assert!(draw.backend().shown(mesh));
+    assert_eq!(
+        draw.backend().commands,
+        [
+            Command::AddSurface(mesh, SurfaceKind::Lines, 64),
+            Command::Visible(draw.state()[4].mesh + 1, true),
+        ]
+    );
+    let surface = &draw.backend().meshes[&mesh][0];
+    assert_eq!(surface.material, materials().line, "drawn over the preview, no depth test");
+    let style = |surface: &recorder::RecordedSurface| {
+        f32::from_le_bytes(surface.attributes[16..20].try_into().unwrap())
+    };
+    assert_eq!(style(surface), LineStyle::HueOutlineValid as u8 as f32);
+    // Unchanged: nothing written.
+    draw.backend_mut().commands.clear();
+    assert!(!draw.draw_marks(&outline.clone()));
+    assert!(draw.backend().commands.is_empty());
+    // Moved, the same layout: written in place only.
+    assert!(draw.draw_marks(&square(12.0)));
+    assert!(
+        (draw.backend().commands.iter()).all(|command| matches!(command, Command::Update(..))),
+        "{:?}",
+        draw.backend().commands
+    );
+    // A refusal's stretch: the refused look.
+    let mut stretch = square(12.0);
+    stretch.refused = true;
+    assert!(draw.draw_marks(&stretch));
+    assert_eq!(
+        style(&draw.backend().meshes[&mesh][0]),
+        LineStyle::HueOutlineRefused as u8 as f32
+    );
+    // The join goes: hidden once, then nothing.
+    draw.backend_mut().commands.clear();
+    draw.clear_marks();
+    assert!(!draw.backend().shown(mesh));
+    let hidden = draw.backend().commands.len();
+    assert!(hidden > 0);
+    assert!(!draw.draw_marks(&marks::JoinMarks::default()));
+    assert_eq!(draw.backend().commands.len(), hidden);
 }

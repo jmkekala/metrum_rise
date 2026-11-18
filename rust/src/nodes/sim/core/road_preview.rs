@@ -20,6 +20,7 @@ use super::road_terrain_inputs::RoadTerrainInputs;
 use super::road_tool_context::RoadPreviewContext;
 use super::state::SimCore;
 use crate::nodes::sim::road_tool::draw::chunks::PreviewOverlay;
+use crate::nodes::sim::road_tool::draw::marks::JoinMarks;
 use crate::nodes::sim::road_tool::hue::{HueState, OffFrameHue};
 use crate::nodes::sim::road_tool::validate_road_candidate_against_water;
 use crate::simulation::network::graph::{Edge, RegionGraph, RoadMedian, RoadParking};
@@ -32,6 +33,7 @@ use crate::simulation::network::road_edit::{
 };
 use crate::simulation::network::roadbed::{
     PieceMesh, RoadbedDelta, RoadbedRestore, RoadbedSystem, SurfaceChunkKey,
+    preview_candidate_roadbed_half_width_m,
 };
 use crate::simulation::terrain::TerrainSystem;
 use crate::simulation::terrain::graded::{GradedSurface, QueryScratch, TerrainQueryIndex};
@@ -419,6 +421,9 @@ pub(crate) struct RoadPreview {
     pub(crate) fingerprint: RoadPreviewFingerprint,
     /// `None` when the stroke is invalid or its plan incomplete.
     pub(crate) pieces: Option<RoadPreviewPieces>,
+    /// What the preview draws of a join (`ROAD-118` round JS5b): a valid stroke's junction
+    /// outline, or a `roads_overlap` refusal's overlapped stretch; empty otherwise.
+    pub(crate) marks: JoinMarks,
     pub(crate) times: RoadPreviewTimes,
 }
 
@@ -501,11 +506,12 @@ impl RoadPreviewContext {
             ..Default::default()
         };
         let mut launched = false;
+        let mut marks = JoinMarks::default();
         let pieces = validation
             .is_valid
             .then(|| {
                 let hue = hue.as_mut().map(|(hue, half_width_m)| (&mut **hue, *half_width_m));
-                self.compile_plan_pieces(&plan, &mut times, hue, &mut launched)
+                self.compile_plan_pieces(&plan, &mut times, hue, &mut launched, &mut marks)
             })
             .flatten();
         let plotted = pieces.as_ref().and_then(|pieces| pieces.take.plotted);
@@ -525,11 +531,16 @@ impl RoadPreviewContext {
             }
             hue.set_verdict(HueState::of_preview(validation.is_valid, false));
         }
+        if !validation.is_valid {
+            marks.clear();
+            self.overlap_marks(&plan, &validation, &mut marks);
+        }
         RoadPreview {
             plan,
             validation,
             fingerprint,
             pieces,
+            marks,
             times,
         }
     }
@@ -571,6 +582,35 @@ impl RoadPreviewContext {
         Some(result)
     }
 
+    // A `roads_overlap` refusal's overlapped stretch (`ROAD-118` round JS5b) into `marks`: the
+    // refused end's road on the replica (the graph the plan read), against the drawn stroke at
+    // its roadbed half width. Nothing for any other verdict. `O(road points x window points)`.
+    fn overlap_marks(
+        &self,
+        plan: &RoadEditPlan,
+        validation: &RoadPreviewValidation,
+        marks: &mut JoinMarks,
+    ) {
+        let Some(end) = validation.overlap_end else {
+            return;
+        };
+        let Some((road, _)) = validation.endpoint_edges[end] else {
+            return;
+        };
+        let prepared = plan.prepared();
+        let request = plan.request();
+        let half_width_m = preview_candidate_roadbed_half_width_m(
+            &prepared.points,
+            prepared.class,
+            request.fwd_lanes.clamp(0, i32::from(u8::MAX)) as u8,
+            request.bkw_lanes.clamp(0, i32::from(u8::MAX)) as u8,
+            prepared.median,
+            prepared.parking,
+            prepared.attributes,
+        );
+        marks.overlap(&self.replica, road, &prepared.points, end, half_width_m);
+    }
+
     // Applies the plan's topology to the replica and compiles what it dirtied into an `O(1)`
     // copy of the view's roadbed with the delta installed. The caller restores the replica from
     // the returned checkpoint, the one the commit's undo record captures.
@@ -587,6 +627,7 @@ impl RoadPreviewContext {
         let delta = roadbed.compile_delta_with(&self.replica, &mut self.roadbed_scratch);
         let (changed_chunks, restore) = roadbed.install(&delta);
         Some(CompiledPose {
+            stroke_ends: applied.stroke_ends,
             checkpoint,
             delta,
             roadbed,
@@ -606,6 +647,7 @@ impl RoadPreviewContext {
         times: &mut RoadPreviewTimes,
         hue: Option<(&mut OffFrameHue, f32)>,
         launched: &mut bool,
+        marks: &mut JoinMarks,
     ) -> Option<RoadPreviewPieces> {
         let roadbed_start = Instant::now();
         let CompiledPose {
@@ -614,6 +656,7 @@ impl RoadPreviewContext {
             mut roadbed,
             changed_chunks,
             restore,
+            stroke_ends,
         } = self.compile_on_replica(plan)?;
         if let Some((hue, half_width_m)) = hue {
             hue.launch(plan, Some(&delta), &self.view, half_width_m);
@@ -633,7 +676,11 @@ impl RoadPreviewContext {
             stages.run(&mut self.graded, &mut roadbed);
         times.roadbed_ms = compile_ms + stage_times.roadbed_ms;
         times.graded_ms = stage_times.graded_ms;
-        times.payload_ms = stage_times.payload_ms;
+        // The junction outline (`ROAD-118` round JS5b) on the edited replica and the installed
+        // pieces: `O(outline vertices)`.
+        let marks_start = Instant::now();
+        marks.outline(&self.replica, &roadbed, stroke_ends);
+        times.payload_ms = stage_times.payload_ms + marks_start.elapsed().as_secs_f64() * 1000.0;
         let restore_start = Instant::now();
         self.replica.restore_undo_delta_local(&checkpoint);
         times.roadbed_ms += restore_start.elapsed().as_secs_f64() * 1000.0;
@@ -765,4 +812,6 @@ struct CompiledPose {
     roadbed: RoadbedSystem,
     changed_chunks: Vec<SurfaceChunkKey>,
     restore: RoadbedRestore,
+    // The stroke's end nodes in the replica's ids (the junction outline, `ROAD-118` round JS5b).
+    stroke_ends: [u32; 2],
 }

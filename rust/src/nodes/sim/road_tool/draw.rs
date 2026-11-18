@@ -14,6 +14,10 @@
 //! place. The bytes are built here in kept buffers: a draw allocates nothing once they have grown
 //! (a rebuild hands the engine fresh arrays).
 //!
+//! The preview's join marks (`ROAD-118` round JS5b: the junction outline, a refusal's overlapped
+//! stretch, [`marks::JoinMarks`]) have an overlay of their own, drawn with each preview the display
+//! shows and only when they changed.
+//!
 //! Behind [`backend::DrawBackend`]: [`engine::GodotBackend`] for the game, a recorder in tests.
 //! The preview's road chunks (round R2-4a) are drawn by [`chunks::ChunkOverlays`], a pool of
 //! its own over the same backend, attached with the chunk renderer's layer materials.
@@ -25,6 +29,7 @@ pub(crate) mod backend;
 pub(crate) mod chunks;
 pub(crate) mod engine;
 pub(crate) mod lines;
+pub(crate) mod marks;
 #[cfg(test)]
 pub(crate) mod recorder;
 #[cfg(test)]
@@ -34,6 +39,7 @@ use crate::nodes::sim::road_tool::frame::Gizmos;
 use crate::nodes::sim::road_tool::hue::{FootprintHue, HueState};
 use backend::{DrawBackend, Handle, Region, Surface, SurfaceKind};
 use godot::builtin::Vector3;
+use marks::JoinMarks;
 use lines::{
     LineQuadBuffers, LineStyle, VERTEX_BYTES, handle_kind_code, line_style, write_floats,
     write_vectors,
@@ -288,6 +294,10 @@ pub(crate) struct ToolDraw<B: DrawBackend> {
     ghost_fills: [Vec<Vector3>; 2],
     ghost_fill_bytes: [Vec<u8>; 2],
     ghost_edges: LineBytes,
+    // The preview's join marks (round JS5b): their overlay, bytes and the marks drawn last.
+    marks: Overlay,
+    mark_lines: LineBytes,
+    drawn_marks: JoinMarks,
 }
 
 impl<B: DrawBackend> ToolDraw<B> {
@@ -296,6 +306,7 @@ impl<B: DrawBackend> ToolDraw<B> {
         let gizmos = Overlay::create(&mut backend);
         let hues = [Overlay::create(&mut backend), Overlay::create(&mut backend)];
         let ghost = Overlay::create(&mut backend);
+        let marks = Overlay::create(&mut backend);
         Self {
             backend,
             materials,
@@ -311,6 +322,9 @@ impl<B: DrawBackend> ToolDraw<B> {
             ghost_fills: Default::default(),
             ghost_fill_bytes: Default::default(),
             ghost_edges: LineBytes::default(),
+            marks,
+            mark_lines: LineBytes::default(),
+            drawn_marks: JoinMarks::default(),
         }
     }
 
@@ -471,13 +485,55 @@ impl<B: DrawBackend> ToolDraw<B> {
         self.ghost.clear(&mut self.backend);
     }
 
-    /// The overlays' drawn state: the gizmos, the current hue, the held hue, the ghost.
-    pub(crate) fn state(&self) -> [OverlayState; 4] {
+    /// Draws the preview's join marks (round JS5b) when they differ from those drawn last: one
+    /// line surface (no depth test) in the hue outline's look, valid for the junction outline and
+    /// refused for an overlapped stretch; hidden when empty. Returns whether anything was
+    /// written. Unchanged marks (a still frame, an untouched pose after another) write nothing;
+    /// `O(mark points)` for the comparison and, on a change, the bytes and their upload in
+    /// place while the padded layout holds. Allocates nothing once the buffers have grown,
+    /// unless the layout changed.
+    pub(crate) fn draw_marks(&mut self, marks: &JoinMarks) -> bool {
+        if *marks == self.drawn_marks {
+            return false;
+        }
+        self.drawn_marks.clone_from(marks);
+        if marks.is_empty() {
+            self.marks.clear(&mut self.backend);
+            return true;
+        }
+        let style = if marks.refused {
+            LineStyle::HueOutlineRefused
+        } else {
+            LineStyle::HueOutlineValid
+        };
+        self.mark_lines.fill(&marks.points, &marks.starts, |_| style);
+        let lines = self.mark_lines.vertex_count();
+        let parts = [Part {
+            kind: SurfaceKind::Lines,
+            vertex_count: lines,
+            vertices: &self.mark_lines.vertices,
+            attributes: &self.mark_lines.attributes,
+            indices: self.indices.of(lines),
+            material: self.materials.line,
+        }];
+        self.marks.show(&mut self.backend, &parts);
+        true
+    }
+
+    /// Hides the join marks (the preview went, another world).
+    pub(crate) fn clear_marks(&mut self) {
+        self.draw_marks(&JoinMarks::default());
+    }
+
+    /// The overlays' drawn state: the gizmos, the current hue, the held hue, the ghost, the
+    /// join marks.
+    pub(crate) fn state(&self) -> [OverlayState; 5] {
         [
             self.gizmos.state(),
             self.hues[self.hue].state(),
             self.hues[1 - self.hue].state(),
             self.ghost.state(),
+            self.marks.state(),
         ]
     }
 
@@ -495,7 +551,7 @@ impl<B: DrawBackend> ToolDraw<B> {
 impl<B: DrawBackend> Drop for ToolDraw<B> {
     // Frees every instance and mesh the drawing made (the materials are the setup's).
     fn drop(&mut self) {
-        for overlay in [&self.gizmos, &self.hues[0], &self.hues[1], &self.ghost] {
+        for overlay in [&self.gizmos, &self.hues[0], &self.hues[1], &self.ghost, &self.marks] {
             overlay.free(&mut self.backend);
         }
     }

@@ -16651,6 +16651,105 @@ exclusive timing locks, the machine shared with other sessions):
   0.09-0.11 ms throughout, branch 0.09-0.10 ms from 6,024 agents on and 0.33-0.93 ms at 24 agents
   in three locked rows, not reproduced in two later runs (0.08 and 0.12 ms, base 0.09).
 
+#### The preview of a join (round JS5b)
+
+Branch `roadtools-js5b` off `dev` `86c59d9a` (R2-4b and JS5a landed). The user's rule stands:
+**roads never snap or move; the junction forms and changes its form.** Round JS5a kept every drawn
+point and the chips on the drawn stroke; the preview still showed only the built pieces, so a join
+read as road appearing beside the cursor. The preview now shows the junction that will form.
+
+- **The junction outline** (`nodes/sim/road_tool/draw/marks.rs`, `JoinMarks::outline`). For a
+  valid stroke, each stroke end node where two roads or more meet after the plan (the plan's
+  `stroke_ends`, mapped to the edited replica by `AppliedRoadTopology::stroke_ends`) has its node
+  piece outlined from the preview's roadbed: the piece's outer chains in their order, each joined
+  to the next across its mouth (`roadbed::node` emits one chain per sector, from one arm's mouth
+  corner to the next arm's), closed. The preview's pieces are the commit's, so the outline is the
+  committed piece's. A side T, a crossroads, a bend at a road end, a JS3 end join into a junction
+  all draw it; an end on open ground, a road end's cap or a straight joint with no piece draws
+  none. Built in the preview's payload stage on the edited replica: `O(outline vertices)`.
+- **The overlapped stretch** of a `roads_overlap` refusal (`JoinMarks::overlap`). The refusal now
+  records which end it names (`RoadPreviewValidation::overlap_end`; the road and station were
+  already in `endpoint_edges`). The stretch is that road's centreline where it lies within the
+  two roadbed half widths of the refused end's last stretch (the contact's own window: the reach
+  over the sine of the 25-degree arm limit, whole segments), so where the two footprints overlap,
+  measured across. Per pair of segments the set is one interval (the distance to a segment is
+  convex along a line), bounded by the capsule's end circles and sides in closed form; the
+  intervals merge into runs, each drawn as the road's footprint over it (offsets mitred). `O(road
+  points x window points)`, refused poses only.
+- **The rubber band** (the draft line) is the session's drawn draft, which no join reads: it ends
+  on the drawn end, never on the node the lead-in builds to.
+- **Drawing.** The marks travel in the preview's outcome (`PreviewOutcome::marks`, buffers reused
+  pose to pose) and have one overlay in the tool's drawing (`ToolDraw::draw_marks`, one line
+  surface, no depth test, the hue outline's looks: valid blue for the outline, refusal red for
+  the stretch; no palette or GDScript change). `road_tool_show_chunks` draws the shown preview's
+  marks with its chunks; `road_tool_clear_chunks` and `road_tool_drop_chunks` hide them. Change
+  gated: marks equal to those drawn last write nothing (`O(mark points)` to compare); a change
+  writes in place while the padded layout holds, else rebuilds the surface. A still frame shows
+  no new preview and touches nothing; a pose that joins nothing after another such pose writes
+  nothing. The tick ring's `overlay_ms` includes the marks; their part is also its own column,
+  `marks_ms`. `road_tool_drawn()` reports the `marks` overlay.
+- **Tests:** `road_junction_spacing::outlines` (the outline equals the committed piece's outer
+  chains for a side T, a crossroads in a T's open side and a bend at a road end; a stroke on open
+  ground and one a footprint short of a road end carry none; a 15-degree overlap carries the
+  street's footprint over the computed stretch; the draft line ends on the drawn end, 4 m from
+  the T's node the plan builds to); `draw::tests::join_marks_draw_only_when_they_change`
+  (recorder: one line surface in the valid look, nothing written for unchanged marks or for none
+  after none, in place on a move, the refused look, hidden once when the join goes).
+  `road_tool_capture.gd` set `joins`: stills of the three joins and the overlap, and a join drag's
+  parts.
+
+**Fresh, 2026-11-18** (base `dev` `86c59d9a`, release library `4c41f8ad2084e0b6`, release lib
+test binary `02e179b790c0afea`, session bench binary `6ca999778a6ae845`, built in the base
+worktree's own cargo target directory; branch code `2b86d470`, release library `36552bcc50f8ba34`,
+test binary `94fdad0dd6ce266d`, bench binary `76bd32b39b10874e`, built in the branch worktree's own
+directory; every hash differs from the base's; the final tip differs from the measured code only
+in `every_object_made_is_freed`'s count, 8 to 10 objects; pinned to the performance cores, eight
+workers, run and exclusive timing locks for timed rows, the machine shared with other sessions):
+
+- **Gates** (final tip). Clippy warning set equal to the base's (16 = 16, diff 0); debug `cargo
+  test --lib` 2,903 passed, 0 failed, 237 ignored; missing docs 0; `./run.sh --test` passes (no
+  script error, no skipped Godot script).
+- **Products.** Kuopio's 78 drag-probe commits and the 17 gameplay fixtures EQUAL in every field
+  (base library and scripts against the branch's); the Kuopio drag probe passes on both.
+- **Captures** (gamescope headless 1920x1080). The 43 junction preview captures pixel-identical.
+  Tool stills: `restyle` 7/7, `scurve_freeform` 3/3 and `road_height_capture.gd`'s default 11/11
+  identical; the joins show their outline where they differ: `continuous_from_dead_end` (a bend
+  at the dead end), `ui1_square_lock` and `ui1_corner_arc_oblique` (a T where the branch starts),
+  `hue_junction_*`, `hue_short_junction_*` (junctions) and `hue_refused_*` (a `roads_overlap`
+  refusal: its stretch). Every still where no join happens matches: `batch_ghost` differed in the
+  first branch pass in the clouds alone (max delta 5) and a second branch pass equals both base
+  passes; `ui1_zoning_guide` (3,325 px along tree-shadow edges, max delta 20) is the worktree's
+  own Godot import, not the library: the base library run with the branch worktree's Godot
+  directory reproduces it exactly. The height `hue` set's broad low-view differences are its known
+  noise (13 of 23 differ between two base passes).
+- **The marks' part of the overlay** (the tick ring's `marks_ms`, ticks whose gizmos changed,
+  120-frame drags, p50 / p95 / max ms): curve end 0.0002 / 0.0003 / 0.0004, S-curve end 0.0003 /
+  0.0004 / 0.0004, freeform handle 0.0002 / 0.0003 / 0.0008 (no join: the comparison of empty
+  marks); a drag circling 12 m about a point 6 m off a street (joins, refusals and crossings
+  every frame, the outline or stretch rewritten each pose) 0.0047 / 0.0171 / 0.0320. A still
+  frame shows no preview and touches no mark. `overlay_ms` itself stays the dev-wide miss of
+  decision R2-4a (`R2-9`'s); the marks add at most 0.02 ms p95 to it on a joining drag.
+- **Allocations.** Whole-tick probe (round R2-2's, heaptrack `--record-only`): outside
+  `RoadToolContext::preview_road` and its payload 0.00 a tick in every mode (still, hover, pose);
+  the pose's overlay show 273.08 a tick as on `dev` since R2-4a (R2-4b: 273). Session allocation
+  probe (n = 0 / 20 / 200 moves): base 2,416,720 / - / 2,416,723, branch 2,416,775 / 2,416,538 /
+  2,416,717: zero per pointer move.
+- **Session bench** 30k locality C B B C: straight p50 105.2 / 103.4 / 103.7 / 103.4 us, curve
+  p50 115.5 / 113.7 / 114.1 / 114.0 us, frame digests `32cb9b4b11dccf75` and `ca3e8f6d742b48b2`
+  on every row: level.
+- **Per pose** (`benchmark_road_preview_stages`, C B B C, payload p50 sloped T / sloped branch /
+  divided T): base 0.512 / 0.491 / 0.583 and 0.637 / 0.680 / 0.817 ms, branch 0.502 / 0.607 /
+  1.172 and 0.654 / 0.776 / 0.859 ms: the first pair level (0.512 / 0.502 on the T), the rest
+  within the shared machine's spread (one binary 1.3-1.6x between rows). Joining locality
+  (`populated_joining_road_plan_scaling`, 24 to 600,024 agents): identical local products at
+  every size, compile p50 base 0.59 / 2.18 / 0.72 / 0.80 ms, branch 0.52 / 0.79 / 0.75 / 0.73 ms:
+  no trend with the city.
+- **Level F timing** with K22 (`./run.sh --timing --level F --k22 --branch-cache ...`; path rule
+  F): `PERF-07` 30k 32x C B B C mean 4.248 / 4.284 ms (+0.8 %), p99 +1.8 %, p99.9 -2.5 %, max
+  unpreempted +2.3 %, every component level, the known exception `PERF-17` on every row both
+  sides; 30k 1x mean 2.066 / 2.072 ms, every component level, acceptance PASS on both. K22 30k
+  click-to-ack 6.83 / 6.85 ms.
+
 ### Moving and reshaping built roads (`ROAD-113`)
 
 One geometry edit gives a set of edges a new horizontal shape and a set of nodes a new position

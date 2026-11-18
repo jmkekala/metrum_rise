@@ -76,12 +76,16 @@ impl SimulationNode {
     /// road mesh generation not installed yet, or while an install is held, waits for the
     /// install. True when shown or waiting; false, with the display cleared, when `sequence`
     /// is not the last valid preview handed out with chunks, its runs do not fit the resident
-    /// chunks, or no display is attached. Its time goes into the tick's sample
-    /// (`road_tool_timings`' `overlay_ms`). `O(the overlay's bytes + chunks * log resident +
-    /// runs * log runs + hidden vertices)`.
+    /// chunks, or no display is attached. The preview's join marks (`ROAD-118` round JS5b: its
+    /// junction outline, or a refusal's overlapped stretch) are drawn with it, only when they
+    /// changed. Its time goes into the tick's sample (`road_tool_timings`' `overlay_ms`, the
+    /// marks' part also as `marks_ms`). `O(the overlay's bytes + chunks * log resident + runs *
+    /// log runs + hidden vertices + mark points)`.
     #[func]
     pub fn road_tool_show_chunks(&mut self, sequence: i64) -> bool {
         let start = Instant::now();
+        self.road_tool_draw_marks(sequence);
+        let marks = Self::road_tool_tick_elapsed(start);
         self.road_tool_note_holding();
         let chunks = &mut self.road_tool_session.chunks;
         let Some(display) = &mut chunks.display else {
@@ -97,16 +101,20 @@ impl SimulationNode {
             display.clear();
         }
         let elapsed = Self::road_tool_tick_elapsed(start);
-        self.road_tool_tick_add_overlay(elapsed);
+        self.road_tool_tick_add_overlay(elapsed, marks);
         shown
     }
 
-    /// Restores the current preview's collapsed runs and hides its overlays (the preview
-    /// went); a held commit's display stays.
+    /// Restores the current preview's collapsed runs and hides its overlays and join marks
+    /// (the preview went); a held commit's display stays.
     #[func]
     pub fn road_tool_clear_chunks(&mut self) {
-        if let Some(display) = &mut self.road_tool_session.chunks.display {
+        let bridge = &mut self.road_tool_session;
+        if let Some(display) = &mut bridge.chunks.display {
             display.clear();
+        }
+        if let Some(draw) = &mut bridge.draw {
+            draw.clear_marks();
         }
     }
 
@@ -129,6 +137,9 @@ impl SimulationNode {
     /// display and hue released and the holds' preview hold dropped.
     #[func]
     pub fn road_tool_drop_chunks(&mut self) {
+        if let Some(draw) = &mut self.road_tool_session.draw {
+            draw.clear_marks();
+        }
         let chunks = &mut self.road_tool_session.chunks;
         if let Some(display) = &mut chunks.display {
             display.clear();
@@ -288,6 +299,21 @@ impl SimulationNode {
 }
 
 impl SimulationNode {
+    // The join marks of preview `sequence` (`ROAD-118` round JS5b): the standing preview's when
+    // it is the last one handed out, else none; drawn only when they changed. `O(mark points)`.
+    fn road_tool_draw_marks(&mut self, sequence: i64) {
+        let bridge = &mut self.road_tool_session;
+        let Some(draw) = &mut bridge.draw else {
+            return;
+        };
+        match &bridge.preview {
+            Some(standing) if sequence == bridge.tick.sequence => {
+                draw.draw_marks(&standing.outcome.marks);
+            }
+            _ => draw.clear_marks(),
+        }
+    }
+
     // The overlays of preview `sequence` as just handed out, the source `road_tool_show_chunks`
     // reads (none: the preview is not valid or has no chunks).
     pub(super) fn road_tool_set_overlay_source(

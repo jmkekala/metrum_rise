@@ -491,6 +491,9 @@ pub(crate) struct AppliedRoadTopology {
     merged_nodes: Vec<u32>,
     /// Routing chunks under the moved nodes and the replaced edges, before and after.
     pub(crate) cch_chunks: Vec<(i32, i32)>,
+    /// The canonical nodes at the stroke's first and last point, in live ids (the preview's
+    /// junction outline, `ROAD-118` round JS5b).
+    pub(crate) stroke_ends: [u32; 2],
 }
 
 impl AppliedRoadTopology {
@@ -632,7 +635,9 @@ impl RoadTopologyPlan {
             .iter()
             .map(|id| node_ids[*id as usize])
             .collect();
+        let stroke_ends = self.stroke_ends.map(|end| node_ids[end as usize]);
         Some(AppliedRoadTopology {
+            stroke_ends,
             node_ids,
             edge_ids,
             dirty_edges,

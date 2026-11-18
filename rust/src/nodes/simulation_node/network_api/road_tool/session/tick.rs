@@ -169,6 +169,7 @@ struct TickSample {
     hue_draw_us: f32,
     ghost_us: f32,
     overlay_us: f32,
+    marks_us: f32,
     flags: i32,
 }
 
@@ -358,7 +359,9 @@ impl SimulationNode {
     /// `hue_ms` (the hue's join after the tick), `hue_draw_ms` (its bytes and upload),
     /// `ghost_ms` (the batch ghost's split, bytes and upload), `overlay_ms` (the preview's road
     /// chunks shown after the tick, `road_tool_show_chunks`: the overlays staged and swapped and,
-    /// since round R2-4b, the resident runs checked, collapsed and restored) and `flags`.
+    /// since round R2-4b, the resident runs checked, collapsed and restored, and since round
+    /// JS5b the preview's join marks), `marks_ms` (the join marks' part of `overlay_ms`: their
+    /// comparison, bytes and upload) and `flags`.
     /// `clear` empties the ring after reading it.
     #[func]
     pub fn road_tool_timings(&mut self, clear: bool) -> VarDictionary {
@@ -378,6 +381,7 @@ impl SimulationNode {
             "hue_draw_ms": column(|sample| sample.hue_draw_us),
             "ghost_ms": column(|sample| sample.ghost_us),
             "overlay_ms": column(|sample| sample.overlay_us),
+            "marks_ms": column(|sample| sample.marks_us),
             "flags": ring.ordered().map(|sample| sample.flags).collect::<PackedInt32Array>(),
         };
         if clear {
@@ -548,10 +552,12 @@ impl SimulationNode {
         }
     }
 
-    // The overlay chunks' show, which follows the tick, adds its time to the tick's sample.
-    pub(super) fn road_tool_tick_add_overlay(&mut self, overlay_us: f32) {
+    // The overlay chunks' show, which follows the tick, adds its time to the tick's sample, and
+    // its join marks' part of it (`ROAD-118` round JS5b) to their own column.
+    pub(super) fn road_tool_tick_add_overlay(&mut self, overlay_us: f32, marks_us: f32) {
         if let Some(sample) = self.road_tool_session.tick.ring.last_mut() {
             sample.overlay_us += overlay_us;
+            sample.marks_us += marks_us;
         }
     }
 

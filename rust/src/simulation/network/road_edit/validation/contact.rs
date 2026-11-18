@@ -98,6 +98,7 @@ impl Overlap {
         validation.geometry_measured = self.angle_deg;
         validation.geometry_limit = MIN_CONTACT_ANGLE_DEG;
         validation.endpoint_edges[self.end] = Some((self.edge, self.station_m));
+        validation.overlap_end = Some(self.end);
         validation.with_invalid_reason(PREVIEW_ROADS_OVERLAP_REASON)
     }
 }

@@ -13,6 +13,7 @@ use std::sync::Arc;
 use godot::builtin::Vector3;
 
 use super::draw::chunks::PreviewOverlay;
+use super::draw::marks::JoinMarks;
 use super::labels::PreviewFacts;
 use super::wording::ReasonFacts;
 use crate::simulation::network::road_edit::RoadPreviewValidation;
@@ -75,6 +76,9 @@ pub(crate) struct PreviewOutcome {
     /// The changed chunks' overlays encoded for the server (round R2-4a), shared with the
     /// preview's pieces; `None` without them.
     pub(crate) overlay: Option<Arc<PreviewOverlay>>,
+    /// A single stroke's join marks (`ROAD-118` round JS5b): its junction outline, or a
+    /// `roads_overlap` refusal's overlapped stretch; the buffers are reused from pose to pose.
+    pub(crate) marks: JoinMarks,
 }
 
 impl PreviewOutcome {
@@ -84,15 +88,19 @@ impl PreviewOutcome {
         self.valid = false;
         self.pending = false;
         self.reason = Cow::Borrowed(COMMIT_REJECTED_REASON);
+        self.marks.clear();
     }
 
-    /// A blank outcome keeping this one's prepared-points buffer (the next pose's, so a pose
-    /// allocates none once it has grown).
+    /// A blank outcome keeping this one's prepared-points and marks buffers (the next pose's,
+    /// so a pose allocates none once they have grown).
     pub(crate) fn recycled(self) -> Self {
         let mut prepared = self.prepared;
         prepared.clear();
+        let mut marks = self.marks;
+        marks.clear();
         Self {
             prepared,
+            marks,
             ..Self::default()
         }
     }

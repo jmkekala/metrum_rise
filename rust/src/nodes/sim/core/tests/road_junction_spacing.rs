@@ -290,6 +290,7 @@ fn a_t_10_m_from_a_road_end_builds_and_the_road_end_then_keeps_its_place() {
 
 mod contacts;
 mod lead_ins;
+mod outlines;
 mod stubs_and_joins;
 
 fn facts(validation: &RoadPreviewValidation) -> ReasonFacts {

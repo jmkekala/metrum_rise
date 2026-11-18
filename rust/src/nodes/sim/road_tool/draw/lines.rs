@@ -44,11 +44,13 @@ pub(crate) enum LineStyle {
     GhostRefusedEdge = 6,
     /// An end's ground marker: its vertical line and its ring on the ground (round H2).
     GroundMarker = 7,
-    /// A tunnel run's outline in the footprint hue (round HU), the draft accepted.
+    /// A tunnel run's outline in the footprint hue (round HU), the draft accepted; also the
+    /// preview's junction outline (`ROAD-118` round JS5b, drawn without the depth test).
     HueOutlineValid = 8,
     /// The same, the draft still checked.
     HueOutlineChecking = 9,
-    /// The same, the draft refused.
+    /// The same, the draft refused; also a `roads_overlap` refusal's overlapped stretch (round
+    /// JS5b, without the depth test).
     HueOutlineRefused = 10,
     /// The alignment guide that took the cursor and the angle lock's ray (round UI1: thicker and
     /// more opaque than the shared guide look).

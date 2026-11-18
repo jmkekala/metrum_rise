@@ -514,6 +514,7 @@ impl SimulationNode {
         outcome.prepared.clear();
         outcome.prepared.extend_from_slice(&prepared.points);
         outcome.demolish_count = demolish_count;
+        outcome.marks.clone_from(&preview.marks);
         dict.set(
             "surface_generation",
             generation(fingerprint.surface_generation),
@@ -981,6 +982,7 @@ impl SimulationNode {
         RoadPreviewValidation {
             junction_place,
             endpoint_edges,
+            overlap_end: None,
             joined_nodes: [None; 2],
             contacts: [None; 2],
             lead_ins: [None; 2],

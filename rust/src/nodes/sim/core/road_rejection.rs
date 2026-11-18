@@ -466,6 +466,7 @@ mod tests {
 
     fn validation() -> RoadPreviewValidation {
         RoadPreviewValidation {
+            overlap_end: None,
             joined_nodes: [None; 2],
             contacts: [None; 2],
             lead_ins: [None; 2],

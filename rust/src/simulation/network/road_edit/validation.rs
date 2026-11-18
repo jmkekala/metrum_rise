@@ -173,6 +173,10 @@ pub(crate) struct RoadPreviewValidation {
     /// end: the live edge id and the end's station along it from its start node, horizontal
     /// metres. `None` at a node, on open terrain and on accepted strokes.
     pub(crate) endpoint_edges: [Option<(usize, f32)>; 2],
+    /// The end a `roads_overlap` refusal names (0 the start, 1 the end; `ROAD-118` round JS5b:
+    /// the preview outlines its overlapped stretch); its road and station are in
+    /// [`Self::endpoint_edges`]. `None` for any other verdict.
+    pub(crate) overlap_end: Option<usize>,
     /// The live nodes an accepted plan joined the stroke's ends to, start then end (`ROAD-118`
     /// rounds JS3, JS4a): the stroke it builds runs to them through its lead-ins. `None` for an
     /// end on no existing node.
@@ -236,6 +240,7 @@ impl RoadPreviewValidation {
             geometry_limit: 0.0,
             junction_place: None,
             endpoint_edges: [None; 2],
+            overlap_end: None,
             joined_nodes: [None; 2],
             contacts: [None; 2],
             lead_ins: [None; 2],

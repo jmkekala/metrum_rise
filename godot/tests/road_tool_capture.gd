@@ -27,6 +27,11 @@
 ## from a road held square (round UI2: the right-angle square), an oblique branch's corner arc,
 ## and the alignment guide of a dead end shown faint near the cursor before it captures, then
 ## captured.
+## `METRUM_ROAD_TOOL_CAPTURE_SET=joins` writes round JS5b's (`ROAD-118`): with the Roads snap off,
+## a stroke ending 4 m short of a road's side (a T forms), one ending in a T's open side (a
+## crossroads), one whose cap lies over a road end in line 2 m to its side (a bend), each with the
+## outline of the junction that forms, and one meeting a road at 15 degrees 1 m off its centreline
+## (refused: the overlapped stretch outlined in the refusal's look).
 extends SceneTree
 
 const RoadToolScript := preload("res://scripts/tools/road_tool.gd")
@@ -83,8 +88,10 @@ func _run() -> void:
 	_tool.active = true
 	_tool.begin_preview_measurement()
 	var capture_set := OS.get_environment("METRUM_ROAD_TOOL_CAPTURE_SET")
-	if capture_set in ["snapping", "scurve_freeform", "restyle", "batch_ghost", "scurve_steps", "continuous_chains", "ui1"]:
-		if capture_set == "snapping":
+	if capture_set in ["snapping", "scurve_freeform", "restyle", "batch_ghost", "scurve_steps", "continuous_chains", "ui1", "joins"]:
+		if capture_set == "joins":
+			await _capture_joins()
+		elif capture_set == "snapping":
 			await _capture_snapping()
 		elif capture_set == "ui1":
 			await _capture_ui1()
@@ -323,6 +330,57 @@ func _capture_ui1() -> void:
 	_tool.cancel_road()
 	_tool.set_process(true)
 
+# Round JS5b (`ROAD-118`): the preview outlines the junction a join forms, and a `roads_overlap`
+# refusal's overlapped stretch. A street along x through the origin with a side street north
+# from (60, 0), and a road ending at (300, 100) from the west; the Roads snap off, so each end
+# stays where it is drawn and the join forms the junction.
+func _capture_joins() -> void:
+	_tool.draw_mode = RoadToolScript.DrawMode.STRAIGHT
+	_tool.set_option("network_snap", false)
+	for road in [[Vector3(-100.0, 0.0, 0.0), Vector3(160.0, 0.0, 0.0)], [Vector3(60.0, 0.0, 0.0), Vector3(60.0, 0.0, -100.0)], [Vector3(200.0, 0.0, 100.0), Vector3(300.0, 0.0, 100.0)]]:
+		_tool._begin_stroke(road[0])
+		_tool.set_scripted_pointer(true, road[1])
+		await _frames(3)
+		_expect(_tool._commit_segment(road[1]), "the base road %s commits" % [road])
+		await _ack()
+		_tool.cancel_road()
+	var heading := func(degrees: float) -> Vector3: return Vector3(cos(deg_to_rad(degrees)), 0.0, sin(deg_to_rad(degrees)))
+	# (label, the drawn end, the direction it is drawn in, whether the preview is refused)
+	var cases := [
+		["join_side_t", Vector3(10.0, 0.0, 4.0), heading.call(-60.0), false],
+		["join_t_open_side", Vector3(62.0, 0.0, 8.0), Vector3(0.0, 0.0, -1.0), false],
+		["join_road_end", Vector3(306.0, 0.0, 102.0), Vector3(-1.0, 0.0, 0.0), false],
+		["join_overlap", Vector3(-30.0, 0.0, 1.0), heading.call(-15.0), true],
+	]
+	for case in cases:
+		var end: Vector3 = case[1]
+		var start: Vector3 = end - (case[2] as Vector3) * 60.0
+		_camera.position = end + Vector3(0.0, 70.0, 45.0)
+		_camera.look_at(end)
+		_tool._begin_stroke(start)
+		_tool.set_scripted_pointer(true, end)
+		await _frames(3)
+		var preview: Dictionary = _simulation.road_tool_preview()
+		var drawn: Dictionary = _simulation.road_tool_drawn()
+		var refused := not bool(preview.get("is_valid", false))
+		_expect(refused == case[3], "%s: refused %s (%s)" % [case[0], refused, preview.get("invalid_reason", "")])
+		_expect(bool(drawn.get("marks_visible", false)), "%s: the join's marks are drawn" % case[0])
+		await _capture(case[0])
+		_tool.cancel_road()
+		await _frames(2)
+		_expect(not bool(_simulation.road_tool_drawn().get("marks_visible", true)), "%s: the marks go with the preview" % case[0])
+	# A drag whose end circles 12 m about a point 6 m north of the street (joining, refused and
+	# crossing poses): the marks' part of each frame's overlay.
+	_tool._begin_stroke(Vector3(-20.0, 0.0, 58.0))
+	await _drag_record(Vector3(10.0, 0.0, 6.0), func(at: Vector3): _tool.set_scripted_pointer(true, at))
+	var report := {"join_drag": _last_parts}
+	var file := FileAccess.open(_output.path_join("gizmo_upload_joins.json"), FileAccess.WRITE)
+	file.store_string(JSON.stringify(report, "\t"))
+	file.close()
+	print("ROAD_TOOL_CAPTURE %s" % JSON.stringify(report))
+	_tool.cancel_road()
+	_tool.set_option("network_snap", true)
+
 # Round SC: an S-curve step by step, its road previewed from the first click, then built.
 func _capture_scurve_steps() -> void:
 	_tool.draw_mode = RoadToolScript.DrawMode.COMPLEX_CURVE
@@ -513,7 +571,8 @@ func _capture_batch_ghost() -> void:
 # The recorded ticks' parts from the tool's tick ring (round R2-2): the gizmos' comparison, bytes
 # and upload (round R2-3: Rust draws them), the hue's bytes and upload, the ghost's, the overlay
 # (those three summed a tick), the chips (their words, placement and the HUD's fetch) and the
-# whole tick, p50, p95 and max each, over the ticks whose gizmos changed.
+# whole tick, p50, p95 and max each, over the ticks whose gizmos changed; also the join marks'
+# part (round JS5b) and the road chunks' show with it (the ring's `overlay_ms`, as `chunks_ms`).
 func _parts() -> Dictionary:
 	var parts := {}
 	var ring: Dictionary = _simulation.road_tool_timings(false)
@@ -522,8 +581,10 @@ func _parts() -> Dictionary:
 		if ring["flags"][index] & 16:
 			overlay.append(ring["gizmos_ms"][index] + ring["hue_draw_ms"][index] + ring["ghost_ms"][index])
 	var columns := {"overlay_ms": overlay}
-	for key in ["gizmos_ms", "hue_draw_ms", "ghost_ms", "chips_ms", "total_ms"]:
+	for key in ["gizmos_ms", "hue_draw_ms", "ghost_ms", "chips_ms", "total_ms", "marks_ms"]:
 		columns[key] = _ring_part(key, 16, ring)
+	# The preview's road chunks shown after the tick, the join marks' part included (round JS5b).
+	columns["chunks_ms"] = _ring_part("overlay_ms", 16, ring)
 	for key in columns:
 		var times: Array = columns[key]
 		times.sort()
