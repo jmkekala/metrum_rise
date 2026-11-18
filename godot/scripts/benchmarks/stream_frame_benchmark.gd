@@ -11,7 +11,7 @@
 ## 23:00 a still, a 1 s turn and, from the settled base pose as by day, a pan (`RENDER-32-I`: the
 ## night pan started where the night turns left the terrain catching up). `post_load` records
 ## the frames from the load call's return until settled, with the hand-over's time (`ready_ms`).
-## METRUM_STREAM_PHASES picks phases (still, turns, pan, zoom, jump, night, post_load),
+## METRUM_STREAM_PHASES picks phases (still, turns, pan, zoom, jump, night, water, water_turns, post_load),
 ## METRUM_STREAM_TURNS the turn durations in seconds, METRUM_STREAM_STILL_S the still's length in
 ## seconds of wall time instead of its frames (a still with the simulation running, `PL1`). Each row
 ## also records the wall clock at its frame's end (`t_unix`), to join a profile's samples to frames.
@@ -62,6 +62,13 @@
 ## has water: the pond copy of the 30k save (a 600 x 400 m pond, 3 m deep, north of its last
 ## street) is the input of this phase.
 ##
+## The `water_turns` phase (`RENDER-27`, round WR1) turns with the water reflection drawing: from
+## the settled base pose when the reflection has a plane there (the Kuopio city, the user's turn
+## pose), else from the `water` phase's shore pose (the pond copy of the 30k city), a still
+## (`water_turns_still`) and the 180-degree turns of every duration (`water_turn_out`, `_back`,
+## `_repeat`), each duration from the settled pose. The pose it took is `water_turns_pose`, with
+## `water_turns_from` "base" or "shore"; a world with neither skips it.
+##
 ## METRUM_STREAM_SHADOWS (`RENDER-15`, benchmark-only, unset by default) is a comma-separated
 ## sequence of the sun-shadow variants of `shadow_variants.gd`, applied once the load has settled
 ## (after `SceneLighting` set the sun) and before the base pose settles. One entry runs the phases
@@ -105,7 +112,7 @@ const JUMP_MAX_FRAMES := 3000
 const POST_LOAD_MAX_FRAMES := 6000
 # CameraNode::pan scales its speed by the orbit distance over INITIAL_DISTANCE_M (400 m).
 const PAN_REFERENCE_DISTANCE_M := 400.0
-const DEFAULT_PHASES: Array[String] = ["still", "turns", "pan", "zoom", "jump", "night", "water"]
+const DEFAULT_PHASES: Array[String] = ["still", "turns", "pan", "zoom", "jump", "night", "water", "water_turns"]
 const WATER_STEP_M := 250.0
 const WATER_SCAN_M := 250.0
 const WATER_SCAN_REACH_M := 8500.0
@@ -217,7 +224,7 @@ func run(bench: Node) -> void:
 		"perf_records": _scripts, "load": {}, "samples": [], "graded_digests": [], "lamp_digests": [],
 		"building_digests": [], "patch_digests": [], "road_digests": [], "parked_digests": [],
 		"vegetation_digests": [],
-		"water_pose": [], "shadows": shadows, "drawn_probe": {},
+		"water_pose": [], "water_turns_pose": [], "water_turns_from": "", "shadows": shadows, "drawn_probe": {},
 		"timing_contract": "frame_ms is the wall time from one process_frame to the next; scripts are the perf channel's records of that same frame (instrumented runs give shares, not times)",
 	}
 	bench._metrics = _report
@@ -400,6 +407,8 @@ func run(bench: Node) -> void:
 				bench._fail("the water pose did not settle")
 				return
 			_report.samples.append(await _capture_frames(bench, "water_still", WATER_FRAMES))
+	if phases.has("water_turns") and not await _water_turns(bench, turns, base, world):
+		return
 	if _probe != null:
 		RenderingServer.frame_post_draw.disconnect(_on_probe_post_draw)
 		_report.drawn_probe = _probe.report()
@@ -481,13 +490,15 @@ func _census(bench: Node, base: PackedFloat32Array) -> bool:
 	return await _start_from(bench, base)
 
 # The still and turns phases, if selected; false (the run failed) when a turn's start did not settle.
-func _still_and_turns(bench: Node, phases: Array, turns: Array, base: PackedFloat32Array) -> bool:
+# `still_label` and `turn_prefix` name the samples (the `water_turns` phase's own).
+func _still_and_turns(bench: Node, phases: Array, turns: Array, base: PackedFloat32Array,
+		still_label := "still", turn_prefix := "") -> bool:
 	if phases.has("still"):
 		var still_s := float(OS.get_environment("METRUM_STREAM_STILL_S"))
 		if still_s > 0.0:
-			_report.samples.append(await _capture_for(bench, "still", still_s))
+			_report.samples.append(await _capture_for(bench, still_label, still_s))
 		else:
-			_report.samples.append(await _capture_frames(bench, "still", STILL_FRAMES))
+			_report.samples.append(await _capture_frames(bench, still_label, STILL_FRAMES))
 	if phases.has("turns"):
 		for duration_variant: Variant in turns:
 			var duration := float(duration_variant)
@@ -495,8 +506,28 @@ func _still_and_turns(bench: Node, phases: Array, turns: Array, base: PackedFloa
 				bench._fail("the turn's start did not settle")
 				return false
 			for turn: Array in [["turn_out", 1.0], ["turn_back", -1.0], ["turn_repeat", 1.0]]:
-				_report.samples.append(await _capture_turn(bench, turn[0], duration, turn[1]))
+				_report.samples.append(await _capture_turn(bench, turn_prefix + turn[0], duration, turn[1]))
 	return true
+
+# The `water_turns` phase (see the header); false (the run failed) when its pose did not settle.
+func _water_turns(bench: Node, turns: Array, base: PackedFloat32Array, world: Vector2) -> bool:
+	if not await _start_from(bench, base):
+		bench._fail("the water turns' base pose did not settle")
+		return false
+	var pose := base
+	var from := "base"
+	if _reflection_levels().all(func(level: Variant) -> bool: return level == null):
+		pose = _water_pose(bench, base, world)
+		from = "shore"
+		if pose.is_empty():
+			return true
+		if not await _start_from(bench, pose):
+			bench._fail("the water turns' shore pose did not settle")
+			return false
+	_report.water_turns_pose = Array(pose)
+	_report.water_turns_from = from
+	print("[STREAM] WATER_TURNS_POSE %s %s" % [from, str(Array(pose))])
+	return await _still_and_turns(bench, ["still", "turns"], turns, pose, "water_turns_still", "water_")
 
 # Puts the camera at `view`, waits WARMUP_FRAMES frames and then until settled.
 func _start_from(bench: Node, view: PackedFloat32Array) -> bool:
