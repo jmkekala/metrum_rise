@@ -185,6 +185,15 @@ fn graded_surface_of<T>(
     SCRATCH.with_borrow_mut(|scratch| query(&surface, scratch))
 }
 
+/// [`ViewGround::key`]: what a view's graded surface reads.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct GroundKey {
+    terrain: usize,
+    roadbed: (usize, u64),
+    inputs: u64,
+    index: (u64, u64),
+}
+
 /// What the footprint hue reads of a view, owned (`ROAD-123` round HF2): the terrain, the
 /// roadbed, the site patches and the graded query index of one publication, shared in `O(1)`
 /// without allocation (two `Arc`s and two persistent maps), so the hue's build reads that
@@ -204,6 +213,20 @@ impl ViewGround {
             roadbed: Arc::clone(&view.roadbed),
             terrain_inputs: view.terrain_inputs.clone(),
             query_index: view.terrain_query_index.clone(),
+        }
+    }
+
+    /// What the graded surface of this view reads, as a key equal for two views only while
+    /// their ground is the same (the road tool's footprint hue keeps its reads under it,
+    /// `ROAD-123` round HF3): the terrain and roadbed (identity and generation), the site
+    /// patches' revision and the query index's version, which every road, site or base edit a
+    /// publication brings advances. `O(1)`.
+    pub(crate) fn key(&self) -> GroundKey {
+        GroundKey {
+            terrain: Arc::as_ptr(&self.terrain) as usize,
+            roadbed: (Arc::as_ptr(&self.roadbed) as usize, self.roadbed.generation()),
+            inputs: self.terrain_inputs.revision,
+            index: self.query_index.version(),
         }
     }
 

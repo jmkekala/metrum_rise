@@ -23,7 +23,7 @@
 //! themselves ([`surface`]): their top triangles and curb faces (carriageway, kerbs, sidewalks,
 //! junction corners, end caps), each point at least the lift above both the piece and the drawn
 //! ground the caller reads there. Round HU3 (decision HU2-1 (a)): the session reads the drawn
-//! graded surface ([`graded_ground`], through the view's shared query index), so the hue stays
+//! graded surface (through the view's shared query index, [`lattice`]), so the hue stays
 //! above existing roads' cuts and fills too. The path's widened strip above stays the fill of
 //! a draft the preview draws no pieces for (a refused or pending pose) and of bridges.
 //!
@@ -122,6 +122,9 @@ pub(crate) struct FootprintHue {
     pub(crate) outline_starts: Vec<u32>,
     // The draft's drawn road pieces (round HU2), the fill of its ground and cut strokes.
     surface: surface::PieceSurface,
+    // The drawn ground's lattice blocks the last build read, kept for the next one on the same
+    // view (`ROAD-123` round HF3).
+    lattice: lattice::LatticeCache,
     state: Option<HueState>,
     revision: u64,
 }
@@ -237,17 +240,23 @@ impl FootprintHue {
     /// Builds the pushed hue's mesh on `view` (owned parts of the snapshot its preview read):
     /// the strip's ground the segmentation's (`DraftGround`), the drawn ground under the pieces
     /// the published graded surface through the view's shared query index (round HU3, decision
-    /// HU2-1 (a); `ROAD-123`'s lattice reader). The state is set apart ([`Self::conclude`]),
-    /// once the preview's verdict is known (`ROAD-123` round HF2: the mesh is built off the
-    /// frame). False when the hue has nothing to show (and is hidden).
+    /// HU2-1 (a); `ROAD-123`'s lattice reader, its blocks kept from the last build on the same
+    /// view's ground, round HF3). The state is set apart ([`Self::conclude`]), once the
+    /// preview's verdict is known (`ROAD-123` round HF2: the mesh is built off the frame). False
+    /// when the hue has nothing to show (and is hidden).
     pub(crate) fn build_on(&mut self, view: &ViewGround, half_width_m: f32) -> bool {
-        view.with_ground(|ground, surface, scratch| {
+        let mut lattice = std::mem::take(&mut self.lattice);
+        lattice.begin(view.key());
+        let shown = view.with_ground(|ground, surface, scratch| {
             self.build(
                 half_width_m,
                 |x, z| ground.height_at(x, z),
-                graded_ground(surface, scratch),
+                lattice.reader(surface, scratch),
             )
-        })
+        });
+        lattice.end();
+        self.lattice = lattice;
+        shown
     }
 
     /// Ends a build launched at revision `from`: shows the mesh in `state` when `shown`, else
@@ -483,9 +492,11 @@ fn push_edge(
     }
 }
 
+mod lattice;
 mod off_frame;
 mod surface;
 pub(crate) use off_frame::OffFrameHue;
+#[cfg(test)]
 pub(crate) use surface::graded_ground;
 #[cfg(test)]
 mod rows;

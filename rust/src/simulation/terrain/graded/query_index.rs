@@ -181,6 +181,12 @@ impl TerrainQueryIndex {
         self.generation
     }
 
+    /// Which index this is and its generation: equal for two copies only while they hold the
+    /// same inputs (the road tool's footprint hue keys its kept reads by it, `ROAD-123`).
+    pub(crate) fn version(&self) -> (u64, u64) {
+        (self.identity, self.generation)
+    }
+
     pub(super) fn identity(&self) -> u64 {
         self.identity
     }

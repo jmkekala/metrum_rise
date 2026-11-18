@@ -11,7 +11,7 @@
 use super::*;
 use crate::nodes::sim::core::{
     CityTreasury, RoadCommitRequest, RoadPreview, RoadPreviewContext,
-    RoadPreviewRequest, RoadToolQuerySnapshot, SimCore,
+    RoadPreviewRequest, RoadToolQuerySnapshot, SimCore, ViewGround,
 };
 use crate::simulation::core::config::WorldConfig;
 use crate::simulation::network::graph::RoadParking;
@@ -116,24 +116,8 @@ impl RowWorld {
                 1.0,
             );
         }
-        for [a, b] in &row.roads {
-            let points = vec![surface_point(&core, *a), surface_point(&core, *b)];
-            let outcome = core.commit_road(
-                RoadCommitRequest {
-                    points,
-                    fwd_lanes: 1,
-                    bkw_lanes: 1,
-                    snap_to_existing_roads: true,
-                    profile: RoadProfile::FollowGround,
-                    median: None,
-                    parking: RoadParking::NONE,
-                    attributes: RoadAttributes::DEFAULT,
-                    preview: None,
-                },
-                Instant::now(),
-                Default::default(),
-            );
-            assert!(outcome.committed, "{}: {}", row.name, outcome.rejection);
+        for &road in &row.roads {
+            commit(&mut core, row, road);
         }
         let view = core
             .publish_road_tool_view()
@@ -141,6 +125,27 @@ impl RowWorld {
             .view;
         Self { core, view }
     }
+}
+
+// Commits one of the row's roads through the gameplay path: one lane each way, snapping.
+fn commit(core: &mut SimCore, row: &Row, [a, b]: [Vector2; 2]) {
+    let points = vec![surface_point(core, a), surface_point(core, b)];
+    let outcome = core.commit_road(
+        RoadCommitRequest {
+            points,
+            fwd_lanes: 1,
+            bkw_lanes: 1,
+            snap_to_existing_roads: true,
+            profile: RoadProfile::FollowGround,
+            median: None,
+            parking: RoadParking::NONE,
+            attributes: RoadAttributes::DEFAULT,
+            preview: None,
+        },
+        Instant::now(),
+        Default::default(),
+    );
+    assert!(outcome.committed, "{}: {}", row.name, outcome.rejection);
 }
 
 // The rows' stroke request: one lane each way, snapping, the default road.
@@ -181,24 +186,28 @@ impl PoseHue {
     // Round HF's build after the preview (`road_tool_hue_of_preview`), in the preview's state;
     // with `graded` off the drawn ground is a constant below everything (the build without its
     // read).
+    // Round HF3: the graded build is the session's (`build_on`, its lattice blocks kept from
+    // the pose before on the same view).
     fn build(&self, world: &RowWorld, hue: &mut FootprintHue, graded: bool) {
         let state = HueState::of_preview(self.preview.validation.is_valid, false);
-        self.build_with(world, hue, |surface, scratch, hue, ground| {
-            if graded {
-                hue.finish(
-                    HALF_WIDTH_M,
-                    |x, z| ground.height_at(x, z),
-                    graded_ground(surface, scratch),
-                    state,
-                );
-            } else {
-                hue.finish(
-                    HALF_WIDTH_M,
-                    |x, z| ground.height_at(x, z),
-                    |_, _| -1.0e3,
-                    state,
-                );
-            }
+        if graded {
+            hue.push_preview(
+                self.preview.plan.prepared(),
+                self.preview.plan.profile(),
+                self.preview.pieces.as_ref().map(|pieces| &pieces.delta),
+            );
+            let from = hue.revision();
+            let shown = hue.build_on(&ViewGround::of(&world.view), HALF_WIDTH_M);
+            hue.conclude(from, shown, state);
+            return;
+        }
+        self.build_with(world, hue, |_, _, hue, ground| {
+            hue.finish(
+                HALF_WIDTH_M,
+                |x, z| ground.height_at(x, z),
+                |_, _| -1.0e3,
+                state,
+            );
         });
     }
 
@@ -360,6 +369,40 @@ fn the_preview_builds_its_hue_bitwise_with_it() {
     }
 }
 
+// `ROAD-123` round HF3: the lattice blocks a hue keeps from pose to pose are read again once the
+// view's ground changes: after a road committed across the stroke, the hue that kept the last
+// view's blocks is bitwise the hue built without any, and differs from the hue of the view before.
+#[test]
+fn the_kept_lattice_blocks_follow_the_view() {
+    let row = rows()
+        .into_iter()
+        .find(|row| row.name == "sloped_t")
+        .expect("the T row");
+    let mut world = RowWorld::build(&row);
+    let (mut kept, mut fresh, mut before) = Default::default();
+    let mut context = RoadPreviewContext::capture(world.view.clone());
+    PoseHue::of(&world, &mut context, &row, 0.5).build(&world, &mut kept, true);
+    PoseHue::of(&world, &mut context, &row, 0.5).build(&world, &mut before, true);
+    commit(
+        &mut world.core,
+        &row,
+        [Vector2::new(-30.0, -40.0), Vector2::new(30.0, -40.0)],
+    );
+    world.view = world
+        .core
+        .publish_road_tool_view()
+        .expect("a current roadbed")
+        .view;
+    let mut context = RoadPreviewContext::capture(world.view.clone());
+    let pose = PoseHue::of(&world, &mut context, &row, 0.5);
+    pose.build(&world, &mut kept, true);
+    pose.build(&world, &mut fresh, true);
+    let fresh: &FootprintHue = &fresh;
+    assert!(fresh.fill_used > 0);
+    assert_eq!(kept.fill_bytes, fresh.fill_bytes);
+    assert_ne!(kept.fill_bytes, before.fill_bytes);
+}
+
 // FNV-1a over the hue's fill bytes (padding included) and its outline's bits.
 fn digest(hue: &FootprintHue, mut hash: u64) -> u64 {
     let mut eat = |byte: u8| {
@@ -441,6 +484,10 @@ fn benchmark_hue_rows() {
             triangles / poses.len(),
             hash,
         );
+        // `METRUM_HUE_BUILD_ONLY` stops at the build, for a profile of it alone (round HF3).
+        if std::env::var_os("METRUM_HUE_BUILD_ONLY").is_some() {
+            continue;
+        }
         // Round HF2: the preview's wall time alone, with round HF's hue built after it (the
         // base's frame), and with its hue launched off the thread and joined at once after the
         // preview (the hue overlapping only the preview's later stages; the frame overlaps it

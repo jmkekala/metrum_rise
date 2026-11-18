@@ -13040,6 +13040,209 @@ decision HF-1 (b) as the coordinator's night call, for the user's review.
   job, which is (b); reusing one job's box would need rayon-core's `JobRef`, private to that
   crate.
 
+### The hue's reads kept from pose to pose (round HF3, `ROAD-123`)
+
+Round HF3 (2026-11-18, branch `roadtools-hf3` on `dev` `86c59d9a`, R2-4b landed; for review):
+decision R2-4a section 3. R2-4a and R2-4b shortened the frame's work between the hue's launch
+and its join, so a cross pose's build (5.4-6.4 ms at p50 in the game) outlasted it: the join
+waited 0.27-0.40 ms at p95 a preview tick (cross rows 0.50-0.68).
+
+- **Why the build reads about twice the bench's in the game** (step 1, measured; a probe library
+  with the build's launch, start, end and join times and its worker's `/proc` scheduler counts,
+  never committed; two batches of the cross rows, 1,771 builds, 03:02-03:04, a diagnostic run, not
+  a timing; every thread's cycles and reference cycles counted apart by `perf stat
+  --per-thread`): **the clock**. The game's shared
+  pool workers ran at 2.13-2.40 GHz while busy, the bench's at 4.25-4.40 GHz (`benchmark_hue_rows`
+  on the cross rows, the same counting): a ratio of 1.8-2.0 against the build's 1.95 (6.23 ms at
+  p50 in the game, 3.0-3.4 in the bench). Not the graded stage's workers: the build waited
+  0.055 ms at p50 (0.094 p95) from its launch to its start and about nothing on the run queue. The
+  slack from launch to join was 6.75 ms at p50 (3.94 at p5); 364 of the 1,771 builds outlasted it.
+  Scaled by 0.7, the same poses' builds would have outlasted it none.
+- **Where a cross pose's build goes** (bench, probe counters; ms a pose): the cut 0.75, the
+  drawn-ground read 1.70 (76 lattice blocks: their windows 0.17 and coverage rasters 0.54; 14,945
+  lattice vertices evaluated, over 2.2 listed seams a block), the rises and the mesh 0.38-0.78.
+  With 2.2 seams a block the seam evaluation is not the read's cost: ordering each 2 m bin's
+  candidates for the bake's early exit was tried and measured no faster, and dropped.
+- **The change** (the mesh bitwise, step (b); no step (c), no new pool, no new spawn):
+  1. `GradedSurface::ground_at_lattice` reads a lattice point from its own vertex alone: its
+     `GL0` weights are `[1, 0, 0]`, and `1 v0 + 0 v1 + 0 v2` is `v0` bit for bit for finite
+     vertices unless `v0` is `-0.0`, when the other two are still evaluated. 12,962 vertices a
+     cross pose instead of 14,945.
+  2. The reader's 8 m blocks (each its coverage raster, its evaluated vertices and its reads) are
+     kept from pose to pose (`hue/lattice.rs`, `LatticeCache`, owned by the hue, moved to its
+     worker and back with it) while the view's ground is the same: `ViewGround::key` (the terrain's
+     and roadbed's identity, the roadbed's generation, the site patches' revision and the query
+     index's identity and generation, which every road, site and base edit a publication brings
+     advances). A drag's poses all read one published view and its footprint moves a little a pose,
+     so a pose evaluates only the points the pose before did not read and prepares a window only
+     for a block with such a point. A read is a pure function of the view and the point, so a kept
+     value is the bits a fresh read gives. Kept: the last pose's blocks (memory: the most blocks
+     two poses in turn read, about 6.5 kB each, 76 a cross pose); a new view forgets them all.
+- **Bound per pose:** `O(B log B)` for the `B` blocks read (lookup and the kept set's update)
+  plus round HF's per-block and per-point costs for the blocks and points the last pose did not
+  read; no allocation once the blocks have grown (the hue's own buffers, as before).
+- **Bitwise:** the hue's digests over each row's 48 poses (kept blocks across the poses and
+  rounds) equal the base's on every row: sloped_t `26fac535530341fe`, sloped_branch
+  `915d1e9ed17e6109` (`dev`'s since round HF's `da1b19a5fe5605b9`, on base and branch alike),
+  flat_cross `093060ecf329939b`, sloped_cross `c51f99827fe25713`, dense `5d65d730adc9b860`.
+  `the_lattice_reader_builds_hu3s_hue_bitwise_on_the_rows` now runs the session's build (the
+  kept blocks) against round HU3's point reader, `the_preview_builds_its_hue_bitwise_with_it`
+  the off-frame join; new `the_kept_lattice_blocks_follow_the_view`: after a road committed across
+  the stroke, the hue that kept the old view's blocks equals one built without any and differs
+  from the old view's.
+- **Bench** (`benchmark_hue_rows`, the session's build: on the base round HF's reader, a fresh
+  block a build, on the branch `build_on` with the kept blocks; release, `RAYON_NUM_THREADS=4`,
+  `taskset -c 0,2,4,6,8,10,12,14`, run and exclusive timing locks, one C B B C pass 2026-11-18
+  03:34-03:37, load 1.7-6.0, no other Godot, build or test binary running; test binaries
+  `8ce61257146cb191` (base) and `a5bb2a3d16886a75` (branch); ms a pose, p50 / p99 over 9 rounds
+  of the 48 poses, the two runs a side; the join's wait from the off-frame variant, which joins
+  right after the preview):
+
+  | Row | Base build | Branch build | Base join wait p50 / p99 | Branch join wait p50 / p99 |
+  | --- | --- | --- | --- | --- |
+  | sloped_t | 1.077 / 1.399, 1.075 / 1.392 | 0.817 / 1.565, 0.823 / 1.600 | 0.000 / 0.000-0.001 | 0.000 / 0.001 |
+  | sloped_branch | 1.170 / 1.267, 1.168 / 1.266 | 0.650 / 0.765, 0.657 / 0.773 | 0.000 / 0.001-0.002 | 0.000 / 0.001 |
+  | flat_cross | 2.995 / 3.230, 2.990 / 3.226 | 1.719 / 2.119, 1.718 / 2.129 | 0.000 / 0.503-0.507 | 0.000 / 0.001 |
+  | sloped_cross | 3.402 / 3.705, 3.390 / 3.688 | 2.110 / 2.588, 2.109 / 2.595 | 0.508-0.524 / 0.944-1.146 | 0.000 / 0.001 |
+  | dense | 0.865 / 1.129, 0.862 / 1.135 | 0.625 / 1.722, 0.626 / 1.703 | 0.000 / 0.001 | 0.000 / 0.001 |
+
+  The cross rows' build is 0.57-0.62x the base's at p50 and 0.66-0.70x at p99; the constant-ground
+  build (the cut and the mesh, unchanged) reads level (1.18-1.20 ms). The p99 of the T and dense
+  rows reads 0.17-0.59 ms higher (not attributed pose by pose; consistent with the first pose of
+  each round, where the sweep restarts and nearly every block is new and is written into memory
+  the pose before did not touch, where the base reuses one block): a drag would pay it at its
+  start, on rows whose join waited at most 0.002 ms in round HF2.
+- **Products and allocation** (fresh, base `dev` `86c59d9a` library `d7e9e9338e75f128` with its
+  own tree's scripts against the branch's `051fed7894a7988e`): Kuopio's 78 commits and the 17
+  gameplay fixtures EQUAL in every product (`commit_products.gd`), the drag probe PASS on both. The
+  whole-tick allocation probe (round R2-2's, headless, four workers; allocations a tick from
+  `heaptrack --record-only`, 200 ticks less 20): still 0 and hover 0 in the tick outside the
+  preview, a pose tick 627.47 on the branch against 627.64 on the base (the preview's own 459.83
+  / 459.86, Rust off the tick 612.95 / 613.23): the kept blocks add no allocation a pose once
+  grown.
+- **Session bench** (`road_tool_session_benchmark`, the 30k locality mode, 20 trails, 10,240
+  moves a row, C B B C 03:41-03:48, run and exclusive timing locks, pinned, no Godot running;
+  bench binaries `9a2ede5d2978eb6a` base, `a94b1eec8236ce43` branch; us a move, p50 / p99):
+  straight 102.91 / 139.18, 103.36 / 150.84, 105.19 / 141.89, 102.39 / 138.32; curve 113.44 /
+  150.48, 113.48 / 150.18, 115.61 / 152.80, 113.02 / 150.37; digests equal
+  (`32cb9b4b11dccf75`, `ca3e8f6d742b48b2`). Level: the branch's p50 within 0.5-2.2 % of the base's,
+  its p99 within one run's spread but for one straight p99 (+8.4 %, the other branch run +2.0 %).
+- **Timing, level F** (the path rule: `simulation/terrain/graded` fails closed to F;
+  `./run.sh --timing --level F --k22`, control test binary `8ce61257146cb191` (`dev` `86c59d9a`),
+  branch `a5bb2a3d16886a75`, branch snapshots in a branch cache, 2026-11-18 04:04-04:15, boot
+  `248ac927`, CPUs 0-14 even, eight workers): 30k 32x C B B C all level (mean 4.218 -> 4.179 ms,
+  p99 6.26 -> 6.30, p99.9 7.43 -> 7.34, the largest unpreempted frame better, 8.64 -> 7.94; the
+  control's two runs and one branch run the known exception `PERF-17`, the other branch run PASS);
+  30k 1x C B all level, PASS both (mean 2.082 -> 2.068, p99.9 3.82 -> 3.73); K22 30k click to
+  acknowledgement 6.77 -> 6.61 ms, commit 6.74 -> 6.57 ms.
+- **The paused preview rows, interleaved** (round R2-4b's measurement pass: round R2-0's preview
+  rows unprofiled, gamescope headless 1920x1080, four workers, 100 samples after 8 warm-ups; the
+  order pred, base and branch alternating per batch (b B b B b B b B b), pred; run and exclusive
+  timing locks, pinned, each run waiting for no Godot, gamescope, build or test binary and a load
+  under 6, no overlap recorded; the main thread's clock and cycles counted by `perf stat -t`;
+  2026-11-18 03:48-04:04; libraries pred `85b3d2e78ea3302c`, base `d7e9e9338e75f128`, branch
+  `051fed7894a7988e`):
+
+  | Group | Side | Poses | Sample to installed mean / p95 | Hue join p95 a preview tick | Hue build p50 (worker) | Graded stage | Main-thread clock | Main-thread Mcycles a pose | U-R2-1 (16.7 / 17 / 18 / 20 ms) |
+  | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+  | cross | pred | 1,334 | 12.150 / 22.784 | - | - | 2.490 | 2.27 GHz | 50.23 | 51.3 / 59.4 / 66.9 / 75.7 |
+  | cross | base | 3,319 | 10.212 / 17.479 | 0.484 | 6.435 | 2.922 | 2.24 GHz | 61.86 | 68.2 / 78.5 / 85.6 / 91.4 |
+  | cross | branch | 2,701 | 11.060 / 17.880 | 0.001 | 4.619 | 3.074 | 2.00 GHz | 55.49 | 57.9 / 64.6 / 73.2 / 83.0 |
+  | T, branch, dense | pred | 2,070 | 9.388 / 17.177 | - | - | 2.904 | 1.65 GHz | 31.65 | 55.4 / 63.5 / 74.7 / 82.8 |
+  | T, branch, dense | base | 5,251 | 8.803 / 14.217 | 0.002 | 3.466 | 3.496 | 1.44 GHz | 34.05 | 54.8 / 64.2 / 77.0 / 87.2 |
+  | T, branch, dense | branch | 4,221 | 8.744 / 14.386 | 0.002 | 2.252 | 3.397 | 1.45 GHz | 32.39 | 53.6 / 61.8 / 75.2 / 85.5 |
+  | all | base | 8,570 | 9.349 / 15.221 | 0.259 | 4.489 | 3.274 | 1.78 GHz | 44.82 | 60.0 / 69.7 / 80.4 / 88.8 |
+  | all | branch | 6,922 | 9.647 / 15.893 | 0.002 | 2.933 | 3.271 | 1.69 GHz | 41.41 | 55.3 / 62.9 / 74.4 / 84.6 |
+
+  Per batch, branch minus the mean of the two bases around it, sample to installed: cross +1.140
+  +1.427 +0.672 +0.268 ms at -0.306 -0.349 -0.215 -0.133 GHz; T, branch and dense -0.248 +0.325
+  +0.099 -0.367 ms at +0.026 -0.038 -0.010 +0.033 GHz (base batches' own spread 1.111 and 0.580
+  ms). Scripts `$ARTIFACTS/scripts/rows-il.sh`, `il.py` (round R2-4b's), `il_cycles.py` (new).
+- **Verdict against the brief's bars.** **Met:** the hue's join wait at most 0.01 ms at p95 in
+  every row group (0.001 cross, 0.002 T, branch and dense, the measurement's floor; the base 0.484
+  and 0.002); the hue's digests bitwise; Kuopio 78 and the fixtures 17 EQUAL; no allocation added
+  a pose and none in a tick outside the preview; the T, branch and dense rows' sample to installed
+  level at the same clock. **Missed:** sample to installed on the cross rows, +0.848 ms at the
+  mean (+0.401 at p95), every branch batch above the bases around it, and with it the graded stage
+  on those rows (+0.152 ms; level over all rows, 3.274 / 3.271) and their share within 16.7-20 ms
+  against the base (still above pred, so U-R2-1 passes there); U-R2-1 on the T, branch and dense
+  rows is missed within 16.7 and 17 ms (53.6 / 61.8 against pred's 55.4 / 63.5; the base 54.8 /
+  64.2 in the same pass).
+- **The cross rows' miss is the main thread's clock, not its work.** Every branch batch ran the
+  main thread 0.13-0.35 GHz slower than the bases around it (2.00 against 2.24 GHz pooled), and
+  every main-thread stage slowed by about that ratio, the plan too (2.020 -> 2.224 ms), which
+  runs before the hue is launched and shares no code with this round; in counted cycles the main
+  thread did 10 % less a pose (55.5 against 61.9 M; T, branch and dense 5 % less at the same
+  clock). Round HF saw the same with the build moved the other way (its base's 5.5 ms hue on the
+  main thread kept it at 3.45 GHz, the branch's at 2.15) and round R2-0 found the share below 17
+  ms follows the governor's clock as much as the work. The shorter build on its worker leaves the
+  performance cores idler during a cross pose, and the main thread's clock falls with them.
+- **Decision HF3-1** (for the user): (a) accept the round on its own bar (the join wait), the
+  cross rows' sample to installed recorded as a clock effect with the cycles above and judged
+  again at `ROAD-112` R2-L, recommended; (b) hold the round until a clock-pinned pass (a fixed
+  performance-core frequency for the rows, machine settings outside the repository) shows the
+  cross rows level at equal clock; (c) reject the cache and keep only change 1 (13 % fewer
+  vertices; not measured alone: by its vertex count about a tenth of the bench's cross gain, 3.0-3.4
+  to 1.7-2.1 ms, so the join wait would very likely stay above the bar on the cross rows).
+- **Round HF3F** (2026-11-18 04:17-05:30, the same branch, no code change; the coordinator did not
+  take (a): find the cause, fix it so every bar holds, or report). **The cause, measured: the
+  P-cores' clock follows the process's load, and the kept blocks cut the load.** Machine: i9-12900K,
+  `intel_pstate` active, governor `powersave`, EPP `balance_performance`. Libraries: base
+  `b5bc9a20324e5a3b` (`dev` `86c59d9a` rebuilt in another worktree; the release profile's debug
+  info carries the worktree's path, so not HF3's `d7e9e9338e75f128`), change 1 alone
+  `0935bf261fac9c50` (the base plus the lattice-vertex shortcut, option (c)'s build), the branch
+  `051fed7894a7988e` (HF3's), and a measurement variant never committed, "no keep",
+  `049d366a34728efa`: the branch with every kept block forgotten at each pose, so its build reads
+  through the cache's arena but keeps nothing (and does more than the base's work: its in-pose
+  search of the blocks read is linear).
+  - **Schedule traces** (diagnostic, profiled: every switch-out of every thread of the process
+    sampled with its slice's core and reference cycles, on-CPU time and instructions, `perf` on the
+    E-cores; the cross rows, three runs a side interleaved, 04:31-04:37 base, change 1, branch and
+    05:12-05:18 change 1, no keep, branch): the main thread executes the same instructions a pose
+    on every library (31.3-31.8 M) and its clock alone differs: base 2.39 GHz, change 1 2.40-2.41,
+    branch 2.05-2.07, no keep 3.72. Every thread of the process moves with it (the shared pool's
+    workers 2.08 / 2.12-2.13 / 1.95-1.96 / 3.42 GHz, Godot's own 2.14 / 2.17-2.22 / 1.92-1.93 /
+    3.54), whether or not another thread ran beside the main thread and however long its CPU had
+    been idle before: not contention, not a cold core, and not the kept blocks' memory traffic (no
+    keep uses the same arena and runs fastest). It follows the shared pool's work: 105.9 M
+    instructions a pose with change 1, 86.9 M with the branch, 175.9 M with no keep.
+  - **Unprofiled confirmation** (`rows-il.sh` as the judging pass: the main thread's clock
+    counted by `perf stat -t`; the cross rows; order base, branch, no keep, change 1, twice, then
+    base; 05:21-05:26, run and exclusive timing locks, pinned, no overlap recorded):
+
+    | Library | Poses | Sample to installed mean / p95 | Hue join p95 | Hue build p50 | Main-thread clock | Main-thread Mcycles a pose | U-R2-1 within 16.7 / 17 ms, per batch |
+    | --- | --- | --- | --- | --- | --- | --- | --- |
+    | base | 1,995 | 10.152 / 16.842 | 0.462 | 6.434 | 2.25 GHz | 61.63 | 68.2-70.6 / 75.7-83.5 |
+    | change 1 | 1,373 | 10.275 / 16.808 | 0.140 | 6.234 | 2.21 GHz | 60.25 | 64.0-70.5 / 71.1-85.1 |
+    | branch | 1,336 | 11.500 / 18.936 | 0.001 | 4.748 | 1.92 GHz | 55.61 | 53.5-54.3 / 58.7-61.2 |
+    | no keep | 1,323 | 7.282 / 13.664 | 5.813 | 7.811 | 3.41 GHz | 79.99 | 69.3-70.1 / 81.6-83.3 |
+
+  - **Verdict.** Change 2 (`LatticeCache`) brings the miss, change 1 does not (its clock and sample
+    to installed level with the base), but change 1 alone misses the join bar (0.140 ms at p95 on
+    the cross rows). The miss is the governor's answer to less work: a variant doing more work than
+    the base, on the same code path, beats the base's sample to installed by 2.9 ms while missing
+    the join bar by 5.8 ms. On this machine at these settings the unpinned interleaved bar rewards
+    work on the shared pool; no change in the hue's scope reaches both bars except one that keeps
+    the cores busy for the clock's sake, which this round does not make (it costs power, depends on
+    one machine's firmware and would read as a speed-up for the wrong reason). The T, branch and
+    dense rows' U-R2-1 shortfall in HF3's pass lies within the base batches' own spread (per batch
+    within 16.7 ms: base 53.5-55.9, branch 51.4-55.2; within 17 ms 61.3-68.3 and 60.0-64.9).
+    Scripts `$ARTIFACTS/scripts/rows-il.sh` (`SCHED=1` the traces), `sched_sum.py`, `il_sides.py`,
+    `il_u21.py`.
+  - **Decision HF3F-1** (for the user): (a) accept HF3 on its own bars with the cross rows' sample
+    to installed recorded as the governor's (the evidence above); (b) judge the rows at a fixed
+    P-core clock (EPP `performance` or a fixed ratio for the pass: machine settings, root, the
+    user's) and land on that pass, recommended, since the unpinned bar passes a strictly worse
+    binary; note that unpinned, on this machine, a player sees the branch's cross poses about 1.3
+    ms later at the mean; (c) keep change 1 only (clock and sample to installed level, the join bar
+    missed); (d) keep the cores busy for the clock: not recommended, listed because the no-keep
+    variant shows it would pass.
+  - **The user's decision (2026-11-18): (a).** HF3 landed on `dev` on its own bars (the join wait,
+    the digests, the products, the allocations, the gates and the timing); the cross rows'
+    sample to installed (+1.3 ms at the mean in HF3F's pass) is recorded as the governor's clock
+    effect, not the hue's work. The T, branch and dense rows' U-R2-1 gap stays open for
+    `ROAD-112` R2-L.
+
 ### The frozen cursor removed (round R2-7)
 
 Round R2-7 of `ROAD-112` (branch `roadtools-r27` on `dev` `17207c94`). **Removed:** the frozen

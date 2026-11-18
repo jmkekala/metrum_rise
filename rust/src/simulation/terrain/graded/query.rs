@@ -309,8 +309,7 @@ impl GradedSurface<'_> {
                 && (0..=BLOCK_CELLS).contains(&(j - origin[1]))
         });
         if !held {
-            let origin = [i, j].map(|index| index.div_euclid(BLOCK_CELLS) * BLOCK_CELLS);
-            self.prepare_block(origin, block, scratch);
+            self.prepare_block(LatticeBlock::origin_of([i, j]), block, scratch);
         }
         let origin = block.origin.expect("a prepared block");
         let (x, z) = (i as f64 * GL0_M, j as f64 * GL0_M);
@@ -362,7 +361,16 @@ impl GradedSurface<'_> {
         let cell = Cell::at(x, z);
         let [w0, w1, w2] = cell.weights();
         let [v0, v1, v2] = cell.vertices();
-        w0 * self.block_vertex(v0, block, scratch)
+        let first = self.block_vertex(v0, block, scratch);
+        // At a lattice point the weights are `[1, 0, 0]`, and `1 v0 + 0 v1 + 0 v2` is `v0` bit
+        // for bit: every vertex is finite (a base sample plus the `f32` delta of finite cones),
+        // so the zero products are zeros, which leave `v0` as it is unless it is `-0.0` (a
+        // `+0.0` product turns it positive). Only then are the other two vertices evaluated;
+        // else a point evaluates its own vertex alone (`ROAD-123` round HF3).
+        if [w0, w1, w2] == [1.0, 0.0, 0.0] && !(first == 0.0 && first.is_sign_negative()) {
+            return first;
+        }
+        w0 * first
             + w1 * self.block_vertex(v1, block, scratch)
             + w2 * self.block_vertex(v2, block, scratch)
     }
@@ -1290,6 +1298,17 @@ impl LatticeBlock {
     // The slot of lattice point `(i, j)` of the block at `origin`.
     fn slot(origin: [i64; 2], [i, j]: [i64; 2]) -> usize {
         (i - origin[0]) as usize * BLOCK_POINTS + (j - origin[1]) as usize
+    }
+
+    /// The first lattice point of the block [`GradedSurface::ground_at_lattice`] reads lattice
+    /// point `(i, j)` in: a reader keeping blocks apart passes it that block.
+    pub(crate) fn origin_of(point: [i64; 2]) -> [i64; 2] {
+        point.map(|index| index.div_euclid(BLOCK_CELLS) * BLOCK_CELLS)
+    }
+
+    /// Forgets what the block read: its next read prepares it again (another view's ground).
+    pub(crate) fn forget(&mut self) {
+        self.origin = None;
     }
 }
 

@@ -26,6 +26,7 @@
 //! they have grown.
 
 use crate::simulation::network::roadbed::{PieceMesh, RoadVec3};
+#[cfg(test)]
 use crate::simulation::terrain::graded::{GradedSurface, LatticeBlock, QueryScratch};
 
 /// The cell the hue's fill is cut into, metres: the terrain's 2 m cells.
@@ -421,7 +422,10 @@ fn spans(
 /// once and evaluate each lattice point once, so a pose's read costs
 /// `O(blocks x (local pieces and seams + coverage triangles) + lattice points x listed seams)`
 /// for the blocks and points under the draft's pieces, never its whole window.
-/// Allocation-free once the scratch is warm (the block is a fixed-size array).
+/// Allocation-free once the scratch is warm (the block is a fixed-size array). The session keeps
+/// the blocks from pose to pose instead (`LatticeCache`, round HF3); this one-pose reader is the
+/// tests'.
+#[cfg(test)]
 pub(crate) fn graded_ground<'a>(
     surface: &'a GradedSurface<'a>,
     scratch: &'a mut QueryScratch,
