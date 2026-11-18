@@ -15007,6 +15007,27 @@ re-recorded (`0xa61a_7aa1_0ae5_fc7d`): drawing only, since the frames without th
 same under the old and the new lengths (`0xb72e_a82f_7f69_a9a8`, the old digest held with the old
 lengths).
 
+**A followed guide holds past the gathering radius.** The user, the same day: "i cannot snap to
+the end of the line. i can snap only to about 50% of the length of the guide", "when i take the
+mouse cursor down ... the guiding line disappears". A guide is gathered only while its source (a
+road end or node) lies within `GUIDE_RADIUS_M` (64 m) of the cursor, so a guide drawn 40 m past the
+cursor dropped once the cursor was 64 m from its source. Now the session keeps the lines that held
+the cursor (`held`, the anchor they held it from beside them, part of the pose key) and adds them
+back to the next pose's candidates (`snap::keep_held_guides`, after the gathered ones and only where
+no gathered line is the same line, so ties still go to the gathered candidates) while the anchor is
+unchanged: a guide followed within its 4 m reach holds the cursor however far it is followed. A
+cursor that comes to the line from more than 64 m out still finds none, as the faint guides do;
+a placed point, Shift, the Guides option off and a scripted pointer drop it. The frame draws the
+held lines (the pose's `holding_guides` once, not again in the draw). Cost: `O(guides)` a pose
+more, no allocation. Test `a_followed_guide_holds_past_the_gathering_radius` (the spur's dead end's
+perpendicular, 2 m off the line, every 5 m from 20 m to 150 m; fails at 65 m without the hold;
+jumped to directly at 150 m the cursor stays free; Guides off drops it). Session bench (`road_tool_session_benchmark`, the 30k
+locality mode, 20 trails, 10,240 moves) C B B C against round R2-10's bench, which has neither of
+the day's two changes, pinned to the P-cores under the exclusive timing lock: digests identical;
+straight p50 103.8 / 104.0 us control, 101.8 / 102.2 us branch, p99 141.2 / 142.6 against 138.2 /
+145.0; curve p50 113.7 / 114.6 against 112.3 / 112.8, p99 150.0 / 154.1 against 149.7 / 152.5:
+level. Debug lib tests 2,922 passed / 0 failed; `./run.sh --test` PASS.
+
 ### The pick's graded preparation halved (round PB, `ROAD-116`)
 
 Round PB of `ROAD-112` (branch `roadtools-pb`, R2-7 on `dev` `75523322`). **Bisect.** The

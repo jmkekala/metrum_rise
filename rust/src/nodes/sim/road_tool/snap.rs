@@ -647,6 +647,19 @@ pub(crate) fn collect_guides(
     }
 }
 
+/// Adds the guide lines that held the cursor last pose (`held`) to `guides` when no gathered line
+/// is the same line, so a guide followed away from its source keeps the cursor past
+/// [`GUIDE_RADIUS_M`] (the user, 2026-11-18: the guide drawn [`super::guides::GUIDE_PAST_M`]
+/// past the cursor took it only within 64 m of its source). They go last, so ties still go to
+/// the gathered candidates. `O(guides)`, no allocation after warm-up.
+pub(crate) fn keep_held_guides(guides: &mut Vec<GuideLine>, held: [Option<GuideLine>; 2]) {
+    for line in held.into_iter().flatten() {
+        if !guides.iter().any(|guide| guide.same_line(&line)) {
+            guides.push(line);
+        }
+    }
+}
+
 // An edge's centreline: its physical profile when present.
 fn edge_points(graph: &RegionGraph, edge_id: usize) -> &[Vector3] {
     let edge = graph.edge(edge_id);

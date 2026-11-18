@@ -15,7 +15,7 @@ use crate::nodes::sim::road_tool::session::{
     Pointer, RoadToolEvent, RoadToolOption, RoadToolSession,
 };
 use crate::nodes::sim::road_tool::snap::{
-    GUIDE_NEAR_M, GUIDE_REACH_M, GuideLine, SQUARE_CAPTURE_DEG, SQUARE_RELEASE_DEG, SnapKind,
+    GUIDE_NEAR_M, GUIDE_RADIUS_M, GUIDE_REACH_M, GuideLine, SQUARE_CAPTURE_DEG, SQUARE_RELEASE_DEG, SnapKind,
     SnapOptions, SquareAxis, near_guides, resolve, square_lock,
 };
 use crate::nodes::sim::road_tool::wording::{NoticeFacts, label_text};
@@ -513,4 +513,36 @@ fn a_chained_start_shows_the_square_and_reuses_the_buffers() {
     for deg in [90.4, 60.0, 89.6, 90.0] {
         assert_eq!(pose(&mut tool, deg).2, grown, "{deg}");
     }
+}
+
+// The user, 2026-11-18: a guide drawn 40 m past the cursor took it only within 64 m of its
+// source. Followed away from the spur's dead end along its perpendicular, 2 m off the line, the
+// guide holds the cursor on the line to 150 m; jumped to directly that far out, nothing does.
+#[test]
+fn a_followed_guide_holds_past_the_gathering_radius() {
+    let end = d(-40.0, 200.0);
+    let along = d(-1.0, 1.0).normalize();
+    let at = |m: f64| {
+        let p = end + along * m + along.perp() * 2.0;
+        ray(p.x as f32, p.y as f32)
+    };
+    let off_line = |tool: &RoadToolSession| {
+        let p = tool.frame().cursor.position;
+        along.perp_dot(d(f64::from(p.x), f64::from(p.z)) - end).abs()
+    };
+    let mut tool = session();
+    for step in 4..=30 {
+        let m = f64::from(step) * 5.0;
+        move_to(&mut tool, at(m));
+        assert_eq!(tool.frame().cursor.snap, SnapKind::Guide, "{m} m");
+        assert!(off_line(&tool) < 1e-3, "{m} m: {}", off_line(&tool));
+    }
+    const { assert!(150.0 > GUIDE_RADIUS_M + GUIDE_REACH_M) };
+    let mut fresh = session();
+    move_to(&mut fresh, at(150.0));
+    assert_eq!(fresh.frame().cursor.snap, SnapKind::Free);
+    // Guides off drops the held line.
+    tool.set_option(RoadToolOption::GuideLines(false));
+    move_to(&mut tool, at(150.0));
+    assert_eq!(tool.frame().cursor.snap, SnapKind::Free);
 }

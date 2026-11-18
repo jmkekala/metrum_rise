@@ -57,8 +57,8 @@ use super::pick::{
 };
 use super::snap::{
     GuideLine, SnapInput, SnapKind, SnapOptions, SnapScratch, Snapped, SquareAxis,
-    apply_length_step, collect_guides, edge_direction_at, holding_guides, near_guides,
-    nearest_guide, network_snap, resolve, square_lock, xz_of,
+    apply_length_step, collect_guides, edge_direction_at, holding_guides, keep_held_guides,
+    near_guides, nearest_guide, network_snap, resolve, square_lock, xz_of,
 };
 use crate::nodes::sim::core::RoadToolQuerySnapshot;
 use crate::simulation::network::guide::{DVec2, GuideError, GuidePath, GuideSegment};
@@ -240,6 +240,10 @@ impl DraftKey {
 // (always refreshed) or in `set_option` (which drops the key). So a pointer move with an equal
 // key would rebuild the frame it already has, and is skipped. The pointer's and the cursor's
 // positions compare bitwise; the rest by `==` (a NaN never matches: it refreshes).
+// The guide lines that held the cursor (the second only at a corner) and the anchor they held
+// it from.
+type HeldGuides = Option<(Option<DVec2>, [Option<GuideLine>; 2])>;
+
 #[derive(Clone, Copy, Debug)]
 struct PoseKey {
     pointer: Option<Pointer>,
@@ -250,6 +254,7 @@ struct PoseKey {
     cursor_bits: [u64; 5],
     sticky: Option<(NetworkSnapTarget, u64)>,
     square: Option<SquareAxis>,
+    held: HeldGuides,
     heights: ([u32; 2], bool, bool, Option<DraftEnd>, DraftEnd),
     view: [u64; 3],
     // The addresses of the view's terrain, graph and roadbed; `PoseView` keeps them from being
@@ -287,6 +292,7 @@ impl PoseKey {
             && self.cursor == other.cursor
             && self.sticky == other.sticky
             && self.square == other.square
+            && self.held == other.held
             && self.heights == other.heights
             && self.view == other.view
             && self.parts == other.parts
@@ -322,6 +328,8 @@ pub struct RoadToolSession {
     sticky: Option<(NetworkSnapTarget, u64)>,
     // The square lock's line held last pose (round UI1, `snap::square_lock`).
     square: Option<SquareAxis>,
+    // The guide lines that held the cursor last pose, with the anchor they held it from.
+    held: HeldGuides,
     cursor: Option<Cursor>,
     shift: bool,
     ctrl: bool,
@@ -366,6 +374,7 @@ impl RoadToolSession {
             carried_aim: None,
             sticky: None,
             square: None,
+            held: None,
             cursor: None,
             shift: false,
             ctrl: false,
@@ -565,6 +574,7 @@ impl RoadToolSession {
             cursor_bits,
             sticky: self.sticky,
             square: self.square,
+            held: self.held,
             heights: (
                 [heights.start_offset_m.to_bits(), heights.end_offset_m.to_bits()],
                 heights.straight_grade,
@@ -1132,6 +1142,7 @@ impl RoadToolSession {
             Pointer::Scripted(position) => {
                 self.sticky = None;
                 self.square = None;
+                self.held = None;
                 return Some(Cursor {
                     position,
                     raw: xz_of(position),
@@ -1207,6 +1218,11 @@ impl RoadToolSession {
                 first_axis.flatten(),
                 &mut self.scratch,
             );
+            // A guide that held the cursor keeps it while followed, past the gathering radius;
+            // only from the same anchor, as a placed point brings its own guides.
+            if let Some((_, lines)) = self.held.filter(|(from, _)| *from == anchor) {
+                keep_held_guides(&mut self.scratch.guides, lines);
+            }
         } else {
             self.scratch.guides.clear();
         }
@@ -1247,6 +1263,20 @@ impl RoadToolSession {
                 .flatten();
             apply_length_step(&mut snapped, anchor, self.snap.length_step_m, guide);
         }
+        // The lines holding the cursor, drawn as such by the frame and kept next pose.
+        self.held = (constrained
+            && self.snap.guides
+            && matches!(
+                snapped.kind,
+                SnapKind::Guide | SnapKind::GuideCorner | SnapKind::AngleGuide
+            ))
+        .then(|| {
+            let [first, second] = holding_guides(&self.scratch.guides, snapped.xz);
+            (
+                anchor,
+                [first, second.filter(|_| snapped.kind == SnapKind::GuideCorner)],
+            )
+        });
 
         let height = match (snapped.kind, network) {
             // An untouched pick keeps its hit, bit for bit (today's free cursor).
@@ -1719,17 +1749,10 @@ impl RoadToolSession {
                 *line = GizmoLineClass::Angle;
             }
         }
-        let mut holding = [None; 2];
-        if matches!(
-            cursor.snapped.kind,
-            SnapKind::Guide | SnapKind::GuideCorner | SnapKind::AngleGuide
-        ) {
-            let [first, second] = holding_guides(&self.scratch.guides, cursor.snapped.xz);
-            let corner = cursor.snapped.kind == SnapKind::GuideCorner;
-            holding = [first, second.filter(|_| corner)];
-            for guide in holding.into_iter().flatten() {
-                push_alignment_guide(&mut self.frame.gizmos, guide, cursor.snapped.xz, y);
-            }
+        // The guides holding the cursor, as the pose took them (`held`).
+        let holding = self.held.map_or([None; 2], |(_, lines)| lines);
+        for guide in holding.into_iter().flatten() {
+            push_alignment_guide(&mut self.frame.gizmos, guide, cursor.snapped.xz, y);
         }
         for guide in near_guides(&self.scratch.guides, cursor.raw, holding)
             .into_iter()
