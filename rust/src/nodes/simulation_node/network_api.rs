@@ -72,6 +72,37 @@ impl SimulationNode {
         PackedVector3Array::from_iter(edge.physical_geometry.iter().cloned())
     }
 
+    /// What the select tool draws a road's highlight ribbon from, in one core lock: `points` (the
+    /// edge's physical polyline), `width` (metres) and `lanes` (as
+    /// [`Self::get_edge_cross_section`]'s). Empty for an id that is not a live edge. A hover
+    /// (`wait` false) answers `false` while the simulation thread holds the core, so it keeps
+    /// its last ribbon and asks again (`CODE-25`); a selection waits (`CODE-20`).
+    /// `O(the edge's points + lanes)`.
+    #[func]
+    pub fn get_edge_ribbon(
+        &self,
+        edge_id: i32,
+        #[opt(default = false)] wait: bool,
+    ) -> Variant {
+        let Some(core) = self.lock_core_if(wait) else {
+            return false.to_variant();
+        };
+        let graph = &core.region_graph;
+        let Some(edge) = usize::try_from(edge_id)
+            .ok()
+            .and_then(|edge| graph.get_edge(edge))
+            .filter(|edge| !edge.deleted)
+        else {
+            return VarDictionary::new().to_variant();
+        };
+        vdict! {
+            "points": PackedVector3Array::from(edge.physical_geometry.as_slice()),
+            "width": edge.width,
+            "lanes": lane_rows(edge),
+        }
+        .to_variant()
+    }
+
     /// Returns the width of a specific road edge.
     #[func]
     pub fn get_edge_width(&self, edge_idx: i32) -> f32 {
@@ -718,16 +749,7 @@ impl SimulationNode {
             result.set("speed_kmh", i64::from(speed_kmh));
             result.set("zoning", !edge.no_building_spawn);
             result.set("street_lights", !edge.no_street_lights);
-            // Forward lanes 0.., backward lanes -1.. (`vehicle_lane_offset`'s numbering).
-            let lane_offset = crate::simulation::network::lanes::rebuild::vehicle_lane_offset;
-            let lanes: PackedVector2Array = (0..edge.fwd_lanes as i8)
-                .map(|lane| Vector2::new(lane_offset(edge, lane), 1.0))
-                .chain(
-                    (1..=edge.bkw_lanes as i8)
-                        .map(|lane| Vector2::new(lane_offset(edge, -lane), -1.0)),
-                )
-                .collect();
-            result.set("lanes", lanes);
+            result.set("lanes", lane_rows(edge));
             (result, (section, speed_kmh, !edge.no_street_lights))
         };
         // The library is matched without the core lock.
@@ -1014,6 +1036,17 @@ impl SimulationNode {
             true
         });
     }
+}
+
+// One entry per vehicle lane of `edge`: its centre's lateral offset in metres, positive to the
+// right looking along the drawn direction, and 1 forward or -1 backward; forward lanes 0..,
+// backward lanes -1.. (`vehicle_lane_offset`'s numbering).
+fn lane_rows(edge: &crate::simulation::network::graph::Edge) -> PackedVector2Array {
+    let lane_offset = crate::simulation::network::lanes::rebuild::vehicle_lane_offset;
+    (0..edge.fwd_lanes as i8)
+        .map(|lane| Vector2::new(lane_offset(edge, lane), 1.0))
+        .chain((1..=edge.bkw_lanes as i8).map(|lane| Vector2::new(lane_offset(edge, -lane), -1.0)))
+        .collect()
 }
 
 // The pockets a committed stroke's road type asked for and could not get, one dictionary each

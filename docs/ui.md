@@ -536,7 +536,8 @@ update resolves the terrain hit once, sharing it across control picking.
 **Road highlight and hover.** The selected roads are drawn as one ribbon over the road with
 `assets/materials/road_highlight.gdshader` (unshaded, no depth test): a faint fill, a glowing
 outline at both edges and, on each vehicle lane, chevrons drifting the way that lane's traffic
-goes (Rust's `lanes` in `get_edge_cross_section`: each lane's offset and direction), so a two-way
+goes (Rust's `get_edge_ribbon`: the road's polyline, width and `lanes`, each lane's offset and
+direction, in one core lock), so a two-way
 road shows both directions. Hovering the Road Properties window's parking Left or Right toggle
 lights that half of the road, which names the sides the toggles mean. While `SelectTool` is on, the one road under the cursor (not already selected, no button
 down, no junction selected, the GUI not hovered) gets the same outline without chevrons and the
@@ -544,7 +545,9 @@ cursor turns to a pointing hand, which shows that a click inspects roads. The ho
 non-blocking Rust call per frame (`pick_road_piece`: the roadbed's ray walk and the surface probe
 under a single `try_lock`; `false` while the simulation thread holds the core, when the hover stays as it
 was rather than blinking off), and its one-edge mesh is rebuilt only when the hovered edge
-changes; nothing is drawn over the rest of the network.
+changes, from one `get_edge_ribbon` call that never waits for the core either: while the core is
+busy the last road stays outlined and the next frame asks again (until 2026-11-19 a hover change
+took two blocking core locks from `_process`); nothing is drawn over the rest of the network.
 Picking is exact (Rust's `pick_road_piece(origin, direction, wait)`: the roadbed piece the ray
 meets on the visible surface, `Vector2i(road, junction)`), for the hover, the click and a drag
 selection alike: a junction's paved piece picks the junction, a road's span (sidewalks included)

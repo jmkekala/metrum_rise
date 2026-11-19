@@ -31,6 +31,8 @@ class SimulationStub extends Node3D:
 		return Vector2i(0, 1)
 	func get_edge_geometry_3d(_edge: int) -> PackedVector3Array:
 		return PackedVector3Array([Vector3.ZERO, Vector3(20, 0, 0)])
+	func get_edge_ribbon(edge: int, _wait := false) -> Variant:
+		return {"points": get_edge_geometry_3d(edge), "width": get_edge_width(edge), "lanes": PackedVector2Array()}
 	func get_lane_width() -> float:
 		return 3.5
 	func get_edge_width(_edge: int) -> float:

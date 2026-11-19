@@ -32,6 +32,8 @@
 ## dragged, the road under the cursor gets a fainter outline and the pointer becomes a hand, so
 ## it is clear a click picks roads. Only the one hovered road is drawn, rebuilt when it changes:
 ## the cost is one surface probe and one road-index query per frame, whatever the map's size.
+## Its ribbon comes from one Rust `get_edge_ribbon` call (polyline, width and lanes) that never
+## waits for a busy core: the hover then keeps the last road and asks again the next frame.
 extends Node3D
 
 const HighlightMesh := preload("res://scripts/renderers/highlight_mesh.gd")
@@ -741,8 +743,9 @@ func _highlight_material(fill: float, glow: float, edge: float, chevrons: float,
 # drawn direction) and UV.y in metres along it. With `lanes`, each vehicle lane also gets a strip
 # (vertex colour red 1) whose UV.y runs the way its traffic goes, for the shader's chevrons. The
 # shader's width uniform takes the widest road; on a mixed selection narrower roads get a
-# slightly thicker outline, which reads fine.
-func _ribbon_mesh(edges: Array[int], mi: MeshInstance3D, lanes := false) -> ImmediateMesh:
+# slightly thicker outline, which reads fine. Each road is one `get_edge_ribbon` call; without
+# `wait` (the hover) a busy core answers null, and the caller keeps what it shows.
+func _ribbon_mesh(edges: Array[int], mi: MeshInstance3D, lanes := false, wait := true) -> ImmediateMesh:
 	var im := ImmediateMesh.new()
 	var widest := 0.0
 	var lane_w := 0.0
@@ -750,10 +753,13 @@ func _ribbon_mesh(edges: Array[int], mi: MeshInstance3D, lanes := false) -> Imme
 		lane_w = simulation_node.get_lane_width()
 	im.surface_begin(Mesh.PRIMITIVE_TRIANGLES)
 	for edge_idx in edges:
-		var pts: PackedVector3Array = simulation_node.get_edge_geometry_3d(edge_idx)
+		var ribbon = simulation_node.get_edge_ribbon(edge_idx, wait)
+		if ribbon is bool:
+			return null
+		var pts: PackedVector3Array = ribbon.get("points", PackedVector3Array())
 		if pts.size() < 2:
 			continue
-		var half_w: float = simulation_node.get_edge_width(edge_idx) * 0.5 + HIGHLIGHT_PAD_M
+		var half_w: float = float(ribbon["width"]) * 0.5 + HIGHLIGHT_PAD_M
 		widest = maxf(widest, half_w * 2.0)
 		var centre := PackedVector3Array()
 		var lateral := PackedVector3Array()
@@ -778,7 +784,7 @@ func _ribbon_mesh(edges: Array[int], mi: MeshInstance3D, lanes := false) -> Imme
 		if not lanes:
 			continue
 		# Rust's lanes: (offset to the right of the centreline, 1 forward or -1 backward).
-		for lane: Vector2 in simulation_node.get_edge_cross_section(edge_idx).get("lanes", PackedVector2Array()):
+		for lane: Vector2 in ribbon["lanes"]:
 			_add_strip(im, centre, lateral, along, lane.x - lane_w * 0.5, lane.x + lane_w * 0.5, lane.y, Color.RED)
 	im.surface_end()
 	var mat := mi.material_override as ShaderMaterial
@@ -827,16 +833,19 @@ func _update_hover() -> void:
 		Input.set_default_cursor_shape(Input.CURSOR_POINTING_HAND if junction != -1 or edge_idx != -1 else Input.CURSOR_ARROW)
 
 func _set_hover(edge_idx: int) -> void:
-	var was := _hover_edge
-	_hover_edge = edge_idx
-	if was == edge_idx:
+	if _hover_edge == edge_idx:
 		return
 	if _hover_mi:
 		if edge_idx == -1:
 			_hover_mi.mesh = null
 		else:
 			var one: Array[int] = [edge_idx]
-			_hover_mi.mesh = _ribbon_mesh(one, _hover_mi)
+			var mesh := _ribbon_mesh(one, _hover_mi, false, false)
+			# The simulation thread holds the core: keep the last hover and ask again next frame.
+			if mesh == null:
+				return
+			_hover_mi.mesh = mesh
+	_hover_edge = edge_idx
 	Input.set_default_cursor_shape(Input.CURSOR_POINTING_HAND if edge_idx != -1 else Input.CURSOR_ARROW)
 
 # ── Junction window (`ROAD-95` turn pockets) ────────────────────────────────
