@@ -6,17 +6,10 @@ The old monolithic ledger and numbered backlog are archived in [`archive/project
 
 ## Snapshot
 
-`ROAD-119` on `feat/road-type-pockets`: custom road types carry turn-pocket defaults; drawing
-applies them to the new road's junction approaches, with local hover, refusal feedback and one
-undo. Built on the branch, waiting for the user's in-game test ([contract](roads.md#turn-pockets-road-95)).
-
-The `u02` icon HUD pass on `feat/icon-ui` moves status into a slim top bar, fixes the bottom
-toolbar height, adds zoning/service/industry tiles and compacts Road Properties. Inspect now
-clears selection before exiting on Esc and releases keyboard focus. Godot parse-only checks
-pass; runtime regressions and visual review remain pending ([HUD contract](ui.md#2-bottom-toolbar)). Merged with `dev`
-on 2026-11-10: the Roundabout takes the removed Cul-De-Sac's tile (key O, its Diameter row in the
-road options panel), Road Properties gains a Parking lane row of Left / Right switches, and the
-Junction window takes the accent Apply at 460 x 600; all three await visual review.
+Veeti's icon UI (`UI-12`: HUD, menus, save browser, card inspectors, select-tool pick and highlights), with road
+types' turn pockets (`ROAD-128`), posted speed limits with signs (`ROAD-129`) and build-menu icons (`TOOLS-29`), is
+merged on the branch `icon-ui-merge` over `dev` `aadb87c98`, ported to `dev`'s road tool; not on `dev`, not gated or
+timed, awaiting the user's play test ([pockets](roads.md#turn-pockets-road-95), [HUD](ui.md#2-bottom-toolbar)).
 
 Parking (`PARK-01`, `PARK-02`, `PARK-05`, Veeti's `feat/parking`) landed on `dev` on 2026-11-07 at
 save format 118. The user accepted its `PERF-07` miss at 30k 32× (`PERF-17`): the gate fails there, on

@@ -341,21 +341,39 @@ The acceptance (`TRAFFIC-23`) is in [`traffic.md`](traffic.md#advance-lane-choic
 
 ### Turn pockets (`ROAD-95`)
 
-**Road-type defaults (`ROAD-119`).** A custom type can request Left, Right or both, with
+**Road-type defaults (`ROAD-128`).** A custom type can request Left, Right or both, with
 neither selected meaning none. Its body length uses the existing 60 m default and 20–300 m
-range in 10 m steps. On a stroke, only its new incoming car approaches at junctions receive
-these requests, including both endpoints and intermediate crossings/joins. Resident roads
-and their split descendants do not acquire the selected type's pockets. Targets are captured
+range in 10 m steps. The pockets are part of the road tool's road type in Rust
+(`RoadTypeSpec::pockets`, filled from the library by `road_tool_set_road_type`; GDScript holds
+no copy and has no setter), so picking a type that differs only in its pockets previews the
+stroke again. On a stroke, only its own new incoming car approaches at junctions receive
+these requests, including both endpoints and intermediate crossings/joins. The stroke's own
+edges are those left after its plan's splits and dissolves (`AppliedRoadTopology::stroke_edges`):
+a part of the stroke that merges into a resident road (a joint dissolved into it, `ROAD-118`
+round JS2) and a grown road end (round JS5c) are resident and take none, and resident roads
+and their split descendants do not acquire the selected type's pockets. **Open for the user
+(2026-11-19):** a resident road's end that merges into a stroke edge (a stroke starting at that
+road's dead end and then crossing the same road near it) keeps the stroke edge's id, so the
+merged edge counts as the stroke's and can get a pocket. Targets are captured
 in stroke-edge/end order and followed through local split lineage, so the two ends remain
-independent. Every request runs the existing pocket edit's checks, land take and dependent
+independent; an approach without a live descendant is skipped and logged on `road`
+(`stroke_pocket_approach_skipped`), identically on hover and commit, never a panic. Every
+request runs the existing pocket edit's checks, land take and dependent
 migration. A refusal leaves that approach without a pocket, keeps the road, and shows the
-existing Rust reason in a short label over the junction that fades after four seconds.
+existing Rust reason in a short label over the junction that fades after four seconds. A
+refusal is normal where the approach lacks the turn, such as a left pocket on a T's approach
+that has no left turn (`pocket_movement_missing`).
 The two requested roles are one existing pocket request: if either cannot be offered, that
 approach receives neither. Editing an existing road's type does not apply these drawing defaults: nor does a graded stroke that the
 road tool cuts into ground, bridge and tunnel parts (`ROAD-112` batch commit), whose strokes
-commit without the type's pockets.
+commit without the type's pockets; an accepted limit (the user, 2026-11-19), tracked as
+`ROAD-130`. A refused stroke's `road_attempt` record carries the type's pockets (none for such
+a cut stroke), and its replay requests the recorded ones, not the road tool's current type's
+([`debug.md`](debug.md#road-rejections)).
 
-The stroke and accepted pockets publish together and have one composed local undo record.
+The stroke and accepted pockets publish together and have one composed local undo record, which
+also holds the pockets' build cost: undo refunds the stroke and its pockets together (the branch
+refunded only the road).
 Graph and paint inverses retain pre-stroke values; dependent migrations restore in reverse.
 As with existing road edits, demolished buildings are not resurrected by undo. Hover runs the
 same pocket checks on its local graph replica and shows the accepted pockets. Final graded
@@ -11969,8 +11987,11 @@ Rounds RB3a (Rust model, library and stroke), RB3b and RB3b2 (in place, costs), 
 2026-11-03/04. The user's decisions of 2026-11-03 are binding: sidewalks none or both,
 independent of zoning; speed per type; costs by type; Road Properties changes all three in place.
 
-- **Attributes.** A type has `speed_kmh` (a Finnish posted limit, 20, 30, 40, 50, 60, 70, 80, 100 or 120 km/h, each with its C32 sign; Finland posts no 90 or 110; `speed_out_of_range` off the
-  grid; every built-in 50; a walkway has none and lists 0), `sidewalks` (its sides, `ROAD-107`:
+- **Attributes.** A type has `speed_kmh` (a Finnish posted limit, 20, 30, 40, 50, 60, 70, 80, 100 or 120 km/h, each with its C32 sign, `ROAD-129`; Finland posts no 90 or 110; `speed_out_of_range` off the
+  grid; every built-in 50; a walkway has none and lists 0; an accepted limit, the user
+  2026-11-19: a custom type saved at 90 or 110 km/h under the old grid of 10 km/h steps is
+  listed as unusable with `speed_out_of_range` until the player edits it, and a built road at 90
+  or 110 km/h keeps its speed with no sign), `sidewalks` (its sides, `ROAD-107`:
   0 none, 1 left, 2 right, 3 both) and `zoning`. A stroke carries them as `RoadAttributes` from `set_road_tool_attributes` through the
   preview, commit, attempt record and plan (`is_for`: preview = commit); the edge gets `FOOT`
   only with sidewalks, `speed_limit = speed_kmh / 3.6` (50 bitwise the old default) and
@@ -12140,7 +12161,8 @@ D1-D5, D22, D23).
 
 #### The road builder (ROAD-101, round RB2)
 
-**Built-in turn pockets (`ROAD-119`, branch `feat/road-type-pockets`).** The builder has
+**Built-in turn pockets (`ROAD-128`, Veeti Reis's `feat/road-type-pockets`, merged with the icon UI
+on the branch `icon-ui-merge`).** The builder has
 independent Left/Right arrow switches and a metre stepper, using Rust's Junction-window limits.
 The cross-section stage annotates the selected arrows and length “at junctions”, because these
 are local approach lanes rather than lanes along the whole type. Neither switch means none;
@@ -12159,7 +12181,8 @@ to no pockets; malformed lengths are rejected without rewriting the file. City s
 unchanged: placed pockets use the existing edge records. See [Turn pockets](#turn-pockets-road-95)
 for drawing, hover, refusal and undo semantics.
 
-ROAD-119 validation (2026-11-12, Apple M2 Pro, two Rayon workers, unpinned release runs):
+`ROAD-128` validation on Veeti's branch, before the merge onto `dev`'s road tool (2026-11-12,
+Apple M2 Pro, two Rayon workers, unpinned release runs; the merged tree is not measured yet):
 `cargo test --lib road_type` passed 31 tests (2 ignored); `cargo test --lib road_pockets`
 passed 31 (3 ignored). `cargo clippy --all-targets` is clean. `cargo doc --no-deps` succeeds
 with no missing-doc warnings (28 existing private-link warnings). The final `./run.sh --test`
@@ -12229,7 +12252,7 @@ Opening re-reads the library file and starts a new layout, the 2-Lane Road's.
   controls' speed, zoning and street lights: an edited type keeps its own. Zoning is disabled
   with no sidewalk on either side, its value kept (`ROAD-109`).
 - **Name and create.** The footer's name field shows Rust's suggested name ("2+2 Grass 3 m";
-  a type with turn pockets adds " Pocket L", " Pocket R" or " Pockets", `ROAD-119`) until the
+  a type with turn pockets adds " Pocket L", " Pocket R" or " Pockets", `ROAD-128`) until the
   player types one. Create road (Save when editing) is enabled only when the layout
   passes and `check_road_type_name` accepts the name (empty, over 40 characters, control
   characters, or another type's name ignoring case, built-ins included) and the library can be
