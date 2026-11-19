@@ -18365,6 +18365,12 @@ base pose; a local input, never the player's save itself), the benchmark's base 
   frames of 27-34 ms; capped at 4 or 6 background workers, none (p95 9.4-9.5 ms) and no content
   later, but the load to settled 0.2-0.9 s longer (single runs). The pinned rows never saw it:
   they run eight workers a pool.
+  **Corrected by analysis A-BG (2026-11-19):** "on every map" and "no content later" hold only
+  against this machine's default, an 8 P + 8 E hybrid CPU. The owner is the main thread's clock,
+  not the pool's CPU time: the background bursts over both kinds of core leave the main thread on
+  slowed CPUs. On the homogeneous shapes emulated (6 to 16 logical CPUs) the default pools drop no
+  frame, and a smaller pool only brings fewer tiles in a fast turn and lengthens the load
+  ([record](#background-work-and-the-main-threads-clock-render-27-analysis-a-bg-and-round-bg-t-2026-11-19)).
 - Not owners: the far view's GPU (4-9 ms throughout), residency churn (the residency is already
   a square around the camera, `CODE-12`, so `RENDER-57`'s lever (1) is void; a turn brings tiles in
   because the orbit moves the eye), and pipeline compiles, which stall cold caches only
@@ -18505,6 +18511,142 @@ fixed target, the in-place refresh) and fails only its stale shader-text asserti
 and godot-vehicle PASS, no SCRIPT ERROR). No Rust changed: no clippy run and no level F
 timing (`timing_session.py`'s path rule puts `godot/`, `tools/` and `docs/` at no timing; the
 library is the control's own build), the changed per-frame path timed by the rows above.
+
+### Background work and the main thread's clock (`RENDER-27`, analysis A-BG and round BG-T, 2026-11-19)
+
+A1 found that the as-played 30k turns drop frames with the default pools and not with 4-6
+background workers. The user asked how a count tuned on one machine could be right for all
+machines (2026-11-19). Fable's analysis A-BG (read only, `dev` `3c1c2a38`) measured why and on
+which machines. Round BG-T added the rows that measure it to the stream benchmark. Both were
+decided under the user's night delegation, 2026-11-19, for review.
+
+**Method.**
+- The stream benchmark's `still,turns` phases at 4K on the 30k city of record, paused, run in
+  gamescope headless at 1000 Hz under the timing locks.
+- As played: unpinned and `RAYON_NUM_THREADS` unset, so each pool has one worker per logical CPU
+  the process may use.
+- A machine profile: the whole process tree under `taskset -c <list>`. Rayon sizes both pools
+  from that set. Godot's `WorkerThreadPool` does not: it kept 24 threads in every profile.
+- This CPU is an i9-12900K: P-cores are logical CPUs 0-15 in SMT pairs, E-cores 16-23.
+- Measurement libraries: `dev` plus environment knobs that are off by default and were never
+  committed. The knobs set the pool sizes, a background priority class, the load's jobs on the
+  shared pool, the bake grain and a limit on bakes in flight.
+- Instruments, all unprivileged:
+  - the main thread's `schedstat`, read each frame;
+  - every thread group's scheduler statistics for each phase;
+  - `perf stat` on the main thread (cycles, instructions, cache misses, migrations, and APERF/MPERF
+    for its real clock);
+  - `perf record` of the main thread and the pool workers;
+  - a profile of the main thread's context switches;
+  - affinity applied from outside with `taskset -cp` after the load call, as a diagnostic.
+- One run a cell unless a range shows more. Three turns of each duration are pooled.
+- Every row ran under `intel_pstate` (`powersave`, `balance_performance`), the machine's own
+  setting.
+
+**The mechanism (the whole machine: 24 logical CPUs, default pools).**
+- The main thread loses no CPU time to the background workers. A frame over 16.7 ms waits
+  0.33 ms on a run queue and is blocked 0.9 ms, the same as a fast frame. It runs the same
+  30-34 M cycles a frame (instructions, IPC, cache misses and kernel share unchanged) as with six
+  workers.
+- What changes is the clock of the CPU it runs on: 3.1-3.5 GHz with the default pools, 4.4-4.6
+  with six background workers, and 4.9 when the main thread is held on one P-core. At 4.5 GHz a
+  turn frame's cycles take 6.9 ms, under the GPU's 8.7 ms. At 3.1 GHz they take 10 ms, and on an
+  E-core at 2.4 GHz 13 ms. Frames over 16.7 ms follow the clock row for row.
+- The main thread sleeps about 24 times a frame. About 20 of those sleeps are upstream Godot's
+  X11 display server making synchronous round trips for the window's state (`RENDER-62`). It moves
+  CPU about 220 times a second in every configuration.
+- While 24 workers light CPUs of both kinds in bursts, the CPUs the main thread lands on run
+  slowly. This kernel gives P- and E-cores the same `cpu_capacity`, so placement does not steer
+  by core kind. Why the hardware clocks those CPUs lower is inferred, not proven: HWP picks each
+  CPU's frequency from that CPU's recent load. The governor was not changed to test this.
+- With another program's eight busy loops running, the default pools drop no frame and the clock
+  is 4.0 GHz. With twenty busy loops every configuration drops frames, now from want of CPU time.
+- The 24-worker pool is three times wider than the work: a 1 s turn's 2,715 tiles cost 7.1-7.7
+  CPU-seconds against 2.4 on six workers. About 2.0 CPU-seconds a second are Rayon's steal,
+  search, `sched_yield` and wake-ups. The shared pool adds 1.7-1.9 in a paused game (`PERF-31`).
+
+**Three classes of machine** (default pools, 30k, 4K, paused; frames over 16.7 ms a turn, 1 s /
+0.5 s turns):
+
+| class | profiles emulated | default | what a smaller pool does |
+|---|---|---|---|
+| large hybrid (P + E, 16 logical CPUs or more) | 8 P + 8 E (24), 6 P + 8 E (20), 8 P without SMT + 8 E (16), 4 P + 8 E (16) | 4.0-10.0 / 3.3-6.7, 3.7 / 2.7, 1.7-5.3 / 0.3-3.3, 0.7 / 2.0 | removes the drops |
+| homogeneous, 6-16 logical CPUs, and the small hybrids | 8 P with SMT, 6 P with SMT, 8 P, 4 P with SMT, 6 P; 4 P + 4 E, 2 P + 8 E, 4 P + 4 E without SMT | 0.0-0.3 / 0.0-0.3, p95 9.3-11.6 ms | nothing for the frames; a quarter-size pool brings fewer tiles in a 0.5 s turn (17-48 % on the homogeneous shapes, 23-46 % on the small hybrids) and adds 0.5-1.8 s of load |
+| four logical CPUs or fewer | 4 P, 2 P with SMT, 4 E | 0.7 / 0.3, 10.3-10.7 / 5.0-6.0, 10.7 / 11.7; the main thread waits 1.7-3.5 ms a frame for a CPU | here CPU time is the owner; `SCHED_IDLE` workers take two cores with SMT to 2.0 / 2.0, with the same tiles and load |
+
+**The levers** (the whole machine unless named; diagnostics marked):
+
+| lever | frames over 16.7 ms a turn, 1 s / 0.5 s | across profiles | cost and risk |
+|---|---|---|---|
+| default | 4.0-10.0 / 3.3-6.7 (5 runs) | | load 12.27-12.69 s |
+| main thread held on one P-core (affinity from outside, a diagnostic) | 0 / 0 (3 runs), p95 9.3 ms, tiles in a 0.5 s turn 2,691-2,713 against 1,600-1,777 | measured on the whole machine only | `unsafe` FFI or a crate. The core must be a fast one. A held thread is worse than a free one when another program saturates the machine (16.0 against 11.3 frames over a turn with twenty busy loops) |
+| at most six background workers, the load's jobs on the shared pool until the hand-over | 0.0-0.3 / 0.0-0.7 (8 runs), load 12.32-12.80 s | level on the fast-core shapes | safe Rust, but a count tuned on this CPU's core speed; a likely fill-in trade on slow many-core CPUs |
+| `SCHED_IDLE`, `SCHED_BATCH`, `nice` 10 or 19 workers | 5.3-7.7 / 2.3-7.0 (9 rows) | helps only at four CPUs or fewer | FFI. Cannot be undone by the thread on Linux |
+| a limit on the graded bakes in flight (24, 8) | 10.0 / 4.3, 8.3 / 8.0 | | content behind, load 13.4 and 16.9 s; rejected |
+| a quarter-size pool (A1's BG1) | removes the drops on large hybrids | harms every homogeneous shape | rejected |
+| a coarser bake grain (4-32 tiles) | 0.3-1.0 / 0.7-1.3 | fewer tiles on 16 and 8 homogeneous CPUs | a partial fix |
+| Godot's Wayland display driver | 3.0 / 1.0 (one run) | not measured | a setting; did not exit under gamescope's headless backend |
+
+- Determinism: the settle digests of a still and of the turns were equal in every family on the
+  30k city between two default runs, and between the default and both `SCHED_IDLE` workers and
+  six workers with the load on the shared pool. On the Kuopio city they were equal between the
+  default and the six-worker lever. No lever changes what a pure job computes or
+  touches the shared pool's size, which the simulation reads.
+- The levers wait for the user in `PERF-30`, with its bars across profiles. A-BG's order: first
+  one as-played row under the `performance` governor (`gamemoderun`), which tells how much of
+  this is the machine's power policy; then the held core if `unsafe` or a dependency is
+  acceptable, else the six-worker cap. No lever was built at night.
+- Limits: an affinity set gives the count and kind of CPUs. It does not give a smaller cache, a
+  laptop's power limit, another governor, or an AMD or ARM layout. No Windows or macOS machine
+  was measured. Windows 11 and macOS do steer background QoS threads to E-cores, so the mechanism
+  may not carry over. Gamescope headless has no vsync and no compositor.
+
+**Round BG-T: the as-played and machine-profile rows** (branch `bench-as-played`; tooling and
+docs only, no library or game script change):
+- `tools/stream_benchmark.py run|series --as-played` runs unpinned with the game's default pools
+  (`RAYON_NUM_THREADS` unset).
+- `--cpus <list or profile>` runs the whole game inside a CPU set. Profiles are named in the local
+  timing settings' `cpu_profiles`, because CPU numbering belongs to the machine. On this
+  machine: `whole` `0-23`, `6p8e` `0-11,16-23`, `4p8e` `0-7,16-23`, `8p-smt` `0-15`, `8p`
+  `0,2,4,6,8,10,12,14`, `4p-smt` `0-7`, `2p-smt` `0-3`. Without `--as-played` a set keeps eight
+  workers a pool.
+- Both rows record their placement and the cpufreq driver, governor and energy preference
+  (`row_mode`). On Linux they also sample Godot's main thread from outside the game every
+  10 ms, found by its `--log-file`. The samples are `/proc/<pid>/task/<tid>/schedstat`, the
+  thread's `sched` (`se.nr_migrations`) and `stat` (state and last CPU), and that CPU's
+  `scaling_cur_freq`. The measured thread does no extra work and nothing depends on `perf`.
+- The samples are joined to each phase by the rows' wall clock (`t_unix`). Each phase reports, a
+  frame: on-CPU ms, run-queue wait ms and timeslices. It also reports CPU changes a second, and
+  the mean clock and the E-cores' share over the samples where the thread was running or
+  runnable (`main_thread_sched`, printed by `summary`; raw samples in `<label>.sched.json`).
+  Elsewhere the report says "not measured".
+- The pinned rows' command, environment, identity and report are unchanged, and `compare` reads
+  old reports. Tests: `tools/test_stream_benchmark.py` (placement, profiles, the `/proc` parsing,
+  the join, the fallback).
+
+The proof rows (2026-11-19 06:29-06:33, `dev`'s release library (Rust identical to `3c1c2a38`)
+with the branch's scripts, 30k, 4K, paused, the turns pooled; not a timing acceptance):
+
+| row | 1 s turns: p50 / p95, >16.7 a turn | 0.5 s turns: p50 / p95, >16.7 a turn | graded tiles a turn, 1 s / 0.5 s | main thread a frame on the 1 s turns: run-queue wait ms, timeslices | migrations /s | clock GHz, 1 s / 0.5 s | E-core share | load s |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| as played (2 runs) | 9.67-9.96 / 16.1-19.2, 3.3-6.7 | 11.02-11.26 / 17.6-19.0, 3.0-5.0 | 2,715 / 1,815-1,843 | 0.08-0.12, 23 | 177-231 | 2.97-3.18 / 3.27-3.40 | 13-21 % | 12.28-12.38 |
+| `--cpus 2p-smt` (1) | 10.96 / 18.0, 8.0 | 11.84 / 17.3, 3.3 | 2,119 / 1,154 | 2.97-3.13, 27 | 114-116 | 4.98 / 4.97 | 0 % | 22.03 |
+
+- Both reproduce A-BG's rows. The as-played rows match its default on frames over, p95 and the
+  clock (3.1 / 3.5 GHz by APERF/MPERF). The two-core row matches A-BG's 10.3-10.7 / 5.0-6.0 frames
+  over, 3.5 ms of wait and 22.7-23.4 s of load: this machine's CPU time is the owner there.
+- One more as-played row ran first beside this round's own `git log -S` searches, one CPU
+  90-100 % busy. It dropped no frame (p95 9.9 / 11.8 ms) and its main thread ran at 4.6-4.7 GHz.
+  This is one run and contaminated, so it is left out of the table. It agrees with A-BG's finding
+  that the machine's load raises the clock, and it shows why an as-played row is a guard read
+  against its own control's spread and never beside other work.
+
+```bash
+tools/stream_benchmark.py run --label 30k-asplayed-b --as-played --save <populated_city_30000.sqlite> \
+    --resolution 3840x2160 --phases still,turns --turns 1,0.5 --library <dev release .so> --out "$ARTIFACTS/rows"
+tools/stream_benchmark.py run --label 30k-2psmt --as-played --cpus 2p-smt ...    # a machine profile
+tools/stream_benchmark.py summary "$ARTIFACTS/rows/30k-2psmt.metrics.json"
+```
 
 ### First-use pipelines at the load (`RENDER-43`, round R43, 2026-11-17)
 

@@ -1591,7 +1591,8 @@ CPU; skipped with a note where the OS has no affinity call), sets `RAYON_NUM_THR
 `METRUM_DEBUG=0`, unsets the display, refuses a binary whose SHA-256 changed since the plan, and
 holds each row while `godot`, `cargo` or `rustc` runs or a local quiet window would overlap it.
 Machine-specific settings (the CPU list, more busy processes, quiet and no-cache windows, and the
-lock commands wrapped around the prepare and timed phases) live in an untracked
+lock commands wrapped around the prepare and timed phases, and the named CPU sets
+`cpu_profiles` of the stream benchmark's machine-profile rows, `PERF-23`) live in an untracked
 `timing-session.json` in the main checkout's Cargo target directory, or `$METRUM_TIMING_SETTINGS`.
 
 ```bash
