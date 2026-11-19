@@ -16,6 +16,7 @@ extends Node3D
 const SceneLighting := preload("res://scripts/core/scene_lighting.gd")
 const SHADER := preload("res://scripts/shaders/street_light.gdshader")
 const GLOW_SHADER := preload("res://scripts/shaders/street_light_glow.gdshader")
+const PipelineTemplate := preload("res://scripts/renderers/pipeline_template.gd")
 const MODEL_DIR := "res://assets/models/street_lights/"
 # Indexed by the Rust `StreetLightKind`.
 const MODELS: Array[String] = ["SL-RES-STEEL", "SL-RES-WOOD", "SL-MAIN", "SL-MEDIAN", "SL-PATH"]
@@ -259,6 +260,13 @@ func clear() -> void:
 ## `shadow_variants.gd`; the game always casts).
 func set_cast_shadows(cast: bool) -> void:
 	_book.set_cast_shadows(cast)
+
+## The menu's pipeline prewarm templates (`RENDER-43`): the lamps' shader on the merged lamp
+## meshes' vertex format (`_merged`: positions, normals, colours, UVs) and the glow's on its quad.
+static func pipeline_prewarm_surfaces() -> Array:
+	var format := Mesh.ARRAY_FORMAT_NORMAL | Mesh.ARRAY_FORMAT_COLOR | Mesh.ARRAY_FORMAT_TEX_UV
+	return [[PipelineTemplate.format_mesh(format), PipelineTemplate.bare(SHADER)],
+		[QuadMesh.new(), PipelineTemplate.bare(GLOW_SHADER)]]
 
 static func _ensure_meshes() -> void:
 	if not _meshes.is_empty():

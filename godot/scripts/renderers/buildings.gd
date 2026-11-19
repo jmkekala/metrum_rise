@@ -93,6 +93,19 @@ func _create_fallback_mesh() -> ArrayMesh:
 	mesh.surface_set_material(0, mat)
 	return mesh
 
+# The construction sites' see-through shell.
+static func _site_material() -> Material:
+	var mat := StandardMaterial3D.new()
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	mat.roughness = 0.9
+	mat.albedo_color = Color(0.24, 0.23, 0.20, 0.72)
+	return WindowMaterials.create(mat)
+
+## The menu's pipeline prewarm template of the site batches (`RENDER-43`): the shells'
+## see-through variant on their BoxMesh (the foundations' plain variant is the buildings').
+static func pipeline_prewarm_surfaces() -> Array:
+	return [[BoxMesh.new(), _site_material()]]
+
 func _setup_construction_site() -> void:
 	var mmi := MultiMeshInstance3D.new()
 	var mm := MultiMesh.new()
@@ -100,11 +113,7 @@ func _setup_construction_site() -> void:
 	mm.instance_count = 0
 	var mesh := BoxMesh.new()
 	mesh.size = Vector3.ONE
-	var mat := StandardMaterial3D.new()
-	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	mat.roughness = 0.9
-	mat.albedo_color = Color(0.24, 0.23, 0.20, 0.72)
-	mesh.material = WindowMaterials.create(mat)
+	mesh.material = _site_material()
 	mm.mesh = mesh
 	mmi.multimesh = mm
 	SceneLightingConfig.apply_shadow_policy(

@@ -17,7 +17,8 @@ const WindowMaterials := preload("res://scripts/renderers/window_materials.gd")
 const FORMAT_MASK := (((1 << 25) - 1) & ~Mesh.ARRAY_FORMAT_INDEX) | Mesh.ARRAY_FLAG_USE_2D_VERTICES \
 	| Mesh.ARRAY_FLAG_COMPRESS_ATTRIBUTES
 
-## The inventory of `main`'s world: `drawn` (key to its count and up to four node paths),
+## The inventory of `main`'s world: `drawn` (key to its node count with up to four node paths,
+## and its building looks' count),
 ## `untemplated` (the drawn keys no template holds), `window_variants` (every variant of the
 ## window shader made, by code hash, with whether a template holds it), `slots` (each stream
 ## layer's vertex formats with whether a template has the format) and `templates` (the count).
@@ -32,7 +33,7 @@ static func collect(main: Node) -> Dictionary:
 			var mesh := look[0] as Mesh
 			if mesh != null:
 				for surface in mesh.get_surface_count():
-					_count(drawn, surface_key(mesh, surface, look[1] as Material), "building look")
+					_count(drawn, surface_key(mesh, surface, look[1] as Material), "", true)
 	var templated := {}
 	var formats := {}
 	for pair: Array in PipelinePrewarm.templates():
@@ -112,9 +113,13 @@ static func _walk(node: Node, drawn: Dictionary) -> void:
 	for child in node.get_children(true):
 		_walk(child, drawn)
 
-static func _count(drawn: Dictionary, key: String, where: String) -> void:
-	var entry: Dictionary = drawn.get(key, {"count": 0, "at": []})
-	entry.count += 1
-	if (entry.at as Array).size() < 4:
-		(entry.at as Array).append(where)
+# A building look counts in `looks`, a node in `count` with its path in `at` (the first four).
+static func _count(drawn: Dictionary, key: String, where: String, look := false) -> void:
+	var entry: Dictionary = drawn.get(key, {"count": 0, "looks": 0, "at": []})
+	if look:
+		entry.looks += 1
+	else:
+		entry.count += 1
+		if (entry.at as Array).size() < 4:
+			(entry.at as Array).append(where)
 	drawn[key] = entry

@@ -22,6 +22,14 @@ const GrassRenderer := preload("res://scripts/renderers/grass.gd")
 const TreeSpecies := preload("res://scripts/renderers/tree_species.gd")
 const TerrainGradedTiles := preload("res://scripts/renderers/terrain_graded_tiles.gd")
 const WaterReflection := preload("res://scripts/renderers/water_reflection.gd")
+const AgentsRenderer := preload("res://scripts/renderers/agents.gd")
+const VehicleResources := preload("res://scripts/renderers/vehicle_resources.gd")
+const VehicleLamps := preload("res://scripts/renderers/vehicle_lamps.gd")
+const BuildingsRenderer := preload("res://scripts/renderers/buildings.gd")
+const BuildingLods := preload("res://scripts/renderers/building_lods.gd")
+const WorldMaterials := preload("res://scripts/renderers/world_materials.gd")
+const StreetLights := preload("res://scripts/renderers/street_lights.gd")
+const RoadSigns := preload("res://scripts/renderers/road_signs.gd")
 
 ## A group's name, its pairs' builder (a Callable answering `[Mesh, Material or null]` pairs) and
 ## whether the water mirror draws it (its pipelines are also wanted at the mirror's MSAA).
@@ -85,15 +93,35 @@ static func groups() -> Array[Dictionary]:
 		out.append(_group("vegetation_%d" % species, func() -> Array:
 			return VegetationRenderer.pipeline_prewarm_species(species)))
 	out.append(_group("impostors", func() -> Array: return VegetationRenderer.pipeline_prewarm_impostors()))
+	# The sets the world scene makes at its start, before any content: the cars, their lamps and
+	# beams, the walkers, the site batches, the grass clumps and the world's borders.
+	out.append(_group("first_frame", func() -> Array:
+		var pairs := VehicleResources.pipeline_prewarm_surfaces()
+		pairs.append_array(VehicleLamps.pipeline_prewarm_surfaces())
+		pairs.append_array(AgentsRenderer.pipeline_prewarm_surfaces())
+		pairs.append_array(BuildingsRenderer.pipeline_prewarm_surfaces())
+		pairs.append_array(GrassRenderer.pipeline_prewarm_clumps())
+		pairs.append_array(TerrainRenderer.pipeline_prewarm_border())
+		pairs.append_array(WaterRenderer.pipeline_prewarm_border())
+		return pairs))
 	# The graded tiles' base cells: the terrain shader on the lattice's vertex format.
 	out.append(_group("base_cells", func() -> Array: return TerrainGradedTiles.pipeline_prewarm_base_cells()))
-	# What the water mirror draws, at its MSAA too: the terrain proxies and the tree impostors.
+	# What the water mirror draws, at its MSAA too (and, with the setting restored, at the game's):
+	# the terrain proxies, the tree impostors, the building tiers and the site batches.
 	var mirror := func() -> Array:
 		var pairs := WaterReflection.pipeline_prewarm_surfaces()
 		for species in [TreeSpecies.CONIFER, TreeSpecies.BROADLEAF]:
 			pairs.append([TreeSpecies.impostor_mesh(), TreeSpecies.impostor_material(species)])
+		pairs.append_array(BuildingLods.pipeline_prewarm_surfaces())
+		pairs.append_array(BuildingsRenderer.pipeline_prewarm_surfaces())
 		return pairs
 	out.append(_group("mirror", mirror, true))
+	# Worlds with roads: the chunk layers, then the street lights and the signs.
+	out.append(_group("roads", func() -> Array: return WorldMaterials.pipeline_prewarm_roads()))
+	out.append(_group("lights_signs", func() -> Array:
+		var pairs := StreetLights.pipeline_prewarm_surfaces()
+		pairs.append_array(RoadSigns.pipeline_prewarm_surfaces())
+		return pairs))
 	return out
 
 ## Every group's pairs, in order (the benchmark's inventory). Builds them all at once.

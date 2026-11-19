@@ -6,6 +6,7 @@ extends RefCounted
 
 const WindowMaterials := preload("res://scripts/renderers/window_materials.gd")
 const VehicleLamps := preload("res://scripts/renderers/vehicle_lamps.gd")
+const PipelineTemplate := preload("res://scripts/renderers/pipeline_template.gd")
 const MODELS := {
 	0: "res://assets/models/vehicles/civilian/sedan.glb",
 	1: "res://assets/models/vehicles/civilian/sedan-sports.glb",
@@ -160,15 +161,28 @@ func _merged_body_arrays(surfaces: Array, scale: float, y_offset: float) -> Arra
 	return arrays
 
 func _vehicle_glb_material(model_path: String) -> Material:
+	var albedo := _load_source_texture(model_path.get_base_dir() + "/Textures/colormap.png")
+	return car_material(albedo, draw_fade_m)
+
+## A car body's material: `albedo` through the building shader, receiving no shadows, dithered
+## out over `fade_m` (the draw distance fade band from the camera in metres).
+static func car_material(albedo: Texture2D, fade_m: Vector2) -> Material:
 	var mat := StandardMaterial3D.new()
-	mat.albedo_texture = _load_source_texture(model_path.get_base_dir() + "/Textures/colormap.png")
+	mat.albedo_texture = albedo
 	mat.albedo_color = Color.WHITE
 	mat.roughness = 0.8
 	mat.metallic = 0.0
 	mat.cull_mode = BaseMaterial3D.CULL_BACK
 	mat.disable_receive_shadows = true
 	# Through the building shader, so the clouds dim the sun on cars as on the street.
-	return WindowMaterials.create(mat, false, WindowMaterials.DEFAULT_BRIGHTNESS, draw_fade_m)
+	return WindowMaterials.create(mat, false, WindowMaterials.DEFAULT_BRIGHTNESS, fade_m)
+
+## The menu's pipeline prewarm template of the cars (`RENDER-43`): their material's shader
+## variant (the fade's, any band selects it) on the bodies' vertex format (positions, normals,
+## tangents, UVs).
+static func pipeline_prewarm_surfaces() -> Array:
+	var format := Mesh.ARRAY_FORMAT_NORMAL | Mesh.ARRAY_FORMAT_TANGENT | Mesh.ARRAY_FORMAT_TEX_UV
+	return [[PipelineTemplate.format_mesh(format), car_material(null, Vector2.ONE)]]
 
 func _collect_glb_node_surfaces(
 	doc: Dictionary,

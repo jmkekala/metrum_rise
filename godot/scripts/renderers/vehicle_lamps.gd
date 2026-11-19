@@ -15,6 +15,7 @@ extends RefCounted
 
 const GLOW_SHADER := preload("res://scripts/shaders/vehicle_lamp_glow.gdshader")
 const BEAM_SHADER := preload("res://scripts/shaders/vehicle_headlight_beam.gdshader")
+const PipelineTemplate := preload("res://scripts/renderers/pipeline_template.gd")
 # Metadata on the mesh: body surface count and body AABB, before the lamp surfaces were added.
 const BODY_SURFACES_META := "vehicle_body_surfaces"
 const BODY_AABB_META := "vehicle_body_aabb"
@@ -50,6 +51,13 @@ const GLOW_MATERIAL_KEY := "glow"
 # `materials` is the caller's cache, shared by every model it builds: the glow material under
 # `GLOW_MATERIAL_KEY` and one beam material per `material_key` (it holds that model's lamps).
 # `draw_fade_m`, when set, is the cars' draw distance fade band: the glows fade out with the car.
+## The menu's pipeline prewarm templates (`RENDER-43`): the glow quads' shader on their format
+## (positions, normals, colours, UVs) and the beam boxes' on positions.
+static func pipeline_prewarm_surfaces() -> Array:
+	var glow := Mesh.ARRAY_FORMAT_NORMAL | Mesh.ARRAY_FORMAT_COLOR | Mesh.ARRAY_FORMAT_TEX_UV
+	return [[PipelineTemplate.format_mesh(glow), PipelineTemplate.bare(GLOW_SHADER)],
+		[PipelineTemplate.format_mesh(Mesh.ARRAY_FORMAT_VERTEX), PipelineTemplate.bare(BEAM_SHADER)]]
+
 static func add_surfaces(mesh: ArrayMesh, material_key: String, materials: Dictionary,
 		draw_fade_m := Vector2.ZERO) -> void:
 	var body_surfaces := mesh.get_surface_count()

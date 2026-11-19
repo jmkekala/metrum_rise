@@ -8,6 +8,7 @@ extends RefCounted
 class_name WorldMaterials
 
 const SceneLightingConfig := preload("res://scripts/core/scene_lighting.gd")
+const PipelineTemplate := preload("res://scripts/renderers/pipeline_template.gd")
 
 const MATERIAL_ASPHALT := "asphalt"
 const MATERIAL_CONCRETE := "concrete"
@@ -66,6 +67,24 @@ static func prewarm_road_materials() -> void:
 	road_sidewalk_face_material()
 	road_skirt_material()
 	road_concrete_material()
+
+## The menu's pipeline prewarm templates of the road chunks (`RENDER-43`): each chunk layer's
+## shader (`road_chunk_renderer.gd` `_layer_materials`) on the layers' vertex format (positions,
+## normals, colours, UVs; the asphalt's with its RGBA float crossings in CUSTOM0), and the tunnel
+## lining's shadow caster on positions. The shaders come from this script's cache, so the chunks'
+## materials take the same shader objects.
+static func pipeline_prewarm_roads() -> Array:
+	var layer := Mesh.ARRAY_FORMAT_NORMAL | Mesh.ARRAY_FORMAT_COLOR | Mesh.ARRAY_FORMAT_TEX_UV
+	var mesh := PipelineTemplate.format_mesh(layer)
+	var pairs := []
+	for path: String in [ROAD_FACE_SHADER, ROAD_PATH_SHADER, ROAD_MARKING_SHADER, CONCRETE_SHADER,
+			SITE_GROUND_SHADER]:
+		pairs.append([mesh, PipelineTemplate.bare(_load_shader(path))])
+	pairs.append([PipelineTemplate.format_mesh(layer | Mesh.ARRAY_FORMAT_CUSTOM0),
+		PipelineTemplate.bare(_load_shader(ROAD_ASPHALT_SHADER))])
+	pairs.append([PipelineTemplate.format_mesh(Mesh.ARRAY_FORMAT_VERTEX),
+		PipelineTemplate.bare(_load_shader(TUNNEL_LINING_SHADOW_SHADER))])
+	return pairs
 
 static func road_asphalt_material() -> ShaderMaterial:
 	if _road_asphalt_material == null:

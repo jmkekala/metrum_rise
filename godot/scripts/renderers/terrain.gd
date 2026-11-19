@@ -28,6 +28,8 @@ const TerrainWorldNoise := preload("res://scripts/renderers/terrain_world_noise.
 const RenderDebug := preload("res://scripts/renderers/render_debug.gd")
 const WorldMaterials := preload("res://scripts/renderers/world_materials.gd")
 const TerrainGradedTiles := preload("res://scripts/renderers/terrain_graded_tiles.gd")
+const PipelineTemplate := preload("res://scripts/renderers/pipeline_template.gd")
+const BORDER_SKIRT_SHADER := preload("res://scripts/renderers/terrain_border.gdshader")
 const TERRAIN_COAL_ALBEDO_PATH := "res://assets/textures/general/coal/dark_rock_diff_2k.jpg"
 const TERRAIN_GRAIN_ALBEDO_PATH := "res://assets/textures/general/grain/withered_grass_diff_2k.jpg"
 const HEIGHT_SCALE := 20.0
@@ -262,6 +264,12 @@ static func pipeline_prewarm_surfaces() -> Array:
 	var pairs := [[PlaneMesh.new(), material]]
 	pairs.append_array(TerrainGradedTiles.pipeline_prewarm_surfaces())
 	return pairs
+
+## The menu's pipeline prewarm template of the world's border skirt (`RENDER-43`): its shader on
+## the skirt's vertex format (positions, normals, tangents, UVs).
+static func pipeline_prewarm_border() -> Array:
+	var format := Mesh.ARRAY_FORMAT_NORMAL | Mesh.ARRAY_FORMAT_TANGENT | Mesh.ARRAY_FORMAT_TEX_UV
+	return [[PipelineTemplate.format_mesh(format), PipelineTemplate.bare(BORDER_SKIRT_SHADER)]]
 
 func rebuild_from_simulation_state() -> void:
 	terrain_world_size = simulation_node.get_terrain_world_size()
@@ -2721,7 +2729,7 @@ func _ensure_border_visuals() -> void:
 		add_child(border_bottom_cap_instance)
 	if border_skirt_material == null:
 		border_skirt_material = ShaderMaterial.new()
-		border_skirt_material.shader = load("res://scripts/renderers/terrain_border.gdshader")
+		border_skirt_material.shader = BORDER_SKIRT_SHADER
 		border_skirt_material.set_shader_parameter("skirt_depth_m", TERRAIN_BORDER_DEPTH_M)
 		border_skirt_material.set_shader_parameter("top_color", TERRAIN_BORDER_TOP_COLOR)
 		border_skirt_material.set_shader_parameter("mid_color", TERRAIN_BORDER_MID_COLOR)

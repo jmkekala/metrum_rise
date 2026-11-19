@@ -11,6 +11,7 @@ const BuildingMeshes := preload("res://scripts/renderers/building_meshes.gd")
 const WindowMaterials := preload("res://scripts/renderers/window_materials.gd")
 const SchemeMaterials := preload("res://scripts/renderers/scheme_materials.gd")
 const GameSettings := preload("res://scripts/core/game_settings.gd")
+const PipelineTemplate := preload("res://scripts/renderers/pipeline_template.gd")
 
 var simulation_node: Node
 var catalog: Array = []
@@ -47,6 +48,29 @@ var _looks: Dictionary = {}
 var _reflection_scenario := RID()
 var _linked := false
 var _fresh := false
+
+## The menu's pipeline prewarm templates (`RENDER-43`): the building shader's variants the
+## shipped packs' building tiers draw with, on the tiers' vertex formats (the stream benchmark's
+## inventory, round R43c): plain, two-sided, and two-sided with nearest filtering on positions,
+## normals, tangents and UVs, unshaded on positions, normals, tangents and colours. A pack whose
+## materials make another variant draws it cold once; the inventory names it.
+static func pipeline_prewarm_surfaces() -> Array:
+	var textured := PipelineTemplate.format_mesh(Mesh.ARRAY_FORMAT_NORMAL | Mesh.ARRAY_FORMAT_TANGENT
+		| Mesh.ARRAY_FORMAT_TEX_UV)
+	var coloured := PipelineTemplate.format_mesh(Mesh.ARRAY_FORMAT_NORMAL | Mesh.ARRAY_FORMAT_TANGENT
+		| Mesh.ARRAY_FORMAT_COLOR)
+	var two_sided := StandardMaterial3D.new()
+	two_sided.cull_mode = BaseMaterial3D.CULL_DISABLED
+	var nearest := StandardMaterial3D.new()
+	nearest.cull_mode = BaseMaterial3D.CULL_DISABLED
+	nearest.texture_filter = BaseMaterial3D.TEXTURE_FILTER_NEAREST_WITH_MIPMAPS
+	var unshaded := StandardMaterial3D.new()
+	unshaded.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	var pairs := []
+	for source: StandardMaterial3D in [StandardMaterial3D.new(), two_sided, nearest]:
+		pairs.append([textured, WindowMaterials.create(source)])
+	pairs.append([coloured, WindowMaterials.create(unshaded)])
+	return pairs
 
 func configure(simulation: Node, placeholder: Mesh) -> void:
 	simulation_node = simulation

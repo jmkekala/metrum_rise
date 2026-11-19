@@ -6,6 +6,7 @@ extends Node3D
 
 const WindowMaterials := preload("res://scripts/renderers/window_materials.gd")
 const SceneLightingConfig := preload("res://scripts/core/scene_lighting.gd")
+const PipelineTemplate := preload("res://scripts/renderers/pipeline_template.gd")
 const MODEL_DIR := "res://assets/models/road_signs/"
 # Indexed by Rust RoadSignKind. B1/B6 are assets for later, never placed here. B5-D2 is B5.glb
 # with the D2 disc added under its triangle (`_add_roundabout_disc`); E1-B5-D2 is that with
@@ -84,6 +85,17 @@ func remove_chunk(key: Vector2i) -> void:
 func clear() -> void:
 	for key in _chunks.keys():
 		remove_chunk(key)
+
+## The menu's pipeline prewarm templates (`RENDER-43`): the signs' two-sided variant of the
+## building shader on the sign models' vertex format (positions, normals, tangents, UVs) and on
+## the roundabout disc's (`_add_roundabout_disc`: no UVs).
+static func pipeline_prewarm_surfaces() -> Array:
+	var source := StandardMaterial3D.new()
+	source.cull_mode = BaseMaterial3D.CULL_DISABLED
+	var material := WindowMaterials.create(source, false, 0.0)
+	var disc := Mesh.ARRAY_FORMAT_NORMAL | Mesh.ARRAY_FORMAT_TANGENT
+	return [[PipelineTemplate.format_mesh(disc | Mesh.ARRAY_FORMAT_TEX_UV), material],
+		[PipelineTemplate.format_mesh(disc), material]]
 
 static func _ensure_meshes() -> void:
 	if not _meshes.is_empty():

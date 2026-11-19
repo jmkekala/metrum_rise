@@ -25,6 +25,8 @@ const PerfDebug := preload("res://scripts/core/perf_debug.gd")
 const WindowMaterials := preload("res://scripts/renderers/window_materials.gd")
 const VehicleLamps := preload("res://scripts/renderers/vehicle_lamps.gd")
 const VehicleHeadlights := preload("res://scripts/renderers/vehicle_headlights.gd")
+const PipelineTemplate := preload("res://scripts/renderers/pipeline_template.gd")
+const WALK_SHADER := preload("res://scripts/shaders/pedestrian_walk.gdshader")
 
 @onready var simulation_node = $"../SimulationNode"
 
@@ -62,6 +64,14 @@ var _debug_overlay_visible := false
 var _swarm_us := PackedInt64Array([0, 0, 0, 0])
 var _walker_buckets_uploaded := 0
 
+
+## The menu's pipeline prewarm template of the walkers (`RENDER-43`): their VAT shader on the
+## walker meshes' vertex format (positions, normals, tangents, UV and UV2, compressed).
+static func pipeline_prewarm_surfaces() -> Array:
+	var format := (Mesh.ARRAY_FORMAT_NORMAL | Mesh.ARRAY_FORMAT_TANGENT | Mesh.ARRAY_FORMAT_TEX_UV
+		| Mesh.ARRAY_FORMAT_TEX_UV2)
+	return [[PipelineTemplate.format_mesh(format, true), PipelineTemplate.bare(WALK_SHADER)]]
+
 func _ready():
 	# --- Walker MultiMeshes — VAT (Vertex Animation Texture) pipeline ---
 	# Assets baked from .blend source by tools/bake_vat_blend.py.
@@ -92,7 +102,6 @@ func _ready():
 		3: Vector3(1.0, 0.9, 0.92),
 	}
 
-	var walk_shader = preload("res://scripts/shaders/pedestrian_walk.gdshader")
 	# Walker fade start and draw distance, then the cars', from the camera in metres.
 	var draw: PackedFloat32Array = SimulationNode.get_agent_draw_distances()
 	_vehicles.draw_fade_m = Vector2(draw[2], draw[3])
@@ -147,7 +156,7 @@ func _ready():
 		)
 
 		var mat := ShaderMaterial.new()
-		mat.shader = walk_shader
+		mat.shader = WALK_SHADER
 		mat.set_shader_parameter("vat_texture",    vat_tex)
 		mat.set_shader_parameter("albedo_texture", _load_source_texture(person_palettes[p_type]))
 		mat.set_shader_parameter("num_frames",     WALKER_VAT_FRAMES)

@@ -10,6 +10,7 @@ const GRASS_SHADER := preload("res://scripts/shaders/grass.gdshader")
 const MASK_SHADER := preload("res://scripts/shaders/grass_surface_mask.gdshader")
 const GRADED_MASK_SHADER := preload("res://scripts/shaders/grass_graded_mask.gdshader")
 const GradedTiles := preload("res://scripts/renderers/terrain_graded_tiles.gd")
+const PipelineTemplate := preload("res://scripts/renderers/pipeline_template.gd")
 const CELL_M := 0.8
 # Farthest a clump draws (grain; meadow fades out by 60 m, see grass.gdshader). The vertex shader
 # runs for every cell of the window whether its clump draws or not, so the window is no larger
@@ -210,6 +211,14 @@ func _set_binding(index: int, parameter: StringName, value: Variant) -> void:
 	if _bindings[index].get(parameter) != value:
 		(_draw_at(index).material_override as ShaderMaterial).set_shader_parameter(parameter, value)
 		_bindings[index][parameter] = value
+
+## The menu's pipeline prewarm template of the clumps (`RENDER-43`): their shader on the clump
+## meshes' vertex format (positions, normals, tangents, UVs).
+static func pipeline_prewarm_clumps() -> Array:
+	if not GameSettings.GRASS_ENABLED:
+		return []
+	var format := Mesh.ARRAY_FORMAT_NORMAL | Mesh.ARRAY_FORMAT_TANGENT | Mesh.ARRAY_FORMAT_TEX_UV
+	return [[PipelineTemplate.format_mesh(format), PipelineTemplate.bare(GRASS_SHADER)]]
 
 ## The menu's pipeline prewarm templates (`RENDER-43`): the masks' surface shader on a terrain
 ## patch's PlaneMesh and their graded cells' shader on the cells' vertex format. The masks first

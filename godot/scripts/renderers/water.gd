@@ -15,6 +15,8 @@ const PerfDebug := preload("res://scripts/core/perf_debug.gd")
 const RenderDebug := preload("res://scripts/renderers/render_debug.gd")
 const WaterReflection := preload("res://scripts/renderers/water_reflection.gd")
 const TerrainRenderer := preload("res://scripts/renderers/terrain.gd")
+const PipelineTemplate := preload("res://scripts/renderers/pipeline_template.gd")
+const BORDER_CURTAIN_SHADER := preload("res://scripts/renderers/water_border.gdshader")
 const HEIGHT_SCALE := 20.0
 const SHORE_SOFTNESS_M := 0.26
 const SHORE_FOAM_BAND_M := 0.18
@@ -148,6 +150,13 @@ static func pipeline_prewarm_surfaces() -> Array:
 	var material := ShaderMaterial.new()
 	material.shader = WATER_SHADER
 	return [[mesh, material]]
+
+## The menu's pipeline prewarm template of the world's border curtain (`RENDER-43`): its shader
+## on the curtain's vertex format (positions, normals, tangents, colours, UVs).
+static func pipeline_prewarm_border() -> Array:
+	var format := (Mesh.ARRAY_FORMAT_NORMAL | Mesh.ARRAY_FORMAT_TANGENT | Mesh.ARRAY_FORMAT_COLOR
+		| Mesh.ARRAY_FORMAT_TEX_UV)
+	return [[PipelineTemplate.format_mesh(format), PipelineTemplate.bare(BORDER_CURTAIN_SHADER)]]
 
 func rebuild_from_simulation_state() -> void:
 	var patch_layout: Dictionary = simulation_node.get_terrain_patch_layout()
@@ -1888,7 +1897,7 @@ func _ensure_water_border_visual() -> void:
 		add_child(water_border_instance)
 	if water_border_material == null:
 		water_border_material = ShaderMaterial.new()
-		water_border_material.shader = load("res://scripts/renderers/water_border.gdshader")
+		water_border_material.shader = BORDER_CURTAIN_SHADER
 		water_border_material.set_shader_parameter("shallow_water_color", SHALLOW_WATER_COLOR)
 		water_border_material.set_shader_parameter("deep_water_color", DEEP_WATER_COLOR)
 	water_border_instance.material_override = water_border_material
