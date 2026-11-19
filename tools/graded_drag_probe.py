@@ -14,7 +14,17 @@ settings (`METRUM_GRADED_DRAG_CASES`, `_SWEEP`, `_SWEEP_CONVERGE`, `_HOLE_PIXELS
 `_STROKES`, `_CONTINUE`, ...). Untimed: it takes the shared timing lock, and the run lock with
 `--run-lock` (a 30k+ city).
 
+Timed rows (`TERRAIN-14` round T14Cf): `--timing` runs the probe's timing mode
+(`METRUM_GRADED_DRAG_TIMING`: no per-frame draw check in the frames) and holds the run lock and
+the timing lock exclusive, as `--exclusive` does for an untimed rendered row in a timing session;
+`--prewarm` runs the menu's pipeline prewarm to its end before the first load
+(`METRUM_GRADED_DRAG_PREWARM`, a launch as a player gets it); `--as-played` leaves the run
+unpinned (the frames as played; pinned to the P-cores otherwise). The verdict file then lists the
+swing and drag pose frames of 18-100 ms with their split (scripts before the draw, the draw) and
+every frame over 100 ms with its pipeline compilations.
+
     tools/graded_drag_probe.py --out <dir> --label br-kuopio --env METRUM_GRADED_DRAG_CASES=kuopio_08
+    tools/graded_drag_probe.py --out <dir> --label played-1 --timing --as-played --env METRUM_GRADED_DRAG_SWEEP=30
 """
 
 import argparse
@@ -29,11 +39,17 @@ import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import godot_isolated  # noqa: E402  (the isolated profile, TOOLS-19)
+import timing_session  # noqa: E402  (the main checkout's shared locks)
 
 ROOT = Path(__file__).resolve().parent.parent
-LOCKS = ROOT / "rust/target"
 # A log line that fails the run: a cell drawn with failed instance uniforms renders wrong.
 LOG_FAILURES = ["Too many instances using shader instance variables"]
+# The frames a timed row judges (swing and drag poses), late from LATE_MS (a missed 60 Hz present)
+# to LONG_MS, and long above it (`TERRAIN-14` bars 9 and 10).
+MOVING = ("sweep", "pose")
+LATE_MS = 18.0
+LONG_MS = 100.0
+PIPELINES = ("canvas", "mesh", "surface", "draw", "specialization")
 
 
 def failures(report):
@@ -67,10 +83,87 @@ def verdict(status, log_text, report):
     return out
 
 
-def lock(path, exclusive):
-    handle = open(path, "a")
-    fcntl.flock(handle, fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
-    return handle
+def frame_rows(report):
+    """Every recorded frame row of the report in order, each with `at` (case:attempt:part[index])."""
+    out = []
+    for stroke in report.get("strokes", []):
+        for part in ("sweep", "fast", "undo", "converged"):
+            for index, row in enumerate(stroke.get(part, {}).get("frames", [])):
+                out.append(dict(row, at=f"{stroke.get('case')}:{stroke.get('attempt')}:{part}[{index}]"))
+    return out
+
+
+def frame_summary(report):
+    """The timed row's lines: the late swing and drag pose frames per kind with their split, the
+    frames over LONG_MS with their pipeline compilations, and the compilations over every row (the
+    first row's counted from the settled frame before its drag)."""
+    rows = frame_rows(report)
+    lines = []
+    for kind in MOVING:
+        late = [row for row in rows if row["kind"] == kind and LATE_MS < row["frame_ms"] <= LONG_MS]
+        lines.append(f"{kind} frames {sum(1 for row in rows if row['kind'] == kind)}, late {len(late)}")
+        lines += [f"  late {row['at']} {row['frame_ms']:.1f} ms: scripts {row.get('pre_ms', -1.0):.2f}, draw {row.get('draw_ms', -1.0):.2f}"
+                  for row in late]
+    for row in rows:
+        if row["frame_ms"] > LONG_MS and row["kind"] != "settled":
+            made = {name: count for name, count in zip(PIPELINES, row.get("pipelines", [])) if count}
+            lines.append(f"long {row['at']} {row['kind']} {row['frame_ms']:.1f} ms: pipelines {made}")
+    totals = [sum(column) for column in zip(*(row.get("pipelines", [0] * len(PIPELINES)) for row in rows))]
+    lines.append(f"pipelines over the rows {dict(zip(PIPELINES, totals))}")
+    return lines
+
+
+def probe_env(args):
+    """The probe's settings from the runner's options and `--env` (which wins)."""
+    env = {}
+    if args.timing:
+        env["METRUM_GRADED_DRAG_TIMING"] = "1"
+    if args.prewarm:
+        env["METRUM_GRADED_DRAG_PREWARM"] = "1"
+    for item in args.env:
+        name, _, value = item.partition("=")
+        env[name] = value
+    return env
+
+
+def held_locks(args):
+    """The locks the run holds, (name, exclusive): a timed or `--exclusive` row both exclusive."""
+    if args.timing or args.exclusive:
+        return [(".run.lock", True), (".timing.lock", True)]
+    return ([(".run.lock", True)] if args.run_lock else []) + [(".timing.lock", False)]
+
+
+def pinning(args):
+    """The command's CPU pinning: the P-cores, or none as played."""
+    return [] if args.as_played else ["taskset", "-c", "0,2,4,6,8,10,12,14"]
+
+
+def try_locks(directory, wanted):
+    """Every lock of `wanted` ((name, exclusive) pairs) in `directory` taken at once, as open
+    handles, or None with none held."""
+    held = []
+    for name, exclusive in wanted:
+        handle = open(directory / name, "a")
+        try:
+            fcntl.flock(handle, (fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH) | fcntl.LOCK_NB)
+        except BlockingIOError:
+            handle.close()
+            for other in held:
+                other.close()
+            return None
+        held.append(handle)
+    return held
+
+
+def take_locks(directory, wanted, retry_s=2.0):
+    """`try_locks` until it succeeds. No lock is held while another is waited for: holding one
+    can deadlock against a process that takes them in the other order (a run under
+    `flock -s .timing.lock` waiting for `.run.lock`, seen in round T14Cf)."""
+    while True:
+        held = try_locks(directory, wanted)
+        if held is not None:
+            return held
+        time.sleep(retry_s)
 
 
 def main(argv=None):
@@ -83,6 +176,10 @@ def main(argv=None):
     parser.add_argument("--headless", action="store_true", help="no rendering: the flow only")
     parser.add_argument("--env", action="append", default=[], help="NAME=VALUE for the probe")
     parser.add_argument("--run-lock", action="store_true", help="also hold the run lock (a 30k+ city)")
+    parser.add_argument("--timing", action="store_true", help="the probe's timing mode, a timed row (exclusive locks)")
+    parser.add_argument("--exclusive", action="store_true", help="hold the run and timing locks exclusive (an untimed row in a timing session)")
+    parser.add_argument("--prewarm", action="store_true", help="the menu's pipeline prewarm to its end before the first load")
+    parser.add_argument("--as-played", action="store_true", help="no CPU pinning (the frames as played)")
     parser.add_argument("--timeout", type=int, default=1800)
     args = parser.parse_args(argv)
     out = Path(args.out).resolve()
@@ -116,9 +213,7 @@ def main(argv=None):
         "METRUM_GAMEPLAY_BENCHMARK_PROFILED": "0", "METRUM_GAMEPLAY_BENCHMARK_GPU_PROFILED": "0",
         "METRUM_GAMEPLAY_BENCHMARK_GIT_REVISION": revision, "METRUM_DEBUG": "0",
     })
-    for item in args.env:
-        name, _, value = item.partition("=")
-        env[name] = value
+    env.update(probe_env(args))
     godot = ["godot", "--path", str(project), "--log-file", str(log)]
     # A rendered run names the x11 driver (`RENDER-62`): the frames on record are x11's.
     godot += ["--headless"] if args.headless else ["--display-driver", "x11", "--windowed", "--resolution", "1920x1080"]
@@ -126,12 +221,13 @@ def main(argv=None):
     command = ["sh", "-c", '"$@"; echo $? > "$0"', str(status_file)] + godot
     if not args.headless:
         command = godot_isolated.gamescope_command(["--backend", "headless", "-W", "1920", "-H", "1080"], command)
-    command = ["taskset", "-c", "0,2,4,6,8,10,12,14", "timeout", "--kill-after=10s", str(args.timeout)] + command
+    command = pinning(args) + ["timeout", "--kill-after=10s", str(args.timeout)] + command
     (run_dir / "identity.txt").write_text(
         f"tree {revision}\nlibrary {args.library or 'the godot directory'}\nscripts {args.scripts or 'the tree'}\n"
-        f"env {' '.join(args.env)}\n")
-    held = [lock(LOCKS / ".run.lock", True)] if args.run_lock else []
-    held.append(lock(LOCKS / ".timing.lock", False))
+        f"env {' '.join(f'{name}={value}' for name, value in probe_env(args).items())}\n"
+        f"pinned {not args.as_played}\n")
+    # The main checkout's locks, which its worktrees share.
+    held = take_locks(timing_session.main_target(), held_locks(args))
     stdout = open(run_dir / "out.txt", "w")
     process = subprocess.Popen(command, env=env, stdout=stdout, stderr=subprocess.STDOUT, start_new_session=True)
     stopped = False
@@ -155,6 +251,8 @@ def main(argv=None):
     summary = report.get("summary") if report else None
     lines = [f"graded_drag_probe {args.label}: {'PASS' if not problems else 'FAIL'}",
              f"summary {json.dumps(summary)}"] + [f"  {problem}" for problem in problems]
+    if report:
+        lines += frame_summary(report)
     (run_dir / "verdict.txt").write_text("\n".join(lines) + "\n")
     print("\n".join(lines))
     if not problems:

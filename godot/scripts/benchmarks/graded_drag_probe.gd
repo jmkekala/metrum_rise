@@ -39,12 +39,25 @@
 ## the converged click, the last of which must show the vegetation of the committed road.
 ## METRUM_GRADED_DRAG_PRODUCTS=1 (check-only, `ROAD-112` round C) records each commit's request and
 ## products (`commit_products.gd`) in its drag's `products`, for a bitwise comparison of two runs.
+## Every frame row records the frame's split on Godot's clock (`TERRAIN-14` round T14Cf): `pre_ms`,
+## from the frame's start to `frame_pre_draw` (every script and Rust call before the draw), and
+## `draw_ms`, to `frame_post_draw` (the draw with its present wait); the probe's own `probe_ms`;
+## and `pipelines`, the increase of Godot's five pipeline compilation counters (canvas, mesh,
+## surface, draw, specialization) since the row before, the first row's since the settled frame
+## before the drag. METRUM_GRADED_DRAG_TIMING=1 (the timing mode) leaves the per-frame draw checks
+## out of the frames (`tile_draw_violations`, `hole_patches`, `patches_with_cells`, the preview's
+## entries, the preview road check): 3-9 ms of a frame (T14C) that the frames being timed must
+## not carry; the check rows run without it. METRUM_GRADED_DRAG_PREWARM=1 (rendered runs): before
+## its first load the probe runs the menu's pipeline prewarm (`menu_pipeline_prewarm.gd`,
+## `RENDER-43`) to its end and frees it, as a player who stays in the menu gets it; the probe
+## launches without the menu, so without it every run meets a cold driver cache.
 extends RefCounted
 
 const MANIFEST := "res://../benchmarks/fixtures/kuopio-terrain/placements.json"
 const Vegetation := preload("res://scripts/renderers/vegetation.gd")
 const RoadChunkRenderer := preload("res://scripts/renderers/road_chunk_renderer.gd")
 const CommitProducts := preload("res://scripts/benchmarks/commit_products.gd")
+const MenuPipelinePrewarm := preload("res://scripts/core/menu_pipeline_prewarm.gd")
 const POSES := 8
 # The Godot terrain install share of a pose, commit or undo frame (`terrain.md` budgets).
 const SHARE_MS := 1.0
@@ -52,6 +65,8 @@ const SHARE_MS := 1.0
 const CATCH_UP_LIMIT := 64
 const EDIT_FRAME_LIMIT := 600
 const SETTLE_FRAME_LIMIT := 6000
+# Frames the menu's prewarm may take (5.5 s on a cold cache in T14C's rows).
+const PREWARM_FRAME_LIMIT := 3600
 const CREATED := ["textures_created", "images_created", "meshes_created", "materials_created", "multimeshes_created"]
 const HEALTH := ["pool_exhausted", "bake_failures", "walls_truncated"]
 const KINDS := ["pose", "catch_up", "fast_commit", "undo", "commit"]
@@ -80,6 +95,11 @@ var _sweep_deg := 0.0
 var _sweep_converge := false
 var _continue := not OS.get_environment("METRUM_GRADED_DRAG_CONTINUE").is_empty()
 var _hole_pixels := false
+# The timing mode (METRUM_GRADED_DRAG_TIMING): no per-frame draw check in the recorded frames.
+var _timing := OS.get_environment("METRUM_GRADED_DRAG_TIMING") == "1"
+# The last draw's start and end (`frame_pre_draw`, `frame_post_draw`), from the probe's hooks.
+var _pre_draw_us := 0
+var _post_draw_us := 0
 # METRUM_GRADED_DRAG_VEGETATION=<frames> (`ROAD-68-H` round 7): every recorded frame counts the
 # plants drawn on a drawn road around the stroke (a drawn vegetation instance whose trunk stands
 # inside a visible road chunk's triangles), and the drawn plants Rust's placement for the current
@@ -138,9 +158,16 @@ func run(bench: Node) -> void:
 		DisplayServer.window_set_title("Metrum Rise - graded drag probe")
 	_viewport = bench.get_viewport().get_viewport_rid()
 	RenderingServer.viewport_set_measure_render_time(_viewport, true)
+	# Disconnected in `_finish`: a hook left on the server aborts Godot at its exit.
+	RenderingServer.frame_pre_draw.connect(_on_pre_draw)
+	RenderingServer.frame_post_draw.connect(_on_post_draw)
 	_report.merge({"runtime": bench._runtime_metadata(), "camera_distance_m": _distance,
 		"manifest_sha256": FileAccess.get_sha256(manifest_path), "source_world_sha256": manifest.source_world_sha256,
-		"helper_sha256": FileAccess.get_sha256(get_script().resource_path)})
+		"helper_sha256": FileAccess.get_sha256(get_script().resource_path), "timing_mode": _timing})
+	if OS.get_environment("METRUM_GRADED_DRAG_PREWARM") == "1" and bench.mode != "headless":
+		if not await _prewarm():
+			_finish("the menu's pipeline prewarm did not finish in %d frames" % PREWARM_FRAME_LIMIT)
+			return
 	var selected := OS.get_environment("METRUM_GRADED_DRAG_CASES").split(",", false)
 	for fixture in manifest.cases:
 		if not selected.is_empty() and not fixture.case_id in selected:
@@ -161,7 +188,8 @@ func run(bench: Node) -> void:
 		_vegetation = bench.terrain.get_node_or_null("../Vegetation")
 		# The settle includes every resident patch's cell set build (off the frame paths).
 		_report.loads.append({"case": fixture.case_id, "settle_ms": float(Time.get_ticks_usec() - load_us) / 1000.0,
-			"cell_builds": int(_graded.counters["cell_builds"]), "patches_with_cells": _graded.patches_with_cells()})
+			"cell_builds": int(_graded.counters["cell_builds"]), "patches_with_cells": _graded.patches_with_cells(),
+			"pipelines": _pipelines()})
 		if _graded == null:
 			_finish("the terrain renderer draws no graded tiles")
 			return
@@ -453,6 +481,7 @@ func _begin_frames() -> void:
 func _remember() -> void:
 	for name in ["uploads", "upload_bytes", "preview_frames", "edit_batches", "edit_adopted", "cell_builds"]:
 		_seen[name] = int(_graded.counters[name])
+	_seen["pipelines"] = _pipelines()
 
 # Awaits the next frame and records the one that just ran (`_kind`): resumed at the frame's start,
 # before any node processes it.
@@ -469,27 +498,17 @@ func _next_frame() -> void:
 		"uploads": int(counters["uploads"]) - int(_seen["uploads"]),
 		"upload_bytes": int(counters["upload_bytes"]) - int(_seen["upload_bytes"]),
 		"pending": int(_bench.road_tool._graded_pending),
-		"cell_patches": _graded.patches_with_cells(),
 		"cell_builds": int(counters["cell_builds"]) - int(_seen["cell_builds"]),
-		# Resident patches drawing nothing (sky through the ground): a failure in any frame.
-		"holes": _graded.hole_patches(),
-		"tile_draw": _graded.tile_draw_violations(),
 		"valid": bool(_bench.road_tool._preview.get("is_valid", false)),
-		"preview_shown": _graded.preview.size(),
+		"pipelines": _pipelines_since(_seen["pipelines"]),
 	}
-	if int(row["holes"]) > 0:
-		_holes += 1
-	if int(row["tile_draw"]["holes"]) > 0:
-		_tile_holes += 1
-	# A preview tile discards its bake's road footprint: it shows only beside its road (the
-	# preview's display, or the held one until the commit's chunks install), outside an edit.
-	var tool: Node = _bench.road_tool
-	var simulation: Object = tool.simulation_node
-	var road_drawn: bool = simulation.road_tool_overlay_counts()[1] > 0 or bool(simulation.road_tool_chunk_display().get("held", false))
-	if _kind in ["pose", "catch_up", "sweep"] and int(row["preview_shown"]) > 0 and not road_drawn:
-		_unroaded += 1
-		row["unroaded"] = true
-	row["chunks_held"] = tool.chunks.is_holding()
+	# The frame's draw, when it drew one: its scripts before it and the draw itself.
+	if _pre_draw_us >= _last_us and _post_draw_us >= _pre_draw_us:
+		row["pre_ms"] = float(_pre_draw_us - _last_us) / 1000.0
+		row["draw_ms"] = float(_post_draw_us - _pre_draw_us) / 1000.0
+	if not _timing:
+		_check_row(row)
+	row["chunks_held"] = _bench.road_tool.chunks.is_holding()
 	if _clip and not _capture_dir.is_empty() and _kind != "settled":
 		DirAccess.make_dir_recursive_absolute(_capture_dir)
 		_bench.get_viewport().get_texture().get_image().save_png(_capture_dir.path_join("clip_%05d_%s.png" % [_clip_frames, _kind]))
@@ -514,9 +533,67 @@ func _next_frame() -> void:
 		row["batch_parts"] = (counters["edit_frame_parts"] as Dictionary).duplicate()
 	if PerfDebug.is_enabled():
 		_road_share(row, PerfDebug.take_frame())
+	row["probe_ms"] = float(Time.get_ticks_usec() - now) / 1000.0
 	_frames.append(row)
 	_last_us = now
 	_remember()
+
+# The per-frame draw checks (`TERRAIN-12`) of the frame `row` records; the timing mode leaves
+# them out.
+func _check_row(row: Dictionary) -> void:
+	row["cell_patches"] = _graded.patches_with_cells()
+	# Resident patches drawing nothing (sky through the ground): a failure in any frame.
+	row["holes"] = _graded.hole_patches()
+	row["tile_draw"] = _graded.tile_draw_violations()
+	row["preview_shown"] = _graded.preview.size()
+	if int(row["holes"]) > 0:
+		_holes += 1
+	if int(row["tile_draw"]["holes"]) > 0:
+		_tile_holes += 1
+	# A preview tile discards its bake's road footprint: it shows only beside its road (the
+	# preview's display, or the held one until the commit's chunks install), outside an edit.
+	var simulation: Object = _bench.road_tool.simulation_node
+	var road_drawn: bool = simulation.road_tool_overlay_counts()[1] > 0 or bool(simulation.road_tool_chunk_display().get("held", false))
+	if _kind in ["pose", "catch_up", "sweep"] and int(row["preview_shown"]) > 0 and not road_drawn:
+		_unroaded += 1
+		row["unroaded"] = true
+
+func _on_pre_draw() -> void:
+	_pre_draw_us = Time.get_ticks_usec()
+
+func _on_post_draw() -> void:
+	_post_draw_us = Time.get_ticks_usec()
+
+# Godot's pipeline compilations so far: canvas, mesh, surface, draw, specialization.
+static func _pipelines() -> Array:
+	return [RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_PIPELINE_COMPILATIONS_CANVAS),
+		RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_PIPELINE_COMPILATIONS_MESH),
+		RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_PIPELINE_COMPILATIONS_SURFACE),
+		RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_PIPELINE_COMPILATIONS_DRAW),
+		RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_PIPELINE_COMPILATIONS_SPECIALIZATION)]
+
+static func _pipelines_since(before: Array) -> Array:
+	var now := _pipelines()
+	for at in now.size():
+		now[at] -= int(before[at])
+	return now
+
+# The menu's pipeline prewarm (METRUM_GRADED_DRAG_PREWARM) run to its end, then freed as the menu
+# frees it at its exit; its time, its groups' report and the compilations so far go in the report.
+func _prewarm() -> bool:
+	var start := Time.get_ticks_usec()
+	var prewarm := MenuPipelinePrewarm.new()
+	_bench.add_child(prewarm)
+	var frames := 0
+	while not prewarm.is_finished() and frames < PREWARM_FRAME_LIMIT:
+		await _bench.get_tree().process_frame
+		frames += 1
+	var finished: bool = prewarm.is_finished()
+	_report["prewarm"] = {"finished": finished, "frames": frames, "ms": float(Time.get_ticks_usec() - start) / 1000.0,
+		"report": prewarm.report(), "pipelines": _pipelines()}
+	prewarm.queue_free()
+	await _bench.get_tree().process_frame
+	return finished
 
 # The road chunk work of the frame `row` records, from its perf records: `network_ms` (the
 # network refresh, terrain included), `road_ms` (its road staging and commit plus any road chunk
@@ -782,6 +859,10 @@ func _log_failures() -> Dictionary:
 	return out
 
 func _finish(error: String) -> void:
+	if RenderingServer.frame_pre_draw.is_connected(_on_pre_draw):
+		RenderingServer.frame_pre_draw.disconnect(_on_pre_draw)
+	if RenderingServer.frame_post_draw.is_connected(_on_post_draw):
+		RenderingServer.frame_post_draw.disconnect(_on_post_draw)
 	_bench._stop_scripted_tool()
 	if error.is_empty():
 		var logged := _log_failures()
