@@ -14,6 +14,9 @@ var pending_vegetation := {}
 var benchmark_menu_dwell_s := -1.0
 # Its prewarm's start and the menu's exit, milliseconds from the launch (the benchmark's report).
 var benchmark_menu_ms := [-1, -1]
+# What the benchmark's menu saw (`RENDER-43`): its longest frame and frame count until its exit,
+# and its prewarm's report (`menu_pipeline_prewarm.gd`).
+var benchmark_menu := {}
 
 func queue_new_game(world_definition_path: String, vegetation: Dictionary) -> void:
 	pending_world_definition_path = world_definition_path

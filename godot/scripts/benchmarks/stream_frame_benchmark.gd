@@ -83,6 +83,7 @@
 extends RefCounted
 
 const ShadowVariants := preload("res://scripts/benchmarks/shadow_variants.gd")
+const PipelineInventory := preload("res://scripts/benchmarks/pipeline_inventory.gd")
 
 const SCHEMA_VERSION := 1
 const WARMUP_FRAMES := 120
@@ -171,6 +172,9 @@ var _probe: RefCounted
 var _stream: Node
 var _camera: Camera3D
 var _probe_heights := Vector2.ZERO
+# The open settle wait's frames (`RENDER-43`): what the last sample was, its frame count, worst
+# frame and its compilations, the counters at its start and its last frame's end.
+var _wait := {}
 
 func run(bench: Node) -> void:
 	var main := bench.get_parent()
@@ -238,6 +242,7 @@ func run(bench: Node) -> void:
 	var settled := false
 	var pipelines_at_load := _pipelines()
 	var load_start := Time.get_ticks_usec()
+	var load_begin_ms := Time.get_ticks_msec()
 	print("[STREAM] LOAD_BEGIN save=%s world=%s" % [_report.save_path, bench.world_path])
 	var loaded: bool
 	if not str(_report.save_path).is_empty():
@@ -282,6 +287,8 @@ func run(bench: Node) -> void:
 		return
 	var perf_stats: Dictionary = bench.simulation_node.get_perf_stats()
 	var world: Vector2 = bench.simulation_node.get_terrain_world_size()
+	var menu_ms := _menu_ms(bench)
+	var menu_exit_ms: int = int(menu_ms[1]) if menu_ms.size() == 2 else -1
 	_report.load = {
 		"load_call_ms": load_call_ms, "elapsed_ms": bench._elapsed_ms(load_start),
 		"agent_count": int(perf_stats.get("agent_count", -1)), "saved_view": Array(saved_view),
@@ -291,7 +298,13 @@ func run(bench: Node) -> void:
 		"pipelines": [pipelines_at_load, pipelines_after_call, _pipelines()],
 		# The menu's prewarm start and exit (ms from the launch) when launched through the menu; by
 		# path, as a test runs this script without the autoloads.
-		"menu_ms": _menu_ms(bench),
+		"menu_ms": menu_ms,
+		# From the menu's exit to the load call's start (the scene change and the world scene's
+		# start), and what the menu reported of its frames and its prewarm (`RENDER-43`); -1 and
+		# empty without the menu. Exit to settled is gap_ms + elapsed_ms.
+		"load_begin_ms": load_begin_ms,
+		"gap_ms": load_begin_ms - menu_exit_ms if menu_exit_ms >= 0 else -1,
+		"menu": _menu_report(bench),
 		# The node renderers' casters by shadow policy category at the settled base pose, with
 		# their instances and those within the sun's shadow range of the camera (`RENDER-15`).
 		"node_casters": ShadowVariants.node_casters(main, bench.get_viewport().get_camera_3d().global_position,
@@ -412,6 +425,8 @@ func run(bench: Node) -> void:
 	if _probe != null:
 		RenderingServer.frame_post_draw.disconnect(_on_probe_post_draw)
 		_report.drawn_probe = _probe.report()
+	if OS.get_environment("METRUM_STREAM_INVENTORY") == "1":
+		_report["inventory"] = PipelineInventory.collect(main)
 	if _scripts:
 		PerfDebug.end_frame_capture()
 		if _core_locks != null:
@@ -531,16 +546,55 @@ func _water_turns(bench: Node, turns: Array, base: PackedFloat32Array, world: Ve
 
 # Puts the camera at `view`, waits WARMUP_FRAMES frames and then until settled.
 func _start_from(bench: Node, view: PackedFloat32Array) -> bool:
+	_wait_begin()
 	bench.camera.set_view_state(view)
 	for _frame in WARMUP_FRAMES:
 		await bench.get_tree().process_frame
+		_wait_frame()
 	return await _wait_settled(bench)
+
+# A settle wait's frames are recorded too (`RENDER-43`): a first view reached by a pose move
+# between two samples (the pond's mirror) compiles in them. One entry a wait in `settle_waits`.
+func _wait_begin() -> void:
+	if not _wait.is_empty():
+		return
+	var samples: Array = _report.samples
+	var at := _pipelines()
+	_wait = {"after": str(samples.back().label) if not samples.is_empty() else "load", "frames": 0,
+		"worst_ms": 0.0, "worst_pipelines": [], "start": at, "last": at, "us": Time.get_ticks_usec()}
+
+func _wait_frame() -> void:
+	var now := Time.get_ticks_usec()
+	var at := _pipelines()
+	var frame_ms := float(now - int(_wait.us)) / 1000.0
+	_wait.frames = int(_wait.frames) + 1
+	if frame_ms > float(_wait.worst_ms):
+		_wait.worst_ms = frame_ms
+		_wait.worst_pipelines = _counter_delta(_wait.last, at)
+	_wait.last = at
+	_wait.us = now
+
+func _wait_end() -> void:
+	if _wait.is_empty():
+		return
+	if not _report.has("settle_waits"):
+		_report["settle_waits"] = []
+	_report.settle_waits.append({"after": _wait.after, "frames": _wait.frames, "worst_ms": _wait.worst_ms,
+		"worst_pipelines": _wait.worst_pipelines, "pipelines": _counter_delta(_wait.start, _wait.last)})
+	_wait = {}
+
+static func _counter_delta(before: Array, after: Array) -> Array:
+	var out := []
+	for index in after.size():
+		out.append(int(after[index]) - int(before[index]))
+	return out
 
 func _is_settled(bench: Node) -> bool:
 	return (bench._is_idle() and _terrain.is_render_settled() and not _vegetation.has_pending_work()
 		and (_roads == null or not _roads.is_pending()))
 
 func _wait_settled(bench: Node) -> bool:
+	_wait_begin()
 	var start_us := Time.get_ticks_usec()
 	var stable := 0
 	# METRUM_STREAM_SETTLE_CAP_S (`PL1`): a city whose simulation edits it every few frames (100k
@@ -549,11 +603,15 @@ func _wait_settled(bench: Node) -> bool:
 	while stable < SETTLED_FRAMES:
 		if cap_s > 0.0 and bench._elapsed_ms(start_us) > cap_s * 1000.0:
 			_report["unsettled_starts"] = int(_report.get("unsettled_starts", 0)) + 1
+			_wait_end()
 			return true
 		if bench._elapsed_ms(start_us) > bench.settle_timeout_sec * 1000.0:
+			_wait_end()
 			return false
 		await bench.get_tree().process_frame
+		_wait_frame()
 		stable = stable + 1 if _is_settled(bench) else 0
+	_wait_end()
 	_record_digest("settled")
 	return true
 
@@ -1065,6 +1123,12 @@ static func _menu_ms(bench: Node) -> Array:
 	var state := bench.get_node_or_null("/root/LaunchState")
 	var times = state.get("benchmark_menu_ms") if state != null else null
 	return times if times is Array else []
+
+# `LaunchState.benchmark_menu`: the menu's longest frame and its prewarm's report, or empty.
+static func _menu_report(bench: Node) -> Dictionary:
+	var state := bench.get_node_or_null("/root/LaunchState")
+	var report = state.get("benchmark_menu") if state != null else null
+	return report if report is Dictionary else {}
 
 static func _pipelines() -> Array:
 	return [RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_PIPELINE_COMPILATIONS_CANVAS),

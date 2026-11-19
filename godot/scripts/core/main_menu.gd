@@ -16,6 +16,8 @@ const SAVES_DIR := "user://saves"
 
 var _options_window = null
 var _new_game_dialog: Window = null
+# The benchmark's menu (`RENDER-43`): the last frame's start, for its longest frame.
+var _benchmark_frame_us := 0
 
 func _enter_tree() -> void:
 	GameSettings.set_menu_frame_cap(true)
@@ -25,6 +27,11 @@ func _exit_tree() -> void:
 
 func _ready() -> void:
 	_build_ui()
+	if LaunchState.benchmark_menu_dwell_s >= 0.0:
+		# The menu's frames, its prewarm's build frames included, for the benchmark's report.
+		LaunchState.benchmark_menu = {"longest_frame_ms": 0.0, "frames": 0}
+		_benchmark_frame_us = Time.get_ticks_usec()
+		get_tree().process_frame.connect(_note_benchmark_frame)
 	# The first load's pipelines compile while the menu shows (`RENDER-43`), from its second
 	# frame: the first shows the menu at once.
 	await get_tree().process_frame
@@ -42,7 +49,15 @@ func _leave_after_benchmark_dwell() -> void:
 	if left > 0.0:
 		await get_tree().create_timer(left).timeout
 	LaunchState.benchmark_menu_ms[1] = Time.get_ticks_msec()
+	get_tree().process_frame.disconnect(_note_benchmark_frame)
 	get_tree().change_scene_to_file("res://scenes/Main.tscn")
+
+func _note_benchmark_frame() -> void:
+	var now := Time.get_ticks_usec()
+	var report: Dictionary = LaunchState.benchmark_menu
+	report.frames = int(report.frames) + 1
+	report.longest_frame_ms = maxf(float(report.longest_frame_ms), float(now - _benchmark_frame_us) / 1000.0)
+	_benchmark_frame_us = now
 
 func _build_ui() -> void:
 	set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)

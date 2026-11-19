@@ -71,7 +71,8 @@ import timing_session  # noqa: E402  (shares the machine settings and window che
 ROOT = Path(__file__).resolve().parent.parent
 # The benchmark's own scripts: copied over another build's scripts so both sides measure alike.
 BENCH_SCRIPTS = ["benchmarks/stream_frame_benchmark.gd", "benchmarks/gameplay_road_benchmark.gd",
-                 "core/perf_debug.gd", "benchmarks/shadow_variants.gd", "benchmarks/draw_census.gd"]
+                 "core/perf_debug.gd", "benchmarks/shadow_variants.gd", "benchmarks/draw_census.gd",
+                 "benchmarks/pipeline_inventory.gd"]
 WORKERS = "8"
 # Set in the child a run or series starts under the timed locks.
 LOCKED_ENV = "METRUM_STREAM_LOCKED"
