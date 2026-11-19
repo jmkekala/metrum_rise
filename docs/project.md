@@ -154,6 +154,7 @@ warm loads level. R43b also fixed a load cost it exposed: an asset reload journa
 change as a graded site edit (1.7 s on the 30k city whenever the graded journal was on, every later
 load in a session too); it now journals a reset
 ([record](terrain.md#first-use-pipelines-at-the-load-render-43-round-r43-2026-11-17)).
+Round R43c (2026-11-19, branch `render-43-paced`, for review, not landed: leaving the menu at 6 s on a new game is 1.03 s over A7's bar) paces the menu's prewarm a shader at a time and templates the rest of a first run's sets, the water mirror's 2x MSAA included: a first run with 15 s in the menu settles 3.9 s sooner on the Kuopio city ([record](terrain.md#round-r43c-the-paced-menu-prewarm-2026-11-19)).
 Parked cars have the moving cars' draw distance since `RENDER-48` (round R48, 2026-11-13, stills
 approved by the owner): they fade out between 2.0 and 2.5 km like the moving cars, and Godot skips a
 parked batch with no car within 2.5 km. The 100k still draws 22 M fewer primitives (99 to 76 M) and

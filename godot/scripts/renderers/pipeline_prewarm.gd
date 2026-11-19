@@ -37,7 +37,7 @@ const GROUP_NAME := "name"
 const GROUP_PAIRS := "pairs"
 const GROUP_MIRROR := "mirror"
 
-# The hidden instances of the group in flight.
+# The hidden instances of the group in flight (its slices added so far).
 var _instances: Array[RID] = []
 # Every added group's resources, alive until `end`: the shaders keep their pipelines.
 var _pairs: Array = []
@@ -105,7 +105,8 @@ static func groups() -> Array[Dictionary]:
 		pairs.append_array(WaterRenderer.pipeline_prewarm_border())
 		return pairs))
 	# The graded tiles' base cells: the terrain shader on the lattice's vertex format.
-	out.append(_group("base_cells", func() -> Array: return TerrainGradedTiles.pipeline_prewarm_base_cells()))
+	out.append(_group("base_cells", func() -> Array:
+		return TerrainGradedTiles.pipeline_prewarm_base_cells()))
 	# What the water mirror draws, at its MSAA too (and, with the setting restored, at the game's):
 	# the terrain proxies, the tree impostors, the building tiers and the site batches.
 	var mirror := func() -> Array:

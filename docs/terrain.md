@@ -19176,6 +19176,224 @@ autoloads, until `15f60ca1` read `LaunchState` by path); `tools/test_stream_benc
 `an_asset_reload_journals_a_reset`; clippy `--all-targets` adds no warning in the changed files.
 Artefacts: `$ARTIFACTS/render43/r43b` (profiles, series, products, the session log).
 
+#### Round R43c: the paced menu prewarm (2026-11-19)
+
+Analysis A7 and round R43c (night delegation, 2026-11-18, carried into the morning; every
+decision is for review). A7 found what a first run leaves cold through the menu on `dev`
+(`a7e715e0`, cold caches): the scene's start-up sets in the first frame after the load (cars,
+lamps, walkers, the site batches, the grass clumps, the world's borders: 0.83-1.25 s against
+0.12-0.32 s warm), the road chunks' first frame (0.61-0.79 s), the water mirror's first draw
+(1.0-2.5 s) and the Kuopio city's first turn toward water (0.37-0.40 s), and on the Kuopio city
+the graded base cells (0.76-0.85 s: the terrain shader on the lattice's vertex format, in no
+template). The grass masks are covered through the menu (4-6 ms). It also found why templates
+for everything are not enough: Godot's background compilations run a few at a time
+(`threading/worker_pool/low_priority_thread_ratio` 0.3: seven on this machine) in one first-in
+first-out queue, and a draw that needs a queued pipeline waits for everything queued before it,
+so a prototype with every template added at once was 3.9 s better than `dev` from the menu's
+exit when the menu had 10 s, and 4.5 s worse (7.1 s on a new game) when the player left after
+1.5 s. And the mirror: Godot precompiles a surface's pipelines for one MSAA sample count, the
+project setting's (`RenderForwardClustered::_update_global_pipeline_data_requirements_from_project`,
+read every frame; the root viewport takes the setting once at the start), so the mirror's 2x
+pipelines always compiled at draw time.
+
+**Clock.** Every time below is **from the menu's exit to settled** (what a player waits after
+the click, but for a frozen menu frame the click lands in, counted apart): the menu's exit to
+the load call's start (`load.gap_ms`: the scene change and the world scene's start, which no
+report held before) plus R43b's start to settled. The benchmark
+also reports the menu's longest frame and frame count, the prewarm's groups with their times,
+every settle wait's worst frame and compilations (`settle_waits`: a first view reached by a pose
+move, as the pond's mirror), and with `METRUM_STREAM_INVENTORY=1` (untimed) every (shader,
+vertex format, primitive) the world draws against the templates'. The benchmark menu's dwell is
+now wall-clock time: a scene tree timer counts process time, which fell 3 s behind the wall
+clock across the prewarm's long frames (a 6 s dwell left at 8.97 s; found in this round's first
+session, whose branch rows are discarded).
+
+**The change (decided under the night delegation, for review).**
+- The menu's view adds its templates a group at a time, in value order
+  (`menu_pipeline_prewarm.gd`, `PipelinePrewarm.groups()`): the ground (`dev`'s present
+  templates: terrain, graded tiles, water, grass masks, the vegetation catalogue with its
+  impostors and hedges, built and added whole in the menu's second frame as before), the first
+  frame's sets (the cars' fade variant, their lamp glows and beams, the walkers, the site shells,
+  the grass clumps, the world's border skirt and curtain), the graded base cells, the mirror (the
+  terrain proxies, the impostors, the building tiers' variants, the site shells), the roads (the
+  chunk layers' six shaders, the asphalt's `CUSTOM0` format, the tunnel lining's caster), the
+  street lights and the signs: 6 groups, 146 surface compilations queued (56 on `dev`).
+- **Slices and markers.** A shader's first draw compiles its variants on the main thread
+  (0.1-0.5 s each on a first run, a frozen menu frame a click waits for: a group added at once
+  froze the menu 0.5-1.0 s). So after the first group the view adds a slice a frame, each slice
+  ending at a shader it has not drawn yet; after the slice's draw (its compilations are queued) a
+  marker task joins the same low-priority queue (`PipelinePrewarm.queue_marker`,
+  `WorkerThreadPool.add_task(..., false)`), and when it has run (everything queued before it has
+  been taken up; a few may still run) the next slice, or the next group, follows. A finished
+  group's instances are freed. `O(1)` a frame while the menu shows, nothing after it. Leaving
+  costs at most one slice's compilations and the few still running; a click waits at most one
+  slice's frame.
+- Templates are bare materials on one triangle of the real vertex format
+  (`pipeline_template.gd`), owned by each renderer next to the code that makes its surfaces, and
+  take the renderers' own shader objects (script constants, `WorldMaterials`' and
+  `WindowMaterials`' caches, the water reflection's proxy cache, now static), so the world
+  reuses what the menu compiled and nothing is freed (and waited for) at the menu's exit. No
+  model, scene or texture is loaded for a template.
+- The mirror group: the view sets the project's `rendering/anti_aliasing/quality/msaa_3d` to the
+  mirror's (`WaterReflection.MIRROR_MSAA`, 2x) while its slices get their surfaces, then restores
+  it (also in `_exit_tree`) and draws once more, which queues the group's game sets. Only the
+  precompilation reads that setting after the launch, the root viewport's MSAA is untouched and
+  nothing drawn changes. This leans on engine behaviour the documentation describes otherwise
+  ("read at startup"): if a later Godot stops reading it per frame, the mirror's first draws are
+  merely cold again and bar 4's row shows it.
+- No "Preparing shaders" label (the user's 2026-11-17 decision); the marker now gives an exact
+  end (to within the compilations still running): `is_finished`, `group_finished`, `finished`.
+- GDScript only, no Rust. The pacing is a small stage machine in the menu's view (about 80
+  lines): bookkeeping, not game logic.
+
+**Tried and dropped in the round** (Kuopio city, cold, same session as their controls):
+- The vegetation catalogue built a species a frame (to spread the menu's 2.4 s frozen frame):
+  the earliest click comes 2 s sooner, but the world scene's start then builds the catalogue,
+  and from the click a 0 s leave was 1.54 s longer cold and 1.17 s longer warm (from the launch
+  0.57 s shorter cold, 0.24 s longer warm). Bar 1 counts from the click: dropped; the first
+  group is built whole as before.
+- Whole groups with one marker each: a group's add froze the menu 0.5-1.0 s, and a click at
+  6 s waited for it (the benchmark left at 6.86-6.91 s); the new game's 6 s row was +0.88 s from
+  the exit, +1.74 s from the click.
+
+**Timing** (`$ARTIFACTS/render43/r43c/t4`, 2026-11-19 10:56-11:23, governor `performance`, the
+user away; one session: `tools/stream_benchmark.py run` rows through the menu, gamescope headless
+1920x1080, P-cores, eight workers, paused, the timing locks, phases `post_load`, `still`, the 1 s
+and 0.5 s turns, and `water_turns` on the Kuopio city and the pond; control: the release library
+of `dev` `3386098b` with `dev`'s scripts and this round's benchmark scripts; branch: the same
+library with the branch's scripts (no Rust change); cold: a fresh profile; warm: each side's
+caches seeded by its first cold 6 s row; per input C B B C cold and warm at 6 s, one row a side
+cold at 0 and 15 s and warm at 0 s; dwell from the launch, by the wall clock). "From the click"
+adds the time the menu left after the dwell (a frozen slice frame); the control leaves on time.
+
+| input | run | exit to settled s (C / B) | from the click s (B) | difference (exit / click) | spread | start to settled s (C / B) |
+|---|---|---|---|---|---:|---|
+| Kuopio city | cold, 0 s | 13.23 / 13.09 | 13.09 | -0.14 / -0.14 | - | 8.54 / 8.61 |
+| Kuopio city | cold, 6 s | 11.44, 11.42 / 9.84, 9.93 | 9.99, 10.20 | -1.55 / -1.34 | 0.08 | 8.29, 8.31 / 5.48, 5.61 |
+| Kuopio city | cold, 15 s | 11.18 / 7.24 | 7.24 | -3.94 / -3.94 | - | 8.18 / 4.77 |
+| Kuopio city | warm, 0 s | 6.77 / 6.96 | 6.96 | +0.18 / +0.18 | - | 4.11 / 4.30 |
+| Kuopio city | warm, 6 s | 6.60, 6.54 / 6.41, 6.22 | 6.41, 6.22 | -0.25 / -0.26 | 0.19 | 3.90, 3.91 / 4.06, 3.87 |
+| Kuopio new game | cold, 0 s | 8.23 / 7.92 | 7.92 | -0.31 / -0.31 | - | 3.55 / 3.37 |
+| Kuopio new game | cold, 6 s | 6.56, 6.68 / 7.81, 7.50 | 7.85, 7.79 | +1.03 / +1.20 | 0.31 | 3.37, 3.44 / 3.10, 3.09 |
+| Kuopio new game | cold, 15 s | 6.11 / 5.13 | 5.14 | -0.98 / -0.98 | - | 3.12 / 2.65 |
+| Kuopio new game | warm, 0 s | 5.11 / 5.19 | 5.19 | +0.07 / +0.07 | - | 2.49 / 2.55 |
+| Kuopio new game | warm, 6 s | 5.19, 5.27 / 4.87, 4.96 | 4.87, 4.96 | -0.32 / -0.32 | 0.09 | 2.52, 2.55 / 2.48, 2.55 |
+| 30k city | cold, 0 s | 14.26 / 14.09 | 14.09 | -0.16 / -0.16 | - | 9.59 / 9.54 |
+| 30k city | cold, 6 s | 12.69, 12.71 / 12.95, 12.89 | 13.17, 13.17 | +0.22 / +0.47 | 0.06 | 9.45, 9.56 / 8.65, 8.74 |
+| 30k city | cold, 15 s | 12.51 / 10.30 | 10.31 | -2.21 / -2.21 | - | 9.46 / 7.83 |
+| 30k city | warm, 0 s | 10.14 / 10.29 | 10.29 | +0.15 / +0.15 | - | 7.49 / 7.62 |
+| 30k city | warm, 6 s | 10.19, 10.00 / 9.60, 9.78 | 9.61, 9.79 | -0.40 / -0.40 | 0.20 | 7.50, 7.36 / 7.24, 7.41 |
+| pond (30k) | cold, 0 s | 14.30 / 14.38 | 14.38 | +0.07 / +0.07 | - | 9.66 / 9.83 |
+| pond (30k) | cold, 6 s | 12.56, 12.83 / 13.49, 13.11 | 13.51, 13.41 | +0.61 / +0.76 | 0.38 | 9.43, 9.61 / 8.95, 8.89 |
+| pond (30k) | cold, 15 s | 12.64 / 10.50 | 10.50 | -2.14 / -2.14 | - | 9.59 / 8.06 |
+| pond (30k) | warm, 0 s | 10.16 / 10.33 | 10.33 | +0.17 / +0.17 | - | 7.53 / 7.69 |
+| pond (30k) | warm, 6 s | 10.21, 10.40 / 9.76, 9.94 | 9.76, 9.95 | -0.46 / -0.46 | 0.19 | 7.58, 7.62 / 7.43, 7.55 |
+
+**Bars** (A7's, unchanged):
+1. Leaving early, cold at 0 and 6 s, not worse than control by more than 1.0 s: met on the
+   Kuopio city (-0.14, -1.55 s), the 30k city (-0.16, +0.22 s; +0.47 from the click) and the pond (+0.07, +0.61 s; +0.76 from the click);
+   **missed on the Kuopio new game at 6 s: +1.03 s from the exit (spread 0.31), +1.20 s from the
+   click** (0 s: -0.31). The mirror group was in flight at its 6 s exit (3 of 4 groups done):
+   the terrain proxies' 2x pipelines, the slowest of the prewarm, still compiling while the new
+   game's world scene starts (its gap 4.1-4.3 s against 3.2 s); the new game draws no mirror,
+   road or building. Before the slices the same row was +0.88 s from the exit and +1.74 s from
+   the click.
+2. Menu had time (cold 15 s within 1.2 s of the warm control; 0.8 s on the new game): met, the
+   Kuopio city 7.24 against 6.57 s (+0.67), the 30k city 10.30 against 10.10 s (+0.20), the new
+   game 5.13 against 5.23 s (-0.10).
+3. Cold 15 s frames: met. First frames 395 (Kuopio city), 409 (new game), 280 ms (30k city)
+   and 258 ms (pond); no other frame over 200 ms; over 100 ms only the second frame (103-141 ms, warm
+   alike: not pipelines, A7); settle waits' worst 13-21 ms.
+4. First turn toward water, cold 15 s (the Kuopio city's 1 s `turn_out`): 16.8 ms (control
+   396 ms): met. The pond's first turn, where its mirror first draws: 55 ms at 15 s and 57 ms at
+   6 s against 2,180-2,199 ms. Other turns level (one 23 ms frame on the 30k city's, with no
+   compilation).
+5. Warm at 0 and 6 s: level or better: the Kuopio city -0.25 / +0.18 s (one row a side at 0 s;
+   the 6 s spread 0.19), the new game -0.32 / +0.07 s, the 30k city -0.40 s at 6 s and the pond -0.46 s at 6 s;
+   at 0 s every input reads +0.07 to +0.18 s (one row a side, each within its input's 6 s spread
+   of 0.09-0.20 s; the common sign leaves a small cost there unexcluded).
+6. The menu: its longest frame is the first group's build, the same code as `dev`'s: 2.52-2.72 s
+   cold and 1.25-1.27 s warm against 2.51-2.63 s and 1.23-1.28 s. Two branch rows (2.67 and
+   2.72 s) are up to 0.08 s over the control's longest, so the bar reads missed by them; the
+   ranges overlap.
+   The slices' frames are at most 0.55 s cold (a shader's variants, on the main thread) and
+   0.01 s warm; the prewarm ends 7.2-7.5 s from the launch cold (all 6 groups) and 2.44-2.49 s
+   warm; 146 surface compilations are queued (56 on `dev`).
+7-10. Below.
+
+**Coverage** (`METRUM_STREAM_INVENTORY=1`, untimed, the four inputs): every (shader, vertex
+format, primitive) the tree's geometry nodes and the building tiers' looks draw is templated but
+one, accepted: the tools' gizmos and the border's bottom cap (`StandardMaterial3D`, on no
+first-run path). The window shader's variants made are all templated; the stream core's slots'
+vertex formats (vegetation, parked cars, cars, buildings) are all a template's. Outside the
+inventory's reach (RenderingServer objects with no material back-reference): the road chunks,
+the street lights, the graded cells and the mirror's proxies; their templates follow the code,
+and the rendered test checks the street lights' and signs' formats against their real meshes
+(it found the roundabout disc's format, now templated). Still compiled at draw time, from the
+caches the menu filled: the pond's mirror's first draw (+10 draw compilations, 53 ms against
+446 ms before the building variants' 2x templates) and 4 in the Kuopio city's settle wait
+(21-50 ms): the mirror's other passes or features the menu's view does not render.
+
+**Products** (`$ARTIFACTS/render43/r43c/products`; control: `dev`'s scripts, same library):
+- Settle-point digests through the menu at 15 s (the whole prewarm, the swing included), one run
+  a side: the 30k city's 5 of 5 and the Kuopio new game's 9 of 9 points equal (graded tiles,
+  buildings, roads, parked cars, vegetation, land cover, water).
+- Stills on direct launches (no prewarm; they cover the renderers' refactors: the car and site
+  materials, the border shader constants, the static proxy cache): Kuopio's `close`, `mid` and
+  `forest_low` byte-identical, control against branch and control against control; the 30k
+  city's `city_low` byte-identical, `city` 1 px (delta 1) and `saved` 3 px (delta 2) against the
+  control, where control against control is 2 px and 2 px: the `RENDER-45` residue, now on `city`
+  too.
+- The menu itself (Godot's movie writer, 480 frames at 1920x1080 from the launch, no benchmark):
+  byte-identical without and with the prewarm (`dev` against the branch, the branch twice); a
+  first control run differed only in the Quit button's hover state, from the headless pointer.
+- The Kuopio city's base pose with the mirror drawing (`water`, 600 warm-up frames, through the
+  menu at 15 s and on direct launches): not byte-identical, but no more so than control against
+  control (through the menu 14,100 / 228,759 px, branch against control 28,916-37,376 /
+  251,060-266,082 px, at most delta 21, in the clouds and their reflection; direct launches
+  20,935 / 228,574 px): the cloud field moves with the engine's
+  time, which a capture's frame lands on differently each run. With 4,000 warm-up frames (direct,
+  one run a side) branch against control is 229,144 px on `water` (98% in the sky, the rest the
+  lake's reflection of it) and 6,690 on `saved`; no control pair was run at that length. So bar
+  7's mirror still is not shown byte-identical; the branch changes no sky, cloud or water code,
+  and the mirror's own change (one proxy shader object shared, made the same way) is covered by
+  the digests and the direct stills above.
+
+**Gates** (fresh, the branch at `cc6cb9389` with this record's comment edits):
+`env -u DISPLAY -u WAYLAND_DISPLAY ./run.sh --test` PASS (rust 3m00s, godot-main 2m58s,
+godot-vehicle 1m22s), with the new rendered `menu_pipeline_prewarm_test` (the groups finish in
+order, one slice in flight, the project MSAA setting is the mirror's only in a mirror group and
+back after the prewarm and after leaving in the middle of the mirror group, the root viewport's
+MSAA untouched, the street lights' and signs' templates of their real meshes' vertex formats;
+a deliberately broken `_exit_tree` restore fails it); `tools/test_stream_benchmark.py` 32 tests
+OK. No Rust change, so no clippy run; no level F: the round adds no per-frame code outside the
+menu. Artefacts: `$ARTIFACTS/render43/r43c` (sessions `t1`-`t4`, of which `t4` is the record,
+`diag`, `inv-*`, `products`, the session and row scripts, `rows.txt`, `ps-during.txt`).
+
+**A loading screen** (the user is considering one before the menu; not decided): it would wait on
+the same groups. It needs the view and its world to outlive it into the menu, or the prewarm
+started by the screen and handed on (today the view is the menu's child and its groups end with
+it); the engine must keep rendering frames while it waits (a draw queues each group, so the
+screen cannot block the main thread); and it can wait for `finished` or for a chosen group
+(`group_finished`, the ground and vegetation first) with a time limit, since a cold run's queue
+takes about 5 s on eight cores. The marker is the end signal R43b lacked.
+
+**For review and later.**
+- `threading/worker_pool/low_priority_thread_ratio` (0.3) caps the background compilations at
+  seven threads; raising it shortens a first run's queue and competes with the main thread while
+  it drains. Not changed (unmeasured).
+- The vegetation catalogue's build is the menu's 2.5 s frozen second frame on a first run, as on
+  `dev`; splitting it costs an early click (above). Moving the catalogue's model loads onto a
+  thread (`ResourceLoader.load_threaded_request`) would shorten the frame without that cost: not
+  tried.
+- Leaving while the mirror group is in flight costs a world without water up to about a second
+  (bar 1's new game row). Putting the roads before the mirror would move that cost to cities at
+  a later click; the mirror first follows A7's value order.
+- A7's other named leftovers stand: the first frame's remainder (the sky, the cloud and mist
+  effects, the bakes' canvas shaders: 0.10-0.13 s above warm), direct-to-load launches (no
+  prewarm), and user asset packs whose materials make another building shader variant (the
+  inventory names it).
+
 ### Street lights in chunk batches (`RENDER-46` lever 5, round SL1, 2026-11-17)
 
 Round SL1, the user's decision of 2026-11-17 on CS1's lever 5 ("it is acceptable. i doubt nobody
