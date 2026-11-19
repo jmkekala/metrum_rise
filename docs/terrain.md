@@ -4513,6 +4513,10 @@ km.
   Godot uploads them into free slots and swaps the instances to them (and the cells' meshes where a
   tile becomes graded or ungraded); cancel swaps back. This replaces the refined patches in the
   terrain half of the preview and `road_terrain_preview.gd`'s patch staging.
+  Correction (`TERRAIN-14`, round T14Sb,
+  [record](#the-previews-graded-sets-staged-in-the-background-terrain-14-analysis-t14s-and-round-t14sb-2026-11-19)):
+  a pose's whole selection is staged as one set by a job on the background pool, the frame only
+  takes the pose's inputs and polls; T27 (d)'s per-frame share is superseded.
 - **Commit.** For the same tiles the commit gathers the committed inputs and compares them with the
   preview's. Matching tiles are adopted: Godot keeps the preview slots and frees the old ones.
   Others are baked by the commit. The function is total, so no terrain validation can reject a
@@ -15173,6 +15177,163 @@ RAYON_NUM_THREADS=4 METRUM_DEBUG=0 METRUM_COMMIT_TIERS=10000,30000 METRUM_PERF_C
   reconsidered.
 - Side finding, not fixed (`TERRAIN-32`, proposed): the extras call libm's `hypot`, whose last bit
   is the platform's.
+
+### The preview's graded sets staged in the background (`TERRAIN-14`, analysis T14S and round T14Sb, 2026-11-19)
+
+Fable's analysis T14S (a throwaway prototype on `dev` `aadb87c9`) measured asynchronous staging,
+the lever T14 left to the user; round T14Sb (branch `terrain-14-staging`, base `dev` `aadb87c9`)
+built its plan; round T14Sv measured commits 1-2 alone against the same base. Decided under the
+user's night delegation, 2026-11-19, for review. **Commits 1-2 (the staging, the strict display,
+the pack in the job) are landed**; commits 3-4 (the trailing display with the frame-end poll) are
+built and measured, **not landed**: they miss bars 9 and 10 (spans below) and stay on branch
+`terrain-14-staging` for the user's reading of the clips and a load prewarm.
+
+**What changed** (four code commits, each standing alone; every converged, committed and undone
+tile bitwise; 1-2 landed, 3-4 on `terrain-14-staging` only).
+1. `perf(terrain)`: a pose's frame takes the pose's inputs as owned `O(1)` copies (the terrain
+   `Arc`, the published and the pose's roadbed snapshots, the site patches' map, the roadbed's
+   `TerrainChanges` moved in, the level rule) and starts one job on the background pool that
+   selects the pose's dirty tiles and stages the whole selection over the last landed set
+   (`graded_stage.rs` `GradedPreview`, `PoseSet::stage`). At most one set is in flight and one
+   pose queued behind it, the newest (a newer pose replaces the queued one, never the set in
+   flight). Generations: a set of a pose that a release, a cancel, a pose without a drawn road or a
+   publication invalidated is dropped as it lands. The frame polls the lane without waiting
+   (pose frames, and the tick's frames without a new pose). `POSE_FRAME_TILES`,
+   `CATCH_UP_FRAME_TILES`, the staging order by distance from the stroke's end and
+   `keep_unmoved`'s second selection (`LastPose`) are gone. The carrier is the agents' frame lane
+   (`RENDER-47`), made generic as `thread_pools::lane::FrameLane<T>`: a mechanical move of its
+   `Resident` / `Running` / `Landed` state (the R47 tests unchanged and green), so one lane shape
+   serves both payloads. The strict display: a landed set draws only while it is the latest
+   pose's: no preview terrain under a moving road, as before, and the pose's terrain one frame
+   after the road pauses.
+2. `perf(terrain)`: the set's job packs every tile (`pack_slot`, `pack_walls`) into byte buffers
+   pooled with the preview (`PackedTile`, at most 192 buffers kept); the frame hands the displayed
+   tiles' changes over as indices into the landed set and only copies the bytes into Godot's
+   arrays. The packed bytes equal the frame's former pack (test).
+3. `feat(terrain)`: the trailing display (not landed). The newest landed set stays displayed under a newer
+   pose's road; while it trails, every frame that sends graded changes sends its tiles as
+   `graded_trail`, and the renderer draws each of its preview tiles with its cut as the backstop
+   (T65 option (c)'s mechanism, `cells.rs` `CutTiles::trails`, `backstop_in`; a set holding a
+   trailing tile takes the behind-the-road variant before the frame's tiles are placed). The
+   latest pose's own set draws as itself, without the bit, so the early depth test stays on exact
+   frames. Traces record `preview_trail` and replay it.
+4. `feat(terrain)`: the frame-end poll (not landed). `road_tool.gd` hooks `RenderingServer.frame_pre_draw`
+   and, while a set is in flight, calls `road_tool_graded_frame_end`; Rust lands a set that
+   finished during the frame and returns its changes.
+
+**T60's invariant** stands unchanged with the landed strict display (a preview tile shows only
+under its own pose's road). Restated with commit 3 (not landed): a preview tile shows under a later
+pose's road only as part of one earlier pose's whole set, its cut drawn as the backstop; the
+branch's probe checks it on every frame (`trail_violations`). T27 (d)'s property that the shown tiles after each frame depend
+only on the pose sequence is superseded: which frame shows a set depends on when its job lands;
+every shown set is one pose's exact bake. Tests take the synchronous path (each frame first waits
+for the set in flight; the drag harness without `METRUM_DRAG_FRAME_MS`), on which frame `N` shows
+pose `N - 1`'s set and the catch-up frame the last pose's.
+
+**Bounds.** A pose's frame: `O(1)` (snapshots, the changes moved, one lane take) plus a landed
+set's hand-over; a poll: `O(1)`, no allocation when nothing landed, plus a landed set's hand-over
+`O(landed tiles)` (the old set's buffers retired; the display's diff `O(display + sent log
+display)` as before). The job: `O(one selection + wanted gathers + rebaked bakes + wanted packs)`
+on the background pool. With `w` a set's wall time and `T` the frame, a pose's set lands
+`ceil(w / T)` frames after it, a queued pose's at most `2 ceil(w / T)`. Allocation per pose: the
+pool's box for the spawned job and the job's stage and pack vectors; the selection, bake and pack
+buffers travel with the lane payload and are reused.
+
+**A job outliving its context** (risk checked by construction): the job owns every input it reads
+(`Arc`s and `O(1)` snapshots moved into the payload) and the lane's shared state; it holds no
+reference to the core, the road tool's context, its mutex or Godot. A context dropped with a set
+in flight lets the job land into a lane nobody reads, and the payload is freed with the job's last
+`Arc`. `thread_pools::stop` waits for spawned jobs before the library unloads.
+
+**Bars** (analysis T14S section 7, unchanged; same-session control from the base `aadb87c9`, C B B
+C, four workers a pool unless named, P-cores `taskset -c 0,2,4,6,8,10,12,14`, governor
+`performance` on every row; the Rust rows in one hold of the run and exclusive timing locks,
+19:18:02-19:20:46, `ps` logged per row, no profiler; the control binary drags its frames back to
+back, the branch's frames are paced at 60 Hz (`METRUM_DRAG_FRAME_MS=16.667`) unless named). Round
+T14Sb's rows ran on commits 1-4 (the rendered rows on the trailing build); round T14Sv's rows for
+commits 1-2 alone follow the table.
+
+| # | Bar | Target | Control | Branch (commits 1-4) | |
+| --- | --- | --- | --- | --- | --- |
+| 1 | The terrain stage on the frame | no pose or catch-up frame over 3.0 ms (Kuopio, 10k, 30k; four workers and one); worst <= 0.3 ms | Kuopio worst 2.92 / 2.72 ms; one worker 31 pose and 31 catch-up frames over (worst 6.45); 10k / 30k worst 2.53 / 2.39, one worker 16 / 15 over | worst 0.047 ms (Kuopio), 0.009 (populated); one worker 0.045 / 0.006; none over | met |
+| 2 | Convergence after a pause | 60 Hz: <= 2 frames at the median and worst; 144 Hz: median <= 2 | p50 5, worst 9 (Kuopio); 10k p50 5 worst 7; 30k p50 3 worst 4 | 1 on every stroke and sample (both rows); 144 Hz p50 1, worst 3 (Kuopio), 1 (populated) | met |
+| 3 | Bitwise | the convergence digests equal to the control's in every row | Kuopio `8646a67c80c70269`, 10k `c5ecdf93eed24ded`, 30k `db14592d457c7679` | equal in all nine branch rows (60 Hz, 144 Hz, the synchronous path, one worker) | met |
+| 4 | A set's job | Kuopio p95 <= 6 ms, none over 16.7; populated worst <= 10 ms | - | Kuopio p95 5.00 / 5.03, worst 8.64 / 8.45, none over 16.7; 10k worst 8.65 / 8.29, 30k 4.21 / 4.32 (queue to landing) | met |
+| 5 | The frame showing a set (rendered, pinned, eight workers) | install + pack: p95 <= 0.6 ms, worst <= 1.0 ms | one set a pause: p95 0.65, worst 0.65 ms (the pack on the frame) | 452 set frames: p50 0.27, p95 0.42, worst 0.70 ms (the pack is the frame's copy of the job's bytes) | met |
+| 6 | Holes (magenta background, swing 30 degrees, Kuopio's 39 strokes) | 0 frames with the background; the probe's per-frame checks pass | 0 (one run, every stroke) | continuous swing: 1 frame, an **undo** frame of `kuopio_03` 8 (167 sampled pixels, 46 ms), not reproduced in two more runs of that case; with pauses: 0; no swing, pose or catch-up frame in any run; `trail_violations` 0 on every frame | missed by one frame (below) |
+| 7 | The commit and its jobs | populated commit, recommit and undo calls and the lot adoption and routing jobs level (medians within 5 %); K22 level | 30k commit p50 44.99 / 46.01 ms, recommit 47.42 / 48.47, undo 109.1 / 106.4; lot adoption 72.9 / 73.3, routing 67.7 / 67.6; K22 30k click-to-ack 7.03 ms | 44.43 / 44.28, 45.67 / 45.89, 106.7 / 108.3; 73.2 / 73.7, 69.1 / 68.9; K22 6.92 ms; the 10k calls and jobs level too | met |
+| 8 | Streaming | the stream series level; a swing during a 1 s camera turn on the 30k city | - | not run (no drag runs without a pose, so the paused and turning rows are untouched by construction; the swing-during-a-turn probe row does not exist and was not built) | not measured |
+| 9 | As played (no pinning, default pools, three rows a side) | swing and drag pose frames of 18-100 ms not above control by more than one a row at the median; the recurring late frames attributed | swing 1, 2, 3; pose 1, 3, 1 | swing 13, 11, 8; pose 4, 2, 4 (18.0-24.2 ms) | **missed** |
+| 10 | First use | no frame over 100 ms in a drag after the load's settle that the control does not have | `kuopio_03` 6's first swing frame 611-615 ms; others shared | the first swing frame 1,184-1,219 ms and a second, 990-1,031 ms | **missed** |
+| 11 | Gates | `./run.sh --test`, debug `cargo test --lib`, clippy, level F | - | gate passes (Rust 2,930 passed, both Godot chains); debug lib 2,926 passed; clippy: no warning in changed code; level F (below) | met |
+
+- **The frame-end poll** (pinned rows): the pose's own set drew in its own frame on 271 of 282
+  swing frames (96 %) and 187 of 214 drag pose frames (87 %); the rest trailed one pose.
+- **Bar 6's undo frame.** The undo path is unchanged by the round (commit and undo tiles bitwise);
+  the control's run over every stroke showed none, and two repeats of `kuopio_03` alone on the
+  branch showed none. Not attributed.
+- **Bar 9, the recurring late frames.** As in T14S they are the same frames in every run
+  (`kuopio_08` 21's swing poses 1-3, 14, 17, 18): each lands a set at the frame's end (installs
+  0.12-0.31 ms, the frame's pack copy 0.06-0.18 ms, 0.35-1.2 MB uploaded) and runs 1.5-7 ms past the
+  vsync; a pipeline-count row (`RENDERING_INFO_PIPELINE_COMPILATIONS_*` per frame, a throwaway
+  probe copy) found no pipeline compiled in any of the 10 late frames, so the cost lies outside the
+  book's install and pack and is not a first-use compile. Not traced further.
+- **Bar 10, attributed in part.** The second long frame (990-1,031 ms) compiles 2 specialization
+  and 3 surface pipelines, the set the control compiles later (`kuopio_08` 22's swing frame, 391 ms,
+  in both). The first swing frame's extra 570 ms compiles no pipeline; that stroke creates two
+  preview pages against the control's one (`pages_created`), the likeliest cost. Neither is
+  prewarmed: a prewarm of the second preview page and of those pipelines at load is the lever
+  (`RENDER-43`'s class), not built.
+- **Level F** (`./run.sh --timing --level F --base aadb87c9 --k22`, the same two binaries, eight
+  workers, P-cores): 30k 32x C B B C level on every metric (`PERF-17`'s known exception on one
+  row a side); 30k 1x: both days pass the acceptance; the first branch day's worst unpreempted
+  frame was 5.86 against 5.19 ms (+12.9 %, over the 8.5 % one-run tolerance), and the session's one
+  rerun read 5.15 ms (level on every metric).
+- **The CPU price** (decision 4) and the trailing look (decision 1) are as T14S measured them; the
+  clips show the earlier footprint's pale strip beside the road and the small streaked patch near
+  the guide ring that T14S noted on the trailing panels (not traced).
+
+**Round T14Sv: commits 1-2 alone** (2026-11-19, 20:27-21:33, the same boot as T14Sb). Bars 6,
+8, 9 and 10 measured on the strict build (release library of `3a931b19`, the landed code) against
+`aadb87c9`'s, each side with its own scripts (a measurement copy adds counters to the probe's rows
+and, for the turn row, the turn), gamescope headless at 1080p, isolated profiles, governor `performance` on every row, `ps`
+logged before each row (no profiler), the run and exclusive timing locks held per row. Rows,
+logs, parsers and the measurement scripts: `$ARTIFACTS/t14sv/`.
+
+| # | Bar | Target | Control | Strict (commits 1-2) | |
+| --- | --- | --- | --- | --- | --- |
+| 6 | Holes (magenta background, swing 30 degrees, Kuopio's 39 strokes, eight workers, pinned) | 0 frames with the background; the probe's per-frame checks pass | continuous swing 0 frames in three runs (2,316-2,317 frames checked a run, undo frames included); with pauses 0 in three (6,532-6,533); every per-frame check passes | continuous swing 0 frames in three runs (2,146-2,147 a run); with pauses 0 in three (2,966-2,970); every per-frame check passes on every stroke; T14Sb's `kuopio_03` 8 undo frame (seen once on the trailing build) did not recur, so the ten-repeat attribution was not triggered | met |
+| 8 | Streaming | the stream series C B B C level; the swing during a 1 s turn on the 30k city: frames over 16.7 ms and the agents' late frames not above control | series: see the strict column; turn row: frames over 16.7 ms 22 and 27 a run (p50 12.9 / 12.7 ms), the agents' late frame jobs 0 | series (`tools/stream_benchmark.py series --input-label 30k`, paused, every phase): level or better in 21 of 23 phases; flags on two maxima only, `turn_back 0.5s` (+1.5 ms, spread 1.0) and `turn_repeat 1s` (+3.8, spread 3.8: one 15 ms frame), no frame over 16.7 ms on either side but `zoom_in`'s 49-56 ms on every row; turn row: 20 and 20 (p50 12.2 / 11.9 ms), late jobs 0; a set in flight on every swing frame | met |
+| 9 | As played (unpinned, default pools, three rows a side, `kuopio_08`, `_04`, `_03`) | swing and drag pose frames of 18-100 ms not above control by more than one a row at the median | swing 4, 3, 1 (median 3); pose 1, 1, 1 | swing 5, 4, 2 (median 4); pose 1, 4, 1 (median 1); 18.1-19.4 ms, none of them showing a set (the strict display installs none while the road moves), in the control's strokes (`kuopio_08` 21 and 22, `kuopio_04` 10) | met |
+| 10 | First use | no frame over 100 ms in a drag after the load's settle that the control does not have | the as-played rows: `kuopio_03` 6's first swing frame 608-621 ms, `kuopio_08` 22's swing frame 399-408, `kuopio_03` 7's fast click 380-389, edit waits 170-198; once a 1,171 ms `kuopio_03` 6 fast click | the same frames: 614-624, 399-417, 384-397, 182-202; once 1,174 ms (`kuopio_03` 6 fast click). The six swing hole rows (every stroke) agree: `kuopio_01` 1's first swing frame 607-621 ms (control 622-628) and its fast click 1,200-1,241 (1,213-1,242), `kuopio_08` 22's swing frame 413-477 (413-509), edit waits 196-235 (197-235); none on the strict build alone | met |
+
+The 30k turn row (bar 8's new probe row, a measurement copy of `graded_drag_probe.gd`, not
+committed): the 30k save loaded, three 120 m two-lane strokes north off the west trunk (the
+populated drags' starts, `x` -1,900, -2,050 and -2,200 m, `z` -1,200), each swung 30 degrees each
+way in 80 poses (1.5 degrees a frame) while the camera orbits 180 degrees in 1 s of wall time around
+the stroke's end at 400 m (the stream benchmark's turn), no vsync (gamescope at 1000 Hz), eight
+workers, pinned; the simulation at 1x during each swing (paused again for the settles), C S S C,
+21:30-21:33. Every run on both sides fails the probe's `tile_draw_violations` check on the same 7
+frames (2, 3 and 2 a stroke: 9-127 tiles of a set drawn other than the set shows, on swing frames
+that show no preview tile, while the turn brings patches in): the base's own, first seen because the
+probe never turned the camera before; recorded for the owner of that check, not this round's. A
+paused first pass (one stroke a run, the case ended at that check) read the same: 10 and 17 frames
+over 16.7 ms on the control, 6 and 9 on the strict build.
+
+**Landable commits.** Commits 1-2 (`431db14e`, `3a931b19`: the staging, the strict display, the
+pack in the job) meet every bar measured on them and are the landed set. Commits 3-4 (`f405897e`,
+`34bf81ae`: trailing, frame-end poll) are built and measured, **not landed**: they miss bar 9 (8-13
+swing frames of 18-24 ms a row against 1-3) and bar 10 (a first swing frame of 1,184-1,219 ms and
+a second of 990-1,031 ms the control does not have); branch `terrain-14-staging` keeps them for
+the user's reading of the clips and a load prewarm of the second preview page and its pipelines.
+
+**Clips for the user** (`$ARTIFACTS/t14sb/clips/`, three panels: today, strict, trailing with the
+frame-end poll; `kuopio_08` attempt 22 swung 30 degrees each way; gamescope headless, 1080p,
+captured frames, then slowed): `fast-sweep-today-vs-strict-vs-trailing-poll.mp4` (5 degrees a
+frame), `slow-sweep-...` (1 degree a frame, camera 90 m), `near-slow-sweep-...` (45 m) and
+`fast-drag-...` (eight poses, the catch-up, the click: today 16 frames, strict 13, trailing 12).
+Capturing slows the frames, so every set lands before the next frame there: the trailing panels
+show the pose's own terrain, the strict panel none while the road moves.
 
 ### Buildings by travel bucket, batches through the pools (`RENDER-32-L`, 2026-11-12)
 
