@@ -107,8 +107,17 @@ static func groups() -> Array[Dictionary]:
 	# The graded tiles' base cells: the terrain shader on the lattice's vertex format.
 	out.append(_group("base_cells", func() -> Array:
 		return TerrainGradedTiles.pipeline_prewarm_base_cells()))
+	# Worlds with roads: the chunk layers, then the street lights and the signs. Before the mirror
+	# (round R43d): a player who leaves while a group is in flight waits for it at the world
+	# scene's start, and the mirror's slices (the terrain proxies at 2x) are among the slowest;
+	# only worlds with water draw it, and late (a pose toward water).
+	out.append(_group("roads", func() -> Array: return WorldMaterials.pipeline_prewarm_roads()))
+	out.append(_group("lights_signs", func() -> Array:
+		var pairs := StreetLights.pipeline_prewarm_surfaces()
+		pairs.append_array(RoadSigns.pipeline_prewarm_surfaces())
+		return pairs))
 	# What the water mirror draws, at its MSAA too (and, with the setting restored, at the game's):
-	# the terrain proxies, the tree impostors, the building tiers and the site batches.
+	# the terrain proxies, the tree impostors, the building tiers and the site batches. Last.
 	var mirror := func() -> Array:
 		var pairs := WaterReflection.pipeline_prewarm_surfaces()
 		for species in [TreeSpecies.CONIFER, TreeSpecies.BROADLEAF]:
@@ -117,12 +126,6 @@ static func groups() -> Array[Dictionary]:
 		pairs.append_array(BuildingsRenderer.pipeline_prewarm_surfaces())
 		return pairs
 	out.append(_group("mirror", mirror, true))
-	# Worlds with roads: the chunk layers, then the street lights and the signs.
-	out.append(_group("roads", func() -> Array: return WorldMaterials.pipeline_prewarm_roads()))
-	out.append(_group("lights_signs", func() -> Array:
-		var pairs := StreetLights.pipeline_prewarm_surfaces()
-		pairs.append_array(RoadSigns.pipeline_prewarm_surfaces())
-		return pairs))
 	return out
 
 ## Every group's pairs, in order (the benchmark's inventory). Builds them all at once.
