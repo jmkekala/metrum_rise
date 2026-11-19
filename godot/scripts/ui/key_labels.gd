@@ -4,6 +4,8 @@
 ## position is named as the player's layout prints it.
 extends RefCounted
 
+const WaylandInput := preload("res://scripts/core/wayland_input.gd")
+
 ## "Option" on macOS, "Alt" elsewhere.
 static func alt() -> String:
 	return "Option" if OS.get_name() == "macOS" else "Alt"
@@ -14,5 +16,5 @@ static func alt() -> String:
 static func physical(key: Key) -> String:
 	if DisplayServer.get_name() == "headless":
 		return String.chr(key)
-	var label := DisplayServer.keyboard_get_label_from_physical(key)
+	var label := DisplayServer.keyboard_get_label_from_physical(WaylandInput.display_physical(key))
 	return String.chr(label).to_upper() if label > 0 and label < KEY_SPECIAL else String.chr(key)

@@ -11,6 +11,7 @@ run/main_scene="res://scenes/Router.tscn"
 LaunchState="*res://scripts/core/launch_state.gd"
 FpsOverlay="*res://scripts/core/fps_overlay.gd"
 DebugConsole="*res://scripts/ui/debug_console/debug_console.gd"
+WaylandInput="*res://scripts/core/wayland_input.gd"
 
 [display]
 
