@@ -48,6 +48,12 @@ var _halo := FootprintHalo.new()
 func _ready() -> void:
 	add_child(_halo)
 
+# The halo becomes a child only in _ready; an inspector freed without entering the tree (a test
+# building one bare) would leak it with its mesh and material.
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_PREDELETE and is_instance_valid(_halo) and _halo.get_parent() == null:
+		_halo.free()
+
 func _process(_delta: float) -> void:
 	if _open_windows.is_empty() or simulation_node == null:
 		return
