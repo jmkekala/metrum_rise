@@ -157,6 +157,23 @@ impl PortalWindow {
     }
 }
 
+#[cfg(test)]
+impl PortalWindow {
+    /// A window of rows with corners `a` and `b` (the road on their left) and no vertices, for
+    /// the lane kernel's tests.
+    pub(super) fn of_rows(rows: &[([f64; 2], [f64; 2])]) -> Self {
+        let rows = rows.iter().map(|&(a, b)| PortalRow {
+            key: [a[0], 0.0, a[1], b[0], 0.0, b[1]].map(f64::to_bits),
+            a,
+            b,
+            vertices: Vec::new(),
+        });
+        Self {
+            rows: rows.collect(),
+        }
+    }
+}
+
 // The nearest point of `seam` to the XZ point `(x, z)`, by `Seam::at`'s exact clamp.
 fn nearest_point(seam: &Seam, x: f64, z: f64) -> (f64, f64) {
     let [ax, _, az] = seam.a;

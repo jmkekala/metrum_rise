@@ -204,6 +204,35 @@ pub(super) fn settled(
     })
 }
 
+/// The candidate's part of [`settled`] for a lane kernel (`TERRAIN-14`), the same expressions
+/// on the same operands: `None` where every point is settled (the candidate lies beyond the
+/// cap), else the distance less the slack and the heights' cone bounds at it.
+pub(super) fn settle_of(heights: (f64, f64), distance: f64) -> Option<Settle> {
+    let k = TIE_IN_SLOPE;
+    let farther = distance - REACH_SLACK_M;
+    if farther > padded(CAP_M) {
+        return None;
+    }
+    Some(Settle {
+        farther,
+        hi: heights.1 - k * farther,
+        lo: heights.0 + k * farther,
+    })
+}
+
+/// [`settle_of`]'s product: a point is settled where `farther` exceeds its nearest road seam's
+/// distance, or the band, times [`NEAR_FACTOR`], and, at a ground point, `hi` lies below
+/// `max(L, min(b, U))` and `lo` above `min(b, U)`.
+#[derive(Clone, Copy)]
+pub(super) struct Settle {
+    pub(super) farther: f64,
+    pub(super) hi: f64,
+    pub(super) lo: f64,
+}
+
+/// The near limit's factor in [`settled`], `1 + REACH_SLACK`.
+pub(super) const NEAR_FACTOR: f64 = 1.0 + REACH_SLACK;
+
 /// Pass 1 of the exact pruning: whether a seam with heights `seam` may change a value at points
 /// at least `distance` from it whose base lies in `base`, because its cone can bind that base or
 /// it lies within the band `band` (a road seam's; a pad seam takes none). Where it is false the

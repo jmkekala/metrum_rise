@@ -28,6 +28,9 @@ robust = "1.2"
 soa_derive = "0.14"
 spade = "2.15"
 splines = { version = "5.0", features = ["glam"] }
+# Safe SIMD vectors (SSE2/AVX or NEON, else scalar) for the graded bake's four-lane kernel
+# (`TERRAIN-14`); already in the lock file through `imbl` and `simba`.
+wide = "0.7.33"
 sha2 = "0.11"
 zip = { version = "8.6", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 

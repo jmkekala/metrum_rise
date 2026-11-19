@@ -351,14 +351,95 @@ fn a_seam_in_lanes_equals_the_seam_at_each_point() {
                 let xs: [f64; 4] =
                     std::array::from_fn(|lane| f64::from(start * 4 + lane as i32) * 0.29);
                 let (distance, height) = seam.at_lanes(&xs, z);
+                let (four_distance, four_height) = seam.at_four(wide::f64x4::new(xs), z);
+                let (four_distance, four_height) = (four_distance.to_array(), four_height.to_array());
                 for lane in 0..4 {
                     let at = seam.at(xs[lane], z);
                     assert_eq!(distance[lane].to_bits(), at.distance.to_bits());
                     assert_eq!(height[lane].to_bits(), at.height.to_bits());
+                    assert_eq!(four_distance[lane].to_bits(), at.distance.to_bits());
+                    assert_eq!(four_height[lane].to_bits(), at.height.to_bits());
                 }
             }
         }
     }
+}
+
+// `TERRAIN-14`: the four-lane kernel against one point at a time and against the scalar lanes on
+// the two paths it hands to scalar code: two road seams at the same distance from a lane (the
+// nearest seam's tie order) and lanes past a portal row (the hidden cones), with ground, covered
+// and pad lanes, troughs on and off and a retained seam.
+#[test]
+fn four_lanes_equal_one_point_at_a_time_at_ties_and_past_a_portal_row() {
+    use super::portal::PortalWindow;
+    use super::sample::{Listed, Value, evaluate, evaluate_four, evaluate_lanes};
+    use super::seams::Seam;
+    let seam = |a, b, kind, retained| Seam {
+        a,
+        b,
+        kind,
+        retained,
+    };
+    let seams = [
+        // Two roads at different heights, point mirrors about the origin, each nearest to a
+        // point on `x = 0` at its end 1.5 m from it (for `|z| <= 3.375`): such a point lies at
+        // the same distance from both, bitwise, and their line distances order the tie.
+        seam([-1.5, 1.0, 0.0], [-6.0, 1.0, -2.0], SeamKind::Road, false),
+        seam([1.5, 3.0, 0.0], [6.0, 3.0, 2.0], SeamKind::Road, false),
+        seam([-8.0, 0.5, -6.0], [8.0, 0.5, -6.0], SeamKind::Pad, false),
+        // A retained approach seam across the rows (only with troughs, as the bake lists it).
+        seam([-30.0, 2.5, 0.25], [30.0, 2.0, 0.25], SeamKind::Road, true),
+    ];
+    // The row's line is `x = z`: a point with `x > z` lies past it.
+    let window = PortalWindow::of_rows(&[([-20.0, -20.0], [20.0, 20.0])]);
+    let bits = |value: &Value| {
+        (
+            [value.height, value.sdf, value.nearest_distance, value.cones.lower, value.cones.upper]
+                .map(f64::to_bits),
+            (value.nearest, value.conflict, value.ground, value.evaluated),
+        )
+    };
+    let (mut ties, mut past, mut points) = (0, 0, 0);
+    for (count, troughs) in [(3, false), (3, true), (4, true)] {
+        let seams = &seams[..count];
+        let all = || (0..count as u32).map(Listed::unbounded);
+        for portals in [None, window.active()] {
+            for row in -12..=12 {
+                let z = f64::from(row) * 0.5;
+                for start in -8..=4 {
+                    let xs: [f64; 4] =
+                        std::array::from_fn(|lane| f64::from(start + lane as i32) * 0.5);
+                    let bases = xs.map(|x| 2.0 + 0.1 * x - 0.05 * z);
+                    // A covered lane and a pad lane that move along the row.
+                    let at = |lane: usize, every: i32| (start + lane as i32).rem_euclid(every) == 0;
+                    let roads: [Option<f32>; 4] =
+                        std::array::from_fn(|lane| at(lane, 3).then_some(1.75));
+                    let pads: [Option<f64>; 4] =
+                        std::array::from_fn(|lane| (at(lane, 5) && !at(lane, 3)).then_some(0.75));
+                    let four = evaluate_four(
+                        &xs, z, &bases, &roads, &pads, seams, all(), 4.0, portals, troughs,
+                    );
+                    let lanes = evaluate_lanes(
+                        &xs, z, &bases, &roads, &pads, seams, all(), 4.0, portals, troughs,
+                    );
+                    for lane in 0..4 {
+                        let x = xs[lane];
+                        let one = evaluate(
+                            x, z, bases[lane], roads[lane], pads[lane], seams, all(), 4.0,
+                            portals, troughs,
+                        );
+                        let at = format!("({x}, {z}) {count} seams, troughs {troughs}");
+                        assert_eq!(bits(&four[lane]), bits(&one), "{at}");
+                        assert_eq!(bits(&lanes[lane]), bits(&one), "{at}");
+                        ties += usize::from(x == 0.0 && one.nearest < 2);
+                        past += usize::from(portals.is_some_and(|portals| portals.past(x, z)));
+                        points += 1;
+                    }
+                }
+            }
+        }
+    }
+    assert!(ties > 0 && past > 0 && past < points, "{ties} ties, {past} of {points} past");
 }
 
 #[test]

@@ -4,6 +4,7 @@
 //! one seam's nearest point, distance, height and side at a world point.
 
 use crate::simulation::network::roadbed::{PieceId, RoadVec3, RoadbedSystem, WallSegment};
+use wide::{CmpGe, CmpLe, f64x4};
 
 /// What a seam bounds. Every kind ties in at the slope ratio
 /// [`super::grade::TIE_IN_SLOPE`].
@@ -105,6 +106,34 @@ impl Seam {
             }
         }
         (distance, height)
+    }
+    /// [`Self::at_lanes`] at four points `(xs[l], z)` on `wide::f64x4` (`TERRAIN-14`): every
+    /// lane step is the scalar expression on the same operands as one vector operation (`wide`
+    /// fuses no multiply-add, and add, subtract, multiply, divide and square root are correctly
+    /// rounded per lane on every target), the clamps compares and selects, so each lane equals
+    /// `at` bitwise. `O(1)`.
+    #[inline(always)]
+    pub(super) fn at_four(&self, xs: f64x4, z: f64) -> (f64x4, f64x4) {
+        let [ax, ay, az] = self.a;
+        let [bx, by, bz] = self.b;
+        let (dx, dz) = (bx - ax, bz - az);
+        let len2 = dx * dx + dz * dz;
+        if len2 > 0.0 {
+            let t = ((xs - ax) * dx + (z - az) * dz) / len2;
+            let (at_a, at_b) = (t.cmp_le(f64x4::ZERO), t.cmp_ge(f64x4::ONE));
+            // `a` where `t <= 0`, else `b` where `t >= 1`, else the point at `t`.
+            let clamp = |a: f64, b: f64, mid: f64x4| {
+                at_a.blend(f64x4::splat(a), at_b.blend(f64x4::splat(b), mid))
+            };
+            let qx = clamp(ax, bx, f64x4::splat(ax) + f64x4::splat(dx) * t);
+            let qz = clamp(az, bz, f64x4::splat(az) + f64x4::splat(dz) * t);
+            let h = clamp(ay, by, f64x4::splat(ay) + f64x4::splat(by - ay) * t);
+            let (ex, ez) = (xs - qx, f64x4::splat(z) - qz);
+            ((ex * ex + ez * ez).sqrt(), h)
+        } else {
+            let (ex, ez) = (xs - ax, z - az);
+            ((ex * ex + ez * ez).sqrt(), f64x4::splat(ay))
+        }
     }
 }
 

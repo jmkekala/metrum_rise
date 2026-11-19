@@ -770,6 +770,7 @@ dependencies = [
  "spade",
  "splines",
  "toml",
+ "wide",
  "zip",
 ]
 

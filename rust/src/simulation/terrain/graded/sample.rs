@@ -6,11 +6,15 @@
 //! scaled to metres, and a sample's value is a function of its position, its coverage and the
 //! seams it is given, which the bake prunes exactly and the queries do not prune at all.
 
-use super::grade::{CAP_M, Cones, INSIDE_REACH_M, cone, inside, inside_deep, settled};
+use super::grade::{
+    CAP_M, Cones, INSIDE_REACH_M, NEAR_FACTOR, TIE_IN_SLOPE, cone, inside, inside_deep, settle_of,
+    settled,
+};
 use super::portal::PortalWindow;
 use super::seams::{Seam, SeamKind};
 use crate::config::HEIGHT_SCALE;
 use crate::simulation::terrain::TerrainSystem;
+use wide::{CmpEq, CmpGe, CmpGt, CmpLe, CmpLt, f64x4};
 
 /// No seam index.
 pub(super) const NO_SEAM: u32 = u32::MAX;
@@ -115,8 +119,9 @@ pub(super) fn evaluate(
 /// the candidates until its own early exit, and later ones no longer touch it, so every lane
 /// equals `evaluate` at its point bitwise, its cones and count included. Each candidate's seam is
 /// evaluated for all lanes at once ([`Seam::at_lanes`]; one lane takes [`Seam::at`], the same
-/// bits), with the cone bounds updated by selects, so the arithmetic compiles to vector
-/// instructions. `O(candidates x N)`.
+/// bits), with the cone bounds updated by selects. One lane is `evaluate`; four are the scalar
+/// form of the bake's [`evaluate_four`], which the tests hold it to (LLVM leaves this form
+/// scalar code, `TERRAIN-14`). `O(candidates x N)`.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn evaluate_lanes<const N: usize>(
     xs: &[f64; N],
@@ -242,6 +247,143 @@ pub(super) fn evaluate_lanes<const N: usize>(
             cones,
             nearest[lane],
             evaluated[lane],
+            band,
+        )
+    })
+}
+
+/// [`evaluate_lanes`] at four points on `wide::f64x4` (`TERRAIN-14`), the bake's lane groups:
+/// the lanes' cones, nearest road seam (distance, height and index, `-1` without one), live mask
+/// and counts in vectors, and every per-lane step of `evaluate_lanes` the same expression on
+/// the same operands as one vector operation with masks for its branches ([`Seam::at_four`]
+/// for the seam), so each lane equals `evaluate` at its point bitwise. `min` and `max` are a
+/// compare and a select: they differ from `f64::min` and `f64::max` only at a NaN, which no
+/// operand can be (no `inf - inf`, no `0 / 0` with `len2 > 0`), and between two zeros of
+/// opposite sign, where `f64::max` itself leaves the sign unspecified and the settle test only
+/// compares them. A tie in distance with the nearest seam so far, and a lane past a portal row,
+/// take the scalar test of that lane ([`nearer`], [`PortalWindow::hides`]). `O(candidates)`,
+/// no allocation.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn evaluate_four(
+    xs: &[f64; 4],
+    z: f64,
+    bases: &[f64; 4],
+    roads: &[Option<f32>; 4],
+    pads: &[Option<f64>; 4],
+    seams: &[Seam],
+    candidates: impl Iterator<Item = Listed>,
+    band: f64,
+    portals: Option<&PortalWindow>,
+    troughs: bool,
+) -> [Value; 4] {
+    let min = |a: f64x4, b: f64x4| a.cmp_lt(b).blend(a, b);
+    let max = |a: f64x4, b: f64x4| a.cmp_gt(b).blend(a, b);
+    let mask = |lanes: [bool; 4]| f64x4::new(lanes.map(f64::from)).cmp_gt(f64x4::ZERO);
+    let past: [bool; 4] =
+        std::array::from_fn(|lane| portals.is_some_and(|portals| portals.past(xs[lane], z)));
+    let any_past = past.contains(&true);
+    // As in `evaluate_lanes`: the lanes whose value reads the cones over their base.
+    let ground = mask(std::array::from_fn(|lane| {
+        let covered = roads[lane].is_some();
+        (!covered && pads[lane].is_none()) || (covered && troughs)
+    }));
+    let (x, base, band_v) = (f64x4::new(*xs), f64x4::new(*bases), f64x4::splat(band));
+    let (cap, k) = (f64x4::splat(CAP_M), f64x4::splat(TIE_IN_SLOPE));
+    let mut lower = f64x4::splat(Cones::NONE.lower);
+    let mut upper = f64x4::splat(Cones::NONE.upper);
+    let (mut near_d, mut near_h) = (f64x4::splat(f64::INFINITY), f64x4::ZERO);
+    let mut near_i = f64x4::splat(-1.0);
+    let (mut live, mut evaluated) = (mask([true; 4]), f64x4::ZERO);
+    for Listed {
+        index,
+        distance,
+        heights,
+    } in candidates
+    {
+        // `settled` per lane: every lane past the cap, else a lane is live where the candidate
+        // is near (within its nearest seam's distance or the band), or at a ground lane where
+        // its bounds may bind.
+        let Some(settle) = settle_of(heights, distance) else {
+            break;
+        };
+        let near = f64x4::splat(settle.farther).cmp_le(min(near_d, band_v) * NEAR_FACTOR);
+        let floor = min(base, upper);
+        let binds = f64x4::splat(settle.hi).cmp_ge(max(lower, floor))
+            | f64x4::splat(settle.lo).cmp_le(floor);
+        live &= near | (ground & binds);
+        if live.none() {
+            break;
+        }
+        evaluated += live.blend(f64x4::ONE, f64x4::ZERO);
+        let seam = &seams[index as usize];
+        let (distance, height) = seam.at_four(x, z);
+        let mut take = live & distance.cmp_le(cap);
+        if any_past {
+            // Not the lanes past a portal row the seam is hidden from.
+            let lanes = take.move_mask();
+            take &= mask(std::array::from_fn(|lane| {
+                lanes & (1 << lane) == 0
+                    || !past[lane]
+                    || !portals.is_some_and(|portals| portals.hides(seam, xs[lane], z))
+            }));
+        }
+        // `cone`: `h - k d` and `h + k d`.
+        let reach = k * distance;
+        lower = take.blend(max(lower, height - reach), lower);
+        // A retained seam bounds from below alone (`ROAD-61` round R8e).
+        if !seam.retained {
+            upper = take.blend(min(upper, height + reach), upper);
+        }
+        if seam.kind != SeamKind::Road {
+            continue;
+        }
+        let candidate = take & distance.cmp_lt(band_v);
+        let closer = candidate & distance.cmp_lt(near_d);
+        let tie = candidate & distance.cmp_eq(near_d);
+        near_d = closer.blend(distance, near_d);
+        near_h = closer.blend(height, near_h);
+        near_i = closer.blend(f64x4::splat(f64::from(index)), near_i);
+        if tie.any() {
+            let (tie, distance, height) = (tie.move_mask(), distance.to_array(), height.to_array());
+            let (mut names, mut heights) = (near_i.to_array(), near_h.to_array());
+            for lane in 0..4 {
+                if tie & (1 << lane) != 0
+                    && nearer(
+                        seams,
+                        (xs[lane], z),
+                        (index, distance[lane]),
+                        (names[lane] as u32, distance[lane]),
+                    )
+                {
+                    names[lane] = f64::from(index);
+                    heights[lane] = height[lane];
+                }
+            }
+            near_i = f64x4::new(names);
+            near_h = f64x4::new(heights);
+        }
+    }
+    let (lower, upper, evaluated) = (lower.to_array(), upper.to_array(), evaluated.to_array());
+    let (near_d, near_h, near_i) = (near_d.to_array(), near_h.to_array(), near_i.to_array());
+    std::array::from_fn(|lane| {
+        let cones = Cones {
+            lower: lower[lane],
+            upper: upper[lane],
+        };
+        let nearest =
+            (near_i[lane] >= 0.0).then(|| (near_i[lane] as u32, near_d[lane], near_h[lane]));
+        let retained = nearest.is_some_and(|(index, ..)| seams[index as usize].retained);
+        debug_assert!(
+            !retained || roads[lane].is_none() || troughs,
+            "a covered lane naming a retained seam reads the cones"
+        );
+        value(
+            bases[lane],
+            (roads[lane], retained),
+            pads[lane],
+            cones,
+            nearest,
+            evaluated[lane] as u32,
             band,
         )
     })

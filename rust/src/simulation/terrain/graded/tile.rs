@@ -17,7 +17,7 @@ use super::prune::{
     list_second_pass,
 };
 use super::sample::{
-    AxisStop, BaseGrid, BaseWindow, Listed, NO_SEAM, Value, evaluate, evaluate_lanes,
+    AxisStop, BaseGrid, BaseWindow, Listed, NO_SEAM, Value, evaluate, evaluate_four,
 };
 use super::seams::{Seam, SeamScratch, gather_road_seams, gather_wall_seams};
 use super::sites::{NO_SITE, SiteBuffer, SiteSource};
@@ -1225,7 +1225,7 @@ impl Sampling<'_> {
                     );
                     [value; LANES]
                 } else {
-                    evaluate_lanes(
+                    evaluate_four(
                         &points,
                         z,
                         &bases,
