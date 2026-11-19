@@ -651,6 +651,21 @@ tools/godot_isolated.py run --mods player -- gamescope --backend headless -- god
 
 A round's logs end clean: `grep -rl 'is a relative path' <artefacts>` finds nothing.
 
+**The display driver (`RENDER-62`).** A rendered tool or test run names its driver,
+`--display-driver x11`: `run.sh`'s rendered tests (`run_rendered_godot_test`), its windowed
+gameplay benchmark, the stream benchmark (`run`, `series`, stills) and the graded-drag probe. The
+frames, digests and exits on record are x11's, and Godot falls back from a driver that fails to
+the other one, so a run without the flag could open on the real desktop once the project's
+default changes. Without `--display`, the launcher unsets `DISPLAY` and sets `WAYLAND_DISPLAY` to
+a socket that cannot exist (`NO_WAYLAND_DISPLAY`): unset, libwayland tries `wayland-0`, the
+session's own socket on many machines. gamescope itself connects to any `WAYLAND_DISPLAY` it sees
+and exits when it cannot, so a tool builds its launch with `gamescope_command`: gamescope with
+the variable unset, Godot inside it with the isolated name. Wayland rows are opt-in: `stream_benchmark.py run
+--display-driver wayland` exposes gamescope's socket (`--expose-wayland`) and fails a row as an
+exit hang when its Godot is still there 20 s after its report (godot#123059), stopping that
+Godot. The benchmark reports carry the driver in use (`runtime.display_server`), the stream rows
+the requested one (`display_driver` in `<label>.identity.json`).
+
 **The refusal (`TOOLS-19` part 2).** The extension refuses a test, benchmark or probe started in
 the player's profile: at its Scene initialisation stage (before Godot creates a main loop or runs a
 `--script`), when the command line names a script under `res://tests/` or

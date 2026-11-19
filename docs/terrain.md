@@ -18648,6 +18648,111 @@ tools/stream_benchmark.py run --label 30k-2psmt --as-played --cpus 2p-smt ...   
 tools/stream_benchmark.py summary "$ARTIFACTS/rows/30k-2psmt.metrics.json"
 ```
 
+### Godot's Wayland display driver (`RENDER-62`, analysis A8 and round W1, 2026-11-19)
+
+A-BG found that under gamescope the X11 driver puts the main thread to sleep about 21 times a
+frame on round trips to the X server, and the Wayland driver 4-5 times (`PERF-30`'s lever 4).
+Fable's analysis A8 (read only, `dev` `e8fc34bd`) asked whether Wayland can be the Linux default.
+Round W1 built the opt-in and the groundwork. Both were decided under the user's away delegation,
+2026-11-19, for review.
+
+**How Godot picks the driver.** Linux registers X11 first, then Wayland. The order of choice is
+`--display-driver` (or `--headless`) on the command line, then (editor only) the editor setting
+`prefer_wayland`, then the project setting `display/display_server/driver` with its `.linuxbsd`
+override. A driver that fails to start falls back to the other one. A default of Wayland would be
+one line in `godot/project.godot`: `display_server/driver.linuxbsd="wayland"`. On an X11 session
+it falls back to X11 with three `ERROR` lines and a `WARNING`. gamescope hides its Wayland socket
+unless started with `--expose-wayland`. libwayland tries `wayland-0` when `WAYLAND_DISPLAY` is
+unset.
+
+**A8's findings** (Godot 4.7.2 `ed1daf0bf`, gamescope 3.17.0, KWin 6.8.2, governor `performance`):
+- **Godot can hang when it quits under Wayland.** Upstream's `WaylandThread::destroy` loses a
+  wake-up between the main thread and its "Wayland Events" thread (godot#123059, open; a fix,
+  godot#123760, was closed unmerged). The window closes and the process stays, holding its memory
+  and video memory, and does not end by itself (150 s). Quits from the main menu hung 5 of 25
+  times under gamescope and 3 of 32 on the real KDE Plasma session; under X11 none of 12. The
+  extension's threads are gone by then: nothing the game does at quit can close the race.
+- **No frame gain on this boot.** Under `performance` no 30k row of either driver had a frame
+  over 16.7 ms, so A-BG's `powersave` reading (3.0 / 1.0 against 4.0-10.0 / 3.3-6.7 frames over a
+  turn) could not be repeated. Under gamescope on CPU-bound views (the Kuopio city, 1080p)
+  Wayland is level to 0.7 ms better at p50 and level to 0.6 ms better at p95, never worse. On the
+  real desktop, fullscreen 4K, vsync off and on, both drivers are level. X11's round trips are 21
+  of the main thread's 26 switches a frame under gamescope (`poll` and futex in libxcb, and
+  `XGetWindowProperty` from `window_get_mode` and `_window_maximize_check`); Wayland has 3-7.
+- **Unpinned Wayland runs** sometimes show the main thread preempted 25 or more times a frame on
+  turns, while the pools bake. No frame cost here; not measured under `powersave`.
+- **Two game gaps under Wayland.** `apply_display_scale` read `root.current_screen`, always 0
+  under Wayland, whose per-screen scale is the output's integer scale: a single monitor at
+  125-175 % would get a doubled UI. `fit_launch_window` sized and centred the window on screen 0,
+  whatever screen the window is on; Wayland reports no window position and cannot set it.
+- **Feature check** (the probe on the real session): fullscreen, maximise, borderless, vsync
+  modes, keyboard layouts, IME support, cursor shapes, embedded popups and file dialogs work.
+  Different: the start-up size is scaled by the window's scale (1920x1080 opens as 2304x1296
+  pixels at 1.2); no window position or screen; the clipboard set needs the window to have had
+  input; a window started from a background shell opens unfocused; a hidden window does not draw;
+  a touchpad's two-finger scroll and pinch arrive as pan and magnify gestures.
+
+**Round W1: the opt-in, no default change** (branch `wayland-optin`):
+- `project.godot` keeps X11. `./run.sh --display-driver wayland` is the opt-in for a run of the
+  game; an exported game takes Godot's own `--display-driver wayland`.
+- Every rendered tool and test launch names its driver, `--display-driver x11`: `run.sh`'s
+  rendered tests and windowed gameplay benchmark, the stream benchmark (`run`, `series`, stills),
+  the graded-drag probe and the camera playtest. `tools/godot_isolated.py` sets
+  `WAYLAND_DISPLAY` to a socket that cannot exist instead of unsetting it; `gamescope_command`
+  keeps the name from gamescope itself, which connects to any `WAYLAND_DISPLAY` it sees and exits
+  when it cannot (the round's first gate failed on exactly that). See [`debug.md`](debug.md#godot-test-guard).
+- `stream_benchmark.py run --display-driver wayland` exposes gamescope's socket and fails a row
+  as an exit hang when its Godot is still there 20 s after its report, stopping that Godot. The
+  benchmark reports carry `runtime.display_server`, the stream rows' identity `display_driver`.
+- `GameSettings.apply_display_scale` reads `SCREEN_OF_MAIN_WINDOW` and keeps the scale at 1 under
+  Wayland, the UI's size under X11 (the choice below). `fit_launch_window` leaves a Wayland window
+  at Godot's own launch size and lets the compositor place it. X11, macOS and Windows behave as
+  before (`screen_get_scale` is 1 on X11 for every screen).
+
+**W1's proof** (2026-11-19 13:31-14:05, governor `performance`, gamescope headless unless named,
+under the timing locks; library: `dev` `e8fc34bd`'s release build for both sides, since the branch
+changes no Rust; control: `dev`'s own tool and scripts, which pass no driver flag):
+
+| bar | result |
+|---|---|
+| `env -u DISPLAY -u WAYLAND_DISPLAY ./run.sh --test` | green (2,927 Rust tests; both Godot chains; the tools' unit tests). The first gate failed: gamescope connected to the isolated `WAYLAND_DISPLAY` and exited, hence `gamescope_command` |
+| the tool logs name X11 | every row's `runtime.display_server` is `X11`; no "Can't connect to a Wayland display" or fallback line in the 58 row, digest and quit logs |
+| digests and `SIM-02` | 30k city: every family equal (5 of 5 settle points); Kuopio: every family equal (9 of 9). No Rust change, so the simulation and its fingerprints are the same code |
+| pinned C B B C, 30k city, 4K, `still,turns` | no frame over 16.7 ms on either side; p50 8.7-9.3 ms, GPU 8.6-8.7 ms. First quartet: five phases inside the control's spread, two 0.02-0.03 ms above a 0.005-0.013 ms spread (`turn_back` 1 s, `turn_out` 0.5 s), one 0.08 ms below. The one rerun: every phase level, inside the control's spread |
+| the probe under both drivers | gamescope and the real KDE session, X11 and Wayland: the UI scale is 1 under Wayland and the launch fit leaves Godot's own size. `dev`'s scripts fail it under Wayland: on the real session the window is fitted to screen 0 (the 1920x1200 monitor) at 1728x972 instead of Godot's 2304x1296 on the 4K one |
+| 50 X11 quits from the main menu under gamescope | none hung (6.2-6.4 s each) |
+| X11 stills | Kuopio `close`, `mid`, `forest_low` and 30k `city_low` byte-identical; 30k `city` 1 px and `saved` 3-6 px differ by at most 2 levels, as `dev` differs from itself (1 px and 3 px) |
+
+- Both Wayland probe quits under gamescope hung (godot#123059 again: the main thread in a futex,
+  "Wayland Events" in `poll`; stopped by PID); the two probes and three scale captures on the
+  real session quit cleanly.
+- An incident: the first gate's own import repair (`run.sh` runs `godot --path godot --import`
+  outside an isolated profile when a worktree's import cache is incomplete) re-saved the editor's
+  settings file in the home profile. The game's logs, packs and saves were untouched. A new
+  worktree's first isolated import must find `godot/.godot` already there, or it imports into the
+  throwaway profile and leaves the worktree's cache empty.
+
+**Decisions for the user.**
+1. Default now or later: W2, the one line, waits for godot#123059 to be fixed in the pinned Godot
+   (or an exit guard, `unsafe` `_exit` on a timer, which A8 does not recommend), the user's
+   evening of play under Wayland, and a `powersave` session (A8's W2 bars).
+2. The UI's size under Wayland on a scaled desktop: (b) as built, X11's size (the desktop's
+   scale ignored on Linux); or (a), the window's scale, 20 % larger at 1.2, as macOS follows its
+   backing scale.
+   Stills, real session, same city and view: `$ARTIFACTS/w1/scale/side-by-side-menu.png`,
+   `side-by-side-hud.png` and `hud-bar-native-pixels.png` (the HUD bar at native pixels): X11
+   1920x1080 at UI 1.0; Wayland (b) 2304x1296 at UI 1.0 (the same bar, more view); Wayland (a)
+   2304x1296 at UI 1.2.
+3. A comment with A8's numbers on godot#123059, from the user's account; nothing was posted.
+4. Under Wayland a touchpad pans and zooms through the gesture path written for macOS.
+
+```bash
+./run.sh --release --display-driver wayland            # the opt-in
+tools/stream_benchmark.py run --label 30k-wl --display-driver wayland --as-played \
+    --save <populated_city_30000.sqlite> --resolution 3840x2160 --phases still,turns --turns 1,0.5 \
+    --out "$ARTIFACTS/rows"
+```
+
 ### The construction sites published (`RENDER-30`, analysis A5 and round R30, 2026-11-19)
 
 Fable's analysis A5 (read only, `dev` `bca40981`) measured the growing city's site frame at 30k:
