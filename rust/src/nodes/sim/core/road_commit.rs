@@ -663,28 +663,34 @@ impl SimCore {
     // O(stroke edges * endpoint degree + sum(pocket closure work)). Stable edge/end order.
     // Endpoints are captured before splitting; later requests resolve through only that node's
     // incidence, so a pocket at the other end cannot redirect the request to its transition.
+    // `edges` are the stroke's own live edges after its plan's splits and dissolves
+    // (`AppliedRoadTopology::stroke_edges`): a piece merged into a resident road is not one, so
+    // its approach asks for no pocket (decision D2 of the icon UI merge).
     fn apply_stroke_pockets(
         &mut self,
         edges: &[usize],
         pockets: RoadTypePockets,
         dirty: &mut HashSet<usize>,
     ) -> Vec<StrokePocketRefusal> {
-        use crate::simulation::network::pockets::StrokePocketTargets;
+        use crate::simulation::network::pockets::{PocketEndView, StrokePocketTargets};
         let mut targets = StrokePocketTargets::new(&self.region_graph, edges, pockets);
         if targets.is_empty() {
             return Vec::new();
         }
         // Finish the plain stroke's paint inheritance before a pocket opens another erase.
         self.plan_lots_after_erase();
-        let mut records = if self.benchmark_mode {
-            Vec::new()
-        } else {
-            vec![self.undo_stack.pop_back().expect("stroke checkpoint")]
-        };
+        // The stroke's record, on top: its commit pushed it (benchmark mode dropped it on
+        // acceptance). Each pocket's record is taken off as made, so no pocket's push can retire
+        // an older undo group, and all fold into the stroke's below.
+        let mut records = Vec::new();
+        if !self.benchmark_mode {
+            records.extend(self.undo_stack.pop_back());
+        }
         let mut refused = Vec::new();
         let mut terrain = self.last_road_terrain_changes.clone();
         while let Some((original, node, request)) = targets.next(&self.region_graph) {
             let before = self.region_graph.edge_count();
+            let depth = self.undo_stack.len();
             if self.set_stroke_pocket_internal(request, dirty) {
                 targets.record(original, before..self.region_graph.edge_count());
                 let changed = &self.last_road_terrain_changes;
@@ -692,28 +698,29 @@ impl SimCore {
                 terrain.chains.extend_from_slice(&changed.chains);
                 terrain.segments.extend_from_slice(&changed.segments);
                 terrain.portals.extend_from_slice(&changed.portals);
-                let record = self.undo_stack.pop_back().expect("pocket checkpoint");
+                // The pocket's record, with its charge (`push_pocket_undo`).
+                let record = if self.undo_stack.len() > depth {
+                    self.undo_stack.pop_back()
+                } else {
+                    None
+                };
                 if !self.benchmark_mode {
-                    records.push(record);
+                    records.extend(record);
                 }
             } else {
-                let rejection = self
+                // A refused edit changed nothing and left its reason (`apply_road_pocket`).
+                let reason = self
                     .last_road_rejection
                     .take()
-                    .expect("pocket refusal has a reason");
-                let view = crate::simulation::network::pockets::PocketEndView::of(
-                    &self.region_graph,
-                    request.edge,
-                    request.end,
-                )
-                .expect("new approach");
-                let bearing_deg = crate::nodes::sim::road_pockets::bearing_out(&view.road);
+                    .map_or_else(|| "unknown".to_owned(), |rejection| rejection.reason);
+                let bearing_deg = PocketEndView::of(&self.region_graph, request.edge, request.end)
+                    .map_or(0.0, |view| crate::nodes::sim::road_pockets::bearing_out(&view.road));
                 refused.push(StrokePocketRefusal {
                     bearing_deg,
                     position: self.region_graph.node(node).pos,
                     edge: original,
                     node,
-                    reason: rejection.reason,
+                    reason,
                 });
             }
         }

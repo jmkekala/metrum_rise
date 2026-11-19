@@ -18,32 +18,38 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 const UNDO_GROUP_CAP: usize = 30;
 
 impl SimCore {
-    /// Stores a stroke and its optional pockets as one local inverse (`ROAD-119`).
-    /// The graph and paint journals keep pre-stroke values; dependent migrations undo in reverse.
+    /// Stores a stroke and its optional pockets as one local inverse (`ROAD-119`): `records` the
+    /// stroke's record, then each accepted pocket's, in the order made. The graph and paint
+    /// journals keep pre-stroke values; dependent migrations undo in reverse. The pockets' build
+    /// charges stay on the folded record, so its undo refunds them with the road's (U5). Nothing
+    /// is pushed for an empty `records`.
     /// O(journal records log journal records), with no city scan or snapshot.
-    pub(crate) fn push_stroke_pocket_undo(&mut self, mut records: Vec<SimulationSnapshot>) {
-        if records.len() == 1 {
-            self.push_undo_snapshot(records.pop().unwrap());
+    pub(crate) fn push_stroke_pocket_undo(&mut self, records: Vec<SimulationSnapshot>) {
+        let mut records = records.into_iter();
+        let Some(mut first) = records.next() else {
+            return;
+        };
+        let mut records = records.peekable();
+        if records.peek().is_none() {
+            self.push_undo_snapshot(first);
             return;
         }
-        let mut records = records.into_iter();
-        let mut first = records
-            .next()
-            .expect("a committed stroke has an undo record");
         let mut graphs = Vec::new();
         let mut paints: Vec<_> = first.cells.take().into_iter().collect();
         let mut dependents = Vec::new();
         for record in records {
+            first.charged += record.charged;
             graphs.extend(record.trans_graph);
             paints.extend(record.cells);
             if let Some(SimulationRuntimeSnapshot::RoadDependents(edit)) = record.runtime {
                 dependents.push(edit);
             }
         }
-        first.trans_graph = Some(RegionGraphUndoDelta::combine(
-            first.trans_graph.take().unwrap(),
-            graphs,
-        ));
+        // A stroke's record always holds its graph checkpoint (`push_network_undo_for_*`).
+        first.trans_graph = first
+            .trans_graph
+            .take()
+            .map(|base| RegionGraphUndoDelta::combine(base, graphs));
         first.cells = CellPaintUndo::combine(paints);
         first.runtime = Some(SimulationRuntimeSnapshot::RoadDependents(
             crate::simulation::network::pockets::PocketDependentsUndo::combine(dependents),

@@ -827,31 +827,41 @@ impl StrokePocketTargets {
         self.approaches.len() == 0
     }
 
-    /// The next original edge, junction and request on its current descendant. O(degree).
+    /// The next original edge, junction and request on its current descendant. O(degree) per
+    /// approach taken.
+    ///
+    /// A pocket at one end of a stroke edge cuts it, and [`Self::record`] adds the half it
+    /// appended, so the edge's other junction still has a descendant arm. An approach left without
+    /// one is skipped, the same on hover and commit, rather than stopping the commit.
     pub(crate) fn next(&mut self, graph: &RegionGraph) -> Option<(usize, u32, PocketRequest)> {
-        let (original, node) = self.approaches.next()?;
-        let edge = graph
-            .node_adjacency(node)
-            .iter()
-            .copied()
-            .find(|id| self.descendants.get(id) == Some(&original) && !graph.edge(*id).deleted)
-            .expect("a pocket split preserves the opposite junction's approach");
-        let end = if graph.get_valid_node(graph.edge(edge).start_node) == node {
-            EdgeEnd::Start
-        } else {
-            EdgeEnd::End
-        };
-        Some((
-            original,
-            node,
-            PocketRequest {
-                edge,
-                end,
-                left: self.setting.left,
-                right: self.setting.right,
-                body_m: self.setting.body_m,
-            },
-        ))
+        for (original, node) in self.approaches.by_ref() {
+            let Some(edge) = graph.node_adjacency(node).iter().copied().find(|id| {
+                self.descendants.get(id) == Some(&original) && !graph.edge(*id).deleted
+            }) else {
+                crate::debug_log!(
+                    "road",
+                    "stroke_pocket_approach_skipped edge={original} node={node}"
+                );
+                continue;
+            };
+            let end = if graph.get_valid_node(graph.edge(edge).start_node) == node {
+                EdgeEnd::Start
+            } else {
+                EdgeEnd::End
+            };
+            return Some((
+                original,
+                node,
+                PocketRequest {
+                    edge,
+                    end,
+                    left: self.setting.left,
+                    right: self.setting.right,
+                    body_m: self.setting.body_m,
+                },
+            ));
+        }
+        None
     }
 
     /// Records only the new edges appended by this accepted pocket. O(appended edges).

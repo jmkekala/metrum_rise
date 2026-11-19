@@ -656,12 +656,21 @@ impl RoadTopologyPlan {
             .map(|grown| node_ids[self.nodes[grown.junction as usize].canonical as usize])
             .filter(|node| !stroke_ends.contains(node))
             .collect();
-        // Roots are resolved in split order: O(local edges + splits), without a city scan.
+        // The stroke's own edges (`ROAD-119` pockets, decision D2 of the icon UI merge): the new
+        // edges descended from the drawn road by its splits, live after the dissolves. A stroke
+        // piece that dissolves into a resident road (`ROAD-118` round JS2) is the deleted piece,
+        // the road keeping its id; a resident head that joins a stroke edge keeps the stroke
+        // edge's id. A grown road end's piece (round JS5c) is new but the grown road's, never the
+        // stroke's. Roots are resolved in split order: O(local edges + splits + growths), without
+        // a city scan.
         let mut resident: Vec<bool> = self
             .edges
             .iter()
             .map(|edge| edge.source.is_some())
             .collect();
+        for grown in &self.dissolves[..self.grown] {
+            resident[grown.from] = true;
+        }
         for split in &self.splits {
             resident[split.new_edge_id] = resident[split.edge_id];
         }
