@@ -323,10 +323,9 @@ impl SimulationNode {
         context: &mut crate::nodes::sim::core::RoadPreviewContext,
         dict: &mut VarDictionary,
     ) -> (i64, Option<std::sync::Arc<PreviewOverlay>>) {
-        let (mut tiles, mut removed) = (Vec::new(), Vec::new());
-        context.graded.take_shown_changes(&mut tiles, &mut removed);
-        let cell_m = f64::from(context.view.terrain.cell_size_m());
-        Self::set_graded_preview_changes(dict, &tiles, &removed, context.graded.epoch(), cell_m);
+        let mut changes = crate::nodes::sim::core::ShownChanges::default();
+        context.graded.take_shown_changes(&mut changes);
+        Self::set_graded_preview_changes(dict, &changes, context.graded.epoch());
         let batch = context.batch().expect("an accepted batch");
         let pieces = batch.pieces.as_ref().expect("an accepted batch's pieces");
         dict.set("has_road_chunks", pieces.chunks.is_some());

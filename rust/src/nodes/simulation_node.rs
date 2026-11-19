@@ -149,7 +149,7 @@ mod building_lod_api;
 mod cell_zoning_api;
 mod core_lock_stats;
 mod economy_api;
-mod graded_tiles_api;
+pub(crate) mod graded_tiles_api;
 mod gridlock_api;
 mod junction_debug_api;
 mod network_api;

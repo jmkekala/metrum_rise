@@ -13,6 +13,7 @@
 use super::road_edit_order::{ARM_M, Stroke, committed, committed_on};
 use super::*;
 use crate::nodes::sim::core::graded_stage::GradedPose;
+use crate::nodes::simulation_node::graded_tiles_api::PackedTile;
 use crate::nodes::sim::core::road_commit::RoadCommitRequest;
 use crate::nodes::sim::core::road_preview::{RoadPreview, RoadPreviewRequest};
 use crate::nodes::sim::core::road_tool_context::RoadPreviewContext;
@@ -843,16 +844,20 @@ fn a_swung_preview_displays_only_exact_tiles_and_an_invalid_pose_none() {
     let start = case.drag[0];
     let mut roadbeds = Vec::new();
     let mut renderer = std::collections::BTreeMap::new();
-    let (mut changed, mut removed) = (Vec::new(), Vec::new());
+    let mut changes = crate::nodes::sim::core::ShownChanges::default();
     let mut draw = |context: &mut RoadPreviewContext| {
-        context
-            .graded
-            .take_shown_changes(&mut changed, &mut removed);
-        for tile in &removed {
+        context.graded.take_shown_changes(&mut changes);
+        for tile in &changes.removed {
             renderer.remove(&(tile.x, tile.z));
         }
-        for tile in changed.drain(..) {
-            renderer.insert((tile.tile.x, tile.tile.z), tile);
+        // `TERRAIN-14` commit 2: the set's job packed each tile as the frame packed it before.
+        let epoch = i64::try_from(context.graded.epoch()).unwrap();
+        let cell_m = f64::from(context.view.terrain.cell_size_m());
+        for &index in &changes.changed {
+            let tile = &changes.shown.stage.tiles()[index];
+            let fresh = PackedTile::pack(tile, epoch, cell_m, Default::default());
+            assert_eq!(changes.shown.packed[index].bytes(), fresh.bytes(), "the job's pack");
+            renderer.insert((tile.tile.x, tile.tile.z), tile.clone());
         }
         renderer.len()
     };
@@ -882,11 +887,10 @@ fn a_swung_preview_displays_only_exact_tiles_and_an_invalid_pose_none() {
     // A pose that compiles nothing (a stroke too short to plan) draws no road: no preview terrain.
     let pose = preview(&mut context, &stroke(&core, [start, start]));
     assert!(pose.pieces.is_none(), "the degenerate stroke has no pieces");
-    context
-        .graded
-        .take_shown_changes(&mut changed, &mut removed);
-    assert!(changed.is_empty(), "nothing new is shown");
-    assert_eq!(removed.len(), drawn, "every drawn tile is handed back");
+    let mut changes = crate::nodes::sim::core::ShownChanges::default();
+    context.graded.take_shown_changes(&mut changes);
+    assert!(changes.changed.is_empty(), "nothing new is shown");
+    assert_eq!(changes.removed.len(), drawn, "every drawn tile is handed back");
     assert!(context.graded.displayed().is_empty());
 }
 
@@ -917,11 +921,9 @@ fn a_set_of_an_invalidated_pose_never_displays() {
         assert!(context.catch_up_graded().is_none(), "release {release}: dropped as it lands");
         assert_eq!(context.graded.pending_sets(), 0, "release {release}");
         assert!(context.graded.displayed().is_empty(), "release {release}");
-        let (mut changed, mut removed) = (Vec::new(), Vec::new());
-        context
-            .graded
-            .take_shown_changes(&mut changed, &mut removed);
-        assert!(changed.is_empty() && removed.is_empty(), "release {release}");
+        let mut changes = crate::nodes::sim::core::ShownChanges::default();
+        context.graded.take_shown_changes(&mut changes);
+        assert!(changes.changed.is_empty() && changes.removed.is_empty(), "release {release}");
     }
 }
 

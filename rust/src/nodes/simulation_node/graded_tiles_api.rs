@@ -135,25 +135,42 @@ pub(crate) fn pool_side(level: Level, cell_m: f64) -> usize {
     slot_side(pool_level, cell_m)
 }
 
-/// Staged tiles packed as `poll_graded_tile_results` returns its tiles, each with `token`
-/// (`TERRAIN-07-E`: the road preview's shown tiles, a commit's installed tiles).
-pub(crate) fn packed_tile_dicts(
-    tiles: &[crate::simulation::terrain::graded::StagedTile],
-    token: i64,
-    cell_m: f64,
-) -> VarArray {
-    let mut out = VarArray::new();
-    for staged in tiles {
+/// A staged tile packed as `poll_graded_tile_results` returns its tiles, with a token
+/// (`TERRAIN-14`: the road preview's sets, packed by their jobs off the frame).
+pub(crate) struct PackedTile(TileResult);
+
+impl PackedTile {
+    /// Packs `staged` with `token` into `buffers` (texels, rows, walls; their storage reused).
+    /// `O(the tile's slot and walls)`.
+    pub(crate) fn pack(
+        staged: &crate::simulation::terrain::graded::StagedTile,
+        token: i64,
+        cell_m: f64,
+        buffers: [Vec<u8>; 3],
+    ) -> Self {
         let request = GradedTileRequest {
             tile: staged.tile,
             level: staged.level,
             token,
         };
         let side = pool_side(staged.level, cell_m);
-        let result = TileResult::packed(request, &staged.payload, side, Default::default());
-        out.push(&result.to_dict().to_variant());
+        Self(TileResult::packed(request, &staged.payload, side, buffers))
     }
-    out
+
+    /// The tile as `poll_graded_tile_results` returns it: its bytes copied into Godot's arrays.
+    pub(crate) fn to_dict(&self) -> VarDictionary {
+        self.0.to_dict()
+    }
+
+    /// Its byte buffers, for reuse.
+    pub(crate) fn into_buffers(self) -> [Vec<u8>; 3] {
+        [self.0.texels, self.0.rows, self.0.walls]
+    }
+    /// Its bytes and token (tests).
+    #[cfg(test)]
+    pub(crate) fn bytes(&self) -> ([&[u8]; 3], i64) {
+        ([&self.0.texels, &self.0.rows, &self.0.walls], self.0.request.token)
+    }
 }
 
 /// The graded residency jobs of one node: tile requests pending and in flight (the queue that

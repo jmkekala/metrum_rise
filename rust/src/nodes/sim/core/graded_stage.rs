@@ -37,9 +37,10 @@ use crate::simulation::core::pure_job::{JobStart, PureJob};
 use crate::simulation::network::roadbed::{RoadbedDelta, RoadbedSystem, TerrainChanges};
 use crate::simulation::terrain::TerrainSystem;
 use crate::simulation::terrain::graded::{
-    BakeError, LevelRule, SiteBuffer, SiteSource, StageScratch, StageStats, StagedTile, TileKey,
+    BakeError, LevelRule, SiteBuffer, SiteSource, StageScratch, StageStats, TileKey,
     TileStage, bake_window, stage_selected, stage_tiles,
 };
+use crate::nodes::simulation_node::graded_tiles_api::PackedTile;
 use crate::thread_pools::lane::{FrameLane, Taken};
 
 /// The building sites the road tool's view captured per render patch
@@ -162,25 +163,58 @@ struct PoseInputs {
     rule: LevelRule,
 }
 
+/// A landed set's tiles packed for the renderer by its job, aligned with the set's tiles: the
+/// frame only copies their bytes into Godot's arrays.
+pub(crate) type PackedSet = Vec<PackedTile>;
+
+/// A landed set with its tiles packed for the renderer (both empty: no set).
+#[derive(Clone, Default)]
+pub(crate) struct ShownSet {
+    /// The set's tiles, each one pose's exact bake.
+    pub(crate) stage: Arc<TileStage>,
+    /// The same tiles packed, in the same order.
+    pub(crate) packed: Arc<PackedSet>,
+}
+
+/// One frame's changes of the displayed tiles, for the renderer
+/// ([`GradedPreview::take_shown_changes`]).
+#[derive(Default)]
+pub(crate) struct ShownChanges {
+    /// The displayed set.
+    pub(crate) shown: ShownSet,
+    /// Indices into the set of the tiles displayed now with a payload the renderer does not
+    /// hold.
+    pub(crate) changed: Vec<usize>,
+    /// The tiles the renderer holds that are displayed no more.
+    pub(crate) removed: Vec<TileKey>,
+}
+
+// Packed byte buffers kept for the next sets' packs at most: three a tile, a drag's few sets.
+const SPARE_BUFFERS_MAX: usize = 192;
+
 // The preview's lane payload: a pose's inputs and adoption pool in, its set out, the staging's
-// buffers travelling with them (reused from set to set).
+// and the pack's buffers travelling with them (reused from set to set).
 #[derive(Default)]
 struct PoseSet {
     pose: Option<(PoseInputs, Arc<TileStage>)>,
+    // The renderer's token (the preview epoch) the set's tiles are packed with.
+    token: i64,
     // The landed set and the generation of the pose it is of.
-    staged: Option<Result<(Arc<TileStage>, StageStats), BakeError>>,
+    staged: Option<Result<(ShownSet, StageStats), BakeError>>,
     generation: u64,
     // When a frame started the job, and when it landed.
     started: Option<Instant>,
     job_ms: f64,
     scratch: StageScratch,
+    // Byte buffers for the packs.
+    spare: Vec<Vec<u8>>,
 }
 
 impl PoseSet {
     // The job, a pure function of its inputs: the pose's selection, then its whole set staged
     // over the adoption pool (a tile whose inputs equal a held one's is adopted, the rest are
     // baked; the bakes' parallel passes stay on the background pool). `O(one selection +
-    // wanted gathers + rebaked bakes)`.
+    // wanted gathers + rebaked bakes + wanted packs)`.
     fn stage(&mut self) {
         let Some((pose, held)) = self.pose.take() else {
             return;
@@ -197,8 +231,18 @@ impl PoseSet {
         );
         let select_ms = select_start.elapsed().as_secs_f64() * 1000.0;
         let staged = stage_selected(&pose.terrain, &pose.after, &sites, &held, &mut self.scratch);
+        let cell_m = f64::from(pose.terrain.cell_size_m());
         self.staged = Some(staged.map(|(stage, stats)| {
-            (Arc::new(stage), StageStats { select_ms, ..stats })
+            // Every tile is packed: which the renderer lacks is known only when the set shows.
+            let mut buffer = || self.spare.pop().unwrap_or_default();
+            let packed = (stage.tiles().iter())
+                .map(|tile| PackedTile::pack(tile, self.token, cell_m, [(); 3].map(|_| buffer())))
+                .collect();
+            let shown = ShownSet {
+                stage: Arc::new(stage),
+                packed: Arc::new(packed),
+            };
+            (shown, StageStats { select_ms, ..stats })
         }));
         self.generation = pose.generation;
         self.job_ms = self
@@ -220,7 +264,7 @@ impl PoseSet {
 #[derive(Default)]
 pub(crate) struct GradedPreview {
     // The newest landed set of this epoch: what the next set and a commit adopt from.
-    shown: Arc<TileStage>,
+    shown: ShownSet,
     // Its staging, the generation of its pose (0: none) and why the newest set failed, if it
     // did.
     shown_stats: StageStats,
@@ -228,7 +272,7 @@ pub(crate) struct GradedPreview {
     shown_error: Option<BakeError>,
     // What the renderer draws (T61 (1) (a)): one pose's whole set, each tile its exact bake, or
     // nothing (the published tiles), never a part.
-    display: Arc<TileStage>,
+    display: ShownSet,
     // The display the renderer holds: as of the last `take_shown_changes`.
     sent: Arc<TileStage>,
     // The sets' carrier between the frame and the background pool.
@@ -251,6 +295,8 @@ pub(crate) struct GradedPreview {
     // The latest pose's tiles whose published cut its road may leave open (scratch of
     // `cut_tiles`).
     cut: Vec<TileKey>,
+    // Packed byte buffers of sets shown no more, for the next set's packs.
+    spare: Vec<Vec<u8>>,
     // Tests: jobs are held here instead of queued, and run by the test.
     #[cfg(test)]
     deferred: Option<Vec<Box<dyn FnOnce() + Send>>>,
@@ -286,7 +332,7 @@ impl GradedPreview {
             changes,
             rule: self.rule,
         });
-        self.display = Arc::default();
+        self.display = ShownSet::default();
         let job_ms = self.poll();
         self.pose(start, job_ms)
     }
@@ -316,7 +362,7 @@ impl GradedPreview {
     pub(crate) fn supersede(&mut self) {
         self.queued = None;
         self.valid_from = self.latest + 1;
-        self.display = Arc::default();
+        self.display = ShownSet::default();
     }
 
     /// Sets the renderer's view the next poses select their tiles' levels by (a pose in flight
@@ -334,7 +380,8 @@ impl GradedPreview {
         let released = self.epoch;
         self.epoch += 1;
         self.supersede();
-        self.shown = Arc::default();
+        let shown = std::mem::take(&mut self.shown);
+        self.retire_packed(shown.packed);
         self.shown_stats = StageStats::default();
         self.shown_generation = 0;
         self.shown_error = None;
@@ -370,7 +417,7 @@ impl GradedPreview {
     /// T61).
     #[cfg(test)]
     pub(crate) fn displayed(&self) -> &TileStage {
-        &self.display
+        &self.display.stage
     }
 
     /// Tests' synchronous path: waits until the set in flight, if any, has landed (the next
@@ -395,35 +442,32 @@ impl GradedPreview {
         ran
     }
 
-    /// The displayed tiles changed since the last call, for the renderer: into `changed` the
-    /// tiles displayed now with a payload it does not hold, into `removed` the tiles it holds
-    /// that are displayed no more. `O(display + sent log display)`.
-    pub(crate) fn take_shown_changes(
-        &mut self,
-        changed: &mut Vec<StagedTile>,
-        removed: &mut Vec<TileKey>,
-    ) {
-        changed.clear();
-        removed.clear();
-        changed.extend(
-            (self.display.tiles().iter())
-                .filter(|tile| {
+    /// The displayed tiles changed since the last call, for the renderer, into `changes`: the
+    /// displayed set, the indices of its tiles displayed now with a payload the renderer does not
+    /// hold, and the tiles it holds that are displayed no more. `O(display + sent log display)`.
+    pub(crate) fn take_shown_changes(&mut self, changes: &mut ShownChanges) {
+        changes.changed.clear();
+        changes.removed.clear();
+        changes.shown = self.display.clone();
+        let display = &self.display.stage;
+        changes.changed.extend(
+            (display.tiles().iter().enumerate())
+                .filter(|(_, tile)| {
                     !(self.sent.get(tile.level, tile.tile))
                         .is_some_and(|sent| Arc::ptr_eq(sent, &tile.payload))
                 })
-                .cloned(),
+                .map(|(index, _)| index),
         );
         // A wanted tile takes one level, so the displayed tiles' keys are unique.
         self.keys.clear();
-        self.keys
-            .extend(self.display.tiles().iter().map(|tile| tile.tile));
+        self.keys.extend(display.tiles().iter().map(|tile| tile.tile));
         self.keys.sort_unstable();
-        removed.extend(
+        changes.removed.extend(
             (self.sent.tiles().iter())
                 .map(|tile| tile.tile)
                 .filter(|tile| self.keys.binary_search(tile).is_err()),
         );
-        self.sent = Arc::clone(&self.display);
+        self.sent = Arc::clone(display);
     }
 
     // Takes the lane's payload without waiting: lands the set in it, if one landed, then starts
@@ -456,36 +500,55 @@ impl GradedPreview {
             return false;
         };
         if set.generation < self.valid_from {
-            if let Ok((stage, _)) = staged {
-                retire(&mut set.scratch, stage, &self.shown);
+            if let Ok((dropped, _)) = staged {
+                retire(&mut set.scratch, dropped.stage, &self.shown.stage);
+                self.retire_packed(dropped.packed);
             }
             return false;
         }
         match staged {
-            Ok((stage, stats)) => {
-                let old = std::mem::replace(&mut self.shown, Arc::clone(&stage));
-                retire(&mut set.scratch, old, &stage);
+            Ok((shown, stats)) => {
+                self.display = if set.generation == self.latest {
+                    shown.clone()
+                } else {
+                    ShownSet::default()
+                };
+                let old = std::mem::replace(&mut self.shown, shown);
+                retire(&mut set.scratch, old.stage, &self.shown.stage);
+                self.retire_packed(old.packed);
                 self.shown_stats = stats;
                 self.shown_error = None;
-                self.display = if set.generation == self.latest {
-                    stage
-                } else {
-                    Arc::default()
-                };
             }
             Err(error) => {
                 self.shown_stats = StageStats::default();
                 self.shown_error = Some(error);
-                self.display = Arc::default();
+                self.display = ShownSet::default();
             }
         }
         self.shown_generation = set.generation;
         true
     }
 
+    // Keeps the byte buffers of a packed set nothing else holds for the next sets' packs; one
+    // the renderer's frame still holds is dropped with it there. What the bound leaves over is
+    // freed on the background pool. `O(its tiles)`.
+    fn retire_packed(&mut self, packed: Arc<PackedSet>) {
+        let Ok(packed) = Arc::try_unwrap(packed) else {
+            return;
+        };
+        self.spare
+            .extend(packed.into_iter().flat_map(PackedTile::into_buffers));
+        if self.spare.len() > SPARE_BUFFERS_MAX {
+            let excess = self.spare.split_off(SPARE_BUFFERS_MAX);
+            crate::thread_pools::spawn(move || drop(excess));
+        }
+    }
+
     // Starts `pose`'s set on the background pool over the shown set.
     fn launch(&mut self, mut set: Box<PoseSet>, pose: PoseInputs) {
-        set.pose = Some((pose, Arc::clone(&self.shown)));
+        set.pose = Some((pose, Arc::clone(&self.shown.stage)));
+        set.token = i64::try_from(self.epoch).unwrap_or(i64::MAX);
+        set.spare.append(&mut self.spare);
         set.started = Some(Instant::now());
         self.in_flight = true;
         let job = self.lane.job(set, PoseSet::stage);
@@ -501,7 +564,7 @@ impl GradedPreview {
         GradedPose {
             stage: match self.shown_error {
                 Some(error) => Err(error),
-                None => Ok(Arc::clone(&self.shown)),
+                None => Ok(Arc::clone(&self.shown.stage)),
             },
             stats: self.shown_stats,
             pending: self.pending_sets(),

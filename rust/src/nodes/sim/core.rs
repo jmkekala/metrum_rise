@@ -41,7 +41,7 @@ pub(crate) use budget::CityServicePolicy;
 pub use budget::CityTreasury;
 pub use populated_city::{EconomyHourTimes, PopulatedCity, PopulatedCityBuildTimes};
 pub(crate) use graded_edits::{GradedEdit, GradedEditJournal, GradedEditSelection, GradedInstallTiles};
-pub(crate) use graded_stage::{GradedPose, GradedPreview, GradedUndo};
+pub(crate) use graded_stage::{GradedPose, GradedPreview, GradedUndo, ShownChanges};
 pub(crate) use road_commit::RoadCommitAck;
 pub(crate) use road_edit_plan::{CoreLand, RoadEditPlan, RoadLandSource, RoadLandTake};
 pub(crate) use road_edit_site::{

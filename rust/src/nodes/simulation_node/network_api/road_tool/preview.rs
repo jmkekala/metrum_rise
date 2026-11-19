@@ -423,8 +423,7 @@ impl SimulationNode {
         outcome: &mut PreviewOutcome,
     ) -> VarDictionary {
         let [fwd_lanes, bkw_lanes] = lanes;
-        let mut graded_tiles = Vec::new();
-        let mut graded_removed = Vec::new();
+        let mut graded_changes = crate::nodes::sim::core::ShownChanges::default();
         let mut graded_cut = Vec::new();
         let spec = self.road_tool_spec();
         let land = self.road_tool.land();
@@ -432,7 +431,6 @@ impl SimulationNode {
             preview,
             span_m,
             origin,
-            view_terrain,
             graded_epoch,
             road_mesh_generation,
             demolish_lots,
@@ -458,7 +456,7 @@ impl SimulationNode {
             context.last_preview = Some(Arc::clone(&preview));
             context
                 .graded
-                .take_shown_changes(&mut graded_tiles, &mut graded_removed);
+                .take_shown_changes(&mut graded_changes);
             // T65 option (c): the tiles whose published cut this pose's road may leave open,
             // none when it draws no road.
             {
@@ -482,7 +480,6 @@ impl SimulationNode {
                 preview,
                 roadbed.chunk_span_m(),
                 (origin_x, origin_z),
-                Arc::clone(&context.view.terrain),
                 context.graded.epoch(),
                 context.view.road_mesh_surface_generation,
                 demolish_lots,
@@ -550,14 +547,7 @@ impl SimulationNode {
             }
             outcome.overlay = pieces.overlay.clone();
         }
-        let cell_m = f64::from(view_terrain.cell_size_m());
-        Self::set_graded_preview_changes(
-            &mut dict,
-            &graded_tiles,
-            &graded_removed,
-            graded_epoch,
-            cell_m,
-        );
+        Self::set_graded_preview_changes(&mut dict, &graded_changes, graded_epoch);
         // A pose's frame replaces its epoch's backstop tiles (flat `(x, z)`); a catch-up frame
         // carries none and keeps them.
         dict.set("graded_cut", PackedInt32Array::from(graded_cut.as_slice()));
@@ -615,9 +605,8 @@ impl SimulationNode {
     // `advance_road_preview_terrain`'s step, `None` (no allocation) when no set landed: the road
     // tool's tick polls through it (round R2-2).
     pub(super) fn road_preview_terrain_step(&self) -> Option<VarDictionary> {
-        let mut tiles = Vec::new();
-        let mut removed = Vec::new();
-        let (pose, epoch, cell_m) = {
+        let mut changes = crate::nodes::sim::core::ShownChanges::default();
+        let (pose, epoch) = {
             let mut context = self
                 .road_tool
                 .context
@@ -625,10 +614,9 @@ impl SimulationNode {
                 .expect("road tool context lock poisoned");
             let pose = context.catch_up_graded();
             if pose.is_some() {
-                context.graded.take_shown_changes(&mut tiles, &mut removed);
+                context.graded.take_shown_changes(&mut changes);
             }
-            let cell_m = f64::from(context.view.terrain.cell_size_m());
-            (pose, context.graded.epoch(), cell_m)
+            (pose, context.graded.epoch())
         };
         let pose = pose?;
         let mut dict = VarDictionary::new();
@@ -637,7 +625,7 @@ impl SimulationNode {
         dict.set("graded_baked", pose.stats.baked as i64);
         dict.set("graded_pending", pose.pending as i64);
         Self::set_graded_landing(&mut dict, &pose);
-        Self::set_graded_preview_changes(&mut dict, &tiles, &removed, epoch, cell_m);
+        Self::set_graded_preview_changes(&mut dict, &changes, epoch);
         Some(dict)
     }
 
@@ -705,23 +693,25 @@ impl SimulationNode {
         dict.set("graded_job_ms", pose.job_ms);
     }
 
-    // The shown graded tiles' changes of a preview frame: `graded_tiles` (packed as
-    // `poll_graded_tile_results` packs its tiles, the token the epoch), `graded_removed` (flat
-    // `(x, z)` pairs of the tiles shown no more) and `graded_epoch`.
+    // The shown graded tiles' changes of a preview frame: `graded_tiles` (as
+    // `poll_graded_tile_results` returns its tiles, packed by the set's job, the token the
+    // epoch), `graded_removed` (flat `(x, z)` pairs of the tiles shown no more) and
+    // `graded_epoch`. `graded_pack_ms` is the frame's copy of the packed bytes.
     pub(super) fn set_graded_preview_changes(
         dict: &mut VarDictionary,
-        tiles: &[crate::simulation::terrain::graded::StagedTile],
-        removed: &[crate::simulation::terrain::graded::TileKey],
+        changes: &crate::nodes::sim::core::ShownChanges,
         epoch: u64,
-        cell_m: f64,
     ) {
         let epoch = i64::try_from(epoch).unwrap_or(i64::MAX);
         let pack_start = std::time::Instant::now();
-        dict.set(
-            "graded_tiles",
-            super::super::super::graded_tiles_api::packed_tile_dicts(tiles, epoch, cell_m),
-        );
-        let flat: Vec<i32> = removed.iter().flat_map(|tile| [tile.x, tile.z]).collect();
+        let mut tiles = VarArray::new();
+        for &index in &changes.changed {
+            tiles.push(&changes.shown.packed[index].to_dict().to_variant());
+        }
+        dict.set("graded_tiles", tiles);
+        let flat: Vec<i32> = (changes.removed.iter())
+            .flat_map(|tile| [tile.x, tile.z])
+            .collect();
         dict.set("graded_removed", PackedInt32Array::from(flat.as_slice()));
         dict.set("graded_epoch", epoch);
         dict.set(
