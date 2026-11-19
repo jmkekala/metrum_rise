@@ -15335,6 +15335,100 @@ frame), `slow-sweep-...` (1 degree a frame, camera 90 m), `near-slow-sweep-...` 
 Capturing slows the frames, so every set lands before the next frame there: the trailing panels
 show the pose's own terrain, the strict panel none while the road moves.
 
+**Analysis T14C and round T14Cf: why the trailing display missed bars 9 and 10, re-measured**
+(2026-11-19 21:18 to 2026-11-20 00:55, decided under the user's night delegation, for review). Fable's analysis
+T14C traced both misses outside the trailing display:
+- **Bar 9 was the probe's.** The late frames are late in the scripts before the draw, not in the
+  draw, the upload, the GPU or the pool: the probe's own per-frame check `tile_draw_violations`
+  (a dictionary per resident patch's cell set and a read-back of the shown sets' `MultiMesh`
+  buffers) costs 2.8-3.5 ms of every frame in both builds and 6.3-8.7 ms on the first frame after a
+  set changes, which the trailing display has 26-28 times a row against the control's 10-15;
+  `kuopio_08` 21 is the stroke nearest the budget on both sides (13-14 ms of main-thread work in a
+  paused empty world), so the doubled check tips exactly those frames. Dropping the grass mask
+  renders, the slot uploads or the frame-end poll changed nothing.
+- **Bar 10 is the cold driver cache.** The first trailing swing frames wait for nine surface
+  pipelines (the graded and behind-the-road shaders on the cell lattice) that the control compiles
+  at its first commit or undo instead (a 1.1-1.2 s fast-commit frame there in some control rows):
+  the probe launches without the menu, so every probe row is a first run. No page, allocation or
+  upload is involved; T14Sb's "second preview page" reading is withdrawn. The menu's existing
+  prewarm (`menu_pipeline_prewarm.gd`, `RENDER-43`) already holds those shaders in its `ground`
+  group.
+
+Round T14Cf (branch `terrain-14-trailing`, base `dev` `da9ffb5c`):
+1. `test(terrain)` (landable alone): the drag probe's rows record the frame's split
+   (`pre_ms` to `frame_pre_draw`, `draw_ms` to `frame_post_draw`, the hooks disconnected at its
+   finish), its own `probe_ms` and the pipeline compilations since the row before (the first row's
+   since the settled frame before the drag). `METRUM_GRADED_DRAG_TIMING=1` (the timing mode) leaves
+   the per-frame draw checks out of the frames (`O(1)` a row: 0.08 ms against 4.6-4.8 ms);
+   `METRUM_GRADED_DRAG_PREWARM=1` runs the menu's prewarm to its end before the first load and
+   frees it. `tools/graded_drag_probe.py` gains `--timing` (the mode, the run and timing locks held
+   exclusive), `--exclusive`, `--prewarm`, `--as-played` (unpinned) and lists late and long frames
+   with their split and pipelines; it now takes the main checkout's locks from a worktree too (it
+   locked a worktree-local file before), all at once or none (below).
+2. `feat(terrain)`: `f405897e` cherry-picked (the trailing display), the probe's trail
+   check moved into the check rows' helper so the timing mode leaves it out too; Rust unchanged.
+3. `feat(terrain)`: `34bf81ae` cherry-picked unchanged (the frame-end poll).
+Commits 2-3 are built and measured, **held for the user's look at the clips** (T14Sb's), not landed.
+
+**Readings adopted (for the user's review).** Bar 9 is judged on the timing mode (the draw checks
+off in the timed rows only, the control measured the same way; the check rows, bar 6, run with
+every check on all 39 strokes). Bar 10 is judged on a prewarmed launch (the menu's prewarm before
+the load, as a player gets it), with the cold rows reported beside it. No bar value changed.
+
+**Rows** (2026-11-19 22:41 to 2026-11-20 00:54; branch `B`: the release library of commits 1-3
+(the Rust of `34bf81ae`); control `C`: `dev` `da9ffb5c`'s Rust, T14Sv's strict library, with commit 1's probe; each side its
+own scripts; gamescope headless 1080p at 60 Hz, `--display-driver x11`, isolated fresh profiles, governor
+`performance` on every row, the run and timing locks held exclusive per row). The other session of the
+night ran its gates and benchmarks through most of the window: a timed row starts only after 30 s
+without a foreign `godot`, `gamescope`, `rustc` or `cargo` process (sampled every 2 s), and a row with one
+seen during it is rerun and reported only (from 00:21 the sampler also counts a foreign
+`timing_session.py` and any foreign process over half a CPU). Rows, logs, the samples (`foreign.txt`), parsers and
+the measurement copy (pack time and the turn row, as T14Sv's): `$ARTIFACTS/t14cf/`.
+
+| # | Bar (T14S section 7, unchanged) | How measured | Control | Trailing (commits 2-3) | |
+| --- | --- | --- | --- | --- | --- |
+| 5 | The frame showing a set: install + pack p95 <= 0.6 ms, worst <= 1.0 ms | the swing hole rows (pinned, eight workers, measurement copy) | one set a pause: p95 0.75 ms, worst 0.75 | 1,429-1,432 set frames a row: p95 0.35 and 0.41 ms, worst 0.79 and 0.95 | met |
+| 6 | Holes: 0 frames with the background; the probe's per-frame checks pass (all on) | Kuopio's 39 strokes, swing 30 degrees, magenta background, pinned, eight workers: continuous three runs a side, with pauses two a side (cut from three for time) | continuous 0 frames in three runs (2,147-2,148 frames checked a run); with pauses 0 in two (2,967-2,968); every check passes | continuous 0 in three (2,106-2,107); with pauses 0 in two (2,114-2,116); every check passes, `trail_violations` 0 on every frame; T14Sb's `kuopio_03` 8 undo frame did not recur | met |
+| 8 | Streaming: the series level; the 30k swing during a 1 s turn, frames over 16.7 ms and late agent frames not above control | the stream series C B B C (paused); T14Sv's turn row (measurement copy) at 1x, timing mode, C B B C, gamescope at 1,000 Hz (as T14Sv) and once more at 60 Hz | series: see the branch column; turn row at 1,000 Hz: 1 and 5 frames over 16.7 ms (p50 9.10 / 9.00 ms), late agent jobs 0; at 60 Hz: 3 and 3 frames past the vsync (over 18 ms) | series level or better in 21 of 23 phases; flagged maxima only: `still` 12.9 against 9.7 ms and `far_zoom_out` one 20.4 / 21.0 ms frame a row against none (control max 15.4); no job runs without a drag. Turn row at 1,000 Hz: 6 and 3 frames over 16.7 ms (p50 9.47 / 9.26), late agent jobs 0; at 60 Hz: 6 and 4 past the vsync | series met; **turn row not shown level**: a median 4.5 frames over against 3 (spans below) |
+| 9 | As played: swing and drag pose frames of 18-100 ms not above control by more than one a row at the median | timing mode, unpinned, default pools, cold launches, C B C B C B on quiet rows | swing 0, 0, 0; pose 0, 0, 0 | swing 0, 2, 0; pose 0, 1, 0 (18.0-19.1 ms: `kuopio_04` 10's first swing frame, scripts 7.4 + draw 10.6 ms; `kuopio_08` 21 swing pose 14, 10.8 + 8.2; a `kuopio_04` 10 drag pose, 2.5 + 16.5, compiling 3 specialization pipelines) | **met** |
+| 10 | First use: no frame over 100 ms in a drag after the load's settle that the control does not have | the menu's prewarm first (timing mode): pinned C B B C, eight workers; as played C B | pinned (three rows): first swing frame 31.0-36.1 ms, nothing over 100 ms but the edit waits (175-250 ms on both sides); as played: 42.3 ms, nothing over 100 ms | pinned (two rows): first swing frame 56.2, 63.5 ms, nothing over 100 ms but the same edit waits; as played: 34.4 ms, nothing over 100 ms | **met** on the prewarmed launch |
+| 10 (cold) | the same, reported beside | the bar 9 rows (no prewarm) | `kuopio_03` 6's first swing frame 608-630 ms (+9 surface, +9 specialization pipelines), `kuopio_03` 7's fast click 377-437 ms (+3, +3), `kuopio_08` 22's swing pose 3 384-410 ms (+3, +2); once (row 1) a 1,155 ms `kuopio_03` 6 fast click (+9 surface) | the first swing frame 1,180-1,241 ms (+15 surface, +13 specialization) and the second 982-1,166 ms (+3, +2); the same two shared frames 376-392 and 384-397 ms; no long fast click | missed cold, as T14C found: the control's first-commit compilations move to the first swing |
+| 11 | Gates | | | `./run.sh --test` on commit 1 alone and on the branch: passed, Rust 2,930 passed each, both Godot chains (both run before the runner's all-or-none locks were folded into commit 1, a Python-only change whose unit tests pass); debug `cargo test --lib` on the branch 2,926 passed; clippy: no warning in changed code (the two in `cells.rs`, lines 229 and 782, predate the round) | met |
+
+- **The late frames left in bar 9** are single frames at a row's start or on `kuopio_08` 21 (T14C:
+  13-14 ms of main-thread work in both builds before anything is added), none showing more than
+  2.5 ms of extra scripts. With the per-frame checks back on (one full-probe pair, as played, every
+  check) the trailing build has 12 late swing and 5 late pose frames (9 of them on `kuopio_08` 21)
+  against the control's 2 and 0: T14Sb's miss, reproduced, and gone with the checks out of the
+  frames.
+- **The prewarmed launch, pinned:** the trailing build's first stroke of the session
+  (`kuopio_03` 6's swing) still has 6-8 frames of 18-64 ms against the control's one (31 ms): its
+  first two frames start 13 and 2 specialization compilations (the control's first 9), which run
+  on the same eight cores, and the next few frames carry 7-13 ms of scripts. Once a session, under
+  100 ms; T14C saw the same eight frames. As played with the prewarm (the player's case) they are
+  gone: 1 late swing frame and 1 late pose frame against the control's 1 and 0, the session's first
+  swing frame 34.4 ms against 42.3.
+- **Cold launches** (every probe row before this round) keep the long first frames on the
+  trailing build: the nine surface pipelines of the first graded tile, compiled at the first swing
+  instead of the control's first commit or undo. A launch through the menu that stays about 1.5 s
+  (the `ground` group taken up) has none; one that leaves earlier, or skips the menu, meets them
+  once at its first swing. No product change was made for that (T14C section 7; the only lever, a
+  prewarm at the first load when the menu did not run, was R43's dropped design).
+- **Bar 8's turn row, the spans.** The frames over 16.7 ms on both sides are frames with 10-18 ms of
+  scripts (the turn bringing patches in: the long ones 28.8-32.7 ms on both sides, 14-16 ms of
+  scripts and 14-18 of draw). The branch's extra ones (17.0-20.8 ms) hand a set of 6-8 tiles over
+  and carry 10-17.6 ms of scripts; the scripts' median is 0.2-0.3 ms higher on the branch (6.08-6.16
+  against 5.83-5.89 ms; T14C's 0.3 ms of poll and install). Two rows a side on a 30k city during a
+  turn do not separate one or two frames from the noise (the control's two rows: 1 and 5); not
+  attributed further, not relaxed: for the user with the clips.
+- **Disturbances, recorded:** the other session's gates, benchmarks and a level L timing session
+  ran through most of the window. Six timed rows saw a foreign process and were rerun, and the rows
+  of the first two attempts at the chain (before the 30 s rule, and one that ended a second into the
+  other session's timing session, which the first watcher did not sample) are discarded; all are
+  reported only (their late frames 0-9 a row, the 9 on a control row). Its stream benchmark held the timing lock shared while
+  waiting for the run lock, which the probe runner held while waiting for the timing lock: a
+  deadlock (23:16-23:28) that commit 1's runner now avoids by taking its locks all at once or none.
+
 ### Buildings by travel bucket, batches through the pools (`RENDER-32-L`, 2026-11-12)
 
 B1, with `RENDER-37` first. The building LOD's per-frame rule (a part's projected size in render
