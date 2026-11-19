@@ -7,7 +7,7 @@ The old monolithic ledger and numbered backlog are archived in [`archive/project
 ## Snapshot
 
 Veeti's icon UI (`UI-12`: HUD, menus, save browser, card inspectors, select-tool pick and highlights), with road
-types' turn pockets (`ROAD-128`), posted speed limits with signs (`ROAD-129`) and build-menu icons (`TOOLS-29`), is
+types' turn pockets (`ROAD-128`), posted speed limits with signs (`ROAD-129`) and build-menu icons (`TOOLS-30`), is
 merged on the branch `icon-ui-merge` over `dev` `aadb87c98`, ported to `dev`'s road tool; not on `dev`, not gated or
 timed, awaiting the user's play test ([pockets](roads.md#turn-pockets-road-95), [HUD](ui.md#2-bottom-toolbar)).
 
