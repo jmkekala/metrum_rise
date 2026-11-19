@@ -11,7 +11,9 @@ pub(crate) mod agent_inspection;
 /// Agent-specific rendering (pedestrians, cars, path debug).
 pub mod agents;
 pub(crate) mod building_lod;
-/// Building-specific rendering (asset transforms, plots).
+/// The construction sites' rows, published with the per-frame values (`RENDER-30`).
+pub(crate) mod building_sites;
+/// Building-specific rendering (asset transforms, construction sites).
 pub mod buildings;
 pub(crate) mod car_visual;
 pub(crate) mod junctions;

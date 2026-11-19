@@ -1063,12 +1063,15 @@ impl SimCore {
     }
 
     /// Schedules the completion of every construction site placed since the last call, in
-    /// placement order. O(new sites).
+    /// placement order, and notes each in the site roster (`RENDER-30`). O(new sites), the
+    /// roster's bound amortized.
     pub(crate) fn schedule_construction_completions(&mut self) {
         for (building, slot) in self.allocator.pending_construction.drain(..) {
             self.events
                 .schedule(slot, SimEvent::ConstructionComplete { building });
+            self.site_rows.note_site(building);
         }
+        self.site_rows.bound_roster(&self.allocator);
     }
 }
 

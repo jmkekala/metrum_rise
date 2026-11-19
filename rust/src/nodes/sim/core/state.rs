@@ -370,6 +370,8 @@ pub struct SimCore {
     pub(crate) road_terrain_inputs: super::RoadTerrainInputsLog,
     /// What Godot's per-frame queries last read (`CODE-26`); derived, never saved.
     pub(crate) frame_queries: super::snapshot::FrameQueriesPublisher,
+    /// The construction sites' rows and their roster (`RENDER-30`); derived, never saved.
+    pub(crate) site_rows: crate::nodes::sim::render::building_sites::SiteRowsPublisher,
     /// World-space AABB for frustum culling: (x_min, x_max, z_min, z_max).
     /// Agents outside this rect are excluded from `RenderSnapshot` transforms.
     /// Updated each frame via `SimCommand::SetCameraAabb`. Defaults to "show all".
@@ -500,6 +502,7 @@ impl SimCore {
             cell_lot_hooks: Default::default(),
             road_terrain_inputs: Default::default(),
             frame_queries: Default::default(),
+            site_rows: Default::default(),
             camera_aabb: (0.0, 0.0, 0.0, 0.0), // 0.0 == 0.0 → cull disabled by default
             render_camera_position: None,
             agent_draw_eye: None,
@@ -1034,6 +1037,8 @@ impl SimCore {
             self.events.reset(next_slot);
             self.reschedule_construction_events();
             self.allocator.pending_construction.clear();
+            // The completions are rescheduled from a scan: the site roster refills from one.
+            self.site_rows.mark_roster_stale();
             self.allocator
                 .building_handles
                 .register_appended(self.allocator.buildings.len());

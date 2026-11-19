@@ -15,15 +15,12 @@ const PerfDebug := preload("res://scripts/core/perf_debug.gd")
 @onready var _stream: Node = get_node_or_null("../StreamNode")
 
 var lod_renderer: Node3D
-var building_visual_revision: int = -1
-## construction_site_multimeshes[zone_id] = MultiMeshInstance3D
-var construction_site_multimeshes: Dictionary = {}
-## construction_foundation_multimeshes[zone_id] = MultiMeshInstance3D
-var construction_foundation_multimeshes: Dictionary = {}
-## construction_scaffold_multimeshes[zone_id] = MultiMeshInstance3D
-var construction_scaffold_multimeshes: Dictionary = {}
+## The nine construction site nodes in the published rows' order: residential, commercial and
+## industrial, each a site pad, a foundation and a scaffold (`get_building_site_rows`).
+var site_multimeshes: Array[MultiMeshInstance3D] = []
 var building_site_ground_instance: MeshInstance3D
 var building_site_surface_instance: MeshInstance3D
+## The site rows' generation last installed; -1 asks for every buffer.
 var building_site_revision: int = -1
 # Read live so the debug console takes effect on the next site-mesh rebuild.
 var building_debug_enabled: bool:
@@ -34,7 +31,6 @@ var building_site_dump_enabled: bool = false
 var building_site_visual_mode := "off"
 var building_site_debug_materials: Dictionary = {}
 
-var _zone_ids := PackedInt32Array([1, 2, 3, 4, 5])
 # Whether this frame's site frame set transforms (the install ledger's charge).
 var _sites_worked := false
 
@@ -82,19 +78,17 @@ func _ready() -> void:
 
 	_load_enabled_packs()
 
-	for zone_id in _zone_ids:
-		_setup_construction_site(zone_id)
-		_setup_construction_foundation(zone_id)
-		_setup_construction_scaffold(zone_id)
+	for _zone in 3:
+		_setup_construction_site()
+		_setup_construction_foundation()
+		_setup_construction_scaffold()
 	_setup_building_site_surfaces()
 
 	_create_lod_renderer()
-	_update_building_render_frame(true)
+	_install_site_rows(true)
 
 func update_all_buildings() -> void:
-	building_site_revision = -1
-	building_visual_revision = -1
-	_update_building_render_frame(true)
+	_install_site_rows(true)
 	if lod_renderer != null and is_inside_tree():
 		lod_renderer.update(get_viewport().get_camera_3d())
 
@@ -126,7 +120,7 @@ func _create_fallback_mesh() -> ArrayMesh:
 	mesh.surface_set_material(0, mat)
 	return mesh
 
-func _setup_construction_site(zone_id: int) -> void:
+func _setup_construction_site() -> void:
 	var mmi := MultiMeshInstance3D.new()
 	var mm := MultiMesh.new()
 	mm.transform_format = MultiMesh.TRANSFORM_3D
@@ -146,9 +140,9 @@ func _setup_construction_site(zone_id: int) -> void:
 		"buildings"
 	)
 	add_child(mmi)
-	construction_site_multimeshes[zone_id] = mmi
+	site_multimeshes.append(mmi)
 
-func _setup_construction_foundation(zone_id: int) -> void:
+func _setup_construction_foundation() -> void:
 	var mmi := MultiMeshInstance3D.new()
 	var mm := MultiMesh.new()
 	mm.transform_format = MultiMesh.TRANSFORM_3D
@@ -167,9 +161,9 @@ func _setup_construction_foundation(zone_id: int) -> void:
 		"buildings"
 	)
 	add_child(mmi)
-	construction_foundation_multimeshes[zone_id] = mmi
+	site_multimeshes.append(mmi)
 
-func _setup_construction_scaffold(zone_id: int) -> void:
+func _setup_construction_scaffold() -> void:
 	var mmi := MultiMeshInstance3D.new()
 	mmi.set_meta("reflection_source", true)
 	var mm := MultiMesh.new()
@@ -189,7 +183,7 @@ func _setup_construction_scaffold(zone_id: int) -> void:
 		"buildings"
 	)
 	add_child(mmi)
-	construction_scaffold_multimeshes[zone_id] = mmi
+	site_multimeshes.append(mmi)
 
 func _setup_building_site_surfaces() -> void:
 	building_site_ground_instance = MeshInstance3D.new()
@@ -211,11 +205,16 @@ func _setup_building_site_surfaces() -> void:
 
 func _process(_delta: float) -> void:
 	var frame_start_us := Time.get_ticks_usec() if PerfDebug.is_enabled() else 0
+	var lod_busy := false
 	if lod_renderer != null:
 		lod_renderer.update(get_viewport().get_camera_3d())
+		lod_busy = lod_renderer.core_busy
 	var sites_start_us := Time.get_ticks_usec()
 	_sites_worked = false
-	_update_building_render_frame()
+	# Sites change in the frame their buildings do: the rows wait while the LOD update finds the
+	# core busy (`RENDER-30`).
+	if not lod_busy:
+		_install_site_rows()
 	var end_us := Time.get_ticks_usec()
 	# A frame that set the sites' transforms charges the install ledger (`RENDER-30`, `RENDER-32-Q`).
 	if _sites_worked and is_instance_valid(_stream):
@@ -233,44 +232,23 @@ func _process(_delta: float) -> void:
 		if lod_renderer != null:
 			details.merge(simulation_node.get_building_lod_work())
 			details.merge(lod_renderer.timing)
+		# The site rows' publisher (`RENDER-30`): refreshes, their time and the roster's scans.
+		details.merge(simulation_node.get_building_site_row_work())
 		PerfDebug.record("buildings", elapsed_ms, details)
 
-func _update_building_render_frame(force_site_mesh: bool = false) -> bool:
-	var known_site_revision := -1 if force_site_mesh else building_site_revision
-	var frame: Dictionary = simulation_node.try_get_building_site_frame(
-		_zone_ids, known_site_revision, building_visual_revision
-	)
-	if bool(frame.get("busy", true)):
+## Sets the site nodes whose published rows changed, from the per-frame publication: never the
+## core. `force` installs every buffer. Whether anything was installed.
+func _install_site_rows(force: bool = false) -> bool:
+	var rows: Array = simulation_node.get_building_site_rows(-1 if force else building_site_revision)
+	if rows.is_empty():
 		return false
-	building_visual_revision = int(frame.get("visual_revision", building_visual_revision))
-	if not frame.has("construction_site_transforms"):
-		return true
 	_sites_worked = true
-
-	var site_buffers: Array = frame.get("construction_site_transforms", []) as Array
-	var foundation_buffers: Array = frame.get("construction_foundation_transforms", []) as Array
-	var scaffold_buffers: Array = frame.get("construction_scaffold_transforms", []) as Array
-	for index in _zone_ids.size():
-		var zone_id: int = _zone_ids[index]
-		if index < site_buffers.size() and construction_site_multimeshes.has(zone_id):
-			_set_multimesh_buffer(
-				construction_site_multimeshes[zone_id] as MultiMeshInstance3D,
-				site_buffers[index] as PackedFloat32Array
-			)
-		if index < foundation_buffers.size() and construction_foundation_multimeshes.has(zone_id):
-			_set_multimesh_buffer(
-				construction_foundation_multimeshes[zone_id] as MultiMeshInstance3D,
-				foundation_buffers[index] as PackedFloat32Array
-			)
-		if index < scaffold_buffers.size() and construction_scaffold_multimeshes.has(zone_id):
-			_set_multimesh_buffer(
-				construction_scaffold_multimeshes[zone_id] as MultiMeshInstance3D,
-				scaffold_buffers[index] as PackedFloat32Array
-			)
-
-	building_site_revision = int(frame.get("site_revision", building_site_revision))
-	if frame.has("site_mesh_data"):
-		_apply_building_site_mesh_data(frame["site_mesh_data"] as Dictionary)
+	for index in site_multimeshes.size():
+		if rows[index + 1] != null:
+			_set_multimesh_buffer(site_multimeshes[index], rows[index + 1] as PackedFloat32Array)
+	building_site_revision = int(rows[0])
+	if building_debug_enabled or building_site_dump_enabled:
+		_apply_building_site_mesh_data(simulation_node.get_building_site_mesh_data())
 	return true
 
 func _set_multimesh_buffer(mmi: MultiMeshInstance3D, buffer: PackedFloat32Array) -> void:
@@ -282,7 +260,6 @@ func _set_multimesh_buffer(mmi: MultiMeshInstance3D, buffer: PackedFloat32Array)
 func _apply_building_site_mesh_data(data: Dictionary) -> void:
 	if not building_site_ground_instance or not building_site_surface_instance:
 		return
-	building_site_revision = int(data.get("revision", building_site_revision))
 	var ground_vertices := data.get("ground_vertices", PackedVector3Array()) as PackedVector3Array
 	var asphalt_vertices := data.get("asphalt_vertices", PackedVector3Array()) as PackedVector3Array
 	var concrete_vertices := data.get("concrete_vertices", PackedVector3Array()) as PackedVector3Array

@@ -159,3 +159,64 @@ fn a_construction_site_completes_identically_on_one_and_eight_workers() {
         std::fs::remove_file(path).unwrap();
     }
 }
+
+// The published construction site rows (`RENDER-30`) through two game days of the starter
+// town's growth, completions and level changes: at every refresh, published once a frame as the
+// simulation thread does, the nine buffers equal the retired scans' rows bit for bit, and the
+// roster scans the buildings once (the first publication) and never again. Then a headless half
+// day with no refresh keeps the roster within its bound, and the next refresh is still exact.
+#[test]
+fn published_site_rows_follow_a_growing_town_without_a_scan() {
+    use crate::nodes::sim::render::building_sites::assert_site_rows_match_scans;
+    let mut town = GrowthScenario::starter_town();
+    let core = &mut town.core;
+    let (mut refreshes, mut changed, mut most_sites, mut completions) = (0, 0, 0, 0);
+    let mut visual = core.allocator.building_visual_revision;
+    let start_day = core.time.day_index;
+    while core.time.day_index < start_day + 2 {
+        core.step_frame(FRAME_DT_S);
+        let generation = core.frame_queries().site_rows.generation;
+        if core.refresh_frame_queries().is_some() {
+            refreshes += 1;
+        }
+        assert_site_rows_match_scans(core, "growth");
+        changed += usize::from(core.frame_queries().site_rows.generation != generation);
+        let now = core
+            .allocator
+            .buildings
+            .iter()
+            .filter(|b| b.is_under_construction())
+            .count();
+        completions += usize::from(core.allocator.building_visual_revision != visual);
+        visual = core.allocator.building_visual_revision;
+        most_sites = most_sites.max(now);
+    }
+    assert_eq!(core.site_rows.full_passes(), 1, "only the first publication scans");
+    assert!(
+        most_sites >= 3 && changed >= 10 && completions >= 3,
+        "a growing town: {most_sites} sites at most, {changed} changes, {completions} completions"
+    );
+    eprintln!(
+        "SITE_ROWS growth: refreshes={refreshes} changed={changed} most_sites={most_sites} \
+         completions={completions} buildings={}",
+        core.allocator.buildings.len()
+    );
+
+    // Headless: sites are noted with no refresh; the roster stays within `2 S + 64`.
+    let end_slot = core.time.absolute_slot() + 12 * SLOTS_PER_HOUR;
+    while core.time.absolute_slot() < end_slot {
+        core.step_frame(FRAME_DT_S);
+        let sites = core
+            .allocator
+            .buildings
+            .iter()
+            .filter(|b| b.is_under_construction())
+            .count();
+        most_sites = most_sites.max(sites);
+        // The prune keeps the sites alive then; the most there were bounds them.
+        assert!(core.site_rows.roster_len() <= 2 * most_sites + 64);
+    }
+    core.refresh_frame_queries();
+    assert_site_rows_match_scans(core, "after the headless half day");
+    assert_eq!(core.site_rows.full_passes(), 1);
+}

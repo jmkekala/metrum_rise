@@ -272,6 +272,7 @@ fn assert_frame_queries_current(core: &mut SimCore, stage: &str) {
         "{stage}: coal pit revision"
     );
     assert_eq!(*queries.growth, core.demand.growth_display(), "{stage}: growth summary");
+    crate::nodes::sim::render::building_sites::assert_site_rows_match_scans(core, stage);
 }
 
 #[test]
@@ -293,14 +294,48 @@ fn published_frame_queries_follow_every_kind_of_edit() {
     assert_frame_queries_current(&mut core, "load");
 
     let asset = register_yard(&mut core);
+    let rows = core.frame_queries().site_rows.clone();
     let first = place_yard_at(&mut core, 0, 1.0, 0.25, &asset).expect("first site placement");
     assert_frame_queries_current(&mut core, "site");
+    // The residential site's three buffers take the new generation; the other six keep theirs.
+    let placed = core.frame_queries().site_rows.clone();
+    for (i, (before, after)) in rows.buffers.iter().zip(&placed.buffers).enumerate() {
+        assert_eq!(after.generation != before.generation, i < 3, "site rows buffer {i}");
+    }
     place_yard_at(&mut core, 0, -1.0, 0.75, &asset).expect("second site placement");
     // Another rebuild (the road tool's, a payload drain's) takes the noted patches first.
     core.refresh_road_terrain_inputs();
     assert_frame_queries_current(&mut core, "second site");
     assert!(core.bulldoze_building(first));
     assert_frame_queries_current(&mut core, "site swap-remove");
+    // A site's removal undone: the site returns with a new handle through the pending list.
+    let third = place_yard_at(&mut core, 0, 1.0, 0.25, &asset).expect("third site placement");
+    assert_frame_queries_current(&mut core, "third site");
+    assert!(core.bulldoze_building(third));
+    assert_frame_queries_current(&mut core, "third site removal");
+    assert!(core.undo_action_internal());
+    assert_frame_queries_current(&mut core, "site removal undone");
+    // A completion, then the clock set directly: the roster refills from one scan.
+    let site = core
+        .allocator
+        .buildings
+        .iter()
+        .position(|b| b.is_under_construction())
+        .expect("a site under construction");
+    core.complete_construction_site(site);
+    assert_frame_queries_current(&mut core, "site completion");
+    assert!(
+        core.allocator.buildings.iter().any(|b| b.is_under_construction()),
+        "a site remains for the clock step"
+    );
+    let passes = core.site_rows.full_passes();
+    core.time.minute_of_day += 90;
+    core.align_events_to_clock();
+    core.refresh_frame_queries();
+    // The roster refills at the next moved building revision, here a placement.
+    place_yard_at(&mut core, 0, -1.0, 0.25, &asset).expect("site after the clock step");
+    assert_frame_queries_current(&mut core, "clock set directly");
+    assert_eq!(core.site_rows.full_passes(), passes + 1, "the clock step refills the roster");
 
     core.slope_terrain_internal(
         Vector2::new(48.0, 48.0), 24.0, Vector2::new(24.0, 48.0), 1.0,

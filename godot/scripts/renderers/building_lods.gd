@@ -21,6 +21,8 @@ var quality := 1
 var evaluated_parts := 0
 var queried_chunks := 0
 var uploaded_bytes := 0
+## Whether this frame's update found the simulation core busy and kept last frame's batches.
+var core_busy := false
 ## The last frame's Rust microseconds (the perf channel): before the update, the update, the
 ## publication.
 var timing: Dictionary = {}
@@ -163,6 +165,7 @@ func update(camera: Camera3D) -> bool:
 	uploaded_bytes = 0
 	evaluated_parts = 0
 	queried_chunks = 0
+	core_busy = false
 	if not timing.is_empty():
 		timing = {}
 	if camera == null:
@@ -190,6 +193,7 @@ func update(camera: Camera3D) -> bool:
 		reload_resources()
 		return false
 	if frame.get("busy", true):
+		core_busy = true
 		return false
 	evaluated_parts = int(frame.get("evaluated_parts", 0))
 	queried_chunks = int(frame.get("queried_chunks", 0))

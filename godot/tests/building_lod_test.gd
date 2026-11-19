@@ -142,7 +142,7 @@ func pose(position: Vector3, target: Vector3) -> void:
 func refresh() -> void:
 	if modern:
 		expect(renderer.lod_renderer.update(camera), "LOD frame must be available while paused")
-		renderer._update_building_render_frame()
+		renderer._install_site_rows()
 	else:
 		# Baseline uses its original LOD0-only collection path. Test-only compatibility
 		# allows identical saves, assets, cameras and timing on the pre-change build.

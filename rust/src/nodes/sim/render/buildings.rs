@@ -59,11 +59,6 @@ impl SimCore {
         PackedFloat32Array::from_iter(buffer)
     }
 
-    /// Returns the revision used by Godot to decide whether site meshes need rebuilding.
-    pub fn get_building_site_revision_internal(&self) -> u64 {
-        self.allocator.building_ref_revision()
-    }
-
     /// Returns the building-site revision and, on the buildings debug channel, the site debug
     /// export. Site pads and their paving render as part of the terrain patches (`ROAD-68-D`).
     pub fn get_building_site_mesh_data_internal(&self) -> VarDictionary {
@@ -79,11 +74,13 @@ impl SimCore {
         dict
     }
 
-    /// Returns neutral construction-site transforms for under-construction buildings.
-    pub fn get_construction_site_transforms_internal(
+    // Construction-site pad transforms of zone `zone_type_int`'s buildings under construction:
+    // the retired scan, kept verbatim as the published site rows' oracle (`RENDER-30`).
+    #[cfg(test)]
+    pub(crate) fn get_construction_site_transforms_internal(
         &self,
         zone_type_int: u8,
-    ) -> PackedFloat32Array {
+    ) -> Vec<f32> {
         let target_zone = match zone_type_int {
             1 => ZoneType::Residential,
             2 => ZoneType::Commercial,
@@ -92,7 +89,7 @@ impl SimCore {
         };
 
         if target_zone == ZoneType::None {
-            return PackedFloat32Array::new();
+            return Vec::new();
         }
 
         let mut buffer = Vec::new();
@@ -122,14 +119,15 @@ impl SimCore {
             );
         }
 
-        PackedFloat32Array::from_iter(buffer)
+        buffer
     }
 
-    /// Returns raised foundation transforms for under-construction buildings.
-    pub fn get_construction_foundation_transforms_internal(
+    // Raised foundation transforms, as above.
+    #[cfg(test)]
+    pub(crate) fn get_construction_foundation_transforms_internal(
         &self,
         zone_type_int: u8,
-    ) -> PackedFloat32Array {
+    ) -> Vec<f32> {
         let target_zone = match zone_type_int {
             1 => ZoneType::Residential,
             2 => ZoneType::Commercial,
@@ -138,7 +136,7 @@ impl SimCore {
         };
 
         if target_zone == ZoneType::None {
-            return PackedFloat32Array::new();
+            return Vec::new();
         }
 
         let mut buffer = Vec::new();
@@ -168,14 +166,15 @@ impl SimCore {
             );
         }
 
-        PackedFloat32Array::from_iter(buffer)
+        buffer
     }
 
-    /// Returns procedural scaffold bar transforms for under-construction buildings.
-    pub fn get_construction_scaffold_transforms_internal(
+    // Procedural scaffold bar transforms, as above.
+    #[cfg(test)]
+    pub(crate) fn get_construction_scaffold_transforms_internal(
         &self,
         zone_type_int: u8,
-    ) -> PackedFloat32Array {
+    ) -> Vec<f32> {
         let target_zone = match zone_type_int {
             1 => ZoneType::Residential,
             2 => ZoneType::Commercial,
@@ -184,7 +183,7 @@ impl SimCore {
         };
 
         if target_zone == ZoneType::None {
-            return PackedFloat32Array::new();
+            return Vec::new();
         }
 
         let mut buffer = Vec::new();
@@ -214,7 +213,7 @@ impl SimCore {
             );
         }
 
-        PackedFloat32Array::from_iter(buffer)
+        buffer
     }
 
     /// Continuous absolute slot clock, for presentation interpolation between slots.
@@ -1008,6 +1007,70 @@ fn building_lot_size_m(cell_size_m: f32, building: &Building) -> (f32, f32) {
         building.width_cells as f32 * cell_size_m,
         building.depth_cells as f32 * cell_size_m,
     )
+}
+
+/// Appends a building under construction's site pad row (12 floats) to `buffer`.
+pub(super) fn construction_site_pad_rows(buffer: &mut Vec<f32>, cell_size_m: f32, b: &Building) {
+    let ground_y = b.support_height_m;
+    let (right, front) = building_lot_basis(b);
+    let (lot_width, lot_depth) = building_lot_size_m(cell_size_m, b);
+    let width = lot_width * SITE_INSET_SCALE;
+    let depth = lot_depth * SITE_INSET_SCALE;
+    let center_y = ground_y + SITE_PAD_HEIGHT_M * 0.5 + 0.015;
+    push_oriented_box_transform(
+        buffer,
+        b.center_x,
+        b.center_y,
+        center_y,
+        right,
+        front,
+        width,
+        SITE_PAD_HEIGHT_M,
+        depth,
+    );
+}
+
+/// Appends a building under construction's raised foundation row to `buffer`.
+pub(super) fn construction_foundation_rows(buffer: &mut Vec<f32>, cell_size_m: f32, b: &Building) {
+    let ground_y = b.support_height_m;
+    let (right, front) = building_lot_basis(b);
+    let (lot_width, lot_depth) = building_lot_size_m(cell_size_m, b);
+    let width = lot_width * FOUNDATION_INSET_SCALE;
+    let depth = lot_depth * FOUNDATION_INSET_SCALE;
+    let center_y = ground_y + SITE_PAD_HEIGHT_M + FOUNDATION_PAD_HEIGHT_M * 0.5 + 0.025;
+    push_oriented_box_transform(
+        buffer,
+        b.center_x,
+        b.center_y,
+        center_y,
+        right,
+        front,
+        width,
+        FOUNDATION_PAD_HEIGHT_M,
+        depth,
+    );
+}
+
+/// Appends a building under construction's 20 scaffold bar rows (eight posts, three rail
+/// levels of four rails) to `buffer`.
+pub(super) fn construction_scaffold_rows(buffer: &mut Vec<f32>, cell_size_m: f32, b: &Building) {
+    let ground_y = b.support_height_m;
+    let (right, front) = building_lot_basis(b);
+    let (lot_width, lot_depth) = building_lot_size_m(cell_size_m, b);
+    let width = lot_width * 0.82;
+    let depth = lot_depth * 0.78;
+    let height = construction_scaffold_height_m(b);
+    push_scaffold_transforms(
+        buffer,
+        b.center_x,
+        b.center_y,
+        ground_y,
+        right,
+        front,
+        width,
+        depth,
+        height,
+    );
 }
 
 /// Existing construction animation's vertical offset below the authored support plane.

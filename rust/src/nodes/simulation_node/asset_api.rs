@@ -52,75 +52,51 @@ impl SimulationNode {
         get_building_mesh_part_count(&self.lock_core(), qualified_id)
     }
 
-    /// Returns changed site/construction visuals independently of camera-driven mesh LODs.
-    /// Unchanged revisions return no buffers; the former all-city per-asset scan is removed.
+    /// The construction sites' rows from the per-frame publication (`RENDER-30`, `CODE-26`):
+    /// never the core lock. Empty while the published generation equals `known_generation`;
+    /// else the generation followed by the nine row buffers (zone-major: residential,
+    /// commercial, industrial; each site pad, foundation, scaffold), `null` for a buffer whose
+    /// rows are not newer than `known_generation`. `O(1)` unchanged, else `O(changed rows)`.
     #[func]
-    pub fn try_get_building_site_frame(
-        &self,
-        zone_ids: PackedInt32Array,
-        known_site_revision: i64,
-        known_visual_revision: i64,
-    ) -> VarDictionary {
-        let mut frame = VarDictionary::new();
-        frame.set("busy", true);
-        let Some(mut core) = self.try_lock_core() else {
-            return frame;
-        };
-
-        let site_revision = core.get_building_site_revision_internal();
-        let visual_revision = core.allocator.building_visual_revision;
-        frame.set("busy", false);
-        frame.set("site_revision", site_revision as i64);
-        frame.set("visual_revision", visual_revision as i64);
-        if known_site_revision == site_revision as i64
-            && known_visual_revision == visual_revision as i64
-        {
-            return frame;
+    pub fn get_building_site_rows(&self, known_generation: i64) -> VarArray {
+        let rows = Arc::clone(&self.snapshot.read().unwrap().queries.site_rows);
+        let mut result = VarArray::new();
+        if rows.generation as i64 == known_generation {
+            return result;
         }
-
-        let mut construction_site_transforms = VarArray::new();
-        let mut construction_foundation_transforms = VarArray::new();
-        let mut construction_scaffold_transforms = VarArray::new();
-        for &zone_id in zone_ids.as_slice() {
-            let zone_id = u8::try_from(zone_id).unwrap_or(0);
-            construction_site_transforms.push(
-                &core
-                    .get_construction_site_transforms_internal(zone_id)
-                    .to_variant(),
-            );
-            construction_foundation_transforms.push(
-                &core
-                    .get_construction_foundation_transforms_internal(zone_id)
-                    .to_variant(),
-            );
-            construction_scaffold_transforms.push(
-                &core
-                    .get_construction_scaffold_transforms_internal(zone_id)
-                    .to_variant(),
-            );
+        result.push(&(rows.generation as i64).to_variant());
+        for buffer in &rows.buffers {
+            if buffer.generation as i64 > known_generation {
+                result.push(&PackedFloat32Array::from(&buffer.rows[..]).to_variant());
+            } else {
+                result.push(&Variant::nil());
+            }
         }
+        result
+    }
 
-        frame.set(
-            "construction_site_transforms",
-            construction_site_transforms.to_variant(),
-        );
-        frame.set(
-            "construction_foundation_transforms",
-            construction_foundation_transforms.to_variant(),
-        );
-        frame.set(
-            "construction_scaffold_transforms",
-            construction_scaffold_transforms.to_variant(),
-        );
-        if known_site_revision != site_revision as i64 {
-            // The debug probes read the graded surface, which reads the site index.
-            core.prepare_site_queries();
-            frame.set(
-                "site_mesh_data",
-                core.get_building_site_mesh_data_internal().to_variant(),
-            );
-        }
-        frame
+    /// The publisher's perf-channel counters (`RENDER-30`): `site_refreshes` (refreshes after a
+    /// moved building revision), `site_refresh_us` (their time) and `site_full_passes` (the
+    /// roster's scans), each since the process started. Never the core lock.
+    #[func]
+    pub fn get_building_site_row_work(&self) -> VarDictionary {
+        let (refreshes, refresh_us, full_passes) =
+            crate::nodes::sim::render::building_sites::site_row_work();
+        let mut out = VarDictionary::new();
+        out.set("site_refreshes", refreshes as i64);
+        out.set("site_refresh_us", refresh_us);
+        out.set("site_full_passes", full_passes as i64);
+        out
+    }
+
+    /// The building-site debug export (the buildings debug channel's site dump), read under the
+    /// core lock; asked only while the dump or the channel is on.
+    #[func]
+    pub fn get_building_site_mesh_data(&self) -> VarDictionary {
+        let mut core = self.lock_core();
+        // The debug probes read the graded surface, which reads the site index.
+        core.prepare_site_queries();
+        core.get_building_site_mesh_data_internal()
     }
 
     /// Returns a Dictionary of live stats for the building whose centre is closest to

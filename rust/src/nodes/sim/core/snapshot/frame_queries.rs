@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
 //! The values Godot's per-frame queries read, published with the render snapshot (`CODE-26`):
-//! the land cover's revisions, the coal pit overlay revision, the growth summary and the
-//! visible surface (terrain and world-surface heights, the water level under the camera). A
-//! query reads the latest publication and never takes the core lock.
+//! the land cover's revisions, the coal pit overlay revision, the growth summary, the
+//! visible surface (terrain and world-surface heights, the water level under the camera) and the
+//! construction sites' rows (`RENDER-30`). A query reads the latest publication and never takes
+//! the core lock.
 //!
 //! Freshness: a publication carries the core's state when it was built. The simulation thread
 //! publishes with the render snapshot after every frame and edit; a bridge call that took the
@@ -16,7 +17,9 @@
 //! only what moved: the growth strings (the hourly assessment), the vegetation revisions
 //! (`O(edited patches)`), the terrain payload revisions (`O(revised patches)`) and the surface:
 //! the road tool's terrain inputs of the noted patches, an `O(1)` roadbed copy and terrain and
-//! water copies shared with the road tool's view (storage chunk handles, no sample copied).
+//! water copies shared with the road tool's view (storage chunk handles, no sample copied), and
+//! the site rows, `O(sites)` from their roster when a building revision moved
+//! (`render::building_sites`).
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -28,6 +31,7 @@ use super::super::graded_stage::PreviewSites;
 use super::super::road_terrain_inputs::RoadTerrainInputs;
 use super::super::state::SimCore;
 use crate::config::HEIGHT_SCALE;
+use crate::nodes::sim::render::building_sites::SiteRows;
 use crate::simulation::economy::demand::GrowthDisplayKey;
 use crate::simulation::network::roadbed::RoadbedSystem;
 use crate::simulation::terrain::TerrainSystem;
@@ -121,6 +125,8 @@ pub(crate) struct FrameQueries {
     pub(crate) growth: Arc<[(usize, String); 3]>,
     /// The visible surface; `None` before the first publication.
     pub(crate) surface: Option<Arc<SurfaceView>>,
+    /// The construction sites' rows (`RENDER-30`).
+    pub(crate) site_rows: Arc<SiteRows>,
 }
 
 impl FrameQueries {
@@ -170,6 +176,7 @@ struct PublishedKey {
     // A water edit replaces the water whole, restarting its render generation: the surface
     // stamp every water edit bumps tells the replacements apart.
     surface_generation: u64,
+    site_rows_generation: u64,
 }
 
 /// The latest publication and what it was built from; derived, never saved.
@@ -197,6 +204,7 @@ impl SimCore {
             terrain_inputs_site_revision: self.road_terrain_inputs.site_revision(),
             water_generation: self.watermap.render_generation(),
             surface_generation: self.road_tool_surface_generation,
+            site_rows_generation: self.site_rows.published().generation,
         }
     }
 
@@ -262,6 +270,8 @@ impl SimCore {
         if self.road_terrain_inputs.has_changes() {
             self.refresh_road_terrain_inputs_for_readers();
         }
+        // The site rows likewise: a changed buffer moves their generation in the key.
+        self.refresh_site_rows();
         let key = self.frame_queries_key();
         let previous = self.frame_queries.key;
         if previous == Some(key) {
@@ -294,6 +304,7 @@ impl SimCore {
             .terrain_payload_generation_counter
             .wrapping_add(self.vegetation_edits.epoch());
         queries.coal_pit_overlay_revision = key.coal_pit_overlay_revision;
+        queries.site_rows = Arc::clone(self.site_rows.published());
         if surface {
             queries.surface = Some(Arc::new(SurfaceView {
                 terrain: self.shared_terrain_copy(),

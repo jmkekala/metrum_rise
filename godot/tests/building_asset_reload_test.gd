@@ -9,9 +9,9 @@ var _failures := 0
 
 class ObservedRenderer extends BuildingRenderer:
 	var refreshes := 0
-	func _update_building_render_frame(force_site_mesh: bool = false) -> bool:
+	func _install_site_rows(force: bool = false) -> bool:
 		refreshes += 1
-		return super._update_building_render_frame(force_site_mesh)
+		return super._install_site_rows(force)
 
 func _initialize() -> void:
 	call_deferred("_run")
@@ -126,10 +126,9 @@ license = "CC0"
 		var previous_refreshes := renderer.refreshes
 		for frame in 60:
 			await process_frame
-			renderer._update_building_render_frame()
-			var idle: Dictionary = simulation.try_get_building_site_frame(renderer._zone_ids, renderer.building_site_revision, renderer.building_visual_revision)
-			if not idle.get("busy", true):
-				_expect(not idle.has("construction_site_transforms") and not idle.has("site_mesh_data"), "idle requests must not rebuild site buffers")
+			renderer._install_site_rows()
+			var idle: Array = simulation.get_building_site_rows(renderer.building_site_revision)
+			_expect(idle.is_empty(), "idle requests must not return site buffers")
 		_expect(renderer.refreshes - previous_refreshes == 60, "requests are state-driven rather than a 30-frame timer")
 	DirAccess.remove_absolute(manifest_path)
 	renderer.reload_asset_packs()
@@ -155,7 +154,7 @@ func _benchmark(renderer: ObservedRenderer, manifest_path: String) -> void:
 		renderer.reload_asset_packs()
 		_expect(renderer.lod_renderer.catalog.size() == parts + 1, "benchmark must request every authored part plus the broken placeholder")
 		for warmup in 3:
-			renderer._update_building_render_frame()
+			renderer._install_site_rows()
 		var samples: Array[float] = []
 		var busy_calls := 0
 		for sample in 11:
@@ -164,7 +163,7 @@ func _benchmark(renderer: ObservedRenderer, manifest_path: String) -> void:
 			var deadline := Time.get_ticks_msec() + 10000
 			while completed < 20 and Time.get_ticks_msec() < deadline:
 				var start := Time.get_ticks_usec()
-				var ready := renderer._update_building_render_frame()
+				var ready := renderer._install_site_rows(true)
 				var duration_us := Time.get_ticks_usec() - start
 				if ready:
 					completed += 1
