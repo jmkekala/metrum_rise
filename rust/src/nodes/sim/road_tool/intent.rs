@@ -8,7 +8,9 @@
 
 use super::measure::RoadTypeSpec;
 use crate::simulation::network::graph::SidewalkSides;
-use crate::simulation::network::road_types::{DEFAULT_SPEED_KMH, RoadAttributes, RoadType};
+use crate::simulation::network::road_types::{
+    DEFAULT_SPEED_KMH, RoadAttributes, RoadType, RoadTypePockets,
+};
 
 /// The built-in type R starts with and falls back to when the picked type is gone.
 pub const DEFAULT_ROAD_TYPE: &str = "builtin:road_2l";
@@ -71,15 +73,16 @@ impl RoadTypePick {
 }
 
 /// What a stroke of `ty` draws: its lanes, median, kerbside parking, speed, sidewalk sides,
-/// zoning and street lights. A walkway, which has neither a speed nor sidewalks of its own,
-/// takes the built-ins' speed and both sides, as every stroke did before road types (its stroke
-/// builds the same footpath either way). An unusable type refuses with its own key. `O(1)`.
+/// zoning, street lights and turn pockets. A walkway, which has neither a speed nor sidewalks of
+/// its own, takes the built-ins' speed and both sides and no pockets, as every stroke did before
+/// road types (its stroke builds the same footpath either way). An unusable type refuses with
+/// its own key. `O(1)`.
 pub fn type_spec(ty: &RoadType) -> Result<RoadTypeSpec, &'static str> {
     let section = ty.verdict.as_ref().map_err(|refusal| refusal.reason)?;
-    let (speed_kmh, sidewalks) = if section.fwd_lanes + section.bkw_lanes == 0 {
-        (DEFAULT_SPEED_KMH, SidewalkSides::BOTH)
+    let (speed_kmh, sidewalks, pockets) = if section.fwd_lanes + section.bkw_lanes == 0 {
+        (DEFAULT_SPEED_KMH, SidewalkSides::BOTH, RoadTypePockets::default())
     } else {
-        (ty.speed_kmh, section.sidewalks)
+        (ty.speed_kmh, section.sidewalks, ty.pockets)
     };
     Ok(RoadTypeSpec {
         fwd_lanes: section.fwd_lanes,
@@ -92,6 +95,7 @@ pub fn type_spec(ty: &RoadType) -> Result<RoadTypeSpec, &'static str> {
             ty.zoning,
             ty.street_lights,
         )?,
+        pockets,
     })
 }
 
@@ -132,6 +136,7 @@ mod tests {
             zoning: false,
             street_lights: false,
             verdict: Ok(section),
+            pockets: RoadTypePockets::default(),
         });
         types.push(RoadType {
             id: "custom:2".to_string(),
@@ -142,6 +147,7 @@ mod tests {
             zoning: true,
             street_lights: true,
             verdict: Err(RoadTypeRefusal::new("too_many_lanes", "")),
+            pockets: RoadTypePockets::default(),
         });
         types
     }

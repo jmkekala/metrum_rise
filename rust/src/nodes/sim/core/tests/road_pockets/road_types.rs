@@ -200,7 +200,7 @@ fn pocket_hover_matches_committed_piece_bits_and_restores_its_replica() {
     core.refresh_road_terrain_inputs();
     let mut context = RoadPreviewContext::capture(road_tool_snapshot_from_core(&core).unwrap());
     let counts = (context.replica.node_count(), context.replica.edge_count());
-    let preview = context.preview_road_with_pockets(
+    let preview = context.preview_road_with_hue(
         RoadPreviewRequest {
             surface_generation: context.view.surface_generation,
             points: vec![
@@ -216,6 +216,7 @@ fn pocket_hover_matches_committed_piece_bits_and_restores_its_replica() {
             attributes: RoadAttributes::DEFAULT,
         },
         pockets(true, true, 60.0),
+        None,
     );
     assert!(preview.validation.is_valid);
     assert_eq!(

@@ -442,7 +442,7 @@ pub(crate) fn drag_with_pockets(
         frame(context);
         let surface_generation = context.view.surface_generation;
         let called = std::time::Instant::now();
-        let preview = context.preview_road_with_pockets(
+        let preview = context.preview_road_with_hue(
             RoadPreviewRequest {
                 surface_generation,
                 points: points.clone(),
@@ -455,6 +455,7 @@ pub(crate) fn drag_with_pockets(
                 attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
             },
             pockets,
+            None,
         );
         let span = span(called);
         let displayed = context.graded.displayed().len();

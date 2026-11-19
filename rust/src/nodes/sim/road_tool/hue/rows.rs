@@ -16,7 +16,7 @@ use crate::nodes::sim::core::{
 use crate::simulation::core::config::WorldConfig;
 use crate::simulation::network::graph::RoadParking;
 use crate::simulation::network::road_edit::{DraftGround, RoadProfile};
-use crate::simulation::network::road_types::RoadAttributes;
+use crate::simulation::network::road_types::{RoadAttributes, RoadTypePockets};
 use godot::prelude::Vector2;
 use std::time::Instant;
 
@@ -336,8 +336,11 @@ fn the_preview_builds_its_hue_bitwise_with_it() {
             requests.push(request(&world, vec![start + lift, end + lift], RoadProfile::Bridge));
         }
         for (k, stroke) in requests.into_iter().enumerate() {
-            let preview =
-                context.preview_road_with_hue(stroke.clone(), Some((&mut joined, HALF_WIDTH_M)));
+            let preview = context.preview_road_with_hue(
+                stroke.clone(),
+                RoadTypePockets::default(),
+                Some((&mut joined, HALF_WIDTH_M)),
+            );
             let announced = joined.revision();
             let reference = plain.preview_road(stroke);
             assert_eq!(
@@ -499,7 +502,11 @@ fn benchmark_hue_rows() {
         let mut joined_hash = 0xcbf2_9ce4_8422_2325;
         let mut offframe = OffFrameHue::default();
         for stroke in &requests {
-            context.preview_road_with_hue(stroke.clone(), Some((&mut offframe, HALF_WIDTH_M)));
+            context.preview_road_with_hue(
+                stroke.clone(),
+                RoadTypePockets::default(),
+                Some((&mut offframe, HALF_WIDTH_M)),
+            );
             joined_hash = digest(offframe.hue(), joined_hash);
         }
         let mut series: [Vec<f64>; 5] = Default::default();
@@ -520,7 +527,8 @@ fn benchmark_hue_rows() {
                         }
                         _ => {
                             let with = Some((&mut offframe, HALF_WIDTH_M));
-                            std::hint::black_box(context.preview_road_with_hue(stroke, with));
+                            let pockets = RoadTypePockets::default();
+                            std::hint::black_box(context.preview_road_with_hue(stroke, pockets, with));
                             offframe.join();
                             series[1].push(start.elapsed().as_secs_f64() * 1.0e3);
                             let (built, waited) = offframe.last_times();

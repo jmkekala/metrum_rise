@@ -779,13 +779,14 @@ fn measure_populated_road_plan_scaling(
             let capture_ms = capture.elapsed().as_secs_f64() * 1000.0;
             for iteration in 0..103 {
                 let start = Instant::now();
-                let pose = context.preview_road_with_pockets(
+                let pose = context.preview_road_with_hue(
                     request(),
                     crate::simulation::network::road_types::RoadTypePockets {
                         left: false,
                         right: true,
                         body_m: 40.0,
                     },
+                    None,
                 );
                 let elapsed = start.elapsed().as_secs_f64() * 1000.0;
                 assert!(

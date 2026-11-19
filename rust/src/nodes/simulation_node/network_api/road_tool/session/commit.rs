@@ -19,8 +19,9 @@ impl SimulationNode {
     /// `road_tool_commit_answer`; `road_tool.gd` asks too when chunks install, as the answer may
     /// arrive in their frame): nil until the core answers it, then the answer, once: `committed`, `phase` and `placed` (the session's, after it),
     /// and for an accepted stroke `generation` (the render generation whose road chunks replace
-    /// the preview: it holds until they are installed) and `border_node` (the external
-    /// connection candidate at an end, -1 for none; the chain ended there), for a refused one
+    /// the preview: it holds until they are installed), `border_node` (the external
+    /// connection candidate at an end, -1 for none; the chain ended there) and `pocket_refusals`
+    /// (the road type's pockets it could not get, `get_road_commit_result`'s form), for a refused one
     /// `graded_epoch` (the preview tiles the commit had adopted, for the renderer to drop) and,
     /// when the stroke is editable again, `rejected` (the dictionary the sent stroke's preview
     /// shows the refusal with: `road_commit_rejected`, its graded tiles handed over at the click
@@ -43,6 +44,10 @@ impl SimulationNode {
             Ok(ack) => (ack.committed, ack.generation, ack.detail.as_str()),
             Err(reason) => (false, 0, *reason),
         };
+        // The road type's pockets the committed stroke could not get (`road_pocket_notice.gd`).
+        let pocket_refusals = answer
+            .as_ref()
+            .map_or_else(|_| VarArray::new(), super::super::super::pocket_refusals_array);
         debug_log!(
             "road",
             "road_commit_result request_id={} committed={} detail={}",
@@ -85,6 +90,7 @@ impl SimulationNode {
             } => {
                 result.set("generation", i64::try_from(generation).unwrap_or(i64::MAX));
                 result.set("border_node", border_node.unwrap_or(-1));
+                result.set("pocket_refusals", pocket_refusals);
                 // The commit's hue and road chunks stay drawn until the hold releases them
                 // (rounds R2-3, R2-4a, R2-4b).
                 self.road_tool_hold_hue(i64::try_from(generation).unwrap_or(i64::MAX));

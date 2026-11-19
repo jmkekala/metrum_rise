@@ -8,7 +8,7 @@
 
 use crate::simulation::network::graph::{RoadMedian, RoadParking};
 use crate::simulation::network::guide::{DVec2, GuidePath, GuideSegment};
-use crate::simulation::network::road_types::RoadAttributes;
+use crate::simulation::network::road_types::{RoadAttributes, RoadTypePockets};
 use crate::simulation::network::road_types::cost::{build_per_m, stroke_weight, upkeep_per_m_day};
 use crate::simulation::network::roadbed::preview_candidate_roadbed_half_width_m;
 use crate::simulation::network::types::EdgeClass;
@@ -35,6 +35,9 @@ pub struct RoadTypeSpec {
     pub parking: RoadParking,
     /// Speed, sidewalks, zoning, lights (`ROAD-101`).
     pub attributes: RoadAttributes,
+    /// The turn pockets the type asks for on each new approach of a stroke into a junction;
+    /// none by default. Single strokes only: a batch takes none.
+    pub pockets: RoadTypePockets,
 }
 
 impl RoadTypeSpec {
@@ -53,6 +56,7 @@ impl Default for RoadTypeSpec {
             median: None,
             parking: RoadParking::default(),
             attributes: RoadAttributes::DEFAULT,
+            pockets: RoadTypePockets::default(),
         }
     }
 }

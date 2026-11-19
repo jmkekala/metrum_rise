@@ -727,6 +727,7 @@ fn hud_prices_the_selected_type_as_the_preview() {
         median: RoadMedian::from_tool(1, 2.0).ok().flatten(),
         parking: RoadParking::from_code(3).expect("both kerbs"),
         attributes: RoadAttributes::from_tool(70, 3, true, false).expect("attributes"),
+        ..RoadTypeSpec::default()
     };
     assert!(spec.median.is_some());
     let mut tool = session();
