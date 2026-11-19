@@ -317,7 +317,9 @@ road_attempt {"attempt":4,"by":"commit","reason":"plotted_building_overlap","gen
 - `road_attempt` carries the stroke exactly as submitted: every point at full `f32` precision,
   the lane counts, snapping, the tool's `tunnel`, its median (`median_style`, `median_width`)
   and road-type attributes (`speed_kmh`, `sidewalks`, `zoning`, `street_lights`; `ROAD-101`),
-  and the road-tool
+  the road type's turn pockets (`pocket_left`, `pocket_right`, `pocket_body_m`; `ROAD-128`;
+  none for a stroke cut into graded parts), which a replay requests instead of the road tool's
+  current type's (a record without them replays with none), and the road-tool
   generation (`get_road_tool_surface_generation`),
   which changes whenever the road network is rebuilt: a built or bulldozed road, an undo, a
   loaded world. A refused stroke leaves it unchanged. Both lines end with the same attempt

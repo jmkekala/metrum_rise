@@ -153,7 +153,10 @@ impl SimCore {
         edit_metrics: RoadEditMetrics,
     ) -> RoadCommitOutcome {
         let preview = request.preview.clone();
-        let submitted = SubmittedStroke::of(&request);
+        let submitted = SubmittedStroke {
+            pockets,
+            ..SubmittedStroke::of(&request)
+        };
         let mut stroke = self.commit_stroke_core(
             request,
             StrokePlan::Preview(preview),
@@ -628,10 +631,13 @@ pub(super) struct SubmittedStroke {
     median: Option<crate::simulation::network::graph::RoadMedian>,
     parking: crate::simulation::network::graph::RoadParking,
     attributes: crate::simulation::network::road_types::RoadAttributes,
+    // The road type's pockets the stroke asked for (`ROAD-128`), which its replay requests.
+    pockets: RoadTypePockets,
 }
 
 impl SubmittedStroke {
-    /// The stroke exactly as `request` submits it.
+    /// The stroke exactly as `request` submits it, without pockets: a batch's strokes take none
+    /// (a single stroke's commit sets its own).
     pub(super) fn of(request: &RoadCommitRequest) -> Self {
         Self {
             points: request.points.clone(),
@@ -642,6 +648,7 @@ impl SubmittedStroke {
             median: request.median,
             parking: request.parking,
             attributes: request.attributes,
+            pockets: RoadTypePockets::default(),
         }
     }
 
@@ -655,6 +662,7 @@ impl SubmittedStroke {
             median: self.median,
             parking: self.parking,
             attributes: self.attributes,
+            pockets: self.pockets,
         }
     }
 }

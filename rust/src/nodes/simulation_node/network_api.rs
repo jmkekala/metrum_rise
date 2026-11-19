@@ -98,12 +98,18 @@ impl SimulationNode {
         bkw_lanes: i32,
         snap_to_existing_roads: bool,
     ) -> i64 {
-        let stroke = self.road_tool_spec().stroke();
-        self.add_road_with_section(points, (fwd_lanes, bkw_lanes), snap_to_existing_roads, stroke)
+        let spec = self.road_tool_spec();
+        self.add_road_with_section(
+            points,
+            (fwd_lanes, bkw_lanes),
+            snap_to_existing_roads,
+            spec.stroke(),
+            spec.pockets,
+        )
     }
 
-    // Queues one follow-ground stroke with `stroke`'s median, parking and attributes (the road
-    // tool's, or a replayed record's) and returns its completion identity. Sent to the
+    // Queues one follow-ground stroke with `stroke`'s median, parking and attributes and the
+    // road type's `pockets` (the road tool's, or a replayed record's) and returns its completion identity. Sent to the
     // background thread so the Godot main thread is never blocked by lane rebuilding and zoning
     // work: the command wakes the existing simulation thread without waiting for, or advancing,
     // its next movement tick.
@@ -113,6 +119,7 @@ impl SimulationNode {
         lanes: (i32, i32),
         snap_to_existing_roads: bool,
         stroke: (Option<RoadMedian>, RoadParking, RoadAttributes),
+        pockets: crate::simulation::network::road_types::RoadTypePockets,
     ) -> i64 {
         let ((fwd_lanes, bkw_lanes), (median, parking, attributes)) = (lanes, stroke);
         let road_debug = crate::debug::Channel::Road.enabled();
@@ -146,7 +153,7 @@ impl SimulationNode {
                 median,
                 parking,
                 attributes,
-                pockets: self.road_tool_spec().pockets,
+                pockets,
                 enqueued_at: Instant::now(),
                 completion,
                 preview,

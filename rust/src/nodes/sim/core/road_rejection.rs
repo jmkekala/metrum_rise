@@ -3,13 +3,13 @@
 //! Road rejection reports on `events`: why a stroke was refused, where, and its exact inputs.
 //!
 //! A refused stroke logs two lines. The first explains the refusal for a person; the second,
-//! `road_attempt {json}`, carries the submitted points at full precision with lanes, snapping and
-//! the road-tool generation, so `run.sh --replay-road-attempts` can replay it against the save the
+//! `road_attempt {json}`, carries the submitted points at full precision with lanes, snapping,
+//! the road type's section and pockets and the road-tool generation, so `run.sh --replay-road-attempts` can replay it against the save the
 //! console's `dump` writes. Reports are built only when a stroke is refused.
 
 use crate::debug_log;
 use crate::simulation::network::graph::RoadMedian;
-use crate::simulation::network::road_types::RoadAttributes;
+use crate::simulation::network::road_types::{RoadAttributes, RoadTypePockets};
 use crate::simulation::network::road_edit::{JunctionPlace, RoadPreviewValidation, RoadProfile};
 use crate::simulation::network::roadbed::NodeRole;
 use godot::prelude::Vector3;
@@ -52,6 +52,26 @@ pub(crate) struct RoadAttempt<'a> {
     pub(crate) parking: crate::simulation::network::graph::RoadParking,
     /// The road tool's road-type attributes (`ROAD-101`), which a replay sets before it draws.
     pub(crate) attributes: RoadAttributes,
+    /// The turn pockets the stroke's road type asks for on its new approaches (`ROAD-128`):
+    /// none for a stroke cut into graded parts, which takes no pockets. A replay requests the
+    /// recorded ones, never the road tool's current type's.
+    pub(crate) pockets: RoadTypePockets,
+}
+
+impl RoadAttempt<'_> {
+    /// The pockets a `road_attempt` record asks for, read through the replay's field readers
+    /// (`number(key, default)`, `flag(key, default)`): a record from before `ROAD-128` has none.
+    pub(crate) fn recorded_pockets(
+        number: impl Fn(&str, f64) -> f64,
+        flag: impl Fn(&str, bool) -> bool,
+    ) -> RoadTypePockets {
+        let none = RoadTypePockets::default();
+        RoadTypePockets {
+            left: flag("pocket_left", none.left),
+            right: flag("pocket_right", none.right),
+            body_m: number("pocket_body_m", f64::from(none.body_m)) as f32,
+        }
+    }
 }
 
 /// Why one stroke was refused.
@@ -146,6 +166,9 @@ impl RoadRejection {
             sidewalks: attempt.attributes.sidewalks.bits(),
             zoning: attempt.attributes.zoning,
             street_lights: attempt.attributes.street_lights,
+            pocket_left: attempt.pockets.left,
+            pocket_right: attempt.pockets.right,
+            pocket_body_m: attempt.pockets.body_m,
             points: attempt.points.iter().map(|p| [p.x, p.y, p.z]).collect(),
         };
         let json = serde_json::to_string(&replay).expect("attempt records serialize");
@@ -178,6 +201,11 @@ struct AttemptRecord<'a> {
     sidewalks: u8,
     zoning: bool,
     street_lights: bool,
+    // The road type's turn pockets (`ROAD-128`), as `RoadTypePockets`: which roles the stroke's
+    // new approaches ask for and the body length.
+    pocket_left: bool,
+    pocket_right: bool,
+    pocket_body_m: f32,
     points: Vec<[f32; 3]>,
 }
 
@@ -533,6 +561,7 @@ mod tests {
             median: None,
             parking: crate::simulation::network::graph::RoadParking::NONE,
             attributes: RoadAttributes::from_tool(100, 1, false, false).unwrap(),
+            pockets: RoadTypePockets::default(),
         };
         let (why, replay) = rejection.lines(7, RejectedBy::Commit, attempt, 42);
         assert_eq!(
@@ -616,6 +645,7 @@ mod tests {
             median: None,
             parking: crate::simulation::network::graph::RoadParking::NONE,
             attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
+            pockets: RoadTypePockets::default(),
         };
         let (why, _) = plain.lines(1, RejectedBy::Tool, attempt, 0);
         assert_eq!(
@@ -623,5 +653,54 @@ mod tests {
             "road rejected by tool: zoning_cell_overlap: the corridor overlaps painted zoning \
              cells. Stroke has no points. Attempt 1."
         );
+    }
+
+    // A replay draws the pockets its record carries (`ROAD-128`), whatever type the road tool
+    // holds when it replays; a record from before them replays with none.
+    #[test]
+    fn a_pocketed_attempt_replays_with_its_recorded_pockets() {
+        let points = [Vector3::ZERO, Vector3::new(80.0, 0.0, 0.0)];
+        let recorded = RoadTypePockets {
+            left: true,
+            right: false,
+            body_m: 40.0,
+        };
+        let attempt = RoadAttempt {
+            points: &points,
+            fwd_lanes: 2,
+            bkw_lanes: 2,
+            snap: true,
+            profile: RoadProfile::FollowGround,
+            median: None,
+            parking: crate::simulation::network::graph::RoadParking::NONE,
+            attributes: RoadAttributes::DEFAULT,
+            pockets: recorded,
+        };
+        let (_, replay) = RoadRejection::new("parcel_overlap", "overlap").lines(
+            3,
+            RejectedBy::Tool,
+            attempt,
+            0,
+        );
+        let mut record: serde_json::Value =
+            serde_json::from_str(replay.strip_prefix("road_attempt ").unwrap()).unwrap();
+        let read = |record: &serde_json::Value| {
+            RoadAttempt::recorded_pockets(
+                |key, default| record[key].as_f64().unwrap_or(default),
+                |key, default| record[key].as_bool().unwrap_or(default),
+            )
+        };
+        let tool_holds = RoadTypePockets {
+            left: false,
+            right: true,
+            body_m: 60.0,
+        };
+        let replayed = read(&record);
+        assert_eq!(replayed, recorded, "the record's own pockets");
+        assert_ne!(replayed, tool_holds);
+        for key in ["pocket_left", "pocket_right", "pocket_body_m"] {
+            record.as_object_mut().unwrap().remove(key);
+        }
+        assert_eq!(read(&record), RoadTypePockets::default(), "an older record has none");
     }
 }

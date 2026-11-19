@@ -38,7 +38,7 @@ static func parse_dump(text: String) -> Dictionary:
 
 ## Replays one attempt. Returns `by` (`tool` or `commit`) and `reason`, empty when the road was
 ## built. Rust's `replay_road_attempt` reads the record's stroke and section (lanes, snapping,
-## profile, median, parking, attributes) in its own call and checks the stroke as the road
+## profile, median, parking, attributes, pockets) in its own call and checks the stroke as the road
 ## tool's click does, or sends a segmented draft's stroke to the commit alone; the road tool's
 ## intent stays as the player set it (`ROAD-112` round R2-6). A built road stays in the loaded
 ## world, so later attempts see it.

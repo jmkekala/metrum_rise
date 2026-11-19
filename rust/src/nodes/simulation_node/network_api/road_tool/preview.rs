@@ -9,7 +9,7 @@ use crate::nodes::sim::road_tool::measure::RoadTypeSpec;
 use crate::nodes::sim::road_tool::outcome::PreviewOutcome;
 use crate::simulation::network::graph::{RoadMedian, RoadParking};
 use crate::simulation::network::road_edit::{PreparedRoadInput, RoadProfile, plan_road_edit};
-use crate::simulation::network::road_types::RoadAttributes;
+use crate::simulation::network::road_types::{RoadAttributes, RoadTypePockets};
 use crate::simulation::network::road_types::cost as road_cost;
 use crate::simulation::network::types::EdgeClass;
 
@@ -270,15 +270,16 @@ impl SimulationNode {
     }
 
     /// Replays one refused stroke's `road_attempt` record (the debug console's replay,
-    /// `road_attempt_replay.gd`) with the record's own lanes, snapping, profile, median, parking
-    /// and road-type attributes; the road tool's intent stays as it is (`ROAD-112` round R2-6).
+    /// `road_attempt_replay.gd`) with the record's own lanes, snapping, profile, median, parking,
+    /// road-type attributes and turn pockets (`ROAD-128`); the road tool's intent stays as it is
+    /// (`ROAD-112` round R2-6).
     /// A follow-ground stroke takes the tool's click check first, which waits for the core for
     /// its corridor clearance, so it always answers (`ROAD-102`); a stroke of a segmented draft
     /// (held ground, bridge or tunnel) goes to the commit alone, since the click check knows only
     /// the follow-ground profile. A field an older record lacks replays its default: one lane
     /// each way, snapping on, the tunnel flag of `ROAD-61` for the profile, no median, no
     /// parking, the built-ins' 50 km/h road with sidewalks on both sides, zoning and street
-    /// lights. Returns `reason`, the key that refused the stroke before the commit (`too_short`
+    /// lights, no pockets. Returns `reason`, the key that refused the stroke before the commit (`too_short`
     /// under two points, the section's own refusal, `road_profile_unknown`, else the click
     /// check's), empty when queued, and `request_id`, the commit to poll with
     /// `get_road_commit_result` (0 when refused before).
@@ -364,6 +365,12 @@ impl SimulationNode {
                 median: spec.median,
                 parking: spec.parking,
                 attributes: spec.attributes,
+                // A graded draft's stroke goes as a batch, which takes no pockets.
+                pockets: if profile == RoadProfile::FollowGround {
+                    spec.pockets
+                } else {
+                    RoadTypePockets::default()
+                },
             },
             facts.surface_generation.max(0) as u64,
         );
@@ -1192,6 +1199,7 @@ impl SimulationNode {
         let snap = flag("snap", true);
         let tunnel = if flag("tunnel", false) { 3.0 } else { 0.0 };
         let profile = number("profile", tunnel) as i32;
+        let pockets = crate::nodes::sim::core::RoadAttempt::recorded_pockets(number, flag);
         let stroke = (
             RoadMedian::from_tool(
                 number("median_style", 0.0) as i32,
@@ -1251,6 +1259,6 @@ impl SimulationNode {
         if let Some(reason) = Self::corridor_refusal(&clearance) {
             return Err(reason);
         }
-        Ok(self.add_road_with_section(points, lanes, snap, stroke))
+        Ok(self.add_road_with_section(points, lanes, snap, stroke, pockets))
     }
 }
