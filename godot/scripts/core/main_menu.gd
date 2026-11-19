@@ -44,12 +44,13 @@ func _ready() -> void:
 # A benchmark's menu (`tools/stream_benchmark.py --menu-dwell`): the menu stays its dwell from the
 # launch, and at least until the prewarm view has rendered once (its surfaces are created at that
 # draw: a player's click comes later), then the benchmark's world scene runs as from the router.
+# The dwell is wall-clock time, as a player's: a scene tree timer counts process steps, which Godot
+# caps on long frames, so it fell 3 s behind across the prewarm's build frames (round R43c).
 func _leave_after_benchmark_dwell() -> void:
 	LaunchState.benchmark_menu_ms[0] = Time.get_ticks_msec()
 	await RenderingServer.frame_post_draw
-	var left := LaunchState.benchmark_menu_dwell_s - Time.get_ticks_msec() / 1000.0
-	if left > 0.0:
-		await get_tree().create_timer(left).timeout
+	while Time.get_ticks_msec() < LaunchState.benchmark_menu_dwell_s * 1000.0:
+		await get_tree().process_frame
 	LaunchState.benchmark_menu_ms[1] = Time.get_ticks_msec()
 	get_tree().process_frame.disconnect(_note_benchmark_frame)
 	LaunchState.benchmark_menu["prewarm"] = _prewarm.report()
