@@ -1184,6 +1184,44 @@ library SHA-256 prefixes: `49a1d0bf1c39` / `8f7f61265fa8`. Normal median times w
 
 ---
 
+## Landing timing of the icon UI merge (`UI-12`)
+
+Level L in merge form, 2026-11-19 23:53 to 2026-11-20 01:55, one boot, governor performance, eight workers
+pinned to the performance cores, `METRUM_DEBUG=0`, the runner's locks, no build or other Godot during a timed row.
+Two sessions: the first stopped early on another session's lock waits; the second ran the rest, nothing rerun.
+Control `dev` `da9ffb5cb` (release test binary `72c40f6f17a1a984`, library `765aec36e3731c7a`), branch
+`icon-ui-merge` `4511aa909` (`a4a5de7f618256a6`, `4325df841ca88e6f`), both built fresh; the landed tree's `rust/`
+is the same. The fixture keys differ only by the parking lots' `icon` field; day records and K22 products are equal.
+
+```bash
+./run.sh --timing --level L --merge --control <the control's $TEST_BINARY> --branch "$TEST_BINARY" --base da9ffb5cb \
+    --head 4511aa909 --artifacts "$ARTIFACTS/session-L" \
+    --bench 'nodes::sim::road_tool::hue::rows::benchmark_hue_rows;RAYON_NUM_THREADS=4' \
+    --bench 'nodes::sim::core::populated_city::routing_benchmark::benchmark_populated_commit_breakdown;METRUM_COMMIT_TIERS=30000;METRUM_PERF_CACHE=<cache>;METRUM_COMMIT_PREVIEW=1'
+./run.sh --timing --artifacts "$ARTIFACTS/session-L" --rerun p07-3-br,p07-8-ctl
+./run.sh --timing --level F --perf07 30000:32:ctl,br,br,ctl --control <the control's $TEST_BINARY> \
+    --branch "$TEST_BINARY" --artifacts "$ARTIFACTS/session-L2"
+METRUM_ROAD_TOOL_LOCALITY=30000 taskset -c 0,2,4,6,8,10,12,14 "$BENCH_BINARY"   # road_tool_session_benchmark, C B B C
+tools/stream_benchmark.py series --input-label kuopio-hud --out "$ARTIFACTS/m2" --ctl-library <control .so> \
+    --ctl-scripts <control godot/scripts> --library <branch .so>
+```
+
+| Row | Control / branch | Verdict |
+| --- | --- | --- |
+| 30k 1× C B B C (the control's noisy day rerun once) | acceptance PASS on all four days (worst unpreempted 5.05-5.18 ms, p99.9 3.91-4.53); mean +0.9%, p99 +2.5%, p99.9 +6.7% | level |
+| 30k 32× C B B C, second session (the first session's one high branch p99.9 was preemption wait on its top frames) | mean 4.180 / 4.164 ms, p99 -1.7%, p99.9 7.18 / 7.40 ms (+3.1%, tolerance 8%), components within 0.6% | level; `PERF-17` known exception on both sides |
+| K22 30k, one run a side | click-to-ack median 6.78 / 6.98 ms, products bitwise equal | level |
+| K22 30k in preview mode, three runs a side | preview call 2.21 / 2.26 ms a pose (+2.4%, inside the control's 5.4% spread); three commits 18.97 / 19.14 ms | level |
+| Road preview (`benchmark_hue_rows`), C B B C x3 | preview alone p50 +0.1 to +0.9% in every row, hue digests equal | level |
+| Road tool session bench, 30k, C B B C | p50 straight -1.6%, curve -1.3%; p99 0.135-0.150 ms against the 0.25 ms bar; digests equal | level, bars met |
+| Economy contract `--diff da9ffb5cb` | the same five parked `PERF-03..05` work-count failures on both sides; hours 1.01 / 0.94 ms (10k), 3.26 / 3.14 ms (30k) | no change |
+| Pocket road type (`ROAD-128`): the commit breakdown at 30k in preview mode, branch only, default against `METRUM_COMMIT_POCKETS=both`, D P P D | hover 1.8 / 4.4-4.8 ms a pose (median); commit 11, 5, 3 / 58, 20, 13 ms over three samples: the preview's pieces are not reused and lots are planned in the commit | new cost, no limit |
+| Rendered stream series with the HUD shown (Kuopio, every phase, gamescope headless, x11), C B B C | frame mean 1.81 / 1.83 ms, p50 1.67 / 1.70 ms (+0.02-0.03 ms), +15 draw calls; no frame over 16.7 ms added | new cost, no limit |
+
+The stream rows ran the landed tree's project and benchmark scripts on both sides: the control with `dev`'s
+library and `godot/scripts`, the branch with its own. Not measured: the select tool's per-frame hover pick (no
+benchmark drives the select tool).
+
 ## Migration Notes
 
 These are the concrete changes needed to move from current state to the target paradigm.

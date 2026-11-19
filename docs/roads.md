@@ -12162,7 +12162,7 @@ D1-D5, D22, D23).
 #### The road builder (ROAD-101, round RB2)
 
 **Built-in turn pockets (`ROAD-128`, Veeti Reis's `feat/road-type-pockets`, merged with the icon UI
-on the branch `icon-ui-merge`).** The builder has
+(`UI-12`)).** The builder has
 independent Left/Right arrow switches and a metre stepper, using Rust's Junction-window limits.
 The cross-section stage annotates the selected arrows and length “at junctions”, because these
 are local approach lanes rather than lanes along the whole type. Neither switch means none;
