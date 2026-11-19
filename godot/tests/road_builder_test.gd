@@ -65,20 +65,24 @@ func _await_generation(generation: int) -> bool:
 
 # One straight stroke along z = `z` through the road tool; returns the drawn edge (-1 if none).
 func _draw(z: float) -> int:
-	var points := PackedVector3Array([_ground(-100.0, z), _ground(100.0, z)])
+	await _draw_stroke(_ground(-100.0, z), _ground(100.0, z))
+	return _simulation.get_hovered_edge(0.0, z)
+
+# One straight stroke from `a` to `b` through the road tool, as two clicks draw it: the tool hears
+# and draws the commit's answer in its own frames.
+func _draw_stroke(a: Vector3, b: Vector3) -> void:
 	var generation: int = _simulation.get_network_render_generation()
-	_tool._begin_stroke(points[0])
-	_tool.set_scripted_pointer(true, points[-1])
+	_tool._begin_stroke(a)
+	_tool.set_scripted_pointer(true, b)
 	_tool._process(1.0 / 60.0)
-	_expect(bool(_tool._preview.get("is_valid", false)), "the stroke at z %.0f previews: %s" % [z, _tool._preview.get("invalid_reason", "")])
-	_expect(_tool._commit_segment(points[-1]), "the click at z %.0f queues the road" % z)
+	_expect(bool(_tool._preview.get("is_valid", false)), "the stroke %s -> %s previews: %s" % [a, b, _tool._preview.get("invalid_reason", "")])
+	_expect(_tool._commit_segment(b), "the click at %s queues the road" % b)
 	var deadline := Time.get_ticks_msec() + TIMEOUT_MS
 	while _tool._commit_request_id > 0 and Time.get_ticks_msec() < deadline:
 		await process_frame
 	_tool.cancel_road()
 	_tool.set_scripted_pointer(false)
-	_expect(await _await_generation(generation), "the stroke at z %.0f publishes" % z)
-	return _simulation.get_hovered_edge(0.0, z)
+	_expect(await _await_generation(generation), "the stroke %s -> %s publishes" % [a, b])
 
 func _layout(edge: int) -> Array:
 	var section: Dictionary = _simulation.get_edge_cross_section(edge)
@@ -279,12 +283,13 @@ func _run() -> void:
 		and pockets.body_m == 70.0, "editing restores the saved controls")
 	_expect(_tool.set_road_type(String(pocket_type.get("id", ""))).is_empty(), "the tool selects a pocket type")
 	await _test_pocket_refusal(String(pocket_type.get("id", "")))
+	await _test_pocket_type_draws(String(pocket_type.get("id", "")))
 	_builder.library_list.duplicate_requested.emit(pocket_type)
 	_expect(_builder.editing_id.is_empty() and pockets.value() == pocket_type.get("pockets", {}),
 		"duplicating retains pockets")
 	_simulation.delete_road_type(String(pocket_type.get("id", "")))
 	_builder._start(_builder.NEW_LAYOUT, "", "")
-	_tool.set_road_type(_tool.DEFAULT_ROAD_TYPE)
+	_tool.set_road_type("builtin:road_2l")
 	_changes.clear()
 
 	# Click-insert: the popup removes both lanes, then a slot and three tiles build the road.
@@ -700,7 +705,7 @@ func _capture_pockets(window: Window, file_name: String) -> void:
 
 # A saved type reaches the sim-thread command, and its refusal reaches the road tool's card.
 func _test_pocket_refusal(type_id: String) -> void:
-	_tool.set_road_type(_tool.DEFAULT_ROAD_TYPE)
+	_tool.set_road_type("builtin:road_2l")
 	var trunk := await _commit_pocket_fixture(_ground(-180.0, 100.0), _ground(180.0, 100.0))
 	_expect(bool(trunk.get("committed", false)), "the pocket fixture's trunk commits")
 	_tool.set_road_type(type_id)
@@ -733,3 +738,37 @@ func _commit_pocket_fixture(a: Vector3, b: Vector3) -> Dictionary:
 		await process_frame
 	_expect(false, "the pocket fixture commit completes")
 	return {}
+
+# The player's path for a pocket type (left and right, 70 m): picked in the Roads row and drawn
+# with the road tool, a road crossing a 2-Lane Road gets both pockets on each of its two new
+# approaches and the crossed road none; a road too short for them still commits, and the tool's
+# commit answer puts its refusal on the HUD's notice (`road_pocket_notice.gd`).
+func _test_pocket_type_draws(type_id: String) -> void:
+	var notice_script := preload("res://scripts/ui/road_pocket_notice.gd")
+	var notices := func() -> Array:
+		return _tool.hud.get_children().filter(func(child: Node): return child.get_script() == notice_script and not child.is_queued_for_deletion())
+	_ui.road_type_menu.pick("builtin:road_2l")
+	await _draw_stroke(_ground(-180.0, 60.0), _ground(180.0, 60.0))
+	_ui.road_type_menu.pick(type_id)
+	_expect(_input.current_tool == _input.Tool.ROAD and _tool.intent().road_type_id == type_id, "the Roads row picks the pocket type")
+	await _draw_stroke(_ground(0.0, -150.0), _ground(0.0, 240.0))
+	_expect(notices.call().is_empty(), "pockets that fit leave no notice")
+	var node: int = _simulation.get_closest_node(_ground(0.0, 60.0), 8.0)
+	var pocketed := {}
+	var arms: Array = _simulation.get_junction_pockets(node)
+	for arm: Dictionary in arms:
+		if bool(arm.get("has_pocket", false)):
+			pocketed[posmod(roundi(float(arm.get("bearing_deg", -1.0))), 360)] = [bool(arm.get("left", false)), bool(arm.get("right", false)), float(arm.get("length_m", 0.0))]
+	_expect(arms.size() == 4 and pocketed == {0: [true, true, 70.0], 180: [true, true, 70.0]},
+		"the drawn pocket type has both pockets on its own two approaches only: %s of %d arms" % [pocketed, arms.size()])
+	await _draw_stroke(_ground(120.0, 120.0), _ground(120.0, 60.0))
+	var shown: Array = notices.call()
+	_expect(shown.size() == 1 and String(shown[0].text).contains("Road too short"),
+		"the short road's refused pocket reaches the notice: %s" % [shown.map(func(notice: Node): return notice.text)])
+	_expect(_simulation.get_hovered_edge(120.0, 90.0) >= 0, "the short road commits without its pocket")
+	for notice: Node in shown:
+		notice.queue_free()
+	for _undone in 3:
+		var generation: int = _simulation.get_network_render_generation()
+		_expect(_simulation.undo_action() and await _await_generation(generation), "one undo removes each drawn road with its pockets")
+	_expect(_simulation.get_hovered_edge(0.0, 0.0) < 0 and _simulation.get_hovered_edge(-100.0, 60.0) < 0, "undo removes the drawn roads")
