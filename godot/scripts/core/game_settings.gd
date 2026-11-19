@@ -171,9 +171,14 @@ static func apply_display_settings() -> void:
 ## pixels, which on a Retina screen is a quarter of the area it was laid out for. The window
 ## keeps the project's aspect, grows by the backing scale and is held to 90% of the usable
 ## screen, centred. Call once at launch: a size the player picks afterwards stays theirs.
+## Under Wayland the window keeps the size Godot opened it at (the project's size times the
+## window's scale) and the compositor places it: Wayland reports no window position or screen,
+## so screen 0, often another monitor, would size it (`RENDER-62`).
 static func fit_launch_window() -> void:
 	# Benchmarks render at the project's fixed size so their frames stay comparable.
 	if _is_benchmark_run() or DisplayServer.window_get_mode() != DisplayServer.WINDOW_MODE_WINDOWED:
+		return
+	if _is_wayland():
 		return
 	var screen := DisplayServer.window_get_current_screen()
 	var usable := DisplayServer.screen_get_usable_rect(screen)
@@ -188,14 +193,20 @@ static func fit_launch_window() -> void:
 	DisplayServer.window_set_size(size)
 	DisplayServer.window_set_position(usable.position + (usable.size - size) / 2)
 
-## Scales all 2D content by the screen's backing scale (2 on a Retina Mac, 1 elsewhere), so
-## 100% UI scale is the size the OS draws its own interface. The 3D view keeps rendering at the
-## window's full pixel size. Follows the window onto screens with a different scale. Benchmark
-## runs keep 1, so the HUD covers the same share of the frame on every machine.
+## Scales all 2D content by the backing scale of the main window's screen (2 on a Retina Mac,
+## 1 elsewhere), so 100% UI scale is the size the OS draws its own interface. The 3D view keeps
+## rendering at the window's full pixel size. Follows the window onto screens with a different
+## scale. Benchmark runs keep 1, so the HUD covers the same share of the frame on every machine.
+## Under Wayland the scale stays 1, the UI's size under X11, where Linux reports no scale: the
+## desktop's own scale (125 % or 200 %, say) is not followed (`RENDER-62`, the user's choice
+## pending).
 static func apply_display_scale() -> void:
 	var root := (Engine.get_main_loop() as SceneTree).root
-	root.content_scale_factor = 1.0 if _is_benchmark_run() else maxf(
-		1.0, DisplayServer.screen_get_scale(root.current_screen))
+	root.content_scale_factor = 1.0 if _is_benchmark_run() or _is_wayland() else maxf(
+		1.0, DisplayServer.screen_get_scale(DisplayServer.SCREEN_OF_MAIN_WINDOW))
+
+static func _is_wayland() -> bool:
+	return DisplayServer.get_name() == "Wayland"
 
 ## Applies vsync, the frame rate cap and the 3D render scale. Shadow quality and view distance
 ## belong to the world scene and are applied by its owners on the `graphics_settings` group.
