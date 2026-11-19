@@ -15008,6 +15008,171 @@ junction tiles stay), or accept it. Recommended: accept (it lasts only while suc
 replaces visible background with ground). Replayed traces: met. Digests and Kuopio's stills: equal.
 Timing level F: level. Not relaxed.
 
+### The graded bake per tile (`TERRAIN-14`, analysis T14 and round T14a, 2026-11-19)
+
+Fable's analysis T14 (throwaway builds on `dev` `98254f92`) measured the 64 m tile bake that
+`TERRAIN-14` names: the heavy single-tile pose frames over the 3.0 ms terrain stage are one
+steep, road-heavy tile's bake (Kuopio's `(-14, -14)`: 2.64-2.68 ms on four workers, 291 window
+seams and a million listed candidates) beside up to 1 ms of selection. Round T14a (branch
+`terrain-14-bake`, base `dev` `11460d3d`) built its plan. Decided under the user's night
+delegation, 2026-11-19, for review; not landed.
+
+**What T14 found.**
+- The levers the row names do not carry the gain. An `x86-64-v3` build was 4.5 % slower over
+  the 60 heavy tiles (heaviest tiles +6 to +13 %), with 3 and 3 pose frames over 3.0 ms against
+  the control's 2 and 2, and equal digests: tried and rejected. Finer sampling bands (2 or 1 row
+  instead of 4) gave under 1 %; the division (only 5.7 % of the heaviest tile's evaluations
+  project inside the seam) 1-2 %.
+- The four-lane evaluation (`TERRAIN-07-A` round 3) was scalar code: `evaluate_lanes`' body
+  held 131 scalar arithmetic instructions and no packed one (perf annotate, one worker); its
+  per-lane settle test, cone update and nearest seam are loops over `Option`s, `bool` arrays and
+  an early `continue`, which LLVM leaves scalar. A plain-Rust rewrite with arrays and selects
+  vectorised only in patches (0.969). Lane runs are full: 97.1 % of groups hold four points.
+- The pass-1 listing (8 %) and the bins' sorts (4 %) ran on one thread on four workers.
+- The populated pose frames were inside 3.0 ms on `dev` already (0 of 48 and 0 of 25 in five
+  control runs, pose maximum 2.48 ms): T63's 3.84 ms frame is not reproduced, and what can still
+  push such a frame over is `PERF-12` (background jobs on the frame's workers), not the bake.
+- A frame's bake costs about 0.18 ms a tile more than back-to-back bakes (the pool waking after
+  16 ms of idle, `PERF-12`'s frame pool); the bars are therefore set on the drags too.
+
+**What changed** (two commits, each bitwise).
+1. `abef9dfb` `perf(terrain)`: the pruned pass-1 listing runs in fixed chunks of 16 seams on the
+   shared pool (`prune.rs` `list_first_pass`, `ListChunk` buffers in the tile's scratch), joined
+   in seam order with the reaches summed in seam order (the same pairs, ranges and `f64` sums);
+   `BinLists::build` sorts its bins by halves on the pool (`sort_bins`, at least 16 bins or
+   1,024 candidates a task; each bin's key is unique, so the lists do not depend on the split);
+   and the whole listing runs in one `rayon::join` beside the coverage raster, whose inputs and
+   products are disjoint. Every new Rayon entry is inside `thread_pools::install` (`CODE-33`'s
+   entry gate). `O(seams x blocks + pairs log(pairs per bin))` as before plus one `O(pairs)`
+   copy; buffers reused, no allocation once warm. The unpruned reference listing is unchanged.
+2. `21d0835f` `perf(terrain)`: `sample.rs` `evaluate_four`, the bake's lane groups on
+   `wide::f64x4`. The lanes' cones, nearest road seam (distance, height, index), live mask and
+   counts are vectors; every per-lane step of `evaluate_lanes` is the same expression on the same
+   operands as one vector operation with masks for branches (`grade.rs` `settle_of` is the
+   candidate's half of `settled`; `seams.rs` `Seam::at_four` is `at_lanes` on vectors). `min` and
+   `max` are a compare and a select: they differ from `f64::min` / `f64::max` only at a NaN, which
+   no operand can be, and between zeros of opposite sign, where `f64::max` itself is unspecified
+   and the settle test only compares them. `wide` fuses no multiply-add, and add, subtract,
+   multiply, divide and square root are correctly rounded per lane on SSE2, AVX and NEON. A tie
+   in distance with the nearest seam so far and a lane past a portal row take the scalar test of
+   that lane (`nearer`, `PortalWindow::hides`). The generic `evaluate_lanes` stays: one lane is
+   `evaluate` (queries, pass 2, runs of one point), and four lanes are the scalar reference a new
+   test holds the kernel to (`four_lanes_equal_one_point_at_a_time_at_ties_and_past_a_portal_row`,
+   both paths checked by mutation: either fallback removed fails it); `a_seam_in_lanes...` covers
+   `at_four`. `O(candidates)` a group as before, no allocation.
+
+**Decision for review: `wide` 0.7.33 as a direct dependency** (one manifest line). It was already
+in `Cargo.lock` through `imbl` and `simba`, so no crate enters the build, and it is safe code: no
+`unsafe` enters the project. The alternative, `core::arch` intrinsics, needs `unsafe` (runtime
+feature dispatch too: E0133 on rustc 1.100). arm64 takes `wide`'s NEON path, exact by
+construction but not run here.
+
+**Not built.** The quotient only inside the segment and 8-row raster bands (T14: about 1 % each,
+inside the 3 % build-to-build layout noise; not measured in this round, so dropped). The extras
+(T48 (a), the largest phase left: 31 % of a heavy tile after the round) are the next lever if more
+margin is wanted. Finer sampling bands, `hypot` shortcuts and asynchronous staging are not in it.
+
+**Bars** (same-session control from the base, C B B C, four workers unless named, P-cores
+`taskset -c 0,2,4,6,8,10,12,14`, governor `performance` on every row; one hold of the run and
+exclusive timing locks, 15:52:00-15:53:24, `ps` logged per row, no profiler running).
+
+| Bar | Target | Control | Branch | |
+| --- | --- | --- | --- | --- |
+| 1. Tile digests | `graded_slot_rows_census` equal, six levels | Kuopio save (301 tiles), 30k city (3,280) | equal at all six levels on both | met |
+| 2. Frame digests | Kuopio and populated drags, commits and undos | 39 strokes; 10k and 30k, 6 samples | equal in all four runs of each | met |
+| 3. Tests and stills | graded debug tests, bitwise tests; reference stills byte-identical | stills not byte-stable control against control | tests pass; stills differ only where the control's own pairs differ (clouds, water) | tests met; stills not shown (below) |
+| 4. A tile cheaper | 60 heavy tiles, sum of minima <= 0.83 x control | 37.59 ms | 30.43 ms, **0.810** | met |
+| | heaviest tile `(-14, -14)` <= 2.0 ms | 2.70 ms | **1.84 ms** | met |
+| | one worker, the same sum <= 0.90 x control | 91.96 ms | 81.48 ms, **0.886** | met |
+| 5. Kuopio frames | 0 of 306 pose and 0 of 199 catch-up over 3.0 ms in both B runs | 2 and 2 pose over (3.37, 3.40 ms); 0 catch-up (max 2.96, 2.61) | **0 and 0** pose (max 2.66, 2.64), 0 and 0 catch-up (max 2.33, 2.41) | met |
+| 6. Populated frames | 0 over 3.0 ms in both B runs; maxima not above control | 0; pose max 2.33, 2.51; catch-up max 2.67, 2.58 | 0; pose max 2.44, 2.41; catch-up max 2.56, 2.44 | met (see below) |
+| 7. Gates | `./run.sh --test`, debug `cargo test --lib`, clippy, level F | - | gate passes (Rust, both Godot chains); debug lib 2,924 passed; clippy: no warning in changed code; F: the branch's 1x day rows pass, 32x level | met (F below) |
+
+- **Tiles** (`kuopio_drag_tile_costs`, the six strokes T14 names, 40 bakes a tile on four
+  workers and 15 on one, two mirrored passes, minimum over passes). Per stroke the heaviest tile
+  on four workers: `kuopio_08` 22 `(-14, -14)` 2.70 -> 1.84 ms, `kuopio_04` 10 `(6, -5)` 2.29 ->
+  1.67, `kuopio_09` 24 `(-13, -3)` 1.70 -> 1.33, `kuopio_03` 7 `(8, 3)` 1.51 -> 1.27, `kuopio_11`
+  33 1.21 -> 1.04, `kuopio_05` 13 `(1, -17)` 1.04 -> 0.91. One worker: `(-14, -14)` 7.20 -> 5.74
+  ms.
+- **Kuopio drags** (`benchmark_kuopio_graded_drags`): pose frames p50 1.10-1.11 -> 1.02-1.03 ms,
+  p95 2.02-2.03 -> 1.87-1.88; one-tile pose bakes p95 1.51-1.55 -> 1.28-1.32, max 2.93-2.94 ->
+  2.27-2.31; selection unchanged (p95 0.68-0.73, max 0.91-1.01). The control's frames over are
+  T14's: `kuopio_04` 10 pose 6 (bake 2.75-2.82 ms) and `kuopio_08` 22 pose 8 (2.93-2.94 ms). The
+  margin is about 0.34 ms. Staging is unchanged (a pose stages one tile, a catch-up frame two):
+  a median 6 tiles a pose (p95 14, at most 19), converged a median 5 catch-up frames after the
+  last pose (at most 9), as on `dev`. The fast click (T27 (f), accepted) 7.59-7.99 ms against
+  7.47-8.53 ms: T14's control range (7.5-9.0), neither better nor worse.
+- **Populated drags** (`benchmark_populated_graded_drags`, `METRUM_COMMIT_TIERS=10000,30000`,
+  each binary's own prepared cities, loaded): the pose frames are selection-bound and their
+  bakes the cheap class (one-tile bakes at most 1.29-1.34 -> 1.24-1.28 ms). The branch's largest
+  pose frame, 2.44 ms (30k, sample 0, pose 1: selection 1.19 ms, bake 1.25 ms), lies inside the
+  control's maxima 2.33-2.51 ms; against the first control run alone it is 0.11 ms above, in the
+  selection (that frame's control: selection 1.04, bake 1.29). Catch-up maxima 2.67, 2.58 ->
+  2.56, 2.44 (the two-tile frame at 10k, all bake).
+- **Level F** (`./run.sh --timing --level F --base 11460d3d`, the same two binaries, P-cores,
+  eight workers; another round's builds and Godot runs shared the machine). 30k 32x C B B C:
+  level on every metric (mean 4.23 against 4.21 ms; PERF-17's known exception on both sides).
+  30k 1x day: the first branch rows were preempted 9 and 3 times as often as the control's
+  (54,864 and 19,171 frames against 6,080; the runner held the second for a busy `godot` and
+  `cargo`) and failed; the one rerun of all three rows had quiet branch rows (3,206 and 2,835
+  preempted) that pass the acceptance (unpreempted 5.06 / 5.50 ms, p99.9 3.76 / 3.75, preempted
+  less wait 3.71 / 3.91) and a noisy control (12,222 preempted, 10.19 ms p99.9). Against the
+  first session's quiet control row (mean 2.089, p99 3.43, p99.9 4.42, unpreempted 5.24) the quiet
+  branch rows are level (mean 2.066-2.068, p99 3.27-3.29): no difference shown either way.
+- **Stills** (`stream_benchmark.py stills capture`, Kuopio city save, the saved pose and two
+  views, 1080p, gamescope headless, `--display-driver x11`, two captures a side). These views are
+  not byte-stable: control against control 8,073 px (saved), 177,433 (turn) and 3,190 (road)
+  differ, in the clouds and the water. `stills systematic` finds pixels that differ by side and
+  agree within each side on two views (saved 16,493 px, max delta 6; turn 18,260 px, max delta
+  28; road none): all of them clouds and water (`$ARTIFACTS/stills/diff/*-systematic.png`),
+  none on the graded ground, the roads or the walls, whose products are bitwise above. The
+  clouds and the water animate; why each side repeats its own frame of them was not traced (most
+  likely when a run reaches its capture). The benchmark has no knob to hold them, and none was
+  added. Byte-identical stills are therefore not shown; for review.
+- **Bitwise.** Census digests (control = branch): Kuopio `GL0` `e6f59674bb10837e`, `GL1`
+  `a843f5c3dab8b1a3`, `GL2` `61b6d494033d2029`, `GL3` steps 2, 4, 8 `e9b0db5dac2ee7f0`,
+  `79a3e1ace81a4ef3`, `a41803c57f526f45`; the 30k commit city `GL0` `9c0694bbc57e67a4`, `GL1`
+  `7479904e26a1350a`, `GL2` `d9b159bb4ecb7e63`, `GL3` `6965893fdced4dd3`, `12371c7051dbbf96`,
+  `08e70f36c2e16f79`. Drag digests over every pose frame, commit, fast commit, undo, fast undo
+  and converged set (T14's parser): Kuopio `a616aa67abf4ba0a`, populated `41219161361e63d8`, in
+  all eight runs and equal to T14's.
+
+**Commands** (release lib test binaries of the base and the branch, `$TEST_BINARY`):
+
+```bash
+# Untimed, under the shared timing lock: each binary's cities, then the census at six levels.
+METRUM_COMMIT_TIERS=10000,30000 METRUM_PERF_CACHE="$ARTIFACTS/snap/cache" \
+    $TEST_BINARY benchmark_populated_commit_prepare --ignored --nocapture
+METRUM_GRADED_ROWS_SAVE=<kuopio-terrain-map.sqlite | the 30k commit city> \
+    $TEST_BINARY graded_slot_rows_census --ignored --nocapture
+# Timed, one hold of .run.lock and the exclusive .timing.lock, C B B C, P-cores:
+RAYON_NUM_THREADS=4 METRUM_DEBUG=0 METRUM_DRAG_CASE=kuopio_08 METRUM_DRAG_ATTEMPT=22 \
+    METRUM_DRAG_TILE_REPS=40 taskset -c 0,2,4,6,8,10,12,14 \
+    $TEST_BINARY kuopio_drag_tile_costs --ignored --nocapture   # and the five other strokes
+RAYON_NUM_THREADS=4 METRUM_DEBUG=0 taskset -c 0,2,4,6,8,10,12,14 \
+    $TEST_BINARY benchmark_kuopio_graded_drags --ignored --nocapture
+RAYON_NUM_THREADS=4 METRUM_DEBUG=0 METRUM_COMMIT_TIERS=10000,30000 METRUM_PERF_CACHE="$ARTIFACTS/snap/cache" \
+    taskset -c 0,2,4,6,8,10,12,14 $TEST_BINARY benchmark_populated_graded_drags --ignored --nocapture
+```
+
+**Left for the user.**
+- The preview's lag is not shortened: a cheaper bake closes the over-budget frames, but a pose
+  still stages one tile and a catch-up frame two (three do not fit: a two-tile frame is already
+  2.4 ms), so a pose's terrain still appears a median 5 frames (at most 9) after the drag pauses
+  and never during a continuous drag. Only asynchronous staging removes that. T14's estimate
+  (nothing built): a pose's whole selection baked off the frame is 8-22 ms of one-worker time on
+  the heavy strokes with this round's bake (6 tiles at the median: about 1-2 ms on four
+  background workers); the frame would pay only the selection and the adoption (at most 1.0 ms
+  on Kuopio, 1.45 ms populated), and the preview terrain would trail the road by one or two frames
+  continuously. Its costs: the bakes share the background pool with the commit's jobs
+  (`PERF-12`), superseded poses must be cancelled, the pose's roadbed must outlive its frame, and
+  T61's all-or-nothing display stays. The user's later decision.
+- `x86-64-v3` stays rejected. With the four-lane kernel a `v3` build would run it on one 256-bit
+  register instead of two 128-bit ones; unmeasured, worth one row only if the user wants `v3`
+  reconsidered.
+- Side finding, not fixed (`TERRAIN-32`, proposed): the extras call libm's `hypot`, whose last bit
+  is the platform's.
+
 ### Buildings by travel bucket, batches through the pools (`RENDER-32-L`, 2026-11-12)
 
 B1, with `RENDER-37` first. The building LOD's per-frame rule (a part's projected size in render
