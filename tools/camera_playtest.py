@@ -147,10 +147,10 @@ renderer/rendering_method="gl_compatibility"
         env.pop("DISPLAY", None)
         env.pop("WAYLAND_DISPLAY", None)
         status = trial / "exit-status"
-        command = ["gamescope", "--backend", "headless", "-W", "960", "-H", "540", "--",
-                   "sh", "-c", '"$@"; result=$?; echo "$result" > "$0"; exit "$result"', str(status),
-                   "godot", "--path", str(project), "--display-driver", "x11", "--audio-driver", "Dummy",
-                   "--fixed-fps", "60", "--script", "res://playtest.gd"]
+        command = godot_isolated.gamescope_command(["--backend", "headless", "-W", "960", "-H", "540"], [
+            "sh", "-c", '"$@"; result=$?; echo "$result" > "$0"; exit "$result"', str(status),
+            "godot", "--path", str(project), "--display-driver", "x11", "--audio-driver", "Dummy",
+            "--fixed-fps", "60", "--script", "res://playtest.gd"])
         metadata["commands"].append(command)
         run_logged(command, trial / "godot.log", env, timeout=600)
         if not status.exists() or status.read_text().strip() != "0":

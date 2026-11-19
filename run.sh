@@ -97,6 +97,14 @@
 #                        luminance, footprint
 #   --visuals [mode]     Alias for --debug visuals [mode]
 #
+# Display driver (Linux):
+#   --display-driver <x11|wayland>
+#                        The game's display driver (`RENDER-62`). Default: the project's, x11 (on a
+#                        Wayland session through Xwayland). wayland is opt-in until Godot's driver
+#                        quits cleanly (godot#123059: about one quit in ten hangs after the window
+#                        closes). --benchmark-stream passes it to its row; every other tool and test
+#                        launch names x11.
+#
 # Release crash diagnostics:
 #   --release defaults METRUM_CRASH_DIAGNOSTICS=1 and writes panic/hang dumps to logs/
 #   Interactive --release launches also default METRUM_HANG_ABORT=1 so a hang leaves a core
@@ -146,6 +154,7 @@ TEST_QUICK=0
 ROAD_CHUNK_BENCHMARK=0
 ROAD_CHUNK_UPLOAD_BENCHMARK=0
 STREAM_BENCHMARK=0
+DISPLAY_DRIVER=""
 ROAD_REPLAY_DUMP=""
 GAMEPLAY_ROAD_PROFILE_MODE=""
 GAMEPLAY_ROAD_USE_PROFILER=0
@@ -363,18 +372,24 @@ run_road_chunk_upload_benchmark() {
 }
 
 # Rendered Godot tests need a real renderer. They run in gamescope's headless backend, which
-# renders offscreen on the GPU and takes no display, with the session's display variables unset
-# so nothing can fall back to it; on $DISPLAY only without gamescope. Never xvfb-run: without
-# DRI3 Godot's x11 driver fails there and falls back to the session's display. gamescope exits 0
-# whatever its child returns, so the test's status comes back through a file. Usage:
-# run_rendered_godot_test <width> <height> <godot arguments...>. Fails when nothing can render.
+# renders offscreen on the GPU and takes no display, with DISPLAY unset and, for Godot,
+# WAYLAND_DISPLAY naming a socket that cannot exist (unset, libwayland tries `wayland-0`, the
+# session's on many machines; gamescope itself runs with it unset, since it connects to any it
+# sees), so nothing can fall back to the session; on $DISPLAY only without gamescope. Every test runs on
+# the x11 driver, named here (`RENDER-62`): its frames and exits are the ones on record. Never
+# xvfb-run: without DRI3 Godot's x11 driver fails there and falls back to the session's display.
+# gamescope exits 0 whatever its child returns, so the test's status comes back through a file.
+# Usage: run_rendered_godot_test <width> <height> <godot arguments...>. Fails when nothing can
+# render.
 run_rendered_godot_test() {
     local width="$1" height="$2" status_file status
     shift 2
     if command -v gamescope >/dev/null 2>&1; then
         status_file=$(mktemp "$asset_test_profile/rendered-test.XXXXXX") || return 1
-        run_guarded_godot_test env -u WAYLAND_DISPLAY -u DISPLAY gamescope --backend headless \
-            -W "$width" -H "$height" -- sh -c '"$@"; echo $? > "$0"' "$status_file" godot "$@"
+        run_guarded_godot_test env -u DISPLAY -u WAYLAND_DISPLAY \
+            gamescope --backend headless -W "$width" -H "$height" -- \
+            sh -c '"$@"; echo $? > "$0"' "$status_file" \
+            env WAYLAND_DISPLAY=metrum-isolated-no-wayland godot --display-driver x11 "$@"
         status=$(cat "$status_file" 2>/dev/null)
         rm -f "$status_file"
         [ "$status" = 0 ] && return 0
@@ -382,7 +397,7 @@ run_rendered_godot_test() {
         return 1
     fi
     if [ -n "${DISPLAY:-}" ]; then
-        run_guarded_godot_test godot "$@"
+        run_guarded_godot_test godot --display-driver x11 "$@"
         return $?
     fi
     echo "Rendered Godot tests need gamescope or a display: $*" >&2
@@ -646,7 +661,7 @@ godot_main_chain() {
     # at a time.
     for script in terrain_overlay_shader_test graded_cells_shader_test debug_visual_modes_test graded_page_growth_test; do
         echo "Running rendered $script..."
-        run_rendered_godot_test 128 128 --path "$asset_test_project" --display-driver x11 \
+        run_rendered_godot_test 128 128 --path "$asset_test_project" \
             --rendering-method gl_compatibility --audio-driver Dummy --resolution 128x128 \
             --script "res://tests/${script}.gd" || return 1
     done
@@ -1223,6 +1238,19 @@ while [ $i -le $# ]; do
         fi
     elif [[ "$arg" == --quit-after=* ]]; then
         GODOT_ENGINE_ARGS+=("$arg")
+    elif [ "$arg" = "--display-driver" ] || [[ "$arg" == --display-driver=* ]]; then
+        if [ "$arg" = "--display-driver" ]; then
+            next_index=$((i + 1))
+            DISPLAY_DRIVER="${!next_index:-}"
+            i=$((i + 1))
+        else
+            DISPLAY_DRIVER="${arg#--display-driver=}"
+        fi
+        if [ -z "$DISPLAY_DRIVER" ]; then
+            echo "Error: --display-driver needs a driver name (x11 or wayland)." >&2
+            exit 2
+        fi
+        GODOT_ENGINE_ARGS+=(--display-driver "$DISPLAY_DRIVER")
     elif [ "$arg" = "--debug-traffic" ]; then
         DEBUG_TRAFFIC=1
     elif [ "$arg" = "--pedestrian-vat-debug" ]; then
@@ -1684,7 +1712,7 @@ if [ -n "$GAMEPLAY_ROAD_PROFILE_MODE" ]; then
     if [ "$GAMEPLAY_ROAD_PROFILE_MODE" = "headless" ]; then
         GAMEPLAY_COMMAND+=(--headless)
     else
-        GAMEPLAY_COMMAND+=(--windowed --resolution 1920x1080)
+        GAMEPLAY_COMMAND+=(--windowed --resolution 1920x1080 --display-driver "${DISPLAY_DRIVER:-x11}")
     fi
     if [ "$GAMEPLAY_ROAD_GPU_PROFILE" -eq 1 ]; then
         GAMEPLAY_COMMAND+=(--gpu-profile)
@@ -1735,6 +1763,7 @@ if [ $STREAM_BENCHMARK -eq 1 ]; then
         --out "${METRUM_STREAM_OUT:-$PROJECT_ROOT/benchmark-results}" --godot-dir "$GODOT_DIR")
     [ -n "${METRUM_STREAM_SAVE:-}" ] && stream_args+=(--save "$METRUM_STREAM_SAVE")
     [ "${METRUM_STREAM_DETAIL:-0}" = 1 ] && stream_args+=(--detail)
+    [ -n "$DISPLAY_DRIVER" ] && stream_args+=(--display-driver "$DISPLAY_DRIVER")
     exec python3 "$PROJECT_ROOT/tools/stream_benchmark.py" "${stream_args[@]}"
 fi
 

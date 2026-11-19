@@ -120,11 +120,12 @@ def main(argv=None):
         name, _, value = item.partition("=")
         env[name] = value
     godot = ["godot", "--path", str(project), "--log-file", str(log)]
-    godot += ["--headless"] if args.headless else ["--windowed", "--resolution", "1920x1080"]
+    # A rendered run names the x11 driver (`RENDER-62`): the frames on record are x11's.
+    godot += ["--headless"] if args.headless else ["--display-driver", "x11", "--windowed", "--resolution", "1920x1080"]
     godot += ["--", "--gameplay-road-benchmark"]
     command = ["sh", "-c", '"$@"; echo $? > "$0"', str(status_file)] + godot
     if not args.headless:
-        command = ["gamescope", "--backend", "headless", "-W", "1920", "-H", "1080", "--"] + command
+        command = godot_isolated.gamescope_command(["--backend", "headless", "-W", "1920", "-H", "1080"], command)
     command = ["taskset", "-c", "0,2,4,6,8,10,12,14", "timeout", "--kill-after=10s", str(args.timeout)] + command
     (run_dir / "identity.txt").write_text(
         f"tree {revision}\nlibrary {args.library or 'the godot directory'}\nscripts {args.scripts or 'the tree'}\n"

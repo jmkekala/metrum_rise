@@ -90,6 +90,8 @@ func _runtime_metadata() -> Dictionary:
 		"godot": Engine.get_version_info(),
 		"cpu": OS.get_processor_name(), "logical_cpus": OS.get_processor_count(),
 		"video_adapter": RenderingServer.get_video_adapter_name(),
+		# The display driver in use (`RENDER-62`): "X11", "Wayland" or "headless".
+		"display_server": DisplayServer.get_name(),
 		"max_fps": Engine.max_fps, "vsync": DisplayServer.window_get_vsync_mode(),
 		"viewport_size": [viewport_size.x, viewport_size.y],
 		"configured_renderer": ProjectSettings.get_setting("rendering/renderer/rendering_method"),

@@ -17,7 +17,11 @@ one's; `profile` only makes one and prints its paths for a shell to `eval`.
     eval "$(tools/godot_isolated.py profile)"   # METRUM_GODOT_PROJECT, XDG_* for a shell's runs
 
 `{project}` and `{profile}` in the command are replaced by the project copy and profile paths.
-The display variables are unset unless `--display` is given.
+Without `--display`, `DISPLAY` is unset and `WAYLAND_DISPLAY` names a socket that cannot exist:
+unset, libwayland would try `wayland-0`, the real session's socket on many machines (`RENDER-62`).
+gamescope itself must not see that name (it connects to any `WAYLAND_DISPLAY` and exits when it
+cannot), so a tool builds its gamescope launch with `gamescope_command`. A rendered run names its
+driver too (`--display-driver x11`, docs/debug.md "Godot Test Guard").
 """
 
 import argparse
@@ -31,6 +35,9 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parent.parent
 XDG_HOMES = {"XDG_DATA_HOME": "data", "XDG_CONFIG_HOME": "config", "XDG_CACHE_HOME": "cache"}
+# An isolated run's WAYLAND_DISPLAY: a relative name libwayland looks for in XDG_RUNTIME_DIR, where
+# no compositor makes it. Unset, libwayland would fall back to `wayland-0` (`RENDER-62`).
+NO_WAYLAND_DISPLAY = "metrum-isolated-no-wayland"
 # The home profile's Godot directories, by the XDG variable that would move them.
 HOME_DEFAULTS = {"XDG_DATA_HOME": ".local/share", "XDG_CONFIG_HOME": ".config", "XDG_CACHE_HOME": ".cache"}
 
@@ -63,16 +70,25 @@ def check_isolated(env, home=None):
 
 
 def isolated_env(profile, base=None, display=False, home=None):
-    """`base` (default the process environment) with the XDG homes in `profile`, checked; the
-    display variables removed unless `display`."""
+    """`base` (default the process environment) with the XDG homes in `profile`, checked. Unless
+    `display`: `DISPLAY` removed, `WAYLAND_DISPLAY` set to a socket that cannot exist."""
     env = dict(os.environ if base is None else base)
     for name, sub in XDG_HOMES.items():
         env[name] = str(Path(profile) / sub)
     if not display:
-        for name in ("DISPLAY", "WAYLAND_DISPLAY"):
-            env.pop(name, None)
+        env.pop("DISPLAY", None)
+        env["WAYLAND_DISPLAY"] = NO_WAYLAND_DISPLAY
     check_isolated(env, home)
     return env
+
+
+def gamescope_command(gamescope_args, godot_command, expose_wayland=False):
+    """`gamescope <gamescope_args> -- <godot_command>` for an isolated environment: gamescope
+    runs with `WAYLAND_DISPLAY` unset (it would connect to the isolated name and exit), Godot
+    inside it with the isolated name back, or with gamescope's own socket when `expose_wayland`."""
+    inner = list(godot_command) if expose_wayland else ["env", f"WAYLAND_DISPLAY={NO_WAYLAND_DISPLAY}"] + list(godot_command)
+    return (["env", "-u", "WAYLAND_DISPLAY", "gamescope"] + list(gamescope_args)
+            + (["--expose-wayland"] if expose_wayland else []) + ["--"] + inner)
 
 
 def player_mods():

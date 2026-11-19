@@ -21,6 +21,10 @@ variant sequence (`RENDER-15`, METRUM_STREAM_SHADOWS) of a run or a series' bran
 `census` prints its tables (`RENDER-44`, `tools/draw_census.py`).
 `--drawn` runs the drawn probe (METRUM_STREAM_DRAWN, `RENDER-32-N`: an instrumented run) and
 `drawn` prints its table: per sample and layer, entered-to-drawn and in-view holes in frames.
+Every row names its display driver: `--display-driver x11` (the default, the rows on record) or
+`wayland` (`RENDER-62`, analysis A8: gamescope exposes its Wayland socket). Godot 4.7's Wayland
+driver can hang after its window closes (godot#123059): a Wayland row whose Godot is still there
+20 s after its report fails as an exit hang, its Godot stopped. Stills always run on x11.
 `--as-played` (`RENDER-27`, analysis A-BG) runs a row as a player would: unpinned, the game's
 default pools (`RAYON_NUM_THREADS` unset). `--cpus <list or profile>` runs the whole game inside a
 CPU set (a machine profile; profiles are named in the local settings' `cpu_profiles`, since CPU
@@ -53,6 +57,7 @@ import math
 import os
 from pathlib import Path
 import shutil
+import signal
 import statistics
 import subprocess
 import sys
@@ -72,6 +77,9 @@ WORKERS = "8"
 LOCKED_ENV = "METRUM_STREAM_LOCKED"
 # A series' rows in run order: control, branch, branch, control.
 SERIES = [("ctl", 1), ("br", 1), ("br", 2), ("ctl", 2)]
+# Seconds a Wayland row's Godot may stay after writing its report before the row fails as an
+# exit hang (`RENDER-62`; a clean quit takes well under one).
+EXIT_HANG_S = 20
 
 
 def sha256(path):
@@ -168,6 +176,50 @@ def copy_caches(profile, name, store, seed):
         shutil.copytree(source, target, symlinks=True)
 
 
+def godot_of_row(root_pid, log_file):
+    """The row's Godot: `root_pid` (the row's own child) or a process under it whose command line
+    holds the row's `--log-file`, unique to the row. None when it is gone."""
+    parents, godots = {}, []
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            parents[int(entry.name)] = int((entry / "stat").read_text().rsplit(")", 1)[1].split()[1])
+            argv = (entry / "cmdline").read_bytes().split(b"\0")
+        except OSError:
+            continue
+        if Path(argv[0].decode(errors="replace")).name == "godot" and log_file.encode() in argv:
+            godots.append(int(entry.name))
+    for pid in godots:
+        ancestor = pid
+        while ancestor in parents and ancestor > 1:
+            if ancestor == root_pid:
+                return pid
+            ancestor = parents[ancestor]
+    return None
+
+
+def run_watched(command, env, log, metrics, log_file):
+    """Runs a Wayland row's command; returns `(status, exit_hang)`. Once the report is written,
+    a Godot still there EXIT_HANG_S later is stopped (godot#123059: it would never end)."""
+    child = subprocess.Popen(command, env=env, stdout=log, stderr=subprocess.STDOUT)
+    written = None
+    while True:
+        try:
+            return child.wait(timeout=1), False
+        except subprocess.TimeoutExpired:
+            pass
+        if written is None and metrics.exists():
+            written = time.monotonic()
+        if written is not None and time.monotonic() - written > EXIT_HANG_S:
+            pid = godot_of_row(child.pid, log_file)
+            if pid is not None:
+                os.kill(pid, signal.SIGKILL)
+            else:
+                child.terminate()  # `timeout` passes it on to gamescope
+            return child.wait(), True
+
+
 def run_row(args, settings, out, label, library, scripts, shadows, cache_key):
     godot_dir = Path(args.godot_dir).resolve()
     metrics = out / f"{label}.metrics.json"
@@ -194,6 +246,7 @@ def run_row(args, settings, out, label, library, scripts, shadows, cache_key):
             "shader_cache": str(store) if store is not None else "", "shader_cache_warm": bool(store and store.is_dir()),
             "menu_dwell_s": args.menu_dwell,
             "locked": os.environ.get(LOCKED_ENV) == "1" or not settings.get("timed_wrapper"),
+            "display_driver": args.display_driver,
         }
         # New keys only on the new rows: a pinned row's identity stays as it was.
         identity.update(mode)
@@ -224,9 +277,12 @@ def run_row(args, settings, out, label, library, scripts, shadows, cache_key):
         command = ["timeout", "--kill-after=10s", str(args.timeout)]
         if cpus:
             command = ["taskset", "-c", cpus] + command
-        command += ["gamescope", "--backend", "headless", "-r", "1000", "-W", width, "-H", height, "--",
-                    "godot", "--path", str(project), "--log-file", str(out / f"{label}.godot.log"),
-                    "--windowed", "--resolution", args.resolution]
+        wayland = args.display_driver == "wayland"
+        godot_log = str(out / f"{label}.godot.log")
+        command += godot_isolated.gamescope_command(
+            ["--backend", "headless", "-r", "1000", "-W", width, "-H", height],
+            ["godot", "--path", str(project), "--log-file", godot_log, "--display-driver", args.display_driver,
+             "--windowed", "--resolution", args.resolution], expose_wayland=wayland)
         command += (["--gpu-profile"] if args.gpu_profile else []) + ["--", "--gameplay-road-benchmark"]
         wait_for_quiet(settings, args.timeout)
         identity["start"] = datetime.datetime.now().isoformat(timespec="seconds")
@@ -236,18 +292,25 @@ def run_row(args, settings, out, label, library, scripts, shadows, cache_key):
             sampler.start()
         try:
             with open(out / f"{label}.out", "w") as log:
-                status = subprocess.run(command, env=env, stdout=log, stderr=subprocess.STDOUT).returncode
+                if wayland:
+                    status, identity["exit_hang"] = run_watched(command, env, log, metrics, godot_log)
+                else:
+                    status = subprocess.run(command, env=env, stdout=log, stderr=subprocess.STDOUT).returncode
         finally:
             if sampler is not None:
                 sampler.stop()
         identity["end"] = datetime.datetime.now().isoformat(timespec="seconds")
-        if store is not None and status == 0:
+        if store is not None and status == 0 and not identity.get("exit_hang"):
             copy_caches(profile, name, store, seed=False)
         identity["status"] = status
         identity["script_errors"] = (out / f"{label}.out").read_text(errors="replace").count("SCRIPT ERROR")
         (out / f"{label}.identity.json").write_text(json.dumps(identity, indent=1) + "\n")
     finally:
         shutil.rmtree(profile, ignore_errors=True)
+    if identity.get("exit_hang"):
+        print(f"stream_benchmark: {label} failed: exit hang (Godot still there {EXIT_HANG_S} s after its "
+              f"report, stopped; godot#123059); see {out / (label + '.out')}", file=sys.stderr)
+        return 1
     if status == 0 and identity["script_errors"] == 0 and metrics.exists():
         report = json.loads(metrics.read_text())
         if mode:
@@ -967,10 +1030,10 @@ def capture(args):
         command = (["flock", "-s", str(lock)] if lock.exists() else [])
         if settings.get("cpus"):
             command += ["taskset", "-c", settings["cpus"]]
-        command += ["timeout", "--kill-after=10s", str(args.timeout),
-                    "gamescope", "--backend", "headless", "-W", width, "-H", height, "--",
-                    "godot", "--path", str(project), "--windowed", "--resolution", args.resolution, "--",
-                    "--gameplay-road-benchmark"]
+        command += ["timeout", "--kill-after=10s", str(args.timeout)] + godot_isolated.gamescope_command(
+            ["--backend", "headless", "-W", width, "-H", height],
+            ["godot", "--path", str(project), "--display-driver", "x11", "--windowed",
+             "--resolution", args.resolution, "--", "--gameplay-road-benchmark"])
         with open(out / "godot.out", "w") as log:
             status = subprocess.run(command, env=env, stdout=log, stderr=subprocess.STDOUT).returncode
     finally:
@@ -1080,6 +1143,9 @@ def add_run_options(parser, series):
                         "samples the main thread's scheduling (RENDER-27)")
     parser.add_argument("--cpus", help="run the game inside this CPU set: a taskset list or a profile named in "
                         "the local timing settings' cpu_profiles (a machine profile); samples the main thread")
+    parser.add_argument("--display-driver", choices=["x11", "wayland"], default="x11",
+                        help="Godot's display driver (RENDER-62); wayland exposes gamescope's socket and fails "
+                        "a row on an exit hang. Pinned acceptance rows stay x11")
     parser.add_argument("--settle-timeout", type=int, default=180)
     parser.add_argument("--timeout", type=int, default=600)
 

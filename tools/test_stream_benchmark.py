@@ -7,7 +7,9 @@ import copy
 import io
 import json
 import os
+import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -233,6 +235,55 @@ class AsPlayedTests(unittest.TestCase):
         self.assertEqual(command[:3], ["taskset", "-c", "4-7"])
         self.assertEqual(env["RAYON_NUM_THREADS"], "8")
         self.assertFalse(identity["as_played"])
+
+    def test_rows_name_their_display_driver(self):
+        # x11 by default, gamescope's Wayland socket hidden (`RENDER-62`).
+        command, _env, identity = self.launch([], self.SETTINGS)
+        godot = command[command.index("godot"):]
+        self.assertEqual(godot[godot.index("--display-driver") + 1], "x11")
+        self.assertNotIn("--expose-wayland", command)
+        self.assertEqual(identity["display_driver"], "x11")
+        self.assertNotIn("exit_hang", identity)
+        with mock.patch.object(sb, "run_watched", return_value=(0, False)) as watched:
+            command, _env, identity = self.launch_watched(["--display-driver", "wayland"], watched)
+        self.assertIn("--expose-wayland", command[:command.index("godot")])
+        self.assertEqual(command[command.index("--display-driver") + 1], "wayland")
+        self.assertEqual((identity["display_driver"], identity["exit_hang"]), ("wayland", False))
+
+    def launch_watched(self, extra, watched):
+        with tempfile.TemporaryDirectory() as temp:
+            temp = Path(temp)
+            godot, library = fake_godot(temp)
+            argv = ["run", "--label", "r", "--library", str(library), "--godot-dir", str(godot),
+                    "--out", str(temp / "out")] + extra
+            with mock.patch.object(sb.timing_session, "load_settings", return_value=self.SETTINGS), \
+                    mock.patch.object(sb.subprocess, "run", return_value=mock.Mock(returncode=0, stdout="abc\n")), \
+                    mock.patch.object(sb.timing_session, "busy_processes", return_value=[]), \
+                    mock.patch.object(sb.MainThreadSampler, "_find", return_value=None), \
+                    contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                sb.main(argv)
+            return watched.call_args.args[0], watched.call_args.args[1], \
+                json.loads((temp / "out/r.identity.json").read_text())
+
+    def test_a_godot_still_there_after_its_report_is_an_exit_hang(self):
+        with tempfile.TemporaryDirectory() as temp:
+            temp = Path(temp)
+            godot = temp / "godot"  # a stand-in that never quits, under a wrapper like gamescope
+            godot.symlink_to(sys.executable)
+            metrics = temp / "r.metrics.json"
+            metrics.write_text("{}")
+            log_file = str(temp / "r.godot.log")
+            command = ["sh", "-c", '"$@"', "sh", str(godot), "-c", "import time; time.sleep(60)", "--log-file", log_file]
+            started = time.monotonic()
+            with mock.patch.object(sb, "EXIT_HANG_S", 0.5), open(temp / "out", "w") as log:
+                status, hung = sb.run_watched(command, {}, log, metrics, log_file)
+            self.assertTrue(hung)
+            self.assertNotEqual(status, 0)
+            self.assertLess(time.monotonic() - started, 30)
+            # A Godot that quits is no hang.
+            command = ["sh", "-c", '"$@"', "sh", str(godot), "-c", "pass", "--log-file", log_file]
+            with open(temp / "out", "w") as log:
+                self.assertEqual(sb.run_watched(command, {}, log, metrics, log_file), (0, False))
 
     def test_cpu_lists_and_profiles(self):
         self.assertEqual(sb.cpu_list("0-2,16,20-21"), {0, 1, 2, 16, 20, 21})

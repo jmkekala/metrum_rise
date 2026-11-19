@@ -42,6 +42,22 @@ class EnvironmentTests(unittest.TestCase):
                     self.assertNotEqual((path / "godot").resolve(), real.resolve())
             self.assertNotIn("DISPLAY", env)
             self.assertIn("DISPLAY", gi.isolated_env(profile, base={"DISPLAY": ":0"}, display=True))
+            # Unset, libwayland would try `wayland-0`, the real session's socket on many machines.
+            wayland = gi.isolated_env(profile, base={"WAYLAND_DISPLAY": "wayland-0"})["WAYLAND_DISPLAY"]
+            self.assertEqual(wayland, gi.NO_WAYLAND_DISPLAY)
+            self.assertNotEqual(gi.isolated_env(profile, base={})["WAYLAND_DISPLAY"], "")
+            self.assertEqual(gi.isolated_env(profile, base={"WAYLAND_DISPLAY": "wayland-1"},
+                                             display=True)["WAYLAND_DISPLAY"], "wayland-1")
+
+    def test_gamescope_runs_without_the_isolated_wayland_name_and_godot_with_it(self):
+        # gamescope connects to any WAYLAND_DISPLAY it sees and exits when it cannot.
+        command = gi.gamescope_command(["--backend", "headless"], ["godot", "--path", "p"])
+        self.assertEqual(command[:4], ["env", "-u", "WAYLAND_DISPLAY", "gamescope"])
+        inner = command[command.index("--") + 1:]
+        self.assertEqual(inner, ["env", f"WAYLAND_DISPLAY={gi.NO_WAYLAND_DISPLAY}", "godot", "--path", "p"])
+        # Exposed, Godot gets gamescope's own socket.
+        command = gi.gamescope_command(["--backend", "headless"], ["godot"], expose_wayland=True)
+        self.assertEqual(command[command.index("--expose-wayland") + 1:], ["--", "godot"])
 
     def test_a_relative_unset_or_home_xdg_path_is_refused(self):
         with tempfile.TemporaryDirectory() as home:
