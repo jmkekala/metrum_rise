@@ -15015,7 +15015,8 @@ Fable's analysis T14 (throwaway builds on `dev` `98254f92`) measured the 64 m ti
 steep, road-heavy tile's bake (Kuopio's `(-14, -14)`: 2.64-2.68 ms on four workers, 291 window
 seams and a million listed candidates) beside up to 1 ms of selection. Round T14a (branch
 `terrain-14-bake`, base `dev` `11460d3d`) built its plan. Decided under the user's night
-delegation, 2026-11-19, for review; not landed.
+delegation, 2026-11-19, for review; landed on `dev` 2026-11-19 on the user's word ("land it"),
+the stills' cloud and water differences below accepted.
 
 **What T14 found.**
 - The levers the row names do not carry the gain. An `x86-64-v3` build was 4.5 % slower over
@@ -15128,7 +15129,7 @@ exclusive timing locks, 15:52:00-15:53:24, `ps` logged per row, no profiler runn
   none on the graded ground, the roads or the walls, whose products are bitwise above. The
   clouds and the water animate; why each side repeats its own frame of them was not traced (most
   likely when a run reaches its capture). The benchmark has no knob to hold them, and none was
-  added. Byte-identical stills are therefore not shown; for review.
+  added. Byte-identical stills are therefore not shown; accepted by the user (2026-11-19).
 - **Bitwise.** Census digests (control = branch): Kuopio `GL0` `e6f59674bb10837e`, `GL1`
   `a843f5c3dab8b1a3`, `GL2` `61b6d494033d2029`, `GL3` steps 2, 4, 8 `e9b0db5dac2ee7f0`,
   `79a3e1ace81a4ef3`, `a41803c57f526f45`; the 30k commit city `GL0` `9c0694bbc57e67a4`, `GL1`
