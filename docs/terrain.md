@@ -18648,6 +18648,173 @@ tools/stream_benchmark.py run --label 30k-2psmt --as-played --cpus 2p-smt ...   
 tools/stream_benchmark.py summary "$ARTIFACTS/rows/30k-2psmt.metrics.json"
 ```
 
+### The construction sites published (`RENDER-30`, analysis A5 and round R30, 2026-11-19)
+
+Fable's analysis A5 (read only, `dev` `bca40981`) measured the growing city's site frame at 30k:
+each building change cost a 1.4-1.6 ms pulse on the main thread, 0.9-1.05 ms of it under the
+core, 92 times a real minute at 1x and 483 at 32x. Two thirds of every pulse was the hidden plot
+overlay (three scans of every building and a 1.0 MB upload for multimeshes shown only on key F);
+the rest was nine more scans for a few dozen sites. Round R30 (branch `render-30-sites`) built
+its plan. Decided under the user's night delegation, 2026-11-19, for review.
+
+**What changed.**
+- The plot overlay, key F (which also fired while typing an F in a text field) and
+  `get_building_plot_transforms_internal` are deleted.
+- The construction sites' rows are published with the per-frame values (`CODE-26`): nine row
+  buffers in `FrameQueries` (site pad, foundation and scaffold of the residential, commercial
+  and industrial zones, 12 floats a row in building index order: the bytes the nine site
+  multimeshes received before). Each buffer carries the generation at which its rows last
+  changed; generations come from a process-wide counter.
+- Which buildings are sites comes from a roster of building handles
+  (`nodes/sim/render/building_sites.rs`), not a scan. Every building under construction has its
+  completion scheduled or waits in `pending_construction`; the roster notes each handle
+  `schedule_construction_completions` drains, and a refresh reads the pending ones beside it. A
+  moved world epoch (a load, a new world) and a clock set directly (`align_events_to_clock`'s
+  rescheduling branch) refill it from one scan. A refresh resolves the handles and keeps the
+  buildings under construction, so a stale handle never adds a wrong site. The roster is derived
+  render state: never saved, never read by the simulation.
+- `refresh_frame_queries` refreshes the rows first, then compares its key (the rows' generation
+  joins it), as it does for the road tool's terrain inputs. The rows' own key is the world epoch
+  and the building reference and visual revisions.
+- `buildings.gd` makes one bridge call a frame, `get_building_site_rows(known_generation)`, which
+  reads the publication and never takes the core, and sets only the buffers that changed. It
+  installs after an LOD update that did not find the core busy, so a site and its rising
+  building change in the same frame, as before (A5 section 8; the earlier install, up to 28
+  frames ahead of the buildings, is a choice for the user).
+- The dead site mesh path (`_apply_building_site_mesh_data` and its builders, built from vertex
+  arrays Rust stopped sending at `ROAD-68-D`), its dump, the Rust site debug export
+  (`building_site_debug_sites`), the `building_sites_dump` startup mode and the
+  `building_sites_visual` visual mode with its `run.sh` option are deleted ([`debug.md`](debug.md)).
+  `buildings.gd` goes from 680 to 211 lines.
+- Kept as before: office and mixed-use sites draw no construction visuals (the zone map covers
+  residential, commercial and industrial only; fixing it changes a look).
+
+**Bounds.** A frame with nothing changed: one snapshot read and one integer compare on the main
+thread, no allocation. A publication with the building revisions unmoved: `O(1)`. A moved
+revision: `O(S log S + P + T)` on the publishing thread for `S` sites, `P` pending placements and
+`T` buildings without a handle yet (normally none), plus 22 rows a site; nothing is allocated
+unless a buffer changed. A new site: `O(1)` amortized in the scheduling hook; with no refresh (a
+headless game) the roster holds at most `2 S + 64` handles. Only a load, a new world or a clock
+set directly scans the buildings, `O(B)`, beside the scans those paths already make. An install:
+`O(rows of the changed buffers)`, at most `22 S` rows. At the scale target this is `O(S)` a site
+change: at about 500 sites under construction at once (0.5 MB an upload) the rows should become
+slot-stable or chunked (A5 section 10).
+
+**Tests (fresh, this round).**
+- `published_site_rows_follow_a_growing_town_without_a_scan`: two game days of the starter town
+  (87 sites at most, 90 completions, 182 changed publications): at every refresh the nine buffers
+  equal the retired scans bit for bit, the roster scans once (the first publication), and a
+  headless half day keeps it within `2 S + 64` handles.
+- `published_frame_queries_follow_every_kind_of_edit` gains the rows' equality at every step,
+  plus a site, a site's removal undone, a completion and a clock set directly (one refill), and
+  checks that a residential site moves only the residential buffers' generations.
+- Test builds assert the roster's members equal a scan at every refresh, so every test that
+  builds a snapshot checks it.
+- Gates on the branch tip `5cbb67b8` and on `94a9e2c4`: `env -u DISPLAY -u WAYLAND_DISPLAY
+  ./run.sh --test` passed both (Rust 2,927, both Godot chains); the debug `cargo test --lib`
+  2,923 passed; clippy adds no warning in changed code.
+
+**Method.** Release libraries of `dev` `bca40981` (control, with its own scripts) and the branch
+tip `5cbb67b8`; A5's row shape: the 30k timing-cache city (21,400 buildings, 32,620 agents), the
+simulation running from the hand-over, a 60 s still and three 1 s turns, Godot 4.7.2 Forward+,
+gamescope headless at 1000 Hz, 1920x1080, P-cores `0,2,4,6,8,10,12,14`, eight workers, isolated
+profile, under the timing locks (`$ARTIFACTS/r30`).
+
+```bash
+tools/stream_benchmark.py run --label <label> --out $ARTIFACTS/r30/rows --library <side .so> \
+    --scripts <side>/godot/scripts --save <populated_city_30000.sqlite> --speed <1|32> \
+    --settle-cap-s 20 --settle-timeout 300 --phases still,turns --turns 1 --still-s 60 [--detail]
+```
+
+**The site frame** (instrumented `--detail` rows, one a side and speed; `sites_ms` is the
+frame's site work in `buildings.gd`):
+
+| | Control 1x | Branch 1x | Control 32x | Branch 32x |
+|---|---:|---:|---:|---:|
+| Still: mean / p99 / max, ms | 0.021 / 1.25 / 1.86 | 0.0036 / 0.019 / 0.131 | 0.084 / 1.41 / 1.68 | 0.0028 / 0.047 / 0.098 |
+| Still: frames at 0.5 ms or more | 92 | 0 | 486 | 0 |
+| Turns: mean / p99 / max, ms | 0.056 / 1.69 / 2.00 | 0.0042 / **0.087** / 0.109 | 0.014 / 0.010 / 1.53 | 0.0021 / 0.010 / 0.097 |
+| Turns: frames at 0.5 ms or more | 11 | 0 | 2 | 0 |
+| Site frame core tries a frame (busy share, still) | 1 (16 %) | 0 | 1 (44 %) | 0 |
+| Publisher: refreshes after a moved revision, mean | | 92 (still), 11.3 us | | 611 (still), 11.5 us |
+| Roster scans after the load's | | 0 | | 0 |
+
+A5's bars: the mean (at most 0.005 ms) and no frame at 0.5 ms or more hold everywhere; the p99
+(at most 0.05 ms) holds on both stills and the 32x turns and **misses on the 1x turns, 0.087 ms**
+(0.096 in a second instrumented run). The 1x turns run at a game hour with about 64 sites, and 8
+of their 352 frames carry an install, so the p99 is an install frame. An install there costs
+0.06-0.12 ms for three buffers of 62-64 KB: the bridge call's copy into packed arrays 25-38 us,
+the instance count (a reallocation) 14-20 us and the buffer set 24-29 us (`$ARTIFACTS/r30`
+`exp-split-1x`, the branch with a GDScript split). Keeping a capacity with visible instance counts
+removes the reallocation (2-4 us) but uploads up to twice the rows (`exp-cap-1x`, padded in
+GDScript: 0.2 ms; not built). The install's cost is the rows' size, so the lever is smaller
+uploads (per-chunk or slot-stable scaffold rows), not this round's.
+
+The core: the main thread's site frame try is gone (`core_locks` lists no `asset_api.rs` site);
+`buildings.gd` tries the core once a frame (the LOD update). The publisher costs 11-14 us a moved
+revision at 30k and makes no scan after the load's.
+
+**Pictures and digests.** Stills through `stream_benchmark.py stills capture` (paused, the saved,
+`city` and `city_low` poses plus two views over three of the save's four sites, `sites` and
+`sites_close`, which shows a pad, a foundation and a scaffold), the control twice:
+
+| Pose | Control null, pixels | Branch against control 1, pixels |
+|---|---:|---:|
+| `saved` | 5 | 3 |
+| `city` | 1 | 1 |
+| `city_low` | 0 | 0 |
+| `sites` | 1 | 2 |
+| `sites_close` | 9,910 | 11,358 |
+
+Every difference is the control's own noise: isolated pixels at most 2 levels apart, and in
+`sites_close` a sky band (rows 43-77) that differs between the two control runs too; nothing
+differs anywhere else, the sites included (`$ARTIFACTS/r30/stills`, diff images
+`diff-<pose>-c1-b.png`). The stream digests (`--digests`, paused, `post_load,still,turns`) are
+equal: buildings, graded, parked, patches, roads, vegetation.
+
+**Frames** (uninstrumented, C B B C at each speed, then the session's one rerun; frame ms,
+p50 / p99, control 1, branch 1, branch 2, control 2):
+
+| Phase | 1x | 1x rerun | 32x | 32x rerun |
+|---|---|---|---|---|
+| Still p50 | 6.70 6.70 6.79 6.80 | 6.71 6.68 6.68 6.70 | 7.01 6.94 6.93 6.97 | 6.95 6.93 6.94 6.96 |
+| Still p99 | 7.92 7.64 8.03 8.20 | 7.85 7.51 7.73 7.84 | 11.88 10.94 10.99 11.36 | 11.12 10.65 10.69 10.96 |
+| Turn out p50 | 7.07 7.21 7.34 7.09 | 7.05 7.03 7.07 7.03 | 7.77 7.54 7.59 7.59 | 7.50 7.78 7.40 7.58 |
+| Turn out p99 | 12.01 11.11 11.06 11.51 | 12.93 11.42 12.16 11.84 | 13.53 13.02 15.23 13.77 | 13.49 13.07 12.49 12.85 |
+| Turn back p50 | 7.07 7.16 7.27 7.26 | 7.07 6.94 7.04 7.03 | 7.56 7.55 7.68 7.67 | 7.42 7.46 7.57 7.42 |
+| Turn back p99 | 10.75 15.43 10.78 11.66 | 13.68 13.79 12.01 13.32 | 10.75 13.59 11.93 11.76 | 12.89 11.23 12.31 11.71 |
+| Turn repeat p50 | 7.45 7.58 7.42 7.90 | 7.54 7.33 7.34 7.32 | 7.79 7.83 7.72 7.69 | 7.85 7.57 7.54 7.52 |
+| Turn repeat p99 | 17.54 13.79 15.63 18.55 | 14.23 13.12 13.37 19.30 | 12.08 12.52 11.43 13.50 | 14.11 12.73 11.72 10.73 |
+
+The 60 s stills (8,300-8,900 frames) are equal or better at both speeds; the 32x still's p99
+falls 0.3-0.9 ms. The 1 s turns (110-140 frames a phase) straddle the control both ways: a branch
+value sits above the control pair's highest in seven of the 24 turn values of the first session
+and four of the rerun (by 0.01-0.25 ms on a p50; a p99 here is a turn's second-slowest frame),
+and below the pair's lowest in others. So
+A5's frame bar ("within the control pair's spread in every phase") is not met literally; read
+against the rerun it is noise, not a cost. A `ps` log every 15 s over the rows saw no compiler,
+`perf` or `addr2line` process. Level F (`./run.sh --timing --level F`, release test executables
+of the base and the tip): every metric level at 30k 1x and 32x (mean -1.4 % and +0.9 %).
+
+**Bars.** Met: the buffers (1), the stills (2: no pixel differs beyond the control's own null),
+the digests (3), the site frame's mean and its 0.5 ms frames (4, part), the core (5), the
+publisher (6), level F (7, part), the simulation (8: the gate's products, saves and `SIM-02`
+fingerprints) and the gates (9). Missed: the site frame's p99 on the 1x turns (4: 0.087 ms
+against 0.05) and, literally, the turns' frame spread (7). So only the plot overlay's deletion
+(`1390ee46`, no timing bar of its own; its stills and digests are the tip's) is landable; the
+published rows and the dead path's deletion wait for the user.
+
+**For the user.**
+1. Whether the 1x turns' install cost (0.06-0.12 ms on 2 % of turn frames, against 1.4-2.0 ms
+   pulses today) is accepted as the bar's exception, or the next round makes uploads smaller
+   first (scaffold rows a chunk: opaque, so their pictures cannot change; the transparent pads
+   stay whole-city).
+2. The Rust site export and the two debug modes deleted with the dump (A5's recommendation).
+3. Sites installed at once instead of with their buildings: a one-line change, up to 28 frames
+   earlier at 32x; not built (a changed timing).
+4. Office and mixed-use sites draw no construction visuals, as before.
+5. The building change log's unnamed steps (`ALLOC-06`, proposed).
+
 ### First-use pipelines at the load (`RENDER-43`, round R43, 2026-11-17)
 
 Round R43 (night delegation; every decision below is for review). Every stream benchmark load
