@@ -265,12 +265,13 @@ func _commit_previewed(tool: Node3D, points: PackedVector3Array, preview: Dictio
 	tool._begin_stroke(points[0])
 	tool.set_scripted_pointer(true, points[-1])
 	tool._process(1.0 / 60.0)
-	# The frames after the pose stage the rest of its graded tiles (T27 (d)); the click then
-	# commits what the preview shows.
-	var catch_up := 0
-	while tool._graded_pending > 0 and catch_up < 64:
+	# The frames after the pose poll for its graded set, staged on the background pool
+	# (`TERRAIN-14`; a debug build's bake takes a while: a deadline, not a frame count); the click
+	# then commits what the preview shows.
+	var landed_by := Time.get_ticks_msec() + 60000
+	while tool._graded_pending > 0 and Time.get_ticks_msec() < landed_by:
+		OS.delay_msec(2)
 		tool._process(1.0 / 60.0)
-		catch_up += 1
 	_expect(tool._graded_pending == 0, "%s: the preview's graded tiles converge" % label)
 	var shown: Dictionary = tool.terrain_node.graded_tiles.shown.duplicate()
 	# The first poll that reaches the core starts the graded edit journal, which carries the

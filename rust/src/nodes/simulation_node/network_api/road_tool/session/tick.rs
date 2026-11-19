@@ -368,12 +368,12 @@ impl SimulationNode {
         self.road_tool_session.tick.graded.take().unwrap_or_default()
     }
 
-    /// The latest pose's graded tiles still to stage (`TERRAIN-07-E`; each tick without a new
-    /// pose stages the next share while the stroke is editable; probes wait on 0).
+    /// The graded sets still to land, in flight or queued (`TERRAIN-14`; each tick without a
+    /// new pose polls for them while the stroke is editable; probes wait on 0).
     #[func]
     pub fn road_tool_graded_pending(&self) -> i64 {
         let context = self.road_tool.context.lock().expect("road tool context lock poisoned");
-        context.graded.pending_tiles() as i64
+        context.graded.pending_sets() as i64
     }
 
     /// The sent stroke's answer the last tick heard (`road_tool_commit_poll`'s dictionary),

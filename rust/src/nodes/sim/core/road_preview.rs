@@ -404,8 +404,8 @@ pub(crate) struct RoadPreviewTimes {
     pub(crate) roadbed_ms: f64,
     /// The changed render chunks: the pieces emitted and spliced into the published chunks.
     pub(crate) payload_ms: f64,
-    /// The graded tiles of the pose's frame (`TERRAIN-07-E`, T27 (d)): the dirty tile
-    /// selection and the frame's share of the pose's tiles, gathered and adopted or baked.
+    /// The graded tiles of the pose's frame (`TERRAIN-14`): the pose's inputs taken, its set
+    /// started or queued on the background pool and a landed set taken.
     pub(crate) graded_ms: f64,
 }
 
@@ -417,8 +417,8 @@ pub(crate) struct RoadPreviewPieces {
     pub(crate) roadbed: RoadbedSystem,
     /// Render chunks the delta changed, in ascending order.
     pub(crate) changed_chunks: Vec<SurfaceChunkKey>,
-    /// The pose's staged graded tiles (`TERRAIN-07-E`): the commit adopts those whose inputs
-    /// equal its own.
+    /// The newest landed graded set as of the pose's frame (`TERRAIN-14`): the commit adopts
+    /// the tiles whose inputs equal its own.
     pub(crate) graded: GradedPose,
     /// The changed chunks below the chunk (`ROAD-68-H` round 3): each one's overlay of rebuilt
     /// pieces and the published runs it replaces, which compose the chunk the commit publishes
@@ -568,10 +568,10 @@ impl RoadPreviewContext {
         }
     }
 
-    /// One frame without a new pose (T27 (d)): stages the next share of the latest pose's
-    /// graded tiles and returns the tiles shown after it; the latest preview then offers them
-    /// to its commit, unless a commit already holds it. `None` once the shown tiles are the
-    /// pose's. No core lock; `O(share's gathers and bakes + wanted log wanted)`.
+    /// One frame without a new pose (`TERRAIN-14`): lands the graded set in flight if its job
+    /// finished and returns the tiles shown after it; the latest preview then offers them to its
+    /// commit, unless a commit already holds it. `None` (no allocation) when no set landed. No
+    /// core lock; `O(1)` plus the landed set's hand-over.
     pub(crate) fn catch_up_graded(&mut self) -> Option<GradedPose> {
         let pose = self.graded.catch_up()?;
         if let Some(pieces) = self
@@ -697,7 +697,6 @@ impl RoadPreviewContext {
             view: &self.view,
             replica: &self.replica,
             land: &self.land,
-            plan,
             delta: &delta,
             changed_chunks: &changed_chunks,
             restore: &restore,
@@ -732,7 +731,6 @@ struct PoseStages<'a> {
     view: &'a RoadToolQuerySnapshot,
     replica: &'a RegionGraph,
     land: &'a Arc<super::road_tool_land::RoadToolLand>,
-    plan: &'a RoadEditPlan,
     delta: &'a RoadbedDelta,
     changed_chunks: &'a [SurfaceChunkKey],
     restore: &'a RoadbedRestore,
@@ -766,26 +764,12 @@ impl PoseStages<'_> {
         times.roadbed_ms = take_start.elapsed().as_secs_f64() * 1000.0;
         let terrain_changes = roadbed.take_terrain_changes();
         let graded_start = Instant::now();
-        let end = self
-            .plan
-            .request()
-            .points
-            .last()
-            .map_or([0.0; 2], |end| [f64::from(end.x), f64::from(end.z)]);
-        // Every owner the delta covers, a failed node's too: the pieces this pose can differ in.
-        let owners = delta.pieces().map(|(id, _)| id).chain(
-            delta
-                .failed_nodes()
-                .map(|(node, _)| crate::simulation::network::roadbed::PieceId::Node(node)),
-        );
         let graded = graded.stage_pose(
             &view.terrain,
             &view.roadbed,
             roadbed,
             &view.terrain_inputs,
-            &terrain_changes,
-            owners,
-            end,
+            terrain_changes,
         );
         times.graded_ms = graded_start.elapsed().as_secs_f64() * 1000.0;
         let payload_start = Instant::now();

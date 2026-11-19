@@ -1078,7 +1078,7 @@ fn graded_drag(
     let called = Instant::now();
     let outcome = core.commit_road(
         RoadCommitRequest {
-            points: poses[7].clone(),
+            points: poses[poses.len() - 1].clone(),
             fwd_lanes: 1,
             bkw_lanes: 1,
             snap_to_existing_roads: true,
@@ -1096,19 +1096,20 @@ fn graded_drag(
     record
 }
 
-// A 1 + 1 stroke from `start` to `end` in eight poses, each pose's end on the ground under its
-// point; the last pose ends at `end` itself, so its commit is the stroke's.
+// A 1 + 1 stroke from `start` to `end` in eight poses (`METRUM_DRAG_POSES`), each pose's end on
+// the ground under its point; the last pose ends at `end` itself, so its commit is the stroke's.
 fn branch_poses(
     core: &crate::nodes::sim::core::state::SimCore,
     start: godot::prelude::Vector3,
     end: godot::prelude::Vector3,
 ) -> Vec<Vec<godot::prelude::Vector3>> {
-    (1..=8)
+    let count = crate::nodes::sim::core::tests::graded_stage::drag_pose_count();
+    (1..=count)
         .map(|step| {
-            let mut point = if step == 8 {
+            let mut point = if step == count {
                 end
             } else {
-                start.lerp(end, step as f32 / 8.0)
+                start.lerp(end, step as f32 / count as f32)
             };
             point.y = core.heightmap.sample_height_world(point.x, point.z);
             vec![start, point]

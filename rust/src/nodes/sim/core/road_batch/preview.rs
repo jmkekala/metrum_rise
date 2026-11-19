@@ -150,8 +150,8 @@ pub(crate) struct BatchPreview {
     pub(crate) pieces: Option<BatchPreviewPieces>,
     /// Each tier-2 frame's stages, in frame order.
     pub(crate) frames: Vec<RoadPreviewTimes>,
-    /// The accepted pose's graded tiles still to stage after the accepting frame's share (the
-    /// display's catch-up frames stage them, `advance_road_preview_terrain`, as a stroke's).
+    /// The graded sets still to land after the accepting frame (`TERRAIN-14`: the display's
+    /// polls land them, `advance_road_preview_terrain`, as a stroke's).
     pub(crate) graded_pending: usize,
 }
 
@@ -488,22 +488,17 @@ impl RoadPreviewContext {
         let owners = batch_owners(&batch.strokes);
         let terrain_changes = batch.roadbed.take_terrain_changes();
         let graded_start = Instant::now();
-        let end = batch
-            .requests
-            .last()
-            .and_then(|request| request.points.last())
-            .map_or([0.0; 2], |end| [f64::from(end.x), f64::from(end.z)]);
         // The shown tiles are staged as a stroke's pose stages them; the commit stages its own.
-        batch.graded_pending = self.graded.stage_pose(
-            &self.view.terrain,
-            &self.view.roadbed,
-            &batch.roadbed,
-            &self.view.terrain_inputs,
-            &terrain_changes,
-            owners.iter().copied(),
-            end,
-        )
-        .pending;
+        batch.graded_pending = self
+            .graded
+            .stage_pose(
+                &self.view.terrain,
+                &self.view.roadbed,
+                &batch.roadbed,
+                &self.view.terrain_inputs,
+                terrain_changes,
+            )
+            .pending;
         times.graded_ms = graded_start.elapsed().as_secs_f64() * 1000.0;
         // The overlay composes over the published chunks only while they are the view's.
         if self.view.road_mesh_generation != Some(self.view.roadbed.generation()) {

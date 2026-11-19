@@ -3,16 +3,16 @@
 //! `TERRAIN-07-E` acceptance, the Rust half: the graded tiles of every drag frame, the commit,
 //! the undo, a recommit of the same stroke and a saved and loaded city each equal the fresh bake
 //! of the state they stand for, bitwise, on the T, the Y, the four-way and the split trunk, flat
-//! and on the 2.5% slope. A drag's frames stage a bounded share of each pose's tiles (T27 (d)):
-//! every shown tile is the exact bake of some pose, and once the poses stop the shown tiles
-//! converge to the last pose's in a bounded number of frames; the commit then adopts them all,
+//! and on the 2.5% slope. A drag's poses are staged as whole sets on the background pool
+//! (`TERRAIN-14`): every set is the exact bake of one pose, and once the poses stop the last
+//! pose's set lands and displays; the commit then adopts them all,
 //! a commit right after the drag bakes what the preview had not, undo adopts the kept tiles,
 //! and a commit with a stale context bakes and equals a fresh bake. Also the drag harness the
 //! Kuopio and populated drag benchmarks share.
 
 use super::road_edit_order::{ARM_M, Stroke, committed, committed_on};
 use super::*;
-use crate::nodes::sim::core::graded_stage::{CATCH_UP_FRAME_TILES, GradedPose, POSE_FRAME_TILES};
+use crate::nodes::sim::core::graded_stage::GradedPose;
 use crate::nodes::sim::core::road_commit::RoadCommitRequest;
 use crate::nodes::sim::core::road_preview::{RoadPreview, RoadPreviewRequest};
 use crate::nodes::sim::core::road_tool_context::RoadPreviewContext;
@@ -326,16 +326,19 @@ fn cut_spike(context: &mut RoadPreviewContext, preview: &RoadPreview) -> Option<
     cut_frame(context, preview, step).map(|frame| frame.json())
 }
 
-/// A dragged stroke's frames on the road tool's preview (T27 (d)).
+/// A dragged stroke's frames on the road tool's preview (`TERRAIN-14`).
 pub(crate) struct Drag {
     /// Per frame what its graded terrain did: `pose` (1-based; `null` for a catch-up frame),
-    /// `frame_ms` (the whole terrain work), `select_ms`, `bake_ms`, `wanted`, `adopted`,
-    /// `baked`, `pending`, the shown tiles' `digest` and the call's `span_ms` on the benchmark
-    /// clock.
+    /// `frame_ms` (the frame's terrain work), the newest landed set's `select_ms`, `bake_ms`,
+    /// `wanted`, `adopted` and `baked` (its job's), `pending` (sets still to land), `behind`
+    /// (poses the set is behind the latest), `job_ms` (a set that landed in the frame: its job
+    /// from start to landing), `displayed` (tiles the renderer draws), the set's `digest` and
+    /// the call's `span_ms` on the benchmark clock. A catch-up frame that landed no set has
+    /// `landed: false` and its `frame_ms` only.
     pub(crate) frames: Vec<serde_json::Value>,
     /// The slowest frame's terrain work, milliseconds.
     pub(crate) frame_max_ms: f64,
-    /// The catch-up frames after the last pose.
+    /// The catch-up frames after the last pose (polls, with or without a set landing).
     pub(crate) catch_up_frames: usize,
     /// The last pose's points and preview, its graded tiles those shown after the last frame.
     pub(crate) points: Vec<Vector3>,
@@ -345,6 +348,7 @@ pub(crate) struct Drag {
 fn frame_record(
     pose: Option<usize>,
     graded: &GradedPose,
+    displayed: usize,
     span: serde_json::Value,
 ) -> serde_json::Value {
     let stats = graded.stats;
@@ -352,13 +356,46 @@ fn frame_record(
         "pose": pose, "span_ms": span, "frame_ms": graded.frame_ms,
         "select_ms": stats.select_ms, "bake_ms": stats.bake_ms, "wanted": stats.wanted,
         "adopted": stats.adopted, "baked": stats.baked, "pending": graded.pending,
+        "behind": graded.behind, "job_ms": graded.job_ms, "displayed": displayed,
         "error": graded.stage.as_ref().err().map(|e| format!("{e:?}")),
         "digest": graded.stage.as_deref().ok().map(stage_digest),
     })
 }
 
+// The drag benchmarks' frame pacing (`METRUM_DRAG_FRAME_MS`, milliseconds a frame): none by
+// default.
+fn frame_pacing() -> Option<std::time::Duration> {
+    let ms: f64 = std::env::var("METRUM_DRAG_FRAME_MS").ok()?.parse().ok()?;
+    Some(std::time::Duration::from_secs_f64(ms / 1000.0))
+}
+
+/// The drag benchmarks' poses a stroke (`METRUM_DRAG_POSES`, 8 by default): more poses are a
+/// slower drag in smaller steps.
+pub(crate) fn drag_pose_count() -> usize {
+    std::env::var("METRUM_DRAG_POSES")
+        .ok()
+        .and_then(|poses| poses.parse().ok())
+        .filter(|&poses| poses > 0)
+        .unwrap_or(8)
+}
+
+/// The tests' synchronous path to the preview's converged terrain: waits for each set in flight
+/// and lands it until none is pending. Returns the last frame that landed a set.
+pub(crate) fn converge_graded(context: &mut RoadPreviewContext) -> Option<GradedPose> {
+    let mut last = None;
+    while context.graded.pending_sets() > 0 {
+        context.graded.wait();
+        last = context.catch_up_graded().or(last);
+    }
+    last
+}
+
 /// Drags the stroke through `poses` (each pose's points) on `context`, one frame a pose; with
-/// `converge`, then the catch-up frames until the shown tiles are the last pose's.
+/// `converge`, then the catch-up frames until no set is pending. With `METRUM_DRAG_FRAME_MS`
+/// the frames are paced as a game's (a pose or a poll a frame, the thread asleep between them,
+/// so a set lands whenever its job ends); without it each frame first waits for the set in
+/// flight (the synchronous path: frame `N` shows pose `N - 1`'s set and the catch-up frame the
+/// last pose's), so the frames depend on the poses alone.
 pub(crate) fn drag(
     context: &mut RoadPreviewContext,
     poses: &[Vec<Vector3>],
@@ -368,8 +405,23 @@ pub(crate) fn drag(
     use crate::thread_pools::spans::ms;
     let span =
         |start: std::time::Instant| serde_json::json!([ms(start), ms(std::time::Instant::now())]);
+    let pacing = frame_pacing();
+    let mut next_frame = std::time::Instant::now();
+    let mut frame = |context: &RoadPreviewContext| match pacing {
+        Some(period) => {
+            next_frame += period;
+            let now = std::time::Instant::now();
+            if next_frame > now {
+                std::thread::sleep(next_frame - now);
+            } else {
+                next_frame = now;
+            }
+        }
+        None => context.graded.wait(),
+    };
     let (mut frames, mut frame_max_ms, mut last) = (Vec::new(), 0.0f64, None);
     for (step, points) in poses.iter().enumerate() {
+        frame(context);
         let surface_generation = context.view.surface_generation;
         let called = std::time::Instant::now();
         let preview = context.preview_road(RoadPreviewRequest {
@@ -384,10 +436,11 @@ pub(crate) fn drag(
             attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
         });
         let span = span(called);
+        let displayed = context.graded.displayed().len();
         frames.push(match preview.pieces.as_ref() {
             Some(pieces) => {
                 frame_max_ms = frame_max_ms.max(pieces.graded.frame_ms);
-                frame_record(Some(step + 1), &pieces.graded, span)
+                frame_record(Some(step + 1), &pieces.graded, displayed, span)
             }
             None => serde_json::json!({
                 "pose": step + 1, "span_ms": span, "invalid": preview.validation.invalid_reason,
@@ -400,19 +453,29 @@ pub(crate) fn drag(
     }
     let (points, mut preview) = last.expect("a pose");
     let mut catch_up_frames = 0;
-    let mut called = std::time::Instant::now();
-    while let Some(graded) = converge.then(|| context.catch_up_graded()).flatten() {
+    while converge && context.graded.pending_sets() > 0 {
+        frame(context);
+        let called = std::time::Instant::now();
+        let graded = context.catch_up_graded();
+        let poll_ms = called.elapsed().as_secs_f64() * 1000.0;
         let span = span(called);
         catch_up_frames += 1;
+        let Some(graded) = graded else {
+            frame_max_ms = frame_max_ms.max(poll_ms);
+            frames.push(serde_json::json!({
+                "pose": null, "span_ms": span, "frame_ms": poll_ms, "landed": false,
+            }));
+            continue;
+        };
         frame_max_ms = frame_max_ms.max(graded.frame_ms);
-        frames.push(frame_record(None, &graded, span));
+        let displayed = context.graded.displayed().len();
+        frames.push(frame_record(None, &graded, displayed, span));
         if let Some(pieces) = preview.pieces.as_mut() {
             pieces.graded = graded;
         }
         if let Some(cut) = cut_spike(context, &preview) {
             frames.last_mut().unwrap()["cut"] = cut;
         }
-        called = std::time::Instant::now();
     }
     Drag {
         frames,
@@ -526,60 +589,41 @@ fn pose_digests(frames: &[serde_json::Value], poses: usize) -> Vec<serde_json::V
         .collect()
 }
 
-// One drag frame's shown tiles (T27 (d)): each is the fresh bake of the frame's pose or the
-// tile the frame before showed; at least the frame's staged tiles are the pose's; the share
-// stays within its bound. Returns the shown tiles.
+// One drag frame's graded tiles (`TERRAIN-14`): the newest landed set is one pose's whole
+// selection, each tile the fresh bake of that pose (`roadbeds`: every staged pose's roadbed, the
+// latest last), or none before the first set lands; what the renderer draws is the latest pose's
+// whole set or nothing (T60, T61 (1) (a)). Returns the set.
 fn check_frame(
     label: &str,
     context: &RoadPreviewContext,
-    roadbed: &RoadbedSystem,
     core: &SimCore,
-    (graded, bound): (&GradedPose, usize),
-    before: &TileStage,
+    graded: &GradedPose,
+    roadbeds: &[RoadbedSystem],
 ) -> Arc<TileStage> {
     let stage = graded.stage.as_ref().expect("the frame's tiles bake");
-    let stats = graded.stats;
-    assert!(
-        stats.adopted + stats.baked <= bound,
-        "{label}: the frame's share"
-    );
-    assert!(
-        stage.len() <= stats.wanted,
-        "{label}: only the pose's tiles shown"
-    );
-    let fresh = fresh(&context.view.terrain, roadbed, &core.allocator, stage);
-    let before = stage_bits(before);
-    let mut posed = 0;
-    for (shown, fresh) in stage_bits(stage).iter().zip(&fresh) {
-        if shown == fresh {
-            posed += 1;
-        } else {
-            assert!(
-                before.contains(shown),
-                "{label}: tile {:?} is neither the pose's bake nor the tile shown before",
-                shown.0
-            );
-        }
-    }
-    assert!(
-        posed >= stats.adopted + stats.baked,
-        "{label}: the staged tiles are the pose's"
-    );
-    // TERRAIN-12 (T60, T61 (1) (a)): what the renderer draws is the pose's whole selection or
-    // nothing, never a part of it beside published tiles, and only the pose's exact tiles, never
-    // an earlier pose's whose road lies elsewhere.
     let displayed = context.graded.displayed();
-    assert!(
-        displayed.is_empty() || displayed.len() == stats.wanted,
-        "{label}: {} of {} selected tiles displayed: a mix with published tiles",
-        displayed.len(),
-        stats.wanted
-    );
+    let Some(behind) = graded.behind else {
+        assert!(stage.is_empty(), "{label}: no set landed, none shown");
+        assert!(displayed.is_empty(), "{label}: no set landed, none displayed");
+        return Arc::clone(stage);
+    };
+    let roadbed = &roadbeds[roadbeds.len() - 1 - behind as usize];
+    assert_eq!(stage.len(), graded.stats.wanted, "{label}: a whole set");
     assert_eq!(
-        stage_bits(displayed),
-        self::fresh(&context.view.terrain, roadbed, &core.allocator, displayed),
-        "{label}: every displayed tile is the pose's exact bake"
+        stage_bits(stage),
+        fresh(&context.view.terrain, roadbed, &core.allocator, stage),
+        "{label}: the set is its pose's exact bake"
     );
+    // TERRAIN-12 (T60, T61 (1) (a)): the renderer draws the latest pose's whole set or nothing,
+    // never a part of it beside published tiles, nor an earlier pose's whose road lies elsewhere.
+    if !displayed.is_empty() {
+        assert_eq!(behind, 0, "{label}: only the latest pose's set is displayed");
+        assert_eq!(
+            stage_bits(displayed),
+            stage_bits(stage),
+            "{label}: the displayed tiles are the whole set"
+        );
+    }
     Arc::clone(stage)
 }
 
@@ -628,12 +672,9 @@ fn a_pose_replacing_published_pieces_leaves_no_open_cut_outside_its_backstop() {
                 last = Some(pose);
             }
             let last = last.expect("a pose");
-            let mut frames = 0;
-            while context.catch_up_graded().is_some() {
-                frames += 1;
-                let frame = cut_frame(&mut context, &last, 0.25).expect("the pose's pieces");
-                assert_eq!(frame.open_outside, 0, "{name} catch-up frame {frames}: {frame:?}");
-            }
+            assert!(converge_graded(&mut context).is_some(), "{name}: the last set lands");
+            let frame = cut_frame(&mut context, &last, 0.25).expect("the pose's pieces");
+            assert_eq!(frame.open_outside, 0, "{name} converged: {frame:?}");
         }
     }
     assert!(replacing > 0, "no pose replaced a published piece");
@@ -651,43 +692,44 @@ fn graded_tiles_of_drags_commits_undo_and_loads_equal_fresh_bakes() {
             let mut context = RoadPreviewContext::capture(
                 road_tool_snapshot_from_core(&core).expect("current roadbed"),
             );
-            // The drag: the stroke grows from its start towards its end, a frame a pose, then
-            // the catch-up frames.
+            // The drag: the stroke grows from its start towards its end, a frame a pose, each
+            // frame after the set in flight landed (the synchronous path), then the catch-up
+            // frame that lands the last pose's set.
             let [start, end] = case.drag;
             let poses: Vec<_> = [0.4, 0.6, 0.8, 1.0]
                 .map(|u| stroke(&core, [start, start.lerp(end, u)]))
                 .to_vec();
-            let mut shown = Arc::new(TileStage::default());
+            let mut roadbeds = Vec::new();
             let mut last = None;
             for (index, points) in poses.iter().enumerate() {
+                context.graded.wait();
                 let pose = preview(&mut context, points);
                 let pieces = pose.pieces.as_ref().unwrap_or_else(|| {
                     panic!("{name} pose {index}: {}", pose.validation.invalid_reason)
                 });
                 let label = format!("{name} pose {index}");
-                let frame = (&pieces.graded, POSE_FRAME_TILES);
-                shown = check_frame(&label, &context, &pieces.roadbed, &core, frame, &shown);
-                assert!(!shown.is_empty(), "{label}: the pose grades tiles");
+                roadbeds.push(pieces.roadbed.snapshot());
+                check_frame(&label, &context, &core, &pieces.graded, &roadbeds);
+                let behind = (index > 0).then_some(1);
+                assert_eq!(pieces.graded.behind, behind, "{label}: the set before shown");
+                assert!(context.graded.displayed().is_empty(), "{label}: none under the road");
+                assert_eq!(pieces.graded.pending, 1, "{label}: the pose's set in flight");
                 last = Some(pose);
             }
             let mut pose = last.unwrap();
             let pieces = pose.pieces.as_mut().unwrap();
-            let (wanted, pending) = (pieces.graded.stats.wanted, pieces.graded.pending);
-            let mut frames = 0;
-            while let Some(graded) = context.catch_up_graded() {
-                frames += 1;
-                let label = format!("{name} catch-up frame {frames}");
-                let frame = (&graded, CATCH_UP_FRAME_TILES);
-                shown = check_frame(&label, &context, &pieces.roadbed, &core, frame, &shown);
-                pieces.graded = graded;
-            }
+            context.graded.wait();
+            let graded = context.catch_up_graded().expect("the last pose's set lands");
+            let label = format!("{name} catch-up frame");
+            let shown = check_frame(&label, &context, &core, &graded, &roadbeds);
+            assert_eq!((graded.behind, graded.pending), (Some(0), 0), "{name}: converged");
+            assert!(!shown.is_empty(), "{name}: the pose grades tiles");
             assert_eq!(
-                frames,
-                pending.div_ceil(CATCH_UP_FRAME_TILES),
-                "{name}: the shown tiles converge in the bounded frames"
+                stage_bits(context.graded.displayed()),
+                stage_bits(&shown),
+                "{name}: the converged set is displayed"
             );
-            assert_eq!(pieces.graded.pending, 0, "{name}: converged");
-            assert_eq!(shown.len(), wanted, "{name}: every wanted tile shown");
+            pieces.graded = graded;
             assert_eq!(
                 stage_bits(&shown),
                 fresh(
@@ -786,13 +828,10 @@ fn graded_tiles_of_drags_commits_undo_and_loads_equal_fresh_bakes() {
     }
 }
 
-// T27 (d): a click right after a fast drag, before the preview has caught up, commits the tiles
-// a click after the converged drag commits, bitwise: the commit adopts the shown tiles whose
-// inputs match and bakes the rest in its own frame. The two drags' pose frames show the same
-// tiles: they depend on the pose sequence only.
-// TERRAIN-12 (T60): a stroke swung sideways after it converged hands the renderer only tiles
-// exact for each pose (checked in check_frame), keeping those the move left unchanged; a pose
-// that draws no road hands every displayed tile back.
+// TERRAIN-12 (T60), `TERRAIN-14`: a stroke swung sideways after it converged hands the renderer
+// only the latest pose's whole set (checked in check_frame): nothing under a moved road, the
+// pose's set once it lands; a set adopts every tile of the set before it whose inputs the move
+// left unchanged; a pose that draws no road hands every displayed tile back.
 #[test]
 fn a_swung_preview_displays_only_exact_tiles_and_an_invalid_pose_none() {
     let case = &cases()[0];
@@ -802,71 +841,125 @@ fn a_swung_preview_displays_only_exact_tiles_and_an_invalid_pose_none() {
     let mut context =
         RoadPreviewContext::capture(road_tool_snapshot_from_core(&core).expect("current roadbed"));
     let start = case.drag[0];
-    let mut shown = Arc::new(TileStage::default());
-    let (mut kept, mut renderer) = (0, std::collections::BTreeMap::new());
-    for (index, x) in [0.0f32, 12.0, 24.0, 24.0].into_iter().enumerate() {
-        let end = Vector2::new(x, case.drag[1].y);
-        let pose = preview(&mut context, &stroke(&core, [start, end]));
-        let pieces = pose.pieces.as_ref().expect("the swing's poses are valid");
-        let label = format!("swing pose {index}");
-        shown = check_frame(
-            &label,
-            &context,
-            &pieces.roadbed,
-            &core,
-            (&pieces.graded, POSE_FRAME_TILES),
-            &shown,
-        );
-        let (mut changed, mut removed) = (Vec::new(), Vec::new());
+    let mut roadbeds = Vec::new();
+    let mut renderer = std::collections::BTreeMap::new();
+    let (mut changed, mut removed) = (Vec::new(), Vec::new());
+    let mut draw = |context: &mut RoadPreviewContext| {
         context
             .graded
             .take_shown_changes(&mut changed, &mut removed);
         for tile in &removed {
             renderer.remove(&(tile.x, tile.z));
         }
-        kept += renderer.len();
         for tile in changed.drain(..) {
             renderer.insert((tile.tile.x, tile.tile.z), tile);
         }
-        while let Some(graded) = context.catch_up_graded() {
-            let label = format!("swing pose {index} catch-up");
-            shown = check_frame(
-                &label,
-                &context,
-                &pieces.roadbed,
-                &core,
-                (&graded, CATCH_UP_FRAME_TILES),
-                &shown,
+        renderer.len()
+    };
+    for (index, x) in [0.0f32, 12.0, 24.0, 24.0].into_iter().enumerate() {
+        let end = Vector2::new(x, case.drag[1].y);
+        let pose = preview(&mut context, &stroke(&core, [start, end]));
+        let pieces = pose.pieces.as_ref().expect("the swing's poses are valid");
+        let label = format!("swing pose {index}");
+        roadbeds.push(pieces.roadbed.snapshot());
+        check_frame(&label, &context, &core, &pieces.graded, &roadbeds);
+        assert_eq!(draw(&mut context), 0, "{label}: nothing under the moved road");
+        let graded = converge_graded(&mut context).expect("the pose's set lands");
+        let label = format!("swing pose {index} landed");
+        let shown = check_frame(&label, &context, &core, &graded, &roadbeds);
+        assert_eq!(graded.behind, Some(0), "{label}");
+        assert_eq!(draw(&mut context), shown.len(), "{label}: the whole set drawn");
+        if index == 3 {
+            assert_eq!(
+                (graded.stats.adopted, graded.stats.baked),
+                (shown.len(), 0),
+                "{label}: the repeated pose adopts every tile of the set before it"
             );
-            context
-                .graded
-                .take_shown_changes(&mut changed, &mut removed);
-            for tile in &removed {
-                renderer.remove(&(tile.x, tile.z));
-            }
-            for tile in changed.drain(..) {
-                renderer.insert((tile.tile.x, tile.tile.z), tile);
-            }
         }
     }
-    assert!(kept > 0, "a pose keeps the tiles its move left unchanged");
-    assert!(!renderer.is_empty(), "the converged pose's tiles are drawn");
+    let drawn = draw(&mut context);
+    assert!(drawn > 0, "the converged pose's tiles are drawn");
     // A pose that compiles nothing (a stroke too short to plan) draws no road: no preview terrain.
     let pose = preview(&mut context, &stroke(&core, [start, start]));
     assert!(pose.pieces.is_none(), "the degenerate stroke has no pieces");
-    let (mut changed, mut removed) = (Vec::new(), Vec::new());
     context
         .graded
         .take_shown_changes(&mut changed, &mut removed);
     assert!(changed.is_empty(), "nothing new is shown");
-    assert_eq!(
-        removed.len(),
-        renderer.len(),
-        "every drawn tile is handed back"
-    );
+    assert_eq!(removed.len(), drawn, "every drawn tile is handed back");
     assert!(context.graded.displayed().is_empty());
 }
 
+// `TERRAIN-14`: a set of a pose that a release or a pose without a drawn road invalidated is
+// dropped as it lands and never displays; the set it would have replaced stays the adoption pool.
+#[test]
+fn a_set_of_an_invalidated_pose_never_displays() {
+    let case = &cases()[0];
+    let core = committed_on(case.world_m, &case.roads, &[0], true);
+    let [start, end] = case.drag;
+    let snapshot = |core: &mut SimCore| {
+        core.refresh_road_terrain_inputs();
+        RoadPreviewContext::capture(road_tool_snapshot_from_core(core).expect("current roadbed"))
+    };
+    let mut core = core;
+    for release in [false, true] {
+        let mut context = snapshot(&mut core);
+        context.graded.defer_jobs();
+        let pose = preview(&mut context, &stroke(&core, [start, end]));
+        assert_eq!(pose.pieces.as_ref().unwrap().graded.pending, 1);
+        if release {
+            context.graded.release();
+        } else {
+            let none = preview(&mut context, &stroke(&core, [start, start]));
+            assert!(none.pieces.is_none(), "the degenerate stroke has no pieces");
+        }
+        assert_eq!(context.graded.run_deferred(), 1, "release {release}: the set ran");
+        assert!(context.catch_up_graded().is_none(), "release {release}: dropped as it lands");
+        assert_eq!(context.graded.pending_sets(), 0, "release {release}");
+        assert!(context.graded.displayed().is_empty(), "release {release}");
+        let (mut changed, mut removed) = (Vec::new(), Vec::new());
+        context
+            .graded
+            .take_shown_changes(&mut changed, &mut removed);
+        assert!(changed.is_empty() && removed.is_empty(), "release {release}");
+    }
+}
+
+// `TERRAIN-14`: newest wins. While a set is in flight a newer pose replaces the queued one, which
+// never starts a job; the set in flight lands (behind, not displayed under the newer road), then
+// the newest pose's set runs and displays.
+#[test]
+fn a_queued_pose_replaced_by_a_newer_one_starts_no_job() {
+    let case = &cases()[0];
+    let mut core = committed_on(case.world_m, &case.roads, &[0], true);
+    core.refresh_road_terrain_inputs();
+    let mut context =
+        RoadPreviewContext::capture(road_tool_snapshot_from_core(&core).expect("current roadbed"));
+    context.graded.defer_jobs();
+    let [start, end] = case.drag;
+    let mut roadbeds = Vec::new();
+    for u in [0.5, 0.75, 1.0] {
+        let pose = preview(&mut context, &stroke(&core, [start, start.lerp(end, u)]));
+        roadbeds.push(pose.pieces.as_ref().expect("the pose's pieces").roadbed.snapshot());
+    }
+    assert_eq!(context.graded.pending_sets(), 2, "one set in flight, one pose queued");
+    assert_eq!(context.graded.run_deferred(), 1, "the first pose's set");
+    let first = context.catch_up_graded().expect("the first set lands");
+    check_frame("first", &context, &core, &first, &roadbeds);
+    assert_eq!(first.behind, Some(2), "the first pose's set, two poses behind");
+    assert!(context.graded.displayed().is_empty(), "not under the newest road");
+    assert_eq!(context.graded.run_deferred(), 1, "only the newest pose's set runs");
+    let newest = context.catch_up_graded().expect("the newest set lands");
+    let shown = check_frame("newest", &context, &core, &newest, &roadbeds);
+    assert_eq!((newest.behind, newest.pending), (Some(0), 0));
+    assert_eq!(stage_bits(context.graded.displayed()), stage_bits(&shown));
+    assert_eq!(context.graded.run_deferred(), 0, "no job for the replaced pose");
+}
+
+// T27 (d), `TERRAIN-14`: a click right after a fast drag, before the last pose's set has landed,
+// commits the tiles a click after the converged drag commits, bitwise: the commit adopts the
+// landed set's tiles whose inputs match and bakes the rest in its own frame. On the synchronous
+// path the two drags' pose frames show the same sets.
 #[test]
 fn a_commit_right_after_a_fast_drag_bakes_what_the_preview_had_not() {
     let case = &cases()[3];
@@ -976,9 +1069,7 @@ fn tunnel_tiles_of_a_preview_commit_undo_and_load_equal_fresh_bakes() {
     };
     let mut pose = context.preview_road(request(&context));
     let pieces = pose.pieces.as_mut().expect("the tunnel's pieces");
-    while let Some(graded) = context.catch_up_graded() {
-        pieces.graded = graded;
-    }
+    pieces.graded = converge_graded(&mut context).expect("the pose's set lands");
     assert_eq!(pieces.graded.pending, 0, "converged");
     let shown = Arc::clone(pieces.graded.stage.as_ref().expect("the pose's tiles bake"));
     assert!(

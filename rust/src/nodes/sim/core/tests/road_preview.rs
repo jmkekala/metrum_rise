@@ -760,10 +760,10 @@ fn a_split_trunk_rebuilds_only_the_terrain_near_the_junction() {
                 let points = stroke(&core, side);
                 let mut context = context(&mut core);
                 let mut preview = preview(&mut context, &points);
-                // T27 (d): the preview's terrain catches up before the click.
-                while let Some(graded) = context.catch_up_graded() {
-                    preview.pieces.as_mut().expect("the pose's pieces").graded = graded;
-                }
+                // `TERRAIN-14`: the pose's graded set lands before the click.
+                let graded = super::graded_stage::converge_graded(&mut context)
+                    .expect("the pose's set lands");
+                preview.pieces.as_mut().expect("the pose's pieces").graded = graded;
                 commit(&mut core, &points, Some(Arc::new(preview)));
                 // `TERRAIN-07-E`: the commit adopts the preview's graded tiles, the same tiles
                 // on either trunk.

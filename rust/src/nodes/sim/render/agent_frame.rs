@@ -29,8 +29,10 @@ use super::car_visual::{CarVisualSmoother, GroundView};
 use super::walker_visual::DrawnWalkers;
 use crate::nodes::sim::core::RenderSnapshot;
 use crate::simulation::parking::ParkedPublication;
+use crate::thread_pools::lane::FrameLane;
+pub(crate) use crate::thread_pools::lane::Taken;
 use glam::Vec3;
-use std::sync::{Arc, Condvar, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 
 /// Floats per car row (a 3D transform) and per walker row (transform, then custom data).
 pub(crate) const CAR_STRIDE: usize = 12;
@@ -308,147 +310,9 @@ impl AgentFrame {
     }
 }
 
-// Where a frame is: on the main thread (or before the first), at a job, or back from one.
-enum LaneState {
-    Resident(Box<AgentFrame>),
-    Running,
-    Landed(Box<AgentFrame>),
-}
-
-// The lane's state with the condition a waiter (tests' synchronous path) blocks on.
-type Shared = Arc<(Mutex<LaneState>, Condvar)>;
-
-/// Where the agents' frame is between the main thread and its job, and the deltas of frames
-/// whose job was late. Every operation is `O(1)` on the main thread.
-pub(crate) struct AgentFrameLane {
-    shared: Shared,
-    // Seconds of frames that started no job, carried into the next.
-    carried_delta: f64,
-    late_frames: u64,
-}
-
-impl Default for AgentFrameLane {
-    fn default() -> Self {
-        Self {
-            shared: Arc::new((
-                Mutex::new(LaneState::Resident(Box::default())),
-                Condvar::new(),
-            )),
-            carried_delta: 0.0,
-            late_frames: 0,
-        }
-    }
-}
-
-/// What [`AgentFrameLane::take`] found.
-pub(crate) enum Taken {
-    /// A frame a job prepared: install it, then start the next.
-    Landed(Box<AgentFrame>),
-    /// A frame that was not at a job (the first, or after the synchronous path): start it.
-    Resident(Box<AgentFrame>),
-    /// The job still runs: draw what was drawn.
-    Late,
-}
-
-impl AgentFrameLane {
-    fn state(&self) -> std::sync::MutexGuard<'_, LaneState> {
-        self.shared.0.lock().unwrap_or_else(PoisonError::into_inner)
-    }
-
-    /// Takes the frame for this frame's `delta` seconds, never waiting: returns it with the
-    /// delta its job is to smooth over (this one's plus every late frame's since the last
-    /// start), or [`Taken::Late`] and carries `delta` on.
-    pub(crate) fn take(&mut self, delta: f64) -> (Taken, f64) {
-        let mut state = self.state();
-        let taken = match std::mem::replace(&mut *state, LaneState::Running) {
-            LaneState::Running => {
-                drop(state);
-                self.late_frames += 1;
-                self.carried_delta += delta;
-                return (Taken::Late, 0.0);
-            }
-            LaneState::Resident(frame) => Taken::Resident(frame),
-            LaneState::Landed(frame) => Taken::Landed(frame),
-        };
-        drop(state);
-        (taken, std::mem::take(&mut self.carried_delta) + delta)
-    }
-
-    /// Takes the frame, waiting for a job in flight (the synchronous path: tests and tools),
-    /// and whether a job prepared it (its outputs not yet installed).
-    pub(crate) fn take_waiting(&mut self) -> (Box<AgentFrame>, bool) {
-        let (lock, landed) = &*self.shared;
-        let mut state = landed
-            .wait_while(
-                lock.lock().unwrap_or_else(PoisonError::into_inner),
-                |state| matches!(state, LaneState::Running),
-            )
-            .unwrap_or_else(PoisonError::into_inner);
-        match std::mem::replace(&mut *state, LaneState::Running) {
-            LaneState::Resident(frame) => (frame, false),
-            LaneState::Landed(frame) => (frame, true),
-            LaneState::Running => unreachable!("waited while running"),
-        }
-    }
-
-    /// Keeps `frame` on the main thread (the synchronous path), readable by [`Self::resident`].
-    pub(crate) fn keep(&mut self, frame: Box<AgentFrame>) {
-        *self.state() = LaneState::Resident(frame);
-    }
-
-    /// The job that runs `prepare` on `frame` and lands it for the next [`Self::take`]: the
-    /// caller queues it on the background pool. The frame must have come from `take`.
-    pub(crate) fn job(
-        &self,
-        mut frame: Box<AgentFrame>,
-        prepare: impl FnOnce(&mut AgentFrame) + Send + 'static,
-    ) -> impl FnOnce() + Send + 'static {
-        let shared = Arc::clone(&self.shared);
-        move || {
-            prepare(&mut frame);
-            land(&shared, frame);
-        }
-    }
-
-    /// Lands `frame`, prepared on the calling thread, for the next [`Self::take`]. The frame
-    /// must have come from `take`.
-    pub(crate) fn land(&mut self, frame: Box<AgentFrame>) {
-        land(&self.shared, frame);
-    }
-
-    /// The frame kept on the main thread by the synchronous path, if it is there.
-    pub(crate) fn resident<R>(&self, read: impl FnOnce(&AgentFrame) -> R) -> Option<R> {
-        match &*self.state() {
-            LaneState::Resident(frame) => Some(read(frame)),
-            _ => None,
-        }
-    }
-
-    /// Waits until no job runs (tests).
-    #[cfg(test)]
-    pub(crate) fn wait_landed(&self) {
-        let (lock, landed) = &*self.shared;
-        drop(
-            landed
-                .wait_while(lock.lock().unwrap(), |state| {
-                    matches!(state, LaneState::Running)
-                })
-                .unwrap(),
-        );
-    }
-
-    /// Frames whose job was still running when they asked for it, since the lane began.
-    pub(crate) fn late_frames(&self) -> u64 {
-        self.late_frames
-    }
-}
-
-// Puts a prepared frame where the next `take` finds it and wakes a waiter.
-fn land(shared: &Shared, frame: Box<AgentFrame>) {
-    let (lock, landed) = &**shared;
-    *lock.lock().unwrap_or_else(PoisonError::into_inner) = LaneState::Landed(frame);
-    landed.notify_all();
-}
+/// Where the agents' frame is between the main thread and its job (the shared lane,
+/// [`crate::thread_pools::lane`]).
+pub(crate) type AgentFrameLane = FrameLane<AgentFrame>;
 
 /// The candidates handed from the agents' frame to the shadow-caster twins, and the shadow
 /// range the twins last drew with (the next job's candidate radius). Main thread only.

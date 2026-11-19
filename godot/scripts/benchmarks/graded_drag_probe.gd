@@ -4,16 +4,17 @@
 ## for a rendered run on a real display): replays the pinned Kuopio strokes of the terrain
 ## replay's manifest through the production RoadTool as `benchmark_kuopio_graded_drags` drags them
 ## in Rust: eight poses growing from the stroke's start to its end, one pose a frame, clicked in
-## the frame after the last pose and undone, then dragged again, caught up (the frames that stage
-## the rest of the last pose's graded tiles) and clicked; the case goes on from that commit.
+## the frame after the last pose and undone, then dragged again, caught up (the frames until the
+## last pose's graded set, staged on the background pool, has landed: `TERRAIN-14`) and clicked;
+## the case goes on from that commit.
 ## Per frame it records the terrain renderer's install share: on a pose or catch-up frame
 ## show_preview (the slot uploads and the cell and wall instance swaps), on the frame that installs
 ## a commit's or undo's edit batch that frame's graded work (the staged tiles' uploads, the
 ## preview's release and the swaps); with the bytes uploaded, the patches drawing graded cells, the
 ## frame's wall time and the viewport's last measured GPU time. It checks the renderer's bookkeeping: no pool exhausted, no
 ## bake failed, nothing created by a drag or an edit beyond the pages and variants the renderer
-## creates on demand, each batch's tiles installed with the preview released, and a catch-up of
-## one share a frame.
+## creates on demand, each batch's tiles installed with the preview released, and the preview
+## converging.
 ## Env: METRUM_GRADED_DRAG_CASES (case ids, comma-separated; default every case),
 ## METRUM_GRADED_DRAG_DISTANCE (the camera's orbit distance from the stroke's end, m; default 40,
 ## so the tiles around the click take GL0, the dearest to upload), METRUM_GRADED_DRAG_CAPTURE_DIR
@@ -47,9 +48,7 @@ const CommitProducts := preload("res://scripts/benchmarks/commit_products.gd")
 const POSES := 8
 # The Godot terrain install share of a pose, commit or undo frame (`terrain.md` budgets).
 const SHARE_MS := 1.0
-# Tiles a catch-up frame stages (`graded_stage.rs`'s CATCH_UP_FRAME_TILES, two since
-# `TERRAIN-07-G` round 7).
-const CATCH_UP_FRAME_TILES := 2
+# Frames a converging drag waits for its last graded set at most (it lands when its job ends).
 const CATCH_UP_LIMIT := 64
 const EDIT_FRAME_LIMIT := 600
 const SETTLE_FRAME_LIMIT := 6000
@@ -399,8 +398,6 @@ func _drag(record: Dictionary, start: Vector2, end: Vector2, stroke: Dictionary,
 			await _next_frame()
 			catch_up += 1
 		_expect(tool._graded_pending == 0, record, "the preview converges")
-		_expect(catch_up == ceili(float(pending) / CATCH_UP_FRAME_TILES), record,
-			"one share a catch-up frame: %d frames for %d tiles" % [catch_up, pending])
 		await _capture(record, "preview")
 	var out := {"valid": bool(tool._preview.get("is_valid", false)), "pending_after_poses": pending,
 		"catch_up_frames": catch_up, "committed": false}

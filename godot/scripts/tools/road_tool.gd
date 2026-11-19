@@ -34,8 +34,8 @@
 ## that frame in place of the resident chunks. A click submits that preview; the preview stays
 ## shown until the committed generation's chunks are installed, then both swap in one call. The
 ## preview's graded terrain tiles (`TERRAIN-07-E`) show on the terrain renderer's graded tiles
-## from the frame that staged them; frames without a new pose stage the pose's rest, and the
-## commit's edit replaces them with the committed tiles in one frame. Also the snapping options
+## from the frame their set lands in (`TERRAIN-14`: each pose's set is staged on the background
+## pool, and frames without a new pose poll for it), and the commit's edit replaces them with the committed tiles in one frame. Also the snapping options
 ## (network snap, guide lines, zoning grid, angle lock step, length step; Shift draws free of all
 ## but the network, B5). Heights (round I): each free end has a height handle, a grip above it;
 ## a press on a grip drags it (Rust projects the pointer onto its vertical line in 0.5 m steps,
@@ -98,7 +98,7 @@ const ACTION_FORGET_PREVIEW := 8
 const _FLAG_OPTIONS := {"network_snap": 0, "guide_lines": 1, "zoning_grid": 2, "continuous": 3, "straight_grade": 4}
 const _STEP_OPTIONS := {"angle_step_deg": 0, "length_step_m": 1}
 # The tick's flags (`road_tool_tick`): a new preview, the preview gone, a batch ghost, the ghost
-# gone, the gizmos, the hue, the chips, only the chips' corners, the pose's graded share, the sent
+# gone, the gizmos, the hue, the chips, only the chips' corners, a landed graded set, the sent
 # stroke's answer (the tick stopped there), the cursor; `road_tool_tick_off`'s drawings dropped.
 const TICK_PREVIEW := 1
 const TICK_PREVIEW_CLEARED := 2
@@ -182,8 +182,8 @@ var _graded_commit_epoch: int:
 		return simulation_node.road_tool_commit_graded_epoch() if _has_session() else -1
 # The outlines of the lots the previewed stroke removes (`ZONE-09`), made on first use.
 var _demolish_mesh: MeshInstance3D = null
-# The latest pose's graded tiles still to stage (`TERRAIN-07-E`, T27 (d); the tick stages the
-# next share each frame without a new pose; probes and tests wait on 0).
+# The graded sets still to land (`TERRAIN-14`; the tick polls for them each frame without a new
+# pose; probes and tests wait on 0).
 var _graded_pending: int:
 	get:
 		return simulation_node.road_tool_graded_pending() if _has_session() else 0
@@ -299,7 +299,7 @@ func _draw_tick(flags: int, start_us := 0) -> void:
 		_clear_preview_visual()
 		_clear_preview_cache()
 	elif flags & TICK_GRADED:
-		# A frame without a new pose staged the next share of the pose's graded tiles.
+		# A frame without a new pose landed a graded set.
 		_show_graded(simulation_node.road_tool_graded_changes())
 	if hud != null and (flags & (TICK_CHIPS | TICK_CORNERS) or hud.stale):
 		hud.simulation_node = simulation_node
@@ -517,7 +517,7 @@ func _graded_renderer():
 		return null
 	return terrain_node.get("graded_tiles")
 
-# Shows one frame's graded tile changes (a pose's or a catch-up frame's) and returns the
+# Shows one frame's graded tile changes (a pose's or a landed set's) and returns the
 # milliseconds the renderer took.
 func _show_graded(frame: Dictionary) -> float:
 	var graded = _graded_renderer()

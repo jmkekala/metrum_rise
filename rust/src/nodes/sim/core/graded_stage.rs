@@ -3,11 +3,11 @@
 //! The graded terrain's tiles in the road tool's preview poses, the commit and undo
 //! (`TERRAIN-07-E`, `docs/terrain.md` "Preview, commit, undo and load"): the Rust half.
 //!
-//! - A pose selects the dirty tiles of the preview roadbed against the published one and
-//!   stages a bounded share of them per frame (T27 (d), decided by the user, 2026-10-27),
-//!   nearest the stroke's moving end first, adopting a shown tile whose inputs equal the pose's
-//!   and baking the rest; the frames after it stage the rest, the earlier poses' tiles shown
-//!   until then, so a frame's terrain work stays within its share whatever the edit.
+//! - A pose's whole selection is staged as one set by a job on the background pool
+//!   (`TERRAIN-14`, superseding T27 (d)'s per-frame share): the job selects the dirty tiles of
+//!   the pose's roadbed against the published one and stages them, adopting a tile of the last
+//!   landed set whose inputs equal the pose's and baking the rest. The frame only takes the
+//!   pose's inputs and polls for a landed set, so its terrain work is `O(1)` plus the hand-over.
 //! - The commit selects its own dirty tiles over the live roadbed and sites, adopts the matching
 //!   preview's staged tiles whose inputs equal the committed ones and bakes the rest. Its undo
 //!   record keeps the tiles the commit replaced (T20 (a)): a pure job bakes them from the
@@ -18,12 +18,12 @@
 //!
 //! Inputs decide every reuse, so each staged tile is bitwise the fresh bake of the state it
 //! stands for (invariant 9); a shown preview tile is the exact bake of some pose's inputs,
-//! never a blend or a part of one. The renderer is handed the latest pose's whole selection,
-//! each tile its exact bake, or none (`TERRAIN-12`, `docs/terrain.md` T60 and T61, the user,
-//! 2026-10-29): a tile an earlier pose staged counts while the move left its inputs unchanged,
-//! and a pose that draws no road draws no preview terrain. Each tile is staged at the level the
-//! renderer's distance rule gives it ([`LevelRule`], T42). The renderer takes each frame's
-//! changed displayed tiles ([`GradedPreview::take_shown_changes`]); the tiles of a commit or
+//! never a blend or a part of one. The renderer is handed one pose's whole set, each tile its
+//! exact bake, or none (`TERRAIN-12`, `docs/terrain.md` T60 and T61, the user, 2026-10-29): the
+//! latest pose's set once it lands, and a pose that draws no road draws no preview terrain. Which
+//! frame a set lands in depends on its job's time; what it holds does not. Each tile is staged at
+//! the level the renderer's distance rule gives it ([`LevelRule`], T42). The renderer takes each
+//! frame's changed displayed tiles ([`GradedPreview::take_shown_changes`]); the tiles of a commit or
 //! undo ride on the graded edit journal's record of the install, so the renderer installs them
 //! instead of rebaking.
 
@@ -34,12 +34,13 @@ use super::road_terrain_inputs::RoadTerrainInputs;
 use super::state::SimCore;
 use crate::simulation::buildings::allocator::BuildingSiteTerrainSnapshot;
 use crate::simulation::core::pure_job::{JobStart, PureJob};
-use crate::simulation::network::roadbed::{PieceId, RoadbedDelta, RoadbedSystem, TerrainChanges};
+use crate::simulation::network::roadbed::{RoadbedDelta, RoadbedSystem, TerrainChanges};
 use crate::simulation::terrain::TerrainSystem;
 use crate::simulation::terrain::graded::{
-    BakeError, Level, LevelRule, SiteBuffer, SiteSource, StageScratch, StageStats, StagedTile,
-    TILE_M, TileKey, TileStage, bake_window, stage_selected, stage_tiles,
+    BakeError, LevelRule, SiteBuffer, SiteSource, StageScratch, StageStats, StagedTile, TileKey,
+    TileStage, bake_window, stage_selected, stage_tiles,
 };
+use crate::thread_pools::lane::{FrameLane, Taken};
 
 /// The building sites the road tool's view captured per render patch
 /// ([`RoadTerrainInputs`]), answered with the allocator's own test: a graded bake from them
@@ -95,20 +96,6 @@ impl SiteSource for PreviewSites<'_> {
     }
 }
 
-/// Tiles one pose's frame stages at most after its selection (T27 (d), decided by the user,
-/// 2026-10-27): each is gathered, then adopted from the shown tiles or baked. A bound on the
-/// work, never on time, measured to fit the 3.0 ms terrain stage on four workers with the
-/// selection (`docs/terrain.md` "Preview, commit, undo and load"); a pose with more tiles
-/// finishes them in the frames after it. One is the least a pose can stage.
-pub(crate) const POSE_FRAME_TILES: usize = 1;
-
-/// Tiles a catch-up frame stages at most: a frame without a new pose has no selection.
-/// Re-measured with T48 (a)'s extra candidates and T49 (c)'s flag in the bake
-/// (`TERRAIN-07-G` round 7): on four workers the populated drags' catch-up frames take at most
-/// 2.65 ms with two tiles and 3.03 ms with three, so two. On Kuopio's steepest strokes a single
-/// tile's bake alone takes up to 3.64 ms, so no count fits there (`docs/terrain.md` T27).
-pub(crate) const CATCH_UP_FRAME_TILES: usize = 2;
-
 /// The tiles whose published road cut the drawn road may leave open (T65 option (c), `ROAD-112`
 /// round G2): every tile meeting the bounds of a published piece `delta` replaces. A preview
 /// draws `delta`'s pieces in place of those (their runs collapsed), so a published tile's cut
@@ -135,258 +122,205 @@ pub(crate) fn replaced_cut_tiles(
     out.dedup();
 }
 
-/// One frame's graded tiles of the road tool's preview: the tiles shown after it, or why the
-/// frame could not stage them, with what the frame staged.
+/// One frame's graded tiles of the road tool's preview: the newest landed set, or why it could
+/// not be staged, with what its job staged.
 #[derive(Clone, Debug)]
 pub(crate) struct GradedPose {
-    /// Per wanted tile of the latest pose, its exact bake of this pose's inputs once staged,
-    /// else the tile an earlier pose showed (no tile: the published terrain shows).
+    /// The newest landed set of the epoch: one pose's whole selection, each tile its exact bake
+    /// of that pose's inputs (no tile before the first set lands). What a commit adopts from.
     pub(crate) stage: Result<Arc<TileStage>, BakeError>,
-    /// The frame's staging: `wanted` the pose's tiles, `adopted` and `baked` this frame's.
+    /// That set's staging: `wanted` its pose's tiles, `adopted` and `baked` its job's, with the
+    /// selection's and the bakes' times on the background pool.
     pub(crate) stats: StageStats,
-    /// The pose's tiles still to stage in later frames; 0 once the shown tiles are the pose's.
+    /// Sets still to land, in flight or queued (at most two); 0 once the newest landed set is
+    /// the latest pose's.
     pub(crate) pending: usize,
-    /// The frame's whole terrain work, milliseconds: the selection, the staging and the shown
-    /// tiles.
+    /// Poses the newest landed set is behind the latest pose (0: the latest pose's own set);
+    /// `None` before any set landed in the epoch.
+    pub(crate) behind: Option<u64>,
+    /// The job of the set that landed in this frame, milliseconds from its start on a frame to
+    /// its landing; 0 when none landed.
+    pub(crate) job_ms: f64,
+    /// The frame's terrain work on the calling thread, milliseconds: the pose's snapshots, the
+    /// poll and the landed set's hand-over.
     pub(crate) frame_ms: f64,
-    /// The level rule the pose's tiles were selected and staged by; a commit of the pose
+    /// The level rule the latest pose's tiles are selected and staged by; a commit of the pose
     /// stages by it too, so its tiles meet the preview's at the same levels.
     pub(crate) rule: LevelRule,
     /// The preview epoch the shown tiles belong to ([`GradedPreview::release`]).
     pub(crate) epoch: u64,
 }
 
-// The pose `exact` is exact for: its roadbed (the owners its delta covered are
-// `GradedPreview::owners`), with the terrain, site revision and level rule it was staged over;
-// a next pose with other inputs keeps no tile (T60 (a)).
-struct LastPose {
-    roadbed: RoadbedSystem,
-    terrain: Arc<TerrainSystem>,
-    sites_revision: u64,
-    rule: LevelRule,
-}
-
-// What the latest pose's remaining tiles bake from: the inputs it was selected over, `O(1)`
-// copies.
+// What a pose's set reads, owned by its job: `O(1)` copies, the changes moved in.
 struct PoseInputs {
+    generation: u64,
     terrain: Arc<TerrainSystem>,
-    roadbed: RoadbedSystem,
+    before: RoadbedSystem,
+    after: RoadbedSystem,
     sites: RoadTerrainInputs,
+    changes: TerrainChanges,
     rule: LevelRule,
 }
 
-/// The road tool's graded preview between frames (T27 (d)): the tiles it shows and the latest
-/// pose's tiles still to stage, and their buffers. Each frame stages a bounded share of the
-/// latest pose's tiles in a fixed order (nearest the stroke's moving end first, then `(level,
-/// tile)`), so the shown tiles after every frame depend only on the pose sequence, never on
-/// timing or the worker count. A new pose supersedes the older pose's unstaged tiles; once the
-/// poses stop, the shown tiles become the pose's in `ceil(remaining / CATCH_UP_FRAME_TILES)`
-/// frames, bitwise its fresh bake.
+// The preview's lane payload: a pose's inputs and adoption pool in, its set out, the staging's
+// buffers travelling with them (reused from set to set).
+#[derive(Default)]
+struct PoseSet {
+    pose: Option<(PoseInputs, Arc<TileStage>)>,
+    // The landed set and the generation of the pose it is of.
+    staged: Option<Result<(Arc<TileStage>, StageStats), BakeError>>,
+    generation: u64,
+    // When a frame started the job, and when it landed.
+    started: Option<Instant>,
+    job_ms: f64,
+    scratch: StageScratch,
+}
+
+impl PoseSet {
+    // The job, a pure function of its inputs: the pose's selection, then its whole set staged
+    // over the adoption pool (a tile whose inputs equal a held one's is adopted, the rest are
+    // baked; the bakes' parallel passes stay on the background pool). `O(one selection +
+    // wanted gathers + rebaked bakes)`.
+    fn stage(&mut self) {
+        let Some((pose, held)) = self.pose.take() else {
+            return;
+        };
+        let select_start = Instant::now();
+        let sites = PreviewSites::new(&pose.terrain, &pose.sites);
+        self.scratch.select_road_edit(
+            &pose.terrain,
+            &pose.before,
+            &pose.after,
+            &sites,
+            &pose.changes,
+            &pose.rule,
+        );
+        let select_ms = select_start.elapsed().as_secs_f64() * 1000.0;
+        let staged = stage_selected(&pose.terrain, &pose.after, &sites, &held, &mut self.scratch);
+        self.staged = Some(staged.map(|(stage, stats)| {
+            (Arc::new(stage), StageStats { select_ms, ..stats })
+        }));
+        self.generation = pose.generation;
+        self.job_ms = self
+            .started
+            .map_or(0.0, |started| started.elapsed().as_secs_f64() * 1000.0);
+    }
+}
+
+/// The road tool's graded preview between frames (`TERRAIN-14`): each pose's whole selection is
+/// staged as one set by a job on the background pool, and the frame only polls for it. At most
+/// one set is in flight and one pose queued behind it, the newest (a newer pose replaces the
+/// queued one, never the set in flight, which is the next to land). A landed set becomes the
+/// adoption pool of the next set and of a commit; it is displayed only while it is the latest
+/// pose's (the strict display: no preview terrain under a moving road, the pose's terrain one
+/// frame after the road pauses). A set of a pose a release, a cancel, a pose that draws no road
+/// or a publication invalidated is dropped as it lands. Which frame shows a set depends on when
+/// its job lands; every shown set is one pose's exact bake, and a converged set, the commit
+/// and the undo are bitwise as before (T27 (d)'s per-frame share superseded).
 #[derive(Default)]
 pub(crate) struct GradedPreview {
-    // Every tile a frame of this epoch staged and still wanted: what the next stage and a
-    // commit adopt from (T27 (d)).
+    // The newest landed set of this epoch: what the next set and a commit adopt from.
     shown: Arc<TileStage>,
-    // The tiles of `shown` exact for the latest pose (T60), by induction: a pose keeps the
-    // tiles it wants whose inputs its move left unchanged and adds its staged tiles; a pose
-    // without a drawn road, or a publication, keeps none.
-    exact: Arc<TileStage>,
-    // What the renderer draws (T61 (1) (a)): the latest pose's whole selection once `exact`
-    // holds every tile of it, else nothing (the published tiles), never a part.
+    // Its staging, the generation of its pose (0: none) and why the newest set failed, if it
+    // did.
+    shown_stats: StageStats,
+    shown_generation: u64,
+    shown_error: Option<BakeError>,
+    // What the renderer draws (T61 (1) (a)): one pose's whole set, each tile its exact bake, or
+    // nothing (the published tiles), never a part.
     display: Arc<TileStage>,
     // The display the renderer holds: as of the last `take_shown_changes`.
     sent: Arc<TileStage>,
-    // The latest pose `exact` is exact for, for the next pose's move (T60 (a)).
-    last: Option<LastPose>,
-    // The owners the latest pose's delta covered, sorted; a pose's own, the union of both and
-    // its move's changes and tiles (scratch, reused).
-    owners: Vec<PieceId>,
-    pose_owners: Vec<PieceId>,
-    move_owners: Vec<PieceId>,
-    move_changes: TerrainChanges,
-    displayed_keys: Vec<TileKey>,
-    moved: Vec<TileKey>,
+    // The sets' carrier between the frame and the background pool.
+    lane: FrameLane<PoseSet>,
+    // The latest pose's generation, the oldest generation whose set still counts, whether a set
+    // is in flight and the pose queued behind it.
+    latest: u64,
+    valid_from: u64,
+    in_flight: bool,
+    queued: Option<PoseInputs>,
+    // The level rule the latest pose was selected by.
+    latest_rule: LevelRule,
     // Counts releases and cancels: the renderer tags the tiles it shows with it, and a commit's
     // install releases the tiles of the epoch its pose belonged to.
     epoch: u64,
     // The renderer's view the poses select for.
     rule: LevelRule,
-    // The tile keys of `shown`, sorted (scratch of `take_shown_changes`).
+    // The tile keys of `display`, sorted (scratch of `take_shown_changes`).
     keys: Vec<TileKey>,
-    pending: Option<PoseInputs>,
-    // The latest pose's tiles in `(level, tile)` order, then in staging order, of which the
-    // first `next` are staged.
-    wanted: Vec<(Level, TileKey)>,
-    order: Vec<(Level, TileKey)>,
-    next: usize,
-    // One frame's share, in `(level, tile)` order.
-    share: Vec<(Level, TileKey)>,
-    scratch: StageScratch,
     // The latest pose's tiles whose published cut its road may leave open (scratch of
     // `cut_tiles`).
     cut: Vec<TileKey>,
+    // Tests: jobs are held here instead of queued, and run by the test.
+    #[cfg(test)]
+    deferred: Option<Vec<Box<dyn FnOnce() + Send>>>,
 }
 
 impl GradedPreview {
-    /// One pose's frame: selects the dirty tiles of `changes` from the published roadbed
-    /// `before` to the pose's roadbed `after` and stages the first [`POSE_FRAME_TILES`] of them
-    /// nearest `end` (the stroke's moving end, world XZ), adopting shown tiles whose inputs
-    /// equal the pose's. `owners` are the owners the pose's delta covers. The exact tiles keep
-    /// the pose's wanted tiles the move from the latest pose left unchanged (a second selection,
-    /// of the move, among them, T60 (a)). `O(selection + the move's candidates + share's gathers
-    /// and bakes + wanted log wanted)`.
-    #[allow(clippy::too_many_arguments)]
+    /// One pose's frame: takes the pose's inputs (the terrain, the published roadbed `before`,
+    /// the pose's roadbed `after`, the site patches, `O(1)` copies, and the roadbed's `changes`,
+    /// moved in), lands a set that finished, and starts the pose's set or queues the pose behind
+    /// the set in flight. Nothing an earlier pose staged is displayed under this pose. `O(1)` plus
+    /// a landed set's hand-over.
     pub(crate) fn stage_pose(
         &mut self,
         terrain: &Arc<TerrainSystem>,
         before: &RoadbedSystem,
         after: &RoadbedSystem,
         sites: &RoadTerrainInputs,
-        changes: &TerrainChanges,
-        owners: impl Iterator<Item = PieceId>,
-        end: [f64; 2],
+        changes: TerrainChanges,
     ) -> GradedPose {
         let start = Instant::now();
-        self.pending = None;
-        self.pose_owners.clear();
-        self.pose_owners.extend(owners);
-        self.pose_owners.sort_unstable();
-        self.pose_owners.dedup();
-        let last = self.last.take();
-        let preview_sites = PreviewSites::new(terrain, sites);
-        let ready = preview_sites.ready();
-        if ready {
-            self.scratch.select_road_edit(
-                terrain,
-                before,
-                after,
-                &preview_sites,
-                changes,
-                &self.rule,
-            );
-            self.wanted.clear();
-            self.wanted.extend_from_slice(self.scratch.selected());
-            self.keep_unmoved(last, terrain, sites, after);
-        } else {
-            self.exact = Arc::default();
-            self.display = Arc::default();
-        }
-        // This pose is the next one's base.
-        std::mem::swap(&mut self.owners, &mut self.pose_owners);
-        self.last = Some(LastPose {
-            roadbed: after.snapshot(),
-            terrain: Arc::clone(terrain),
-            sites_revision: sites.revision,
-            rule: self.rule,
-        });
-        if !ready {
+        if !PreviewSites::new(terrain, sites).ready() {
+            self.supersede();
             return self.failed(BakeError::SitesUnavailable, start);
         }
-        let select_ms = start.elapsed().as_secs_f64() * 1000.0;
-        self.order.clone_from(&self.wanted);
-        // Nearest the moving end first: the squared distance from `end` to the tile's square
-        // (non-negative, so its order is total), then `(level, tile)`.
-        let distance = |&(_, tile): &(Level, TileKey)| {
-            let [x, z] = tile.origin();
-            let dx = (x - end[0]).max(end[0] - x - TILE_M).max(0.0);
-            let dz = (z - end[1]).max(end[1] - z - TILE_M).max(0.0);
-            dx * dx + dz * dz
-        };
-        self.order
-            .sort_by(|a, b| distance(a).total_cmp(&distance(b)).then_with(|| a.cmp(b)));
-        self.next = 0;
-        self.pending = Some(PoseInputs {
+        self.latest += 1;
+        self.latest_rule = self.rule;
+        self.queued = Some(PoseInputs {
+            generation: self.latest,
             terrain: Arc::clone(terrain),
-            roadbed: after.snapshot(),
+            before: before.snapshot(),
+            after: after.snapshot(),
             sites: sites.clone(),
+            changes,
             rule: self.rule,
         });
-        self.advance(POSE_FRAME_TILES, select_ms, start)
-    }
-
-    // T60 (a): the exact tiles keep those this pose wants that the latest pose's exact tiles held
-    // and that the move from that pose to this one left unchanged: the dirty tiles of the
-    // roadbed change between the two poses (the owners either delta covered), selected as a
-    // commit's are among the displayed tiles, so a kept tile's inputs equal this pose's and it
-    // is this pose's exact bake. A latest pose over other terrain, sites or levels keeps none.
-    // `O(the move's candidates + displayed tiles' tests + display log wanted)`.
-    fn keep_unmoved(
-        &mut self,
-        last: Option<LastPose>,
-        terrain: &Arc<TerrainSystem>,
-        sites: &RoadTerrainInputs,
-        after: &RoadbedSystem,
-    ) {
-        let Some(last) = last.filter(|last| {
-            !self.exact.is_empty()
-                && Arc::ptr_eq(&last.terrain, terrain)
-                && last.sites_revision == sites.revision
-                && last.rule == self.rule
-        }) else {
-            self.exact = Arc::default();
-            return;
-        };
-        // The owners either pose's delta covered: every piece that can differ between them.
-        self.move_owners.clear();
-        self.move_owners.extend_from_slice(&self.owners);
-        self.move_owners.extend_from_slice(&self.pose_owners);
-        self.move_owners.sort_unstable();
-        self.move_owners.dedup();
-        after.terrain_changes_from(&last.roadbed, &self.move_owners, &mut self.move_changes);
-        // Only the displayed tiles need the test: the move's selection over them alone.
-        self.displayed_keys.clear();
-        self.displayed_keys
-            .extend(self.exact.tiles().iter().map(|held| held.tile));
-        self.displayed_keys.sort_unstable();
-        let displayed = &self.displayed_keys;
-        let selected = self.scratch.select_road_edit_where(
-            terrain,
-            &last.roadbed,
-            after,
-            &PreviewSites::new(terrain, sites),
-            &self.move_changes,
-            &self.rule,
-            |tile| displayed.binary_search(&tile).is_ok(),
-        );
-        self.moved.clear();
-        self.moved.extend(selected.iter().map(|&(_, tile)| tile));
-        self.moved.sort_unstable();
-        self.moved.dedup();
-        let (wanted, moved) = (&self.wanted, &self.moved);
-        self.exact = Arc::new(self.exact.filtered(|level, tile| {
-            wanted.binary_search(&(level, tile)).is_ok() && moved.binary_search(&tile).is_err()
-        }));
-    }
-
-    /// One frame without a new pose: stages the next [`CATCH_UP_FRAME_TILES`] of the latest
-    /// pose's tiles. `None` once the shown tiles are the pose's (or no pose is pending).
-    pub(crate) fn catch_up(&mut self) -> Option<GradedPose> {
-        self.pending.as_ref()?;
-        Some(self.advance(CATCH_UP_FRAME_TILES, 0.0, Instant::now()))
-    }
-
-    /// The latest pose's tiles still to stage (0 once the shown tiles are the pose's).
-    pub(crate) fn pending_tiles(&self) -> usize {
-        if self.pending.is_some() {
-            self.order.len() - self.next
-        } else {
-            0
-        }
-    }
-
-    /// Drops the latest pose's unstaged tiles: a newer pose that draws no road (no pieces, or
-    /// invalid), or a publication that replaced the view, supersedes them. The shown tiles stay
-    /// for adoption, but the renderer is handed none (T60: a pose without a drawn road shows no
-    /// preview terrain; after a publication no earlier tile is known to be exact).
-    pub(crate) fn supersede(&mut self) {
-        self.pending = None;
-        self.exact = Arc::default();
         self.display = Arc::default();
-        self.last = None;
+        let job_ms = self.poll();
+        self.pose(start, job_ms)
     }
 
-    /// Sets the renderer's view the next poses select their tiles' levels by (a pending pose
-    /// keeps the levels it was selected at).
+    /// One frame without a new pose: lands the set in flight if its job finished, and starts the
+    /// queued pose's. `None` (no allocation) when no set that counts landed. `O(1)` plus a
+    /// landed set's hand-over.
+    pub(crate) fn catch_up(&mut self) -> Option<GradedPose> {
+        if !self.in_flight {
+            return None;
+        }
+        let start = Instant::now();
+        let job_ms = self.poll()?;
+        Some(self.pose(start, Some(job_ms)))
+    }
+
+    /// Sets still to land, in flight or queued (0 once the newest landed set is the latest
+    /// pose's, or a release dropped the rest).
+    pub(crate) fn pending_sets(&self) -> usize {
+        usize::from(self.in_flight) + usize::from(self.queued.is_some())
+    }
+
+    /// Drops the poses whose sets have not landed: a newer pose that draws no road (no pieces, or
+    /// invalid), or a publication that replaced the view, supersedes them. The shown set stays
+    /// for adoption, but the renderer is handed none (T60: a pose without a drawn road shows no
+    /// preview terrain; after a publication no earlier set is known to be exact).
+    pub(crate) fn supersede(&mut self) {
+        self.queued = None;
+        self.valid_from = self.latest + 1;
+        self.display = Arc::default();
+    }
+
+    /// Sets the renderer's view the next poses select their tiles' levels by (a pose in flight
+    /// or queued keeps the levels it was selected at).
     pub(crate) fn set_rule(&mut self, rule: LevelRule) {
         self.rule = rule;
     }
@@ -394,16 +328,17 @@ impl GradedPreview {
     /// Hands the shown tiles over and starts a new epoch with none: at a click, whose commit
     /// installs the tiles of the epoch returned and lets the renderer release that epoch's,
     /// or at cancel. The renderer keeps what it shows until then; the next poses send theirs
-    /// under the new epoch. Returns the released epoch.
+    /// under the new epoch, and a set in flight is dropped as it lands. Returns the released
+    /// epoch.
     pub(crate) fn release(&mut self) -> u64 {
         let released = self.epoch;
         self.epoch += 1;
-        self.pending = None;
+        self.supersede();
         self.shown = Arc::default();
-        self.exact = Arc::default();
-        self.display = Arc::default();
+        self.shown_stats = StageStats::default();
+        self.shown_generation = 0;
+        self.shown_error = None;
         self.sent = Arc::default();
-        self.last = None;
         released
     }
 
@@ -431,11 +366,33 @@ impl GradedPreview {
         &self.cut
     }
 
-    /// The tiles the renderer draws: the latest pose's whole selection, each its exact bake, or
-    /// none (T60, T61).
+    /// The tiles the renderer draws: one pose's whole set, each its exact bake, or none (T60,
+    /// T61).
     #[cfg(test)]
     pub(crate) fn displayed(&self) -> &TileStage {
         &self.display
+    }
+
+    /// Tests' synchronous path: waits until the set in flight, if any, has landed (the next
+    /// [`Self::catch_up`] or pose takes it).
+    #[cfg(test)]
+    pub(crate) fn wait(&self) {
+        self.lane.wait_landed();
+    }
+
+    /// Tests: holds every job from now on instead of queuing it, for [`Self::run_deferred`].
+    #[cfg(test)]
+    pub(crate) fn defer_jobs(&mut self) {
+        self.deferred = Some(Vec::new());
+    }
+
+    /// Tests: runs the held jobs on this thread; returns how many ran.
+    #[cfg(test)]
+    pub(crate) fn run_deferred(&mut self) -> usize {
+        let jobs = std::mem::take(self.deferred.as_mut().expect("jobs deferred"));
+        let ran = jobs.len();
+        jobs.into_iter().for_each(|job| job());
+        ran
     }
 
     /// The displayed tiles changed since the last call, for the renderer: into `changed` the
@@ -469,59 +426,89 @@ impl GradedPreview {
         self.sent = Arc::clone(&self.display);
     }
 
-    // Stages the next `count` tiles of the pending pose against the shown tiles and shows them
-    // over the shown tiles of the pose's other wanted tiles.
-    fn advance(&mut self, count: usize, select_ms: f64, start: Instant) -> GradedPose {
-        let inputs = self.pending.as_ref().expect("a pending pose");
-        let inputs_rule = inputs.rule;
-        let end = (self.next + count).min(self.order.len());
-        self.share.clear();
-        self.share.extend_from_slice(&self.order[self.next..end]);
-        self.share.sort_unstable();
-        let sites = PreviewSites::new(&inputs.terrain, &inputs.sites);
-        let staged = stage_tiles(
-            &inputs.terrain,
-            &inputs.roadbed,
-            &sites,
-            &self.share,
-            &self.shown,
-            &mut self.scratch,
-        );
-        let (staged, stats) = match staged {
-            Ok(staged) => staged,
-            Err(error) => {
-                self.pending = None;
-                self.display = Arc::default();
-                return self.failed(error, start);
-            }
+    // Takes the lane's payload without waiting: lands the set in it, if one landed, then starts
+    // the queued pose's set if there is one. Returns the landed set's job time when a set that
+    // counts landed. `O(1)` plus the hand-over.
+    fn poll(&mut self) -> Option<f64> {
+        let (mut set, landed) = match self.lane.take(0.0).0 {
+            Taken::Late => return None,
+            Taken::Resident(set) => (set, false),
+            Taken::Landed(set) => (set, true),
         };
-        self.next = end;
-        let pending = self.order.len() - end;
-        if pending == 0 {
-            self.pending = None;
-        }
-        let shown = Arc::new(TileStage::overlay(&self.wanted, &staged, &self.shown));
-        // The exact tiles take the staged ones over what they kept, each the pose's bake; the
-        // renderer gets them once they are the whole selection (T61 (1) (a)).
-        self.exact = Arc::new(TileStage::overlay(&self.wanted, &staged, &self.exact));
-        self.display = if self.exact.len() == self.wanted.len() {
-            Arc::clone(&self.exact)
+        let counted = if landed {
+            self.in_flight = false;
+            self.land(&mut set).then_some(set.job_ms)
         } else {
-            Arc::default()
+            None
         };
-        let old = std::mem::replace(&mut self.shown, Arc::clone(&shown));
-        let old = Arc::try_unwrap(old).unwrap_or_else(|shared| TileStage::clone(&shared));
-        self.scratch.retire(old, &shown);
+        match self.queued.take() {
+            Some(pose) => self.launch(set, pose),
+            None => self.lane.keep(set),
+        }
+        counted
+    }
+
+    // Takes a landed set: one that counts becomes the shown set and, while it is the latest
+    // pose's, the display; one of an invalidated pose is dropped, its buffers kept for reuse.
+    // Returns whether it counted.
+    fn land(&mut self, set: &mut PoseSet) -> bool {
+        let Some(staged) = set.staged.take() else {
+            return false;
+        };
+        if set.generation < self.valid_from {
+            if let Ok((stage, _)) = staged {
+                retire(&mut set.scratch, stage, &self.shown);
+            }
+            return false;
+        }
+        match staged {
+            Ok((stage, stats)) => {
+                let old = std::mem::replace(&mut self.shown, Arc::clone(&stage));
+                retire(&mut set.scratch, old, &stage);
+                self.shown_stats = stats;
+                self.shown_error = None;
+                self.display = if set.generation == self.latest {
+                    stage
+                } else {
+                    Arc::default()
+                };
+            }
+            Err(error) => {
+                self.shown_stats = StageStats::default();
+                self.shown_error = Some(error);
+                self.display = Arc::default();
+            }
+        }
+        self.shown_generation = set.generation;
+        true
+    }
+
+    // Starts `pose`'s set on the background pool over the shown set.
+    fn launch(&mut self, mut set: Box<PoseSet>, pose: PoseInputs) {
+        set.pose = Some((pose, Arc::clone(&self.shown)));
+        set.started = Some(Instant::now());
+        self.in_flight = true;
+        let job = self.lane.job(set, PoseSet::stage);
+        #[cfg(test)]
+        if let Some(deferred) = &mut self.deferred {
+            deferred.push(Box::new(job));
+            return;
+        }
+        crate::thread_pools::spawn(job);
+    }
+
+    fn pose(&self, start: Instant, job_ms: Option<f64>) -> GradedPose {
         GradedPose {
-            stage: Ok(shown),
-            stats: StageStats {
-                wanted: self.wanted.len(),
-                select_ms,
-                ..stats
+            stage: match self.shown_error {
+                Some(error) => Err(error),
+                None => Ok(Arc::clone(&self.shown)),
             },
-            pending,
+            stats: self.shown_stats,
+            pending: self.pending_sets(),
+            behind: (self.shown_generation > 0).then(|| self.latest - self.shown_generation),
+            job_ms: job_ms.unwrap_or(0.0),
             frame_ms: start.elapsed().as_secs_f64() * 1000.0,
-            rule: inputs_rule,
+            rule: self.latest_rule,
             epoch: self.epoch,
         }
     }
@@ -530,12 +517,21 @@ impl GradedPreview {
         GradedPose {
             stage: Err(error),
             stats: StageStats::default(),
-            pending: 0,
+            pending: self.pending_sets(),
+            behind: None,
+            job_ms: 0.0,
             frame_ms: start.elapsed().as_secs_f64() * 1000.0,
             rule: self.rule,
             epoch: self.epoch,
         }
     }
+}
+
+// Hands a set no longer shown to the scratch for its buffers' reuse (its tiles `kept` does not
+// share). A set the renderer still holds is copied (its tiles' handles), as before.
+fn retire(scratch: &mut StageScratch, old: Arc<TileStage>, kept: &TileStage) {
+    let old = Arc::try_unwrap(old).unwrap_or_else(|shared| TileStage::clone(&shared));
+    scratch.retire(old, kept);
 }
 
 /// What a road commit's undo record keeps of the graded tiles (T20 (a)): the tiles the commit

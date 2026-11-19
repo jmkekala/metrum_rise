@@ -313,6 +313,8 @@ pub(crate) fn disable_global_pool() -> bool {
     built.is_err() && refused
 }
 
+pub(crate) mod lane;
+
 #[cfg(test)]
 mod entry_gate;
 

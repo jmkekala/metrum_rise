@@ -538,6 +538,7 @@ impl SimulationNode {
             dict.set("graded_adopted", stats.adopted as i64);
             dict.set("graded_baked", stats.baked as i64);
             dict.set("graded_pending", pieces.graded.pending as i64);
+            Self::set_graded_landing(&mut dict, &pieces.graded);
         }
         let packing_start = std::time::Instant::now();
         let mut chunks = PackedInt32Array::new();
@@ -600,19 +601,19 @@ impl SimulationNode {
         view_lot_outlines(context, take)
     }
 
-    /// One frame of the road preview's graded terrain without a new pose (`TERRAIN-07-E`,
-    /// `docs/terrain.md` T27 (d)): stages the next bounded share of the latest pose's tiles.
-    /// Returns `{}` once the shown tiles are the pose's, else `graded_ms` (the frame's terrain
-    /// work), `graded_adopted`, `graded_baked` and `graded_pending` (the pose's tiles still to
-    /// stage), as `preview_road` reports them for a pose's frame, with the shown tiles' changes
-    /// as `preview_road` returns them. Takes the context lock only.
+    /// One frame of the road preview's graded terrain without a new pose (`TERRAIN-14`,
+    /// `docs/terrain.md` T27 (d)): lands the graded set in flight if its job finished. Returns
+    /// `{}` when no set landed, else `graded_ms` (the frame's terrain work), `graded_adopted`,
+    /// `graded_baked` and `graded_pending` (the sets still to land), as `preview_road` reports
+    /// them for a pose's frame, with the shown tiles' changes as `preview_road` returns them.
+    /// Takes the context lock only.
     #[func]
     pub fn advance_road_preview_terrain(&self) -> VarDictionary {
         self.road_preview_terrain_step().unwrap_or_default()
     }
 
-    // `advance_road_preview_terrain`'s step, `None` (no allocation) once the shown tiles are the
-    // pose's: the road tool's tick stages through it (round R2-2).
+    // `advance_road_preview_terrain`'s step, `None` (no allocation) when no set landed: the road
+    // tool's tick polls through it (round R2-2).
     pub(super) fn road_preview_terrain_step(&self) -> Option<VarDictionary> {
         let mut tiles = Vec::new();
         let mut removed = Vec::new();
@@ -635,6 +636,7 @@ impl SimulationNode {
         dict.set("graded_adopted", pose.stats.adopted as i64);
         dict.set("graded_baked", pose.stats.baked as i64);
         dict.set("graded_pending", pose.pending as i64);
+        Self::set_graded_landing(&mut dict, &pose);
         Self::set_graded_preview_changes(&mut dict, &tiles, &removed, epoch, cell_m);
         Some(dict)
     }
@@ -692,6 +694,15 @@ impl SimulationNode {
             .graded
             .release();
         i64::try_from(epoch).unwrap_or(i64::MAX)
+    }
+
+    // The newest landed graded set's place (`TERRAIN-14`): `graded_behind` the poses it is
+    // behind the latest (0: the latest pose's own; -1 before any set landed), `graded_job_ms`
+    // the job of a set that landed in this frame (0 when none did).
+    fn set_graded_landing(dict: &mut VarDictionary, pose: &crate::nodes::sim::core::GradedPose) {
+        let behind = pose.behind.map_or(-1, |behind| i64::try_from(behind).unwrap_or(i64::MAX));
+        dict.set("graded_behind", behind);
+        dict.set("graded_job_ms", pose.job_ms);
     }
 
     // The shown graded tiles' changes of a preview frame: `graded_tiles` (packed as

@@ -1029,13 +1029,17 @@ func _check_road_preview(graded: GradedTiles, simulation: SimulationNode, camera
 	var frame: Dictionary = simulation.preview_road(points, 1, 1, true)
 	_expect(frame.get("is_valid", false), "the preview stroke must validate: %s" % frame.get("invalid_reason", ""))
 	var install_ms := graded.show_preview(frame)
+	# The pose's graded set is staged on the background pool (`TERRAIN-14`): the frames poll for
+	# it until it lands (a debug build's bake takes a while; a deadline, not a frame count).
 	var pending := int(frame.get("graded_pending", 0))
 	var frames := 1
-	while pending > 0 and frames < 64:
+	var deadline := Time.get_ticks_msec() + 60000
+	while pending > 0 and Time.get_ticks_msec() < deadline:
+		OS.delay_msec(2)
 		_frame(graded, camera, resident)
 		var step: Dictionary = simulation.advance_road_preview_terrain()
 		install_ms = maxf(install_ms, graded.show_preview(step))
-		pending = int(step.get("graded_pending", 0))
+		pending = simulation.road_tool_graded_pending()
 		frames += 1
 	_expect(pending == 0 and graded.preview.size() > 0, "the preview's tiles converge and show (%d)" % graded.preview.size())
 	var levels := {}

@@ -1150,13 +1150,12 @@ fn benchmark_kuopio_graded_drags() {
     );
 }
 
-// T27 (d) on Kuopio: `kuopio_10`'s first stroke (14 tiles on a hillside) dragged in eight
-// poses shows the same tiles in both drags' pose frames, converges in the bounded catch-up
-// frames to tiles the commit adopts every one of, and a click right after the drag bakes the
-// rest and commits the same tiles, bitwise.
+// `TERRAIN-14` on Kuopio: `kuopio_10`'s first stroke (14 tiles on a hillside) dragged in eight
+// poses on the synchronous path shows the same sets in both drags' pose frames, converges in one
+// catch-up frame to the set the commit adopts every tile of, and a click right after the drag
+// bakes the rest and commits the same tiles, bitwise.
 #[test]
 fn a_kuopio_drag_converges_to_the_tiles_it_commits() {
-    use crate::nodes::sim::core::graded_stage::{CATCH_UP_FRAME_TILES, POSE_FRAME_TILES};
     let manifest = kuopio_manifest();
     let case = manifest["cases"]
         .as_array()
@@ -1169,15 +1168,11 @@ fn a_kuopio_drag_converges_to_the_tiles_it_commits() {
     let record = graded_drag(&mut core, stroke);
     let (commit, fast) = (&record["commit"], &record["fast_commit"]);
     let tiles = commit["tiles"].as_u64().unwrap() as usize;
-    assert!(
-        tiles > POSE_FRAME_TILES,
-        "the stroke outgrows a frame: {tiles}"
-    );
+    assert!(tiles > 1, "the stroke grades tiles: {tiles}");
     assert!(record["pose_frames_equal"].as_bool().unwrap(), "{record}");
-    let frames = record["catch_up_frames"].as_u64().unwrap() as usize;
+    assert_eq!(record["catch_up_frames"].as_u64(), Some(1), "{record}");
     let last_pose = &record["frames"][7];
-    let pending = last_pose["pending"].as_u64().unwrap() as usize;
-    assert_eq!(frames, pending.div_ceil(CATCH_UP_FRAME_TILES), "{record}");
+    assert_eq!(last_pose["pending"].as_u64(), Some(1), "{record}");
     assert_eq!(
         commit["adopted"].as_u64().unwrap() as usize,
         tiles,
@@ -1319,9 +1314,10 @@ fn graded_drag(core: &mut SimCore, stroke: &serde_json::Value) -> serde_json::Va
     core.precompute_road_mesh_data();
     core.allocator
         .prepare_building_site_query_index(core.config.zone_cell_m);
-    let poses: Vec<_> = (1..=8)
+    let count = super::graded_stage::drag_pose_count();
+    let poses: Vec<_> = (1..=count)
         .map(|step| {
-            let u = step as f32 / 8.0;
+            let u = step as f32 / count as f32;
             let end = [0, 1].map(|i| ends[0][i] + (ends[1][i] - ends[0][i]) * u);
             road_tool_points(core, [ends[0], end])
         })
