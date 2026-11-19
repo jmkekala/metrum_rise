@@ -18658,8 +18658,9 @@ the rest was nine more scans for a few dozen sites. Round R30 (branch `render-30
 its plan. Decided under the user's night delegation, 2026-11-19, for review.
 
 **Landed.** The plot overlay's deletion (`1390ee46`, gated alone) landed on `dev` 2026-11-19 with
-this record; the published site rows, the dead path's deletion and their docs wait for the owner's
-call on the 1x turns' p99 (below).
+this record; the published site rows, the dead path's deletion and their docs followed the same
+day on the user's word, which accepted the 1x turns' p99 of 0.087 ms against A5's 0.05 ms bar
+(below). Office and mixed-use sites' visuals: `RENDER-63`.
 
 **What changed.**
 - The plot overlay, key F (which also fired while typing an F in a text field) and
