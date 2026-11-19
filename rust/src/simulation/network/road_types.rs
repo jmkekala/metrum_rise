@@ -29,7 +29,7 @@ use super::roadbed::{FOOTPATH_MIN_WIDTH_M, SHOULDER_BAND_WIDTH_M};
 use super::types::TransitFlags;
 use crate::config;
 
-/// Pockets requested on each new approach into a junction (`ROAD-119`).
+/// Pockets requested on each new approach into a junction (`ROAD-128`).
 /// Roles are relative to the approaching driver; length uses the Junction window's body grid.
 #[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct RoadTypePockets {
@@ -618,7 +618,7 @@ pub fn same_name(a: &str, b: &str) -> bool {
 
 /// The cross-section's [`RoadCrossSection::base_name`], or the first of "<base> (2)",
 /// "<base> (3)", ... that `taken` does not hold. `O(taken names x attempts)` on a UI action.
-/// The type's turn pockets follow the layout (`ROAD-119`): "1+1 Pocket L", "1+1 Pocket R",
+/// The type's turn pockets follow the layout (`ROAD-128`): "1+1 Pocket L", "1+1 Pocket R",
 /// "1+1 Pockets" for both.
 pub fn suggested_name(
     section: RoadCrossSection,

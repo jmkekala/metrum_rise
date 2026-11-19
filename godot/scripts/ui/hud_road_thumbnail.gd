@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-2.0-only
 
 ## Top-down road tile art, using the builder's glyphs and Rust's per-part widths, with a turn
-## arrow badge in the top-right corner for a type with turn pockets (`ROAD-119`). Geometry is
+## arrow badge in the top-right corner for a type with turn pockets (`ROAD-128`). Geometry is
 ## prepared once per type refresh; painting is O(parts), independent of world population.
 extends RefCounted
 

@@ -656,7 +656,7 @@ impl RoadTopologyPlan {
             .map(|grown| node_ids[self.nodes[grown.junction as usize].canonical as usize])
             .filter(|node| !stroke_ends.contains(node))
             .collect();
-        // The stroke's own edges (`ROAD-119` pockets, decision D2 of the icon UI merge): the new
+        // The stroke's own edges (`ROAD-128` pockets, decision D2 of the icon UI merge): the new
         // edges descended from the drawn road by its splits, live after the dissolves. A stroke
         // piece that dissolves into a resident road (`ROAD-118` round JS2) is the deleted piece,
         // the road keeping its id; a resident head that joins a stroke edge keeps the stroke

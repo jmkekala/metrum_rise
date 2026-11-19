@@ -18,7 +18,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 const UNDO_GROUP_CAP: usize = 30;
 
 impl SimCore {
-    /// Stores a stroke and its optional pockets as one local inverse (`ROAD-119`): `records` the
+    /// Stores a stroke and its optional pockets as one local inverse (`ROAD-128`): `records` the
     /// stroke's record, then each accepted pocket's, in the order made. The graph and paint
     /// journals keep pre-stroke values; dependent migrations undo in reverse. The pockets' build
     /// charges stay on the folded record, so its undo refunds them with the road's (U5). Nothing

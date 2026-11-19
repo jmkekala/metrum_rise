@@ -244,7 +244,7 @@ fn session_grid_snap_on_a_road() {
 // square in place of the arc, drawing only. Re-recorded 2026-11-18 (the user: guides 40 m past
 // the cursor, faint from 24 m): drawing only, as the frames without their gizmos hash the same
 // under the old and the new lengths (`0xb72e_a82f_7f69_a9a8`). Re-recorded by the icon UI merge
-// (round U1): the frame's road type prints the type's pockets (`ROAD-119`), none here; with each
+// (round U1): the frame's road type prints the type's pockets (`ROAD-128`), none here; with each
 // frame's `pockets` field cut out, the old digest `0xa61a_7aa1_0ae5_fc7d` held.
 #[test]
 fn grid_off_frames_are_unchanged() {

@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-2.0-only
 
-## The road tiles' hover card (`ROAD-101`, `ROAD-119`): the type's name beside its speed limit
+## The road tiles' hover card (`ROAD-101`, `ROAD-128`): the type's name beside its speed limit
 ## sign, then its layout as small symbol chips (lane arrows, width, median swatch, parking sign,
 ## turn pockets, and only the unusual sidewalk, lighting and zoning cases), then Rust's cost per
 ## metre with the money sign, as the road builder shows it. Built from a `get_road_types` entry;

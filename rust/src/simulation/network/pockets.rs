@@ -770,7 +770,7 @@ fn join_split_dependents(
     DependentsEntry::Join { rows, occupancy }
 }
 
-/// Stable new-stroke approach traversal shared by hover and commit (`ROAD-119`).
+/// Stable new-stroke approach traversal shared by hover and commit (`ROAD-128`).
 /// Stores only stroke descendants; each next request resolves through one junction's incidence.
 pub(crate) struct StrokePocketTargets {
     approaches: std::vec::IntoIter<(usize, u32)>,

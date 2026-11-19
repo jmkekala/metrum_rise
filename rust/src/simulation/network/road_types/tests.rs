@@ -363,7 +363,7 @@ fn suggested_names_describe_the_layout_and_skip_taken_ones() {
         }),
         "Walkway (2)"
     );
-    // Turn pockets follow the layout (`ROAD-119`).
+    // Turn pockets follow the layout (`ROAD-128`).
     let pockets = |left, right| RoadTypePockets {
         left,
         right,
@@ -393,7 +393,7 @@ fn suggested_names_describe_the_layout_and_skip_taken_ones() {
 #[test]
 fn pockets_fit_the_layout_they_are_saved_with() {
     // A left pocket on a divided two-way road takes a lane's width out of a raised median and
-    // leaves its kerb stub (`ROAD-119`); right pockets and undivided roads always have room.
+    // leaves its kerb stub (`ROAD-128`); right pockets and undivided roads always have room.
     let road = |fwd_lanes, bkw_lanes, style, width_m| RoadCrossSection {
         fwd_lanes,
         bkw_lanes,

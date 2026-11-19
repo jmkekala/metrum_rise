@@ -22,7 +22,7 @@
 //! reads as 50 km/h with zoning, and the next write stores the file as version 2, its entries as
 //! they were. `street_lights` came later in version 2 (`ROAD-101` RB3e), without a version
 //! change: an entry without it reads as lit and is written back as it was until edited.
-//! `pockets` (`ROAD-119`) is also additive in version 2: `{left, right, body_m}`; absent
+//! `pockets` (`ROAD-128`) is also additive in version 2: `{left, right, body_m}`; absent
 //! means neither role and the shared 60 m default. City save format is unchanged.
 
 use super::{

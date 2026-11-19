@@ -140,7 +140,7 @@ impl SimulationNode {
     /// without one, included); `build_per_m` and `upkeep_per_m_day`, the valid type's cost per
     /// metre on the ground (`ROAD-101`: 15 and 0.1 for the 2-Lane Road; a bridge costs three
     /// times, a tunnel five; 0 when refused); and `suggested_name`, a free name for a new type
-    /// of a valid layout with `pockets` (`{left, right, body_m}`, `ROAD-119`): "2+2 Grass 3 m",
+    /// of a valid layout with `pockets` (`{left, right, body_m}`, `ROAD-128`): "2+2 Grass 3 m",
     /// "1+1 Pockets", with " (2)" when taken; else empty; and `pocket_refusal`, why a valid
     /// layout cannot take `pockets` (`RoadTypePockets::fits`), else empty. `O(parts)` plus
     /// the name lookup's `O(types)`.

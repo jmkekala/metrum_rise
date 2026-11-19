@@ -284,7 +284,7 @@ fn populated_ring_join_scaling() {
 }
 
 #[test]
-#[ignore = "unprofiled ROAD-119 hover locality; run alone with --release --ignored --nocapture"]
+#[ignore = "unprofiled ROAD-128 hover locality; run alone with --release --ignored --nocapture"]
 fn populated_road_type_pocket_scaling() {
     measure_populated_road_plan_scaling(
         false,
@@ -585,7 +585,7 @@ fn measure_populated_road_plan_scaling(
             building.facing_dir = Vector2::new(0.0, -1.0);
             building.edge_idx = background_base + index / 256;
             building.frontage_t = ((index % 256) as f32 * 24.0 + 12.0) / 6144.0;
-            // ROAD-119 holds roughly 30k agents at the largest tier, like commit locality.
+            // ROAD-128 holds roughly 30k agents at the largest tier, like commit locality.
             building.occupancy = if measured == Measured::PocketStroke { 1 } else { 6 };
             if fields {
                 let p = Vector2::new(building.center_x, building.center_y + 12.0);

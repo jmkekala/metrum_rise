@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
 //! Road-type pockets: stroke ownership (under `dev`'s joins and growths, `ROAD-118`), refusal
-//! independence, hover against commit, undo and its refund (`ROAD-119`).
+//! independence, hover against commit, undo and its refund (`ROAD-128`).
 
 use super::*;
 use crate::nodes::sim::core::road_commit::{RoadCommitOutcome, RoadCommitRequest};

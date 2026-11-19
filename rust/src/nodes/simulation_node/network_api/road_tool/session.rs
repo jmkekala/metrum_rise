@@ -1038,7 +1038,7 @@ mod tests {
     use super::*;
     use crate::simulation::network::road_types::RoadTypePockets;
 
-    // P1 of the icon UI merge (`ROAD-119` road-type pockets): the road type's pockets live in
+    // P1 of the icon UI merge (`ROAD-128` road-type pockets): the road type's pockets live in
     // the session's spec, so picking a type that differs from the previewed one only in its
     // pockets leaves the standing preview stale, and the next tick previews the stroke again.
     #[test]

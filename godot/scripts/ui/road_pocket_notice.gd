@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-2.0-only
 
-## Short-lived feedback for optional road-type pockets Rust refused on a built road (`ROAD-119`):
+## Short-lived feedback for optional road-type pockets Rust refused on a built road (`ROAD-128`):
 ## one small label over each junction with the reasons, which fades out after `HOLD_S`. Uses the
 ## shared road reason translations.
 extends Label
