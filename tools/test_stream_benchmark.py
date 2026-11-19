@@ -182,6 +182,104 @@ class SeriesTests(unittest.TestCase):
             run.assert_not_called()
 
 
+class AsPlayedTests(unittest.TestCase):
+    """`--as-played` and `--cpus` (`RENDER-27`, A-BG): the row's placement, and the pinned rows unchanged."""
+
+    def launch(self, extra, settings):
+        with tempfile.TemporaryDirectory() as temp:
+            temp = Path(temp)
+            godot, library = fake_godot(temp)
+            argv = ["run", "--label", "r", "--library", str(library), "--godot-dir", str(godot),
+                    "--out", str(temp / "out")] + extra
+            calls = []
+
+            def fake_run(command, **kwargs):
+                calls.append((command, kwargs.get("env", {})))
+                return mock.Mock(returncode=0, stdout="abc\n")
+            with mock.patch.object(sb.timing_session, "load_settings", return_value=settings), \
+                    mock.patch.object(sb.subprocess, "run", side_effect=fake_run), \
+                    mock.patch.object(sb.timing_session, "busy_processes", return_value=[]), \
+                    mock.patch.object(sb.MainThreadSampler, "_find", return_value=None), \
+                    contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                sb.main(argv)
+            command, env = [(c, e) for c, e in calls if "gamescope" in c][0]
+            return command, env, json.loads((temp / "out/r.identity.json").read_text())
+
+    SETTINGS = {"cpus": "0,2", "busy_processes": [], "quiet_windows": [], "timed_wrapper": [],
+                "cpu_profiles": {"2p-smt": "0-3"}}
+
+    def test_a_pinned_row_is_unchanged(self):
+        command, env, identity = self.launch([], self.SETTINGS)
+        self.assertEqual(command[:3], ["taskset", "-c", "0,2"])
+        self.assertEqual(env["RAYON_NUM_THREADS"], "8")
+        self.assertNotIn("as_played", identity)
+        self.assertNotIn("cpu_profile", identity)
+        self.assertEqual((identity["cpus"], identity["workers"]), ("0,2", "8"))
+
+    def test_as_played_is_unpinned_with_the_games_pools(self):
+        command, env, identity = self.launch(["--as-played"], self.SETTINGS)
+        self.assertNotIn("taskset", command)
+        self.assertNotIn("RAYON_NUM_THREADS", env)
+        self.assertTrue(identity["as_played"])
+        self.assertEqual((identity["cpus"], identity["workers"]), ("", "auto"))
+
+    def test_a_profile_runs_the_whole_game_in_its_set(self):
+        command, env, identity = self.launch(["--as-played", "--cpus", "2p-smt"], self.SETTINGS)
+        self.assertEqual(command[:3], ["taskset", "-c", "0-3"])
+        self.assertNotIn("RAYON_NUM_THREADS", env)
+        self.assertEqual((identity["cpus"], identity["cpu_profile"]), ("0-3", "2p-smt"))
+        # Without --as-played a CPU set keeps the rows' eight workers.
+        command, env, identity = self.launch(["--cpus", "4-7"], self.SETTINGS)
+        self.assertEqual(command[:3], ["taskset", "-c", "4-7"])
+        self.assertEqual(env["RAYON_NUM_THREADS"], "8")
+        self.assertFalse(identity["as_played"])
+
+    def test_cpu_lists_and_profiles(self):
+        self.assertEqual(sb.cpu_list("0-2,16,20-21"), {0, 1, 2, 16, 20, 21})
+        self.assertEqual(sb.resolve_cpus("2p-smt", self.SETTINGS), ("0-3", "2p-smt"))
+        self.assertEqual(sb.resolve_cpus("0,2", self.SETTINGS), ("0,2", ""))
+        with self.assertRaises(SystemExit):
+            sb.resolve_cpus("big", self.SETTINGS)
+
+
+class MainThreadSchedTests(unittest.TestCase):
+    def test_proc_parsing(self):
+        stat = "4242 (godot (main) x) R 1 2 3" + " 0" * 32 + " 17 0 0"
+        self.assertEqual(sb.parse_stat(stat), ("R", 17))
+        sched = "godot (4242, #threads: 60)\n---\nse.exec_start   :  1.0\nse.nr_migrations   :   321\n"
+        self.assertEqual(sb.parse_migrations(sched), 321)
+        self.assertIsNone(sb.parse_migrations("nr_switches : 3\n"))
+
+    def test_phases_join_by_wall_clock(self):
+        # Every 10 ms: 9 ms on a CPU, 0.5 ms waiting, 2 slices, a migration every other sample.
+        samples = []
+        for i in range(301):
+            cpu = 16 if i % 4 == 1 else 2
+            samples.append([100.0 + i * 0.01, i * 9_000_000, i * 500_000, i * 2, i // 2, 1, cpu, 4_000_000])
+        samples[150][5] = 0  # asleep: not in the clock
+        samples[150][7] = 800_000
+        record = {"available": True, "period_s": 0.01, "samples": samples}
+        # One phase of 100 frames of 10 ms: 101.0 s to 102.0 s.
+        rows = [{"t_unix": 101.0 + (i + 1) * 0.01, "frame_ms": 10.0} for i in range(100)]
+        report = {"samples": [{"label": "turns", "duration_s": 1.0, "rows": rows}]}
+        phase = sb.sched_phases(report, record, e_cores={16})["phases"][0]
+        self.assertEqual((phase["phase"], phase["frames"]), ("turns 1s", 100))
+        self.assertAlmostEqual(phase["on_cpu_ms"], 9.0)
+        self.assertAlmostEqual(phase["wait_ms"], 0.5)
+        self.assertAlmostEqual(phase["timeslices"], 2.0)
+        self.assertAlmostEqual(phase["migrations_s"], 50.0)
+        self.assertAlmostEqual(phase["clock_ghz"], 4.0)
+        self.assertEqual(phase["running_samples"], 100)
+        self.assertAlmostEqual(phase["e_core_share"], 0.25)
+
+    def test_unavailable_degrades_and_old_reports_print_as_before(self):
+        self.assertEqual(sb.sched_phases({"samples": []}, {"available": False, "reason": "x"}),
+                         {"available": False, "reason": "x"})
+        self.assertEqual(sb.sched_lines({"samples": []}), [])
+        lines = sb.sched_lines({"main_thread_sched": {"available": False, "reason": "Linux only"}})
+        self.assertEqual(lines, ["main thread: not measured (Linux only)"])
+
+
 class CompareTests(unittest.TestCase):
     def test_reproduces_render_32_l_turn_rows(self):
         lines = sb.compare_lines("30k", FIXTURE["rows"])

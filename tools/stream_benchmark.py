@@ -21,6 +21,14 @@ variant sequence (`RENDER-15`, METRUM_STREAM_SHADOWS) of a run or a series' bran
 `census` prints its tables (`RENDER-44`, `tools/draw_census.py`).
 `--drawn` runs the drawn probe (METRUM_STREAM_DRAWN, `RENDER-32-N`: an instrumented run) and
 `drawn` prints its table: per sample and layer, entered-to-drawn and in-view holes in frames.
+`--as-played` (`RENDER-27`, analysis A-BG) runs a row as a player would: unpinned, the game's
+default pools (`RAYON_NUM_THREADS` unset). `--cpus <list or profile>` runs the whole game inside a
+CPU set (a machine profile; profiles are named in the local settings' `cpu_profiles`, since CPU
+numbering is the machine's), with eight workers unless `--as-played`. Both rows sample Godot's main
+thread from outside every 10 ms on Linux (`/proc/<pid>/task/<tid>/schedstat`, `sched`, `stat` and
+its CPU's `scaling_cur_freq`) and add to their report per phase: on-CPU and run-queue wait ms and
+timeslices a frame, CPU changes a second, the clock of the CPU it ran on and the E-cores' share
+(`main_thread_sched`, printed by `summary`), with the placement and cpufreq policy (`row_mode`).
 
     ./run.sh --benchmark-stream                     # builds release, then `run` on Kuopio
     tools/stream_benchmark.py run --label c30k-br1 --save <populated_city_30000.sqlite> --out <dir>
@@ -29,6 +37,8 @@ variant sequence (`RENDER-15`, METRUM_STREAM_SHADOWS) of a run or a series' bran
     tools/stream_benchmark.py digests <a.metrics.json> <b.metrics.json>
     tools/stream_benchmark.py stills capture|compare|systematic ...
     tools/stream_benchmark.py summary <dir>/c30k-br1.metrics.json [--scripts]
+    tools/stream_benchmark.py run --label 30k-asplayed --as-played --phases still,turns --turns 1,0.5 ...
+    tools/stream_benchmark.py run --label 30k-2p --as-played --cpus 2p-smt ...    # a machine profile
     tools/stream_benchmark.py run --label 30k-drawn --drawn --phases turns,zoom --turns 0.5 ... ; \
         tools/stream_benchmark.py drawn <dir>/30k-drawn.metrics.json
     tools/stream_benchmark.py run --label 30k-shadows --shadows full,none,none,full ... ; \
@@ -46,6 +56,7 @@ import shutil
 import statistics
 import subprocess
 import sys
+import threading
 import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -127,6 +138,7 @@ def run(args):
             print(f"stream_benchmark: {out / label}.metrics.json exists; choose a new label", file=sys.stderr)
             return 2
     settings = timing_session.load_settings()
+    row_placement(args, settings)  # an unknown --cpus refuses before any lock
     wrapper = list(settings.get("timed_wrapper", []))
     if wrapper and os.environ.get(LOCKED_ENV) != "1":
         env = dict(os.environ, **{LOCKED_ENV: "1"})
@@ -168,6 +180,7 @@ def run_row(args, settings, out, label, library, scripts, shadows, cache_key):
     try:
         if store is not None:
             copy_caches(profile, name, store, seed=True)
+        cpus, workers, mode = row_placement(args, settings)
         identity = {
             "label": label, "library": str(library), "library_sha256": sha256(library),
             "scripts": str(scripts or godot_dir / "scripts"),
@@ -177,14 +190,16 @@ def run_row(args, settings, out, label, library, scripts, shadows, cache_key):
             "input": save or world, "input_sha256": sha256(save)[:16] if save else "",
             "resolution": args.resolution, "speed": args.speed, "detail": args.detail,
             "phases": args.phases, "drawn": args.drawn, "still_s": args.still_s, "settle_cap_s": args.settle_cap_s, "shadows": shadows, "gpu_profile": args.gpu_profile,
-            "cpus": settings.get("cpus", ""), "workers": WORKERS,
+            "cpus": cpus, "workers": workers,
             "shader_cache": str(store) if store is not None else "", "shader_cache_warm": bool(store and store.is_dir()),
             "menu_dwell_s": args.menu_dwell,
             "locked": os.environ.get(LOCKED_ENV) == "1" or not settings.get("timed_wrapper"),
         }
+        # New keys only on the new rows: a pinned row's identity stays as it was.
+        identity.update(mode)
         width, height = args.resolution.split("x")
         env.update({
-            "RAYON_NUM_THREADS": WORKERS, "METRUM_DEBUG": "0", "METRUM_DEBUG_PERF": "1" if args.detail else "0",
+            "RAYON_NUM_THREADS": workers, "METRUM_DEBUG": "0", "METRUM_DEBUG_PERF": "1" if args.detail else "0",
             "METRUM_CRASH_DIAGNOSTICS": "0",
             "METRUM_GAMEPLAY_BENCHMARK_MODE": "windowed", "METRUM_GAMEPLAY_BENCHMARK_MATRIX": "stream",
             "METRUM_GAMEPLAY_BENCHMARK_RUN_ID": label, "METRUM_GAMEPLAY_BENCHMARK_WORLD_PATH": world,
@@ -203,9 +218,12 @@ def run_row(args, settings, out, label, library, scripts, shadows, cache_key):
             "METRUM_STREAM_DRAWN": "1" if args.drawn else "0",
             "METRUM_STREAM_MENU_DWELL_S": "" if args.menu_dwell is None else str(args.menu_dwell),
         })
+        if args.as_played:
+            # The game's own pools: one worker a logical CPU of the row's set.
+            env.pop("RAYON_NUM_THREADS")
         command = ["timeout", "--kill-after=10s", str(args.timeout)]
-        if settings.get("cpus"):
-            command = ["taskset", "-c", settings["cpus"]] + command
+        if cpus:
+            command = ["taskset", "-c", cpus] + command
         command += ["gamescope", "--backend", "headless", "-r", "1000", "-W", width, "-H", height, "--",
                     "godot", "--path", str(project), "--log-file", str(out / f"{label}.godot.log"),
                     "--windowed", "--resolution", args.resolution]
@@ -213,8 +231,15 @@ def run_row(args, settings, out, label, library, scripts, shadows, cache_key):
         wait_for_quiet(settings, args.timeout)
         identity["start"] = datetime.datetime.now().isoformat(timespec="seconds")
         identity["loadavg"] = os.getloadavg()
-        with open(out / f"{label}.out", "w") as log:
-            status = subprocess.run(command, env=env, stdout=log, stderr=subprocess.STDOUT).returncode
+        sampler = MainThreadSampler(str(out / f"{label}.godot.log")) if mode.get("sched") else None
+        if sampler is not None:
+            sampler.start()
+        try:
+            with open(out / f"{label}.out", "w") as log:
+                status = subprocess.run(command, env=env, stdout=log, stderr=subprocess.STDOUT).returncode
+        finally:
+            if sampler is not None:
+                sampler.stop()
         identity["end"] = datetime.datetime.now().isoformat(timespec="seconds")
         if store is not None and status == 0:
             copy_caches(profile, name, store, seed=False)
@@ -225,6 +250,16 @@ def run_row(args, settings, out, label, library, scripts, shadows, cache_key):
         shutil.rmtree(profile, ignore_errors=True)
     if status == 0 and identity["script_errors"] == 0 and metrics.exists():
         report = json.loads(metrics.read_text())
+        if mode:
+            # An as-played or machine-profile row: its placement and the main thread's scheduling
+            # go into its own report (a pinned row's report stays the game's).
+            report["row_mode"] = mode
+            if sampler is not None:
+                (out / f"{label}.sched.json").write_text(json.dumps(sampler.record(), separators=(",", ":")) + "\n")
+                report["main_thread_sched"] = sched_phases(report, sampler.record())
+            else:
+                report["main_thread_sched"] = {"available": False, "reason": "Linux only"}
+            metrics.write_text(json.dumps(report))
         if report.get("success"):
             print(f"== {label}")
             print_summary(report, args.detail)
@@ -232,6 +267,238 @@ def run_row(args, settings, out, label, library, scripts, shadows, cache_key):
     print(f"stream_benchmark: {label} failed (status {status}, "
           f"{identity['script_errors']} script errors); see {out / (label + '.out')}", file=sys.stderr)
     return 1
+
+
+# ---------------------------------------------------------------------------------------------
+# As-played and machine-profile rows (`RENDER-27`, analysis A-BG): where a row runs, and the
+# main thread's scheduling (run-queue wait, CPU changes, the clock of the CPU it runs on).
+
+def cpu_list(text):
+    """The CPUs of a `taskset -c` list such as `0-11,16-23`."""
+    cpus = set()
+    for part in text.split(","):
+        first, _, last = part.strip().partition("-")
+        cpus.update(range(int(first), int(last or first) + 1))
+    return cpus
+
+
+def resolve_cpus(value, settings):
+    """`--cpus`: a profile named in the local settings' `cpu_profiles` (CPU numbering is the
+    machine's), or a CPU list. Returns `(list, profile name or "")`."""
+    profiles = settings.get("cpu_profiles", {})
+    if value in profiles:
+        return profiles[value], value
+    try:
+        cpu_list(value)
+    except ValueError:
+        raise SystemExit(f"stream_benchmark: --cpus {value!r} is neither a CPU list nor a profile "
+                         f"({', '.join(sorted(profiles)) or 'none in the local settings'})")
+    return value, ""
+
+
+def row_placement(args, settings):
+    """A row's CPU list, worker count and its record of a non-default placement. The default (the
+    rows of record) is pinned to the local settings' CPUs with eight workers in each pool, and
+    records nothing new. `--as-played` leaves the pools to the game (one worker a logical CPU of
+    the set) and the row unpinned unless `--cpus` gives a set; `--cpus` alone keeps eight workers."""
+    if not args.as_played and not args.cpus:
+        return settings.get("cpus", ""), WORKERS, {}
+    cpus, profile = resolve_cpus(args.cpus, settings) if args.cpus else ("", "")
+    workers = "auto" if args.as_played else WORKERS
+    mode = {"as_played": args.as_played, "cpus": cpus, "cpu_profile": profile,
+            "sched": sys.platform.startswith("linux")}
+    mode.update(cpufreq_policy())
+    return cpus, workers, mode
+
+
+def row_mode_line(mode):
+    where = "unpinned" if not mode.get("cpus") else f"CPUs {mode['cpus']}" + (
+        f" (profile {mode['cpu_profile']})" if mode.get("cpu_profile") else "")
+    pools = "the game's default pools" if mode.get("as_played") else f"{WORKERS} workers a pool"
+    policy = " ".join(f"{key}={mode[key]}" for key in ("governor", "epp") if mode.get(key))
+    return f"   {'as played' if mode.get('as_played') else 'CPU set'}: {where}, {pools}" + (
+        f"; cpufreq {policy}" if policy else "")
+
+
+def cpufreq_policy():
+    """Linux: CPU 0's frequency driver, governor and energy preference (the clock follows them)."""
+    base = Path("/sys/devices/system/cpu/cpu0/cpufreq")
+    policy = {}
+    for key, name in (("driver", "scaling_driver"), ("governor", "scaling_governor"),
+                      ("epp", "energy_performance_preference")):
+        try:
+            policy[key] = (base / name).read_text().strip()
+        except OSError:
+            pass
+    return policy
+
+
+def efficiency_cpus():
+    """Linux on a hybrid Intel CPU: the E-cores (`cpu_atom`), else an empty set."""
+    try:
+        return cpu_list(Path("/sys/devices/cpu_atom/cpus").read_text().strip())
+    except (OSError, ValueError):
+        return set()
+
+
+def parse_stat(text):
+    """`/proc/<pid>/task/<tid>/stat`: the state and the CPU it last ran on (field 39). The name
+    field may hold spaces and parentheses, so fields count from the last `)`."""
+    fields = text[text.rindex(")") + 2:].split()
+    return fields[0], int(fields[36])
+
+
+def parse_migrations(text):
+    """`/proc/<pid>/task/<tid>/sched`: `se.nr_migrations`, or None where the kernel has no such line."""
+    for line in text.splitlines():
+        if line.startswith("se.nr_migrations"):
+            return int(line.split(":")[1])
+    return None
+
+
+class MainThreadSampler:
+    """Linux: samples Godot's main thread from outside the game every `period_s` (no work on the
+    measured thread, no `perf`). Finds the Godot process by its `--log-file` (unique to a row) and
+    records `[wall s, on-CPU ns, run-queue wait ns, timeslices, migrations, running, CPU, kHz]`:
+    the thread's cumulative scheduler statistics, whether it was running or runnable, the CPU it
+    last ran on and that CPU's `scaling_cur_freq` (the hardware's recent average on that CPU)."""
+
+    def __init__(self, log_file, period_s=0.01):
+        self.log_file = log_file
+        self.period_s = period_s
+        self.samples = []
+        self.reason = ""
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+
+    def start(self):
+        self._thread.start()
+
+    def stop(self):
+        self._stop.set()
+        self._thread.join()
+
+    def record(self):
+        return {"available": bool(self.samples), "reason": self.reason, "period_s": self.period_s,
+                "fields": ["t_unix", "on_cpu_ns", "wait_ns", "timeslices", "migrations", "running", "cpu", "khz"],
+                "samples": self.samples}
+
+    def _find(self):
+        for entry in Path("/proc").iterdir():
+            if not entry.name.isdigit():
+                continue
+            try:
+                argv = (entry / "cmdline").read_bytes().split(b"\0")
+            except OSError:
+                continue
+            if Path(argv[0].decode(errors="replace")).name == "godot" and self.log_file.encode() in argv:
+                return int(entry.name)
+        return None
+
+    def _run(self):
+        pid = None
+        while pid is None and not self._stop.wait(0.1):
+            pid = self._find()
+        if pid is None:
+            self.reason = "the Godot process was not found"
+            return
+        task = Path(f"/proc/{pid}/task/{pid}")
+        freq = {}
+        try:
+            files = [os.open(task / name, os.O_RDONLY) for name in ("schedstat", "sched", "stat")]
+        except OSError as error:
+            self.reason = f"unreadable: {error}"
+            return
+        try:
+            while not self._stop.wait(self.period_s):
+                try:
+                    schedstat, sched, stat = (os.pread(fd, 8192, 0).decode() for fd in files)
+                except OSError:
+                    break  # the process ended
+                if not schedstat:
+                    break
+                state, cpu = parse_stat(stat)
+                if cpu not in freq:
+                    try:
+                        freq[cpu] = os.open(f"/sys/devices/system/cpu/cpu{cpu}/cpufreq/scaling_cur_freq", os.O_RDONLY)
+                    except OSError:
+                        freq[cpu] = None
+                khz = int(os.pread(freq[cpu], 64, 0)) if freq[cpu] is not None else 0
+                on_cpu, wait, slices = (int(value) for value in schedstat.split()[:3])
+                self.samples.append([round(time.time(), 4), on_cpu, wait, slices, parse_migrations(sched),
+                                     int(state == "R"), cpu, khz])
+        finally:
+            for fd in files + [fd for fd in freq.values() if fd is not None]:
+                os.close(fd)
+
+
+def interpolate(samples, column, moment):
+    """A cumulative counter at `moment`, linear between the samples around it (None outside)."""
+    for before, after in zip(samples, samples[1:]):
+        if before[0] <= moment <= after[0]:
+            if before[column] is None or after[column] is None:
+                return None
+            span = after[0] - before[0]
+            share = (moment - before[0]) / span if span > 0 else 0.0
+            return before[column] + share * (after[column] - before[column])
+    return None
+
+
+def sched_phases(report, record, e_cores=None):
+    """Per phase (sample) of a report, the main thread's scheduling from `MainThreadSampler`'s
+    record joined by the rows' wall clock (`t_unix` at each frame's end): per frame its on-CPU
+    and run-queue wait ms and timeslices, CPU changes a second, and over the samples where it was
+    running or runnable the mean clock of its CPU (GHz) and the E-cores' share."""
+    if not record.get("available"):
+        return {"available": False, "reason": record.get("reason") or "no samples"}
+    samples = record["samples"]
+    e_cores = efficiency_cpus() if e_cores is None else e_cores
+    phases = []
+    for sample in report["samples"]:
+        rows = sample["rows"]
+        if not rows or "t_unix" not in rows[0]:
+            continue
+        start = rows[0]["t_unix"] - rows[0]["frame_ms"] / 1000.0
+        end = rows[-1]["t_unix"]
+        entry = {"phase": phase_label(sample), "frames": len(rows), "seconds": round(end - start, 3)}
+        deltas = {}
+        for column, name in ((1, "on_cpu"), (2, "wait"), (3, "timeslices"), (4, "migrations")):
+            a, b = interpolate(samples, column, start), interpolate(samples, column, end)
+            deltas[name] = None if a is None or b is None else b - a
+        if deltas["on_cpu"] is not None:
+            entry["on_cpu_ms"] = round(deltas["on_cpu"] / 1e6 / len(rows), 3)
+            entry["wait_ms"] = round(deltas["wait"] / 1e6 / len(rows), 3)
+            entry["timeslices"] = round(deltas["timeslices"] / len(rows), 2)
+        if deltas["migrations"] is not None and end > start:
+            entry["migrations_s"] = round(deltas["migrations"] / (end - start), 1)
+        running = [s for s in samples if start <= s[0] <= end and s[5] and s[7]]
+        entry["running_samples"] = len(running)
+        if running:
+            entry["clock_ghz"] = round(statistics.mean(s[7] for s in running) / 1e6, 3)
+            if e_cores:
+                entry["e_core_share"] = round(sum(s[6] in e_cores for s in running) / len(running), 3)
+        phases.append(entry)
+    return {"available": True, "period_s": record["period_s"], "phases": phases}
+
+
+def sched_lines(report):
+    """`summary`'s main-thread table of an as-played or machine-profile row (none on other rows)."""
+    sched = report.get("main_thread_sched")
+    if not sched:
+        return []
+    if not sched.get("available"):
+        return [f"main thread: not measured ({sched.get('reason', '')})"]
+    lines = [f"{'main thread':<22}{'cpu ms':>8}{'wait ms':>8}{'slices':>8}{'migr/s':>8}{'GHz':>7}{'E %':>6}  "
+             "(a frame; GHz and E-cores over running samples)"]
+
+    def cell(entry, key, width, digits):
+        return f"{entry[key]:>{width}.{digits}f}" if key in entry else f"{'-':>{width}}"
+    for entry in sched["phases"]:
+        share = f"{entry['e_core_share'] * 100:>6.0f}" if "e_core_share" in entry else f"{'-':>6}"
+        lines.append(f"{entry['phase']:<22}{cell(entry, 'on_cpu_ms', 8, 2)}{cell(entry, 'wait_ms', 8, 3)}"
+                     f"{cell(entry, 'timeslices', 8, 1)}{cell(entry, 'migrations_s', 8, 0)}"
+                     f"{cell(entry, 'clock_ghz', 7, 2)}{share}")
+    return lines
 
 
 def percentile(values, q):
@@ -260,6 +527,8 @@ def script_means(rows):
 
 
 def print_summary(report, scripts=False):
+    if report.get("row_mode"):
+        print(row_mode_line(report["row_mode"]))
     print(f"{'phase':<22}{'n':>5}{'p50':>8}{'p95':>8}{'max':>8}{'>16.7':>6}{'>22':>5}{'>33':>5}"
           f"{'gpu50':>7}  levels")
     for sample in report["samples"]:
@@ -271,6 +540,8 @@ def print_summary(report, scripts=False):
               f"{percentile(times, 0.95):>8.2f}{max(times):>8.2f}{sample['over_16_7']:>6}"
               f"{sample['over_22']:>5}{sample['over_33_3']:>5}{percentile(gpu, 0.5):>7.2f}  "
               f"{rows[-1].get('reflection_levels')}{settle}")
+    for line in sched_lines(report):
+        print(line)
     for sample in report["samples"]:
         passes = sample.get("gpu_passes")
         if passes:
@@ -804,6 +1075,11 @@ def add_run_options(parser, series):
                         "runs: seeded from it when present (warm), saved back after a passed run (RENDER-43)")
     parser.add_argument("--menu-dwell", type=float, help="METRUM_STREAM_MENU_DWELL_S: launch through the main menu, "
                         "which stays this many seconds from the launch before the benchmark's world (RENDER-43)")
+    parser.add_argument("--as-played", action="store_true",
+                        help="unpinned (or in --cpus) with the game's default pools, RAYON_NUM_THREADS unset; "
+                        "samples the main thread's scheduling (RENDER-27)")
+    parser.add_argument("--cpus", help="run the game inside this CPU set: a taskset list or a profile named in "
+                        "the local timing settings' cpu_profiles (a machine profile); samples the main thread")
     parser.add_argument("--settle-timeout", type=int, default=180)
     parser.add_argument("--timeout", type=int, default=600)
 
