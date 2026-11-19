@@ -18240,6 +18240,101 @@ elsewhere); no public item added; debug `cargo test --lib` 2,808 passed, 0 faile
 `./run.sh --test` PASS (nextest 2,812 passed, 233 skipped; godot-main and godot-vehicle PASS, no
 SCRIPT ERROR).
 
+### Shadow caster cells and graded cell bounds (`RENDER-60`, `RENDER-61`, analysis A3 and round SC1, 2026-11-19)
+
+`RENDER-50` (occluded and off-screen instances) was analysed by Fable (A3, read-only, `dev`
+`e77092c3`) and its two cheap exact levers were built by round SC1 (branch `shadow-caster-cells`
+from `dev` `c2591327`). Both decided under the user's night delegation, 2026-11-19, for review.
+Godot 4.7.2 Forward+, RADV on the RX 7900 XTX, gamescope headless, 1080p, P-cores, eight workers,
+isolated profiles, paused. Inputs: the 30k city of record and the Kuopio city (a copy of the user's
+Kuopio save).
+
+**A3's findings.**
+
+- The 30k still draws 47.4 M main-pass primitives (8.9 M off-screen inside drawn batches, 3.9 M
+  sub-pixel, 16.9 M occluded) and 23.3 M in the sun's shadow pass, about 80 % of the latter
+  instances outside the split they are drawn into: the building batches and parked buckets are
+  512 m chunk batches, the shadow reaches 420 m in four splits, and Godot draws a batch whole into
+  every split its box touches.
+- Godot's occlusion culling (box occluders per drawn building, a coarse terrain mesh): nothing
+  culled from 80 m up and above, 7.5-15 M at street level only with unsafe boxes, 0.3-0.6 ms of
+  render CPU a frame, the Kuopio city 0.4-0.8 ms slower: rejected. GPU per-instance culling is
+  feasible on unmodified 4.7.2 and left to a design round (`RENDER-50`).
+- Lever SC (caster cells): the batches stop casting and shadow-only twins of 256 m cells cast
+  their rows; a throwaway measured the 30k shadow pass 23.3 to 11.1 M and GPU -0.46 ms on the still,
+  stills byte-identical (its twins did not follow the camera, so its turn rows measured no update
+  cost). Lever GB (graded bounds): every cell MultiMesh of a graded patch carries the patch's box;
+  with each one's own cells' box A3 estimated 1.0 M (still) to 3.7 M (mid height) fewer primitives.
+
+**Round SC1, what was built** (three code commits on the branch, none landed):
+
+- SC for the building batches (`stream/layers/buildings.rs`, `stream/layers/caster_cells.rs`): a
+  drawn batch casts nothing; its rows are cast by shadow-only slots of the same pool, one per 256 m
+  quadrant of its chunk holding any of them, each bounded by its own instances' boxes (the part's
+  conservative box through each, as the batch's bounds), with the batch's mesh, material override
+  and 32 m shadow margin. A cell's box lies inside its batch's, so every split culls it at least
+  where it culled the batch: exact. Cells are written with their batch, admitted with its chunk
+  (`RENDER-42`: at most five slots a batch) and follow every change; `set_cast_shadows` shows or
+  hides them. `O(changed batches + their instances)` a published frame, nothing a frame otherwise.
+- SC for the parked buckets (`stream/layers/parked.rs`): the same per chunk and bucket, the 12 m
+  dynamic caster margin kept, each cell with the engine's bounds of its own poses and its own
+  draw-distance range (beyond it every car of the cell has faded out whole, in the shadow passes
+  too).
+- GB (`stream/layers/graded/objects.rs`): each cell mesh carries the union of its drawn cells'
+  64 m squares clamped to the patch rectangle in the shader's patch-local frame, refit whenever
+  the published places, the visible count or the rectangle uniform change.
+- Tests: the quadrant split, cells inside their batch's box, cells following placement, tier
+  moves, demolition, emptied batches, a chunk leaving and returning, a waiting chunk and the full
+  pool, for both layers; the graded box following places, count and a base mesh reset.
+
+**Measured** (fresh, one session 03:55-04:13; control `dev` `c2591327` built the same night;
+rows C, SC, SC+GB, SC+GB, SC, C on each input; series `$ARTIFACTS/sc1/sess`, census
+`$ARTIFACTS/sc1/census`):
+
+| bar | control | SC | SC+GB | verdict |
+|---|---:|---:|---:|---|
+| 30k still, shadow pass M (draws) | 23.32 (744) | 10.41 (851) | 10.41 (851) | met (at most 12 M, 1,000 draws) |
+| 30k still, GPU p50 ms | 6.53 | 6.15 (-0.38, spread 0.00) | 6.15 | met (at least 0.35 under control) |
+| 30k turns 0.5 s, frame p50 ms (out / back / repeat) | 7.0-7.5 | 7.6-8.4 (+0.7 to +0.8) | 7.6-7.9 (+0.3 to +0.6) | **missed** (level or better) |
+| 30k turns 0.5 s repeat, max ms | 11, 12 | 21, 22 | 13, 11 | **missed** for SC |
+| 30k turns 1 s, frame p50 / max | 6.8-7.0 / 8-9 | 6.6-6.8 / 9-13 | 6.5-6.6 / 9-15 | p50 better, **max missed** |
+| 30k main pass, every census pose | 47.39 M at the still | equal at every pose | graded lower only | met |
+| building uploads, 30k 1 s turns | 0.64 MB | 1.29 MB (2.0x) | 1.29 MB | at the bar (at most twice) |
+| Kuopio city, every phase | | level (still max +2.8 against a spread of 1.4) | level | met but for the still's max |
+| graded layer, 30k still / mid height (M) | 4.35 / 7.27 | | 4.32 / 7.15 | **missed** (at most 3.4 / 3.7) |
+| GB still GPU against SC | | 6.15 | 6.15 (+0.00) | **missed** (0.08 under SC) |
+
+- Stills (300 warm-up frames, against the control): 30k `saved` / `city` / `city_low` 3 / 1 / 0 px
+  for SC and 0 / 2 / 0 for SC+GB, delta at most 2 (the `RENDER-45` residue); the night pose (22:00)
+  0 / 0 and 1 / 0; Kuopio `city` and `city_low` byte-identical; Kuopio `saved` no systematic pixel
+  (3,328 by side against 3,751 / 3,528 for the other pairings). Digests equal (graded, buildings,
+  roads, parked, vegetation, land cover, water; 30k and the Kuopio city).
+- **Why SC misses the turns.** The GPU is faster on every turn (-0.30 to -0.42 ms) but the frame is
+  CPU-bound there, and the viewport's render CPU grows by 0.4-0.7 ms on the 0.5 s turns and
+  0.3-0.4 ms on the 1 s turns (pans and zooms +0.1-0.3, at night +0.2-0.3) at p50, on every frame
+  of a turn, not only on upload frames. The cells add 5,702 instances to the 30k scenario (buildings
+  884 batches to 1,965 cells, parked 1,274 buckets to 3,737 cells) and about 100 shadow draws.
+  Hiding the cells by class (`--shadows` chains, `$ARTIFACTS/sc1/exp`): the parked cells cost
+  about 0.22 ms of render CPU more than the buckets casting, the building cells about 0.07; with
+  every cell hidden SC still costs about 0.3 ms more than the control (not explained: hidden
+  instances or the pools' other objects). Profiles of the 0.5 s turns (`$ARTIFACTS/sc1/prof`,
+  the main thread with call graphs, then every thread) put it in Godot's render lists, not in its
+  cull: uniform-set binds, the surface sort, the instance data fill and the draw list (+167 ms of
+  Godot's threads over the run, nothing of `_scene_cull` above the report's threshold). A3's
+  throwaway built its twins once at the base pose, so its turn rows could not show this.
+- **Why GB misses.** A graded patch's box is 8,192 m tall (`terrain.gd` `patch_cull_aabb`: a
+  sculpted height has no cached range), and a tight horizontal box of that height stays in the
+  view from 80 m and 300 m up. A3's estimate used each cell's terrain height -40/+60 m, a range the
+  renderer does not have. GB removes 0.02-0.18 M and 4-8 draws: nothing measurable.
+- Level F timing was not run: no code commit is landable, and the round touches no simulation
+  path.
+
+**Left** (`RENDER-60`, `RENDER-61`): SC needs a cheaper form before it can land: far fewer cell
+instances (for example cells only for batches whose primitives are worth it, or only near the
+shadow range) and the unexplained render CPU of the hidden cells found first (a profile with
+Godot's workers). The 32 m margin on the building cells is kept; dropping it (A3: 0.13 ms more)
+is a question for its owner. GB needs an exact height range per patch or cell mesh first.
+
 ### The camera turn's frame drops and the water reflection (`RENDER-27`, analysis A1 and round WR1, 2026-11-18)
 
 The user's turn drops (`RENDER-27`, and `RENDER-57`, merged into it) were analysed by Fable (A1,
