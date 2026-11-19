@@ -210,7 +210,7 @@ func _run() -> void:
 		"the custom type picks the Road tool and the drop-down shows it")
 	for other in builtin_ids:
 		_expect(not menu.button_for(other).button_pressed, "a custom type unmarks %s" % other)
-	# Its hover card is the road card: name, speed sign, chips and cost (`ROAD-119` polish).
+	# Its hover card is the road card: name, speed sign, chips and cost (`ROAD-128` polish).
 	var card_builder = menu.custom_menu.get_meta(&"hud_tooltip_card", null)
 	_expect(card_builder is Callable, "the custom tile carries the road type card")
 	if card_builder is Callable:

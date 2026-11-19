@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-2.0-only
 
-## Road-type turn pockets (`ROAD-119`): two independent role toggles and a length stepper.
+## Road-type turn pockets (`ROAD-128`): two independent role toggles and a length stepper.
 ## Rust supplies the Junction window's length grid and applies every placement rule.
 extends HBoxContainer
 
