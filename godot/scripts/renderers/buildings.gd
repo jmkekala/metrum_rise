@@ -7,7 +7,6 @@ extends Node3D
 const ModPackConfig = preload("res://scripts/core/mod_pack_config.gd")
 const BuildingLods := preload("res://scripts/renderers/building_lods.gd")
 const WindowMaterials := preload("res://scripts/renderers/window_materials.gd")
-const WorldMaterials = preload("res://scripts/renderers/world_materials.gd")
 const SceneLightingConfig := preload("res://scripts/core/scene_lighting.gd")
 const PerfDebug := preload("res://scripts/core/perf_debug.gd")
 
@@ -18,19 +17,8 @@ var lod_renderer: Node3D
 ## The nine construction site nodes in the published rows' order: residential, commercial and
 ## industrial, each a site pad, a foundation and a scaffold (`get_building_site_rows`).
 var site_multimeshes: Array[MultiMeshInstance3D] = []
-var building_site_ground_instance: MeshInstance3D
-var building_site_surface_instance: MeshInstance3D
 ## The site rows' generation last installed; -1 asks for every buffer.
-var building_site_revision: int = -1
-# Read live so the debug console takes effect on the next site-mesh rebuild.
-var building_debug_enabled: bool:
-	get:
-		return MetrumDebug.is_enabled("buildings")
-var building_site_dump_enabled: bool = false
-# `off` or `material`; the debug console changes it through `_on_visual_mode_changed`.
-var building_site_visual_mode := "off"
-var building_site_debug_materials: Dictionary = {}
-
+var site_rows_generation: int = -1
 # Whether this frame's site frame set transforms (the install ledger's charge).
 var _sites_worked := false
 
@@ -62,27 +50,12 @@ func _load_enabled_packs() -> void:
 				push_warning("Asset pack warning: " + w)
 
 func _ready() -> void:
-	building_site_dump_enabled = MetrumDebug.startup_mode("building_sites_dump")
-	building_site_visual_mode = MetrumDebug.visual_mode("building_sites_visual")
-	var console := get_node_or_null("/root/DebugConsole")
-	if console != null:
-		console.visual_mode_changed.connect(_on_visual_mode_changed)
-	if building_debug_enabled:
-		MetrumDebug.log(
-			"buildings",
-			"enabled site_visual_mode=%s site_dump=%s"
-			% [building_site_visual_mode, str(building_site_dump_enabled)]
-		)
-	elif _building_site_visual_debug_enabled():
-		MetrumDebug.log("buildings", "site visual overlay enabled mode=%s" % [building_site_visual_mode])
-
 	_load_enabled_packs()
 
 	for _zone in 3:
 		_setup_construction_site()
 		_setup_construction_foundation()
 		_setup_construction_scaffold()
-	_setup_building_site_surfaces()
 
 	_create_lod_renderer()
 	_install_site_rows(true)
@@ -185,24 +158,6 @@ func _setup_construction_scaffold() -> void:
 	add_child(mmi)
 	site_multimeshes.append(mmi)
 
-func _setup_building_site_surfaces() -> void:
-	building_site_ground_instance = MeshInstance3D.new()
-	SceneLightingConfig.apply_shadow_policy(
-		building_site_ground_instance,
-		SceneLightingConfig.SHADOW_RECEIVER_ONLY,
-		"yards"
-	)
-	building_site_ground_instance.material_override = _building_site_ground_material()
-	add_child(building_site_ground_instance)
-
-	building_site_surface_instance = MeshInstance3D.new()
-	SceneLightingConfig.apply_shadow_policy(
-		building_site_surface_instance,
-		SceneLightingConfig.SHADOW_RECEIVER_ONLY,
-		"yards"
-	)
-	add_child(building_site_surface_instance)
-
 func _process(_delta: float) -> void:
 	var frame_start_us := Time.get_ticks_usec() if PerfDebug.is_enabled() else 0
 	var lod_busy := false
@@ -239,16 +194,14 @@ func _process(_delta: float) -> void:
 ## Sets the site nodes whose published rows changed, from the per-frame publication: never the
 ## core. `force` installs every buffer. Whether anything was installed.
 func _install_site_rows(force: bool = false) -> bool:
-	var rows: Array = simulation_node.get_building_site_rows(-1 if force else building_site_revision)
+	var rows: Array = simulation_node.get_building_site_rows(-1 if force else site_rows_generation)
 	if rows.is_empty():
 		return false
 	_sites_worked = true
 	for index in site_multimeshes.size():
 		if rows[index + 1] != null:
 			_set_multimesh_buffer(site_multimeshes[index], rows[index + 1] as PackedFloat32Array)
-	building_site_revision = int(rows[0])
-	if building_debug_enabled or building_site_dump_enabled:
-		_apply_building_site_mesh_data(simulation_node.get_building_site_mesh_data())
+	site_rows_generation = int(rows[0])
 	return true
 
 func _set_multimesh_buffer(mmi: MultiMeshInstance3D, buffer: PackedFloat32Array) -> void:
@@ -256,356 +209,3 @@ func _set_multimesh_buffer(mmi: MultiMeshInstance3D, buffer: PackedFloat32Array)
 	mmi.multimesh.instance_count = count
 	if count > 0:
 		mmi.multimesh.buffer = buffer
-
-func _apply_building_site_mesh_data(data: Dictionary) -> void:
-	if not building_site_ground_instance or not building_site_surface_instance:
-		return
-	var ground_vertices := data.get("ground_vertices", PackedVector3Array()) as PackedVector3Array
-	var asphalt_vertices := data.get("asphalt_vertices", PackedVector3Array()) as PackedVector3Array
-	var concrete_vertices := data.get("concrete_vertices", PackedVector3Array()) as PackedVector3Array
-	var ground_material := _building_site_ground_material()
-	building_site_ground_instance.mesh = _building_site_mesh_from_vertices(
-		ground_vertices,
-		ground_material
-	)
-	building_site_surface_instance.mesh = _building_site_surface_mesh(data)
-	_print_building_site_debug(
-		data,
-		ground_vertices,
-		asphalt_vertices,
-		concrete_vertices,
-		ground_material
-	)
-
-func _building_site_surface_mesh(data: Dictionary):
-	var mesh := ArrayMesh.new()
-	_add_building_site_surface(
-		mesh,
-		data.get("asphalt_vertices", PackedVector3Array()) as PackedVector3Array,
-		_building_site_surface_material(WorldMaterials.MATERIAL_ASPHALT)
-	)
-	_add_building_site_surface(
-		mesh,
-		data.get("concrete_vertices", PackedVector3Array()) as PackedVector3Array,
-		_building_site_surface_material(WorldMaterials.MATERIAL_CONCRETE)
-	)
-	return mesh if mesh.get_surface_count() > 0 else null
-
-func _building_site_mesh_from_vertices(vertices: PackedVector3Array, material: Material):
-	var mesh := ArrayMesh.new()
-	_add_building_site_surface(mesh, vertices, material)
-	return mesh if mesh.get_surface_count() > 0 else null
-
-func _add_building_site_surface(mesh: ArrayMesh, vertices: PackedVector3Array, material: Material) -> void:
-	if vertices.size() < 3:
-		return
-	var normals := PackedVector3Array()
-	normals.resize(vertices.size())
-	for i in normals.size():
-		normals[i] = Vector3.UP
-	var arrays := []
-	arrays.resize(Mesh.ARRAY_MAX)
-	arrays[Mesh.ARRAY_VERTEX] = vertices
-	arrays[Mesh.ARRAY_NORMAL] = normals
-	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
-	mesh.surface_set_material(mesh.get_surface_count() - 1, material)
-
-func _building_site_ground_material() -> Material:
-	if not _building_site_visual_debug_enabled():
-		return WorldMaterials.site_ground_material()
-	return _building_site_debug_material("ground", Color(0.0, 0.95, 0.25, 1.0))
-
-func _building_site_surface_material(material_name: String) -> Material:
-	if not _building_site_visual_debug_enabled():
-		return WorldMaterials.site_surface_material(material_name)
-	match material_name:
-		WorldMaterials.MATERIAL_CONCRETE:
-			return _building_site_debug_material("concrete", Color(0.25, 0.55, 1.0, 0.65))
-		_:
-			return _building_site_debug_material("asphalt", Color(1.0, 0.20, 0.10, 0.65))
-
-func _building_site_debug_material(role: String, color: Color) -> StandardMaterial3D:
-	if building_site_debug_materials.has(role):
-		return building_site_debug_materials[role] as StandardMaterial3D
-	var mat := StandardMaterial3D.new()
-	mat.resource_name = "debug_building_site_" + role
-	mat.albedo_color = color
-	mat.transparency = BaseMaterial3D.TRANSPARENCY_DISABLED if color.a >= 0.99 else BaseMaterial3D.TRANSPARENCY_ALPHA
-	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
-	mat.roughness = 1.0
-	building_site_debug_materials[role] = mat
-	return mat
-
-func _building_site_visual_debug_enabled() -> bool:
-	return building_site_visual_mode != "off"
-
-## The ground instance carries its material as an override; the surface meshes carry theirs per
-## surface, so a forced site frame rebuilds them with the new materials on the next frame.
-func _on_visual_mode_changed(mode: String) -> void:
-	if mode != "building_sites_visual":
-		return
-	building_site_visual_mode = MetrumDebug.visual_mode("building_sites_visual")
-	if building_site_ground_instance != null:
-		building_site_ground_instance.material_override = _building_site_ground_material()
-	building_site_revision = -1
-
-func _print_building_site_debug(
-	data: Dictionary,
-	ground_vertices: PackedVector3Array,
-	asphalt_vertices: PackedVector3Array,
-	concrete_vertices: PackedVector3Array,
-	ground_material: Material
-) -> void:
-	if not building_debug_enabled and not building_site_dump_enabled:
-		return
-	if not building_site_dump_enabled:
-		MetrumDebug.log(
-			"buildings",
-			"site_mesh revision=%d ground_vertices=%d asphalt_vertices=%d concrete_vertices=%d"
-			% [
-				int(data.get("revision", building_site_revision)),
-				ground_vertices.size(),
-				asphalt_vertices.size(),
-				concrete_vertices.size(),
-			]
-		)
-		return
-	var debug_sites: Array = data.get("debug_sites", [])
-	var ground_area := _triangle_area_xz(ground_vertices)
-	var asphalt_area := _triangle_area_xz(asphalt_vertices)
-	var concrete_area := _triangle_area_xz(concrete_vertices)
-	MetrumDebug.log(
-		"buildings",
-		"BUILDING_SITE_DUMP_BEGIN revision=%d sites=%d visual_mode=%s"
-		% [
-			int(data.get("revision", building_site_revision)),
-			debug_sites.size(),
-			building_site_visual_mode,
-		]
-	)
-	MetrumDebug.log(
-		"buildings",
-		"buffers ground_vertices=%d ground_triangles=%d ground_area_m2=%.3f ground_bounds=%s asphalt_vertices=%d asphalt_triangles=%d asphalt_area_m2=%.3f asphalt_bounds=%s concrete_vertices=%d concrete_triangles=%d concrete_area_m2=%.3f concrete_bounds=%s"
-		% [
-			ground_vertices.size(),
-			ground_vertices.size() / 3,
-			ground_area,
-			_vector3_bounds_label(ground_vertices),
-			asphalt_vertices.size(),
-			asphalt_vertices.size() / 3,
-			asphalt_area,
-			_vector3_bounds_label(asphalt_vertices),
-			concrete_vertices.size(),
-			concrete_vertices.size() / 3,
-			concrete_area,
-			_vector3_bounds_label(concrete_vertices),
-		]
-	)
-	MetrumDebug.log(
-		"buildings",
-		"materials ground=%s asphalt=%s concrete=%s"
-		% [
-			_material_debug_label(ground_material),
-			_material_debug_label(_building_site_surface_material(WorldMaterials.MATERIAL_ASPHALT)),
-			_material_debug_label(_building_site_surface_material(WorldMaterials.MATERIAL_CONCRETE)),
-		]
-	)
-	MetrumDebug.log(
-		"buildings",
-		"uv_sources ground=world_xz(site_ground grass shader) asphalt=world_xz(site_surface shader) concrete=world_xz(site_surface shader)"
-	)
-	for site_variant in debug_sites:
-		var site: Dictionary = site_variant as Dictionary
-		_print_building_site_record(site)
-	MetrumDebug.log("buildings", "BUILDING_SITE_DUMP_END")
-
-func _print_building_site_record(site: Dictionary) -> void:
-	var site_index := int(site.get("site_index", -1))
-	MetrumDebug.log(
-		"buildings",
-		"site index=%d asset_id=%s zone=%s edge=%d side=%d frontage_t=%.3f center=%s facing=%s side_offset_m=%.3f cells=%dx%d lot_m=(%.3f,%.3f) support_y=%.3f area_m2=%.3f bounds=[%s..%s] footprint=%s surfaces=%d"
-		% [
-			site_index,
-			str(site.get("asset_id", "")),
-			str(site.get("zone_type", "")),
-			int(site.get("edge_idx", -1)),
-			int(site.get("side", 0)),
-			float(site.get("frontage_t", 0.0)),
-			_vector2_label(site.get("center", Vector2.ZERO)),
-			_vector2_label(site.get("facing_dir", Vector2.ZERO)),
-			float(site.get("side_offset_m", 0.0)),
-			int(site.get("width_cells", 0)),
-			int(site.get("depth_cells", 0)),
-			float(site.get("lot_width_m", 0.0)),
-			float(site.get("lot_depth_m", 0.0)),
-			float(site.get("support_height_m", 0.0)),
-			float(site.get("footprint_area_m2", 0.0)),
-			_vector2_label(site.get("bounds_min", Vector2.ZERO)),
-			_vector2_label(site.get("bounds_max", Vector2.ZERO)),
-			_packed_vector2_label(site.get("footprint", PackedVector2Array())),
-			(site.get("surfaces", []) as Array).size(),
-		]
-	)
-	var road_sample_count := int(site.get("road_sample_count", 0))
-	MetrumDebug.log(
-		"buildings",
-		"site_grading site=%d road_samples=%d road_y=[%.3f..%.3f] road_range=%.3f max_abs_support_delta_road=%.3f terrain_visual_y=[%.3f..%.3f] terrain_visual_range=%.3f max_abs_support_delta_visual=%.3f claimed_probe_valid=%s claimed_probe_point=%s claimed_probe_has_height=%s claimed_probe_y=%.3f claimed_probe_delta=%.3f"
-		% [
-			site_index,
-			road_sample_count,
-			float(site.get("road_height_min_m", 0.0)),
-			float(site.get("road_height_max_m", 0.0)),
-			float(site.get("road_height_range_m", 0.0)),
-			float(site.get("max_abs_support_delta_road_m", 0.0)),
-			float(site.get("terrain_visual_height_min_m", 0.0)),
-			float(site.get("terrain_visual_height_max_m", 0.0)),
-			float(site.get("terrain_visual_height_range_m", 0.0)),
-			float(site.get("max_abs_support_delta_visual_m", 0.0)),
-			str(site.get("claimed_road_probe_valid", false)),
-			_vector2_label(site.get("claimed_road_probe_point", Vector2.ZERO)),
-			str(site.get("claimed_road_probe_has_height", false)),
-			float(site.get("claimed_road_probe_height_m", 0.0)),
-			float(site.get("claimed_road_probe_support_delta_m", 0.0)),
-		]
-	)
-	var samples: Array = site.get("samples", [])
-	for sample_variant in samples:
-		var sample: Dictionary = sample_variant as Dictionary
-		MetrumDebug.log(
-			"buildings",
-			"site_sample site=%d label=%s point=%s terrain_source_y=%.3f terrain_visual_y=%.3f support_delta_source=%.3f support_delta_visual=%.3f"
-			% [
-				site_index,
-				str(sample.get("label", "")),
-				_vector2_label(sample.get("point", Vector2.ZERO)),
-				float(sample.get("terrain_source_height_m", 0.0)),
-				float(sample.get("terrain_visual_height_m", 0.0)),
-				float(sample.get("support_delta_source_m", 0.0)),
-				float(sample.get("support_delta_visual_m", 0.0)),
-			]
-		)
-	var edge_samples: Array = site.get("edge_samples", [])
-	for edge_sample_variant in edge_samples:
-		var edge_sample: Dictionary = edge_sample_variant as Dictionary
-		MetrumDebug.log(
-			"buildings",
-			"site_edge_sample site=%d edge=%d role=%s sample=%d/%d t=%.3f point=%s road_probe=%s road_visible=%s road_y=%.3f support_delta_road=%.3f terrain_source_y=%.3f terrain_visual_y=%.3f support_delta_source=%.3f support_delta_visual=%.3f"
-			% [
-				site_index,
-				int(edge_sample.get("edge_index", -1)),
-				str(edge_sample.get("edge_role", "")),
-				int(edge_sample.get("sample_index", 0)) + 1,
-				int(edge_sample.get("sample_count", 0)),
-				float(edge_sample.get("t", 0.0)),
-				_vector2_label(edge_sample.get("point", Vector2.ZERO)),
-				_vector2_label(edge_sample.get("road_probe_point", Vector2.ZERO)),
-				str(edge_sample.get("road_visible", false)),
-				float(edge_sample.get("road_visible_height_m", 0.0)),
-				float(edge_sample.get("support_delta_road_m", 0.0)),
-				float(edge_sample.get("terrain_source_height_m", 0.0)),
-				float(edge_sample.get("terrain_visual_height_m", 0.0)),
-				float(edge_sample.get("support_delta_source_m", 0.0)),
-				float(edge_sample.get("support_delta_visual_m", 0.0)),
-			]
-		)
-	var surfaces: Array = site.get("surfaces", [])
-	for surface_variant in surfaces:
-		var surface: Dictionary = surface_variant as Dictionary
-		MetrumDebug.log(
-			"buildings",
-			"site_surface site=%d index=%d name=%s material=%s height_y=%.3f area_m2=%.3f bounds=[%s..%s] vertices=%s"
-			% [
-				site_index,
-				int(surface.get("surface_index", -1)),
-				str(surface.get("name", "")),
-				str(surface.get("material", "")),
-				float(surface.get("height_m", 0.0)),
-				float(surface.get("area_m2", 0.0)),
-				_vector2_label(surface.get("bounds_min", Vector2.ZERO)),
-				_vector2_label(surface.get("bounds_max", Vector2.ZERO)),
-				_packed_vector2_label(surface.get("vertices", PackedVector2Array())),
-			]
-		)
-
-func _triangle_area_xz(vertices: PackedVector3Array) -> float:
-	var area := 0.0
-	var triangle_count := vertices.size() / 3
-	for triangle_index in triangle_count:
-		var a := vertices[triangle_index * 3]
-		var b := vertices[triangle_index * 3 + 1]
-		var c := vertices[triangle_index * 3 + 2]
-		area += absf(
-			(a.x * (b.z - c.z) + b.x * (c.z - a.z) + c.x * (a.z - b.z)) * 0.5
-		)
-	return area
-
-func _vector3_bounds_label(vertices: PackedVector3Array) -> String:
-	if vertices.is_empty():
-		return "none"
-	var min_v := vertices[0]
-	var max_v := vertices[0]
-	for vertex in vertices:
-		min_v.x = minf(min_v.x, vertex.x)
-		min_v.y = minf(min_v.y, vertex.y)
-		min_v.z = minf(min_v.z, vertex.z)
-		max_v.x = maxf(max_v.x, vertex.x)
-		max_v.y = maxf(max_v.y, vertex.y)
-		max_v.z = maxf(max_v.z, vertex.z)
-	return "(%.3f,%.3f,%.3f)..(%.3f,%.3f,%.3f)" % [
-		min_v.x,
-		min_v.y,
-		min_v.z,
-		max_v.x,
-		max_v.y,
-		max_v.z,
-	]
-
-func _material_debug_label(material: Material) -> String:
-	if material == null:
-		return "null"
-	if material is StandardMaterial3D:
-		var standard := material as StandardMaterial3D
-		return "StandardMaterial3D name=%s albedo=%s roughness=%.3f cull=%d transparency=%d" % [
-			standard.resource_name,
-			_color_label(standard.albedo_color),
-			standard.roughness,
-			standard.cull_mode,
-			standard.transparency,
-		]
-	if material is ShaderMaterial:
-		var shader_material := material as ShaderMaterial
-		var shader_path := ""
-		if shader_material.shader:
-			shader_path = shader_material.shader.resource_path
-		if shader_path.ends_with("site_ground.gdshader"):
-			return "ShaderMaterial shader=%s grass_macro_scale=%s grass_detail_scale=%s grass_albedo_strength=%s hillshade_strength=%s" % [
-				shader_path,
-				str(shader_material.get_shader_parameter("terrain_grass_macro_scale")),
-				str(shader_material.get_shader_parameter("terrain_grass_detail_scale")),
-				str(shader_material.get_shader_parameter("terrain_grass_albedo_strength")),
-				str(shader_material.get_shader_parameter("hillshade_strength")),
-			]
-		return "ShaderMaterial shader=%s uv_scale=%s macro_uv_scale=%s macro_influence=%s brightness=%s" % [
-			shader_path,
-			str(shader_material.get_shader_parameter("uv_scale")),
-			str(shader_material.get_shader_parameter("macro_uv_scale")),
-			str(shader_material.get_shader_parameter("macro_influence")),
-			str(shader_material.get_shader_parameter("brightness")),
-		]
-	return material.get_class()
-
-func _color_label(color: Color) -> String:
-	return "(%.3f,%.3f,%.3f,%.3f)" % [color.r, color.g, color.b, color.a]
-
-func _vector2_label(value) -> String:
-	var vector := value as Vector2
-	return "(%.3f,%.3f)" % [vector.x, vector.y]
-
-func _packed_vector2_label(value) -> String:
-	var points := value as PackedVector2Array
-	var parts: Array[String] = []
-	for point in points:
-		parts.append(_vector2_label(point))
-	return "[" + ", ".join(parts) + "]"
-

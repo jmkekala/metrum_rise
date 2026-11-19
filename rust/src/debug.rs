@@ -66,7 +66,6 @@ fn startup_modes_from(env: impl Fn(&str) -> Option<String>) -> Vec<(&'static str
     let overlay = |name: &str, markers: &[&str]| {
         channel::overlay_flag(env(name).as_deref(), &raw_filter, markers)
     };
-    let dump = text("METRUM_DEBUG_BUILDING_SITES_DUMP");
     vec![
         (
             "road_geometry_dump",
@@ -83,10 +82,6 @@ fn startup_modes_from(env: impl Fn(&str) -> Option<String>) -> Vec<(&'static str
         (
             "terrain_verbose",
             flag("METRUM_DEBUG_TERRAIN_VERBOSE") || listed(&["terrain-verbose"]),
-        ),
-        (
-            "building_sites_dump",
-            matches!(dump.as_str(), "1" | "true" | "yes" | "full"),
         ),
     ]
 }
@@ -210,7 +205,6 @@ mod tests {
         let vars = [
             ("METRUM_DEBUG_FILTER", "road,terrain-verbose,road-probe"),
             ("METRUM_DEBUG_SURFACE", "0"),
-            ("METRUM_DEBUG_BUILDING_SITES_DUMP", "full"),
         ];
         let modes = startup_modes_from(|name| {
             vars.iter()
@@ -222,6 +216,5 @@ mod tests {
         assert!(get("road_probe"));
         assert!(get("terrain_verbose"));
         assert!(!get("road_geometry_dump"));
-        assert!(get("building_sites_dump"));
     }
 }

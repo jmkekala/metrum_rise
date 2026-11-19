@@ -1,16 +1,15 @@
 # SPDX-License-Identifier: GPL-2.0-only
 
 ## Visual debug modes switch at runtime: console command and Visual pickers, shader globals,
-## the walker VAT material, building-site materials and terrain/water residency and LODs.
+## the walker VAT material and terrain/water residency and LODs.
 extends SceneTree
 
 const DebugConsoleScript := preload("res://scripts/ui/debug_console/debug_console.gd")
 const TerrainScript := preload("res://scripts/renderers/terrain.gd")
 const WaterScript := preload("res://scripts/renderers/water.gd")
 const AgentsScript := preload("res://scripts/renderers/agents.gd")
-const BuildingsScript := preload("res://scripts/renderers/buildings.gd")
 const MODES := [
-	"terrain_visual", "terrain_grass", "building_sites_visual", "pedestrian_vat",
+	"terrain_visual", "terrain_grass", "pedestrian_vat",
 	"terrain_force_lod1", "terrain_force_full_world", "junction_connectors",
 ]
 # Writes both shader globals into one pixel, since global values cannot be read back at runtime.
@@ -125,7 +124,6 @@ func _check_shader_globals(console: Node) -> void:
 	viewport.queue_free()
 
 func _check_renderers(console: Node) -> void:
-	_check_building_sites(console)
 	var host := Node3D.new()
 	root.add_child(host)
 	var simulation := SimulationNode.new()
@@ -185,30 +183,6 @@ func _check_walkers(console: Node, agents: Node) -> void:
 	_expect(console.set_visual_mode("pedestrian_vat", "off"), "pedestrian_vat must switch off")
 	for mmi in agents.walker_mmis.values():
 		_expect(int(mmi.material_override.get_shader_parameter("debug_mode")) == 0, "walker materials must return to normal")
-
-# The site renderer is not added to the tree: its packs and frames need a running city. The
-# switch handler and the mesh apply path are the parts this mode changes.
-func _check_building_sites(console: Node) -> void:
-	var buildings := BuildingsScript.new()
-	buildings._setup_building_site_surfaces()
-	console.visual_mode_changed.connect(buildings._on_visual_mode_changed)
-	var normal_ground: Material = buildings.building_site_ground_instance.material_override
-	var triangle := PackedVector3Array([Vector3.ZERO, Vector3(1, 0, 0), Vector3(0, 0, 1)])
-	var data := {"revision": 7, "ground_vertices": triangle, "asphalt_vertices": triangle}
-	buildings.building_site_revision = 7
-	_expect(console.set_visual_mode("building_sites_visual", "material"), "building_sites_visual must switch")
-	_expect(buildings.building_site_revision == -1, "a switch must request a fresh site frame")
-	_expect(buildings.building_site_ground_instance.material_override != normal_ground, "the ground override must show the overlay")
-	buildings._apply_building_site_mesh_data(data)
-	var surface: Material = buildings.building_site_surface_instance.mesh.surface_get_material(0)
-	_expect(surface == buildings.building_site_debug_materials.get("asphalt"), "rebuilt site surfaces must use overlay materials")
-	_expect(console.set_visual_mode("building_sites_visual", "off"), "building_sites_visual must switch off")
-	_expect(buildings.building_site_ground_instance.material_override == normal_ground, "the ground override must return to normal")
-	buildings._apply_building_site_mesh_data(data)
-	surface = buildings.building_site_surface_instance.mesh.surface_get_material(0)
-	_expect(surface == WorldMaterials.site_surface_material(WorldMaterials.MATERIAL_ASPHALT), "rebuilt site surfaces must return to normal")
-	console.visual_mode_changed.disconnect(buildings._on_visual_mode_changed)
-	buildings.free()
 
 func _check_residency(console: Node, terrain: Node, water: Node) -> void:
 	_expect(await _settle(terrain, water), "camera-based residency must settle")

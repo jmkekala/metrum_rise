@@ -90,16 +90,6 @@ pub const MODES: &[VisualMode] = &[
         ],
     },
     VisualMode {
-        name: "building_sites_visual",
-        env: "METRUM_DEBUG_BUILDING_SITES_VISUAL",
-        values: &["off", "material"],
-        aliases: &[
-            ("materials", "material"),
-            ("source", "material"),
-            ("sources", "material"),
-        ],
-    },
-    VisualMode {
         name: "pedestrian_vat",
         env: "METRUM_DEBUG_PEDESTRIAN_VAT",
         values: &["off", "rest", "uv", "offsets"],
@@ -222,8 +212,7 @@ pub fn set(name: &str, value: &str) -> Result<u8, Refusal> {
 }
 
 /// Starting index of every mode, in [`MODES`] order, from the launch variables and the
-/// `--pedestrian-vat-debug` argument. Unknown names start off, except that any set building
-/// site variable shows the only overlay there is.
+/// `--pedestrian-vat-debug` argument. Unknown names start off.
 fn starting_indices(
     env: impl Fn(&str) -> Option<String>,
     args: impl IntoIterator<Item = String>,
@@ -244,7 +233,6 @@ fn starting_indices(
             "terrain_force_full_world" => u8::from(
                 env_flag(text.as_deref()) || listed(&["terrain-full", "terrain-full-lod1"]),
             ),
-            "building_sites_visual" => mode.parse(text.as_deref().unwrap_or_default()).unwrap_or(1),
             _ => mode.parse(text.as_deref().unwrap_or_default()).unwrap_or(0),
         };
     }
@@ -314,7 +302,6 @@ mod tests {
         assert_eq!(lookup("terrain_grass").parse("footprint"), Some(10));
         assert_eq!(lookup("pedestrian_vat").parse("offset"), Some(3));
         assert_eq!(lookup("pedestrian_vat").parse("off"), Some(0));
-        assert_eq!(lookup("building_sites_visual").parse("sources"), Some(1));
         assert_eq!(lookup("terrain_force_lod1").parse("on"), Some(1));
         assert_eq!(lookup("terrain_force_lod1").parse("yes"), Some(1));
         assert_eq!(lookup("terrain_force_lod1").parse("2"), None);
@@ -341,7 +328,6 @@ mod tests {
                 ("METRUM_DEBUG_FILTER", "road,terrain-full-lod1"),
                 ("METRUM_DEBUG_TERRAIN_VISUAL", "Relief"),
                 ("METRUM_DEBUG_TERRAIN_GRASS", "nonsense"),
-                ("METRUM_DEBUG_BUILDING_SITES_VISUAL", "anything"),
                 ("METRUM_DEBUG_PEDESTRIAN_VAT", "rest"),
             ],
             &["godot", "--", "--pedestrian-vat-debug", "UV"],
@@ -351,7 +337,6 @@ mod tests {
             [
                 ("terrain_visual", "relief"),
                 ("terrain_grass", "off"),
-                ("building_sites_visual", "material"),
                 ("pedestrian_vat", "uv"),
                 ("terrain_force_lod1", "on"),
                 ("terrain_force_full_world", "on"),
@@ -361,15 +346,13 @@ mod tests {
         let modes = start(
             &[
                 ("METRUM_DEBUG_TERRAIN_FORCE_LOD1", "1"),
-                ("METRUM_DEBUG_BUILDING_SITES_VISUAL", "0"),
                 ("METRUM_DEBUG_PEDESTRIAN_VAT", "rest"),
             ],
             &["--pedestrian-vat-debug=offsets"],
         );
-        assert_eq!(modes[2], ("building_sites_visual", "off"));
-        assert_eq!(modes[3], ("pedestrian_vat", "offsets"));
-        assert_eq!(modes[4], ("terrain_force_lod1", "on"));
-        assert_eq!(modes[5], ("terrain_force_full_world", "off"));
+        assert_eq!(modes[2], ("pedestrian_vat", "offsets"));
+        assert_eq!(modes[3], ("terrain_force_lod1", "on"));
+        assert_eq!(modes[4], ("terrain_force_full_world", "off"));
         assert!(start(&[], &[]).iter().all(|(_, value)| *value == "off"));
     }
 

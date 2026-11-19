@@ -127,7 +127,7 @@ license = "CC0"
 		for frame in 60:
 			await process_frame
 			renderer._install_site_rows()
-			var idle: Array = simulation.get_building_site_rows(renderer.building_site_revision)
+			var idle: Array = simulation.get_building_site_rows(renderer.site_rows_generation)
 			_expect(idle.is_empty(), "idle requests must not return site buffers")
 		_expect(renderer.refreshes - previous_refreshes == 60, "requests are state-driven rather than a 30-frame timer")
 	DirAccess.remove_absolute(manifest_path)

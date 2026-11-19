@@ -36,7 +36,7 @@ and the name used by filters, the bridge and the console.
 | `sim` | opt-in | Hourly simulation summaries. |
 | `perf` | opt-in | Renderer frame CPU summaries (`PerfDebug`), preview and simulation frame timing. |
 | `terrain` | opt-in | Terrain and water patch residency, meshing and timing. |
-| `buildings` | opt-in | Building-site mesh, material and grading samples. |
+| `buildings` | opt-in | Frontage attachment repairs and building LOD slot shortages. The building-site dump and its visual mode were removed with the dead site mesh path (`RENDER-30`, round R30, 2026-11-19). |
 | `save` | general | Save and load. |
 | `world-editor` | general | World editor activity. |
 | `asset-editor` | general | Asset editor export and validation. |
@@ -92,7 +92,6 @@ Some debug variables switch a diagnostic that is not a channel and not a [visual
 | `road_surface` | `METRUM_DEBUG_SURFACE`, or `road-surface` / `surface-debug` in the filter. Compiled road-surface overlay. |
 | `road_probe` | `METRUM_DEBUG_ROAD_PROBE`, or `road-probe` in the filter. Surface probe dumps under the cursor. |
 | `terrain_verbose` | `METRUM_DEBUG_TERRAIN_VERBOSE`, or `terrain-verbose` in the filter. |
-| `building_sites_dump` | `METRUM_DEBUG_BUILDING_SITES_DUMP` = `1`, `true`, `yes` or `full`. |
 
 Rust road-commit code still reads its own road-geometry dump size and full-validation variables
 (`METRUM_DEBUG_ROAD_GEOMETRY_DUMP_FULL`, `_MAX_BYTES`, `METRUM_DEBUG_ROAD_COMMIT_FULL_VALIDATION`).
@@ -107,7 +106,6 @@ launch variable sets only the starting value, and the console switches every mod
 |------|--------|--------|-------|
 | `terrain_visual` | `off`, `patch`, `lod`, `height`, `relief`, `shore`, `water-depth`, `water-lod`, `water-patch`, `water-material`, `lighting`, `graded-delta`, `graded-sdf`, `graded-level`, `graded-slot` | `METRUM_DEBUG_TERRAIN_VISUAL` | Terrain and water material views ([modes](#terrain--water-visual-modes)). |
 | `terrain_grass` | `off`, `raw`, `macro`, `mid`, `micro`, `fades`, `material`, `height`, `mask`, `luminance`, `footprint` | `METRUM_DEBUG_TERRAIN_GRASS` | Terrain grass layers ([modes](#terrain-grass-visual-modes)). |
-| `building_sites_visual` | `off`, `material` | `METRUM_DEBUG_BUILDING_SITES_VISUAL` | Site ground, asphalt and concrete tinted by material source ([modes](#building-site-visual-modes)). |
 | `pedestrian_vat` | `off`, `rest`, `uv`, `offsets` | `METRUM_DEBUG_PEDESTRIAN_VAT`, overridden by `--pedestrian-vat-debug` | `rest`: no VAT animation, so rigid sliding is expected. `uv`: vertex-ID UVs. `offsets`: VAT offset magnitude while offsets apply. |
 | `terrain_force_lod1` | `off`, `on` | `METRUM_DEBUG_TERRAIN_FORCE_LOD1`, or `terrain-lod1` / `terrain-full-lod1` in the filter | Every resident terrain and water patch at LOD1, the finest mesh. |
 | `terrain_force_full_world` | `off`, `on` | `METRUM_DEBUG_TERRAIN_FORCE_FULL_WORLD`, or `terrain-full` / `terrain-full-lod1` in the filter | Every terrain patch resident, with water following it. |
@@ -118,8 +116,7 @@ These rules apply:
 - Names are case-insensitive. Each value also accepts its index, and the aliases listed in the
   linked mode tables. `false` and an empty value are `off`; `on` modes also accept `true` and
   `yes`.
-- An unknown launch value starts `off`. The exception is `building_sites_visual`: any other set
-  value starts its only overlay, `material`.
+- An unknown launch value starts `off`.
 - At runtime, an unknown mode or value is refused and the reason is logged on `events`.
 - `pedestrian_vat` `off` now means no debug view. Before `DEBUG-02` it selected the offsets
   view, which is now `offsets` (alias `offset`).
@@ -139,9 +136,6 @@ These rules apply:
 - Every other mode reaches its renderer through the console's `visual_mode_changed(mode)`
   signal:
   - `pedestrian_vat`: the walker renderer sets `debug_mode` on its four walker materials.
-  - `building_sites_visual`: the building renderer swaps the site ground override and asks for
-    a fresh site frame. The next frame rebuilds the site surfaces with the new materials through
-    the normal site-mesh path. This is one O(sites) site mesh rebuild per switch.
   - `terrain_force_lod1` and `terrain_force_full_world`: the terrain and water renderers update
     their cached flags. Residency already reads the full-world flag on every frame, so the next
     frames load or drop patches through the normal per-frame budget, without a teardown. LOD
@@ -982,7 +976,6 @@ in the headless bridge list too). It covers:
 - on the rendered run only, the values the shaders receive, read from a probe pixel (the
   headless renderer draws nothing, and global shader values cannot be read back at runtime);
 - the walker VAT materials;
-- the building-site ground override and rebuilt surface materials;
 - live terrain and water renderers on an 8 km test world with a corner camera: 49 of 64 patches
   are resident, at LOD 1, 2 and 4. Full-world residency loads all 64; force-LOD1 refines every
   terrain and water patch; switching either off returns the same patch set and LODs.
@@ -1199,8 +1192,7 @@ set only the starting value; the console switches them later.
 | `--debug terrain-full-lod1` | `METRUM_DEBUG_TERRAIN=1`, `METRUM_DEBUG_TERRAIN_FORCE_FULL_WORLD=1`, `METRUM_DEBUG_TERRAIN_FORCE_LOD1=1` | Starts with both, for seam/material debugging. |
 | `--debug perf` | `METRUM_DEBUG_PERF=1` | Frame CPU summaries by renderer every 0.5 s. Reports total renderer CPU per completed frame plus per-renderer/detail averages and maxes. |
 | `--debug buildings` | `METRUM_DEBUG_BUILDINGS=1` | Building-site mesh, material, height, and site metadata logs only. |
-| `--debug building-sites-visual [mode]` | `METRUM_DEBUG_BUILDING_SITES_VISUAL=<mode>` | Starts the building-site visual overlay. Current mode: `material`. |
-| `--debug site-grading` | `METRUM_DEBUG_FILTER=road`, `METRUM_DEBUG_BUILDINGS=1`, `METRUM_DEBUG_BUILDING_SITES_VISUAL=material` | Combined road CDT, building-site edge/grading, and site material diagnostics for road/yard seam debugging. |
+| `--debug site-grading` | `METRUM_DEBUG_FILTER=road`, `METRUM_DEBUG_BUILDINGS=1` | Combined road CDT and `buildings` channel diagnostics for road/yard seam debugging. |
 | `--debug traffic` / `--debug-traffic` | `METRUM_DEBUG_TRAFFIC=1` | Traffic/routing and road-network connectivity logging to stdout as `[DEBUG:traffic]` plus visual lane/connector debug labels. Emits road split/apply tags, road-edit agent remap tags, entrance-cache diffs, exact replan rejection diagnostics, and watchdog recovery lines. |
 | `--pedestrian-vat-debug=<mode>` | `METRUM_DEBUG_PEDESTRIAN_VAT=<mode>` | Starts a pedestrian VAT material view: `rest`, `uv` or `offsets` (see [Visual Modes](#visual-modes)). `off`, or no flag, gives normal animated character colors. |
 | `--debug-world-editor` | `METRUM_DEBUG=1`, `METRUM_DEBUG_FILTER=world-editor` | WorldEditor create/open/save/tool activity. |
@@ -1295,12 +1287,3 @@ Values of the `terrain_visual` visual mode: `visual terrain_visual <mode>` in th
 | `graded-sdf` | `sdf` | Graded cells' footprint distance: red where masked under a road, green fading over the band. |
 | `graded-level` | | Each terrain cell's lattice: `GL0`-`GL2` green, base cells and `GL3` by step; base cells dimmed. |
 | `graded-slot` | | Each graded cell's slot-pool layer as an identity colour; base cells grey. |
-
-### Building-Site Visual Modes
-
-Values of the `building_sites_visual` visual mode: `visual building_sites_visual <mode>` in the
-console, or `--debug building-sites-visual <mode>` at launch.
-
-| Mode | Aliases | Meaning |
-|------|---------|---------|
-| `material` | `materials`, `source`, `sources` | Tints site ground, asphalt, and concrete by material source. |

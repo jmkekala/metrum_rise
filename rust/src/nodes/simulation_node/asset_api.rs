@@ -89,16 +89,6 @@ impl SimulationNode {
         out
     }
 
-    /// The building-site debug export (the buildings debug channel's site dump), read under the
-    /// core lock; asked only while the dump or the channel is on.
-    #[func]
-    pub fn get_building_site_mesh_data(&self) -> VarDictionary {
-        let mut core = self.lock_core();
-        // The debug probes read the graded surface, which reads the site index.
-        core.prepare_site_queries();
-        core.get_building_site_mesh_data_internal()
-    }
-
     /// Returns a Dictionary of live stats for the building whose centre is closest to
     /// (`world_x`, `world_z`) within a 30 m pick radius.
     ///

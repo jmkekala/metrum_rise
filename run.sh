@@ -45,7 +45,7 @@
 # Debug modes:
 #   These set the startup state of the debug channels and visual modes. In game, the key
 #   left of "1" (§ on Nordic layouts) opens the debug console: switch channels and visual
-#   modes (terrain-visual, visuals, building-sites-visual, pedestrian VAT, terrain-lod1,
+#   modes (terrain-visual, visuals, pedestrian VAT, terrain-lod1,
 #   terrain-full) at runtime, read, filter, copy, or dump the log to user://debug/.
 #   The options below only pick the starting value of a visual mode. See docs/debug.md.
 #   --debug              General debug channels (stdout); terrain, buildings, perf,
@@ -73,12 +73,10 @@
 #                        water-material, lighting
 #   --debug perf         Frame CPU diagnostics by renderer. Emits [DEBUG:perf]
 #                        summaries every 0.5 s.
-#   --debug buildings    Building-site mesh/material diagnostics (log only).
-#   --debug building-sites-visual [mode]
-#                        Building-site material-source overlay. Modes: material
+#   --debug buildings    Building diagnostics on the buildings channel (log only).
 #   --debug site-grading
-#                        Best combo for building/road yard seams: road geometry dump,
-#                        building-site diagnostics, and building-site material overlay.
+#                        Best combo for building/road yard seams: road geometry dump and
+#                        the buildings channel.
 #   --debug traffic      Traffic/routing + road-network connectivity ([DEBUG:traffic], stdout)
 #   --debug-traffic      Alias for --debug traffic
 #                        Shows per-road-placement split details, CCH rebuild connectivity
@@ -156,8 +154,6 @@ DEBUG=0
 DEBUG_TRAFFIC=0
 DEBUG_SIM=0
 DEBUG_BUILDINGS=0
-BUILDING_SITE_VISUAL_DEBUG=0
-BUILDING_SITE_VISUAL_DEBUG_MODE="material"
 VISUAL_DEBUG=0
 VISUAL_DEBUG_MODE="material"
 TERRAIN_VISUAL_DEBUG=0
@@ -1252,22 +1248,11 @@ while [ $i -le $# ]; do
                 elif [ "$next_arg" = "site-grading" ] || [ "$next_arg" = "building-site-grading" ]; then
                     DEBUG=1
                     DEBUG_BUILDINGS=1
-                    BUILDING_SITE_VISUAL_DEBUG=1
                     DEBUG_CATEGORY="road"
                 elif [ "$next_arg" = "buildings" ] || [ "$next_arg" = "building-sites" ]; then
                     DEBUG=1
                     DEBUG_BUILDINGS=1
                     DEBUG_CATEGORY="buildings"
-                elif [ "$next_arg" = "building-sites-visual" ] || [ "$next_arg" = "building-visual" ] || [ "$next_arg" = "buildings-visual" ]; then
-                    BUILDING_SITE_VISUAL_DEBUG=1
-                    mode_index=$((i + 2))
-                    if [ $mode_index -le $# ]; then
-                        mode_arg="${!mode_index}"
-                        if [[ "$mode_arg" != --* ]]; then
-                            BUILDING_SITE_VISUAL_DEBUG_MODE="$mode_arg"
-                            i=$((i + 1))
-                        fi
-                    fi
                 elif [ "$next_arg" = "visuals" ] || [ "$next_arg" = "visual" ]; then
                     VISUAL_DEBUG=1
                     mode_index=$((i + 2))
@@ -1412,20 +1397,6 @@ case "$TERRAIN_VISUAL_DEBUG_MODE" in
         ;;
 esac
 
-case "$BUILDING_SITE_VISUAL_DEBUG_MODE" in
-    material|materials|source|sources)
-        BUILDING_SITE_VISUAL_DEBUG_MODE="material"
-        ;;
-    "")
-        BUILDING_SITE_VISUAL_DEBUG_MODE="material"
-        ;;
-    *)
-        echo "Error: unknown building-site visual debug mode '$BUILDING_SITE_VISUAL_DEBUG_MODE'." >&2
-        echo "Valid modes: material" >&2
-        exit 2
-        ;;
-esac
-
 case "$PEDESTRIAN_VAT_DEBUG_MODE" in
     rest|uv|offsets|off|"")
         ;;
@@ -1536,8 +1507,7 @@ if [ $DEBUG -eq 1 ]; then
             echo "  Reports total renderer CPU per completed frame plus per-renderer averages/maxes."
         elif [ "$DEBUG_CATEGORY" = "buildings" ]; then
             DEBUG_BUILDINGS=1
-            echo "  Building-site diagnostics enabled: [DEBUG:buildings] mesh, material, height, and site metadata."
-            echo "  Visual overlay is separate: add --debug building-sites-visual material when needed."
+            echo "  Building diagnostics enabled: [DEBUG:buildings]."
         fi
     else
         echo "Debug logging enabled (output goes to stdout)"
@@ -1565,13 +1535,8 @@ fi
 if [ $DEBUG_BUILDINGS -eq 1 ]; then
     export METRUM_DEBUG_BUILDINGS=1
     if [ "$DEBUG_CATEGORY" != "buildings" ]; then
-        echo "Building-site diagnostics enabled: [DEBUG:buildings] site, edge, material, and grading samples."
+        echo "Building diagnostics enabled: [DEBUG:buildings]."
     fi
-fi
-if [ $BUILDING_SITE_VISUAL_DEBUG -eq 1 ]; then
-    export METRUM_DEBUG_BUILDING_SITES_VISUAL="$BUILDING_SITE_VISUAL_DEBUG_MODE"
-    echo "Building-site visual debug enabled: material source overlay"
-    echo "  Ground yards, asphalt surfaces, and concrete surfaces are tinted separately."
 fi
 if [ $VISUAL_DEBUG -eq 1 ]; then
     export METRUM_DEBUG_TERRAIN_GRASS="$VISUAL_DEBUG_MODE"
