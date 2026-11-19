@@ -15368,7 +15368,9 @@ Round T14Cf (branch `terrain-14-trailing`, base `dev` `da9ffb5c`):
 2. `feat(terrain)`: `f405897e` cherry-picked (the trailing display), the probe's trail
    check moved into the check rows' helper so the timing mode leaves it out too; Rust unchanged.
 3. `feat(terrain)`: `34bf81ae` cherry-picked unchanged (the frame-end poll).
-Commits 2-3 are built and measured, **held for the user's look at the clips** (T14Sb's), not landed.
+Commits 2-3 are built and measured, not landed. **The user's decision (2026-11-20): keep the strict
+display; the trailing display is parked** on branch `terrain-14-trailing` (a turn-row fix round,
+T14H, was started and stopped before any change).
 
 **Readings adopted (for the user's review).** Bar 9 is judged on the timing mode (the draw checks
 off in the timed rows only, the control measured the same way; the check rows, bar 6, run with
