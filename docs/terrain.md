@@ -19214,10 +19214,11 @@ session, whose branch rows are discarded).
   templates: terrain, graded tiles, water, grass masks, the vegetation catalogue with its
   impostors and hedges, built and added whole in the menu's second frame as before), the first
   frame's sets (the cars' fade variant, their lamp glows and beams, the walkers, the site shells,
-  the grass clumps, the world's border skirt and curtain), the graded base cells, the mirror (the
-  terrain proxies, the impostors, the building tiers' variants, the site shells), the roads (the
+  the grass clumps, the world's border skirt and curtain), the graded base cells, the roads (the
   chunk layers' six shaders, the asphalt's `CUSTOM0` format, the tunnel lining's caster), the
-  street lights and the signs: 6 groups, 146 surface compilations queued (56 on `dev`).
+  street lights and the signs, and last the mirror (the terrain proxies, the impostors, the
+  building tiers' variants, the site shells; after the roads since round R43d, below): 6 groups,
+  146 surface compilations queued (56 on `dev`).
 - **Slices and markers.** A shader's first draw compiles its variants on the main thread
   (0.1-0.5 s each on a first run, a frozen menu frame a click waits for: a group added at once
   froze the menu 0.5-1.0 s). So after the first group the view adds a slice a frame, each slice
@@ -19225,9 +19226,9 @@ session, whose branch rows are discarded).
   marker task joins the same low-priority queue (`PipelinePrewarm.queue_marker`,
   `WorkerThreadPool.add_task(..., false)`), and when it has run (everything queued before it has
   been taken up; a few may still run) the next slice, or the next group, follows. A finished
-  group's instances are freed. `O(1)` a frame while the menu shows, nothing after it. Leaving
-  costs at most one slice's compilations and the few still running; a click waits at most one
-  slice's frame.
+  group's instances are freed. `O(1)` a frame while the menu shows, nothing after it. A click
+  waits at most one slice's frame; leaving with a slice in flight still costs the world scene's
+  start 0.2-1.2 s, whatever the slice (round R43d, below).
 - Templates are bare materials on one triangle of the real vertex format
   (`pipeline_template.gd`), owned by each renderer next to the code that makes its surfaces, and
   take the renderers' own shader objects (script constants, `WorldMaterials`' and
@@ -19256,7 +19257,8 @@ session, whose branch rows are discarded).
   6 s waited for it (the benchmark left at 6.86-6.91 s); the new game's 6 s row was +0.88 s from
   the exit, +1.74 s from the click.
 
-**Timing** (`$ARTIFACTS/render43/r43c/t4`, 2026-11-19 10:56-11:23, governor `performance`, the
+**Timing** (R43c's order, the mirror before the roads; round R43d's order and session below)
+(`$ARTIFACTS/render43/r43c/t4`, 2026-11-19 10:56-11:23, governor `performance`, the
 user away; one session: `tools/stream_benchmark.py run` rows through the menu, gamescope headless
 1920x1080, P-cores, eight workers, paused, the timing locks, phases `post_load`, `still`, the 1 s
 and 0.5 s turns, and `water_turns` on the Kuopio city and the pond; control: the release library
@@ -19289,7 +19291,7 @@ adds the time the menu left after the dwell (a frozen slice frame); the control 
 | pond (30k) | warm, 0 s | 10.16 / 10.33 | 10.33 | +0.17 / +0.17 | - | 7.53 / 7.69 |
 | pond (30k) | warm, 6 s | 10.21, 10.40 / 9.76, 9.94 | 9.76, 9.95 | -0.46 / -0.46 | 0.19 | 7.58, 7.62 / 7.43, 7.55 |
 
-**Bars** (A7's, unchanged):
+**Bars** (A7's, unchanged; R43c's order, superseded by round R43d's below):
 1. Leaving early, cold at 0 and 6 s, not worse than control by more than 1.0 s: met on the
    Kuopio city (-0.14, -1.55 s), the 30k city (-0.16, +0.22 s; +0.47 from the click) and the pond (+0.07, +0.61 s; +0.76 from the click);
    **missed on the Kuopio new game at 6 s: +1.03 s from the exit (spread 0.31), +1.20 s from the
@@ -19378,6 +19380,115 @@ screen cannot block the main thread); and it can wait for `finished` or for a ch
 (`group_finished`, the ground and vegetation first) with a time limit, since a cold run's queue
 takes about 5 s on eight cores. The marker is the end signal R43b lacked.
 
+**Round R43d: the group order** (2026-11-19, the night delegation carried on; for review). The
+one bar R43c missed was leaving the menu at 6 s on the Kuopio new game, which draws no mirror,
+road or building.
+
+*What leaving costs.* A throwaway probe (`$ARTIFACTS/render43/r43d/d1`, timestamps at the scene
+change, the menu's and its view's tree exits and each child of the world scene at its `_ready`)
+on the new game, cold:
+
+| | scene change to the world scene's start s | `SceneLighting` ready s | `Buildings` ready s | gap s |
+|---|---:|---:|---:|---:|
+| control, 6 s | 0.43 | 0.08 | 0.80 | 3.14 |
+| R43c, 6 s (a road slice in flight) | 1.37-1.39 | 0.81-0.88 | 0.56 | 4.24-4.38 |
+| R43c, 15 s (the queue drained) | 0.36 | 0.08 | 0.53 | 2.48 |
+
+With compilations still running at the exit, the scene change and the lighting's start (its
+cloud, sky and gust bakes and the water reflection) take 1.7 s more than with the queue drained;
+the view's `_prewarm.end()` takes under 6 ms. Godot compiles a shader's variants as
+high-priority tasks (`ShaderRD::_compile_version_start`), so they do not queue behind the
+pipelines; whether the wait is the main thread competing with up to seven running compilations
+on the benchmark's eight pinned cores or a sync with the render thread was not separated. So a
+slice in flight costs more than its own compilations, and how much depends on the slice:
+
+*Screening* (`$ARTIFACTS/render43/r43d/s1`, cold, one session, interleaved C B A A B C, governor
+`performance`; Kuopio new game at 5, 6 and 7 s and the Kuopio city at 6 s; difference of means
+against the control from the exit / from the click, the group in flight at the exit in brackets):
+
+| order | new game, 5 s | new game, 6 s | new game, 7 s | Kuopio city, 6 s |
+|---|---|---|---|---|
+| R43c: ..., base cells, mirror, roads, signs | +0.70 / +0.85 (mirror) | +0.92 / +1.11 (roads) | +0.71 / +0.71 (roads) | -0.92 / -0.89 (mirror) |
+| A: ..., base cells, roads, signs, mirror | +0.58 / +0.58 (roads) | +0.39 / +0.42 (signs) | +0.87 / +0.87 (mirror) | -0.32 / -0.19 (signs) |
+| B: ..., base cells, mirror, signs, roads (one row at 5 and 7 s) | +0.71 / +0.91 (mirror) | +0.81 / +1.09 (signs) | +0.19 / +0.20 (roads) | -1.93 / -1.72 (signs) |
+
+Leaving with any group in flight costs the new game 0.2-1.1 s; no order makes an early exit free,
+and an order only decides which click times are cheaper (B's 6 s row with the signs in flight still
+read +1.09 s from the click, its menu left in a slice frame). A keeps the new game within 1.0 s at
+all three exits (its worst +0.87 s at 7 s, R43c's +1.11 s at 6 s). Its cost: the Kuopio city's
+mirror is no longer ready at 6 s, so that row's first turn toward water (`water_turns`) is cold again (413-424 ms
+against R43c's 14-15 ms; the control's 381-410 ms), and at 15 s it is ready as before (bar 4).
+**Adopted: order A** (`pipeline_prewarm.gd`), the coordinator's first candidate.
+
+*Timing* (`$ARTIFACTS/render43/r43d/t1`, 2026-11-19 14:17-15:58, governor `performance`, R43c's
+session shape and control: `dev`'s scripts with this round's benchmark scripts on the release
+library of `3386098b` (the same Rust as `e8fc34bd`); branch the same library with the branch's
+scripts; other agents' runs took the timing locks between rows, never during one, and
+`ps-during-s1.txt` logs the machine every 15 s):
+
+| input | run | exit to settled s (C / B) | from the click s (B) | difference (exit / click) | spread | start to settled s (C / B) |
+|---|---|---|---|---|---:|---|
+| Kuopio city | cold, 0 s | 12.85 / 13.14 | 13.14 | +0.29 / +0.29 | - | 8.37 / 8.58 |
+| Kuopio city | cold, 6 s | 11.54, 11.41 / 10.57, 10.53 | 10.57, 10.67 | -0.93 / -0.86 | 0.13 | 8.40, 8.28 / 6.56, 6.62 |
+| Kuopio city | cold, 15 s | 11.25 / 7.14 | 7.15 | -4.11 / -4.10 | - | 8.19 / 4.68 |
+| Kuopio city | warm, 0 s | 6.56 / 6.46 | 6.46 | -0.10 / -0.10 | - | 3.93 / 3.90 |
+| Kuopio city | warm, 6 s | 6.58, 6.50 / 6.17, 6.13 | 6.17, 6.14 | -0.39 / -0.39 | 0.08 | 3.96, 3.86 / 3.87, 3.81 |
+| Kuopio new game | cold, 0 s | 8.17 / 8.12 | 8.12 | -0.05 / -0.05 | - | 3.52 / 3.50 |
+| Kuopio new game | cold, 6 s | 6.58, 6.38 / 6.80, 6.69 | 6.81, 6.91 | +0.26 / +0.37 | 0.21 | 3.40, 3.26 / 2.87, 2.85 |
+| Kuopio new game | cold, 15 s | 6.15 / 5.25 | 5.26 | -0.91 / -0.90 | - | 3.12 / 2.74 |
+| Kuopio new game | warm, 0 s | 5.16 / 5.12 | 5.12 | -0.04 / -0.04 | - | 2.49 / 2.51 |
+| Kuopio new game | warm, 6 s | 5.19, 5.20 / 4.80, 4.81 | 4.81, 4.82 | -0.39 / -0.39 | 0.01 | 2.52, 2.50 / 2.47, 2.49 |
+| 30k city | cold, 6 s | 12.61, 14.07 / 12.39, 12.34 | 12.52, 12.43 | -0.97 / -0.87 | 1.45 | 9.47, 10.91 / 8.49, 8.34 |
+| pond (30k) | cold, 6 s | 12.88, 12.77 / 12.70, 12.45 | 12.72, 12.46 | -0.25 / -0.24 | 0.25 | 9.77, 9.62 / 8.66, 8.56 |
+
+The 30k city and the pond were timed only where an order can change a row: cold, leaving at 6 s (at
+0 s the ground group, first in both orders, is in flight; at 15 s and warm the queue has drained).
+The 30k city's second control row is slow throughout (start to settled 10.91 s against 9.47 s);
+against its other control row the branch is -0.25 s.
+
+**Bars** (R43c's, unchanged, against this session's control):
+1. Leaving early, cold at 0 and 6 s, within 1.0 s of the control: **met**. The new game -0.05 s
+   at 0 s and +0.26 s from the exit at 6 s (+0.37 s from the click; spread 0.21); the Kuopio city
+   +0.29 s and -0.93 s (-0.86 s from the click); at 6 s the 30k city -0.97 s (-0.25 s against
+   its faster control row) and the pond -0.25 s. In the screening the new game stayed
+   within it at 5 and 7 s too (+0.58, +0.87 s from the click).
+2. Menu had time (cold 15 s against the warm control at 6 s): met, the Kuopio city 7.14 against
+   6.54 s (+0.60, limit 1.2), the new game 5.25 against 5.20 s (+0.05, limit 0.8); the 30k city
+   not rerun (an order cannot change a drained queue; R43c's +0.20 s stands).
+3. Cold 15 s frames: met. First frames 395 ms (Kuopio city) and 394 ms (new game); over 100 ms
+   only the city's second frame (104 ms, warm alike) and its 15th (109 ms: the mirror's first draw,
+   +4 surface and +2 draw compilations, the four R43c named outside the inventory's reach, with an
+   88 MB allocation; 63-73 ms in R43c's session); settle waits' worst 26 ms.
+4. First turn toward water, cold 15 s (the Kuopio city's 1 s `turn_out`): 19 ms (control 388 ms):
+   met. At a 6 s exit it is cold again with this order (399 ms, the control's 395 ms; R43c's order
+   17 ms), as the screening showed.
+5. Warm at 0 and 6 s: met, the Kuopio city -0.10 / -0.39 s, the new game -0.04 / -0.39 s.
+6. The menu: the longest frame is the first group's build, the same code as `dev`'s. This
+   session cold 2.48-2.60 s control, 2.52-2.72 s branch; warm 1.22-1.28 / 1.22-1.25 s. Pooled
+   with R43c's session (rows with a dwell, 18 a side cold, 12 warm): cold +32 ms (control
+   2,559 ms, sd 41; branch 2,591 ms, sd 59; Welch's t 1.9), warm -1 ms (t -0.2). So the cold
+   difference is not shown to be noise either: the bar reads **missed by up to 0.09 s** on the
+   longest rows, cause not found (the frame builds the same templates as `dev`'s; the branch
+   loads more renderer scripts with the menu, before that frame). The slice frames are at most
+   0.40 s cold and 0.01 s warm; the prewarm ends 7.2-7.5 s from the launch cold and 2.4-2.7 s
+   warm; 146 surface compilations queued (56 on `dev`).
+7. Stills: the menu itself (Godot's movie writer, 480 frames from the launch, control against
+   the branch) byte-identical in every frame. Bar 7's mirror view settled: Kuopio city `water` and
+   `saved`, direct launches, 4,000 warm-up frames, control twice and the branch once, each with
+   the clouds drawn and without (`$ARTIFACTS/render43/r43d/products/kuow4k-*`): control against
+   control 161,571 px on `water` (13,663 on `saved`), branch against the two controls 228,858 and
+   244,578 px (21,925 and 29,113); without the clouds control against control 12,122 px on
+   `water`, branch against the controls 8,635 and 12,128 px, in the same places (swaying trees
+   and their reflection; diff images beside the stills). So the capture itself is not repeatable
+   at 4,000 frames, the clouds carry most of it, and with them off the branch is as far from the
+   control as the control from itself: no difference of the branch's own. Not byte-identical.
+8. Digests through the menu at 15 s (the whole prewarm in the new order, one run a side): the
+   30k city's 5 of 5 and the Kuopio new game's 9 of 9 points equal.
+9. Gates: `env -u DISPLAY -u WAYLAND_DISPLAY ./run.sh --test` PASS on the reordered branch (rust
+   3m00s, godot-main 2m59s with `menu_pipeline_prewarm_test`, godot-vehicle 1m23s);
+   `tools/test_stream_benchmark.py` 32 tests OK. No Rust change, no clippy run.
+10. The untemplated list: unchanged (an order moves no template).
+
 **For review and later.**
 - `threading/worker_pool/low_priority_thread_ratio` (0.3) caps the background compilations at
   seven threads; raising it shortens a first run's queue and competes with the main thread while
@@ -19386,9 +19497,10 @@ takes about 5 s on eight cores. The marker is the end signal R43b lacked.
   `dev`; splitting it costs an early click (above). Moving the catalogue's model loads onto a
   thread (`ResourceLoader.load_threaded_request`) would shorten the frame without that cost: not
   tried.
-- Leaving while the mirror group is in flight costs a world without water up to about a second
-  (bar 1's new game row). Putting the roads before the mirror would move that cost to cities at
-  a later click; the mirror first follows A7's value order.
+- Leaving while any group is in flight costs the world scene's start 0.2-1.1 s (round R43d); the
+  order only moves it between click times. Smaller slices in the mirror group (its restore draw
+  queues the whole group's game sets at once) or a lower
+  `low_priority_thread_ratio` while the menu shows might shrink it: not tried.
 - A7's other named leftovers stand: the first frame's remainder (the sky, the cloud and mist
   effects, the bakes' canvas shaders: 0.10-0.13 s above warm), direct-to-load launches (no
   prewarm), and user asset packs whose materials make another building shader variant (the
