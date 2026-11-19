@@ -462,10 +462,12 @@ player's edits and loading (`prepare_building_site_query_index`, `rebuild_zone_i
 reader outside that order readies only the site part, through `SimCore::prepare_site_queries`
 (with the roadbed compile: `prepare_site_and_road_reads`): the render snapshot the simulation
 thread builds after every frame and edit (never in a headless run), the pointer's
-`hover_world_surface`, `intersect_world_surface` and `get_world_surface_height`,
-`try_get_building_site_frame`, the graded tiles' inputs, the vegetation, water and parcel-overlay
-queries, the agent inspector, the building LOD view, the bulldoze hover, the cell overlay's chunks
-(requested and stale), the cell gesture and parcel previews, and the building pick below.
+`hover_world_surface`, `intersect_world_surface` and `get_world_surface_height`, the graded
+tiles' inputs, the vegetation, water and parcel-overlay queries, the agent inspector, the building
+LOD view, the bulldoze hover, the cell overlay's chunks (requested and stale), the cell gesture and
+parcel previews, and the building pick below. The construction sites' published rows read building
+rows only and ready nothing (`RENDER-30`, round R30); their site roster is derived render state,
+never saved and never read by the simulation (`render::building_sites`).
 `building_site_query_index_ready()` accepts the site part, which is all a site query reads
 (`graded_site_snapshot`, the vehicle ground solve, the cell mask request, `has_explicit_cell_sites`,
 the explicit-site snapshot); an edit's graded stage prepares the whole index without asking it, so
