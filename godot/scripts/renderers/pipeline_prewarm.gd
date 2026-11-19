@@ -5,13 +5,14 @@
 ## a draw waits for the one it needs; with a cold driver cache one terrain pipeline takes most of a
 ## second. The layers that first draw frames after a load (the terrain patches, the graded tiles,
 ## the water, the vegetation, the grass masks) each made the frame they first drew in wait for
-## theirs, one after another. `begin` puts one hidden instance of every (mesh, material) template
-## those layers draw with into a scenario: Godot creates their surfaces when it next renders a 3D
-## scene and compiles all their pipelines at once in the background (the menu does this from the
+## theirs, one after another. `add` puts one hidden instance of every (mesh, material) template
+## of a group into a scenario: Godot creates their surfaces when it next renders a 3D scene and
+## compiles their pipelines in the background (the menu does this a group at a time from the
 ## game's launch, `menu_pipeline_prewarm.gd`). A hidden instance is never drawn, culled or paired;
-## `end` frees them, and the compiled pipelines stay with their shaders and the caches. A pipeline
-## depends on the shader, the mesh's vertex format and primitive and the pass, never on a
-## material's parameters or a mesh's size, so the pairs are templates (`templates`).
+## `release` and `end` free them, and the compiled pipelines stay with their shaders and the
+## caches. A pipeline depends on the shader, the mesh's vertex format and primitive and the pass,
+## never on a material's parameters or a mesh's size, so the pairs are templates (`groups`,
+## `pipeline_template.gd`).
 extends RefCounted
 
 const TerrainRenderer := preload("res://scripts/renderers/terrain.gd")
@@ -20,15 +21,21 @@ const VegetationRenderer := preload("res://scripts/renderers/vegetation.gd")
 const GrassRenderer := preload("res://scripts/renderers/grass.gd")
 const TreeSpecies := preload("res://scripts/renderers/tree_species.gd")
 
+## A group's name, its pairs' builder (a Callable answering `[Mesh, Material or null]` pairs) and
+## whether the water mirror draws it (its pipelines are also wanted at the mirror's MSAA).
+const GROUP_NAME := "name"
+const GROUP_PAIRS := "pairs"
+const GROUP_MIRROR := "mirror"
+
+# The hidden instances of the group in flight.
 var _instances: Array[RID] = []
-# The pairs' resources, alive as long as their instances.
+# Every added group's resources, alive until `end`: the shaders keep their pipelines.
 var _pairs: Array = []
 
 ## Puts a hidden instance of every `[Mesh, Material or null]` pair into `scenario` (a null
-## material draws the mesh's own surface materials). O(pairs).
-func begin(scenario: RID, pairs: Array) -> void:
-	end()
-	_pairs = pairs
+## material draws the mesh's own surface materials), beside those already added. O(pairs).
+func add(scenario: RID, pairs: Array) -> void:
+	_pairs.append_array(pairs)
 	for pair: Array in pairs:
 		var mesh := pair[0] as Mesh
 		if mesh == null or mesh.get_surface_count() == 0:
@@ -41,23 +48,57 @@ func begin(scenario: RID, pairs: Array) -> void:
 		RenderingServer.instance_set_scenario(instance, scenario)
 		_instances.append(instance)
 
-## Frees the hidden instances; the compiled pipelines stay with their shaders. O(pairs).
-func end() -> void:
+## Frees the hidden instances and keeps their resources: the next 3D render compiles nothing more
+## for them (a finished group leaves the precompiled set the project's MSAA setting selects).
+## O(instances).
+func release() -> void:
 	for instance in _instances:
 		RenderingServer.free_rid(instance)
 	_instances.clear()
+
+## Frees the hidden instances and the resources; the compiled pipelines stay with their shaders,
+## which the renderers hold. O(pairs).
+func end() -> void:
+	release()
 	_pairs = []
 
 ## How many hidden instances are in the world (tests).
 func instance_count() -> int:
 	return _instances.size()
 
-## Every `[Mesh, Material or null]` template of the layers that first draw after a load: the
-## terrain and its graded tiles, the water, the vegetation catalogue (its authored meshes load once
-## and stay shared with the vegetation renderer) and the grass masks. Whatever the city to come.
+## The templates of every layer that first draws after a load, in groups in the order the menu
+## adds them (`menu_pipeline_prewarm.gd`): what every world draws first. Whatever the city to
+## come. Each group is `{GROUP_NAME, GROUP_PAIRS, GROUP_MIRROR}`; its pairs are built when called.
+static func groups() -> Array[Dictionary]:
+	var out: Array[Dictionary] = []
+	# The terrain and its graded tiles, the water and the grass masks: every world.
+	out.append(_group("ground", func() -> Array:
+		var pairs := TerrainRenderer.pipeline_prewarm_surfaces()
+		pairs.append_array(WaterRenderer.pipeline_prewarm_surfaces())
+		pairs.append_array(GrassRenderer.pipeline_prewarm_surfaces())
+		return pairs))
+	# The vegetation catalogue a species at a time (its authored meshes load once and stay shared
+	# with the vegetation renderer), then the impostors and hedges.
+	for species in [TreeSpecies.CONIFER, TreeSpecies.BROADLEAF, TreeSpecies.BUSH, TreeSpecies.ROCK]:
+		out.append(_group("vegetation_%d" % species, func() -> Array:
+			return VegetationRenderer.pipeline_prewarm_species(species)))
+	out.append(_group("impostors", func() -> Array: return VegetationRenderer.pipeline_prewarm_impostors()))
+	return out
+
+## Every group's pairs, in order (the benchmark's inventory). Builds them all at once.
 static func templates() -> Array:
-	var pairs := TerrainRenderer.pipeline_prewarm_surfaces()
-	pairs.append_array(WaterRenderer.pipeline_prewarm_surfaces())
-	pairs.append_array(VegetationRenderer.pipeline_prewarm_surfaces(TreeSpecies.build_meshes()))
-	pairs.append_array(GrassRenderer.pipeline_prewarm_surfaces())
+	var pairs := []
+	for group in groups():
+		pairs.append_array((group[GROUP_PAIRS] as Callable).call())
 	return pairs
+
+static func _group(name: String, pairs: Callable, mirror := false) -> Dictionary:
+	return {GROUP_NAME: name, GROUP_PAIRS: pairs, GROUP_MIRROR: mirror}
+
+## Queues a marker: a low-priority task that does nothing, in the queue Godot's background
+## pipeline compilations wait in (first in, first out, a few running at once:
+## `threading/worker_pool/low_priority_thread_ratio` of the pool's threads). When it has run, the
+## queue has taken up every compilation queued before it (a few may still be running). Answers
+## its task id, for `WorkerThreadPool.is_task_completed` and `wait_for_task_completion`. O(1).
+static func queue_marker() -> int:
+	return WorkerThreadPool.add_task(func() -> void: pass, false, "pipeline prewarm marker")

@@ -16,6 +16,7 @@ const SAVES_DIR := "user://saves"
 
 var _options_window = null
 var _new_game_dialog: Window = null
+var _prewarm: Node = null
 # The benchmark's menu (`RENDER-43`): the last frame's start, for its longest frame.
 var _benchmark_frame_us := 0
 
@@ -35,7 +36,8 @@ func _ready() -> void:
 	# The first load's pipelines compile while the menu shows (`RENDER-43`), from its second
 	# frame: the first shows the menu at once.
 	await get_tree().process_frame
-	add_child(MenuPipelinePrewarm.new())
+	_prewarm = MenuPipelinePrewarm.new()
+	add_child(_prewarm)
 	if LaunchState.benchmark_menu_dwell_s >= 0.0:
 		_leave_after_benchmark_dwell()
 
@@ -50,6 +52,7 @@ func _leave_after_benchmark_dwell() -> void:
 		await get_tree().create_timer(left).timeout
 	LaunchState.benchmark_menu_ms[1] = Time.get_ticks_msec()
 	get_tree().process_frame.disconnect(_note_benchmark_frame)
+	LaunchState.benchmark_menu["prewarm"] = _prewarm.report()
 	get_tree().change_scene_to_file("res://scenes/Main.tscn")
 
 func _note_benchmark_frame() -> void:

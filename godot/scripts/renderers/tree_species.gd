@@ -162,20 +162,25 @@ static func build_meshes() -> Array:
 	var meshes: Array = []
 	meshes.resize(SPECIES_COUNT)
 	for species in range(SPECIES_COUNT):
-		var variants: Array = []
-		variants.resize(VARIANT_COUNTS[species])
-		for variant in range(variants.size()):
-			match species:
-				CONIFER, BROADLEAF:
-					variants[variant] = [_canopy_tree(species, variant, 0),
-						_canopy_tree(species, variant, 1), _canopy_blend(species, variant)]
-				BUSH:
-					variants[variant] = [_bush(variant) if variant < LANDSCAPE_FIRST_VARIANT
-						else _landscape_plant(variant)]
-				ROCK:
-					variants[variant] = [_rock(variant)]
-		meshes[species] = variants
+		meshes[species] = build_species_meshes(species)
 	return meshes
+
+## One species' entry of `build_meshes`: its meshes indexed by variant, then level (the menu's
+## pipeline prewarm builds the catalogue a species a frame, `RENDER-43`).
+static func build_species_meshes(species: int) -> Array:
+	var variants: Array = []
+	variants.resize(VARIANT_COUNTS[species])
+	for variant in range(variants.size()):
+		match species:
+			CONIFER, BROADLEAF:
+				variants[variant] = [_canopy_tree(species, variant, 0),
+					_canopy_tree(species, variant, 1), _canopy_blend(species, variant)]
+			BUSH:
+				variants[variant] = [_bush(variant) if variant < LANDSCAPE_FIRST_VARIANT
+					else _landscape_plant(variant)]
+			ROCK:
+				variants[variant] = [_rock(variant)]
+	return variants
 
 ## Authored form of one canopy variant, as "<form>_<model>".
 static func canopy_model(species: int, variant: int) -> String:
