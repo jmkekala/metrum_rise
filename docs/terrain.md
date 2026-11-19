@@ -19380,7 +19380,7 @@ screen cannot block the main thread); and it can wait for `finished` or for a ch
 (`group_finished`, the ground and vegetation first) with a time limit, since a cold run's queue
 takes about 5 s on eight cores. The marker is the end signal R43b lacked.
 
-**Round R43d: the group order** (2026-11-19, the night delegation carried on; for review). The
+**Round R43d: the group order** (2026-11-19, the night delegation carried on; for review; landed on `dev` 2026-11-19 with R43c, the user accepting bars 6 and 7 below on the coordinator's recommendation). The
 one bar R43c missed was leaving the menu at 6 s on the Kuopio new game, which draws no mirror,
 road or building.
 
