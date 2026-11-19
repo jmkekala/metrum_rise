@@ -13,7 +13,8 @@ use super::extras::{ExtraScratch, Named, square_extras};
 use super::grade::{CAP_M, continues_ground};
 use super::portal::PortalWindow;
 use super::prune::{
-    BinGrid, BinLists, Lifted, bin_side, finish_second_pass, list_first_pass, list_second_pass,
+    BinGrid, BinLists, Lifted, ListChunk, bin_side, finish_second_pass, list_first_pass,
+    list_second_pass,
 };
 use super::sample::{
     AxisStop, BaseGrid, BaseWindow, Listed, NO_SEAM, Value, evaluate, evaluate_lanes,
@@ -317,6 +318,8 @@ pub(super) struct BakeScratch {
     columns: Vec<(u32, AxisStop)>,
     // Each seam's first-pass bin range `[x0, x1, z0, z1]`, empty as `[1, 0, 1, 0]`.
     seam_bins: Vec<[u32; 4]>,
+    // The pass-1 listing's tasks' products (`TERRAIN-14`).
+    list_chunks: Vec<ListChunk>,
     bins: BinGrid,
     // Each bin's lowest first-pass ground below the base, `+inf` without one.
     bin_floor: Vec<f64>,
@@ -745,6 +748,7 @@ fn bake_tile(
         zs,
         columns,
         seam_bins,
+        list_chunks,
         bins,
         bin_floor,
         pairs,
@@ -783,17 +787,33 @@ fn bake_tile(
         ..BakeStats::default()
     };
 
-    // Pass 1's seams in each bin over the lattice.
+    // Pass 1's seams in each bin over the lattice, beside the coverage raster on the shared
+    // pool (`TERRAIN-14`): their inputs and products are disjoint.
     bins.fill(base, rect, bin_side(spacing));
     let prune = evaluation != Evaluation::Unpruned;
-    list_first_pass(seams, bins, base, band, prune, seam_bins, pairs, &mut stats);
-    first.build(bins.len(), pairs);
-    trough_bins.clear();
-    trough_bins.extend((0..bins.len()).map(|bin| {
-        (first.of(bin).iter()).any(|listed| seams[listed.index as usize].retained)
-    }));
-
-    rasterize(covering, xs, zs, covering_spans, road);
+    crate::thread_pools::install(|| {
+        rayon::join(
+            || {
+                list_first_pass(
+                    seams,
+                    bins,
+                    base,
+                    band,
+                    prune,
+                    list_chunks,
+                    seam_bins,
+                    pairs,
+                    &mut stats,
+                );
+                first.build(bins.len(), pairs);
+                trough_bins.clear();
+                trough_bins.extend((0..bins.len()).map(|bin| {
+                    (first.of(bin).iter()).any(|listed| seams[listed.index as usize].retained)
+                }));
+            },
+            || rasterize(covering, xs, zs, covering_spans, road),
+        )
+    });
     let shadow = portals.active();
     // Without sites every lattice point is outside pads and surfaces: the rasters stay empty,
     // which reads as no pad, class 0 and no edge. The nearest edges are searched in the row

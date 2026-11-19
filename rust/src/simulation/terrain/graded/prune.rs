@@ -236,8 +236,8 @@ pub(super) struct BinLists {
 
 impl BinLists {
     /// From `(bin, candidate)` pairs, each candidate holding its own seam's heights, by a
-    /// counting sort, then each bin's candidates by distance with the suffix height bounds.
-    /// `O(pairs log (pairs per bin) + bins)`.
+    /// counting sort, then each bin's candidates by distance with the suffix height bounds, the
+    /// bins on the shared pool ([`sort_bins`]). `O(pairs log (pairs per bin) + bins)`.
     pub(super) fn build(&mut self, bins: usize, pairs: &[(u32, Listed)]) {
         self.starts.clear();
         self.starts.resize(bins + 1, 0);
@@ -256,8 +256,28 @@ impl BinLists {
             self.items[*cursor as usize] = listed;
             *cursor += 1;
         }
-        for bin in 0..bins {
-            let list = &mut self.items[self.starts[bin] as usize..self.starts[bin + 1] as usize];
+        sort_bins(&mut self.items, &self.starts);
+    }
+
+    pub(super) fn of(&self, bin: usize) -> &[Listed] {
+        &self.items[self.starts[bin] as usize..self.starts[bin + 1] as usize]
+    }
+}
+
+// Bins one task of `sort_bins` sorts at least, and the candidates below which a task is not
+// split further: a split costs more than a few short sorts.
+const SORT_BINS: usize = 16;
+const SORT_ITEMS: usize = 1024;
+
+// Each bin's candidates of `items` (the bins `starts` bounds, offsets from `starts[0]`) by
+// distance, then window order, with the suffix height bounds, by halves of the bins on the shared
+// pool (`TERRAIN-14`). Each bin's list is sorted alone by a key no two candidates share, so the
+// lists do not depend on the split or the worker count. `O(pairs log (pairs per bin) + bins)`.
+fn sort_bins(items: &mut [Listed], starts: &[u32]) {
+    let bins = starts.len() - 1;
+    if bins <= SORT_BINS || items.len() <= SORT_ITEMS {
+        for bin in starts.windows(2) {
+            let list = &mut items[(bin[0] - starts[0]) as usize..(bin[1] - starts[0]) as usize];
             list.sort_unstable_by(|a, b| {
                 a.distance
                     .total_cmp(&b.distance)
@@ -272,11 +292,16 @@ impl BinLists {
                 listed.heights = heights;
             }
         }
+        return;
     }
-
-    pub(super) fn of(&self, bin: usize) -> &[Listed] {
-        &self.items[self.starts[bin] as usize..self.starts[bin + 1] as usize]
-    }
+    let mid = bins / 2;
+    let (left, right) = items.split_at_mut((starts[mid] - starts[0]) as usize);
+    crate::thread_pools::install(|| {
+        rayon::join(
+            || sort_bins(left, &starts[..=mid]),
+            || sort_bins(right, &starts[mid..]),
+        )
+    });
 }
 
 /// A sample graded by the overlap rule (a ground sample, or a covered one naming a retained seam,
@@ -297,9 +322,25 @@ pub(super) struct Lifted {
     pub(super) in_band: bool,
 }
 
+// Seams one task of the pruned pass-1 listing lists: a fixed partition, so the pairs do not
+// depend on the worker count.
+const LIST_SEAMS: usize = 16;
+
+/// One task's share of the pruned pass-1 listing: its seams' `(bin, seam)` pairs, visited ranges
+/// and reaches, in seam order. Reused between tiles.
+#[derive(Default)]
+pub(super) struct ListChunk {
+    pairs: Vec<(u32, Listed)>,
+    ranges: Vec<[u32; 4]>,
+    reaches: Vec<f64>,
+}
+
 /// Pass 1: every bin lists the seams `BinGrid::first_bins` names, as `(bin, seam)` pairs in seam
 /// order; each seam's visited range goes to `ranges`. Unpruned, every bin lists every seam.
-/// `O(seams x blocks in each range + bins of the blocks that pass)`.
+/// Pruned, chunks of [`LIST_SEAMS`] seams list on the shared pool into `chunks` (`TERRAIN-14`),
+/// joined in seam order, and the reaches are summed in seam order: the same pairs, ranges and
+/// bits as one pass. `O(seams x blocks in each range + bins of the blocks that pass)`, plus one
+/// `O(pairs)` copy.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn list_first_pass(
     seams: &[Seam],
@@ -307,34 +348,67 @@ pub(super) fn list_first_pass(
     base: &BaseWindow,
     band: f64,
     prune: bool,
+    chunks: &mut Vec<ListChunk>,
     ranges: &mut Vec<[u32; 4]>,
     pairs: &mut Vec<(u32, Listed)>,
     stats: &mut BakeStats,
 ) {
-    let slope = if prune { base.slope() } else { 0.0 };
+    use rayon::prelude::*;
     ranges.clear();
     pairs.clear();
-    for (index, seam) in seams.iter().enumerate() {
-        let listed = |distance: f64| Listed {
-            index: index as u32,
-            distance,
-            heights: seam.height_range(),
-        };
-        if !prune {
-            // The reference: every seam everywhere, with no distance bound to stop at.
-            let all = [0, bins.count[0] - 1, 0, bins.count[1] - 1];
+    if !prune {
+        // The reference: every seam everywhere, with no distance bound to stop at.
+        let all = [0, bins.count[0] - 1, 0, bins.count[1] - 1];
+        for (index, seam) in seams.iter().enumerate() {
+            let listed = Listed {
+                index: index as u32,
+                distance: 0.0,
+                heights: seam.height_range(),
+            };
             ranges.push(all);
-            pairs.extend((0..bins.len() as u32).map(|bin| (bin, listed(0.0))));
-            continue;
+            pairs.extend((0..bins.len() as u32).map(|bin| (bin, listed)));
         }
-        let (range, reach) = bins.first_range(seam, base, slope, band);
-        stats.reach_sum_m += reach;
-        stats.reach_max_m = stats.reach_max_m.max(reach);
-        ranges.push(range);
-        bins.first_bins(seam, range, band, |bin, distance| {
-            pairs.push((bin as u32, listed(distance)));
-            false
-        });
+        return;
+    }
+    let slope = base.slope();
+    let count = seams.len().div_ceil(LIST_SEAMS);
+    if chunks.len() < count {
+        chunks.resize_with(count, ListChunk::default);
+    }
+    let chunks = &mut chunks[..count];
+    crate::thread_pools::install(|| {
+        chunks
+            .par_iter_mut()
+            .zip(seams.par_chunks(LIST_SEAMS))
+            .enumerate()
+            .for_each(|(chunk_index, (chunk, seams))| {
+                chunk.pairs.clear();
+                chunk.ranges.clear();
+                chunk.reaches.clear();
+                for (offset, seam) in seams.iter().enumerate() {
+                    let listed = |distance: f64| Listed {
+                        index: (chunk_index * LIST_SEAMS + offset) as u32,
+                        distance,
+                        heights: seam.height_range(),
+                    };
+                    let (range, reach) = bins.first_range(seam, base, slope, band);
+                    chunk.ranges.push(range);
+                    chunk.reaches.push(reach);
+                    let pairs = &mut chunk.pairs;
+                    bins.first_bins(seam, range, band, |bin, distance| {
+                        pairs.push((bin as u32, listed(distance)));
+                        false
+                    });
+                }
+            })
+    });
+    for chunk in chunks.iter() {
+        ranges.extend_from_slice(&chunk.ranges);
+        pairs.extend_from_slice(&chunk.pairs);
+        for &reach in &chunk.reaches {
+            stats.reach_sum_m += reach;
+            stats.reach_max_m = stats.reach_max_m.max(reach);
+        }
     }
 }
 
