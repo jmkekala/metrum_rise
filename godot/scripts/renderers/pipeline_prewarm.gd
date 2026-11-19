@@ -20,6 +20,8 @@ const WaterRenderer := preload("res://scripts/renderers/water.gd")
 const VegetationRenderer := preload("res://scripts/renderers/vegetation.gd")
 const GrassRenderer := preload("res://scripts/renderers/grass.gd")
 const TreeSpecies := preload("res://scripts/renderers/tree_species.gd")
+const TerrainGradedTiles := preload("res://scripts/renderers/terrain_graded_tiles.gd")
+const WaterReflection := preload("res://scripts/renderers/water_reflection.gd")
 
 ## A group's name, its pairs' builder (a Callable answering `[Mesh, Material or null]` pairs) and
 ## whether the water mirror draws it (its pipelines are also wanted at the mirror's MSAA).
@@ -83,6 +85,15 @@ static func groups() -> Array[Dictionary]:
 		out.append(_group("vegetation_%d" % species, func() -> Array:
 			return VegetationRenderer.pipeline_prewarm_species(species)))
 	out.append(_group("impostors", func() -> Array: return VegetationRenderer.pipeline_prewarm_impostors()))
+	# The graded tiles' base cells: the terrain shader on the lattice's vertex format.
+	out.append(_group("base_cells", func() -> Array: return TerrainGradedTiles.pipeline_prewarm_base_cells()))
+	# What the water mirror draws, at its MSAA too: the terrain proxies and the tree impostors.
+	var mirror := func() -> Array:
+		var pairs := WaterReflection.pipeline_prewarm_surfaces()
+		for species in [TreeSpecies.CONIFER, TreeSpecies.BROADLEAF]:
+			pairs.append([TreeSpecies.impostor_mesh(), TreeSpecies.impostor_material(species)])
+		return pairs
+	out.append(_group("mirror", mirror, true))
 	return out
 
 ## Every group's pairs, in order (the benchmark's inventory). Builds them all at once.

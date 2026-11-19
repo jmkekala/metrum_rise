@@ -17,7 +17,17 @@
 ## templates are built and added, the view draws once (their compilations are queued), then a
 ## marker task joins the same queue (`PipelinePrewarm.queue_marker`); when it has run, the queue
 ## has taken up everything before it, the group's instances are freed and the next group is
-## added. Leaving costs at most the group in flight. `group_finished` and `finished` say how far
+## added. Leaving costs at most the group in flight.
+##
+## The water mirror draws at its own MSAA (`WaterReflection.MIRROR_MSAA`), and Godot precompiles a
+## surface's pipelines for one sample count, the project setting's
+## (`rendering/anti_aliasing/quality/msaa_3d`, read by the precompilation every frame and by
+## nothing else after the launch: the root viewport took its MSAA at the start). So while a mirror
+## group's templates get their surfaces the view holds that setting at the mirror's: its first
+## draw queues their mirror sets, the setting is restored, the next draw queues their game sets
+## (the earlier groups' instances are already freed, so nothing else is recompiled). Nothing
+## drawn changes. `_exit_tree` restores the setting whatever the stage. If a later Godot stops
+## reading the setting there, the mirror's first draws are merely cold again. `group_finished` and `finished` say how far
 ## it is (a loading screen could wait on them). Freed with the menu; compilations already queued
 ## finish anyway and stay with their shaders and the caches.
 extends SubViewport
@@ -29,9 +39,11 @@ signal group_finished(index: int, name: String)
 signal finished
 
 const PipelinePrewarm := preload("res://scripts/renderers/pipeline_prewarm.gd")
+const WaterReflection := preload("res://scripts/renderers/water_reflection.gd")
 const DEFAULT_ENVIRONMENT := preload("res://default_environment.tres")
 # Smallest view that renders every pass; its size selects no pipeline.
 const VIEW_SIZE := Vector2i(64, 64)
+const MSAA_SETTING := "rendering/anti_aliasing/quality/msaa_3d"
 
 # The group in flight: ADD builds and adds it, DRAW waits for the view's draw that queues its
 # compilations, MARKER for the queue to take them up; DONE after the last group.
@@ -46,6 +58,8 @@ var _marker := -1
 # The next group's pairs, built while the queue takes up the group in flight.
 var _ahead: Array = []
 var _ahead_built := false
+# The project MSAA setting's value while a mirror group holds it at the mirror's, else null.
+var _swung_from: Variant = null
 # Per group `{name, pairs, build_ms, added_ms, finished_ms}`: the build's main-thread time and the
 # times from the launch it was added and its marker ran (`report`).
 var _log: Array[Dictionary] = []
@@ -88,6 +102,7 @@ func _process(_delta: float) -> void:
 func _exit_tree() -> void:
 	if RenderingServer.frame_post_draw.is_connected(_on_post_draw):
 		RenderingServer.frame_post_draw.disconnect(_on_post_draw)
+	_restore_msaa()
 	# A marker not yet run is left to the queue: waiting for it here would hold the transition
 	# for the group in flight, which the world's first frames would otherwise overlap.
 	if _marker >= 0 and WorkerThreadPool.is_task_completed(_marker):
@@ -108,6 +123,9 @@ func _add_group() -> void:
 	var pairs := _ahead if _ahead_built else _build(_group)
 	_ahead = []
 	_ahead_built = false
+	if _groups[_group][PipelinePrewarm.GROUP_MIRROR]:
+		_swung_from = ProjectSettings.get_setting(MSAA_SETTING)
+		ProjectSettings.set_setting(MSAA_SETTING, WaterReflection.MIRROR_MSAA)
 	_prewarm.add(_scenario, pairs)
 	_log.append({"name": _groups[_group][PipelinePrewarm.GROUP_NAME], "pairs": pairs.size(),
 		"build_ms": float(Time.get_ticks_usec() - build_us) / 1000.0, "added_ms": Time.get_ticks_msec(),
@@ -121,8 +139,17 @@ func _build(index: int) -> Array:
 func _on_post_draw() -> void:
 	if _stage != Stage.DRAW:
 		return
+	if _swung_from != null:
+		# The mirror sets are queued; the next draw queues the game's.
+		_restore_msaa()
+		return
 	_marker = PipelinePrewarm.queue_marker()
 	_stage = Stage.MARKER
+
+func _restore_msaa() -> void:
+	if _swung_from != null:
+		ProjectSettings.set_setting(MSAA_SETTING, _swung_from)
+		_swung_from = null
 
 func _finish_group() -> void:
 	_prewarm.release()

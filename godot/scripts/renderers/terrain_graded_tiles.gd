@@ -145,18 +145,31 @@ var residency_settling := false:
 ## The load's pipeline prewarm templates (`RENDER-43`): the cells' and the walls' vertex format
 ## (positions and indices) with the graded, behind and wall shaders.
 static func pipeline_prewarm_surfaces() -> Array:
-	var arrays := []
-	arrays.resize(Mesh.ARRAY_MAX)
-	arrays[Mesh.ARRAY_VERTEX] = PackedVector3Array([Vector3.ZERO, Vector3.RIGHT, Vector3.BACK])
-	arrays[Mesh.ARRAY_INDEX] = PackedInt32Array([0, 1, 2])
-	var mesh := ArrayMesh.new()
-	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	var mesh := lattice_template()
 	var pairs := []
 	for shader: Shader in [GRADED_SHADER, GRADED_BEHIND_SHADER, WALL_SHADER]:
 		var material := ShaderMaterial.new()
 		material.shader = shader
 		pairs.append([mesh, material])
 	return pairs
+
+## The base cells' template (round R43c): the base cells draw the patch's own material, the
+## terrain shader (its slowest pipelines), on the lattice's vertex format. A group of its own in
+## the menu (`pipeline_prewarm.gd`).
+static func pipeline_prewarm_base_cells() -> Array:
+	var material := ShaderMaterial.new()
+	material.shader = PATCH_SHADER
+	return [[lattice_template(), material]]
+
+## One triangle of the cell and wall lattice's vertex format (positions and indices).
+static func lattice_template() -> ArrayMesh:
+	var arrays := []
+	arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = PackedVector3Array([Vector3.ZERO, Vector3.RIGHT, Vector3.BACK])
+	arrays[Mesh.ARRAY_INDEX] = PackedInt32Array([0, 1, 2])
+	var mesh := ArrayMesh.new()
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	return mesh
 
 ## Reads the slot layout, creates the world pages of GL0 and GL1 and prewarms the cell meshes.
 ## `pool_slots` overrides the per-level most slots a page holds (tests use small pages).

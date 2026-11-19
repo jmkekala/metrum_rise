@@ -18,6 +18,13 @@
 extends Node
 
 const ReflectionSources := preload("res://scripts/renderers/water_reflection_sources.gd")
+# The terrain patches' shader (terrain.gd's TERRAIN_SHADER; by path, as terrain.gd reaches this
+# script through scene_lighting.gd).
+const TERRAIN_SHADER := preload("res://assets/materials/terrain.gdshader")
+## The mirrors' MSAA. Godot precompiles pipelines for the project setting's sample count only, so
+## the menu's prewarm holds that setting here while the mirror's templates get their surfaces
+## (`menu_pipeline_prewarm.gd`, `RENDER-43`).
+const MIRROR_MSAA := Viewport.MSAA_2X
 
 ## Layer 18 holds the water, which the reflection camera does not draw.
 const WATER_LAYER := 1 << 17
@@ -85,7 +92,9 @@ var _proxy_frame := 0
 var _terrain: Node
 # Reflection variants of terrain materials, by source.
 var _grid_materials := {}
-var _proxy_shaders := {}
+# The proxy variant of each source shader, shared by every mirror and the menu's templates (one
+# shader object, so the pipelines the menu compiled are the mirror's).
+static var _proxy_shaders := {}
 # Per source shader, its material parameters' names, which a refresh compares.
 var _shader_parameters := {}
 var _dirty_terrain_patches := {}
@@ -139,7 +148,7 @@ func _ready() -> void:
 		# Linear HDR, like the screen texture the screen march reads, rather than tonemapped.
 		viewport.use_hdr_2d = true
 		# Resolve analytic terrain clip coverage as well as raster edges into the map's alpha.
-		viewport.msaa_3d = Viewport.MSAA_2X
+		viewport.msaa_3d = MIRROR_MSAA
 		viewport.screen_space_aa = Viewport.SCREEN_SPACE_AA_DISABLED
 		viewport.render_target_update_mode = SubViewport.UPDATE_DISABLED
 		viewport.world_3d = _world
@@ -595,7 +604,14 @@ func _refresh_proxy_material(copy: ShaderMaterial, source: ShaderMaterial) -> vo
 		if typeof(held) != typeof(value) or held != value:
 			copy.set_shader_parameter(parameter, value)
 
-func _proxy_shader(source: Shader) -> Shader:
+## The menu's pipeline prewarm template of the mirror (`RENDER-43`): the terrain proxies' shader
+## on a patch's PlaneMesh.
+static func pipeline_prewarm_surfaces() -> Array:
+	var material := ShaderMaterial.new()
+	material.shader = _proxy_shader(TERRAIN_SHADER)
+	return [[PlaneMesh.new(), material]]
+
+static func _proxy_shader(source: Shader) -> Shader:
 	var shader: Shader = _proxy_shaders.get(source)
 	if shader == null:
 		shader = Shader.new()

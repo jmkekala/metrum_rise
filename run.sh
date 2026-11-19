@@ -656,9 +656,9 @@ godot_main_chain() {
     # Rendered tests: the terrain shaders, the debug-view shader globals and the graded page
     # growth's drawn bytes (TERRAIN-22) on the compatibility renderer, the vegetation comparisons,
     # the terrain variants on tangent-less cell meshes, the graded cells' instance data under FSR 2
-    # (TERRAIN-10) and the plot and paving lighting (RENDER-13) on Forward+, which the
-    # compatibility backend does not draw. They all stay in this chain, so only one gamescope runs
-    # at a time.
+    # (TERRAIN-10), the menu's paced pipeline prewarm (RENDER-43) and the plot and paving
+    # lighting (RENDER-13) on Forward+, which the compatibility backend does not draw. They all
+    # stay in this chain, so only one gamescope runs at a time.
     for script in terrain_overlay_shader_test graded_cells_shader_test debug_visual_modes_test graded_page_growth_test; do
         echo "Running rendered $script..."
         run_rendered_godot_test 128 128 --path "$asset_test_project" \
@@ -666,7 +666,8 @@ godot_main_chain() {
             --script "res://tests/${script}.gd" || return 1
     done
     for script in vegetation_level_match_test vegetation_wind_gate_test terrain_tangent_test \
-        graded_tile_renderer_test graded_page_publication_test road_render_publication_test; do
+        graded_tile_renderer_test graded_page_publication_test road_render_publication_test \
+        menu_pipeline_prewarm_test; do
         echo "Running rendered $script..."
         run_rendered_godot_test 640 480 --path "$asset_test_project" --audio-driver Dummy \
             --resolution 640x480 --script "res://tests/${script}.gd" || return 1
