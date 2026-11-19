@@ -431,7 +431,7 @@ func benchmark() -> void:
 					uploads += renderer.lod_renderer.uploaded_bytes
 					evaluations += renderer.lod_renderer.evaluated_parts
 				elif frame % 30 == 0:
-					for groups: Dictionary in [renderer.multimeshes, renderer.deserted_multimeshes, renderer.foundation_multimeshes, renderer.construction_site_multimeshes, renderer.construction_foundation_multimeshes, renderer.construction_scaffold_multimeshes]:
+					for groups: Dictionary in [renderer.multimeshes, renderer.deserted_multimeshes, renderer.construction_site_multimeshes, renderer.construction_foundation_multimeshes, renderer.construction_scaffold_multimeshes]:
 						for node: MultiMeshInstance3D in groups.values():
 							uploads += node.multimesh.instance_count * 12 * 4
 		var row := {"trial": trial, "update_us": summarize(samples), "render_cpu_ms": summarize(cpu), "gpu_ms": summarize(gpu), "uploaded_bytes": uploads, "evaluated_parts": evaluations,

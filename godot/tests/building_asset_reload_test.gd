@@ -129,7 +129,7 @@ license = "CC0"
 			renderer._update_building_render_frame()
 			var idle: Dictionary = simulation.try_get_building_site_frame(renderer._zone_ids, renderer.building_site_revision, renderer.building_visual_revision)
 			if not idle.get("busy", true):
-				_expect(not idle.has("plot_transforms") and not idle.has("site_mesh_data"), "idle requests must not rebuild site buffers")
+				_expect(not idle.has("construction_site_transforms") and not idle.has("site_mesh_data"), "idle requests must not rebuild site buffers")
 		_expect(renderer.refreshes - previous_refreshes == 60, "requests are state-driven rather than a 30-frame timer")
 	DirAccess.remove_absolute(manifest_path)
 	renderer.reload_asset_packs()

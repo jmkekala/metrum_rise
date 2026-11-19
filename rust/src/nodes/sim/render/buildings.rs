@@ -2,7 +2,7 @@
 
 //! Building-specific rendering logic for Godot interaction.
 //!
-//! Handles building instance transform generation and plot/construction-site visuals.
+//! Handles building instance transform generation and construction-site visuals.
 
 use crate::assets::{AssetEntry, MeshPart, SiteSurfaceMaterial};
 use crate::config::HEIGHT_SCALE;
@@ -77,59 +77,6 @@ impl SimCore {
             dict.set("debug_sites", self.building_site_debug_sites());
         }
         dict
-    }
-
-    /// Returns the 12-float transforms for zone-filtered plot overlay MultiMeshes.
-    pub fn get_building_plot_transforms_internal(&self, zone_type_int: u8) -> PackedFloat32Array {
-        let target_zone = match zone_type_int {
-            1 => ZoneType::Residential,
-            2 => ZoneType::Commercial,
-            3 => ZoneType::Industrial,
-            _ => ZoneType::None,
-        };
-
-        if target_zone == ZoneType::None {
-            return PackedFloat32Array::new();
-        }
-
-        let mut buffer = Vec::new();
-
-        for b in &self.allocator.buildings {
-            if b.zone_type == target_zone {
-                let world_x = b.center_x;
-                let world_z = b.center_y;
-                let world_y = b.support_height_m + 0.02; // Slightly above terrain
-
-                let fd = b.facing_dir.normalized();
-                let b_zx = fd.x;
-                let b_zz = fd.y;
-                let b_xx = fd.y;
-                let b_xz = -fd.x;
-
-                // Plot size is 10m * cell count (default 3x3 = 30x30)
-                let cell_size = self.config.zone_cell_m;
-                let sx = b.width_cells as f32 * cell_size;
-                let sz = b.depth_cells as f32 * cell_size;
-                let sy = 0.5; // Thin foundation box
-
-                buffer.push(b_xx * sx);
-                buffer.push(0.0);
-                buffer.push(b_zx * sz);
-                buffer.push(world_x);
-
-                buffer.push(0.0);
-                buffer.push(sy);
-                buffer.push(0.0);
-                buffer.push(world_y);
-
-                buffer.push(b_xz * sx);
-                buffer.push(0.0);
-                buffer.push(b_zz * sz);
-                buffer.push(world_z);
-            }
-        }
-
-        PackedFloat32Array::from_iter(buffer)
     }
 
     /// Returns neutral construction-site transforms for under-construction buildings.

@@ -16,8 +16,6 @@ const PerfDebug := preload("res://scripts/core/perf_debug.gd")
 
 var lod_renderer: Node3D
 var building_visual_revision: int = -1
-## foundation_multimeshes[zone_id] = MultiMeshInstance3D
-var foundation_multimeshes: Dictionary = {}
 ## construction_site_multimeshes[zone_id] = MultiMeshInstance3D
 var construction_site_multimeshes: Dictionary = {}
 ## construction_foundation_multimeshes[zone_id] = MultiMeshInstance3D
@@ -35,8 +33,6 @@ var building_site_dump_enabled: bool = false
 # `off` or `material`; the debug console changes it through `_on_visual_mode_changed`.
 var building_site_visual_mode := "off"
 var building_site_debug_materials: Dictionary = {}
-
-var show_foundations := false
 
 var _zone_ids := PackedInt32Array([1, 2, 3, 4, 5])
 # Whether this frame's site frame set transforms (the install ledger's charge).
@@ -86,9 +82,7 @@ func _ready() -> void:
 
 	_load_enabled_packs()
 
-	# Build foundation multimeshes for each zone type.
 	for zone_id in _zone_ids:
-		_setup_foundation(zone_id)
 		_setup_construction_site(zone_id)
 		_setup_construction_foundation(zone_id)
 		_setup_construction_scaffold(zone_id)
@@ -131,33 +125,6 @@ func _create_fallback_mesh() -> ArrayMesh:
 	var mesh := st.commit()
 	mesh.surface_set_material(0, mat)
 	return mesh
-
-func _setup_foundation(zone_id: int) -> void:
-	var mmi := MultiMeshInstance3D.new()
-	var mm := MultiMesh.new()
-	mm.transform_format = MultiMesh.TRANSFORM_3D
-	mm.instance_count = 0
-	var mesh := BoxMesh.new()
-	mesh.size = Vector3(1.0, 0.1, 1.0)
-	var mat := StandardMaterial3D.new()
-	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	match zone_id:
-		1: mat.albedo_color = Color(0.2, 0.4, 0.2, 0.5)
-		2: mat.albedo_color = Color(0.2, 0.2, 0.5, 0.5)
-		3: mat.albedo_color = Color(0.4, 0.4, 0.1, 0.5)
-		4: mat.albedo_color = Color(0.1, 0.4, 0.4, 0.5)
-		_: mat.albedo_color = Color(0.3, 0.3, 0.3, 0.5)
-	mesh.material = mat
-	mm.mesh = mesh
-	mmi.multimesh = mm
-	SceneLightingConfig.apply_shadow_policy(
-		mmi,
-		SceneLightingConfig.SHADOW_DEBUG_OVERLAY,
-		"buildings"
-	)
-	mmi.visible = show_foundations
-	add_child(mmi)
-	foundation_multimeshes[zone_id] = mmi
 
 func _setup_construction_site(zone_id: int) -> void:
 	var mmi := MultiMeshInstance3D.new()
@@ -256,7 +223,7 @@ func _process(_delta: float) -> void:
 	if PerfDebug.is_enabled():
 		var elapsed_ms := float(end_us - frame_start_us) / 1000.0
 		var details := {
-			# The plots' and construction sites' frame (`RENDER-30`), apart from the LOD batches.
+			# The construction sites' frame (`RENDER-30`), apart from the LOD batches.
 			"sites_ms": float(end_us - sites_start_us) / 1000.0,
 			"lod_parts": lod_renderer.evaluated_parts if lod_renderer else 0,
 			"lod_chunks": lod_renderer.queried_chunks if lod_renderer else 0,
@@ -268,13 +235,6 @@ func _process(_delta: float) -> void:
 			details.merge(lod_renderer.timing)
 		PerfDebug.record("buildings", elapsed_ms, details)
 
-func _input(event: InputEvent) -> void:
-	if event is InputEventKey and event.pressed and not event.echo:
-		if event.keycode == KEY_F:
-			show_foundations = !show_foundations
-			for mmi in foundation_multimeshes.values():
-				mmi.visible = show_foundations
-
 func _update_building_render_frame(force_site_mesh: bool = false) -> bool:
 	var known_site_revision := -1 if force_site_mesh else building_site_revision
 	var frame: Dictionary = simulation_node.try_get_building_site_frame(
@@ -283,21 +243,15 @@ func _update_building_render_frame(force_site_mesh: bool = false) -> bool:
 	if bool(frame.get("busy", true)):
 		return false
 	building_visual_revision = int(frame.get("visual_revision", building_visual_revision))
-	if not frame.has("plot_transforms"):
+	if not frame.has("construction_site_transforms"):
 		return true
 	_sites_worked = true
 
-	var plot_buffers: Array = frame.get("plot_transforms", []) as Array
 	var site_buffers: Array = frame.get("construction_site_transforms", []) as Array
 	var foundation_buffers: Array = frame.get("construction_foundation_transforms", []) as Array
 	var scaffold_buffers: Array = frame.get("construction_scaffold_transforms", []) as Array
 	for index in _zone_ids.size():
 		var zone_id: int = _zone_ids[index]
-		if index < plot_buffers.size() and foundation_multimeshes.has(zone_id):
-			_set_multimesh_buffer(
-				foundation_multimeshes[zone_id] as MultiMeshInstance3D,
-				plot_buffers[index] as PackedFloat32Array
-			)
 		if index < site_buffers.size() and construction_site_multimeshes.has(zone_id):
 			_set_multimesh_buffer(
 				construction_site_multimeshes[zone_id] as MultiMeshInstance3D,

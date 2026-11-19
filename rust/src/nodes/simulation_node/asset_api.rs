@@ -78,17 +78,11 @@ impl SimulationNode {
             return frame;
         }
 
-        let mut plot_transforms = VarArray::new();
         let mut construction_site_transforms = VarArray::new();
         let mut construction_foundation_transforms = VarArray::new();
         let mut construction_scaffold_transforms = VarArray::new();
         for &zone_id in zone_ids.as_slice() {
             let zone_id = u8::try_from(zone_id).unwrap_or(0);
-            plot_transforms.push(
-                &core
-                    .get_building_plot_transforms_internal(zone_id)
-                    .to_variant(),
-            );
             construction_site_transforms.push(
                 &core
                     .get_construction_site_transforms_internal(zone_id)
@@ -106,7 +100,6 @@ impl SimulationNode {
             );
         }
 
-        frame.set("plot_transforms", plot_transforms.to_variant());
         frame.set(
             "construction_site_transforms",
             construction_site_transforms.to_variant(),
