@@ -18909,8 +18909,10 @@ changes no Rust; control: `dev`'s own tool and scripts, which pass no driver fla
    `side-by-side-hud.png` and `hud-bar-native-pixels.png` (the HUD bar at native pixels): X11
    1920x1080 at UI 1.0; Wayland (b) 2304x1296 at UI 1.0 (the same bar, more view); Wayland (a)
    2304x1296 at UI 1.2.
-3. A comment with A8's numbers on godot#123059, from the user's account; nothing was posted.
-4. Under Wayland a touchpad pans and zooms through the gesture path written for macOS.
+3. A comment with A8's numbers on godot#123059, from the user's account; nothing was posted (the
+   user, 2026-11-19: nothing goes upstream).
+4. Under Wayland a touchpad pans and zooms through the gesture path written for macOS (decided
+   by the user and built in round W1b below: the same controls as X11, a pinch zooms).
 
 ```bash
 ./run.sh --release --display-driver wayland            # the opt-in
@@ -18918,6 +18920,85 @@ tools/stream_benchmark.py run --label 30k-wl --display-driver wayland --as-playe
     --save <populated_city_30000.sqlite> --resolution 3840x2160 --phases still,turns --turns 1,0.5 \
     --out "$ARTIFACTS/rows"
 ```
+
+**Round W1b: the same controls under both drivers** (2026-11-19, branch `wayland-input`). The
+user's decisions (2026-11-19): nothing goes to Godot upstream; Wayland stays opt-in and its UI keeps
+X11's size (option (b), as landed); "the X11 and Wayland controls should be the same on both
+environments", and "Wayland can have more advanced controls that X11 cannot support (like
+pinching)". So every input both drivers deliver gives the same events and actions, and a
+Wayland-only input may do more.
+
+The inventory, from Godot 4.7.2's `platform/linuxbsd/x11` against `wayland`, Xwayland 24.1's
+`xwayland-input.c` (the reference X11 is X11 under Xwayland on the user's KDE session) and the
+game's handlers:
+
+| input | X11 (Xwayland) | Wayland | the game | W1b |
+|---|---|---|---|---|
+| wheel notch (v120 120) | `WHEEL_UP`/`DOWN` press and release, `factor` 1, integer position | press with `factor` = v120/120 = 1, then a release without modifiers; fractional position | camera zoom one step; Ctrl/Shift size the brush; controls scroll 1/8 page | same action; given X11's shape |
+| high-resolution wheel (v120 below 120) | one click per 120 accumulated (Xwayland passes v120/120 to the scroll valuator, the X server emits a button per 1.0) | one press a frame, `factor` = v120/120 (0.125 for 15) | every handler of ours ignores `factor`: 8 zoom steps a notch at 15 units; a SpinBox rounds 0.125 of a step away | **normalised**: whole clicks, the remainder carried |
+| touchpad two-finger scroll | one click per 10 surface units (Xwayland's divisor 10) | `InputEventPanGesture`, delta in surface units, dispatched twice | camera `zoom(-delta.y)`: 10 steps per X11 click; the brush likewise; ScrollContainer and Tree scroll delta/8 pages | **normalised** to clicks, one remainder with the wheel's (one X valuator) |
+| horizontal scroll (tilt wheel, touchpad) | buttons 6/7: `WHEEL_LEFT`/`RIGHT` | tilt: `WHEEL_LEFT`/`RIGHT` with `factor`; touchpad: pan `delta.x` | brush steps; horizontal scrolling in controls | **normalised** as above |
+| pinch | nothing (Godot's X11 driver reads no XI gestures) | `InputEventMagnifyGesture` (`factor` 1 + scale change) and a pan of the fingers' motion, each dispatched twice | magnify zooms (the macOS path); on `dev` the pan also zoomed by -dy | Wayland-only, kept: zooms once per step; its pan is dropped, as macOS sends none |
+| mouse motion | `relative` = change of the integer position; `velocity` Input's; `pressure` 1 with the left button held | fractional position × scale; `relative` = relative-pointer delta × scale, which goes on at the screen's edge; own `velocity`; `pressure` 0 | orbit, drag pan and window resize read `relative`; tools read the position | **normalised**: integer position, `relative` from it, no event when it does not change; `velocity` and `pressure` kept (no reader in the game or Godot's controls) |
+| captured relative motion | raw XInput deltas (unaccelerated) | relative-pointer delta (accelerated) | the game never captures the mouse | not normalised (no reader) |
+| buttons | 1-3, 8/9 as `XBUTTON1`/`2`, 10+ as indices 10+ | `BTN_SIDE`/`EXTRA` as `XBUTTON1`/`2`, others dropped | left, middle, right only | same action; positions made integer |
+| double click | 400 ms and 5 px; never on a wheel | 400 ms and 5 px on compositor time; a wheel right after a click can be flagged | no reader of ours; Godot's controls read it on the left button | same action; normalised clicks never flagged |
+| keycode | the layout's level-0 symbol (`KeyMappingX11`) | the same rule (`KeyMappingXKB`, an identical table) | shortcuts | same |
+| physical keycode | XKB keycodes 0x22, 0x23, 0x31, 0x5E: `BRACKETLEFT`, `BRACKETRIGHT`, `QUOTELEFT`, `SECTION` | `BRACELEFT`, `BRACERIGHT`, `SECTION`, `QUOTELEFT` | the roundabout's size keys (`BRACKET*`) did nothing under Wayland; the console's toggle | **normalised** to X11's names; `KeyLabels.physical` translates back for the display server's lookup |
+| key label | the unmodified symbol | the symbol under the modifiers (Shift+1 is `!`) | only the console toggle's `KEY_LESS` test (macOS) | same action (no Linux layout prints `<` on the key left of 1 shifted); not normalised |
+| unicode | input method or keysym; Ctrl+A keeps `a` | xkb with Ctrl's transformation: 0 | text fields ignore unicode under Ctrl, Alt or Meta | same action |
+| dead keys | the input method takes the dead key's press, delivers its release and the composed key's press and release | xkb compose: no dead-key events, the composed press, never its release | Input kept the key held: after "á", A panned the camera until pressed again | **normalised**: the release follows the composed press, through Input |
+| modifiers | X state before the event; AltGr is not Alt | xkb's effective modifiers, updated after the key; AltGr (Mod5) is not Alt | Ctrl/Shift/Alt gestures | same |
+| key repeat | Xwayland's autorepeat at the compositor's rate, echo presses | client-side repeat at the compositor's rate | shortcuts skip echoes; text fields repeat | same |
+| focus loss | Input releases held keys and buttons | the same | camera cancels | same |
+| touch screen, tablet | XInput touch and pen valuators | `wl_touch`, tablet-v2 | no reader of pressure or tilt; touch reaches us as Godot's mouse emulation | not normalised; no device here |
+
+How: the autoload `WaylandInput` ([`wayland_input.gd`](../godot/scripts/core/wayland_input.gd)).
+Under the Wayland driver only it takes the main window's input callback from the root Window
+(`DisplayServer.window_set_input_event_callback`) and forwards each event as
+`Window::_window_input` does for a window that embeds its subwindows (`window_input`, then
+`push_input`), after giving it X11's shape. It sits before everything that reads input: the
+embedded dialogs, every `_input`, Godot's controls and the shortcuts. A release it adds goes
+through `Input.parse_input_event`, so Input's held keys clear. Under X11, macOS, Windows and
+headless the autoload does nothing after one name check in `_ready`: no callback, no `_input`,
+no per-frame work, and those paths are the engine's own. Cost under Wayland: O(1) per event,
+with one allocation per wheel click it adds (two events), as the engine allocates its own.
+
+Left as they are (no reader, or the same action): Input's own physical-key set and mouse velocity
+keep Wayland's values; a held composed key is released at once (under X11 Input holds it until the
+key comes up); a composition whose character is the key's own is not seen as one (none known);
+`KeyLabels.physical` asked while Shift or AltGr is held reads the shifted symbol under Wayland
+(the roundabout's hint reads it once). Under X11 the ISO `<` key beside left Shift reports
+physical `SECTION`, so it opens the debug console and never types; Wayland now does the same,
+and the fix for both is `DEBUG-11`.
+
+**W1b's proof** (2026-11-19, no Rust change):
+- `godot/tests/wayland_input_test.gd` (in the gate's main chain) plays each input above as both
+  drivers' events, from the sources, through Input: X11's through the engine's own callback, as on
+  `dev`, Wayland's through `WaylandInput`. The game sees the same events and acts alike: the camera
+  (`input_manager.gd`), the brush's wheel gestures, the console toggle, the roundabout's size keys
+  and Input's held keys; a pinch zooms. It also checks X11's own outcomes (a notch is one 1.2 step;
+  Å and ¨ step the roundabout). With `WaylandInput` off, the same test fails 14 checks: a
+  15-unit high-resolution wheel's two notches zoomed out 16 steps, to the test camera's 1,000 m limit,
+  where X11 zooms two steps to 576 m; a touchpad scroll to
+  13 m where X11 reaches 333 m; the orbit turned 2.7 times as far; the bracket keys did nothing;
+  A stayed held after "á"; the pinch's pan zoomed out.
+- Real input under gamescope's headless backend (P-cores, under the run and timing locks): XTest
+  into gamescope's Xwayland, which hands it to gamescope as EI input, so it reaches an X11 or a
+  Wayland Godot as the compositor's own input. Five wheel clicks (up, up, down, left, right), a
+  middle-button drag and the keys at XKB 0x22, 0x23, 0x31 and 0x5E (gamescope's US keymap), logged
+  by a throwaway probe's `_input`. X11 and Wayland through `WaylandInput` logged the same events,
+  `velocity` aside (no reader). Wayland's raw events, logged before `WaylandInput`, named the keys
+  physical `BRACELEFT`, `BRACERIGHT`, `SECTION` and `QUOTELEFT`, X11 `BRACKETLEFT`, `BRACKETRIGHT`,
+  `QUOTELEFT` and `SECTION`, so the ISO key, `<` on this keymap, reached the console as `SECTION`
+  under X11 (`DEBUG-11`). XTest's wheel arrives as whole notches, so this path cannot inject a
+  high-resolution wheel, a touchpad scroll or a pinch, and gamescope's US keymap has no dead keys:
+  those rest on the sources and the parity test. Godot under gamescope's Wayland quit cleanly in
+  both Wayland runs.
+- The real KDE session was not used: it was in use (`IdleHint=no`, then the user's own test of
+  `dev`), and `/dev/uinput`, writable here, would reach the live desktop and its focused window.
+  The user's desktop test keeps A8's input items (section 9: a high-resolution wheel, a touchpad's
+  scroll and pinch, drags to the screen's edge, typing on the Finnish layout with dead keys).
 
 ### The construction sites published (`RENDER-30`, analysis A5 and round R30, 2026-11-19)
 

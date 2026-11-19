@@ -904,7 +904,9 @@ available in every build and scene.
   US layouts. Most platforms report it as physical `KEY_QUOTELEFT`; macOS reports it as
   `KEY_SECTION` on ISO keyboards, where `KEY_QUOTELEFT` is the `<` key beside left shift, so a
   `KEY_QUOTELEFT` press labelled `<` keeps typing. The key is always consumed, so it
-  never types into a text field.
+  never types into a text field. On Linux, Godot's X11 driver reports the ISO `<` key as
+  `KEY_SECTION`, so that key opens the console too and cannot type (`DEBUG-11`); under the Wayland
+  driver the game gets X11's key names (`WaylandInput`, `RENDER-62` round W1b), so it acts the same.
 - The console slides down from the top edge, anchored left. By default it is one third of the
   window wide and as tall as the HUD allows. It stays between the visible controls in the
   `debug_console_keep_clear` group that its width overlaps: those in the top half of the window
