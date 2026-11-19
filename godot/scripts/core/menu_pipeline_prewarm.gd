@@ -17,7 +17,9 @@
 ## templates are built and added, the view draws once (their compilations are queued), then a
 ## marker task joins the same queue (`PipelinePrewarm.queue_marker`); when it has run, the queue
 ## has taken up everything before it, the group's instances are freed and the next group is
-## added. Leaving costs at most the group in flight.
+## added. Leaving costs at most the group in flight. `group_finished` and `finished` say how far
+## it is (a loading screen could wait on them). Freed with the menu; compilations already queued
+## finish anyway and stay with their shaders and the caches.
 ##
 ## The water mirror draws at its own MSAA (`WaterReflection.MIRROR_MSAA`), and Godot precompiles a
 ## surface's pipelines for one sample count, the project setting's
@@ -27,9 +29,7 @@
 ## draw queues their mirror sets, the setting is restored, the next draw queues their game sets
 ## (the earlier groups' instances are already freed, so nothing else is recompiled). Nothing
 ## drawn changes. `_exit_tree` restores the setting whatever the stage. If a later Godot stops
-## reading the setting there, the mirror's first draws are merely cold again. `group_finished` and `finished` say how far
-## it is (a loading screen could wait on them). Freed with the menu; compilations already queued
-## finish anyway and stay with their shaders and the caches.
+## reading the setting there, the mirror's first draws are merely cold again.
 extends SubViewport
 
 ## Emitted when the queue has taken up group `index`'s compilations (`PipelinePrewarm.groups()`
@@ -60,8 +60,9 @@ var _ahead: Array = []
 var _ahead_built := false
 # The project MSAA setting's value while a mirror group holds it at the mirror's, else null.
 var _swung_from: Variant = null
-# Per group `{name, pairs, build_ms, added_ms, finished_ms}`: the build's main-thread time and the
-# times from the launch it was added and its marker ran (`report`).
+# Per group `{name, pairs, build_ms, added_ms, finished_ms}`: the add's main-thread time (the
+# build's unless it was built ahead) and the times from the launch it was added and its marker
+# ran (`report`).
 var _log: Array[Dictionary] = []
 
 func _ready() -> void:
@@ -104,7 +105,7 @@ func _exit_tree() -> void:
 		RenderingServer.frame_post_draw.disconnect(_on_post_draw)
 	_restore_msaa()
 	# A marker not yet run is left to the queue: waiting for it here would hold the transition
-	# for the group in flight, which the world's first frames would otherwise overlap.
+	# for the group in flight, which the world scene's start can overlap instead.
 	if _marker >= 0 and WorkerThreadPool.is_task_completed(_marker):
 		WorkerThreadPool.wait_for_task_completion(_marker)
 	_prewarm.end()
@@ -116,7 +117,8 @@ func is_finished() -> bool:
 ## The groups added so far, each `{name, pairs, build_ms, added_ms, finished_ms}` (milliseconds
 ## from the launch; finished_ms -1 while in flight), and the last group's finish (-1 before it).
 func report() -> Dictionary:
-	return {"groups": _log.duplicate(true), "finished_ms": _log.back().finished_ms if is_finished() else -1}
+	var end: int = _log.back().finished_ms if is_finished() else -1
+	return {"groups": _log.duplicate(true), "finished_ms": end}
 
 func _add_group() -> void:
 	var build_us := Time.get_ticks_usec()

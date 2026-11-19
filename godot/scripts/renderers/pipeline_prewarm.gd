@@ -81,18 +81,18 @@ func instance_count() -> int:
 ## come. Each group is `{GROUP_NAME, GROUP_PAIRS, GROUP_MIRROR}`; its pairs are built when called.
 static func groups() -> Array[Dictionary]:
 	var out: Array[Dictionary] = []
-	# The terrain and its graded tiles, the water and the grass masks: every world.
+	# What every world draws first, in one build (the menu's second frame, as before R43c): the
+	# terrain and its graded tiles, the water, the grass masks and the vegetation catalogue (its
+	# authored meshes load once and stay shared with the vegetation renderer) with the impostors
+	# and hedges. Built later, a share of it would fall on the world scene's start after an early
+	# click instead (round R43c: built a species a frame, a first run left at the earliest
+	# moment waited 1.5 s more after its click, though 2 s earlier).
 	out.append(_group("ground", func() -> Array:
 		var pairs := TerrainRenderer.pipeline_prewarm_surfaces()
 		pairs.append_array(WaterRenderer.pipeline_prewarm_surfaces())
 		pairs.append_array(GrassRenderer.pipeline_prewarm_surfaces())
+		pairs.append_array(VegetationRenderer.pipeline_prewarm_surfaces(TreeSpecies.build_meshes()))
 		return pairs))
-	# The vegetation catalogue a species at a time (its authored meshes load once and stay shared
-	# with the vegetation renderer), then the impostors and hedges.
-	for species in [TreeSpecies.CONIFER, TreeSpecies.BROADLEAF, TreeSpecies.BUSH, TreeSpecies.ROCK]:
-		out.append(_group("vegetation_%d" % species, func() -> Array:
-			return VegetationRenderer.pipeline_prewarm_species(species)))
-	out.append(_group("impostors", func() -> Array: return VegetationRenderer.pipeline_prewarm_impostors()))
 	# The sets the world scene makes at its start, before any content: the cars, their lamps and
 	# beams, the walkers, the site batches, the grass clumps and the world's borders.
 	out.append(_group("first_frame", func() -> Array:

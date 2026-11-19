@@ -163,20 +163,16 @@ func _register_catalogue() -> void:
 		stream.set_vegetation_reflection_scenario(_reflection_scenario)
 		stream.set_vegetation_cast_shadows(cast_shadows)
 
-## The menu's pipeline prewarm pairs (`RENDER-43`) of one species: every mesh of its catalogue
-## entry (`TreeSpecies.build_species_meshes`, whose authored meshes are loaded once and shared with
-## this renderer) with its own surface materials.
-static func pipeline_prewarm_species(species: int) -> Array:
+## The menu's pipeline prewarm pairs (`RENDER-43`): every mesh of `catalogue`
+## (`TreeSpecies.build_meshes`, whose authored meshes are loaded once and shared with this
+## renderer) with its own surface materials, the impostor quad with the impostor materials and
+## their shadow casters, the hedges.
+static func pipeline_prewarm_surfaces(catalogue: Array) -> Array:
 	var pairs := []
-	for variant: Array in TreeSpecies.build_species_meshes(species):
-		for mesh: Mesh in variant:
-			pairs.append([mesh, null])
-	return pairs
-
-## The menu's pipeline prewarm pairs (`RENDER-43`) of the impostors and hedges: the impostor quad
-## with the impostor materials and their shadow casters, the hedges.
-static func pipeline_prewarm_impostors() -> Array:
-	var pairs := []
+	for species in range(TreeSpecies.SPECIES_COUNT):
+		for variant in range(TreeSpecies.VARIANT_COUNTS[species]):
+			for mesh: Mesh in catalogue[species][variant]:
+				pairs.append([mesh, null])
 	for species in [TreeSpecies.CONIFER, TreeSpecies.BROADLEAF]:
 		pairs.append([TreeSpecies.impostor_mesh(), TreeSpecies.impostor_material(species)])
 		pairs.append([TreeSpecies.impostor_mesh(), TreeSpecies.impostor_shadow_material(species)])
