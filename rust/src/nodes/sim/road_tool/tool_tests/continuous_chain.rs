@@ -335,7 +335,9 @@ enum Step {
 // straight chain likewise (the simple curve's now leaves along the tangent exactly). Re-recorded
 // by round UI1 (the round's changes off, the old digest held; its drawing changes alone off, the
 // 4 m reach and the square lock on, it held too): the chained starts gain their corner arcs and
-// faint guides and the angle chips move to the arcs; no snapped point changed.
+// faint guides and the angle chips move to the arcs; no snapped point changed. Re-recorded by the
+// icon UI merge (round U1): the frame's road type prints the type's pockets (`ROAD-119`), none
+// here; with each frame's `pockets` field cut out, the old digest `0x59a9_8956_2034_85fa` held.
 #[test]
 fn continuous_off_and_straight_curve_chains_are_unchanged() {
     use RoadToolAction::{Cancel, Confirm, ModeComplexCurve, ModeFreeform, ModeSimpleCurve};
@@ -382,6 +384,6 @@ fn continuous_off_and_straight_curve_chains_are_unchanged() {
     run_script(&mut tool, &on, &mut frames);
     assert_eq!(
         (frames.len(), frames_digest(&frames)),
-        (58, 0x59a9_8956_2034_85fa)
+        (58, 0x53d2_088c_9ddb_29fd)
     );
 }

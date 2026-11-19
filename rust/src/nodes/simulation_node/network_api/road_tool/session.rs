@@ -133,6 +133,19 @@ struct PreviewKey {
     generation: i64,
 }
 
+impl PreviewKey {
+    // Whether this key is for `stroke` drawn with `spec` on context `generation`. The spec is
+    // compared whole, the road type's pockets included, so a type change of any of its parts
+    // previews again. Compares in place: no allocation.
+    fn is_for(&self, stroke: &StrokeRequest, spec: RoadTypeSpec, generation: i64) -> bool {
+        self.points == stroke.points
+            && self.spec == spec
+            && self.snap == stroke.snap_to_existing_roads
+            && self.grade == stroke.grade
+            && self.generation == generation
+    }
+}
+
 #[godot_api(secondary)]
 impl SimulationNode {
     /// The road tool's pointer moved: a camera ray (`ROAD-112`; a click's, which can arrive before
@@ -560,11 +573,7 @@ impl SimulationNode {
         let bridge = &self.road_tool_session;
         let stroke = &bridge.session.frame().stroke;
         bridge.previewed.as_ref().is_some_and(|key| {
-            key.points == stroke.points
-                && key.spec == bridge.session.spec()
-                && key.snap == stroke.snap_to_existing_roads
-                && key.grade == stroke.grade
-                && key.generation == self.road_tool_view_generation()
+            key.is_for(stroke, bridge.session.spec(), self.road_tool_view_generation())
         })
     }
 
@@ -1021,5 +1030,44 @@ fn refusal_key(refusal: DraftRefusal) -> &'static str {
         DraftRefusal::NoBiarc => "no_biarc",
         DraftRefusal::TightCurve => "road_tight_curve",
         DraftRefusal::TooLong => "batch_too_large",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::simulation::network::road_types::RoadTypePockets;
+
+    // P1 of the icon UI merge (`ROAD-119` road-type pockets): the road type's pockets live in
+    // the session's spec, so picking a type that differs from the previewed one only in its
+    // pockets leaves the standing preview stale, and the next tick previews the stroke again.
+    #[test]
+    fn a_pocket_change_drops_the_standing_preview() {
+        let spec = RoadTypeSpec::default();
+        let stroke = StrokeRequest {
+            points: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(80.0, 0.0, 0.0)],
+            spec,
+            snap_to_existing_roads: true,
+            grade: None,
+        };
+        let key = PreviewKey {
+            points: stroke.points.clone(),
+            spec,
+            snap: true,
+            grade: None,
+            generation: 7,
+        };
+        assert!(key.is_for(&stroke, spec, 7), "the same spec keeps the preview");
+        for pockets in [(true, false, 60.0), (false, true, 60.0), (true, true, 40.0)] {
+            let pocketed = RoadTypeSpec {
+                pockets: RoadTypePockets {
+                    left: pockets.0,
+                    right: pockets.1,
+                    body_m: pockets.2,
+                },
+                ..spec
+            };
+            assert!(!key.is_for(&stroke, pocketed, 7), "{pockets:?} previews again");
+        }
     }
 }

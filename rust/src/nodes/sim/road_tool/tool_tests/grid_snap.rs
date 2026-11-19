@@ -243,7 +243,9 @@ fn session_grid_snap_on_a_road() {
 // off the old digest `0x9600_a727_6994_283d` held): its 90 degree corners draw the right-angle
 // square in place of the arc, drawing only. Re-recorded 2026-11-18 (the user: guides 40 m past
 // the cursor, faint from 24 m): drawing only, as the frames without their gizmos hash the same
-// under the old and the new lengths (`0xb72e_a82f_7f69_a9a8`).
+// under the old and the new lengths (`0xb72e_a82f_7f69_a9a8`). Re-recorded by the icon UI merge
+// (round U1): the frame's road type prints the type's pockets (`ROAD-119`), none here; with each
+// frame's `pockets` field cut out, the old digest `0xa61a_7aa1_0ae5_fc7d` held.
 #[test]
 fn grid_off_frames_are_unchanged() {
     let mut frames = Vec::new();
@@ -256,7 +258,7 @@ fn grid_off_frames_are_unchanged() {
     assert!(frames.iter().any(|frame| frame.contains("snap: Node")));
     assert_eq!(
         (frames.len(), frames_digest(&frames)),
-        (36, 0xa61a_7aa1_0ae5_fc7d)
+        (36, 0x9ec0_7cae_572c_1b29)
     );
 }
 
