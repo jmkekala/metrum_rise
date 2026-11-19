@@ -597,7 +597,7 @@ godot_main_chain() {
     for script in \
         economy_machinery_test growth_meter_test field_edit_tool_test building_asset_reload_test \
         environment_overlay_test surface_patch_debug_test simulation_speed_input_test \
-        selection_gesture_test crosswalk_toggle_test road_lane_edit_test road_cross_section_test road_turn_arrows_test road_pocket_test road_roundabouts_test road_mixed_junction_test ui_settings_test \
+        selection_gesture_test inspect_lifecycle_test crosswalk_toggle_test road_lane_edit_test road_cross_section_test road_turn_arrows_test road_pocket_test road_roundabouts_test road_mixed_junction_test ui_settings_test \
         network_tool_chunk_renderer_test road_benchmark_metrics_test road_preview_metrics_test \
         stream_benchmark_report_test \
         vegetation_edit_test vegetation_appearance_test vegetation_land_cover_test \
