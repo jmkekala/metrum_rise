@@ -60,7 +60,11 @@ Current deterministic rules:
   remains an explicit player choice
 - `MainMenu` contains no `SimulationNode`
 - `MainMenu` contains no terrain, water, road, or gameplay HUD surfaces
-- `New Game` opens the save browser's world list (`user://worlds/`), then the New Game dialog
+- `New Game` opens the save browser's world list (`user://worlds/`), then the New Game dialog;
+  when no enabled pack has a building for any zoning profile, the dialog shows one line, "No
+  building pack is enabled. Add one in Options > Mods.", and still starts the game (`TOOLS-32`).
+  It asks Rust's static `SimulationNode.enabled_packs_stock_zones` at each opening, since the
+  menu has no simulation ([zoning API](zoning.md#4-public-runtime-api))
 - `Load Game` opens the save browser's save list (`user://saves/`)
 - selecting a world or save stores the request in the `LaunchState` autoload and then enters
   `Main.tscn`

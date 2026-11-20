@@ -228,7 +228,21 @@ Profile registry:
 
 ```text
 get_zone_profiles() -> Array[Dictionary]
+get_stocked_zone_profile_ids() -> PackedInt32Array
+SimulationNode.enabled_packs_stock_zones(dir_path, enabled_pack_ids) -> bool  # static
 ```
+
+A profile has stock when the planning pass's spawn filter
+(`BuildingAllocator::collect_spawn_asset_candidates_by_profile`: a level-1 zoned private building
+of the profile's zone and density, with the profile's tags and a resolved economy binding) finds a
+candidate in the registered packs (`TOOLS-32`). `BuildingAllocator::stocked_zone_profiles` runs
+that same filter and keeps the profiles with candidates; `SimCore::replace_asset_registry` stores
+the result, so a pack load is the only refresh. The profiles and the economy catalog are shipped,
+immutable data, and a world load or new world carries the registry over unchanged. Cost
+`O(P + Σ_p A_p log A_p)` per load, `A_p` being the assets of profile `p`'s zone and density;
+`get_stocked_zone_profile_ids` copies the stored ids, `O(P)`. The static call answers without a
+world for the New Game dialog: it scans the selected packs' manifests in `dir_path` and runs the
+same filter, but imports no meshes, so an asset whose mesh a load would skip still counts there.
 
 Parcel creation and preview:
 
@@ -320,6 +334,11 @@ stroke would remove and refuses only plotted land before submission
 ([roads over zoned land](#roads-road-edits-and-placements-over-zoned-land-zone-09-zone-10-zone-11)).
 Changing parcels republishes that land at the end of the simulation frame.
 
+The zoning palette (`zoning_panel.gd`, built by `main_ui.gd`) reads
+`get_stocked_zone_profile_ids` each time a zone type opens. A profile tile without stock is greyed,
+and its tooltip adds "No buildings for this zone in the enabled packs."; it stays selectable and
+its zone stays paintable (`TOOLS-32`). Painted cells carry no mark.
+
 Godot must not rasterize zoning state into an authoritative grid or resolve placement conflicts.
 
 ---
@@ -331,6 +350,7 @@ The building allocator consumes parcels as private-building candidate authority.
 - Candidate discovery scans available parcels.
 - Parcels without compatible initial assets remain zoned but produce no growth candidate. Loading
   suitable assets makes them eligible through the existing discovery and registry invalidation path.
+  The palette greys such a profile's tile ([stock](#4-public-runtime-api)).
 - Zone legality comes from parcel runtime profile id plus `ZoningProfileRegistry`.
 - Placement claims a parcel through `ZoningSystem::occupy_parcel`.
 - Removal or allocator remap clears/remaps parcel occupancy through zoning helpers.

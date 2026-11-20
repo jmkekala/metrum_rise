@@ -29,7 +29,9 @@ use crate::simulation::terrain::TerrainSystem;
 use crate::simulation::work_area::{
     explicit_work_area_startup_budget, initial_work_area_scale, minimum_work_area_workers,
 };
-use crate::simulation::zoning::{ParcelGeometry, ZoneType, ZoningParcel, ZoningSystem};
+use crate::simulation::zoning::{
+    ParcelGeometry, ZoneType, ZoningParcel, ZoningProfileRegistry, ZoningSystem,
+};
 use godot::prelude::{Vector2, Vector3};
 use rayon::prelude::*;
 use std::collections::{BTreeMap, HashMap};
@@ -241,8 +243,35 @@ impl BuildingAllocator {
         zoning: &ZoningSystem,
         catalog: &RuntimeEconomyCatalog,
     ) -> BTreeMap<u16, SpawnProfileAssetCandidates> {
+        self.spawn_asset_candidates_by_profile(&zoning.profiles, catalog)
+    }
+
+    /// The runtime ids, ascending, of the zoning profiles with at least one spawn candidate in
+    /// the registry: the planning pass's own filter, so a profile left out here never spawns.
+    ///
+    /// `O(P + Σ_p A_p log A_p)` for P profiles, A_p being the registered assets of profile p's
+    /// zone and density; each asset sits in one such bucket. Run when the registry is replaced,
+    /// never per tick or per query.
+    pub(crate) fn stocked_zone_profiles(
+        &self,
+        profiles: &ZoningProfileRegistry,
+        catalog: &RuntimeEconomyCatalog,
+    ) -> Vec<u16> {
+        self.spawn_asset_candidates_by_profile(profiles, catalog)
+            .into_iter()
+            .filter(|(_, assets)| !assets.candidates.is_empty())
+            .map(|(runtime_id, _)| runtime_id)
+            .collect()
+    }
+
+    // The filter needs only the profiles, so the stocked-profile check runs it without a world.
+    fn spawn_asset_candidates_by_profile(
+        &self,
+        profiles: &ZoningProfileRegistry,
+        catalog: &RuntimeEconomyCatalog,
+    ) -> BTreeMap<u16, SpawnProfileAssetCandidates> {
         let mut by_profile = BTreeMap::new();
-        for profile in zoning.profiles.profiles() {
+        for profile in profiles.profiles() {
             let Some(zone_class) = zone_type_to_zone_class(profile.zone_type) else {
                 continue;
             };
@@ -263,7 +292,7 @@ impl BuildingAllocator {
                 let Some(params) = self.asset_placement_params(qualified_id, catalog) else {
                     continue;
                 };
-                if !zoning.profiles.asset_is_legal(
+                if !profiles.asset_is_legal(
                     profile.runtime_id,
                     params.zone_type,
                     &params.density,

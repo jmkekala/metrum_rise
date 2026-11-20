@@ -5,6 +5,9 @@ extends VBoxContainer
 
 const HudIcons = preload("res://scripts/ui/hud_icons.gd")
 const UIStyle = preload("res://scripts/ui/ui_style.gd")
+## The tooltip line and icon grey of a profile tile without stock.
+const NO_STOCK_NOTE := "No buildings for this zone in the enabled packs."
+const NO_STOCK_INK := Color(0.42, 0.42, 0.42)
 var profile_panel: PanelContainer
 var profile_menu: HBoxContainer
 var mode_menu: HBoxContainer
@@ -50,10 +53,14 @@ func build() -> void:
 	profile_panel.hide()
 
 ## A zone or profile tile. Medium and high density profiles get their own building silhouette.
-static func tile(zone: String, title: String, detail: String, profile_color: String = "", density: String = "") -> Button:
+## A profile without stock (no enabled pack has a building for it, as Rust's
+## `get_stocked_zone_profile_ids` says) is greyed and says so, but stays selectable and paintable.
+static func tile(zone: String, title: String, detail: String, profile_color: String = "", density: String = "", has_stock := true) -> Button:
 	var icon := zone if zone in ["residential", "commercial", "industrial"] else "zoning"
 	if icon != "zoning" and density in ["medium", "high"]:
 		icon += "_" + density
+	if not has_stock:
+		detail = NO_STOCK_NOTE if detail.is_empty() else detail + "\n\n" + NO_STOCK_NOTE
 	var button := HudIcons.icon_button(icon, title, detail, 64)
 	button.toggle_mode = true
 	var color: Color = {
@@ -63,5 +70,5 @@ static func tile(zone: String, title: String, detail: String, profile_color: Str
 	}.get(zone, UIStyle.TEXT_PRIMARY)
 	if not profile_color.is_empty():
 		color = Color.from_string(profile_color, color)
-	HudIcons.tint(button, color.lightened(0.25))
+	HudIcons.tint(button, color.lightened(0.25) if has_stock else NO_STOCK_INK)
 	return button

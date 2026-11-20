@@ -5,10 +5,17 @@
 ## The defaults and presets come from the Rust `VegetationOptions` class,
 ## which is their only source; drifting copies here would outlive the renderer limit that sets
 ## the ceiling. This script renders those numbers and reports the player's choice. Rust
-## sanitises whatever it receives, so nothing here guarantees a valid parameter.
+## sanitises whatever it receives, so nothing here guarantees a valid parameter. A line points to
+## the pack screen when Rust finds no zone a building in the enabled packs (`TOOLS-32`).
 extends Window
 
 const UIStyle = preload("res://scripts/ui/ui_style.gd")
+const ModPackConfig = preload("res://scripts/core/mod_pack_config.gd")
+const MODS_DIR := "user://mods/"
+const BASE_SIZE := Vector2i(480, 150)
+const BASE_MIN_SIZE := Vector2i(400, 140)
+## The no-building-pack line's height with its row gap, unscaled.
+const PACK_NOTICE_HEIGHT := 32
 
 ## Emitted with the chosen vegetation parameters when the player confirms the dialog.
 signal start_requested(world_path: String, vegetation: Dictionary)
@@ -22,6 +29,8 @@ var _defaults: Dictionary = {}
 var _presets: Dictionary = {}
 var _forest_buttons: Array[Button] = []
 var _world_label: Label
+# Shown when no zoning profile has a building in the enabled packs; starting stays allowed.
+var _pack_notice: Label
 
 func _ready() -> void:
 	_defaults = _options.get_default_config()
@@ -41,7 +50,7 @@ func _build_ui() -> void:
 			_on_close_requested())
 	# No viewport argument: the helper resolves the parent's, which is the surface this window
 	# opens on. Passing this window would clamp its size against its own current size.
-	UIStyle.set_window_base_size(self, Vector2i(480, 150), Vector2i(400, 140))
+	UIStyle.set_window_base_size(self, BASE_SIZE, BASE_MIN_SIZE)
 
 	var body := PanelContainer.new()
 	body.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
@@ -63,6 +72,14 @@ func _build_ui() -> void:
 	UIStyle.set_font_size(_world_label, 15)
 	_world_label.add_theme_color_override("font_color", UIStyle.TEXT_PRIMARY)
 	content.add_child(_world_label)
+
+	_pack_notice = Label.new()
+	_pack_notice.text = "No building pack is enabled. Add one in Options > Mods."
+	_pack_notice.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	UIStyle.set_font_size(_pack_notice, 13)
+	_pack_notice.add_theme_color_override("font_color", UIStyle.TEXT_DIM)
+	_pack_notice.visible = false
+	content.add_child(_pack_notice)
 
 	_forest_buttons = _make_choices(_make_row(content, "Forest"), FOREST_KEYS)
 
@@ -123,6 +140,12 @@ func popup_for_world(world_path: String) -> void:
 	reset_to_defaults()
 	if _world_label:
 		_world_label.text = "World: " + world_path.get_file()
+	if _pack_notice:
+		# Rust answers with the game's own spawn filter; the selection may have changed since.
+		_pack_notice.visible = not SimulationNode.enabled_packs_stock_zones(
+			ProjectSettings.globalize_path(MODS_DIR), PackedStringArray(ModPackConfig.load_enabled_pack_ids()))
+		var extra := Vector2i(0, PACK_NOTICE_HEIGHT if _pack_notice.visible else 0)
+		UIStyle.set_window_base_size(self, BASE_SIZE + extra, BASE_MIN_SIZE + extra)
 	popup_centered(size)
 
 ## Restores every control to the parameters a new game starts with by default.

@@ -421,3 +421,29 @@ fn benchmark_precise_cell_site_locality() {
         );
     }
 }
+
+// A zoning profile has stock when the spawn filter finds a building for it: an empty registry
+// stocks none, and a low-density house stocks residential low but not residential medium.
+#[test]
+fn stocked_zone_profiles_follow_the_spawn_filter() {
+    use crate::simulation::zoning::{ZoneDensity, load_builtin_profile_registry};
+    let profiles = load_builtin_profile_registry().unwrap();
+    let catalog = load_runtime_economy_catalog().unwrap();
+    let mut allocator = BuildingAllocator::new();
+    assert!(
+        allocator
+            .stocked_zone_profiles(&profiles, &catalog)
+            .is_empty()
+    );
+    register_test_asset(&mut allocator, "test", "house", ZoneClass::Residential);
+    let id = |density| {
+        profiles
+            .runtime_id_for_zone_density(ZoneType::Residential, density)
+            .unwrap()
+    };
+    assert_eq!(
+        allocator.stocked_zone_profiles(&profiles, &catalog),
+        vec![id(ZoneDensity::Low)]
+    );
+    assert_ne!(id(ZoneDensity::Low), id(ZoneDensity::Medium));
+}

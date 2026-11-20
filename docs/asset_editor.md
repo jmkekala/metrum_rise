@@ -215,6 +215,10 @@ Shipped design:
   tests that need both load a copy of the two folders (`tests/test_packs.gd`). A development
   run (not an export template) also seeds it into `user://mods/` and enables it by default, so
   saved test cities keep their buildings.
+- Without a building pack the zones stay empty, so the game says so: the zoning palette greys a
+  profile no enabled pack has a building for, with a tooltip saying why, and the New Game dialog
+  shows one line pointing to Options > Mods when no profile has one. Both answers come from Rust,
+  by the allocator's own spawn filter ([zoning API](zoning.md#4-public-runtime-api)).
 
 ```text
 user://mods/

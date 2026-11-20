@@ -3021,7 +3021,7 @@ reopening requires a current reproduction, not an assumption that the old geomet
   and `user://saves/`, then copies missing bundled starter entries from `res://bootstrap/worlds/`
   and `res://bootstrap/mods/` without overwriting user-owned files. Fresh profiles also seed
   `user://settings.cfg` for general options state and `user://active_packs.cfg` with the bundled
-  `parking` pack enabled (the Kenney building pack is test-only since `TOOLS-32`); later saved pack selections, including an empty list, remain
+  `parking` pack enabled (the Kenney building pack is test-only since `TOOLS-32`; the zoning palette greys a profile no enabled pack stocks, and the New Game dialog says when none does); later saved pack selections, including an empty list, remain
   player-owned. See [`ui.md`](ui.md), [`terrain.md`](terrain.md), and
   [`asset_editor.md`](asset_editor.md).
 - Added a dedicated `MainMenu` front-door scene and `LaunchState` startup handoff so normal launch no longer boots an empty fallback gameplay map. `New Game` now begins from `user://worlds/`, `Load Game` begins from `user://saves/`, and gameplay only opens after one of those selections. See [`ui.md`](ui.md).

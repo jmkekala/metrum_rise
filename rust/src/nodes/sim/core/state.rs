@@ -230,6 +230,10 @@ pub struct SimCore {
     pub(crate) environment_sweep: EnvironmentSweep,
     /// Building placement and vacancy index.
     pub allocator: BuildingAllocator,
+    /// Runtime ids, ascending, of the zoning profiles the registered packs can build on
+    /// (`BuildingAllocator::stocked_zone_profiles`); rebuilt with the registry, which a world
+    /// load or a new world carries over unchanged. Profiles and catalog are shipped data.
+    pub(crate) stocked_zone_profiles: Vec<u16>,
     /// Agent FSM in Structure-of-Arrays layout.
     pub agents: AgentSystem,
     /// Persistent physical parking supply and parked vehicles; PARK-01 does not alter trips.
@@ -441,6 +445,8 @@ impl SimCore {
             road_upkeep: RoadUpkeepRoll::default(),
             environment_sweep: EnvironmentSweep::default(),
             allocator: BuildingAllocator::new_at_slot(next_slot - 1),
+            // The registry starts empty, so no profile has stock.
+            stocked_zone_profiles: Vec::new(),
             agents: AgentSystem::new(),
             parking: Default::default(),
             households: HouseholdSystem::new(),

@@ -66,6 +66,14 @@ impl SimulationNode {
         arr
     }
 
+    /// Returns the runtime ids, ascending, of the zoning profiles the enabled packs have a
+    /// building for; a profile left out never grows one. Computed when the packs load; `O(P)`.
+    #[func]
+    pub fn get_stocked_zone_profile_ids(&self) -> PackedInt32Array {
+        let core = self.lock_core();
+        PackedInt32Array::from_iter(core.stocked_zone_profiles.iter().map(|&id| i32::from(id)))
+    }
+
     fn service_placement_error_message(
         rejection: ExplicitServicePlacementRejection,
     ) -> &'static str {

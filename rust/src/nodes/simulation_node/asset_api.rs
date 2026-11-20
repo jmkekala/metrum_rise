@@ -24,6 +24,17 @@ impl SimulationNode {
         load_asset_packs(&mut self.lock_core(), dir_path, None)
     }
 
+    /// Whether the selected packs in `dir_path` hold a building for any zoning profile, by the
+    /// spawn filter a game uses. Static, for menus without a simulation: it scans the pack
+    /// manifests on each call, so call it when a dialog opens, not per frame.
+    #[func]
+    pub fn enabled_packs_stock_zones(
+        dir_path: GString,
+        enabled_pack_ids: PackedStringArray,
+    ) -> bool {
+        crate::nodes::sim::bridge::assets::enabled_packs_stock_zones(dir_path, &enabled_pack_ids)
+    }
+
     /// Returns all qualified asset IDs (`"pack_id:asset_id"`) currently in the registry.
     ///
     /// Godot uses this to enumerate which meshes to load for building rendering.

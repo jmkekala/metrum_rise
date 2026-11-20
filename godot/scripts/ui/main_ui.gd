@@ -871,12 +871,14 @@ func _rebuild_zoning_profile_menu(zone_type: String) -> void:
 	_zoning_profile_buttons.clear()
 
 	var profiles: Array = _zoning_profiles_by_zone_type.get(zone_type, [])
+	# Read at each opening: a load reloads the packs.
+	var stocked: PackedInt32Array = simulation_node.get_stocked_zone_profile_ids()
 	for entry in profiles:
 		var profile: Dictionary = entry
+		var runtime_id := int(profile.get("runtime_id", 0))
 		var button := ZoningPanel.tile(zone_type,
 			str(profile.get("display_name", zone_type.capitalize())), str(profile.get("ui_description", "")),
-			str(profile.get("ui_color", "")), str(profile.get("density", "")))
-		var runtime_id := int(profile.get("runtime_id", 0))
+			str(profile.get("ui_color", "")), str(profile.get("density", "")), runtime_id in stocked)
 		button.pressed.connect(func(): _select_zoning_profile(zone_type, runtime_id))
 		zoning_profile_menu.add_child(button)
 		_zoning_profile_buttons[runtime_id] = button
