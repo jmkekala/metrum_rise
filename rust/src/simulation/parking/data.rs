@@ -18,6 +18,9 @@ pub(crate) enum PlaceSource {
     /// One parking lane of a road edge (`PARK-05`). Live edges are tombstoned, never renumbered;
     /// a save renumbers them past the deleted ones and maps this edge with them.
     Kerb { edge: u32, right: bool },
+    /// A building's proven `loading_bay` anchor (`PARK-19`): a stop for freight, never parking
+    /// supply. In no chunk list, so no search, catchment, wake or render pass sees it.
+    Dock { building: u64, anchor: u32 },
 }
 
 /// One public bay. Membership offsets make chunk/source removal O(1).
@@ -37,6 +40,10 @@ pub(crate) struct Place {
     pub length: f32,
     pub occupant: Handle<Vehicle>,
     pub reservation: Handle<Vehicle>,
+    // The freight carrier holding a dock (`PARK-20`); none on a bay, and on every dock until
+    // carriers take docks.
+    pub freight_holder: crate::simulation::economy::agents::AgentHandle,
+    // A dock's is `NO_CHUNK`: it is in no chunk list.
     pub chunk_slot: usize,
     pub source_slot: usize,
     // Derived, never saved: this bay's slot in its chunk's `parked` list, or `NOT_PARKED`.
@@ -52,6 +59,9 @@ pub(super) const GROUND_UNSOLVED: u8 = u8::MAX;
 
 /// `Place::parked_slot` of a bay on no parked list: empty, or its car is moving.
 pub(super) const NOT_PARKED: u32 = u32::MAX;
+
+/// `Place::chunk_slot` of a dock, which no chunk lists.
+pub(super) const NO_CHUNK: usize = usize::MAX;
 
 /// A persistent car, independent of the resident movement FSM in PARK-01.
 #[derive(StructOfArray)]

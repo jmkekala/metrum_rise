@@ -8,7 +8,7 @@ use crate::simulation::core::handles::Handle;
 use crate::simulation::network::types::EdgeClass;
 use crate::simulation::parking::kerb::{KerbBlocker, kerb_bays, kerb_blockers};
 use crate::simulation::parking::{Bay, ParkedPublication, PlaceSource, holds_parking};
-use crate::simulation::parking::lots::lot_bays;
+use crate::simulation::parking::lots::{LotProof, has_freight_anchors, lot_bays, lot_proof};
 use rayon::prelude::*;
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -73,15 +73,16 @@ impl SimCore {
                     if handle.is_none() {
                         return None;
                     }
-                    let (bays, issues, blockers) = self.site_lot(index);
-                    Some((handle, bays, issues, blockers))
+                    let (lot, blockers) = self.site_lot(index);
+                    Some((handle, lot, blockers))
                 })
                 .collect()
         });
         // Geometry is independent; live occupancy reconciliation commits in source order.
         let mut points = Vec::new();
         let mut kerb_edges = edges.clone();
-        for (handle, bays, issues, blockers) in lots {
+        for (handle, lot, blockers) in lots {
+            let LotProof { bays, issues, docks, dock_issues } = lot;
             self.parking
                 .set_kerb_blockers(handle.to_bits(), blockers, &mut kerb_edges);
             points.extend(self.parking.source_points(handle.to_bits()));
@@ -99,6 +100,7 @@ impl SimCore {
             } else {
                 self.parking.diagnostics.insert(handle.to_bits(), issues);
             }
+            self.publish_docks(handle.to_bits(), &docks, dock_issues);
         }
         points.extend(
             edges
@@ -149,23 +151,78 @@ impl SimCore {
         }
     }
 
-    // Building `index`'s lot: the bays it offers as supply, its validation issues, and the kerb
-    // blockers of its whole layout. A site under construction offers no bay and its door holds
-    // no list until completion publishes both (`PERF-25`, the user's decision of 2026-11-16);
-    // its driveways and bay entries keep the kerb clear from the start, so completion moves no
-    // kerbside bay. O(`lot_bays`).
-    fn site_lot(&self, index: usize) -> (Vec<(u32, Bay)>, Vec<String>, Vec<KerbBlocker>) {
-        let (mut bays, issues) = lot_bays(
+    // Building `index`'s lot: the bays it offers as supply and its docks, their validation
+    // issues, and the kerb blockers of its whole layout. A site under construction offers no
+    // bay and no dock, and its door holds no list until completion publishes them (`PERF-25`,
+    // the user's decision of 2026-11-16); its driveways and bay entries keep the kerb clear from
+    // the start, so completion moves no kerbside bay. O(`lot_proof`).
+    fn site_lot(&self, index: usize) -> (LotProof, Vec<KerbBlocker>) {
+        let mut lot = lot_proof(
             &self.allocator,
             index,
             &self.region_graph,
             &self.transit_network.roadbed,
         );
-        let blockers = kerb_blockers(&self.allocator, index, &self.region_graph, &bays);
+        let blockers = kerb_blockers(&self.allocator, index, &self.region_graph, &lot.bays);
         if !self.holds_parking(index) {
-            bays.clear();
+            lot.bays.clear();
+            lot.docks.clear();
         }
-        (bays, issues, blockers)
+        (lot, blockers)
+    }
+
+    // Publishes one building's docks and their rejections, then their access and its freight
+    // gate (`PARK-19`). Docks are no supply: nothing here touches a chunk, a list or a count.
+    // O(the building's docks + one entrance derivation).
+    fn publish_docks(&mut self, handle: u64, docks: &[(u32, Bay)], issues: Vec<String>) {
+        self.parking.replace_docks(handle, docks);
+        if issues.is_empty() {
+            self.parking.dock_diagnostics.remove(&handle);
+        } else {
+            self.parking.dock_diagnostics.insert(handle, issues);
+        }
+        self.parking.refresh_dock_access(
+            handle,
+            &self.allocator,
+            &self.transit_network,
+            &self.region_graph,
+        );
+        self.rebuild_freight_gate(handle);
+    }
+
+    // Building `handle`'s freight gate from its dock rows: the gate its first dock's route
+    // starts at, entered and left at that road connection, its door the building's. No record
+    // without an active dock. O(its docks + one entrance derivation).
+    pub(crate) fn rebuild_freight_gate(&mut self, handle: u64) {
+        let building = self
+            .allocator
+            .building_handles
+            .resolve(Handle::from_bits(handle));
+        let kerb = self
+            .parking
+            .building_docks(handle)
+            .next()
+            .and_then(|dock| self.parking.dock_kerb(dock));
+        let gate = building.zip(kerb).and_then(|(b, [x, z])| {
+            let door = self.allocator.entrances.get(b)?.door_pos;
+            let building = &self.allocator.buildings[b];
+            let entrance = crate::simulation::buildings::allocator::BuildingAllocator::parking_access_at(
+                door,
+                godot::prelude::Vector2::new(x, z),
+                building.edge_idx,
+                building.side,
+                &self.region_graph,
+                &self.transit_network.lane_system,
+            );
+            Some(crate::simulation::buildings::allocator::FreightGate {
+                arrive: entrance.clone(),
+                leave: entrance,
+            })
+        });
+        match gate {
+            Some(gate) => self.allocator.freight_gates.insert(handle, gate),
+            None => self.allocator.freight_gates.remove(&handle),
+        };
     }
 
     /// The kerb blockers a load leaves out (`PARK-15`): they are derived and unsaved, and every
@@ -187,13 +244,62 @@ impl SimCore {
             (0..self.allocator.buildings.len())
                 .into_par_iter()
                 .filter(|&i| kerbed(i))
-                .map(|i| (self.allocator.building_handles.handle(i), self.site_lot(i).2))
+                .map(|i| (self.allocator.building_handles.handle(i), self.site_lot(i).1))
                 .collect()
         });
         let mut laid = BTreeSet::new();
         for (handle, blockers) in blockers {
             self.parking
                 .set_kerb_blockers(handle.to_bits(), blockers, &mut laid);
+        }
+    }
+
+    /// The docks' derived state after a load (`PARK-19`): a save of format 123 holds its dock
+    /// rows, whose access and freight gates are rebuilt here, O(docks + their buildings'
+    /// entrance derivations). An older save holds none, so the lots of the buildings whose asset
+    /// has a freight Driveway and a loading bay are validated once and their docks published as
+    /// an edit would, so the loaded city equals a new one: O(buildings) to find them, plus their
+    /// lot validation, parallel. Every other lot is left alone, so a city without such an asset
+    /// pays one pass over its buildings' assets.
+    pub(crate) fn restore_loaded_docks(&mut self, docks_saved: bool) {
+        if !docks_saved {
+            let freight = |index: usize| {
+                let building = &self.allocator.buildings[index];
+                self.holds_parking(index)
+                    && self
+                        .allocator
+                        .registry
+                        .get(&building.asset_id)
+                        .is_some_and(|asset| has_freight_anchors(&asset.manifest.anchors))
+            };
+            let lots: Vec<_> = crate::thread_pools::install(|| {
+                (0..self.allocator.buildings.len())
+                    .into_par_iter()
+                    .filter(|&i| freight(i))
+                    .map(|i| {
+                        let lot = lot_proof(
+                            &self.allocator,
+                            i,
+                            &self.region_graph,
+                            &self.transit_network.roadbed,
+                        );
+                        (self.allocator.building_handles.handle(i).to_bits(), lot)
+                    })
+                    .collect()
+            });
+            for (handle, lot) in lots {
+                self.publish_docks(handle, &lot.docks, lot.dock_issues);
+            }
+            return;
+        }
+        for handle in self.parking.dock_buildings() {
+            self.parking.refresh_dock_access(
+                handle,
+                &self.allocator,
+                &self.transit_network,
+                &self.region_graph,
+            );
+            self.rebuild_freight_gate(handle);
         }
     }
 
@@ -295,17 +401,18 @@ impl SimCore {
                 .par_iter()
                 .map(|&handle| {
                     let Some(i) = self.allocator.building_handles.resolve(handle) else {
-                        return (handle, Vec::new(), Vec::new(), Vec::new());
+                        return (handle, LotProof::default(), Vec::new());
                     };
-                    let (bays, issues, blockers) = self.site_lot(i);
-                    (handle, bays, issues, blockers)
+                    let (lot, blockers) = self.site_lot(i);
+                    (handle, lot, blockers)
                 })
                 .collect()
         });
         let mut points = Vec::new();
         let mut hosts = Vec::with_capacity(lots.len());
         let mut kerb_edges = BTreeSet::new();
-        for (handle, bays, issues, blockers) in lots {
+        for (handle, lot, blockers) in lots {
+            let LotProof { bays, issues, docks, dock_issues } = lot;
             hosts.push(handle.to_bits());
             self.parking
                 .set_kerb_blockers(handle.to_bits(), blockers, &mut kerb_edges);
@@ -324,6 +431,7 @@ impl SimCore {
             } else {
                 self.parking.diagnostics.insert(handle.to_bits(), issues);
             }
+            self.publish_docks(handle.to_bits(), &docks, dock_issues);
         }
         self.reconcile_kerb_parking(&kerb_edges, &mut points);
         self.publish_site_catchments(&hosts, &points);

@@ -407,6 +407,19 @@ impl Default for BuildingEntrance {
     }
 }
 
+/// A building's freight gate (`PARK-19`): where a carrier bound for its docks arrives and where
+/// one leaving them joins the road, both at the gate's road connection, the door the
+/// building's. Derived from the building's dock rows by the reconcile that changes them and by
+/// a load; never saved.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct FreightGate {
+    /// The entrance a carrier's plan ends at.
+    pub arrive: BuildingEntrance,
+    /// The entrance a carrier leaving a dock starts from; the same gate until drive-through
+    /// routes name an exit (`PARK-21`).
+    pub leave: BuildingEntrance,
+}
+
 /// Building rows a copy of the store must refresh: the rows named by building revision steps,
 /// or every row after a step that could not name them. Unlike the bounded revision log, it is
 /// kept until its one consumer drains it, so draining never depends on how much history a log
@@ -542,6 +555,9 @@ pub struct BuildingAllocator {
     pub(crate) entrance_ref_revision: u64,
     /// Derived building entrance/access cache keyed by building index.
     pub(crate) entrances: Vec<BuildingEntrance>,
+    /// Each building with a published dock's freight gate, by stable building handle bits
+    /// (`PARK-19`); derived, never saved. Nothing reads it before carriers use docks (`PARK-20`).
+    pub(crate) freight_gates: HashMap<u64, FreightGate>,
     /// Derived flat building-site clients keyed by building index.
     pub(crate) building_sites: Vec<BuildingSiteClient>,
     /// The site clients by the 64 m cells their bounds meet, changed with them (`TERRAIN-07-F`).
@@ -962,6 +978,7 @@ impl BuildingAllocator {
             building_visual_revision: 0,
             entrance_ref_revision: 0,
             entrances: Vec::new(),
+            freight_gates: HashMap::new(),
             building_sites: Vec::new(),
             site_cells: site::SiteCells::default(),
             building_site_dirty_bounds: Vec::new(),
@@ -1211,6 +1228,7 @@ impl BuildingAllocator {
         self.pending_yards.clear();
         self.level_changes.clear();
         self.building_sites.clear();
+        self.freight_gates.clear();
         self.site_cells.clear();
         self.edge_occupancy.clear();
         for list in &mut self.zone_index {

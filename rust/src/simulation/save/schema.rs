@@ -6,7 +6,12 @@ use super::SaveLoadError;
 use crate::simulation::network::types::{EdgeClass, NodeType, TransitType, VehicleFrontageAccess};
 
 /// Current save format version (`SIM-02` broke older saves).
-pub const SAVE_VERSION: i64 = 122;
+pub const SAVE_VERSION: i64 = 123;
+
+/// Format 122, saved before docks were saved state (`PARK-19`): its parking rows hold no dock.
+/// It loads as before, and the load validates the lots of the buildings whose asset has a
+/// freight Driveway and a loading bay once, publishing their docks as an edit would.
+pub const PRE_DOCKS_SAVE_VERSION: i64 = 122;
 
 /// Format 121, saved before a tool's own node left without a road was retired (`ROAD-124`):
 /// every hole is a merged node with its alias. It loads as before; a node such a game left

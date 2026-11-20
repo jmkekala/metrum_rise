@@ -50,10 +50,11 @@ impl ParkingSystem {
                 (self.places.source[p], self.places.identity[p], words)
             })
             .collect();
-        rows.sort_unstable_by(|a, b| (a.0, a.1).cmp(&(b.0, b.1)));
+        rows.sort_unstable_by_key(|row| (row.0, row.1));
         let source_words = |source: PlaceSource| match source {
             PlaceSource::Building { building, anchor } => [0, building, u64::from(anchor)],
             PlaceSource::Kerb { edge, right } => [1, u64::from(edge), u64::from(right)],
+            PlaceSource::Dock { building, anchor } => [2, building, u64::from(anchor)],
         };
         rows.iter()
             .flat_map(|(source, _, words)| source_words(*source).into_iter().chain(words.iter().copied()))

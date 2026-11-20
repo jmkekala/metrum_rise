@@ -175,6 +175,7 @@ impl SimCore {
     }
 
     fn apply_loaded_simulation(&mut self, loaded: LoadedSimulation, events: TimingWheel<SimEvent>) {
+        let docks_saved = loaded.docks_saved;
         self.config = loaded.config;
         self.vegetation = VegetationGenerator::resolve(loaded.vegetation, &self.config);
         self.vegetation_edits = loaded.vegetation_edits;
@@ -284,6 +285,8 @@ impl SimCore {
         self.prepare_loaded_parking_routes();
         // The kerb blockers are derived and unsaved like the catchments (`PARK-15`).
         self.rebuild_loaded_kerb_blockers();
+        // Docks are saved from format 123; an older save's are derived once (`PARK-19`).
+        self.restore_loaded_docks(docks_saved);
         let buildings: Vec<_> = (0..self.allocator.buildings.len()).collect();
         self.parking.refresh_retired_access(&self.transit_network, &self.region_graph);
         // Catchments are derived and unsaved: rebuilding them is not new supply, so no

@@ -42,6 +42,12 @@ pub(crate) fn lot_bays(
     (proof.bays, proof.issues)
 }
 
+/// Whether `anchors` hold a freight Driveway and a loading bay a truck may stop at: the assets
+/// whose lots `lot_proof` proves docks for. O(anchors).
+pub(crate) fn has_freight_anchors(anchors: &[Anchor]) -> bool {
+    anchors.iter().any(is_freight_driveway) && anchors.iter().any(is_dock_anchor)
+}
+
 // A Driveway that admits freight: a gate once it is wide enough (owner decision 11: freight
 // never uses a `car` Driveway). O(1).
 fn is_freight_driveway(anchor: &Anchor) -> bool {
@@ -81,8 +87,7 @@ pub(crate) fn lot_proof(
     };
     let anchors = &asset.manifest.anchors;
     let has_parking = anchors.iter().any(|a| a.anchor_type == AnchorType::Parking);
-    let has_freight =
-        anchors.iter().any(is_freight_driveway) && anchors.iter().any(is_dock_anchor);
+    let has_freight = has_freight_anchors(anchors);
     if !has_parking && !has_freight {
         return LotProof::default();
     }

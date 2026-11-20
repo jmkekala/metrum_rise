@@ -569,7 +569,7 @@ mod tests {
         // 3 m across over 11.5 m bends by 14.6°: still straight through for a truck.
         assert!(freight_route(3.0, wall).is_ok());
         // 4 m across bends by 19.2°: the turn off the Driveway needs its square and hits the wall.
-        let rejection = freight_route(4.0, wall).err().expect("a bend needs an envelope");
+        let rejection = freight_route(4.0, wall).expect_err("a bend needs an envelope");
         assert_eq!(
             rejection.reason,
             "no room to drive in: the turn off the Driveway hits the building or another structure (a truck needs about 8.5 m by 8.5 m of clear paving just inside the Driveway to turn, so keep the Driveway about 4.25 m from the lot's side edges)"

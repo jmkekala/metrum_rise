@@ -17,6 +17,16 @@ struct SavedPlace {
     bay: SavedBay,
     occupant: u64,
     reservation: u64,
+    // A dock's carrier (`PARK-19`); written only when one holds it, so a row without one, and
+    // every row of a city without docks, saves as it did before the column.
+    #[serde(default = "no_holder", skip_serializing_if = "is_no_holder")]
+    freight_holder: u64,
+}
+fn no_holder() -> u64 {
+    Handle::<crate::simulation::economy::agents::Agent>::NONE.to_bits()
+}
+fn is_no_holder(bits: &u64) -> bool {
+    *bits == no_holder()
 }
 #[derive(Serialize, Deserialize)]
 struct SavedBay {
@@ -112,6 +122,7 @@ impl ParkingSystem {
                     },
                     occupant: self.places.occupant[p].to_bits(),
                     reservation: self.places.reservation[p].to_bits(),
+                    freight_holder: self.places.freight_holder[p].to_bits(),
                 })
                 .collect()
         });
@@ -177,11 +188,21 @@ impl ParkingSystem {
             ..Self::default()
         };
         for place in saved.places {
-            if let PlaceSource::Building { building, .. } = place.source {
-                let sources = system.building_sources.entry(building).or_default();
-                if !sources.contains(&place.source) {
-                    sources.push(place.source);
+            let dock = matches!(place.source, PlaceSource::Dock { .. });
+            match place.source {
+                PlaceSource::Building { building, .. } => {
+                    let sources = system.building_sources.entry(building).or_default();
+                    if !sources.contains(&place.source) {
+                        sources.push(place.source);
+                    }
                 }
+                PlaceSource::Dock { building, .. } => {
+                    let sources = system.building_docks.entry(building).or_default();
+                    if !sources.contains(&place.source) {
+                        sources.push(place.source);
+                    }
+                }
+                PlaceSource::Kerb { .. } => {}
             }
             let p = system.places.len();
             let handle = system.place_handles.handle(p);
@@ -196,8 +217,16 @@ impl ParkingSystem {
             {
                 return Err("invalid parking bay geometry".into());
             }
-            let key = chunk_at([bay.position[0], bay.position[2]]);
-            let chunk = system.chunks.entry(key).or_default();
+            if dock && (place.occupant != Handle::<Vehicle>::NONE.to_bits()
+                || place.reservation != Handle::<Vehicle>::NONE.to_bits())
+            {
+                return Err("a loading dock holds a car".into());
+            }
+            // A dock is in no chunk (`PARK-19`).
+            let chunk = (!dock).then(|| {
+                let key = chunk_at([bay.position[0], bay.position[2]]);
+                system.chunks.entry(key).or_default()
+            });
             let list = system.sources.entry(place.source).or_default();
             system.places.push(Place {
                 source: place.source,
@@ -216,19 +245,25 @@ impl ParkingSystem {
                 length: bay.length,
                 occupant: Handle::from_bits(place.occupant),
                 reservation: Handle::from_bits(place.reservation),
-                chunk_slot: chunk.places.len(),
+                freight_holder: Handle::from_bits(place.freight_holder),
+                chunk_slot: chunk.as_ref().map_or(super::data::NO_CHUNK, |c| c.places.len()),
                 source_slot: list.len(),
                 parked_slot: super::data::NOT_PARKED,
                 ground: [0.0; 12],
                 ground_model: super::data::GROUND_UNSOLVED,
             });
-            if place.active {
-                system.usable_places += 1;
-            } else {
-                system.retired_dirty.push(handle);
+            if let Some(chunk) = chunk {
+                if place.active {
+                    system.usable_places += 1;
+                } else {
+                    system.retired_dirty.push(handle);
+                }
+                chunk.places.push(handle);
             }
-            chunk.places.push(handle);
             list.push(handle);
+        }
+        for docks in system.building_docks.values_mut() {
+            docks.sort_unstable();
         }
         for car in saved.vehicles {
             if car.model >= 5 || car.colour >= 5 || !car.home.into_iter().all(f32::is_finite) {
@@ -356,7 +391,7 @@ impl ParkingSystem {
                 continue;
             }
             let valid = match *source {
-                PlaceSource::Building { building, .. } => allocator
+                PlaceSource::Building { building, .. } | PlaceSource::Dock { building, .. } => allocator
                     .building_handles
                     .resolve(Handle::from_bits(building))
                     .is_some(),

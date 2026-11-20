@@ -141,6 +141,9 @@ pub(crate) struct LoadedSimulation {
     pub agriculture: AgricultureSystem,
     pub agents: AgentSystem,
     pub parking: crate::simulation::parking::ParkingSystem,
+    /// Whether the save holds its docks (format 123, `PARK-19`); an older one's are derived once
+    /// at load.
+    pub docks_saved: bool,
     pub treasury: CityTreasury,
     pub service_policy: CityServicePolicy,
     pub fiscal_policy: CityFiscalPolicy,
@@ -576,8 +579,9 @@ pub(crate) fn load_road_graph(path: &Path) -> SaveLoadResult<RegionGraph> {
     let version: i64 = conn.query_row("SELECT version FROM save_meta LIMIT 1", [], |row| {
         row.get(0)
     })?;
-    let saved_ids = version == SAVE_VERSION || version == PRE_RETIRED_NODES_SAVE_VERSION;
-    let mut graph = network::load_graph(&conn, saved_ids, version == SAVE_VERSION)?;
+    let retired_holes = version == SAVE_VERSION || version == PRE_DOCKS_SAVE_VERSION;
+    let saved_ids = retired_holes || version == PRE_RETIRED_NODES_SAVE_VERSION;
+    let mut graph = network::load_graph(&conn, saved_ids, retired_holes)?;
     graph.rebuild_adjacency_list();
     Ok(graph)
 }
@@ -596,8 +600,10 @@ pub(crate) fn load_from_sqlite(
     // `SAVE-08`, `SAVE-09`) and format 118 without congestion state either
     // (`PRE_CONGESTION_SAVE_VERSION`, `TRAFFIC-17`).
     // Format 121 saves node, edge and lane ids as they are (`SAVE-11`); older formats compacted
-    // them. Format 122 also saves retired nodes as holes without an alias (`ROAD-124`).
-    let retired_holes = version == SAVE_VERSION;
+    // them. Format 122 also saves retired nodes as holes without an alias (`ROAD-124`), and
+    // format 123 dock rows (`PARK-19`).
+    let docks_saved = version == SAVE_VERSION;
+    let retired_holes = docks_saved || version == PRE_DOCKS_SAVE_VERSION;
     let ids_saved = retired_holes || version == PRE_RETIRED_NODES_SAVE_VERSION;
     let continuation_saved = ids_saved || version == PRE_SAVED_IDS_SAVE_VERSION;
     let congestion_saved = continuation_saved || version == PRE_CONTINUATION_SAVE_VERSION;
@@ -935,6 +941,7 @@ pub(crate) fn load_from_sqlite(
         fiscal_policy,
         budget_history,
         parking,
+        docks_saved,
     })
 }
 

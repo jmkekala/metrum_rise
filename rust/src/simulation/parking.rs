@@ -5,6 +5,7 @@
 
 mod candidates;
 mod data;
+mod docks;
 mod edits;
 mod geometry;
 pub(crate) mod kerb;
@@ -75,6 +76,11 @@ pub(crate) struct ParkingSystem {
     // the lots it lacks (`SimCore::parking_rejections`, `PARK-17`).
     pub(crate) diagnostics: std::collections::BTreeMap<u64, Vec<String>>,
     building_sources: HashMap<u64, Vec<PlaceSource>>,
+    // Each building's dock sources (`PARK-19`), in anchor order; not supply, so kept apart from
+    // `building_sources`.
+    building_docks: HashMap<u64, Vec<PlaceSource>>,
+    // Each validated lot's loading-bay rejections, for inspection only, as `diagnostics`.
+    pub(crate) dock_diagnostics: std::collections::BTreeMap<u64, Vec<String>>,
     // Derived at every reconcile and site publication; not saved. The load rebuilds those of
     // the buildings on roads with a parking lane (`SimCore::rebuild_loaded_kerb_blockers`).
     kerb_blockers: HashMap<u64, Vec<kerb::KerbBlocker>>,
@@ -134,6 +140,7 @@ impl ParkingSystem {
             length: bay.length,
             occupant: Handle::NONE,
             reservation: Handle::NONE,
+            freight_holder: Handle::NONE,
             chunk_slot: chunk.places.len(),
             source_slot: source_list.len(),
             parked_slot: data::NOT_PARKED,
@@ -347,6 +354,7 @@ impl ParkingSystem {
             if !self.places.active[p]
                 || !self.places.occupant[p].is_none()
                 || !self.places.reservation[p].is_none()
+                || matches!(self.places.source[p], PlaceSource::Dock { .. })
             {
                 continue;
             }

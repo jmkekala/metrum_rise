@@ -41,9 +41,15 @@ pub(crate) fn passage_rectangle(
 ) -> Option<[[f32; 2]; 2]> {
     let forward = lot_axis_forward(part, passage)?;
     let [x, _, z] = passage.position;
-    let mouth = part.local_transform().transform_point3(glam::Vec3::new(x, 0.0, z));
+    let mouth = part
+        .local_transform()
+        .transform_point3(glam::Vec3::new(x, 0.0, z));
     let (behind_mouth, ahead) = if margins {
-        let far = if passage.through { PASSAGE_EAVES_MARGIN_M } else { 0.0 };
+        let far = if passage.through {
+            PASSAGE_EAVES_MARGIN_M
+        } else {
+            0.0
+        };
         (PASSAGE_EAVES_MARGIN_M, passage.length_m + far)
     } else {
         (0.0, passage.length_m)
@@ -51,7 +57,12 @@ pub(crate) fn passage_rectangle(
     let across = [-forward[1], forward[0]];
     let half = passage.width_m * 0.5;
     let mut rect = [[f32::INFINITY; 2], [f32::NEG_INFINITY; 2]];
-    for (along, side) in [(-behind_mouth, -half), (-behind_mouth, half), (ahead, -half), (ahead, half)] {
+    for (along, side) in [
+        (-behind_mouth, -half),
+        (-behind_mouth, half),
+        (ahead, -half),
+        (ahead, half),
+    ] {
         let point = [
             mouth.x + forward[0] * along + across[0] * side,
             mouth.z + forward[1] * along + across[1] * side,
@@ -103,7 +114,11 @@ pub(crate) fn class_structure_footprints(
     };
     let start = out.len();
     out.push(whole);
-    for passage in part.passages.iter().filter(|p| p.clear_height_m >= clear_height) {
+    for passage in part
+        .passages
+        .iter()
+        .filter(|p| p.clear_height_m >= clear_height)
+    {
         let Some(cut) = passage_rectangle(part, passage, true) else {
             continue;
         };
@@ -180,7 +195,10 @@ mod tests {
         class_structure_footprints(&blind, 4.0, &mut pieces);
         assert_eq!(pieces.len(), 3, "{pieces:?}");
         let back = pieces[2];
-        assert!((back[1][1] - 0.3).abs() < 1e-4, "the back wall starts 8 m in: {back:?}");
+        assert!(
+            (back[1][1] - 0.3).abs() < 1e-4,
+            "the back wall starts 8 m in: {back:?}"
+        );
     }
 
     #[test]
@@ -190,7 +208,10 @@ mod tests {
         class_structure_footprints(&part, 2.0, &mut car);
         class_structure_footprints(&part, 4.0, &mut freight);
         assert_eq!(car.len(), 2);
-        assert_eq!(freight, vec![super::super::structure_footprint(&part).unwrap()]);
+        assert_eq!(
+            freight,
+            vec![super::super::structure_footprint(&part).unwrap()]
+        );
     }
 
     #[test]
@@ -201,7 +222,10 @@ mod tests {
         assert!(check_passages_in_bounds(&bunker(true, 4.6, 17.5)).is_err());
         let mut turned = bunker(true, 4.6, 16.25);
         turned.rotation_degrees[1] = 90.0;
-        assert_eq!(lot_axis_forward(&turned, &turned.passages[0]), Some([-1.0, 0.0]));
+        assert_eq!(
+            lot_axis_forward(&turned, &turned.passages[0]),
+            Some([-1.0, 0.0])
+        );
         turned.rotation_degrees[1] = 30.0;
         assert_eq!(lot_axis_forward(&turned, &turned.passages[0]), None);
     }

@@ -8,6 +8,7 @@ use crate::nodes::sim::core::RoadCommitRequest;
 use std::time::Instant;
 
 mod catchments;
+mod docks;
 mod kerb;
 mod poses;
 mod published;

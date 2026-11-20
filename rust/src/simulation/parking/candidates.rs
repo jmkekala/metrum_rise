@@ -205,7 +205,7 @@ impl ParkingSystem {
     }
 
     // Publishes one bay's access, from the current doors and roads. O(its host's entrance).
-    fn refresh_place_access(
+    pub(super) fn refresh_place_access(
         &mut self,
         place: Handle<Place>,
         allocator: &BuildingAllocator,
@@ -327,6 +327,14 @@ impl ParkingSystem {
                 graph,
             );
             let live = self.candidates.get(&handle);
+            // A dock is never a parking candidate (`PARK-19`).
+            for candidate in live.into_iter().flat_map(|c| &c.entries) {
+                let p = self.place_handles.resolve(candidate.place).expect("a listed bay");
+                assert!(
+                    !matches!(self.places.source[p], PlaceSource::Dock { .. }),
+                    "the door of building {b} lists a dock"
+                );
+            }
             assert_eq!(
                 live.map_or(Vec::new(), |c| bits(&c.entries)),
                 bits(&scratch.entries),
@@ -605,7 +613,8 @@ impl ParkingSystem {
     ) -> Option<BuildingEntrance> {
         let p = self.place_handles.resolve(place)?;
         let building = match self.places.source[p] {
-            PlaceSource::Building { building, .. } => building,
+            // A dock's access is a lot bay's: its route starts at its gate's road connection.
+            PlaceSource::Building { building, .. } | PlaceSource::Dock { building, .. } => building,
             PlaceSource::Kerb { edge, right } => {
                 return self.kerb_place_entrance(p, edge as usize, right, network, graph);
             }

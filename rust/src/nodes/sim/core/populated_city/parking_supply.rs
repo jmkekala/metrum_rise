@@ -221,6 +221,9 @@ fn the_fixtures_car_bays_and_rejections_keep_their_recorded_digest() {
         text_hash(text_hash(hash, id), &payload.to_string())
     });
     assert!(core.parking.counts().0 > 0 && !core.parking_rejection_lines().is_empty());
+    // No fixture asset has a freight Driveway (`PARK-19`): no dock, no dock rejection.
+    assert!(core.parking.dock_rows().is_empty() && core.parking.dock_diagnostics.is_empty());
+    assert!(core.allocator.freight_gates.is_empty());
     let digest = [lots, reasons, editor];
     let recorded = [0x8576_f0fd_bbcc_ed0d, 0x2ba3_ad70_d4ef_a643, 0xbf68_7441_d5fc_8bfa];
     assert_eq!(digest, recorded, "{digest:016x?}");
