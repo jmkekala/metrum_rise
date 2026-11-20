@@ -13,7 +13,13 @@ file gets the standard text of its declared licence from `tools/ci/license_texts
 authors and repository. The run fails when a crate has neither, so a new dependency cannot ship
 without a notice.
 
+Before anything is written, every linked crate's declared licence is checked against
+`ACCEPTED`, the licences that may be combined with the game's `GPL-3.0-or-later`. A crate
+passes when one alternative of its licence expression is accepted in full. `--check` runs only
+this check, for the test gate (`./run.sh --test`).
+
     tools/ci/third_party_licenses.py <rust-dir> <output-file>
+    tools/ci/third_party_licenses.py --check <rust-dir>
 """
 
 import json
@@ -25,6 +31,22 @@ import sys
 LICENSE_FILE = re.compile(r"^(LICEN[CS]E|COPYING|NOTICE|COPYRIGHT|UNLICENSE)", re.IGNORECASE)
 TEXTS = Path(__file__).resolve().parent / "license_texts"
 RULE = "=" * 78
+
+# Licences a linked crate may carry: each is compatible with GPL version 3 (FSF licence list).
+# Add one only after checking that; GPL-2.0-only, SSPL, BUSL and the like never belong here.
+ACCEPTED = {
+    "0BSD",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "ISC",
+    "MIT",
+    "MPL-2.0",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+}
 
 MIT = """MIT License
 
@@ -94,6 +116,70 @@ def standard_text(package):
     return None
 
 
+def licence_accepted(expression):
+    """Whether an SPDX expression can be satisfied with accepted licences only.
+
+    `OR` needs one side, `AND` both. `X WITH <exception>` counts as `X`: an exception only adds
+    permissions. `X+` (this version or later) counts as `X`. Cargo's old `A/B` means `A OR B`.
+    """
+    tokens = re.findall(r"\(|\)|[^\s()]+", (expression or "").replace("/", " OR "))
+    position = 0
+
+    def peek():
+        return tokens[position] if position < len(tokens) else None
+
+    def take():
+        nonlocal position
+        position += 1
+        return tokens[position - 1]
+
+    def term():
+        if peek() is None:
+            raise ValueError("incomplete expression")
+        token = take()
+        if token == "(":
+            value = alternatives()
+            if peek() != ")":
+                raise ValueError("unbalanced brackets")
+            take()
+            return value
+        if token in (")", "OR", "AND", "WITH"):
+            raise ValueError(f"unexpected {token}")
+        if peek() == "WITH":
+            take()
+            take()
+        return token.removesuffix("+") in ACCEPTED
+
+    def conjunction():
+        value = term()
+        while peek() == "AND":
+            take()
+            value = term() and value
+        return value
+
+    def alternatives():
+        value = conjunction()
+        while peek() == "OR":
+            take()
+            value = conjunction() or value
+        return value
+
+    try:
+        value = alternatives()
+    except (ValueError, IndexError):
+        return False
+    return value and position == len(tokens)
+
+
+def rejected_licences(packages):
+    """A line for each crate whose declared licence is missing or not acceptable."""
+    return [
+        f"{package['name']} {package['version']}: licence \"{package.get('license')}\""
+        for package in packages
+        if not licence_accepted(package.get("license"))
+    ]
+
+
 def label(package):
     """One line naming a crate: name, version, declared licence and where its source is."""
     source = package.get("repository") or f"https://crates.io/crates/{package['name']}"
@@ -101,9 +187,11 @@ def label(package):
 
 
 def main():
-    if len(sys.argv) != 3:
-        sys.exit(__doc__.strip().splitlines()[-1].strip())
-    rust_dir, output = sys.argv[1], Path(sys.argv[2])
+    arguments = sys.argv[1:]
+    check_only = arguments[:1] == ["--check"]
+    if len(arguments) != 2:
+        sys.exit("usage: third_party_licenses.py <rust-dir> <output-file> | --check <rust-dir>")
+    rust_dir = arguments[1] if check_only else arguments[0]
     metadata = json.loads(
         subprocess.run(
             ["cargo", "metadata", "--locked", "--format-version", "1"],
@@ -113,6 +201,18 @@ def main():
         ).stdout
     )
     packages = linked_packages(metadata)
+
+    rejected = rejected_licences(packages)
+    if rejected:
+        sys.exit(
+            "Crates linked into the game whose licence is not on the accepted list\n"
+            "(ACCEPTED in tools/ci/third_party_licenses.py; docs/release.md, Licence files):\n  "
+            + "\n  ".join(rejected)
+        )
+    if check_only:
+        print(f"Crate licences: {len(packages)} linked crates, all accepted.")
+        return
+    output = Path(arguments[1])
 
     # Text -> the crates that carry it, in first-use order (packages are sorted by name).
     users = {}

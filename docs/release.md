@@ -86,6 +86,13 @@ script (MIT) or `tools/ci/license_texts/`, with its authors and repository. The 
 crate has neither, so a new dependency cannot ship without a notice: add the missing standard
 text there.
 
+The same script checks every linked crate's declared licence against its `ACCEPTED` list, the
+licences that may be combined with `GPL-3.0-or-later`. A crate passes when one alternative of its
+licence expression is accepted in full; a crate with no declared licence fails. The release job
+runs the check before it writes the file, and `./run.sh --test` runs it alone (`--check`), so a
+new dependency with an unfit licence fails on `dev`. Add a licence to the list only after
+checking it against the FSF's list of GPL-compatible licences.
+
 The source code that the GPL requires is the repository at the release's tag; `CREDITS.md` says
 so. Assets stored in Git LFS are not in GitHub's automatic source archives, only in a clone.
 

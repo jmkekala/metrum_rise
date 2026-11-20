@@ -7,7 +7,8 @@
 #   --timing --level R|F|L --control BIN --branch BIN --base REV --artifacts DIR
 #                        A round's timing session (tools/timing_session.py; docs/simulation.md,
 #                        timing levels): prepares snapshots, then times the level's rows
-#   --test               The full gate. Serial: Python unit tests, `cargo check --bench '*'`, the
+#   --test               The full gate. Serial: Python unit tests, the crate licence check,
+#                        `cargo check --bench '*'`, the
 #                        test build. Godot loads the test build's own library (test profile:
 #                        opt-level 1, debug assertions), so the gate builds the crate once; with
 #                        --release it builds and loads the release library. A later plain
@@ -724,6 +725,11 @@ build_gate_targets() {
         return 1
     fi
     if ! python3 -m unittest discover -s "$PROJECT_ROOT/tools" -p test_graded_drag_probe.py; then
+        return 1
+    fi
+    # A linked crate whose licence cannot be combined with the game's fails here, not at release
+    # time (`TOOLS-31`, docs/release.md).
+    if ! python3 "$PROJECT_ROOT/tools/ci/third_party_licenses.py" --check "$PROJECT_ROOT/rust"; then
         return 1
     fi
     echo "Checking benchmark targets for API drift..."
