@@ -2979,8 +2979,10 @@ straight street; the plan left the reach of the paving extension unverified.
 - *Arriving.* A carrier bound for a building with a gate is routed to the gate's lane point
   instead of the door's. It detaches there as any car does (`try_network_detach`), stands one
   tick, and the ordered phase gives it the building's first free dock in anchor order. It then
-  drives gate, approach, aisle, stop at 3 m/s and stands in the bay, drawn, facing the bay's
-  `forward`.
+  drives gate, approach, aisle, stop at 3 m/s and stands in the bay, drawn, facing along its
+  route's last leg, from the aisle into the bay (checked in round 1: the snapshot draws a carrier
+  in access ingress as an off-lane car of its own vehicle type, grounded per bucket, with no
+  parked-car publication; without a standing pose it would face the door).
 - *Refused.* With no free dock it drives the plain access path from the gate's lane point to the
   door and enters the building, as today's delivery does from the door's lane point. It never
   waits.
@@ -3009,9 +3011,12 @@ dock.
 | `PullOut` (reused) | Stop to gate, then the lane attach | dispatch and `start_return_trip` |
 | `GateToDoor` (new) | The refused carrier's path from the gate's lane point to the door | the commit that refuses |
 
-One new access flag, `ACCESS_FREIGHT_GATE`, says the plan ends at a gate (*unverified*: that the
-flags byte has a free bit). On the road the phase is `None`, so no network step tests anything
-new for any agent.
+A flag says the plan ends at a gate. It cannot be an access flag: the flags byte has no free bit
+(checked 2026-11-21 in `PARK-20` round 1: `0x01` to `0x80` are all taken, `ACCESS_WALK_TO_SIDEWALK`
+the last). It is `ParkingTrip::freight_gate`, in the row's padding (the row used 54 of its 56
+bytes, now 55; the size assertion stands), set at the plan and kept through `PullIn`, `AtDock` and
+`GateToDoor`, and not written when false, so a row without it saves as before. On the road the
+phase is `None`, so no network step tests anything new for any agent.
 
 **Where each decision is made.**
 
@@ -3079,7 +3084,7 @@ the clock or a derived cache to make it.
 | A building is bulldozed with a truck in its yard | Its open shipments settle and their carriers leave, as today. A carrier already on its way home keeps the inactive row and drives out | the existing building removal; the site journal |
 | A road edit clears a carrier's plan in a yard | A pull-in ends in its bay (`AtDock`), as a resident's pull-in ends in its bay (`PARK-11`). A pull-out stands at the dock and plans again on the parking retry wheel with the stranded walkers' backoff | `clear_route_plan_after_road_edit`, `queue_parking_retry` |
 | The frontage road is bulldozed | The lot's supply is disabled as today; docks go inactive by the first row; a carrier in the yard waits by the row above | `reconcile_parking_frontages` |
-| A carrier is removed (finished, failed, timed out) | It releases a dock it holds | the agent removal path (*unverified*: where a resident's custody is released there) |
+| A carrier is removed (finished, failed, timed out) | It releases a dock it holds | Not the agent removal path: checked in round 1, a resident's custody is not released there (`remove_agent_record` has no parking hook; the household lifecycle releases it, `ParkingSystem::remove_household_car` from `SimCore::publish_parking_households`), and every carrier removal goes through `AgentSystem::remove_freight_carrier`, reached from `logistics/progress.rs` and from a building's or border's cancellation inside the allocator's removal, neither holding the parking system. Built instead: a dock's `freight_holder` counts only while the holder's trip names the dock in `PullIn` or `AtDock` (`AgentSystem::holds_freight_dock`), so a removal, a new plan or an arrival frees it with no hook; the gate commit reads that, and the site reconcile clears such holders before it reconciles the rows (`clear_left_dock_holders`) |
 | Undo | The restored building's docks are published again with no holder. Shipments are not restored, as today | the site journal |
 
 The watchdog skips a carrier whose phase is not `None`, as it skips a resident on a parking leg:
