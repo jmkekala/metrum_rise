@@ -2982,7 +2982,7 @@ Recorded, not fixed. The pipeline's report or check would have named each:
 
 Each with the recommendation first.
 
-- **Q1 Versioning the local pack.** Recommended: a git repository whose data lives outside the
+- **Q1 Versioning the local pack.** Decided 2026-11-20: a git repository whose data lives outside the
   profile (`git init --separate-git-dir`), leaving one `.git` pointer file in the pack folder.
   Found: the scanner skips dot-names only among the folders of `user://mods/` itself;
   `collect_assets` walks every folder inside a pack, a `.git` directory included, and registers
@@ -2990,8 +2990,8 @@ Each with the recommendation first.
   `walk` also enters `.git`: its files are never archived but all appear in the export dialog's
   excluded list, and a link or a non-UTF-8 name there would refuse the export. Importing a newer
   archive of the pack moves the installed folder to Trash, a `.git` directory with it; a pointer
-  file loses nothing. Alternative: a plain `.git` directory in the pack plus a rule that
-  `collect_assets` and `archive::walk` skip dot-names.
+  file loses nothing. Rejected: a plain `.git` directory in the pack plus a rule that
+  `collect_assets` and `archive::walk` skip dot-names; and no repository, with backups only.
 - **Q2 Hand-authored fields.** Recommended: the list above. Alternative: derive a default front
   walk (a strip from the main door to the front lot edge): every hand asset has exactly one
   surface, asphalt, reaching the front lot edge.
