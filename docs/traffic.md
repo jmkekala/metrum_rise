@@ -2756,8 +2756,9 @@ recommendations.
 - **Vehicle size.** Every vehicle takes `CAR_LENGTH` (2.6 m) plus `IDM_S_MIN` in a lane bucket;
   movement has no per-class length. The freight model is the Kenney delivery van
   (`vehicle_resources.gd` model 4), drawn at its native scale; its lamp table puts the lamps 3.1 m
-  apart along the body and at most 0.55 m off the centre line, so the van is about 3.2 m by 1.3 m
-  (*unverified*: the mesh bounds were not read). Lot proofs use a 1.8 m by 4.5 m body and a
+  apart along the body and at most 0.55 m off the centre line. Its mesh bounds (`delivery.glb`,
+  read 2026-11-20 in `PARK-19` round 1) are 3.25 m long, 1.5 m wide and 1.65 m high, inside the
+  car proof's body. Lot proofs use a 1.8 m by 4.5 m body and a
   4.85 m turn envelope, the body's diagonal (`parking/validation.rs`).
 - **`loading_bay` has no consumer.** `site/derive.rs` matches it and adds nothing; `lot_bays`
   reads `parking` anchors only. `vehicle_class` is validated as `car`, `freight` or `service`
@@ -2863,8 +2864,13 @@ one per class; `structure_collision` and the editor's wall list take the class's
 and planting keep the whole rectangle (`yard.rs` is not touched). A passage's floor needs paving
 like any other ground. Manifest validation refuses a passage that leaves its part's bounds by more
 than the margin, a non-unit `forward` or a non-positive size. The values above are the coal
-mine's bunker (*unverified*: computed from its sidecar bounds and the asset's part position, not
-checked in the editor).
+mine's bunker as far as the dock needs (checked 2026-11-20 in `PARK-19` round 1 against the
+bunker's `LOD0` bounds, part-local x -6.3 to 6.3 and z -8.125 to 8.125, and the paving): the lane
+is 5.0 m wide on part-local x -1.9, and the mouth at z 7.825 is the paving's edge, 0.3 m inside
+the bounds' face. But the bunker is 16.25 m deep, so `length_m = 8.0` opens only the half under
+the loading bay, and the far end that `through` marks stays closed; a passage that opens the
+whole lane is `position = [-1.9, 0, 8.125]`, `length_m = 16.25`. The dock proves with either. The
+clear height of 4.6 m was not measured.
 
 **Rows.** A dock is a `Place` row with a third source, `PlaceSource::Dock { building, anchor }`.
 It shares the handle table, the per-source lists, `replace_source`, the saved rows, the cached
@@ -2919,11 +2925,11 @@ runs):
 
 | Asset | Result | Why |
 | --- | --- | --- |
-| Test pack, all six with a `loading_bay` | none | No gate: every driveway is `car`, 3 m |
+| Test pack, all six with a `loading_bay` | none (verified: `no_fixture_pack_asset_publishes_a_dock`) | No gate: every driveway is `car`, 3 m |
 | Test pack `food_processing_plant`, `milling_machines`, `small_grocery_store`, were their driveway a gate | none | The 8.45 m envelope at the approach crosses their own parking bays |
 | Test pack `small_farm`, were its driveway a 4 m gate | plausibly | The yard is one 14 m by 20 m slab; both envelopes fit it by reading, structures not checked |
 | Bundled `parking` lots | none | No `loading_bay` |
-| Owner's `coal_mine_1` | yes, once the bunker declares its passage | Straight from `truck_in`: a 2.6 m corridor on a 5 m lane, no bend, so no envelope |
+| Owner's `coal_mine_1` | yes, once the bunker declares its passage (verified in `PARK-19` round 1 on a copy: without it, "inside the building: mark the lane as a Passage on its mesh part") | Straight from `truck_in`: a 2.6 m corridor on a 5 m lane, no bend, so no envelope |
 | Owner's `grain_farm_1` | not as it is | No `loading_bay`, and its driveway is `car`. A bay straight ahead of the driveway (in front of the barn's big doors) plausibly proves once the driveway is a gate; a bay at the dryer's intake needs a turn just inside the gate, where the paving is 5.2 m wide against the 8.45 m envelope |
 | Owner's shops and factory | none | No `loading_bay` |
 
