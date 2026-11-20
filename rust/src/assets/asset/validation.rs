@@ -458,11 +458,10 @@ fn validate_building_anchor_position(
     Ok(())
 }
 
-fn validate_building_site_anchor_footprint(
-    asset_id: &str,
-    building: &BuildingData,
-    anchor: &Anchor,
-) -> Result<(), ManifestError> {
+/// The plan rectangle `[x, z]` a driveway, parking or loading anchor claims, in asset-local
+/// metres: its width across `forward`, its length along it from the anchor position. `None`
+/// for other anchors and for a forward without a horizontal part. Constant work.
+pub(crate) fn site_anchor_footprint(anchor: &Anchor) -> Option<[[f32; 2]; 4]> {
     let (anchor_width, anchor_length) = match anchor.anchor_type {
         AnchorType::Driveway => {
             let width = anchor.width_m.unwrap_or(0.0);
@@ -472,23 +471,18 @@ fn validate_building_site_anchor_footprint(
             anchor.width_m.unwrap_or(0.0),
             anchor.length_m.unwrap_or(0.0),
         ),
-        _ => return Ok(()),
+        _ => return None,
     };
     let [forward_x, _, forward_z] = anchor.forward;
     let horizontal_len = (forward_x * forward_x + forward_z * forward_z).sqrt();
     if horizontal_len <= ANCHOR_FORWARD_UNIT_EPS {
-        return Err(ManifestError::Validation(format!(
-            "asset_id '{}': anchor '{}' with type = \"{:?}\" must have a horizontal forward direction",
-            asset_id, anchor.name, anchor.anchor_type
-        )));
+        return None;
     }
     let fwd_x = forward_x / horizontal_len;
     let fwd_z = forward_z / horizontal_len;
     let side_x = -fwd_z;
     let side_z = fwd_x;
     let half_anchor_width = anchor_width * 0.5;
-    let half_lot_width = f32::from(building.lot_width_cells) * ZONE_CELL_M * 0.5;
-    let half_lot_depth = f32::from(building.lot_depth_cells) * ZONE_CELL_M * 0.5;
     let offsets = [
         (-side_x * half_anchor_width, -side_z * half_anchor_width),
         (side_x * half_anchor_width, side_z * half_anchor_width),
@@ -501,9 +495,33 @@ fn validate_building_site_anchor_footprint(
             -side_z * half_anchor_width + fwd_z * anchor_length,
         ),
     ];
-    for (offset_x, offset_z) in offsets {
-        let x = anchor.position[0] + offset_x;
-        let z = anchor.position[2] + offset_z;
+    Some(
+        offsets.map(|(offset_x, offset_z)| {
+            [anchor.position[0] + offset_x, anchor.position[2] + offset_z]
+        }),
+    )
+}
+
+fn validate_building_site_anchor_footprint(
+    asset_id: &str,
+    building: &BuildingData,
+    anchor: &Anchor,
+) -> Result<(), ManifestError> {
+    if !matches!(
+        anchor.anchor_type,
+        AnchorType::Driveway | AnchorType::Parking | AnchorType::LoadingBay
+    ) {
+        return Ok(());
+    }
+    let Some(corners) = site_anchor_footprint(anchor) else {
+        return Err(ManifestError::Validation(format!(
+            "asset_id '{}': anchor '{}' with type = \"{:?}\" must have a horizontal forward direction",
+            asset_id, anchor.name, anchor.anchor_type
+        )));
+    };
+    let half_lot_width = f32::from(building.lot_width_cells) * ZONE_CELL_M * 0.5;
+    let half_lot_depth = f32::from(building.lot_depth_cells) * ZONE_CELL_M * 0.5;
+    for [x, z] in corners {
         if x.abs() > half_lot_width + ANCHOR_LOT_EPS_M
             || z.abs() > half_lot_depth + ANCHOR_LOT_EPS_M
         {

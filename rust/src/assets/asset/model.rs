@@ -65,6 +65,25 @@ impl MeshPart {
         )
     }
 
+    // The plan rectangle `[min, max]` (`[x, z]`) of mesh-root `bounds` through this part's
+    // transform: the eight corners transformed, as the editor's native AABB transform does.
+    pub(crate) fn plan_bounds(&self, bounds: [[f32; 3]; 2]) -> [[f32; 2]; 2] {
+        let transform = self.local_transform();
+        let mut plan = [[f32::INFINITY; 2], [f32::NEG_INFINITY; 2]];
+        for corner in 0..8 {
+            let point = transform.transform_point3(glam::Vec3::new(
+                bounds[corner & 1][0],
+                bounds[(corner >> 1) & 1][1],
+                bounds[(corner >> 2) & 1][2],
+            ));
+            for (axis, value) in [point.x, point.z].into_iter().enumerate() {
+                plan[0][axis] = plan[0][axis].min(value);
+                plan[1][axis] = plan[1][axis].max(value);
+            }
+        }
+        plan
+    }
+
     /// Creates a default-position building mesh part with one LOD0 mesh file.
     pub fn single_lod0(name: impl Into<String>, file: impl Into<String>) -> Self {
         Self {

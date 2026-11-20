@@ -61,6 +61,19 @@ pub fn load_asset_packs(
     GString::from(result.warnings.join("\n").as_str())
 }
 
+/// Import one asset's `LOD0` bounds into its parts, as a pack load does (the acceptance check
+/// of `TOOLS-33`). Main thread only: Godot's importers run here.
+pub(crate) fn import_asset_bounds(
+    manifest: &mut AssetManifest,
+    asset_dir: &Path,
+) -> Result<(), String> {
+    mesh_bounds::import_building_bounds(
+        manifest,
+        &asset_dir.to_string_lossy(),
+        &mut mesh_bounds::MeshBoundsCache::new(),
+    )
+}
+
 // The packs a load registers: every pack without a selection, none for an empty one.
 fn scan_enabled_packs(
     dir_path: &GString,

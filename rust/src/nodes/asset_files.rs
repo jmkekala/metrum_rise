@@ -14,6 +14,8 @@ use godot::prelude::*;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 
+mod model_draft;
+
 /// Stateless authoring file services; no widgets, meshes or live simulation state.
 #[derive(GodotClass)]
 #[class(init, base = RefCounted)]
@@ -26,7 +28,7 @@ impl AssetAuthoringFiles {
     pub fn colour_document_error(document: GString) -> GString {
         let result = serde_json::from_str::<Value>(&document.to_string())
             .map_err(|error| error.to_string())
-            .and_then(|state| colour_dependencies(&state).map(|_| ()));
+            .and_then(|state| colour_dependencies(&state, &decodes).map(|_| ()));
         result.err().unwrap_or_default().as_str().into()
     }
     /// Resolve a user asset directory without permitting links or escaping the asset root.
@@ -414,55 +416,31 @@ impl AssetAuthoringFiles {
     /// Validate and publish a document's complete model/dependency set transactionally.
     #[func]
     pub fn publish_document(document: GString, output: GString) -> GString {
-        let result = (|| {
-            let mut state: Value =
-                serde_json::from_str(&document.to_string()).map_err(|e| e.to_string())?;
-            colours::canonical_names(&mut state)?;
-            let params: ExportParams =
-                serde_json::from_value(state["params"].clone()).map_err(|e| e.to_string())?;
-            let (asset, pack) = validated_tomls(&params)?;
-            let sources: Vec<Vec<String>> =
-                serde_json::from_value(state["sources"].clone()).map_err(|e| e.to_string())?;
-            if sources.len() != params.mesh_parts.len() {
-                return Err("Mesh source count does not match the document".into());
-            }
-            let mut models = Vec::new();
-            for (part, paths) in params.mesh_parts.iter().zip(sources) {
-                if part.lods.len() != paths.len() {
-                    return Err(format!(
-                        "Source count does not match LODs for {}",
-                        part.name
-                    ));
-                }
-                for (lod, path) in part.lods.iter().zip(paths) {
-                    models.push((lod.file.clone(), PathBuf::from(path)));
-                }
-            }
-            let mut extras: Vec<_> = params
-                .thumbnail
-                .iter()
-                .map(|file| {
-                    (
-                        file.clone(),
-                        PathBuf::from(state["thumbnail_source"].as_str().unwrap_or("")),
-                    )
-                })
-                .collect();
-            if let Some(sources) = state.get("supporting_sources") {
-                let sources: std::collections::BTreeMap<String, String> =
-                    serde_json::from_value(sources.clone()).map_err(|e| e.to_string())?;
-                for (relative, path) in sources {
-                    if !relative.starts_with("attribution/") || !files::safe_relative(&relative) {
-                        return Err("Supporting credits must stay within attribution/".into());
-                    }
-                    extras.push((relative, PathBuf::from(path)));
-                }
-            }
-            extras.extend(colour_dependencies(&state)?);
-            let plan = files::plan(&models, &extras)?;
-            files::publish(&native_path(output), &params.asset_id, &plan, &asset, &pack)
-        })();
-        result.err().unwrap_or_default().as_str().into()
+        serde_json::from_str(&document.to_string())
+            .map_err(|e| e.to_string())
+            .and_then(|state| publish_state(state, &native_path(output), &decodes))
+            .err()
+            .unwrap_or_default()
+            .as_str()
+            .into()
+    }
+
+    /// Draft a building from a `metrum_models` facts sidecar (`TOOLS-33`): derive the editor
+    /// document, publish it through `publish_document`'s path unless the asset exists (then
+    /// report stale geometry instead), write the ledger and run the acceptance check. Native
+    /// paths only. Returns `{exit, report}`, `report` being JSON (docs/asset_editor.md
+    /// "Draft command").
+    #[func]
+    pub fn draft_from_model(request: GString) -> VarDictionary {
+        let engine = model_draft::Engine {
+            thumbnail: &write_thumbnail,
+            bounds: &|manifest, directory| {
+                crate::nodes::sim::bridge::assets::import_asset_bounds(manifest, directory)
+            },
+            decodes: &decodes,
+        };
+        let (exit, report) = model_draft::run(&request.to_string(), &engine);
+        vdict! { "exit": exit, "report": report.to_string() }
     }
 
     /// Read only the JSON chunk of a GLB/glTF for authoring inspection.
@@ -522,11 +500,13 @@ impl AssetAuthoringFiles {
     }
 }
 
-fn colour_dependencies(state: &Value) -> Result<Vec<(String, PathBuf)>, String> {
+fn colour_dependencies(
+    state: &Value,
+    decodes: &dyn Fn(&Path) -> bool,
+) -> Result<Vec<(String, PathBuf)>, String> {
     let dependencies = colours::dependencies(state)?;
     for (_, path) in &dependencies {
-        let image = Image::load_from_file(&GString::from(path.to_string_lossy().as_ref()));
-        if image.is_none_or(|image| image.is_empty()) {
+        if !decodes(path) {
             return Err(format!(
                 "Unreadable colour scheme texture: {}",
                 path.display()
@@ -534,6 +514,98 @@ fn colour_dependencies(state: &Value) -> Result<Vec<(String, PathBuf)>, String> 
         }
     }
     Ok(dependencies)
+}
+
+// Whether Godot decodes the image file at `path`.
+fn decodes(path: &Path) -> bool {
+    Image::load_from_file(&GString::from(path.to_string_lossy().as_ref()))
+        .is_some_and(|image| !image.is_empty())
+}
+
+// R8: the models preview, cropped about its centre to 4:3 and resized once with Lanczos to
+// the editor's capture size, saved as lossy WebP at the editor's quality.
+fn write_thumbnail(preview: &Path, output: &Path) -> Result<(), String> {
+    use crate::assets::authoring::model_draft::rules;
+    let image = Image::load_from_file(&GString::from(preview.to_string_lossy().as_ref()))
+        .filter(|image| !image.is_empty())
+        .ok_or_else(|| format!("Unreadable preview: {}", preview.display()))?;
+    let [x, y, width, height] = rules::thumbnail_crop([image.get_width(), image.get_height()]);
+    let mut region = image
+        .get_region(Rect2i::from_components(x, y, width, height))
+        .ok_or("Preview crop failed")?;
+    let [width, height] = rules::THUMBNAIL_SIZE;
+    region
+        .resize_ex(width, height)
+        .interpolation(godot::classes::image::Interpolation::LANCZOS)
+        .done();
+    if let Some(folder) = output.parent() {
+        std::fs::create_dir_all(folder).map_err(|e| e.to_string())?;
+    }
+    let error = region
+        .save_webp_ex(&GString::from(output.to_string_lossy().as_ref()))
+        .lossy(true)
+        .quality(rules::THUMBNAIL_QUALITY)
+        .done();
+    if error != godot::global::Error::OK {
+        return Err(format!(
+            "Thumbnail not written ({error:?}): {}",
+            output.display()
+        ));
+    }
+    Ok(())
+}
+
+// The editor's publication: validate the document, plan its complete dependency set and
+// stage-swap `assets/<asset_id>/` in `output`. `decodes` checks colour scheme textures.
+fn publish_state(
+    mut state: Value,
+    output: &Path,
+    decodes: &dyn Fn(&Path) -> bool,
+) -> Result<(), String> {
+    colours::canonical_names(&mut state)?;
+    let params: ExportParams =
+        serde_json::from_value(state["params"].clone()).map_err(|e| e.to_string())?;
+    let (asset, pack) = validated_tomls(&params)?;
+    let sources: Vec<Vec<String>> =
+        serde_json::from_value(state["sources"].clone()).map_err(|e| e.to_string())?;
+    if sources.len() != params.mesh_parts.len() {
+        return Err("Mesh source count does not match the document".into());
+    }
+    let mut models = Vec::new();
+    for (part, paths) in params.mesh_parts.iter().zip(sources) {
+        if part.lods.len() != paths.len() {
+            return Err(format!(
+                "Source count does not match LODs for {}",
+                part.name
+            ));
+        }
+        for (lod, path) in part.lods.iter().zip(paths) {
+            models.push((lod.file.clone(), PathBuf::from(path)));
+        }
+    }
+    let mut extras: Vec<_> = params
+        .thumbnail
+        .iter()
+        .map(|file| {
+            (
+                file.clone(),
+                PathBuf::from(state["thumbnail_source"].as_str().unwrap_or("")),
+            )
+        })
+        .collect();
+    if let Some(sources) = state.get("supporting_sources") {
+        let sources: std::collections::BTreeMap<String, String> =
+            serde_json::from_value(sources.clone()).map_err(|e| e.to_string())?;
+        for (relative, path) in sources {
+            if !relative.starts_with("attribution/") || !files::safe_relative(&relative) {
+                return Err("Supporting credits must stay within attribution/".into());
+            }
+            extras.push((relative, PathBuf::from(path)));
+        }
+    }
+    extras.extend(colour_dependencies(&state, decodes)?);
+    let plan = files::plan(&models, &extras)?;
+    files::publish(output, &params.asset_id, &plan, &asset, &pack)
 }
 
 fn pack_dictionary(manifest: &PackManifest) -> VarDictionary {

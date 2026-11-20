@@ -26,6 +26,36 @@ pub(crate) fn clamp_interval(value: f32, min: f32, max: f32) -> f32 {
     }
 }
 
+/// Whether a plan rectangle `[min, max]` lies inside the lot `±half_lot` grown by `tolerance`:
+/// the editor's mesh part fit (`_mesh_part_fits_in_lot`, `CODE-36`). Constant work.
+pub(crate) fn fits_lot(plan: [[f32; 2]; 2], half_lot: [f32; 2], tolerance: f32) -> bool {
+    (0..2).all(|axis| {
+        plan[0][axis] >= -half_lot[axis] - tolerance && plan[1][axis] <= half_lot[axis] + tolerance
+    })
+}
+
+/// Whether two simple polygons share area or touch: an edge crossing, or one polygon holding
+/// a vertex of the other. O(A × B), asset-local.
+pub(crate) fn polygons_overlap(a: &[[f32; 2]], b: &[[f32; 2]]) -> bool {
+    if a.len() < 3 || b.len() < 3 {
+        return false;
+    }
+    let inside = |point: [f32; 2], polygon: &[[f32; 2]]| {
+        let ring: Vec<_> = polygon
+            .iter()
+            .map(|&[x, z]| godot::prelude::Vector2::new(x, z))
+            .collect();
+        crate::utils::point_in_polygon(godot::prelude::Vector2::new(point[0], point[1]), &ring)
+    };
+    polygon_edges(a).any(|(p, q)| polygon_edges(b).any(|(r, s)| segments_intersect(p, q, r, s)))
+        || inside(a[0], b)
+        || inside(b[0], a)
+}
+
+fn polygon_edges(polygon: &[[f32; 2]]) -> impl Iterator<Item = ([f32; 2], [f32; 2])> + '_ {
+    (0..polygon.len()).map(move |i| (polygon[i], polygon[(i + 1) % polygon.len()]))
+}
+
 pub(crate) fn is_valid(vertices: &[[f32; 2]]) -> bool {
     vertices.len() >= 3
         && vertices.iter().flatten().all(|value| value.is_finite())
