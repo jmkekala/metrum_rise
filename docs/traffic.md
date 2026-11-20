@@ -3200,6 +3200,36 @@ The 30k city is the acceptance; no 100k and no 1M measurement. Levels and rows a
 | C | F | The parking phase's candidate counts | As A2; candidate counts identical in the fixtures |
 | Each landing | L | The 30k acceptance, K22, the economy contract `--diff` | The landing rule |
 
+**A1, measured** (2026-11-21 00:30-00:38, one session, one boot; level F by the path rule).
+Control: release test binary of `dev` `2c8b47bdd` (SHA-256 `8ce2996c5fdaf62e`); branch:
+`freight-yards-a1` at `8e8f93b59` (`e369a4ebd2141286`). Pinned to the eight performance cores,
+eight workers, no Godot, no build, nothing else heavy running:
+
+```bash
+./run.sh --timing --level F --control "$CONTROL_TEST_BINARY" --branch "$TEST_BINARY" \
+    --branch-cache "$ARTIFACTS/snapshots-park19" --base dev --k22 \
+    --bench 'nodes::sim::core::populated_city::commit_locality::benchmark_parking_locality;METRUM_LOCALITY_TIERS=0,1000,10000,100000' \
+    --artifacts "$ARTIFACTS"
+```
+
+The branch needs its own snapshot cache: the economy snapshots are keyed by the fixture revision,
+not `SAVE_VERSION`, so a format 123 binary and a format 122 one share a file name and the runner
+refused the first attempt in its prepare check.
+
+| Row | Control | Branch | Reading |
+| --- | --- | --- | --- |
+| 30k 32×, C B B C: mean / p99 / p99.9 / worst unpreempted, ms | 4.234 / 6.344 / 8.734 / 8.474 | 4.253 / 6.374 / 7.786 / 8.197 | level (p99.9 "better", noise); every run a known `PERF-17` exception |
+| 30k 1×, one day a side: mean / p99 / p99.9 / worst unpreempted, ms | 2.069 / 3.265 / 3.677 / 4.911 | 2.090 / 3.289 / 3.658 / 5.099 | level; `PERF-07` passes on both |
+| `load_s` (30k 32× and 1× loads) | 2.299, 2.302 | 2.283, 2.286 | level |
+| K22 30k: click-to-ack / commit, ms | 6.74 / 6.70 | 6.63 / 6.60 | level |
+| `benchmark_parking_locality`, three runs a side: per lot, ms, at 0 / 1k / 10k / 100k background | 0.273 / 0.276 / 0.279 / 0.281 | 0.270 / 0.273 / 0.277 / 0.279 | flat with the city, level; products identical, 72 places and 1,656 candidate entries at every tier |
+| same: site publication, ms | 1.279 / 1.279 / 1.335 / 1.373 | 1.257 / 1.269 / 1.295 / 1.470 | level within the runs' spread (+7% at 100k, three runs) |
+
+No row is beyond the runner's tolerance; the fixtures' car products equal the control's (the
+recorded digest), and the `SIM-02` envelope and determinism records are byte-equal to `dev`'s
+(`tools/sim02_gate.py envelope determinism`, six workers, branch rerun 2026-11-21 against the
+control's records of 2026-11-20 from the same binary).
+
 #### Risks
 
 1. **Freight stuck in yards starves shops.** Guards: no waiting in A and B; a refused truck
