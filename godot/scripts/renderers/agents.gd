@@ -99,6 +99,14 @@ func _ready():
 		2: vat_base + "female_palette.png",
 		3: vat_base + "female_palette.png",
 	}
+	# Palette texels the shader recolours per walker: top, trousers (-1: none) and hair. The
+	# female model's top is a dress, so it has no separate trousers.
+	var person_garment_slots = {
+		0: Vector3i(3, 4, 2),
+		1: Vector3i(3, 4, 2),
+		2: Vector3i(3, -1, 2),
+		3: Vector3i(3, -1, 2),
+	}
 	var person_tints = {
 		0: Vector3(1.0, 1.0, 1.0),
 		1: Vector3(0.86, 0.92, 1.0),
@@ -149,7 +157,7 @@ func _ready():
 		var mm  := MultiMesh.new()
 		mm.transform_format = MultiMesh.TRANSFORM_3D
 		mm.use_colors       = false
-		mm.use_custom_data  = true   # INSTANCE_CUSTOM.x = walk_phase [0..1]
+		mm.use_custom_data  = true   # INSTANCE_CUSTOM.x = walk_phase, .y = look, both [0..1)
 		mm.instance_count   = 0
 		mm.mesh             = mesh
 		mmi.multimesh       = mm
@@ -165,6 +173,7 @@ func _ready():
 		mat.set_shader_parameter("albedo_texture", _load_source_texture(person_palettes[p_type]))
 		mat.set_shader_parameter("num_frames",     WALKER_VAT_FRAMES)
 		mat.set_shader_parameter("albedo_tint",    person_tints[p_type])
+		mat.set_shader_parameter("garment_slots",  person_garment_slots[p_type])
 		mat.set_shader_parameter("debug_mode",     pedestrian_vat_debug_mode)
 		mat.set_shader_parameter("reverse_phase",  WALKER_VAT_REVERSE_PHASE)
 		mat.set_shader_parameter("draw_fade_m",    Vector2(draw[0], draw[1]))
