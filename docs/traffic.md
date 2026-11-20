@@ -3001,7 +3001,9 @@ straight street; the plan left the reach of the paving extension unverified.
 
 **State.** A carrier uses the `ParkingTrip` column it already has (56 bytes, unchanged):
 `vehicle` stays empty, `target` is the building's stable handle, `destination` or `source` the
-dock.
+dock. (Corrected in `PARK-20` round 2: in `PullOut`, `target` is the handle of the building whose
+gate the plan ends at, or `NO_FREIGHT_GATE` for a plan ending at a door or a border, since the
+row has no other place for the trip's far end.)
 
 | Phase | Meaning for a carrier | Set by |
 | --- | --- | --- |
@@ -3037,8 +3039,10 @@ phase is `None`, so no network step tests anything new for any agent.
 
 `shipment_carrier_progress_to_endpoint` counts a carrier as arrived when it is inside the
 building, as today, or `AtDock` with that building as `target`. That one function is the whole
-change to `logistics/progress.rs`'s reading of arrivals. `dispatch_shipment` and `check_shipment`
-gain the `ParkingSystem`, to take a dock at dispatch and to start a pull-out.
+change to `logistics/progress.rs`'s reading of arrivals. `dispatch_shipment` gains the
+`ParkingSystem`, to take a dock at dispatch. (Corrected in `PARK-20` round 2: starting a pull-out
+needs only the trip row, which names the dock, the truck's standing position and the allocator's
+gate, so `check_shipment` and `deliver_shipment` keep their signatures.)
 
 **The fallback rule, in full.** A delivery uses the yard if and only if both hold:
 
