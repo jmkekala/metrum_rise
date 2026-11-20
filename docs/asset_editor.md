@@ -2637,7 +2637,9 @@ Warnings:
 
 ## Model Draft Pipeline — `TOOLS-33`
 
-**Status: planned design, not implemented, awaiting the owner's review.** Nothing in this section
+**Status: design reviewed by the owner 2026-11-20, not implemented.** The decisions are marked in
+[Open questions](#open-questions); a question still marked Recommended follows its recommendation
+until the owner says otherwise. Nothing in this section
 exists in code. A statement marked *(unverified)* was not checked in code or files; every other
 statement about current behaviour was read in the named source on 2026-11-20. Door positions in
 the evidence tables were computed by hand from the `build.py` constants and each asset's
