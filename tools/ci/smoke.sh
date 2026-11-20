@@ -5,6 +5,7 @@
 #   - no ERROR/WARNING lines except Godot's release-template popup messages (UI-11),
 #   - first-run packs and worlds byte-identical to the export's bootstrap manifest,
 #   - no Git LFS pointer files among them.
+# It also requires the licence, credits and third-party licence files beside the executable.
 # Run it where the build checkout is absent, so a path baked in at compile time cannot resolve.
 # Usage: smoke.sh linux|windows <game-dir> <bootstrap.sha256>
 set -uo pipefail
@@ -44,6 +45,12 @@ esac
 printf '[autoload]\n\nSmokeDriver="*%s"\n' "$driver" > "$game/override.cfg"
 
 failures=0
+for notice in LICENSE.md CREDITS.md THIRD-PARTY-LICENSES.txt; do
+  if [ ! -s "$game/$notice" ]; then
+    echo "FAIL [$platform]: the package has no $notice"
+    failures=$((failures + 1))
+  fi
+done
 for world in $worlds; do
   log=$work/$world.log
   world_failures=$failures

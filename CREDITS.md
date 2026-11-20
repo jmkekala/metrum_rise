@@ -52,3 +52,7 @@ under `GPL-3.0-or-later`. Each asset folder has a `credits.txt` with the exact t
 - [SQLite](https://sqlite.org/): public domain.
 - Rust crates under the MIT, Apache-2.0, BSD, Zlib and MPL-2.0 licences. The complete list
   with versions is in [`rust/Cargo.lock`](rust/Cargo.lock).
+
+Release packages carry the full licence texts of the engine, its components and the crates in
+`THIRD-PARTY-LICENSES.txt`. The source code of every release is at
+<https://github.com/jmkekala/metrum_rise>, under the release's tag.

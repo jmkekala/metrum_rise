@@ -33,10 +33,10 @@ releases by hand.
 | Job | Runner | Work |
 | --- | --- | --- |
 | `version` | Ubuntu 24.04 | the version above |
-| `lib-linux` | Ubuntu 22.04 | `libmetrum_rise.so`; the oldest supported image keeps the glibc requirement low |
+| `lib-linux` | Ubuntu 22.04 | `libmetrum_rise.so`; the oldest supported image keeps the glibc requirement low. Also the linked crates' licence texts (`tools/ci/third_party_licenses.py`) |
 | `lib-windows` | Ubuntu 24.04 | `metrum_rise.dll`, cross-built with MinGW (`x86_64-pc-windows-gnu`) |
 | `lib-macos` | macOS 15 | `libmetrum_rise.dylib`, arm64 and x86_64 merged with `lipo`, macOS 11 minimum |
-| `export` | Ubuntu 24.04 | pinned official Godot editor and templates (`tools/ci/install_godot.sh`, checked against Godot's SHA512 sums), import, the three exports, packages with `.sha256` files |
+| `export` | Ubuntu 24.04 | pinned official Godot editor and templates (`tools/ci/install_godot.sh`, checked against Godot's SHA512 sums), import, the three exports, the licence files, packages with `.sha256` files |
 | `smoke-linux`, `smoke-windows` | Ubuntu 24.04 | `tools/ci/smoke.sh` on the unpacked packages; Windows runs under WineHQ's Wine 11.0, pinned (Ubuntu's Wine 9.0 crashes starting Godot 4.7) |
 | `publish` | Ubuntu 24.04 | `main` only: a GitHub Release with the packages and notes, published only when complete |
 
@@ -54,6 +54,9 @@ releases by hand.
 | `MetrumRise-windows-x86_64.zip` | `MetrumRise/` with `MetrumRise.exe`, `MetrumRise.pck` and the DLL |
 | `MetrumRise-macos-universal.zip` | `Metrum Rise.app`, bundle ID `com.metrumrise.game`, ad-hoc signed |
 
+- Every package also carries `LICENSE.md` (GPL version 3), `CREDITS.md` and
+  `THIRD-PARTY-LICENSES.txt`, beside the executable or, on macOS, beside the app in the zip
+  (`TOOLS-31`). See [Licence files](#licence-files).
 - The macOS bundle ID is fixed: a change makes macOS treat the game as a different app.
 - Builds are unsigned. Windows shows SmartScreen (More info → Run anyway). macOS blocks a
   downloaded copy ("Apple could not verify…") until the player picks Open Anyway under System
@@ -63,6 +66,28 @@ releases by hand.
 - Players keep saves and packs in `user://`, so an update replaces only the game folder.
 - About 500 MB compressed per platform; 4K textures in `assets/textures/general` are most of it.
 - Extra content packs are shared separately as `.metrum.zip` (`TOOLS-09`/`TOOLS-10`).
+
+## Licence files
+
+The game is `GPL-3.0-or-later`, and the engine and the Rust crates in the library are under MIT,
+Apache-2.0, BSD, Zlib, MPL-2.0 and similar licences that require their texts and copyright
+notices to travel with a binary. `THIRD-PARTY-LICENSES.txt` holds them, in two parts:
+
+- Godot's licence, the copyright notices of its bundled components and the licence texts they
+  name. `tools/ci/godot_licenses.gd` reads them from the pinned editor (`Engine.get_license_text`,
+  `get_copyright_info`, `get_license_info`), so they match the Godot version that exported.
+- The licence and notice files of every crate reachable from the game crate through normal
+  dependencies, on all platforms, read from the sources Cargo downloaded
+  (`tools/ci/third_party_licenses.py`). Development and build-only dependencies are not linked
+  and are left out. Identical texts are printed once.
+
+A crate that ships no licence file gets the standard text of its declared licence, from the
+script (MIT) or `tools/ci/license_texts/`, with its authors and repository. The job fails when a
+crate has neither, so a new dependency cannot ship without a notice: add the missing standard
+text there.
+
+The source code that the GPL requires is the repository at the release's tag; `CREDITS.md` says
+so. Assets stored in Git LFS are not in GitHub's automatic source archives, only in a clone.
 
 ## Exported-game rules
 
@@ -86,7 +111,8 @@ when:
 - the log has no `ERROR` or `WARNING` line, except Godot's release-template popup messages
   (`UI-11`, upstream godot#87626);
 - the first-run packs and worlds match the export job's `bootstrap.sha256` byte for byte, with no
-  Git LFS pointer files.
+  Git LFS pointer files;
+- `LICENSE.md`, `CREDITS.md` and `THIRD-PARTY-LICENSES.txt` are beside the executable.
 
 The smoke jobs check out only `tools/ci`, so a path baked in at compile time cannot resolve. A run
 takes well under a minute per platform. Locally, hide the checkout the same way (for example with
