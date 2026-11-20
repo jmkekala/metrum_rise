@@ -2850,7 +2850,7 @@ of the centre in both); for the factory it is the front lobby entrance, not the 
 
 | Rule | Exact rule | What the hand values say |
 | --- | --- | --- |
-| R1 lot cells | `lot_width_cells = max(1, ceil((W − 0.01) / 10))`, `lot_depth_cells` likewise from `D`; 0.01 m is the editor's fit tolerance (`_mesh_part_fits_in_lot`) | 23 of 24 dimensions match. The factory is 4 deep where the rule gives 3: one cell of yard added by hand |
+| R1 lot cells | Changed 2026-11-20 by the owner. The role's `lot_cells: [width, depth]` when given, used as is; a lot the part does not fit at its R2 position is refused, naming the size it needs (how a shop with front parking or an apartment block is ordered). Without it, one dwelling (a detached house, whose lot holds a yard): `lot_width_cells = ceil((W + 2 × 3.0 − 0.01) / 10)`, `lot_depth_cells = ceil((D + 4.0 − 0.01) / 10)`, at least 3.0 m free on each side across and 4.0 m in front; anything else: the tight fit `max(1, ceil((W − 0.01) / 10))`, depth likewise from `D`. 0.01 m is the editor's fit tolerance (`_mesh_part_fits_in_lot`) | 23 of 24 dimensions match. The factory is 4 deep where the rule gives 3: one cell of yard added by hand. (The tight fit alone, the rule as first written, matched 22: it also gave `house_2`'s 9.08 m width one cell; this section first claimed 23 for it) |
 | R2 mesh part | one part; `name` = the `LOD0` file name; `rotation_degrees = [0, 0, 0]`; `scale = 1`; `pivot_offset = [0, 0, 0]`; `position = [−(min.x + max.x) / 2, 0, −lot_depth_m / 2 − min.z]` (centred across, bounds on the back lot edge) | name, rotation, scale, pivot: 12 of 12 (one mislabelled name, below). `z`: exact for the four level-1 houses and `rowhouse_2`; the level-2 houses stand 0.65–0.78 m forward (they have hedges on all four edges), the rest are free drags. `x`: free drags within ±1.1 m, no pattern; only the untouched factory is centred. See Q3 |
 | R3 frontage | `frontage_forward = [0, 0, 1]` | 12 of 12 |
 | R4 entrance | `type = "entrance"`, `name = "main"`, `position = part.position + [door.x, 0, door.z]` of the `main` door, `forward = door.facing` | `y = 0`: 12 of 12. Position: within 0.5 m of the door in 3 of 12 (`house_1`, `house_3`, `rowhouse_2`), 0.6–2.0 m off in the rest. Forward: the door's facing where it is cardinal for the front-door assets; hand-turned to 71° for the side door that faces 90° (`house_4`, both levels) and to 43.4° for the 45° corner door (grocery). See Q6 |
@@ -2902,13 +2902,15 @@ refused, failed the acceptance check, or not run; 2 an existing asset with stale
   the acceptance check then runs once more, read-only, on the real pack. The draft path takes
   native paths as given and does not resolve them through `ProjectSettings.globalize_path`.
 - Role inputs (`role.json`, later an entry of the wanted list): `pack_id`, `asset_id`,
-  `display_name`, `zone_type`, `density`, `level`; optional `economy_profile`, `asset_set`. The
+  `display_name`, `zone_type`, `density`, `level`; optional `economy_profile` (required for a
+  commercial or industrial role, 2026-11-20), `asset_set`, `lot_cells` (R1). The
   owner's ids and names are role names (`building.residential.house_3`, "House 3"), not model
   names, and one model serves several assets (each house is published at level 1 and level 2),
   so neither can be derived from the sidecar.
 - Preconditions, each a refusal with nothing written: sidecar schema and version; every listed
   hash matches its file; `source.dirty` is `false`; the pack exists (`files::pack_directory`);
-  role values pass `validated_tomls`.
+  role values pass `validated_tomls`; a workplace role names an `economy_profile` (without one it
+  never spawns); an ordered `lot_cells` holds the model.
 - Write: the command builds the same document the editor does (`params`, `sources`,
   `colour_sources`, `thumbnail_source`) and calls the publish path, which validates
   (`validated_tomls`, `colours::canonical_names`, texture decoding) and stages and swaps the
@@ -2972,8 +2974,9 @@ As built (`model_draft/acceptance.rs`): the fit rule is Rust's (`geometry::fits_
 does not call it yet, so `CODE-36` stays open for that. The registry the level rule reads is the
 packs folder the check runs in, which for the copy holds only the role's pack: a higher level
 whose level below lives in another pack fails on the copy. The spawn filter rejects a workplace
-whose `economy_profile` does not bind to a runtime profile, so a commercial or industrial role
-without one fails the check (R5 sets no profile it was not given). Failures block `--write`;
+whose `economy_profile` does not bind to a runtime profile; a role without one is refused before
+the draft (decided 2026-11-20), so the check catches only a profile that does not bind. Failures
+block `--write`;
 warnings do not. The on-demand check of a whole pack is not built.
 
 Stills, for the owner's review, to `$ARTIFACTS`: the `LOD0` three-quarter view in the default
@@ -3009,6 +3012,9 @@ Recorded, not fixed. The pipeline's report or check would have named each:
   in the pack is identical to it. Which side is newer is not known.
 - `checksums.sha256` lists none of the four level-2 assets, so pack verification reports their
   files as extra.
+- `rowhouse_2` carries `flat_size_m2 = 100`; R5 gives its model 90 m². Accepted by the owner
+  (2026-11-20): R5 stands, and the hand value stays in the existing asset, which a draft never
+  overwrites.
 
 ### Open questions
 
@@ -3037,9 +3043,12 @@ Each with the recommendation first.
 - **Q4 `flat_size_m2`.** Decided 2026-11-20: R5's 0.8 × wall-plate area per dwelling, rounded
   to 10, capped at 80 for a building of one dwelling. Uncapped, a 140 to 150 m² house would admit
   a household of four or five adults. Rejected: no cap, and a fixed 80 for every home.
-- **Q5 Lot slack.** Recommended: R1 with no minimum yard, the report stating the slack on each
-  side; the smallest slack by hand is 3.2 m. Alternative: add a depth cell when the slack in front
-  of the main door is under a stated minimum.
+- **Q5 Lot slack.** Decided 2026-11-20: a detached house's default lot keeps a yard of at least
+  3.0 m each side and 4.0 m in front (R1; the owner's starting values, judged against four houses
+  of similar size); every other building takes the tight fit unless its role orders `lot_cells`;
+  the report states the slack on each side. The stale report never reports a hand lot larger than
+  the default: a lot is stale only when the part no longer fits the asset's own lot (as built from
+  the start). Rejected: no minimum yard for any building.
 - **Q6 Entrance point.** Decided 2026-11-20: R4, the door on its wall plane at `y = 0`, and
   0.5 m / 15° as the report's tolerance; nine of the twelve hand anchors are then reported once.
   Rejected: the foot of the entrance steps, which needs one more sidecar fact per door.
@@ -3089,8 +3098,9 @@ Details the design left open, as built:
   a `source.commit` that is not 40 lowercase hex digits, any listed file outside the export folder
   but the preview (`../` steps then names). Schema and version are read before the fields.
 - The role is strict too: unknown keys, a zone type other than residential, commercial or
-  industrial (Q12), level 0, and an `economy_profile` on a residential role are refusals. A
-  workplace's `dwellings` set no household capacity.
+  industrial (Q12), level 0, an `economy_profile` on a residential role, a workplace role without
+  one, and a `lot_cells` entry of 0 are refusals. A workplace's `dwellings` set no household
+  capacity.
 - R2 writes `0`, never `-0`, for a centred model. R5 rounds halves away from zero, and a
   residential draft whose flat rounds to 0 is refused. R8 crops a preview narrower than 4:3 in
   height instead.
@@ -3104,7 +3114,7 @@ Details the design left open, as built:
   | `liikekeskus_pharmacy` | 3 × 2 | −0.76 | −3.40, 7.24 | — | 1.52 / 2.10 |
   | `tehdas_brick_gable` | 5 × 3 | −0.875 | 6.50, 8.125 | — | 1.75 / 3.70 |
   | `rintamamiestalo_balcony` | 2 × 2 | −2.96 | −1.30, 2.34 | 1, 80 | 5.92 / 4.65 |
-  | `rintamamiestalo_gable_entry` | 1 × 2 | −2.51 | 0.09, 1.74 | 1, 80 | 5.02 / 0.46 |
+  | `rintamamiestalo_gable_entry` | 2 × 2 | −2.51 | 0.09, 1.74 | 1, 80 | 5.02 / 5.46 |
   | `rintamamiestalo_porch` | 2 × 2 | −3.16 | −1.20, 1.94 | 1, 80 | 6.32 / 4.65 |
   | `rintamamiestalo_side_entry` | 2 × 2 | −3.78 | −2.60, 0.94 (+X) | 1, 80 | 7.56 / 4.65 |
   | `rivitalo_brick_gable` | 4 × 2 | −2.28 | 3.84, 4.84 | 4, 90 | 4.56 / 4.31 |
@@ -3112,10 +3122,11 @@ Details the design left open, as built:
   | `brick_clocktower_hall` | 5 × 3 | −0.825 | 0.00, 12.15 | — | 1.65 / 0.15 |
 
   Every part is centred (`x = 0`) with no back gap. The hall parses but is an explicit building:
-  the role reader refuses it (Q12). Two evidence-table statements do not hold for these files: R1
-  gives `rintamamiestalo_gable_entry` (`house_2`, 9.08 m wide) one lot cell across, where the
-  hand asset has two; and R5 gives `rivitalo_brick_gable` (`rowhouse_2`, 472.72 m² over 4
-  dwellings) 90 m², not the 100 m² the illustrative 120 m² plates gave.
+  the role reader refuses it (Q12), and the three workplaces need an `economy_profile` in their
+  role. The four houses take the house yard (R1, 2026-11-20) and come out 2 × 2 like the hand
+  assets; the rest take the tight fit. R5 gives `rivitalo_brick_gable` (`rowhouse_2`, 472.72 m²
+  over 4 dwellings) 90 m², not the 100 m² the illustrative 120 m² plates gave: accepted by the
+  owner (see the findings).
 
 ## Implementation Plan
 

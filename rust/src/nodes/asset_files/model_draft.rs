@@ -397,11 +397,11 @@ mod tests {
     }
 
     #[test]
-    fn a_workplace_passes_with_a_parking_warning_only_with_a_runtime_profile() {
+    fn a_workplace_needs_a_profile_and_passes_with_a_parking_warning() {
         let mut fixture = Fixture::new();
         fixture.sidecar["dwellings"] = json!(0);
-        // The grocery's model defect, which the check reports: a main door 1.9375 m high on a
-        // 0.375 m plinth. A low balcony door is no pedestrian door and is not sized.
+        // A model defect the check reports: a main door 1.9375 m high on a 0.375 m plinth. A
+        // low balcony door is no pedestrian door and is not sized.
         fixture.sidecar["doors"][0]["height_m"] = json!(1.9375);
         fixture.sidecar["doors"][0]["position"][1] = json!(0.375);
         fixture.sidecar["doors"][1]["kind"] = json!("balcony");
@@ -410,10 +410,24 @@ mod tests {
         let mut role = fixture.role();
         role["zone_type"] = json!("commercial");
         role["asset_id"] = json!("building.commercial.shop");
+        // Without a profile the role is refused before anything is written.
+        let (exit, report) = run_fixture(&fixture, role.clone(), false);
+        assert_eq!(
+            (exit, report["status"].as_str()),
+            (1, Some("refused")),
+            "{report:#}"
+        );
+        assert!(
+            report["error"]
+                .as_str()
+                .unwrap()
+                .contains("economy_profile")
+        );
+        assert!(!fixture.root.join("copy").join(PACK).join("assets").exists());
+        role["economy_profile"] = json!("grocery_basic");
         let (exit, report) = run_fixture(&fixture, role.clone(), false);
         assert_eq!(exit, 1, "{report:#}");
         let failures = report["acceptance"]["failures"].to_string();
-        assert!(failures.contains("spawn candidate"), "{failures}");
         assert!(
             failures.contains("door 'front' height_m 1.9375"),
             "{failures}"
@@ -422,7 +436,6 @@ mod tests {
         fixture.sidecar["doors"][0]["height_m"] = json!(2.1);
         fixture.write_sidecar();
         role["asset_id"] = json!("building.commercial.grocery");
-        role["economy_profile"] = json!("grocery_basic");
         let (exit, report) = run_fixture(&fixture, role, false);
         assert_eq!(exit, 0, "{report:#}");
         assert!(

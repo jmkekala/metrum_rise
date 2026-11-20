@@ -143,6 +143,9 @@ pub(crate) struct Role {
     pub(crate) economy_profile: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) asset_set: Option<String>,
+    /// The ordered lot `[width, depth]` in whole cells; derived by R1 when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) lot_cells: Option<[u16; 2]>,
 }
 
 impl Facts {
@@ -381,6 +384,20 @@ impl Role {
         }
         if role.zone_type == "residential" && role.economy_profile.is_some() {
             return Err("a residential role takes no economy_profile".into());
+        }
+        if role.zone_type != "residential"
+            && role
+                .economy_profile
+                .as_deref()
+                .is_none_or(|p| p.trim().is_empty())
+        {
+            return Err(format!(
+                "a {} role needs an economy_profile: a workplace without one never spawns",
+                role.zone_type
+            ));
+        }
+        if role.lot_cells.is_some_and(|lot| lot.contains(&0)) {
+            return Err("role lot_cells must be whole cells, at least 1 each".into());
         }
         Ok(role)
     }

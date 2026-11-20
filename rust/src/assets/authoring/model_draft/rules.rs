@@ -23,17 +23,47 @@ const SINGLE_DWELLING_FLAT_CAP_M2: f64 = 80.0;
 /// R5: share of the wall-plate area a household counts as its flat.
 const FLAT_SHARE_OF_PLATE: f64 = 0.8;
 
-/// R1: lot cells covering one mesh extent, with the editor's fit tolerance.
+/// R1, a detached house's yard: the free space the default lot of a one-dwelling building
+/// leaves on each side across and in front of the part at its R2 position. The owner's starting
+/// values (2026-11-20), judged against four houses of similar size.
+const HOUSE_SIDE_YARD_M: f64 = 3.0;
+const HOUSE_FRONT_YARD_M: f64 = 4.0;
+
+/// Lot cells covering one extent, with the editor's fit tolerance.
 pub(crate) fn lot_cells(extent_m: f64) -> u16 {
     ((extent_m - LOT_FIT_TOLERANCE_M) / f64::from(ZONE_CELL_M))
         .ceil()
         .max(1.0) as u16
 }
 
-/// R1 for both axes: `[width, depth]` from the `LOD0` bounds.
-pub(crate) fn lot(facts: &Facts) -> [u16; 2] {
+/// The tightest lot `[width, depth]` the `LOD0` bounds fit, centred across and back-flush.
+pub(crate) fn tight_lot(facts: &Facts) -> [u16; 2] {
     let [min, max] = [facts.bounds.min, facts.bounds.max];
     [lot_cells(max[0] - min[0]), lot_cells(max[2] - min[2])]
+}
+
+/// R1: the role's `lot_cells` when it gives them, refused when the model does not fit them at
+/// its R2 position; else for one dwelling (a detached house) the smallest lot with its yard,
+/// and for anything else the tightest lot. Apartment blocks and shops vary too much to derive:
+/// their role orders the lot.
+pub(crate) fn lot(facts: &Facts, ordered: Option<[u16; 2]>) -> Result<[u16; 2], String> {
+    let tight = tight_lot(facts);
+    if let Some(lot) = ordered {
+        if lot[0] < tight[0] || lot[1] < tight[1] {
+            return Err(format!(
+                "role lot_cells {lot:?} is too small: the model needs at least {tight:?} cells (width, depth)"
+            ));
+        }
+        return Ok(lot);
+    }
+    if facts.dwellings != 1 {
+        return Ok(tight);
+    }
+    let [min, max] = [facts.bounds.min, facts.bounds.max];
+    Ok([
+        lot_cells(max[0] - min[0] + 2.0 * HOUSE_SIDE_YARD_M),
+        lot_cells(max[2] - min[2] + HOUSE_FRONT_YARD_M),
+    ])
 }
 
 /// R2: centred across, bounds on the back lot edge. A starting position only (Q3).
@@ -177,7 +207,7 @@ pub(crate) fn params(
 ) -> Result<Value, String> {
     let preset = super::super::conversion(&json!({}), &role.zone_type, "")?;
     let mut params = preset["document"].clone();
-    let [width, depth] = lot(facts);
+    let [width, depth] = lot(facts, role.lot_cells)?;
     let part_name = &facts.lods[0].file;
     let position = part_position(facts, depth);
     let lods: Vec<Value> = lod_bands(facts.lods.len())?

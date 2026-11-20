@@ -315,6 +315,9 @@ fn inputs_refuse_dirty_sources_changed_files_and_bad_roles() {
         ("asset_id", json!("Bad Id"), "asset id"),
         ("economy_profile", json!("grocery_basic"), "economy_profile"),
         ("colour", json!("red"), "unknown field"),
+        ("lot_cells", json!([2, 0]), "at least 1"),
+        // A workplace without a profile never spawns: refused up front.
+        ("zone_type", json!("commercial"), "needs an economy_profile"),
     ] {
         let mut role = role.clone();
         role[key] = value;
@@ -337,7 +340,66 @@ fn r1_lot_cells_cover_the_bounds_with_the_editor_tolerance() {
     assert_eq!([rules::lot_cells(35.0), rules::lot_cells(21.0)], [4, 3]);
     assert_eq!([rules::lot_cells(42.60), rules::lot_cells(28.25)], [5, 3]);
     let fixture = Fixture::new();
-    assert_eq!(rules::lot(&fixture.inputs().facts), [2, 2]);
+    assert_eq!(rules::tight_lot(&fixture.inputs().facts), [2, 2]);
+}
+
+// The worked example resized to `width` × `depth` metres with `dwellings`.
+fn sized(width: f64, depth: f64, dwellings: u32) -> Facts {
+    let fixture = Fixture::new();
+    let mut facts = fixture.inputs().facts;
+    facts.bounds.min = [-width / 2.0, 0.0, -depth / 2.0];
+    facts.bounds.max = [width / 2.0, 9.0, depth / 2.0];
+    facts.dwellings = dwellings;
+    facts
+}
+
+#[test]
+fn r1_gives_a_detached_house_its_yard_and_anything_else_the_tight_lot() {
+    // `rintamamiestalo_gable_entry`: 9.08 m wide needs 3 m each side, so 2 cells across.
+    assert_eq!(rules::lot(&sized(9.08, 14.98, 1), None).unwrap(), [2, 2]);
+    // The other three houses stay 2 × 2.
+    for (width, depth) in [(10.70, 14.08), (10.70, 13.68), (10.70, 12.44)] {
+        assert_eq!(rules::lot(&sized(width, depth, 1), None).unwrap(), [2, 2]);
+    }
+    // The yard margins with the 0.01 m slack: 14.01 + 6 m fits 2 cells, 14.03 does not.
+    assert_eq!(rules::lot(&sized(14.01, 10.0, 1), None).unwrap(), [2, 2]);
+    assert_eq!(rules::lot(&sized(14.03, 16.02, 1), None).unwrap(), [3, 3]);
+    // A terrace and a shop keep the tight fit.
+    assert_eq!(rules::lot(&sized(9.08, 14.98, 4), None).unwrap(), [1, 2]);
+    assert_eq!(rules::lot(&sized(35.0, 21.0, 0), None).unwrap(), [4, 3]);
+}
+
+#[test]
+fn r1_uses_an_ordered_lot_as_is_and_refuses_one_the_model_does_not_fit() {
+    let shop = sized(35.0, 21.0, 0);
+    assert_eq!(rules::lot(&shop, Some([5, 4])).unwrap(), [5, 4]);
+    assert_eq!(rules::lot(&shop, Some([4, 3])).unwrap(), [4, 3]);
+    let error = rules::lot(&shop, Some([4, 2])).unwrap_err();
+    assert!(error.contains("[4, 3]"), "{error}");
+    // An ordered lot wins over the house yard, too.
+    assert_eq!(
+        rules::lot(&sized(9.08, 14.98, 1), Some([1, 2])).unwrap(),
+        [1, 2]
+    );
+    let fixture = Fixture::new();
+    let mut role = fixture.role();
+    role["lot_cells"] = json!([3, 4]);
+    let inputs = read_inputs(&fixture.sidecar_path(), role.clone()).unwrap();
+    let derived = derive(&inputs, &fixture.mods(), &fixture.root).unwrap();
+    let params = &derived.document["params"];
+    assert_eq!(
+        [&params["lot_width_cells"], &params["lot_depth_cells"]],
+        [3, 4]
+    );
+    // R2 stays back-flush in the ordered lot: z = −20 + 6.84.
+    let z = params["mesh_parts"][0]["position"][2].as_f64().unwrap();
+    assert!((z + 13.16).abs() < 1e-9, "{z}");
+    role["lot_cells"] = json!([1, 1]);
+    let inputs = read_inputs(&fixture.sidecar_path(), role).unwrap();
+    let error = derive(&inputs, &fixture.mods(), &fixture.root)
+        .err()
+        .unwrap();
+    assert!(error.contains("too small"), "{error}");
 }
 
 #[test]
