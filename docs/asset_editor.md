@@ -2635,6 +2635,396 @@ Warnings:
 - thumbnail missing
 - no license / attribution metadata
 
+## Model Draft Pipeline — `TOOLS-33`
+
+**Status: planned design, not implemented, awaiting the owner's review.** Nothing in this section
+exists in code. A statement marked *(unverified)* was not checked in code or files; every other
+statement about current behaviour was read in the named source on 2026-11-20. Door positions in
+the evidence tables were computed by hand from the `build.py` constants and each asset's
+`notes.md` pivot statement, not from a build run.
+
+The pipeline turns a building made in the separate `metrum_models` repository into a draft asset
+in a local pack. The two repositories exchange files only. `metrum_models` stays standalone: what
+it emits describes geometry and never names a game concept. The asset editor stays the source of
+truth for every asset: a draft is a starting point the owner finishes there.
+
+Steps and owners:
+
+1. Wanted list (game, later step, not designed here): the missing building stock, one entry per
+   wanted asset, carrying the role inputs of [Draft command](#draft-command).
+2. Build (`metrum_models`): the session builds the model and writes the
+   [facts sidecar](#facts-sidecar) beside its export.
+3. Draft (game): a headless command derives a draft asset from sidecar and `.glb` tiers by the
+   [derivation rules](#derivation-rules) and publishes it through `files::publish`, the function
+   the editor's `AssetAuthoringFiles.publish_document` ends in.
+4. Acceptance (game): the [acceptance check](#acceptance-check) and stills.
+5. Review (owner): the asset editor, for everything in
+   [hand-authored fields](#hand-authored-fields).
+
+Out of scope: pack zip export and releases (manual), props, vehicles, characters, explicit
+(service, utility, landmark) buildings in the first version.
+
+### Facts sidecar
+
+One JSON file per asset, written by the model build: `export/<asset_name>.model.json`, beside the
+`.glb` tiers. UTF-8, no comments, keys as below, unknown keys rejected by the reader
+(`deny_unknown_fields`, as the game's manifests are).
+
+Units and frame: metres; the frame of the exported `.glb` files themselves (glTF: right-handed,
+`+Y` up, `+Z` front, origin at the model's pivot). No second frame exists in the file: a consumer
+may add any sidecar point to a `.glb` vertex. For the builder, a Blender point `(bx, by, bz)` with
+the build's pivot offset `(px, py, pz)` (`asset_build.pivot_offset`) is
+`[bx - px, bz - pz, -(by - py)]`. Plan points are `[x, z]` pairs of that frame.
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `schema` | string | `"metrum-model-facts"` |
+| `version` | integer | `1`; a reader refuses any other value |
+| `name` | string | the asset folder name, e.g. `rintamamiestalo_porch` |
+| `path` | string | repository path of the asset folder, e.g. `buildings/residential/rintamamiestalo_porch` |
+| `source.commit` | string | 40-hex commit of the models repository the export was built from |
+| `source.dirty` | boolean | whether the asset folder or `scripts/` differed from that commit |
+| `source.blender` | string | Blender version string of the build |
+| `license` | string | SPDX id of the content, `CC-BY-4.0` |
+| `bounds.min`, `bounds.max` | `[x, y, z]` | `LOD0` vertex bounds; `min.y` is `0` |
+| `footprint` | array of `[x, z]` | outer wall outline at ground level, one simple polygon, no repeated end point; excludes eaves, steps, fences, ladders |
+| `storeys` | array of `{floor_y_m, area_m2}` | one entry per occupied storey, lowest first; `area_m2` is the area inside the outer wall faces, and for a storey under a roof only the part with at least 1.6 m to the roof underside |
+| `dwellings` | integer | separate dwelling units with their own front door; `0` for a building that is not housing |
+| `doors` | array | every door leaf or door pair in an outer wall, see below |
+| `lods` | array of `{file, triangles, sha256}` | nearest first; `file` is relative to the sidecar's folder |
+| `textures.orm`, `.normal`, `.emission` | `{file, sha256}` | shared maps; `emission` absent for an unlit building |
+| `variants` | array of `{id, albedo, sha256}` | every colour variant; `id` is the `<variant>` of `<name>_albedo_<variant>.png` |
+| `default_variant` | string | the `id` the `.glb` files reference |
+| `preview` | `{file, sha256}` | `../preview.png`, the catalog render |
+| `hero` | boolean | whether the hero/landmark triangle ceilings apply |
+
+A `doors` entry:
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `id` | string | unique in the asset, e.g. `front`, `back`, `unit_3` |
+| `position` | `[x, y, z]` | centre of the threshold on the outer wall plane; `y` is the threshold height above ground |
+| `facing` | `[x, 0, z]` | unit outward normal of that wall |
+| `width_m`, `height_m` | number | clear opening of the leaf or pair, without fanlight |
+| `main` | boolean | exactly one door is `true`: the entrance a visitor uses |
+
+For a row of dwellings the builder marks as `main` the dwelling door nearest `x = 0`, the one on
+the `+X` side on a tie. A door set back in a lobby or reveal keeps its `position` on the outer
+wall plane.
+
+What the build data holds today (read in `scripts/asset_build.py` and the ten `build.py` files):
+
+| Fact | Today | Work in `metrum_models` |
+| --- | --- | --- |
+| `name`, `variants`, `default_variant`, `lods[].file` | `asset_build.Asset` fields | none |
+| `lods[].triangles`, `bounds`, pivot offset | returned by `Asset.build_all()` (`stats`), printed, not stored | write them |
+| texture and preview file names | fixed by the output contract | hash them |
+| `source.commit`, `source.dirty` | not recorded | `git rev-parse` and `git status` at build |
+| `doors` position, facing, size | present, but in ten asset-specific shapes: wall item tuples `("door_front", s, z)` with `OPENINGS` sizes (houses, terraces), `DOORS`/`DOOR_W` (pharmacy), an `entrance=True` wall (grocery), tuple tables (hall, factory) | one `doors()` function per `build.py` returning build-frame entries; no shared reader is possible |
+| `doors[].main` | nowhere | new tag per asset |
+| `footprint` | constants such as `HX`, `HY`, porch corners, the grocery's `OUTLINE`; no common field | new per-asset list |
+| `storeys`, `dwellings` | prose in `notes.md` (`Story height`), `UNITS` in the two terraces | new per-asset values |
+| `hero` | a `validate_asset.py` command-line word | new per-asset value |
+
+Proposed home: `Asset.write_facts(stats, facts)` in `scripts/asset_build.py`, called by
+`Asset.main()` after `export_all()`, with `facts` a dict each `build.py` declares in build-frame
+coordinates; `write_facts` applies the pivot. `scripts/validate_asset.py` gains one check: the
+sidecar parses, its hashes match the files, one door is `main`, every door lies within 0.05 m of a
+`footprint` edge or inside the polygon. The models repository's `CLAUDE.md` forbids "asset/pack
+manifests until a consuming importer exists" and lists the handoff as copying files by hand; both
+lines need the owner's edit there, since the sidecar is a facts file for this importer.
+
+Worked example, `rintamamiestalo_porch` (bounds, triangles, `LOD0` hash and commit read from the
+files; door and footprint points computed from `build.py`: main block ±5 × ±4 m, porch
+`x` −2.7…0.3 to `y` −6.2, pivot 1.10 m in front of the main block's centre; storey areas are
+illustrative; `<sha256>` stands for a 64-hex digest):
+
+```json
+{
+  "schema": "metrum-model-facts",
+  "version": 1,
+  "name": "rintamamiestalo_porch",
+  "path": "buildings/residential/rintamamiestalo_porch",
+  "source": {"commit": "9c93f65ae0f3e78d40c9c86f3b65cc290965c35a", "dirty": false, "blender": "5.2.0"},
+  "license": "CC-BY-4.0",
+  "bounds": {"min": [-5.35, 0.0, -6.84], "max": [5.35, 9.562, 6.84]},
+  "footprint": [[-5.0, -5.1], [5.0, -5.1], [5.0, 2.9], [0.3, 2.9], [0.3, 5.1], [-2.7, 5.1], [-2.7, 2.9], [-5.0, 2.9]],
+  "storeys": [{"floor_y_m": 0.70, "area_m2": 86.6}, {"floor_y_m": 3.80, "area_m2": 58.0}],
+  "dwellings": 1,
+  "doors": [
+    {"id": "front", "position": [-1.2, 0.70, 5.1], "facing": [0, 0, 1], "width_m": 0.90, "height_m": 2.10, "main": true},
+    {"id": "back", "position": [1.5, 0.70, -5.1], "facing": [0, 0, -1], "width_m": 0.90, "height_m": 2.10, "main": false}
+  ],
+  "lods": [
+    {"file": "rintamamiestalo_porch_lod0.glb", "triangles": 2642, "sha256": "9729cbe0649a29cace4df2d3f04418d3e8033130c25acabca2cf53e9340b75fb"},
+    {"file": "rintamamiestalo_porch_lod1.glb", "triangles": 2054, "sha256": "<sha256>"},
+    {"file": "rintamamiestalo_porch_lod2.glb", "triangles": 682, "sha256": "<sha256>"},
+    {"file": "rintamamiestalo_porch_lod3.glb", "triangles": 342, "sha256": "<sha256>"}
+  ],
+  "textures": {
+    "orm": {"file": "rintamamiestalo_porch_orm.png", "sha256": "<sha256>"},
+    "normal": {"file": "rintamamiestalo_porch_normal.png", "sha256": "<sha256>"},
+    "emission": {"file": "rintamamiestalo_porch_emission.png", "sha256": "<sha256>"}
+  },
+  "variants": [
+    {"id": "red", "albedo": "rintamamiestalo_porch_albedo_red.png", "sha256": "<sha256>"},
+    {"id": "yellow", "albedo": "rintamamiestalo_porch_albedo_yellow.png", "sha256": "<sha256>"},
+    {"id": "white", "albedo": "rintamamiestalo_porch_albedo_white.png", "sha256": "<sha256>"},
+    {"id": "blue", "albedo": "rintamamiestalo_porch_albedo_blue.png", "sha256": "<sha256>"},
+    {"id": "green", "albedo": "rintamamiestalo_porch_albedo_green.png", "sha256": "<sha256>"}
+  ],
+  "default_variant": "red",
+  "preview": {"file": "../preview.png", "sha256": "<sha256>"},
+  "hero": false
+}
+```
+
+### Contract comparison
+
+The models output contract against [Coordinate Conventions](#coordinate-conventions) and the code:
+
+- **Axes agree.** Models: Blender `Z` up, front `-Y`, exported `+Y` up; the game: `+Y` up, `+Z`
+  front. All twelve hand-authored assets use `frontage_forward = [0, 0, 1]`, rotation `0`,
+  scale `1`, `pivot_offset = [0, 0, 0]`.
+- **Pivot wording agrees, the meaning needs care.** Both say "ground level, centred on the
+  footprint". The models pivot is the centre of the `LOD0` plan bounding box with eaves, steps,
+  yard fences and ladders included, so it is not the centre of the walls: 0.48 to 3.12 m off along
+  the depth in seven of the ten models (the pharmacy and the hall were not checked, the grocery is
+  centred) and 0.09 m off sideways in three. Rules below position by
+  bounds, never by assuming the origin is the wall centre.
+- **Tier bounds differ.** Models guarantees one pivot and one plan centre for all tiers (1 mm),
+  not equal extents: the factory's `LOD0` is 28.25 m deep and its `LOD3` 28.00 m. The game imports
+  `LOD0` bounds only (`nodes/sim/bridge/assets/mesh_bounds.rs`), which is the larger.
+- **LOD bands agree**: 35 / 70 / 120 m in both; triangle ceilings agree (12,000 / 4,000 / 1,500 /
+  500, hero 20,000 / 6,000 / 2,500 / 700).
+- **Thumbnail differs**: the editor publishes `thumbnail.webp` at 1024 × 768
+  (`thumbnail_capture.gd`); the models preview is a 1600 × 1000 PNG from a fixed catalog camera.
+- **Blender floor differs, compatibly**: this document names 4.5 LTS "or newer"; models requires
+  5.2 or newer.
+- **This document's manifest contract is ahead of the code** in three places the draft follows the
+  code on: published assets live at `assets/<asset_id>/` (`files::publish`; the share archive
+  refuses any other layout, `archive::inventory`), not at the category-first paths of
+  [V1 Pack Root And Scanner Rules](#v1-pack-root-and-scanner-rules); `build_asset_toml` writes no
+  `asset_class`, `[orientation]` or `[attribution]`; and `[attribution]` is not a parsed table
+  *(unverified beyond a search of `assets/asset/`)*.
+
+### Derivation rules
+
+Inputs: the sidecar, the `.glb` files it names, and the role inputs. All rules are pure functions
+of those; none reads the clock or an existing asset. The lot cell is 10 m: `ZONE_CELL_M` in
+`assets/asset/validation.rs` and `EDITOR_LOT_CELL_M` in `assets/authoring.rs` are both `10.0`,
+while a world's own `zone_cell_m` is a `WorldConfig` field (10.0 in every constructor found).
+`W = bounds.max.x - bounds.min.x`, `D = bounds.max.z - bounds.min.z`. Start values come from
+`authoring::conversion("{}", zone_type, "")`, the preset the editor's New Asset uses.
+
+Evidence is the owner's pack: twelve assets made in the editor from eight of the ten models (the
+pharmacy and the hall have none). Lot frame, metres; "back gap" is the distance from the mesh
+bounds to the back lot edge; "anchor − door" is the `entrance/main` position minus the main door
+mapped through the part position.
+
+| Asset | Model | `W × D` | Lot cells | Part `x`, `z` | Back gap | Anchor − door `(x, z)` |
+| --- | --- | --- | --- | --- | --- | --- |
+| `house_1` | `rintamamiestalo_balcony` | 10.70 × 14.08 | 2 × 2 | −1.09, −2.96 | 0.00 | +0.04, −0.09 |
+| `house_1_level_2` | same | same | 2 × 2 | −0.61, −2.18 | 0.78 | +0.27, −0.76 |
+| `house_2` | `rintamamiestalo_gable_entry` | 9.08 × 14.98 | 2 × 2 | −0.33, −2.51 | 0.00 | −1.53, +0.09 |
+| `house_2_level_2` | same | same | 2 × 2 | −0.38, −1.86 | 0.65 | −1.48, −0.56 |
+| `house_3` | `rintamamiestalo_porch` | 10.70 × 13.68 | 2 × 2 | −0.04, −3.16 | 0.00 | +0.10, −0.36 |
+| `house_3_level_2` | same | same | 2 × 2 | −0.13, −2.50 | 0.66 | +0.19, −1.02 |
+| `house_4` | `rintamamiestalo_side_entry` | 10.70 × 12.44 | 2 × 2 | −0.26, −3.78 | 0.00 | +0.01, −1.18 |
+| `house_4_level_2` | same | same | 2 × 2 | +0.23, −3.07 | 0.71 | −0.41, −0.41 |
+| `rowhouse_1` | `rivitalo_two_storey` | 36.78 × 15.13 | 4 × 2 | −0.46, −0.47 | 1.96 | +0.44, +0.81 |
+| `rowhouse_2` | `rivitalo_brick_gable` | 31.38 × 15.44 | 4 × 2 | +0.58, −2.28 | 0.00 | +0.13, +0.29 |
+| `grocery_store_1` | `lahikauppa_corner` | 35.00 × 21.00 | 4 × 3 | +0.26, +0.94 | 5.44 | −0.19, −2.01 |
+| `food_processing_factory_1` | `tehdas_brick_gable` | 42.60 × 28.25 | 5 × 4 | 0, 0 | 5.88 | +0.50, −0.76 |
+
+For the two terraces the door is the dwelling door nearest the anchor (the first on the `+X` side
+of the centre in both); for the factory it is the front lobby entrance, not the east porch.
+
+| Rule | Exact rule | What the hand values say |
+| --- | --- | --- |
+| R1 lot cells | `lot_width_cells = max(1, ceil((W − 0.01) / 10))`, `lot_depth_cells` likewise from `D`; 0.01 m is the editor's fit tolerance (`_mesh_part_fits_in_lot`) | 23 of 24 dimensions match. The factory is 4 deep where the rule gives 3: one cell of yard added by hand |
+| R2 mesh part | one part; `name` = the `LOD0` file name; `rotation_degrees = [0, 0, 0]`; `scale = 1`; `pivot_offset = [0, 0, 0]`; `position = [−(min.x + max.x) / 2, 0, −lot_depth_m / 2 − min.z]` (centred across, bounds on the back lot edge) | name, rotation, scale, pivot: 12 of 12 (one mislabelled name, below). `z`: exact for the four level-1 houses and `rowhouse_2`; the level-2 houses stand 0.65–0.78 m forward (they have hedges on all four edges), the rest are free drags. `x`: free drags within ±1.1 m, no pattern; only the untouched factory is centred. See Q3 |
+| R3 frontage | `frontage_forward = [0, 0, 1]` | 12 of 12 |
+| R4 entrance | `type = "entrance"`, `name = "main"`, `position = part.position + [door.x, 0, door.z]` of the `main` door, `forward = door.facing` | `y = 0`: 12 of 12. Position: within 0.5 m of the door in 3 of 12 (`house_1`, `house_3`, `rowhouse_2`), 0.6–2.0 m off in the rest. Forward: the door's facing where it is cardinal for the front-door assets; hand-turned to 71° for the side door that faces 90° (`house_4`, both levels) and to 43.4° for the 45° corner door (grocery). See Q6 |
+| R5 capacity, housing | `household_capacity = dwellings`; `flat_size_m2` = `0.8 × Σ storeys.area_m2 / dwellings`, rounded to the nearest 10 | households: 10 of 10 (1, 6, 4). Flat size by hand: 80 for every house and `rowhouse_1`, 100 for `rowhouse_2`. Per dwelling the wall plates give 102 m² (`rowhouse_1`) and 120 m² (`rowhouse_2`), so the rule gives 80 and 100 there; for the houses it gives 110 to 120 with the attic counted, against the hand 80, which equals the 10 × 8 m ground plate alone. No one rule gives all three. See Q4 |
+| R5 capacity, work | `worker_capacity = 1`, the preset; `economy_profile` only when given as a role input | both hand assets carry `worker_capacity = 1` and a hand-picked profile (`grocery_basic`, `food_processor_basic`), whose own capacity is authoritative |
+| R6 LOD bands | tier `i` of `n`: `distance_min_m` = `[0, 35, 70, 120][i]`, `distance_max_m` = the next tier's minimum, none on the last; more than four tiers is an error | 12 of 12. Runtime selection ignores the bands (`TOOLS-05`) |
+| R7 colour schemes | one scheme per variant, sorted by `id`: `id` = variant id, `name` = the id with `_` as spaces and each word capitalised, one override with `part` = the part name, `materials` = the single material name of each tier's `.glb` in order, `albedo` = `colours/<albedo file>`; `default_scheme = default_variant`; `spawn = "random_scheme"`. A tier with other than one material stops the draft | ids, names, default, spawn, materials: 12 of 12. Order: by id in 11; `house_1` lists its default first |
+| R8 thumbnail | `thumbnail.webp`, 1024 × 768, WebP quality 0.9: the preview cropped about its centre to `round(height × 4 / 3)` wide, then one Lanczos resize | file name, size and format: 12 of 12; the hand images are editor captures with their own framing. See Q9 |
+| R9 the rest | `window_brightness = 3`; `placement_mode = "zoned_private"`; no `asset_set`, tags, icon, `min_zone_*`, hedge, planting, surfaces or site anchors | 12 of 12 for brightness, `asset_set`, tags and `min_zone_*` |
+
+The published default albedo exists twice, once beside the `.glb` (its image `uri`) and once under
+`colours/`, as in every hand asset; this follows from the present publish path and is not changed
+here.
+
+### Draft command
+
+Route: Godot headless, with a thin script and one new Rust static call. `publish_document` and
+the bounds importer are Godot-side (`Json`, `Image`, `ProjectSettings`, `GltfDocument`), and the
+crate has no binary target, so a plain Rust executable would have to copy the publish body
+instead of reusing it.
+
+```bash
+tools/model_draft.py --sidecar <path>/export/<name>.model.json --role <role.json> --mods <mods dir> [--write]
+```
+
+- `tools/model_draft.py` (new) creates an isolated profile with `tools/godot_isolated.py`
+  (`create`, `isolated_env`) and runs
+  `godot --headless --path {project} --script res://scripts/editors/asset_editor/model_draft.gd -- …`.
+  The script only passes arguments to `AssetAuthoringFiles.draft_from_model(request) -> Dictionary`
+  (new) and prints its report. All rules live in Rust (`assets/authoring/`).
+- Godot itself always runs in the throwaway profile, so the player's logs, settings and pack
+  selection are never touched. The script is outside `res://tests/` and
+  `res://scripts/benchmarks/`, so the profile guard (`debug/profile_guard.rs`) does not apply to
+  it; isolation comes from the launcher.
+- `--mods` is required and has no default. Without `--write` the command works on a copy of
+  `<mods>/<pack_id>` inside the profile, runs the acceptance check there and writes nothing
+  outside the profile and `$ARTIFACTS`. With `--write` it first does exactly that, and only when
+  the check passes publishes once more into `<mods>/<pack_id>`. This is the one sanctioned write
+  into the owner's real `user://mods/`; no test and no gate passes `--write`. `publish_document`
+  resolves its output through `ProjectSettings.globalize_path`, which is expected to leave an
+  absolute native path unchanged *(unverified)*.
+- Role inputs (`role.json`, later an entry of the wanted list): `pack_id`, `asset_id`,
+  `display_name`, `zone_type`, `density`, `level`; optional `economy_profile`, `asset_set`. The
+  owner's ids and names are role names (`building.residential.house_3`, "House 3"), not model
+  names, and one model serves several assets (each house is published at level 1 and level 2),
+  so neither can be derived from the sidecar.
+- Preconditions, each a refusal with nothing written: sidecar schema and version; every listed
+  hash matches its file; `source.dirty` is `false`; the pack exists (`files::pack_directory`);
+  role values pass `validated_tomls`.
+- Write: the command builds the same document the editor does (`params`, `sources`,
+  `colour_sources`, `thumbnail_source`) and calls the publish path, which validates
+  (`validated_tomls`, `colours::canonical_names`, texture decoding) and stages and swaps the
+  folder `assets/<asset_id>/`. It never creates a pack and never edits `pack.toml` or
+  `checksums.sha256`.
+- **No overwrite.** `files::publish` replaces an existing asset folder by design, so the command
+  checks first: when `assets/<asset_id>` exists in the target pack (file, folder or link) it
+  publishes nothing and produces the stale-geometry report instead. The check and the publish run
+  in one Rust call. There is no force flag.
+- Ledger: beside the publish, the command copies the sidecar and the role inputs to
+  `<pack>/model_sources/<asset_id>.json`. The scanner ignores it (it registers `asset.toml` files
+  only), the share archive leaves it out (it lists it as excluded), and an editor republish cannot
+  drop it, because publication replaces only `assets/<asset_id>/`. See Q8.
+
+Stale-geometry report (existing `asset_id`; read-only; JSON plus a text summary, exit status 2
+when any line is reported):
+
+1. Files: each published tier and texture whose SHA-256 differs from the sidecar's file of the
+   same name, and names present on one side only.
+2. Facts, when a ledger entry exists: every sidecar field that differs from the ledger copy
+   (bounds, footprint, storeys, dwellings, each door by `id`, variants).
+3. Lot fit: whether the new `LOD0` bounds, through the asset's present part transform, stay
+   inside its lot (the editor's rule, tolerance 0.01 m).
+4. Entrance: the distance in plan between `entrance/main` and the new `main` door through the
+   present part transform, and the angle between the anchor's `forward` and the door's `facing`;
+   reported above 0.5 m or 15°. With a ledger entry the door's own move is reported from 0.05 m.
+5. Schemes: variant ids without a scheme and schemes without a variant.
+6. Capacity: `household_capacity` against `dwellings`.
+7. Site layout: each site surface, planting area and parking, driveway or loading rectangle that
+   overlaps the new `footprint` polygon.
+
+The report names the editor field each line concerns and changes nothing. The owner updates the
+asset in the editor (relinking the model files, then the affected fields).
+
+### Acceptance check
+
+Run on the pack copy in the isolated profile, on every draft and on demand for a whole pack.
+Existing validation is reused wherever it exists; "new" marks what must be written.
+
+| Assertion | Source |
+| --- | --- |
+| The pack scans with no warning naming it | `scan_pack_dir` |
+| The pack is exportable: every `asset.toml` at `assets/<asset_id>/`, folder name equal to the id, every referenced file present, no link, no names differing only by case; no file of the new asset is listed as excluded | `archive::inventory` (`inspect_pack`) |
+| The manifest validates: one `entrance/main`, anchors and polygons inside the lot, LOD order | `AssetManifest::validate` |
+| The LOD chain starts at 0 and is contiguous; a zoned building has four tiers | `authoring::lod_chain_error`; tier count new |
+| Each part's bounds import, and the part fits its lot | `import_building_bounds`; the fit rule is new in Rust, moved from `_mesh_part_fits_in_lot` so the editor and the check share it (`CODE-36`) |
+| Every scheme texture decodes and every scheme names a material each tier has | `colour_dependencies`, `BuildingAppearance::validate`, `colour_material_error` |
+| A level-1 asset is a spawn candidate of its zoning profile; a higher level has a level below it with the same zone, density and lot cells | `stocked_zone_profiles` (the allocator's filter); the level rule is new, from the registry's upgrade rule |
+| Door sanity, from the ledger sidecar: `main` door `height_m` in 2.0–2.6, `width_m` in 0.7–6.0, threshold `y` in 0–1.5, `entrance/main` within 0.5 m of it in plan | new |
+| Triangles per tier within the ceilings of [Buildings](#buildings), from each `.glb` index count | new; a warning, since the models validator owns this gate |
+
+Stills, for the owner's review, to `$ARTIFACTS`: the `LOD0` three-quarter view in the default
+scheme, a top-down lot plan (lot rectangle, bounds, footprint, doors, entrance anchor), and one
+frame per tier at its band's near distance. They need a rendered run (gamescope headless, as the
+other rendered tools); whether the asset editor's preview can be driven for them without changes
+is *(unverified)*.
+
+### Hand-authored fields
+
+A draft leaves these to the owner in the editor, and no rerun of the pipeline ever writes them:
+site surfaces; yard hedge and planting; driveway, parking and loading anchors; `economy_profile`
+when the role did not give one; `asset_set`, tags and icon; `window_brightness`; the scheme
+spawn policy and display names; extra lot cells (back yard, `TOOLS-12`) and the final part
+position; `flat_size_m2` and capacities, as corrections of the derived values; the entrance anchor,
+as a correction; a recaptured thumbnail.
+
+### Findings in the hand-authored pack
+
+Recorded, not fixed. The pipeline's report or check would have named each:
+
+- `rowhouse_1`'s mesh part is named `rivitalo_brick_gable_lod0.glb` while its files are
+  `rivitalo_two_storey_*` (the schemes' `part` matches the name, so it works).
+- The four level-2 houses moved the mesh 0.65–0.9 m and kept the level-1 site surface; two of
+  them (`house_2_level_2`, `house_3_level_2`) also kept the level-1 entrance anchor, now 1.0–1.6 m
+  from the door.
+- `house_2`'s entrance anchor stands 1.53 m beside the centred gable door, in front of a window.
+- `house_4`'s entrance anchor stands in the corner between porch and front wall, 1.18 m from the
+  side door.
+- `grocery_store_1`'s entrance anchor is 2.0 m behind the corner door's wall plane.
+- All eight textures of `food_processing_factory_1` and the four non-default albedos of
+  `rowhouse_1` differ by SHA-256 from the models repository's export at `9c93f65`; every `.glb`
+  in the pack is identical to it. Which side is newer is not known.
+- `checksums.sha256` lists none of the four level-2 assets, so pack verification reports their
+  files as extra.
+
+### Open questions
+
+Each with the recommendation first.
+
+- **Q1 Versioning the local pack.** Recommended: a git repository whose data lives outside the
+  profile (`git init --separate-git-dir`), leaving one `.git` pointer file in the pack folder.
+  Found: the scanner skips dot-names only among the folders of `user://mods/` itself;
+  `collect_assets` walks every folder inside a pack, a `.git` directory included, and registers
+  only files named `asset.toml` (git stores none unless a ref is named so). The zip export's
+  `walk` also enters `.git`: its files are never archived but all appear in the export dialog's
+  excluded list, and a link or a non-UTF-8 name there would refuse the export. Importing a newer
+  archive of the pack moves the installed folder to Trash, a `.git` directory with it; a pointer
+  file loses nothing. Alternative: a plain `.git` directory in the pack plus a rule that
+  `collect_assets` and `archive::walk` skip dot-names.
+- **Q2 Hand-authored fields.** Recommended: the list above. Alternative: derive a default front
+  walk (a strip from the main door to the front lot edge): every hand asset has exactly one
+  surface, asphalt, reaching the front lot edge.
+- **Q3 Part position.** Recommended: R2 (centred across, back-flush), exact in `z` for 5 of 12.
+  Alternative: centred both ways, which is where the editor leaves an imported mesh (the factory).
+  A rear margin for hedged lots (0.65–0.78 m by hand at level 2) stays a hand edit either way.
+- **Q4 `flat_size_m2`.** Recommended: R5's 0.8 × wall-plate area per dwelling, rounded to 10.
+  Alternative: a fixed 80 as the houses use, or the ground storey alone.
+- **Q5 Lot slack.** Recommended: R1 with no minimum yard, the report stating the slack on each
+  side; the smallest slack by hand is 3.2 m. Alternative: add a depth cell when the slack in front
+  of the main door is under a stated minimum.
+- **Q6 Entrance point.** Recommended: R4, the door on its wall plane at `y = 0`, and 0.5 m / 15°
+  as the report's tolerance; nine of the twelve hand anchors would then be reported once.
+  Alternative: the foot of the entrance steps, which needs one more sidecar fact per door.
+- **Q7 Main door.** Recommended: the builder tags it; rows use the door nearest the centre, `+X`
+  on a tie, as both hand terraces do. Alternative: the game picks the door nearest the lot's front
+  edge centre.
+- **Q8 Ledger.** Recommended: `<pack>/model_sources/<asset_id>.json`, no schema change.
+  Alternative: a provenance table in `asset.toml`, which needs `ExportParams` and the manifest
+  extended (both reject unknown fields) so an editor republish keeps it. Files inside the asset
+  folder are no option: publication drops what the manifest does not reference, and a library
+  asset reopened through `load_manifest` sets no `supporting_sources`, so even `attribution/`
+  files appear not to survive a republish (read in `authoring_session.gd`, not run).
+- **Q9 Thumbnail.** Recommended: R8 from the models preview, replaced by an editor capture when
+  the owner wants the pack's framing. Alternative: capture it in the rendered stills run.
+- **Q10 Existing assets.** Recommended: write ledger entries for the twelve assets once (a
+  read-only backfill that touches no `assets/` folder), then act on the findings by hand.
+  Alternative: leave them outside the pipeline.
+- **Q11 Models contract.** Recommended: amend the models repository's manifest ban and handoff
+  text for the sidecar, add `write_facts` and the validator check, tag the ten buildings.
+  Alternative: none; the pipeline needs the sidecar.
+- **Q12 Explicit buildings.** Recommended: zoned buildings only in the first version; the hall
+  waits. Alternative: accept `placement_mode = "explicit"` with a `service_class` role input.
+
 ## Implementation Plan
 
 ### Phase 0: Schema, Scanner, And Registry
