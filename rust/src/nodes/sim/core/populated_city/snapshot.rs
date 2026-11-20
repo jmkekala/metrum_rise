@@ -4,7 +4,7 @@
 //! `ROAD-68-K22` commit breakdown's saved cities.
 
 use super::PopulatedCity;
-use crate::nodes::sim::core::scenario::install_bootstrap_assets;
+use crate::nodes::sim::core::scenario::{FIXTURE_PACK_ROOTS, install_bootstrap_assets};
 use crate::nodes::sim::core::state::SimCore;
 use crate::simulation::core::config::WorldConfig;
 use crate::simulation::core::time::SIMULATION_SPEED_STEPS;
@@ -409,14 +409,15 @@ fn fixture_revision_at(repository: &Path) -> String {
         hasher.update(source);
     }
 
-    let root = repository.join("godot/bootstrap/mods");
     // These definitions are loaded from disk independently of the bootstrap asset registry.
     // Their contents affect warm-up, so an asset-only revision can accept a stale city.
     let mut manifests = vec![
         repository.join("economy/profiles.toml"),
         repository.join("demand/growth_profiles.toml"),
     ];
-    collect_bootstrap_manifests(&root, &mut manifests);
+    for root in FIXTURE_PACK_ROOTS {
+        collect_bootstrap_manifests(&repository.join(root), &mut manifests);
+    }
     manifests.sort();
     for path in manifests {
         let relative = path
@@ -471,6 +472,7 @@ fn snapshot_revision_rejects_changed_economy_demand_and_assets() {
         "economy/profiles.toml",
         "demand/growth_profiles.toml",
         "godot/bootstrap/mods/test/manifest.json",
+        "godot/tests/mods/test/asset.toml",
     ];
     for input in inputs {
         let path = root.join(input);

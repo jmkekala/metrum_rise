@@ -16,6 +16,7 @@ extends SceneTree
 const ServiceTool := preload("res://scripts/tools/service_building_tool.gd")
 const IndustryTool := preload("res://scripts/tools/industry_building_tool.gd")
 const FieldTool := preload("res://scripts/tools/field_edit_tool.gd")
+const TestPacks := preload("res://tests/test_packs.gd")
 const TIMEOUT_MS := 20000
 const FARM := "kenney:building.industrial.small_farm"
 const MINE := "kenney:building.coal.mine"
@@ -79,7 +80,7 @@ func _load(scene: Node3D) -> void:
 	simulation = SimulationNode.new()
 	simulation.name = "SimulationNode"
 	scene.add_child(simulation)
-	var warnings := simulation.load_asset_packs(ProjectSettings.globalize_path("res://bootstrap/mods"), PackedStringArray(["kenney", "parking"]))
+	var warnings := simulation.load_asset_packs(TestPacks.mods_root(), PackedStringArray(["kenney", "parking"]))
 	_expect(warnings.is_empty(), "the packs load: " + warnings)
 	_expect(simulation.load_game(_fixture), "the street fixture must load")
 	simulation.set_simulation_speed(0.0)

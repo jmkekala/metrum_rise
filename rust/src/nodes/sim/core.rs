@@ -48,6 +48,8 @@ pub(crate) use road_edit_site::{
     RoadEditSite, TriedGraphEdit, compile_closure, edge_grade, steepened_profile,
 };
 pub(crate) use road_rejection::{RejectedBy, RoadAttempt, RoadRejection};
+#[cfg(test)]
+pub(crate) use scenario::install_bootstrap_assets;
 pub use scenario::{
     GrowthBusinessCashFlow, GrowthBusinessOutcome, GrowthDayRecord, GrowthReport, GrowthScenario,
 };

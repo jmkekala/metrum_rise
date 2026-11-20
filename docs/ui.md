@@ -55,8 +55,9 @@ Current deterministic rules:
 - startup creates `user://worlds/`, `user://mods/`, and `user://saves/`, then copies missing
   bundled starter entries from `res://bootstrap/worlds/` and `res://bootstrap/mods/`
 - when `user://settings.cfg` is missing, startup seeds default general UI/runtime settings
-- when `user://active_packs.cfg` is missing, startup seeds it with the bundled `kenney` pack
-  enabled; a saved empty enabled-pack list remains an explicit player choice
+- when `user://active_packs.cfg` is missing, startup seeds it with the bundled `parking` pack
+  enabled (the game bundles no building pack, `TOOLS-32`); a saved empty enabled-pack list
+  remains an explicit player choice
 - `MainMenu` contains no `SimulationNode`
 - `MainMenu` contains no terrain, water, road, or gameplay HUD surfaces
 - `New Game` opens the save browser's world list (`user://worlds/`), then the New Game dialog

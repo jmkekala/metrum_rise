@@ -978,7 +978,7 @@ These are necessary, not sufficient, because they omit overhead, weak sales and 
 player paths:
 - a border road and main street with commercial zoning;
 - residential and industrial cross streets;
-- the `godot/bootstrap/mods` pack.
+- the test building pack (`godot/tests/mods`) and the bundled packs (`godot/bootstrap/mods`).
 
 It then runs frame by frame at 32×. `rust/tests/growth_scenario.rs`:
 

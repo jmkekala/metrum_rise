@@ -11,6 +11,7 @@ extends SceneTree
 const RoadToolScript := preload("res://scripts/tools/road_tool.gd")
 const RoadReasonText := preload("res://scripts/ui/road_reason_text.gd")
 const RoadToolHudScript := preload("res://scripts/ui/road_tool_hud.gd")
+const TestPacks := preload("res://tests/test_packs.gd")
 const PARKING_LOT := "parking:building.parking.small_lot"
 const TIMEOUT_MS := 20000
 
@@ -46,7 +47,7 @@ func _run() -> void:
 		return
 	simulation = SimulationNode.new()
 	root.add_child(simulation)
-	var warnings := simulation.load_asset_packs(ProjectSettings.globalize_path("res://bootstrap/mods"), PackedStringArray(["kenney", "parking"]))
+	var warnings := simulation.load_asset_packs(TestPacks.mods_root(), PackedStringArray(["kenney", "parking"]))
 	_expect(warnings.is_empty(), "the house and parking packs load: " + warnings)
 	_expect(simulation.load_game(fixture), "the street fixture must load")
 	simulation.set_simulation_speed(0.0)

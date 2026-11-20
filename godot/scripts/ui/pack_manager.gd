@@ -99,7 +99,7 @@ func apply_changes() -> Error:
 	return OK
 
 func reset_defaults() -> void:
-	var defaults := ModPackConfig.DEFAULT_ENABLED_PACK_IDS
+	var defaults := ModPackConfig.default_enabled_pack_ids()
 	for pack_id in _checks:
 		(_checks[pack_id] as CheckBox).button_pressed = pack_id in defaults
 	_emit_dirty_state()

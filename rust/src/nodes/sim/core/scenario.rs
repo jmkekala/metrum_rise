@@ -3,7 +3,7 @@
 //! Headless growth scenario for economy balancing (`ECON-12`).
 //!
 //! Builds a small zoned town through the player's own tools (road commits, border connection,
-//! cell paint) with the repository's bootstrap asset pack, then runs it with
+//! cell paint) with the repository's fixture asset packs, then runs it with
 //! [`SimCore::step_frame`] at maximum speed. Agents move exactly as in the game, because a
 //! household is admitted only once its carrier reaches home.
 //!
@@ -297,16 +297,29 @@ fn place_producer_site(core: &mut SimCore, mine: bool, hectares: f32, x: f32) ->
     owner
 }
 
-pub(super) fn install_bootstrap_assets(core: &mut SimCore) {
-    let mods = Path::new(env!("CARGO_MANIFEST_DIR")).join("../godot/bootstrap/mods");
-    let scan = scan_pack_dir(&mods);
-    assert!(
-        scan.warnings.is_empty() && !scan.packs.is_empty(),
-        "bootstrap packs in {}: {:?}",
-        mods.display(),
-        scan.warnings
-    );
-    core.replace_asset_registry(scan.packs.into_iter().flat_map(|pack| {
+/// The pack folders test and benchmark cities register, relative to the repository root: the
+/// test-only building pack, then the bundled packs. Alphabetical pack order across both, the
+/// order one shared folder gave, so registry indices are unchanged.
+pub(crate) const FIXTURE_PACK_ROOTS: [&str; 2] = ["godot/tests/mods", "godot/bootstrap/mods"];
+
+/// Replaces the registry with every pack under [`FIXTURE_PACK_ROOTS`]. The building stock is
+/// the test-only pack; a release ships none of it.
+pub(crate) fn install_bootstrap_assets(core: &mut SimCore) {
+    let repository = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let mut packs = Vec::new();
+    for root in FIXTURE_PACK_ROOTS {
+        let mods = repository.join(root);
+        let scan = scan_pack_dir(&mods);
+        assert!(
+            scan.warnings.is_empty() && !scan.packs.is_empty(),
+            "fixture packs in {}: {:?}",
+            mods.display(),
+            scan.warnings
+        );
+        packs.extend(scan.packs);
+    }
+    packs.sort_by(|a, b| a.pack.pack_id.cmp(&b.pack.pack_id));
+    core.replace_asset_registry(packs.into_iter().flat_map(|pack| {
         let pack_id = pack.pack.pack_id;
         pack.assets
             .into_iter()

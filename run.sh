@@ -1063,7 +1063,8 @@ repair_godot_import_cache_if_needed() {
     fi
 }
 
-# The player's installed packs, seeded from godot/bootstrap/mods on first launch.
+# The player's installed packs, seeded from godot/bootstrap/mods (and, in development runs,
+# godot/tests/mods) on first launch.
 player_mods_dir() {
     if [ "$METRUM_PLATFORM" = "darwin" ]; then
         printf '%s\n' "$HOME/Library/Application Support/Godot/app_userdata/Metrum Rise/mods"
@@ -1134,7 +1135,8 @@ ensure_lfs_assets() {
 }
 
 # Seeding never overwrites the player's files, so stubs seeded before the assets were fetched
-# stay broken. Replace each with its fetched bootstrap original; packs without one are left alone.
+# stay broken. Replace each with its fetched original, bundled (bootstrap/mods) or the development
+# seed (tests/mods); packs without one are left alone.
 repair_seeded_mod_stubs() {
     local mods_dir
     mods_dir="$(player_mods_dir)"
@@ -1146,6 +1148,7 @@ repair_seeded_mod_stubs() {
     while IFS= read -r -d '' stub; do
         relative_path="${stub#"$mods_dir"/}"
         seed="$GODOT_DIR/bootstrap/mods/$relative_path"
+        [ -f "$seed" ] || seed="$GODOT_DIR/tests/mods/$relative_path"
         if [ -f "$seed" ] && ! grep -q -x -F -I -m1 -- "$LFS_POINTER_HEADER" "$seed"; then
             if ! cp "$seed" "$stub"; then
                 echo "Error: could not replace the pointer stub $stub." >&2

@@ -10,7 +10,6 @@
 //! Godot's main thread calls, the simulation thread and spawned jobs.
 
 use super::*;
-use crate::assets::scan_pack_dir;
 use crate::nodes::sim::core::{RoadCommitAck, RoadCommitRequest};
 use crate::nodes::sim::render::car_visual::CarVisualSmoother;
 use crate::simulation::economy::fiscal::POLICY_COMMERCIAL_PROPERTY_TAX;
@@ -107,19 +106,7 @@ impl Entries {
 }
 
 fn assets_installed(core: &mut SimCore) {
-    let mods = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../godot/bootstrap/mods");
-    let scan = scan_pack_dir(&mods);
-    assert!(
-        !scan.packs.is_empty(),
-        "bootstrap packs in {}",
-        mods.display()
-    );
-    core.replace_asset_registry(scan.packs.into_iter().flat_map(|pack| {
-        let pack_id = pack.pack.pack_id;
-        pack.assets
-            .into_iter()
-            .map(move |(manifest, dir)| (pack_id.clone(), manifest, dir))
-    }));
+    crate::nodes::sim::core::install_bootstrap_assets(core);
 }
 
 fn committed(core: &mut SimCore, (x0, z0): (f32, f32), (x1, z1): (f32, f32)) {

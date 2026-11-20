@@ -13,6 +13,8 @@ const USER_MODS_DIR := "user://mods"
 const USER_SAVES_DIR := "user://saves"
 const BOOTSTRAP_WORLDS_DIR := "res://bootstrap/worlds"
 const BOOTSTRAP_MODS_DIR := "res://bootstrap/mods"
+# The repository's test building pack, for development runs. Exports exclude res://tests.
+const DEV_MODS_DIR := "res://tests/mods"
 const COPY_CHUNK_BYTES := 1024 * 1024
 
 static func run() -> void:
@@ -21,6 +23,8 @@ static func run() -> void:
 	_ensure_user_dir(USER_SAVES_DIR)
 	_seed_top_level_entries(BOOTSTRAP_WORLDS_DIR, USER_WORLDS_DIR)
 	_seed_top_level_entries(BOOTSTRAP_MODS_DIR, USER_MODS_DIR)
+	if not OS.has_feature("template"):
+		_seed_top_level_entries(DEV_MODS_DIR, USER_MODS_DIR)
 	# Pack imports that never finished (a crash mid-import) leave hidden staging folders.
 	AssetAuthoringFiles.sweep_imports(USER_MODS_DIR)
 	GameSettings.seed_default_config_if_missing()

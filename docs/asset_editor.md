@@ -206,8 +206,15 @@ Shipped design:
   Every bundled `.glb` and `.png` imports as `keep` (`TOOLS-15`): export otherwise packs only
   the imported form, and the copy would install `.import` stubs instead of the files. The copy
   skips `.import` sidecars, so an installed pack holds only its files, as in an export.
-- Fresh profiles seed `user://active_packs.cfg` with the bundled `kenney` pack enabled. Once the
+- Fresh profiles seed `user://active_packs.cfg` with the bundled `parking` pack enabled. Once the
   player saves pack selection, even an empty enabled list is preserved as intentional.
+- The game bundles no building pack (`TOOLS-32`): a player imports one, and an imported pack
+  installs disabled. The Kenney building pack is test-only, in `godot/tests/mods/kenney/`, which
+  the export presets exclude with the rest of `tests/`. Rust test and benchmark cities register
+  it with the bundled packs (`FIXTURE_PACK_ROOTS`, `nodes/sim/core/scenario.rs`), and Godot
+  tests that need both load a copy of the two folders (`tests/test_packs.gd`). A development
+  run (not an export template) also seeds it into `user://mods/` and enables it by default, so
+  saved test cities keep their buildings.
 
 ```text
 user://mods/

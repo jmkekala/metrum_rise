@@ -106,6 +106,8 @@ An exported game has neither the repository nor raw `res://` files (`TOOLS-15`):
   `FileAccess`) imports as `keep`; a non-resource file it needs (the walker `.bin` buffers) goes
   in the presets' include filter.
 - First-run setup copies `res://bootstrap/` without `.import` sidecars.
+- A release bundles no building pack (`TOOLS-32`). The Kenney building pack is test-only under
+  `godot/tests/mods/`, which the presets' `tests/*` exclude filter keeps out of every export.
 
 ## Smoke test
 

@@ -80,7 +80,7 @@ func _run() -> void:
 	_expect(manager._status_label.text == "Moved %s to Trash." % PACK, "status reports the removal: " + manager._status_label.text)
 	_expect(manager._checks.has(LOCAL) and not manager._checks[LOCAL].button_pressed and manager.has_pending_changes(), "unapplied changes survive the reload")
 	messages.clear()
-	_expect(actions.remove_dialog("kenney", message) == null and str(messages[-1]).contains("bundled"), "bundled packs cannot be removed")
+	_expect(actions.remove_dialog("parking", message) == null and str(messages[-1]).contains("bundled"), "bundled packs cannot be removed")
 
 	manager.free()
 	_remove_tree(MODS + LOCAL)

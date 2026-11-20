@@ -67,7 +67,7 @@ func _load(scene: Node3D) -> void:
 	simulation = SimulationNode.new()
 	simulation.name = "SimulationNode"
 	scene.add_child(simulation)
-	var warnings := simulation.load_asset_packs(ProjectSettings.globalize_path("res://bootstrap/mods"), PackedStringArray(["kenney"]))
+	var warnings := simulation.load_asset_packs(ProjectSettings.globalize_path("res://tests/mods"), PackedStringArray(["kenney"]))
 	_expect(warnings.is_empty(), "the house pack loads: " + warnings)
 	_expect(simulation.load_game(_fixture), "the T fixture must load")
 	simulation.set_simulation_speed(0.0)

@@ -486,15 +486,7 @@ fn vegetation_snapshot_on_a_saved_city() {
             let mut core = SimCore::new(crate::simulation::core::config::WorldConfig::new(
                 2048.0, 2048.0, 40.0, 10.0,
             ));
-            let mods =
-                std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../godot/bootstrap/mods");
-            let scan = crate::assets::scanner::scan_pack_dir(&mods);
-            core.replace_asset_registry(scan.packs.into_iter().flat_map(|pack| {
-                let pack_id = pack.pack.pack_id;
-                pack.assets
-                    .into_iter()
-                    .map(move |(manifest, dir)| (pack_id.clone(), manifest, dir))
-            }));
+            crate::nodes::sim::core::install_bootstrap_assets(&mut core);
             core.load_game_internal(&path).unwrap();
             core.precompute_road_mesh_data();
             core
