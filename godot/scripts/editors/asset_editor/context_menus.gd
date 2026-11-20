@@ -182,6 +182,10 @@ func open_library(mouse: Vector2) -> void:
 	var target := {}
 	if item != null:
 		var metadata = item.get_metadata(0)
+		# A level chip targets its own level; the rest of a row targets the row's lowest level.
+		var chip: String = editor._browser.level_id(item, tree.get_button_id_at_position(mouse))
+		if not chip.is_empty():
+			metadata = chip
 		if metadata is String:
 			target = {"id": metadata}
 			item.select(0)

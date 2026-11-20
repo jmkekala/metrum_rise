@@ -45,7 +45,7 @@ const TYPES: [(&str, &str); 7] = [
     ("explicit", "Other explicitly placed building"),
 ];
 
-const SERVICES: [(&str, &str); 10] = [
+pub(crate) const SERVICES: [(&str, &str); 10] = [
     ("power", "Power"),
     ("water", "Water"),
     ("waste", "Wastewater"),

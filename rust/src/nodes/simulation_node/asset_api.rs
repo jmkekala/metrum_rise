@@ -533,6 +533,82 @@ impl SimulationNode {
         crate::assets::asset::BuildingData::DEFAULT_FARMHOUSE_AREA_M2
     }
 
+    /// The asset editor browser's rows for the registered assets matching `query` (`TOOLS-34`),
+    /// grouped and ordered by Rust, as `{packs, missing}`. `packs` holds `{pack, asset_count,
+    /// groups}`, each group `{label, type, asset_count, rows}` (`type` is the editor creation
+    /// type a New asset there starts as, or `""`), each row `{label, asset_set, levels}` and
+    /// each level `{level, id}` (`level` 0 for an asset that is not a building). Counts are of
+    /// assets, not rows; a family's row holds only its matching members. `missing` holds the
+    /// catalogue groups no pack has an asset in, as `{label, type}`, and is empty while a
+    /// search is given. Call it on a refresh or a search edit, not per frame; see
+    /// `assets::browser` for the order and the bound.
+    #[func]
+    pub fn get_asset_browser_rows(&self, query: GString) -> VarDictionary {
+        use crate::assets::browser::{
+            BrowserGroup, BrowserQuery, browser_packs, catalogue_groups, missing_groups,
+            profile_resources,
+        };
+        use crate::simulation::buildings::allocator::zone_type_to_zone_class;
+        use crate::simulation::economy::definitions::EconomyProfileRuntimeKind as Kind;
+        let core = self.lock_core();
+        let registry = &core.allocator.registry;
+        let query = BrowserQuery::parse(&query.to_string());
+        let array = |items: Vec<VarDictionary>| {
+            VarArray::from_iter(items.iter().map(|item| item.to_variant()))
+        };
+        let group_dict = |group: &BrowserGroup| {
+            vdict! { "label": group.label(), "type": group.creation_type() }
+        };
+        let packs = browser_packs(registry, &query);
+        let packs = packs.iter().map(|pack| {
+            let groups = pack.groups.iter().map(|group| {
+                let rows = group.rows.iter().map(|row| {
+                    let levels = row.levels.iter().map(|level| {
+                        vdict! { "level": i64::from(level.level), "id": level.id }
+                    });
+                    vdict! {
+                        "label": row.label,
+                        "asset_set": row.asset_set.unwrap_or_default(),
+                        "levels": array(levels.collect()),
+                    }
+                });
+                let mut dict = group_dict(&group.group);
+                dict.set("asset_count", group.asset_count as i64);
+                dict.set("rows", array(rows.collect()));
+                dict
+            });
+            vdict! {
+                "pack": pack.pack_id,
+                "asset_count": pack.asset_count as i64,
+                "groups": array(groups.collect()),
+            }
+        });
+        let packs = array(packs.collect());
+        let mut missing = Vec::new();
+        if query.is_empty() {
+            let catalog = core.demand.runtime_catalog();
+            let zoned = core
+                .zoning
+                .profiles
+                .profiles()
+                .iter()
+                .filter_map(|profile| {
+                    let zone = zone_type_to_zone_class(profile.zone_type)?;
+                    Some((zone, profile.density.as_str()))
+                });
+            let catalogue = catalogue_groups(
+                zoned,
+                profile_resources(catalog, Kind::Extractor),
+                profile_resources(catalog, Kind::FieldProducer),
+            );
+            missing = missing_groups(registry, catalogue)
+                .iter()
+                .map(group_dict)
+                .collect();
+        }
+        vdict! { "packs": packs, "missing": array(missing) }
+    }
+
     /// Returns a JSON object describing the manifest for an already-registered asset,
     /// or `""` if the qualified ID is not in the registry.
     ///

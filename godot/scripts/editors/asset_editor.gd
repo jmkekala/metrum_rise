@@ -23,6 +23,7 @@ const AuthoringSession = preload("res://scripts/editors/asset_editor/authoring_s
 const WorkspaceLayout = preload("res://scripts/editors/asset_editor/workspace_layout.gd")
 const AssetSelection = preload("res://scripts/editors/asset_editor/asset_selection.gd")
 const ContextMenus = preload("res://scripts/editors/asset_editor/context_menus.gd")
+const AssetBrowser = preload("res://scripts/editors/asset_editor/asset_browser.gd")
 
 const PANEL_GAP := EditorSpacing.CONTROL_GAP
 const PACK_MENU_CREATE_NEW := 1000000
@@ -49,6 +50,7 @@ var _view := EditorView.new()
 var _layout := WorkspaceLayout.new()
 var _selection := AssetSelection.new()
 var _menus := ContextMenus.new()
+var _browser: RefCounted
 var _session: RefCounted
 var _yard_preview: RefCounted
 var _lod_preview := PreviewLod.new()
@@ -77,7 +79,6 @@ var _frontage_fwd: Vector3 = Vector3.FORWARD
 
 # Registered asset IDs, refreshed after pack load.
 var _asset_ids: Array[String] = []
-var _asset_display_names: Dictionary = {}
 var _suppress_part_transform_changed: bool = false
 var _last_glb_dir: String = ""     # last directory used in GLB file dialogs
 var _config: ConfigFile            # persistent editor preferences
@@ -132,6 +133,7 @@ func _ready() -> void:
 	_load_zone_profiles()
 	_build_preview_node()
 	_view._build_ui()
+	_browser = AssetBrowser.new(_view._asset_tree)
 	_selection.configure(self)
 	_lod_preview.configure(_preview, _view._preview_panel)
 	_bbcode_strip_regex = RegEx.new()
@@ -314,7 +316,7 @@ func _refresh_asset_browser() -> void:
 		_asset_ids.append(str(aid))
 	_asset_ids.sort()
 	_refresh_known_packs(mods_path)
-	_refresh_asset_display_name_cache()
+	_browser.index_labels(sim.get_asset_browser_rows(""))
 	_rebuild_asset_tree()
 	_log("Registry: %d asset(s) loaded." % _asset_ids.size())
 
@@ -537,104 +539,22 @@ func _suggest_new_pack_id() -> String:
 		i += 1
 	return "my-pack-%d" % int(Time.get_unix_time_from_system())
 
-func _refresh_asset_display_name_cache() -> void:
-	_asset_display_names.clear()
-	for aid in _asset_ids:
-		var json_str: String = sim.get_asset_manifest_json(aid)
-		if json_str.is_empty():
-			continue
-		var parsed = JSON.parse_string(json_str)
-		if not (parsed is Dictionary):
-			continue
-		var display_name := str((parsed as Dictionary).get("display_name", "")).strip_edges()
-		if not display_name.is_empty():
-			_asset_display_names[aid] = display_name
-
 func _on_asset_search_changed(_text: String) -> void:
 	_rebuild_asset_tree()
 
+# Rust groups, orders and searches the rows (`TOOLS-34`); the browser view only draws them.
 func _rebuild_asset_tree() -> void:
 	if not _view._asset_tree:
 		return
-
 	var query := ""
 	if _view._asset_search_edit:
-		query = _view._asset_search_edit.text.strip_edges().to_lower()
-
-	_view._asset_tree.clear()
-	var root := _view._asset_tree.create_item()
-	var visible_ids: Array[String] = []
-	for aid in _asset_ids:
-		if _asset_matches_query(aid, query):
-			visible_ids.append(aid)
-
+		query = _view._asset_search_edit.text.strip_edges()
+	var visible: int = _browser.build(sim.get_asset_browser_rows(query), _known_packs, not query.is_empty())
 	if _view._asset_count_lbl:
 		if query.is_empty():
 			_view._asset_count_lbl.text = "%d assets" % _asset_ids.size()
 		else:
-			_view._asset_count_lbl.text = "%d / %d assets" % [visible_ids.size(), _asset_ids.size()]
-
-	if visible_ids.is_empty():
-		var empty_item := _view._asset_tree.create_item(root)
-		empty_item.set_text(0, "No matching assets")
-		empty_item.set_selectable(0, false)
-
-	var pack_counts := {}
-	var category_counts := {}
-	for aid in visible_ids:
-		var pack := _asset_pack_id(aid)
-		var category := _asset_category_id(aid)
-		pack_counts[pack] = int(pack_counts.get(pack, 0)) + 1
-		var category_key := "%s\n%s" % [pack, category]
-		category_counts[category_key] = int(category_counts.get(category_key, 0)) + 1
-
-	var pack_items := {}
-	var category_items := {}
-	if query.is_empty():
-		for known: Dictionary in _known_packs:
-			var pack_id := str(known.pack_id)
-			var item := _view._asset_tree.create_item(root)
-			item.set_text(0, "%s (%d)" % [pack_id, int(pack_counts.get(pack_id, 0))])
-			item.set_selectable(0, false)
-			item.set_metadata(0, {"pack": pack_id})
-			pack_items[pack_id] = item
-	for aid in visible_ids:
-		var pack := _asset_pack_id(aid)
-		var category := _asset_category_id(aid)
-		var pack_item: TreeItem = pack_items.get(pack, null)
-		if pack_item == null:
-			pack_item = _view._asset_tree.create_item(root)
-			pack_item.set_text(0, "%s (%d)" % [pack, int(pack_counts.get(pack, 0))])
-			pack_item.set_selectable(0, false)
-			pack_item.set_metadata(0, {"pack": pack})
-			pack_item.set_collapsed(false)
-			pack_items[pack] = pack_item
-
-		var category_key := "%s\n%s" % [pack, category]
-		var category_item: TreeItem = category_items.get(category_key, null)
-		if category_item == null:
-			category_item = _view._asset_tree.create_item(pack_item)
-			category_item.set_text(
-				0,
-				"%s (%d)" % [category, int(category_counts.get(category_key, 0))]
-			)
-			category_item.set_selectable(0, false)
-			category_item.set_metadata(0, {"pack": pack, "type": category.get_slice(" / ", 1)})
-			category_item.set_collapsed(false)
-			category_items[category_key] = category_item
-
-		var asset_item := _view._asset_tree.create_item(category_item)
-		asset_item.set_text(0, _asset_browser_label(aid))
-		asset_item.set_metadata(0, aid)
-		asset_item.set_tooltip_text(0, aid)
-
-func _asset_matches_query(aid: String, query: String) -> bool:
-	if query.is_empty():
-		return true
-	return (
-		aid.to_lower().contains(query)
-		or _asset_browser_label(aid).to_lower().contains(query)
-	)
+			_view._asset_count_lbl.text = "%d / %d assets" % [visible, _asset_ids.size()]
 
 func _asset_pack_id(aid: String) -> String:
 	var sep := aid.find(":")
@@ -648,17 +568,8 @@ func _asset_local_id(aid: String) -> String:
 		return aid
 	return aid.substr(sep + 1)
 
-func _asset_category_id(aid: String) -> String:
-	var local_id := _asset_local_id(aid)
-	var parts := local_id.split(".")
-	if parts.size() >= 2:
-		return "%s / %s" % [str(parts[0]), str(parts[1])]
-	if parts.size() == 1 and not str(parts[0]).is_empty():
-		return str(parts[0])
-	return "uncategorized"
-
 func _asset_browser_label(aid: String) -> String:
-	return str(_asset_display_names.get(aid, _asset_local_id(aid))).strip_edges()
+	return str(_browser.labels.get(aid, _asset_local_id(aid))).strip_edges()
 
 # Preview choices never mutate placement bounds, source geometry or material files.
 func _frame_selected_part() -> void:
@@ -695,6 +606,13 @@ func _on_add_part_lod_requested() -> void:
 
 func _on_asset_tree_activated() -> void:
 	_load_selected_asset_from_tree()
+
+func _on_asset_tree_button_clicked(item: TreeItem, _column: int, id: int, mouse_button_index: int) -> void:
+	if mouse_button_index != MOUSE_BUTTON_LEFT:
+		return
+	var aid: String = _browser.level_id(item, id)
+	if not aid.is_empty():
+		_load_asset_manifest(aid)
 
 func _on_asset_tree_gui_input(event: InputEvent) -> void:
 	if event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_DELETE:

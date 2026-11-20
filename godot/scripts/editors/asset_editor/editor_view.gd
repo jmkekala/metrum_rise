@@ -305,6 +305,7 @@ func _build_library(parent: Node) -> void:
 	_asset_tree.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	_asset_tree.hide_root = true
 	_asset_tree.item_activated.connect(_editor._on_asset_tree_activated)
+	_asset_tree.button_clicked.connect(_editor._on_asset_tree_button_clicked)
 	_asset_tree.gui_input.connect(_editor._on_asset_tree_gui_input)
 	body.add_child(_asset_tree)
 

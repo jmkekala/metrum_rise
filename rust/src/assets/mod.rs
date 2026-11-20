@@ -15,6 +15,7 @@
 pub(crate) mod archive;
 pub mod asset;
 pub(crate) mod authoring;
+pub(crate) mod browser;
 pub mod lod_policy;
 pub mod pack;
 pub mod registry;

@@ -1867,11 +1867,48 @@ V1 inspector and viewport contract:
   application viewport so a saved layout cannot reopen editor-owned windows outside the app.
   The mesh picker saves its own `mesh_import_dialog` section of `asset_editor.cfg`. An editor save
   takes only that section from disk and writes the rest from memory, so neither save drops the other's state.
-- The asset browser presents a searchable, deterministic hierarchy rather than one flat list. The
-  baseline grouping is pack, then asset category derived from the registered asset ID, then the
-  individual asset. Individual asset rows display the authored `display_name`; the full asset ID is
-  retained as item metadata/tooltip and remains searchable. Single click selects an asset browser
-  row; double click or keyboard activation loads it into the inspector.
+- The asset browser (`TOOLS-34`) presents a searchable, deterministic hierarchy rather than one
+  flat list. Rust builds its rows (`SimulationNode.get_asset_browser_rows(query)`, grouping in
+  `rust/src/assets/browser.rs`); GDScript only draws them and parses no manifest. The hierarchy
+  is pack (by id), then a group read from manifest fields, never from the asset ID text, then one
+  row per building. Groups appear in this fixed order:
+  1. zoned buildings by `zone_type` (residential, commercial, industrial, office, mixed), then
+     `density` (low, medium, high, others by name), e.g. `Residential · low density`;
+  2. explicit buildings with a declared `service_class`, as `Service · <subtype>`, in the
+     editor's service subtype order, unknown classes after them by name;
+  3. `Parking lots`: explicit buildings of service class `parking`;
+  4. `Resource extractor · <resource>` (an explicit `[building.extractor]`), then
+     `Farm · <resource>` (an explicit `[building.field]`); an explicit building's kind follows
+     the editor's authoring precedence: extractor, field, service class, plain explicit;
+  5. `Other explicit buildings`, then `Props · <category>`, `Vehicles`, `Characters` and a
+     fallback `Other assets`.
+- Members of one upgrade family (the same `asset_set`) in one pack and group form one row, named
+  by its lowest level's `display_name`, with one level chip (`L1`, `L2`, ...) per member in
+  ascending level. A building outside any family is its own row with its single level chip, so
+  two levels of one building, or two namesakes, never show as identical rows. Rows sort by
+  display name (ASCII case folded), then qualified ID. Pack and group counts are of assets, not
+  rows. A row's tooltip is its lowest level's qualified ID (and the family); a chip's tooltip is
+  its level and qualified ID.
+- Single click selects a row; double click or keyboard activation opens the row's lowest level.
+  A single click on a level chip opens that level, and its context menu targets that level.
+  Chips are Tree buttons: a transparent texture reserves each chip's place and Tree's own hit
+  test reports the click. An overlay control above the rows paints the chip labels in the button
+  rectangles; a custom cell draw callback cannot, because Tree draws its rows on a canvas item of
+  their own and the editor theme's opaque focus style covers anything the callback draws.
+- Search terms (whitespace-separated, case ignored) must all match. A term matches the
+  qualified ID, display name, group heading, zone, density, service class, extractor or field
+  resource, `asset_set` or a tag; `L2`, `level2` or `level 2` matches level 2 exactly. A family
+  row keeps only its matching levels.
+- With no search, a `No assets yet` section after the packs lists, once, every group the game
+  names without an asset that no pack fills, each as a greyed, non-selectable `(0)` row in group
+  order: each built-in zoning profile's zone and density, each service subtype the editor
+  creates, parking lots, and each resource an executable extractor or field economy profile
+  produces. Other explicit buildings, props, vehicles and characters have no such list and never
+  appear there. A group with any asset in any pack is not missing, even if no level-1 asset
+  could spawn from it.
+- Rows are rebuilt when the library refreshes or the search changes, never per frame:
+  `O(N (Q L + log N + log G) + G log G)` for `N` registered assets, `Q` search terms, `L` bytes
+  of searchable text per asset and `G` catalogue groups.
 - Mesh import uses a project-native picker with folder navigation, current-folder filtering, and a
   live 3D preview of the selected GLB/GLTF/FBX file before it is accepted into the asset. The
   preview loader uses the same import path as the final building preview so the picker cannot show
