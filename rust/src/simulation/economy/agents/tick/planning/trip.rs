@@ -73,27 +73,32 @@ pub(crate) fn plan_building_origin_trip(
     })
 }
 
-/// Builds a freight carrier's car plan from building `current_building`'s door to `gate`, the
-/// freight gate of `target_building` (`PARK-20`). The plan's end is the gate's lane point, so
-/// no flow field (they lead to doors) is read. `None` when no car route reaches the gate; the
-/// caller then plans to the door. O(4 candidate quotes + one route), as the door's plan.
+/// Builds a freight carrier's car plan from `origin` to `destination`, entrances of its own
+/// (`PARK-20`): a building's door to a freight gate, or a freight gate to a door or a gate. No
+/// flow field (they lead from doors' lane points to doors) is read: the route is the CCH's.
+/// `None` when no car route joins them; the caller then plans from or to the door. O(4
+/// candidate quotes + one route), as the door's plan.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn plan_building_origin_trip_to_gate(
-    current_building: usize,
+pub(crate) fn plan_car_trip_between_entrances(
+    origin: &BuildingEntrance,
     target_building: usize,
     activity: u8,
-    gate: &BuildingEntrance,
-    allocator: &BuildingAllocator,
+    destination: &BuildingEntrance,
     transit_network: &TransitNetwork,
     graph: &RegionGraph,
     pathfind_count: &AtomicU32,
 ) -> Option<BuiltTripPlan> {
-    let origin = allocator.entrances.get(current_building)?;
-    if !entrance_pair_supports_mode(MODE_CAR, true, origin, gate) {
+    if !entrance_pair_supports_mode(MODE_CAR, true, origin, destination) {
         return None;
     }
-    let mut chosen =
-        best_trip_candidate_for_mode(MODE_CAR, origin, gate, transit_network, graph, pathfind_count)?;
+    let mut chosen = best_trip_candidate_for_mode(
+        MODE_CAR,
+        origin,
+        destination,
+        transit_network,
+        graph,
+        pathfind_count,
+    )?;
     let (current_path, access_flags) =
         build_exact_path(&mut chosen, None, transit_network, graph, pathfind_count)?;
     Some(BuiltTripPlan {
@@ -189,8 +194,26 @@ pub(crate) fn plan_building_to_border_trip(
         return None;
     }
 
-    let origin_entrance = &allocator.entrances[current_building];
-    if origin_entrance.edge_idx >= graph.edge_count()
+    plan_entrance_to_border_trip(
+        &allocator.entrances[current_building],
+        border_node,
+        transit_network,
+        graph,
+        pathfind_count,
+    )
+}
+
+/// [`plan_building_to_border_trip`] from `origin_entrance`, a door's or a freight gate's
+/// (`PARK-20`, a truck leaving a dock). O(2 candidate routes), as the door's plan.
+pub(crate) fn plan_entrance_to_border_trip(
+    origin_entrance: &BuildingEntrance,
+    border_node: u32,
+    transit_network: &TransitNetwork,
+    graph: &RegionGraph,
+    pathfind_count: &AtomicU32,
+) -> Option<BuiltTripPlan> {
+    if border_node as usize >= graph.node_count()
+        || origin_entrance.edge_idx >= graph.edge_count()
         || graph.edge(origin_entrance.edge_idx).deleted
     {
         return None;

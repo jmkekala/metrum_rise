@@ -456,6 +456,24 @@ impl BuildingAllocator {
         self.freight_gate_entrance(handle, graph, lanes)
             .map(|entrance| (handle, entrance))
     }
+
+    /// The departure entrance of building `index`'s freight gate (`PARK-20`): the origin of a
+    /// carrier's plan out of one of its docks, its lane ids refreshed as
+    /// [`Self::freight_gate_entrance`]'s. `None` without a published dock. O(1) plus the refresh.
+    pub(crate) fn freight_gate_departure(
+        &self,
+        index: usize,
+        graph: &RegionGraph,
+        lanes: &crate::simulation::network::lanes::LaneSystem,
+    ) -> Option<BuildingEntrance> {
+        if self.freight_gates.is_empty() || index >= self.buildings.len() {
+            return None;
+        }
+        let handle = self.building_handles.handle(index).to_bits();
+        let mut entrance = self.freight_gates.get(&handle)?.leave.clone();
+        Self::refresh_entrance_lanes(&mut entrance, graph, lanes);
+        Some(entrance)
+    }
 }
 
 /// Building rows a copy of the store must refresh: the rows named by building revision steps,

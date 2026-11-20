@@ -12,7 +12,7 @@ use crate::simulation::economy::definitions::{
 };
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
-use crate::simulation::parking::ParkingTripPhase;
+use crate::simulation::parking::{ParkingSystem, ParkingTripPhase};
 
 use super::data::{Shipment, ShipmentEndpoint, ShipmentStatus, ShipmentSystem};
 use super::requests::event_cooldown_until;
@@ -73,13 +73,16 @@ impl ShipmentSystem {
     }
 
     /// Sends loaded shipment `id`'s carrier on its way at its departure slot (`SIM-02-E`). True when
-    /// a carrier left; one that cannot route fails the shipment and returns its cargo.
-    /// O(log S) plus one route.
+    /// a carrier left; one that cannot route fails the shipment and returns its cargo. A carrier
+    /// leaving a building with a free dock starts standing in it and takes it (`PARK-20`).
+    /// O(log S) plus one route, plus O(the source's docks).
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn dispatch_shipment(
         &mut self,
         id: u64,
         allocator: &mut BuildingAllocator,
         agents: &mut AgentSystem,
+        parking: &mut ParkingSystem,
         transit_network: &TransitNetwork,
         graph: &RegionGraph,
         treasury_balance: &mut f64,
@@ -100,6 +103,7 @@ impl ShipmentSystem {
                     shipment.id,
                     source,
                     destination,
+                    parking,
                     allocator,
                     transit_network,
                     graph,
@@ -119,6 +123,7 @@ impl ShipmentSystem {
                     shipment.id,
                     source,
                     border_node,
+                    parking,
                     allocator,
                     transit_network,
                     graph,
@@ -287,11 +292,14 @@ impl ShipmentSystem {
             retry_cooldown_hours,
             &catalog,
         );
+        // These drivers' cities publish no dock (`PARK-20`).
+        let mut parking = ParkingSystem::default();
         for id in std::mem::take(&mut self.held_dispatches) {
             self.dispatch_shipment(
                 id,
                 allocator,
                 agents,
+                &mut parking,
                 transit_network,
                 graph,
                 treasury_balance,
@@ -350,11 +358,14 @@ impl ShipmentSystem {
             retry_cooldown_hours,
             &catalog,
         );
+        // These drivers' cities publish no dock (`PARK-20`).
+        let mut parking = ParkingSystem::default();
         for id in std::mem::take(&mut self.held_dispatches) {
             self.dispatch_shipment(
                 id,
                 allocator,
                 agents,
+                &mut parking,
                 transit_network,
                 graph,
                 treasury_balance,

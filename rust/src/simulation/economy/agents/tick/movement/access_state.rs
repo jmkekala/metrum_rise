@@ -38,6 +38,12 @@ pub(super) unsafe fn reset_invalid_access_plan(
     slices: &MovementSlices,
 ) {
     unsafe {
+        // A truck pulling out of a dock whose plan went (`PARK-20`): its yard trip ends where
+        // the door carrier's would, which frees the dock. Round 2's minimal rule; one byte test
+        // on this failure path.
+        if slices.parking_trip.get(i).freight_gate {
+            *slices.parking_trip.get_mut(i) = Default::default();
+        }
         *slices.pos_x.get_mut(i) = pos.x;
         *slices.pos_y.get_mut(i) = pos.y;
         *slices.cur_b.get_mut(i) = current_building;

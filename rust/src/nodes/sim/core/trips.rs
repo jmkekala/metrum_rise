@@ -264,6 +264,7 @@ impl SimCore {
                     shipment,
                     &mut self.allocator,
                     &mut self.agents,
+                    &mut self.parking,
                     &self.transit_network,
                     &self.region_graph,
                     &mut self.treasury.balance,

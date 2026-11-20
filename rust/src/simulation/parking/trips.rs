@@ -14,7 +14,9 @@ pub(crate) enum ParkingTripPhase {
     None,
     /// Pedestrian travel from the origin door to the car's actual bay.
     WalkToCar,
-    /// The validated bay–aisle–driveway maneuver followed by ordinary lane entry.
+    /// The validated bay–aisle–driveway maneuver followed by ordinary lane entry. For a freight
+    /// carrier (`freight_gate`), its dock's route reversed, from the stop to the gate's lane
+    /// point, out of dock `source` (`PARK-20`).
     PullOut,
     /// Ordinary network driving between driveway lane endpoints.
     Drive,
@@ -51,11 +53,13 @@ pub struct ParkingTrip {
     pub(crate) target: u64,
     pub(crate) phase: ParkingTripPhase,
     pub(crate) ready: bool,
-    /// A freight carrier's trip into the yard of building `target` (`PARK-20`): its plan ends at
-    /// the building's freight gate, and it keeps the flag through `PullIn`, `AtDock` and
-    /// `GateToDoor`. Never set for a resident. Lives in the row's padding (the access flags
-    /// byte has no free bit), and is not written when false, so a city without docks saves the
-    /// rows it saved before.
+    /// A freight carrier's yard trip (`PARK-20`). With phase `None`, `PullIn`, `AtDock` or
+    /// `GateToDoor`: into the yard of building `target`, its plan ending at that building's
+    /// freight gate. With `PullOut`: out of dock `source`, its plan starting at the gate's lane
+    /// point and ending at the freight gate of building `target`, or at a door or a border when
+    /// `target` is `NO_FREIGHT_GATE`. Never set for a resident. Lives in the row's padding
+    /// (the access flags byte has no free bit), and is not written when false, so a city without
+    /// docks saves the rows it saved before.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub(crate) freight_gate: bool,
 }
@@ -63,7 +67,49 @@ pub struct ParkingTrip {
 // Every agent's row is in the movement pass's working set: growth here costs each tick.
 const _: () = assert!(std::mem::size_of::<ParkingTrip>() == 56);
 
+/// The `target` of a freight carrier's pull-out whose plan ends at a door or a border rather than
+/// at a freight gate (`PARK-20`): `Handle::NONE`'s bits, which no building handle has.
+pub(crate) const NO_FREIGHT_GATE: u64 = (u32::MAX as u64) << 32;
+
 impl ParkingTrip {
+    /// A freight carrier's pull-out of `dock`, its plan ending at the freight gate of the
+    /// building whose handle bits `gate` names, or at a door or border with none (`PARK-20`).
+    pub(crate) fn freight_pull_out(dock: Handle<Place>, gate: Option<u64>) -> Self {
+        Self {
+            source: dock,
+            target: gate.unwrap_or(NO_FREIGHT_GATE),
+            phase: ParkingTripPhase::PullOut,
+            freight_gate: true,
+            ..Self::default()
+        }
+    }
+
+    /// The dock a freight carrier's yard trip holds (`PARK-20`): the one it pulls into or stands
+    /// in (`destination`), or the one it pulls out of (`source`). None for every other row. O(1).
+    pub(crate) fn held_dock(&self) -> Handle<Place> {
+        match self.phase {
+            _ if !self.freight_gate => Handle::NONE,
+            ParkingTripPhase::PullIn | ParkingTripPhase::AtDock => self.destination,
+            ParkingTripPhase::PullOut => self.source,
+            _ => Handle::NONE,
+        }
+    }
+
+    /// A freight carrier's row once its pull-out has reached the gate's lane point
+    /// (`PARK-20`): on to the freight gate of building `target`, or no yard trip at all. The
+    /// dock it held is free from then on. O(1).
+    pub(crate) fn after_freight_pull_out(&self) -> Self {
+        if self.target == NO_FREIGHT_GATE {
+            Self::default()
+        } else {
+            Self {
+                target: self.target,
+                freight_gate: true,
+                ..Self::default()
+            }
+        }
+    }
+
     /// Reconstructs derived route storage after a saved/cloned record is restored.
     /// O(prepared nodes) allocation at load/undo only; no work when capacity is sufficient.
     pub(crate) fn prepare_route_buffer(&self, route: &mut Vec<u32>) {

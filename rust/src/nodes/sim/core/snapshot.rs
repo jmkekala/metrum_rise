@@ -81,7 +81,7 @@ pub(crate) fn access_phase_target(
     }
 }
 
-fn access_phase_direction(
+pub(super) fn access_phase_direction(
     core: &SimCore,
     agent_idx: usize,
     world_x: f32,
@@ -94,7 +94,13 @@ fn access_phase_direction(
         TRANSIT_ACCESS_INGRESS => access_phase_target(core, agent_idx, false),
         _ => None,
     }?;
-    let direction = Vector3::new(target.x - world_x, 0.0, target.z - world_z);
+    let mut direction = Vector3::new(target.x - world_x, 0.0, target.z - world_z);
+    let trip = &core.agents.parking_trip[agent_idx];
+    if trip.freight_gate && trip.phase == crate::simulation::parking::ParkingTripPhase::PullOut {
+        // A truck backs out of its dock (owner decision 2, `PARK-20`): its nose points back
+        // along the route, into the bay.
+        direction = -direction;
+    }
     (direction.length_squared() > 1e-6).then(|| direction.normalized())
 }
 

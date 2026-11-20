@@ -11,10 +11,15 @@
 //! `ready` again, and the next visit stands it in the bay (`AtDock`), where its shipment's next
 //! check delivers (`logistics/progress.rs`).
 //!
+//! The check sends it back by `PullOut` (`lifecycle.rs`): the route reversed, from the stop to
+//! the gate's lane point, where the egress step ends the yard trip as it attaches or waits to
+//! (`access_state/egress.rs`). A dispatch from a building with a free dock starts its carrier
+//! the same way, standing in the dock it takes.
+//!
 //! A dock's `freight_holder` counts only while the holder's trip still names the dock in
-//! `PullIn` or `AtDock`. A new plan, an arrival, the end of the building and every removal end
-//! that trip, so none of them needs the parking system to free the dock: the next visit that
-//! looks at the dock finds it free. The holder and the trips are saved, so the choice is the same
+//! `PullIn`, `AtDock` or `PullOut` (`ParkingTrip::held_dock`). A new plan, an arrival, the lane
+//! point, the end of the building and every removal end that trip, so none of them needs the
+//! parking system to free the dock: the next visit that looks at the dock finds it free. The holder and the trips are saved, so the choice is the same
 //! after a load and at any worker count.
 
 use super::super::super::{AgentHandle, AgentSystem};
@@ -65,10 +70,7 @@ impl AgentSystem {
     // The gate commit: the building's first dock in anchor order with no holder, or the door.
     // O(docks of the building).
     fn commit_freight_gate(&mut self, i: usize, building: u64, parking: &mut ParkingSystem) {
-        let docks = &*parking;
-        let dock = docks
-            .building_docks(building)
-            .find(|&dock| self.dock_is_free(dock, docks));
+        let dock = self.first_free_dock(building, parking);
         let trip = &mut self.agents.parking_trip[i];
         trip.ready = false;
         match dock {
@@ -81,13 +83,23 @@ impl AgentSystem {
         }
     }
 
-    // Whether `dock` has no holder: none recorded, or one whose trip no longer names it. O(1).
-    fn dock_is_free(&self, dock: Handle<Place>, parking: &ParkingSystem) -> bool {
-        !self.holds_freight_dock(parking.dock_holder(dock), dock)
+    /// The first active dock of the building whose handle bits are `building`, in anchor order,
+    /// with no holder: none recorded, or one whose trip no longer names it (`PARK-20`). The gate
+    /// commit grants it, and a dispatch from the building spawns its carrier in it. O(docks of
+    /// the building), no allocation.
+    pub(crate) fn first_free_dock(
+        &self,
+        building: u64,
+        parking: &ParkingSystem,
+    ) -> Option<Handle<Place>> {
+        parking
+            .building_docks(building)
+            .find(|&dock| !self.holds_freight_dock(parking.dock_holder(dock), dock))
     }
 
-    /// Whether carrier `holder` still holds `dock`: it is alive and pulling into the dock or
-    /// standing in it. A dock's recorded holder counts only while this holds (`PARK-20`). O(1).
+    /// Whether carrier `holder` still holds `dock`: it is alive and pulling into the dock,
+    /// standing in it or pulling out of it, short of the lane (`ParkingTrip::held_dock`). A
+    /// dock's recorded holder counts only while this holds (`PARK-20`). O(1).
     pub(crate) fn holds_freight_dock(&self, holder: AgentHandle, dock: Handle<Place>) -> bool {
         self.handles
             .resolve(holder)
@@ -96,19 +108,15 @@ impl AgentSystem {
 
     // Ends carrier `i`'s yard trip where it stands, freeing a dock it holds. O(1).
     fn leave_freight_yard(&mut self, i: usize, parking: &mut ParkingSystem) {
-        let trip = self.agents.parking_trip[i];
-        if holds_dock(&trip, trip.destination)
-            && parking.dock_holder(trip.destination) == self.handles.handle(i)
-        {
-            parking.set_dock_holder(trip.destination, AgentHandle::NONE);
+        let dock = self.agents.parking_trip[i].held_dock();
+        if !dock.is_none() && parking.dock_holder(dock) == self.handles.handle(i) {
+            parking.set_dock_holder(dock, AgentHandle::NONE);
         }
         self.agents.parking_trip[i] = ParkingTrip::default();
     }
 }
 
-// Whether `trip` holds `dock`: a carrier pulling into it or standing in it.
+// Whether `trip` holds `dock`.
 fn holds_dock(trip: &ParkingTrip, dock: Handle<Place>) -> bool {
-    trip.freight_gate
-        && trip.destination == dock
-        && matches!(trip.phase, ParkingTripPhase::PullIn | ParkingTripPhase::AtDock)
+    !dock.is_none() && trip.held_dock() == dock
 }

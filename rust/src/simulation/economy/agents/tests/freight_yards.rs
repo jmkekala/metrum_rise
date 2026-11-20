@@ -20,9 +20,10 @@ use crate::simulation::parking::{Bay, ParkingSystem, ParkingTrip, ParkingTripPha
 // The source's and the yard's centres on the road's south side.
 const SOURCE_X: f32 = 45.0;
 const YARD_X: f32 = 300.0;
-// The gate's road connection: 20 m east of the yard's door, so the gate's lane point and the
+// A gate's road connection: 20 m east of its building's door, so the gate's lane point and the
 // door's differ.
-const GATE_X: f32 = 320.0;
+const GATE_OFFSET: f32 = 20.0;
+const GATE_X: f32 = YARD_X + GATE_OFFSET;
 const PACKAGED_FOOD: &str = "packaged_food";
 
 struct Yard {
@@ -37,6 +38,12 @@ struct Yard {
 // A food processor at `SOURCE_X` and a grocery at `YARD_X` with `docks` loading bays behind
 // one gate, in anchor order from west to east.
 fn yard(docks: u32) -> Yard {
+    yard_with(0, docks)
+}
+
+// [`yard`] with `source_docks` loading bays behind a gate of the processor as well (`PARK-20`:
+// trucks load at the source's dock).
+fn yard_with(source_docks: u32, docks: u32) -> Yard {
     let (network, graph, _, _) = setup_straight_road();
     let mut allocator = BuildingAllocator::new();
     let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
@@ -60,8 +67,10 @@ fn yard(docks: u32) -> Yard {
         .register_appended(allocator.buildings.len());
     allocator.rebuild_entrance_cache(&graph, &network.lane_system);
     let mut parking = ParkingSystem::default();
-    if docks > 0 {
-        publish_docks(&mut parking, &mut allocator, &network, &graph, docks);
+    for (building, count) in [(0, source_docks), (1, docks)] {
+        if count > 0 {
+            publish_docks(&mut parking, &mut allocator, &network, &graph, building, count);
+        }
     }
     Yard {
         agents: AgentSystem::new(),
@@ -73,7 +82,7 @@ fn yard(docks: u32) -> Yard {
     }
 }
 
-// The yard's dock rows, their access and its gate, as `SimCore::publish_docks` and
+// Building `building`'s dock rows, their access and its gate, as `SimCore::publish_docks` and
 // `rebuild_freight_gate` make them: each route runs from the gate's road connection, 4.25 m in
 // (the approach), across to the aisle and into the bay 6 m behind it.
 fn publish_docks(
@@ -81,21 +90,23 @@ fn publish_docks(
     allocator: &mut BuildingAllocator,
     network: &TransitNetwork,
     graph: &RegionGraph,
+    building: usize,
     docks: u32,
 ) {
-    let handle = allocator.building_handles.handle(1).to_bits();
-    let entrance = allocator.entrances[1].clone();
+    let handle = allocator.building_handles.handle(building).to_bits();
+    let entrance = allocator.entrances[building].clone();
     let kerb = entrance.curb_pos.y;
+    let gate_x = allocator.buildings[building].center_x + GATE_OFFSET;
     let rows: Vec<_> = (0..docks)
         .map(|anchor| {
-            let x = GATE_X + 4.0 * anchor as f32;
+            let x = gate_x + 4.0 * anchor as f32;
             let stop = kerb - 20.0;
             let bay = Bay {
                 identity: [handle, u64::from(anchor)],
                 position: [x, 0.0, stop],
                 path: [
-                    [GATE_X, kerb],
-                    [GATE_X, kerb - 4.25],
+                    [gate_x, kerb],
+                    [gate_x, kerb - 4.25],
                     [x, stop + 6.0],
                     [x, stop],
                 ],
@@ -108,10 +119,10 @@ fn publish_docks(
         .collect();
     parking.replace_docks(handle, &rows);
     parking.refresh_dock_access(handle, allocator, network, graph);
-    let b = &allocator.buildings[1];
+    let b = &allocator.buildings[building];
     let gate = BuildingAllocator::parking_access_at(
         entrance.door_pos,
-        Vector2::new(GATE_X, kerb),
+        Vector2::new(gate_x, kerb),
         b.edge_idx,
         b.side,
         graph,
@@ -151,6 +162,7 @@ impl Yard {
             id,
             &mut self.allocator,
             &mut self.agents,
+            &mut self.parking,
             &self.network,
             &self.graph,
             &mut treasury,
@@ -218,8 +230,30 @@ impl Yard {
     }
 
     fn dock(&self, anchor: u32) -> crate::simulation::core::handles::Handle<crate::simulation::parking::Place> {
-        let handle = self.allocator.building_handles.handle(1).to_bits();
+        self.dock_of(1, anchor)
+    }
+
+    fn dock_of(
+        &self,
+        building: usize,
+        anchor: u32,
+    ) -> crate::simulation::core::handles::Handle<crate::simulation::parking::Place> {
+        let handle = self.allocator.building_handles.handle(building).to_bits();
         self.parking.building_docks(handle).nth(anchor as usize).unwrap()
+    }
+
+    fn inside(&self, i: usize, building: usize) -> bool {
+        self.agents.agents.transit[i] == TRANSIT_IN_BUILDING
+            && self.agents.agents.current_building[i] == building
+    }
+
+    fn phase(&self, i: usize) -> ParkingTripPhase {
+        self.agents.agents.parking_trip[i].phase
+    }
+
+    fn holds(&self, i: usize, dock: crate::simulation::core::handles::Handle<crate::simulation::parking::Place>) -> bool {
+        self.parking.dock_holder(dock) == self.agents.handles.handle(i)
+            && self.agents.holds_freight_dock(self.agents.handles.handle(i), dock)
     }
 }
 
@@ -277,15 +311,14 @@ fn a_carrier_drives_into_the_dock_stands_in_the_bay_and_delivers_there() {
         assert_eq!(yard.agents.parking_work.last_candidates, 0);
     }
 
-    // The next check delivers where it stands and sends it back.
+    // The next check delivers where it stands and sends it back, out of the dock it keeps.
     let before = yard.grocery_food();
     assert!(yard.check(0), "the carrier turns back");
     assert_eq!(yard.status(0), ShipmentStatus::Returning);
     assert_eq!(yard.grocery_food(), before + 40.0);
-    // Round 1: the return starts at the door (`PARK-20` round 2 reverses out through the gate),
-    // and the dock is free for the next carrier.
     let returning = yard.agents.resolve_agent(yard.shipments.shipments[0].carrier).unwrap();
-    assert!(idle(yard.agents.agents.parking_trip[returning]));
+    assert_eq!(yard.phase(returning), ParkingTripPhase::PullOut);
+    assert!(yard.holds(returning, dock));
 }
 
 // Two carriers, one dock: the first through the gate takes it, the second goes on to the door
@@ -362,14 +395,15 @@ fn a_refused_carrier_drives_from_the_gate_to_the_door() {
     assert_eq!(yard.parking.dock_holder(dock), yard.handle(first));
 }
 
-// A carrier that left (here, delivered and turned back) holds the dock no more: the next one
-// through the gate takes it, though the row still names the first.
+// A carrier that left (here, delivered, turned back and pulled out to the lane) holds the dock
+// no more: the next one through the gate takes it, though the row still names the first.
 #[test]
 fn a_dock_its_carrier_left_is_free_for_the_next() {
     let mut yard = yard(1);
     let first = yard.dispatch(0);
     yard.tick_until(|y| y.agents.agents.parking_trip[first].phase == ParkingTripPhase::AtDock);
     assert!(yard.check(0));
+    yard.tick_until(|y| y.phase(first) != ParkingTripPhase::PullOut);
     let dock = yard.dock(0);
     assert_eq!(yard.parking.dock_holder(dock), yard.handle(first));
     let second = yard.dispatch(1);
@@ -462,4 +496,219 @@ fn a_standing_carrier_saves_and_validates_and_an_idle_row_writes_no_new_key() {
     yard.parking.validate_custody(&yard.agents, &households).unwrap();
     let idle_row = serde_json::to_string(&ParkingTrip::default()).unwrap();
     assert!(!idle_row.contains("freight_gate"), "{idle_row}");
+}
+
+// The lane point a carrier plans to join the road at.
+fn attach_point(yard: &Yard, i: usize) -> Vector2 {
+    let a = &yard.agents.agents;
+    let lane = &yard.network.lane_system.lanes[a.planned_attach_lane_id[i] as usize];
+    BuildingAllocator::sample_pos_on_lane(lane, a.planned_attach_lane_d[i])
+}
+
+// Ticks carrier `i` through its pull-out of `dock`, asserting each tick that it holds the dock
+// and backs along the route towards the gate at driveway speed; returns the ticks it took.
+fn pull_out(yard: &mut Yard, i: usize, dock: crate::simulation::core::handles::Handle<crate::simulation::parking::Place>) -> usize {
+    let route = yard.parking.dock_route(dock).unwrap();
+    let gate = attach_point(yard, i);
+    let a = &yard.agents.agents;
+    let mut last = Vector2::new(a.pos_x[i], a.pos_y[i]);
+    assert_eq!(last, Vector2::new(route[3][0], route[3][1]), "it starts at the stop");
+    for tick in 1..6_000 {
+        yard.tick();
+        let a = &yard.agents.agents;
+        let at = Vector2::new(a.pos_x[i], a.pos_y[i]);
+        if yard.phase(i) != ParkingTripPhase::PullOut {
+            // At the gate's lane point: the yard trip is over and the dock free.
+            assert!(at.distance_to(gate) < 1e-3, "left the yard at {at:?}, not {gate:?}");
+            assert!(!yard.agents.holds_freight_dock(yard.agents.handles.handle(i), dock));
+            return tick;
+        }
+        assert_eq!(a.transit[i], crate::simulation::economy::agents::TRANSIT_ACCESS_EGRESS);
+        assert!(yard.holds(i, dock), "the dock is its own until the lane");
+        // Straight back up the route (every route here is straight at the gate's x) and on to
+        // the lane point, never faster than the driveway speed.
+        assert!(at.distance_to(last) <= 0.1 * crate::config::AGENT_DRIVEWAY_SPEED_MS + 1e-4);
+        assert!(at.y >= last.y - 1e-4, "it moves towards the street: {last:?} -> {at:?}");
+        assert!((at.x - route[0][0]).abs() < 0.5, "off the route at {at:?}");
+        last = at;
+    }
+    panic!("never reached the lane");
+}
+
+// After delivering, a truck backs out of its dock along the route reversed (owner decision 2),
+// to the gate's lane point, where it joins the lane: the dock is its own until then and free
+// from there on. Its return trip then runs to its source's door, which has no dock, as before.
+#[test]
+fn a_delivered_truck_backs_out_through_the_gate_and_frees_the_dock_at_the_lane() {
+    let mut yard = yard(1);
+    let carrier = yard.dispatch(0);
+    yard.tick_until(|y| y.phase(carrier) == ParkingTripPhase::AtDock);
+    assert!(yard.check(0));
+    let dock = yard.dock(0);
+    let trip = yard.agents.agents.parking_trip[carrier];
+    assert!(trip.freight_gate && trip.source == dock);
+    // Its plan ends at the source's door: nothing of the yard trip outlasts the pull-out.
+    assert!(idle(trip.after_freight_pull_out()));
+    assert!((attach_point(&yard, carrier).x - GATE_X).abs() < 0.5, "it leaves by the gate");
+    let ticks = pull_out(&mut yard, carrier, dock);
+    // 20 m of route at 3 m/s and the step to the lane.
+    assert!((60..120).contains(&ticks), "{ticks} ticks");
+    assert!(idle(yard.agents.agents.parking_trip[carrier]));
+    assert_ne!(
+        yard.agents.agents.transit[carrier],
+        crate::simulation::economy::agents::TRANSIT_ACCESS_EGRESS
+    );
+    yard.tick_until(|y| y.inside(carrier, 0));
+    assert!(!yard.check(0), "back at its source it finishes");
+    assert_eq!(yard.status(0), ShipmentStatus::Fulfilled);
+}
+
+// Owner decision 10: a dispatch from a building with a free dock spawns its truck standing in
+// the dock, which it takes, and it leaves at once through the gate. Bound for the grocery's
+// yard, it keeps its yard trip past the lane, stands in the grocery's dock, backs out of it and
+// returns to its source's dock, where the last check removes it.
+#[test]
+fn a_truck_loads_at_its_sources_dock_and_comes_back_to_it() {
+    let mut yard = yard_with(1, 1);
+    let carrier = yard.dispatch(0);
+    let (home, away) = (yard.dock_of(0, 0), yard.dock(0));
+    let handle = |y: &Yard, b: usize| y.allocator.building_handles.handle(b).to_bits();
+    let trip = yard.agents.agents.parking_trip[carrier];
+    assert_eq!(trip.phase, ParkingTripPhase::PullOut);
+    assert_eq!(trip.source, home);
+    assert_eq!(yard.agents.agents.current_building[carrier], 0);
+    assert!(yard.holds(carrier, home));
+    assert!((attach_point(&yard, carrier).x - (SOURCE_X + GATE_OFFSET)).abs() < 0.5);
+    assert!((detach_point(&yard, carrier).x - GATE_X).abs() < 0.5, "bound for the yard's gate");
+    pull_out(&mut yard, carrier, home);
+    let trip = yard.agents.agents.parking_trip[carrier];
+    assert!(trip.freight_gate && trip.phase == ParkingTripPhase::None);
+    assert_eq!(trip.target, handle(&yard, 1));
+
+    yard.tick_until(|y| y.phase(carrier) == ParkingTripPhase::AtDock);
+    assert_eq!(yard.agents.agents.parking_trip[carrier].destination, away);
+    assert!(yard.check(0));
+    assert_eq!(yard.status(0), ShipmentStatus::Returning);
+    let trip = yard.agents.agents.parking_trip[carrier];
+    assert_eq!((trip.phase, trip.source), (ParkingTripPhase::PullOut, away));
+    assert!(
+        (detach_point(&yard, carrier).x - (SOURCE_X + GATE_OFFSET)).abs() < 0.5,
+        "bound for its source's gate"
+    );
+    pull_out(&mut yard, carrier, away);
+    assert_eq!(yard.agents.agents.parking_trip[carrier].target, handle(&yard, 0));
+    // It asks its source for a dock as any arrival does, and stands in it.
+    yard.tick_until(|y| y.phase(carrier) == ParkingTripPhase::AtDock);
+    assert_eq!(yard.agents.agents.parking_trip[carrier].destination, home);
+    let removed = yard.handle(carrier);
+    assert!(!yard.check(0));
+    assert_eq!(yard.status(0), ShipmentStatus::Fulfilled);
+    assert!(yard.agents.resolve_agent(removed).is_none());
+    assert!(!yard.agents.holds_freight_dock(yard.parking.dock_holder(home), home));
+}
+
+// With its source's only dock held, a dispatch starts at the door exactly as a dispatch from a
+// building without a dock: the same plan and the same place.
+#[test]
+fn with_no_free_dock_a_dispatch_starts_at_the_door_as_before() {
+    let mut docked = yard_with(1, 1);
+    let first = docked.dispatch(0);
+    assert_eq!(docked.phase(first), ParkingTripPhase::PullOut);
+    let second = docked.dispatch(1);
+    let mut plain = yard_with(0, 1);
+    let reference = plain.dispatch(1);
+    let row = |y: &Yard, i: usize| {
+        let a = &y.agents.agents;
+        (
+            a.pos_x[i].to_bits(),
+            a.pos_y[i].to_bits(),
+            a.transit[i],
+            a.planned_attach_lane_id[i],
+            a.planned_attach_lane_d[i].to_bits(),
+            a.planned_detach_lane_id[i],
+            a.planned_detach_lane_d[i].to_bits(),
+            a.current_path[i].clone(),
+            format!("{:?}", a.parking_trip[i]),
+        )
+    };
+    assert_eq!(row(&docked, second), row(&plain, reference));
+    let door = docked.allocator.entrances[0].door_pos;
+    let a = &docked.agents.agents;
+    assert_eq!((a.pos_x[second], a.pos_y[second]), (door.x, door.y));
+    assert!(docked.holds(first, docked.dock_of(0, 0)));
+}
+
+// Two-way traffic through one dock: a truck arriving while the delivered one is still backing
+// out finds the dock held and goes on to the door. Every product is the same at 1 and 8 workers.
+#[test]
+fn an_arrival_meeting_a_truck_backing_out_goes_to_the_door_on_any_worker_count() {
+    let run = |workers: usize| {
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(workers)
+            .build()
+            .unwrap();
+        pool.install(|| {
+            let mut yard = yard(1);
+            let first = yard.dispatch(0);
+            yard.tick_until(|y| y.phase(first) == ParkingTripPhase::AtDock);
+            let second = yard.dispatch(1);
+            let gate = detach_point(&yard, second);
+            // Turn the first back just before the second reaches the gate.
+            yard.tick_until(|y| {
+                let a = &y.agents.agents;
+                a.transit[second] == crate::simulation::economy::agents::TRANSIT_NETWORK
+                    && Vector2::new(a.pos_x[second], a.pos_y[second]).distance_to(gate) < 12.0
+            });
+            assert!(yard.check(0));
+            let mut trace = Vec::new();
+            yard.tick_until(|y| {
+                let a = &y.agents.agents;
+                trace.push([first, second].map(|i| {
+                    (a.pos_x[i].to_bits(), a.pos_y[i].to_bits(), a.transit[i], format!("{:?}", a.parking_trip[i]))
+                }));
+                y.phase(second) != ParkingTripPhase::None
+            });
+            let refused = yard.phase(second);
+            let first_backing = yard.phase(first) == ParkingTripPhase::PullOut;
+            yard.tick_until(|y| y.inside_grocery(second));
+            let before = yard.grocery_food();
+            assert!(yard.check(1));
+            (trace, refused, first_backing, yard.grocery_food() - before, yard.status(1))
+        })
+    };
+    let serial = run(1);
+    let (_, refused, first_backing, delivered, status) = &serial;
+    assert!(*first_backing, "the first still backs out");
+    assert_eq!(*refused, ParkingTripPhase::GateToDoor);
+    assert_eq!(*delivered, 40.0);
+    assert_eq!(*status, ShipmentStatus::Returning);
+    assert_eq!(run(8), serial);
+}
+
+// Round 2's minimal rule for a pull-out whose plan goes (a road edit clears an access plan, as
+// `clear_route_plan_after_road_edit` does): the yard trip ends, the dock is free, and the truck
+// is where today's door carrier would be, inside the building. Round 3 makes it stand at the dock
+// and plan again instead.
+#[test]
+fn a_pull_out_whose_plan_goes_ends_its_yard_trip_at_the_door() {
+    for spawned in [false, true] {
+        let mut yard = yard_with(1, 1);
+        let carrier = yard.dispatch(0);
+        let (dock, building) = if spawned {
+            (yard.dock_of(0, 0), 0)
+        } else {
+            yard.tick_until(|y| y.phase(carrier) == ParkingTripPhase::AtDock);
+            assert!(yard.check(0));
+            (yard.dock(0), 1)
+        };
+        for _ in 0..10 {
+            yard.tick();
+        }
+        assert_eq!(yard.phase(carrier), ParkingTripPhase::PullOut);
+        yard.agents.agents.access_flags[carrier] = 0;
+        yard.tick();
+        assert!(yard.inside(carrier, building));
+        assert!(idle(yard.agents.agents.parking_trip[carrier]));
+        assert!(!yard.agents.holds_freight_dock(yard.parking.dock_holder(dock), dock));
+    }
 }

@@ -167,7 +167,14 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
                     true
                 };
                 if trip.phase == crate::simulation::parking::ParkingTripPhase::PullOut {
-                    slices.parking_trip.get_mut(i).phase = crate::simulation::parking::ParkingTripPhase::Drive;
+                    if trip.freight_gate {
+                        // A truck out of its dock at the gate's lane point: its yard trip ends
+                        // here, which frees the dock (`PARK-20`), and the plan's own end, a gate
+                        // or a door or a border, is all it keeps.
+                        *slices.parking_trip.get_mut(i) = trip.after_freight_pull_out();
+                    } else {
+                        slices.parking_trip.get_mut(i).phase = crate::simulation::parking::ParkingTripPhase::Drive;
+                    }
                     if !attach_allowed {
                         *s_pos_x.get_mut(i) = path.points[path.count - 1].x;
                         *s_pos_y.get_mut(i) = path.points[path.count - 1].y;

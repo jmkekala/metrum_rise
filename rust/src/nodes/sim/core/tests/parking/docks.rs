@@ -420,12 +420,12 @@ fn the_inspector_shows_a_buildings_docks_and_their_rejections() {
     assert_eq!(lines(&core), (0, 1, vec![reason.to_owned()]));
 }
 
-// A carrier from a second yard 60 m east, standing in the first yard's dock (`PARK-20`).
-fn truck_at_dock() -> (SimCore, u64, usize) {
+// A carrier from a second yard 60 m east to the first, just dispatched: standing in its
+// source's dock, which it has taken (`PARK-20`, owner decision 10).
+fn dispatched_truck() -> (SimCore, u64, usize) {
     use crate::simulation::economy::logistics::{
         CarrierClass, Shipment, ShipmentEndpoint, ShipmentStatus,
     };
-    use crate::simulation::parking::ParkingTripPhase;
     let (mut core, building) = place_yard(true, "6");
     let id = core.allocator.buildings[0].asset_id.clone();
     let source = core.place_service_building_internal(&id, 60.0, -40.0).unwrap();
@@ -453,6 +453,7 @@ fn truck_at_dock() -> (SimCore, u64, usize) {
         0,
         &mut core.allocator,
         &mut core.agents,
+        &mut core.parking,
         &core.transit_network,
         &core.region_graph,
         &mut treasury,
@@ -461,22 +462,97 @@ fn truck_at_dock() -> (SimCore, u64, usize) {
         .agents
         .resolve_agent(core.logistics.shipments[0].carrier)
         .unwrap();
+    (core, building, carrier)
+}
+
+// One agent tick of `core`'s city.
+fn tick_agents(core: &mut SimCore) {
+    crate::thread_pools::install(|| {
+        core.agents.tick_with_parking(
+            &core.allocator,
+            &mut core.transit_network,
+            &mut core.region_graph,
+            0.1,
+            &core.time,
+            &mut core.parking,
+        )
+    });
+}
+
+// [`dispatched_truck`] once it stands in the first yard's dock.
+fn truck_at_dock() -> (SimCore, u64, usize) {
+    use crate::simulation::parking::ParkingTripPhase;
+    let (mut core, building, carrier) = dispatched_truck();
     for _ in 0..6_000 {
         if core.agents.parking_trip[carrier].phase == ParkingTripPhase::AtDock {
             return (core, building, carrier);
         }
-        crate::thread_pools::install(|| {
-            core.agents.tick_with_parking(
-                &core.allocator,
-                &mut core.transit_network,
-                &mut core.region_graph,
-                0.1,
-                &core.time,
-                &mut core.parking,
-            )
-        });
+        tick_agents(&mut core);
     }
     panic!("the truck never stood in the dock");
+}
+
+// Turns shipment 0's truck, standing in the first yard's dock, back to its source, as a
+// delivering check does (`start_return_trip`): these yards have no economy to deliver to.
+fn check_truck(core: &mut SimCore) -> bool {
+    use crate::simulation::economy::logistics::ShipmentEndpoint;
+    let ShipmentEndpoint::Building(source) = core.logistics.shipments[0].source else {
+        panic!("a yard sent it");
+    };
+    let carrier = core
+        .agents
+        .resolve_agent(core.logistics.shipments[0].carrier)
+        .unwrap();
+    core.agents.route_freight_carrier_building_to_building(
+        carrier,
+        0,
+        source,
+        &core.allocator,
+        &core.transit_network,
+        &core.region_graph,
+    )
+}
+
+// Shipment 0's truck over the next `ticks` agent ticks: its pose, transit and trip, and the
+// holder of every dock, each tick.
+fn truck_trace(core: &mut SimCore, ticks: usize) -> Vec<(u32, u32, u8, String, Vec<u64>)> {
+    (0..ticks)
+        .map(|_| {
+            tick_agents(core);
+            let i = core
+                .agents
+                .resolve_agent(core.logistics.shipments[0].carrier)
+                .expect("the truck is under way");
+            let holders = core
+                .parking
+                .dock_buildings()
+                .into_iter()
+                .flat_map(|b| core.parking.building_docks(b).collect::<Vec<_>>())
+                .map(|dock| core.parking.dock_holder(dock).to_bits())
+                .collect();
+            let a = &core.agents;
+            (
+                a.pos_x[i].to_bits(),
+                a.pos_y[i].to_bits(),
+                a.transit[i],
+                format!("{:?}", a.parking_trip[i]),
+                holders,
+            )
+        })
+        .collect()
+}
+
+// Saves `core`, runs `ticks` ticks, loads the save and runs them again: both runs are equal, and
+// the truck has left the yard by their end.
+fn assert_save_continues_equally(mut core: SimCore, name: &str, ticks: usize) {
+    let path = std::env::temp_dir().join(format!("metrum_{name}_{}.sqlite", std::process::id()));
+    let path_text = path.to_str().expect("a temporary path");
+    core.save_game_settled_at(path_text, None, 0).expect("the yard saves");
+    let live = truck_trace(&mut core, ticks);
+    assert!(live[0].3.contains("PullOut") && !live[ticks - 1].3.contains("PullOut"), "{live:?}");
+    core.load_game_internal(path_text).expect("the yard loads");
+    let _ = std::fs::remove_file(&path);
+    assert_eq!(truck_trace(&mut core, ticks), live);
 }
 
 // A save made while a truck stands in a dock loads with the truck still standing there and the
@@ -500,17 +576,84 @@ fn a_truck_standing_in_a_dock_round_trips_a_save() {
     assert_eq!((core.agents.pos_x[carrier], core.agents.pos_y[carrier]), pose);
     assert_eq!(core.parking.building_docks(building).next(), Some(dock));
     assert_eq!(core.parking.dock_holder(dock), core.agents.agent_handle(carrier));
-    crate::thread_pools::install(|| {
-        core.agents.tick_with_parking(
-            &core.allocator,
-            &mut core.transit_network,
-            &mut core.region_graph,
-            0.1,
-            &core.time,
-            &mut core.parking,
-        )
-    });
+    tick_agents(&mut core);
     assert_eq!((core.agents.pos_x[carrier], core.agents.pos_y[carrier]), pose);
+}
+
+// A save made while a delivered truck backs out of the dock (`PARK-20`) continues as the live
+// city does, through its lane attach, where the dock is freed, and on along the road.
+#[test]
+fn a_truck_backing_out_of_a_dock_round_trips_a_save() {
+    use crate::simulation::parking::ParkingTripPhase;
+    let (mut core, _, carrier) = truck_at_dock();
+    assert!(check_truck(&mut core));
+    for _ in 0..20 {
+        tick_agents(&mut core);
+    }
+    assert_eq!(core.agents.parking_trip[carrier].phase, ParkingTripPhase::PullOut);
+    assert_save_continues_equally(core, "truck_backing_out", 200);
+}
+
+// A save made right after a dispatch spawned its truck in its source's dock continues as the
+// live city does, the truck backing out and taking the road.
+#[test]
+fn a_truck_spawned_in_a_dock_round_trips_a_save() {
+    use crate::simulation::parking::ParkingTripPhase;
+    let (mut core, _, carrier) = dispatched_truck();
+    let trip = core.agents.parking_trip[carrier];
+    assert_eq!(trip.phase, ParkingTripPhase::PullOut);
+    assert_eq!(core.parking.dock_holder(trip.source), core.agents.agent_handle(carrier));
+    assert_save_continues_equally(core, "truck_spawned_in_dock", 200);
+}
+
+// A truck turned back faces as it stood, nose into the bay, and backs out (owner decision 2):
+// the pose the snapshot draws points against its travel.
+#[test]
+fn a_truck_backs_out_of_its_dock_facing_into_the_bay() {
+    let (mut core, _, carrier) = truck_at_dock();
+    let facing = |core: &SimCore| {
+        let a = &core.agents;
+        crate::nodes::sim::core::snapshot::access_phase_direction(
+            core,
+            carrier,
+            a.pos_x[carrier],
+            a.pos_y[carrier],
+        )
+        .expect("a pose")
+    };
+    let standing = facing(&core);
+    assert!(check_truck(&mut core));
+    assert!((facing(&core) - standing).length() < 1e-5, "it turned on the spot");
+    let from = Vector2::new(core.agents.pos_x[carrier], core.agents.pos_y[carrier]);
+    for _ in 0..10 {
+        tick_agents(&mut core);
+    }
+    let to = Vector2::new(core.agents.pos_x[carrier], core.agents.pos_y[carrier]);
+    let travel = (to - from).normalized();
+    let nose = facing(&core);
+    assert!(travel.dot(Vector2::new(nose.x, nose.z)) < -0.999, "travel {travel:?}, nose {nose:?}");
+}
+
+// Bulldozing a yard while a truck backs out of its dock cancels the shipment and removes the
+// truck, as for one standing there; the dock goes with the building.
+#[test]
+fn bulldozing_a_yard_with_a_truck_backing_out_removes_both() {
+    let (mut core, building, _) = truck_at_dock();
+    assert!(check_truck(&mut core));
+    for _ in 0..5 {
+        tick_agents(&mut core);
+    }
+    let agents = core.agents.len();
+    assert!(core.bulldoze_building(0));
+    core.publish_pending_building_site_changes();
+    assert_eq!(core.agents.len(), agents - 1, "the truck is removed");
+    assert!(core.logistics.shipments.is_empty());
+    assert!(
+        core.parking
+            .dock_rows()
+            .iter()
+            .all(|(source, _, _)| *source != PlaceSource::Dock { building, anchor: 3 })
+    );
 }
 
 // Bulldozing a yard with a truck in its dock cancels the shipment and removes the truck, as for
