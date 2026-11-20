@@ -2942,6 +2942,7 @@ Existing validation is reused wherever it exists; "new" marks what must be writt
 | A level-1 asset is a spawn candidate of its zoning profile; a higher level has a level below it with the same zone, density and lot cells | `stocked_zone_profiles` (the allocator's filter); the level rule is new, from the registry's upgrade rule |
 | Door sanity, from the ledger sidecar: `main` door `height_m` in 2.0–2.6, `width_m` in 0.7–6.0, threshold `y` in 0–1.5, `entrance/main` within 0.5 m of it in plan | new |
 | Triangles per tier within the ceilings of [Buildings](#buildings), from each `.glb` index count | new; a warning, since the models validator owns this gate |
+| A building with a `worker_capacity` has a parking anchor | new; a warning: a draft has none until the owner adds them (Q3) |
 
 Stills, for the owner's review, to `$ARTIFACTS`: the `LOD0` three-quarter view in the default
 scheme, a top-down lot plan (lot rectangle, bounds, footprint, doors, entrance anchor), and one
@@ -2994,9 +2995,13 @@ Each with the recommendation first.
 - **Q2 Hand-authored fields.** Recommended: the list above. Alternative: derive a default front
   walk (a strip from the main door to the front lot edge): every hand asset has exactly one
   surface, asphalt, reaching the front lot edge.
-- **Q3 Part position.** Recommended: R2 (centred across, back-flush), exact in `z` for 5 of 12.
-  Alternative: centred both ways, which is where the editor leaves an imported mesh (the factory).
-  A rear margin for hedged lots (0.65–0.78 m by hand at level 2) stays a hand edit either way.
+- **Q3 Part position.** Decided 2026-11-20: R2 (centred across, back-flush) is a starting
+  position only, valid on every lot, and the final position is hand-authored: it depends on the
+  parking, driveway, loading and hedge the owner adds in the editor. The draft's report states the
+  free space on each side of the lot. A draft with a `worker_capacity` and no parking anchor passes
+  the acceptance check with a warning. Deferred, until commercial and industrial models are made
+  in number: a site layout role input (parking side and bay count) that places the building,
+  adds lot cells and drafts the parking anchors and surface.
 - **Q4 `flat_size_m2`.** Decided 2026-11-20: R5's 0.8 × wall-plate area per dwelling, rounded
   to 10, capped at 80 for a building of one dwelling. Uncapped, a 140 to 150 m² house would admit
   a household of four or five adults. Rejected: no cap, and a fixed 80 for every home.
