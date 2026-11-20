@@ -229,11 +229,32 @@ fn check_stock(
         .prev_level(&manifest.qualified_id(pack_id), 0)
         .is_none()
     {
-        outcome.failures.push(format!(
-            "level {} has no level {} asset of the same zone, density and lot cells (or asset_set)",
-            building.level,
-            building.level - 1
-        ));
+        outcome
+            .failures
+            .push(level_below_missing(manifest, building));
+    }
+}
+
+// The registry's downgrade rule (`AssetRegistry::prev_level`) in words, for the one asset.
+fn level_below_missing(manifest: &AssetManifest, building: &crate::assets::BuildingData) -> String {
+    let (level, below) = (building.level, building.level - 1);
+    match &manifest.asset_set {
+        Some(set) => format!(
+            "level {level} in asset_set '{set}' needs the set's level {below} asset among the \
+             scanned packs; with an asset_set only that asset counts, whatever its zone, density \
+             or lot"
+        ),
+        None => format!(
+            "level {level} without an asset_set needs a level {below} zoned asset without an \
+             asset_set, of zone {}, density {} and lot {} × {} cells, among the scanned packs",
+            building
+                .zone_type
+                .map_or("none".into(), |zone| format!("{zone:?}")
+                    .to_ascii_lowercase()),
+            building.density_key().unwrap_or("low"),
+            building.lot_width_cells,
+            building.lot_depth_cells
+        ),
     }
 }
 

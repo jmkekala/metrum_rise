@@ -1,7 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Shared site-polygon checks for manifest validation and interactive authoring.
-//! Area is O(V); intersection checks are O(V²), allocation-free and asset-local.
+//! Area is O(V); intersection checks are O(V²), allocation-free and asset-local; the shared
+//! area of two polygons goes through the polygon overlay, once per asset check.
+
+use i_overlay::core::{fill_rule::FillRule, overlay_rule::OverlayRule};
+use i_overlay::float::single::SingleFloatOverlay;
 
 pub(crate) fn clamp_translation(
     min: [f32; 2],
@@ -34,26 +38,30 @@ pub(crate) fn fits_lot(plan: [[f32; 2]; 2], half_lot: [f32; 2], tolerance: f32) 
     })
 }
 
-/// Whether two simple polygons share area or touch: an edge crossing, or one polygon holding
-/// a vertex of the other. O(A × B), asset-local.
-pub(crate) fn polygons_overlap(a: &[[f32; 2]], b: &[[f32; 2]]) -> bool {
+/// The area two simple polygons share, through the crate's polygon overlay (`i_overlay`, as the
+/// parking edit checks use it). Polygons that only touch, along an edge or at a point, share
+/// none. O((A + B) log(A + B)), asset-local.
+pub(crate) fn intersection_area(a: &[[f32; 2]], b: &[[f32; 2]]) -> f64 {
     if a.len() < 3 || b.len() < 3 {
-        return false;
+        return 0.0;
     }
-    let inside = |point: [f32; 2], polygon: &[[f32; 2]]| {
-        let ring: Vec<_> = polygon
-            .iter()
-            .map(|&[x, z]| godot::prelude::Vector2::new(x, z))
-            .collect();
-        crate::utils::point_in_polygon(godot::prelude::Vector2::new(point[0], point[1]), &ring)
+    let precise = |polygon: &[[f32; 2]]| -> Vec<[f64; 2]> {
+        polygon.iter().map(|p| p.map(f64::from)).collect()
     };
-    polygon_edges(a).any(|(p, q)| polygon_edges(b).any(|(r, s)| segments_intersect(p, q, r, s)))
-        || inside(a[0], b)
-        || inside(b[0], a)
-}
-
-fn polygon_edges(polygon: &[[f32; 2]]) -> impl Iterator<Item = ([f32; 2], [f32; 2])> + '_ {
-    (0..polygon.len()).map(move |i| (polygon[i], polygon[(i + 1) % polygon.len()]))
+    let shapes = precise(a).overlay(&precise(b), OverlayRule::Intersect, FillRule::EvenOdd);
+    // Even-odd contours: holes wind opposite to their outer contour, so signed areas net out.
+    let twice: f64 = shapes
+        .iter()
+        .flatten()
+        .map(|contour| {
+            contour
+                .iter()
+                .zip(contour.iter().cycle().skip(1))
+                .map(|(p, q)| p[0] * q[1] - q[0] * p[1])
+                .sum::<f64>()
+        })
+        .sum();
+    (twice * 0.5).abs()
 }
 
 pub(crate) fn is_valid(vertices: &[[f32; 2]]) -> bool {

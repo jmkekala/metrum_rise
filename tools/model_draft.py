@@ -13,8 +13,12 @@ outside the profile is written (besides `--report`). With `--write` the draft is
 more into `<mods>/<pack_id>`, and only when the copy passed the acceptance check. An asset that
 already exists is never replaced: the stale-geometry report comes back instead.
 
-Exit status: 0 drafted (and written), or an existing asset with nothing to report; 1 refused,
-failed or not run; 2 an existing asset with stale lines reported.
+A role without `pack_id` takes the only pack in `--mods`; with none or several it is refused.
+Paths inside the profile's pack copy are reported as their `--mods` paths, since the profile is
+deleted after the run (unless `--keep-profile`, which keeps the `copy` paths as they are).
+
+Exit status: 0 drafted (and written), or an existing asset with no stale line (information lines
+may be reported); 1 refused, failed or not run; 2 an existing asset with stale lines reported.
 """
 
 import argparse
@@ -28,13 +32,55 @@ import sys
 import godot_isolated
 
 SCRIPT = "res://scripts/editors/asset_editor/model_draft.gd"
+# What the game's `is_valid_pack_id` accepts; the Rust role reader says the same.
+PACK_ID_RULE = ("a pack id is the name of the pack's folder in --mods, made of lowercase letters, digits "
+                "and hyphens, not starting or ending with a hyphen")
+
+
+def valid_pack_id(pack_id):
+    return (isinstance(pack_id, str) and pack_id != "" and not pack_id.startswith("-")
+            and not pack_id.endswith("-") and all(c in "abcdefghijklmnopqrstuvwxyz0123456789-" for c in pack_id))
+
+
+def label(role):
+    """`<pack_id>:<asset_id>` of role inputs that may be incomplete, as the draft names them."""
+    field = lambda key: role.get(key) if isinstance(role.get(key), str) else f"(no {key})"
+    return f"{field('pack_id')}:{field('asset_id')}"
+
+
+def with_pack_id(role, mods):
+    """The role with `pack_id` filled in when it gives none: the only pack in `mods` (a folder,
+    not a link and not a dot-name, holding `pack.toml`). None or several packs is a refusal."""
+    if "pack_id" in role:
+        return role
+    packs = sorted(path.name for path in Path(mods).iterdir()
+                   if not path.name.startswith(".") and path.is_dir() and not path.is_symlink()
+                   and (path / "pack.toml").is_file())
+    if len(packs) != 1:
+        raise ValueError(f"the role gives no pack_id and --mods holds {len(packs)} packs "
+                         f"({', '.join(packs) or 'none'}); name one in pack_id")
+    return dict(role, pack_id=packs[0])
+
+
+def unprofile(value, copy, mods):
+    """`value` with every path inside the profile's pack copy `copy` named by its path in `mods`:
+    the copy is the pack in `mods`, and the profile is deleted after the run."""
+    if isinstance(value, str):
+        for prefix in dict.fromkeys((copy, os.path.realpath(copy))):
+            value = mods if value == prefix else value.replace(prefix + os.sep, mods + os.sep)
+        return value
+    if isinstance(value, list):
+        return [unprofile(item, copy, mods) for item in value]
+    if isinstance(value, dict):
+        return {key: unprofile(item, copy, mods) for key, item in value.items()}
+    return value
 
 
 def copy_pack(mods, pack_id, destination):
     """Copies `<mods>/<pack_id>` into `destination` (links kept as links, which the draft then
     refuses). A missing pack copies nothing: the draft refuses it by name."""
-    if not pack_id or Path(pack_id).name != pack_id or pack_id.startswith("."):
-        raise ValueError(f"role pack_id {pack_id!r} is not a pack folder name")
+    if not valid_pack_id(pack_id):
+        raise ValueError(f"role pack_id {pack_id!r} is not a pack id: {PACK_ID_RULE}")
     destination.mkdir(parents=True, exist_ok=True)
     source = Path(mods) / pack_id
     if source.is_dir() and not source.is_symlink():
@@ -67,9 +113,15 @@ def main(argv=None):
     args = parser.parse_args(argv)
     try:
         role = json.loads(Path(args.role).read_text(encoding="utf-8"))
-        pack_id = role.get("pack_id", "") if isinstance(role, dict) else ""
+        if not isinstance(role, dict):
+            raise ValueError("not a JSON object")
     except (OSError, ValueError) as error:
-        print(f"model_draft: cannot read the role inputs: {error}", file=sys.stderr)
+        print(f"model_draft: cannot read the role inputs {args.role}: {error}", file=sys.stderr)
+        return 1
+    try:
+        role = with_pack_id(role, args.mods)
+    except (OSError, ValueError) as error:
+        print(f"model_draft: {label(role)}: refused: {error}", file=sys.stderr)
         return 1
     try:
         profile, project, _, env = godot_isolated.create(
@@ -79,7 +131,7 @@ def main(argv=None):
         return 1
     keep = args.keep_profile
     try:
-        copy_pack(args.mods, pack_id, profile / "draft-mods")
+        copy_pack(args.mods, role["pack_id"], profile / "draft-mods")
         request_path = profile / "draft-request.json"
         report_path = profile / "draft-report.json"
         request_path.write_text(json.dumps(request(args, role, profile), indent=2), encoding="utf-8")
@@ -89,16 +141,20 @@ def main(argv=None):
             env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True)
         if not report_path.is_file():
             print(run.stdout + run.stderr, file=sys.stderr)
-            print(f"model_draft: Godot exited {run.returncode} without a report", file=sys.stderr)
+            print(f"model_draft: {label(role)}: Godot exited {run.returncode} without a report", file=sys.stderr)
             keep = True
             return 1
         report = json.loads(report_path.read_text(encoding="utf-8"))
+        copy_paths = report.get("copy")
+        report = unprofile(report, str(profile / "draft-mods"), os.path.abspath(args.mods))
+        if keep and copy_paths is not None:
+            report["copy"] = copy_paths
         print(report.get("summary", ""))
         if args.report:
             Path(args.report).write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
         return run.returncode
     except ValueError as error:
-        print(f"model_draft: {error}", file=sys.stderr)
+        print(f"model_draft: {label(role)}: refused: {error}", file=sys.stderr)
         return 1
     finally:
         if keep:

@@ -130,14 +130,18 @@ pub(crate) struct Variant {
 }
 
 /// The role inputs of one wanted asset: what the sidecar cannot say (`TOOLS-33` "Draft command").
+/// `pack_id` is required here: the launcher fills it in when `--mods` holds exactly one pack.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Role {
     pub(crate) pack_id: String,
     pub(crate) asset_id: String,
+    /// Absent or empty: `default_display_name` of the asset id.
+    #[serde(default)]
     pub(crate) display_name: String,
     pub(crate) zone_type: String,
     pub(crate) density: String,
+    #[serde(default = "first_level")]
     pub(crate) level: u8,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) economy_profile: Option<String>,
@@ -358,16 +362,24 @@ impl Facts {
 }
 
 impl Role {
+    /// Read and check role inputs, filling in the defaults: `level` 1 and the display name.
     pub(crate) fn parse(value: serde_json::Value) -> Result<Self, String> {
-        let role: Self = serde_json::from_value(value).map_err(|e| format!("role: {e}"))?;
+        let mut role: Self = serde_json::from_value(value).map_err(|e| format!("role: {e}"))?;
         if !crate::assets::is_valid_pack_id(&role.pack_id) {
-            return Err(format!("role pack_id '{}' is not a pack id", role.pack_id));
+            return Err(format!(
+                "role pack_id '{}' is not a pack id: {PACK_ID_RULE}",
+                role.pack_id
+            ));
         }
         if !crate::assets::is_valid_asset_id(&role.asset_id) {
             return Err(format!(
-                "role asset_id '{}' is not an asset id",
+                "role asset_id '{}' is not an asset id: dot-separated segments of lowercase \
+                 letters, digits and underscores",
                 role.asset_id
             ));
+        }
+        if role.display_name.trim().is_empty() {
+            role.display_name = default_display_name(&role.asset_id);
         }
         // Zoned buildings only in this version (Q12); explicit buildings wait.
         if !matches!(
@@ -403,6 +415,21 @@ impl Role {
     }
 }
 
+/// What `is_valid_pack_id` accepts, for refusals; `tools/model_draft.py` says the same.
+const PACK_ID_RULE: &str = "a pack id is the name of the pack's folder in --mods, made of \
+                            lowercase letters, digits and hyphens, not starting or ending with a hyphen";
+
+fn first_level() -> u8 {
+    1
+}
+
+/// A role's display name when it gives none: the asset id's last `.` segment with `_` read as
+/// spaces and each word capitalised (R7's scheme name rule): `building.residential.house_3`
+/// gives "House 3".
+pub(crate) fn default_display_name(asset_id: &str) -> String {
+    super::rules::scheme_name(asset_id.rsplit('.').next().unwrap_or(asset_id))
+}
+
 /// The ledger entry beside a published draft, `<pack>/model_sources/<asset_id>.json`.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -435,8 +462,9 @@ pub(crate) fn read_ledger(pack: &Path, asset_id: &str) -> Result<Option<Facts>, 
         .map_err(|e| format!("ledger {}: {e}", path.display()))
 }
 
-/// Copy the sidecar and role, as read, beside the pack's assets. The scanner registers only
-/// `asset.toml` files, and an editor republish replaces only `assets/<asset_id>/`.
+/// Copy the sidecar as read and the role with its defaults filled in beside the pack's assets.
+/// The scanner registers only `asset.toml` files, and an editor republish replaces only
+/// `assets/<asset_id>/`.
 pub(crate) fn write_ledger(
     pack: &Path,
     asset_id: &str,

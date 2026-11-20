@@ -4,11 +4,11 @@
 //! fixture that follows the spec's worked example (`rintamamiestalo_porch`). The fixture's
 //! `.glb` files are JSON-only GLB containers: every Rust consumer reads the JSON chunk only.
 
-use super::report::{Line, stale_report};
+use super::report::{Line, role_mismatches, stale_report};
 use super::rules;
 use super::sidecar::{Facts, Role, read_ledger, write_ledger};
 use super::*;
-use crate::assets::asset::geometry::{fits_lot, polygons_overlap};
+use crate::assets::asset::geometry::{fits_lot, intersection_area};
 use crate::assets::authoring::files::token;
 use serde_json::json;
 use std::fs;
@@ -763,9 +763,19 @@ fn lot_fit_and_overlap_geometry() {
     let square = [[0.0, 0.0], [2.0, 0.0], [2.0, 2.0], [0.0, 2.0]];
     let inner = [[0.5, 0.5], [1.0, 0.5], [1.0, 1.0]];
     let apart = [[3.0, 3.0], [4.0, 3.0], [4.0, 4.0]];
-    assert!(polygons_overlap(&square, &inner));
-    assert!(polygons_overlap(&inner, &square));
-    assert!(!polygons_overlap(&square, &apart));
+    let beside = [[2.0, 0.5], [3.0, 0.5], [3.0, 1.5], [2.0, 1.5]];
+    let across = [[1.5, -1.0], [3.0, -1.0], [3.0, 3.0], [1.5, 3.0]];
+    for (a, b, area) in [
+        (&square[..], &inner[..], 0.125),
+        (&inner, &square, 0.125),
+        (&square, &apart, 0.0),
+        // Touching along an edge or at a corner shares no area.
+        (&square, &beside, 0.0),
+        (&square, &[[2.0, 2.0], [3.0, 2.0], [3.0, 3.0]], 0.0),
+        (&square, &across, 1.0),
+    ] {
+        assert!((intersection_area(a, b) - area).abs() < 1e-6, "{b:?}");
+    }
     let mut part = crate::assets::MeshPart::single_lod0("p", "p.glb");
     part.rotation_degrees = [0.0, 90.0, 0.0];
     part.position = [1.0, 0.0, 0.0];
@@ -773,4 +783,130 @@ fn lot_fit_and_overlap_geometry() {
     for (actual, expected) in plan.iter().flatten().zip([0.0, -2.0, 2.0, 2.0]) {
         assert!((actual - expected).abs() < 1e-5, "{plan:?}");
     }
+}
+
+// The worked example's footprint through `hand_manifest`'s part reaches z 1.94 at the porch front.
+fn site_lines(facts: &Facts, ledger: Option<&Facts>, surface: &str) -> Vec<Line> {
+    let fixture = Fixture::new();
+    let manifest = hand_manifest([-1.14, 0.0, 1.58], surface);
+    stale_report(facts, ledger, &manifest, &published(&fixture, facts))
+        .into_iter()
+        .filter(|line| line.check == "site_layout")
+        .collect()
+}
+
+#[test]
+fn a_site_surface_touching_the_footprint_or_holding_all_of_it_is_not_reported() {
+    let facts = Fixture::new().inputs().facts;
+    // Its back edge lies on the porch's front wall.
+    let touching = "[[-3.57, 1.94], [1.43, 1.94], [1.43, 10], [-3.57, 10]]";
+    assert_eq!(site_lines(&facts, Some(&facts), touching), []);
+    // A lot-wide pad under the whole building.
+    let pad = "[[-10, -10], [10, -10], [10, 10], [-10, 10]]";
+    assert_eq!(site_lines(&facts, None, pad), []);
+    let mut changed = facts.clone();
+    changed.footprint[0][0] -= 0.5;
+    assert_eq!(site_lines(&facts, Some(&changed), pad), []);
+}
+
+#[test]
+fn a_partial_overlap_is_information_unless_the_ledger_footprint_changed() {
+    let facts = Fixture::new().inputs().facts;
+    // Under the porch: x −2.74..0.26 of the walk, z 0..1.94.
+    let walk = "[[-3.57, 0], [1.43, 0], [1.43, 10], [-3.57, 10]]";
+    for ledger in [None, Some(&facts)] {
+        let lines = site_lines(&facts, ledger, walk);
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(!lines[0].stale, "{lines:?}");
+        assert!(!lines[0].message.contains("new"), "{lines:?}");
+        assert!(lines[0].message.contains("5.82 m²"), "{lines:?}");
+    }
+    let mut drafted = facts.clone();
+    drafted.footprint[4][1] = 4.0;
+    let lines = site_lines(&facts, Some(&drafted), walk);
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert!(lines[0].stale, "{lines:?}");
+    assert!(lines[0].message.contains("footprint changed"), "{lines:?}");
+}
+
+#[test]
+fn a_hero_model_is_refused_for_a_zoned_role() {
+    let mut fixture = Fixture::new();
+    fixture.sidecar["hero"] = json!(true);
+    fixture.write_sidecar();
+    let error = read_inputs(&fixture.sidecar_path(), fixture.role())
+        .err()
+        .unwrap();
+    assert!(error.contains("hero model"), "{error}");
+}
+
+#[test]
+fn role_inputs_that_differ_from_the_existing_asset_are_information_lines() {
+    let fixture = Fixture::new();
+    let manifest = hand_manifest([-1.14, 0.0, 1.58], "[[0, 0], [1, 0], [1, 1]]");
+    let role = |edit: fn(&mut Value)| {
+        let mut role = fixture.role();
+        edit(&mut role);
+        Role::parse(role).unwrap()
+    };
+    assert_eq!(role_mismatches(&role(|_| {}), &manifest), []);
+    // A lot the role does not give is not compared.
+    assert_eq!(
+        role_mismatches(&role(|r| r["lot_cells"] = json!([2, 2])), &manifest),
+        []
+    );
+    let lines = role_mismatches(
+        &role(|r| {
+            r["level"] = json!(2);
+            r["density"] = json!("medium");
+            r["lot_cells"] = json!([3, 2]);
+            r["asset_set"] = json!("veterans");
+            r["zone_type"] = json!("commercial");
+            r["economy_profile"] = json!("grocery_basic");
+        }),
+        &manifest,
+    );
+    let fields: Vec<_> = lines.iter().map(|line| line.field).collect();
+    assert_eq!(
+        fields,
+        [
+            "level",
+            "zone_type",
+            "density",
+            "lot_cells",
+            "asset_set",
+            "economy_profile"
+        ]
+    );
+    assert!(lines.iter().all(|line| !line.stale && line.check == "role"));
+    assert_eq!(
+        lines[0].message,
+        "the role gives level 2, the existing asset has 1"
+    );
+    assert_eq!(
+        lines[4].message,
+        "the role gives asset_set 'veterans', the existing asset has none"
+    );
+}
+
+#[test]
+fn a_role_defaults_its_level_and_display_name() {
+    let fixture = Fixture::new();
+    let mut role = fixture.role();
+    let object = role.as_object_mut().unwrap();
+    object.remove("level");
+    object.remove("display_name");
+    let parsed = Role::parse(role.clone()).unwrap();
+    assert_eq!((parsed.level, parsed.display_name.as_str()), (1, "House 3"));
+    role["asset_id"] = json!("building.residential.house_1_level_2");
+    role["display_name"] = json!(" ");
+    assert_eq!(Role::parse(role).unwrap().display_name, "House 1 Level 2");
+    assert_eq!(super::sidecar::default_display_name("rowhouse"), "Rowhouse");
+    let mut role = fixture.role();
+    role["pack_id"] = json!("Kuopio");
+    let error = Role::parse(role).unwrap_err();
+    assert!(
+        error.contains("lowercase letters, digits and hyphens"),
+        "{error}"
+    );
 }

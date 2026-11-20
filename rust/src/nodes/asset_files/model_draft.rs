@@ -55,12 +55,15 @@ enum Step {
 
 /// Run one draft request. Returns the exit status and the JSON report with its text summary.
 pub(super) fn run(request: &str, engine: &Engine) -> (i64, Value) {
+    let mut asset = None;
     let result = (|| -> Result<(i64, Value), String> {
         let request: Request =
             serde_json::from_str(request).map_err(|e| format!("draft request: {e}"))?;
-        let inputs = draft::read_inputs(&request.sidecar, request.role.clone())?;
-        let asset = format!("{}:{}", inputs.role.pack_id, inputs.role.asset_id);
-        let mut report = json!({"asset": asset});
+        // Named from the role as sent, so a refusal of the role itself still names it.
+        let label = asset_label(&request.role);
+        asset = Some(label.clone());
+        let inputs = draft::read_inputs(&request.sidecar, request.role)?;
+        let mut report = json!({"asset": label});
         let copy = draft_into(&inputs, &request.mods, &request.work, engine)?;
         let mut exit = describe(&copy, &mut report, "copy");
         report["status"] = json!(match (&copy, exit) {
@@ -78,10 +81,25 @@ pub(super) fn run(request: &str, engine: &Engine) -> (i64, Value) {
         }
         Ok((exit, report))
     })();
-    let (exit, mut report) =
-        result.unwrap_or_else(|error| (EXIT_FAILED, json!({"status": "refused", "error": error})));
+    let (exit, mut report) = result.unwrap_or_else(|error| {
+        let mut report = json!({"status": "refused", "error": error});
+        if let Some(asset) = asset {
+            report["asset"] = json!(asset);
+        }
+        (EXIT_FAILED, report)
+    });
     report["summary"] = json!(summary(&report));
     (exit, report)
+}
+
+// `<pack_id>:<asset_id>` from role inputs that may not parse.
+fn asset_label(role: &Value) -> String {
+    let field = |key: &str| {
+        role[key]
+            .as_str()
+            .map_or_else(|| format!("(no {key})"), str::to_owned)
+    };
+    format!("{}:{}", field("pack_id"), field("asset_id"))
 }
 
 // Draft into the role's pack in `mods`: nothing is written when the asset exists.
@@ -102,9 +120,13 @@ fn draft_into(
     let asset_id = &inputs.role.asset_id;
     (engine.thumbnail)(&derived.preview, &derived.thumbnail)?;
     publish_state(derived.document.clone(), &derived.pack, engine.decodes)?;
-    let ledger =
-        sidecar::write_ledger(&derived.pack, asset_id, &inputs.sidecar, &inputs.role_value)
-            .map_err(|e| format!("assets/{asset_id} was published, but its {e}"))?;
+    let ledger = sidecar::write_ledger(
+        &derived.pack,
+        asset_id,
+        &inputs.sidecar,
+        &json!(inputs.role),
+    )
+    .map_err(|e| format!("assets/{asset_id} was published, but its {e}"))?;
     let outcome = acceptance::check(
         mods,
         &inputs.role.pack_id,
@@ -126,8 +148,10 @@ fn draft_into(
 fn describe(step: &Step, report: &mut Value, key: &str) -> i64 {
     match step {
         Step::Existing(lines) => {
-            report["stale"] = json!(lines);
-            if lines.is_empty() {
+            let (stale, info): (Vec<_>, Vec<_>) = lines.iter().partition(|line| line.stale);
+            report["stale"] = json!(stale);
+            report["info"] = json!(info);
+            if stale.is_empty() {
                 EXIT_OK
             } else {
                 EXIT_STALE
@@ -164,12 +188,14 @@ fn summary(report: &Value) -> String {
     let draft = &report["draft"];
     if draft.is_object() {
         lines.push(format!(
-            "  lot {} x {} cells; part at {}; entrance at {}",
+            "  lot {} x {} cells; part at {}; entrance at {} facing {}",
             draft["lot_cells"][0],
             draft["lot_cells"][1],
             draft["part_position"],
-            draft["entrance"]["position"]
+            draft["entrance"]["position"],
+            draft["entrance"]["forward"]
         ));
+        lines.push(format!("  capacity: {}", capacity(draft)));
         let free = &draft["free_space"];
         lines.push(format!(
             "  free space: front {} m, back {} m, left {} m, right {} m",
@@ -181,18 +207,42 @@ fn summary(report: &Value) -> String {
             lines.push(format!("  {kind}: {}", entry.as_str().unwrap_or_default()));
         }
     }
-    for line in report["stale"].as_array().into_iter().flatten() {
-        lines.push(format!(
-            "  {} [{}]: {}",
-            line["check"].as_str().unwrap_or_default(),
-            line["field"].as_str().unwrap_or_default(),
-            line["message"].as_str().unwrap_or_default()
-        ));
+    for (prefix, key) in [("", "stale"), ("info: ", "info")] {
+        for line in report[key].as_array().into_iter().flatten() {
+            lines.push(format!(
+                "  {prefix}{} [{}]: {}",
+                line["check"].as_str().unwrap_or_default(),
+                line["field"].as_str().unwrap_or_default(),
+                line["message"].as_str().unwrap_or_default()
+            ));
+        }
     }
     if report["stale"].as_array().is_some_and(Vec::is_empty) {
-        lines.push("  the asset exists and matches the model; nothing was published".into());
+        lines.push("  the asset exists and no line marks it stale; nothing was published".into());
     }
     lines.join("\n")
+}
+
+// The derived capacities: households and flat size for housing, workers and profile otherwise.
+fn capacity(draft: &Value) -> String {
+    let mut parts = Vec::new();
+    if !draft["household_capacity"].is_null() {
+        parts.push(format!("households {}", draft["household_capacity"]));
+    }
+    if !draft["flat_size_m2"].is_null() {
+        parts.push(format!("flat size {} m²", draft["flat_size_m2"]));
+    }
+    if !draft["worker_capacity"].is_null() {
+        parts.push(format!("workers {}", draft["worker_capacity"]));
+    }
+    if let Some(profile) = draft["economy_profile"].as_str() {
+        parts.push(format!("economy_profile {profile}"));
+    }
+    if parts.is_empty() {
+        "none".into()
+    } else {
+        parts.join(", ")
+    }
 }
 
 #[cfg(test)]
@@ -296,11 +346,12 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+        let summary = report["summary"].as_str().unwrap();
+        assert!(summary.contains("free space: front 6.32 m"), "{summary}");
+        assert!(summary.contains("facing [0.0,0.0,1.0]"), "{summary}");
         assert!(
-            report["summary"]
-                .as_str()
-                .unwrap()
-                .contains("free space: front 6.32 m")
+            summary.contains("capacity: households 1, flat size 80.0 m²"),
+            "{summary}"
         );
 
         let (exit, report) = run_fixture(&fixture, fixture.role(), true);
@@ -364,6 +415,43 @@ mod tests {
             snapshot(&fixture.pack()),
             installed,
             "the report writes nothing"
+        );
+    }
+
+    #[test]
+    fn information_lines_leave_the_exit_status_and_refusals_name_the_asset() {
+        let mut fixture = Fixture::new();
+        // The copy keeps the asset from this run.
+        assert_eq!(run_fixture(&fixture, fixture.role(), false).0, 0);
+        // A mistyped id that hits the level-1 asset: role lines only, exit 0.
+        let mut role = fixture.role();
+        role["level"] = json!(2);
+        let (exit, report) = run_fixture(&fixture, role, false);
+        assert_eq!(
+            (exit, report["status"].as_str()),
+            (0, Some("existing")),
+            "{report:#}"
+        );
+        assert_eq!(report["stale"], json!([]));
+        assert_eq!(report["info"][0]["field"], "level", "{report:#}");
+        let summary = report["summary"].as_str().unwrap();
+        assert!(
+            summary.contains("info: role [level]: the role gives level 2"),
+            "{summary}"
+        );
+        // A refused role still names its pack and asset.
+        fixture.sidecar["hero"] = json!(true);
+        fixture.write_sidecar();
+        let (exit, report) = run_fixture(&fixture, fixture.role(), false);
+        assert_eq!(exit, 1, "{report:#}");
+        let label = format!("{PACK}:{ASSET}");
+        assert_eq!(report["asset"], json!(label));
+        assert!(
+            report["summary"]
+                .as_str()
+                .unwrap()
+                .starts_with(&format!("{label}: refused")),
+            "{report:#}"
         );
     }
 

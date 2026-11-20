@@ -24,16 +24,16 @@ use std::path::{Path, PathBuf};
 /// A read and checked sidecar with its role inputs, as the draft command received them.
 pub(crate) struct Inputs {
     pub(crate) facts: Facts,
-    /// The sidecar and role as read, copied verbatim into the ledger.
+    /// The sidecar as read, copied verbatim into the ledger.
     pub(crate) sidecar: Value,
+    /// The role with its defaults filled in, as the ledger records it.
     pub(crate) role: Role,
-    pub(crate) role_value: Value,
     /// The sidecar's folder, which every file path in it is relative to.
     pub(crate) export: PathBuf,
 }
 
 /// Read the preconditions that need no pack: sidecar schema and version, every listed hash,
-/// a clean source, and well-formed role inputs. Each failure is a refusal.
+/// a clean source, no hero model, and well-formed role inputs. Each failure is a refusal.
 pub(crate) fn read_inputs(sidecar_path: &Path, role: Value) -> Result<Inputs, String> {
     let text = std::fs::read_to_string(sidecar_path)
         .map_err(|e| format!("cannot read sidecar {}: {e}", sidecar_path.display()))?;
@@ -46,6 +46,15 @@ pub(crate) fn read_inputs(sidecar_path: &Path, role: Value) -> Result<Inputs, St
             facts.name
         ));
     }
+    // Every role this version takes is zoned (Q12); a hero model is a landmark or service
+    // building, which must not slip through under a commercial role.
+    if facts.hero {
+        return Err(format!(
+            "{} is a hero model (sidecar hero: true): this version drafts zoned buildings only, \
+             and a hero or service building waits for explicit buildings (Q12)",
+            facts.name
+        ));
+    }
     let export = sidecar_path
         .parent()
         .ok_or("the sidecar has no folder")?
@@ -54,8 +63,7 @@ pub(crate) fn read_inputs(sidecar_path: &Path, role: Value) -> Result<Inputs, St
     Ok(Inputs {
         facts,
         sidecar,
-        role: Role::parse(role.clone())?,
-        role_value: role,
+        role: Role::parse(role)?,
         export,
     })
 }
@@ -169,21 +177,16 @@ fn tier_materials(facts: &Facts, export: &Path) -> Result<Vec<String>, String> {
         .collect()
 }
 
-/// The no-overwrite rule: `None` when `assets/<asset_id>` is free, else the stale-geometry
-/// report against what is there. Anything at that path (file, folder or link) counts.
+/// The no-overwrite rule: `None` when `assets/<asset_id>` is free, else the report against what
+/// is there: role mismatches, then the stale-geometry report. Anything at that path (file,
+/// folder or link) counts.
 pub(crate) fn existing(pack: &Path, inputs: &Inputs) -> Option<Vec<report::Line>> {
     let asset_id = &inputs.role.asset_id;
     let target = pack.join("assets").join(asset_id);
     if !target.exists() && !target.is_symlink() {
         return None;
     }
-    let unreadable = |message: String| {
-        vec![report::Line {
-            check: "files",
-            field: "asset_id",
-            message,
-        }]
-    };
+    let unreadable = |message: String| vec![report::line("files", "asset_id", message)];
     let mods = pack.parent().unwrap_or(Path::new("."));
     let pack_id = &inputs.role.pack_id;
     let directory = match files::asset_directory(mods, pack_id, asset_id) {
@@ -201,13 +204,9 @@ pub(crate) fn existing(pack: &Path, inputs: &Inputs) -> Option<Vec<report::Line>
         Ok(published) => published,
         Err(error) => return Some(unreadable(format!("assets/{asset_id}: {error}"))),
     };
-    let mut lines = Vec::new();
+    let mut lines = report::role_mismatches(&inputs.role, &manifest);
     let ledger = sidecar::read_ledger(pack, asset_id).unwrap_or_else(|error| {
-        lines.push(report::Line {
-            check: "facts",
-            field: "asset_id",
-            message: error,
-        });
+        lines.push(report::line("facts", "asset_id", error));
         None
     });
     lines.extend(report::stale_report(

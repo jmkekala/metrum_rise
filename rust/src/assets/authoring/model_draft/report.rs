@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The stale-geometry report (docs/asset_editor.md "Draft command"): what a rebuilt model
-//! changes for an asset that already exists. Read-only; every line names the editor field it
-//! concerns. O(published files + doors + footprint × site items), once per draft.
+//! changes for an asset that already exists, and information lines that do not mark it stale.
+//! Read-only; every line names the editor field it concerns. O(published files + doors + site
+//! items × (footprint + item) log(footprint + item)), once per draft.
 
 use super::rules::LOT_FIT_TOLERANCE_M;
-use super::sidecar::Facts;
-use crate::assets::asset::geometry::{fits_lot, polygons_overlap};
+use super::sidecar::{Facts, Role};
+use crate::assets::asset::geometry::{fits_lot, intersection_area, signed_area};
 use crate::assets::asset::validation::{ZONE_CELL_M, site_anchor_footprint};
 use crate::assets::{AnchorType, AssetManifest, MeshPart};
 use serde::Serialize;
@@ -20,22 +21,38 @@ pub(crate) const ENTRANCE_TOLERANCE_DEG: f32 = 15.0;
 /// With a ledger entry, a door that moved this far is reported on its own.
 const DOOR_MOVE_M: f64 = 0.05;
 
+/// A site item reported only when it shares more than this with the footprint: a surface whose
+/// edge lies on a wall touches it and shares nothing, and float noise along such an edge stays
+/// far below this. A surface holding all but this much of the footprint is a pad under it.
+pub(crate) const OVERLAP_TOLERANCE_M2: f64 = 0.01;
+
 /// One reported difference.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub(crate) struct Line {
     /// Which of the report's checks found it: `files`, `facts`, `lot_fit`, `entrance`,
-    /// `schemes`, `capacity` or `site_layout`.
+    /// `schemes`, `capacity`, `site_layout` or `role`.
     pub(crate) check: &'static str,
     /// The editor field the owner updates.
     pub(crate) field: &'static str,
     pub(crate) message: String,
+    /// A stale line marks the asset stale (exit status 2); an information line does not.
+    #[serde(skip)]
+    pub(crate) stale: bool,
 }
 
-fn line(check: &'static str, field: &'static str, message: String) -> Line {
+pub(crate) fn line(check: &'static str, field: &'static str, message: String) -> Line {
     Line {
         check,
         field,
         message,
+        stale: true,
+    }
+}
+
+fn info(check: &'static str, field: &'static str, message: String) -> Line {
+    Line {
+        stale: false,
+        ..line(check, field, message)
     }
 }
 
@@ -68,7 +85,7 @@ pub(crate) fn stale_report(
             ));
         }
         lines.extend(entrance(facts, ledger, manifest, part));
-        lines.extend(site_layout(facts, manifest, part));
+        lines.extend(site_layout(facts, ledger, manifest, part));
     } else if part.is_none() {
         lines.push(line(
             "lot_fit",
@@ -305,8 +322,16 @@ fn schemes(facts: &Facts, manifest: &AssetManifest) -> Vec<Line> {
     lines
 }
 
-// Site items the new footprint, placed through the present part, would stand on.
-fn site_layout(facts: &Facts, manifest: &AssetManifest, part: &MeshPart) -> Vec<Line> {
+// Site items the footprint, placed through the present part, stands on. Touching is no overlap;
+// a site surface holding the whole footprint is a pad under the building and is not reported.
+// Any other overlap is information, since the owner may have laid it so, unless the ledger shows
+// the footprint changed since the draft: then the model moved onto the item and it is stale.
+fn site_layout(
+    facts: &Facts,
+    ledger: Option<&Facts>,
+    manifest: &AssetManifest,
+    part: &MeshPart,
+) -> Vec<Line> {
     let transform = part.local_transform();
     let footprint: Vec<[f32; 2]> = facts
         .footprint
@@ -316,14 +341,34 @@ fn site_layout(facts: &Facts, manifest: &AssetManifest, part: &MeshPart) -> Vec<
             [point.x, point.z]
         })
         .collect();
+    let footprint_m2 = f64::from(signed_area(&footprint).abs());
+    let changed = ledger.is_some_and(|ledger| ledger.footprint != facts.footprint);
     let mut lines = Vec::new();
-    for surface in &manifest.site_surfaces {
-        if polygons_overlap(&footprint, &surface.vertices) {
-            lines.push(line(
+    let mut overlap = |item: String, field: &'static str, shared_m2: f64| {
+        if shared_m2 <= OVERLAP_TOLERANCE_M2 {
+            return;
+        }
+        let message = format!(
+            "{item} lies under {shared_m2:.2} m² of the building's {footprint_m2:.2} m² footprint"
+        );
+        lines.push(if changed {
+            line(
                 "site_layout",
+                field,
+                format!("{message}; the footprint changed since the asset was drafted"),
+            )
+        } else {
+            info("site_layout", field, message)
+        });
+    };
+    for surface in &manifest.site_surfaces {
+        let shared = intersection_area(&footprint, &surface.vertices);
+        if footprint_m2 - shared > OVERLAP_TOLERANCE_M2 {
+            overlap(
+                format!("site surface '{}'", surface.name),
                 "site_surfaces",
-                format!("site surface '{}' overlaps the new footprint", surface.name),
-            ));
+                shared,
+            );
         }
     }
     let plantings = manifest
@@ -331,27 +376,81 @@ fn site_layout(facts: &Facts, manifest: &AssetManifest, part: &MeshPart) -> Vec<
         .iter()
         .flat_map(|building| &building.yard_planting);
     for area in plantings {
-        if polygons_overlap(&footprint, &area.vertices) {
-            lines.push(line(
-                "site_layout",
-                "site_surfaces",
-                format!("planting area '{}' overlaps the new footprint", area.name),
-            ));
-        }
+        overlap(
+            format!("planting area '{}'", area.name),
+            "site_surfaces",
+            intersection_area(&footprint, &area.vertices),
+        );
     }
     for anchor in &manifest.anchors {
-        if let Some(corners) = site_anchor_footprint(anchor)
-            && polygons_overlap(&footprint, &corners)
-        {
-            lines.push(line(
-                "site_layout",
+        if let Some(corners) = site_anchor_footprint(anchor) {
+            overlap(
+                format!("{:?} anchor '{}'", anchor.anchor_type, anchor.name),
                 "anchors",
-                format!(
-                    "{:?} anchor '{}' overlaps the new footprint",
-                    anchor.anchor_type, anchor.name
-                ),
-            ));
+                intersection_area(&footprint, &corners),
+            );
         }
     }
     lines
+}
+
+/// Information lines for each role input that differs from the existing asset's manifest, so a
+/// mistyped asset id that hits a real asset is noticed. `lot_cells` is compared only when the
+/// role gives it. None marks the asset stale.
+pub(crate) fn role_mismatches(role: &Role, manifest: &AssetManifest) -> Vec<Line> {
+    let Some(building) = &manifest.building else {
+        return vec![info(
+            "role",
+            "asset_id",
+            "the existing asset is no building".into(),
+        )];
+    };
+    let quoted = |value: Option<&str>| value.map_or("none".to_owned(), |v| format!("'{v}'"));
+    let zone = building
+        .zone_type
+        .map(|zone| format!("{zone:?}").to_ascii_lowercase());
+    let mut fields: Vec<(&'static str, String, String)> = vec![
+        ("level", role.level.to_string(), building.level.to_string()),
+        (
+            "zone_type",
+            quoted(Some(&role.zone_type)),
+            quoted(zone.as_deref()),
+        ),
+        (
+            "density",
+            quoted(Some(&role.density)),
+            quoted(building.density.as_deref()),
+        ),
+    ];
+    if let Some(lot) = role.lot_cells {
+        fields.push((
+            "lot_cells",
+            format!("{} × {}", lot[0], lot[1]),
+            format!(
+                "{} × {}",
+                building.lot_width_cells, building.lot_depth_cells
+            ),
+        ));
+    }
+    fields.push((
+        "asset_set",
+        quoted(role.asset_set.as_deref()),
+        quoted(manifest.asset_set.as_deref()),
+    ));
+    fields.push((
+        "economy_profile",
+        quoted(role.economy_profile.as_deref()),
+        quoted(building.economy_profile.as_deref()),
+    ));
+    fields
+        .into_iter()
+        .filter(|(_, wanted, present)| wanted != present)
+        .map(|(field, wanted, present)| {
+            info(
+                "role",
+                field,
+                format!("the role gives {field} {wanted}, the existing asset has {present}"),
+            )
+        })
+        .collect()
 }

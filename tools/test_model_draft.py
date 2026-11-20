@@ -183,8 +183,42 @@ class CommandTests(unittest.TestCase):
     def test_a_pack_id_that_is_a_path_is_refused(self):
         with self.assertRaises(ValueError):
             model_draft.copy_pack(self.root / "mods", "../mods", self.root / "copy")
-        with self.assertRaises(ValueError):
+        with self.assertRaisesRegex(ValueError, "lowercase letters, digits and hyphens"):
             model_draft.copy_pack(self.root / "mods", ".hidden", self.root / "copy")
+
+    def test_a_role_without_pack_id_takes_the_only_pack(self):
+        role = json.loads((self.root / "role.json").read_text())
+        del role["pack_id"]
+        (self.root / "role.json").write_text(json.dumps(role))
+        status, report = self.draft()
+        self.assertEqual(status, 0)
+        self.assertEqual(report["seen"]["request"]["role"]["pack_id"], PACK)
+        # Dot-names, links and folders without pack.toml are no packs.
+        (self.root / "mods" / ".git").mkdir()
+        (self.root / "mods" / "loose").mkdir()
+        self.assertEqual(model_draft.with_pack_id(role, self.root / "mods")["pack_id"], PACK)
+        (self.root / "mods" / "second").mkdir()
+        (self.root / "mods" / "second" / "pack.toml").write_text("")
+        with self.assertRaisesRegex(ValueError, "holds 2 packs"):
+            model_draft.with_pack_id(role, self.root / "mods")
+        self.assertEqual(model_draft.with_pack_id(dict(role, pack_id="x"), self.root / "mods")["pack_id"], "x")
+        self.assertEqual(self.draft()[0], 1)
+
+    def test_paths_in_the_pack_copy_are_reported_as_mods_paths(self):
+        status, report = self.draft()
+        self.assertEqual(status, 0)
+        # The stand-in reports the copy's packs folder, which the profile no longer holds.
+        self.assertEqual(report["seen"]["request"]["mods"], os.path.abspath(self.root / "mods"))
+        copy, mods = str(self.root / "p" / "draft-mods"), "/packs"
+        report = {"error": f"assets/x: Missing referenced file: {copy}{os.sep}kuopio{os.sep}a.png",
+                  "copy": {"asset": f"{copy}{os.sep}kuopio"}, "lines": [copy, f"{copy}-other"], "exit": 2}
+        self.assertEqual(model_draft.unprofile(report, copy, mods), {
+            "error": f"assets/x: Missing referenced file: /packs{os.sep}kuopio{os.sep}a.png",
+            "copy": {"asset": f"/packs{os.sep}kuopio"}, "lines": ["/packs", f"{copy}-other"], "exit": 2})
+
+    def test_labels_name_pack_and_asset_even_when_missing(self):
+        self.assertEqual(model_draft.label({"pack_id": "kuopio", "asset_id": "a.b"}), "kuopio:a.b")
+        self.assertEqual(model_draft.label({"asset_id": "a.b"}), "(no pack_id):a.b")
 
 
 @unittest.skipUnless(os.environ.get("METRUM_MODEL_DRAFT_GODOT") == "1", "needs Godot and the built library")
