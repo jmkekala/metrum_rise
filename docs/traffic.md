@@ -2721,20 +2721,24 @@ and lifecycle handling. Freight keeps today's door-to-door car path and the stuc
 teleport (`TRAFFIC-20`). `PARK-03` (authored yard supply and a parking-backed admission gate) and
 `PARK-04` (paint and signs) are planned; see [`roadmap.md`](roadmap.md).
 
-The freight half of round 2b is now planned as [freight yards](#freight-yards-planned-park-19-to-park-22)
+The freight half of round 2b is now planned as [freight yards](#freight-yards-park-19-to-park-22)
 below (`PARK-19` to `PARK-22`): a truck drives into a yard and stops at a loading bay. That plan
 replaces "freight custody" and "outside-door deliveries" as the next freight work; it takes the
 watchdog away from a truck inside a yard and leaves `TRAFFIC-20` on the road as it is.
 
-### Freight yards (planned, `PARK-19` to `PARK-22`)
+### Freight yards (`PARK-19` to `PARK-22`)
 
-**Planned, not built.** Written 2026-11-20 as a design round with no code run. Every statement
-about today's code was read in the source or the manifests at `dev` `579c4101` unless it says
-*unverified*; every statement about the planned behaviour is a specification. Owner decisions are
+**Stage A1 is built ([below](#stage-a1-docks-park-19-as-built)); stages A2, B and C are planned,
+not built.** The plan was written 2026-11-20 as a design round with no code run. Every statement
+about the code before A1 was read in the source or the manifests at `dev` `579c4101` unless it
+says *unverified*; every statement about A2, B and C is a specification. Owner decisions are
 listed [at the end](#owner-decisions-freight-yards) with a recommendation each; the text assumes the
-recommendations.
+recommendations, and A1 was built on them.
 
-#### What is true today
+#### What was true before A1
+
+The baseline the plan was written against. A1 changed the last three points: `loading_bay` and
+`vehicle_class` now have consumers, and a passage opens a part's rectangle.
 
 - **A freight carrier is one agent per shipment** (`VEHICLE_FREIGHT_DELIVERY`,
   `freight_shipment_id`), spawned at its source building's door (`spawn_freight_carrier_base`,
@@ -2790,21 +2794,26 @@ and load work with no change to any trip, so it can land and be reviewed in the 
 inspector before any carrier changes course, and it carries the whole risk to the existing car
 proofs on its own. Stage C stays optional.
 
-#### Stage A1: docks (`PARK-19`)
+#### Stage A1: docks (`PARK-19`), as built
 
-**Behaviour.** Nothing moves differently. A placed building publishes one *dock* for each
-`loading_bay` anchor that passes the checks below. The building inspector shows "Loading bays: n
-of m usable" and each rejection's reason, as it shows parking places today. The asset editor
-draws the proven route of the selected loading bay, or the failing shape, and lists rejections.
+**Built** on branch `freight-yards-a1` in two rounds (2026-11-20 and 2026-11-21). Nothing moves
+differently: no trip, quote or tick reads a dock yet. A placed building publishes one *dock* for
+each `loading_bay` anchor that passes the dock proof below, saves it, and shows it in the building
+inspector; the asset editor runs the same proofs and draws them.
 
-**A gate** is a `driveway` anchor with `vehicle_class = "freight"` and `width_m` of at least
-4.0 m. Cars keep using every driveway, a gate included, as today. Freight uses gates only. This
-is the opt-in that keeps every existing city unchanged: no asset of the test pack or of the
-bundled pack has a gate, so none publishes a dock.
+**A gate** is a `driveway` anchor with `vehicle_class = "freight"` (trimmed) and `width_m` of at
+least 4.0 m. Cars keep using every driveway, a gate included. Freight uses gates only (owner
+decision 11). An asset is proven for docks only when it has a freight driveway of any width and a
+loading bay whose class is `freight` or absent (`lots::has_freight_anchors`); a freight driveway
+under 4 m switches the proof on so that its narrow gate is reported. No asset of the test pack or
+of the bundled pack has a freight driveway, so none is proven and every existing city is
+unchanged (`no_fixture_pack_asset_publishes_a_dock`).
 
-**Vehicle classes.** The constants of `parking/validation.rs` become one table, and
-`validate_bay` takes a class. The car row is today's numbers, so car proofs do not change by a
-bit.
+**Vehicle classes** (`parking/validation.rs`: `ProofClass`, `VehicleProof`, `CLASS_TABLE`). The
+car row is the car proof's old constants; its products were recorded at `dev` `2c8b47bdd` before
+the change and are asserted after it (`the_fixtures_car_bays_and_rejections_keep_their_recorded_digest`:
+places `8576f0fdbbcced0d`, reasons `2ba3ad70d4efa643`, editor `bf687441d5fc8bfa`, unchanged by
+both rounds).
 
 | Class | Body (proof rectangle) | Turn envelope (square side) | Lead before a bay and after a gate | A bend needs an envelope above | Smallest bay | Smallest gate | Passage clear height |
 | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -2812,126 +2821,156 @@ bit.
 | freight | 2.6 × 8.0 m | 8.45 m | 4.25 m | 15° | 3.0 × 8.0 m | 4.0 m | 4.0 m |
 
 The envelope is the body's diagonal rounded up (√(2.6² + 8.0²) = 8.41), as 4.85 is for the car.
-The bend limit is tighter for freight because the corner of an 8 m body swings further: turning
-15° about its centre it leaves the two corridors by under 4 cm, against 14 cm at 30°. The freight
-body is a rigid truck, not today's van, which fits inside the car body: the proofs are sized for
-the truck models that will replace it (decision 1).
+Turning 15° about its centre an 8 m body leaves the two corridors by under 4 cm, against 14 cm at
+30°. The freight body is a rigid truck, not today's van, which fits inside the car body (decision
+1).
 
-**The dock proof**, per `loading_bay` whose class is `freight` or absent, in asset anchor order.
-It is the car proof with the freight row, and three differences, each stated:
+**The dock proof** (`validate_bay` with `ProofClass::Freight`, in `lots::lot_proof`), per dock
+anchor in anchor order:
 
-1. The bay rectangle, inset 5 cm, is at least the smallest bay, lies on asphalt or concrete, and
-   overlaps no structure, parking bay or other dock.
-2. The route is today's four points: the gate's road connection
-   (`claimed_road_side_connection_pos`), the *approach* one lead inside the gate, the *aisle* one
-   lead before the bay's entry edge, and the *stop* at the bay's centre. Each leg's corridor is
-   the body's width and the leg's length plus one body length, as for cars. A corridor is blocked
-   by unpaved ground, a structure, a parking bay or another dock.
-3. **Difference:** an envelope is required at the approach and at the aisle only where the route
-   bends there by more than the class limit. A car always needs one at the driveway
-   (`corner == approach`). A truck's turn off the street is made on the road and through a gate
-   of at least 4 m, and is not proven inside the lot (decision 3); the car's envelope does not
-   prove the road side of that turn either.
-4. **Difference:** a dock always needs a gate. A loading bay opening straight onto the street is
-   not a dock.
-5. **Difference:** one arrival gate per building. Each dock takes the first gate, in anchor
-   order, that proves its route. The building's gate is that of its first published dock; a
-   later dock that proves only through another gate is rejected ("its Driveway differs from the
-   building's first loading bay's"). Routing needs one arrival point per building before a dock
-   is chosen.
+1. The bay is at least the smallest bay and, inset 5 cm, overlaps no structure of the freight set
+   ("inside the building: mark the lane as a Passage on its mesh part"), no parking bay and no
+   other loading bay, and lies on paving.
+2. The route is the car proof's four points: the gate's road connection, the approach one lead
+   inside the gate, the aisle one lead before the bay's entry edge, the stop at the bay's centre.
+   Each leg's corridor is the body's width and the leg plus one body length; unpaved ground, a
+   structure of the freight set, a parking bay or another loading bay blocks it.
+3. An envelope is required at the approach and at the aisle only where the route bends there by
+   more than 15° (`VehicleProof::turn_at_gate` is false for freight, decision 3); a car always
+   needs one at the approach.
+4. A dock always needs a gate: no loading bay opens onto the street.
+5. One arrival gate per building (`validation::dock_routes`, shared by the placed lot and the
+   editor): the first dock takes the first gate, in anchor order, that proves its route; every
+   later dock is proven through that gate only. A later dock that fails there is rejected with the
+   gate's failure, or with "its Driveway differs from the building's first loading bay's" when
+   another gate would prove it.
 
-Rejections reuse `Rejection` and its wording, with "truck" for "car" and the freight sizes, and
-one new cause: "inside the building: mark the lane as a Passage on its mesh part".
+Rejections are `"<asset> loading bay <anchor index>: <reason>"`, the car wording with "truck" and
+the freight sizes, plus "needs a freight Driveway at least 4 m wide: trucks use no car Driveway"
+and the Passage hint above. A site under construction publishes no dock, as it publishes no bay.
 
-**Passages.** A mesh part may declare openings a vehicle drives through:
+**Passages** (`assets/asset/model.rs` `Passage`, `assets/asset/passage.rs`). A mesh part may
+declare openings a vehicle drives into or through:
 
 ```toml
 [[mesh_parts.passages]]
-name = "loading_lane"
-position = [-1.9, 0, 7.825]   # part-local, centre of the mouth at ground level
+name = "tunnel"
+position = [-1.9, 0, 8.125]   # part-local, centre of the mouth at ground level
 forward = [0, 0, -1]          # into the part
 width_m = 5.0
-length_m = 8.0
+length_m = 16.25
 clear_height_m = 4.6
 through = true                # open at the far end too
 ```
 
-The rectangle `width_m` by `length_m`, lengthened by 1.0 m in front of the mouth, and behind the
-far end when `through`, is subtracted from that part's structure rectangle for every class whose
-clear height it meets. The margin clears the eaves, which the part's bounds include. The site
-derivation does the subtraction once (`derive_building_site_client`) and keeps two structure sets,
-one per class; `structure_collision` and the editor's wall list take the class's set. Yard hedges
-and planting keep the whole rectangle (`yard.rs` is not touched). A passage's floor needs paving
-like any other ground. Manifest validation refuses a passage that leaves its part's bounds by more
-than the margin, a non-unit `forward` or a non-positive size. The values above are the coal
-mine's bunker as far as the dock needs (checked 2026-11-20 in `PARK-19` round 1 against the
-bunker's `LOD0` bounds, part-local x -6.3 to 6.3 and z -8.125 to 8.125, and the paving): the lane
-is 5.0 m wide on part-local x -1.9, and the mouth at z 7.825 is the paving's edge, 0.3 m inside
-the bounds' face. But the bunker is 16.25 m deep, so `length_m = 8.0` opens only the half under
-the loading bay, and the far end that `through` marks stays closed; a passage that opens the
-whole lane is `position = [-1.9, 0, 8.125]`, `length_m = 16.25`. The dock proves with either. The
-clear height of 4.6 m was not measured.
+As built:
 
-**Rows.** A dock is a `Place` row with a third source, `PlaceSource::Dock { building, anchor }`.
-It shares the handle table, the per-source lists, `replace_source`, the saved rows, the cached
-`access` entrance (`derive_place_entrance`, whose kerb is `path[0]`) and `maneuver_path`. It is
-not supply:
+- The passage runs along a lot axis after its part's rotation: manifest validation refuses a
+  forward that the part's Y rotation does not turn onto X or Z, so the cut is an exact rectangle
+  difference (`subtract_rectangle`). The plan allowed any level forward.
+- Its rectangle, `width_m` by `length_m` from the mouth, lengthened by 1.0 m
+  (`PASSAGE_EAVES_MARGIN_M`) in front of the mouth and, when `through`, behind the far end, is cut
+  from the part's structure rectangle for each class whose clear height it meets
+  (`class_structure_footprints`). Ground dressing parts block nothing, as before.
+- The site derivation keeps the cut sets per class in
+  `BuildingSiteClient::vehicle_structure_world`, only for an asset with a passage; `structure_world`
+  (yard hedges, planting) keeps the whole rectangles. `structure_collision` takes a class.
+- Manifest validation refuses an empty or repeated name, a forward that is not a level unit
+  vector, a forward off the lot axes and a non-positive size; a pack load whose part bounds are
+  imported refuses a passage that leaves its part by more than the margin
+  (`check_passages_in_bounds`, skipped with a warning as a bounds error is).
+- The passage's floor needs paving like any other ground.
 
-- it is in no chunk's `places` list and not in `usable_places`, so `nearest_with`, the door
-  catchments, the stored-car wakes and the parked chunks never see it;
-- `building_place_count` skips it, and a separate count feeds the inspector;
-- it has no `Vehicle`. A new column `freight_holder: AgentHandle` names the carrier that holds it
-  (A2); `occupant` and `reservation` stay empty;
-- test builds extend `audit_candidates`: no candidate list names a `Dock` source.
+**Rows** (`parking/docks.rs`, `parking/data.rs`). A dock is a `Place` row with the source
+`PlaceSource::Dock { building, anchor }`, appended last so the derived order of existing sources
+is unchanged, and a new column `freight_holder` (none on every row in A1). It shares the handle
+table, the per-source lists, the pose-key retention of an unmoved row and the cached access entrance
+(`derive_place_entrance`, kerb `path[0]`), but it is reconciled by its own
+`ParkingSystem::replace_docks`, not `replace_source`: a dock has no chunk slot (`NO_CHUNK`), no
+supply count, no catchment journal and no towing, which `replace_source` carries. It is in no
+chunk's `places`, not in `usable_places`, not counted by `building_place_count`, filled by no test
+fleet, and test builds assert that no door's candidate list names it (`audit_candidates`,
+`audit_docks`). `dock_diagnostics` holds the rejections by building, as `diagnostics` holds the
+bays', for inspection only.
 
-A sibling table was considered and rejected: it would repeat the handle table, the source
-reconcile, the save and the access-path lookup for the sake of one column.
+`SimCore::publish_docks` runs from both reconcile loops (`reconcile_parking_supply`,
+`publish_parking_sites`) after the bays, so an edit, asset reload or undo that revalidates a lot
+revalidates its docks. `allocator.freight_gates` (`FreightGate { arrive, leave }`, both
+`parking_access_at` on the first dock's gate kerb) is rebuilt by the reconcile that changes the
+rows and by the load; nothing reads it in A1. Its lane ids go stale on a lane rebuild like any
+cached entrance and are refreshed on read in A2.
 
-`lot_bays` returns docks beside bays from the same pass. `SimCore::reconcile_parking_frontages`,
-the site publication, asset reload and undo therefore reconcile docks through the hooks that
-reconcile bays, with no new trigger. The allocator keeps one derived record per building with a
-dock, `freight_gates: HashMap<building handle, FreightGate>`, holding the gate's arrival and
-departure entrances (`parking_access_at` on the gate's kerb point; `door_pos` is the building's
-door). It is rebuilt from the dock rows by the reconcile that changes them and by the load. A1
-writes it and nothing reads it.
+**Save** (format 123, `SAVE_VERSION`; the [save-format history](simulation.md#ids-are-saved-state-save-11)
+ends with it). `parking_state` holds dock rows with the places; `freight_holder` is skipped when empty, so a city
+without docks writes the parking JSON of format 122. A format 122 save has no dock: its load
+validates, in parallel, the lots of the buildings whose asset has freight anchors and publishes
+their docks once (decision 12). A format 123 load validates nothing and rebuilds the docks'
+access and the gates from the rows.
 
-**The editor** (`validation::editor_payload`, the asset document commands, the editor scripts):
+**The building inspector** (`SimCore::dock_lines`, the `dock_usable`, `dock_bays` and
+`dock_rejected` keys of the inspection payload, `building_inspector.gd`) shows, beside the parking
+places and only for an asset with a freight driveway, "Loading bays: n of m usable" and each dock
+rejection as a parking alert. As for bays (`PARK-17`), a load keeps no rejection: a building with
+fewer docks than loading bays is validated again for its reasons when inspected.
 
-- Site / Access points gains the class on a Driveway (Car, Freight) and a Passage object on a
-  mesh part, drawn as its ground rectangle with the two ends marked.
-- A loading bay is validated like a parking spot, with the freight row. A rejected loading bay
-  blocks "Validate & export" only when the asset has a gate; without one it is a note ("unused:
-  no freight Driveway"), so the existing packs export as before.
-- `PARK-18` is closed here, for bays and docks alike: the editor builds the same support the
-  placed check uses, the asset's paving as the site derivation extends it to the street
-  (*unverified*: the extension by the front gap and `APRON_TUCK_M` was read in `derive.rs`, its
-  exact reach was not), plus an assumed road strip along the lot's street edge, and runs the
-  road-to-Driveway leg. An asset whose paving stops short of the street is then rejected in the
-  editor with the placed game's words. The coverage tolerance does not change.
+**The asset editor** (`validation/editor.rs`, `parking_diagnostics_json`, the passage panel,
+`building_preview.gd`) runs the placed proofs over the asset alone, on an assumed straight street:
 
-**Save.** Format 123 or the next free number at landing: `parking_state` holds dock rows with
-the places (the source variant serialises as the others do). A save of an earlier format has
-none, so its load validates the lots of the buildings whose asset has a gate and a `loading_bay`,
-in parallel, as `rebuild_loaded_kerb_blockers` does for kerbs. A current save validates nothing
-at load and derives `freight_gates` from its rows.
+- *Support and the road leg (`PARK-18`).* The site derivation extends paving only towards a street
+  that leaves a front gap of at least 1 cm (`front_gap_at`, `MIN_FRONT_GAP_M`): a vertex drawn
+  within 0.25 m of the lot's front line (`LOT_LINE_EPS_M`) moves out by the gap plus 0.1 m
+  (`APRON_TUCK_M`), so on a curved street paving that stops up to 0.1 m short reaches under the
+  road and paving that stops 0.1 to 0.25 m short leaves a strip of the shortfall less 0.1 m. On a
+  straight street the gap is zero and nothing moves, and the road surface starts at the lot line
+  (verified by `the_editor_rejects_the_way_in_from_the_driveway_as_the_placed_lot_does`: paving to
+  the line passes, 2 cm short fails). The editor takes that straight street: the paving as authored
+  plus an open street 8 m deep beyond the street edge and past both side edges, and each driveway's
+  road connection on the street edge straight out from the anchor, 5 cm into the street
+  (`BUILDING_SITE_ROAD_SAMPLE_INSET_M`), where the placed connection lies. Paving that stops short
+  of the street edge is then rejected in the editor with the placed words ("the way in from the
+  Driveway leaves the paved yard"). A curved street's verge and a real road's width stay with the
+  placed building's inspector.
+- *Walls.* The editor sends each mesh part's imported mesh-root bounds; Rust cuts the class's
+  structure set from them with the parts' passages, as the site derivation does.
+- *Docks.* Loading bays are proven with the freight row and `dock_routes`. The payload carries the
+  car rejections (`rejected`) and, for an asset with a truck's loading bay or a passage, `docks`
+  (each dock's route), `dock_rejected` (with `blocks`), `passages` (their rectangles and ends) and
+  `passage_issues` (a passage outside its part). An asset with neither gets the car payload alone.
+- *The export rule.* A rejected loading bay blocks "Validate & export" only when the asset has a
+  gate. Without one it is a note on the bay ("unused: no freight Driveway", or the narrow gate's
+  reason for a freight driveway under 4 m), so the existing packs export as before.
+- *Drawing.* The preview draws the selected loading bay's route from the gate's road connection,
+  its failed shape when it has one, and every passage as a dashed rectangle with its open ends.
+- *Passages* are listed on the selected mesh part (Model, "Passages"), added at the part's front
+  face, moved, sized and deleted through the document's `passage` command, one undo step each, and
+  carried by the editor's load JSON, drafts, the export TOML and publication.
+- *Classes.* A driveway's and a loading bay's `vehicle_class` was already editable (car, freight,
+  service).
 
 **Complexity.** Edit and load only. With A bays and docks, D driveways, S support vertices, L
-local structure vertices and P passages of the asset: today's O(A² D + A D (S + L + K overlay))
-per lot, plus O(parts × P) rectangle differences once per site derivation. No dependence on the
-city's size. Nothing in the tick.
+local structure vertices and P passages of the asset: O(A² D + A D (S + L + K overlay)) per lot,
+plus O(parts × P²) rectangle differences once per site derivation; the inspector's dock lines
+O(anchors), plus one lot validation after a load; the editor's payload the same over the asset
+alone. No dependence on the city's size. Nothing in the tick.
 
-**Which assets would publish a dock** (from their manifests; *unverified* until the validator
-runs):
+**Which assets publish a dock.**
 
 | Asset | Result | Why |
 | --- | --- | --- |
-| Test pack, all six with a `loading_bay` | none (verified: `no_fixture_pack_asset_publishes_a_dock`) | No gate: every driveway is `car`, 3 m |
-| Test pack `food_processing_plant`, `milling_machines`, `small_grocery_store`, were their driveway a gate | none | The 8.45 m envelope at the approach crosses their own parking bays |
-| Test pack `small_farm`, were its driveway a 4 m gate | plausibly | The yard is one 14 m by 20 m slab; both envelopes fit it by reading, structures not checked |
+| Test pack, all six with a `loading_bay` | none (verified: `no_fixture_pack_asset_publishes_a_dock`) | No gate: every driveway is `car`, 3 m. In the editor each bay is a note |
 | Bundled `parking` lots | none | No `loading_bay` |
-| Owner's `coal_mine_1` | yes, once the bunker declares its passage (verified in `PARK-19` round 1 on a copy: without it, "inside the building: mark the lane as a Passage on its mesh part") | Straight from `truck_in`: a 2.6 m corridor on a 5 m lane, no bend, so no envelope |
-| Owner's `grain_farm_1` | not as it is | No `loading_bay`, and its driveway is `car`. A bay straight ahead of the driveway (in front of the barn's big doors) plausibly proves once the driveway is a gate; a bay at the dryer's intake needs a turn just inside the gate, where the paving is 5.2 m wide against the 8.45 m envelope |
+| Owner's `coal_mine_1`, the pack's layout (bunker unturned, bay entered from the street through `truck_in`) | yes once the bunker declares its passage (verified on a copy in the editor: without it "inside the building: mark the lane as a Passage on its mesh part"; with the passage above, added through the passage panel, a dock straight in from `truck_in`, published and reloaded with it) | A 2.6 m corridor on a 5 m lane, no bend, so no envelope |
+| Owner's `coal_mine_1` relaid for the turned bunker (pack repository branch, 2026-11-21: lane centre x -2.475, mouths z 2.2 and 10.2, the bay entered from the back) | not in stage A, with the passage added (position `[-5.925, 0, -4.35]`, forward `[0, 0, 1]`, 8.7 m, through): through `truck_in` "the way to the front of the spot leaves the paved yard" (the straight leg from the approach to the aisle runs across the yard), through `truck_out` "the turn into the spot leaves the paved yard" (the route reverses behind the bunker and needs the 8.45 m square there; the lane paving is 6 m wide) | The intended route enters from the back after two turns: a drive-through route for Stage B. Entered from the street instead (bay at `[-2.475, 0, 10.2]` facing `-Z`) it proves straight in from `truck_out`, the truck reversing out in A |
+| Owner's `grain_farm_1` | not as it is | No `loading_bay`, and its driveway is `car` |
 | Owner's shops and factory | none | No `loading_bay` |
+
+**Differences from the plan.** Docks reconcile through `replace_docks`, not `replace_source`
+(above). A passage must run along a lot axis after its part's rotation. A later dock is proven
+through the building's gate and rejected as differing only if another gate would prove it. A
+loading bay overlapping any structure rectangle of its class's set gets the Passage hint, not only
+one inside a part. A site under construction publishes no dock. A freight driveway under 4 m
+switches the proof on so that its narrow gate is reported. The editor's road leg assumes a
+straight street; the plan left the reach of the paving extension unverified.
 
 #### Stage A2: trucks use docks (`PARK-20`)
 

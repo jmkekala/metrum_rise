@@ -566,9 +566,12 @@ stores and edits that entrance in the same anchor list as the optional site-layo
   lot; requires `width_m`
 - `parking`: the entry edge of a bay inside the lot, which runs `length_m` along `forward`; requires
   `width_m` and `length_m`
-- `loading_bay`: freight/service stop position inside the lot; requires `width_m` and `length_m`
-  (no runtime consumer yet; planned as a freight dock, with `freight` driveways as gates and
-  passages on mesh parts, in [freight yards](traffic.md#freight-yards-planned-park-19-to-park-22))
+- `loading_bay`: freight stop position inside the lot; requires `width_m` and `length_m`. With a
+  `freight` driveway of at least 4 m (a gate), a placed building publishes it as a dock when a
+  truck can reach it ([freight yards](traffic.md#stage-a1-docks-park-19-as-built), `PARK-19`);
+  no trip uses a dock yet (`PARK-20`)
+- `vehicle_class` on a driveway or a bay (`car`, `freight`, `service`; the Vehicle class field of
+  Access points). Cars use every driveway; trucks only `freight` driveways of at least 4 m
 - All building anchor positions must remain inside the authored lot footprint. `driveway` anchors
   must lie on the frontage edge; the editor lets them slide along that edge and derives their
   inward direction from the building frontage. For `driveway`, `parking`, and `loading_bay`, the
@@ -582,7 +585,8 @@ stores and edits that entrance in the same anchor list as the optional site-layo
 Runtime use in v1:
 
 - `entrance/main` remains the only anchor consumed by the live entrance/exit system; a fitting
-  `parking` anchor is public supply ([anchor lots](traffic.md#anchor-lots-park-01)).
+  `parking` anchor is public supply ([anchor lots](traffic.md#anchor-lots-park-01)); a proven
+  `loading_bay` is a saved dock, shown in the building inspector and not yet used by any trip.
 - `driveway`, `parking`, and `loading_bay` anchors do not create asphalt, concrete, paths, pads, yards, parking markings, loading markings, or other
   visuals by themselves.
 - Building yard polygons are authored explicitly through `[[site_surfaces]]`. Live gameplay treats
@@ -594,6 +598,42 @@ Runtime use in v1:
   parking, freight stop targeting, queueing, or capacity in v1.
 - Do not add prop sockets in v1. Decorative attachment points belong to a later visual-variation
   feature, not to baseline site-layout tooling.
+
+### Lot checks, docks and passages in the editor (`PARK-18`, `PARK-19`)
+
+The editor runs the placed game's lot proofs over the asset alone, in Rust
+(`AssetAuthoringPolicy.parking_diagnostics_json`, `parking/validation/editor.rs`); the scripts only
+draw and list the results.
+
+- **The street is assumed straight and flush with the lot.** The support is the paving as
+  authored and an open street beyond the lot's street edge; every driveway's road connection lies
+  on that edge straight out from the anchor, 5 cm into the street, as the placed connection does.
+  So the leg from the road to the driveway is checked: paving that stops short of the street edge,
+  even by 2 cm, rejects the spots reached through that driveway with the placed game's words
+  ("the way in from the Driveway leaves the paved yard"). On a straight street the placed site
+  derivation does not extend paving either; on a curved one it extends paving drawn within 0.25 m
+  of the lot line across the verge, which the editor does not model
+  ([freight yards](traffic.md#stage-a1-docks-park-19-as-built) has the verified reach).
+- **Walls** are each mesh part's imported bounds, less its passages for the vehicle class, cut in
+  Rust as the site derivation cuts them; ground dressing blocks nothing.
+- **Loading bays** are proven for a truck (2.6 × 8 m body) from the asset's freight driveways of at
+  least 4 m, all docks through the first dock's gate. A rejected loading bay blocks Validate &
+  export only when the asset has such a gate; otherwise it is a note on the bay, in amber in the
+  access list and above its properties ("unused: no freight Driveway", or the narrow gate's
+  reason when the freight driveway is under 4 m), and the asset still exports.
+- **The preview** draws the selected loading bay's proven route, from the gate's road connection
+  to the bay's centre, or its failed shape, and every passage as a dashed rectangle with a solid
+  line across each open end.
+- **Passages** are authored on the selected mesh part: Model → Passages lists the part's
+  passages; Add passage puts one at the part's front face, opening into it along part-local -Z;
+  its fields set the mouth's part-local X and Z, the direction it opens toward (±X, ±Z,
+  part-local), its clear width, its depth from the mouth, its clear height and whether the far end
+  is open too; Delete passage removes it. Each change is one document command (`passage`), one
+  undo step. Validation reports a passage that does not run along a lot axis once the part is
+  turned, a non-positive size, a repeated name, and one that leaves its part's bounds by more than
+  1 m. Passages travel in the editor's load JSON, drafts, the export TOML
+  (`[[mesh_parts.passages]]`, [format](traffic.md#stage-a1-docks-park-19-as-built)) and
+  publication. A passage at least 4 m high opens its part for trucks, at least 2 m for cars.
 
 ### Building Site Surfaces
 
@@ -1104,8 +1144,8 @@ Anchor requirements by asset class:
 - Buildings require exactly one `entrance` anchor named `main` that marks the main door or primary access point used by the generic entrance/exit system.
 - Buildings may define optional `driveway`, `parking`, and `loading_bay` anchors. These are authored
   site-layout metadata. They do not generate visual yard surfaces. A fitting `parking` anchor is
-  public supply ([anchor lots](traffic.md#anchor-lots-park-01)); freight stop behavior remains a
-  later runtime hook, planned in [freight yards](traffic.md#freight-yards-planned-park-19-to-park-22).
+  public supply ([anchor lots](traffic.md#anchor-lots-park-01)); a `loading_bay` reached from a
+  freight gate is a dock ([freight yards](traffic.md#freight-yards-park-19-to-park-22)).
 - Buildings may define optional `[[site_surfaces]]` polygons for authored yard materials: asphalt
   and concrete. Live gameplay renders/queries these polygons as material/layout regions on the flat
   building-site support plane.
@@ -2315,6 +2355,12 @@ Optional fields:
 - `mesh_parts.lods.file`: relative path to the part mesh file
 - `mesh_parts.lods.distance_min_m` / `distance_max_m`: existing schema's ordered metre bands,
   retained on save but ignored by the screen-size preview; pending calibrated-policy migration
+- `mesh_parts.passages`: optional `[[mesh_parts.passages]]` openings a vehicle drives into or
+  through (`PARK-19`): `name` (unique in the part), `position` (part-local centre of the mouth at
+  ground level), `forward` (level unit vector into the part that the part's Y rotation turns onto
+  a lot axis), `width_m`, `length_m` (depth from the mouth), `clear_height_m` (all positive) and
+  `through` (default false). The passage opens the part's wall rectangle for each vehicle class
+  whose clear height it meets ([freight yards](traffic.md#stage-a1-docks-park-19-as-built))
 - `service_class`: enum, one of `none`, `police`, `fire`, `healthcare`, `education`, `power`, `water`, `waste`, `transit`, `parks`, `government`; default `none`. Non-`none` service classes are valid only for `placement_mode = "explicit"` in baseline `v1`.
 - `economy_profile`: reference to an authored economy profile. Utility service assets require a resolved utility profile; the starter mappings are `power -> power_plant_basic`, `water -> water_plant_basic`, and `waste -> wastewater_treatment_basic` (`waste` is the asset-side service class for sewage treatment). Ordinary zoned commercial service assets such as barbers and pharmacies select reusable commercial profiles such as `personal_service_small` or `health_essentials_small`; they do not set `service_class` or define barber/pharmacy-specific economy fields.
 - The incoming small Machinery factory uses `placement_mode = "zoned_private"`, `zone_type = "industrial"`, `density = "low"`, `level = 1`, and `economy_profile = "machinery_factory_basic"`. Leave `service_class`, field and extractor metadata unset. Choose lot dimensions that fit the mesh; provide the usual `entrance/main` and freight-capable road access/site anchors. The profile supplies four jobs and consumes 12 Steel, 4 Metals and 2 Machinery per day to produce 42 Machinery (40 net). No factory-specific script or new asset schema is needed. Steel/Metals/Machinery imports work before upstream assets exist; see [`economy.md`](economy.md#machinery-upkeep-econ-09).

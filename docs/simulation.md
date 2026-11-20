@@ -447,6 +447,19 @@ written as it is, and the column `zoning_parcels.storage_index`. Format 120 (`PR
 ids compacted. A game that is never loaded runs as before: the `SIM-02` envelope fingerprints (four
 workloads, 14 days) and determinism products equal `dev`'s (2026-11-16, fresh, both binaries).
 
+Save format 123 (`PARK-19`, stage A1 of [freight yards](traffic.md#stage-a1-docks-park-19-as-built),
+2026-11-20) adds docks to `parking_state`: a dock is a place row whose source is
+`Dock { building, anchor }`, and every place gains `freight_holder`, written only when set (never
+in A1), so a city without docks writes the parking JSON of format 122 and only
+`save_meta.version` differs. A format 122 save (`PRE_DOCKS_SAVE_VERSION`) has no dock: its load
+validates, in parallel, the lots of the buildings whose asset has a freight Driveway and a loading
+bay and publishes their docks once, as a new city would have them
+(`an_older_save_derives_the_docks_a_fresh_validation_gives`). A format 123 load validates nothing:
+it rebuilds the docks' access and the freight gates from the rows
+(`a_dock_goes_with_its_building_and_round_trips_a_save`). No fixture asset has a freight
+Driveway, so every existing city saves and loads as on format 122; the `SIM-02` envelope
+determinism records equal `dev`'s.
+
 ## Scheduler
 
 Every system registers a declaration. The dispatcher runs declarations in one fixed order per
