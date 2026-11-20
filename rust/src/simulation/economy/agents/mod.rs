@@ -15,6 +15,8 @@ mod remap;
 #[cfg(test)]
 mod tests;
 pub mod tick;
+pub(crate) mod walker_crowd;
+pub(crate) mod walker_gait;
 
 pub(crate) use data::AgentHandle;
 pub use data::{Agent, AgentSystem, AgentVec, LaneEntry};

@@ -42,6 +42,7 @@ use super::apply_network_replan;
 use crate::config::AGENT_WALK_SPEED_MS;
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::economy::agents::remap::{LANE_REATTACH_MAX_DIST_M, nearest_sidewalk};
+use crate::simulation::economy::agents::walker_gait::walker_pace;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::lanes::LaneType;
@@ -575,7 +576,7 @@ unsafe fn start_sidewalk_walk(
         *slices.access_flags.get_mut(i) = ACCESS_WALK_TO_SIDEWALK;
         *slices.network_replan_failures.get_mut(i) = 0;
         *slices.next_replan_time.get_mut(i) = 0.0;
-        *slices.speed.get_mut(i) = AGENT_WALK_SPEED_MS;
+        *slices.speed.get_mut(i) = AGENT_WALK_SPEED_MS * walker_pace(*slices.schedule_seed.get(i));
         Place::Walking(metres)
     }
 }
@@ -648,11 +649,11 @@ pub(super) unsafe fn walk_to_sidewalk(
         };
         path.points[0] = pos;
         path.points[1] = Vector2::new(target.x, target.z);
-        let (next, reached) =
-            advance_along_local_access_path(pos, path.as_slice(), AGENT_WALK_SPEED_MS * delta);
+        let speed = AGENT_WALK_SPEED_MS * walker_pace(*slices.schedule_seed.get(i));
+        let (next, reached) = advance_along_local_access_path(pos, path.as_slice(), speed * delta);
         *slices.pos_x.get_mut(i) = next.x;
         *slices.pos_y.get_mut(i) = next.y;
-        *slices.speed.get_mut(i) = AGENT_WALK_SPEED_MS;
+        *slices.speed.get_mut(i) = speed;
         if !reached {
             return true;
         }

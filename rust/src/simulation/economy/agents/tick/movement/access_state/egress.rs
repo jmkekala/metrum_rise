@@ -18,6 +18,7 @@ use super::{point, pulls_out_of_a_dock, reset_invalid_access_plan, stand_in_yard
 use crate::config::{AGENT_DRIVEWAY_SPEED_MS, AGENT_WALK_SPEED_MS};
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::economy::agents::LaneEntry;
+use crate::simulation::economy::agents::walker_gait::walker_pace;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::parking::ParkingTripPhase;
@@ -142,7 +143,7 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
             let step = if *s_tmode.get(i) == MODE_CAR {
                 AGENT_DRIVEWAY_SPEED_MS
             } else {
-                AGENT_WALK_SPEED_MS
+                AGENT_WALK_SPEED_MS * walker_pace(*slices.schedule_seed.get(i))
             } * delta;
             // A walker from a car may start at its door, off the polyline (`PARK-35`).
             let (next_pos, reached_handoff) = if trip.phase == ParkingTripPhase::WalkToDoor

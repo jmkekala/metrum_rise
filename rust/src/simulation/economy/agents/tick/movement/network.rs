@@ -15,11 +15,14 @@ use super::super::access::ACCESS_LANE_D_TOLERANCE_M;
 use super::super::claims::LaneClaimContext;
 use super::super::slices::MovementSlices;
 use super::super::traffic::{connector_turn_speed, junction_car_speed};
-use crate::config::CAR_JUNCTION_SPEED_MS;
+use crate::config::{AGENT_SIDEWALK_SPEED_MS, CAR_JUNCTION_SPEED_MS};
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::economy::agents::LaneEntry;
+use crate::simulation::economy::agents::walker_crowd::{Opposing, walker_lane_speed};
+use crate::simulation::economy::agents::walker_gait::walker_pace;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
+use crate::simulation::network::lanes::LaneType;
 use detach::try_network_detach;
 use junction::{LaneEndAction, handle_lane_end};
 use lane_change::prepare_lane_change_and_overtake;
@@ -56,6 +59,12 @@ pub(super) unsafe fn handle_network_movement(
     unsafe {
         let s_lane_id = &slices.lane_id;
         let s_lane_d = &slices.lane_d;
+        let walker = *slices.tmode.get(i) != MODE_CAR;
+        // A walker's speed is what it walked this tick: 0 until it steps, so the walkers behind
+        // one held anywhere below queue behind it (`walker_crowd`).
+        if walker {
+            *slices.speed.get_mut(i) = 0.0;
+        }
 
         if try_pending_lane_attach(i, transit_network, graph, lane_buckets, lane_claims, slices)
             || walk_home::walk_to_sidewalk(
@@ -89,8 +98,9 @@ pub(super) unsafe fn handle_network_movement(
             return;
         }
 
-        let speed = network_movement_speed(i, transit_network, slices);
+        let speed = network_movement_speed(i, transit_network, lane_buckets, slices);
         let mut remaining_dist = speed * delta;
+        let step = remaining_dist;
         let mut allow_zero_speed_network_bootstrap =
             remaining_dist <= 0.0 && *s_lane_id.get(i) == usize::MAX;
 
@@ -187,6 +197,9 @@ pub(super) unsafe fn handle_network_movement(
             }
         }
 
+        if walker && delta > 0.0 {
+            *slices.speed.get_mut(i) = (step - remaining_dist).max(0.0) / delta;
+        }
         update_network_pose(i, transit_network, slices);
     }
 }
@@ -194,6 +207,7 @@ pub(super) unsafe fn handle_network_movement(
 unsafe fn network_movement_speed(
     i: usize,
     transit_network: &TransitNetwork,
+    lane_buckets: &[Vec<LaneEntry>],
     slices: &MovementSlices,
 ) -> f32 {
     unsafe {
@@ -203,7 +217,7 @@ unsafe fn network_movement_speed(
         let s_lane_id = &slices.lane_id;
 
         if *s_tmode.get(i) != MODE_CAR {
-            return 4.0;
+            return walker_network_speed(i, transit_network, lane_buckets, slices);
         }
 
         if *s_transit.get(i) == TRANSIT_INTERSECTION {
@@ -221,6 +235,46 @@ unsafe fn network_movement_speed(
         } else {
             *s_speed.get(i)
         }
+    }
+}
+
+// Walker `i`'s speed on its lane: its pace, or the slower walker's ahead that it cannot pass.
+// Reads the tick's buckets and other walkers' seeds, which no worker writes. O(log bucket).
+unsafe fn walker_network_speed(
+    i: usize,
+    transit_network: &TransitNetwork,
+    lane_buckets: &[Vec<LaneEntry>],
+    slices: &MovementSlices,
+) -> f32 {
+    unsafe {
+        let pace_speed =
+            |agent: usize| AGENT_SIDEWALK_SPEED_MS * walker_pace(*slices.schedule_seed.get(agent));
+        let own = pace_speed(i);
+        let lane_id = *slices.lane_id.get(i);
+        let lanes = &transit_network.lane_system;
+        let (Some(lane), Some(bucket)) = (lanes.lanes.get(lane_id), lane_buckets.get(lane_id))
+        else {
+            return own;
+        };
+        if lane.lane_type != LaneType::Foot {
+            return own;
+        }
+        let opposing = || {
+            let id = lanes.opposing_foot_lane(lane_id)?;
+            Some(Opposing {
+                bucket: lane_buckets.get(id)?,
+                length: lanes.lanes[id].length,
+            })
+        };
+        walker_lane_speed(
+            own,
+            *slices.lane_d.get(i),
+            i,
+            lane.length,
+            bucket,
+            opposing,
+            pace_speed,
+        )
     }
 }
 

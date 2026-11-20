@@ -216,6 +216,28 @@ impl Default for LaneSystem {
 }
 
 impl LaneSystem {
+    /// The foot lane on `lane_id`'s walkway that runs the other way: a road sidewalk's or a
+    /// footpath's lane in the opposite direction, whose walkers come toward `lane_id`'s. `None`
+    /// for a vehicle lane, a junction connector or a one-way walkway. The two share their
+    /// centre line, ends and length. O(lanes of the edge).
+    pub(crate) fn opposing_foot_lane(&self, lane_id: usize) -> Option<usize> {
+        let lane = self.lanes.get(lane_id)?;
+        if lane.lane_type != LaneType::Foot || lane.edge_id == usize::MAX {
+            return None;
+        }
+        self.edge_lanes
+            .get(&lane.edge_id)?
+            .iter()
+            .copied()
+            .find(|&id| {
+                self.lanes.get(id).is_some_and(|other| {
+                    other.lane_type == LaneType::Foot
+                        && other.lane_idx == lane.lane_idx
+                        && other.is_fwd != lane.is_fwd
+                })
+            })
+    }
+
     /// Creates a new, empty lane system.
     pub fn new() -> Self {
         Self {

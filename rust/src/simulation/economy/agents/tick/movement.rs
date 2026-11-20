@@ -17,6 +17,7 @@ use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::core::time::TimeSystem;
 use crate::simulation::economy::agents::LaneEntry;
 use crate::simulation::economy::agents::data::AgentSystem;
+use crate::simulation::economy::agents::walker_gait::walker_size;
 use crate::simulation::economy::definitions::{
     OperationalClockRuntimeTuning, RuntimeEconomyCatalog,
 };
@@ -31,7 +32,10 @@ use std::sync::atomic::AtomicU32;
 const BUILDING_REPLAN_DELAY_S: f32 = 30.0;
 const NETWORK_REPLAN_DELAY_S: f32 = 5.0;
 const WALK_PHASE_CYCLES_PER_METER: f32 = 0.8;
-const WALK_PHASE_MAX_ADVANCE_PER_TICK: f32 = 0.025;
+// The cap keeps fast-forwarded legs from flailing. At 1x a 60 Hz tick moves the fastest walker
+// (AGENT_SIDEWALK_SPEED_MS at the top pace, 1.65 m/s) 0.028 m, 0.022 of a cycle: under the cap,
+// so a walker's feet keep pace with its body at any pace.
+const WALK_PHASE_MAX_ADVANCE_PER_TICK: f32 = 0.07;
 
 #[inline(always)]
 fn walk_phase_advance(distance_m: f32) -> f32 {
@@ -164,7 +168,9 @@ impl AgentSystem {
                 let dx = *s_pos_x.get(i) - previous_x;
                 let dz = *s_pos_y.get(i) - previous_z;
                 let distance_m = dx.hypot(dz);
-                let phase_delta = walk_phase_advance(distance_m);
+                // Each walker's stride scales with its drawn size (`walker_gait`).
+                let stride = walker_size(*slices.schedule_seed.get(i));
+                let phase_delta = walk_phase_advance(distance_m / stride);
                 if phase_delta > 0.0 {
                     let phase = *s_walk_phase.get(i);
                     *s_walk_phase.get_mut(i) = (phase + phase_delta) % 1.0;
@@ -188,5 +194,10 @@ mod tests {
 
         let fast_forward = walk_phase_advance(AGENT_WALK_SPEED_MS * realtime_delta * 60.0);
         assert_eq!(fast_forward, WALK_PHASE_MAX_ADVANCE_PER_TICK);
+
+        // The fastest sidewalk walker at 1x is not capped: its feet match its body.
+        let top_pace = 1.0 + crate::simulation::economy::agents::walker_gait::PACE_SPREAD;
+        let sidewalk = crate::config::AGENT_SIDEWALK_SPEED_MS * top_pace * realtime_delta;
+        assert!(walk_phase_advance(sidewalk) < WALK_PHASE_MAX_ADVANCE_PER_TICK);
     }
 }

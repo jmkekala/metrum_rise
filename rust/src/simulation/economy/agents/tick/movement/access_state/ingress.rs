@@ -17,6 +17,7 @@ use super::super::{NETWORK_REPLAN_DELAY_S, transit_mode_label};
 use super::{arrive_in_building, point, reset_invalid_access_plan};
 use crate::config::{AGENT_DRIVEWAY_SPEED_MS, AGENT_WALK_SPEED_MS};
 use crate::simulation::buildings::allocator::BuildingAllocator;
+use crate::simulation::economy::agents::walker_gait::walker_pace;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::parking::ParkingTripPhase;
@@ -162,7 +163,7 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
             let step = if *s_tmode.get(i) == MODE_CAR {
                 AGENT_DRIVEWAY_SPEED_MS
             } else {
-                AGENT_WALK_SPEED_MS
+                AGENT_WALK_SPEED_MS * walker_pace(*slices.schedule_seed.get(i))
             } * delta;
             let (next_pos, reached_door) = advance_along_local_access_path(current, path, step);
             *s_pos_x.get_mut(i) = next_pos.x;
