@@ -512,6 +512,17 @@ impl SiteSource for SiteSnapshot {
 }
 
 impl BuildingSiteClient {
+    /// The walls `class` meets on this site: the passage-cut set when a part declares a
+    /// passage, else the whole part rectangles. O(1).
+    pub(crate) fn vehicle_structures(
+        &self,
+        class: crate::simulation::parking::validation::ProofClass,
+    ) -> &[[Vector2; 4]] {
+        self.vehicle_structure_world
+            .as_deref()
+            .map_or(&self.structure_world, |sets| &sets[class as usize])
+    }
+
     pub(crate) fn contains_point(&self, pos: Vector2) -> bool {
         point_in_polygon_slice(pos, &self.footprint_world)
     }

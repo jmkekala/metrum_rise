@@ -932,3 +932,31 @@ fn declared_lods_share_validation_across_asset_classes() {
         }
     }
 }
+
+#[test]
+fn building_parses_a_passage_and_refuses_a_bad_one() {
+    let passage = r#"
+[[mesh_parts.passages]]
+name = "loading_lane"
+position = [0.0, 0.0, 4.0]
+forward = [0.0, 0.0, -1.0]
+width_m = 5.0
+length_m = 8.0
+clear_height_m = 4.6
+through = true
+"#;
+    let manifest = format!("{BUILDING_TOML}{passage}").parse::<AssetManifest>().unwrap();
+    let parsed = &manifest.mesh_parts[0].passages[0];
+    assert_eq!((parsed.name.as_str(), parsed.width_m, parsed.through), ("loading_lane", 5.0, true));
+    for (from, to) in [
+        ("forward = [0.0, 0.0, -1.0]", "forward = [0.0, 0.0, -2.0]"),
+        ("forward = [0.0, 0.0, -1.0]", "forward = [0.6, 0.0, -0.8]"),
+        ("width_m = 5.0", "width_m = 0.0"),
+        ("length_m = 8.0", "length_m = -1.0"),
+        ("clear_height_m = 4.6", "clear_height_m = nan"),
+        ("name = \"loading_lane\"", "name = \"\""),
+    ] {
+        let toml = format!("{BUILDING_TOML}{}", passage.replace(from, to));
+        assert!(toml.parse::<AssetManifest>().is_err(), "{to} accepted");
+    }
+}

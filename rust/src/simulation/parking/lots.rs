@@ -173,7 +173,7 @@ pub(crate) fn lot_bays(
                 .any(|a| a.anchor_type == AnchorType::Driveway),
             &paths,
             street,
-            |foot| structure_collision(allocator, foot),
+            |foot| structure_collision(allocator, ProofClass::Car, foot),
         );
         if let Ok(path) = checked {
             let swept_path = path.map(|p| [p.x, p.y]);

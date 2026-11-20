@@ -125,6 +125,13 @@ pub fn structure_footprint(part: &super::MeshPart) -> Option<[[f32; 2]; 2]> {
     if (max[1] - min[1]) * part.scale <= GROUND_DRESSING_MAX_HEIGHT_M {
         return None;
     }
+    plan_rectangle(part)
+}
+
+// The local `[min, max]` X/Z rectangle of a part's imported bounds at ground level, dressing
+// included; `None` without bounds. O(1).
+pub(crate) fn plan_rectangle(part: &super::MeshPart) -> Option<[[f32; 2]; 2]> {
+    let [min, max] = part.imported_bounds?;
     let transform = part.local_transform();
     let mut rect = [[f32::INFINITY; 2], [f32::NEG_INFINITY; 2]];
     for (x, z) in [

@@ -11,6 +11,7 @@ mod building;
 mod character;
 pub(crate) mod geometry;
 mod model;
+pub(crate) mod passage;
 pub(crate) mod validation;
 mod vehicle;
 mod yard_hedge;
@@ -22,14 +23,15 @@ pub use building::{
 };
 pub use character::{ArchetypeFamily, CharacterData, SkinVariant};
 pub use model::{
-    Anchor, AnchorType, AssetClass, AssetManifest, LodEntry, MeshPart, PropData, SiteSurface,
-    SiteSurfaceMaterial, SnapMode, TerrainBehavior,
+    Anchor, AnchorType, AssetClass, AssetManifest, LodEntry, MeshPart, PASSAGE_EAVES_MARGIN_M,
+    Passage, PropData, SiteSurface, SiteSurfaceMaterial, SnapMode, TerrainBehavior,
 };
 pub use vehicle::{ColorVariant, VehicleClass, VehicleData, VehicleFamily};
 pub use yard_hedge::{
     FRONT_INSET_M, LotEdge, YardHedge, YardHedgeKind, YardHedgeRow, YardLot, plan_yard_hedge,
     structure_footprint,
 };
+pub(crate) use yard_hedge::plan_rectangle;
 pub use yard_planting::{YardPlantKind, YardPlanting};
 
 #[cfg(test)]

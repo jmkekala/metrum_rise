@@ -24,6 +24,7 @@ pub(super) fn import_building_bounds(
             .entry(path.clone())
             .or_insert_with(|| import_bounds(&path));
         part.imported_bounds = Some(bounds.clone()?);
+        crate::assets::asset::passage::check_passages_in_bounds(part)?;
     }
     Ok(())
 }

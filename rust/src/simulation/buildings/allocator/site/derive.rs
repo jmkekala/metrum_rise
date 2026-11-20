@@ -12,6 +12,7 @@ use crate::simulation::buildings::allocator::entrance::{
 };
 use crate::simulation::buildings::allocator::geometry::front_gap_at;
 use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
+use crate::simulation::parking::validation::ProofClass;
 use crate::simulation::zoning::ParcelGeometry;
 use godot::prelude::Vector2;
 use rayon::prelude::*;
@@ -296,23 +297,34 @@ impl BuildingAllocator {
             .unwrap_or_default();
 
         // The same wall rectangles the yard hedge plan keeps off, placed in the world.
-        let structure_world = self
+        let to_world = |[a, b]: [[f32; 2]; 2]| {
+            [[a[0], a[1]], [a[0], b[1]], [b[0], b[1]], [b[0], a[1]]]
+                .map(|[x, z]| building_local_xz_pos(building, [x, 0.0, z], frontage_forward))
+        };
+        let parts = self
             .registry
             .get(&building.asset_id)
-            .map(|entry| {
-                entry
-                    .manifest
-                    .mesh_parts
-                    .iter()
-                    .filter_map(crate::assets::asset::structure_footprint)
-                    .map(|[a, b]| {
-                        [[a[0], a[1]], [a[0], b[1]], [b[0], b[1]], [b[0], a[1]]].map(|[x, z]| {
-                            building_local_xz_pos(building, [x, 0.0, z], frontage_forward)
-                        })
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
+            .map_or(&[][..], |entry| &entry.manifest.mesh_parts[..]);
+        let structure_world = parts
+            .iter()
+            .filter_map(crate::assets::asset::structure_footprint)
+            .map(to_world)
+            .collect();
+        // Each vehicle class meets those walls less the passages it fits through (`PARK-19`).
+        // O(parts × P²) for P passages per part, once per derivation.
+        let vehicle_structure_world = parts.iter().any(|part| !part.passages.is_empty()).then(|| {
+            Box::new(ProofClass::ALL.map(|class| {
+                let mut local = Vec::new();
+                for part in parts {
+                    crate::assets::asset::passage::class_structure_footprints(
+                        part,
+                        class.proof().clear_height,
+                        &mut local,
+                    );
+                }
+                local.into_iter().map(to_world).collect()
+            }))
+        });
 
         let planting_world = self
             .registry
@@ -339,6 +351,7 @@ impl BuildingAllocator {
             support_height_m: building.support_height_m,
             surfaces,
             structure_world,
+            vehicle_structure_world,
             planting_world,
         }
     }

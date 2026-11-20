@@ -715,8 +715,54 @@ fn validate_building_mesh_parts(
             )));
         }
         validate_lods(asset_id, Some(name), &part.lods)?;
+        validate_passages(asset_id, part)?;
     }
 
+    Ok(())
+}
+
+// A passage needs a unique name, a finite unit forward that the part's rotation turns along a
+// lot axis, and finite positive sizes; its bounds are checked once the part's are imported
+// (`passage::check_passages_in_bounds`). O(P²) names for P passages of the part.
+fn validate_passages(asset_id: &str, part: &MeshPart) -> Result<(), ManifestError> {
+    let fail = |passage: &str, problem: &str| {
+        Err(ManifestError::Validation(format!(
+            "asset_id '{asset_id}': mesh part '{}' passage '{passage}' {problem}",
+            part.name
+        )))
+    };
+    for (index, passage) in part.passages.iter().enumerate() {
+        let name = passage.name.trim();
+        if name.is_empty() {
+            return fail(&index.to_string(), "needs a name");
+        }
+        if part.passages[..index].iter().any(|p| p.name.trim() == name) {
+            return fail(name, "has the name of another passage of the part");
+        }
+        for (field, value) in [("position", passage.position), ("forward", passage.forward)] {
+            validate_finite_vec3(asset_id, "passage", name, field, value)?;
+        }
+        let [x, y, z] = passage.forward;
+        let length = (x * x + y * y + z * z).sqrt();
+        if (length - 1.0).abs() > ANCHOR_FORWARD_UNIT_EPS || y.abs() > ANCHOR_FORWARD_UNIT_EPS {
+            return fail(name, "needs a level unit forward");
+        }
+        if super::passage::lot_axis_forward(part, passage).is_none() {
+            return fail(
+                name,
+                "must run along a lot axis: its forward, turned by the part's rotation, along X or Z",
+            );
+        }
+        for (field, value) in [
+            ("width_m", passage.width_m),
+            ("length_m", passage.length_m),
+            ("clear_height_m", passage.clear_height_m),
+        ] {
+            if !value.is_finite() || value <= 0.0 {
+                return fail(name, &format!("{field} must be finite and > 0"));
+            }
+        }
+    }
     Ok(())
 }
 

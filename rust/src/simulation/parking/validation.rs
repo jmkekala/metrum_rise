@@ -25,11 +25,15 @@ const STREET_EDGE_TOLERANCE_M: f32 = 0.6;
 // Where a car stops on the street before turning straight into a street-edge bay.
 const STREET_APPROACH_M: f32 = 2.5;
 
-/// The vehicle classes a lot proves a route for (`PARK-19`). Indexes the class table.
+/// The vehicle classes a lot proves a route for (`PARK-19`): cars to parking bays, freight to
+/// loading bays. Indexes the class table and a site's structure sets.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ProofClass {
     /// A resident's car: every `driveway`, every `parking` anchor.
     Car = 0,
+    /// A freight carrier: `freight` driveways of at least the row's gate width (gates) and
+    /// `loading_bay` anchors only.
+    Freight = 1,
 }
 
 /// One row of the class table: the body a route is proven for and the room it needs.
@@ -54,6 +58,8 @@ pub(crate) struct VehicleProof {
     pub min_bay: [f32; 2],
     /// The narrowest driveway the class may use.
     pub min_gate: f32,
+    /// The clear height a passage needs to open its part for this class.
+    pub clear_height: f32,
     // Words for the rejections: the vehicle, the envelope's room and its distance from a lot edge.
     noun: &'static str,
     turn_room: &'static str,
@@ -61,14 +67,20 @@ pub(crate) struct VehicleProof {
 }
 
 impl ProofClass {
+    /// Both classes, in table order.
+    pub(crate) const ALL: [Self; 2] = [Self::Car, Self::Freight];
+
     /// This class's row of the table. O(1).
     pub(crate) const fn proof(self) -> &'static VehicleProof {
         &CLASS_TABLE[self as usize]
     }
 }
 
-// The car row is the numbers the car proof used before the table, bit for bit.
-const CLASS_TABLE: [VehicleProof; 1] = [
+// The car row is the numbers the car proof used before the table, bit for bit. The freight
+// body is a rigid truck (owner decision 1): its envelope is its diagonal, √(2.6² + 8.0²) = 8.41,
+// rounded up as 4.85 is for the car; turning 15° about its centre an 8 m body leaves the two
+// corridors by under 4 cm, against 14 cm at 30°, hence the tighter bend.
+const CLASS_TABLE: [VehicleProof; 2] = [
     VehicleProof {
         body_width: 1.8,
         body_length: 4.5,
@@ -78,9 +90,25 @@ const CLASS_TABLE: [VehicleProof; 1] = [
         turn_at_gate: true,
         min_bay: [1.8, 4.5],
         min_gate: 1.8,
+        clear_height: 2.0,
         noun: "car",
         turn_room: "5 m by 5 m",
         edge_room: "2.5 m",
+    },
+    VehicleProof {
+        body_width: 2.6,
+        body_length: 8.0,
+        turn_envelope: 8.45,
+        lead: 4.25,
+        // cos 15°.
+        straight_through_cos: 0.965_926,
+        turn_at_gate: false,
+        min_bay: [3.0, 8.0],
+        min_gate: 4.0,
+        clear_height: 4.0,
+        noun: "truck",
+        turn_room: "8.5 m by 8.5 m",
+        edge_room: "4.25 m",
     },
 ];
 

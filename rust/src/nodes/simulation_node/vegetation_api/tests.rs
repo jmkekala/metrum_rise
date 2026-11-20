@@ -1771,6 +1771,7 @@ fn an_authored_plant_takes_a_yards_lawn_but_not_its_walls_or_paving() {
     core.allocator.buildings.push(building);
     core.allocator.push_site_client(BuildingSiteClient {
         structure_world: vec![[house[0], house[1], house[2], house[3]]],
+        vehicle_structure_world: None,
         planting_world: Vec::new(),
         footprint_world: lot.clone(),
         lot_footprint_world: [lot[0], lot[1], lot[2], lot[3]],

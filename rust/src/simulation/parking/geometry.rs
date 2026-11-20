@@ -99,9 +99,15 @@ pub(super) fn overlaps(a: &[Vector2], b: &[Vector2]) -> bool {
     PolygonFootprint::new(a).overlaps(&PolygonFootprint::new(b))
 }
 
-/// O(local structure vertices + overlapping structures × overlay cost). The existing
-/// PolygonFootprint overlap rejects disjoint AABBs before overlay; site cells bound candidates.
-pub(super) fn structure_collision(allocator: &BuildingAllocator, points: &[Vector2]) -> bool {
+/// Whether `points` meet a wall `class` meets (`BuildingSiteClient::vehicle_structures`: a
+/// passage opens its part for the classes it is high enough for). O(local structure vertices +
+/// overlapping structures × overlay cost). The existing PolygonFootprint overlap rejects
+/// disjoint AABBs before overlay; site cells bound candidates.
+pub(super) fn structure_collision(
+    allocator: &BuildingAllocator,
+    class: super::validation::ProofClass,
+    points: &[Vector2],
+) -> bool {
     let footprint = PolygonFootprint::new(points);
     let mut collision = false;
     allocator.site_cells.visit(
@@ -117,7 +123,7 @@ pub(super) fn structure_collision(allocator: &BuildingAllocator, points: &[Vecto
             }
             if let Some(site) = allocator.building_sites.get(idx) {
                 collision |= site
-                    .structure_world
+                    .vehicle_structures(class)
                     .iter()
                     .any(|structure| footprint.overlaps(&PolygonFootprint::new(structure)));
             }

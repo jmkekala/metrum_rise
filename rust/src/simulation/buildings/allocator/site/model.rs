@@ -31,6 +31,10 @@ pub(crate) struct BuildingSiteClient {
     /// World-space footprint of each mesh part's imported bounds: the walls a yard plant keeps
     /// off. Empty when the asset has no imported bounds.
     pub(crate) structure_world: Vec<[Vector2; 4]>,
+    /// The structure rectangles each vehicle class meets, in `ProofClass` order, when a part
+    /// declares a passage (`PARK-19`): `structure_world` less the passages that class fits
+    /// through. `None` without a passage, where every class meets `structure_world`.
+    pub(crate) vehicle_structure_world: Option<Box<[Vec<[Vector2; 4]>; 2]>>,
     /// World-space yard planting areas, where a yard tree may stand nearer the house than a
     /// tree's usual room allows.
     pub(crate) planting_world: Vec<Vec<Vector2>>,

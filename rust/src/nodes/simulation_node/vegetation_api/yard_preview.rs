@@ -160,6 +160,7 @@ pub(crate) fn plan(data: &Value, structures: &[[[f32; 2]; 2]], salt: u64) -> Vec
                     ]
                 })
                 .collect(),
+            vehicle_structure_world: None,
             planting_world: planting
                 .iter()
                 .map(|area| {

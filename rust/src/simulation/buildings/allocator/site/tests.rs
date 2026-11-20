@@ -27,6 +27,7 @@ use godot::prelude::{Vector2, Vector3};
 fn site_radius_is_measured_from_the_indexed_lot_center() {
     let site = BuildingSiteClient {
         structure_world: Vec::new(),
+        vehicle_structure_world: None,
         planting_world: Vec::new(),
         footprint_world: vec![
             Vector2::new(18.0, -1.0),
@@ -387,6 +388,7 @@ fn road_test_edge(
 fn square_site_with_surface() -> BuildingSiteClient {
     BuildingSiteClient {
         structure_world: Vec::new(),
+        vehicle_structure_world: None,
         planting_world: Vec::new(),
         footprint_world: vec![
             Vector2::new(-5.0, -5.0),

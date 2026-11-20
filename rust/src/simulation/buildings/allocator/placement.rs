@@ -2687,6 +2687,7 @@ mod tests {
             .building_sites
             .push(super::super::site::BuildingSiteClient {
                 structure_world: Vec::new(),
+                vehicle_structure_world: None,
                 planting_world: Vec::new(),
                 footprint_world: square_footprint(0.0, 0.0, 10.0, 10.0),
                 lot_footprint_world: [

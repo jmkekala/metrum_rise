@@ -50,7 +50,42 @@ pub struct MeshPart {
     /// LOD tiers for this specific mesh part, nearest-first.
     #[serde(default)]
     pub lods: Vec<LodEntry>,
+    /// Openings a vehicle drives into or through (`[[mesh_parts.passages]]`, `PARK-19`): each
+    /// opens the part's structure rectangle for the vehicle classes whose clear height it meets.
+    #[serde(default)]
+    pub passages: Vec<Passage>,
 }
+
+/// One opening in a mesh part that a vehicle drives into, or through when `through`.
+///
+/// Its rectangle, `width_m` across and `length_m` deep from the mouth along `forward`, is cut
+/// from the part's structure rectangle for every vehicle class whose clear height it meets,
+/// lengthened by [`PASSAGE_EAVES_MARGIN_M`] in front of the mouth and behind the far end when
+/// `through`, so the eaves the part's bounds include do not close it.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Passage {
+    /// Short editor label, unique within the part.
+    pub name: String,
+    /// Centre of the mouth at ground level, part-local (mesh-root coordinates, before the part's
+    /// own transform).
+    pub position: [f32; 3],
+    /// Unit direction into the part, part-local; turned by the part's rotation it must run
+    /// along a lot axis.
+    pub forward: [f32; 3],
+    /// Clear width in metres.
+    pub width_m: f32,
+    /// Depth from the mouth in metres.
+    pub length_m: f32,
+    /// Clear height in metres; a class whose own clear height exceeds it is not let through.
+    pub clear_height_m: f32,
+    /// Whether the far end is open too.
+    #[serde(default)]
+    pub through: bool,
+}
+
+/// How far a passage's cut runs past its open ends, clearing the eaves the part's bounds hold.
+pub const PASSAGE_EAVES_MARGIN_M: f32 = 1.0;
 
 impl MeshPart {
     // Shared with rendered instances and structural support. Match Godot's positive-Y yaw:
@@ -98,6 +133,7 @@ impl MeshPart {
                 distance_min_m: 0.0,
                 distance_max_m: None,
             }],
+            passages: Vec::new(),
         }
     }
 }
