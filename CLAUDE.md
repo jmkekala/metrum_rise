@@ -70,14 +70,14 @@ Player builds come only from GitHub Actions on pushes to `main` ([`docs/release.
 - **Subsystem docs in `docs/`** — files such as `entrance_and_exit.md`, `economy.md`, `demand.md`, and `zoning.md` own the detailed design/spec contracts for their respective systems. When behavior changes, update both the subsystem spec and the relevant status note in `project.md`.
 - **`CLAUDE.md` / `AGENTS.md`** — contributor guidance, architectural invariants, workflow rules, and sharp edges for coding agents. Keep this file focused on stable guidance rather than exhaustive feature-by-feature implementation history.
 - **Do not create additional `*.md` files in `docs/`** unless they have a durable distinct role and are linked from `docs/README.md`. Prefer updating the owning subsystem document rather than piling more detail into `project.md`.
-- **Do not create standalone `*.md` files outside `docs/`** (except `CLAUDE.md` and `README`).
+- **Do not create standalone `*.md` files outside `docs/`** (except `CLAUDE.md`, `README`, `LICENSE.md` and `CREDITS.md`).
 
 ## Source File Licensing
 
 - Every project-owned Rust source file (`*.rs`) must begin with `// SPDX-License-Identifier: GPL-3.0-or-later`.
 - Every project-owned GDScript source file (`*.gd`) must begin with `# SPDX-License-Identifier: GPL-3.0-or-later`.
 - Keep the SPDX identifier as the first line, followed by a blank line and then any Rust crate attributes/module documentation or GDScript `##` class documentation.
-- Do not add author names, copyright-holder names, full licence boilerplate, or modification histories to individual source files.
+- Do not add author names, copyright-holder names, full licence boilerplate, or modification histories to individual source files; authors and third-party credits live in `CREDITS.md`.
 - Do not replace or override notices in third-party files. Preserve their original licensing and attribution.
 
 ## AI Behaviour Guidelines

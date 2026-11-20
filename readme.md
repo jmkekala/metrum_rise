@@ -4,6 +4,8 @@
 Open source city building game built with the Godot game engine and Rust programming language.
 License: [GNU General Public License, version 3 or later (GPL-3.0-or-later)](LICENSE.md)
 
+Copyright © 2026 the Metrum Rise authors, see [CREDITS.md](CREDITS.md).
+
 ## Requirements
 - Godot
 - Rust
@@ -40,21 +42,11 @@ There are also economy and world editor. But these are not update in awhile so t
 Loads of bugs
 
 ## Credits
+Authors, assets and third-party software are listed in [CREDITS.md](CREDITS.md).
 
-### Kuopio map:
-Credits: National Land Survey of Finland/Heighmap of Kuopio/the National Land Survey of Finland Topographic Database/ Date: 19.04.2026)
-
-### 3rd party assets used
-- https://ambientcg.com/view?id=DaySkyHDRI059B
-- https://www.cgbookcase.com/textures/grass-01
-- https://polyhaven.com/a/concrete_layers_02
-- https://polyhaven.com/a/asphalt_04
-- https://polyhaven.com/a/clean_asphalt
-- https://polyhaven.com/a/withered_grass
-- https://polyhaven.com/a/dark_rock
-
-- https://quaternius.com/
-- https://kenney.itch.io/
+## Contributing
+Contributions are accepted under the same licence as the project, `GPL-3.0-or-later`. You keep
+the copyright in your work. Add your name to [CREDITS.md](CREDITS.md) with your first change.
 
 
 ## Screenshots
