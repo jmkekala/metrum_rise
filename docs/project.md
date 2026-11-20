@@ -10,8 +10,9 @@ Veeti's icon UI (`UI-12`: HUD, menus, save browser, card inspectors, select-tool
 types' turn pockets (`ROAD-128`), posted speed limits with signs (`ROAD-129`) and build-menu icons (`TOOLS-30`),
 landed on `dev` from the merge branch `icon-ui-merge`, ported to `dev`'s road tool: gated, and timed at level L in
 merge form, level with `dev` ([timing](ui.md#landing-timing-of-the-icon-ui-merge-ui-12)); new costs, no limit: a
-pocket type's hover and commit, and the HUD's 0.02-0.03 ms a frame; the select tool's hover is not measured. Awaiting
-the user's play test ([pockets](roads.md#turn-pockets-road-95), [HUD](ui.md#2-bottom-toolbar)).
+pocket type's hover and commit, and the HUD's 0.02-0.03 ms a frame; the select tool's hover is not measured. The user
+played the merged branch on 2026-11-19 and accepted the UI's look ([HUD](ui.md#2-bottom-toolbar)); the
+[pockets](roads.md#turn-pockets-road-95) and the speed signs still await the user's play test.
 
 Parking (`PARK-01`, `PARK-02`, `PARK-05`, Veeti's `feat/parking`) landed on `dev` on 2026-11-07 at
 save format 118. The user accepted its `PERF-07` miss at 30k 32× (`PERF-17`): the gate fails there, on
