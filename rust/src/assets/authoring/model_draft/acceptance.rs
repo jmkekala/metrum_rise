@@ -50,10 +50,14 @@ pub(crate) fn check(mods: &Path, pack_id: &str, asset_id: &str, engine: &Engine)
     let mut outcome = Outcome::default();
     let pack = mods.join(pack_id);
     let scan = scan_pack_dir(mods);
-    let folder = pack.join("assets").join(asset_id);
-    let folder_text = folder.to_string_lossy();
+    // The scanner names a skipped pack by its folder and a skipped asset by its manifest.
+    let manifest = pack.join("assets").join(asset_id).join("asset.toml");
+    let names = [
+        format!("'{}'", pack.display()),
+        format!("'{}'", manifest.display()),
+    ];
     for warning in &scan.warnings {
-        if warning.contains(asset_id) || warning.contains(folder_text.as_ref()) {
+        if names.iter().any(|name| warning.contains(name.as_str())) {
             outcome.failures.push(format!("pack scan: {warning}"));
         }
     }

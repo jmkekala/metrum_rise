@@ -109,14 +109,19 @@ pub(crate) fn derive(inputs: &Inputs, mods: &Path, work: &Path) -> Result<Derive
     let part = &params["mesh_parts"][0];
     let position: [f64; 3] =
         serde_json::from_value(part["position"].clone()).map_err(|e| e.to_string())?;
+    let entrance: [f64; 3] = serde_json::from_value(params["anchors"][0]["position"].clone())
+        .map_err(|e| e.to_string())?;
     let lot = [
         params["lot_width_cells"].as_u64().unwrap_or(0) as u16,
         params["lot_depth_cells"].as_u64().unwrap_or(0) as u16,
     ];
     let summary = json!({
         "lot_cells": lot,
-        "part_position": position,
-        "entrance": params["anchors"][0],
+        "part_position": position.map(tenth_mm),
+        "entrance": {
+            "position": entrance.map(tenth_mm),
+            "forward": params["anchors"][0]["forward"],
+        },
         "household_capacity": params["household_capacity"],
         "flat_size_m2": params["flat_size_m2"],
         "worker_capacity": params["worker_capacity"],
@@ -138,6 +143,11 @@ pub(crate) fn derive(inputs: &Inputs, mods: &Path, work: &Path) -> Result<Derive
         preview: inputs.export.join(&facts.preview.file),
         thumbnail,
     })
+}
+
+// The report's lengths at the sidecar's own precision, 0.1 mm, without f64 noise.
+fn tenth_mm(value: f64) -> f64 {
+    (value * 10_000.0).round() / 10_000.0 + 0.0
 }
 
 // R7: the one material of each tier, read from the tier's `.glb`; any other count stops it.
