@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The grading rules (`TERRAIN-07`): tie-in cones, the overlap rule, the inside rule under a
 //! road, and the reaches and tests of the two-pass exact pruning that bound where a seam can

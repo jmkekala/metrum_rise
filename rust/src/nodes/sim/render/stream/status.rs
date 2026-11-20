@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! `StreamStatus` (`RENDER-32-E`, `docs/terrain.md` "Streaming core"): what one layer has
 //! installed, what waits and what the last frame spent, read by the benchmark, the perf channel

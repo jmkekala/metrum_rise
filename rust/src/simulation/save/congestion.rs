@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The car-congestion metric's state (`TRAFFIC-17`, save format 119): one `congestion_routing`
 //! row with the adopted metric's directed weights and, while a customization is pending, its

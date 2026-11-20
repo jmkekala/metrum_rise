@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Reads the stream benchmark's draw census (`RENDER-44`, `godot/scripts/benchmarks/draw_census.gd`;
 `tools/stream_benchmark.py census`): per pose, the main pass's primitives by layer and distance
 band, the instances drawn off-screen inside drawn batches, triangles per screen pixel and the

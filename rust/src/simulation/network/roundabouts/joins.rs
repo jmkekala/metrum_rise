@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! A stroke joining a ring near a bare ring node (`ROAD-62`, D9). A pass-through node holds a join
 //! as an arm would: the ring between them must take the join's two ring mouths, so a player who

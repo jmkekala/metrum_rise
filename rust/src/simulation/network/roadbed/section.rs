@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Sampled span cross-sections read by section-based renderers (markings, bridges, furniture).
 

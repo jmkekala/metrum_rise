@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Platform names for keys in UI text. macOS calls Godot's Alt modifier Option; a key bound by
 ## position is named as the player's layout prints it.

@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Native save/load regression for camera framing, controls, and world-bound UI state.
 extends SceneTree

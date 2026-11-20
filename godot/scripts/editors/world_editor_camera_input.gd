@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Orbit/pan/zoom camera controller for the world editor.
 ## Routes editor input into the shared CameraNode world-camera core while

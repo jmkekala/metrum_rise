@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Operational-hour household economy orchestration. Daily settlement runs per entity at
 //! each one's daily phase (`households/settlement.rs`). Each household recounts its members at

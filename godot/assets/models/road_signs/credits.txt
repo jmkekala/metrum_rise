@@ -16,7 +16,7 @@ C32-120: Finland_road_sign_C32-120.svg | Public domain |  | https://commons.wiki
 E1-1: Finland_road_sign_E1-1.svg | Public domain |  | https://commons.wikimedia.org/wiki/File:Finland_road_sign_E1-1.svg
 E1-2: Finland_road_sign_E1-2.svg | Public domain |  | https://commons.wikimedia.org/wiki/File:Finland_road_sign_E1-2.svg
 Geometry and metal swatch: original, CC BY 4.0 (credit as "<sign> model" from Metrum Rise).
-The public-domain faces stay public domain. Code: GPL-2.0-only.
+The public-domain faces stay public domain. Code: GPL-3.0-or-later.
 Warning faces (offline path compositions; source IDs retained):
 A1.1: Finland_road_sign_A1.1.svg | Public domain | Republic of Finland | https://commons.wikimedia.org/wiki/File:Finland_road_sign_A1.1.svg
 A1.2: Finland_road_sign_A1.2.svg | Public domain | Republic of Finland | https://commons.wikimedia.org/wiki/File:Finland_road_sign_A1.2.svg

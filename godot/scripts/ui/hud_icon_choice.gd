@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Segmented icon choice; the selected index and item_selected signal mirror a native picker.
 extends HBoxContainer

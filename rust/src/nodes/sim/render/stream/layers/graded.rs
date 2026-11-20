@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The graded tile renderer's state in Rust (`TERRAIN-13` part 2, `RENDER-32-I`, round G2a),
 //! ported from `terrain_graded_tiles.gd` and `terrain_graded_pages.gd` by record and replay (the

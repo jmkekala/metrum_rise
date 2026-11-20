@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Finnish road surface: stone-mastic asphalt with studded-tyre ruts on busy roads, sealed cracks,
 // trench and cut patches, manholes and drain grates, and a crushed-rock gravel variant. From the look-dev in docs/roads.md (`ROAD-56`).
 //

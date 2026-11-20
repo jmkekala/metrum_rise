@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Temporary game vegetation view. Rust plans the lot; this controller only renders placements
 ## and restores the exact editing visibility. No preview state enters the authoring document.

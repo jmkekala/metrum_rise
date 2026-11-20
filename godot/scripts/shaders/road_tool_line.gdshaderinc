@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 // The road tool's lines (`ROAD-112` rounds V and V2): quads of a constant on-screen width, as
 // `route_ribbon.gdshader` widens them, from `road_tool_frame`'s `gizmo_line_vertices` and

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Buyer-local receipt withdrawal using the same accounts, seller chains and undo journal.
 

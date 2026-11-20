@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Event-driven lot work grouped by the existing 512 m world chunk convention, queued for the
 //! `cell lots` scheduler system (`SIM-02-H`, `docs/simulation.md#request-queues`).

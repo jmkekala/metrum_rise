@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Checks economy money/quantity displays and the asset editor's economy profile selector.
 ## Editor controllers stay detached so this test never changes user configuration.

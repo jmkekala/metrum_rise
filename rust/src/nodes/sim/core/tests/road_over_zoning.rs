@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Roads over zoned land (`ZONE-09`, rounds RZ1 and RZ2; the in-place edits, `ZONE-10`, in
 //! `edits`): a road stroke takes the zoned land its

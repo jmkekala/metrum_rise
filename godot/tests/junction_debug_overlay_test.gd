@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## The `junction_connectors` overlay draws the connector arcs Rust builds, redraws when the
 ## network generation changes, focuses one junction, runs the stall detector and clears when off.

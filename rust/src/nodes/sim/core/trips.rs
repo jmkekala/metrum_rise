@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Trips as timed events (`SIM-02-E`, `docs/simulation.md#deadlines-and-timed-events`).
 //!

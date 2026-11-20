@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Batch preview through the bridge (`ROAD-112` round G1): a level draft across a sculpted valley
 ## segments into held ground, a bridge and held ground (`preview_road_draft`). Every pose runs

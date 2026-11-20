@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The Godot test guard's refusal (`TOOLS-19` part 2, docs/debug.md "Godot Test Guard"): a test
 //! script, benchmark matrix or probe started in the player's real profile stops before it writes

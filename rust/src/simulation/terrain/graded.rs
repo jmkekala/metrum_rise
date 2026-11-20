@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Graded terrain surface (`TERRAIN-07`, approach B): the base heightmap plus a grading and
 //! footprint distance layer per 64 m tile near roads and building sites, sampled on four level

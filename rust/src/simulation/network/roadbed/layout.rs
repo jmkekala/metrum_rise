@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Junction layout (`ROAD-68-C`, part 1): the arm order, sectors, curb-return corners, round
 //! joins, mouth stations and carriageway core loop of one node, built from abstract arms.

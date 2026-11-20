@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The detach rule: a car detaches at its door's lane end (`TRAFFIC-15`) and only on its route's
 //! last visit to the detach lane (`TRAFFIC-13`).

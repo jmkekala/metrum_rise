@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Manages the 3D preview for the building importer.
 ## Handles the imported GLB mesh, flat lot plane, frontage arrow, authored site surfaces,

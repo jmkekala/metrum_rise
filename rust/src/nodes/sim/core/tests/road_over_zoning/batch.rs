@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Batch commits (`ROAD-112` round F, plan 11 F): a batch of strokes leaves the graph, roadbed,
 //! cells and parcels bitwise as the same strokes committed one by one; one undo takes the whole

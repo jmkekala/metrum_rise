@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Point and ray queries of the graded surface (`TERRAIN-07`), for roads and building sites, the
 //! read API the consumers moved to in `TERRAIN-07-F`. Every query evaluates the same pointwise

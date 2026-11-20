@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The road drawing holds' rule in Rust (`ROAD-112` round G2, docs/terrain.md T61 (2) and T65): an
 //! install of road chunks made while the graded journal holds an edit the terrain renderer has not

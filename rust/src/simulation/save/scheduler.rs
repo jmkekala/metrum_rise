@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Scheduler state (`SIM-02`): the timing wheel and its counters, saved as generic rows so
 //! this module does not depend on the simulation's event types.

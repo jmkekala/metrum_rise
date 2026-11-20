@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! `TRAFFIC-14` saturation fixture as a whole city: one block as a closed ring of four one-way
 //! roads with no way out, full of trucks on looping routes and more waiting at every corner,

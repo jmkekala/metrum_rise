@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Planar boxes of lane geometry, for exact conservative render culling (`SIM-02-K`).
 //!

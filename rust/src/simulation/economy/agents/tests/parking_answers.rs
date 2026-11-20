@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The parking commit's prepared answers (`PARK-02`). The walk takes an answer only to the
 //! question it has just formed from the live state, so the answers change no outcome at any

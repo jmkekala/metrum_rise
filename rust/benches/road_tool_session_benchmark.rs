@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Road tool session benchmark (`ROAD-112` round B; the session alone since round R2-7): one
 //! pointer move of the session (pick, snap, shape, measure; no preview) on the fixture of

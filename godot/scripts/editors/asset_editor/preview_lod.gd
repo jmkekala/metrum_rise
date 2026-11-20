@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Editor-only orchestration of the shared Rust LOD policy and preloaded preview tiers.
 ## Idle updates are O(1); changed camera/placement updates are O(parts in this document).

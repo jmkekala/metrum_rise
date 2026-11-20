@@ -1,7 +1,7 @@
 #[compute]
 #version 450
 
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 // Volumetric cloud march, dispatched by weather_cloud_effect.gd in two modes.
 //   View (mode 0): one texel per low-resolution screen pixel. Each frame marches with a fresh

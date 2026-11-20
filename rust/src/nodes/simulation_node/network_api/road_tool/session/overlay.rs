@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The preview's road chunks on the bridge (`ROAD-112` rounds R2-4a, R2-4b): `road_tool.gd`
 //! attaches the chunk renderer's layer materials and its `RoadDrawHolds` once; each preview the

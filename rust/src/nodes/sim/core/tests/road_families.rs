@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The remaining road families on the reference harness (`ROAD-68-F` part 2), flat and on its
 //! 2.5% slope: bridge decks and tunnel road pieces where they meet grounded roads at a junction's

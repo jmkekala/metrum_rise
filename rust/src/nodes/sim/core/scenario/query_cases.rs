@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Godot-facing queries leave the simulation's order (`ALLOC-05`): the renderers, pointer
 //! raycasts, overlays and inspectors ask the core between frames, whenever Godot's frame asks,

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! dedicated background thread. The render thread reads only from a
 //! `RenderSnapshot` that the sim thread writes after each tick.

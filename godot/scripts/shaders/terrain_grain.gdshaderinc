@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 // Shared field colour; callers supply the terrain grain uniforms and noise2d.
 vec2 rotate2d(vec2 uv, float angle) {

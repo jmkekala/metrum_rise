@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The roundabout edit on a city (`ROAD-62`, round R7b): what a ring on empty ground and a
 //! conversion build, the preview being the commit, the refusals changing nothing, undo restoring

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The wait-for cycle check, its detour and the gridlock report (`TRAFFIC-14`,
 //! `docs/traffic.md#gridlock-check-traffic-14`).

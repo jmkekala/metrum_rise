@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! What happens during the funding census's window, the hour's second half (`SIM-02-I`): per
 //! hour, the appends and structural changes there, census restarts, planning passes whose

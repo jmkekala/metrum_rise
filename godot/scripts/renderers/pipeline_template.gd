@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## The pieces of a pipeline prewarm template (`RENDER-43`, `pipeline_prewarm.gd`). A pipeline
 ## depends on the shader, the vertex format, the primitive and the pass, never on a material's

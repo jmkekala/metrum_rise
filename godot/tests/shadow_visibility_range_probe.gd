@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Asks one question: does a MultiMeshInstance3D culled by its visibility range still cast?
 ##

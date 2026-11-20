@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Exercises vertex picking, release commits, rejection rollback and cancellation through the tool,
 ## the lots a drag would take outlined and named in the hint (`ZONE-11`), and the industry tool's

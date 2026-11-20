@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The zoning ring against a brute-force pass over every chunk of the world: random walks with
 //! steps, still frames and jumps; a still frame visits nothing; nearest-first order.

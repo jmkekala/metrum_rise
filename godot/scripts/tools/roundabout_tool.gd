@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## The roundabout tool (`ROAD-62`, D11-D14): the Roads menu's "Roundabout" button or O activates
 ## it; a click builds a ring in place of the junction under the pointer, or a bare ring on empty

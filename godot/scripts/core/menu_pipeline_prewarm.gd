@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## The menu's pipeline prewarm (`RENDER-43` rounds R43b and R43c, docs/terrain.md "First-use
 ## pipelines at the load"): the templates of every layer that first draws after a load

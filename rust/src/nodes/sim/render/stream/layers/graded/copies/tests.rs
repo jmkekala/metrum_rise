@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The copies' rules on a small world: a block's first page sized for its lists, placement and
 //! its effects, a full page's growth (a move keeping every copy) and an emptied page's release.

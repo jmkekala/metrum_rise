@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The road tool session's benchmark fixture (`ROAD-112` round B), public so the Criterion bench
 //! (`benches/road_tool_session_benchmark.rs`) can drive it: a fixed neighbourhood around the

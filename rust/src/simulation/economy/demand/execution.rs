@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Construction permits and level-change proofs at the hour's planning slot (`SIM-02-I`).
 //!

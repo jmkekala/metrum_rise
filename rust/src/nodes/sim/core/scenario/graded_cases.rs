@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The graded terrain over a grown town (`TERRAIN-07-D`, `T7`): every tile the town's patches
 //! list bakes at every level and `GL3` step, so no residency request fails by contract on a

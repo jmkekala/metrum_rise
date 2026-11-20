@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Road chunk hydration at a load (`RENDER-36`, `RENDER-32-P`, `docs/terrain.md` "Streaming
 //! core"): the chunks of a whole network installed a part at a time, nearest first, under a

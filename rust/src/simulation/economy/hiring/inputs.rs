@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The funding census's rolling input copy (`SIM-02-I`, `docs/simulation.md#pure-jobs`).
 //!

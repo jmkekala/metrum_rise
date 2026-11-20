@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! `ROAD-61` round R8h (the user's decision, 2026-11-01): the land over a tunnel's bore is used as
 //! if no tunnel ran under it. Explicit buildings, their pads and fields stand over a bore, and a

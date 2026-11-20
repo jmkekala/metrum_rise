@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The building layer against the recorder: a frame drawn as the batch nodes drew it, missing
 //! looks, size classes, a chunk leaving and coming back without new objects, chunks waiting for

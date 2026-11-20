@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## A T junction whose stem has no sidewalks (`ROAD-101`, design D2 (a)) against the native bridge:
 ## the through road drawn as the 2-Lane Road, the stem by the road tool's attributes without

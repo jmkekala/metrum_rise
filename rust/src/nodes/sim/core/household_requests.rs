@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The household request queues (`SIM-02-J`, `docs/simulation.md#request-queues`).
 //!

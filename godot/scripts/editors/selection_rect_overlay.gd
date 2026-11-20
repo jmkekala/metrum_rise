@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Draws the asset editor mesh-part drag-selection rectangle over the 3D viewport.
 extends Control

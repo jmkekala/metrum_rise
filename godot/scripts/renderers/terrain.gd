@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Terrain patch renderer — uploads chunk-local visual terrain patches and world-edge terrain skirts.
 ##

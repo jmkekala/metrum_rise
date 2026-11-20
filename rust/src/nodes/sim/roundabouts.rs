@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The roundabout edit (`ROAD-62`) on the turn pocket's transaction shape (`ROAD-95`): the plan
 //! ([`RoundaboutLayout`]) is checked against water, applied to the graph, the ring nodes and the

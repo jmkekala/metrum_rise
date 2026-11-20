@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! `ROAD-68-C` node-piece acceptance: the fixture set flat and on a 2.5% slope, watertight pieces
 //! and mouths, heights on the node plane, mouths on the arms' offset curves, insertion-order

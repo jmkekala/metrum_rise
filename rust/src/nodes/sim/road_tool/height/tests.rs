@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The segmentation table of `ROAD-112` plan section 4, one test per row, on analytic ground.
 

@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Isolated authoring state regression: lossless drafts, dirty tracking and grouped history.
 ## No live scene, source assets or installed packs are needed.

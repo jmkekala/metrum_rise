@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Fixed-resolution thumbnail capture for the asset editor.
 ## The published image backs both the editor list and in-game asset detail views, so its size is a

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Cell gestures, local paint inverses and event-driven lot preparation for private demand:
 //! a full drain for editing paths and the per-slot `cell lots` queue (`SIM-02-H`).

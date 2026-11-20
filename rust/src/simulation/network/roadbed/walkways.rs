@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Pedestrian walkways of one node from its junction layout (`ROAD-68-C`): where its sidewalks
 //! end, its zebra crossings and the sidewalk corner routes between neighbouring arms.

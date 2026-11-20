@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Exercises selection and lane gestures through real viewport input, including consumed releases.
 ## The simulation stub records commands; native lane mutation has separate Rust coverage.

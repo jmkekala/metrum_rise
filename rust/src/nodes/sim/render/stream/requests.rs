@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The graded tile bake request queue (`TERRAIN-13` part 1, round G1). The renderer hands over
 //! every tile it can install once, with its level and token; the queue holds it pending (a few

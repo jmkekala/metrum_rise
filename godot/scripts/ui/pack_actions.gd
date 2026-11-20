@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Per-pack actions in Options → Mods (`TOOLS-11`): verify, show folder and remove.
 ## Rust checks removal eligibility and verifies files; this script only presents and dispatches.

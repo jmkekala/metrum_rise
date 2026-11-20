@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The turn pocket edit (`ROAD-95` round R5a2) on a city: what an add, a resize, a role change
 //! and a removal build, the preview being the commit at both stored ends, the refusals, the

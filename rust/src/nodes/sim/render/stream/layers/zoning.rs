@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The zoning ground masks' resident chunks on a ring (`RENDER-32-P`, `docs/terrain.md`
 //! "Streaming core"): while the zoning overlay shows, every zoning chunk whose square reaches

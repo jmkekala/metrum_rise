@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## A click on a moving car inspects it: a window beside the cursor shows its trip and can be
 ## dragged and resized without taking the keyboard, the route is drawn from the car to where it

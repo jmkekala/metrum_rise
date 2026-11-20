@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Junction spacing (`ROAD-118` round JS3): a short stub to a road end goes, and a stroke's end
 //! too close to an occupied node joins that node, through a lead-in from the drawn end (round

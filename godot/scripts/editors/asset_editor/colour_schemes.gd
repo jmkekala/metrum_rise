@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Colour scheme controls and preview projection. Rust discovers and validates source bindings;
 ## authored changes go through the existing document history, never into imported resources.

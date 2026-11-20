@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Rendered (gamescope headless) coverage of the menu's paced pipeline prewarm (`RENDER-43`
 ## round R43c, `menu_pipeline_prewarm.gd`): the groups finish in `PipelinePrewarm.groups()` order with one in

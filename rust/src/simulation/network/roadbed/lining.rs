@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The closed tunnel (`ROAD-61`, round R8): a buried piece's lining, its walls standing on the
 //! deck's outer chains and its ceiling over them, the end wall of a bore that ends underground,

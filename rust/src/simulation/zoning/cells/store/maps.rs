@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The two map kinds a cell store keeps its entries in (`ROAD-68` open question 32): the live
 //! store's plain hash maps, and the persistent maps of the road tool view's copy, whose clone is

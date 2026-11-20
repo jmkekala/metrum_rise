@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Asset editor view: panel layout, control references and theme styling.
 ## Controller callbacks own authoring actions; this view owns no simulation or file I/O.

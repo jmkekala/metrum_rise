@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## The road tool's synchronous preview against the native bridge (`ROAD-68-E`): one frame
 ## previews a stroke and shows its rebuilt pieces over the resident chunks, whose replaced runs it

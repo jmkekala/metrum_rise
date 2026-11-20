@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Road edits in place over zoned land (`ZONE-10`, round RZ10a): a widening, a turn pocket and a
 //! roundabout (its island included) take the zoned land their pieces newly cover as a road

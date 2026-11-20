@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The gridlock checker's state (`TRAFFIC-14`, save format 109): one `gridlock_state` row with
 //! the last check's report and, packed little-endian, what the next check needs: the stamps of

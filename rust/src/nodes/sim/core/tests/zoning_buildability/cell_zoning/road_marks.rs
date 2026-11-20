@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! A road commit marks the cell lots of the roads whose geometry or curb frames changed
 //! (`ROAD-68-G` part 3); edits that leave their regions to the `cell lots` queue mark every road

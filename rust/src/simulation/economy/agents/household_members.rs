@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Persistent household member lists (`SIM-02-I`, `docs/simulation.md#snapshots`).
 //!

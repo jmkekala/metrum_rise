@@ -1,7 +1,7 @@
 #[compute]
 #version 450
 
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 // Bakes the tiling 3D cloud noise once at startup (weather_cloud_effect.gd). Every lattice wraps
 // at the texture edge, so the clouds repeat seamlessly.

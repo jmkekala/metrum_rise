@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Shipment loading, dispatch, arrival, refund, timeout and failure handling. Every step runs
 //! when the shipment's state changes or at one of its trip events (`SIM-02-E`, `SIM-02-J`):

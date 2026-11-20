@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Shared operations on compact resource totals used by demand and household settlement.
 //! Lookup is linear in the represented catalog resources, independent of city population.

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 // Bakes one tile of the cloud shape into RG and the regional placement fields into BA. Drawn once at startup by weather_cloud_shape.gd.
 shader_type canvas_item;

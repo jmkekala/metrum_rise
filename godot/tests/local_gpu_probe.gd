@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Local, opt-in rendered GPU probe; writes measurements without saving gameplay state.
 ## Run from repo root: godot --path godot --windowed --resolution 1280x720 --gpu-profile --script res://tests/local_gpu_probe.gd

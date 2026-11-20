@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## The Terrain palette, laid out like Services: one row of category tiles, [Raise and lower |
 ## Trees, Shrubs, Flowers, Hedges, Rocks | Remove], and beside it the open category's planting

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Agent instances of the render snapshot: camera cull, pose and buckets (`SIM-02-K`).
 //!

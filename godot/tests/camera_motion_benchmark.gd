@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Isolated headless camera command/update benchmark, with setup outside timed batches.
 ## METRUM_CAMERA_BENCH_OUTPUT selects the JSON artifact. Run identical fixtures against

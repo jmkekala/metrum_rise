@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Freeform (`ROAD-112` round N, plan 2.2): a draft of cubic Bezier spans through the nodes the
 //! player places, with handles the player can edit before the road is built. No freehand: the

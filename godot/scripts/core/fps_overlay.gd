@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Frame rate readout at the right end of the gameplay menu bar (top-right corner below the
 ## bar elsewhere), toggled by Options -> Graphics -> Show FPS.

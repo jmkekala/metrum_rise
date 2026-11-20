@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Godot's own arithmetic for the few operations the vegetation product reproduces bit for bit
 //! (`RENDER-32-C`): `hash()` of an `int` and of a `Vector2`, `Basis` from an axis and an angle,

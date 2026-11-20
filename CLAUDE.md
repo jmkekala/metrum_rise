@@ -74,8 +74,8 @@ Player builds come only from GitHub Actions on pushes to `main` ([`docs/release.
 
 ## Source File Licensing
 
-- Every project-owned Rust source file (`*.rs`) must begin with `// SPDX-License-Identifier: GPL-2.0-only`.
-- Every project-owned GDScript source file (`*.gd`) must begin with `# SPDX-License-Identifier: GPL-2.0-only`.
+- Every project-owned Rust source file (`*.rs`) must begin with `// SPDX-License-Identifier: GPL-3.0-or-later`.
+- Every project-owned GDScript source file (`*.gd`) must begin with `# SPDX-License-Identifier: GPL-3.0-or-later`.
 - Keep the SPDX identifier as the first line, followed by a blank line and then any Rust crate attributes/module documentation or GDScript `##` class documentation.
 - Do not add author names, copyright-holder names, full licence boilerplate, or modification histories to individual source files.
 - Do not replace or override notices in third-party files. Preserve their original licensing and attribution.

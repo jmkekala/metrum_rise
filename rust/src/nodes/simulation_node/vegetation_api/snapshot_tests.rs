@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The vegetation query from a snapshot (`RENDER-32-D`): bitwise the live query on a fixture
 //! with roads, sidewalks, street lights, a footpath, a field, a yard with walls, paving and a

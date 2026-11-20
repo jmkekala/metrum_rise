@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The road tool's label chips (`ROAD-112` round V): small panels on the geometry, each with one
 //! value, as the HUD. Rust decides which chips exist, their values, their text

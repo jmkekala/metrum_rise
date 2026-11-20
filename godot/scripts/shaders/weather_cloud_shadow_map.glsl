@@ -1,7 +1,7 @@
 #[compute]
 #version 450
 
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 // Bakes the clouds' sun transmission over a square window of the deck around the camera, once
 // per frame, before the opaque pass. Every receiver then reads one bilinear texel instead of

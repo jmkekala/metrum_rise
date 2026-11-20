@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Graded tile probe (TERRAIN-07-D item 5; opt-in, not part of run.sh, needs a rendering device):
 ## loads a save and renders its graded terrain through the production renderer at one camera,

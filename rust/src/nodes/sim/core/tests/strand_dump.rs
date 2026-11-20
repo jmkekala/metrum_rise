@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! `ECON-29` / `TRAFFIC-37` end-to-end (round FSTRAND, from round STRAND's diagnosis): loads the
 //! owner's dump, saved before the fix with five households moving in whose new homes a walkway

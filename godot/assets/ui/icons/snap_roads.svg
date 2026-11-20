@@ -1,4 +1,4 @@
-<!-- SPDX-License-Identifier: GPL-2.0-only -->
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
 <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
   <path d="M3 12h6M15 12h6M12 15v6"/><circle cx="12" cy="12" r="3"/><circle cx="12" cy="12" r="0.8" fill="white"/>
 </svg>

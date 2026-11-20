@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Advance lane choice through the native bridge (`ROAD-94`): a 4 + 4 arterial with a grass
 ## median crossed by a 1 + 1 street. A debug car spawned on the arterial's innermost lane with a

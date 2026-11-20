@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Headless contract test for atomic road-chunk hydration and replacement, and for the road
 ## tool's synchronous preview (`ROAD-68-E`): one frame samples, previews and shows a stroke.

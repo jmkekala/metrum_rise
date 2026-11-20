@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## A load's road chunks, installed in parts (`RENDER-32-P`, `RENDER-36`, `RENDER-52` part 2):
 ## instead of the whole network's meshes in the load's first frame, the chunk renderer's chunks

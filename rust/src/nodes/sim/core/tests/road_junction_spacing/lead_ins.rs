@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! `ROAD-118` round JS5a: joins form the junction; nothing the player drew moves. Every join
 //! below previews and commits a 2-lane stroke on a small flat city and holds the round's bar:

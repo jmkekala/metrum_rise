@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! `ROAD-74`: the per-arm crossing toggle on a city. What turning a zebra off removes and turning
 //! it on restores, the preview being the commit, undo, overrides carried through a split and a

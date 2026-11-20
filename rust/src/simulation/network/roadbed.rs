@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Constructive roadbed (`ROAD-68`): road cross-section profiles, immutable road pieces, the
 //! road chunk index and visible-surface queries, all derived from the road graph.

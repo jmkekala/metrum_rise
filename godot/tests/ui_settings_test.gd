@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Verifies settings normalization/default recovery and coherent UI scale refreshes.
 ## The original settings file is restored; benchmark setup and assertions stay outside timing.

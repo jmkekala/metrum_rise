@@ -3,5 +3,5 @@ schema_version = 1
 display_name = "Parking"
 version = "0.1.0"
 author = "Metrum Rise"
-license = "GPL-2.0-only"
+license = "GPL-3.0-or-later"
 description = "A small publicly usable asphalt parking lot."

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The graded patch lists' requests and arrivals in Rust (`RENDER-32-K` part 6), as
 //! `terrain_graded_tiles.gd`'s `_request_patch_lists`, `_take_list` and `_failed` did them, in the

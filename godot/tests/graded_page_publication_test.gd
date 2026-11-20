@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Exercises full-page migration and edit publication with controlled allocator pressure.
 ## GPU runs compare the published bytes (Compatibility: the pages' CPU copy, TERRAIN-22);

@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## In-game debug console: a left-anchored drop-down over every scene, toggled by the key left
 ## of "1" (§ on Nordic layouts, ` on US layouts).

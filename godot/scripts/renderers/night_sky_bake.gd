@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Bakes all stars and the Milky Way once in the celestial frame for water reflections.
 ## The cached RGB9E5 octahedral map keeps linear HDR radiance and a full mip chain; turning

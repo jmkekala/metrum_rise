@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The demand request queues (`SIM-02-J`): the level changes the hour's actions slot proved,
 //! with their permits; the queued building removals; the admitted households not created yet,

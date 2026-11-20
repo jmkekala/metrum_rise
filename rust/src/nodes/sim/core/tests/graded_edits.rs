@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! `TERRAIN-07-D` item 5: a committed road edit journals what it changed for the graded tiles,
 //! and the journal's own snapshots select off the lock exactly the tiles the live core's

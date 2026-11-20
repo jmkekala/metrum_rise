@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! `ROAD-61` round R8h (the user's play-test of 2026-11-01): a road over a tunnel is a
 //! grade-separated crossing, refused only when its deck would stand within the bore's cover of

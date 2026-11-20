@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Headless contract test for the day/night lighting curve.
 ## The palette is a pure function of the operational day fraction, so the whole cycle can be

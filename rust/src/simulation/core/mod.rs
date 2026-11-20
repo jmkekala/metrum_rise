@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Core simulation primitives: time, slots, scheduling, entity handles, request queues, timed
 //! events and weather.

@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Orbit/pan/zoom camera controller for the asset editor sandbox.
 ## Uses _input with an explicit viewport-position guard: input is only processed

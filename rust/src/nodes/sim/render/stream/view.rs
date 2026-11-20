@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The view a streaming layer measures its chunks from (`RENDER-32`): the camera and how far it
 //! has travelled, and the agents' ground rectangle from the camera's corner rays. For the graded tiles the camera is the renderer's (`terrain.gd`): its XZ with,

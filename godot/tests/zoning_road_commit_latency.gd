@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Frames between a committed road becoming renderable and its cell grid reaching the overlay.
 ## Run explicitly; METRUM_ZONE_ROAD_LATENCY_OUT optionally names a JSON results file.

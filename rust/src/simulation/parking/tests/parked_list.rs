@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! `PARK-02` parked chunks: the per-chunk parked list and the pooled rebuild that reads it,
 //! against the full scan and the fresh buffers they replaced.

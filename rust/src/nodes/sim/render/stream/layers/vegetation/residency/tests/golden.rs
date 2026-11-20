@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The residency against the control's `vegetation.gd`, recorded on the stream benchmark's camera
 //! paths (`dev` `f1c93527`, `RENDER-32-F`): every phase of the 30k city and Kuopio, from the

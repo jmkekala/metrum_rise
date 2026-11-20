@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The legacy section model of one edge: stations, frame, plane blend and section evaluation,
 //! ported from `surface/edge/{sections,polyline,profile}.rs` with unchanged rules except the

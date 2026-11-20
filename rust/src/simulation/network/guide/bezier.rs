@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Cubic Bezier spans (the freeform tool's), with arc length by a fixed quadrature table.
 //!

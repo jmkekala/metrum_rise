@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! A driver whose trip is taken from it on the way (`TRAFFIC-29`): each case starts from the real
 //! event, a job ending or a building going, with the car on the road.

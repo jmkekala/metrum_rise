@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Camera response, immediate restore, clearance and UI ownership regression.
 ## Uses a small blank world and the real input wrappers without gameplay construction.

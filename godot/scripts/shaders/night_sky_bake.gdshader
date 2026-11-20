@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 // One celestial-frame octahedral map, drawn once by night_sky_bake.gd.
 shader_type canvas_item;

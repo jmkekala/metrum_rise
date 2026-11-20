@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## A committed stroke's products as digests (`ROAD-112` round C, the straight parity check): the
 ## request the road tool sent (its points), the graph (each edge slot's geometry, width and class,

@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Shared material factory for gameplay batches and asset previews. Every building and vehicle
 ## surface, and any other lit world surface authored as a BaseMaterial3D (retaining walls, rocks,

@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Bakes the gust lattice once and publishes it as the `weather_gust_map` shader global, which
 ## weather_gust() reads for every tree vertex, impostor and water pixel.

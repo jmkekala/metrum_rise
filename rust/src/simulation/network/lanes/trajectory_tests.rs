@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Junction connector trajectory invariants (`TRAFFIC-12`) on the compiled roadbed: every vehicle
 //! connector stays on the carriageway, never steps backwards against its chord, never

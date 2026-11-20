@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## The road builder's part popup (`ROAD-101`), opened by clicking a part in the strip: one row,
 ## the clicked part being highlighted on the strip already. For a median, its style swatches and

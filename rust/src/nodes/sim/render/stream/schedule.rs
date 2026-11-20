@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The install scheduler (`RENDER-32-E`, `docs/terrain.md` "Streaming core" 5.4): one
 //! streaming budget a frame for every layer, one order, and a cost predicted from fixed

@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## A build-menu asset tile shows the asset's own icon (its manifest `icon`), else its class
 ## icon; a named icon the game lacks falls back to the class icon too.

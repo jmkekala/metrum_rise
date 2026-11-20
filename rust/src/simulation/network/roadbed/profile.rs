@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Cross-section profiles: ordered lateral bands with widths and levels, and the roadbed
 //! half-width rule derived from them.

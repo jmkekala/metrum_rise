@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! `TERRAIN-07-C` acceptance: pads at their support height bitwise, material classes against the
 //! legacy paving partition, exact pruning with sites and walls, site change selection, and the

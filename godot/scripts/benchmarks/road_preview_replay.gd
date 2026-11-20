@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Preview-only matrix using the existing gameplay harness and production RoadTool.
 ## Setup/commits are excluded; each mode starts from the same deterministic world.

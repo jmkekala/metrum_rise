@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Road-tool HUD numbers (`ROAD-112` round B, plan section 5): length, bearing, the angle to the
 //! connected road at each end, radius, design speed from radius, build cost and upkeep from the

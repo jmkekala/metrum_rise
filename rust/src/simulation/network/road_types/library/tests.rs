@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The road-type library file (`ROAD-101`): round trip, ids, two handles, and the rules that
 //! never lose a player's road (unreadable and newer files untouched, invalid entries kept).

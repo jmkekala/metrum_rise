@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Planting a spawned building's yard areas: a jittered grid in the lot's frame, seeded by the
 //! yard's own key, so two copies of one asset grow different yards and a reload grows none.

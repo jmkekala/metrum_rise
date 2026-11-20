@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Real task-oriented editor regression: all building types, document history, guards and drafts.
 ## Generated fixtures live in the isolated test profile; no creator project is required.

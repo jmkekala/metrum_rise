@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Round B (`ROAD-112`) tests: the snapping precedence of plan section 3 (one test per row and
 //! per tie, on the pure resolver), the allocation-free network snap against the acquisition,

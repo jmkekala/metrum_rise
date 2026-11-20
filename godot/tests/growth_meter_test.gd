@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Checks the cached growth bridge, exact project counts and HUD bar geometry.
 extends SceneTree

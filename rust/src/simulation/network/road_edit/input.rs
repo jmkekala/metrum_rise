@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Road-tool input preparation: alignment simplification, endpoint snapping and the vertical
 //! profile solve shared by preview and committed placement.

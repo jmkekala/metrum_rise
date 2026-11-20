@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Residential admission order (`ALLOC-03`): vacancy positions grouped by the starter household
 //! size admission offers there, so admission finds the home a scan of the whole residential

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The turn pocket edit's plan (`ROAD-95`, PLAN-R5 2.5): a pure, local product of the graph that
 //! gives a road end a pocket, resizes it, changes its roles or removes it. A pocket is the short

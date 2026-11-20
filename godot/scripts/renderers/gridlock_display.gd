@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Gridlock notice and junction highlight (`TRAFFIC-14`). Reads Rust's last gridlock report
 ## (`get_gridlock_report`) twice a second and, only when its junctions differ from the ones

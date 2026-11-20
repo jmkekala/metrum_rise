@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Vegetation patches drawn through the streaming backend (`RENDER-32-E`, `docs/terrain.md`
 //! "Streaming core"): a prepared patch product (`RENDER-32-C`/`-D`) installs as one unit, every

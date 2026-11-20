@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Seed 6807 reproduces the full-page migration deadlock at stroke attempt 52.
 ## Drives the production road tool and renderers; checks meshes, materials, cell references and

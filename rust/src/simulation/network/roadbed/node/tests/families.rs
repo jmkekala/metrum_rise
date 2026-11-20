@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The remaining road families at nodes (`ROAD-68-F` part 2), flat and on the 2.5% slope: roads
 //! without sidewalks (raised shoulders, D6) at junctions, bends and road ends; mixed widths and

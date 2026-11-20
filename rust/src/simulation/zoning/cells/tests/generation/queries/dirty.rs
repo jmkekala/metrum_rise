@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Partial invalidation must retain full-rebuild geometry, frontage and occupied claims.
 

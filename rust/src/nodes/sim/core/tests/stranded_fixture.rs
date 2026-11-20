@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! `ROAD-74` stranded walkers as a whole city: one square block of two-way roads with every
 //! crossing off, so its inner and outer sidewalks are two walk networks, and walkers on the

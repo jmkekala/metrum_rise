@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Painted land re-lays around a road edit as unpainted land does (`ZONE-14`, round RL1,
 //! PLAN-RL section 4): the edit's land take releases the free paint of the region it regenerates

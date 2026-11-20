@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Exact rectangular zoning coverage behind a coarse, conservative ground-mask lookup.
 //! Rendering data only: no terrain samples, simulation mutations or persistent spatial index.

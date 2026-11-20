@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Full-operation farm/mine worksheet, separate from the physical village experiments.
 //! Assumes all output sells, inputs/utilities are imported, level-one property tax, and

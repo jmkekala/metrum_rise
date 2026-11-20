@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! `TRAFFIC-14` ring fixture: one block of the populated-city grid as a closed ring of four
 //! one-way lanes (380 m, 30 m, 380 m, 30 m) joined by four 20 m corner connectors, the way the

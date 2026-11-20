@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Vehicle junction connectors (`TRAFFIC-12`): one connector lane per allowed turn (the node's
 //! whitelist, or else the default lane use of `ROAD-94`), from the incoming lane's end to the

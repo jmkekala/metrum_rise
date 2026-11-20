@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Conflict walls (`TERRAIN-07-C`, the user's `T2` (c) decision): where two seams stand closer
 //! than 1:2 allows, the overlap rule takes the highest lower bound, so the graded ground just

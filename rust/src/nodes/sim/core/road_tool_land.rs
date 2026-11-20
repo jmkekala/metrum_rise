@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The land the road tool's hover preview takes (`ZONE-09`, round RZ3): the parcels with their
 //! occupants, the explicit sites' lots, the field and extraction reservations, published by the

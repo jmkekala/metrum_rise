@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! What a ring carries (`ROAD-62`, round R7c2): a saturating fixture with no city. Every entry
 //! lane has a source that places a car at its start whenever the lane's entry slot is clear, so

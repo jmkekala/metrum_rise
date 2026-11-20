@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Task-specific building inspector construction. Applicability comes from Rust via the session.
 ## No pack I/O, simulation decisions or document mutation is owned by this view builder.

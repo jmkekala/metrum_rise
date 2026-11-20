@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Spatial-index adapter for the pure LOD batcher. Cached state belongs to the render
 //! consumer, never the simulation/save. Residency visits the existing 512 m center index.

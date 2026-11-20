@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Road tunnels through the player's road tool (`ROAD-61`, `ROAD-112` round I): on a sculpted hill
 ## the tool's straight grade (T, and its checkbox) previews a level stroke between two ends

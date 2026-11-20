@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! `ROAD-68-G` (D7): a road commit rebuilds the routing hierarchy as a pure job and adopts it a
 //! fixed number of frames later. Held frames run nothing, so neither the job's speed nor a

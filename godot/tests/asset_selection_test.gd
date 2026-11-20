@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Generated real-editor fixtures for 3D picking, overlap/filter UX, gestures and cache invalidation.
 ## Isolated user profile via run.sh; optional captures/benchmarks never depend on creator assets.

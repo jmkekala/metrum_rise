@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Physical electricity quantities shared by hourly dispatch, billing, saves and inspectors.
 

@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Refused road strokes are explained on `events` with their exact inputs, the console dump names
 ## its save and road generation, and a replay against that save reproduces each refusal. A record

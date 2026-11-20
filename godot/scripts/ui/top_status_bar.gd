@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## City status in the middle of the menu bar: clock, speed, treasury, agents and demand. It moves
 ## into the bar's own layer once the menu exists, so it is part of the bar, not an island below.

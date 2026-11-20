@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Bridge concrete: the deck's fascias, the slab under the deck and the terrain-supported piers.
 //!

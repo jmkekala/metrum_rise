@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! `PieceMesh`: a piece's vertices, triangles grouped by band kind, curb faces, outer chains,
 //! the strips hanging from them and the triangle query grid, and the span mesh built from its

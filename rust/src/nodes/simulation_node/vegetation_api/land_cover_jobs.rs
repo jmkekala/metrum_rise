@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Terrain land covers rebuilt on the background pool (`RENDER-40`): the terrain renderer asks
 //! for a patch whose land cover went stale; one snapshot taker takes the asked patches'

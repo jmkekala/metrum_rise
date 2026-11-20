@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The parcel store as a cell-lot plan sees it (`ROAD-68` open question 21 (b)): the store the
 //! plan started from, unchanged, plus the plan's own retirements, reattachments and new lots.

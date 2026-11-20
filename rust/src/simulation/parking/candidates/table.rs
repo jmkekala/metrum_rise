@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The door-independent half of a catchment rebuild: every bay's walking ends and economy ends,
 //! derived once and read by each door it reaches.

@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Shared, read-only projection of authored values into preview geometry.
 ## Invalid metadata stays in the document; display defaults are never written back.

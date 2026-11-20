@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Record and replay of the graded tile renderer (`RENDER-32-I`, docs/terrain.md "Record and
 ## replay"). Recording writes, in the order they happen, every input the renderer reads (its

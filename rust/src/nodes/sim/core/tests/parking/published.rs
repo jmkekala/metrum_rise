@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! `PARK-02` parked publication through the real snapshot path: the buffers two snapshots take
 //! turns on, and the parked lists across real edits, undo and a load.

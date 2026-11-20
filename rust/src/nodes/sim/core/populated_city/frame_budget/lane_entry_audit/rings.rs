@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! `TRAFFIC-14` ring diagnostics, test code only: when wait-for cycles of full lanes form while a
 //! tier city is built and warmed to its snapshot day, which cars stand in them and how those

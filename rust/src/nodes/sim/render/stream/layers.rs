@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The streaming core's layers: per renderer, the state that decides what it draws, its
 //! product-to-install mapping and the display rules that are its own (`docs/terrain.md`

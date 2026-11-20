@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The graded cell sets' `RenderingServer` objects (`RENDER-32-K`, G2c-1): what
 //! `terrain_graded_tiles.gd` made of the book's cell effects 30-46 with nodes, made through the

@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Teardown probe (`RENDER-39`, `RENDER-41`; the gameplay harness's `teardown` matrix, meant for
 ## a rendered run): a new game on the harness's world, a 3 x 3 road grid and a separate road near

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! `NET-07` planner regressions: chosen car plans are drivable through the lanes' own
 //! connectors, which allow a U-turn only at a dead end.

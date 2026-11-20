@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Draws a handful of Rust placements (6 floats each: x, y, z, yaw, scale, species | biased
 ## variant << 2, as `yard_preview_plants` and `get_vegetation_preset_sample` pack them) with the

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! `TERRAIN-07-D` acceptance on the Rust side: the graded patch tile lists against the bake, the
 //! slot packing, and a port of the Godot cell shader's arithmetic

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Guide kernel tests (`ROAD-112` round A): construction exactness, the flattening rule's sag
 //! and step bounds, `f32` placement at +-10 km, offsets, splits, reversal and determinism.

@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Event-driven HUD tooltip. Reads the owner's text and tooltip_text when shown, so library
 ## edits and selection changes need no second copy of the content. Never takes mouse focus.

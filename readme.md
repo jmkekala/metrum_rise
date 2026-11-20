@@ -2,7 +2,7 @@
 
 ## Description
 Open source city building game built with the Godot game engine and Rust programming language.
-License: [GNU General Public License, version 2 only (GPL-2.0-only)](LICENSE.md)
+License: [GNU General Public License, version 3 or later (GPL-3.0-or-later)](LICENSE.md)
 
 ## Requirements
 - Godot

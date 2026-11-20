@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! What a stroke's profile pins to (`ROAD-68` open question 16): the grounded carriageways of the
 //! pieces its edit leaves alone (not a bridge's deck or a tunnel's, `ROAD-99`), the graph

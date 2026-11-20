@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Bakes the terrain's position-only noise fields once per world and publishes them as the
 ## `grass_world_noise` / `grass_world_noise_bounds` shader globals.

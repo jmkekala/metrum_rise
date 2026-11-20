@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! One site for the graph-only road edits (`ZONE-10`, round RZ10b, PLAN-RZ 10.3): the graph an
 //! edit is tried on, the published roadbed it compiles against, the terrain and water it reads

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The road chunk hydration's source (`RENDER-36`, `RENDER-32-P`, `RENDER-52` part 2): a load's
 //! whole network taken once, as the full road snapshot took it, and installed a part at a time

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 // Bakes the gust lattice, one weather_gust_corner() value per texel, drawn once by
 // weather_gust_map.gd. weather_gust_layer() interpolates it in one filtered fetch.

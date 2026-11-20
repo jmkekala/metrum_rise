@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 //
 // Road selection and hover highlight (SelectTool). Two kinds of strip, told apart by the vertex
 // colour's red channel:

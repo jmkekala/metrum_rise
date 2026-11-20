@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 """Measure isolated cell-zoning heap phases with the installed glibc memusage tool.
 

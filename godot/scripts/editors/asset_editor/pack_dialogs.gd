@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Pack settings and share-archive export dialogs (`TOOLS-09`).
 ## Rust validates metadata and builds the archive; these dialogs only present and dispatch.

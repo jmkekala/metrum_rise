@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Bounded, opt-in road preview timing collector. Never participates in placement decisions.
 ## Godot ticks and Rust Instant durations are kept separate; frame_post_draw is not scanout.

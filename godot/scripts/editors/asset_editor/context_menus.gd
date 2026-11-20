@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## On-demand contextual menu presentation for preview, object lists and the library.
 ## Captured generation/targets prevent delayed actions from editing a replacement document.

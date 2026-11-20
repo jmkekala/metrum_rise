@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Turn pockets (`ROAD-95`, round R5a1): the asymmetric profile of a right (kerb) pocket, the lane
 //! offsets that keep the through lanes in place, the D4 taper at the lane transition, the

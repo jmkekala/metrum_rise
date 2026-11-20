@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The preview's road chunks displayed over the resident chunks (`ROAD-112` round R2-4b, the
 //! bookkeeping `road_preview_display.gd` kept until then; `ROAD-68-H` round 3). A preview's

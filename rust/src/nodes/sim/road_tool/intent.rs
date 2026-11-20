@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The road tool's road type pick (`ROAD-112` round R2-6, F12): which road type the next stroke
 //! draws, the car type R draws again, and a listed type's lanes, median, parking and attributes

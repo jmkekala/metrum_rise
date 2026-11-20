@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Yard events: the hedge rows and planting areas a placed building's asset asks for, and the
 //! buildings removed.

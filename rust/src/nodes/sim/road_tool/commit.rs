@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The road tool's commit sequence (`ROAD-112` round R2-1): what a confirming click does with
 //! the stroke the session sent, and what the core's answer does to the session and the standing

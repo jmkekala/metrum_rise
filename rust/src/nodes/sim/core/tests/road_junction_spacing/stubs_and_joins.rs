@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! `ROAD-118` round JS3 on small flat cities: a stroke end too close to a junction or a bend
 //! joins it (a T becomes a crossroads, a bend a T), unless the joined stroke breaks a rule; a

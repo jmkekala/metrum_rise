@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Road ends make way along their own line (`ROAD-118` round JS5c, the user's decision D2 (a)).
 //! Nothing the player drew moves and no existing point moves: a road end the edit meets grows

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Finnish paths (`ROAD-56`): light-traffic asphalt, stone dust (kivituhka) and forest trail.
 // From Codex look-dev; outputs follow fr_surface in road_surface_finnish.gdshaderinc.
 // detail_map is the existing linear RGBA aggregate_packed.png, repeat + mipmaps.

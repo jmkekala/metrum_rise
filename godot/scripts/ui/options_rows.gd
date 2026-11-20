@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Building blocks shared by the Options panels: a section heading, a setting row (name at the
 ## left, its value at the right, a hairline under it, the whole row lit under the mouse) and the

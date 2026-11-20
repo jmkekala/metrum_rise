@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! `PERF-07` worst sim-frame benchmark (`docs/simulation.md#frame-budget-perf-07`).
 //!

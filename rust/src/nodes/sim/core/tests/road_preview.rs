@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! `ROAD-68-E` acceptance on the road side: a current preview's pieces are the pieces the commit
 //! installs (the same `Arc`s), a stale preview's commit equals a fresh commit bitwise, undo swaps

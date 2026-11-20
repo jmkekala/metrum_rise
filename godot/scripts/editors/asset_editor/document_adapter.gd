@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Projects an authoring document into preview objects without repairing or normalizing it.
 ## Mesh sources are reloaded only when they change; metadata/history never owns scene resources.

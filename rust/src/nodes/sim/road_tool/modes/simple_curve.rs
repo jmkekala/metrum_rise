@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Simple curve (U1): start, a free control point, end. The draft is the fillet arc tangent to
 //! both legs with tangent length `min(|AC|, |CB|)` plus a straight lead on the longer leg

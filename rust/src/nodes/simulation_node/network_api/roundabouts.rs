@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The roundabout tool's Godot API (`ROAD-62`, D11-D14): what stands under its point, the commit's
 //! verdict with the outline the tool draws, the node markers around its point, and the commit.

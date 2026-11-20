@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## The stranded-walker notice and junction highlight (`ROAD-74`): the game scene shows nothing on
 ## an empty world, and on the stranded block fixture (`METRUM_STRANDED_FIXTURE`, written by the

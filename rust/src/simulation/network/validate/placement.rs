@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The illegal geometry a road edit adds, which placement refuses (`ROAD-54`).
 //!

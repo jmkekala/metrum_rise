@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Oblique reference renders of scripted road junctions through the production road chunk renderer.
 ## Set METRUM_ROAD_JUNCTION_REFERENCE_DIR for PNGs and manifest.json; use a real rendering device.

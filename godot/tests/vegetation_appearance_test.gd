@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Deterministic vegetation appearance contracts and a fixed patch upload benchmark.
 ## Run headless with --script res://tests/vegetation_appearance_test.gd.

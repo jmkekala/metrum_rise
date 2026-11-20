@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The cell objects against the recorder: a set draws only while shown under its patch node and
 //! only its meshes with instances, binds its materials only while it draws, and its base cells'

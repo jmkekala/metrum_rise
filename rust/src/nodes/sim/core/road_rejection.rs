@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Road rejection reports on `events`: why a stroke was refused, where, and its exact inputs.
 //!

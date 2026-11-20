@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Idle-frame matrix on the gameplay harness: loads the pinned world, holds the camera still at
 ## fixed poses and records steady-state frame cost with no edits, agents or input.

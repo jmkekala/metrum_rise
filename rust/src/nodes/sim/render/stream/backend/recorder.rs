@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The recording backend (tests): every command in order, the state the commands leave on each
 //! object (what an instance would draw), and a digest of the sequence, so the layers' per-frame

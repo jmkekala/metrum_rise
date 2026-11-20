@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Street lights' camera passes (`RENDER-32-H`, `RENDER-33`, `docs/roads.md` `ROAD-59`): the
 //! lamp cell grid the lit materials read, the far light map, the pool of real lights, and each

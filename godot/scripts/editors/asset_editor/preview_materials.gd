@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Non-destructive colour and emission inspection. Only preview surface overrides are changed;
 ## source materials, shared meshes and exported files retain their authored values.

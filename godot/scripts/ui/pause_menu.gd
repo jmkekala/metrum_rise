@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## In-game pause menu: Esc with nothing left to cancel opens it over a dimmed screen. A view:
 ## each button emits `action_requested` with a TopMenu file action id (or RESUME), and TopMenu

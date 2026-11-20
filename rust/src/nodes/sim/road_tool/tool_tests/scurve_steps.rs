@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Round SC (`ROAD-112`) tests: the S-curve previews its road from the first click (Straight's
 //! request, then the simple curve's), each curve step shows its hint chip, a cancel leaves

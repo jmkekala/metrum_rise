@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The parked layer against the recorder: a chunk drawn as its bucket nodes drew it, a chunk
 //! updated whole, a full pool refusing a chunk without sending anything, the teardown that

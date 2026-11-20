@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Road-tool drawing modes (`ROAD-112` round B): one small state machine per mode, turning the
 //! clicks placed so far and the live cursor into the draft's guide path.

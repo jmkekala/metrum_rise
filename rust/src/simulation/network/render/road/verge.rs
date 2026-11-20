@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The drawn ground under roadside furniture that stands off the compiled bands (`ROAD-59`): a
 //! street light on the verge of a road without sidewalks, a footpath's post-top light, a sign

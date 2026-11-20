@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The agents' frame bridge (`RENDER-47`, `docs/terrain.md` "Car smoothing a frame ahead"):
 //! `agents.gd` installs, each frame, the walkers, smoothed cars and parked chunks a background

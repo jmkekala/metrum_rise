@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Pack-generation mesh and colour-scheme texture cache. Imports and root-space baking happen
 ## only at loading/reload, never while changing LODs or colour schemes. Authored surface

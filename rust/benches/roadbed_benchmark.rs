@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Isolated roadbed span- and node-piece build and publish costs (`ROAD-68-B`, `ROAD-68-C`).
 //!

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Road coverage (`TERRAIN-07`): which lattice points a grounded road top triangle covers, by
 //! the roadbed's own point-in-triangle predicate, so it equals `height_at(p).is_some()` wherever

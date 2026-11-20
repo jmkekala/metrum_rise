@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The walking planner's whole-network proof on the benchmark street grid (`ROAD-68-C`, D8):
 //! every node lets every arriving sidewalk reach every leaving one, its four corner bends

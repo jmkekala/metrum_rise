@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Opt-in stills of the road tool's modes, gizmos and HUD (`ROAD-112` round D) and the gizmo
 ## upload time per frame. Uses a fresh blank world and an isolated test profile; never loads or

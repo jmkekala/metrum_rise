@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! A walker whose route is gone gives its trip up and walks home, or is stranded with a backoff
 //! when home is out of reach too (`ROAD-74`, the user's option (c)).

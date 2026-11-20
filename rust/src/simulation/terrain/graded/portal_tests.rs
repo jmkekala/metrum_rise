@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Portal rows in the graded terrain (`TERRAIN-07-C`, `ROAD-61` round R8): no cone reaches past
 //! a tunnel's portal row, the approach's retained seams leave the hill beside it natural (round

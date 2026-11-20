@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Hour-start and day-start economy cost of fully housed cities (`ECON-13`).
 //!

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Road render chunk frames and chunk-line clipping (`ROAD-68-D`, open questions 23 and 24).
 //!

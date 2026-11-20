@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Pack settings and share-archive export through the real editor dialogs and Rust bridge.
 ## Writes packs and archives, so it refuses to run outside an isolated test profile.

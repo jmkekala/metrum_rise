@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Vegetation presentation: the mesh and material catalogue and the draw settings. Rust owns the
 ## rest. Rust supplies deterministic patch-local placements for four species: conifer, broadleaf,

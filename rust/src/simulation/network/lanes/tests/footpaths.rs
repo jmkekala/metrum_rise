@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Footpaths joining sidewalks and each other at junctions. Each ends at its mouth in its node's
 //! junction layout (D5).

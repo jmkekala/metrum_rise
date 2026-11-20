@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Height handles on the real road tool (`ROAD-112` round I), on flat ground: a straight draft's
 ## start grip, grabbed with a press and dragged up 5 m, makes the draft one bridge stroke that

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! `ECON-29` (round STRAND's diagnosis, 2026-11-13): a household moving in by car whose new home
 //! is demolished on its way in, the car case of the owner's stranded walkers.

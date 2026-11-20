@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Household membership counts and shopping car access, recounted from each household's
 //! member list at its hourly phase (`SIM-02-I`).

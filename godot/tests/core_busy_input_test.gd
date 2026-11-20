@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## One-shot input while the simulation thread holds the core (`CODE-25`): the bulldoze tool's
 ## hover keeps its target while its own query answers busy, and its click waits for the core and

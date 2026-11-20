@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Round I (`ROAD-112`) tests: the height handles (a grip's drag projects the pointer ray onto
 //! its vertical line and steps by 0.5 m, Shift frees it; PageUp/PageDown give the same offsets

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Terrain and water patches on the streaming core (`RENDER-32-M`, `docs/terrain.md` "Streaming
 //! core" 5.6): residency, mesh level of detail and prewarm of the 510 m render patches, decided

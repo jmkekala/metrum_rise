@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Isolated Inspect lifecycle regression: real input routing and windows, a minimal road stub.
 ## Closing a building's card also takes its ring off the map.

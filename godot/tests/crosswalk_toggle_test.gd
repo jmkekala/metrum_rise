@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## The select tool's crossing toggle against the native bridge (`ROAD-74`): a click on an arm's
 ## toggle turns its zebra off, the next render generation's road chunks, installed by the road

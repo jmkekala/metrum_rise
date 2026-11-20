@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! An edge's cross-section: where its two directional lane groups sit inside the centred
 //! carriageway (`ROAD-100`), the median between them (`ROAD-80`), a turn pocket's extra lane and

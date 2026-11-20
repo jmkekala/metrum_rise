@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Per-pack Verify / Show folder / Remove in Options → Mods (`TOOLS-11`), through the real
 ## panel and Rust bridge. Writes packs and a stand-in Trash, so it refuses to run outside an

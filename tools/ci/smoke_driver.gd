@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Release smoke-test driver. `tools/ci/smoke.sh` injects it into an exported game as an autoload
 ## through `override.cfg`; it is never part of the game itself. Once the launch router has seeded

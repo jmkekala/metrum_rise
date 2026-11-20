@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The rings and travel buckets against brute force: annulus enumeration against every cell of a
 //! box, ring deltas on random walks against the set differences of the rule evaluated over the

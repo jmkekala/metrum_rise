@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Exact binary rows of the census input copy (`SIM-02-I`): every field of a building,
 //! household and fiscal policy as little-endian bits, so a loaded copy is the saved one bit for

@@ -1,7 +1,7 @@
 #[compute]
 #version 450
 
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 // Morning mist over the lakes, laid over the finished frame after the transparent pass, so the
 // water is already drawn. Mist density falls off exponentially with height above the water it

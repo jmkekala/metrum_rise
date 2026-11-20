@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The curve of one vehicle junction connector (`TRAFFIC-12`), from the incoming lane's mouth
 //! frame to the outgoing lane's: one construction that always exists, built from straights and

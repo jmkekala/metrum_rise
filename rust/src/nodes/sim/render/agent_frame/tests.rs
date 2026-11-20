@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The agents' frame a frame ahead (`RENDER-47`): the drawn sequence is the synchronous one a
 //! frame later, a late job carries its delta, and the caster candidates hold every agent the

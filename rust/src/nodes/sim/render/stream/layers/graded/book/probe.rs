@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The graded book's part of the stream benchmark's drawn probe (`RENDER-32-N`,
 //! [`crate::nodes::sim::render::stream::probe`]): its resident patches with what they draw, and

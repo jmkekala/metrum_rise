@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Compact road-option view (`ROAD-112`): the four drawing modes and Continuous, the snapping
 ## toggles, Straight grade, and the angle and length steps. The host owns tool state and connects

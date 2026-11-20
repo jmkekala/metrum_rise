@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Wait diagnosis of the lane-entry audit: how long each held car has waited, what stands in its
 //! way, and which lanes keep a stopped head car from one checkpoint to the next. Read-only

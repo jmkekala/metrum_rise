@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Build and tick cost of the `ECON-13` benchmark city across tiers, projected to 1M residents.
 //!

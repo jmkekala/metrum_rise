@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Fuzzy text matching for list search: the query's characters must appear in the text in order
 ## (case-insensitive, spaces in the query ignored), not necessarily together. Among all the

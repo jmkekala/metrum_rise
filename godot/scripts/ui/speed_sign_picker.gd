@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## A speed limit picker drawn as Finnish speed limit signs (a yellow disc in a red ring, black
 ## numerals; the sign alone, no pole): a strip of `full_signs` whole signs (1 or 3) with the

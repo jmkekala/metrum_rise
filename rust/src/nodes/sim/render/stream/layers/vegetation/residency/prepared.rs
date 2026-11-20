@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The vegetation's prepared set (`RENDER-32-N`, `CODE-12`; `docs/terrain.md` "Streaming core"
 //! 5.3 item 2): products of the patches the camera can need next, built on the background pool

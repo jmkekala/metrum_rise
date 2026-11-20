@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Typed authoring commands over lossless document dictionaries; no JSON edit round trips.
 //! Validate the whole target set before making a private command snapshot.

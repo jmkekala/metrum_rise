@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Which water a view ray first comes down onto, for the planar water reflection's choice of
 //! mirror planes (`water_reflection.gd`).

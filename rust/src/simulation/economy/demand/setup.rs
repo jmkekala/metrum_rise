@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! A planning slot's setup, held for its plan (`SIM-02-K`). The setup slot, the first slot of
 //! the planning slot's game minute, counts the live workforce and scans the free lots and the

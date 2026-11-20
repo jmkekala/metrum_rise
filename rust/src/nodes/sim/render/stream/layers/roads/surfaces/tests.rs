@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The encoder against bytes Godot 4.7.2 stored for the same arrays (read back with
 //! `RenderingServer.mesh_get_surface` by CB's `format_probe.gd` and CB2's `aabb_probe.gd`; the

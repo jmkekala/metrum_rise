@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Run-queue waits of the threads that do a `PERF-07` frame's work (`SIM-02-K` part 7).
 //!

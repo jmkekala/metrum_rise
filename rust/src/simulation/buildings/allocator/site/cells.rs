@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The building sites by the 64 m cells their bounds meet (`TERRAIN-07-F`, `docs/terrain.md`
 //! T37 (b), T40 (a)): the graded terrain's site reads visit the sites near their window, not

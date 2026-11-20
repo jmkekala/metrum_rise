@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Editor interaction controller: direct selection, hover/cycling and thresholded gestures.
 ## Geometry mutators and document history remain owned by the editor/session.

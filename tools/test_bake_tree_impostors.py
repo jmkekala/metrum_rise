@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Small analytic checks for CPU impostor baking and its shared DDS writer."""
 
 import copy

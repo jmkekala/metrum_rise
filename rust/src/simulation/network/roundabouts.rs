@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Roundabout rings (`ROAD-62`): the ring's geometry and its plan on the graph, on empty ground or
 //! in place of a junction. A ring is a circle of one-way edges between ring nodes: each node

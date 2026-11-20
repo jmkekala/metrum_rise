@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Share-archive import (`TOOLS-10`): verify a `.metrum.zip`, stage it inside the mods folder
 //! and rename it into place.

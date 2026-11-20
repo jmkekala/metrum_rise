@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Road-tool preview requests, the immutable road-tool query snapshot and the synchronous
 //! preview (`ROAD-68-E`): the commit's own plan, compiled pieces and their dependency

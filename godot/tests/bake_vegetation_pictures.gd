@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Bakes the Terrain menu's planting pictures (`terrain_panel.gd`) into
 ## `assets/ui/vegetation/<name>.png`, one per brush option of `vegetation_tool.gd`. Rust says

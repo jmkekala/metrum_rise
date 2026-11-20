@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Where households shop and visit (`SIM-02-J`): the stores selling household supplies and the
 //! service stores hosting visible visits, as building handles in buckets by foot and car

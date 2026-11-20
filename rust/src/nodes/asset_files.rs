@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! File-service bridge for asset authoring. Rust owns dependency planning, staging and drafts.
 //! Godot supplies Variant serialization, user:// resolution and texture decoding validation.

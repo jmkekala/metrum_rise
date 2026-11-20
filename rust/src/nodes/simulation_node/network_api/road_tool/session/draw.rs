@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The road tool's drawing on the bridge (`ROAD-112` round R2-3): `road_tool_gizmos.gd` makes the
 //! palette's materials once and attaches them with its world's scenario; from then on the tick

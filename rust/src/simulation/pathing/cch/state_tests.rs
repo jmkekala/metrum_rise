@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Independent f64 Dijkstra and concrete-edge witnesses for turn-state CCH queries.
 

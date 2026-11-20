@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Cell zoning authority persistence; generated meshes, empty cells and indices are rebuilt.
 //! The pending dirty lot regions are saved in service order, with the asset sizes the lots were

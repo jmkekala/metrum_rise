@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Street lights along roads and footpaths (`ROAD-59`). Rust places them with each road chunk
 ## (`street_lights` in the chunk data: five floats per light, chunk-local pole base x, y, z, yaw,

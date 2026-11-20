@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Batch preview Godot API (`ROAD-112` round G1, plan 6.2): a draft that segments into several
 //! strokes (`segment_draft`, round H) previews as a batch. Every pose runs tier 1 (each stroke's

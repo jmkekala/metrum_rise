@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Building inspector: one card per inspected building, in the game's own chrome
 ## (`inspector_card.gd`: borderless, dragged by its header, × or Esc closes).

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Service-sales pool regressions (`SIM-02-I`): money paid at household phases and drawn at
 //! store phases an hour later is conserved, also when a store leaves before its draw.

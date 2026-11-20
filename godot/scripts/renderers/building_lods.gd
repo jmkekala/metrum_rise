@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Resource half of spatial building LOD rendering. Rust owns candidate gathering, projection,
 ## hysteresis, grouping and the batches themselves: it draws them through the stream backend's

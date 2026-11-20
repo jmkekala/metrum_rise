@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Building scene coordinator: pack activation, spatial LOD resources and site visuals.
 ## Rust selects/batches building tiers; building_lods.gd owns mesh resources and GPU uploads.

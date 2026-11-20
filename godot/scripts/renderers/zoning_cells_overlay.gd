@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Ground-mask chunks from Rust on the streaming core's 2 km ring about the eye (`RENDER-32-P`);
 ## retained textures upload only after local changes. Generation, reservations, cell ownership

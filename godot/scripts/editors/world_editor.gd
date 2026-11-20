@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Blank-world authoring shell — launched via `--world-editor`.
 ## Shares the same SimulationNode runtime as gameplay, but keeps the editor

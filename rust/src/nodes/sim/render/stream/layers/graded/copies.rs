@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! A block's pages, a tile's copies in them and a block's growth (`RENDER-32-I`, WIP: not wired
 //! yet), ported from `terrain_graded_tiles.gd` (`_block_of`, `_patch_page`, `_block_listed`,

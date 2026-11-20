@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Packed cell-zoning gestures; Godot owns pointer input while Rust owns selection and edits.
 

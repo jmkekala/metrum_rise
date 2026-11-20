@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Graded preview drag probe (`TERRAIN-07-E`; the gameplay harness's `graded_drag` matrix, meant
 ## for a rendered run on a real display): replays the pinned Kuopio strokes of the terrain

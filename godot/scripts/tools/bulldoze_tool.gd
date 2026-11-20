@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Dedicated bulldoze tool for deleting one building, road or vegetation target per click. A
 ## roundabout goes whole (`ROAD-62`, D15): Rust's target is its whole ring and names it, and the

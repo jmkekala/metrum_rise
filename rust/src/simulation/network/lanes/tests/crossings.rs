@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Junction crossings and sidewalk corners from the junction layout (`ROAD-68-C`): zebras right
 //! outside the curb returns, shared kerb points with the node pieces, sidewalk lanes ending on the

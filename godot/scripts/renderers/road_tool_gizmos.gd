@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## The road tool's drawing setup (`ROAD-112` rounds D, V, HU and R2-3): the palette and the
 ## materials, made once and handed to Rust with this node's world (`road_tool_attach_draw`).

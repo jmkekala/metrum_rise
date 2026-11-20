@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Junction mouth clips from the junction layout (`ROAD-68-C`), and incident-edge collection.
 //!

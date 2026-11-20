@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The drawn ground's lattice blocks kept from pose to pose (`ROAD-123` round HF3). A drag's
 //! poses all read the same published view, and its footprint moves only a little from pose to

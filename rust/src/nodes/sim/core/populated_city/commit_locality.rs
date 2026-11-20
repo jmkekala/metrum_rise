@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Commit locality on a populated map (`ROAD-68-G` part 8, `docs/roads.md` "Targets",
 //! Locality): the edited neighbourhood is held fixed while remote roads, buildings, parcels and

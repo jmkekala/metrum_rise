@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Farm vertex editor. Rust validates and commits each released drag atomically.
 ## Draws the active field and farm boundaries; production and land reservations stay in Rust.

@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## The game's own inspector chrome, shared by the Building Inspector and Road Properties: a
 ## borderless embedded Window holding a dark rounded card with a soft shadow and a thin accent

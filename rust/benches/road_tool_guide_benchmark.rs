@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Guide kernel benchmark (`ROAD-112` round A): flattening a 1 km arc and a 1 km cubic Bezier
 //! into a reused buffer, at 10 km from the origin.

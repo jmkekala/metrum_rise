@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Node pieces (`ROAD-68-C`): the surface of one junction, bend or terminal, constructed from its
 //! [`JunctionLayout`].

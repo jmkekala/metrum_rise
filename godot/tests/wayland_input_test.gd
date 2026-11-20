@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## X11 and Wayland input parity (`RENDER-62`, round W1b). Each physical input is fed as the event
 ## shapes Godot 4.7.2's X11 driver (under Xwayland) and its Wayland driver deliver for it, read from

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Canonical clipping of triangles by axis-aligned grid rectangles (`ROAD-68-D`): road render
 //! chunks and building foundations clip their triangles to chunk and patch rectangles with it.

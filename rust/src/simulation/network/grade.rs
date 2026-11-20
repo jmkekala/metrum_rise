@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The road grade rule (`ROAD-68` open question 37, decided 2026-10-25): the one grade of a
 //! profile, the 1:3 maximum placement refuses beyond, the 16% warning, and the construction of a

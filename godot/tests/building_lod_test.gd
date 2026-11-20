@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Generated gameplay LOD regression and matched renderer benchmark. Rust prepares saves;
 ## this harness prepares model resources outside measurements, without personal asset packs.

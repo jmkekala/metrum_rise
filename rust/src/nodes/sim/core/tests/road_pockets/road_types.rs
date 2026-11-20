@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Road-type pockets: stroke ownership (under `dev`'s joins and growths, `ROAD-118`), refusal
 //! independence, hover against commit, undo and its refund (`ROAD-128`).

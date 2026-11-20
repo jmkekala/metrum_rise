@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! In-place edits of an existing road: the class change (`ROAD-97`: a spliced publication equals
 //! a full emission; R3-k: its undo record), the lane-count edit (`ROAD-80`): what it builds,

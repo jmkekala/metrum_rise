@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Asset-editor-only spacing, applied after palette styling in either theme.
 ## Duplicate style boxes so shared editor/gameplay themes remain unchanged.

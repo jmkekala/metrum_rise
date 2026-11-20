@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! `ROAD-118` round JS5d: roads alongside are refused, naming the road. On a flat 2-lane street, a
 //! 2-lane stroke whose side runs on top of the street with no end involved (parallel within the

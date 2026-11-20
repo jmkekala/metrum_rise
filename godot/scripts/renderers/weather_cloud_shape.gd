@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Bakes the tiling cloud shape once and publishes it as the `weather_cloud_shape_map` shader
 ## global, which the sky and every cloud-shadow receiver sample.

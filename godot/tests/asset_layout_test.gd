@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Real-editor startup, contextual chrome and persisted layout regression.
 ## Run with the isolated user profile supplied by run.sh; optional rendered captures use generated geometry.

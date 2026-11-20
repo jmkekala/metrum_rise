@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! IDM following and overlap correction; the lane-bucket lifecycle is covered in lane_dynamics.
 

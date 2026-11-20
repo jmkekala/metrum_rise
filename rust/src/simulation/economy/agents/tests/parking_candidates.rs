@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Which agents the ordered parking phase visits (`PARK-02`, B1). Debug test builds also check
 //! after every tick of every test that the phase missed no agent due in it.

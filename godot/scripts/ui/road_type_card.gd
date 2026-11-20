@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## The road tiles' hover card (`ROAD-101`, `ROAD-128`): the type's name beside its speed limit
 ## sign, then its layout as small symbol chips (lane arrows, width, median swatch, parking sign,

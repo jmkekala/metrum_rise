@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The road tool's tick (`ROAD-112` round R2-2): one typed call a frame. `road_tool.gd` hands
 //! over the camera and the mouse (or a scripted world point); the tick answers the sent stroke's

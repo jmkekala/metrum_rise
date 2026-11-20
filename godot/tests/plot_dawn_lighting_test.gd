@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Morning paving parity with the actual day-cycle sky, shadows and angled camera.
 ## Reuses the material fixture; --benchmark-dawn --baseline-shader=PATH measures GPU cost.

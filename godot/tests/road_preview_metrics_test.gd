@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Correlation, bounded storage, payload accounting and cancellation regression for ROAD-30.
 extends SceneTree

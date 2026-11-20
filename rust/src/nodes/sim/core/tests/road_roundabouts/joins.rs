@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Strokes joined to a bare ring (`ROAD-62`, D9, round R7b): the player's main workflow, a bare
 //! ring placed and an ordinary crossroads drawn onto it. A join near a bare node takes that node's

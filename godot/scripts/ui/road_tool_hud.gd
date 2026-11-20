@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## The road tool's HUD (`ROAD-112` rounds D, V and V2): label chips on the geometry, each a small
 ## dark rounded panel with a vector icon and one text, the same pixel size at every zoom.

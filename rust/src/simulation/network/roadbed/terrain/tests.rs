@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The roadbed's terrain-facing contracts the graded terrain reads (`TERRAIN-07`): outer chains
 //! keep the road on their left, and the top triangles' closed coverage predicate. Restored in

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Road tool guide geometry (`ROAD-112` round A): the exact curves the road tool draws with
 //! (straight lines, circular arcs and cubic Bezier spans), the closed-form constructions that

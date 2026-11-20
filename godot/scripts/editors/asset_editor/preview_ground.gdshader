@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 // Grid overlay for the shared game grass material, aligned with the authored lot cells.
 shader_type spatial;

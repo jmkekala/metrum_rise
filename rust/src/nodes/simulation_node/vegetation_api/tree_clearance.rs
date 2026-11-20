@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Walkway and lamp setbacks for wild and brushed trees over existing surface and road chunk
 //! indices.

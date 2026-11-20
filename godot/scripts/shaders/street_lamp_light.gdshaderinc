@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 // Street lamps past the real SpotLight3D handoff, lit inside the receiving material (ROAD-59).
 // Reproduces Godot's spot light diffuse term (range window, inverse distance, 80° cone with

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Save sweep of vehicle junction connectors (`TRAFFIC-12`): loads a saved city and measures
 //! every vehicle connector at every node against the compiled carriageway, and every vehicle

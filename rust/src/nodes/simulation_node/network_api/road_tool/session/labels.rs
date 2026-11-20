@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The road tool's label chips on the bridge (`ROAD-112` rounds V2, R2-5 and R2-2): each tick
 //! builds the chips (kind, tone, text in `road_tool::wording`, size in the HUD's font) into

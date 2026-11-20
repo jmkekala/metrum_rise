@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 // The wind every tree and every water ripple shares: one clock, one strength and one gust field,
 // all from the Rust weather state (weather.rs). They therefore move together, follow the weather

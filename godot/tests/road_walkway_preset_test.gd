@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## ROAD-92 on the road-type path (`ROAD-101`): a divided custom type (created through the API)
 ## picked on the Road tool carries its median; X picks the Walkway type, which clears it, and a

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The pole batches' cell levels (`RENDER-46`): the engine's range rule and hysteresis, the cells
 //! a chunk batch holds from a camera, a still camera's empty frame and a far jump's release, and

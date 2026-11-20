@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The street lights' batches on pooled `RenderingServer` slots (`RENDER-52` part 2, round CB3;
 //! chunk batches, `RENDER-46` lever 5, round SL1): per road chunk, pole kind and level of detail

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Roads over zoned land in the road tool's hover preview (`ZONE-09`, round RZ3): the preview
 //! takes, without the core, what the commit takes for the same stroke and state (the same cells,

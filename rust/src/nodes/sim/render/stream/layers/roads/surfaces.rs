@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! A road chunk's surfaces in the `RenderingServer`'s own layout (`RENDER-52` part 2,
 //! `docs/terrain.md` "Streaming core"): the bytes `ArrayMesh.add_surface_from_arrays` stores for

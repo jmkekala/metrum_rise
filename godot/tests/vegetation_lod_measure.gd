@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Exports the live canopy catalogue for tools/vegetation_lod_measure.py.
 ## Runs with Godot's headless dummy renderer; no gameplay scene or simulation setup.

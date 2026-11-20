@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Headless lamp grid coverage, packing, deterministic overflow, far-map splat and chunk-edit
 ## regression through the Rust `StreetLightBook` (`RENDER-32-H`), and the chunk batches against

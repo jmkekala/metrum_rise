@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## The road builder's procedural art (`ROAD-101`): each road part's name, its surface colour
 ## (after the roadbed's asphalt, sidewalk paving, grass and median paving) and its `_draw()`

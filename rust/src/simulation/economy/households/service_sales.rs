@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Service-store sales through an hourly money pool (`SIM-02-I`, `docs/economy.md#services`).
 //!

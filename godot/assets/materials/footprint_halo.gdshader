@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 //
 // The building inspector's ring (`footprint_halo.gd`): the road highlight's band
 // (`road_highlight.gdshaderinc`, the ribbon kind), depth-tested so the building hides the far

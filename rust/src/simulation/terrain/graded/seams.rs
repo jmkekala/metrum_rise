@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Seams (`TERRAIN-07`): the segments the graded terrain ties in to, their canonical keys, and
 //! one seam's nearest point, distance, height and side at a world point.

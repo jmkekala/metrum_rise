@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The hue over the draft's drawn road pieces (`ROAD-112` round HU2): the top triangles and curb
 //! faces of the preview pieces the draft's stroke runs over (carriageway, kerbs, sidewalks,

@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Verifies cell gestures, independent Erase, cancellation, native selection and chunk reuse.
 extends "res://tests/road_junction_preview_test.gd"

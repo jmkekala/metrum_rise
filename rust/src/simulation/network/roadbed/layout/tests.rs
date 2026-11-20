@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Junction-layout fixtures: arm order and rotation invariance, symmetry, exact corner endpoints,
 //! mouth stations, fitting, degrees, angles, bends, terminals, mixed widths, curved arms and the

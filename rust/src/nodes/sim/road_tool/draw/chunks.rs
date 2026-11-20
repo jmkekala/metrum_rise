@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The preview's road chunks drawn by Rust (`ROAD-112` round R2-4a): the overlay of each chunk
 //! a stroke changes (`ROAD-68-H` round 3: the rebuilt pieces drawn over the resident chunk, whose

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The street light poles' levels of detail in chunk batches (`RENDER-46` lever 5): one batch per
 //! road chunk, pole kind and level of detail instead of one per 64 m cell, kind and level, with

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Engine-owned authored-mesh LOD selection, independent of Godot and simulation state.
 //! Bounds are always LOD0's local geometry bounds. No distance bands, culling or shadows

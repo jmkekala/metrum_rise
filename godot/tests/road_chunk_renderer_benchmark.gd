@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Deterministic headless benchmark for committed-road chunk validation and ArrayMesh upload.
 ## A chunk without a kerbed grass median sends no `median_grass` arrays, as Rust's payload does

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Typed Godot boundary for Rust-owned authoring history; no JSON round trips on edits.
 //! Deep-copy only when dictionaries enter or leave the immutable document store.

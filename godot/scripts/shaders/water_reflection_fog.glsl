@@ -1,7 +1,7 @@
 #[compute]
 #version 450
 
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 // The distance fade of the planar water reflection's pass (water_reflection.gd), as coverage
 // rather than colour. The main view fades far ground into the fog colour, which matches the sky

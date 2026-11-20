@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Graded tile renderer (TERRAIN-07-D): residency requests and async bakes through the bridge,
 ## installs into the prewarmed slot pools within the install budget, the cell instances and

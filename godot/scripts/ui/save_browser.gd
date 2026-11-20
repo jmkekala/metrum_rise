@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Save, Load and New Game file lists, drawn in the game's own UI like Options: one folder
 ## (`user://saves` or `user://worlds`), its `.sqlite` files only, by name without the extension

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The road tool's versioned context (`ROAD-68-E`): the immutable view the simulation publishes
 //! after each edit without copying the city, and the preview's private graph replica, kept equal

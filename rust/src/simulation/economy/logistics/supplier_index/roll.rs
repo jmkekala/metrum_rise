@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The hour-long rolling build of the dispatch supplier index (`SIM-02-I`,
 //! `docs/simulation.md#snapshots`).

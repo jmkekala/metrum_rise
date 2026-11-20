@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Local, opt-in capture of the day/night cycle. Writes screenshots only; saves no state.
 ## Run from repo root:

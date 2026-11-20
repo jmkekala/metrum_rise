@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The vegetation patch product (`RENDER-32-C`, round V1a; `docs/terrain.md` "Streaming core"):
 //! every instance buffer a vegetation patch draws, built in Rust from the patch's placements, its

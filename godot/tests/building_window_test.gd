@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Rendered schedule/preview parity regression and optional matched material benchmark.
 ## Requires a real renderer: headless dummy rendering cannot validate shader execution.

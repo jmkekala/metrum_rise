@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Opt-in production-ground fixture, screenshots and hidden/shown frame timings. Uses a fresh
 ## blank world and an isolated test profile; never loads or writes a gameplay save.

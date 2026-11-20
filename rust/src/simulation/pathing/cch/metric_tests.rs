@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Metric customization regressions: the free-flow profiles' exact bits and the car-congestion
 //! profile (`TRAFFIC-17`).

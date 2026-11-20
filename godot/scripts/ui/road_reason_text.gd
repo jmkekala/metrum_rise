@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## The player's text for Rust's road refusal keys, shared by every host that shows a road
 ## verdict: the road tool's stroke preview, the Road Properties window's in-place edits

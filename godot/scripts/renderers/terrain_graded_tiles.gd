@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Graded terrain tiles (TERRAIN-07-D, docs/terrain.md "Godot tile renderer"): the executor of the
 ## graded book. The graded 64 m tiles of the resident patches by camera distance, their pages

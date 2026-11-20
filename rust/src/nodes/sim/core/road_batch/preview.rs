@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Batch preview (`ROAD-112` round G1, plan 6.2, `docs/roads.md` "Road tools"): a draft that is
 //! several strokes (automatic bridge and tunnel segments, later grids and parallel copies) is

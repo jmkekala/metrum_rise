@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The display's collapsed runs against the recorder (`ROAD-112` round R2-4b): a preview
 //! collapses exactly its runs and restores the ones it no longer hides, waits for the install

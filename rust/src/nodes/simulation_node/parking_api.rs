@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Thin parking inspector, debug fleet and versioned parked-render bridge. The render path reads
 //! the snapshot only: moving and parked cars come from one custody state, and no call here

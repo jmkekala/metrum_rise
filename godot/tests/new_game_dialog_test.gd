@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Headless contract test for the new-game vegetation dialog.
 ## The dialog must report exactly what Rust accepts: its defaults, presets and readouts all come

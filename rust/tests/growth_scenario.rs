@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Headless growth, recurring business income and municipal funding checks (`ECON-12`, `ECON-14`,
 //! `DEM-02`).

@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Rendered (Forward+): every terrain surface variant draws the graded renderer's tangent-less
 ## cell meshes without Godot's "requires tangents" warning (`ROAD-68-H` round 3). A shader that

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Default junction lane use (`ROAD-94`): which movements (left, straight, right) each approach
 //! lane of an open node serves, and which target lanes each movement reaches. Graph-only and

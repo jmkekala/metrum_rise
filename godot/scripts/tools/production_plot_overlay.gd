@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Displays Rust's farm lot and blocking building/yard boundary during field authoring.
 ## Geometry is built once per selected farm; this node has no per-frame simulation queries.

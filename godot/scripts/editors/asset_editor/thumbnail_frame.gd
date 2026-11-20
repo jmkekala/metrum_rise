@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Draws the fixed-aspect thumbnail capture frame over the asset editor preview.
 ## The capture crops exactly this rectangle, so the dimmed border is what gets discarded.

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Round GS (`ROAD-112`) tests: with the zoning grid on, a cursor on an existing road keeps the
 //! road's centreline across it and takes `RoadGridSnap`'s grid-aligned position along it (a

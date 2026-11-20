@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Road-generated zoning cells around turn pockets (`ROAD-95` round R5d1): a pocket's pieces
 //! keep their base road's curb frames, its widened curb reads them moved out by the kerb's

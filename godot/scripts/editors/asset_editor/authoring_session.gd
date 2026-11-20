@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Asset-authoring workflow: documents, commands, dialogs, validation and publication.
 ## Rust owns applicability and gameplay contracts. The view and preview are document projections.

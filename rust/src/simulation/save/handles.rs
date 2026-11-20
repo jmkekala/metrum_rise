@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Entity handle tables (`SIM-02`): saved with their stores, so a loaded game resolves every
 //! handle to the same entity and reuses freed slots in the same order.

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The graded tile result path in Rust (`RENDER-32-K` part 3, `docs/terrain.md` "Streaming
 //! core"): the poll of finished bakes within the install budget, each tile's checks (its request

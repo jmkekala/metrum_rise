@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Agent inspector window: the inspected agent's trip, filled by `agent_inspector.gd`.
 ##

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Run the resident parking capture in a uniquely named, isolated Godot profile."""
 
 import argparse

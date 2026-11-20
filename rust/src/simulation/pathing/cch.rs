@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Turn-aware customizable contraction hierarchy with allocation-free elimination-tree queries.
 

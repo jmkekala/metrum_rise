@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Portal rows in the graded terrain (`TERRAIN-07-C`, `docs/terrain.md` T22 5, closed by
 //! `ROAD-61` round R8): no tie-in cone reaches past a tunnel's portal row, so the hill over the

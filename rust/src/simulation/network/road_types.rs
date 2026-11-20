@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Road types (`ROAD-101`): a road's layout as the player composes it, an ordered list of parts
 //! left to right looking along the road's forward direction, and the one check that turns it

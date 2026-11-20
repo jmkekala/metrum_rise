@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Round H2 (`ROAD-112`) tests: the height display. An end off the ground under it gets a ground
 //! marker from its height to that ground (the segmentation's [`DraftGround`]: the highest

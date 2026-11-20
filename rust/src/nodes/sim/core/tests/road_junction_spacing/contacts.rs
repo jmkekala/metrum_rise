@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! `ROAD-118` round JS4a: roads that touch join. The user's `dump-2026-11-15_11-54-18`: 16
 //! roads, each drawn with its end cap on another road's side and no junction anywhere. Each of

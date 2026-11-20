@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Opt-in camera motion fixture, driven through the native command API at fixed frame rates.
 ## Run with tools/camera_playtest.py; no gameplay saves, input bindings or camera code change.

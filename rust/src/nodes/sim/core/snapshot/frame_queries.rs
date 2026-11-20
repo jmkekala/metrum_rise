@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The values Godot's per-frame queries read, published with the render snapshot (`CODE-26`):
 //! the land cover's revisions, the coal pit overlay revision, the growth summary, the

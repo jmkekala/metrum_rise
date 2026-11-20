@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Rayon pools whose workers the extension joins before Godot unloads it (`CODE-17`).
 //!

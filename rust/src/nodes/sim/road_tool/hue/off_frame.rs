@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The footprint hue built off the frame with its preview (`ROAD-123` round HF2, decision HF-1
 //! (b)). A single stroke's preview is synchronous on the frame's thread; its hue's mesh is the

@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Medians through the native bridge (`ROAD-80`), for each style: the road tool's median is
 ## refused on a one-way stroke with its reason, previews and commits on a 1 + 1 stroke, and the

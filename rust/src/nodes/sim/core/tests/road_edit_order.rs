@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! `ROAD-68` invariant 6 (open question 15): edit histories that produce the same graph produce
 //! the same graph profiles, clips and roadbed pieces, bitwise. The fixtures are the rendered

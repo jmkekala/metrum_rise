@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Share archives (`TOOLS-09`): a pack's referenced file set and its deterministic zip.
 //! Import (`TOOLS-10`) lives in [`import`] and re-checks every rule export enforces;

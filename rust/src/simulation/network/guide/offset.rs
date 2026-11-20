@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Offsets of a guide by a signed distance: lines to parallel lines and arcs to concentric arcs
 //! (exact), Bezier spans by a sampled offset. The parallel mode's copy (`ROAD-112` round K, plan

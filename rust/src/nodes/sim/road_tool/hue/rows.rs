@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The paused preview rows' worlds and poses in Rust (`ROAD-123`, round HF): round L1's
 //! `road_preview_replay.gd` cases (`sloped_t`, `sloped_branch`, `flat_cross`, `sloped_cross`,

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! `ROAD-112` round H: the stroke profile field and the automatic bridge/tunnel segmentation of a
 //! draft through the existing preparation, validation and batch commit. Today's strokes keep

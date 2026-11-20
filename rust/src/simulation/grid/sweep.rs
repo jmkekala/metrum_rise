@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The day-long rolling sweep of pollution, noise and desirability (`SIM-02-H`,
 //! `docs/simulation.md#snapshots`).

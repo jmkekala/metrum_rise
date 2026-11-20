@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The lamp draw against the recording backend: a chunk's batches draw with the settings the
 //! batch nodes had, a batch a pole kind and level holding its cells at their levels, only once

@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Continuous-motion regression and latency capture through the production RoadTool process path
 ## with the synchronous preview (`ROAD-68-E`): every moved frame previews and shows its own pose.

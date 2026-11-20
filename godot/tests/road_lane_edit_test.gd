@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## The Road Properties window's road-type picker against the native bridge (`ROAD-101`,
 ## `ROAD-80`): the picker shows the selected road's type (or "Custom layout"); a pick shows

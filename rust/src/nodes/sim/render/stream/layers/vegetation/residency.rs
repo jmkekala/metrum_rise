@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The vegetation's residency (`RENDER-32-F`, `docs/terrain.md` "Streaming core" 5.3, 5.6),
 //! moved from `vegetation.gd` with its rules and constants unchanged: which patches are wanted,

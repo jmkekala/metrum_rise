@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Graded terrain cells (TERRAIN-07-D) through the real shaders: a GL0 cell whose slot names a
 ## road seam is discarded exactly on the road's side and drawn elsewhere, and a base cell of the

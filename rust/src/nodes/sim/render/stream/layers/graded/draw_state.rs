@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! What a resident patch draws (`RENDER-32-J`; T53 (a), decided by the user 2026-10-28), ported
 //! from `terrain_graded_tiles.gd` (`_draw_state`, `_apply_shown`, `_previews_in`) and the

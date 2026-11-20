@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The behind-the-road tile flag (`TERRAIN-07-G`, `docs/terrain.md` T49 (c)): whether the drawn
 //! terrain of a tile rises above the road top along a road seam, where the outer-band overlap

@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Event-driven workflow, shape and erase controls; all authoring stays in the zoning tool.
 extends HBoxContainer

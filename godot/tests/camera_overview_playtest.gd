@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Opt-in rendered overview sweep using the real gameplay scene; never saves the loaded world.
 ## METRUM_OVERVIEW_WORLD and METRUM_OVERVIEW_OUTPUT select the input and a fresh artifact folder.

@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Graded terrain pages (TERRAIN-07-G, docs/terrain.md "Pages and the row atlas"): the page
 ## textures of terrain_graded_tiles.gd. A page is two Texture2DArrays, its slot layers (one per

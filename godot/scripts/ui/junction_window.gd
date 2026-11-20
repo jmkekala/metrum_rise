@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## The Junction window for the select tool's junction clicks (`ROAD-95`, round R5c2), in the
 ## game's card chrome (`inspector_card.gd`, as Road Properties: the header drags it, × closes it).

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! A construction site's parking in a played town (`PERF-25`): its lot is no supply and its door
 //! holds no list until the building is finished; completion publishes both as a rebuild from

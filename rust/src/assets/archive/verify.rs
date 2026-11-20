@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Installed-pack verification (`TOOLS-11`): compare a pack folder with the
 //! `checksums.sha256` its import kept.

@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Road drawing tool: a thin bridge to Rust's road tool session (`ROAD-112`), with a synchronous
 ## WYSIWYG preview, gizmos and the HUD.

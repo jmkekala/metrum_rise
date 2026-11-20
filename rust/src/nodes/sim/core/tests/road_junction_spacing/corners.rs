@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! `ROAD-118` round JS5c: road ends make way along their own line. A stroke end whose cap
 //! touches a road end's cap, where the two lines meet ahead of both ends, makes a corner where

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The draft's footprint hue (`ROAD-112` round HU): a translucent mark of the ground a draft's
 //! road takes (carriageway plus sidewalks), drawn while dragging so the draft reads as a preview

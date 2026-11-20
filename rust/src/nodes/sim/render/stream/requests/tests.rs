@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The request queue: nearest first, the in-flight bound, replaced and cancelled requests never
 //! started, and no work without a change.

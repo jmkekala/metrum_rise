@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Parity of the street lights' passes with the control's GDScript (`street_lamp_grid.gd`,
 //! `street_lights.gd` at `1279537c`): `golden.txt` holds what it built on the

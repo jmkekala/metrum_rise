@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! `ROAD-126` round JS5f: `ROAD-54`'s junction arm limit is 20 degrees (the user's decision of
 //! 2026-11-18; it was 25). On a flat city of 2-lane roads, a Y whose second branch leaves a road

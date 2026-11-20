@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Event-driven workspace sizing in logical UI pixels, independent of monitor resolution.
 ## Restore after container sorting; persist user preferences, never transient startup geometry.

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! A driver whose road route to its bay is cut on the way (`TRAFFIC-31`, `TRAFFIC-32`,
 //! `TRAFFIC-34`): it parks in the nearest bay it can reach and walks on, or drives home, or, with

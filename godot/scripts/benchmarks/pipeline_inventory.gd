@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## The stream benchmark's pipeline inventory (`RENDER-43`, METRUM_STREAM_INVENTORY=1, untimed): what
 ## a pipeline depends on (the shader, the vertex format and the primitive) for every surface the

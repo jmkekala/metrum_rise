@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Agent renderer — streams agent positions from Rust into a MultiMeshInstance3D each frame.
 ##

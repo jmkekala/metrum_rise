@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Shared icon/tile factories and interruptible hover feedback for the bottom HUD. Native
 ## Button text remains available to callers; only the styled tooltip paints the name.

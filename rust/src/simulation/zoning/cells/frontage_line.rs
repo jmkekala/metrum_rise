@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The straight line whose curb frames a road's cells use (`ROAD-95` round R5d1): the road
 //! alone, or the pieces a turn pocket split off one straight base road, joined through their

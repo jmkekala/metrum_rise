@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 // Rain from the Rust weather state (weather.rs): derived from the cloud deck, so it arrives and
 // leaves with it, and holds still while the game is paused like the rest of the weather.

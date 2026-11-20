@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The graded tiles' desired levels and their travel buckets (`TERRAIN-13` part 1, round G1;
 //! `docs/terrain.md` "LOD and distant tiles", T26), moved from `terrain_graded_tiles.gd`

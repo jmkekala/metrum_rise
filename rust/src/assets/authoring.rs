@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Editor-only building presets, capability discovery and explicit conversion previews.
 //! These project the existing manifest contract; they are not new runtime asset categories.

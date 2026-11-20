@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Shared site-polygon checks for manifest validation and interactive authoring.
 //! Area is O(V); intersection checks are O(V²), allocation-free and asset-local.

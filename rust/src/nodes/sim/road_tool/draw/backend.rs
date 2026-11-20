@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The tool's drawing calls behind [`DrawBackend`] (`ROAD-112` round R2-3), the pattern of the
 //! streaming core's `sim/render/stream/backend.rs`, whose trait is `MultiMesh`-only: the tool

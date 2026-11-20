@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## The road builder window (`ROAD-101`) through Main.tscn and the player's gestures: opened from
 ## the Roads row's drop-down; sidewalk, backward lane, grass median, forward lane, sidewalk built

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Road placement validation: stroke length, profile grade and clearance, endpoint snapping,
 //! same-node connections and the `ROAD-54` edit geometry limits, the 1:3 maximum grade among

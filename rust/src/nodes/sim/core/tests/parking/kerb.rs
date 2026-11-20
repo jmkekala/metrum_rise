@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! PARK-05 kerbside bays: layout along the parking lane, driveway gaps, edits and saves.
 

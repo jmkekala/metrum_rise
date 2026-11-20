@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Border promotion keeps the rest of the network's lane ids: it extends one road, so only that
 //! road's lanes may change, and agents elsewhere keep the lanes they hold.

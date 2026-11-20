@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The `RenderingServer` backend of the tool's drawing (`ROAD-112` round R2-3). It keeps the
 //! materials `road_tool_gizmos.gd` made (alive while the drawing is attached), the scenario the

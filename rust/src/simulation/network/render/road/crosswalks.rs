@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Finnish zebra paint on the existing asphalt triangles, never an offset paint plane and never a
 //! cut: the triangles under a crossing's bars carry its paint frame, and the shader draws the bars.

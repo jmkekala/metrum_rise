@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The rest of the graded state's operations (`RENDER-32-I`): setup and reset, a resident patch's
 //! change, lists, failures, the install check, the preview's tiles, the edit batch's

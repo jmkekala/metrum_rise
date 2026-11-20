@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Replays a recorded graded tile renderer trace (terrain_graded_trace.gd, `RENDER-32-I`) through
 ## the renderer as it is now, headless and without Rust's residency jobs: the streaming core's

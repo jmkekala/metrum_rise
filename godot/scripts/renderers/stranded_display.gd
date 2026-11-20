@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Stranded-walker notice and junction highlight (`ROAD-74`): the gridlock display's poll, rings
 ## and HUD line, read from Rust's stranded-walker report (`get_stranded_walkers_report`): the

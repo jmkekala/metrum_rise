@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Reusable populated-city SQLite fixtures for short economy performance checks, and the
 //! `ROAD-68-K22` commit breakdown's saved cities.

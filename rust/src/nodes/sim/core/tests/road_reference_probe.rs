@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The roadbed product probe over the rendered reference junctions, committed stroke by stroke
 //! through `SimCore::commit_road` as the reference harness does, flat and on its 2.5% slope: graph

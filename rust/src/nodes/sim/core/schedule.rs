@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The simulation's system declarations and per-slot dispatch (`SIM-02`,
 //! `docs/simulation.md#scheduler`).

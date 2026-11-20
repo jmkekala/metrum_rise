@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Deterministic editor-local hit collection. No selection, document or UI mutation.
 ## Meshes use cached native BVHs; site polygons and pixel handles use authored heights.

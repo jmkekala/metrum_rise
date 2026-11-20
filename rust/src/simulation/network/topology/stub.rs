@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Short stubs go (`ROAD-118` round JS3): a road end too close to the junction an edit makes
 //! moves into that junction, and the stub between them goes, so the junction becomes a bend.

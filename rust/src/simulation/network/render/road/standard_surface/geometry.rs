@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Shared section projection and quad emission helpers for section-based road meshes, and the
 //! emission of the strips a piece hangs from its outer chains.

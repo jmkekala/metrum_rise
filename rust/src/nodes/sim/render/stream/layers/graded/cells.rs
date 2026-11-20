@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The graded renderer's cell sets and walls in Rust (`RENDER-32-J`, `TERRAIN-13` part 3), ported
 //! from `terrain_graded_tiles.gd` by record and replay with their order of effects: per resident

@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## The red "this goes" highlight shared by the bulldoze tool's hover and the road tool's
 ## demolition preview (`ZONE-09`): filled, outlined polygons on an unshaded, see-through material

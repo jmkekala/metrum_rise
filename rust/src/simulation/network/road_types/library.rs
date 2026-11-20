@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The player's road types (`ROAD-101`): one JSON file per user, shared by every city, never
 //! part of a save. Path-parameterised and engine-free; the Godot API places it in the user

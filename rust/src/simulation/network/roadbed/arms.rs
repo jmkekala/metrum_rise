@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Node arms from the graph (`ROAD-68-C`): one [`ArmInput`] per live incident edge end, oriented
 //! away from the node, the rule that decides which nodes get a layout, and the D8 rule that

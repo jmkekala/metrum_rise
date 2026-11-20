@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Opt-in stills of the road tool's height display (`ROAD-112` rounds I and H2) on flat ground: each
 ## case from above and from a low angle. A draft whose end is raised 6.5 m (a bridge: the end's

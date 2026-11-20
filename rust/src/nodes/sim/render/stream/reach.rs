@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The camera's reach (`RENDER-32-N`, `docs/terrain.md` "Streaming core" 5.3 item 2): where the
 //! eye can be next, as sample eyes each with its travel, the camera travel along its path from

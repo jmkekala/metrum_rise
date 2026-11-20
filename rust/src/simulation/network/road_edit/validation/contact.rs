@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Roads that touch join (`ROAD-118` rounds JS4a, JS5a): at ground level two roads meet only in a
 //! junction. A stroke end whose footprint, its roadbed's outer band and the round cap of that

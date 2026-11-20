@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## The road builder (`ROAD-101`): a movable, resizable, non-exclusive window where the player
 ## builds a road type from parts seen across the road, names it and creates it, and manages the

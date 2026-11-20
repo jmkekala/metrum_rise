@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Round UI1 (`ROAD-112`) tests: the square lock's capture and release angles (hysteresis) and
 //! its place in the precedence (a node, an edge and the zoning grid where it captured still

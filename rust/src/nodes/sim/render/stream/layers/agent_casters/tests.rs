@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The agents' shadow-only twins against the recorder: only the agents within reach cast, each
 //! twin with its bucket's mesh, material and margin; an unchanged feed and view send nothing;

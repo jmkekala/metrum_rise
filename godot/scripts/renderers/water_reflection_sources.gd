@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## One shared MultiMesh reflection instance per construction scaffold batch (the building LOD
 ## batches' proxies are drawn by Rust with their batches, `RENDER-32-L`).

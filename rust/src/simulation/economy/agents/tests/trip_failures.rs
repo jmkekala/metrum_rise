@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Trip failure lines on `events` (`DEBUG-06`), from failures in the movement tick.
 

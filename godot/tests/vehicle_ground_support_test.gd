@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Real vehicle mesh contacts through native grounding, native smoothing and MultiMesh upload.
 extends SceneTree

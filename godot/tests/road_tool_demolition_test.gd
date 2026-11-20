@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Roads over zoned land in the road tool (`ZONE-09`, PLAN-RZ test 9): on a street with one house
 ## on its cell lot (`METRUM_ROAD_DEMOLITION_FIXTURE`, written by the Rust recorder

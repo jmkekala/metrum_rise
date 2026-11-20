@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Asset-local filesystem operations: dependency planning and transactional publication.
 //! Work is O(files + bytes copied), plus ordered-map insertion O(F log F); no city scans.

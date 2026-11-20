@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Centralized input orchestrator — owns tool activation state and global keyboard/mouse routing.
 ##

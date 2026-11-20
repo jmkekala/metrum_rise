@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Straight mode: two clicks, one line. Its stroke request is the line's two ends, exactly the
 //! two points today's tool sends (round A decision D2: the kernel's 4 m flattening is not sent).

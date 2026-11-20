@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## The roundabout tool against the native bridge (`ROAD-62`, round R7b, PLAN-R7 3.7). On empty
 ## ground a 36 m ring: its verdict and overlay, the click, undo. A 1 + 1 crossing converted at

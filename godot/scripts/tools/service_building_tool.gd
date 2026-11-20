@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Explicit service-building placement tool with Rust-authored frontage snapping and validation.
 ## A placement over zoned land takes it (`ZONE-11`): the hover outlines the lots it would take

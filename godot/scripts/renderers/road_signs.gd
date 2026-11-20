@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Cosmetic Finnish road signs. Rust supplies five floats per pose: chunk-local pole-base
 ## x, y, z, yaw about +Y, model index. This renderer only batches those transforms.

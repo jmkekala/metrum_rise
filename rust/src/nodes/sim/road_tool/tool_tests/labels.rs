@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Round V (`ROAD-112`) tests: the label chips of each mode (values against their closed forms,
 //! no upkeep, bearing and design speed present), the freeform hint and Build / Cancel chips, the

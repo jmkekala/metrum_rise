@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 // Godot's built-in lighting, reproduced so the sun can pass through the cloud shadow.
 //

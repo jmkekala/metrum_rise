@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Versioned parked chunks. Rust owns supply, custody, pose and persisted palette, and draws the
 ## chunks through the streaming core's pooled slots (`StreamNode`, `RENDER-32-P`): this script

@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## The stream benchmark's draw census (`RENDER-44`, `RENDER-46`; benchmark-only, untimed: it reads
 ## buffers and meshes back from the GPU). At a pose it writes `<dir>/<label>.census.json`:

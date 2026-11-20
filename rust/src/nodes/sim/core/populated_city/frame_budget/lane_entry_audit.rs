@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! `TRAFFIC-07` audit: runs a prepared snapshot's day and counts, every few game hours, the
 //! lanes holding more cars than fit and the cars stacked at one point of a lane, plus the cars

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Input restock planning for profile-driven buildings: the check a building makes at its
 //! hourly phase and the plan the freight request queue serves (`SIM-02-J`).

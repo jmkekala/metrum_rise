@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Share-archive import for Options → Mods (`TOOLS-10`).
 ## Rust verifies, stages and installs the archive; this script only drives the file picker,

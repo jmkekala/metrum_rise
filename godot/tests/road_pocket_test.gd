@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## The Junction window's Turn pockets rows against the native bridge (`ROAD-95`, round R5c2). A
 ## junction click opens the window: on a 1 + 1 crossing four rows named by the direction their

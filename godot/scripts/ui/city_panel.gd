@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Tab "status check" panel sliding in from the left: treasury, agents and each zone's growth
 ## with Rust's own explanation lines (`get_growth_overview`). A read-only view: MainUI feeds it

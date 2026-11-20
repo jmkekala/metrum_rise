@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Turn tools/model_trees.py and tools/model_landscape.py output into the game's assets.
 
 Usage: python3 tools/prepare_tree_models.py imgs/tree_models/out

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The slot pool against the recorder: reuse by kind, the limit and the spare limit (invariant
 //! 6), exhaustion, eviction, fresh storage, and the padding of a buffer.

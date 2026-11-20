@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! A commit's cell lots, planned off the commit and adopted the next frame (`ROAD-68-G` part 7,
 //! `docs/roads.md` question 33 (c)), as D7 adopts the routing rebuild.

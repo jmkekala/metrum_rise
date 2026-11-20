@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Constant-size visible site handles, clipped to the preview pane.
 ## Occluded handles are omitted by the picker; world-space hover lines live in the preview.

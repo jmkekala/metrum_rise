@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! `TERRAIN-07-D` item 4: Godot's surface queries (`get_world_surface_height`,
 //! `intersect_world_surface`) answer from the graded surface the tiles render, on the sloped

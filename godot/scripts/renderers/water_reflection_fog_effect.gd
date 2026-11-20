@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## The planar water reflection pass's distance fade, as coverage rather than colour
 ## (water_reflection_fog.glsl). water_reflection.gd attaches one to each mirror camera with the

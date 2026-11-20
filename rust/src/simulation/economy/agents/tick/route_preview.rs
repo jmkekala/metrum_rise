@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Lane-by-lane route an agent will follow from where it is now, for the agent inspector.
 //!

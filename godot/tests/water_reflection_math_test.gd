@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Headless-safe reflection proxy and mip-filter regressions; no frame capture or rendering.
 extends SceneTree

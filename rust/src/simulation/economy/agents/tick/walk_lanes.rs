@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Walk lane witnesses (`ROAD-74`): the sidewalk a walker takes on each road of its node path.
 //!

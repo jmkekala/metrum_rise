@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The page allocator against the GDScript allocator's rules (`terrain_graded_pages.gd` before
 //! `RENDER-32-I`): slot order, first-fit runs merged on free, the pool's reuse and drop order, the

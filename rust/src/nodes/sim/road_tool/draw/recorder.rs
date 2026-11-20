@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The recorder backend (tests, `ROAD-112` round R2-3): records every drawing command and keeps
 //! the state they leave (meshes' surfaces and bytes, instances' visibility), so the draw module

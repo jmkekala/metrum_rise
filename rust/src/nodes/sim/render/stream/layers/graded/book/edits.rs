@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The graded edit batch and the road preview's tiles in Rust (`RENDER-32-K` part 4,
 //! `docs/terrain.md` "Streaming core"), as `terrain_graded_tiles.gd`'s `_apply_edit`,

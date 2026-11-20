@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The graded pages' allocator (`RENDER-32-I`, `docs/terrain.md` "Pages and the row atlas"),
 //! moved from `terrain_graded_pages.gd` with its behaviour: per level code the slot layer's side,

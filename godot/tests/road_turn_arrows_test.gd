@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Selective turn arrows through the native bridge (`ROAD-75`): a four-way of two 1 + 1 streets
 ## publishes only their centre lines (`ROAD-106`: dashed at 50 km/h) and no arrow, while a

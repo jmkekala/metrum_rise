@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The tool's drawing against the recorder (`ROAD-112` round R2-3): a draw of the same layout
 //! writes in place, a new layout rebuilds, a clear hides, the bytes are the encoders', the hue

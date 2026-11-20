@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! `ROAD-118` round JS5b: the preview shows the junction that will form. A valid stroke whose
 //! end joins a road carries the outline of the node piece that forms there, equal to the outer

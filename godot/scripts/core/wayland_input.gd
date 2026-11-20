@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## X11's input under Godot's Wayland driver (`RENDER-62`, round W1b): the same physical input gives
 ## the game the same events under both Linux drivers, so the camera, the tools, the shortcuts and

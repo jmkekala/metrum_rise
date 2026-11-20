@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Cosmetic GPU grass window. Reuses resident terrain textures and mesh coverage; never places
 ## simulation vegetation. CPU work is bounded by the four patches touching the 140 m window, each

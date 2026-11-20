@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The terrain and water patch layer against brute-force replicas of the scripts' rules, on
 //! scripted and random camera walks.

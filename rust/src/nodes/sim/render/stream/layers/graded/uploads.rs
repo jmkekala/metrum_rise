@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The graded pages' slot uploads (`RENDER-32-K` part 2, `docs/terrain.md` "Pages and the row
 //! atlas"), moved from `terrain_graded_pages.gd`'s `write_copy`: a placed tile's bake is written

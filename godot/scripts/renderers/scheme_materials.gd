@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Shared colour-scheme material construction. The asset editor preview and the gameplay
 ## building renderer bind the same channels through this one implementation, so a scheme

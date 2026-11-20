@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## The mouse's back (thumb) button acts as Esc in the menus: it closes the main menu's Load
 ## Game and New Game browsers, the New Game dialog and Options, and in the pause menu it first

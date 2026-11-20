@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The graded renderer's state, ported from `terrain_graded_tiles.gd` (`RENDER-32-I` to `-K`) and
 //! owned by the book ([`super::book`]). One struct, its rules split by domain: [`super::copies`]

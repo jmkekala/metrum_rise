@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Library dialogs and native platform actions; Rust validates all asset file operations.
 ## Trash is recoverable and separate from document history; publication is always explicit.

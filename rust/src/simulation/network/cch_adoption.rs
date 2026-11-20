@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Deferred routing adoption after a topology edit (`docs/roads.md` D7, `ROAD-68-G`).
 //!

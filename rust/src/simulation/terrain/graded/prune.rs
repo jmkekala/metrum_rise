@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The two-pass exact pruning of the tile bake (`TERRAIN-07`, `T18` (a)): the seams each bin of
 //! a tile's lattice must evaluate, bins of `max(4 m, the level's spacing)`.

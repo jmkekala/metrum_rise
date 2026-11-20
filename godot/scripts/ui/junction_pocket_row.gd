@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## One road coming into the Junction window's junction (`ROAD-95`, round R5c2), drawn as a card
 ## well in the inspector style: where it comes from ("From west") over its type in dim text, with

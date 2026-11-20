@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! `ROAD-62` round R7c: what a day does at the city's roundabouts, on one `ROUNDABOUT_DAY` line at
 //! the audit's end. The gate's two numbers, the `TRAFFIC-14` saturation reports and the trip

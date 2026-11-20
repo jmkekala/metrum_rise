@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The populated fixture's parking supply (`PARK-02`, F8): kerbside lanes on the cross streets,
 //! none on the rows or the trunk, small lots along the rows, and every door with bays to walk to.

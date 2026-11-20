@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## The gridlock notice and junction highlight (`TRAFFIC-14`): the game scene shows nothing on an
 ## empty world, and on the locked ring fixture (`METRUM_GRIDLOCK_FIXTURE`, written by the Rust

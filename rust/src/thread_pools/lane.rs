@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! A frame's payload handed between the main thread and its background-pool job (`RENDER-47`'s
 //! agents' frame, `TERRAIN-14`'s graded preview sets).

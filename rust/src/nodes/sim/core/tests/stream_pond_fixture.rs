@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The stream benchmark's water input of record (`RENDER-32-M` step 0, `docs/terrain.md`
 //! "Stream benchmark"): a pond made on the prepared 30k city by a fixed recipe through the

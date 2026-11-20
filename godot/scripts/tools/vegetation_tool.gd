@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Player vegetation input and ground-ring preview; all placement decisions stay in Rust.
 ## Rust methods called: add_vegetation_at(), remove_vegetation_at(), paint_vegetation(),

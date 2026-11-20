@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Logic for modifying simulation state (road placement, terrain sculpt, zoning, edge editing).
 

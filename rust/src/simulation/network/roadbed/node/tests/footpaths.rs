@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Footpath junctions (D5, `ROAD-68` open question 14): footpaths attached to road nodes end on
 //! the sidewalk ring's outer boundary on shared vertices, at sidewalk height, and footpaths

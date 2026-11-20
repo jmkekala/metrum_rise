@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The culled, parallel render snapshot reproduces the serial full-pose snapshot bit for bit
 //! (`SIM-02-K` part 2), on populated cities, frame after frame.

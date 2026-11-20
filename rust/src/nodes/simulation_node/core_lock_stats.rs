@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! How often Godot's main thread finds the simulation core busy, by call site (`CODE-26`).
 //!

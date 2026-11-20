@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Lead-ins (`ROAD-118` round JS5a): a join forms the junction; nothing the player drew moves.
 //! Where a stroke end joins a road it touches or a node it is too close to, the stroke keeps

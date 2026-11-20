@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The vegetation's distance rules in `vegetation.gd`'s arithmetic (`RENDER-32-F`): patch
 //! centres, origins and distances in Godot's single precision `Vector2` operations (the engine's

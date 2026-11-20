@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The roadbed product probe over every roadbed node and span test fixture, flat and sloped:
 //! node and span pieces, layouts, walkways and lanes hash exactly as recorded. Refactors that

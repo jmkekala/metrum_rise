@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Short type-first creation dialog. Cancellation never touches the active document.
 ## Type/subtype choices come from Rust; this view owns only input and presentation.

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! `SIM-02-A` guards (`docs/simulation.md#behaviour-envelope-sim-02-a`): the behaviour
 //! envelope and burst limits, economy invariants, and determinism checks.

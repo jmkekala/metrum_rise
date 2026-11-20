@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! `ROAD-99`: grade separation by structure, not by height. Two roads meet only where both are
 //! grounded; a bridge or a tunnel's bore crosses other roads without a node, and a road passes

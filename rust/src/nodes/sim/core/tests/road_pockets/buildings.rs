@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Buildings fronting a turn pocket's curbs (`ROAD-95` round R5d3): a building grown on a lot
 //! fronting either curb of a pocket edge reads that curb, the carriageway's own edge (D17), for

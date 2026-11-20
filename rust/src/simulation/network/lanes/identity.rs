@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Lane identities that survive a full [`LaneSystem::rebuild`], which renumbers every lane, and
 //! a local one, which gives a rebuilt lane the id of the retired lane it shares one with.

@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Road-type turn pockets (`ROAD-128`): two independent role toggles and a length stepper.
 ## Rust supplies the Junction window's length grid and applies every placement rule.

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The graded terrain's edit journal (`TERRAIN-07-D` item 5, `docs/terrain.md` "Preview,
 //! commit, undo and load"): what each published edit changed for the graded tiles, recorded

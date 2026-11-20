@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Building refresh cadence and pack replacement through the real registry, importer and renderer.
 extends SceneTree

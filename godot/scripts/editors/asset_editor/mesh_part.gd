@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Editable preview projection of a Rust-owned document part; never owns command history.
 ## LODs share its transform and LOD0 bounds.

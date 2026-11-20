@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The preview's join marks (`ROAD-118` round JS5b): what the preview draws of a join beside its
 //! pieces, as line strips the tool's drawing shows ([`super::ToolDraw::draw_marks`]).

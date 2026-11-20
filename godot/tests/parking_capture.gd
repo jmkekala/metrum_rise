@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Isolated PARK-02 resident fixture. Rust admits households, schedules their departures and
 ## executes the ordinary parking FSM. The copied meshes provide controlled fixture homes.

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The stream benchmark's drawn probe (`RENDER-32-N`, `CODE-12`'s go/no-go measurement): for
 //! every layer, how many frames a chunk that enters the layer's installed set waits until it is

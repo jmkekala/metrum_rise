@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Yard hedge contract for building assets and the hedge rows it plans inside the lot.
 //!

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 // Procedural cloud shape, evaluated once per texel by weather_cloud_shape_bake.gdshader and never
 // per frame. Every noise lattice divides WEATHER_CLOUD_PERIOD_M, so the baked texture tiles.

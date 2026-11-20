@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Rendered grass/paving boundary regression; --benchmark-plots --baseline-dir=PATH
 ## compares current shaders with *.before snapshots from the specified directory.

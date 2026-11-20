@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Engine-independent, reusable building LOD batches. The bridge supplies spatial-index
 //! candidates; this module never queries simulation state or calls Godot. Only topology

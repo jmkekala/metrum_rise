@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## PARK-01 bridge regression: shared mesh equivalence, lot supply, immutable chunks and towing;
 ## `ROAD-109`: a door keeps its sidewalk and a side without one takes no building, with the reason.

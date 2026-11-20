@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Save determinism (`ROAD-68-K16`): a save is a function of the city and the save time it is
 //! given, so a played town saves the same bytes twice, and the game loaded from that save saves

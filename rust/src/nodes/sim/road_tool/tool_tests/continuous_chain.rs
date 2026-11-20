@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Round CT (`ROAD-112`) tests: with Continuous on a chain carries its direction into the
 //! S-curve (its start aim: that step is skipped) and freeform (its start's handle direction),

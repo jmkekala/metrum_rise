@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The moving agents' shadow casters (`RENDER-15`'s `agents_near`, round R47): a shadow-only
 //! twin per walker and car bucket, drawn through the backend's pools, holding only the agents

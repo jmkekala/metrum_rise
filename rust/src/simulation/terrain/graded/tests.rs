@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! `TERRAIN-07-A` acceptance: exact pruning, batch, order and worker independence, shared
 //! border and level samples, coverage against the roadbed's own query, an open chain's

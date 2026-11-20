@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Exact circular arcs, stored as their two ends plus the bulge, and the simple curve's
 //! three-click fillet (`ROAD-112` decision U1).

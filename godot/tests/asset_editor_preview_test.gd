@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Asset editor regression: real UI, four-tier round-trip, dependency-safe saves and lighting.
 ## Run with --asset-editor; fixtures use a process-unique pack and never edit source assets.

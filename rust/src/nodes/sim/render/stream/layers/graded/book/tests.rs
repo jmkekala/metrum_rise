@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The book's result path and edit batch without the engine (`CODE-30`, the streaming audit's
 //! finding 5): a [`Host`] that records the renderer's callbacks and scripts the polls and the

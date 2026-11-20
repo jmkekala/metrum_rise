@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Road-type Godot API methods (`ROAD-101`): the road types the Roads menu, Road Properties and
 //! the road builder list, the layout check the builder asks on every edit, and the player's

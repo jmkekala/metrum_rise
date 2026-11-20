@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Engine-independent context-action rules and deterministic authoring names/angles.
 //! Selection queries are O(selected objects); names are resolved once per command.

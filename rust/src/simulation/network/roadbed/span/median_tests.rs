@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! `ROAD-80` divided spans: where a raised median continues through a pass-through node, where
 //! it noses out, and the span meshes it builds.

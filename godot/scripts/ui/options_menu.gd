@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Options, drawn in the game's own UI over a dimmed screen (main menu and gameplay): a Display
 ## tab (graphics and interface scale) and a Mods tab (installed packs), as one centred column of

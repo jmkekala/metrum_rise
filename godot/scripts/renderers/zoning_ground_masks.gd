@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Sparse resident ground masks and analytic rows. Layer zero of rows is the world chunk table;
 ## its R/G channels select the committed/preview layers. Empty chunks allocate no mask layer.

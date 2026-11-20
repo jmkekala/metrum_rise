@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! A draft's height display (`ROAD-112` round H2, the user's 2026-11-14 test drive): at each end
 //! off the ground, a ground marker (a vertical line from the end to the ground directly under or

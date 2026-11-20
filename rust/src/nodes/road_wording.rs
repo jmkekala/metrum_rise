@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Stateless bridge to the road wording (`ROAD-112` round V2): the player's text for a road
 //! refusal key, from the one place the strings live (`nodes::sim::road_tool::wording`), for the

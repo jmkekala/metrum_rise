@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Shared vehicle mesh and palette/material loading for moving and parked renderers.
 ## Lamps are optional so parked meshes never include headlight/glow surfaces.

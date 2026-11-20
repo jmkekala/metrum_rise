@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Road chunk hydration: order (view, near ring, distance, key), the budget, busy and gone
 //! answers, cancellation, chunks in parts across frames, chunks waiting for their surfaces, the

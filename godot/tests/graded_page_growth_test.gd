@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## A graded page growth keeps every moved copy's exact bytes on the GPU (TERRAIN-22). Installed and
 ## preview tiles of distinct floats (negative, above 1, per texel) fill a GL2 block's page; the

@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Asset editor shell — launched via `--asset-editor` command-line argument.
 ## Shares the same SimulationNode and compiled .so as the game, but runs a

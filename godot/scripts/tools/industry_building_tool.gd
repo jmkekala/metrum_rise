@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Explicit industry area placement tool with a player-drawn production polygon.
 ## The building and its polygon take the zoned land under them (`ZONE-11`): the building's hover

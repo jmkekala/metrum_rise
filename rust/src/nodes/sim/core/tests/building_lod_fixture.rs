@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Generated save fixtures for end-to-end Godot building LOD checks and matched rendering
 //! benchmarks. World/road/save preparation is deliberately outside all measured paths.

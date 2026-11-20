@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Road types in the game (`ROAD-101`), through Main.tscn and the player's controls: the Roads
 ## menu lists the built-in types in order and a custom type created through the API; each

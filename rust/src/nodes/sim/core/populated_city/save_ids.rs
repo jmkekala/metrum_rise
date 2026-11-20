@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Node, edge and lane ids as saved state on the populated street grid (`SAVE-11`), where equal
 //! cost routes exist and ties break by id: a grid saved after road edits continues across a load

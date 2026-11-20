@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Minimal road graphs for roadbed tests: no lanes, zoning or terrain, only edges, nodes and the
 //! graph clips that place the span mouths. Also the product probe ([`ProductProbe`]): bitwise

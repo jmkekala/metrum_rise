@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Complex curve: the biarc S-curve (`GuidePath::set_biarc`, equal tangent lengths). Clicks: the
 //! start `A`, a point giving the start tangent (`A -> TA`), a point giving the end tangent, then

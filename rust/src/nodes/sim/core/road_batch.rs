@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! A batch of road strokes committed as one transaction (`ROAD-112` round F, `docs/roads.md`
 //! "Preview, commit, undo and load"): a draft's segments, a grid's lines or parallel copies.

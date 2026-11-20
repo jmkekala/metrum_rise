@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The player's text for the road tool and for road verdicts (`ROAD-112` round V2): the one place
 //! these strings live (a later translation replaces this module's strings, nothing else). The

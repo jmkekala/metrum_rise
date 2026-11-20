@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The walkers' drawn buffers between snapshots (`RENDER-28`): a bucket uploads only when its
 //! snapshot buffer differs bit for bit from the one drawn, so a paused city, and every frame

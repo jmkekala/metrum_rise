@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The road tool's commit sequence on the bridge (`ROAD-112` round R2-1): a confirming click
 //! sends the stroke its standing preview accepts (or logs the preview's refusal), the bridge

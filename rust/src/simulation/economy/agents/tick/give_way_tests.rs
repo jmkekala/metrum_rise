@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Give-way on entry to a roundabout ring (`ROAD-62`): the rule on its own, the lane-end hold and
 //! claim on a converted junction, the gridlock check's view and the fork's drain test. Isolated

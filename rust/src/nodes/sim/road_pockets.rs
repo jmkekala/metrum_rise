@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The turn pocket edit (`ROAD-95`, PLAN-R5 2.5) on the cross-section edit's transaction shape
 //! (`ROAD-80`, `ROAD-74`): the plan ([`PocketPlan`]) is applied to the graph, the junction, the

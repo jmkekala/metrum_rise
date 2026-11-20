@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Output surplus export planning to `OWA` border terminals: the check a producer makes at its
 //! hourly phase and the plan the freight request queue serves (`SIM-02-J`).

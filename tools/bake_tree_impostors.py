@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Bake deterministic hemi-octahedral tree albedo/normal atlases on the CPU.
 
 Usage: python3 tools/bake_tree_impostors.py /tmp/tree-meshes.json

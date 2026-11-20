@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The construction sites' rows, published with the per-frame values (`RENDER-30`, `CODE-32`):
 //! the site pad, foundation and scaffold transforms of every building under construction, which

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The funding census's rolling input copy and the census over the hour's second half in a
 //! growing town, and the demand snapshot front planning reads beside it (`SIM-02-I`).

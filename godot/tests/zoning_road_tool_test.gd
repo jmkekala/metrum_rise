@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Tests native both-side zoning and the tool's hover cache, option changes and immediate clicks.
 ## Reuses the native road fixture helpers; controlled cursor responses exercise input transitions.

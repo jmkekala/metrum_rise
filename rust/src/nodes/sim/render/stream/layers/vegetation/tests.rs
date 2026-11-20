@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The vegetation layer against the recording backend, without Godot (`docs/terrain.md`
 //! "Streaming core" 5.5): one version drawn (invariant 1), the budget and the order (2), the

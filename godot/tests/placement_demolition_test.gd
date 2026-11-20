@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Plotted placements over zoned land (`ZONE-11`, round RZ11b, PLAN-RZ 11.6 test 6): on a street
 ## lined with houses (`METRUM_PLACEMENT_DEMOLITION_FIXTURE`, written by the Rust recorder

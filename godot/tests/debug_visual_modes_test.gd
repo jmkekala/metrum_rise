@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Visual debug modes switch at runtime: console command and Visual pickers, shader globals,
 ## the walker VAT material and terrain/water residency and LODs.

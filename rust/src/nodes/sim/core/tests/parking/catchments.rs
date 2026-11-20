@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Door catchments stay what a load would rebuild: after every site edit, and once the frame
 //! that adopts a road edit has run. `audit_every_parking_catchment` is that rebuild.

@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## The road builder's strip (`ROAD-101`): the layout seen across the road, left to right looking
 ## the way it is drawn, drawn to scale with a floor of MIN_PART_PX per part so a 0.5 m painted

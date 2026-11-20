@@ -1,7 +1,7 @@
 #[compute]
 #version 450
 
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 // Lays the low-resolution cloud buffer over the sky, after the sky is drawn and before the
 // transparent pass, so the water's screen reads see it. Clouds stand behind every surface, so

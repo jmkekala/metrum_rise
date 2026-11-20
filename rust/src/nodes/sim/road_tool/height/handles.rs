@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! A draft's end height handles (`ROAD-112` round I, plan section 4): each end of a draft is
 //! `Free` (an offset above its support, the ground or the road surface the pointer met) or

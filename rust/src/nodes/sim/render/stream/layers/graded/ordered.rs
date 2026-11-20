@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! An insertion-ordered hash map with `O(1)` removal, iterating as Godot's `Dictionary` does: a
 //! new key goes last, assigning an existing key keeps its place, a removed key that comes back

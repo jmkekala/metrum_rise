@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## GPU regression for scheduled window spill onto buildings and both ground shaders.
 ## Optional --benchmark-spill measures matched SSIL off/on viewport GPU times.

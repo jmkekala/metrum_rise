@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Graded terrain residency (`TERRAIN-07-D`, `docs/terrain.md` "Residency and eviction"). Godot
 //! owns residency: it requests the graded tile lists of its resident patches and the bakes of

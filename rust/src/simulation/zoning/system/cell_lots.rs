@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Atomic cell claims shared with the existing parcel allocator and redevelopment lifecycle.
 

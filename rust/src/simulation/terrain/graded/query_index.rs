@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Sparse, derived 64 m input lists for graded point queries (`TERRAIN-07-F`, T37 (a)).
 //!

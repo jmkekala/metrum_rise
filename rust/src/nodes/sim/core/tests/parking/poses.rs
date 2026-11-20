@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! `PARK-02` parked poses: the per-place cache against a fresh ground solve, bit for bit, across
 //! every way the ground under a bay moves. Most fixtures use a place no reconcile refreshes, so

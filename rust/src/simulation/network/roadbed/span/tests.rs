@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! `ROAD-68-B` span acceptance: watertight pieces, heights from the section evaluation, queries
 //! from the rendered triangles, determinism and local rebuilds.

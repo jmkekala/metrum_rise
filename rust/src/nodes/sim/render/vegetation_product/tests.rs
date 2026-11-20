@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Godot's `hash()` against vectors from the engine, the product's buffer layouts, and the cost
 //! of a dense patch. Bitwise parity with the GDScript upload is `vegetation_api`'s

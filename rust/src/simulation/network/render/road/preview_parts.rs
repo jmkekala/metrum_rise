@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! A batch preview's overlay built over several frames (`ROAD-112` round G1b): the chunks
 //! [`RoadRenderer::generate_preview_overlay`](super::RoadRenderer::generate_preview_overlay)

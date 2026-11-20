@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Stranded walkers (`ROAD-74`): the walkers waiting at the end of a lane with no route home
 //! ([`ACCESS_WALK_STRANDED`]), and the report of where they wait for the player's notice. With

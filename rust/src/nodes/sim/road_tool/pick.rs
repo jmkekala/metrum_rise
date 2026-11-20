@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Road-tool picking (`ROAD-112` round B): the pointer ray to a surface point on the level it hit
 //! (`ROAD-99` `StructureHit`), and the level height and map-edge helpers of the session's cursor.

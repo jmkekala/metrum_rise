@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## The committed road network's chunks (`RENDER-52`, docs/roads.md "Road tools"): the resident
 ## set, staged updates, the holds of T61 (2), payload validation and the chunk build, with the

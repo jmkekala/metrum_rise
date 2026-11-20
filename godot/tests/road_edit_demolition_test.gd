@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Road edits in place over zoned land (`ZONE-10`, round RZ10b, PLAN-RZ 10.5 test 9): on a T
 ## junction whose street is lined with houses (`METRUM_ROAD_EDIT_DEMOLITION_FIXTURE`, written by

@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Cached native triangle BVHs for static imported preview geometry, without physics bodies.
 ## Build on import, query on pointer/camera changes; transforms never rebuild triangle data.

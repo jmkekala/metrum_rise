@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Native road/cell reference layouts through the production chunk renderer and terrain mesh.
 ## Set METRUM_ZONE_REFERENCE_DIR for PNGs and a manifest; use a real rendering device.

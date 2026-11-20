@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Commute bounds and shared network legs used by job search must never change an exhaustive
 //! commute estimate.

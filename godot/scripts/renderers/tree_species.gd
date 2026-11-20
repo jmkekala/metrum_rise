@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Decorative species mesh catalogue, ordered by the Rust placement species IDs.
 ## Owns mesh construction independently of patch residency and instance placement.

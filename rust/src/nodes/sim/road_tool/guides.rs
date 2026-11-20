@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The road tool's guide gizmos of round V (`ROAD-112`): the zoning-depth guide and the
 //! alignment guides as the player sees them.

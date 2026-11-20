@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The preview's overlay chunks against the recorder (`ROAD-112` round R2-4a): a preview is
 //! staged and swapped in one call with the encoder's bytes and each layer's material at its

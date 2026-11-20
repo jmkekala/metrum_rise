@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Parked car chunks drawn through the backend's pools (`RENDER-32-P`, `docs/terrain.md`
 //! "Streaming core"): every vehicle bucket of a parked chunk writes its poses into a pooled

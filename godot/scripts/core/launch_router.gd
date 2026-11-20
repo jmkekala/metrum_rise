@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Checks command-line arguments and loads the appropriate scene.
 ## This is the project's main scene entry point.

@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## The first load's pipeline prewarm (`RENDER-43`, docs/terrain.md "First-use pipelines at the
 ## load"). Godot compiles a surface's pipelines in the background when the surface is created, and

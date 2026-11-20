@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Native ground-mask locality and real-device frame measurements on the production lot-ground shader.
 ## Run explicitly with METRUM_ZONE_OVERLAY_DIR; setup and surface inspection are not timed.

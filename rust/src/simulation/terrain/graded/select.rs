@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Dirty tile selection (`TERRAIN-07`): the tiles a road change, a site change or a base edit
 //! can alter, from the changed seams' own reaches, so cost follows the edit and never the city.

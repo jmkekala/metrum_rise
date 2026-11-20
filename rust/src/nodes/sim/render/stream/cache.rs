@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The product cache (`RENDER-32-D`, `docs/terrain.md` "Streaming core"): prepared products
 //! waiting for the renderer's poll, with the bytes they hold, and spare product storage that

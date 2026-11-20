@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Isolated junction-layout benchmark (`ROAD-68-C`): one T, four-way and six-way node each, with
 //! straight two-lane arms carrying sidewalks and crosswalks, 6 m knots and 50 m of reach.

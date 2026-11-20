@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Engine-independent authoring history. Each immutable document revision is stored once.
 //! Commands cost O(document size) to compare; undo/redo and transaction setup are O(1).

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! An empty joint between houses dissolves (`ROAD-118` round JS2): a street drawn as two roads
 //! meeting at a joint, houses grown on its north curb on both sides of the joint, and a side

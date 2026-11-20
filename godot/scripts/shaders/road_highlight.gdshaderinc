@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 //
 // The highlight band's uniforms and fragment, shared by the road selection
 // (`road_highlight.gdshader`, drawn over everything) and the building inspector's ring

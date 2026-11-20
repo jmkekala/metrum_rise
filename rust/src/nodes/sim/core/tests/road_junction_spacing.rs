@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! `ROAD-118` round JS1 on the user's network of `dump-2026-11-15_11-27-06` (15 nodes, 16 1 + 1
 //! roads, laid flat): a road end reserves only its cap, so a T beside one builds (the dump's

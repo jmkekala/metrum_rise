@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Roundabout rings (`ROAD-62`) over the size and arm matrix, flat and sloped: every arm node lays
 //! out with a straight island sector and full corners, and every piece is watertight against its

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! `GradedTileBook`, the graded tile renderer's state in Rust (`RENDER-32-I`): the pages, a
 //! block's pages and growth, the installed and preview tiles' copies, the requests, refusals and

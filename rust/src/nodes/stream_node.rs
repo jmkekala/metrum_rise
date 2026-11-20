@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The streaming core's frame (`RENDER-32-E`, `docs/terrain.md` "Streaming core"): a node after
 //! the camera in `Main.tscn` that, every frame, takes the products the background jobs finished,

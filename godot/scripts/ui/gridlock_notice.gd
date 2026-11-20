@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Player-facing gridlock notice (`TRAFFIC-14`): one HUD line at the top of the screen naming
 ## how many junctions the last gridlock check found locked with no way out. The stranded-walker

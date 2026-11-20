@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Headless native vegetation edit, persistence, tool routing and preview contract.
 ## Uses explicit failures because headless GDScript assertions do not terminate a test.

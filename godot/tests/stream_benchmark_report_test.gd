@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## The stream benchmark's report schema (`PERF-23`): a sample built by the benchmark's own
 ## finishing step from synthetic rows passes the schema check; one missing a row key, a statistic

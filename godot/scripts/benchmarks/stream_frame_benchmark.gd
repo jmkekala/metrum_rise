@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Rendered camera-move benchmark (`PERF-23`, `RENDER-32`): the wall-clock companion of the idle
 ## matrix's fixed-step paths. Loads a world or save, holds the simulation at

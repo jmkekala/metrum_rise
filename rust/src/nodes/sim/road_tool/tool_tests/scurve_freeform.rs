@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Round N (`ROAD-112`) tests: the S-curve's gizmos and its two radii with the tight-curve
 //! verdict on the tighter; freeform placing, the edit phase (handle edits keep joints collinear

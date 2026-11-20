@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Tiles, level lattices and the tile bake (`TERRAIN-07`): the pointwise function sampled on a
 //! level's lattice over one 64 m tile, with the two-pass exact pruning (`prune`), coverage,

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Congestion-aware car routing in a played town (`TRAFFIC-17`): the periodic customization is
 //! the same for any worker count, and a game saved while one is pending continues bit for bit.

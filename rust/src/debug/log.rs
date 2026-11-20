@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Bounded in-memory log of enabled debug lines, shared by Rust and GDScript.
 //!

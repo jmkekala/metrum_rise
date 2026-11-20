@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## A median's controls (`ROAD-80`, `ROAD-101`): a style row (None, Painted, Grass, Paving) and a
 ## width stepper in 0.5 m steps within the style's range. Kept from the removed drawing-panel

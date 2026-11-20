@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Watchdog probe (`TRAFFIC-19`): every trip-failure record and every replan-watchdog verdict of
 //! a populated city's days after the build, by agent kind (walker, car, freight), lane state,

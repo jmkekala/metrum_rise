@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Ring plan tests (`ROAD-62`): orientation, sidewalk side, lanes at the arm nodes, splits and the
 //! plan's refusals. The junction layouts and pieces over the size and arm matrix are

@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## One tile of the road builder's part palette (`ROAD-101`): the part's glyph and name. A click
 ## emits `picked` (the builder inserts the part at the selected slot); a drag carries the part

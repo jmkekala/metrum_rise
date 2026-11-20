@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## The Roads menu's thumbnail grid (`ROAD-101`): one toggle tile per usable built-in type in
 ## Rust's `get_road_types` order, then one "Custom roads" drop-down listing the player's usable

@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Building authoring bridge and creation UI regression using the real compiled Rust policy.
 ## Fixtures are generated metadata; no external asset project or installed pack is needed.

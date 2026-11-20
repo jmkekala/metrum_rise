@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The resident patches handed to the book by the streaming core (`RENDER-32-K` part 6,
 //! `docs/terrain.md` "Streaming core"): the terrain layer's residency, mesh steps and surface

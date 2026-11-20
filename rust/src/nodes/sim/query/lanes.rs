@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Lane-specific spatial queries (lane positions, junction connectivity, crosswalks).
 

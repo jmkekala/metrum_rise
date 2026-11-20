@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The agents' frame prepared a frame ahead on the background pool (`RENDER-47`).
 //!

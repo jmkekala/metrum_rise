@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Building LOD batches drawn through the backend's pools (`RENDER-32-L`, `RENDER-34`,
 //! `docs/terrain.md` "Streaming core"): every changed batch of a building LOD frame

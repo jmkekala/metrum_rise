@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The graded terrain's tiles in the road tool's preview poses, the commit and undo
 //! (`TERRAIN-07-E`, `docs/terrain.md` "Preview, commit, undo and load"): the Rust half.

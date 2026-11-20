@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! In-place cross-section edits of an existing road (`ROAD-80`): its lane counts, median and
 //! kerbside parking (`PARK-05`), and its road type's attributes (`ROAD-101`: sidewalks, speed,

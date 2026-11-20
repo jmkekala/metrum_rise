@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Local interactive Kuopio vegetation preview. F9 toggles trees; normal camera controls work.
 ## Run: godot --path godot --script res://tests/local_vegetation_demo.gd

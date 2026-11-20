@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Top-down road tile art, using the builder's glyphs and Rust's per-part widths, with a turn
 ## arrow badge in the top-right corner for a type with turn pockets (`ROAD-128`). Geometry is

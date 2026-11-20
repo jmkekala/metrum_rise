@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Share-archive import through the Options → Mods panel and the Rust bridge (`TOOLS-10`).
 ## Writes packs, archives and a stand-in Trash, so it refuses to run outside an isolated

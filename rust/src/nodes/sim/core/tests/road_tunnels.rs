@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! `ROAD-61` road tunnels: the three probe strokes of `docs/roads.md` (quick validation, the
 //! preview's exact plan and the commit agree), the tool's tunnel intent, buried pavement and

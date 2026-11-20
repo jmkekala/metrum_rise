@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Residency inputs of the graded terrain (`TERRAIN-07-D`): which tiles of a render patch render
 //! graded, from the same inputs as the bake, and a baked tile packed into a page's slot layer and

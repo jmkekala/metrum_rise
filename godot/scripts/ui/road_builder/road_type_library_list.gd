@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## The road builder's library column (`ROAD-101`): the library error on top when the file cannot
 ## be written (it does not parse, or a newer game wrote it), then every road type from Rust's

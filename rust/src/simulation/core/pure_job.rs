@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Pure jobs ([`docs/simulation.md#pure-jobs`]): a pure function of an immutable snapshot,
 //! started on the background pool and taken by the simulation at a fixed frame.

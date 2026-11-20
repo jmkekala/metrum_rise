@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Tools > Weather and Tools > Looks dispatch the scenario index the Rust bridge expects and pin
 ## the hour the Time of Day menu shows.

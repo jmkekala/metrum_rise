@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! `TERRAIN-07-E` acceptance, the Rust half: the graded tiles of every drag frame, the commit,
 //! the undo, a recommit of the same stroke and a saved and loaded city each equal the fresh bake

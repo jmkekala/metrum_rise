@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 // Stars and the Milky Way, analytic in the visible sky and baked once in the celestial frame
 // for water through night_sky_baked(). The 2048-square octahedral RGB9E5 map holds all four star

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! `NET-07`: cars never follow a plan that needs a U-turn the lanes cannot drive.
 

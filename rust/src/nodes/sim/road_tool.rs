@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Road-tool query helpers shared by Godot-facing bridge methods, and the road tool core
 //! (`ROAD-112`): picking, snapping, the drawing modes, the HUD numbers and the session that owns

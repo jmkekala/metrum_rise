@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The prepare queue (`RENDER-32-D`, `docs/terrain.md` "Streaming core"): which chunk products
 //! are being prepared on the background pool and which request of each chunk is live.

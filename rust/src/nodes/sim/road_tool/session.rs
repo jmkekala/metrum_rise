@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The road tool session (`ROAD-112` round B, plan 2.1-2.4): the one owner of tool state that
 //! decides outcomes. It consumes the event protocol of plan 2.3 as plain Rust

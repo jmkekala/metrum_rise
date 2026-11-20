@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! A draft as an ordered stroke list for the batch preview (`ROAD-112` round G1, plan 6.2): the
 //! preview requests of a segmented draft's strokes ([`super::height::segment_draft`]) in drawing

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Local asset-sized lot proposals supported by complete generated road frontages, planned
 //! by one planner and applied by one installer (`ROAD-68` open question 21 (b)).

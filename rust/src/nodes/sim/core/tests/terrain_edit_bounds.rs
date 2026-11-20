@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! `TERRAIN-28`: every terrain brush edit clamps its footprint to the world and refuses one
 //! wholly outside it. An edit whose footprint reaches the world writes exactly the samples it

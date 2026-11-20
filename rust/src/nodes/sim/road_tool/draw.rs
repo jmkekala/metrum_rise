@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The road tool's drawing (`ROAD-112` round R2-3): the gizmos, the footprint hue (and a
 //! commit's hue held with its preview) and the batch ghost, drawn through the `RenderingServer`

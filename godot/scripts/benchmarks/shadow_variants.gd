@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## The sun-shadow variants the idle and stream benchmarks measure (`RENDER-15`). Every variant
 ## starts from the High setting as `SceneLighting.apply_shadow_quality` sets it, then removes or

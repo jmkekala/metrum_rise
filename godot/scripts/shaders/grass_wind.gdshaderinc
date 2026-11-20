@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 // Wind waves over grass and grain (honami): as a gust bends a stretch of blades their paler
 // sides turn up, so bands of light roll downwind across a meadow or a field. From a gameplay

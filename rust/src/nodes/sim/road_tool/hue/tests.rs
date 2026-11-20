@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Round HU (`ROAD-112`) tests: the footprint hue covers the draft's footprint once (no
 //! overlap, area within 1 %) for a straight, a curve and a draft onto an existing road; it lies

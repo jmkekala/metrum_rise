@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Yards of rigid lots on a curved street: the verge their paving crosses to the road and the
 //! hedge two lots share across the wedge between them.

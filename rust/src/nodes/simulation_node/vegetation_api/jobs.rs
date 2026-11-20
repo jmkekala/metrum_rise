@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Vegetation patches prepared on the background pool (`RENDER-32-D`): the renderer requests a
 //! patch by key with the bands it chose; a worker takes the patch's

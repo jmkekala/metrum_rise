@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! What a road costs (`ROAD-101`): one per-metre weight in 2-lane-road units, so the built-in
 //! 2-Lane Road at 50 km/h on the ground weighs exactly 1.0, builds for exactly

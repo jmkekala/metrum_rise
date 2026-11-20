@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## A glowing band around a building's footprint, the road selection's look
 ## (`road_highlight.gdshader`'s ribbon: an outline at each edge with a glow between), in a tint

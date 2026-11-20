@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Runs a Rust bridge call on the WorkerThreadPool and resumes on the main thread.
 ## `work` must touch no engine singletons or nodes; it returns the result Dictionary.
