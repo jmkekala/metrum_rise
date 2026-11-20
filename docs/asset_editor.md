@@ -2638,7 +2638,8 @@ Warnings:
 ## Model Draft Pipeline — `TOOLS-33`
 
 **Status: design reviewed by the owner 2026-11-20; the game side is built (branch `model-draft`,
-2026-11-20, for review), the stills and the wanted list are not.** The decisions are marked in
+2026-11-20, for review; report and usability fixes after the proof run on branch
+`model-draft-fixes`, the same day), the stills and the wanted list are not.** The decisions are marked in
 [Open questions](#open-questions); a question still marked Recommended follows its recommendation
 until the owner says otherwise. Where the build differs from or adds to the design, it is said in
 place and listed in [As built](#as-built). The owner amended the sidecar's doors after the models
@@ -2877,10 +2878,16 @@ tools/model_draft.py --sidecar <path>/export/<name>.model.json --role <role.json
     [--report <report.json>] [--godot <binary>] [--profile-root <dir>] [--keep-profile]
 ```
 
-As built, the command prints a text summary (lot cells, part position, entrance, free space on
-each side, acceptance failures and warnings, stale lines) and `--report` writes the full JSON
-report. Exit status: 0 drafted (and written), or an existing asset with nothing to report; 1
-refused, failed the acceptance check, or not run; 2 an existing asset with stale lines.
+As built, the command prints a text summary and `--report` writes the full JSON report. The
+summary's first line is `<pack_id>:<asset_id>: <status>` for every outcome, refusals included;
+a refusal the launcher makes before Godot runs is printed as `model_draft: <pack_id>:<asset_id>:
+refused: <reason>`, a missing id read as `(no pack_id)` or `(no asset_id)`. A draft's summary
+states the lot cells, the part position, the entrance's position and `forward`, the capacities
+(households and flat size, or workers and `economy_profile`), the free space on each side, and
+the acceptance failures and warnings; an existing asset's summary lists its stale lines, then its
+information lines marked `info:`. Exit status: 0 drafted (and written), or an existing asset with
+no stale line (information lines do not count); 1 refused, failed the acceptance check, or not
+run; 2 an existing asset with stale lines.
 
 - `tools/model_draft.py` (new) creates an isolated profile with `tools/godot_isolated.py`
   (`create`, `isolated_env`) and runs
@@ -2894,21 +2901,34 @@ refused, failed the acceptance check, or not run; 2 an existing asset with stale
 - `--mods` is required and has no default. Without `--write` the command works on a copy of
   `<mods>/<pack_id>` inside the profile, runs the acceptance check there and writes nothing
   outside the profile and `$ARTIFACTS`. With `--write` it first does exactly that, and only when
-  the check passes publishes once more into `<mods>/<pack_id>`. This is the one sanctioned write
+  the check passes publishes once more into `<mods>/<pack_id>`. Every path inside the profile's
+  copy of the pack is reported as the same path in `--mods`, in messages and in the JSON report,
+  since the profile is deleted after the run; with `--keep-profile` the report's `copy.asset` and
+  `copy.ledger` keep naming the kept copy. After a dry run those two name where `--write` would
+  publish. This is the one sanctioned write
   into the owner's real `user://mods/`; no test and no gate points `--mods` at the player's packs
   (the gate's end-to-end test passes `--write` against a temporary packs folder). As built, the
   copy, its check and the real publish are one `draft_from_model` call: the launcher copies the
   pack and passes both folders, and Rust publishes into the real one only after the copy passed;
   the acceptance check then runs once more, read-only, on the real pack. The draft path takes
   native paths as given and does not resolve them through `ProjectSettings.globalize_path`.
-- Role inputs (`role.json`, later an entry of the wanted list): `pack_id`, `asset_id`,
-  `display_name`, `zone_type`, `density`, `level`; optional `economy_profile` (required for a
-  commercial or industrial role, 2026-11-20), `asset_set`, `lot_cells` (R1). The
+- Role inputs (`role.json`, later an entry of the wanted list): `asset_id`, `zone_type`,
+  `density`; `pack_id`, `level` and `display_name` with defaults; optional `economy_profile`
+  (required for a commercial or industrial role, 2026-11-20), `asset_set`, `lot_cells` (R1).
+  Defaults (2026-11-20): `level` is 1; `display_name`, when absent or blank, is the last
+  `.`-separated segment of `asset_id` with `_` read as spaces and each word's first letter
+  capitalised (R7's scheme name rule: `building.residential.house_1_level_2` gives
+  "House 1 Level 2"); `pack_id`, when absent, is the only pack in `--mods` (a folder holding
+  `pack.toml` that is neither a link nor a dot-name), and the role is refused when `--mods` holds
+  none or several. A pack id is the pack's folder name: lowercase letters, digits and hyphens, not
+  starting or ending with a hyphen; a refusal says so. The
   owner's ids and names are role names (`building.residential.house_3`, "House 3"), not model
   names, and one model serves several assets (each house is published at level 1 and level 2),
   so neither can be derived from the sidecar.
 - Preconditions, each a refusal with nothing written: sidecar schema and version; every listed
-  hash matches its file; `source.dirty` is `false`; the pack exists (`files::pack_directory`);
+  hash matches its file; `source.dirty` is `false`; the sidecar's `hero` is `false` (a hero or
+  service building, such as the hall, must not slip through under a zoned role; Q12); the pack
+  exists (`files::pack_directory`);
   role values pass `validated_tomls`; a workplace role names an `economy_profile` (without one it
   never spawns); an ordered `lot_cells` holds the model.
 - Write: the command builds the same document the editor does (`params`, `sources`,
@@ -2924,12 +2944,14 @@ refused, failed the acceptance check, or not run; 2 an existing asset with stale
   `<pack>/model_sources/<asset_id>.json`. The scanner ignores it (it registers `asset.toml` files
   only), the share archive leaves it out (it lists it as excluded), and an editor republish cannot
   drop it, because publication replaces only `assets/<asset_id>/`. See Q8. As built, the entry is
-  `{"sidecar": <the sidecar as read>, "role": <the role as read>}`, read back by the same strict
+  `{"sidecar": <the sidecar as read>, "role": <the role with its defaults filled in>}`, read back
+  by the same strict
   sidecar reader; it is written after the publish, so a failed ledger write is reported with the
   asset already published.
 
-Stale-geometry report (existing `asset_id`; read-only; JSON plus a text summary, exit status 2
-when any line is reported):
+Stale-geometry report (existing `asset_id`; read-only; JSON plus a text summary). Its lines are
+stale lines (the JSON `stale` list; any one gives exit status 2) or information lines (the JSON
+`info` list; they never change the exit status):
 
 1. Files: each published tier and texture whose SHA-256 differs from the sidecar's file of the
    same name, and names present on one side only.
@@ -2943,7 +2965,19 @@ when any line is reported):
 5. Schemes: variant ids without a scheme and schemes without a variant.
 6. Capacity: `household_capacity` against `dwellings`.
 7. Site layout: each site surface, planting area and parking, driveway or loading rectangle that
-   overlaps the new `footprint` polygon.
+   shares more than 0.01 m² with the `footprint` polygon placed through the present part
+   (decided 2026-11-20). An item that only touches the footprint, such as a walk whose edge lies
+   on the front wall, shares no area and is not reported. A site surface that holds the whole
+   footprint (all but 0.01 m² of it) is a pad laid under the building and is not reported. Any
+   other overlap is an information line naming the shared area and the footprint's area, unless
+   the asset has a ledger entry whose sidecar `footprint` differs from the new sidecar's: then it
+   is a stale line that says the footprint changed since the asset was drafted. "Changed" compares
+   the two `footprint` point lists exactly, in the model's own frame, so a hand move of the part in
+   the editor is no change, and the same outline listed from another start point counts as one.
+8. Role (information only): each of `level`, `zone_type`, `density`, `lot_cells` (only when the
+   role gives it), `asset_set` and `economy_profile` that differs between the role inputs (with
+   their defaults) and the asset's manifest, so a mistyped asset id that hits a real asset is
+   noticed.
 
 The report names the editor field each line concerns and changes nothing. The owner updates the
 asset in the editor (relinking the model files, then the affected fields). As built, files are
@@ -3100,7 +3134,14 @@ Details the design left open, as built:
 - The role is strict too: unknown keys, a zone type other than residential, commercial or
   industrial (Q12), level 0, an `economy_profile` on a residential role, a workplace role without
   one, and a `lot_cells` entry of 0 are refusals. A workplace's `dwellings` set no household
-  capacity.
+  capacity. The launcher fills in a missing `pack_id`; the Rust reader fills in `level` and
+  `display_name`.
+- The level rule's failure names exactly what `AssetRegistry::prev_level` looks for: with an
+  `asset_set`, the set's asset one level below, whatever its zone, density or lot; without one, a
+  zoned asset one level below without an `asset_set`, of the same zone, density and lot cells.
+- The site layout check measures shared area with the crate's polygon overlay (`i_overlay`,
+  `geometry::intersection_area`), which replaced a touch-inclusive overlap test that only the
+  report used.
 - R2 writes `0`, never `-0`, for a centred model. R5 rounds halves away from zero, and a
   residential draft whose flat rounds to 0 is refused. R8 crops a preview narrower than 4:3 in
   height instead.
