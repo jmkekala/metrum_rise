@@ -3022,14 +3022,15 @@ Each with the recommendation first.
   files appear not to survive a republish (read in `authoring_session.gd`, not run).
 - **Q9 Thumbnail.** Recommended: R8 from the models preview, replaced by an editor capture when
   the owner wants the pack's framing. Alternative: capture it in the rendered stills run.
-- **Q10 Existing assets.** Recommended: write ledger entries for the twelve assets once (a
-  read-only backfill that touches no `assets/` folder), then act on the findings by hand.
-  Alternative: leave them outside the pipeline.
+- **Q10 Existing assets.** Decided 2026-11-20: write ledger entries for the twelve assets once
+  (a read-only backfill that touches no `assets/` folder), then fix the findings as reviewed
+  commits in the pack's repository (Q1), with door positions taken from the sidecars, not from
+  hand calculation. Rejected: leave them outside the pipeline.
 - **Q11 Models contract.** Recommended: amend the models repository's manifest ban and handoff
   text for the sidecar, add `write_facts` and the validator check, tag the ten buildings.
   Alternative: none; the pipeline needs the sidecar.
-- **Q12 Explicit buildings.** Recommended: zoned buildings only in the first version; the hall
-  waits. Alternative: accept `placement_mode = "explicit"` with a `service_class` role input.
+- **Q12 Explicit buildings.** Decided 2026-11-20: zoned buildings only in the first version; the
+  hall waits. Deferred: `placement_mode = "explicit"` with a `service_class` role input.
 
 ## Implementation Plan
 
