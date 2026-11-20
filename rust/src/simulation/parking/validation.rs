@@ -6,6 +6,7 @@ use super::geometry::{covered, overlaps, rectangle};
 use godot::prelude::Vector2;
 use serde_json::{Value, json};
 
+#[derive(Clone, Copy)]
 pub(super) struct AnchorBay {
     pub pos: Vector2,
     pub forward: Vector2,
@@ -60,10 +61,15 @@ pub(crate) struct VehicleProof {
     pub min_gate: f32,
     /// The clear height a passage needs to open its part for this class.
     pub clear_height: f32,
-    // Words for the rejections: the vehicle, the envelope's room and its distance from a lot edge.
+    // Words for the rejections: the vehicle, the envelope's room and its distance from a lot
+    // edge, the missing driveway, a bay in a structure, and the other bays a bay may not meet.
     noun: &'static str,
     turn_room: &'static str,
     edge_room: &'static str,
+    no_driveway: &'static str,
+    in_structure: &'static str,
+    overlaps_bay: &'static str,
+    crosses_bay: &'static str,
 }
 
 impl ProofClass {
@@ -94,6 +100,10 @@ const CLASS_TABLE: [VehicleProof; 2] = [
         noun: "car",
         turn_room: "5 m by 5 m",
         edge_room: "2.5 m",
+        no_driveway: "needs a Driveway point, or put the spot's front edge on the street edge pointing into the lot",
+        in_structure: "overlaps the building or another structure",
+        overlaps_bay: "overlaps another parking spot",
+        crosses_bay: "crosses another parking spot",
     },
     VehicleProof {
         body_width: 2.6,
@@ -109,6 +119,11 @@ const CLASS_TABLE: [VehicleProof; 2] = [
         noun: "truck",
         turn_room: "8.5 m by 8.5 m",
         edge_room: "4.25 m",
+        // A dock always needs a gate; freight never uses a car Driveway (owner decision 11).
+        no_driveway: "needs a freight Driveway at least 4 m wide: trucks use no car Driveway",
+        in_structure: "inside the building: mark the lane as a Passage on its mesh part",
+        overlaps_bay: "overlaps a parking spot or another loading bay",
+        crosses_bay: "crosses a parking spot or another loading bay",
     },
 ];
 
@@ -159,26 +174,29 @@ pub(super) fn opens_onto_street(
 }
 
 // O(bays + local polygon/overlay work) per tested sweep; only authoring/edit boundaries.
-// `street` is the road connection for a bay that opens onto the street, if any; `paths` are
-// the class's usable driveways' road connections and approaches.
+// `bays` and `footprints` are the class's own bays (parking spots for cars, loading bays for
+// freight) and `others` the footprints of any other bays its routes may not meet (for freight
+// the parking spots; none for cars). `street` is the road connection for a bay that opens onto
+// the street, if any; `paths` are the class's usable driveways' road connections and approaches.
+// Returns the route and the index in `paths` of the driveway it proves through (`None` for a
+// street bay).
 #[allow(clippy::too_many_arguments)]
 pub(super) fn validate_bay(
     class: ProofClass,
     slot: usize,
     bays: &[AnchorBay],
     footprints: &[[Vector2; 4]],
+    others: &[[Vector2; 4]],
     support: &[Vec<[f64; 2]>],
     has_driveway: bool,
     paths: &[[Vector2; 2]],
     street: Option<Vector2>,
     collision: impl Fn(&[Vector2]) -> bool,
-) -> Result<[Vector2; 4], Rejection> {
+) -> Result<([Vector2; 4], Option<usize>), Rejection> {
     let row = class.proof();
     let bay = &bays[slot];
     if !has_driveway && street.is_none() {
-        return Err(
-            "needs a Driveway point, or put the spot's front edge on the street edge pointing into the lot".into(),
-        );
+        return Err(row.no_driveway.into());
     }
     let [min_width, min_length] = row.min_bay;
     if bay.width < min_width || bay.length < min_length || bay.forward.length_squared() < 0.99 {
@@ -189,13 +207,14 @@ pub(super) fn validate_bay(
         .into());
     }
     if collision(&footprints[slot]) {
-        return Err("overlaps the building or another structure".into());
+        return Err(row.in_structure.into());
     }
     let other_bay = |foot: &[Vector2]| {
         footprints
             .iter()
             .enumerate()
             .any(|(other, b)| other != slot && overlaps(foot, b))
+            || others.iter().any(|b| overlaps(foot, b))
     };
     // Authored surfaces stop a few centimetres short of the lot edge they were drawn to, and
     // bays painted side by side share an edge that rounding may push a hair into the next.
@@ -206,7 +225,7 @@ pub(super) fn validate_bay(
         bay.length - SUPPORT_TOLERANCE_M * 2.0,
     );
     if other_bay(&inset) {
-        return Err("overlaps another parking spot".into());
+        return Err(row.overlaps_bay.into());
     }
     if !covered(&inset, support) {
         return Err(
@@ -217,12 +236,15 @@ pub(super) fn validate_bay(
     if let Some(connection) = street {
         // The car turns in from the street and drives straight onto the bay.
         let entry = bay.pos - bay.forward * (bay.length * 0.5);
-        return Ok([
-            connection,
-            entry - bay.forward * STREET_APPROACH_M,
-            entry,
-            bay.pos,
-        ]);
+        return Ok((
+            [
+                connection,
+                entry - bay.forward * STREET_APPROACH_M,
+                entry,
+                bay.pos,
+            ],
+            None,
+        ));
     }
     // What blocks a car's swept shape, if anything.
     let blocked = |foot: &[Vector2]| {
@@ -231,13 +253,13 @@ pub(super) fn validate_bay(
         } else if collision(foot) {
             Some("hits the building or another structure")
         } else if other_bay(foot) {
-            Some("crosses another parking spot")
+            Some(row.crosses_bay)
         } else {
             None
         }
     };
     let mut first = None;
-    for &[connection, approach] in paths {
+    for (gate, &[connection, approach]) in paths.iter().enumerate() {
         let aisle = bay.pos - bay.forward * (bay.length * 0.5 + row.lead);
         let path = [connection, approach, aisle, bay.pos];
         let legs = [
@@ -278,7 +300,7 @@ pub(super) fn validate_bay(
             .chain(turns)
             .find_map(|(part, shape)| blocked(&shape).map(|cause| (part, cause, shape)));
         match failure {
-            None => return Ok(path),
+            None => return Ok((path, Some(gate))),
             Some(failure) => {
                 first.get_or_insert(failure);
             }
@@ -416,6 +438,7 @@ pub(crate) fn editor_payload(params: &Value, structures: &[f32]) -> Value {
                 slot,
                 &bays,
                 &footprints,
+                &[],
                 &support,
                 has_driveway,
                 &paths,
@@ -436,6 +459,7 @@ pub(crate) fn editor_payload(params: &Value, structures: &[f32]) -> Value {
 
 #[cfg(test)]
 mod tests {
+    use super::super::geometry::precise;
     use super::*;
     #[test]
     fn editor_payload_reports_missing_driveway_and_accepts_clear_asset() {
@@ -503,6 +527,98 @@ mod tests {
         );
         params["anchors"][1]["position"] = json!([-17.0, 0, 15]);
         assert_eq!(editor_payload(&params, &[])["rejected"], json!([]));
+    }
+
+    // A loading bay at `x`, its entry edge on z = 0 facing +z, reached from a gate at
+    // (0, -20) facing +z, on a yard paved 40 m square, with one wall box. The dock proof as
+    // `lot_proof` runs it, without a city: the gate's road connection a metre outside it.
+    fn freight_route(x: f32, wall: [Vector2; 4]) -> Result<([Vector2; 4], Option<usize>), Rejection> {
+        let forward = Vector2::new(0.0, 1.0);
+        let dock = AnchorBay {
+            pos: Vector2::new(x, 4.0),
+            forward,
+            width: 3.5,
+            length: 8.0,
+        };
+        let footprints = [rectangle(dock.pos, forward, dock.width, dock.length)];
+        let yard = precise(&rectangle(Vector2::ZERO, forward, 40.0, 50.0));
+        let gate = Vector2::new(0.0, -20.0);
+        let lead = ProofClass::Freight.proof().lead;
+        validate_bay(
+            ProofClass::Freight,
+            0,
+            &[dock],
+            &footprints,
+            &[],
+            &[yard],
+            true,
+            &[[gate - forward, gate + forward * lead]],
+            None,
+            |foot| overlaps(foot, &wall),
+        )
+    }
+
+    #[test]
+    fn a_straight_freight_route_needs_no_envelope_and_a_bend_over_15_degrees_does() {
+        // Clear of every corridor, inside the 8.45 m square at the approach (0, -15.75).
+        let wall = rectangle(Vector2::new(-3.6, -15.5), Vector2::new(0.0, 1.0), 1.2, 5.0);
+        let (path, gate) = freight_route(0.0, wall).unwrap_or_else(|r| panic!("{}", r.reason));
+        assert_eq!(gate, Some(0));
+        assert_eq!(path[1], Vector2::new(0.0, -15.75));
+        assert_eq!(path[2], Vector2::new(0.0, -4.25), "the aisle is one truck lead before the bay");
+        // 3 m across over 11.5 m bends by 14.6°: still straight through for a truck.
+        assert!(freight_route(3.0, wall).is_ok());
+        // 4 m across bends by 19.2°: the turn off the Driveway needs its square and hits the wall.
+        let rejection = freight_route(4.0, wall).err().expect("a bend needs an envelope");
+        assert_eq!(
+            rejection.reason,
+            "no room to drive in: the turn off the Driveway hits the building or another structure (a truck needs about 8.5 m by 8.5 m of clear paving just inside the Driveway to turn, so keep the Driveway about 4.25 m from the lot's side edges)"
+        );
+        let shape = rejection.shape.expect("the failing square");
+        assert!((shape[0].distance_to(shape[1]) - 8.45).abs() < 1e-4, "{shape:?}");
+        assert!((shape[1].distance_to(shape[2]) - 8.45).abs() < 1e-4, "{shape:?}");
+    }
+
+    #[test]
+    fn a_dock_needs_a_gate_room_for_a_truck_and_a_lane_through_its_building() {
+        let forward = Vector2::new(0.0, 1.0);
+        let small = AnchorBay {
+            pos: Vector2::new(0.0, 4.0),
+            forward,
+            width: 2.9,
+            length: 8.0,
+        };
+        let footprints = [rectangle(small.pos, forward, small.width, small.length)];
+        let prove = |bay: AnchorBay, has_gate, wall: &[Vector2]| {
+            validate_bay(
+                ProofClass::Freight,
+                0,
+                &[bay],
+                &footprints,
+                &[],
+                &[],
+                has_gate,
+                &[],
+                None,
+                |foot| overlaps(foot, wall),
+            )
+            .err()
+            .map(|r| r.reason)
+        };
+        let nowhere = rectangle(Vector2::new(100.0, 100.0), forward, 1.0, 1.0);
+        assert_eq!(
+            prove(AnchorBay { ..small }, false, &nowhere).as_deref(),
+            Some("needs a freight Driveway at least 4 m wide: trucks use no car Driveway")
+        );
+        assert_eq!(
+            prove(AnchorBay { ..small }, true, &nowhere).as_deref(),
+            Some("too small for a truck: make it at least 3 m wide and 8 m long")
+        );
+        let bunker = rectangle(Vector2::new(0.0, 4.0), forward, 12.0, 16.0);
+        assert_eq!(
+            prove(AnchorBay { width: 3.5, ..small }, true, &bunker).as_deref(),
+            Some("inside the building: mark the lane as a Passage on its mesh part")
+        );
     }
 
     #[test]
