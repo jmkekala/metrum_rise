@@ -185,6 +185,15 @@ fn files(facts: &Facts, published: &BTreeMap<String, String>) -> Vec<Line> {
     lines
 }
 
+/// Whether two footprints are the same outline: equal point lists up to the start point. The
+/// writer always winds positively but may start anywhere, so a rotation of the list is no
+/// change; points compare exactly. O(n²) for n points, once per draft.
+pub(crate) fn same_outline(a: &[[f64; 2]], b: &[[f64; 2]]) -> bool {
+    a.len() == b.len()
+        && (a.is_empty()
+            || (0..b.len()).any(|start| (0..a.len()).all(|i| a[i] == b[(start + i) % b.len()])))
+}
+
 // Sidecar fields that differ from the ledger copy the asset was drafted from.
 fn changed_facts(facts: &Facts, ledger: &Facts) -> Vec<Line> {
     let mut lines = Vec::new();
@@ -199,7 +208,7 @@ fn changed_facts(facts: &Facts, ledger: &Facts) -> Vec<Line> {
     };
     compare(facts.bounds != ledger.bounds, "bounds", "mesh_parts");
     compare(
-        facts.footprint != ledger.footprint,
+        !same_outline(&facts.footprint, &ledger.footprint),
         "footprint",
         "site_surfaces",
     );
@@ -342,7 +351,7 @@ fn site_layout(
         })
         .collect();
     let footprint_m2 = f64::from(signed_area(&footprint).abs());
-    let changed = ledger.is_some_and(|ledger| ledger.footprint != facts.footprint);
+    let changed = ledger.is_some_and(|ledger| !same_outline(&ledger.footprint, &facts.footprint));
     let mut lines = Vec::new();
     let mut overlap = |item: String, field: &'static str, shared_m2: f64| {
         if shared_m2 <= OVERLAP_TOLERANCE_M2 {

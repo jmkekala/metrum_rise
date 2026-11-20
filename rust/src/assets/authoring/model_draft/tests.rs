@@ -4,7 +4,7 @@
 //! fixture that follows the spec's worked example (`rintamamiestalo_porch`). The fixture's
 //! `.glb` files are JSON-only GLB containers: every Rust consumer reads the JSON chunk only.
 
-use super::report::{Line, role_mismatches, stale_report};
+use super::report::{Line, role_mismatches, same_outline, stale_report};
 use super::rules;
 use super::sidecar::{Facts, Role, read_ledger, write_ledger};
 use super::*;
@@ -821,12 +821,63 @@ fn a_partial_overlap_is_information_unless_the_ledger_footprint_changed() {
         assert!(!lines[0].message.contains("new"), "{lines:?}");
         assert!(lines[0].message.contains("5.82 m²"), "{lines:?}");
     }
+    // The same outline listed from another start point is no change.
+    let mut rotated = facts.clone();
+    rotated.footprint.rotate_left(3);
+    let lines = site_lines(&facts, Some(&rotated), walk);
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert!(!lines[0].stale, "{lines:?}");
     let mut drafted = facts.clone();
     drafted.footprint[4][1] = 4.0;
     let lines = site_lines(&facts, Some(&drafted), walk);
     assert_eq!(lines.len(), 1, "{lines:?}");
     assert!(lines[0].stale, "{lines:?}");
     assert!(lines[0].message.contains("footprint changed"), "{lines:?}");
+}
+
+#[test]
+fn an_outline_from_another_start_point_is_the_same_outline() {
+    let facts = Fixture::new().inputs().facts;
+    let outline = &facts.footprint;
+    for start in 0..outline.len() {
+        let mut rotated = outline.clone();
+        rotated.rotate_left(start);
+        assert!(same_outline(outline, &rotated), "{start}");
+    }
+    let mut moved = outline.clone();
+    moved.rotate_left(2);
+    moved[5][0] += 0.0001;
+    assert!(!same_outline(outline, &moved));
+    // The reverse winding and a dropped point are other outlines.
+    let mut reversed = outline.clone();
+    reversed.reverse();
+    assert!(!same_outline(outline, &reversed));
+    assert!(!same_outline(outline, &outline[1..]));
+    // The facts line follows the same rule.
+    let mut rotated = facts.clone();
+    rotated.footprint.rotate_left(1);
+    let fixture = Fixture::new();
+    let manifest = hand_manifest([-1.14, 0.0, 1.58], "[[0, 0], [1, 0], [1, 1]]");
+    let files = published(&fixture, &facts);
+    let footprint_line = |lines: Vec<Line>| {
+        lines
+            .iter()
+            .any(|l| l.message.starts_with("footprint changed"))
+    };
+    assert!(!footprint_line(stale_report(
+        &facts,
+        Some(&rotated),
+        &manifest,
+        &files
+    )));
+    let mut moved = facts.clone();
+    moved.footprint[0][0] -= 0.5;
+    assert!(footprint_line(stale_report(
+        &facts,
+        Some(&moved),
+        &manifest,
+        &files
+    )));
 }
 
 #[test]
@@ -900,8 +951,18 @@ fn a_role_defaults_its_level_and_display_name() {
     assert_eq!((parsed.level, parsed.display_name.as_str()), (1, "House 3"));
     role["asset_id"] = json!("building.residential.house_1_level_2");
     role["display_name"] = json!(" ");
-    assert_eq!(Role::parse(role).unwrap().display_name, "House 1 Level 2");
-    assert_eq!(super::sidecar::default_display_name("rowhouse"), "Rowhouse");
+    assert_eq!(Role::parse(role).unwrap().display_name, "House 1");
+    // Only a trailing `_level_<digits>` of the last segment is dropped.
+    for (id, name) in [
+        ("rowhouse", "Rowhouse"),
+        ("building.residential.rowhouse_2_level_12", "Rowhouse 2"),
+        ("building.residential.level_2", "Level 2"),
+        ("building.residential.house_level_two", "House Level Two"),
+        ("building.residential.house_level_2_b", "House Level 2 B"),
+        ("building.residential.house_level_", "House Level"),
+    ] {
+        assert_eq!(super::sidecar::default_display_name(id), name, "{id}");
+    }
     let mut role = fixture.role();
     role["pack_id"] = json!("Kuopio");
     let error = Role::parse(role).unwrap_err();

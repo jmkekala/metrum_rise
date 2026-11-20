@@ -2915,10 +2915,12 @@ run; 2 an existing asset with stale lines.
 - Role inputs (`role.json`, later an entry of the wanted list): `asset_id`, `zone_type`,
   `density`; `pack_id`, `level` and `display_name` with defaults; optional `economy_profile`
   (required for a commercial or industrial role, 2026-11-20), `asset_set`, `lot_cells` (R1).
-  Defaults (2026-11-20): `level` is 1; `display_name`, when absent or blank, is the last
-  `.`-separated segment of `asset_id` with `_` read as spaces and each word's first letter
-  capitalised (R7's scheme name rule: `building.residential.house_1_level_2` gives
-  "House 1 Level 2"); `pack_id`, when absent, is the only pack in `--mods` (a folder holding
+  Defaults (2026-11-20): `level` is 1; `display_name`, when absent or blank, is made from the
+  last `.`-separated segment of `asset_id`: a trailing `_level_` followed by one or more digits
+  (and preceded by at least one character) is dropped, as the owner names both levels of a house
+  alike, then `_` is read as spaces and each word's first letter capitalised (R7's scheme name
+  rule): `building.residential.house_1` and `building.residential.house_1_level_2` both give
+  "House 1", while `level_2` alone or `house_level_two` keep every word; `pack_id`, when absent, is the only pack in `--mods` (a folder holding
   `pack.toml` that is neither a link nor a dot-name), and the role is refused when `--mods` holds
   none or several. A pack id is the pack's folder name: lowercase letters, digits and hyphens, not
   starting or ending with a hyphen; a refusal says so. The
@@ -2956,7 +2958,8 @@ stale lines (the JSON `stale` list; any one gives exit status 2) or information 
 1. Files: each published tier and texture whose SHA-256 differs from the sidecar's file of the
    same name, and names present on one side only.
 2. Facts, when a ledger entry exists: every sidecar field that differs from the ledger copy
-   (bounds, footprint, storeys, dwellings, each door by `id`, variants).
+   (bounds, footprint, storeys, dwellings, each door by `id`, variants). The footprint is compared
+   as an outline, as in item 7.
 3. Lot fit: whether the new `LOD0` bounds, through the asset's present part transform, stay
    inside its lot (the editor's rule, tolerance 0.01 m).
 4. Entrance: the distance in plan between `entrance/main` and the new `main` door through the
@@ -2972,8 +2975,10 @@ stale lines (the JSON `stale` list; any one gives exit status 2) or information 
    other overlap is an information line naming the shared area and the footprint's area, unless
    the asset has a ledger entry whose sidecar `footprint` differs from the new sidecar's: then it
    is a stale line that says the footprint changed since the asset was drafted. "Changed" compares
-   the two `footprint` point lists exactly, in the model's own frame, so a hand move of the part in
-   the editor is no change, and the same outline listed from another start point counts as one.
+   the two `footprint` outlines in the model's own frame, independently of the start point
+   (decided 2026-11-20): they are the same when one point list is a rotation of the other, points
+   compared exactly, winding kept (the writer always winds positively but may start anywhere). A
+   moved, added or dropped point is a change; a hand move of the part in the editor is none.
 8. Role (information only): each of `level`, `zone_type`, `density`, `lot_cells` (only when the
    role gives it), `asset_set` and `economy_profile` that differs between the role inputs (with
    their defaults) and the asset's manifest, so a mistyped asset id that hits a real asset is
@@ -3141,7 +3146,9 @@ Details the design left open, as built:
   zoned asset one level below without an `asset_set`, of the same zone, density and lot cells.
 - The site layout check measures shared area with the crate's polygon overlay (`i_overlay`,
   `geometry::intersection_area`), which replaced a touch-inclusive overlap test that only the
-  report used.
+  report used. Whether the footprint changed since the draft is `report::same_outline`, which
+  both the facts line and the site layout check use. The default display name is
+  `sidecar::default_display_name`.
 - R2 writes `0`, never `-0`, for a centred model. R5 rounds halves away from zero, and a
   residential draft whose flat rounds to 0 is refused. R8 crops a preview narrower than 4:3 in
   height instead.

@@ -423,11 +423,19 @@ fn first_level() -> u8 {
     1
 }
 
-/// A role's display name when it gives none: the asset id's last `.` segment with `_` read as
-/// spaces and each word capitalised (R7's scheme name rule): `building.residential.house_3`
-/// gives "House 3".
+/// A role's display name when it gives none: the asset id's last `.` segment without a trailing
+/// `_level_<digits>` (both levels of a house share their name), then `_` read as spaces and each
+/// word capitalised (R7's scheme name rule): `building.residential.house_3` and
+/// `building.residential.house_3_level_2` both give "House 3".
 pub(crate) fn default_display_name(asset_id: &str) -> String {
-    super::rules::scheme_name(asset_id.rsplit('.').next().unwrap_or(asset_id))
+    let segment = asset_id.rsplit('.').next().unwrap_or(asset_id);
+    let name = segment
+        .rsplit_once("_level_")
+        .filter(|(base, level)| {
+            !base.is_empty() && !level.is_empty() && level.bytes().all(|b| b.is_ascii_digit())
+        })
+        .map_or(segment, |(base, _)| base);
+    super::rules::scheme_name(name)
 }
 
 /// The ledger entry beside a published draft, `<pack>/model_sources/<asset_id>.json`.
