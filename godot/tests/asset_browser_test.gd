@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Asset library rows from Rust (`TOOLS-34`): manifest groups, one row per upgrade family with
-## clickable level chips, search on level and group fields, and the groups no pack fills.
+## clickable level chips, a refused Delete on a family row, search on level and group fields,
+## and the groups no pack fills.
 ## Fixture packs live in the isolated test profile; optional `--capture-browser=<dir>` stills.
 extends SceneTree
 
@@ -109,6 +110,12 @@ func _click(tree: Tree, local: Vector2) -> void:
 		Input.parse_input_event(event)
 		await process_frame
 
+func _trash_dialog(editor: Node) -> ConfirmationDialog:
+	for dialog: ConfirmationDialog in editor.find_children("*", "ConfirmationDialog", false, false):
+		if dialog.visible and dialog.title == "Move asset to Trash?":
+			return dialog
+	return null
+
 func _capture(name: String) -> void:
 	if _capture_dir.is_empty():
 		return
@@ -171,6 +178,25 @@ license = "CC0"
 	editor._menus.open_library(chip_rect.get_center())
 	_expect(editor._menus.context.library.get("id") == family_2, "a chip's context menu targets its level")
 	editor._menus.popup.hide()
+
+	# Delete never guesses a level: a family row is refused with a hint, a single-level row
+	# still asks to move its asset to Trash.
+	var delete := InputEventKey.new()
+	delete.keycode = KEY_DELETE
+	delete.pressed = true
+	family.select(0)
+	tree.gui_input.emit(delete)
+	var status: Label = editor._view._asset_status_lbl
+	_expect(status.visible and status.text.contains("level chip") and _trash_dialog(editor) == null, "Delete on a family row is refused: " + status.text)
+	_expect(editor._asset_ids.has(family_1) and editor._asset_ids.has(family_2), "the refused Delete keeps both levels")
+	houses[0].select(0)
+	tree.gui_input.emit(delete)
+	var dialog := _trash_dialog(editor)
+	_expect(dialog != null and dialog.dialog_text.contains(houses[0].get_metadata(0)), "Delete on a single-level row asks to move it to Trash")
+	if dialog != null:
+		dialog.canceled.emit()
+		dialog.hide()
+	await _settle()
 	await _capture("library")
 	# Stills of the last pack and of the missing section, for packs copied in with `--mods`.
 	if not _capture_dir.is_empty():

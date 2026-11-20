@@ -1891,6 +1891,10 @@ V1 inspector and viewport contract:
   its level and qualified ID.
 - Single click selects a row; double click or keyboard activation opens the row's lowest level.
   A single click on a level chip opens that level, and its context menu targets that level.
+  Delete moves a single-level row's asset to Trash (after confirmation); on a row with more than
+  one level it is refused with a line under the library's count asking for a level chip's
+  context menu instead, so Delete never guesses a level. A synthetic X server click (XTest
+  through gamescope's Xwayland, the path a real pointer takes) on an `L2` chip opened level 2.
   Chips are Tree buttons: a transparent texture reserves each chip's place and Tree's own hit
   test reports the click. An overlay control above the rows paints the chip labels in the button
   rectangles; a custom cell draw callback cannot, because Tree draws its rows on a canvas item of
@@ -1902,8 +1906,10 @@ V1 inspector and viewport contract:
 - With no search, a `No assets yet` section after the packs lists, once, every group the game
   names without an asset that no pack fills, each as a greyed, non-selectable `(0)` row in group
   order: each built-in zoning profile's zone and density, each service subtype the editor
-  creates, parking lots, and each resource an executable extractor or field economy profile
-  produces. Other explicit buildings, props, vehicles and characters have no such list and never
+  creates that an executable economy profile serves (by the editor's own profile test; today
+  power, water and wastewater), parking lots, and each resource an executable extractor or field
+  economy profile produces. A subtype without gameplay (police, fire, ...) is never listed as
+  missing, though a pack's assets of it still show in their group. Other explicit buildings, props, vehicles and characters have no such list and never
   appear there. A group with any asset in any pack is not missing, even if no level-1 asset
   could spawn from it.
 - Rows are rebuilt when the library refreshes or the search changes, never per frame:

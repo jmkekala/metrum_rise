@@ -550,11 +550,18 @@ func _rebuild_asset_tree() -> void:
 	if _view._asset_search_edit:
 		query = _view._asset_search_edit.text.strip_edges()
 	var visible: int = _browser.build(sim.get_asset_browser_rows(query), _known_packs, not query.is_empty())
+	_show_library_status("")
 	if _view._asset_count_lbl:
 		if query.is_empty():
 			_view._asset_count_lbl.text = "%d assets" % _asset_ids.size()
 		else:
 			_view._asset_count_lbl.text = "%d / %d assets" % [visible, _asset_ids.size()]
+
+# One line under the library's count; empty hides it.
+func _show_library_status(text: String) -> void:
+	if _view._asset_status_lbl:
+		_view._asset_status_lbl.text = text
+		_view._asset_status_lbl.visible = not text.is_empty()
 
 func _asset_pack_id(aid: String) -> String:
 	var sep := aid.find(":")
@@ -618,7 +625,12 @@ func _on_asset_tree_gui_input(event: InputEvent) -> void:
 	if event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_DELETE:
 		var item := _view._asset_tree.get_selected()
 		if item != null and item.get_metadata(0) is String:
-			_menus.library.execute("library_trash", {"id": item.get_metadata(0)})
+			# A family row stands for several assets; Delete never guesses which one.
+			var levels: int = _browser.level_count(item)
+			if levels > 1:
+				_show_library_status("%s has %d levels. Right-click a level chip to move that level to Trash." % [item.get_text(0), levels])
+			else:
+				_menus.library.execute("library_trash", {"id": item.get_metadata(0)})
 			_view._asset_tree.accept_event()
 		return
 	if not (event is InputEventMouseButton):

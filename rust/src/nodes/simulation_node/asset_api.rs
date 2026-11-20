@@ -545,8 +545,8 @@ impl SimulationNode {
     #[func]
     pub fn get_asset_browser_rows(&self, query: GString) -> VarDictionary {
         use crate::assets::browser::{
-            BrowserGroup, BrowserQuery, browser_packs, catalogue_groups, missing_groups,
-            profile_resources,
+            BrowserGroup, BrowserQuery, browser_packs, catalogue_groups, executable_services,
+            missing_groups, profile_resources,
         };
         use crate::simulation::buildings::allocator::zone_type_to_zone_class;
         use crate::simulation::economy::definitions::EconomyProfileRuntimeKind as Kind;
@@ -598,6 +598,7 @@ impl SimulationNode {
                 });
             let catalogue = catalogue_groups(
                 zoned,
+                executable_services(catalog),
                 profile_resources(catalog, Kind::Extractor),
                 profile_resources(catalog, Kind::FieldProducer),
             );

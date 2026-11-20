@@ -80,6 +80,10 @@ func build(result: Dictionary, known_packs: Array, searching: bool) -> int:
 			item.set_tooltip_text(0, "No pack has an asset in this group.")
 	return visible
 
+## The number of level chips on `item`'s row.
+func level_count(item: TreeItem) -> int:
+	return _chips.get(item, []).size()
+
 ## The qualified id behind chip `index` of `item`, or "".
 func level_id(item: TreeItem, index: int) -> String:
 	var chips: Array = _chips.get(item, [])

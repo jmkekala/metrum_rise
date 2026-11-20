@@ -17,6 +17,7 @@ var _log_label: RichTextLabel
 var _asset_tree: Tree
 var _asset_search_edit: LineEdit
 var _asset_count_lbl: Label
+var _asset_status_lbl: Label
 var yard_preview_button: Button
 var exit_yard_preview_button: Button
 var _preview_panel: PreviewPanel
@@ -301,6 +302,10 @@ func _build_library(parent: Node) -> void:
 	_asset_search_edit.text_changed.connect(_editor._on_asset_search_changed)
 	_asset_count_lbl = Label.new()
 	body.add_child(_asset_count_lbl)
+	_asset_status_lbl = Label.new()
+	_asset_status_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_asset_status_lbl.hide()
+	body.add_child(_asset_status_lbl)
 	_asset_tree = Tree.new()
 	_asset_tree.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	_asset_tree.hide_root = true

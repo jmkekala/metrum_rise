@@ -10,7 +10,8 @@
 //! (`authoring::kind`): extractor, then field, then service class, then plain explicit.
 //!
 //! With no search, the browser also lists the groups the game names without any asset (zoning
-//! profiles, service subtypes, parking, extractor and field resources) that no pack fills
+//! profiles, service subtypes with gameplay, parking, extractor and field resources) that no
+//! pack fills
 //! ([`missing_groups`]).
 //!
 //! Runs when the browser refreshes or its search changes, never per frame: for `N` registered
@@ -19,7 +20,7 @@
 //! given.
 
 use crate::assets::asset::{AssetManifest, BuildingData, PlacementMode, ZoneClass};
-use crate::assets::authoring::SERVICES;
+use crate::assets::authoring::{SERVICES, profile_matches};
 use crate::assets::registry::AssetRegistry;
 use crate::simulation::economy::definitions::{EconomyProfileRuntimeKind, RuntimeEconomyCatalog};
 use std::cmp::Ordering;
@@ -400,22 +401,20 @@ fn group_rows<'a>(
 }
 
 /// The groups the game names without any asset existing, in group order and without
-/// repeats: each zoning profile's zone and density (`zoned`), every service subtype the editor
-/// creates, parking lots, and each resource an executable extractor or field profile produces.
-/// Other explicit buildings, props, vehicles and characters have no such list.
+/// repeats: each zoning profile's zone and density (`zoned`), the service subtypes with
+/// gameplay (`services`, see [`executable_services`]), parking lots, and each resource an
+/// executable extractor or field profile produces. Other explicit buildings, props, vehicles and
+/// characters have no such list.
 pub(crate) fn catalogue_groups<'a>(
     zoned: impl IntoIterator<Item = (ZoneClass, &'a str)>,
+    services: impl IntoIterator<Item = &'a str>,
     extractor_resources: impl IntoIterator<Item = &'a str>,
     field_resources: impl IntoIterator<Item = &'a str>,
 ) -> Vec<BrowserGroup<'a>> {
     let mut groups: Vec<_> = zoned
         .into_iter()
         .map(|(zone, density)| BrowserGroup::zoned(zone, density))
-        .chain(
-            SERVICES
-                .iter()
-                .map(|(class, _)| BrowserGroup::service(class)),
-        )
+        .chain(services.into_iter().map(BrowserGroup::service))
         .chain([BrowserGroup::Parking])
         .chain(extractor_resources.into_iter().map(BrowserGroup::Extractor))
         .chain(field_resources.into_iter().map(BrowserGroup::Field))
@@ -423,6 +422,28 @@ pub(crate) fn catalogue_groups<'a>(
     groups.sort_unstable();
     groups.dedup();
     groups
+}
+
+/// The editor's service subtypes that some executable catalogue profile serves, by the editor's
+/// own profile test (`authoring::profile_matches`); a subtype without one has no gameplay.
+/// `O(S P)` for `S` subtypes and `P` catalogue profiles.
+pub(crate) fn executable_services<'a>(
+    catalog: &RuntimeEconomyCatalog,
+) -> impl Iterator<Item = &'a str> {
+    SERVICES
+        .iter()
+        .map(|&(id, _)| -> &'a str { id })
+        .filter(|id| {
+            let service = serde_json::json!({
+                "asset_class": "building",
+                "placement_mode": "explicit",
+                "service_class": id,
+            });
+            catalog
+                .all_profiles()
+                .iter()
+                .any(|profile| profile_matches(&service, profile, catalog))
+        })
 }
 
 /// The resources the catalogue's executable profiles of `kind` produce: an extractor or field
@@ -717,22 +738,62 @@ forward = [0.0, 0.0, 1.0]
     }
 
     // Every zone and density of the built-in zoning profiles, as the bridge passes them.
-    fn profile_groups(
-        profiles: &crate::simulation::zoning::ZoningProfileRegistry,
-    ) -> Vec<BrowserGroup<'_>> {
+    // The economy catalogue's subtypes and resources, as the bridge passes them.
+    fn profile_groups<'a>(
+        profiles: &'a crate::simulation::zoning::ZoningProfileRegistry,
+        catalog: &'a RuntimeEconomyCatalog,
+    ) -> Vec<BrowserGroup<'a>> {
         use crate::simulation::buildings::allocator::zone_type_to_zone_class;
         let zoned = profiles.profiles().iter().filter_map(|profile| {
             zone_type_to_zone_class(profile.zone_type).map(|zone| (zone, profile.density.as_str()))
         });
-        catalogue_groups(zoned, ["coal"], ["grain"])
+        catalogue_groups(
+            zoned,
+            executable_services(catalog),
+            profile_resources(catalog, EconomyProfileRuntimeKind::Extractor),
+            profile_resources(catalog, EconomyProfileRuntimeKind::FieldProducer),
+        )
+    }
+
+    #[test]
+    fn only_service_subtypes_with_an_executable_profile_are_catalogued() {
+        let catalog =
+            crate::simulation::economy::definitions::load_runtime_economy_catalog().unwrap();
+        let services: Vec<_> = executable_services(&catalog).collect();
+        assert!(services.contains(&"power"), "{services:?}");
+        for subtype in [
+            "police",
+            "fire",
+            "healthcare",
+            "education",
+            "transit",
+            "parks",
+        ] {
+            assert!(
+                !services.contains(&subtype),
+                "{subtype} has no profile: {services:?}"
+            );
+        }
+        // Each catalogued subtype is served by a utility profile the editor would offer it.
+        for subtype in &services {
+            let service = serde_json::json!({
+                "asset_class": "building", "placement_mode": "explicit", "service_class": subtype,
+            });
+            let served = catalog.all_profiles().iter().filter(|profile| {
+                profile_matches(&service, profile, &catalog) && profile.utility_service.is_some()
+            });
+            assert!(served.count() > 0, "{subtype}");
+        }
     }
 
     #[test]
     fn groups_no_pack_stocks_are_missing_until_one_does() {
         let profiles = crate::simulation::zoning::load_builtin_profile_registry().unwrap();
+        let catalog =
+            crate::simulation::economy::definitions::load_runtime_economy_catalog().unwrap();
         let mut registry = registry(vec![("base", house("b.house", "House", None, "low", 1))]);
         let labels = |registry: &AssetRegistry| -> Vec<String> {
-            missing_groups(registry, profile_groups(&profiles))
+            missing_groups(registry, profile_groups(&profiles, &catalog))
                 .iter()
                 .map(BrowserGroup::label)
                 .collect()
@@ -756,7 +817,13 @@ forward = [0.0, 0.0, 1.0]
             ]
         );
         assert!(missing.contains(&"Parking lots".to_owned()));
-        assert!(missing.contains(&"Service · Fire".to_owned()));
+        // A subtype with gameplay is missing while no pack has it; one without never is.
+        assert!(missing.contains(&"Service · Power".to_owned()));
+        assert!(
+            !missing
+                .iter()
+                .any(|label| label == "Service · Fire" || label == "Service · Police")
+        );
         assert!(missing.contains(&"Resource extractor · coal".to_owned()));
         assert!(missing.contains(&"Farm · grain".to_owned()));
 
@@ -777,12 +844,14 @@ forward = [0.0, 0.0, 1.0]
             explicit("b.lot", "Lot", "service_class = \"parking\""),
             String::new(),
         );
+        let plant = explicit("b.plant", "Plant", "service_class = \"power\"");
+        registry.register("addon", plant, String::new());
         let missing = labels(&registry);
         assert!(
             missing.iter().all(|label| !label.contains("density")),
             "{missing:?}"
         );
         assert!(!missing.contains(&"Parking lots".to_owned()));
-        assert!(missing.contains(&"Service · Fire".to_owned()));
+        assert!(!missing.contains(&"Service · Power".to_owned()));
     }
 }
