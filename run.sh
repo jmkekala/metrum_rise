@@ -650,6 +650,9 @@ godot_main_chain() {
     for script in asset_document_test asset_authoring_test asset_workspace_test asset_layout_test asset_selection_test asset_editor_preview_test asset_colour_schemes_test asset_pack_export_test pack_import_test pack_actions_test; do
         run_godot_asset_test "$script" || return 1
     done
+    # The model draft command end to end (`TOOLS-33`): a generated model drafted, written and
+    # reported stale through Godot, each run in its own throwaway profile, into temporary packs.
+    METRUM_MODEL_DRAFT_GODOT=1 python3 "$PROJECT_ROOT/tools/test_model_draft.py" GodotDraftTests || return 1
     if [ "$METRUM_PLATFORM" != "linux" ]; then
         echo "Rendered Godot tests skipped on macOS: the gamescope path is Linux-only and a direct macOS renderer path is not yet validated."
         return 0
@@ -725,6 +728,9 @@ build_gate_targets() {
         return 1
     fi
     if ! python3 -m unittest discover -s "$PROJECT_ROOT/tools" -p test_graded_drag_probe.py; then
+        return 1
+    fi
+    if ! python3 -m unittest discover -s "$PROJECT_ROOT/tools" -p test_model_draft.py; then
         return 1
     fi
     # A linked crate whose licence cannot be combined with the game's fails here, not at release
