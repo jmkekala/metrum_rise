@@ -16,7 +16,8 @@ pub(crate) const MAX_DRAFT_BYTES: u64 = 64 * 1024 * 1024;
 pub(crate) type Files = BTreeMap<PathBuf, PathBuf>;
 
 pub(crate) fn create_pack(mods: &Path, id: &str, name: &str, author: &str) -> Result<(), String> {
-    let manifest = crate::assets::pack::manifest_toml(id, name, "0.1.0", author, "CC0");
+    // No licence is assumed for the author: it stays empty until set in Pack settings.
+    let manifest = crate::assets::pack::manifest_toml(id, name, "0.1.0", author, "");
     crate::assets::PackManifest::from_str(&manifest).map_err(|e| e.to_string())?;
     let directory = mods.join(id);
     if directory.is_symlink() {
@@ -646,6 +647,15 @@ mod tests {
              bounding_size_m = [1.0, 1.0, 1.0]\nsnap_mode = \"free\"\nterrain_behavior = \"flat_ground\"\n\
              [[lods]]\nfile = \"model.gltf\"\ndistance_min_m = 0.0\n"
         )
+    }
+
+    #[test]
+    fn new_pack_states_no_licence() {
+        let fixture = Fixture::new();
+        let mods = fixture.0.join("mods");
+        create_pack(&mods, "new-pack", "New", "Author").unwrap();
+        let text = fs::read_to_string(mods.join("new-pack/pack.toml")).unwrap();
+        assert_eq!(crate::assets::PackManifest::from_str(&text).unwrap().license, "");
     }
 
     #[test]

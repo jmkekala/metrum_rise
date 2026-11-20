@@ -117,8 +117,8 @@ pub struct ExportParams {
     /// Semver version string for the pack (default `"0.1.0"`).
     #[serde(default = "default_version")]
     pub pack_version: String,
-    /// SPDX licence identifier for the pack (default `"CC0"`).
-    #[serde(default = "default_license")]
+    /// SPDX licence identifier for the pack. Empty when unset: none is assumed for the author.
+    #[serde(default)]
     pub pack_license: String,
 
     /// Asset class tag (`"building"` for Step 5; extended in Step 6).
@@ -237,9 +237,6 @@ where
 
 fn default_version() -> String {
     "0.1.0".to_owned()
-}
-fn default_license() -> String {
-    "CC0".to_owned()
 }
 fn default_level() -> u8 {
     1

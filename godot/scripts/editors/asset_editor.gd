@@ -472,7 +472,7 @@ func _ensure_pack_create_window() -> void:
 	_view._new_pack_author_edit = _view._add_line_edit(root, "Author", "")
 
 	var hint := Label.new()
-	hint.text = "Creates user://mods/<pack_id>/pack.toml now. Asset files are added on export."
+	hint.text = "Creates user://mods/<pack_id>/pack.toml now. Asset files are added on export. The pack has no license until you set one in Pack settings…"
 	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	hint.add_theme_font_size_override("font_size", _view._font_size_label)
 	root.add_child(hint)

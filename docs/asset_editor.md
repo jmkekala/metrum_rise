@@ -1927,7 +1927,9 @@ V1 inspector and viewport contract:
 - Overview uses a single `Choose / manage pack…` command plus a compact selected-pack summary instead of
   separate free-form pack fields. The command opens a pack menu listing installed
   `user://mods/*/pack.toml` packs and a `Create New Pack...` action. Creating a pack writes a
-  minimal `pack.toml` immediately; asset files are still added on export.
+  minimal `pack.toml` immediately; asset files are still added on export. Its `license` is empty,
+  as is that of a pack first written by an export without one: no licence is assumed for the
+  author, who sets it in `Pack settings…`.
 - If an existing loaded asset is exported to a different pack, the editor must stop for an explicit
   retarget choice: `Copy`, `Move`, or `Cancel`. `Copy` writes/updates the target pack and leaves the
   original asset folder untouched. `Move` writes/updates the target pack, then deletes only the
