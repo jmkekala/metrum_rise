@@ -864,6 +864,9 @@ freight.
   the supplier's live stock.
 - **Routing:** freight routes use the exact car-access abstraction of the entrance cache, with
   direct same-lane frontage travel when the exact points are in forward order.
+  Planned, not built: a carrier's own plan ends at a building's freight gate and loading bay
+  while quotes keep this abstraction
+  ([freight yards](traffic.md#freight-yards-planned-park-19-to-park-22)).
 - **Border quote preparation:** retain the existing per-border network tables for dispatch,
   and derive their exact per-node minimum once per routing revision or border-set change.
   This additional preparation costs O(nodes × borders), with O(nodes + borders) storage;

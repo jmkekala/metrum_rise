@@ -567,6 +567,8 @@ stores and edits that entrance in the same anchor list as the optional site-layo
 - `parking`: the entry edge of a bay inside the lot, which runs `length_m` along `forward`; requires
   `width_m` and `length_m`
 - `loading_bay`: freight/service stop position inside the lot; requires `width_m` and `length_m`
+  (no runtime consumer yet; planned as a freight dock, with `freight` driveways as gates and
+  passages on mesh parts, in [freight yards](traffic.md#freight-yards-planned-park-19-to-park-22))
 - All building anchor positions must remain inside the authored lot footprint. `driveway` anchors
   must lie on the frontage edge; the editor lets them slide along that edge and derives their
   inward direction from the building frontage. For `driveway`, `parking`, and `loading_bay`, the
@@ -1103,7 +1105,7 @@ Anchor requirements by asset class:
 - Buildings may define optional `driveway`, `parking`, and `loading_bay` anchors. These are authored
   site-layout metadata. They do not generate visual yard surfaces. A fitting `parking` anchor is
   public supply ([anchor lots](traffic.md#anchor-lots-park-01)); freight stop behavior remains a
-  later runtime hook.
+  later runtime hook, planned in [freight yards](traffic.md#freight-yards-planned-park-19-to-park-22).
 - Buildings may define optional `[[site_surfaces]]` polygons for authored yard materials: asphalt
   and concrete. Live gameplay renders/queries these polygons as material/layout regions on the flat
   building-site support plane.
@@ -2763,6 +2765,11 @@ without a tagged main entrance is refused. A door set back in a lobby or reveal 
 `position` on the outer wall plane; a door in the side wall of a pocket lies on a `footprint` edge.
 Lengths are rounded to 0.1 mm and areas to 0.01 m². The schema version stays 1 with `kind`:
 nothing consumed version 1 before it.
+
+The sidecar has no field for a lane a vehicle drives through (reported 2026-11-20 with the coal
+bunker). A `passages` array is proposed, not adopted, in
+[freight yards](traffic.md#stage-b-drive-through-routes-park-21); a loading point needs no field
+beyond a `vehicle` door.
 
 What the build data holds today (read in `scripts/asset_build.py` and the ten `build.py` files):
 
