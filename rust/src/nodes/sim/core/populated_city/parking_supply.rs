@@ -166,3 +166,62 @@ fn a_construction_site_and_its_completion_leave_every_list_a_rebuild_gives() {
     assert!(!core.parking.candidate_products(handle).is_empty());
     core.audit_every_parking_catchment();
 }
+
+// The car products a lot-proof change must keep (`PARK-19`): every place row of the 800 m
+// fixture, every rejected lot's reasons as the inspector and the panel show them, and the asset
+// editor's rejections of every fixture-pack asset. Recorded at `dev` 2c8b47bdd before the vehicle
+// class table; a change that moves any bay or reason moves this digest.
+#[test]
+fn the_fixtures_car_bays_and_rejections_keep_their_recorded_digest() {
+    use crate::simulation::core::stable_hash64;
+    let core = zoned_city(2.0 * CROSS_SPACING_M);
+    let text_hash = |hash: u64, text: &str| {
+        text.bytes().fold(stable_hash64(hash ^ text.len() as u64), |h, b| stable_hash64(h ^ u64::from(b)))
+    };
+    let lots = core.parking.place_product_hash();
+    let reasons = (0..core.allocator.buildings.len())
+        .flat_map(|i| core.parking_rejections(i).into_owned())
+        .chain(core.parking_rejection_lines())
+        .fold(0, |hash, line| text_hash(hash, &line));
+    let mut assets: Vec<_> = core.allocator.registry.qualified_ids().collect();
+    assets.sort_unstable();
+    let editor = assets.iter().fold(0, |hash, id| {
+        let manifest = &core.allocator.registry.get(id).expect("a listed asset").manifest;
+        let Some(building) = manifest.building.as_ref() else {
+            return hash;
+        };
+        let params = serde_json::json!({
+            "frontage_forward": manifest.building_frontage_forward(),
+            "lot_half_extents": [
+                f32::from(building.lot_width_cells) * 5.0,
+                f32::from(building.lot_depth_cells) * 5.0,
+            ],
+            "anchors": manifest.anchors.iter().map(|a| serde_json::json!({
+                "anchor_type": match a.anchor_type {
+                    crate::assets::AnchorType::Driveway => "driveway",
+                    crate::assets::AnchorType::Parking => "parking",
+                    crate::assets::AnchorType::LoadingBay => "loading_bay",
+                    _ => "other",
+                },
+                "position": a.position,
+                "forward": a.forward,
+                "width_m": a.width_m,
+                "length_m": a.length_m,
+                "vehicle_class": a.vehicle_class.as_deref(),
+            })).collect::<Vec<_>>(),
+            "site_surfaces": manifest.site_surfaces.iter().map(|s| serde_json::json!({
+                "material": match s.material {
+                    crate::assets::SiteSurfaceMaterial::Asphalt => "asphalt",
+                    crate::assets::SiteSurfaceMaterial::Concrete => "concrete",
+                },
+                "vertices": s.vertices,
+            })).collect::<Vec<_>>(),
+        });
+        let payload = crate::simulation::parking::validation::editor_payload(&params, &[]);
+        text_hash(text_hash(hash, id), &payload.to_string())
+    });
+    assert!(core.parking.counts().0 > 0 && !core.parking_rejection_lines().is_empty());
+    let digest = [lots, reasons, editor];
+    let recorded = [0x8576_f0fd_bbcc_ed0d, 0x2ba3_ad70_d4ef_a643, 0xbf68_7441_d5fc_8bfa];
+    assert_eq!(digest, recorded, "{digest:016x?}");
+}
