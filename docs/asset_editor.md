@@ -3008,9 +3008,9 @@ Each with the recommendation first.
 - **Q5 Lot slack.** Recommended: R1 with no minimum yard, the report stating the slack on each
   side; the smallest slack by hand is 3.2 m. Alternative: add a depth cell when the slack in front
   of the main door is under a stated minimum.
-- **Q6 Entrance point.** Recommended: R4, the door on its wall plane at `y = 0`, and 0.5 m / 15°
-  as the report's tolerance; nine of the twelve hand anchors would then be reported once.
-  Alternative: the foot of the entrance steps, which needs one more sidecar fact per door.
+- **Q6 Entrance point.** Decided 2026-11-20: R4, the door on its wall plane at `y = 0`, and
+  0.5 m / 15° as the report's tolerance; nine of the twelve hand anchors are then reported once.
+  Rejected: the foot of the entrance steps, which needs one more sidecar fact per door.
 - **Q7 Main door.** Recommended: the builder tags it; rows use the door nearest the centre, `+X`
   on a tie, as both hand terraces do. Alternative: the game picks the door nearest the lot's front
   edge centre.
