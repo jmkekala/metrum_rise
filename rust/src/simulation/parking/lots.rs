@@ -5,7 +5,7 @@
 use super::{
     Bay,
     geometry::{precise, rectangle, structure_collision},
-    validation::{AnchorBay, driveway_points_inward, opens_onto_street, validate_bay},
+    validation::{AnchorBay, ProofClass, driveway_points_inward, opens_onto_street, validate_bay},
 };
 use crate::assets::AnchorType;
 use crate::assets::asset::validation::ZONE_CELL_M;
@@ -101,6 +101,7 @@ pub(crate) fn lot_bays(
             length,
         })
         .collect();
+    let car = ProofClass::Car.proof();
     let mut result = Vec::new();
     let mut issues = Vec::new();
     for (slot, &(anchor, pos, forward, width, length)) in bays.iter().enumerate() {
@@ -114,7 +115,7 @@ pub(crate) fn lot_bays(
             .iter()
             .filter(|a| a.anchor_type == AnchorType::Driveway)
             .filter_map(|driveway| {
-                if driveway.width_m.unwrap_or(3.0) < 1.8 {
+                if driveway.width_m.unwrap_or(3.0) < car.min_gate {
                     return None;
                 }
                 let start = position(driveway.position);
@@ -133,7 +134,7 @@ pub(crate) fn lot_bays(
                 )?;
                 // Placement already validates frontage support; repeat its exact connection proof.
                 roads.height_at(connection.x, connection.y)?;
-                let approach = start + inward * 2.5;
+                let approach = start + inward * car.lead;
                 Some([connection, approach])
             })
             .collect();
@@ -162,6 +163,7 @@ pub(crate) fn lot_bays(
             })
             .flatten();
         let checked = validate_bay(
+            ProofClass::Car,
             slot,
             &geometry,
             &footprints,

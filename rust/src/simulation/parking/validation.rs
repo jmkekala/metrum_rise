@@ -24,11 +24,65 @@ pub(super) fn driveway_points_inward(forward: Vector2, outward: Vector2) -> bool
 const STREET_EDGE_TOLERANCE_M: f32 = 0.6;
 // Where a car stops on the street before turning straight into a street-edge bay.
 const STREET_APPROACH_M: f32 = 2.5;
-// A path corner that bends by at most 30° needs no turning envelope: the two 1.8 m corridors,
-// each extended 2.25 m past the corner, already cover a car's sweep through so slight a bend.
-const STRAIGHT_THROUGH_COS: f32 = 0.866;
-// Side of the square a car needs to change heading at a path corner.
-const TURN_ENVELOPE_M: f32 = 4.85;
+
+/// The vehicle classes a lot proves a route for (`PARK-19`). Indexes the class table.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ProofClass {
+    /// A resident's car: every `driveway`, every `parking` anchor.
+    Car = 0,
+}
+
+/// One row of the class table: the body a route is proven for and the room it needs.
+pub(crate) struct VehicleProof {
+    /// The body's width: every corridor's width.
+    pub body_width: f32,
+    /// The body's length: a corridor runs half of it past each end of its leg.
+    pub body_length: f32,
+    /// Side of the square the body needs to change heading at a corner: its diagonal, rounded up.
+    pub turn_envelope: f32,
+    /// How far inside a gate the approach lies, and how far before a bay's entry edge the aisle.
+    pub lead: f32,
+    /// A corner whose legs' unit headings have a dot product below this needs an envelope;
+    /// through a slighter bend the two corridors, each extended half a body past the corner,
+    /// already cover the body's sweep.
+    pub straight_through_cos: f32,
+    /// Whether the turn off the street always needs an envelope at the approach. A car's does;
+    /// a truck's is made on the road through a gate of at least `min_gate` and is not proven in
+    /// the lot (owner decision 3).
+    pub turn_at_gate: bool,
+    /// The smallest bay (width, length).
+    pub min_bay: [f32; 2],
+    /// The narrowest driveway the class may use.
+    pub min_gate: f32,
+    // Words for the rejections: the vehicle, the envelope's room and its distance from a lot edge.
+    noun: &'static str,
+    turn_room: &'static str,
+    edge_room: &'static str,
+}
+
+impl ProofClass {
+    /// This class's row of the table. O(1).
+    pub(crate) const fn proof(self) -> &'static VehicleProof {
+        &CLASS_TABLE[self as usize]
+    }
+}
+
+// The car row is the numbers the car proof used before the table, bit for bit.
+const CLASS_TABLE: [VehicleProof; 1] = [
+    VehicleProof {
+        body_width: 1.8,
+        body_length: 4.5,
+        turn_envelope: 4.85,
+        lead: 2.5,
+        straight_through_cos: 0.866,
+        turn_at_gate: true,
+        min_bay: [1.8, 4.5],
+        min_gate: 1.8,
+        noun: "car",
+        turn_room: "5 m by 5 m",
+        edge_room: "2.5 m",
+    },
+];
 
 /// Why a bay is rejected, with the local shape that failed when one did, so the editor can
 /// draw it.
@@ -39,8 +93,14 @@ pub(super) struct Rejection {
 
 impl From<&str> for Rejection {
     fn from(reason: &str) -> Self {
+        reason.to_owned().into()
+    }
+}
+
+impl From<String> for Rejection {
+    fn from(reason: String) -> Self {
         Self {
-            reason: reason.to_owned(),
+            reason,
             shape: None,
         }
     }
@@ -48,12 +108,12 @@ impl From<&str> for Rejection {
 
 // Whether the path bends at `corner` enough to need a turning envelope. A zero-length side
 // has no heading, so it counts as a turn. O(1).
-fn turns_at(before: Vector2, corner: Vector2, after: Vector2) -> bool {
+fn turns_at(before: Vector2, corner: Vector2, after: Vector2, straight_through_cos: f32) -> bool {
     let a = corner - before;
     let b = after - corner;
     a.length_squared() < 1e-8
         || b.length_squared() < 1e-8
-        || a.normalized().dot(b.normalized()) < STRAIGHT_THROUGH_COS
+        || a.normalized().dot(b.normalized()) < straight_through_cos
 }
 
 /// Whether a bay, in asset-local coordinates, opens straight onto the street: its entry edge
@@ -71,9 +131,11 @@ pub(super) fn opens_onto_street(
 }
 
 // O(bays + local polygon/overlay work) per tested sweep; only authoring/edit boundaries.
-// `street` is the road connection for a bay that opens onto the street, if any.
+// `street` is the road connection for a bay that opens onto the street, if any; `paths` are
+// the class's usable driveways' road connections and approaches.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn validate_bay(
+    class: ProofClass,
     slot: usize,
     bays: &[AnchorBay],
     footprints: &[[Vector2; 4]],
@@ -83,14 +145,20 @@ pub(super) fn validate_bay(
     street: Option<Vector2>,
     collision: impl Fn(&[Vector2]) -> bool,
 ) -> Result<[Vector2; 4], Rejection> {
+    let row = class.proof();
     let bay = &bays[slot];
     if !has_driveway && street.is_none() {
         return Err(
             "needs a Driveway point, or put the spot's front edge on the street edge pointing into the lot".into(),
         );
     }
-    if bay.width < 1.8 || bay.length < 4.5 || bay.forward.length_squared() < 0.99 {
-        return Err("too small for a car: make it at least 1.8 m wide and 4.5 m long".into());
+    let [min_width, min_length] = row.min_bay;
+    if bay.width < min_width || bay.length < min_length || bay.forward.length_squared() < 0.99 {
+        return Err(format!(
+            "too small for a {}: make it at least {min_width} m wide and {min_length} m long",
+            row.noun
+        )
+        .into());
     }
     if collision(&footprints[slot]) {
         return Err("overlaps the building or another structure".into());
@@ -142,7 +210,7 @@ pub(super) fn validate_bay(
     };
     let mut first = None;
     for &[connection, approach] in paths {
-        let aisle = bay.pos - bay.forward * (bay.length * 0.5 + 2.5);
+        let aisle = bay.pos - bay.forward * (bay.length * 0.5 + row.lead);
         let path = [connection, approach, aisle, bay.pos];
         let legs = [
             "the way in from the Driveway",
@@ -155,24 +223,27 @@ pub(super) fn validate_bay(
                 let shape = rectangle(
                     (pair[0] + pair[1]) * 0.5,
                     delta.normalized(),
-                    1.8,
-                    delta.length() + 4.5,
+                    row.body_width,
+                    delta.length() + row.body_length,
                 );
                 (leg, shape)
             })
         });
-        // Full turning envelopes prove the orientation change where the path bends: always at
-        // the Driveway, where the car leaves the street, and at the aisle unless it is
-        // straight through.
+        // Full turning envelopes prove the orientation change where the path bends: for a car
+        // always at the Driveway, where it leaves the street, and elsewhere unless the path is
+        // straight through by the class's bend limit.
         let turns = [
             (connection, approach, aisle, "the turn off the Driveway"),
             (approach, aisle, bay.pos, "the turn into the spot"),
         ]
         .into_iter()
-        .filter(|&(before, corner, after, _)| corner == approach || turns_at(before, corner, after))
+        .filter(|&(before, corner, after, _)| {
+            (row.turn_at_gate && corner == approach)
+                || turns_at(before, corner, after, row.straight_through_cos)
+        })
         // Squared to the spot, which lies square to its lot, so a turned lot keeps its envelope.
         .map(|(_, corner, _, part)| {
-            let shape = rectangle(corner, bay.forward, TURN_ENVELOPE_M, TURN_ENVELOPE_M);
+            let shape = rectangle(corner, bay.forward, row.turn_envelope, row.turn_envelope);
             (part, shape)
         });
         let failure = corridors
@@ -188,17 +259,20 @@ pub(super) fn validate_bay(
     let Some((part, cause, shape)) = first else {
         return Err("the Driveway must sit at the street edge and point into the lot".into());
     };
+    let (noun, width, lead) = (row.noun, row.body_width, row.lead);
     let room = match part {
-        "the turn off the Driveway" => {
-            "a car needs about 5 m by 5 m of clear paving just inside the Driveway to turn, so keep the Driveway about 2.5 m from the lot's side edges"
-        }
-        "the turn into the spot" => {
-            "a car needs about 5 m by 5 m of clear paving in front of the spot to turn in"
-        }
-        "the way to the front of the spot" => {
-            "a car drives straight from just inside the Driveway to about 2.5 m in front of the spot, on a 1.8 m strip of clear paving reaching half a car length past both ends"
-        }
-        _ => "the way needs about 1.8 m of clear paving",
+        "the turn off the Driveway" => format!(
+            "a {noun} needs about {} of clear paving just inside the Driveway to turn, so keep the Driveway about {} from the lot's side edges",
+            row.turn_room, row.edge_room
+        ),
+        "the turn into the spot" => format!(
+            "a {noun} needs about {} of clear paving in front of the spot to turn in",
+            row.turn_room
+        ),
+        "the way to the front of the spot" => format!(
+            "a {noun} drives straight from just inside the Driveway to about {lead} m in front of the spot, on a {width} m strip of clear paving reaching half a {noun} length past both ends"
+        ),
+        _ => format!("the way needs about {width} m of clear paving"),
     };
     Err(Rejection {
         reason: format!("no room to drive in: {part} {cause} ({room})"),
@@ -270,10 +344,11 @@ pub(crate) fn editor_payload(params: &Value, structures: &[f32]) -> Value {
             ]
         })
         .collect();
+    let car = ProofClass::Car.proof();
     let has_driveway = anchors.iter().any(|a| a["anchor_type"] == "driveway");
     let paths: Vec<_> = anchors
         .iter()
-        .filter(|a| a["anchor_type"] == "driveway" && number(a, "width_m", 3.0) >= 1.8)
+        .filter(|a| a["anchor_type"] == "driveway" && number(a, "width_m", 3.0) >= car.min_gate)
         .filter(|a| {
             params.get("frontage_forward").is_none_or(|outward| {
                 driveway_points_inward(
@@ -283,7 +358,7 @@ pub(crate) fn editor_payload(params: &Value, structures: &[f32]) -> Value {
             })
         })
         .map(|a| {
-            let approach = vector(&a["position"]) + vector(&a["forward"]).normalized() * 2.5;
+            let approach = vector(&a["position"]) + vector(&a["forward"]).normalized() * car.lead;
             [approach, approach]
         })
         .collect();
@@ -309,6 +384,7 @@ pub(crate) fn editor_payload(params: &Value, structures: &[f32]) -> Value {
                 .filter(|&(outward, half)| opens_onto_street(entry, bay.forward, outward, half))
                 .map(|_| entry - bay.forward * STREET_APPROACH_M);
             validate_bay(
+                ProofClass::Car,
                 slot,
                 &bays,
                 &footprints,
