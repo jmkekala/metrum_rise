@@ -5,7 +5,10 @@
 use super::{
     Bay,
     geometry::{precise, rectangle, structure_collision},
-    validation::{AnchorBay, ProofClass, driveway_points_inward, opens_onto_street, validate_bay},
+    validation::{
+        AnchorBay, ProofClass, dock_routes, driveway_points_inward, is_dock_class,
+        is_freight_class, opens_onto_street, validate_bay,
+    },
 };
 use crate::assets::{Anchor, AnchorType};
 use crate::assets::asset::validation::ZONE_CELL_M;
@@ -48,20 +51,21 @@ pub(crate) fn has_freight_anchors(anchors: &[Anchor]) -> bool {
     anchors.iter().any(is_freight_driveway) && anchors.iter().any(is_dock_anchor)
 }
 
+/// How many loading bays of `anchors` a truck may stop at: the docks a building of the asset
+/// could publish, as the inspector counts them. O(anchors).
+pub(crate) fn dock_anchor_count(anchors: &[Anchor]) -> usize {
+    anchors.iter().filter(|a| is_dock_anchor(a)).count()
+}
+
 // A Driveway that admits freight: a gate once it is wide enough (owner decision 11: freight
 // never uses a `car` Driveway). O(1).
 fn is_freight_driveway(anchor: &Anchor) -> bool {
-    anchor.anchor_type == AnchorType::Driveway
-        && anchor.vehicle_class.as_deref().map(str::trim) == Some("freight")
+    anchor.anchor_type == AnchorType::Driveway && is_freight_class(anchor.vehicle_class.as_deref())
 }
 
 // A loading bay a truck may stop at: its class is `freight` or absent. O(1).
 fn is_dock_anchor(anchor: &Anchor) -> bool {
-    anchor.anchor_type == AnchorType::LoadingBay
-        && anchor
-            .vehicle_class
-            .as_deref()
-            .is_none_or(|class| class.trim() == "freight")
+    anchor.anchor_type == AnchorType::LoadingBay && is_dock_class(anchor.vehicle_class.as_deref())
 }
 
 /// One place per valid parking anchor and one dock per valid loading bay, at asset/edit
@@ -294,26 +298,9 @@ pub(crate) fn lot_proof(
                 |foot| structure_collision(allocator, freight, foot),
             )
         };
-        // One arrival gate per building: the first dock takes the first gate, in anchor order,
-        // that proves its route; every later dock must prove through that gate.
-        let mut building_gate = None;
-        for (slot, &(anchor, pos, forward, width, length)) in docks.iter().enumerate() {
-            let checked = match building_gate {
-                None => prove(slot, &gates).map(|(path, gate)| {
-                    building_gate = gate;
-                    path
-                }),
-                Some(gate) => prove(slot, &gates[gate..=gate])
-                    .map(|(path, _)| path)
-                    .map_err(|rejection| {
-                        if prove(slot, &gates).is_ok() {
-                            "its Driveway differs from the building's first loading bay's".into()
-                        } else {
-                            rejection
-                        }
-                    }),
-            };
-            match checked {
+        let routes = dock_routes(docks.len(), &gates, prove);
+        for (&(anchor, pos, forward, width, length), route) in docks.iter().zip(routes) {
+            match route {
                 Ok(path) => proof.docks.push(place(anchor, path, pos, forward, width, length)),
                 Err(rejection) => proof.dock_issues.push(format!(
                     "{} loading bay {}: {}",

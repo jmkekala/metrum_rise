@@ -8,7 +8,9 @@ use crate::simulation::core::handles::Handle;
 use crate::simulation::network::types::EdgeClass;
 use crate::simulation::parking::kerb::{KerbBlocker, kerb_bays, kerb_blockers};
 use crate::simulation::parking::{Bay, ParkedPublication, PlaceSource, holds_parking};
-use crate::simulation::parking::lots::{LotProof, has_freight_anchors, lot_bays, lot_proof};
+use crate::simulation::parking::lots::{
+    LotProof, dock_anchor_count, has_freight_anchors, lot_bays, lot_proof,
+};
 use rayon::prelude::*;
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -318,6 +320,37 @@ impl SimCore {
             Some(issues) => Cow::Borrowed(issues),
             None => Cow::Owned(self.unrecorded_rejections(index, handle)),
         }
+    }
+
+    /// Building `index`'s docks as the building inspector shows them beside its parking
+    /// (`PARK-19`): the docks it publishes, the loading bays a truck may stop at, and each
+    /// rejected loading bay's reason. `None` for an asset without a freight Driveway, whose
+    /// loading bays are never proven. As [`Self::parking_rejections`], a lot the live map lacks
+    /// (a load keeps no reason) is validated here when it publishes fewer docks than it has
+    /// such bays. O(its anchors and docks), plus one lot validation for such a lot.
+    pub(crate) fn dock_lines(&self, index: usize) -> Option<(usize, usize, Cow<'_, [String]>)> {
+        let building = &self.allocator.buildings[index];
+        let anchors = &self.allocator.registry.get(&building.asset_id)?.manifest.anchors;
+        if !has_freight_anchors(anchors) {
+            return None;
+        }
+        let handle = self.allocator.building_handles.handle(index).to_bits();
+        let bays = dock_anchor_count(anchors);
+        let usable = self.parking.building_docks(handle).count();
+        let reasons = match self.parking.dock_diagnostics.get(&handle) {
+            Some(issues) => Cow::Borrowed(issues.as_slice()),
+            None if usable < bays => Cow::Owned(
+                lot_proof(
+                    &self.allocator,
+                    index,
+                    &self.region_graph,
+                    &self.transit_network.roadbed,
+                )
+                .dock_issues,
+            ),
+            None => Cow::Borrowed(&[][..]),
+        };
+        Some((usable, bays, reasons))
     }
 
     /// Every rejected lot's reasons as the parking panel lists them, `building <index>: <reason>`

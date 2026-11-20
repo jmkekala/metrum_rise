@@ -124,6 +124,7 @@ fn edit(
             resolved.len() == 1 && resolved[0].3 == ObjectKind::Yard
         }
         "create" => resolved.is_empty() && text(&params, "asset_class") == "building",
+        "passage" => resolved.len() == 1 && resolved[0].3 == ObjectKind::Mesh,
         _ => false,
     };
     if !allowed {
@@ -345,6 +346,7 @@ fn edit(
                 }
                 entry.set("vertices", vertices);
             }
+            "passage" => edit_passages(&mut entry, args)?,
             _ => return Err("Unsupported edit".into()),
         }
         entries.set(*index, &entry.to_variant());
@@ -353,6 +355,85 @@ fn edit(
     }
     next.set("params", params);
     Ok((next, selection))
+}
+
+// Adds, removes or changes one passage of a mesh part (`PARK-19`): `op` is "add" (at the
+// optional part-local `position`, opening along -Z), "delete" or "set" (`field` to `value`) of
+// passage `passage`. Names stay unique in the part and sizes positive; the lot-axis and bounds
+// rules are reported by validation, so an author may pass through an invalid state. O(P) for
+// the part's P passages.
+fn edit_passages(part: &mut VarDictionary, args: &VarDictionary) -> Result<(), String> {
+    let mut passages = array(part, "passages");
+    let index = args
+        .get("passage")
+        .and_then(|v| v.try_to::<i64>().ok())
+        .and_then(|v| usize::try_from(v).ok())
+        .filter(|&i| i < passages.len());
+    match text(args, "op").as_str() {
+        "add" => {
+            let position = args
+                .get("position")
+                .and_then(|v| v.try_to::<VarArray>().ok())
+                .filter(|v| v.len() == 3)
+                .unwrap_or_else(|| vec3([0.0; 3]));
+            let name = unique_name("passage", &mut names(&passages));
+            let passage = vdict! { "name": name, "position": position, "forward": vec3([0.0, 0.0, -1.0]), "width_m": 5.0, "length_m": 8.0, "clear_height_m": 4.5, "through": false };
+            passages.push(&passage.to_variant());
+        }
+        "delete" => {
+            passages.remove(index.ok_or("The passage no longer exists")?);
+        }
+        "set" => {
+            let index = index.ok_or("The passage no longer exists")?;
+            let mut passage: VarDictionary =
+                passages.at(index).try_to().map_err(|e| e.to_string())?;
+            let field = text(args, "field");
+            let value = args.get("value").ok_or("Missing value")?;
+            match field.as_str() {
+                "name" => {
+                    let name = value.try_to::<GString>().map_err(|e| e.to_string())?;
+                    let name = name.to_string().trim().to_owned();
+                    if name.is_empty() {
+                        return Err("Name cannot be empty".into());
+                    }
+                    if passages.iter_shared().enumerate().any(|(i, v)| {
+                        i != index
+                            && v.try_to::<VarDictionary>()
+                                .is_ok_and(|v| text(&v, "name") == name)
+                    }) {
+                        return Err("That name is already in use".into());
+                    }
+                    passage.set("name", name);
+                }
+                "width_m" | "length_m" | "clear_height_m" => {
+                    let size = value.try_to::<f64>().map_err(|e| e.to_string())?;
+                    if !size.is_finite() || size <= 0.0 {
+                        return Err("A passage's sizes must be greater than zero".into());
+                    }
+                    passage.set(field.as_str(), size);
+                }
+                "position" | "forward" => {
+                    let vector = value.try_to::<VarArray>().map_err(|e| e.to_string())?;
+                    if vector.len() != 3
+                        || vector
+                            .iter_shared()
+                            .any(|v| !v.try_to::<f64>().is_ok_and(f64::is_finite))
+                    {
+                        return Err("Expected three finite numbers".into());
+                    }
+                    passage.set(field.as_str(), vector);
+                }
+                "through" => {
+                    passage.set("through", value.try_to::<bool>().map_err(|e| e.to_string())?);
+                }
+                _ => return Err("Unsupported passage field".into()),
+            }
+            passages.set(index, &passage.to_variant());
+        }
+        _ => return Err("Unsupported passage edit".into()),
+    }
+    part.set("passages", passages);
+    Ok(())
 }
 
 fn names(entries: &VarArray) -> HashSet<String> {

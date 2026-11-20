@@ -21,11 +21,15 @@ pub struct AssetAuthoringPolicy {
 
 #[godot_api]
 impl AssetAuthoringPolicy {
-    /// Asset-local parking rejection payload; frontage road checks require a placed building.
+    /// The placed lot proofs over the asset alone, on an assumed straight street (`PARK-18`):
+    /// car rejections and, with a loading bay or a passage, dock routes, loading bay rejections
+    /// and passages (`PARK-19`). `part_bounds` is six floats per mesh part in part order, its
+    /// imported mesh-root AABB minimum then maximum (a box of no plan area for none); the
+    /// walls each class meets are cut from them as the site derivation cuts them.
     #[func]
-    pub fn parking_diagnostics_json(&self, params: GString, structures: PackedFloat32Array) -> GString {
+    pub fn parking_diagnostics_json(&self, params: GString, part_bounds: PackedFloat32Array) -> GString {
         let data = serde_json::from_str::<Value>(&params.to_string()).unwrap_or(Value::Null);
-        crate::simulation::parking::validation::editor_payload(&data, structures.as_slice())
+        crate::simulation::parking::validation::editor_lot_payload(&data, part_bounds.as_slice())
             .to_string().as_str().into()
     }
 

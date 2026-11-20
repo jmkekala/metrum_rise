@@ -204,6 +204,12 @@ impl SimulationNode {
         dict.set("parking_valid_places", core.parking.building_place_count(handle) as i64);
         let rejected = core.parking_rejections(best_idx);
         dict.set("parking_rejected", PackedStringArray::from_iter(rejected.iter().map(|s| GString::from(s.as_str()))));
+        // Docks beside the parking places, only for an asset with a freight Driveway (`PARK-19`).
+        if let Some((usable, bays, reasons)) = core.dock_lines(best_idx) {
+            dict.set("dock_usable", usable as i64);
+            dict.set("dock_bays", bays as i64);
+            dict.set("dock_rejected", PackedStringArray::from_iter(reasons.iter().map(|s| GString::from(s.as_str()))));
+        }
         dict.set("building_id", best_idx as i64);
         // The outline the inspector rings, at the bulldoze highlight's height.
         if let Some(site) = core.allocator.building_sites.get(best_idx) {

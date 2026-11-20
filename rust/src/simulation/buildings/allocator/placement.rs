@@ -2158,7 +2158,9 @@ pub(crate) fn construction_duration_hours(
 const BUILDING_SITE_DRIVEWAY_HEIGHT_CONFLICT_EPS_M: f32 = 0.35;
 const BUILDING_SITE_NEIGHBOR_HEIGHT_EPS_M: f32 = 0.10;
 const BUILDING_SITE_NEIGHBOR_EPS_M: f32 = 0.05;
-const BUILDING_SITE_ROAD_SAMPLE_INSET_M: f32 = 0.05;
+// How far inside the sidewalk's outer edge a Driveway's road connection lies; the asset editor
+// assumes the same connection on its street (`PARK-18`).
+pub(crate) const BUILDING_SITE_ROAD_SAMPLE_INSET_M: f32 = 0.05;
 
 struct DrivewayConnectionCandidate {
     connection_pos: Vector2,

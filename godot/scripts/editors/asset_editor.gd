@@ -24,8 +24,11 @@ const WorkspaceLayout = preload("res://scripts/editors/asset_editor/workspace_la
 const AssetSelection = preload("res://scripts/editors/asset_editor/asset_selection.gd")
 const ContextMenus = preload("res://scripts/editors/asset_editor/context_menus.gd")
 const AssetBrowser = preload("res://scripts/editors/asset_editor/asset_browser.gd")
+const PassagePanel = preload("res://scripts/editors/asset_editor/passage_panel.gd")
 
 const PANEL_GAP := EditorSpacing.CONTROL_GAP
+# A loading bay's note: it publishes no dock, but the asset still exports.
+const NOTE_COLOR := Color(0.95, 0.8, 0.4)
 const PACK_MENU_CREATE_NEW := 1000000
 const PACK_MENU_NO_PACKS := 1000001
 const MESH_ROTATION_DRAG_DEG_PER_PX := 0.35
@@ -54,6 +57,7 @@ var _browser: RefCounted
 var _session: RefCounted
 var _yard_preview: RefCounted
 var _lod_preview := PreviewLod.new()
+var _passages := PassagePanel.new()
 
 @onready var sim: SimulationNode = $SimulationNode
 
@@ -1131,13 +1135,17 @@ func _update_site_anchor_preview() -> void:
 		)
 		_update_site_anchor_issues()
 
-# Runs the game's drive-in check over the current site, as {"rejected": [{anchor, reason, shape}]}.
+# Runs the game's drive-in checks over the current site on an assumed straight street, as
+# {"rejected": [{anchor, reason, shape}]} for parking spots and, with a loading bay or a
+# passage, "docks" [{anchor, route}], "dock_rejected" [{anchor, reason, shape, blocks}],
+# "passages" and "passage_issues" (`PARK-18`, `PARK-19`).
 func _parking_diagnostics() -> Dictionary:
 	var params := {"anchors": _site_anchors_data, "site_surfaces": _site_surfaces_data,
+		"mesh_parts": _session._adapter.geometry()["mesh_parts"],
 		"frontage_forward": [_frontage_fwd.x, _frontage_fwd.y, _frontage_fwd.z],
 		"lot_half_extents": [float(_view._width_spin.value) * 5.0, float(_view._depth_spin.value) * 5.0]}
 	return JSON.parse_string(_session.policy.parking_diagnostics_json(
-		JSON.stringify(params), _session.yard_structure_bounds()))
+		JSON.stringify(params), _session.part_bounds()))
 
 # Shows each rejected spot's reason in the access list and, wrapped, above the selected spot's
 # properties, so a rejection never relies on the viewport labels alone.
@@ -1147,13 +1155,21 @@ func _update_site_anchor_issues() -> void:
 	var list: ItemList = _view._site_anchor_list
 	for index in mini(list.item_count, _site_anchors_data.size()):
 		var rejection: String = _preview.parking_rejection(index)
-		# The list is rebuilt on every refresh, so only rejected rows need styling.
+		var note: String = _preview.parking_note(index)
+		# The list is rebuilt on every refresh, so only rejected or noted rows need styling.
 		if not rejection.is_empty():
 			list.set_item_custom_fg_color(index, Color(1.0, 0.45, 0.4))
 			list.set_item_tooltip(index, "Rejected: " + rejection)
-	var selected: String = _preview.parking_rejection(_selected_site_anchor_index) if _selected_site_anchor_index >= 0 else ""
-	_view._site_anchor_issue_label.text = "Rejected: " + selected
-	_view._site_anchor_issue_label.visible = not selected.is_empty()
+		elif not note.is_empty():
+			list.set_item_custom_fg_color(index, NOTE_COLOR)
+			list.set_item_tooltip(index, "Note: " + note)
+	var index := _selected_site_anchor_index
+	var selected: String = _preview.parking_rejection(index) if index >= 0 else ""
+	var selected_note: String = _preview.parking_note(index) if index >= 0 else ""
+	# A loading bay of an asset without a freight gate is a note: it never blocks export.
+	_view._site_anchor_issue_label.text = "Rejected: " + selected if not selected.is_empty() else "Note: " + selected_note
+	_view._site_anchor_issue_label.add_theme_color_override("font_color", Color(1.0, 0.45, 0.4) if not selected.is_empty() else NOTE_COLOR)
+	_view._site_anchor_issue_label.visible = not selected.is_empty() or not selected_note.is_empty()
 
 func _anchor_position(anchor: Dictionary) -> Vector3:
 	return PreviewGeometry.vector3(anchor.get("position"))
@@ -1240,6 +1256,7 @@ func _refresh_selected_part_controls() -> void:
 	_view._part_rotation_y_spin.value = _parts[_selected_part_index].rotation_y if has_part else 0.0
 	_view._preview_scale_spin.value = _parts[_selected_part_index].scale if has_part else 1.0
 	_suppress_part_transform_changed = false
+	_passages.refresh()
 
 func _on_part_transform_changed(_value: float, field: String) -> void:
 	if _suppress_part_transform_changed:

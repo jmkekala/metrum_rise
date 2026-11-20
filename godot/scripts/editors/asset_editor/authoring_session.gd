@@ -522,6 +522,16 @@ func yard_structure_bounds() -> PackedFloat32Array:
 			walls.append_array([rect.position.x, rect.position.y, rect.end.x, rect.end.y])
 	return walls
 
+## Each mesh part's imported LOD0 bounds in mesh-root coordinates, six floats per part in part
+## order (minimum, then maximum): the parking check cuts each vehicle class's walls from them,
+## less the passages, as the game does from the bounds it imports.
+func part_bounds() -> PackedFloat32Array:
+	var bounds := PackedFloat32Array()
+	for part in _editor._parts:
+		var box: AABB = part.aabb
+		bounds.append_array([box.position.x, box.position.y, box.position.z, box.end.x, box.end.y, box.end.z])
+	return bounds
+
 func _preview_yard_hedge() -> void:
 	var rows = JSON.parse_string(policy.yard_hedge_rows_json(JSON.stringify(params), yard_structure_bounds()))
 	_editor._preview.set_yard_hedge(rows if rows is Array else [],
@@ -553,13 +563,20 @@ func validate() -> void:
 	var fit_error: String = _editor._mesh_parts_lot_fit_error()
 	if not fit_error.is_empty():
 		_issues.append({"section": "site", "field": "lot_width_cells", "message": fit_error})
-	# A rejected spot never takes a car in the game, so it must not ship as if it worked.
+	# A rejected spot never takes a car in the game, so it must not ship as if it worked. A
+	# rejected loading bay blocks export only when the asset has a freight gate; otherwise it is
+	# a note on the bay (`PARK-19`).
 	var list: ItemList = _editor._view._site_anchor_list
-	for rejected: Dictionary in _editor._parking_diagnostics().get("rejected", []):
+	var diagnostics: Dictionary = _editor._parking_diagnostics()
+	for rejected: Dictionary in diagnostics.get("rejected", []) + diagnostics.get("dock_rejected", []):
+		if not bool(rejected.get("blocks", true)):
+			continue
 		var anchor := int(rejected["anchor"])
-		var name := list.get_item_text(anchor) if list and anchor < list.item_count else "Parking spot %d" % (anchor + 1)
+		var name := list.get_item_text(anchor) if list and anchor < list.item_count else "Access point %d" % (anchor + 1)
 		_issues.append({"section": "site", "field": "anchors", "anchor": anchor,
 			"message": "%s is rejected: %s" % [name, str(rejected["reason"])]})
+	for issue: Dictionary in diagnostics.get("passage_issues", []):
+		_issues.append({"section": "model", "field": "mesh_parts", "message": str(issue["message"])})
 	var view = _editor._view
 	var tiers := 0
 	for part in _editor._parts:

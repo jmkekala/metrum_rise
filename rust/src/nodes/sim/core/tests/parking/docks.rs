@@ -5,6 +5,7 @@
 
 use super::*;
 use crate::simulation::parking::{Bay, PlaceSource};
+use godot::prelude::Vector2;
 
 // A 30 m by 40 m yard paved whole, placed as a service building (the parking class, a fixture's
 // convenience: no economy): a drive-through bunker on the west with its lane at
@@ -277,4 +278,144 @@ fn no_fixture_pack_asset_publishes_a_dock() {
             "kenney:building.power.coal_power_plant",
         ]
     );
+}
+
+// The asset editor's payload of the yard as the editor sends it: anchors, paving and mesh parts
+// with their passages, and the parts' imported bounds.
+fn editor_payload_of(core: &SimCore, id: &str) -> serde_json::Value {
+    use serde_json::json;
+    let manifest = &core.allocator.registry.get(id).unwrap().manifest;
+    let building = manifest.building.as_ref().unwrap();
+    let anchor_type = |a: &crate::assets::Anchor| match a.anchor_type {
+        AnchorType::Driveway => "driveway",
+        AnchorType::Parking => "parking",
+        AnchorType::LoadingBay => "loading_bay",
+        _ => "other",
+    };
+    let params = json!({
+        "frontage_forward": manifest.building_frontage_forward(),
+        "lot_half_extents": [
+            f32::from(building.lot_width_cells) * 5.0,
+            f32::from(building.lot_depth_cells) * 5.0,
+        ],
+        "anchors": manifest.anchors.iter().map(|a| json!({
+            "anchor_type": anchor_type(a), "position": a.position, "forward": a.forward,
+            "width_m": a.width_m, "length_m": a.length_m,
+            "vehicle_class": a.vehicle_class.as_deref(),
+        })).collect::<Vec<_>>(),
+        "site_surfaces": manifest.site_surfaces.iter().map(|s| json!({
+            "material": "asphalt", "vertices": s.vertices,
+        })).collect::<Vec<_>>(),
+        "mesh_parts": manifest.mesh_parts.iter().map(|p| json!({
+            "name": p.name, "position": p.position, "rotation_degrees": p.rotation_degrees,
+            "scale": p.scale,
+            "passages": p.passages.iter().map(|q| json!({
+                "name": q.name, "position": q.position, "forward": q.forward,
+                "width_m": q.width_m, "length_m": q.length_m,
+                "clear_height_m": q.clear_height_m, "through": q.through,
+            })).collect::<Vec<_>>(),
+        })).collect::<Vec<_>>(),
+    });
+    let bounds: Vec<f32> = manifest
+        .mesh_parts
+        .iter()
+        .flat_map(|p| p.imported_bounds.unwrap_or_default().into_iter().flatten())
+        .collect();
+    crate::simulation::parking::validation::editor_lot_payload(&params, &bounds)
+}
+
+// `PARK-18`: paving that stops 2 cm short of the lot's street edge leaves the way in from the
+// Driveway unpaved. The placed lot rejects its spot, and the editor rejects it with the same
+// words; paved to the edge, both accept it. The dock, proven from its gate, follows suit.
+#[test]
+fn the_editor_rejects_the_way_in_from_the_driveway_as_the_placed_lot_does() {
+    for front in ["20", "19.98"] {
+        let mut core = core();
+        // The yard's spot moved off the street edge, reached through a car Driveway.
+        let toml = YARD
+            .replace("PASSAGE", LANE)
+            .replace("GATE_WIDTH", "6")
+            .replace("position = [8, 0, 20]", "position = [8, 0, 8]")
+            .replace(
+                "\n[[site_surfaces]]",
+                "\n[[anchors]]\ntype = \"driveway\"\nposition = [8, 0, 20]\nforward = [0, 0, -1]\nwidth_m = 3\nvehicle_class = \"car\"\n\n[[site_surfaces]]",
+            )
+            .replace("[15, 20], [-15, 20]", &format!("[15, {front}], [-15, {front}]"));
+        let mut manifest = AssetManifest::from_str(&toml).unwrap();
+        for part in &mut manifest.mesh_parts {
+            part.imported_bounds = Some(match part.name.as_str() {
+                "bunker" => [[-4.0, 0.0, -8.0], [4.0, 10.0, 8.0]],
+                _ => [[-6.0, 0.0, -6.0], [6.0, 6.0, 6.0]],
+            });
+        }
+        let id = manifest.qualified_id("freight");
+        core.allocator.registry.register("freight", manifest, String::new());
+        let index = core.place_service_building_internal(&id, 0.0, -40.0).unwrap();
+        core.publish_pending_building_site_changes();
+        let handle = core.allocator.building_handles.handle(index).to_bits();
+        let placed: Vec<_> = core.parking_rejections(index).into_owned();
+        let editor = editor_payload_of(&core, &id);
+        let edited: Vec<_> = editor["rejected"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| format!("{id} parking anchor {}: {}", r["anchor"], r["reason"].as_str().unwrap()))
+            .collect();
+        assert_eq!(edited, placed, "paving to z {front}");
+        assert_eq!(placed.is_empty(), front == "20", "{placed:?}");
+        if front != "20" {
+            assert!(placed[0].ends_with("no room to drive in: the way in from the Driveway leaves the paved yard (the way needs about 1.8 m of clear paving)"), "{placed:?}");
+        }
+        // So is the dock's: its route from the gate is the editor's, point for point in lot
+        // terms, and its way in from the gate is unpaved the same way.
+        let docks = dock(&core, handle);
+        if front != "20" {
+            assert!(docks.is_empty());
+            let edited: Vec<_> = editor["dock_rejected"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|r| format!("{id} loading bay {}: {}", r["anchor"], r["reason"].as_str().unwrap()))
+                .collect();
+            assert_eq!(edited, core.parking.dock_diagnostics[&handle]);
+            continue;
+        }
+        assert_eq!(docks.len(), 1, "{:?}", core.parking.dock_diagnostics);
+        let route = &editor["docks"][0]["route"];
+        let b = &core.allocator.buildings[index];
+        let (bx, bz) = crate::simulation::buildings::allocator::building_local_xz_basis(
+            b.facing_dir,
+            [0.0, 0.0, 1.0],
+        );
+        for (k, world) in docks[0].1.path.iter().enumerate() {
+            let local = [0, 1].map(|i| route[k][i].as_f64().unwrap() as f32);
+            let expected = Vector2::new(b.center_x, b.center_y) + bx * local[0] + bz * local[1];
+            assert!(expected.distance_to(Vector2::new(world[0], world[1])) < 1e-3,
+                "route point {k}: placed {world:?}, editor {local:?}");
+        }
+    }
+}
+
+// The inspector's dock lines (`dock_usable`, `dock_bays`, `dock_rejected`): a proven yard has
+// its one dock usable and no reason; one without its passage none, with the reason, also after
+// a load, which keeps no reason and derives it again.
+#[test]
+fn the_inspector_shows_a_buildings_docks_and_their_rejections() {
+    let (core, _) = place_yard(true, "6");
+    let (usable, bays, reasons) = core.dock_lines(0).expect("a yard with a gate");
+    assert_eq!((usable, bays, reasons.len()), (1, 1, 0));
+    let (mut core, building) = place_yard(false, "6");
+    let reason = "freight:building.industrial.freight_yard loading bay 3: inside the building: mark the lane as a Passage on its mesh part";
+    let lines = |core: &SimCore| {
+        let (usable, bays, reasons) = core.dock_lines(0).expect("a yard with a gate");
+        (usable, bays, reasons.into_owned())
+    };
+    assert_eq!(lines(&core), (0, 1, vec![reason.to_owned()]));
+    let path = std::env::temp_dir().join(format!("metrum_dock_lines_{}.sqlite", std::process::id()));
+    let path_text = path.to_str().expect("a temporary path");
+    core.save_game_settled_at(path_text, None, 0).expect("the yard saves");
+    core.load_game_internal(path_text).expect("the yard loads");
+    let _ = std::fs::remove_file(&path);
+    assert!(!core.parking.dock_diagnostics.contains_key(&building));
+    assert_eq!(lines(&core), (0, 1, vec![reason.to_owned()]));
 }

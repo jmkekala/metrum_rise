@@ -36,6 +36,7 @@ pub(crate) use placement::{ExplicitPlacementKind, ExplicitServicePlacementPrevie
 pub(crate) use placement::ExplicitSiteSnapshot;
 pub(crate) use placement::SpawnProfileAssetCandidates;
 pub(crate) use placement::construction_duration_hours;
+pub(crate) use placement::BUILDING_SITE_ROAD_SAMPLE_INSET_M;
 #[cfg(test)]
 pub(crate) use site::SiteRoads;
 pub(crate) use site::BuildingSiteSurfaceClient;

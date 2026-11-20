@@ -673,12 +673,14 @@ fn load_document(path: &Path) -> Result<VarDictionary, String> {
     }
     if let Some(parts) = state["params"]["mesh_parts"].as_array() {
         for part in parts {
-            if let Some(lods) = part.get("lods")
-                && !lods
-                    .as_array()
-                    .is_some_and(|values| values.iter().all(Value::is_object))
-            {
-                return Err("Draft mesh LODs must be an array of objects".into());
+            for (key, what) in [("lods", "LODs"), ("passages", "passages")] {
+                if let Some(entries) = part.get(key)
+                    && !entries
+                        .as_array()
+                        .is_some_and(|values| values.iter().all(Value::is_object))
+                {
+                    return Err(format!("Draft mesh {what} must be an array of objects"));
+                }
             }
         }
     }

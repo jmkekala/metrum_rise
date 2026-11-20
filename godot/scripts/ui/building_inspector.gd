@@ -246,6 +246,12 @@ func _populate(entry: Dictionary, info: Dictionary) -> void:
 	var parking_rejected: PackedStringArray = info.get("parking_rejected", PackedStringArray())
 	for reason in parking_rejected:
 		_add_alert(pages["Parking"], reason, false)
+	# Loading bays, for an asset with a freight Driveway (`PARK-19`).
+	var dock_rejected: PackedStringArray = info.get("dock_rejected", PackedStringArray())
+	if info.has("dock_bays"):
+		_row(pages["Parking"], "Loading bays", "%d of %d usable" % [int(info["dock_usable"]), int(info["dock_bays"])])
+		for reason in dock_rejected:
+			_add_alert(pages["Parking"], reason, false)
 
 	var tabs := TabContainer.new()
 	_style_tabs(tabs, accent)
@@ -257,7 +263,7 @@ func _populate(entry: Dictionary, info: Dictionary) -> void:
 			page.free()
 			continue
 		tabs.add_child(page)
-		if title == "Parking" and not parking_rejected.is_empty():
+		if title == "Parking" and not (parking_rejected.is_empty() and dock_rejected.is_empty()):
 			var index := tabs.get_tab_count() - 1
 			tabs.set_tab_icon(index, load(HudIcons.ICON_DIR + "warning.svg") as Texture2D)
 			tabs.set_tab_icon_max_width(index, int(UIStyle.scaled_px(13.0)))

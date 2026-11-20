@@ -4,7 +4,11 @@
 
 use super::geometry::{covered, overlaps, rectangle};
 use godot::prelude::Vector2;
-use serde_json::{Value, json};
+
+mod editor;
+pub(crate) use editor::editor_lot_payload;
+#[cfg(test)]
+pub(crate) use editor::editor_payload;
 
 #[derive(Clone, Copy)]
 pub(super) struct AnchorBay {
@@ -330,205 +334,50 @@ pub(super) fn validate_bay(
     })
 }
 
-/// Editor payload with original anchor indices and exact local rejection reasons.
-/// O(A²D + AD × local polygon overlay work), independent of city size. The road-to-driveway
-/// segment needs a placed frontage and is checked by `lot_bays`, never guessed in the editor.
-pub(crate) fn editor_payload(params: &Value, structures: &[f32]) -> Value {
-    let anchors = params["anchors"]
-        .as_array()
-        .map(Vec::as_slice)
-        .unwrap_or_default();
-    let vector = |value: &Value| {
-        Vector2::new(
-            value[0].as_f64().unwrap_or(0.0) as f32,
-            value[2].as_f64().unwrap_or(0.0) as f32,
-        )
-    };
-    let number = |a: &Value, key: &str, fallback| a[key].as_f64().unwrap_or(fallback) as f32;
-    let parking: Vec<_> = anchors
-        .iter()
-        .enumerate()
-        .filter(|(_, a)| a["anchor_type"] == "parking")
-        .collect();
-    let bays: Vec<_> = parking
-        .iter()
-        .map(|(_, a)| {
-            // Entry edge to centre, matching `lot_bays`.
-            let forward = vector(&a["forward"]).normalized();
-            let length = number(a, "length_m", 5.0);
-            AnchorBay {
-                pos: vector(&a["position"]) + forward * (length * 0.5),
-                forward,
-                width: number(a, "width_m", 2.5),
-                length,
-            }
+// A Driveway admits freight by its `vehicle_class` alone (owner decision 11). O(1).
+pub(super) fn is_freight_class(class: Option<&str>) -> bool {
+    class.map(str::trim) == Some("freight")
+}
+
+// A loading bay is a truck's when its class is `freight` or absent. O(1).
+pub(super) fn is_dock_class(class: Option<&str>) -> bool {
+    class.is_none_or(|class| class.trim() == "freight")
+}
+
+/// One arrival gate per building (`PARK-19`): the first dock takes the first gate, in anchor
+/// order, that `prove` proves its route through; every later dock must prove through that gate,
+/// and one that only another gate proves is rejected as differing. `prove(slot, gates)` is the
+/// dock proof of dock `slot` over `gates`. Shared by the placed lot and the asset editor.
+/// O(docks × gates) proofs, two per later dock that fails.
+pub(super) fn dock_routes(
+    docks: usize,
+    gates: &[[Vector2; 2]],
+    prove: impl Fn(usize, &[[Vector2; 2]]) -> Result<([Vector2; 4], Option<usize>), Rejection>,
+) -> Vec<Result<[Vector2; 4], Rejection>> {
+    let mut building_gate = None;
+    (0..docks)
+        .map(|slot| match building_gate {
+            None => prove(slot, gates).map(|(path, gate)| {
+                building_gate = gate;
+                path
+            }),
+            Some(gate) => prove(slot, &gates[gate..=gate])
+                .map(|(path, _)| path)
+                .map_err(|rejection| {
+                    if prove(slot, gates).is_ok() {
+                        "its Driveway differs from the building's first loading bay's".into()
+                    } else {
+                        rejection
+                    }
+                }),
         })
-        .collect();
-    let footprints: Vec<_> = bays
-        .iter()
-        .map(|b| rectangle(b.pos, b.forward, b.width, b.length))
-        .collect();
-    let support: Vec<_> = params["site_surfaces"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter(|s| s["material"] == "asphalt" || s["material"] == "concrete")
-        .filter_map(|s| s["vertices"].as_array())
-        .map(|vertices| {
-            vertices
-                .iter()
-                .map(|p| [p[0].as_f64().unwrap_or(0.0), p[1].as_f64().unwrap_or(0.0)])
-                .collect()
-        })
-        .collect();
-    let walls: Vec<_> = structures
-        .as_chunks::<4>()
-        .0
-        .iter()
-        .map(|b| {
-            [
-                Vector2::new(b[0], b[1]),
-                Vector2::new(b[2], b[1]),
-                Vector2::new(b[2], b[3]),
-                Vector2::new(b[0], b[3]),
-            ]
-        })
-        .collect();
-    let car = ProofClass::Car.proof();
-    let has_driveway = anchors.iter().any(|a| a["anchor_type"] == "driveway");
-    let paths: Vec<_> = anchors
-        .iter()
-        .filter(|a| a["anchor_type"] == "driveway" && number(a, "width_m", 3.0) >= car.min_gate)
-        .filter(|a| {
-            params.get("frontage_forward").is_none_or(|outward| {
-                driveway_points_inward(
-                    vector(&a["forward"]).normalized(),
-                    vector(outward).normalized(),
-                )
-            })
-        })
-        .map(|a| {
-            let approach = vector(&a["position"]) + vector(&a["forward"]).normalized() * car.lead;
-            [approach, approach]
-        })
-        .collect();
-    let outward = params
-        .get("frontage_forward")
-        .map(|outward| vector(outward).normalized());
-    let half_extents = params.get("lot_half_extents").map(|h| {
-        Vector2::new(
-            h[0].as_f64().unwrap_or(0.0) as f32,
-            h[1].as_f64().unwrap_or(0.0) as f32,
-        )
-    });
-    let rejected: Vec<_> = parking
-        .iter()
-        .enumerate()
-        .filter_map(|(slot, (index, _))| {
-            let bay = &bays[slot];
-            let entry = bay.pos - bay.forward * (bay.length * 0.5);
-            // Without a city the street side of the edge is assumed open; the placed
-            // building's inspector reports the real road connection.
-            let street = outward
-                .zip(half_extents)
-                .filter(|&(outward, half)| opens_onto_street(entry, bay.forward, outward, half))
-                .map(|_| entry - bay.forward * STREET_APPROACH_M);
-            validate_bay(
-                ProofClass::Car,
-                slot,
-                &bays,
-                &footprints,
-                &[],
-                &support,
-                has_driveway,
-                &paths,
-                street,
-                |foot| walls.iter().any(|wall| overlaps(foot, wall)),
-            )
-            .err()
-            .map(|rejection| {
-                let shape = rejection
-                    .shape
-                    .map(|shape| shape.map(|p| [p.x, p.y]).to_vec());
-                json!({"anchor":index, "reason":rejection.reason, "shape":shape})
-            })
-        })
-        .collect();
-    json!({"rejected":rejected, "frontage_check":"Road connection checked in the placed building inspector"})
+        .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::super::geometry::precise;
     use super::*;
-    #[test]
-    fn editor_payload_reports_missing_driveway_and_accepts_clear_asset() {
-        let mut params = json!({"anchors":[{"anchor_type":"parking", "position":[0,0,8],
-            "forward":[0,0,1], "width_m":2.5, "length_m":5.0}],
-            "site_surfaces":[{"material":"asphalt", "vertices":[[-20,-20],[20,-20],[20,20],[-20,20]]}]});
-        assert_eq!(
-            editor_payload(&params, &[])["rejected"][0]["reason"],
-            "needs a Driveway point, or put the spot's front edge on the street edge pointing into the lot"
-        );
-        params["anchors"]
-            .as_array_mut()
-            .unwrap()
-            .push(json!({"anchor_type":"driveway",
-            "position":[0,0,-10], "forward":[0,0,1]}));
-        assert_eq!(editor_payload(&params, &[])["rejected"], json!([]));
-    }
-
-    #[test]
-    fn only_a_real_turn_needs_a_turning_envelope_and_the_rejection_names_it() {
-        // Two end-on spots beside a shallow forecourt (the Kenney pharmacy layout).
-        let params = json!({"frontage_forward":[0,0,-1], "lot_half_extents":[10,10],
-            "anchors":[
-            {"anchor_type":"parking", "position":[-3.71,0,-7.89], "forward":[-1,0,0],
-                "width_m":2.5, "length_m":5.0},
-            {"anchor_type":"parking", "position":[-3.78,0,-4.53], "forward":[-1,0,0],
-                "width_m":2.5, "length_m":5.0},
-            {"anchor_type":"driveway", "position":[0.68,0,-10], "forward":[0,0,1], "width_m":3.0}],
-            "site_surfaces":[{"material":"asphalt",
-            "vertices":[[-10,-10],[5.39,-10],[5.53,-2.69],[-10,-2.77]]}]});
-        let rejected = editor_payload(&params, &[])["rejected"].clone();
-        // The first spot's way in bends by about 12° at the aisle: no envelope there, whose
-        // square would cross the street edge.
-        assert_eq!(rejected.as_array().unwrap().len(), 1, "{rejected}");
-        assert_eq!(rejected[0]["anchor"], 1);
-        // The second is reached diagonally right under the shop front.
-        assert_eq!(
-            rejected[0]["reason"],
-            "no room to drive in: the way to the front of the spot leaves the paved yard (a car drives straight from just inside the Driveway to about 2.5 m in front of the spot, on a 1.8 m strip of clear paving reaching half a car length past both ends)"
-        );
-        assert_eq!(rejected[0]["shape"].as_array().unwrap().len(), 4);
-    }
-
-    #[test]
-    fn a_spot_needs_room_in_front_to_line_up_and_the_rejection_says_so() {
-        // A shop-front row (the K-market layout): spots face the shop, the street runs behind.
-        let mut params = json!({"frontage_forward":[0,0,1], "lot_half_extents":[20,15],
-            "anchors":[
-            {"anchor_type":"parking", "position":[-2.5,0,11.42], "forward":[0,0,-1],
-                "width_m":2.5, "length_m":5.0},
-            {"anchor_type":"driveway", "position":[-18.5,0,15], "forward":[0,0,-1], "width_m":3.0}],
-            "site_surfaces":[{"material":"asphalt",
-            "vertices":[[-20,-15],[20,-15],[20,15],[-20,15]]}]});
-        let reason = "no room to drive in: the way to the front of the spot leaves the paved yard (a car drives straight from just inside the Driveway to about 2.5 m in front of the spot, on a 1.8 m strip of clear paving reaching half a car length past both ends)";
-        // Its open end is 1 m from the street edge, with no paving for the car to line up on.
-        assert_eq!(
-            editor_payload(&params, &[])["rejected"][0]["reason"],
-            reason
-        );
-        // Moved towards the shop, it still cannot be reached from a Driveway in the lot's corner.
-        params["anchors"][0]["position"] = json!([-2.5, 0, 7.5]);
-        assert_eq!(
-            editor_payload(&params, &[])["rejected"][0]["reason"],
-            reason
-        );
-        params["anchors"][1]["position"] = json!([-17.0, 0, 15]);
-        assert_eq!(editor_payload(&params, &[])["rejected"], json!([]));
-    }
-
     // A loading bay at `x`, its entry edge on z = 0 facing +z, reached from a gate at
     // (0, -20) facing +z, on a yard paved 40 m square, with one wall box. The dock proof as
     // `lot_proof` runs it, without a city: the gate's road connection a metre outside it.
@@ -618,24 +467,6 @@ mod tests {
         assert_eq!(
             prove(AnchorBay { width: 3.5, ..small }, true, &bunker).as_deref(),
             Some("inside the building: mark the lane as a Passage on its mesh part")
-        );
-    }
-
-    #[test]
-    fn a_bay_opening_onto_the_street_needs_no_driveway() {
-        // A detached-house layout: the bay's front edge is the lot's street edge.
-        let mut params = json!({"frontage_forward":[0,0,1], "lot_half_extents":[10,15],
-            "anchors":[{"anchor_type":"parking", "position":[-4.2,0,15],
-            "forward":[0,0,-1], "width_m":2.5, "length_m":4.6}],
-            "site_surfaces":[{"material":"asphalt",
-            "vertices":[[-6.9,8.07],[4.18,8],[4.2,14.98],[-6.86,14.98]]}]});
-        assert_eq!(editor_payload(&params, &[])["rejected"], json!([]));
-        // Set back from the street edge, the same bay needs a Driveway.
-        params["anchors"][0]["position"] = json!([-4.2, 0, 13]);
-        params["anchors"][0]["length_m"] = json!(4.5);
-        assert_eq!(
-            editor_payload(&params, &[])["rejected"][0]["reason"],
-            "needs a Driveway point, or put the spot's front edge on the street edge pointing into the lot"
         );
     }
 }

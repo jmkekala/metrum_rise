@@ -37,6 +37,9 @@ const SELECTION_CORNER_FRACTION := 0.22
 const SELECTION_CORNER_MIN_M := 0.55
 const SELECTION_CORNER_MAX_M := 2.20
 const ANCHOR_DASH_M := 0.80
+const DOCK_ROUTE_COLOR := Color(0.2, 0.85, 1.0)
+const DOCK_ROUTE_WIDTH_M := 0.3
+const PASSAGE_COLOR := Color(1.0, 0.75, 0.2)
 const ANCHOR_GAP_M := 0.40
 const SITE_SURFACE_FILL_Y := 0.09
 const SITE_SURFACE_GUIDE_Y := 0.105
@@ -104,6 +107,13 @@ var _site_anchors: Array[Dictionary] = []
 var _parking_rejections: Dictionary = {}
 # Rejected anchor index -> the asset-local XZ corners of the swept shape that failed, if any.
 var _parking_rejection_shapes: Dictionary = {}
+# Loading bay anchor index -> why it would publish no dock, where that does not block export.
+var _parking_notes: Dictionary = {}
+# Loading bay anchor index -> its dock's proven route, asset-local XZ points from the gate's road
+# connection to the bay's centre (`PARK-19`).
+var _dock_routes: Dictionary = {}
+# Every passage's ground rectangle and ends, as the lot check reports them.
+var _passages: Array = []
 # The site object under the cursor, whose name shows while hovered (`kind:index`).
 var _hovered_label_key := ""
 var _site_surfaces: Array[Dictionary] = []
@@ -525,14 +535,27 @@ func set_selected_mesh_parts(indices: Array, active_index: int = -1) -> void:
 func parking_rejection(index: int) -> String:
 	return str(_parking_rejections.get(index, ""))
 
-## Replace the editor-only site anchor preview list.
+## Why loading bay `index` publishes no dock where that does not block export, or "".
+func parking_note(index: int) -> String:
+	return str(_parking_notes.get(index, ""))
+
+## Replace the lot check's results the site overlay draws: rejected spots and loading bays with
+## their failed shapes, notes, dock routes and passages.
 func set_parking_diagnostics(payload: Dictionary) -> void:
 	_parking_rejections.clear()
 	_parking_rejection_shapes.clear()
-	for issue: Dictionary in payload.get("rejected", []):
+	_parking_notes.clear()
+	_dock_routes.clear()
+	for issue: Dictionary in payload.get("rejected", []) + payload.get("dock_rejected", []):
+		if not bool(issue.get("blocks", true)):
+			_parking_notes[int(issue["anchor"])] = str(issue["reason"])
+			continue
 		_parking_rejections[int(issue["anchor"])] = str(issue["reason"])
 		if issue.get("shape") is Array:
 			_parking_rejection_shapes[int(issue["anchor"])] = issue["shape"]
+	for dock: Dictionary in payload.get("docks", []):
+		_dock_routes[int(dock["anchor"])] = dock["route"]
+	_passages = payload.get("passages", [])
 
 ## Shows the name of the site object under the cursor; other names show only when selected or
 ## rejected. `kind` is "anchor" or "surface", or "" for none.
@@ -1223,7 +1246,7 @@ func _build_site_anchor_overlay() -> void:
 	if not _site_anchor_overlay:
 		return
 	_clear_site_anchor_labels()
-	if _site_anchors.is_empty():
+	if _site_anchors.is_empty() and _passages.is_empty():
 		_site_anchor_overlay.mesh = null
 		return
 
@@ -1346,12 +1369,41 @@ func _build_site_anchor_overlay() -> void:
 			var a: Array = failed[corner]
 			var b: Array = failed[(corner + 1) % 4]
 			_draw_dashed_line(im, Vector3(a[0], y, a[1]), Vector3(b[0], y, b[1]), Color(1.0, 0.2, 0.15), ANCHOR_BORDER_WIDTH_M, ANCHOR_DASH_M, ANCHOR_GAP_M)
+	# The selected loading bay's proven route, from its gate's road connection to its centre.
+	var route = _dock_routes.get(_selected_site_anchor_index)
+	if route is Array:
+		var y := _preview_anchor_position(_site_anchors[_selected_site_anchor_index]).y + 0.16
+		for point in route.size() - 1:
+			var a: Array = route[point]
+			var b: Array = route[point + 1]
+			_draw_thick_line(im, Vector3(a[0], y, a[1]), Vector3(b[0], y, b[1]), DOCK_ROUTE_COLOR, DOCK_ROUTE_WIDTH_M)
+	_draw_passages(im)
 	im.surface_end()
 
 	im.surface_set_material(0, _new_overlay_material())
 	_site_anchor_overlay.mesh = im
 	_apply_site_label_visibility()
 	_site_labels_ready.call_deferred()
+
+# Each passage as its dashed ground rectangle with a solid mouth, and a solid far end when it is
+# open there too.
+func _draw_passages(im: ImmediateMesh) -> void:
+	for passage: Dictionary in _passages:
+		var corners: Array = passage["corners"]
+		var y := 0.14
+		for corner in 4:
+			var a: Array = corners[corner]
+			var b: Array = corners[(corner + 1) % 4]
+			_draw_dashed_line(im, Vector3(a[0], y, a[1]), Vector3(b[0], y, b[1]), PASSAGE_COLOR, ANCHOR_BORDER_WIDTH_M, ANCHOR_DASH_M, ANCHOR_GAP_M)
+		var mouth := Vector3(float(passage["mouth"][0]), y, float(passage["mouth"][1]))
+		var far := Vector3(float(passage["far"][0]), y, float(passage["far"][1]))
+		var along := far - mouth
+		var across := Vector3(-along.z, 0.0, along.x).normalized()
+		# The rectangle's extent across the lane: its diagonal projected on the across axis.
+		var diagonal := Vector3(float(corners[2][0]) - float(corners[0][0]), 0.0, float(corners[2][1]) - float(corners[0][1]))
+		var half := 0.5 * absf(diagonal.dot(across))
+		for end in [mouth, far] if bool(passage.get("through", false)) else [mouth]:
+			_draw_thick_line(im, end - across * half, end + across * half, PASSAGE_COLOR, DOCK_ROUTE_WIDTH_M)
 
 func _draw_quad_fill(im: ImmediateMesh, corners: Array, color: Color) -> void:
 	if corners.size() != 4:

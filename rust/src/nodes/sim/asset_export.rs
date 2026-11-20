@@ -6,7 +6,8 @@
 //! publication belongs exclusively to `assets::authoring::files`; this module only reads packs.
 
 use crate::assets::asset::{
-    AnchorType, LotEdge, PlacementMode, SiteSurfaceMaterial, YardHedgeKind, YardPlantKind,
+    AnchorType, LotEdge, Passage, PlacementMode, SiteSurfaceMaterial, YardHedgeKind,
+    YardPlantKind,
 };
 use crate::assets::pack::toml_string;
 use crate::assets::{AssetManifest, PackManifest};
@@ -96,6 +97,10 @@ pub struct MeshPartParams {
     /// LOD entries ordered from highest to lowest detail.
     #[serde(default)]
     pub lods: Vec<LodParams>,
+    /// Openings a vehicle drives into or through (`PARK-19`), exported as
+    /// `[[mesh_parts.passages]]` and validated with the manifest.
+    #[serde(default)]
+    pub passages: Vec<Passage>,
 }
 
 /// Flat JSON payload sent by the building importer form.
@@ -405,6 +410,18 @@ fn build_asset_toml(p: &ExportParams) -> Result<String, String> {
             if let Some(max) = lod.distance_max_m {
                 out.push_str(&format!("distance_max_m = {max}\n"));
             }
+        }
+        for passage in &part.passages {
+            out.push_str("\n[[mesh_parts.passages]]\n");
+            out.push_str(&format!("name = {}\n", toml_string(&passage.name)));
+            let [x, y, z] = passage.position;
+            out.push_str(&format!("position = [{x}, {y}, {z}]\n"));
+            let [fx, fy, fz] = passage.forward;
+            out.push_str(&format!("forward = [{fx}, {fy}, {fz}]\n"));
+            out.push_str(&format!("width_m = {}\n", passage.width_m));
+            out.push_str(&format!("length_m = {}\n", passage.length_m));
+            out.push_str(&format!("clear_height_m = {}\n", passage.clear_height_m));
+            out.push_str(&format!("through = {}\n", passage.through));
         }
     }
 
@@ -884,7 +901,8 @@ pub fn get_asset_manifest_json_internal(
         "asset_set": m.asset_set,
         "tags": m.tags,
         "asset_class": m.class().map(|c| format!("{c:?}").to_lowercase()).unwrap_or_default(),
-        "mesh_parts": m.mesh_parts.iter().map(|part| serde_json::json!({
+        "mesh_parts": m.mesh_parts.iter().map(|part| {
+            let mut entry = serde_json::json!({
             "name": part.name,
             "position": part.position,
             "rotation_degrees": part.rotation_degrees,
@@ -895,7 +913,21 @@ pub fn get_asset_manifest_json_internal(
                 "distance_min_m": l.distance_min_m,
                 "distance_max_m": l.distance_max_m,
             })).collect::<Vec<_>>(),
-        })).collect::<Vec<_>>(),
+            });
+            // Only a part with passages carries the key, so other documents stay as they were.
+            if !part.passages.is_empty() {
+                entry["passages"] = part.passages.iter().map(|p| serde_json::json!({
+                    "name": p.name,
+                    "position": p.position,
+                    "forward": p.forward,
+                    "width_m": p.width_m,
+                    "length_m": p.length_m,
+                    "clear_height_m": p.clear_height_m,
+                    "through": p.through,
+                })).collect();
+            }
+            entry
+        }).collect::<Vec<_>>(),
         "anchors": m.anchors.iter().map(|a| serde_json::json!({
             "anchor_type": anchor_type_key(a.anchor_type),
             "name": a.name,
@@ -1140,6 +1172,41 @@ mod tests {
         assert_eq!(loaded["icon"], "parking_lot");
         data["icon"] = serde_json::json!("../lot.svg");
         assert!(validate_asset_params_internal(&data.to_string()).contains("icon"));
+    }
+
+    // A passage survives the editor's load JSON, its export and the manifest parse (`PARK-19`),
+    // and a bad one is a validation issue, not a silent drop.
+    #[test]
+    fn round_trip_keeps_passages_and_refuses_a_bad_one() {
+        let mut data: serde_json::Value =
+            serde_json::from_str(&minimal_building_json("building.industrial.yard")).unwrap();
+        let lane = serde_json::json!({"name": "lane", "position": [-1.9, 0.0, 8.125],
+            "forward": [0.0, 0.0, -1.0], "width_m": 5.0, "length_m": 16.25,
+            "clear_height_m": 4.6, "through": true});
+        data["mesh_parts"][0]["passages"] = serde_json::json!([lane]);
+        let params: ExportParams = serde_json::from_value(data.clone()).unwrap();
+        let (toml, _) = validated_tomls(&params).unwrap();
+        let manifest = AssetManifest::from_str(&toml).unwrap();
+        let passage = &manifest.mesh_parts[0].passages[0];
+        assert_eq!(
+            (passage.position, passage.length_m, passage.through),
+            ([-1.9, 0.0, 8.125], 16.25, true)
+        );
+        let mut registry = crate::assets::registry::AssetRegistry::new();
+        registry.register("test-pack", manifest, String::new());
+        let loaded: serde_json::Value = serde_json::from_str(&get_asset_manifest_json_internal(
+            &registry,
+            "test-pack:building.industrial.yard",
+        ))
+        .unwrap();
+        assert_eq!(loaded["mesh_parts"][0]["passages"][0]["name"], lane["name"]);
+        // Loaded as the editor loads it and exported again, the TOML is the same.
+        let mut again = data.clone();
+        again["mesh_parts"] = loaded["mesh_parts"].clone();
+        let again: ExportParams = serde_json::from_value(again).unwrap();
+        assert_eq!(validated_tomls(&again).unwrap().0, toml);
+        data["mesh_parts"][0]["passages"][0]["forward"] = serde_json::json!([0.6, 0.0, 0.8]);
+        assert!(validate_asset_params_internal(&data.to_string()).contains("lot axis"));
     }
 
     #[test]

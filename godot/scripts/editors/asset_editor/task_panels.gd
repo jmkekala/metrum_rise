@@ -69,6 +69,7 @@ func _model() -> void:
 	v._part_z_spin = _geometry_number(part, "_part_z", "Position Z (m)", -500, 500, 0.1, e._on_part_transform_changed.bind("z"))
 	v._part_rotation_y_spin = _geometry_number(part, "_part_yaw", "Rotation Y (°)", -180, 180, 1, e._on_part_transform_changed.bind("yaw"))
 	v.geometry_button(part, "Fit selected part to lot", e._on_autofit_pressed)
+	e._passages.build(v, v.part_properties)
 	v.part_properties.visible = false
 	var brightness: SpinBox = v.number_field(box, "window_brightness", "Window brightness", 10.0, 0.1)
 	brightness.allow_greater = false
