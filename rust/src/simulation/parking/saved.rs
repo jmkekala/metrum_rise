@@ -493,6 +493,19 @@ impl ParkingSystem {
             if trip.phase == ParkingTripPhase::None {
                 continue;
             }
+            // A freight carrier's yard trip holds no car: a pull-in or a stand names a dock row,
+            // which may since have gone inactive (`PARK-20`).
+            if trip.freight_gate {
+                let docked = matches!(trip.phase, ParkingTripPhase::PullIn | ParkingTripPhase::AtDock);
+                let dock = self
+                    .place_handles
+                    .resolve(trip.destination)
+                    .map(|p| self.places.source[p]);
+                if docked && !matches!(dock, Some(PlaceSource::Dock { .. })) {
+                    return Err("freight trip names no dock".into());
+                }
+                continue;
+            }
             let v = self
                 .vehicle_handles
                 .resolve(trip.vehicle)

@@ -69,11 +69,14 @@ impl Default for ParkingWork {
     }
 }
 
+// A resident's car leg, which holds a reservation. A freight carrier's pull-in holds a dock
+// instead, which no reservation watch reads (`PARK-20`).
 fn on_a_car_leg(trip: &ParkingTrip) -> bool {
-    matches!(
-        trip.phase,
-        ParkingTripPhase::PullOut | ParkingTripPhase::Drive | ParkingTripPhase::PullIn
-    )
+    !trip.freight_gate
+        && matches!(
+            trip.phase,
+            ParkingTripPhase::PullOut | ParkingTripPhase::Drive | ParkingTripPhase::PullIn
+        )
 }
 
 impl MovementSlices<'_> {

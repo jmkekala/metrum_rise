@@ -75,6 +75,11 @@ pub(super) unsafe fn arrive_in_building(
             // Arrival is an event for ordered custody release, including a wholly walking return.
             slices.parking_trip.get_mut(i).ready = true;
         }
+        // A carrier that came through its gate, or was sent to the door from it, has ended its
+        // yard trip (`PARK-20`). One byte test per arrival.
+        if slices.parking_trip.get(i).freight_gate {
+            *slices.parking_trip.get_mut(i) = Default::default();
+        }
         let home = *slices.home.get(i);
         let activity = *slices.activity.get(i);
         *slices.activity.get_mut(i) = if building_id == home && activity != ACTIVITY_SHOPPING {

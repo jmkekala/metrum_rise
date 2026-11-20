@@ -421,6 +421,43 @@ pub(crate) struct FreightGate {
     pub leave: BuildingEntrance,
 }
 
+impl BuildingAllocator {
+    /// The arrival entrance of the freight gate of the building whose stable handle bits are
+    /// `handle` (`PARK-20`), its lane ids derived from the current lanes, since a lane rebuild
+    /// renumbers them under the cached copy. `None` without a published dock: one emptiness
+    /// test in a city with none. O(1) plus O(lanes on the gate's edge), allocation-free.
+    pub(crate) fn freight_gate_entrance(
+        &self,
+        handle: u64,
+        graph: &RegionGraph,
+        lanes: &crate::simulation::network::lanes::LaneSystem,
+    ) -> Option<BuildingEntrance> {
+        if self.freight_gates.is_empty() {
+            return None;
+        }
+        let mut entrance = self.freight_gates.get(&handle)?.arrive.clone();
+        Self::refresh_entrance_lanes(&mut entrance, graph, lanes);
+        Some(entrance)
+    }
+
+    /// [`Self::freight_gate_entrance`] of building `index`, with its stable handle bits: the
+    /// destination of a freight plan, whose carrier then uses the yard (`PARK-20`). O(1) plus
+    /// the refresh.
+    pub(crate) fn freight_gate_arrival(
+        &self,
+        index: usize,
+        graph: &RegionGraph,
+        lanes: &crate::simulation::network::lanes::LaneSystem,
+    ) -> Option<(u64, BuildingEntrance)> {
+        if self.freight_gates.is_empty() || index >= self.buildings.len() {
+            return None;
+        }
+        let handle = self.building_handles.handle(index).to_bits();
+        self.freight_gate_entrance(handle, graph, lanes)
+            .map(|entrance| (handle, entrance))
+    }
+}
+
 /// Building rows a copy of the store must refresh: the rows named by building revision steps,
 /// or every row after a step that could not name them. Unlike the bounded revision log, it is
 /// kept until its one consumer drains it, so draining never depends on how much history a log

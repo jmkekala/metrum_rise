@@ -574,6 +574,25 @@ pub(super) fn build_exact_path_for_candidate(
     graph: &RegionGraph,
     pathfind_count: &AtomicU32,
 ) -> Option<(Vec<u32>, u8)> {
+    build_exact_path(
+        candidate,
+        Some((target_building, target_zone)),
+        transit_network,
+        graph,
+        pathfind_count,
+    )
+}
+
+/// [`build_exact_path_for_candidate`], with the flow fields read only for `flow_target`'s door:
+/// `None` routes on the CCH alone, for a destination the fields do not lead to (a freight gate,
+/// `PARK-20`).
+pub(super) fn build_exact_path(
+    candidate: &mut PlannedTripCandidate,
+    flow_target: Option<(usize, ZoneType)>,
+    transit_network: &TransitNetwork,
+    graph: &RegionGraph,
+    pathfind_count: &AtomicU32,
+) -> Option<(Vec<u32>, u8)> {
     let direct_same_lane_frontage = candidate.planned_attach_lane_id
         == candidate.planned_detach_lane_id
         && candidate.planned_attach_lane_id != usize::MAX
@@ -597,12 +616,14 @@ pub(super) fn build_exact_path_for_candidate(
     TripQueryScratch::with_routes(|scratch| {
         // Car fields are free flow: once a congestion metric is adopted, cars take the
         // congested CCH route instead (`TRAFFIC-17`).
-        let flow_field = if candidate.mode != MODE_CAR {
-            transit_network.flow_fields.foot(target_zone)
-        } else if transit_network.cch_graph.congestion_weights().is_none() {
-            transit_network.flow_fields.car(target_zone)
-        } else {
-            None
+        let (target_building, flow_field) = match flow_target {
+            Some((building, zone)) if candidate.mode != MODE_CAR => {
+                (building, transit_network.flow_fields.foot(zone))
+            }
+            Some((building, zone)) if transit_network.cch_graph.congestion_weights().is_none() => {
+                (building, transit_network.flow_fields.car(zone))
+            }
+            _ => (usize::MAX, None),
         };
         if let Some(field) = flow_field
             && field

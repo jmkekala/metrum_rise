@@ -16,6 +16,7 @@ use crate::simulation::zoning::{ZoneType, ZoningSystem};
 use godot::prelude::{Vector2, Vector3};
 
 mod departure;
+mod freight_yards;
 pub(super) mod parking;
 mod parking_answers;
 mod parking_candidates;

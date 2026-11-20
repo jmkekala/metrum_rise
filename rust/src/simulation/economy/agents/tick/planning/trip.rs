@@ -12,7 +12,8 @@ use super::super::access::{
 use super::super::lane_nav::lane_terminal_node;
 use super::candidate::{
     NODE_RANK_PAIRS, NODE_RANKS, PlannedTripCandidate, TripEnd, TripLeg,
-    best_trip_candidate_for_mode, build_exact_path_for_candidate, candidate_better,
+    best_trip_candidate_for_mode, build_exact_path, build_exact_path_for_candidate,
+    candidate_better,
     candidate_lane_id, entrance_pair_supports_mode, mode_choice_cost_for,
     price_trip_without_network,
 };
@@ -59,6 +60,44 @@ pub(crate) fn plan_building_origin_trip(
 
     Some(BuiltTripPlan {
         mode: chosen.mode,
+        target_building,
+        activity,
+        planned_attach_node: chosen.planned_attach_node,
+        planned_detach_node: chosen.planned_detach_node,
+        planned_attach_lane_id: chosen.planned_attach_lane_id,
+        planned_detach_lane_id: chosen.planned_detach_lane_id,
+        planned_attach_lane_d: chosen.planned_attach_lane_d,
+        planned_detach_lane_d: chosen.planned_detach_lane_d,
+        current_path,
+        access_flags,
+    })
+}
+
+/// Builds a freight carrier's car plan from building `current_building`'s door to `gate`, the
+/// freight gate of `target_building` (`PARK-20`). The plan's end is the gate's lane point, so
+/// no flow field (they lead to doors) is read. `None` when no car route reaches the gate; the
+/// caller then plans to the door. O(4 candidate quotes + one route), as the door's plan.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn plan_building_origin_trip_to_gate(
+    current_building: usize,
+    target_building: usize,
+    activity: u8,
+    gate: &BuildingEntrance,
+    allocator: &BuildingAllocator,
+    transit_network: &TransitNetwork,
+    graph: &RegionGraph,
+    pathfind_count: &AtomicU32,
+) -> Option<BuiltTripPlan> {
+    let origin = allocator.entrances.get(current_building)?;
+    if !entrance_pair_supports_mode(MODE_CAR, true, origin, gate) {
+        return None;
+    }
+    let mut chosen =
+        best_trip_candidate_for_mode(MODE_CAR, origin, gate, transit_network, graph, pathfind_count)?;
+    let (current_path, access_flags) =
+        build_exact_path(&mut chosen, None, transit_network, graph, pathfind_count)?;
+    Some(BuiltTripPlan {
+        mode: MODE_CAR,
         target_building,
         activity,
         planned_attach_node: chosen.planned_attach_node,

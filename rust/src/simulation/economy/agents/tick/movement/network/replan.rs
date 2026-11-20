@@ -105,6 +105,13 @@ unsafe fn bootstrap_immigration_trip(
 
         let border_node = *s_cur_n.get(i);
         let home_bldg = *s_tgt_b.get(i);
+        let trip = *slices.parking_trip.get(i);
+        // A carrier the watchdog moved to a border keeps its yard trip: back to its gate while
+        // the building has one (`PARK-20`).
+        let gate = trip
+            .freight_gate
+            .then(|| allocator.freight_gate_entrance(trip.target, graph, &transit_network.lane_system))
+            .flatten();
         let plan = if *slices.pending_household_size.get(i) > 0
             || (slices.parking.is_some() && *slices.freight_shipment_id.get(i) == u64::MAX)
         {
@@ -112,7 +119,17 @@ unsafe fn bootstrap_immigration_trip(
                 plan_border_arrival(border_node, home_bldg,
                     crate::simulation::economy::agents::MODE_WALK, entrance,
                     transit_network, graph, pathfind_count))
+        } else if let Some(gate) = gate
+            && let Some(plan) = plan_border_arrival(border_node, home_bldg,
+                crate::simulation::economy::agents::MODE_CAR, &gate, transit_network, graph,
+                pathfind_count)
+        {
+            Some(plan)
         } else {
+            // To the door: a yard trip it had ends.
+            if trip.freight_gate {
+                *slices.parking_trip.get_mut(i) = Default::default();
+            }
             plan_immigration_trip(border_node, home_bldg, allocator, transit_network, graph, pathfind_count)
         };
         if let Some(plan) = plan {

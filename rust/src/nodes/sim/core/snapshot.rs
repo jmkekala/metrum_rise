@@ -40,6 +40,12 @@ pub(crate) fn access_phase_target(
     egress: bool,
 ) -> Option<Vector3> {
     let trip = core.agents.parking_trip[agent_idx];
+    if trip.phase == crate::simulation::parking::ParkingTripPhase::AtDock {
+        // A truck standing in its bay faces along its route's last leg, into the bay
+        // (`PARK-20`): a point one leg beyond the stop.
+        let [_, _, [ax, az], [sx, sz]] = core.parking.dock_route(trip.destination)?;
+        return Some(Vector3::new(2.0 * sx - ax, 0.0, 2.0 * sz - az));
+    }
     if matches!(trip.phase, crate::simulation::parking::ParkingTripPhase::PullOut | crate::simulation::parking::ParkingTripPhase::PullIn) {
         let (place, lane, distance) = if egress {
             (trip.source,core.agents.planned_attach_lane_id[agent_idx],core.agents.planned_attach_lane_d[agent_idx])

@@ -3,18 +3,20 @@
 //! Dock rows (`PARK-19`): a building's proven loading bays, kept in the place table beside the
 //! bays (handles, source lists, saved rows, cached access) but never as supply. A dock is in no
 //! chunk list and no supply count, so no search, door catchment, stored-car wake or parked-car
-//! publication sees it. Reconciled at the site and frontage hooks that reconcile bays; nothing
-//! here runs in a tick.
+//! publication sees it. Reconciled at the site and frontage hooks that reconcile bays. In a tick
+//! only the parking phase's ordered commit reads and writes a dock's holder (`PARK-20`).
 
 use super::*;
 use crate::simulation::buildings::allocator::BuildingAllocator;
+use crate::simulation::economy::agents::AgentHandle;
 use crate::simulation::network::{TransitNetwork, graph::RegionGraph};
 
 impl ParkingSystem {
     /// Replaces one building's docks with `docks` (anchor, geometry), keeping a dock whose pose
     /// is unchanged under its handle. A dock a carrier holds (`freight_holder`) goes inactive
-    /// and stays until it is released; no carrier holds one before `PARK-20`. O(old log old +
-    /// new) for the building's docks; an edit or load boundary.
+    /// and stays until it is released; callers clear the holders that have left first
+    /// ([`Self::clear_left_dock_holders`]). O(old log old + new) for the building's docks; an
+    /// edit or load boundary.
     pub(crate) fn replace_docks(&mut self, building: u64, docks: &[(u32, Bay)]) {
         let mut sources = self.building_docks.remove(&building).unwrap_or_default();
         sources.extend(
@@ -147,6 +149,51 @@ impl ParkingSystem {
         self.place_handles
             .resolve(dock)
             .map(|p| self.places.path[p][0])
+    }
+
+    /// The carrier recorded as holding `dock` (`PARK-20`): none, or one the caller must confirm
+    /// by its trip, since a carrier that left or was removed does not clear it. O(1).
+    pub(crate) fn dock_holder(&self, dock: Handle<Place>) -> AgentHandle {
+        self.place_handles
+            .resolve(dock)
+            .map_or(AgentHandle::NONE, |p| self.places.freight_holder[p])
+    }
+
+    /// Records `holder` (none to release) as the carrier holding `dock`. O(1); an ordered-phase
+    /// commit only.
+    pub(crate) fn set_dock_holder(&mut self, dock: Handle<Place>, holder: AgentHandle) {
+        if let Some(p) = self.place_handles.resolve(dock) {
+            self.places.freight_holder[p] = holder;
+        }
+    }
+
+    /// Clears the holder of each of the building's dock rows, active or retired, that `holds`
+    /// says has left it, so a reconcile removes a retired row nobody holds any more instead of
+    /// keeping it for a carrier that delivered or was removed (`PARK-20`). O(its dock rows); an
+    /// edit or load boundary.
+    pub(crate) fn clear_left_dock_holders(
+        &mut self,
+        building: u64,
+        holds: impl Fn(AgentHandle, Handle<Place>) -> bool,
+    ) {
+        let Some(sources) = self.building_docks.get(&building) else {
+            return;
+        };
+        for &dock in sources.iter().filter_map(|s| self.sources.get(s)).flatten() {
+            let p = self.place_handles.resolve(dock).expect("dock row");
+            let holder = self.places.freight_holder[p];
+            if !holder.is_none() && !holds(holder, dock) {
+                self.places.freight_holder[p] = AgentHandle::NONE;
+            }
+        }
+    }
+
+    /// A dock's proven route: the gate's road connection, the approach, the aisle and the stop.
+    /// O(1).
+    pub(crate) fn dock_route(&self, dock: Handle<Place>) -> Option<[[f32; 2]; 4]> {
+        self.place_handles
+            .resolve(dock)
+            .map(|p| self.places.path[p])
     }
 
     /// Publishes the access of the building's docks from the current door and roads, as a bay's

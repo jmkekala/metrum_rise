@@ -12,8 +12,10 @@ use super::{
 use crate::config::DEFAULT_URBAN_ROAD_SPEED_MS;
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::economy::agents::tick::{
-    plan_building_origin_trip, plan_building_to_border_trip, plan_immigration_trip,
+    BuiltTripPlan, plan_border_arrival, plan_building_origin_trip,
+    plan_building_origin_trip_to_gate, plan_building_to_border_trip, plan_immigration_trip,
 };
+use crate::simulation::parking::ParkingTrip;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
 use godot::prelude::Vector2;
@@ -283,18 +285,16 @@ impl AgentSystem {
         transit_network: &TransitNetwork,
         graph: &RegionGraph,
     ) -> Option<usize> {
-        let plan = plan_building_origin_trip(
+        let (plan, gate) = self.plan_freight_from_building(
             source_building,
             destination_building,
-            2,
-            true,
             allocator,
             transit_network,
             graph,
-            &self.pathfind_count,
         )?;
         let agent_idx = self.spawn_freight_carrier_base(shipment_id, source_building);
         self.apply_building_origin_freight_plan(agent_idx, source_building, plan, allocator);
+        self.set_freight_trip(agent_idx, gate);
         Some(agent_idx)
     }
 
@@ -311,20 +311,18 @@ impl AgentSystem {
         if agent_idx >= self.agents.len() {
             return false;
         }
-        let Some(plan) = plan_building_origin_trip(
+        let Some((plan, gate)) = self.plan_freight_from_building(
             source_building,
             destination_building,
-            2,
-            true,
             allocator,
             transit_network,
             graph,
-            &self.pathfind_count,
         ) else {
             return false;
         };
         self.apply_building_origin_freight_plan(agent_idx, source_building, plan, allocator);
         self.agents.freight_target_border_node[agent_idx] = u32::MAX;
+        self.set_freight_trip(agent_idx, gate);
         true
     }
 
@@ -338,13 +336,12 @@ impl AgentSystem {
         transit_network: &TransitNetwork,
         graph: &RegionGraph,
     ) -> Option<usize> {
-        let plan = plan_immigration_trip(
+        let (plan, gate) = self.plan_freight_from_border(
             border_node,
             destination_building,
             allocator,
             transit_network,
             graph,
-            &self.pathfind_count,
         )?;
         if border_node as usize >= graph.node_count() {
             return None;
@@ -357,6 +354,7 @@ impl AgentSystem {
             plan,
             graph,
         );
+        self.set_freight_trip(agent_idx, gate);
         Some(agent_idx)
     }
 
@@ -373,13 +371,12 @@ impl AgentSystem {
         if agent_idx >= self.agents.len() {
             return false;
         }
-        let Some(plan) = plan_immigration_trip(
+        let Some((plan, gate)) = self.plan_freight_from_border(
             border_node,
             destination_building,
             allocator,
             transit_network,
             graph,
-            &self.pathfind_count,
         ) else {
             return false;
         };
@@ -393,6 +390,7 @@ impl AgentSystem {
             plan,
             graph,
         );
+        self.set_freight_trip(agent_idx, gate);
         true
     }
 
@@ -417,6 +415,7 @@ impl AgentSystem {
         let agent_idx = self.spawn_freight_carrier_base(shipment_id, source_building);
         self.apply_building_origin_freight_plan(agent_idx, source_building, plan, allocator);
         self.agents.freight_target_border_node[agent_idx] = border_node;
+        self.set_freight_trip(agent_idx, None);
         Some(agent_idx)
     }
 
@@ -445,7 +444,99 @@ impl AgentSystem {
         };
         self.apply_building_origin_freight_plan(agent_idx, source_building, plan, allocator);
         self.agents.freight_target_border_node[agent_idx] = border_node;
+        self.set_freight_trip(agent_idx, None);
         true
+    }
+
+    // A carrier's plan from building `source` to building `destination`: to the destination's
+    // freight gate, with its building handle, when it has a published dock and a car route
+    // reaches the gate; else today's plan to the door (`PARK-20`). A city without docks pays one
+    // emptiness test. O(the plan).
+    fn plan_freight_from_building(
+        &self,
+        source: usize,
+        destination: usize,
+        allocator: &BuildingAllocator,
+        transit_network: &TransitNetwork,
+        graph: &RegionGraph,
+    ) -> Option<(BuiltTripPlan, Option<u64>)> {
+        if let Some((handle, gate)) =
+            allocator.freight_gate_arrival(destination, graph, &transit_network.lane_system)
+            && let Some(plan) = plan_building_origin_trip_to_gate(
+                source,
+                destination,
+                2,
+                &gate,
+                allocator,
+                transit_network,
+                graph,
+                &self.pathfind_count,
+            )
+        {
+            return Some((plan, Some(handle)));
+        }
+        plan_building_origin_trip(
+            source,
+            destination,
+            2,
+            true,
+            allocator,
+            transit_network,
+            graph,
+            &self.pathfind_count,
+        )
+        .map(|plan| (plan, None))
+    }
+
+    // [`Self::plan_freight_from_building`] for a carrier entering at border node `border`.
+    fn plan_freight_from_border(
+        &self,
+        border: u32,
+        destination: usize,
+        allocator: &BuildingAllocator,
+        transit_network: &TransitNetwork,
+        graph: &RegionGraph,
+    ) -> Option<(BuiltTripPlan, Option<u64>)> {
+        if let Some((handle, gate)) =
+            allocator.freight_gate_arrival(destination, graph, &transit_network.lane_system)
+            && let Some(plan) = plan_border_arrival(
+                border,
+                destination,
+                MODE_CAR,
+                &gate,
+                transit_network,
+                graph,
+                &self.pathfind_count,
+            )
+        {
+            return Some((plan, Some(handle)));
+        }
+        plan_immigration_trip(
+            border,
+            destination,
+            allocator,
+            transit_network,
+            graph,
+            &self.pathfind_count,
+        )
+        .map(|plan| (plan, None))
+    }
+
+    // Starts carrier `i`'s yard trip to the building whose handle bits `gate` names, or ends the
+    // one it had: a new plan replaces every phase, and a dock the carrier held is free again,
+    // since a hold counts only while its holder's trip names it (`PARK-20`). A carrier that never
+    // had a yard trip is not written. O(1).
+    fn set_freight_trip(&mut self, i: usize, gate: Option<u64>) {
+        let trip = &mut self.agents.parking_trip[i];
+        if let Some(target) = gate {
+            *trip = ParkingTrip {
+                target,
+                freight_gate: true,
+                ..ParkingTrip::default()
+            };
+        } else if trip.freight_gate {
+            *trip = ParkingTrip::default();
+        }
     }
 
     /// Checks that an agent slot still belongs to the expected physical shipment.

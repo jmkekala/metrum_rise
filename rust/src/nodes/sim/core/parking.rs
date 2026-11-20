@@ -175,8 +175,13 @@ impl SimCore {
 
     // Publishes one building's docks and their rejections, then their access and its freight
     // gate (`PARK-19`). Docks are no supply: nothing here touches a chunk, a list or a count.
-    // O(the building's docks + one entrance derivation).
+    // O(the building's dock rows + one entrance derivation).
     fn publish_docks(&mut self, handle: u64, docks: &[(u32, Bay)], issues: Vec<String>) {
+        // A carrier that has left a dock does not clear its holder (`PARK-20`): clear those
+        // first, so a dock that stops proving is removed rather than kept for nobody.
+        let agents = &self.agents;
+        self.parking
+            .clear_left_dock_holders(handle, |holder, dock| agents.holds_freight_dock(holder, dock));
         self.parking.replace_docks(handle, docks);
         if issues.is_empty() {
             self.parking.dock_diagnostics.remove(&handle);

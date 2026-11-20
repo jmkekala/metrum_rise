@@ -18,6 +18,7 @@ use std::sync::atomic::AtomicU32;
 mod candidates;
 mod prepared;
 mod recovery;
+mod yard;
 pub(crate) use candidates::ParkingWork;
 #[cfg(test)]
 pub(in crate::simulation::economy::agents) use prepared::{AnswerCounts, take_answer_counts};
@@ -154,6 +155,11 @@ impl AgentSystem {
         graph: &RegionGraph,
     ) {
         let trip = self.agents.parking_trip[i];
+        // A freight carrier's yard trip (`PARK-20`): one byte test for every other candidate.
+        if trip.freight_gate {
+            self.commit_freight_yard_visit(i, parking, allocator);
+            return;
+        }
         if trip.retry_pending {
             return;
         }
@@ -400,6 +406,7 @@ impl AgentSystem {
                     delivery_only: false,
                     replan_needed: false,
                     walk_origin: crate::simulation::core::handles::Handle::NONE,
+                    freight_gate: false,
                 };
                 self.set_off_on_parking_leg(i, plan, origin);
                 return;

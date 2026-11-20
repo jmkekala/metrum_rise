@@ -22,6 +22,12 @@ pub(crate) enum ParkingTripPhase {
     PullIn,
     /// Pedestrian travel from the occupied bay to the destination door.
     WalkToDoor,
+    /// A freight carrier standing in the dock `destination` of building `target` (`PARK-20`),
+    /// until its shipment's next check delivers.
+    AtDock,
+    /// A freight carrier the gate commit refused a dock: the plain access path from the gate's
+    /// lane point to the door of building `target` (`PARK-20`).
+    GateToDoor,
 }
 
 /// Persistent per-agent itinerary, stored as one column in the agent SoA.
@@ -45,6 +51,13 @@ pub struct ParkingTrip {
     pub(crate) target: u64,
     pub(crate) phase: ParkingTripPhase,
     pub(crate) ready: bool,
+    /// A freight carrier's trip into the yard of building `target` (`PARK-20`): its plan ends at
+    /// the building's freight gate, and it keeps the flag through `PullIn`, `AtDock` and
+    /// `GateToDoor`. Never set for a resident. Lives in the row's padding (the access flags
+    /// byte has no free bit), and is not written when false, so a city without docks saves the
+    /// rows it saved before.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) freight_gate: bool,
 }
 
 // Every agent's row is in the movement pass's working set: growth here costs each tick.
@@ -362,9 +375,14 @@ impl ParkingSystem {
     ) -> Option<crate::simulation::buildings::allocator::BuildingEntrance> {
         use ParkingTripPhase::*;
         let place = match (origin, trip.phase) {
+            // A carrier bound for a yard arrives at its gate, and from there walks no other
+            // entrance: the dock's for a pull-in, the gate's again on the way to the door.
+            (false, None | GateToDoor) if trip.freight_gate => {
+                return allocator.freight_gate_entrance(trip.target, graph, &network.lane_system);
+            }
             (true, WalkToCar) if !trip.walk_origin.is_none() => trip.walk_origin,
             (true, PullOut) | (false, WalkToCar) => trip.source,
-            (true, WalkToDoor) | (false, PullOut | Drive | PullIn) => trip.destination,
+            (true, WalkToDoor) | (false, PullOut | Drive | PullIn | AtDock) => trip.destination,
             _ => return Option::None,
         };
         self.place_entrance(place, allocator, network, graph)
@@ -535,6 +553,11 @@ impl ParkingSystem {
                 self.trip_entrance(trip, false, allocator, network, graph)
                     .unwrap_or_default(),
             ),
+            // A carrier on its way to a freight gate keeps it; with the gate gone it plans to
+            // the door, and the gate commit drops the flag (`PARK-20`).
+            ParkingTripPhase::None if trip.freight_gate => {
+                self.trip_entrance(trip, false, allocator, network, graph)
+            }
             _ => None,
         }
     }

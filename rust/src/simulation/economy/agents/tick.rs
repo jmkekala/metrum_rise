@@ -61,8 +61,8 @@ pub(crate) use planning::{
     BuildingTripEnds, BuildingWalkingAccess, BuiltTripPlan, PedestrianReachability,
     SharedNetworkQuotes, TripEstimate, TripQueryScratch, building_origin_trip_is_feasible,
     estimate_building_origin_trip_seconds, estimate_building_origin_trip_seconds_with_scratch,
-    estimate_trip_seconds_with_scratch, plan_building_origin_trip, plan_building_to_border_trip,
-    plan_immigration_trip, plan_border_arrival,
+    estimate_trip_seconds_with_scratch, plan_building_origin_trip, plan_building_origin_trip_to_gate,
+    plan_building_to_border_trip, plan_immigration_trip, plan_border_arrival,
 };
 // The agent inspector draws the route the movement rules below would follow.
 pub(crate) use route_preview::{PlannedRoute, RouteEnd, planned_route};

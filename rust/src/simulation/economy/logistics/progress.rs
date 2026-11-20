@@ -12,6 +12,7 @@ use crate::simulation::economy::definitions::{
 };
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
+use crate::simulation::parking::ParkingTripPhase;
 
 use super::data::{Shipment, ShipmentEndpoint, ShipmentStatus, ShipmentSystem};
 use super::requests::event_cooldown_until;
@@ -174,7 +175,12 @@ impl ShipmentSystem {
         let overdue = self.leg_overdue(&shipment);
         match shipment.status {
             ShipmentStatus::Returning => {
-                match shipment_carrier_progress_to_endpoint(&shipment, agents, shipment.source) {
+                match shipment_carrier_progress_to_endpoint(
+                    &shipment,
+                    agents,
+                    allocator,
+                    shipment.source,
+                ) {
                     CarrierProgress::Traveling if !overdue => true,
                     _ => {
                         self.finish_delivered_shipment(idx, &shipment, agents);
@@ -192,7 +198,12 @@ impl ShipmentSystem {
                     })
                     .operational_clock
                     .shipment_retry_cooldown_hours;
-                match shipment_carrier_progress_to_endpoint(&shipment, agents, shipment.destination)
+                match shipment_carrier_progress_to_endpoint(
+                    &shipment,
+                    agents,
+                    allocator,
+                    shipment.destination,
+                )
                 {
                     CarrierProgress::Traveling if !overdue => true,
                     CarrierProgress::Traveling => {
@@ -866,9 +877,12 @@ fn fail_shipment_before_dispatch(
     shipment.status = ShipmentStatus::Failed;
 }
 
+// A carrier has arrived at a building when it is inside it, as before docks, or standing in one
+// of its docks (`PARK-20`): this is the whole of the yard's reading of arrivals. O(1).
 fn shipment_carrier_progress_to_endpoint(
     shipment: &Shipment,
     agents: &AgentSystem,
+    allocator: &BuildingAllocator,
     endpoint: ShipmentEndpoint,
 ) -> CarrierProgress {
     let Some(carrier_idx) = agents
@@ -880,8 +894,13 @@ fn shipment_carrier_progress_to_endpoint(
 
     let arrived = match endpoint {
         ShipmentEndpoint::Building(destination_idx) => {
-            agents.transit[carrier_idx] == TRANSIT_IN_BUILDING
-                && agents.current_building[carrier_idx] == destination_idx
+            let trip = &agents.parking_trip[carrier_idx];
+            (agents.transit[carrier_idx] == TRANSIT_IN_BUILDING
+                && agents.current_building[carrier_idx] == destination_idx)
+                || (trip.phase == ParkingTripPhase::AtDock
+                    && trip.freight_gate
+                    && destination_idx < allocator.buildings.len()
+                    && trip.target == allocator.building_handles.handle(destination_idx).to_bits())
         }
         ShipmentEndpoint::OwaBorder(border_node) => {
             agents.current_node[carrier_idx] == border_node

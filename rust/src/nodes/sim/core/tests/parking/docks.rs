@@ -419,3 +419,116 @@ fn the_inspector_shows_a_buildings_docks_and_their_rejections() {
     assert!(!core.parking.dock_diagnostics.contains_key(&building));
     assert_eq!(lines(&core), (0, 1, vec![reason.to_owned()]));
 }
+
+// A carrier from a second yard 60 m east, standing in the first yard's dock (`PARK-20`).
+fn truck_at_dock() -> (SimCore, u64, usize) {
+    use crate::simulation::economy::logistics::{
+        CarrierClass, Shipment, ShipmentEndpoint, ShipmentStatus,
+    };
+    use crate::simulation::parking::ParkingTripPhase;
+    let (mut core, building) = place_yard(true, "6");
+    let id = core.allocator.buildings[0].asset_id.clone();
+    let source = core.place_service_building_internal(&id, 60.0, -40.0).unwrap();
+    core.publish_pending_building_site_changes();
+    let catalog = load_runtime_economy_catalog().unwrap();
+    core.logistics.shipments.push(Shipment {
+        id: 0,
+        resource_runtime_id: catalog.resource_runtime_id_for_id("packaged_food").unwrap(),
+        amount: 40.0,
+        source: ShipmentEndpoint::Building(source),
+        destination: ShipmentEndpoint::Building(0),
+        carrier_class: CarrierClass::Truck,
+        status: ShipmentStatus::InTransit,
+        carrier: crate::simulation::economy::agents::AgentHandle::NONE,
+        total_cost: 600.0,
+        freight_cost: 50.0,
+        eta_hours: 1,
+        leg_started_hour: 0,
+        trip_event_slot: 0,
+        cargo_loaded: true,
+    });
+    core.logistics.next_shipment_id = 1;
+    let mut treasury = 0.0;
+    assert!(core.logistics.dispatch_shipment(
+        0,
+        &mut core.allocator,
+        &mut core.agents,
+        &core.transit_network,
+        &core.region_graph,
+        &mut treasury,
+    ));
+    let carrier = core
+        .agents
+        .resolve_agent(core.logistics.shipments[0].carrier)
+        .unwrap();
+    for _ in 0..6_000 {
+        if core.agents.parking_trip[carrier].phase == ParkingTripPhase::AtDock {
+            return (core, building, carrier);
+        }
+        crate::thread_pools::install(|| {
+            core.agents.tick_with_parking(
+                &core.allocator,
+                &mut core.transit_network,
+                &mut core.region_graph,
+                0.1,
+                &core.time,
+                &mut core.parking,
+            )
+        });
+    }
+    panic!("the truck never stood in the dock");
+}
+
+// A save made while a truck stands in a dock loads with the truck still standing there and the
+// dock still its own; the next tick leaves both as they were.
+#[test]
+fn a_truck_standing_in_a_dock_round_trips_a_save() {
+    let (mut core, building, carrier) = truck_at_dock();
+    let dock = core.parking.building_docks(building).next().unwrap();
+    let trip = format!("{:?}", core.agents.parking_trip[carrier]);
+    let pose = (core.agents.pos_x[carrier], core.agents.pos_y[carrier]);
+    let path = std::env::temp_dir().join(format!("metrum_truck_dock_{}.sqlite", std::process::id()));
+    let path_text = path.to_str().expect("a temporary path");
+    core.save_game_settled_at(path_text, None, 0).expect("the yard saves");
+    core.load_game_internal(path_text).expect("the yard loads");
+    let _ = std::fs::remove_file(&path);
+    let carrier = core
+        .agents
+        .resolve_agent(core.logistics.shipments[0].carrier)
+        .unwrap();
+    assert_eq!(format!("{:?}", core.agents.parking_trip[carrier]), trip);
+    assert_eq!((core.agents.pos_x[carrier], core.agents.pos_y[carrier]), pose);
+    assert_eq!(core.parking.building_docks(building).next(), Some(dock));
+    assert_eq!(core.parking.dock_holder(dock), core.agents.agent_handle(carrier));
+    crate::thread_pools::install(|| {
+        core.agents.tick_with_parking(
+            &core.allocator,
+            &mut core.transit_network,
+            &mut core.region_graph,
+            0.1,
+            &core.time,
+            &mut core.parking,
+        )
+    });
+    assert_eq!((core.agents.pos_x[carrier], core.agents.pos_y[carrier]), pose);
+}
+
+// Bulldozing a yard with a truck in its dock cancels the shipment and removes the truck, as for
+// a truck inside; the dock goes with the building and holds nobody.
+#[test]
+fn bulldozing_a_yard_with_a_truck_in_its_dock_removes_both() {
+    let (mut core, building, _) = truck_at_dock();
+    let agents = core.agents.len();
+    assert!(core.bulldoze_building(0));
+    core.publish_pending_building_site_changes();
+    assert_eq!(core.agents.len(), agents - 1, "the truck is removed");
+    assert!(core.logistics.shipments.is_empty());
+    assert!(dock(&core, building).is_empty());
+    assert!(
+        core.parking
+            .dock_rows()
+            .iter()
+            .all(|(source, _, _)| *source != PlaceSource::Dock { building, anchor: 3 })
+    );
+    assert!(!core.allocator.freight_gates.contains_key(&building));
+}

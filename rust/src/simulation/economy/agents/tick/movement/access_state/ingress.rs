@@ -19,6 +19,7 @@ use crate::config::{AGENT_DRIVEWAY_SPEED_MS, AGENT_WALK_SPEED_MS};
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
+use crate::simulation::parking::ParkingTripPhase;
 use crate::traffic_log;
 use godot::prelude::*;
 use std::sync::atomic::AtomicU32;
@@ -57,8 +58,20 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
         let s_path_idx = &slices.path_idx;
         let s_speed = &slices.speed;
 
+        let trip = *slices.parking_trip.get(i);
+        // `freight_gate` is the one test a carrier without a yard trip, and every resident, pays
+        // here (`PARK-20`): a byte of the row this step reads anyway.
+        if trip.freight_gate && trip.phase == ParkingTripPhase::AtDock {
+            // Standing in the bay until its shipment's check delivers; nothing moves it.
+            *s_speed.get_mut(i) = 0.0;
+            return;
+        }
         let b_id = *s_tgt_b.get(i);
         if b_id == usize::MAX || b_id >= allocator.buildings.len() {
+            // A carrier's yard trip ends with its building: the hold it had goes with the trip.
+            if trip.freight_gate {
+                *slices.parking_trip.get_mut(i) = Default::default();
+            }
             // The building went under a parking leg: its recovery owns the car and the bay.
             if slices.parking_trip.get(i).phase != crate::simulation::parking::ParkingTripPhase::None {
                 let trip = slices.parking_trip.get_mut(i);
@@ -95,11 +108,17 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
             arrive_in_building(i, b_id, ingress_target, sim_time, slices);
             return;
         }
-        let trip = *slices.parking_trip.get(i);
+        if trip.freight_gate && trip.phase == ParkingTripPhase::None && slices.parking.is_some() {
+            // At the gate's lane point: the parking phase's ordered commit gives it a dock or
+            // sends it to the door this tick (`PARK-20`). It stands meanwhile.
+            slices.parking_trip.get_mut(i).ready = true;
+            *s_speed.get_mut(i) = 0.0;
+            return;
+        }
         // Off a parking leg there is no endpoint to look up: most agents here, every tick.
         let parking_entrance = slices
             .parking
-            .filter(|_| trip.phase != crate::simulation::parking::ParkingTripPhase::None)
+            .filter(|_| trip.phase != ParkingTripPhase::None)
             .and_then(|p| p.trip_entrance(trip, false, allocator, transit_network, graph));
         let entrance = parking_entrance.as_ref().unwrap_or(&allocator.entrances[b_id]);
         let detach_lane_id = *s_plan_detach_lane.get(i) as usize;

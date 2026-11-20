@@ -26,6 +26,8 @@ pub(crate) use trip::{
     estimate_building_origin_trip_seconds, estimate_building_origin_trip_seconds_with_scratch,
     estimate_trip_seconds_with_scratch,
 };
-pub(crate) use trip::{plan_building_origin_trip, plan_building_to_border_trip};
+pub(crate) use trip::{
+    plan_building_origin_trip, plan_building_origin_trip_to_gate, plan_building_to_border_trip,
+};
 pub(super) use types::BuiltNetworkReplan;
 pub(crate) use types::BuiltTripPlan;
