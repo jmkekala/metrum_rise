@@ -23,8 +23,9 @@
 //! The shortest valid route wins, lengths compared in whole millimetres; ties go to the lower
 //! gate index, then the lower candidate index. Only `+ − × ÷` and square roots are used.
 
+use super::super::geometry::rectangle;
 use super::route::{MIN_LEG_M, Way, prove_way};
-use super::{AnchorBay, VehicleProof};
+use super::{AnchorBay, Rejection, VehicleProof, turns_at};
 use godot::prelude::Vector2;
 
 /// The drive lines a car place may be routed along when its straight path fails (`PARK-24`).
@@ -43,18 +44,20 @@ const PARALLEL_SIN: f32 = 1e-3;
 // A place lies in line with a gate when its stop is within this of the gate line.
 const IN_LINE_M: f32 = 0.01;
 
-/// The shortest proven drive-line route to `bay` and the index of its gate in `paths`, or `None`
-/// when no candidate proves. `blocked` is the class's sweep test, as the straight path uses it.
-/// O(gates × 4 candidates × (4 shape tests, each the local overlay work of one shape)); a
-/// candidate no shorter than the best found so far is not proven.
+/// The shortest proven drive-line route to `bay` and the index of its gate in `paths`; when no
+/// candidate proves, the rejection the shortest candidate failed on, carrying its route (`None`
+/// when the lines give no candidate), for the editor to draw. `blocked` is the class's sweep test, as the
+/// straight path uses it. O(gates × 4 candidates × (5 shape tests, each the local overlay work of
+/// one shape)); a candidate no shorter than the best found so far is not proven.
 pub(super) fn shortest_route(
     row: &VehicleProof,
     bay: &AnchorBay,
     paths: &[[Vector2; 2]],
     lines: DriveLines,
     blocked: &impl Fn(&[Vector2]) -> Option<&'static str>,
-) -> Option<([Vector2; 4], usize)> {
+) -> Result<([Vector2; 4], usize), Option<Rejection>> {
     let mut best: Option<(i64, [Vector2; 4], usize)> = None;
+    let mut failed: Option<(i64, Rejection)> = None;
     for (gate, (&[connection, approach], &inward)) in paths.iter().zip(lines.inward).enumerate() {
         for [first, second] in candidates(row, bay, approach, inward, lines.axes)
             .into_iter()
@@ -65,12 +68,72 @@ pub(super) fn shortest_route(
             if best.is_some_and(|(shortest, ..)| length >= shortest) {
                 continue;
             }
-            if prove_way(row, Way::In { derived: true }, &path, bay.forward, blocked).is_ok() {
-                best = Some((length, path, gate));
+            match prove_way(row, Way::In { derived: true }, &path, bay.forward, blocked) {
+                Ok(()) => best = Some((length, path, gate)),
+                Err(rejection) => {
+                    if failed
+                        .as_ref()
+                        .is_none_or(|(shortest, ..)| length < *shortest)
+                    {
+                        let route = Some(path);
+                        failed = Some((length, Rejection { route, ..rejection }));
+                    }
+                }
             }
         }
     }
-    best.map(|(_, path, gate)| (path, gate))
+    match best {
+        Some((_, path, gate)) => Ok((path, gate)),
+        None => Err(failed.map(|(_, rejection)| rejection)),
+    }
+}
+
+/// A car bay neither its straight path nor any drive-line route reaches (`PARK-24`): the straight
+/// path's failing `part` and `cause`, and the shape, leg and route of the shortest drive-line
+/// candidate that failed (`tried`), or the straight path's `shape` when the lines give none.
+/// O(1).
+pub(super) fn no_way(
+    row: &VehicleProof,
+    part: &str,
+    cause: &str,
+    shape: [Vector2; 4],
+    tried: Option<Rejection>,
+) -> Rejection {
+    let reason = format!(
+        "no way to drive to this spot: straight from the Driveway, {part} {cause}, and no way along the row or straight down from the Driveway is clear (a {} needs a {} m strip of clear paving to drive on and about {} of it where it turns): clear the way or move the spot",
+        row.noun, row.body_width, row.turn_room
+    );
+    match tried {
+        Some(tried) => Rejection {
+            reason,
+            shape: tried.shape.or(Some(shape)),
+            ..tried
+        },
+        None => Rejection {
+            reason,
+            shape: Some(shape),
+            leg: None,
+            route: None,
+        },
+    }
+}
+
+/// The turn envelopes a car spot's proof checked, for the editor to draw (`PARK-24`): the car's
+/// square, squared to the spot, at each inner point of `path` bending by more than 30°, and at
+/// the approach when `at_gate` (a straight path, whose car always turns there). O(1).
+pub(super) fn car_envelopes(
+    path: &[Vector2; 4],
+    forward: Vector2,
+    at_gate: bool,
+) -> Vec<[Vector2; 4]> {
+    let row = super::ProofClass::Car.proof();
+    (1..3)
+        .filter(|&j| {
+            (j == 1 && at_gate)
+                || turns_at(path[j - 1], path[j], path[j + 1], row.straight_through_cos)
+        })
+        .map(|j| rectangle(path[j], forward, row.turn_envelope, row.turn_envelope))
+        .collect()
 }
 
 // A route's length in whole millimetres. O(1).

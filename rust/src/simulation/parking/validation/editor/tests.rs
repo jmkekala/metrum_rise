@@ -41,7 +41,7 @@ fn only_a_real_turn_needs_a_turning_envelope_and_the_rejection_names_it() {
     // The second is reached diagonally right under the shop front.
     assert_eq!(
         rejected[0]["reason"],
-        "no room to drive in: the way to the front of the spot leaves the paved yard (a car drives straight from just inside the Driveway to about 2.5 m in front of the spot, on a 1.8 m strip of clear paving reaching half a car length past both ends)"
+        "no way to drive to this spot: straight from the Driveway, the way to the front of the spot leaves the paved yard, and no way along the row or straight down from the Driveway is clear (a car needs a 1.8 m strip of clear paving to drive on and about 5 m by 5 m of it where it turns): clear the way or move the spot"
     );
     assert_eq!(rejected[0]["shape"].as_array().unwrap().len(), 4);
 }
@@ -56,7 +56,7 @@ fn a_spot_needs_room_in_front_to_line_up_and_the_rejection_says_so() {
         {"anchor_type":"driveway", "position":[-18.5,0,15], "forward":[0,0,-1], "width_m":3.0}],
         "site_surfaces":[{"material":"asphalt",
         "vertices":[[-20,-15],[20,-15],[20,15],[-20,15]]}]});
-    let reason = "no room to drive in: the way to the front of the spot leaves the paved yard (a car drives straight from just inside the Driveway to about 2.5 m in front of the spot, on a 1.8 m strip of clear paving reaching half a car length past both ends)";
+    let reason = "no way to drive to this spot: straight from the Driveway, the way to the front of the spot leaves the paved yard, and no way along the row or straight down from the Driveway is clear (a car needs a 1.8 m strip of clear paving to drive on and about 5 m by 5 m of it where it turns): clear the way or move the spot";
     // Its open end is 1 m from the street edge, with no paving for the car to line up on.
     assert_eq!(
         editor_payload(&params, &[])["rejected"][0]["reason"],
@@ -109,7 +109,7 @@ fn paving_short_of_the_street_edge_rejects_the_way_in_from_the_driveway() {
     let rejected = editor_payload(&driveway_lot(14.98), &[])["rejected"].clone();
     assert_eq!(
         rejected[0]["reason"],
-        "no room to drive in: the way in from the Driveway leaves the paved yard (the way needs about 1.8 m of clear paving)"
+        "no way to drive to this spot: straight from the Driveway, the way in from the Driveway leaves the paved yard, and no way along the row or straight down from the Driveway is clear (a car needs a 1.8 m strip of clear paving to drive on and about 5 m by 5 m of it where it turns): clear the way or move the spot"
     );
 }
 
@@ -317,6 +317,9 @@ fn the_editor_routes_along_the_drive_lines_unless_the_lot_is_pinned() {
     assert_eq!(routed["rejected"], json!([]));
     assert_eq!(routed["spots"][0]["kind"], "auto");
     assert_eq!(routed["spots"][0]["gate"], 0);
+    // Straight down the drive: no bend, no envelope.
+    assert_eq!(routed["spots"][0]["envelopes"], json!([]));
+    assert_eq!(routed["spots"][0]["route"][3], json!([0.0, -2.5]));
     params["car_routes"] = json!("direct");
     let pinned = editor_lot_payload(&params, &[]);
     assert_eq!(pinned["spots"], json!([]));
@@ -324,6 +327,22 @@ fn the_editor_routes_along_the_drive_lines_unless_the_lot_is_pinned() {
         pinned["rejected"][0]["reason"],
         "no room to drive in: the turn off the Driveway leaves the paved yard (a car needs about 5 m by 5 m of clear paving just inside the Driveway to turn, so keep the Driveway about 2.5 m from the lot's side edges)"
     );
+    assert!(pinned["rejected"][0].get("route").is_none());
+    // A spot painted across the drive: no way reaches the first one. The rejection names the
+    // straight way's failure and carries the drive-line route it was last tried along, with the
+    // shape that blocked it.
+    params["car_routes"] = Value::Null;
+    params["anchors"].as_array_mut().unwrap().push(json!({"anchor_type":"parking",
+        "position":[-1.25,0,8], "forward":[1,0,0], "width_m":2.5, "length_m":5.0}));
+    let blocked = editor_lot_payload(&params, &[]);
+    let first = &blocked["rejected"][0];
+    assert_eq!(first["anchor"], 0);
+    assert_eq!(
+        first["reason"],
+        "no way to drive to this spot: straight from the Driveway, the way to the front of the spot crosses another parking spot, and no way along the row or straight down from the Driveway is clear (a car needs a 1.8 m strip of clear paving to drive on and about 5 m by 5 m of it where it turns): clear the way or move the spot"
+    );
+    assert_eq!(first["route"][1][0], 0.0, "down the drive: {first}");
+    assert_eq!(first["shape"].as_array().unwrap().len(), 4);
 }
 
 // Every fixture-pack building (the test pack and the bundled packs), proven pinned to the

@@ -466,7 +466,7 @@ fn the_editor_rejects_the_way_in_from_the_driveway_as_the_placed_lot_does() {
         assert_eq!(edited, placed, "paving to z {front}");
         assert_eq!(placed.is_empty(), front == "20", "{placed:?}");
         if front != "20" {
-            assert!(placed[0].ends_with("no room to drive in: the way in from the Driveway leaves the paved yard (the way needs about 1.8 m of clear paving)"), "{placed:?}");
+            assert!(placed[0].ends_with("no way to drive to this spot: straight from the Driveway, the way in from the Driveway leaves the paved yard, and no way along the row or straight down from the Driveway is clear (a car needs a 1.8 m strip of clear paving to drive on and about 5 m by 5 m of it where it turns): clear the way or move the spot"), "{placed:?}");
         }
         // So is the dock's: its route from the gate is the editor's, point for point in lot
         // terms, and its way in from the gate is unpaved the same way.

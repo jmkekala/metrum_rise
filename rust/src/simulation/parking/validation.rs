@@ -143,11 +143,13 @@ const CLASS_TABLE: [VehicleProof; 2] = [
 
 /// Why a bay is rejected, with the local shape that failed when one did, so the editor can
 /// draw it, or the leg of an authored way the reason names (`PARK-21`: too short, off the bay's
-/// direction, touching its way).
+/// direction, touching its way), and the drive-line route a car bay was last tried along
+/// (`PARK-24`).
 pub(super) struct Rejection {
     pub reason: String,
     pub shape: Option<[Vector2; 4]>,
     pub leg: Option<[Vector2; 2]>,
+    pub route: Option<[Vector2; 4]>,
 }
 
 impl From<&str> for Rejection {
@@ -162,6 +164,7 @@ impl From<String> for Rejection {
             reason,
             shape: None,
             leg: None,
+            route: None,
         }
     }
 }
@@ -294,13 +297,15 @@ pub(super) fn validate_bay(
     let Some((part, cause, shape)) = first else {
         return Err("the Driveway must sit at the street edge and point into the lot".into());
     };
-    // Only where the straight path fails, so every bay it proves keeps its path bit for bit.
-    if let Some(lines) = lines
-        && let Some((path, gate)) = drive_lines::shortest_route(row, bay, paths, lines, &blocked)
-    {
-        return Ok((path, Some(gate)));
+    // Only where the straight path fails, so every bay it proves keeps its path bit for bit. A
+    // lot pinned to the straight path keeps the straight path's rejection word for word.
+    let Some(lines) = lines else {
+        return Err(drive_rejection(row, "in", part, cause, shape, false));
+    };
+    match drive_lines::shortest_route(row, bay, paths, lines, &blocked) {
+        Ok((path, gate)) => Ok((path, Some(gate))),
+        Err(tried) => Err(drive_lines::no_way(row, part, cause, shape, tried)),
     }
-    Err(drive_rejection(row, "in", part, cause, shape, false))
 }
 
 // A route's failing leg or bend as a rejection: what blocks it and the room it needs. The
@@ -344,6 +349,7 @@ fn drive_rejection(
         reason: format!("no room to drive {way}: {part} {cause} ({room})"),
         shape: Some(shape),
         leg: None,
+        route: None,
     }
 }
 

@@ -12,6 +12,7 @@
 //! road's width are left to the placed building's inspector.
 
 use super::super::geometry::{overlaps, precise, rectangle};
+use super::drive_lines::car_envelopes;
 use super::route::{arc_waypoints, drive_envelopes};
 use super::{
     AnchorBay, DockWayInput, DriveLines, ProofClass, Rejection, STREET_APPROACH_M, dock_ways,
@@ -242,9 +243,10 @@ impl<'a> EditorLot<'a> {
 
     // The car payload: one rejection per parking anchor the placed proof would reject; and the
     // spots, one per parking anchor it accepts (`PARK-24`): its route, how it was found (`street`
-    // from the street edge, `straight` from a Driveway, `auto` along the drive lines) and its
-    // Driveway's index among the usable ones (none for a street spot). A drive-line route whose
-    // points are the straight path's reads `straight`: it is drawn the same.
+    // from the street edge, `straight` from a Driveway, `auto` along the drive lines), its
+    // Driveway's index among the usable ones (none for a street spot) and the turn envelopes its
+    // proof checked. A drive-line route whose points are the straight path's reads `straight`:
+    // it is drawn the same.
     fn car_payload(&self) -> (Map<String, Value>, Vec<Value>) {
         let parking = self.bays("parking", |_| true);
         let bays: Vec<_> = parking.iter().map(|&(_, bay)| bay).collect();
@@ -295,7 +297,15 @@ impl<'a> EditorLot<'a> {
                         Some(_) => "auto",
                     };
                     let route = path.map(point);
-                    spots.push(json!({"anchor":index, "route":route, "kind":kind, "gate":gate}));
+                    // A street spot is proven by its edge alone, with no envelope.
+                    let envelopes: Vec<_> = (kind != "street")
+                        .then(|| car_envelopes(&path, bay.forward, kind == "straight"))
+                        .into_iter()
+                        .flatten()
+                        .map(|shape| shape.map(point).to_vec())
+                        .collect();
+                    spots.push(json!({"anchor":index, "route":route, "kind":kind, "gate":gate,
+                        "envelopes":envelopes}));
                 })
                 .err()
                 .map(|rejection| rejection_json(index, rejection))
@@ -487,9 +497,13 @@ fn way_input(anchor: &Value, names: &[&str]) -> DockWayInput {
 fn rejection_json(anchor: usize, rejection: Rejection) -> Value {
     let shape = rejection.shape.map(|shape| shape.map(point).to_vec());
     let mut entry = json!({"anchor":anchor, "reason":rejection.reason, "shape":shape});
-    // The leg of an authored way the reason names (`PARK-21`); never on a car rejection.
+    // The leg of an authored way the reason names (`PARK-21`), or of the drive-line route a car
+    // spot was last tried along (`PARK-24`), and that route itself.
     if let Some(leg) = rejection.leg {
         entry["leg"] = json!(leg.map(point));
+    }
+    if let Some(route) = rejection.route {
+        entry["route"] = json!(route.map(point));
     }
     entry
 }

@@ -121,6 +121,18 @@ fn grocery() -> Lot {
     }
 }
 
+// The rejection of a place no route reaches, from the straight path's rejection on a pinned lot:
+// that path's failure, then the drive lines' (`PARK-24`).
+fn no_way(straight: &str) -> String {
+    let failure = straight
+        .strip_prefix("no room to drive in: ")
+        .and_then(|rest| rest.split(" (").next())
+        .unwrap();
+    format!(
+        "no way to drive to this spot: straight from the Driveway, {failure}, and no way along the row or straight down from the Driveway is clear (a car needs a 1.8 m strip of clear paving to drive on and about 5 m by 5 m of it where it turns): clear the way or move the spot"
+    )
+}
+
 fn assert_points(path: [Vector2; 4], expected: [Vector2; 3]) {
     for (p, e) in path[1..].iter().zip(expected) {
         assert!((*p - e).length() < 1e-4, "{path:?} vs {expected:?}");
@@ -198,11 +210,13 @@ fn a_side_drive_reaches_two_places_beside_the_house() {
     assert_points(first, [v(-7.5, 2.0), v(-5.0, 2.0), v(-2.5, 2.0)]);
     let (second, _) = routed[1].clone().unwrap();
     assert_points(second, [v(-7.5, -0.5), v(-5.0, -0.5), v(-2.5, -0.5)]);
-    // A pad a metre narrower leaves no room to turn: rejected, as before.
+    // A pad a metre narrower leaves no room to turn: rejected, naming the straight way's failure.
     let mut narrow = lot.clone();
     narrow.paving[1] = rect(v(-9.0, -4.0), v(0.0, 5.0));
     assert_eq!(narrow.valid(true), [false, false]);
-    assert_eq!(narrow.prove(0.0, true), narrow.prove(0.0, false));
+    for (pinned, routed) in narrow.prove(0.0, false).iter().zip(narrow.prove(0.0, true)) {
+        assert_eq!(routed.err(), Some(no_way(pinned.as_ref().unwrap_err())));
+    }
 }
 
 #[test]
@@ -227,8 +241,8 @@ fn a_place_in_line_behind_a_drive_needs_no_square_at_the_gate() {
     );
 }
 
-// Negative controls on the grocery: what blocks the aisle keeps the far places rejected, with the
-// straight path's reason word for word.
+// Negative controls on the grocery: what blocks the aisle keeps the far places rejected, naming
+// the straight path's failure.
 #[test]
 fn a_blocked_row_line_an_unpaved_leg_or_a_structure_keeps_the_rejection() {
     let mut parked = grocery();
@@ -272,7 +286,7 @@ fn a_blocked_row_line_an_unpaved_leg_or_a_structure_keeps_the_rejection() {
         assert_eq!(front, reaches, "{name}: {routed:?}");
         for (before, after) in pinned.iter().zip(&routed) {
             if let Err(reason) = after {
-                assert_eq!(before.as_ref().err(), Some(reason), "{name}");
+                assert_eq!(reason, &no_way(before.as_ref().unwrap_err()), "{name}");
             }
         }
     }
