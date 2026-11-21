@@ -541,6 +541,10 @@ junction, queue heads hold half a body length before the lane end, compared agai
   off-lane cars (`rust/src/nodes/sim/render/car_visual.rs`, `agent_frame.rs`); only buckets that
   changed are uploaded, and a car at rest is not uploaded again. See
   [Render Movement](traffic.md#render-movement).
+- A car or truck pulling into or out of a lot place or a dock is posed on arcs round its route's
+  bends (car 2.5 m, freight 6 m), not at its simulated point
+  ([Drawn turns](traffic.md#drawn-turns-park-29-as-built), `PARK-29`); it still turns on the spot
+  where it joins or leaves its lane (`PARK-31`).
 - There is no level of detail: one mesh at every distance out to 2,500 m, fading over 2,000 to
   2,500 m (`CAR_FADE_START_M`, `CAR_DRAW_DISTANCE_M` in `rust/src/config.rs`).
 - Ground support: `agents.gd` finds each model's contact points by scanning its vertices at

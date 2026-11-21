@@ -42,6 +42,63 @@ while retaining the car's last bay.
 The [parking spec](traffic.md#parking) records bounds, cache memory and acceptance. Freight keeps its previous access behavior for round 2b. `TRAFFIC-13` and `TRAFFIC-15` remain dependencies of the shared detach
 function; parking does not add an alternate detach path.
 
+### The lane hop of a lot or yard manoeuvre (`PARK-29`)
+
+Recorded 2026-11-21 with the drawn turns of the lot route
+([`traffic.md`](traffic.md#drawn-turns-park-29-as-built)), which leave this hop as it was.
+
+**As built.** Every lot and yard access is same-side only (`derive_place_entrance` and
+`parking_access_at` set `SameSideOnly`): a car or truck joins and leaves the outermost lane of
+its own side's direction. The `BothSides` crossover below serves door access only; no lot or yard
+manoeuvre crosses a lane. The hop is the manoeuvre's first leg (pull-in) or last (pull-out): from
+the lane point, on that lane's centre line abreast the road connection (the connection's station
+projected on the lane), to the road connection, 5 cm inside the outer edge of the side band. On a
+two-lane street (3.5 m lanes, 1.5 m sidewalks) it runs square to the road for 3.2 m: half the lane
+and the sidewalk.
+
+- **Pull-in.** The car is drawn at its lane pose until the tick its movement reaches the planned
+  detach distance; `try_network_detach` puts it at the lane point (an overshoot of up to one step
+  is set back) and off the lane. The next snapshot draws it there, grounded, facing along the hop:
+  the position is continuous, the heading turns by the angle between lane and hop (about 90°)
+  between two snapshots, and the render smoother shows the turn at once (a change of height owner,
+  lane to ground, is never blended). A truck bound for a yard detaches at the gate's lane point
+  with no dock yet and stands there while the same tick's parking phase gives it one.
+- **Pull-out.** The mirror: drawn along the hop facing the lane point, then, on the tick it reaches
+  it with the slot clear (`lane_attach_slot_clear`, `claim_lane_entry`), on the lane at the attach
+  distance, which is the lane point in plan: continuous in position, a turn on the spot in heading.
+- **Held at the lane point** (the slot busy): the car stands lane-less in the network state with
+  its attach pending; the snapshot finds no access phase and draws it facing a fixed world
+  direction (`Vector3::BACK`), not along the hop or the lane. Found 2026-11-21, older than
+  `PARK-29`, not changed by it.
+
+**The gate turn (`PARK-31`, not built).** The owner asked for the lane corner rounded too: the
+lane's direction as a virtual leg at the lane point, on a pull-out an arc started late, near the
+far side of the last lane crossed, and the mirror on a pull-in; per class a wanted radius (car
+2.5 m, truck 6 m), never below what the run permits. It needs:
+
+1. **Drawing on the lane.** An arc tangent to the lane runs onto the lane past the lane point
+   (pull-out) or leaves it before (pull-in); an arc that ends at the lane point itself can be
+   tangent to the hop only by swinging the other way first. So the on-network pose changes for a
+   car about to detach (on its planned detach lane, its route's last visit, within the tangent
+   length before the detach distance) or just attached (on its attach lane, the route's first
+   lane, within it past the attach distance): a test in every lane car's pose (the parking phase
+   and two plan fields), the last-visit check, and a cull margin for lane cars, whose lane box test
+   assumes the pose lies on the lane. The lane point is then drawn at the arc's middle, not on the
+   route; the held car and the truck waiting at the gate need their pose there too.
+2. **Lanes to cross** (the left exit and entry, and the trucks' sweep over crossed lanes) need
+   simulation changes first: with same-side access nothing crosses a lane today. A left turn out of
+   or into a lot needs `BothSides` lot access (planner, legality, a parking crossover path, a claim
+   or gap check on the crossed lane), and changes positions and arrival ticks.
+3. **Radii the design gives** on a two-lane street with sidewalks, 90° turns, entry and exit
+   alike (mirror images), the gate's own bend under 5° so the whole run is the arc's (in brackets:
+   half the run, as the lot's legs are held to):
+
+   | Turn | Run (connection to lane centre) | Car (wanted 2.5 m) | Truck (wanted 6 m) |
+   | --- | --- | --- | --- |
+   | Near side | 3.2 m | 2.5 m, from 0.7 m inside the lot edge (1.6 m) | 3.2 m, from the lot edge (1.6 m); 6 m if the arc may run on into the gate's first leg |
+   | Across the near lane | 6.7 m | 2.5 m, from 4.2 m: 0.75 m before the centre line (2.5 m) | 6 m, from 0.7 m: over the sidewalk, sweeping across the near lane (3.35 m) |
+   | In the lot (built) | each leg | 2.5 m on legs of 5 m or more at 90° | 6 m on legs of 12 m or more at 90° |
+
 ## Current System
 
 Lane attachment and ingress rollback publish occupancy through the shared

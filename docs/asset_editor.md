@@ -629,7 +629,9 @@ draw and list the results.
   accepted spot's route (`spots`: `street`, `straight` or `auto`, its Driveway and the turn
   squares its proof checked). The selected spot's route is drawn dashed with its squares; the
   **Car routes** switch under Site → Access points draws every spot's route faintly (preview
-  only, never exported). A spot no way reaches is rejected, naming the straight way's failure
+  only, never exported). The line drawn is the one the car is drawn along in the game, each bend
+  an arc (`drawn`, [`PARK-29`](traffic.md#drawn-turns-park-29-as-built)), over the stored route as
+  a fainter thin guide; an own route's waypoints stay on the stored route. A spot no way reaches is rejected, naming the straight way's failure
   ("no way to drive to this spot: straight from the Driveway, …, and no way along the row or
   straight down from the Driveway is clear …"), and the preview draws in red the route it was
   last tried along with the shape that blocked it. An asset pinned to the straight path

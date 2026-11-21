@@ -2413,6 +2413,93 @@ branch matched byte for byte), the `SIM-02` envelope and determinism records (de
 identical; the recorded fixture digest test passes unchanged (no fixture asset has an own route).
 Timing level F with K22 is prepared, not run.
 
+#### Drawn turns (`PARK-29`), as built
+
+A car or truck pulling into or out of a lot place or a dock is drawn round each bend of its
+manoeuvre on a circular arc tangent to both legs, where it used to pivot at the point (the
+renderer only slerped its heading). The drawn pose only: the simulation walks the polyline as
+before, and positions, arrival ticks, saves and the determinism records are unchanged
+(owner decision: a drawn arc of fixed radius, no proof, no storage).
+
+- **Which bends.** Every interior point of the polyline the manoeuvre walks
+  (`maneuver_path`: the lane point, then the place's route or way, reversed for a pull-out):
+  four-point paths, long ways and own routes, automatic or hand-drawn, building lots and parking
+  lots, and docks' paths and authored ways. The ends are not rounded: the stop, and the lane
+  point, where the car joins or leaves its lane as before ([below](#the-gate-turn-park-31-not-built)).
+  The road connection is an interior point (the hop from the lane meets the route there), so its
+  bend is rounded too; at a gate square to the road it is under 5°. A bend under 5° keeps its
+  corner; so does a reversal (180°). Kerbside places (`PARK-05`) are drawn as walked.
+- **The arc.** Wanted radius R: 2.5 m for a car, 6 m for anything in a dock manoeuvre (every such
+  vehicle, a van included, is proven with the freight body). Bend θ: tangent length
+  `t = min(R tan(θ/2), half of either leg, 6 m)`, radius `t / tan(θ/2)`. Half a leg at most, so
+  two arcs never overlap, each leg's midpoint stays on the stored route and a short leg shrinks the
+  arc smoothly towards the old pivot (a 2 m leg between two right angles: radius 1 m). The 6 m cap
+  binds only past 90° for a truck (past 135° for a car), and bounds how far the drawn pose lies
+  from the simulated one: within `MAX_DRAWN_OFFSET_M` (12.05 m).
+- **The mapping** (`simulation/parking/turns.rs`, `drawn_turn`). The snapshot's existing leg scan
+  (`local_access_target_segment`) names the leg the vehicle is on; its progress is its position
+  projected on that leg. The `2t` of route around a corner maps linearly onto the arc, so the
+  vehicle stands at the arc's middle while it is at the corner, is drawn at its own position on
+  every straight part (bit for bit, facing the leg's end as before), and slows to `θ / (2 tan
+  (θ/2))` of its speed on an arc (0.79 at 90°). It faces along the arc. A reversing truck
+  (`yard_pose_reversed`: backing out of a dock, or into one marked `tail_in`) is drawn on the same
+  line facing the other way: the arcs depend on the polyline, not on the direction it is walked,
+  so a truck backing out along its way in passes the poses it drove in through.
+- **Freight ways.** A dock's authored way bends by at most 15° a point (chords of an arc,
+  `arc_waypoints`): rounded with the truck's radius, the drawn line keeps within 6 cm of the chords
+  and within 8° of each chord's heading. They look as before, with the heading steps between
+  chords gone.
+- **Cost.** Per posed manoeuvring vehicle, per snapshot: the polyline copy and leg scan the facing
+  already made (O(points), at most 25), then O(1): the two bends at the current leg's ends, a
+  `sin_cos` and an `atan2` each, no allocation. Other cars pay nothing new. The camera cull tests
+  a manoeuvring car's stored position widened by `MAX_DRAWN_OFFSET_M` (a box, where it tested the
+  point), so the culled pose stays the full pose bit for bit; a few more off-lane cars near the
+  view's edge are posed. Per-frame work (the snapshot), so level F timing applies; not run (below).
+- **Editor.** The lot payload's `spots` gain `drawn`, the line the car is drawn along
+  (`rounded_line`: each arc sampled at least every 10°); the asset editor's Car routes draw it,
+  dashed for an automatic route and solid for an own one, over the stored route as a fainter thin
+  guide. Own routes keep their waypoint handles on the stored route. The editor's route starts at
+  the gate's road connection, so its first bend in the game (from the hop) is not shown.
+
+Known limits:
+
+- The drawn body may overlap a neighbouring place, or leave the paving the lot proof proved, by up
+  to about 0.6 m at a 90° bend (0.34 to 0.36 m at 30 to 45°): the proof proves a pivot square,
+  which only fits a 0.2 to 0.35 m arc (the `PARK-29` analysis; accepted by the owner).
+- Cars still join and leave the lane with a turn on the spot at the lane point
+  ([the gate turn](#the-gate-turn-park-31-not-built), `PARK-31`, is not built).
+- On an arc a vehicle is drawn slower than it moves (to 0.79 at 90°) and catches up on the next
+  straight part; its simulated timing is unchanged.
+
+Tests: `simulation/parking/turns.rs` (a right angle drawn on a circle of the wanted radius, facing
+along it, coinciding with the route at its ends, leg midpoints and straight parts, the arc's middle
+at the corner; short legs and slight bends; a chord-arc way within 6 cm; a reversed route on the
+same line; the editor's sampled line), `nodes/sim/core/tests/parking/drive_lines/long_ways.rs`
+(the own-route lots: on every tick of both manoeuvres the car is drawn on its way's rounded line
+facing along it, where it is on straight parts, the snapshot's instance at the drawn point; its
+positions, trip rows and arrival tick for tick as in a city that builds no snapshot),
+`docks/drive_through.rs` (a drive-through truck drawn on its chords as before, facing its travel),
+`docks/backs_in.rs` (a backed-into dock's truck drawn where the nose-first one is, bit for bit,
+facing the other way) and the Godot `asset_car_route_test` (the routed spot's drawn line, rounded,
+same start and stop).
+
+Verification (fresh, 2026-11-21): `./run.sh --test` PASS (rust 3,120 passed, 244 skipped;
+godot-main, godot-vehicle); clippy `--all-targets` adds no warning. Against the release library
+test binary of `dev` `d4abd72e1` that `PARK-25` and `PARK-26` were compared with, the `SIM-02`
+envelope and determinism records (determinism and all 56 day records of the four workloads, six
+workers) are byte-equal and the `PERF-06` work counts identical; the recorded fixture digest test
+passes unchanged. The populated-city snapshot equivalence (`culled_snapshot_matches_full_pose_on_a_populated_city`,
+release, 6,002 compared frames) passes with the widened cull. Timing level F with K22 (the
+snapshot is per-frame work) is prepared, not run.
+
+#### The gate turn (`PARK-31`, not built)
+
+Where the car joins or leaves its lane it still turns on the spot: the owner's gate turn (the
+lane's direction as a virtual leg at the lane point, arcs started late across crossed lanes,
+larger and earlier for trucks) needs more than the drawn manoeuvre can give, and is not built.
+How the hop is drawn today, and what the gate turn needs, is in
+[`entrance_and_exit.md`](entrance_and_exit.md#the-lane-hop-of-a-lot-or-yard-manoeuvre-park-29).
+
 ### Edits and towing (`PARK-01`, `PARK-05`)
 
 Road and building edits reconcile the affected sources at the existing publication and edit hooks.
@@ -4069,6 +4156,8 @@ delta)` runs the same frame synchronously for tests that feed their own poses:
   unchanged and are not remembered
 - poses are smoothed every render frame so fast sim multipliers do not quantize cars to the
   simulation tick rate
+- a car or truck in a lot or yard manoeuvre is posed on its route's arcs, not at its simulated
+  point ([Drawn turns](#drawn-turns-park-29-as-built))
 - **rest** (`RENDER-28`, `RENDER-32-G`): a car whose drawn pose has reached its snapshot pose to
   `f32` resolution (within 8 units in the last place; an off-lane car compares the inputs of its
   solve, XZ and horizontal heading) is drawn exactly as it was while its snapshot pose stays bit
