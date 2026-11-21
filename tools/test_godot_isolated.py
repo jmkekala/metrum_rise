@@ -81,6 +81,10 @@ class ProfileTests(unittest.TestCase):
             mods = temp / "player-mods/pack"
             mods.mkdir(parents=True)
             (mods / "asset.toml").write_text("pack")
+            # A pack's `.git` pointer (and one beside the packs) stays behind; deeper ones are content.
+            (mods / ".git").write_text("gitdir: /elsewhere/pack.git\n")
+            (mods.parent / ".git").mkdir()
+            (mods / "assets/.git").mkdir(parents=True)
             profile, project, name, env = gi.create(temp, "probe.", godot_dir=godot, mods=mods.parent,
                                                     name_prefix="MetrumProbe")
             self.assertEqual(profile.parent, temp.resolve())
@@ -91,6 +95,9 @@ class ProfileTests(unittest.TestCase):
             self.assertFalse((project / "project.godot").is_symlink())
             self.assertTrue((profile / "maps").is_symlink())
             self.assertEqual((gi.user_dir(profile, name) / "mods/pack/asset.toml").read_text(), "pack")
+            self.assertFalse((gi.user_dir(profile, name) / "mods/pack/.git").exists())
+            self.assertFalse((gi.user_dir(profile, name) / "mods/.git").exists())
+            self.assertTrue((gi.user_dir(profile, name) / "mods/pack/assets/.git").is_dir())
             self.assertTrue(Path(env["XDG_DATA_HOME"]).is_relative_to(profile))
             # Another build's library gets a bin/ of its own; the tree's stays untouched.
             library = temp / "other.so"

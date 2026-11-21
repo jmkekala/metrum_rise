@@ -102,6 +102,20 @@ def player_mods():
     return Path(data) / "godot/app_userdata/Metrum Rise/mods"
 
 
+def without_git(source, depth):
+    """A `shutil.copytree` ignore for `source` that leaves out the `.git` entry (file or folder)
+    of `source` itself and of every folder up to `depth` levels below it: a pack keeps its git data
+    outside the folder behind a `.git` pointer file (docs/asset_editor.md Q1), and a copy holding
+    that pointer would let a git command in the copy act on the real repository. Neither the pack
+    scan nor the export needs the entry."""
+    source = Path(source)
+
+    def ignore(folder, names):
+        inside = Path(folder).relative_to(source)
+        return {".git"} & set(names) if len(inside.parts) <= depth else set()
+    return ignore
+
+
 def make_project(profile, godot_dir, library=None, scripts=None, mods=None, name_prefix="MetrumIsolated",
                  own_scripts=()):
     """An isolated copy of the project in `profile`: every entry of `godot_dir` linked,
@@ -109,7 +123,8 @@ def make_project(profile, godot_dir, library=None, scripts=None, mods=None, name
     repo's other entries linked beside it (scripts reach them through `res://../<dir>`).
     `library` copies another build's library into a `bin/` of its own (default: `bin/` linked);
     `scripts` copies another tree's scripts with `own_scripts` (paths under scripts/) taken from
-    `godot_dir`; `mods` copies those packs into the profile's user://mods."""
+    `godot_dir`; `mods` copies those packs into the profile's user://mods, without the `.git`
+    entry of the packs folder or of a pack (`without_git`)."""
     profile = Path(profile)
     godot_dir = Path(godot_dir)
     project = profile / "project"
@@ -136,7 +151,7 @@ def make_project(profile, godot_dir, library=None, scripts=None, mods=None, name
     (project / "override.cfg").write_text(
         f'[application]\nconfig/name="{name}"\nconfig/use_custom_user_dir=false\n')
     if mods is not None and Path(mods).is_dir():
-        shutil.copytree(mods, user_dir(profile, name) / "mods", symlinks=True)
+        shutil.copytree(mods, user_dir(profile, name) / "mods", symlinks=True, ignore=without_git(mods, 1))
     return project
 
 

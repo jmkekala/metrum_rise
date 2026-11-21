@@ -193,6 +193,23 @@ class CommandTests(unittest.TestCase):
         self.assertEqual(status, 2)
         self.assertEqual(report["seen"]["request"]["write_mods"], os.path.abspath(self.root / "mods"))
 
+    def test_the_pack_copy_leaves_out_the_packs_git_entry(self):
+        pack = self.root / "mods" / PACK
+        # The owner's pack: its git data outside, a `.git` pointer file in the folder.
+        (pack / ".git").write_text("gitdir: /elsewhere/kuopio.git\n")
+        (pack / "assets" / "a" / ".git").mkdir(parents=True)
+        model_draft.copy_pack(self.root / "mods", PACK, self.root / "copy")
+        copied = self.root / "copy" / PACK
+        self.assertTrue((copied / "pack.toml").is_file())
+        self.assertFalse((copied / ".git").exists())
+        # Only the pack's own entry: a deeper `.git` is the pack's content, copied as it is.
+        self.assertTrue((copied / "assets" / "a" / ".git").is_dir())
+        (pack / ".git").unlink()
+        (pack / ".git").mkdir()
+        (pack / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
+        model_draft.copy_pack(self.root / "mods", PACK, self.root / "copy2")
+        self.assertFalse((self.root / "copy2" / PACK / ".git").exists())
+
     def test_a_pack_id_that_is_a_path_is_refused(self):
         with self.assertRaises(ValueError):
             model_draft.copy_pack(self.root / "mods", "../mods", self.root / "copy")

@@ -80,13 +80,15 @@ def unprofile(value, copy, mods):
 
 def copy_pack(mods, pack_id, destination):
     """Copies `<mods>/<pack_id>` into `destination` (links kept as links, which the draft then
-    refuses). A missing pack copies nothing: the draft refuses it by name."""
+    refuses), without the pack's own `.git` entry (`godot_isolated.without_git`). A missing pack
+    copies nothing: the draft refuses it by name."""
     if not valid_pack_id(pack_id):
         raise ValueError(f"role pack_id {pack_id!r} is not a pack id: {PACK_ID_RULE}")
     destination.mkdir(parents=True, exist_ok=True)
     source = Path(mods) / pack_id
     if source.is_dir() and not source.is_symlink():
-        shutil.copytree(source, destination / pack_id, symlinks=True)
+        shutil.copytree(source, destination / pack_id, symlinks=True,
+                        ignore=godot_isolated.without_git(source, 0))
 
 
 def request(args, role, profile):
