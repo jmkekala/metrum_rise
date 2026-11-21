@@ -175,15 +175,16 @@ func _bay_at_door() -> void:
 	expect(anchors.size() == 4 and bay["anchor_type"] == "loading_bay" and bay["name"] == "dock", "a loading bay named after the door: %s" % [bay])
 	expect(is_equal_approx(float(position[0]), 1.51) and is_equal_approx(float(position[2]), -1.7031) and bay["forward"] == [-1.0, 0.0, 0.0], "end-on to the door: %s" % [bay])
 	expect(float(bay["width_m"]) == 3.5 and float(bay["length_m"]) == 8.0 and bay["vehicle_class"] == "freight", "the standard size: %s" % [bay])
-	# The same fields and defaults as a loading bay the Access points button creates (its stand
-	# absent: nose in, `PARK-23`).
+	# The same fields and defaults as a loading bay the Access points button creates (whose stand
+	# is absent: nose in), but backed into: a truck backs up to a door (`PARK-23`).
 	var targets: Array[Dictionary] = []
 	var created: Dictionary = document.prepare_edit("create", targets, {"kind": "loading_bay"})["document"]["params"]["anchors"].back()
 	var keys := bay.keys()
 	var created_keys := created.keys()
 	keys.sort()
 	created_keys.sort()
-	expect(keys == created_keys and not bay.has("stand"), "a door's bay carries a created bay's fields: %s against %s" % [keys, created_keys])
+	keys.erase("stand")
+	expect(keys == created_keys and not created.has("stand") and bay.get("stand") == "tail_in", "a door's bay carries a created bay's fields and backs in: %s against %s" % [bay, created_keys])
 	expect(document.undo_label() == "Loading bay at door" and editor._selected_site_anchor_index == 3, "one step, the new bay selected")
 	document.undo()
 	expect(document.snapshot() == before, "one undo removes it")

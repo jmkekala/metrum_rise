@@ -670,7 +670,7 @@ fn move_site(params: &mut VarDictionary, args: &VarDictionary) -> Result<(), Str
 
 // A new access point of `kind` facing `forward`, with the editor's defaults: what "create" adds
 // and what "bay_at_door" starts its loading bay from, so both carry the same fields (a loading
-// bay's `stand` is absent, the default nose-in, `PARK-23`).
+// bay's `stand` is absent, the default nose-in, `PARK-23`; the door's bay then backs in).
 fn new_anchor(kind: &str, forward: Variant) -> VarDictionary {
     let mut entry = vdict! { "anchor_type": kind, "name": if kind == "entrance" { "main" } else { kind }, "position": vec3([0.0; 3]), "forward": forward };
     if kind != "entrance" {
@@ -700,7 +700,8 @@ fn new_anchor(kind: &str, forward: Variant) -> VarDictionary {
 // "Loading bay at vehicle door" (`TOOLS-40`): adds a loading bay end-on to `door` (`{id,
 // position, facing}` in part `part`'s frame, from the asset's model draft ledger) at the standard
 // size of a new loading bay (`new_anchor`), its far end just clear of the part's plan bounds
-// (`door_bay::bay_at_door`), named after the door. `part_bounds` is that part's imported bounds, six floats. Returns the new anchor's
+// (`door_bay::bay_at_door`), named after the door, backed into (`stand = "tail_in"`, `PARK-23`): a
+// truck backs up to a door. `part_bounds` is that part's imported bounds, six floats. Returns the new anchor's
 // index. O(anchors).
 fn bay_at_door(params: &mut VarDictionary, part: usize, args: &VarDictionary) -> Result<usize, String> {
     use crate::assets::authoring::door_bay;
@@ -747,6 +748,7 @@ fn bay_at_door(params: &mut VarDictionary, part: usize, args: &VarDictionary) ->
     bay.set("name", name);
     bay.set("position", vec3(position));
     bay.set("forward", vec3(forward));
+    bay.set("stand", "tail_in");
     anchors.push(&bay.to_variant());
     params.set("anchors", anchors);
     Ok(array(params, "anchors").len() - 1)
