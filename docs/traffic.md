@@ -2209,6 +2209,56 @@ and turn envelopes share the filter. Structure checks already use the site-cell 
 For A bays and D driveways the bound is O(A² D + A D (S + L + K overlay cost)), L local
 structure vertices. This is edit and load work and has no dependency on total city buildings.
 
+#### Drive-line routes (`PARK-24`), as built
+
+Stage C1a of the car routes plan. A bay whose straight path fails through every Driveway is
+routed along the lot's **drive lines**, straight lines its own layout gives: the **gate line**
+through a Driveway along its forward; the **row line** of a bay, through its aisle point (2.5 m
+in front of its entry edge) square to the bay, and for a bay angled to its lot also along either
+lot axis; and the **place line** through the bay along its forward. A route bends only where two
+lines cross and keeps the row's four points, so storage, saves and the tick are unchanged:
+
+- along a row: `[connection, J, aisle, stop]`, down the gate line to J where it crosses a row
+  line, along the row line to the aisle point and into the bay;
+- along the place line: `[connection, J', P, stop]`, down the gate line to J' where it crosses the
+  place line, then straight in; P is the aisle point when J' lies before it, else halfway from J'
+  to the stop. A bay in line with the gate (its stop within 1 cm of the gate line) has no crossing:
+  its two points lie at thirds of the straight way from the gate to the stop.
+
+A turn off the gate line must lie past the gate; lines within a sine of 0.001 of parallel never
+cross. Each candidate is proven by the drive-through rules (`PARK-21`) with the car row: a
+1.8 m corridor per leg reaching 2.25 m past both ends, the 4.85 m square at every bend over 30°,
+the last leg along the bay, legs of at least 0.1 m that touch only their neighbours. No square is
+required just inside the gate unless the route bends there: the car turns off the street on the
+road, as a street-edge bay's car and a truck do (owner decision). The shortest valid route over
+all gates and candidates wins, lengths compared in whole millimetres; a tie goes to the lower gate
+index, then the lower candidate index. Only `+ − × ÷` and square roots are used, so the routes add
+nothing to the cross-platform limit `SIM-03`.
+
+Owner decisions: the straight path is tried first, exactly as before, so every bay it proves keeps
+its path bits; a bay no candidate reaches is still rejected, with the straight path's reason
+(the new wording comes with C1b); a car leaves along its way in, nose first, as before; cars
+meeting in an aisle stay ignored. The asset editor and the placed lot call the same validator
+(`validate_bay` with `DriveLines`; the editor proves in the lot frame, the placed lot in the
+world). The editor payload lists each accepted spot's route as `spots` (`street`, `straight` or
+`auto`, with its Driveway index).
+
+**The test pack is pinned (temporary).** Without a pin the drive lines rescue places in the test
+pack (in the editor frame: `small_grocery_store`'s fourth parking anchor and
+`coal_power_plant`'s sixth) and the populated fixtures move. `[building] car_routes = "direct"` on
+the ten test-pack manifests keeps them on the straight path; the key is the only one of its kind,
+read by the placed lot and the editor (it round-trips through export), and is removed at the
+`PARK-07` rebaseline. The bundled `parking` pack is not pinned: drive lines rescue none of its
+bays, so its supply is unchanged. The pin is in the fixture inputs, so it re-keys the populated
+snapshots once (same content).
+
+Cost: unchanged for a bay whose straight path proves. A bay whose straight path fails pays at most
+four candidates per gate, each at most five shape tests (three corridors and up to two squares,
+stopping at the first blocked shape), and a candidate no shorter than the best found is not
+proven: O(D × c) more per failing bay, c one shape test, so the lot bound keeps its order. A
+failing candidate formats its (unread) rejection, as the drive-through proof does. Edit and load
+work only; nothing per tick, nothing that reads the city.
+
 ### Edits and towing (`PARK-01`, `PARK-05`)
 
 Road and building edits reconcile the affected sources at the existing publication and edit hooks.
