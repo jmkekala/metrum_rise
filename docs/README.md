@@ -13,6 +13,7 @@ This directory stays intentionally flat for now. Each file should have one clear
 | [`simulation.md`](simulation.md) | Simulation engine contract: game clock, scheduler, entity handles, timed events, snapshot rules, sim-frame budget and simulation tiers (`SIM-02`). |
 | [`entrance_and_exit.md`](entrance_and_exit.md) | Building entrance/exit and trip-planning spec. |
 | [`traffic.md`](traffic.md) | Lane-bound vehicle movement, car following, junction traversal, lane changes, overtaking, traffic debug, and parking: supply, kerbside lanes, parked cars and resident trips. |
+| [`vehicles.md`](vehicles.md) | Vehicles as things: the model contract the models repository builds to, body classes and sizes, lamps and glass, vehicle pack assets, and how vehicles are loaded and drawn. Movement and parking stay in `traffic.md`. |
 | [`economy.md`](economy.md) | Current economy specification: money and fiscal policy, households, funding census, labor, production, utilities, freight, bankruptcy, and validation recipes. |
 | [`demand.md`](demand.md) | Current growth specification: household admission and removal, private construction, level changes, failed-site clearance, and growth diagnostics. |
 | [`zoning.md`](zoning.md) | Zoning system spec. |
