@@ -155,14 +155,14 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
             } else {
                 AGENT_WALK_SPEED_MS
             } * delta;
-            let (next_pos, reached_door) = advance_along_local_access_path(current, &path, step);
+            let (next_pos, reached_door) = advance_along_local_access_path(current, path.as_slice(), step);
             *s_pos_x.get_mut(i) = next_pos.x;
             *s_pos_y.get_mut(i) = next_pos.y;
             if crate::debug::Channel::Traffic.enabled()
-                && local_access_should_log_step(current, next_pos, &path, reached_door)
+                && local_access_should_log_step(current, next_pos, path.as_slice(), reached_door)
             {
-                let seg_before = local_access_target_segment(current, &path);
-                let seg_after = local_access_target_segment(next_pos, &path);
+                let seg_before = local_access_target_segment(current, path.as_slice());
+                let seg_after = local_access_target_segment(next_pos, path.as_slice());
                 traffic_log!(
                     "[ACCESS_INGRESS_STEP] agent={} bldg={} mode={} lane={}({}) lane_d={:.2} seg_before={:?} seg_after={:?} reached_door={} current=({:.2},{:.2}) next=({:.2},{:.2}) p0=({:.2},{:.2}) p1=({:.2},{:.2}) p2=({:.2},{:.2}) p3=({:.2},{:.2}) count={}",
                     i,

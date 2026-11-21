@@ -60,14 +60,14 @@ mod tests {
             }
             for (step, expected) in steps {
                 assert_eq!(
-                    advance_along_local_access_path(path.points[0], &path, step),
+                    advance_along_local_access_path(path.points[0], path.as_slice(), step),
                     (expected, false),
                     "reverse={reverse}, step={step}"
                 );
             }
             for step in [5.0, 6.0] {
                 assert_eq!(
-                    advance_along_local_access_path(path.points[0], &path, step),
+                    advance_along_local_access_path(path.points[0], path.as_slice(), step),
                     (path.points[3], true)
                 );
             }
@@ -88,7 +88,7 @@ mod tests {
         };
 
         let current = path.points[3];
-        let (next, reached_handoff) = advance_along_local_access_path(current, &path, 0.05);
+        let (next, reached_handoff) = advance_along_local_access_path(current, path.as_slice(), 0.05);
 
         assert!(
             reached_handoff,
@@ -114,7 +114,7 @@ mod tests {
             !local_access_should_log_step(
                 Vector2::new(0.10, 0.0),
                 Vector2::new(0.20, 0.0),
-                &path,
+                path.as_slice(),
                 false
             ),
             "sub-meter movement within one progress bucket should stay quiet"
@@ -123,7 +123,7 @@ mod tests {
             local_access_should_log_step(
                 Vector2::new(0.95, 0.0),
                 Vector2::new(1.05, 0.0),
-                &path,
+                path.as_slice(),
                 false
             ),
             "crossing a whole-meter remaining-distance bucket should be logged"
@@ -132,7 +132,7 @@ mod tests {
             local_access_should_log_step(
                 Vector2::new(3.95, 0.0),
                 Vector2::new(4.00, 0.0),
-                &path,
+                path.as_slice(),
                 true
             ),
             "completion should always be logged"

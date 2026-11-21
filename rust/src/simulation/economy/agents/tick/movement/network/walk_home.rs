@@ -649,7 +649,7 @@ pub(super) unsafe fn walk_to_sidewalk(
         path.points[0] = pos;
         path.points[1] = Vector2::new(target.x, target.z);
         let (next, reached) =
-            advance_along_local_access_path(pos, &path, AGENT_WALK_SPEED_MS * delta);
+            advance_along_local_access_path(pos, path.as_slice(), AGENT_WALK_SPEED_MS * delta);
         *slices.pos_x.get_mut(i) = next.x;
         *slices.pos_y.get_mut(i) = next.y;
         *slices.speed.get_mut(i) = AGENT_WALK_SPEED_MS;

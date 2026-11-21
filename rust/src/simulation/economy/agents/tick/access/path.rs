@@ -22,6 +22,14 @@ pub(crate) struct LocalAccessPath {
     pub(crate) count: usize,
 }
 
+impl LocalAccessPath {
+    /// The valid points, in travel order: what the walking functions below take, so a longer
+    /// polyline (a dock's authored route, `PARK-21`) walks by the same code. O(1).
+    pub(crate) fn as_slice(&self) -> &[Vector2] {
+        &self.points[..self.count]
+    }
+}
+
 /// Builds a short local access path between a building door and a lane/curb handoff point.
 pub(in crate::simulation::economy::agents::tick) fn local_access_path(
     mode: u8,
@@ -89,21 +97,20 @@ fn point_on_segment(p: Vector2, a: Vector2, b: Vector2) -> bool {
     segment_distance(p, proj) <= 0.05
 }
 
-/// Returns the next segment endpoint index the agent should move toward.
-pub(crate) fn local_access_target_segment(
-    current: Vector2,
-    path: &LocalAccessPath,
-) -> Option<usize> {
-    if path.count <= 1 {
+/// Returns the next segment endpoint index the agent should move toward on the polyline
+/// `points`. O(points).
+pub(crate) fn local_access_target_segment(current: Vector2, points: &[Vector2]) -> Option<usize> {
+    let count = points.len();
+    if count <= 1 {
         return None;
     }
-    if segment_distance(current, path.points[path.count - 1]) <= 0.05 {
+    if segment_distance(current, points[count - 1]) <= 0.05 {
         return None;
     }
 
-    for idx in (1..path.count).rev() {
-        let a = path.points[idx - 1];
-        let b = path.points[idx];
+    for idx in (1..count).rev() {
+        let a = points[idx - 1];
+        let b = points[idx];
         if segment_distance(current, b) <= 0.0001 {
             continue;
         }
@@ -115,11 +122,11 @@ pub(crate) fn local_access_target_segment(
     None
 }
 
-fn local_access_remaining_distance(current: Vector2, path: &LocalAccessPath) -> Option<f32> {
-    let target_idx = local_access_target_segment(current, path)?;
-    let mut distance = segment_distance(current, path.points[target_idx]);
-    for idx in (target_idx + 1)..path.count {
-        distance += segment_distance(path.points[idx - 1], path.points[idx]);
+fn local_access_remaining_distance(current: Vector2, points: &[Vector2]) -> Option<f32> {
+    let target_idx = local_access_target_segment(current, points)?;
+    let mut distance = segment_distance(current, points[target_idx]);
+    for idx in (target_idx + 1)..points.len() {
+        distance += segment_distance(points[idx - 1], points[idx]);
     }
     Some(distance)
 }
@@ -128,36 +135,37 @@ fn local_access_remaining_distance(current: Vector2, path: &LocalAccessPath) -> 
 pub(in crate::simulation::economy::agents::tick) fn local_access_should_log_step(
     current: Vector2,
     next: Vector2,
-    path: &LocalAccessPath,
+    points: &[Vector2],
     reached_end: bool,
 ) -> bool {
     if reached_end {
         return true;
     }
 
-    let seg_before = local_access_target_segment(current, path);
-    let seg_after = local_access_target_segment(next, path);
+    let seg_before = local_access_target_segment(current, points);
+    let seg_after = local_access_target_segment(next, points);
     if seg_before != seg_after {
         return true;
     }
 
-    let Some(before_remaining) = local_access_remaining_distance(current, path) else {
+    let Some(before_remaining) = local_access_remaining_distance(current, points) else {
         return true;
     };
-    let Some(after_remaining) = local_access_remaining_distance(next, path) else {
+    let Some(after_remaining) = local_access_remaining_distance(next, points) else {
         return true;
     };
 
     before_remaining.floor() != after_remaining.floor()
 }
 
-/// Advances along a local access path by `step` meters.
+/// Advances along the polyline `points` by `step` meters. O(points).
 pub(in crate::simulation::economy::agents::tick) fn advance_along_local_access_path(
     current: Vector2,
-    path: &LocalAccessPath,
+    points: &[Vector2],
     step: f32,
 ) -> (Vector2, bool) {
-    if path.count <= 1 {
+    let count = points.len();
+    if count <= 1 {
         return (current, true);
     }
 
@@ -165,11 +173,11 @@ pub(in crate::simulation::economy::agents::tick) fn advance_along_local_access_p
     let mut remaining = step.max(0.0);
 
     loop {
-        let Some(idx) = local_access_target_segment(pos, path) else {
-            return (path.points[path.count - 1], true);
+        let Some(idx) = local_access_target_segment(pos, points) else {
+            return (points[count - 1], true);
         };
 
-        let target = path.points[idx];
+        let target = points[idx];
         let dist = segment_distance(pos, target);
         if remaining < dist && dist > 1e-6 {
             let dir = (target - pos).normalized();
@@ -177,7 +185,7 @@ pub(in crate::simulation::economy::agents::tick) fn advance_along_local_access_p
         }
 
         pos = target;
-        if idx == path.count - 1 {
+        if idx == count - 1 {
             return (pos, true);
         }
         remaining = (remaining - dist).max(0.0);

@@ -358,7 +358,7 @@ fn ingress_points(
 
 // The agent's position, then the access points still ahead of it.
 fn remaining_access_points(here: Vector2, path: &LocalAccessPath) -> Vec<Vector2> {
-    let next = local_access_target_segment(here, path).unwrap_or(path.count.saturating_sub(1));
+    let next = local_access_target_segment(here, path.as_slice()).unwrap_or(path.count.saturating_sub(1));
     let mut points = Vec::with_capacity(path.count + 1);
     points.push(here);
     points.extend_from_slice(&path.points[next.min(path.count)..path.count]);
