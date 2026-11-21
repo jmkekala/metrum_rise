@@ -521,7 +521,7 @@ Current vacancy rule:
 - `mark_building_deserted()` removes remaining vacancies immediately in O(1), including farms; admission and forced rehousing never wait for a later full index rebuild.
 - Housing capacity comes from the resolved asset, with exactly one household slot for explicit field-producing farms. Unresolved, broken, deserted, and under-construction buildings offer no usable housing.
 - Farms share the residential vacancy list without joining the residential zoning/growth index; household capacity does not grow with field area. Farmhouse area uses the authored `flat_size_m2`, defaulting to 120 m2 when unspecified.
-- `worker_capacity_with_catalog(idx, catalog)` uses the bound economy profile and committed production area. Inspector, toolbar and city diagnostics reuse the live catalog; unresolved profiles offer zero jobs. Manifest capacity applies only to assets without an economy profile.
+- `worker_capacity_with_catalog(idx, catalog)` uses the bound economy profile and committed production area. Inspector, toolbar and city diagnostics reuse the live catalog; unresolved profiles offer zero jobs. Manifest capacity applies only to assets without an economy profile, and there only to what is shown: hiring needs a bound profile (`active_work_profile`), so such a building has no workers (`TOOLS-38`).
 
 This index is allocator-owned because household admission and home claiming still route through the
 allocator today.

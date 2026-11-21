@@ -1506,8 +1506,8 @@ Building asset data:
   - `zone_type` and `density` when `placement_mode = "zoned_private"`
   - `lot_width_cells`
   - `lot_depth_cells`
-  - `household_capacity`, `worker_capacity`, `flat_size_m2`, or combinations depending on `placement_mode` and
-    `zone_type` when zoned
+  - `household_capacity` and `flat_size_m2` for housing and farms; `worker_capacity` only for an
+    explicit building without an `economy_profile` (a profile supplies the workers, `TOOLS-38`)
   - `service_class`
   - `economy_profile` reference
   - `asset_set`
@@ -2007,7 +2007,7 @@ V1 inspector and viewport contract:
   live 3D preview of the selected GLB/GLTF/FBX file before it is accepted into the asset. The
   preview loader uses the same import path as the final building preview so the picker cannot show
   a materially different model from the exported asset.
-- Building mode inspector edits shared asset fields (`asset_id`, `display_name`, `thumbnail`, `asset_set`, `tags`, optional attribution), building fields (`placement_mode`, conditional `zone_type` and `density`, `service_class`, `economy_profile`, `lot_width_cells`, `lot_depth_cells`, `frontage_forward`, `min_zone_width_cells`, `min_zone_depth_cells`, `household_capacity`, `worker_capacity`, `flat_size_m2`, extractor resource metadata, field resource metadata), mesh part files/transforms, optional material paths, the required `entrance/main` anchor, and optional `driveway`/`parking`/`loading_bay` site anchors.
+- Building mode inspector edits shared asset fields (`asset_id`, `display_name`, `thumbnail`, `asset_set`, `tags`, optional attribution), building fields (`placement_mode`, conditional `zone_type` and `density`, `service_class`, `economy_profile`, `lot_width_cells`, `lot_depth_cells`, `frontage_forward`, `min_zone_width_cells`, `min_zone_depth_cells`, `household_capacity`, `worker_capacity` (explicit buildings without a profile only), `flat_size_m2`, extractor resource metadata, field resource metadata), mesh part files/transforms, optional material paths, the required `entrance/main` anchor, and optional `driveway`/`parking`/`loading_bay` site anchors.
 - Normal viewport selection is **All objects**, independent of the current inspector section.
   Click a visible mesh, anchor or yard directly; no toolbar/task change is required first.
   A plain click opens Model, Site / Access points or Site / Surfaces respectively, expanding a
@@ -2421,7 +2421,24 @@ Optional fields:
 - `min_zone_width_cells`: integer, default `lot_width_cells`
 - `min_zone_depth_cells`: integer, default `lot_depth_cells`
 - `household_capacity`: integer, `>= 0`. Defines the number of distinct household slots (families). Required for residential. Explicit field-producing farms always provide exactly one slot; the editor displays this as a fixed value.
-- `worker_capacity`: integer, `>= 0`. Defines the total staffing capacity. Required for commercial/industrial. Note: if an `economy_profile` is selected, this value is read authoritatively from the profile and cannot be overridden at the asset level.
+- `worker_capacity`: integer, `>= 0`, optional for every kind (`TOOLS-38`, checked 2026-11-21). The asset's own number never sets a building's workers in the simulation:
+  - A building with an `economy_profile` takes its workers from the profile
+    (`BuildingAllocator::worker_capacity_for_asset_with_catalog`); an extractor or farm scales the
+    profile's workers per hectare with its drawn area (`physical_worker_capacity_for_profile`). A
+    profile that is missing or not executable makes the building economy-broken: no workers. The
+    asset's number is not read for any of these, so the editor shows the profile's number
+    read-only with its source (for example "Workers: 10 (from the economy profile
+    food_processor_basic)"), and export drops an asset's own `worker_capacity` when it has a
+    profile. A manifest that still carries one loads unchanged and the number is ignored.
+  - A zoned commercial or industrial building without a profile never spawns or becomes a
+    level-change target (`asset_placement_params`, `level_change_target`), so export requires the
+    profile and the editor does not ask for workers. The manifest loader still accepts the older
+    `worker_capacity`-only form.
+  - An explicit building without a profile (a parking lot, a police or fire station) hires no one:
+    hiring needs a bound profile (`active_work_profile`). Its `worker_capacity` is what the game's
+    build menu tile and building inspector show as its jobs; absent means 0. The editor keeps it as
+    an input for these kinds only, noting that it is shown, not hired.
+  - Residential buildings must not use it.
 - `flat_size_m2`: float, `>= 0.0`. The average interior living area per household. Used to derive compatible starter household size from a baseline area, adult-weighted members, and lighter child-weighted extra members. Farmhouses preserve this value through export/re-import, defaulting to 120 m2 at runtime when unspecified. Authoring loads retain raw optional values rather than replacing them with effective runtime defaults. Profile-derived staffing and the fixed one-family farm contract do not erase dormant authored capacity metadata.
 
 Placement-mode interpretation:
@@ -2463,7 +2480,7 @@ Building families and upgrade levels:
   matched release test executables.
 
 - `lot_width_cells` and `lot_depth_cells` must be identical for all members of a family. The footprint does not change on upgrade; only the mesh and capacities change.
-- `household_capacity`, `worker_capacity`, and `flat_size_m2` are tier-specific. A level-2 building may house more households or provide larger flats than a level-1 building of the same family.
+- `household_capacity` and `flat_size_m2` are tier-specific, and so are a workplace's workers through its tier's `economy_profile`. A level-2 building may house more households or provide larger flats than a level-1 building of the same family.
 - Cross-density change is not an ordinary family upgrade. If gameplay later wants a building to move
   into a different density band, that must happen through rezoning plus redevelopment or
   replacement rather than by crossing density inside one `upgrade_family`.
@@ -2506,7 +2523,9 @@ Deterministic editor rules:
 
 #### Capacity estimation
 
-The asset editor auto-suggests capacity values when a mesh is scaled. The formulas are:
+Not built: the editor suggests no capacity (checked 2026-11-21). The worker rows below no longer
+apply in any case: a zoned workplace's workers come from its economy profile (`TOOLS-38`). The
+planned formulas are:
 
 ```
 floors         = max(1, round(scaled_height / 3.5))        # ~3.5 m per storey
@@ -2532,8 +2551,10 @@ Building rules:
 - `placement_mode = "explicit"` forbids `zone_type` and `density`.
 - `placement_mode = "zoned_private"` and `zone_type = "residential"` requires
   `household_capacity` and must not use `worker_capacity`.
-- `placement_mode = "zoned_private"` and `zone_type = "commercial"` or `industrial` requires
-  `worker_capacity`.
+- `placement_mode = "zoned_private"` and `zone_type = "commercial"` or `industrial` requires an
+  executable `economy_profile` at export, which supplies its workers; it writes no
+  `worker_capacity` (`TOOLS-38`). The manifest loader also accepts an older asset with
+  `worker_capacity` and no profile, which never spawns.
 - `density` is independent of `zone_type` when `placement_mode = "zoned_private"`. A
   `residential / high` building is a high-density apartment; `residential / low` is a detached
   house. The zoning system uses `zone_type + density` together as the baseline
@@ -3050,7 +3071,7 @@ of the centre in both); for the factory it is the front lobby entrance, not the 
 | R3 frontage | `frontage_forward = [0, 0, 1]` | 12 of 12 |
 | R4 entrance | `type = "entrance"`, `name = "main"`, `position = part.position + [door.x, 0, door.z]` of the `main` door, `forward = door.facing` | `y = 0`: 12 of 12. Position: within 0.5 m of the door in 3 of 12 (`house_1`, `house_3`, `rowhouse_2`), 0.6–2.0 m off in the rest. Forward: the door's facing where it is cardinal for the front-door assets; hand-turned to 71° for the side door that faces 90° (`house_4`, both levels) and to 43.4° for the 45° corner door (grocery). See Q6 |
 | R5 capacity, housing | `household_capacity = dwellings`; `flat_size_m2` = `0.8 × Σ storeys.area_m2 / dwellings`, rounded to the nearest 10, and at most 80 when `dwellings = 1` (decided 2026-11-20: a detached house holds one family-sized household whatever its floor area) | households: 10 of 10 (1, 6, 4). Flat size by hand: 80 for every house and `rowhouse_1`, 100 for `rowhouse_2`. Per dwelling the wall plates give 102 m² (`rowhouse_1`) and 120 m² (`rowhouse_2`), so the rule gives 80 and 100 there; for the houses it gives 110 to 120 with the attic counted, against the hand 80, which equals the 10 × 8 m ground plate alone; the cap for one dwelling gives 80 there, so the rule gives all ten hand values. See Q4 |
-| R5 capacity, work | `worker_capacity = 1`, the preset; `economy_profile` only when given as a role input | both hand assets carry `worker_capacity = 1` and a hand-picked profile (`grocery_basic`, `food_processor_basic`), whose own capacity is authoritative |
+| R5 capacity, work | `economy_profile` from the role input, which a workplace role must give; no `worker_capacity`, since the profile supplies the workers (changed 2026-11-21, `TOOLS-38`; first written as `worker_capacity = 1`, the editor preset) | both hand assets carry `worker_capacity = 1` and a hand-picked profile (`grocery_basic`, `food_processor_basic`), whose own capacity is the one the game uses; the hand `1` is unused and the editor drops it on the next export |
 | R6 LOD bands | tier `i` of `n`: `distance_min_m` = `[0, 35, 70, 120][i]`, `distance_max_m` = the next tier's minimum, none on the last; more than four tiers is an error | 12 of 12. Runtime selection ignores the bands (`TOOLS-05`) |
 | R7 colour schemes | one scheme per variant, sorted by `id`: `id` = variant id, `name` = the id with `_` as spaces and each word capitalised, one override with `part` = the part name, `materials` = the single material name of each tier's `.glb` in order, `albedo` = `colours/<albedo file>`; `default_scheme = default_variant`; `spawn = "random_scheme"`. A tier with other than one material stops the draft | ids, names, default, spawn, materials: 12 of 12. Order: by id in 11; `house_1` lists its default first |
 | R8 thumbnail | `thumbnail.webp`, 1024 × 768, WebP quality 0.9: the preview cropped about its centre to `round(height × 4 / 3)` wide, then one Lanczos resize | file name, size and format: 12 of 12; the hand images are editor captures with their own framing. See Q9 |
@@ -3077,7 +3098,7 @@ summary's first line is `<pack_id>:<asset_id>: <status>` for every outcome, refu
 a refusal the launcher makes before Godot runs is printed as `model_draft: <pack_id>:<asset_id>:
 refused: <reason>`, a missing id read as `(no pack_id)` or `(no asset_id)`. A draft's summary
 states the lot cells, the part position, the entrance's position and `forward`, the capacities
-(households and flat size, or workers and `economy_profile`), the free space on each side, and
+(households and flat size, or the `economy_profile` that supplies the workers), the free space on each side, and
 the acceptance failures and warnings; an existing asset's summary lists its stale lines, then its
 information lines marked `info:`. Exit status: 0 drafted (and written), or an existing asset with
 no stale line (information lines do not count); 1 refused, failed the acceptance check, or not
@@ -3203,7 +3224,7 @@ Existing validation is reused wherever it exists; "new" marks what must be writt
 | A level-1 asset is a spawn candidate of its zoning profile; a higher level has a level below it with the same zone, density and lot cells | `stocked_zone_profiles` (the allocator's filter); the level rule is new, from the registry's upgrade rule |
 | Door sanity, from the ledger sidecar: every `entrance` and `service` door's `height_m` in 2.0–2.6, `width_m` in 0.7–6.0, threshold `y` in 0–1.5 (`vehicle`, `balcony` and `store` doors are not sized: amended 2026-11-20); `entrance/main` within 0.5 m of the `main` door in plan, and a ledger sidecar without a main door fails, since the draft refuses one | new |
 | Triangles per tier within the ceilings of [Buildings](#buildings), from each `.glb` index count | new; a warning, since the models validator owns this gate |
-| A building with a `worker_capacity` has a parking anchor | new; a warning: a draft has none until the owner adds them (Q3) |
+| A workplace (an `economy_profile`, or an older asset's `worker_capacity`) has a parking anchor | new; a warning: a draft has none until the owner adds them (Q3) |
 
 As built (`model_draft/acceptance.rs`): the fit rule is Rust's (`geometry::fits_lot` over
 `MeshPart::plan_bounds`, the editor's rule and 0.01 m), but the editor's `_mesh_part_fits_in_lot`
@@ -3272,8 +3293,8 @@ Each with the recommendation first.
 - **Q3 Part position.** Decided 2026-11-20: R2 (centred across, back-flush) is a starting
   position only, valid on every lot, and the final position is hand-authored: it depends on the
   parking, driveway, loading and hedge the owner adds in the editor. The draft's report states the
-  free space on each side of the lot. A draft with a `worker_capacity` and no parking anchor passes
-  the acceptance check with a warning. Deferred, until commercial and industrial models are made
+  free space on each side of the lot. A workplace draft with no parking anchor passes the
+  acceptance check with a warning. Deferred, until commercial and industrial models are made
   in number: a site layout role input (parking side and bay count) that places the building,
   adds lot cells and drafts the parking anchors and surface.
 - **Q4 `flat_size_m2`.** Decided 2026-11-20: R5's 0.8 × wall-plate area per dwelling, rounded
@@ -3463,6 +3484,9 @@ screen-size LOD policy and staged package publisher. The shipped contract is:
 - Residential never exposes mining/farm/service/employment controls. Rust filters profiles by
   executable behavior, resource and utility compatibility. Profile staffing is derived/read-only,
   including explicit-work-area staffing density; authors cannot edit a competing worker value.
+  Commercial and industrial require a profile and never show a worker field; only an explicit
+  building without a profile authors `worker_capacity` (shown in the game, not hired). The Rust
+  descriptor's `workers` line states the number and its source (`TOOLS-38`).
 - Widget-independent documents, saveable incomplete drafts, open/save/save-as, bounded grouped
   undo/redo (including geometry and type changes), and unsaved-change guards for document replacement,
   leaving the editor and closing the window. A successful runtime export establishes the clean

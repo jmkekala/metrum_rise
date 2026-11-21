@@ -271,8 +271,10 @@ keeps 2 kg of its own output for upkeep. A profile without a matching asset cann
 
 ### Asset binding and failure states
 
-- An asset stores one `economy_profile` reference; the profile defines behavior. `worker_capacity`
-  comes from the bound profile, overriding the asset manifest. Household capacity and
+- An asset stores one `economy_profile` reference; the profile defines behavior. Its workers come
+  from the bound profile, and an asset's own `worker_capacity` is never read for it: the editor
+  shows the profile's number and export drops the asset's (`TOOLS-38`). A building without a
+  profile hires no one; its manifest `worker_capacity` is only shown. Household capacity and
   `flat_size_m2` remain asset metadata.
 - Explicit farms and mines are industry-area assets placed by the player, followed by a drawn
   polygon within 10 m of the building.
