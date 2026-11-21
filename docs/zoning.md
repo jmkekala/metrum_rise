@@ -1394,7 +1394,7 @@ references together. Save/load must reproduce cell ownership and paint, not mere
 ### Reuse and performance gates
 
 Start with dependencies already in `rust/Cargo.toml`: `glam` for geometry, existing `rstar` road
-queries, current rectangle predicates or `parry2d` where appropriate, `i_overlay` for necessary
+queries, current rectangle predicates, `i_overlay` for necessary
 road-boundary polygon operations, Rayon, serde and SQLite. Existing polygon and road-geometry
 adapters should be reused. `imbl` (locked to 7.0.2) additionally supplies structural sharing for
 the existing road chunk-to-owner indices; their whole-index snapshot copies were measured as a

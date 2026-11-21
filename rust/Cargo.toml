@@ -9,7 +9,6 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 godot = { version = "0.4.5", features = ["experimental-threads"] }
-rand = "0.8"
 rayon = "1.10"
 rusqlite = { version = "0.32", features = ["bundled"] }
 serde = { version = "1.0", features = ["derive"] }
@@ -17,25 +16,29 @@ serde_json = "1.0"
 toml = "0.8"
 chrono = "0.4"
 foldhash = "0.2"
-glam = "0.30"
+# `libm` is load-bearing, not redundant: glam then computes sin, cos, atan2, exp, powf and the
+# rest through the `libm` crate, the same bits on Linux, Windows and macOS, instead of the
+# platform's C library (glam 0.30 selects `libm` even with `std` on). It used to arrive only
+# through the unused `parry2d`'s `enhanced-determinism` feature (`TOOLS-37`).
+# `debug-glam-assert` keeps glam's argument checks in debug builds (godot-core also enables it).
+glam = { version = "0.30", features = ["libm", "debug-glam-assert"] }
 i_overlay = "5.0"
 imbl = "7.0.0"
-parry2d = { version = "0.26", features = ["enhanced-determinism"] }
 rstar = "0.12"
 # Exact orientation predicates (already built for spade), so the junction core check agrees
 # with the constrained triangulation that consumes the loop.
 robust = "1.2"
 soa_derive = "0.14"
 spade = "2.15"
-splines = { version = "5.0", features = ["glam"] }
 # Safe SIMD vectors (SSE2/AVX or NEON, else scalar) for the graded bake's four-lane kernel
-# (`TERRAIN-14`); already in the lock file through `imbl` and `simba`.
+# (`TERRAIN-14`); already in the lock file through `imbl`.
 wide = "0.7.33"
 sha2 = "0.11"
 zip = { version = "8.6", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
+rand = "0.8"
 
 [profile.release]
 debug = 1
