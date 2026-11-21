@@ -443,6 +443,25 @@ impl AssetAuthoringFiles {
         vdict! { "exit": exit, "report": report.to_string() }
     }
 
+    /// The `vehicle` doors of an asset's model draft ledger (`<pack>/model_sources/<asset_id>.json`,
+    /// `TOOLS-40`), for the editor's "Loading bay at vehicle door": `{part, doors}` as JSON, or
+    /// `{}` when the asset has no ledger entry, `{error}` when it cannot be read. Read-only.
+    #[func]
+    pub fn model_vehicle_doors(pack_directory: GString, asset_id: GString) -> GString {
+        let result = crate::assets::authoring::door_bay::vehicle_doors(
+            &native_path(pack_directory),
+            &asset_id.to_string(),
+        );
+        match result {
+            Ok(Some(doors)) => doors,
+            Ok(None) => serde_json::json!({}),
+            Err(error) => serde_json::json!({"error": error}),
+        }
+        .to_string()
+        .as_str()
+        .into()
+    }
+
     /// Read only the JSON chunk of a GLB/glTF for authoring inspection.
     #[func]
     pub fn read_gltf_json(path: GString) -> GString {

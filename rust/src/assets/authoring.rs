@@ -11,6 +11,7 @@ use serde_json::{Value, json};
 
 pub(crate) mod colours;
 pub(crate) mod document;
+pub(crate) mod door_bay;
 pub(crate) mod edits;
 pub(crate) mod files;
 pub(crate) mod model_draft;

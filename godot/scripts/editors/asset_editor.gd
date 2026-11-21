@@ -28,6 +28,7 @@ const PassagePanel = preload("res://scripts/editors/asset_editor/passage_panel.g
 const RoutePanel = preload("res://scripts/editors/asset_editor/route_panel.gd")
 const TaskPanels = preload("res://scripts/editors/asset_editor/task_panels.gd")
 const SiteMovePanel = preload("res://scripts/editors/asset_editor/site_move_panel.gd")
+const DoorBayPanel = preload("res://scripts/editors/asset_editor/door_bay_panel.gd")
 
 const PANEL_GAP := EditorSpacing.CONTROL_GAP
 # A loading bay's note: it publishes no dock, but the asset still exports.
@@ -63,6 +64,7 @@ var _lod_preview := PreviewLod.new()
 var _passages := PassagePanel.new()
 var _routes := RoutePanel.new()
 var _site_move := SiteMovePanel.new()
+var _door_bays := DoorBayPanel.new()
 
 @onready var sim: SimulationNode = $SimulationNode
 
@@ -1096,6 +1098,7 @@ func _update_site_anchor_controls() -> void:
 	_update_site_anchor_issues()
 	_updating_site_anchor_controls = false
 	_routes.refresh()
+	_door_bays.refresh()
 	if _session != null:
 		_session.selection_changed()
 

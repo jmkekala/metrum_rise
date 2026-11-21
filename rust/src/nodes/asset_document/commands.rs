@@ -128,6 +128,7 @@ fn edit(
         "passage" => resolved.len() == 1 && resolved[0].3 == ObjectKind::Mesh,
         "route" => resolved.len() == 1 && resolved[0].3 == ObjectKind::Loading,
         "move_site" => resolved.is_empty(),
+        "bay_at_door" => resolved.len() == 1 && resolved[0].3 == ObjectKind::Mesh,
         _ => false,
     };
     if !allowed {
@@ -231,6 +232,9 @@ fn edit(
         selection.push(&vdict! { "kind": match key { "mesh_parts" => "mesh", "anchors" => "anchor", _ => "surface" }, "index": entries.len() as i64 });
         entries.push(&entry.to_variant());
         params.set(key, entries);
+    } else if action == "bay_at_door" {
+        let index = bay_at_door(&mut params, resolved[0].1, args)?;
+        selection.push(&vdict! { "kind": "anchor", "index": index as i64 });
     } else if action == "move_site" {
         move_site(&mut params, args)?;
         selection = targets.clone();
@@ -634,6 +638,54 @@ fn move_site(params: &mut VarDictionary, args: &VarDictionary) -> Result<(), Str
         surface.set("vertices", points(&moved.surfaces[i]));
     });
     Ok(())
+}
+
+// "Loading bay at vehicle door" (`TOOLS-40`): adds a loading bay end-on to `door` (`{id,
+// position, facing}` in part `part`'s frame, from the asset's model draft ledger) at the standard
+// size, its far end just clear of the part's plan bounds (`door_bay::bay_at_door`), named after
+// the door. `part_bounds` is that part's imported bounds, six floats. Returns the new anchor's
+// index. O(anchors).
+fn bay_at_door(params: &mut VarDictionary, part: usize, args: &VarDictionary) -> Result<usize, String> {
+    use crate::assets::authoring::door_bay;
+    let entry = dictionary_at(params, "mesh_parts", part).ok_or("The part no longer exists")?;
+    let door: VarDictionary = args
+        .get("door")
+        .and_then(|v| v.try_to().ok())
+        .ok_or("Missing door")?;
+    let triple = |value: Option<Variant>| -> Option<[f64; 3]> {
+        let values = value?.try_to::<VarArray>().ok()?;
+        let v = |i: usize| values.get(i)?.try_to::<f64>().ok().filter(|v| v.is_finite());
+        Some([v(0)?, v(1)?, v(2)?])
+    };
+    let bounds = args
+        .get("part_bounds")
+        .and_then(|v| v.try_to::<PackedFloat32Array>().ok())
+        .map(|b| b.as_slice().to_vec())
+        .filter(|b| b.len() == 6 && b[3] - b[0] >= 0.001 && b[5] - b[2] >= 0.001)
+        .ok_or("The part's model has no imported bounds yet")?;
+    let mut placed = crate::assets::MeshPart::single_lod0("", "");
+    placed.position = triple(entry.get("position")).unwrap_or_default().map(|v| v as f32);
+    placed.rotation_degrees = triple(entry.get("rotation_degrees")).unwrap_or_default().map(|v| v as f32);
+    placed.scale = entry.get("scale").and_then(|v| v.try_to::<f64>().ok()).unwrap_or(1.0) as f32;
+    placed.pivot_offset = triple(entry.get("pivot_offset")).map(|p| p.map(|v| v as f32));
+    let cells = |key: &str| {
+        params.get(key).and_then(|v| v.try_to::<f64>().ok()).unwrap_or(1.0)
+            * f64::from(crate::assets::asset::validation::ZONE_CELL_M)
+            * 0.5
+    };
+    let (position, forward) = door_bay::bay_at_door(
+        &placed,
+        [[bounds[0], bounds[1], bounds[2]], [bounds[3], bounds[4], bounds[5]]],
+        triple(door.get("position")).ok_or("Invalid door position")?,
+        triple(door.get("facing")).ok_or("Invalid door facing")?,
+        [cells("lot_width_cells"), cells("lot_depth_cells")],
+    )?;
+    let mut anchors = array(params, "anchors");
+    let name = unique_name(&text(&door, "id"), &mut names(&anchors));
+    let bay = vdict! { "anchor_type": "loading_bay", "name": name, "position": vec3(position), "forward": vec3(forward), "width_m": door_bay::BAY_WIDTH_M, "vehicle_class": "freight", "length_m": door_bay::BAY_LENGTH_M };
+    anchors.push(&bay.to_variant());
+    params.set("anchors", anchors);
+    Ok(array(params, "anchors").len() - 1)
 }
 
 fn names(entries: &VarArray) -> HashSet<String> {

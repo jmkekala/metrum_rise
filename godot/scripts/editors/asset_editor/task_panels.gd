@@ -126,6 +126,7 @@ func _access(box: Control) -> void:
 	box.add_child(actions)
 	for kind in ["entrance", "driveway", "parking", "loading_bay"]:
 		v.button(actions, kind.capitalize().replace("_", " "), func(): e._menus.actions.create_from_controls(kind))
+	e._door_bays.build(v, box)
 	v._site_anchor_list = ItemList.new()
 	v._site_anchor_list.custom_minimum_size.y = 125
 	v._site_anchor_list.select_mode = ItemList.SELECT_MULTI
