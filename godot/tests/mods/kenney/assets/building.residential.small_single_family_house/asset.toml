@@ -2,6 +2,9 @@ asset_id = "building.residential.small_single_family_house"
 display_name = "Small Single-Family House"
 
 [building]
+# Temporary (`PARK-24`): cars take only the straight path, so the fixtures stay still until the
+# `PARK-07` rebaseline removes this pin.
+car_routes = "direct"
 placement_mode = "zoned_private"
 zone_type = "residential"
 density = "low"

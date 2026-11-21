@@ -2,6 +2,9 @@ asset_id = "building.commercial.small_grocery_store"
 display_name = "Small Grocery Store"
 
 [building]
+# Temporary (`PARK-24`): cars take only the straight path, so the fixtures stay still until the
+# `PARK-07` rebaseline removes this pin.
+car_routes = "direct"
 placement_mode = "zoned_private"
 zone_type = "commercial"
 density = "low"

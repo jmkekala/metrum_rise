@@ -97,6 +97,21 @@ pub struct BuildingData {
     /// Lawn areas a spawned building plants with trees or shrubs; none when omitted.
     #[serde(default)]
     pub yard_planting: Vec<super::YardPlanting>,
+    /// How cars reach this lot's parking places (`PARK-24`): absent routes a place along the lot's
+    /// drive lines when its straight path fails. Temporary: only the test pack sets it, to keep
+    /// the populated fixtures still until the `PARK-07` rebaseline removes it.
+    #[serde(default)]
+    pub car_routes: Option<CarRoutes>,
+}
+
+/// A pin on how cars reach a lot's parking places (`PARK-24`). Temporary, with
+/// [`BuildingData::car_routes`]: removed at the `PARK-07` rebaseline.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CarRoutes {
+    /// Only the straight path from a Driveway (or the street for a street-edge place), as before
+    /// `PARK-24`: a place it does not prove stays rejected.
+    Direct,
 }
 
 /// Authored extraction behavior for one explicit industry building.

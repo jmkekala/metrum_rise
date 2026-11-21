@@ -2,6 +2,9 @@ asset_id = "building.power.coal_power_plant"
 display_name = "Coal Power Plant"
 
 [building]
+# Temporary (`PARK-24`): cars take only the straight path, so the fixtures stay still until the
+# `PARK-07` rebaseline removes this pin.
+car_routes = "direct"
 placement_mode = "explicit"
 lot_width_cells = 4
 lot_depth_cells = 3

@@ -606,6 +606,7 @@ fn required_support_footprint_keeps_driveway_clear_of_road_boundary() {
             field: None,
             yard_hedge: None,
             yard_planting: Vec::new(),
+            car_routes: None,
         }),
         prop: None,
         vehicle: None,

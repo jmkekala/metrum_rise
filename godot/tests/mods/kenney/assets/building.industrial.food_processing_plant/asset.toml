@@ -2,6 +2,9 @@ asset_id = "building.industrial.food_processing_plant"
 display_name = "Food Processing Plant"
 
 [building]
+# Temporary (`PARK-24`): cars take only the straight path, so the fixtures stay still until the
+# `PARK-07` rebaseline removes this pin.
+car_routes = "direct"
 placement_mode = "zoned_private"
 zone_type = "industrial"
 density = "low"

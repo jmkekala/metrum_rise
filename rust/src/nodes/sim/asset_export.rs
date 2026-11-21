@@ -219,6 +219,10 @@ pub struct ExportParams {
     /// absent.
     #[serde(default)]
     pub yard_hedge_edges: Option<Vec<String>>,
+    /// `"direct"` pins the lot's cars to the straight path (`PARK-24`); absent routes along the
+    /// drive lines. Temporary: kept so a pinned test-pack asset exports as authored.
+    #[serde(default)]
+    pub car_routes: Option<String>,
 
     /// Building mesh parts. Each part owns its own LOD entries.
     #[serde(default)]
@@ -338,6 +342,9 @@ fn build_asset_toml(p: &ExportParams) -> Result<String, String> {
                 out.push_str(&format!("min_zone_depth_cells = {min_depth}\n"));
             }
             out.push_str(&format!("level = {}\n", p.level));
+            if let Some(routes) = non_empty_optional_string(&p.car_routes) {
+                out.push_str(&format!("car_routes = {}\n", toml_string(routes)));
+            }
             // Export authored values, not effective runtime defaults. Hidden/dormant
             // fields may only be cleared by an explicit, confirmed editor command.
             if let Some(h) = p.household_capacity {
@@ -996,6 +1003,10 @@ pub fn get_asset_manifest_json_internal(
 
     if let Some(b) = &m.building {
         obj["window_brightness"] = serde_json::json!(b.window_brightness);
+        // Only a pinned lot carries the key (`PARK-24`), so other documents stay as they were.
+        if b.car_routes == Some(crate::assets::asset::CarRoutes::Direct) {
+            obj["car_routes"] = serde_json::json!("direct");
+        }
         obj["appearance"] = serde_json::json!(b.appearance);
         obj["placement_mode"] = serde_json::json!(match b.placement_mode {
             PlacementMode::ZonedPrivate => "zoned_private",

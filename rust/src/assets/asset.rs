@@ -19,7 +19,7 @@ mod yard_planting;
 
 pub use appearance::{BuildingAppearance, ColourScheme, MaterialOverride, SpawnAppearance};
 pub use building::{
-    BuildingData, BuildingExtractorData, BuildingFieldData, PlacementMode, ZoneClass,
+    BuildingData, BuildingExtractorData, BuildingFieldData, CarRoutes, PlacementMode, ZoneClass,
 };
 pub use character::{ArchetypeFamily, CharacterData, SkinVariant};
 pub use model::{

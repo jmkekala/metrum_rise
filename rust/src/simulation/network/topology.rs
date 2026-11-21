@@ -1837,6 +1837,7 @@ mod tests {
                     field: None,
                     yard_hedge: None,
                     yard_planting: Vec::new(),
+                    car_routes: None,
                 }),
                 prop: None,
                 vehicle: None,

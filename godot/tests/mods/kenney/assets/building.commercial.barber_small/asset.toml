@@ -3,6 +3,9 @@ display_name = "Small Barber"
 tags = ["barber", "personal_service"]
 
 [building]
+# Temporary (`PARK-24`): cars take only the straight path, so the fixtures stay still until the
+# `PARK-07` rebaseline removes this pin.
+car_routes = "direct"
 placement_mode = "zoned_private"
 zone_type = "commercial"
 density = "low"
