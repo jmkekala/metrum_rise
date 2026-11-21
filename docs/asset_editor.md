@@ -622,6 +622,19 @@ draw and list the results.
   ([freight yards](traffic.md#stage-a1-docks-park-19-as-built) has the verified reach).
 - **Walls** are each mesh part's imported bounds, less its passages for the vehicle class, cut in
   Rust as the site derivation cuts them; ground dressing blocks nothing.
+- **Car routes** (`PARK-24`): a parking spot whose straight path from a Driveway fails is routed
+  along the lot's drive lines (down the gate line, along its row's line 2.5 m in front of the row
+  or onto its own line, and in), as the placed lot routes it
+  ([drive-line routes](traffic.md#drive-line-routes-park-24-as-built)). The payload lists each
+  accepted spot's route (`spots`: `street`, `straight` or `auto`, its Driveway and the turn
+  squares its proof checked). The selected spot's route is drawn dashed with its squares; the
+  **Car routes** switch under Site → Access points draws every spot's route faintly (preview
+  only, never exported). A spot no way reaches is rejected, naming the straight way's failure
+  ("no way to drive to this spot: straight from the Driveway, …, and no way along the row or
+  straight down from the Driveway is clear …"), and the preview draws in red the route it was
+  last tried along with the shape that blocked it. An asset pinned to the straight path
+  (`car_routes = "direct"`, only the test pack until `PARK-07`) keeps the straight path's reasons
+  word for word; the key is carried through the document and written back on export.
 - **Loading bays** are proven for a truck (2.6 × 8 m body) from the asset's freight driveways of at
   least 4 m, all docks through the first dock's gate. A rejected loading bay blocks Validate &
   export only when the asset has such a gate; otherwise it is a note on the bay, in amber in the

@@ -2211,7 +2211,7 @@ structure vertices. This is edit and load work and has no dependency on total ci
 
 #### Drive-line routes (`PARK-24`), as built
 
-Stage C1a of the car routes plan. A bay whose straight path fails through every Driveway is
+Stages C1a and C1b of the car routes plan. A bay whose straight path fails through every Driveway is
 routed along the lot's **drive lines**, straight lines its own layout gives: the **gate line**
 through a Driveway along its forward; the **row line** of a bay, through its aisle point (2.5 m
 in front of its entry edge) square to the bay, and for a bay angled to its lot also along either
@@ -2236,19 +2236,25 @@ index, then the lower candidate index. Only `+ − × ÷` and square roots are u
 nothing to the cross-platform limit `SIM-03`.
 
 Owner decisions: the straight path is tried first, exactly as before, so every bay it proves keeps
-its path bits; a bay no candidate reaches is still rejected, with the straight path's reason
-(the new wording comes with C1b); a car leaves along its way in, nose first, as before; cars
-meeting in an aisle stay ignored. The asset editor and the placed lot call the same validator
-(`validate_bay` with `DriveLines`; the editor proves in the lot frame, the placed lot in the
-world). The editor payload lists each accepted spot's route as `spots` (`street`, `straight` or
-`auto`, with its Driveway index).
+its path bits; a car leaves along its way in, nose first, as before; cars meeting in an aisle stay
+ignored. A bay no candidate reaches is still rejected, in plain words naming the straight way's
+failure: "no way to drive to this spot: straight from the Driveway, {part} {cause}, and no way
+along the row or straight down from the Driveway is clear (a car needs a 1.8 m strip of clear
+paving to drive on and about 5 m by 5 m of it where it turns): clear the way or move the spot".
+The rejection carries the shortest failed candidate's route and the shape that blocked it, for
+the editor to draw. The asset editor and the placed lot (its inspector included) call the same
+validator (`validate_bay` with `DriveLines`; the editor proves in the lot frame, the placed lot
+in the world). The editor payload lists each accepted spot's route as `spots` (`street`,
+`straight` or `auto`, its Driveway index and the turn squares its proof checked); the editor
+draws them (stage C1b, [asset editor](asset_editor.md#lot-checks-docks-and-passages-in-the-editor-park-18-park-19-park-21)).
 
 **The test pack is pinned (temporary).** Without a pin the drive lines rescue places in the test
 pack (in the editor frame: `small_grocery_store`'s fourth parking anchor and
-`coal_power_plant`'s sixth) and the populated fixtures move. `[building] car_routes = "direct"` on
-the ten test-pack manifests keeps them on the straight path; the key is the only one of its kind,
-read by the placed lot and the editor (it round-trips through export), and is removed at the
-`PARK-07` rebaseline. The bundled `parking` pack is not pinned: drive lines rescue none of its
+`coal_power_plant`'s sixth); placed, every `small_grocery_store` of the populated fixture gains
+one place (55 places, 1,905 to 1,960) and its recorded digest moves. `[building] car_routes =
+"direct"` on the ten test-pack manifests keeps them on the straight path, with today's reasons
+word for word; the key is the only one of its kind, read by the placed lot and the editor (it
+round-trips through export), and is removed at the `PARK-07` rebaseline. The bundled `parking` pack is not pinned: drive lines rescue none of its
 bays, so its supply is unchanged. The pin is in the fixture inputs, so it re-keys the populated
 snapshots once (same content).
 
