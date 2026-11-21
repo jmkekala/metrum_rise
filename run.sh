@@ -647,7 +647,7 @@ godot_main_chain() {
     run_guarded_godot_test godot --headless --path "$asset_test_project" \
         --script res://tests/building_lod_test.gd \
         --log-file "$asset_test_profile/building_lod_test.log" -- --asset-editor || return 1
-    for script in asset_document_test asset_authoring_test asset_workspace_test asset_layout_test asset_selection_test asset_browser_test asset_editor_preview_test asset_passage_test asset_waypoint_test asset_colour_schemes_test asset_pack_export_test pack_import_test pack_actions_test; do
+    for script in asset_document_test asset_authoring_test asset_workspace_test asset_layout_test asset_selection_test asset_browser_test asset_editor_preview_test asset_passage_test asset_waypoint_test asset_site_tools_test asset_colour_schemes_test asset_pack_export_test pack_import_test pack_actions_test; do
         run_godot_asset_test "$script" || return 1
     done
     # The model draft command end to end (`TOOLS-33`): a generated model drafted, written and

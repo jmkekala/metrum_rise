@@ -4,6 +4,11 @@
 ## No pack I/O, simulation decisions or document mutation is owned by this view builder.
 extends RefCounted
 
+# Positions step in 0.1 mm, the sidecar's and the arc helper's precision, so a drafted value is
+# shown and kept as it is; the arrows still step 0.1 m. Sizes, heights and angles keep their steps.
+const POSITION_STEP_M := 0.0001
+const POSITION_ARROW_STEP_M := 0.1
+
 var v: RefCounted
 var e: Node
 
@@ -64,9 +69,9 @@ func _model() -> void:
 	v._preview_panel.move_lod_controls(part)
 	part = v.advanced(v.part_properties, "placement", "Placement")
 	v._preview_scale_spin = _geometry_number(part, "_part_scale", "Scale · authored", 0.001, 1000, 0.01, e._on_part_transform_changed.bind("scale"))
-	v._part_x_spin = _geometry_number(part, "_part_x", "Position X (m)", -500, 500, 0.1, e._on_part_transform_changed.bind("x"))
-	v._part_y_spin = _geometry_number(part, "_part_y", "Position Y (m)", -500, 500, 0.1, e._on_part_transform_changed.bind("y"))
-	v._part_z_spin = _geometry_number(part, "_part_z", "Position Z (m)", -500, 500, 0.1, e._on_part_transform_changed.bind("z"))
+	v._part_x_spin = _position_number(part, "_part_x", "Position X (m)", e._on_part_transform_changed.bind("x"))
+	v._part_y_spin = _position_number(part, "_part_y", "Position Y (m)", e._on_part_transform_changed.bind("y"))
+	v._part_z_spin = _position_number(part, "_part_z", "Position Z (m)", e._on_part_transform_changed.bind("z"))
 	v._part_rotation_y_spin = _geometry_number(part, "_part_yaw", "Rotation Y (°)", -180, 180, 1, e._on_part_transform_changed.bind("yaw"))
 	v.geometry_button(part, "Fit selected part to lot", e._on_autofit_pressed)
 	e._passages.build(v, v.part_properties)
@@ -138,9 +143,9 @@ func _access(box: Control) -> void:
 	v._site_anchor_vehicle_class_btn = v.choice_field(body, "_anchor_vehicle", "Vehicle class", ["car", "freight", "service"])
 	v._site_anchor_vehicle_class_btn.item_selected.connect(e._on_site_anchor_vehicle_class_selected)
 	v._site_anchor_vehicle_class_btn.item_selected.connect(func(_index): e._session.capture_geometry("Change access class"))
-	v._site_anchor_x_spin = _geometry_number(body, "_anchor_x", "Position X (m)", -500, 500, 0.1, e._on_site_anchor_spin_changed.bind("x"))
-	v._site_anchor_y_spin = _geometry_number(body, "_anchor_y", "Position Y (m)", -500, 500, 0.1, e._on_site_anchor_spin_changed.bind("y"))
-	v._site_anchor_z_spin = _geometry_number(body, "_anchor_z", "Position Z (m)", -500, 500, 0.1, e._on_site_anchor_spin_changed.bind("z"))
+	v._site_anchor_x_spin = _position_number(body, "_anchor_x", "Position X (m)", e._on_site_anchor_spin_changed.bind("x"))
+	v._site_anchor_y_spin = _position_number(body, "_anchor_y", "Position Y (m)", e._on_site_anchor_spin_changed.bind("y"))
+	v._site_anchor_z_spin = _position_number(body, "_anchor_z", "Position Z (m)", e._on_site_anchor_spin_changed.bind("z"))
 	v._site_anchor_yaw_spin = _geometry_number(body, "_anchor_yaw", "Rotation Y (°)", -180, 180, 0.1, e._on_site_anchor_spin_changed.bind("yaw"))
 	v._site_anchor_width_spin = _geometry_number(body, "_anchor_width", "Width (m)", 0, 100, 0.1, e._on_site_anchor_spin_changed.bind("width_m"))
 	v._site_anchor_length_spin = _geometry_number(body, "_anchor_length", "Length (m)", 0, 100, 0.1, e._on_site_anchor_spin_changed.bind("length_m"))
@@ -214,6 +219,11 @@ func _label_detached(text: String) -> Label:
 	label.text = text
 	label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	return label
+
+func _position_number(parent: Node, key: String, title: String, callback: Callable) -> SpinBox:
+	var spin := _geometry_number(parent, key, title, -500, 500, POSITION_STEP_M, callback)
+	spin.custom_arrow_step = POSITION_ARROW_STEP_M
+	return spin
 
 func _geometry_number(parent: Node, key: String, title: String, minimum: float, maximum: float, step: float, callback: Callable) -> SpinBox:
 	var spin: SpinBox = v.number_field(parent, key, title, maximum, step)

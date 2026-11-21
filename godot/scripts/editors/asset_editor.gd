@@ -26,6 +26,7 @@ const ContextMenus = preload("res://scripts/editors/asset_editor/context_menus.g
 const AssetBrowser = preload("res://scripts/editors/asset_editor/asset_browser.gd")
 const PassagePanel = preload("res://scripts/editors/asset_editor/passage_panel.gd")
 const RoutePanel = preload("res://scripts/editors/asset_editor/route_panel.gd")
+const TaskPanels = preload("res://scripts/editors/asset_editor/task_panels.gd")
 
 const PANEL_GAP := EditorSpacing.CONTROL_GAP
 # A loading bay's note: it publishes no dock, but the asset still exports.
@@ -1122,10 +1123,20 @@ func _apply_site_anchor_controls(field: String) -> void:
 		"length_m": anchor["length_m"] = float(_view._site_anchor_length_spin.value)
 		"yaw": _set_site_anchor_yaw(_selected_site_anchor_index, _view._site_anchor_yaw_spin.value)
 		"x", "y", "z":
+			# Only the edited coordinate is written (at the field's 0.1 mm); the others keep their
+			# stored values unless the lot clamp moves them.
+			var value := snappedf(float(_view.fields["_anchor_" + field].value), TaskPanels.POSITION_STEP_M)
 			var pos := _anchor_position(anchor)
-			pos[field] = float(_view.fields["_anchor_" + field].value)
-			pos = _clamp_site_anchor_position_to_lot(anchor, pos)
-			anchor["position"] = [pos.x, pos.y, pos.z]
+			pos[field] = value
+			var clamped := _clamp_site_anchor_position_to_lot(anchor, pos)
+			var stored: Array = (anchor.get("position", [0.0, 0.0, 0.0]) as Array).duplicate()
+			var axis := "xyz".find(field)
+			for i in 3:
+				if not is_equal_approx(clamped[i], pos[i]):
+					stored[i] = clamped[i]
+				elif i == axis:
+					stored[i] = value
+			anchor["position"] = stored
 	_refresh_site_anchor_list()
 
 func _update_site_anchor_preview() -> void:
@@ -1210,10 +1221,11 @@ func _set_site_anchor_yaw(index: int, yaw_degrees: float) -> void:
 		resolved_forward,
 		0.001
 	)
-	_site_anchors_data[index]["position"] = _vector3_to_array(
-		_clamp_site_anchor_position_to_lot(_site_anchors_data[index], _anchor_position(_site_anchors_data[index])),
-		0.01
-	)
+	# A turn writes the position only when the lot clamp moves it, so it never re-rounds it.
+	var position := _anchor_position(_site_anchors_data[index])
+	var clamped := _clamp_site_anchor_position_to_lot(_site_anchors_data[index], position)
+	if not clamped.is_equal_approx(position):
+		_site_anchors_data[index]["position"] = _vector3_to_array(clamped, 0.01)
 	_update_site_anchor_controls()
 	_update_site_anchor_preview()
 

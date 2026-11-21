@@ -63,8 +63,20 @@ func _number(view: RefCounted, key: String, title: String, minimum: float, maxim
 	spin.min_value = minimum
 	spin.allow_lesser = minimum < 0.0
 	spin.value_changed.connect(func(_value):
-		_set_field(field, [_x.value, 0.0, _z.value] if field == "position" else spin.value))
+		if field == "position":
+			_set_position(0 if spin == _x else 2, spin.value)
+		else:
+			_set_field(field, spin.value))
 	return spin
+
+# A mouth field writes its own coordinate; the other keeps its stored value, never the field's
+# rounding of it.
+func _set_position(axis: int, value: float) -> void:
+	if _updating or selected < 0:
+		return
+	var position: Array = (passages()[selected].get("position", [0.0, 0.0, 0.0]) as Array).duplicate()
+	position[axis] = value
+	_set_field("position", position)
 
 func _on_selected(index: int) -> void:
 	selected = index

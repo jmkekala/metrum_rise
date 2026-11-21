@@ -101,7 +101,10 @@ func _coordinate(view: RefCounted, key: String, title: String) -> SpinBox:
 	spin.allow_lesser = true
 	spin.value_changed.connect(func(_value):
 		if not _updating and selected >= 0:
-			_edit({"op": "move", "way": way, "waypoint": selected, "point": [_x.value, _z.value]}, "Move waypoint"))
+			# The edited coordinate only; the other keeps its stored value.
+			var point: Array = (waypoints()[selected] as Array).duplicate()
+			point[0 if spin == _x else 1] = spin.value
+			_edit({"op": "move", "way": way, "waypoint": selected, "point": point}, "Move waypoint"))
 	return spin
 
 ## The selected anchor as the editor projects the document, or {} when it is not a loading bay.

@@ -92,7 +92,20 @@ func to_manifest() -> Dictionary:
 	var result := _authored.duplicate(true)
 	for key in current:
 		if current[key] != _baseline.get(key):
-			result[key] = current[key]
+			result[key] = _edited_position(current[key]) if key == "position" else current[key]
+	return result
+
+# A position edit replaces only the coordinates that changed: the projection holds a Vector3, so
+# writing all three back would turn an untouched authored value into its 32-bit neighbour.
+func _edited_position(current: Array) -> Array:
+	var authored = _authored.get("position")
+	var baseline: Array = _baseline.get("position", [])
+	if not (authored is Array and authored.size() == 3 and baseline.size() == 3):
+		return current
+	var result: Array = authored.duplicate()
+	for axis in 3:
+		if current[axis] != baseline[axis]:
+			result[axis] = current[axis]
 	return result
 
 func _current_manifest() -> Dictionary:
