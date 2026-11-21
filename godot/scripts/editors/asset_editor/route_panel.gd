@@ -76,7 +76,8 @@ func build(view: RefCounted, parent: Control) -> void:
 	_root.visible = false
 
 func _coordinate(view: RefCounted, key: String, title: String) -> SpinBox:
-	var spin: SpinBox = view.number_field(_point_fields, key, title, 500, 0.01)
+	# 0.1 mm steps: a SpinBox rounds to its step, and the arc helper's chords are 0.1 mm.
+	var spin: SpinBox = view.number_field(_point_fields, key, title, 500, 0.0001)
 	spin.min_value = -500
 	spin.allow_lesser = true
 	spin.value_changed.connect(func(_value):

@@ -234,12 +234,8 @@ fn drive_through(
     None
 }
 
-// The registry with every loading-bay asset given its gate of `class`; the ids changed.
-fn install_gates(core: &mut SimCore, class: &str) -> Vec<String> {
-    install_docks(core, class, false)
-}
-
-// [`install_gates`], with `through` each asset a drive-through where one proves.
+// The registry with every loading-bay asset given its gate of `class`, with `through` a
+// drive-through where one proves; the ids changed.
 fn install_docks(core: &mut SimCore, class: &str, through: bool) -> Vec<String> {
     let mut changed = Vec::new();
     let mut entries = Vec::new();
