@@ -130,14 +130,14 @@ impl WaitBook {
 
 /// The lane occupancy the diagnosis reads, built from the agent columns: per lane the cars
 /// sorted by distance, plus the agent index of each car id.
-struct Occupancy<'a> {
+pub(super) struct Occupancy<'a> {
     core: &'a SimCore,
-    buckets: Vec<Vec<LaneEntry>>,
-    index_of: HashMap<u64, usize>,
+    pub(super) buckets: Vec<Vec<LaneEntry>>,
+    pub(super) index_of: HashMap<u64, usize>,
 }
 
 impl<'a> Occupancy<'a> {
-    fn new(core: &'a SimCore) -> Self {
+    pub(super) fn new(core: &'a SimCore) -> Self {
         let agents = &core.agents.agents;
         let lane_count = core.transit_network.lane_system.lanes.len();
         let mut buckets = vec![Vec::new(); lane_count];
@@ -159,8 +159,12 @@ impl<'a> Occupancy<'a> {
         }
     }
 
-    fn agents(&self) -> &AgentVec {
+    pub(super) fn agents(&self) -> &AgentVec {
         &self.core.agents.agents
+    }
+
+    pub(super) fn core(&self) -> &'a SimCore {
+        self.core
     }
 
     // Half the length of car `i`'s body in a lane.
@@ -266,7 +270,7 @@ impl<'a> Occupancy<'a> {
     }
 
     // Why car `i` is not moving: the car in its way, or the end of the chain.
-    fn step(&self, i: usize) -> Step {
+    pub(super) fn step(&self, i: usize) -> Step {
         let core = self.core;
         let agents = self.agents();
         let lanes = &core.transit_network.lane_system.lanes;
@@ -468,7 +472,7 @@ impl<'a> Occupancy<'a> {
         }
     }
 
-    fn describe(&self, i: usize) -> String {
+    pub(super) fn describe(&self, i: usize) -> String {
         let agents = self.agents();
         let truck = if agents.freight_shipment_id[i] != u64::MAX {
             " truck"
@@ -493,7 +497,7 @@ impl<'a> Occupancy<'a> {
     }
 }
 
-enum Step {
+pub(super) enum Step {
     Moving,
     Blocked(usize, String),
     Unexplained(String),
@@ -501,7 +505,7 @@ enum Step {
 
 /// Where a blocker chain ends.
 #[derive(Clone)]
-enum Outcome {
+pub(super) enum Outcome {
     /// Reaches a moving car (agent index).
     Moving(usize),
     /// Reaches a stopped car with nothing in its way (agent index, why).
@@ -521,7 +525,7 @@ impl Outcome {
 }
 
 // Follows the chain from `start` to its end, memoised in `memo` for every car on it.
-fn resolve(
+pub(super) fn resolve(
     occ: &Occupancy<'_>,
     steps: &mut HashMap<usize, Step>,
     memo: &mut HashMap<usize, Outcome>,

@@ -91,7 +91,8 @@ impl TripBook {
         std::mem::swap(&mut self.freight, &mut self.freight_now);
     }
 
-    pub(super) fn report(mut self, core: &SimCore) {
+    /// Prints the trips finished since the previous report and forgets them.
+    pub(super) fn report(&mut self, core: &SimCore) {
         let mut trips = serde_json::Map::new();
         for (kind, durations) in &mut self.durations {
             durations.sort_unstable_by(f32::total_cmp);
@@ -108,6 +109,7 @@ impl TripBook {
                 serde_json::json!({"count": durations.len(), "mean_s": mean, "p50_s": at(0.5),
                     "p95_s": at(0.95), "max_s": at(1.0)}),
             );
+            durations.clear();
         }
         let parking = &core.parking;
         let departures: BTreeMap<&str, u64> = DepartureOutcome::ALL
@@ -118,7 +120,7 @@ impl TripBook {
         eprintln!(
             "TRAFFIC38_TRIPS {}",
             serde_json::json!({
-                "trips": trips,
+                "day": core.time.day_index, "trips": trips,
                 "freight_on_road_at_end": self.freight.len(),
                 "parking_departures": departures,
                 "parking_vehicles": {"parked": vehicles.parked, "moving": vehicles.moving,

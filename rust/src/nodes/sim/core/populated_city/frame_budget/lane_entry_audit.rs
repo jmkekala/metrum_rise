@@ -7,6 +7,7 @@
 
 mod ring_day;
 mod rings;
+mod stuck;
 mod trips;
 mod waits;
 
@@ -396,7 +397,13 @@ fn traffic07_lane_entry_audit() {
     let speed: f32 = std::env::var("METRUM_PERF07_SPEED")
         .map(|value| value.parse().expect("METRUM_PERF07_SPEED must be a number"))
         .unwrap_or(32.0);
-    let mut city = snapshot::load_snapshot(residents(), &cache_dir());
+    // METRUM_AUDIT_FRESH=1 builds the city as the envelope does (`PopulatedCity::build`, the
+    // snapshot's day-12 boundary not reached yet), so a multi-day audit follows the envelope's days.
+    let mut city = if std::env::var("METRUM_AUDIT_FRESH").is_ok_and(|value| value == "1") {
+        super::super::PopulatedCity::build(residents())
+    } else {
+        snapshot::load_snapshot(residents(), &cache_dir())
+    };
     let core = &mut city.core;
     core.time.speed_multiplier = speed;
     let start = absolute_minute(core);
@@ -421,6 +428,10 @@ fn traffic07_lane_entry_audit() {
     let work_start = crate::debug::work::snapshot();
     let mut ring_day = ring_day::RingDay::new(core);
     let mut trips = trips::TripBook::new();
+    // `TRAFFIC-38` flow check: stationary vehicles, lane throughput, trip ages, per day.
+    let mut flow = stuck::FlowBook::default();
+    flow.start(core);
+    stuck::FlowBook::short_lanes(core);
     loop {
         if trace && traced < 400 {
             traced += trace_entries(
@@ -434,6 +445,7 @@ fn traffic07_lane_entry_audit() {
         let now = absolute_minute(core);
         if now != last_wait_minute {
             waits.update(core, now);
+            flow.sample(core, now);
             last_wait_minute = now;
         }
         if now >= next {
@@ -464,6 +476,8 @@ fn traffic07_lane_entry_audit() {
         }
         if now >= next_report {
             waits.report(core, now, now - start);
+            flow.report_day(core, now);
+            trips.report(core);
             next_report += MINUTES_PER_DAY;
         }
         if now >= end {
@@ -476,5 +490,4 @@ fn traffic07_lane_entry_audit() {
         trips.after_frame(core);
     }
     ring_day.report(core);
-    trips.report(core);
 }
