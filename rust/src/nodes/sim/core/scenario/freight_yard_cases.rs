@@ -7,7 +7,10 @@
 //! The fixture packs publish no dock (`PARK-19`, owner decision 11), so the run builds its own
 //! variants in memory: each of the six assets with a `loading_bay` gets its bay turned to face
 //! into the lot and a 4.5 m Driveway in front of it, at the first place across the lot where the
-//! asset editor's dock proof passes. Nothing is written to a pack.
+//! asset editor's dock proof passes. Nothing is written to a pack. The drive-through run
+//! (`PARK-21`) first tries each asset as a drive-through: a second gate 14 m across the street
+//! edge as the bay's exit, and a way out straight on past the bay and round a half circle of 7 m
+//! in 13 chords to it; an asset where no such drive proves keeps its stage A dock.
 
 use super::{FRAME_DT_S, GrowthScenario};
 use crate::assets::{AnchorType, AssetManifest};
@@ -30,6 +33,7 @@ fn proven_docks(manifest: &AssetManifest) -> (usize, String) {
         AnchorType::LoadingBay => "loading_bay",
         _ => "other",
     };
+    let route = |points: &[[f32; 2]]| (!points.is_empty()).then(|| json!(points));
     let params = json!({
         "frontage_forward": manifest.building_frontage_forward(),
         "lot_half_extents": [
@@ -39,7 +43,9 @@ fn proven_docks(manifest: &AssetManifest) -> (usize, String) {
         "anchors": manifest.anchors.iter().map(|a| json!({
             "anchor_type": anchor_type(a), "position": a.position, "forward": a.forward,
             "width_m": a.width_m, "length_m": a.length_m,
-            "vehicle_class": a.vehicle_class.as_deref(),
+            "vehicle_class": a.vehicle_class.as_deref(), "name": a.name,
+            "exit": a.exit.as_deref(), "route_in": route(&a.route_in),
+            "route_out": route(&a.route_out),
         })).collect::<Vec<_>>(),
         "site_surfaces": manifest.site_surfaces.iter().map(|s| json!({
             "material": "asphalt", "vertices": s.vertices,
@@ -66,6 +72,18 @@ fn proven_docks(manifest: &AssetManifest) -> (usize, String) {
 // and depth position, scanning the lot in 0.5 m steps, where the freight variant's dock proves.
 // The error names the reasons at the lot's middle when no position proves.
 fn with_gate(manifest: &AssetManifest, class: &str) -> Result<AssetManifest, String> {
+    with_dock(manifest, class, false)
+}
+
+// `PARK-21`: the half circle's radius, so the exit stands twice that across from the arrival gate.
+const DRIVE_RADIUS_M: f32 = 7.0;
+
+// [`with_gate`], or with `through` a drive-through dock: an exit gate `truck_exit` of the same
+// class 14 m across the street edge from the arrival gate (either side), and the bay's way out
+// straight on to a turning point, then a half circle of 7 m in 13 chords (the editor's arc
+// helper's chords) ending in line with the exit. The turning point is scanned past the bay in
+// 0.5 m steps. The control keeps the same geometry with car gates.
+fn with_dock(manifest: &AssetManifest, class: &str, through: bool) -> Result<AssetManifest, String> {
     let building = manifest.building.as_ref().ok_or("no building")?;
     let mut reasons = String::new();
     let forward = manifest.building_frontage_forward();
@@ -122,6 +140,20 @@ fn with_gate(manifest: &AssetManifest, class: &str) -> Result<AssetManifest, Str
                 gate.width_m = Some(GATE_WIDTH_M);
                 gate.vehicle_class = Some("freight".to_owned());
                 variant.anchors.push(gate);
+                if through {
+                    if let Some(mut drive) = drive_through(&variant, bay, at, inward, lateral, half_width) {
+                        for anchor in &mut drive.anchors {
+                            if anchor.vehicle_class.as_deref() == Some("freight")
+                                && anchor.anchor_type == AnchorType::Driveway
+                            {
+                                anchor.vehicle_class = Some(class.to_owned());
+                            }
+                        }
+                        return Ok(drive);
+                    }
+                    depth += 0.5;
+                    continue;
+                }
                 let (docks, rejected) = proven_docks(&variant);
                 if docks == 1 {
                     variant.anchors.last_mut().unwrap().vehicle_class = Some(class.to_owned());
@@ -138,8 +170,77 @@ fn with_gate(manifest: &AssetManifest, class: &str) -> Result<AssetManifest, Str
     Err(reasons)
 }
 
+// `variant` (its bay `bay` placed, its arrival gate last) made a drive-through that proves, if
+// any exit side and turning point does. `at(lateral, depth)` places a lot point.
+fn drive_through(
+    variant: &AssetManifest,
+    bay: usize,
+    at: impl Fn(f32, f32) -> [f32; 3],
+    inward: [f32; 3],
+    lateral: f32,
+    half_width: f32,
+) -> Option<AssetManifest> {
+    use godot::prelude::Vector2;
+    let building = variant.building.as_ref()?;
+    let half_depth = f32::from(building.lot_depth_cells) * 5.0;
+    let anchor = &variant.anchors[bay];
+    let length = anchor.length_m.unwrap_or(5.0);
+    let stop_depth = {
+        let p = anchor.position;
+        // The bay's depth from the street edge inward: its position along `inward`, plus half
+        // its length.
+        let along = |q: [f32; 3]| q[0] * inward[0] + q[2] * inward[2];
+        along(p) + length * 0.5
+    };
+    for side in [1.0f32, -1.0] {
+        let exit_lateral = lateral + side * 2.0 * DRIVE_RADIUS_M;
+        if exit_lateral.abs() > half_width - GATE_WIDTH_M {
+            continue;
+        }
+        let mut turn = stop_depth + 2.0;
+        while turn + DRIVE_RADIUS_M <= half_depth - 2.0 {
+            let mut drive = variant.clone();
+            let mut exit = drive.anchors.last().unwrap().clone();
+            exit.name = "truck_exit".to_owned();
+            exit.position = at(exit_lateral, -half_depth);
+            drive.anchors.push(exit);
+            let start = at(lateral, turn);
+            let start = Vector2::new(start[0], start[2]);
+            let heading = Vector2::new(inward[0], inward[2]);
+            // Left of the heading, as a driver sees it, is (h.z, -h.x).
+            let across = at(side, 0.0);
+            let left = Vector2::new(heading.y, -heading.x).dot(Vector2::new(across[0], across[2])) > 0.0;
+            let arc = crate::simulation::parking::validation::arc_waypoints(
+                start,
+                heading,
+                DRIVE_RADIUS_M,
+                180.0,
+                left,
+            )
+            .ok()?;
+            let round = |v: f32| (v * 10_000.0).round() / 10_000.0;
+            let anchor = &mut drive.anchors[bay];
+            anchor.exit = Some("truck_exit".to_owned());
+            anchor.route_out = std::iter::once(start)
+                .chain(arc)
+                .map(|p| [round(p.x), round(p.y)])
+                .collect();
+            if proven_docks(&drive).0 == 1 {
+                return Some(drive);
+            }
+            turn += 0.5;
+        }
+    }
+    None
+}
+
 // The registry with every loading-bay asset given its gate of `class`; the ids changed.
 fn install_gates(core: &mut SimCore, class: &str) -> Vec<String> {
+    install_docks(core, class, false)
+}
+
+// [`install_gates`], with `through` each asset a drive-through where one proves.
+fn install_docks(core: &mut SimCore, class: &str, through: bool) -> Vec<String> {
     let mut changed = Vec::new();
     let mut entries = Vec::new();
     let mut ids: Vec<String> = core
@@ -158,7 +259,8 @@ fn install_gates(core: &mut SimCore, class: &str) -> Vec<String> {
             .iter()
             .any(|a| a.anchor_type == AnchorType::LoadingBay)
         {
-            manifest = with_gate(&manifest, class)
+            manifest = with_dock(&manifest, class, through)
+                .or_else(|_| with_gate(&manifest, class))
                 .unwrap_or_else(|reasons| panic!("{id}: no gate position proves a dock:{reasons}"));
             changed.push(id.clone());
         }
@@ -175,6 +277,8 @@ struct YardRun {
     // gate (the fallback: every dock held at the gate commit); at the door, planned there (the
     // building had no dock when the carrier was planned).
     delivered_in_yard: u32,
+    // Of those, at a drive-through dock (`PARK-21`): the truck left forward by the exit.
+    delivered_in_drive_through: u32,
     delivered_at_door_from_gate: u32,
     delivered_at_door_planned: u32,
     // Deliveries to a building without a dock, and to the border.
@@ -189,6 +293,8 @@ struct YardRun {
     // Dock buildings, docks, and dock-frames held (summed over frames) out of dock-frames.
     dock_buildings: usize,
     docks: usize,
+    // Dock buildings whose docks are drive-throughs, at the end.
+    drive_through_buildings: usize,
     held_dock_frames: u64,
     dock_frames: u64,
     most_held: usize,
@@ -200,8 +306,13 @@ struct YardRun {
 
 // Runs the producer town with gates of `class` for `DAYS` days.
 fn run(class: &str) -> YardRun {
+    run_with(class, false)
+}
+
+// [`run`], with `through` drive-through docks where one proves.
+fn run_with(class: &str, through: bool) -> YardRun {
     let mut scenario = GrowthScenario::producer_town();
-    let changed = install_gates(&mut scenario.core, class);
+    let changed = install_docks(&mut scenario.core, class, through);
     assert_eq!(changed.len(), 6, "{changed:?}");
     let core = &mut scenario.core;
     let mut result = YardRun::default();
@@ -258,6 +369,12 @@ fn run(class: &str) -> YardRun {
                                 let docked = core.parking.building_docks(handle).next().is_some();
                                 if entry.1 {
                                     result.delivered_in_yard += 1;
+                                    let forward = core
+                                        .parking
+                                        .building_docks(handle)
+                                        .next()
+                                        .is_some_and(|dock| core.parking.dock_leaves_forward(dock));
+                                    result.delivered_in_drive_through += u32::from(forward);
                                 } else if docked && (entry.2 || entry.4) {
                                     result.delivered_at_door_from_gate += 1;
                                 } else if docked {
@@ -309,6 +426,15 @@ fn run(class: &str) -> YardRun {
             }
         }
         result.dock_buildings = buildings.len();
+        result.drive_through_buildings = buildings
+            .iter()
+            .filter(|&&b| {
+                core.parking
+                    .building_docks(b)
+                    .next()
+                    .is_some_and(|dock| core.parking.dock_leaves_forward(dock))
+            })
+            .count();
         result.docks = docks;
         result.held_dock_frames += held as u64;
         result.dock_frames += docks as u64;
@@ -358,4 +484,26 @@ fn freight_yards_keep_deliveries_alive_for_14_days() {
         total(&yards),
         total(&control)
     );
+}
+
+// `PARK-21`'s liveness run: the A2 run with every asset where a drive-through proves given one
+// (the others keep their stage A dock), beside the same geometry with car gates. Deliveries stay
+// alive, trucks drive through, no shipment vanishes and no trip failure names a yard. Manual:
+// run with `--ignored --nocapture`.
+#[test]
+#[ignore = "manual 14-day drive-through freight yard liveness run (PARK-21); prints delivery counts"]
+fn drive_through_yards_keep_deliveries_alive_for_14_days() {
+    let yards = run_with("freight", true);
+    let control = run_with("car", true);
+    eprintln!("with drive-through docks: {yards:#?}");
+    eprintln!("control, car gates: {control:#?}");
+    assert!(yards.drive_through_buildings > 0, "{yards:#?}");
+    assert!(yards.delivered_in_drive_through > 0, "trucks drive through");
+    assert_eq!(control.docks, 0);
+    assert!(
+        yards.yard_failure_lines.is_empty(),
+        "{:#?}",
+        yards.yard_failure_lines
+    );
+    assert_eq!(yards.vanished, 0);
 }
