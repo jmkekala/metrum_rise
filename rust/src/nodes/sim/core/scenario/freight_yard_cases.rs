@@ -309,6 +309,17 @@ fn run(class: &str) -> YardRun {
 fn run_with(class: &str, through: bool) -> YardRun {
     let mut scenario = GrowthScenario::producer_town();
     let changed = install_docks(&mut scenario.core, class, through);
+    if through {
+        let registry = &scenario.core.allocator.registry;
+        let drives: Vec<_> = changed
+            .iter()
+            .filter(|id| {
+                let manifest = &registry.get(id.as_str()).unwrap().manifest;
+                manifest.anchors.iter().any(|a| a.exit.is_some())
+            })
+            .collect();
+        eprintln!("{class}: drive-through assets {drives:?} of {changed:?}");
+    }
     assert_eq!(changed.len(), 6, "{changed:?}");
     let core = &mut scenario.core;
     let mut result = YardRun::default();
