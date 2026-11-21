@@ -127,6 +127,7 @@ fn edit(
         "create" => resolved.is_empty() && text(&params, "asset_class") == "building",
         "passage" => resolved.len() == 1 && resolved[0].3 == ObjectKind::Mesh,
         "route" => resolved.len() == 1 && resolved[0].3 == ObjectKind::Loading,
+        "move_site" => resolved.is_empty(),
         _ => false,
     };
     if !allowed {
@@ -230,6 +231,9 @@ fn edit(
         selection.push(&vdict! { "kind": match key { "mesh_parts" => "mesh", "anchors" => "anchor", _ => "surface" }, "index": entries.len() as i64 });
         entries.push(&entry.to_variant());
         params.set(key, entries);
+    } else if action == "move_site" {
+        move_site(&mut params, args)?;
+        selection = targets.clone();
     } else if action == "duplicate" || action == "delete" {
         for (kind, key) in [
             ("mesh", "mesh_parts"),
@@ -571,6 +575,64 @@ fn arc_route(
         points.insert(at + k, &point.to_variant());
     }
     anchor.set(key, points);
+    Ok(())
+}
+
+// "Move whole site" (`TOOLS-40`): every part, access point, surface vertex and waypoint by
+// `dx`, `dz` (a Driveway along its street edge), as one edit; `site_move::move_site` decides and
+// refuses a move that leaves the lot. `part_bounds` is the parts' imported bounds, six floats
+// each. Only the moved keys are written back, so every other value stays as authored.
+// O(parts + anchors + vertices + waypoints).
+fn move_site(params: &mut VarDictionary, args: &VarDictionary) -> Result<(), String> {
+    let number = |key: &str| {
+        args.get(key)
+            .and_then(|v| v.try_to::<f64>().ok())
+            .ok_or(format!("Expected a number for {key}"))
+    };
+    let bounds = args
+        .get("part_bounds")
+        .and_then(|v| v.try_to::<PackedFloat32Array>().ok())
+        .unwrap_or_default();
+    let json: serde_json::Value =
+        serde_json::from_str(&Json::stringify(&params.to_variant()).to_string())
+            .map_err(|e| e.to_string())?;
+    let moved = crate::assets::authoring::site_move::move_site(
+        &json,
+        bounds.as_slice(),
+        number("dx")?,
+        number("dz")?,
+    )?;
+    let points = |points: &[[f64; 2]]| -> VarArray {
+        points
+            .iter()
+            .map(|&[x, z]| varray![x, z].to_variant())
+            .collect()
+    };
+    let mut write = |key: &str, edit: &mut dyn FnMut(usize, &mut VarDictionary)| {
+        let mut entries = array(params, key);
+        for index in 0..entries.len() {
+            if let Ok(mut entry) = entries.at(index).try_to::<VarDictionary>() {
+                edit(index, &mut entry);
+                entries.set(index, &entry.to_variant());
+            }
+        }
+        params.set(key, entries);
+    };
+    write("mesh_parts", &mut |i, part| {
+        part.set("position", vec3(moved.parts[i]));
+    });
+    write("anchors", &mut |i, anchor| {
+        let moved = &moved.anchors[i];
+        anchor.set("position", vec3(moved.position));
+        for (key, route) in [("route_in", &moved.route_in), ("route_out", &moved.route_out)] {
+            if let Some(route) = route {
+                anchor.set(key, points(route));
+            }
+        }
+    });
+    write("site_surfaces", &mut |i, surface| {
+        surface.set("vertices", points(&moved.surfaces[i]));
+    });
     Ok(())
 }
 

@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Asset editor regression for the site layout tools (`TOOLS-40`): position fields keep a drafted
-## value to 0.1 mm and an edit writes only the coordinate it changes.
+## value to 0.1 mm and an edit writes only the coordinate it changes; "Move whole site" moves
+## everything on the lot as one undo step and refuses a move off the lot.
 ## Run with --asset-editor in an isolated profile; the fixture model is generated.
 extends SceneTree
 
@@ -64,6 +65,7 @@ func _run() -> void:
 	expect(document.snapshot() == fixture, "opening the document changes nothing")
 
 	_precision()
+	_move_site()
 
 	editor.free()
 	await process_frame
@@ -95,3 +97,20 @@ func _precision() -> void:
 	expect(is_equal_approx(float(part[0]), -8.25) and float(part[2]) == -2.2031 and float(part[1]) == 0.0, "a part X edit keeps the stored Z: %s" % [part])
 	document.undo()
 	expect(float(_params()["mesh_parts"][0]["position"][0]) == -8.5, "one undo restores the part")
+
+# One offset for everything, one undo step; a Driveway moves only along the street edge.
+func _move_site() -> void:
+	var before: Dictionary = document.snapshot()
+	expect(editor._site_move.move(-1.0, -0.5), "the whole site moves")
+	var params := _params()
+	expect(params["mesh_parts"][0]["position"] == [-9.5, 0.0, -2.7031], "the part moves: %s" % [params["mesh_parts"][0]["position"]])
+	expect(params["anchors"][BAY]["position"] == [11.0, 0.0, -2.0729], "the bay moves: %s" % [params["anchors"][BAY]["position"]])
+	expect(params["anchors"][2]["position"] == [9.0, 0.0, 20.0], "the gate moves along the street edge only: %s" % [params["anchors"][2]["position"]])
+	expect(params["site_surfaces"][0]["vertices"][0] == [-1.0, -10.5], "the yard moves: %s" % [params["site_surfaces"][0]["vertices"]])
+	expect(document.undo_label() == "Move whole site", "one command: %s" % document.undo_label())
+	expect(editor._parts[0].position.is_equal_approx(Vector3(-9.5, 0.0, -2.7031)), "the preview follows")
+	document.undo()
+	expect(document.snapshot() == before, "one undo restores everything")
+	# The block's back would leave the lot: refused, nothing changes.
+	expect(not editor._site_move.move(0.0, -16.0), "a move off the lot is refused")
+	expect(document.snapshot() == before and document.undo_label() != "Move whole site", "a refused move changes nothing")

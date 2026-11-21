@@ -27,6 +27,7 @@ const AssetBrowser = preload("res://scripts/editors/asset_editor/asset_browser.g
 const PassagePanel = preload("res://scripts/editors/asset_editor/passage_panel.gd")
 const RoutePanel = preload("res://scripts/editors/asset_editor/route_panel.gd")
 const TaskPanels = preload("res://scripts/editors/asset_editor/task_panels.gd")
+const SiteMovePanel = preload("res://scripts/editors/asset_editor/site_move_panel.gd")
 
 const PANEL_GAP := EditorSpacing.CONTROL_GAP
 # A loading bay's note: it publishes no dock, but the asset still exports.
@@ -61,6 +62,7 @@ var _yard_preview: RefCounted
 var _lod_preview := PreviewLod.new()
 var _passages := PassagePanel.new()
 var _routes := RoutePanel.new()
+var _site_move := SiteMovePanel.new()
 
 @onready var sim: SimulationNode = $SimulationNode
 

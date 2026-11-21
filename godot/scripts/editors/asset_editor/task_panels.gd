@@ -102,6 +102,7 @@ func _site() -> void:
 		change.pressed.connect(e._session.extend_lot_at_back.bind(step))
 		back_yard.add_child(change)
 	v.field_row(footprint, "_back_yard", "Back yard · grows or trims the lot behind the house; the street side stays put", back_yard)
+	e._site_move.build(v, footprint)
 	v._frontage_lbl = _label(footprint, "Frontage")
 	v.geometry_button(footprint, "Set frontage from view", e._on_set_front_from_view)
 	v.geometry_button(footprint, "Move main entrance to frontage", e._on_reset_main_entrance_pressed)

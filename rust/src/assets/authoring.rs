@@ -14,6 +14,7 @@ pub(crate) mod document;
 pub(crate) mod edits;
 pub(crate) mod files;
 pub(crate) mod model_draft;
+pub(crate) mod site_move;
 
 /// Editor chains additionally start at zero and use contiguous authored distance bands.
 /// This metadata remains separate from the engine's screen-size preview policy.
