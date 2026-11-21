@@ -102,27 +102,38 @@ Later, not ordered: a city bus, emergency and service vehicles, trailers.
 
 ### Vertex ids
 
-Every tier has one vertex colour attribute, exported as `COLOR_0`, authored as a linear float
-colour (a byte colour is sRGB and the exporter bends the values).
+Every tier of every vehicle, pilot and fleet, carries its ids in one attribute: glTF `COLOR_0`
+as a **normalised `UNSIGNED_BYTE` `VEC4`**. There is no float form and no second attribute.
 
-| Channel | Meaning | Values, stored as `id / 255` |
+| Channel | Meaning | Byte value |
 | --- | --- | --- |
 | R | part | `0` body; `1` front left wheel, `2` front right, `3` rear left, `4` rear right (up to `8`, in sidecar order) |
 | G | surface | `0` plain; `1..15` a lamp; `32..47` glass; other values unused |
-| B | paint | `1.0` on painted body panels, `0.0` elsewhere (glass, tyres, trim, lamps, plates) |
-| A | unused | `1.0` |
+| B | paint | `255` on painted body panels, `0` elsewhere (glass, tyres, trim, lamps, plates) |
+| A | unused | `255` |
 
-- The three corners of every triangle share one R and one G: ids never blend.
+- The three corners of every triangle carry identical values: ids never blend.
 - A lamp or glass face is body: R = 0 and B = 0 wherever G is not 0.
-- B is 0 or 1 at every vertex.
+- B is 0 or 255 at every vertex.
 - A face is a lamp, or glass, or neither, so one channel holds both ranges.
 
-**Open until the pilot's exporter report.** `COLOR_0` was chosen knowingly: standard glTF viewers
-multiply it into the base colour and show these files dark. The pilot pair also carries the same
-four values per vertex as a custom attribute, `_METRUM_IDS`, so that both import paths can be
-tested in the game. The fleet carries only the one chosen after that test. An exact encoding is
-preferred: normalised unsigned bytes if the exporter can write them, else the values must decode
-to whole numbers within 0.002.
+How the bytes are produced (models side, tested 2026-11-21 with the Blender 5.3.0 exporter):
+
+- Author a **linear float** colour attribute on the **face-corner** domain. A byte colour
+  attribute in Blender is sRGB-encoded and bends the ids.
+- The exporter writes `COLOR_0` as normalised `UNSIGNED_SHORT`. The models build converts it to
+  normalised `UNSIGNED_BYTE` without loss and refuses any value more than 1e-3 off a whole byte.
+- The exporter splits vertices where ids differ: no extra vertices on a surface of one id, up to
+  33 to 48 % more on a mesh with an id per triangle.
+- Draco and meshopt compression stay off.
+- Blender's own importer is lossy for `COLOR_0`, so the validator reads the GLB accessors
+  directly, never a re-import.
+
+`COLOR_0` was chosen knowingly: standard glTF viewers multiply it into the base colour and show
+these files dark. A custom attribute (`_METRUM_IDS`) was tried on the pilot and dropped from the
+contract: Godot's stock glTF importer discards it. What the game does with the bytes, and what
+was and was not tested there, is under
+[the renderer's id decode](#planned-renderer-render-65).
 
 ### Lamps
 
@@ -178,8 +189,8 @@ region, so that tint, lit cabins and see-through glass can come later without to
 - In the emission texture, glass texels hold a dim, neutral picture of the lit cabin (the
   building night-room painter at a low level, no colour). The game keeps it dark until lit
   cabins are built.
-- The texture generator records which atlas texels are glass, so the validator can tell an
-  unmarked glass face.
+- The atlas generator provides the mask of glass texels, so the validator can tell an unmarked
+  glass face (confirmed by the models side, 2026-11-21).
 
 ### Interior
 
@@ -244,7 +255,8 @@ frame. Geometry and files only.
             {"z": -1.31, "track_m": 1.54, "steer": false, "twin": false}],
   "wheels": [{"id": "front_left", "part": 1, "axle": 0, "side": "left",
               "centre": [0.77, 0.32, 1.34], "radius_m": 0.32, "width_m": 0.21, "steer": true}],
-  "attributes": {"set": "COLOR_0", "r": "part", "g": "surface", "b": "paint", "version": 1},
+  "attributes": {"set": "COLOR_0", "component": "UNSIGNED_BYTE", "normalized": true,
+                 "r": "part", "g": "surface", "b": "paint", "version": 1},
   "lamps": [{"group": "low_beam", "lamp": 7, "side": "left", "position": "front",
              "centre": [0.68, 0.66, 2.17], "facing": [0.0, 0.0, 1.0],
              "width_m": 0.16, "height_m": 0.10}],
@@ -287,8 +299,9 @@ The models repository runs these on the exported files:
 1. The straight-ahead model fits its class box; `bounds.min.y` is 0 within 1 mm; each wheel's
    lowest point is 0 within 1 mm and `centre.y` equals `radius_m`.
 2. Wheel and lamp pairs mirror in `x` within 1 mm.
-3. Ids: R and G decode to whole numbers, from the allowed sets; every triangle has one R and one
-   G; R = 0 and B = 0 wherever G is not 0; B is 0 or 1.
+3. Ids, read from the GLB accessors: `COLOR_0` is a normalised `UNSIGNED_BYTE` `VEC4`; R and G
+   are exact bytes from the allowed sets; the three corners of every triangle are identical;
+   R = 0 and B = 0 wherever G is not 0; B is 0 or 255; A is 255. No Draco or meshopt extension.
 4. Per tier: LOD0 and LOD1 have every wheel part, every required lamp id and every listed glass
    id; LOD2 has no wheel parts; LOD3 has R = 0 and G = 0 everywhere.
 5. Each wheel part's vertices lie inside its sidecar cylinder (plus 5 mm) and no body vertex does.
@@ -311,12 +324,11 @@ figure and a bay outline) is rendered for the owner's look. It is not a committe
 
 ### Open points of the contract
 
-- Which attribute carries the ids in the fleet, `COLOR_0` or `_METRUM_IDS`, and the exact
-  component type: decided from the pilot's exporter report and the game's import test.
-- That the texture generator can hand the validator the list of glass texels (check 8): for the
-  models repository to confirm on the pilot.
 - The `car` box (4.50 × 1.80 m) is looked at once more with the pilot estate beside a parking
-  bay, before the fleet is ordered.
+  bay, before the fleet is ordered. This is the only open point.
+
+Closed 2026-11-21: the id attribute (`COLOR_0` as normalised unsigned bytes, see
+[Vertex ids](#vertex-ids)) and the glass texel mask for check 8.
 
 ## Sizes
 
@@ -702,8 +714,44 @@ vector, the row shape walkers already use:
 | `custom.w` | reserved | 0 |
 
 Lamp bits: lights on, brake, indicator left, indicator right, reverse, high beam, beacon, one
-spare. Hazard is both indicator bits. No instance colours and no per-instance shader uniforms
-are used: the paint is a palette index.
+spare. Hazard is both indicator bits. No per-instance shader uniforms are used.
+
+**Ids, instance colours and paint.** The ids arrive as `COLOR_0` bytes
+([Vertex ids](#vertex-ids)). Rules for the game side:
+
+- Vehicle MultiMeshes keep **`use_colors = false`**, moving and parked alike. With
+  `use_colors = true` the instance colour is multiplied into `COLOR`, alpha included, before the
+  shader's code runs, and the ids cannot be recovered.
+- Paint therefore goes through the instance **custom data**, as the palette index in `custom.z`.
+- The shader decodes in `vertex()` and passes the result on in a varying (smooth or flat both
+  work, since a triangle's corners are identical):
+
+  ```glsl
+  vec4 ids = round(COLOR * 255.0); // x part, y surface, z paint (0 or 255)
+  ```
+
+- Ids never travel in an 8-bit or half-float custom channel: `ARRAY_CUSTOM0` as RGBA8 unorm and
+  the half-float custom formats are broken in the Compatibility renderer (float custom formats
+  are exact).
+- Any reader that takes colours as floats rounds them before they become bytes: the engine
+  converts a float `ARRAY_COLOR` to bytes by truncation, so a float id that is slightly low
+  loses one.
+- If the hand-written GLB reader of `vehicle_resources.gd` is still in use when ids arrive, it
+  carries the `COLOR_0` bytes into `ARRAY_COLOR` through `Color8`, `_merged_body_arrays` carries
+  colours, and the pipeline prewarm template's vertex format (`RENDER-43`) adds the colour
+  format.
+
+Tested 2026-11-21 on Godot 4.7.2 with Forward+, Mobile and Compatibility, on one AMD GPU on
+Linux:
+
+- the stock glTF import keeps the `COLOR_0` bytes exactly in `ARRAY_COLOR` (stored RGBA8 unorm),
+  with no sRGB conversion at import or in any of the three renderers;
+- the decode above recovers every id exactly over the full range 0 to 255, on a mesh and on a
+  MultiMesh with `use_colors = false`;
+- the stock importer drops `_METRUM_IDS`;
+- a MultiMesh instance colour destroys the ids (not recoverable in Forward+ or Mobile).
+
+Not tested: other GPUs and drivers, Windows, macOS, and the web export.
 
 **One body shader**, with the cloud shadow (`standard_light.gdshaderinc`) and the draw fade
 (`agent_draw_fade.gdshaderinc`):
