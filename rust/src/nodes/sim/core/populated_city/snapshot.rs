@@ -20,8 +20,8 @@ use std::time::{Duration, Instant};
 // included sources or bump this marker explicitly. The save format is a revision input too
 // (`TOOLS-35`): builds on different formats name their files apart, and the metadata check still
 // refuses a file whose saved format is not this build's.
-const FIXTURE_ALGORITHM_REVISION: &[u8] = b"perf-fixture-revision-v11";
-// Both tiers exercise rebuilding in the following day; day 7 had no execution census.
+const FIXTURE_ALGORITHM_REVISION: &[u8] = b"perf-fixture-revision-v12";
+// Day 7 had no execution census.
 const SNAPSHOT_DAY: u32 = 12;
 const SNAPSHOT_MINUTE: u16 = 0;
 
@@ -124,18 +124,10 @@ fn ensure_fixture(residents: u32, cache_dir: &Path, fixture: Fixture) -> Option<
     // A cache is accepted only after a fresh load produces the same next daily record as the
     // straight-through city. This catches omitted continuation state before the fixture is used.
     let mut loaded = load_snapshot_from_path(residents, &temporary_path, fixture);
-    let building_revision = city.core.allocator.building_ref_revision();
+    // The fiscal-stress fixture must churn buildings in every hour of that day (checked inside).
+    // The baseline cities no longer fail businesses at all since their borders pass their freight
+    // (`TRAFFIC-38`, a trunk per 5,000 residents), so their next day rebuilds nothing.
     assert_exact_continuation(&mut city, &mut loaded, fixture);
-    // At 10k the healthy city has almost no failed businesses to rebuild since settlement moved to
-    // each building's own phase (`SIM-02-G`), so the 30k tier carries this check. The commit city
-    // times road commits, not churn.
-    if residents == 30_000 && !matches!(fixture, Fixture::CommitCity) {
-        assert_ne!(
-            city.core.allocator.building_ref_revision(),
-            building_revision,
-            "performance snapshot must exercise building mutations during its next day",
-        );
-    }
     fs::rename(&temporary_path, &path).unwrap_or_else(|error| {
         panic!(
             "could not publish populated-city snapshot {}: {error}",

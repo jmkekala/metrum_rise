@@ -88,8 +88,11 @@ const DISTRICTS: [ZoneType; 8] = [
 const FUNDED_TREASURY: f64 = 1.0e10;
 const WARM_UP_DAYS: u32 = 2;
 // One border trunk per this many residents. Imports cross the border on the roads alone, so a
-// single trunk could not supply a 100k city's industry; 10k keeps its one trunk.
-const RESIDENTS_PER_BORDER: f32 = 10_000.0;
+// single trunk could not supply a 100k city's industry. One per 10,000 held 250-1,100 freight
+// carriers queued at its border nodes at each day's end, up to a game day each, once vehicles
+// took their real lengths (`TRAFFIC-38`); widening the trunks to 2 + 2 instead cost the 30k grid
+// the homes of its trunk rows (29,614 housed).
+const RESIDENTS_PER_BORDER: f32 = 5_000.0;
 // One small lot stands along every this many row blocks, a checkerboard of the grid: lots take
 // homes, and the floored grid must still house its tier (30k has about 2% to spare).
 const ROW_BLOCKS_PER_LOT: usize = 2;
