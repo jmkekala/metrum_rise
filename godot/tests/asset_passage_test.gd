@@ -3,7 +3,8 @@
 ## Asset editor regression for freight yards (`PARK-19`): a Passage authored on a mesh part through
 ## the passage panel opens the part for a truck, its loading bay becomes a dock whose route the
 ## preview holds, and a rejected loading bay is an export issue only with a freight gate. Its
-## drive-through (`PARK-21`) is authored through the route panel and the arc helper.
+## drive-through (`PARK-21`) is authored through the route panel and the arc helper, and so is
+## a bay a truck backs into (`PARK-23`).
 ## Run with --asset-editor in an isolated profile; the fixture model is generated.
 extends SceneTree
 
@@ -103,6 +104,44 @@ func _drive_through(document) -> void:
 	document.apply(before, "Restore")
 	editor._set_selected_site_anchors([], -1)
 
+# `PARK-23`: the route panel's stand choice marks the bay backed into in one undo step; the dock
+# proves as before, the preview draws the standing truck's cab at the bay's entry and labels the
+# bay, and an exit on a backed-into bay is a manifest issue. Nose in removes the key again.
+func _backs_in(document) -> void:
+	editor._set_selected_site_anchors([2], 2)
+	var routes = editor._routes
+	var preview = editor._preview
+	expect(str(preview._standing_truck.get("anchor", -1)) == "2" and is_equal_approx(float(preview._standing_truck["cab"].y), -0.9), "nose in: the cab at the bay's far end: %s" % preview._standing_truck)
+	var tail := -1
+	for index in routes._stand.item_count:
+		if str(routes._stand.get_item_metadata(index)) == "tail_in":
+			tail = index
+	routes._stand.select(tail)
+	routes._stand.item_selected.emit(tail)
+	expect(str(routes.anchor().get("stand", "")) == "tail_in" and document.undo_label() == "Set stand", "the stand is set in one step")
+	var diagnostics: Dictionary = editor._parking_diagnostics()
+	expect(diagnostics.get("dock_rejected", []).is_empty() and diagnostics.get("docks", []).size() == 1, "a backed-into dock proves the same way: %s" % diagnostics)
+	expect(not _loading_bay_issue(), "a backed-into dock is no export issue")
+	var nose: Vector2 = preview._standing_truck.get("nose", Vector2.ZERO)
+	expect(nose.is_equal_approx(Vector2(0.0, 1.0)) and is_equal_approx(float(preview._standing_truck["cab"].y), 4.9), "tail in: the cab at the bay's entry, nose out: %s" % preview._standing_truck)
+	expect(preview._site_anchor_labels.any(func(label): return str(label.text).ends_with("· backs in")), "the bay's label says it is backed into")
+	var inspected: Dictionary = JSON.parse_string(editor._session.policy.inspect_json(JSON.stringify(document.snapshot()["params"])))
+	expect(not inspected["issues"].any(func(issue): return str(issue["message"]).contains("stand")), "the manifest validates: %s" % str(inspected["issues"]))
+	routes._exit.select(1)
+	routes._exit.item_selected.emit(1)
+	inspected = JSON.parse_string(editor._session.policy.inspect_json(JSON.stringify(document.snapshot()["params"])))
+	expect(inspected["issues"].any(func(issue): return str(issue["message"]).contains("the bay names no exit")), "an exit on a backed-into bay is an issue: %s" % str(inspected["issues"]))
+	document.undo()
+	expect(not routes.anchor().has("exit") and str(routes.anchor().get("stand", "")) == "tail_in", "undo takes the exit back")
+	routes._stand.select(0)
+	routes._stand.item_selected.emit(0)
+	expect(not routes.anchor().has("stand"), "nose in is the default and leaves the key out")
+	document.undo()
+	expect(str(routes.anchor().get("stand", "")) == "tail_in" and routes._stand.selected == tail, "undo restores the stand and the panel shows it")
+	document.undo()
+	expect(not routes.anchor().has("stand"), "undo takes the stand back")
+	editor._set_selected_site_anchors([], -1)
+
 func _run() -> void:
 	var path := ProjectSettings.globalize_path("user://passage-bunker.glb")
 	_model(path)
@@ -159,6 +198,7 @@ func _run() -> void:
 	expect(not inspected["issues"].any(func(issue): return str(issue["message"]).contains("passage")), "the passage validates: %s" % str(inspected["issues"]))
 
 	_drive_through(document)
+	_backs_in(document)
 
 	# A passage left outside its part is an issue.
 	panel._z.value = 14.0

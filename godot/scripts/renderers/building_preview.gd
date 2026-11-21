@@ -46,6 +46,13 @@ const DOCK_ROUTE_WIDTH_M := 0.3
 const DOCK_ROUTE_Y_M := 0.16
 const WAYPOINT_Y_M := 0.2
 const PASSAGE_COLOR := Color(1.0, 0.75, 0.2)
+# The truck standing in the selected loading bay (`PARK-23`): the freight proof's body (2.6 m by
+# 8 m, `ProofClass::Freight` in `parking/validation.rs`), its cab filled at the nose end, so the
+# author sees which end of the bay the tail is at.
+const TRUCK_BODY_WIDTH_M := 2.6
+const TRUCK_BODY_LENGTH_M := 8.0
+const TRUCK_CAB_LENGTH_M := 2.2
+const TRUCK_COLOR := Color(0.95, 0.95, 0.95)
 const ANCHOR_GAP_M := 0.40
 const SITE_SURFACE_FILL_Y := 0.09
 const SITE_SURFACE_GUIDE_Y := 0.105
@@ -125,6 +132,9 @@ var _dock_ways: Dictionary = {}
 var _parking_rejection_legs: Dictionary = {}
 # Every passage's ground rectangle and ends, as the lot check reports them.
 var _passages: Array = []
+# The truck drawn standing in the selected loading bay: {"anchor", "nose" (the unit direction
+# its cab points, asset-local XZ), "cab" (the cab's centre)}, or {} when none is selected.
+var _standing_truck: Dictionary = {}
 # The site object under the cursor, whose name shows while hovered (`kind:index`).
 var _hovered_label_key := ""
 var _site_surfaces: Array[Dictionary] = []
@@ -1379,6 +1389,8 @@ func _build_site_anchor_overlay() -> void:
 		# and hides the neighbouring spots.
 		if _parking_rejections.has(index):
 			label.text += " · rejected"
+		elif anchor_type == "loading_bay" and str(anchor.get("stand", "")) == "tail_in":
+			label.text += " · backs in"
 		_site_anchor_label_root.add_child(label)
 		_site_anchor_labels.append(label)
 		var label_pos := base + forward * maxf(1.25, width * 0.6) + Vector3(0.0, LABEL_HEIGHT_M, 0.0)
@@ -1410,6 +1422,7 @@ func _build_site_anchor_overlay() -> void:
 		var y := _preview_anchor_position(_site_anchors[_selected_site_anchor_index]).y + 0.18
 		_draw_thick_line(im, Vector3(leg[0][0], y, leg[0][1]), Vector3(leg[1][0], y, leg[1][1]), Color(1.0, 0.2, 0.15), DOCK_ROUTE_WIDTH_M)
 	_draw_waypoints(im)
+	_draw_standing_truck(im)
 	_draw_passages(im)
 	im.surface_end()
 
@@ -1423,6 +1436,32 @@ func _draw_polyline(im: ImmediateMesh, points: Array, y: float, color: Color) ->
 		var a: Array = points[point]
 		var b: Array = points[point + 1]
 		_draw_thick_line(im, Vector3(a[0], y, a[1]), Vector3(b[0], y, b[1]), color, DOCK_ROUTE_WIDTH_M)
+
+# The truck standing in the selected loading bay, centred in it as the dock's stop is: its body's
+# outline and its cab at the bay's far end (nose in) or at its entry (tail in, `PARK-23`).
+func _draw_standing_truck(im: ImmediateMesh) -> void:
+	_standing_truck = {}
+	if _selected_site_anchor_index < 0 or _selected_site_anchor_index >= _site_anchors.size():
+		return
+	var anchor := _site_anchors[_selected_site_anchor_index]
+	if str(anchor.get("anchor_type", "")) != "loading_bay":
+		return
+	var forward := _preview_anchor_forward(anchor)
+	var nose := -forward if str(anchor.get("stand", "")) == "tail_in" else forward
+	var side := Vector3(-nose.z, 0.0, nose.x)
+	var pos := _preview_anchor_position(anchor)
+	var y := pos.y + DOCK_ROUTE_Y_M + 0.02
+	var center := Vector3(pos.x, y, pos.z) + forward * maxf(0.5, _preview_anchor_number(anchor, "length_m", 0.0)) * 0.5
+	var half_w := TRUCK_BODY_WIDTH_M * 0.5
+	var front := center + nose * TRUCK_BODY_LENGTH_M * 0.5
+	var back := center - nose * TRUCK_BODY_LENGTH_M * 0.5
+	var corners := [back - side * half_w, back + side * half_w, front + side * half_w, front - side * half_w]
+	for edge in 4:
+		_draw_thick_line(im, corners[edge], corners[(edge + 1) % 4], TRUCK_COLOR, ANCHOR_BORDER_WIDTH_M)
+	var cab_back := front - nose * TRUCK_CAB_LENGTH_M
+	_draw_quad_fill(im, [cab_back - side * half_w, cab_back + side * half_w, front + side * half_w, front - side * half_w], Color(TRUCK_COLOR, 0.55))
+	var cab := (cab_back + front) * 0.5
+	_standing_truck = {"anchor": _selected_site_anchor_index, "nose": Vector2(nose.x, nose.z), "cab": Vector2(cab.x, cab.z)}
 
 # The selected loading bay's authored waypoints as small squares, the way in's in the route
 # colour and the way out's in its own, so a way shows where it is even while it is rejected.

@@ -6,10 +6,14 @@
 ## a side; Rust lays the chords. Rust proves the drive and the preview draws its result; this
 ## panel only edits and lists. The editor view picks, drags, inserts and deletes the same
 ## waypoints through it: a drag shows live on the editor's projection and ends in one "move".
+## Above the group, how a truck stands in the bay (`PARK-23`): nose in (it backs out) or tail in
+## (it backs in and drives out), sent as the same command's "stand"; Rust refuses tail in with an
+## exit.
 extends RefCounted
 
 const PreviewGeometry = preload("res://scripts/editors/asset_editor/preview_geometry.gd")
 const WAYS := {"in": "Way in", "out": "Way out"}
+const STANDS := {"nose_in": "Nose in: drives in, backs out", "tail_in": "Tail in: backs in, drives out"}
 # A new waypoint's distance from the point it follows, along the bay: a starting place the
 # author then moves.
 const NEW_WAYPOINT_STEP_M := 4.0
@@ -22,6 +26,7 @@ var way := "in"
 var list: ItemList
 var _editor: Node
 var _root: VBoxContainer
+var _stand: OptionButton
 var _exit: OptionButton
 var _way: OptionButton
 var _x: SpinBox
@@ -39,6 +44,13 @@ func build(view: RefCounted, parent: Control) -> void:
 	_editor = view._editor
 	_root = VBoxContainer.new()
 	parent.add_child(_root)
+	_stand = view.choice_field(_root, "_route_stand", "Truck stands", STANDS.keys())
+	for index in _stand.item_count:
+		_stand.set_item_text(index, STANDS[_stand.get_item_metadata(index)])
+	_stand.tooltip_text = "Tail in puts the truck's back at the bay's far end, at a loading door: it reverses in along the way in and drives out forward. A bay backed into has no exit."
+	_stand.item_selected.connect(func(index):
+		if not _updating:
+			_edit({"op": "stand", "value": str(_stand.get_item_metadata(index))}, "Set stand"))
 	var box: VBoxContainer = view.advanced(_root, "drive_through", "Drive-through")
 	var hint := Label.new()
 	hint.text = "A truck drives in along the way in, stands in the bay, and leaves forward along the way out by the exit Driveway. Without an exit it backs out the way it came. Every bend over 15° needs room for the truck to turn: lay curves with Add arc."
@@ -120,6 +132,10 @@ func refresh() -> void:
 	if bay.is_empty():
 		return
 	_updating = true
+	var stand := str(bay.get("stand", "nose_in"))
+	for index in _stand.item_count:
+		if str(_stand.get_item_metadata(index)) == stand:
+			_stand.select(index)
 	# The exit names one of the asset's freight Driveways; whether it is usable is validation's.
 	_exit.clear()
 	_exit.add_item("None: back out")
