@@ -1050,7 +1050,8 @@ fn declared_lods_share_validation_across_asset_classes() {
         distance_min_m: 0.0,
         distance_max_m: None,
     };
-    for source in [BUILDING_TOML, PROP_TOML, VEHICLE_TOML, CHARACTER_TOML] {
+    let vehicle = with_lamps(VEHICLE_TOML, &CAR_LAMPS);
+    for source in [BUILDING_TOML, PROP_TOML, vehicle.as_str(), CHARACTER_TOML] {
         let base = source.parse::<AssetManifest>().unwrap();
         for invalid_lods in [
             vec![LodEntry {

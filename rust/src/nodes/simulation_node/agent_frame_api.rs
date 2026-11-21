@@ -113,10 +113,10 @@ impl SimulationNode {
             if let Ok(flags) = field("ground_flags").try_to::<PackedByteArray>() {
                 input.flags.extend_from_slice(flags.as_slice());
             }
-            // Custom data as given, or zero for each car (`RENDER-65`).
+            // Custom data as given, or zero for each car when absent (`RENDER-65`).
             match field("custom").try_to::<PackedFloat32Array>() {
-                Ok(custom) => input.custom.extend_from_slice(custom.as_slice()),
-                Err(_) => input.custom.resize(input.ids.len() * 4, 0.0),
+                Ok(custom) if !custom.is_empty() => input.custom.extend_from_slice(custom.as_slice()),
+                _ => input.custom.resize(input.ids.len() * 4, 0.0),
             }
         }
         frame.smooth_cars();

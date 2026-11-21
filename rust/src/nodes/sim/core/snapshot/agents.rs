@@ -469,18 +469,14 @@ fn bucket_posed_agents(chunks: &[Vec<PosedAgent>], snapshot: &mut RenderSnapshot
         || {
             rayon::join(
                 || {
-                    rayon::join(
-                        || {
-                            fill_buckets(car_transforms, chunks, true, |buffer, agent| {
-                                buffer.extend_from_slice(&agent.transform)
-                            })
-                        },
-                        || {
-                            fill_buckets(car_custom, chunks, true, |buffer, agent| {
-                                buffer.extend_from_slice(&agent.custom)
-                            })
-                        },
-                    )
+                    // The custom data after the poses on the same task: each fill is parallel
+                    // over its buckets already.
+                    fill_buckets(car_transforms, chunks, true, |buffer, agent| {
+                        buffer.extend_from_slice(&agent.transform)
+                    });
+                    fill_buckets(car_custom, chunks, true, |buffer, agent| {
+                        buffer.extend_from_slice(&agent.custom)
+                    });
                 },
                 || {
                     rayon::join(

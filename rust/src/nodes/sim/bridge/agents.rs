@@ -18,6 +18,9 @@ pub fn get_car_render_data(snapshot: &RenderSnapshot) -> VarDictionary {
             "ground_flags",
             PackedByteArray::from(snapshot.car_ground_flags[&k].as_slice()),
         );
+        if let Some(custom) = snapshot.car_custom.get(&k) {
+            bucket.set("custom", PackedFloat32Array::from(custom.as_slice()));
+        }
         dict.set(k as i32, bucket);
     }
     dict
