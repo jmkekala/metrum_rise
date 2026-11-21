@@ -185,9 +185,11 @@ fn parked_rows(poses: &[f32], custom: &[f32]) -> PackedFloat32Array {
     rows.resize(poses.len() / 12 * ROW);
     for ((row, pose), data) in rows
         .as_mut_slice()
-        .chunks_exact_mut(ROW)
-        .zip(poses.chunks_exact(12))
-        .zip(custom.chunks_exact(4))
+        .as_chunks_mut::<ROW>()
+        .0
+        .iter_mut()
+        .zip(poses.as_chunks::<12>().0)
+        .zip(custom.as_chunks::<4>().0)
     {
         row[..12].copy_from_slice(pose);
         row[12..].copy_from_slice(data);

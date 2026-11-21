@@ -609,7 +609,7 @@ fn same_custom(recorded: &[u32], custom: &[f32]) -> bool {
 // malformed bucket's). O(cars), only for a bucket whose drawn buffer changed.
 fn fill_rows(rows: &mut Vec<f32>, poses: &[f32], custom: &[u32]) {
     rows.clear();
-    for (car, pose) in poses.chunks_exact(STRIDE).enumerate() {
+    for (car, pose) in poses.as_chunks::<STRIDE>().0.iter().enumerate() {
         rows.extend_from_slice(pose);
         let data = custom.get(car * CUSTOM..car * CUSTOM + CUSTOM);
         rows.extend(data.map_or([0.0; CUSTOM], |data| std::array::from_fn(|i| f32::from_bits(data[i]))));

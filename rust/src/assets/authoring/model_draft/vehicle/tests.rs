@@ -155,7 +155,8 @@ fn the_reader_takes_the_pilot_shape_and_is_strict() {
     let facts = facts_with(|_| {}).unwrap();
     assert_eq!((facts.wheels.len(), facts.lamps.len()), (4, 15));
     assert!(is_vehicle(&VehicleFixture::new().sidecar));
-    let refusals: [(&str, fn(&mut Value)); 8] = [
+    type Edit = fn(&mut Value);
+    let refusals: [(&str, Edit); 8] = [
         ("unknown key", |s| s["extra"] = json!(1)),
         ("version 1", |s| s["version"] = json!(1)),
         ("another kind", |s| s["kind"] = json!("building")),

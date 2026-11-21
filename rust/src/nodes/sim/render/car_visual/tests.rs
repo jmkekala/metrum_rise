@@ -233,7 +233,7 @@ fn nearest_cars_picks_the_closest_within_radius_nearest_first() {
     .concat();
     // As drawn rows: each pose followed by its custom data.
     let rows = |poses: &[f32]| -> Vec<f32> {
-        poses.chunks_exact(STRIDE).flat_map(|pose| [pose, &[0.0; CUSTOM][..]].concat()).collect()
+        poses.as_chunks::<STRIDE>().0.iter().flat_map(|pose| [&pose[..], &[0.0; CUSTOM][..]].concat()).collect()
     };
     let (first, second) = (rows(&first), rows(&second));
     let buffers = [first.as_slice(), second.as_slice()];
