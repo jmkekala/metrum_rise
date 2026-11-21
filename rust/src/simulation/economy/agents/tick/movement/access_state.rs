@@ -12,6 +12,12 @@ use godot::prelude::Vector2;
 pub(super) use egress::handle_access_egress;
 pub(super) use ingress::handle_access_ingress;
 
+// Point `k` of a walked polyline for the traffic log, the origin past its end, as the fixed
+// arrays' unused entries read.
+fn point(path: &[Vector2], k: usize) -> Vector2 {
+    path.get(k).copied().unwrap_or(Vector2::ZERO)
+}
+
 /// Clears the authoritative access plan scalars for one agent.
 ///
 /// Safety: `i` must be unique to the current worker for every raw slice in `slices`.

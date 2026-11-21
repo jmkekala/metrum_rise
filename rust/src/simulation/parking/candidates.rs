@@ -590,7 +590,7 @@ impl ParkingSystem {
         self.live_access(place, network, graph)
     }
 
-    fn live_access(
+    pub(super) fn live_access(
         &self,
         place: Handle<Place>,
         network: &TransitNetwork,

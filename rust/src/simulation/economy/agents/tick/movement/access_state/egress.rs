@@ -4,8 +4,9 @@
 
 use super::super::super::super::{ACCESS_PLAN_VALID, MODE_CAR};
 use super::super::super::access::{
-    advance_along_local_access_path, local_access_path, local_access_should_log_step,
-    local_access_side_label, local_access_target_segment, planned_attach_is_legal,
+    LocalAccessPath, ManeuverPath, advance_along_local_access_path, local_access_path,
+    local_access_should_log_step, local_access_side_label, local_access_target_segment,
+    planned_attach_is_legal,
 };
 use super::super::super::claims::LaneClaimContext;
 use super::super::super::lane_nav::lane_origin_node;
@@ -13,7 +14,7 @@ use super::super::super::slices::{MovementSlices, enter_lane, hold_for_lane_atta
 use super::super::super::traffic::{claim_lane_entry, lane_attach_slot_clear};
 use super::super::super::trip_failures::{FailureCause, FailureOutcome, record_failure};
 use super::super::{BUILDING_REPLAN_DELAY_S, transit_mode_label};
-use super::{pulls_out_of_a_dock, reset_invalid_access_plan, stand_in_yard};
+use super::{point, pulls_out_of_a_dock, reset_invalid_access_plan, stand_in_yard};
 use crate::config::{AGENT_DRIVEWAY_SPEED_MS, AGENT_WALK_SPEED_MS};
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::network::TransitNetwork;
@@ -107,10 +108,15 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
             transit_network,
             graph,
         );
+        // The walked polyline, borrowed from whichever path was built: a bay's or a dock's
+        // manoeuvre (`PARK-21`: a dock's way, on the stack) or the door's access path.
+        let maneuver;
+        let access;
         let exact_path = if trip.phase == crate::simulation::parking::ParkingTripPhase::PullOut {
-            slices.parking.and_then(|p| p.maneuver_path(trip.source, attach_lane_id, attach_lane_d, transit_network, false))
+            maneuver = slices.parking.and_then(|p| p.maneuver_path(trip.source, attach_lane_id, attach_lane_d, transit_network, false, trip.freight_gate));
+            maneuver.as_ref().map(ManeuverPath::as_slice)
         } else if legal_attach {
-            local_access_path(
+            access = local_access_path(
                 *s_tmode.get(i),
                 entrance,
                 attach_lane_id,
@@ -118,7 +124,8 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
                 transit_network,
                 graph,
                 false,
-            )
+            );
+            access.as_ref().map(LocalAccessPath::as_slice)
         } else {
             None
         };
@@ -134,14 +141,14 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
             } else {
                 AGENT_WALK_SPEED_MS
             } * delta;
-            let (next_pos, reached_handoff) = advance_along_local_access_path(current, path.as_slice(), step);
+            let (next_pos, reached_handoff) = advance_along_local_access_path(current, path, step);
             *s_pos_x.get_mut(i) = next_pos.x;
             *s_pos_y.get_mut(i) = next_pos.y;
             if crate::debug::Channel::Traffic.enabled()
-                && local_access_should_log_step(current, next_pos, path.as_slice(), reached_handoff)
+                && local_access_should_log_step(current, next_pos, path, reached_handoff)
             {
-                let seg_before = local_access_target_segment(current, path.as_slice());
-                let seg_after = local_access_target_segment(next_pos, path.as_slice());
+                let seg_before = local_access_target_segment(current, path);
+                let seg_after = local_access_target_segment(next_pos, path);
                 traffic_log!(
                     "[ACCESS_EGRESS_STEP] agent={} bldg={} mode={} lane={}({}) lane_d={:.2} seg_before={:?} seg_after={:?} reached_handoff={} current=({:.2},{:.2}) next=({:.2},{:.2}) p0=({:.2},{:.2}) p1=({:.2},{:.2}) p2=({:.2},{:.2}) p3=({:.2},{:.2}) count={}",
                     i,
@@ -157,15 +164,15 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
                     current.y,
                     next_pos.x,
                     next_pos.y,
-                    path.points[0].x,
-                    path.points[0].y,
-                    path.points[1].x,
-                    path.points[1].y,
-                    path.points[2].x,
-                    path.points[2].y,
-                    path.points[3].x,
-                    path.points[3].y,
-                    path.count,
+                    point(path, 0).x,
+                    point(path, 0).y,
+                    point(path, 1).x,
+                    point(path, 1).y,
+                    point(path, 2).x,
+                    point(path, 2).y,
+                    point(path, 3).x,
+                    point(path, 3).y,
+                    path.len(),
                 );
             }
             if reached_handoff {
@@ -188,8 +195,8 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
                         slices.parking_trip.get_mut(i).phase = crate::simulation::parking::ParkingTripPhase::Drive;
                     }
                     if !attach_allowed {
-                        *s_pos_x.get_mut(i) = path.points[path.count - 1].x;
-                        *s_pos_y.get_mut(i) = path.points[path.count - 1].y;
+                        *s_pos_x.get_mut(i) = path[path.len() - 1].x;
+                        *s_pos_y.get_mut(i) = path[path.len() - 1].y;
                         *s_cur_b.get_mut(i) = usize::MAX;
                         hold_for_lane_attach!(slices, i, transit_network, attach_lane_id, attach_lane_d, origin_node);
                         return;
@@ -204,18 +211,18 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
                             attach_lane_id,
                             local_access_side_label(*s_tmode.get(i), entrance, attach_lane_id),
                             attach_lane_d,
-                            path.points[path.count - 1].x,
-                            path.points[path.count - 1].y,
+                            path[path.len() - 1].x,
+                            path[path.len() - 1].y,
                         );
                     }
-                    *s_pos_x.get_mut(i) = path.points[path.count - 1].x;
-                    *s_pos_y.get_mut(i) = path.points[path.count - 1].y;
+                    *s_pos_x.get_mut(i) = path[path.len() - 1].x;
+                    *s_pos_y.get_mut(i) = path[path.len() - 1].y;
                     *s_speed.get_mut(i) = 0.0;
                     return;
                 }
                 let parent_edge = transit_network.lane_system.lanes[attach_lane_id].edge_id;
-                *s_pos_x.get_mut(i) = path.points[path.count - 1].x;
-                *s_pos_y.get_mut(i) = path.points[path.count - 1].y;
+                *s_pos_x.get_mut(i) = path[path.len() - 1].x;
+                *s_pos_y.get_mut(i) = path[path.len() - 1].y;
                 *s_cur_b.get_mut(i) = usize::MAX;
                 enter_lane!(
                     slices,
@@ -243,8 +250,8 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
                         attach_lane_d,
                         origin_node,
                         parent_edge,
-                        path.points[path.count - 1].x,
-                        path.points[path.count - 1].y,
+                        path[path.len() - 1].x,
+                        path[path.len() - 1].y,
                     );
                 }
             }

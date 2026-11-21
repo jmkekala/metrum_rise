@@ -4,9 +4,9 @@
 
 use super::super::super::super::{ACCESS_PLAN_VALID, MODE_CAR, MODE_WALK, TRANSIT_NETWORK};
 use super::super::super::access::{
-    advance_along_local_access_path, local_access_path, local_access_point,
-    local_access_should_log_step, local_access_side_label, local_access_target_segment,
-    planned_detach_is_legal,
+    LocalAccessPath, ManeuverPath, advance_along_local_access_path, local_access_path,
+    local_access_point, local_access_should_log_step, local_access_side_label,
+    local_access_target_segment, planned_detach_is_legal,
 };
 use super::super::super::planning::plan_network_replan;
 use super::super::super::slices::{MovementSlices, enter_lane, hold_for_lane_attach};
@@ -14,7 +14,7 @@ use super::super::super::trip_failures::FailureCause;
 use super::super::network::apply_network_replan;
 use super::super::replan_watchdog::delay_or_recover_after_network_replan_failure;
 use super::super::{NETWORK_REPLAN_DELAY_S, transit_mode_label};
-use super::{arrive_in_building, reset_invalid_access_plan};
+use super::{arrive_in_building, point, reset_invalid_access_plan};
 use crate::config::{AGENT_DRIVEWAY_SPEED_MS, AGENT_WALK_SPEED_MS};
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::network::TransitNetwork;
@@ -132,10 +132,15 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
             transit_network,
             graph,
         );
+        // The walked polyline, borrowed from whichever path was built: a bay's or a dock's
+        // manoeuvre (`PARK-21`: a dock's way, on the stack) or the door's access path.
+        let maneuver;
+        let access;
         let exact_path = if trip.phase == crate::simulation::parking::ParkingTripPhase::PullIn {
-            slices.parking.and_then(|p| p.maneuver_path(trip.destination, detach_lane_id, detach_lane_d, transit_network, true))
+            maneuver = slices.parking.and_then(|p| p.maneuver_path(trip.destination, detach_lane_id, detach_lane_d, transit_network, true, trip.freight_gate));
+            maneuver.as_ref().map(ManeuverPath::as_slice)
         } else if legal_detach {
-            local_access_path(
+            access = local_access_path(
                 *s_tmode.get(i),
                 entrance,
                 detach_lane_id,
@@ -143,7 +148,8 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
                 transit_network,
                 graph,
                 true,
-            )
+            );
+            access.as_ref().map(LocalAccessPath::as_slice)
         } else {
             None
         };
@@ -155,14 +161,14 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
             } else {
                 AGENT_WALK_SPEED_MS
             } * delta;
-            let (next_pos, reached_door) = advance_along_local_access_path(current, path.as_slice(), step);
+            let (next_pos, reached_door) = advance_along_local_access_path(current, path, step);
             *s_pos_x.get_mut(i) = next_pos.x;
             *s_pos_y.get_mut(i) = next_pos.y;
             if crate::debug::Channel::Traffic.enabled()
-                && local_access_should_log_step(current, next_pos, path.as_slice(), reached_door)
+                && local_access_should_log_step(current, next_pos, path, reached_door)
             {
-                let seg_before = local_access_target_segment(current, path.as_slice());
-                let seg_after = local_access_target_segment(next_pos, path.as_slice());
+                let seg_before = local_access_target_segment(current, path);
+                let seg_after = local_access_target_segment(next_pos, path);
                 traffic_log!(
                     "[ACCESS_INGRESS_STEP] agent={} bldg={} mode={} lane={}({}) lane_d={:.2} seg_before={:?} seg_after={:?} reached_door={} current=({:.2},{:.2}) next=({:.2},{:.2}) p0=({:.2},{:.2}) p1=({:.2},{:.2}) p2=({:.2},{:.2}) p3=({:.2},{:.2}) count={}",
                     i,
@@ -178,19 +184,19 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
                     current.y,
                     next_pos.x,
                     next_pos.y,
-                    path.points[0].x,
-                    path.points[0].y,
-                    path.points[1].x,
-                    path.points[1].y,
-                    path.points[2].x,
-                    path.points[2].y,
-                    path.points[3].x,
-                    path.points[3].y,
-                    path.count,
+                    point(path, 0).x,
+                    point(path, 0).y,
+                    point(path, 1).x,
+                    point(path, 1).y,
+                    point(path, 2).x,
+                    point(path, 2).y,
+                    point(path, 3).x,
+                    point(path, 3).y,
+                    path.len(),
                 );
             }
             if reached_door {
-                let ingress_target = path.points[path.count - 1];
+                let ingress_target = path[path.len() - 1];
                 if crate::debug::Channel::Traffic.enabled() {
                     traffic_log!(
                         "[ACCESS_INGRESS_DONE] agent={} bldg={} pos=({:.2},{:.2}) activity_before={} flags=0x{:02x}",

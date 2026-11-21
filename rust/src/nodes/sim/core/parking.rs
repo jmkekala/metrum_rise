@@ -207,6 +207,10 @@ impl SimCore {
         if before.is_some() && before != after {
             self.replan_carriers_bound_for_gate(handle);
         }
+        // An exit gate that moves or goes needs no pass (`PARK-21`): a truck leaving one of the
+        // building's docks drives its own row's way out, which a held row keeps
+        // (`replace_docks`), from a plan made at that way's end; one turned back later in a row
+        // whose exit is no longer the building's plans from the dock (`FreightGate::elsewhere`).
     }
 
     // Building `handle`'s freight gate moved or went (`PARK-20`): every carrier on the road with
@@ -241,32 +245,43 @@ impl SimCore {
     }
 
     // Building `handle`'s freight gate from its dock rows: the gate its first dock's route
-    // starts at, entered and left at that road connection, its door the building's. No record
-    // without an active dock. O(its docks + one entrance derivation).
+    // starts at, entered at that road connection, and left at its way out's end (`PARK-21`), or
+    // at the same connection for docks a truck backs out of; its door the building's. No record
+    // without an active dock. O(its dock rows + two entrance derivations).
     pub(crate) fn rebuild_freight_gate(&mut self, handle: u64) {
         let building = self
             .allocator
             .building_handles
             .resolve(Handle::from_bits(handle));
-        let kerb = self
-            .parking
-            .building_docks(handle)
-            .next()
-            .and_then(|dock| self.parking.dock_kerb(dock));
-        let gate = building.zip(kerb).and_then(|(b, [x, z])| {
+        let first = self.parking.building_docks(handle).next();
+        let kerbs = first.and_then(|dock| {
+            Some((self.parking.dock_kerb(dock)?, self.parking.dock_departure_kerb(dock)?))
+        });
+        let gate = building.zip(kerbs).and_then(|(b, (arrive, leave))| {
             let door = self.allocator.entrances.get(b)?.door_pos;
             let building = &self.allocator.buildings[b];
-            let entrance = crate::simulation::buildings::allocator::BuildingAllocator::parking_access_at(
-                door,
-                godot::prelude::Vector2::new(x, z),
-                building.edge_idx,
-                building.side,
-                &self.region_graph,
-                &self.transit_network.lane_system,
-            );
+            let access = |[x, z]: [f32; 2]| {
+                crate::simulation::buildings::allocator::BuildingAllocator::parking_access_at(
+                    door,
+                    godot::prelude::Vector2::new(x, z),
+                    building.edge_idx,
+                    building.side,
+                    &self.region_graph,
+                    &self.transit_network.lane_system,
+                )
+            };
+            // Every dock of a building leaves by one gate (the proof's rule); a retired row a
+            // truck still holds may not.
+            let elsewhere = self
+                .parking
+                .building_dock_rows(handle)
+                .filter(|&dock| self.parking.dock_departure_kerb(dock) != Some(leave))
+                .map(|dock| dock.to_bits())
+                .collect();
             Some(crate::simulation::buildings::allocator::FreightGate {
-                arrive: entrance.clone(),
-                leave: entrance,
+                arrive: access(arrive),
+                leave: access(leave),
+                elsewhere,
             })
         });
         match gate {

@@ -49,10 +49,13 @@ impl ParkingSystem {
         let mut kept = false;
         for handle in old {
             let p = self.place_handles.resolve(handle).expect("dock row");
+            // A held row keeps its drive (`PARK-21`): its truck may be on it, and the way it
+            // drives must not change under it. One whose drive changes is retired for it.
             let same_pose = bay.is_some_and(|bay| {
                 self.places.position[p].map(f32::to_bits) == bay.position.map(f32::to_bits)
                     && self.places.heading[p].to_bits() == bay.heading.to_bits()
-            });
+            }) && (self.places.freight_holder[p].is_none()
+                || self.dock_ways.get(&handle) == way);
             match bay {
                 Some(bay) if same_pose && !kept => {
                     kept = true;
@@ -71,8 +74,10 @@ impl ParkingSystem {
         }
     }
 
-    // Records or clears a dock row's authored drive. O(1).
+    // Records or clears a dock row's authored drive; its exit's access is derived again with
+    // the row's (`refresh_dock_access`). O(1).
     fn set_dock_way(&mut self, handle: Handle<Place>, way: Option<&DockWay>) {
+        self.dock_exits.remove(&handle);
         match way {
             Some(way) => self.dock_ways.insert(handle, *way),
             None => self.dock_ways.remove(&handle),
@@ -119,6 +124,7 @@ impl ParkingSystem {
             return;
         }
         self.dock_ways.remove(&handle);
+        self.dock_exits.remove(&handle);
         let source = self.places.source[p];
         let slot = self.places.source_slot[p];
         let list = self.sources.get_mut(&source).expect("indexed dock source");
@@ -211,10 +217,53 @@ impl ParkingSystem {
 
     /// A dock's authored drive (`PARK-21`): its whole way in and its way out to the exit gate;
     /// `None` for a stage A dock, whose route is [`Self::dock_route`] and which backs out along
-    /// it. O(1). Test builds only until the drive-through's movement reads it.
+    /// it. O(1). Test builds only: movement reads the drive through [`Self::maneuver_path`].
     #[cfg(test)]
     pub(crate) fn dock_way(&self, dock: Handle<Place>) -> Option<&DockWay> {
         self.dock_ways.get(&dock)
+    }
+
+    /// The road connection of the gate a truck leaves `dock` by (`PARK-21`): its way out's last
+    /// point, or its route's first point when it backs out through its arrival gate. O(1).
+    pub(crate) fn dock_departure_kerb(&self, dock: Handle<Place>) -> Option<[f32; 2]> {
+        match self.dock_ways.get(&dock).map(|way| way.route_out.as_slice()) {
+            Some([.., last]) => Some(*last),
+            _ => self.dock_kerb(dock),
+        }
+    }
+
+    /// The access a truck leaving `dock` joins the road by, its lane ids derived from the
+    /// current lanes (`PARK-21`): its exit gate's for a dock with a way out, else the dock's own
+    /// ([`Self::place_entrance`], its arrival gate's). The origin of every plan out of a dock
+    /// made from the dock itself (`plan_way_out_of_dock`) and of its pull-out's attach check.
+    /// O(1) plus O(lanes on the gate's edge), allocation-free.
+    pub(crate) fn dock_departure(
+        &self,
+        dock: Handle<Place>,
+        network: &TransitNetwork,
+        graph: &RegionGraph,
+    ) -> Option<crate::simulation::buildings::allocator::BuildingEntrance> {
+        let Some(exit) = self.dock_exits.get(&dock) else {
+            return self.live_access(dock, network, graph);
+        };
+        if exit.edge_idx == usize::MAX {
+            return None;
+        }
+        let mut exit = exit.clone();
+        BuildingAllocator::refresh_entrance_lanes(&mut exit, graph, &network.lane_system);
+        Some(exit)
+    }
+
+    /// Every dock row of the building, active or retired, in source and slot order. O(its
+    /// rows).
+    pub(crate) fn building_dock_rows(&self, building: u64) -> impl Iterator<Item = Handle<Place>> + '_ {
+        self.building_docks
+            .get(&building)
+            .into_iter()
+            .flatten()
+            .filter_map(|source| self.sources.get(source))
+            .flatten()
+            .copied()
     }
 
     /// Publishes the access of the building's docks from the current door and roads, as a bay's
@@ -229,18 +278,31 @@ impl ParkingSystem {
     ) {
         // Every row, a retired one a truck still holds included: after a load its access is
         // what that truck leaves the yard by (`PARK-20`).
-        let docks: Vec<_> = self
-            .building_docks
-            .get(&building)
-            .into_iter()
-            .flatten()
-            .filter_map(|source| self.sources.get(source))
-            .flatten()
-            .copied()
-            .collect();
+        let docks: Vec<_> = self.building_dock_rows(building).collect();
         for dock in docks {
             self.refresh_place_access(dock, allocator, network, graph);
+            self.refresh_dock_exit(dock, graph);
         }
+    }
+
+    // Derives the access of a dock row's exit gate (`PARK-21`), as its own access is derived but
+    // at its way out's last point; none for a dock without a way out. O(the host's entrance
+    // copy + one projection on its road).
+    fn refresh_dock_exit(&mut self, dock: Handle<Place>, graph: &RegionGraph) {
+        let Some(&[.., [x, z]]) = self.dock_ways.get(&dock).map(|way| way.route_out.as_slice()) else {
+            self.dock_exits.remove(&dock);
+            return;
+        };
+        let p = self.place_handles.resolve(dock).expect("dock row");
+        let mut exit = self.places.access[p].clone();
+        if let Some(edge) = graph.get_edge(exit.edge_idx).filter(|e| !e.deleted) {
+            let kerb = godot::prelude::Vector2::new(x, z);
+            exit.entrance_s_m = BuildingAllocator::project_point_to_polyline_s(&edge.physical_geometry, kerb);
+            exit.curb_pos = kerb;
+        } else {
+            exit = Default::default();
+        }
+        self.dock_exits.insert(dock, exit);
     }
 
     /// Every dock row's source, for the audits and the older-save derivation's check. O(places),

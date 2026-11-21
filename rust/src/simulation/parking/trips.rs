@@ -15,8 +15,9 @@ pub(crate) enum ParkingTripPhase {
     /// Pedestrian travel from the origin door to the car's actual bay.
     WalkToCar,
     /// The validated bay–aisle–driveway maneuver followed by ordinary lane entry. For a freight
-    /// carrier (`freight_gate`), its dock's route reversed, from the stop to the gate's lane
-    /// point, out of dock `source` (`PARK-20`).
+    /// carrier (`freight_gate`), out of dock `source`: its route reversed, from the stop to the
+    /// gate's lane point (`PARK-20`), or its way out forward to the exit gate's lane point
+    /// (`PARK-21`).
     PullOut,
     /// Ordinary network driving between driveway lane endpoints.
     Drive,
@@ -55,8 +56,8 @@ pub struct ParkingTrip {
     pub(crate) ready: bool,
     /// A freight carrier's yard trip (`PARK-20`). With phase `None`, `PullIn`, `AtDock` or
     /// `GateToDoor`: into the yard of building `target`, its plan ending at that building's
-    /// freight gate. With `PullOut`: out of dock `source`, its plan starting at the gate's lane
-    /// point and ending at the freight gate of building `target`, or at a door or a border when
+    /// freight gate. With `PullOut`: out of dock `source`, its plan starting at the lane point of
+    /// the gate it leaves by (its exit, `PARK-21`) and ending at the freight gate of building `target`, or at a door or a border when
     /// `target` is `NO_FREIGHT_GATE`. Never set for a resident. Lives in the row's padding
     /// (the access flags byte has no free bit), and is not written when false, so a city without
     /// docks saves the rows it saved before.
@@ -95,7 +96,7 @@ impl ParkingTrip {
         }
     }
 
-    /// A freight carrier's row once its pull-out has reached the gate's lane point
+    /// A freight carrier's row once its pull-out has reached its departure gate's lane point
     /// (`PARK-20`): on to the freight gate of building `target`, or no yard trip at all. The
     /// dock it held is free from then on. O(1).
     pub(crate) fn after_freight_pull_out(&self) -> Self {
@@ -410,7 +411,8 @@ impl ParkingSystem {
         Some(godot::prelude::Vector2::new(x, z))
     }
 
-    /// O(1) phase endpoint selection plus the host's existing frontage projection.
+    /// O(1) phase endpoint selection plus the host's existing frontage projection; a freight
+    /// carrier's pull-out one lookup of its dock's exit more (`PARK-21`).
     pub(crate) fn trip_entrance(
         &self,
         trip: ParkingTrip,
@@ -426,6 +428,10 @@ impl ParkingSystem {
             (false, None | GateToDoor) if trip.freight_gate => {
                 return allocator.freight_gate_entrance(trip.target, graph, &network.lane_system);
             }
+            // A truck leaves its dock by the gate its way out ends at (`PARK-21`).
+            (true, PullOut) if trip.freight_gate => {
+                return self.dock_departure(trip.source, network, graph);
+            }
             (true, WalkToCar) if !trip.walk_origin.is_none() => trip.walk_origin,
             (true, PullOut) | (false, WalkToCar) => trip.source,
             (true, WalkToDoor) | (false, PullOut | Drive | PullIn | AtDock) => trip.destination,
@@ -435,6 +441,11 @@ impl ParkingSystem {
     }
 
     /// O(1) fixed swept-path pose product, with the exact adjacent lane point at the driveway.
+    /// For a freight carrier (`freight`, its trip's flag) in a dock with an authored drive
+    /// (`PARK-21`): the lane point and the whole way in, or the way out forward and the exit
+    /// gate's lane point, or without a way out the way in reversed; O(its points), at most
+    /// [`MANEUVER_POINTS`](crate::simulation::economy::agents::tick::MANEUVER_POINTS), on the
+    /// stack. A car pays the flag test.
     pub(crate) fn maneuver_path(
         &self,
         place: Handle<Place>,
@@ -442,19 +453,56 @@ impl ParkingSystem {
         distance: f32,
         network: &crate::simulation::network::TransitNetwork,
         ingress: bool,
-    ) -> Option<crate::simulation::economy::agents::tick::ParkingAccessPath> {
+        freight: bool,
+    ) -> Option<crate::simulation::economy::agents::tick::ManeuverPath> {
+        use crate::simulation::economy::agents::tick::{MANEUVER_POINTS, ManeuverPath};
         use godot::prelude::Vector2;
         let p = self.place_handles.resolve(place)?;
         let lane = network.lane_system.lanes.get(lane)?;
         let point = crate::simulation::buildings::allocator::BuildingAllocator::sample_pos_on_lane(
             lane, distance,
         );
+        if freight && let Some(way) = self.dock_ways.get(&place) {
+            let mut points = [Vector2::ZERO; MANEUVER_POINTS];
+            let mut count = 0;
+            let mut push = |[x, z]: [f32; 2]| {
+                points[count] = Vector2::new(x, z);
+                count += 1;
+            };
+            match (ingress, way.route_out.as_slice()) {
+                (true, _) => {
+                    push([point.x, point.y]);
+                    way.route_in.as_slice().iter().copied().for_each(&mut push);
+                }
+                // A dock without an exit: the way in, backed out of.
+                (false, []) => {
+                    way.route_in.as_slice().iter().rev().copied().for_each(&mut push);
+                    push([point.x, point.y]);
+                }
+                (false, out) => {
+                    out.iter().copied().for_each(&mut push);
+                    push([point.x, point.y]);
+                }
+            }
+            return Some(ManeuverPath::Way { points, count });
+        }
         let swept = self.places.path[p].map(|[x, z]| Vector2::new(x, z));
         let mut points = [point, swept[0], swept[1], swept[2], swept[3]];
         if !ingress {
             points.reverse();
         }
-        Some(crate::simulation::economy::agents::tick::ParkingAccessPath { points, count: 5 })
+        Some(ManeuverPath::Bay(
+            crate::simulation::economy::agents::tick::ParkingAccessPath { points, count: 5 },
+        ))
+    }
+
+    /// Whether a freight carrier leaving `dock` drives forward (`PARK-21`): the dock has an
+    /// authored way out to its exit gate. Otherwise it backs out along its way in (`PARK-20`).
+    /// O(1).
+    pub(crate) fn dock_leaves_forward(&self, dock: Handle<Place>) -> bool {
+        self.dock_ways
+            .get(&dock)
+            .is_some_and(|way| !way.route_out.as_slice().is_empty())
     }
 
     /// O(1) inspection of the independent car's current place.

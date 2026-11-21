@@ -82,6 +82,9 @@ pub(crate) struct ParkingSystem {
     // The authored drive of each dock row that has one (`PARK-21`), by the row's handle: saved
     // with its row, removed with it, kept with a retired row its truck still drives.
     dock_ways: HashMap<Handle<Place>, DockWay>,
+    // The access of each dock row with a way out at its exit gate's road connection (`PARK-21`),
+    // where its truck joins the road: derived with the row's access, never saved.
+    dock_exits: HashMap<Handle<Place>, crate::simulation::buildings::allocator::BuildingEntrance>,
     // Each validated lot's loading-bay rejections, for inspection only, as `diagnostics`.
     pub(crate) dock_diagnostics: std::collections::BTreeMap<u64, Vec<String>>,
     // Derived at every reconcile and site publication; not saved. The load rebuilds those of

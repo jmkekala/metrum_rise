@@ -12,8 +12,9 @@
 //! check delivers (`logistics/progress.rs`).
 //!
 //! The check sends it back by `PullOut` (`lifecycle.rs`): the route reversed, from the stop to
-//! the gate's lane point, where the egress step ends the yard trip as it attaches or waits to
-//! (`access_state/egress.rs`). A dispatch from a building with a free dock starts its carrier
+//! the gate's lane point, or for a dock with a way out (`PARK-21`) that way forward, from the
+//! stop to the exit gate's lane point, where the egress step ends the yard trip as it attaches
+//! or waits to (`access_state/egress.rs`). A dispatch from a building with a free dock starts its carrier
 //! the same way, standing in the dock it takes.
 //!
 //! A dock's `freight_holder` counts only while the holder's trip still names the dock in
@@ -123,10 +124,11 @@ impl AgentSystem {
             .is_some_and(|i| holds_dock(&self.agents.parking_trip[i], dock))
     }
 
-    // A truck that stopped while backing out of its dock (`stand_in_yard`: a road edit dropped
-    // its plan, its way onto the road went stale, or its road went) plans its way out again from
-    // the dock's own access, its gate's road connection, which outlives the building's gate
-    // record (an inactive row keeps it). It keeps its place on the route and its dock. With no
+    // A truck that stopped while leaving its dock (`stand_in_yard`: a road edit dropped its
+    // plan, its way onto the road went stale, or its road went) plans its way out again from the
+    // dock's own departure (`dock_departure`): its exit gate's road connection for a dock with a
+    // way out (`PARK-21`), else its gate's, which outlives the building's gate record (an
+    // inactive row keeps it). It keeps its place on its way and its dock. With no
     // way out it stays, holding the dock, and tries again on the retry wheel with the stranded
     // walkers' backoff (5 s, 30 s, then every 2 min; the step in `network_replan_failures`),
     // recorded once (`TRAFFIC-32`). The shipment's leg timeout bounds the wait: its check
@@ -146,7 +148,7 @@ impl AgentSystem {
             graph.get_edge(b.edge_idx).is_some_and(|edge| !edge.deleted)
         });
         if road_stands
-            && let Some(exit) = parking.place_entrance(dock, allocator, network, graph)
+            && let Some(exit) = parking.dock_departure(dock, network, graph)
             && self.replan_freight_pull_out(i, &exit, allocator, network, graph)
         {
             self.record_parking_outcome(i, None, FailureOutcome::Replans);

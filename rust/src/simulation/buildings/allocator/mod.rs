@@ -409,16 +409,21 @@ impl Default for BuildingEntrance {
 }
 
 /// A building's freight gate (`PARK-19`): where a carrier bound for its docks arrives and where
-/// one leaving them joins the road, both at the gate's road connection, the door the
+/// one leaving them joins the road, each at its gate's road connection, the door the
 /// building's. Derived from the building's dock rows by the reconcile that changes them and by
 /// a load; never saved.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct FreightGate {
     /// The entrance a carrier's plan ends at.
     pub arrive: BuildingEntrance,
-    /// The entrance a carrier leaving a dock starts from; the same gate until drive-through
-    /// routes name an exit (`PARK-21`).
+    /// The entrance a carrier leaving a dock starts from: the exit gate its docks' way out ends
+    /// at (`PARK-21`), or the arrival gate for docks a truck backs out of.
     pub leave: BuildingEntrance,
+    /// The building's retired dock rows whose truck leaves by another gate than `leave`, as the
+    /// handle bits of each (`PARK-21`): an edit moved the exit under a truck that holds one. A
+    /// truck turned back in one plans its way out from the dock itself. Empty, unallocated,
+    /// but for that.
+    pub elsewhere: Vec<u64>,
 }
 
 impl BuildingAllocator {
@@ -473,6 +478,19 @@ impl BuildingAllocator {
         let mut entrance = self.freight_gates.get(&handle)?.leave.clone();
         Self::refresh_entrance_lanes(&mut entrance, graph, lanes);
         Some(entrance)
+    }
+
+    /// Whether a truck in building `index`'s dock `dock` (handle bits) leaves by another gate
+    /// than the building's departure gate (`PARK-21`, [`FreightGate::elsewhere`]); false without
+    /// a gate record. O(1) plus O(such rows), none but after an edit under a truck.
+    pub(crate) fn freight_dock_leaves_elsewhere(&self, index: usize, dock: u64) -> bool {
+        if self.freight_gates.is_empty() || index >= self.buildings.len() {
+            return false;
+        }
+        let handle = self.building_handles.handle(index).to_bits();
+        self.freight_gates
+            .get(&handle)
+            .is_some_and(|gate| gate.elsewhere.contains(&dock))
     }
 }
 

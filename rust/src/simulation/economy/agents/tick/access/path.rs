@@ -30,6 +30,36 @@ impl LocalAccessPath {
     }
 }
 
+/// The most points a parking manoeuvre walks: a dock's authored way and the lane point
+/// (`PARK-21`).
+pub(crate) const MANEUVER_POINTS: usize = crate::assets::asset::validation::MAX_ROUTE_POINTS + 1;
+
+/// A parking manoeuvre's polyline, lane point included (`ParkingSystem::maneuver_path`): a bay's
+/// fixed five points, or a dock's authored way (`PARK-21`), built on the stack per access step,
+/// so a car or a stage A truck copies the five points it always did.
+#[derive(Clone, Copy)]
+pub(crate) enum ManeuverPath {
+    /// A bay's or a stage A dock's route and the lane point, in travel order.
+    Bay(LocalAccessPath),
+    /// A dock's authored way and the lane point, in travel order: `count` valid `points`.
+    Way {
+        /// The points, in travel order.
+        points: [Vector2; MANEUVER_POINTS],
+        /// Number of valid entries in `points`.
+        count: usize,
+    },
+}
+
+impl ManeuverPath {
+    /// The valid points, in travel order. O(1).
+    pub(crate) fn as_slice(&self) -> &[Vector2] {
+        match self {
+            Self::Bay(path) => path.as_slice(),
+            Self::Way { points, count } => &points[..*count],
+        }
+    }
+}
+
 /// Builds a short local access path between a building door and a lane/curb handoff point.
 pub(in crate::simulation::economy::agents::tick) fn local_access_path(
     mode: u8,

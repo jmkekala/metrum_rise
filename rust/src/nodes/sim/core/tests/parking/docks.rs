@@ -245,12 +245,30 @@ fn an_older_save_derives_the_docks_a_fresh_validation_gives() {
 // behind the bunker, and north to `truck_out`. The shed is small and moved out of the way, and
 // the car spot off the exit's line.
 fn place_drive_through() -> (SimCore, u64, String) {
+    let manifest = drive_through_manifest(true);
+    let id = manifest.qualified_id("freight");
+    let mut core = core();
+    core.allocator.registry.register("freight", manifest, String::new());
+    let index = core.place_service_building_internal(&id, 0.0, -40.0).unwrap();
+    core.publish_pending_building_site_changes();
+    let handle = core.allocator.building_handles.handle(index).to_bits();
+    (core, handle, id)
+}
+
+// The drive-through yard's asset ([`place_drive_through`]), its bay naming the exit and the way
+// out, or (`exit` false) neither: then a stage A dock backed out of through `truck_in`.
+fn drive_through_manifest(exit: bool) -> AssetManifest {
     let arc: Vec<_> = (0..=13)
         .map(|k| {
             let angle = std::f32::consts::PI * (1.0 - k as f32 / 13.0);
             format!("[{}, {}]", 7.5 * angle.cos(), -8.0 - 7.5 * angle.sin())
         })
         .collect();
+    let drive = if exit {
+        format!("length_m = 8\nvehicle_class = \"freight\"\nexit = \"truck_out\"\nroute_out = [{}]", arc.join(", "))
+    } else {
+        "length_m = 8\nvehicle_class = \"freight\"".to_owned()
+    };
     let toml = YARD
         .replace("PASSAGE", LANE)
         .replace("GATE_WIDTH", "6")
@@ -260,10 +278,7 @@ fn place_drive_through() -> (SimCore, u64, String) {
             "vehicle_class = \"freight\"\n\n[[anchors]]\ntype = \"loading_bay\"",
             "vehicle_class = \"freight\"\n\n[[anchors]]\ntype = \"driveway\"\nname = \"truck_out\"\nposition = [7.5, 0, 20]\nforward = [0, 0, -1]\nwidth_m = 6\nvehicle_class = \"freight\"\n\n[[anchors]]\ntype = \"loading_bay\"",
         )
-        .replace(
-            "length_m = 8\nvehicle_class = \"freight\"",
-            &format!("length_m = 8\nvehicle_class = \"freight\"\nexit = \"truck_out\"\nroute_out = [{}]", arc.join(", ")),
-        );
+        .replace("length_m = 8\nvehicle_class = \"freight\"", &drive);
     let mut manifest = AssetManifest::from_str(&toml).unwrap();
     for part in &mut manifest.mesh_parts {
         part.imported_bounds = Some(match part.name.as_str() {
@@ -271,13 +286,7 @@ fn place_drive_through() -> (SimCore, u64, String) {
             _ => [[-1.0, 0.0, -1.0], [1.0, 2.0, 1.0]],
         });
     }
-    let id = manifest.qualified_id("freight");
-    let mut core = core();
-    core.allocator.registry.register("freight", manifest, String::new());
-    let index = core.place_service_building_internal(&id, 0.0, -40.0).unwrap();
-    core.publish_pending_building_site_changes();
-    let handle = core.allocator.building_handles.handle(index).to_bits();
-    (core, handle, id)
+    manifest
 }
 
 #[test]
@@ -1127,3 +1136,5 @@ fn write_the_freight_yard_still_save() {
     let json = serde_json::json!({ "docks": docks, "yard": handles[0], "source": handles[1] });
     std::fs::write(out.join("yard.json"), json.to_string()).unwrap();
 }
+
+mod drive_through;

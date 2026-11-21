@@ -50,9 +50,10 @@ pub(crate) fn access_phase_target(
         let (place, lane, distance) = if egress {
             (trip.source,core.agents.planned_attach_lane_id[agent_idx],core.agents.planned_attach_lane_d[agent_idx])
         } else { (trip.destination,core.agents.planned_detach_lane_id[agent_idx],core.agents.planned_detach_lane_d[agent_idx]) };
-        let path=core.parking.maneuver_path(place,lane as usize,distance,&core.transit_network,!egress)?;
+        let path=core.parking.maneuver_path(place,lane as usize,distance,&core.transit_network,!egress,trip.freight_gate)?;
+        let path=path.as_slice();
         let current=godot::prelude::Vector2::new(core.agents.pos_x[agent_idx],core.agents.pos_y[agent_idx]);
-        let target=crate::simulation::economy::agents::tick::parking_path_target_segment(current,path.as_slice()).map(|i| path.points[i])?;
+        let target=crate::simulation::economy::agents::tick::parking_path_target_segment(current,path).map(|i| path[i])?;
         return Some(Vector3::new(target.x,0.0,target.y));
     }
     if matches!(trip.phase, crate::simulation::parking::ParkingTripPhase::WalkToCar | crate::simulation::parking::ParkingTripPhase::WalkToDoor) {
@@ -96,9 +97,12 @@ pub(super) fn access_phase_direction(
     }?;
     let mut direction = Vector3::new(target.x - world_x, 0.0, target.z - world_z);
     let trip = &core.agents.parking_trip[agent_idx];
-    if trip.freight_gate && trip.phase == crate::simulation::parking::ParkingTripPhase::PullOut {
+    if trip.freight_gate
+        && trip.phase == crate::simulation::parking::ParkingTripPhase::PullOut
+        && !core.parking.dock_leaves_forward(trip.source)
+    {
         // A truck backs out of its dock (owner decision 2, `PARK-20`): its nose points back
-        // along the route, into the bay.
+        // along the route, into the bay. One with a way out drives it forward (`PARK-21`).
         direction = -direction;
     }
     (direction.length_squared() > 1e-6).then(|| direction.normalized())

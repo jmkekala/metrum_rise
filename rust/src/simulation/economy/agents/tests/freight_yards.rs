@@ -133,6 +133,7 @@ fn publish_docks(
         FreightGate {
             arrive: gate.clone(),
             leave: gate,
+            elsewhere: Vec::new(),
         },
     );
 }
@@ -913,3 +914,5 @@ fn the_leg_timeout_ends_a_wait_in_the_yard_and_frees_the_dock() {
     let building = yard.allocator.building_handles.handle(1).to_bits();
     assert_eq!(yard.agents.first_free_dock(building, &yard.parking), Some(dock));
 }
+
+mod drive_through;

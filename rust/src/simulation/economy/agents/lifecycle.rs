@@ -522,8 +522,9 @@ impl AgentSystem {
         true
     }
 
-    /// Plans carrier `i`'s way out of the dock it backs out of again, from `exit` (the dock's
-    /// access, at its gate's road connection) to where it was going: a border, or a building's
+    /// Plans carrier `i`'s way out of the dock it leaves again, from `exit` (the dock's
+    /// departure: its exit gate's road connection, or its gate's for a dock it backs out of,
+    /// `PARK-21`) to where it was going: a border, or a building's
     /// gate or door (`PARK-20`). For a pull-out whose plan a road edit dropped or left stale. It
     /// keeps its place on the dock's route, its dock and its journey clock. False, with nothing
     /// changed, when no road leaves the gate for it. O(one plan).
@@ -718,9 +719,10 @@ impl AgentSystem {
     }
 
     // A truck standing in `dock` of building `source` whose gate record went under it: an edit
-    // retired the building's last dock (the held row stays, inactive). It backs out of its dock
-    // all the same, to `to` (a building, or a border node), but its plan needs the dock's own
-    // access, which the parking system holds: it waits in the bay, frozen for the parking
+    // retired the building's last dock (the held row stays, inactive); or whose retired row
+    // leaves by another gate than the record's (`PARK-21`, `FreightGate::elsewhere`). It leaves
+    // its dock all the same, to `to` (a building, or a border node), but its plan needs the
+    // dock's own departure, which the parking system holds: it waits in the bay, frozen for the parking
     // phase's ordered commit to plan it (`yard.rs`), which then retries on the wheel if no road
     // leaves the gate. False, with nothing changed, for any other carrier: one test of the
     // dock found before (`PARK-20`). O(1).
@@ -741,6 +743,7 @@ impl AgentSystem {
         if allocator
             .freight_gate_departure(source, graph, &transit_network.lane_system)
             .is_some()
+            && !allocator.freight_dock_leaves_elsewhere(source, dock.to_bits())
         {
             return false;
         }

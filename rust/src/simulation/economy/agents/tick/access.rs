@@ -13,7 +13,7 @@ pub(super) use geometry::{
 pub(super) use legality::{
     ACCESS_LANE_D_TOLERANCE_M, planned_attach_is_legal, planned_detach_is_legal,
 };
-pub(crate) use path::{LocalAccessPath, local_access_target_segment};
+pub(crate) use path::{LocalAccessPath, MANEUVER_POINTS, ManeuverPath, local_access_target_segment};
 pub(super) use path::{
     advance_along_local_access_path, local_access_path, local_access_should_log_step,
 
