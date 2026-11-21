@@ -214,7 +214,7 @@ fn an_older_save_derives_the_docks_a_fresh_validation_gives() {
     let gates = core.allocator.freight_gates.clone();
     assert_eq!(rows.len(), 1);
     // The save an older build wrote: no dock row.
-    core.parking.replace_docks(building, &[]);
+    core.parking.replace_docks(building, &[], &[]);
     core.allocator.freight_gates.clear();
     let path = std::env::temp_dir().join(format!("metrum_old_docks_{}.sqlite", std::process::id()));
     let path_text = path.to_str().expect("a temporary path");
@@ -238,6 +238,92 @@ fn an_older_save_derives_the_docks_a_fresh_validation_gives() {
     assert_eq!(core.parking.dock_rows(), rows);
     assert_eq!(core.allocator.freight_gates, gates);
     core.parking.audit_docks();
+}
+
+// `PARK-21`: the yard with a second gate, `truck_out`, east of the bunker, and the bay's way out
+// through the lane's far end, a half circle of radius 7.5 m in 13 chords (each bend under 15°)
+// behind the bunker, and north to `truck_out`. The shed is small and moved out of the way, and
+// the car spot off the exit's line.
+fn place_drive_through() -> (SimCore, u64, String) {
+    let arc: Vec<_> = (0..=13)
+        .map(|k| {
+            let angle = std::f32::consts::PI * (1.0 - k as f32 / 13.0);
+            format!("[{}, {}]", 7.5 * angle.cos(), -8.0 - 7.5 * angle.sin())
+        })
+        .collect();
+    let toml = YARD
+        .replace("PASSAGE", LANE)
+        .replace("GATE_WIDTH", "6")
+        .replace("position = [5, 0, -10]", "position = [12, 0, 10]")
+        .replace("position = [8, 0, 20]", "position = [12, 0, 20]")
+        .replace(
+            "vehicle_class = \"freight\"\n\n[[anchors]]\ntype = \"loading_bay\"",
+            "vehicle_class = \"freight\"\n\n[[anchors]]\ntype = \"driveway\"\nname = \"truck_out\"\nposition = [7.5, 0, 20]\nforward = [0, 0, -1]\nwidth_m = 6\nvehicle_class = \"freight\"\n\n[[anchors]]\ntype = \"loading_bay\"",
+        )
+        .replace(
+            "length_m = 8\nvehicle_class = \"freight\"",
+            &format!("length_m = 8\nvehicle_class = \"freight\"\nexit = \"truck_out\"\nroute_out = [{}]", arc.join(", ")),
+        );
+    let mut manifest = AssetManifest::from_str(&toml).unwrap();
+    for part in &mut manifest.mesh_parts {
+        part.imported_bounds = Some(match part.name.as_str() {
+            "bunker" => [[-4.0, 0.0, -8.0], [4.0, 10.0, 8.0]],
+            _ => [[-1.0, 0.0, -1.0], [1.0, 2.0, 1.0]],
+        });
+    }
+    let id = manifest.qualified_id("freight");
+    let mut core = core();
+    core.allocator.registry.register("freight", manifest, String::new());
+    let index = core.place_service_building_internal(&id, 0.0, -40.0).unwrap();
+    core.publish_pending_building_site_changes();
+    let handle = core.allocator.building_handles.handle(index).to_bits();
+    (core, handle, id)
+}
+
+#[test]
+fn a_drive_through_dock_keeps_its_ways_on_its_row_and_in_a_save() {
+    use crate::simulation::core::handles::Handle;
+    let (mut core, building, id) = place_drive_through();
+    let source = PlaceSource::Dock { building, anchor: 4 };
+    let docks = core.parking.source_bays(source);
+    assert_eq!(docks.len(), 1, "{:?}", core.parking.dock_diagnostics);
+    let (handle, bay) = docks[0];
+    let way = *core.parking.dock_way(Handle::from_bits(handle)).expect("the drive");
+    // The derived way in is the row's route; the way out leaves the stop and ends at the exit's
+    // road connection: the stop, 14 arc points, the exit's approach and connection.
+    assert_eq!(way.route_in.as_slice(), bay.path);
+    assert_eq!(way.route_out.as_slice().len(), 17);
+    assert_eq!(way.route_out.as_slice()[0], bay.path[3]);
+    // The editor proves the same drive over the asset alone.
+    let editor = editor_payload_of(&core, &id);
+    let dock = &editor["docks"][0];
+    assert_eq!((dock["arrive"].as_str(), dock["leave"].as_str()), (Some("truck_in"), Some("truck_out")));
+    assert_eq!(dock["route_out"].as_array().map(Vec::len), Some(17), "{editor:#}");
+    // Saved with its row and loaded as saved; a save without the drive's format (123) loads its
+    // stage A docks validating nothing.
+    let path = std::env::temp_dir().join(format!("metrum_drive_{}.sqlite", std::process::id()));
+    let path_text = path.to_str().expect("a temporary path");
+    core.save_game_settled_at(path_text, None, 0).expect("the yard saves");
+    core.load_game_internal(path_text).expect("the yard loads");
+    assert_eq!(core.parking.source_bays(source), docks);
+    assert_eq!(core.parking.dock_way(Handle::from_bits(handle)), Some(&way));
+    let _ = std::fs::remove_file(&path);
+    let (mut core, building) = place_yard(true, "6");
+    let rows = core.parking.dock_rows();
+    core.save_game_settled_at(path_text, None, 0).expect("the yard saves");
+    rusqlite::Connection::open(&path)
+        .unwrap()
+        .execute_batch(&format!(
+            "UPDATE save_meta SET version = {};",
+            crate::simulation::save::schema::PRE_ROUTES_SAVE_VERSION
+        ))
+        .unwrap();
+    core.parking.replace_docks(building, &[], &[]);
+    core.load_game_internal(path_text).expect("format 123 loads");
+    let _ = std::fs::remove_file(&path);
+    assert_eq!(core.parking.dock_rows(), rows);
+    let (handle, _) = core.parking.source_bays(PlaceSource::Dock { building, anchor: 3 })[0];
+    assert!(core.parking.dock_way(Handle::from_bits(handle)).is_none());
 }
 
 // No asset of the test pack or the bundled packs has a freight Driveway, so none publishes a
@@ -299,9 +385,10 @@ fn editor_payload_of(core: &SimCore, id: &str) -> serde_json::Value {
             f32::from(building.lot_depth_cells) * 5.0,
         ],
         "anchors": manifest.anchors.iter().map(|a| json!({
-            "anchor_type": anchor_type(a), "position": a.position, "forward": a.forward,
-            "width_m": a.width_m, "length_m": a.length_m,
-            "vehicle_class": a.vehicle_class.as_deref(),
+            "anchor_type": anchor_type(a), "name": a.name, "position": a.position,
+            "forward": a.forward, "width_m": a.width_m, "length_m": a.length_m,
+            "vehicle_class": a.vehicle_class.as_deref(), "exit": a.exit,
+            "route_in": a.route_in, "route_out": a.route_out,
         })).collect::<Vec<_>>(),
         "site_surfaces": manifest.site_surfaces.iter().map(|s| json!({
             "material": "asphalt", "vertices": s.vertices,

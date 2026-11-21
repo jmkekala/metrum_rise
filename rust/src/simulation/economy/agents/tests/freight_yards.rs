@@ -117,7 +117,7 @@ fn publish_docks(
             (anchor, bay)
         })
         .collect();
-    parking.replace_docks(handle, &rows);
+    parking.replace_docks(handle, &rows, &[]);
     parking.refresh_dock_access(handle, allocator, network, graph);
     let b = &allocator.buildings[building];
     let gate = BuildingAllocator::parking_access_at(

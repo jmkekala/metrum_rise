@@ -24,7 +24,7 @@ pub(crate) mod saved;
 mod tests;
 
 use crate::simulation::core::handles::{Handle, HandleTable};
-pub(crate) use data::{Bay, ParkingCost, Place, PlaceSource, Vehicle};
+pub(crate) use data::{Bay, DockRoute, DockWay, ParkingCost, Place, PlaceSource, Vehicle};
 use data::{Chunk, chunk_at};
 pub(crate) use render::ParkedPublication;
 use std::collections::HashMap;
@@ -79,6 +79,9 @@ pub(crate) struct ParkingSystem {
     // Each building's dock sources (`PARK-19`), in anchor order; not supply, so kept apart from
     // `building_sources`.
     building_docks: HashMap<u64, Vec<PlaceSource>>,
+    // The authored drive of each dock row that has one (`PARK-21`), by the row's handle: saved
+    // with its row, removed with it, kept with a retired row its truck still drives.
+    dock_ways: HashMap<Handle<Place>, DockWay>,
     // Each validated lot's loading-bay rejections, for inspection only, as `diagnostics`.
     pub(crate) dock_diagnostics: std::collections::BTreeMap<u64, Vec<String>>,
     // Derived at every reconcile and site publication; not saved. The load rebuilds those of

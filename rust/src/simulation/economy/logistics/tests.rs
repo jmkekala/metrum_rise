@@ -523,6 +523,9 @@ fn register_test_asset_with_profile(
             width_m: None,
             length_m: None,
             vehicle_class: None,
+            exit: None,
+            route_in: Vec::new(),
+            route_out: Vec::new(),
         }],
         site_surfaces: vec![],
         building: Some(BuildingData {
@@ -581,6 +584,9 @@ fn register_test_city_service_asset(
             width_m: None,
             length_m: None,
             vehicle_class: None,
+            exit: None,
+            route_in: Vec::new(),
+            route_out: Vec::new(),
         }],
         site_surfaces: vec![],
         building: Some(BuildingData {
@@ -637,6 +643,9 @@ fn register_test_field_asset(
             width_m: None,
             length_m: None,
             vehicle_class: None,
+            exit: None,
+            route_in: Vec::new(),
+            route_out: Vec::new(),
         }],
         site_surfaces: vec![],
         building: Some(BuildingData {

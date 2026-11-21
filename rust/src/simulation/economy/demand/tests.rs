@@ -81,6 +81,9 @@ fn register_test_utility_asset(
                 width_m: None,
                 length_m: None,
                 vehicle_class: None,
+                exit: None,
+                route_in: Vec::new(),
+                route_out: Vec::new(),
             }],
             site_surfaces: vec![],
             building: Some(BuildingData {
@@ -138,6 +141,9 @@ fn register_explicit_profile_asset(
                 width_m: None,
                 length_m: None,
                 vehicle_class: None,
+                exit: None,
+                route_in: Vec::new(),
+                route_out: Vec::new(),
             }],
             site_surfaces: vec![],
             building: Some(BuildingData {
@@ -246,6 +252,9 @@ fn register_family_asset_with_economy_profile_and_flat_size(
             width_m: None,
             length_m: None,
             vehicle_class: None,
+            exit: None,
+            route_in: Vec::new(),
+            route_out: Vec::new(),
         }],
         site_surfaces: vec![],
         building: Some(BuildingData {

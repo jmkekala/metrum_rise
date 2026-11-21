@@ -6,7 +6,9 @@ use super::geometry::{covered, overlaps, rectangle};
 use godot::prelude::Vector2;
 
 mod editor;
+mod route;
 pub(crate) use editor::editor_lot_payload;
+pub(super) use route::{DockWayInput, dock_ways, validate_dock};
 #[cfg(test)]
 pub(crate) use editor::editor_payload;
 
@@ -19,6 +21,10 @@ pub(super) struct AnchorBay {
 }
 
 const SUPPORT_TOLERANCE_M: f32 = 0.05;
+
+// The freight row's bend limit in degrees, for the words of a drive-through's rejections; the
+// proof itself compares the legs' headings with `straight_through_cos`.
+const BEND_LIMIT_DEG: u32 = 15;
 
 pub(super) fn driveway_points_inward(forward: Vector2, outward: Vector2) -> bool {
     forward.dot(-outward) >= 0.9
@@ -199,44 +205,16 @@ pub(super) fn validate_bay(
 ) -> Result<([Vector2; 4], Option<usize>), Rejection> {
     let row = class.proof();
     let bay = &bays[slot];
-    if !has_driveway && street.is_none() {
-        return Err(row.no_driveway.into());
-    }
-    let [min_width, min_length] = row.min_bay;
-    if bay.width < min_width || bay.length < min_length || bay.forward.length_squared() < 0.99 {
-        return Err(format!(
-            "too small for a {}: make it at least {min_width} m wide and {min_length} m long",
-            row.noun
-        )
-        .into());
-    }
-    if collision(&footprints[slot]) {
-        return Err(row.in_structure.into());
-    }
-    let other_bay = |foot: &[Vector2]| {
-        footprints
-            .iter()
-            .enumerate()
-            .any(|(other, b)| other != slot && overlaps(foot, b))
-            || others.iter().any(|b| overlaps(foot, b))
-    };
-    // Authored surfaces stop a few centimetres short of the lot edge they were drawn to, and
-    // bays painted side by side share an edge that rounding may push a hair into the next.
-    let inset = rectangle(
-        bay.pos,
-        bay.forward,
-        bay.width - SUPPORT_TOLERANCE_M * 2.0,
-        bay.length - SUPPORT_TOLERANCE_M * 2.0,
-    );
-    if other_bay(&inset) {
-        return Err(row.overlaps_bay.into());
-    }
-    if !covered(&inset, support) {
-        return Err(
-            "not fully on asphalt or concrete: move the whole spot onto a paved yard surface"
-                .into(),
-        );
-    }
+    check_bay(
+        row,
+        slot,
+        bays,
+        footprints,
+        others,
+        support,
+        has_driveway || street.is_some(),
+        &collision,
+    )?;
     if let Some(connection) = street {
         // The car turns in from the street and drives straight onto the bay.
         let entry = bay.pos - bay.forward * (bay.length * 0.5);
@@ -250,17 +228,10 @@ pub(super) fn validate_bay(
             None,
         ));
     }
-    // What blocks a car's swept shape, if anything.
     let blocked = |foot: &[Vector2]| {
-        if !covered(foot, support) {
-            Some("leaves the paved yard")
-        } else if collision(foot) {
-            Some("hits the building or another structure")
-        } else if other_bay(foot) {
-            Some(row.crosses_bay)
-        } else {
-            None
-        }
+        sweep_blocked(row, foot, support, &collision, |foot| {
+            meets_other_bay(foot, slot, footprints, others)
+        })
     };
     let mut first = None;
     for (gate, &[connection, approach]) in paths.iter().enumerate() {
@@ -313,6 +284,20 @@ pub(super) fn validate_bay(
     let Some((part, cause, shape)) = first else {
         return Err("the Driveway must sit at the street edge and point into the lot".into());
     };
+    Err(drive_rejection(row, "in", part, cause, shape, false))
+}
+
+// A route's failing leg or bend as a rejection: what blocks it and the room it needs. The
+// stage A labels keep their words (`PARK-19`); a drive-through's legs and bends (`PARK-21`) say
+// what a corridor or an envelope needs. `way` is "in" or "out". O(1).
+fn drive_rejection(
+    row: &VehicleProof,
+    way: &str,
+    part: &str,
+    cause: &str,
+    shape: [Vector2; 4],
+    bend: bool,
+) -> Rejection {
     let (noun, width, lead) = (row.noun, row.body_width, row.lead);
     let room = match part {
         "the turn off the Driveway" => format!(
@@ -326,12 +311,106 @@ pub(super) fn validate_bay(
         "the way to the front of the spot" => format!(
             "a {noun} drives straight from just inside the Driveway to about {lead} m in front of the spot, on a {width} m strip of clear paving reaching half a {noun} length past both ends"
         ),
-        _ => format!("the way needs about {width} m of clear paving"),
+        "the way in from the Driveway" | "the way into the spot" => {
+            format!("the way needs about {width} m of clear paving")
+        }
+        _ if bend => format!(
+            "a {noun} needs about {} of clear paving to change direction by more than {}°: bend by at most that much at each point, as chords of an arc, or give it the room",
+            row.turn_room,
+            BEND_LIMIT_DEG
+        ),
+        _ => format!(
+            "a {noun} needs a {width} m strip of clear paving along it, reaching half a {noun} length ({} m) past both ends",
+            row.body_length * 0.5
+        ),
     };
-    Err(Rejection {
-        reason: format!("no room to drive in: {part} {cause} ({room})"),
+    Rejection {
+        reason: format!("no room to drive {way}: {part} {cause} ({room})"),
         shape: Some(shape),
-    })
+    }
+}
+
+// The bay itself, before any route (`PARK-19`): something to reach it from (a Driveway, or the
+// street for a car bay on the street edge), its size, clear of structures and of the other bays,
+// and on paving. O(bays + local polygon overlay work).
+#[allow(clippy::too_many_arguments)]
+fn check_bay(
+    row: &VehicleProof,
+    slot: usize,
+    bays: &[AnchorBay],
+    footprints: &[[Vector2; 4]],
+    others: &[[Vector2; 4]],
+    support: &[Vec<[f64; 2]>],
+    reachable: bool,
+    collision: &impl Fn(&[Vector2]) -> bool,
+) -> Result<(), Rejection> {
+    let bay = &bays[slot];
+    if !reachable {
+        return Err(row.no_driveway.into());
+    }
+    let [min_width, min_length] = row.min_bay;
+    if bay.width < min_width || bay.length < min_length || bay.forward.length_squared() < 0.99 {
+        return Err(format!(
+            "too small for a {}: make it at least {min_width} m wide and {min_length} m long",
+            row.noun
+        )
+        .into());
+    }
+    if collision(&footprints[slot]) {
+        return Err(row.in_structure.into());
+    }
+    // Authored surfaces stop a few centimetres short of the lot edge they were drawn to, and
+    // bays painted side by side share an edge that rounding may push a hair into the next.
+    let inset = rectangle(
+        bay.pos,
+        bay.forward,
+        bay.width - SUPPORT_TOLERANCE_M * 2.0,
+        bay.length - SUPPORT_TOLERANCE_M * 2.0,
+    );
+    if meets_other_bay(&inset, slot, footprints, others) {
+        return Err(row.overlaps_bay.into());
+    }
+    if !covered(&inset, support) {
+        return Err(
+            "not fully on asphalt or concrete: move the whole spot onto a paved yard surface"
+                .into(),
+        );
+    }
+    Ok(())
+}
+
+// Whether `foot` meets a bay of the class other than `slot`, or one of `others`. O(bays).
+fn meets_other_bay(
+    foot: &[Vector2],
+    slot: usize,
+    footprints: &[[Vector2; 4]],
+    others: &[[Vector2; 4]],
+) -> bool {
+    footprints
+        .iter()
+        .enumerate()
+        .any(|(other, b)| other != slot && overlaps(foot, b))
+        || others.iter().any(|b| overlaps(foot, b))
+}
+
+// What blocks a swept shape of the class, if anything: unpaved ground first, then a structure,
+// then another bay. O(local polygon overlay work + bays).
+fn sweep_blocked(
+    row: &VehicleProof,
+    foot: &[Vector2],
+    support: &[Vec<[f64; 2]>],
+    collision: &impl Fn(&[Vector2]) -> bool,
+    other_bay: impl Fn(&[Vector2]) -> bool,
+) -> Option<&'static str> {
+    if !covered(foot, support) {
+        Some("leaves the paved yard")
+    } else if collision(foot) {
+        Some("hits the building or another structure")
+    } else if other_bay(foot) {
+        Some(row.crosses_bay)
+    } else {
+        None
+    }
 }
 
 // A Driveway admits freight by its `vehicle_class` alone (owner decision 11). O(1).
@@ -342,36 +421,6 @@ pub(super) fn is_freight_class(class: Option<&str>) -> bool {
 // A loading bay is a truck's when its class is `freight` or absent. O(1).
 pub(super) fn is_dock_class(class: Option<&str>) -> bool {
     class.is_none_or(|class| class.trim() == "freight")
-}
-
-/// One arrival gate per building (`PARK-19`): the first dock takes the first gate, in anchor
-/// order, that `prove` proves its route through; every later dock must prove through that gate,
-/// and one that only another gate proves is rejected as differing. `prove(slot, gates)` is the
-/// dock proof of dock `slot` over `gates`. Shared by the placed lot and the asset editor.
-/// O(docks × gates) proofs, two per later dock that fails.
-pub(super) fn dock_routes(
-    docks: usize,
-    gates: &[[Vector2; 2]],
-    prove: impl Fn(usize, &[[Vector2; 2]]) -> Result<([Vector2; 4], Option<usize>), Rejection>,
-) -> Vec<Result<[Vector2; 4], Rejection>> {
-    let mut building_gate = None;
-    (0..docks)
-        .map(|slot| match building_gate {
-            None => prove(slot, gates).map(|(path, gate)| {
-                building_gate = gate;
-                path
-            }),
-            Some(gate) => prove(slot, &gates[gate..=gate])
-                .map(|(path, _)| path)
-                .map_err(|rejection| {
-                    if prove(slot, gates).is_ok() {
-                        "its Driveway differs from the building's first loading bay's".into()
-                    } else {
-                        rejection
-                    }
-                }),
-        })
-        .collect()
 }
 
 #[cfg(test)]

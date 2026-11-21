@@ -13,6 +13,11 @@ const ANCHOR_FORWARD_UNIT_EPS: f32 = 0.02;
 const ANCHOR_LOT_EPS_M: f32 = 0.001;
 const ANCHOR_FRONTAGE_EDGE_EPS_M: f32 = 0.05;
 
+/// The most points a loading bay's way in or way out holds (`PARK-21`): its gate's road
+/// connection and approach and the stop, and at most 21 waypoints between them. The tick walks
+/// it with the lane point before it, so a truck's access path has at most 25 points.
+pub(crate) const MAX_ROUTE_POINTS: usize = 24;
+
 impl AssetManifest {
     /// Validates structural and semantic constraints.
     ///
@@ -51,6 +56,7 @@ impl AssetManifest {
 
         for anchor in &self.anchors {
             validate_anchor_common(&self.asset_id, anchor)?;
+            validate_anchor_route(&self.asset_id, &self.anchors, anchor)?;
         }
 
         if let Some(b) = &self.building {
@@ -364,6 +370,60 @@ fn validate_anchor_common(asset_id: &str, anchor: &Anchor) -> Result<(), Manifes
         validate_anchor_vehicle_class(asset_id, anchor, vehicle_class)?;
     }
     Ok(())
+}
+
+// A loading bay's drive-through fields (`PARK-21`): only a loading bay carries them, its
+// waypoints are finite and fit a route of `MAX_ROUTE_POINTS`, `route_out` needs an `exit`, and
+// the exit names exactly one Driveway of the asset. Whether that Driveway is a gate and the
+// route proves is the lot proof's to say. O(anchors + waypoints).
+fn validate_anchor_route(
+    asset_id: &str,
+    anchors: &[Anchor],
+    anchor: &Anchor,
+) -> Result<(), ManifestError> {
+    let fail = |message: String| {
+        Err(ManifestError::Validation(format!(
+            "asset_id '{asset_id}': anchor '{}' {message}",
+            anchor.name
+        )))
+    };
+    let authored = anchor.exit.is_some() || !anchor.route_in.is_empty() || !anchor.route_out.is_empty();
+    if !authored {
+        return Ok(());
+    }
+    if anchor.anchor_type != AnchorType::LoadingBay {
+        return fail("has exit, route_in or route_out, which only a loading_bay may carry".into());
+    }
+    let most = MAX_ROUTE_POINTS - 3;
+    for (key, route) in [("route_in", &anchor.route_in), ("route_out", &anchor.route_out)] {
+        if route.iter().flatten().any(|v| !v.is_finite()) {
+            return fail(format!("has a {key} waypoint that is not finite"));
+        }
+        if route.len() > most {
+            return fail(format!(
+                "has {} {key} waypoints; at most {most} fit a route of {MAX_ROUTE_POINTS} points with its gate and stop",
+                route.len()
+            ));
+        }
+    }
+    match anchor.exit.as_deref().map(str::trim) {
+        None if !anchor.route_out.is_empty() => {
+            fail("has route_out without an exit; name the Driveway it leaves by".into())
+        }
+        None => Ok(()),
+        Some("") => fail("has an empty exit; name the Driveway it leaves by".into()),
+        Some(exit) => {
+            let named = anchors
+                .iter()
+                .filter(|a| a.anchor_type == AnchorType::Driveway && a.name.trim() == exit)
+                .count();
+            match named {
+                1 => Ok(()),
+                0 => fail(format!("exit '{exit}' names no Driveway of the asset")),
+                _ => fail(format!("exit '{exit}' names {named} Driveways; give each Driveway its own name")),
+            }
+        }
+    }
 }
 
 fn validate_finite_vec3(

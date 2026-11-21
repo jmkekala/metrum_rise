@@ -13,8 +13,9 @@
 
 use super::super::geometry::{overlaps, precise, rectangle};
 use super::{
-    AnchorBay, ProofClass, Rejection, STREET_APPROACH_M, dock_routes, driveway_points_inward,
-    is_dock_class, is_freight_class, opens_onto_street, validate_bay,
+    AnchorBay, DockWayInput, ProofClass, Rejection, STREET_APPROACH_M, dock_ways,
+    driveway_points_inward, is_dock_class, is_freight_class, opens_onto_street, validate_bay,
+    validate_dock,
 };
 use crate::assets::asset::passage::{
     check_passages_in_bounds, class_structure_footprints, lot_axis_forward, passage_rectangle,
@@ -193,14 +194,14 @@ impl<'a> EditorLot<'a> {
             .collect()
     }
 
-    // The road connection and approach of every Driveway passing `admits` that is at least the
-    // class's gate width and points into the lot. Without a street the approach stands for the
-    // connection, as before `PARK-18`.
+    // The name, road connection and approach of every Driveway passing `admits` that is at least
+    // the class's gate width and points into the lot. Without a street the approach stands for
+    // the connection, as before `PARK-18`.
     fn driveway_paths(
         &self,
         class: ProofClass,
         admits: impl Fn(&Value) -> bool,
-    ) -> Vec<[Vector2; 2]> {
+    ) -> Vec<(&'a str, [Vector2; 2])> {
         let row = class.proof();
         self.anchors
             .iter()
@@ -220,7 +221,7 @@ impl<'a> EditorLot<'a> {
                         + outward
                             * (edge - position.dot(outward) + BUILDING_SITE_ROAD_SAMPLE_INSET_M)
                 });
-                [connection, approach]
+                (a["name"].as_str().unwrap_or_default().trim(), [connection, approach])
             })
             .collect()
     }
@@ -242,7 +243,11 @@ impl<'a> EditorLot<'a> {
             .map(|b| rectangle(b.pos, b.forward, b.width, b.length))
             .collect();
         let has_driveway = self.anchors.iter().any(|a| a["anchor_type"] == "driveway");
-        let paths = self.driveway_paths(ProofClass::Car, |_| true);
+        let paths: Vec<_> = self
+            .driveway_paths(ProofClass::Car, |_| true)
+            .into_iter()
+            .map(|(_, path)| path)
+            .collect();
         let rejected: Vec<_> = parking
             .iter()
             .enumerate()
@@ -313,24 +318,41 @@ impl<'a> EditorLot<'a> {
                 .iter()
                 .map(|(_, b)| rectangle(b.pos, b.forward, b.width, b.length))
                 .collect();
-            let gates = self.driveway_paths(freight, |a| is_freight_class(a["vehicle_class"].as_str()));
-            let prove = |slot: usize, gates: &[[Vector2; 2]]| {
-                validate_bay(
-                    freight,
+            let (names, gates): (Vec<_>, Vec<_>) = self
+                .driveway_paths(freight, |a| is_freight_class(a["vehicle_class"].as_str()))
+                .into_iter()
+                .unzip();
+            let ways: Vec<_> = docks
+                .iter()
+                .map(|&(index, _)| way_input(&self.anchors[index], &names))
+                .collect();
+            let prove = |slot: usize, only: Option<usize>| {
+                validate_dock(
                     slot,
                     &bays,
                     &footprints,
                     &parking,
                     &self.support,
                     has_gate,
-                    gates,
-                    None,
+                    &gates,
+                    only,
+                    &ways[slot],
                     self.collision(freight),
                 )
             };
-            for (&(index, _), route) in docks.iter().zip(dock_routes(docks.len(), &gates, prove)) {
+            for (&(index, _), route) in docks.iter().zip(dock_ways(docks.len(), prove)) {
                 match route {
-                    Ok(path) => routes.push(json!({"anchor":index, "route":path.map(point)})),
+                    Ok(dock) => {
+                        let mut entry = json!({"anchor":index, "route":dock.path.map(point)});
+                        // A drive-through's whole ways (`PARK-21`), for drawing and inspection.
+                        if !dock.route_in.is_empty() {
+                            entry["route_in"] = json!(dock.route_in.iter().copied().map(point).collect::<Vec<_>>());
+                            entry["route_out"] = json!(dock.route_out.iter().copied().map(point).collect::<Vec<_>>());
+                            entry["arrive"] = json!(names[dock.arrive]);
+                            entry["leave"] = json!(names[dock.leave]);
+                        }
+                        routes.push(entry);
+                    }
                     Err(rejection) => {
                         let mut entry = rejection_json(index, rejection);
                         entry["blocks"] = json!(has_gate);
@@ -398,6 +420,32 @@ impl<'a> EditorLot<'a> {
             })
             .chain(bounds)
             .collect()
+    }
+}
+
+// A loading bay's drive-through as the editor sends it (`PARK-21`): `exit` by name, resolved
+// among the usable gates' `names`, and `route_in` and `route_out` as `[x, z]` waypoints in
+// asset-local metres. O(waypoints + gates).
+fn way_input(anchor: &Value, names: &[&str]) -> DockWayInput {
+    let waypoints = |key: &str| {
+        anchor[key]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|p| {
+                Vector2::new(
+                    p[0].as_f64().unwrap_or(0.0) as f32,
+                    p[1].as_f64().unwrap_or(0.0) as f32,
+                )
+            })
+            .collect()
+    };
+    DockWayInput {
+        route_in: waypoints("route_in"),
+        route_out: waypoints("route_out"),
+        exit: anchor["exit"].as_str().map(str::trim).map(|exit| {
+            names.iter().position(|&name| name == exit).ok_or_else(|| exit.to_owned())
+        }),
     }
 }
 

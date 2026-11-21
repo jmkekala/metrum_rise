@@ -125,6 +125,7 @@ fn edit(
         }
         "create" => resolved.is_empty() && text(&params, "asset_class") == "building",
         "passage" => resolved.len() == 1 && resolved[0].3 == ObjectKind::Mesh,
+        "route" => resolved.len() == 1 && resolved[0].3 == ObjectKind::Loading,
         _ => false,
     };
     if !allowed {
@@ -347,6 +348,7 @@ fn edit(
                 entry.set("vertices", vertices);
             }
             "passage" => edit_passages(&mut entry, args)?,
+            "route" => edit_route(&mut entry, args)?,
             _ => return Err("Unsupported edit".into()),
         }
         entries.set(*index, &entry.to_variant());
@@ -433,6 +435,72 @@ fn edit_passages(part: &mut VarDictionary, args: &VarDictionary) -> Result<(), S
         _ => return Err("Unsupported passage edit".into()),
     }
     part.set("passages", passages);
+    Ok(())
+}
+
+// Changes one loading bay's drive-through (`PARK-21`): `op` "exit" sets the exit Driveway's
+// name (`value`; empty clears it, and with it the way out, which needs an exit); "add" inserts
+// waypoint `point` (`[x, z]`) into `way` ("in" or "out") before `waypoint`, or at the end when
+// absent; "move" sets waypoint `waypoint` of `way` to `point`; "delete" removes it. Whether the
+// exit names a gate and the route proves is validation's to report, so an author may pass
+// through an invalid state. O(waypoints).
+fn edit_route(anchor: &mut VarDictionary, args: &VarDictionary) -> Result<(), String> {
+    let op = text(args, "op");
+    if op == "exit" {
+        let exit = text(args, "value").trim().to_owned();
+        if exit.is_empty() {
+            anchor.remove("exit");
+            anchor.remove("route_out");
+        } else {
+            anchor.set("exit", exit);
+        }
+        return Ok(());
+    }
+    let key = match text(args, "way").as_str() {
+        "in" => "route_in",
+        "out" if anchor.contains_key("exit") => "route_out",
+        "out" => return Err("Name the exit Driveway before adding a way out".into()),
+        _ => return Err("Unsupported route".into()),
+    };
+    let mut points = array(anchor, key);
+    let waypoint = args
+        .get("waypoint")
+        .and_then(|v| v.try_to::<i64>().ok())
+        .and_then(|v| usize::try_from(v).ok());
+    let point = || {
+        let point = array(args, "point");
+        let finite = point.len() == 2
+            && point
+                .iter_shared()
+                .all(|v| v.try_to::<f64>().is_ok_and(f64::is_finite));
+        finite.then_some(point).ok_or("Expected two finite numbers")
+    };
+    let most = crate::assets::asset::validation::MAX_ROUTE_POINTS - 3;
+    match op.as_str() {
+        "add" if points.len() >= most => {
+            return Err(format!("A way holds at most {most} waypoints"));
+        }
+        "add" => {
+            let at = waypoint.unwrap_or(points.len()).min(points.len());
+            points.insert(at, &point()?.to_variant());
+        }
+        "move" | "delete" => {
+            let index = waypoint
+                .filter(|&i| i < points.len())
+                .ok_or("The waypoint no longer exists")?;
+            if op == "move" {
+                points.set(index, &point()?.to_variant());
+            } else {
+                points.remove(index);
+            }
+        }
+        _ => return Err("Unsupported route edit".into()),
+    }
+    if points.is_empty() {
+        anchor.remove(key);
+    } else {
+        anchor.set(key, points);
+    }
     Ok(())
 }
 

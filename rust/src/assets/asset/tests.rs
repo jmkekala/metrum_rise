@@ -592,6 +592,57 @@ fn building_rejects_invalid_anchor_vehicle_class() {
     );
 }
 
+#[test]
+fn a_loading_bay_names_its_exit_and_carries_waypoints_and_nothing_else_does() {
+    // `PARK-21`: the drive-through fields on a loading bay, with two freight Driveways.
+    let gates = r#"
+[[anchors]]
+type = "driveway"
+name = "truck_in"
+position = [-3.0, 0.0, 15.0]
+forward = [0.0, 0.0, -1.0]
+width_m = 6.0
+vehicle_class = "freight"
+
+[[anchors]]
+type = "driveway"
+name = "truck_out"
+position = [3.0, 0.0, 15.0]
+forward = [0.0, 0.0, -1.0]
+width_m = 6.0
+vehicle_class = "freight"
+"#;
+    let bay = |fields: &str| {
+        format!(
+            "{BUILDING_TOML}{gates}\n[[anchors]]\ntype = \"loading_bay\"\nname = \"bay\"\nposition = [-3.0, 0.0, 4.0]\nforward = [0.0, 0.0, -1.0]\nwidth_m = 3.5\nlength_m = 8.0\nvehicle_class = \"freight\"\n{fields}\n"
+        )
+    };
+    let parse = |fields: &str| bay(fields).parse::<AssetManifest>().map_err(|e| e.to_string());
+    let manifest = parse(
+        "exit = \"truck_out\"\nroute_in = [[-3.0, 8.0]]\nroute_out = [[-3.0, -6.0], [3.0, -6.0]]",
+    )
+    .expect("a drive-through bay parses");
+    let dock = manifest.anchors.last().expect("the bay");
+    assert_eq!(dock.exit.as_deref(), Some("truck_out"));
+    assert_eq!(dock.route_in, [[-3.0, 8.0]]);
+    assert_eq!(dock.route_out, [[-3.0, -6.0], [3.0, -6.0]]);
+    let refused = |fields: &str, words: &str| {
+        let error = parse(fields).expect_err(fields);
+        assert!(error.contains(words), "{fields}: {error}");
+    };
+    refused("route_out = [[0.0, 0.0]]", "route_out without an exit");
+    refused("exit = \"gate\"", "exit 'gate' names no Driveway");
+    let many: Vec<_> = (0..22).map(|i| format!("[{i}.0, 0.0]")).collect();
+    refused(&format!("route_in = [{}]", many.join(", ")), "22 route_in waypoints; at most 21");
+    refused("exit = \"truck_in\"\nexit_m = 1", "unknown field");
+    let on_driveway = format!("{BUILDING_TOML}{gates}").replace(
+        "vehicle_class = \"freight\"\n",
+        "vehicle_class = \"freight\"\nroute_in = [[0.0, 0.0]]\n",
+    );
+    let error = on_driveway.parse::<AssetManifest>().expect_err("a Driveway carries no route");
+    assert!(error.to_string().contains("only a loading_bay"), "{error}");
+}
+
 // ── Prop ────────────────────────────────────────────────────────────────
 
 const PROP_TOML: &str = r#"

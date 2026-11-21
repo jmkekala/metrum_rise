@@ -171,6 +171,19 @@ pub struct Anchor {
     /// Optional vehicle class accepted by this anchor, such as `"car"` or `"freight"`.
     #[serde(default)]
     pub vehicle_class: Option<String>,
+    /// A loading bay's exit gate (`PARK-21`): the name of the freight Driveway a truck leaves
+    /// by, driving forward from the stop along `route_out`. Absent: it leaves by its arrival
+    /// gate, backing out along the way it came in.
+    #[serde(default)]
+    pub exit: Option<String>,
+    /// A loading bay's waypoints `[x, z]` (asset-local metres) between its arrival gate's
+    /// approach and the stop. Empty: the derived way in (approach, aisle, stop).
+    #[serde(default)]
+    pub route_in: Vec<[f32; 2]>,
+    /// A loading bay's waypoints `[x, z]` between the stop and its exit gate's approach; only
+    /// with an `exit`. Empty with an exit: straight from the stop to the exit's approach.
+    #[serde(default)]
+    pub route_out: Vec<[f32; 2]>,
 }
 
 /// Recognised anchor roles.

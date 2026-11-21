@@ -6,6 +6,7 @@
 #![allow(clippy::redundant_field_names)]
 
 use super::*;
+use crate::assets::asset::validation::MAX_ROUTE_POINTS;
 use soa_derive::StructOfArray;
 
 /// The geometry owner of a place; building identities survive allocator swap removal.
@@ -102,6 +103,49 @@ pub(crate) struct Bay {
     pub heading: f32,
     pub width: f32,
     pub length: f32,
+}
+
+/// One way of a dock's authored drive (`PARK-21`): a polyline of at most `MAX_ROUTE_POINTS`
+/// world points `[x, z]`, kept inline so a row needs no allocation. Empty: no such way.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct DockRoute {
+    points: [[f32; 2]; MAX_ROUTE_POINTS],
+    len: u8,
+}
+
+impl DockRoute {
+    /// No way: a dock without an exit has no way out.
+    pub(crate) const EMPTY: Self = Self {
+        points: [[0.0; 2]; MAX_ROUTE_POINTS],
+        len: 0,
+    };
+
+    /// The route through `points`, or `None` when they are more than `MAX_ROUTE_POINTS`.
+    /// O(points).
+    pub(crate) fn new(points: &[[f32; 2]]) -> Option<Self> {
+        let mut route = Self::EMPTY;
+        route.points.get_mut(..points.len())?.copy_from_slice(points);
+        route.len = points.len() as u8;
+        Some(route)
+    }
+
+    /// The route's points, in travel order. O(1).
+    pub(crate) fn as_slice(&self) -> &[[f32; 2]] {
+        &self.points[..usize::from(self.len)]
+    }
+}
+
+/// A dock's authored drive (`PARK-21`), kept beside its row: the whole way in from the arrival
+/// gate's road connection to the stop, and the way out from the stop to the exit gate's road
+/// connection, or empty when the truck backs out along the way in.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct DockWay {
+    /// The arrival gate's road connection, its approach, the waypoints (or the aisle) and the
+    /// stop.
+    pub route_in: DockRoute,
+    /// The stop, the waypoints, the exit gate's approach and its road connection; empty when
+    /// the dock names no exit.
+    pub route_out: DockRoute,
 }
 
 /// Exact quote supplied by a caller, or Euclidean walking time in the foundation query.

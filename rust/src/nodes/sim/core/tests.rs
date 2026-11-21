@@ -1402,6 +1402,9 @@ fn register_test_asset(
             width_m: None,
             length_m: None,
             vehicle_class: None,
+            exit: None,
+            route_in: Vec::new(),
+            route_out: Vec::new(),
         }],
         site_surfaces: vec![],
         building: Some(BuildingData {

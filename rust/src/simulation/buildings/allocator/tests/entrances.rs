@@ -152,6 +152,9 @@ fn test_rebuild_entrance_cache_uses_authored_anchor_meters_without_preview_scale
             width_m: None,
             length_m: None,
             vehicle_class: None,
+            exit: None,
+            route_in: Vec::new(),
+            route_out: Vec::new(),
         }],
         site_surfaces: vec![],
         building: Some(BuildingData {

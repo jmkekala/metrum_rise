@@ -21,6 +21,17 @@ struct SavedPlace {
     // every row of a city without docks, saves as it did before the column.
     #[serde(default = "no_holder", skip_serializing_if = "is_no_holder")]
     freight_holder: u64,
+    // A dock's authored drive (`PARK-21`, format 124); written only for a dock that has one, so
+    // every other row saves as it did before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    way: Option<SavedWay>,
+}
+// The two ways of a dock's drive, as their points; `route_out` absent when the dock has no exit.
+#[derive(Serialize, Deserialize)]
+struct SavedWay {
+    route_in: Vec<[f32; 2]>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    route_out: Vec<[f32; 2]>,
 }
 fn no_holder() -> u64 {
     Handle::<crate::simulation::economy::agents::Agent>::NONE.to_bits()
@@ -123,6 +134,10 @@ impl ParkingSystem {
                     occupant: self.places.occupant[p].to_bits(),
                     reservation: self.places.reservation[p].to_bits(),
                     freight_holder: self.places.freight_holder[p].to_bits(),
+                    way: self.dock_ways.get(&self.place_handles.handle(p)).map(|way| SavedWay {
+                        route_in: way.route_in.as_slice().to_vec(),
+                        route_out: way.route_out.as_slice().to_vec(),
+                    }),
                 })
                 .collect()
         });
@@ -221,6 +236,20 @@ impl ParkingSystem {
                 || place.reservation != Handle::<Vehicle>::NONE.to_bits())
             {
                 return Err("a loading dock holds a car".into());
+            }
+            if let Some(way) = place.way {
+                // A drive's way in reaches the stop from a gate's connection and approach (at
+                // least four points); a way out, when there is one, leaves the stop by an exit's
+                // approach and connection (at least three).
+                let routes = DockRoute::new(&way.route_in).zip(DockRoute::new(&way.route_out));
+                let Some((route_in, route_out)) = routes.filter(|_| {
+                    dock && way.route_in.len() >= 4
+                        && (way.route_out.is_empty() || way.route_out.len() >= 3)
+                        && way.route_in.iter().chain(&way.route_out).flatten().all(|v| v.is_finite())
+                }) else {
+                    return Err("invalid loading dock route".into());
+                };
+                system.dock_ways.insert(handle, DockWay { route_in, route_out });
             }
             // A dock is in no chunk (`PARK-19`).
             let chunk = (!dock).then(|| {

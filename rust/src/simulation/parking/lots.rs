@@ -3,11 +3,11 @@
 //! Public anchor bays with fixed driveway–aisle–bay swept-footprint proofs.
 
 use super::{
-    Bay,
+    Bay, DockRoute, DockWay,
     geometry::{precise, rectangle, structure_collision},
     validation::{
-        AnchorBay, ProofClass, dock_routes, driveway_points_inward, is_dock_class,
-        is_freight_class, opens_onto_street, validate_bay,
+        AnchorBay, DockWayInput, ProofClass, dock_ways, driveway_points_inward, is_dock_class,
+        is_freight_class, opens_onto_street, validate_bay, validate_dock,
     },
 };
 use crate::assets::{Anchor, AnchorType};
@@ -32,6 +32,8 @@ pub(crate) struct LotProof {
     /// One reason per rejected loading bay. Empty for an asset without a freight Driveway,
     /// whose loading bays are not validated at all.
     pub dock_issues: Vec<String>,
+    /// The authored drive of each dock that has one (`PARK-21`), by anchor index.
+    pub dock_ways: Vec<(u32, DockWay)>,
 }
 
 /// [`lot_proof`]'s car half, for the callers that read no dock. Same bound.
@@ -275,33 +277,62 @@ pub(crate) fn lot_proof(
             .map(|(_, p, f, w, l)| rectangle(*p, *f, *w, *l))
             .collect();
         let freight = ProofClass::Freight;
-        let gates: Vec<_> = anchors
+        // The usable gates with their names, for the exits that name them (`PARK-21`).
+        let (names, gates): (Vec<_>, Vec<_>) = anchors
             .iter()
             .filter(|a| is_freight_driveway(a))
-            .filter_map(|gate| driveway_path(gate, freight))
-            .collect();
+            .filter_map(|gate| Some((gate.name.trim(), driveway_path(gate, freight)?)))
+            .unzip();
         let has_gate = anchors.iter().any(|a| {
             is_freight_driveway(a) && a.width_m.unwrap_or(3.0) >= freight.proof().min_gate
         });
+        let lot_point = |[x, z]: [f32; 2]| position([x, 0.0, z]);
+        let ways: Vec<_> = docks
+            .iter()
+            .map(|&(anchor, ..)| {
+                let anchor = &anchors[anchor as usize];
+                DockWayInput {
+                    route_in: anchor.route_in.iter().copied().map(lot_point).collect(),
+                    route_out: anchor.route_out.iter().copied().map(lot_point).collect(),
+                    exit: anchor.exit.as_deref().map(|exit| {
+                        let exit = exit.trim();
+                        names.iter().position(|&name| name == exit).ok_or_else(|| exit.to_owned())
+                    }),
+                }
+            })
+            .collect();
         // A dock never opens onto the street, and its routes also keep off the parking spots.
-        let prove = |slot: usize, gates: &[[Vector2; 2]]| {
-            validate_bay(
-                freight,
+        let prove = |slot: usize, only: Option<usize>| {
+            validate_dock(
                 slot,
                 &dock_geometry,
                 &dock_footprints,
                 &footprints,
                 &support,
                 has_gate,
-                gates,
-                None,
+                &gates,
+                only,
+                &ways[slot],
                 |foot| structure_collision(allocator, freight, foot),
             )
         };
-        let routes = dock_routes(docks.len(), &gates, prove);
+        let routes = dock_ways(docks.len(), prove);
         for (&(anchor, pos, forward, width, length), route) in docks.iter().zip(routes) {
             match route {
-                Ok(path) => proof.docks.push(place(anchor, path, pos, forward, width, length)),
+                Ok(dock) => {
+                    if !dock.route_in.is_empty() {
+                        let points = |route: &[Vector2]| {
+                            let points: Vec<_> = route.iter().map(|p| [p.x, p.y]).collect();
+                            DockRoute::new(&points).expect("a proven way fits its row")
+                        };
+                        let way = DockWay {
+                            route_in: points(&dock.route_in),
+                            route_out: points(&dock.route_out),
+                        };
+                        proof.dock_ways.push((anchor, way));
+                    }
+                    proof.docks.push(place(anchor, dock.path, pos, forward, width, length));
+                }
                 Err(rejection) => proof.dock_issues.push(format!(
                     "{} loading bay {}: {}",
                     building.asset_id, anchor, rejection.reason

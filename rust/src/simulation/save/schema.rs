@@ -6,7 +6,13 @@ use super::SaveLoadError;
 use crate::simulation::network::types::{EdgeClass, NodeType, TransitType, VehicleFrontageAccess};
 
 /// Current save format version (`SIM-02` broke older saves).
-pub const SAVE_VERSION: i64 = 123;
+pub const SAVE_VERSION: i64 = 124;
+
+/// Format 123, saved before a dock's authored drive was saved state (`PARK-21`): its dock rows
+/// carry no way in or out beyond the row's four points. It loads as format 124 does, validating
+/// nothing: its format had no drive to save, because no asset could author one, so every dock
+/// it holds is a stage A dock.
+pub const PRE_ROUTES_SAVE_VERSION: i64 = 123;
 
 /// Format 122, saved before docks were saved state (`PARK-19`): its parking rows hold no dock.
 /// It loads as before, and the load validates the lots of the buildings whose asset has a

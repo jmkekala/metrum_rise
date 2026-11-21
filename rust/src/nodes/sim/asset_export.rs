@@ -56,6 +56,15 @@ pub struct AnchorParams {
     /// Optional vehicle class accepted by this anchor.
     #[serde(default)]
     pub vehicle_class: Option<String>,
+    /// A loading bay's exit gate, by its Driveway's name (`PARK-21`).
+    #[serde(default)]
+    pub exit: Option<String>,
+    /// A loading bay's waypoints `[x, z]` between its arrival gate and the stop.
+    #[serde(default)]
+    pub route_in: Vec<[f32; 2]>,
+    /// A loading bay's waypoints `[x, z]` between the stop and its exit gate.
+    #[serde(default)]
+    pub route_out: Vec<[f32; 2]>,
 }
 
 /// Visual yard surface entry sent from the building importer form.
@@ -445,6 +454,17 @@ fn build_asset_toml(p: &ExportParams) -> Result<String, String> {
             && !vehicle_class.is_empty()
         {
             out.push_str(&format!("vehicle_class = {}\n", toml_string(vehicle_class)));
+        }
+        // A loading bay's drive-through (`PARK-21`), written only when authored.
+        if let Some(exit) = &anchor.exit
+            && !exit.trim().is_empty()
+        {
+            out.push_str(&format!("exit = {}\n", toml_string(exit)));
+        }
+        for (key, route) in [("route_in", &anchor.route_in), ("route_out", &anchor.route_out)] {
+            if !route.is_empty() {
+                out.push_str(&format!("{key} = {}\n", toml_polygon(route)));
+            }
         }
     }
 
@@ -928,15 +948,28 @@ pub fn get_asset_manifest_json_internal(
             }
             entry
         }).collect::<Vec<_>>(),
-        "anchors": m.anchors.iter().map(|a| serde_json::json!({
-            "anchor_type": anchor_type_key(a.anchor_type),
-            "name": a.name,
-            "position": a.position,
-            "forward": a.forward,
-            "width_m": a.width_m,
-            "length_m": a.length_m,
-            "vehicle_class": a.vehicle_class.as_deref(),
-        })).collect::<Vec<_>>(),
+        "anchors": m.anchors.iter().map(|a| {
+            let mut entry = serde_json::json!({
+                "anchor_type": anchor_type_key(a.anchor_type),
+                "name": a.name,
+                "position": a.position,
+                "forward": a.forward,
+                "width_m": a.width_m,
+                "length_m": a.length_m,
+                "vehicle_class": a.vehicle_class.as_deref(),
+            });
+            // Only a loading bay with a drive-through carries the keys (`PARK-21`), so other
+            // documents stay as they were.
+            if let Some(exit) = &a.exit {
+                entry["exit"] = serde_json::json!(exit);
+            }
+            for (key, route) in [("route_in", &a.route_in), ("route_out", &a.route_out)] {
+                if !route.is_empty() {
+                    entry[key] = serde_json::json!(route);
+                }
+            }
+            entry
+        }).collect::<Vec<_>>(),
         "site_surfaces": m.site_surfaces.iter().map(|s| serde_json::json!({
             "material": site_surface_material_key(s.material),
             "name": s.name,
@@ -1207,6 +1240,42 @@ mod tests {
         assert_eq!(validated_tomls(&again).unwrap().0, toml);
         data["mesh_parts"][0]["passages"][0]["forward"] = serde_json::json!([0.6, 0.0, 0.8]);
         assert!(validate_asset_params_internal(&data.to_string()).contains("lot axis"));
+    }
+
+    // `PARK-21`: a loading bay's exit and waypoints go to the TOML, come back in the editor's
+    // load JSON, export the same again, and a route without its exit is a validation issue.
+    #[test]
+    fn round_trip_keeps_a_loading_bays_drive_through() {
+        let mut data: serde_json::Value =
+            serde_json::from_str(&minimal_building_json("building.industrial.drive")).unwrap();
+        data["anchors"].as_array_mut().unwrap().extend([
+            serde_json::json!({"anchor_type": "driveway", "name": "out", "position": [5.0, 0.0, 10.0],
+                "forward": [0.0, 0.0, -1.0], "width_m": 6.0, "vehicle_class": "freight"}),
+            serde_json::json!({"anchor_type": "loading_bay", "name": "bay", "position": [-5.0, 0.0, 4.0],
+                "forward": [0.0, 0.0, -1.0], "width_m": 3.5, "length_m": 8.0, "vehicle_class": "freight",
+                "exit": "out", "route_in": [[-5.0, 6.5]], "route_out": [[-5.0, -8.0], [5.0, -8.0]]}),
+        ]);
+        let params: ExportParams = serde_json::from_value(data.clone()).unwrap();
+        let (toml, _) = validated_tomls(&params).unwrap();
+        assert!(toml.contains("exit = \"out\"\nroute_in = [[-5, 6.5]]\nroute_out = [[-5, -8], [5, -8]]\n"), "{toml}");
+        let manifest = AssetManifest::from_str(&toml).unwrap();
+        let bay = &manifest.anchors[2];
+        assert_eq!((bay.exit.as_deref(), bay.route_out.len()), (Some("out"), 2));
+        let mut registry = crate::assets::registry::AssetRegistry::new();
+        registry.register("test-pack", manifest, String::new());
+        let loaded: serde_json::Value = serde_json::from_str(&get_asset_manifest_json_internal(
+            &registry,
+            "test-pack:building.industrial.drive",
+        ))
+        .unwrap();
+        assert_eq!(loaded["anchors"][2]["route_in"], data["anchors"][2]["route_in"]);
+        assert!(loaded["anchors"][1].get("exit").is_none(), "a Driveway carries no route keys");
+        let mut again = data.clone();
+        again["anchors"] = loaded["anchors"].clone();
+        let again: ExportParams = serde_json::from_value(again).unwrap();
+        assert_eq!(validated_tomls(&again).unwrap().0, toml);
+        data["anchors"][2].as_object_mut().unwrap().remove("exit");
+        assert!(validate_asset_params_internal(&data.to_string()).contains("route_out without an exit"));
     }
 
     #[test]

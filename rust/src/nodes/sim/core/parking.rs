@@ -7,7 +7,7 @@ use crate::assets::AnchorType;
 use crate::simulation::core::handles::Handle;
 use crate::simulation::network::types::EdgeClass;
 use crate::simulation::parking::kerb::{KerbBlocker, kerb_bays, kerb_blockers};
-use crate::simulation::parking::{Bay, ParkedPublication, PlaceSource, holds_parking};
+use crate::simulation::parking::{Bay, DockWay, ParkedPublication, PlaceSource, holds_parking};
 use crate::simulation::parking::lots::{
     LotProof, dock_anchor_count, has_freight_anchors, lot_bays, lot_proof,
 };
@@ -84,7 +84,7 @@ impl SimCore {
         let mut points = Vec::new();
         let mut kerb_edges = edges.clone();
         for (handle, lot, blockers) in lots {
-            let LotProof { bays, issues, docks, dock_issues } = lot;
+            let LotProof { bays, issues, docks, dock_issues, dock_ways } = lot;
             self.parking
                 .set_kerb_blockers(handle.to_bits(), blockers, &mut kerb_edges);
             points.extend(self.parking.source_points(handle.to_bits()));
@@ -102,7 +102,7 @@ impl SimCore {
             } else {
                 self.parking.diagnostics.insert(handle.to_bits(), issues);
             }
-            self.publish_docks(handle.to_bits(), &docks, dock_issues);
+            self.publish_docks(handle.to_bits(), &docks, &dock_ways, dock_issues);
         }
         points.extend(
             edges
@@ -169,6 +169,7 @@ impl SimCore {
         if !self.holds_parking(index) {
             lot.bays.clear();
             lot.docks.clear();
+            lot.dock_ways.clear();
         }
         (lot, blockers)
     }
@@ -176,13 +177,19 @@ impl SimCore {
     // Publishes one building's docks and their rejections, then their access and its freight
     // gate (`PARK-19`). Docks are no supply: nothing here touches a chunk, a list or a count.
     // O(the building's dock rows + one entrance derivation).
-    fn publish_docks(&mut self, handle: u64, docks: &[(u32, Bay)], issues: Vec<String>) {
+    fn publish_docks(
+        &mut self,
+        handle: u64,
+        docks: &[(u32, Bay)],
+        ways: &[(u32, DockWay)],
+        issues: Vec<String>,
+    ) {
         // A carrier that has left a dock does not clear its holder (`PARK-20`): clear those
         // first, so a dock that stops proving is removed rather than kept for nobody.
         let agents = &self.agents;
         self.parking
             .clear_left_dock_holders(handle, |holder, dock| agents.holds_freight_dock(holder, dock));
-        self.parking.replace_docks(handle, docks);
+        self.parking.replace_docks(handle, docks, ways);
         if issues.is_empty() {
             self.parking.dock_diagnostics.remove(&handle);
         } else {
@@ -331,7 +338,7 @@ impl SimCore {
                     .collect()
             });
             for (handle, lot) in lots {
-                self.publish_docks(handle, &lot.docks, lot.dock_issues);
+                self.publish_docks(handle, &lot.docks, &lot.dock_ways, lot.dock_issues);
             }
             return;
         }
@@ -486,7 +493,7 @@ impl SimCore {
         let mut hosts = Vec::with_capacity(lots.len());
         let mut kerb_edges = BTreeSet::new();
         for (handle, lot, blockers) in lots {
-            let LotProof { bays, issues, docks, dock_issues } = lot;
+            let LotProof { bays, issues, docks, dock_issues, dock_ways } = lot;
             hosts.push(handle.to_bits());
             self.parking
                 .set_kerb_blockers(handle.to_bits(), blockers, &mut kerb_edges);
@@ -505,7 +512,7 @@ impl SimCore {
             } else {
                 self.parking.diagnostics.insert(handle.to_bits(), issues);
             }
-            self.publish_docks(handle.to_bits(), &docks, dock_issues);
+            self.publish_docks(handle.to_bits(), &docks, &dock_ways, dock_issues);
         }
         self.reconcile_kerb_parking(&kerb_edges, &mut points);
         self.publish_site_catchments(&hosts, &points);
