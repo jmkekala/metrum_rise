@@ -4,6 +4,7 @@
 
 use super::*;
 
+mod long_ways;
 mod parked_list;
 
 fn bay(x: f32, z: f32) -> Bay {

@@ -445,7 +445,9 @@ impl ParkingSystem {
     /// (`PARK-21`): the lane point and the whole way in, or the way out forward and the exit
     /// gate's lane point, or without a way out the way in reversed; O(its points), at most
     /// [`MANEUVER_POINTS`](crate::simulation::economy::agents::tick::MANEUVER_POINTS), on the
-    /// stack. A car pays the flag test.
+    /// stack. For a place with a long way (`PARK-25`): the lane point and the way, reversed for a
+    /// pull-out, likewise O(its points) on the stack. Any other car pays the flag test and one
+    /// column read.
     pub(crate) fn maneuver_path(
         &self,
         place: Handle<Place>,
@@ -484,6 +486,17 @@ impl ParkingSystem {
                     push([point.x, point.y]);
                 }
             }
+            return Some(ManeuverPath::Way { points, count });
+        }
+        if self.places.way[p] != ways::NO_WAY {
+            // A long way (`PARK-25`): from the lane point in, or out to it reversed.
+            let way = self.car_ways.points(self.places.way[p]);
+            let count = way.len() + 1;
+            let mut points = [Vector2::ZERO; MANEUVER_POINTS];
+            for (i, &[x, z]) in way.iter().enumerate() {
+                points[if ingress { i + 1 } else { way.len() - 1 - i }] = Vector2::new(x, z);
+            }
+            points[if ingress { 0 } else { count - 1 }] = point;
             return Some(ManeuverPath::Way { points, count });
         }
         let swept = self.places.path[p].map(|[x, z]| Vector2::new(x, z));

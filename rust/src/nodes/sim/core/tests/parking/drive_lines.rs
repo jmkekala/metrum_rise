@@ -11,6 +11,8 @@ use crate::simulation::buildings::allocator::building_local_xz_basis;
 use crate::simulation::parking::{ParkingTripPhase, PlaceSource};
 use godot::prelude::Vector2;
 
+mod long_ways;
+
 // A 20 m lot paved whole, a 3 m car Driveway at its left, an island of planters 4 m by 5 m in the
 // middle of its street half, and two rows of two places: one nose to the back (entries at z -2,
 // its line at z 0.5) and one nose to the street (entries at z 4.95, its line at z 2.45).

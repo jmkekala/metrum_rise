@@ -17,6 +17,7 @@ mod render;
 mod retired;
 pub(crate) mod stats;
 mod trips;
+mod ways;
 pub use trips::ParkingTrip;
 pub(crate) use trips::ParkingTripPhase;
 pub(crate) mod saved;
@@ -82,6 +83,10 @@ pub(crate) struct ParkingSystem {
     // The authored drive of each dock row that has one (`PARK-21`), by the row's handle: saved
     // with its row, removed with it, kept with a retired row its truck still drives.
     dock_ways: HashMap<Handle<Place>, DockWay>,
+    // Every car place's long way (`PARK-25`), by the id in its row's `way` column: saved with
+    // its row, freed with it, kept with a retired row its car still drives. Empty in a city
+    // without one.
+    car_ways: ways::CarWays,
     // The dock rows a truck backs into (`PARK-23`), by the row's handle: saved with its row,
     // removed with it, kept with a retired row its truck still uses. Empty in a city without one,
     // so a yard truck's pose pays one emptiness test for it.
@@ -144,6 +149,7 @@ impl ParkingSystem {
             identity: bay.identity,
             position: bay.position,
             path: bay.path,
+            way: ways::NO_WAY,
             access: Default::default(),
             heading: bay.heading,
             width: bay.width,

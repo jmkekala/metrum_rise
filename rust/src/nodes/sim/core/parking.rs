@@ -96,7 +96,7 @@ impl SimCore {
             } else {
                 self.parking.remove_destination_candidates(handle.to_bits());
             }
-            self.parking.replace_building(handle.to_bits(), &bays);
+            self.parking.replace_building(handle.to_bits(), &bays, &[]);
             if issues.is_empty() {
                 self.parking.diagnostics.remove(&handle.to_bits());
             } else {
@@ -151,6 +151,31 @@ impl SimCore {
             );
             self.parking.replace_kerb(edge, &bays);
         }
+    }
+
+    /// Test builds: building `index`'s lot as its proof publishes it, but with the long ways
+    /// `ways` (anchor, whole way from the road connection to the stop; `PARK-25`) for those
+    /// places, each place's path their ends, then its doors' lists: the reconcile's own steps,
+    /// for the long ways nothing produces before `PARK-26`. O(`lot_proof` + the publication).
+    #[cfg(test)]
+    pub(crate) fn publish_long_car_ways(
+        &mut self,
+        index: usize,
+        ways: &[(u32, crate::simulation::parking::DockRoute)],
+    ) {
+        let handle = self.allocator.building_handles.handle(index).to_bits();
+        let (mut lot, _) = self.site_lot(index);
+        for (anchor, bay) in &mut lot.bays {
+            if let Some((_, way)) = ways.iter().find(|(a, _)| a == anchor)
+                && let [first, second, .., before, stop] = *way.as_slice()
+            {
+                bay.path = [first, second, before, stop];
+            }
+        }
+        let mut points = self.parking.source_points(handle);
+        self.parking.replace_building(handle, &lot.bays, ways);
+        points.extend(lot.bays.iter().map(|(_, b)| [b.position[0], b.position[2]]));
+        self.publish_site_catchments(&[handle], &points);
     }
 
     // Building `index`'s lot: the bays it offers as supply and its docks, their validation
@@ -549,7 +574,7 @@ impl SimCore {
             } else {
                 self.parking.remove_destination_candidates(handle.to_bits());
             }
-            self.parking.replace_building(handle.to_bits(), &bays);
+            self.parking.replace_building(handle.to_bits(), &bays, &[]);
             if issues.is_empty() {
                 self.parking.diagnostics.remove(&handle.to_bits());
             } else {

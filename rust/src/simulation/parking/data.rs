@@ -35,6 +35,10 @@ pub(crate) struct Place {
     pub identity: [u64; 2],
     pub position: [f32; 3],
     pub path: [[f32; 2]; 4],
+    // A car place's long way in `ParkingSystem::car_ways` (`PARK-25`), whose first, second,
+    // second to last and last points `path` holds; `ways::NO_WAY` when `path` is the whole way.
+    // A column, so it moves with the row on swap removal.
+    pub way: u32,
     pub access: crate::simulation::buildings::allocator::BuildingEntrance,
     pub heading: f32,
     pub width: f32,
@@ -105,8 +109,9 @@ pub(crate) struct Bay {
     pub length: f32,
 }
 
-/// One way of a dock's authored drive (`PARK-21`): a polyline of at most `MAX_ROUTE_POINTS`
-/// world points `[x, z]`, kept inline so a row needs no allocation. Empty: no such way.
+/// One way of a dock's authored drive (`PARK-21`), or a car place's long way on its way to the
+/// place rows (`PARK-25`): a polyline of at most `MAX_ROUTE_POINTS` world points `[x, z]`, kept
+/// inline so building one needs no allocation. Empty: no such way.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct DockRoute {
     points: [[f32; 2]; MAX_ROUTE_POINTS],

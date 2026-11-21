@@ -646,16 +646,18 @@ impl ParkingSystem {
         Some(entrance)
     }
 
-    /// O(1), fixed swept-path length at driveway speed; physical timing includes this path.
+    /// O(1), fixed swept-path length at driveway speed; physical timing includes this path. A
+    /// long way's length (`PARK-25`) is read as stored, never summed here: this runs inside the
+    /// catchment ordering.
     pub(crate) fn maneuver_seconds(&self, place: Handle<Place>) -> f32 {
         self.place_handles
             .resolve(place)
             .map_or(f32::INFINITY, |p| {
-                self.places.path[p]
-                    .windows(2)
-                    .map(|w| (w[1][0] - w[0][0]).hypot(w[1][1] - w[0][1]))
-                    .sum::<f32>()
-                    / crate::config::AGENT_DRIVEWAY_SPEED_MS
+                let metres = match self.places.way[p] {
+                    ways::NO_WAY => ways::length(&self.places.path[p]),
+                    way => self.car_ways.metres(way),
+                };
+                metres / crate::config::AGENT_DRIVEWAY_SPEED_MS
             })
     }
 }

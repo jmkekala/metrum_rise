@@ -124,6 +124,7 @@ impl ParkingSystem {
             identity: bay.identity,
             position: bay.position,
             path: bay.path,
+            way: ways::NO_WAY,
             access: Default::default(),
             heading: bay.heading,
             width: bay.width,

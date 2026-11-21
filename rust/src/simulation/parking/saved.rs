@@ -21,8 +21,9 @@ struct SavedPlace {
     // every row of a city without docks, saves as it did before the column.
     #[serde(default = "no_holder", skip_serializing_if = "is_no_holder")]
     freight_holder: u64,
-    // A dock's authored drive (`PARK-21`, format 124); written only for a dock that has one, so
-    // every other row saves as it did before.
+    // A dock's authored drive (`PARK-21`, format 124), or a car place's long way as `route_in`
+    // (`PARK-25`, format 126); written only for a row that has one, so every other row saves as
+    // it did before.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     way: Option<SavedWay>,
     // A dock a truck backs into (`PARK-23`, format 125); written only when set, so every other
@@ -138,10 +139,16 @@ impl ParkingSystem {
                     occupant: self.places.occupant[p].to_bits(),
                     reservation: self.places.reservation[p].to_bits(),
                     freight_holder: self.places.freight_holder[p].to_bits(),
-                    way: self.dock_ways.get(&self.place_handles.handle(p)).map(|way| SavedWay {
-                        route_in: way.route_in.as_slice().to_vec(),
-                        route_out: way.route_out.as_slice().to_vec(),
-                    }),
+                    way: match self.dock_ways.get(&self.place_handles.handle(p)) {
+                        Some(way) => Some(SavedWay {
+                            route_in: way.route_in.as_slice().to_vec(),
+                            route_out: way.route_out.as_slice().to_vec(),
+                        }),
+                        None => (self.places.way[p] != super::ways::NO_WAY).then(|| SavedWay {
+                            route_in: self.place_way(p).to_vec(),
+                            route_out: Vec::new(),
+                        }),
+                    },
                     tail_in: self.dock_tail_in.contains(&self.place_handles.handle(p)),
                 })
                 .collect()
@@ -242,13 +249,31 @@ impl ParkingSystem {
             {
                 return Err("a loading dock holds a car".into());
             }
-            if let Some(way) = place.way {
+            let mut car_way = super::ways::NO_WAY;
+            if let Some(way) = place.way.as_ref().filter(|_| !dock) {
+                // A car place's long way (`PARK-25`): more than four points, whose first,
+                // second, second to last and last the row's path holds. The pool takes it in
+                // row order; its id is derived, never saved.
+                let points = &way.route_in;
+                let ends = |n: usize| {
+                    [points[0], points[1], points[n - 2], points[n - 1]].map(|q| q.map(f32::to_bits))
+                };
+                if !super::ways::CarWays::storable(points)
+                    || !way.route_out.is_empty()
+                    || !points.iter().flatten().all(|v| v.is_finite())
+                    || ends(points.len()) != bay.path.map(|q| q.map(f32::to_bits))
+                {
+                    return Err("invalid parking place way".into());
+                }
+                car_way = system.car_ways.insert(points);
+            }
+            if let Some(way) = place.way.filter(|_| dock) {
                 // A drive's way in reaches the stop from a gate's connection and approach (at
                 // least four points); a way out, when there is one, leaves the stop by an exit's
                 // approach and connection (at least three).
                 let routes = DockRoute::new(&way.route_in).zip(DockRoute::new(&way.route_out));
                 let Some((route_in, route_out)) = routes.filter(|_| {
-                    dock && way.route_in.len() >= 4
+                    way.route_in.len() >= 4
                         && (way.route_out.is_empty() || way.route_out.len() >= 3)
                         && way.route_in.iter().chain(&way.route_out).flatten().all(|v| v.is_finite())
                 }) else {
@@ -278,6 +303,7 @@ impl ParkingSystem {
                 identity: bay.identity,
                 position: bay.position,
                 path: bay.path,
+                way: car_way,
                 access: crate::simulation::buildings::allocator::BuildingEntrance {
                     side: place.access_side,
                     ..Default::default()
@@ -395,6 +421,8 @@ impl ParkingSystem {
         }
         #[cfg(test)]
         system.check_parked_lists()?;
+        #[cfg(test)]
+        system.check_car_ways()?;
         for (key, after) in saved.arrival_cursors {
             let chunk = system.chunks.entry(key).or_default();
             chunk.release_pending = true;

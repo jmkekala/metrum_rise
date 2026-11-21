@@ -47,6 +47,8 @@ impl ParkingSystem {
                 ];
                 words.extend(self.places.position[p].map(|v| u64::from(v.to_bits())));
                 words.extend(self.places.path[p].iter().flatten().map(|v| u64::from(v.to_bits())));
+                // A long way (`PARK-25`) adds its points; a row without one hashes as before.
+                words.extend(self.place_way(p).iter().flatten().map(|v| u64::from(v.to_bits())));
                 (self.places.source[p], self.places.identity[p], words)
             })
             .collect();
