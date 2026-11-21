@@ -227,6 +227,77 @@ pub(in crate::simulation::parking) fn dock_ways(
         .collect()
 }
 
+/// The turn envelopes a proven drive-through needs, as its proof checked them, for the editor's
+/// drawing (`PARK-21`): the class's square at every inner point of either way bending more than
+/// the class's limit, and at the stop when the drive turns there. Empty for a stage A dock.
+/// O(points).
+pub(in crate::simulation::parking) fn drive_envelopes(
+    dock: &ProvenDock,
+    forward: Vector2,
+) -> Vec<[Vector2; 4]> {
+    let row = ProofClass::Freight.proof();
+    let bends = |points: &[Vector2]| {
+        (1..points.len().saturating_sub(1))
+            .filter(|&j| turns_at(points[j - 1], points[j], points[j + 1], row.straight_through_cos))
+            .map(|j| points[j])
+            .collect::<Vec<_>>()
+    };
+    let mut corners = bends(&dock.route_in);
+    corners.extend(bends(&dock.route_out));
+    let n = dock.route_in.len();
+    if n >= 2
+        && dock.route_out.len() >= 2
+        && turns_at(dock.route_in[n - 2], dock.route_in[n - 1], dock.route_out[1], row.straight_through_cos)
+    {
+        corners.push(dock.route_in[n - 1]);
+    }
+    corners
+        .into_iter()
+        .map(|p| rectangle(p, forward, row.turn_envelope, row.turn_envelope))
+        .collect()
+}
+
+/// The waypoints of a turn the asset editor's arc helper lays (`PARK-21`): from `start`,
+/// heading `heading`, an arc of `radius` metres turning `angle_deg` degrees to the left (as a
+/// driver sees it, `+Y` up) or the right, as chords whose ends lie on the circle. A chord turns
+/// by `angle / chords`, the first and the last half that against the straight before and after,
+/// and `chords = floor(angle / 15°) + 1` keeps every bend under the freight class's 15° limit,
+/// as the proof requires (13 chords for a half circle, 7 for a quarter turn). Points are rounded
+/// to 0.1 mm, as an authored TOML holds them; the rounding moves a bend by far less than the
+/// margin left under 15°. Returns the chord ends after `start`, at most `MAX_ROUTE_POINTS`.
+/// O(chords).
+pub(crate) fn arc_waypoints(
+    start: Vector2,
+    heading: Vector2,
+    radius: f32,
+    angle_deg: f32,
+    left: bool,
+) -> Result<Vec<Vector2>, String> {
+    if !(radius.is_finite() && radius > 0.0 && angle_deg.is_finite() && angle_deg > 0.0 && angle_deg <= 360.0) {
+        return Err("An arc needs a radius above 0 m and an angle above 0° and up to 360°".into());
+    }
+    if heading.length_squared() < 1e-8 {
+        return Err("The arc's start has no heading: move its waypoint off the point before it".into());
+    }
+    let h = heading.normalized();
+    // Toward the centre: a driver facing `h` with `+Y` up has `(-h.z, h.x)` on the right.
+    let n = if left { Vector2::new(h.y, -h.x) } else { Vector2::new(-h.y, h.x) };
+    let chords = (angle_deg / BEND_LIMIT_DEG as f32).floor() as usize + 1;
+    if chords > MAX_ROUTE_POINTS - 3 {
+        return Err(format!("A way holds at most {} waypoints", MAX_ROUTE_POINTS - 3));
+    }
+    let step = angle_deg.to_radians() / chords as f32;
+    let round = |v: f32| (v * 10_000.0).round() / 10_000.0;
+    Ok((1..=chords)
+        .map(|k| {
+            let phi = step * k as f32;
+            // On the circle through `start` tangent to `h`: c - n r cos φ + h r sin φ, c = start + n r.
+            let p = start + n * (radius * (1.0 - phi.cos())) + h * (radius * phi.sin());
+            Vector2::new(round(p.x), round(p.y))
+        })
+        .collect())
+}
+
 #[derive(Clone, Copy)]
 enum Way {
     // A way in; `derived` when its one middle point is the aisle, not an authored waypoint.
@@ -296,12 +367,16 @@ fn prove_way(
         )
         .into());
     }
+    let on_leg = |rejection: Rejection, i: usize| Rejection {
+        leg: Some([points[i], points[i + 1]]),
+        ..rejection
+    };
     if let Some(i) = (0..n - 1).find(|&i| points[i].distance_to(points[i + 1]) < MIN_LEG_M) {
-        return Err(format!(
+        let reason = format!(
             "{} is shorter than {MIN_LEG_M} m: remove one of its ends",
             way.leg(i, n)
-        )
-        .into());
+        );
+        return Err(on_leg(reason.into(), i));
     }
     // The leg at the bay, and the heading it must keep: into the stop for a way in, out of it
     // for a way out, both along the bay.
@@ -320,21 +395,21 @@ fn prove_way(
                 "a truck leaves its spot driving forward, so put the first waypoint in line ahead of the spot"
             }
         };
-        return Err(format!(
+        let reason = format!(
             "{} runs {degrees}° off the spot's direction: {fix} (within {BEND_LIMIT_DEG}°)",
             way.leg(at_bay, n)
-        )
-        .into());
+        );
+        return Err(on_leg(reason.into(), at_bay));
     }
     for a in 0..n - 1 {
         for b in a + 2..n - 1 {
             if segment_gap(points[a], points[a + 1], points[b], points[b + 1]) < MIN_LEG_M {
-                return Err(format!(
+                let reason = format!(
                     "the way {word} touches itself: {} comes within {MIN_LEG_M} m of {} (a way may not cross or touch itself; the way in and the way out may cross each other)",
                     way.leg(b, n),
                     way.leg(a, n)
-                )
-                .into());
+                );
+                return Err(on_leg(reason.into(), b));
             }
         }
     }

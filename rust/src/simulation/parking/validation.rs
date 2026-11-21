@@ -7,8 +7,10 @@ use godot::prelude::Vector2;
 
 mod editor;
 mod route;
-pub(crate) use editor::editor_lot_payload;
+pub(crate) use editor::{editor_lot_payload, route_arc};
 pub(super) use route::{DockWayInput, dock_ways, validate_dock};
+#[cfg(test)]
+pub(crate) use route::arc_waypoints;
 #[cfg(test)]
 pub(crate) use editor::editor_payload;
 
@@ -138,10 +140,12 @@ const CLASS_TABLE: [VehicleProof; 2] = [
 ];
 
 /// Why a bay is rejected, with the local shape that failed when one did, so the editor can
-/// draw it.
+/// draw it, or the leg of an authored way the reason names (`PARK-21`: too short, off the bay's
+/// direction, touching its way).
 pub(super) struct Rejection {
     pub reason: String,
     pub shape: Option<[Vector2; 4]>,
+    pub leg: Option<[Vector2; 2]>,
 }
 
 impl From<&str> for Rejection {
@@ -155,6 +159,7 @@ impl From<String> for Rejection {
         Self {
             reason,
             shape: None,
+            leg: None,
         }
     }
 }
@@ -327,6 +332,7 @@ fn drive_rejection(
     Rejection {
         reason: format!("no room to drive {way}: {part} {cause} ({room})"),
         shape: Some(shape),
+        leg: None,
     }
 }
 

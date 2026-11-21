@@ -12,6 +12,7 @@
 //! road's width are left to the placed building's inspector.
 
 use super::super::geometry::{overlaps, precise, rectangle};
+use super::route::{arc_waypoints, drive_envelopes};
 use super::{
     AnchorBay, DockWayInput, ProofClass, Rejection, STREET_APPROACH_M, dock_ways,
     driveway_points_inward, is_dock_class, is_freight_class, opens_onto_street, validate_bay,
@@ -340,16 +341,24 @@ impl<'a> EditorLot<'a> {
                     self.collision(freight),
                 )
             };
-            for (&(index, _), route) in docks.iter().zip(dock_ways(docks.len(), prove)) {
+            for (slot, (&(index, _), route)) in
+                docks.iter().zip(dock_ways(docks.len(), prove)).enumerate()
+            {
                 match route {
                     Ok(dock) => {
                         let mut entry = json!({"anchor":index, "route":dock.path.map(point)});
-                        // A drive-through's whole ways (`PARK-21`), for drawing and inspection.
+                        // A drive-through's whole ways (`PARK-21`), for drawing and inspection,
+                        // with the truck's envelope at each bend the proof checked.
                         if !dock.route_in.is_empty() {
                             entry["route_in"] = json!(dock.route_in.iter().copied().map(point).collect::<Vec<_>>());
                             entry["route_out"] = json!(dock.route_out.iter().copied().map(point).collect::<Vec<_>>());
                             entry["arrive"] = json!(names[dock.arrive]);
                             entry["leave"] = json!(names[dock.leave]);
+                            let envelopes: Vec<_> = drive_envelopes(&dock, bays[slot].forward)
+                                .into_iter()
+                                .map(|shape| shape.map(point).to_vec())
+                                .collect();
+                            entry["envelopes"] = json!(envelopes);
                         }
                         routes.push(entry);
                     }
@@ -451,7 +460,74 @@ fn way_input(anchor: &Value, names: &[&str]) -> DockWayInput {
 
 fn rejection_json(anchor: usize, rejection: Rejection) -> Value {
     let shape = rejection.shape.map(|shape| shape.map(point).to_vec());
-    json!({"anchor":anchor, "reason":rejection.reason, "shape":shape})
+    let mut entry = json!({"anchor":anchor, "reason":rejection.reason, "shape":shape});
+    // The leg of an authored way the reason names (`PARK-21`); never on a car rejection.
+    if let Some(leg) = rejection.leg {
+        entry["leg"] = json!(leg.map(point));
+    }
+    entry
+}
+
+/// The waypoints the asset editor's arc helper inserts into loading bay `anchor`'s way in
+/// (`way_in`) or way out (`PARK-21`), after waypoint `after` (`None`: the last), as
+/// [`arc_waypoints`] lays them from that point and the heading of the leg arriving at it. The
+/// leg before the way's first waypoint comes from the stop along the bay (way out) or from the
+/// arrival gate's road connection to its approach (way in: the first usable freight Driveway in
+/// anchor order that is not the bay's exit, on the assumed straight street); with no waypoint
+/// the arc starts at the stop or the approach. `params` is the editor document's. Returns the
+/// index to insert at and the points. O(anchors + waypoints + chords); an edit boundary.
+pub(crate) fn route_arc(
+    params: &Value,
+    anchor: usize,
+    way_in: bool,
+    after: Option<usize>,
+    radius: f32,
+    angle_deg: f32,
+    left: bool,
+) -> Result<(usize, Vec<[f32; 2]>), String> {
+    let mut params = params.clone();
+    // The document holds the lot in cells; the lot check reads its half extents.
+    if params.get("lot_half_extents").is_none() {
+        let half = |key: &str| params[key].as_f64().unwrap_or(1.0) * 5.0;
+        params["lot_half_extents"] = json!([half("lot_width_cells"), half("lot_depth_cells")]);
+    }
+    let lot = EditorLot::parse(&params, &[]);
+    let a = lot.anchors.get(anchor).ok_or("The loading bay no longer exists")?;
+    let waypoints: Vec<Vector2> = a[if way_in { "route_in" } else { "route_out" }]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|p| Vector2::new(p[0].as_f64().unwrap_or(0.0) as f32, p[1].as_f64().unwrap_or(0.0) as f32))
+        .collect();
+    let at = after.map_or(waypoints.len(), |i| (i + 1).min(waypoints.len()));
+    // The way's points before the inserted ones: what leads to the way's first waypoint, then
+    // the waypoints up to `at`.
+    let lead = if way_in {
+        let exit = a["exit"].as_str().map(str::trim).unwrap_or_default();
+        let freight = ProofClass::Freight;
+        let (_, [connection, approach]) = lot
+            .driveway_paths(freight, |d| is_freight_class(d["vehicle_class"].as_str()))
+            .into_iter()
+            .find(|(name, _)| exit.is_empty() || *name != exit)
+            .ok_or("Add a freight Driveway at the street edge first: a way in starts at its approach")?;
+        [connection, approach]
+    } else {
+        let forward = vector(&a["forward"]).normalized();
+        let stop = vector(&a["position"]) + forward * (number(a, "length_m", 5.0) * 0.5);
+        [stop - forward, stop]
+    };
+    let mut points = lead.to_vec();
+    points.extend_from_slice(&waypoints[..at]);
+    let n = points.len();
+    let start = points[n - 1];
+    let arc = arc_waypoints(start, start - points[n - 2], radius, angle_deg, left)?;
+    if waypoints.len() + arc.len() > crate::assets::asset::validation::MAX_ROUTE_POINTS - 3 {
+        return Err(format!(
+            "A way holds at most {} waypoints",
+            crate::assets::asset::validation::MAX_ROUTE_POINTS - 3
+        ));
+    }
+    Ok((at, arc.into_iter().map(point).collect()))
 }
 
 /// The asset editor's car rejections (the car half of [`editor_lot_payload`], which the

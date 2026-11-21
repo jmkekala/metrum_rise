@@ -5,6 +5,7 @@
 
 use crate::assets::asset::YardPlantKind;
 use crate::assets::authoring::edits::{ObjectKind, unique_name};
+use godot::classes::Json;
 use godot::{builtin::vdict, prelude::*};
 use std::collections::HashSet;
 
@@ -348,6 +349,7 @@ fn edit(
                 entry.set("vertices", vertices);
             }
             "passage" => edit_passages(&mut entry, args)?,
+            "route" if text(args, "op") == "arc" => arc_route(&params, *index, &mut entry, args)?,
             "route" => edit_route(&mut entry, args)?,
             _ => return Err("Unsupported edit".into()),
         }
@@ -501,6 +503,62 @@ fn edit_route(anchor: &mut VarDictionary, args: &VarDictionary) -> Result<(), St
     } else {
         anchor.set(key, points);
     }
+    Ok(())
+}
+
+// The arc helper (`PARK-21`): inserts into `way` ("in" or "out") of loading bay `index` the
+// waypoints of a turn of `radius` metres and `angle` degrees to `side` ("left" or "right", as a
+// driver sees it), after waypoint `waypoint` (absent: the last), from the heading of the leg
+// arriving there. Rust lays the chords (`route_arc`), every bend under 15°; this inserts them
+// as one edit. O(anchors + waypoints + chords).
+fn arc_route(
+    params: &VarDictionary,
+    index: usize,
+    anchor: &mut VarDictionary,
+    args: &VarDictionary,
+) -> Result<(), String> {
+    let way_in = match text(args, "way").as_str() {
+        "in" => true,
+        "out" if anchor.contains_key("exit") => false,
+        "out" => return Err("Name the exit Driveway before adding a way out".into()),
+        _ => return Err("Unsupported route".into()),
+    };
+    let number = |key: &str| {
+        args.get(key)
+            .and_then(|v| v.try_to::<f64>().ok())
+            .filter(|v| v.is_finite())
+            .ok_or(format!("Expected a number for {key}"))
+    };
+    let left = match text(args, "side").as_str() {
+        "left" => true,
+        "right" => false,
+        _ => return Err("An arc turns left or right".into()),
+    };
+    let after = args
+        .get("waypoint")
+        .and_then(|v| v.try_to::<i64>().ok())
+        .and_then(|v| usize::try_from(v).ok());
+    let json: serde_json::Value =
+        serde_json::from_str(&Json::stringify(&params.to_variant()).to_string())
+            .map_err(|e| e.to_string())?;
+    let (at, arc) = crate::simulation::parking::validation::route_arc(
+        &json,
+        index,
+        way_in,
+        after,
+        number("radius")? as f32,
+        number("angle")? as f32,
+        left,
+    )?;
+    let key = if way_in { "route_in" } else { "route_out" };
+    let mut points = array(anchor, key);
+    for (k, [x, z]) in arc.into_iter().enumerate() {
+        // Rounded to 0.1 mm as `arc_waypoints` laid them, without the f32's tail.
+        let mm = |v: f32| (f64::from(v) * 10_000.0).round() / 10_000.0;
+        let point: VarArray = varray![mm(x), mm(z)];
+        points.insert(at + k, &point.to_variant());
+    }
+    anchor.set(key, points);
     Ok(())
 }
 

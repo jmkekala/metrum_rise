@@ -38,6 +38,8 @@ const SELECTION_CORNER_MIN_M := 0.55
 const SELECTION_CORNER_MAX_M := 2.20
 const ANCHOR_DASH_M := 0.80
 const DOCK_ROUTE_COLOR := Color(0.2, 0.85, 1.0)
+# A drive-through's way out, after the stop (`PARK-21`).
+const DOCK_WAY_OUT_COLOR := Color(0.35, 1.0, 0.45)
 const DOCK_ROUTE_WIDTH_M := 0.3
 const PASSAGE_COLOR := Color(1.0, 0.75, 0.2)
 const ANCHOR_GAP_M := 0.40
@@ -112,6 +114,11 @@ var _parking_notes: Dictionary = {}
 # Loading bay anchor index -> its dock's proven route, asset-local XZ points from the gate's road
 # connection to the bay's centre (`PARK-19`).
 var _dock_routes: Dictionary = {}
+# Loading bay anchor index -> its drive-through as proven (`PARK-21`): {"route_in", "route_out",
+# "envelopes"}, asset-local XZ, the envelopes the 4-corner squares at its bends.
+var _dock_ways: Dictionary = {}
+# Rejected loading bay anchor index -> the leg of its authored way the reason names, two XZ points.
+var _parking_rejection_legs: Dictionary = {}
 # Every passage's ground rectangle and ends, as the lot check reports them.
 var _passages: Array = []
 # The site object under the cursor, whose name shows while hovered (`kind:index`).
@@ -546,6 +553,8 @@ func set_parking_diagnostics(payload: Dictionary) -> void:
 	_parking_rejection_shapes.clear()
 	_parking_notes.clear()
 	_dock_routes.clear()
+	_dock_ways.clear()
+	_parking_rejection_legs.clear()
 	for issue: Dictionary in payload.get("rejected", []) + payload.get("dock_rejected", []):
 		if not bool(issue.get("blocks", true)):
 			_parking_notes[int(issue["anchor"])] = str(issue["reason"])
@@ -553,8 +562,12 @@ func set_parking_diagnostics(payload: Dictionary) -> void:
 		_parking_rejections[int(issue["anchor"])] = str(issue["reason"])
 		if issue.get("shape") is Array:
 			_parking_rejection_shapes[int(issue["anchor"])] = issue["shape"]
+		if issue.get("leg") is Array:
+			_parking_rejection_legs[int(issue["anchor"])] = issue["leg"]
 	for dock: Dictionary in payload.get("docks", []):
 		_dock_routes[int(dock["anchor"])] = dock["route"]
+		if dock.has("route_in"):
+			_dock_ways[int(dock["anchor"])] = dock
 	_passages = payload.get("passages", [])
 
 ## Shows the name of the site object under the cursor; other names show only when selected or
@@ -1369,14 +1382,25 @@ func _build_site_anchor_overlay() -> void:
 			var a: Array = failed[corner]
 			var b: Array = failed[(corner + 1) % 4]
 			_draw_dashed_line(im, Vector3(a[0], y, a[1]), Vector3(b[0], y, b[1]), Color(1.0, 0.2, 0.15), ANCHOR_BORDER_WIDTH_M, ANCHOR_DASH_M, ANCHOR_GAP_M)
-	# The selected loading bay's proven route, from its gate's road connection to its centre.
+	# The selected loading bay's proven route, from its gate's road connection to its centre, or
+	# its whole drive-through: the way in, the way out and the truck's envelope at each bend.
 	var route = _dock_routes.get(_selected_site_anchor_index)
+	var way: Dictionary = _dock_ways.get(_selected_site_anchor_index, {})
 	if route is Array:
 		var y := _preview_anchor_position(_site_anchors[_selected_site_anchor_index]).y + 0.16
-		for point in route.size() - 1:
-			var a: Array = route[point]
-			var b: Array = route[point + 1]
-			_draw_thick_line(im, Vector3(a[0], y, a[1]), Vector3(b[0], y, b[1]), DOCK_ROUTE_COLOR, DOCK_ROUTE_WIDTH_M)
+		_draw_polyline(im, way.get("route_in", route), y, DOCK_ROUTE_COLOR)
+		_draw_polyline(im, way.get("route_out", []), y + 0.01, DOCK_WAY_OUT_COLOR)
+		for envelope: Array in way.get("envelopes", []):
+			for corner in 4:
+				var a: Array = envelope[corner]
+				var b: Array = envelope[(corner + 1) % 4]
+				_draw_dashed_line(im, Vector3(a[0], y, a[1]), Vector3(b[0], y, b[1]), DOCK_ROUTE_COLOR, ANCHOR_BORDER_WIDTH_M, ANCHOR_DASH_M, ANCHOR_GAP_M)
+	# The leg of a rejected way the reason names.
+	var leg = _parking_rejection_legs.get(_selected_site_anchor_index)
+	if leg is Array:
+		var y := _preview_anchor_position(_site_anchors[_selected_site_anchor_index]).y + 0.18
+		_draw_thick_line(im, Vector3(leg[0][0], y, leg[0][1]), Vector3(leg[1][0], y, leg[1][1]), Color(1.0, 0.2, 0.15), DOCK_ROUTE_WIDTH_M)
+	_draw_waypoints(im)
 	_draw_passages(im)
 	im.surface_end()
 
@@ -1384,6 +1408,26 @@ func _build_site_anchor_overlay() -> void:
 	_site_anchor_overlay.mesh = im
 	_apply_site_label_visibility()
 	_site_labels_ready.call_deferred()
+
+func _draw_polyline(im: ImmediateMesh, points: Array, y: float, color: Color) -> void:
+	for point in points.size() - 1:
+		var a: Array = points[point]
+		var b: Array = points[point + 1]
+		_draw_thick_line(im, Vector3(a[0], y, a[1]), Vector3(b[0], y, b[1]), color, DOCK_ROUTE_WIDTH_M)
+
+# The selected loading bay's authored waypoints as small squares, the way in's in the route
+# colour and the way out's in its own, so a way shows where it is even while it is rejected.
+func _draw_waypoints(im: ImmediateMesh) -> void:
+	if _selected_site_anchor_index < 0 or _selected_site_anchor_index >= _site_anchors.size():
+		return
+	var anchor := _site_anchors[_selected_site_anchor_index]
+	var y := _preview_anchor_position(anchor).y + 0.2
+	for key in ["route_in", "route_out"]:
+		var color := DOCK_ROUTE_COLOR if key == "route_in" else DOCK_WAY_OUT_COLOR
+		for point in anchor.get(key, []):
+			var c := Vector3(float(point[0]), y, float(point[1]))
+			var h := 0.35
+			_draw_quad_fill(im, [c + Vector3(-h, 0, -h), c + Vector3(h, 0, -h), c + Vector3(h, 0, h), c + Vector3(-h, 0, h)], color)
 
 # Each passage as its dashed ground rectangle with a solid mouth, and a solid far end when it is
 # open there too.

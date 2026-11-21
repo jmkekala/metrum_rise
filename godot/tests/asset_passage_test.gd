@@ -2,7 +2,8 @@
 
 ## Asset editor regression for freight yards (`PARK-19`): a Passage authored on a mesh part through
 ## the passage panel opens the part for a truck, its loading bay becomes a dock whose route the
-## preview holds, and a rejected loading bay is an export issue only with a freight gate.
+## preview holds, and a rejected loading bay is an export issue only with a freight gate. Its
+## drive-through (`PARK-21`) is authored through the route panel and the arc helper.
 ## Run with --asset-editor in an isolated profile; the fixture model is generated.
 extends SceneTree
 
@@ -35,6 +36,72 @@ func _model(path: String) -> void:
 func _loading_bay_issue() -> bool:
 	editor._session.validate()
 	return editor._session._issues.any(func(issue): return issue.get("anchor", -1) == 2)
+
+# `PARK-21`: an exit Driveway east of the bunker, and the bay's way out authored through the
+# route panel: a waypoint at the lane's far end, then a half circle laid by the arc helper. Each
+# change is one undo step; the preview draws the proven drive and a rejected leg.
+func _drive_through(document) -> void:
+	var before: Dictionary = document.snapshot()
+	var gate: Dictionary = document.snapshot()
+	gate["params"]["anchors"][1]["name"] = "truck_in"
+	gate["params"]["anchors"].append({"anchor_type": "driveway", "name": "truck_out", "position": [7.5, 0.0, 20.0], "forward": [0.0, 0.0, -1.0], "width_m": 6.0, "vehicle_class": "freight"})
+	document.apply(gate, "Exit gate")
+	editor._set_selected_site_anchors([2], 2)
+	var routes = editor._routes
+	expect(routes._root.visible, "the drive-through panel shows for a loading bay")
+	var exit_index := -1
+	for index in routes._exit.item_count:
+		if str(routes._exit.get_item_metadata(index)) == "truck_out":
+			exit_index = index
+	expect(exit_index > 0, "the exit choice lists the freight Driveways")
+	routes._exit.select(exit_index)
+	routes._exit.item_selected.emit(exit_index)
+	expect(str(routes.anchor().get("exit", "")) == "truck_out" and document.undo_label() == "Set exit", "the exit is set in one step")
+	routes._way.select(1)
+	routes._way.item_selected.emit(1)
+	routes.add()
+	expect(routes.waypoints().size() == 1 and routes.selected == 0, "Add waypoint adds one to the way out")
+	routes._z.value = -8.0
+	var first: Array = routes.waypoints()[0]
+	expect(is_equal_approx(float(first[0]), -7.5) and is_equal_approx(float(first[1]), -8.0) and document.undo_label() == "Move waypoint", "the waypoint moves to the lane's far end: %s" % [first])
+	routes._radius.value = 7.5
+	routes._angle.value = 180.0
+	routes._side.select(1)
+	routes.add_arc()
+	var points: Array = routes.waypoints()
+	expect(points.size() == 14 and document.undo_label() == "Add arc", "the arc adds 13 chords in one step: %s" % [points])
+	expect(absf(float(points[13][0]) - 7.5) < 0.001 and absf(float(points[13][1]) + 8.0) < 0.001, "the half circle ends behind the bunker's east side: %s" % [points[13]])
+	var diagnostics: Dictionary = editor._parking_diagnostics()
+	var docks: Array = diagnostics.get("docks", [])
+	expect(diagnostics.get("dock_rejected", []).is_empty() and docks.size() == 1 and str(docks[0].get("leave", "")) == "truck_out" and docks[0].get("envelopes", [""]).is_empty(), "the drive-through proves with no envelope: %s" % diagnostics)
+	expect(editor._preview._dock_ways.has(2) and editor._preview._dock_ways[2]["route_out"].size() == 17, "the preview holds the way out")
+	expect(not _loading_bay_issue(), "a proven drive-through is no export issue")
+	# Insert and delete, one step each.
+	routes.selected = 1
+	routes.insert()
+	expect(routes.waypoints().size() == 15 and document.undo_label() == "Insert waypoint", "Insert before adds one")
+	routes.delete()
+	expect(routes.waypoints().size() == 14 and document.undo_label() == "Delete waypoint", "Delete waypoint removes it")
+	# A first leg 24° off the bay is rejected on that leg, drawn and listed.
+	routes.selected = 0
+	routes._x.value = -3.0
+	diagnostics = editor._parking_diagnostics()
+	var rejected: Array = diagnostics.get("dock_rejected", [])
+	expect(rejected.size() == 1 and str(rejected[0]["reason"]).contains("off the spot's direction") and rejected[0].get("leg") is Array, "a sharp leg out of the bay is rejected: %s" % diagnostics)
+	expect(editor._preview._parking_rejection_legs.has(2), "the preview draws the rejected leg")
+	expect(_loading_bay_issue(), "the rejection is an export issue with a freight gate")
+	document.undo()
+	expect(editor._parking_diagnostics().get("dock_rejected", []).is_empty(), "undo proves it again")
+	# The way out goes with the exit; and an arc on the way in starts at the arrival gate.
+	routes._exit.select(0)
+	routes._exit.item_selected.emit(0)
+	expect(not routes.anchor().has("exit") and not routes.anchor().has("route_out"), "no exit, no way out")
+	var inspected: Dictionary = JSON.parse_string(editor._session.policy.inspect_json(JSON.stringify(document.snapshot()["params"])))
+	expect(not inspected["issues"].any(func(issue): return str(issue["message"]).contains("route") or str(issue["message"]).contains("exit")), "the manifest validates: %s" % str(inspected["issues"]))
+	document.undo()
+	expect(routes.waypoints().size() == 14 and str(routes.anchor().get("exit", "")) == "truck_out", "undo restores the exit and its way")
+	document.apply(before, "Restore")
+	editor._set_selected_site_anchors([], -1)
 
 func _run() -> void:
 	var path := ProjectSettings.globalize_path("user://passage-bunker.glb")
@@ -90,6 +157,8 @@ func _run() -> void:
 	expect(editor._session._adapter.geometry()["mesh_parts"][0].get("passages", []).size() == 1, "the part's manifest carries its passage")
 	var inspected: Dictionary = JSON.parse_string(editor._session.policy.inspect_json(JSON.stringify(document.snapshot()["params"])))
 	expect(not inspected["issues"].any(func(issue): return str(issue["message"]).contains("passage")), "the passage validates: %s" % str(inspected["issues"]))
+
+	_drive_through(document)
 
 	# A passage left outside its part is an issue.
 	panel._z.value = 14.0

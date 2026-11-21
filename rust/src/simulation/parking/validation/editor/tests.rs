@@ -198,3 +198,78 @@ fn a_passage_leaving_its_part_is_an_issue() {
     assert!(message.contains("leaves the part's bounds"), "{payload}");
 }
 
+
+// `PARK-21`: the yard with an exit gate `truck_out` at x 7.5 and a way out laid as the editor's
+// arc helper lays it: straight through the lane to its far end at z -8, then a half circle of
+// 7.5 m turning right behind the bunker, which ends heading for the exit.
+#[test]
+fn the_arc_helper_lays_a_drive_through_that_proves_without_an_envelope() {
+    let (mut params, bounds) = yard(gate(6.0, "freight"), true);
+    let anchors = params["anchors"].as_array_mut().unwrap();
+    anchors[1]["name"] = json!("truck_in");
+    anchors.push(json!({"anchor_type":"driveway", "name":"truck_out", "position":[7.5,0,20],
+        "forward":[0,0,-1], "width_m":6.0, "vehicle_class":"freight"}));
+    // The car spot off the exit's line.
+    anchors[0]["position"] = json!([12, 0, 20]);
+    anchors[2]["exit"] = json!("truck_out");
+    anchors[2]["route_out"] = json!([[-7.5, -8.0]]);
+    let (at_index, arc) = route_arc(&params, 2, false, None, 7.5, 180.0, false).unwrap();
+    assert_eq!((at_index, arc.len()), (1, 13), "13 chords for a half circle");
+    let end = arc[12];
+    assert!((end[0] - 7.5).abs() < 1e-3 && (end[1] + 8.0).abs() < 1e-3, "{end:?}");
+    // Every point on the circle about (0, -8), the first chord turning half a step.
+    for p in &arc {
+        assert!((p[0].hypot(p[1] + 8.0) - 7.5).abs() < 1e-3, "{p:?}");
+    }
+    let mut out = params["anchors"][2]["route_out"].as_array().unwrap().clone();
+    out.extend(arc.iter().map(|p| json!(p)));
+    params["anchors"][2]["route_out"] = json!(out);
+    let payload = editor_lot_payload(&params, &bounds);
+    assert_eq!(payload["dock_rejected"], json!([]), "{payload}");
+    let dock = &payload["docks"][0];
+    assert_eq!((dock["arrive"].as_str(), dock["leave"].as_str()), (Some("truck_in"), Some("truck_out")));
+    assert_eq!(dock["route_out"].as_array().unwrap().len(), 17, "stop, 14 waypoints, the exit's two");
+    assert_eq!(dock["envelopes"], json!([]), "no bend reaches 15°");
+    // A way in laid from the arrival gate's approach, not the exit's: a quarter turn of 7
+    // chords left from the approach heading -z.
+    let (at_index, arc) = route_arc(&params, 2, true, None, 10.0, 90.0, true).unwrap();
+    assert_eq!((at_index, arc.len()), (0, 7));
+    let approach = &dock["route_in"][1];
+    let first = arc[0];
+    assert!(
+        (first[0] as f64 - approach[0].as_f64().unwrap()) < 0.0,
+        "it turns left (to -x) from the approach at {approach}: {first:?}"
+    );
+    // An arc on a way out needs the exit; a sharp first leg is rejected on its leg.
+    params["anchors"][2]["route_out"] = json!([[-3.0, -8.0]]);
+    let payload = editor_lot_payload(&params, &bounds);
+    let rejected = &payload["dock_rejected"][0];
+    assert!(rejected["reason"].as_str().unwrap().contains("off the spot's direction"), "{rejected}");
+    assert!(at(&rejected["leg"][1], [-3.0, -8.0]), "{rejected}");
+}
+
+#[test]
+fn an_arc_bends_under_fifteen_degrees_at_every_chord() {
+    use super::super::route::arc_waypoints;
+    let start = Vector2::new(0.0, 0.0);
+    let heading = Vector2::new(0.0, -1.0);
+    for (angle, chords) in [(180.0, 13), (90.0, 7), (15.0, 2), (14.9, 1), (360.0, 25)] {
+        let arc = arc_waypoints(start, heading, 5.0, angle, true);
+        if chords > 21 {
+            assert!(arc.is_err(), "{angle}");
+            continue;
+        }
+        let arc = arc.unwrap();
+        assert_eq!(arc.len(), chords, "{angle}");
+        let mut points = vec![start - heading, start];
+        points.extend(arc.iter().copied());
+        let last = *points.last().unwrap();
+        let turned = heading.rotated(-angle.to_radians());
+        points.push(last + turned);
+        for w in points.windows(3) {
+            let (a, b) = ((w[1] - w[0]).normalized(), (w[2] - w[1]).normalized());
+            assert!(a.dot(b) > 15f32.to_radians().cos(), "{angle}: {w:?}");
+        }
+    }
+    assert!(arc_waypoints(start, heading, 0.0, 90.0, true).is_err());
+}

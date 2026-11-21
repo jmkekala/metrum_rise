@@ -144,6 +144,7 @@ func _access(box: Control) -> void:
 	v._site_anchor_yaw_spin = _geometry_number(body, "_anchor_yaw", "Rotation Y (°)", -180, 180, 0.1, e._on_site_anchor_spin_changed.bind("yaw"))
 	v._site_anchor_width_spin = _geometry_number(body, "_anchor_width", "Width (m)", 0, 100, 0.1, e._on_site_anchor_spin_changed.bind("width_m"))
 	v._site_anchor_length_spin = _geometry_number(body, "_anchor_length", "Length (m)", 0, 100, 0.1, e._on_site_anchor_spin_changed.bind("length_m"))
+	e._routes.build(v, body)
 	v.anchor_properties.visible = false
 
 func _surfaces(box: Control) -> void:
