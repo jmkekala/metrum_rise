@@ -635,6 +635,25 @@ draw and list the results.
   last tried along with the shape that blocked it. An asset pinned to the straight path
   (`car_routes = "direct"`, only the test pack until `PARK-07`) keeps the straight path's reasons
   word for word; the key is carried through the document and written back on export.
+- **Car route** (`PARK-26`) is the route panel's section for a selected parking spot
+  (`asset_editor/route_panel.gd`; the loading bay's Drive-through section, titled Car route, with
+  no stand, exit or way out). An automatic spot offers **Edit this route**: Rust (`route` command,
+  op `pin`, `car_route_to_pin`) takes the route the lot check shows for it (a rejected spot's last
+  tried route, else the straight path through the first usable car Driveway) and writes its inner
+  points, rounded to 0.1 mm, as the spot's `route_in`; a street-edge spot has no route to edit,
+  and the lot needs a car Driveway. The spot then follows its own route, drawn solid with its
+  waypoint squares (an automatic one stays dashed), and the panel shows the loading bay's tools
+  for its way in: the waypoint list, Add waypoint, Insert before, Delete waypoint, the X and Z
+  fields, the view's handles, drags and context menu, and Add arc in 30° chords
+  (`floor(angle / 30°) + 1`, four for a quarter turn, from the leg arriving at the waypoint: for
+  waypoint 1, from the road connection of the car Driveway the route starts at). **Back to
+  automatic** (op `unpin`) removes `route_in`, as deleting the last waypoint does. Each is one
+  undo step. The proof and its rules are the game's
+  ([own routes](traffic.md#a-places-own-route-park-26-as-built)): waypoint 1 inside the lot
+  straight ahead of a car Driveway, the last leg within 30° of the spot's direction, a square at
+  every bend over 30°; a failing own route rejects its spot with the reason and "This spot
+  follows its own route: move its waypoints, or choose Back to automatic", and blocks export. No
+  automatic route stands in for it. The own route is the only route written to the file.
 - **Loading bays** are proven for a truck (2.6 × 8 m body) from the asset's freight driveways of at
   least 4 m, all docks through the first dock's gate. A rejected loading bay blocks Validate &
   export only when the asset has such a gate; otherwise it is a note on the bay, in amber in the
@@ -678,7 +697,8 @@ draw and list the results.
   circle, 7 for a quarter turn), rounded to 0.1 mm. Every change, an arc included, is one
   document command (`route`: `exit`, `add`, `move`, `delete`, `arc`), one undo step. A way holds
   at most 21 waypoints.
-- **Waypoints in the view** (`TOOLS-36`): the selected loading bay's authored waypoints are
+- **Waypoints in the view** (`TOOLS-36`; a parking spot's own route too, `PARK-26`, every leg of
+  its drawn route taking an inserted waypoint): the selected loading bay's authored waypoints are
   square handles with the yard vertices' 8-pixel pick radius (`asset_picker.gd`), on the access-point layer of the selection filter
   (All and Access points), ranked with yard vertices above every shape and cycled by Alt+click;
   no other bay's waypoints are handles. A click selects the waypoint: the panel shows its way,

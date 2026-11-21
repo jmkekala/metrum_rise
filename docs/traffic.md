@@ -2240,7 +2240,8 @@ its path bits; a car leaves along its way in, nose first, as before; cars meetin
 ignored. A bay no candidate reaches is still rejected, in plain words naming the straight way's
 failure: "no way to drive to this spot: straight from the Driveway, {part} {cause}, and no way
 along the row or straight down from the Driveway is clear (a car needs a 1.8 m strip of clear
-paving to drive on and about 5 m by 5 m of it where it turns): clear the way or move the spot".
+paving to drive on and about 5 m by 5 m of it where it turns): clear the way, move the spot, or
+draw this spot's own route (Edit this route)" (the last clause since `PARK-26`).
 The rejection carries the shortest failed candidate's route and the shape that blocked it, for
 the editor to draw. The asset editor and the placed lot (its inspector included) call the same
 validator (`validate_bay` with `DriveLines`; the editor proves in the lot frame, the placed lot
@@ -2268,9 +2269,9 @@ work only; nothing per tick, nothing that reads the city.
 #### Long ways (`PARK-25`), as built
 
 Stage C2 of the car routes plan: storage, saving and movement for a car place's way of more than
-four points (up to `MAX_ROUTE_POINTS`, 24, the dock route's limit). Nothing produces one yet: the
-lot proof still yields four points, and hand-drawn routes (`PARK-26`) and lot lanes (`PARK-27`)
-will be the first producers. So every existing lot and fixture is unchanged, bit for bit.
+four points (up to `MAX_ROUTE_POINTS`, 24, the dock route's limit). At C2 nothing produced one;
+a place's own route (`PARK-26`, below) is the first producer, lot lanes (`PARK-27`) the next. No
+existing lot or fixture has one, so every one is unchanged, bit for bit.
 
 - **Storage.** The place row gains a `way: u32` column (4 bytes a row): `NO_WAY`, or the id of a
   span in the parking system's `car_ways`. A span is 12 bytes (start, point count, length in
@@ -2286,7 +2287,7 @@ will be the first producers. So every existing lot and fixture is unchanged, bit
   test-build audit checks that every live span is in bounds, no two live spans or freed runs share
   a point, and every id is held once or freed once; it runs at every load in test builds.
 - **Edits.** `replace_building` takes the ways by anchor beside the bays (the lot reconcile passes
-  none until `PARK-26`). A kept place (unchanged pose) whose way changes is journalled for its
+  `LotProof::car_ways`, filled by own routes since `PARK-26`). A kept place (unchanged pose) whose way changes is journalled for its
   doors as a changed path is, and its old run is freed first, so a new way of the same count takes
   the same run and id back; an unchanged way, or the same four points again, journals and writes
   nothing. A removed row frees its way before the swap removal (the column moves with the row);
@@ -2328,6 +2329,89 @@ a release library test binary of `dev` `d4abd72e1` (the branch point, `PARK-24` 
 workloads, six workers) are byte-equal and the `PERF-06` work counts identical; the recorded
 fixture digest test passes unchanged. Timing level F with K22 (the path rule's level; the save
 files compare `load_s`, since the format step re-keys the snapshots) is prepared, not run.
+
+#### A place's own route (`PARK-26`), as built
+
+Stage C3 of the car routes plan: a parking place's route drawn by hand in the asset editor and
+saved in the asset, for a place the automatic routes do not reach or reach badly. Nothing in the
+game edits a route; the placed building's inspector shows the result and the reason only.
+
+- **Data.** `route_in = [[x, z], ...]` on a `parking` anchor: the waypoints between a car
+  Driveway's road connection and the place's stop (its centre), asset-local metres, at most 21
+  (the loading bay's field and limit). Absent: the automatic route (`PARK-24`), which is never
+  written to the file. Manifest validation refuses `exit`, `route_out` and `stand` on a parking
+  anchor ("has exit or route_out, which only a loading_bay may carry: a car leaves its spot along
+  its route_in"; a stand keeps its existing refusal). An asset without own routes exports byte for
+  byte as before; an own route round-trips byte for byte.
+- **Proof** (`validate_car_route`, `simulation/parking/validation/route.rs`). The place's own
+  checks first (size, paving, structures, other places), then the route `[road connection,
+  waypoints, stop]` through `prove_way` with the car row: at most 24 points, legs of at least
+  0.1 m, the way never touching itself, a 1.8 m corridor per leg reaching 2.25 m past both ends,
+  the 4.85 m square (squared to the place) at every waypoint bending more than 30°, and nothing
+  just inside the gate unless the route bends there (as for `PARK-24`'s candidates). End rules:
+  - **Start.** The route starts at a usable car Driveway (at least 1.8 m wide, pointing into the
+    lot, on a live frontage): waypoint 1 lies inside the lot past the Driveway's mouth (one lead,
+    2.5 m, before its approach), along its inward heading, and within 30° of straight ahead of
+    its road connection. Of the Driveways it so starts at, the first in anchor order whose proof
+    passes is its gate. None: "its own route starts at no Driveway: put waypoint 1 inside the lot
+    straight ahead of a car Driveway that points into the lot (within 30° of the Driveway's
+    direction)".
+  - **End.** The route ends at the stop, appended by the proof; the last leg runs within 30° of
+    the place's direction: "the way into the spot from waypoint N runs D° off the spot's
+    direction: a car drives into its spot along it, so put the last waypoint in line behind the
+    spot (within 30°)".
+  - **Legs and bends.** "no room to drive in: the way in from waypoint 1 to waypoint 2 crosses
+    another parking spot (a car needs a 1.8 m strip of clear paving along it, reaching half a car
+    length (2.25 m) past both ends)"; "no room to drive in: the bend at waypoint 2 hits the
+    building or another structure (a car needs about 5 m by 5 m of clear paving to change
+    direction by more than 30°: bend by at most that much at each point, as chords of an arc, or
+    give it the room)"; "the way in touches itself: ... (a way may not cross or touch itself)".
+  - **No fallback.** Every route rejection ends with ". This spot follows its own route: move its
+    waypoints, or choose Back to automatic", carries the route it was tried along and the failing
+    leg or shape, and blocks export in the editor; no automatic route is tried for the place.
+  The freight texts are unchanged; the row table gained `bend_limit_deg` (car 30, freight 15) for
+  the words and the arc chords.
+- **The pin.** `car_routes = "direct"` (the test pack, until `PARK-07`) governs the automatic
+  routes only: a place with its own route uses it on any lot. The simpler rule; no test-pack asset
+  has one.
+- **Row and way.** A proven own route of four points is the row's `path` itself; of three (one
+  waypoint), the path splits the leg into the spot at its middle (the same line); of five or more,
+  the path holds its ends and the whole route goes to the long-way pool (`PARK-25`) through
+  `LotProof::car_ways` and the two lot reconciles; a site that holds no parking clears them with
+  its bays. Movement, time and saves are `PARK-25`'s, unchanged.
+- **Cost.** A place with its own route: O(gates × (points² + points × c)), points at most 23, at
+  the lot proof's moments (completion, a road edit within 8 m, an asset reload, an undo); its
+  automatic candidates are not run. A place without one: unchanged. Nothing per tick.
+
+The editor ([asset editor](asset_editor.md#lot-checks-docks-and-passages-in-the-editor-park-18-park-19-park-21)):
+the selected place's route panel offers **Edit this route** (`route` command, op `pin`: Rust takes
+the route the lot check shows, or a rejected place's last tried route, else the straight path
+through the first usable car Driveway, and writes its inner points, rounded to 0.1 mm, as
+`route_in`; refused for a street-edge place and for one that already has its own), the loading
+bay's waypoint tools for its way in, Add arc in 30° chords (`floor(angle / 30°) + 1`: four for a
+quarter turn), and **Back to automatic** (op `unpin`, which removes `route_in`; deleting the last
+waypoint does the same). Each is one undo step. The payload's `spots` gain kind `yours` with the
+whole route; the preview draws it solid, an automatic one dashed.
+
+Tests: `route/tests.rs` (a two-bend own route, its row path and a long one; a post in a bend's
+square named; the start and end rules and a way touching itself), `editor/tests.rs` (every
+fixture-pack spot reached from a Driveway pins its shown route, proves `yours` on the same points
+and is restored exactly by Back to automatic; an own route drawn whole on a pinned lot, its arc in
+30° chords, a failing one carrying the hint), `asset_export.rs` (round trip; way out, exit and
+stand refused), `nodes/sim/core/tests/parking/drive_lines/long_ways.rs` (the `PARK-25` scenarios
+now produced by own routes through the real lot reconcile: six-point ways, a resident leaving and
+parking within 5 cm of them, a save on the way in continuing tick for tick, Back to automatic
+under a pulling car; a two-waypoint route stored as the plain path the automatic route takes; a
+failing route rejecting its place with the hint and no fallback) and the Godot
+`asset_car_route_test` (the panel's commands and their undo steps, export round trips).
+
+Verification (fresh, 2026-11-21): `./run.sh --test` PASS (rust 3,112 passed, 244 skipped;
+godot-main, godot-vehicle); clippy `--all-targets` adds no warning. Against the release library
+test binary of `dev` `d4abd72e1` that `PARK-25` was compared with (whose records the `PARK-25`
+branch matched byte for byte), the `SIM-02` envelope and determinism records (determinism and all
+56 day records of the four workloads, six workers) are byte-equal and the `PERF-06` work counts
+identical; the recorded fixture digest test passes unchanged (no fixture asset has an own route).
+Timing level F with K22 is prepared, not run.
 
 ### Edits and towing (`PARK-01`, `PARK-05`)
 
