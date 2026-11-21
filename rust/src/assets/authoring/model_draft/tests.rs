@@ -193,7 +193,7 @@ fn close(a: [f64; 3], b: [f64; 3]) -> bool {
 fn the_reader_takes_the_worked_example() {
     let fixture = Fixture::new();
     let inputs = fixture.inputs();
-    assert_eq!(inputs.facts.main_door().id, "front");
+    assert_eq!(inputs.facts.main_door().unwrap().id, "front");
     assert_eq!(inputs.facts.lods.len(), 4);
     assert_eq!(inputs.role.asset_id, ASSET);
     assert_eq!(inputs.export, fixture.export());
@@ -215,8 +215,7 @@ fn the_reader_is_strict() {
     );
     refused(|s| s["schema"] = json!("other"), "schema");
     refused(|s| s["extra"] = json!(1), "unknown field");
-    refused(|s| s["doors"][1]["main"] = json!(true), "exactly one door");
-    refused(|s| s["doors"][0]["main"] = json!(false), "exactly one door");
+    refused(|s| s["doors"][1]["main"] = json!(true), "at most one door");
     refused(|s| s["doors"][1]["id"] = json!("front"), "repeated");
     refused(
         |s| s["doors"][0]["facing"] = json!([0, 0, 2]),
@@ -264,7 +263,8 @@ fn the_reader_is_strict() {
         "kind entrance",
     );
     // No fallback picks a main door the builder did not tag (Q7).
-    refused(|s| s["doors"][0]["main"] = json!(false), "exactly one door");
+    let untagged = facts_with(|s| s["doors"][0]["main"] = json!(false)).unwrap();
+    assert_eq!(untagged.main_door(), None);
     // Positive shoelace area in [x, z], any start point.
     refused(
         |s| {
@@ -425,7 +425,7 @@ fn r4_puts_the_entrance_on_the_main_door_wall_plane_at_ground_level() {
     let fixture = Fixture::new();
     let facts = fixture.inputs().facts;
     let part = rules::part_position(&facts, 2);
-    let entrance = rules::entrance(part, facts.main_door());
+    let entrance = rules::entrance(part, facts.main_door().unwrap());
     let position: [f64; 3] = serde_json::from_value(entrance["position"].clone()).unwrap();
     assert!(close(position, [-1.2, 0.0, 1.94]));
     assert_eq!(entrance["forward"], json!([0.0, 0.0, 1.0]));
@@ -1084,4 +1084,102 @@ fn the_stale_report_compares_passages_when_the_model_declares_them() {
         passages(&stale_report(&absent, None, &manifest, &files)),
         [(false, format!("the model's sidecar declares no passages; part '{NAME}_lod0.glb' keeps its 1 as authored"))]
     );
+}
+
+// A part of a multi-building asset, such as a chimney with only a cleanout hatch: no door and no
+// occupied storey.
+fn doorless(sidecar: &mut Value) {
+    sidecar["doors"] = json!([]);
+    sidecar["storeys"] = json!([]);
+}
+
+#[test]
+fn the_reader_takes_a_model_without_a_main_door_and_refuses_two_or_one_not_an_entrance() {
+    let facts = facts_with(doorless).unwrap();
+    assert_eq!((facts.doors.len(), facts.storeys.len()), (0, 0));
+    assert_eq!(facts.main_door(), None);
+    let error = facts.main_entrance().unwrap_err();
+    assert!(error.contains("a zoned building needs one"), "{error}");
+    let error = facts_with(|s| {
+        s["doors"][1]["kind"] = json!("entrance");
+        s["doors"][1]["main"] = json!(true);
+    })
+    .unwrap_err();
+    assert!(error.contains("at most one door as main"), "{error}");
+    let error = facts_with(|s| s["doors"][0]["kind"] = json!("vehicle")).unwrap_err();
+    assert!(error.contains("'front' must be of kind entrance"), "{error}");
+}
+
+#[test]
+fn a_draft_without_a_main_entrance_or_a_home_without_storeys_is_refused_up_front() {
+    let mut fixture = Fixture::new();
+    let commercial = || {
+        let mut role = fixture.role();
+        role["zone_type"] = json!("commercial");
+        role["economy_profile"] = json!("grocery_basic");
+        role
+    };
+    let (residential, commercial) = (fixture.role(), commercial());
+    fixture.sidecar["doors"][0]["main"] = json!(false);
+    fixture.write_sidecar();
+    // Up front: refused before the files are hashed, so a changed file does not hide it.
+    fs::write(fixture.export().join(format!("{NAME}_orm.png")), "changed").unwrap();
+    for role in [&residential, &commercial] {
+        let error = read_inputs(&fixture.sidecar_path(), role.clone())
+            .err()
+            .unwrap();
+        assert_eq!(
+            error,
+            format!(
+                "{NAME} has no main entrance door: a zoned building needs one (a sidecar door \
+                 with main true, of kind entrance)"
+            )
+        );
+    }
+    let mut fixture = Fixture::new();
+    fixture.sidecar["storeys"] = json!([]);
+    fixture.write_sidecar();
+    let error = read_inputs(&fixture.sidecar_path(), residential)
+        .err()
+        .unwrap();
+    assert_eq!(
+        error,
+        format!("{NAME} lists no storeys: a residential building needs them for its flat size (R5)")
+    );
+    // A workplace sizes nothing from storeys.
+    let inputs = read_inputs(&fixture.sidecar_path(), commercial).unwrap();
+    let derived = derive(&inputs, &fixture.mods(), &fixture.root).unwrap();
+    assert!(derived.document["params"]["flat_size_m2"].is_null());
+}
+
+#[test]
+fn the_stale_report_says_a_model_without_a_main_door_gives_no_entrance_to_compare() {
+    let fixture = Fixture::new();
+    let facts = fixture.inputs().facts;
+    let files = published(&fixture, &facts);
+    let walk = "[[-3.57, 3], [1.43, 3], [1.43, 10], [-3.57, 10]]";
+    let manifest = hand_manifest([-1.14, 0.0, 1.58], walk);
+    let model = facts_with(doorless).unwrap();
+    let entrance = |lines: Vec<Line>| -> Vec<(bool, String)> {
+        lines
+            .into_iter()
+            .filter(|l| l.check == "entrance")
+            .map(|l| (l.stale, l.message))
+            .collect()
+    };
+    let expected = [(
+        false,
+        "the model's sidecar marks no main door; entrance/main is not compared".to_owned(),
+    )];
+    assert_eq!(entrance(stale_report(&model, None, &manifest, &files)), expected);
+    // Against the ledger the doors and storeys that went are facts lines, still compared.
+    let lines = stale_report(&model, Some(&facts), &manifest, &files);
+    for name in ["door 'front'", "storeys"] {
+        let message = format!("{name} changed since the asset was drafted");
+        assert!(lines.iter().any(|l| l.stale && l.message == message), "{lines:?}");
+    }
+    assert_eq!(entrance(lines), expected);
+    // A ledger without a main door leaves the present door compared with the anchor only.
+    let lines = stale_report(&facts, Some(&model), &manifest, &files);
+    assert_eq!(entrance(lines), []);
 }

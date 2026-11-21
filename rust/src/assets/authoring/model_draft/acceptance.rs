@@ -288,7 +288,6 @@ fn check_ledger(manifest: &AssetManifest, pack: &Path, outcome: &mut Outcome) {
             }
         }
     }
-    let door = facts.main_door();
     let part = manifest.mesh_parts.iter().find(|part| {
         part.lods
             .first()
@@ -298,8 +297,10 @@ fn check_ledger(manifest: &AssetManifest, pack: &Path, outcome: &mut Outcome) {
         .anchors
         .iter()
         .find(|a| a.anchor_type == AnchorType::Entrance && a.name == "main");
-    match (part, entrance) {
-        (Some(part), Some(anchor)) => {
+    // The draft refuses a model without a main door, so a ledger without one is not this draft's.
+    match (facts.main_entrance(), part, entrance) {
+        (Err(error), _, _) => outcome.failures.push(format!("ledger sidecar: {error}")),
+        (Ok(door), Some(part), Some(anchor)) => {
             let (distance, _) = door_offset(part, door, anchor.position, anchor.forward);
             if distance > ENTRANCE_TOLERANCE_M {
                 outcome.failures.push(format!(

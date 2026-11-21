@@ -32,8 +32,9 @@ pub(crate) struct Inputs {
     pub(crate) export: PathBuf,
 }
 
-/// Read the preconditions that need no pack: sidecar schema and version, every listed hash,
-/// a clean source, no hero model, and well-formed role inputs. Each failure is a refusal.
+/// Read the preconditions that need no pack: sidecar schema and version, a clean source, no hero
+/// model, well-formed role inputs, the model facts the role needs (`draftable`), and every listed
+/// hash. Each failure is a refusal.
 pub(crate) fn read_inputs(sidecar_path: &Path, role: Value) -> Result<Inputs, String> {
     let text = std::fs::read_to_string(sidecar_path)
         .map_err(|e| format!("cannot read sidecar {}: {e}", sidecar_path.display()))?;
@@ -55,6 +56,8 @@ pub(crate) fn read_inputs(sidecar_path: &Path, role: Value) -> Result<Inputs, St
             facts.name
         ));
     }
+    let role = Role::parse(role)?;
+    draftable(&facts, &role)?;
     let export = sidecar_path
         .parent()
         .ok_or("the sidecar has no folder")?
@@ -63,9 +66,23 @@ pub(crate) fn read_inputs(sidecar_path: &Path, role: Value) -> Result<Inputs, St
     Ok(Inputs {
         facts,
         sidecar,
-        role: Role::parse(role)?,
+        role,
         export,
     })
+}
+
+// What a draft needs of the model beyond a valid file, which may describe a part of a placed
+// asset with no door or storey (a chimney). Every role this version takes is zoned (Q12), and a
+// zoned building needs its main entrance (R4); a home needs the storeys R5 sizes its flats from.
+fn draftable(facts: &Facts, role: &Role) -> Result<(), String> {
+    facts.main_entrance()?;
+    if role.zone_type == "residential" && facts.storeys.is_empty() {
+        return Err(format!(
+            "{} lists no storeys: a residential building needs them for its flat size (R5)",
+            facts.name
+        ));
+    }
+    Ok(())
 }
 
 /// A draft derived for one pack, not yet published.

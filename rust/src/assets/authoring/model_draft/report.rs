@@ -285,9 +285,17 @@ fn entrance(
     manifest: &AssetManifest,
     part: &MeshPart,
 ) -> Vec<Line> {
+    // A model without a main door gives nothing to compare `entrance/main` with; a door that lost
+    // its `main` tag since the draft is already a facts line.
+    let Some(door) = facts.main_door() else {
+        return vec![info(
+            "entrance",
+            "anchors",
+            "the model's sidecar marks no main door; entrance/main is not compared".into(),
+        )];
+    };
     let mut lines = Vec::new();
-    let door = facts.main_door();
-    if let Some(old) = ledger.map(Facts::main_door) {
+    if let Some(old) = ledger.and_then(Facts::main_door) {
         if old.id != door.id {
             lines.push(line(
                 "entrance",

@@ -2836,9 +2836,9 @@ the build's pivot offset `(px, py, pz)` (`asset_build.pivot_offset`) is
 | `license` | string | SPDX id of the content, `CC-BY-4.0` |
 | `bounds.min`, `bounds.max` | `[x, y, z]` | `LOD0` vertex bounds; `min.y` is `0` |
 | `footprint` | array of `[x, z]` | outer wall outline at ground level, one simple polygon, no repeated end point, positive shoelace area in `[x, z]` from any start point; excludes eaves, steps, fences, ladders |
-| `storeys` | array of `{floor_y_m, area_m2}` | one entry per occupied storey, lowest first; `area_m2` is the area inside the outer wall faces, and for a storey under a roof only the part with at least 1.6 m to the roof underside |
+| `storeys` | array of `{floor_y_m, area_m2}` | one entry per occupied storey, lowest first; `area_m2` is the area inside the outer wall faces, and for a storey under a roof only the part with at least 1.6 m to the roof underside; empty for a model with no occupied storey (see below) |
 | `dwellings` | integer | separate dwelling units with their own front door; `0` for a building that is not housing |
-| `doors` | array | every door leaf or door pair in an outer wall, see below |
+| `doors` | array | every door leaf or door pair in an outer wall, see below; empty for a model without one |
 | `lods` | array of `{file, triangles, sha256}` | nearest first; `file` is relative to the sidecar's folder |
 | `textures.orm`, `.normal`, `.emission` | `{file, sha256}` | shared maps; `emission` absent for an unlit building |
 | `variants` | array of `{id, albedo, sha256}` | every colour variant; `id` is the `<variant>` of `<name>_albedo_<variant>.png` |
@@ -2856,10 +2856,23 @@ A `doors` entry:
 | `position` | `[x, y, z]` | centre of the threshold on the outer wall plane; `y` is the threshold height above ground (a balcony door carries its upper floor's) |
 | `facing` | `[x, 0, z]` | unit outward normal of that wall |
 | `width_m`, `height_m` | number | clear opening of the leaf or pair, without fanlight |
-| `main` | boolean | exactly one door is `true`, and it is an `entrance`: the entrance a visitor uses |
+| `main` | boolean | at most one door is `true`, and that door is an `entrance`: the entrance a visitor uses |
 
-The builder tags the main door (amended 2026-11-20): the reader never picks one, and a sidecar
-without a tagged main entrance is refused. A door set back in a lobby or reveal keeps its
+The builder tags the main door (amended 2026-11-20): the reader never picks one. The rule for the
+file (amended 2026-11-21; the models validator checks the same rule):
+
+- `doors` may be empty.
+- At most one door has `main: true`, and a door with `main: true` has `kind` `"entrance"`.
+- `storeys` may be empty; the entries it has are listed lowest first, with a finite `floor_y_m`
+  and a finite `area_m2` of 0 or more.
+
+A sidecar that breaks the rule is refused when it is read. A sidecar with no main door, or with
+no storey, is a valid file: it describes a piece that honestly has none, such as a chimney with
+only a cleanout hatch, one part of a multi-building placed asset (a power plant) that the owner
+assembles by hand from several sidecars and that is never drafted alone. What a draft needs of
+the model is a draft precondition, checked when it is drafted (see the preconditions in
+[Draft command](#draft-command)): a zoned building needs exactly one main entrance door, and a
+residential one a non-empty `storeys` for R5. A door set back in a lobby or reveal keeps its
 `position` on the outer wall plane; a door in the side wall of a pocket lies on a `footprint` edge.
 Lengths are rounded to 0.1 mm and areas to 0.01 m². The schema version stays 1 with `kind`:
 nothing consumed version 1 before it.
@@ -2918,7 +2931,8 @@ What the build data holds today (read in `scripts/asset_build.py` and the ten `b
 Proposed home: `Asset.write_facts(stats, facts)` in `scripts/asset_build.py`, called by
 `Asset.main()` after `export_all()`, with `facts` a dict each `build.py` declares in build-frame
 coordinates; `write_facts` applies the pivot. `scripts/validate_asset.py` gains one check: the
-sidecar parses, its hashes match the files, one door is `main`, every door lies within 0.05 m of a
+sidecar parses, its hashes match the files, at most one door is `main` and that door is an
+`entrance` (the rule above), every door lies within 0.05 m of a
 `footprint` edge or inside the polygon. The models repository's `CLAUDE.md` forbids "asset/pack
 manifests until a consuming importer exists" and lists the handoff as copying files by hand; both
 lines need the owner's edit there, since the sidecar is a facts file for this importer.
@@ -3109,9 +3123,10 @@ run; 2 an existing asset with stale lines.
   so neither can be derived from the sidecar.
 - Preconditions, each a refusal with nothing written: sidecar schema and version; every listed
   hash matches its file; `source.dirty` is `false`; the sidecar's `hero` is `false` (a hero or
-  service building, such as the hall, must not slip through under a zoned role; Q12); the pack
-  exists (`files::pack_directory`);
-  role values pass `validated_tomls`; a workplace role names an `economy_profile` (without one it
+  service building, such as the hall, must not slip through under a zoned role; Q12); the model
+  has a main entrance door, since every role is zoned and a zoned building needs one (R4); a
+  residential role's model lists at least one storey (R5); the pack exists
+  (`files::pack_directory`); role values pass `validated_tomls`; a workplace role names an `economy_profile` (without one it
   never spawns); an ordered `lot_cells` holds the model.
 - Write: the command builds the same document the editor does (`params`, `sources`,
   `colour_sources`, `thumbnail_source`) and calls the publish path, which validates
@@ -3145,6 +3160,8 @@ stale lines (the JSON `stale` list; any one gives exit status 2) or information 
 4. Entrance: the distance in plan between `entrance/main` and the new `main` door through the
    present part transform, and the angle between the anchor's `forward` and the door's `facing`;
    reported above 0.5 m or 15°. With a ledger entry the door's own move is reported from 0.05 m.
+   A sidecar without a main door gives nothing to compare: one information line says so
+   (amended 2026-11-21); a main door the model lost since the draft is a facts line (item 2).
 5. Schemes: variant ids without a scheme and schemes without a variant.
 6. Capacity: `household_capacity` against `dwellings`.
 7. Site layout: each site surface, planting area and parking, driveway or loading rectangle that
@@ -3184,7 +3201,7 @@ Existing validation is reused wherever it exists; "new" marks what must be writt
 | Each part's bounds import, and the part fits its lot | `import_building_bounds`; the fit rule is new in Rust, moved from `_mesh_part_fits_in_lot` so the editor and the check share it (`CODE-36`) |
 | Every scheme texture decodes and every scheme names a material each tier has | `colour_dependencies`, `BuildingAppearance::validate`, `colour_material_error` |
 | A level-1 asset is a spawn candidate of its zoning profile; a higher level has a level below it with the same zone, density and lot cells | `stocked_zone_profiles` (the allocator's filter); the level rule is new, from the registry's upgrade rule |
-| Door sanity, from the ledger sidecar: every `entrance` and `service` door's `height_m` in 2.0–2.6, `width_m` in 0.7–6.0, threshold `y` in 0–1.5 (`vehicle`, `balcony` and `store` doors are not sized: amended 2026-11-20); `entrance/main` within 0.5 m of the `main` door in plan | new |
+| Door sanity, from the ledger sidecar: every `entrance` and `service` door's `height_m` in 2.0–2.6, `width_m` in 0.7–6.0, threshold `y` in 0–1.5 (`vehicle`, `balcony` and `store` doors are not sized: amended 2026-11-20); `entrance/main` within 0.5 m of the `main` door in plan, and a ledger sidecar without a main door fails, since the draft refuses one | new |
 | Triangles per tier within the ceilings of [Buildings](#buildings), from each `.glb` index count | new; a warning, since the models validator owns this gate |
 | A building with a `worker_capacity` has a parking anchor | new; a warning: a draft has none until the owner adds them (Q3) |
 
@@ -3272,7 +3289,8 @@ Each with the recommendation first.
   0.5 m / 15° as the report's tolerance; nine of the twelve hand anchors are then reported once.
   Rejected: the foot of the entrance steps, which needs one more sidecar fact per door.
 - **Q7 Main door.** Decided 2026-11-20 (amendment): the builder tags it, and only the builder;
-  a sidecar without a tagged main door of kind `entrance` is refused. Rejected: a fallback rule
+  a sidecar without a tagged main door of kind `entrance` is refused. Amended 2026-11-21 by the
+  owner: a file may tag none (a chimney); the refusal moved from the reader to the zoned draft. Rejected: a fallback rule
   (the door nearest the centre, `+X` on a tie), and the game picking the door nearest the lot's
   front edge centre.
 - **Q8 Ledger.** Recommended: `<pack>/model_sources/<asset_id>.json`, no schema change.
@@ -3329,6 +3347,18 @@ Details the design left open, as built:
   report used. Whether the footprint changed since the draft is `report::same_outline`, which
   both the facts line and the site layout check use. The default display name is
   `sidecar::default_display_name`.
+- A model without a main door or storeys (amended 2026-11-21, branch `sidecar-no-main`): the
+  reader takes `doors: []`, `storeys: []` and doors none of which is `main`; `Facts::main_door`
+  is an `Option`. `read_inputs` refuses a model without a main entrance ("`<name>` has no main
+  entrance door: a zoned building needs one") and a residential role's model without storeys
+  ("`<name>` lists no storeys: a residential building needs them for its flat size (R5)") after
+  the role is read and before any file is hashed; R4 (`rules::params`) and the acceptance check
+  refuse a missing main door with the same message rather than assuming one. Checked against the
+  nineteen sidecars in the `metrum_models` tree at 9aa0427, seventeen committed and two not yet
+  (`voimalan_konttori_brick` and the chimney `savupiippu_brick_round`), read only, 2026-11-21:
+  the eighteen with a main door read, verify and derive exactly as before (identical rule output
+  before and after the change); the chimney (`doors: []`, `storeys: []`) now reads and verifies,
+  and a draft of it is refused for its missing main entrance.
 - R2 writes `0`, never `-0`, for a centred model. R5 rounds halves away from zero, and a
   residential draft whose flat rounds to 0 is refused. R8 crops a preview narrower than 4:3 in
   height instead.

@@ -29,8 +29,11 @@ pub(crate) struct Facts {
     pub(crate) license: String,
     pub(crate) bounds: Bounds,
     pub(crate) footprint: Vec<[f64; 2]>,
+    /// Lowest first; empty for a model with no occupied storey (a residential draft refuses it).
     pub(crate) storeys: Vec<Storey>,
     pub(crate) dwellings: u32,
+    /// Empty for a model without a door; at most one is `main`, an entrance (a zoned draft
+    /// refuses a model without one).
     pub(crate) doors: Vec<Door>,
     pub(crate) lods: Vec<LodFile>,
     pub(crate) textures: Textures,
@@ -193,12 +196,21 @@ impl Facts {
         Ok(facts)
     }
 
-    /// The one door a visitor uses; `check` guarantees there is exactly one.
-    pub(crate) fn main_door(&self) -> &Door {
-        self.doors
-            .iter()
-            .find(|door| door.main)
-            .expect("checked sidecar has a main door")
+    /// The one door a visitor uses, when the builder tagged one: `check` allows at most one,
+    /// of kind entrance. A model may have none (a chimney that is part of a placed asset).
+    pub(crate) fn main_door(&self) -> Option<&Door> {
+        self.doors.iter().find(|door| door.main)
+    }
+
+    /// The main door a zoned draft puts its entrance on (R4); a model without one is a refusal.
+    pub(crate) fn main_entrance(&self) -> Result<&Door, String> {
+        self.main_door().ok_or_else(|| {
+            format!(
+                "{} has no main entrance door: a zoned building needs one (a sidecar door with \
+                 main true, of kind entrance)",
+                self.name
+            )
+        })
     }
 
     /// Every hashed file as `(path relative to the sidecar's folder, sha256)`, in file order:
@@ -369,19 +381,17 @@ impl Facts {
                 return Err(format!("sidecar door '{}' needs a positive size", door.id));
             }
         }
-        // The builder tags the main door; the reader never picks one (Q7).
+        // The builder tags the main door; the reader never picks one (Q7). A file may tag none,
+        // `doors` empty included: a zoned draft refuses that, not the reader.
         let mut mains = self.doors.iter().filter(|door| door.main);
         match (mains.next(), mains.next()) {
-            (Some(door), None) if door.kind == DoorKind::Entrance => {}
-            (Some(door), None) => {
-                return Err(format!(
-                    "sidecar main door '{}' must be of kind entrance",
-                    door.id
-                ));
-            }
-            _ => return Err("sidecar must mark exactly one door as main".into()),
+            (Some(_), Some(_)) => Err("sidecar must mark at most one door as main".into()),
+            (Some(door), None) if door.kind != DoorKind::Entrance => Err(format!(
+                "sidecar main door '{}' must be of kind entrance",
+                door.id
+            )),
+            _ => Ok(()),
         }
-        Ok(())
     }
 }
 

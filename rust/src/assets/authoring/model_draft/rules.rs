@@ -245,7 +245,7 @@ pub(crate) fn params(
             "pivot_offset": [0.0, 0.0, 0.0],
             "lods": lods,
         }],
-        "anchors": [entrance(position, facts.main_door())],
+        "anchors": [entrance(position, facts.main_entrance()?)],
         "site_surfaces": [],
         "appearance": appearance(facts, part_name, materials),
     });
