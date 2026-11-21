@@ -717,7 +717,7 @@ each panel only lists and sends input.
 - **Move whole site** (Site → Footprint & frontage, `asset_editor/site_move_panel.gd`; command
   `move_site`): moves everything on the lot by one X and Z offset: every mesh part (its passages
   are part-local and go with it), every access point, every site surface and planting vertex, and
-  every loading bay waypoint. A Driveway stays on the street edge and moves only along it. With
+  every loading bay waypoint; every other field, a bay's `stand` included, stays as authored. A Driveway stays on the street edge and moves only along it. With
   several parts (the farm, the mine, the power plant) every part moves; a part selected and
   dragged or typed alone still moves alone, as before. Refused, naming the first object, when any
   part's bounds (0.01 m tolerance), access point, footprint, vertex or waypoint would leave the
@@ -734,7 +734,7 @@ each panel only lists and sends input.
   command `bay_at_door`): for an asset whose pack keeps a model draft ledger
   (`model_sources/<asset_id>.json`, read through `AssetAuthoringFiles.model_vehicle_doors`), one
   button per `vehicle` door of the model adds a loading bay end-on to that door: centred on the
-  door, 3.5 × 8 m (the new bay's size), facing the door, its far end at the part's plan bounds on
+  door, with a new bay's fields and defaults (3.5 × 8 m, freight, `stand` absent: nose in, `PARK-23`; the command starts from the same new access point as the Loading bay button), facing the door, its far end at the part's plan bounds on
   that side plus at least 1 cm, rounded outward to the whole centimetre, named after the door. The
   door goes through the part that shows the ledger's `LOD0` file (position, rotation, scale,
   pivot) and must then face a lot axis; a bay that would leave the lot is refused. Without a

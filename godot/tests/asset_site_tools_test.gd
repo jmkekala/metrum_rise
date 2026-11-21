@@ -95,7 +95,7 @@ func _run() -> void:
 	params["mesh_parts"][0]["pivot_offset"] = [0.0, 0.0, 0.0]
 	params["anchors"] = [
 		{"anchor_type": "entrance", "name": "main", "position": [-8.5, 0.0, -0.2031], "forward": [0.0, 0.0, 1.0]},
-		{"anchor_type": "loading_bay", "name": "bay", "position": [12.0, 0.0, -1.5729], "forward": [-1.0, 0.0, 0.0], "width_m": 3.5, "length_m": 8.0, "vehicle_class": "freight"},
+		{"anchor_type": "loading_bay", "name": "bay", "position": [12.0, 0.0, -1.5729], "forward": [-1.0, 0.0, 0.0], "width_m": 3.5, "length_m": 8.0, "vehicle_class": "freight", "stand": "tail_in"},
 		{"anchor_type": "driveway", "name": "gate", "position": [10.0, 0.0, 20.0], "forward": [0.0, 0.0, -1.0], "width_m": 6.0, "vehicle_class": "freight"},
 	]
 	params["site_surfaces"] = [{"name": "Yard", "material": "asphalt", "y_m": 0.01, "vertices": [[0.0, -10.0], [14.5, -10.0], [14.5, 19.5], [0.0, 19.5]]}]
@@ -149,6 +149,7 @@ func _move_site() -> void:
 	expect(params["anchors"][BAY]["position"] == [11.0, 0.0, -2.0729], "the bay moves: %s" % [params["anchors"][BAY]["position"]])
 	expect(params["anchors"][2]["position"] == [9.0, 0.0, 20.0], "the gate moves along the street edge only: %s" % [params["anchors"][2]["position"]])
 	expect(params["site_surfaces"][0]["vertices"][0] == [-1.0, -10.5], "the yard moves: %s" % [params["site_surfaces"][0]["vertices"]])
+	expect(params["anchors"][BAY].get("stand") == "tail_in", "the bay keeps its stand (`PARK-23`): %s" % [params["anchors"][BAY]])
 	expect(document.undo_label() == "Move whole site", "one command: %s" % document.undo_label())
 	expect(editor._parts[0].position.is_equal_approx(Vector3(-9.5, 0.0, -2.7031)), "the preview follows")
 	document.undo()
@@ -174,6 +175,15 @@ func _bay_at_door() -> void:
 	expect(anchors.size() == 4 and bay["anchor_type"] == "loading_bay" and bay["name"] == "dock", "a loading bay named after the door: %s" % [bay])
 	expect(is_equal_approx(float(position[0]), 1.51) and is_equal_approx(float(position[2]), -1.7031) and bay["forward"] == [-1.0, 0.0, 0.0], "end-on to the door: %s" % [bay])
 	expect(float(bay["width_m"]) == 3.5 and float(bay["length_m"]) == 8.0 and bay["vehicle_class"] == "freight", "the standard size: %s" % [bay])
+	# The same fields and defaults as a loading bay the Access points button creates (its stand
+	# absent: nose in, `PARK-23`).
+	var targets: Array[Dictionary] = []
+	var created: Dictionary = document.prepare_edit("create", targets, {"kind": "loading_bay"})["document"]["params"]["anchors"].back()
+	var keys := bay.keys()
+	var created_keys := created.keys()
+	keys.sort()
+	created_keys.sort()
+	expect(keys == created_keys and not bay.has("stand"), "a door's bay carries a created bay's fields: %s against %s" % [keys, created_keys])
 	expect(document.undo_label() == "Loading bay at door" and editor._selected_site_anchor_index == 3, "one step, the new bay selected")
 	document.undo()
 	expect(document.snapshot() == before, "one undo removes it")

@@ -178,28 +178,7 @@ fn edit(
                 {
                     return Err("Select the existing main entrance instead".into());
                 }
-                let mut entry = vdict! { "anchor_type": kind.clone(), "name": if kind == "entrance" { "main" } else { kind.as_str() }, "position": vec3([0.0; 3]), "forward": params.get("frontage_forward").unwrap_or(vec3([0.0, 0.0, 1.0]).to_variant()) };
-                if kind != "entrance" {
-                    entry.set(
-                        "width_m",
-                        match kind.as_str() {
-                            "parking" => 2.5,
-                            "loading_bay" => 3.5,
-                            _ => 3.0,
-                        },
-                    );
-                    entry.set(
-                        "vehicle_class",
-                        if kind == "loading_bay" {
-                            "freight"
-                        } else {
-                            "car"
-                        },
-                    );
-                }
-                if kind == "parking" || kind == "loading_bay" {
-                    entry.set("length_m", if kind == "parking" { 5.0 } else { 8.0 });
-                }
+                let entry = new_anchor(&kind, params.get("frontage_forward").unwrap_or(vec3([0.0, 0.0, 1.0]).to_variant()));
                 ("anchors", entry)
             }
             // Yard paving, or a yard planting area, which the editor keeps among the surfaces
@@ -689,10 +668,39 @@ fn move_site(params: &mut VarDictionary, args: &VarDictionary) -> Result<(), Str
     Ok(())
 }
 
+// A new access point of `kind` facing `forward`, with the editor's defaults: what "create" adds
+// and what "bay_at_door" starts its loading bay from, so both carry the same fields (a loading
+// bay's `stand` is absent, the default nose-in, `PARK-23`).
+fn new_anchor(kind: &str, forward: Variant) -> VarDictionary {
+    let mut entry = vdict! { "anchor_type": kind, "name": if kind == "entrance" { "main" } else { kind }, "position": vec3([0.0; 3]), "forward": forward };
+    if kind != "entrance" {
+        entry.set(
+            "width_m",
+            match kind {
+                "parking" => 2.5,
+                "loading_bay" => 3.5,
+                _ => 3.0,
+            },
+        );
+        entry.set(
+            "vehicle_class",
+            if kind == "loading_bay" {
+                "freight"
+            } else {
+                "car"
+            },
+        );
+    }
+    if kind == "parking" || kind == "loading_bay" {
+        entry.set("length_m", if kind == "parking" { 5.0 } else { 8.0 });
+    }
+    entry
+}
+
 // "Loading bay at vehicle door" (`TOOLS-40`): adds a loading bay end-on to `door` (`{id,
 // position, facing}` in part `part`'s frame, from the asset's model draft ledger) at the standard
-// size, its far end just clear of the part's plan bounds (`door_bay::bay_at_door`), named after
-// the door. `part_bounds` is that part's imported bounds, six floats. Returns the new anchor's
+// size of a new loading bay (`new_anchor`), its far end just clear of the part's plan bounds
+// (`door_bay::bay_at_door`), named after the door. `part_bounds` is that part's imported bounds, six floats. Returns the new anchor's
 // index. O(anchors).
 fn bay_at_door(params: &mut VarDictionary, part: usize, args: &VarDictionary) -> Result<usize, String> {
     use crate::assets::authoring::door_bay;
@@ -722,8 +730,13 @@ fn bay_at_door(params: &mut VarDictionary, part: usize, args: &VarDictionary) ->
             * f64::from(crate::assets::asset::validation::ZONE_CELL_M)
             * 0.5
     };
+    // The editor's new loading bay, its size included; the helper places it at the door.
+    let mut bay = new_anchor("loading_bay", vec3([0.0, 0.0, 1.0]).to_variant());
+    let size = |key: &str| bay.get(key).and_then(|v| real(&v)).unwrap_or_default();
+    let size = [size("width_m"), size("length_m")];
     let (position, forward) = door_bay::bay_at_door(
         &placed,
+        size,
         [[bounds[0], bounds[1], bounds[2]], [bounds[3], bounds[4], bounds[5]]],
         triple(door.get("position")).ok_or("Invalid door position")?,
         triple(door.get("facing")).ok_or("Invalid door facing")?,
@@ -731,7 +744,9 @@ fn bay_at_door(params: &mut VarDictionary, part: usize, args: &VarDictionary) ->
     )?;
     let mut anchors = array(params, "anchors");
     let name = unique_name(&text(&door, "id"), &mut names(&anchors));
-    let bay = vdict! { "anchor_type": "loading_bay", "name": name, "position": vec3(position), "forward": vec3(forward), "width_m": door_bay::BAY_WIDTH_M, "vehicle_class": "freight", "length_m": door_bay::BAY_LENGTH_M };
+    bay.set("name", name);
+    bay.set("position", vec3(position));
+    bay.set("forward", vec3(forward));
     anchors.push(&bay.to_variant());
     params.set("anchors", anchors);
     Ok(array(params, "anchors").len() - 1)
