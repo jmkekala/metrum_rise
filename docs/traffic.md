@@ -3196,8 +3196,9 @@ hoppers, out of the lane's far end, round the half circle and back to `truck_out
 ```toml
 exit = "truck_out"                      # a gate's name; absent: leave by the arrival gate
 route_in = [[-7.8, 14.0]]               # waypoints between the gate's approach and the stop
-route_out = [[-7.8, -9.85], [-8.04, -11.66]]  # waypoints between the stop and the exit's approach
-                                        # (the first two of the coal mine's arc, for illustration)
+route_out = [[-7.8, -9.85], [-8.0034, -11.5252]]  # waypoints between the stop and the exit's
+                                        # approach (the first two of the coal mine's 13-chord
+                                        # arc, for illustration; 15° chords were planned, see below)
 ```
 
 A route is the gate's connection, its approach, the waypoints and the stop (reversed order for
