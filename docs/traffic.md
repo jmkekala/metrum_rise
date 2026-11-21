@@ -2730,7 +2730,8 @@ is.
 ### Freight yards (`PARK-19` to `PARK-22`)
 
 **Stages A1 and A2 are built ([A1](#stage-a1-docks-park-19-as-built),
-[A2](#stage-a2-trucks-use-docks-park-20-as-built)); stages B and C are planned, not built.** The plan was written 2026-11-20 as a design round with no code run. Every statement
+[A2](#stage-a2-trucks-use-docks-park-20-as-built)); stage B is in progress (round 1 of 3, below);
+stage C is planned, not built.** The plan was written 2026-11-20 as a design round with no code run. Every statement
 about the code before A1 was read in the source or the manifests at `dev` `579c4101` unless it
 says *unverified*; every statement about A2, B and C is a specification. Owner decisions are
 listed [at the end](#owner-decisions-freight-yards) with a recommendation each; the text assumes the
@@ -3207,11 +3208,32 @@ waypoints, not a second anchor type: the bay and both driveways exist already (d
 bends more than 15°, at most 24 points per route, and a *simple* route (no two non-adjacent
 segments within 0.1 m), because the tick finds a truck's segment from its position
 (`local_access_target_segment`). The in-route and the out-route are separate paths and may cross.
-An arc is authored as chords of at most 15°: 12 for a half circle. One departure gate per
-building, by the A1 rule.
+An arc is authored as chords that bend by *under* 15°: 13 for a half circle, 7 per quarter turn
+(corrected in round 1: the freight row's bend test, `straight_through_cos` 0.965926, counts a bend
+from 14.99996° as over the limit, so a chord of exactly 15° sits on the float boundary, and the
+12-chord half circle with coordinates rounded to 0.1 mm, bends of 15.0000 to 15.0031°, is refused
+for want of an envelope; verified on both coal mine layouts). One departure gate per building, by
+the A1 rule.
+
+*As implemented in round 1* (`parking/validation/route.rs`; the full write-up is the last
+round's): a way in is the arrival gate's road connection, its approach, the waypoints (without
+any, the derived aisle) and the stop; a way out is the stop, the waypoints, the exit gate's
+approach and its road connection. Each way is checked in this order, the first failure being the
+rejection, which names the leg or bend: at most 24 points; no leg under 0.1 m; the leg into the
+stop and the leg out of it within 15° of the bay's direction (a truck stands in its bay and leaves
+it forward); simple; every leg's corridor (2.6 m wide, the leg plus 8 m long, centred on it) paved
+and clear of the freight structure set (passages cut), the other loading bays and the parking
+spots; the 8.45 m square, squared to the bay, at every inner point bending more than 15°, the stop
+included for a through route. The exit must name a usable gate of the asset. A bay without an
+exit and without waypoints is proven by the A1 rule unchanged. Both coal mine layouts prove with
+the tunnel passage, `exit = "truck_out"` and arcs of 13 chords (layout 1, out) or two of 7
+(layout 2, in); a 7 m radius needs no envelope then, its corridors staying inside the 6 m lane
+paving of 4.8 m to 10 m radius.
 
 **Reuse and change.** The route lives beside the place row (`[[f32; 2]; 24]` and a count for each
-direction, saved with it). `maneuver_path` hands out a borrowed slice, and
+direction, saved with it; as built in round 1, a side table `ParkingSystem::dock_ways` by the
+row's handle with one `DockWay` per dock that has a drive, not a column on every place, saved
+inline with its row). `maneuver_path` hands out a borrowed slice, and
 `advance_along_local_access_path` and `local_access_target_segment` take a slice instead of the
 five-point array: O(points) per access step, 5 today, at most 25. `FreightGate::leave` becomes
 the exit gate. The dock is still released at the exit gate's lane point, by the A2 holder rule
@@ -3493,6 +3515,14 @@ The outline as planned:
 products first, then the format and proof, then the exit gate, then the editor, then the
 sidecar reader. *Gate and hand-back:* as A2, plus the coal mine's two routes as proven and a clip
 of the drive-through.
+*Round split* (defined in round 1, 2026-11-21): (1) slice paths with equal products, the format
+and proof, the drive stored on the dock row and saved (format 124), the editor's Rust payload and
+document command; (2) the exit gate: `FreightGate::leave`, movement along the stored ways
+(`maneuver_path` over the drive, no reversing on a way out, `access_phase_direction`), dispatch
+and recovery from the way out, the tests that a truck leaves by its exit; (3) the editor's
+authoring UI and drawing, the sidecar reader and `tools/model_draft.py`, the as-built write-up.
+Until round 2 a dock with authored waypoints is driven along its row's four points (the gate's
+connection and approach, the last waypoint, the stop); no pack asset has one.
 
 **C (`PARK-22`), 2 rounds,** only on decision 13. *Files:* the format's `role`, `parking/trips.rs`,
 `tick/parking.rs`, `nodes/sim/core/trips.rs`. *Gate:* as A2, plus a run where a dock is held for
