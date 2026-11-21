@@ -1014,3 +1014,88 @@ fn a_placed_lot_paints_its_bays_as_the_editor_draws_them() {
     c.build_lot_paint();
     assert!(c.parking.paint_publication().chunks.values().all(|chunk| chunk.rows.is_empty()));
 }
+
+// The rendered evidence's city (`PARK-30`): on a straight street, the bundled small and medium
+// lots, a lot on a slope across the street, and the explicit copies of pack assets found in
+// `METRUM_PAINT_STILL_ASSETS` (folders named by asset id, each with its `asset.toml`, registered
+// in pack `kuopio`): every `building.industrial.*` placed as industry, the others as services.
+// Writes `paint.sqlite` and `paint.json` (each building's asset id and centre) into
+// `METRUM_PAINT_STILL_OUT`.
+#[test]
+#[ignore = "manual fixture for rendered bay paint stills; requires METRUM_PAINT_STILL_ASSETS and _OUT"]
+fn write_the_lot_paint_still_save() {
+    let var = |name| std::env::var(name).unwrap_or_else(|_| panic!("{name} is required"));
+    let (assets, out) = (var("METRUM_PAINT_STILL_ASSETS"), var("METRUM_PAINT_STILL_OUT"));
+    let mut core = SimCore::new(
+        WorldConfig::new(512.0, 512.0, 16.0, 10.0)
+            .with_chunking(128.0, 0.0)
+            .with_terrain_resolution(2.0),
+    );
+    core.treasury.balance = 10_000_000.0;
+    // A 1:8 rise north of the street, under the sloped lot.
+    use godot::prelude::Vector2;
+    for _ in 0..12 {
+        core.slope_terrain_internal(
+            Vector2::new(-160.0, 30.0), 70.0, Vector2::new(-160.0, -5.0), 0.0,
+            Vector2::new(-160.0, 65.0), 9.0, 1.0,
+        );
+    }
+    let ground = |core: &SimCore, z: f32| core.get_world_surface_height_internal(Vector2::new(-160.0, z));
+    eprintln!("PAINT_STILL slope {:?}", [0.0, 10.0, 20.0, 30.0].map(|z| ground(&core, z)));
+    commit(&mut core, (-220.0, 0.0), (220.0, 0.0));
+    let small = register_lot(&mut core);
+    let medium = register_lot_toml(
+        &mut core,
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../godot/bootstrap/mods/parking/assets/building.parking.medium_lot/asset.toml"
+        )),
+    );
+    let mut placed = vec![
+        (small.clone(), core.place_service_building_internal(&small, -160.0, -30.0).unwrap()),
+        (medium.clone(), core.place_service_building_internal(&medium, -120.0, -35.0).unwrap()),
+        (small.clone(), core.place_service_building_internal(&small, -160.0, 30.0).unwrap()),
+    ];
+    let mut dirs: Vec<_> = std::fs::read_dir(&assets).unwrap().map(|e| e.unwrap().path()).collect();
+    dirs.sort();
+    let mut x = -80.0;
+    for dir in dirs {
+        let text = std::fs::read_to_string(dir.join("asset.toml")).unwrap();
+        let manifest = AssetManifest::from_str(&text).unwrap();
+        let id = manifest.qualified_id("kuopio");
+        let cells = manifest.building.as_ref().map_or(2, |b| b.lot_width_cells) as f32;
+        let industry = manifest.asset_id.starts_with("building.industrial.");
+        core.allocator
+            .registry
+            .register("kuopio", manifest, dir.to_string_lossy().into_owned());
+        x += cells * 5.0 + 6.0;
+        let building = if industry {
+            core.place_industry_building_internal(&id, x, -45.0)
+        } else {
+            core.place_service_building_internal(&id, x, -40.0)
+        }
+        .unwrap_or_else(|e| panic!("{id}: {e:?}"));
+        x += cells * 5.0;
+        placed.push((id, building));
+    }
+    core.publish_pending_building_site_changes();
+    eprintln!("PAINT_STILL lot {:?}", [5.0, 15.0, 25.0, 30.0].map(|z| ground(&core, z)));
+    let parking = &core.parking;
+    let issues: Vec<_> =
+        parking.diagnostics.values().chain(parking.dock_diagnostics.values()).flatten().collect();
+    eprintln!("PAINT_STILL issues {issues:#?}");
+    let out = std::path::Path::new(&out);
+    std::fs::create_dir_all(out).unwrap();
+    core.save_game_settled_at(out.join("paint.sqlite").to_str().unwrap(), None, 0)
+        .expect("the still city saves");
+    let buildings: Vec<_> = placed
+        .iter()
+        .map(|(id, b)| {
+            let building = &core.allocator.buildings[*b];
+            serde_json::json!({ "id": id, "x": building.center_x, "z": building.center_y,
+                "support": core.allocator.building_sites[*b].support_height_m })
+        })
+        .collect();
+    let json = serde_json::json!({ "buildings": buildings });
+    std::fs::write(out.join("paint.json"), json.to_string()).unwrap();
+}
