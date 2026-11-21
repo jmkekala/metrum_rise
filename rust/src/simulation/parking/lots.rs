@@ -6,8 +6,9 @@ use super::{
     Bay, DockRoute, DockWay,
     geometry::{precise, rectangle, structure_collision},
     validation::{
-        AnchorBay, DockWayInput, DriveLines, ProofClass, dock_ways, driveway_points_inward,
-        is_dock_class, is_freight_class, opens_onto_street, validate_bay, validate_dock,
+        AnchorBay, DockWayInput, DriveLines, ProofClass, car_row_path, dock_ways,
+        driveway_points_inward, is_dock_class, is_freight_class, opens_onto_street, validate_bay,
+        validate_car_route, validate_dock,
     },
 };
 use crate::assets::asset::CarRoutes;
@@ -34,8 +35,12 @@ pub(crate) struct LotProof {
     /// whose loading bays are not validated at all.
     pub dock_issues: Vec<String>,
     /// The authored drive of each dock that has one (`PARK-21`), by anchor index.
-    pub dock_ways: Vec<(u32, DockWay)>,    /// The docks a truck backs into (`PARK-23`), by anchor index, ascending.
+    pub dock_ways: Vec<(u32, DockWay)>,
+    /// The docks a truck backs into (`PARK-23`), by anchor index, ascending.
     pub tail_in: Vec<u32>,
+    /// The whole way of each place whose own route (`PARK-26`) is longer than its row's four
+    /// `path` points, by anchor index: the long ways `replace_building` stores (`PARK-25`).
+    pub car_ways: Vec<(u32, DockRoute)>,
 }
 
 /// [`lot_proof`]'s car half, for the callers that read no dock. Same bound.
@@ -230,6 +235,7 @@ pub(crate) fn lot_proof(
         inward: &inward,
         axes: [bx.normalized(), bz.normalized()],
     });
+    let has_driveway = anchors.iter().any(|a| a.anchor_type == AnchorType::Driveway);
     for (slot, &(anchor, pos, forward, width, length)) in bays.iter().enumerate() {
         let fail = |reason: &str| {
             format!(
@@ -237,8 +243,41 @@ pub(crate) fn lot_proof(
                 building.asset_id, anchor, reason
             )
         };
-        // A bay whose entry edge is the lot's street edge is reached straight from the road.
         let local = &anchors[anchor as usize];
+        // A place with its own route (`PARK-26`) is proven along it alone, on any lot: the
+        // `car_routes` pin governs only the automatic routes.
+        if !local.route_in.is_empty() {
+            let route_in: Vec<_> = local
+                .route_in
+                .iter()
+                .map(|&[x, z]| position([x, 0.0, z]))
+                .collect();
+            let checked = validate_car_route(
+                slot,
+                &car_geometry,
+                &footprints,
+                &support,
+                has_driveway,
+                &paths,
+                &inward,
+                &route_in,
+                |foot| structure_collision(allocator, ProofClass::Car, foot),
+            );
+            match checked {
+                Ok((route, _)) => {
+                    let (path, way) = car_row_path(&route);
+                    if let Some(way) = way {
+                        let points: Vec<_> = way.iter().map(|p| [p.x, p.y]).collect();
+                        let way = DockRoute::new(&points).expect("a proven way fits its row");
+                        proof.car_ways.push((anchor, way));
+                    }
+                    proof.bays.push(place(anchor, path, pos, forward, width, length));
+                }
+                Err(rejection) => proof.issues.push(fail(&rejection.reason)),
+            }
+            continue;
+        }
+        // A bay whose entry edge is the lot's street edge is reached straight from the road.
         let local_forward = Vector2::new(local.forward[0], local.forward[2]).normalized();
         let local_entry = Vector2::new(local.position[0], local.position[2]);
         let half_extents = Vector2::new(
@@ -268,9 +307,7 @@ pub(crate) fn lot_proof(
             &footprints,
             &[],
             &support,
-            anchors
-                .iter()
-                .any(|a| a.anchor_type == AnchorType::Driveway),
+            has_driveway,
             &paths,
             street,
             lines,

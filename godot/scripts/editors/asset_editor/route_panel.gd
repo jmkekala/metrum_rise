@@ -9,10 +9,16 @@
 ## Above the group, how a truck stands in the bay (`PARK-23`): nose in (it backs out) or tail in
 ## (it backs in and drives out), sent as the same command's "stand"; Rust refuses tail in with an
 ## exit.
+## A selected parking spot (`PARK-26`) gets the same waypoint tools for its own way in, and no
+## stand, exit or way out: "Edit this route" sends the command's "pin", which copies the route the
+## lot check shows into `route_in`, and "Back to automatic" its "unpin", each one undo step.
 extends RefCounted
 
 const PreviewGeometry = preload("res://scripts/editors/asset_editor/preview_geometry.gd")
 const WAYS := {"in": "Way in", "out": "Way out"}
+const TRUCK_HINT := "A truck drives in along the way in, stands in the bay, and leaves forward along the way out by the exit Driveway. Without an exit it backs out the way it came. Every bend over 15° needs room for the truck to turn: lay curves with Add arc."
+const CAR_HINT := "A car drives in from the street along this spot's route and leaves the same way. Automatic until you choose Edit this route, which makes the shown route the spot's own; its waypoints then move, insert and delete as a loading bay's. Every bend over 30° needs about 5 m by 5 m of paving: lay curves with Add arc. Back to automatic drops the spot's own route."
+const GROUPS := {"loading_bay": "Drive-through", "parking": "Car route"}
 const STANDS := {"nose_in": "Nose in: drives in, backs out", "tail_in": "Tail in: backs in, drives out"}
 # A new waypoint's distance from the point it follows, along the bay: a starting place the
 # author then moves.
@@ -35,6 +41,12 @@ var _radius: SpinBox
 var _angle: SpinBox
 var _side: OptionButton
 var _point_fields: Control
+var _tools: Control
+var _hint: Label
+var _own: Button
+var _automatic: Button
+var _group: CheckButton
+var _rows: Dictionary
 var _updating := false
 var _anchor := -1
 # The dragged waypoint's stored point before the drag, put back when the drag is cancelled.
@@ -52,10 +64,17 @@ func build(view: RefCounted, parent: Control) -> void:
 		if not _updating:
 			_edit({"op": "stand", "value": str(_stand.get_item_metadata(index))}, "Set stand"))
 	var box: VBoxContainer = view.advanced(_root, "drive_through", "Drive-through")
-	var hint := Label.new()
-	hint.text = "A truck drives in along the way in, stands in the bay, and leaves forward along the way out by the exit Driveway. Without an exit it backs out the way it came. Every bend over 15° needs room for the truck to turn: lay curves with Add arc."
-	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	box.add_child(hint)
+	_group = view.advanced_groups["drive_through"]["toggle"]
+	_rows = view.rows
+	_hint = Label.new()
+	_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	box.add_child(_hint)
+	var own := HFlowContainer.new()
+	box.add_child(own)
+	_own = view.button(own, "Edit this route", pin)
+	_own.tooltip_text = "Make the route shown for this spot its own, to edit by its waypoints. Saved in the asset."
+	_automatic = view.button(own, "Back to automatic", unpin)
+	_automatic.tooltip_text = "Drop this spot's own route: the game routes it again."
 	_exit = view.choice_field(box, "_route_exit", "Exit Driveway")
 	_exit.item_selected.connect(func(index):
 		if not _updating:
@@ -67,6 +86,9 @@ func build(view: RefCounted, parent: Control) -> void:
 		way = str(_way.get_item_metadata(index))
 		selected = -1
 		refresh())
+	_tools = VBoxContainer.new()
+	box.add_child(_tools)
+	box = _tools
 	var actions := HFlowContainer.new()
 	box.add_child(actions)
 	view.button(actions, "Add waypoint", add)
@@ -107,15 +129,20 @@ func _coordinate(view: RefCounted, key: String, title: String) -> SpinBox:
 			_edit({"op": "move", "way": way, "waypoint": selected, "point": point}, "Move waypoint"))
 	return spin
 
-## The selected anchor as the editor projects the document, or {} when it is not a loading bay.
-## The projection equals the document except during a view drag, which the fields then follow.
+## The selected anchor as the editor projects the document, or {} when it is neither a loading
+## bay nor a parking spot. The projection equals the document except during a view drag, which
+## the fields then follow.
 func anchor() -> Dictionary:
 	var index: int = _editor._selected_site_anchor_index
 	var anchors: Array = _editor._site_anchors_data
 	if index < 0 or index >= anchors.size():
 		return {}
 	var entry: Dictionary = anchors[index]
-	return entry if str(entry.get("anchor_type", "")) == "loading_bay" else {}
+	return entry if GROUPS.has(str(entry.get("anchor_type", ""))) else {}
+
+## Whether the selected anchor is a parking spot, whose route is a way in only.
+func car() -> bool:
+	return str(anchor().get("anchor_type", "")) == "parking"
 
 ## The waypoints of the shown way.
 func waypoints() -> Array:
@@ -135,6 +162,17 @@ func refresh() -> void:
 	if bay.is_empty():
 		return
 	_updating = true
+	var spot := car()
+	if spot:
+		way = "in"
+	var own: bool = spot and not bay.get("route_in", []).is_empty()
+	_group.text = GROUPS[str(bay.get("anchor_type", ""))]
+	_hint.text = CAR_HINT if spot else TRUCK_HINT
+	for key in ["_route_stand", "_route_exit", "_route_way"]:
+		_rows[key].visible = not spot
+	_own.visible = spot and not own
+	_automatic.visible = own
+	_tools.visible = own or not spot
 	var stand := str(bay.get("stand", "nose_in"))
 	for index in _stand.item_count:
 		if str(_stand.get_item_metadata(index)) == stand:
@@ -163,6 +201,17 @@ func refresh() -> void:
 		_x.value = float(points[selected][0])
 		_z.value = float(points[selected][1])
 	_updating = false
+
+## "Edit this route": the spot's shown route becomes its own (Rust picks and rounds it).
+func pin() -> void:
+	if _edit({"op": "pin", "way": "in", "part_bounds": _editor._session.part_bounds()}, "Edit this route"):
+		_group.button_pressed = true
+		select_waypoint("in", -1)
+
+## "Back to automatic": the spot's own route is dropped.
+func unpin() -> void:
+	if _edit({"op": "unpin", "way": "in"}, "Back to automatic"):
+		select_waypoint("in", -1)
 
 ## Add a waypoint after the selected one (or at the end), a step along the bay from it.
 func add() -> void:

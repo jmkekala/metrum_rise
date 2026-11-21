@@ -177,7 +177,9 @@ pub struct Anchor {
     #[serde(default)]
     pub exit: Option<String>,
     /// A loading bay's waypoints `[x, z]` (asset-local metres) between its arrival gate's
-    /// approach and the stop. Empty: the derived way in (approach, aisle, stop).
+    /// approach and the stop. Empty: the derived way in (approach, aisle, stop). On a parking
+    /// spot (`PARK-26`), its own route's waypoints between a car Driveway's road connection and
+    /// the stop; empty: the automatic route.
     #[serde(default)]
     pub route_in: Vec<[f32; 2]>,
     /// A loading bay's waypoints `[x, z]` between the stop and its exit gate's approach; only

@@ -216,6 +216,7 @@ fn drive_through(
                 DRIVE_RADIUS_M,
                 180.0,
                 left,
+                crate::simulation::parking::validation::ProofClass::Freight.proof().bend_limit_deg,
             )
             .ok()?;
             let round = |v: f32| (v * 10_000.0).round() / 10_000.0;

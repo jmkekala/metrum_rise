@@ -41,7 +41,7 @@ fn only_a_real_turn_needs_a_turning_envelope_and_the_rejection_names_it() {
     // The second is reached diagonally right under the shop front.
     assert_eq!(
         rejected[0]["reason"],
-        "no way to drive to this spot: straight from the Driveway, the way to the front of the spot leaves the paved yard, and no way along the row or straight down from the Driveway is clear (a car needs a 1.8 m strip of clear paving to drive on and about 5 m by 5 m of it where it turns): clear the way or move the spot"
+        "no way to drive to this spot: straight from the Driveway, the way to the front of the spot leaves the paved yard, and no way along the row or straight down from the Driveway is clear (a car needs a 1.8 m strip of clear paving to drive on and about 5 m by 5 m of it where it turns): clear the way, move the spot, or draw this spot's own route (Edit this route)"
     );
     assert_eq!(rejected[0]["shape"].as_array().unwrap().len(), 4);
 }
@@ -56,7 +56,7 @@ fn a_spot_needs_room_in_front_to_line_up_and_the_rejection_says_so() {
         {"anchor_type":"driveway", "position":[-18.5,0,15], "forward":[0,0,-1], "width_m":3.0}],
         "site_surfaces":[{"material":"asphalt",
         "vertices":[[-20,-15],[20,-15],[20,15],[-20,15]]}]});
-    let reason = "no way to drive to this spot: straight from the Driveway, the way to the front of the spot leaves the paved yard, and no way along the row or straight down from the Driveway is clear (a car needs a 1.8 m strip of clear paving to drive on and about 5 m by 5 m of it where it turns): clear the way or move the spot";
+    let reason = "no way to drive to this spot: straight from the Driveway, the way to the front of the spot leaves the paved yard, and no way along the row or straight down from the Driveway is clear (a car needs a 1.8 m strip of clear paving to drive on and about 5 m by 5 m of it where it turns): clear the way, move the spot, or draw this spot's own route (Edit this route)";
     // Its open end is 1 m from the street edge, with no paving for the car to line up on.
     assert_eq!(
         editor_payload(&params, &[])["rejected"][0]["reason"],
@@ -109,7 +109,7 @@ fn paving_short_of_the_street_edge_rejects_the_way_in_from_the_driveway() {
     let rejected = editor_payload(&driveway_lot(14.98), &[])["rejected"].clone();
     assert_eq!(
         rejected[0]["reason"],
-        "no way to drive to this spot: straight from the Driveway, the way in from the Driveway leaves the paved yard, and no way along the row or straight down from the Driveway is clear (a car needs a 1.8 m strip of clear paving to drive on and about 5 m by 5 m of it where it turns): clear the way or move the spot"
+        "no way to drive to this spot: straight from the Driveway, the way in from the Driveway leaves the paved yard, and no way along the row or straight down from the Driveway is clear (a car needs a 1.8 m strip of clear paving to drive on and about 5 m by 5 m of it where it turns): clear the way, move the spot, or draw this spot's own route (Edit this route)"
     );
 }
 
@@ -281,7 +281,7 @@ fn an_arc_bends_under_fifteen_degrees_at_every_chord() {
     let start = Vector2::new(0.0, 0.0);
     let heading = Vector2::new(0.0, -1.0);
     for (angle, chords) in [(180.0, 13), (90.0, 7), (15.0, 2), (14.9, 1), (360.0, 25)] {
-        let arc = arc_waypoints(start, heading, 5.0, angle, true);
+        let arc = arc_waypoints(start, heading, 5.0, angle, true, 15);
         if chords > 21 {
             assert!(arc.is_err(), "{angle}");
             continue;
@@ -298,7 +298,7 @@ fn an_arc_bends_under_fifteen_degrees_at_every_chord() {
             assert!(a.dot(b) > 15f32.to_radians().cos(), "{angle}: {w:?}");
         }
     }
-    assert!(arc_waypoints(start, heading, 0.0, 90.0, true).is_err());
+    assert!(arc_waypoints(start, heading, 0.0, 90.0, true, 15).is_err());
 }
 
 // A place in line behind a 3 m drive (`PARK-24`): the straight path's square just inside the
@@ -339,7 +339,7 @@ fn the_editor_routes_along_the_drive_lines_unless_the_lot_is_pinned() {
     assert_eq!(first["anchor"], 0);
     assert_eq!(
         first["reason"],
-        "no way to drive to this spot: straight from the Driveway, the way to the front of the spot crosses another parking spot, and no way along the row or straight down from the Driveway is clear (a car needs a 1.8 m strip of clear paving to drive on and about 5 m by 5 m of it where it turns): clear the way or move the spot"
+        "no way to drive to this spot: straight from the Driveway, the way to the front of the spot crosses another parking spot, and no way along the row or straight down from the Driveway is clear (a car needs a 1.8 m strip of clear paving to drive on and about 5 m by 5 m of it where it turns): clear the way, move the spot, or draw this spot's own route (Edit this route)"
     );
     assert_eq!(first["route"][1][0], 0.0, "down the drive: {first}");
     assert_eq!(first["shape"].as_array().unwrap().len(), 4);
@@ -411,4 +411,93 @@ fn every_straight_spot_keeps_its_route_and_the_drive_lines_only_add_spots() {
         ("building.power.coal_power_plant".to_owned(), vec![6]),
     ]);
     assert_eq!(rescued, expected);
+}
+
+// "Edit this route" and "Back to automatic" (`PARK-26`) on every fixture-pack building: every
+// spot reached from a Driveway pins its shown route as its own, which proves as `yours` along the
+// same points (to the 0.1 mm the pin rounds to) on a lot pinned to the straight path or not; with
+// the route removed again the payload is the automatic one exactly. A street spot has no route
+// to pin.
+#[test]
+fn every_shown_route_pins_as_its_own_and_back_to_automatic_restores_it() {
+    use std::path::Path;
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../godot");
+    let mut pinned = 0;
+    for pack in ["tests/mods", "bootstrap/mods"] {
+        let mut stack = vec![root.join(pack)];
+        while let Some(dir) = stack.pop() {
+            for entry in std::fs::read_dir(dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    stack.push(path);
+                    continue;
+                }
+                if path.file_name().is_none_or(|n| n != "asset.toml") {
+                    continue;
+                }
+                let text = std::fs::read_to_string(&path).unwrap();
+                let manifest = crate::assets::AssetManifest::from_str(&text).unwrap();
+                let Some(params) = editor_params(&manifest) else {
+                    continue;
+                };
+                let automatic = editor_lot_payload(&params, &[]);
+                for spot in automatic["spots"].as_array().unwrap() {
+                    let anchor = spot["anchor"].as_u64().unwrap() as usize;
+                    let pin = car_route_to_pin(&params, &[], anchor);
+                    if spot["kind"] == "street" {
+                        assert!(pin.unwrap_err().contains("opens onto the street"));
+                        continue;
+                    }
+                    let mut own = params.clone();
+                    own["anchors"][anchor]["route_in"] = json!(pin.unwrap());
+                    let payload = editor_lot_payload(&own, &[]);
+                    let yours = payload["spots"].as_array().unwrap().iter()
+                        .find(|s| s["anchor"] == anchor)
+                        .unwrap_or_else(|| panic!("{} anchor {anchor}: {}", manifest.asset_id, payload["rejected"]));
+                    assert_eq!(yours["kind"], "yours");
+                    let points = |s: &Value| -> Vec<f64> {
+                        s["route"].as_array().unwrap().iter()
+                            .flat_map(|p| p.as_array().unwrap().iter().map(|v| v.as_f64().unwrap()))
+                            .collect()
+                    };
+                    let (a, b) = (points(spot), points(yours));
+                    assert_eq!(a.len(), b.len());
+                    assert!(a.iter().zip(&b).all(|(a, b)| (a - b).abs() < 1e-4), "{a:?} {b:?}");
+                    assert!(car_route_to_pin(&own, &[], anchor).unwrap_err().contains("already"));
+                    own["anchors"][anchor].as_object_mut().unwrap().remove("route_in");
+                    assert_eq!(editor_lot_payload(&own, &[]), automatic);
+                    pinned += 1;
+                }
+            }
+        }
+    }
+    assert!(pinned > 40, "{pinned}");
+}
+
+// A drive lot: its own route of three waypoints proves as `yours` on a pinned lot too, drawn
+// whole with its two squares; an arc continues it in 30° chords; a failing one is rejected with
+// the hint and the whole route it was tried along.
+#[test]
+fn an_own_route_is_drawn_whole_and_its_arc_bends_under_thirty_degrees() {
+    let mut params = json!({"frontage_forward":[0,0,1], "lot_half_extents":[10,15],
+        "car_routes":"direct",
+        "anchors":[
+        {"anchor_type":"parking", "position":[5,0,0], "forward":[0,0,-1],
+            "width_m":2.5, "length_m":5.0,
+            "route_in":[[0,10],[0,4.0],[2.5,4.2],[5,4.0]]},
+        {"anchor_type":"driveway", "position":[0,0,15], "forward":[0,0,-1], "width_m":3.0}],
+        "site_surfaces":[{"material":"asphalt",
+        "vertices":[[-10,-15],[10,-15],[10,15],[-10,15]]}]});
+    let payload = editor_lot_payload(&params, &[]);
+    assert_eq!(payload["rejected"], json!([]));
+    let spot = &payload["spots"][0];
+    assert_eq!((spot["kind"].as_str(), spot["route"].as_array().unwrap().len()), (Some("yours"), 6));
+    assert_eq!(spot["envelopes"].as_array().unwrap().len(), 2, "{spot}");
+    let (at, arc) = route_arc(&params, 0, true, Some(1), 5.0, 90.0, true).unwrap();
+    assert_eq!((at, arc.len()), (2, 4), "a quarter turn in four chords");
+    assert!(route_arc(&params, 0, false, None, 5.0, 90.0, true).is_err());
+    params["anchors"][0]["route_in"] = json!([[0,10],[2,-2.5]]);
+    let rejected = &editor_lot_payload(&params, &[])["rejected"][0];
+    assert!(rejected["reason"].as_str().unwrap().ends_with("or choose Back to automatic"), "{rejected}");
+    assert_eq!(rejected["route"].as_array().unwrap().len(), 4);
 }

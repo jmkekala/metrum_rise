@@ -245,8 +245,9 @@ func surface_edge(mouse: Vector2, camera: Camera3D) -> Dictionary:
 func precise(hit: Dictionary) -> bool:
 	return _pick_layer(hit) < 2
 
-## The selected loading bay's authored waypoints, as {"way", "waypoint", "position"} at the height
-## the preview draws their markers; empty for any other selection.
+## The selected loading bay's authored waypoints, or a parking spot's own route's (`PARK-26`), as
+## {"way", "waypoint", "position"} at the height the preview draws their markers; empty for any
+## other selection.
 func waypoints() -> Array[Dictionary]:
 	var result: Array[Dictionary] = []
 	var bay := _selected_bay()
@@ -263,11 +264,16 @@ func waypoints() -> Array[Dictionary]:
 ## "waypoint": the index a waypoint inserted there takes, "point": the leg's ground point under
 ## the cursor}, or {}. A proven way runs connection, approach, waypoints, stop (in) or stop,
 ## waypoints, approach, connection (out); the gate's own connection-approach stretch takes none.
+## A parking spot's own route (`PARK-26`) runs connection, waypoints, stop: every leg takes one.
 func route_leg(mouse: Vector2, camera: Camera3D) -> Dictionary:
 	var bay := _selected_bay()
 	if bay.is_empty():
 		return {}
-	var drawn: Dictionary = editor._preview.dock_way(editor._selected_site_anchor_index)
+	var car := str(bay.get("anchor_type", "")) == "parking"
+	if car and bay.get("route_in", []).is_empty():
+		return {}
+	var drawn: Dictionary = {"route_in": editor._preview.car_way(editor._selected_site_anchor_index)} if car \
+		else editor._preview.dock_way(editor._selected_site_anchor_index)
 	var y: float = editor._anchor_position(bay).y + editor._preview.DOCK_ROUTE_Y_M
 	var closest := {}
 	var distance := EDGE_RADIUS * EDGE_RADIUS
@@ -275,7 +281,7 @@ func route_leg(mouse: Vector2, camera: Camera3D) -> Dictionary:
 		var points: Array = drawn.get("route_" + way, [])
 		var authored: int = bay.get("route_" + way, []).size()
 		for leg in points.size() - 1:
-			if leg == (0 if way == "in" else points.size() - 2):
+			if not car and leg == (0 if way == "in" else points.size() - 2):
 				continue
 			var a := Vector3(float(points[leg][0]), y, float(points[leg][1]))
 			var b := Vector3(float(points[leg + 1][0]), y, float(points[leg + 1][1]))
@@ -290,7 +296,8 @@ func route_leg(mouse: Vector2, camera: Camera3D) -> Dictionary:
 			if point == null or not editor._preview.pick_mesh_parts(begin, point - begin.direction_to(point) * DEPTH_EPSILON_M).is_empty():
 				continue
 			distance = screen_distance
-			closest = {"way": way, "waypoint": clampi(leg - 1 if way == "in" else leg, 0, authored), "point": Vector2(point.x, point.z)}
+			var at: int = leg if car else (leg - 1 if way == "in" else leg)
+			closest = {"way": way, "waypoint": clampi(at, 0, authored), "point": Vector2(point.x, point.z)}
 	return closest
 
 func _selected_bay() -> Dictionary:
@@ -298,7 +305,7 @@ func _selected_bay() -> Dictionary:
 	if index < 0 or index >= editor._site_anchors_data.size():
 		return {}
 	var anchor: Dictionary = editor._site_anchors_data[index]
-	return anchor if anchor.get("anchor_type") == "loading_bay" else {}
+	return anchor if anchor.get("anchor_type") in ["loading_bay", "parking"] else {}
 
 static func in_depth_range(camera: Camera3D, point: Vector3) -> bool:
 	var depth := -(camera.get_camera_transform().affine_inverse() * point).z

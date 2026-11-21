@@ -126,7 +126,10 @@ fn edit(
         }
         "create" => resolved.is_empty() && text(&params, "asset_class") == "building",
         "passage" => resolved.len() == 1 && resolved[0].3 == ObjectKind::Mesh,
-        "route" => resolved.len() == 1 && resolved[0].3 == ObjectKind::Loading,
+        // A parking spot's own route (`PARK-26`) as a loading bay's way in.
+        "route" => {
+            resolved.len() == 1 && matches!(resolved[0].3, ObjectKind::Loading | ObjectKind::Parking)
+        }
         "move_site" => resolved.is_empty(),
         "bay_at_door" => resolved.len() == 1 && resolved[0].3 == ObjectKind::Mesh,
         _ => false,
@@ -338,6 +341,7 @@ fn edit(
             "set_vertex" | "set_rectangle" => edit_surface(&params, &mut entry, action, args)?,
             "passage" => edit_passages(&mut entry, args)?,
             "route" if text(args, "op") == "arc" => arc_route(&params, *index, &mut entry, args)?,
+            "route" if text(args, "op") == "pin" => pin_route(&params, *index, &mut entry, args)?,
             "route" => edit_route(&mut entry, args)?,
             _ => return Err("Unsupported edit".into()),
         }
@@ -484,8 +488,24 @@ fn edit_passages(part: &mut VarDictionary, args: &VarDictionary) -> Result<(), S
 // through an invalid state. O(waypoints). `op` "stand" sets how a truck stands in the bay
 // (`PARK-23`): `value` "tail_in" (backs in), or "nose_in" or empty for the default, which leaves
 // the key out; that a backed-into bay names no exit is validation's to report.
+//
+// On a parking spot (`PARK-26`) only its way in is edited: "add", "move" and "delete" of
+// `route_in`, and "unpin" (Back to automatic) removes it, as deleting its last waypoint does.
 fn edit_route(anchor: &mut VarDictionary, args: &VarDictionary) -> Result<(), String> {
     let op = text(args, "op");
+    if text(anchor, "anchor_type") == "parking" {
+        match op.as_str() {
+            "unpin" if anchor.contains_key("route_in") => {
+                anchor.remove("route_in");
+                return Ok(());
+            }
+            "unpin" => return Err("This spot already follows the automatic route".into()),
+            "add" | "move" | "delete" if text(args, "way") == "in" => {}
+            _ => return Err("A parking spot's route has only a way in".into()),
+        }
+    } else if op == "unpin" {
+        return Err("Unsupported route edit".into());
+    }
     if op == "stand" {
         match text(args, "value").trim() {
             "tail_in" => anchor.set("stand", "tail_in"),
@@ -567,6 +587,9 @@ fn arc_route(
 ) -> Result<(), String> {
     let way_in = match text(args, "way").as_str() {
         "in" => true,
+        "out" if text(anchor, "anchor_type") == "parking" => {
+            return Err("A parking spot's route has only a way in".into());
+        }
         "out" if anchor.contains_key("exit") => false,
         "out" => return Err("Name the exit Driveway before adding a way out".into()),
         _ => return Err("Unsupported route".into()),
@@ -607,6 +630,35 @@ fn arc_route(
         points.insert(at + k, &point.to_variant());
     }
     anchor.set(key, points);
+    Ok(())
+}
+
+// "Edit this route" (`PARK-26`): gives parking spot `index` its own route, the inner points of
+// the route the lot check shows for it, rounded to 0.1 mm (`car_route_to_pin`, which reads the
+// parts' imported bounds from `part_bounds`, six floats each). One edit. O(the lot check).
+fn pin_route(
+    params: &VarDictionary,
+    index: usize,
+    anchor: &mut VarDictionary,
+    args: &VarDictionary,
+) -> Result<(), String> {
+    let bounds = args
+        .get("part_bounds")
+        .and_then(|v| v.try_to::<PackedFloat32Array>().ok())
+        .unwrap_or_default();
+    let json: serde_json::Value =
+        serde_json::from_str(&Json::stringify(&params.to_variant()).to_string())
+            .map_err(|e| e.to_string())?;
+    let points = crate::simulation::parking::validation::car_route_to_pin(
+        &json,
+        bounds.as_slice(),
+        index,
+    )?;
+    let points: VarArray = points
+        .into_iter()
+        .map(|[x, z]| varray![x, z].to_variant())
+        .collect();
+    anchor.set("route_in", points);
     Ok(())
 }
 

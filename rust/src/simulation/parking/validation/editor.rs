@@ -13,11 +13,11 @@
 
 use super::super::geometry::{overlaps, precise, rectangle};
 use super::drive_lines::car_envelopes;
-use super::route::{arc_waypoints, drive_envelopes};
+use super::route::{arc_waypoints, drive_envelopes, starts_at};
 use super::{
     AnchorBay, DockWayInput, DriveLines, ProofClass, Rejection, STREET_APPROACH_M, dock_ways,
     driveway_points_inward, is_dock_class, is_freight_class, opens_onto_street, validate_bay,
-    validate_dock,
+    validate_car_route, validate_dock,
 };
 use crate::assets::asset::passage::{
     check_passages_in_bounds, class_structure_footprints, lot_axis_forward, passage_rectangle,
@@ -68,6 +68,31 @@ fn triple(value: &Value, fallback: [f32; 3]) -> [f32; 3] {
 
 fn point(p: Vector2) -> [f32; 2] {
     [p.x, p.y]
+}
+
+// An anchor's waypoints under `key` (`route_in` or `route_out`) as `[x, z]` in asset-local
+// metres. O(waypoints).
+fn waypoints(anchor: &Value, key: &str) -> Vec<Vector2> {
+    anchor[key]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|p| {
+            Vector2::new(
+                p[0].as_f64().unwrap_or(0.0) as f32,
+                p[1].as_f64().unwrap_or(0.0) as f32,
+            )
+        })
+        .collect()
+}
+
+// A car spot the lot check proves (`PARK-24`, `PARK-26`): its whole route from the road
+// connection to the stop, how it was found and its Driveway's index among the usable ones (none
+// for a street spot).
+struct CarSpot {
+    route: Vec<Vector2>,
+    kind: &'static str,
+    gate: Option<usize>,
 }
 
 impl<'a> EditorLot<'a> {
@@ -241,13 +266,13 @@ impl<'a> EditorLot<'a> {
         }
     }
 
-    // The car payload: one rejection per parking anchor the placed proof would reject; and the
-    // spots, one per parking anchor it accepts (`PARK-24`): its route, how it was found (`street`
-    // from the street edge, `straight` from a Driveway, `auto` along the drive lines), its
-    // Driveway's index among the usable ones (none for a street spot) and the turn envelopes its
-    // proof checked. A drive-line route whose points are the straight path's reads `straight`:
-    // it is drawn the same.
-    fn car_payload(&self) -> (Map<String, Value>, Vec<Value>) {
+    // Every parking anchor's proof as the placed lot runs it, in anchor order: (anchor index,
+    // bay, its spot or its rejection). A spot's kind is `street` from the street edge,
+    // `straight` from a Driveway, `auto` along the drive lines (`PARK-24`) or `yours` along its
+    // own route (`PARK-26`, on any lot: `car_routes` governs only the automatic routes). A
+    // drive-line route whose points are the straight path's reads `straight`: it is drawn the
+    // same.
+    fn car_spots(&self) -> Vec<(usize, AnchorBay, Result<CarSpot, Rejection>)> {
         let parking = self.bays("parking", |_| true);
         let bays: Vec<_> = parking.iter().map(|&(_, bay)| bay).collect();
         let footprints: Vec<_> = bays
@@ -265,11 +290,31 @@ impl<'a> EditorLot<'a> {
             inward: &inward,
             axes: [Vector2::new(1.0, 0.0), Vector2::new(0.0, 1.0)],
         });
-        let mut spots = Vec::new();
-        let rejected: Vec<_> = parking
+        let collision = self.collision(ProofClass::Car);
+        parking
             .iter()
             .enumerate()
-            .filter_map(|(slot, &(index, bay))| {
+            .map(|(slot, &(index, bay))| {
+                let own = waypoints(&self.anchors[index], "route_in");
+                if !own.is_empty() {
+                    let proof = validate_car_route(
+                        slot,
+                        &bays,
+                        &footprints,
+                        &self.support,
+                        has_driveway,
+                        &paths,
+                        &inward,
+                        &own,
+                        &collision,
+                    )
+                    .map(|(route, gate)| CarSpot {
+                        route,
+                        kind: "yours",
+                        gate: Some(gate),
+                    });
+                    return (index, bay, proof);
+                }
                 let entry = bay.pos - bay.forward * (bay.length * 0.5);
                 // The street side of the edge is assumed open; the placed building's inspector
                 // reports the real road connection.
@@ -277,7 +322,7 @@ impl<'a> EditorLot<'a> {
                     .street
                     .filter(|&(outward, half)| opens_onto_street(entry, bay.forward, outward, half))
                     .map(|_| entry - bay.forward * STREET_APPROACH_M);
-                validate_bay(
+                let proof = validate_bay(
                     ProofClass::Car,
                     slot,
                     &bays,
@@ -288,29 +333,46 @@ impl<'a> EditorLot<'a> {
                     &paths,
                     street,
                     lines,
-                    self.collision(ProofClass::Car),
+                    &collision,
                 )
-                .map(|(path, gate)| {
-                    let kind = match gate {
+                .map(|(path, gate)| CarSpot {
+                    route: path.to_vec(),
+                    kind: match gate {
                         None => "street",
                         Some(gate) if path[1] == paths[gate][1] => "straight",
                         Some(_) => "auto",
-                    };
-                    let route = path.map(point);
+                    },
+                    gate,
+                });
+                (index, bay, proof)
+            })
+            .collect()
+    }
+
+    // The car payload: one rejection per parking anchor the placed proof would reject; and the
+    // spots, one per parking anchor it accepts (`PARK-24`): its route, its kind (`car_spots`),
+    // its Driveway's index among the usable ones (none for a street spot) and the turn envelopes
+    // its proof checked.
+    fn car_payload(&self) -> (Map<String, Value>, Vec<Value>) {
+        let mut spots = Vec::new();
+        let mut rejected = Vec::new();
+        for (index, bay, proof) in self.car_spots() {
+            match proof {
+                Ok(spot) => {
                     // A street spot is proven by its edge alone, with no envelope.
-                    let envelopes: Vec<_> = (kind != "street")
-                        .then(|| car_envelopes(&path, bay.forward, kind == "straight"))
+                    let envelopes: Vec<_> = (spot.kind != "street")
+                        .then(|| car_envelopes(&spot.route, bay.forward, spot.kind == "straight"))
                         .into_iter()
                         .flatten()
                         .map(|shape| shape.map(point).to_vec())
                         .collect();
-                    spots.push(json!({"anchor":index, "route":route, "kind":kind, "gate":gate,
-                        "envelopes":envelopes}));
-                })
-                .err()
-                .map(|rejection| rejection_json(index, rejection))
-            })
-            .collect();
+                    let route: Vec<_> = spot.route.iter().copied().map(point).collect();
+                    spots.push(json!({"anchor":index, "route":route, "kind":spot.kind,
+                        "gate":spot.gate, "envelopes":envelopes}));
+                }
+                Err(rejection) => rejected.push(rejection_json(index, rejection)),
+            }
+        }
         let mut payload = Map::new();
         payload.insert("rejected".into(), Value::Array(rejected));
         payload.insert(
@@ -472,22 +534,9 @@ impl<'a> EditorLot<'a> {
 // among the usable gates' `names`, and `route_in` and `route_out` as `[x, z]` waypoints in
 // asset-local metres. O(waypoints + gates).
 fn way_input(anchor: &Value, names: &[&str]) -> DockWayInput {
-    let waypoints = |key: &str| {
-        anchor[key]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .map(|p| {
-                Vector2::new(
-                    p[0].as_f64().unwrap_or(0.0) as f32,
-                    p[1].as_f64().unwrap_or(0.0) as f32,
-                )
-            })
-            .collect()
-    };
     DockWayInput {
-        route_in: waypoints("route_in"),
-        route_out: waypoints("route_out"),
+        route_in: waypoints(anchor, "route_in"),
+        route_out: waypoints(anchor, "route_out"),
         exit: anchor["exit"].as_str().map(str::trim).map(|exit| {
             names.iter().position(|&name| name == exit).ok_or_else(|| exit.to_owned())
         }),
@@ -503,20 +552,35 @@ fn rejection_json(anchor: usize, rejection: Rejection) -> Value {
         entry["leg"] = json!(leg.map(point));
     }
     if let Some(route) = rejection.route {
-        entry["route"] = json!(route.map(point));
+        entry["route"] = json!(route.into_iter().map(point).collect::<Vec<_>>());
     }
     entry
 }
 
+// The editor document's `params` as the lot check reads them: the document holds the lot in
+// cells, the check its half extents. O(params).
+fn document_lot(params: &Value) -> Value {
+    let mut params = params.clone();
+    if params.get("lot_half_extents").is_none() {
+        let half = |key: &str| params[key].as_f64().unwrap_or(1.0) * 5.0;
+        params["lot_half_extents"] = json!([half("lot_width_cells"), half("lot_depth_cells")]);
+    }
+    params
+}
+
 /// The waypoints the asset editor's arc helper inserts into loading bay `anchor`'s way in
-/// (`way_in`) or way out (`PARK-21`), after waypoint `after` (`None`: the last), as
-/// [`arc_waypoints`] lays them from that point and the heading of the leg arriving at it. The
-/// leg before the way's first waypoint comes from the stop along the bay (way out) or from the
-/// arrival gate's road connection to its approach (way in: the first usable freight Driveway in
-/// anchor order that is not the bay's exit, else the exit itself when it is the only one, on the
-/// assumed straight street); with no waypoint
-/// the arc starts at the stop or the approach. `params` is the editor document's. Returns the
-/// index to insert at and the points. O(anchors + waypoints + chords); an edit boundary.
+/// (`way_in`) or way out (`PARK-21`), or into a parking spot's own route (`PARK-26`, a way in
+/// only), after waypoint `after` (`None`: the last), as [`arc_waypoints`] lays them from that
+/// point and the heading of the leg arriving at it, every bend under the class's limit (15° for
+/// a truck, 30° for a car). The leg before the way's first waypoint comes from the stop along the
+/// bay (way out), from the arrival gate's road connection to its approach (a loading bay's way
+/// in: the first usable freight Driveway in anchor order that is not the bay's exit, else the
+/// exit itself when it is the only one, on the assumed straight street), or from the road
+/// connection of the car Driveway the spot's route starts at (the first usable one waypoint 1
+/// lies straight ahead of, else the first usable one); with no waypoint a bay's arc starts at
+/// the stop or the approach, and a spot without its own route has none to continue. `params` is
+/// the editor document's. Returns the index to insert at and the points. O(anchors + waypoints +
+/// chords); an edit boundary.
 pub(crate) fn route_arc(
     params: &Value,
     anchor: usize,
@@ -526,24 +590,26 @@ pub(crate) fn route_arc(
     angle_deg: f32,
     left: bool,
 ) -> Result<(usize, Vec<[f32; 2]>), String> {
-    let mut params = params.clone();
-    // The document holds the lot in cells; the lot check reads its half extents.
-    if params.get("lot_half_extents").is_none() {
-        let half = |key: &str| params[key].as_f64().unwrap_or(1.0) * 5.0;
-        params["lot_half_extents"] = json!([half("lot_width_cells"), half("lot_depth_cells")]);
-    }
+    let params = document_lot(params);
     let lot = EditorLot::parse(&params, &[]);
     let a = lot.anchors.get(anchor).ok_or("The loading bay no longer exists")?;
-    let waypoints: Vec<Vector2> = a[if way_in { "route_in" } else { "route_out" }]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .map(|p| Vector2::new(p[0].as_f64().unwrap_or(0.0) as f32, p[1].as_f64().unwrap_or(0.0) as f32))
-        .collect();
+    let car = a["anchor_type"] == "parking";
+    let waypoints = waypoints(a, if way_in { "route_in" } else { "route_out" });
     let at = after.map_or(waypoints.len(), |i| (i + 1).min(waypoints.len()));
     // The way's points before the inserted ones: what leads to the way's first waypoint, then
     // the waypoints up to `at`.
-    let lead = if way_in {
+    let lead = if car {
+        if !way_in || waypoints.is_empty() {
+            return Err("Choose Edit this route first: an arc continues a parking spot's own way in".into());
+        }
+        let gates = lot.driveway_paths(ProofClass::Car, |_| true);
+        let (_, [connection, _], _) = gates
+            .iter()
+            .find(|&&(_, path, inward)| starts_at(path, inward, waypoints[0]))
+            .or(gates.first())
+            .ok_or("Add a car Driveway at the street edge first: a spot's route starts at one")?;
+        vec![*connection]
+    } else if way_in {
         let exit = a["exit"].as_str().map(str::trim).unwrap_or_default();
         let freight = ProofClass::Freight;
         let gates = lot.driveway_paths(freight, |d| is_freight_class(d["vehicle_class"].as_str()));
@@ -554,17 +620,19 @@ pub(crate) fn route_arc(
             .find(|(name, ..)| exit.is_empty() || *name != exit)
             .or(gates.first())
             .ok_or("Add a freight Driveway at the street edge first: a way in starts at its approach")?;
-        [*connection, *approach]
+        vec![*connection, *approach]
     } else {
         let forward = vector(&a["forward"]).normalized();
         let stop = vector(&a["position"]) + forward * (number(a, "length_m", 5.0) * 0.5);
-        [stop - forward, stop]
+        vec![stop - forward, stop]
     };
-    let mut points = lead.to_vec();
+    let mut points = lead;
     points.extend_from_slice(&waypoints[..at]);
     let n = points.len();
     let start = points[n - 1];
-    let arc = arc_waypoints(start, start - points[n - 2], radius, angle_deg, left)?;
+    let class = if car { ProofClass::Car } else { ProofClass::Freight };
+    let limit = class.proof().bend_limit_deg;
+    let arc = arc_waypoints(start, start - points[n - 2], radius, angle_deg, left, limit)?;
     if waypoints.len() + arc.len() > crate::assets::asset::validation::MAX_ROUTE_POINTS - 3 {
         return Err(format!(
             "A way holds at most {} waypoints",
@@ -572,6 +640,56 @@ pub(crate) fn route_arc(
         ));
     }
     Ok((at, arc.into_iter().map(point).collect()))
+}
+
+/// The waypoints "Edit this route" gives parking spot `anchor` (`PARK-26`): the inner points of
+/// the route the lot check shows for it (its proven route; when it is rejected, the drive-line
+/// route last tried, else the straight path through the first usable car Driveway), rounded to
+/// 0.1 mm as an authored TOML holds them. Refused for a spot that already has its own route, a
+/// spot driven straight in from the street, and a lot without a usable car Driveway. `params` is
+/// the editor document's, `part_bounds` six floats per mesh part. O(the lot check).
+pub(crate) fn car_route_to_pin(
+    params: &Value,
+    part_bounds: &[f32],
+    anchor: usize,
+) -> Result<Vec<[f64; 2]>, String> {
+    let params = document_lot(params);
+    let lot = EditorLot::parse(&params, part_bounds);
+    let a = lot.anchors.get(anchor).ok_or("The parking spot no longer exists")?;
+    if a["anchor_type"] != "parking" {
+        return Err("Only a parking spot's route is edited this way".into());
+    }
+    if !waypoints(a, "route_in").is_empty() {
+        return Err("This spot already follows its own route".into());
+    }
+    let (_, bay, proof) = lot
+        .car_spots()
+        .into_iter()
+        .find(|&(index, ..)| index == anchor)
+        .ok_or("The parking spot no longer exists")?;
+    let route = match proof {
+        Ok(spot) if spot.kind == "street" => {
+            return Err("This spot opens onto the street: a car drives straight in from the road, so it has no route to edit".into());
+        }
+        Ok(spot) => spot.route,
+        Err(Rejection {
+            route: Some(route), ..
+        }) => route,
+        Err(_) => {
+            let row = ProofClass::Car.proof();
+            let (_, [connection, approach], _) = *lot
+                .driveway_paths(ProofClass::Car, |_| true)
+                .first()
+                .ok_or("Add a car Driveway at the street edge first: a spot's route starts at one")?;
+            let aisle = bay.pos - bay.forward * (bay.length * 0.5 + row.lead);
+            vec![connection, approach, aisle, bay.pos]
+        }
+    };
+    let round = |v: f32| (f64::from(v) * 10_000.0).round() / 10_000.0;
+    Ok(route[1..route.len() - 1]
+        .iter()
+        .map(|p| [round(p.x), round(p.y)])
+        .collect())
 }
 
 /// The asset editor's car rejections (the car half of [`editor_lot_payload`], which the

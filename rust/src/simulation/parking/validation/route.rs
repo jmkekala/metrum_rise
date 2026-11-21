@@ -24,11 +24,16 @@
 //!
 //! A dock without an exit and without waypoints is proven by the stage A rule
 //! (`validate_bay`) unchanged.
+//!
+//! A car place's own route (`PARK-26`, `validate_car_route`) is proven by the same rules with the
+//! car's sizes (30° bends): the road connection of a car Driveway, the waypoints, the stop. It has
+//! no approach and no way out; its waypoint 1 must lie inside the lot straight ahead of the
+//! Driveway it starts from.
 
 use super::super::geometry::rectangle;
 use super::{
-    AnchorBay, BEND_LIMIT_DEG, ProofClass, Rejection, VehicleProof, check_bay, drive_rejection,
-    meets_other_bay, sweep_blocked, turns_at, validate_bay,
+    AnchorBay, ProofClass, Rejection, VehicleProof, check_bay, drive_rejection, meets_other_bay,
+    sweep_blocked, turns_at, validate_bay,
 };
 use crate::assets::asset::validation::MAX_ROUTE_POINTS;
 use godot::prelude::Vector2;
@@ -193,6 +198,119 @@ pub(in crate::simulation::parking) fn validate_dock(
     })
 }
 
+/// What every rejection of a car place's own route ends with (`PARK-26`): no other route is
+/// tried for it.
+pub(in crate::simulation::parking) const OWN_ROUTE_HINT: &str =
+    "This spot follows its own route: move its waypoints, or choose Back to automatic";
+
+/// The proof of car place `slot`'s own route (`PARK-26`): the road connection of a usable car
+/// Driveway, the waypoints `route_in`, the stop. `paths` are the usable car Driveways' road
+/// connections and approaches, `inward` their unit inward headings. The route starts at a
+/// Driveway whose mouth (one lead before its approach) waypoint 1 lies past, along its inward
+/// heading, and whose road connection it lies within the car's 30° of straight ahead of; of the
+/// Driveways it so starts at, the first in `paths` order that proves the route by the module's
+/// rules is its gate. It ends at the stop, its last leg within 30° of the place's direction. No
+/// other route is tried: a failure rejects the place with the reason, the route it was tried
+/// along and [`OWN_ROUTE_HINT`]. Returns the whole route and its gate's index in `paths`.
+/// O(gates × (points² + points × local overlay work)), points at most `MAX_ROUTE_POINTS`; an
+/// edit or load boundary.
+#[allow(clippy::too_many_arguments)]
+pub(in crate::simulation::parking) fn validate_car_route(
+    slot: usize,
+    bays: &[AnchorBay],
+    footprints: &[[Vector2; 4]],
+    support: &[Vec<[f64; 2]>],
+    has_driveway: bool,
+    paths: &[[Vector2; 2]],
+    inward: &[Vector2],
+    route_in: &[Vector2],
+    collision: impl Fn(&[Vector2]) -> bool,
+) -> Result<(Vec<Vector2>, usize), Rejection> {
+    let row = ProofClass::Car.proof();
+    let bay = &bays[slot];
+    check_bay(
+        row, slot, bays, footprints, &[], support, has_driveway, &collision,
+    )?;
+    let blocked = |foot: &[Vector2]| {
+        sweep_blocked(row, foot, support, &collision, |foot| {
+            meets_other_bay(foot, slot, footprints, &[])
+        })
+    };
+    let whole = |connection: Vector2| {
+        let mut route = Vec::with_capacity(route_in.len() + 2);
+        route.push(connection);
+        route.extend_from_slice(route_in);
+        route.push(bay.pos);
+        route
+    };
+    let mut failed = None;
+    for (gate, (&path, &inward)) in paths.iter().zip(inward).enumerate() {
+        if !starts_at(path, inward, route_in[0]) {
+            continue;
+        }
+        let [connection, _] = path;
+        let route = whole(connection);
+        match prove_way(row, Way::Car, &route, bay.forward, &blocked) {
+            Ok(()) => return Ok((route, gate)),
+            Err(rejection) => {
+                failed.get_or_insert(Rejection {
+                    route: Some(route),
+                    ..rejection
+                });
+            }
+        }
+    }
+    let rejection = failed.unwrap_or_else(|| {
+        let reason = format!(
+            "its own route starts at no Driveway: put waypoint 1 inside the lot straight ahead of a car Driveway that points into the lot (within {}° of the Driveway's direction)",
+            row.bend_limit_deg
+        );
+        // Drawn from the first usable Driveway, its first leg the one that fails.
+        let route = paths.first().map(|&[connection, _]| whole(connection));
+        Rejection {
+            reason,
+            shape: None,
+            leg: route.as_ref().map(|route| [route[0], route[1]]),
+            route,
+        }
+    });
+    Err(Rejection {
+        reason: format!("{}. {OWN_ROUTE_HINT}", rejection.reason),
+        ..rejection
+    })
+}
+
+/// Whether a car place's own route whose waypoint 1 is `first` starts at the car Driveway with
+/// road connection and approach `path` and unit inward heading `inward` (`PARK-26`): `first` lies
+/// inside the lot past the Driveway's mouth, one lead before its approach, and within the car's
+/// bend limit of straight ahead of its road connection. O(1).
+pub(in crate::simulation::parking) fn starts_at(
+    [connection, approach]: [Vector2; 2],
+    inward: Vector2,
+    first: Vector2,
+) -> bool {
+    let row = ProofClass::Car.proof();
+    let mouth = approach - inward * row.lead;
+    let lead = first - connection;
+    (first - mouth).dot(inward) > 0.0
+        && lead.length_squared() >= 1e-8
+        && lead.normalized().dot(inward) >= row.straight_through_cos
+}
+
+/// A proven car route as the place row holds it (`PARK-26`): its four `path` points (the route
+/// itself; for three points, the leg into the spot split at its middle, the same line) and the
+/// whole route when it is longer, for the long-way pool (`PARK-25`). O(points).
+pub(in crate::simulation::parking) fn car_row_path(
+    route: &[Vector2],
+) -> ([Vector2; 4], Option<&[Vector2]>) {
+    if let [connection, waypoint, stop] = *route {
+        return ([connection, waypoint, (waypoint + stop) * 0.5, stop], None);
+    }
+    let n = route.len();
+    let path = [route[0], route[1], route[n - 2], route[n - 1]];
+    (path, (n > 4).then_some(route))
+}
+
 /// One arrival gate and one departure gate per building (`PARK-19`, `PARK-21`): the first dock
 /// takes the first gate, in anchor order, that `prove` proves its way in through, and leaves by
 /// its exit, or by that gate when it names none; every later dock must arrive through that gate
@@ -262,17 +380,18 @@ pub(in crate::simulation::parking) fn drive_envelopes(
 /// heading `heading`, an arc of `radius` metres turning `angle_deg` degrees to the left (as a
 /// driver sees it, `+Y` up) or the right, as chords whose ends lie on the circle. A chord turns
 /// by `angle / chords`, the first and the last half that against the straight before and after,
-/// and `chords = floor(angle / 15°) + 1` keeps every bend under the freight class's 15° limit,
-/// as the proof requires (13 chords for a half circle, 7 for a quarter turn). Points are rounded
-/// to 0.1 mm, as an authored TOML holds them; the rounding moves a bend by far less than the
-/// margin left under 15°. Returns the chord ends after `start`, at most `MAX_ROUTE_POINTS`.
-/// O(chords).
+/// and `chords = floor(angle / limit) + 1` keeps every bend under the class's limit `limit_deg`,
+/// as the proof requires: for a truck's 15°, 13 chords for a half circle and 7 for a quarter
+/// turn; for a car's 30° (`PARK-26`), 7 and 4. Points are rounded to 0.1 mm, as an authored TOML
+/// holds them; the rounding moves a bend by far less than the margin left under the limit.
+/// Returns the chord ends after `start`, at most `MAX_ROUTE_POINTS`. O(chords).
 pub(crate) fn arc_waypoints(
     start: Vector2,
     heading: Vector2,
     radius: f32,
     angle_deg: f32,
     left: bool,
+    limit_deg: u32,
 ) -> Result<Vec<Vector2>, String> {
     if !(radius.is_finite() && radius > 0.0 && angle_deg.is_finite() && angle_deg > 0.0 && angle_deg <= 360.0) {
         return Err("An arc needs a radius above 0 m and an angle above 0° and up to 360°".into());
@@ -283,7 +402,7 @@ pub(crate) fn arc_waypoints(
     let h = heading.normalized();
     // Toward the centre: a driver facing `h` with `+Y` up has `(-h.z, h.x)` on the right.
     let n = if left { Vector2::new(h.y, -h.x) } else { Vector2::new(-h.y, h.x) };
-    let chords = (angle_deg / BEND_LIMIT_DEG as f32).floor() as usize + 1;
+    let chords = (angle_deg / limit_deg as f32).floor() as usize + 1;
     if chords > MAX_ROUTE_POINTS - 3 {
         return Err(format!("A way holds at most {} waypoints", MAX_ROUTE_POINTS - 3));
     }
@@ -304,12 +423,14 @@ pub(super) enum Way {
     // A way in; `derived` when its one middle point is the aisle, not an authored waypoint.
     In { derived: bool },
     Out,
+    // A car place's own way in (`PARK-26`): the road connection, waypoints 1 to n - 2, the stop.
+    Car,
 }
 
 impl Way {
     fn word(self) -> &'static str {
         match self {
-            Self::In { .. } => "in",
+            Self::In { .. } | Self::Car => "in",
             Self::Out => "out",
         }
     }
@@ -317,6 +438,9 @@ impl Way {
     // The words for leg `i` (point i to point i + 1) of a way of `n` points. O(1).
     fn leg(self, i: usize, n: usize) -> String {
         match self {
+            Self::Car if i == 0 => "the way in from the Driveway to waypoint 1".into(),
+            Self::Car if i == n - 2 => format!("the way into the spot from waypoint {i}"),
+            Self::Car => format!("the way in from waypoint {i} to waypoint {}", i + 1),
             Self::In { .. } if i == 0 => "the way in from the Driveway".into(),
             Self::In { derived: true } if i == 1 => "the way to the front of the spot".into(),
             Self::In { derived: true } => "the way into the spot".into(),
@@ -342,6 +466,7 @@ impl Way {
     // The words for the bend at inner point `j` of a way of `n` points. O(1).
     fn bend(self, j: usize, n: usize) -> String {
         match self {
+            Self::Car => format!("the bend at waypoint {j}"),
             Self::In { .. } if j == 1 => "the turn off the Driveway".into(),
             Self::In { derived: true } => "the turn into the spot".into(),
             Self::In { .. } => format!("the bend at waypoint {} of the way in", j - 1),
@@ -362,9 +487,12 @@ pub(super) fn prove_way(
     let n = points.len();
     let word = way.word();
     if n > MAX_ROUTE_POINTS {
+        let (ends, waypoints) = match way {
+            Way::Car => ("road connection", MAX_ROUTE_POINTS - 2),
+            _ => ("road connection and approach", MAX_ROUTE_POINTS - 3),
+        };
         return Err(format!(
-            "the way {word} has {n} points: at most {MAX_ROUTE_POINTS}, its Driveway's road connection and approach and the spot with at most {} waypoints",
-            MAX_ROUTE_POINTS - 3
+            "the way {word} has {n} points: at most {MAX_ROUTE_POINTS}, its Driveway's {ends} and the spot with at most {waypoints} waypoints"
         )
         .into());
     }
@@ -382,31 +510,38 @@ pub(super) fn prove_way(
     // The leg at the bay, and the heading it must keep: into the stop for a way in, out of it
     // for a way out, both along the bay.
     let (at_bay, heading) = match way {
-        Way::In { .. } => (n - 2, points[n - 1] - points[n - 2]),
+        Way::In { .. } | Way::Car => (n - 2, points[n - 1] - points[n - 2]),
         Way::Out => (0, points[1] - points[0]),
     };
     let off = heading.normalized().dot(forward);
     if off < row.straight_through_cos {
         let degrees = off.clamp(-1.0, 1.0).acos().to_degrees().round();
+        let noun = row.noun;
         let fix = match way {
-            Way::In { .. } => {
-                "a truck drives into its spot along it, so put the last waypoint in line behind the spot"
-            }
-            Way::Out => {
-                "a truck leaves its spot driving forward, so put the first waypoint in line ahead of the spot"
-            }
+            Way::In { .. } | Way::Car => format!(
+                "a {noun} drives into its spot along it, so put the last waypoint in line behind the spot"
+            ),
+            Way::Out => format!(
+                "a {noun} leaves its spot driving forward, so put the first waypoint in line ahead of the spot"
+            ),
         };
         let reason = format!(
-            "{} runs {degrees}° off the spot's direction: {fix} (within {BEND_LIMIT_DEG}°)",
-            way.leg(at_bay, n)
+            "{} runs {degrees}° off the spot's direction: {fix} (within {}°)",
+            way.leg(at_bay, n),
+            row.bend_limit_deg
         );
         return Err(on_leg(reason.into(), at_bay));
     }
     for a in 0..n - 1 {
         for b in a + 2..n - 1 {
             if segment_gap(points[a], points[a + 1], points[b], points[b + 1]) < MIN_LEG_M {
+                // A car has no way out to cross.
+                let rule = match way {
+                    Way::Car => "a way may not cross or touch itself",
+                    _ => "a way may not cross or touch itself; the way in and the way out may cross each other",
+                };
                 let reason = format!(
-                    "the way {word} touches itself: {} comes within {MIN_LEG_M} m of {} (a way may not cross or touch itself; the way in and the way out may cross each other)",
+                    "the way {word} touches itself: {} comes within {MIN_LEG_M} m of {} ({rule})",
                     way.leg(b, n),
                     way.leg(a, n)
                 );

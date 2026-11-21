@@ -372,7 +372,8 @@ fn validate_anchor_common(asset_id: &str, anchor: &Anchor) -> Result<(), Manifes
     Ok(())
 }
 
-// A loading bay's drive-through fields (`PARK-21`): only a loading bay carries them, its
+// A loading bay's drive-through fields (`PARK-21`): only a loading bay carries them (a parking
+// spot its own `route_in` alone, `PARK-26`), its
 // waypoints are finite and fit a route of `MAX_ROUTE_POINTS`, `route_out` needs an `exit`, and
 // the exit names exactly one Driveway of the asset. Whether that Driveway is a gate and the
 // route proves is the lot proof's to say. A stand (`PARK-23`) is a loading bay's too, and a bay
@@ -402,7 +403,15 @@ fn validate_anchor_route(
     if !authored {
         return Ok(());
     }
-    if anchor.anchor_type != AnchorType::LoadingBay {
+    // A parking spot may carry its own way in (`PARK-26`); a car leaves along it, by no exit.
+    if anchor.anchor_type == AnchorType::Parking {
+        if anchor.exit.is_some() || !anchor.route_out.is_empty() {
+            return fail(
+                "has exit or route_out, which only a loading_bay may carry: a car leaves its spot along its route_in"
+                    .into(),
+            );
+        }
+    } else if anchor.anchor_type != AnchorType::LoadingBay {
         return fail("has exit, route_in or route_out, which only a loading_bay may carry".into());
     }
     let most = MAX_ROUTE_POINTS - 3;

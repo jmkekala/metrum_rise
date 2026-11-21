@@ -616,6 +616,11 @@ func set_car_routes_visible(visible: bool) -> void:
 	_car_routes_visible = visible
 	_build_site_anchor_overlay()
 
+## Parking anchor `index`'s drawn route (`PARK-26`): its spot's route, or the route a rejected spot
+## was last tried along, or [].
+func car_way(index: int) -> Array:
+	return _car_spots.get(index, {}).get("route", _parking_rejection_routes.get(index, []))
+
 ## Loading bay `index`'s drive-through as last proven, {"route_in", "route_out", "envelopes"} in
 ## asset-local XZ, or {} when it has none or is rejected.
 func dock_way(index: int) -> Dictionary:
@@ -1465,21 +1470,22 @@ func _build_site_anchor_overlay() -> void:
 	_site_labels_ready.call_deferred()
 
 # Car spots' routes (`PARK-24`), from the gate's road connection to the spot's centre, dashed as
-# every automatic route is: every spot's faintly when shown, the selected spot's bold with the
-# turn squares its proof checked, and a rejected selected spot's last tried route in red.
+# every automatic route is and solid when the spot has its own (`PARK-26`): every spot's faintly
+# when shown, the selected spot's bold with the turn squares its proof checked, and a rejected
+# selected spot's last tried route in red.
 func _draw_car_routes(im: ImmediateMesh) -> void:
 	var selected := _selected_site_anchor_index
 	if _car_routes_visible:
 		for index: int in _car_spots:
 			if index != selected and index < _site_anchors.size():
 				var y := _preview_anchor_position(_site_anchors[index]).y + DOCK_ROUTE_Y_M
-				_draw_dashed_polyline(im, _car_spots[index]["route"], y, CAR_ROUTE_FAINT_COLOR, CAR_ROUTE_FAINT_WIDTH_M)
+				_draw_car_route(im, _car_spots[index], y, CAR_ROUTE_FAINT_COLOR, CAR_ROUTE_FAINT_WIDTH_M)
 	if selected < 0 or selected >= _site_anchors.size():
 		return
 	var y := _preview_anchor_position(_site_anchors[selected]).y + DOCK_ROUTE_Y_M
 	var spot: Dictionary = _car_spots.get(selected, {})
 	if not spot.is_empty():
-		_draw_dashed_polyline(im, spot["route"], y, CAR_ROUTE_COLOR, CAR_ROUTE_WIDTH_M)
+		_draw_car_route(im, spot, y, CAR_ROUTE_COLOR, CAR_ROUTE_WIDTH_M)
 		for envelope: Array in spot.get("envelopes", []):
 			for corner in 4:
 				var a: Array = envelope[corner]
@@ -1488,6 +1494,16 @@ func _draw_car_routes(im: ImmediateMesh) -> void:
 	var tried = _parking_rejection_routes.get(selected)
 	if tried is Array:
 		_draw_dashed_polyline(im, tried, y, Color(1.0, 0.2, 0.15), CAR_ROUTE_WIDTH_M)
+
+func _draw_car_route(im: ImmediateMesh, spot: Dictionary, y: float, color: Color, width_m: float) -> void:
+	if str(spot.get("kind", "")) != "yours":
+		_draw_dashed_polyline(im, spot["route"], y, color, width_m)
+		return
+	var points: Array = spot["route"]
+	for point in points.size() - 1:
+		var a: Array = points[point]
+		var b: Array = points[point + 1]
+		_draw_thick_line(im, Vector3(a[0], y, a[1]), Vector3(b[0], y, b[1]), color, width_m)
 
 func _draw_dashed_polyline(im: ImmediateMesh, points: Array, y: float, color: Color, width_m: float) -> void:
 	for point in points.size() - 1:

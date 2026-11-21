@@ -1348,6 +1348,46 @@ mod tests {
         assert!(exit.contains("leaves it forward the way it came in"), "{exit}");
     }
 
+    // `PARK-26`: a parking spot's own route goes to the TOML as `route_in`, comes back in the
+    // editor's load JSON and exports byte for byte the same; a way out, an exit or a stand on a
+    // parking spot is a validation issue.
+    #[test]
+    fn round_trip_keeps_a_parking_spots_own_route() {
+        let mut data: serde_json::Value =
+            serde_json::from_str(&minimal_building_json("building.residential.own_route")).unwrap();
+        data["anchors"].as_array_mut().unwrap().push(serde_json::json!({
+            "anchor_type": "parking", "name": "spot", "position": [-5.0, 0.0, 4.0],
+            "forward": [0.0, 0.0, -1.0], "width_m": 2.5, "length_m": 5.0,
+            "vehicle_class": "car", "route_in": [[-10.75, 11.5], [-5.0, 6.55]]}));
+        let params: ExportParams = serde_json::from_value(data.clone()).unwrap();
+        let (toml, _) = validated_tomls(&params).unwrap();
+        assert!(toml.contains("vehicle_class = \"car\"\nroute_in = [[-10.75, 11.5], [-5, 6.55]]\n"), "{toml}");
+        let manifest = AssetManifest::from_str(&toml).unwrap();
+        assert_eq!(manifest.anchors[1].route_in, vec![[-10.75, 11.5], [-5.0, 6.55]]);
+        let mut registry = crate::assets::registry::AssetRegistry::new();
+        registry.register("test-pack", manifest, String::new());
+        let loaded: serde_json::Value = serde_json::from_str(&get_asset_manifest_json_internal(
+            &registry,
+            "test-pack:building.residential.own_route",
+        ))
+        .unwrap();
+        // The load JSON holds the f32 the manifest stores; the TOML writes it back the same.
+        assert_eq!(loaded["anchors"][1]["route_in"][1][1].as_f64().map(|v| v as f32), Some(6.55));
+        assert!(loaded["anchors"][0].get("route_in").is_none(), "only the spot carries a route");
+        let mut again = data.clone();
+        again["anchors"] = loaded["anchors"].clone();
+        let again: ExportParams = serde_json::from_value(again).unwrap();
+        assert_eq!(validated_tomls(&again).unwrap().0, toml);
+        let issue = |key: &str, value: serde_json::Value| {
+            let mut data = data.clone();
+            data["anchors"][1][key] = value;
+            validate_asset_params_internal(&data.to_string())
+        };
+        assert!(issue("route_out", serde_json::json!([[0.0, 0.0]])).contains("a car leaves its spot along its route_in"));
+        assert!(issue("exit", serde_json::json!("gate")).contains("a car leaves its spot along its route_in"));
+        assert!(issue("stand", serde_json::json!("tail_in")).contains("only a loading_bay"));
+    }
+
     #[test]
     fn round_trip_preserves_thumbnail_small_pivot_and_precise_area() {
         let mut data: serde_json::Value =

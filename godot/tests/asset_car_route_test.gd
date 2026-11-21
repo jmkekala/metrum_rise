@@ -6,7 +6,10 @@
 ## Car routes on. Pinned to the straight path (`car_routes = "direct"`) the far spots are rejected
 ## with today's reasons; a spot painted across the aisle rejects the spots behind it with the new
 ## wording and the route last tried. The asset exports, and exporting the reopened asset writes the
-## same file.
+## same file. The route panel (`PARK-26`): Edit this route makes the far spot's shown route its
+## own, a waypoint drag, Add arc and Back to automatic are one undo step each, a failing own route
+## blocks export naming Back to automatic, and an own route exports, reopens and exports the same;
+## dropped again, the export is the unpinned file byte for byte.
 ## Run with --asset-editor in an isolated profile; the fixture model is generated.
 extends SceneTree
 
@@ -107,6 +110,51 @@ func _run() -> void:
 	expect(editor._preview._parking_rejection_routes.has(9), "the preview draws the tried route")
 	document.undo()
 
+	# Edit this route on the far front spot: its shown route becomes its own, drawn solid.
+	var routes = editor._routes
+	editor._set_selected_site_anchors([9], 9)
+	routes.refresh()
+	var before: Dictionary = document.snapshot()
+	var shown: Array = editor._preview.car_spot(9)["route"]
+	expect(routes.car() and routes._own.visible and not routes._automatic.visible and not routes._tools.visible, "an automatic spot offers Edit this route only")
+	routes.pin()
+	var own: Array = routes.waypoints()
+	expect(document.undo_label() == "Edit this route" and own.size() == 2, "Edit this route is one step: %s" % [own])
+	for k in 2:
+		expect(Vector2(float(own[k][0]), float(own[k][1])).distance_to(Vector2(float(shown[k + 1][0]), float(shown[k + 1][1]))) < 0.001, "waypoint %d is the shown route's: %s %s" % [k, own, shown])
+	var spot: Dictionary = editor._preview.car_spot(9)
+	expect(str(spot.get("kind", "")) == "yours" and spot.get("route", []).size() == 4, "the spot follows its own route: %s" % spot)
+	expect(routes._automatic.visible and routes._tools.visible and not routes._own.visible, "an own route offers its waypoints and Back to automatic")
+	# Drag the corner off the gate line 0.45 m toward the street: live, one Move waypoint at release.
+	routes.select_waypoint("in", 0)
+	routes.begin_drag()
+	routes.drag(Vector2(-10.75, 11.0))
+	expect(document.snapshot()["params"]["anchors"][9]["route_in"][0][1] != 11.0, "the document waits for the release")
+	routes.end_drag()
+	spot = editor._preview.car_spot(9)
+	expect(document.undo_label() == "Move waypoint" and str(spot.get("kind", "")) == "yours" and absf(float(spot["route"][1][1]) - 11.0) < 0.001, "the dragged route proves: %s" % [editor._parking_diagnostics()])
+	# Add arc after the corner: a quarter turn in four chords, one step.
+	routes._angle.value = 90
+	routes._radius.value = 3.0
+	routes.add_arc()
+	expect(document.undo_label() == "Add arc" and routes.waypoints().size() == 6, "Add arc lays four chords: %s" % [routes.waypoints()])
+	document.undo()
+	# The last waypoint 5 m aside: the way into the spot runs 45° off, the spot is rejected with the
+	# hint and blocks export.
+	routes.select_waypoint("in", 1)
+	routes._x.value = 5.0
+	var stale: Array = editor._parking_diagnostics().get("rejected", []).filter(func(issue): return int(issue["anchor"]) == 9)
+	expect(stale.size() == 1 and str(stale[0]["reason"]).ends_with("or choose Back to automatic") and stale[0].get("route", []).size() == 4, "a failing own route rejects its spot: %s" % [stale])
+	expect(not _rejected_issues().is_empty(), "it blocks export")
+	document.undo()
+	# Back to automatic: the automatic route exactly, one step; three undos return to before.
+	routes.unpin()
+	expect(document.undo_label() == "Back to automatic" and not editor._site_anchors_data[9].has("route_in"), "Back to automatic drops the own route")
+	expect(editor._preview.car_spot(9)["route"] == shown and str(editor._preview.car_spot(9)["kind"]) == "auto", "the automatic route is back as it was")
+	for step in 3:
+		document.undo()
+	expect(document.snapshot() == before, "Edit this route, the move and Back to automatic undo to the start")
+
 	# Export, reopen and export again: the same file.
 	editor._session.publish()
 	var first := FileAccess.get_file_as_string(FILE)
@@ -119,6 +167,25 @@ func _run() -> void:
 	expect(editor._parking_diagnostics().get("rejected", []).is_empty(), "the reopened asset has no rejected spot")
 	editor._session.publish()
 	expect(FileAccess.get_file_as_string(FILE) == first, "exporting the reopened asset writes the same file")
+	# An own route exports, reopens and exports the same; dropped, the file is the unpinned one.
+	editor._set_selected_site_anchors([9], 9)
+	routes.refresh()
+	routes.pin()
+	editor._session.publish()
+	var pinned_file := FileAccess.get_file_as_string(FILE)
+	expect(pinned_file.contains("route_in = [[-10.75, 10.55], [10, 10.55]]"), "the own route is written: %s" % editor._view.export_result.text)
+	loaded = JSON.parse_string(editor.sim.get_asset_manifest_json(ID))
+	editor._session.load_manifest(loaded)
+	for frame in 4:
+		await process_frame
+	expect(str(editor._preview.car_spot(9).get("kind", "")) == "yours", "the reopened spot follows its own route")
+	editor._session.publish()
+	expect(FileAccess.get_file_as_string(FILE) == pinned_file, "exporting the reopened own route writes the same file")
+	editor._set_selected_site_anchors([9], 9)
+	routes.refresh()
+	routes.unpin()
+	editor._session.publish()
+	expect(FileAccess.get_file_as_string(FILE) == first, "back to automatic exports the unpinned file")
 	editor.free()
 	await process_frame
 	if failures == 0:

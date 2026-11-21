@@ -1,65 +1,63 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! `PARK-25` long ways driven: the two lots of `drive_lines.rs`, every place given an
-//! eight-point way with six bends (a jog out to x -8.5 on the gate line, a kink on the row's
-//! line), published as the lot reconcile publishes a lot. A resident leaves one lot and parks in
-//! the other along those ways, a save made on the way in continues tick for tick, a format 125
-//! save loads, and a way changed under a pulling car ends its manoeuvre without stranding it.
+//! `PARK-25` long ways from `PARK-26` own routes, driven: the lot of `drive_lines.rs` with every
+//! place given its own route in the asset (`route_in`: down the gate line, along its row's line
+//! with a 0.3 m kink half way, and in), proven and published by the lot reconcile as six-point
+//! long ways. A resident leaves one lot and parks in the other along those ways, a save made on
+//! the way in continues tick for tick, a format 125 save loads, and a way changed under a pulling
+//! car ends its manoeuvre without stranding it. A two-waypoint own route is a plain path, and a
+//! failing one rejects its place with the hint and no fallback.
 
 use super::*;
-use crate::simulation::parking::DockRoute;
+use crate::assets::AssetManifest;
+
+// The lot with `routes` (anchor, lot-frame waypoints) as its places' own routes, registered
+// over the drive-lines asset.
+fn register_routes(core: &mut SimCore, routes: &[(u32, Vec<[f32; 2]>)]) {
+    let mut manifest = AssetManifest::from_str(LOT).unwrap();
+    manifest.mesh_parts[0].imported_bounds = Some([[-2.0, 0.0, -2.5], [2.0, 1.0, 2.5]]);
+    for (anchor, route) in routes {
+        manifest.anchors[*anchor as usize].route_in = route.clone();
+    }
+    core.allocator
+        .registry
+        .register("parking", manifest, String::new());
+}
+
+// Place `anchor`'s own route: down the gate line (x -7), along its row's line with a 0.3 m kink
+// half way to the place, and to the point in front of it.
+fn own_route(anchor: u32) -> Vec<[f32; 2]> {
+    let (_, [x, z], forward) = PLACES.into_iter().find(|p| p.0 == anchor).unwrap();
+    let row = z - forward * 2.5;
+    vec![[-7.0, 7.0], [-7.0, row], [(x - 7.0) / 2.0, row + 0.3], [x, row]]
+}
 
 // Building `index`'s lot-frame point in the world.
-fn world(core: &SimCore, index: usize, p: Vector2) -> [f32; 2] {
+fn world(core: &SimCore, index: usize, [x, z]: [f32; 2]) -> [f32; 2] {
     let b = &core.allocator.buildings[index];
     let (bx, bz) = building_local_xz_basis(b.facing_dir, [0.0, 0.0, 1.0]);
-    let w = Vector2::new(b.center_x, b.center_y) + bx * p.x + bz * p.y;
+    let w = Vector2::new(b.center_x, b.center_y) + bx * x + bz * z;
     [w.x, w.y]
 }
 
-// The jog's far point, in the lot's frame. The four-point path keeps to x -7 and east of it, so a
-// car west of x -7.5 is on the jog.
-const JOG: Vector2 = Vector2::new(-8.5, 5.5);
+// Republishes building `index`'s lot as a site edit does.
+fn republish(core: &mut SimCore, index: usize) {
+    let handle = core.allocator.building_handles.handle(index);
+    core.allocator.parking_site_changes.push(handle);
+    core.publish_parking_sites();
+}
 
-// Place `anchor`'s long way in building `index`: its road connection, down the gate line with a
-// jog out to x -8.5 and back, along its row's line with a 0.3 m kink half way, and in.
-fn long_way(core: &SimCore, index: usize, anchor: u32) -> Vec<[f32; 2]> {
+fn place(core: &SimCore, index: usize, anchor: u32) -> crate::simulation::core::handles::Handle<crate::simulation::parking::Place> {
     let building = core.allocator.building_handles.handle(index).to_bits();
-    let (_, [x, z], forward) = PLACES.into_iter().find(|p| p.0 == anchor).unwrap();
-    let connection = core
+    let place = core
         .parking
         .source_bays(PlaceSource::Building { building, anchor })[0]
-        .1
-        .path[0];
-    let row = z - forward * 2.5;
-    let inner = [
-        Vector2::new(-7.0, 7.0),
-        JOG,
-        Vector2::new(-7.0, 4.0),
-        Vector2::new(-7.0, row),
-        Vector2::new((x - 7.0) / 2.0, row + 0.3),
-        Vector2::new(x, row),
-        Vector2::new(x, z + forward * 2.5),
-    ];
-    std::iter::once(connection)
-        .chain(inner.map(|p| world(core, index, p)))
-        .collect()
+        .0;
+    crate::simulation::core::handles::Handle::from_bits(place)
 }
 
-fn publish_long_ways(core: &mut SimCore, index: usize) {
-    let ways: Vec<_> = PLACES
-        .iter()
-        .map(|&(anchor, ..)| {
-            let way = DockRoute::new(&long_way(core, index, anchor)).unwrap();
-            (anchor, way)
-        })
-        .collect();
-    core.publish_long_car_ways(index, &ways);
-}
-
-// The drive-lines city, two lots 900 m apart on one road, every place on its long way, and a
-// resident sent from one to the other: (city, agent, home, target).
-fn city() -> (SimCore, usize, usize, usize) {
+// Two lots 900 m apart on one road with `routes` registered.
+fn lots(routes: &[(u32, Vec<[f32; 2]>)]) -> SimCore {
     let mut c = SimCore::new(
         WorldConfig::new(2048.0, 1024.0, 16.0, 10.0)
             .with_chunking(128.0, 0.0)
@@ -68,24 +66,35 @@ fn city() -> (SimCore, usize, usize, usize) {
     c.treasury.balance = 1_000_000.0;
     commit(&mut c, (-600.0, 0.0), (600.0, 0.0));
     let id = register(&mut c);
+    register_routes(&mut c, routes);
     c.place_service_building_internal(&id, -450.0, -30.0)
         .unwrap();
     c.place_service_building_internal(&id, 450.0, -30.0)
         .unwrap();
     c.publish_pending_building_site_changes();
+    c
+}
+
+// The drive-lines city, every place on its own long way, and a resident sent from one lot to the
+// other: (city, agent, home, target).
+fn city() -> (SimCore, usize, usize, usize) {
+    let routes: Vec<_> = PLACES.iter().map(|&(a, ..)| (a, own_route(a))).collect();
+    let mut c = lots(&routes);
     for b in 0..2 {
-        publish_long_ways(&mut c, b);
-        let building = c.allocator.building_handles.handle(b).to_bits();
+        assert!(c.parking_rejections(b).is_empty(), "{:?}", c.parking_rejections(b));
         for (anchor, ..) in PLACES {
-            let place = c
-                .parking
-                .source_bays(PlaceSource::Building { building, anchor })[0]
-                .0;
-            let place = crate::simulation::core::handles::Handle::from_bits(place);
-            assert_eq!(c.parking.long_way(place), Some(long_way(&c, b, anchor)));
+            let way = c.parking.long_way(place(&c, b, anchor)).expect("a long way");
+            let connection = way[0];
+            let expected: Vec<_> = std::iter::once(connection)
+                .chain(own_route(anchor).into_iter().map(|p| world(&c, b, p)))
+                .collect();
+            assert_eq!(way.len(), 6, "anchor {anchor}");
+            for (p, e) in way[..5].iter().zip(&expected) {
+                assert!((p[0] - e[0]).hypot(p[1] - e[1]) < 1e-3, "anchor {anchor}: {way:?}");
+            }
         }
     }
-    assert_eq!(c.parking.check_car_ways(), Ok(8 * 8));
+    assert_eq!(c.parking.check_car_ways(), Ok(8 * 6));
     let eastbound = c.allocator.entrances[0].side == -1;
     let (home, target) = if eastbound { (0, 1) } else { (1, 0) };
     let agent = c.debug_add_parking_commuter(home, target).unwrap();
@@ -107,14 +116,20 @@ fn trace(c: &mut SimCore, agent: usize) -> Vec<(u32, u32, String)> {
         .collect()
 }
 
+// Whether the car at lot-frame `car` is on the kink of its way `way` (lot frame): more than
+// 0.2 m off the row's line, east of the corner onto it.
+fn on_kink(way: &[Vector2], car: Vector2) -> bool {
+    (car.y - way[2].y).abs() > 0.2 && car.x > way[2].x + 1.0 && car.x < way[4].x
+}
+
 // Inside a lot on every tick of both manoeuvres, the car keeps within 5 cm of its place's long
-// way and out of every other place, and passes the jog's far point; the time doors sort a place
-// by is its way's stored length at driveway speed. On the way in, past the jog, a save
-// continues tick for tick, with the way loaded beside its row.
+// way and out of every other place, and takes the kink; the time doors sort a place by is its
+// way's stored length at driveway speed. On the way in, past the kink, a save continues tick for
+// tick, with the way loaded beside its row.
 #[test]
-fn a_car_parks_and_leaves_along_long_ways() {
+fn a_car_parks_and_leaves_along_its_places_own_routes() {
     let (mut c, agent, home, target) = city();
-    let (mut jogs, mut saved) = ([false; 2], false);
+    let (mut kinks, mut saved) = ([false; 2], false);
     let mut timed = false;
     for _ in 0..12_000 {
         tick(&mut c);
@@ -123,7 +138,7 @@ fn a_car_parks_and_leaves_along_long_ways() {
             ParkingTripPhase::PullOut => (trip.source, home, 0),
             ParkingTripPhase::PullIn => (trip.destination, target, 1),
             _ => {
-                if jogs[1] && c.agents.current_building[agent] == target {
+                if kinks[1] && c.agents.current_building[agent] == target {
                     break;
                 }
                 continue;
@@ -151,12 +166,9 @@ fn a_car_parks_and_leaves_along_long_ways() {
             .windows(2)
             .map(|leg| segment_distance(at, leg[0], leg[1]))
             .fold(f32::MAX, f32::min);
-        assert!(
-            off < 0.05,
-            "{:?} {off} m off its way at {car:?}",
-            trip.phase
-        );
-        jogs[slot] |= car.x < -7.5;
+        assert!(off < 0.05, "{:?} {off} m off its way at {car:?}", trip.phase);
+        let local_way: Vec<_> = way.iter().map(|&p| local(&c, building, p)).collect();
+        kinks[slot] |= on_kink(&local_way, car);
         for (anchor, [x, z], forward) in PLACES {
             let centre = Vector2::new(x, z + forward * 2.5);
             let inside = (car.x - centre.x).abs() < 1.25 && (car.y - centre.y).abs() < 2.5;
@@ -168,16 +180,12 @@ fn a_car_parks_and_leaves_along_long_ways() {
                 })
                 .first()
                 .is_some_and(|&(h, _)| h == place.to_bits());
-            assert!(
-                !inside || own,
-                "{:?}: the car crosses anchor {anchor} at {car:?}",
-                trip.phase
-            );
+            assert!(!inside || own, "{:?}: the car crosses anchor {anchor} at {car:?}", trip.phase);
         }
-        // Past the jog on the way in, a save continues tick for tick.
-        if slot == 1 && jogs[1] && !saved && car.y < 4.0 {
+        // Past the kink on the way in, a save continues tick for tick.
+        if slot == 1 && kinks[1] && !saved {
             saved = true;
-            let file = temp_save_path("long-ways-pull-in");
+            let file = temp_save_path("own-routes-pull-in");
             let text = file.to_str().unwrap();
             c.save_game_settled_at(text, None, 0).unwrap();
             let live = trace(&mut c, agent);
@@ -186,12 +194,12 @@ fn a_car_parks_and_leaves_along_long_ways() {
                 c.parking.long_way(place),
                 Some(way.iter().map(|p| [p.x, p.y]).collect())
             );
-            assert_eq!(c.parking.check_car_ways(), Ok(8 * 8));
+            assert_eq!(c.parking.check_car_ways(), Ok(8 * 6));
             assert_eq!(trace(&mut c, agent), live);
             std::fs::remove_file(file).unwrap();
         }
     }
-    assert_eq!(jogs, [true, true], "it took the jog leaving and arriving");
+    assert_eq!(kinks, [true, true], "it took the kink leaving and arriving");
     assert!(saved);
     assert_eq!(c.agents.current_building[agent], target, "it arrived");
 }
@@ -199,17 +207,7 @@ fn a_car_parks_and_leaves_along_long_ways() {
 // A save of format 125, which could hold no long way, loads its rows as saved.
 #[test]
 fn a_format_125_save_loads() {
-    let mut c = SimCore::new(
-        WorldConfig::new(2048.0, 1024.0, 16.0, 10.0)
-            .with_chunking(128.0, 0.0)
-            .with_terrain_resolution(2.0),
-    );
-    c.treasury.balance = 1_000_000.0;
-    commit(&mut c, (-600.0, 0.0), (600.0, 0.0));
-    let id = register(&mut c);
-    c.place_service_building_internal(&id, -450.0, -30.0)
-        .unwrap();
-    c.publish_pending_building_site_changes();
+    let mut c = lots(&[]);
     let file = temp_save_path("long-ways-format-125");
     let text = file.to_str().unwrap();
     c.save_game_settled_at(text, None, 0).unwrap();
@@ -227,9 +225,9 @@ fn a_format_125_save_loads() {
     assert_eq!(c.parking.check_car_ways(), Ok(0));
 }
 
-// The target lot republished without long ways while the car pulls in past the jog: the car
-// is on no leg of the new path, so its manoeuvre ends at the place, and it walks on to the
-// door. The freed ways leave the pool consistent.
+// Back to automatic while the car pulls in past the kink: the target lot, republished without
+// its own routes, gives the car no leg of the new path, so its manoeuvre ends at the place and it
+// walks on to the door. The freed ways leave the pool consistent.
 #[test]
 fn a_way_changed_under_a_pulling_car_ends_its_manoeuvre() {
     let (mut c, agent, _, target) = city();
@@ -239,10 +237,14 @@ fn a_way_changed_under_a_pulling_car_ends_its_manoeuvre() {
         let trip = c.agents.parking_trip[agent];
         if !changed && trip.phase == ParkingTripPhase::PullIn {
             let at = Vector2::new(c.agents.pos_x[agent], c.agents.pos_y[agent]);
-            if local(&c, target, at).x < -7.5 {
-                c.publish_long_car_ways(target, &[]);
+            let way: Vec<_> = c.parking.long_way(trip.destination).unwrap().into_iter()
+                .map(|[x, z]| local(&c, target, Vector2::new(x, z)))
+                .collect();
+            if on_kink(&way, local(&c, target, at)) {
+                register_routes(&mut c, &[]);
+                republish(&mut c, target);
                 assert!(c.parking.long_way(trip.destination).is_none());
-                assert_eq!(c.parking.check_car_ways(), Ok(8 * 8));
+                assert_eq!(c.parking.check_car_ways(), Ok(8 * 6));
                 changed = true;
             }
         }
@@ -250,6 +252,45 @@ fn a_way_changed_under_a_pulling_car_ends_its_manoeuvre() {
             break;
         }
     }
-    assert!(changed, "it reached the jog");
+    assert!(changed, "it reached the kink");
     assert_eq!(c.agents.current_building[agent], target, "it arrived");
+}
+
+// Own routes of two waypoints and of one: the first is the place's plain four-point path (no
+// long way), along the lines the automatic route takes; the second, its last leg askew, rejects
+// its place with the reason and the hint, and no other route is tried.
+#[test]
+fn a_short_own_route_is_a_plain_path_and_a_failing_one_rejects() {
+    let auto = lots(&[]);
+    let mut c = lots(&[(2, vec![[-7.0, 0.5], [2.5, 0.5]]), (3, vec![[-7.0, 0.5]])]);
+    let path = c.parking.source_bays(PlaceSource::Building {
+        building: c.allocator.building_handles.handle(0).to_bits(),
+        anchor: 2,
+    })[0]
+        .1
+        .path;
+    let automatic = auto.parking.source_bays(PlaceSource::Building {
+        building: auto.allocator.building_handles.handle(0).to_bits(),
+        anchor: 2,
+    })[0]
+        .1
+        .path;
+    for (p, a) in path.iter().zip(automatic) {
+        assert!((p[0] - a[0]).hypot(p[1] - a[1]) < 1e-4, "{path:?} {automatic:?}");
+    }
+    assert!(c.parking.long_way(place(&c, 0, 2)).is_none());
+    assert_eq!(c.parking.check_car_ways(), Ok(0));
+    let building = c.allocator.building_handles.handle(0).to_bits();
+    assert!(c.parking.source_bays(PlaceSource::Building { building, anchor: 3 }).is_empty());
+    let reasons = c.parking_rejections(0).into_owned();
+    assert_eq!(reasons.len(), 1, "{reasons:?}");
+    assert!(
+        reasons[0].contains("parking anchor 3: the way into the spot from waypoint 1 runs ")
+            && reasons[0].ends_with(
+                "° off the spot's direction: a car drives into its spot along it, so put the last waypoint in line behind the spot (within 30°). This spot follows its own route: move its waypoints, or choose Back to automatic"
+            ),
+        "{reasons:?}"
+    );
+    republish(&mut c, 0);
+    assert_eq!(c.parking_rejections(0).into_owned(), reasons);
 }

@@ -129,7 +129,7 @@ fn no_way(straight: &str) -> String {
         .and_then(|rest| rest.split(" (").next())
         .unwrap();
     format!(
-        "no way to drive to this spot: straight from the Driveway, {failure}, and no way along the row or straight down from the Driveway is clear (a car needs a 1.8 m strip of clear paving to drive on and about 5 m by 5 m of it where it turns): clear the way or move the spot"
+        "no way to drive to this spot: straight from the Driveway, {failure}, and no way along the row or straight down from the Driveway is clear (a car needs a 1.8 m strip of clear paving to drive on and about 5 m by 5 m of it where it turns): clear the way, move the spot, or draw this spot's own route (Edit this route)"
     )
 }
 

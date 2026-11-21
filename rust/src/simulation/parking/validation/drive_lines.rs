@@ -75,7 +75,7 @@ pub(super) fn shortest_route(
                         .as_ref()
                         .is_none_or(|(shortest, ..)| length < *shortest)
                     {
-                        let route = Some(path);
+                        let route = Some(path.to_vec());
                         failed = Some((length, Rejection { route, ..rejection }));
                     }
                 }
@@ -100,7 +100,7 @@ pub(super) fn no_way(
     tried: Option<Rejection>,
 ) -> Rejection {
     let reason = format!(
-        "no way to drive to this spot: straight from the Driveway, {part} {cause}, and no way along the row or straight down from the Driveway is clear (a {} needs a {} m strip of clear paving to drive on and about {} of it where it turns): clear the way or move the spot",
+        "no way to drive to this spot: straight from the Driveway, {part} {cause}, and no way along the row or straight down from the Driveway is clear (a {} needs a {} m strip of clear paving to drive on and about {} of it where it turns): clear the way, move the spot, or draw this spot's own route (Edit this route)",
         row.noun, row.body_width, row.turn_room
     );
     match tried {
@@ -120,14 +120,11 @@ pub(super) fn no_way(
 
 /// The turn envelopes a car spot's proof checked, for the editor to draw (`PARK-24`): the car's
 /// square, squared to the spot, at each inner point of `path` bending by more than 30°, and at
-/// the approach when `at_gate` (a straight path, whose car always turns there). O(1).
-pub(super) fn car_envelopes(
-    path: &[Vector2; 4],
-    forward: Vector2,
-    at_gate: bool,
-) -> Vec<[Vector2; 4]> {
+/// the approach when `at_gate` (a straight path, whose car always turns there). `path` is four
+/// points, or a spot's own route (`PARK-26`). O(points).
+pub(super) fn car_envelopes(path: &[Vector2], forward: Vector2, at_gate: bool) -> Vec<[Vector2; 4]> {
     let row = super::ProofClass::Car.proof();
-    (1..3)
+    (1..path.len().saturating_sub(1))
         .filter(|&j| {
             (j == 1 && at_gate)
                 || turns_at(path[j - 1], path[j], path[j + 1], row.straight_through_cos)

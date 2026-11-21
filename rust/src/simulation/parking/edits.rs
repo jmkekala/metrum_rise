@@ -256,8 +256,8 @@ impl ParkingSystem {
 
     /// Replaces only this building: O(old log old + old × new anchors + local towing),
     /// bounded by its asset-local swept-path validation, never city size. `ways` (anchor, whole
-    /// way; `PARK-25`) names the bays whose way is longer than their `path`; nothing produces
-    /// one before `PARK-26`. O(old × ways) more for their lookup and O(their points) to store.
+    /// way; `PARK-25`) names the bays whose way is longer than their `path`: a place's own route
+    /// (`PARK-26`). O(old × ways) more for their lookup and O(their points) to store.
     pub(crate) fn replace_building(
         &mut self,
         building: u64,

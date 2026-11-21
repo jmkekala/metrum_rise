@@ -9,8 +9,10 @@ mod drive_lines;
 mod editor;
 mod route;
 pub(super) use drive_lines::DriveLines;
-pub(crate) use editor::{editor_lot_payload, route_arc};
-pub(super) use route::{DockWayInput, dock_ways, validate_dock};
+pub(crate) use editor::{car_route_to_pin, editor_lot_payload, route_arc};
+pub(super) use route::{
+    DockWayInput, car_row_path, dock_ways, validate_car_route, validate_dock,
+};
 #[cfg(test)]
 pub(crate) use route::arc_waypoints;
 #[cfg(test)]
@@ -25,10 +27,6 @@ pub(super) struct AnchorBay {
 }
 
 const SUPPORT_TOLERANCE_M: f32 = 0.05;
-
-// The freight row's bend limit in degrees, for the words of a drive-through's rejections; the
-// proof itself compares the legs' headings with `straight_through_cos`.
-const BEND_LIMIT_DEG: u32 = 15;
 
 pub(super) fn driveway_points_inward(forward: Vector2, outward: Vector2) -> bool {
     forward.dot(-outward) >= 0.9
@@ -65,6 +63,9 @@ pub(crate) struct VehicleProof {
     /// through a slighter bend the two corridors, each extended half a body past the corner,
     /// already cover the body's sweep.
     pub straight_through_cos: f32,
+    /// The bend `straight_through_cos` admits, in whole degrees: for the words of a rejection
+    /// and the chords of an authored arc (`PARK-21`, `PARK-26`).
+    pub bend_limit_deg: u32,
     /// Whether the turn off the street always needs an envelope at the approach. A car's does;
     /// a truck's is made on the road through a gate of at least `min_gate` and is not proven in
     /// the lot (owner decision 3).
@@ -107,6 +108,7 @@ const CLASS_TABLE: [VehicleProof; 2] = [
         turn_envelope: 4.85,
         lead: 2.5,
         straight_through_cos: 0.866,
+        bend_limit_deg: 30,
         turn_at_gate: true,
         min_bay: [1.8, 4.5],
         min_gate: 1.8,
@@ -126,6 +128,7 @@ const CLASS_TABLE: [VehicleProof; 2] = [
         lead: 4.25,
         // cos 15°.
         straight_through_cos: 0.965_926,
+        bend_limit_deg: 15,
         turn_at_gate: false,
         min_bay: [3.0, 8.0],
         min_gate: 4.0,
@@ -143,13 +146,13 @@ const CLASS_TABLE: [VehicleProof; 2] = [
 
 /// Why a bay is rejected, with the local shape that failed when one did, so the editor can
 /// draw it, or the leg of an authored way the reason names (`PARK-21`: too short, off the bay's
-/// direction, touching its way), and the drive-line route a car bay was last tried along
-/// (`PARK-24`).
+/// direction, touching its way), and the route a car bay was last tried along: a drive-line
+/// candidate (`PARK-24`) or its own route (`PARK-26`).
 pub(super) struct Rejection {
     pub reason: String,
     pub shape: Option<[Vector2; 4]>,
     pub leg: Option<[Vector2; 2]>,
-    pub route: Option<[Vector2; 4]>,
+    pub route: Option<Vec<Vector2>>,
 }
 
 impl From<&str> for Rejection {
@@ -338,7 +341,7 @@ fn drive_rejection(
         _ if bend => format!(
             "a {noun} needs about {} of clear paving to change direction by more than {}°: bend by at most that much at each point, as chords of an arc, or give it the room",
             row.turn_room,
-            BEND_LIMIT_DEG
+            row.bend_limit_deg
         ),
         _ => format!(
             "a {noun} needs a {width} m strip of clear paving along it, reaching half a {noun} length ({} m) past both ends",
