@@ -863,10 +863,14 @@ freight.
   sweep built, each supplier as it stood at its slot of that hour, and the choice still checks
   the supplier's live stock.
 - **Routing:** freight routes use the exact car-access abstraction of the entrance cache, with
-  direct same-lane frontage travel when the exact points are in forward order.
-  Planned, not built: a carrier's own plan ends at a building's freight gate and loading bay
-  while quotes keep this abstraction
-  ([freight yards](traffic.md#freight-yards-park-19-to-park-22)).
+  direct same-lane frontage travel when the exact points are in forward order. Quotes and the
+  route cache keep it in every city. A carrier's own plan to or from a building with a published
+  dock ends or starts at the building's freight gate instead (`PARK-20`): the truck stands in a
+  free dock until its `FreightCheck` delivers, or with every dock held goes on from the gate to
+  the door at once, and a dispatch from a building with a free dock starts in it. A delivery's
+  timing moves by the yard route's seconds; prices, reservations, refunds and leg timeouts do not
+  change, and a city without docks is bit-identical
+  ([freight yards](traffic.md#stage-a2-trucks-use-docks-park-20-as-built)).
 - **Border quote preparation:** retain the existing per-border network tables for dispatch,
   and derive their exact per-node minimum once per routing revision or border-set change.
   This additional preparation costs O(nodes × borders), with O(nodes + borders) storage;

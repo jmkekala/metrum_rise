@@ -458,7 +458,12 @@ bay and publishes their docks once, as a new city would have them
 it rebuilds the docks' access and the freight gates from the rows
 (`a_dock_goes_with_its_building_and_round_trips_a_save`). No fixture asset has a freight
 Driveway, so every existing city saves and loads as on format 122; the `SIM-02` envelope
-determinism records equal `dev`'s.
+determinism records equal `dev`'s. Stage A2 (`PARK-20`, trucks use docks) changes no format: a
+carrier's trip row writes `freight_gate` and a held dock its `freight_holder`, each only when set,
+so a city without docks writes the bytes it wrote before; a save at every phase of a yard trip
+continues as the live city, and a save taken with a truck in a yard loads after an edit to its
+asset retired the dock, since a format 123 load validates nothing
+([as built](traffic.md#stage-a2-trucks-use-docks-park-20-as-built)).
 
 ## Scheduler
 

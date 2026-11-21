@@ -2723,13 +2723,14 @@ teleport (`TRAFFIC-20`). `PARK-03` (authored yard supply and a parking-backed ad
 
 The freight half of round 2b is now planned as [freight yards](#freight-yards-park-19-to-park-22)
 below (`PARK-19` to `PARK-22`): a truck drives into a yard and stops at a loading bay. That plan
-replaces "freight custody" and "outside-door deliveries" as the next freight work; it takes the
-watchdog away from a truck inside a yard and leaves `TRAFFIC-20` on the road as it is.
+replaces "freight custody" and "outside-door deliveries" as the next freight work. Since stage A2
+(`PARK-20`) a truck inside a yard never reaches the watchdog; `TRAFFIC-20` stays on the road as it
+is.
 
 ### Freight yards (`PARK-19` to `PARK-22`)
 
-**Stage A1 is built ([below](#stage-a1-docks-park-19-as-built)); stages A2, B and C are planned,
-not built.** The plan was written 2026-11-20 as a design round with no code run. Every statement
+**Stages A1 and A2 are built ([A1](#stage-a1-docks-park-19-as-built),
+[A2](#stage-a2-trucks-use-docks-park-20-as-built)); stages B and C are planned, not built.** The plan was written 2026-11-20 as a design round with no code run. Every statement
 about the code before A1 was read in the source or the manifests at `dev` `579c4101` unless it
 says *unverified*; every statement about A2, B and C is a specification. Owner decisions are
 listed [at the end](#owner-decisions-freight-yards) with a recommendation each; the text assumes the
@@ -2972,144 +2973,215 @@ one inside a part. A site under construction publishes no dock. A freight drivew
 switches the proof on so that its narrow gate is reported. The editor's road leg assumes a
 straight street; the plan left the reach of the paving extension unverified.
 
-#### Stage A2: trucks use docks (`PARK-20`)
+#### Stage A2: trucks use docks (`PARK-20`), as built
+
+**Built** on branch `freight-yards-a2` in three rounds (2026-11-21). A building with a published
+dock is served in its yard at both ends of a trip; every other building, every border end, the
+lane model, the freight price, the reservation and refund rules, the leg timeouts and `TRAFFIC-20`
+on the road are as before.
 
 **Behaviour.**
 
-- *Arriving.* A carrier bound for a building with a gate is routed to the gate's lane point
-  instead of the door's. It detaches there as any car does (`try_network_detach`), stands one
-  tick, and the ordered phase gives it the building's first free dock in anchor order. It then
-  drives gate, approach, aisle, stop at 3 m/s and stands in the bay, drawn, facing along its
-  route's last leg, from the aisle into the bay (checked in round 1: the snapshot draws a carrier
-  in access ingress as an off-lane car of its own vehicle type, grounded per bucket, with no
-  parked-car publication; without a standing pose it would face the door).
-- *Refused.* With no free dock it drives the plain access path from the gate's lane point to the
-  door and enters the building, as today's delivery does from the door's lane point. It never
-  waits.
-- *Standing.* The next `FreightCheck` delivers, exactly as it does for a truck inside the
-  building, and sends it back. Its stand is the wait it has today: none to one check interval.
-- *Leaving.* It drives the route back to the gate and enters the lane through the existing
-  attach hold (`lane_attach_slot_clear`, `claim_lane_entry`). It reverses from the bay to the
-  nearest corner that has a proven envelope and drives forward from there; with no such corner
-  it reverses to the street (decision 2).
-- *Loading at the source.* A dispatch from a building with a free dock spawns the carrier
-  standing in it and takes the dock; it leaves at once, as today's carrier leaves the door at
-  once. A returning carrier asks for a dock at its source like an arriving one and is removed by
-  its last check where it stands (decision 10).
-- *As today:* every building without a published dock, every border end, the lane model, the
-  freight price, the reservation and refund rules, the leg timeouts, and `TRAFFIC-20` on the road.
+- *Arriving.* A carrier bound for a building with a freight gate plans to the gate's lane point
+  instead of the door's. At its first access step there it stands (`ready`), and the parking
+  phase's ordered commit, in ascending agent order, grants it the building's first free dock in
+  anchor order. It drives the dock's proven route (lane point, gate, approach, aisle, stop) at
+  3 m/s and stands in the bay, drawn as an off-lane car facing along the route's last leg.
+- *Refused.* With every dock held it drives the plain access path from the gate's lane point to
+  the door and enters the building, as a door delivery does. It never waits.
+- *Standing.* The shipment's next `FreightCheck` delivers, exactly as for a truck inside the
+  building (`shipment_carrier_progress_to_endpoint` counts `AtDock` at the destination as
+  arrived), and turns it back. The stand is the wait it had before: none to one check interval
+  (decision 9).
+- *Leaving.* It backs out along the whole route reversed, nose into the bay, from the stop to the
+  gate's lane point, at 3 m/s, and joins the lane through the existing attach hold. The plan's
+  "reverse to the nearest corner with a proven envelope, then forward" is not built (below).
+- *Loading at the source.* A dispatch from a building with a free dock spawns its truck standing
+  in the first free dock in anchor order, which it takes, and it backs out at once (decision 10).
+  With none free, or no road from the gate, the dispatch is the door's, bit for bit. A returning
+  truck bound for a source with a gate plans to that gate, takes a dock there like any arrival,
+  and is removed by its last check where it stands. Import carriers spawn at a border as before.
 
-**State.** A carrier uses the `ParkingTrip` column it already has (56 bytes, unchanged):
-`vehicle` stays empty, `target` is the building's stable handle, `destination` or `source` the
-dock. (Corrected in `PARK-20` round 2: in `PullOut`, `target` is the handle of the building whose
-gate the plan ends at, or `NO_FREIGHT_GATE` for a plan ending at a door or a border, since the
-row has no other place for the trip's far end.)
+**State.** No new column: the `ParkingTrip` row stays 56 bytes (55 used, one byte free). A
+carrier's yard trip has `vehicle` empty and the flag `freight_gate` set (in the row's padding: the
+access flags byte has no free bit; serde default and skipped when false, so an idle row saves as
+before). `held_dock()` names the dock a yard trip holds.
 
-| Phase | Meaning for a carrier | Set by |
-| --- | --- | --- |
-| `None` | On the road, at a door, or between the detach and the ordered phase | planner |
-| `PullIn` (reused) | Gate to stop along the dock's route | the commit that grants the dock |
-| `AtDock` (new) | Standing in the bay | the commit after the route's end |
-| `PullOut` (reused) | Stop to gate, then the lane attach | dispatch and `start_return_trip` |
-| `GateToDoor` (new) | The refused carrier's path from the gate's lane point to the door | the commit that refuses |
+| Phase (with `freight_gate`) | Meaning | `target` | Dock | Set by | Tick phase |
+| --- | --- | --- | --- | --- | --- |
+| `None` | On the road to the gate's lane point, or standing there (`ready`) | the building's handle | none | the plan sites (`set_freight_trip`, `lifecycle.rs`); the lane point after a pull-out bound for another yard | serial event; movement |
+| `PullIn` | Lane point to stop along the dock's route | the building's handle | `destination` | the gate commit that grants the dock | parking ordered phase |
+| `AtDock` | Standing in the bay; the access step returns at once | the building's handle | `destination` | the commit after the route's end | parking ordered phase |
+| `GateToDoor` | The refused carrier's access path from the gate's lane point to the door | the building's handle | none | the gate commit that refuses | parking ordered phase |
+| `PullOut` | Stop to the gate's lane point, the route reversed, drawn reversing | the handle of the building whose gate its plan ends at, or `NO_FREIGHT_GATE` (`Handle::NONE`'s bits) for a door or a border | `source` | dispatch (`start_freight_trip_at_dock`), the return (`pull_out_of_dock`), recovery | egress, own row |
 
-A flag says the plan ends at a gate. It cannot be an access flag: the flags byte has no free bit
-(checked 2026-11-21 in `PARK-20` round 1: `0x01` to `0x80` are all taken, `ACCESS_WALK_TO_SIDEWALK`
-the last). It is `ParkingTrip::freight_gate`, in the row's padding (the row used 54 of its 56
-bytes, now 55; the size assertion stands), set at the plan and kept through `PullIn`, `AtDock` and
-`GateToDoor`, and not written when false, so a row without it saves as before. On the road the
-phase is `None`, so no network step tests anything new for any agent.
-
-**Where each decision is made.**
-
-1. *Plan time* (dispatch, return, replan; serial events and the planner): the destination end is
-   `allocator.freight_gates[target].arrive` when the building has one, else
-   `allocator.entrances[target]`; the flag is set to match. The origin end of a carrier leaving a
-   dock is the gate's `leave` entrance (the same gate in A2). Sites: `plan_building_origin_trip`
-   and `plan_building_to_border_trip` (`planning/trip.rs`), the border-origin plans
-   (`lifecycle.rs`), the replan's `target_entrance` (`movement/network/replan.rs`) and the
-   watchdog's exact-access replan.
-2. *Gate commit* (the parking tick's ordered phase, ascending agent order): a flagged carrier in
-   access ingress with phase `None` sets `ready` on its first step. Its visit grants the first
-   dock of the building with `active` and no holder, in anchor order, or refuses. Both are O(docks
-   of the building).
-3. *Arrival commit:* the route's end sets `ready`; the visit sets `AtDock`.
-4. *Release:* when the pull-out has attached to its lane, where a resident's origin bay is
-   released today.
-
-`shipment_carrier_progress_to_endpoint` counts a carrier as arrived when it is inside the
-building, as today, or `AtDock` with that building as `target`. That one function is the whole
-change to `logistics/progress.rs`'s reading of arrivals. `dispatch_shipment` gains the
-`ParkingSystem`, to take a dock at dispatch. (Corrected in `PARK-20` round 2: starting a pull-out
-needs only the trip row, which names the dock, the truck's standing position and the allocator's
-gate, so `check_shipment` and `deliver_shipment` keep their signatures.)
+The yard trip ends, and with it any hold, at the door (`arrive_in_building`), at a new plan
+(`set_freight_trip`), when the pull-out reaches the lane point (`after_freight_pull_out`, which
+keeps only a next gate), when the building goes, and at removal.
 
 **The fallback rule, in full.** A delivery uses the yard if and only if both hold:
 
-- at the plan, the destination building has a published dock (an active `Dock` row, saved);
-- at the gate commit, one of its docks has no holder (`freight_holder`, saved).
+- at the plan, the destination building has a freight gate (an active dock row; the gate record
+  `allocator.freight_gates` is rebuilt from the rows by every reconcile and by the load) and a car
+  route reaches the gate's lane point;
+- at the gate commit, one of its docks is free.
 
-Otherwise it uses the door: from the door's lane point when the first fails, from the gate's
-lane point when only the second does. A truck spawns in a dock if and only if, at its dispatch
-event, its source has an active dock with no holder. The dock rows, the holders, the trip rows
-and the flag are saved; commits run in ascending agent order and dispatches in event order. So
-the choice is the same at any worker count and the same after a load. Nothing reads live traffic,
-the clock or a derived cache to make it.
+Otherwise it uses the door: planned to the door's lane point when the first fails, from the
+gate's lane point when only the second does. A truck spawns in a dock if and only if, at its
+dispatch event, its source has a free dock and a car route leaves the gate. The dock rows, the
+holders, the trip rows and the flag are saved; commits run in ascending agent order and
+dispatches in event order, so the choice is the same at any worker count and after a load.
+Nothing reads live traffic, the clock or a derived cache to make it.
 
-**Timing and the economy.**
+**Where a dock is held and released.** A dock's saved `freight_holder` counts only while
+`holds_freight_dock(holder, dock)`: the holder resolves and its trip, flagged, names the dock in
+`PullIn`, `AtDock` or `PullOut`. The gate commit and the dispatch spawn record the holder; nothing
+clears it on release. So the dock is free from the moment the trip stops naming it: at the gate's
+lane point when the pull-out gets there, whether it attaches at once or waits in the attach hold;
+at removal (finished, expired, cancelled), for which the agent removal path has no parking hook
+(`remove_freight_carrier` is reached from logistics and from the allocator's building removal,
+neither holding the parking system); and at any new plan or arrival. The site reconcile clears
+such stale holders before it reconciles the rows (`clear_left_dock_holders`), so a retired row
+held by nobody is removed. Explicit release happens only in the commit's own exits
+(`leave_freight_yard`).
 
-- *Prices do not change.* The freight quote and the route cache keep reading the entrance cache
-  (`FreightEntranceAccess`), in every city (decision 5). The carrier's own plan is the only reader
-  of the gate. A quote is then off by the distance between the door's and the gate's lane points,
-  at most the lot's width, and by the yard route; a quote is fixed at the contract and legs time
-  out after hours, so nothing depends on that difference.
-- *Deliveries are slower by seconds.* The yard route replaces a straight line to the door at the
-  same 3 m/s. For the coal mine that is 16 m from the gate to the stop against about 13 m from the street
-  to the door today (*unverified*: measured on the manifest). A settle can move by one check interval when those seconds cross a check.
-- *Dwell.* No minimum is added (decision 9).
-- *Bit-identical:* a city with no published dock, in every respect: books, pass fingerprints,
-  day and lane records, events, saved bytes apart from the format number and an empty dock list.
-  That covers every fixture and every economy test, since no asset they load has a gate.
-- *Allowed to change:* in a city with docks, the times of deliveries to and from dock buildings
-  and whatever follows from them. Prices, reservations and refunds keep their rules.
-- *The demand pass.* The plan mutates no customer, business or input book and adds no
-  `journal_*` call site: `deliver_shipment` and the settlement are untouched.
-- *Proof per stage:* a unit test asserts that no asset of the test and bundled packs publishes a
-  dock; the `sim02_gate.py envelope determinism` records at 10k and 30k equal the control's byte
-  for byte; `PERF-06` work counts are identical; the economy contract's deterministic work counts
-  are identical.
+**Edits, recovery and the watchdog, as built.**
 
-**Edits, recovery and the watchdog.**
-
-| Event | What happens | Hook |
+| Event | Phase | What happens |
 | --- | --- | --- |
-| A dock stops proving, or its asset drops it, with a holder | The row goes inactive and stays, with its route, until the holder releases it; then it is removed. No new claim is granted on it | `replace_source`, as a retired bay keeps its geometry for its borrower |
-| A building's last dock or its gate changes | Carriers bound for it lose their plan and replan to the new gate or the door, found by one pass over the shipments | the site reconcile; `O(shipments)` per such edit, as `SAVE-06`'s border check |
-| A building is bulldozed with a truck in its yard | Its open shipments settle and their carriers leave, as today. A carrier already on its way home keeps the inactive row and drives out | the existing building removal; the site journal |
-| A road edit clears a carrier's plan in a yard | A pull-in ends in its bay (`AtDock`), as a resident's pull-in ends in its bay (`PARK-11`). A pull-out stands at the dock and plans again on the parking retry wheel with the stranded walkers' backoff | `clear_route_plan_after_road_edit`, `queue_parking_retry` |
-| The frontage road is bulldozed | The lot's supply is disabled as today; docks go inactive by the first row; a carrier in the yard waits by the row above | `reconcile_parking_frontages` |
-| A carrier is removed (finished, failed, timed out) | It releases a dock it holds | Not the agent removal path: checked in round 1, a resident's custody is not released there (`remove_agent_record` has no parking hook; the household lifecycle releases it, `ParkingSystem::remove_household_car` from `SimCore::publish_parking_households`), and every carrier removal goes through `AgentSystem::remove_freight_carrier`, reached from `logistics/progress.rs` and from a building's or border's cancellation inside the allocator's removal, neither holding the parking system. Built instead: a dock's `freight_holder` counts only while the holder's trip names the dock in `PullIn` or `AtDock` (`AgentSystem::holds_freight_dock`), so a removal, a new plan or an arrival frees it with no hook; the gate commit reads that, and the site reconcile clears such holders before it reconciles the rows (`clear_left_dock_holders`) |
-| Undo | The restored building's docks are published again with no holder. Shipments are not restored, as today | the site journal |
+| A road edit drops the plan (`clear_route_plan_after_road_edit`) | `None` on the road | Plans again as any carrier; `replan_entrance` gives the gate, or the door when the gate went |
+| | `None` at the gate, `GateToDoor` | Enters at the door as a door carrier whose plan dropped does; the yard trip ends there |
+| | `PullIn` | Ends in its bay at the route's stop (`AtDock`), as a resident's pull-in does (`PARK-11`) |
+| | `AtDock` | Stands; only the return reads a plan, and it plans afresh |
+| | `PullOut` | Stops where it is on its route and keeps the dock (`stand_in_yard`, `access_state.rs`); the same tick's ordered commit plans its way out again from the dock's own access (`plan_way_out_of_dock`, `yard.rs`; `replan_freight_pull_out`, `lifecycle.rs`), keeping its place on the route and its journey clock |
+| A stale lane (no legal exit or entry, no route geometry) | `PullIn` | Ends in its bay; never put back on the road |
+| | `PullOut` | As a dropped plan, recorded once as `StaleEntry` whose outcome the commit writes |
+| | `GateToDoor` | Back on the lane at its lane point, planning to the gate again (`replan_entrance` keeps the gate for `GateToDoor`) |
+| The frontage road goes | `PullOut` | Stops in the yard; the commit plans nothing while the building's road is deleted and retries |
+| No road leaves the gate for a pull-out | `PullOut` | Stays, holding the dock, and retries on the parking retry wheel (`TripEvent::ParkingRetry`) with the stranded walkers' backoff: 5 s, 30 s, then every 2 min (the step in `network_replan_failures`). Recorded once on `events`: "no road from its loading bay's gate to building n" (or "border node n"); "stops in the yard, keeps its loading bay and plans the way out again in 5 s, until its delivery times out". The other trucks of the building deliver at the door meanwhile |
+| The shipment's leg runs out while it waits | any | The check that finds the leg overdue expires a dispatch (with its refund) or finishes a return, and removes the truck where it stands, which frees the dock. This is the bound on the wait: at most the leg's timeout divided by 2 min retries, one plan each, nothing per tick |
+| A dock stops proving, or its asset drops it, with a holder | `PullIn`, `AtDock`, `PullOut` | The row goes inactive and stays with its route, refreshed access included; the truck finishes its yard trip on it. No new grant is made on it. The next reconcile of the building after the truck has left removes it |
+| The building's last dock goes, so its gate record goes | `AtDock` at the return | The truck backs out of its dock all the same: it waits in the bay (`back_out_without_a_gate`) for the commit to plan its way out from the dock's own access, by the rows above |
+| | `None` on the road, `PullOut` bound for it | Loses its plan in one pass over the shipments (`replan_carriers_bound_for_gate`, `nodes/sim/core/parking.rs`) and plans again to the door; also when the gate moves, to the new gate. O(shipments), only on a reconcile that moves or removes a dock building's gate |
+| | `None` at the gate, `GateToDoor` | Goes on: the gate commit reads the current gate (no gate: the door, from where it stands) |
+| A dock moves | `AtDock` | The new row is added and active; the old one stays inactive for the truck standing in it, which leaves along the old route. The next truck is granted the new dock |
+| A revalidation that leaves a dock's pose | any | The row, its handle and its holder are kept |
+| The building is bulldozed | any | Its shipments are cancelled and their trucks removed, as for door carriers; the dock rows go with the building |
+| The frontage road is bulldozed | `PullIn` | Ends in its bay; a pull-out waits by the rows above |
+| A carrier is removed | any | Its dock is free (the holder rule); tested in `PullIn`, `AtDock` and `PullOut`, spawned and delivered |
+| Undo | | The restored building's docks are published again with no holder; shipments are not restored, as before |
 
-The watchdog skips a carrier whose phase is not `None`, as it skips a resident on a parking leg:
-a truck in a yard is never teleported. It stands at its dock, retries on the saved wheel and is
-reported once on `events` (`TRAFFIC-32`'s record); the shipment's own leg timeout bounds the
-wait, and until then the other trucks deliver at the door. On the road a carrier keeps
-`TRAFFIC-20` unchanged, and holds no dock there.
+The watchdog never sees a truck in a yard: standing in a dock or backing out of one it does not
+plan on the road, and a pull-in whose way goes ends in its bay. The one yard phase that can reach
+it is `GateToDoor` after a stale lane put the truck back on the road: it holds no dock, its yard
+trip ends there, and `TRAFFIC-20` applies to it as to any carrier on the road.
+
+**Saves.** No format change: format 123 (`PARK-19`) already carried `freight_holder`, written
+only when set; a carrier's trip row writes `freight_gate` only when set. A city without docks
+writes the bytes it wrote before A2. Load validation accepts a yard trip that names a dock row
+(active or retired) in `PullIn`, `AtDock` or `PullOut`. Verified: a save at every phase continues
+tick for tick as the live city (`a_truck_round_trips_a_save_at_every_phase_of_its_yard_trip`: on
+the road to the gate, pulling in, standing, sent from the gate to the door;
+`a_truck_backing_out_of_a_dock_round_trips_a_save`; `a_truck_spawned_in_a_dock_round_trips_a_save`);
+a format 122 save still derives its docks at load
+(`an_older_save_derives_the_docks_a_fresh_validation_gives`); and a save taken with a truck in a
+yard loads as saved after an edit to the asset retired its dock, since a format 123 load validates
+nothing, the edit taking effect at the next revalidation of the lot, which retires the row under
+the truck as any edit does (`a_save_with_a_truck_in_a_yard_loads_after_an_edit_retired_its_dock`).
+
+**Timing and the economy.** Quotes and the route cache keep the entrance cache (decision 5;
+`the_quote_of_a_dock_building_equals_its_quote_without_the_dock`). No `journal_*` call site is
+added; `deliver_shipment` and the settlement are untouched; `check_shipment` keeps its signature
+(the return needs only the trip row, the standing position and the allocator's gate record, and a
+truck whose gate record went defers its plan to the parking commit instead of threading the
+parking system through `deliver_shipment`). `dispatch_shipment` takes the parking system. A city
+without a published dock is bit-identical: the determinism gate's records and the `PERF-06` work
+counts equal `dev`'s (below).
+
+**What a carrier without a dock pays.** Plan time: one emptiness test of `freight_gates` per
+dispatch, return or border-origin plan, and one phase compare at the return. Access ingress: one
+byte of the row the step reads (twice, short-circuit). Access egress: nothing on the step's path;
+the yard tests sit on its failure branches and inside the existing `PullOut` branch residents take
+once per pull-out. Arrival: one byte test. Parking commit: one byte test per candidate. Failure
+paths (`reset_invalid_access_plan`, the watchdog, the border bootstrap): one byte test each.
+Render: one byte and phase test per access agent per frame. A site reconcile: two lookups in the
+gate map, usually empty.
 
 **Complexity.**
 
 | Path | Bound |
 | --- | --- |
 | Network step, any agent | Unchanged: no new test |
-| Access step of a flagged carrier | O(1): one map read for the gate, then today's path advance |
-| `AtDock` | O(1) per standing carrier and tick, no candidate note |
-| Gate commit, arrival commit, release | O(docks of one building), O(1), O(1); two candidate notes per yard visit |
-| Dispatch and return | Today's plan plus O(docks of one building) |
-| Render | A carrier in a yard is an off-lane car, grounded per frame as any car on an access path |
+| Access step of a carrier | O(1): one byte test; a flagged carrier one gate map read, then the path advance |
+| `AtDock` | O(1) per standing truck and tick, no candidate note |
+| Gate commit, arrival commit, release | O(docks of one building), O(1), O(1) with no write |
+| Dispatch and return | The plan as before, plus O(docks of one building) |
+| A pull-out planned again | One plan per commit visit, only after a failure or a wheel wake; no per-tick retry |
+| The gate pass | O(shipments) per reconcile that moves or removes a dock building's gate |
+| Site reconcile | O(the building's dock rows), retired ones included |
+| Render | A truck in a yard is an off-lane car, grounded per frame as any car on an access path |
 
-No allocation: rows and the map exist before the tick, and a claim writes columns. The commit is
-serial because a visit takes what the next one wants, as for bays.
+No allocation in a per-tick or per-agent path: rows and the gate map exist before the tick, a
+grant writes columns, and a plan allocates its route only when it is made.
+
+**Differences from the plan, with their reasons.**
+
+1. *The flag* is a byte in the row's padding (`ParkingTrip::freight_gate`), not an access flag:
+   the flags byte has no free bit.
+2. *Release* is at the gate's lane point, whether the truck attaches or waits in the attach hold,
+   not at the attach: the egress step that reaches the lane point is the last step that knows the
+   yard trip; the dock is behind the truck from there.
+3. *No removal hook*: a hold counts only while its truck's trip names the dock, so removal, a new
+   plan and an arrival release it with no parking write (the agent removal path holds no parking
+   system).
+4. *A pull-out's `target`* names the far end's gate building or `NO_FREIGHT_GATE`, since the row
+   has no other place for the trip's far end.
+5. *`check_shipment` and `deliver_shipment` keep their signatures*: the return reads the trip row,
+   the standing position and the gate record; a truck whose gate record went is planned by the
+   parking commit instead (difference 9).
+6. *The truck reverses the whole route* in stage A, not to the nearest corner with a proven
+   envelope and forward from there: the decision taken for stage A, since a forward turn at a
+   corner is a manoeuvre the four-point route does not carry; stage B's drive-through routes
+   give the forward way out.
+7. *A building removed under a homebound truck* cancels its shipment and removes the truck, as for
+   door carriers; the plan's "keeps the inactive row and drives out" is not built (owner's
+   decision for A2).
+8. *A retired row* stays until the next reconcile of its building after its truck left, not until
+   the release itself: release is implicit, and the reconcile is where rows change.
+9. *Recovery plans from the dock's own access*, not the gate record, so it outlives a gate that
+   went; a truck turned back while its building has no gate record waits in the bay for that plan.
+10. *A stale pull-in ends in its bay*, as a dropped plan does; the plan named only the dropped
+    plan.
+11. *The watchdog* needs no skip: no yard phase reaches it but `GateToDoor` back on the road,
+    which ends its yard trip and takes the road's rules.
+12. *The gate pass* covers carriers on the road and pull-outs bound for the gate; one standing at
+    the old gate or in the yard goes on by the gate commit and its own dock's route.
+13. *Round 2 rule replaced*: round 2 ended a pull-out whose plan went at the door; round 3 builds
+    the plan's stand and retry.
+
+**Liveness run** (the plan's gate; `freight_yards_keep_deliveries_alive_for_14_days`, ignored,
+manual, `nodes/sim/core/scenario/freight_yard_cases.rs`). The producer town (`ECON-12`) for 14
+days, its six loading-bay assets (coal mine, farm, power plant, food processing plant, milling
+machines, grocery store) given in memory a 4.5 m freight gate straight in front of the bay, the bay
+turned into the lot, at the first position where the editor's dock proof passes (car spots in the
+gate's line removed and the lot paved whole where needed), beside a control with the same variants
+whose gates are car Driveways (no dock). Run 2026-11-21 on `freight-yards-a2`:
+
+| Count | With docks | Control |
+| --- | --- | --- |
+| Deliveries in a yard (stood in a dock) | 132 | 0 |
+| Deliveries at the door after the gate commit refused (every dock held) | 10 | 0 |
+| Deliveries at the door of a building with a dock, planned there | 0 | 0 |
+| Deliveries at a door without a dock | 0 | 133 |
+| Deliveries to a border | 136 | 136 |
+| Carriers that started in their source's dock | 179 | 0 |
+| Failed, expired, vanished in transit | 0, 0, 0 | 0, 0, 0 |
+| Dock buildings, docks at the end | 17, 17 | 0, 0 |
+| Dock occupancy: held dock-frames of all dock-frames; most held at once | 7,852 of 598,658 (1.3 %); 8 | |
+| Trip failure lines naming a yard | 0 | 0 |
+
+Every delivery to a dock building went through its yard or, refused at the gate, to its door;
+none waited and none failed.
 
 #### Stage B: drive-through routes (`PARK-21`)
 
@@ -3142,8 +3214,11 @@ building, by the A1 rule.
 direction, saved with it). `maneuver_path` hands out a borrowed slice, and
 `advance_along_local_access_path` and `local_access_target_segment` take a slice instead of the
 five-point array: O(points) per access step, 5 today, at most 25. `FreightGate::leave` becomes
-the exit gate. The dock is still released at the lane attach. The kerb gap at each gate is
-today's `KerbBlocker` for a driveway.
+the exit gate. The dock is still released at the exit gate's lane point, by the A2 holder rule
+(the trip stops naming it there). A2's recovery plans a pull-out from the dock's own access, its
+route's first point: with an exit gate that becomes the out-route's first point, and the
+reversing pose (`access_phase_direction`) applies only to a route reversed, not to an out-route.
+The kerb gap at each gate is today's `KerbBlocker` for a driveway.
 
 **The models repository's sidecar** (a proposal; that repository is separate). Its schema is
 version 1 and the game's reader refuses unknown keys, so the reader must accept the field before
@@ -3170,6 +3245,10 @@ a dock. A carrier refused a dock takes the first free waiting position and stand
 released dock goes to the waiting carrier with the oldest claim, on that building's release
 event. A carrier that has waited 10 authored minutes (a tuning value) drives to the door from
 where it stands and delivers there. With no free waiting position it goes to the door at once.
+A2 has no release event: a dock is free as soon as its truck's trip stops naming it, with no
+parking write (the holder rule). C's hand-over therefore needs one: the egress step that ends a
+pull-out would note the building for the ordered phase, which hands the dock to its oldest
+waiting claim.
 
 **The guard against starvation** is that bound: a delivery is late by at most the wait, and
 never waits on another truck's progress beyond it. A building without waiting positions behaves
@@ -3188,7 +3267,7 @@ In the repository's styles: unit tests beside the code, Godot tests only for wha
 | Stage | Tests |
 | --- | --- |
 | A1 | `validation.rs`: the car table reproduces every existing test's result; a straight freight route needs no envelope; a bend over 15° needs the 8.45 m square and names it; a 3.9 m gate is refused. `yard_hedge.rs` or the site derivation: a through passage splits a rectangle in two and the eaves margin clears the mouth; a low passage cuts for cars only. `parking/tests`: a dock is in no chunk list, no candidate list and no supply count; `replace_source` keeps an unmoved dock; save and load round-trip a dock; an older save derives the same rows as a fresh validation. A pack test: no asset of the test and bundled packs publishes a dock. The editor payload: the road-to-Driveway rejection matches the placed one (`PARK-18`); an asset without a gate exports. One Godot asset-editor test: the Passage object and the loading bay issue list |
-| A2 | Agent tests on a minimal graph (no gameplay constructor): arrive, stand, deliver, pull out; two carriers and one dock, the second delivers at the door, at 1 and 8 workers with equal products; spawn in a dock at dispatch; save at each phase and reload to equal continuations; a dock removed under each phase; a road edit under a pull-in and a pull-out; the watchdog never fires in a yard; a carrier removal releases its dock. A logistics test: the quote of a dock building equals its quote without the dock |
+| A2 (built) | `economy/agents/tests/freight_yards.rs` on a minimal graph (no gameplay constructor): arrive, stand, deliver, pull out; two carriers and one dock, the second delivers at the door, at 1 and 8 workers with equal products; a refusal meeting a pull-out at 1 and 8 workers; spawn in a dock at dispatch and back to it; a pull-out whose plan goes stands and plans again; one with no way out waits on the retry wheel, reported once, never moved; a stale pull-in ends in its bay; removal frees the dock in every holding phase; the leg timeout ends a wait; the quote of a dock building equals its quote without the dock. `nodes/sim/core/tests/parking/docks.rs`: save and reload at every phase; a dock retired under each holding phase; a dock moved and revalidated under a standing truck; a gate that goes under a truck on the road; a save that loads after an edit retired its dock; bulldozing with a truck standing or backing out. The ignored 14-day liveness run (`scenario/freight_yard_cases.rs`) and the still fixture (`write_the_freight_yard_still_save`) |
 | B | A half-circle route proves and a self-touching one is refused; the slice path advance equals the array one on every existing path test; a truck leaves by the exit gate without reversing; the sidecar reader accepts and refuses `passages` |
 | C | A waiting carrier takes the released dock in claim order; the bound sends it to the door; save and reload while waiting |
 
@@ -3238,6 +3317,43 @@ No row is beyond the runner's tolerance; the fixtures' car products equal the co
 recorded digest), and the `SIM-02` envelope and determinism records are byte-equal to `dev`'s
 (`tools/sim02_gate.py envelope determinism`, six workers, branch rerun 2026-11-21 against the
 control's records of 2026-11-20 from the same binary).
+
+**A2, measured** (2026-11-21 02:54-03:06, one session, one boot, level F by the path rule).
+Control: release test binary of `dev` `b5af1f1b1` (SHA-256 `d98ec5d95527de2e`); branch:
+`freight-yards-a2` at `8e4119f7d` (`7d88c2fe6cfb1f6a`). Pinned to the eight performance cores,
+eight workers, no Godot, no build, nothing else heavy running. Both binaries write format 123; their
+economy snapshot keys differ (the branch's fixture revision moved with its new scenario module), so
+each prepared its own files in one cache directory before the locks:
+
+```bash
+./run.sh --timing --level F --control "$CONTROL_TEST_BINARY" --branch "$TEST_BINARY" \
+    --control-cache "$ARTIFACTS/snapshots-park19" --branch-cache "$ARTIFACTS/snapshots-park19" \
+    --base dev --k22 --artifacts "$ARTIFACTS"
+```
+
+| Row | Control | Branch | Reading |
+| --- | --- | --- | --- |
+| 30k 32×, C B B C: mean / p99 / p99.9 / worst unpreempted, ms | 4.275 / 6.313 / 7.623 / 8.953 | 4.265 / 6.365 / 7.244 / 8.504 | level on every metric and component (agent +0.9 %, snapshot -1.1 %, slot -1.0 %, tolerance 2.5 %); every run a known `PERF-17` exception |
+| 30k 1×, one day a side: mean / p99 / p99.9 / worst unpreempted, ms | 2.090 / 3.323 / 3.782 / 4.891 | 2.098 / 3.327 / 3.724 / 5.171 | level (agent +1.2 % of 3.5 %); `PERF-07` passes on both |
+| `load_s` (30k 32× and 1×) | 2.289, 2.297 | 2.305, 2.315 | level |
+| K22 30k: click-to-ack / commit, ms | 6.47 / 6.44 | 6.62 / 6.58 | one run a side, within run-to-run spread |
+
+`PERF-06` (`benchmark_agent_tick_contract`, eight workers, the same cores, run straight after the
+session under the timing lock, eleven alternated runs a side; the runner has no reader for its
+`PERF_AGENT` lines): the work counts are identical on every run, and the branch's median is inside
+the control's interquartile range on all six rows.
+
+| Mode, tier | Control median (Q1-Q3), ms | Branch median, ms |
+| --- | --- | --- |
+| network 10k / 30k | 0.761 (0.575-0.993) / 0.837 (0.679-1.749) | 0.406 / 0.810 |
+| access egress 10k / 30k | 0.772 (0.587-1.312) / 2.404 (1.526-3.546) | 0.847 / 1.811 |
+| access ingress 10k / 30k | 0.302 (0.253-0.457) / 0.542 (0.448-0.784) | 0.282 / 0.611 |
+
+The single-tick samples spread widely (one timed tick per run); they show no regression, not a
+speedup. The plan's A2 acceptance holds: `PERF-06` work counts identical and medians within the
+control's quartiles, `PERF-07` within tolerance with `PERF-17` the known exception, and the
+determinism gate's records identical (`tools/sim02_gate.py envelope determinism`, six workers,
+`8e4119f7d` against the control's records of the same `dev` binary).
 
 #### Risks
 
@@ -3315,7 +3431,8 @@ and timing at its level. Estimates are in agent rounds and are estimates.
   dock and route as the validator prints them, from a copy of the owner's asset with the passage
   added; an editor screenshot of that route and of a rejection; the F timing.
 
-**A2 (`PARK-20`), 3 rounds.**
+**A2 (`PARK-20`), 3 rounds, done** ([as built](#stage-a2-trucks-use-docks-park-20-as-built)).
+The outline as planned:
 
 - *Files:* `agents/tick/planning/trip.rs`, `agents/lifecycle.rs`, `movement/network/replan.rs`,
   `movement/replan_watchdog.rs`, `movement/access_state/ingress.rs` and `egress.rs`,
