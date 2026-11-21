@@ -3,7 +3,8 @@
 ## Asset editor regression for the site layout tools (`TOOLS-40`): position fields keep a drafted
 ## value to 0.1 mm and an edit writes only the coordinate it changes; "Move whole site" moves
 ## everything on the lot as one undo step and refuses a move off the lot; an asset with a model
-## draft ledger offers a loading bay at each vehicle door.
+## draft ledger offers a loading bay at each vehicle door; a surface's vertices are typed as numbers
+## or set to a rectangle by two corners, each one undo step.
 ## Run with --asset-editor in an isolated profile; the fixture model is generated.
 extends SceneTree
 
@@ -97,6 +98,7 @@ func _run() -> void:
 	_precision()
 	_move_site()
 	_bay_at_door()
+	_surface_vertices()
 
 	editor.free()
 	await process_frame
@@ -164,3 +166,29 @@ func _bay_at_door() -> void:
 	expect(document.undo_label() == "Loading bay at door" and editor._selected_site_anchor_index == 3, "one step, the new bay selected")
 	document.undo()
 	expect(document.snapshot() == before, "one undo removes it")
+
+# A vertex typed, a rectangle by two corners; a vertex off the lot or a crossing outline refused.
+func _surface_vertices() -> void:
+	editor._set_selected_site_surface(0)
+	var panel: RefCounted = editor._surface_vertices
+	panel.refresh()
+	expect(panel._root.visible and panel.list.item_count == 4, "the yard's four vertices are listed")
+	expect(panel._corners[0].value == 0.0 and panel._corners[3].value == 19.5, "the corners start at the yard's bounds")
+	var before: Dictionary = document.snapshot()
+	panel.list.select(1)
+	panel.list.item_selected.emit(1)
+	expect(panel.selected == 1 and is_equal_approx(panel._x.value, 14.5), "the selected vertex's fields")
+	panel._x.value = 13.2501
+	var vertices: Array = _params()["site_surfaces"][0]["vertices"]
+	expect(is_equal_approx(float(vertices[1][0]), 13.2501) and float(vertices[1][1]) == -10.0 and vertices[0] == [0.0, -10.0], "the typed X moves that vertex only: %s" % [vertices])
+	expect(document.undo_label() == "Move vertex", "one step: %s" % document.undo_label())
+	document.undo()
+	expect(document.snapshot() == before, "one undo restores it")
+	expect(not panel.set_vertex(1, [15.5, -10.0]), "a vertex off the lot is refused")
+	expect(not panel.set_vertex(1, [-5.0, 5.0]), "a crossing outline is refused")
+	expect(document.snapshot() == before, "refusals change nothing")
+	expect(panel.set_rectangle([4.0, 5.0], [-2.0, -3.0]), "a rectangle by two corners")
+	vertices = _params()["site_surfaces"][0]["vertices"]
+	expect(vertices == [[-2.0, -3.0], [4.0, -3.0], [4.0, 5.0], [-2.0, 5.0]] and document.undo_label() == "Set rectangle", "the outline is the rectangle: %s" % [vertices])
+	document.undo()
+	expect(document.snapshot() == before, "one undo restores the outline")

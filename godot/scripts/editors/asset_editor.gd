@@ -29,6 +29,7 @@ const RoutePanel = preload("res://scripts/editors/asset_editor/route_panel.gd")
 const TaskPanels = preload("res://scripts/editors/asset_editor/task_panels.gd")
 const SiteMovePanel = preload("res://scripts/editors/asset_editor/site_move_panel.gd")
 const DoorBayPanel = preload("res://scripts/editors/asset_editor/door_bay_panel.gd")
+const SurfacePanel = preload("res://scripts/editors/asset_editor/surface_panel.gd")
 
 const PANEL_GAP := EditorSpacing.CONTROL_GAP
 # A loading bay's note: it publishes no dock, but the asset still exports.
@@ -65,6 +66,7 @@ var _passages := PassagePanel.new()
 var _routes := RoutePanel.new()
 var _site_move := SiteMovePanel.new()
 var _door_bays := DoorBayPanel.new()
+var _surface_vertices := SurfacePanel.new()
 
 @onready var sim: SimulationNode = $SimulationNode
 
@@ -884,6 +886,7 @@ func _update_site_surface_controls() -> void:
 	# A planting area is lawn: it has no paving height.
 	_view.rows["_surface_y"].visible = str(surface.get("material", "")) not in ["trees", "bushes", "mixed", "flowers"]
 	_updating_site_surface_controls = false
+	_surface_vertices.refresh()
 	if _session != null:
 		_session.selection_changed()
 

@@ -121,7 +121,7 @@ fn edit(
         "duplicate" => !resolved.is_empty() && resolved.iter().all(|v| v.3.duplicates()),
         "rename" => resolved.len() == 1 && resolved[0].3 != ObjectKind::Entrance,
         "delete" => !resolved.is_empty(),
-        "material" | "insert_vertex" | "delete_vertex" => {
+        "material" | "insert_vertex" | "delete_vertex" | "set_vertex" | "set_rectangle" => {
             resolved.len() == 1 && resolved[0].3 == ObjectKind::Yard
         }
         "create" => resolved.is_empty() && text(&params, "asset_class") == "building",
@@ -356,6 +356,7 @@ fn edit(
                 }
                 entry.set("vertices", vertices);
             }
+            "set_vertex" | "set_rectangle" => edit_surface(&params, &mut entry, action, args)?,
             "passage" => edit_passages(&mut entry, args)?,
             "route" if text(args, "op") == "arc" => arc_route(&params, *index, &mut entry, args)?,
             "route" => edit_route(&mut entry, args)?,
@@ -367,6 +368,54 @@ fn edit(
     }
     next.set("params", params);
     Ok((next, selection))
+}
+
+// A surface's vertices as numbers (`TOOLS-40`): "set_vertex" puts vertex `vertex` at `point`
+// (`[x, z]`), "set_rectangle" makes the outline the rectangle with corners `a` and `b`; each is
+// refused, as a drag is held back, when a vertex leaves the lot or the outline self-intersects
+// (`surface_edit`). Only `vertices` is written. O(vertices²).
+fn edit_surface(
+    params: &VarDictionary,
+    surface: &mut VarDictionary,
+    action: &str,
+    args: &VarDictionary,
+) -> Result<(), String> {
+    use crate::assets::authoring::surface_edit;
+    let pair = |value: Option<Variant>| -> Option<[f64; 2]> {
+        let values = value?.try_to::<VarArray>().ok()?;
+        Some([values.get(0)?.try_to::<f64>().ok()?, values.get(1)?.try_to::<f64>().ok()?])
+    };
+    let half = |key: &str| {
+        params.get(key).and_then(|v| v.try_to::<f64>().ok()).unwrap_or(1.0)
+            * f64::from(crate::assets::asset::validation::ZONE_CELL_M)
+            * 0.5
+    };
+    let lot = [half("lot_width_cells"), half("lot_depth_cells")];
+    if action == "set_vertex" {
+        let mut stored = array(surface, "vertices");
+        let current = stored
+            .iter_shared()
+            .map(|v| pair(Some(v)).ok_or("Invalid vertex"))
+            .collect::<Result<Vec<_>, _>>()?;
+        let index = args
+            .get("vertex")
+            .and_then(|v| v.try_to::<i64>().ok())
+            .and_then(|v| usize::try_from(v).ok())
+            .ok_or("Invalid vertex")?;
+        let point = pair(args.get("point")).ok_or("Expected two finite numbers")?;
+        surface_edit::set_vertex(&current, index, point, lot)?;
+        // The other vertices stay exactly as authored.
+        stored.set(index, &varray![point[0], point[1]].to_variant());
+        surface.set("vertices", stored);
+    } else {
+        let corner = |key: &str| pair(args.get(key)).ok_or("Expected two corners");
+        let vertices: VarArray = surface_edit::rectangle(corner("a")?, corner("b")?, lot)?
+            .into_iter()
+            .map(|[x, z]| varray![x, z].to_variant())
+            .collect();
+        surface.set("vertices", vertices);
+    }
+    Ok(())
 }
 
 // Adds, removes or changes one passage of a mesh part (`PARK-19`): `op` is "add" (at the

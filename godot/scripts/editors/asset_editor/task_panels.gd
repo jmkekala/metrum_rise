@@ -179,7 +179,8 @@ func _surfaces(box: Control) -> void:
 	v._site_surface_material_btn.item_selected.connect(e._on_site_surface_material_selected)
 	v._site_surface_material_btn.item_selected.connect(func(_value): e._session.capture_geometry("Change surface material"))
 	v._site_surface_y_spin = _geometry_number(body, "_surface_y", "Height (m)", -50, 50, 0.01, e._on_site_surface_spin_changed)
-	_label(body, "Drag vertices in the viewport. Right-click an edge to add a vertex, or a vertex to remove it.")
+	_label(body, "Drag vertices in the viewport. Right-click an edge to add a vertex, or a vertex to remove it. Or type them under Vertices as numbers.")
+	e._surface_vertices.build(v, body)
 	_label(body, "Planting areas are lawn: each spawned house fills them with its own trees or shrubs, and players can plant trees there too.")
 	v.surface_properties.visible = false
 
