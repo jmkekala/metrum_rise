@@ -606,7 +606,7 @@ fn anything_at_the_asset_path_blocks_the_draft() {
 fn the_ledger_round_trips_through_the_strict_reader() {
     let fixture = Fixture::new();
     assert_eq!(read_ledger(&fixture.pack(), ASSET).unwrap(), None);
-    let path = write_ledger(&fixture.pack(), ASSET, &fixture.sidecar, &fixture.role()).unwrap();
+    let path = write_ledger(&fixture.pack(), ASSET, &fixture.sidecar, &fixture.role(), None).unwrap();
     assert_eq!(
         path,
         fixture
@@ -1214,4 +1214,33 @@ fn doors_are_listed_in_the_lot_frame_through_the_part() {
     assert_eq!(doors[0]["facing"], json!([1.0, 0.0, 0.0]));
     assert_eq!(doors[1]["position"], json!([-3.1, 0.7, -0.5]));
     assert_eq!(doors[1]["facing"], json!([-1.0, 0.0, 0.0]));
+}
+
+#[test]
+fn a_source_commit_is_a_hex_id_kept_as_given_and_recorded_in_the_ledger() {
+    use super::sidecar::{read_ledger_entry, source_commit};
+    assert_eq!(source_commit(None), Ok(None));
+    for good in ["034dc4c", "034DC4C", "6e3973f9979a5b41e6289f64a0061325cd1f3621"] {
+        assert_eq!(source_commit(Some(good.into())), Ok(Some(good.into())));
+    }
+    for bad in ["034dc4", "034dc4g", "main", "6e3973f9979a5b41e6289f64a0061325cd1f36210"] {
+        let error = source_commit(Some(bad.into())).unwrap_err();
+        assert!(error.contains("7 to 40 hexadecimal digits"), "{error}");
+    }
+    let fixture = Fixture::new();
+    write_ledger(&fixture.pack(), ASSET, &fixture.sidecar, &fixture.role(), Some("034dc4c")).unwrap();
+    let entry = read_ledger_entry(&fixture.pack(), ASSET).unwrap().unwrap();
+    assert_eq!(entry.source_commit.as_deref(), Some("034dc4c"));
+    // The sidecar still reads through the strict reader beside it.
+    assert!(read_ledger(&fixture.pack(), ASSET).unwrap().is_some());
+    // An entry written without one has no key at all.
+    write_ledger(&fixture.pack(), ASSET, &fixture.sidecar, &fixture.role(), None).unwrap();
+    let text = fs::read_to_string(super::sidecar::ledger_path(&fixture.pack(), ASSET)).unwrap();
+    assert!(!text.contains("source_commit"), "{text}");
+    // The stale report's line: only when the given commit differs from the recorded one.
+    let line = super::report::source_commit("034dc4c", None, "6e39").unwrap();
+    assert_eq!((line.check, line.field, line.stale), ("source", "source_commit", false));
+    assert!(line.message.contains("the ledger records none"), "{}", line.message);
+    assert!(super::report::source_commit("034dc4c", Some("034dc4c"), "6e39").is_none());
+    assert!(super::report::source_commit("034dc4c", Some("b5660bb"), "6e39").is_some());
 }

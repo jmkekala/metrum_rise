@@ -495,6 +495,21 @@ fn site_layout(
     lines
 }
 
+/// An information line when the `--source-commit` given differs from the one the ledger records
+/// (none recorded counts as different): the files may have been copied from another commit.
+pub(crate) fn source_commit(given: &str, recorded: Option<&str>, sidecar: &str) -> Option<Line> {
+    (recorded != Some(given)).then(|| {
+        info(
+            "source",
+            "source_commit",
+            format!(
+                "the files are copied from models commit {given}; the ledger records {} (the sidecar's own source.commit is {sidecar})",
+                recorded.unwrap_or("none")
+            ),
+        )
+    })
+}
+
 /// Information lines for each role input that differs from the existing asset's manifest, so a
 /// mistyped asset id that hits a real asset is noticed. `lot_cells` is compared only when the
 /// role gives it. None marks the asset stale.

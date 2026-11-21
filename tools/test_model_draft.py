@@ -184,6 +184,10 @@ class CommandTests(unittest.TestCase):
         self.assertTrue(Path(report["copy"]["asset"]).is_relative_to(self.root))
         self.assertNotEqual(Path(report["copy"]["asset"]).parent.parent.parent, self.root / "mods")
 
+    def test_source_commit_is_passed_as_given(self):
+        self.assertEqual(self.draft("--source-commit", "034dc4c")[1]["seen"]["request"]["source_commit"], "034dc4c")
+        self.assertIsNone(self.draft()[1]["seen"]["request"]["source_commit"])
+
     def test_check_asks_for_the_check_only_and_never_with_write(self):
         status, report = self.draft("--check")
         self.assertEqual(status, 0)

@@ -545,6 +545,25 @@ pub(crate) fn default_display_name(asset_id: &str) -> String {
 pub(crate) struct Ledger {
     pub(crate) sidecar: serde_json::Value,
     pub(crate) role: serde_json::Value,
+    /// The models commit the files were copied from (`--source-commit`), as given, when the
+    /// author names one beside the sidecar's own `source.commit` (which built the scripts).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) source_commit: Option<String>,
+}
+
+/// `--source-commit` checked: a hex commit id of 7 to 40 digits, kept as given.
+pub(crate) fn source_commit(value: Option<String>) -> Result<Option<String>, String> {
+    match value {
+        Some(commit)
+            if !(7..=40).contains(&commit.len())
+                || !commit.bytes().all(|b| b.is_ascii_hexdigit()) =>
+        {
+            Err(format!(
+                "--source-commit '{commit}' is not a commit id: 7 to 40 hexadecimal digits"
+            ))
+        }
+        value => Ok(value),
+    }
 }
 
 pub(crate) fn ledger_path(pack: &Path, asset_id: &str) -> PathBuf {
@@ -553,6 +572,17 @@ pub(crate) fn ledger_path(pack: &Path, asset_id: &str) -> PathBuf {
 
 /// The ledger's sidecar, read by the same strict reader; `None` when the asset has no entry.
 pub(crate) fn read_ledger(pack: &Path, asset_id: &str) -> Result<Option<Facts>, String> {
+    let Some(ledger) = read_ledger_entry(pack, asset_id)? else {
+        return Ok(None);
+    };
+    let path = ledger_path(pack, asset_id);
+    Facts::from_value(ledger.sidecar)
+        .map(Some)
+        .map_err(|e| format!("ledger {}: {e}", path.display()))
+}
+
+/// The ledger entry as written; `None` when the asset has none.
+pub(crate) fn read_ledger_entry(pack: &Path, asset_id: &str) -> Result<Option<Ledger>, String> {
     let path = ledger_path(pack, asset_id);
     if !path.exists() && !path.is_symlink() {
         return Ok(None);
@@ -564,21 +594,20 @@ pub(crate) fn read_ledger(pack: &Path, asset_id: &str) -> Result<Option<Facts>, 
         ));
     }
     let text = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
-    let ledger: Ledger =
-        serde_json::from_str(&text).map_err(|e| format!("ledger {}: {e}", path.display()))?;
-    Facts::from_value(ledger.sidecar)
+    serde_json::from_str(&text)
         .map(Some)
         .map_err(|e| format!("ledger {}: {e}", path.display()))
 }
 
-/// Copy the sidecar as read and the role with its defaults filled in beside the pack's assets.
-/// The scanner registers only `asset.toml` files, and an editor republish replaces only
-/// `assets/<asset_id>/`.
+/// Copy the sidecar as read, the role with its defaults filled in and the optional source commit
+/// beside the pack's assets. The scanner registers only `asset.toml` files, and an editor
+/// republish replaces only `assets/<asset_id>/`.
 pub(crate) fn write_ledger(
     pack: &Path,
     asset_id: &str,
     sidecar: &serde_json::Value,
     role: &serde_json::Value,
+    source_commit: Option<&str>,
 ) -> Result<PathBuf, String> {
     let path = ledger_path(pack, asset_id);
     let folder = path.parent().ok_or("ledger has no folder")?;
@@ -589,6 +618,7 @@ pub(crate) fn write_ledger(
     let ledger = Ledger {
         sidecar: sidecar.clone(),
         role: role.clone(),
+        source_commit: source_commit.map(str::to_owned),
     };
     let text = serde_json::to_string_pretty(&ledger).map_err(|e| e.to_string())? + "\n";
     crate::assets::authoring::files::write_atomic(&path, text.as_bytes())

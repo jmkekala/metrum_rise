@@ -30,6 +30,9 @@ pub(crate) struct Inputs {
     pub(crate) role: Role,
     /// The sidecar's folder, which every file path in it is relative to.
     pub(crate) export: PathBuf,
+    /// The models commit the files were copied from (`--source-commit`), checked by
+    /// `sidecar::source_commit`; the ledger records it beside the sidecar's own commit.
+    pub(crate) source_commit: Option<String>,
 }
 
 /// Read the preconditions that need no pack: sidecar schema and version, a clean source, no hero
@@ -68,6 +71,7 @@ pub(crate) fn read_inputs(sidecar_path: &Path, role: Value) -> Result<Inputs, St
         sidecar,
         role,
         export,
+        source_commit: None,
     })
 }
 
@@ -155,6 +159,8 @@ pub(crate) fn derive(inputs: &Inputs, mods: &Path, work: &Path) -> Result<Derive
         "economy_profile": params["economy_profile"],
         "schemes": facts.variants.len(),
         "free_space": rules::free_space(facts, lot, position),
+        "sidecar_commit": facts.source.commit,
+        "source_commit": inputs.source_commit,
         "doors": report::doors_in_lot(facts, &placed),
     });
     let document = json!({
@@ -241,6 +247,17 @@ pub(crate) fn existing(pack: &Path, inputs: &Inputs) -> Option<Existing> {
         lines.push(report::line("facts", "asset_id", error));
         None
     });
+    if let Some(given) = &inputs.source_commit {
+        let recorded = sidecar::read_ledger_entry(pack, asset_id)
+            .ok()
+            .flatten()
+            .and_then(|entry| entry.source_commit);
+        lines.extend(report::source_commit(
+            given,
+            recorded.as_deref(),
+            &inputs.facts.source.commit,
+        ));
+    }
     lines.extend(report::stale_report(
         &inputs.facts,
         ledger.as_ref(),

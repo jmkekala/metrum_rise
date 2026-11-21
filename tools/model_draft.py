@@ -4,7 +4,7 @@
 docs/asset_editor.md "Draft command").
 
     tools/model_draft.py --sidecar <model>/export/<name>.model.json --role <role.json> \\
-        --mods <packs folder> [--write | --check] [--report <report.json>]
+        --mods <packs folder> [--write | --check] [--source-commit <hash>] [--report <report.json>]
 
 Godot runs headless in a throwaway profile (tools/godot_isolated.py), never in the player's. The
 role's pack is copied from `--mods` into that profile, and the draft is published and checked
@@ -107,6 +107,7 @@ def request(args, role, profile):
         "write_mods": os.path.abspath(args.mods) if args.write else None,
         "target_mods": os.path.abspath(args.mods),
         "check": args.check,
+        "source_commit": args.source_commit,
     }
 
 
@@ -121,6 +122,9 @@ def main(argv=None):
     mode.add_argument("--check", action="store_true",
                       help="check the existing asset as it is in the pack: its stale report and the "
                            "acceptance check, drafting and writing nothing")
+    parser.add_argument("--source-commit",
+                        help="the models commit the files were copied from, recorded in the ledger beside "
+                             "the sidecar's own source.commit (7 to 40 hexadecimal digits)")
     parser.add_argument("--report", help="also write the JSON report here")
     parser.add_argument("--godot", default="godot", help="the Godot binary")
     parser.add_argument("--profile-root", help="where the throwaway profile is made (default: the temporary directory)")

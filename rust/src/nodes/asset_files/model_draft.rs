@@ -44,6 +44,9 @@ struct Request {
     /// the pack (the copy of it in `mods`), drafting and writing nothing.
     #[serde(default)]
     check: bool,
+    /// `--source-commit`: the models commit the files were copied from, for the ledger.
+    #[serde(default)]
+    source_commit: Option<String>,
 }
 
 /// The exit status a draft leaves (`tools/model_draft.py` passes it on).
@@ -70,7 +73,8 @@ pub(super) fn run(request: &str, engine: &Engine) -> (i64, Value) {
         // Named from the role as sent, so a refusal of the role itself still names it.
         let label = asset_label(&request.role);
         asset = Some(label.clone());
-        let inputs = draft::read_inputs(&request.sidecar, request.role)?;
+        let mut inputs = draft::read_inputs(&request.sidecar, request.role)?;
+        inputs.source_commit = sidecar::source_commit(request.source_commit)?;
         let mut report = json!({"asset": label});
         if request.check {
             let exit = check_existing(&inputs, &request.mods, engine, &mut report)?;
@@ -183,6 +187,7 @@ fn draft_into(
         asset_id,
         &inputs.sidecar,
         &json!(inputs.role),
+        inputs.source_commit.as_deref(),
     )
     .map_err(|e| format!("assets/{asset_id} was published, but its {e}"))?;
     let outcome = acceptance::check(
@@ -269,6 +274,12 @@ fn summary(report: &Value) -> String {
             draft["entrance"]["forward"]
         ));
         lines.push(format!("  capacity: {}", capacity(draft)));
+        if let Some(commit) = draft["source_commit"].as_str() {
+            lines.push(format!(
+                "  source: files from models commit {commit}; the sidecar was built at {}",
+                text(&draft["sidecar_commit"])
+            ));
+        }
         let free = &draft["free_space"];
         lines.push(format!(
             "  free space: front {} m, back {} m, left {} m, right {} m",
@@ -383,10 +394,11 @@ mod tests {
     // The engine without Godot: the preview copied as the thumbnail, the sidecar's bounds as
     // the imported bounds, every image decoding.
     fn run_fixture(fixture: &Fixture, role: Value, write: bool) -> (i64, Value) {
-        run_with(fixture, role, write, false)
+        run_with(fixture, role, write, json!({}))
     }
 
-    fn run_with(fixture: &Fixture, role: Value, write: bool, check: bool) -> (i64, Value) {
+    // `extra` adds request fields (`check`, `source_commit`).
+    fn run_with(fixture: &Fixture, role: Value, write: bool, extra: Value) -> (i64, Value) {
         let bounds = [[-5.35, 0.0, -6.84], [5.35, 9.5625, 6.84]];
         let engine = Engine {
             thumbnail: &|preview, output| {
@@ -412,13 +424,15 @@ mod tests {
             )
             .unwrap();
         }
-        let request = json!({
+        let mut request = json!({
             "sidecar": fixture.sidecar_path(), "role": role, "mods": copy,
             "work": fixture.root.join("work"),
             "write_mods": if write { json!(fixture.mods()) } else { Value::Null },
             "target_mods": fixture.mods(),
-            "check": check,
         });
+        for (key, value) in extra.as_object().into_iter().flatten() {
+            request[key] = value.clone();
+        }
         run(&request.to_string(), &engine)
     }
 
@@ -725,14 +739,14 @@ mod tests {
         role["asset_id"] = json!("building.commercial.grocery");
         role["economy_profile"] = json!("grocery_basic");
         // Nothing to check before the asset exists.
-        let (exit, report) = run_with(&fixture, role.clone(), false, true);
+        let (exit, report) = run_with(&fixture, role.clone(), false, json!({"check": true}));
         assert_eq!((exit, report["status"].as_str()), (1, Some("refused")), "{report:#}");
         assert!(report["error"].as_str().unwrap().contains("nothing to check"));
         // Drafted into the copy, the workplace warns that it has no parking.
         assert_eq!(run_fixture(&fixture, role.clone(), false).0, 0);
         let copy = fixture.root.join("copy");
         let before = snapshot(&copy);
-        let (exit, report) = run_with(&fixture, role.clone(), false, true);
+        let (exit, report) = run_with(&fixture, role.clone(), false, json!({"check": true}));
         assert_eq!((exit, report["status"].as_str()), (0, Some("checked")), "{report:#}");
         assert!(report["acceptance"]["warnings"].to_string().contains("parking"), "{report:#}");
         let summary = report["summary"].as_str().unwrap();
@@ -745,14 +759,42 @@ mod tests {
         let mut text = fs::read_to_string(&manifest).unwrap();
         text.push_str("\n[[anchors]]\ntype = \"parking\"\nname = \"staff\"\nposition = [7.5, 0, 9]\nforward = [0, 0, -1]\nwidth_m = 2.5\nlength_m = 5\nvehicle_class = \"car\"\n");
         fs::write(&manifest, text).unwrap();
-        let (exit, report) = run_with(&fixture, role.clone(), false, true);
+        let (exit, report) = run_with(&fixture, role.clone(), false, json!({"check": true}));
         assert_eq!(exit, 0, "{report:#}");
         assert!(!report["acceptance"]["warnings"].to_string().contains("parking"), "{report:#}");
         // A failing check fails the command.
         fs::remove_file(copy.join(PACK).join("model_sources/building.commercial.grocery.json")).unwrap();
-        let (exit, report) = run_with(&fixture, role, false, true);
+        let (exit, report) = run_with(&fixture, role, false, json!({"check": true}));
         assert_eq!((exit, report["status"].as_str()), (1, Some("checked")), "{report:#}");
         assert!(report["summary"].as_str().unwrap().contains("FAIL: the asset has no ledger entry"));
+    }
+
+    #[test]
+    fn a_source_commit_goes_into_the_ledger_and_the_stale_report_names_a_different_one() {
+        let fixture = Fixture::new();
+        let commit = |c: &str| json!({"source_commit": c});
+        let (exit, report) = run_with(&fixture, fixture.role(), false, commit("034DC4"));
+        assert_eq!((exit, report["status"].as_str()), (1, Some("refused")), "{report:#}");
+        let (exit, report) = run_with(&fixture, fixture.role(), true, commit("034dc4c"));
+        assert_eq!(exit, 0, "{report:#}");
+        let summary = report["summary"].as_str().unwrap();
+        assert!(summary.contains("source: files from models commit 034dc4c"), "{summary}");
+        let ledger = fs::read_to_string(fixture.pack().join(format!("model_sources/{ASSET}.json"))).unwrap();
+        assert!(ledger.contains("\"source_commit\": \"034dc4c\""), "{ledger}");
+        fs::remove_dir_all(fixture.root.join("copy")).unwrap();
+        // The same commit: no line; another: an information line, exit unchanged. The fresh copy
+        // drafts again; the real pack holds the asset, so the write reports instead.
+        let (exit, report) = run_with(&fixture, fixture.role(), true, commit("034dc4c"));
+        assert_eq!(
+            (exit, report["status"].as_str(), report["info"].clone()),
+            (0, Some("existing"), json!([])),
+            "{report:#}"
+        );
+        fs::remove_dir_all(fixture.root.join("copy")).unwrap();
+        let (exit, report) = run_with(&fixture, fixture.role(), true, commit("b5660bb"));
+        assert_eq!(exit, 0, "{report:#}");
+        assert_eq!(report["info"][0]["field"], "source_commit", "{report:#}");
+        assert!(report["summary"].as_str().unwrap().contains("the ledger records 034dc4c"));
     }
 
     #[test]
