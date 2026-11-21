@@ -72,6 +72,11 @@ func open_preview(mouse: Vector2) -> void:
 		editor._selection.refresh(mouse, true)
 		if not editor._selection.hits.is_empty() and not editor._selection.hits[0].get("occluded", false):
 			hit = editor._selection.hits[0].duplicate()
+		# A leg of the selected loading bay's drive-through, unless a handle is under the pointer.
+		if editor._selection.effective_filter() in ["anchor", "all"] and (hit.is_empty() or not editor._selection.picker.precise(hit)):
+			var leg: Dictionary = editor._selection.picker.route_leg(mouse, editor.get_node("CameraNode"))
+			if not leg.is_empty():
+				hit = leg.merged({"kind": "leg", "index": editor._selected_site_anchor_index})
 	var ground = editor._project_mouse_to_horizontal_plane(mouse, 0.0)
 	_open(hit, mouse, ground)
 
@@ -89,7 +94,7 @@ func _open(hit: Dictionary, mouse: Vector2, ground: Variant) -> void:
 			_item(popup, "Frame entire asset", "frame_all")
 			_item(popup, "Hide scale reference" if editor._preview.has_scale_reference() else "Show scale reference", "reference_toggle")
 			_item(popup, "Lighting & quality…", "lighting")
-		elif editor._session.document.selection_actions(actions._typed(context.targets)).get("delete", false):
+		elif hit.kind not in ["waypoint", "leg"] and editor._session.document.selection_actions(actions._typed(context.targets)).get("delete", false):
 			popup.add_separator()
 			var count: int = context.targets.size()
 			_item(popup, "Delete %d objects" % count if count > 1 else ("Delete mesh part (all LODs)" if hit.kind == "mesh" else "Delete " + ("yard" if hit.kind in ["surface", "vertex"] else "anchor")), "delete")
@@ -106,6 +111,13 @@ func _objects(hit: Dictionary) -> void:
 	if hit.kind == "ghost":
 		_item(popup, "Frame comparison", "frame")
 		_item(popup, "Clear comparison", "ghost_clear")
+		return
+	# Route handles of the selected loading bay, through the route panel's commands.
+	if hit.kind == "waypoint":
+		_item(popup, "Delete waypoint", "delete_waypoint")
+		return
+	if hit.kind == "leg":
+		_item(popup, "Insert waypoint here", "insert_waypoint", {"waypoint": hit.waypoint, "point": [hit.point.x, hit.point.y]})
 		return
 	_item(popup, "Properties", "properties")
 	_item(popup, "Frame selection", "frame")
@@ -268,6 +280,13 @@ func dispatch(action: String, captured: Dictionary, args: Dictionary = {}) -> vo
 			actions.frame(all)
 		"rename": actions.rename(objects, func(): return valid(captured))
 		"delete", "material", "delete_vertex", "insert_vertex": actions.edit(action, objects, args)
+		"delete_waypoint", "insert_waypoint":
+			# Reselect the bay and the waypoint or way the menu was opened on.
+			actions.properties(hit)
+			if action == "delete_waypoint":
+				editor._routes.delete()
+			else:
+				editor._routes.insert_at(args.waypoint, args.point)
 		"rotate": actions.begin_rotation(objects, args.get("angle", NAN))
 		"duplicate":
 			actions.begin_placement("duplicate", objects, {}, captured.get("ground"))

@@ -95,6 +95,8 @@ func label(target: Dictionary) -> String:
 		"mesh": return editor._parts[target.index].name
 		"anchor": return editor._site_anchor_display_label(target.index)
 		"surface", "vertex": return editor._site_surface_display_label(target.index)
+		"waypoint": return "%s · %s · waypoint %d" % [editor._site_anchor_display_label(target.index), editor._routes.WAYS[target.way], target.waypoint + 1]
+		"leg": return "%s · %s" % [editor._site_anchor_display_label(target.index), editor._routes.WAYS[target.way]]
 		"reference": return "Scale reference"
 		"ghost": return "Comparison model"
 	return "Preview"

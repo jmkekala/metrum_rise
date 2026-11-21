@@ -649,6 +649,26 @@ draw and list the results.
   circle, 7 for a quarter turn), rounded to 0.1 mm. Every change, an arc included, is one
   document command (`route`: `exit`, `add`, `move`, `delete`, `arc`), one undo step. A way holds
   at most 21 waypoints.
+- **Waypoints in the view** (`TOOLS-36`): the selected loading bay's authored waypoints are
+  square handles with the yard vertices' 8-pixel pick radius (`asset_picker.gd`), on the access-point layer of the selection filter
+  (All and Access points), ranked with yard vertices above every shape and cycled by Alt+click;
+  no other bay's waypoints are handles. A click selects the waypoint: the panel shows its way,
+  highlights its row and opens Drive-through, and the handle turns cyan; a click on the bay
+  itself selects the bay with no waypoint. Dragging past the 6-pixel threshold moves it on the
+  ground plane, kept in the lot and on the centimetre as yard vertices are. The drag changes only
+  the editor's projection: each pointer move reruns the lot check, so the proven way, its
+  envelopes and any rejection redraw live, and the panel's row and X and Z fields follow (both at
+  0.1 mm). The release sends one `route` `move`, one undo step ("Move waypoint"); a release where
+  it started adds none, and Escape, focus loss or a modal cancels with no step. Delete in the view
+  removes the selected waypoint, not its bay. The context menu offers Delete waypoint on a
+  waypoint and Insert waypoint here on a leg of a proven way (8-pixel line target, as a yard
+  edge's): it inserts the clicked point between the leg's ends (`add`), selected. The gate's own
+  stretch from its road connection to its approach takes no waypoint, and a rejected way draws no
+  legs to click (use Insert before). The gate's road connection, the approach and the stop at the
+  bay's centre are corners of the drawn way only, with no handle: they are derived, not authored.
+  Measured 2026-11-21 (debug build, gamescope headless, the Kuopio pack's copy): one pointer move
+  costs a median 0.96 ms on the grain farm (two waypoints; the lot check 0.28 ms of it) and
+  1.25 ms on the coal mine (16 waypoints, two arcs).
 - **Passages** are authored on the selected mesh part: Model → Passages lists the part's
   passages; Add passage puts one at the part's front face, opening into it along part-local -Z;
   its fields set the mouth's part-local X and Z, the direction it opens toward (±X, ±Z,
@@ -1711,6 +1731,7 @@ library and modal focus. Toolbar deletion uses the same complete-selection comma
 | Main entrance | Properties, Frame, Rotate, Reset to frontage, Create, Delete; no rename/duplicate |
 | Driveway | Properties, Frame, Rename, Duplicate, Create, Delete; no free rotation |
 | Yard/edge/vertex | Properties, Frame, Rename, Duplicate, Material; valid edge insertion/vertex deletion; Create, Delete |
+| Route waypoint / leg | Delete waypoint, or Insert waypoint here on a leg of the selected bay's proven way; Create |
 | Scale reference / comparison | Frame and reset/hide reference, or clear comparison; preview-only, outside history |
 | Library asset | Open, editable copy, comparison, show folder, copy ID, confirmed Move to Trash |
 | Library pack/category/empty space | Pack-bound/category-prefilled New asset; pack folder/refresh; empty-space New asset/Create pack/Refresh |

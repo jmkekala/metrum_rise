@@ -4,7 +4,8 @@
 ## its way in and way out, listed, added, inserted, moved and deleted through the document's
 ## "route" command, so each change is one undo step. The arc helper sends a radius, an angle and
 ## a side; Rust lays the chords. Rust proves the drive and the preview draws its result; this
-## panel only edits and lists.
+## panel only edits and lists. The editor view picks, drags, inserts and deletes the same
+## waypoints through it: a drag shows live on the editor's projection and ends in one "move".
 extends RefCounted
 
 const PreviewGeometry = preload("res://scripts/editors/asset_editor/preview_geometry.gd")
@@ -12,6 +13,9 @@ const WAYS := {"in": "Way in", "out": "Way out"}
 # A new waypoint's distance from the point it follows, along the bay: a starting place the
 # author then moves.
 const NEW_WAYPOINT_STEP_M := 4.0
+# A view drag or insertion lands on the centimetre, as the editor's other handles do; the X and Z
+# fields show it exactly.
+const VIEW_SNAP_M := 0.01
 
 var selected := -1
 var way := "in"
@@ -28,6 +32,8 @@ var _side: OptionButton
 var _point_fields: Control
 var _updating := false
 var _anchor := -1
+# The dragged waypoint's stored point before the drag, put back when the drag is cancelled.
+var _drag_start: Array = []
 
 func build(view: RefCounted, parent: Control) -> void:
 	_editor = view._editor
@@ -58,7 +64,8 @@ func build(view: RefCounted, parent: Control) -> void:
 	list.custom_minimum_size.y = 72
 	list.item_selected.connect(func(index):
 		selected = index
-		refresh())
+		refresh()
+		_editor._selection.context_changed())
 	box.add_child(list)
 	_point_fields = VBoxContainer.new()
 	box.add_child(_point_fields)
@@ -85,10 +92,11 @@ func _coordinate(view: RefCounted, key: String, title: String) -> SpinBox:
 			_edit({"op": "move", "way": way, "waypoint": selected, "point": [_x.value, _z.value]}, "Move waypoint"))
 	return spin
 
-## The selected anchor as the document holds it, or {} when it is not a loading bay.
+## The selected anchor as the editor projects the document, or {} when it is not a loading bay.
+## The projection equals the document except during a view drag, which the fields then follow.
 func anchor() -> Dictionary:
 	var index: int = _editor._selected_site_anchor_index
-	var anchors: Array = _editor._session.document.snapshot().get("params", {}).get("anchors", [])
+	var anchors: Array = _editor._site_anchors_data
 	if index < 0 or index >= anchors.size():
 		return {}
 	var entry: Dictionary = anchors[index]
@@ -104,18 +112,20 @@ func refresh() -> void:
 		return
 	var bay := anchor()
 	_root.visible = not bay.is_empty()
+	# Another bay, or the same one selected again, starts with no waypoint selected.
+	var shown: int = -1 if bay.is_empty() else _editor._selected_site_anchor_index
+	if _anchor != shown:
+		_anchor = shown
+		selected = -1
 	if bay.is_empty():
 		return
-	if _anchor != _editor._selected_site_anchor_index:
-		_anchor = _editor._selected_site_anchor_index
-		selected = -1
 	_updating = true
 	# The exit names one of the asset's freight Driveways; whether it is usable is validation's.
 	_exit.clear()
 	_exit.add_item("None: back out")
 	_exit.set_item_metadata(0, "")
 	var exit := str(bay.get("exit", ""))
-	for entry: Dictionary in _editor._session.document.snapshot()["params"].get("anchors", []):
+	for entry: Dictionary in _editor._site_anchors_data:
 		if str(entry.get("anchor_type", "")) == "driveway" and str(entry.get("vehicle_class", "")) == "freight":
 			_exit.add_item(str(entry.get("name", "")))
 			_exit.set_item_metadata(_exit.item_count - 1, str(entry.get("name", "")))
@@ -162,6 +172,56 @@ func delete() -> void:
 	if selected >= 0 and _edit({"op": "delete", "way": way, "waypoint": selected}, "Delete waypoint"):
 		selected -= 1
 		refresh()
+
+## Show way `next_way` ("in" or "out") and select its waypoint `index` (-1: none), as a click on
+## its marker in the view does; the Drive-through group opens to show it.
+func select_waypoint(next_way: String, index: int) -> void:
+	way = next_way
+	selected = index
+	if _root == null:
+		return
+	for item in _way.item_count:
+		if str(_way.get_item_metadata(item)) == way:
+			_way.select(item)
+	if index >= 0:
+		_editor._view.advanced_groups["drive_through"]["toggle"].button_pressed = true
+	refresh()
+	_editor._selection.context_changed()
+
+## Insert a waypoint at `point` (`[x, z]`) as waypoint `index` of the shown way, one undo step,
+## and select it: the view's "Insert waypoint here" on a leg.
+func insert_at(index: int, point: Array) -> void:
+	if _edit({"op": "add", "way": way, "waypoint": index, "point": _snapped(Vector2(float(point[0]), float(point[1])))}, "Insert waypoint"):
+		select_waypoint(way, index)
+
+## Begin dragging the selected waypoint in the view; returns its point as asset-local XZ.
+func begin_drag() -> Vector2:
+	_drag_start = waypoints()[selected].duplicate()
+	return Vector2(float(_drag_start[0]), float(_drag_start[1]))
+
+## Move the dragged waypoint to `point` in the editor's projection only: the preview proves and
+## draws the route from it and the fields follow, but the document waits for `end_drag`.
+func drag(point: Vector2) -> void:
+	# Kept in the lot, as a dragged yard vertex is.
+	waypoints()[selected] = _snapped(_editor._clamp_site_surface_vertex_to_lot(point))
+	_editor._update_site_anchor_preview()
+	refresh()
+
+## Finish a drag as one "move" command; a waypoint dropped where it started adds no undo step.
+func end_drag() -> void:
+	var point: Array = waypoints()[selected]
+	if point == _snapped(Vector2(float(_drag_start[0]), float(_drag_start[1]))) \
+			or not _edit({"op": "move", "way": way, "waypoint": selected, "point": point}, "Move waypoint"):
+		cancel_drag()
+
+## Put the dragged waypoint back where it was and redraw.
+func cancel_drag() -> void:
+	waypoints()[selected] = _drag_start
+	_editor._update_site_anchor_preview()
+	refresh()
+
+func _snapped(point: Vector2) -> Array:
+	return [snappedf(point.x, VIEW_SNAP_M), snappedf(point.y, VIEW_SNAP_M)]
 
 ## Insert the chords of a turn after the selected waypoint (or the last), from the heading of the
 ## leg arriving there; Rust computes them.

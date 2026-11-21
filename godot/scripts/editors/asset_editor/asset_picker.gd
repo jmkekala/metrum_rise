@@ -1,7 +1,9 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 
 ## Deterministic editor-local hit collection. No selection, document or UI mutation.
-## Meshes use cached native BVHs; site polygons and pixel handles use authored heights.
+## Meshes use cached native BVHs; site polygons and pixel handles use authored heights. The
+## selected loading bay's authored waypoints are pixel handles too; the derived points of its
+## proven ways (gate connection, approach, stop) are not.
 extends RefCounted
 
 const ANCHOR_RADIUS := 12.0
@@ -88,6 +90,15 @@ func collect(mouse: Vector2, camera: Camera3D, filter: String) -> Array[Dictiona
 				if near:
 					hit["occluded"] = not point_visible(camera, position)
 				hits.append(hit)
+		for handle in waypoints():
+			var point: Vector3 = handle["position"]
+			if in_depth_range(camera, point) and mouse.distance_to(camera.unproject_position(point)) <= VERTEX_RADIUS:
+				var hit := _hit("waypoint", editor._selected_site_anchor_index, point, begin)
+				hit["occluded"] = not point_visible(camera, point)
+				hit["way"] = handle["way"]
+				hit["waypoint"] = handle["waypoint"]
+				hit["screen_distance"] = mouse.distance_squared_to(camera.unproject_position(point))
+				hits.append(hit)
 	if filter in ["surface", "all"]:
 		for index in editor._site_surfaces_data.size():
 			var point = plane_hit(begin, end, surface_height(index))
@@ -143,7 +154,8 @@ func _before(a: Dictionary, b: Dictionary) -> bool:
 	var b_layer := _pick_layer(b)
 	if a_layer != b_layer:
 		return a_layer < b_layer
-	if a["kind"] == "vertex" and a["screen_distance"] != b["screen_distance"]:
+	# Handles of one layer: the nearest on screen.
+	if a.has("screen_distance") and b.has("screen_distance") and a["screen_distance"] != b["screen_distance"]:
 		return a["screen_distance"] < b["screen_distance"]
 	# Overlapping spots: the smaller footprint is the one the cursor most plausibly means.
 	if a.get("area", 0.0) != b.get("area", 0.0):
@@ -154,7 +166,9 @@ func _before(a: Dictionary, b: Dictionary) -> bool:
 		return a["kind"] < b["kind"]
 	if a["index"] != b["index"]:
 		return a["index"] < b["index"]
-	return a.get("vertex", -1) < b.get("vertex", -1)
+	if a.get("way", "") != b.get("way", ""):
+		return a.get("way", "") < b.get("way", "")
+	return a.get("vertex", a.get("waypoint", -1)) < b.get("vertex", b.get("waypoint", -1))
 
 # Precise targets first: handles and vertices, an anchor's own circle, then anchor shapes.
 # Floating names come next: they are wide and can cover another access point, so a name never
@@ -163,7 +177,7 @@ func _before(a: Dictionary, b: Dictionary) -> bool:
 func _pick_layer(hit: Dictionary) -> int:
 	if hit.get("handle", false):
 		return -1
-	if hit["kind"] == "vertex":
+	if hit["kind"] in ["vertex", "waypoint"]:
 		return 0
 	if hit.get("near", false):
 		return 1
@@ -225,6 +239,66 @@ func surface_edge(mouse: Vector2, camera: Camera3D) -> Dictionary:
 			distance = screen_distance
 			closest = {"surface": selected, "edge": index, "point": Vector2(point.x, point.z)}
 	return closest
+
+## Whether `hit` is a handle or an access point's own circle, which a pixel-sized line target such
+## as a route leg never outranks.
+func precise(hit: Dictionary) -> bool:
+	return _pick_layer(hit) < 2
+
+## The selected loading bay's authored waypoints, as {"way", "waypoint", "position"} at the height
+## the preview draws their markers; empty for any other selection.
+func waypoints() -> Array[Dictionary]:
+	var result: Array[Dictionary] = []
+	var bay := _selected_bay()
+	if bay.is_empty():
+		return result
+	var y: float = editor._anchor_position(bay).y + editor._preview.WAYPOINT_Y_M
+	for way in ["in", "out"]:
+		var points: Array = bay.get("route_" + way, [])
+		for index in points.size():
+			result.append({"way": way, "waypoint": index, "position": Vector3(float(points[index][0]), y, float(points[index][1]))})
+	return result
+
+## The leg of the selected loading bay's proven way within a few pixels of `mouse`, as {"way",
+## "waypoint": the index a waypoint inserted there takes, "point": the leg's ground point under
+## the cursor}, or {}. A proven way runs connection, approach, waypoints, stop (in) or stop,
+## waypoints, approach, connection (out); the gate's own connection-approach stretch takes none.
+func route_leg(mouse: Vector2, camera: Camera3D) -> Dictionary:
+	var bay := _selected_bay()
+	if bay.is_empty():
+		return {}
+	var drawn: Dictionary = editor._preview.dock_way(editor._selected_site_anchor_index)
+	var y: float = editor._anchor_position(bay).y + editor._preview.DOCK_ROUTE_Y_M
+	var closest := {}
+	var distance := EDGE_RADIUS * EDGE_RADIUS
+	for way in ["in", "out"]:
+		var points: Array = drawn.get("route_" + way, [])
+		var authored: int = bay.get("route_" + way, []).size()
+		for leg in points.size() - 1:
+			if leg == (0 if way == "in" else points.size() - 2):
+				continue
+			var a := Vector3(float(points[leg][0]), y, float(points[leg][1]))
+			var b := Vector3(float(points[leg + 1][0]), y, float(points[leg + 1][1]))
+			if not in_depth_range(camera, a) or not in_depth_range(camera, b):
+				continue
+			var screen_point := Geometry2D.get_closest_point_to_segment(mouse, camera.unproject_position(a), camera.unproject_position(b))
+			var screen_distance := mouse.distance_squared_to(screen_point)
+			if screen_distance > distance:
+				continue
+			var begin := camera.project_position(screen_point, camera.near)
+			var point = plane_hit(begin, camera.project_position(screen_point, camera.far), y)
+			if point == null or not editor._preview.pick_mesh_parts(begin, point - begin.direction_to(point) * DEPTH_EPSILON_M).is_empty():
+				continue
+			distance = screen_distance
+			closest = {"way": way, "waypoint": clampi(leg - 1 if way == "in" else leg, 0, authored), "point": Vector2(point.x, point.z)}
+	return closest
+
+func _selected_bay() -> Dictionary:
+	var index: int = editor._selected_site_anchor_index
+	if index < 0 or index >= editor._site_anchors_data.size():
+		return {}
+	var anchor: Dictionary = editor._site_anchors_data[index]
+	return anchor if anchor.get("anchor_type") == "loading_bay" else {}
 
 static func in_depth_range(camera: Camera3D, point: Vector3) -> bool:
 	var depth := -(camera.get_camera_transform().affine_inverse() * point).z

@@ -20,6 +20,7 @@ var _start := Vector2.ZERO
 var _target: Dictionary = {}
 var _preview_start := Vector3.ZERO
 var _preview_drag_hit := Vector3.ZERO
+var _waypoint_start := Vector2.ZERO
 var _box := false
 var _mouse := Vector2.INF
 var _camera_transform := Transform3D.IDENTITY
@@ -123,6 +124,8 @@ func refresh(mouse: Vector2, force: bool = false) -> void:
 	_draw_hover(camera)
 
 func _key(hit: Dictionary) -> String:
+	if hit["kind"] == "waypoint":
+		return "waypoint:%s:%d" % [hit["way"], hit["waypoint"]]
 	return "%s:%d" % [hit["kind"], hit["index"]]
 
 func cycle(mouse: Vector2) -> void:
@@ -165,6 +168,12 @@ func select_hit(hit: Dictionary, additive: bool) -> void:
 				editor._select_site_anchor(index)
 			else:
 				editor._set_selected_site_anchors(editor._selected_site_anchor_indices, index)
+			# The bay itself, not one of its waypoints, is what the click selects.
+			editor._routes.select_waypoint(editor._routes.way, -1)
+		"waypoint", "leg":
+			# Only the selected bay has route handles; a waypoint or leg selects it alone.
+			editor._select_site_anchor(index)
+			editor._routes.select_waypoint(hit["way"], hit["waypoint"] if hit["kind"] == "waypoint" else -1)
 		"surface", "vertex":
 			if additive:
 				editor._set_selected_site_surface(-1 if editor._selected_site_surface_index == index else index, false)
@@ -177,7 +186,7 @@ func select_hit(hit: Dictionary, additive: bool) -> void:
 			editor._view.toggle_inspector()
 		match hit["kind"]:
 			"mesh": editor._view.show_task("model")
-			"anchor":
+			"anchor", "waypoint", "leg":
 				editor._view.show_task("site")
 				editor._view.show_site(1)
 			"surface", "vertex":
@@ -207,6 +216,11 @@ func handle_input(event: InputEvent) -> bool:
 			cancel()
 			var objects: Array[Dictionary] = editor._menus.actions.selection()
 			if objects.is_empty(): return false
+			# A waypoint picked in the view, not its bay, is what Delete removes there.
+			if event.keycode == KEY_DELETE and objects.size() == 1 and editor._routes.selected >= 0 \
+					and editor.get_viewport().gui_get_focus_owner() == null:
+				editor._routes.delete()
+				return true
 			if event.keycode == KEY_R:
 				editor._menus.actions.begin_rotation(objects)
 				return true
@@ -264,11 +278,15 @@ func motion(mouse: Vector2) -> void:
 			return
 		if not _prepare_drag():
 			return
-		if not _preview_target():
+		if not _preview_target() and not _waypoint_target():
 			editor._session.document.begin_transaction("Move selection")
 		dragging = true
 	if _target["kind"] == "vertex":
 		editor._drag_site_surface_vertex_from_mouse(mouse)
+	elif _waypoint_target():
+		var hit = editor._project_mouse_to_horizontal_plane(mouse, editor._drag_plane_y)
+		if hit != null:
+			editor._routes.drag(_waypoint_start + Vector2(hit.x - _preview_drag_hit.x, hit.z - _preview_drag_hit.z))
 	elif _preview_target():
 		var hit = editor._project_mouse_to_horizontal_plane(mouse, editor._drag_plane_y)
 		if hit != null:
@@ -293,6 +311,11 @@ func _prepare_drag() -> bool:
 		_preview_start = editor._preview.scale_reference_world_position() if _target["kind"] == "reference" else editor._preview.get_ghost_world_position()
 		_preview_drag_hit = hit
 		return true
+	if _waypoint_target():
+		# The drag edits the editor's projection only; the release sends one "move" command.
+		_waypoint_start = editor._routes.begin_drag()
+		_preview_drag_hit = hit
+		return true
 	editor._mesh_part_drag_start_hit = Vector3(hit.x, 0, hit.z)
 	editor._mesh_part_drag_start_positions.clear()
 	for index in editor._mesh_part_drag_indices():
@@ -310,6 +333,9 @@ func _prepare_drag() -> bool:
 func _preview_target() -> bool:
 	return _target.get("kind") in ["reference", "ghost"]
 
+func _waypoint_target() -> bool:
+	return _target.get("kind") == "waypoint"
+
 func _set_preview_position(position: Vector3) -> void:
 	if _target["kind"] == "reference":
 		editor._preview.set_scale_reference_world_position(position)
@@ -321,7 +347,9 @@ func release(mouse: Vector2) -> void:
 		applying_selection = true
 		editor._finish_mesh_part_box_selection(mouse)
 		applying_selection = false
-	if dragging and not _preview_target():
+	if dragging and _waypoint_target():
+		editor._routes.end_drag()
+	elif dragging and not _preview_target():
 		editor._session.capture_geometry("Transform selection")
 		editor._session.document.commit_transaction()
 	pressed = false
@@ -335,6 +363,8 @@ func cancel() -> void:
 	if dragging:
 		if _preview_target():
 			_set_preview_position(_preview_start)
+		elif _waypoint_target():
+			editor._routes.cancel_drag()
 		else:
 			editor._session.capture_geometry("Transform selection")
 			editor._session.document.cancel_transaction()
@@ -360,13 +390,19 @@ func _draw_hover(camera: Camera3D) -> void:
 			var point: Vector3 = picker.anchor_position(index)
 			if picker.point_visible(camera, point):
 				overlay.anchors.append(camera.unproject_position(point))
+		for handle in picker.waypoints():
+			var point: Vector3 = handle["position"]
+			if picker.point_visible(camera, point):
+				overlay.waypoints.append(camera.unproject_position(point))
+				if handle["way"] == editor._routes.way and handle["waypoint"] == editor._routes.selected:
+					overlay.selected_waypoint = overlay.waypoints[-1]
 	if _effective in ["surface", "all"] and editor._selected_site_surface_index >= 0:
 		for point in picker.surface_points(editor._selected_site_surface_index):
 			if picker.point_visible(camera, point):
 				overlay.vertices.append(camera.unproject_position(point))
 	var label_kind := ""
-	if hovered.get("kind") in ["anchor", "surface", "vertex"] and not hovered.get("occluded", false):
-		label_kind = "anchor" if hovered["kind"] == "anchor" else "surface"
+	if hovered.get("kind") in ["anchor", "surface", "vertex", "waypoint"] and not hovered.get("occluded", false):
+		label_kind = "anchor" if hovered["kind"] in ["anchor", "waypoint"] else "surface"
 	editor._preview.set_label_hover(label_kind, hovered.get("index", -1))
 	view.hover_label.text = "%s · Click selects · %s+click cycles overlaps" % [_filter_label(_effective).capitalize(), KeyLabels.alt()]
 	if editor._preview.scale_reference_selected:
@@ -398,6 +434,8 @@ func _draw_hover(camera: Camera3D) -> void:
 			var rejection: String = editor._preview.parking_rejection(index)
 			if not rejection.is_empty():
 				title += " · Rejected: " + rejection
+		"waypoint":
+			title = "%s · waypoint %d · Drag to move · Delete removes · Escape cancels a drag" % [editor._routes.WAYS[hovered["way"]], hovered["waypoint"] + 1]
 	if hovered["kind"] != "reference" and not hovered.get("occluded", false):
 		overlay.marker = camera.unproject_position(hovered["position"])
 		overlay.marker_radius = Picker.ANCHOR_RADIUS if hovered["kind"] == "anchor" else Picker.VERTEX_RADIUS

@@ -41,6 +41,10 @@ const DOCK_ROUTE_COLOR := Color(0.2, 0.85, 1.0)
 # A drive-through's way out, after the stop (`PARK-21`).
 const DOCK_WAY_OUT_COLOR := Color(0.35, 1.0, 0.45)
 const DOCK_ROUTE_WIDTH_M := 0.3
+# Heights above the selected loading bay of its drawn way in and of its waypoint markers, which
+# the editor's picker hit-tests at the same heights.
+const DOCK_ROUTE_Y_M := 0.16
+const WAYPOINT_Y_M := 0.2
 const PASSAGE_COLOR := Color(1.0, 0.75, 0.2)
 const ANCHOR_GAP_M := 0.40
 const SITE_SURFACE_FILL_Y := 0.09
@@ -569,6 +573,11 @@ func set_parking_diagnostics(payload: Dictionary) -> void:
 		if dock.has("route_in"):
 			_dock_ways[int(dock["anchor"])] = dock
 	_passages = payload.get("passages", [])
+
+## Loading bay `index`'s drive-through as last proven, {"route_in", "route_out", "envelopes"} in
+## asset-local XZ, or {} when it has none or is rejected.
+func dock_way(index: int) -> Dictionary:
+	return _dock_ways.get(index, {})
 
 ## Shows the name of the site object under the cursor; other names show only when selected or
 ## rejected. `kind` is "anchor" or "surface", or "" for none.
@@ -1387,7 +1396,7 @@ func _build_site_anchor_overlay() -> void:
 	var route = _dock_routes.get(_selected_site_anchor_index)
 	var way: Dictionary = _dock_ways.get(_selected_site_anchor_index, {})
 	if route is Array:
-		var y := _preview_anchor_position(_site_anchors[_selected_site_anchor_index]).y + 0.16
+		var y := _preview_anchor_position(_site_anchors[_selected_site_anchor_index]).y + DOCK_ROUTE_Y_M
 		_draw_polyline(im, way.get("route_in", route), y, DOCK_ROUTE_COLOR)
 		_draw_polyline(im, way.get("route_out", []), y + 0.01, DOCK_WAY_OUT_COLOR)
 		for envelope: Array in way.get("envelopes", []):
@@ -1421,7 +1430,7 @@ func _draw_waypoints(im: ImmediateMesh) -> void:
 	if _selected_site_anchor_index < 0 or _selected_site_anchor_index >= _site_anchors.size():
 		return
 	var anchor := _site_anchors[_selected_site_anchor_index]
-	var y := _preview_anchor_position(anchor).y + 0.2
+	var y := _preview_anchor_position(anchor).y + WAYPOINT_Y_M
 	for key in ["route_in", "route_out"]:
 		var color := DOCK_ROUTE_COLOR if key == "route_in" else DOCK_WAY_OUT_COLOR
 		for point in anchor.get(key, []):
