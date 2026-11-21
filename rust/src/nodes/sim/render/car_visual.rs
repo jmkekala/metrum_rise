@@ -27,8 +27,12 @@ const INTERPOLATION_RATE: f32 = 24.0;
 const ROTATION_INTERPOLATION_RATE: f32 = 18.0;
 /// A longer jump (respawn, access handoff across the map) snaps instead of sliding.
 const SNAP_DISTANCE_M: f32 = 80.0;
-/// Floats per car in the MultiMesh `TRANSFORM_3D` row-major 3×4 layout.
+/// Floats per car pose in the MultiMesh `TRANSFORM_3D` row-major 3×4 layout.
 const STRIDE: usize = 12;
+/// Floats per car of instance custom data (`RENDER-65`): steer, roll, the packed word, spare.
+const CUSTOM: usize = 4;
+/// Floats per drawn row: the pose, then the custom data.
+pub(crate) const ROW: usize = STRIDE + CUSTOM;
 /// Below this a basis is degenerate or mirrored and has no rotation to interpolate.
 const MIN_DETERMINANT: f32 = 1e-6;
 /// Cars per Rayon task. A bucket below this stays on the calling thread: at ~40 ns of math per
@@ -82,9 +86,15 @@ struct DrawnCar {
 struct Bucket {
     ids: Vec<i64>,
     targets: Vec<u32>,
+    // The cars' custom data as given, bit for bit, `CUSTOM` floats each.
+    custom: Vec<u32>,
     flags: Vec<u8>,
     near: Vec<bool>,
     drawn: Vec<f32>,
+    // The drawn poses with their custom data, `ROW` floats each: what is uploaded.
+    rows: Vec<f32>,
+    // This frame's custom data differs from the last recorded.
+    custom_changed: bool,
     // Cars not at rest (or not recordable), and off-lane cars, as recorded.
     moving: usize,
     off_lane: usize,
@@ -181,24 +191,30 @@ impl CarVisualSmoother {
         }
     }
 
-    /// Smooths one bucket: `targets` are its snapshot poses, `ids` and `flags` (1: off-lane) are
-    /// aligned with them. Leaves an untouched bucket as it was drawn; O(1) plus a compare of the
-    /// inputs for it. Otherwise O(cars) with one lookup each; the bucket's off-lane cars not at
-    /// rest then wait for [`Self::solve_pending`] and its recording for [`Self::finish_frame`].
+    /// Smooths one bucket: `targets` are its snapshot poses, `custom` the cars' instance custom
+    /// data (drawn as given), `ids` and `flags` (1: off-lane) are aligned with them. Leaves an
+    /// untouched bucket as it was drawn; O(1) plus a compare of the inputs for it. Otherwise
+    /// O(cars) with one lookup each; the bucket's off-lane cars not at rest then wait for
+    /// [`Self::solve_pending`] and its recording for [`Self::finish_frame`].
     pub(crate) fn smooth_bucket(
         &mut self,
         key: u8,
         targets: &[f32],
+        custom: &[f32],
         ids: &[i64],
         flags: &[u8],
         alpha: f32,
     ) {
         let count = ids.len();
-        debug_assert!(targets.len() == count * STRIDE && flags.len() == count);
+        debug_assert!(
+            targets.len() == count * STRIDE
+                && custom.len() == count * CUSTOM
+                && flags.len() == count
+        );
         self.parts[3] += count as i64;
         let off_lane = flags.iter().filter(|&&flag| flag != 0).count();
         self.parts[4] += off_lane as i64;
-        if self.untouched(key, targets, ids, flags) {
+        if self.untouched(key, targets, custom, ids, flags) {
             self.parts[6] += count as i64;
             self.parts[7] += off_lane as i64;
             self.parts[9] += 1;
@@ -216,6 +232,11 @@ impl CarVisualSmoother {
         bucket
             .targets
             .extend(targets.iter().map(|value| value.to_bits()));
+        bucket.custom_changed = !same_custom(&bucket.custom, custom);
+        if bucket.custom_changed {
+            bucket.custom.clear();
+            bucket.custom.extend(custom.iter().map(|value| value.to_bits()));
+        }
         bucket.pending = true;
         bucket.solved = true;
         let mut next = std::mem::take(&mut bucket.next);
@@ -288,8 +309,8 @@ impl CarVisualSmoother {
     }
 
     /// Draws a malformed bucket (counts that do not match) as its snapshot poses, unsmoothed
-    /// and unrecorded. O(cars).
-    pub(crate) fn pass_through(&mut self, key: u8, targets: &[f32]) {
+    /// and unrecorded, with `custom` where it has a vector a pose. O(cars).
+    pub(crate) fn pass_through(&mut self, key: u8, targets: &[f32], custom: &[f32]) {
         self.stale = true;
         let frame = self.frame;
         let bucket = self.bucket_mut(key);
@@ -302,9 +323,12 @@ impl CarVisualSmoother {
         bucket.off_lane = 0;
         bucket.recorded = frame;
         bucket.present = frame;
-        if !same_bits(&bucket.drawn, targets) {
+        if !same_bits(&bucket.drawn, targets) || !same_custom(&bucket.custom, custom) {
             bucket.drawn.clear();
             bucket.drawn.extend_from_slice(targets);
+            bucket.custom.clear();
+            bucket.custom.extend(custom.iter().map(|value| value.to_bits()));
+            fill_rows(&mut bucket.rows, &bucket.drawn, &bucket.custom);
             self.changed.push(key);
         }
     }
@@ -345,9 +369,9 @@ impl CarVisualSmoother {
         &self.left
     }
 
-    /// Bucket `key`'s drawn buffer.
+    /// Bucket `key`'s drawn rows, [`ROW`] floats a car: the pose, then the custom data.
     pub(crate) fn drawn_bucket(&self, key: u8) -> &[f32] {
-        &self.buckets[usize::from(key)].drawn
+        &self.buckets[usize::from(key)].rows
     }
 
     /// One more than the largest bucket key met: every key below it has a drawn buffer (empty
@@ -380,7 +404,14 @@ impl CarVisualSmoother {
     // Whether bucket `key` stands as drawn last frame: drawn then, every car at rest, the same
     // inputs bit for bit and, for its off-lane cars, the same ground and side of the full-detail
     // radius. O(1) plus the compare; O(off-lane cars) more when the camera moved.
-    fn untouched(&mut self, key: u8, targets: &[f32], ids: &[i64], flags: &[u8]) -> bool {
+    fn untouched(
+        &mut self,
+        key: u8,
+        targets: &[f32],
+        custom: &[f32],
+        ids: &[i64],
+        flags: &[u8],
+    ) -> bool {
         let frame = self.frame;
         let (ground, ground_changed, camera_moved) =
             (self.ground, self.ground_changed, self.camera_moved);
@@ -389,6 +420,7 @@ impl CarVisualSmoother {
             || bucket.moving != 0
             || bucket.ids != ids
             || bucket.flags != flags
+            || !same_custom(&bucket.custom, custom)
             || !targets
                 .iter()
                 .zip(&bucket.targets)
@@ -554,12 +586,33 @@ impl CarVisualSmoother {
         bucket.recorded = frame;
         bucket.present = frame;
         bucket.pending = false;
-        if !same_bits(&bucket.drawn, &bucket.next) {
+        if !same_bits(&bucket.drawn, &bucket.next) || bucket.custom_changed {
             std::mem::swap(&mut bucket.drawn, &mut bucket.next);
+            fill_rows(&mut bucket.rows, &bucket.drawn, &bucket.custom);
             self.changed.push(key);
             self.parts[8] += 1;
         }
         *self.bucket_mut(key) = bucket;
+    }
+}
+
+// Whether `recorded` (bits) holds `custom` bit for bit.
+fn same_custom(recorded: &[u32], custom: &[f32]) -> bool {
+    recorded.len() == custom.len()
+        && recorded
+            .iter()
+            .zip(custom)
+            .all(|(&bits, value)| bits == value.to_bits())
+}
+
+// The uploaded rows: each pose followed by its custom data (zero where `custom` is short, a
+// malformed bucket's). O(cars), only for a bucket whose drawn buffer changed.
+fn fill_rows(rows: &mut Vec<f32>, poses: &[f32], custom: &[u32]) {
+    rows.clear();
+    for (car, pose) in poses.chunks_exact(STRIDE).enumerate() {
+        rows.extend_from_slice(pose);
+        let data = custom.get(car * CUSTOM..car * CUSTOM + CUSTOM);
+        rows.extend(data.map_or([0.0; CUSTOM], |data| std::array::from_fn(|i| f32::from_bits(data[i]))));
     }
 }
 
@@ -632,7 +685,7 @@ pub(crate) fn nearest_cars(
     let mut heap = std::collections::BinaryHeap::with_capacity(max + 1);
     let limit = radius * radius;
     for (buffer, poses) in buffers.iter().enumerate() {
-        for (car, pose) in poses.as_chunks::<STRIDE>().0.iter().enumerate() {
+        for (car, pose) in poses.as_chunks::<ROW>().0.iter().enumerate() {
             let d2 = Vec3::new(pose[3], pose[7], pose[11]).distance_squared(eye);
             // Non-negative finite f32s order like their bit patterns.
             if d2.is_nan() || d2 > limit {

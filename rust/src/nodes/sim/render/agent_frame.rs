@@ -34,8 +34,11 @@ pub(crate) use crate::thread_pools::lane::Taken;
 use glam::Vec3;
 use std::sync::{Arc, Mutex};
 
-/// Floats per car row (a 3D transform) and per walker row (transform, then custom data).
+/// Floats per car pose (a 3D transform) in the snapshot, and per drawn car row (the pose, then
+/// the custom data, `RENDER-65`) and walker row (the same shape).
 pub(crate) const CAR_STRIDE: usize = 12;
+/// See [`CAR_STRIDE`].
+pub(crate) const CAR_ROW: usize = super::car_visual::ROW;
 /// See [`CAR_STRIDE`].
 pub(crate) const WALKER_STRIDE: usize = 16;
 /// The longest shadow a 2 m agent throws with the sun above 4 degrees, metres: the twins keep
@@ -71,10 +74,12 @@ pub(crate) fn candidate_radius_m(range: f32) -> f32 {
 /// One car bucket of a snapshot as the smoothing reads it.
 #[derive(Default)]
 pub(crate) struct CarInput {
-    /// The bucket key (`vehicle_type * 10 + colour variant`).
+    /// The bucket key (`look * 4 + tier`, [`super::vehicle_catalogue`]).
     pub(crate) key: u8,
     /// Snapshot poses, 12 floats each.
     pub(crate) targets: Vec<f32>,
+    /// Instance custom data aligned with the poses, 4 floats each.
+    pub(crate) custom: Vec<f32>,
     /// Render IDs aligned with the poses.
     pub(crate) ids: Vec<i64>,
     /// Off-lane flags aligned with the poses.
@@ -84,7 +89,9 @@ pub(crate) struct CarInput {
 impl CarInput {
     // Whether the counts agree (else the bucket is drawn as given, unsmoothed).
     fn aligned(&self) -> bool {
-        self.targets.len() == self.ids.len() * CAR_STRIDE && self.flags.len() == self.ids.len()
+        self.targets.len() == self.ids.len() * CAR_STRIDE
+            && self.custom.len() == self.ids.len() * (CAR_ROW - CAR_STRIDE)
+            && self.flags.len() == self.ids.len()
     }
 }
 
@@ -110,6 +117,7 @@ impl CarInputs {
         self.used += 1;
         bucket.key = key;
         bucket.targets.clear();
+        bucket.custom.clear();
         bucket.ids.clear();
         bucket.flags.clear();
         bucket
@@ -122,6 +130,9 @@ impl CarInputs {
         for (&key, targets) in &snapshot.car_transforms {
             let bucket = self.push(key);
             bucket.targets.extend_from_slice(targets);
+            if let Some(custom) = snapshot.car_custom.get(&key) {
+                bucket.custom.extend_from_slice(custom);
+            }
             if let Some(ids) = snapshot.car_render_ids.get(&key) {
                 bucket.ids.extend_from_slice(ids);
             }
@@ -137,7 +148,7 @@ impl CarInputs {
 }
 
 /// The shadow-caster candidates of a frame: per bucket key, the drawn rows within the
-/// candidate radius of the job's eye (cars 12 floats a row, walkers 16).
+/// candidate radius of the job's eye (16 floats a row, cars and walkers alike).
 #[derive(Default)]
 pub(crate) struct CasterCandidates {
     /// By car bucket key.
@@ -206,6 +217,8 @@ pub(crate) struct AgentFrame {
     pub(crate) parked: Option<(ParkedPublication, u64)>,
     /// The snapshot's ground key ([`GroundView::key`]).
     pub(crate) ground_key: [u64; 3],
+    /// The vehicle catalogue revision the snapshot's car buckets are keyed by.
+    pub(crate) vehicle_revision: u64,
     /// Where [`FrameView::watch`] was drawn, if it was.
     pub(crate) watched: Option<Vec3>,
     /// The caster candidates, and whether this frame changed them.
@@ -225,6 +238,7 @@ impl AgentFrame {
         self.cars.copy_snapshot(snapshot);
         self.parked = Some((snapshot.parked.clone(), snapshot.vehicle_world_epoch));
         self.ground_key = snapshot.vehicle_ground_key;
+        self.vehicle_revision = snapshot.vehicle_catalogue_revision;
     }
 
     /// Smooths every car bucket toward its snapshot poses; the off-lane cars not at rest then
@@ -239,12 +253,14 @@ impl AgentFrame {
                 self.smoother.smooth_bucket(
                     bucket.key,
                     &bucket.targets,
+                    &bucket.custom,
                     &bucket.ids,
                     &bucket.flags,
                     self.view.alpha,
                 );
             } else {
-                self.smoother.pass_through(bucket.key, &bucket.targets);
+                self.smoother
+                    .pass_through(bucket.key, &bucket.targets, &bucket.custom);
             }
         }
     }
@@ -290,7 +306,7 @@ impl AgentFrame {
             } else {
                 &[]
             };
-            keep_candidates(out, drawn, CAR_STRIDE, eye, radius);
+            keep_candidates(out, drawn, CAR_ROW, eye, radius);
         }
         let walkers = &mut self.casters.walkers;
         for (key, _) in self.walkers.buckets() {
@@ -329,7 +345,7 @@ pub(crate) struct CasterFeed {
 /// The shared feed (`SimulationNode` writes, `StreamNode` reads; both on the main thread).
 pub(crate) type SharedCasterFeed = Arc<Mutex<CasterFeed>>;
 
-/// A test bucket of cars: key, poses, render IDs, off-lane flags.
+/// A test bucket of cars: key, poses, render IDs, off-lane flags. Their custom data is zero.
 #[cfg(test)]
 pub(crate) type TestCars = (u8, Vec<f32>, Vec<i64>, Vec<u8>);
 
@@ -339,12 +355,15 @@ pub(crate) fn snapshot_with_cars(cars: &[TestCars]) -> RenderSnapshot {
     use std::collections::HashMap;
     let mut snapshot = RenderSnapshot::default();
     let (mut transforms, mut ids, mut flags) = (HashMap::new(), HashMap::new(), HashMap::new());
+    let mut custom = HashMap::new();
     for (key, poses, render_ids, ground) in cars {
         transforms.insert(*key, poses.clone());
+        custom.insert(*key, vec![0.0; render_ids.len() * (CAR_ROW - CAR_STRIDE)]);
         ids.insert(*key, render_ids.clone());
         flags.insert(*key, ground.clone());
     }
     snapshot.car_transforms = transforms;
+    snapshot.car_custom = custom;
     snapshot.car_render_ids = ids;
     snapshot.car_ground_flags = flags;
     snapshot

@@ -985,6 +985,15 @@ impl StreamNode {
         true
     }
 
+    /// Forgets every twin of `kind` (0 walkers, 1 cars) and frees its slots: the bucket keys now
+    /// name other meshes (a rebuilt vehicle catalogue, `RENDER-65`); register them again.
+    #[func]
+    pub fn unregister_agent_casters(&mut self, kind: i64) {
+        if let (Some(draw), Some(kind)) = (self.agents.as_mut(), agent_kind(kind)) {
+            draw.layer.unregister(&mut draw.backend, kind);
+        }
+    }
+
     /// Whether an agent kind's twins cast (`kind` 0 walkers, 1 cars; the shadow benchmark's
     /// caster classes, `RENDER-15`); the game never clears it.
     #[func]
@@ -1019,18 +1028,27 @@ impl StreamNode {
         out
     }
 
-    /// Registers vehicle bucket `bucket`'s mesh and its bounds (`Mesh.get_aabb`; built by
-    /// `parked_cars.gd` as the bucket is first met). The bounds give each drawn bucket the bounds
-    /// its draw distance is measured from (`RENDER-48`). A bucket registered again keeps its
-    /// first mesh.
+    /// Registers parked bucket `bucket`'s mesh (a look's tier, `look * 4 + tier`, `RENDER-65`),
+    /// its bounds (`Mesh.get_aabb`; built by `parked_cars.gd` as the look is first met) and the
+    /// band of camera distance its tier draws in, `range_end` 0 for no end. The bounds give each
+    /// drawn bucket the bounds its draw distance is measured from (`RENDER-48`). A bucket
+    /// registered again keeps its first mesh.
     #[func]
-    pub fn register_parked_mesh(&mut self, bucket: i64, mesh: Rid, bounds: godot::builtin::Aabb) {
+    pub fn register_parked_mesh(
+        &mut self,
+        bucket: i64,
+        mesh: Rid,
+        bounds: godot::builtin::Aabb,
+        range_begin: f32,
+        range_end: f32,
+    ) {
         if let Some(draw) = self.parked.as_mut()
             && !draw.layer.has_mesh(bucket as u32)
         {
             let index = draw.backend.push_mesh(mesh);
             let bounds = Aabb::new(bounds.position.to_array(), bounds.size.to_array());
-            draw.layer.register(bucket as u32, index, bounds);
+            let end = if range_end > 0.0 { range_end } else { f32::INFINITY };
+            draw.layer.register(bucket as u32, index, bounds, [range_begin, end]);
         }
     }
 
@@ -1070,8 +1088,8 @@ impl StreamNode {
         }
     }
 
-    /// Installs parked chunk `key` as `buckets` (vehicle bucket to its poses, 12 floats each;
-    /// every bucket with poses registered), whole; false when the pool could not take it
+    /// Installs parked chunk `key` as `buckets` (vehicle look to its rows, 16 floats each, drawn
+    /// in each of the look's registered tier buckets), whole; false when the pool could not take it
     /// (nothing changed: the caller offers it again). `O(buckets + poses)`.
     #[func]
     pub fn set_parked_chunk(&mut self, key: Vector2i, buckets: VarDictionary) -> bool {
@@ -1089,8 +1107,12 @@ impl StreamNode {
             else {
                 continue;
             };
-            if layer.has_mesh(bucket as u32) {
-                poses.push((bucket as u32, rows));
+            // A look's cars go to each of its tiers' buckets (`RENDER-65`).
+            for tier in 0..crate::nodes::sim::render::vehicle_catalogue::TIERS as i64 {
+                let key = (bucket * 4 + tier) as u32;
+                if layer.has_mesh(key) {
+                    poses.push((key, rows.clone()));
+                }
             }
         }
         let installed = layer.install(
@@ -1100,6 +1122,15 @@ impl StreamNode {
         );
         poses.clear();
         installed
+    }
+
+    /// Frees every parked slot and forgets every registered mesh: the buckets now name other
+    /// meshes (a rebuilt vehicle catalogue, `RENDER-65`).
+    #[func]
+    pub fn clear_parked_meshes(&mut self) {
+        if let Some(draw) = self.parked.as_mut() {
+            draw.layer.forget_meshes(&mut draw.backend);
+        }
     }
 
     /// Frees every parked slot (a world replaced; the renderer leaving).

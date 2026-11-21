@@ -306,28 +306,17 @@ impl SimulationNode {
         crate::nodes::sim::bridge::agents::get_car_render_data(&self.snapshot.read().unwrap())
     }
 
-    /// Registers model-local ground geometry once at mesh load; never alters agent movement.
+    /// The loaded packs' vehicle looks as the renderer draws them (`RENDER-65`): `revision`,
+    /// which changes when packs load, and `looks`, by look index (a car bucket is `look * 4 +
+    /// tier`). Each look: its model `id`, `tiers` and `tier_starts_m` (four each), the `albedo`,
+    /// `orm`, `normal` (empty when none) and `emission` maps (native paths), `paint` (false:
+    /// painted faces stay white), `palette` (linear colours, the paint index's), `wheels` (centre
+    /// and steer flag, the turned frame), `head_lamp` and `tail_lamp` (the right-hand lenses,
+    /// turned frame) and `size` (length, width, height). O(looks), when a renderer builds its
+    /// meshes.
     #[func]
-    pub fn set_vehicle_ground_support(
-        &self,
-        vehicle: i32,
-        bounds: Aabb,
-        contacts: PackedVector3Array,
-    ) -> bool {
-        use crate::nodes::sim::render::vehicle_ground::VehicleGroundSupport;
-        let Some(profile) = VehicleGroundSupport::new(
-            [
-                bounds.position.x,
-                bounds.position.z,
-                bounds.end().x,
-                bounds.end().z,
-            ],
-            contacts.as_slice(),
-        ) else {
-            return false;
-        };
-        usize::try_from(vehicle)
-            .is_ok_and(|id| self.lock_core().set_vehicle_ground_support(id, profile))
+    pub fn get_vehicle_catalogue(&self) -> VarDictionary {
+        crate::nodes::sim::bridge::agents::vehicle_catalogue(&self.lock_core().vehicle_catalogue)
     }
 
     /// Grounds an interpolated car bucket in Rust. Empty means busy/unprepared: use its already
@@ -358,8 +347,8 @@ impl SimulationNode {
     }
 
     /// Up to `max_count` drawn cars nearest `eye` within `radius_m`, nearest first, from the
-    /// bucket → transform buffers `advance_agent_frame` returns as `cars`: 13 floats per car, its
-    /// 12-float MultiMesh transform then its bucket key. Feeds the headlight spot lights.
+    /// bucket → row buffers `advance_agent_frame` returns as `cars` (16 floats a car): 13 floats
+    /// per car, its 12-float MultiMesh transform then its bucket key. Feeds the headlight spot lights.
     /// O(cars · log max_count).
     #[func]
     pub fn nearest_car_poses(
@@ -391,8 +380,8 @@ impl SimulationNode {
         out.resize(chosen.len() * 13);
         let out_slice = out.as_mut_slice();
         for (i, (buffer, car)) in chosen.into_iter().enumerate() {
-            out_slice[i * 13..i * 13 + 12]
-                .copy_from_slice(&slices[buffer][car * 12..car * 12 + 12]);
+            let row = car * crate::nodes::sim::render::car_visual::ROW;
+            out_slice[i * 13..i * 13 + 12].copy_from_slice(&slices[buffer][row..row + 12]);
             out_slice[i * 13 + 12] = keys[buffer];
         }
         out

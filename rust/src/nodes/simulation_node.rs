@@ -239,6 +239,8 @@ pub struct SimulationNode {
     /// split, and where the watched car was drawn.
     car_buffers: VarDictionary,
     changed_car_buckets: PackedInt64Array,
+    // The vehicle catalogue revision of the installed frame's snapshot (`RENDER-65`).
+    vehicle_revision: u64,
     walker_buffers: VarDictionary,
     changed_walker_buckets: PackedInt64Array,
     agent_parts: agent_frame_api::AgentParts,
@@ -578,6 +580,7 @@ impl INode3D for SimulationNode {
             agent_lane: Default::default(),
             car_buffers: VarDictionary::new(),
             changed_car_buckets: PackedInt64Array::new(),
+            vehicle_revision: 0,
             walker_buffers: VarDictionary::new(),
             changed_walker_buckets: PackedInt64Array::new(),
             agent_parts: Default::default(),

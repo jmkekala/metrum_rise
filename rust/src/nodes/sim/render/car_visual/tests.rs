@@ -25,7 +25,7 @@ fn yaw(pose: &[f32]) -> f32 {
 /// Draws one frame of a single car and returns its drawn pose; a solve leaves poses as they are.
 fn frame(smoother: &mut CarVisualSmoother, target: &[f32], flag: u8, alpha: f32) -> Vec<f32> {
     smoother.begin_frame(GroundView::default());
-    smoother.smooth_bucket(0, target, &[7], &[flag], alpha);
+    smoother.smooth_bucket(0, target, &[0.0; 4], &[7], &[flag], alpha);
     smoother.solve_pending(|_, _, _| true);
     smoother.finish_frame();
     smoother.buckets[0].drawn.clone()
@@ -154,7 +154,7 @@ fn a_busy_solve_restores_only_the_cars_it_was_to_solve() {
     let mut moved = targets.clone();
     moved[2 * STRIDE + 3] += 2.0;
     smoother.begin_frame(ground);
-    smoother.smooth_bucket(0, &moved, &ids, &flags, 0.3);
+    smoother.smooth_bucket(0, &moved, &vec![0.0; ids.len() * 4], &ids, &flags, 0.3);
     smoother.solve_pending(|_, _, _| false);
     smoother.finish_frame();
     let drawn = &smoother.buckets[0].drawn;
@@ -231,6 +231,11 @@ fn nearest_cars_picks_the_closest_within_radius_nearest_first() {
         pose(0.0, Vec3::new(0.0, 0.0, 20.0)),
     ]
     .concat();
+    // As drawn rows: each pose followed by its custom data.
+    let rows = |poses: &[f32]| -> Vec<f32> {
+        poses.chunks_exact(STRIDE).flat_map(|pose| [pose, &[0.0; CUSTOM][..]].concat()).collect()
+    };
+    let (first, second) = (rows(&first), rows(&second));
     let buffers = [first.as_slice(), second.as_slice()];
     assert_eq!(
         nearest_cars(&buffers, eye, 100.0, 3),
@@ -292,7 +297,7 @@ fn draw(
     solved: &AtomicUsize,
 ) -> bool {
     smoother.begin_frame(ground);
-    smoother.smooth_bucket(key, targets, ids, flags, alpha);
+    smoother.smooth_bucket(key, targets, &vec![0.0; ids.len() * 4], ids, flags, alpha);
     smoother.solve_pending(|_, poses, mask| solve_masked(poses, mask, ground, solved));
     smoother.finish_frame();
     smoother.changed().contains(&key)
@@ -580,7 +585,7 @@ fn drawn_buffers_follow_the_control_frame_by_frame() {
                     .get(usize::from(key))
                     .map(|b| b.drawn.clone()),
             );
-            smoother.smooth_bucket(key, &targets, &ids, &flags, alpha);
+            smoother.smooth_bucket(key, &targets, &vec![0.0; ids.len() * 4], &ids, &flags, alpha);
         }
         smoother.solve_pending(|_, poses, mask| solve_masked(poses, mask, ground, &solved));
         smoother.finish_frame();

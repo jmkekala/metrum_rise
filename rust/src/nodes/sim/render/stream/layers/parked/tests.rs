@@ -11,7 +11,9 @@ use super::*;
 
 fn poses(count: usize, x: f32) -> Vec<f32> {
     (0..count)
-        .flat_map(|i| [1.0, 0.0, 0.0, x + i as f32, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 2.0])
+        .flat_map(|i| {
+            [1.0, 0.0, 0.0, x + i as f32, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 2.0, 0.0, 0.0, 0.0, 0.0]
+        })
         .collect()
 }
 
@@ -23,8 +25,8 @@ const CAR: Aabb = Aabb {
 
 fn layer() -> ParkedLayer {
     let mut layer = ParkedLayer::new(64, 16);
-    layer.register(10, 1, CAR);
-    layer.register(21, 2, CAR);
+    layer.register(10, 1, CAR, [0.0, f32::INFINITY]);
+    layer.register(21, 2, CAR, [0.0, f32::INFINITY]);
     layer
 }
 
@@ -56,7 +58,8 @@ fn a_chunk_draws_each_bucket_as_its_node_did() {
         assert_eq!(instance.origin, [0.0; 3]);
         assert!(!instance.dynamic_gi);
         let multimesh = &backend.multimeshes[&instance.base];
-        assert!(!multimesh.colors && !multimesh.custom);
+        // Instance custom data carries each car's paint (`RENDER-65`).
+        assert!(!multimesh.colors && multimesh.custom);
         let rows = &multimesh.rows[..multimesh.visible_count.unwrap() as usize * STRIDE];
         assert_eq!(multimesh.aabb, CAR.through_instances(rows, rows.len() / STRIDE), "the engine's bounds of the poses");
     }
@@ -86,8 +89,8 @@ fn a_chunk_update_hides_the_buckets_that_left_and_reuses_its_objects() {
 fn a_chunk_the_full_pool_cannot_take_is_refused_whole_until_room_frees() {
     let mut backend = Recorder::new();
     let mut layer = ParkedLayer::new(2, 2);
-    layer.register(10, 1, CAR);
-    layer.register(21, 2, CAR);
+    layer.register(10, 1, CAR, [0.0, f32::INFINITY]);
+    layer.register(21, 2, CAR, [0.0, f32::INFINITY]);
     let (a, b, c) = (poses(3, 0.0), poses(5, 100.0), poses(2, 7.0));
     layer.install(&mut backend, (0, 0), [(10, &a[..]), (21, &b[..])].into_iter());
     let before = (backend.commands.len(), drawn(&backend));

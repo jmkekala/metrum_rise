@@ -105,6 +105,7 @@ fn control(frames: usize) -> Vec<Drawn> {
             smoother.smooth_bucket(
                 key,
                 targets,
+                &snapshot.car_custom[&key],
                 &snapshot.car_render_ids[&key],
                 &snapshot.car_ground_flags[&key],
                 view.alpha,

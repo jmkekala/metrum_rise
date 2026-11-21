@@ -661,8 +661,9 @@ impl SimCore {
             return;
         }
         let mut jobs = self.parking.take_dirty_jobs();
+        let looks = crate::nodes::sim::render::vehicle_catalogue::CatalogueLooks(&self.vehicle_catalogue);
         self.parking
-            .solve_dirty_chunks(&mut jobs, |model, source, pos, heading| {
+            .solve_dirty_chunks(&mut jobs, &looks, |model, source, pos, heading| {
                 self.parked_ground_pose(model, source, pos, heading)
             });
         self.parking.install_dirty_chunks(jobs);

@@ -162,8 +162,8 @@ pub(super) fn pack_parked(
         update.set("version", chunk.version as i64);
         let mut buckets = VarDictionary::new();
         let mut identities = VarDictionary::new();
-        for (bucket, poses, ids) in chunk.buckets() {
-            buckets.set(bucket as i32, PackedFloat32Array::from(poses));
+        for (bucket, poses, custom, ids) in chunk.rows() {
+            buckets.set(bucket as i32, parked_rows(poses, custom));
             identities.set(
                 bucket as i32,
                 PackedInt64Array::from_iter(ids.iter().map(|&id| id as i64)),
@@ -175,4 +175,22 @@ pub(super) fn pack_parked(
     }
     result.set("chunks", updates);
     result
+}
+
+// A parked bucket's MultiMesh rows: each pose followed by its custom data (`RENDER-65`), the
+// moving cars' row shape. O(cars), once per changed chunk.
+fn parked_rows(poses: &[f32], custom: &[f32]) -> PackedFloat32Array {
+    use crate::nodes::sim::render::car_visual::ROW;
+    let mut rows = PackedFloat32Array::new();
+    rows.resize(poses.len() / 12 * ROW);
+    for ((row, pose), data) in rows
+        .as_mut_slice()
+        .chunks_exact_mut(ROW)
+        .zip(poses.chunks_exact(12))
+        .zip(custom.chunks_exact(4))
+    {
+        row[..12].copy_from_slice(pose);
+        row[12..].copy_from_slice(data);
+    }
+    rows
 }

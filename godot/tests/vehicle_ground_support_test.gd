@@ -1,9 +1,11 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-## Real vehicle mesh contacts through native grounding, native smoothing and MultiMesh upload.
+## Real vehicle mesh contacts through native grounding, native smoothing and MultiMesh upload:
+## the bundled pack's models (`RENDER-65`), grounded by the support profiles Rust builds from their
+## wheel facts, checked against the tyre vertices of their nearest tier.
 extends SceneTree
 
-const VehicleLamps := preload("res://scripts/renderers/vehicle_lamps.gd")
+const VehicleResources := preload("res://scripts/renderers/vehicle_resources.gd")
 const AgentRenderer := preload("res://scripts/renderers/agents.gd")
 var _failures := 0
 var _poses := 0
@@ -23,9 +25,12 @@ class RenderSource extends RefCounted:
 	func advance_agent_frame(delta: float, _full: bool) -> Dictionary:
 		drawn = simulation.smooth_car_render_data(cars, delta)
 		return {"installed": true, "cars": drawn, "walkers": {}, "changed_cars": simulation.get_changed_car_buckets(),
-			"changed_walkers": PackedInt64Array()}
-	func set_vehicle_ground_support(kind: int, bounds: AABB, contacts: PackedVector3Array) -> bool:
-		return simulation.set_vehicle_ground_support(kind, bounds, contacts)
+			"changed_walkers": PackedInt64Array(), "vehicle_revision": revision}
+	var revision := 0
+	func get_vehicle_catalogue() -> Dictionary:
+		var catalogue: Dictionary = simulation.get_vehicle_catalogue()
+		revision = catalogue["revision"]
+		return catalogue
 
 func _initialize() -> void:
 	call_deferred("_run")
@@ -51,37 +56,30 @@ func _run() -> void:
 	source.simulation = simulation
 	var renderer := AgentRenderer.new()
 	renderer.simulation_node = source
-	var models := ["civilian/sedan", "civilian/sedan-sports", "civilian/suv", "civilian/suv-luxury", "freight/delivery"]
+	var warnings := simulation.load_asset_packs(ProjectSettings.globalize_path("res://bootstrap/mods"), PackedStringArray(["vehicles"]))
+	_expect(warnings.is_empty(), "the vehicle pack loads: " + warnings)
+	var meshes := VehicleResources.new()
+	meshes.lamps_enabled = false
+	meshes.refresh(source)
+	# One look a model: its index is the model's ground profile, its tier 0 the drawn bucket.
+	var models: Array[String] = []
+	var buckets: Array[int] = []
 	var contacts_by_model: Array = []
-	for kind in range(models.size()):
-		var path: String = "res://assets/models/vehicles/%s.glb" % models[kind]
-		var model: Dictionary = renderer._load_vehicle_glb_source(path)
-		var mesh: Mesh = renderer._build_vehicle_mesh_from_glb(model, path, 0.0, 0.0, Vector3(0, PI, 0))
-		_expect(mesh != null, "vehicle source mesh must load: " + path)
-		if mesh == null:
-			quit(1)
-			return
-		_expect(renderer._add_car_multimesh(kind, 0, mesh), "native support registration must accept " + path)
-		var body_surfaces: int = mesh.get_meta(VehicleLamps.BODY_SURFACES_META)
-		_expect(mesh.get_surface_count() == body_surfaces + 2, "every original model must have glow and beam surfaces")
-		var anchor: Vector3 = mesh.get_meta(VehicleLamps.HEAD_LAMP_META)
-		var beam := mesh.surface_get_material(body_surfaces + 1) as ShaderMaterial
-		_expect(beam.get_shader_parameter("head_lamp").is_equal_approx(anchor), "beam must use the model headlight anchor")
-		_expect(renderer._headlights.head_points[kind * 10].is_equal_approx(Vector3(0, anchor.y, anchor.z - 0.15)), "spot/projector must follow the same anchor")
-		var painted: Mesh = renderer._build_vehicle_mesh_from_glb(model, path, 0.2, 0.0, Vector3(0, PI, 0))
-		_expect(painted.get_meta(VehicleLamps.HEAD_LAMP_META) == anchor, "atlas variants must not move lamps")
-		_expect(painted.surface_get_material(body_surfaces + 1) == beam, "atlas variants must share beam materials")
+	for look in meshes.looks.size():
+		var model: int = meshes.looks[look]["model"]
+		if model < models.size():
+			continue
+		models.append(meshes.looks[look]["id"])
+		buckets.append(look * VehicleResources.TIERS)
+		var mesh: Mesh = meshes.mesh_for_bucket(look * VehicleResources.TIERS)
 		var contacts: Array[Vector3] = []
-		# Body surfaces only: the headlight volume reaches below the ground by design.
-		for surface in range(int(mesh.get_meta("vehicle_body_surfaces", mesh.get_surface_count()))):
-			var vertices: PackedVector3Array = mesh.surface_get_arrays(surface)[Mesh.ARRAY_VERTEX]
-			for point in vertices:
-				# A corner repeats once per triangle using it (32 points, 8 distinct per model):
-				# a repeat only repeats the same clearance check, each a native height query.
-				if point.y <= 0.0001 and not contacts.has(point):
-					contacts.append(point)
-		_expect(not contacts.is_empty(), "vehicle must have bottom contacts")
+		for point: Vector3 in mesh.surface_get_arrays(0)[Mesh.ARRAY_VERTEX]:
+			# The tyres' lowest vertices: the contract puts them on y = 0 exactly.
+			if point.y <= 0.001 and not contacts.has(point):
+				contacts.append(point)
+		_expect(not contacts.is_empty(), "%s must have tyre contacts" % models[model])
 		contacts_by_model.append(contacts)
+	_expect(models.size() == 2, "the estate and the truck: %s" % [models])
 
 	for side in [-1.0, 1.0]:
 		for rise in [-1.0, 1.0]:
@@ -125,12 +123,12 @@ func _run() -> void:
 							-1000.0, 1000.0, -1000.0, 1000.0,
 							Vector3(SimulationNode.get_vehicle_ground_full_detail_m(), 0.0, predicted_visual_z)
 						)
-						source.cars = {kind * 10: {"transforms": target, "ids": PackedInt64Array([1]), "ground_flags": PackedByteArray([1])}}
+						source.cars = {buckets[kind]: {"transforms": target, "ids": PackedInt64Array([1]), "ground_flags": PackedByteArray([1])}}
 						renderer.update_swarm(1.0 / 60.0)
-						var visual := _unpack(source.drawn[kind * 10])
+						var visual := _unpack(source.drawn[buckets[kind]])
 						previous_visual_z = visual.origin.z
 						if DisplayServer.get_name() != "headless":
-							var uploaded: Transform3D = renderer.car_mmis[kind * 10].multimesh.get_instance_transform(0)
+							var uploaded: Transform3D = renderer.car_mmis[buckets[kind]].multimesh.get_instance_transform(0)
 							_expect(uploaded.is_equal_approx(visual), "GPU buffer layout must preserve corrected pose")
 							visual = uploaded
 						if visual.basis.y.distance_to(Vector3.UP) > 0.01:
@@ -142,7 +140,9 @@ func _run() -> void:
 							var height := simulation.get_world_surface_height(Vector2(world.x, world.z))
 							var clearance: float = world.y - height
 							_minimum_clearance = minf(_minimum_clearance, clearance)
-							_expect(clearance >= 0.0198, "buried contact model=%s side=%s direction=%s frame=%d clearance=%f" % [models[kind], side, direction, frame, clearance])
+							# The solve lifts its support points 2 cm; a tyre vertex between them, over a
+							# grade break, may sit up to a millimetre lower (`RENDER-65`), never buried.
+							_expect(clearance >= 0.019, "buried contact model=%s side=%s direction=%s frame=%d clearance=%f" % [models[kind], side, direction, frame, clearance])
 						_poses += 1
 						if _failures > 0:
 							renderer.free()
@@ -165,7 +165,7 @@ func _run() -> void:
 		var drawn: PackedFloat32Array = result[0]
 		_expect(drawn[3] == target[3] and drawn[11] == target[11], "height owner handoff must use target pose")
 		if previous:
-			_expect(drawn == target, "lane target after handoff must be shown unchanged")
+			_expect(drawn.slice(0, 12) == target and drawn.size() == 16, "lane target after handoff must be shown unchanged")
 	_expect(_tilted_poses > 100, "fixture must exercise pitch/roll, not flat poses")
 	_expect(_largest_center_lift > 0.1, "fixture must require footprint support beyond a centre-height solve")
 	if "--benchmark-vehicle-support" in OS.get_cmdline_user_args():

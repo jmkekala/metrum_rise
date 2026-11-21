@@ -7,6 +7,7 @@
 use super::super::super::backend::Scenario;
 use super::super::super::backend::recorder::Recorder;
 use super::*;
+use crate::nodes::sim::render::agent_frame::CAR_STRIDE;
 
 fn car(x: f32, z: f32) -> [f32; CAR_STRIDE] {
     [1.0, 0.0, 0.0, x, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, z]
@@ -33,6 +34,7 @@ fn feed() -> CasterFeed {
     feed.candidates.cars = vec![Vec::new(); 11];
     for x in [100.0, 600.0, -100.0, -20.0] {
         feed.candidates.cars[10].extend(car(x, 5.0));
+        feed.candidates.cars[10].extend([0.0; 4]);
     }
     feed.candidates.walkers = vec![walker(50.0, 0.0, 0.25).to_vec()];
     feed.serial = 1;
@@ -55,11 +57,8 @@ fn drawn(backend: &Recorder) -> Vec<Twin> {
         .visible(Scenario::Main)
         .map(|(_, instance)| {
             let multimesh = &backend.multimeshes[&instance.base];
-            let stride = if multimesh.custom {
-                WALKER_STRIDE
-            } else {
-                CAR_STRIDE
-            };
+            // Cars and walkers alike: a transform, then custom data (`RENDER-65`).
+            let stride = WALKER_STRIDE;
             let count = multimesh.visible_count.unwrap() as usize;
             (
                 multimesh.mesh.unwrap(),
@@ -80,7 +79,7 @@ fn twins_cast_only_the_agents_within_reach_as_their_buckets_did() {
     let mut layer = layer();
     let feed = feed();
     assert!(layer.update(&mut backend, &feed, VIEW));
-    let kept_cars: Vec<f32> = [car(100.0, 5.0), car(-20.0, 5.0)].concat();
+    let kept_cars: Vec<f32> = [&car(100.0, 5.0)[..], &[0.0; 4], &car(-20.0, 5.0), &[0.0; 4]].concat();
     assert_eq!(
         drawn(&backend),
         vec![
@@ -111,7 +110,7 @@ fn twins_cast_only_the_agents_within_reach_as_their_buckets_did() {
         .filter(|(kind, ..)| *kind == AgentKind::Cars)
         .map(|(_, _, rows)| rows.to_vec())
         .collect();
-    assert_eq!(cars, vec![[car(-100.0, 5.0), car(-20.0, 5.0)].concat()]);
+    assert_eq!(cars, vec![[&car(-100.0, 5.0)[..], &[0.0; 4], &car(-20.0, 5.0), &[0.0; 4]].concat()]);
     // The walker 50 m behind the camera leaves.
     assert!(layer.drawn().all(|(kind, ..)| kind == AgentKind::Cars));
 }

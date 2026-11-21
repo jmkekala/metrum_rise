@@ -30,10 +30,12 @@ impl SimulationNode {
     /// Installs the agents' frame the background job prepared and starts the next one for this
     /// frame's `delta` seconds (`RENDER-47`). Returns `installed` (false while the job still
     /// runs: draw what was drawn), `cars` and `walkers` (the drawn buffers by bucket, the node's
-    /// own dictionaries: cars 12 floats a car, walkers 16), `changed_cars` and
+    /// own dictionaries: 16 floats an agent, a transform then custom data), `changed_cars` and
     /// `changed_walkers` (the buckets to upload, those that left now absent: draw none) and,
     /// when the frame's snapshot holds parked chunks not installed, `parked` (the payload
-    /// `get_vehicle_frame` gives; `full_parked` asks for a complete republication). The frame
+    /// `get_vehicle_frame` gives; `full_parked` asks for a complete republication), and
+    /// `vehicle_revision`, the vehicle catalogue's revision the car buckets were keyed by (a
+    /// renderer with meshes of another revision rebuilds them, `RENDER-65`). The frame
     /// drawn is the one the main thread drew a frame earlier before `RENDER-47`. Main thread
     /// `O(changed buckets' agents)` copies and `O(1)` to start the job; the job `O(drawn
     /// agents)` on the background pool.
@@ -61,6 +63,7 @@ impl SimulationNode {
         result.set("walkers", self.walker_buffers.clone());
         result.set("changed_cars", self.changed_car_buckets.clone());
         result.set("changed_walkers", self.changed_walker_buckets.clone());
+        result.set("vehicle_revision", self.vehicle_revision as i64);
         self.agent_parts.install_us = started.elapsed().as_micros() as i64;
         result
     }
@@ -109,6 +112,11 @@ impl SimulationNode {
             }
             if let Ok(flags) = field("ground_flags").try_to::<PackedByteArray>() {
                 input.flags.extend_from_slice(flags.as_slice());
+            }
+            // Custom data as given, or zero for each car (`RENDER-65`).
+            match field("custom").try_to::<PackedFloat32Array>() {
+                Ok(custom) => input.custom.extend_from_slice(custom.as_slice()),
+                Err(_) => input.custom.resize(input.ids.len() * 4, 0.0),
             }
         }
         frame.smooth_cars();
@@ -185,6 +193,7 @@ impl SimulationNode {
         parked: Option<(&mut VarDictionary, bool)>,
     ) {
         self.install_cars(&frame.smoother);
+        self.vehicle_revision = frame.vehicle_revision;
         for &key in frame.walkers.changed() {
             let drawn = frame.walkers.drawn(key);
             if drawn.is_empty() {
@@ -286,6 +295,8 @@ fn solve_off_lane(frame: &mut AgentFrame, core: &Mutex<SimCore>) {
     let core = SimulationNode::try_lock_shared_core(core);
     frame.smoother.solve_pending(|slot, poses, solve| {
         core.as_ref()
-            .is_some_and(|core| core.ground_vehicle_transforms(slot / 10, poses, solve, camera))
+            .is_some_and(|core| {
+                core.ground_vehicle_transforms(core.vehicle_bucket_model(slot), poses, solve, camera)
+            })
     });
 }

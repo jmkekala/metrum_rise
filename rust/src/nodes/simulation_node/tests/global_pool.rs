@@ -381,7 +381,7 @@ fn editing_a_town(e: &mut Entries, core: &mut SimCore) {
             let ids = &cars.car_render_ids[&key];
             let mut smoother = CarVisualSmoother::default();
             smoother.begin_frame(Default::default());
-            smoother.smooth_bucket(key, transforms, ids, flags, 0.5);
+            smoother.smooth_bucket(key, transforms, &vec![0.0; ids.len() * 4], ids, flags, 0.5);
             smoother.solve_pending(|_, poses, solve| {
                 core.ground_vehicle_transforms(0, poses, solve, None)
             });

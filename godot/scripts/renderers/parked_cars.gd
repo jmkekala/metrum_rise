@@ -2,8 +2,9 @@
 
 ## Versioned parked chunks. Rust owns supply, custody, pose and persisted palette, and draws the
 ## chunks through the streaming core's pooled slots (`StreamNode`, `RENDER-32-P`): this script
-## builds each vehicle bucket's mesh once and hands every changed chunk's poses over; it creates
-## no node per chunk. Payloads arrive with the moving cars of the same snapshot (agents.gd); one
+## builds each vehicle look's four tier meshes once, each registered with its tier's band of
+## camera distance (`RENDER-65`), and hands every changed chunk's rows (pose, then custom data
+## carrying the paint) over; it creates no node per chunk. Payloads arrive with the moving cars of the same snapshot (agents.gd); one
 ## acknowledgement answers each, once every chunk of it is drawn (a chunk the pool refused is
 ## offered again). Unchanged chunks perform no upload. Parked resources omit all lamps and lights.
 ## The cars draw to the moving cars' distance and fade out over the same band (`RENDER-48`):
@@ -15,6 +16,7 @@ const VehicleResources := preload("res://scripts/renderers/vehicle_resources.gd"
 @onready var simulation_node: Node = $"../SimulationNode"
 @onready var _stream: Node = get_node_or_null("../StreamNode")
 var _resources := VehicleResources.new()
+# Look → its tier meshes (kept, so their RIDs stay valid).
 var _meshes := {}
 var _versions := {}
 var _epoch := -1
@@ -32,12 +34,25 @@ func _exit_tree() -> void:
 	if _stream != null:
 		_stream.clear_parked_chunks()
 
+## Rebuilds the meshes when the parked buckets are keyed by another catalogue revision (packs
+## loaded), and asks for every chunk again. One integer compare a frame otherwise.
+func follow_vehicle_catalogue(wanted: int) -> void:
+	if not _resources.refresh(simulation_node, wanted):
+		return
+	_meshes.clear()
+	_versions.clear()
+	if _stream != null:
+		_stream.clear_parked_meshes()
+	_full = true
+
 func needs_full_publication() -> bool:
 	return _full
 
 func apply_publication(payload: Dictionary) -> void:
 	if _stream == null:
 		return
+	if _resources.revision < 0:
+		_resources.refresh(simulation_node)
 	var epoch: int = payload["epoch"]
 	if epoch != _epoch:
 		_stream.clear_parked_chunks()
@@ -58,17 +73,30 @@ func apply_publication(payload: Dictionary) -> void:
 		if _versions.get(key, -1) == version:
 			continue
 		var buckets: Dictionary = update["buckets"]
-		for bucket: int in buckets:
-			if not _meshes.has(bucket):
-				_meshes[bucket] = _resources.mesh_for_bucket(bucket)
-				var mesh: Mesh = _meshes[bucket]
-				_stream.register_parked_mesh(bucket, mesh.get_rid(), mesh.get_aabb())
+		for look: int in buckets:
+			if not _meshes.has(look):
+				_register_look(look)
 		if _stream.set_parked_chunk(key, buckets):
 			_versions[key] = version
 		else:
 			complete = false
 	if complete:
 		simulation_node.acknowledge_parked_cars(epoch, payload["serial"])
+
+# A look's tiers, each drawn while the camera is within its band of the batch's centre; with no
+# catalogue look (the procedural fallback) one mesh at every distance.
+func _register_look(look: int) -> void:
+	var meshes: Array[Mesh] = []
+	var starts := PackedFloat32Array([0.0])
+	if look < _resources.looks.size():
+		starts = _resources.looks[look]["tier_starts_m"]
+	for tier in starts.size():
+		var key := look * VehicleResources.TIERS + tier
+		var mesh: Mesh = _resources.mesh_for_bucket(key)
+		meshes.append(mesh)
+		var end := starts[tier + 1] if tier + 1 < starts.size() else 0.0
+		_stream.register_parked_mesh(key, mesh.get_rid(), mesh.get_aabb(), starts[tier], end)
+	_meshes[look] = meshes
 
 ## The drawn buckets (the stream benchmark's digests): `chunk`, `bucket`, `count` and `rows`, the
 ## poses read back from the engine (a headless renderer keeps no buffer: then empty).
@@ -78,6 +106,6 @@ func drawn_rows() -> Array[Dictionary]:
 		return out
 	for item: Dictionary in _stream.get_parked_drawn():
 		var count: int = item.count
-		var rows := RenderingServer.multimesh_get_buffer(item.multimesh).slice(0, count * 12)
+		var rows := RenderingServer.multimesh_get_buffer(item.multimesh).slice(0, count * 16)
 		out.append({"chunk": item.chunk, "bucket": item.bucket, "count": count, "rows": rows})
 	return out

@@ -378,10 +378,15 @@ pub struct RenderSnapshot {
     /// What a drawn car's ground solve depends on besides its pose and the camera: the world,
     /// [`SimCore::vehicle_ground_generation`] and the full-detail radius's bits (`RENDER-28`).
     pub(crate) vehicle_ground_key: [u64; 3],
+    /// The vehicle catalogue revision its car and parked buckets are keyed by (`RENDER-65`).
+    pub(crate) vehicle_catalogue_revision: u64,
     /// Per `pedestrian_type` → flat 12-float `Transform3D` buffer.
     pub pedestrian_transforms: HashMap<u8, Vec<f32>>,
-    /// Per `(vehicle_type * 10 + color_variant)` → flat 12-float `Transform3D` buffer.
+    /// Per car bucket (`look * 4 + tier`, `RENDER-65`) → flat 12-float `Transform3D` buffer.
     pub car_transforms: HashMap<u8, Vec<f32>>,
+    /// Per car bucket → instance custom data, 4 floats a car in `car_transforms` order
+    /// ([`crate::nodes::sim::render::vehicle_catalogue::DrawnVehicle::custom`]).
+    pub(crate) car_custom: HashMap<u8, Vec<f32>>,
     /// Per car transform bucket → render IDs matching `car_transforms` instance order.
     pub car_render_ids: HashMap<u8, Vec<i64>>,
     /// Off-lane support flags, aligned with each car transform/identity bucket.
@@ -496,8 +501,10 @@ impl Default for RenderSnapshot {
             parked: Default::default(),
             vehicle_world_epoch: 0,
             vehicle_ground_key: [0; 3],
+            vehicle_catalogue_revision: 0,
             pedestrian_transforms: HashMap::new(),
             car_transforms: HashMap::new(),
+            car_custom: HashMap::new(),
             car_render_ids: HashMap::new(),
             car_ground_flags: HashMap::new(),
             agent_draw_cut: [0; 2],
@@ -592,6 +599,7 @@ impl SimCore {
                     .values_mut()
                     .for_each(Vec::clear);
                 snapshot.car_transforms.values_mut().for_each(Vec::clear);
+                snapshot.car_custom.values_mut().for_each(Vec::clear);
                 snapshot.car_render_ids.values_mut().for_each(Vec::clear);
                 snapshot.car_ground_flags.values_mut().for_each(Vec::clear);
             }
@@ -631,6 +639,9 @@ impl SimCore {
         for buffer in snapshot.car_transforms.values_mut() {
             buffer.clear();
         }
+        for buffer in snapshot.car_custom.values_mut() {
+            buffer.clear();
+        }
         for ids in snapshot.car_render_ids.values_mut() {
             ids.clear();
         }
@@ -646,6 +657,7 @@ impl SimCore {
             u32::try_from(agents_started.elapsed().as_micros()).unwrap_or(u32::MAX);
         self.publish_parked_chunks(&mut snapshot.parked);
         snapshot.vehicle_world_epoch = self.world_epoch;
+        snapshot.vehicle_catalogue_revision = self.vehicle_catalogue.revision;
         snapshot.vehicle_ground_key = [
             self.world_epoch,
             self.vehicle_ground_generation,

@@ -70,6 +70,8 @@ struct PosedAgent {
     render_id: i64,
     transform: [f32; 12],
     walk_phase: f32,
+    // A car's instance custom data (`RENDER-65`).
+    custom: [f32; 4],
 }
 
 // Why an agent has no instance in this snapshot.
@@ -131,9 +133,14 @@ impl DrawEye {
     // off-lane car, measured in the ground plane. The ground terms are summed first, so the sum
     // is never below the ground-plane distance `misses_box` rounds.
     fn excludes(self, x: f32, y: Option<f32>, z: f32, car: bool) -> bool {
+        self.distance_sq(x, y, z) > Self::reach_sq(car)
+    }
+
+    // The squared distance `excludes` compares; a car's tier is chosen by it too.
+    fn distance_sq(self, x: f32, y: Option<f32>, z: f32) -> f32 {
         let (dx, dz) = (x - self.0.x, z - self.0.z);
         let dy = y.map_or(0.0, |y| y - self.0.y);
-        dx * dx + dz * dz + dy * dy > Self::reach_sq(car)
+        dx * dx + dz * dz + dy * dy
     }
 
     // True only when no point of the widened box lies within the kind's reach in the ground
@@ -375,12 +382,11 @@ impl SimCore {
                 render_id: 0,
                 transform: transform_floats(basis, Vector3::new(world_x, world_y, world_z)),
                 walk_phase: self.agents.walk_phase[i],
+                custom: [0.0; 4],
             })
         } else {
             // Off-lane footprints are grounded per bucket after bucketing.
             let render_id = self.agents.render_id[i];
-            let (v_type, variant_id, _) = self.parking.vehicle_visual(self.agents.parking_trip[i].vehicle)
-                .unwrap_or((self.agents.vehicle_type[i], (render_id % 5) as u8, render_id));
             let (world_y, basis) = if let Some((pos, tangent)) = lane_pose {
                 (pos.y + AGENT_SURFACE_CLEARANCE_M, model_basis(-tangent))
             } else {
@@ -397,13 +403,17 @@ impl SimCore {
             {
                 return Err(Cut::Far);
             }
+            // The tier by the distance the draw distance measures (`RENDER-65`).
+            let distance_sq = view.eye.map(|eye| eye.distance_sq(world_x, drawn_y, world_z));
+            let (key, custom) = self.drawn_car(i, distance_sq);
             Ok(PosedAgent {
-                key: (v_type * 10) + variant_id,
+                key,
                 car: true,
                 ground_flag: u8::from(lane_pose.is_none()),
                 render_id: render_id.min(i64::MAX as u64) as i64,
                 transform: transform_floats(basis, Vector3::new(world_x, world_y, world_z)),
                 walk_phase: 0.0,
+                custom,
             })
         }
     }
@@ -413,7 +423,7 @@ impl SimCore {
         let flags = &snapshot.car_ground_flags;
         par_for_each_bucket(&mut snapshot.car_transforms, |key, buffer| {
             self.solve_vehicle_transforms(
-                key / 10,
+                self.vehicle_bucket_model(key),
                 buffer,
                 &flags[&key],
                 self.render_camera_position,
@@ -435,6 +445,7 @@ fn bucket_posed_agents(chunks: &[Vec<PosedAgent>], snapshot: &mut RenderSnapshot
         }
         if present[1][usize::from(key)] {
             snapshot.car_transforms.entry(key).or_default();
+            snapshot.car_custom.entry(key).or_default();
             snapshot.car_render_ids.entry(key).or_default();
             snapshot.car_ground_flags.entry(key).or_default();
         }
@@ -442,6 +453,7 @@ fn bucket_posed_agents(chunks: &[Vec<PosedAgent>], snapshot: &mut RenderSnapshot
     let RenderSnapshot {
         pedestrian_transforms,
         car_transforms,
+        car_custom,
         car_render_ids,
         car_ground_flags,
         ..
@@ -457,9 +469,18 @@ fn bucket_posed_agents(chunks: &[Vec<PosedAgent>], snapshot: &mut RenderSnapshot
         || {
             rayon::join(
                 || {
-                    fill_buckets(car_transforms, chunks, true, |buffer, agent| {
-                        buffer.extend_from_slice(&agent.transform)
-                    })
+                    rayon::join(
+                        || {
+                            fill_buckets(car_transforms, chunks, true, |buffer, agent| {
+                                buffer.extend_from_slice(&agent.transform)
+                            })
+                        },
+                        || {
+                            fill_buckets(car_custom, chunks, true, |buffer, agent| {
+                                buffer.extend_from_slice(&agent.custom)
+                            })
+                        },
+                    )
                 },
                 || {
                     rayon::join(
@@ -529,6 +550,9 @@ impl SimCore {
             buffer.clear();
         }
         for buffer in snapshot.car_transforms.values_mut() {
+            buffer.clear();
+        }
+        for buffer in snapshot.car_custom.values_mut() {
             buffer.clear();
         }
         for ids in snapshot.car_render_ids.values_mut() {
@@ -620,9 +644,13 @@ impl SimCore {
                     continue;
                 }
                 let render_id = self.agents.render_id[i];
-                let (v_type, variant_id, _) = self.parking.vehicle_visual(self.agents.parking_trip[i].vehicle)
-                    .unwrap_or((self.agents.vehicle_type[i], (render_id % 5) as u8, render_id));
-                let model_key = (v_type * 10) + variant_id;
+                let distance_sq = eye.map(|eye| eye.distance_sq(world_x, lane_y, world_z));
+                let (model_key, custom) = self.drawn_car(i, distance_sq);
+                snapshot
+                    .car_custom
+                    .entry(model_key)
+                    .or_default()
+                    .extend_from_slice(&custom);
                 snapshot
                     .car_render_ids
                     .entry(model_key)

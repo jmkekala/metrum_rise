@@ -28,7 +28,7 @@ mod tests;
 use crate::simulation::core::handles::{Handle, HandleTable};
 pub(crate) use data::{Bay, DockRoute, DockWay, ParkingCost, Place, PlaceSource, Vehicle};
 use data::{Chunk, chunk_at};
-pub(crate) use render::ParkedPublication;
+pub(crate) use render::{ParkedLooks, ParkedPublication};
 use std::collections::HashMap;
 use std::sync::Arc;
 

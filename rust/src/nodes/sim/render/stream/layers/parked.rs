@@ -16,6 +16,12 @@
 //! centre is known exactly. Nothing runs a frame for it: the engine checks the range of a batch
 //! only as it culls, `O(buckets in view)`, and no slot is shown or hidden for it.
 //!
+//! Tiers (`RENDER-65`): a vehicle look's four tier meshes are registered as four buckets, each
+//! with its band of camera distance, and a chunk's cars of that look are written to each of them.
+//! The engine draws the tier whose band holds the camera's distance from the batch's centre, so
+//! the tier switches per chunk and bucket, by the same range test as the draw distance, with no
+//! work a frame; the cost is the rows uploaded four times when a chunk changes.
+//!
 //! A chunk installs whole or not at all: its buckets that left are hidden and its new ones drawn
 //! in the same call, and a chunk the pool cannot take (every slot of the limit live) sends
 //! nothing and is refused, so its publication is not acknowledged and the snapshot offers it
@@ -42,14 +48,14 @@ pub(crate) const SLOT_LIMIT: usize = 8_192;
 pub(crate) const SPARE_LIMIT: usize = 2_048;
 // `SceneLightingConfig.DYNAMIC_CASTER_EXTRA_CULL_MARGIN_M`, the cars' shadow policy.
 const EXTRA_MARGIN_M: f32 = 12.0;
-// A pose: a 3D transform's 12 floats.
-const STRIDE: usize = 12;
+// A row: a 3D transform's 12 floats, then the car's custom data (`RENDER-65`).
+const STRIDE: usize = crate::nodes::sim::render::car_visual::ROW;
 
 /// The parked chunks' slots.
 pub(crate) struct ParkedLayer {
     pool: SlotPool,
-    // Each bucket's catalogue mesh and the mesh's bounds.
-    meshes: Map<u32, (u32, Aabb)>,
+    // Each bucket's catalogue mesh, the mesh's bounds and its tier's band of camera distance.
+    meshes: Map<u32, (u32, Aabb, [f32; 2])>,
     drawn: Map<(ChunkKey, u32), SlotId>,
     // Each drawn chunk's buckets, so a chunk's update finds the buckets that left.
     buckets: Map<ChunkKey, Vec<u32>>,
@@ -90,10 +96,18 @@ impl ParkedLayer {
         }
     }
 
-    /// Registers a vehicle bucket's mesh (a catalogue index) and the mesh's bounds
-    /// (`Mesh.get_aabb`, what the engine bounds a `MultiMesh` of it with).
-    pub(crate) fn register(&mut self, bucket: u32, mesh: u32, bounds: Aabb) {
-        self.meshes.insert(bucket, (mesh, bounds));
+    /// Registers a vehicle bucket's mesh (a catalogue index), the mesh's bounds (`Mesh.get_aabb`,
+    /// what the engine bounds a `MultiMesh` of it with) and the band of camera distance from the
+    /// batch's centre its tier draws in (`[0, inf]` for every distance).
+    pub(crate) fn register(&mut self, bucket: u32, mesh: u32, bounds: Aabb, band: [f32; 2]) {
+        self.meshes.insert(bucket, (mesh, bounds, band));
+    }
+
+    /// Frees every slot and forgets every mesh: the buckets now name other meshes (a rebuilt
+    /// vehicle catalogue, `RENDER-65`). `O(slots)`.
+    pub(crate) fn forget_meshes(&mut self, backend: &mut impl RenderBackend) {
+        self.reset(backend);
+        self.meshes.clear();
     }
 
     /// Whether a bucket has its mesh.
@@ -140,7 +154,7 @@ impl ParkedLayer {
                 continue;
             }
             let count = (rows.len() / STRIDE) as u32;
-            let (mesh, mesh_bounds) = self.meshes[&bucket];
+            let (mesh, mesh_bounds, band) = self.meshes[&bucket];
             let slot = match self.drawn.get(&(chunk, bucket)) {
                 Some(&slot) => slot,
                 None => {
@@ -148,7 +162,7 @@ impl ParkedLayer {
                         mesh,
                         class: capacity_class(count).0,
                         colors: false,
-                        custom: false,
+                        custom: true,
                         parameter: None,
                     };
                     let slot = self
@@ -162,7 +176,7 @@ impl ParkedLayer {
             };
             let (bounds, range_end) = drawn_bounds(&mesh_bounds, rows);
             self.pool.fill(backend, slot, rows, count, bounds);
-            self.draw(backend, slot, range_end);
+            self.draw(backend, slot, [band[0], band[1].min(range_end)]);
         }
         if !kept.is_empty() {
             self.buckets.insert(chunk, kept);
@@ -208,12 +222,12 @@ impl ParkedLayer {
             && kind.class >= capacity_class((floats / STRIDE) as u32).0
     }
 
-    fn draw(&mut self, backend: &mut impl RenderBackend, slot: SlotId, range_end: f32) {
+    fn draw(&mut self, backend: &mut impl RenderBackend, slot: SlotId, range: [f32; 2]) {
         let fresh = self.pool.slot(slot).drawn(Role::Main).is_none();
         let main = Drawn {
             origin: [0.0; 3],
             aabb: Aabb::default(),
-            range: [0.0, range_end],
+            range,
             material: None,
             shadow: if self.cast_shadows {
                 Shadow::On

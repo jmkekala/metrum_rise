@@ -1122,7 +1122,7 @@ fn a_resting_car_keeps_a_fresh_solve_until_the_ground_under_it_changes() {
     let draw = |smoother: &mut CarVisualSmoother, core: &SimCore, poses: &[f32], alpha| {
         smoother.begin_frame(ground(core));
         let before = calls.load(Ordering::Relaxed);
-        smoother.smooth_bucket(0, poses, &[9], &[1], alpha);
+        smoother.smooth_bucket(0, poses, &[0.0; 4], &[9], &[1], alpha);
         smoother.solve_pending(|_, poses, mask| {
             calls.fetch_add(1, Ordering::Relaxed);
             *input.lock().unwrap() = poses.to_vec();
@@ -1145,7 +1145,7 @@ fn a_resting_car_keeps_a_fresh_solve_until_the_ground_under_it_changes() {
         draw(&mut smoother, &core, &target, alpha) == (false, 0)
     });
     assert!(rested, "a still car comes to rest");
-    assert_eq!(bits(smoother.drawn_bucket(0)), fresh(&core));
+    assert_eq!(bits(&smoother.drawn_bucket(0)[..12]), fresh(&core));
     for _ in 0..30 {
         assert_eq!(draw(&mut smoother, &core, &target, 0.3), (false, 0));
     }
@@ -1169,7 +1169,7 @@ fn a_resting_car_keeps_a_fresh_solve_until_the_ground_under_it_changes() {
     assert!(core.vehicle_ground_generation > generation + 2);
     core.prepare_site_queries();
     assert_eq!(draw(&mut smoother, &core, &target, 0.3).1, 1);
-    assert_eq!(bits(smoother.drawn_bucket(0)), fresh(&core));
+    assert_eq!(bits(&smoother.drawn_bucket(0)[..12]), fresh(&core));
 }
 
 #[test]

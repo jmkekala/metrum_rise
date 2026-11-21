@@ -13,20 +13,43 @@ use std::cell::Cell;
 use std::cmp::Reverse;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-/// One chunk's immutable publication; no buckets removes its previous instances. Three flat
+/// How a parked car is drawn (`RENDER-65`): its bucket, the model whose ground support poses it,
+/// and its instance custom data, from its saved model and colour bytes and its identity. The
+/// renderer's catalogue answers in the game; the simulation never reads it.
+pub(crate) trait ParkedLooks: Sync {
+    /// `(bucket, ground model, custom data)` of a car saved as `model` and `colour`.
+    fn look(&self, model: u8, colour: u8, identity: u64) -> (u8, u8, [f32; 4]);
+}
+
+/// The looks the saved bytes alone give: bucket `model * 10 + colour`, posed as `model`. Tests
+/// of the parked chunks, which need no catalogue.
+#[cfg(test)]
+pub(crate) struct SavedLooks;
+
+#[cfg(test)]
+impl ParkedLooks for SavedLooks {
+    fn look(&self, model: u8, colour: u8, _: u64) -> (u8, u8, [f32; 4]) {
+        (model * 10 + colour, model, [0.0; 4])
+    }
+}
+
+/// One chunk's immutable publication; no buckets removes its previous instances. Four flat
 /// buffers, so the next rebuild can reuse them whole.
 #[derive(Debug, Default)]
 pub(crate) struct ParkedChunk {
     pub version: u64,
-    // Twelve floats and one identity a car, bucket by bucket, each bucket in bay handle order.
+    // Twelve floats, four of custom data and one identity a car, bucket by bucket, each bucket
+    // in bay handle order.
     poses: Vec<f32>,
+    custom: Vec<f32>,
     identities: Vec<u64>,
     // Each bucket present, ascending, and the car index it ends at.
     runs: Vec<(u8, u32)>,
 }
 
 impl ParkedChunk {
-    /// Each bucket with its poses and identities, ascending. O(buckets), no copy.
+    /// Each bucket with its poses and identities, ascending. O(buckets), no copy. Tests.
+    #[cfg(test)]
     pub(crate) fn buckets(&self) -> impl Iterator<Item = (u8, &[f32], &[u64])> {
         let mut start = 0;
         self.runs.iter().map(move |&(bucket, end)| {
@@ -35,6 +58,22 @@ impl ParkedChunk {
             (
                 bucket,
                 &self.poses[cars.start * 12..cars.end * 12],
+                &self.identities[cars],
+            )
+        })
+    }
+
+    /// Each bucket with its poses (12 floats a car), custom data (4) and identities,
+    /// ascending. O(buckets), no copy.
+    pub(crate) fn rows(&self) -> impl Iterator<Item = (u8, &[f32], &[f32], &[u64])> {
+        let mut start = 0;
+        self.runs.iter().map(move |&(bucket, end)| {
+            let cars = start as usize..end as usize;
+            start = end;
+            (
+                bucket,
+                &self.poses[cars.start * 12..cars.end * 12],
+                &self.custom[cars.start * 4..cars.end * 4],
                 &self.identities[cars],
             )
         })
@@ -49,17 +88,22 @@ impl ParkedChunk {
     /// What this chunk's buffers can hold, summed.
     #[cfg(test)]
     pub(crate) fn capacities(&self) -> usize {
-        self.poses.capacity() + self.identities.capacity() + self.runs.capacity()
+        self.poses.capacity()
+            + self.custom.capacity()
+            + self.identities.capacity()
+            + self.runs.capacity()
     }
 
     fn clear(&mut self) {
         self.poses.clear();
+        self.custom.clear();
         self.identities.clear();
         self.runs.clear();
     }
 
-    fn push(&mut self, bucket: u8, pose: &[f32; 12], identity: u64) {
+    fn push(&mut self, bucket: u8, pose: &[f32; 12], custom: [f32; 4], identity: u64) {
         self.poses.extend_from_slice(pose);
+        self.custom.extend_from_slice(&custom);
         self.identities.push(identity);
         let cars = self.identities.len() as u32;
         match self.runs.last_mut() {
@@ -212,7 +256,7 @@ impl ParkingSystem {
         pose: impl Fn(u8, PlaceSource, [f32; 3], f32) -> [f32; 12] + Sync,
     ) {
         let mut jobs = self.take_dirty_jobs();
-        self.solve_dirty_chunks(&mut jobs, pose);
+        self.solve_dirty_chunks(&mut jobs, &SavedLooks, pose);
         self.install_dirty_chunks(jobs);
     }
 
@@ -241,21 +285,23 @@ impl ParkingSystem {
         jobs
     }
 
-    /// Builds every dirty chunk's payload, in parallel: a copy of each parked car's cached pose.
-    /// O(sum(C log C)) for C parked cars per dirty chunk, empty bays never visited, plus Q, the
-    /// ground solve, only for a car on a place with no pose for its model: a new or moved-ground
-    /// place, or a car of another model arrived since the last solve. The log is the sort: the
+    /// Builds every dirty chunk's payload, in parallel: a copy of each parked car's cached pose
+    /// and its look (`looks`, O(1) a car). O(sum(C log C)) for C parked cars per dirty chunk,
+    /// empty bays never visited, plus Q, the ground solve, only for a car on a place with no pose
+    /// for its ground model: a new or moved-ground place, or a car of another model arrived since
+    /// the last solve. The log is the sort: the
     /// list is in no order, and the payload's order is bay handle order within each bucket. The
     /// solves of every dirty chunk run as one parallel loop before the payloads: a site edit
     /// unsolves the bays round it, most of them in one chunk, and each solve is independent.
     pub(crate) fn solve_dirty_chunks(
         &self,
         jobs: &mut [ChunkJob],
+        looks: &impl ParkedLooks,
         pose: impl Fn(u8, PlaceSource, [f32; 3], f32) -> [f32; 12] + Sync,
     ) {
         let jobs = &mut jobs[..self.dirty.len()];
         crate::thread_pools::install(|| {
-            jobs.par_iter_mut().for_each(|job| self.unsolved_places(job));
+            jobs.par_iter_mut().for_each(|job| self.unsolved_places(job, looks));
             jobs.par_iter_mut()
                 .flat_map(|job| job.solved.par_iter_mut())
                 .for_each(|(p, model, solved)| {
@@ -267,20 +313,20 @@ impl ParkingSystem {
                         self.places.heading[p],
                     );
                 });
-            jobs.par_iter_mut().for_each(|job| self.build_chunk(job));
+            jobs.par_iter_mut().for_each(|job| self.build_chunk(job, looks));
         });
     }
 
     // Lists the chunk's parked cars whose place has no pose for their model, by place row, each
     // with a pose still to solve. O(C + S log S), S of them.
-    fn unsolved_places(&self, job: &mut ChunkJob) {
+    fn unsolved_places(&self, job: &mut ChunkJob, looks: &impl ParkedLooks) {
         for &handle in &self.chunks[&job.key].parked {
             let p = self.place_handles.resolve(handle).expect("parked bay");
             let v = self
                 .vehicle_handles
                 .resolve(self.places.occupant[p])
                 .expect("parked car");
-            let model = self.vehicles.model[v];
+            let model = self.parked_look(p, v, looks).1;
             if self.places.ground_model[p] != model {
                 job.solved.push((p, model, [0.0; 12]));
             }
@@ -288,7 +334,13 @@ impl ParkingSystem {
         job.solved.sort_unstable_by_key(|&(p, ..)| p);
     }
 
-    fn build_chunk(&self, job: &mut ChunkJob) {
+    // A parked car's look, named by its handle as when it drives (`SimCore::drawn_car`).
+    fn parked_look(&self, p: usize, v: usize, looks: &impl ParkedLooks) -> (u8, u8, [f32; 4]) {
+        let identity = self.places.occupant[p].to_bits() | (1_u64 << 62);
+        looks.look(self.vehicles.model[v], self.vehicles.colour[v], identity)
+    }
+
+    fn build_chunk(&self, job: &mut ChunkJob, looks: &impl ParkedLooks) {
         let chunk = &self.chunks[&job.key];
         let mut parked = PARKED_ORDER.take();
         parked.clear();
@@ -298,7 +350,7 @@ impl ParkingSystem {
                 .vehicle_handles
                 .resolve(self.places.occupant[p])
                 .expect("parked car");
-            (self.vehicles.model[v] * 10 + self.vehicles.colour[v], handle, p, v)
+            (self.parked_look(p, v, looks).0, handle, p, v)
         }));
         parked.sort_unstable();
         let shared = job.chunk.as_mut().expect("a prepared job");
@@ -306,7 +358,7 @@ impl ParkingSystem {
         payload.clear();
         payload.version = chunk.version + 1;
         for &(bucket, _, p, v) in &parked {
-            let model = self.vehicles.model[v];
+            let (_, model, custom) = self.parked_look(p, v, looks);
             let grounded = if self.places.ground_model[p] == model {
                 self.places.ground[p]
             } else {
@@ -314,7 +366,7 @@ impl ParkingSystem {
                 job.solved[i.expect("a solved pose")].2
             };
             let identity = self.places.occupant[p].to_bits() | (1_u64 << 62);
-            payload.push(bucket, &grounded, identity);
+            payload.push(bucket, &grounded, custom, identity);
         }
         PARKED_ORDER.set(parked);
     }

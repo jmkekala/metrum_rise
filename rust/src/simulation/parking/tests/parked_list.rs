@@ -210,7 +210,7 @@ fn a_rebuild_reads_the_parked_list_and_no_empty_bay() {
     let chunk = s.chunks.get_mut(&(0, 0)).unwrap();
     let places = std::mem::take(&mut chunk.places);
     assert_eq!((places.len(), chunk.parked.len()), (2000, 3));
-    s.solve_dirty_chunks(&mut jobs, flat_pose);
+    s.solve_dirty_chunks(&mut jobs, &super::super::render::SavedLooks, flat_pose);
     s.chunks.get_mut(&(0, 0)).unwrap().places = places;
     s.install_dirty_chunks(jobs);
     assert_eq!(rows(&s.publications(true)[0].1), want);

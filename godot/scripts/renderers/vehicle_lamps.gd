@@ -2,8 +2,9 @@
 
 ## Vehicle lamps: appends the night-lighting surfaces to a car mesh built by agents.gd.
 ##
-## Lamp centres are measured from the original vehicle GLBs, after the renderer turns them to
-## face -Z and grounds their wheels. Adds two surfaces to every car instance of the MultiMesh:
+## The lamp centres are the model's right-hand low-beam and tail lenses from its facts sidecar
+## (the vehicle catalogue, `RENDER-65`), in the turned frame the car is drawn in (nose at -Z); each
+## left-hand lamp mirrors X. Adds two surfaces to every car instance of the MultiMesh:
 ##   - glow: one camera-facing quad per lamp (vehicle_lamp_glow.gdshader). All four vertices sit
 ##     at the lamp centre; UV holds the corner (-1..1), NORMAL the way the lamp faces, COLOR.rgb
 ##     its colour and COLOR.a its world radius.
@@ -20,16 +21,6 @@ const PipelineTemplate := preload("res://scripts/renderers/pipeline_template.gd"
 const BODY_SURFACES_META := "vehicle_body_surfaces"
 const BODY_AABB_META := "vehicle_body_aabb"
 const HEAD_LAMP_META := "vehicle_head_lamp"
-# Right-hand lamp centres in grounded, -Z-facing mesh space, in metres. Measured from the
-# GLBs' front/rear lens bounds (sports uses the corresponding untextured body panels).
-# Each left-hand lamp mirrors X. These anchors are independent of atlas palette variants.
-const MODEL_LAMPS := {
-	"sedan": [Vector3(0.4125, 0.65, -1.15), Vector3(0.4125, 0.65, 1.25)],
-	"sedan-sports": [Vector3(0.4125, 0.55, -1.15), Vector3(0.4125, 0.55, 1.25)],
-	"suv": [Vector3(0.4125, 0.65, -1.25), Vector3(0.50, 0.60, 1.15)],
-	"suv-luxury": [Vector3(0.4125, 0.6875, -1.2375), Vector3(0.45, 0.75, 1.40)],
-	"delivery": [Vector3(0.4125, 0.65, -1.50), Vector3(0.55, 0.45, 1.60)],
-}
 const HEAD_COLOR := Color(1.0, 0.93, 0.8)
 const TAIL_COLOR := Color(1.0, 0.06, 0.03)
 const HEAD_GLOW_RADIUS_M := 0.22
@@ -50,6 +41,7 @@ const GLOW_MATERIAL_KEY := "glow"
 
 # `materials` is the caller's cache, shared by every model it builds: the glow material under
 # `GLOW_MATERIAL_KEY` and one beam material per `material_key` (it holds that model's lamps).
+# `head` and `tail` are the right-hand headlight and tail light centres.
 # `draw_fade_m`, when set, is the cars' draw distance fade band: the glows fade out with the car.
 ## The menu's pipeline prewarm templates (`RENDER-43`): the glow quads' shader on their format
 ## (positions, normals, colours, UVs) and the beam boxes' on positions.
@@ -58,19 +50,13 @@ static func pipeline_prewarm_surfaces() -> Array:
 	return [[PipelineTemplate.format_mesh(glow), PipelineTemplate.bare(GLOW_SHADER)],
 		[PipelineTemplate.format_mesh(Mesh.ARRAY_FORMAT_VERTEX), PipelineTemplate.bare(BEAM_SHADER)]]
 
-static func add_surfaces(mesh: ArrayMesh, material_key: String, materials: Dictionary,
-		draw_fade_m := Vector2.ZERO) -> void:
+static func add_surfaces(mesh: ArrayMesh, material_key: String, head_lamp: Vector3, tail_lamp: Vector3,
+		materials: Dictionary, draw_fade_m := Vector2.ZERO) -> void:
 	var body_surfaces := mesh.get_surface_count()
 	mesh.set_meta(BODY_SURFACES_META, body_surfaces)
 	mesh.set_meta(BODY_AABB_META, mesh.get_aabb())
-	var bounds := mesh.get_aabb()
-	var model_name := material_key.get_file().get_basename()
-	var anchors: Array = MODEL_LAMPS.get(model_name, [
-		Vector3(bounds.size.x * 0.35, bounds.size.y * 0.45, bounds.position.z),
-		Vector3(bounds.size.x * 0.35, bounds.size.y * 0.45, bounds.end.z),
-	])
-	var head := [anchors[0] * Vector3(-1, 1, 1), anchors[0]]
-	var tail := [anchors[1] * Vector3(-1, 1, 1), anchors[1]]
+	var head := [head_lamp * Vector3(-1, 1, 1), head_lamp]
+	var tail := [tail_lamp * Vector3(-1, 1, 1), tail_lamp]
 	# The right-hand headlight, for vehicle_headlights.gd.
 	mesh.set_meta(HEAD_LAMP_META, head[1])
 	if not materials.has(GLOW_MATERIAL_KEY):

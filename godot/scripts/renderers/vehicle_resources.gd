@@ -1,502 +1,260 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-## Shared vehicle mesh and palette/material loading for moving and parked renderers.
-## Lamps are optional so parked meshes never include headlight/glow surfaces.
+## Vehicle meshes and materials for the moving and parked car renderers (`RENDER-65`,
+## docs/vehicles.md "Renderer"). Rust's vehicle catalogue (`SimulationNode.get_vehicle_catalogue`)
+## names the looks, a model in one albedo variant, and each car bucket is `look * 4 + tier`. A
+## tier is read through Godot's glTF importer as building meshes are, turned half a turn about Y
+## (cars drive along their -Z) and drawn with one body shader (`vehicle_body.gdshader`) that reads
+## the ids the mesh carries in COLOR_0. Lamps are optional, so parked meshes have no headlight or
+## glow surface. With no vehicle model at all a procedural box car, sized to the car class box,
+## draws every bucket. Loading runs when a renderer first meets a bucket, never per frame.
 extends RefCounted
 
 const WindowMaterials := preload("res://scripts/renderers/window_materials.gd")
 const VehicleLamps := preload("res://scripts/renderers/vehicle_lamps.gd")
 const PipelineTemplate := preload("res://scripts/renderers/pipeline_template.gd")
-const MODELS := {
-	0: "res://assets/models/vehicles/civilian/sedan.glb",
-	1: "res://assets/models/vehicles/civilian/sedan-sports.glb",
-	2: "res://assets/models/vehicles/civilian/suv.glb",
-	3: "res://assets/models/vehicles/civilian/suv-luxury.glb",
-	4: "res://assets/models/vehicles/freight/delivery.glb",
-}
-const COLOURS := [Color(0.22, 0.42, 0.78), Color(0.72, 0.16, 0.14), Color(0.17, 0.55, 0.38), Color(0.88, 0.78, 0.30), Color(0.82, 0.84, 0.86)]
+const BODY_SHADER := preload("res://scripts/shaders/vehicle_body.gdshader")
+const TIERS := 4
+const PALETTE_SIZE := 64
+const WHEEL_SLOTS := 8
 
-const GLB_MAGIC := 0x46546c67
-const GLB_CHUNK_JSON := 0x4e4f534a
-const GLB_CHUNK_BIN := 0x004e4942
-const GLTF_COMPONENT_UNSIGNED_BYTE := 5121
-const GLTF_COMPONENT_UNSIGNED_SHORT := 5123
-const GLTF_COMPONENT_UNSIGNED_INT := 5125
-const GLTF_COMPONENT_FLOAT := 5126
-const GLTF_MODE_TRIANGLES := 4
-var _vehicle_glb_cache: Dictionary = {}
-var texture_cache: Dictionary = {}
-var _lamp_materials: Dictionary = {}
 var lamps_enabled := true
 # The cars' draw distance fade band from the camera, metres (agents.gd and parked_cars.gd set it
 # from Rust, `RENDER-28`, `RENDER-48`); zero draws at every distance.
 var draw_fade_m := Vector2.ZERO
+## The catalogue revision the looks were read at; -1 before the first read.
+var revision := -1
+## The catalogue's looks, by look index.
+var looks: Array = []
+var _tier_arrays: Dictionary = {}
+var _textures: Dictionary = {}
+var _materials: Dictionary = {}
+var _lamp_materials: Dictionary = {}
 
-func _load_source_texture(path: String) -> Texture2D:
-	if texture_cache.has(path):
-		return texture_cache[path]
 
-	var tex: Texture2D = null
-	var image := Image.load_from_file(ProjectSettings.globalize_path(path))
-	if image:
-		tex = ImageTexture.create_from_image(image)
-	else:
-		push_error("Could not load texture source: " + path)
+## Reads the catalogue when its revision is not `wanted` (-1: always) and drops every mesh source
+## and material of the last one. Returns whether the looks changed.
+func refresh(simulation_node: Object, wanted := -1) -> bool:
+	if wanted >= 0 and wanted == revision:
+		return false
+	var catalogue: Dictionary = simulation_node.get_vehicle_catalogue()
+	revision = catalogue["revision"]
+	looks = catalogue["looks"]
+	_tier_arrays.clear()
+	_materials.clear()
+	_lamp_materials.clear()
+	return true
 
-	texture_cache[path] = tex
-	return tex
 
-func _load_vehicle_glb_source(model_path: String) -> Dictionary:
-	if _vehicle_glb_cache.has(model_path):
-		return _vehicle_glb_cache[model_path]
-
-	var result: Dictionary = {}
-	var file := FileAccess.open(ProjectSettings.globalize_path(model_path), FileAccess.READ)
-	if not file:
-		_vehicle_glb_cache[model_path] = result
-		return result
-
-	if file.get_32() != GLB_MAGIC:
-		_vehicle_glb_cache[model_path] = result
-		return result
-
-	var version := file.get_32()
-	file.get_32() # total length
-	if version != 2:
-		_vehicle_glb_cache[model_path] = result
-		return result
-
-	var json_doc = null
-	var bin_chunk := PackedByteArray()
-	while file.get_position() + 8 <= file.get_length():
-		var chunk_length := file.get_32()
-		var chunk_type := file.get_32()
-		var chunk_data := file.get_buffer(chunk_length)
-		if chunk_type == GLB_CHUNK_JSON:
-			json_doc = JSON.parse_string(chunk_data.get_string_from_utf8().strip_edges())
-		elif chunk_type == GLB_CHUNK_BIN:
-			bin_chunk = chunk_data
-
-	if typeof(json_doc) == TYPE_DICTIONARY and not bin_chunk.is_empty():
-		result = {
-			"json": json_doc,
-			"bin": bin_chunk,
-		}
-	_vehicle_glb_cache[model_path] = result
-	return result
-
-func _build_vehicle_mesh_from_glb(
-	model: Dictionary,
-	model_path: String,
-	uv_shift: float,
-	target_height: float,
-	base_rotation: Vector3
-) -> ArrayMesh:
-	var doc: Dictionary = model.get("json", {})
-	var bin: PackedByteArray = model.get("bin", PackedByteArray())
-	var scenes: Array = doc.get("scenes", [])
-	if scenes.is_empty() or bin.is_empty():
-		return null
-
-	var scene_index := int(doc.get("scene", 0))
-	if scene_index < 0 or scene_index >= scenes.size():
-		return null
-
-	var base_tf = Transform3D().rotated(Vector3.RIGHT, base_rotation.x)
-	base_tf = base_tf.rotated(Vector3.UP, base_rotation.y)
-	base_tf = base_tf.rotated(Vector3.FORWARD, base_rotation.z)
-
-	var surfaces: Array = []
-	var bounds := {
-		"has": false,
-		"aabb": AABB(),
-	}
-	var scene: Dictionary = scenes[scene_index]
-	for node_index in scene.get("nodes", []):
-		_collect_glb_node_surfaces(doc, bin, int(node_index), base_tf, uv_shift, surfaces, bounds)
-
-	if surfaces.is_empty() or not bounds["has"]:
-		return null
-
-	var aabb: AABB = bounds["aabb"]
-	var scale := 1.0
-	if target_height > 0.0 and aabb.size.y > 0.01:
-		scale = target_height / aabb.size.y
-	var y_offset := -aabb.position.y * scale
-
-	var final_mesh := ArrayMesh.new()
-	final_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, _merged_body_arrays(surfaces, scale, y_offset))
-	final_mesh.surface_set_material(0, _vehicle_glb_material(model_path))
-
+## Bucket `bucket`'s mesh: its look's tier with the look's material, and lamps when enabled.
+func mesh_for_bucket(bucket: int) -> ArrayMesh:
+	var look_index := bucket / TIERS
+	if look_index >= looks.size():
+		return _build_car_mesh()
+	var look: Dictionary = looks[look_index]
+	var arrays := _tier(look["tiers"][bucket % TIERS])
+	if arrays.is_empty():
+		return _build_car_mesh()
+	var mesh := ArrayMesh.new()
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	mesh.surface_set_material(0, _material(look_index))
 	if lamps_enabled:
-		VehicleLamps.add_surfaces(final_mesh, model_path, _lamp_materials, draw_fade_m)
-	return final_mesh
+		VehicleLamps.add_surfaces(mesh, "model%d" % look["model"], look["head_lamp"], look["tail_lamp"],
+			_lamp_materials, draw_fade_m)
+	return mesh
 
-# Every glTF primitive of the body (body panels, the four wheels) as one surface: they share one
-# material, so a MultiMesh of the car draws its body once instead of once a primitive
-# (`RENDER-46`). Vertices, normals and UVs keep their order; each primitive's indices are offset
-# by the vertices before it, so the triangles and their winding are the primitives' own.
-func _merged_body_arrays(surfaces: Array, scale: float, y_offset: float) -> Array:
-	var verts := PackedVector3Array()
-	var normals := PackedVector3Array()
-	var uvs := PackedVector2Array()
-	var indices := PackedInt32Array()
-	for surface in surfaces:
-		var base := verts.size()
-		var surface_verts: PackedVector3Array = surface["vertices"]
-		for i in range(surface_verts.size()):
-			var v := surface_verts[i] * scale
-			v.y += y_offset
-			verts.append(v)
-		normals.append_array(surface["normals"])
-		uvs.append_array(surface["uvs"])
-		for index in surface["indices"] as PackedInt32Array:
-			indices.append(base + index)
-	var arrays := []
-	arrays.resize(Mesh.ARRAY_MAX)
-	arrays[Mesh.ARRAY_VERTEX] = verts
-	arrays[Mesh.ARRAY_NORMAL] = normals
-	arrays[Mesh.ARRAY_TEX_UV] = uvs
-	arrays[Mesh.ARRAY_INDEX] = indices
+
+## A tier's surface arrays in the drawn frame, read once a revision. Empty when it cannot be read.
+func _tier(path: String) -> Array:
+	if _tier_arrays.has(path):
+		return _tier_arrays[path]
+	var arrays := _import_tier(path)
+	_tier_arrays[path] = arrays
 	return arrays
 
-func _vehicle_glb_material(model_path: String) -> Material:
-	var albedo := _load_source_texture(model_path.get_base_dir() + "/Textures/colormap.png")
-	return car_material(albedo, draw_fade_m)
 
-## A car body's material: `albedo` through the building shader, receiving no shadows, dithered
-## out over `fade_m` (the draw distance fade band from the camera in metres).
-static func car_material(albedo: Texture2D, fade_m: Vector2) -> Material:
-	var mat := StandardMaterial3D.new()
-	mat.albedo_texture = albedo
-	mat.albedo_color = Color.WHITE
-	mat.roughness = 0.8
-	mat.metallic = 0.0
-	mat.cull_mode = BaseMaterial3D.CULL_BACK
-	mat.disable_receive_shadows = true
-	# Through the building shader, so the clouds dim the sun on cars as on the street.
-	return WindowMaterials.create(mat, false, WindowMaterials.DEFAULT_BRIGHTNESS, fade_m)
+func _import_tier(path: String) -> Array:
+	var document := GLTFDocument.new()
+	var state := GLTFState.new()
+	var glb := _without_textures(FileAccess.get_file_as_bytes(path)) if FileAccess.file_exists(path) else PackedByteArray()
+	if glb.is_empty() or document.append_from_buffer(glb, path.get_base_dir(), state) != OK:
+		push_error("Vehicle tier could not be read: " + path)
+		return []
+	var scene := document.generate_scene(state)
+	if scene == null:
+		push_error("Vehicle tier has no scene: " + path)
+		return []
+	var arrays := []
+	var instance := _first_mesh_instance(scene)
+	if instance != null and instance.mesh != null and instance.mesh.get_surface_count() > 0:
+		arrays = _drawn_arrays(instance.mesh.surface_get_arrays(0), _scene_transform(instance, scene))
+		if instance.mesh.get_surface_count() > 1:
+			push_warning("Vehicle tier has more than one surface; drawing the first: " + path)
+	scene.free()
+	return arrays
 
-## The menu's pipeline prewarm template of the cars (`RENDER-43`): their material's shader
-## variant (the fade's, any band selects it) on the bodies' vertex format (positions, normals,
-## tangents, UVs).
-static func pipeline_prewarm_surfaces() -> Array:
-	var format := Mesh.ARRAY_FORMAT_NORMAL | Mesh.ARRAY_FORMAT_TANGENT | Mesh.ARRAY_FORMAT_TEX_UV
-	return [[PipelineTemplate.format_mesh(format), car_material(null, Vector2.ONE)]]
 
-func _collect_glb_node_surfaces(
-	doc: Dictionary,
-	bin: PackedByteArray,
-	node_index: int,
-	parent_transform: Transform3D,
-	uv_shift: float,
-	surfaces: Array,
-	bounds: Dictionary
-) -> void:
-	var nodes: Array = doc.get("nodes", [])
-	if node_index < 0 or node_index >= nodes.size():
-		return
+# The tier in the frame cars are drawn in: the node transform, then half a turn about Y (x and z
+# negated exactly). Ids are snapped to their bytes plus half a step, so the engine's float-to-byte
+# truncation keeps every id exactly (`RENDER-65`, docs/vehicles.md "Ids, instance colours and
+# paint").
+static func _drawn_arrays(arrays: Array, node: Transform3D) -> Array:
+	var vertices: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
+	for i in vertices.size():
+		var v := node * vertices[i]
+		vertices[i] = Vector3(-v.x, v.y, -v.z)
+	arrays[Mesh.ARRAY_VERTEX] = vertices
+	if arrays[Mesh.ARRAY_NORMAL] is PackedVector3Array:
+		var normals: PackedVector3Array = arrays[Mesh.ARRAY_NORMAL]
+		var normal_basis := node.basis.inverse().transposed()
+		for i in normals.size():
+			var n := (normal_basis * normals[i]).normalized()
+			normals[i] = Vector3(-n.x, n.y, -n.z)
+		arrays[Mesh.ARRAY_NORMAL] = normals
+	if arrays[Mesh.ARRAY_TANGENT] is PackedFloat32Array:
+		var tangents: PackedFloat32Array = arrays[Mesh.ARRAY_TANGENT]
+		for i in range(0, tangents.size(), 4):
+			var t := (node.basis * Vector3(tangents[i], tangents[i + 1], tangents[i + 2])).normalized()
+			tangents[i] = -t.x
+			tangents[i + 1] = t.y
+			tangents[i + 2] = -t.z
+		arrays[Mesh.ARRAY_TANGENT] = tangents
+	if arrays[Mesh.ARRAY_COLOR] is PackedColorArray:
+		var colors: PackedColorArray = arrays[Mesh.ARRAY_COLOR]
+		for i in colors.size():
+			var c := colors[i]
+			colors[i] = Color((roundf(c.r * 255.0) + 0.5) / 255.0, (roundf(c.g * 255.0) + 0.5) / 255.0,
+				(roundf(c.b * 255.0) + 0.5) / 255.0, 1.0)
+		arrays[Mesh.ARRAY_COLOR] = colors
+	return arrays
 
-	var node: Dictionary = nodes[node_index]
-	var current_transform: Transform3D = parent_transform * _glb_node_transform(node)
-	if node.has("mesh"):
-		var meshes: Array = doc.get("meshes", [])
-		var mesh_index := int(node["mesh"])
-		if mesh_index >= 0 and mesh_index < meshes.size():
-			var mesh_def: Dictionary = meshes[mesh_index]
-			for primitive in mesh_def.get("primitives", []):
-				var surface := _read_glb_primitive_surface(
-					doc,
-					bin,
-					primitive,
-					current_transform,
-					uv_shift,
-					bounds
-				)
-				if not surface.is_empty():
-					surfaces.append(surface)
 
-	for child_index in node.get("children", []):
-		_collect_glb_node_surfaces(
-			doc,
-			bin,
-			int(child_index),
-			current_transform,
-			uv_shift,
-			surfaces,
-			bounds
-		)
-
-func _glb_node_transform(node: Dictionary) -> Transform3D:
-	if node.has("matrix"):
-		var matrix: Array = node["matrix"]
-		if matrix.size() >= 16:
-			var basis := Basis(
-				Vector3(float(matrix[0]), float(matrix[1]), float(matrix[2])),
-				Vector3(float(matrix[4]), float(matrix[5]), float(matrix[6])),
-				Vector3(float(matrix[8]), float(matrix[9]), float(matrix[10]))
-			)
-			var origin := Vector3(float(matrix[12]), float(matrix[13]), float(matrix[14]))
-			return Transform3D(basis, origin)
-
-	var basis := Basis()
-	if node.has("rotation"):
-		var rotation: Array = node["rotation"]
-		if rotation.size() >= 4:
-			basis = Basis(Quaternion(
-				float(rotation[0]),
-				float(rotation[1]),
-				float(rotation[2]),
-				float(rotation[3])
-			))
-	if node.has("scale"):
-		basis = basis.scaled(_json_vec3(node["scale"], Vector3(1.0, 1.0, 1.0)))
-
-	return Transform3D(basis, _json_vec3(node.get("translation", []), Vector3.ZERO))
-
-func _json_vec3(value, fallback: Vector3) -> Vector3:
-	if not (value is Array) or value.size() < 3:
-		return fallback
-	return Vector3(float(value[0]), float(value[1]), float(value[2]))
-
-func _read_glb_primitive_surface(
-	doc: Dictionary,
-	bin: PackedByteArray,
-	primitive: Dictionary,
-	transform: Transform3D,
-	uv_shift: float,
-	bounds: Dictionary
-) -> Dictionary:
-	var attrs: Dictionary = primitive.get("attributes", {})
-	if not attrs.has("POSITION"):
-		return {}
-	if int(primitive.get("mode", GLTF_MODE_TRIANGLES)) != GLTF_MODE_TRIANGLES:
-		return {}
-
-	var positions := _read_glb_accessor_vec3(doc, bin, int(attrs["POSITION"]))
-	if positions.is_empty():
-		return {}
-
-	var normals := PackedVector3Array()
-	if attrs.has("NORMAL"):
-		normals = _read_glb_accessor_vec3(doc, bin, int(attrs["NORMAL"]))
-	var uvs := PackedVector2Array()
-	if attrs.has("TEXCOORD_0"):
-		uvs = _read_glb_accessor_vec2(doc, bin, int(attrs["TEXCOORD_0"]), uv_shift)
-
-	var indices := PackedInt32Array()
-	if primitive.has("indices"):
-		indices = _read_glb_accessor_indices(doc, bin, int(primitive["indices"]))
-	if indices.is_empty():
-		indices.resize(positions.size())
-		for i in range(positions.size()):
-			indices[i] = i
-	indices = _reversed_triangle_winding(indices)
-
-	var verts_out := PackedVector3Array()
-	var normals_out := PackedVector3Array()
-	var uvs_out := PackedVector2Array()
-	verts_out.resize(positions.size())
-	normals_out.resize(positions.size())
-	uvs_out.resize(positions.size())
-
-	for i in range(positions.size()):
-		var pos: Vector3 = transform * positions[i]
-		verts_out[i] = pos
-		_expand_glb_bounds(bounds, pos)
-		if normals.size() == positions.size():
-			normals_out[i] = (transform.basis * normals[i]).normalized()
-		else:
-			normals_out[i] = Vector3.UP
-		if uvs.size() == positions.size():
-			uvs_out[i] = uvs[i]
-		else:
-			uvs_out[i] = Vector2.ZERO
-
-	return {
-		"vertices": verts_out,
-		"normals": normals_out,
-		"uvs": uvs_out,
-		"indices": indices,
-	}
-
-func _reversed_triangle_winding(indices: PackedInt32Array) -> PackedInt32Array:
-	var out := indices
-	for i in range(0, indices.size() - 2, 3):
-		var tmp := out[i]
-		out[i] = out[i + 2]
-		out[i + 2] = tmp
+# The GLB with its JSON chunk's images, textures and samplers and the material's texture slots
+# taken out: the body shader binds the maps itself, so the importer neither decodes them nor tries
+# to load an external `keep` file as a resource. Mesh data is untouched. Empty when `glb` is not a
+# GLB with a JSON chunk first.
+static func _without_textures(glb: PackedByteArray) -> PackedByteArray:
+	if glb.size() < 20 or glb.decode_u32(0) != 0x46546c67 or glb.decode_u32(16) != 0x4e4f534a:
+		return PackedByteArray()
+	var json_length := glb.decode_u32(12)
+	var doc = JSON.parse_string(glb.slice(20, 20 + json_length).get_string_from_utf8())
+	if not doc is Dictionary:
+		return PackedByteArray()
+	for key in ["images", "textures", "samplers"]:
+		doc.erase(key)
+	for material: Dictionary in doc.get("materials", []):
+		for key in ["normalTexture", "occlusionTexture", "emissiveTexture"]:
+			material.erase(key)
+		var pbr: Dictionary = material.get("pbrMetallicRoughness", {})
+		pbr.erase("baseColorTexture")
+		pbr.erase("metallicRoughnessTexture")
+	var json := JSON.stringify(doc, "", false, true).to_utf8_buffer()
+	while json.size() % 4 != 0:
+		json.append(0x20)
+	var rest := glb.slice(20 + json_length)
+	var out := PackedByteArray()
+	out.resize(20)
+	out.encode_u32(0, 0x46546c67)
+	out.encode_u32(4, 2)
+	out.encode_u32(8, 20 + json.size() + rest.size())
+	out.encode_u32(12, json.size())
+	out.encode_u32(16, 0x4e4f534a)
+	out.append_array(json)
+	out.append_array(rest)
 	return out
 
-func _expand_glb_bounds(bounds: Dictionary, point: Vector3) -> void:
-	if not bounds["has"]:
-		bounds["aabb"] = AABB(point, Vector3.ZERO)
-		bounds["has"] = true
-		return
-	var aabb: AABB = bounds["aabb"]
-	bounds["aabb"] = aabb.expand(point)
 
-func _read_glb_accessor_vec3(doc: Dictionary, bin: PackedByteArray, accessor_index: int) -> PackedVector3Array:
-	var layout := _glb_accessor_layout(doc, accessor_index, "VEC3")
-	var out := PackedVector3Array()
-	if layout.is_empty() or int(layout["component_type"]) != GLTF_COMPONENT_FLOAT:
-		return out
+static func _first_mesh_instance(node: Node) -> MeshInstance3D:
+	if node is MeshInstance3D:
+		return node
+	for child in node.get_children():
+		var found := _first_mesh_instance(child)
+		if found != null:
+			return found
+	return null
 
-	var offset := int(layout["offset"])
-	var stride := int(layout["stride"])
-	var count := int(layout["count"])
-	out.resize(count)
-	for i in range(count):
-		var p := offset + i * stride
-		if p + 12 > bin.size():
-			return PackedVector3Array()
-		out[i] = Vector3(bin.decode_float(p), bin.decode_float(p + 4), bin.decode_float(p + 8))
-	return out
 
-func _read_glb_accessor_vec2(
-	doc: Dictionary,
-	bin: PackedByteArray,
-	accessor_index: int,
-	uv_shift: float
-) -> PackedVector2Array:
-	var layout := _glb_accessor_layout(doc, accessor_index, "VEC2")
-	var out := PackedVector2Array()
-	if layout.is_empty() or int(layout["component_type"]) != GLTF_COMPONENT_FLOAT:
-		return out
+static func _scene_transform(node: Node, root: Node) -> Transform3D:
+	var transform := Transform3D.IDENTITY
+	while node != null and node != root:
+		if node is Node3D:
+			transform = (node as Node3D).transform * transform
+		node = node.get_parent()
+	return transform
 
-	var offset := int(layout["offset"])
-	var stride := int(layout["stride"])
-	var count := int(layout["count"])
-	out.resize(count)
-	for i in range(count):
-		var p := offset + i * stride
-		if p + 8 > bin.size():
-			return PackedVector2Array()
-		var u := bin.decode_float(p)
-		if uv_shift != 0.0:
-			u = fmod(u + uv_shift, 1.0)
-		out[i] = Vector2(u, bin.decode_float(p + 4))
-	return out
 
-func _read_glb_accessor_indices(doc: Dictionary, bin: PackedByteArray, accessor_index: int) -> PackedInt32Array:
-	var layout := _glb_accessor_layout(doc, accessor_index, "SCALAR")
-	var out := PackedInt32Array()
-	if layout.is_empty():
-		return out
+func _material(look_index: int) -> ShaderMaterial:
+	if _materials.has(look_index):
+		return _materials[look_index]
+	var look: Dictionary = looks[look_index]
+	var material := ShaderMaterial.new()
+	material.shader = BODY_SHADER
+	material.set_shader_parameter("albedo_texture", _texture(look["albedo"]))
+	material.set_shader_parameter("orm_texture", _texture(look["orm"]))
+	material.set_shader_parameter("emission_texture", _texture(look["emission"]))
+	var normal: String = look["normal"]
+	material.set_shader_parameter("has_normal", normal != "")
+	if normal != "":
+		material.set_shader_parameter("normal_texture", _texture(normal))
+	material.set_shader_parameter("paint_enabled", look["paint"])
+	var palette := PackedVector3Array()
+	palette.resize(PALETTE_SIZE)
+	var colours: PackedColorArray = look["palette"]
+	for i in mini(colours.size(), PALETTE_SIZE):
+		palette[i] = Vector3(colours[i].r, colours[i].g, colours[i].b)
+	material.set_shader_parameter("palette", palette)
+	var wheels := PackedVector4Array()
+	wheels.resize(WHEEL_SLOTS)
+	var centres: PackedVector4Array = look["wheels"]
+	for i in mini(centres.size(), WHEEL_SLOTS):
+		wheels[i] = centres[i]
+	material.set_shader_parameter("wheels", wheels)
+	if draw_fade_m != Vector2.ZERO:
+		material.set_shader_parameter("draw_fade_m", draw_fade_m)
+	_materials[look_index] = material
+	return material
 
-	var offset := int(layout["offset"])
-	var stride := int(layout["stride"])
-	var count := int(layout["count"])
-	var component_type := int(layout["component_type"])
-	out.resize(count)
-	for i in range(count):
-		var p := offset + i * stride
-		if component_type == GLTF_COMPONENT_UNSIGNED_BYTE:
-			if p + 1 > bin.size():
-				return PackedInt32Array()
-			out[i] = int(bin[p])
-		elif component_type == GLTF_COMPONENT_UNSIGNED_SHORT:
-			if p + 2 > bin.size():
-				return PackedInt32Array()
-			out[i] = _decode_glb_u16(bin, p)
-		elif component_type == GLTF_COMPONENT_UNSIGNED_INT:
-			if p + 4 > bin.size():
-				return PackedInt32Array()
-			out[i] = _decode_glb_u32(bin, p)
-		else:
-			return PackedInt32Array()
-	return out
 
-func _glb_accessor_layout(doc: Dictionary, accessor_index: int, expected_type: String) -> Dictionary:
-	var accessors: Array = doc.get("accessors", [])
-	if accessor_index < 0 or accessor_index >= accessors.size():
-		return {}
-	var accessor: Dictionary = accessors[accessor_index]
-	if str(accessor.get("type", "")) != expected_type:
-		return {}
+func _texture(path: String) -> Texture2D:
+	if _textures.has(path):
+		return _textures[path]
+	var texture: Texture2D = null
+	var image := Image.load_from_file(path)
+	if image != null and not image.is_empty():
+		image.generate_mipmaps()
+		texture = ImageTexture.create_from_image(image)
+	else:
+		push_error("Vehicle texture could not be read: " + path)
+	_textures[path] = texture
+	return texture
 
-	var views: Array = doc.get("bufferViews", [])
-	var view_index := int(accessor.get("bufferView", -1))
-	if view_index < 0 or view_index >= views.size():
-		return {}
 
-	var component_type := int(accessor.get("componentType", 0))
-	var component_size := _glb_component_size(component_type)
-	var component_count := _glb_type_component_count(expected_type)
-	if component_size <= 0 or component_count <= 0:
-		return {}
-
-	var view: Dictionary = views[view_index]
-	var stride := int(view.get("byteStride", component_size * component_count))
-	return {
-		"offset": int(view.get("byteOffset", 0)) + int(accessor.get("byteOffset", 0)),
-		"stride": stride,
-		"count": int(accessor.get("count", 0)),
-		"component_type": component_type,
-	}
-
-func _glb_component_size(component_type: int) -> int:
-	match component_type:
-		GLTF_COMPONENT_UNSIGNED_BYTE:
-			return 1
-		GLTF_COMPONENT_UNSIGNED_SHORT:
-			return 2
-		GLTF_COMPONENT_UNSIGNED_INT, GLTF_COMPONENT_FLOAT:
-			return 4
-	return 0
-
-func _glb_type_component_count(accessor_type: String) -> int:
-	match accessor_type:
-		"SCALAR":
-			return 1
-		"VEC2":
-			return 2
-		"VEC3":
-			return 3
-		"VEC4":
-			return 4
-	return 0
-
-func _decode_glb_u16(bin: PackedByteArray, offset: int) -> int:
-	return int(bin[offset]) | (int(bin[offset + 1]) << 8)
-
-func _decode_glb_u32(bin: PackedByteArray, offset: int) -> int:
-	return (
-		int(bin[offset])
-		| (int(bin[offset + 1]) << 8)
-		| (int(bin[offset + 2]) << 16)
-		| (int(bin[offset + 3]) << 24)
-	)
-
-func _build_car_mesh(body_color: Color) -> ArrayMesh:
-	# Use plain Array (reference type) so helpers can append to the caller's arrays.
-	# Converted to PackedVector3Array only when passing to add_surface_from_arrays.
+## The last fallback with no vehicle model: a box car the size of the car class box (4.5 × 1.8 m,
+## nose at -Z), body and cabin, through the building shader.
+func _build_car_mesh() -> ArrayMesh:
+	# Plain Arrays (reference types) so the helpers append to the caller's arrays.
 	var verts: Array = []
 	var norms: Array = []
-
-	_add_box(verts, norms, Vector3(-0.9, 0.0, -2.1), Vector3(0.9, 0.55, 2.1))
-	# Cabin starts at y=0 so its front/back faces seal the gap at z=±1.1 all the way to ground,
-	# preventing the hollow body interior from being visible through the junction edges.
-	_add_box(verts, norms, Vector3(-0.9, 0.0, -1.1), Vector3(0.9, 1.2, 1.1))
-
+	_add_box(verts, norms, Vector3(-0.9, 0.0, -2.25), Vector3(0.9, 0.7, 2.25))
+	# The cabin starts at y = 0 so its faces seal the body's open ends at z = ±1.1.
+	_add_box(verts, norms, Vector3(-0.85, 0.0, -1.1), Vector3(0.85, 1.45, 1.1))
 	var arrays := []
 	arrays.resize(Mesh.ARRAY_MAX)
 	arrays[Mesh.ARRAY_VERTEX] = PackedVector3Array(verts)
 	arrays[Mesh.ARRAY_NORMAL] = PackedVector3Array(norms)
-
 	var mesh := ArrayMesh.new()
 	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
-
 	var mat := StandardMaterial3D.new()
-	mat.albedo_color = body_color
+	mat.albedo_color = Color(0.62, 0.64, 0.66)
 	mat.roughness = 0.8
-	mat.metallic = 0.0   # metallic without an HDR environment looks glassy/see-through
+	mat.metallic = 0.0
 	mat.disable_receive_shadows = true
 	mesh.surface_set_material(0, WindowMaterials.create(mat, false, WindowMaterials.DEFAULT_BRIGHTNESS, draw_fade_m))
-
 	if lamps_enabled:
-		VehicleLamps.add_surfaces(mesh, "procedural", _lamp_materials, draw_fade_m)
+		VehicleLamps.add_surfaces(mesh, "procedural", Vector3(0.6, 0.55, -2.25), Vector3(0.65, 0.6, 2.25),
+			_lamp_materials, draw_fade_m)
 	return mesh
+
 
 func _add_box(verts: Array, norms: Array, mn: Vector3, mx: Vector3) -> void:
 	var x0 := mn.x; var y0 := mn.y; var z0 := mn.z
@@ -508,6 +266,7 @@ func _add_box(verts: Array, norms: Array, mn: Vector3, mx: Vector3) -> void:
 	_add_quad(verts, norms, Vector3(x0,y0,z1), Vector3(x1,y0,z1), Vector3(x1,y1,z1), Vector3(x0,y1,z1), Vector3.BACK)
 	_add_quad(verts, norms, Vector3(x1,y0,z0), Vector3(x0,y0,z0), Vector3(x0,y1,z0), Vector3(x1,y1,z0), Vector3.FORWARD)
 
+
 func _add_quad(verts: Array, norms: Array,
 			   a: Vector3, b: Vector3, c: Vector3, d: Vector3, n: Vector3) -> void:
 	verts.append(a); verts.append(b); verts.append(c)
@@ -515,11 +274,12 @@ func _add_quad(verts: Array, norms: Array,
 	for _i in 6:
 		norms.append(n)
 
-func mesh_for_bucket(bucket: int) -> Mesh:
-	var model := bucket / 10
-	var colour := bucket % 10
-	var path: String = MODELS[model]
-	var data := _load_vehicle_glb_source(path)
-	if data.is_empty():
-		return _build_car_mesh(COLOURS[colour])
-	return _build_vehicle_mesh_from_glb(data, path, 0.0 if model == 4 else colour * 0.1, 0.0, Vector3(0, PI, 0))
+
+## The menu's pipeline prewarm template of the cars (`RENDER-43`): the body shader with the fade
+## (any band selects it) on the tiers' vertex format (positions, normals, tangents, colours, UVs).
+static func pipeline_prewarm_surfaces() -> Array:
+	var format := (Mesh.ARRAY_FORMAT_NORMAL | Mesh.ARRAY_FORMAT_TANGENT | Mesh.ARRAY_FORMAT_COLOR
+		| Mesh.ARRAY_FORMAT_TEX_UV)
+	var body := PipelineTemplate.bare(BODY_SHADER)
+	body.set_shader_parameter("draw_fade_m", Vector2.ONE)
+	return [[PipelineTemplate.format_mesh(format), body]]

@@ -3,9 +3,9 @@
 ## Agent renderer — streams agent positions from Rust into a MultiMeshInstance3D each frame.
 ##
 ## Rust methods called: advance_agent_frame(), get_car_frame_parts(), get_agent_frame_parts(),
-##   set_vehicle_ground_support(), get_agent_paths_debug(), update_agent_view(),
+##   get_vehicle_catalogue(), get_agent_paths_debug(), update_agent_view(),
 ##   get_agent_draw_distances(), get_agent_snapshot_parts(); on the StreamNode
-##   attach_agent_casters(), register_agent_caster()
+##   attach_agent_casters(), register_agent_caster(), unregister_agent_casters()
 ## The agents' view (the ground rectangle the snapshot culls to, and the eye their draw distances
 ## measure from) comes from the camera in Rust. Walkers and moving cars fade out by a dither over
 ## a band before their draw distance (`RENDER-28`); the snapshot does not pose them beyond it.
@@ -15,15 +15,17 @@
 ## job prepared in the frame before and starts the next. The bucket nodes cast no shadow: the
 ## StreamNode's shadow-only twins cast for the agents within reach of the sun's shadow range
 ## (`RENDER-15`); without a StreamNode the bucket nodes cast as before.
-## Agent transforms arrive as a flat PackedFloat32Array of 12 floats per agent:
-##   [xx, yx, zx, ox, xy, yy, zy, oy, xz, yz, zz, oz] — MultiMesh row-major 3×4 layout.
+## Agent rows arrive as a flat PackedFloat32Array of 16 floats per agent: the MultiMesh
+## row-major 3×4 transform [xx, yx, zx, ox, xy, yy, zy, oy, xz, yz, zz, oz], then the instance
+## custom data (a walker's walk phase; a car's steer, wheel roll, packed lamp/paint/blink word and
+## a spare, `RENDER-65`). A car bucket is `look * 4 + tier` of Rust's vehicle catalogue: its node is
+## made when the bucket is first drawn, and every car node is remade when the frame's catalogue
+## revision changes (packs loaded).
 ## Path debug lines (toggled with P key) arrive as a PackedVector3Array of point pairs.
 extends Node3D
 
 const SceneLightingConfig := preload("res://scripts/core/scene_lighting.gd")
 const PerfDebug := preload("res://scripts/core/perf_debug.gd")
-const WindowMaterials := preload("res://scripts/renderers/window_materials.gd")
-const VehicleLamps := preload("res://scripts/renderers/vehicle_lamps.gd")
 const VehicleHeadlights := preload("res://scripts/renderers/vehicle_headlights.gd")
 const PipelineTemplate := preload("res://scripts/renderers/pipeline_template.gd")
 const WALK_SHADER := preload("res://scripts/shaders/pedestrian_walk.gdshader")
@@ -32,7 +34,7 @@ const WALK_SHADER := preload("res://scripts/shaders/pedestrian_walk.gdshader")
 
 # Key: pedestrian_type (int), Value: MultiMeshInstance3D
 var walker_mmis: Dictionary = {}
-# Key: vehicle_type (int), Value: MultiMeshInstance3D
+# Key: car bucket (look * 4 + tier), Value: MultiMeshInstance3D
 var car_mmis: Dictionary = {}
 ## The drawn buffers per bucket as Rust installed them (walker type, car type key).
 var walker_buffers: Dictionary = {}
@@ -41,7 +43,8 @@ var texture_cache: Dictionary = {}
 const WALKER_VAT_FRAMES := 30.0
 # Quaternius walk clips are baked in the opposite temporal direction from our distance phase.
 const WALKER_VAT_REVERSE_PHASE := true
-const CAR_TRANSFORM_STRIDE := 12
+# A car's transform, then its custom data.
+const CAR_STRIDE := 16
 # A walker's transform, then its custom data (the walk phase).
 const WALKER_STRIDE := 16
 const DEBUG_LABEL_LIMIT := 96
@@ -63,6 +66,7 @@ var _debug_overlay_visible := false
 # place every update.
 var _swarm_us := PackedInt64Array([0, 0, 0, 0])
 var _walker_buckets_uploaded := 0
+var _casters_attached := false
 
 
 ## The menu's pipeline prewarm template of the walkers (`RENDER-43`): their VAT shader on the
@@ -172,29 +176,6 @@ func _ready():
 
 	# --- Car MultiMeshes (Civilians) ---
 	add_child(_headlights)
-	var car_models = {
-		0: "res://assets/models/vehicles/civilian/sedan.glb",
-		1: "res://assets/models/vehicles/civilian/sedan-sports.glb",
-		2: "res://assets/models/vehicles/civilian/suv.glb",
-		3: "res://assets/models/vehicles/civilian/suv-luxury.glb",
-		4: "res://assets/models/vehicles/freight/delivery.glb"
-	}
-
-	# Original atlas palette variants; bucket keys stay (vehicle_type * 10) + variant.
-	var color_offsets = [0.0, 0.1, 0.2, 0.3, 0.4]
-	var car_colors = [
-		Color(0.22, 0.42, 0.78),
-		Color(0.72, 0.16, 0.14),
-		Color(0.17, 0.55, 0.38),
-		Color(0.88, 0.78, 0.30),
-		Color(0.82, 0.84, 0.86),
-	]
-	for v_type in car_models:
-		var offsets = [0.0, 0.0, 0.0, 0.0, 0.0] if v_type == 4 else color_offsets
-		var loaded_model = _add_car_model_variants(v_type, car_models[v_type], offsets)
-		if not loaded_model:
-			_add_procedural_car_variants(v_type, car_colors)
-
 	_attach_shadow_casters()
 
 	debug_mesh_instance = MeshInstance3D.new()
@@ -281,9 +262,12 @@ func update_swarm(delta: float = 0.0):
 	# The frame a background job prepared from one snapshot: walkers, smoothed and grounded cars,
 	# and that snapshot's parked chunks, so a car crossing a bay's edge is drawn exactly once.
 	var frame: Dictionary = simulation_node.advance_agent_frame(delta, full)
+	if parked_renderer != null:
+		parked_renderer.follow_vehicle_catalogue(int(frame.get("vehicle_revision", 0)))
 	if parked_renderer != null and frame.has("parked"):
 		parked_renderer.apply_publication(frame["parked"])
 	var frame_us := Time.get_ticks_usec()
+	_follow_vehicle_catalogue(int(frame.get("vehicle_revision", 0)))
 	walker_buffers = frame["walkers"]
 	# A bucket absent from the buffers left the view: it draws none.
 	var changed_walkers: PackedInt64Array = frame["changed_walkers"]
@@ -293,7 +277,10 @@ func update_swarm(delta: float = 0.0):
 	var walkers_us := Time.get_ticks_usec()
 	car_buffers = frame["cars"]
 	for type_key in frame["changed_cars"]:
-		_upload(car_mmis.get(type_key), car_buffers.get(type_key, PackedFloat32Array()), CAR_TRANSFORM_STRIDE)
+		var buffer: PackedFloat32Array = car_buffers.get(type_key, PackedFloat32Array())
+		if not buffer.is_empty() and not car_mmis.has(type_key):
+			_add_car_bucket(type_key)
+		_upload(car_mmis.get(type_key), buffer, CAR_STRIDE)
 	var assigned_us := Time.get_ticks_usec()
 	_headlights.update(simulation_node, car_buffers)
 	var lit_us := Time.get_ticks_usec()
@@ -333,23 +320,63 @@ func _upload(mmi: MultiMeshInstance3D, buffer: PackedFloat32Array, stride: int) 
 	if count > 0:
 		mmi.multimesh.buffer = buffer
 
-# Hands every bucket's mesh, material and margin to the StreamNode's shadow-only twins, which cast
-# the agents within reach of the sun's shadow range; the bucket nodes then cast nothing
-# (`RENDER-15`). Without a StreamNode (tests) they cast as before.
+# Hands every walker bucket's mesh, material and margin to the StreamNode's shadow-only twins,
+# which cast the agents within reach of the sun's shadow range; the bucket nodes then cast nothing
+# (`RENDER-15`). Car buckets register as they are made. Without a StreamNode (tests) they cast as
+# before.
 func _attach_shadow_casters() -> void:
+	var stream := _caster_stream()
+	if stream == null:
+		return
+	stream.attach_agent_casters(simulation_node, get_node("../DirectionalLight3D"), get_world_3d().scenario)
+	_casters_attached = true
+	for key in walker_mmis:
+		_register_caster(0, key, walker_mmis[key])
+
+func _caster_stream() -> Node:
 	var stream := get_node_or_null("../StreamNode")
 	var sun := get_node_or_null("../DirectionalLight3D") as DirectionalLight3D
 	if stream == null or sun == null or not stream.has_method("attach_agent_casters"):
+		return null
+	return stream
+
+func _register_caster(kind: int, key: int, mmi: MultiMeshInstance3D) -> void:
+	if not _casters_attached:
 		return
-	stream.attach_agent_casters(simulation_node, sun, get_world_3d().scenario)
-	for kind in [0, 1]:
-		var buckets: Dictionary = walker_mmis if kind == 0 else car_mmis
-		for key in buckets:
-			var mmi: MultiMeshInstance3D = buckets[key]
-			var material: Material = mmi.material_override
-			if stream.register_agent_caster(kind, key, mmi.multimesh.mesh.get_rid(),
-					material.get_rid() if material != null else RID(), mmi.extra_cull_margin):
-				mmi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	var material: Material = mmi.material_override
+	if _caster_stream().register_agent_caster(kind, key, mmi.multimesh.mesh.get_rid(),
+			material.get_rid() if material != null else RID(), mmi.extra_cull_margin):
+		mmi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+
+# Remakes the car nodes when the frame's buckets are keyed by another catalogue revision than the
+# meshes (packs loaded, `RENDER-65`). One integer compare a frame otherwise.
+func _follow_vehicle_catalogue(wanted: int) -> void:
+	if not _vehicles.refresh(simulation_node, wanted):
+		return
+	for mmi: MultiMeshInstance3D in car_mmis.values():
+		mmi.queue_free()
+	car_mmis.clear()
+	_headlights.forget_models()
+	if _casters_attached:
+		_caster_stream().unregister_agent_casters(1)
+
+# A car bucket's node: its look's tier mesh, rows with custom data (`RENDER-65`).
+func _add_car_bucket(key: int) -> void:
+	var mesh := _vehicles.mesh_for_bucket(key)
+	var mmi := MultiMeshInstance3D.new()
+	var mm := MultiMesh.new()
+	mm.transform_format = MultiMesh.TRANSFORM_3D
+	# Instance colours would multiply into COLOR and destroy the mesh's ids.
+	mm.use_colors = false
+	mm.use_custom_data = true
+	mm.instance_count = 0
+	mm.mesh = mesh
+	mmi.multimesh = mm
+	SceneLightingConfig.apply_shadow_policy(mmi, SceneLightingConfig.SHADOW_DYNAMIC_CASTER, "cars")
+	add_child(mmi)
+	car_mmis[key] = mmi
+	_headlights.register_model(key, mesh)
+	_register_caster(1, key, mmi)
 
 func clear_debug_overlay() -> void:
 	if debug_mesh:
@@ -404,151 +431,6 @@ func _load_source_texture(path: String) -> Texture2D:
 	texture_cache[path] = tex
 	return tex
 
-func _add_car_model_variants(v_type: int, model_path: String, color_offsets: Array) -> bool:
-	var model := _load_vehicle_glb_source(model_path)
-	if model.is_empty():
-		push_warning("Using procedural fallback for car model: " + model_path)
-		return false
-
-	var added_count := 0
-	for variant_id in range(color_offsets.size()):
-		var uv_shift = color_offsets[variant_id]
-		var mesh = _build_vehicle_mesh_from_glb(model, model_path, uv_shift, 0.0, Vector3(0, PI, 0))
-		if not mesh:
-			continue
-		if not _add_car_multimesh(v_type, variant_id, mesh):
-			return false
-		added_count += 1
-
-	return added_count > 0
-
-func _load_vehicle_glb_source(model_path: String) -> Dictionary:
-	return _vehicles._load_vehicle_glb_source(model_path)
-
-func _build_vehicle_mesh_from_glb(model: Dictionary, model_path: String, uv_shift: float, target_height: float, base_rotation: Vector3) -> ArrayMesh:
-	return _vehicles._build_vehicle_mesh_from_glb(model, model_path, uv_shift, target_height, base_rotation)
-
-func _add_procedural_car_variants(v_type: int, colors: Array) -> void:
-	for variant_id in range(colors.size()):
-		_add_car_multimesh(v_type, variant_id, _build_car_mesh(colors[variant_id]))
-
-func _add_car_multimesh(v_type: int, variant_id: int, mesh: Mesh) -> bool:
-	if variant_id == 0:
-		var unique_contacts: Dictionary = {}
-		# The body alone: lamp glows and the headlight volume are not ground contact or car extent.
-		var body_aabb: AABB = mesh.get_meta(VehicleLamps.BODY_AABB_META, mesh.get_aabb())
-		var body_surfaces: int = mesh.get_meta(VehicleLamps.BODY_SURFACES_META, mesh.get_surface_count())
-		for surface in range(body_surfaces):
-			var vertices: PackedVector3Array = mesh.surface_get_arrays(surface)[Mesh.ARRAY_VERTEX]
-			for vertex in vertices:
-				# Mesh loading has already moved its lowest point to y=0. This is a geometric
-				# tolerance for coincident bottom vertices, not a per-frame terrain probe.
-				if absf(vertex.y) <= 0.0001:
-					unique_contacts[vertex] = true
-		if not simulation_node.set_vehicle_ground_support(v_type, body_aabb, PackedVector3Array(unique_contacts.keys())):
-			push_warning("Invalid vehicle ground support geometry for type %d; using fallback" % v_type)
-			return false
-	var mmi = MultiMeshInstance3D.new()
-	var mm = MultiMesh.new()
-	mm.transform_format = MultiMesh.TRANSFORM_3D
-	mm.use_colors = false
-	mm.use_custom_data = false
-	mm.instance_count = 0
-	mm.mesh = mesh
-	mmi.multimesh = mm
-	SceneLightingConfig.apply_shadow_policy(
-		mmi,
-		SceneLightingConfig.SHADOW_DYNAMIC_CASTER,
-		"cars"
-	)
-	add_child(mmi)
-
-	var key = (v_type * 10) + variant_id
-	car_mmis[key] = mmi
-	_headlights.register_model(key, mesh)
-	return true
-
-# Builds a car-shaped ArrayMesh from two boxes (body + cabin). No mesh files required.
-# Car faces along local -Z (Godot forward). Origin at bottom-centre of body.
-# Body: 1.8 m wide × 0.55 m tall × 4.2 m long
-# Cabin: 1.8 m wide × 1.2 m tall × 2.2 m long, full-height to seal the body opening at z=±1.1
-func _build_car_mesh(body_color: Color) -> ArrayMesh:
-	return _vehicles._build_car_mesh(body_color)
-
-# Extracts and merges all surfaces from a Node hierarchy into an ArrayMesh.
-# target_height: if > 0, scales the model to this height in meters.
-# base_rotation: additional rotation (Euler) to apply before normalization.
-func _extract_mesh(root_node: Node, uv_shift: float = 0.0, target_height: float = 0.0, base_rotation: Vector3 = Vector3.ZERO) -> Mesh:
-	var mesh_instances = []
-	var base_tf = Transform3D().rotated(Vector3.RIGHT, base_rotation.x)
-	base_tf = base_tf.rotated(Vector3.UP, base_rotation.y)
-	base_tf = base_tf.rotated(Vector3.FORWARD, base_rotation.z)
-	
-	_find_mesh_instances(root_node, base_tf, mesh_instances)
-	
-	if mesh_instances.size() == 0:
-		return null
-		
-	# 1. Calculate the bounding box of the entire merged model to find height and bottom.
-	var aabb = AABB()
-	var first = true
-	for item in mesh_instances:
-		var mi = item.node
-		var tf = item.transform
-		var mi_aabb = tf * mi.mesh.get_aabb()
-		if first:
-			aabb = mi_aabb
-			first = false
-		else:
-			aabb = aabb.merge(mi_aabb)
-			
-	# 2. Define our "normalization" transform: 
-	var normalization = Transform3D()
-	
-	# Scaling
-	if target_height > 0.0 and aabb.size.y > 0.01:
-		var s = target_height / aabb.size.y
-		normalization = normalization.scaled(Vector3(s, s, s))
-		aabb.position *= s
-		aabb.size *= s
-
-	# Shift so bottom is at Y=0
-	normalization.origin.y = -aabb.position.y
-	
-	var final_mesh := ArrayMesh.new()
-	for item in mesh_instances:
-		var mi = item.node
-		var tf = normalization * item.transform
-		
-		for i in range(mi.mesh.get_surface_count()):
-			var st = SurfaceTool.new()
-			st.begin(Mesh.PRIMITIVE_TRIANGLES)
-			st.append_from(mi.mesh, i, tf)
-			
-			# Apply UV shift for randomization
-			if uv_shift != 0.0:
-				var attr = st.commit_to_arrays()
-				var uvs = attr[Mesh.ARRAY_TEX_UV]
-				for j in range(uvs.size()):
-					uvs[j] = Vector2(fmod(uvs[j].x + uv_shift, 1.0), uvs[j].y)
-				attr[Mesh.ARRAY_TEX_UV] = uvs
-				
-				# We cannot easily re-inject into SurfaceTool without manual vertex loop,
-				# so we'll just add the array directly to ArrayMesh.
-				var mat = mi.get_active_material(i)
-				final_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, attr)
-				if mat:
-					final_mesh.surface_set_material(final_mesh.get_surface_count() - 1, mat)
-			else:
-				var mat = mi.get_active_material(i)
-				if mat:
-					st.set_material(mat)
-				st.commit(final_mesh)
-			
-	return final_mesh
-
-# Extracts the first ArrayMesh from a GLTF scene tree as-is (no coordinate transform).
-# Used for VAT rest-pose meshes which are already in Godot Y-up space.
 func _extract_first_mesh(root: Node) -> Mesh:
 	if root is MeshInstance3D and root.mesh:
 		return root.mesh
@@ -557,17 +439,3 @@ func _extract_first_mesh(root: Node) -> Mesh:
 		if m:
 			return m
 	return null
-
-func _find_mesh_instances(node: Node, parent_transform: Transform3D, out_list: Array) -> void:
-	var current_transform = parent_transform
-	if node is Node3D:
-		current_transform = parent_transform * node.transform
-		
-	if node is MeshInstance3D and node.mesh:
-		out_list.append({"node": node, "transform": current_transform})
-
-	for child in node.get_children():
-		_find_mesh_instances(child, current_transform, out_list)
-
-# Adds all 6 faces of an AABB to verts/norms with correct CCW winding.
-# Arrays must be plain Array (reference type), not PackedVector3Array.

@@ -81,7 +81,9 @@ impl SimCore {
     }
 
     /// Replaces a model's support profile, false for a model that does not exist. Its contacts
-    /// decide its pose on every bay, so the parked poses go with it. O(bays), at mesh load.
+    /// decide its pose on every bay, so the parked poses go with it. O(bays). The game sets every
+    /// profile from the catalogue's wheel facts (`rebuild_vehicle_catalogue`).
+    #[cfg(test)]
     pub(crate) fn set_vehicle_ground_support(
         &mut self,
         vehicle: usize,
@@ -226,7 +228,7 @@ impl SimCore {
     }
 }
 
-/// Model-local support samples, prepared once when the renderer loads a vehicle mesh.
+/// Model-local support samples, prepared once per model when packs load (`RENDER-65`).
 #[derive(Clone)]
 pub(crate) struct VehicleGroundSupport {
     bounds: [f32; 4],

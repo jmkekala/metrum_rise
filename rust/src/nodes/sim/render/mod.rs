@@ -25,6 +25,7 @@ pub(crate) mod mist;
 pub mod network;
 /// Authored resource overlay rendering.
 pub mod resources;
+pub(crate) mod vehicle_catalogue;
 pub(crate) mod vehicle_ground;
 /// Street lights' lamp grid, far light map, light pool and chunk batches (`RENDER-32-H`).
 pub(crate) mod street_lights;

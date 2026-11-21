@@ -355,16 +355,17 @@ fn a_load_rebuilds_every_pose_from_the_loaded_ground() {
     assert_eq!(after, before);
 }
 
-// A loaded mesh replaces a model's contacts, and with them its pose on every bay.
+// A new support profile replaces a model's contacts, and with them its pose on every bay.
 #[test]
 fn a_new_car_profile_refreshes_that_models_poses() {
     let mut core = hillside();
     let before = fresh_poses(&mut core, "before");
     let profile = VehicleGroundSupport::new([-1.4, -3.0, 1.4, 3.0], &[]).unwrap();
-    for model in 0..4 {
+    let models = core.vehicle_ground_support.len();
+    for model in 0..models {
         assert!(core.set_vehicle_ground_support(model, profile.clone()));
     }
-    assert!(!core.set_vehicle_ground_support(9, profile));
+    assert!(!core.set_vehicle_ground_support(models, profile));
     let after = fresh_poses(&mut core, "profile");
     assert_eq!(moved(&before, &after), before.len());
 }

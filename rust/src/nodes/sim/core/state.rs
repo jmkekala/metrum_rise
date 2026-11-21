@@ -404,9 +404,13 @@ pub struct SimCore {
     /// Whether the zoning cell overlay is shown; stale warm cell chunks then regenerate in the
     /// same tick as the edit that invalidated them. UI state, kept across world resets.
     pub(crate) cell_overlay_visible: bool,
-    /// Runtime mesh support geometry; rendering metadata, not saved simulation state.
+    /// Each catalogue model's ground support (`RENDER-65`), from its wheel facts; one fallback
+    /// profile with no model. Rendering metadata, not saved simulation state.
     pub(crate) vehicle_ground_support:
-        [crate::nodes::sim::render::vehicle_ground::VehicleGroundSupport; 5],
+        Vec<crate::nodes::sim::render::vehicle_ground::VehicleGroundSupport>,
+    /// The loaded packs' vehicle models as the renderer draws them; never read by the
+    /// simulation, never saved.
+    pub(crate) vehicle_catalogue: crate::nodes::sim::render::vehicle_catalogue::VehicleCatalogue,
 }
 
 impl SimCore {
@@ -519,7 +523,8 @@ impl SimCore {
             slot_route_scratch: Default::default(),
             frame_end_slot: u64::MAX,
             cell_overlay_visible: false,
-            vehicle_ground_support: Default::default(),
+            vehicle_ground_support: vec![Default::default()],
+            vehicle_catalogue: Default::default(),
         }
     }
 

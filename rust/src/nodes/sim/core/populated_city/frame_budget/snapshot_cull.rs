@@ -519,7 +519,7 @@ fn far_min_clearance(core: &SimCore, snapshot: &RenderSnapshot) -> f32 {
                 Vector3::new(transform[1], transform[5], transform[9]),
                 Vector3::new(transform[2], transform[6], transform[10]),
             ];
-            for contact in core.vehicle_ground_support[usize::from(key / 10)].contacts() {
+            for contact in core.vehicle_ground_support[usize::from(core.vehicle_bucket_model(key))].contacts() {
                 let point =
                     origin + basis[0] * contact.x + basis[1] * contact.y + basis[2] * contact.z;
                 let ground = core.get_world_surface_height_internal(Vector2::new(point.x, point.z));

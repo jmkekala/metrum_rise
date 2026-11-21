@@ -131,6 +131,7 @@ impl SimCore {
                 .registry
                 .register(&pack_id, manifest, asset_dir);
         }
+        self.rebuild_vehicle_catalogue();
         self.allocator
             .refresh_building_sites_after_asset_reload(self.zoning.config.zone_cell_m);
         self.zoning.invalidate_cell_lot_assets();

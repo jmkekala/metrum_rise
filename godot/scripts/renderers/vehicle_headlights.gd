@@ -54,7 +54,7 @@ const COLOR := Color(1.0, 0.93, 0.8)
 # Sun elevations in degrees over which the lamps come on (matches the street lights).
 const LAMPS_ON_ELEVATION_DEG := Vector2(4.0, -2.0)
 
-# Key: car bucket key (vehicle_type * 10 + variant), Value: headlight centre in the car's space.
+# Key: car bucket key (look * 4 + tier, `RENDER-65`), Value: headlight centre in the car's space.
 var head_points: Dictionary = {}
 var _pool: Array[SpotLight3D] = []
 var _lit := false
@@ -90,6 +90,11 @@ func register_model(bucket_key: int, mesh: Mesh) -> void:
 		var lamp: Vector3 = mesh.get_meta(VehicleLamps.HEAD_LAMP_META)
 		# Centred between the lamps, just ahead of the lens so the light misses the car's own nose.
 		head_points[bucket_key] = Vector3(0.0, lamp.y, lamp.z - 0.15)
+
+
+## Forgets every model: the bucket keys now name other meshes (a rebuilt vehicle catalogue).
+func forget_models() -> void:
+	head_points.clear()
 
 
 func update(simulation_node: Object, car_buffers: Dictionary) -> void:

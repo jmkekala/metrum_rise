@@ -22,7 +22,7 @@
 use super::super::backend::{
     Drawn, RenderBackend, Role, Shadow, SlotId, SlotKind, SlotPool, capacity_class,
 };
-use crate::nodes::sim::render::agent_frame::{self, CAR_STRIDE, CasterFeed, WALKER_STRIDE};
+use crate::nodes::sim::render::agent_frame::{self, CAR_ROW, CasterFeed, WALKER_STRIDE};
 use crate::nodes::sim::render::vegetation_product::godot_math::Aabb;
 use glam::Vec3;
 
@@ -44,7 +44,7 @@ impl AgentKind {
     fn stride(self) -> usize {
         match self {
             Self::Walkers => WALKER_STRIDE,
-            Self::Cars => CAR_STRIDE,
+            Self::Cars => CAR_ROW,
         }
     }
 }
@@ -126,6 +126,17 @@ impl AgentCasterLayer {
                 visible: false,
             });
         }
+    }
+
+    /// Forgets every bucket of `kind` and frees its slots: the buckets' keys now name other meshes
+    /// (a rebuilt vehicle catalogue, `RENDER-65`). `O(twins)`.
+    pub(crate) fn unregister(&mut self, backend: &mut impl RenderBackend, kind: AgentKind) {
+        for twin in self.twins.iter().filter(|twin| twin.kind == kind) {
+            if let Some(slot) = twin.slot {
+                self.pool.release(backend, slot);
+            }
+        }
+        self.twins.retain(|twin| twin.kind != kind);
     }
 
     /// Whether any bucket is registered (the twins draw).
@@ -215,7 +226,7 @@ impl AgentCasterLayer {
                     mesh: twin.mesh,
                     class: wanted,
                     colors: false,
-                    custom: twin.kind == AgentKind::Walkers,
+                    custom: true,
                     parameter: None,
                 };
                 if let Some(old) = twin.slot {
