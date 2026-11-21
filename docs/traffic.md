@@ -3546,6 +3546,50 @@ branch contains A1's code, and so does the control, whose rows equal the branch'
 beyond the known exceptions above, all pre-existing on `dev` before A1 (`PERF-17` accepted
 2026-11-07; the contract's five limits recorded before A1).
 
+**B, landing session at level L** (2026-11-21 05:30-05:41, one session; nothing else heavy
+running; no build during it). Control: release test binary of `dev` `120565121` (SHA-256
+`4e44b9d78f02da05`, format 123); branch: `freight-yards-b` at `d2782d3f8` (`8446ecbd5f9afb74`,
+format 124; the docs commits after it change no code). Pinned to the eight performance cores,
+eight workers. The economy snapshots are keyed by the fixture revision, not `SAVE_VERSION`, so the
+branch prepared its own cache, as A1's did; the control used A2's:
+
+```bash
+./run.sh --timing --level L --control "$CONTROL_TEST_BINARY" --branch "$TEST_BINARY" \
+    --control-cache "$ARTIFACTS/snapshots-park19" --branch-cache "$ARTIFACTS/snapshots-park21" \
+    --base dev --artifacts "$ARTIFACTS"
+```
+
+The control binary had no cached rows in this boot, so its 1× day was timed (the runner's rule)
+and its K22 and contract rows, cache-only at L, were skipped. Measured fresh in the session: 30k
+32× C B B C, the control's 1× day, the branch's two 1× days, the branch's K22 row and the branch's
+economy contract (`--diff dev`, full days). After the session, outside the timed phase, on the same
+cores under the timing lock: the K22 rows again by the runner (`--rerun k22-1-ctl,k22-2-br`, the
+control refused as its commit city was not prepared), so the K22 test alternated by hand, control
+and branch C C B B C B C (the first control run made the control's commit city and is not
+counted), and the control's contract once for its work counts, as for A2.
+
+| Row | Control | Branch | Acceptance | Reading |
+| --- | --- | --- | --- | --- |
+| 30k 32×, C B B C: mean / p99 / p99.9 / worst unpreempted, ms | 4.275 / 6.403 / 7.632 / 8.583 | 4.287 / 6.386 / 7.540 / 8.505 | `PERF-07`, `PERF-17` the known exception | level on every metric and component (agent +0.0 %, snapshot +0.1 %, slot +0.9 % of 2.5 %); all four runs the known `PERF-17` exception |
+| 30k 1×, control one day, branch two: mean / p99 / p99.9 / worst unpreempted, ms | 2.094 / 3.296 / 3.728 / 5.124 | 2.072 / 3.276 / 3.644 / 5.136 | `PERF-07` | passes on every day (branch 4.99 and 5.28 ms worst unpreempted, p99.9 3.64 and 3.65); level on every metric and component |
+| `load_s` (30k 32× and 1×) | 2.294, 2.289 | 2.293, 2.283 | | level |
+| K22 30k click-to-ack, ms | after the session: 6.86, 6.61, 6.52 | in the session 6.94, its rerun 6.80; after: 6.69, 7.26, 6.73 | | level: medians 6.61 against 6.73 (+0.12 ms), inside either side's run-to-run spread (0.34 ms control, 0.57 ms branch) |
+| Economy contract, hour means: baseline 10k / 30k, fiscal 10k / 30k, ms | 0.94 / 3.27 / 6.30 / 13.89 (untimed reference) | 0.89 / 3.20 / 6.24 / 13.75 | the contract's limits | level; no time limit fails |
+| Economy contract, work-count limits | the same five fail | baseline `buyer_sites_built` 10 -> 48, `staffing_trials` 41,070 -> 176,857, `supplier_searches` 12,996 -> 65,998, `supplier_routes` 218,285 -> 1,177,406, `job_search_keys` 0 -> 988 (limit 3.28×) | | pre-existing: identical to the control's and to A2's session; the four parked scaling limits and the `staffing_trials` measurement effect accepted on 2026-11-09 ([economy](economy.md#performance-contract-perf-01perf-05)) |
+
+Every other work count of the contract is identical between control and branch except
+`cch_point_searches` (63,594 against 63,591 at 10k, 186,342 against 186,346 at 30k), which depends
+on the worker schedule (A2's session). K22, read again as the A2 landing asked: A2's level L
+session read the branch at 7.27 ms against 6.47 ms for the control reused from the level F
+session an hour before; here,
+control and branch alternated in one sitting, the branch read 6.69, 7.26 and 6.73 ms and the
+control 6.86, 6.61 and 6.52 ms, so a single branch run near 7.3 ms recurs within the branch's
+spread while its median sits 0.12 ms above the control's. Stage B adds no work to that path in a
+city without docks (the dock reconcile of an edited building finds no row). The plan's B row
+(level F: `PERF-06` access ingress and egress) is covered by the identical `PERF-06` work counts
+(untimed, one run a side) and this session's 30k agent components; no timed `PERF-06` medians were
+taken. No row misses beyond the known exceptions, all pre-existing on `dev`.
+
 #### Risks
 
 1. **Freight stuck in yards starves shops.** Guards: no waiting in A and B; a refused truck
