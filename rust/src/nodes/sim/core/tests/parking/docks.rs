@@ -423,16 +423,23 @@ fn the_inspector_shows_a_buildings_docks_and_their_rejections() {
 // A carrier from a second yard 60 m east to the first, just dispatched: standing in its
 // source's dock, which it has taken (`PARK-20`, owner decision 10).
 fn dispatched_truck() -> (SimCore, u64, usize) {
-    use crate::simulation::economy::logistics::{
-        CarrierClass, Shipment, ShipmentEndpoint, ShipmentStatus,
-    };
     let (mut core, building) = place_yard(true, "6");
     let id = core.allocator.buildings[0].asset_id.clone();
     let source = core.place_service_building_internal(&id, 60.0, -40.0).unwrap();
     core.publish_pending_building_site_changes();
+    let carrier = dispatch_shipment(&mut core, 0, source);
+    (core, building, carrier)
+}
+
+// Loads and dispatches shipment `id` of packaged food from building `source` to the first yard,
+// returning its truck.
+fn dispatch_shipment(core: &mut SimCore, id: u64, source: usize) -> usize {
+    use crate::simulation::economy::logistics::{
+        CarrierClass, Shipment, ShipmentEndpoint, ShipmentStatus,
+    };
     let catalog = load_runtime_economy_catalog().unwrap();
     core.logistics.shipments.push(Shipment {
-        id: 0,
+        id,
         resource_runtime_id: catalog.resource_runtime_id_for_id("packaged_food").unwrap(),
         amount: 40.0,
         source: ShipmentEndpoint::Building(source),
@@ -447,10 +454,10 @@ fn dispatched_truck() -> (SimCore, u64, usize) {
         trip_event_slot: 0,
         cargo_loaded: true,
     });
-    core.logistics.next_shipment_id = 1;
+    core.logistics.next_shipment_id = id + 1;
     let mut treasury = 0.0;
     assert!(core.logistics.dispatch_shipment(
-        0,
+        id,
         &mut core.allocator,
         &mut core.agents,
         &mut core.parking,
@@ -458,11 +465,10 @@ fn dispatched_truck() -> (SimCore, u64, usize) {
         &core.region_graph,
         &mut treasury,
     ));
-    let carrier = core
-        .agents
-        .resolve_agent(core.logistics.shipments[0].carrier)
-        .unwrap();
-    (core, building, carrier)
+    let index = core.logistics.shipment_index(id).unwrap();
+    core.agents
+        .resolve_agent(core.logistics.shipments[index].carrier)
+        .unwrap()
 }
 
 // One agent tick of `core`'s city.
@@ -513,15 +519,19 @@ fn check_truck(core: &mut SimCore) -> bool {
     )
 }
 
-// Shipment 0's truck over the next `ticks` agent ticks: its pose, transit and trip, and the
+// Shipment `index`'s truck over the next `ticks` agent ticks: its pose, transit and trip, and the
 // holder of every dock, each tick.
-fn truck_trace(core: &mut SimCore, ticks: usize) -> Vec<(u32, u32, u8, String, Vec<u64>)> {
+fn shipment_trace(
+    core: &mut SimCore,
+    ticks: usize,
+    index: usize,
+) -> Vec<(u32, u32, u8, String, Vec<u64>)> {
     (0..ticks)
         .map(|_| {
             tick_agents(core);
             let i = core
                 .agents
-                .resolve_agent(core.logistics.shipments[0].carrier)
+                .resolve_agent(core.logistics.shipments[index].carrier)
                 .expect("the truck is under way");
             let holders = core
                 .parking
@@ -545,14 +555,29 @@ fn truck_trace(core: &mut SimCore, ticks: usize) -> Vec<(u32, u32, u8, String, V
 // Saves `core`, runs `ticks` ticks, loads the save and runs them again: both runs are equal, and
 // the truck has left the yard by their end.
 fn assert_save_continues_equally(mut core: SimCore, name: &str, ticks: usize) {
+    let live = save_and_continue(&mut core, name, ticks, 0, |_| {});
+    assert!(live[0].3.contains("PullOut") && !live[ticks - 1].3.contains("PullOut"), "{live:?}");
+}
+
+// Saves `core`, runs `ticks` ticks following shipment `index`'s truck, applies `between` (an edit
+// made after the save, before the load), loads the save and runs them again: both runs are equal.
+// Returns the live run.
+fn save_and_continue(
+    core: &mut SimCore,
+    name: &str,
+    ticks: usize,
+    index: usize,
+    between: impl FnOnce(&mut SimCore),
+) -> Vec<(u32, u32, u8, String, Vec<u64>)> {
     let path = std::env::temp_dir().join(format!("metrum_{name}_{}.sqlite", std::process::id()));
     let path_text = path.to_str().expect("a temporary path");
     core.save_game_settled_at(path_text, None, 0).expect("the yard saves");
-    let live = truck_trace(&mut core, ticks);
-    assert!(live[0].3.contains("PullOut") && !live[ticks - 1].3.contains("PullOut"), "{live:?}");
+    let live = shipment_trace(core, ticks, index);
+    between(core);
     core.load_game_internal(path_text).expect("the yard loads");
     let _ = std::fs::remove_file(&path);
-    assert_eq!(truck_trace(&mut core, ticks), live);
+    assert_eq!(shipment_trace(core, ticks, index), live);
+    live
 }
 
 // A save made while a truck stands in a dock loads with the truck still standing there and the
@@ -674,4 +699,260 @@ fn bulldozing_a_yard_with_a_truck_in_its_dock_removes_both() {
             .all(|(source, _, _)| *source != PlaceSource::Dock { building, anchor: 3 })
     );
     assert!(!core.allocator.freight_gates.contains_key(&building));
+}
+
+// Ticks `core` until `done` holds of truck `i`, at most 6,000 ticks.
+fn tick_truck_until(core: &mut SimCore, i: usize, done: impl Fn(&SimCore, usize) -> bool) {
+    for _ in 0..6_000 {
+        if done(core, i) {
+            return;
+        }
+        tick_agents(core);
+    }
+    panic!("not reached in 6,000 ticks: {:?}", core.agents.parking_trip[i]);
+}
+
+fn phase_of(core: &SimCore, i: usize) -> crate::simulation::parking::ParkingTripPhase {
+    core.agents.parking_trip[i].phase
+}
+
+// A truck between its source's gate and the first yard's: on the road, its plan ending at the
+// yard's gate.
+fn truck_on_the_road() -> (SimCore, u64, usize) {
+    use crate::simulation::economy::agents::TRANSIT_NETWORK;
+    use crate::simulation::parking::ParkingTripPhase;
+    let (mut core, building, carrier) = dispatched_truck();
+    tick_truck_until(&mut core, carrier, |core, i| {
+        let trip = core.agents.parking_trip[i];
+        trip.freight_gate
+            && trip.phase == ParkingTripPhase::None
+            && core.agents.transit[i] == TRANSIT_NETWORK
+    });
+    assert_eq!(core.agents.parking_trip[carrier].target, building);
+    (core, building, carrier)
+}
+
+// Save and reload at every phase of a yard trip (`PARK-20`): the live city and the loaded one
+// continue tick for tick alike. On the road to the gate, pulling in, standing (`AtDock`, here
+// through 100 ticks), sent from the gate to the door with the dock held by another, and backing
+// out (`a_truck_backing_out_of_a_dock_round_trips_a_save`, `a_truck_spawned_in_a_dock_round_trips_a_save`).
+#[test]
+fn a_truck_round_trips_a_save_at_every_phase_of_its_yard_trip() {
+    use crate::simulation::parking::ParkingTripPhase;
+    let (mut core, _, _) = truck_on_the_road();
+    let live = save_and_continue(&mut core, "truck_on_the_road", 400, 0, |_| {});
+    assert!(live.iter().any(|t| t.3.contains("PullIn")), "it reached the gate");
+    assert!(live[399].3.contains("AtDock"), "{:?}", live[399]);
+
+    let (mut core, _, carrier) = dispatched_truck();
+    tick_truck_until(&mut core, carrier, |core, i| phase_of(core, i) == ParkingTripPhase::PullIn);
+    let live = save_and_continue(&mut core, "truck_pulling_in", 200, 0, |_| {});
+    assert!(live[0].3.contains("PullIn") && live[199].3.contains("AtDock"), "{live:?}");
+
+    let (mut core, _, _) = truck_at_dock();
+    let live = save_and_continue(&mut core, "truck_standing", 100, 0, |_| {});
+    assert!(live.iter().all(|t| t == &live[0]), "it stands");
+
+    // A second truck, from the source's door (its dock is free again, but the first yard's is
+    // held), refused at the gate.
+    let (mut core, _, _) = truck_at_dock();
+    let crate::simulation::economy::logistics::ShipmentEndpoint::Building(source) =
+        core.logistics.shipments[0].source
+    else {
+        panic!("a yard sent it");
+    };
+    let second = dispatch_shipment(&mut core, 1, source);
+    tick_truck_until(&mut core, second, |core, i| phase_of(core, i) == ParkingTripPhase::GateToDoor);
+    let live = save_and_continue(&mut core, "truck_gate_to_door", 200, 1, |_| {});
+    assert!(live[0].3.contains("GateToDoor"), "{:?}", live[0]);
+    assert!(live[199].2 == crate::simulation::economy::agents::TRANSIT_IN_BUILDING, "{:?}", live[199]);
+}
+
+// The yard asset with its lane declared or not (without it the dock stops proving) and its
+// loading bay at local z `bay_z`, with the parts' imported bounds.
+fn yard_manifest(lane: bool, bay_z: &str) -> AssetManifest {
+    let toml = YARD
+        .replace("PASSAGE", if lane { LANE } else { "" })
+        .replace("GATE_WIDTH", "6")
+        .replace("position = [-7.5, 0, 6]", &format!("position = [-7.5, 0, {bay_z}]"));
+    let mut manifest = AssetManifest::from_str(&toml).unwrap();
+    for part in &mut manifest.mesh_parts {
+        part.imported_bounds = Some(match part.name.as_str() {
+            "bunker" => [[-4.0, 0.0, -8.0], [4.0, 10.0, 8.0]],
+            _ => [[-6.0, 0.0, -6.0], [6.0, 6.0, 6.0]],
+        });
+    }
+    manifest
+}
+
+// An asset reload with the yard as `manifest`: every yard's lot and docks are validated again.
+fn reload_yard(core: &mut SimCore, manifest: AssetManifest) {
+    core.replace_asset_registry(vec![("freight".to_owned(), manifest, String::new())]);
+}
+
+// The first yard's dock rows, in handle order: each handle and whether it is active.
+fn yard_docks(
+    core: &SimCore,
+    building: u64,
+) -> Vec<(crate::simulation::core::handles::Handle<crate::simulation::parking::Place>, bool)> {
+    let active: Vec<_> = core.parking.building_docks(building).collect();
+    core.parking
+        .source_bays(PlaceSource::Dock { building, anchor: 3 })
+        .into_iter()
+        .map(|(bits, _)| {
+            let dock = crate::simulation::core::handles::Handle::from_bits(bits);
+            (dock, active.contains(&dock))
+        })
+        .collect()
+}
+
+// A dock an edit to its asset retires while a truck holds it, in each phase that holds one
+// (`PARK-20`): the row goes inactive and stays with its route, the building's gate record goes
+// with its last active dock, and the truck finishes its yard trip on the row. A truck turned back
+// from it with no gate record waits in its bay for the parking phase to plan its way out from the
+// dock's own access. The next reconcile after it has left removes the row.
+#[test]
+fn a_dock_retired_under_a_truck_stays_for_it_until_it_leaves() {
+    use crate::simulation::parking::ParkingTripPhase::{AtDock, PullIn, PullOut};
+    for phase in [PullIn, AtDock, PullOut] {
+        let (mut core, building, carrier) = dispatched_truck();
+        let reached = if phase == PullOut { AtDock } else { phase };
+        tick_truck_until(&mut core, carrier, |core, i| phase_of(core, i) == reached);
+        if phase == PullOut {
+            assert!(check_truck(&mut core));
+            tick_agents(&mut core);
+        }
+        let docks = yard_docks(&core, building);
+        let [(dock, true)] = docks[..] else {
+            panic!("{docks:?}");
+        };
+        let route = core.parking.dock_route(dock).unwrap();
+        let holds = |core: &SimCore| {
+            core.agents
+                .holds_freight_dock(core.agents.handles.handle(carrier), dock)
+        };
+        reload_yard(&mut core, yard_manifest(false, "6"));
+        assert_eq!(yard_docks(&core, building), [(dock, false)], "{phase:?}");
+        assert!(!core.allocator.freight_gates.contains_key(&building));
+        assert!(holds(&core), "{phase:?}");
+        assert_eq!(phase_of(&core, carrier), phase);
+        if phase != PullOut {
+            tick_truck_until(&mut core, carrier, |core, i| phase_of(core, i) == AtDock);
+            let a = &core.agents;
+            assert_eq!([a.pos_x[carrier], a.pos_y[carrier]], route[3]);
+            assert!(check_truck(&mut core), "turned back with no gate record");
+            assert_eq!(phase_of(&core, carrier), PullOut);
+            tick_agents(&mut core);
+            let trip = core.agents.parking_trip[carrier];
+            assert!(!trip.ready && !trip.retry_pending, "planned by the commit: {trip:?}");
+            assert_eq!([core.agents.pos_x[carrier], core.agents.pos_y[carrier]], route[3]);
+        }
+        tick_truck_until(&mut core, carrier, |core, i| phase_of(core, i) != PullOut);
+        assert!(!holds(&core));
+        assert_eq!(
+            core.agents.transit[carrier],
+            crate::simulation::economy::agents::TRANSIT_NETWORK,
+            "it left by the road"
+        );
+        reload_yard(&mut core, yard_manifest(false, "6"));
+        assert!(yard_docks(&core, building).is_empty(), "{phase:?}");
+    }
+}
+
+// A revalidation that leaves a dock's pose keeps it under its handle with its truck; one that
+// moves it adds the new row and keeps the old one, inactive, for the truck standing in it, which
+// leaves along its old route. The next truck is granted the new dock.
+#[test]
+fn a_dock_moved_under_a_standing_truck_keeps_its_old_row_until_the_truck_leaves() {
+    use crate::simulation::parking::ParkingTripPhase::{AtDock, PullIn, PullOut};
+    let (mut core, building, carrier) = truck_at_dock();
+    let docks = yard_docks(&core, building);
+    let [(old, true)] = docks[..] else {
+        panic!("{docks:?}");
+    };
+    let holds = |core: &SimCore, dock| {
+        core.agents
+            .holds_freight_dock(core.agents.handles.handle(carrier), dock)
+    };
+    reload_yard(&mut core, yard_manifest(true, "6"));
+    assert_eq!(yard_docks(&core, building), [(old, true)]);
+    assert!(holds(&core, old));
+    let stop = core.parking.dock_route(old).unwrap()[3];
+    reload_yard(&mut core, yard_manifest(true, "4"));
+    let docks = yard_docks(&core, building);
+    assert!(docks.contains(&(old, false)) && docks.len() == 2, "{docks:?}");
+    let new = docks.iter().find(|(_, active)| *active).unwrap().0;
+    assert_ne!(core.parking.dock_route(new).unwrap()[3], stop);
+    assert!(holds(&core, old));
+    tick_agents(&mut core);
+    let a = &core.agents;
+    assert_eq!(([a.pos_x[carrier], a.pos_y[carrier]], phase_of(&core, carrier)), (stop, AtDock));
+    assert!(check_truck(&mut core));
+    tick_truck_until(&mut core, carrier, |core, i| phase_of(core, i) != PullOut);
+    assert!(!holds(&core, old));
+    // The next truck through the gate takes the new dock.
+    let crate::simulation::economy::logistics::ShipmentEndpoint::Building(source) =
+        core.logistics.shipments[0].source
+    else {
+        panic!("a yard sent it");
+    };
+    let second = dispatch_shipment(&mut core, 1, source);
+    tick_truck_until(&mut core, second, |core, i| phase_of(core, i) == PullIn);
+    assert_eq!(core.agents.parking_trip[second].destination, new);
+    reload_yard(&mut core, yard_manifest(true, "4"));
+    assert_eq!(yard_docks(&core, building), [(new, true)]);
+}
+
+// A truck on the road bound for a yard whose gate goes (its last dock retired by an asset edit)
+// loses its plan in the gate pass over the shipments and plans again to the door's lane point,
+// where it arrives as a truck without a yard.
+#[test]
+fn a_truck_bound_for_a_gate_that_goes_plans_again_to_the_door() {
+    use crate::simulation::economy::agents::{ACCESS_PLAN_VALID, TRANSIT_ACCESS_INGRESS};
+    let (mut core, building, carrier) = truck_on_the_road();
+    let gate = core.allocator.freight_gates[&building].arrive.curb_pos;
+    reload_yard(&mut core, yard_manifest(false, "6"));
+    assert!(!core.allocator.freight_gates.contains_key(&building));
+    assert_eq!(core.agents.access_flags[carrier] & ACCESS_PLAN_VALID, 0, "its plan went");
+    tick_truck_until(&mut core, carrier, |core, i| {
+        core.agents.transit[i] == TRANSIT_ACCESS_INGRESS
+    });
+    let a = &core.agents;
+    let lane = &core.transit_network.lane_system.lanes[a.planned_detach_lane_id[carrier] as usize];
+    let detach = crate::simulation::buildings::allocator::BuildingAllocator::sample_pos_on_lane(
+        lane,
+        a.planned_detach_lane_d[carrier],
+    );
+    let door = core.allocator.entrances[0].curb_pos;
+    assert!(detach.distance_to(door) < detach.distance_to(gate), "{detach:?}: door {door:?}, gate {gate:?}");
+    tick_truck_until(&mut core, carrier, |core, i| {
+        core.agents.transit[i] == crate::simulation::economy::agents::TRANSIT_IN_BUILDING
+    });
+    assert_eq!(core.agents.current_building[carrier], 0);
+    assert!(!core.agents.parking_trip[carrier].freight_gate);
+}
+
+// A save taken with a truck in a yard loads as saved after an edit to the asset retired its dock
+// (`PARK-19`'s rule: a current save validates nothing, its dock rows and holders are taken as they
+// are), so the loaded city continues as the live one; the edit takes effect at the next
+// revalidation of the lot (an asset reload), which retires the row under the truck as any edit.
+#[test]
+fn a_save_with_a_truck_in_a_yard_loads_after_an_edit_retired_its_dock() {
+    use crate::simulation::parking::ParkingTripPhase::PullOut;
+    let (mut core, building, carrier) = truck_at_dock();
+    let docks = yard_docks(&core, building);
+    let live = save_and_continue(&mut core, "truck_dock_edited", 100, 0, |core| {
+        core.allocator
+            .registry
+            .register("freight", yard_manifest(false, "6"), String::new());
+    });
+    assert!(live.iter().all(|t| t == &live[0]), "it stands");
+    assert_eq!(yard_docks(&core, building), docks, "loaded as saved");
+    let dock = docks[0].0;
+    assert!(core.agents.holds_freight_dock(core.agents.handles.handle(carrier), dock));
+    reload_yard(&mut core, yard_manifest(false, "6"));
+    assert_eq!(yard_docks(&core, building), [(dock, false)]);
+    assert!(check_truck(&mut core));
+    tick_truck_until(&mut core, carrier, |core, i| phase_of(core, i) != PullOut);
+    assert!(!core.agents.holds_freight_dock(core.agents.handles.handle(carrier), dock));
 }

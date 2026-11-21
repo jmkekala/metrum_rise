@@ -210,6 +210,11 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
                     arrive_in_building(i, b_id, ingress_target, sim_time, slices);
                 }
             }
+        } else if trip.freight_gate && trip.phase == ParkingTripPhase::PullIn {
+            // A truck pulling into its dock whose way in went stale (`PARK-20`): it ends in its
+            // bay, as one whose plan was dropped does above, and is never put back on the road.
+            slices.parking_trip.get_mut(i).ready = true;
+            *s_speed.get_mut(i) = 0.0;
         } else if let Some(ingress_origin) = local_access_point(
             *s_tmode.get(i),
             entrance,

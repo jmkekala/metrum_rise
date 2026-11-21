@@ -72,6 +72,9 @@ pub(super) enum FailureCause {
     NoPlan,
     /// A driver who has parked finds no walk from its bay to its destination (`TRAFFIC-34`).
     NoWalkFromBay,
+    /// A truck backing out of a dock finds no road from its yard's gate to where it goes
+    /// (`PARK-20`).
+    NoRouteFromDock,
 }
 
 /// What happens to the agent after the failure.
@@ -124,6 +127,10 @@ pub(super) enum FailureOutcome {
     /// A parked driver with no walk on and no way home stays in its bay and plans the drive home
     /// again after `after_s`, then on the walkers' backoff (`TRAFFIC-34`).
     StaysParked { after_s: f32 },
+    /// A truck backing out of a dock stops where it is in the yard, keeps the dock and plans its
+    /// way out again after `after_s`, then on the walkers' backoff, until its shipment's leg
+    /// times out (`PARK-20`).
+    StandsInYard { after_s: f32 },
 }
 
 impl FailureOutcome {
@@ -390,6 +397,7 @@ pub(crate) mod probe_tally {
             FailureOutcome::DrivesHome { .. } => "drives home",
             FailureOutcome::WaitsAtLaneEnd { .. } => "waits at its lane end",
             FailureOutcome::StaysParked { .. } => "stays parked",
+            FailureOutcome::StandsInYard { .. } => "stands in its yard",
         };
         *TALLY
             .lock()

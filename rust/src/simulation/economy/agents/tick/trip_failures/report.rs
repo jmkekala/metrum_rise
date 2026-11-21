@@ -111,7 +111,8 @@ impl FailurePlaces {
             FailureCause::NoDeparture { .. }
             | FailureCause::NoPosition
             | FailureCause::NoPlan
-            | FailureCause::NoWalkFromBay => ([u32::MAX; 2], [NO_LANE; 2], [NO_LANE; 2]),
+            | FailureCause::NoWalkFromBay
+            | FailureCause::NoRouteFromDock => ([u32::MAX; 2], [NO_LANE; 2], [NO_LANE; 2]),
         };
         Self {
             cause: CAUSE_LABELS[usize::from(cause_index(&failure.cause))],

@@ -13,7 +13,7 @@ use super::super::super::slices::{MovementSlices, enter_lane, hold_for_lane_atta
 use super::super::super::traffic::{claim_lane_entry, lane_attach_slot_clear};
 use super::super::super::trip_failures::{FailureCause, FailureOutcome, record_failure};
 use super::super::{BUILDING_REPLAN_DELAY_S, transit_mode_label};
-use super::reset_invalid_access_plan;
+use super::{pulls_out_of_a_dock, reset_invalid_access_plan, stand_in_yard};
 use crate::config::{AGENT_DRIVEWAY_SPEED_MS, AGENT_WALK_SPEED_MS};
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::network::TransitNetwork;
@@ -56,6 +56,11 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
         }
         let b = &allocator.buildings[b_id];
         if b.edge_idx >= graph.edge_count() || graph.edge(b.edge_idx).deleted {
+            // A truck backing out of a dock stays in the yard, whose road went (`PARK-20`).
+            if pulls_out_of_a_dock(i, slices) {
+                stand_in_yard(i, slices);
+                return;
+            }
             let pos = Vector2::new(*s_pos_x.get(i), *s_pos_y.get(i));
             reset_invalid_access_plan(i, b_id, pos, sim_time + BUILDING_REPLAN_DELAY_S, slices);
             return;
@@ -63,6 +68,13 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
         let plan_valid =
             (*s_access_flags.get(i) & ACCESS_PLAN_VALID) != 0 && b_id < allocator.entrances.len();
         if !plan_valid {
+            // A road edit dropped a pull-out's plan (`clear_route_plan_after_road_edit`): the
+            // truck stops on its route out of the dock and plans again (`PARK-20`), where a
+            // car would go back inside its building.
+            if pulls_out_of_a_dock(i, slices) {
+                stand_in_yard(i, slices);
+                return;
+            }
             let origin_door = allocator
                 .entrances
                 .get(b_id)
@@ -250,12 +262,20 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
                     *s_access_flags.get(i),
                 );
             }
+            let cause = FailureCause::StaleEntry {
+                lane: attach_lane_id,
+                lane_d: attach_lane_d,
+            };
+            if pulls_out_of_a_dock(i, slices) {
+                // Its way onto the road is stale: it stops in the yard, and the parking phase's
+                // plan from the dock completes this record (`PARK-20`, `TRAFFIC-32`).
+                record_failure(i, cause, FailureOutcome::ParkingRecovery, slices);
+                stand_in_yard(i, slices);
+                return;
+            }
             record_failure(
                 i,
-                FailureCause::StaleEntry {
-                    lane: attach_lane_id,
-                    lane_d: attach_lane_d,
-                },
+                cause,
                 FailureOutcome::RetryDeparture {
                     after_s: BUILDING_REPLAN_DELAY_S,
                 },

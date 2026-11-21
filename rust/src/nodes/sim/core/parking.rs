@@ -194,7 +194,43 @@ impl SimCore {
             &self.transit_network,
             &self.region_graph,
         );
+        let before = self.allocator.freight_gates.get(&handle).map(|g| g.arrive.curb_pos);
         self.rebuild_freight_gate(handle);
+        let after = self.allocator.freight_gates.get(&handle).map(|g| g.arrive.curb_pos);
+        if before.is_some() && before != after {
+            self.replan_carriers_bound_for_gate(handle);
+        }
+    }
+
+    // Building `handle`'s freight gate moved or went (`PARK-20`): every carrier on the road with
+    // a plan to its old lane point, or backing out of a dock bound for it, loses its plan and
+    // plans again, to the new gate or the door (`replan_entrance`; a pull-out from its dock,
+    // `yard.rs`). One standing at the old gate or already in the yard goes on: the gate commit
+    // reads the current gate, and a dock's route is its own. One pass over the shipments, only
+    // when a dock building's gate changes. O(shipments).
+    fn replan_carriers_bound_for_gate(&mut self, handle: u64) {
+        use crate::simulation::economy::agents::{TRANSIT_INTERSECTION, TRANSIT_NETWORK};
+        use crate::simulation::parking::ParkingTripPhase;
+        for shipment in &self.logistics.shipments {
+            let Some(i) = self.agents.resolve_agent(shipment.carrier) else {
+                continue;
+            };
+            let trip = self.agents.agents.parking_trip[i];
+            let transit = self.agents.agents.transit[i];
+            let bound = trip.freight_gate
+                && trip.target == handle
+                && match trip.phase {
+                    ParkingTripPhase::None => {
+                        transit == TRANSIT_NETWORK || transit == TRANSIT_INTERSECTION
+                    }
+                    ParkingTripPhase::PullOut => true,
+                    _ => false,
+                };
+            if bound {
+                self.agents
+                    .clear_route_plan_after_road_edit(i, &self.transit_network.lane_system);
+            }
+        }
     }
 
     // Building `handle`'s freight gate from its dock rows: the gate its first dock's route

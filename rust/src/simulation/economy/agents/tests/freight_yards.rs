@@ -685,30 +685,231 @@ fn an_arrival_meeting_a_truck_backing_out_goes_to_the_door_on_any_worker_count()
     assert_eq!(run(8), serial);
 }
 
-// Round 2's minimal rule for a pull-out whose plan goes (a road edit clears an access plan, as
-// `clear_route_plan_after_road_edit` does): the yard trip ends, the dock is free, and the truck
-// is where today's door carrier would be, inside the building. Round 3 makes it stand at the dock
-// and plan again instead.
+// Ticks `yard` until truck `i` has backed out of `dock` to the lane: the dock is free from there.
+fn leave_the_yard(yard: &mut Yard, i: usize, dock: crate::simulation::core::handles::Handle<crate::simulation::parking::Place>) {
+    yard.tick_until(|y| y.phase(i) != ParkingTripPhase::PullOut);
+    let a = &yard.agents.agents;
+    assert_ne!(a.transit[i], TRANSIT_IN_BUILDING, "it left by the road");
+    assert!(!yard.agents.holds_freight_dock(yard.agents.handles.handle(i), dock));
+}
+
+// A pull-out whose plan a road edit drops (`clear_route_plan_after_road_edit` clears the access
+// plan) stops where it is on its route, keeps its dock, and the parking phase plans its way out
+// again in the same tick; it never goes back inside the building. Both for a truck spawned in its
+// source's dock and for one delivered in the yard's.
 #[test]
-fn a_pull_out_whose_plan_goes_ends_its_yard_trip_at_the_door() {
+fn a_pull_out_whose_plan_goes_stands_in_the_yard_and_plans_again() {
     for spawned in [false, true] {
         let mut yard = yard_with(1, 1);
         let carrier = yard.dispatch(0);
-        let (dock, building) = if spawned {
-            (yard.dock_of(0, 0), 0)
+        let dock = if spawned {
+            yard.dock_of(0, 0)
         } else {
             yard.tick_until(|y| y.phase(carrier) == ParkingTripPhase::AtDock);
             assert!(yard.check(0));
-            (yard.dock(0), 1)
+            yard.dock(0)
         };
         for _ in 0..10 {
             yard.tick();
         }
         assert_eq!(yard.phase(carrier), ParkingTripPhase::PullOut);
+        let at = |y: &Yard| (y.agents.agents.pos_x[carrier], y.agents.agents.pos_y[carrier]);
+        let stood = at(&yard);
+        let attach = (
+            yard.agents.agents.planned_attach_lane_id[carrier],
+            yard.agents.agents.planned_attach_lane_d[carrier].to_bits(),
+        );
         yard.agents.agents.access_flags[carrier] = 0;
         yard.tick();
-        assert!(yard.inside(carrier, building));
-        assert!(idle(yard.agents.agents.parking_trip[carrier]));
-        assert!(!yard.agents.holds_freight_dock(yard.parking.dock_holder(dock), dock));
+        assert_eq!(at(&yard), stood, "it stopped where it was");
+        assert_eq!(yard.phase(carrier), ParkingTripPhase::PullOut);
+        assert!(yard.holds(carrier, dock));
+        let a = &yard.agents.agents;
+        let trip = a.parking_trip[carrier];
+        assert!(!trip.ready && !trip.replan_needed && !trip.retry_pending, "planned at once");
+        assert_eq!(
+            (a.planned_attach_lane_id[carrier], a.planned_attach_lane_d[carrier].to_bits()),
+            attach,
+            "the same way out of the same gate"
+        );
+        leave_the_yard(&mut yard, carrier, dock);
+        assert!(yard.agents.trip_failures.lines.is_empty(), "{:?}", yard.agents.trip_failures.lines);
     }
+}
+
+// With no road from its gate to where it goes, a truck backing out stops in the yard, holding its
+// dock, and waits for the parking retry wheel: it is reported once, never moved, never sent home
+// or to a border by the watchdog, and its wheel retries back off (5 s, then 30 s). Once a road is
+// back, the next retry plans its way out and it leaves. The shipment's leg timeout bounds the wait.
+#[test]
+fn a_pull_out_with_no_way_out_waits_in_the_yard_on_the_retry_wheel() {
+    let mut yard = yard(1);
+    let carrier = yard.dispatch(0);
+    yard.tick_until(|y| y.phase(carrier) == ParkingTripPhase::AtDock);
+    assert!(yard.check(0));
+    let dock = yard.dock(0);
+    for _ in 0..10 {
+        yard.tick();
+    }
+    let handle = yard.handle(carrier);
+    let at = |y: &Yard| (y.agents.agents.pos_x[carrier], y.agents.agents.pos_y[carrier]);
+    let stood = at(&yard);
+    // Its source (the return's destination) cut off: no plan reaches building 0's door.
+    let door = yard.allocator.entrances[0].clone();
+    yard.allocator.entrances[0].edge_idx = usize::MAX;
+    yard.agents.agents.access_flags[carrier] = 0;
+    yard.tick();
+    let wheel = std::mem::take(&mut yard.agents.parking_retries);
+    assert_eq!(wheel, [(handle, 5)]);
+    let wake = |y: &mut Yard| {
+        let i = y.agents.resolve_agent(handle).unwrap();
+        y.agents.agents.parking_trip[i].retry_pending = false;
+        y.agents.agents.next_replan_time[i] = 0.0;
+        y.agents.wake_parking_agent(handle);
+    };
+    for round in 0..2 {
+        for _ in 0..300 {
+            yard.tick();
+            let a = &yard.agents.agents;
+            assert_eq!(at(&yard), stood, "it waits where it stopped");
+            assert_eq!(a.transit[carrier], crate::simulation::economy::agents::TRANSIT_ACCESS_EGRESS);
+            assert_eq!(yard.phase(carrier), ParkingTripPhase::PullOut);
+            assert!(yard.holds(carrier, dock));
+        }
+        assert!(yard.agents.parking_retries.is_empty(), "nothing retries before the wheel");
+        wake(&mut yard);
+        yard.tick();
+        let wheel = std::mem::take(&mut yard.agents.parking_retries);
+        assert_eq!(wheel, [(handle, if round == 0 { 30 } else { 120 })]);
+    }
+    let lines = &yard.agents.trip_failures.lines;
+    assert_eq!(lines.len(), 1, "reported once: {lines:#?}");
+    assert!(lines[0].contains("no road from its loading bay's gate to building 0"), "{lines:#?}");
+    assert!(lines[0].contains("stops in the yard, keeps its loading bay"), "{lines:#?}");
+    assert!(
+        !lines.iter().any(|l| l.contains("sent home") || l.contains("sent to border")),
+        "{lines:#?}"
+    );
+    yard.allocator.entrances[0] = door;
+    wake(&mut yard);
+    leave_the_yard(&mut yard, carrier, dock);
+    yard.tick_until(|y| y.inside(carrier, 0));
+    assert!(!yard.check(0));
+    assert_eq!(yard.status(0), ShipmentStatus::Fulfilled);
+}
+
+// A pull-in whose way in from the gate goes stale ends in its bay, as one whose plan was dropped
+// does: it is never put back on the road (where the watchdog could move it).
+#[test]
+fn a_stale_pull_in_ends_in_its_bay() {
+    let mut yard = yard(1);
+    let carrier = yard.dispatch(0);
+    yard.tick_until(|y| y.phase(carrier) == ParkingTripPhase::PullIn);
+    yard.tick();
+    let dock = yard.dock(0);
+    yard.agents.agents.planned_detach_lane_id[carrier] = u32::MAX;
+    yard.tick_until(|y| y.phase(carrier) != ParkingTripPhase::PullIn);
+    assert_eq!(yard.phase(carrier), ParkingTripPhase::AtDock);
+    let stop = yard.parking.dock_route(dock).unwrap()[3];
+    let a = &yard.agents.agents;
+    assert_eq!((a.pos_x[carrier], a.pos_y[carrier]), (stop[0], stop[1]));
+    assert_eq!(a.transit[carrier], crate::simulation::economy::agents::TRANSIT_ACCESS_INGRESS);
+    assert!(yard.holds(carrier, dock));
+}
+
+// A removed carrier holds no dock, in every phase that holds one: pulling in, standing, and
+// backing out after a delivery or after a dispatch from its source's dock. Nothing calls the
+// parking system: the next gate commit or dispatch finds the dock free.
+#[test]
+fn a_removed_carrier_frees_its_dock_in_every_phase() {
+    for phase in [
+        ParkingTripPhase::PullIn,
+        ParkingTripPhase::AtDock,
+        ParkingTripPhase::PullOut,
+    ] {
+        for spawned in [false, true] {
+            if spawned && phase != ParkingTripPhase::PullOut {
+                continue;
+            }
+            let mut yard = yard_with(1, 1);
+            let carrier = yard.dispatch(0);
+            let (building, dock) = if spawned {
+                (0, yard.dock_of(0, 0))
+            } else {
+                let reached = if phase == ParkingTripPhase::PullOut {
+                    ParkingTripPhase::AtDock
+                } else {
+                    phase
+                };
+                yard.tick_until(|y| y.phase(carrier) == reached);
+                if phase == ParkingTripPhase::PullOut {
+                    assert!(yard.check(0));
+                    yard.tick();
+                }
+                (1, yard.dock(0))
+            };
+            assert_eq!(yard.phase(carrier), phase);
+            assert!(yard.holds(carrier, dock));
+            let handle = yard.allocator.building_handles.handle(building).to_bits();
+            assert_eq!(yard.agents.first_free_dock(handle, &yard.parking), None);
+            let removed = yard.handle(carrier);
+            yard.agents.remove_freight_carrier(carrier, 0);
+            assert!(yard.agents.resolve_agent(removed).is_none());
+            assert_eq!(
+                yard.agents.first_free_dock(handle, &yard.parking),
+                Some(dock),
+                "{phase:?}, spawned {spawned}"
+            );
+        }
+    }
+}
+
+// A carrier sent on from the gate to the door that a stale lane puts back on the road plans to
+// the gate again, where its access path to the door starts; with the gate gone, to the door.
+#[test]
+fn a_carrier_on_its_way_from_the_gate_to_the_door_replans_to_the_gate() {
+    let mut yard = yard(1);
+    let handle = yard.allocator.building_handles.handle(1).to_bits();
+    let trip = ParkingTrip {
+        target: handle,
+        phase: ParkingTripPhase::GateToDoor,
+        freight_gate: true,
+        ..ParkingTrip::default()
+    };
+    let entrance = |y: &Yard| {
+        y.parking
+            .replan_entrance(trip, &y.allocator, &y.network, &y.graph)
+            .map(|e| e.curb_pos)
+    };
+    let gate = yard.allocator.freight_gates[&handle].arrive.curb_pos;
+    assert_eq!(entrance(&yard), Some(gate));
+    yard.allocator.freight_gates.clear();
+    assert_eq!(entrance(&yard), None, "to the door");
+}
+
+// The leg timeout bounds a truck's wait in the yard: the check that finds its return overdue
+// finishes the shipment and removes the truck where it stands, which frees the dock. A dispatch
+// that waits is expired the same way, with its refund.
+#[test]
+fn the_leg_timeout_ends_a_wait_in_the_yard_and_frees_the_dock() {
+    let mut yard = yard(1);
+    let carrier = yard.dispatch(0);
+    yard.tick_until(|y| y.phase(carrier) == ParkingTripPhase::AtDock);
+    assert!(yard.check(0));
+    let dock = yard.dock(0);
+    yard.tick();
+    let handle = yard.handle(carrier);
+    yard.allocator.entrances[0].edge_idx = usize::MAX;
+    yard.agents.agents.access_flags[carrier] = 0;
+    for _ in 0..100 {
+        yard.tick();
+    }
+    assert!(yard.agents.agents.parking_trip[carrier].retry_pending);
+    assert!(yard.check(0), "within its leg's hours it waits");
+    yard.shipments.hour_ticks = 1_000;
+    assert!(!yard.check(0));
+    assert_eq!(yard.status(0), ShipmentStatus::Fulfilled);
+    assert!(yard.agents.resolve_agent(handle).is_none());
+    let building = yard.allocator.building_handles.handle(1).to_bits();
+    assert_eq!(yard.agents.first_free_dock(building, &yard.parking), Some(dock));
 }

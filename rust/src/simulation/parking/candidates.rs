@@ -204,7 +204,9 @@ impl ParkingSystem {
         changed
     }
 
-    // Publishes one bay's access, from the current doors and roads. O(its host's entrance).
+    // Publishes one bay's access, from the current doors and roads. A dock retired while a
+    // truck holds it keeps its access too, which the truck plans its way out from (`PARK-20`).
+    // O(its host's entrance).
     pub(super) fn refresh_place_access(
         &mut self,
         place: Handle<Place>,
@@ -212,7 +214,9 @@ impl ParkingSystem {
         network: &TransitNetwork,
         graph: &RegionGraph,
     ) {
-        let Some(p) = self.place_handles.resolve(place).filter(|&p| self.places.active[p]) else {
+        let Some(p) = self.place_handles.resolve(place).filter(|&p| {
+            self.places.active[p] || matches!(self.places.source[p], PlaceSource::Dock { .. })
+        }) else {
             return;
         };
         let access = self

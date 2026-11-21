@@ -38,9 +38,10 @@ pub(super) unsafe fn reset_invalid_access_plan(
     slices: &MovementSlices,
 ) {
     unsafe {
-        // A truck pulling out of a dock whose plan went (`PARK-20`): its yard trip ends where
-        // the door carrier's would, which frees the dock. Round 2's minimal rule; one byte test
-        // on this failure path.
+        // A carrier whose building went while it pulled out of one of its docks (`PARK-20`):
+        // its yard trip ends with the building, which frees the dock. A pull-out with its
+        // building standing waits in the yard instead (`stand_in_yard`). One byte test on this
+        // failure path.
         if slices.parking_trip.get(i).freight_gate {
             *slices.parking_trip.get_mut(i) = Default::default();
         }
@@ -53,6 +54,31 @@ pub(super) unsafe fn reset_invalid_access_plan(
         *slices.transit.get_mut(i) = TRANSIT_IN_BUILDING;
         *slices.next_replan_time.get_mut(i) = next_replan_time;
         *slices.network_replan_failures.get_mut(i) = 0;
+    }
+}
+
+/// Whether agent `i` is a truck backing out of a dock (`PARK-20`), which a lost or stale access
+/// plan never moves: it stops where it is on its route, keeps the dock, and the parking phase
+/// plans its way out again ([`stand_in_yard`]). One byte test of a row the step has read.
+///
+/// Safety: `i` must be unique to the current worker for every raw slice in `slices`.
+pub(super) unsafe fn pulls_out_of_a_dock(i: usize, slices: &MovementSlices) -> bool {
+    unsafe {
+        let trip = slices.parking_trip.get(i);
+        trip.freight_gate && trip.phase == crate::simulation::parking::ParkingTripPhase::PullOut
+    }
+}
+
+/// Stops truck `i` in its yard, frozen for the parking phase's ordered commit to plan its way out
+/// of the dock again (`PARK-20`; `yard.rs`). O(1).
+///
+/// Safety: `i` must be unique to the current worker for every raw slice in `slices`.
+pub(super) unsafe fn stand_in_yard(i: usize, slices: &MovementSlices) {
+    unsafe {
+        let trip = slices.parking_trip.get_mut(i);
+        trip.ready = true;
+        trip.replan_needed = true;
+        *slices.speed.get_mut(i) = 0.0;
     }
 }
 

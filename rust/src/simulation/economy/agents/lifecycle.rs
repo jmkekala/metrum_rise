@@ -328,6 +328,17 @@ impl AgentSystem {
             return false;
         }
         let dock = self.standing_dock(agent_idx, source_building, allocator);
+        if self.back_out_without_a_gate(
+            agent_idx,
+            dock,
+            source_building,
+            (destination_building, u32::MAX),
+            allocator,
+            transit_network,
+            graph,
+        ) {
+            return true;
+        }
         let Some(((plan, gate), dock)) = self.plan_freight_out_of_dock(
             dock,
             source_building,
@@ -474,6 +485,17 @@ impl AgentSystem {
             return false;
         }
         let dock = self.standing_dock(agent_idx, source_building, allocator);
+        if self.back_out_without_a_gate(
+            agent_idx,
+            dock,
+            source_building,
+            (usize::MAX, border_node),
+            allocator,
+            transit_network,
+            graph,
+        ) {
+            return true;
+        }
         let Some((plan, dock)) = self.plan_freight_out_of_dock(
             dock,
             source_building,
@@ -497,6 +519,50 @@ impl AgentSystem {
         self.apply_building_origin_freight_plan(agent_idx, source_building, plan, allocator);
         self.agents.freight_target_border_node[agent_idx] = border_node;
         self.pull_out_of_dock(agent_idx, dock, stop, None);
+        true
+    }
+
+    /// Plans carrier `i`'s way out of the dock it backs out of again, from `exit` (the dock's
+    /// access, at its gate's road connection) to where it was going: a border, or a building's
+    /// gate or door (`PARK-20`). For a pull-out whose plan a road edit dropped or left stale. It
+    /// keeps its place on the dock's route, its dock and its journey clock. False, with nothing
+    /// changed, when no road leaves the gate for it. O(one plan).
+    pub(crate) fn replan_freight_pull_out(
+        &mut self,
+        i: usize,
+        exit: &BuildingEntrance,
+        allocator: &BuildingAllocator,
+        transit_network: &TransitNetwork,
+        graph: &RegionGraph,
+    ) -> bool {
+        let source = self.agents.current_building[i];
+        let border = self.agents.freight_target_border_node[i];
+        let planned = if border != u32::MAX {
+            self.plan_freight_to_border(source, Some(exit), border, allocator, transit_network, graph)
+                .map(|plan| (plan, None))
+        } else {
+            let destination = self.agents.target_building[i];
+            self.plan_freight_from_building(
+                source,
+                Some(exit),
+                destination,
+                allocator,
+                transit_network,
+                graph,
+            )
+        };
+        let Some((plan, gate)) = planned else {
+            return false;
+        };
+        let dock = self.agents.parking_trip[i].source;
+        let a = &self.agents;
+        let (x, z, started) = (a.pos_x[i], a.pos_y[i], a.journey_start_time[i]);
+        self.apply_building_origin_freight_plan(i, source, plan, allocator);
+        let a = &mut self.agents;
+        a.pos_x[i] = x;
+        a.pos_y[i] = z;
+        a.journey_start_time[i] = started;
+        a.parking_trip[i] = ParkingTrip::freight_pull_out(dock, gate);
         true
     }
 
@@ -649,6 +715,52 @@ impl AgentSystem {
             return None;
         }
         self.first_free_dock(allocator.building_handles.handle(source).to_bits(), parking)
+    }
+
+    // A truck standing in `dock` of building `source` whose gate record went under it: an edit
+    // retired the building's last dock (the held row stays, inactive). It backs out of its dock
+    // all the same, to `to` (a building, or a border node), but its plan needs the dock's own
+    // access, which the parking system holds: it waits in the bay, frozen for the parking
+    // phase's ordered commit to plan it (`yard.rs`), which then retries on the wheel if no road
+    // leaves the gate. False, with nothing changed, for any other carrier: one test of the
+    // dock found before (`PARK-20`). O(1).
+    #[allow(clippy::too_many_arguments)]
+    fn back_out_without_a_gate(
+        &mut self,
+        i: usize,
+        dock: Option<Handle<Place>>,
+        source: usize,
+        to: (usize, u32),
+        allocator: &BuildingAllocator,
+        transit_network: &TransitNetwork,
+        graph: &RegionGraph,
+    ) -> bool {
+        let Some(dock) = dock else {
+            return false;
+        };
+        if allocator
+            .freight_gate_departure(source, graph, &transit_network.lane_system)
+            .is_some()
+        {
+            return false;
+        }
+        let now = self.sim_time;
+        let a = &mut self.agents;
+        a.current_building[i] = source;
+        (a.target_building[i], a.freight_target_border_node[i]) = to;
+        a.journey_start_time[i] = now;
+        a.transit[i] = TRANSIT_ACCESS_EGRESS;
+        a.access_flags[i] = 0;
+        a.current_path[i].clear();
+        a.current_path_index[i] = 0;
+        a.speed[i] = 0.0;
+        a.network_replan_failures[i] = 0;
+        a.parking_trip[i] = ParkingTrip {
+            ready: true,
+            replan_needed: true,
+            ..ParkingTrip::freight_pull_out(dock, None)
+        };
+        true
     }
 
     // The dock carrier `i` stands in at building `building` after delivering there, which it

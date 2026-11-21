@@ -600,8 +600,10 @@ impl ParkingSystem {
                     .unwrap_or_default(),
             ),
             // A carrier on its way to a freight gate keeps it; with the gate gone it plans to
-            // the door, and the gate commit drops the flag (`PARK-20`).
-            ParkingTripPhase::None if trip.freight_gate => {
+            // the door, and the gate commit drops the flag (`PARK-20`). One sent on to the door
+            // that a stale lane put back on the road plans to the gate again, where its access
+            // path to the door starts (`trip_entrance`).
+            ParkingTripPhase::None | ParkingTripPhase::GateToDoor if trip.freight_gate => {
                 self.trip_entrance(trip, false, allocator, network, graph)
             }
             _ => None,

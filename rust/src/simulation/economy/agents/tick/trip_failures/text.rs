@@ -31,7 +31,7 @@ pub(super) fn failure_line(
 }
 
 /// Short names of the causes, by [`cause_index`], for the summaries.
-pub(super) const CAUSE_LABELS: [&str; 12] = [
+pub(super) const CAUSE_LABELS: [&str; 13] = [
     "no road to the next node",
     "no turn at a junction",
     "no turn into the exit lane",
@@ -44,6 +44,7 @@ pub(super) const CAUSE_LABELS: [&str; 12] = [
     "no position to plan from",
     "no plan",
     "no walk from the parking bay",
+    "no road out of the freight yard",
 ];
 
 /// The cause's index in [`CAUSE_LABELS`].
@@ -61,12 +62,13 @@ pub(super) fn cause_index(cause: &FailureCause) -> u8 {
         FailureCause::NoPosition => 9,
         FailureCause::NoPlan => 10,
         FailureCause::NoWalkFromBay => 11,
+        FailureCause::NoRouteFromDock => 12,
     }
 }
 
 /// Whether the cause happens at a building door rather than at a node.
 pub(super) fn cause_at_building(cause: usize) -> bool {
-    cause == 5 || cause == 8
+    cause == 5 || cause == 8 || cause == 12
 }
 
 fn kind_label(kind: AgentKind) -> &'static str {
@@ -195,6 +197,14 @@ impl fmt::Display for Cause<'_> {
                 "no walk from its parking bay to building {}",
                 failure.destination
             ),
+            FailureCause::NoRouteFromDock => {
+                write!(f, "no road from its loading bay's gate to ")?;
+                if failure.border == u32::MAX {
+                    write!(f, "building {}", failure.destination)
+                } else {
+                    write!(f, "border node {}", failure.border)
+                }
+            }
         }
     }
 }
@@ -334,6 +344,11 @@ impl fmt::Display for Outcome {
                 f,
                 "no way home either: stays parked in its bay, plans the drive home again in \
                  {after_s:.0} s"
+            ),
+            FailureOutcome::StandsInYard { after_s } => write!(
+                f,
+                "stops in the yard, keeps its loading bay and plans the way out again in \
+                 {after_s:.0} s, until its delivery times out"
             ),
         }
     }

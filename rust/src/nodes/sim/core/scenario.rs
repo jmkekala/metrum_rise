@@ -23,6 +23,8 @@ mod congestion_cases;
 #[cfg(test)]
 mod construction_cases;
 #[cfg(test)]
+mod freight_yard_cases;
+#[cfg(test)]
 mod graded_cases;
 #[cfg(test)]
 mod query_cases;

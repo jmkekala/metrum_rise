@@ -107,9 +107,18 @@ pub(super) unsafe fn delay_or_recover_after_network_replan_failure(
         }
         // Captured before the attempt is cleared, so the log shows where the agent failed.
         let mut failure = TripFailure::capture(i, cause, FailureOutcome::Replans, slices);
-        // A parking leg's failure goes to the leg's recovery in this tick's commit, which gives
-        // the record the outcome it takes (`TRAFFIC-32`).
-        if slices.parking_trip.get(i).phase != crate::simulation::parking::ParkingTripPhase::None {
+        let trip = *slices.parking_trip.get(i);
+        if trip.freight_gate && trip.phase != crate::simulation::parking::ParkingTripPhase::None {
+            // A truck in a yard never gets here (`PARK-20`): standing in a dock or backing out
+            // of one it does not plan on the road, and a pull-in whose way in went stale ends in
+            // its bay. Only one sent on from its gate to the door, put back on the road by a
+            // stale lane, does: it holds no dock, its yard trip ends, and the road's rules below
+            // apply to it as to any carrier (`TRAFFIC-20`).
+            debug_assert_eq!(trip.phase, crate::simulation::parking::ParkingTripPhase::GateToDoor);
+            *slices.parking_trip.get_mut(i) = Default::default();
+        } else if trip.phase != crate::simulation::parking::ParkingTripPhase::None {
+            // A parking leg's failure goes to the leg's recovery in this tick's commit, which
+            // gives the record the outcome it takes (`TRAFFIC-32`).
             let trip = slices.parking_trip.get_mut(i);
             trip.ready = true;
             trip.replan_needed = true;

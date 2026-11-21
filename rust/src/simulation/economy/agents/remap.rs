@@ -575,7 +575,10 @@ impl AgentSystem {
             || CchGraph::path_has_valid_vehicle_turns(&[node], incoming, outgoing, graph)
     }
 
-    fn clear_route_plan_after_road_edit(&mut self, i: usize, lane_system: &LaneSystem) {
+    // Drops agent `i`'s route and access plan as a road edit through them does; the movement
+    // pass plans it again. Also used when a freight gate a carrier is bound for moves or goes
+    // (`PARK-20`). O(1).
+    pub(crate) fn clear_route_plan_after_road_edit(&mut self, i: usize, lane_system: &LaneSystem) {
         let freight_border_node = self.agents.freight_target_border_node[i];
         let preserve_freight_border = freight_border_node != u32::MAX
             && (self.agents.access_flags[i] & ACCESS_FREIGHT_BORDER_DESTINATION) != 0;

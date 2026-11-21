@@ -157,7 +157,7 @@ impl AgentSystem {
         let trip = self.agents.parking_trip[i];
         // A freight carrier's yard trip (`PARK-20`): one byte test for every other candidate.
         if trip.freight_gate {
-            self.commit_freight_yard_visit(i, parking, allocator);
+            self.commit_freight_yard_visit(i, parking, allocator, network, graph);
             return;
         }
         if trip.retry_pending {

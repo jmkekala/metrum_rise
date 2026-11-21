@@ -19,25 +19,39 @@
 //! A dock's `freight_holder` counts only while the holder's trip still names the dock in
 //! `PullIn`, `AtDock` or `PullOut` (`ParkingTrip::held_dock`). A new plan, an arrival, the lane
 //! point, the end of the building and every removal end that trip, so none of them needs the
-//! parking system to free the dock: the next visit that looks at the dock finds it free. The holder and the trips are saved, so the choice is the same
-//! after a load and at any worker count.
+//! parking system to free the dock: the next visit that looks at the dock finds it free. The
+//! holder and the trips are saved, so the choice is the same after a load and at any worker
+//! count.
+//!
+//! A truck in a yard is never moved by a failure. A pull-in whose way in goes ends in its bay; a
+//! pull-out whose plan a road edit drops, or whose way onto the road goes stale, stops on its
+//! route and is planned again here from the dock's own access, retrying on the parking wheel
+//! while no road leaves the gate, until its shipment's leg times out
+//! (`access_state.rs` `stand_in_yard`, `plan_way_out_of_dock` below).
 
 use super::super::super::{AgentHandle, AgentSystem};
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::core::handles::Handle;
+use crate::simulation::economy::agents::tick::movement::retry_after_s;
+use crate::simulation::economy::agents::tick::trip_failures::{FailureCause, FailureOutcome};
+use crate::simulation::network::{TransitNetwork, graph::RegionGraph};
 use crate::simulation::parking::{ParkingSystem, ParkingTrip, ParkingTripPhase, Place};
 
 impl AgentSystem {
     /// One freight carrier's visit, `i` with a yard trip. O(docks of its building) for the gate
-    /// commit, O(1) otherwise; no allocation.
+    /// commit, one plan for a pull-out planned again, O(1) otherwise; no allocation beyond the
+    /// plan's route.
     pub(super) fn commit_freight_yard_visit(
         &mut self,
         i: usize,
         parking: &mut ParkingSystem,
         allocator: &BuildingAllocator,
+        network: &TransitNetwork,
+        graph: &RegionGraph,
     ) {
         let trip = self.agents.parking_trip[i];
-        if !trip.ready {
+        // A pull-out waiting on the retry wheel is visited again when the wheel wakes it.
+        if !trip.ready || trip.retry_pending {
             return;
         }
         match trip.phase {
@@ -60,6 +74,9 @@ impl AgentSystem {
                 a.speed[i] = 0.0;
                 a.parking_trip[i].phase = ParkingTripPhase::AtDock;
                 a.parking_trip[i].ready = false;
+            }
+            ParkingTripPhase::PullOut => {
+                self.plan_way_out_of_dock(i, parking, allocator, network, graph);
             }
             // The gate went before the carrier reached it, or a failure asked for recovery:
             // it goes on as a carrier without a yard, to the door from where it stands.
@@ -104,6 +121,46 @@ impl AgentSystem {
         self.handles
             .resolve(holder)
             .is_some_and(|i| holds_dock(&self.agents.parking_trip[i], dock))
+    }
+
+    // A truck that stopped while backing out of its dock (`stand_in_yard`: a road edit dropped
+    // its plan, its way onto the road went stale, or its road went) plans its way out again from
+    // the dock's own access, its gate's road connection, which outlives the building's gate
+    // record (an inactive row keeps it). It keeps its place on the route and its dock. With no
+    // way out it stays, holding the dock, and tries again on the retry wheel with the stranded
+    // walkers' backoff (5 s, 30 s, then every 2 min; the step in `network_replan_failures`),
+    // recorded once (`TRAFFIC-32`). The shipment's leg timeout bounds the wait: its check
+    // expires a dispatch or finishes a return and removes the truck, which frees the dock. One
+    // plan per visit, which runs only on a wake or after the failure, never every tick.
+    fn plan_way_out_of_dock(
+        &mut self,
+        i: usize,
+        parking: &mut ParkingSystem,
+        allocator: &BuildingAllocator,
+        network: &TransitNetwork,
+        graph: &RegionGraph,
+    ) {
+        let dock = self.agents.parking_trip[i].source;
+        let building = self.agents.current_building[i];
+        let road_stands = allocator.buildings.get(building).is_some_and(|b| {
+            graph.get_edge(b.edge_idx).is_some_and(|edge| !edge.deleted)
+        });
+        if road_stands
+            && let Some(exit) = parking.place_entrance(dock, allocator, network, graph)
+            && self.replan_freight_pull_out(i, &exit, allocator, network, graph)
+        {
+            self.record_parking_outcome(i, None, FailureOutcome::Replans);
+            return;
+        }
+        let step = self.agents.network_replan_failures[i];
+        let after_s = retry_after_s(step);
+        self.agents.network_replan_failures[i] = step.saturating_add(1);
+        self.record_parking_outcome(
+            i,
+            (step == 0).then_some(FailureCause::NoRouteFromDock),
+            FailureOutcome::StandsInYard { after_s },
+        );
+        self.queue_parking_retry(i, after_s as u16);
     }
 
     // Ends carrier `i`'s yard trip where it stands, freeing a dock it holds. O(1).

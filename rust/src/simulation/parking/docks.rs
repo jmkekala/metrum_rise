@@ -206,7 +206,17 @@ impl ParkingSystem {
         network: &TransitNetwork,
         graph: &RegionGraph,
     ) {
-        let docks: Vec<_> = self.building_docks(building).collect();
+        // Every row, a retired one a truck still holds included: after a load its access is
+        // what that truck leaves the yard by (`PARK-20`).
+        let docks: Vec<_> = self
+            .building_docks
+            .get(&building)
+            .into_iter()
+            .flatten()
+            .filter_map(|source| self.sources.get(source))
+            .flatten()
+            .copied()
+            .collect();
         for dock in docks {
             self.refresh_place_access(dock, allocator, network, graph);
         }
