@@ -49,13 +49,17 @@ impl ParkingSystem {
         let mut kept = false;
         for handle in old {
             let p = self.place_handles.resolve(handle).expect("dock row");
-            // A held row keeps its drive (`PARK-21`): its truck may be on it, and the way it
-            // drives must not change under it. One whose drive changes is retired for it.
+            // A held row keeps its route and its drive (`PARK-21`): its truck may be on them, and
+            // the way it drives must not change under it. One whose route or drive changes (an
+            // arrival gate or an exit moved) is retired for it, as a moved dock is.
             let same_pose = bay.is_some_and(|bay| {
                 self.places.position[p].map(f32::to_bits) == bay.position.map(f32::to_bits)
                     && self.places.heading[p].to_bits() == bay.heading.to_bits()
-            }) && (self.places.freight_holder[p].is_none()
-                || self.dock_ways.get(&handle) == way);
+                    && (self.places.freight_holder[p].is_none()
+                        || (self.places.path[p].map(|q| q.map(f32::to_bits))
+                            == bay.path.map(|q| q.map(f32::to_bits))
+                            && self.dock_ways.get(&handle) == way))
+            });
             match bay {
                 Some(bay) if same_pose && !kept => {
                     kept = true;
@@ -252,6 +256,14 @@ impl ParkingSystem {
         let mut exit = exit.clone();
         BuildingAllocator::refresh_entrance_lanes(&mut exit, graph, &network.lane_system);
         Some(exit)
+    }
+
+    /// The loading bay anchor a dock row was proven from. O(1).
+    pub(crate) fn dock_anchor(&self, dock: Handle<Place>) -> Option<u32> {
+        match self.places.source[self.place_handles.resolve(dock)?] {
+            PlaceSource::Dock { anchor, .. } => Some(anchor),
+            _ => None,
+        }
     }
 
     /// Every dock row of the building, active or retired, in source and slot order. O(its

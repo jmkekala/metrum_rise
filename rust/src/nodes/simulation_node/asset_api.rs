@@ -209,6 +209,8 @@ impl SimulationNode {
             dict.set("dock_usable", usable as i64);
             dict.set("dock_bays", bays as i64);
             dict.set("dock_rejected", PackedStringArray::from_iter(reasons.iter().map(|s| GString::from(s.as_str()))));
+            let drives = core.dock_drive_lines(best_idx);
+            dict.set("dock_drives", PackedStringArray::from_iter(drives.iter().map(|s| GString::from(s.as_str()))));
         }
         dict.set("building_id", best_idx as i64);
         // The outline the inspector rings, at the bulldoze highlight's height.

@@ -258,6 +258,11 @@ fn place_drive_through() -> (SimCore, u64, String) {
 // The drive-through yard's asset ([`place_drive_through`]), its bay naming the exit and the way
 // out, or (`exit` false) neither: then a stage A dock backed out of through `truck_in`.
 fn drive_through_manifest(exit: bool) -> AssetManifest {
+    drive_through_manifest_at(exit, "7.5")
+}
+
+// [`drive_through_manifest`] with `truck_out` at local x `exit_x`.
+fn drive_through_manifest_at(exit: bool, exit_x: &str) -> AssetManifest {
     let arc: Vec<_> = (0..=13)
         .map(|k| {
             let angle = std::f32::consts::PI * (1.0 - k as f32 / 13.0);
@@ -276,9 +281,10 @@ fn drive_through_manifest(exit: bool) -> AssetManifest {
         .replace("position = [8, 0, 20]", "position = [12, 0, 20]")
         .replace(
             "vehicle_class = \"freight\"\n\n[[anchors]]\ntype = \"loading_bay\"",
-            "vehicle_class = \"freight\"\n\n[[anchors]]\ntype = \"driveway\"\nname = \"truck_out\"\nposition = [7.5, 0, 20]\nforward = [0, 0, -1]\nwidth_m = 6\nvehicle_class = \"freight\"\n\n[[anchors]]\ntype = \"loading_bay\"",
+            "vehicle_class = \"freight\"\n\n[[anchors]]\ntype = \"driveway\"\nname = \"truck_out\"\nposition = [EXIT_X, 0, 20]\nforward = [0, 0, -1]\nwidth_m = 6\nvehicle_class = \"freight\"\n\n[[anchors]]\ntype = \"loading_bay\"",
         )
-        .replace("length_m = 8\nvehicle_class = \"freight\"", &drive);
+        .replace("length_m = 8\nvehicle_class = \"freight\"", &drive)
+        .replace("EXIT_X", exit_x);
     let mut manifest = AssetManifest::from_str(&toml).unwrap();
     for part in &mut manifest.mesh_parts {
         part.imported_bounds = Some(match part.name.as_str() {
@@ -997,6 +1003,104 @@ fn a_dock_moved_under_a_standing_truck_keeps_its_old_row_until_the_truck_leaves(
     assert_eq!(core.agents.parking_trip[second].destination, new);
     reload_yard(&mut core, yard_manifest(true, "4"));
     assert_eq!(yard_docks(&core, building), [(new, true)]);
+}
+
+// A stage A dock whose pose stays while its route changes under a truck holding it (`truck_in`
+// moved 0.5 m west, so the gate's connection, approach and aisle move): the held row is retired
+// with its route, as a moved dock is (`PARK-21` round 3; before, the row's route was overwritten
+// under the truck, which jumped to its end), and a new row takes the new route. The truck drives
+// its old route on in every holding phase, never moving farther in a tick than it drives, leaves
+// through the old gate, and the next reconcile removes the retired row.
+#[test]
+fn a_stage_a_dock_whose_route_changes_under_a_truck_keeps_its_old_route_for_it() {
+    use crate::simulation::parking::ParkingTripPhase::{AtDock, PullIn, PullOut};
+    let moved_gate = || {
+        let toml = YARD
+            .replace("PASSAGE", LANE)
+            .replace("GATE_WIDTH", "6")
+            .replace("position = [-7.5, 0, 20]", "position = [-8, 0, 20]");
+        let mut manifest = AssetManifest::from_str(&toml).unwrap();
+        for part in &mut manifest.mesh_parts {
+            part.imported_bounds = Some(match part.name.as_str() {
+                "bunker" => [[-4.0, 0.0, -8.0], [4.0, 10.0, 8.0]],
+                _ => [[-6.0, 0.0, -6.0], [6.0, 6.0, 6.0]],
+            });
+        }
+        manifest
+    };
+    for phase in [PullIn, AtDock, PullOut] {
+        let (mut core, building, carrier) = dispatched_truck();
+        let reached = if phase == PullOut { AtDock } else { phase };
+        tick_truck_until(&mut core, carrier, |core, i| phase_of(core, i) == reached);
+        if phase == PullIn {
+            for _ in 0..10 {
+                tick_agents(&mut core);
+            }
+            assert_eq!(phase_of(&core, carrier), PullIn, "mid-route");
+        }
+        if phase == PullOut {
+            assert!(check_truck(&mut core));
+            for _ in 0..10 {
+                tick_agents(&mut core);
+            }
+        }
+        let docks = yard_docks(&core, building);
+        let [(dock, true)] = docks[..] else {
+            panic!("{docks:?}");
+        };
+        let route = core.parking.dock_route(dock).unwrap();
+        reload_yard(&mut core, moved_gate());
+        let docks = yard_docks(&core, building);
+        assert!(docks.contains(&(dock, false)) && docks.len() == 2, "{phase:?}: {docks:?}");
+        assert_eq!(core.parking.dock_route(dock).unwrap(), route, "{phase:?}: its route kept");
+        let new = docks.iter().find(|(_, active)| *active).unwrap().0;
+        let new_route = core.parking.dock_route(new).unwrap();
+        assert_eq!(new_route[3], route[3], "{phase:?}: the same stop");
+        assert_ne!(new_route[0], route[0], "{phase:?}: a new gate");
+        let holds = |core: &SimCore| {
+            core.agents
+                .holds_freight_dock(core.agents.handles.handle(carrier), dock)
+        };
+        assert!(holds(&core), "{phase:?}");
+        // Never farther in a tick than 3 m/s for 0.1 s: no jump to the route's end.
+        let step = |core: &mut SimCore| {
+            let before = Vector2::new(core.agents.pos_x[carrier], core.agents.pos_y[carrier]);
+            tick_agents(core);
+            let now = Vector2::new(core.agents.pos_x[carrier], core.agents.pos_y[carrier]);
+            assert!(now.distance_to(before) < 0.31, "{phase:?}: jumped {before:?} -> {now:?}");
+        };
+        if phase != PullOut {
+            while phase_of(&core, carrier) == PullIn {
+                step(&mut core);
+            }
+            assert_eq!(phase_of(&core, carrier), AtDock);
+            let a = &core.agents;
+            assert_eq!([a.pos_x[carrier], a.pos_y[carrier]], route[3], "{phase:?}");
+            assert!(check_truck(&mut core));
+        }
+        let mut last = [0.0; 2];
+        while phase_of(&core, carrier) == PullOut {
+            last = [core.agents.pos_x[carrier], core.agents.pos_y[carrier]];
+            step(&mut core);
+        }
+        assert!(!holds(&core), "{phase:?}");
+        let old_gate = Vector2::new(route[0][0], route[0][1]);
+        let new_gate = Vector2::new(new_route[0][0], new_route[0][1]);
+        let left = Vector2::new(last[0], last[1]);
+        assert!(
+            left.distance_to(old_gate) < left.distance_to(new_gate),
+            "{phase:?}: it left through the old gate at {left:?}"
+        );
+        // One active row again, held by nobody, with the new route: the first row by handle
+        // whose pose matches is taken up (the A2 rule), the other removed.
+        reload_yard(&mut core, moved_gate());
+        let docks = yard_docks(&core, building);
+        let [(row, true)] = docks[..] else {
+            panic!("{phase:?}: {docks:?}");
+        };
+        assert_eq!(core.parking.dock_route(row).unwrap(), new_route, "{phase:?}");
+        assert!(core.parking.dock_holder(row).is_none(), "{phase:?}");
+    }
 }
 
 // A truck on the road bound for a yard whose gate goes (its last dock retired by an asset edit)

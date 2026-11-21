@@ -250,6 +250,10 @@ func _populate(entry: Dictionary, info: Dictionary) -> void:
 	var dock_rejected: PackedStringArray = info.get("dock_rejected", PackedStringArray())
 	if info.has("dock_bays"):
 		_row(pages["Parking"], "Loading bays", "%d of %d usable" % [int(info["dock_usable"]), int(info["dock_bays"])])
+		# How each usable bay is driven: a drive-through names its exit (`PARK-21`).
+		for line: String in info.get("dock_drives", PackedStringArray()):
+			var pair := line.split(": ", true, 1)
+			_row(pages["Parking"], pair[0], pair[1] if pair.size() > 1 else "")
 		for reason in dock_rejected:
 			_add_alert(pages["Parking"], reason, false)
 

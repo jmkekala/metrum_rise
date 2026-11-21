@@ -416,6 +416,28 @@ impl SimCore {
         Some((usable, bays, reasons))
     }
 
+    /// How each of building `index`'s published docks is driven, one inspector line per dock
+    /// in anchor order (`PARK-21`): a drive-through names its exit, a dock backed out of says so.
+    /// Empty for a building without docks. O(its docks).
+    pub(crate) fn dock_drive_lines(&self, index: usize) -> Vec<String> {
+        let building = &self.allocator.buildings[index];
+        let Some(asset) = self.allocator.registry.get(&building.asset_id) else {
+            return Vec::new();
+        };
+        let handle = self.allocator.building_handles.handle(index).to_bits();
+        self.parking
+            .building_docks(handle)
+            .filter_map(|dock| {
+                let bay = asset.manifest.anchors.get(self.parking.dock_anchor(dock)? as usize)?;
+                let name = if bay.name.is_empty() { "loading bay" } else { bay.name.as_str() };
+                Some(match bay.exit.as_deref().filter(|_| self.parking.dock_leaves_forward(dock)) {
+                    Some(exit) => format!("{name}: drive-through, leaves forward by '{exit}'"),
+                    None => format!("{name}: backs out through its gate"),
+                })
+            })
+            .collect()
+    }
+
     /// Every rejected lot's reasons as the parking panel lists them, `building <index>: <reason>`
     /// in building-handle order, the lots the live map lacks validated as in
     /// [`Self::parking_rejections`]. O(buildings' parking anchors), plus one lot validation per

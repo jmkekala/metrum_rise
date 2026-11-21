@@ -308,3 +308,86 @@ fn a_revalidation_leaves_a_held_drive_through_dock_as_it_was() {
     assert!(check_truck(&mut core));
     drive_facing_travel(&mut core, carrier, PullOut, dock);
 }
+
+// The exit moved (`truck_out` 1 m west, not removed) under a truck holding its drive-through
+// dock: the way out changes, so the held row is retired with its old way and a new row takes the
+// new one; the building's departure moves to the new exit and the retired row is `elsewhere`. The
+// truck finishes on its old way in every phase, nose first, and leaves by the old exit; the next
+// reconcile leaves the new row alone.
+#[test]
+fn an_exit_moved_under_a_drive_through_truck_keeps_its_old_way_for_it() {
+    for phase in [PullIn, AtDock, PullOut] {
+        let (mut core, building, carrier) = dispatched_through_truck();
+        let reached = if phase == PullOut { AtDock } else { phase };
+        tick_truck_until(&mut core, carrier, |core, i| {
+            phase_of(core, i) == reached && core.agents.parking_trip[i].target == building
+        });
+        if phase == PullOut {
+            assert!(check_truck(&mut core));
+            for _ in 0..30 {
+                tick_agents(&mut core);
+            }
+        }
+        let dock = first_dock(&core, building);
+        let out = way_out(&core, dock);
+        reload_yard(&mut core, drive_through_manifest_at(true, "6.5"));
+        let label = format!("{phase:?}");
+        let active: Vec<_> = core.parking.building_docks(building).collect();
+        assert!(!active.contains(&dock) && active.len() == 1, "{label}: the held row is retired");
+        assert_eq!(way_out(&core, dock), out, "{label}: with its way");
+        let moved = way_out(&core, active[0]);
+        assert!(
+            (moved[moved.len() - 1].x - out[out.len() - 1].x + 1.0).abs() < 1e-3,
+            "{label}: the new way leaves by the moved exit: {moved:?}"
+        );
+        assert!(core.parking.dock_leaves_forward(active[0]), "{label}");
+        let gate = &core.allocator.freight_gates[&building];
+        let curb = gate.leave.curb_pos;
+        assert!(
+            curb.distance_to(moved[moved.len() - 1]) < curb.distance_to(out[out.len() - 1]),
+            "{label}: the departure moved to the new exit: {curb:?}"
+        );
+        assert_eq!(gate.elsewhere, [dock.to_bits()], "{label}");
+        if phase != PullOut {
+            tick_truck_until(&mut core, carrier, |core, i| phase_of(core, i) == AtDock);
+            assert!(check_truck(&mut core), "{label}: turned back");
+            tick_agents(&mut core);
+            let trip = core.agents.parking_trip[carrier];
+            assert!(
+                trip.phase == PullOut && !trip.ready && !trip.retry_pending,
+                "{label}: planned by the commit: {trip:?}"
+            );
+        }
+        let taken = drive_facing_travel(&mut core, carrier, PullOut, dock);
+        let joined = taken[taken.len() - 2];
+        assert!(
+            joined.distance_to(out[out.len() - 1]) < joined.distance_to(moved[moved.len() - 1]),
+            "{label}: left by its old exit at {joined:?}"
+        );
+        reload_yard(&mut core, drive_through_manifest_at(true, "6.5"));
+        let rows = core.parking.source_bays(PlaceSource::Dock {
+            building,
+            anchor: 4,
+        });
+        // One row again, active, held by nobody, with the new way (the A2 rule takes up the
+        // first row whose pose matches and removes the other).
+        assert_eq!(rows.len(), 1, "{label}: {rows:?}");
+        let row = Handle::from_bits(rows[0].0);
+        assert_eq!(core.parking.building_docks(building).collect::<Vec<_>>(), [row], "{label}");
+        assert_eq!(way_out(&core, row), moved, "{label}");
+        assert!(core.parking.dock_holder(row).is_none(), "{label}");
+    }
+}
+
+// The building inspector's dock lines name a drive-through's exit, and say a dock backed out of
+// backs out (`PARK-21`).
+#[test]
+fn the_inspector_says_how_each_dock_is_driven() {
+    let (mut core, _, _) = place_drive_through();
+    assert_eq!(
+        core.dock_drive_lines(0),
+        ["bay: drive-through, leaves forward by 'truck_out'"]
+    );
+    reload_yard(&mut core, drive_through_manifest(false));
+    assert_eq!(core.dock_drive_lines(0), ["bay: backs out through its gate"]);
+}
