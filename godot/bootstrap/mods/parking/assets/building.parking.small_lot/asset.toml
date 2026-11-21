@@ -13,11 +13,11 @@ household_capacity = 0
 window_brightness = 0
 
 [[mesh_parts]]
-name = "markings"
+name = "kerbs"
 position = [0, 0, 0]
 scale = 1
 [[mesh_parts.lods]]
-file = "small_lot_markings.glb"
+file = "small_lot_kerbs.glb"
 distance_min_m = 0
 
 [[mesh_parts]]

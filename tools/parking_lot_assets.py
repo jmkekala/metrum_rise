@@ -5,7 +5,7 @@ import sys
 AISLE_HALF, BAY_LEN, PITCH = 3.5, 5.0, 2.5
 
 
-def lot(asset_id, name, depth_cells, z_rear, bays, markings):
+def lot(asset_id, name, depth_cells, z_rear, bays, kerbs):
     half = depth_cells * 5.0
     front, rear = half, -half
     head = AISLE_HALF + BAY_LEN
@@ -23,11 +23,11 @@ household_capacity = 0
 window_brightness = 0
 
 [[mesh_parts]]
-name = "markings"
+name = "kerbs"
 position = [0, 0, 0]
 scale = 1
 [[mesh_parts.lods]]
-file = "{markings}"
+file = "{kerbs}"
 distance_min_m = 0
 
 [[mesh_parts]]
@@ -87,11 +87,11 @@ vehicle_class = "car"
 
 
 root = sys.argv[1]
-for asset_id, name, depth, z_rear, bays, markings in (
+for asset_id, name, depth, z_rear, bays, kerbs in (
     ("building.parking.small_lot", "Small parking lot (12 bays)", 2, -8.5, 6,
-     "small_lot_markings.glb"),
+     "small_lot_kerbs.glb"),
     ("building.parking.medium_lot", "Parking lot (20 bays)", 3, -13.5, 10,
-     "medium_lot_markings.glb"),
+     "medium_lot_kerbs.glb"),
 ):
     with open(f"{root}/{asset_id}/asset.toml", "w") as f:
-        f.write(lot(asset_id, name, depth, z_rear, bays, markings))
+        f.write(lot(asset_id, name, depth, z_rear, bays, kerbs))

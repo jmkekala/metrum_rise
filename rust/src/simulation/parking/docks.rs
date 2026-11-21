@@ -77,6 +77,7 @@ impl ParkingSystem {
             match bay {
                 Some(bay) if same_pose && !kept => {
                     kept = true;
+                    self.mark_paint(source, bay.position);
                     self.places.active[p] = true;
                     self.places.path[p] = bay.path;
                     self.places.width[p] = bay.width;
@@ -113,8 +114,10 @@ impl ParkingSystem {
         };
     }
 
-    // A new dock row: the handle table and its source list, nothing else. O(1) amortised.
+    // A new dock row: the handle table, its source list and its chunk's dock list (the paint's
+    // alone, `PARK-30`). O(1) amortised.
     fn add_dock(&mut self, source: PlaceSource, bay: Bay) -> Handle<Place> {
+        self.mark_paint(source, bay.position);
         let source_list = self.sources.entry(source).or_default();
         self.places.push(Place {
             source,
@@ -132,7 +135,7 @@ impl ParkingSystem {
             occupant: Handle::NONE,
             reservation: Handle::NONE,
             freight_holder: Handle::NONE,
-            chunk_slot: data::NO_CHUNK,
+            chunk_slot: 0,
             source_slot: source_list.len(),
             parked_slot: data::NOT_PARKED,
             ground: [0.0; 12],
@@ -141,6 +144,9 @@ impl ParkingSystem {
         self.place_handles.register_appended(self.places.len());
         let handle = self.place_handles.handle(self.places.len() - 1);
         source_list.push(handle);
+        let slot = self.list_dock(handle, bay.position);
+        let last = self.places.len() - 1;
+        self.places.chunk_slot[last] = slot;
         handle
     }
 
@@ -149,10 +155,12 @@ impl ParkingSystem {
         let Some(p) = self.place_handles.resolve(handle) else {
             return;
         };
+        self.mark_paint(self.places.source[p], self.places.position[p]);
         if !self.places.freight_holder[p].is_none() {
             self.places.active[p] = false;
             return;
         }
+        self.unlist_dock(p);
         self.dock_ways.remove(&handle);
         self.dock_exits.remove(&handle);
         self.dock_tail_in.remove(&handle);

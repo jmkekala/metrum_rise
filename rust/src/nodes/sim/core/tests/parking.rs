@@ -97,7 +97,7 @@ fn register_lot_toml(core: &mut SimCore, toml: &str) -> String {
     // The bounds the game imports from the lot's glb files.
     for part in &mut manifest.mesh_parts {
         part.imported_bounds = Some(match part.name.as_str() {
-            "markings" => [[-8.65, 0.0, -10.15], [8.65, 0.12, 10.0]],
+            "kerbs" => [[-8.65, 0.0, -10.15], [8.65, 0.12, 10.0]],
             "p_sign" => [[-0.3, 0.0, -0.03], [0.3, 2.6, 0.07]],
             _ => [[-0.12, 0.0, -0.1], [0.12, 1.36, 0.1]],
         });
@@ -957,4 +957,60 @@ fn parking_medium_lot_accepts_all_twenty_bays() {
     let issues: Vec<_> = c.parking.diagnostics.values().flatten().collect();
     assert!(issues.is_empty(), "{issues:#?}");
     assert_eq!(c.parking.counts().0, 20);
+}
+
+// `PARK-30`: a placed bundled lot draws the editor's bay paint, line for line, on its pad; a
+// load rebuilds it, and a demolition clears its chunk.
+#[test]
+fn a_placed_lot_paints_its_bays_as_the_editor_draws_them() {
+    use crate::simulation::parking::paint::STRIDE;
+    let mut c = core();
+    let id = register_lot(&mut c);
+    c.place_service_building_internal(&id, 0.0, -30.0).unwrap();
+    c.publish_pending_building_site_changes();
+    c.prepare_site_queries();
+    c.build_lot_paint();
+    let paint = c.parking.paint_publication();
+    let rows: Vec<f32> = paint
+        .chunks
+        .values()
+        .flat_map(|chunk| chunk.rows.iter().copied())
+        .collect();
+    // Two rows of six: seven side lines and one head line each.
+    assert_eq!(rows.len(), 16 * STRIDE);
+    let manifest = c.allocator.registry.get(&id).unwrap().manifest.clone();
+    let params = crate::simulation::parking::validation::editor_params(&manifest).unwrap();
+    let bounds: Vec<f32> = manifest
+        .mesh_parts
+        .iter()
+        .flat_map(|p| p.imported_bounds.unwrap_or_default().into_iter().flatten())
+        .collect();
+    let editor = crate::simulation::parking::validation::editor_lot_payload(&params, &bounds);
+    assert_eq!(editor["paint_rows"].as_array().unwrap().len(), rows.len());
+    // Every line lies on the lot's pad, at its support height plus the decal lift.
+    let support = c.allocator.building_sites[0].support_height_m;
+    for row in rows.as_chunks::<STRIDE>().0 {
+        let lift = row[7] - support;
+        assert!((lift - crate::config::ROAD_DECAL_RENDER_Z_BIAS_M).abs() < 1e-3, "{row:?}");
+        assert!(row[4].abs() < 1e-4, "a level pad tilts no line: {row:?}");
+    }
+    let path = temp_save_path("parking-paint");
+    c.save_game_settled_at(path.to_str().unwrap(), None, 0).unwrap();
+    c.load_game_internal(path.to_str().unwrap()).unwrap();
+    c.prepare_site_queries();
+    c.build_lot_paint();
+    let loaded = c.parking.paint_publication();
+    let bits = |paint: &crate::simulation::parking::PaintPublication| {
+        let rows = |chunk: &crate::simulation::parking::paint::PaintChunk| {
+            chunk.rows.iter().map(|f| f.to_bits()).collect::<Vec<_>>()
+        };
+        paint.chunks.iter().map(|(k, v)| (*k, rows(v))).collect::<Vec<_>>()
+    };
+    assert_eq!(bits(&loaded), bits(&paint), "a load paints the same lines");
+    std::fs::remove_file(path).unwrap();
+    assert!(c.bulldoze_building(0));
+    c.publish_pending_building_site_changes();
+    c.prepare_site_queries();
+    c.build_lot_paint();
+    assert!(c.parking.paint_publication().chunks.values().all(|chunk| chunk.rows.is_empty()));
 }

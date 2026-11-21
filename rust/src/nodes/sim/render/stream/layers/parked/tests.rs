@@ -24,7 +24,7 @@ const CAR: Aabb = Aabb {
 };
 
 fn layer() -> ParkedLayer {
-    let mut layer = ParkedLayer::new(64, 16);
+    let mut layer = ParkedLayer::new(64, 16, CAR_DRAW_DISTANCE_M);
     layer.register(10, 1, CAR, [0.0, f32::INFINITY]);
     layer.register(21, 2, CAR, [0.0, f32::INFINITY]);
     layer
@@ -88,7 +88,7 @@ fn a_chunk_update_hides_the_buckets_that_left_and_reuses_its_objects() {
 #[test]
 fn a_chunk_the_full_pool_cannot_take_is_refused_whole_until_room_frees() {
     let mut backend = Recorder::new();
-    let mut layer = ParkedLayer::new(2, 2);
+    let mut layer = ParkedLayer::new(2, 2, CAR_DRAW_DISTANCE_M);
     layer.register(10, 1, CAR, [0.0, f32::INFINITY]);
     layer.register(21, 2, CAR, [0.0, f32::INFINITY]);
     let (a, b, c) = (poses(3, 0.0), poses(5, 100.0), poses(2, 7.0));

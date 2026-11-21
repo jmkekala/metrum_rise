@@ -371,7 +371,7 @@ fn register_small_lot(core: &mut SimCore) -> String {
     .expect("the bundled small lot parses");
     for part in &mut manifest.mesh_parts {
         part.imported_bounds = Some(match part.name.as_str() {
-            "markings" => [[-8.65, 0.0, -10.15], [8.65, 0.12, 10.0]],
+            "kerbs" => [[-8.65, 0.0, -10.15], [8.65, 0.12, 10.0]],
             "p_sign" => [[-0.3, 0.0, -0.03], [0.3, 2.6, 0.07]],
             _ => [[-0.12, 0.0, -0.1], [0.12, 1.36, 0.1]],
         });

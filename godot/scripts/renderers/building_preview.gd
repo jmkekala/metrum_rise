@@ -78,6 +78,7 @@ var _hover_outline: MeshInstance3D
 var _lot_plane: MeshInstance3D
 var _ground: MeshInstance3D
 var _site_surface_fill: MeshInstance3D
+var _lot_paint: MultiMeshInstance3D
 var _site_surface_overlay: MeshInstance3D
 var _site_anchor_overlay: MeshInstance3D
 var _lot_overlay: MeshInstance3D
@@ -222,6 +223,14 @@ func _ready() -> void:
 
 	_site_surface_overlay = MeshInstance3D.new()
 	add_child(_site_surface_overlay)
+
+	_lot_paint = MultiMeshInstance3D.new()
+	_lot_paint.name = "LotPaint"
+	_lot_paint.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	_lot_paint.multimesh = MultiMesh.new()
+	_lot_paint.multimesh.transform_format = MultiMesh.TRANSFORM_3D
+	_lot_paint.multimesh.mesh = WorldMaterials.lot_paint_mesh()
+	add_child(_lot_paint)
 
 	_site_anchor_overlay = MeshInstance3D.new()
 	add_child(_site_anchor_overlay)
@@ -605,6 +614,19 @@ func set_parking_diagnostics(payload: Dictionary) -> void:
 		if dock.has("route_in"):
 			_dock_ways[int(dock["anchor"])] = dock
 	_passages = payload.get("passages", [])
+	_set_lot_paint(PackedFloat32Array(payload.get("paint_rows", [])))
+
+# The game's bay paint of the accepted spots and docks (`PARK-30`): the placed lots' own instance
+# rows, built in Rust for the flat lot, raised onto the highest authored paving's preview fill.
+func _set_lot_paint(rows: PackedFloat32Array) -> void:
+	var count := rows.size() / 12
+	_lot_paint.multimesh.instance_count = count
+	if count > 0:
+		_lot_paint.multimesh.buffer = rows
+	var top := 0.01 if _site_surfaces.is_empty() else -INF
+	for surface in _site_surfaces:
+		top = maxf(top, PreviewGeometry.number(surface, "y_m", 0.01))
+	_lot_paint.position.y = SITE_SURFACE_FILL_Y + top
 
 ## Parking anchor `index`'s accepted spot as last proven (`PARK-24`): {"route", "kind",
 ## "envelopes"} in asset-local XZ, or {} when it is rejected.

@@ -29,6 +29,10 @@
 //! buckets give up their slots before new ones are taken, so a bucket moving to a larger size
 //! class fits the room its old slot leaves. Costs: an install `O(buckets of the chunk + their
 //! poses)`, a reset `O(slots)`; nothing allocates once the maps and the pool have grown.
+//!
+//! The lots' bay paint (`PARK-30`) draws through a second layer of this kind, one bucket a chunk
+//! (the paint quad, [`PAINT_BUCKET`]), its own draw distance ([`PAINT_DRAW_DISTANCE_M`]) and no
+//! shadow casting.
 
 use super::super::backend::{
     Drawn, RenderBackend, Role, Shadow, SlotId, SlotKind, SlotPool, capacity_class,
@@ -46,6 +50,15 @@ pub(crate) type ChunkKey = (i32, i32);
 pub(crate) const SLOT_LIMIT: usize = 8_192;
 /// Spare slots kept for reuse.
 pub(crate) const SPARE_LIMIT: usize = 2_048;
+/// The paint layer's slots (one a parking chunk with paint) and spares.
+pub(crate) const PAINT_SLOT_LIMIT: usize = 4_096;
+/// The paint layer's spare slots.
+pub(crate) const PAINT_SPARE_LIMIT: usize = 512;
+/// The paint layer's one bucket: the bay line quad.
+pub(crate) const PAINT_BUCKET: u32 = 0;
+/// How far the bay paint draws, metres: a 0.10 m line is about a quarter pixel there at a
+/// 1080-line, 60 degree view, so its batch is dropped unseen.
+pub(crate) const PAINT_DRAW_DISTANCE_M: f32 = 400.0;
 // `SceneLightingConfig.DYNAMIC_CASTER_EXTRA_CULL_MARGIN_M`, the cars' shadow policy.
 const EXTRA_MARGIN_M: f32 = 12.0;
 // A row: a 3D transform's 12 floats, then the car's custom data (`RENDER-65`).
@@ -60,20 +73,36 @@ pub(crate) struct ParkedLayer {
     // Each drawn chunk's buckets, so a chunk's update finds the buckets that left.
     buckets: Map<ChunkKey, Vec<u32>>,
     // Whether the cars cast the sun's shadow (the shadow benchmark's caster classes,
-    // `RENDER-15`); the game never clears it.
+    // `RENDER-15`); the game never clears it. The paint layer never casts.
     cast_shadows: bool,
+    // How far an instance draws: the cars' `CAR_DRAW_DISTANCE_M`, the paint's own.
+    draw_distance: f32,
 }
 
 impl ParkedLayer {
-    /// A layer of at most `limit` slots, `spare_limit` of them spare.
-    pub(crate) fn new(limit: usize, spare_limit: usize) -> Self {
+    /// A layer of at most `limit` slots, `spare_limit` of them spare, drawing each instance to
+    /// `draw_distance` metres.
+    pub(crate) fn new(limit: usize, spare_limit: usize, draw_distance: f32) -> Self {
         Self {
             pool: SlotPool::new(limit, spare_limit),
             meshes: Map::default(),
             drawn: Map::default(),
             buckets: Map::default(),
             cast_shadows: true,
+            draw_distance,
         }
+    }
+
+    /// The parked cars' layer.
+    pub(crate) fn cars() -> Self {
+        Self::new(SLOT_LIMIT, SPARE_LIMIT, CAR_DRAW_DISTANCE_M)
+    }
+
+    /// The bay paint's layer: no shadow casting.
+    pub(crate) fn paint() -> Self {
+        let mut layer = Self::new(PAINT_SLOT_LIMIT, PAINT_SPARE_LIMIT, PAINT_DRAW_DISTANCE_M);
+        layer.cast_shadows = false;
+        layer
     }
 
     /// The pool (tests and status).
@@ -174,7 +203,7 @@ impl ParkedLayer {
                     slot
                 }
             };
-            let (bounds, range_end) = drawn_bounds(&mesh_bounds, rows);
+            let (bounds, range_end) = drawn_bounds(&mesh_bounds, rows, self.draw_distance);
             self.pool.fill(backend, slot, rows, count, bounds);
             self.draw(backend, slot, [band[0], band[1].min(range_end)]);
         }
@@ -254,7 +283,7 @@ impl ParkedLayer {
 // skips the batch when the camera is farther than that from the centre (the range has no
 // margins, so no state), and then every origin is beyond the draw distance, where the material
 // has faded its car out whole. `O(poses)`.
-fn drawn_bounds(mesh: &Aabb, rows: &[f32]) -> (Aabb, f32) {
+fn drawn_bounds(mesh: &Aabb, rows: &[f32], draw_distance: f32) -> (Aabb, f32) {
     let bounds = mesh.through_instances(rows, rows.len() / STRIDE);
     let (mut low, mut high) = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]);
     for pose in rows.as_chunks::<STRIDE>().0 {
@@ -267,7 +296,7 @@ fn drawn_bounds(mesh: &Aabb, rows: &[f32]) -> (Aabb, f32) {
         .corners()
         .into_iter()
         .fold(0.0f32, |reach, corner| reach.max(length3(sub3(centre, corner))));
-    (bounds, CAR_DRAW_DISTANCE_M + reach)
+    (bounds, draw_distance + reach)
 }
 
 #[cfg(test)]

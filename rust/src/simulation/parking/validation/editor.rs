@@ -24,6 +24,7 @@ use crate::assets::asset::passage::{
 };
 use crate::assets::asset::{MeshPart, Passage};
 use crate::simulation::buildings::allocator::BUILDING_SITE_ROAD_SAMPLE_INSET_M;
+use crate::simulation::parking::paint::{PaintPlace, paint_rows, paint_segments};
 use godot::prelude::Vector2;
 use serde_json::{Map, Value, json};
 
@@ -354,7 +355,7 @@ impl<'a> EditorLot<'a> {
     // along (`drawn`, `PARK-29`), its kind (`car_spots`),
     // its Driveway's index among the usable ones (none for a street spot) and the turn envelopes
     // its proof checked.
-    fn car_payload(&self) -> (Map<String, Value>, Vec<Value>) {
+    fn car_payload(&self, paint: &mut Vec<PaintPlace>) -> (Map<String, Value>, Vec<Value>) {
         let mut spots = Vec::new();
         let mut rejected = Vec::new();
         for (index, bay, proof) in self.car_spots() {
@@ -378,6 +379,7 @@ impl<'a> EditorLot<'a> {
                     .collect();
                     spots.push(json!({"anchor":index, "route":route, "drawn":drawn,
                         "kind":spot.kind, "gate":spot.gate, "envelopes":envelopes}));
+                    paint.push(paint_place(&bay, false));
                 }
                 Err(rejection) => rejected.push(rejection_json(index, rejection)),
             }
@@ -396,7 +398,7 @@ impl<'a> EditorLot<'a> {
     // route, or a rejection that blocks export only when the asset has a gate; without one it
     // is a note. As `lot_proof`: no loading bay is proven without a freight Driveway, and every
     // dock arrives through the building's one gate.
-    fn dock_payload(&self) -> Option<Map<String, Value>> {
+    fn dock_payload(&self, paint: &mut Vec<PaintPlace>) -> Option<Map<String, Value>> {
         let docks = self.bays("loading_bay", |a| is_dock_class(a["vehicle_class"].as_str()));
         let has_passage = self.parts.iter().any(|p| !p.passages.is_empty());
         if docks.is_empty() && !has_passage && self.passage_errors.is_empty() {
@@ -453,6 +455,7 @@ impl<'a> EditorLot<'a> {
             {
                 match route {
                     Ok(dock) => {
+                        paint.push(paint_place(&bays[slot], true));
                         let mut entry = json!({"anchor":index, "route":dock.path.map(point)});
                         // A drive-through's whole ways (`PARK-21`), for drawing and inspection,
                         // with the truck's envelope at each bend the proof checked.
@@ -708,7 +711,7 @@ pub(crate) fn car_route_to_pin(
 /// polygon overlay work) for A bays and D driveways, independent of city size.
 #[cfg(test)]
 pub(crate) fn editor_payload(params: &Value, part_bounds: &[f32]) -> Value {
-    Value::Object(EditorLot::parse(params, part_bounds).car_payload().0)
+    Value::Object(EditorLot::parse(params, part_bounds).car_payload(&mut Vec::new()).0)
 }
 
 /// The editor document's lot-check keys for a building `manifest`, as the editor sends them
@@ -749,14 +752,30 @@ pub(crate) fn editor_params(manifest: &crate::assets::AssetManifest) -> Option<V
 
 /// The car rejections, the accepted spots' routes (`spots`, `PARK-24`) and, for an asset with a
 /// truck's loading bay or a passage, its docks' routes, its loading bays' rejections (`blocks`
-/// only when it has a freight gate), its passages' rectangles and their issues (`PARK-19`). Same
-/// bound, with docks for bays.
+/// only when it has a freight gate), its passages' rectangles and their issues (`PARK-19`); and
+/// the bay paint of the accepted spots and docks (`paint_rows`, `PARK-30`), the game's own
+/// instance rows on the flat lot at height 0 (12 floats a line). Same bound, with docks for bays.
 pub(crate) fn editor_lot_payload(params: &Value, part_bounds: &[f32]) -> Value {
     let lot = EditorLot::parse(params, part_bounds);
-    let (mut payload, spots) = lot.car_payload();
+    let mut paint = Vec::new();
+    let (mut payload, spots) = lot.car_payload(&mut paint);
     payload.insert("spots".into(), Value::Array(spots));
-    payload.extend(lot.dock_payload().into_iter().flatten());
+    payload.extend(lot.dock_payload(&mut paint).into_iter().flatten());
+    let mut rows = Vec::new();
+    paint_rows(&paint_segments(paint), |_, _| 0.0, &mut rows);
+    payload.insert("paint_rows".into(), json!(rows));
     Value::Object(payload)
+}
+
+// An accepted spot's or dock's paint rectangle, in asset-local XZ.
+fn paint_place(bay: &AnchorBay, dock: bool) -> PaintPlace {
+    PaintPlace::from_forward(
+        [bay.pos.x, bay.pos.y],
+        [bay.forward.x, bay.forward.y],
+        bay.width,
+        bay.length,
+        dock,
+    )
 }
 
 #[cfg(test)]

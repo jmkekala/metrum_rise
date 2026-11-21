@@ -26,6 +26,7 @@
 //! road tool's commit, under a hydration budget a frame.
 //! The parked cars' chunks (`RENDER-32-P`) draw through pooled slots of their own backend
 //! ([`ParkedLayer`]): `parked_cars.gd` hands each changed chunk's poses over and creates no node.
+//! The lots' bay paint (`PARK-30`) draws through a second such layer, one slot a parking chunk.
 //! While the zoning overlay shows, its ground masks' resident chunks are a 2 km ring about the
 //! eye ([`ZoningRing`]), which the overlay moves to its camera as it asks for them.
 
@@ -38,7 +39,7 @@ use crate::nodes::sim::render::stream::layers::agent_casters::{
 };
 use crate::nodes::sim::render::stream::layers::graded::book::GradedTileBook;
 use crate::nodes::sim::render::stream::layers::parked::{
-    ParkedLayer, SLOT_LIMIT as PARKED_SLOT_LIMIT, SPARE_LIMIT as PARKED_SPARE_LIMIT,
+    PAINT_BUCKET, ParkedLayer,
 };
 use crate::nodes::sim::render::stream::layers::roads::{
     ROAD_HYDRATION_BUDGET_US, RoadExecutor, RoadHydration, RoadInstall, RoadKey, RoadPart,
@@ -133,6 +134,8 @@ pub struct StreamNode {
     frame_road_us: f64,
     // The parked cars' slots (`RENDER-32-P`), once `parked_cars.gd` gave the scenario.
     parked: Option<ParkedDraw>,
+    // The lots' bay paint (`PARK-30`), with the parked cars' scenario.
+    paint: Option<ParkedDraw>,
     // The moving agents' shadow-only twins (`RENDER-15`, R47), once `agents.gd` attached them.
     agents: Option<AgentDraw>,
     // The zoning masks' ring (`RENDER-32-P`) with the chunk span and world size it is for.
@@ -208,6 +211,7 @@ impl INode for StreamNode {
             road_work: RoadWork::default(),
             frame_road_us: 0.0,
             parked: None,
+            paint: None,
             agents: None,
             zoning: None,
             graded: None,
@@ -930,7 +934,14 @@ impl StreamNode {
             backend.set_catalogue(Vec::new(), Vec::new(), Vec::new());
             self.parked = Some(ParkedDraw {
                 backend,
-                layer: ParkedLayer::new(PARKED_SLOT_LIMIT, PARKED_SPARE_LIMIT),
+                layer: ParkedLayer::cars(),
+                poses: Vec::new(),
+            });
+            let mut backend = GodotBackend::new(scenario);
+            backend.set_catalogue(Vec::new(), Vec::new(), Vec::new());
+            self.paint = Some(ParkedDraw {
+                backend,
+                layer: ParkedLayer::paint(),
                 poses: Vec::new(),
             });
         }
@@ -1061,7 +1072,8 @@ impl StreamNode {
         }
     }
 
-    /// The draw census of a pooled layer's live slots, `"vegetation"` or `"parked"` (`RENDER-44`,
+    /// The draw census of a pooled layer's live slots, `"vegetation"`, `"parked"`, `"agents"` or
+    /// `"paint"` (`RENDER-44`,
     /// the stream benchmark's census only; see `backend::slot_census`). Empty for another name
     /// or a layer not drawing. `O(slots)`.
     #[func]
@@ -1076,6 +1088,10 @@ impl StreamNode {
                 .agents
                 .as_ref()
                 .map_or_else(VarDictionary::new, |draw| slot_census(draw.layer.pool())),
+            "paint" => self
+                .paint
+                .as_ref()
+                .map_or_else(VarDictionary::new, |draw| slot_census(draw.layer.pool())),
             _ => VarDictionary::new(),
         }
     }
@@ -1083,7 +1099,7 @@ impl StreamNode {
     /// Whether reused parked slots take fresh storage (the viewport draws motion vectors).
     #[func]
     pub fn set_parked_fresh_buffers(&mut self, fresh: bool) {
-        if let Some(draw) = self.parked.as_mut() {
+        for draw in [self.parked.as_mut(), self.paint.as_mut()].into_iter().flatten() {
             draw.layer.set_fresh_buffers(fresh);
         }
     }
@@ -1133,12 +1149,65 @@ impl StreamNode {
         }
     }
 
-    /// Frees every parked slot (a world replaced; the renderer leaving).
+    /// Frees every parked slot and every paint slot (a world replaced; the renderer leaving).
     #[func]
     pub fn clear_parked_chunks(&mut self) {
-        if let Some(draw) = self.parked.as_mut() {
+        for draw in [self.parked.as_mut(), self.paint.as_mut()].into_iter().flatten() {
             draw.layer.reset(&mut draw.backend);
         }
+    }
+
+    /// Registers the bay paint's line quad (`PARK-30`; built by `parked_cars.gd` with the road
+    /// marking material) and its bounds. A second registration keeps the first mesh.
+    #[func]
+    pub fn register_lot_paint_mesh(&mut self, mesh: Rid, bounds: godot::builtin::Aabb) {
+        if let Some(draw) = self.paint.as_mut()
+            && !draw.layer.has_mesh(PAINT_BUCKET)
+        {
+            let index = draw.backend.push_mesh(mesh);
+            let bounds = Aabb::new(bounds.position.to_array(), bounds.size.to_array());
+            draw.layer.register(PAINT_BUCKET, index, bounds, [0.0, f32::INFINITY]);
+        }
+    }
+
+    /// Installs a bay paint payload (`SimulationNode.get_lot_paint`, `PARK-30`): with `full`,
+    /// every paint slot is freed first; each listed chunk then draws its `rows` (12 floats a
+    /// line), or nothing when they are empty. False when a chunk was refused (the pool full) or
+    /// the paint has no mesh yet: the renderer asks for the same revision again.
+    /// `O(listed chunks + their rows)`.
+    #[func]
+    pub fn apply_lot_paint(&mut self, payload: VarDictionary) -> bool {
+        let Some(draw) = self.paint.as_mut() else {
+            return false;
+        };
+        if !draw.layer.has_mesh(PAINT_BUCKET) {
+            return false;
+        }
+        if payload.get("full").is_some_and(|full| full.try_to::<bool>().unwrap_or(false)) {
+            draw.layer.reset(&mut draw.backend);
+        }
+        let chunks = payload.get("chunks").map(|chunks| chunks.try_to::<VarArray>());
+        let Some(Ok(chunks)) = chunks else {
+            return true;
+        };
+        let mut complete = true;
+        for chunk in chunks.iter_shared() {
+            let Ok(chunk) = chunk.try_to::<VarDictionary>() else {
+                continue;
+            };
+            let (Some(Ok(key)), Some(Ok(rows))) = (
+                chunk.get("chunk").map(|key| key.try_to::<Vector2i>()),
+                chunk.get("rows").map(|rows| rows.try_to::<PackedFloat32Array>()),
+            ) else {
+                continue;
+            };
+            complete &= draw.layer.install(
+                &mut draw.backend,
+                (key.x, key.y),
+                std::iter::once((PAINT_BUCKET, rows.as_slice())),
+            );
+        }
+        complete
     }
 
     /// The drawn parked buckets (tests and the stream benchmark's digests): `chunk`, `bucket`,

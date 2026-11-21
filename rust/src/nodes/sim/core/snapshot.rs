@@ -606,6 +606,8 @@ pub struct RenderSnapshot {
     /// Parked chunks of the custody state `car_transforms` was built from: a car entering or
     /// leaving a bay is in exactly one of them, in every snapshot.
     pub(crate) parked: crate::simulation::parking::ParkedPublication,
+    /// The bay paint of every lot (`PARK-30`), with the vehicle world epoch below.
+    pub(crate) lot_paint: crate::simulation::parking::PaintPublication,
     /// World identity of the coherent vehicle frame.
     pub(crate) vehicle_world_epoch: u64,
     /// What a drawn car's ground solve depends on besides its pose and the camera: the world,
@@ -735,6 +737,7 @@ impl Default for RenderSnapshot {
     fn default() -> Self {
         Self {
             parked: Default::default(),
+            lot_paint: Default::default(),
             vehicle_world_epoch: 0,
             vehicle_ground_key: [0; 3],
             vehicle_catalogue_revision: 0,
@@ -893,6 +896,8 @@ impl SimCore {
         snapshot.agent_instances_us =
             u32::try_from(agents_started.elapsed().as_micros()).unwrap_or(u32::MAX);
         self.publish_parked_chunks(&mut snapshot.parked);
+        self.build_lot_paint();
+        snapshot.lot_paint = self.parking.paint_publication();
         snapshot.vehicle_world_epoch = self.world_epoch;
         snapshot.vehicle_catalogue_revision = self.vehicle_catalogue.revision;
         self.vehicle_catalogue

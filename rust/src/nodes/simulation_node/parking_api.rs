@@ -133,6 +133,22 @@ impl SimulationNode {
         result
     }
 
+    /// The bay paint of the lots (`PARK-30`) the renderer does not hold, which holds the paint
+    /// of world `epoch` up to `revision`: an empty dictionary when that is the snapshot's, else
+    /// `epoch`, `revision`, `full` (another world's paint: clear it first) and `chunks`, each
+    /// `chunk` with its `rows` (12 floats an instance; empty: the chunk lost its paint). O(1)
+    /// when nothing changed. Never waits for the simulation.
+    #[func]
+    pub fn get_lot_paint(&self, epoch: i64, revision: i64) -> VarDictionary {
+        let snapshot = self.snapshot.read().unwrap();
+        pack_lot_paint(
+            &snapshot.lot_paint,
+            snapshot.vehicle_world_epoch,
+            epoch as u64,
+            revision as u64,
+        )
+    }
+
     /// Records that the renderer installed a payload. O(1), lock-free; an answer from a replaced
     /// world or an older serial changes nothing, so it cannot discard a newer pose.
     #[func]
@@ -142,6 +158,40 @@ impl SimulationNode {
             snapshot.parked.acknowledge(serial as u64);
         }
     }
+}
+
+// The bay paint payload `parked_cars.gd` hands to the stream node (`PARK-30`): nothing when the
+// renderer holds `epoch` and `revision` already; else every chunk changed after `revision`, or
+// every chunk with paint when `epoch` is another world's or `revision` a replaced store's (`full`:
+// the renderer clears first).
+// O(1) unchanged, else O(painted chunks + changed rows).
+pub(super) fn pack_lot_paint(
+    paint: &crate::simulation::parking::PaintPublication,
+    world: u64,
+    epoch: u64,
+    revision: u64,
+) -> VarDictionary {
+    let mut result = VarDictionary::new();
+    // A revision past the store's is a replaced store's (a load): as another world.
+    let full = world != epoch || revision > paint.revision;
+    if !full && revision == paint.revision {
+        return result;
+    }
+    result.set("epoch", world as i64);
+    result.set("revision", paint.revision as i64);
+    result.set("full", full);
+    let mut chunks = VarArray::new();
+    for (&(x, z), chunk) in paint.chunks.iter() {
+        if (full && chunk.rows.is_empty()) || (!full && chunk.version <= revision) {
+            continue;
+        }
+        let mut update = VarDictionary::new();
+        update.set("chunk", Vector2i::new(x, z));
+        update.set("rows", PackedFloat32Array::from(&chunk.rows[..]));
+        chunks.push(&update.to_variant());
+    }
+    result.set("chunks", chunks);
+    result
 }
 
 // The parked payload `parked_cars.gd` installs: a snapshot's parked chunks not yet installed,

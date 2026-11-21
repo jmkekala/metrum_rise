@@ -13,6 +13,7 @@ impl ParkingSystem {
         };
         let car = self.places.occupant[p];
         let reservation = self.places.reservation[p];
+        self.mark_paint(self.places.source[p], self.places.position[p]);
         if self.places.active[p] {
             self.journal_place(handle, true);
             self.places.active[p] = false;
@@ -120,6 +121,7 @@ impl ParkingSystem {
                 self.places.length[p] = bay.length;
                 self.places.path[p] = bay.path;
                 self.set_place_way(p, way);
+                self.mark_paint(source, bay.position);
                 reactivated
             } else {
                 let place = self.add_place(source, *bay);

@@ -187,9 +187,12 @@ fn a_loading_bay_blocks_export_only_with_a_gate_and_its_dock_route_is_drawn() {
 fn an_asset_without_a_loading_bay_or_passage_gets_the_car_payload_alone() {
     let params = driveway_lot(15.0);
     let mut payload = editor_lot_payload(&params, &[]);
-    // Beside the car payload, the accepted spot's route (`PARK-24`).
+    // Beside the car payload, the accepted spot's route (`PARK-24`) and its bay paint, two
+    // sides and a head (`PARK-30`).
     let spots = payload.as_object_mut().unwrap().remove("spots").unwrap();
     assert_eq!(spots[0]["kind"], "straight");
+    let paint = payload.as_object_mut().unwrap().remove("paint_rows").unwrap();
+    assert_eq!(paint.as_array().unwrap().len(), 3 * 12);
     assert_eq!(payload, editor_payload(&params, &[]));
 }
 

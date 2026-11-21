@@ -49,6 +49,7 @@ static var _texture_cache = {}
 static var _shader_cache = {}
 static var _road_asphalt_material: ShaderMaterial
 static var _road_marking_material: ShaderMaterial
+static var _lot_paint_mesh: ArrayMesh
 static var _road_sidewalk_material: ShaderMaterial
 static var _road_sidewalk_face_material: ShaderMaterial
 static var _road_skirt_material: ShaderMaterial
@@ -100,6 +101,31 @@ static func road_marking_material() -> ShaderMaterial:
 		_road_marking_material.resource_name = "road_marking_finnish"
 		_road_marking_material.shader = _load_shader(ROAD_MARKING_SHADER)
 	return _road_marking_material
+
+## The lots' bay paint quad (`PARK-30`), shared by the game's paint batches and the asset
+## editor's preview: 1 x 1 m on the XZ plane about its origin, which each instance stretches along
+## and across its line; white and solid (UV.y 0) under the road marking material.
+static func lot_paint_mesh() -> ArrayMesh:
+	if _lot_paint_mesh == null:
+		var arrays := []
+		arrays.resize(Mesh.ARRAY_MAX)
+		arrays[Mesh.ARRAY_VERTEX] = PackedVector3Array([Vector3(-0.5, 0.0, -0.5),
+				Vector3(0.5, 0.0, -0.5), Vector3(0.5, 0.0, 0.5), Vector3(-0.5, 0.0, 0.5)])
+		var normals := PackedVector3Array()
+		var colors := PackedColorArray()
+		var uvs := PackedVector2Array()
+		for i in 4:
+			normals.append(Vector3.UP)
+			colors.append(Color.WHITE)
+			uvs.append(Vector2.ZERO)
+		arrays[Mesh.ARRAY_NORMAL] = normals
+		arrays[Mesh.ARRAY_COLOR] = colors
+		arrays[Mesh.ARRAY_TEX_UV] = uvs
+		arrays[Mesh.ARRAY_INDEX] = PackedInt32Array([0, 1, 2, 0, 2, 3])
+		_lot_paint_mesh = ArrayMesh.new()
+		_lot_paint_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+		_lot_paint_mesh.surface_set_material(0, road_marking_material())
+	return _lot_paint_mesh
 
 static func road_sidewalk_material() -> ShaderMaterial:
 	if _road_sidewalk_material == null:

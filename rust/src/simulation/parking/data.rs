@@ -48,7 +48,8 @@ pub(crate) struct Place {
     // The freight carrier holding a dock (`PARK-20`); none on a bay, and on every dock until
     // carriers take docks.
     pub freight_holder: crate::simulation::economy::agents::AgentHandle,
-    // A dock's is `NO_CHUNK`: it is in no chunk list.
+    // A dock's is its slot in its chunk's dock list, which only the paint reads (`PARK-30`):
+    // a dock is in no car chunk list.
     pub chunk_slot: usize,
     pub source_slot: usize,
     // Derived, never saved: this bay's slot in its chunk's `parked` list, or `NOT_PARKED`.
@@ -64,9 +65,6 @@ pub(super) const GROUND_UNSOLVED: u8 = u8::MAX;
 
 /// `Place::parked_slot` of a bay on no parked list: empty, or its car is moving.
 pub(super) const NOT_PARKED: u32 = u32::MAX;
-
-/// `Place::chunk_slot` of a dock, which no chunk lists.
-pub(super) const NO_CHUNK: usize = usize::MAX;
 
 /// A persistent car, independent of the resident movement FSM in PARK-01.
 #[derive(StructOfArray)]

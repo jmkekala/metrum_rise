@@ -289,7 +289,8 @@ impl ParkingSystem {
                 }
                 system.dock_tail_in.insert(handle);
             }
-            // A dock is in no chunk (`PARK-19`).
+            // A dock is in no car chunk (`PARK-19`); the paint lists it apart (`PARK-30`).
+            let dock_slot = if dock { system.list_dock(handle, bay.position) } else { 0 };
             let chunk = (!dock).then(|| {
                 let key = chunk_at([bay.position[0], bay.position[2]]);
                 system.chunks.entry(key).or_default()
@@ -314,7 +315,7 @@ impl ParkingSystem {
                 occupant: Handle::from_bits(place.occupant),
                 reservation: Handle::from_bits(place.reservation),
                 freight_holder: Handle::from_bits(place.freight_holder),
-                chunk_slot: chunk.as_ref().map_or(super::data::NO_CHUNK, |c| c.places.len()),
+                chunk_slot: chunk.as_ref().map_or(dock_slot, |c| c.places.len()),
                 source_slot: list.len(),
                 parked_slot: super::data::NOT_PARKED,
                 ground: [0.0; 12],
@@ -444,6 +445,7 @@ impl ParkingSystem {
         for key in keys {
             system.mark_dirty(key);
         }
+        system.mark_all_paint();
 
         Ok(system)
     }

@@ -10,6 +10,9 @@
 ## The cars draw to the moving cars' distance and fade out over the same band (`RENDER-48`):
 ## their materials take the band from Rust, and each bucket's batch ends its visibility range in
 ## Rust from the mesh bounds registered here.
+## The lots' bay paint (`PARK-30`) is Rust's too: one line quad with the road marking material is
+## registered here, and each frame one call asks whether the paint changed (nothing to do when
+## not); changed chunks go to the stream node, which draws one batch a parking chunk.
 extends Node3D
 
 const VehicleResources := preload("res://scripts/renderers/vehicle_resources.gd")
@@ -22,6 +25,9 @@ var _versions := {}
 var _epoch := -1
 var _full := true
 var _fresh := false
+var _paint_mesh: ArrayMesh
+var _paint_epoch := -1
+var _paint_revision := 0
 
 func _ready() -> void:
 	_resources.lamps_enabled = false
@@ -29,6 +35,17 @@ func _ready() -> void:
 	_resources.draw_fade_m = Vector2(draw[2], draw[3])
 	if _stream != null:
 		_stream.set_parked_scenario(get_world_3d().scenario)
+		_paint_mesh = WorldMaterials.lot_paint_mesh()
+		_stream.register_lot_paint_mesh(_paint_mesh.get_rid(), _paint_mesh.get_aabb())
+
+func _process(_delta: float) -> void:
+	if _stream == null:
+		return
+	var payload: Dictionary = simulation_node.get_lot_paint(_paint_epoch, _paint_revision)
+	# A refused chunk leaves the held revision as it was, so the same changes come again.
+	if not payload.is_empty() and _stream.apply_lot_paint(payload):
+		_paint_epoch = payload["epoch"]
+		_paint_revision = payload["revision"]
 
 func _exit_tree() -> void:
 	if _stream != null:
@@ -56,9 +73,11 @@ func apply_publication(payload: Dictionary) -> void:
 		_resources.refresh(simulation_node)
 	var epoch: int = payload["epoch"]
 	if epoch != _epoch:
+		# Clears the paint too: it is asked for whole again.
 		_stream.clear_parked_chunks()
 		_versions.clear()
 		_epoch = epoch
+		_paint_epoch = -1
 	if payload["full"]:
 		_full = false
 	# Motion vectors (TAA, FSR 2) keep a buffer's previous upload: reused slots take fresh storage.

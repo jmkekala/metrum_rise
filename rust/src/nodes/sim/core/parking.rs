@@ -7,7 +7,9 @@ use crate::assets::AnchorType;
 use crate::simulation::core::handles::Handle;
 use crate::simulation::network::types::EdgeClass;
 use crate::simulation::parking::kerb::{KerbBlocker, kerb_bays, kerb_blockers};
-use crate::simulation::parking::{Bay, DockWay, ParkedPublication, PlaceSource, holds_parking};
+use crate::simulation::parking::{
+    Bay, DockWay, ParkedPublication, PlaceSource, holds_parking, paint,
+};
 use crate::simulation::parking::lots::{
     LotProof, dock_anchor_count, has_freight_anchors, lot_bays, lot_proof,
 };
@@ -651,6 +653,34 @@ impl SimCore {
         self.parking.take_renderer_answers();
         self.build_parked_chunks();
         *parked = self.parking.publication();
+    }
+
+    /// Rebuilds the bay paint (`PARK-30`) of the chunks whose building places or docks changed,
+    /// on the visible surface, in parallel over the chunks. Reads the live ground, so it runs
+    /// where the site index is ready. O(the changed chunks' places log them + their lines' height
+    /// queries); nothing when no chunk changed.
+    pub(crate) fn build_lot_paint(&mut self) {
+        if !self.parking.has_paint_dirty() {
+            return;
+        }
+        let dirty = self.parking.take_paint_dirty();
+        let built = crate::thread_pools::install(|| {
+            dirty
+                .into_par_iter()
+                .map(|key| {
+                    let lines = self.parking.paint_lines(key);
+                    let mut rows = Vec::with_capacity(lines.len() * paint::STRIDE);
+                    self.with_graded_surface(|surface, scratch| {
+                        let height = |x: f32, z: f32| {
+                            surface.surface_height_at(f64::from(x), f64::from(z), scratch) as f32
+                        };
+                        paint::paint_rows(&lines, height, &mut rows);
+                    });
+                    (key, rows)
+                })
+                .collect()
+        });
+        self.parking.install_paint(built);
     }
 
     /// Rebuilds dirty parked chunks from the cached poses; a place without a pose for its car's

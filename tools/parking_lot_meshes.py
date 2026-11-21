@@ -11,7 +11,6 @@ import bpy
 
 OUT = sys.argv[sys.argv.index("--") + 1]
 
-PAINT = (0.92, 0.92, 0.88, 1.0)
 KERB = (0.55, 0.55, 0.53, 1.0)
 POST = (0.62, 0.64, 0.66, 1.0)
 POST_HEAD = (0.30, 0.32, 0.34, 1.0)
@@ -57,18 +56,13 @@ def export(path):
                               export_apply=True)
 
 
-def lot_markings(path, aisle_half, bay_len, z_rear, bays, asphalt_rear, lot_front):
-    # Painted bay separators on both sides of a central aisle, kerbs along the asphalt edge.
+def lot_kerbs(path, aisle_half, bay_len, asphalt_rear, lot_front):
+    # Kerbs along the asphalt edge behind both rows of bays and across the rear. The bay lines
+    # are generated from the anchors in game (`PARK-30`), so the lot models no paint.
     reset()
-    paint = material("paint", PAINT, 0.7)
     kerb = material("kerb", KERB)
     for side in (-1, 1):
-        inner, outer = side * aisle_half, side * (aisle_half + bay_len)
-        # Lines stop 0.3 m short of the kerb, as painted lines usually do.
-        lo, hi = sorted((inner, outer - side * 0.3))
-        for k in range(bays + 1):
-            z = z_rear + k * 2.5
-            box(f"line_{side}_{k}", paint, lo, hi, 0.012, 0.022, z - 0.05, z + 0.05)
+        outer = side * (aisle_half + bay_len)
         x0, x1 = sorted((outer, outer + side * 0.15))
         box(f"kerb_{side}", kerb, x0, x1, 0.0, 0.12, asphalt_rear - 0.15, lot_front)
     box("kerb_rear", kerb, -(aisle_half + bay_len), aisle_half + bay_len, 0.0, 0.12,
@@ -147,7 +141,7 @@ def p_sign(path):
     export(path)
 
 
-lot_markings(f"{OUT}/small_lot_markings.glb", 3.5, 5.0, -8.5, 6, -10.0, 10.0)
-lot_markings(f"{OUT}/medium_lot_markings.glb", 3.5, 5.0, -13.5, 10, -15.0, 15.0)
+lot_kerbs(f"{OUT}/small_lot_kerbs.glb", 3.5, 5.0, -10.0, 10.0)
+lot_kerbs(f"{OUT}/medium_lot_kerbs.glb", 3.5, 5.0, -15.0, 15.0)
 heating_post(f"{OUT}/heating_post.glb")
 p_sign(f"{OUT}/p_sign.glb")

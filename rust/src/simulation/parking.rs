@@ -9,6 +9,7 @@ mod docks;
 mod edits;
 mod geometry;
 pub(crate) mod kerb;
+pub(crate) mod paint;
 pub(crate) mod validation;
 pub(crate) mod lots;
 #[cfg(test)]
@@ -28,6 +29,7 @@ mod tests;
 use crate::simulation::core::handles::{Handle, HandleTable};
 pub(crate) use data::{Bay, DockRoute, DockWay, ParkingCost, Place, PlaceSource, Vehicle};
 use data::{Chunk, chunk_at};
+pub(crate) use paint::PaintPublication;
 pub(crate) use render::{ParkedLooks, ParkedPublication};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -84,6 +86,9 @@ pub(crate) struct ParkingSystem {
     // The authored drive of each dock row that has one (`PARK-21`), by the row's handle: saved
     // with its row, removed with it, kept with a retired row its truck still drives.
     dock_ways: HashMap<Handle<Place>, DockWay>,
+    // The bay markings drawn from the building places and docks (`PARK-30`): render data,
+    // derived, never saved.
+    paint: paint::LotPaint,
     // Every car place's long way (`PARK-25`), by the id in its row's `way` column: saved with
     // its row, freed with it, kept with a retired row its car still drives. Empty in a city
     // without one.
@@ -139,6 +144,7 @@ impl ParkingSystem {
                 sources.push(source);
             }
         }
+        self.mark_paint(source, bay.position);
         let key = chunk_at([bay.position[0], bay.position[2]]);
         let chunk = self.chunks.entry(key).or_default();
         let source_list = self.sources.entry(source).or_default();

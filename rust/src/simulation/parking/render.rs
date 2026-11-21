@@ -475,7 +475,8 @@ impl ParkingSystem {
     }
 
     /// Forgets the pose of every place within `rect` (world `[min_x, min_z, max_x, max_z]`),
-    /// because the ground there changed, and dirties chunks with a car on such a place.
+    /// because the ground there changed, and dirties chunks with a car on such a place; the
+    /// bay paint of every chunk it touches is rebuilt.
     /// O(chunks the rectangle touches + their places), at edit boundaries only.
     pub(crate) fn invalidate_ground(&mut self, rect: [f64; 4]) {
         let [min_x, min_z, max_x, max_z] = rect.map(|v| v as f32);
@@ -499,6 +500,8 @@ impl ParkingSystem {
                 }
             }
         }
+        // The bay paint lies on the same ground.
+        self.mark_paint_in([min_x, min_z, max_x, max_z]);
     }
 
     /// Forgets every pose: a new or reloaded world, a dense terrain undo, a new car profile.
@@ -511,6 +514,7 @@ impl ParkingSystem {
                 self.mark_dirty(chunk_at([x, z]));
             }
         }
+        self.mark_all_paint();
     }
 }
 
