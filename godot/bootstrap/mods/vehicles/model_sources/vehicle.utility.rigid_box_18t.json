@@ -30,16 +30,16 @@
       "rear_overhang_m": 2.0,
       "wheelbase_m": 4.5,
       "width_m": 2.53,
-      "width_mirrors_m": 2.98
+      "width_mirrors_m": 2.986
     },
     "bounds": {
       "max": [
-        1.49,
+        1.493,
         3.7,
         3.95
       ],
       "min": [
-        -1.49,
+        -1.493,
         0.0,
         -3.95
       ]
@@ -61,12 +61,12 @@
     "default_variant": "plain",
     "glass": [
       {
-        "area_m2": 1.622,
+        "area_m2": 1.646,
         "group": "glass_windscreen",
         "id": 32
       },
       {
-        "area_m2": 0.938,
+        "area_m2": 1.251,
         "group": "glass_front_side",
         "id": 33
       }
@@ -114,22 +114,22 @@
       },
       {
         "centre": [
-          0.934,
-          0.675,
-          3.912
+          0.9307,
+          0.735,
+          3.8239
         ],
         "colour": "amber",
         "facing": [
+          0.1591,
           0.0,
-          0.0,
-          1.0
+          0.9873
         ],
         "group": "indicator_left",
-        "height_m": 0.156,
+        "height_m": 0.25,
         "lamp": 4,
         "position": "front",
         "side": "left",
-        "width_m": 0.068
+        "width_m": 0.1049
       },
       {
         "centre": [
@@ -152,9 +152,9 @@
       },
       {
         "centre": [
-          1.138,
-          1.25,
-          3.545
+          1.1419,
+          1.27,
+          3.445
         ],
         "colour": "amber",
         "facing": [
@@ -171,22 +171,22 @@
       },
       {
         "centre": [
-          -0.934,
-          0.675,
-          3.912
+          -0.9307,
+          0.735,
+          3.8239
         ],
         "colour": "amber",
         "facing": [
+          -0.1591,
           0.0,
-          0.0,
-          1.0
+          0.9873
         ],
         "group": "indicator_right",
-        "height_m": 0.156,
+        "height_m": 0.25,
         "lamp": 5,
         "position": "front",
         "side": "right",
-        "width_m": 0.068
+        "width_m": 0.1049
       },
       {
         "centre": [
@@ -209,9 +209,9 @@
       },
       {
         "centre": [
-          -1.138,
-          1.25,
-          3.545
+          -1.1419,
+          1.27,
+          3.445
         ],
         "colour": "amber",
         "facing": [
@@ -266,117 +266,155 @@
       },
       {
         "centre": [
-          0.83,
-          0.699,
-          3.912
+          0.8073,
+          0.7625,
+          3.8438
         ],
         "colour": "white",
         "facing": [
+          0.1579,
           0.0,
-          0.0,
-          1.0
+          0.9875
         ],
         "group": "low_beam",
-        "height_m": 0.108,
+        "height_m": 0.195,
         "lamp": 7,
         "position": "front",
         "side": "left",
-        "width_m": 0.14
+        "width_m": 0.145
       },
       {
         "centre": [
-          -0.83,
-          0.699,
-          3.912
+          -0.8073,
+          0.7625,
+          3.8438
         ],
         "colour": "white",
         "facing": [
+          -0.1579,
           0.0,
-          0.0,
-          1.0
+          0.9875
         ],
         "group": "low_beam",
-        "height_m": 0.108,
+        "height_m": 0.195,
         "lamp": 7,
         "position": "front",
         "side": "right",
-        "width_m": 0.14
+        "width_m": 0.145
       },
       {
         "centre": [
-          0.686,
-          0.699,
-          3.912
+          0.6469,
+          0.7625,
+          3.8695
         ],
         "colour": "white",
         "facing": [
+          0.1589,
           0.0,
-          0.0,
-          1.0
+          0.9873
         ],
         "group": "high_beam",
-        "height_m": 0.108,
+        "height_m": 0.195,
         "lamp": 8,
         "position": "front",
         "side": "left",
-        "width_m": 0.148
+        "width_m": 0.18
       },
       {
         "centre": [
-          -0.686,
-          0.699,
-          3.912
+          -0.6469,
+          0.7625,
+          3.8695
         ],
         "colour": "white",
         "facing": [
+          -0.1589,
           0.0,
-          0.0,
-          1.0
+          0.9873
         ],
         "group": "high_beam",
-        "height_m": 0.108,
+        "height_m": 0.195,
         "lamp": 8,
         "position": "front",
         "side": "right",
-        "width_m": 0.148
+        "width_m": 0.18
       },
       {
         "centre": [
-          0.756,
-          0.621,
-          3.912
+          0.7184,
+          0.6375,
+          3.858
         ],
         "colour": "white",
         "facing": [
+          0.1585,
           0.0,
-          0.0,
-          1.0
+          0.9874
         ],
         "group": "daytime",
-        "height_m": 0.048,
+        "height_m": 0.055,
         "lamp": 9,
         "position": "front",
         "side": "left",
-        "width_m": 0.288
+        "width_m": 0.325
       },
       {
         "centre": [
-          -0.756,
-          0.621,
-          3.912
+          -0.7184,
+          0.6375,
+          3.858
         ],
         "colour": "white",
         "facing": [
+          -0.1585,
           0.0,
-          0.0,
-          1.0
+          0.9874
         ],
         "group": "daytime",
-        "height_m": 0.048,
+        "height_m": 0.055,
         "lamp": 9,
         "position": "front",
         "side": "right",
-        "width_m": 0.288
+        "width_m": 0.325
+      },
+      {
+        "centre": [
+          0.8729,
+          0.497,
+          3.8172
+        ],
+        "colour": "white",
+        "facing": [
+          0.1792,
+          0.0,
+          0.9838
+        ],
+        "group": "fog_front",
+        "height_m": 0.062,
+        "lamp": 10,
+        "position": "front",
+        "side": "left",
+        "width_m": 0.1239
+      },
+      {
+        "centre": [
+          -0.8729,
+          0.497,
+          3.8172
+        ],
+        "colour": "white",
+        "facing": [
+          -0.1792,
+          0.0,
+          0.9838
+        ],
+        "group": "fog_front",
+        "height_m": 0.062,
+        "lamp": 10,
+        "position": "front",
+        "side": "right",
+        "width_m": 0.1239
       },
       {
         "centre": [
@@ -594,23 +632,23 @@
         "file": "rigid_box_18t_lod0.glb",
         "glass_ids": true,
         "lamp_ids": true,
-        "sha256": "ed53ae137c3fa6ce250b7ffd012087c5dba084e5f9cedc15f425092c1ae68cf4",
-        "triangles": 4316,
+        "sha256": "1485ed84591b7ddea346b812e7b45e16990eb552a3dcd0d77752df4802cca047",
+        "triangles": 4490,
         "wheel_parts": true
       },
       {
         "file": "rigid_box_18t_lod1.glb",
         "glass_ids": true,
         "lamp_ids": true,
-        "sha256": "683ed68bf78a997e06f141c5e65fb7cf425acceec9eeff5e3a5730839f7b75cf",
-        "triangles": 1380,
+        "sha256": "75bd0ef19c49d092bc900f152e41fbea4e8f5b78aa3f475445f9d469192b9f8b",
+        "triangles": 1398,
         "wheel_parts": true
       },
       {
         "file": "rigid_box_18t_lod2.glb",
         "glass_ids": true,
         "lamp_ids": true,
-        "sha256": "07f4ec877c298bc408f0f959724c7c10f95f2f23fac2657b9add47fc917f4510",
+        "sha256": "a7dc7edf750af4229626fd5283dda847b1b1fb7c9ef269493a07e9b4b05b63cb",
         "triangles": 348,
         "wheel_parts": false
       },
@@ -618,7 +656,7 @@
         "file": "rigid_box_18t_lod3.glb",
         "glass_ids": false,
         "lamp_ids": false,
-        "sha256": "c7e60cede0964294e029fbd029022db8e0aa3140999ec2d2eb6b13a3772adb9e",
+        "sha256": "0e7647188d3f8dd8b21bf3dcc975a29ecbec4dca3663f3a0f6bbfbb58c3baa18",
         "triangles": 60,
         "wheel_parts": false
       }
@@ -627,33 +665,33 @@
     "path": "vehicles/truck/rigid_box_18t",
     "preview": {
       "file": "preview.png",
-      "sha256": "82252e1662f14084923ea1cdccac77da88d75f088ca2e46692b0ad6814080191"
+      "sha256": "18aacee7904939778a400e6d272c5c692956e174f48e847c7b69cd61694a90d9"
     },
     "schema": "metrum-model-facts",
     "source": {
       "blender": "5.3.0",
-      "commit": "65714311db2b8c1438092ce23c0fe3c603fa0c5d",
+      "commit": "6905dc0b0e5581190d8feafa5b53de2fe7f36b8c",
       "dirty": false
     },
     "textures": {
       "emission": {
         "file": "rigid_box_18t_emission.png",
-        "sha256": "59452e5899fb3736b8c5955edaa56fa5bfeeea4a2493df311f460896703cf5a7"
+        "sha256": "092329a5e1cf21b7f3ebd5356361c1be1506ddb5936ebc14be1331c283f2a5c9"
       },
       "normal": {
         "file": "rigid_box_18t_normal.png",
-        "sha256": "b24f859605ecbb1fa8bd54f852b1036fe2ae8549aba97f8073a4e3c3a961c21d"
+        "sha256": "aaf2f9076af6690d6144218a7081a4fabacba371f1a1d88f5e9ef01ec785e79f"
       },
       "orm": {
         "file": "rigid_box_18t_orm.png",
-        "sha256": "f452427f243c38b200e2bbf9ed02ead3fa5ab9b128a8f4c41ee5113b09243ddf"
+        "sha256": "b3980ab63176181196a7701c39ada1d99f8b477f8be5f4d5cb13cd876a51aedf"
       }
     },
     "variants": [
       {
         "albedo": {
           "file": "rigid_box_18t_albedo_plain.png",
-          "sha256": "65e9b2cbe7c0e3d4db5d542f9a31cb2f8406bd4bab13b65aba7e7049058581cd"
+          "sha256": "87a7c8d548638bcff015f3e064028dbe0dc76fc935435ccf12a65be8615e3457"
         },
         "name": "plain",
         "paint": true
@@ -661,7 +699,7 @@
       {
         "albedo": {
           "file": "rigid_box_18t_albedo_haulier.png",
-          "sha256": "b1129b650f3bcb3a261ae396d9c158259cb4a936069f88d0ddd955ed9b509149"
+          "sha256": "c3ccc1229c7bc371f340275eb8c18cc15a17736de711d9c3622f002311ae5820"
         },
         "name": "haulier",
         "paint": false
@@ -735,5 +773,5 @@
     "vehicle_class": "utility",
     "vehicle_family": "truck"
   },
-  "source_commit": "52f503e3efb1c5d3f0ca307722a00ab5b3e410c7"
+  "source_commit": "428a4131e86b7932be4c01648a2bb24d6a0da49c"
 }

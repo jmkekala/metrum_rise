@@ -67,11 +67,16 @@ fn tiers_switch_at_the_asset_starts_and_lamps_sit_in_the_turned_frame() {
     assert_eq!([tier(0, 0.0), tier(0, 29.9), tier(0, 30.0), tier(0, 99.0), tier(0, 397.0), tier(0, 400.0)], [0, 0, 1, 1, 2, 3]);
     assert_eq!([tier(1, 50.0), tier(1, 60.0), tier(1, 700.0), tier(1, 710.0)], [0, 1, 2, 3]);
     let estate = &catalogue.models[0];
-    // The right low beam, nose at -Z after the half turn; the right tail lamp at the back.
+    // The right (-X) low-beam lens, nose at -Z after the half turn; the right tail lamp at +Z.
+    let lens = |group| {
+        estate.data.lamps.iter().find(|l| l.group == group && l.centre[0] < 0.0).unwrap().centre
+    };
     let head = estate.lamp(&[LampGroup::LowBeam], 1.0).unwrap();
-    assert_eq!(head, Vector3::new(0.7307, 0.7487, -1.9913));
+    assert_eq!(head, Vector3::from_array(turned(lens(LampGroup::LowBeam))));
+    assert!(head.x > 0.0 && head.z < -1.5, "{head:?}");
     let tail = estate.lamp(&[LampGroup::TailBrake, LampGroup::Tail], -1.0).unwrap();
-    assert_eq!(tail, Vector3::new(0.7492, 0.9151, 1.9995));
+    assert_eq!(tail, Vector3::from_array(turned(lens(LampGroup::TailBrake))));
+    assert!(tail.x > 0.0 && tail.z > 1.5, "{tail:?}");
     let supports = catalogue.ground_supports();
     assert_eq!(supports.len(), 2);
     // The nine plan-box samples and nine contact-patch points a wheel.

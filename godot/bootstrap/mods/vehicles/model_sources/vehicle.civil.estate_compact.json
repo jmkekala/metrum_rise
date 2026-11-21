@@ -49,22 +49,22 @@
     "default_variant": "plain",
     "glass": [
       {
-        "area_m2": 1.199,
+        "area_m2": 1.196,
         "group": "glass_windscreen",
         "id": 32
       },
       {
-        "area_m2": 0.414,
+        "area_m2": 0.408,
         "group": "glass_front_side",
         "id": 33
       },
       {
-        "area_m2": 0.815,
+        "area_m2": 0.803,
         "group": "glass_rear_side",
         "id": 34
       },
       {
-        "area_m2": 0.393,
+        "area_m2": 0.398,
         "group": "glass_rear",
         "id": 35
       }
@@ -74,56 +74,56 @@
     "lamps": [
       {
         "centre": [
-          0.8548,
-          0.9251,
-          -1.8757
+          0.8562,
+          0.925,
+          -1.8755
         ],
         "colour": "red",
         "facing": [
-          0.9493,
-          0.2005,
-          -0.2422
+          0.9531,
+          0.1904,
+          -0.2353
         ],
         "group": "tail",
-        "height_m": 0.1579,
+        "height_m": 0.1572,
         "lamp": 1,
         "position": "side",
         "side": "left",
-        "width_m": 0.2225
+        "width_m": 0.2227
       },
       {
         "centre": [
-          -0.8548,
-          0.9251,
-          -1.8757
+          -0.8562,
+          0.925,
+          -1.8755
         ],
         "colour": "red",
         "facing": [
-          -0.9493,
-          0.2005,
-          -0.2422
+          -0.9531,
+          0.1904,
+          -0.2353
         ],
         "group": "tail",
-        "height_m": 0.1579,
+        "height_m": 0.1572,
         "lamp": 1,
         "position": "side",
         "side": "right",
-        "width_m": 0.2225
+        "width_m": 0.2227
       },
       {
         "centre": [
           0.0,
           1.3586,
-          -1.787
+          -1.7921
         ],
         "colour": "red",
         "facing": [
           0.0,
-          -0.3199,
-          -0.9475
+          -0.6856,
+          -0.728
         ],
         "group": "brake",
-        "height_m": 0.0285,
+        "height_m": 0.0346,
         "lamp": 2,
         "position": "rear",
         "side": "centre",
@@ -131,85 +131,85 @@
       },
       {
         "centre": [
-          0.7492,
-          0.9151,
-          -1.9995
+          0.7521,
+          0.9155,
+          -1.9987
         ],
         "colour": "red",
         "facing": [
-          0.3798,
-          0.383,
-          -0.8421
+          0.3903,
+          0.3749,
+          -0.8409
         ],
         "group": "tail_brake",
-        "height_m": 0.1808,
+        "height_m": 0.1803,
         "lamp": 3,
         "position": "rear",
         "side": "left",
-        "width_m": 0.1806
+        "width_m": 0.1861
       },
       {
         "centre": [
-          -0.7492,
-          0.9151,
-          -1.9995
+          -0.7521,
+          0.9155,
+          -1.9987
         ],
         "colour": "red",
         "facing": [
-          -0.3798,
-          0.383,
-          -0.8421
+          -0.3903,
+          0.3749,
+          -0.8409
         ],
         "group": "tail_brake",
-        "height_m": 0.1808,
+        "height_m": 0.1803,
         "lamp": 3,
         "position": "rear",
         "side": "right",
-        "width_m": 0.1806
+        "width_m": 0.1861
       },
       {
         "centre": [
-          0.6241,
-          0.9442,
-          -2.0254
+          0.6382,
+          0.9449,
+          -2.0224
         ],
         "colour": "amber",
         "facing": [
-          0.1757,
-          0.4176,
-          -0.8915
+          0.1872,
+          0.4118,
+          -0.8918
         ],
         "group": "indicator_left",
-        "height_m": 0.1024,
+        "height_m": 0.1025,
         "lamp": 4,
         "position": "rear",
         "side": "left",
-        "width_m": 0.1085
+        "width_m": 0.1144
       },
       {
         "centre": [
-          0.8247,
-          0.7656,
-          1.8228
+          0.8239,
+          0.7568,
+          1.8431
         ],
         "colour": "amber",
         "facing": [
-          0.8149,
-          0.5551,
-          0.167
+          0.8415,
+          0.5203,
+          0.1458
         ],
         "group": "indicator_left",
-        "height_m": 0.1349,
+        "height_m": 0.1465,
         "lamp": 4,
         "position": "side",
         "side": "left",
-        "width_m": 0.2923
+        "width_m": 0.3149
       },
       {
         "centre": [
           1.01,
-          1.0211,
-          0.8084
+          1.0234,
+          0.7937
         ],
         "colour": "amber",
         "facing": [
@@ -218,55 +218,55 @@
           0.0
         ],
         "group": "indicator_left",
-        "height_m": 0.0581,
+        "height_m": 0.0582,
         "lamp": 4,
         "position": "side",
         "side": "left",
-        "width_m": 0.0171
+        "width_m": 0.025
       },
       {
         "centre": [
-          -0.6241,
-          0.9442,
-          -2.0254
+          -0.6382,
+          0.9449,
+          -2.0224
         ],
         "colour": "amber",
         "facing": [
-          -0.1757,
-          0.4176,
-          -0.8915
+          -0.1872,
+          0.4118,
+          -0.8918
         ],
         "group": "indicator_right",
-        "height_m": 0.1024,
+        "height_m": 0.1025,
         "lamp": 5,
         "position": "rear",
         "side": "right",
-        "width_m": 0.1085
+        "width_m": 0.1144
       },
       {
         "centre": [
-          -0.8247,
-          0.7656,
-          1.8228
+          -0.8239,
+          0.7568,
+          1.8431
         ],
         "colour": "amber",
         "facing": [
-          -0.8149,
-          0.5551,
-          0.167
+          -0.8415,
+          0.5203,
+          0.1458
         ],
         "group": "indicator_right",
-        "height_m": 0.1349,
+        "height_m": 0.1465,
         "lamp": 5,
         "position": "side",
         "side": "right",
-        "width_m": 0.2923
+        "width_m": 0.3149
       },
       {
         "centre": [
           -1.01,
-          1.0211,
-          0.8084
+          1.0234,
+          0.7937
         ],
         "colour": "amber",
         "facing": [
@@ -275,182 +275,182 @@
           0.0
         ],
         "group": "indicator_right",
-        "height_m": 0.0581,
+        "height_m": 0.0582,
         "lamp": 5,
         "position": "side",
         "side": "right",
-        "width_m": 0.0171
+        "width_m": 0.025
       },
       {
         "centre": [
-          0.6261,
-          0.8632,
-          -2.063
+          0.63,
+          0.8635,
+          -2.0617
         ],
         "colour": "white",
         "facing": [
-          0.1842,
-          0.4176,
-          -0.8898
+          0.1877,
+          0.412,
+          -0.8917
         ],
         "group": "reverse",
-        "height_m": 0.0906,
+        "height_m": 0.0907,
         "lamp": 6,
         "position": "rear",
         "side": "left",
-        "width_m": 0.112
+        "width_m": 0.1201
       },
       {
         "centre": [
-          -0.6261,
-          0.8632,
-          -2.063
+          -0.63,
+          0.8635,
+          -2.0617
         ],
         "colour": "white",
         "facing": [
-          -0.1842,
-          0.4176,
-          -0.8898
+          -0.1877,
+          0.412,
+          -0.8917
         ],
         "group": "reverse",
-        "height_m": 0.0906,
+        "height_m": 0.0907,
         "lamp": 6,
         "position": "rear",
         "side": "right",
-        "width_m": 0.112
+        "width_m": 0.1201
       },
       {
         "centre": [
-          0.7307,
-          0.7487,
-          1.9913
+          0.7269,
+          0.741,
+          2.0139
         ],
         "colour": "white",
         "facing": [
-          0.446,
-          0.6131,
-          0.6521
+          0.4173,
+          0.5973,
+          0.6849
         ],
         "group": "low_beam",
-        "height_m": 0.1707,
+        "height_m": 0.1857,
         "lamp": 7,
         "position": "front",
         "side": "left",
-        "width_m": 0.2036
+        "width_m": 0.1978
       },
       {
         "centre": [
-          -0.7307,
-          0.7487,
-          1.9913
+          -0.7269,
+          0.741,
+          2.0139
         ],
         "colour": "white",
         "facing": [
-          -0.446,
-          0.6131,
-          0.6521
+          -0.4173,
+          0.5973,
+          0.6849
         ],
         "group": "low_beam",
-        "height_m": 0.1707,
+        "height_m": 0.1857,
         "lamp": 7,
         "position": "front",
         "side": "right",
-        "width_m": 0.2036
+        "width_m": 0.1978
       },
       {
         "centre": [
-          0.5314,
-          0.7506,
-          2.0723
+          0.5217,
+          0.7448,
+          2.0843
         ],
         "colour": "white",
         "facing": [
-          0.2435,
-          0.472,
-          0.8473
+          0.21,
+          0.4487,
+          0.8687
         ],
         "group": "high_beam",
-        "height_m": 0.1396,
+        "height_m": 0.1485,
         "lamp": 8,
         "position": "front",
         "side": "left",
-        "width_m": 0.3081
+        "width_m": 0.3108
       },
       {
         "centre": [
-          -0.5314,
-          0.7506,
-          2.0723
+          -0.5217,
+          0.7448,
+          2.0843
         ],
         "colour": "white",
         "facing": [
-          -0.2435,
-          0.472,
-          0.8473
+          -0.21,
+          0.4487,
+          0.8687
         ],
         "group": "high_beam",
-        "height_m": 0.1396,
+        "height_m": 0.1485,
         "lamp": 8,
         "position": "front",
         "side": "right",
-        "width_m": 0.3081
+        "width_m": 0.3108
       },
       {
         "centre": [
-          0.5209,
-          0.6777,
-          2.1139
+          0.5106,
+          0.6648,
+          2.1262
         ],
         "colour": "white",
         "facing": [
-          0.1737,
-          0.4908,
-          0.8538
+          0.1387,
+          0.4662,
+          0.8737
         ],
         "group": "daytime",
-        "height_m": 0.0767,
+        "height_m": 0.0784,
         "lamp": 9,
         "position": "front",
         "side": "left",
-        "width_m": 0.3135
+        "width_m": 0.3194
       },
       {
         "centre": [
-          -0.5209,
-          0.6777,
-          2.1139
+          -0.5106,
+          0.6648,
+          2.1262
         ],
         "colour": "white",
         "facing": [
-          -0.1737,
-          0.4908,
-          0.8538
+          -0.1387,
+          0.4662,
+          0.8737
         ],
         "group": "daytime",
-        "height_m": 0.0767,
+        "height_m": 0.0784,
         "lamp": 9,
         "position": "front",
         "side": "right",
-        "width_m": 0.3135
+        "width_m": 0.3194
       },
       {
         "centre": [
-          0.5,
+          0.4999,
           0.4165,
-          -2.201
+          -2.195
         ],
         "colour": "red",
         "facing": [
-          0.1731,
-          -0.0409,
-          -0.9841
+          0.1754,
+          -0.0712,
+          -0.9819
         ],
         "group": "fog_rear",
-        "height_m": 0.0711,
+        "height_m": 0.0712,
         "lamp": 11,
         "position": "rear",
         "side": "left",
-        "width_m": 0.1122
+        "width_m": 0.1126
       }
     ],
     "license": "CC-BY-4.0",
@@ -459,31 +459,31 @@
         "file": "estate_compact_lod0.glb",
         "glass_ids": true,
         "lamp_ids": true,
-        "sha256": "54ab036923dbedc8bb9241806c4f3a7e897791dbca9e630480b030be873239ee",
-        "triangles": 2944,
+        "sha256": "e3683f58d7edc3d27396328718c14e293316d8c66b7f3ad248bf81b0dea52c97",
+        "triangles": 2990,
         "wheel_parts": true
       },
       {
         "file": "estate_compact_lod1.glb",
         "glass_ids": true,
         "lamp_ids": true,
-        "sha256": "66a95c0774ddfadeadc7142290ce9828d2ac683d3a94b762a47d74d9fd27d946",
-        "triangles": 892,
+        "sha256": "a64ea9d1313d3348467c275ca255af7585fdf6c6523fe48b1a596367b8d9ed78",
+        "triangles": 880,
         "wheel_parts": true
       },
       {
         "file": "estate_compact_lod2.glb",
         "glass_ids": true,
         "lamp_ids": true,
-        "sha256": "5a8afc64cae1abd9fdd7cbcd94a8c0b65c4f4c741652fa374b93d3a8190e6d9b",
-        "triangles": 208,
+        "sha256": "023fbdae188514121c3112c2a92ce49b2e2d6abd509890e1992b7d8c8458a268",
+        "triangles": 216,
         "wheel_parts": false
       },
       {
         "file": "estate_compact_lod3.glb",
         "glass_ids": false,
         "lamp_ids": false,
-        "sha256": "7b80afbc259a32fa26254af75c8b3fef122826864c181d72300e3f7ad3844dc5",
+        "sha256": "d6247f3d7f74e02ec7df88f65709697f23807156c0e48d5c638ce3660f1b7857",
         "triangles": 40,
         "wheel_parts": false
       }
@@ -492,33 +492,33 @@
     "path": "vehicles/car/estate_compact",
     "preview": {
       "file": "preview.png",
-      "sha256": "1258d39ccfb5b6ac4851797154d54a075ba385d9bff7aaa976822b3530248bf3"
+      "sha256": "6afb0f5076a193958310545bafe48e782d8d5a410d6fcbbddab861b07a4cb62d"
     },
     "schema": "metrum-model-facts",
     "source": {
       "blender": "5.3.0",
-      "commit": "25b701da0eeab899ae1f705d2eabd761998faf4e",
+      "commit": "15ef73d958bdffc3913cbd4efaecfdd9f31646b0",
       "dirty": false
     },
     "textures": {
       "emission": {
         "file": "estate_compact_emission.png",
-        "sha256": "d459690d9cc2f3494239c52c7872910dfc33cf15a7e679bed26d4ef505d57d54"
+        "sha256": "14202068e85350aa1d846fe4dd94b0e031ab1b5ae28baed557ee610e3b161f5d"
       },
       "normal": {
         "file": "estate_compact_normal.png",
-        "sha256": "6c9f2dc1138af02fd0d1658b4161a55b3cab5867c59f8453cb632942940a3bda"
+        "sha256": "871e0c473bceb7c3f1c1b029b465e76eeb337a1357e7304c5b5e1e908a064647"
       },
       "orm": {
         "file": "estate_compact_orm.png",
-        "sha256": "84a7ab4d169fc22ded2fedb1cbfc4f5bfd8de9f9d4aa5c6baf0d0b46c565f59f"
+        "sha256": "a7b6e98b11b0a002c5057d93bbd9cc540ecd1c2ec6772435e4d1b3c544f29dc6"
       }
     },
     "variants": [
       {
         "albedo": {
           "file": "estate_compact_albedo_plain.png",
-          "sha256": "184167830a1548f397d8310378e69b55a6d3070e8625d80c081c6413106d138f"
+          "sha256": "2c52ba4c999419286a7bf1a6798c61751695d4e7231f587da8aacfa2a8b1911d"
         },
         "name": "plain",
         "paint": true
@@ -592,5 +592,5 @@
     "vehicle_class": "civil",
     "vehicle_family": "estate"
   },
-  "source_commit": "52f503e3efb1c5d3f0ca307722a00ab5b3e410c7"
+  "source_commit": "428a4131e86b7932be4c01648a2bb24d6a0da49c"
 }

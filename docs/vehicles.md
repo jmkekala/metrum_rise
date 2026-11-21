@@ -402,9 +402,9 @@ figures are those of the two sidecars.
 | Variants | `plain` | `plain` (paint true), `haulier` (paint false) |
 | Validator | 0 FAIL, 1 WARN: the high brake lamp's id is missing on LOD2, accepted | 0 FAIL, 0 WARN |
 
-The game draws the pair as imported from models commit `52f503e` (the estate's export of
-`de0b8ec`, after its body was reshaped; the truck's of `65714311`), whose sidecars give the
-triangle counts 2,944 / 892 / 208 / 40 (estate) and 4,316 / 1,380 / 348 / 60 (truck). Still to
+The game draws the pair as imported from models commit `428a413` (2026-11-22: new looks and
+lens entries; the truck gained a front fog pair, 29 lenses), whose sidecars give the triangle
+counts 2,990 / 880 / 216 / 40 (estate) and 4,490 / 1,398 / 348 / 60 (truck). Still to
 do on the game side: wheel steer and spin, on the twin wheel parts as on single ones
 ([steered wheels](#planned-brake-lights-indicators-and-steered-wheels-render-66),
 [wheel spin](#planned-beams-later-lamps-and-glass-render-67)), and the owner's look at the `car`
@@ -741,8 +741,8 @@ tools/vehicle_roles/import.sh <metrum_models checkout> <commit> --write
 ```
 
 A draft never replaces an asset: remove `assets/<asset_id>/` and `model_sources/<asset_id>.json`
-first. The pack was imported from models commit `52f503e` (the estate's export from `de0b8ec`,
-the truck's from `65714311`); without `--write` the command is a dry run.
+first. The pack was imported from models commit `428a413` (both sidecars from clean trees);
+without `--write` the command is a dry run.
 
 Other packs may add vehicles: the catalogue merges them by body class and weight. With no
 vehicle model at all, a procedural box car the size of the car class box draws every vehicle.
@@ -877,8 +877,8 @@ buried, the lowest 0.3 mm under the 2 cm the solve lifts its support points (19.
   per changed car and builds the 16-float rows only for buckets that changed. Rows are 64 bytes
   (48 before), a third more to upload for buckets that moved. Nothing allocates per frame once the
   buffers have grown.
-- GPU per car: LOD0 2,944 triangles for the estate and 4,316 for the truck within its 53 m; 892 /
-  1,380 to 100 / 176 m; 208 / 348 to 398 / 702 m; 40 / 60 beyond. The placeholder cars were
+- GPU per car: LOD0 2,990 triangles for the estate and 4,490 for the truck within its 53 m; 880 /
+  1,398 to 100 / 176 m; 216 / 348 to 398 / 702 m; 40 / 60 beyond. The placeholder cars were
   2,032 to 2,476 triangles at every distance. The wheel and lamp work is a few ALU operations per
   vertex.
 - Parked: four slots per chunk and look instead of one; only the tier whose band holds the camera

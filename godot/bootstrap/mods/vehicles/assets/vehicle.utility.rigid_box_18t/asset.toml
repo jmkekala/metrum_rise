@@ -108,10 +108,10 @@ lamp = 4
 side = "left"
 position = "front"
 colour = "amber"
-centre = [0.934, 0.675, 3.912]
-facing = [0, 0, 1]
-width_m = 0.068
-height_m = 0.156
+centre = [0.9307, 0.735, 3.8239]
+facing = [0.1591, 0, 0.9873]
+width_m = 0.1049
+height_m = 0.25
 
 [[vehicle.lamps]]
 group = "indicator_left"
@@ -130,7 +130,7 @@ lamp = 4
 side = "left"
 position = "side"
 colour = "amber"
-centre = [1.138, 1.25, 3.545]
+centre = [1.1419, 1.27, 3.445]
 facing = [1, 0, 0]
 width_m = 0.07
 height_m = 0.06
@@ -141,10 +141,10 @@ lamp = 5
 side = "right"
 position = "front"
 colour = "amber"
-centre = [-0.934, 0.675, 3.912]
-facing = [0, 0, 1]
-width_m = 0.068
-height_m = 0.156
+centre = [-0.9307, 0.735, 3.8239]
+facing = [-0.1591, 0, 0.9873]
+width_m = 0.1049
+height_m = 0.25
 
 [[vehicle.lamps]]
 group = "indicator_right"
@@ -163,7 +163,7 @@ lamp = 5
 side = "right"
 position = "side"
 colour = "amber"
-centre = [-1.138, 1.25, 3.545]
+centre = [-1.1419, 1.27, 3.445]
 facing = [-1, 0, 0]
 width_m = 0.07
 height_m = 0.06
@@ -196,10 +196,10 @@ lamp = 7
 side = "left"
 position = "front"
 colour = "white"
-centre = [0.83, 0.699, 3.912]
-facing = [0, 0, 1]
-width_m = 0.14
-height_m = 0.108
+centre = [0.8073, 0.7625, 3.8438]
+facing = [0.1579, 0, 0.9875]
+width_m = 0.145
+height_m = 0.195
 
 [[vehicle.lamps]]
 group = "low_beam"
@@ -207,10 +207,10 @@ lamp = 7
 side = "right"
 position = "front"
 colour = "white"
-centre = [-0.83, 0.699, 3.912]
-facing = [0, 0, 1]
-width_m = 0.14
-height_m = 0.108
+centre = [-0.8073, 0.7625, 3.8438]
+facing = [-0.1579, 0, 0.9875]
+width_m = 0.145
+height_m = 0.195
 
 [[vehicle.lamps]]
 group = "high_beam"
@@ -218,10 +218,10 @@ lamp = 8
 side = "left"
 position = "front"
 colour = "white"
-centre = [0.686, 0.699, 3.912]
-facing = [0, 0, 1]
-width_m = 0.148
-height_m = 0.108
+centre = [0.6469, 0.7625, 3.8695]
+facing = [0.1589, 0, 0.9873]
+width_m = 0.18
+height_m = 0.195
 
 [[vehicle.lamps]]
 group = "high_beam"
@@ -229,10 +229,10 @@ lamp = 8
 side = "right"
 position = "front"
 colour = "white"
-centre = [-0.686, 0.699, 3.912]
-facing = [0, 0, 1]
-width_m = 0.148
-height_m = 0.108
+centre = [-0.6469, 0.7625, 3.8695]
+facing = [-0.1589, 0, 0.9873]
+width_m = 0.18
+height_m = 0.195
 
 [[vehicle.lamps]]
 group = "daytime"
@@ -240,10 +240,10 @@ lamp = 9
 side = "left"
 position = "front"
 colour = "white"
-centre = [0.756, 0.621, 3.912]
-facing = [0, 0, 1]
-width_m = 0.288
-height_m = 0.048
+centre = [0.7184, 0.6375, 3.858]
+facing = [0.1585, 0, 0.9874]
+width_m = 0.325
+height_m = 0.055
 
 [[vehicle.lamps]]
 group = "daytime"
@@ -251,10 +251,32 @@ lamp = 9
 side = "right"
 position = "front"
 colour = "white"
-centre = [-0.756, 0.621, 3.912]
-facing = [0, 0, 1]
-width_m = 0.288
-height_m = 0.048
+centre = [-0.7184, 0.6375, 3.858]
+facing = [-0.1585, 0, 0.9874]
+width_m = 0.325
+height_m = 0.055
+
+[[vehicle.lamps]]
+group = "fog_front"
+lamp = 10
+side = "left"
+position = "front"
+colour = "white"
+centre = [0.8729, 0.497, 3.8172]
+facing = [0.1792, 0, 0.9838]
+width_m = 0.1239
+height_m = 0.062
+
+[[vehicle.lamps]]
+group = "fog_front"
+lamp = 10
+side = "right"
+position = "front"
+colour = "white"
+centre = [-0.8729, 0.497, 3.8172]
+facing = [-0.1792, 0, 0.9838]
+width_m = 0.1239
+height_m = 0.062
 
 [[vehicle.lamps]]
 group = "fog_rear"
