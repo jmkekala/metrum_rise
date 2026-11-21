@@ -246,3 +246,31 @@ fn a_stand_changed_under_a_standing_truck_keeps_its_pose() {
     assert_eq!(rows.len(), 1, "{rows:?}");
     assert!(rows[0].1 && core.parking.dock_backs_in(rows[0].0));
 }
+
+// `PARK-29`: a truck backing into its dock is drawn where one driving in nose first is, bit for
+// bit, facing the other way, and one backing out of a dock likewise: the drawn turns round the
+// polyline whichever way the truck faces along it (`turns` tests the arcs of a reversed route;
+// this yard's route is straight).
+#[test]
+fn a_backed_into_dock_is_drawn_on_the_same_line_facing_back() {
+    let (mut nosed, _, n) = dispatched(false);
+    let (mut tailed, _, t) = dispatched(true);
+    let (mut compared, mut pulled_in) = (0, false);
+    for _ in 0..6_000 {
+        tick_agents(&mut nosed);
+        tick_agents(&mut tailed);
+        match phase_of(&nosed, n) {
+            PullIn => pulled_in = true,
+            AtDock if pulled_in => break,
+            _ => {}
+        }
+        let (Some(front), Some(back)) = (drawn_truck(&nosed, n), drawn_truck(&tailed, t)) else {
+            continue;
+        };
+        assert_eq!((front.1.x.to_bits(), front.1.y.to_bits()), (back.1.x.to_bits(), back.1.y.to_bits()));
+        let (a, b) = (front.2.expect("a facing"), back.2.expect("a facing"));
+        assert!((a + b).length() < 1e-5, "{a:?} {b:?}");
+        compared += 1;
+    }
+    assert!(pulled_in && compared > 20, "compared {compared}");
+}

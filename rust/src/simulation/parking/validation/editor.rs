@@ -350,7 +350,8 @@ impl<'a> EditorLot<'a> {
     }
 
     // The car payload: one rejection per parking anchor the placed proof would reject; and the
-    // spots, one per parking anchor it accepts (`PARK-24`): its route, its kind (`car_spots`),
+    // spots, one per parking anchor it accepts (`PARK-24`): its route, the line its car is drawn
+    // along (`drawn`, `PARK-29`), its kind (`car_spots`),
     // its Driveway's index among the usable ones (none for a street spot) and the turn envelopes
     // its proof checked.
     fn car_payload(&self) -> (Map<String, Value>, Vec<Value>) {
@@ -367,8 +368,16 @@ impl<'a> EditorLot<'a> {
                         .map(|shape| shape.map(point).to_vec())
                         .collect();
                     let route: Vec<_> = spot.route.iter().copied().map(point).collect();
-                    spots.push(json!({"anchor":index, "route":route, "kind":spot.kind,
-                        "gate":spot.gate, "envelopes":envelopes}));
+                    // The line its car is drawn along, each bend an arc (`PARK-29`).
+                    let drawn: Vec<_> = crate::simulation::parking::turns::rounded_line(
+                        &spot.route,
+                        crate::simulation::parking::turns::CAR_TURN_RADIUS_M,
+                    )
+                    .into_iter()
+                    .map(point)
+                    .collect();
+                    spots.push(json!({"anchor":index, "route":route, "drawn":drawn,
+                        "kind":spot.kind, "gate":spot.gate, "envelopes":envelopes}));
                 }
                 Err(rejection) => rejected.push(rejection_json(index, rejection)),
             }

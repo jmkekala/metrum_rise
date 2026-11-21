@@ -391,3 +391,52 @@ fn the_inspector_says_how_each_dock_is_driven() {
     reload_yard(&mut core, drive_through_manifest(false));
     assert_eq!(core.dock_drive_lines(0), ["bay: backs out through its gate"]);
 }
+
+// The bend of `path` at point `j` in degrees, 0 at its ends.
+fn bend(path: &[Vector2], j: usize) -> f32 {
+    if j == 0 || j + 1 >= path.len() {
+        return 0.0;
+    }
+    let (a, b) = (path[j] - path[j - 1], path[j + 1] - path[j]);
+    a.cross(b).abs().atan2(a.dot(b)).to_degrees()
+}
+
+// `PARK-29`: a drive-through truck is drawn on its ways' authored chords as before. On a leg whose
+// two bends are chord bends (15° or less) the drawn point keeps within 6 cm of where the truck is
+// and faces within 8° of the leg, rounding it; at any sharper bend (none in this yard: its gates
+// are square to the road) it would take an arc within the drawn offset bound. It faces its travel
+// throughout.
+#[test]
+fn a_drive_through_way_is_drawn_on_its_chords_as_before() {
+    use crate::simulation::parking::turns::MAX_DRAWN_OFFSET_M;
+    let (mut core, _, carrier) = dispatched_through_truck();
+    let (mut rounded_chords, mut pulled_in) = (0, false);
+    for _ in 0..12_000 {
+        let before = at(&core, carrier);
+        tick_agents(&mut core);
+        match phase_of(&core, carrier) {
+            PullIn => pulled_in = true,
+            AtDock if pulled_in => break,
+            _ => {}
+        }
+        let Some((stored, drawn, facing, path, target)) = drawn_truck(&core, carrier) else {
+            continue;
+        };
+        let facing = facing.expect("a facing");
+        let offset = drawn.distance_to(stored);
+        if bend(&path, target - 1) <= 15.5 && bend(&path, target) <= 15.5 {
+            let leg = (path[target] - path[target - 1]).normalized();
+            assert!(offset < 0.06, "{offset} m off its chord at {stored:?}");
+            assert!(facing.dot(leg) > 8f32.to_radians().cos(), "{facing:?} along {leg:?}");
+            rounded_chords += usize::from(offset > 1e-4);
+        } else {
+            assert!(offset <= MAX_DRAWN_OFFSET_M);
+        }
+        let travel = stored - before;
+        if travel.length() > 1e-4 {
+            assert!(facing.dot(travel.normalized()) > 0.0, "it faces its travel");
+        }
+    }
+    assert!(pulled_in, "it pulled into the dock");
+    assert!(rounded_chords > 0, "the chords are rounded");
+}

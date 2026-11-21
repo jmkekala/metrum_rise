@@ -7,7 +7,8 @@
 //! pose the snapshot computes:
 //!
 //! - An agent without a valid lane is posed at its stored position, which the cull tests
-//!   exactly.
+//!   exactly; a car pulling into or out of a place is drawn round the bends of its manoeuvre
+//!   (`PARK-29`), within `MAX_DRAWN_OFFSET_M` of it, so the cull tests that square about it.
 //! - An agent on a lane is posed on that lane's geometry, or, while a car changes lanes, on a
 //!   blend of the source and target lane at the same distance. Either pose lies in the planar
 //!   box of those lanes' points ([`LaneSystem::planar_bounds`]), widened by
@@ -41,13 +42,15 @@ use rayon::prelude::*;
 
 use super::{
     AGENT_SURFACE_CLEARANCE_M, RenderSnapshot, access_phase_direction, default_model_basis,
-    model_basis, pedestrian_lane_surface_height, transform_floats,
+    model_basis, off_lane_car_pose, pedestrian_lane_surface_height, transform_floats,
 };
 use crate::config::{AGENT_CULL_PADDING_M, CAR_DRAW_DISTANCE_M, WALKER_DRAW_DISTANCE_M};
 use crate::nodes::sim::core::state::SimCore;
 use crate::nodes::sim::render::lane_pose::{sample_lane_change_pose, sample_lane_pose};
 use crate::simulation::economy::agents::{MODE_CAR, TRANSIT_NETWORK, transit_is_visible};
 use crate::simulation::network::lanes::LanePlanarBox;
+use crate::simulation::parking::ParkingTripPhase;
+use crate::simulation::parking::turns::MAX_DRAWN_OFFSET_M;
 use godot::prelude::{Vector2, Vector3};
 
 // Agents per posing task. Agents inside the camera sit together in the index, so a task's cost
@@ -267,8 +270,19 @@ impl SimCore {
         let car = self.agents.transit_mode[i] == MODE_CAR;
         let boxes = self.transit_network.lane_system.planar_bounds();
         let Some(&lane_box) = boxes.get(self.agents.current_lane_id[i]) else {
+            let (x, z) = (self.agents.pos_x[i], self.agents.pos_y[i]);
+            if car
+                && matches!(
+                    self.agents.parking_trip[i].phase,
+                    ParkingTripPhase::PullIn | ParkingTripPhase::PullOut
+                )
+            {
+                // Drawn on its manoeuvre's arcs, near the stored position (`PARK-29`).
+                let m = MAX_DRAWN_OFFSET_M;
+                return view.cut_box([x - m, z - m, x + m, z + m], car);
+            }
             // Posed at the stored position; a walker's height comes later, never nearer.
-            return view.cut_point(self.agents.pos_x[i], None, self.agents.pos_y[i], car);
+            return view.cut_point(x, None, z, car);
         };
         if !self.agents.lane_distance[i].is_finite() {
             return None;
@@ -324,6 +338,11 @@ impl SimCore {
                 pedestrian_lane_surface_y = Some(pedestrian_lane_surface_height(lane, pos.y));
             }
         }
+        // Off every lane a car is drawn round the bends of its manoeuvre (`PARK-29`).
+        let mut off_lane_facing = None;
+        if lane_pose.is_none() && self.agents.transit_mode[i] == MODE_CAR {
+            (world_x, world_z, off_lane_facing) = off_lane_car_pose(self, i, world_x, world_z);
+        }
 
         if view
             .rect
@@ -365,7 +384,7 @@ impl SimCore {
             let (world_y, basis) = if let Some((pos, tangent)) = lane_pose {
                 (pos.y + AGENT_SURFACE_CLEARANCE_M, model_basis(-tangent))
             } else {
-                let heading = access_phase_direction(self, i, world_x, world_z)
+                let heading = off_lane_facing
                     .map(|direction| -direction)
                     .unwrap_or(Vector3::BACK);
                 (0.0, model_basis(heading))
@@ -563,6 +582,10 @@ impl SimCore {
                     pedestrian_lane_surface_y = Some(pedestrian_lane_surface_height(lane, pos.y));
                 }
             }
+            let mut off_lane_facing = None;
+            if lane_pose.is_none() && self.agents.transit_mode[i] == MODE_CAR {
+                (world_x, world_z, off_lane_facing) = off_lane_car_pose(self, i, world_x, world_z);
+            }
 
             if cull
                 && (world_x < aabb_x_min
@@ -613,7 +636,7 @@ impl SimCore {
                 let (world_y, basis) = if let Some((pos, tangent)) = lane_pose {
                     (pos.y + AGENT_SURFACE_CLEARANCE_M, model_basis(-tangent))
                 } else {
-                    let heading = access_phase_direction(self, i, world_x, world_z)
+                    let heading = off_lane_facing
                         .map(|direction| -direction)
                         .unwrap_or(Vector3::BACK);
                     (0.0, model_basis(heading))

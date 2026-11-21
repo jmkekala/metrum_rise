@@ -48,10 +48,7 @@ pub(crate) fn access_phase_target(
         return Some(Vector3::new(2.0 * sx - ax, 0.0, 2.0 * sz - az));
     }
     if matches!(trip.phase, crate::simulation::parking::ParkingTripPhase::PullOut | crate::simulation::parking::ParkingTripPhase::PullIn) {
-        let (place, lane, distance) = if egress {
-            (trip.source,core.agents.planned_attach_lane_id[agent_idx],core.agents.planned_attach_lane_d[agent_idx])
-        } else { (trip.destination,core.agents.planned_detach_lane_id[agent_idx],core.agents.planned_detach_lane_d[agent_idx]) };
-        let path=core.parking.maneuver_path(place,lane as usize,distance,&core.transit_network,!egress,trip.freight_gate)?;
+        let (_, path) = pulling_maneuver(core, agent_idx, egress)?;
         let path=path.as_slice();
         let current=godot::prelude::Vector2::new(core.agents.pos_x[agent_idx],core.agents.pos_y[agent_idx]);
         let target=crate::simulation::economy::agents::tick::parking_path_target_segment(current,path).map(|i| path[i])?;
@@ -83,20 +80,37 @@ pub(crate) fn access_phase_target(
     }
 }
 
-pub(super) fn access_phase_direction(
+// The place and polyline of the manoeuvre agent `agent_idx` pulls in or out along
+// (`ParkingSystem::maneuver_path`); `egress` for a pull-out. O(its points), on the stack.
+fn pulling_maneuver(
     core: &SimCore,
     agent_idx: usize,
-    world_x: f32,
-    world_z: f32,
-) -> Option<Vector3> {
-    use crate::simulation::economy::agents::{TRANSIT_ACCESS_EGRESS, TRANSIT_ACCESS_INGRESS};
+    egress: bool,
+) -> Option<(
+    crate::simulation::core::handles::Handle<crate::simulation::parking::Place>,
+    crate::simulation::economy::agents::tick::ManeuverPath,
+)> {
+    let trip = core.agents.parking_trip[agent_idx];
+    let (place, lane, distance) = if egress {
+        (trip.source,core.agents.planned_attach_lane_id[agent_idx],core.agents.planned_attach_lane_d[agent_idx])
+    } else { (trip.destination,core.agents.planned_detach_lane_id[agent_idx],core.agents.planned_detach_lane_d[agent_idx]) };
+    let path=core.parking.maneuver_path(place,lane as usize,distance,&core.transit_network,!egress,trip.freight_gate)?;
+    Some((place, path))
+}
 
-    let target = match core.agents.transit[agent_idx] {
-        TRANSIT_ACCESS_EGRESS => access_phase_target(core, agent_idx, true),
-        TRANSIT_ACCESS_INGRESS => access_phase_target(core, agent_idx, false),
+// Whether agent `agent_idx` is in an access phase, and which: `Some(true)` leaving a building or
+// a bay, `Some(false)` arriving.
+fn access_egress(core: &SimCore, agent_idx: usize) -> Option<bool> {
+    use crate::simulation::economy::agents::{TRANSIT_ACCESS_EGRESS, TRANSIT_ACCESS_INGRESS};
+    match core.agents.transit[agent_idx] {
+        TRANSIT_ACCESS_EGRESS => Some(true),
+        TRANSIT_ACCESS_INGRESS => Some(false),
         _ => None,
-    }?;
-    let mut direction = Vector3::new(target.x - world_x, 0.0, target.z - world_z);
+    }
+}
+
+// The facing of agent `agent_idx` from its travel `direction` on the ground plane, unit length.
+fn facing(core: &SimCore, agent_idx: usize, mut direction: Vector3) -> Option<Vector3> {
     let trip = &core.agents.parking_trip[agent_idx];
     if trip.freight_gate && core.parking.yard_pose_reversed(trip) {
         // A truck backs out of its dock (owner decision 2, `PARK-20`): its nose points back
@@ -106,6 +120,56 @@ pub(super) fn access_phase_direction(
         direction = -direction;
     }
     (direction.length_squared() > 1e-6).then(|| direction.normalized())
+}
+
+pub(super) fn access_phase_direction(
+    core: &SimCore,
+    agent_idx: usize,
+    world_x: f32,
+    world_z: f32,
+) -> Option<Vector3> {
+    let target = access_phase_target(core, agent_idx, access_egress(core, agent_idx)?)?;
+    facing(core, agent_idx, Vector3::new(target.x - world_x, 0.0, target.z - world_z))
+}
+
+/// The drawn ground position and facing of car `agent_idx` off every lane, from its simulated
+/// position (`world_x`, `world_z`). A car or truck pulling into or out of a lot place or a dock
+/// is drawn round each bend of its manoeuvre on an arc (`PARK-29`,
+/// [`turns`](crate::simulation::parking::turns)), facing along it; anywhere else it is drawn at
+/// its position facing [`access_phase_direction`], as before. The drawn position lies within
+/// [`MAX_DRAWN_OFFSET_M`](crate::simulation::parking::turns::MAX_DRAWN_OFFSET_M) of the
+/// simulated one. O(manoeuvre points) for the leg scan the facing always made, then O(1); no
+/// allocation.
+pub(crate) fn off_lane_car_pose(
+    core: &SimCore,
+    agent_idx: usize,
+    world_x: f32,
+    world_z: f32,
+) -> (f32, f32, Option<Vector3>) {
+    use crate::simulation::parking::ParkingTripPhase::{PullIn, PullOut};
+    let trip = &core.agents.parking_trip[agent_idx];
+    if let Some(egress) = access_egress(core, agent_idx)
+        && matches!(trip.phase, PullOut | PullIn)
+        && let Some((place, path)) = pulling_maneuver(core, agent_idx, egress)
+    {
+        let path = path.as_slice();
+        let current = godot::prelude::Vector2::new(world_x, world_z);
+        let target = crate::simulation::economy::agents::tick::parking_path_target_segment(current, path);
+        if let (Some(target), Some(radius)) =
+            (target, core.parking.maneuver_turn_radius(place, trip.freight_gate))
+            && let Some((drawn, travel)) =
+                crate::simulation::parking::turns::drawn_turn(path, target, current, radius)
+        {
+            let nose = facing(core, agent_idx, Vector3::new(travel.x, 0.0, travel.y));
+            return (drawn.x, drawn.y, nose);
+        }
+        // On a straight part: facing the leg's end, as `access_phase_direction` does.
+        let nose = target.and_then(|target| {
+            facing(core, agent_idx, Vector3::new(path[target].x - world_x, 0.0, path[target].y - world_z))
+        });
+        return (world_x, world_z, nose);
+    }
+    (world_x, world_z, access_phase_direction(core, agent_idx, world_x, world_z))
 }
 
 fn model_basis(basis_z: Vector3) -> [Vector3; 3] {

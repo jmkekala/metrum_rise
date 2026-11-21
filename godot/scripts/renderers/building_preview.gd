@@ -139,8 +139,8 @@ var _dock_ways: Dictionary = {}
 # Rejected loading bay anchor index -> the leg of its authored way the reason names, two XZ points.
 var _parking_rejection_legs: Dictionary = {}
 # Parking anchor index -> its accepted spot (`PARK-24`): {"route" (the gate's road connection to
-# the spot's centre, asset-local XZ), "kind" (street, straight or auto), "envelopes" (the turn
-# squares its proof checked)}.
+# the spot's centre, asset-local XZ), "drawn" (the line its car is drawn along, `PARK-29`), "kind"
+# (street, straight, auto or yours), "envelopes" (the turn squares its proof checked)}.
 var _car_spots: Dictionary = {}
 # Rejected parking anchor index -> the drive-line route it was last tried along, four XZ points.
 var _parking_rejection_routes: Dictionary = {}
@@ -1495,11 +1495,19 @@ func _draw_car_routes(im: ImmediateMesh) -> void:
 	if tried is Array:
 		_draw_dashed_polyline(im, tried, y, Color(1.0, 0.2, 0.15), CAR_ROUTE_WIDTH_M)
 
+# A spot's car route: the line its car is drawn along, each bend an arc (`drawn`, `PARK-29`),
+# dashed for an automatic route and solid for the spot's own, over its stored route as a fainter
+# thin guide where the two differ.
 func _draw_car_route(im: ImmediateMesh, spot: Dictionary, y: float, color: Color, width_m: float) -> void:
+	var drawn: Array = spot.get("drawn", spot["route"])
+	if drawn.size() != spot["route"].size():
+		_draw_polyline_width(im, spot["route"], y, Color(color, color.a * 0.4), width_m * 0.5)
 	if str(spot.get("kind", "")) != "yours":
-		_draw_dashed_polyline(im, spot["route"], y, color, width_m)
+		_draw_dashed_polyline(im, drawn, y, color, width_m)
 		return
-	var points: Array = spot["route"]
+	_draw_polyline_width(im, drawn, y, color, width_m)
+
+func _draw_polyline_width(im: ImmediateMesh, points: Array, y: float, color: Color, width_m: float) -> void:
 	for point in points.size() - 1:
 		var a: Array = points[point]
 		var b: Array = points[point + 1]

@@ -509,6 +509,21 @@ impl ParkingSystem {
         ))
     }
 
+    /// The radius the bends of a manoeuvre into or out of `place` are drawn with (`PARK-29`,
+    /// [`turns`](super::turns)): a freight carrier's (`freight`, its trip's flag) or a car's;
+    /// `None` for a kerbside place, whose manoeuvre is drawn as walked. The pose only. O(1).
+    pub(crate) fn maneuver_turn_radius(&self, place: Handle<Place>, freight: bool) -> Option<f32> {
+        let p = self.place_handles.resolve(place)?;
+        if matches!(self.places.source[p], PlaceSource::Kerb { .. }) {
+            return None;
+        }
+        Some(if freight {
+            super::turns::FREIGHT_TURN_RADIUS_M
+        } else {
+            super::turns::CAR_TURN_RADIUS_M
+        })
+    }
+
     /// Whether a freight carrier leaving `dock` drives forward (`PARK-21`): the dock has an
     /// authored way out to its exit gate. Otherwise it backs out along its way in (`PARK-20`).
     /// O(1).

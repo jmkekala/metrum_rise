@@ -294,3 +294,114 @@ fn a_short_own_route_is_a_plain_path_and_a_failing_one_rejects() {
     republish(&mut c, 0);
     assert_eq!(c.parking_rejections(0).into_owned(), reasons);
 }
+
+// The polyline car `agent` walks in its current manoeuvre, lane point included.
+fn maneuver(c: &SimCore, agent: usize) -> Vec<Vector2> {
+    let trip = c.agents.parking_trip[agent];
+    let egress = trip.phase == ParkingTripPhase::PullOut;
+    let (place, lane, distance) = if egress {
+        (trip.source, c.agents.planned_attach_lane_id[agent], c.agents.planned_attach_lane_d[agent])
+    } else {
+        (trip.destination, c.agents.planned_detach_lane_id[agent], c.agents.planned_detach_lane_d[agent])
+    };
+    c.parking
+        .maneuver_path(place, lane as usize, distance, &c.transit_network, !egress, false)
+        .unwrap()
+        .as_slice()
+        .to_vec()
+}
+
+// `PARK-29`: on every tick of both manoeuvres the snapshot draws the car on its way's line rounded
+// at each bend with the car's radius, facing along it, within the drawn offset bound of where it
+// is, and where it is on the straight parts. Each manoeuvre takes arcs, the snapshot's car
+// instance stands at the drawn point, and the car's positions and arrival are the same tick for
+// tick as in a city that builds no snapshot.
+#[test]
+fn a_car_is_drawn_round_its_ways_bends_and_moves_as_before() {
+    use crate::nodes::sim::core::snapshot::off_lane_car_pose;
+    use crate::simulation::parking::turns::{CAR_TURN_RADIUS_M, MAX_DRAWN_OFFSET_M, rounded_line};
+    let (mut c, agent, _, target) = city();
+    let (mut plain, twin, ..) = city();
+    assert_eq!(agent, twin);
+    let mut arcs = [0; 2];
+    let mut checked_instance = false;
+    for tick_index in 0..12_000 {
+        tick(&mut c);
+        tick(&mut plain);
+        assert_eq!(
+            (c.agents.pos_x[agent].to_bits(), c.agents.pos_y[agent].to_bits(), c.agents.transit[agent]),
+            (plain.agents.pos_x[agent].to_bits(), plain.agents.pos_y[agent].to_bits(), plain.agents.transit[agent]),
+            "tick {tick_index}"
+        );
+        assert_eq!(
+            format!("{:?}", c.agents.parking_trip[agent]),
+            format!("{:?}", plain.agents.parking_trip[agent])
+        );
+        let snapshot = c.build_snapshot();
+        let phase = c.agents.parking_trip[agent].phase;
+        let slot = match phase {
+            ParkingTripPhase::PullOut => 0,
+            ParkingTripPhase::PullIn => 1,
+            _ => {
+                if c.agents.current_building[agent] == target {
+                    break;
+                }
+                continue;
+            }
+        };
+        if c.agents.current_lane_id[agent] != usize::MAX {
+            continue;
+        }
+        let stored = Vector2::new(c.agents.pos_x[agent], c.agents.pos_y[agent]);
+        let (x, z, facing) = off_lane_car_pose(&c, agent, stored.x, stored.y);
+        let drawn = Vector2::new(x, z);
+        let facing = facing.map(|f| Vector2::new(f.x, f.z));
+        let path = maneuver(&c, agent);
+        let line = rounded_line(&path, CAR_TURN_RADIUS_M);
+        let off_line = line
+            .windows(2)
+            .map(|leg| segment_distance(drawn, leg[0], leg[1]))
+            .fold(f32::MAX, f32::min);
+        // The line samples each arc every 10°: 1 cm from the circle at a 2.5 m radius.
+        assert!(off_line < 0.012, "{phase:?}: drawn {drawn:?} {off_line} m off its line");
+        assert!(drawn.distance_to(stored) <= MAX_DRAWN_OFFSET_M);
+        if drawn.distance_to(stored) > 1e-3 {
+            arcs[slot] += 1;
+            // Along the line: the drawn point a little further on lies ahead of the facing.
+            let facing = facing.expect("a facing");
+            assert!((facing.length() - 1.0).abs() < 1e-4);
+            let nearest = line
+                .windows(2)
+                .min_by(|a, b| {
+                    segment_distance(drawn, a[0], a[1]).total_cmp(&segment_distance(drawn, b[0], b[1]))
+                })
+                .unwrap();
+            let chord = (nearest[1] - nearest[0]).normalized();
+            assert!(facing.dot(chord) > (6.0f32).to_radians().cos(), "{phase:?}: {facing:?} {chord:?}");
+            if !checked_instance {
+                let id = c.agents.render_id[agent] as i64;
+                let (key, index) = snapshot
+                    .car_render_ids
+                    .iter()
+                    .find_map(|(&key, ids)| ids.iter().position(|&i| i == id).map(|i| (key, i)))
+                    .expect("the car's instance");
+                let pose = &snapshot.car_transforms[&key][index * 12..index * 12 + 12];
+                assert!(
+                    Vector2::new(pose[3], pose[11]).distance_to(drawn) < 1e-3,
+                    "the instance stands at the drawn point: {pose:?} {drawn:?}"
+                );
+                checked_instance = true;
+            }
+        }
+        let target = crate::simulation::economy::agents::tick::parking_path_target_segment(stored, &path)
+            .expect("a leg");
+        if crate::simulation::parking::turns::drawn_turn(&path, target, stored, CAR_TURN_RADIUS_M).is_none() {
+            // On a straight part: drawn where it is.
+            assert_eq!((x.to_bits(), z.to_bits()), (stored.x.to_bits(), stored.y.to_bits()));
+        }
+    }
+    assert!(arcs[0] > 3 && arcs[1] > 3, "both manoeuvres took arcs: {arcs:?}");
+    assert!(checked_instance);
+    assert_eq!(c.agents.current_building[agent], target, "it arrived");
+    assert_eq!(plain.agents.current_building[agent], target);
+}

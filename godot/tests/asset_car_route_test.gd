@@ -3,7 +3,7 @@
 ## Asset editor regression for car routes (`PARK-24`): a grocery layout (a shop across the back,
 ## one 6 m gate at the left, a row of eight spots nose to the shop front and six nose to the
 ## street) has no rejected spot, and the preview holds a route per spot, drawn for every spot with
-## Car routes on. Pinned to the straight path (`car_routes = "direct"`) the far spots are rejected
+## Car routes on, its car's line rounded at the bends (`PARK-29`). Pinned to the straight path (`car_routes = "direct"`) the far spots are rejected
 ## with today's reasons; a spot painted across the aisle rejects the spots behind it with the new
 ## wording and the route last tried. The asset exports, and exporting the reopened asset writes the
 ## same file. The route panel (`PARK-26`): Edit this route makes the far spot's shown route its
@@ -83,6 +83,8 @@ func _run() -> void:
 	expect(str(far.get("kind", "")) == "auto" and far["route"].size() == 4, "the far front spot is routed along the drive lines: %s" % far)
 	expect(absf(float(far["route"][1][0]) + 10.75) < 0.001 and absf(float(far["route"][1][1]) - 10.55) < 0.001, "it turns off the gate line onto the row's line: %s" % far)
 	expect(far.get("envelopes", []).size() == 2, "the selected spot's squares are the two bends: %s" % far)
+	var drawn: Array = far.get("drawn", [])
+	expect(drawn.size() > far["route"].size() and drawn[0] == far["route"][0] and drawn[-1] == far["route"][-1], "its car is drawn on a line rounded at its bends, from the same start to the same stop (PARK-29): %s" % [drawn])
 	expect(editor._preview._car_spots.size() == 14, "the preview holds a route per spot")
 	expect(_rejected_issues().is_empty(), "no spot blocks export")
 	editor._view.car_routes_button.button_pressed = true

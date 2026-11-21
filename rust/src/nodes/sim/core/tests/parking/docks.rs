@@ -803,6 +803,37 @@ fn bulldozing_a_yard_with_a_truck_in_its_dock_removes_both() {
     assert!(!core.allocator.freight_gates.contains_key(&building));
 }
 
+// `PARK-29`: truck `i`'s manoeuvre while it pulls in or out off the road: where it is, the
+// snapshot's drawn point and facing, the polyline it walks and the end of the leg it is on.
+type DrawnTruck = (Vector2, Vector2, Option<Vector2>, Vec<Vector2>, usize);
+fn drawn_truck(core: &SimCore, i: usize) -> Option<DrawnTruck> {
+    use crate::simulation::parking::ParkingTripPhase::{PullIn, PullOut};
+    let trip = core.agents.parking_trip[i];
+    let egress = match trip.phase {
+        PullOut => true,
+        PullIn => false,
+        _ => return None,
+    };
+    if core.agents.current_lane_id[i] != usize::MAX {
+        return None;
+    }
+    let (place, lane, distance) = if egress {
+        (trip.source, core.agents.planned_attach_lane_id[i], core.agents.planned_attach_lane_d[i])
+    } else {
+        (trip.destination, core.agents.planned_detach_lane_id[i], core.agents.planned_detach_lane_d[i])
+    };
+    let path = core
+        .parking
+        .maneuver_path(place, lane as usize, distance, &core.transit_network, !egress, trip.freight_gate)?
+        .as_slice()
+        .to_vec();
+    let stored = Vector2::new(core.agents.pos_x[i], core.agents.pos_y[i]);
+    let target = crate::simulation::economy::agents::tick::parking_path_target_segment(stored, &path)?;
+    let (x, z, facing) =
+        crate::nodes::sim::core::snapshot::off_lane_car_pose(core, i, stored.x, stored.y);
+    Some((stored, Vector2::new(x, z), facing.map(|f| Vector2::new(f.x, f.z)), path, target))
+}
+
 // Ticks `core` until `done` holds of truck `i`, at most 6,000 ticks.
 fn tick_truck_until(core: &mut SimCore, i: usize, done: impl Fn(&SimCore, usize) -> bool) {
     for _ in 0..6_000 {

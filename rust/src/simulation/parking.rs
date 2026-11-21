@@ -17,6 +17,7 @@ mod render;
 mod retired;
 pub(crate) mod stats;
 mod trips;
+pub(crate) mod turns;
 mod ways;
 pub use trips::ParkingTrip;
 pub(crate) use trips::ParkingTripPhase;
