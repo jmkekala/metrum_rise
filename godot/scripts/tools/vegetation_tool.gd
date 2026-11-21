@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-## Player vegetation input and ground-ring preview; all placement decisions stay in Rust.
+## Player vegetation input and ground-disc preview; all placement decisions stay in Rust.
 ## Rust methods called: add_vegetation_at(), remove_vegetation_at(), paint_vegetation(),
 ## plant_vegetation_line(), snap_vegetation_line_end(), intersect_world_surface(),
 ## hover_world_surface().
@@ -56,12 +56,12 @@ const BRUSH_OPTIONS := [
 ]
 const LABEL_HOLD_SECONDS := 1.0
 const LABEL_FADE_SECONDS := 0.25
-# Clearance between the ring's highest point on screen and the bottom of the text, in pixels.
+# Clearance between the footprint's top on screen and the bottom of the text, in pixels.
 const LABEL_OFFSET_PX := 24.0
 
 # The radius is the only size control, and it also chooses between a point edit and a brush: at
 # the minimum a plant lands exactly under the cursor, and above it the disc scatters spaced plants.
-# The ground ring is therefore the mode readout as well as the footprint.
+# The ground disc is therefore the mode readout as well as the footprint.
 const MIN_RADIUS_M := 1.0
 const MAX_RADIUS_M := 1024.0
 # Matches the native paint bound; removal retains its 1 km radius.
@@ -81,23 +81,16 @@ const MENU_DISMISS_FRAMES := 2
 const PLANT_RING_COLOR := Color(0.85, 0.95, 0.45)
 # Cross-section of the bar that previews a hedge row on the ground, in metres.
 const LINE_PREVIEW_SIZE := Vector2(0.25, 0.6)
-# Ring that marks where a hedge end will land, in place of the brush footprint.
+# Disc that marks where a hedge end will land, in place of the brush footprint.
 const LINE_CURSOR_RADIUS_M := 0.5
 const REMOVE_RING_COLOR := Color(0.95, 0.45, 0.35)
 
-# Ring stroke, in pixels. A fixed world-space stroke is honest in metres and useless on screen: at
-# the former 0.3 m it covered two pixels at 100 m and a quarter of one at 900 m, so the cursor
-# faded out exactly where a large brush needs it most. The radius stays a true world measurement,
-# because it is the footprint the stamp will cover; only the stroke follows the screen.
-const RING_STROKE_PX := 3.0
-# Bounds on what that resolves to in world metres. The lower bound is the former fixed stroke and
-# keeps the torus from degenerating at the point-edit radius. The upper keeps a 256 m brush
-# reading as a ring rather than filling in as a disc.
-const RING_STROKE_MIN_M := 0.3
-const RING_STROKE_MAX_RATIO := 0.06
-
 @onready var simulation_node = $"../SimulationNode"
-var active := false
+var active := false:
+	set(value):
+		active = value
+		if not active:
+			_hide_brush_preview()
 var mode: Mode = Mode.PLANT:
 	set(value):
 		if mode == value:
@@ -121,11 +114,8 @@ var preset: int:
 var radius := MIN_RADIUS_M:
 	set(value):
 		radius = minf(value, _paint_radius_limit() if mode == Mode.PLANT else MAX_RADIUS_M)
-var preview: MeshInstance3D
-var _ring: TorusMesh
-var _ring_material: StandardMaterial3D
-var _preview_radius := -1.0
-var _preview_stroke := -1.0
+var _preview_visible := false
+var _preview_footprint := Vector3.INF
 var _preview_mode := -1
 var _option_label: Label3D
 var _label_time_left := 0.0
@@ -140,7 +130,7 @@ var _hold_left := 0.0
 # Where a stamp last added nothing. A full stand stays full, so a hold does not repeat there:
 # the largest tree stamp costs about 22 ms even when it adds nothing.
 var _idle_stamp := Vector2.INF
-# Where the ring sits while the pointer is on a popup instead of on the ground.
+# Where the disc sits while the pointer is on a popup instead of on the ground.
 var _last_hit := Vector3.INF
 var _menu_grab_frames := 0
 # Unspent part of a two-finger scroll, in the gesture's own units. One unit is one step.
@@ -159,28 +149,17 @@ func is_line_option() -> bool:
 	return mode == Mode.PLANT and BRUSH_OPTIONS[option_index].get("line", false)
 
 func _ready() -> void:
-	_ring = TorusMesh.new()
-	_ring.rings = 64
-	_ring.ring_segments = 8
-	preview = MeshInstance3D.new()
-	preview.mesh = _ring
-	preview.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-	preview.top_level = true
-	preview.visible = false
-	_ring_material = StandardMaterial3D.new()
-	_ring_material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	_ring_material.albedo_color = PLANT_RING_COLOR
-	# This is a cursor footprint, so uneven ground must not hide half the ring.
-	_ring_material.no_depth_test = true
-	preview.material_override = _ring_material
-	add_child(preview)
+	var line_material := StandardMaterial3D.new()
+	line_material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	line_material.albedo_color = PLANT_RING_COLOR
+	line_material.no_depth_test = true
 	_line_bar = BoxMesh.new()
 	_line_preview = MeshInstance3D.new()
 	_line_preview.mesh = _line_bar
 	_line_preview.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	_line_preview.top_level = true
 	_line_preview.visible = false
-	_line_preview.material_override = _ring_material
+	_line_preview.material_override = line_material
 	add_child(_line_preview)
 	_option_label = Label3D.new()
 	_option_label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
@@ -189,23 +168,24 @@ func _ready() -> void:
 	_option_label.pixel_size = 0.01
 	_option_label.outline_size = 8
 	_option_label.outline_modulate = UIStyle.BG_DARK
-	# Both the ring and this text skip the depth test, so draw order alone decides which of
-	# them survives an overlap. Sort the text and its outline above the ring, and the text
-	# above its own outline.
+	# Sort the label above the hedge bar and the text above its own outline.
 	_option_label.render_priority = 2
 	_option_label.outline_render_priority = 1
 	_option_label.top_level = true
 	_option_label.visible = false
 	add_child(_option_label)
 
+func _exit_tree() -> void:
+	_hide_brush_preview()
+
 func _process(delta: float) -> void:
 	# The latch advances before any early return: the frames a popup holds the grab are exactly
 	# the frames this function would otherwise leave through one of them.
-	if not get_viewport().get_embedded_subwindows().is_empty():
+	var popup_open := not get_viewport().get_embedded_subwindows().is_empty()
+	if popup_open:
 		_menu_grab_frames = MENU_DISMISS_FRAMES
 	elif _menu_grab_frames > 0:
 		_menu_grab_frames -= 1
-	preview.visible = false
 	_line_preview.visible = false
 	_option_label.visible = false
 	_label_time_left = maxf(0.0, _label_time_left - delta)
@@ -213,50 +193,38 @@ func _process(delta: float) -> void:
 	if not active:
 		_painting = false
 		_line_start = Vector3.INF
-	if not active or get_viewport().gui_get_hovered_control() != null:
+	if not active or (not popup_open and get_viewport().gui_get_hovered_control() != null):
+		_hide_brush_preview()
 		return
 	# With the species popup open the pointer is over the menu, so the ray lands wherever the
-	# menu happens to sit rather than where the player was pointing. The ring holds its last
+	# menu happens to sit rather than where the player was pointing. The disc holds its last
 	# ground position instead, because resizing the brush from an open menu is blind otherwise
 	# and being able to resize from there is the point.
 	if _menu_grab_frames > 0:
 		if _last_hit == Vector3.INF:
+			_hide_brush_preview()
 			return
 	else:
 		var probe = _mouse_world_pos()
 		if probe == null:
+			_hide_brush_preview()
 			return
-		# While the simulation thread holds the core the ring keeps its last ground position.
+		# While the simulation thread holds the core the disc keeps its last ground position.
 		if probe is Vector3:
 			_last_hit = probe
 		elif _last_hit == Vector3.INF:
+			_hide_brush_preview()
 			return
 	var hit := _last_hit
 	var line := is_line_option()
 	# A hedge end lands on a hedge it is drawn near, so the cursor shows it there.
 	if line:
 		hit = _line_end(hit)
-	var ring_radius := LINE_CURSOR_RADIUS_M if line else radius
-	# TorusMesh rebuilds its surface on every property write, so the stroke is only re-applied
-	# once it has drifted enough to see. Camera motion otherwise rebuilds 1024 triangles a frame.
-	var stroke := _ring_stroke_m(hit, ring_radius)
-	if ring_radius != _preview_radius or absf(stroke - _preview_stroke) > _preview_stroke * 0.05:
-		_preview_radius = ring_radius
-		_preview_stroke = stroke
-		_ring.outer_radius = ring_radius
-		_ring.inner_radius = maxf(0.05, ring_radius - stroke)
-	# Colour carries the mode, because the panel has no space to and the cursor is where the
-	# player is looking when it matters.
-	if int(mode) != _preview_mode:
-		_preview_mode = int(mode)
-		_ring_material.albedo_color = (
-			REMOVE_RING_COLOR if mode == Mode.REMOVE else PLANT_RING_COLOR
-		)
-	preview.global_position = hit + Vector3.UP * 0.15
-	preview.visible = true
+	var preview_radius := LINE_CURSOR_RADIUS_M if line else radius
+	_show_brush_preview(hit, preview_radius)
 	if _line_start != Vector3.INF:
 		_show_line(_line_start, hit)
-	_update_option_label()
+	_update_option_label(hit + Vector3.UP * 0.15, preview_radius)
 	# Removal clears the whole disc on its first stamp, so only planting repeats while held.
 	if _painting and mode == Mode.PLANT and _menu_grab_frames == 0:
 		_hold_left -= delta
@@ -352,31 +320,28 @@ func _show_option_label() -> void:
 	_option_label.transparency = 0.0
 	_label_time_left = LABEL_HOLD_SECONDS + LABEL_FADE_SECONDS
 
-func _update_option_label() -> void:
+func _update_option_label(anchor: Vector3, preview_radius: float) -> void:
 	if _label_time_left <= 0.0:
 		return
 	var camera := get_viewport().get_camera_3d()
 	if camera == null:
 		return
-	# Project a pixel at the ring's depth: size and separation stay constant on screen for
+	# Project a pixel at the disc's depth: size and separation stay constant on screen for
 	# either camera projection, independent of brush radius. The held preview position also
 	# keeps this text anchored while a popup owns the pointer.
-	var anchor := preview.global_position
 	var depth := -camera.to_local(anchor).z
 	if depth <= 0.0:
 		return
 	var screen := camera.unproject_position(anchor)
 	var above := camera.project_position(screen - Vector2(0.0, 1.0), depth)
 	var metres_per_px := anchor.distance_to(above)
-	# The ring lies flat on the ground, so how far up the screen it reaches follows the
-	# camera's pitch as well as the brush radius: seen from near ground level its far edge
-	# climbs far past any fixed offset from the centre, which is what put the text across it.
-	# The far edge is the highest point of a ground circle for any camera above the ground.
+	# Sample the far edge on the published terrain so the label clears an uphill footprint.
 	var away := anchor - camera.global_position
 	away.y = 0.0
 	var reach := 0.0
 	if away.length_squared() > 0.0:
-		var far_edge := anchor + away.normalized() * _preview_radius
+		var far_edge := anchor + away.normalized() * preview_radius
+		far_edge.y = maxf(far_edge.y, simulation_node.get_height_at(Vector2(far_edge.x, far_edge.z)))
 		reach = maxf(0.0, screen.y - camera.unproject_position(far_edge).y)
 	_option_label.global_position = (anchor
 		+ camera.global_basis.y * (reach + LABEL_OFFSET_PX) * metres_per_px)
@@ -447,19 +412,23 @@ func _show_line(start: Vector3, end: Vector3) -> void:
 		(start + end) * 0.5 + Vector3.UP * (LINE_PREVIEW_SIZE.y * 0.5))
 	_line_preview.visible = true
 
-# World metres that cover RING_STROKE_PX at the cursor. Same projection term as the field edit
-# tool's handle scaling, which is the existing idiom for this in the tool layer.
-func _ring_stroke_m(hit: Vector3, ring_radius: float) -> float:
-	var camera := get_viewport().get_camera_3d()
-	if camera == null:
-		return RING_STROKE_MIN_M
-	var height_px := maxf(float(get_viewport().get_visible_rect().size.y), 1.0)
-	var metres_per_px := 2.0 * camera.global_position.distance_to(hit) * tan(
-		deg_to_rad(camera.fov * 0.5)
-	) / height_px
-	# The upper bound never falls below the lower one, which it would at the point-edit radius.
-	var upper := maxf(RING_STROKE_MIN_M, ring_radius * RING_STROKE_MAX_RATIO)
-	return clampf(RING_STROKE_PX * metres_per_px, RING_STROKE_MIN_M, upper)
+func _show_brush_preview(hit: Vector3, preview_radius: float) -> void:
+	var footprint := Vector3(hit.x, hit.z, preview_radius)
+	if footprint != _preview_footprint:
+		_preview_footprint = footprint
+		RenderingServer.global_shader_parameter_set("vegetation_brush_footprint", footprint)
+	if int(mode) != _preview_mode:
+		_preview_mode = int(mode)
+		var color := REMOVE_RING_COLOR if mode == Mode.REMOVE else PLANT_RING_COLOR
+		RenderingServer.global_shader_parameter_set("vegetation_brush_color", color)
+	if not _preview_visible:
+		_preview_visible = true
+		RenderingServer.global_shader_parameter_set("vegetation_brush_enabled", true)
+
+func _hide_brush_preview() -> void:
+	if _preview_visible:
+		_preview_visible = false
+		RenderingServer.global_shader_parameter_set("vegetation_brush_enabled", false)
 
 # The ground point under the pointer, null for none. A click's query waits for the core
 # (`CODE-25`); the others answer false while the simulation thread holds it.

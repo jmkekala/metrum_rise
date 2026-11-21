@@ -39,6 +39,19 @@ zoning_rows={
 "value": ""
 }
 
+vegetation_brush_enabled={
+"type": "bool",
+"value": false
+}
+vegetation_brush_footprint={
+"type": "vec3",
+"value": Vector3(0, 0, 1)
+}
+vegetation_brush_color={
+"type": "color",
+"value": Color(0.85, 0.95, 0.45, 1)
+}
+
 street_lamp_cells={
 "type": "sampler2D",
 "value": ""

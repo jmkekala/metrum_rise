@@ -29,6 +29,7 @@ void vertex() {
 
 #include "res://scripts/shaders/street_lamp_light.gdshaderinc"
 #include "res://scripts/shaders/zoning_ground.gdshaderinc"
+#include "res://scripts/shaders/vegetation_brush.gdshaderinc"
 
 void fragment() {
 	cloud_sun = weather_cloud_sun(world_pos);
@@ -55,6 +56,9 @@ void fragment() {
 	SPECULAR = 0.08;
 	if (zoning_mask_enabled) {
 		apply_zoning_ground(world_pos, CAMERA_POSITION_WORLD, ALBEDO, EMISSION);
+	}
+	if (vegetation_brush_enabled) {
+		apply_vegetation_brush(world_pos.xz, ALBEDO, EMISSION);
 	}
 	EMISSION += ALBEDO * (1.0 - METALLIC) * street_lamp_surface(VERTEX, NORMAL, TANGENT, BINORMAL,
 		NORMAL_MAP, NORMAL_MAP_DEPTH, INV_VIEW_MATRIX, CAMERA_POSITION_WORLD);

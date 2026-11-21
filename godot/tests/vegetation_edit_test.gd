@@ -230,10 +230,6 @@ func _run() -> void:
 	manager._unhandled_input(erase)
 	_expect(tool.mode == VegetationTool.Mode.PLANT and not remove_button.button_pressed, "E must restore planting and synchronize Remove")
 	_expect(tool._option_label.text == VegetationTool.BRUSH_OPTIONS[tool.option_index].label, "plant label must show the active option")
-	# Neither depth-tests, so only the draw order keeps the text off the ring it names.
-	_expect(tool._option_label.render_priority > tool._ring_material.render_priority
-		and tool._option_label.outline_render_priority > tool._ring_material.render_priority,
-		"the label and its outline must sort above the ground ring")
 	remove_button.pressed.emit()
 	_expect(tool.mode == VegetationTool.Mode.REMOVE and remove_button.button_pressed, "Remove must update the same mode as E")
 	remove_button.pressed.emit()
@@ -253,10 +249,14 @@ func _run() -> void:
 	_expect(tool.mode == VegetationTool.Mode.PLANT and tool.option_index == flowers[1], "the open category's digit leaves Remove first")
 	panel.free()
 
+	tool._show_brush_preview(Vector3(10.0, 0.0, 10.0), 4.0)
+	_expect(tool._preview_visible, "a shown preview paints the ground disc")
 	manager._activate_tool_logic(InputManager.Tool.VEGETATION, false)
 	tool._process(0.0)
-	_expect(not tool.active and not tool.preview.visible, "deactivation must hide the ground preview")
-	_expect(tool.preview.mesh is TorusMesh, "tool must provide a ground-ring preview")
+	# The disc is painted by the ground shaders from a global flag, so a tool left without
+	# clearing it would keep a brush painted on the world after it is gone. The headless
+	# renderer does not keep global parameters, so the tool's own record of the flag is read.
+	_expect(not tool.active and not tool._preview_visible, "deactivation must hide the ground preview")
 	# The preset table in vegetation_api/brush.rs names which meshes are pine and which are
 	# spruce; tree_species.gd owns that rule for the meshes themselves. Nothing but this check
 	# links the two, so a change on either side that the other does not follow fails here.
