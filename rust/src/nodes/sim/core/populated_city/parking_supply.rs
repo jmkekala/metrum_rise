@@ -201,3 +201,51 @@ fn the_fixtures_car_bays_and_rejections_keep_their_recorded_digest() {
     let recorded = [0x8576_f0fd_bbcc_ed0d, 0x2ba3_ad70_d4ef_a643, 0xbf68_7441_d5fc_8bfa];
     assert_eq!(digest, recorded, "{digest:016x?}");
 }
+
+/// Diagnostic, not acceptance timing (`PARK-30`): the bay paint of a prepared city
+/// (`METRUM_PERF_RESIDENTS`, `METRUM_PERF_CACHE`), as a load builds it (every chunk), then one
+/// lot's republication alone. Prints `LOT_PAINT` with the chunks (one draw call each in range),
+/// lines (two triangles each), places and docks painted, and the milliseconds of both builds.
+#[test]
+#[ignore = "PARK-30 bay paint cost on a prepared city; run alone, release"]
+fn lot_paint_cost_on_a_prepared_city() {
+    let residents = super::contract::residents();
+    let mut city = super::snapshot::load_snapshot(residents, &super::contract::cache_dir());
+    let core = &mut city.core;
+    core.prepare_site_queries();
+    // The load marked every chunk: what a loaded game builds at its first snapshot.
+    let started = std::time::Instant::now();
+    core.build_lot_paint();
+    let load_ms = started.elapsed().as_secs_f64() * 1000.0;
+    let paint = core.parking.paint_publication();
+    let chunks = paint.chunks.values().filter(|c| !c.rows.is_empty()).count();
+    let lines: usize = paint.chunks.values().map(|c| c.rows.len()).sum::<usize>()
+        / crate::simulation::parking::paint::STRIDE;
+    let biggest = paint.chunks.values().map(|c| c.rows.len()).max().unwrap_or(0)
+        / crate::simulation::parking::paint::STRIDE;
+    let (places, docks) = (0..core.allocator.buildings.len())
+        .map(|b| core.allocator.building_handles.handle(b).to_bits())
+        .fold((0, 0), |(p, d), h| {
+            let parking = &core.parking;
+            (p + parking.building_place_count(h), d + parking.building_docks(h).count())
+        });
+    // A ground change under one lot, as a site edit makes: only its chunk is rebuilt.
+    let lot = (0..core.allocator.buildings.len())
+        .find(|&b| {
+            let handle = core.allocator.building_handles.handle(b).to_bits();
+            core.parking.building_place_count(handle) > 0
+        })
+        .expect("a lot with places");
+    let (x, z) = (core.allocator.buildings[lot].center_x, core.allocator.buildings[lot].center_y);
+    let at = [f64::from(x), f64::from(z)];
+    core.parking.invalidate_ground([at[0] - 1.0, at[1] - 1.0, at[0] + 1.0, at[1] + 1.0]);
+    let started = std::time::Instant::now();
+    core.build_lot_paint();
+    let edit_ms = started.elapsed().as_secs_f64() * 1000.0;
+    println!(
+        "LOT_PAINT residents={residents} chunks={chunks} lines={lines} triangles={} \
+         biggest_chunk_lines={biggest} places={places} docks={docks} load_ms={load_ms:.2} \
+         one_chunk_ms={edit_ms:.3}",
+        lines * 2
+    );
+}
