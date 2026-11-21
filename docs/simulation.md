@@ -465,13 +465,17 @@ continues as the live city, and a save taken with a truck in a yard loads after 
 asset retired the dock, since a format 123 load validates nothing
 ([as built](traffic.md#stage-a2-trucks-use-docks-park-20-as-built)).
 
-Save format 124 (`PARK-21`, stage B of [freight yards](traffic.md#stage-b-drive-through-routes-park-21),
-round 1, 2026-11-21) adds a dock's authored drive: a dock row whose loading bay names an exit or
+Save format 124 (`PARK-21`, stage B of [freight yards](traffic.md#stage-b-drive-through-routes-park-21-as-built),
+2026-11-21) adds a dock's authored drive: a dock row whose loading bay names an exit or
 carries waypoints writes `way` (`route_in`, and `route_out` when it has an exit), every other row
 nothing, so a city without such a dock writes the parking JSON of format 123 and only
 `save_meta.version` differs. A format 123 save (`PRE_ROUTES_SAVE_VERSION`) loads as format 124
 does, validating nothing: no asset could author a drive under its format, so its docks are stage A
-docks (`a_drive_through_dock_keeps_its_ways_on_its_row_and_in_a_save`).
+docks (`a_drive_through_dock_keeps_its_ways_on_its_row_and_in_a_save`). A save at every phase of a
+drive-through trip continues tick for tick as the live city
+(`a_drive_through_truck_round_trips_a_save_at_every_phase`). No fixture asset has a freight
+Driveway, so every existing city saves the parking JSON of format 123; the `SIM-02` envelope and
+determinism records and the `PERF-06` work counts equal `dev`'s.
 
 ## Scheduler
 

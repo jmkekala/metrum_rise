@@ -3184,86 +3184,209 @@ whose gates are car Driveways (no dock). Run 2026-11-21 on `freight-yards-a2`:
 Every delivery to a dock building went through its yard or, refused at the gate, to its door;
 none waited and none failed.
 
-#### Stage B: drive-through routes (`PARK-21`)
+#### Stage B: drive-through routes (`PARK-21`), as built
 
-**Behaviour.** A dock may name an exit gate and carry authored routes. The truck enters at its
-arrival gate, follows the in-route to the stop, and leaves along the out-route to the exit gate,
-facing its travel all the way. For the coal mine: in at `truck_in`, 16 m to the stop under the
-hoppers, out of the lane's far end, round the half circle and back to `truck_out`.
+**Built** on branch `freight-yards-b` in three rounds (2026-11-21). A loading bay may name an exit
+gate and carry waypoints. A truck for such a dock enters at the arrival gate, drives its proven
+way in to the stop, stands, and leaves forward along its proven way out to the exit gate, facing
+its travel all the way; a dock without an exit backs out along its way in, as in A2. For the
+coal mine (layout 1): in at `truck_in`, 16 m to the stop under the hoppers, out of the lane's far
+end, round the half circle behind the bunker and back to `truck_out`. Every other dock, every
+other building, the fallback rule, the economy and the save of a city without such a dock are as
+in A2.
 
 **Format**, on the `loading_bay` anchor, all optional:
 
 ```toml
-exit = "truck_out"                      # a gate's name; absent: leave by the arrival gate
+exit = "truck_out"                      # a freight Driveway's name; absent: leave by the arrival gate
 route_in = [[-7.8, 14.0]]               # waypoints between the gate's approach and the stop
 route_out = [[-7.8, -9.85], [-8.0034, -11.5252]]  # waypoints between the stop and the exit's
-                                        # approach (the first two of the coal mine's 13-chord
-                                        # arc, for illustration; 15° chords were planned, see below)
+                                        # approach (the first two of the coal mine's 13-chord arc)
 ```
 
-A route is the gate's connection, its approach, the waypoints and the stop (reversed order for
-the way out). It replaces the derived four points when given. One anchor with an `exit` and
-waypoints, not a second anchor type: the bay and both driveways exist already (decision 6).
+Manifest validation keeps the fields on loading bays, finite, at most 21 waypoints a way
+(`MAX_ROUTE_POINTS` 24 less the gate's connection and approach and the stop), `route_out` only with
+an `exit`, and the exit naming exactly one Driveway. One anchor with an exit and waypoints, not a
+second anchor type (decision 6).
 
-**Proof.** The A1 proof over a polyline: a corridor per segment, an envelope at every vertex that
-bends more than 15°, at most 24 points per route, and a *simple* route (no two non-adjacent
-segments within 0.1 m), because the tick finds a truck's segment from its position
-(`local_access_target_segment`). The in-route and the out-route are separate paths and may cross.
-An arc is authored as chords that bend by *under* 15°: 13 for a half circle, 7 per quarter turn
-(corrected in round 1: the freight row's bend test, `straight_through_cos` 0.965926, counts a bend
-from 14.99996° as over the limit, so a chord of exactly 15° sits on the float boundary, and the
-12-chord half circle with coordinates rounded to 0.1 mm, bends of 15.0000 to 15.0031°, is refused
-for want of an envelope; verified on both coal mine layouts). One departure gate per building, by
-the A1 rule.
+**Proof** (`parking/validation/route.rs`). A way in is the arrival gate's road connection, its
+approach, the waypoints (without any, the derived aisle) and the stop at the bay's centre; a way
+out is the stop, the waypoints, the exit gate's approach and its road connection. Each way is
+checked in this order, the first failure being the rejection, which names the leg or bend:
 
-*As implemented in round 1* (`parking/validation/route.rs`; the full write-up is the last
-round's): a way in is the arrival gate's road connection, its approach, the waypoints (without
-any, the derived aisle) and the stop; a way out is the stop, the waypoints, the exit gate's
-approach and its road connection. Each way is checked in this order, the first failure being the
-rejection, which names the leg or bend: at most 24 points; no leg under 0.1 m; the leg into the
-stop and the leg out of it within 15° of the bay's direction (a truck stands in its bay and leaves
-it forward); simple; every leg's corridor (2.6 m wide, the leg plus 8 m long, centred on it) paved
-and clear of the freight structure set (passages cut), the other loading bays and the parking
-spots; the 8.45 m square, squared to the bay, at every inner point bending more than 15°, the stop
-included for a through route. The exit must name a usable gate of the asset. A bay without an
-exit and without waypoints is proven by the A1 rule unchanged. Both coal mine layouts prove with
-the tunnel passage, `exit = "truck_out"` and arcs of 13 chords (layout 1, out) or two of 7
-(layout 2, in); a 7 m radius needs no envelope then, its corridors staying inside the 6 m lane
-paving of 4.8 m to 10 m radius.
+1. at most 24 points;
+2. no leg under 0.1 m;
+3. the leg into the stop and the leg out of it within 15° of the bay's direction (a truck stands
+   in its bay and leaves it forward);
+4. simple: no two legs that share no point within 0.1 m (the tick finds a truck's leg from its
+   position); the way in and the way out may cross each other;
+5. every leg's corridor (2.6 m wide, the leg plus 8 m long, centred on it) paved and clear of the
+   freight structure set (passages cut), the other loading bays and the parking spots;
+6. the 8.45 m square, squared to the bay, at every inner point bending more than 15°, and at the
+   stop when the drive turns there.
 
-**Reuse and change.** The route lives beside the place row (`[[f32; 2]; 24]` and a count for each
-direction, saved with it; as built in round 1, a side table `ParkingSystem::dock_ways` by the
-row's handle with one `DockWay` per dock that has a drive, not a column on every place, saved
-inline with its row). `maneuver_path` hands out the stored way with the lane point added
-(corrected in round 2: it cannot lend the stored way as it is, since the lane point is not part of
-it, so it builds the polyline on the stack per access step, only for a freight trip in a dock with
-a way; a bay keeps its five points), and `advance_along_local_access_path` and
-`local_access_target_segment` take a slice instead of the five-point array: O(points) per access
-step, 5 today, at most 25. `FreightGate::leave` becomes
-the exit gate. The dock is still released at the exit gate's lane point, by the A2 holder rule
-(the trip stops naming it there). A2's recovery plans a pull-out from the dock's own access, its
-route's first point: with an exit gate it plans from the out-route's last point, the exit's road
-connection (corrected in round 2: the out-route's first point is the stop), and the
-reversing pose (`access_phase_direction`) applies only to a route reversed, not to an out-route.
-The kerb gap at each gate is today's `KerbBlocker` for a driveway.
+The exit must name a usable gate of the asset. A bay without an exit and without waypoints is
+proven by the A1 rule unchanged. Every dock of a building arrives by the first dock's arrival gate
+and leaves by its departure gate (the exit, or the arrival gate for a dock backed out of): "its
+exit differs from the building's first loading bay's" otherwise. An arc is authored as chords
+bending by *under* 15°: the freight row's bend test (`straight_through_cos` 0.965926) counts a bend
+from 14.99996° as over the limit, so chords of exactly 15° sit on the float boundary, and the
+12-chord half circle rounded to 0.1 mm (bends of 15.0000 to 15.0031°) is refused for want of an
+envelope; 13 chords a half circle, 7 a quarter turn, prove (owner's decision: the limit stays
+strict). A 7 m radius needs no envelope then.
 
-**The models repository's sidecar** (a proposal; that repository is separate). Its schema is
-version 1 and the game's reader refuses unknown keys, so the reader must accept the field before
-a build writes it:
+**Storage and saves.** The drive lives beside the dock row in a side table,
+`ParkingSystem::dock_ways`, by the row's handle: one `DockWay { route_in, route_out }` per dock
+that has a drive, each way `[[f32; 2]; 24]` and a count (`DockRoute`), world points; the place
+rows are unchanged. It is set with the row (`replace_docks`), removed with a removed row and kept
+with a retired one. Each row with a way out also keeps its exit's access (`dock_exits`, derived,
+unsaved, refreshed with the row's access and so at load). Save format 124 writes `way` on such a
+row only, so a city without a drive-through writes the parking JSON of format 123 and only
+`save_meta.version` differs ([saves](simulation.md)).
 
-| Field | Type | Meaning |
+**Movement.** No trip row change: `ParkingTrip` stays 56 bytes and stores no progress.
+
+- *The path.* `maneuver_path` returns the dock's five points as before, or, only for a freight
+  trip (the row's flag) in a dock with a drive, a polyline of at most 25 points built on the stack
+  per access step: ingress, the gate's lane point and the whole way in; egress with a way out, the
+  way out forward and the exit's lane point; egress without one (waypoints, no exit), the way in
+  reversed and the lane point. The truck's leg is found from its position by the existing
+  O(points) segment scan (`local_access_target_segment`), which takes the next leg within 5 cm of
+  a corner, so a truck keeps within 5 cm of its way (measured on the coal mine: under 1 cm).
+- *The pose.* The snapshot draws the reversing pose only for a pull-out from a dock without a way
+  out (`dock_leaves_forward`); the standing heading reads the way in's last leg.
+- *The departure gate.* `FreightGate::leave` is the access at the first active dock's departure
+  kerb (`dock_departure_kerb`: the way out's last point, else the route's first point).
+  `FreightGate::elsewhere` lists the building's retired dock rows whose departure kerb differs
+  from it (empty, unallocated, normally). Returns and dispatches plan from `leave`; a pull-out's
+  attach check reads the dock's own departure (`dock_departure`).
+- *Release* is unchanged: the egress step at the lane point, now the exit's, runs
+  `after_freight_pull_out`, and the A2 holder rule frees the dock there.
+
+**Edits and recovery** (each case tested unless noted; A2's table applies to every other case):
+
+| Event | Phase | Behaviour |
 | --- | --- | --- |
-| `passages` | array, may be absent | every opening a vehicle drives into or through |
-| `passages[].id` | string | unique in the asset |
-| `passages[].position` | `[x, 0, z]` | centre of the mouth on the outer wall plane |
-| `passages[].facing` | `[x, 0, z]` | unit outward normal at the mouth, as a door's |
-| `passages[].width_m`, `height_m`, `length_m` | number | clear width and height, and depth from the mouth |
-| `passages[].through` | boolean | open at the far end |
+| A road edit drops the plan, or the attach lane is stale | way out | Stands, plans again from the exit (`plan_way_out_of_dock` from `dock_departure`), keeps its attach and goes on forward; a stale lane is recorded once as `StaleEntry` |
+| A road edit drops the plan | way in | Ends in its bay, as in A2 |
+| No road from the exit | way out | Waits where it stopped on the parking retry wheel, then leaves by the exit |
+| The exit and the way out removed by an asset edit (the departure moves to the arrival gate) | way in, standing, way out | The held row is retired with its way; the truck finishes on it; turned back, it is `elsewhere`, so the commit plans from the dock's own exit, and it leaves forward by the old exit; the next reconcile removes or takes up the row |
+| The exit moved, not removed (round 3) | way in, standing, way out | As above: the new row takes the new way and the departure moves to the new exit; the truck leaves by the old one |
+| The dock dropped (the lane's passage removed; the gate record goes) | way in, standing, way out | As above, by A2's no-gate deferral |
+| A stage A dock's route changes under its truck, the pose staying (its arrival gate moved; round 3) | pulling in, standing, backing out | The held row is retired with its route, as a moved dock is, and a new row takes the new route; the truck drives its old route, moving no farther in a tick than it drives, and leaves through the old gate; the next reconcile removes or takes up the row. **A2 behaviour changed here only**: A2 overwrote the row's route under the truck, which then found no leg and jumped to the route's end |
+| A revalidation leaving the dock as it was | standing | Row, way and holder kept; `elsewhere` empty |
+| The carrier removed | way in, standing, way out | The dock is free (the holder rule) |
+| The gate pass | | Unchanged trigger (the arrival kerb). An exit change needs no pass: a truck on its way out drives its row's way from a plan made at that way's end, and one standing in a retired row with another exit is `elsewhere` |
+| The watchdog | | No new path: a yard truck never plans on the road (not separately tested) |
+| Bulldozing | any | As A2 (not re-tested for a drive-through) |
+| Save and reload | spawned on the way out, on the road, way in, standing, way out after a delivery | Tick for tick equal |
 
-A loading point needs no new field: a `vehicle` door already gives its position, facing and size.
-The draft command (`TOOLS-33`) would copy each passage to `[[mesh_parts.passages]]` (`forward` is
-`−facing`) and may list, in its report only, a suggested `loading_bay` in front of each `vehicle`
-door. It writes no driveway and no route: the site layout is the owner's (decision 8).
+**The editor** ([asset editor](asset_editor.md#lot-checks-docks-and-passages-in-the-editor-park-18-park-19-park-21)).
+A loading bay's Drive-through section sets its exit and adds, inserts, moves and deletes the
+waypoints of each way, each change one undo step through the document's `route` command; Add arc
+sends a radius, an angle and a side, and Rust lays `floor(angle / 15°) + 1` chords on the circle
+from the heading of the leg arriving at the selected waypoint (`arc_waypoints`, `route_arc`). The
+preview draws the proven way in and way out, the envelopes at their bends, a rejection's failing
+corridor, envelope or leg, and the authored waypoints, from the Rust payload; a rejected loading
+bay blocks export only when the asset has a freight gate (A1's rule). The building inspector's
+dock lines name a drive-through's exit ("coal_loading: drive-through, leaves forward by
+'truck_out'") or say the dock backs out.
+
+**The models repository's sidecar.** The game's reader accepts an optional `passages` array in
+schema version 1: each entry is a mesh part passage's fields in the `.glb`'s frame (`id`,
+`position`, `forward`, `width_m`, `length_m`, `clear_height_m`, `through`), the draft puts them on
+the drafted part, and the stale report compares them with an existing asset's
+([spec](asset_editor.md#facts-sidecar)). The draft derives no loading bay, exit or way (decision
+8); the models repository is not touched.
+
+**Complexity.**
+
+| Path | Bound |
+| --- | --- |
+| Access step of a car or a stage A dock's truck | Unchanged: one byte test for the flag |
+| Access step of a drive-through truck | O(points), at most 25, on the stack; the leg scan O(points) |
+| Dock proof | O(gates × (points² + points × local overlay work)), points at most 24; an edit or load boundary |
+| `replace_dock_source` | O(rows of the source), at most two; the round 3 check adds a four-point compare |
+| Gate record rebuild (`leave`, `elsewhere`) | O(the building's dock rows) per reconcile |
+| Arc helper | O(anchors + waypoints + chords), chords at most 21; an edit |
+| Inspector dock lines | O(the building's docks), on opening the inspector |
+| Sidecar passages | O(passages log passages) per read or report |
+
+No allocation in a per-tick or per-agent path: the drive is in the table before the tick and the
+polyline is a stack array.
+
+**Differences from the plan, with their reasons** (all three rounds).
+
+1. *A side table, not a column* (round 1): `dock_ways` by handle holds a drive only for a dock
+   that has one, so no place row grows; the plan's "beside the place row" holds.
+2. *`maneuver_path` builds the polyline per access step* (round 2), not a borrowed slice of the
+   stored way: the lane point is not part of the stored way. Only a drive-through truck pays it.
+3. *Recovery plans from the way out's last point* (round 2), the exit's road connection, not its
+   first, which is the stop.
+4. *Chords under 15°, 13 a half circle, 7 a quarter turn* (round 1), not 12 and 6 of exactly 15°:
+   those sit on the float boundary of the strict limit and are refused. The owner kept the strict
+   limit.
+5. *No stored progress* (round 2): the leg comes from the position, as for every access path, so
+   the trip row is unchanged.
+6. *The exit handled by retired rows and `elsewhere`* (round 2): the plan said only that
+   `FreightGate::leave` becomes the exit. A held row whose way changes is retired with its way, its
+   truck finishes on it, and a truck turned back in a retired row whose exit is no longer the
+   building's plans from its dock, as one with no gate record does in A2.
+7. *A stage A row whose route changes is retired too* (round 3, the fix above), changing A2 in
+   that one case, so the rule is one for every held row: kept only if its pose, route and drive
+   are all unchanged.
+8. *The sidecar field* is the passage's own (`forward` into the model, `clear_height_m`, `id`),
+   not the plan's `facing` outward and `height_m`: the draft copies the entry unchanged, so one
+   spelling and one set of rules serve both. It is optional in version 1. The draft report lists
+   no suggested loading bay per `vehicle` door: docks are never derived (decision 8).
+9. *`tools/model_draft.py` is unchanged*: it hands the sidecar to the Rust reader, which is the
+   one that reads `passages`.
+10. *The way in's arc start* is the arrival gate taken as the first usable freight Driveway that is
+    not the bay's exit; the proof takes the first gate that proves the way, the same gate on every
+    asset seen.
+
+**Decisions taken.** The strict 15° limit (the owner's); a side table for the ways; a retired row
+keeps its way for its truck; the exit handled by retired rows and `elsewhere`; the stage A fix
+(retire a held row whose route changes), which changes A2 behaviour in that one case.
+
+**Evidence.**
+
+- *Through the real editor path* (2026-11-21, headless, an isolated profile with a copy of the
+  owner's pack; nothing written to the pack or its repository): on a copy of each coal mine
+  layout, the pack folder's (layout 1) and the pack repository's relaid one (layout 2, its own
+  bunker and headframe models), the tunnel was authored through the passage panel, the exit and
+  the waypoints through the route panel and the arc helper (layout 1: one waypoint at the lane's
+  far end and a 180° arc of 7 m to the left; layout 2: a waypoint, a 90° arc of 7 m to the right, a
+  waypoint and another such arc), validated with no issue, published and loaded back: the dock
+  proves before and after, and each published `asset.toml` equals, byte for byte, the variant
+  round 1 wrote by hand and proved (layout 1, way out of 17 points; layout 2, way in of 19). A
+  layout 2 still save made from it places two copies, each with its dock proven by the placed lot.
+- *Movement* (round 2): a truck driven through each layout keeps within 1 cm of its proven way,
+  facing its travel every tick.
+
+**Liveness run** (`drive_through_yards_keep_deliveries_alive_for_14_days`, ignored, manual,
+`nodes/sim/core/scenario/freight_yard_cases.rs`; run 2026-11-21 on `freight-yards-b`). A2's run
+with each loading-bay asset first tried as a drive-through: an exit 14 m across the street edge
+and a way out straight on past the bay and round a half circle of 7 m in 13 chords, the turning
+point scanned past the bay. The coal mine, the farm and the power plant prove one (one building
+each in the town); the other three keep their stage A dock. Beside it the same geometry with car
+gates:
+
+| Count | With docks | Control |
+| --- | --- | --- |
+| Deliveries in a yard: at a drive-through dock / at a dock backed out of | 9 / 122 | 0 / 0 |
+| Deliveries at the door after the gate commit refused (every dock held) | 10 | 0 |
+| Deliveries at the door of a building with a dock, planned there | 0 | 0 |
+| Deliveries at a door without a dock | 0 | 133 |
+| Deliveries to a border | 135 | 136 |
+| Carriers that started in their source's dock | 180 | 0 |
+| Failed, expired, vanished in transit | 0, 0, 0 | 0, 0, 0 |
+| Dock buildings, of them drive-throughs, docks at the end | 17, 3, 17 | 0, 0, 0 |
+| Dock occupancy: held dock-frames of all dock-frames; most held at once | 8,930 of 598,658 (1.5 %); 8 | |
+| Trip failure lines naming a yard | 0 | 0 |
+
+Deliveries stayed alive, none waited and none failed; no shipment was starved (none expired or
+vanished).
 
 #### Stage C: waiting (`PARK-22`)
 
@@ -3272,17 +3395,23 @@ a dock. A carrier refused a dock takes the first free waiting position and stand
 released dock goes to the waiting carrier with the oldest claim, on that building's release
 event. A carrier that has waited 10 authored minutes (a tuning value) drives to the door from
 where it stands and delivers there. With no free waiting position it goes to the door at once.
-A2 has no release event: a dock is free as soon as its truck's trip stops naming it, with no
-parking write (the holder rule). C's hand-over therefore needs one: the egress step that ends a
+A2 and B have no release event: a dock is free as soon as its truck's trip stops naming it, with
+no parking write (the holder rule), at the lane point where its pull-out ends, which for a
+drive-through is the exit's. C's hand-over therefore needs one: the egress step that ends a
 pull-out would note the building for the ordered phase, which hands the dock to its oldest
-waiting claim.
+waiting claim. A dock's departure in B is its own (`dock_departure`) and a retired row may leave
+by another gate than the building's (`FreightGate::elsewhere`); a waiting position takes no part
+in either, but C's hand-over must not grant a retired row.
 
 **The guard against starvation** is that bound: a delivery is late by at most the wait, and
 never waits on another truck's progress beyond it. A building without waiting positions behaves
 as in Stage B. The wait is a saved timing-wheel event (`TripEvent::ParkingRetry`), not a
 countdown. Stage C also releases a dock when its truck has left the bay, for docks whose in- and
 out-routes' swept shapes are disjoint (proven at validation), so a drive-through serves the next
-truck sooner.
+truck sooner. As built in B a drive-through truck holds its dock along its whole way out (the
+coal mine's 69 m), so this early release is where C gains most; it needs a release point on the
+way out, found from the position as the leg is (B stores no progress), and the proof of the
+disjoint sweeps, which B's corridors give per leg.
 
 **Complexity.** One event per waiting carrier; the hand-over is O(waiting positions of one
 building) in the ordered phase; nothing per tick.
@@ -3295,7 +3424,7 @@ In the repository's styles: unit tests beside the code, Godot tests only for wha
 | --- | --- |
 | A1 | `validation.rs`: the car table reproduces every existing test's result; a straight freight route needs no envelope; a bend over 15° needs the 8.45 m square and names it; a 3.9 m gate is refused. `yard_hedge.rs` or the site derivation: a through passage splits a rectangle in two and the eaves margin clears the mouth; a low passage cuts for cars only. `parking/tests`: a dock is in no chunk list, no candidate list and no supply count; `replace_source` keeps an unmoved dock; save and load round-trip a dock; an older save derives the same rows as a fresh validation. A pack test: no asset of the test and bundled packs publishes a dock. The editor payload: the road-to-Driveway rejection matches the placed one (`PARK-18`); an asset without a gate exports. One Godot asset-editor test: the Passage object and the loading bay issue list |
 | A2 (built) | `economy/agents/tests/freight_yards.rs` on a minimal graph (no gameplay constructor): arrive, stand, deliver, pull out; two carriers and one dock, the second delivers at the door, at 1 and 8 workers with equal products; a refusal meeting a pull-out at 1 and 8 workers; spawn in a dock at dispatch and back to it; a pull-out whose plan goes stands and plans again; one with no way out waits on the retry wheel, reported once, never moved; a stale pull-in ends in its bay; removal frees the dock in every holding phase; the leg timeout ends a wait; the quote of a dock building equals its quote without the dock. `nodes/sim/core/tests/parking/docks.rs`: save and reload at every phase; a dock retired under each holding phase; a dock moved and revalidated under a standing truck; a gate that goes under a truck on the road; a save that loads after an edit retired its dock; bulldozing with a truck standing or backing out. The ignored 14-day liveness run (`scenario/freight_yard_cases.rs`) and the still fixture (`write_the_freight_yard_still_save`) |
-| B | A half-circle route proves and a self-touching one is refused; the slice path advance equals the array one on every existing path test; a truck leaves by the exit gate without reversing; the sidecar reader accepts and refuses `passages` |
+| B (built) | `parking/validation/route/tests.rs`: a half circle out to the exit proves and names both gates; a sharp bend needs its envelope and says where; a self-touching or askew way is refused; every dock arrives and leaves by the first dock's gates. `editor/tests.rs`: the arc helper lays 13 chords for a half circle that proves with no envelope, a way in's arc starts at the arrival gate, a sharp first leg is rejected on its leg; every arc bends under 15°. `nodes/sim/core/tests/parking/docks/drive_through.rs`: a truck faces its travel and leaves by the exit; save and reload at every phase; an edit removing the exit or the dock, and an exit moved, under a truck in each phase; a revalidation keeps the row; the inspector's dock lines. `docks.rs`: a stage A row whose route changes under a truck in each phase. `agents/tests/freight_yards/drive_through.rs`: recovery on the way out and in, no road from the exit, removal. `model_draft/tests.rs`: the sidecar reader takes or refuses `passages`, the draft declares them, the stale report compares them. Godot `asset_passage_test`: the route panel and the `route` command, one undo step each. The ignored 14-day run `drive_through_yards_keep_deliveries_alive_for_14_days` |
 | C | A waiting carrier takes the released dock in claim order; the bound sends it to the door; save and reload while waiting |
 
 The populated-city locality check applies to A1 only (a lot's dock validation must follow the
@@ -3513,7 +3642,8 @@ The outline as planned:
 - *Hand-back:* that run's delivery counts by yard and by door; `PERF-06` counts; the F timing; a
   clip of a truck entering, standing and reversing out.
 
-**B (`PARK-21`), 2 to 3 rounds.** *Files:* `assets/asset/model.rs` and `validation.rs`,
+**B (`PARK-21`), 3 rounds, done** ([as built](#stage-b-drive-through-routes-park-21-as-built)).
+The outline as planned: *Files:* `assets/asset/model.rs` and `validation.rs`,
 `parking/validation.rs` and `lots.rs`, the route table beside the places and `saved.rs`,
 `tick/access/path.rs` and its callers, `parking/trips.rs`, the editor's route waypoints,
 `tools/model_draft.py` and the sidecar reader for `passages`. *Order:* slice paths with equal
@@ -3525,9 +3655,8 @@ and proof, the drive stored on the dock row and saved (format 124), the editor's
 document command; (2) the exit gate: `FreightGate::leave`, movement along the stored ways
 (`maneuver_path` over the drive, no reversing on a way out, `access_phase_direction`), dispatch
 and recovery from the way out, the tests that a truck leaves by its exit; (3) the editor's
-authoring UI and drawing, the sidecar reader and `tools/model_draft.py`, the as-built write-up.
-Until round 2 a dock with authored waypoints is driven along its row's four points (the gate's
-connection and approach, the last waypoint, the stop); no pack asset has one.
+authoring UI and drawing, the sidecar reader and `tools/model_draft.py`, the as-built write-up;
+round 3 also fixed the stage A held-row case and tested an exit moved under a truck.
 
 **C (`PARK-22`), 2 rounds,** only on decision 13. *Files:* the format's `role`, `parking/trips.rs`,
 `tick/parking.rs`, `nodes/sim/core/trips.rs`. *Gate:* as A2, plus a run where a dock is held for

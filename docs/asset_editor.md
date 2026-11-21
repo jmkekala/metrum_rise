@@ -568,8 +568,10 @@ stores and edits that entrance in the same anchor list as the optional site-layo
   `width_m` and `length_m`
 - `loading_bay`: freight stop position inside the lot; requires `width_m` and `length_m`. With a
   `freight` driveway of at least 4 m (a gate), a placed building publishes it as a dock when a
-  truck can reach it ([freight yards](traffic.md#stage-a1-docks-park-19-as-built), `PARK-19`);
-  no trip uses a dock yet (`PARK-20`)
+  truck can reach it ([freight yards](traffic.md#stage-a1-docks-park-19-as-built), `PARK-19`),
+  where trucks deliver and load (`PARK-20`). It may name an `exit` driveway and carry `route_in`
+  and `route_out` waypoints: a drive-through, entered at one gate and left forward by the other
+  ([format](traffic.md#stage-b-drive-through-routes-park-21-as-built), `PARK-21`)
 - `vehicle_class` on a driveway or a bay (`car`, `freight`, `service`; the Vehicle class field of
   Access points). Cars use every driveway; trucks only `freight` driveways of at least 4 m
 - All building anchor positions must remain inside the authored lot footprint. `driveway` anchors
@@ -586,7 +588,8 @@ Runtime use in v1:
 
 - `entrance/main` remains the only anchor consumed by the live entrance/exit system; a fitting
   `parking` anchor is public supply ([anchor lots](traffic.md#anchor-lots-park-01)); a proven
-  `loading_bay` is a saved dock, shown in the building inspector and not yet used by any trip.
+  `loading_bay` is a saved dock, shown in the building inspector (with its exit when it is a
+  drive-through), where trucks deliver and load.
 - `driveway`, `parking`, and `loading_bay` anchors do not create asphalt, concrete, paths, pads, yards, parking markings, loading markings, or other
   visuals by themselves.
 - Building yard polygons are authored explicitly through `[[site_surfaces]]`. Live gameplay treats
@@ -599,7 +602,7 @@ Runtime use in v1:
 - Do not add prop sockets in v1. Decorative attachment points belong to a later visual-variation
   feature, not to baseline site-layout tooling.
 
-### Lot checks, docks and passages in the editor (`PARK-18`, `PARK-19`)
+### Lot checks, docks and passages in the editor (`PARK-18`, `PARK-19`, `PARK-21`)
 
 The editor runs the placed game's lot proofs over the asset alone, in Rust
 (`AssetAuthoringPolicy.parking_diagnostics_json`, `parking/validation/editor.rs`); the scripts only
@@ -623,7 +626,29 @@ draw and list the results.
   reason when the freight driveway is under 4 m), and the asset still exports.
 - **The preview** draws the selected loading bay's proven route, from the gate's road connection
   to the bay's centre, or its failed shape, and every passage as a dashed rectangle with a solid
-  line across each open end.
+  line across each open end. For a drive-through it draws the whole way in (blue), the way out
+  (green), the truck's 8.45 m envelope dashed at each bend the proof checked, and the bay's
+  authored waypoints as small squares; for a rejected way, the failing corridor or envelope
+  dashed in red, or the failing leg (too short, off the bay's direction, touching its way) as a
+  red line. The rejection's reason is in the issue list, the access list's tooltip and above the
+  bay's properties, as for any loading bay.
+- **Drive-through** (`PARK-21`) is a section of a loading bay's properties under Site → Access
+  points (`asset_editor/route_panel.gd`). Exit Driveway chooses one of the asset's freight
+  driveways by name, or none (the truck backs out the way it came); clearing the exit clears the
+  way out with it. Waypoints of chooses the way in or the way out (a way out needs an exit), and
+  lists its waypoints in drive order. Add waypoint puts one after the selected waypoint (or at the
+  end), 4 m along the bay from it; Insert before puts one halfway between the selected waypoint
+  and the one before it; Delete waypoint removes it; the X and Z fields move it (asset-local
+  metres). Add arc inserts, after the selected waypoint (or the last), the chords of a turn of the
+  given radius and angle to the left or the right as a driver sees it, starting along the leg that
+  arrives at that waypoint (for the way out's first, the leg out of the bay; for the way in's
+  first, the leg from the arrival gate's road connection to its approach, the arrival gate being
+  the first usable freight driveway that is not the exit). Rust lays the chords
+  (`route_arc`, `arc_waypoints`): ends on the circle, `floor(angle / 15°) + 1` chords, so every
+  bend, the first and the last included, stays under the proof's 15° (13 chords for a half
+  circle, 7 for a quarter turn), rounded to 0.1 mm. Every change, an arc included, is one
+  document command (`route`: `exit`, `add`, `move`, `delete`, `arc`), one undo step. A way holds
+  at most 21 waypoints.
 - **Passages** are authored on the selected mesh part: Model → Passages lists the part's
   passages; Add passage puts one at the part's front face, opening into it along part-local -Z;
   its fields set the mouth's part-local X and Z, the direction it opens toward (±X, ±Z,
@@ -2301,6 +2326,11 @@ Optional `[[anchors]]` table:
   `driveway` anchors derive their v1 editor footprint length from `width_m`.
 - `vehicle_class`: optional string, baseline values `car`, `freight`, or `service`. If present,
   validation rejects any other value.
+- `exit`, `route_in`, `route_out`: optional, on a `loading_bay` only (`PARK-21`). `exit` names
+  the freight `driveway` a truck leaves by, forward; `route_in` is `[[x, z], …]` waypoints between
+  the arrival gate's approach and the stop, `route_out` those between the stop and the exit's
+  approach (only with an `exit`), asset-local metres, finite, at most 21 a way. The proof's rules
+  are in [freight yards](traffic.md#stage-b-drive-through-routes-park-21-as-built).
 
 Optional `[[site_surfaces]]` table for building visual yard polygons:
 
@@ -2794,6 +2824,7 @@ the build's pivot offset `(px, py, pz)` (`asset_build.pivot_offset`) is
 | `default_variant` | string | the `id` the `.glb` files reference |
 | `preview` | `{file, sha256}` | `../preview.png`, the catalog render |
 | `hero` | boolean | whether the hero/landmark triangle ceilings apply |
+| `passages` | array, optional | every lane a vehicle drives into or through the model, see below (`PARK-21`) |
 
 A `doors` entry:
 
@@ -2812,10 +2843,42 @@ without a tagged main entrance is refused. A door set back in a lobby or reveal 
 Lengths are rounded to 0.1 mm and areas to 0.01 m². The schema version stays 1 with `kind`:
 nothing consumed version 1 before it.
 
-The sidecar has no field for a lane a vehicle drives through (reported 2026-11-20 with the coal
-bunker). A `passages` array is proposed, not adopted, in
-[freight yards](traffic.md#stage-b-drive-through-routes-park-21); a loading point needs no field
-beyond a `vehicle` door.
+A `passages` entry (`PARK-21`, added 2026-11-21; the field stays optional in schema version 1, so
+every sidecar written before it still reads, and the version does not change):
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `id` | string | unique in the asset, e.g. `tunnel`; the passage's `name` in the manifest |
+| `position` | `[x, 0, z]` | centre of the mouth on the outer wall plane, at ground level (`y` within 1 mm of 0) |
+| `forward` | `[x, 0, z]` | unit direction into the model from the mouth: the opposite of the mouth's outward normal |
+| `width_m` | number | clear width |
+| `length_m` | number | depth from the mouth to the far end |
+| `clear_height_m` | number | clear height; at least 4 m lets a truck through, at least 2 m a car |
+| `through` | boolean | whether the far end is open too |
+
+The fields are a mesh part passage's (`[[mesh_parts.passages]]`) in the sidecar's own frame, the
+`.glb`'s, which is the drafted part's local frame: the draft copies each entry onto the part that
+shows the model, and the part's R2 position places it with the model. For a model whose lanes
+run along its own axes, `forward` is one of `[0, 0, ±1]`, `[±1, 0, 0]`. The reader refuses an
+unknown key in an entry, a repeated or empty `id`, a non-finite or off-ground mouth, a forward
+that is not a horizontal unit vector (within 0.01), and a non-positive size; whether a passage
+lies inside the model and runs along a lot axis is the drafted asset's validation. Absent, the
+model says nothing about lanes: a draft has no passage and the stale report leaves an existing
+part's passages as authored (an information line); present (an empty array included), it is the
+whole list, and the report marks the asset stale for a passage the part lacks, one the model
+lacks, or one whose fields differ by 1 mm or more, and, against the ledger copy, "passages
+changed since the asset was drafted". Example, the coal bunker's tunnel as the asset authors it
+on its part (a model build writes its own numbers):
+
+```json
+"passages": [
+  {"id": "tunnel", "position": [-1.9, 0.0, 8.125], "forward": [0, 0, -1], "width_m": 5.0, "length_m": 16.25, "clear_height_m": 4.6, "through": true}
+]
+```
+
+A loading point needs no field beyond a `vehicle` door. The draft derives no loading bay, exit,
+driveway or way from a sidecar: docks are the site layout's, authored by the owner (freight
+yards owner decision 8).
 
 What the build data holds today (read in `scripts/asset_build.py` and the ten `build.py` files):
 
@@ -2948,7 +3011,7 @@ of the centre in both); for the factory it is the front lobby entrance, not the 
 | Rule | Exact rule | What the hand values say |
 | --- | --- | --- |
 | R1 lot cells | Changed 2026-11-20 by the owner. The role's `lot_cells: [width, depth]` when given, used as is; a lot the part does not fit at its R2 position is refused, naming the size it needs (how a shop with front parking or an apartment block is ordered). Without it, one dwelling (a detached house, whose lot holds a yard): `lot_width_cells = ceil((W + 2 × 3.0 − 0.01) / 10)`, `lot_depth_cells = ceil((D + 4.0 − 0.01) / 10)`, at least 3.0 m free on each side across and 4.0 m in front; anything else: the tight fit `max(1, ceil((W − 0.01) / 10))`, depth likewise from `D`. 0.01 m is the editor's fit tolerance (`_mesh_part_fits_in_lot`) | 23 of 24 dimensions match. The factory is 4 deep where the rule gives 3: one cell of yard added by hand. (The tight fit alone, the rule as first written, matched 22: it also gave `house_2`'s 9.08 m width one cell; this section first claimed 23 for it) |
-| R2 mesh part | one part; `name` = the `LOD0` file name; `rotation_degrees = [0, 0, 0]`; `scale = 1`; `pivot_offset = [0, 0, 0]`; `position = [−(min.x + max.x) / 2, 0, −lot_depth_m / 2 − min.z]` (centred across, bounds on the back lot edge) | name, rotation, scale, pivot: 12 of 12 (one mislabelled name, below). `z`: exact for the four level-1 houses and `rowhouse_2`; the level-2 houses stand 0.65–0.78 m forward (they have hedges on all four edges), the rest are free drags. `x`: free drags within ±1.1 m, no pattern; only the untouched factory is centred. See Q3 |
+| R2 mesh part | one part; `name` = the `LOD0` file name; `rotation_degrees = [0, 0, 0]`; `scale = 1`; `pivot_offset = [0, 0, 0]`; `position = [−(min.x + max.x) / 2, 0, −lot_depth_m / 2 − min.z]` (centred across, bounds on the back lot edge); `passages` = the sidecar's optional `passages`, copied unchanged (`PARK-21`) | name, rotation, scale, pivot: 12 of 12 (one mislabelled name, below). `z`: exact for the four level-1 houses and `rowhouse_2`; the level-2 houses stand 0.65–0.78 m forward (they have hedges on all four edges), the rest are free drags. `x`: free drags within ±1.1 m, no pattern; only the untouched factory is centred. See Q3 |
 | R3 frontage | `frontage_forward = [0, 0, 1]` | 12 of 12 |
 | R4 entrance | `type = "entrance"`, `name = "main"`, `position = part.position + [door.x, 0, door.z]` of the `main` door, `forward = door.facing` | `y = 0`: 12 of 12. Position: within 0.5 m of the door in 3 of 12 (`house_1`, `house_3`, `rowhouse_2`), 0.6–2.0 m off in the rest. Forward: the door's facing where it is cardinal for the front-door assets; hand-turned to 71° for the side door that faces 90° (`house_4`, both levels) and to 43.4° for the 45° corner door (grocery). See Q6 |
 | R5 capacity, housing | `household_capacity = dwellings`; `flat_size_m2` = `0.8 × Σ storeys.area_m2 / dwellings`, rounded to the nearest 10, and at most 80 when `dwellings = 1` (decided 2026-11-20: a detached house holds one family-sized household whatever its floor area) | households: 10 of 10 (1, 6, 4). Flat size by hand: 80 for every house and `rowhouse_1`, 100 for `rowhouse_2`. Per dwelling the wall plates give 102 m² (`rowhouse_1`) and 120 m² (`rowhouse_2`), so the rule gives 80 and 100 there; for the houses it gives 110 to 120 with the attic counted, against the hand 80, which equals the 10 × 8 m ground plate alone; the cap for one dwelling gives 80 there, so the rule gives all ten hand values. See Q4 |
