@@ -28,14 +28,16 @@ under `GPL-3.0-or-later`. Each asset folder has a `credits.txt` with the exact t
 - [Shrubs, hedges and flowers](godot/assets/models/vegetation/landscape/credits.txt)
 - [Rocks](godot/assets/models/vegetation/rocks/credits.txt)
 - [Road textures](godot/assets/textures/road/finnish/credits.txt)
+- [Vehicles](godot/bootstrap/mods/vehicles/pack.toml): the bundled `vehicles` pack's cars and
+  trucks, built in the Metrum Rise models repository; CC BY 4.0, as its `pack.toml` states.
 - [Tree impostor atlases](godot/assets/textures/vegetation/credits.txt)
 
 ## Third-party assets
 
 - Kuopio map: contains data from the National Land Survey of Finland, Kuopio height model and
   Topographic Database, retrieved 2026-04-19. Licence: CC BY 4.0.
-- [Kenney](https://kenney.itch.io/): car models; building models used by tests only, not in
-  release packages. Licence: CC0 1.0.
+- [Kenney](https://kenney.itch.io/): building models used by tests only, not in release
+  packages. Licence: CC0 1.0.
 - [Quaternius](https://quaternius.com/): character models. Licence: CC0 1.0.
 - [ambientCG](https://ambientcg.com/view?id=DaySkyHDRI059B): Day Sky HDRI 059 B. Licence: CC0 1.0.
 - [CGBookcase](https://www.cgbookcase.com/textures/grass-01): Grass 01. Licence: CC0 1.0.
