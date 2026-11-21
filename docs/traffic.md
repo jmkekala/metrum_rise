@@ -3234,12 +3234,16 @@ paving of 4.8 m to 10 m radius.
 **Reuse and change.** The route lives beside the place row (`[[f32; 2]; 24]` and a count for each
 direction, saved with it; as built in round 1, a side table `ParkingSystem::dock_ways` by the
 row's handle with one `DockWay` per dock that has a drive, not a column on every place, saved
-inline with its row). `maneuver_path` hands out a borrowed slice, and
-`advance_along_local_access_path` and `local_access_target_segment` take a slice instead of the
-five-point array: O(points) per access step, 5 today, at most 25. `FreightGate::leave` becomes
+inline with its row). `maneuver_path` hands out the stored way with the lane point added
+(corrected in round 2: it cannot lend the stored way as it is, since the lane point is not part of
+it, so it builds the polyline on the stack per access step, only for a freight trip in a dock with
+a way; a bay keeps its five points), and `advance_along_local_access_path` and
+`local_access_target_segment` take a slice instead of the five-point array: O(points) per access
+step, 5 today, at most 25. `FreightGate::leave` becomes
 the exit gate. The dock is still released at the exit gate's lane point, by the A2 holder rule
 (the trip stops naming it there). A2's recovery plans a pull-out from the dock's own access, its
-route's first point: with an exit gate that becomes the out-route's first point, and the
+route's first point: with an exit gate it plans from the out-route's last point, the exit's road
+connection (corrected in round 2: the out-route's first point is the stop), and the
 reversing pose (`access_phase_direction`) applies only to a route reversed, not to an out-route.
 The kerb gap at each gate is today's `KerbBlocker` for a driveway.
 
