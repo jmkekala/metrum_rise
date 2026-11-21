@@ -24,8 +24,8 @@ its roadmap row. The owner accepted the plan on 2026-11-21.
 | `[vehicle]` assets in packs, vehicle drafts | as built | `TOOLS-41` |
 | Bundled `vehicles` pack, removal of the placeholder cars | as built | `TOOLS-42` |
 | Vehicle renderer: catalogue, shader, tiers (stage 1a) | as built | `RENDER-65` |
-| Brake lights, indicators, steered wheels | planned | `RENDER-66` |
-| Low and high beam, later lamps, glass features | planned | `RENDER-67` |
+| Brake lights, indicators, reverse lamp, steered and rolling wheels (stage 1b) | as built | `RENDER-66` |
+| Low and high beam, hazard lights, later lamps, glass features | planned | `RENDER-67` |
 | Lane length by body class | planned | `TRAFFIC-38` |
 | Waiting position at junctions | planned | `TRAFFIC-39` |
 | Night lamps (glows, beams, the headlight pool) | as built, from the sidecar lenses | `RENDER-26` |
@@ -406,7 +406,7 @@ The game draws the pair as imported from models commit `428a413` (2026-11-22: ne
 lens entries; the truck gained a front fog pair, 29 lenses), whose sidecars give the triangle
 counts 2,990 / 880 / 216 / 40 (estate) and 4,490 / 1,398 / 348 / 60 (truck). Still to
 do on the game side: wheel steer and spin, on the twin wheel parts as on single ones
-([steered wheels](#planned-brake-lights-indicators-and-steered-wheels-render-66),
+([steered wheels](#as-built-brake-lights-indicators-reverse-lamp-and-wheels-render-66),
 [wheel spin](#planned-beams-later-lamps-and-glass-render-67)), and the owner's look at the `car`
 box with the estate beside a bay ([open points](#open-points-of-the-contract)).
 
@@ -786,11 +786,11 @@ models are gone; type 4, freight, stays.
 
 A row is the MultiMesh transform (12 floats) and one custom-data vector:
 
-| Float | Content | 1a |
+| Float | Content | Filled by |
 | --- | --- | --- |
-| `custom.x` | front wheel steer angle, radians | 0 |
-| `custom.y` | wheel roll angle, radians | 0 |
-| `custom.z` | one whole number: bits 0-7 lamps, 8-13 paint index, 14-17 blink phase | lamps: bit 0 for a moving car |
+| `custom.x` | front wheel steer angle, radians, positive to the left | the snapshot's target, eased by the frame job ([`RENDER-66`](#as-built-brake-lights-indicators-reverse-lamp-and-wheels-render-66)) |
+| `custom.y` | wheel roll angle, radians, positive rolling forward | the frame job, from the drawn travel |
+| `custom.z` | one whole number: bits 0-7 lamps, 8-13 paint index, 14-17 blink phase | the snapshot |
 | `custom.w` | reserved | 0 |
 
 Lamp bits: 0 lights on (driving), 1 brake, 2 indicator left, 3 indicator right, 4 reverse,
@@ -841,16 +841,18 @@ shadows, as before:
 
 - vertex: `round(COLOR.rgb * 255.0)` gives part, surface and paint; a wheel vertex (part 1 to 8)
   and its normal are rotated about the wheel's centre (a uniform array per model), roll about
-  the model's `X`, then steer about `Y` for a steering wheel (identity in 1a); the lamp gain of
-  the vertex's surface comes from the lamp bits, the night value (sun 4 to -2 degrees) and, for
-  indicators, a blink of 90 flashes a minute (it reads `TIME` until `RENDER-66` brings the
-  paused clock); the palette colour by the paint index, white for a `paint: false` variant;
+  the model's `X`, then steer about `Y` for a steering wheel; the lamp gain of the vertex's
+  surface comes from the lamp bits, the night value (sun 4 to -2 degrees) and, for indicators,
+  a blink of 90 flashes a minute on the wind clock (`weather_wind.x`, which stops while the game
+  is paused and keeps normal pace above normal speed); the palette colour by the paint index,
+  white for a `paint: false` variant;
 - fragment: albedo, times the paint where `B` is 255; ORM; the optional normal map; emission
   times the lamp gain. Glass and every surface without a lit lamp have gain 0: glass draws
   opaque as painted, and the cabin picture stays dark.
 
-In 1a, a moving car at night lights its tail, tail-and-brake (half), low-beam and marker lenses;
-a parked car none.
+A moving car at night lights its tail, tail-and-brake (half), low-beam and marker lenses; brake,
+indicator and reverse lenses light by their bits at any hour; a parked car, and a truck standing in
+its dock, none.
 
 ### Lamps at night
 
@@ -898,33 +900,107 @@ buried, the lowest 0.3 mm under the 2 cm the solve lifts its support points (19.
   alike at 1080p. LOD3 has no wheels and a dark lower strip, visible only near.
 - Parked tiers switch per chunk, by the distance to the chunk's batch centre.
 
-## Planned: brake lights, indicators and steered wheels (`RENDER-66`)
+## As built: brake lights, indicators, reverse lamp and wheels (`RENDER-66`)
 
-**Planned.** Everything here is computed for posed cars only (those in view and within draw
-distance), is a pure function of simulation state read under the snapshot's lock, allocates
-nothing per car, and is never written back to the simulation.
+**As built (2026-11-22, stage 1b, branch `vehicles-1b`).** The values 1a left at zero are filled
+from the simulation's state, drawn only: nothing is saved, nothing is written back, and no speed,
+route or position reads them. The lamp bits and the steer target are a pure function of the state
+the snapshot reads, so two runs draw the same bits and angles for the same tick
+(`rust/src/nodes/sim/render/vehicle_signals.rs`); the drawn steer and the wheel roll are the frame
+job's, like the smoothed pose (`car_visual.rs`).
 
-| Signal | Source | Computed in | Bound |
+| Value | Rule | Computed in | Bound per posed car |
 | --- | --- | --- | --- |
-| Brake | the car's speed fell since the last snapshot, or it stands on a live lane | the frame job, with one remembered speed per drawn car | O(drawn cars), 4 bytes each |
-| Indicator, junction turn | the connector the car will take (`planned_next_connector` in `rust/src/simulation/economy/agents/tick/lane_nav.rs`) and which way it bends | the snapshot's pose step | O(1) per posed car near its lane end |
-| Indicator, lane change | an active lane change and the side of the target lane | the snapshot | O(1) |
-| Indicator, parking | the trip phase (pulling in or out) and the side of the bay or driveway | the snapshot | O(1) |
-| Steered wheels | the path's curvature: two tangent samples half a wheelbase apart (`rust/src/nodes/sim/render/lane_pose.rs`) | the snapshot gives the target; the frame job eases toward it | two more lane samples per posed car within 100 m |
-| Blink | the shader | | none on the CPU |
+| Brake (bit 1) | below | the snapshot, LOD0 to LOD2 | the speed pass's own reads: O(log cars in the lane), near a lane end the planned connector and one entry-slot test |
+| Indicators (bits 2, 3) | below | the snapshot, within 100 m of the eye | O(1) plus one or two lane samples, O(log lane points); near a lane end the planned connector |
+| Reverse (bit 4) | a truck drawn tail first in a yard manoeuvre | the snapshot | O(1) |
+| Steer target (`custom.x`) | below | the snapshot, LOD0 and LOD1 (the tiers with wheels) | two lane tangents, O(log lane points) each |
+| Steer drawn, roll (`custom.x`, `custom.y`) | eased and integrated | the frame job's existing loop | O(1), two floats per drawn car |
+| Blink | 90 flashes a minute on the wind clock | the shader | none on the CPU |
 
-Rules:
+**Brake.** A car on a live lane brakes when the next tick's speed update would slow it or it
+stands: its speed is at most 0.05 m/s, or one of the speed pass's braking caps (a junction
+approach, a connector's blocked exit lane, a blocked planned lane change) is below its speed, or
+its IDM acceleration is below -1.0 m/s². The pass's caps and IDM step are shared code
+(`AgentSystem::speed_outlook`, `idm_acceleration`), read on the lane buckets the last tick rebuilt
+after its movement, so they are what the next tick reads. The -1.0 m/s² margin keeps a car that
+follows at a steady gap, whose acceleration hovers about zero, dark: a memoryless rule cannot flicker
+there, and needs no hold time. A car off every lane brakes while it waits to join its lane (the
+lane-attach hold, or an egress car within 0.5 m of its lane point). Braking is read from the state,
+not from a speed change between snapshots, so it is not a snapshot late.
 
-- A connector's bend side is left, right or straight (25 degrees between its first and last
-  tangent). It is stored on the lane when connectors are built; derived, never saved.
-- A car signals from 40 m before its lane end, or from its brake look-ahead, to the end of the
-  connector.
-- Indicators and steering are computed within 100 m of the eye; beyond it the bits are zero.
-- Parked cars show no lamps.
-- The test that leaves a resting bucket untouched compares the new inputs too: a resting car
-  uploads nothing, and a changed lamp bit uploads once.
-- Braking is read from the speed change, one snapshot late; the simulation stores no
-  acceleration.
+**Indicators.** Left or right, never both (no hazard state fits yet, below):
+
+- during a lane change, toward the target lane;
+- on a road lane, from 40 m before its lane end, or 3 s of its speed when that is farther, toward
+  the bend of its planned connector, and on that connector to its end. A connector bends when its
+  first and last tangent differ by 25 degrees or more; a U-turn takes its side from its chord;
+- roundabouts: no signal entering the ring or circulating, the exit's bend side leaving it (a
+  connector at a node with a ring edge that does not lead onto the ring);
+- within the same lead of its detach point, toward the door of the building it drives to;
+- pulling out (egress or the lane-attach hold), toward the way it turns onto its lane when that
+  turn is 25 degrees or more, else toward the lane point when it lies 0.5 m or more to a side (out
+  of a kerb bay);
+- pulling in, toward the side of its lane it has left, until it faces 60 degrees from the lane;
+- none while reversing.
+
+**Reverse.** A truck whose yard pose is reversed (`yard_pose_reversed`: backing out of a dock, or
+into a `tail_in` one) while it pulls in or out off the lane. Resident cars never back up.
+
+**Steer.** On a lane, the signed angle between the path's tangents at the front and the rear axle
+(the means of the steering and the fixed wheels' centres from the facts): an arc of radius `R`
+gives `L / R` for a wheelbase `L`. Past its lane's end the front axle reads the lane the car takes
+next (its planned connector, or a connector's exit lane), so the wheels turn in before the
+connector, not when the car's centre reaches it. During a lane change both tangents are the
+S-curve's. Off a lane, `atan(L κ)` of the drawn arc's curvature `κ` (`PARK-29`, 0 on a straight
+leg), negated for a vehicle backing. Clamped to 35 degrees (the contract's wheel clearance) and
+rounded to a quarter of a degree, with zero as `+0.0`: a car on a straight or a steady curve gives
+one value tick after tick. The frame job eases the drawn steer toward the target at the body's
+rotation rate (18 per second) and takes the target once within 0.002 rad, so the easing ends
+exactly; a car is at rest only once its steer has settled.
+
+**Roll.** The drawn origin's travel along the nose (the runtime's `-Z`) over the model's wheel
+radius (the first wheel's; the pilot pair's wheels are one size each), added each frame and wrapped
+to a turn: it stops with the drawn pose (paused, queued), runs backward when the car backs, and
+follows any game speed. It carries on across tier and bucket switches and a change of height owner
+(lane to off-lane); a car first drawn starts at zero, as a parked row has it. Not quantised: it
+changes only while the pose does, and a resting car's row is copied, so it never churns on its
+own.
+
+**Parked and standing.** Parked rows keep every lamp bit zero, steer and roll zero, as in 1a: no
+work a frame. A truck standing in its dock (`AtDock`) is drawn with every lamp bit zero and
+straight wheels.
+
+**Uploads.** The untouched-bucket test compares the snapshot's steer target and lamp word, and a
+car's rest includes a settled steer, so a resting or steadily queued car uploads nothing; a lamp
+bit that changes uploads its bucket once. The indicator blink needs no upload. Measured
+(2026-11-22, the prepared 10k city, 1,190 frames at normal speed after 10 of warm-up, the release
+library test `vehicle_rows_uploaded_on_a_prepared_city`, each frame drawn through the agents' frame
+job twice, with 1b's values and with stage 1a's): a street view (eye 25 m up, a 300 m box) draws
+28.7 cars a frame, of which 3.6 brake, 1.7 indicate and 1.1 steer; a district view (300 m up, 2 km)
+826.6 cars, 8.6 braking, none indicating or steering (all on LOD2 and LOD3). Both views upload the
+same buckets and rows as 1a, 5.2 and 6.0 buckets with 28.7 and 826.6 rows a frame: every drawn
+bucket holds a moving car, so it uploads each frame either way, and the new values add no upload.
+
+**Left out.**
+
+- High beam stays off: an honest rule needs the oncoming lanes' buckets and on and off distances
+  kept between frames (presentation memory), and only its lens would show without the beam layers;
+  it stays with `RENDER-67`.
+- Hazard lights: no state fits. A truck standing at a dock is parked (engine off, lamps dark), and
+  a car stuck in gridlock is waiting, not broken down. Left for a breakdown or emergency state.
+- No early indicator before a lane change starts: the simulation has no planned-change state.
+
+**Tests.** `vehicle_signals/tests.rs` (brake for a braking, a standing and a queued car, dark for a
+cruising and a steadily following one, and for an off-lane car in the attach hold; indicators on a
+left and a right connector, a straight one and both lane changes, none beyond 100 m or on LOD3;
+steer `L / R` with its sign on a known arc, zero on a straight, the lock, none on LOD2, the arc rule
+forward and backing; the same state draws the same bits, angles and custom data);
+`car_visual/tests.rs` (roll follows the drawn travel through speed changes, a tier switch and a
+change of height owner, stops exactly and uploads nothing at rest, runs backward backing, restarts
+when a car is drawn anew; the steer eases and settles); `docks/backs_in.rs` (a truck backing into
+a `tail_in` dock shows the reverse lamp and no indicator, stands with every lamp dark, and leaves
+forward without it).
 
 ## Planned: beams, later lamps and glass (`RENDER-67`)
 
@@ -935,8 +1011,7 @@ Rules:
 | `daytime` | the car is driving, by day; dimmed at night |
 | `low_beam`, `tail` | driving, and the global night value is above zero |
 | `high_beam` | lights on, and the road has no street lights, and no vehicle is ahead in its lane within 150 m, and none is oncoming on the road's opposite lanes within 300 m |
-| `reverse` | a truck reversing in a yard |
-| hazard (both indicators) | a truck standing at a dock |
+| hazard (both indicators) | a state that fits (a breakdown, an emergency stop); not a truck at a dock, which is parked (`RENDER-66`) |
 
 - The high-beam rule is cosmetic: no speed, route or headway reads it. It is decided per posed
   car in the snapshot from the road's street-light flag and two lane-bucket lookups, O(log cars
@@ -944,8 +1019,6 @@ Rules:
   night. Vehicles beyond the current road are not seen.
 - To stop flicker at the thresholds the frame job keeps one bit per drawn car, with on and off
   distances of 150 / 180 m ahead and 300 / 350 m oncoming.
-- Wheel spin: the roll angle advances by the drawn displacement over the wheel radius, in the
-  frame job's existing loop.
 
 How the light is shown, through the three existing layers with a per-car high flag and no new
 light type:
