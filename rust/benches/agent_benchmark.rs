@@ -15,9 +15,11 @@ use metrum_rise::simulation::economy::agents::data::Agent;
 use metrum_rise::simulation::economy::agents::{
     ACCESS_PLAN_VALID, ACTIVITY_HOME, ACTIVITY_SHOPPING, ACTIVITY_WORK, AGE_ADULT, AgentSystem,
     MODE_CAR, TRANSIT_ACCESS_EGRESS, TRANSIT_ACCESS_INGRESS, TRANSIT_IN_BUILDING, TRANSIT_NETWORK,
-    VEHICLE_SEDAN,
 };
 use metrum_rise::simulation::economy::households::HouseholdSystem;
+
+// A car's vehicle type (0 to 3 are cars; the renderer picks the model, `RENDER-65`).
+const VEHICLE_CAR: u8 = 0;
 use metrum_rise::simulation::economy::logistics::ShipmentSystem;
 use metrum_rise::simulation::network::TransitNetwork;
 use metrum_rise::simulation::network::graph::{Edge, RegionGraph};
@@ -504,7 +506,7 @@ fn make_access_egress_agent(shared: &AccessSharedSetup) -> Agent {
         parking_trip: Default::default(),
         job_lock_until_day: 0,
         consecutive_unpaid_days: 0,
-        vehicle_type: VEHICLE_SEDAN,
+        vehicle_type: VEHICLE_CAR,
         pedestrian_type: 0,
         walk_phase: 0.0,
     }
@@ -569,7 +571,7 @@ fn make_access_ingress_agent(shared: &AccessSharedSetup) -> Agent {
         parking_trip: Default::default(),
         job_lock_until_day: 0,
         consecutive_unpaid_days: 0,
-        vehicle_type: VEHICLE_SEDAN,
+        vehicle_type: VEHICLE_CAR,
         pedestrian_type: 0,
         walk_phase: 0.0,
     }
@@ -673,7 +675,7 @@ fn make_idle_agent(shared: &SharedSetup) -> Agent {
         parking_trip: Default::default(),
         job_lock_until_day: 0,
         consecutive_unpaid_days: 0,
-        vehicle_type: VEHICLE_SEDAN,
+        vehicle_type: VEHICLE_CAR,
         pedestrian_type: 0,
         walk_phase: 0.0,
     }
@@ -742,7 +744,7 @@ fn make_on_road_agent(shared: &SharedSetup, route: Vec<u32>, progression: f32) -
         parking_trip: Default::default(),
         job_lock_until_day: 0,
         consecutive_unpaid_days: 0,
-        vehicle_type: VEHICLE_SEDAN,
+        vehicle_type: VEHICLE_CAR,
         pedestrian_type: 0,
         walk_phase: 0.0,
     }
