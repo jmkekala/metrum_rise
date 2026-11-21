@@ -147,6 +147,28 @@ so it is derived from the saved clock. `TimeSystem::process_delta` reports the c
 `start_slot + 1..=end_slot`; the slot in progress has already been processed. A minute's first
 slot is crossed exactly when the minute is.
 
+## Determinism across platforms (`SIM-03`)
+
+The determinism this project requires and tests is on one machine: the same save, inputs and
+frame sequence give the same result at any worker count, checked by the determinism gate
+(`tools/sim02_gate.py envelope determinism`) and the save and reload tests. It is **not**
+guaranteed across platforms. Known limit, accepted by the owner 2026-11-21:
+
+- `glam`'s own methods (`sin`, `sin_cos`, `tan`, `atan2`, `sqrt`, `exp`, `exp2`, `ln`, `log2`,
+  `powf`, `mul_add`, rounding) use the portable `libm` crate, because `rust/Cargo.toml` names
+  glam's `libm` feature (`TOOLS-37`). Those give the same bits on Linux, Windows and macOS.
+- Transcendental calls on plain `f32` and `f64` (`.sin()`, `.cos()`, `.atan2()`, `.powf()`,
+  `.exp()` and the like; a rough count on 2026-11-21 found about 255 outside test files, in
+  terrain, lane geometry, roundabouts and roadbed layout among others) use the platform's math
+  library, whose last bits may differ between platforms and library versions.
+
+So a save played on two platforms may drift apart. That does not affect single-player on one
+machine. It would matter for multiplayer, shared replays, or comparing a bug report tick for tick
+across platforms. Nothing is to be done until a feature needs it; then the simulation's
+transcendental calls go through `libm` or one thin wrapper, with a timing round, since the
+portable functions may cost more than the platform's. Do not remove glam's `libm` feature as
+redundant.
+
 ## Entity handles
 
 - A handle is `(index: u32, generation: u32)`. Each entity kind keeps a handle table: per handle
