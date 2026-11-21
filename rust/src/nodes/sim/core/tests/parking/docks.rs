@@ -1007,8 +1007,9 @@ fn write_the_freight_yard_still_save() {
     let catalog = load_runtime_economy_catalog().unwrap();
     core.logistics.shipments.push(Shipment {
         id: 0,
-        resource_runtime_id: catalog.resource_runtime_id_for_id("coal").unwrap(),
-        amount: 10.0,
+        // An input the yard's asset takes (the coal mine's machinery), so the check delivers.
+        resource_runtime_id: catalog.resource_runtime_id_for_id("machinery").unwrap(),
+        amount: 4.0,
         source: ShipmentEndpoint::Building(source),
         destination: ShipmentEndpoint::Building(yard),
         carrier_class: CarrierClass::Truck,
