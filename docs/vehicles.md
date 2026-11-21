@@ -891,8 +891,11 @@ buried, the lowest 0.3 mm under the 2 cm the solve lifts its support points (19.
 - Lanes still queue cars 2.7 m apart (`CAR_LENGTH`) while the estate is 4.48 m and the truck
   7.90 m long: queued cars overlap nose to tail until `TRAFFIC-38`.
 - One car shape in many paints until the fleet is built.
-- The tier pops at a band edge; the silhouettes match across tiers, and a cross-fade waits for
-  stills that show a pop.
+- The tier pops at a band edge, without a cross-fade. Seen in stills at the switch distances
+  (2026-11-22, the 428a413 pair, Forward+ and Compatibility, 13:00): at 30 m the estate's mirrors
+  go (LOD0 to LOD1), at 100 m its grey rims take the body colour (LOD1 to LOD2), the truck's
+  steps at 53 and 176 m are as slight; at 398 m (estate) and 702 m (truck) LOD2 and LOD3 read
+  alike at 1080p. LOD3 has no wheels and a dark lower strip, visible only near.
 - Parked tiers switch per chunk, by the distance to the chunk's batch centre.
 
 ## Planned: brake lights, indicators and steered wheels (`RENDER-66`)
