@@ -321,3 +321,39 @@ fn a_tie_goes_to_the_lower_gate_and_otherwise_the_shorter_route_wins() {
         }
     }
 }
+
+// An angled place (45° to its lot) has row lines along both lot axes through its aisle point too;
+// the axis parallel to the gate line crosses nothing. A square place has none beyond its own.
+#[test]
+fn an_angled_place_adds_the_lot_axes_row_lines() {
+    let row = ProofClass::Car.proof();
+    let axes = [v(1.0, 0.0), UP];
+    let s = std::f32::consts::FRAC_1_SQRT_2;
+    let forward = v(s, -s);
+    let bay = AnchorBay {
+        pos: forward * 2.5,
+        forward,
+        width: 2.5,
+        length: 5.0,
+    };
+    let aisle = forward * -2.5;
+    let [square, along_x, along_z, place] =
+        super::candidates(row, &bay, v(-10.0, 12.5), DOWN, axes);
+    let close = |got: Option<[Vector2; 2]>, want: [Vector2; 2]| {
+        let got = got.unwrap_or_else(|| panic!("no candidate for {want:?}"));
+        assert!(
+            got.iter().zip(want).all(|(g, w)| (*g - w).length() < 1e-4),
+            "{got:?} vs {want:?}"
+        );
+    };
+    close(square, [v(-10.0, aisle.y - (aisle.x + 10.0)), aisle]);
+    close(along_x, [v(-10.0, aisle.y), aisle]);
+    assert_eq!(along_z, None, "parallel to the gate line");
+    close(place, [v(-10.0, 10.0), aisle]);
+    let square_bay = AnchorBay {
+        forward: DOWN,
+        ..bay
+    };
+    let [_, x, z, _] = super::candidates(row, &square_bay, v(-10.0, 12.5), DOWN, axes);
+    assert_eq!((x, z), (None, None));
+}
