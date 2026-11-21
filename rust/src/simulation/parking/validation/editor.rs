@@ -473,7 +473,8 @@ fn rejection_json(anchor: usize, rejection: Rejection) -> Value {
 /// [`arc_waypoints`] lays them from that point and the heading of the leg arriving at it. The
 /// leg before the way's first waypoint comes from the stop along the bay (way out) or from the
 /// arrival gate's road connection to its approach (way in: the first usable freight Driveway in
-/// anchor order that is not the bay's exit, on the assumed straight street); with no waypoint
+/// anchor order that is not the bay's exit, else the exit itself when it is the only one, on the
+/// assumed straight street); with no waypoint
 /// the arc starts at the stop or the approach. `params` is the editor document's. Returns the
 /// index to insert at and the points. O(anchors + waypoints + chords); an edit boundary.
 pub(crate) fn route_arc(
@@ -505,12 +506,15 @@ pub(crate) fn route_arc(
     let lead = if way_in {
         let exit = a["exit"].as_str().map(str::trim).unwrap_or_default();
         let freight = ProofClass::Freight;
-        let (_, [connection, approach]) = lot
-            .driveway_paths(freight, |d| is_freight_class(d["vehicle_class"].as_str()))
-            .into_iter()
+        let gates = lot.driveway_paths(freight, |d| is_freight_class(d["vehicle_class"].as_str()));
+        // The proof arrives through any usable gate, the exit included: a gate other than the
+        // exit when the asset has one, else the exit itself (one gate both ways).
+        let (_, [connection, approach]) = gates
+            .iter()
             .find(|(name, _)| exit.is_empty() || *name != exit)
+            .or(gates.first())
             .ok_or("Add a freight Driveway at the street edge first: a way in starts at its approach")?;
-        [connection, approach]
+        [*connection, *approach]
     } else {
         let forward = vector(&a["forward"]).normalized();
         let stop = vector(&a["position"]) + forward * (number(a, "length_m", 5.0) * 0.5);

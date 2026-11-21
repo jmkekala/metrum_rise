@@ -248,6 +248,29 @@ fn the_arc_helper_lays_a_drive_through_that_proves_without_an_envelope() {
     assert!(at(&rejected["leg"][1], [-3.0, -8.0]), "{rejected}");
 }
 
+// Found authoring the power plant: with one freight gate that is also the bay's exit, "Add arc"
+// on the way in found no arrival gate. The proof arrives through any usable gate, the exit
+// included, so the arc starts from that gate's approach.
+#[test]
+fn the_way_ins_arc_starts_at_the_one_gate_even_when_it_is_the_exit() {
+    let (mut params, _) = yard(gate(6.0, "freight"), true);
+    params["anchors"][1]["name"] = json!("truck_gate");
+    let before = route_arc(&params, 2, true, None, 10.0, 90.0, true).unwrap();
+    params["anchors"][2]["exit"] = json!("truck_gate");
+    let after = route_arc(&params, 2, true, None, 10.0, 90.0, true)
+        .expect("the exit is the only gate, so the way in arrives through it");
+    assert_eq!(after, before, "the same gate's approach, whether or not it is the exit");
+    // With a second gate, the way in still starts at the gate that is not the exit.
+    params["anchors"].as_array_mut().unwrap().push(json!({"anchor_type":"driveway",
+        "name":"truck_out", "position":[7.5,0,20], "forward":[0,0,-1], "width_m":6.0,
+        "vehicle_class":"freight"}));
+    params["anchors"][2]["exit"] = json!("truck_out");
+    assert_eq!(route_arc(&params, 2, true, None, 10.0, 90.0, true).unwrap(), before);
+    params["anchors"][2]["exit"] = json!("truck_gate");
+    let other = route_arc(&params, 2, true, None, 10.0, 90.0, true).unwrap();
+    assert_ne!(other, before, "the way in arrives by truck_out when truck_gate is the exit");
+}
+
 #[test]
 fn an_arc_bends_under_fifteen_degrees_at_every_chord() {
     use super::super::route::arc_waypoints;
