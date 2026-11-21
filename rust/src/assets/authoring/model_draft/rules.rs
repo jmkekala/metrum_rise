@@ -264,5 +264,10 @@ pub(crate) fn params(
     if let Some(set) = &role.asset_set {
         params["asset_set"] = json!(set);
     }
+    // The model's lanes on the part that shows it (`PARK-21`): part-local is the `.glb`'s frame,
+    // so the R2 position places them with the model. Docks, exits and routes are never drafted.
+    if facts.passages.as_ref().is_some_and(|p| !p.is_empty()) {
+        params["mesh_parts"][0]["passages"] = json!(facts.part_passages());
+    }
     Ok(params)
 }

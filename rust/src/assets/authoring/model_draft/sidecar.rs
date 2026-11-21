@@ -38,6 +38,29 @@ pub(crate) struct Facts {
     pub(crate) default_variant: String,
     pub(crate) preview: FileRef,
     pub(crate) hero: bool,
+    /// Every lane a vehicle drives into or through the model (`PARK-21`). Optional in schema
+    /// version 1: absent (`None`), the model says nothing about lanes and a draft or report
+    /// leaves the parts' passages as authored; present, empty included, it is the whole list.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) passages: Option<Vec<SidecarPassage>>,
+}
+
+/// A lane through the model, in the sidecar's frame: the fields of a mesh part's passage
+/// (`[[mesh_parts.passages]]`), which the draft copies onto the drafted part unchanged, since a
+/// part's local frame is the `.glb`'s.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SidecarPassage {
+    /// Unique in the asset; the passage's `name`.
+    pub(crate) id: String,
+    /// Centre of the mouth on the outer wall plane at ground level, `[x, 0, z]`.
+    pub(crate) position: [f64; 3],
+    /// Unit direction into the model, `[x, 0, z]`: the opposite of the mouth's outward normal.
+    pub(crate) forward: [f64; 3],
+    pub(crate) width_m: f64,
+    pub(crate) length_m: f64,
+    pub(crate) clear_height_m: f64,
+    pub(crate) through: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
@@ -272,6 +295,7 @@ impl Facts {
             return Err("sidecar storeys must be listed lowest first".into());
         }
         self.check_doors()?;
+        self.check_passages()?;
         if self.lods.is_empty() {
             return Err("sidecar lists no LOD file".into());
         }
@@ -358,6 +382,67 @@ impl Facts {
             _ => return Err("sidecar must mark exactly one door as main".into()),
         }
         Ok(())
+    }
+}
+
+impl Facts {
+    // Passages: unique ids, a finite mouth on the ground, a horizontal unit forward and a
+    // positive size. Whether one lies inside the model and runs along a lot axis is the drafted
+    // asset's validation (`check_passages_in_bounds`, `lot_axis_forward`). O(passages log passages).
+    fn check_passages(&self) -> Result<(), String> {
+        let mut ids = BTreeSet::new();
+        for passage in self.passages.iter().flatten() {
+            if passage.id.trim().is_empty() || !ids.insert(passage.id.as_str()) {
+                return Err(format!(
+                    "sidecar passage id '{}' is empty or repeated",
+                    passage.id
+                ));
+            }
+            let [fx, fy, fz] = passage.forward;
+            if !passage
+                .position
+                .iter()
+                .chain(&passage.forward)
+                .all(|v| v.is_finite())
+                || passage.position[1].abs() > GROUND_TOLERANCE_M
+                || fy != 0.0
+                || ((fx * fx + fz * fz).sqrt() - 1.0).abs() > UNIT_TOLERANCE
+            {
+                return Err(format!(
+                    "sidecar passage '{}' needs a finite mouth on the ground and a horizontal unit forward",
+                    passage.id
+                ));
+            }
+            if ![passage.width_m, passage.length_m, passage.clear_height_m]
+                .iter()
+                .all(|v| v.is_finite() && *v > 0.0)
+            {
+                return Err(format!(
+                    "sidecar passage '{}' needs a positive width, length and clear height",
+                    passage.id
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// The passages as the drafted part's `passages`, in sidecar order. O(passages).
+    pub(crate) fn part_passages(&self) -> Vec<serde_json::Value> {
+        self.passages
+            .iter()
+            .flatten()
+            .map(|p| {
+                serde_json::json!({
+                    "name": p.id,
+                    "position": p.position,
+                    "forward": p.forward,
+                    "width_m": p.width_m,
+                    "length_m": p.length_m,
+                    "clear_height_m": p.clear_height_m,
+                    "through": p.through,
+                })
+            })
+            .collect()
     }
 }
 

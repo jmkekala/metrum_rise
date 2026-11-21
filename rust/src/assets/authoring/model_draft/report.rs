@@ -20,6 +20,8 @@ pub(crate) const ENTRANCE_TOLERANCE_M: f32 = 0.5;
 pub(crate) const ENTRANCE_TOLERANCE_DEG: f32 = 15.0;
 /// With a ledger entry, a door that moved this far is reported on its own.
 const DOOR_MOVE_M: f64 = 0.05;
+/// A part's passage differs from the model's when a field differs by this much (`PARK-21`).
+const PASSAGE_TOLERANCE_M: f64 = 0.001;
 
 /// A site item reported only when it shares more than this with the footprint: a surface whose
 /// edge lies on a wall touches it and shares nothing, and float noise along such an edge stays
@@ -86,6 +88,7 @@ pub(crate) fn stale_report(
         }
         lines.extend(entrance(facts, ledger, manifest, part));
         lines.extend(site_layout(facts, ledger, manifest, part));
+        lines.extend(passages(facts, part));
     } else if part.is_none() {
         lines.push(line(
             "lot_fit",
@@ -219,12 +222,59 @@ fn changed_facts(facts: &Facts, ledger: &Facts) -> Vec<Line> {
         "household_capacity",
     );
     compare(facts.variants != ledger.variants, "variants", "appearance");
+    compare(facts.passages != ledger.passages, "passages", "mesh_parts");
     let old: BTreeMap<_, _> = ledger.doors.iter().map(|d| (d.id.as_str(), d)).collect();
     let new: BTreeMap<_, _> = facts.doors.iter().map(|d| (d.id.as_str(), d)).collect();
     for id in old.keys().chain(new.keys()).collect::<BTreeSet<_>>() {
         if old.get(id) != new.get(id) {
             compare(true, &format!("door '{id}'"), "anchors");
         }
+    }
+    lines
+}
+
+// The model's passages against the part that shows it (`PARK-21`), by name: one the part lacks,
+// one the model lacks, or one whose fields differ by 1 mm or more (the sidecar rounds to 0.1 mm)
+// marks the asset stale. A sidecar without the optional `passages` says nothing about lanes: an
+// information line when the part has passages. O(passages log passages).
+fn passages(facts: &Facts, part: &MeshPart) -> Vec<Line> {
+    let Some(model) = &facts.passages else {
+        if part.passages.is_empty() {
+            return Vec::new();
+        }
+        return vec![info(
+            "passages",
+            "mesh_parts",
+            format!(
+                "the model's sidecar declares no passages; part '{}' keeps its {} as authored",
+                part.name,
+                part.passages.len()
+            ),
+        )];
+    };
+    let old: BTreeMap<_, _> = part.passages.iter().map(|p| (p.name.as_str(), p)).collect();
+    let new: BTreeMap<_, _> = model.iter().map(|p| (p.id.as_str(), p)).collect();
+    let close = |a: f64, b: f32| (a - f64::from(b)).abs() < PASSAGE_TOLERANCE_M;
+    let mut lines = Vec::new();
+    for id in old.keys().chain(new.keys()).collect::<BTreeSet<_>>() {
+        let message = match (old.get(id), new.get(id)) {
+            (None, Some(_)) => format!("the model has passage '{id}', part '{}' does not", part.name),
+            (Some(_), None) => format!("part '{}' has passage '{id}', the model does not", part.name),
+            (Some(a), Some(b)) => {
+                let same = (0..3).all(|i| close(b.position[i], a.position[i]))
+                    && (0..3).all(|i| close(b.forward[i], a.forward[i]))
+                    && close(b.width_m, a.width_m)
+                    && close(b.length_m, a.length_m)
+                    && close(b.clear_height_m, a.clear_height_m)
+                    && b.through == a.through;
+                if same {
+                    continue;
+                }
+                format!("passage '{id}' of part '{}' differs from the model's", part.name)
+            }
+            (None, None) => continue,
+        };
+        lines.push(line("passages", "mesh_parts", message));
     }
     lines
 }

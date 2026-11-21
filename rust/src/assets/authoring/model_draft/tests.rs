@@ -971,3 +971,117 @@ fn a_role_defaults_its_level_and_display_name() {
         "{error}"
     );
 }
+
+// `PARK-21`: the optional `passages` of schema version 1, in the sidecar's frame.
+fn with_passage(sidecar: &mut Value) {
+    sidecar["passages"] = json!([{
+        "id": "carport", "position": [-4.0, 0.0, 2.9], "forward": [0, 0, -1],
+        "width_m": 1.5, "length_m": 4.0, "clear_height_m": 2.2, "through": false
+    }]);
+}
+
+#[test]
+fn the_reader_takes_passages_or_their_absence_and_refuses_bad_ones() {
+    let absent = facts_with(|_| {}).unwrap();
+    assert_eq!(absent.passages, None, "today's sidecars carry none");
+    assert!(facts_with(|s| s["passages"] = json!([])).unwrap().passages == Some(Vec::new()));
+    let facts = facts_with(with_passage).unwrap();
+    let passage = &facts.passages.as_ref().unwrap()[0];
+    assert_eq!((passage.id.as_str(), passage.width_m, passage.through), ("carport", 1.5, false));
+    let refused = |edit: fn(&mut Value), expected: &str| {
+        let error = facts_with(|s| {
+            with_passage(s);
+            edit(&mut s["passages"][0]);
+        })
+        .unwrap_err();
+        assert!(error.contains(expected), "{expected}: {error}");
+    };
+    refused(|p| p["facing"] = json!([0, 0, 1]), "unknown field");
+    refused(|p| p["id"] = json!(" "), "empty or repeated");
+    refused(|p| p["forward"] = json!([0, 0.5, -1]), "horizontal unit forward");
+    refused(|p| p["forward"] = json!([0, 0, -2]), "horizontal unit forward");
+    refused(|p| p["position"] = json!([-4.0, 0.3, 2.9]), "on the ground");
+    refused(|p| p["clear_height_m"] = json!(0.0), "positive width");
+    refused(
+        |p| {
+            p.as_object_mut().unwrap().remove("through");
+        },
+        "missing field",
+    );
+    let error = facts_with(|s| {
+        with_passage(s);
+        let copy = s["passages"][0].clone();
+        s["passages"].as_array_mut().unwrap().push(copy);
+    })
+    .unwrap_err();
+    assert!(error.contains("empty or repeated"), "{error}");
+}
+
+// The draft puts the model's passages on the part that shows it, in its own (the `.glb`'s)
+// frame, so the R2 position places them with the model; it drafts no loading bay, exit or way.
+#[test]
+fn the_draft_declares_the_models_passages_on_its_part() {
+    let mut fixture = Fixture::new();
+    with_passage(&mut fixture.sidecar);
+    fixture.write_sidecar();
+    let derived = derive(&fixture.inputs(), &fixture.mods(), &fixture.root).unwrap();
+    let params = &derived.document["params"];
+    assert_eq!(
+        params["mesh_parts"][0]["passages"],
+        json!([{"name": "carport", "position": [-4.0, 0.0, 2.9], "forward": [0.0, 0.0, -1.0],
+                "width_m": 1.5, "length_m": 4.0, "clear_height_m": 2.2, "through": false}])
+    );
+    let anchors = params["anchors"].as_array().unwrap();
+    assert!(anchors.iter().all(|a| a["anchor_type"] == "entrance"), "{anchors:?}");
+    // Without the field the part has no passages, as before.
+    let plain = Fixture::new();
+    let plain = derive(&plain.inputs(), &plain.mods(), &plain.root).unwrap();
+    assert!(plain.document["params"]["mesh_parts"][0].get("passages").is_none());
+}
+
+// The stale report compares the model's passages with the part's by name; an absent field
+// leaves the part's as authored with an information line.
+#[test]
+fn the_stale_report_compares_passages_when_the_model_declares_them() {
+    let fixture = Fixture::new();
+    let files = published(&fixture, &fixture.inputs().facts);
+    let walk = "[[-3.57, 3], [1.43, 3], [1.43, 10], [-3.57, 10]]";
+    let facts = facts_with(with_passage).unwrap();
+    let passages = |lines: &[Line]| -> Vec<(bool, String)> {
+        lines
+            .iter()
+            .filter(|l| l.check == "passages")
+            .map(|l| (l.stale, l.message.clone()))
+            .collect()
+    };
+    let manifest = hand_manifest([-1.14, 0.0, 1.58], walk);
+    let lines = stale_report(&facts, None, &manifest, &files);
+    assert_eq!(
+        passages(&lines),
+        [(true, format!("the model has passage 'carport', part '{NAME}_lod0.glb' does not"))]
+    );
+    let mut manifest = hand_manifest([-1.14, 0.0, 1.58], walk);
+    let part: crate::assets::asset::Passage = serde_json::from_value(
+        json!({"name": "carport", "position": [-4.0, 0.0, 2.9], "forward": [0, 0, -1],
+               "width_m": 1.5, "length_m": 4.0, "clear_height_m": 2.2}),
+    )
+    .unwrap();
+    manifest.mesh_parts[0].passages.push(part);
+    assert!(passages(&stale_report(&facts, None, &manifest, &files)).is_empty());
+    let mut taller = facts.clone();
+    taller.passages.as_mut().unwrap()[0].clear_height_m = 2.4;
+    assert_eq!(
+        passages(&stale_report(&taller, Some(&facts), &manifest, &files)),
+        [(true, format!("passage 'carport' of part '{NAME}_lod0.glb' differs from the model's"))]
+    );
+    assert!(
+        stale_report(&taller, Some(&facts), &manifest, &files)
+            .iter()
+            .any(|l| l.check == "facts" && l.message.contains("passages"))
+    );
+    let absent = facts_with(|_| {}).unwrap();
+    assert_eq!(
+        passages(&stale_report(&absent, None, &manifest, &files)),
+        [(false, format!("the model's sidecar declares no passages; part '{NAME}_lod0.glb' keeps its 1 as authored"))]
+    );
+}
