@@ -84,7 +84,7 @@ impl SimCore {
         let mut points = Vec::new();
         let mut kerb_edges = edges.clone();
         for (handle, lot, blockers) in lots {
-            let LotProof { bays, issues, docks, dock_issues, dock_ways } = lot;
+            let LotProof { bays, issues, docks, dock_issues, dock_ways, tail_in } = lot;
             self.parking
                 .set_kerb_blockers(handle.to_bits(), blockers, &mut kerb_edges);
             points.extend(self.parking.source_points(handle.to_bits()));
@@ -102,7 +102,7 @@ impl SimCore {
             } else {
                 self.parking.diagnostics.insert(handle.to_bits(), issues);
             }
-            self.publish_docks(handle.to_bits(), &docks, &dock_ways, dock_issues);
+            self.publish_docks(handle.to_bits(), &docks, &dock_ways, &tail_in, dock_issues);
         }
         points.extend(
             edges
@@ -170,6 +170,7 @@ impl SimCore {
             lot.bays.clear();
             lot.docks.clear();
             lot.dock_ways.clear();
+            lot.tail_in.clear();
         }
         (lot, blockers)
     }
@@ -182,6 +183,7 @@ impl SimCore {
         handle: u64,
         docks: &[(u32, Bay)],
         ways: &[(u32, DockWay)],
+        tail_in: &[u32],
         issues: Vec<String>,
     ) {
         // A carrier that has left a dock does not clear its holder (`PARK-20`): clear those
@@ -189,7 +191,7 @@ impl SimCore {
         let agents = &self.agents;
         self.parking
             .clear_left_dock_holders(handle, |holder, dock| agents.holds_freight_dock(holder, dock));
-        self.parking.replace_docks(handle, docks, ways);
+        self.parking.replace_docks(handle, docks, ways, tail_in);
         if issues.is_empty() {
             self.parking.dock_diagnostics.remove(&handle);
         } else {
@@ -353,7 +355,7 @@ impl SimCore {
                     .collect()
             });
             for (handle, lot) in lots {
-                self.publish_docks(handle, &lot.docks, &lot.dock_ways, lot.dock_issues);
+                self.publish_docks(handle, &lot.docks, &lot.dock_ways, &lot.tail_in, lot.dock_issues);
             }
             return;
         }
@@ -417,7 +419,8 @@ impl SimCore {
     }
 
     /// How each of building `index`'s published docks is driven, one inspector line per dock
-    /// in anchor order (`PARK-21`): a drive-through names its exit, a dock backed out of says so.
+    /// in anchor order (`PARK-21`): a drive-through names its exit, a dock backed out of says so,
+    /// and so does one backed into (`PARK-23`).
     /// Empty for a building without docks. O(its docks).
     pub(crate) fn dock_drive_lines(&self, index: usize) -> Vec<String> {
         let building = &self.allocator.buildings[index];
@@ -432,6 +435,9 @@ impl SimCore {
                 let name = if bay.name.is_empty() { "loading bay" } else { bay.name.as_str() };
                 Some(match bay.exit.as_deref().filter(|_| self.parking.dock_leaves_forward(dock)) {
                     Some(exit) => format!("{name}: drive-through, leaves forward by '{exit}'"),
+                    None if self.parking.dock_backs_in(dock) => {
+                        format!("{name}: backs in, leaves forward through its gate")
+                    }
                     None => format!("{name}: backs out through its gate"),
                 })
             })
@@ -530,7 +536,7 @@ impl SimCore {
         let mut hosts = Vec::with_capacity(lots.len());
         let mut kerb_edges = BTreeSet::new();
         for (handle, lot, blockers) in lots {
-            let LotProof { bays, issues, docks, dock_issues, dock_ways } = lot;
+            let LotProof { bays, issues, docks, dock_issues, dock_ways, tail_in } = lot;
             hosts.push(handle.to_bits());
             self.parking
                 .set_kerb_blockers(handle.to_bits(), blockers, &mut kerb_edges);
@@ -549,7 +555,7 @@ impl SimCore {
             } else {
                 self.parking.diagnostics.insert(handle.to_bits(), issues);
             }
-            self.publish_docks(handle.to_bits(), &docks, &dock_ways, dock_issues);
+            self.publish_docks(handle.to_bits(), &docks, &dock_ways, &tail_in, dock_issues);
         }
         self.reconcile_kerb_parking(&kerb_edges, &mut points);
         self.publish_site_catchments(&hosts, &points);

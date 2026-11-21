@@ -33,7 +33,8 @@ pub(crate) struct LotProof {
     /// whose loading bays are not validated at all.
     pub dock_issues: Vec<String>,
     /// The authored drive of each dock that has one (`PARK-21`), by anchor index.
-    pub dock_ways: Vec<(u32, DockWay)>,
+    pub dock_ways: Vec<(u32, DockWay)>,    /// The docks a truck backs into (`PARK-23`), by anchor index, ascending.
+    pub tail_in: Vec<u32>,
 }
 
 /// [`lot_proof`]'s car half, for the callers that read no dock. Same bound.
@@ -332,6 +333,9 @@ pub(crate) fn lot_proof(
                         proof.dock_ways.push((anchor, way));
                     }
                     proof.docks.push(place(anchor, dock.path, pos, forward, width, length));
+                    if anchors[anchor as usize].backs_in() {
+                        proof.tail_in.push(anchor);
+                    }
                 }
                 Err(rejection) => proof.dock_issues.push(format!(
                     "{} loading bay {}: {}",

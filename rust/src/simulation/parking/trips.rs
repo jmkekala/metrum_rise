@@ -505,6 +505,25 @@ impl ParkingSystem {
             .is_some_and(|way| !way.route_out.as_slice().is_empty())
     }
 
+    /// Whether a freight carrier on yard trip `trip` faces against the way its access step
+    /// leads it: tail first. Pulling into and standing in a dock it backs into (`PARK-23`), and
+    /// pulling out of a dock it neither leaves by a way out (`PARK-21`) nor backed into, which it
+    /// backs out of nose to the bay (`PARK-20`). The pose only: positions do not read it. O(1); a
+    /// stage A dock's pull-out one lookup more than before, a pull-in or stand one emptiness
+    /// test in a city without a backed-into dock.
+    pub(crate) fn yard_pose_reversed(&self, trip: &ParkingTrip) -> bool {
+        match trip.phase {
+            _ if !trip.freight_gate => false,
+            ParkingTripPhase::PullIn | ParkingTripPhase::AtDock => {
+                self.dock_backs_in(trip.destination)
+            }
+            ParkingTripPhase::PullOut => {
+                !self.dock_leaves_forward(trip.source) && !self.dock_backs_in(trip.source)
+            }
+            _ => false,
+        }
+    }
+
     /// O(1) inspection of the independent car's current place.
     pub(crate) fn vehicle_place(&self, car: Handle<Vehicle>) -> Option<Handle<Place>> {
         self.vehicle_handles

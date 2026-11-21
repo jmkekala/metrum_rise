@@ -42,7 +42,8 @@ pub(crate) fn access_phase_target(
     let trip = core.agents.parking_trip[agent_idx];
     if trip.phase == crate::simulation::parking::ParkingTripPhase::AtDock {
         // A truck standing in its bay faces along its route's last leg, into the bay
-        // (`PARK-20`): a point one leg beyond the stop.
+        // (`PARK-20`): a point one leg beyond the stop. `access_phase_direction` turns it about
+        // for a dock the truck backs into (`PARK-23`).
         let [_, _, [ax, az], [sx, sz]] = core.parking.dock_route(trip.destination)?;
         return Some(Vector3::new(2.0 * sx - ax, 0.0, 2.0 * sz - az));
     }
@@ -97,12 +98,11 @@ pub(super) fn access_phase_direction(
     }?;
     let mut direction = Vector3::new(target.x - world_x, 0.0, target.z - world_z);
     let trip = &core.agents.parking_trip[agent_idx];
-    if trip.freight_gate
-        && trip.phase == crate::simulation::parking::ParkingTripPhase::PullOut
-        && !core.parking.dock_leaves_forward(trip.source)
-    {
+    if trip.freight_gate && core.parking.yard_pose_reversed(trip) {
         // A truck backs out of its dock (owner decision 2, `PARK-20`): its nose points back
-        // along the route, into the bay. One with a way out drives it forward (`PARK-21`).
+        // along the route, into the bay. One with a way out drives it forward (`PARK-21`). One
+        // that backs into its dock (`PARK-23`) points its tail along the way in and at the bay's
+        // far end while it stands, and drives out forward.
         direction = -direction;
     }
     (direction.length_squared() > 1e-6).then(|| direction.normalized())

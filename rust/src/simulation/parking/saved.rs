@@ -25,6 +25,10 @@ struct SavedPlace {
     // every other row saves as it did before.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     way: Option<SavedWay>,
+    // A dock a truck backs into (`PARK-23`, format 125); written only when set, so every other
+    // row saves as it did before.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    tail_in: bool,
 }
 // The two ways of a dock's drive, as their points; `route_out` absent when the dock has no exit.
 #[derive(Serialize, Deserialize)]
@@ -138,6 +142,7 @@ impl ParkingSystem {
                         route_in: way.route_in.as_slice().to_vec(),
                         route_out: way.route_out.as_slice().to_vec(),
                     }),
+                    tail_in: self.dock_tail_in.contains(&self.place_handles.handle(p)),
                 })
                 .collect()
         });
@@ -250,6 +255,14 @@ impl ParkingSystem {
                     return Err("invalid loading dock route".into());
                 };
                 system.dock_ways.insert(handle, DockWay { route_in, route_out });
+            }
+            if place.tail_in {
+                // Only a dock is backed into, and a truck leaves one forward the way it came:
+                // never through an exit (`PARK-23`).
+                if !dock || system.dock_ways.get(&handle).is_some_and(|w| !w.route_out.as_slice().is_empty()) {
+                    return Err("invalid backed-into loading dock".into());
+                }
+                system.dock_tail_in.insert(handle);
             }
             // A dock is in no chunk (`PARK-19`).
             let chunk = (!dock).then(|| {

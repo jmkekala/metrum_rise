@@ -12,13 +12,19 @@ use crate::simulation::economy::agents::AgentHandle;
 use crate::simulation::network::{TransitNetwork, graph::RegionGraph};
 
 impl ParkingSystem {
-    /// Replaces one building's docks with `docks` (anchor, geometry) and their authored drives
-    /// `ways` (anchor, drive; `PARK-21`), keeping a dock whose pose is unchanged under its
-    /// handle. A dock a carrier holds (`freight_holder`) goes inactive and stays, with its
+    /// Replaces one building's docks with `docks` (anchor, geometry), their authored drives
+    /// `ways` (anchor, drive; `PARK-21`) and the anchors of those a truck backs into, `tail_in`
+    /// (`PARK-23`), keeping a dock whose pose is unchanged under its handle. A dock a carrier holds (`freight_holder`) goes inactive and stays, with its
     /// drive, until it is released; callers clear the holders that have left first
     /// ([`Self::clear_left_dock_holders`]). O(old log old + new × ways) for the building's
     /// docks; an edit or load boundary.
-    pub(crate) fn replace_docks(&mut self, building: u64, docks: &[(u32, Bay)], ways: &[(u32, DockWay)]) {
+    pub(crate) fn replace_docks(
+        &mut self,
+        building: u64,
+        docks: &[(u32, Bay)],
+        ways: &[(u32, DockWay)],
+        tail_in: &[u32],
+    ) {
         let mut sources = self.building_docks.remove(&building).unwrap_or_default();
         sources.extend(
             docks
@@ -33,7 +39,7 @@ impl ParkingSystem {
             };
             let bay = docks.iter().find(|(a, _)| *a == anchor).map(|(_, bay)| bay);
             let way = ways.iter().find(|(a, _)| *a == anchor).map(|(_, way)| way);
-            self.replace_dock_source(source, bay, way);
+            self.replace_dock_source(source, bay, way, tail_in.contains(&anchor));
         }
         sources.retain(|source| self.sources.contains_key(source));
         if !sources.is_empty() {
@@ -41,9 +47,15 @@ impl ParkingSystem {
         }
     }
 
-    // One loading bay's rows: the row with `bay`'s pose kept and updated, its drive with it,
-    // every other removed, a new row when none kept. O(rows of the source), at most two.
-    fn replace_dock_source(&mut self, source: PlaceSource, bay: Option<&Bay>, way: Option<&DockWay>) {
+    // One loading bay's rows: the row with `bay`'s pose kept and updated, its drive and stand
+    // with it, every other removed, a new row when none kept. O(rows of the source), at most two.
+    fn replace_dock_source(
+        &mut self,
+        source: PlaceSource,
+        bay: Option<&Bay>,
+        way: Option<&DockWay>,
+        tail_in: bool,
+    ) {
         let mut old = self.sources.get(&source).cloned().unwrap_or_default();
         old.sort_unstable();
         let mut kept = false;
@@ -51,14 +63,16 @@ impl ParkingSystem {
             let p = self.place_handles.resolve(handle).expect("dock row");
             // A held row keeps its route and its drive (`PARK-21`): its truck may be on them, and
             // the way it drives must not change under it. One whose route or drive changes (an
-            // arrival gate or an exit moved) is retired for it, as a moved dock is.
+            // arrival gate or an exit moved) is retired for it, as a moved dock is; so is one
+            // whose stand changes (`PARK-23`), so its truck never turns about under the author.
             let same_pose = bay.is_some_and(|bay| {
                 self.places.position[p].map(f32::to_bits) == bay.position.map(f32::to_bits)
                     && self.places.heading[p].to_bits() == bay.heading.to_bits()
                     && (self.places.freight_holder[p].is_none()
                         || (self.places.path[p].map(|q| q.map(f32::to_bits))
                             == bay.path.map(|q| q.map(f32::to_bits))
-                            && self.dock_ways.get(&handle) == way))
+                            && self.dock_ways.get(&handle) == way
+                            && self.dock_tail_in.contains(&handle) == tail_in))
             });
             match bay {
                 Some(bay) if same_pose && !kept => {
@@ -68,6 +82,7 @@ impl ParkingSystem {
                     self.places.width[p] = bay.width;
                     self.places.length[p] = bay.length;
                     self.set_dock_way(handle, way);
+                    self.set_dock_stand(handle, tail_in);
                 }
                 _ => self.remove_dock(handle),
             }
@@ -75,6 +90,16 @@ impl ParkingSystem {
         if let (false, Some(bay)) = (kept, bay) {
             let handle = self.add_dock(source, *bay);
             self.set_dock_way(handle, way);
+            self.set_dock_stand(handle, tail_in);
+        }
+    }
+
+    // Records whether a truck backs into a dock row (`PARK-23`). O(1).
+    fn set_dock_stand(&mut self, handle: Handle<Place>, tail_in: bool) {
+        if tail_in {
+            self.dock_tail_in.insert(handle);
+        } else {
+            self.dock_tail_in.remove(&handle);
         }
     }
 
@@ -129,6 +154,7 @@ impl ParkingSystem {
         }
         self.dock_ways.remove(&handle);
         self.dock_exits.remove(&handle);
+        self.dock_tail_in.remove(&handle);
         let source = self.places.source[p];
         let slot = self.places.source_slot[p];
         let list = self.sources.get_mut(&source).expect("indexed dock source");
@@ -225,6 +251,13 @@ impl ParkingSystem {
     #[cfg(test)]
     pub(crate) fn dock_way(&self, dock: Handle<Place>) -> Option<&DockWay> {
         self.dock_ways.get(&dock)
+    }
+
+    /// Whether a truck backs into `dock` and leaves it forward (`PARK-23`): it travels the
+    /// dock's way in tail first and back out nose first. O(1); one emptiness test in a city
+    /// without such a dock.
+    pub(crate) fn dock_backs_in(&self, dock: Handle<Place>) -> bool {
+        !self.dock_tail_in.is_empty() && self.dock_tail_in.contains(&dock)
     }
 
     /// The road connection of the gate a truck leaves `dock` by (`PARK-21`): its way out's last

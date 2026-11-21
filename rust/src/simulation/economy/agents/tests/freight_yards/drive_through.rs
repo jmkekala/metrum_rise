@@ -44,7 +44,7 @@ fn publish_drive_through(yard: &mut Yard, building: usize) -> DockWay {
         width: 3.5,
         length: 8.0,
     };
-    yard.parking.replace_docks(handle, &[(0, bay)], &[(0, way)]);
+    yard.parking.replace_docks(handle, &[(0, bay)], &[(0, way)], &[]);
     yard.parking
         .refresh_dock_access(handle, &yard.allocator, &yard.network, &yard.graph);
     let b = &yard.allocator.buildings[building];

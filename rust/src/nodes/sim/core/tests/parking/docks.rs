@@ -214,7 +214,7 @@ fn an_older_save_derives_the_docks_a_fresh_validation_gives() {
     let gates = core.allocator.freight_gates.clone();
     assert_eq!(rows.len(), 1);
     // The save an older build wrote: no dock row.
-    core.parking.replace_docks(building, &[], &[]);
+    core.parking.replace_docks(building, &[], &[], &[]);
     core.allocator.freight_gates.clear();
     let path = std::env::temp_dir().join(format!("metrum_old_docks_{}.sqlite", std::process::id()));
     let path_text = path.to_str().expect("a temporary path");
@@ -333,7 +333,7 @@ fn a_drive_through_dock_keeps_its_ways_on_its_row_and_in_a_save() {
             crate::simulation::save::schema::PRE_ROUTES_SAVE_VERSION
         ))
         .unwrap();
-    core.parking.replace_docks(building, &[], &[]);
+    core.parking.replace_docks(building, &[], &[], &[]);
     core.load_game_internal(path_text).expect("format 123 loads");
     let _ = std::fs::remove_file(&path);
     assert_eq!(core.parking.dock_rows(), rows);
@@ -1166,7 +1166,8 @@ fn a_save_with_a_truck_in_a_yard_loads_after_an_edit_retired_its_dock() {
 // and registered as `METRUM_FREIGHT_STILL_ID` (`pack:asset`, the id the game's packs give it).
 // Writes `yard.sqlite` and `yard.json` (each dock's route and heading, world x and z) into
 // `METRUM_FREIGHT_STILL_OUT`. A save loads without validating its docks, so the game draws the
-// rows proven here.
+// rows proven here. The shipment carries `METRUM_FREIGHT_STILL_RESOURCE`, an input the asset
+// takes (default `machinery`, the coal mine's; `grain` for a food processor, `PARK-23`).
 #[test]
 #[ignore = "manual fixture for rendered freight yard stills; requires METRUM_FREIGHT_STILL_ASSET, _ID and _OUT"]
 fn write_the_freight_yard_still_save() {
@@ -1208,7 +1209,11 @@ fn write_the_freight_yard_still_save() {
     core.logistics.shipments.push(Shipment {
         id: 0,
         // An input the yard's asset takes (the coal mine's machinery), so the check delivers.
-        resource_runtime_id: catalog.resource_runtime_id_for_id("machinery").unwrap(),
+        resource_runtime_id: catalog
+            .resource_runtime_id_for_id(
+                &std::env::var("METRUM_FREIGHT_STILL_RESOURCE").unwrap_or_else(|_| "machinery".into()),
+            )
+            .unwrap(),
         amount: 4.0,
         source: ShipmentEndpoint::Building(source),
         destination: ShipmentEndpoint::Building(yard),
@@ -1241,4 +1246,5 @@ fn write_the_freight_yard_still_save() {
     std::fs::write(out.join("yard.json"), json.to_string()).unwrap();
 }
 
+mod backs_in;
 mod drive_through;

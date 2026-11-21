@@ -82,6 +82,10 @@ pub(crate) struct ParkingSystem {
     // The authored drive of each dock row that has one (`PARK-21`), by the row's handle: saved
     // with its row, removed with it, kept with a retired row its truck still drives.
     dock_ways: HashMap<Handle<Place>, DockWay>,
+    // The dock rows a truck backs into (`PARK-23`), by the row's handle: saved with its row,
+    // removed with it, kept with a retired row its truck still uses. Empty in a city without one,
+    // so a yard truck's pose pays one emptiness test for it.
+    dock_tail_in: std::collections::HashSet<Handle<Place>>,
     // The access of each dock row with a way out at its exit gate's road connection (`PARK-21`),
     // where its truck joins the road: derived with the row's access, never saved.
     dock_exits: HashMap<Handle<Place>, crate::simulation::buildings::allocator::BuildingEntrance>,
