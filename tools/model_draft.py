@@ -4,7 +4,7 @@
 docs/asset_editor.md "Draft command").
 
     tools/model_draft.py --sidecar <model>/export/<name>.model.json --role <role.json> \\
-        --mods <packs folder> [--write] [--report <report.json>]
+        --mods <packs folder> [--write | --check] [--report <report.json>]
 
 Godot runs headless in a throwaway profile (tools/godot_isolated.py), never in the player's. The
 role's pack is copied from `--mods` into that profile, and the draft is published and checked
@@ -19,8 +19,13 @@ deleted after the run, except the report's `copy` paths: they named the deleted 
 `copy.passed` is kept (all of them with `--keep-profile`). A dry run's report says `dry_run: true`,
 and `would_write` names where `--write` would publish.
 
+`--check` runs the stale report and the acceptance check on the existing asset as it is in the
+pack (a copy of it), drafting and writing nothing: after finishing an asset in the editor it says
+whether a warning, such as a workplace's missing parking, has cleared.
+
 Exit status: 0 drafted (and written), or an existing asset with no stale line (information lines
-may be reported); 1 refused, failed or not run; 2 an existing asset with stale lines reported.
+may be reported); 1 refused, failed or not run, or with `--check` a failed acceptance check; 2 an
+existing asset with stale lines reported.
 """
 
 import argparse
@@ -101,6 +106,7 @@ def request(args, role, profile):
         "work": str(profile / "draft-work"),
         "write_mods": os.path.abspath(args.mods) if args.write else None,
         "target_mods": os.path.abspath(args.mods),
+        "check": args.check,
     }
 
 
@@ -109,8 +115,12 @@ def main(argv=None):
     parser.add_argument("--sidecar", required=True, help="the model's <name>.model.json")
     parser.add_argument("--role", required=True, help="the wanted asset's role inputs (JSON)")
     parser.add_argument("--mods", required=True, help="the packs folder holding the role's pack")
-    parser.add_argument("--write", action="store_true",
-                        help="publish into <mods>/<pack_id> after the copy passes the acceptance check")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--write", action="store_true",
+                      help="publish into <mods>/<pack_id> after the copy passes the acceptance check")
+    mode.add_argument("--check", action="store_true",
+                      help="check the existing asset as it is in the pack: its stale report and the "
+                           "acceptance check, drafting and writing nothing")
     parser.add_argument("--report", help="also write the JSON report here")
     parser.add_argument("--godot", default="godot", help="the Godot binary")
     parser.add_argument("--profile-root", help="where the throwaway profile is made (default: the temporary directory)")

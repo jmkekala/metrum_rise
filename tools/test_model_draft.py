@@ -184,6 +184,19 @@ class CommandTests(unittest.TestCase):
         self.assertTrue(Path(report["copy"]["asset"]).is_relative_to(self.root))
         self.assertNotEqual(Path(report["copy"]["asset"]).parent.parent.parent, self.root / "mods")
 
+    def test_check_asks_for_the_check_only_and_never_with_write(self):
+        status, report = self.draft("--check")
+        self.assertEqual(status, 0)
+        self.assertTrue(report["seen"]["request"]["check"])
+        self.assertIsNone(report["seen"]["request"]["write_mods"])
+        self.assertFalse(self.draft()[1]["seen"]["request"]["check"])
+        with self.assertRaises(SystemExit), open(os.devnull, "w") as quiet:
+            stderr, sys.stderr = sys.stderr, quiet
+            try:
+                self.draft("--check", "--write")
+            finally:
+                sys.stderr = stderr
+
     def test_write_names_the_real_packs_folder_and_the_status_passes_through(self):
         os.environ["FAKE_GODOT_EXIT"] = "2"
         try:
@@ -280,6 +293,10 @@ class GodotDraftTests(unittest.TestCase):
                 self.assertTrue((asset / file).is_file(), file)
             self.assertTrue((mods / PACK / "model_sources" / f"{ASSET}.json").is_file())
             installed = tree(mods)
+
+            status, report = draft("--check")
+            self.assertEqual((status, report["status"], report["acceptance"]["failures"]), (0, "checked", []), report)
+            self.assertEqual(tree(mods), installed, "a check writes nothing")
 
             status, report = draft("--write")
             self.assertEqual((status, report["status"], report["stale"]), (0, "existing", []), report)

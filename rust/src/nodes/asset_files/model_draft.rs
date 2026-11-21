@@ -40,6 +40,10 @@ struct Request {
     /// names where `--write` would publish. Nothing is written there without `write_mods`.
     #[serde(default)]
     target_mods: Option<PathBuf>,
+    /// `--check`: run the stale report and the acceptance check on the existing asset as it is in
+    /// the pack (the copy of it in `mods`), drafting and writing nothing.
+    #[serde(default)]
+    check: bool,
 }
 
 /// The exit status a draft leaves (`tools/model_draft.py` passes it on).
@@ -68,6 +72,10 @@ pub(super) fn run(request: &str, engine: &Engine) -> (i64, Value) {
         asset = Some(label.clone());
         let inputs = draft::read_inputs(&request.sidecar, request.role)?;
         let mut report = json!({"asset": label});
+        if request.check {
+            let exit = check_existing(&inputs, &request.mods, engine, &mut report)?;
+            return Ok((exit, report));
+        }
         let copy = draft_into(&inputs, &request.mods, &request.work, engine)?;
         let mut exit = describe(&copy, &mut report, "copy");
         // Unambiguous for a reader of the JSON: a dry run writes nothing outside the copy, and
@@ -116,6 +124,40 @@ fn asset_label(role: &Value) -> String {
             .map_or_else(|| format!("(no {key})"), str::to_owned)
     };
     format!("{}:{}", field("pack_id"), field("asset_id"))
+}
+
+// `--check`: the existing asset's stale report and its acceptance check, as it is in the pack, so
+// a warning the author has since fixed in the editor (a workplace's parking) is seen to clear.
+// Exit status 1 when the check fails, else 2 with a stale line, else 0. Writes nothing.
+fn check_existing(
+    inputs: &draft::Inputs,
+    mods: &Path,
+    engine: &Engine,
+    report: &mut Value,
+) -> Result<i64, String> {
+    let (pack_id, asset_id) = (&inputs.role.pack_id, &inputs.role.asset_id);
+    let pack = crate::assets::authoring::files::pack_directory(mods, pack_id)?;
+    let existing = draft::existing(&pack, inputs).ok_or_else(|| {
+        format!(
+            "assets/{asset_id} does not exist in pack {pack_id}: nothing to check; run without \
+             --check to draft it"
+        )
+    })?;
+    let exit = describe(&Step::Existing(existing), report, "existing");
+    let outcome = acceptance::check(
+        mods,
+        pack_id,
+        asset_id,
+        &acceptance::Engine {
+            bounds: engine.bounds,
+            decodes: engine.decodes,
+        },
+    );
+    report["status"] = json!("checked");
+    report["check"] = json!(true);
+    let exit = if outcome.passed() { exit } else { EXIT_FAILED };
+    report["acceptance"] = json!(outcome);
+    Ok(exit)
 }
 
 // Draft into the role's pack in `mods`: nothing is written when the asset exists.
@@ -207,7 +249,7 @@ fn summary(report: &Value) -> String {
     let mut lines = vec![format!(
         "{}: {status}{}",
         report["asset"].as_str().unwrap_or("draft"),
-        if dry_run && status != "refused" {
+        if dry_run && !matches!(status, "refused" | "checked") {
             " (dry run: nothing written)"
         } else {
             ""
@@ -249,7 +291,9 @@ fn summary(report: &Value) -> String {
         }
     }
     lines.extend(door_lines(&report["doors"]));
-    if report["stale"].as_array().is_some_and(Vec::is_empty) {
+    if status == "checked" {
+        lines.push("  checked the asset as it is in the pack; nothing was written".into());
+    } else if report["stale"].as_array().is_some_and(Vec::is_empty) {
         lines.push("  the asset exists and no line marks it stale; nothing was published".into());
     }
     if report["written"].is_object() {
@@ -339,6 +383,10 @@ mod tests {
     // The engine without Godot: the preview copied as the thumbnail, the sidecar's bounds as
     // the imported bounds, every image decoding.
     fn run_fixture(fixture: &Fixture, role: Value, write: bool) -> (i64, Value) {
+        run_with(fixture, role, write, false)
+    }
+
+    fn run_with(fixture: &Fixture, role: Value, write: bool, check: bool) -> (i64, Value) {
         let bounds = [[-5.35, 0.0, -6.84], [5.35, 9.5625, 6.84]];
         let engine = Engine {
             thumbnail: &|preview, output| {
@@ -369,6 +417,7 @@ mod tests {
             "work": fixture.root.join("work"),
             "write_mods": if write { json!(fixture.mods()) } else { Value::Null },
             "target_mods": fixture.mods(),
+            "check": check,
         });
         run(&request.to_string(), &engine)
     }
@@ -664,6 +713,46 @@ mod tests {
         .unwrap();
         assert!(published.contains("economy_profile = \"grocery_basic\""));
         assert!(!published.contains("worker_capacity"), "{published}");
+    }
+
+    #[test]
+    fn check_runs_the_acceptance_check_on_the_existing_asset_and_writes_nothing() {
+        let mut fixture = Fixture::new();
+        fixture.sidecar["dwellings"] = json!(0);
+        fixture.write_sidecar();
+        let mut role = fixture.role();
+        role["zone_type"] = json!("commercial");
+        role["asset_id"] = json!("building.commercial.grocery");
+        role["economy_profile"] = json!("grocery_basic");
+        // Nothing to check before the asset exists.
+        let (exit, report) = run_with(&fixture, role.clone(), false, true);
+        assert_eq!((exit, report["status"].as_str()), (1, Some("refused")), "{report:#}");
+        assert!(report["error"].as_str().unwrap().contains("nothing to check"));
+        // Drafted into the copy, the workplace warns that it has no parking.
+        assert_eq!(run_fixture(&fixture, role.clone(), false).0, 0);
+        let copy = fixture.root.join("copy");
+        let before = snapshot(&copy);
+        let (exit, report) = run_with(&fixture, role.clone(), false, true);
+        assert_eq!((exit, report["status"].as_str()), (0, Some("checked")), "{report:#}");
+        assert!(report["acceptance"]["warnings"].to_string().contains("parking"), "{report:#}");
+        let summary = report["summary"].as_str().unwrap();
+        assert!(summary.contains("warn: a workplace without a parking anchor"), "{summary}");
+        assert!(summary.contains("nothing was written") && !summary.contains("dry run"), "{summary}");
+        assert_eq!(report["doors"][0]["id"], "front");
+        assert_eq!(snapshot(&copy), before, "a check writes nothing");
+        // The author adds parking in the editor: the warning clears.
+        let manifest = copy.join(PACK).join("assets/building.commercial.grocery/asset.toml");
+        let mut text = fs::read_to_string(&manifest).unwrap();
+        text.push_str("\n[[anchors]]\ntype = \"parking\"\nname = \"staff\"\nposition = [7.5, 0, 9]\nforward = [0, 0, -1]\nwidth_m = 2.5\nlength_m = 5\nvehicle_class = \"car\"\n");
+        fs::write(&manifest, text).unwrap();
+        let (exit, report) = run_with(&fixture, role.clone(), false, true);
+        assert_eq!(exit, 0, "{report:#}");
+        assert!(!report["acceptance"]["warnings"].to_string().contains("parking"), "{report:#}");
+        // A failing check fails the command.
+        fs::remove_file(copy.join(PACK).join("model_sources/building.commercial.grocery.json")).unwrap();
+        let (exit, report) = run_with(&fixture, role, false, true);
+        assert_eq!((exit, report["status"].as_str()), (1, Some("checked")), "{report:#}");
+        assert!(report["summary"].as_str().unwrap().contains("FAIL: the asset has no ledger entry"));
     }
 
     #[test]
