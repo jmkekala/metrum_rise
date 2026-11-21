@@ -4,16 +4,17 @@
 
 use super::*;
 use crate::nodes::sim::core::VegetationEditUndo;
-use crate::simulation::vegetation::edits::{
-    AuthoredPlant as Plant, VARIANT_FROM_SEED, VegetationCell, VegetationLayer, pack_patch_key,
-};
 use crate::simulation::terrain::graded::GroundClass;
+use crate::simulation::vegetation::edits::{
+    AuthoredPlant as Plant, FIXED_LOOK, VARIANT_FROM_SEED, VegetationCell, VegetationLayer,
+    canopy_model_height_m, pack_patch_key,
+};
 use crate::simulation::vegetation::{hash, unit};
 use brush::preset;
-use world::VegetationWorld;
 pub(crate) use jobs::VegetationJobs;
 pub(crate) use land_cover::PatchLandCover;
 pub(crate) use land_cover_jobs::LandCoverJobs;
+use world::VegetationWorld;
 
 mod brush;
 mod hedge_runs;
@@ -34,18 +35,20 @@ pub(crate) use hedge_runs::hedge_runs;
 #[cfg(test)]
 mod product_parity;
 pub(crate) use placement::publish_yards;
-use placement::{add_at, hedge_end_at, line_at, paint_at, stamp_limit};
+use placement::{
+    AddRefusal, PointAdd, add_at, add_pick_at, hedge_end_at, line_at, paint_at, plan_add,
+    plan_add_pick, stamp_limit,
+};
 
 // Lane five of a packed placement carries both the species ordinal and the renderer mesh
 // variant pinned over it, because widening the stride would cost the whole scatter buffer a
 // seventh float for a field that is zero on every generated plant. The species occupies the
-// low two bits and the biased variant everything above them, so an unpinned plant packs to
-// the bare species ordinal exactly as it did before pinning existed. The largest value this
-// can reach is 12 * 4 + 3, which an f32 carries exactly.
+// low two bits and the variant byte (biased pin and fixed-look flag) everything above them.
+// The packed ten bits fit exactly in an f32; an unmarked, unpinned plant packs to bare species.
 const SPECIES_BITS: u8 = 2;
 
 fn pack_species_variant(species: u8, variant: u8) -> f32 {
-    f32::from((variant << SPECIES_BITS) | species)
+    f32::from((u16::from(variant) << SPECIES_BITS) | u16::from(species))
 }
 
 /// Species ordinals shared with the renderer's mesh table.
@@ -178,6 +181,13 @@ impl SimulationNode {
         self.frame_queries().land_cover_epoch as i64
     }
 
+    /// O(1) revision for cached point previews from the per-frame publication. Covers world
+    /// replacement, water, terrain, site and vegetation changes without locking the core.
+    #[func]
+    pub fn get_vegetation_point_revision(&self) -> i64 {
+        self.snapshot.read().unwrap().queries.sequence as i64
+    }
+
     /// Compares the two existing revision streams, including neighboring crown contributors,
     /// with the published per-frame values (`CODE-26`): never the core lock. Nine bounded
     /// revision lookups without allocating or evaluating any plants.
@@ -263,6 +273,93 @@ impl SimulationNode {
     #[func]
     pub fn add_vegetation_at(&self, pos: Vector2, option: i64) -> bool {
         add_at(&mut self.lock_core(), pos, option)
+    }
+
+    /// Plans a point edit without waiting for the core or rebuilding a stale site index.
+    /// `false` means busy. A packed placement has the same six lanes as a vegetation patch,
+    /// with the visible ground height and the renderer's root offset. A seventh lane gives
+    /// the refusal code for a blocked candidate. An integer refusal means no candidate.
+    /// Visits a fixed neighborhood: O(A + S) for authored entries and local clearance
+    /// candidates (terrain, roads, sites and lights), independent of total city population.
+    #[func]
+    pub fn preview_vegetation_at(&self, pos: Vector2, option: i64) -> Variant {
+        self.preview_point_add(pos, option, PointAdd::new, plan_add)
+    }
+
+    /// Draws a held pick with the same fixed-look record used by placement. The size
+    /// step is zero-based and clamped to 0–4. Uses the same records and busy/refusal values as
+    /// `preview_vegetation_at`. O(A + S) in local authored entries and clearance candidates.
+    #[func]
+    pub fn preview_vegetation_pick_at(
+        &self,
+        pos: Vector2,
+        option: i64,
+        pick: i64,
+        size_step: i64,
+    ) -> Variant {
+        self.preview_point_add(pos, option, PointAdd::for_pick, |core, request| {
+            plan_add_pick(core, request, pick as u32, size_step)
+        })
+    }
+
+    /// Returns the point planner's full canopy mesh height for a zero-based renderer variant.
+    /// The bridge checks this against Godot's built mesh. Unknown models return zero. O(1).
+    #[func]
+    pub fn get_vegetation_canopy_model_height_m(&self, species: i64, variant: i64) -> f32 {
+        canopy_model_height_m(species as usize, variant as usize).unwrap_or(0.0)
+    }
+
+    /// Attempts to plant the same held pick shown by `preview_vegetation_pick_at`. Uses the low
+    /// 32 bits of `pick` and clamps the zero-based size step to 0–4. O(A + S) in local authored
+    /// entries and clearance candidates, plus preparation if the site index is stale.
+    #[func]
+    pub fn add_vegetation_pick_at(
+        &self,
+        pos: Vector2,
+        option: i64,
+        pick: i64,
+        size_step: i64,
+    ) -> bool {
+        add_pick_at(&mut self.lock_core(), pos, option, pick as u32, size_step)
+    }
+
+    fn preview_point_add(
+        &self,
+        pos: Vector2,
+        option: i64,
+        request: fn(&SimCore, Vector2, i64) -> Result<PointAdd, AddRefusal>,
+        plan: impl FnOnce(&SimCore, PointAdd) -> Result<(VegetationCell, Plant), (AddRefusal, Plant)>,
+    ) -> Variant {
+        let Some(core) = Self::try_lock_shared_core(&self.core) else {
+            return false.to_variant();
+        };
+        let request = match request(&core, pos, option) {
+            Ok(request) => request,
+            Err(reason) => return (reason as i64).to_variant(),
+        };
+        if !core.allocator.building_site_query_index_ready() {
+            return false.to_variant();
+        }
+        let (plant, refusal) = match plan(&core, request) {
+            Ok((_, plant)) => (plant, None),
+            Err((reason, plant)) => (plant, Some(reason)),
+        };
+        let mut record = [
+            plant.x,
+            core.surface_height(pos) - plant_sink(plant.species, plant.variant),
+            plant.z,
+            plant.yaw,
+            plant.scale,
+            pack_species_variant(plant.species, plant.variant),
+            0.0,
+        ];
+        let len = if let Some(reason) = refusal {
+            record[6] = f32::from(reason as u8);
+            7
+        } else {
+            6
+        };
+        PackedFloat32Array::from(&record[..len]).to_variant()
     }
 
     /// Scatters class-spaced plants immediately and returns the number added or restored.
@@ -911,13 +1008,6 @@ pub(crate) fn scatter_layer(
                 }
             };
             let y = height(x, z);
-            // A tree's root flare is sunk to cover a slope; a clipped hedge or a yard shrub
-            // keeps its authored height and only settles into the lawn.
-            let sink = if brush::PlantClass::of(species, variant) == brush::PlantClass::Landscape {
-                0.05
-            } else {
-                0.25
-            };
             // A hedge module is never scaled, so its scale lane carries the ground's rise along
             // the row across its one metre instead, and the renderer shears the module to it.
             // Without it every module sat level at its own centre and a row climbed in steps.
@@ -929,7 +1019,7 @@ pub(crate) fn scatter_layer(
             };
             packed.extend_from_slice(&[
                 x,
-                y - sink,
+                y - plant_sink(species, variant),
                 z,
                 yaw,
                 lane_four,
@@ -946,6 +1036,15 @@ fn ground_height(core: &impl VegetationWorld, x: f32, z: f32) -> f32 {
     core.with_surface(|surface, scratch| {
         surface.ground_height_at(f64::from(x), f64::from(z), scratch) as f32
     })
+}
+
+// A tree's root flare covers slopes; a hedge or yard shrub only settles into the lawn.
+fn plant_sink(species: u8, variant: u8) -> f32 {
+    if brush::PlantClass::of(species, variant) == brush::PlantClass::Landscape {
+        0.05
+    } else {
+        0.25
+    }
 }
 
 // The generator decision has one implementation for rendering, picking and painting.
@@ -1051,8 +1150,19 @@ fn clear_site(
     max_relief: f32,
     yard: bool,
 ) -> bool {
+    check_site(core, x, z, radius, max_relief, yard).is_ok()
+}
+
+fn check_site(
+    core: &impl VegetationWorld,
+    x: f32,
+    z: f32,
+    radius: f32,
+    max_relief: f32,
+    yard: bool,
+) -> Result<(), AddRefusal> {
     if !inside_world(core, x, z) {
-        return false;
+        return Err(AddRefusal::OutsideMap);
     }
     core.with_surface(|surface, scratch| {
         let (cx, cz) = (f64::from(x), f64::from(z));
@@ -1062,7 +1172,8 @@ fn clear_site(
         let y = surface.ground_height_near(cx, cz, scratch) as f32;
         // A 3x3 footprint rejects submerged roots and leaves clearance at shorelines
         // and built surfaces. Check ground samples, not a global sea level.
-        clear_footprint(x, z, y, radius, max_relief, |sx, sz| {
+        let mut refusal = AddRefusal::UnevenGround;
+        let clear = clear_footprint(x, z, y, radius, max_relief, |sx, sz| {
             let p = Vector2::new(sx, sz);
             let (px, pz) = (f64::from(sx), f64::from(sz));
             let built = match surface.mask_near(px, pz, scratch) {
@@ -1076,16 +1187,21 @@ fn clear_site(
             // ground; a bridge deck over it is the roadbed's visible surface. A tunnel's deck
             // lies under the hill, which keeps its plants.
             let road = core.roadbed().exposed_height_at(p.x, p.y);
-            if built
-                || core.water_depth(p) > 0.001
-                || road.is_some()
-                || (yard && core.blocks_yard_plant(p))
-                || core.field_covers(p)
-            {
+            if built {
+                refusal = AddRefusal::BuiltSurface;
+                return None;
+            }
+            if core.water_depth(p) > 0.001 {
+                refusal = AddRefusal::Water;
+                return None;
+            }
+            if road.is_some() || (yard && core.blocks_yard_plant(p)) || core.field_covers(p) {
+                refusal = AddRefusal::BuiltSurface;
                 return None;
             }
             Some(surface.ground_height_near(px, pz, scratch) as f32)
-        })
+        });
+        if clear { Ok(()) } else { Err(refusal) }
     })
 }
 

@@ -563,7 +563,9 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
   owned by `RENDER-07`.
   See [the policy and verification scope](asset_editor.md#shared-lod-policy-and-automatic-inspection--tools-05).
 
-- **Vegetation brush navigation**: the tool now owns the four brush options; Shift-wheel cycles them in sync with the dropdown, including while its popup is open. `E` and Remove share the erase toggle, and a fading world-space label names the option or erase mode above the ring. Ctrl-wheel sizing is unchanged. See [the tool contract](terrain.md#local-vegetation-experiment-v01).
+- **Vegetation appearance**. Pine point picks switch between young and mature meshes as the height changes. See [the tool contract](terrain.md#local-vegetation-experiment-v01).
+
+- **Vegetation brush navigation**: the tool now owns the four brush options; Shift-wheel cycles them in sync with the dropdown, including while its popup is open. `E` and Remove share the erase toggle, and a fading world-space label names the option or erase mode above the ring. Ctrl-wheel sizes the brush. At point size, Up/Down selects a canopy height in metres. See [the tool contract](terrain.md#local-vegetation-experiment-v01).
 
 - **Crown cohesion (`RENDER-06`, visually accepted)**: near foliage cores and cards now share smooth crown-volume lighting and stop assigning independent bright faces. Two-sided cards preserve authored normals on their backs; distant radiance is recalibrated to match. Geometry, placement, density and the atlas are unchanged. Fresh appearance, rendered LOD and wind checks pass; see [the change and measurements](terrain.md#crown-cohesion-candidate--2026-09-19).
 

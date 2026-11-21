@@ -160,7 +160,7 @@ pub(super) fn load(conn: &Connection) -> SaveLoadResult<VegetationEdits> {
 mod tests {
     use super::*;
     use crate::simulation::save::schema::SCHEMA;
-    use crate::simulation::vegetation::edits::VARIANT_FROM_SEED;
+    use crate::simulation::vegetation::edits::{FIXED_LOOK, VARIANT_FROM_SEED};
 
     fn cell(x: i32) -> VegetationCell {
         VegetationCell {
@@ -191,17 +191,29 @@ mod tests {
     }
 
     #[test]
-    fn a_pinned_variant_survives_a_save_and_the_unpinned_one_stays_unpinned() {
+    fn pins_and_fixed_look_round_trip_in_authored_order() {
         let mut edits = VegetationEdits::default();
         edits.add(cell(1), plant(0, 6));
         edits.add(cell(1), plant(1, VARIANT_FROM_SEED));
+        edits.add(cell(1), plant(1, FIXED_LOOK | 12));
         let loaded = round_trip(&edits);
         let (_, added) = loaded.cell(cell(1));
         assert_eq!(
             added,
-            [plant(0, 6), plant(1, VARIANT_FROM_SEED)],
+            [
+                plant(0, 6),
+                plant(1, VARIANT_FROM_SEED),
+                plant(1, FIXED_LOOK | 12)
+            ],
             "the pin is authored state and must come back exactly, in authored order"
         );
+    }
+
+    #[test]
+    fn variant_range_checks_the_pin_under_the_fixed_look_flag() {
+        assert!(variant_in_range(2, FIXED_LOOK | 21));
+        assert!(!variant_in_range(2, FIXED_LOOK | 22));
+        assert!(!variant_in_range(4, FIXED_LOOK | 1));
     }
 
     #[test]

@@ -197,3 +197,85 @@ fn dense_patch_product_cost() {
         );
     }
 }
+
+#[test]
+fn unmarked_placements_keep_the_original_rows_and_tint() {
+    let records = [
+        12.5, 0.25, -7.0, 0.8, 0.8, 9.0, -2.0, 0.25, 9.0, 1.2, 0.8, 0.0,
+    ];
+    let mut placed = Vec::new();
+    place(&inputs(&records, true), &mut placed);
+    // Below the knee, the original formula and recorded seed-picked row still match bitwise.
+    assert_eq!(placed.len(), 2);
+    assert_eq!(placed[0].variant, 1);
+    let pinned = &records[..PLACEMENT_STRIDE];
+    let seed = i64::from(hash_vector2(pinned[0], pinned[2]));
+    let scale = f64::from(pinned[4]);
+    let width = scale * (0.80 + jitter_unit(seed, 53) * 0.48);
+    let height = scale * (0.82 + jitter_unit(seed, 17) * 0.42);
+    assert_eq!(
+        placed[0].rows.map(f32::to_bits),
+        instance_rows(pinned, seed, [0.0; 2], width as f32, height as f32).map(f32::to_bits),
+    );
+    assert_eq!(
+        placed[0].tint.map(f32::to_bits),
+        [1064286112, 1065682043, 1066544422]
+    );
+    assert_eq!(placed[1].variant, 7);
+    assert_eq!(
+        placed[1].rows.map(f32::to_bits),
+        [
+            1049246076, 1025932646, 1060234178, 3221225472, 3164496755, 1063735238, 3169397158,
+            1048576000, 3207726885, 3155758670, 1049265595, 1091567616
+        ],
+    );
+    assert_eq!(
+        placed[1].tint.map(f32::to_bits),
+        [1065745057, 1066720133, 1067695209]
+    );
+}
+
+#[test]
+fn fixed_look_uses_the_stored_scale_and_yaw_independently_of_position() {
+    let packed = f32::from((u16::from(FIXED_LOOK | 2) << SPECIES_BITS) | 1);
+    let scale = 1.3;
+    let records = [
+        0.0, 0.0, 0.0, 0.8, scale, packed, 12.5, 0.0, -7.0, 0.8, scale, packed, 20.0, 0.0, -7.0,
+        1.2, scale, packed,
+    ];
+    let mut placed = Vec::new();
+    place(&inputs(&records, true), &mut placed);
+    assert_eq!(placed.len(), 3);
+    let [ghost, planted, other_pick] = placed.as_slice() else {
+        unreachable!()
+    };
+    assert_eq!(ghost.variant, 1);
+    assert_eq!(planted.variant, ghost.variant);
+    assert_eq!((planted.rows[3], planted.rows[11]), (12.5, -7.0));
+    let basis = |rows: [f32; 12]| {
+        [
+            [rows[0], rows[1], rows[2]],
+            [rows[4], rows[5], rows[6]],
+            [rows[8], rows[9], rows[10]],
+        ]
+    };
+    let planted_basis = basis(planted.rows);
+    assert_eq!(
+        planted_basis.map(|r| r.map(f32::to_bits)),
+        basis(ghost.rows).map(|r| r.map(f32::to_bits))
+    );
+    assert_eq!(planted.tint.map(f32::to_bits), ghost.tint.map(f32::to_bits));
+    for axis in 0..3 {
+        // Orthonormal rotation in float32 introduces rounding in the recovered length.
+        assert!(
+            (column_length_squared(&planted_basis, axis).sqrt() - scale).abs()
+                <= 2.0 * f32::EPSILON
+        );
+    }
+    assert_ne!(other_pick.tint, ghost.tint);
+    assert_ne!(
+        basis(other_pick.rows)[0][1],
+        planted_basis[0][1],
+        "yaw also changes the lean"
+    );
+}

@@ -280,7 +280,7 @@ func _test_yard_preview(editor: Node3D) -> void:
 	var plant_count := 0
 	for i in range(0, first.size(), 6):
 		var packed := int(first[i + 5])
-		if yard.TreeSpecies.is_hedge(packed & 3, (packed >> 2) - 1):
+		if yard.TreeSpecies.is_hedge(packed & 3, yard.VegetationPlacements.variant_pin(packed) - 1):
 			hedge_count += 1
 		else:
 			plant_count += 1

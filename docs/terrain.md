@@ -2552,11 +2552,10 @@ Clearing a radius still finds and counts an authored plant hidden under a surfac
 it from the store.
 
 The player reaches all of this through `vegetation_tool.gd`, a Terrain-submenu tool with two
-modes - plant one species, or clear plants - drawn as a ground ring at the cursor's surface hit.
-The radius is the only size control, and it also selects the dispatch: at `MIN_RADIUS_M` a plant
-lands exactly under the cursor through `add_vegetation_at`, and above it the disc fills the
-4 m planting lattice plus generator candidates through `paint_vegetation`. That removes the point/brush mode and the
-radius control from the panel, which leaves a preset choice and a clear. Ctrl and the mouse wheel
+modes - plant one species, or clear plants - drawn as a ground disc at the cursor's surface hit.
+The radius selects the planting dispatch. At `MIN_RADIUS_M`, `add_vegetation_pick_at` places
+the held plant at the ghost's root. At larger radii, `paint_vegetation` fills the disc with
+spaced plants and generator candidates. Ctrl and the mouse wheel
 step the radius geometrically, because no fixed step serves both a one-tree cursor and a 1 km
 clear-cut, and stepping down clamps on the minimum so the point dispatch stays reachable. The
 camera must not zoom on that combination, so `_handle_zoom_wheel` refuses a ctrl-held wheel.
@@ -2566,18 +2565,88 @@ option maps a display label, a menu category and a tooltip line for a mix to a n
 ordinal; adding an option requires only extending that list (its picture comes from Rust's
 `get_vegetation_preset_sample` for the preset). Ctrl takes priority when both modifiers are held,
 and Shift also suppresses camera zoom. `E` toggles planting/erasing while the
-vegetation tool is active, sharing mode state with the Remove toggle. The ring reports footprint
+vegetation tool is active, sharing mode state with the Remove toggle. The disc reports footprint
 and mode by size and colour. On option or mode changes, an outlined billboard `Label3D` above its
 centre shows the option name or `Remove`, using `UIStyle.TEXT_PRIMARY` or `TEXT_ALERT`. The label
 holds for one second and fades over 0.25 seconds; projection keeps its size and offset constant
-in pixels, including at the ring's last position during popup input grabs. Navigation and label
+in pixels, including at the disc's last position during popup input grabs. Navigation and label
 updates are O(1), independent of world population and brush radius; the label is allocated once.
 A stroke continues on held-button motion whenever it is a brush or a clear, and restamps
 after half a radius of travel, so it overlaps without issuing a native call per pixel.
 
-Every one of those stamps is reversible. `add_vegetation_at`, `remove_vegetation_at` and
-`paint_vegetation` each record a bounded inverse journal before they touch a cell: one entry per
-changed cell holding that cell's delta as the stroke found it, plus the render-patch keys whose
+At the minimum planting radius, a translucent, shadowless ghost holds one plant as the cursor
+moves. Rust hashes the tool's 32-bit pick into the preset's species mix, pinned mesh and yaw.
+Changing the option or placing the plant advances the pick by a fixed odd stride. Up and Down
+start in the middle of five height steps for canopy trees. Birch and aspen use
+4, 9, 14, 19 and 24 m. Pine and spruce target 4, 10, 16, 22 and 28 m. Each pine pick
+selects a stable palette variant of the 9.6 m young model through 12.5 m and of the
+23.1 m mature model above that. Spruce keeps its pinned model across steps, so the 17 m
+model reaches 22.1 m at the top step. Rust divides the selected height by the mesh's
+full-level AABB height and limits conifers to 1.3×. The regression checks a 0.15× minimum.
+A 4 m spruce scales to at least about 0.16×, and a 4 m pine to 0.42×. Ground cover,
+rocks and point-planted landscape plants use five steps across the preset's scale band.
+The label shows the held plant's name and height, with one decimal below 10 m or for a
+fractional canopy height.
+Five rising bars beside the label highlight the displayed size step and fade with the text.
+The step carries over to the next pick.
+
+A refused candidate turns red and the option label shows the first failed check for as long as
+the cursor stays there. The size bars hide while the reason is showing. Point placement leaves an 8 m margin at the map edge, rejects footprint
+samples in water or on uneven ground, and keeps clear of roads, paving, buildings and worked
+fields. Trees outside yard planting areas also keep
+back from exposed paths and street lights. Existing plants of the same spacing class reserve their
+space. The held plant's step scales its class spacing and can enlarge the terrain footprint
+beyond the ordinary authored clearance. The ghost and click use the same planner. The preview
+refreshes on a change of position, pick, size step or published world revision. If the simulation
+is busy, the ghost keeps its last answer. Planning visits a bounded neighborhood and costs
+O(A + S) for local authored plants and site candidates.
+
+The held pick sets bit 7 of the saved `AuthoredPlant::variant` byte. Pin readers mask the bit
+off and lane five of the six-float placement record carries it above the species and pin.
+The existing SQLite column stores that byte, so the save format version stays at 122.
+Legacy records have the bit clear and use position-seeded stretch, lean and tint. Hedges
+continue to use their slope-following module transforms.
+
+The ghost builds the shared vegetation render product at the origin on pick and size changes.
+Fixed-look records hash their stored yaw bits for lean and tint and apply the stored scale
+uniformly. Moving the root leaves the basis and tint unchanged, so the settled ghost and
+its planted instance share the full-detail mesh variant, proportions, lean and tint. Horizontal cursor velocity
+drives the ghost's additional spring tilt up to 12 degrees. It uses a 2.5 Hz natural frequency
+and a 0.65 damping ratio, settles to the held lean at rest, and resets when the ghost hides
+or the pick changes. The foliage uses the existing wind. The render flag adds one O(1) branch
+per eligible placement with no allocation or extra hash on the unmarked path.
+
+The earlier held-pick release `./run.sh --timing --level F` session included the
+`nodes::simulation_node::vegetation_api::tests::vegetation_brush_benchmark` test and used
+eight unpinned Rayon workers on an Apple M2 Pro. The control and held-pick
+`$TEST_BINARY` hashes start with `ebf344dcdd12a3ab` and `9346cadaa2f884b6`. Their 30k
+snapshot key was `ab3fe8a9eb7822ae`. At 32×, mean frame time moved from 4.106 to 4.118 ms.
+Fresh 1× rows both averaged 1.942 ms and passed the absolute limits. The single-frame
+unpreempted maximum rose from 5.73 to 7.75 ms and exceeded the comparison tolerance.
+
+The fixed-look release `./run.sh --timing --level F` session ran
+`--bench 'nodes::sim::render::vegetation_product::tests::dense_patch_product_cost;cpus=one'`
+on the same Apple M2 Pro, with eight unpinned Rayon workers and a single-threaded renderer
+benchmark. The control and fixed-look `$TEST_BINARY` hashes start with `864b84c1167f45b4`
+and `bc907d288183ac6d`. Over three runs per build, the 4,096-placement unmarked patch's
+median p50/p95 changed from 0.2039/0.2132 to 0.1963/0.2102 ms in the near band and
+from 0.0500/0.0532 to 0.0482/0.0484 ms in the far band. The 30k snapshot key was
+`ab3fe8a9eb7822ae`. Mean frame time was level at 32× (4.052 to 4.044 ms) and for both fresh
+1× days (1.942 to 1.935 ms). Both 1× days passed the acceptance limits. The 32× rows
+retained the `PERF-17` exception on both builds.
+
+The metre-step release `./run.sh --timing --level F --workers 8` session used the same
+brush benchmark, machine and 30k snapshot. The control and metre-step `$TEST_BINARY` hashes
+start with `bc907d288183ac6d` and `5c9cdf794a92675a`. The three-run brush medians were
+817 to 800 µs for a 64 m stamp and 6.94 to 6.82 ms for a held full 256 m disc.
+The 1× days passed with mean frame times of 1.931 and 1.913 ms. Two 32× tail metrics
+exceeded comparison tolerances in the first session. The matched rerun put both within
+tolerance, with p99.9 at 6.792 and 6.928 ms and the existing `PERF-17` exception on both builds.
+
+Every one of those stamps is reversible. `add_vegetation_at`, `add_vegetation_pick_at`,
+`remove_vegetation_at` and `paint_vegetation` each record a bounded inverse journal before they
+touch a cell. It keeps one entry per changed cell holding that cell's delta as the stroke found
+it, plus the render-patch keys whose
 revisions have to advance again on the way back. Storage is O(changed cells), and a cell the
 generator still owned stores `None` and allocates nothing, which is the whole of a clear-cut over
 unedited forest. A dragged stroke would otherwise fill the 30-entry history with fragments of one

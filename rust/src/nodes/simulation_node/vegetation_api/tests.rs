@@ -5,6 +5,7 @@
 use super::*;
 use crate::nodes::sim::core::RoadCommitRequest;
 use crate::simulation::buildings::allocator::yard::YardEvent;
+use crate::simulation::vegetation::edits::{CanopyKind, canopy_model};
 use crate::simulation::vegetation::{VegetationConfig, VegetationGenerator};
 use std::collections::HashSet;
 use std::time::Instant;
@@ -383,6 +384,249 @@ fn vegetation_point_and_brush_respect_visible_generated_stems() {
     for p in authored(&core).into_iter().filter(|p| p.species < 2) {
         assert!((p.x - generated.x).powi(2) + (p.z - generated.z).powi(2) >= 2.5 * 2.5);
     }
+}
+
+#[test]
+fn vegetation_point_plan_matches_stored_plant() {
+    let mut core = super::super::tests::vegetation_test_core(VegetationConfig {
+        enabled: false,
+        ..Default::default()
+    });
+    prepare_sites(&mut core);
+    for (i, option) in [3, 4, 6, 8, 11, 20].into_iter().enumerate() {
+        let pos = Vector2::new(0.625 + i as f32 * 20.0, -1.25);
+        let request = PointAdd::new(&core, pos, option).unwrap();
+        let (cell, planned) = plan_add(&core, request).unwrap();
+        assert_eq!(planned.variant & FIXED_LOOK, 0);
+        assert_eq!(core.vegetation_edits.cell(cell).1, &[]);
+        assert!(add_at(&mut core, pos, option));
+        assert_eq!(core.vegetation_edits.cell(cell).1, &[planned]);
+    }
+}
+
+#[test]
+fn vegetation_held_pick_is_pure_across_positions_and_size_steps() {
+    use brush::DEFAULT_SCALE;
+
+    let mut core = super::super::tests::vegetation_test_core(VegetationConfig {
+        enabled: false,
+        ..Default::default()
+    });
+    prepare_sites(&mut core);
+    let pos = Vector2::new(0.625, -1.25);
+    let other_pos = Vector2::new(20.625, 10.75);
+    let before = core.vegetation_edits.epoch();
+    for (option, preset) in brush::PRESETS.iter().enumerate() {
+        if preset.is_hedge() {
+            continue;
+        }
+        let option = option as i64;
+        let plan = |pos, step| {
+            let request = PointAdd::for_pick(&core, pos, option).unwrap();
+            plan_add_pick(&core, request, 0xABCD_1234, step).unwrap()
+        };
+        let (_, smallest) = plan(pos, 0);
+        let mut previous = f64::NEG_INFINITY;
+        for step in 0..=4 {
+            let (cell, held) = plan(pos, step);
+            assert_eq!((cell, held), plan(pos, step));
+            let (other_cell, moved) = plan(other_pos, step);
+            assert_ne!(cell, other_cell);
+            assert_eq!(
+                moved,
+                Plant {
+                    x: other_pos.x,
+                    z: other_pos.y,
+                    ..held
+                }
+            );
+            assert_eq!(held.species, smallest.species);
+            assert_eq!(held.yaw.to_bits(), smallest.yaw.to_bits());
+            assert_ne!(held.variant & !FIXED_LOOK, VARIANT_FROM_SEED);
+            let model = held_canopy_model(&held);
+            if !matches!(model, Some((CanopyKind::Pine, _))) {
+                assert_eq!(held.variant, smallest.variant);
+            }
+            let drawn_height = f64::from(held.scale) * model.map_or(1.0, |(_, height)| height);
+            assert!(drawn_height > previous);
+            if held.species >= SPECIES_BUSH as u8 {
+                let fraction = step as f32 / 4.0;
+                let legacy = DEFAULT_SCALE.0 + fraction * (DEFAULT_SCALE.1 - DEFAULT_SCALE.0);
+                assert_eq!(held.scale, preset.size(legacy));
+            }
+            previous = drawn_height;
+        }
+        assert_eq!(plan(pos, i64::MIN), plan(pos, 0));
+        assert_eq!(plan(pos, i64::MAX), plan(pos, 4));
+    }
+    assert_eq!(core.vegetation_edits.epoch(), before);
+}
+
+fn held_canopy_model(plant: &Plant) -> Option<(CanopyKind, f64)> {
+    let pin = usize::from((plant.variant & !FIXED_LOOK) - 1);
+    canopy_model(usize::from(plant.species), pin).map(|(kind, height)| (kind, f64::from(height)))
+}
+
+#[test]
+fn vegetation_held_pick_canopy_bands_cover_every_preset_variant() {
+    let mut core = super::super::tests::vegetation_test_core(VegetationConfig {
+        enabled: false,
+        ..Default::default()
+    });
+    prepare_sites(&mut core);
+    let pos = Vector2::ZERO;
+    for (option, variant_count) in [
+        (0, 9),
+        (1, 12),
+        (4, 5),
+        (5, 4),
+        (6, 8),
+        (7, 4),
+        (8, 21),
+        (9, 21),
+        (10, 13),
+    ] {
+        let mut seen = HashSet::new();
+        let plan = |pick, step| {
+            let request = PointAdd::for_pick(&core, pos, option).unwrap();
+            plan_add_pick(&core, request, pick, step).unwrap().1
+        };
+        for pick in 0..2048 {
+            let plants = std::array::from_fn::<_, 5, _>(|step| plan(pick, step as i64));
+            let conifer = plants[0].species == SPECIES_CONIFER as u8;
+            let band: [f64; 5] = if conifer {
+                [4.0, 10.0, 16.0, 22.0, 28.0]
+            } else {
+                [4.0, 9.0, 14.0, 19.0, 24.0]
+            };
+            let mut previous = 0.0;
+            for (step, (plant, nominal)) in plants.iter().zip(band).enumerate() {
+                seen.insert((plant.species, plant.variant));
+                let (kind, model_height) = held_canopy_model(plant).unwrap();
+                let scale = f64::from(plant.scale);
+                let target = if conifer {
+                    // The smallest spruce may use a mature mesh at 4 m. Pine uses a young form.
+                    assert!((0.15..=1.3).contains(&scale));
+                    nominal.min(1.3 * model_height)
+                } else {
+                    nominal
+                };
+                let drawn = scale * model_height;
+                assert!(
+                    (drawn - target).abs() < 0.000_004,
+                    "{option}/{pick}/{step}: {drawn}"
+                );
+                assert!(drawn > previous && drawn <= band[4]);
+                if kind == CanopyKind::Pine {
+                    let expected = if nominal <= 12.5 {
+                        plants[0]
+                    } else {
+                        plants[2]
+                    };
+                    assert_eq!(plant.variant, expected.variant);
+                    assert_eq!(model_height < 10.0, nominal <= 12.5);
+                } else {
+                    assert_eq!(plant.variant, plants[0].variant);
+                }
+                previous = drawn;
+            }
+        }
+        assert_eq!(seen.len(), variant_count, "preset {option}");
+    }
+}
+
+#[test]
+fn vegetation_held_pick_plan_matches_storage_and_uses_size_for_occupancy() {
+    let mut core = super::super::tests::vegetation_test_core(VegetationConfig {
+        enabled: false,
+        ..Default::default()
+    });
+    prepare_sites(&mut core);
+    for (i, option) in [2, 3, 4, 6, 8, 11, 20].into_iter().enumerate() {
+        let pos = Vector2::new(i as f32 * 20.0, 0.0);
+        let pick = i as u32;
+        let request = PointAdd::for_pick(&core, pos, option).unwrap();
+        let (cell, planned) = plan_add_pick(&core, request, pick, 3).unwrap();
+        assert_eq!(planned.variant & FIXED_LOOK, FIXED_LOOK);
+        assert_eq!(core.vegetation_edits.cell(cell).1, &[]);
+        assert!(add_pick_at(&mut core, pos, option, pick, 3));
+        assert_eq!(core.vegetation_edits.cell(cell).1, &[planned]);
+    }
+    // A birch stands 2.5 m away. A small held tree fits, but the largest step needs more room.
+    let pos = Vector2::new(62.5, 0.0);
+    let request = || PointAdd::for_pick(&core, pos, 8).unwrap();
+    assert!(plan_add_pick(&core, request(), 53, 0).is_ok());
+    let (reason, blocked) = plan_add_pick(&core, request(), 53, 4).unwrap_err();
+    assert_eq!(reason, AddRefusal::Occupied);
+    assert!(blocked.scale > 1.0);
+    assert!(!add_pick_at(&mut core, pos, 8, 53, 4));
+}
+
+#[test]
+fn vegetation_point_plan_reports_each_refusal_without_planting() {
+    let mut core = super::super::tests::vegetation_test_core(VegetationConfig {
+        enabled: false,
+        ..Default::default()
+    });
+    prepare_sites(&mut core);
+    let check = |core: &mut SimCore, pos, option, expected| {
+        let reason = PointAdd::new(core, pos, option)
+            .and_then(|request| plan_add(core, request).map_err(|(reason, _)| reason))
+            .unwrap_err();
+        assert_eq!(reason, expected);
+        let before = core.vegetation_edits.epoch();
+        assert!(!add_at(core, pos, option));
+        assert_eq!(core.vegetation_edits.epoch(), before);
+    };
+    check(&mut core, Vector2::ZERO, 99, AddRefusal::InvalidPreset);
+    for x in [1279.0, 1281.0] {
+        check(&mut core, Vector2::new(x, 0.0), 6, AddRefusal::OutsideMap);
+    }
+    assert!(add_at(&mut core, Vector2::ZERO, 6));
+    check(&mut core, Vector2::new(1.0, 0.0), 4, AddRefusal::Occupied);
+
+    vegetation_test_path(
+        &mut core,
+        Vector2::new(-60.0, 3.5),
+        Vector2::new(60.0, 3.5),
+        0,
+    );
+    core.transit_network
+        .roadbed
+        .compile_dirty(&core.region_graph);
+    core.terrain_query_index
+        .rebuild_all(&core.transit_network.roadbed, &core.allocator);
+    check(
+        &mut core,
+        Vector2::new(15.0, 3.5),
+        6,
+        AddRefusal::BuiltSurface,
+    );
+    check(
+        &mut core,
+        Vector2::new(15.0, 7.4),
+        6,
+        AddRefusal::TreeSetback,
+    );
+
+    core.heightmap.set_height(138, 138, 40.0);
+    check(
+        &mut core,
+        Vector2::new(100.0, 100.0),
+        6,
+        AddRefusal::UnevenGround,
+    );
+    let mut depth = core.watermap.clone_baseline_depth_dense();
+    depth.fill(1.0);
+    core.watermap
+        .replace_baseline_depth_from_dense(&depth)
+        .unwrap();
+    check(
+        &mut core,
+        Vector2::new(-100.0, -100.0),
+        6,
+        AddRefusal::Water,
+    );
 }
 
 #[test]

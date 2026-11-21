@@ -1,9 +1,9 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-## Player vegetation input and ground-disc preview; all placement decisions stay in Rust.
-## Rust methods called: add_vegetation_at(), remove_vegetation_at(), paint_vegetation(),
+## Player vegetation input, ground disc and point planting ghost. Rust decides placement.
+## Rust methods called: add_vegetation_pick_at(), remove_vegetation_at(), paint_vegetation(),
 ## plant_vegetation_line(), snap_vegetation_line_end(), intersect_world_surface(),
-## hover_world_surface().
+## hover_world_surface(), preview_vegetation_pick_at(), get_vegetation_point_revision().
 extends Node3D
 
 enum Mode { PLANT, REMOVE }
@@ -12,6 +12,18 @@ signal option_changed(index: int)
 signal mode_changed(value: Mode)
 
 const UIStyle = preload("res://scripts/ui/ui_style.gd")
+const TreeSpecies = preload("res://scripts/renderers/tree_species.gd")
+const VegetationPlacements = preload("res://scripts/renderers/vegetation_placements.gd")
+# AddRefusal in vegetation_api/placement.rs.
+const POINT_REFUSALS := {
+	1: "Plant option unavailable",
+	2: "Outside the map",
+	3: "Ground is underwater",
+	4: "Ground is too uneven",
+	5: "Blocked by a road, paving, building or field",
+	6: "Too close to a path or street light",
+	7: "Too close to another plant",
+}
 # Display order, which is not the preset table's order: `preset` indexes the table in
 # vegetation_api/brush.rs, which owns every decision about what a stroke plants. Rust decides
 # the species mix, the fraction of the lattice kept and the scale band; this list only names
@@ -59,7 +71,7 @@ const LABEL_FADE_SECONDS := 0.25
 # Clearance between the footprint's top on screen and the bottom of the text, in pixels.
 const LABEL_OFFSET_PX := 24.0
 
-# The radius is the only size control, and it also chooses between a point edit and a brush: at
+# The radius chooses between a point edit and a brush: at
 # the minimum a plant lands exactly under the cursor, and above it the disc scatters spaced plants.
 # The ground disc is therefore the mode readout as well as the footprint.
 const MIN_RADIUS_M := 1.0
@@ -85,6 +97,19 @@ const LINE_PREVIEW_SIZE := Vector2(0.25, 0.6)
 const LINE_CURSOR_RADIUS_M := 0.5
 const REMOVE_RING_COLOR := Color(0.95, 0.45, 0.35)
 
+# Zero-based steps match LAST_SIZE_STEP in vegetation_api/placement.rs.
+const POINT_SIZE_STEPS := 5
+const SIZE_BAR_WIDTH_PX := 3
+const SIZE_BAR_PITCH_PX := 6
+const SIZE_BAR_HEIGHT_PX := 17
+# An odd stride cycles the 32-bit pick space. Rust hashes the pick into each appearance lane.
+const POINT_PICK_STRIDE := 0x9E3779B9
+const POINT_SWAY_LIMIT := deg_to_rad(12.0)
+const POINT_SWAY_GAIN := 0.012 # Radians per metre/second of horizontal cursor motion.
+# Natural frequency 2.5 Hz and damping ratio 0.65.
+const POINT_SWAY_DECAY := 2.5 * TAU * 0.65
+const POINT_SWAY_FREQUENCY := 2.5 * TAU * sqrt(1.0 - 0.65 * 0.65)
+
 @onready var simulation_node = $"../SimulationNode"
 var active := false:
 	set(value):
@@ -96,6 +121,7 @@ var mode: Mode = Mode.PLANT:
 		if mode == value:
 			return
 		mode = value
+		_hide_point_preview()
 		radius = minf(radius, _paint_radius_limit() if mode == Mode.PLANT else MAX_RADIUS_M)
 		_show_option_label()
 		mode_changed.emit(mode)
@@ -105,6 +131,7 @@ var option_index := 0:
 		if option_index == value:
 			return
 		option_index = value
+		_advance_point_pick()
 		radius = radius
 		_show_option_label()
 		option_changed.emit(option_index)
@@ -114,11 +141,34 @@ var preset: int:
 var radius := MIN_RADIUS_M:
 	set(value):
 		radius = minf(value, _paint_radius_limit() if mode == Mode.PLANT else MAX_RADIUS_M)
+		if radius > MIN_RADIUS_M:
+			_hide_point_preview()
+		if _option_label != null:
+			_set_option_label_text()
 var _preview_visible := false
 var _preview_footprint := Vector3.INF
 var _preview_mode := -1
 var _option_label: Label3D
+var _size_indicator: Sprite3D
+var _size_indicator_textures: Array[ImageTexture] = []
 var _label_time_left := 0.0
+var _point_ghost: MultiMeshInstance3D
+var _point_placements: VegetationPlacements
+var _point_pos := Vector2.INF
+var _point_epoch := -1
+var _point_reason := ""
+var _point_pick := 1
+var _point_size_step := 2
+var _point_preview_step := -1
+var _point_model_pick := -1
+var _point_model_step := -1
+var _point_model_tint := Color.WHITE
+var _point_name := ""
+var _point_height_text := ""
+var _point_root := Vector3.ZERO
+var _point_sway_pos := Vector2.INF
+var _point_tilt := Vector2.ZERO
+var _point_tilt_velocity := Vector2.ZERO
 var _painting := false
 # Identity of the gesture in progress, minted on the press that opens it. Rust folds stamps
 # into one undo entry by this id rather than by stamp order: a stamp that changes nothing
@@ -148,6 +198,9 @@ func _paint_radius_limit() -> float:
 func is_line_option() -> bool:
 	return mode == Mode.PLANT and BRUSH_OPTIONS[option_index].get("line", false)
 
+func _is_point_planting() -> bool:
+	return mode == Mode.PLANT and radius <= MIN_RADIUS_M and not is_line_option()
+
 func _ready() -> void:
 	var line_material := StandardMaterial3D.new()
 	line_material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
@@ -164,6 +217,7 @@ func _ready() -> void:
 	_option_label = Label3D.new()
 	_option_label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
 	_option_label.no_depth_test = true
+	_option_label.font = ThemeDB.fallback_font
 	_option_label.font_size = 32
 	_option_label.pixel_size = 0.01
 	_option_label.outline_size = 8
@@ -174,6 +228,30 @@ func _ready() -> void:
 	_option_label.top_level = true
 	_option_label.visible = false
 	add_child(_option_label)
+	_build_size_indicator()
+
+func _build_size_indicator() -> void:
+	# Five tiny prebuilt frames keep the bars on the same pixel grid as the billboard text.
+	var width := (POINT_SIZE_STEPS - 1) * SIZE_BAR_PITCH_PX + SIZE_BAR_WIDTH_PX + 2
+	var border := Color(UIStyle.BG_DARK, 1.0)
+	for step in range(POINT_SIZE_STEPS):
+		var image := Image.create_empty(width, SIZE_BAR_HEIGHT_PX + 2, false, Image.FORMAT_RGBA8)
+		for bar in range(POINT_SIZE_STEPS):
+			var height := SIZE_BAR_HEIGHT_PX - (POINT_SIZE_STEPS - 1 - bar) * 3
+			var rect := Rect2i(1 + bar * SIZE_BAR_PITCH_PX, 1 + SIZE_BAR_HEIGHT_PX - height,
+				SIZE_BAR_WIDTH_PX, height)
+			image.fill_rect(rect.grow(1), border)
+			image.fill_rect(rect, UIStyle.TEXT_PRIMARY if bar == step else UIStyle.TEXT_DIM.darkened(0.35))
+		_size_indicator_textures.append(ImageTexture.create_from_image(image))
+	_size_indicator = Sprite3D.new()
+	_size_indicator.billboard = _option_label.billboard
+	_size_indicator.no_depth_test = true
+	_size_indicator.pixel_size = _option_label.pixel_size
+	_size_indicator.texture_filter = BaseMaterial3D.TEXTURE_FILTER_NEAREST
+	_size_indicator.render_priority = _option_label.render_priority
+	_size_indicator.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	_size_indicator.hide()
+	_option_label.add_child(_size_indicator)
 
 func _exit_tree() -> void:
 	_hide_brush_preview()
@@ -222,6 +300,10 @@ func _process(delta: float) -> void:
 		hit = _line_end(hit)
 	var preview_radius := LINE_CURSOR_RADIUS_M if line else radius
 	_show_brush_preview(hit, preview_radius)
+	if mode == Mode.PLANT and not line and radius <= MIN_RADIUS_M and _menu_grab_frames == 0:
+		_update_point_preview(Vector2(hit.x, hit.z), delta)
+	else:
+		_hide_point_preview()
 	if _line_start != Vector3.INF:
 		_show_line(_line_start, hit)
 	_update_option_label(hit + Vector3.UP * 0.15, preview_radius)
@@ -238,6 +320,14 @@ func _process(delta: float) -> void:
 func _unhandled_input(event: InputEvent) -> void:
 	if not active:
 		return
+	if event is InputEventKey and event.pressed and _menu_grab_frames == 0 and _is_point_planting():
+		if event.keycode == KEY_UP or event.keycode == KEY_DOWN:
+			if not event.echo:
+				var direction := 1 if event.keycode == KEY_UP else -1
+				_point_size_step = clampi(_point_size_step + direction, 0, POINT_SIZE_STEPS - 1)
+				_show_option_label()
+			get_viewport().set_input_as_handled()
+			return
 	if apply_brush_gesture(event):
 		get_viewport().set_input_as_handled()
 		return
@@ -315,13 +405,31 @@ func toggle_mode() -> void:
 func _show_option_label() -> void:
 	if _option_label == null:
 		return
-	_option_label.text = "Remove" if mode == Mode.REMOVE else BRUSH_OPTIONS[option_index].label
-	_option_label.modulate = UIStyle.TEXT_ALERT if mode == Mode.REMOVE else UIStyle.TEXT_PRIMARY
+	_set_option_label_text()
 	_option_label.transparency = 0.0
 	_label_time_left = LABEL_HOLD_SECONDS + LABEL_FADE_SECONDS
 
+func _set_option_label_text() -> void:
+	var show_size := false
+	if not _point_reason.is_empty():
+		_option_label.text = _point_reason
+	elif _is_point_planting():
+		show_size = _point_model_pick == _point_pick
+		_option_label.text = "%s %s m" % [_point_name, _point_height_text] if show_size else ""
+	else:
+		_option_label.text = "Remove" if mode == Mode.REMOVE else BRUSH_OPTIONS[option_index].label
+	_option_label.modulate = UIStyle.TEXT_ALERT if mode == Mode.REMOVE or not _point_reason.is_empty() else UIStyle.TEXT_PRIMARY
+	_size_indicator.visible = show_size
+	if show_size:
+		_size_indicator.texture = _size_indicator_textures[_point_model_step]
+		var width := _option_label.font.get_string_size(_option_label.text,
+			HORIZONTAL_ALIGNMENT_LEFT, -1, _option_label.font_size).x
+		# Offset within the billboard, so both stay registered as the camera turns or zooms.
+		_size_indicator.offset.x = ceilf(width * 0.5) + 9.0 + _size_indicator.texture.get_width() * 0.5
+
 func _update_option_label(anchor: Vector3, preview_radius: float) -> void:
-	if _label_time_left <= 0.0:
+	var blocked := not _point_reason.is_empty()
+	if _option_label.text.is_empty() or (not blocked and _label_time_left <= 0.0):
 		return
 	var camera := get_viewport().get_camera_3d()
 	if camera == null:
@@ -346,7 +454,10 @@ func _update_option_label(anchor: Vector3, preview_radius: float) -> void:
 	_option_label.global_position = (anchor
 		+ camera.global_basis.y * (reach + LABEL_OFFSET_PX) * metres_per_px)
 	_option_label.scale = Vector3.ONE * (metres_per_px / _option_label.pixel_size)
-	_option_label.transparency = 1.0 - minf(1.0, _label_time_left / LABEL_FADE_SECONDS)
+	var opacity := 1.0 if blocked else minf(1.0, _label_time_left / LABEL_FADE_SECONDS)
+	_option_label.transparency = 1.0 - opacity
+	if _size_indicator.visible:
+		_size_indicator.modulate.a = opacity
 	_option_label.visible = true
 
 ## Steps the radius one geometric notch, up for a positive direction. Public so that a control
@@ -370,6 +481,10 @@ func _stamp(click := false) -> bool:
 	var hit = _mouse_world_pos(click)
 	if not (hit is Vector3):
 		return false
+	# A busy hover may still show the previous root or size. The click uses that visible answer.
+	if click and _is_point_planting() and _point_ghost != null and _point_ghost.visible:
+		_apply_point(_point_pos, _point_preview_step)
+		return true
 	var pos := Vector2(hit.x, hit.z)
 	if _painting:
 		if _last_stamp != Vector2.INF and pos.distance_to(_last_stamp) < radius * 0.5:
@@ -388,7 +503,20 @@ func apply_at(pos: Vector2, stroke := 0) -> int:
 		return simulation_node.remove_vegetation_at(pos, radius, stroke)
 	if radius > MIN_RADIUS_M:
 		return simulation_node.paint_vegetation(pos, radius, preset, stroke)
-	return int(simulation_node.add_vegetation_at(pos, preset))
+	return _apply_point(pos, _point_size_step)
+
+func _apply_point(pos: Vector2, step: int) -> int:
+	if not simulation_node.add_vegetation_pick_at(pos, preset, _point_pick, step):
+		return 0
+	_advance_point_pick()
+	return 1
+
+func _advance_point_pick() -> void:
+	_point_pick = (_point_pick + POINT_PICK_STRIDE) & 0xFFFFFFFF
+	_hide_point_preview()
+	if _option_label != null and _is_point_planting():
+		_option_label.hide()
+		_set_option_label_text()
 
 ## Lays the selected hedge from `from` to `to` and returns how many modules Rust planted. Rust
 ## joins either end to a hedge already standing near it.
@@ -426,9 +554,136 @@ func _show_brush_preview(hit: Vector3, preview_radius: float) -> void:
 		RenderingServer.global_shader_parameter_set("vegetation_brush_enabled", true)
 
 func _hide_brush_preview() -> void:
+	_hide_point_preview()
 	if _preview_visible:
 		_preview_visible = false
 		RenderingServer.global_shader_parameter_set("vegetation_brush_enabled", false)
+
+func _update_point_preview(pos: Vector2, delta := 0.0) -> void:
+	var epoch: int = simulation_node.get_vegetation_point_revision()
+	var previous_root := _point_root
+	# Even a move within one cell can cross a clearance or occupancy boundary.
+	if pos != _point_pos or epoch != _point_epoch or _point_size_step != _point_preview_step:
+		var result = simulation_node.preview_vegetation_pick_at(pos, preset, _point_pick,
+			_point_size_step)
+		if not result is bool:
+			_point_pos = pos
+			_point_epoch = epoch
+			_point_preview_step = _point_size_step
+			_show_point_result(result)
+		# A busy result leaves the last ghost visible and the query outstanding.
+	if _point_ghost != null and _point_ghost.visible and (
+			previous_root != _point_root
+			or not _point_sway_pos.is_finite() or _point_tilt != Vector2.ZERO
+			or _point_tilt_velocity != Vector2.ZERO):
+		_sway_point(delta)
+
+func _show_point_result(result: Variant) -> void:
+	var has_plant := result is PackedFloat32Array
+	var refusal := 0
+	if not has_plant:
+		refusal = int(result)
+	elif result.size() == 7:
+		refusal = int(result[6])
+	var reason: String = POINT_REFUSALS.get(refusal, "")
+	var repaint := reason != _point_reason
+	_point_reason = reason
+	if not has_plant:
+		if repaint:
+			_set_option_label_text()
+		if _point_ghost != null:
+			_point_ghost.hide()
+		_reset_point_sway()
+		return
+	if _point_ghost == null:
+		var world_renderer = get_node_or_null("../Vegetation")
+		var meshes: Array = world_renderer.meshes if world_renderer != null else TreeSpecies.build_meshes()
+		_point_placements = VegetationPlacements.new(meshes)
+		_point_ghost = MultiMeshInstance3D.new()
+		_point_ghost.top_level = true
+		_point_ghost.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		_point_ghost.transparency = 0.55
+		_point_ghost.multimesh = MultiMesh.new()
+		_point_ghost.multimesh.transform_format = MultiMesh.TRANSFORM_3D
+		_point_ghost.multimesh.use_colors = true
+		add_child(_point_ghost)
+	var mm := _point_ghost.multimesh
+	if _point_model_pick != _point_pick or _point_model_step != _point_preview_step:
+		_point_model_tint = _point_placements.set_ghost_plant(mm, result)
+		_point_model_pick = _point_pick
+		_point_model_step = _point_preview_step
+		var packed := int(result[5])
+		_point_name = _held_plant_name(packed)
+		var height: float = mm.mesh.get_aabb().size.y * result[4]
+		var decimal := height < 10.0
+		if (packed & VegetationPlacements.Vegetation.SPECIES_MASK) < TreeSpecies.BUSH:
+			# Preserve a model-limited fractional step and discard mesh/scale rounding noise.
+			height = snappedf(height, 0.1)
+			decimal = height < 10.0 or not is_equal_approx(height, roundf(height))
+		_point_height_text = ("%.1f" if decimal else "%.0f") % height
+		repaint = true
+	if repaint:
+		# Instance colour preserves cutouts and tints both bark and foliage.
+		mm.set_instance_color(0, _point_model_tint * VegetationPlacements.BLOCKED_TINT
+			if refusal != 0 else _point_model_tint)
+		_set_option_label_text()
+	_point_root = Vector3(result[0], result[1], result[2])
+	_point_ghost.show()
+
+func _held_plant_name(packed: int) -> String:
+	var species := packed & VegetationPlacements.Vegetation.SPECIES_MASK
+	if species < TreeSpecies.BUSH:
+		var variant := VegetationPlacements.variant_pin(packed) - 1
+		return TreeSpecies.canopy_model(species, variant).get_slice("_", 0).capitalize()
+	return BRUSH_OPTIONS[option_index].label
+
+func _sway_point(delta: float) -> void:
+	var pos := Vector2(_point_root.x, _point_root.z)
+	if delta > 0.0 and _point_sway_pos.is_finite() and (
+			pos != _point_sway_pos or _point_tilt != Vector2.ZERO
+			or _point_tilt_velocity != Vector2.ZERO):
+		var target := ((_point_sway_pos - pos) * (POINT_SWAY_GAIN / delta)).limit_length(POINT_SWAY_LIMIT)
+		# Exact underdamped spring update for this frame's velocity, held constant over delta.
+		var offset := _point_tilt - target
+		var tangent := (_point_tilt_velocity + POINT_SWAY_DECAY * offset) / POINT_SWAY_FREQUENCY
+		var phase := POINT_SWAY_FREQUENCY * delta
+		var cosine := cos(phase)
+		var sine := sin(phase)
+		var envelope := exp(-POINT_SWAY_DECAY * delta)
+		var wave := offset * cosine + tangent * sine
+		_point_tilt = target + envelope * wave
+		_point_tilt_velocity = envelope * (POINT_SWAY_FREQUENCY *
+			(tangent * cosine - offset * sine) - POINT_SWAY_DECAY * wave)
+		if _point_tilt.length_squared() > POINT_SWAY_LIMIT * POINT_SWAY_LIMIT:
+			var outward := _point_tilt.normalized()
+			_point_tilt = outward * POINT_SWAY_LIMIT
+			_point_tilt_velocity -= outward * maxf(0.0, outward.dot(_point_tilt_velocity))
+		if (target == Vector2.ZERO and _point_tilt.length_squared() < 1e-8
+				and _point_tilt_velocity.length_squared() < 1e-6):
+			_point_tilt = Vector2.ZERO
+			_point_tilt_velocity = Vector2.ZERO
+	_point_sway_pos = pos
+	var tilt := Basis.IDENTITY
+	if _point_tilt != Vector2.ZERO:
+		# The rotation axis is up × tilt. The MultiMesh's plant starts at the node's origin.
+		var axis := Vector3(_point_tilt.y, 0.0, -_point_tilt.x).normalized()
+		tilt = Basis(axis, _point_tilt.length())
+	_point_ghost.global_transform = Transform3D(tilt, _point_root)
+
+func _reset_point_sway() -> void:
+	_point_sway_pos = Vector2.INF
+	_point_tilt = Vector2.ZERO
+	_point_tilt_velocity = Vector2.ZERO
+
+func _hide_point_preview() -> void:
+	_point_pos = Vector2.INF
+	_reset_point_sway()
+	if _point_ghost != null:
+		_point_ghost.hide()
+	if not _point_reason.is_empty():
+		_point_reason = ""
+		_set_option_label_text()
+		_option_label.hide()
 
 # The ground point under the pointer, null for none. A click's query waits for the core
 # (`CODE-25`); the others answer false while the simulation thread holds it.

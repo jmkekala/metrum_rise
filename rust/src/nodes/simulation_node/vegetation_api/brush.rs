@@ -2,7 +2,7 @@
 
 //! Named brush presets: what one stroke plants, how densely, and at what size.
 
-use crate::simulation::vegetation::edits::{AuthoredPlant, VARIANT_COUNTS, VARIANT_FROM_SEED};
+use crate::simulation::vegetation::edits::{AuthoredPlant, FIXED_LOOK, VARIANT_COUNTS, VARIANT_FROM_SEED};
 use crate::simulation::vegetation::unit;
 
 /// Instance scale band the generator places every plant in.
@@ -53,7 +53,7 @@ const HEDGE_VARIANTS: u8 = 3;
 /// follow the hedges in the variant table, so a pin past them is not a hedge.
 pub(crate) fn hedge_index(species: u8, variant: u8) -> Option<u8> {
     // Stored variants are one past the model's, which keeps zero for "from the seed".
-    let index = variant.checked_sub(HEDGE_FIRST_VARIANT + 1)?;
+    let index = (variant & !FIXED_LOOK).checked_sub(HEDGE_FIRST_VARIANT + 1)?;
     (species == 2 && index < HEDGE_VARIANTS).then_some(index)
 }
 // A yard shrub is planted near its authored size; the generator's band would span a lilac
@@ -526,7 +526,7 @@ impl PlantClass {
     pub(super) fn of(species: u8, variant: u8) -> Self {
         match species {
             0 | 1 => Self::Tree,
-            2 if variant > LANDSCAPE_FIRST_VARIANT => Self::Landscape,
+            2 if variant & !FIXED_LOOK > LANDSCAPE_FIRST_VARIANT => Self::Landscape,
             2 => Self::Ground,
             _ => Self::Rock,
         }

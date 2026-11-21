@@ -38,6 +38,7 @@ pub struct AuthoredPlant {
     /// Renderer ordinal: conifer, broadleaf, bush or rock (0 through 3).
     pub species: u8,
     /// Renderer mesh variant, biased by one, or [`VARIANT_FROM_SEED`] to leave it unpinned.
+    /// The high bit is [`FIXED_LOOK`] and is separate from the pin.
     ///
     /// A species covers several modelled trees that the renderer normally picks between from
     /// the position's appearance seed, which is why a conifer planted today may come up either
@@ -50,19 +51,72 @@ pub struct AuthoredPlant {
 /// Leaves the renderer to pick a mesh variant from the placement's appearance seed.
 pub const VARIANT_FROM_SEED: u8 = 0;
 
+/// Keeps the held point pick's uniform scale and derives its lean and tint from its yaw.
+pub const FIXED_LOOK: u8 = 1 << 7;
+
 /// Mesh variants the renderer models for each species ordinal.
 ///
 /// This mirrors `TreeSpecies.VARIANT_COUNTS` on the Godot side, which owns the meshes
 /// themselves. Bush variants past the sixth are named landscape plants that only a brush pin
-/// selects. The simulation needs the counts only to bound a pin, and the bridge test
-/// `vegetation_variant_test.gd` fails if the two ever drift apart.
+/// selects. The simulation uses the counts to bound a pin.
 pub const VARIANT_COUNTS: [u8; 4] = [12, 12, 21, 6];
 
-/// Whether a biased variant pin names a mesh the renderer models for that species.
+/// The tree kind represented by one canopy mesh variant.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum CanopyKind {
+    /// Scots pine, including the young form.
+    Pine,
+    /// Norway spruce.
+    Spruce,
+    /// Birch.
+    Birch,
+    /// European aspen.
+    Aspen,
+}
+
+// Full-level canopy AABB heights in metres, indexed by species, form, then model.
+/// The Godot meshes own these heights. `vegetation_edit_test.gd` checks the mirror.
+const CANOPY_MODEL_HEIGHTS_M: [[[f32; 3]; 2]; 2] = [
+    [
+        [23.065_588, 21.344_248, 9.595_602], // Pine
+        [25.000_414, 22.500_5, 17.000_68],   // Spruce
+    ],
+    [
+        [23.938_107, 21.443_018, 18.505_875], // Birch
+        [22.000_149, 20.000_183, 23.500_164], // Aspen
+    ],
+];
+
+/// Resolves a zero-based canopy variant to its full-level mesh height using `TreeSpecies.canopy_model`'s ordering.
+pub(crate) fn canopy_model_height_m(species: usize, variant: usize) -> Option<f32> {
+    canopy_model(species, variant).map(|(_, height)| height)
+}
+
+/// Resolves a zero-based canopy variant to its kind and full-level mesh height.
+pub(crate) fn canopy_model(species: usize, variant: usize) -> Option<(CanopyKind, f32)> {
+    let forms = CANOPY_MODEL_HEIGHTS_M.get(species)?;
+    if variant >= usize::from(VARIANT_COUNTS[species]) {
+        return None;
+    }
+    let slot = variant % 3;
+    let group = variant / 3;
+    let (form, index) = if slot == 2 {
+        (1, group)
+    } else {
+        (0, group * 2 + slot)
+    };
+    let kind = [
+        [CanopyKind::Pine, CanopyKind::Spruce],
+        [CanopyKind::Birch, CanopyKind::Aspen],
+    ];
+    Some((kind[species][form], forms[form][index % forms[form].len()]))
+}
+
+/// Whether the variant byte carries a valid mesh pin for that species.
 pub fn variant_in_range(species: u8, variant: u8) -> bool {
     VARIANT_COUNTS
         .get(species as usize)
-        .is_some_and(|count| variant <= *count)
+        .is_some_and(|count| variant & !FIXED_LOOK <= *count)
 }
 
 /// An inclusive range of one layer's cells: the layer, its columns and its rows.

@@ -8,6 +8,7 @@ const VegetationTool := preload("res://scripts/tools/vegetation_tool.gd")
 const InputManager := preload("res://scripts/core/input_manager.gd")
 const TerrainPanel := preload("res://scripts/ui/terrain_panel.gd")
 const Vegetation := preload("res://scripts/renderers/vegetation.gd")
+const VegetationPlacements := preload("res://scripts/renderers/vegetation_placements.gd")
 const TreeSpecies := preload("res://scripts/renderers/tree_species.gd")
 var _failures := 0
 
@@ -29,10 +30,32 @@ func _click() -> InputEventMouseButton:
 	event.pressed = true
 	return event
 
+func _arrow(key: Key) -> InputEventKey:
+	var event := InputEventKey.new()
+	event.keycode = key
+	event.pressed = true
+	return event
+
 func _expect(condition: bool, message: String) -> void:
 	if not condition:
 		_failures += 1
 		push_error(message)
+
+func _expect_height_label(tool: VegetationTool, expected: String, step: int) -> void:
+	_expect(tool._option_label.text == expected, "point label must show the held plant's mesh height in metres")
+	_expect(tool._size_indicator.visible and tool._size_indicator.texture == tool._size_indicator_textures[step],
+		"point label must highlight the visible size step")
+
+func _check_canopy_model_heights(simulation: SimulationNode) -> void:
+	var meshes := TreeSpecies.build_meshes()
+	for species in [TreeSpecies.CONIFER, TreeSpecies.BROADLEAF]:
+		for variant in range(TreeSpecies.VARIANT_COUNTS[species]):
+			var mesh: ArrayMesh = meshes[species][variant][0]
+			var height := mesh.get_aabb().size.y
+			var mirrored := simulation.get_vegetation_canopy_model_height_m(species, variant)
+			_expect(absf(height - mirrored) <= 0.05,
+				"%s height is %.3f m, Rust mirrors %.3f m" % [
+					TreeSpecies.canopy_model(species, variant), height, mirrored])
 
 func _run() -> void:
 	var host := Node3D.new()
@@ -41,6 +64,7 @@ func _run() -> void:
 	simulation.name = "SimulationNode"
 	host.add_child(simulation)
 	simulation.set_simulation_speed(0.0)
+	_check_canopy_model_heights(simulation)
 	_expect(simulation.create_blank_world(1020.0, 1020.0, 10.0, 510.0, 20.0), "fixture world must be created")
 	var layout: Dictionary = simulation.get_terrain_patch_layout()
 	var span: float = float(layout["terrain_cell_m"]) * float(layout["patch_interval_cells"])
@@ -107,15 +131,190 @@ func _run() -> void:
 	# The radius chooses the point mutator or the brush inside one plant mode, so both dispatches
 	# are exercised without a third mode to select them.
 	tool.mode = VegetationTool.Mode.PLANT
+	var initial_pick := tool._point_pick
 	tool.option_index = 2
+	var held_pick := tool._point_pick
+	_expect(held_pick != initial_pick, "choosing Birch must pick a new plant")
 	_expect(tool.preset == VegetationTool.BRUSH_OPTIONS[2].preset, "the option must resolve its native preset ordinal")
 	tool.radius = VegetationTool.MIN_RADIUS_M
-	_expect(tool.apply_at(Vector2(11.0, 13.0)) == 1, "the minimum radius must call the native point mutator")
+	var point := Vector2(11.0, 13.0)
+	var planned: Variant
+	for _i in range(100):
+		planned = simulation.preview_vegetation_pick_at(point, tool.preset, held_pick, tool._point_size_step)
+		if planned is PackedFloat32Array:
+			tool._update_point_preview(point)
+			if tool._point_ghost != null:
+				break
+		await create_timer(0.01).timeout
+	_expect(planned is PackedFloat32Array and planned.size() == 6, "clear point must return a packed plant")
+	_expect(tool._point_ghost != null and tool._point_ghost.visible, "a clear point must show a ghost")
+	if tool._point_ghost == null:
+		quit(1)
+		return
+	_expect((int(planned[5]) >> Vegetation.SPECIES_BITS) & VegetationPlacements.FIXED_LOOK != 0,
+		"point preview must carry the fixed-look flag")
+	_expect_height_label(tool, "Birch 14 m", 2)
+	var mesh := tool._point_ghost.multimesh.mesh
+	var transform := tool._point_ghost.multimesh.get_instance_transform(0)
+	var moved := point + Vector2(0.25, 0.0)
+	for _i in range(100):
+		tool._update_point_preview(moved, 1.0 / 60.0)
+		if tool._point_pos == moved:
+			break
+		await create_timer(0.01).timeout
+	_expect(tool._point_pos == moved and tool._point_pick == held_pick
+		and tool._point_ghost.multimesh.mesh == mesh
+		and tool._point_ghost.multimesh.get_instance_transform(0) == transform,
+		"moving hover must keep the held plant's model and proportions")
+	_expect(tool._point_tilt.x < 0.0 and tool._point_ghost.global_position.x == moved.x,
+		"the ghost top must lag the cursor with the base at the new spot")
+	for _i in range(90):
+		tool._update_point_preview(moved, 1.0 / 60.0)
+	_expect(tool._point_tilt == Vector2.ZERO, "the spring must settle at rest")
+	var up := _arrow(KEY_UP)
+	var down := _arrow(KEY_DOWN)
+	tool._unhandled_input(up)
+	_expect(tool._point_size_step == 3, "up must step one size")
+	var upper: Variant
+	for _i in range(100):
+		upper = simulation.preview_vegetation_pick_at(moved, tool.preset, held_pick, 3)
+		tool._update_point_preview(moved)
+		if upper is PackedFloat32Array and tool._point_preview_step == 3:
+			break
+		await create_timer(0.01).timeout
+	_expect(upper is PackedFloat32Array and tool._point_preview_step == 3, "the larger ghost must refresh")
+	if upper is PackedFloat32Array:
+		_expect_height_label(tool, "Birch 19 m", 3)
+	tool._unhandled_input(down)
+	for _i in range(100):
+		tool._update_point_preview(moved)
+		if tool._point_preview_step == 2:
+			break
+		await create_timer(0.01).timeout
+	_expect_height_label(tool, "Birch 14 m", 2)
+	for _i in range(8):
+		tool._unhandled_input(up)
+	_expect(tool._point_size_step == 4, "up must clamp at the largest size")
+	for _i in range(100):
+		tool._update_point_preview(moved)
+		if tool._point_preview_step == 4:
+			break
+		await create_timer(0.01).timeout
+	_expect_height_label(tool, "Birch 24 m", 4)
+	for _i in range(8):
+		tool._unhandled_input(down)
+	_expect(tool._point_size_step == 0, "down must clamp at the smallest size")
+	for _i in range(100):
+		tool._update_point_preview(moved)
+		if tool._point_preview_step == 0:
+			break
+		await create_timer(0.01).timeout
+	_expect_height_label(tool, "Birch 4.0 m", 0)
+	tool._unhandled_input(up)
+	tool._unhandled_input(up)
+	_expect(tool._point_pick == held_pick, "size keys must keep the held pick")
+	for _i in range(100):
+		tool._update_point_preview(point)
+		if tool._point_pos == point:
+			break
+		await create_timer(0.01).timeout
+	var ghost_mm := tool._point_ghost.multimesh
+	var ghost_basis := ghost_mm.get_instance_transform(0).basis
+	var ghost_tint := ghost_mm.get_instance_color(0)
+	_expect(simulation.debug_hold_core(1000), "the fixture must hold the native core")
+	var busy = simulation.preview_vegetation_pick_at(point, tool.preset, held_pick, tool._point_size_step)
+	_expect(busy is bool and not busy, "hover must return busy while the core is held")
+	tool._update_point_preview(point + Vector2(10.0, 0.0))
+	_expect(tool._point_pos == point and tool._point_ghost.visible, "busy hover must keep the last ghost")
+	tool._unhandled_input(up)
+	var camera := Camera3D.new()
+	camera.projection = Camera3D.PROJECTION_ORTHOGONAL
+	camera.size = 10.0
+	camera.position = Vector3(point.x, 80.0, point.y)
+	camera.rotation.x = -PI * 0.5
+	host.add_child(camera)
+	camera.make_current()
+	_expect(tool._stamp(true), "a point click on the surface must be handled")
+	camera.free()
+	_expect(tool._point_pick != held_pick and tool._point_size_step == 3,
+		"a successful plant must choose the next pick and keep the selected size step")
+	_expect(tool._option_label.text.is_empty() and not tool._size_indicator.visible,
+		"the old height and size bars must clear while the next pick is pending")
+	tool._unhandled_input(down)
+	var planted := simulation.get_decorative_tree_patch(right, span, true)
+	var planted_record := PackedFloat32Array()
+	for at in range(0, planted.size(), 6):
+		if planted[at] == point.x and planted[at + 2] == point.y:
+			planted_record = planted.slice(at, at + 6)
+	_expect(planted_record == planned, "the click must match all six lanes of the last visible ghost")
+	if not planted_record.is_empty():
+		var drawn := VegetationPlacements.instances(planted_record, tool._point_placements._meshes)
+		var plant_mm: MultiMesh = drawn.get_child(0).multimesh
+		_expect(plant_mm.mesh == mesh and plant_mm.get_instance_transform(0).basis == ghost_basis
+			and plant_mm.get_instance_color(0) == ghost_tint,
+			"the planted record must draw the held ghost's exact mesh, basis and tint")
+		drawn.free()
+	for _i in range(100):
+		tool._update_point_preview(point)
+		if tool._point_pos == point:
+			break
+		await create_timer(0.01).timeout
+	_expect(tool._point_ghost.visible and tool._option_label.text == "Too close to another plant"
+		and tool._option_label.modulate == VegetationTool.UIStyle.TEXT_ALERT
+		and not tool._size_indicator.visible,
+		"a click must refresh the same spot to show its blocked ghost and reason")
+	var next_pick := tool._point_pick
+	_expect(tool.apply_at(point) == 0 and tool._point_pick == next_pick,
+		"a refused point plant must keep the pick")
+	_expect(simulation.undo_action(), "point undo must queue")
+	for _i in range(100):
+		await create_timer(0.01).timeout
+		tool._update_point_preview(point)
+		if tool._point_reason.is_empty():
+			break
+	_expect(tool._point_ghost.visible and tool._point_reason.is_empty(), "undo must refresh a stationary ghost")
+	_expect(tool.apply_at(point) == 1, "the point must be plantable again after undo")
 	tool.mode = VegetationTool.Mode.REMOVE
+	tool._unhandled_input(up)
+	_expect(tool._point_size_step == 2, "arrows must leave the size alone while removing")
+	_expect(not tool._point_ghost.visible and tool._point_reason.is_empty(), "remove mode must hide the point preview")
 	tool.radius = 0.01
 	_expect(tool.apply_at(Vector2(11.0, 13.0)) == 1, "remove mode must forward its radius")
 	tool.mode = VegetationTool.Mode.PLANT
+	tool.option_index = 0
+	var pine_pick := tool._point_pick
+	tool._unhandled_input(down)
+	for _i in range(100):
+		tool._update_point_preview(point)
+		if tool._point_model_pick == pine_pick and tool._point_model_step == 1:
+			break
+		await create_timer(0.01).timeout
+	_expect_height_label(tool, "Pine 10 m", 1)
+	var young_mesh := tool._point_ghost.multimesh.mesh
+	_expect(young_mesh.get_aabb().size.y < 10.0, "the 10 m step must use the young pine")
+	tool._unhandled_input(up)
+	for _i in range(100):
+		tool._update_point_preview(point)
+		if tool._point_model_step == 2:
+			break
+		await create_timer(0.01).timeout
+	_expect_height_label(tool, "Pine 16 m", 2)
+	var mature_mesh := tool._point_ghost.multimesh.mesh
+	_expect(mature_mesh.get_aabb().size.y > 22.0 and mature_mesh != young_mesh,
+		"the 16 m step must swap the ghost to the mature pine")
+	tool._unhandled_input(down)
+	for _i in range(100):
+		tool._update_point_preview(point)
+		if tool._point_model_step == 1:
+			break
+		await create_timer(0.01).timeout
+	_expect_height_label(tool, "Pine 10 m", 1)
+	_expect(tool._point_pick == pine_pick and tool._point_ghost.multimesh.mesh == young_mesh,
+		"returning to 10 m must restore the same young pine and keep the held pick")
+	tool._unhandled_input(up)
 	tool.radius = 32.0
+	tool._unhandled_input(up)
+	_expect(tool._point_size_step == 2, "arrows must leave size alone while brush painting")
 	_expect(tool.apply_at(Vector2(96.0, -96.0)) > 0, "a raised radius must call the native planting brush")
 	# Ctrl and the wheel are the only radius control, and stepping back down has to land on the
 	# minimum exactly, because that value is what selects the single-plant dispatch above.
@@ -145,6 +344,11 @@ func _run() -> void:
 			tool.option_index = index
 			break
 	_expect(tool.is_line_option(), "a hedge option must lay rows")
+	var brush_radius := tool.radius
+	tool.radius = VegetationTool.MIN_RADIUS_M
+	tool._unhandled_input(down)
+	_expect(tool._point_size_step == 2, "arrows must leave size alone while laying hedges")
+	tool.radius = brush_radius
 	var row := tool.apply_line(Vector2(-150.0, 150.0), Vector2(-138.0, 150.0), 41)
 	_expect(row == 12, "a 12 m hedge must lay twelve modules, got %d" % row)
 	_expect(tool.apply_line(Vector2(-150.0, 150.0), Vector2(-138.0, 150.0), 42) == 0, "a redrawn hedge must not stack")
@@ -229,7 +433,10 @@ func _run() -> void:
 	_expect(tool.mode == VegetationTool.Mode.REMOVE and remove_button.button_pressed, "cycling keeps Remove")
 	manager._unhandled_input(erase)
 	_expect(tool.mode == VegetationTool.Mode.PLANT and not remove_button.button_pressed, "E must restore planting and synchronize Remove")
-	_expect(tool._option_label.text == VegetationTool.BRUSH_OPTIONS[tool.option_index].label, "plant label must show the active option")
+	tool.radius = 32.0
+	_expect(tool._option_label.text == VegetationTool.BRUSH_OPTIONS[tool.option_index].label
+		and not tool._size_indicator.visible, "the brush label must show only the active option")
+	tool.radius = VegetationTool.MIN_RADIUS_M
 	remove_button.pressed.emit()
 	_expect(tool.mode == VegetationTool.Mode.REMOVE and remove_button.button_pressed, "Remove must update the same mode as E")
 	remove_button.pressed.emit()
@@ -249,7 +456,20 @@ func _run() -> void:
 	_expect(tool.mode == VegetationTool.Mode.PLANT and tool.option_index == flowers[1], "the open category's digit leaves Remove first")
 	panel.free()
 
-	tool._show_brush_preview(Vector3(10.0, 0.0, 10.0), 4.0)
+	tool.radius = VegetationTool.MIN_RADIUS_M
+	tool._show_brush_preview(Vector3(10.0, 0.0, 10.0), tool.radius)
+	var flower: Variant
+	for _i in range(100):
+		flower = simulation.preview_vegetation_pick_at(point, tool.preset, tool._point_pick, 2)
+		tool._update_point_preview(point)
+		if flower is PackedFloat32Array and flower.size() == 6 and tool._point_pos == point:
+			break
+		await create_timer(0.01).timeout
+	_expect(flower is PackedFloat32Array and flower.size() == 6, "the flower preview must fit")
+	if flower is PackedFloat32Array and flower.size() == 6:
+		var height := tool._point_ghost.multimesh.mesh.get_aabb().size.y * float(flower[4])
+		_expect_height_label(tool, "Lupine %.1f m" % height, 2)
+		_expect(height < 10.0, "the flower fixture must exercise decimal heights")
 	_expect(tool._preview_visible, "a shown preview paints the ground disc")
 	manager._activate_tool_logic(InputManager.Tool.VEGETATION, false)
 	tool._process(0.0)
@@ -257,6 +477,9 @@ func _run() -> void:
 	# clearing it would keep a brush painted on the world after it is gone. The headless
 	# renderer does not keep global parameters, so the tool's own record of the flag is read.
 	_expect(not tool.active and not tool._preview_visible, "deactivation must hide the ground preview")
+	_expect(not tool._point_ghost.visible and tool._point_reason.is_empty(), "deactivation must clear the point preview")
+	tool._unhandled_input(down)
+	_expect(tool._point_size_step == 2, "arrows must leave size alone while the tool is inactive")
 	# The preset table in vegetation_api/brush.rs names which meshes are pine and which are
 	# spruce; tree_species.gd owns that rule for the meshes themselves. Nothing but this check
 	# links the two, so a change on either side that the other does not follow fails here.
@@ -278,7 +501,9 @@ func _run() -> void:
 			if before.has(Vector2(records[i], records[i + 2])):
 				continue
 			var packed := int(records[i + 5])
-			var pin: int = packed >> Vegetation.SPECIES_BITS
+			var pin := VegetationPlacements.variant_pin(packed)
+			_expect((packed >> Vegetation.SPECIES_BITS) & VegetationPlacements.FIXED_LOOK == 0,
+				"a brush stroke must keep the position-seeded look")
 			_expect(pin > 0, "a %s stroke must pin every mesh it plants" % tree)
 			if pin == 0:
 				continue

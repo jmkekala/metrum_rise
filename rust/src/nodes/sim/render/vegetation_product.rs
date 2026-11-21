@@ -11,9 +11,9 @@
 //! its visibility range: the shared bounds every level of one canopy species measures its range
 //! from, which `_share_patch_bounds` used to compute from the nodes.
 //!
-//! The appearance seed is Godot's `hash()` of the placement's world position, and the jitters
-//! hash the seed again; [`godot_math`] reproduces both, and from here on Rust owns them, so a
-//! plant's look no longer depends on the engine version. Every operation keeps GDScript's types:
+//! The appearance seed is Godot's `hash()` of the placement's world position, or a hash of the
+//! stored yaw bits for fixed-look point plants. The jitters hash the seed again. [`godot_math`]
+//! reproduces both hashes independently of the engine version. Every operation keeps GDScript's types:
 //! `float` arithmetic in double precision, `Vector3`, `Basis`, `Color` and `AABB` lanes in single.
 //!
 //! Cost: O(P + R + B) for P placements, R hedge runs and B batches (at most 51 near variants,
@@ -24,6 +24,7 @@ pub(crate) mod godot_math;
 #[cfg(test)]
 mod tests;
 
+use crate::simulation::vegetation::edits::FIXED_LOOK;
 use godot_math::{Aabb, Basis, add3, basis_axis_angle, basis_columns, basis_mul, hash_int};
 use godot_math::{column_length_squared, hash_vector2, length3, lerp_f64, max_f64, max3, min3};
 use godot_math::{smoothstep_f64, sub3};
@@ -57,7 +58,7 @@ const STAND_OPEN_COVER: f64 = 0.35;
 const STAND_CLOSED_COVER: f64 = 0.7;
 // How far inside its range one understory variant may stop, as a share of the range.
 const UNDERSTORY_STAGGER_MIN: f64 = 0.75;
-/// Floats per placement record: x, height, z, yaw, scale (a hedge's rise), species and pin.
+/// Floats per placement record: x, height, z, yaw, scale (a hedge's rise), species and variant byte.
 pub(crate) const PLACEMENT_STRIDE: usize = 6;
 /// Floats per hedge run: centre x, height, centre z, yaw, length, rise and hedge kind.
 pub(crate) const RUN_STRIDE: usize = 7;
@@ -376,25 +377,40 @@ fn place(inputs: &ProductInputs, placed: &mut Vec<Placed>) {
         if (x * 0.754877 + z * 0.56984).abs() % 1.0 >= inputs.settings.density {
             continue;
         }
-        let seed = i64::from(hash_vector2(record[0], record[2]));
-        let pin = packed >> SPECIES_BITS;
-        let variant = if pin > 0 {
-            (pin - 1) as usize
-        } else {
-            (((seed >> 11) & 0xFFFF) % SEED_VARIANT_COUNTS[species]) as usize
-        };
-        // A pin past the species' meshes names nothing to draw (Rust validates pins at the
-        // edit, so only a hand-made record reaches this).
-        if variant >= VARIANT_COUNTS[species] {
+        let variant_byte = packed >> SPECIES_BITS;
+        let pin = variant_byte & !i64::from(FIXED_LOOK);
+        // A pin past the species' meshes names nothing to draw.
+        if pin > VARIANT_COUNTS[species] as i64 {
             continue;
         }
-        let hedge = inputs.near_band && is_hedge(species, variant);
-        let rows = if hedge {
-            hedge_module_rows(record, inputs.origin)
+        let pinned_variant = (pin - 1) as usize;
+        let hedge = is_hedge(species, pinned_variant);
+        let fixed = variant_byte & i64::from(FIXED_LOOK) != 0;
+        let seed = if hedge {
+            0
+        } else if fixed {
+            // The ghost carries this same yaw and scale while its node follows the pointer.
+            i64::from(hash_int(i64::from(record[3].to_bits())))
         } else {
-            instance_rows(record, seed, inputs.origin)
+            i64::from(hash_vector2(record[0], record[2]))
         };
-        let tint = if hedge { [1.0; 3] } else { instance_tint(seed) };
+        let variant = appearance_variant(species, pinned_variant, seed);
+        let (rows, tint) = if hedge {
+            (hedge_module_rows(record, inputs.origin), [1.0; 3])
+        } else {
+            let scale = f64::from(record[4]);
+            let (width, height) = if fixed {
+                (scale, scale)
+            } else {
+                let height = jittered_height_scale(scale, seed);
+                let width = scale * (0.80 + jitter_unit(seed, 53) * 0.48);
+                (width, height)
+            };
+            (
+                instance_rows(record, seed, inputs.origin, width as f32, height as f32),
+                instance_tint(seed),
+            )
+        };
         let closure = match (&cover, species < CANOPY_SPECIES) {
             (Some(cover), true) => cover.closure(rows[3], rows[11]),
             _ => 0.0,
@@ -407,6 +423,18 @@ fn place(inputs: &ProductInputs, placed: &mut Vec<Placed>) {
             closure,
         });
     }
+}
+
+fn appearance_variant(species: usize, pinned_variant: usize, seed: i64) -> usize {
+    if pinned_variant == usize::MAX {
+        (((seed >> 11) & 0xFFFF) % SEED_VARIANT_COUNTS[species]) as usize
+    } else {
+        pinned_variant
+    }
+}
+
+fn jittered_height_scale(scale: f64, seed: i64) -> f64 {
+    scale * (0.82 + jitter_unit(seed, 17) * 0.42)
 }
 
 // Counting sort by (species, variant), stable, so each bucket keeps placement order.
@@ -459,16 +487,22 @@ fn hedge_module_rows(record: &[f32], origin: [f32; 2]) -> [f32; TRANSFORM_FLOATS
     rows_of(&basis, position)
 }
 
-// The jitters take disjoint uses of one hash each: height and width ratios, and a small lean
-// off vertical in a seeded direction. Yaw alone is nearly invisible on a near-symmetric lathe.
-fn instance_rows(record: &[f32], seed: i64, origin: [f32; 2]) -> [f32; TRANSFORM_FLOATS] {
-    let unit = |salt: i64| f64::from(hash_int(seed ^ salt) & 0xFF_FFFF) / 16_777_216.0;
-    let scale = f64::from(record[4]);
-    let height = scale * (0.82 + unit(17) * 0.42);
-    let width = scale * (0.80 + unit(53) * 0.48);
+// The jitters take disjoint uses of one hash each.
+fn jitter_unit(seed: i64, salt: i64) -> f64 {
+    f64::from(hash_int(seed ^ salt) & 0xFF_FFFF) / 16_777_216.0
+}
+
+// A small lean off vertical gives near-symmetric forms a visible seeded direction.
+fn instance_rows(
+    record: &[f32],
+    seed: i64,
+    origin: [f32; 2],
+    width: f32,
+    height: f32,
+) -> [f32; TRANSFORM_FLOATS] {
     // A boulder's lean is its tilt in the ground, so rocks take it as well as plants.
-    let lean = 0.02 + unit(91) * 0.07;
-    let lean_direction = unit(137) * TAU;
+    let lean = 0.02 + jitter_unit(seed, 91) * 0.07;
+    let lean_direction = jitter_unit(seed, 137) * TAU;
     let yawed = basis_axis_angle([0.0, 1.0, 0.0], record[3]);
     let leaned = basis_axis_angle(
         [
@@ -478,7 +512,6 @@ fn instance_rows(record: &[f32], seed: i64, origin: [f32; 2]) -> [f32; TRANSFORM
         ],
         lean as f32,
     );
-    let (width, height) = (width as f32, height as f32);
     let scaled = [[width, 0.0, 0.0], [0.0, height, 0.0], [0.0, 0.0, width]];
     let basis = basis_mul(&basis_mul(&yawed, &leaned), &scaled);
     let position = [

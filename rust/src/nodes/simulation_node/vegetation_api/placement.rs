@@ -4,7 +4,8 @@
 
 use super::*;
 use crate::simulation::buildings::allocator::yard::{self, YardEvent};
-use brush::{BrushPreset, HEDGE_LOW_PRESET, PlantClass};
+use crate::simulation::vegetation::edits::{CanopyKind, VARIANT_COUNTS, canopy_model};
+use brush::{BrushPreset, DEFAULT_SCALE, HEDGE_LOW_PRESET, LANDSCAPE_FIRST_VARIANT, PlantClass};
 
 /// Read-only inputs to hedge planning, supplied by the live world or an isolated flat lot.
 /// Cell lookup retains the vegetation store's existing expected O(1) index.
@@ -34,7 +35,14 @@ impl HedgeSite for SimCore {
 /// Shared exclusion predicate, caching the proposal's class and spacing outside neighbor loops.
 pub(super) fn plant_conflicts(plant: &Plant) -> impl Fn(&Plant) -> bool + Copy + '_ {
     let class = PlantClass::of(plant.species, plant.variant);
-    let radius = class.spacing();
+    conflicts_within(plant, class, class.spacing())
+}
+
+fn conflicts_within(
+    plant: &Plant,
+    class: PlantClass,
+    radius: f32,
+) -> impl Fn(&Plant) -> bool + Copy + '_ {
     move |other| {
         PlantClass::of(other.species, other.variant) == class
             && (other.x - plant.x).powi(2) + (other.z - plant.z).powi(2) < radius * radius
@@ -87,6 +95,14 @@ fn influence(plant: &Plant, pos: Vector2, radius: f32) -> f32 {
 
 /// Uses species clearance while keeping the authored canopy owner cell.
 pub(super) fn authored_clear(core: &impl VegetationWorld, plant: &Plant) -> bool {
+    check_authored_site(core, plant, 1.0).is_ok()
+}
+
+fn check_authored_site(
+    core: &impl VegetationWorld,
+    plant: &Plant,
+    footprint_scale: f32,
+) -> Result<(), AddRefusal> {
     let class = PlantClass::of(plant.species, plant.variant);
     let in_planting =
         class == PlantClass::Tree && core.in_yard_planting(Vector2::new(plant.x, plant.z));
@@ -95,23 +111,31 @@ pub(super) fn authored_clear(core: &impl VegetationWorld, plant: &Plant) -> bool
         PlantClass::Landscape => 1.0,
         _ => 1.6,
     };
-    clear_site(
+    check_site(
         core,
         plant.x,
         plant.z,
-        authored_radius(class, in_planting),
+        authored_radius(class, in_planting) * footprint_scale,
         relief,
         true,
-    ) && (class != PlantClass::Tree || in_planting || tree_clearance::clear(core, plant.x, plant.z))
+    )?;
+    if class == PlantClass::Tree && !in_planting && !tree_clearance::clear(core, plant.x, plant.z) {
+        return Err(AddRefusal::TreeSetback);
+    }
+    Ok(())
 }
 
 // Both layers can own authored plants. Generated neighbors are evaluated locally and honor
 // tombstones; hidden authored entries reserve their space because they can become visible again.
 pub(super) fn occupied(core: &SimCore, plant: &Plant) -> bool {
+    occupied_at_scale(core, plant, 1.0)
+}
+
+fn occupied_at_scale(core: &SimCore, plant: &Plant, footprint_scale: f32) -> bool {
     let class = PlantClass::of(plant.species, plant.variant);
-    let radius = class.spacing();
+    let radius = class.spacing() * footprint_scale;
     let pos = Vector2::new(plant.x, plant.z);
-    let conflicts = plant_conflicts(plant);
+    let conflicts = conflicts_within(plant, class, radius);
     for layer in [VegetationLayer::Canopy, VegetationLayer::Understory] {
         let (step, salt) = grid(core, layer);
         let first = cell_at(pos - Vector2::splat(radius), layer, step);
@@ -137,15 +161,58 @@ pub(super) fn occupied(core: &SimCore, plant: &Plant) -> bool {
     false
 }
 
-/// Places one explicit plant subject to the same occupancy as a brush.
-pub(super) fn add_at(core: &mut SimCore, pos: Vector2, option: i64) -> bool {
-    let Some(preset) = preset(option) else {
-        return false;
-    };
-    if !valid_disc(core, pos, 0.0) {
-        return false;
+/// Point placement refusal codes shared with the vegetation tool.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub(super) enum AddRefusal {
+    /// The preset index is unknown.
+    InvalidPreset = 1,
+    /// The position is outside the usable map, including its margin.
+    OutsideMap,
+    /// A footprint sample is under visible water.
+    Water,
+    /// A footprint sample differs too much in height from the centre.
+    UnevenGround,
+    /// A footprint sample hits a road, paving, building or worked field.
+    BuiltSurface,
+    /// The tree would be too close to an exposed walkway or street light.
+    TreeSetback,
+    /// A same-class plant already reserves the space.
+    Occupied,
+}
+
+/// A point request validated before either caller prepares or reads site queries.
+pub(super) struct PointAdd {
+    pos: Vector2,
+    preset: &'static BrushPreset,
+}
+
+impl PointAdd {
+    /// Rejects bridge inputs that cannot produce a candidate.
+    pub(super) fn new(core: &SimCore, pos: Vector2, option: i64) -> Result<Self, AddRefusal> {
+        let preset = preset(option).ok_or(AddRefusal::InvalidPreset)?;
+        if !valid_disc(core, pos, 0.0) {
+            return Err(AddRefusal::OutsideMap);
+        }
+        Ok(Self { pos, preset })
     }
-    prepare_sites(core);
+
+    /// Validates a held point request, reserving hedge presets for the line tool.
+    pub(super) fn for_pick(core: &SimCore, pos: Vector2, option: i64) -> Result<Self, AddRefusal> {
+        let request = Self::new(core, pos, option)?;
+        if request.preset.is_hedge() {
+            return Err(AddRefusal::InvalidPreset);
+        }
+        Ok(request)
+    }
+}
+
+/// Plans a point add against ready site queries without changing the world. A refused plan
+/// retains its candidate for drawing the ghost.
+pub(super) fn plan_add(
+    core: &SimCore,
+    PointAdd { pos, preset }: PointAdd,
+) -> Result<(VegetationCell, Plant), (AddRefusal, Plant)> {
     let (cell_m, salt) = grid(core, VegetationLayer::Canopy);
     let cell = cell_at(pos, VegetationLayer::Canopy, cell_m);
     let [_, _, yaw, scale] = candidate(cell.x, cell.z, cell_m, salt);
@@ -158,9 +225,116 @@ pub(super) fn add_at(core: &mut SimCore, pos: Vector2, option: i64) -> bool {
         species,
         variant,
     };
-    if !authored_clear(core, &plant) || occupied(core, &plant) {
-        return false;
+    check_point(core, cell, plant, 1.0)
+}
+
+// Five evenly spaced steps, including the endpoints.
+const LAST_SIZE_STEP: i64 = 4;
+const PICK_SALT: u32 = 0xB43F_9A2D;
+const MAX_CONIFER_SCALE: f64 = 1.3;
+// Biased pins for the young (9.6 m) and mature (23.1 m) pine, across palette variants.
+// The other mature form is 21.3 m and would exceed 1.3× at the 28 m step.
+const YOUNG_PINE_PINS: [u8; 2] = [4, 8];
+const MATURE_PINE_PINS: [u8; 3] = [1, 5, 10];
+
+/// Plans a held plant with a position-independent appearance. Checks the selected class and
+/// scale against ready site queries in O(A + S) for local authored entries and site candidates.
+pub(super) fn plan_add_pick(
+    core: &SimCore,
+    PointAdd { pos, preset }: PointAdd,
+    pick: u32,
+    size_step: i64,
+) -> Result<(VegetationCell, Plant), (AddRefusal, Plant)> {
+    let (cell_m, _) = grid(core, VegetationLayer::Canopy);
+    let cell = cell_at(pos, VegetationLayer::Canopy, cell_m);
+    let seed = pick as i32;
+    let (species, mut variant) = preset.plant(seed, 0, PICK_SALT);
+    if variant == VARIANT_FROM_SEED {
+        // Pin even generator-style presets. Bushes can only draw the generated ground cover
+        // forms here. Named landscape forms belong exclusively to their own presets.
+        let count = if species == SPECIES_BUSH as u8 {
+            LANDSCAPE_FIRST_VARIANT
+        } else {
+            VARIANT_COUNTS[species as usize]
+        };
+        variant = (hash(seed, 0, PICK_SALT.wrapping_add(9)) % u32::from(count)) as u8 + 1;
     }
+    let step = size_step.clamp(0, LAST_SIZE_STEP);
+    let scale = if let Some((kind, mut model_height)) =
+        canopy_model(usize::from(species), usize::from(variant - 1))
+    {
+        // Pine and spruce share a band, as do birch and aspen.
+        let conifer = species == SPECIES_CONIFER as u8;
+        let increment = if conifer { 6 } else { 5 };
+        let height = (4 + step * increment) as f32;
+        if kind == CanopyKind::Pine {
+            let young_height = canopy_model_height_m(0, usize::from(YOUNG_PINE_PINS[0] - 1))
+                .expect("young pine pin");
+            let pins: &[u8] = if f64::from(height) <= MAX_CONIFER_SCALE * f64::from(young_height) {
+                &YOUNG_PINE_PINS
+            } else {
+                &MATURE_PINE_PINS
+            };
+            let choice = hash(seed, 0, PICK_SALT.wrapping_add(11)) as usize;
+            variant = pins[choice % pins.len()];
+            model_height = canopy_model_height_m(0, usize::from(variant - 1)).expect("pine pin");
+        }
+        let mut scale = height / model_height;
+        if conifer {
+            scale = scale.min(MAX_CONIFER_SCALE as f32);
+        }
+        // Keep the largest step within the draw band and the conifer scale ceiling after rounding.
+        if (conifer && f64::from(scale) > MAX_CONIFER_SCALE)
+            || (step == LAST_SIZE_STEP
+                && f64::from(scale) * f64::from(model_height) > f64::from(height))
+        {
+            scale.next_down()
+        } else {
+            scale
+        }
+    } else {
+        let fraction = step as f32 / LAST_SIZE_STEP as f32;
+        preset.size(DEFAULT_SCALE.0 + fraction * (DEFAULT_SCALE.1 - DEFAULT_SCALE.0))
+    };
+    let plant = Plant {
+        x: pos.x,
+        z: pos.y,
+        yaw: unit(seed, 0, PICK_SALT.wrapping_add(3)) * std::f32::consts::TAU,
+        scale,
+        species,
+        variant: variant | FIXED_LOOK,
+    };
+    check_point(core, cell, plant, scale)
+}
+
+fn check_point(
+    core: &SimCore,
+    cell: VegetationCell,
+    plant: Plant,
+    footprint_scale: f32,
+) -> Result<(VegetationCell, Plant), (AddRefusal, Plant)> {
+    // The world keeps at least the ordinary authored clearance when it gathers this plant.
+    check_authored_site(core, &plant, footprint_scale.max(1.0))
+        .map_err(|reason| (reason, plant))?;
+    if occupied_at_scale(core, &plant, footprint_scale) {
+        return Err((AddRefusal::Occupied, plant));
+    }
+    Ok((cell, plant))
+}
+
+fn add_with_plan(
+    core: &mut SimCore,
+    pos: Vector2,
+    request: Result<PointAdd, AddRefusal>,
+    plan: impl FnOnce(&SimCore, PointAdd) -> Result<(VegetationCell, Plant), (AddRefusal, Plant)>,
+) -> bool {
+    let Ok(request) = request else {
+        return false;
+    };
+    prepare_sites(core);
+    let Ok((cell, plant)) = plan(core, request) else {
+        return false;
+    };
     let key = PatchLayout::new(core).key(pos.x, pos.y);
     let mut undo = VegetationEditUndo::for_stroke(0);
     undo.record_cell(cell, core.vegetation_edits.snapshot_cell(cell));
@@ -169,6 +343,27 @@ pub(super) fn add_at(core: &mut SimCore, pos: Vector2, option: i64) -> bool {
     core.vegetation_edits.bump_patch(key);
     core.push_vegetation_undo(undo);
     true
+}
+
+/// Places one explicit cell-seeded plant subject to the same occupancy as a brush.
+pub(super) fn add_at(core: &mut SimCore, pos: Vector2, option: i64) -> bool {
+    add_with_plan(core, pos, PointAdd::new(core, pos, option), plan_add)
+}
+
+/// Places the held plant after rechecking the footprint and occupancy used for its preview.
+pub(super) fn add_pick_at(
+    core: &mut SimCore,
+    pos: Vector2,
+    option: i64,
+    pick: u32,
+    step: i64,
+) -> bool {
+    add_with_plan(
+        core,
+        pos,
+        PointAdd::for_pick(core, pos, option),
+        |core, request| plan_add_pick(core, request, pick, step),
+    )
 }
 
 /// Length of one hedge module along its row, in metres; tools/model_landscape.py builds each
@@ -533,6 +728,7 @@ fn hedge_join(core: &impl HedgeSite, pos: Vector2, line: Option<Vector2>) -> Opt
 // Authored plants live in canopy cells, so this visits the few cells around it.
 fn module_taken(core: &impl HedgeSite, plant: &Plant, cell_m: f32) -> bool {
     let reach = HEDGE_MODULE_M * 0.5;
+    let pin = plant.variant & !FIXED_LOOK;
     let pos = Vector2::new(plant.x, plant.z);
     let first = cell_at(pos - Vector2::splat(reach), VegetationLayer::Canopy, cell_m);
     let last = cell_at(pos + Vector2::splat(reach), VegetationLayer::Canopy, cell_m);
@@ -545,7 +741,7 @@ fn module_taken(core: &impl HedgeSite, plant: &Plant, cell_m: f32) -> bool {
             };
             core.hedge_cell(cell).iter().any(|other| {
                 other.species == plant.species
-                    && other.variant == plant.variant
+                    && other.variant & !FIXED_LOOK == pin
                     && (other.yaw - plant.yaw).cos().abs() >= HEDGE_COLLINEAR_COS
                     && (other.x - plant.x).powi(2) + (other.z - plant.z).powi(2) < reach * reach
             })
