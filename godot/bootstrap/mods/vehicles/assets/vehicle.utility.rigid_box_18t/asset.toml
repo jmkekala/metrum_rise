@@ -1,0 +1,378 @@
+asset_id = "vehicle.utility.rigid_box_18t"
+display_name = "Rigid Box Truck"
+thumbnail = "thumbnail.webp"
+tags = ["vehicle", "truck"]
+
+[[lods]]
+file = "rigid_box_18t_lod0.glb"
+distance_min_m = 0.0
+distance_max_m = 53.0
+
+[[lods]]
+file = "rigid_box_18t_lod1.glb"
+distance_min_m = 53.0
+distance_max_m = 176.0
+
+[[lods]]
+file = "rigid_box_18t_lod2.glb"
+distance_min_m = 176.0
+distance_max_m = 702.0
+
+[[lods]]
+file = "rigid_box_18t_lod3.glb"
+distance_min_m = 702.0
+
+[vehicle]
+vehicle_class = "utility"
+vehicle_family = "truck"
+body_class = "truck"
+length_m = 7.9
+width_m = 2.53
+height_m = 3.7
+seats = 2
+orm = "rigid_box_18t_orm.png"
+emission = "rigid_box_18t_emission.png"
+normal = "rigid_box_18t_normal.png"
+
+[[vehicle.variants]]
+name = "plain"
+albedo = "rigid_box_18t_albedo_plain.png"
+paint = true
+
+[[vehicle.variants]]
+name = "haulier"
+albedo = "rigid_box_18t_albedo_haulier.png"
+paint = false
+
+[[vehicle.wheels]]
+part = 1
+side = "left"
+centre = [1.025, 0.52, 2.55]
+radius_m = 0.52
+width_m = 0.3
+steer = true
+twin = false
+
+[[vehicle.wheels]]
+part = 2
+side = "right"
+centre = [-1.025, 0.52, 2.55]
+radius_m = 0.52
+width_m = 0.3
+steer = true
+twin = false
+
+[[vehicle.wheels]]
+part = 3
+side = "left"
+centre = [0.92, 0.52, -1.95]
+radius_m = 0.52
+width_m = 0.64
+steer = false
+twin = true
+
+[[vehicle.wheels]]
+part = 4
+side = "right"
+centre = [-0.92, 0.52, -1.95]
+radius_m = 0.52
+width_m = 0.64
+steer = false
+twin = true
+
+[[vehicle.lamps]]
+group = "tail_brake"
+lamp = 3
+side = "left"
+position = "rear"
+colour = "red"
+centre = [1.02, 0.645, -3.87]
+facing = [0, 0, -1]
+width_m = 0.12
+height_m = 0.12
+
+[[vehicle.lamps]]
+group = "tail_brake"
+lamp = 3
+side = "right"
+position = "rear"
+colour = "red"
+centre = [-1.02, 0.645, -3.87]
+facing = [0, 0, -1]
+width_m = 0.12
+height_m = 0.12
+
+[[vehicle.lamps]]
+group = "indicator_left"
+lamp = 4
+side = "left"
+position = "front"
+colour = "amber"
+centre = [0.934, 0.675, 3.912]
+facing = [0, 0, 1]
+width_m = 0.068
+height_m = 0.156
+
+[[vehicle.lamps]]
+group = "indicator_left"
+lamp = 4
+side = "left"
+position = "rear"
+colour = "amber"
+centre = [1.12, 0.645, -3.87]
+facing = [0, 0, -1]
+width_m = 0.08
+height_m = 0.12
+
+[[vehicle.lamps]]
+group = "indicator_left"
+lamp = 4
+side = "left"
+position = "side"
+colour = "amber"
+centre = [1.138, 1.25, 3.545]
+facing = [1, 0, 0]
+width_m = 0.07
+height_m = 0.06
+
+[[vehicle.lamps]]
+group = "indicator_right"
+lamp = 5
+side = "right"
+position = "front"
+colour = "amber"
+centre = [-0.934, 0.675, 3.912]
+facing = [0, 0, 1]
+width_m = 0.068
+height_m = 0.156
+
+[[vehicle.lamps]]
+group = "indicator_right"
+lamp = 5
+side = "right"
+position = "rear"
+colour = "amber"
+centre = [-1.12, 0.645, -3.87]
+facing = [0, 0, -1]
+width_m = 0.08
+height_m = 0.12
+
+[[vehicle.lamps]]
+group = "indicator_right"
+lamp = 5
+side = "right"
+position = "side"
+colour = "amber"
+centre = [-1.138, 1.25, 3.545]
+facing = [-1, 0, 0]
+width_m = 0.07
+height_m = 0.06
+
+[[vehicle.lamps]]
+group = "reverse"
+lamp = 6
+side = "left"
+position = "rear"
+colour = "white"
+centre = [0.825, 0.645, -3.87]
+facing = [0, 0, -1]
+width_m = 0.09
+height_m = 0.12
+
+[[vehicle.lamps]]
+group = "reverse"
+lamp = 6
+side = "right"
+position = "rear"
+colour = "white"
+centre = [-0.825, 0.645, -3.87]
+facing = [0, 0, -1]
+width_m = 0.09
+height_m = 0.12
+
+[[vehicle.lamps]]
+group = "low_beam"
+lamp = 7
+side = "left"
+position = "front"
+colour = "white"
+centre = [0.83, 0.699, 3.912]
+facing = [0, 0, 1]
+width_m = 0.14
+height_m = 0.108
+
+[[vehicle.lamps]]
+group = "low_beam"
+lamp = 7
+side = "right"
+position = "front"
+colour = "white"
+centre = [-0.83, 0.699, 3.912]
+facing = [0, 0, 1]
+width_m = 0.14
+height_m = 0.108
+
+[[vehicle.lamps]]
+group = "high_beam"
+lamp = 8
+side = "left"
+position = "front"
+colour = "white"
+centre = [0.686, 0.699, 3.912]
+facing = [0, 0, 1]
+width_m = 0.148
+height_m = 0.108
+
+[[vehicle.lamps]]
+group = "high_beam"
+lamp = 8
+side = "right"
+position = "front"
+colour = "white"
+centre = [-0.686, 0.699, 3.912]
+facing = [0, 0, 1]
+width_m = 0.148
+height_m = 0.108
+
+[[vehicle.lamps]]
+group = "daytime"
+lamp = 9
+side = "left"
+position = "front"
+colour = "white"
+centre = [0.756, 0.621, 3.912]
+facing = [0, 0, 1]
+width_m = 0.288
+height_m = 0.048
+
+[[vehicle.lamps]]
+group = "daytime"
+lamp = 9
+side = "right"
+position = "front"
+colour = "white"
+centre = [-0.756, 0.621, 3.912]
+facing = [0, 0, 1]
+width_m = 0.288
+height_m = 0.048
+
+[[vehicle.lamps]]
+group = "fog_rear"
+lamp = 11
+side = "left"
+position = "rear"
+colour = "red"
+centre = [0.915, 0.645, -3.87]
+facing = [0, 0, -1]
+width_m = 0.09
+height_m = 0.12
+
+[[vehicle.lamps]]
+group = "marker"
+lamp = 15
+side = "left"
+position = "front"
+colour = "white"
+centre = [1.11, 3.63, 2.05]
+facing = [0, 0, 1]
+width_m = 0.1
+height_m = 0.06
+
+[[vehicle.lamps]]
+group = "marker"
+lamp = 15
+side = "right"
+position = "front"
+colour = "white"
+centre = [-1.11, 3.63, 2.05]
+facing = [0, 0, 1]
+width_m = 0.1
+height_m = 0.06
+
+[[vehicle.lamps]]
+group = "marker"
+lamp = 15
+side = "left"
+position = "rear"
+colour = "red"
+centre = [1.11, 3.6, -3.95]
+facing = [0, 0, -1]
+width_m = 0.1
+height_m = 0.08
+
+[[vehicle.lamps]]
+group = "marker"
+lamp = 15
+side = "right"
+position = "rear"
+colour = "red"
+centre = [-1.11, 3.6, -3.95]
+facing = [0, 0, -1]
+width_m = 0.1
+height_m = 0.08
+
+[[vehicle.lamps]]
+group = "marker"
+lamp = 15
+side = "left"
+position = "side"
+colour = "amber"
+centre = [1.265, 1.235, 1.65]
+facing = [1, 0, 0]
+width_m = 0.1
+height_m = 0.06
+
+[[vehicle.lamps]]
+group = "marker"
+lamp = 15
+side = "left"
+position = "side"
+colour = "amber"
+centre = [1.265, 1.235, -0.65]
+facing = [1, 0, 0]
+width_m = 0.1
+height_m = 0.06
+
+[[vehicle.lamps]]
+group = "marker"
+lamp = 15
+side = "left"
+position = "side"
+colour = "amber"
+centre = [1.265, 1.235, -2.95]
+facing = [1, 0, 0]
+width_m = 0.1
+height_m = 0.06
+
+[[vehicle.lamps]]
+group = "marker"
+lamp = 15
+side = "right"
+position = "side"
+colour = "amber"
+centre = [-1.265, 1.235, 1.65]
+facing = [-1, 0, 0]
+width_m = 0.1
+height_m = 0.06
+
+[[vehicle.lamps]]
+group = "marker"
+lamp = 15
+side = "right"
+position = "side"
+colour = "amber"
+centre = [-1.265, 1.235, -0.65]
+facing = [-1, 0, 0]
+width_m = 0.1
+height_m = 0.06
+
+[[vehicle.lamps]]
+group = "marker"
+lamp = 15
+side = "right"
+position = "side"
+colour = "amber"
+centre = [-1.265, 1.235, -2.95]
+facing = [-1, 0, 0]
+width_m = 0.1
+height_m = 0.06

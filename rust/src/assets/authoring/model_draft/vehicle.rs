@@ -411,10 +411,12 @@ pub(crate) fn derive(inputs: &VehicleInputs, mods: &Path, work: &Path) -> Result
         .map(|(file, _)| (file.to_owned(), inputs.export.join(file)))
         .collect();
     extras.push((super::rules::THUMBNAIL_FILE.to_owned(), thumbnail.clone()));
+    let size_m = [facts.body.length_m, facts.body.width_m, facts.body.height_m]
+        .map(|v| super::tenth_mm(f64::from(v)));
     let summary = json!({
         "vehicle": {
             "body_class": format!("{:?}", facts.body.class).to_lowercase(),
-            "size_m": [facts.body.length_m, facts.body.width_m, facts.body.height_m],
+            "size_m": size_m,
             "tiers": facts.lods.iter().map(|lod| lod.triangles).collect::<Vec<_>>(),
             "tier_starts_m": tier_starts(facts.body.length_m),
             "wheels": facts.wheels.len(),

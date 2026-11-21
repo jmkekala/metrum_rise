@@ -1,0 +1,8 @@
+{
+  "pack_id": "vehicles",
+  "asset_id": "vehicle.utility.rigid_box_18t",
+  "display_name": "Rigid Box Truck",
+  "vehicle_class": "utility",
+  "vehicle_family": "truck",
+  "seats": 2
+}

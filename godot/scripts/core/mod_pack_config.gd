@@ -8,7 +8,13 @@
 extends RefCounted
 
 const CFG_PATH := "user://active_packs.cfg"
-const BUNDLED_ENABLED_PACK_IDS := ["parking"]
+const BUNDLED_ENABLED_PACK_IDS := ["parking", "vehicles"]
+# Bundled packs a saved selection has already been offered. A pack bundled later is enabled once
+# in a profile that saved its selection before it shipped, so an existing player gets it like a
+# fresh install; disabled afterwards, it stays disabled. A selection saved before this list
+# existed was offered `parking` only.
+const OFFERED_KEY := "bundled_offered"
+const OFFERED_BEFORE_LIST := ["parking"]
 # Seeded from res://tests/mods by UserDataBootstrap; an exported game has neither.
 const DEV_ENABLED_PACK_IDS := ["kenney"]
 
@@ -26,11 +32,21 @@ static func load_enabled_pack_ids() -> Array:
 		push_warning("Could not read active pack config '%s' (error %d)." % [CFG_PATH, err])
 		return []
 	var enabled = cfg.get_value("packs", "enabled", [])
-	return enabled if enabled is Array else []
+	enabled = enabled if enabled is Array else []
+	var offered = cfg.get_value("packs", OFFERED_KEY, OFFERED_BEFORE_LIST)
+	offered = offered if offered is Array else OFFERED_BEFORE_LIST
+	var newly := BUNDLED_ENABLED_PACK_IDS.filter(func(id: String) -> bool: return not id in offered)
+	if not newly.is_empty():
+		for id in newly:
+			if not id in enabled:
+				enabled.append(id)
+		save_enabled_pack_ids(enabled)
+	return enabled
 
 static func save_enabled_pack_ids(enabled_pack_ids: Array) -> Error:
 	var cfg := ConfigFile.new()
 	cfg.set_value("packs", "enabled", enabled_pack_ids.duplicate())
+	cfg.set_value("packs", OFFERED_KEY, BUNDLED_ENABLED_PACK_IDS.duplicate())
 	return cfg.save(CFG_PATH)
 
 static func seed_default_config_if_missing() -> void:

@@ -1,0 +1,739 @@
+{
+  "sidecar": {
+    "attributes": {
+      "b": "paint",
+      "g": "surface",
+      "r": "part",
+      "set": "COLOR_0",
+      "version": 1
+    },
+    "axles": [
+      {
+        "steer": true,
+        "track_m": 2.05,
+        "twin": false,
+        "z": 2.55
+      },
+      {
+        "steer": false,
+        "track_m": 1.84,
+        "twin": true,
+        "z": -1.95
+      }
+    ],
+    "body": {
+      "class": "truck",
+      "front_overhang_m": 1.4,
+      "ground_clearance_m": 0.25,
+      "height_m": 3.7,
+      "length_m": 7.9,
+      "rear_overhang_m": 2.0,
+      "wheelbase_m": 4.5,
+      "width_m": 2.53,
+      "width_mirrors_m": 2.98
+    },
+    "bounds": {
+      "max": [
+        1.49,
+        3.7,
+        3.95
+      ],
+      "min": [
+        -1.49,
+        0.0,
+        -3.95
+      ]
+    },
+    "cargo": {
+      "door": "rear",
+      "max": [
+        1.22,
+        3.45,
+        2.0
+      ],
+      "min": [
+        -1.22,
+        1.25,
+        -3.85
+      ]
+    },
+    "coupling": null,
+    "default_variant": "plain",
+    "glass": [
+      {
+        "area_m2": 1.622,
+        "group": "glass_windscreen",
+        "id": 32
+      },
+      {
+        "area_m2": 0.938,
+        "group": "glass_front_side",
+        "id": 33
+      }
+    ],
+    "interior": null,
+    "kind": "vehicle",
+    "lamps": [
+      {
+        "centre": [
+          1.02,
+          0.645,
+          -3.87
+        ],
+        "colour": "red",
+        "facing": [
+          0.0,
+          0.0,
+          -1.0
+        ],
+        "group": "tail_brake",
+        "height_m": 0.12,
+        "lamp": 3,
+        "position": "rear",
+        "side": "left",
+        "width_m": 0.12
+      },
+      {
+        "centre": [
+          -1.02,
+          0.645,
+          -3.87
+        ],
+        "colour": "red",
+        "facing": [
+          0.0,
+          0.0,
+          -1.0
+        ],
+        "group": "tail_brake",
+        "height_m": 0.12,
+        "lamp": 3,
+        "position": "rear",
+        "side": "right",
+        "width_m": 0.12
+      },
+      {
+        "centre": [
+          0.934,
+          0.675,
+          3.912
+        ],
+        "colour": "amber",
+        "facing": [
+          0.0,
+          0.0,
+          1.0
+        ],
+        "group": "indicator_left",
+        "height_m": 0.156,
+        "lamp": 4,
+        "position": "front",
+        "side": "left",
+        "width_m": 0.068
+      },
+      {
+        "centre": [
+          1.12,
+          0.645,
+          -3.87
+        ],
+        "colour": "amber",
+        "facing": [
+          0.0,
+          0.0,
+          -1.0
+        ],
+        "group": "indicator_left",
+        "height_m": 0.12,
+        "lamp": 4,
+        "position": "rear",
+        "side": "left",
+        "width_m": 0.08
+      },
+      {
+        "centre": [
+          1.138,
+          1.25,
+          3.545
+        ],
+        "colour": "amber",
+        "facing": [
+          1.0,
+          0.0,
+          0.0
+        ],
+        "group": "indicator_left",
+        "height_m": 0.06,
+        "lamp": 4,
+        "position": "side",
+        "side": "left",
+        "width_m": 0.07
+      },
+      {
+        "centre": [
+          -0.934,
+          0.675,
+          3.912
+        ],
+        "colour": "amber",
+        "facing": [
+          0.0,
+          0.0,
+          1.0
+        ],
+        "group": "indicator_right",
+        "height_m": 0.156,
+        "lamp": 5,
+        "position": "front",
+        "side": "right",
+        "width_m": 0.068
+      },
+      {
+        "centre": [
+          -1.12,
+          0.645,
+          -3.87
+        ],
+        "colour": "amber",
+        "facing": [
+          0.0,
+          0.0,
+          -1.0
+        ],
+        "group": "indicator_right",
+        "height_m": 0.12,
+        "lamp": 5,
+        "position": "rear",
+        "side": "right",
+        "width_m": 0.08
+      },
+      {
+        "centre": [
+          -1.138,
+          1.25,
+          3.545
+        ],
+        "colour": "amber",
+        "facing": [
+          -1.0,
+          0.0,
+          0.0
+        ],
+        "group": "indicator_right",
+        "height_m": 0.06,
+        "lamp": 5,
+        "position": "side",
+        "side": "right",
+        "width_m": 0.07
+      },
+      {
+        "centre": [
+          0.825,
+          0.645,
+          -3.87
+        ],
+        "colour": "white",
+        "facing": [
+          0.0,
+          0.0,
+          -1.0
+        ],
+        "group": "reverse",
+        "height_m": 0.12,
+        "lamp": 6,
+        "position": "rear",
+        "side": "left",
+        "width_m": 0.09
+      },
+      {
+        "centre": [
+          -0.825,
+          0.645,
+          -3.87
+        ],
+        "colour": "white",
+        "facing": [
+          0.0,
+          0.0,
+          -1.0
+        ],
+        "group": "reverse",
+        "height_m": 0.12,
+        "lamp": 6,
+        "position": "rear",
+        "side": "right",
+        "width_m": 0.09
+      },
+      {
+        "centre": [
+          0.83,
+          0.699,
+          3.912
+        ],
+        "colour": "white",
+        "facing": [
+          0.0,
+          0.0,
+          1.0
+        ],
+        "group": "low_beam",
+        "height_m": 0.108,
+        "lamp": 7,
+        "position": "front",
+        "side": "left",
+        "width_m": 0.14
+      },
+      {
+        "centre": [
+          -0.83,
+          0.699,
+          3.912
+        ],
+        "colour": "white",
+        "facing": [
+          0.0,
+          0.0,
+          1.0
+        ],
+        "group": "low_beam",
+        "height_m": 0.108,
+        "lamp": 7,
+        "position": "front",
+        "side": "right",
+        "width_m": 0.14
+      },
+      {
+        "centre": [
+          0.686,
+          0.699,
+          3.912
+        ],
+        "colour": "white",
+        "facing": [
+          0.0,
+          0.0,
+          1.0
+        ],
+        "group": "high_beam",
+        "height_m": 0.108,
+        "lamp": 8,
+        "position": "front",
+        "side": "left",
+        "width_m": 0.148
+      },
+      {
+        "centre": [
+          -0.686,
+          0.699,
+          3.912
+        ],
+        "colour": "white",
+        "facing": [
+          0.0,
+          0.0,
+          1.0
+        ],
+        "group": "high_beam",
+        "height_m": 0.108,
+        "lamp": 8,
+        "position": "front",
+        "side": "right",
+        "width_m": 0.148
+      },
+      {
+        "centre": [
+          0.756,
+          0.621,
+          3.912
+        ],
+        "colour": "white",
+        "facing": [
+          0.0,
+          0.0,
+          1.0
+        ],
+        "group": "daytime",
+        "height_m": 0.048,
+        "lamp": 9,
+        "position": "front",
+        "side": "left",
+        "width_m": 0.288
+      },
+      {
+        "centre": [
+          -0.756,
+          0.621,
+          3.912
+        ],
+        "colour": "white",
+        "facing": [
+          0.0,
+          0.0,
+          1.0
+        ],
+        "group": "daytime",
+        "height_m": 0.048,
+        "lamp": 9,
+        "position": "front",
+        "side": "right",
+        "width_m": 0.288
+      },
+      {
+        "centre": [
+          0.915,
+          0.645,
+          -3.87
+        ],
+        "colour": "red",
+        "facing": [
+          0.0,
+          0.0,
+          -1.0
+        ],
+        "group": "fog_rear",
+        "height_m": 0.12,
+        "lamp": 11,
+        "position": "rear",
+        "side": "left",
+        "width_m": 0.09
+      },
+      {
+        "centre": [
+          1.11,
+          3.63,
+          2.05
+        ],
+        "colour": "white",
+        "facing": [
+          0.0,
+          0.0,
+          1.0
+        ],
+        "group": "marker",
+        "height_m": 0.06,
+        "lamp": 15,
+        "position": "front",
+        "side": "left",
+        "width_m": 0.1
+      },
+      {
+        "centre": [
+          -1.11,
+          3.63,
+          2.05
+        ],
+        "colour": "white",
+        "facing": [
+          0.0,
+          0.0,
+          1.0
+        ],
+        "group": "marker",
+        "height_m": 0.06,
+        "lamp": 15,
+        "position": "front",
+        "side": "right",
+        "width_m": 0.1
+      },
+      {
+        "centre": [
+          1.11,
+          3.6,
+          -3.95
+        ],
+        "colour": "red",
+        "facing": [
+          0.0,
+          0.0,
+          -1.0
+        ],
+        "group": "marker",
+        "height_m": 0.08,
+        "lamp": 15,
+        "position": "rear",
+        "side": "left",
+        "width_m": 0.1
+      },
+      {
+        "centre": [
+          -1.11,
+          3.6,
+          -3.95
+        ],
+        "colour": "red",
+        "facing": [
+          0.0,
+          0.0,
+          -1.0
+        ],
+        "group": "marker",
+        "height_m": 0.08,
+        "lamp": 15,
+        "position": "rear",
+        "side": "right",
+        "width_m": 0.1
+      },
+      {
+        "centre": [
+          1.265,
+          1.235,
+          1.65
+        ],
+        "colour": "amber",
+        "facing": [
+          1.0,
+          0.0,
+          0.0
+        ],
+        "group": "marker",
+        "height_m": 0.06,
+        "lamp": 15,
+        "position": "side",
+        "side": "left",
+        "width_m": 0.1
+      },
+      {
+        "centre": [
+          1.265,
+          1.235,
+          -0.65
+        ],
+        "colour": "amber",
+        "facing": [
+          1.0,
+          0.0,
+          0.0
+        ],
+        "group": "marker",
+        "height_m": 0.06,
+        "lamp": 15,
+        "position": "side",
+        "side": "left",
+        "width_m": 0.1
+      },
+      {
+        "centre": [
+          1.265,
+          1.235,
+          -2.95
+        ],
+        "colour": "amber",
+        "facing": [
+          1.0,
+          0.0,
+          0.0
+        ],
+        "group": "marker",
+        "height_m": 0.06,
+        "lamp": 15,
+        "position": "side",
+        "side": "left",
+        "width_m": 0.1
+      },
+      {
+        "centre": [
+          -1.265,
+          1.235,
+          1.65
+        ],
+        "colour": "amber",
+        "facing": [
+          -1.0,
+          0.0,
+          0.0
+        ],
+        "group": "marker",
+        "height_m": 0.06,
+        "lamp": 15,
+        "position": "side",
+        "side": "right",
+        "width_m": 0.1
+      },
+      {
+        "centre": [
+          -1.265,
+          1.235,
+          -0.65
+        ],
+        "colour": "amber",
+        "facing": [
+          -1.0,
+          0.0,
+          0.0
+        ],
+        "group": "marker",
+        "height_m": 0.06,
+        "lamp": 15,
+        "position": "side",
+        "side": "right",
+        "width_m": 0.1
+      },
+      {
+        "centre": [
+          -1.265,
+          1.235,
+          -2.95
+        ],
+        "colour": "amber",
+        "facing": [
+          -1.0,
+          0.0,
+          0.0
+        ],
+        "group": "marker",
+        "height_m": 0.06,
+        "lamp": 15,
+        "position": "side",
+        "side": "right",
+        "width_m": 0.1
+      }
+    ],
+    "license": "CC-BY-4.0",
+    "lods": [
+      {
+        "file": "rigid_box_18t_lod0.glb",
+        "glass_ids": true,
+        "lamp_ids": true,
+        "sha256": "ed53ae137c3fa6ce250b7ffd012087c5dba084e5f9cedc15f425092c1ae68cf4",
+        "triangles": 4316,
+        "wheel_parts": true
+      },
+      {
+        "file": "rigid_box_18t_lod1.glb",
+        "glass_ids": true,
+        "lamp_ids": true,
+        "sha256": "683ed68bf78a997e06f141c5e65fb7cf425acceec9eeff5e3a5730839f7b75cf",
+        "triangles": 1380,
+        "wheel_parts": true
+      },
+      {
+        "file": "rigid_box_18t_lod2.glb",
+        "glass_ids": true,
+        "lamp_ids": true,
+        "sha256": "07f4ec877c298bc408f0f959724c7c10f95f2f23fac2657b9add47fc917f4510",
+        "triangles": 348,
+        "wheel_parts": false
+      },
+      {
+        "file": "rigid_box_18t_lod3.glb",
+        "glass_ids": false,
+        "lamp_ids": false,
+        "sha256": "c7e60cede0964294e029fbd029022db8e0aa3140999ec2d2eb6b13a3772adb9e",
+        "triangles": 60,
+        "wheel_parts": false
+      }
+    ],
+    "name": "rigid_box_18t",
+    "path": "vehicles/truck/rigid_box_18t",
+    "preview": {
+      "file": "preview.png",
+      "sha256": "82252e1662f14084923ea1cdccac77da88d75f088ca2e46692b0ad6814080191"
+    },
+    "schema": "metrum-model-facts",
+    "source": {
+      "blender": "5.3.0",
+      "commit": "65714311db2b8c1438092ce23c0fe3c603fa0c5d",
+      "dirty": false
+    },
+    "textures": {
+      "emission": {
+        "file": "rigid_box_18t_emission.png",
+        "sha256": "59452e5899fb3736b8c5955edaa56fa5bfeeea4a2493df311f460896703cf5a7"
+      },
+      "normal": {
+        "file": "rigid_box_18t_normal.png",
+        "sha256": "b24f859605ecbb1fa8bd54f852b1036fe2ae8549aba97f8073a4e3c3a961c21d"
+      },
+      "orm": {
+        "file": "rigid_box_18t_orm.png",
+        "sha256": "f452427f243c38b200e2bbf9ed02ead3fa5ab9b128a8f4c41ee5113b09243ddf"
+      }
+    },
+    "variants": [
+      {
+        "albedo": {
+          "file": "rigid_box_18t_albedo_plain.png",
+          "sha256": "65e9b2cbe7c0e3d4db5d542f9a31cb2f8406bd4bab13b65aba7e7049058581cd"
+        },
+        "name": "plain",
+        "paint": true
+      },
+      {
+        "albedo": {
+          "file": "rigid_box_18t_albedo_haulier.png",
+          "sha256": "b1129b650f3bcb3a261ae396d9c158259cb4a936069f88d0ddd955ed9b509149"
+        },
+        "name": "haulier",
+        "paint": false
+      }
+    ],
+    "version": 2,
+    "wheels": [
+      {
+        "axle": 0,
+        "centre": [
+          1.025,
+          0.52,
+          2.55
+        ],
+        "id": "front_left",
+        "part": 1,
+        "radius_m": 0.52,
+        "side": "left",
+        "steer": true,
+        "width_m": 0.3
+      },
+      {
+        "axle": 0,
+        "centre": [
+          -1.025,
+          0.52,
+          2.55
+        ],
+        "id": "front_right",
+        "part": 2,
+        "radius_m": 0.52,
+        "side": "right",
+        "steer": true,
+        "width_m": 0.3
+      },
+      {
+        "axle": 1,
+        "centre": [
+          0.92,
+          0.52,
+          -1.95
+        ],
+        "id": "rear_left",
+        "part": 3,
+        "radius_m": 0.52,
+        "side": "left",
+        "steer": false,
+        "width_m": 0.64
+      },
+      {
+        "axle": 1,
+        "centre": [
+          -0.92,
+          0.52,
+          -1.95
+        ],
+        "id": "rear_right",
+        "part": 4,
+        "radius_m": 0.52,
+        "side": "right",
+        "steer": false,
+        "width_m": 0.64
+      }
+    ]
+  },
+  "role": {
+    "asset_id": "vehicle.utility.rigid_box_18t",
+    "display_name": "Rigid Box Truck",
+    "pack_id": "vehicles",
+    "seats": 2,
+    "vehicle_class": "utility",
+    "vehicle_family": "truck"
+  },
+  "source_commit": "52f503e3efb1c5d3f0ca307722a00ab5b3e410c7"
+}
