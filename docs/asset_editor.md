@@ -658,7 +658,8 @@ draw and list the results.
   given radius and angle to the left or the right as a driver sees it, starting along the leg that
   arrives at that waypoint (for the way out's first, the leg out of the bay; for the way in's
   first, the leg from the arrival gate's road connection to its approach, the arrival gate being
-  the first usable freight driveway that is not the exit). Rust lays the chords
+  the first usable freight driveway that is not the exit, or the exit itself when it is the only
+  one: the proof arrives through any usable gate, fixed 2026-11-21, `TOOLS-40`). Rust lays the chords
   (`route_arc`, `arc_waypoints`): ends on the circle, `floor(angle / 15°) + 1` chords, so every
   bend, the first and the last included, stays under the proof's 15° (13 chords for a half
   circle, 7 for a quarter turn), rounded to 0.1 mm. Every change, an arc included, is one
@@ -694,6 +695,54 @@ draw and list the results.
   1 m. Passages travel in the editor's load JSON, drafts, the export TOML
   (`[[mesh_parts.passages]]`, [format](traffic.md#stage-a1-docks-park-19-as-built)) and
   publication. A passage at least 4 m high opens its part for trucks, at least 2 m for cars.
+
+### Site layout tools (`TOOLS-40`)
+
+Added 2026-11-21 after the first real model draft (the machinery factory), whose site layout took
+about 25 minutes by hand. Each tool is one document command in Rust
+(`nodes/asset_document/commands.rs`, its rules in `assets/authoring/site_move.rs`,
+`surface_edit.rs` and `door_bay.rs`), one undo step, refused with its reason as other edits are;
+each panel only lists and sends input.
+
+- **Precision of position fields.** Every position field steps in 0.1 mm, the sidecar's and the
+  arc helper's precision, with its arrows still stepping 0.1 m: a mesh part's X, Y and Z, an
+  access point's X, Y and Z, a surface vertex's X and Z, a waypoint's X and Z, and the Move whole
+  site offsets. A field edit writes only the coordinate it changes; the others keep their stored
+  values exactly (a part's projection holds a 32-bit vector, so it writes back only the changed
+  coordinates). Turning an access point no longer re-rounds its position (only a lot clamp that
+  moves it writes it). Passage fields keep their centimetre steps, but an X or Z edit keeps the
+  stored other coordinate too. Drags and snaps in the view still land on the centimetre, and
+  sizes, heights and angles keep their steps. Opening and publishing an asset unchanged stays byte
+  identical.
+- **Move whole site** (Site → Footprint & frontage, `asset_editor/site_move_panel.gd`; command
+  `move_site`): moves everything on the lot by one X and Z offset: every mesh part (its passages
+  are part-local and go with it), every access point, every site surface and planting vertex, and
+  every loading bay waypoint. A Driveway stays on the street edge and moves only along it. With
+  several parts (the farm, the mine, the power plant) every part moves; a part selected and
+  dragged or typed alone still moves alone, as before. Refused, naming the first object, when any
+  part's bounds (0.01 m tolerance), access point, footprint, vertex or waypoint would leave the
+  lot. Moved values are rounded to 0.1 mm.
+- **Vertices as numbers** (Site → Surfaces, under a selected surface,
+  `asset_editor/surface_panel.gd`; commands `set_vertex`, `set_rectangle`): lists the surface's
+  vertices; the selected one's X and Z fields move it, one step each, writing that vertex only.
+  Set rectangle replaces the outline with the axis-aligned rectangle of two opposite corners
+  (prefilled from the surface's bounds when it is selected), wound as a new surface is; so a new
+  surface is laid by adding it and typing its corners. Both are refused, as a drag is held back,
+  for a vertex outside the lot or an outline that crosses itself; a rectangle needs corners at
+  least 1 cm apart on both axes. Dragging, inserting and deleting vertices work as before.
+- **Loading bay at vehicle door** (Site → Access points, `asset_editor/door_bay_panel.gd`;
+  command `bay_at_door`): for an asset whose pack keeps a model draft ledger
+  (`model_sources/<asset_id>.json`, read through `AssetAuthoringFiles.model_vehicle_doors`), one
+  button per `vehicle` door of the model adds a loading bay end-on to that door: centred on the
+  door, 3.5 × 8 m (the new bay's size), facing the door, its far end at the part's plan bounds on
+  that side plus at least 1 cm, rounded outward to the whole centimetre, named after the door. The
+  door goes through the part that shows the ledger's `LOD0` file (position, rotation, scale,
+  pivot) and must then face a lot axis; a bay that would leave the lot is refused. Without a
+  ledger or a vehicle door the row is hidden. It is an authoring helper the author invokes: it
+  derives nothing on its own and nothing at runtime, and docks stay the site layout's (freight
+  yards owner decision 8). For the machinery factory it places the bay at `[16, 0, -1.5729]`
+  facing -X, where the hand-placed bay stood at `[16, 0, -1.6]` (the 0.1 m field step had rounded
+  the door's centre).
 
 ### Building Site Surfaces
 
@@ -3108,8 +3157,8 @@ crate has no binary target, so a plain Rust executable would have to copy the pu
 instead of reusing it.
 
 ```bash
-tools/model_draft.py --sidecar <path>/export/<name>.model.json --role <role.json> --mods <mods dir> [--write]
-    [--report <report.json>] [--godot <binary>] [--profile-root <dir>] [--keep-profile]
+tools/model_draft.py --sidecar <path>/export/<name>.model.json --role <role.json> --mods <mods dir> [--write | --check]
+    [--source-commit <hash>] [--report <report.json>] [--godot <binary>] [--profile-root <dir>] [--keep-profile]
 ```
 
 As built, the command prints a text summary and `--report` writes the full JSON report. The
@@ -3122,6 +3171,44 @@ the acceptance failures and warnings; an existing asset's summary lists its stal
 information lines marked `info:`. Exit status: 0 drafted (and written), or an existing asset with
 no stale line (information lines do not count); 1 refused, failed the acceptance check, or not
 run; 2 an existing asset with stale lines.
+
+Added 2026-11-21 (`TOOLS-39`), after the first real draft:
+
+- **Dry run or written.** Without `--write` the first line reads `<pack_id>:<asset_id>: drafted
+  (dry run: nothing written)` and the last line names where `--write` would publish (the asset
+  folder and the ledger in the real pack), or says that it would publish nothing while the
+  acceptance check fails; with `--write` the last line reads `written: <asset folder>; ledger
+  <file>`. The JSON report carries `dry_run` (true without `--write`), `would_write` (`asset`,
+  `ledger`: a passed dry run's target, never written) and `written` (the same paths, only when the
+  real pack was written). `copy` names the throwaway copy the draft was checked in; since the
+  profile is deleted after the run, the launcher keeps only `copy.passed` and `copy.kept: false`
+  (the paths too with `--keep-profile`), rather than turning the deleted copy's paths into the
+  real pack's, which a dry run never wrote.
+- **Doors in the lot frame.** The summary lists every sidecar door with its kind, id, `(main)`,
+  position (`y` the threshold height), facing and width × height, placed through the drafted
+  part (a draft) or through the asset's present part (an existing asset or `--check`), so the
+  author lays the entrance, the bays and the walks without working the transform out by hand. The
+  JSON report's `doors` carries the same list.
+- **`--check`** runs, on the existing asset as it is in the pack (a copy of it, as every run),
+  the stale report and the acceptance check, and writes nothing: after finishing an asset in the
+  editor it confirms, for example, that the workplace parking warning has cleared. Its status is
+  `checked`; exit status 1 when the check fails, else 2 with a stale line, else 0. An asset that
+  does not exist is refused ("nothing to check"); `--check` and `--write` exclude each other.
+- **`--source-commit <hash>`**: the models commit the files were copied from, when it is not the
+  one in the sidecar's `source.commit` (which records the commit of the build scripts, while an
+  author may copy the files from a later commit that holds the same files). Checked as 7 to 40
+  hexadecimal digits and stored as given in the ledger entry's `source_commit`; a draft's summary
+  names both. A rerun on an existing asset that names another commit than the ledger's (or one
+  when the ledger has none) gets an information line (`source`, `source_commit`).
+- **The pack copy leaves out `.git`.** The launcher's copy of the pack (`copy_pack`) and
+  `tools/godot_isolated.py --mods` leave out a `.git` entry, file or folder, at the packs folder
+  and at each pack's root (`without_git`): the owner's pack keeps its git data outside the folder
+  behind a `.git` pointer file (Q1), and a copy holding the pointer would let a git command in the
+  copy act on the real repository. The scanner registers only `asset.toml` files and the export
+  lists such an entry as excluded, so neither needs it. A `.git` deeper inside a pack is its
+  content and is copied as it is.
+- The refusal of a workplace role without a profile reads "an industrial role" or "a commercial
+  role".
 
 - `tools/model_draft.py` (new) creates an isolated profile with `tools/godot_isolated.py`
   (`create`, `isolated_env`) and runs
@@ -3137,9 +3224,10 @@ run; 2 an existing asset with stale lines.
   outside the profile and `$ARTIFACTS`. With `--write` it first does exactly that, and only when
   the check passes publishes once more into `<mods>/<pack_id>`. Every path inside the profile's
   copy of the pack is reported as the same path in `--mods`, in messages and in the JSON report,
-  since the profile is deleted after the run; with `--keep-profile` the report's `copy.asset` and
-  `copy.ledger` keep naming the kept copy. After a dry run those two name where `--write` would
-  publish. This is the one sanctioned write
+  since the profile is deleted after the run, except the report's `copy.asset` and `copy.ledger`:
+  they named the deleted copy and are left out (kept, naming the kept copy, with `--keep-profile`);
+  a dry run's `would_write` names where `--write` would publish (changed 2026-11-21, `TOOLS-39`:
+  before, the copy's paths were reported as the real pack's after a dry run). This is the one sanctioned write
   into the owner's real `user://mods/`; no test and no gate points `--mods` at the player's packs
   (the gate's end-to-end test passes `--write` against a temporary packs folder). As built, the
   copy, its check and the real publish are one `draft_from_model` call: the launcher copies the
@@ -3184,7 +3272,8 @@ run; 2 an existing asset with stale lines.
   `{"sidecar": <the sidecar as read>, "role": <the role with its defaults filled in>}`, read back
   by the same strict
   sidecar reader; it is written after the publish, so a failed ledger write is reported with the
-  asset already published.
+  asset already published. With `--source-commit` the entry also holds `"source_commit"`, as given
+  (`TOOLS-39`).
 
 Stale-geometry report (existing `asset_id`; read-only; JSON plus a text summary). Its lines are
 stale lines (the JSON `stale` list; any one gives exit status 2) or information lines (the JSON
