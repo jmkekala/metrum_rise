@@ -499,6 +499,15 @@ drive-through trip continues tick for tick as the live city
 Driveway, so every existing city saves the parking JSON of format 123; the `SIM-02` envelope and
 determinism records and the `PERF-06` work counts equal `dev`'s.
 
+Save format 125 (`PARK-23`, [backed-into docks](traffic.md#backed-into-docks-park-23-as-built),
+2026-11-21) adds a dock's stand: a dock row whose loading bay is marked `stand = "tail_in"` writes
+`tail_in: true`, every other row nothing, so a city without such a dock writes the parking JSON of
+format 124 and only `save_meta.version` differs. The load refuses `tail_in` on a row that is not a
+dock or whose drive has a way out. A format 124 save (`PRE_STANDS_SAVE_VERSION`) loads as format
+125 does with every dock nose in, as no asset could mark a bay backed into under its format
+(`a_backed_into_dock_round_trips_a_save_standing_and_leaving`, which also continues a save taken
+while a truck stands tail in and one taken while it drives out, tick for tick as the live city).
+
 ## Scheduler
 
 Every system registers a declaration. The dispatcher runs declarations in one fixed order per

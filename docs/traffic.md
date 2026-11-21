@@ -3388,6 +3388,108 @@ gates:
 Deliveries stayed alive, none waited and none failed; no shipment was starved (none expired or
 vanished).
 
+#### Backed-into docks (`PARK-23`), as built
+
+**Built** on branch `reverse-in` (2026-11-21), from the owner's need at the food factory's roller
+door: a truck stands with its tail at a loading door, so it reverses into the bay and drives out
+forward. Until then a truck always drove in nose first and backed out, nose to the door.
+
+**Format.** A `loading_bay` anchor may carry `stand`:
+
+```toml
+stand = "tail_in"   # absent or "nose_in": drive in, back out (stages A2 and B)
+```
+
+Any other value is refused (serde), `stand` on another anchor type is refused, and `"tail_in"`
+with an `exit` is refused: the truck leaves a bay it backed into forward by the way it came, so it
+cannot also leave through the bay's far end ("a truck that backs into its bay leaves it forward
+the way it came in, so the bay names no exit"). `"tail_in"` with `route_in` waypoints is valid: the
+truck reverses along the whole authored way in. The model draft pipeline derives no loading bay
+(stage B decision 8), so it needs no change.
+
+**Behaviour.** The same proven way in, the same corridor, the same timing, hold and release; only
+which end leads changes. The truck reverses from the gate's lane point along the way in (tail
+first), stands in the bay with its tail at the bay's far end (the door the bay was laid against),
+and leaves by the way in reversed, nose first, to the gate's lane point. A dispatch spawned in
+such a dock stands tail in and drives out forward. Positions do not read the stand:
+`maneuver_path`, the access step, the commits and the release are untouched, so a truck at a
+`tail_in` dock takes exactly the positions it takes at the same dock `nose_in`, tick for tick.
+
+**Proof.** Unchanged and direction-free: every rule names geometry, not travel. A leg's corridor
+is centred on it (the leg plus one body length), the envelope is a square at the bend, and the
+15° rule at the stop is about the leg's line arriving from the bay's entry side, which is the same
+leg whichever end of the truck leads. A reversing truck sweeps the same body.
+
+**Where a truck's facing is derived** (all through one pose rule,
+`ParkingSystem::yard_pose_reversed`, read by `access_phase_direction`, which both snapshot paths
+use for an off-lane car):
+
+| Case | Nose in (as before) | Tail in |
+| --- | --- | --- |
+| Pull-in (`PullIn`, the trip's `destination`) | along travel | against travel |
+| Standing (`AtDock`): the way in's last leg, `access_phase_target` | into the bay | out of the bay |
+| Pull-out (`PullOut`, the trip's `source`), after a delivery or a dispatch spawn | against travel (backs out), or along it with a way out | along travel |
+| A way out replanned (`stand_in_yard`, `plan_way_out_of_dock`) | the pull-out rule | the pull-out rule |
+| A retired row | its own stand (kept with it) | its own stand |
+
+`access_phase_target` (the travel target, also drawn by the debug overlay) is unchanged.
+
+**State and saves.** The stand belongs to the dock: `ParkingSystem::dock_tail_in`, a set of dock
+row handles beside `dock_ways`, set with the row (`replace_docks`, from the lot proof's
+`LotProof::tail_in`), removed with a removed row and kept with a retired one. A held row whose
+stand changes is retired for its truck, as one whose route or drive changes (stage B round 3), so
+a truck never turns about under an edit; the next truck takes the new row. `ParkingTrip` is
+unchanged (56 bytes). Save format 125 writes `tail_in: true` on such a row only, so a city without
+one writes the parking JSON of format 124 and only `save_meta.version` differs; a format 124 save
+(`PRE_STANDS_SAVE_VERSION`) loads as 125 does with every dock nose in, as its format could hold
+no other. The stand is saved, not derived from the asset at load: a load validates no lot
+(format 123 onwards), and a retired row keeps its stand for its truck after the asset changed.
+
+**What it costs.** A carrier without a dock: nothing new (the pose's flag byte test was there).
+A nose-in truck: one emptiness test of `dock_tail_in` per pose of a pull-in or a stand, and one
+more after the existing `dock_ways` lookup per pose of a pull-out. A site reconcile: one set
+lookup and one insert or remove per dock row, an edit or load boundary. A tail-in truck: one hash
+lookup per pose. Nothing in the tick reads it; no
+allocation in a per-tick or per-agent path.
+
+**Editor and inspector.** Site → Access points, a loading bay's "Truck stands" choice (the
+document's `route` command, op `stand`); the preview draws the standing truck's outline with its
+cab at the nose end and labels the bay "· backs in"
+([asset editor](asset_editor.md#lot-checks-docks-and-passages-in-the-editor-park-18-park-19-park-21)).
+The building inspector's dock line reads "<bay>: backs in, leaves forward through its gate".
+
+**Evidence** (2026-11-21, scratch, nothing written to the owner's pack). A copy of the owner's
+food factory (`building.industrial.food_processing_factory_1`, its plain dock `loading_door` laid
+against the west gable's roller door, entered along an authored arc from `truck_gate`) opened in
+the asset editor in an isolated profile: Truck stands set to tail in through the route panel (one
+undo step), the dock proves as before with no issue, the preview draws the truck's cab at the
+bay's entry, and the published `asset.toml` differs from the copy by the one line
+`stand = "tail_in"`; loaded back, the bay is still tail in and proves. The still save fixture
+(`write_the_freight_yard_still_save`) places explicit industry buildings, and the factory is zoned,
+so the rendered city uses a stand-in: the same published copy made an explicit extractor (its
+placement and economy lines only; model, yard and dock unchanged). Under gamescope headless the
+source's truck stands tail to the gable and drives out forward round the arc, and at the other
+copy it reverses along the arc into the bay, stands tail to the roller door (the Kenney van is
+3.25 m long, so it stands centred in the 8 m bay, 2.4 m short of the door) and drives out forward.
+
+**Verification** (fresh, 2026-11-21). Tests: the stand's manifest refusals and round trip
+(`a_loading_bay_names_its_exit_and_carries_waypoints_and_nothing_else_does`,
+`round_trip_keeps_a_loading_bays_stand`); on the yard of the dock tests, a whole round trip run
+once nose in and once tail in with every position, transit and trip row bit-equal each tick and the
+pose the exact reverse in every yard phase (`a_backed_into_dock_moves_its_truck_as_before_and_turns_only_its_pose`);
+a dispatch spawned tail in leaving forward; saves while standing and while leaving, and a format
+124 save; the inspector line; a stand changed under a standing truck (its row retired with its
+pose); the Godot `asset_passage_test` for the panel, the preview and the exit refusal. The full
+`./run.sh --test` gate (3,074 Rust tests, both Godot chains) and clippy `--all-targets` (no warning
+in a touched file). The `SIM-02` envelope and determinism records (`RAYON_NUM_THREADS=6`, release
+test binaries of this branch and of `dev` `1f9e5240e`): every `SIM02_DAY` record (4 workloads × 14
+days) and the `SIM02_DETERMINISM` record byte-equal, `envelope.json` equal apart from wall clock;
+the `PERF-06` work counts byte-equal (one untimed run a side). No fixture asset has a freight
+Driveway, so no existing city has a dock and none changes.
+
+**Timing level.** F: the pose rule is read per frame by the snapshot (an unlisted per-frame path),
+and the lot proof's edit path changes; no timing was run in this round.
+
 #### Stage C: waiting (`PARK-22`)
 
 **Behaviour.** A `loading_bay` anchor with `role = "waiting"` is a waiting position, proven like

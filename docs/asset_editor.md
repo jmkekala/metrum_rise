@@ -571,7 +571,10 @@ stores and edits that entrance in the same anchor list as the optional site-layo
   truck can reach it ([freight yards](traffic.md#stage-a1-docks-park-19-as-built), `PARK-19`),
   where trucks deliver and load (`PARK-20`). It may name an `exit` driveway and carry `route_in`
   and `route_out` waypoints: a drive-through, entered at one gate and left forward by the other
-  ([format](traffic.md#stage-b-drive-through-routes-park-21-as-built), `PARK-21`)
+  ([format](traffic.md#stage-b-drive-through-routes-park-21-as-built), `PARK-21`). With
+  `stand = "tail_in"` a truck backs into it, tail to the bay's far end (a loading door), and
+  drives out forward the way it came ([backed in](traffic.md#backed-into-docks-park-23-as-built),
+  `PARK-23`)
 - `vehicle_class` on a driveway or a bay (`car`, `freight`, `service`; the Vehicle class field of
   Access points). Cars use every driveway; trucks only `freight` driveways of at least 4 m
 - All building anchor positions must remain inside the authored lot footprint. `driveway` anchors
@@ -631,7 +634,19 @@ draw and list the results.
   authored waypoints as small squares; for a rejected way, the failing corridor or envelope
   dashed in red, or the failing leg (too short, off the bay's direction, touching its way) as a
   red line. The rejection's reason is in the issue list, the access list's tooltip and above the
-  bay's properties, as for any loading bay.
+  bay's properties, as for any loading bay. The selected loading bay also shows the truck that
+  stands in it (`PARK-23`): the freight body's 2.6 × 8 m outline centred in the bay, as the dock's
+  stop is, with its cab filled at the nose end, at the bay's far end for nose in and at its entry
+  for tail in; a bay a truck backs into is labelled "· backs in" whether selected or not.
+- **Truck stands** (`PARK-23`) is a loading bay's choice under Site → Access points, above the
+  Drive-through section (`asset_editor/route_panel.gd`): "Nose in: drives in, backs out" (the
+  default, no key written) or "Tail in: backs in, drives out" (`stand = "tail_in"`). It is the
+  same `route` document command (`stand`), one undo step ("Set stand"). The proof does not change
+  with it; Rust's manifest validation refuses tail in on a bay that names an exit ("a truck that
+  backs into its bay leaves it forward the way it came in, so the bay names no exit"), which the
+  issue list shows. The building inspector's dock line for such a dock reads "<bay>: backs in,
+  leaves forward through its gate" (a plain dock "backs out through its gate", a drive-through
+  "drive-through, leaves forward by '<exit>'").
 - **Drive-through** (`PARK-21`) is a section of a loading bay's properties under Site → Access
   points (`asset_editor/route_panel.gd`). Exit Driveway chooses one of the asset's freight
   driveways by name, or none (the truck backs out the way it came); clearing the exit clears the
@@ -2352,6 +2367,10 @@ Optional `[[anchors]]` table:
   the arrival gate's approach and the stop, `route_out` those between the stop and the exit's
   approach (only with an `exit`), asset-local metres, finite, at most 21 a way. The proof's rules
   are in [freight yards](traffic.md#stage-b-drive-through-routes-park-21-as-built).
+- `stand`: optional, on a `loading_bay` only (`PARK-23`): `"nose_in"` (the default) or
+  `"tail_in"`, a truck backing into the bay and leaving it forward; any other value is refused,
+  and `"tail_in"` with an `exit` is refused. The editor's load JSON carries it only for
+  `"tail_in"`, so an explicit `"nose_in"` is dropped at the next export.
 
 Optional `[[site_surfaces]]` table for building visual yard polygons:
 
