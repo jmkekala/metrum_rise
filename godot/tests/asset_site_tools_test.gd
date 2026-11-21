@@ -63,6 +63,15 @@ func _write_ledger() -> void:
 	file.store_string(JSON.stringify({"sidecar": sidecar, "role": {}}))
 	file.close()
 
+# Close the refusal dialogs the session shows; returns their texts, newest last.
+func _dismiss() -> Array:
+	var texts := []
+	for child in editor.get_children():
+		if child is AcceptDialog and child.visible:
+			texts.append(child.dialog_text)
+			child.hide()
+	return texts
+
 func _params() -> Dictionary:
 	return document.snapshot()["params"]
 
@@ -146,6 +155,8 @@ func _move_site() -> void:
 	expect(document.snapshot() == before, "one undo restores everything")
 	# The block's back would leave the lot: refused, nothing changes.
 	expect(not editor._site_move.move(0.0, -16.0), "a move off the lot is refused")
+	var reasons := _dismiss()
+	expect(reasons.size() == 1 and str(reasons[0]).contains("mesh part") and str(reasons[0]).contains("outside the lot"), "the refusal names the part: %s" % [reasons])
 	expect(document.snapshot() == before and document.undo_label() != "Move whole site", "a refused move changes nothing")
 
 # The ledger's vehicle door is offered; its bay stands end-on to it, just clear of the block.
@@ -175,17 +186,22 @@ func _surface_vertices() -> void:
 	expect(panel._root.visible and panel.list.item_count == 4, "the yard's four vertices are listed")
 	expect(panel._corners[0].value == 0.0 and panel._corners[3].value == 19.5, "the corners start at the yard's bounds")
 	var before: Dictionary = document.snapshot()
+	var reasons := []
 	panel.list.select(1)
 	panel.list.item_selected.emit(1)
 	expect(panel.selected == 1 and is_equal_approx(panel._x.value, 14.5), "the selected vertex's fields")
 	panel._x.value = 13.2501
 	var vertices: Array = _params()["site_surfaces"][0]["vertices"]
-	expect(is_equal_approx(float(vertices[1][0]), 13.2501) and float(vertices[1][1]) == -10.0 and vertices[0] == [0.0, -10.0], "the typed X moves that vertex only: %s" % [vertices])
+	expect(is_equal_approx(float(vertices[1][0]), 13.2501) and float(vertices[1][1]) == -10.0 and vertices[0] == [0.0, -10.0], "the typed X moves that vertex only: %s %s" % [vertices, _dismiss()])
 	expect(document.undo_label() == "Move vertex", "one step: %s" % document.undo_label())
 	document.undo()
 	expect(document.snapshot() == before, "one undo restores it")
 	expect(not panel.set_vertex(1, [15.5, -10.0]), "a vertex off the lot is refused")
+	reasons = _dismiss()
+	expect(reasons.size() == 1 and str(reasons[0]).contains("inside the lot"), "the reason: %s" % [reasons])
 	expect(not panel.set_vertex(1, [-5.0, 5.0]), "a crossing outline is refused")
+	reasons = _dismiss()
+	expect(reasons.size() == 1 and str(reasons[0]).contains("non-intersecting"), "the reason: %s" % [reasons])
 	expect(document.snapshot() == before, "refusals change nothing")
 	expect(panel.set_rectangle([4.0, 5.0], [-2.0, -3.0]), "a rectangle by two corners")
 	vertices = _params()["site_surfaces"][0]["vertices"]

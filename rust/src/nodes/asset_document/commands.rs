@@ -383,10 +383,10 @@ fn edit_surface(
     use crate::assets::authoring::surface_edit;
     let pair = |value: Option<Variant>| -> Option<[f64; 2]> {
         let values = value?.try_to::<VarArray>().ok()?;
-        Some([values.get(0)?.try_to::<f64>().ok()?, values.get(1)?.try_to::<f64>().ok()?])
+        Some([real(&values.get(0)?)?, real(&values.get(1)?)?])
     };
     let half = |key: &str| {
-        params.get(key).and_then(|v| v.try_to::<f64>().ok()).unwrap_or(1.0)
+        params.get(key).and_then(|v| real(&v)).unwrap_or(1.0)
             * f64::from(crate::assets::asset::validation::ZONE_CELL_M)
             * 0.5
     };
@@ -639,7 +639,7 @@ fn arc_route(
 fn move_site(params: &mut VarDictionary, args: &VarDictionary) -> Result<(), String> {
     let number = |key: &str| {
         args.get(key)
-            .and_then(|v| v.try_to::<f64>().ok())
+            .and_then(|v| real(&v))
             .ok_or(format!("Expected a number for {key}"))
     };
     let bounds = args
@@ -703,7 +703,7 @@ fn bay_at_door(params: &mut VarDictionary, part: usize, args: &VarDictionary) ->
         .ok_or("Missing door")?;
     let triple = |value: Option<Variant>| -> Option<[f64; 3]> {
         let values = value?.try_to::<VarArray>().ok()?;
-        let v = |i: usize| values.get(i)?.try_to::<f64>().ok().filter(|v| v.is_finite());
+        let v = |i: usize| real(&values.get(i)?).filter(|v| v.is_finite());
         Some([v(0)?, v(1)?, v(2)?])
     };
     let bounds = args
@@ -715,10 +715,10 @@ fn bay_at_door(params: &mut VarDictionary, part: usize, args: &VarDictionary) ->
     let mut placed = crate::assets::MeshPart::single_lod0("", "");
     placed.position = triple(entry.get("position")).unwrap_or_default().map(|v| v as f32);
     placed.rotation_degrees = triple(entry.get("rotation_degrees")).unwrap_or_default().map(|v| v as f32);
-    placed.scale = entry.get("scale").and_then(|v| v.try_to::<f64>().ok()).unwrap_or(1.0) as f32;
+    placed.scale = entry.get("scale").and_then(|v| real(&v)).unwrap_or(1.0) as f32;
     placed.pivot_offset = triple(entry.get("pivot_offset")).map(|p| p.map(|v| v as f32));
     let cells = |key: &str| {
-        params.get(key).and_then(|v| v.try_to::<f64>().ok()).unwrap_or(1.0)
+        params.get(key).and_then(|v| real(&v)).unwrap_or(1.0)
             * f64::from(crate::assets::asset::validation::ZONE_CELL_M)
             * 0.5
     };
@@ -743,6 +743,14 @@ fn names(entries: &VarArray) -> HashSet<String> {
         .filter_map(|v| v.try_to::<VarDictionary>().ok())
         .map(|v| text(&v, "name"))
         .collect()
+}
+
+// A number held as a float or an integer (a lot's cells, `scale = 1`, a vertex `[20, 5.4]`).
+fn real(value: &Variant) -> Option<f64> {
+    value
+        .try_to::<f64>()
+        .ok()
+        .or_else(|| value.try_to::<i64>().ok().map(|v| v as f64))
 }
 
 fn vec3(value: [f64; 3]) -> VarArray {
