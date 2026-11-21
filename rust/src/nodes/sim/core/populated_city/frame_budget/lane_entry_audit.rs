@@ -2,11 +2,12 @@
 
 //! `TRAFFIC-07` audit: runs a prepared snapshot's day and counts, every few game hours, the
 //! lanes holding more cars than fit and the cars stacked at one point of a lane, plus the cars
-//! waiting at a node for their first lane and at an attach point for a gap (`TRAFFIC-11`). A
-//! diagnostic of lane entry, not acceptance timing.
+//! waiting at a node for their first lane and at an attach point for a gap (`TRAFFIC-11`), and at
+//! its end the day's trip times (`TRAFFIC-38`). A diagnostic of lane entry, not acceptance timing.
 
 mod ring_day;
 mod rings;
+mod trips;
 mod waits;
 
 use super::{FRAME_DT_S, MINUTES_PER_DAY, absolute_minute};
@@ -401,6 +402,7 @@ fn traffic07_lane_entry_audit() {
     // deliveries a control compares).
     let work_start = crate::debug::work::snapshot();
     let mut ring_day = ring_day::RingDay::new(core);
+    let mut trips = trips::TripBook::new();
     loop {
         if trace && traced < 400 {
             traced += trace_entries(
@@ -453,6 +455,8 @@ fn traffic07_lane_entry_audit() {
         frame += 1;
         core.step_frame(FRAME_DT_S);
         ring_day.after_frame(core);
+        trips.after_frame(core);
     }
     ring_day.report(core);
+    trips.report(core);
 }
