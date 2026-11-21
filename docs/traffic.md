@@ -3355,6 +3355,41 @@ control's quartiles, `PERF-07` within tolerance with `PERF-17` the known excepti
 determinism gate's records identical (`tools/sim02_gate.py envelope determinism`, six workers,
 `8e4119f7d` against the control's records of the same `dev` binary).
 
+**A2, landing session at level L** (2026-11-21 03:07-03:16, the same boot as "A2, measured",
+same binaries: control `dev` `b5af1f1b1` `d98ec5d95527de2e`, branch `8e4119f7d` `7d88c2fe6cfb1f6a`,
+eight performance cores, eight workers, nothing else running; no build during the session).
+
+```bash
+./run.sh --timing --level L --control "$CONTROL_TEST_BINARY" --branch "$TEST_BINARY" \
+    --control-cache "$ARTIFACTS/snapshots-park19" --branch-cache "$ARTIFACTS/snapshots-park19" \
+    --base dev --artifacts "$ARTIFACTS"
+```
+
+Reused by the runner's rules: the control's 30k 1× day and its K22 row, from the level F session
+of this boot (the calibration on the first control 32× run passed: +0.3 % mean, +1.3 % p99,
+-5.2 % p99.9). Measured fresh: 30k 32× C B B C, the branch's two 1× days, the branch's K22 row and
+the branch's economy contract (`--diff dev`, full days). The control's contract row is cache-only
+at L and had no cached row, so the runner skipped it; the control's contract was then run once
+outside the timed phase (same cores and lock, untimed use) for its work counts.
+
+| Row | Control | Branch | Acceptance | Reading |
+| --- | --- | --- | --- | --- |
+| 30k 32×, C B B C: mean / p99 / p99.9 / worst unpreempted, ms | 4.279 / 6.376 / 7.248 / 8.125 | 4.267 / 6.371 / 7.613 / 8.550 | `PERF-07`, `PERF-17` the known exception | level on every metric and component; branch runs both the known `PERF-17` exception, control one pass and one exception |
+| 30k 1×, control one day (reused), branch two: mean / p99 / p99.9 / worst unpreempted, ms | 2.090 / 3.323 / 3.782 / 4.891 | 2.074 / 3.288 / 3.715 / 4.965 | `PERF-07` | passes on every day (branch 5.16 and 4.77 ms worst unpreempted, p99.9 3.72 and 3.71); level |
+| `load_s` (30k 32× and 1×) | 2.299, 2.297 | 2.300, 2.305 | | level |
+| K22 30k: click-to-ack / commit, ms | 6.47 / 6.44 (reused) | 7.27 / 7.24 | | one run a side; the branch's level F run was 6.62 / 6.58 |
+| Economy contract, hour means: baseline 10k / 30k, fiscal 10k / 30k, ms | 0.92 / 3.19 / 6.30 / 13.87 (untimed reference) | 0.94 / 3.18 / 6.36 / 13.90 | the contract's limits | level; no time limit fails |
+| Economy contract, work-count limits | the same five fail | baseline `buyer_sites_built` 10 -> 48, `staffing_trials` 41,070 -> 176,857, `supplier_searches` 12,996 -> 65,998, `supplier_routes` 218,285 -> 1,177,406, `job_search_keys` 0 -> 988 (limit 3.28×) | | pre-existing: the control's counts are identical; these are the four parked scaling limits and the `staffing_trials` measurement effect the user accepted on 2026-11-09 ([economy](economy.md#performance-contract-perf-01perf-05)) |
+
+Every other work count of the contract is identical between control and branch except
+`cch_point_searches`, which differs by a few in either direction (63,587 against 63,593 at 10k)
+and differs the same way between two runs of the branch binary: it depends on the worker
+schedule and is no regression. The absolute acceptances measured here (the 30k acceptance and the
+economy contract) also cover stage A1 (`PARK-19`), which landed on its level F rows only: the
+branch contains A1's code, and so does the control, whose rows equal the branch's. No row misses
+beyond the known exceptions above, all pre-existing on `dev` before A1 (`PERF-17` accepted
+2026-11-07; the contract's five limits recorded before A1).
+
 #### Risks
 
 1. **Freight stuck in yards starves shops.** Guards: no waiting in A and B; a refused truck
