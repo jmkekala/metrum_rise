@@ -20,7 +20,7 @@ its roadmap row. The owner accepted the plan on 2026-11-21.
 
 | Topic | State | Row |
 | --- | --- | --- |
-| Model contract and pilot pair | planned, pilot ordered | `TOOLS-41` |
+| Model contract and pilot pair | planned; pilot pair built in the models repository | `TOOLS-41` |
 | `[vehicle]` assets in packs, vehicle drafts | planned | `TOOLS-41` |
 | Bundled `vehicles` pack, removal of the placeholder cars | planned | `TOOLS-42` |
 | Vehicle renderer: catalogue, shader, tiers | planned | `RENDER-65` |
@@ -32,7 +32,9 @@ its roadmap row. The owner accepted the plan on 2026-11-21.
 
 ## Model contract (`TOOLS-41`)
 
-**Planned; the pilot pair is being built to it.** This is the authoritative copy. The game
+**Planned; the pilot pair is built to it in the models repository ([Pilot pair](#pilot-pair)),
+nothing on the game side is.** This is the authoritative copy; the models repository's own
+`CLAUDE.md`, section "Vehicles", states the same contract for its builders. The game
 turns the wheels, lights the lamps and paints the body itself, per vehicle, from ids stored in
 the mesh: **no rig, no animation, no separate wheel files; one mesh and one material per tier.**
 Lamp and glass groups the game does not use yet are still required, so that no model is
@@ -52,7 +54,9 @@ results.
 | `bus` | 12.00 × 2.55 × 3.20 | a 12 m city bus (not ordered yet) |
 
 - Width is without mirrors. Mirrors may add 0.12 m a side on a car and 0.25 m on the others.
-- The box applies to the model as exported, wheels straight ahead. A steered wheel may leave it.
+  Nothing but the mirrors reaches past the width: the validator takes vertices outside it, above
+  the lowest wheel centre and in the front half, for mirrors.
+- The box applies to every tier as exported, wheels straight ahead. A steered wheel may leave it.
 - Sizes are targets within ±0.05 m. A dimension whose target equals a class limit has the
   tolerance -0.05 to 0, so it is built slightly under: the pilot estate is 4.48 m long and the
   pilot truck 2.53 m wide, nominal.
@@ -71,7 +75,8 @@ results.
 | Large panel van | van | 5.95 × 2.05 × 2.60 | 3.66 | 0.35 | 100 % | fleet |
 | Rigid box truck, two axles | truck | 7.90 × 2.55 × 3.70 | 4.50 | 0.52 | 100 % | pilot |
 
-The pilot pair proves the contract; the seven fleet models are ordered together after it. The
+The pilot pair proves the contract. The seven fleet models are ordered together, and only after
+the pilot pair has been seen in the engine (the owner, 2026-11-21). The
 pilot estate: five doors, roof rails, track 1.54 m. The pilot truck: cab over engine, twin rear
 wheels, box body with a rear roller door, under-run bars, front track 2.05 m. No real makes.
 Later, not ordered: a city bus, emergency and service vehicles, trailers.
@@ -83,8 +88,11 @@ Later, not ordered: a city bus, emergency and service vehicles, trailers.
 - Origin on the ground at the centre of the body's plan box (length × width without mirrors).
   One origin for all tiers. The simulation's lane position and a parking bay's centre are both
   the body centre.
-- Tyres touch `y = 0` exactly; nothing is below it. Symmetric about `x = 0` unless a brief says
-  otherwise.
+- Tyres touch `y = 0` exactly; nothing is below it, on any tier.
+- Symmetric about `x = 0`: wheel and lens pairs mirror within 1 mm. A lens of `reverse` (6),
+  `fog_rear` (11), `plate` (12), `beacon` (13) or `sign` (14) may stand alone off the centre
+  line; a car's high-mounted brake lamp is one lens on the centre line. The sidecar has no field
+  for any other asymmetry.
 - "Left" and "right" always mean the driver's. The sidecar names every side, so the game never
   infers one from a sign.
 
@@ -93,9 +101,10 @@ Later, not ordered: a city bus, emergency and service vehicles, trailers.
 - In the source file each wheel is its own object with its origin at the wheel centre. At export
   everything is joined into one mesh.
 - A wheel is a closed solid (tyre, rim face, inner face), so a turned wheel shows no hole. A
-  truck's twin rear wheels are one part a side.
-- The arch is a dark recess. Front arches clear the wheel turned 35 degrees either way about the
-  vertical axis through its centre; every arch clears a spinning wheel.
+  truck's twin rear wheels are one part a side, and their axle says `twin: true`.
+- Parts are numbered in sidecar order: front axle first, left before right.
+- The arch is a dark recess. Every wheel straight ahead, and every front wheel turned 35 degrees
+  either way about the vertical axis through its centre, keeps 10 mm from every body triangle.
 - The game spins a wheel about the model `X` axis and steers it about `Y`, both through the
   wheel centre stated in the sidecar.
 - No brake discs, suspension or tread geometry. At most 8 wheel parts.
@@ -112,7 +121,8 @@ as a **normalised `UNSIGNED_BYTE` `VEC4`**. There is no float form and no second
 | B | paint | `255` on painted body panels, `0` elsewhere (glass, tyres, trim, lamps, plates) |
 | A | unused | `255` |
 
-- The three corners of every triangle carry identical values: ids never blend.
+- The three corners of every triangle carry identical values, R, G and B alike: ids never blend
+  and paint never fades across a panel edge.
 - A lamp or glass face is body: R = 0 and B = 0 wherever G is not 0.
 - B is 0 or 255 at every vertex.
 - A face is a lamp, or glass, or neither, so one channel holds both ranges.
@@ -155,14 +165,19 @@ model has no glow, halo or beam geometry; the game adds those.
 | 10 | `fog_front` | white | optional | reserved |
 | 11 | `fog_rear` | red | optional | reserved |
 | 12 | `plate` | white | rear plate lamp, optional | reserved |
-| 13 | `beacon` | per livery | roof (emergency, maintenance) | reserved |
-| 14 | `sign` | per livery | taxi sign, bus destination board | reserved |
+| 13 | `beacon` | not defined yet | roof (emergency, maintenance) | reserved |
+| 14 | `sign` | not defined yet | taxi sign, bus destination board | reserved |
 | 15 | `marker` | amber, white, red | truck and bus outline lamps | reserved |
 
 - Every vehicle has 3 (or 1 and 2), 4, 5, 6, 7, 8 and 9. A car also has 2 on its high-mounted
-  lamp, which is a lamp face and not glass. A truck also has 15.
+  lamp, on the centre line, which is a lamp face and not glass. A truck also has 15.
 - Low beam, high beam and daytime are separate faces even inside one headlamp.
-- LOD0 and LOD1 carry every lamp face. LOD2 keeps the ids on flat faces. LOD3 has none.
+- A lens is one connected group of faces of the same id, measured from LOD0. The sidecar lists
+  each lens with its lit colour: `white`, `amber` or `red`. The colour is the group's own from
+  the table; a marker's may be any of the three. The colours of `beacon` and `sign` are defined
+  with the emergency-vehicle and bus orders; until then any of the three is accepted.
+- LOD0 and LOD1 carry every lamp face. LOD2 keeps the ids on flat faces inside the same lens
+  rectangles; a lamp id missing on LOD2 is a warning, not a failure. LOD3 has none.
 - Emission is exported bound with factor zero.
 
 ### Glass
@@ -183,14 +198,15 @@ region, so that tint, lit cabins and see-through glass can come later without to
 | 40..47 | reserved | |
 
 - Glass faces are separate faces with paint 0. Mirror glass, lamp lenses and plates are not glass.
-- A car has at least 32, 33, 34 and 35; a truck at least 32 and 33.
+- A car has at least 32, 33, 34 and 35; a van and a truck at least 32 and 33; a bus at least 32.
 - LOD0 and LOD1 carry every glass id. On LOD2 a face that is wholly glass keeps its id; front
   and rear side glass may merge into one band a side, tagged 33. LOD3 has no surface ids.
 - In the emission texture, glass texels hold a dim, neutral picture of the lit cabin (the
   building night-room painter at a low level, no colour). The game keeps it dark until lit
   cabins are built.
-- The atlas generator provides the mask of glass texels, so the validator can tell an unmarked
-  glass face (confirmed by the models side, 2026-11-21).
+- The texture generator writes a record of which texels are glass, `glass_texels.png`, beside
+  the model's `notes.md`, so the validator can tell an unmarked glass face. It is not shipped and
+  not in the sidecar.
 
 ### Interior
 
@@ -209,15 +225,24 @@ region, so that tint, lit cabins and see-through glass can come later without to
 - Painted panels (B = 1) are neutral light grey in the albedo, about 0.75 linear, with panel
   gaps and light wear only. The game multiplies them by the vehicle's paint colour. No body
   colour is baked.
+- The paint level is held so that every vehicle takes a paint alike. On LOD0 and LOD1 the panel
+  field, the area-weighted median of the painted texels, lies within 0.70 to 0.80 linear. On
+  every tier the area-weighted mean of the painted texels is within 10 % of LOD0's, so a vehicle
+  keeps its brightness at a tier switch. Either miss fails the validator.
+- Known and accepted for now: under dark paint a truck's far tiers render about 9 to 13 % darker
+  overall, because its light unpainted parts shrink away there.
 - Plates are blank white rectangles.
 - Maps: albedo per variant, ORM and emission are required; a normal map is optional. The
   emission holds lit lamp lenses, the lit cabin on glass, and black everywhere else. External
   PNGs, one set for all tiers. One material slot.
-- Size: 512 for cars and vans, 1024 for trucks and buses, at 64 texels per metre. Mirrored
+- Size: 1024 for every class (car, van, truck, bus). That is about 128 texels per metre on a
+  car body and about 64 on a truck, with denser rectangles for lamps and wheel faces. Mirrored
   left/right UVs are fine except where a livery needs lettering.
-- Liveries are variants: another albedo on the same geometry. A livery that covers painted
-  panels paints them in full colour and is marked `"paint": false` in the sidecar; the game then
-  uses white as that vehicle's paint colour. The pilot truck has `plain` and `haulier`.
+- Every vehicle has the variant `plain` (`"paint": true`). Liveries are further variants:
+  another albedo on the same geometry. A livery that covers painted panels paints them in full
+  colour and is marked `"paint": false` in the sidecar; the game then uses white as that
+  vehicle's paint colour. A livery names no real company. The pilot truck has `plain` and
+  `haulier`.
 
 ### Tiers
 
@@ -241,86 +266,140 @@ These replace the [earlier provisional tier numbers](#earlier-provisional-tier-n
 [Model Draft Pipeline](asset_editor.md#model-draft-pipeline--tools-33)). Metres, in the exported
 frame. Geometry and files only.
 
+The example is the pilot estate's sidecar cut down to one entry per list, with the keys in the
+order the models build writes them. It illustrates the form; a real sidecar states the values
+measured from its own files.
+
 ```json
 {
   "schema": "metrum-model-facts", "version": 2, "kind": "vehicle",
   "name": "estate_compact", "path": "vehicles/car/estate_compact",
-  "source": {"commit": "…", "dirty": false, "blender": "…"},
+  "source": {"commit": "…", "dirty": false, "blender": "5.3.0"},
   "license": "CC-BY-4.0",
-  "bounds": {"min": [-0.99, 0.0, -2.24], "max": [0.99, 1.47, 2.24]},
-  "body": {"class": "car", "length_m": 4.48, "width_m": 1.80, "width_mirrors_m": 1.98,
-           "height_m": 1.47, "wheelbase_m": 2.65, "front_overhang_m": 0.90,
-           "rear_overhang_m": 0.93, "ground_clearance_m": 0.15},
-  "axles": [{"z": 1.34, "track_m": 1.54, "steer": true, "twin": false},
-            {"z": -1.31, "track_m": 1.54, "steer": false, "twin": false}],
+  "bounds": {"min": [-1.01, 0.0, -2.24], "max": [1.01, 1.468, 2.24]},
+  "body": {"class": "car", "length_m": 4.48, "width_m": 1.79, "width_mirrors_m": 2.02,
+           "height_m": 1.468, "wheelbase_m": 2.65, "front_overhang_m": 0.86,
+           "rear_overhang_m": 0.97, "ground_clearance_m": 0.19},
+  "axles": [{"z": 1.38, "track_m": 1.54, "steer": true, "twin": false},
+            {"z": -1.27, "track_m": 1.54, "steer": false, "twin": false}],
   "wheels": [{"id": "front_left", "part": 1, "axle": 0, "side": "left",
-              "centre": [0.77, 0.32, 1.34], "radius_m": 0.32, "width_m": 0.21, "steer": true}],
-  "attributes": {"set": "COLOR_0", "component": "UNSIGNED_BYTE", "normalized": true,
-                 "r": "part", "g": "surface", "b": "paint", "version": 1},
-  "lamps": [{"group": "low_beam", "lamp": 7, "side": "left", "position": "front",
-             "centre": [0.68, 0.66, 2.17], "facing": [0.0, 0.0, 1.0],
-             "width_m": 0.16, "height_m": 0.10}],
-  "glass": [{"group": "glass_windscreen", "id": 32, "area_m2": 1.05}],
+              "centre": [0.77, 0.32, 1.38], "radius_m": 0.32, "width_m": 0.207, "steer": true}],
+  "attributes": {"set": "COLOR_0", "r": "part", "g": "surface", "b": "paint", "version": 1},
+  "lamps": [{"group": "high_beam", "lamp": 8, "side": "left", "position": "front",
+             "colour": "white", "centre": [0.6062, 0.7582, 2.0864],
+             "facing": [0.2385, 0.5562, 0.7961], "width_m": 0.2286, "height_m": 0.1254}],
+  "glass": [{"group": "glass_windscreen", "id": 32, "area_m2": 1.199}],
   "cargo": null,
   "coupling": null,
   "interior": null,
-  "lods": [{"file": "estate_compact_lod0.glb", "triangles": 2840, "sha256": "…",
+  "lods": [{"file": "estate_compact_lod0.glb", "triangles": 2906, "sha256": "…",
             "wheel_parts": true, "lamp_ids": true, "glass_ids": true}],
   "textures": {"orm": {"file": "…", "sha256": "…"}, "emission": {"file": "…", "sha256": "…"},
-               "normal": null},
+               "normal": {"file": "…", "sha256": "…"}},
   "variants": [{"name": "plain", "albedo": {"file": "…", "sha256": "…"}, "paint": true}],
   "default_variant": "plain",
   "preview": {"file": "preview.png", "sha256": "…"}
 }
 ```
 
+- The models build measures the values from the exported files, geometry from LOD0. A model's
+  own build states `cargo`, and may state `lamps`, `glass`, `coupling` or `interior` instead of
+  the measured ones.
+- `bounds`: LOD0, mirrors included.
 - `body.class` is a size word (`car`, `van`, `truck`, `bus`); the game maps it to its own class.
-- `wheels`: one entry per wheel part, in part order.
-- `lamps`: a flat list with **one entry per lens**: `group`, `lamp` (the id), `side` (`left`,
-  `right` or `centre`), `position` (`front`, `rear`, `side` or `roof`), the lens `centre`, its
-  outward `facing`, `width_m` and `height_m`. An indicator group with a front lamp, a rear lamp
-  and a side repeater on each side has six entries. The game uses the entries for the far glow
-  points and the origin of the light beams.
+  `wheelbase_m` runs from the first to the last axle; `ground_clearance_m` is the height of the
+  lowest body point.
+- `axles`: front first; `twin` is true for an axle with twin wheels, one part a side.
+- `wheels`: one entry per wheel part, in part order; `centre.y` equals `radius_m`.
+- `attributes` names the id attribute and its channels; the byte form is fixed by
+  [Vertex ids](#vertex-ids).
+- `lamps`: a flat list with **one entry per lens**, keys in this order: `group`, `lamp` (the
+  id), `side` (`left`, `right` or `centre`), `position` (`front`, `rear`, `side` or `roof`,
+  from the facing's main axis), `colour` (the lit colour: `white`, `amber` or `red`), the lens
+  `centre`, its unit outward `facing`, `width_m` (along up × facing) and `height_m` (across
+  it). An indicator group with a front lamp, a rear lamp and a side repeater on each side has six
+  entries. The game uses the entries for the far glow points and the origin of the light beams.
 - `glass`: one entry per group present, with its id and area.
 - `lods`: all four tiers.
 - `cargo`: the load box of a van or truck, `{"min": [x, y, z], "max": [x, y, z], "door":
-  "rear"}`; `null` for a car.
+  "rear"}`; `null` for a car, and a failure on a van or truck.
 - `coupling`: `null`; reserved for trailers (hitch point and kind).
 - `interior`: `null`, or `{"file": "…", "triangles": n, "sha256": "…"}` once a model ships the
   optional interior mesh; `null` in the pilot.
+- `textures.normal`: `null` when the model has no normal map.
+- `preview.file` is relative to the asset folder, not to `export/`.
 - Seats are not in the sidecar. Seating is a value of the pack asset on the game side.
-- The lists and the mesh agree both ways: no listed group is missing from the mesh, and no id in
+- The lists and LOD0 agree both ways: no listed group is missing from the mesh, and no id in
   the mesh is missing from the lists.
 
 ### Validator checks
 
 The models repository runs these on the exported files:
 
-1. The straight-ahead model fits its class box; `bounds.min.y` is 0 within 1 mm; each wheel's
-   lowest point is 0 within 1 mm and `centre.y` equals `radius_m`.
-2. Wheel and lamp pairs mirror in `x` within 1 mm.
+1. Every tier, wheels straight ahead, fits its class box (mirrors taken as under
+   [Body classes](#body-classes)), keeps LOD0's plan box (mirrors excluded), and has its lowest
+   point at 0 within 1 mm; each wheel's lowest point is 0 within 1 mm and `centre.y` equals
+   `radius_m`.
+2. Wheel and lens pairs mirror in `x` within 1 mm, apart from the single lenses allowed under
+   [Frame](#frame).
 3. Ids, read from the GLB accessors: `COLOR_0` is a normalised `UNSIGNED_BYTE` `VEC4`; R and G
-   are exact bytes from the allowed sets; the three corners of every triangle are identical;
-   R = 0 and B = 0 wherever G is not 0; B is 0 or 255; A is 255. No Draco or meshopt extension.
-4. Per tier: LOD0 and LOD1 have every wheel part, every required lamp id and every listed glass
-   id; LOD2 has no wheel parts; LOD3 has R = 0 and G = 0 everywhere.
-5. Each wheel part's vertices lie inside its sidecar cylinder (plus 5 mm) and no body vertex does.
-6. Steer clearance: with each steering wheel turned +35 and -35 degrees, no wheel vertex comes
-   within 10 mm of a body triangle.
-7. Lamps: each lamp face is tested against the nearest sidecar entry of its lamp id and lies
-   within that entry's rectangle; every entry has at least one face; lamp emission texels are
-   not black.
-8. Glass: on LOD0 and LOD1 a triangle sampling glass texels without a glass id fails, and a
-   glass-id triangle sampling non-glass texels fails (LOD2: the second only); glass emission is
-   not black.
-9. Emission texels that are neither lamp nor glass are black. Painted faces are near neutral in
-   the albedo.
+   are exact bytes from the allowed sets; the three corners of every triangle are identical, so
+   R, G and B are uniform per triangle; R = 0 and B = 0 wherever G is not 0; B is 0 or 255; A is
+   255. No Draco or meshopt extension.
+4. Per tier: LOD0 and LOD1 have every wheel part (16 to 20 sides on LOD0, 8 to 10 on LOD1),
+   every required lamp id and every required and listed glass id; LOD2 has no wheel parts, and a
+   lamp id missing there is a warning; LOD3 has R = 0 and G = 0 everywhere.
+5. On LOD0 and LOD1 each wheel part's vertices lie inside its sidecar cylinder (plus 5 mm) and
+   no body vertex does.
+6. Wheel clearance: every wheel straight ahead, and each steering wheel turned +35 and -35
+   degrees, sampled at its vertices and at points along every edge, comes no closer than 10 mm
+   to a body triangle.
+7. Lamps: each lamp face lies within the rectangle of the nearest sidecar lens of its lamp id,
+   to 2 mm in the lens plane and 50 mm along its facing; every lens has at least one face; lamp
+   emission texels are not black. Each lens's `colour` is present, allowed for its group (see
+   [Lamps](#lamps)) and matches the emission texels its LOD0 faces sample.
+8. Glass, against `glass_texels.png`: on LOD0 and LOD1 a triangle sampling glass texels without
+   a glass id fails, and a glass-id triangle sampling non-glass texels fails (LOD2: the second
+   only); glass emission is not black.
+9. Emission texels that faces sample and that are neither lamp nor glass are black. Painted
+   faces are near neutral in the albedo. The paint level holds (see
+   [Paint and textures](#paint-and-textures)): the panel field of LOD0 and LOD1 within 0.70 to
+   0.80 linear, every tier's painted mean within 10 % of LOD0's.
 10. Triangle ceilings, one material, external textures, hashes and a clean source, as for
-    buildings.
+    buildings; the sidecar's lists against the mesh both ways, and `cargo` present on a van or
+    truck.
 
 A review sheet (views, wheels turned 35 degrees, each lamp group lit, the cabin lit, a
 false-colour view of the ids, three paint colours, tiers at their switch distances, a 1.8 m
-figure and a bay outline) is rendered for the owner's look. It is not a committed deliverable.
+figure and the class's bay outline: car 2.5 × 5.0 m, van and truck 3.0 × 8.0 m, bus 3.0 ×
+13.0 m) is rendered for the owner's look. It is not a committed deliverable.
+
+### Pilot pair
+
+**Built in the models repository** (commit `22f26cb`, 2026-11-21, not yet pushed there). The
+figures are those of the two sidecars.
+
+| | Compact estate | Rigid box truck |
+| --- | --- | --- |
+| Folder | `vehicles/car/estate_compact` | `vehicles/truck/rigid_box_18t` |
+| Length × width × height (m) | 4.480 × 1.790 × 1.468 | 7.900 × 2.530 × 3.700 |
+| Width over mirrors (m) | 2.020 | 2.98 |
+| Wheelbase (m) | 2.650 | 4.50 |
+| Track (m) | 1.540 | front 2.05; rear twins 1.84 between centres |
+| Wheel radius (m) | 0.320 | 0.52 |
+| Triangles, LOD0 / 1 / 2 / 3 | 2,906 / 890 / 218 / 40 | 4,062 / 1,388 / 348 / 60 |
+| Lenses | 20 | 27, 10 of them markers |
+| Glass ids | 32 to 35 | 32, 33 |
+| Variants | `plain` | `plain` (paint true), `haulier` (paint false) |
+| Validator | 0 FAIL, 1 WARN: the high brake lamp's id is missing on LOD2, accepted | 0 FAIL, 0 WARN |
+
+Still to do on the game side, as the planned sections below describe: the sidecar reader and the
+pack asset ([pack assets](#planned-pack-assets-drafts-and-the-bundled-pack-tools-41-tools-42)),
+tier switching, lamp shading and the paint multiply, skipped (white) for a `paint: false`
+variant ([renderer](#planned-renderer-render-65)), and wheel steer and spin on the twin wheel
+parts as on single ones ([steered wheels](#planned-brake-lights-indicators-and-steered-wheels-render-66),
+[wheel spin](#planned-beams-later-lamps-and-glass-render-67)), and the look at the `car` box
+with the estate beside a bay ([open points](#open-points-of-the-contract)).
 
 ### Open points of the contract
 
@@ -674,15 +753,23 @@ second sidecar kind:
 
 Bundled pack (`TOOLS-42`):
 
-- The fleet ships in a bundled, default-enabled pack, `godot/bootstrap/mods/vehicles/`, like
+- The own models ship in a bundled, default-enabled pack, `godot/bootstrap/mods/vehicles/`, like
   `parking`, so a fresh install with no user pack has traffic. Other packs may add vehicles; the
   catalogue merges them by class and weight.
+- **The pilot pair alone replaces the placeholder cars** (the owner, 2026-11-21). Every car is
+  drawn as the compact estate, its variety coming from the per-car paint of the palette; every
+  freight vehicle, van or truck, is drawn as the rigid box truck in its `plain` and `haulier`
+  variants. There is no wait for more models: the seven fleet models are ordered only after the
+  pilot pair has been seen in the engine, and join the pack when they are built.
+- Game-side work on `TOOLS-41`, `TOOLS-42` and `RENDER-65` starts when the car-route work
+  (`PARK-24`) has landed.
 - With no vehicle model at all, the procedural box car of `vehicle_resources.gd` stays as the
   last fallback, sized to the car class box.
-- Removed with it: `godot/assets/models/vehicles/`, the lamp table of
-  `godot/scripts/renderers/vehicle_lamps.gd`, the vehicle type names that mean models (the
-  freight marker stays), and the placeholder cars' line in `CREDITS.md`; the own models' credit
-  is added.
+- Removed with the pilot pair: `godot/assets/models/vehicles/` (the third-party car models leave
+  the shipped game), the lamp table of `godot/scripts/renderers/vehicle_lamps.gd`, the vehicle
+  type names that mean models (the freight marker stays), and the car models from the
+  placeholder cars' line in `CREDITS.md`; that line keeps the same author's building models,
+  which only tests use and release packages leave out. The own models' credit is added.
 - Tests and benchmarks that load car meshes use the bundled pack's models.
 
 ## Planned: renderer (`RENDER-65`)
@@ -701,7 +788,9 @@ material and registers the meshes. This closes `RENDER-59`.
 vehicle's saved identity inside its body class. Moving and parked rendering call the same
 function, so a car keeps its look across the handoff. No save change; the saved model and colour
 bytes are no longer read. Enabling another vehicle pack reshuffles which car looks like what and
-changes nothing in the simulation.
+changes nothing in the simulation. With the pilot pair alone the car class has one model, so
+every car is the estate in its own paint, and every freight vehicle is the truck, its variant
+picked by the same hash (the owner, 2026-11-21).
 
 **Per-car data: 16 floats, 64 bytes** (today 12 floats). A transform and one custom-data
 vector, the row shape walkers already use:
@@ -761,8 +850,9 @@ Not tested: other GPUs and drivers, Windows, macOS, and the web export.
   model. Body vertices take one branch and no maths. The lamp gain of the vertex's surface id is
   computed from the lamp bits, the global night value and, for indicators, a blink of 90 flashes
   a minute, and passed flat to the fragment stage.
-- Fragment stage: albedo × paint (the palette colour where the paint weight is 1), ORM, optional
-  normal, and emission × lamp gain. Glass ids get a gain of zero, so glass draws as painted.
+- Fragment stage: albedo × paint (the palette colour where the paint weight is 1; white for a
+  `"paint": false` variant), ORM, optional normal, and emission × lamp gain. Glass ids get a gain
+  of zero, so glass draws as painted.
 - The blink reads a global shader clock that stops when the game is paused, and a per-car
   offset. It touches no simulation state and needs no upload: a car waiting to turn keeps
   blinking while its row stays untouched.
