@@ -3480,15 +3480,17 @@ pose the exact reverse in every yard phase (`a_backed_into_dock_moves_its_truck_
 a dispatch spawned tail in leaving forward; saves while standing and while leaving, and a format
 124 save; the inspector line; a stand changed under a standing truck (its row retired with its
 pose); the Godot `asset_passage_test` for the panel, the preview and the exit refusal. The full
-`./run.sh --test` gate (3,074 Rust tests, both Godot chains) and clippy `--all-targets` (no warning
-in a touched file). The `SIM-02` envelope and determinism records (`RAYON_NUM_THREADS=6`, release
-test binaries of this branch and of `dev` `1f9e5240e`): every `SIM02_DAY` record (4 workloads × 14
+`./run.sh --test` gate (3,076 Rust tests, both Godot chains) and clippy `--all-targets` (no warning
+in a touched file) on the branch rebased onto `dev` `e4f0f225f`. The `SIM-02` envelope and
+determinism records (`RAYON_NUM_THREADS=6`, release test binaries of the rebased branch and of
+`dev` `e4f0f225f`): every `SIM02_DAY` record (4 workloads × 14
 days) and the `SIM02_DETERMINISM` record byte-equal, `envelope.json` equal apart from wall clock;
 the `PERF-06` work counts byte-equal (one untimed run a side). No fixture asset has a freight
 Driveway, so no existing city has a dock and none changes.
 
-**Timing level.** F: the pose rule is read per frame by the snapshot (an unlisted per-frame path),
-and the lot proof's edit path changes; no timing was run in this round.
+**Timing level.** F by the path rule: the pose rule is read per frame by the snapshot
+(`nodes/sim/core/snapshot`, `simulation/parking`, per-frame paths), and K22 is added because the
+lot proof's reconcile runs on every edit.
 
 #### Stage C: waiting (`PARK-22`)
 
