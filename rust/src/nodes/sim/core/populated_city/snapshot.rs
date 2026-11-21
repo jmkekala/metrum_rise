@@ -17,8 +17,10 @@ use std::time::{Duration, Instant};
 
 // Bump when the revision inputs or their hashing algorithm changes. The source and bootstrap
 // manifests are hashed below; simulation changes that alter a fixture must also touch one of the
-// included sources or bump this marker explicitly. The save format is checked independently.
-const FIXTURE_ALGORITHM_REVISION: &[u8] = b"perf-fixture-revision-v9";
+// included sources or bump this marker explicitly. The save format is a revision input too
+// (`TOOLS-35`): builds on different formats name their files apart, and the metadata check still
+// refuses a file whose saved format is not this build's.
+const FIXTURE_ALGORITHM_REVISION: &[u8] = b"perf-fixture-revision-v10";
 // Both tiers exercise rebuilding in the following day; day 7 had no execution census.
 const SNAPSHOT_DAY: u32 = 12;
 const SNAPSHOT_MINUTE: u16 = 0;
@@ -346,7 +348,7 @@ fn read_departures(path: &Path, residents: u32, fixture: Fixture) -> (u32, (i64,
 
 /// The revision the baseline and fiscal fixtures are keyed and named by (prepare reports print it).
 pub(super) fn fixture_revision() -> String {
-    fixture_revision_at(&Path::new(env!("CARGO_MANIFEST_DIR")).join(".."))
+    fixture_revision_at(&Path::new(env!("CARGO_MANIFEST_DIR")).join(".."), SAVE_VERSION)
 }
 
 // The economy fixtures' revision and the running binary's SHA-256, hashed once per process
@@ -385,9 +387,10 @@ fn commit_city_revision() -> String {
         .clone()
 }
 
-fn fixture_revision_at(repository: &Path) -> String {
+fn fixture_revision_at(repository: &Path, save_version: i64) -> String {
     let mut hasher = Sha256::new();
     hasher.update(FIXTURE_ALGORITHM_REVISION);
+    hasher.update(save_version.to_le_bytes());
     for source in [
         include_bytes!(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -479,7 +482,7 @@ fn snapshot_revision_rejects_changed_economy_demand_and_assets() {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(path, "original").unwrap();
     }
-    let revision = fixture_revision_at(&root);
+    let revision = fixture_revision_at(&root, SAVE_VERSION);
     let saved = root.join("snapshot.sqlite");
     {
         let connection = Connection::open(&saved).unwrap();
@@ -515,9 +518,41 @@ fn snapshot_revision_rejects_changed_economy_demand_and_assets() {
         &revision,
         Fixture::Baseline
     ));
+    // Another save format is another revision and so another file name (`TOOLS-35`): a control
+    // and a branch on different formats never share or overwrite one snapshot. A file of another
+    // format under this build's name is still refused by its saved version.
+    let other_format = fixture_revision_at(&root, SAVE_VERSION + 1);
+    assert_ne!(revision[..16], other_format[..16]);
+    assert!(!snapshot_metadata_matches(
+        &saved,
+        10_000,
+        &other_format,
+        Fixture::Baseline
+    ));
+    let set_version = |version: i64| {
+        Connection::open(&saved)
+            .unwrap()
+            .execute("UPDATE save_meta SET version = ?1", [version])
+            .unwrap();
+    };
+    set_version(SAVE_VERSION + 1);
+    assert!(!snapshot_metadata_matches(
+        &saved,
+        10_000,
+        &revision,
+        Fixture::Baseline
+    ));
+    set_version(SAVE_VERSION);
+    assert_eq!(revision, fixture_revision_at(&root, SAVE_VERSION));
+    assert!(snapshot_metadata_matches(
+        &saved,
+        10_000,
+        &revision,
+        Fixture::Baseline
+    ));
     for input in inputs {
         fs::write(root.join(input), "changed").unwrap();
-        let changed = fixture_revision_at(&root);
+        let changed = fixture_revision_at(&root, SAVE_VERSION);
         assert_ne!(revision, changed, "untracked fixture input: {input}");
         assert!(!snapshot_metadata_matches(
             &saved,
@@ -526,7 +561,7 @@ fn snapshot_revision_rejects_changed_economy_demand_and_assets() {
             Fixture::Baseline
         ));
         fs::write(root.join(input), "original").unwrap();
-        assert_eq!(revision, fixture_revision_at(&root));
+        assert_eq!(revision, fixture_revision_at(&root, SAVE_VERSION));
     }
     // Identical bytes under another asset path still describe a different registry input.
     fs::rename(
@@ -534,7 +569,7 @@ fn snapshot_revision_rejects_changed_economy_demand_and_assets() {
         root.join("godot/bootstrap/mods/test/other.json"),
     )
     .unwrap();
-    assert_ne!(revision, fixture_revision_at(&root));
+    assert_ne!(revision, fixture_revision_at(&root, SAVE_VERSION));
     fs::remove_dir_all(root).unwrap();
 }
 

@@ -429,11 +429,12 @@ def level_perf07_rows(level, merge):
     return rows
 
 
-def prepare_needs(rows, side):
-    """Snapshot tiers each fixture of one side needs before the locks."""
+def prepare_needs(rows, side, cache_only=False):
+    """Snapshot tiers each fixture of one side needs before the locks. A plan skips cache-only
+    rows; a rerun, which times them, asks for them with `cache_only`."""
     needs = {"baseline": set(), "fiscal": set(), "commit": set()}
     for row in rows:
-        if row["side"] != side or row.get("reuse") == "only":
+        if row["side"] != side or (row.get("reuse") == "only" and not cache_only):
             continue
         if row["kind"] == "perf07":
             needs["baseline"].add(row["tier"])
@@ -443,6 +444,26 @@ def prepare_needs(rows, side):
         elif row["kind"] == "k22":
             needs["commit"].update(int(tier) for tier in row["tiers"].split(",") if int(tier) > 0)
     return {key: sorted(value) for key, value in needs.items()}
+
+
+def unprepared_needs(session, labels):
+    """What a rerun's rows need that the session has not prepared: a cache-only control row's
+    snapshots (at L its K22 commit city, the contract's 10k and fiscal cities), which the plan
+    skipped (`TOOLS-35`). A fiscal city starts from its baseline, so that is verified with it."""
+    rows = [row for row in session["rows"] if row["label"] in labels]
+    needs = {}
+    for side in SIDES:
+        files = session.get("prepare", {}).get(side, {}).get("files", {})
+        wanted = prepare_needs(rows, side, cache_only=True)
+        missing = {fixture: [tier for tier in tiers if f"{fixture}-{tier}" not in files]
+                   for fixture, tiers in wanted.items()}
+        missing["baseline"] = sorted(set(missing["baseline"]) | set(missing["fiscal"]))
+        needs[side] = missing
+    return needs
+
+
+def rerun_command(session, labels):
+    return f"./run.sh --timing --artifacts {session['artifacts']} --rerun {','.join(labels)}"
 
 
 # Measured row walls on the reference machine (P1, 2026-11-09); for the quiet-window check and
@@ -548,7 +569,7 @@ def prepare_chains(session, side, out):
     (fixture, tier, record)."""
     binary = session["binaries"][side]
     env = dict(base_env(session), METRUM_PERF_CACHE=session["caches"][side])
-    needs = session["needs"][side]
+    needs = (session.get("rerun_needs") or session["needs"])[side]
 
     def economy(test, tag, fixture, tier, log):
         def step():
@@ -610,13 +631,20 @@ def snapshot_files(session, side, prepared):
 
 def phase_prepare(session, path):
     """Before the locks' timed phase: prepare every side, then verify that a second pass
-    generates nothing (two old builds with different keys would overwrite one unkeyed file)."""
-    out = Path(session["artifacts"]) / "prepare"
+    generates nothing (two binaries whose snapshots share a file name would overwrite each
+    other). A rerun prepares only what its rows miss and adds it to the session's files."""
+    rerun = bool(session.get("rerun_needs"))
+    out = Path(session["artifacts"]) / ("prepare-rerun" if rerun else "prepare")
     out.mkdir(exist_ok=True)
     started = time.monotonic()
     swept = {side: sweep_temporary(session["caches"][side]) for side in SIDES
              if Path(session["caches"][side]).exists()}
-    session["prepare"] = prepare_sides(session, out, parallel=True)
+    previous = session.get("prepare", {}) if rerun else {}
+    fresh = prepare_sides(session, out, parallel=True)
+    session["prepare"] = {side: {**previous.get(side, {}),
+                                 **{fixture: {**previous.get(side, {}).get(fixture, {}), **records}
+                                    for fixture, records in fresh[side].items()}}
+                          for side in SIDES}
     for side, names in swept.items():
         session["prepare"][side]["swept"] = names
     verify_dir = out / "verify"
@@ -629,9 +657,14 @@ def phase_prepare(session, path):
             for tier, record in again[fixture].items():
                 if record.get("generation_s") is not None:
                     problems.append(f"{side} {fixture} {tier} generated again in the verify pass: "
-                                    "two binaries share an unkeyed snapshot; give each its own cache")
-        session["prepare"][side]["files"] = snapshot_files(session, side, again)
-    session["prepare_s"] = time.monotonic() - started
+                                    "two binaries share one snapshot file name (unkeyed builds, or "
+                                    "builds older than TOOLS-35 on different save formats); give "
+                                    "one its own cache with --branch-cache")
+        session["prepare"][side]["files"] = {**previous.get(side, {}).get("files", {}),
+                                             **snapshot_files(session, side, again)}
+    # A rerun's prepare adds to the session's prepare time.
+    session["prepare_s"] = (session.get("prepare_s", 0.0) if rerun else 0.0) \
+        + time.monotonic() - started
     session["prepare_problems"] = problems
     save_session(session, path)
     for problem in problems:
@@ -883,8 +916,12 @@ def execute_row(session, row, out, cache, rerun=False):
             log_line(out, f"{label} reused from {entry['session']} {entry['recorded'][0]}")
             return
         if row["reuse"] == "only":
-            session["results"][label] = {"label": label, "side": row["side"], "skipped": reason}
-            log_line(out, f"{label} skipped: {reason}")
+            # The level's policy: a cache-only control row is never timed in the session; say
+            # so, and how to time it afterwards (the rerun prepares what it needs).
+            session["results"][label] = {"label": label, "side": row["side"], "skipped": reason,
+                                         "cache_only": True}
+            log_line(out, f"{label} SKIPPED, cache-only control row: {reason}; time it after the "
+                          f"session with: {rerun_command(session, [label])}")
             return
         log_line(out, f"{label} timed: {reason}")
     if row.get("second") and not rerun:
@@ -1085,6 +1122,12 @@ def summary_lines(session):
             status = row_status(result)
         lines.append(f"| {row['label']} | {result.get('start', '')} | "
                      f"{result.get('wall_s', 0):.0f} | {status} |")
+    skipped = [row["label"] for row in session["rows"]
+               if session["results"].get(row["label"], {}).get("cache_only")]
+    if skipped:
+        lines += ["", f"NOT MEASURED: cache-only control rows {', '.join(skipped)} had no usable "
+                      "cached row (see the table); their comparison is missing. Time them with:",
+                  "  " + rerun_command(session, skipped)]
     lines += bench_lines(session)
     for (tier, speed), sides in sorted(perf07_groups(session).items()):
         lines += [""] + comparison_lines(tier, speed, sides)
@@ -1309,8 +1352,13 @@ def main():
                         help="custom PERF-07 rows TIER:SPEEDS:ORDER, e.g. 30000:1+32:ctl,br,br,ctl")
     parser.add_argument("--control", type=Path, help="control release library test executable")
     parser.add_argument("--branch", type=Path, help="branch release library test executable")
-    parser.add_argument("--control-cache", type=Path, help="control snapshot cache directory")
-    parser.add_argument("--branch-cache", type=Path, help="branch snapshot cache directory")
+    parser.add_argument("--control-cache", type=Path,
+                        help="control snapshot cache directory; default: the shared one")
+    parser.add_argument("--branch-cache", type=Path,
+                        help="branch snapshot cache directory; default: the shared one. Binaries "
+                             "with different snapshot keys (save format included since TOOLS-35) "
+                             "share it without overwriting; a separate cache is needed only for "
+                             "unkeyed builds or two builds older than TOOLS-35 on different formats")
     parser.add_argument("--artifacts", type=Path, help="session directory (new, or existing for --rerun)")
     parser.add_argument("--bench", action="append", default=[],
                         help="the change's own benchmark: NAME[;KEY=VALUE...][;cpus=one]")
@@ -1349,10 +1397,21 @@ def main():
             if label in session["results"]:
                 session["results"][label + "#1"] = session["results"].pop(label)
         session["rerun_labels"] = labels
+        # A cache-only control row's snapshots were never prepared: prepare them first, before
+        # the timed phase's locks, as a session does.
+        session.pop("rerun_needs", None)
+        needs = unprepared_needs(session, labels)
+        if any(tiers for side in needs.values() for tiers in side.values()):
+            session["rerun_needs"] = needs
+            print(f"rerun prepares {needs}")
         save_session(session, session_path)
+        if session.get("rerun_needs") and run_phase_child("prepare", session_path, session["settings"]):
+            print("FAIL: rerun prepare phase; nothing timed", file=sys.stderr)
+            return 1
         status = run_phase_child("timed", session_path, session["settings"])
         session = json.loads(session_path.read_text())
         session.pop("rerun_labels", None)
+        session.pop("rerun_needs", None)
         return status or finish(session, session_path)
 
     if not (args.control and args.branch and args.artifacts):

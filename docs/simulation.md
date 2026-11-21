@@ -1578,7 +1578,7 @@ work: `simulation/economy/{demand,households,logistics,hiring,customers,fiscal}`
 `simulation/zoning`, `nodes/sim/core/{schedule,entity_phases,entity_days,demand_requests,household_requests}`,
 the edit paths `nodes/sim/{editing,undo,road_tool,road_pockets,roundabouts,zoning}`,
 `nodes/sim/core/{road_*,graded_*}`, `simulation/network/roadbed` and the guide kernel `simulation/network/guide` (these add the K22 rows), and
-`simulation/save` (compare `load_s`; a `SAVE_VERSION` bump re-keys every snapshot). Per-frame
+`simulation/save` (compare `load_s`; a `SAVE_VERSION` bump re-keys every snapshot, since `TOOLS-35`). Per-frame
 paths are F: `nodes/sim/core/{frame,thread,snapshot,parking,lot_adoption,turnstile,trips,budget}`,
 `nodes/sim/render`, `simulation/economy/agents`, `simulation/network`, `simulation/pathing`,
 `simulation/parking`, `simulation/core/{time,scheduler}`, `simulation/buildings`,
@@ -1591,10 +1591,26 @@ an R path that also runs per frame; R's component comparison is the net for it.
 second generation means two binaries overwrite one file, and the session stops. The timed phase
 never generates: a `PERF-07` row runs `perf07_frame_budget` alone, which only loads, after
 checking that its snapshot is the prepared file (same inode, size and key); a K22 or contract row
-that reports a generation fails. Since `PERF-19` every fixture's file name carries its revision
-(`populated_city_<residents>_<revision>.sqlite`), and the prepare reports print it, so binaries
-with different keys share one cache directory. Older builds use the unkeyed name and need their
-own cache when their keys differ.
+that reports a generation fails. Since `PERF-19` every fixture's file name carries the first 16
+hex digits of its key (`<fixture>_<residents>_<key>.sqlite`), and the prepare reports print the
+key, so binaries with different keys share one cache directory without overwriting each other,
+and binaries with one key share one file. The keys (`TOOLS-35`):
+
+| Cached file | Key | Checked |
+| --- | --- | --- |
+| Baseline `populated_city` and fiscal `fiscal_stress` | the fixture revision: the hash of its algorithm marker, the save format (`SAVE_VERSION`), the fixture's sources (`populated_city.rs`, its `snapshot.rs`, `scenario.rs`), the economy and demand profiles and the fixture packs' manifests | by the prepare and every load: the file's metadata must hold this revision, the tier, the fixture's clock and this build's save format, else the prepare regenerates it and a load refuses it |
+| K22 `commit_city` | the fixture revision and the binary's SHA-256: one build only | the same, without a fixed clock |
+| A cached timed row (control reuse, below) | its binary's SHA-256 and the hash of the baseline file's revision, tier, clock and save format, with the rest of the identity below | by the runner before reuse |
+
+A control and a branch on one save format with unchanged fixture sources and data share the
+economy cities, which keeps a session's prepare short; a branch that changes the format or a
+fixture source gets its own. Builds older than `TOOLS-35` left the save format out of the economy
+revision: two of them on different formats (122 and 123 in `PARK-19`, 123 and 124 in `PARK-21`)
+share one name, each regenerates the file in its own format, and the verify pass stops the
+session; only such a pair needs `--branch-cache` (a separate snapshot directory for the branch),
+as do builds older than `PERF-19`, which use the unkeyed name. `TOOLS-35` re-keyed every economy
+city once: files under the earlier keys are never matched again and may be deleted, as may the
+commit cities of binaries no longer timed.
 
 **Comparison.** For each tier and speed the runner compares the branch's mean against the
 control's on `mean_ms`, `p99_ms`, `p999_ms`, `max_unpreempted_ms`, the mean agent, snapshot, slot
@@ -1612,7 +1628,11 @@ directory per boot and deletes the others. A control's 1× day (and its K22 and 
 reused only when this session's first control 32× run is within 3% on the mean, 6% on p99 and 15%
 on p99.9 of the mean of the cached 32× rows, with preempted frames within 2× of theirs; otherwise
 the control's 1× day is timed and its cached rows are replaced (at L the K22 and contract control
-rows are cache-only and are skipped instead). Same-binary drift between two sessions of one boot
+rows are cache-only and are skipped instead, so that an unchanged `dev` binary's numbers are not
+measured again: the runner prints `SKIPPED, cache-only control row` with the reason and the
+`--rerun` command that times it, and the summary lists those rows as not measured with one command
+for all of them; the rerun first prepares the snapshots the plan skipped for them, before its
+timed phase, `TOOLS-35`). Same-binary drift between two sessions of one boot
 reached +5% on the mean, so a cached day without this check is not evidence. A tier's cached 1× and 32× rows
 always come from one session. Rows recorded in a local no-cache window are not cached.
 
@@ -1632,6 +1652,7 @@ lock commands wrapped around the prepare and timed phases, and the named CPU set
 ./run.sh --timing --level F ... --dry-run   # print the classification and the rows only
 ./run.sh --timing --level L ...             # a landing; add --merge for a merge
 ./run.sh --timing --artifacts "$ARTIFACTS" --rerun p07-3-br   # time one noisy row again
+./run.sh --timing --artifacts "$ARTIFACTS" --rerun k22-1-ctl,contract-1-ctl   # L's skipped control rows
 ```
 
 The session directory keeps today's layout: `p07-<n>-<side>/` with `perf07-<tier>-<speed>x.log`,

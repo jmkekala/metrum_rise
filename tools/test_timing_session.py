@@ -107,6 +107,43 @@ class PlanTests(unittest.TestCase):
         self.assertEqual(ts.prepare_needs(rows, "br"),
                          {"baseline": [10000, 30000], "fiscal": [10000, 30000], "commit": [30000]})
 
+    def test_rerun_prepares_what_a_cache_only_row_misses(self):
+        # TOOLS-35: at L the control's K22 and contract rows are cache-only, so the session's
+        # prepare skipped their cities; a rerun of them prepares those, and nothing else.
+        rows = ts.plan_rows("L")
+        files = {"ctl": {"baseline-30000": {}},
+                 "br": {f"{fixture}-{tier}": {} for fixture in ("baseline", "fiscal")
+                        for tier in (10000, 30000)} | {"commit-30000": {}}}
+        session = {"rows": rows, "prepare": {side: {"files": files[side]} for side in ts.SIDES}}
+        cache_only = [row["label"] for row in rows if row.get("reuse") == "only"]
+        self.assertEqual(cache_only, ["k22-1-ctl", "contract-1-ctl"])
+        needs = ts.unprepared_needs(session, cache_only)
+        self.assertEqual(needs["ctl"], {"baseline": [10000, 30000], "fiscal": [10000, 30000],
+                                        "commit": [30000]})
+        self.assertEqual(needs["br"], {"baseline": [], "fiscal": [], "commit": []})
+        timed = ts.unprepared_needs(session, ["p07-1-ctl", "k22-2-br"])
+        self.assertFalse(any(tiers for side in timed.values() for tiers in side.values()))
+
+    def test_a_rerun_prepare_keeps_the_sessions_files(self):
+        prepared = {"ctl": {"baseline": {"30000": {"key": "k"}}, "fiscal": {}, "commit": {},
+                            "files": {"baseline-30000": {"path": "b"}}},
+                    "br": {"baseline": {}, "fiscal": {}, "commit": {}, "files": {}}}
+        fresh = {"ctl": {"baseline": {}, "fiscal": {}, "commit": {"30000": {"key": "c"}}},
+                 "br": {"baseline": {}, "fiscal": {}, "commit": {}}}
+        with tempfile.TemporaryDirectory() as out:
+            session = {"artifacts": out, "caches": {"ctl": out, "br": out}, "prepare": prepared,
+                       "prepare_s": 5.0, "rerun_needs": {"ctl": {}, "br": {}}}
+            with patch.object(ts, "prepare_sides", return_value=fresh), \
+                    patch.object(ts, "snapshot_files",
+                                 side_effect=lambda session, side, again:
+                                 {"commit-30000": {"path": "c"}} if side == "ctl" else {}):
+                self.assertTrue(ts.phase_prepare(session, Path(out) / "session.json"))
+            self.assertTrue((Path(out) / "prepare-rerun").is_dir())
+        ctl = session["prepare"]["ctl"]
+        self.assertEqual(ctl["files"], {"baseline-30000": {"path": "b"}, "commit-30000": {"path": "c"}})
+        self.assertEqual((ctl["baseline"], ctl["commit"]), ({"30000": {"key": "k"}}, {"30000": {"key": "c"}}))
+        self.assertGreaterEqual(session["prepare_s"], 5.0)
+
 
     def test_prepare_chains_keep_fiscal_after_its_baseline(self):
         rows = ts.plan_rows("L")
@@ -166,6 +203,17 @@ class CacheTests(unittest.TestCase):
         self.assertEqual(result["exit"], 0)
         self.assertEqual(result["day"], "timed")
         self.assertNotIn("reused_from", result)
+
+    def test_a_skipped_cache_only_row_names_its_rerun(self):
+        session = {"artifacts": "/s", "results": {}}
+        row = {"label": "k22-1-ctl", "side": "ctl", "kind": "k22", "tiers": "30000", "reuse": "only"}
+        with tempfile.TemporaryDirectory() as out, \
+                patch.object(ts, "decide_reuse", return_value=(None, "no cached row of this key and boot")):
+            ts.execute_row(session, row, Path(out), cache=None)
+            logged = (Path(out) / "summary.txt").read_text()
+        self.assertTrue(session["results"]["k22-1-ctl"]["cache_only"])
+        self.assertIn("SKIPPED, cache-only control row", logged)
+        self.assertIn("./run.sh --timing --artifacts /s --rerun k22-1-ctl", logged)
 
     def test_windows(self):
         at = datetime.datetime(2026, 11, 9, 17, 50)
@@ -258,6 +306,12 @@ class SnapshotTests(unittest.TestCase):
             self.assertEqual((meta["fixture_revision"], meta["residents"], meta["save_version"]),
                              ("abc", 30000, 120))
             self.assertEqual(len(meta["key"]), 16)
+            # A cached row's snapshot key covers the save format (TOOLS-35).
+            connection = sqlite3.connect(path)
+            connection.execute("UPDATE save_meta SET version = 121")
+            connection.commit()
+            connection.close()
+            self.assertNotEqual(ts.snapshot_meta(path)["key"], meta["key"])
             dead = Path(directory) / ".populated_city_30000.999999999.tmp.sqlite"
             live = Path(directory) / f".populated_city_30000.{os.getpid()}.tmp.sqlite"
             dead.write_text("")
