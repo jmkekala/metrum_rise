@@ -154,6 +154,8 @@ fn audit(core: &SimCore) -> serde_json::Value {
     // Metres of lane the cars on it need: each its body length and the standstill gap
     // (`TRAFFIC-38`).
     let mut need = vec![0.0_f32; lanes.len()];
+    // Each lane's rearmost and foremost body: (distance, half length).
+    let mut ends = vec![((f32::MAX, 0.0_f32), (f32::MIN, 0.0_f32)); lanes.len()];
     let mut at_start = vec![0_u32; lanes.len()];
     let (mut held, mut held_freight, mut held_at_attach) = (0_u32, 0_u32, 0_u32);
     let mut attach_lanes = Vec::new();
@@ -178,8 +180,18 @@ fn audit(core: &SimCore) -> serde_json::Value {
             continue;
         }
         count[lane] += 1;
-        need[lane] +=
-            2.0 * lane_half_length(agents.transit_mode[i], agents.vehicle_type[i]) + IDM_S_MIN;
+        let (d, half) = (
+            agents.lane_distance[i],
+            lane_half_length(agents.transit_mode[i], agents.vehicle_type[i]),
+        );
+        need[lane] += 2.0 * half + IDM_S_MIN;
+        let (rear, front) = &mut ends[lane];
+        if d < rear.0 {
+            *rear = (d, half);
+        }
+        if d > front.0 {
+            *front = (d, half);
+        }
         at_start[lane] += u32::from(agents.lane_distance[i] < STACK_RADIUS_M);
     }
     // A car's spacing: the fit reported for the worst lane and the room for one more car.
@@ -188,11 +200,14 @@ fn audit(core: &SimCore) -> serde_json::Value {
         (0_u32, 0_u32, 0.0_f32, 0);
     let (mut stacked_lanes, mut stacked_cars, mut max_stack) = (0_u32, 0_u32, 0_u32);
     for (lane, &cars) in count.iter().enumerate() {
-        // A lane of length L holds the cars whose spacings sum to at most L, one more at both
-        // ends; a lone car always fits.
+        // Centres lie on the lane, so its bodies' spacings sum to at most L plus the two end
+        // bodies' halves and one gap: a lane is full past L, overfilled past that bound (as
+        // `floor(L / spacing)` cars, and one more, for cars of one class).
         let length = lanes[lane].length;
+        let ((_, rear_half), (_, front_half)) = ends[lane];
         over_fit += u32::from(cars > 1 && need[lane] > length);
-        over_slots += u32::from(cars > 2 && need[lane] - spacing > length);
+        over_slots +=
+            u32::from(cars > 1 && need[lane] > length + rear_half + front_half + IDM_S_MIN + 1e-3);
         let ratio = need[lane] / length.max(spacing);
         if ratio > worst_ratio {
             (worst_ratio, worst_lane) = (ratio, lane);
@@ -216,7 +231,10 @@ fn audit(core: &SimCore) -> serde_json::Value {
     let mut flagged = Vec::new();
     for (lane, &cars) in count.iter().enumerate() {
         let fit = ((lanes[lane].length / spacing).floor() as u32).max(1);
-        if !(cars > 2 && need[lane] - spacing > lanes[lane].length) && at_start[lane] < 2 {
+        let ((_, rear_half), (_, front_half)) = ends[lane];
+        let overfilled =
+            cars > 1 && need[lane] > lanes[lane].length + rear_half + front_half + IDM_S_MIN + 1e-3;
+        if !overfilled && at_start[lane] < 2 {
             continue;
         }
         let mut kinds = std::collections::BTreeMap::<String, u32>::new();
