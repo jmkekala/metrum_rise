@@ -281,6 +281,8 @@ keeps 2 kg of its own output for upkeep. A profile without a matching asset cann
 - **Missing profile:** the building becomes *economy-broken*: it stays visible but inert, and
   recovers if the profile returns.
 - Nothing is ever silently remapped to another asset or profile.
+- One building is one business today. Buildings with several tenants (shops behind separate
+  doors, malls, flats over shops) are planned as `ECON-30` and not built.
 
 ### Runtime tuning
 
