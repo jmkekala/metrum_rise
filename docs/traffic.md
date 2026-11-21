@@ -2265,6 +2265,70 @@ proven: O(D × c) more per failing bay, c one shape test, so the lot bound keeps
 failing candidate formats its (unread) rejection, as the drive-through proof does. Edit and load
 work only; nothing per tick, nothing that reads the city.
 
+#### Long ways (`PARK-25`), as built
+
+Stage C2 of the car routes plan: storage, saving and movement for a car place's way of more than
+four points (up to `MAX_ROUTE_POINTS`, 24, the dock route's limit). Nothing produces one yet: the
+lot proof still yields four points, and hand-drawn routes (`PARK-26`) and lot lanes (`PARK-27`)
+will be the first producers. So every existing lot and fixture is unchanged, bit for bit.
+
+- **Storage.** The place row gains a `way: u32` column (4 bytes a row): `NO_WAY`, or the id of a
+  span in the parking system's `car_ways`. A span is 12 bytes (start, point count, length in
+  metres) over one shared pool of `[f32; 2]` points (8 bytes a point). The row's `path` keeps the
+  way's first, second, second to last and last points, as a dock's row does, so every reader of
+  `path` (the road connection, the access, the kerb blockers, the editor) is unchanged. Not
+  `DockWay`'s 392 inline bytes: a city with a few long ways pays 4 bytes a place and
+  12 + 8 × points bytes a way, nothing else. `ParkingTrip` stays 56 bytes; no progress is stored.
+- **Pool rule.** Freed runs go on a free list per point count and freed span ids on their own
+  list; a new way of N points takes the newest freed run of N, else appends. Adding and freeing are
+  O(points); nothing is moved or compacted, so an edit touches only its own lot's ways. The pool's
+  high-water mark is the sum over point counts of the most ways of that count alive at once. A
+  test-build audit checks that every live span is in bounds, no two live spans or freed runs share
+  a point, and every id is held once or freed once; it runs at every load in test builds.
+- **Edits.** `replace_building` takes the ways by anchor beside the bays (the lot reconcile passes
+  none until `PARK-26`). A kept place (unchanged pose) whose way changes is journalled for its
+  doors as a changed path is, and its old run is freed first, so a new way of the same count takes
+  the same run and id back; an unchanged way, or the same four points again, journals and writes
+  nothing. A removed row frees its way before the swap removal (the column moves with the row);
+  a row retired for the car still driving it keeps its way until the car lets it go, as its path.
+  A way changed under a pulling car leaves the car on no leg of the new way: its manoeuvre ends
+  at the place, as for a changed path (not the dock rule, which retires a held row).
+- **Movement.** `maneuver_path` builds `ManeuverPath::Way` on the stack, the lane point and the
+  way, reversed for a pull-out, as for a dock's drive. Phases stay `PullIn` and `PullOut`; the car
+  faces its next point and leaves along its way in, nose first. Cost per access step for a car:
+  one column read more than before; with a long way a copy of at most 25 points and the O(points)
+  leg scan a drive-through truck pays. No allocation, no new arithmetic beyond the existing walk.
+- **Time.** The way's length is summed once, when it is stored, leg by leg as the four-point
+  path's is; `maneuver_seconds` (inside the catchment ordering predicate and the quote stamp)
+  reads it, O(1). A place without a long way sums its four points exactly as before.
+- **Saves.** Format 126 writes a car row's way as the existing row field `way.route_in` (the dock
+  drive's field), only on a row that has one, so a city without a long way writes the parking
+  JSON of format 125. A load refuses a way of four points or fewer, more than 24, with a way out,
+  with a non-finite point, or whose ends are not its row's path; the pool takes the saved ways in
+  row order (ids and offsets are derived, never saved or compared). Format 125
+  (`PRE_CAR_WAYS_SAVE_VERSION`) loads as 126 does: it can hold no long way.
+- **Memory at scale** (estimates, not measured): 4 bytes a place, about 2.4 to 3.6 MB at 0.6 to
+  0.9 million places; with one place in ten on a long way of ten points, 5.5 to 8.3 MB more.
+
+Tests: `simulation/parking/tests/long_ways.rs` (a four-point way stored exactly as before, saved
+byte for byte and journalling nothing when republished; a nine-point way stored whole and timed
+by its length; edits, a swap removal and a retired row reusing and freeing the pool; a save
+round trip, and a row whose path is not its way's ends refused) and
+`nodes/sim/core/tests/parking/drive_lines/long_ways.rs` (the drive-lines lots with every place on
+an eight-point way with six bends: a resident leaves and parks within 5 cm of its ways and in no
+other place, its time the stored length, a save on the way in continuing tick for tick; a format
+125 save loading; a way removed under a pulling car ending its manoeuvre). Negative control (run
+once, reverted): with the long-way lookup in `maneuver_path` switched off, the car leaves 0.15 m
+off its way and the scenario fails.
+
+Verification (fresh, 2026-11-21, rebased on `dev` `69efdd0ba`): `./run.sh --test` PASS (rust 3,105
+passed, 244 skipped; godot-main, godot-vehicle); clippy `--all-targets` adds no warning. Against
+a release library test binary of `dev` `d4abd72e1` (the branch point, `PARK-24` included), the
+`SIM-02` envelope and determinism records (determinism and all 56 day records of the four
+workloads, six workers) are byte-equal and the `PERF-06` work counts identical; the recorded
+fixture digest test passes unchanged. Timing level F with K22 (the path rule's level; the save
+files compare `load_s`, since the format step re-keys the snapshots) is prepared, not run.
+
 ### Edits and towing (`PARK-01`, `PARK-05`)
 
 Road and building edits reconcile the affected sources at the existing publication and edit hooks.

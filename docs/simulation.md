@@ -508,6 +508,16 @@ dock or whose drive has a way out. A format 124 save (`PRE_STANDS_SAVE_VERSION`)
 (`a_backed_into_dock_round_trips_a_save_standing_and_leaving`, which also continues a save taken
 while a truck stands tail in and one taken while it drives out, tick for tick as the live city).
 
+Save format 126 (`PARK-25`, [long ways](traffic.md#long-ways-park-25-as-built), 2026-11-21) adds
+a car place's way of more than four points, written as the row's existing `way.route_in` field
+only on a row that has one, so a city without one writes the parking JSON of format 125 and only
+`save_meta.version` differs (nothing produces a long way before `PARK-26`). The load refuses such
+a way of four points or fewer, over 24 points, with a way out, with a non-finite point, or whose
+first, second, second to last and last points are not its row's path, and rebuilds the shared
+point pool in row order. A format 125 save (`PRE_CAR_WAYS_SAVE_VERSION`) loads as format 126 does
+(`a_format_125_save_loads`; `a_car_parks_and_leaves_along_long_ways` continues a save taken while
+a car pulls in along a long way, tick for tick as the live city).
+
 ## Scheduler
 
 Every system registers a declaration. The dispatcher runs declarations in one fixed order per
