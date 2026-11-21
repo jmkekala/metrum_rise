@@ -422,35 +422,26 @@ Closed 2026-11-21: the id attribute (`COLOR_0` as normalised unsigned bytes, see
 
 ### Sizes the simulation uses today
 
-**As built.** The lane model and the parking model disagree: lanes were fitted to the placeholder
-cars, parking to real bodies.
+**As built.** Since `TRAFFIC-38` (branch `traffic-38`, for review) lanes and parking use the same
+real body lengths; before it a vehicle of any kind, and a walker, took the 2.6 m of the
+placeholder cars (`CAR_LENGTH`) in a lane.
 
 | What | Value | Where |
 | --- | --- | --- |
-| Length a vehicle takes in a lane: every car, every truck and every walker | 2.6 m (`CAR_LENGTH`) | `rust/src/config.rs` |
+| Length a vehicle takes in a lane, by body class | car 4.5 m (`CAR_BODY_LENGTH_M`), truck 8.0 m (`TRUCK_BODY_LENGTH_M`); van 6.0 m and bus 12.0 m have no simulated vehicle yet | `rust/src/config.rs`, read through `lane_half_length` |
+| Length a walker takes in a foot lane | 0.5 m (`WALKER_BODY_LENGTH_M`) | `rust/src/config.rs` |
 | Standstill gap | 0.1 m (`IDM_S_MIN`) | `rust/src/config.rs` |
 | Time headway | 0.5 s (`IDM_T_HEAD`) | `rust/src/config.rs` |
-| Car body for lot proofs | 1.8 × 4.5 m, turn square 4.85 m, clear height 2.0 m, smallest bay 1.8 × 4.5 m | `CLASS_TABLE` in `rust/src/simulation/parking/validation.rs` |
-| Truck body for lot proofs | 2.6 × 8.0 m, turn square 8.45 m, bay 3.0 × 8.0 m, gate 4.0 m, clear height 4.0 m | the same table |
+| Car body for lot proofs | 1.8 × 4.5 m (the length is `CAR_BODY_LENGTH_M`), turn square 4.85 m, clear height 2.0 m, smallest bay 1.8 × 4.5 m | `CLASS_TABLE` in `rust/src/simulation/parking/validation.rs` |
+| Truck body for lot proofs | 2.6 × 8.0 m (the length is `TRUCK_BODY_LENGTH_M`), turn square 8.45 m, bay 3.0 × 8.0 m, gate 4.0 m, clear height 4.0 m | the same table |
 | Kerbside bay | 6.0 m long in a 2.5 m parking lane | `KERB_BAY_LENGTH_M` in `rust/src/simulation/parking/kerb.rs`, `PARKING_LANE_WIDTH_M` in `rust/src/simulation/network/graph/cross_section.rs` |
 | Bays of the bundled lots | 2.5 × 5.0 m | `godot/bootstrap/mods/parking/assets/` |
 | Driving lane | 3.5 m (`LANE_WIDTH`) | `rust/src/config.rs` |
 | Walker | 1.80 m tall | `godot/assets/models/characters/Quaternius/VAT/` |
 
-`CAR_LENGTH` is read by: the gap to the vehicle ahead, the attach-slot test, the roundabout
-entry gap and the follow gap (`rust/src/simulation/economy/agents/tick/traffic/occupancy.rs`),
-overlap correction (`tick/lane_buckets/occupancy.rs`), the lane-change gap
-(`tick/traffic/lane_change.rs`), evacuation spacing (`agents/building_refs.rs`) and the lane-entry
-audits (`rust/src/nodes/sim/core/populated_city/frame_budget/lane_entry_audit.rs` and its
-`waits.rs`). Car following itself is specified in [`traffic.md`](traffic.md#car-following).
-
-Consequences today:
-
-- A queue packs one car per 2.7 m, while the bays those cars park in are 5 to 6 m long.
-- At 50 km/h the spacing is 2.6 + 0.1 + 6.95 = 9.65 m, about 5,180 vehicles an hour per lane; a
-  jammed lane holds 370 cars per km.
-- The freight "truck" is drawn as a 3.25 m van and takes 2.6 m in a lane, while its docks, gates
-  and turn squares are proven for a 2.6 × 8.0 m body.
+Which tests read the lengths, and how two bodies of different classes are spaced, is specified
+with car following in [`traffic.md`](traffic.md#car-following); the measured effect is in
+[lane length by body class](#lane-length-by-body-class-traffic-38) below.
 
 ### The placeholder cars, measured
 
@@ -468,32 +459,81 @@ Wheels are 0.60 m across on every model. Length is about 0.57 of real, width abo
 about 0.9. A 1.8 m walker is 0.5 m taller than a sedan. Each model is 2,032 to 2,476 triangles,
 about 1,330 of them wheels.
 
-### Planned: lane length by body class (`TRAFFIC-38`)
+### Lane length by body class (`TRAFFIC-38`)
 
-**Planned; lands with the real-size models.**
+**Built 2026-11-21 on branch `traffic-38`, for the owner's review; not landed.** The rules, the
+position convention and the hot-path cost are in [car following](traffic.md#car-following).
 
-- Length by body class from the one class table the lot proofs use: car 4.5 m, van 6.0 m, truck
-  8.0 m. A lane gap becomes the distance between centres minus half of each length.
-- Walkers get a spacing of their own; today they borrow the car's.
-- Every test listed above reads the class length. The lookups stay O(log cars in a lane) with
-  no allocation.
-- Standstill gap, headway and acceleration are not retuned in this work.
+- A lane distance is the body's centre. Two bodies are clear when their centres differ by both
+  half lengths plus `IDM_S_MIN`, plus the headway where a test adds it.
+- Class from saved columns, no new state and no save change: a walker 0.5 m, a freight carrier
+  (`vehicle_type` 4, the vehicle drawn as the truck) the `truck` class 8.0 m, every other vehicle
+  the `car` class 4.5 m. The simulation has no van: door and dock deliveries are both made by the
+  freight carrier, so both are `truck`. Van 6.0 m and bus 12.0 m wait for a simulated vehicle.
+- The lot proof table reads the same two lengths; the proofs are unchanged.
+- Walkers queue single file 0.6 m apart (0.5 m, a standing person's body depth, plus the
+  standstill gap), where they kept the cars' 2.7 m.
+- Standstill gap, headway and acceleration are not retuned.
+- The populated-city fixture revision is `perf-fixture-revision-v11`: every cached city is built
+  again by the engine under test.
 
-Expected from the model's own formula (not measured):
+**Measured against the model's own formula.** Control `dev` `daab78d4c`, branch `ead1c18a3`'s
+simulation (release test binaries, `measure_capacity` from
+`tick/ring_capacity_tests.rs`, saturating sources, cars per minute per entry lane):
 
-| | Today (2.6 m) | Cars at 4.5 m | Trucks at 8.0 m |
-| --- | --- | --- | --- |
-| Jam spacing | 2.7 m | 4.6 m (41 % fewer cars per km) | 8.1 m |
-| Spacing at 50 km/h | 9.65 m | 11.55 m (16 % less flow per lane) | 15.05 m |
-| Roundabout entry gap | 5.48 m | 7.38 m | |
+| | Formula | Measured |
+| --- | --- | --- |
+| Jam spacing, cars | 2.7 to 4.6 m: 41 % fewer cars per jammed km | enforced exactly by the slot and overlap tests (`traffic38_*` tests; the ring lock fills a 380 m lane with 82 cars, where it held 141) |
+| Lane flow at 50 km/h | -16.5 % at the cruise spacing; the model's peak lane flow 4,230 to 3,441 an hour (-18.7 %) | straight road, 1+1 and 2+2 lanes: 55.1-56.3 to 44.1-47.4 a minute per lane (-15.8 % to -20.0 %) |
+| Lane flow at 20 km/h | | -20.9 % to -24.1 % |
+| Junction movements, 1+1 and 2+2 | | through, left, right: -16.6 % to -24.7 %; mixed: -15.7 % to -19.9 % |
+| One-lane roundabout, 36 m | | -8.9 % to -28.2 % by movement |
+| Trucks | 8.1 m jam spacing; peak lane flow 2,608 an hour (-38 % against the old 2.6 m) | not measured alone |
 
-- Simulation outcomes change: queues are longer and spill back sooner, and pull-outs from
-  driveways and kerb bays wait for larger gaps.
-- The fixture cities hold cars 2.7 m apart and are regenerated; the envelope baseline and the
-  economy contract get new reference rows.
-- The save format stays. A loaded jam is denser than the new minimum, so a test shows that a
-  loaded dense city settles without a car leaving its lane.
-- Parking needs no change: bays, proofs and kerb bays already fit the class boxes.
+**The fixture cities** (one game day of each side's own prepared city at 32x, 8 workers, the
+lane-entry audit `traffic07_lane_entry_audit` with its `TRAFFIC38_TRIPS` line; trip times are in
+simulation seconds, a game minute each at 1x):
+
+| 30k / 10k | Control | Branch |
+| --- | --- | --- |
+| Freight deliveries in the day | 4,458 / 1,461 | 3,205 / 1,063 (-28 % / -27 %) |
+| Car trip, mean (p95) | 285 (677) / 208 (421) | 336 (870) / 240 (504): +18 % / +16 % |
+| Commute by car, mean | 158 / 127 | 181 / 150: +14 % / +18 % |
+| Freight trip, mean | 281 / 239 | 364 / 337: +29 % / +41 % |
+| Car trips finished | 29,095 / 11,490 | 25,882 / 9,748 (-11 % / -15 %) |
+| Lanes full at day end (spacings past the length) | 18 / 0 | 136 / 15 |
+| Lanes overfilled, bodies stacked | 0 / 0 | 0 / 0 |
+| Freight held at the border nodes at day end | 687 / 126 | 452 / 17 |
+| Gridlock cycles, detours, saturation reports, trip failures | 0 | 0 |
+| Departures that drove / walked because parking near the destination was full | 23,284 / 2,230 (30k) | 20,451 / 2,908 |
+
+**Behaviour envelope** (`sim02_gate.py envelope`, fresh cities, 14 days; control the `dev`
+binary's records): **16 notes outside the bands, no failure, no invariant broken.** The baseline
+cities lose freight first and their economy follows:
+
+| Baseline, 14-day mean | 10k control | 10k branch | 30k control | 30k branch |
+| --- | --- | --- | --- | --- |
+| Deliveries / 1k buildings / day | 172.3 | 129.1 (-25 %) | 175.4 | 142.6 (-19 %) |
+| Households out of stock | 13.3 % | 19.6 % | 9.8 % | 16.1 % |
+| Employment (final day) | 68.1 % (67.8 %) | 58.5 % (45.7 %) | 67.3 % (65.2 %) | 61.2 % (50.9 %) |
+| Net income / resident / day | 11.20 | 5.19 (-54 %) | 11.00 | 7.11 (-35 %) |
+| Bankruptcies / 1k buildings / day | 0.02 | 1.36 | 0.15 | 0.99 |
+
+The fiscal-stress cities deliver more (+33 % to +51 %) and keep their other numbers within a few
+per cent. Determinism is unchanged: the gate's repeat, 1- and 3-worker and save-reload checks are
+identical, twice, and the 30k audit day ends in the same state at 1 and 8 workers.
+
+**Not landed: the envelope is the owner's decision.** No band was widened and no constant tuned.
+An attribution run with freight carriers at the car's 4.5 m in lanes (the plan's fallback, lot
+proofs unchanged; not committed) still leaves the bands (11 notes) but halves the loss: baseline
+deliveries -11 % (10k) and -8 % (30k), net income -20 % and -13 %, final-day employment 57.9 %
+and 59.8 %. So about half comes from the slower car traffic and half from the 8 m trucks. The
+test cities' freight was already the limit: every border is one single-lane trunk per 10,000
+residents and holds a queue of trucks in both builds (known limit in
+[`traffic.md`](traffic.md#known-limits)). Options: re-record the envelope on these numbers; widen
+the fixture's border trunks or add border nodes (a fixture change, regenerated cities); land
+with trucks at 4.5 m in lanes first; or retune the standstill gap and headway, which this work
+leaves alone.
 
 ### Planned: waiting position at junctions (`TRAFFIC-39`)
 
