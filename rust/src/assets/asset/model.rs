@@ -184,6 +184,28 @@ pub struct Anchor {
     /// with an `exit`. Empty with an exit: straight from the stop to the exit's approach.
     #[serde(default)]
     pub route_out: Vec<[f32; 2]>,
+    /// How a truck stands in a loading bay (`PARK-23`). Absent: `nose_in`.
+    #[serde(default)]
+    pub stand: Option<BayStand>,
+}
+
+impl Anchor {
+    /// Whether a truck backs into this loading bay, tail to the bay's far end (`PARK-23`).
+    pub fn backs_in(&self) -> bool {
+        self.stand == Some(BayStand::TailIn)
+    }
+}
+
+/// How a truck stands in a loading bay (`PARK-23`). Either way it travels the same proven way in
+/// and back out along it; only which end leads changes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BayStand {
+    /// Drives in forward, stands nose to the bay's far end and backs out: the default.
+    NoseIn,
+    /// Backs in from the gate, stands tail to the bay's far end (a loading door) and leaves
+    /// forward by the way it came. A bay a truck backs into names no exit.
+    TailIn,
 }
 
 /// Recognised anchor roles.

@@ -64,7 +64,10 @@ pub struct AnchorParams {
     pub route_in: Vec<[f32; 2]>,
     /// A loading bay's waypoints `[x, z]` between the stop and its exit gate.
     #[serde(default)]
-    pub route_out: Vec<[f32; 2]>,
+    pub route_out: Vec<[f32; 2]>,    /// How a truck stands in a loading bay, `"nose_in"` or `"tail_in"` (`PARK-23`); the
+    /// manifest's validation refuses any other value.
+    #[serde(default)]
+    pub stand: Option<String>,
 }
 
 /// Visual yard surface entry sent from the building importer form.
@@ -469,6 +472,11 @@ fn build_asset_toml(p: &ExportParams) -> Result<String, String> {
             if !route.is_empty() {
                 out.push_str(&format!("{key} = {}\n", toml_polygon(route)));
             }
+        }
+        if let Some(stand) = &anchor.stand
+            && !stand.trim().is_empty()
+        {
+            out.push_str(&format!("stand = {}\n", toml_string(stand.trim())));
         }
     }
 
@@ -972,6 +980,10 @@ pub fn get_asset_manifest_json_internal(
                     entry[key] = serde_json::json!(route);
                 }
             }
+            // A bay a truck backs into says so (`PARK-23`); the default stand is left out.
+            if a.backs_in() {
+                entry["stand"] = serde_json::json!("tail_in");
+            }
             entry
         }).collect::<Vec<_>>(),
         "site_surfaces": m.site_surfaces.iter().map(|s| serde_json::json!({
@@ -1280,6 +1292,49 @@ mod tests {
         assert_eq!(validated_tomls(&again).unwrap().0, toml);
         data["anchors"][2].as_object_mut().unwrap().remove("exit");
         assert!(validate_asset_params_internal(&data.to_string()).contains("route_out without an exit"));
+    }
+
+    // `PARK-23`: a loading bay a truck backs into goes to the TOML as `stand = "tail_in"`, comes
+    // back in the editor's load JSON and exports the same again; an unknown stand, a stand on
+    // another anchor and a backed-into bay with an exit are validation issues.
+    #[test]
+    fn round_trip_keeps_a_loading_bays_stand() {
+        let mut data: serde_json::Value =
+            serde_json::from_str(&minimal_building_json("building.industrial.door")).unwrap();
+        data["anchors"].as_array_mut().unwrap().push(serde_json::json!({
+            "anchor_type": "loading_bay", "name": "door", "position": [-5.0, 0.0, 4.0],
+            "forward": [0.0, 0.0, -1.0], "width_m": 3.5, "length_m": 8.0,
+            "vehicle_class": "freight", "stand": "tail_in"}));
+        let params: ExportParams = serde_json::from_value(data.clone()).unwrap();
+        let (toml, _) = validated_tomls(&params).unwrap();
+        assert!(toml.contains("vehicle_class = \"freight\"\nstand = \"tail_in\"\n"), "{toml}");
+        let manifest = AssetManifest::from_str(&toml).unwrap();
+        assert!(manifest.anchors[1].backs_in());
+        assert!(!manifest.anchors[0].backs_in());
+        let mut registry = crate::assets::registry::AssetRegistry::new();
+        registry.register("test-pack", manifest, String::new());
+        let loaded: serde_json::Value = serde_json::from_str(&get_asset_manifest_json_internal(
+            &registry,
+            "test-pack:building.industrial.door",
+        ))
+        .unwrap();
+        assert_eq!(loaded["anchors"][1]["stand"], "tail_in");
+        assert!(loaded["anchors"][0].get("stand").is_none(), "only a bay backed into says so");
+        let mut again = data.clone();
+        again["anchors"] = loaded["anchors"].clone();
+        let again: ExportParams = serde_json::from_value(again).unwrap();
+        assert_eq!(validated_tomls(&again).unwrap().0, toml);
+        let issue = |edit: &dyn Fn(&mut serde_json::Value)| {
+            let mut data = data.clone();
+            edit(&mut data);
+            validate_asset_params_internal(&data.to_string())
+        };
+        assert!(issue(&|d| d["anchors"][1]["stand"] = "sideways".into()).contains("unknown variant `sideways`"));
+        assert!(issue(&|d| d["anchors"][0]["stand"] = "nose_in".into()).contains("only a loading_bay"));
+        let exit = issue(&|d| {
+            d["anchors"][1]["exit"] = "door".into();
+        });
+        assert!(exit.contains("leaves it forward the way it came in"), "{exit}");
     }
 
     #[test]

@@ -23,7 +23,7 @@ pub use building::{
 };
 pub use character::{ArchetypeFamily, CharacterData, SkinVariant};
 pub use model::{
-    Anchor, AnchorType, AssetClass, AssetManifest, LodEntry, MeshPart, PASSAGE_EAVES_MARGIN_M,
+    Anchor, AnchorType, AssetClass, AssetManifest, BayStand, LodEntry, MeshPart, PASSAGE_EAVES_MARGIN_M,
     Passage, PropData, SiteSurface, SiteSurfaceMaterial, SnapMode, TerrainBehavior,
 };
 pub use vehicle::{ColorVariant, VehicleClass, VehicleData, VehicleFamily};

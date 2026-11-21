@@ -641,6 +641,22 @@ vehicle_class = "freight"
     );
     let error = on_driveway.parse::<AssetManifest>().expect_err("a Driveway carries no route");
     assert!(error.to_string().contains("only a loading_bay"), "{error}");
+
+    // `PARK-23`: a stand, `nose_in` by default; a bay a truck backs into names no exit, and an
+    // unknown stand or one on another anchor is refused.
+    assert!(!parse("").unwrap().anchors.last().unwrap().backs_in());
+    let nose = parse("stand = \"nose_in\"").expect("nose in parses");
+    assert_eq!(nose.anchors.last().unwrap().stand, Some(super::BayStand::NoseIn));
+    let tail = parse("stand = \"tail_in\"\nroute_in = [[-3.0, 8.0]]").expect("tail in parses");
+    assert!(tail.anchors.last().unwrap().backs_in());
+    refused("stand = \"tail_out\"", "unknown variant `tail_out`");
+    refused("stand = \"tail_in\"\nexit = \"truck_out\"", "the bay names no exit");
+    let on_driveway = format!("{BUILDING_TOML}{gates}").replace(
+        "vehicle_class = \"freight\"\n",
+        "vehicle_class = \"freight\"\nstand = \"tail_in\"\n",
+    );
+    let error = on_driveway.parse::<AssetManifest>().expect_err("a Driveway has no stand");
+    assert!(error.to_string().contains("has a stand, which only a loading_bay"), "{error}");
 }
 
 // ── Prop ────────────────────────────────────────────────────────────────

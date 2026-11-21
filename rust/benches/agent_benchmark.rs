@@ -141,6 +141,7 @@ fn register_test_asset(
             exit: None,
             route_in: Vec::new(),
             route_out: Vec::new(),
+            stand: None,
             width_m: None,
             length_m: None,
         }],

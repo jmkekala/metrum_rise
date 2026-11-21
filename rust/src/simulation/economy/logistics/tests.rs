@@ -526,6 +526,7 @@ fn register_test_asset_with_profile(
             exit: None,
             route_in: Vec::new(),
             route_out: Vec::new(),
+            stand: None,
         }],
         site_surfaces: vec![],
         building: Some(BuildingData {
@@ -587,6 +588,7 @@ fn register_test_city_service_asset(
             exit: None,
             route_in: Vec::new(),
             route_out: Vec::new(),
+            stand: None,
         }],
         site_surfaces: vec![],
         building: Some(BuildingData {
@@ -646,6 +648,7 @@ fn register_test_field_asset(
             exit: None,
             route_in: Vec::new(),
             route_out: Vec::new(),
+            stand: None,
         }],
         site_surfaces: vec![],
         building: Some(BuildingData {

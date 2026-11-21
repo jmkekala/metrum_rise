@@ -375,7 +375,9 @@ fn validate_anchor_common(asset_id: &str, anchor: &Anchor) -> Result<(), Manifes
 // A loading bay's drive-through fields (`PARK-21`): only a loading bay carries them, its
 // waypoints are finite and fit a route of `MAX_ROUTE_POINTS`, `route_out` needs an `exit`, and
 // the exit names exactly one Driveway of the asset. Whether that Driveway is a gate and the
-// route proves is the lot proof's to say. O(anchors + waypoints).
+// route proves is the lot proof's to say. A stand (`PARK-23`) is a loading bay's too, and a bay
+// a truck backs into names no exit: the truck leaves it forward by the way it backed in, so it
+// cannot also leave through the bay's far end. O(anchors + waypoints).
 fn validate_anchor_route(
     asset_id: &str,
     anchors: &[Anchor],
@@ -387,6 +389,15 @@ fn validate_anchor_route(
             anchor.name
         )))
     };
+    if anchor.stand.is_some() && anchor.anchor_type != AnchorType::LoadingBay {
+        return fail("has a stand, which only a loading_bay may carry".into());
+    }
+    if anchor.backs_in() && anchor.exit.is_some() {
+        return fail(
+            "has stand = \"tail_in\" and an exit: a truck that backs into its bay leaves it forward the way it came in, so the bay names no exit"
+                .into(),
+        );
+    }
     let authored = anchor.exit.is_some() || !anchor.route_in.is_empty() || !anchor.route_out.is_empty();
     if !authored {
         return Ok(());

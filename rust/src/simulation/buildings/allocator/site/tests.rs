@@ -568,6 +568,7 @@ fn required_support_footprint_keeps_driveway_clear_of_road_boundary() {
                 exit: None,
                 route_in: Vec::new(),
                 route_out: Vec::new(),
+                stand: None,
             },
             Anchor {
                 anchor_type: AnchorType::Driveway,
@@ -580,6 +581,7 @@ fn required_support_footprint_keeps_driveway_clear_of_road_boundary() {
                 exit: None,
                 route_in: Vec::new(),
                 route_out: Vec::new(),
+                stand: None,
             },
         ],
         site_surfaces: Vec::new(),

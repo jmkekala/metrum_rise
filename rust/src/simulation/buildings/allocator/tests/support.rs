@@ -201,6 +201,7 @@ pub(super) fn register_test_asset_with_family_level(
             exit: None,
             route_in: Vec::new(),
             route_out: Vec::new(),
+            stand: None,
         }],
         site_surfaces: vec![],
         building: Some(BuildingData {
@@ -268,6 +269,7 @@ pub(super) fn register_test_power_service_asset(
             exit: None,
             route_in: Vec::new(),
             route_out: Vec::new(),
+            stand: None,
         }],
         site_surfaces: vec![],
         building: Some(BuildingData {

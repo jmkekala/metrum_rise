@@ -445,9 +445,21 @@ fn edit_passages(part: &mut VarDictionary, args: &VarDictionary) -> Result<(), S
 // waypoint `point` (`[x, z]`) into `way` ("in" or "out") before `waypoint`, or at the end when
 // absent; "move" sets waypoint `waypoint` of `way` to `point`; "delete" removes it. Whether the
 // exit names a gate and the route proves is validation's to report, so an author may pass
-// through an invalid state. O(waypoints).
+// through an invalid state. O(waypoints). `op` "stand" sets how a truck stands in the bay
+// (`PARK-23`): `value` "tail_in" (backs in), or "nose_in" or empty for the default, which leaves
+// the key out; that a backed-into bay names no exit is validation's to report.
 fn edit_route(anchor: &mut VarDictionary, args: &VarDictionary) -> Result<(), String> {
     let op = text(args, "op");
+    if op == "stand" {
+        match text(args, "value").trim() {
+            "tail_in" => anchor.set("stand", "tail_in"),
+            "nose_in" | "" => {
+                anchor.remove("stand");
+            }
+            _ => return Err("Unsupported stand".into()),
+        }
+        return Ok(());
+    }
     if op == "exit" {
         let exit = text(args, "value").trim().to_owned();
         if exit.is_empty() {

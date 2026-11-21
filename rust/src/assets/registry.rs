@@ -453,6 +453,7 @@ mod tests {
                 exit: None,
                 route_in: Vec::new(),
                 route_out: Vec::new(),
+                stand: None,
             }],
             site_surfaces: vec![],
             building: Some(BuildingData {
