@@ -41,6 +41,14 @@ const DOCK_ROUTE_COLOR := Color(0.2, 0.85, 1.0)
 # A drive-through's way out, after the stop (`PARK-21`).
 const DOCK_WAY_OUT_COLOR := Color(0.35, 1.0, 0.45)
 const DOCK_ROUTE_WIDTH_M := 0.3
+# A car spot's route (`PARK-24`): the selected spot's, and every spot's when shown, fainter and
+# thinner. Automatic routes draw dashed.
+const CAR_ROUTE_COLOR := Color(0.55, 0.8, 1.0)
+const CAR_ROUTE_FAINT_COLOR := Color(0.55, 0.8, 1.0, 0.45)
+const CAR_ROUTE_WIDTH_M := 0.2
+const CAR_ROUTE_FAINT_WIDTH_M := 0.1
+const CAR_ROUTE_DASH_M := 0.6
+const CAR_ROUTE_GAP_M := 0.35
 # Heights above the selected loading bay of its drawn way in and of its waypoint markers, which
 # the editor's picker hit-tests at the same heights.
 const DOCK_ROUTE_Y_M := 0.16
@@ -130,6 +138,14 @@ var _dock_routes: Dictionary = {}
 var _dock_ways: Dictionary = {}
 # Rejected loading bay anchor index -> the leg of its authored way the reason names, two XZ points.
 var _parking_rejection_legs: Dictionary = {}
+# Parking anchor index -> its accepted spot (`PARK-24`): {"route" (the gate's road connection to
+# the spot's centre, asset-local XZ), "kind" (street, straight or auto), "envelopes" (the turn
+# squares its proof checked)}.
+var _car_spots: Dictionary = {}
+# Rejected parking anchor index -> the drive-line route it was last tried along, four XZ points.
+var _parking_rejection_routes: Dictionary = {}
+# Whether every accepted spot's route is drawn, faintly; the selected spot's always is.
+var _car_routes_visible := false
 # Every passage's ground rectangle and ends, as the lot check reports them.
 var _passages: Array = []
 # The truck drawn standing in the selected loading bay: {"anchor", "nose" (the unit direction
@@ -569,6 +585,8 @@ func set_parking_diagnostics(payload: Dictionary) -> void:
 	_dock_routes.clear()
 	_dock_ways.clear()
 	_parking_rejection_legs.clear()
+	_car_spots.clear()
+	_parking_rejection_routes.clear()
 	for issue: Dictionary in payload.get("rejected", []) + payload.get("dock_rejected", []):
 		if not bool(issue.get("blocks", true)):
 			_parking_notes[int(issue["anchor"])] = str(issue["reason"])
@@ -578,11 +596,25 @@ func set_parking_diagnostics(payload: Dictionary) -> void:
 			_parking_rejection_shapes[int(issue["anchor"])] = issue["shape"]
 		if issue.get("leg") is Array:
 			_parking_rejection_legs[int(issue["anchor"])] = issue["leg"]
+		if issue.get("route") is Array:
+			_parking_rejection_routes[int(issue["anchor"])] = issue["route"]
+	for spot: Dictionary in payload.get("spots", []):
+		_car_spots[int(spot["anchor"])] = spot
 	for dock: Dictionary in payload.get("docks", []):
 		_dock_routes[int(dock["anchor"])] = dock["route"]
 		if dock.has("route_in"):
 			_dock_ways[int(dock["anchor"])] = dock
 	_passages = payload.get("passages", [])
+
+## Parking anchor `index`'s accepted spot as last proven (`PARK-24`): {"route", "kind",
+## "envelopes"} in asset-local XZ, or {} when it is rejected.
+func car_spot(index: int) -> Dictionary:
+	return _car_spots.get(index, {})
+
+## Draws every accepted car spot's route faintly, or only the selected spot's (`PARK-24`).
+func set_car_routes_visible(visible: bool) -> void:
+	_car_routes_visible = visible
+	_build_site_anchor_overlay()
 
 ## Loading bay `index`'s drive-through as last proven, {"route_in", "route_out", "envelopes"} in
 ## asset-local XZ, or {} when it has none or is rejected.
@@ -1403,6 +1435,7 @@ func _build_site_anchor_overlay() -> void:
 			var a: Array = failed[corner]
 			var b: Array = failed[(corner + 1) % 4]
 			_draw_dashed_line(im, Vector3(a[0], y, a[1]), Vector3(b[0], y, b[1]), Color(1.0, 0.2, 0.15), ANCHOR_BORDER_WIDTH_M, ANCHOR_DASH_M, ANCHOR_GAP_M)
+	_draw_car_routes(im)
 	# The selected loading bay's proven route, from its gate's road connection to its centre, or
 	# its whole drive-through: the way in, the way out and the truck's envelope at each bend.
 	var route = _dock_routes.get(_selected_site_anchor_index)
@@ -1430,6 +1463,37 @@ func _build_site_anchor_overlay() -> void:
 	_site_anchor_overlay.mesh = im
 	_apply_site_label_visibility()
 	_site_labels_ready.call_deferred()
+
+# Car spots' routes (`PARK-24`), from the gate's road connection to the spot's centre, dashed as
+# every automatic route is: every spot's faintly when shown, the selected spot's bold with the
+# turn squares its proof checked, and a rejected selected spot's last tried route in red.
+func _draw_car_routes(im: ImmediateMesh) -> void:
+	var selected := _selected_site_anchor_index
+	if _car_routes_visible:
+		for index: int in _car_spots:
+			if index != selected and index < _site_anchors.size():
+				var y := _preview_anchor_position(_site_anchors[index]).y + DOCK_ROUTE_Y_M
+				_draw_dashed_polyline(im, _car_spots[index]["route"], y, CAR_ROUTE_FAINT_COLOR, CAR_ROUTE_FAINT_WIDTH_M)
+	if selected < 0 or selected >= _site_anchors.size():
+		return
+	var y := _preview_anchor_position(_site_anchors[selected]).y + DOCK_ROUTE_Y_M
+	var spot: Dictionary = _car_spots.get(selected, {})
+	if not spot.is_empty():
+		_draw_dashed_polyline(im, spot["route"], y, CAR_ROUTE_COLOR, CAR_ROUTE_WIDTH_M)
+		for envelope: Array in spot.get("envelopes", []):
+			for corner in 4:
+				var a: Array = envelope[corner]
+				var b: Array = envelope[(corner + 1) % 4]
+				_draw_dashed_line(im, Vector3(a[0], y, a[1]), Vector3(b[0], y, b[1]), CAR_ROUTE_COLOR, ANCHOR_BORDER_WIDTH_M, ANCHOR_DASH_M, ANCHOR_GAP_M)
+	var tried = _parking_rejection_routes.get(selected)
+	if tried is Array:
+		_draw_dashed_polyline(im, tried, y, Color(1.0, 0.2, 0.15), CAR_ROUTE_WIDTH_M)
+
+func _draw_dashed_polyline(im: ImmediateMesh, points: Array, y: float, color: Color, width_m: float) -> void:
+	for point in points.size() - 1:
+		var a: Array = points[point]
+		var b: Array = points[point + 1]
+		_draw_dashed_line(im, Vector3(a[0], y, a[1]), Vector3(b[0], y, b[1]), color, width_m, CAR_ROUTE_DASH_M, CAR_ROUTE_GAP_M)
 
 func _draw_polyline(im: ImmediateMesh, points: Array, y: float, color: Color) -> void:
 	for point in points.size() - 1:

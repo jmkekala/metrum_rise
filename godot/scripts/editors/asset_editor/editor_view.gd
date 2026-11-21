@@ -66,6 +66,8 @@ var _part_z_spin: SpinBox
 var _part_rotation_y_spin: SpinBox
 var _dim_label: Label          # live "→ W × D × H m" display
 var scale_reference_button: CheckButton
+## Draws every parking spot's car route in the preview (`PARK-24`); preview only.
+var car_routes_button: CheckButton
 var _font_size_header:  int = 14   # section title labels ("Asset Browser", "Building Importer")
 var _font_size_section: int = 12   # sub-section labels ("Pack", "Asset", "Building", etc.)
 var _font_size_label:   int = 11   # spinbox labels and small info text

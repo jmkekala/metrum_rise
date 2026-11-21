@@ -127,6 +127,11 @@ func _access(box: Control) -> void:
 	for kind in ["entrance", "driveway", "parking", "loading_bay"]:
 		v.button(actions, kind.capitalize().replace("_", " "), func(): e._menus.actions.create_from_controls(kind))
 	e._door_bays.build(v, box)
+	v.car_routes_button = CheckButton.new()
+	v.car_routes_button.text = "Car routes"
+	v.car_routes_button.tooltip_text = "Draw the way a car drives to every parking spot, as the game proves it. The selected spot's route is always drawn. Preview only; never exported."
+	v.car_routes_button.toggled.connect(func(on: bool): e._preview.set_car_routes_visible(on))
+	box.add_child(v.car_routes_button)
 	v._site_anchor_list = ItemList.new()
 	v._site_anchor_list.custom_minimum_size.y = 125
 	v._site_anchor_list.select_mode = ItemList.SELECT_MULTI
