@@ -133,21 +133,52 @@ pub(super) fn access_phase_direction(
 }
 
 /// The drawn ground position and facing of car `agent_idx` off every lane, from its simulated
-/// position (`world_x`, `world_z`). A car or truck pulling into or out of a lot place or a dock
-/// is drawn round each bend of its manoeuvre on an arc (`PARK-29`,
-/// [`turns`](crate::simulation::parking::turns)), facing along it; anywhere else it is drawn at
-/// its position facing [`access_phase_direction`], as before. The drawn position lies within
-/// [`MAX_DRAWN_OFFSET_M`](crate::simulation::parking::turns::MAX_DRAWN_OFFSET_M) of the
-/// simulated one. O(manoeuvre points) for the leg scan the facing always made, then O(1); no
-/// allocation.
+/// position (`world_x`, `world_z`): [`off_lane_car_drawn`] without the turn. For tests.
+#[cfg(test)]
 pub(crate) fn off_lane_car_pose(
     core: &SimCore,
     agent_idx: usize,
     world_x: f32,
     world_z: f32,
 ) -> (f32, f32, Option<Vector3>) {
+    let drawn = off_lane_car_drawn(core, agent_idx, world_x, world_z);
+    (drawn.x, drawn.z, drawn.facing)
+}
+
+/// How a car off every lane is drawn ([`off_lane_car_drawn`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct OffLaneDrawn {
+    pub(crate) x: f32,
+    pub(crate) z: f32,
+    /// Unit nose direction on the ground plane, if any.
+    pub(crate) facing: Option<Vector3>,
+    /// The curvature of its drawn travel, 1/m, positive to the driver's left of travel; 0 on a
+    /// straight part (`RENDER-66`: the steered wheels).
+    pub(crate) curvature: f32,
+}
+
+/// The drawn ground position, facing and turn of car `agent_idx` off every lane, from its
+/// simulated position (`world_x`, `world_z`). A car or truck pulling into or out of a lot place
+/// or a dock is drawn round each bend of its manoeuvre on an arc (`PARK-29`,
+/// [`turns`](crate::simulation::parking::turns)), facing along it; anywhere else it is drawn at
+/// its position facing [`access_phase_direction`], as before. The drawn position lies within
+/// [`MAX_DRAWN_OFFSET_M`](crate::simulation::parking::turns::MAX_DRAWN_OFFSET_M) of the
+/// simulated one. O(manoeuvre points) for the leg scan the facing always made, then O(1); no
+/// allocation.
+pub(crate) fn off_lane_car_drawn(
+    core: &SimCore,
+    agent_idx: usize,
+    world_x: f32,
+    world_z: f32,
+) -> OffLaneDrawn {
     use crate::simulation::parking::ParkingTripPhase::{PullIn, PullOut};
     let trip = &core.agents.parking_trip[agent_idx];
+    let at = |x, z, facing, curvature| OffLaneDrawn {
+        x,
+        z,
+        facing,
+        curvature,
+    };
     if let Some(egress) = access_egress(core, agent_idx)
         && matches!(trip.phase, PullOut | PullIn)
         && let Some((place, path)) = pulling_maneuver(core, agent_idx, egress)
@@ -157,19 +188,19 @@ pub(crate) fn off_lane_car_pose(
         let target = crate::simulation::economy::agents::tick::parking_path_target_segment(current, path);
         if let (Some(target), Some(radius)) =
             (target, core.parking.maneuver_turn_radius(place, trip.freight_gate))
-            && let Some((drawn, travel)) =
-                crate::simulation::parking::turns::drawn_turn(path, target, current, radius)
+            && let Some((drawn, travel, curvature)) =
+                crate::simulation::parking::turns::drawn_arc(path, target, current, radius)
         {
             let nose = facing(core, agent_idx, Vector3::new(travel.x, 0.0, travel.y));
-            return (drawn.x, drawn.y, nose);
+            return at(drawn.x, drawn.y, nose, curvature);
         }
         // On a straight part: facing the leg's end, as `access_phase_direction` does.
         let nose = target.and_then(|target| {
             facing(core, agent_idx, Vector3::new(path[target].x - world_x, 0.0, path[target].y - world_z))
         });
-        return (world_x, world_z, nose);
+        return at(world_x, world_z, nose, 0.0);
     }
-    (world_x, world_z, access_phase_direction(core, agent_idx, world_x, world_z))
+    at(world_x, world_z, access_phase_direction(core, agent_idx, world_x, world_z), 0.0)
 }
 
 fn model_basis(basis_z: Vector3) -> [Vector3; 3] {
@@ -380,6 +411,9 @@ pub struct RenderSnapshot {
     pub(crate) vehicle_ground_key: [u64; 3],
     /// The vehicle catalogue revision its car and parked buckets are keyed by (`RENDER-65`).
     pub(crate) vehicle_catalogue_revision: u64,
+    /// The wheel radius each car bucket's model rolls its wheels with, metres, by bucket key; 0
+    /// for a key without wheels (`RENDER-66`).
+    pub(crate) car_wheel_radius_m: Vec<f32>,
     /// Per `pedestrian_type` → flat 12-float `Transform3D` buffer.
     pub pedestrian_transforms: HashMap<u8, Vec<f32>>,
     /// Per car bucket (`look * 4 + tier`, `RENDER-65`) → flat 12-float `Transform3D` buffer.
@@ -502,6 +536,7 @@ impl Default for RenderSnapshot {
             vehicle_world_epoch: 0,
             vehicle_ground_key: [0; 3],
             vehicle_catalogue_revision: 0,
+            car_wheel_radius_m: Vec::new(),
             pedestrian_transforms: HashMap::new(),
             car_transforms: HashMap::new(),
             car_custom: HashMap::new(),
@@ -658,6 +693,8 @@ impl SimCore {
         self.publish_parked_chunks(&mut snapshot.parked);
         snapshot.vehicle_world_epoch = self.world_epoch;
         snapshot.vehicle_catalogue_revision = self.vehicle_catalogue.revision;
+        self.vehicle_catalogue
+            .fill_wheel_radii(&mut snapshot.car_wheel_radius_m);
         snapshot.vehicle_ground_key = [
             self.world_epoch,
             self.vehicle_ground_generation,

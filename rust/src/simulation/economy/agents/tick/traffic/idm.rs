@@ -11,14 +11,21 @@ pub(in crate::simulation::economy::agents::tick) fn idm_new_speed(
     gap: f32,
     dt: f32,
 ) -> f32 {
+    (v + idm_acceleration(v, v_max, gap) * dt).clamp(0.0, v_max)
+}
+
+/// The simplified IDM's acceleration, m/s², at speed `v` under limit `v_max` with `gap` metres
+/// to the car ahead (`f32::MAX` with none): the step [`idm_new_speed`] takes, before its clamp.
+/// The vehicle renderer reads its sign for the brake lamps (`RENDER-66`).
+#[inline(always)]
+pub(crate) fn idm_acceleration(v: f32, v_max: f32, gap: f32) -> f32 {
     let free = (v / v_max.max(0.1)).powi(4);
-    let acc = if gap < f32::MAX / 2.0 {
+    if gap < f32::MAX / 2.0 {
         let s_star = IDM_S_MIN + v * IDM_T_HEAD;
         IDM_A_MAX * (1.0 - free - (s_star / gap).powi(2))
     } else {
         IDM_A_MAX * (1.0 - free)
-    };
-    (v + acc * dt).clamp(0.0, v_max)
+    }
 }
 
 /// Limits a speed change by acceleration or comfortable braking.

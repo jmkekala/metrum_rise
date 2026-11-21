@@ -14,6 +14,14 @@
 //! stays a fresh solve's answer while the ground ([`GroundView::key`]) and the car's side of the
 //! full-detail radius stay. A bucket whose inputs are last frame's bit for bit and whose cars all
 //! rest is not touched at all, and its drawn buffer is not uploaded again.
+//!
+//! **Wheels (`RENDER-66`).** The drawn row's steer and roll are the smoothing's too: the steer
+//! eases toward the snapshot's target at the rotation's rate and settles on it exactly within
+//! [`STEER_SETTLE_RAD`]; the roll advances by the drawn origin's travel along the car's nose over
+//! its model's wheel radius, so it stops with the car (paused or queued) and runs backward when
+//! the car backs. It carries on across tier and bucket switches and a change of height owner; a
+//! car first drawn starts it at zero, as a parked car's row has it. A car is at rest only once
+//! its steer has settled.
 
 use glam::{Mat3, Quat, Vec2, Vec3};
 use godot::prelude::Vector2;
@@ -39,6 +47,9 @@ const MIN_DETERMINANT: f32 = 1e-6;
 /// car, a smaller split costs more in scheduling (and in waiting on a pool the simulation tick
 /// may be using) than it saves.
 const PARALLEL_MIN_CARS: usize = 2048;
+/// A drawn steer this close to its target takes the target exactly: under half the
+/// snapshot's quantum (`vehicle_signals::STEER_QUANTUM_RAD`), so the easing ends on it.
+const STEER_SETTLE_RAD: f32 = 0.002;
 /// Godot's `CMP_EPSILON`: headings closer than this blend linearly in `slerp`.
 const CMP_EPSILON: f32 = 1e-5;
 /// Units in the last place (of the larger magnitude, at least 1) within which a drawn pose has
@@ -48,10 +59,11 @@ const CMP_EPSILON: f32 = 1e-5;
 const REST_ULPS: f32 = 8.0;
 
 type CarMap = HashMap<i64, DrawnCar, foldhash::fast::FixedState>;
-// One car of a bucket being smoothed: its pose, solve mask and reuse mark, ID and flag.
+// One car of a bucket being smoothed: its pose, solve mask and reuse mark, ID and flag, drawn
+// steer and roll, and custom data.
 type CarItem<'a> = (
-    (&'a mut [f32], (&'a mut u8, &'a mut bool)),
-    (&'a i64, &'a u8),
+    ((&'a mut [f32], (&'a mut u8, &'a mut bool)), (&'a i64, &'a u8)),
+    (&'a mut [f32; 2], &'a [f32]),
 );
 
 #[derive(Clone, Copy)]
@@ -69,8 +81,11 @@ struct DrawnCar {
     // The snapshot pose it moved toward, bit for bit, and the pose drawn.
     target: [u32; STRIDE],
     drawn: [f32; STRIDE],
-    // Drawn at its target to f32 resolution (`REST_ULPS`): drawn again unchanged while the
-    // target stays.
+    // The drawn steer and roll, radians (`RENDER-66`), and the steer target they were drawn for.
+    shown: [f32; 2],
+    steer_target: u32,
+    // Drawn at its target to f32 resolution (`REST_ULPS`), its steer settled: drawn again
+    // unchanged while the target stays.
     rest: bool,
     // Off-lane: the solve that grounded `drawn` was the exact one, inside the full-detail radius.
     near: bool,
@@ -91,6 +106,9 @@ struct Bucket {
     flags: Vec<u8>,
     near: Vec<bool>,
     drawn: Vec<f32>,
+    // The drawn steer and roll a car as in `rows`, and this frame's while it is smoothed.
+    drawn_shown: Vec<[f32; 2]>,
+    shown: Vec<[f32; 2]>,
     // The drawn poses with their custom data, `ROW` floats each: what is uploaded.
     rows: Vec<f32>,
     // This frame's custom data differs from the last recorded.
@@ -163,6 +181,8 @@ pub(crate) struct CarVisualSmoother {
     changed: Vec<u8>,
     left: Vec<u8>,
     parts: CarFrameParts,
+    // Each bucket key's wheel radius, metres (`RENDER-66`); none or 0: the wheels do not roll.
+    wheel_radius_m: Vec<f32>,
 }
 
 impl CarVisualSmoother {
@@ -173,6 +193,13 @@ impl CarVisualSmoother {
         } else {
             1.0
         }
+    }
+
+    /// Sets each bucket key's wheel radius, metres (the snapshot's `car_wheel_radius_m`).
+    /// O(buckets), no allocation once grown.
+    pub(crate) fn set_wheel_radii(&mut self, radii: &[f32]) {
+        self.wheel_radius_m.clear();
+        self.wheel_radius_m.extend_from_slice(radii);
     }
 
     /// Starts a frame whose off-lane cars are grounded against `ground`. O(buckets).
@@ -242,17 +269,28 @@ impl CarVisualSmoother {
         let mut next = std::mem::take(&mut bucket.next);
         let mut solve = std::mem::take(&mut bucket.solve);
         let mut reused = std::mem::take(&mut bucket.reused);
+        let mut shown = std::mem::take(&mut bucket.shown);
         next.clear();
         next.extend_from_slice(targets);
         solve.clear();
         solve.resize(count, 0);
         reused.clear();
         reused.resize(count, false);
-        self.interpolate(&mut next, &mut solve, &mut reused, ids, flags, alpha);
+        shown.clear();
+        shown.resize(count, [0.0; 2]);
+        let radius = self.wheel_radius_m.get(usize::from(key)).copied().unwrap_or(0.0);
+        let mut cars = Cars {
+            poses: &mut next,
+            solve: &mut solve,
+            reused: &mut reused,
+            shown: &mut shown,
+        };
+        self.interpolate(&mut cars, custom, ids, flags, alpha, radius);
         let bucket = &mut self.buckets[usize::from(key)];
         bucket.next = next;
         bucket.solve = solve;
         bucket.reused = reused;
+        bucket.shown = shown;
         self.parts[0] += started.elapsed().as_micros() as i64;
     }
 
@@ -328,7 +366,8 @@ impl CarVisualSmoother {
             bucket.drawn.extend_from_slice(targets);
             bucket.custom.clear();
             bucket.custom.extend(custom.iter().map(|value| value.to_bits()));
-            fill_rows(&mut bucket.rows, &bucket.drawn, &bucket.custom);
+            bucket.drawn_shown.clear();
+            fill_rows(&mut bucket.rows, &bucket.drawn, &bucket.custom, &bucket.drawn_shown);
             self.changed.push(key);
         }
     }
@@ -442,42 +481,51 @@ impl CarVisualSmoother {
                 .all(|((pose, &flag), &near)| flag == 0 || ground.near(pose) == near)
     }
 
-    // Writes this frame's poses over the snapshot poses in `poses` and marks the off-lane cars
-    // to solve in `solve`: a car at rest copies its drawn pose (`reused`); any other moves
-    // toward its target as Godot's `Vector3.lerp` and `Basis.slerp(...).orthonormalized()`
+    // Writes this frame's poses over the snapshot poses in `cars.poses` and marks the off-lane
+    // cars to solve in `cars.solve`: a car at rest copies its drawn pose (`reused`); any other
+    // moves toward its target as Godot's `Vector3.lerp` and `Basis.slerp(...).orthonormalized()`
     // would. Cars first seen, jumping past the snap distance or changing height owner show their
     // orthonormalized snapshot pose; a degenerate or non-finite snapshot pose passes through
-    // unchanged. A bucket below `PARALLEL_MIN_CARS` stays on the calling thread: waking the pool
-    // for it costs more than its math.
+    // unchanged. Each car's drawn steer and roll go to `cars.shown` (module docs, `RENDER-66`):
+    // the roll from the origin's travel over `radius`. A bucket below `PARALLEL_MIN_CARS` stays
+    // on the calling thread: waking the pool for it costs more than its math.
     fn interpolate(
         &self,
-        poses: &mut [f32],
-        solve: &mut [u8],
-        reused: &mut [bool],
+        cars: &mut Cars<'_>,
+        custom: &[f32],
         ids: &[i64],
         flags: &[u8],
         alpha: f32,
+        radius: f32,
     ) {
         let rotation_alpha =
             (alpha * (ROTATION_INTERPOLATION_RATE / INTERPOLATION_RATE)).clamp(0.0, 1.0);
-        let (cars, buckets, frame) = (&self.cars, &self.buckets, self.frame);
+        let (drawn_cars, buckets, frame) = (&self.cars, &self.buckets, self.frame);
         let (ground, ground_changed) = (self.ground, self.ground_changed);
-        let step = |((pose, (solve, reused)), (&id, &flag)): CarItem<'_>| {
-            let previous = cars.get(&id).filter(|car| {
+        let step = |(((pose, (solve, reused)), (&id, &flag)), (shown, custom)): CarItem<'_>| {
+            let steer_target = custom[0];
+            // Drawn last frame; smoothed from that pose unless its height owner changed. Its
+            // wheels carry on either way.
+            let seen = drawn_cars.get(&id).filter(|car| {
                 was_drawn_before(&buckets[usize::from(car.bucket)], frame)
                     && car.frame == buckets[usize::from(car.bucket)].recorded_before
-                    && car.pose.grounded == (flag != 0)
             });
+            let previous = seen.filter(|car| car.pose.grounded == (flag != 0));
             if let Some(car) = previous.filter(|car| {
                 car.rest
+                    && car.steer_target == steer_target.to_bits()
                     && same_target(&car.target, pose)
                     && (flag == 0 || (!ground_changed && ground.near(&car.drawn) == car.near))
             }) {
                 pose.copy_from_slice(&car.drawn);
+                *shown = car.shown;
                 *reused = true;
                 return;
             }
             *solve = flag;
+            // A car first drawn shows its steer target with its roll at zero (a parked car's);
+            // one that snaps or whose pose cannot be read keeps the roll it had.
+            *shown = [steer_target, seen.map_or(0.0, |car| car.shown[1])];
             let Some((target_origin, target_basis)) = read_pose(pose) else {
                 return;
             };
@@ -493,28 +541,36 @@ impl CarVisualSmoother {
                         rotation_alpha,
                     );
                     let origin = car.pose.origin.lerp(target_origin, alpha);
-                    write_pose(pose, origin, Mat3::from_quat(rotation));
+                    let basis = Mat3::from_quat(rotation);
+                    write_pose(pose, origin, basis);
+                    *shown = [
+                        eased_steer(car.shown[0], steer_target, rotation_alpha),
+                        rolled(car.shown[1], origin - car.pose.origin, basis, radius),
+                    ];
                 }
                 _ => write_pose(pose, target_origin, target_basis),
             }
         };
+        let custom = custom.as_chunks::<CUSTOM>().0;
         if ids.len() < PARALLEL_MIN_CARS {
-            poses
+            cars.poses
                 .as_chunks_mut::<STRIDE>()
                 .0
                 .iter_mut()
                 .map(<[f32; STRIDE]>::as_mut_slice)
-                .zip(solve.iter_mut().zip(reused.iter_mut()))
+                .zip(cars.solve.iter_mut().zip(cars.reused.iter_mut()))
                 .zip(ids.iter().zip(flags))
+                .zip(cars.shown.iter_mut().zip(custom.iter().map(<[f32; CUSTOM]>::as_slice)))
                 .for_each(step);
             return;
         }
         // As in `solve_pending`: inline on the frame job's background worker (`RENDER-47`).
         crate::thread_pools::install(|| {
-            poses
+            cars.poses
                 .par_chunks_exact_mut(STRIDE)
-                .zip(solve.par_iter_mut().zip(reused.par_iter_mut()))
+                .zip(cars.solve.par_iter_mut().zip(cars.reused.par_iter_mut()))
                 .zip(ids.par_iter().zip(flags))
+                .zip(cars.shown.par_iter_mut().zip(custom.par_iter().map(<[f32; CUSTOM]>::as_slice)))
                 .with_min_len(PARALLEL_MIN_CARS)
                 .for_each(step);
         });
@@ -554,8 +610,12 @@ impl CarVisualSmoother {
                 continue;
             };
             let target = target.map(f32::from_bits);
+            let shown = bucket.shown[index];
+            let steer_target = bucket.custom.get(index * CUSTOM).copied().unwrap_or(0);
             let rest = previous.is_some()
-                || ((bucket.solve[index] == 0 || bucket.solved) && at_target(pose, &target, flag));
+                || ((bucket.solve[index] == 0 || bucket.solved)
+                    && at_target(pose, &target, flag)
+                    && shown[0].to_bits() == steer_target);
             if !rest {
                 bucket.moving += 1;
             } else if previous.is_some() {
@@ -576,6 +636,8 @@ impl CarVisualSmoother {
                     },
                     target: target.map(f32::to_bits),
                     drawn: *pose,
+                    shown,
+                    steer_target,
                     rest,
                     near,
                     bucket: key,
@@ -586,9 +648,16 @@ impl CarVisualSmoother {
         bucket.recorded = frame;
         bucket.present = frame;
         bucket.pending = false;
-        if !same_bits(&bucket.drawn, &bucket.next) || bucket.custom_changed {
+        let shown_changed = bucket.drawn_shown.len() != bucket.shown.len()
+            || bucket
+                .drawn_shown
+                .iter()
+                .zip(&bucket.shown)
+                .any(|(a, b)| a.map(f32::to_bits) != b.map(f32::to_bits));
+        if !same_bits(&bucket.drawn, &bucket.next) || bucket.custom_changed || shown_changed {
             std::mem::swap(&mut bucket.drawn, &mut bucket.next);
-            fill_rows(&mut bucket.rows, &bucket.drawn, &bucket.custom);
+            std::mem::swap(&mut bucket.drawn_shown, &mut bucket.shown);
+            fill_rows(&mut bucket.rows, &bucket.drawn, &bucket.custom, &bucket.drawn_shown);
             self.changed.push(key);
             self.parts[8] += 1;
         }
@@ -606,14 +675,50 @@ fn same_custom(recorded: &[u32], custom: &[f32]) -> bool {
 }
 
 // The uploaded rows: each pose followed by its custom data (zero where `custom` is short, a
-// malformed bucket's). O(cars), only for a bucket whose drawn buffer changed.
-fn fill_rows(rows: &mut Vec<f32>, poses: &[f32], custom: &[u32]) {
+// malformed bucket's), its steer and roll replaced by `shown` where it has them. O(cars), only
+// for a bucket whose drawn buffer changed.
+fn fill_rows(rows: &mut Vec<f32>, poses: &[f32], custom: &[u32], shown: &[[f32; 2]]) {
     rows.clear();
     for (car, pose) in poses.as_chunks::<STRIDE>().0.iter().enumerate() {
         rows.extend_from_slice(pose);
         let data = custom.get(car * CUSTOM..car * CUSTOM + CUSTOM);
-        rows.extend(data.map_or([0.0; CUSTOM], |data| std::array::from_fn(|i| f32::from_bits(data[i]))));
+        let mut row: [f32; CUSTOM] =
+            data.map_or([0.0; CUSTOM], |data| std::array::from_fn(|i| f32::from_bits(data[i])));
+        if let Some(&[steer, roll]) = shown.get(car) {
+            (row[0], row[1]) = (steer, roll);
+        }
+        rows.extend_from_slice(&row);
     }
+}
+
+// One bucket's per-car outputs while it is smoothed.
+struct Cars<'a> {
+    poses: &'a mut Vec<f32>,
+    solve: &'a mut Vec<u8>,
+    reused: &'a mut Vec<bool>,
+    shown: &'a mut Vec<[f32; 2]>,
+}
+
+// The drawn steer a frame on from `from` toward `target` at the rotation's weight, the target
+// itself once within `STEER_SETTLE_RAD`.
+fn eased_steer(from: f32, target: f32, weight: f32) -> f32 {
+    let next = from + (target - from) * weight;
+    if (target - next).abs() <= STEER_SETTLE_RAD {
+        target
+    } else {
+        next
+    }
+}
+
+// The roll after the drawn origin moved by `travel` with the drawn `basis`: its run along the
+// nose (cars point their `-Z` along travel) over `radius`, wrapped to a turn. Unchanged without
+// a radius.
+fn rolled(roll: f32, travel: Vec3, basis: Mat3, radius: f32) -> f32 {
+    if radius <= 0.0 {
+        return roll;
+    }
+    let run = travel.dot(-basis.z_axis);
+    (roll + run / radius).rem_euclid(std::f32::consts::TAU)
 }
 
 // Whether `bucket` was drawn in the frame before `frame`.

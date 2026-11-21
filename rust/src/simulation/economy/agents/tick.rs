@@ -71,7 +71,7 @@ pub(crate) use route_preview::{PlannedRoute, RouteEnd, planned_route};
 pub(crate) use lane_buckets::LaneBucketScratch;
 pub(crate) use gridlock::{GridlockChecker, GridlockReport, SavedGridlock};
 pub(crate) use stranded::StrandedWalkers;
-pub(crate) use traffic::connector_turn_speed;
+pub(crate) use traffic::{connector_turn_speed, idm_acceleration};
 pub(in crate::simulation::economy::agents) use traffic::lane_attach_slot_clear;
 #[cfg(test)]
 pub(in crate::simulation::economy::agents) use lane_nav::{

@@ -50,6 +50,18 @@ struct Fillet {
 }
 
 impl Fillet {
+    // The arc's curvature, 1/m, positive turning to the driver's left (`RENDER-66`): in the
+    // ground plane's (x, z) a turn toward `incoming`'s counter-clockwise normal is a turn to
+    // the driver's right, as `+X` is the right of a car heading `-Z`.
+    fn curvature(&self) -> f32 {
+        let toward_ccw = self.incoming.cross(self.normal) > 0.0;
+        if toward_ccw {
+            -1.0 / self.radius
+        } else {
+            1.0 / self.radius
+        }
+    }
+
     // The point and unit travel direction `u` (0 to 1) of the way round the arc.
     fn at(&self, u: f32) -> (Vector2, Vector2) {
         let (sin, cos) = (self.angle * u).sin_cos();
@@ -100,13 +112,26 @@ fn fillet(points: &[Vector2], j: usize, radius: f32) -> Option<Fillet> {
 /// `points[target - 1] → points[target]` (the leg `local_access_target_segment` names), when its
 /// progress along that leg lies on one of the leg's two arcs; `None` on a straight part, where it
 /// is drawn at `current` facing `points[target]` as before. The progress is `current` projected
-/// onto the leg. O(1): the bends at the leg's two ends, no allocation.
+/// onto the leg. O(1): the bends at the leg's two ends, no allocation. The snapshot reads
+/// [`drawn_arc`]; this is its tests' form.
+#[cfg(test)]
 pub(crate) fn drawn_turn(
     points: &[Vector2],
     target: usize,
     current: Vector2,
     radius: f32,
 ) -> Option<(Vector2, Vector2)> {
+    drawn_arc(points, target, current, radius).map(|(point, travel, _)| (point, travel))
+}
+
+/// [`drawn_turn`] with the arc's curvature, 1/m, positive turning to the driver's left of
+/// travel (`RENDER-66`: the steered wheels). O(1), no allocation.
+pub(crate) fn drawn_arc(
+    points: &[Vector2],
+    target: usize,
+    current: Vector2,
+    radius: f32,
+) -> Option<(Vector2, Vector2, f32)> {
     if target == 0 || target >= points.len() {
         return None;
     }
@@ -116,15 +141,19 @@ pub(crate) fn drawn_turn(
         return None;
     }
     let along = ((current - a).dot(b - a) / length).clamp(0.0, length);
+    let on = |arc: Fillet, u: f32| {
+        let (point, travel) = arc.at(u);
+        (point, travel, arc.curvature())
+    };
     if let Some(end) = fillet(points, target, radius)
         && along > length - end.tangent
     {
-        return Some(end.at((along - (length - end.tangent)) / (2.0 * end.tangent)));
+        return Some(on(end, (along - (length - end.tangent)) / (2.0 * end.tangent)));
     }
     if let Some(start) = fillet(points, target - 1, radius)
         && along < start.tangent
     {
-        return Some(start.at(0.5 + along / (2.0 * start.tangent)));
+        return Some(on(start, 0.5 + along / (2.0 * start.tangent)));
     }
     None
 }

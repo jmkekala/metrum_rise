@@ -29,7 +29,8 @@ pub(crate) const MAX_LOOKS: usize = 64;
 /// Tiers a model has.
 pub(crate) const TIERS: usize = crate::assets::VEHICLE_TIERS;
 /// The instance word's lamp bit for "lights on" (driving): the shader lights tail, low beam and
-/// marker lenses by it at night. The other bits (`RENDER-66`, `RENDER-67`) are zero in 1a.
+/// marker lenses by it at night. The brake, indicator and reverse bits are
+/// [`super::vehicle_signals`]'s (`RENDER-66`); high beam and beacon stay zero (`RENDER-67`).
 pub(crate) const LAMP_LIGHTS_ON: u32 = 1;
 
 /// One drawable model.
@@ -50,9 +51,42 @@ pub(crate) struct CatalogueModel {
     pub(crate) data: VehicleData,
     /// Palette in linear colour, at most 64.
     pub(crate) palette: Vec<[f32; 3]>,
+    /// The steering and the fixed axle along the nose (`RENDER-66`), `None` without both.
+    pub(crate) axles: Option<Axles>,
+    /// The radius the wheels roll with, metres: the first wheel's (the pilot pair's wheels are
+    /// all one size); 0 without wheels.
+    pub(crate) wheel_radius_m: f32,
     // Cumulative palette weights in parts of `WEIGHT_SCALE`.
     paint_cumulative: Vec<u64>,
     first_look: u8,
+}
+
+/// Where a model's axles sit along its length, metres from the body centre toward the nose
+/// (the contract frame's `z`): the mean of the steering wheels' centres and of the others'.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Axles {
+    pub(crate) front_m: f32,
+    pub(crate) rear_m: f32,
+}
+
+impl Axles {
+    // From a model's wheels; `None` unless some steer and some do not, front ahead of rear.
+    fn of(wheels: &[crate::assets::VehicleWheel]) -> Option<Self> {
+        let mean = |steer: bool| {
+            let (sum, count) = wheels
+                .iter()
+                .filter(|wheel| wheel.steer == steer)
+                .fold((0.0, 0), |(sum, count), wheel| (sum + wheel.centre[2], count + 1));
+            (count > 0).then(|| sum / count as f32)
+        };
+        let (front_m, rear_m) = (mean(true)?, mean(false)?);
+        (front_m > rear_m).then_some(Self { front_m, rear_m })
+    }
+
+    /// Front axle to rear axle, metres.
+    pub(crate) fn wheelbase_m(self) -> f32 {
+        self.front_m - self.rear_m
+    }
 }
 
 /// One model in one albedo variant.
@@ -78,9 +112,10 @@ impl DrawnVehicle {
         (lamps & 0xff | u32::from(self.paint) << 8 | u32::from(self.blink) << 14) as f32
     }
 
-    /// The instance's custom data: steer angle and wheel roll (0 in 1a), the word, a spare.
-    pub(crate) fn custom(self, lamps: u32) -> [f32; 4] {
-        [0.0, 0.0, self.word(lamps), 0.0]
+    /// The instance's custom data as the snapshot gives it: the front wheels' steer target
+    /// (`RENDER-66`), a zero the frame job replaces with the wheels' roll, the word, a spare.
+    pub(crate) fn custom(self, steer: f32, lamps: u32) -> [f32; 4] {
+        [steer, 0.0, self.word(lamps), 0.0]
     }
 }
 
@@ -143,6 +178,8 @@ impl VehicleCatalogue {
                 tier_starts_m,
                 paint_cumulative: cumulative(palette.iter().map(|&(_, w)| w)),
                 palette: palette.iter().map(|&(c, _)| c.map(srgb_to_linear)).collect(),
+                axles: Axles::of(&data.wheels),
+                wheel_radius_m: data.wheels.first().map_or(0.0, |wheel| wheel.radius_m),
                 data,
                 first_look,
             });
@@ -182,6 +219,15 @@ impl VehicleCatalogue {
         self.models
             .get(usize::from(model))
             .map_or(0, |m| m.tier_starts_sq.iter().filter(|&&start| distance_sq >= start).count() as u8)
+    }
+
+    /// Fills `radii` with each bucket key's wheel radius, metres (`RENDER-66`): O(looks × tiers),
+    /// at most 256, with no allocation once `radii` has grown.
+    pub(crate) fn fill_wheel_radii(&self, radii: &mut Vec<f32>) {
+        radii.clear();
+        radii.extend(self.looks.iter().flat_map(|look| {
+            [self.models[usize::from(look.model)].wheel_radius_m; TIERS]
+        }));
     }
 
     /// Each model's ground support from its wheel facts (`RENDER-65`): the plan box and the
@@ -320,6 +366,8 @@ fn default_palette(class: BodyClass) -> Vec<([f32; 3], f32)> {
 #[cfg(test)]
 mod tests;
 
+use crate::nodes::sim::render::vehicle_signals::CarPath;
+
 impl crate::nodes::sim::core::SimCore {
     /// Replaces the catalogue from the asset registry and the ground supports with its models'
     /// (each parked pose follows). O(vehicle assets + bays), when packs load.
@@ -333,10 +381,17 @@ impl crate::nodes::sim::core::SimCore {
     }
 
     /// Agent `i`'s car bucket (`look * 4 + tier`) and instance custom data, the tier for a squared
-    /// distance `distance_sq` to the eye (`None`: the nearest tier). A car with a parking vehicle
-    /// is named by it, as its parked pose is, so it keeps its look across the handoff; any other
-    /// by its render id. Bucket 0 with no model at all (the procedural fallback). O(1).
-    pub(crate) fn drawn_car(&self, i: usize, distance_sq: Option<f32>) -> (u8, [f32; 4]) {
+    /// distance `distance_sq` to the eye (`None`: the nearest tier), its lamps and steer target
+    /// from `path`, how the snapshot posed it (`RENDER-66`, [`SimCore::car_signals`]). A car with
+    /// a parking vehicle is named by it, as its parked pose is, so it keeps its look across the
+    /// handoff; any other by its render id. Bucket 0 with no model at all (the procedural
+    /// fallback). O(1) plus the signals' lane samples.
+    pub(crate) fn drawn_car(
+        &self,
+        i: usize,
+        distance_sq: Option<f32>,
+        path: CarPath,
+    ) -> (u8, [f32; 4]) {
         use crate::simulation::economy::agents::VEHICLE_FREIGHT_DELIVERY;
         let identity = self
             .parking
@@ -344,10 +399,13 @@ impl crate::nodes::sim::core::SimCore {
             .map_or(self.agents.render_id[i], |(_, _, identity)| identity);
         let freight = self.agents.vehicle_type[i] == VEHICLE_FREIGHT_DELIVERY;
         let Some(drawn) = self.vehicle_catalogue.pick(freight, identity) else {
-            return (0, [0.0, 0.0, LAMP_LIGHTS_ON as f32, 0.0]);
+            let (lamps, _) = self.car_signals(i, None, 0, distance_sq, path);
+            return (0, [0.0, 0.0, lamps as f32, 0.0]);
         };
         let tier = distance_sq.map_or(0, |d| self.vehicle_catalogue.tier(drawn.model, d));
-        (drawn.look * TIERS as u8 + tier, drawn.custom(LAMP_LIGHTS_ON))
+        let axles = self.vehicle_catalogue.models[usize::from(drawn.model)].axles;
+        let (lamps, steer) = self.car_signals(i, axles, tier, distance_sq, path);
+        (drawn.look * TIERS as u8 + tier, drawn.custom(steer, lamps))
     }
 
     /// The model (ground support profile) bucket `key` draws. O(1).
@@ -368,6 +426,6 @@ impl crate::simulation::parking::ParkedLooks for CatalogueLooks<'_> {
         let freight = model == crate::simulation::economy::agents::VEHICLE_FREIGHT_DELIVERY;
         self.0
             .pick(freight, identity)
-            .map_or((0, 0, [0.0; 4]), |drawn| (drawn.look, drawn.model, drawn.custom(0)))
+            .map_or((0, 0, [0.0; 4]), |drawn| (drawn.look, drawn.model, drawn.custom(0.0, 0)))
     }
 }

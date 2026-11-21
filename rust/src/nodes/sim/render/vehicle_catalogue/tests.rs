@@ -57,7 +57,7 @@ fn the_word_packs_lamps_paint_and_blink_exactly() {
     let drawn = DrawnVehicle { look: 0, model: 0, paint: 63, blink: 15 };
     let word = drawn.word(0xff) as u32;
     assert_eq!((word & 0xff, (word >> 8) & 63, word >> 14), (0xff, 63, 15));
-    assert_eq!(drawn.custom(LAMP_LIGHTS_ON)[2] as u32 & 0xff, 1);
+    assert_eq!(drawn.custom(0.0, LAMP_LIGHTS_ON)[2] as u32 & 0xff, 1);
 }
 
 #[test]

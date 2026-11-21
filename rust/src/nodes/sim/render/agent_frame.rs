@@ -239,6 +239,7 @@ impl AgentFrame {
         self.parked = Some((snapshot.parked.clone(), snapshot.vehicle_world_epoch));
         self.ground_key = snapshot.vehicle_ground_key;
         self.vehicle_revision = snapshot.vehicle_catalogue_revision;
+        self.smoother.set_wheel_radii(&snapshot.car_wheel_radius_m);
     }
 
     /// Smooths every car bucket toward its snapshot poses; the off-lane cars not at rest then

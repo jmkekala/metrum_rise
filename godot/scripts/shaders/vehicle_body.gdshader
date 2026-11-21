@@ -7,6 +7,8 @@ render_mode blend_mix, depth_draw_opaque, cull_back, diffuse_burley, specular_sc
 // INSTANCE_CUSTOM: x the front wheels' steer angle, y the wheels' roll angle (both radians), z
 // one whole number (8 lamp bits, 6 paint bits, 4 blink bits), w spare. The model was turned half
 // a turn about Y at load (cars drive along their -Z), so the wheel centres are in that frame.
+// The steer, roll, brake, indicator and reverse values come from Rust (`RENDER-66`,
+// nodes/sim/render/vehicle_signals.rs and car_visual.rs).
 
 global uniform vec2 scene_window_clock; // hour, true solar elevation
 
@@ -36,6 +38,7 @@ varying flat float draw_fade;
 #define STANDARD_LIGHT_DIFFUSE_BURLEY
 #include "res://scripts/shaders/standard_light.gdshaderinc"
 #include "res://scripts/shaders/weather_rain.gdshaderinc"
+#include "res://scripts/shaders/weather_wind.gdshaderinc"
 #include "res://scripts/shaders/agent_draw_fade.gdshaderinc"
 
 // Lamp bits of the instance word (docs/vehicles.md "Per-car data").
@@ -87,8 +90,10 @@ void vertex() {
 	paint_face = ids.b;
 	paint_colour = paint_enabled ? palette[paint] : vec3(1.0);
 	float night = smoothstep(lamps_on_elevation_deg.x, lamps_on_elevation_deg.y, scene_window_clock.y);
-	// 90 flashes a minute.
-	float blink = step(0.5, fract(TIME * 1.5 + blink_offset));
+	// 90 flashes a minute on the wind clock (`RENDER-66`): it stops while the game is paused and
+	// keeps normal pace above normal speed. 1.5 flashes a second complete a whole number of
+	// flashes in the clock's wrap, so the blink runs on across it.
+	float blink = step(0.5, fract(weather_wind.x * 1.5 + blink_offset));
 	int surface = int(ids.g);
 	lamp_gain = surface >= 1 && surface <= 15 ? lamp_share(surface, lamps, night, blink) : 0.0;
 	draw_fade = agent_draw_fade(MODEL_MATRIX, MAIN_CAM_INV_VIEW_MATRIX, draw_fade_m);

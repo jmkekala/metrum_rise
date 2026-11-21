@@ -648,3 +648,91 @@ fn drawn_buffers_follow_the_control_frame_by_frame() {
         solved.load(Ordering::Relaxed)
     );
 }
+
+// One frame of car 7 in bucket `key` toward `target` with steer target `steer`; its drawn row.
+fn wheel_frame(
+    smoother: &mut CarVisualSmoother,
+    key: u8,
+    target: &[f32],
+    steer: f32,
+    flag: u8,
+    alpha: f32,
+) -> [f32; ROW] {
+    smoother.begin_frame(GroundView::default());
+    smoother.smooth_bucket(key, target, &[steer, 0.0, 0.0, 0.0], &[7], &[flag], alpha);
+    smoother.solve_pending(|_, _, _| true);
+    smoother.finish_frame();
+    smoother.drawn_bucket(key)[..ROW].try_into().unwrap()
+}
+
+// The roll's change between two rows, unwrapped across a turn.
+fn roll_step(from: &[f32; ROW], to: &[f32; ROW]) -> f32 {
+    let step = to[13] - from[13];
+    (step + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI
+}
+
+#[test]
+fn wheels_roll_with_the_drawn_travel_and_stop_with_it() {
+    const RADIUS: f32 = 0.5;
+    let mut smoother = CarVisualSmoother::default();
+    smoother.set_wheel_radii(&[RADIUS; 8]);
+    // Driving its nose (`-Z`) ahead at varying speeds and frame weights, and switching from
+    // bucket 0 to 5 (a tier) and from lane to off-lane on the way: the roll follows the drawn
+    // origin's travel, without a jump.
+    let mut row = wheel_frame(&mut smoother, 0, &pose(0.0, Vec3::ZERO), 0.0, 0, 0.3);
+    assert_eq!(row[13], 0.0, "first drawn at zero");
+    let (mut rolled, mut travelled) = (0.0, 0.0);
+    let mut z = 0.0;
+    for frame in 0..120 {
+        z -= if frame < 60 { 0.4 } else { 0.1 };
+        let (key, flag) = (if frame < 40 { 0 } else { 5 }, u8::from(frame >= 90));
+        let alpha = if frame % 3 == 0 { 0.2 } else { 0.45 };
+        let next = wheel_frame(&mut smoother, key, &pose(0.0, Vec3::new(0.0, 0.0, z)), 0.0, flag, alpha);
+        rolled += roll_step(&row, &next);
+        if frame != 90 {
+            // The change of height owner snaps the pose; the roll keeps its angle there.
+            travelled += row[11] - next[11];
+        }
+        row = next;
+    }
+    assert!((rolled - travelled / RADIUS).abs() < 1e-3, "{rolled} vs {}", travelled / RADIUS);
+    // Paused: the target stays, the car settles and comes to rest, and the roll stops exactly.
+    for _ in 0..200 {
+        row = wheel_frame(&mut smoother, 5, &pose(0.0, Vec3::new(0.0, 0.0, z)), 0.0, 1, 0.4);
+    }
+    let rested = row;
+    for _ in 0..50 {
+        row = wheel_frame(&mut smoother, 5, &pose(0.0, Vec3::new(0.0, 0.0, z)), 0.0, 1, 0.4);
+        assert_eq!(bits(&row), bits(&rested), "a resting car's row stands still");
+        assert!(smoother.changed().is_empty(), "and is not uploaded");
+    }
+    // Backing (tail first, `+Z`): the roll runs the other way.
+    let next = wheel_frame(&mut smoother, 5, &pose(0.0, Vec3::new(0.0, 0.0, z + 0.3)), 0.0, 1, 1.0);
+    assert!((roll_step(&row, &next) + 0.3 / RADIUS).abs() < 1e-4);
+    // Gone for a frame, it is drawn anew from zero.
+    empty_frame(&mut smoother);
+    let row = wheel_frame(&mut smoother, 5, &pose(0.0, Vec3::new(0.0, 0.0, z)), 0.0, 1, 0.4);
+    assert_eq!(row[13], 0.0);
+}
+
+#[test]
+fn the_steer_eases_to_its_target_and_settles_on_it() {
+    let mut smoother = CarVisualSmoother::default();
+    let at = pose(0.0, Vec3::new(3.0, 0.0, 4.0));
+    let first = wheel_frame(&mut smoother, 0, &at, 0.2, 0, 0.5);
+    assert_eq!(first[12], 0.2, "first drawn at its target");
+    let mut row = first;
+    let mut frames = 0;
+    while row[12] != -0.3 {
+        let next = wheel_frame(&mut smoother, 0, &at, -0.3, 0, 0.5);
+        assert!(next[12] < row[12] && next[12] >= -0.3, "{} after {}", next[12], row[12]);
+        row = next;
+        frames += 1;
+        assert!(frames < 60, "it settles");
+    }
+    // Settled on its target and at rest: the bucket stands untouched.
+    let rows = smoother.drawn_bucket(0).to_vec();
+    wheel_frame(&mut smoother, 0, &at, -0.3, 0, 0.5);
+    assert!(smoother.changed().is_empty());
+    assert_eq!(bits(smoother.drawn_bucket(0)), bits(&rows));
+}

@@ -274,3 +274,62 @@ fn a_backed_into_dock_is_drawn_on_the_same_line_facing_back() {
     }
     assert!(pulled_in && compared > 20, "compared {compared}");
 }
+
+// `RENDER-66`: the truck leaves its source's tail-in dock forward with no reverse lamp, backs
+// into the first yard's with its reverse lamp lit, no indicator and its front wheels straight
+// (this yard's route is straight; the vehicle signals' tests steer a backing truck on an arc),
+// and stands in the dock with every lamp dark.
+#[test]
+fn a_truck_backing_into_a_tail_in_dock_shows_its_reverse_lamp() {
+    use crate::nodes::sim::core::snapshot::off_lane_car_drawn;
+    use crate::nodes::sim::render::vehicle_catalogue::Axles;
+    use crate::nodes::sim::render::vehicle_signals::{
+        CarPath, LAMP_LEFT, LAMP_REVERSE, LAMP_RIGHT,
+    };
+    let (mut core, building, t) = dispatched(true);
+    let truck = Axles {
+        front_m: 2.55,
+        rear_m: -1.95,
+    };
+    // Ticks seen backing in, standing, and leaving forward.
+    let mut seen = [0; 3];
+    let mut turned_back = false;
+    for tick in 0..6_000 {
+        let trip = core.agents.parking_trip[t];
+        let off_lane = core.agents.current_lane_id[t] == usize::MAX;
+        let lamps = core.posed_car_custom(t).map_or(0, |(_, custom)| custom[2] as u32 & 0xff);
+        match trip.phase {
+            PullIn if off_lane && trip.target == building => {
+                assert_ne!(lamps & LAMP_REVERSE, 0, "tick {tick}");
+                assert_eq!(lamps & (LAMP_LEFT | LAMP_RIGHT), 0, "tick {tick}");
+                let drawn = off_lane_car_drawn(&core, t, core.agents.pos_x[t], core.agents.pos_y[t]);
+                let path = CarPath::OffLane {
+                    facing: drawn.facing,
+                    curvature: drawn.curvature,
+                };
+                let (_, steer) = core.car_signals(t, Some(truck), 0, None, path);
+                assert_eq!((drawn.curvature, steer), (0.0, 0.0), "tick {tick}");
+                seen[0] += 1;
+            }
+            AtDock => {
+                assert_eq!(lamps, 0, "tick {tick}");
+                seen[1] += 1;
+                if !turned_back {
+                    assert!(check_truck(&mut core));
+                    turned_back = true;
+                    continue;
+                }
+            }
+            PullOut if off_lane => {
+                assert_eq!(lamps & LAMP_REVERSE, 0, "tick {tick}");
+                seen[2] += 1;
+            }
+            _ => {}
+        }
+        if turned_back && !yard_phase(&core, t) {
+            break;
+        }
+        tick_agents(&mut core);
+    }
+    assert!(seen.iter().all(|&ticks| ticks > 0), "{seen:?}");
+}

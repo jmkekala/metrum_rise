@@ -27,6 +27,8 @@ pub mod network;
 pub mod resources;
 pub(crate) mod vehicle_catalogue;
 pub(crate) mod vehicle_ground;
+/// Brake lamps, indicators, the reverse lamp and the steered wheels (`RENDER-66`).
+pub(crate) mod vehicle_signals;
 /// Street lights' lamp grid, far light map, light pool and chunk batches (`RENDER-32-H`).
 pub(crate) mod street_lights;
 /// The streaming core: render-consumer state chosen from the view (`RENDER-32`).

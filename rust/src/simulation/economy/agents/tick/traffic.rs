@@ -7,6 +7,7 @@ mod junction;
 mod lane_change;
 mod occupancy;
 
+pub(crate) use idm::idm_acceleration;
 pub(super) use idm::{braking_speed_for_distance, idm_new_speed, limit_speed_change};
 pub(crate) use junction::connector_turn_speed;
 pub(super) use junction::{junction_car_speed, junction_entry_speed};
