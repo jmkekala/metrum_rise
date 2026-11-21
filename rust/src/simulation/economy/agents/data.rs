@@ -23,6 +23,13 @@ use std::sync::atomic::{AtomicU32, AtomicUsize};
 /// Stable reference to one agent (`docs/simulation.md#entity-handles`).
 pub(crate) type AgentHandle = Handle<Agent>;
 
+/// One entry of a lane bucket ([`AgentSystem::lane_buckets`]): the agent's lane distance (its
+/// body's centre), its index, and half the length its body takes in the lane (`TRAFFIC-38`,
+/// `lane_half_length`). The half length fills the tuple's padding: an entry stays 16 bytes, and
+/// a gap test reads its neighbour's length from the entry it already loads.
+pub type LaneEntry = (f32, usize, f32);
+const _: () = assert!(std::mem::size_of::<LaneEntry>() == 16);
+
 /// Single agent data structure used for SoA generation.
 #[derive(StructOfArray)]
 #[soa_derive(Debug, Clone)]
@@ -202,11 +209,12 @@ pub struct AgentSystem {
     /// Running count of pathfinding calls this session, used for benchmark logging.
     pub pathfind_count: AtomicU32,
     /// Retained per-lane traffic occupancy snapshot for IDM gap lookup and lane entry checks.
-    /// Indexed by lane ID; each entry is `(lane_distance, agent_idx)` sorted ascending by dist.
+    /// Indexed by lane ID; each entry is `(lane_distance, agent_idx, half_length)`
+    /// ([`LaneEntry`]) sorted ascending by dist.
     ///
     /// Contains physical current-lane occupancy plus source-lane ghost occupancy for active
     /// lane changes. Overlap correction is run before source-lane ghosts are inserted.
-    pub lane_buckets: Vec<Vec<(f32, usize)>>,
+    pub lane_buckets: Vec<Vec<LaneEntry>>,
     /// Dedup flag array — `lane_is_dirty[lid] == true` if lane `lid` has been pushed to this
     /// tick. Sized alongside `lane_buckets`. Cleared via `dirty_lanes` rather than a full scan.
     pub lane_is_dirty: Vec<bool>,

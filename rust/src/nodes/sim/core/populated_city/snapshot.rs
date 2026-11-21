@@ -20,7 +20,7 @@ use std::time::{Duration, Instant};
 // included sources or bump this marker explicitly. The save format is a revision input too
 // (`TOOLS-35`): builds on different formats name their files apart, and the metadata check still
 // refuses a file whose saved format is not this build's.
-const FIXTURE_ALGORITHM_REVISION: &[u8] = b"perf-fixture-revision-v10";
+const FIXTURE_ALGORITHM_REVISION: &[u8] = b"perf-fixture-revision-v11";
 // Both tiers exercise rebuilding in the following day; day 7 had no execution census.
 const SNAPSHOT_DAY: u32 = 12;
 const SNAPSHOT_MINUTE: u16 = 0;

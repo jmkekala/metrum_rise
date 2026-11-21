@@ -4,17 +4,22 @@
 
 use super::super::super::{
     ACCESS_PLAN_VALID, ACCESS_WALK_STRANDED, MODE_WALK, TRANSIT_INTERSECTION, TRANSIT_NETWORK,
+    VEHICLE_FREIGHT_DELIVERY,
 };
 use super::super::claims::LaneClaimContext;
-use crate::config::{CAR_LENGTH, IDM_S_MIN, IDM_T_HEAD};
+use crate::config::{
+    CAR_BODY_LENGTH_M, IDM_S_MIN, IDM_T_HEAD, TRUCK_BODY_LENGTH_M, WALKER_BODY_LENGTH_M,
+};
+use crate::simulation::economy::agents::LaneEntry;
 use crate::simulation::economy::agents::determinism::stable_index;
 use crate::simulation::network::lanes::LaneSystem;
 use crate::simulation::network::roundabouts::RING_SPEED_MS;
 
-// How far from its end a ring lane's head must be for an entry to go: the lane-change gap's
-// separation at the ring's speed. The head's own speed cannot be read here: the speed pass writes
-// the speed column while it runs this test, so only the buckets are a stable input (D16).
-const RING_ENTRY_HEAD_GAP_M: f32 = CAR_LENGTH + IDM_S_MIN + RING_SPEED_MS * IDM_T_HEAD;
+// How far from its end, beyond both bodies' half lengths, a ring lane's head must be for an entry
+// to go: the lane-change gap's separation at the ring's speed. The head's own speed cannot be read
+// here: the speed pass writes the speed column while it runs this test, so only the buckets are a
+// stable input (D16).
+const RING_ENTRY_HEAD_GAP_M: f32 = IDM_S_MIN + RING_SPEED_MS * IDM_T_HEAD;
 // A ring lane's head this close to the end stands there: movement places a waiting head exactly at
 // the end, and a head free to go would have left in the step that reached it.
 const RING_HEAD_STANDING_M: f32 = 0.05;
@@ -32,31 +37,56 @@ pub(in crate::simulation::economy::agents::tick) enum ConnectorEntry {
     MissingConnection,
 }
 
-/// Returns the bumper-to-bumper gap to the nearest vehicle ahead in a sorted lane bucket.
+/// Half the length an agent's body takes in a lane bucket (`TRAFFIC-38`), from its transit mode
+/// and vehicle type, both saved columns: a walker [`WALKER_BODY_LENGTH_M`], a freight carrier
+/// ([`VEHICLE_FREIGHT_DELIVERY`]) the `truck` class, every other vehicle the `car` class. A lane
+/// distance is the body's centre, so two bodies on one lane are clear of each other when their
+/// distances differ by at least the sum of their half lengths. O(1), two compares.
+#[inline(always)]
+pub(crate) fn lane_half_length(mode: u8, vehicle_type: u8) -> f32 {
+    if mode == MODE_WALK {
+        WALKER_BODY_LENGTH_M * 0.5
+    } else if vehicle_type == VEHICLE_FREIGHT_DELIVERY {
+        TRUCK_BODY_LENGTH_M * 0.5
+    } else {
+        CAR_BODY_LENGTH_M * 0.5
+    }
+}
+
+/// Returns the bumper-to-bumper gap from a body of half length `my_half` at `my_dist` to the
+/// nearest body ahead in a sorted lane bucket: the centre distance less both half lengths.
 pub(in crate::simulation::economy::agents::tick) fn idm_gap_bucket(
-    bucket: &[(f32, usize)],
+    bucket: &[LaneEntry],
     my_dist: f32,
+    my_half: f32,
 ) -> f32 {
     let ahead = bucket.partition_point(|e| e.0 <= my_dist + 0.05);
     if ahead < bucket.len() {
-        (bucket[ahead].0 - my_dist - CAR_LENGTH).max(0.1)
+        (bucket[ahead].0 - my_dist - bucket[ahead].2 - my_half).max(0.1)
     } else {
         f32::MAX
     }
 }
 
-/// Returns whether a car can occupy `attach_d` without violating static separation.
+/// Returns whether a body of half length `my_half` can occupy `attach_d` with the standstill gap
+/// ([`IDM_S_MIN`]) to the bodies behind and ahead, each pair spaced by both half lengths.
 pub(in crate::simulation::economy::agents) fn lane_attach_slot_clear(
-    bucket: &[(f32, usize)],
+    bucket: &[LaneEntry],
     attach_d: f32,
+    my_half: f32,
 ) -> bool {
-    let min_sep = CAR_LENGTH + IDM_S_MIN;
     let insert = bucket.partition_point(|entry| entry.0 < attach_d);
-    if insert > 0 && attach_d - bucket[insert - 1].0 < min_sep {
-        return false;
+    if insert > 0 {
+        let behind = bucket[insert - 1];
+        if attach_d - behind.0 < behind.2 + my_half + IDM_S_MIN {
+            return false;
+        }
     }
-    if insert < bucket.len() && bucket[insert].0 - attach_d < min_sep {
-        return false;
+    if insert < bucket.len() {
+        let ahead = bucket[insert];
+        if ahead.0 - attach_d < ahead.2 + my_half + IDM_S_MIN {
+            return false;
+        }
     }
     true
 }
@@ -80,22 +110,23 @@ pub(in crate::simulation::economy::agents) fn lane_bucket_member(mode: u8, flags
     mode != MODE_WALK || flags & (ACCESS_PLAN_VALID | ACCESS_WALK_STRANDED) == ACCESS_PLAN_VALID
 }
 
-/// Returns whether a connector or lane can be entered at distance zero.
+/// Returns whether a body of half length `my_half` can enter a connector or lane at distance zero.
 #[inline(always)]
 pub(in crate::simulation::economy::agents::tick) fn lane_entry_slot_clear(
     lane_id: usize,
-    lane_buckets: &[Vec<(f32, usize)>],
+    my_half: f32,
+    lane_buckets: &[Vec<LaneEntry>],
 ) -> bool {
     lane_buckets
         .get(lane_id)
-        .map(|bucket| lane_attach_slot_clear(bucket, 0.0))
+        .map(|bucket| lane_attach_slot_clear(bucket, 0.0, my_half))
         .unwrap_or(false)
 }
 
 /// The lane an entry onto a roundabout ring gives way to now, `None` when `connector` is free to
-/// go or is no ring entry (`ROAD-62`): a car on the circulating connector, a ring lane head
-/// arriving within the lane-change gap of the node, or a blocked entry slot on the ring lane
-/// itself ("room ahead", the slot test a connector's exit makes, not the box rule). A head already
+/// go or is no ring entry (`ROAD-62`), for an entering body of half length `my_half`: a car on the
+/// circulating connector, a ring lane head arriving within the lane-change gap of the node, or a
+/// blocked entry slot on the ring lane itself ("room ahead", the slot test a connector's exit makes, not the box rule). A head already
 /// standing at the end holds nothing back: if it waits for the ring, the circulating connector or
 /// the ring lane's slot is what it waits for, and those are tested; if it waits for its exit, it
 /// is not coming. So an entry only ever stands for the ring lane it enters or for a moving car,
@@ -105,8 +136,9 @@ pub(in crate::simulation::economy::agents::tick) fn lane_entry_slot_clear(
 #[inline(never)]
 pub(in crate::simulation::economy::agents::tick) fn ring_entry_blocker(
     connector: usize,
+    my_half: f32,
     lanes: &LaneSystem,
-    lane_buckets: &[Vec<(f32, usize)>],
+    lane_buckets: &[Vec<LaneEntry>],
 ) -> Option<usize> {
     let entry = lanes.ring_entry(connector)?;
     let (circulating, ring_in) = (entry.circulating as usize, entry.ring_in as usize);
@@ -117,44 +149,59 @@ pub(in crate::simulation::economy::agents::tick) fn ring_entry_blocker(
     {
         return Some(circulating);
     }
-    if let Some(&(head_d, _)) = lane_buckets.get(ring_in).and_then(|bucket| bucket.last()) {
+    if let Some(&(head_d, _, head_half)) =
+        lane_buckets.get(ring_in).and_then(|bucket| bucket.last())
+    {
         let to_end_m = lanes.lanes[ring_in].length - head_d;
-        if to_end_m <= RING_ENTRY_HEAD_GAP_M && to_end_m > RING_HEAD_STANDING_M {
+        if to_end_m <= head_half + my_half + RING_ENTRY_HEAD_GAP_M
+            && to_end_m > RING_HEAD_STANDING_M
+        {
             return Some(ring_in);
         }
     }
     let ring_out = *lanes.lanes[connector].next_lanes.first()?;
-    (!lane_entry_slot_clear(ring_out, lane_buckets)).then_some(ring_out)
+    (!lane_entry_slot_clear(ring_out, my_half, lane_buckets)).then_some(ring_out)
 }
 
-/// Whether a car may take `connector` as far as give-way on a roundabout ring goes: the one test
-/// the speed pass's lane-end hold, the entry claim and the gridlock check share.
+/// Whether a car of half length `my_half` may take `connector` as far as give-way on a roundabout
+/// ring goes: the one test the speed pass's lane-end hold, the entry claim and the gridlock check
+/// share.
 #[inline(always)]
 pub(in crate::simulation::economy::agents::tick) fn ring_entry_clear(
     connector: usize,
+    my_half: f32,
     lanes: &LaneSystem,
-    lane_buckets: &[Vec<(f32, usize)>],
+    lane_buckets: &[Vec<LaneEntry>],
 ) -> bool {
     lanes
         .lanes
         .get(connector)
         .is_none_or(|lane| lane.ring_entry.is_none())
-        || ring_entry_blocker(connector, lanes, lane_buckets).is_none()
+        || ring_entry_blocker(connector, my_half, lanes, lane_buckets).is_none()
 }
 
-/// Returns whether a target lane has a speed-scaled safe gap at the current distance.
+/// Returns whether a target lane has a speed-scaled safe gap at the current distance for a body
+/// of half length `my_half`: to each neighbour both half lengths, the standstill gap and the
+/// headway at `speed`.
 pub(in crate::simulation::economy::agents::tick) fn lane_change_gap_clear(
-    bucket: &[(f32, usize)],
+    bucket: &[LaneEntry],
     target_d: f32,
     speed: f32,
+    my_half: f32,
 ) -> bool {
-    let min_sep = CAR_LENGTH + IDM_S_MIN + speed.max(0.0) * IDM_T_HEAD;
+    let min_gap = my_half + IDM_S_MIN + speed.max(0.0) * IDM_T_HEAD;
     let insert = bucket.partition_point(|entry| entry.0 < target_d);
-    if insert > 0 && target_d - bucket[insert - 1].0 < min_sep {
-        return false;
+    if insert > 0 {
+        let behind = bucket[insert - 1];
+        if target_d - behind.0 < behind.2 + min_gap {
+            return false;
+        }
     }
-    if insert < bucket.len() && bucket[insert].0 - target_d < min_sep {
-        return false;
+    if insert < bucket.len() {
+        let ahead = bucket[insert];
+        if ahead.0 - target_d < ahead.2 + min_gap {
+            return false;
+        }
     }
     true
 }
@@ -169,14 +216,17 @@ pub(in crate::simulation::economy::agents::tick) fn claim_lane_entry(
     lane_claims.claim_lane(agent_idx, lane_id)
 }
 
-/// Filters connector candidates to clear entries and claims one without allocating.
+/// Filters connector candidates to entries clear for a body of half length `my_half` and claims
+/// one without allocating.
+#[allow(clippy::too_many_arguments)]
 pub(in crate::simulation::economy::agents::tick) fn claim_connector_entry(
     agent_idx: usize,
+    my_half: f32,
     candidate_connectors: &mut Vec<usize>,
     any_routing_valid: bool,
     choice_seed: u64,
     lanes: &LaneSystem,
-    lane_buckets: &[Vec<(f32, usize)>],
+    lane_buckets: &[Vec<LaneEntry>],
     lane_claims: &LaneClaimContext<'_>,
 ) -> ConnectorEntry {
     if candidate_connectors.is_empty() {
@@ -188,8 +238,8 @@ pub(in crate::simulation::economy::agents::tick) fn claim_connector_entry(
     }
 
     candidate_connectors.retain(|&lane_id| {
-        lane_entry_slot_clear(lane_id, lane_buckets)
-            && ring_entry_clear(lane_id, lanes, lane_buckets)
+        lane_entry_slot_clear(lane_id, my_half, lane_buckets)
+            && ring_entry_clear(lane_id, my_half, lanes, lane_buckets)
     });
     if candidate_connectors.is_empty() {
         return ConnectorEntry::Occupied;

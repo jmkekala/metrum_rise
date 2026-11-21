@@ -11,12 +11,13 @@ use super::super::super::access::{
 use super::super::super::claims::LaneClaimContext;
 use super::super::super::lane_nav::lane_origin_node;
 use super::super::super::slices::{MovementSlices, enter_lane, hold_for_lane_attach};
-use super::super::super::traffic::{claim_lane_entry, lane_attach_slot_clear};
+use super::super::super::traffic::{claim_lane_entry, lane_attach_slot_clear, lane_half_length};
 use super::super::super::trip_failures::{FailureCause, FailureOutcome, record_failure};
 use super::super::{BUILDING_REPLAN_DELAY_S, transit_mode_label};
 use super::{point, pulls_out_of_a_dock, reset_invalid_access_plan, stand_in_yard};
 use crate::config::{AGENT_DRIVEWAY_SPEED_MS, AGENT_WALK_SPEED_MS};
 use crate::simulation::buildings::allocator::BuildingAllocator;
+use crate::simulation::economy::agents::LaneEntry;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::parking::ParkingTripPhase;
@@ -34,7 +35,7 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
     allocator: &BuildingAllocator,
     transit_network: &TransitNetwork,
     graph: &RegionGraph,
-    lane_buckets: &[Vec<(f32, usize)>],
+    lane_buckets: &[Vec<LaneEntry>],
     lane_claims: &LaneClaimContext<'_>,
     slices: &MovementSlices,
 ) {
@@ -179,7 +180,11 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
                 let attach_allowed = if *s_tmode.get(i) == MODE_CAR {
                     lane_buckets
                         .get(attach_lane_id)
-                        .map(|bucket| lane_attach_slot_clear(bucket, attach_lane_d))
+                        .map(|bucket| {
+                            let half =
+                                lane_half_length(*s_tmode.get(i), *slices.vehicle_type.get(i));
+                            lane_attach_slot_clear(bucket, attach_lane_d, half)
+                        })
                         .unwrap_or(false)
                         && claim_lane_entry(i, attach_lane_id, lane_claims)
                 } else {

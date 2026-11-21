@@ -9,7 +9,7 @@
 //! buildings or economy.
 
 use super::*;
-use crate::config::{CAR_LENGTH, IDM_S_MIN};
+use crate::config::{CAR_BODY_LENGTH_M, IDM_S_MIN};
 use crate::simulation::economy::agents::tick::{GridlockChecker, GridlockReport};
 use crate::simulation::economy::agents::{
     ACCESS_FREIGHT_BORDER_DESTINATION, ACCESS_PLAN_VALID, MODE_CAR, TRANSIT_INTERSECTION,
@@ -210,7 +210,7 @@ pub(super) fn ring(spacing_m: f32, waiting: usize, feeder: usize) -> Ring {
             agents.current_lane_id[i] = 8;
             agents.current_edge[i] = edge;
             agents.current_node[i] = source;
-            agents.lane_distance[i] = length - slot as f32 * (CAR_LENGTH + IDM_S_MIN + 0.4);
+            agents.lane_distance[i] = length - slot as f32 * (CAR_BODY_LENGTH_M + IDM_S_MIN + 0.4);
         }
     }
     Ring {
@@ -256,7 +256,7 @@ pub(super) fn run_ring(ring: &mut Ring, ticks: usize, window: usize, dt: f32) ->
             cars.sort_by(f32::total_cmp);
             for pair in cars.windows(2) {
                 assert!(
-                    pair[1] - pair[0] >= CAR_LENGTH + IDM_S_MIN - 1e-3,
+                    pair[1] - pair[0] >= CAR_BODY_LENGTH_M + IDM_S_MIN - 1e-3,
                     "tick {tick}: lane {lane} cars at {} and {}",
                     pair[0],
                     pair[1]
@@ -297,13 +297,14 @@ pub(super) fn run_ring(ring: &mut Ring, ticks: usize, window: usize, dt: f32) ->
     }
 }
 
-// Asserts the lock: full as the city's ring (141 cars on a 380 m lane, 12 on a 30 m lane),
+// Asserts the lock: full as the city's ring (82 cars on a 380 m lane, 6 on a 30 m lane),
 // nobody moving over the window while trucks still wait.
 fn assert_locked(ring: &Ring, state: &RingState) {
     assert_eq!(state.moved_in_window, 0, "{state:?}");
     assert!(state.waiting > 0, "{state:?}");
     for k in 0..4 {
-        let fit = (ring.network.lane_system.lanes[k].length / (CAR_LENGTH + IDM_S_MIN)) as usize;
+        let fit =
+            (ring.network.lane_system.lanes[k].length / (CAR_BODY_LENGTH_M + IDM_S_MIN)) as usize;
         assert!(state.per_lane[k] >= fit, "lane {k}: {state:?}");
     }
 }
@@ -335,8 +336,13 @@ fn traffic16_connector_heads_stop_at_a_blocked_exit() {
 /// may also turn at corner k + 1 onto a one-way spur to an outside node, whose return road runs
 /// to corner k + 2 and merges into road lane k + 2. No route uses the escapes until a detour.
 fn add_escapes(ring: &mut Ring) {
+    add_escapes_at(ring, &[0, 1, 2, 3]);
+}
+
+// The escapes of `add_escapes` at corners `k + 1` for each `k` of `corners` only.
+fn add_escapes_at(ring: &mut Ring, corners: &[usize]) {
     let centre = Vector3::new(200.0, 0.0, 25.0);
-    for k in 0..4 {
+    for &k in corners {
         let (b, c) = (corner(k + 1), corner(k + 2));
         let out = b + (b - centre).normalized() * 100.0;
         let graph = &mut ring.graph;

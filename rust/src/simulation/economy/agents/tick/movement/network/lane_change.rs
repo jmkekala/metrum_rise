@@ -10,8 +10,9 @@ use super::super::super::lane_nav::{
 use super::super::super::slices::{MovementSlices, enter_lane};
 use super::super::super::traffic::{
     LaneChangeKind, LaneChangeParams, OVERTAKE_COOLDOWN_S, choose_lane_change, claim_lane_entry,
-    lane_change_finished, lane_change_gap_clear, planned_lane_change_target,
+    lane_change_finished, lane_change_gap_clear, lane_half_length, planned_lane_change_target,
 };
+use crate::simulation::economy::agents::LaneEntry;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
 use crate::traffic_log;
@@ -59,7 +60,7 @@ unsafe fn turn_lane_target(
 pub(super) unsafe fn prepare_lane_change_and_overtake(
     i: usize,
     lane_id: usize,
-    lane_buckets: &[Vec<(f32, usize)>],
+    lane_buckets: &[Vec<LaneEntry>],
     transit_network: &TransitNetwork,
     graph: &RegionGraph,
     lane_claims: &LaneClaimContext<'_>,
@@ -92,6 +93,7 @@ pub(super) unsafe fn prepare_lane_change_and_overtake(
         let detach_lane_d = *slices.planned_detach_lane_d.get(i);
         let has_access_plan = (*slices.access_flags.get(i) & ACCESS_PLAN_VALID) != 0;
         let turn_preparation = transit_network.lane_system.needs_turn_preparation(lane_id);
+        let half = lane_half_length(*slices.tmode.get(i), *slices.vehicle_type.get(i));
         let choice = choose_lane_change(
             LaneChangeParams {
                 lane_id,
@@ -102,6 +104,7 @@ pub(super) unsafe fn prepare_lane_change_and_overtake(
                 has_access_plan,
                 blocked_time: *slices.overtake_blocked_time.get(i),
                 cooldown: *slices.overtake_cooldown.get(i),
+                half,
             },
             transit_network,
             lane_buckets,
@@ -137,7 +140,7 @@ pub(super) unsafe fn prepare_lane_change_and_overtake(
                 let target_d = lane_d.min(transit_network.lane_system.lanes[target_lane_id].length);
                 if !lane_buckets
                     .get(target_lane_id)
-                    .is_some_and(|bucket| lane_change_gap_clear(bucket, target_d, speed))
+                    .is_some_and(|bucket| lane_change_gap_clear(bucket, target_d, speed, half))
                 {
                     traffic_log!(
                         "[LANE_CHANGE_WAIT] agent={} lane={} target_lane={} lane_d={:.2} speed={:.2} reason=target-gap",

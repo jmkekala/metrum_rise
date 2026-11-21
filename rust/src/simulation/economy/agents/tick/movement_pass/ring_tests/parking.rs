@@ -13,7 +13,9 @@ use godot::prelude::Vector2;
 fn parking_gridlock_detour_keeps_the_reserved_driveway_and_never_teleports() {
     let mut ring = ring(12.0, 120, 0);
     run_ring(&mut ring, 4_000, 1, 0.5);
-    add_escapes(&mut ring);
+    // Only corner 1 gets a way out, so the one head that can detour is lane 0's: which lane's
+    // head waits longest, or has the lowest index on a tie, depends on how the lock formed.
+    add_escapes_at(&mut ring, &[0]);
     // Only the destination road needs sidewalks for the last walk of this isolated trip.
     let foot_fwd = ring.network.lane_system.lanes.len();
     let foot_bkw = foot_fwd + 1;

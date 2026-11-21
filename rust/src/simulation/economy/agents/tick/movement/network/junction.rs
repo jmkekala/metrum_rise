@@ -26,6 +26,7 @@ use super::apply_network_replan;
 use super::replan::replan_after_missed_turn;
 use super::walk_home::walker_lost;
 use crate::simulation::buildings::allocator::BuildingAllocator;
+use crate::simulation::economy::agents::LaneEntry;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
 use crate::traffic_log;
@@ -62,7 +63,7 @@ pub(super) unsafe fn handle_lane_end(
     transit_network: &TransitNetwork,
     graph: &RegionGraph,
     pathfind_count: &AtomicU32,
-    lane_buckets: &[Vec<(f32, usize)>],
+    lane_buckets: &[Vec<LaneEntry>],
     lane_claims: &LaneClaimContext<'_>,
     slices: &MovementSlices,
 ) -> LaneEndAction {

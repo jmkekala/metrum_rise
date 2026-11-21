@@ -93,10 +93,15 @@ pub const IDM_B: f32 = 6.0;
 pub const IDM_T_HEAD: f32 = 0.5;
 /// Minimum bumper-to-bumper gap at standstill in metres.
 pub const IDM_S_MIN: f32 = 0.1;
-/// Effective vehicle length used for IDM gap calculation in metres.
-/// Measured from .glb meshes: sedan/sports 2.55 m, SUV 2.85 m. Using 2.6 m as a
-/// representative average; adjust if packing feels too tight or loose.
-pub const CAR_LENGTH: f32 = 2.6;
+/// Body length of the `car` class in metres (`TRAFFIC-38`): what a household car takes in a
+/// lane, and the car lot proof's body (`simulation/parking/validation.rs`).
+pub const CAR_BODY_LENGTH_M: f32 = 4.5;
+/// Body length of the `truck` class in metres (`TRAFFIC-38`): what a freight carrier takes in a
+/// lane, and the freight proof's body its docks, gates and turn squares are proven for.
+pub const TRUCK_BODY_LENGTH_M: f32 = 8.0;
+/// Length a walker takes in a foot lane's bucket, in metres (`TRAFFIC-38`): a standing person's
+/// body depth front to back. Walkers queue single file at this plus [`IDM_S_MIN`].
+pub const WALKER_BODY_LENGTH_M: f32 = 0.5;
 
 /// Multiplier for converting kilometres per hour into the simulation's internal m/s units.
 pub const KMH_TO_MPS: f32 = 1.0 / 3.6;

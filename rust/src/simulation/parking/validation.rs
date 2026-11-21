@@ -3,6 +3,7 @@
 //! Shared asset-local parking proofs; frontage connections are supplied only by the city.
 
 use super::geometry::{covered, overlaps, rectangle};
+use crate::config::{CAR_BODY_LENGTH_M, TRUCK_BODY_LENGTH_M};
 use godot::prelude::Vector2;
 
 mod drive_lines;
@@ -101,10 +102,11 @@ impl ProofClass {
 // body is a rigid truck (owner decision 1): its envelope is its diagonal, √(2.6² + 8.0²) = 8.41,
 // rounded up as 4.85 is for the car; turning 15° about its centre an 8 m body leaves the two
 // corridors by under 4 cm, against 14 cm at 30°, hence the tighter bend.
+// The body lengths are the classes' lengths in a lane too (`TRAFFIC-38`, `config.rs`).
 const CLASS_TABLE: [VehicleProof; 2] = [
     VehicleProof {
         body_width: 1.8,
-        body_length: 4.5,
+        body_length: CAR_BODY_LENGTH_M,
         turn_envelope: 4.85,
         lead: 2.5,
         straight_through_cos: 0.866,
@@ -123,7 +125,7 @@ const CLASS_TABLE: [VehicleProof; 2] = [
     },
     VehicleProof {
         body_width: 2.6,
-        body_length: 8.0,
+        body_length: TRUCK_BODY_LENGTH_M,
         turn_envelope: 8.45,
         lead: 4.25,
         // cos 15°.

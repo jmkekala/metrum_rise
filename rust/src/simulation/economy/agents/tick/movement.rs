@@ -15,6 +15,7 @@ use super::claims::LaneClaimContext;
 use super::slices::MovementSlices;
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::core::time::TimeSystem;
+use crate::simulation::economy::agents::LaneEntry;
 use crate::simulation::economy::agents::data::AgentSystem;
 use crate::simulation::economy::definitions::{
     OperationalClockRuntimeTuning, RuntimeEconomyCatalog,
@@ -55,7 +56,7 @@ impl AgentSystem {
         transit_network: &TransitNetwork,
         graph: &RegionGraph,
         pathfind_count: &AtomicU32,
-        lane_buckets: &[Vec<(f32, usize)>],
+        lane_buckets: &[Vec<LaneEntry>],
         lane_claims: &LaneClaimContext<'_>,
         operational_clock: &OperationalClockRuntimeTuning,
         economy_catalog: &RuntimeEconomyCatalog,

@@ -199,7 +199,8 @@ Connector choices retain their existing `stable_index` algorithm and seeds.
 Cars use a simplified Intelligent Driver Model in `idm_new_speed()`:
 
 - free-flow speed is the current road edge speed limit, or the connector turn speed in junctions
-- gap is bumper-to-bumper distance to the next car in the lane bucket
+- gap is bumper-to-bumper distance to the next car in the lane bucket: the centre distance less
+  both bodies' half lengths (`TRAFFIC-38`, below)
 - the full approach-speed IDM term is not implemented yet because per-agent lead speed is not
   tracked
 
@@ -209,7 +210,41 @@ Current constants:
 - `IDM_B = 6.0 m/s^2`
 - `IDM_T_HEAD = 0.5 s`
 - `IDM_S_MIN = 0.1 m`
-- `CAR_LENGTH = 2.6 m`
+- body lengths by class (`TRAFFIC-38`): `CAR_BODY_LENGTH_M = 4.5 m`, `TRUCK_BODY_LENGTH_M =
+  8.0 m`, walkers `WALKER_BODY_LENGTH_M = 0.5 m`
+
+**Body length in a lane (`TRAFFIC-38`, as built 2026-11-21).** An agent's lane distance is the
+centre of its body (the drawn model's origin and a parking bay's centre are the body centre too).
+Its class comes from two saved columns, so nothing new is stored or saved: a walker
+(`transit_mode == MODE_WALK`) takes 0.5 m, a freight carrier (`vehicle_type ==
+VEHICLE_FREIGHT_DELIVERY`, the vehicle drawn as the truck, whether loaded or not) takes the
+`truck` class's 8.0 m, and every other vehicle the `car` class's 4.5 m. The `van` (6.0 m) and
+`bus` (12.0 m) classes have no simulated vehicle yet. A lane bucket entry is `(distance, agent,
+half length)` (`LaneEntry`): the half length fills the padding of the old `(f32, usize)` pair, so
+an entry stays 16 bytes and a test reads its neighbour's length from the entry it already loads.
+`lane_half_length(transit_mode, vehicle_type)` is the one source; the fill and every patch write
+it, and the test-build rebuild check compares it.
+
+Every spacing is pairwise, the centre distance against both half lengths:
+
+| Test | Two bodies are clear when their centres differ by at least |
+| --- | --- |
+| Following gap (`idm_gap_bucket`), the speed pass and lane-change choice | the gap is centre distance - both halves, floored at 0.1 m |
+| Attach and entry slot (`lane_attach_slot_clear`, `lane_entry_slot_clear`): lane and connector entry, driveway and kerb attach, a connector head's exit, the gridlock check's waits | both halves + `IDM_S_MIN` |
+| Lane-change gap (`lane_change_gap_clear`) | both halves + `IDM_S_MIN` + speed x `IDM_T_HEAD` |
+| Ring entry, arriving head (`ring_entry_blocker`) | the head's distance to its lane end is at most both halves + `IDM_S_MIN` + 20 km/h x `IDM_T_HEAD` |
+| Overlap correction at the end of the tick | both halves + `IDM_S_MIN` (the rear body moves back) |
+| Overtaking pressure (`overtake_follow_gap`) | the bumper gap is under the car's own length + `IDM_S_MIN` + speed x `IDM_T_HEAD` + 8 m |
+
+So a jammed car queue packs one car per 4.6 m, a truck takes 8.1 m, a car behind a truck stands
+6.35 m from it, and walkers queue single file 0.6 m apart. The entering body is the one asking:
+a truck needs 4.0 + 2.25 + 0.1 m of free lane ahead of the entry point to enter behind a car.
+Hot-path cost: none in memory (the entry size is unchanged, no new agent column) and one byte
+read per car in the speed pass (`vehicle_type`, at the pass's own index); the fill reads
+`transit_mode` and `vehicle_type` at the index whose distance it already reads. Every lookup stays
+O(log bucket), no allocation. A city saved with denser queues settles on its first tick: the
+overlap correction pushes each rear car back to the new spacing, clamped at the lane start
+(`traffic38_loaded_jam_at_old_spacing_settles_on_its_lane`).
 
 After IDM proposes a target speed, `limit_speed_change()` clamps the change by acceleration and
 comfortable braking. This prevents cars from snapping instantly between stopped and free-flow
@@ -1029,8 +1064,9 @@ shape for priority roads and yield signs.
 lane buckets:
 
 - a car is on the circulating connector;
-- the ring lane's head is arriving: within `CAR_LENGTH + IDM_S_MIN + 20 km/h x IDM_T_HEAD` (5.48 m)
-  of the lane's end and not standing at it;
+- the ring lane's head is arriving: within both bodies' half lengths + `IDM_S_MIN` + 20 km/h x
+  `IDM_T_HEAD` of the lane's end (7.38 m for two cars; 5.48 m before `TRAFFIC-38`) and not
+  standing at it;
 - the ring lane's entry slot is blocked ("room ahead": `lane_entry_slot_clear`, the test a connector
   head makes at its exit, not the box rule the user dropped in round R14C).
 
@@ -3102,8 +3138,9 @@ The baseline the plan was written against. A1 changed the last three points: `lo
   check and the building departure all test `freight_shipment_id == u64::MAX`
   (`tick/parking/candidates.rs`, `tick/parking.rs`, `movement/building.rs`), and the watchdog
   excludes only residents on a parking leg (`replan_watchdog.rs`).
-- **Vehicle size.** Every vehicle takes `CAR_LENGTH` (2.6 m) plus `IDM_S_MIN` in a lane bucket;
-  movement has no per-class length. The freight model is the Kenney delivery van
+- **Vehicle size.** Every vehicle took `CAR_LENGTH` (2.6 m) plus `IDM_S_MIN` in a lane bucket
+  when this was written; since `TRAFFIC-38` a freight carrier takes 8.0 m and a car 4.5 m
+  ([car following](#car-following)). The freight model is the Kenney delivery van
   (`vehicle_resources.gd` model 4), drawn at its native scale; its lamp table puts the lamps 3.1 m
   apart along the body and at most 0.55 m off the centre line. Its mesh bounds (`delivery.glb`,
   read 2026-11-20 in `PARK-19` round 1) are 3.25 m long, 1.5 m wide and 1.65 m high, inside the
@@ -4615,5 +4652,6 @@ The measured ignored tests are
   must keep connector lanes and `next_lanes` in sync
 - a border queue of held cars is not shortened by the entry hold: the borders' throughput (one
   single-lane trunk per 10,000 residents in the perf fixture) is a separate fixture question
-- walkers walking a route keep car spacing (2.7 m) in lane buckets, connector entry claims and
-  overlap correction; a walker standing with no route is in no bucket (`TRAFFIC-37`)
+- walkers walking a route queue single file 0.6 m apart (`TRAFFIC-38`) in lane buckets,
+  connector entry claims and overlap correction; a walker standing with no route is in no bucket
+  (`TRAFFIC-37`)

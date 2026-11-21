@@ -3,7 +3,7 @@
 //! Lane-transition arbitration regressions and isolated movement measurements.
 
 use super::*;
-use crate::config::{CAR_LENGTH, IDM_S_MIN};
+use crate::config::{CAR_BODY_LENGTH_M, IDM_S_MIN};
 use crate::simulation::economy::agents::{
     ACCESS_FREIGHT_BORDER_DESTINATION, ACCESS_PLAN_VALID, MODE_CAR, MODE_WALK,
     TRANSIT_INTERSECTION, TRANSIT_NETWORK,
@@ -569,7 +569,7 @@ fn run_node_entry(
             for _ in 0..ticks {
                 agents.tick(&allocator, &mut network, &mut graph, 0.25, &clock);
             }
-            let min_gap = CAR_LENGTH + IDM_S_MIN - 1e-3;
+            let min_gap = CAR_BODY_LENGTH_M + IDM_S_MIN - 1e-3;
             for group in 0..groups {
                 let mut on_lane: Vec<f32> = Vec::new();
                 for i in group * cars..(group + 1) * cars {

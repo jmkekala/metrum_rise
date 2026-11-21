@@ -13,11 +13,12 @@ use super::lane_nav::{
 };
 use super::traffic::{
     LaneChangeParams, choose_lane_change, connector_turn_speed, junction_car_speed,
-    lane_attach_slot_clear, lane_change_finished, lane_entry_slot_clear,
+    lane_attach_slot_clear, lane_change_finished, lane_entry_slot_clear, lane_half_length,
     planned_lane_change_target,
 };
 use crate::config::CAR_JUNCTION_SPEED_MS;
 use crate::simulation::buildings::allocator::BuildingAllocator;
+use crate::simulation::economy::agents::LaneEntry;
 use crate::simulation::economy::agents::data::{AgentSystem, AgentVec, MovementClaimMode};
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
@@ -95,7 +96,7 @@ struct ClaimPreparation<'a> {
     allocator: &'a BuildingAllocator,
     network: &'a TransitNetwork,
     graph: &'a RegionGraph,
-    lane_buckets: &'a [Vec<(f32, usize)>],
+    lane_buckets: &'a [Vec<LaneEntry>],
     owners: &'a [AtomicUsize],
     delta: f32,
 }
@@ -177,6 +178,7 @@ fn first_entry_is_held(agents: &AgentVec, i: usize, p: &ClaimPreparation<'_>) ->
     }
     let node = agents.current_node[i];
     let path = &agents.current_path[i];
+    let half = lane_half_length(agents.transit_mode[i], agents.vehicle_type[i]);
     let Some(&next) = path.get(agents.current_path_index[i]) else {
         // Zero-hop: the planned detach lane starts at this node.
         let detach_lane = agents.planned_detach_lane_id[i] as usize;
@@ -185,7 +187,7 @@ fn first_entry_is_held(agents: &AgentVec, i: usize, p: &ClaimPreparation<'_>) ->
             && detach_lane != usize::MAX
             && node == agents.planned_detach_node[i]
             && lane_origin_node(detach_lane, p.network, p.graph) == Some(node)
-            && !lane_entry_slot_clear(detach_lane, p.lane_buckets);
+            && !lane_entry_slot_clear(detach_lane, half, p.lane_buckets);
     };
     let Some(edge_id) = p.graph.get_edge_between_nodes(node, next) else {
         return false;
@@ -199,7 +201,7 @@ fn first_entry_is_held(agents: &AgentVec, i: usize, p: &ClaimPreparation<'_>) ->
         let lane = &p.network.lane_system.lanes[id];
         if lane.is_fwd == forward && lane.lane_type == LaneType::Vehicle {
             any = true;
-            if lane_entry_slot_clear(id, p.lane_buckets) {
+            if lane_entry_slot_clear(id, half, p.lane_buckets) {
                 return false;
             }
         }
@@ -234,7 +236,10 @@ fn classify_network_claims(
                 && preparation
                     .lane_buckets
                     .get(attach_lane)
-                    .is_some_and(|bucket| !lane_attach_slot_clear(bucket, attach_d));
+                    .is_some_and(|bucket| {
+                        let half = lane_half_length(agents.transit_mode[i], agents.vehicle_type[i]);
+                        !lane_attach_slot_clear(bucket, attach_d, half)
+                    });
             return if held {
                 MovementClaimMode::HeldEntry
             } else {
@@ -337,6 +342,7 @@ fn agent_lane_change_target(
             has_access_plan: (agents.access_flags[i] & ACCESS_PLAN_VALID) != 0,
             blocked_time: agents.overtake_blocked_time_s[i],
             cooldown: agents.overtake_cooldown_s[i],
+            half: lane_half_length(agents.transit_mode[i], agents.vehicle_type[i]),
         },
         preparation.network,
         preparation.lane_buckets,

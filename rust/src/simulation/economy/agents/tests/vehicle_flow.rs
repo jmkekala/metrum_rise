@@ -48,18 +48,18 @@ fn test_idm_following_car_slower_than_free_car() {
 
 #[test]
 fn test_overlap_correction_separates_cars() {
-    use crate::config::{CAR_LENGTH, IDM_S_MIN};
-    // Place two cars so they overlap: front car at 20 m, rear car at 20 m + gap < CAR_LENGTH.
+    use crate::config::{CAR_BODY_LENGTH_M, IDM_S_MIN};
+    // Place two cars so they overlap: front car at 20 m, rear car less than a car length behind.
     let (mut network, mut graph, edge_idx, fwd_lane) = setup_straight_road();
     let mut agents = AgentSystem::new();
     let allocator = BuildingAllocator::new();
     let front = place_on_lane(&mut agents, edge_idx, fwd_lane, 20.0, 10.0);
-    let rear = place_on_lane(&mut agents, edge_idx, fwd_lane, 19.5, 10.0); // 0.5 m apart < CAR_LENGTH
+    let rear = place_on_lane(&mut agents, edge_idx, fwd_lane, 19.5, 10.0); // 0.5 m apart
     agents.tick(&allocator, &mut network, &mut graph, 0.1, &test_clock(0, 0));
     let gap = agents.lane_distance[front] - agents.lane_distance[rear];
     assert!(
-        gap >= CAR_LENGTH + IDM_S_MIN - 0.01,
-        "gap {gap:.3} m after tick must be >= CAR_LENGTH + IDM_S_MIN = {:.3}",
-        CAR_LENGTH + IDM_S_MIN
+        gap >= CAR_BODY_LENGTH_M + IDM_S_MIN - 0.01,
+        "gap {gap:.3} m after tick must be >= CAR_BODY_LENGTH_M + IDM_S_MIN = {:.3}",
+        CAR_BODY_LENGTH_M + IDM_S_MIN
     );
 }

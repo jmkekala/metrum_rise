@@ -162,7 +162,7 @@ impl JunctionStallDetector {
                 continue;
             }
             let bucket = &agents.lane_buckets[lane_id];
-            for (slot, &(lane_d, agent)) in bucket.iter().enumerate() {
+            for (slot, &(lane_d, agent, _)) in bucket.iter().enumerate() {
                 if agent >= agents.agents.len()
                     || agents.current_lane_id[agent] != lane_id
                     || agents.transit[agent] != TRANSIT_INTERSECTION
@@ -221,9 +221,9 @@ fn stall_cause(
     let lane = &lanes.lanes[lane_id];
     let bucket = &agents.lane_buckets[lane_id];
     if waits_at_connector_end(bucket[slot].0, lane.length) {
-        return exit_cause(agents, lanes, lane_id);
+        return exit_cause(agents, lanes, lane_id, bucket[slot].2);
     }
-    if let Some(&(leader_d, leader)) = bucket.get(slot + 1) {
+    if let Some(&(leader_d, leader, _)) = bucket.get(slot + 1) {
         return StallCause::QueuedBehind {
             leader_render_id: agents.render_id[leader],
             leader_d,
@@ -234,8 +234,9 @@ fn stall_cause(
     }
 }
 
-// Mirrors the exit check in `exit_connector_lane`: the exit lane's entry slot must be clear.
-fn exit_cause(agents: &AgentSystem, lanes: &LaneSystem, lane_id: usize) -> StallCause {
+// Mirrors the exit check in `exit_connector_lane`: the exit lane's entry slot must be clear for
+// the stalled body, of half length `half`.
+fn exit_cause(agents: &AgentSystem, lanes: &LaneSystem, lane_id: usize, half: f32) -> StallCause {
     let Some(&exit_lane) = lanes.lanes[lane_id].next_lanes.first() else {
         return StallCause::NoExit;
     };
@@ -243,11 +244,11 @@ fn exit_cause(agents: &AgentSystem, lanes: &LaneSystem, lane_id: usize) -> Stall
         .lane_buckets
         .get(exit_lane)
         .map_or(&[][..], Vec::as_slice);
-    if lane_attach_slot_clear(bucket, 0.0) {
+    if lane_attach_slot_clear(bucket, 0.0, half) {
         return StallCause::ExitClaimLost { exit_lane };
     }
     // The bucket is sorted by distance, so the first car is the one nearest the entry.
-    let (blocker_d, blocker) = bucket[0];
+    let (blocker_d, blocker, _) = bucket[0];
     StallCause::ExitOccupied {
         exit_lane,
         blocker_render_id: agents.render_id[blocker],
@@ -303,7 +304,8 @@ mod tests {
                 agents.dirty_lanes.push(lane_id);
             }
             let lane_d = agents.lane_distance[agent];
-            agents.lane_buckets[lane_id].push((lane_d, agent));
+            let half = agents.lane_half_length_of(agent);
+            agents.lane_buckets[lane_id].push((lane_d, agent, half));
         }
         for bucket in &mut agents.lane_buckets {
             bucket.sort_by(|a, b| a.0.total_cmp(&b.0));

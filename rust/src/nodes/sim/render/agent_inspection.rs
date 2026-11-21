@@ -58,7 +58,7 @@ pub(crate) fn pick_agent(
         let Some(lane) = lanes.lanes.get(lane_id) else {
             return;
         };
-        for &(_, idx) in agents.lane_buckets.get(lane_id).into_iter().flatten() {
+        for &(_, idx, _) in agents.lane_buckets.get(lane_id).into_iter().flatten() {
             if idx >= agents.len()
                 || agents.current_lane_id[idx] != lane_id
                 || !matches!(agents.transit[idx], TRANSIT_NETWORK | TRANSIT_INTERSECTION)
@@ -497,7 +497,7 @@ mod tests {
         agents.current_lane_id[idx] = lane_id;
         agents.lane_distance[idx] = lane_d;
         agents.lane_buckets.resize(lanes.lanes.len(), Vec::new());
-        agents.lane_buckets[lane_id].push((lane_d, idx));
+        agents.lane_buckets[lane_id].push((lane_d, idx, 2.25));
         idx
     }
 

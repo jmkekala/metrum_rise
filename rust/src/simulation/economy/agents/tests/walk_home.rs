@@ -1192,7 +1192,9 @@ fn a_walker_waiting_for_a_home_at_its_lane_end_lets_the_walkers_behind_it_pass()
     );
     assert_eq!(agents.access_flags[waiting], 0);
     assert!(
-        agents.lane_buckets[lane].iter().all(|&(_, i)| i != waiting),
+        agents.lane_buckets[lane]
+            .iter()
+            .all(|&(_, i, _)| i != waiting),
         "it is in no bucket"
     );
 }

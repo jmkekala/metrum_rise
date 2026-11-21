@@ -6,12 +6,15 @@
 //!
 //! A car is held when it has no lane and waits at a node for its first lane (`TRAFFIC-07`) or at
 //! an attach point for a gap (`TRAFFIC-11`). Its blocker is the car whose slot conflicts with the
-//! entry (the same static separation `lane_attach_slot_clear` tests). A blocked car on a lane has
+//! entry (the same static separation `lane_attach_slot_clear` tests, both bodies' half lengths and
+//! the standstill gap, `TRAFFIC-38`). A blocked car on a lane has
 //! the car ahead of it, or, at the lane end, the car on the entry of its next lane.
 
 use super::{STACK_RADIUS_M, in_play};
-use crate::config::{CAR_LENGTH, IDM_S_MIN};
+use crate::config::{CAR_BODY_LENGTH_M, IDM_S_MIN};
 use crate::nodes::sim::core::state::SimCore;
+use crate::simulation::economy::agents::LaneEntry;
+use crate::simulation::economy::agents::tick::lane_half_length;
 use crate::simulation::economy::agents::{
     ACCESS_FREIGHT_BORDER_DESTINATION, ACCESS_LANE_ATTACH_PENDING, ACCESS_PLAN_VALID, AgentVec,
     MODE_WALK, TRANSIT_NETWORK,
@@ -19,8 +22,9 @@ use crate::simulation::economy::agents::{
 use crate::simulation::network::lanes::LaneType;
 use std::collections::{BTreeMap, HashMap};
 
-// Static separation of two cars, as `lane_attach_slot_clear` uses.
-const SPACING: f32 = CAR_LENGTH + IDM_S_MIN;
+// Static separation of two cars (`car` class), as `lane_attach_slot_clear` uses: the reach of the
+// queue tests below. The slot test itself reads each body's own length.
+const SPACING: f32 = CAR_BODY_LENGTH_M + IDM_S_MIN;
 // A car faster than this is moving; its queue will clear.
 const MOVING_MS: f32 = 0.5;
 // A stopped car this close behind another counts as queued behind it.
@@ -128,7 +132,7 @@ impl WaitBook {
 /// sorted by distance, plus the agent index of each car id.
 struct Occupancy<'a> {
     core: &'a SimCore,
-    buckets: Vec<Vec<(f32, usize)>>,
+    buckets: Vec<Vec<LaneEntry>>,
     index_of: HashMap<u64, usize>,
 }
 
@@ -141,7 +145,8 @@ impl<'a> Occupancy<'a> {
         for i in 0..agents.len() {
             index_of.insert(agents.render_id[i], i);
             if in_play(agents, i) && agents.current_lane_id[i] < lane_count {
-                buckets[agents.current_lane_id[i]].push((agents.lane_distance[i], i));
+                let half = lane_half_length(agents.transit_mode[i], agents.vehicle_type[i]);
+                buckets[agents.current_lane_id[i]].push((agents.lane_distance[i], i, half));
             }
         }
         for bucket in &mut buckets {
@@ -158,13 +163,22 @@ impl<'a> Occupancy<'a> {
         &self.core.agents.agents
     }
 
-    // The car whose slot conflicts with a car placed at `d` of `lane` (nearer one first).
-    fn in_the_way(&self, lane: usize, d: f32) -> Option<usize> {
+    // Half the length of car `i`'s body in a lane.
+    fn half(&self, i: usize) -> f32 {
+        let agents = self.agents();
+        lane_half_length(agents.transit_mode[i], agents.vehicle_type[i])
+    }
+
+    // The car whose slot conflicts with a body of half length `half` placed at `d` of `lane`
+    // (nearer one first).
+    fn in_the_way(&self, lane: usize, d: f32, half: f32) -> Option<usize> {
         let bucket = self.buckets.get(lane)?;
         let insert = bucket.partition_point(|entry| entry.0 < d);
-        let behind = (insert > 0 && d - bucket[insert - 1].0 < SPACING).then(|| bucket[insert - 1]);
-        let ahead =
-            (insert < bucket.len() && bucket[insert].0 - d < SPACING).then(|| bucket[insert]);
+        let clear = |entry: &LaneEntry| entry.2 + half + IDM_S_MIN;
+        let behind = (insert > 0 && d - bucket[insert - 1].0 < clear(&bucket[insert - 1]))
+            .then(|| bucket[insert - 1]);
+        let ahead = (insert < bucket.len() && bucket[insert].0 - d < clear(&bucket[insert]))
+            .then(|| bucket[insert]);
         match (behind, ahead) {
             (Some(b), Some(a)) => Some(if d - b.0 <= a.0 - d { b.1 } else { a.1 }),
             (Some(b), None) => Some(b.1),
@@ -271,7 +285,7 @@ impl<'a> Occupancy<'a> {
         }
         let bucket = &self.buckets[lane];
         let slot = bucket.partition_point(|entry| (entry.0, entry.1) < (d, i));
-        if let Some(&(leader_d, leader)) = bucket.get(slot + 1)
+        if let Some(&(leader_d, leader, _)) = bucket.get(slot + 1)
             && leader_d - d < QUEUE_REACH_M
         {
             return Step::Blocked(
@@ -284,7 +298,7 @@ impl<'a> Occupancy<'a> {
             if candidates.is_empty() {
                 return Step::Unexplained(format!("at the end of lane {lane} with no next entry"));
             }
-            return self.pick_blocker(&candidates, 0.0, "entry of lane");
+            return self.pick_blocker(&candidates, 0.0, self.half(i), "entry of lane");
         }
         Step::Unexplained("stopped mid-lane with no car ahead".into())
     }
@@ -295,7 +309,7 @@ impl<'a> Occupancy<'a> {
         let agents = self.agents();
         let lanes = &core.transit_network.lane_system.lanes;
         if let Some((lane, d)) = agents.pending_lane_attach(i) {
-            return match self.in_the_way(lane as usize, d) {
+            return match self.in_the_way(lane as usize, d, self.half(i)) {
                 Some(car) => Step::Blocked(car, format!("attach slot of lane {lane} at {d:.1} m")),
                 None => {
                     Step::Unexplained(format!("attach slot of lane {lane} at {d:.1} m is clear"))
@@ -317,7 +331,7 @@ impl<'a> Occupancy<'a> {
         if candidates.is_empty() {
             return Step::Unexplained(format!("no first lane at node {node}"));
         }
-        self.pick_blocker(&candidates, 0.0, "first-lane entry of lane")
+        self.pick_blocker(&candidates, 0.0, self.half(i), "first-lane entry of lane")
     }
 
     // The car ring entry `lane` gives way to (`ROAD-62`): on the circulating connector, or the head
@@ -335,12 +349,12 @@ impl<'a> Occupancy<'a> {
     }
 
     // A car waits when every candidate entry has a car in the way; follow the slowest one.
-    fn pick_blocker(&self, candidates: &[usize], d: f32, what: &str) -> Step {
+    fn pick_blocker(&self, candidates: &[usize], d: f32, half: f32, what: &str) -> Step {
         let agents = self.agents();
         let mut best: Option<(usize, usize)> = None;
         for &lane in candidates {
             let Some(car) = self
-                .in_the_way(lane, d)
+                .in_the_way(lane, d, half)
                 .or_else(|| self.ring_entry_holder(lane))
             else {
                 return Step::Unexplained(format!(
@@ -438,7 +452,9 @@ impl<'a> Occupancy<'a> {
         let slot = bucket.partition_point(|entry| (entry.0, entry.1) < (d, i));
         let queued = bucket
             .get(slot + 1)
-            .is_some_and(|&(leader_d, _)| leader_d - d < SPACING + 0.3);
+            .is_some_and(|&(leader_d, _, leader_half)| {
+                leader_d - d < leader_half + self.half(i) + IDM_S_MIN + 0.3
+            });
         let changing = agents.lane_change_from_lane_id[i] != u32::MAX;
         match (l.edge_id == usize::MAX, d + AT_END_M >= l.length, queued) {
             (true, true, _) => "connector_end",
@@ -761,7 +777,7 @@ impl WaitBook {
         let mut speed_classes = std::collections::BTreeMap::<&str, u32>::new();
         let mut speed_samples = std::collections::BTreeMap::<&str, Vec<u64>>::new();
         for (lane, bucket) in occ.buckets.iter().enumerate() {
-            for &(d, car) in bucket {
+            for &(d, car, _) in bucket {
                 let id = agents.render_id[car];
                 if let Some(&(prev_lane, prev_d)) = self.positions.get(&id)
                     && prev_lane == lane
@@ -785,7 +801,7 @@ impl WaitBook {
         let mut steps = HashMap::new();
         let mut memo = HashMap::new();
         for (lane, bucket) in occ.buckets.iter().enumerate() {
-            let Some(&(d, head)) = bucket.last() else {
+            let Some(&(d, head, _)) = bucket.last() else {
                 continue;
             };
             let id = agents.render_id[head];
@@ -944,7 +960,7 @@ impl WaitBook {
                         let bucket = &occ.buckets[entry];
                         (
                             entry,
-                            occ.in_the_way(entry, 0.0).is_none(),
+                            occ.in_the_way(entry, 0.0, occ.half(i)).is_none(),
                             bucket.len(),
                             bucket.first().map_or(u64::MAX, |f| agents.render_id[f.1]),
                         )
@@ -960,7 +976,7 @@ impl WaitBook {
             let (ahead, entries) = if lane < lanes.len() {
                 let bucket = &occ.buckets[lane];
                 let slot = bucket.partition_point(|entry| (entry.0, entry.1) < (d, i));
-                let ahead = bucket.get(slot + 1).map(|&(ahead_d, car)| {
+                let ahead = bucket.get(slot + 1).map(|&(ahead_d, car, _)| {
                     serde_json::json!({"car": agents.render_id[car], "d": ahead_d, "v": agents.speed[car]})
                 });
                 let entries: Vec<serde_json::Value> = occ
@@ -975,7 +991,7 @@ impl WaitBook {
                             "first_car": first_id, "first_d": first.map(|f| f.0),
                             "first_v": first.map(|f| agents.speed[f.1]),
                             "entered": previous.is_some_and(|p| Some(p) != first_id),
-                            "slot_clear": occ.in_the_way(entry, 0.0).is_none(),
+                            "slot_clear": occ.in_the_way(entry, 0.0, occ.half(i)).is_none(),
                         })
                     })
                     .collect();
@@ -1025,7 +1041,7 @@ pub(super) fn wait_cycles(core: &SimCore) -> Vec<CycleInfo> {
     let mut seen = std::collections::HashSet::new();
     let mut cycles = Vec::new();
     for bucket in &occ.buckets {
-        let Some(&(_, head)) = bucket.last() else {
+        let Some(&(_, head, _)) = bucket.last() else {
             continue;
         };
         if let Outcome::Cycle(cycle) = resolve(&occ, &mut steps, &mut memo, head) {
@@ -1079,8 +1095,9 @@ impl Occupancy<'_> {
             let Some(exit) = exit else {
                 continue;
             };
-            let clear = self.in_the_way(succ, 0.0).is_none()
-                && (exit == succ || self.in_the_way(exit, 0.0).is_none());
+            let half = self.half(i);
+            let clear = self.in_the_way(succ, 0.0, half).is_none()
+                && (exit == succ || self.in_the_way(exit, 0.0, half).is_none());
             ways += u32::from(clear);
         }
         Some(ways)

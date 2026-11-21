@@ -9,6 +9,7 @@ use super::{
     MODE_WALK, TRANSIT_IN_BUILDING, TRANSIT_INTERSECTION, TRANSIT_NETWORK,
 };
 use crate::simulation::buildings::allocator::BuildingAllocator;
+use crate::simulation::economy::agents::LaneEntry;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::lanes::{Lane, LaneIdentity, LaneSystem, LaneType};
 use crate::simulation::pathing::cch::CchGraph;
@@ -291,7 +292,7 @@ impl AgentSystem {
         // lanes was detached, so these are the rebuilt lanes' whole occupancy: a car whose spot
         // is taken waits there for an attach gap instead of stacking (`TRAFFIC-11`).
         // O(reattached × log) per edit.
-        let mut reattached: HashMap<usize, Vec<(f32, usize)>> = HashMap::new();
+        let mut reattached: HashMap<usize, Vec<LaneEntry>> = HashMap::new();
         // Detached agents with no lane in reach whose edge the edit removed (`SAVE-04`).
         let mut stranded = Vec::new();
         for (i, candidate) in detached {
@@ -322,11 +323,12 @@ impl AgentSystem {
             };
 
             let room = self.agents.transit_mode[i] == MODE_WALK || {
+                let half = self.lane_half_length_of(i);
                 let cars = reattached.entry(candidate.lane_id).or_default();
-                let clear = lane_attach_slot_clear(cars, candidate.lane_d);
+                let clear = lane_attach_slot_clear(cars, candidate.lane_d, half);
                 if clear {
                     let at = cars.partition_point(|car| car.0 < candidate.lane_d);
-                    cars.insert(at, (candidate.lane_d, i));
+                    cars.insert(at, (candidate.lane_d, i, half));
                 }
                 clear
             };

@@ -14,7 +14,10 @@
 use super::super::TRANSIT_IMMIGRATING;
 use super::super::data::AgentSystem;
 use super::traffic::{connector_turn_speed, lane_attach_slot_clear, ring_entry_blocker};
-use crate::config::{CAR_LENGTH, DEFAULT_URBAN_ROAD_SPEED_MS, IDM_S_MIN, IDM_T_HEAD};
+use crate::config::{CAR_BODY_LENGTH_M, DEFAULT_URBAN_ROAD_SPEED_MS, IDM_S_MIN, IDM_T_HEAD};
+
+// A car's half length (`TRAFFIC-38`): every car of this fixture is a household car.
+const CAR_HALF: f32 = CAR_BODY_LENGTH_M * 0.5;
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::core::time::TimeSystem;
 use crate::simulation::network::TransitNetwork;
@@ -387,7 +390,7 @@ fn tally_holds(site: &Site, agents: &AgentSystem, sources: &[Source], holds: &mu
     let system = &site.network.lane_system;
     let buckets = &agents.lane_buckets;
     for source in sources {
-        let Some(&(d, _)) = buckets[source.lane].last() else {
+        let Some(&(d, _, _)) = buckets[source.lane].last() else {
             continue;
         };
         let lane = &system.lanes[source.lane];
@@ -396,7 +399,7 @@ fn tally_holds(site: &Site, agents: &AgentSystem, sources: &[Source], holds: &mu
         }
         let mut reason = None;
         for &connector in lane.next_lanes.iter() {
-            if !lane_attach_slot_clear(&buckets[connector], 0.0) {
+            if !lane_attach_slot_clear(&buckets[connector], 0.0, CAR_HALF) {
                 reason.get_or_insert(0);
                 continue;
             }
@@ -404,7 +407,7 @@ fn tally_holds(site: &Site, agents: &AgentSystem, sources: &[Source], holds: &mu
                 reason = Some(9);
                 break;
             };
-            match ring_entry_blocker(connector, system, buckets) {
+            match ring_entry_blocker(connector, CAR_HALF, system, buckets) {
                 None => {
                     reason = Some(9);
                     break;
@@ -486,6 +489,7 @@ fn run(layout: Layout, demand: Demand, dt: f32, phase: u32, warm_s: f32, measure
                     .get(source.lane)
                     .map_or(&[][..], Vec::as_slice),
                 0.0,
+                CAR_HALF,
             );
             if !clear {
                 source.blocked_ticks += u64::from(measuring);
@@ -594,7 +598,7 @@ fn idm_lane_capacity_per_min(v0: f32) -> (f32, f32) {
     let mut v = 0.01;
     while v < v0 {
         let gap = (IDM_S_MIN + v * IDM_T_HEAD) / (1.0 - (v / v0).powi(4)).sqrt();
-        let flow = v / (CAR_LENGTH + gap);
+        let flow = v / (CAR_BODY_LENGTH_M + gap);
         if flow > best {
             (best, at) = (flow, v);
         }

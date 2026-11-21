@@ -20,6 +20,7 @@ pub(super) use lane_change::{
 #[cfg(test)]
 pub(super) use lane_change::{cruise_lane_return_target, overtaking_lane_target};
 pub(in crate::simulation::economy::agents) use occupancy::lane_attach_slot_clear;
+pub(crate) use occupancy::lane_half_length;
 pub(super) use occupancy::{
     ConnectorEntry, claim_connector_entry, claim_lane_entry, idm_gap_bucket, lane_bucket_member,
     lane_change_gap_clear, lane_entry_slot_clear, live_lane_bucket_transit, ring_entry_blocker,
@@ -40,6 +41,9 @@ mod tests {
     use crate::simulation::network::lanes::{Lane, LaneType};
     use godot::prelude::Vector3;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    // A car's half length (`TRAFFIC-38`).
+    const CAR_HALF: f32 = crate::config::CAR_BODY_LENGTH_M * 0.5;
 
     #[test]
     fn test_junction_car_speed_caps_fast_turns() {
@@ -87,7 +91,16 @@ mod tests {
         let claim_context = LaneClaimContext::new(&lane_claims, &modes);
         let mut candidates = vec![0];
         assert_eq!(
-            claim_connector_entry(0, &mut candidates, true, 0, &no_lanes, &lane_buckets, &claim_context),
+            claim_connector_entry(
+                0,
+                CAR_HALF,
+                &mut candidates,
+                true,
+                0,
+                &no_lanes,
+                &lane_buckets,
+                &claim_context
+            ),
             ConnectorEntry::Enter(0)
         );
         assert_eq!(lane_claims[0].load(Ordering::Relaxed), 0);
@@ -95,17 +108,27 @@ mod tests {
 
         let mut candidates = vec![0];
         assert_eq!(
-            claim_connector_entry(1, &mut candidates, true, 0, &no_lanes, &lane_buckets, &claim_context),
+            claim_connector_entry(
+                1,
+                CAR_HALF,
+                &mut candidates,
+                true,
+                0,
+                &no_lanes,
+                &lane_buckets,
+                &claim_context
+            ),
             ConnectorEntry::ClaimedThisTick
         );
 
-        let occupied_buckets = vec![vec![(0.0, 1)]];
+        let occupied_buckets = vec![vec![(0.0, 1, CAR_HALF)]];
         let lane_claims = [AtomicUsize::new(usize::MAX)];
         let claim_context = LaneClaimContext::new(&lane_claims, &modes);
         let mut candidates = vec![0];
         assert_eq!(
             claim_connector_entry(
                 0,
+                CAR_HALF,
                 &mut candidates,
                 true,
                 0,
@@ -118,7 +141,16 @@ mod tests {
 
         let mut candidates = Vec::new();
         assert_eq!(
-            claim_connector_entry(0, &mut candidates, false, 0, &no_lanes, &lane_buckets, &claim_context,),
+            claim_connector_entry(
+                0,
+                CAR_HALF,
+                &mut candidates,
+                false,
+                0,
+                &no_lanes,
+                &lane_buckets,
+                &claim_context,
+            ),
             ConnectorEntry::MissingConnection
         );
     }
@@ -135,10 +167,12 @@ mod tests {
 
     #[test]
     fn test_lane_change_gap_clear_requires_speed_scaled_space() {
-        let bucket = vec![(17.0, 0)];
+        // Two cars 7 m apart, centre to centre: 4.5 m of bodies, 0.1 m standstill gap and the
+        // headway, 2 m at 4 m/s, fit; 7 m at 14 m/s does not.
+        let bucket = vec![(17.0, 0, CAR_HALF)];
 
-        assert!(lane_change_gap_clear(&bucket, 10.0, 4.0));
-        assert!(!lane_change_gap_clear(&bucket, 10.0, 14.0));
+        assert!(lane_change_gap_clear(&bucket, 10.0, 4.0, CAR_HALF));
+        assert!(!lane_change_gap_clear(&bucket, 10.0, 14.0, CAR_HALF));
     }
 
     #[test]
@@ -237,6 +271,7 @@ mod tests {
                 has_access_plan: frontage,
                 blocked_time: 0.0,
                 cooldown: 0.0,
+                half: CAR_HALF,
             };
             let change = |d, flagged| {
                 let network = if flagged { &network } else { &open };

@@ -3,7 +3,7 @@
 //! Retained per-lane occupancy snapshot maintenance.
 //!
 //! The snapshot is a function of the agents' lane state: each live lane agent's
-//! `(lane_distance, index)` in its current lane's bucket, except a walker standing with no route
+//! `(lane_distance, index, half_length)` in its current lane's bucket (`LaneEntry`), except a walker standing with no route
 //! (`lane_bucket_member`, `TRAFFIC-37`), plus a source-lane ghost while a lane
 //! change is under way, every bucket sorted by distance with an index tiebreak. A fill rebuilds
 //! it from every agent on the shared pool; between fills it follows appends and swap-removes
@@ -11,11 +11,11 @@
 
 use super::super::runtime::PAR_THRESHOLD;
 use super::super::traffic::{
-    LANE_CHANGE_FINISH_EPS_M, lane_bucket_member, live_lane_bucket_transit,
+    LANE_CHANGE_FINISH_EPS_M, lane_bucket_member, lane_half_length, live_lane_bucket_transit,
 };
-use crate::config::{CAR_LENGTH, IDM_S_MIN};
-use crate::simulation::economy::agents::TRANSIT_NETWORK;
+use crate::config::IDM_S_MIN;
 use crate::simulation::economy::agents::data::AgentSystem;
+use crate::simulation::economy::agents::{LaneEntry, TRANSIT_NETWORK};
 use rayon::prelude::*;
 use std::cmp::Ordering as CmpOrdering;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -53,6 +53,8 @@ struct FillInput<'a> {
     lanes: &'a [usize],
     distances: &'a [f32],
     transit: &'a [u8],
+    modes: &'a [u8],
+    vehicle_types: &'a [u8],
     change_from: &'a [u32],
     correct_overlaps: bool,
 }
@@ -147,29 +149,41 @@ impl AgentSystem {
         ]
     }
 
+    /// Half the length agent `agent_idx`'s body takes in a lane bucket ([`lane_half_length`]).
+    /// O(1), two column reads.
+    #[inline(always)]
+    pub(in crate::simulation::economy::agents) fn lane_half_length_of(
+        &self,
+        agent_idx: usize,
+    ) -> f32 {
+        lane_half_length(
+            self.agents.transit_mode[agent_idx],
+            self.agents.vehicle_type[agent_idx],
+        )
+    }
+
     /// Inserts one entry at its sorted place, marking the lane dirty. O(bucket).
-    pub(super) fn insert_lane_entry(&mut self, lid: usize, lane_distance: f32, agent_idx: usize) {
+    pub(super) fn insert_lane_entry(&mut self, lid: usize, entry: LaneEntry) {
         if !self.lane_is_dirty[lid] {
             self.lane_is_dirty[lid] = true;
             self.dirty_lanes.push(lid);
         }
-        let entry = (lane_distance, agent_idx);
         let bucket = &mut self.lane_buckets[lid];
         let at = bucket.partition_point(|other| lane_bucket_order(other, &entry).is_lt());
         bucket.insert(at, entry);
     }
 
-    /// Removes agent `agent_idx`'s entry from lane `lid` and returns its distance. O(bucket).
-    pub(super) fn remove_lane_entry(&mut self, lid: usize, agent_idx: usize) -> Option<f32> {
+    /// Removes agent `agent_idx`'s entry from lane `lid` and returns it. O(bucket).
+    pub(super) fn remove_lane_entry(&mut self, lid: usize, agent_idx: usize) -> Option<LaneEntry> {
         let bucket = self.lane_buckets.get_mut(lid)?;
         let at = bucket.iter().position(|entry| entry.1 == agent_idx)?;
-        Some(bucket.remove(at).0)
+        Some(bucket.remove(at))
     }
 
     /// Rebuilds every bucket from the live lane agents `0..n`: clears the previous entries,
-    /// fills and sorts each lane, then, with `correct_overlaps`, moves overlapping cars back
-    /// (the rear car of each pair to the leader's distance less a car length and the minimum
-    /// gap, from the front) before adding the source-lane ghosts of lane changes still under
+    /// fills and sorts each lane, then, with `correct_overlaps`, moves overlapping bodies back
+    /// (the rear body of each pair to the leader's distance less both half lengths and the
+    /// minimum gap, from the front) before adding the source-lane ghosts of lane changes still under
     /// way. Returns the live lane-agent count.
     ///
     /// Agents and lanes are split into contiguous ranges on the shared pool, so the result is
@@ -255,6 +269,8 @@ impl AgentSystem {
             lanes,
             distances: &self.agents.lane_distance[..n],
             transit,
+            modes,
+            vehicle_types: &self.agents.vehicle_type[..n],
             change_from: &self.agents.lane_change_from_lane_id[..n],
             correct_overlaps,
         };
@@ -310,7 +326,12 @@ impl AgentSystem {
             if let Some(source_lid) =
                 self.agent_source_lane_ghost_lid(agent_idx, lane_count, current_lid)
             {
-                self.insert_lane_entry(source_lid, self.agents.lane_distance[agent_idx], agent_idx);
+                let entry = (
+                    self.agents.lane_distance[agent_idx],
+                    agent_idx,
+                    self.lane_half_length_of(agent_idx),
+                );
+                self.insert_lane_entry(source_lid, entry);
             }
         }
     }
@@ -354,7 +375,7 @@ fn group_lane_agents(
 fn fill_lane_range(
     r: usize,
     start: usize,
-    buckets: &mut [Vec<(f32, usize)>],
+    buckets: &mut [Vec<LaneEntry>],
     flags: &mut [bool],
     range: &mut LaneRange,
     input: &FillInput<'_>,
@@ -377,14 +398,15 @@ fn fill_lane_range(
                 flags[local] = true;
                 range.dirty.push(lid);
             }
-            buckets[local].push((input.distances[agent], agent));
+            // The body's half length, read at the index whose distance the fill already reads.
+            let half = lane_half_length(input.modes[agent], input.vehicle_types[agent]);
+            buckets[local].push((input.distances[agent], agent, half));
             if input.change_from[agent] != u32::MAX && input.transit[agent] == TRANSIT_NETWORK {
                 range.ghosts.push(agent);
             }
         }
     }
     range.dirty.sort_unstable();
-    let min_sep = CAR_LENGTH + IDM_S_MIN;
     for &lid in &range.dirty {
         let bucket = &mut buckets[lid - start];
         bucket.sort_unstable_by(lane_bucket_order);
@@ -393,6 +415,7 @@ fn fill_lane_range(
         }
         let corrected = range.corrections.len();
         for j in (0..bucket.len().saturating_sub(1)).rev() {
+            let min_sep = bucket[j + 1].2 + bucket[j].2 + IDM_S_MIN;
             let max_rear = (bucket[j + 1].0 - min_sep).max(0.0);
             if bucket[j].0 > max_rear {
                 bucket[j].0 = max_rear;
@@ -407,7 +430,7 @@ fn fill_lane_range(
     }
 }
 
-pub(super) fn lane_bucket_order(a: &(f32, usize), b: &(f32, usize)) -> CmpOrdering {
+pub(super) fn lane_bucket_order(a: &LaneEntry, b: &LaneEntry) -> CmpOrdering {
     a.0.partial_cmp(&b.0)
         .unwrap_or(CmpOrdering::Equal)
         .then_with(|| a.1.cmp(&b.1))
@@ -420,9 +443,15 @@ mod tests {
 
     #[test]
     fn lane_bucket_order_uses_agent_index_tiebreak() {
-        let mut bucket = vec![(12.0, 3), (12.0, 1), (8.0, 2)];
+        let mut bucket = vec![(12.0, 3, 2.25), (12.0, 1, 4.0), (8.0, 2, 2.25)];
         bucket.sort_unstable_by(lane_bucket_order);
-        assert_eq!(bucket, vec![(8.0, 2), (12.0, 1), (12.0, 3)]);
-        assert_eq!(lane_bucket_order(&(4.0, 7), &(4.0, 7)), Ordering::Equal);
+        assert_eq!(
+            bucket,
+            vec![(8.0, 2, 2.25), (12.0, 1, 4.0), (12.0, 3, 2.25)]
+        );
+        assert_eq!(
+            lane_bucket_order(&(4.0, 7, 2.25), &(4.0, 7, 2.25)),
+            Ordering::Equal
+        );
     }
 }

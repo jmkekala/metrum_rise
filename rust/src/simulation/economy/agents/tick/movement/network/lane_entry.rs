@@ -11,7 +11,7 @@ use super::super::super::lane_nav::{held_attach_origin, lane_origin_node, prefer
 use super::super::super::planning::{plan_border_network_replan, plan_network_replan};
 use super::super::super::slices::{MovementSlices, enter_lane};
 use super::super::super::traffic::{
-    claim_lane_entry, lane_attach_slot_clear, lane_entry_slot_clear,
+    claim_lane_entry, lane_attach_slot_clear, lane_entry_slot_clear, lane_half_length,
 };
 use super::super::super::trip_failures::FailureCause;
 use super::super::super::walk_lanes::WalkFrom;
@@ -25,6 +25,7 @@ use super::junction::witness_lane;
 use super::walk_home::is_stranded;
 use crate::config::AGENT_DRIVEWAY_SPEED_MS;
 use crate::simulation::buildings::allocator::BuildingAllocator;
+use crate::simulation::economy::agents::LaneEntry;
 use crate::simulation::economy::agents::determinism::stable_index;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
@@ -60,7 +61,7 @@ pub(super) unsafe fn try_pending_lane_attach(
     i: usize,
     transit_network: &TransitNetwork,
     graph: &RegionGraph,
-    lane_buckets: &[Vec<(f32, usize)>],
+    lane_buckets: &[Vec<LaneEntry>],
     lane_claims: &LaneClaimContext<'_>,
     slices: &MovementSlices,
 ) -> bool {
@@ -79,9 +80,13 @@ pub(super) unsafe fn try_pending_lane_attach(
             *s_access_flags.get_mut(i) &= !ACCESS_LANE_ATTACH_PENDING;
             return false;
         };
-        let clear = lane_buckets
-            .get(lane_id)
-            .is_some_and(|bucket| lane_attach_slot_clear(bucket, lane_d));
+        let clear = lane_buckets.get(lane_id).is_some_and(|bucket| {
+            lane_attach_slot_clear(
+                bucket,
+                lane_d,
+                lane_half_length(*slices.tmode.get(i), *slices.vehicle_type.get(i)),
+            )
+        });
         if !clear || !claim_lane_entry(i, lane_id, lane_claims) {
             *slices.speed.get_mut(i) = 0.0;
             return true;
@@ -107,7 +112,7 @@ pub(super) unsafe fn prepare_lane_entry(
     transit_network: &TransitNetwork,
     graph: &RegionGraph,
     pathfind_count: &AtomicU32,
-    lane_buckets: &[Vec<(f32, usize)>],
+    lane_buckets: &[Vec<LaneEntry>],
     lane_claims: &LaneClaimContext<'_>,
     slices: &MovementSlices,
 ) -> LaneEntryAction {
@@ -141,8 +146,11 @@ pub(super) unsafe fn prepare_lane_entry(
                 && detach_origin == *s_plan_detach_n.get(i)
             {
                 if *s_tmode.get(i) != MODE_WALK
-                    && (!lane_entry_slot_clear(planned_detach_lane_id, lane_buckets)
-                        || !claim_lane_entry(i, planned_detach_lane_id, lane_claims))
+                    && (!lane_entry_slot_clear(
+                        planned_detach_lane_id,
+                        lane_half_length(*slices.tmode.get(i), *slices.vehicle_type.get(i)),
+                        lane_buckets,
+                    ) || !claim_lane_entry(i, planned_detach_lane_id, lane_claims))
                 {
                     *s_speed.get_mut(i) = 0.0;
                     return LaneEntryAction::Break;
@@ -376,8 +384,14 @@ pub(super) unsafe fn prepare_lane_entry(
                                         })
                                         .find(|&lane| {
                                             *s_tmode.get(i) == MODE_WALK
-                                                || (lane_entry_slot_clear(lane, lane_buckets)
-                                                    && claim_lane_entry(i, lane, lane_claims))
+                                                || (lane_entry_slot_clear(
+                                                    lane,
+                                                    lane_half_length(
+                                                        *slices.tmode.get(i),
+                                                        *slices.vehicle_type.get(i),
+                                                    ),
+                                                    lane_buckets,
+                                                ) && claim_lane_entry(i, lane, lane_claims))
                                         })
                                 });
                                 let Some(chosen) = chosen else {

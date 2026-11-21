@@ -10,10 +10,11 @@ use super::slices::RawSlice;
 use super::traffic::{
     LANE_CHANGE_MIN_LENGTH_M, OVERTAKE_MIN_SPEED_GAIN_MS, braking_speed_for_distance,
     connector_turn_speed, idm_gap_bucket, idm_new_speed, lane_change_gap_clear,
-    lane_entry_slot_clear, limit_speed_change, live_lane_bucket_transit, overtake_follow_gap,
-    planned_lane_change_target,
+    lane_entry_slot_clear, lane_half_length, limit_speed_change, live_lane_bucket_transit,
+    overtake_follow_gap, planned_lane_change_target,
 };
 use crate::config::{CAR_JUNCTION_SPEED_MS, DEFAULT_URBAN_ROAD_SPEED_MS, IDM_B};
+use crate::simulation::economy::agents::LaneEntry;
 use crate::simulation::economy::agents::data::AgentSystem;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
@@ -52,7 +53,8 @@ impl AgentSystem {
             let s_overtake_blocked_idm = RawSlice::new(&mut self.agents.overtake_blocked_time_s);
             let s_overtake_cooldown_idm = RawSlice::new(&mut self.agents.overtake_cooldown_s);
             let s_speed_idm = RawSlice::new(&mut self.agents.speed);
-            let buckets: &Vec<Vec<(f32, usize)>> = &self.lane_buckets;
+            let vehicle_types: &[u8] = &self.agents.vehicle_type;
+            let buckets: &Vec<Vec<LaneEntry>> = &self.lane_buckets;
 
             dispatch_agents(n, |i| unsafe {
                 let cur_spd = *s_speed_idm.get(i);
@@ -73,10 +75,12 @@ impl AgentSystem {
                 }
                 let my_d = *s_lane_d_idm.get(i);
                 let eid = *s_cur_e_idm.get(i);
+                // A car's body (`TRAFFIC-38`): one byte read at this pass's own index.
+                let half = lane_half_length(tmode, vehicle_types[i]);
 
                 let v_max = lane_speed_limit(transit, lid, eid, transit_network, graph);
                 let gap = if lid < buckets.len() {
-                    idm_gap_bucket(&buckets[lid], my_d)
+                    idm_gap_bucket(&buckets[lid], my_d, half)
                 } else {
                     f32::MAX
                 };
@@ -109,6 +113,7 @@ impl AgentSystem {
                     transit,
                     lid,
                     my_d,
+                    half,
                     cur_spd,
                     v_max,
                     gap,
@@ -123,7 +128,7 @@ impl AgentSystem {
                 let traffic_blocked = transit == TRANSIT_NETWORK
                     && *s_lane_change_from_idm.get(i) == u32::MAX
                     && cooldown <= 0.0
-                    && gap < overtake_follow_gap(cur_spd)
+                    && gap < overtake_follow_gap(cur_spd, half)
                     && cur_spd + OVERTAKE_MIN_SPEED_GAIN_MS < v_max;
                 if traffic_blocked {
                     *s_overtake_blocked_idm.get_mut(i) += delta;
@@ -189,10 +194,11 @@ impl AgentSystem {
         }
         let (my_d, speed) = (agents.lane_distance[i], agents.speed[i]);
         let buckets = &self.lane_buckets;
+        let half = self.lane_half_length_of(i);
         let v_max = lane_speed_limit(transit, lid, agents.current_edge[i], transit_network, graph);
         let gap = buckets
             .get(lid)
-            .map_or(f32::MAX, |bucket| idm_gap_bucket(bucket, my_d));
+            .map_or(f32::MAX, |bucket| idm_gap_bucket(bucket, my_d, half));
         let route = || self.planned_connector(i, transit_network, graph);
         let lane_change = || {
             (agents.lane_change_from_lane_id[i] == u32::MAX
@@ -208,6 +214,7 @@ impl AgentSystem {
             transit,
             lid,
             my_d,
+            half,
             speed,
             v_max,
             gap,
@@ -287,13 +294,14 @@ fn braking_cap(
     transit: u8,
     lid: usize,
     my_d: f32,
+    half: f32,
     cur_spd: f32,
     v_max: f32,
     gap: f32,
     route: impl FnOnce() -> Option<usize>,
     lane_change: impl FnOnce() -> Option<(usize, f32)>,
     transit_network: &TransitNetwork,
-    buckets: &[Vec<(f32, usize)>],
+    buckets: &[Vec<LaneEntry>],
 ) -> Option<f32> {
     if transit == TRANSIT_INTERSECTION && gap == f32::MAX {
         // `TRAFFIC-16`: a connector head brakes for its exit lane's entry slot, as a road lane
@@ -302,7 +310,7 @@ fn braking_cap(
         // connector head, no allocation.
         let connector = transit_network.lane_system.lanes.get(lid)?;
         let &exit_lane = connector.next_lanes.first()?;
-        if lane_entry_slot_clear(exit_lane, buckets) {
+        if lane_entry_slot_clear(exit_lane, half, buckets) {
             return None;
         }
         let dist_to_end = (connector.length - my_d).max(0.0);
@@ -323,9 +331,9 @@ fn braking_cap(
             .get(connector_id)
             .map(|connector| {
                 let open = if connector.ring_entry.is_some() {
-                    ring_approach_clear(lid, connector_id, transit_network, buckets)
+                    ring_approach_clear(lid, connector_id, half, transit_network, buckets)
                 } else {
-                    lane_entry_slot_clear(connector_id, buckets)
+                    lane_entry_slot_clear(connector_id, half, buckets)
                 };
                 if open {
                     connector_turn_speed(connector)
@@ -347,7 +355,7 @@ fn braking_cap(
     {
         let target_gap_clear = buckets
             .get(target_lane_id)
-            .map(|bucket| lane_change_gap_clear(bucket, my_d, cur_spd))
+            .map(|bucket| lane_change_gap_clear(bucket, my_d, cur_spd, half))
             .unwrap_or(false);
         if !target_gap_clear {
             let stop_before_lane_change =

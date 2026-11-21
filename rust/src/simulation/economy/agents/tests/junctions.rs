@@ -590,7 +590,7 @@ fn test_zero_hop_access_wait_keeps_path_index_stable() {
 
 #[test]
 fn test_zero_hop_access_enters_spaced_occupied_connector() {
-    use crate::config::{CAR_LENGTH, IDM_S_MIN};
+    use crate::config::{CAR_BODY_LENGTH_M, IDM_S_MIN};
 
     let (mut network, mut graph, _) = build_4way_junction(1, 1);
 
@@ -632,7 +632,7 @@ fn test_zero_hop_access_enters_spaced_occupied_connector() {
     agents.current_node[blocker] = center_node;
     agents.current_edge[blocker] = usize::MAX;
     agents.current_lane_id[blocker] = connector_lane;
-    agents.lane_distance[blocker] = CAR_LENGTH + IDM_S_MIN + 0.5;
+    agents.lane_distance[blocker] = CAR_BODY_LENGTH_M + IDM_S_MIN + 0.5;
     agents.speed[blocker] = 0.0;
 
     let follower = agents.spawn_border_arrival_agent(usize::MAX, west_node, 0.0, 0.0);
@@ -659,7 +659,7 @@ fn test_zero_hop_access_enters_spaced_occupied_connector() {
     assert_eq!(agents.current_lane_id[blocker], connector_lane);
     let gap = (agents.lane_distance[blocker] - agents.lane_distance[follower]).abs();
     assert!(
-        gap >= CAR_LENGTH + IDM_S_MIN - 0.01,
+        gap >= CAR_BODY_LENGTH_M + IDM_S_MIN - 0.01,
         "connector follower should enter only with safe spacing; gap {gap:.3}"
     );
 }

@@ -1255,7 +1255,7 @@ mod tests {
         ticks: usize,
         workers: usize,
     ) -> Vec<(usize, u32, u32)> {
-        use crate::config::{CAR_LENGTH, IDM_S_MIN};
+        use crate::config::{CAR_BODY_LENGTH_M, IDM_S_MIN};
         use crate::simulation::core::time::TimeSystem;
         rayon::ThreadPoolBuilder::new()
             .num_threads(workers)
@@ -1321,7 +1321,8 @@ mod tests {
                     );
                 }
                 let clock = TimeSystem::new();
-                let min_gap = CAR_LENGTH + IDM_S_MIN - 1e-3;
+                // Every queued vehicle is a car by its vehicle type (`TRAFFIC-38`).
+                let min_gap = CAR_BODY_LENGTH_M + IDM_S_MIN - 1e-3;
                 let lanes = network.lane_system.lanes.len();
                 let mut on_lane: Vec<Vec<f32>> = vec![Vec::new(); lanes];
                 let mut held = 0;

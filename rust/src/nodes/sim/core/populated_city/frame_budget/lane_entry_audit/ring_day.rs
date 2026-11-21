@@ -113,7 +113,7 @@ impl JunctionFlows {
         let hour = ((elapsed.fract() * 24.0) as usize).min(23);
         for flow in &mut self.connectors {
             let bucket = &buckets[flow.lane];
-            for &(_, car) in bucket {
+            for &(_, car, _) in bucket {
                 if agents.freight_shipment_id[car] != 0 {
                     self.crossed.insert(agents.freight_shipment_id[car]);
                 }
@@ -318,7 +318,7 @@ impl RingDay {
         let describe = |lane: usize| {
             let cars: Vec<String> = buckets[lane]
                 .iter()
-                .map(|&(d, i)| {
+                .map(|&(d, i, _)| {
                     let idx = agents.current_path_index[i];
                     let path = &agents.current_path[i];
                     let next: Vec<u32> = path.iter().skip(idx).take(3).copied().collect();

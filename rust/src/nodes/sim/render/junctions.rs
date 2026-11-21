@@ -296,7 +296,7 @@ fn connector_color(
                 return EMPTY_COLOR;
             }
             out.occupied += 1;
-            let held = bucket.iter().any(|&(lane_d, agent)| {
+            let held = bucket.iter().any(|&(lane_d, agent, _)| {
                 waits_at_connector_end(lane_d, lane.length)
                     && agents
                         .speed
@@ -632,8 +632,8 @@ mod tests {
             agents.transit_mode[agent] = MODE_CAR;
         }
         agents.speed[moving] = 4.0;
-        agents.lane_buckets[connectors[0]].push((1.0, moving));
-        agents.lane_buckets[connectors[1]].push((lanes.lanes[connectors[1]].length, held));
+        agents.lane_buckets[connectors[0]].push((1.0, moving, 2.25));
+        agents.lane_buckets[connectors[1]].push((lanes.lanes[connectors[1]].length, held, 2.25));
         // Buckets are ignored until the snapshot is valid.
         assert_eq!(occupancy(&agents).occupied, 0);
         agents.lane_bucket_snapshot_valid = true;

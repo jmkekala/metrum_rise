@@ -8,6 +8,7 @@ use super::super::super::super::lane_nav::lane_origin_node;
 use super::super::super::super::slices::MovementSlices;
 use super::enter::enter_detach_lane_connector;
 use super::{LaneEndAction, WalkerStranded};
+use crate::simulation::economy::agents::LaneEntry;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
 
@@ -25,7 +26,7 @@ pub(super) unsafe fn try_zero_hop_access_connector(
     remaining_dist: &mut f32,
     transit_network: &TransitNetwork,
     graph: &RegionGraph,
-    lane_buckets: &[Vec<(f32, usize)>],
+    lane_buckets: &[Vec<LaneEntry>],
     lane_claims: &LaneClaimContext<'_>,
     slices: &MovementSlices,
 ) -> Option<Result<LaneEndAction, WalkerStranded>> {

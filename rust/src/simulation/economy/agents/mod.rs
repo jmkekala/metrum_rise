@@ -17,7 +17,7 @@ mod tests;
 pub mod tick;
 
 pub(crate) use data::AgentHandle;
-pub use data::{Agent, AgentSystem, AgentVec};
+pub use data::{Agent, AgentSystem, AgentVec, LaneEntry};
 pub(crate) use household_members::NO_MEMBER;
 
 pub use crate::simulation::parking::ParkingTrip;

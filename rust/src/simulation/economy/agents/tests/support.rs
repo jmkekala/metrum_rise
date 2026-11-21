@@ -527,9 +527,7 @@ pub(super) fn assert_vehicle_lane_spacing(
     tick: usize,
     label: &str,
 ) -> usize {
-    use crate::config::{CAR_LENGTH, IDM_S_MIN};
-
-    let min_sep = CAR_LENGTH + IDM_S_MIN;
+    use crate::config::IDM_S_MIN;
     let mut connector_pairs = 0;
     for i in 0..agents.len() {
         if !matches!(agents.transit[i], TRANSIT_NETWORK | TRANSIT_INTERSECTION)
@@ -548,6 +546,8 @@ pub(super) fn assert_vehicle_lane_spacing(
             {
                 continue;
             }
+            // Both bodies' half lengths and the standstill gap (`TRAFFIC-38`).
+            let min_sep = agents.lane_half_length_of(i) + agents.lane_half_length_of(j) + IDM_S_MIN;
             let gap = (agents.lane_distance[i] - agents.lane_distance[j]).abs();
             assert!(
                 gap >= min_sep - 0.01,

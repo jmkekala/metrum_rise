@@ -137,6 +137,8 @@ pub(crate) struct MovementSlices<'a> {
     pub(super) overtake_blocked_time: RawSlice<f32>,
     pub(super) overtake_cooldown: RawSlice<f32>,
     pub(super) tmode: RawSlice<u8>,
+    // Read only: with `tmode`, the body's half length in a lane (`lane_half_length`).
+    pub(super) vehicle_type: RawSlice<u8>,
     pub(super) planned_activity: RawSlice<u8>,
     pub(super) path: RawSlice<Vec<u32>>,
     pub(super) path_idx: RawSlice<usize>,
@@ -201,6 +203,7 @@ impl<'a> MovementSlices<'a> {
             overtake_blocked_time: RawSlice::new(&mut agents.overtake_blocked_time_s),
             overtake_cooldown: RawSlice::new(&mut agents.overtake_cooldown_s),
             tmode: RawSlice::new(&mut agents.transit_mode),
+            vehicle_type: RawSlice::new(&mut agents.vehicle_type),
             planned_activity: RawSlice::new(&mut agents.planned_activity),
             path: RawSlice::new(&mut agents.current_path),
             path_idx: RawSlice::new(&mut agents.current_path_index),

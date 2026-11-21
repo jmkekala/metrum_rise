@@ -31,6 +31,7 @@ use super::lane_nav::{
 use super::planning::{BuiltNetworkReplan, plan_border_network_replan, plan_network_replan};
 use super::traffic::{lane_entry_slot_clear, ring_entry_blocker};
 use crate::simulation::buildings::allocator::BuildingAllocator;
+use crate::simulation::economy::agents::LaneEntry;
 use crate::simulation::economy::agents::data::{AgentSystem, AgentVec};
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
@@ -477,7 +478,7 @@ impl AgentSystem {
                     // Connector heads are committed to their turn and never detour.
                     continue;
                 }
-                if let Some(&(_, head)) = self.lane_buckets[lane].last() {
+                if let Some(&(_, head, _)) = self.lane_buckets[lane].last() {
                     checker
                         .candidates
                         .push((checker.head_since[lane], head, lane));
@@ -528,6 +529,7 @@ impl AgentSystem {
         graph: &RegionGraph,
         parking: Option<&ParkingSystem>,
     ) -> bool {
+        let half = self.lane_half_length_of(i);
         let agents = &self.agents;
         let lanes = &network.lane_system.lanes;
         let Some(planned) = head_target(agents, i, lane, network, graph) else {
@@ -557,6 +559,7 @@ impl AgentSystem {
                     entry_state(
                         lane,
                         NextTarget::Edge(exit_edge),
+                        half,
                         network,
                         &self.lane_buckets
                     ),
@@ -656,7 +659,7 @@ impl AgentSystem {
 fn record_cycle(
     checker: &mut GridlockChecker,
     lane: usize,
-    buckets: &[Vec<(f32, usize)>],
+    buckets: &[Vec<LaneEntry>],
     handles: &crate::simulation::core::handles::HandleTable<
         crate::simulation::economy::agents::data::Agent,
     >,
@@ -677,7 +680,7 @@ fn record_cycle(
     cycles.lanes[first..].rotate_left(lowest - first);
     cycles.lane_ends.push(cycles.lanes.len() as u32);
     for k in first..cycles.lanes.len() {
-        for &(d, agent) in &buckets[cycles.lanes[k] as usize] {
+        for &(d, agent, _) in &buckets[cycles.lanes[k] as usize] {
             cycles
                 .cars
                 .push((handles.handle(agent).to_bits(), d.to_bits()));
@@ -694,9 +697,9 @@ pub(super) fn waited_for(
     lane: usize,
     network: &TransitNetwork,
     graph: &RegionGraph,
-    buckets: &[Vec<(f32, usize)>],
+    buckets: &[Vec<LaneEntry>],
 ) -> u32 {
-    let Some(&(d, i)) = buckets[lane].last() else {
+    let Some(&(d, i, half)) = buckets[lane].last() else {
         return NONE;
     };
     // The lane's own fields first: most heads are not at their lane's end, and the agent columns
@@ -717,10 +720,10 @@ pub(super) fn waited_for(
             .next_lanes
             .first()
             .copied()
-            .filter(|&exit| !lane_entry_slot_clear(exit, buckets))
+            .filter(|&exit| !lane_entry_slot_clear(exit, half, buckets))
     } else {
         head_target(agents, i, lane, network, graph).and_then(|target| {
-            match entry_state(lane, target, network, buckets) {
+            match entry_state(lane, target, half, network, buckets) {
                 Entry::Blocked(by) => Some(by),
                 Entry::Free | Entry::Missing => None,
             }
@@ -750,8 +753,9 @@ fn head_target(
     )
 }
 
-// Whether a car at the end of `from` can enter toward `target` now, with the tests the movement
-// step makes: a direct pass-through lane's entry slot; else, among the connectors that lead
+// Whether a car of half length `half` at the end of `from` can enter toward `target` now, with
+// the tests the movement step makes: a direct pass-through lane's entry slot; else, among the
+// connectors that lead
 // there (only the shortest ones toward an edge), one whose entry slot is clear and which owes no
 // give-way on a ring (`ROAD-62`). A blocked entry names the lane in its way: for a yielding head
 // that is the ring's, so a wait-for edge never points at a lane with room while the head waits on
@@ -759,8 +763,9 @@ fn head_target(
 fn entry_state(
     from: usize,
     target: NextTarget,
+    half: f32,
     network: &TransitNetwork,
-    buckets: &[Vec<(f32, usize)>],
+    buckets: &[Vec<LaneEntry>],
 ) -> Entry {
     let lanes = &network.lane_system.lanes;
     let direct = match target {
@@ -768,7 +773,7 @@ fn entry_state(
         NextTarget::Lane(lane) => direct_vehicle_lane_to_lane(from, lane, network).then_some(lane),
     };
     if let Some(next) = direct {
-        return if lane_entry_slot_clear(next, buckets) {
+        return if lane_entry_slot_clear(next, half, buckets) {
             Entry::Free
         } else {
             Entry::Blocked(next)
@@ -797,8 +802,8 @@ fn entry_state(
         {
             continue;
         }
-        let in_the_way = if lane_entry_slot_clear(connector, buckets) {
-            ring_entry_blocker(connector, &network.lane_system, buckets)
+        let in_the_way = if lane_entry_slot_clear(connector, half, buckets) {
+            ring_entry_blocker(connector, half, &network.lane_system, buckets)
         } else {
             Some(connector)
         };
@@ -812,7 +817,8 @@ fn entry_state(
     blocker.map_or(Entry::Missing, Entry::Blocked)
 }
 
-/// Whether a car at the end of `from` may roll onto ring entry `connector`, or a sibling the claim
+/// Whether a car of half length `half` at the end of `from` may roll onto ring entry `connector`,
+/// or a sibling the claim
 /// would take in its place: a one-lane arm fans onto both lanes of a two-lane ring, so the lane-end
 /// hold reads the same candidates as the claim. O(successors of `from`), no allocation. Out of line
 /// to keep the speed pass's ordinary connector path as it was.
@@ -820,12 +826,19 @@ fn entry_state(
 pub(super) fn ring_approach_clear(
     from: usize,
     connector: usize,
+    half: f32,
     network: &TransitNetwork,
-    buckets: &[Vec<(f32, usize)>],
+    buckets: &[Vec<LaneEntry>],
 ) -> bool {
     let lanes = &network.lane_system.lanes;
-    lanes[connector].next_lanes.first().is_some_and(|&ring_out| {
-        let target = NextTarget::Edge(lanes[ring_out].edge_id);
-        matches!(entry_state(from, target, network, buckets), Entry::Free)
-    })
+    lanes[connector]
+        .next_lanes
+        .first()
+        .is_some_and(|&ring_out| {
+            let target = NextTarget::Edge(lanes[ring_out].edge_id);
+            matches!(
+                entry_state(from, target, half, network, buckets),
+                Entry::Free
+            )
+        })
 }

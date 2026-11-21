@@ -4,7 +4,8 @@
 
 use super::super::lane_nav::EntryLanes;
 use super::occupancy::{idm_gap_bucket, lane_change_gap_clear};
-use crate::config::{CAR_LENGTH, IDM_S_MIN, IDM_T_HEAD};
+use crate::config::{IDM_S_MIN, IDM_T_HEAD};
+use crate::simulation::economy::agents::LaneEntry;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::lanes::{Lane, LaneType};
 
@@ -49,6 +50,8 @@ pub(in crate::simulation::economy::agents::tick) struct LaneChangeParams {
     pub blocked_time: f32,
     /// Remaining discretionary maneuver cooldown in seconds.
     pub cooldown: f32,
+    /// Half the car's body length (`lane_half_length`, `TRAFFIC-38`).
+    pub half: f32,
 }
 
 /// Reason for a selected lateral maneuver.
@@ -94,7 +97,7 @@ pub(in crate::simulation::economy::agents::tick) fn lane_change_finished(
 pub(in crate::simulation::economy::agents::tick) fn choose_lane_change(
     params: LaneChangeParams,
     transit_network: &TransitNetwork,
-    lane_buckets: &[Vec<(f32, usize)>],
+    lane_buckets: &[Vec<LaneEntry>],
     turn_lane_id: usize,
     route_lanes: impl FnOnce() -> Option<EntryLanes>,
 ) -> Option<LaneChange> {
@@ -120,7 +123,7 @@ pub(in crate::simulation::economy::agents::tick) fn choose_lane_change(
             .min((available - LANE_CHANGE_FINISH_EPS_M).max(LANE_CHANGE_MIN_LENGTH_M));
         let gap_clear = lane_buckets
             .get(target_lane_id)
-            .is_some_and(|bucket| lane_change_gap_clear(bucket, lane_d, params.speed));
+            .is_some_and(|bucket| lane_change_gap_clear(bucket, lane_d, params.speed, params.half));
         // A pending frontage maneuver takes priority even while its gap is blocked.
         return (available > LANE_CHANGE_MIN_LENGTH_M && gap_clear).then_some(LaneChange {
             target_lane_id,
@@ -142,9 +145,9 @@ pub(in crate::simulation::economy::agents::tick) fn choose_lane_change(
             - i16::from(source.lane_idx))
         .unsigned_abs();
         let length = turn_lane_change_length(params.speed, available, steps)?;
-        let gap_clear = lane_buckets
-            .get(target_lane_id)
-            .is_some_and(|bucket| lane_change_gap_clear(bucket, params.lane_d, params.speed));
+        let gap_clear = lane_buckets.get(target_lane_id).is_some_and(|bucket| {
+            lane_change_gap_clear(bucket, params.lane_d, params.speed, params.half)
+        });
         // A blocked turn maneuver never starts a discretionary move instead. If the gap
         // never opens, the lane-end handler takes a legal onward turn and replans.
         return (available > length + OVERTAKE_EDGE_BUFFER_M && gap_clear).then_some(LaneChange {
@@ -185,7 +188,7 @@ pub(in crate::simulation::economy::agents::tick) fn choose_lane_change(
     // Most cruising cars already occupy the outer lane; skip gap queries without a sibling.
     let current_gap = lane_buckets
         .get(params.lane_id)
-        .map(|bucket| idm_gap_bucket(bucket, params.lane_d))
+        .map(|bucket| idm_gap_bucket(bucket, params.lane_d, params.half))
         .unwrap_or(f32::MAX);
     if kind == LaneChangeKind::Return
         && (current_gap.is_nan() || current_gap <= OVERTAKE_TARGET_AHEAD_GAP_M)
@@ -195,14 +198,14 @@ pub(in crate::simulation::economy::agents::tick) fn choose_lane_change(
     let target = &transit_network.lane_system.lanes[target_lane_id];
     let lane_d = params.lane_d.min(target.length);
     let target_bucket = lane_buckets.get(target_lane_id)?;
-    let target_gap = idm_gap_bucket(target_bucket, lane_d);
+    let target_gap = idm_gap_bucket(target_bucket, lane_d, params.half);
     let useful = if kind == LaneChangeKind::Overtake {
         target_gap > current_gap + OVERTAKE_MIN_GAP_GAIN_M
             && target_gap > OVERTAKE_TARGET_AHEAD_GAP_M
     } else {
         target_gap > OVERTAKE_RETURN_TARGET_GAP_M
     };
-    if !useful || !lane_change_gap_clear(target_bucket, lane_d, params.speed) {
+    if !useful || !lane_change_gap_clear(target_bucket, lane_d, params.speed, params.half) {
         return None;
     }
     // A car on a flagged lane keeps to the lanes its route turns from (S8): an overtake out of
@@ -253,10 +256,14 @@ pub(in crate::simulation::economy::agents::tick) fn lane_change_length_for_speed
         .clamp(LANE_CHANGE_MIN_LENGTH_M, LANE_CHANGE_MAX_LENGTH_M)
 }
 
-/// Returns the gap below which a car starts building overtaking pressure.
+/// Returns the bumper-to-bumper gap below which a car of half length `half` starts building
+/// overtaking pressure: its own body length, the standstill gap and headway at `speed`, and 8 m.
 #[inline(always)]
-pub(in crate::simulation::economy::agents::tick) fn overtake_follow_gap(speed: f32) -> f32 {
-    (CAR_LENGTH + IDM_S_MIN + speed.max(0.0) * IDM_T_HEAD + 8.0)
+pub(in crate::simulation::economy::agents::tick) fn overtake_follow_gap(
+    speed: f32,
+    half: f32,
+) -> f32 {
+    (2.0 * half + IDM_S_MIN + speed.max(0.0) * IDM_T_HEAD + 8.0)
         .max(OVERTAKE_TARGET_AHEAD_GAP_M * 0.5)
 }
 

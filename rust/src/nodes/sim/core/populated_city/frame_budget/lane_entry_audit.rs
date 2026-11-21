@@ -11,8 +11,9 @@ mod waits;
 
 use super::{FRAME_DT_S, MINUTES_PER_DAY, absolute_minute};
 use super::{cache_dir, residents, snapshot, timing_mode};
-use crate::config::{CAR_LENGTH, IDM_S_MIN};
+use crate::config::{CAR_BODY_LENGTH_M, IDM_S_MIN};
 use crate::nodes::sim::core::state::SimCore;
+use crate::simulation::economy::agents::tick::lane_half_length;
 use crate::simulation::economy::agents::{
     ACCESS_LANE_ATTACH_PENDING, ACCESS_PLAN_VALID, ACCESS_WALK_STRANDED, MODE_WALK,
     TRANSIT_INTERSECTION, TRANSIT_NETWORK,
@@ -149,6 +150,9 @@ fn audit(core: &SimCore) -> serde_json::Value {
     let agents = &core.agents.agents;
     let lanes = &core.transit_network.lane_system.lanes;
     let mut count = vec![0_u32; lanes.len()];
+    // Metres of lane the cars on it need: each its body length and the standstill gap
+    // (`TRAFFIC-38`).
+    let mut need = vec![0.0_f32; lanes.len()];
     let mut at_start = vec![0_u32; lanes.len()];
     let (mut held, mut held_freight, mut held_at_attach) = (0_u32, 0_u32, 0_u32);
     let mut attach_lanes = Vec::new();
@@ -173,18 +177,22 @@ fn audit(core: &SimCore) -> serde_json::Value {
             continue;
         }
         count[lane] += 1;
+        need[lane] +=
+            2.0 * lane_half_length(agents.transit_mode[i], agents.vehicle_type[i]) + IDM_S_MIN;
         at_start[lane] += u32::from(agents.lane_distance[i] < STACK_RADIUS_M);
     }
-    let spacing = CAR_LENGTH + IDM_S_MIN;
+    // A car's spacing: the fit reported for the worst lane and the room for one more car.
+    let spacing = CAR_BODY_LENGTH_M + IDM_S_MIN;
     let (mut over_fit, mut over_slots, mut worst_ratio, mut worst_lane) =
         (0_u32, 0_u32, 0.0_f32, 0);
     let (mut stacked_lanes, mut stacked_cars, mut max_stack) = (0_u32, 0_u32, 0_u32);
     for (lane, &cars) in count.iter().enumerate() {
-        // A lane of length L holds floor(L / spacing) cars by length, one more at both ends.
-        let fit = ((lanes[lane].length / spacing).floor() as u32).max(1);
-        over_fit += u32::from(cars > fit);
-        over_slots += u32::from(cars > fit + 1);
-        let ratio = cars as f32 / fit as f32;
+        // A lane of length L holds the cars whose spacings sum to at most L, one more at both
+        // ends; a lone car always fits.
+        let length = lanes[lane].length;
+        over_fit += u32::from(cars > 1 && need[lane] > length);
+        over_slots += u32::from(cars > 2 && need[lane] - spacing > length);
+        let ratio = need[lane] / length.max(spacing);
         if ratio > worst_ratio {
             (worst_ratio, worst_lane) = (ratio, lane);
         }
@@ -200,15 +208,14 @@ fn audit(core: &SimCore) -> serde_json::Value {
     let attach_lanes_full = attach_lanes
         .iter()
         .filter(|&&lane| {
-            lane < lanes.len()
-                && count[lane] >= ((lanes[lane].length / spacing).floor() as u32).max(1)
+            lane < lanes.len() && count[lane] > 0 && need[lane] + spacing > lanes[lane].length
         })
         .count();
     // The lanes the audit flags, with who is on them (diagnostic detail).
     let mut flagged = Vec::new();
     for (lane, &cars) in count.iter().enumerate() {
         let fit = ((lanes[lane].length / spacing).floor() as u32).max(1);
-        if cars <= fit + 1 && at_start[lane] < 2 {
+        if !(cars > 2 && need[lane] - spacing > lanes[lane].length) && at_start[lane] < 2 {
             continue;
         }
         let mut kinds = std::collections::BTreeMap::<String, u32>::new();
@@ -277,7 +284,7 @@ fn trace_entries(
 ) -> u32 {
     let agents = &core.agents.agents;
     let lanes = &core.transit_network.lane_system.lanes;
-    let spacing = CAR_LENGTH + IDM_S_MIN;
+    let spacing = CAR_BODY_LENGTH_M + IDM_S_MIN;
     let mut count = vec![0_u32; lanes.len()];
     let mut reported = 0;
     previous_lane.resize(agents.len(), usize::MAX);

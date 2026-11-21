@@ -83,13 +83,16 @@ impl AgentSystem {
         if live_lane_bucket_transit(self.agents.transit[source]) {
             self.lane_bucket_live_agent_count += 1;
         }
-        let lane_distance = self.agents.lane_distance[source];
+        let (lane_distance, half) = (
+            self.agents.lane_distance[source],
+            self.lane_half_length_of(source),
+        );
         for lid in self
             .agent_bucket_lanes(source, lane_count)
             .into_iter()
             .flatten()
         {
-            self.insert_lane_entry(lid, lane_distance, index);
+            self.insert_lane_entry(lid, (lane_distance, index, half));
         }
     }
 
@@ -131,11 +134,12 @@ impl AgentSystem {
                     .into_iter()
                     .flatten()
                 {
-                    let Some(lane_distance) = self.remove_lane_entry(lid, last) else {
+                    // The entry keeps its distance and half length under its new index.
+                    let Some((lane_distance, _, half)) = self.remove_lane_entry(lid, last) else {
                         self.invalidate_lane_bucket_snapshot();
                         return;
                     };
-                    self.insert_lane_entry(lid, lane_distance, index);
+                    self.insert_lane_entry(lid, (lane_distance, index, half));
                 }
             } else if index < covered {
                 self.add_lane_bucket_agent(last, index, lane_count);
@@ -233,9 +237,13 @@ impl AgentSystem {
                 return;
             }
         }
-        let lane_distance = self.agents.lane_distance[agent_idx];
+        let entry = (
+            self.agents.lane_distance[agent_idx],
+            agent_idx,
+            self.lane_half_length_of(agent_idx),
+        );
         for lid in after.into_iter().flatten() {
-            self.insert_lane_entry(lid, lane_distance, agent_idx);
+            self.insert_lane_entry(lid, entry);
         }
         #[cfg(test)]
         {
@@ -272,7 +280,11 @@ impl AgentSystem {
                 .into_iter()
                 .flatten()
             {
-                expected[lid].push((self.agents.lane_distance[agent], agent));
+                expected[lid].push((
+                    self.agents.lane_distance[agent],
+                    agent,
+                    self.lane_half_length_of(agent),
+                ));
             }
         }
         for bucket in &mut expected {

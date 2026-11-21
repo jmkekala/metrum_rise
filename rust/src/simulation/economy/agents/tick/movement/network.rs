@@ -17,6 +17,7 @@ use super::super::slices::MovementSlices;
 use super::super::traffic::{connector_turn_speed, junction_car_speed};
 use crate::config::CAR_JUNCTION_SPEED_MS;
 use crate::simulation::buildings::allocator::BuildingAllocator;
+use crate::simulation::economy::agents::LaneEntry;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
 use detach::try_network_detach;
@@ -48,7 +49,7 @@ pub(super) unsafe fn handle_network_movement(
     transit_network: &TransitNetwork,
     graph: &RegionGraph,
     pathfind_count: &AtomicU32,
-    lane_buckets: &[Vec<(f32, usize)>],
+    lane_buckets: &[Vec<LaneEntry>],
     lane_claims: &LaneClaimContext<'_>,
     slices: &MovementSlices,
 ) {

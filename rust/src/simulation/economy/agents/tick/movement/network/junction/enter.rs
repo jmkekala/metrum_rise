@@ -12,10 +12,11 @@ use super::super::super::super::lane_nav::{
 use super::super::super::super::slices::{MovementSlices, enter_lane};
 use super::super::super::super::traffic::{
     ConnectorEntry, claim_connector_entry, claim_lane_entry, junction_car_speed,
-    junction_entry_speed, lane_entry_slot_clear,
+    junction_entry_speed, lane_entry_slot_clear, lane_half_length,
 };
 use super::super::super::super::trip_failures::{FailureCause, FailureOutcome, record_failure};
 use super::{LaneEndAction, WalkerStranded};
+use crate::simulation::economy::agents::LaneEntry;
 use crate::simulation::network::TransitNetwork;
 use crate::traffic_log;
 use std::cell::RefCell;
@@ -45,7 +46,7 @@ pub(super) unsafe fn enter_next_edge_connector(
     speed: f32,
     remaining_dist: &mut f32,
     transit_network: &TransitNetwork,
-    lane_buckets: &[Vec<(f32, usize)>],
+    lane_buckets: &[Vec<LaneEntry>],
     lane_claims: &LaneClaimContext<'_>,
     slices: &MovementSlices,
     prefer: Option<EntryLanes>,
@@ -130,7 +131,7 @@ unsafe fn try_enter_edge(
     speed: f32,
     remaining_dist: &mut f32,
     transit_network: &TransitNetwork,
-    lane_buckets: &[Vec<(f32, usize)>],
+    lane_buckets: &[Vec<LaneEntry>],
     lane_claims: &LaneClaimContext<'_>,
     slices: &MovementSlices,
     prefer: Option<EntryLanes>,
@@ -160,6 +161,7 @@ unsafe fn try_enter_edge(
         let connector_entry = match walk_lane {
             Some(target_lane_id) => claim_connector_to_lane(
                 i,
+                lane_half_length(*slices.tmode.get(i), *slices.vehicle_type.get(i)),
                 lane_id,
                 target_lane_id,
                 connector_choice_seed(i, lane_id, target_lane_id, node_id, *s_path_idx.get(i)),
@@ -169,6 +171,7 @@ unsafe fn try_enter_edge(
             ),
             None => claim_connector_to_edge(
                 i,
+                lane_half_length(*slices.tmode.get(i), *slices.vehicle_type.get(i)),
                 lane_id,
                 to_edge,
                 connector_choice_seed(i, lane_id, to_edge, node_id, *s_path_idx.get(i)),
@@ -266,7 +269,7 @@ pub(super) unsafe fn enter_detach_lane_connector(
     speed: f32,
     remaining_dist: &mut f32,
     transit_network: &TransitNetwork,
-    lane_buckets: &[Vec<(f32, usize)>],
+    lane_buckets: &[Vec<LaneEntry>],
     lane_claims: &LaneClaimContext<'_>,
     slices: &MovementSlices,
 ) -> Option<Result<LaneEndAction, WalkerStranded>> {
@@ -305,6 +308,7 @@ pub(super) unsafe fn enter_detach_lane_connector(
 
         let mut connector_entry = claim_connector_to_lane(
             i,
+            lane_half_length(*slices.tmode.get(i), *slices.vehicle_type.get(i)),
             lane_id,
             detach_lane_id,
             connector_choice_seed(i, lane_id, detach_lane_id, node_id, *s_path_idx.get(i)),
@@ -317,6 +321,7 @@ pub(super) unsafe fn enter_detach_lane_connector(
         if car && matches!(connector_entry, ConnectorEntry::MissingConnection) {
             connector_entry = claim_connector_to_edge(
                 i,
+                lane_half_length(*slices.tmode.get(i), *slices.vehicle_type.get(i)),
                 lane_id,
                 detach_edge,
                 connector_choice_seed(i, lane_id, detach_edge, node_id, *s_path_idx.get(i)),
@@ -460,7 +465,7 @@ unsafe fn follow_missed_turn(
     speed: f32,
     remaining_dist: &mut f32,
     transit_network: &TransitNetwork,
-    lane_buckets: &[Vec<(f32, usize)>],
+    lane_buckets: &[Vec<LaneEntry>],
     lane_claims: &LaneClaimContext<'_>,
     slices: &MovementSlices,
 ) -> Option<LaneEndAction> {
@@ -538,12 +543,16 @@ unsafe fn enter_direct_vehicle_lane(
     path_len: usize,
     remaining_dist: &mut f32,
     transit_network: &TransitNetwork,
-    lane_buckets: &[Vec<(f32, usize)>],
+    lane_buckets: &[Vec<LaneEntry>],
     lane_claims: &LaneClaimContext<'_>,
     slices: &MovementSlices,
 ) -> LaneEndAction {
     unsafe {
-        if !lane_entry_slot_clear(target_lane_id, lane_buckets) {
+        if !lane_entry_slot_clear(
+            target_lane_id,
+            lane_half_length(*slices.tmode.get(i), *slices.vehicle_type.get(i)),
+            lane_buckets,
+        ) {
             *slices.path_idx.get_mut(i) = path_idx_before_lane_end;
             *slices.lane_d.get_mut(i) = transit_network.lane_system.lanes[lane_id].length;
             traffic_log!(
@@ -607,11 +616,12 @@ fn target_edge_for_lane(lane_id: usize, transit_network: &TransitNetwork) -> usi
 #[inline]
 fn claim_connector_to_edge(
     agent_idx: usize,
+    half: f32,
     lane_id: usize,
     edge_id: usize,
     seed: u64,
     transit_network: &TransitNetwork,
-    lane_buckets: &[Vec<(f32, usize)>],
+    lane_buckets: &[Vec<LaneEntry>],
     lane_claims: &LaneClaimContext<'_>,
     prefer: Option<EntryLanes>,
 ) -> ConnectorEntry {
@@ -626,6 +636,7 @@ fn claim_connector_to_edge(
         );
         claim_connector_entry(
             agent_idx,
+            half,
             &mut connector_candidates,
             any_routing_valid,
             seed,
@@ -636,14 +647,16 @@ fn claim_connector_to_edge(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 #[inline]
 fn claim_connector_to_lane(
     agent_idx: usize,
+    half: f32,
     lane_id: usize,
     target_lane_id: usize,
     seed: u64,
     transit_network: &TransitNetwork,
-    lane_buckets: &[Vec<(f32, usize)>],
+    lane_buckets: &[Vec<LaneEntry>],
     lane_claims: &LaneClaimContext<'_>,
 ) -> ConnectorEntry {
     VALID_CONNS.with(|v| {
@@ -656,6 +669,7 @@ fn claim_connector_to_lane(
         );
         claim_connector_entry(
             agent_idx,
+            half,
             &mut connector_candidates,
             any_routing_valid,
             seed,

@@ -7,7 +7,11 @@
 use super::super::data::AgentSystem;
 use super::gridlock::waited_for;
 use super::traffic::ring_entry_blocker;
-use crate::config::{CAR_LENGTH, IDM_S_MIN};
+use crate::config::{CAR_BODY_LENGTH_M, IDM_S_MIN};
+use crate::simulation::economy::agents::LaneEntry;
+
+// A car's half length (`TRAFFIC-38`).
+const CAR_HALF: f32 = CAR_BODY_LENGTH_M * 0.5;
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::core::time::TimeSystem;
 use crate::simulation::network::TransitNetwork;
@@ -120,8 +124,8 @@ fn four() -> Site {
 }
 
 // A bucket of one car at `d`, the agent's index being irrelevant to the rule.
-fn with_car(buckets: &mut [Vec<(f32, usize)>], lane: usize, d: f32) {
-    buckets[lane].push((d, 0));
+fn with_car(buckets: &mut [Vec<LaneEntry>], lane: usize, d: f32) {
+    buckets[lane].push((d, 0, CAR_HALF));
 }
 
 #[test]
@@ -133,41 +137,53 @@ fn a_ring_entry_gives_way_to_each_of_its_three_holds_in_turn() {
     let (circulating, ring_in) = (entry.circulating as usize, entry.ring_in as usize);
     let ring_out = lanes[connector].next_lanes[0];
     let empty = vec![Vec::new(); lanes.len()];
-    assert_eq!(ring_entry_blocker(connector, system, &empty), None);
+    assert_eq!(
+        ring_entry_blocker(connector, CAR_HALF, system, &empty),
+        None
+    );
 
     let mut buckets = empty.clone();
     with_car(&mut buckets, circulating, lanes[circulating].length - 0.5);
     assert_eq!(
-        ring_entry_blocker(connector, system, &buckets),
+        ring_entry_blocker(connector, CAR_HALF, system, &buckets),
         Some(circulating)
     );
 
-    let gap = CAR_LENGTH + IDM_S_MIN + 20.0 / 3.6 * crate::config::IDM_T_HEAD;
+    let gap = CAR_BODY_LENGTH_M + IDM_S_MIN + 20.0 / 3.6 * crate::config::IDM_T_HEAD;
     let mut buckets = empty.clone();
     with_car(&mut buckets, ring_in, lanes[ring_in].length - gap + 0.01);
     assert_eq!(
-        ring_entry_blocker(connector, system, &buckets),
+        ring_entry_blocker(connector, CAR_HALF, system, &buckets),
         Some(ring_in)
     );
     let mut buckets = empty.clone();
     with_car(&mut buckets, ring_in, lanes[ring_in].length - gap - 0.01);
-    assert_eq!(ring_entry_blocker(connector, system, &buckets), None);
+    assert_eq!(
+        ring_entry_blocker(connector, CAR_HALF, system, &buckets),
+        None
+    );
     // A head standing at the lane's end is not arriving: it waits for its exit or for the two
     // lanes the rule tests itself.
     let mut buckets = empty.clone();
     with_car(&mut buckets, ring_in, lanes[ring_in].length);
-    assert_eq!(ring_entry_blocker(connector, system, &buckets), None);
+    assert_eq!(
+        ring_entry_blocker(connector, CAR_HALF, system, &buckets),
+        None
+    );
 
     let mut buckets = empty.clone();
     with_car(&mut buckets, ring_out, 1.0);
     assert_eq!(
-        ring_entry_blocker(connector, system, &buckets),
+        ring_entry_blocker(connector, CAR_HALF, system, &buckets),
         Some(ring_out)
     );
     // A car past the slot leaves room ahead: this is the slot test, not the box rule.
     let mut buckets = empty;
-    with_car(&mut buckets, ring_out, CAR_LENGTH + IDM_S_MIN + 0.1);
-    assert_eq!(ring_entry_blocker(connector, system, &buckets), None);
+    with_car(&mut buckets, ring_out, CAR_BODY_LENGTH_M + IDM_S_MIN + 0.1);
+    assert_eq!(
+        ring_entry_blocker(connector, CAR_HALF, system, &buckets),
+        None
+    );
 }
 
 #[test]
@@ -187,8 +203,8 @@ fn an_ordinary_connector_owes_no_give_way() {
     assert_eq!(system.ring_entry(exit), None);
     let mut buckets = vec![Vec::new(); lanes.len()];
     with_car(&mut buckets, entry.circulating as usize, 0.0);
-    assert_eq!(ring_entry_blocker(exit, system, &buckets), None);
-    assert!(ring_entry_blocker(entry_connector, system, &buckets).is_some());
+    assert_eq!(ring_entry_blocker(exit, CAR_HALF, system, &buckets), None);
+    assert!(ring_entry_blocker(entry_connector, CAR_HALF, system, &buckets).is_some());
 }
 
 // What the yield run records: the tick the circulating car left the connector ahead of the entry,
@@ -302,9 +318,9 @@ fn the_gridlock_check_sees_a_yielding_head_waiting_for_the_ring() {
     let head = site.queue_car(&mut agents, 0, 2, 0.0);
     let waits = |other: Option<(usize, f32)>| {
         let mut buckets = vec![Vec::new(); lanes.len()];
-        buckets[entry_lane].push((lanes[entry_lane].length, head));
+        buckets[entry_lane].push((lanes[entry_lane].length, head, CAR_HALF));
         if let Some((lane, d)) = other {
-            buckets[lane].push((d, usize::MAX));
+            buckets[lane].push((d, usize::MAX, CAR_HALF));
         }
         waited_for(
             &agents.agents,

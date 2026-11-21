@@ -31,7 +31,7 @@ fn test_frontage_node_no_uturn() {
 /// each tick — the front agent must never have a smaller distance than the rear.
 #[test]
 fn test_lane_bucket_preserves_all_agents_in_sorted_order() {
-    use crate::config::{CAR_LENGTH, IDM_S_MIN};
+    use crate::config::{CAR_BODY_LENGTH_M, IDM_S_MIN};
     let (mut network, mut graph, edge_idx, fwd_lane) = setup_straight_road();
     let mut agents = AgentSystem::new();
     let allocator = BuildingAllocator::new();
@@ -46,11 +46,11 @@ fn test_lane_bucket_preserves_all_agents_in_sorted_order() {
         agents.tick(&allocator, &mut network, &mut graph, 0.1, &test_clock(0, 0));
     }
 
-    let expected = [_a, _b, _c].map(|i| (agents.lane_distance[i], i));
+    let expected = [_a, _b, _c].map(|i| (agents.lane_distance[i], i, CAR_BODY_LENGTH_M * 0.5));
     let bucket = &agents.lane_buckets[fwd_lane];
     assert_eq!(bucket.as_slice(), expected.as_slice());
 
-    let min_sep = CAR_LENGTH + IDM_S_MIN;
+    let min_sep = CAR_BODY_LENGTH_M + IDM_S_MIN;
     for pair in bucket.windows(2) {
         assert!(
             pair[1].0 - pair[0].0 >= min_sep - 0.01,
@@ -265,12 +265,12 @@ fn test_frontage_delay_cache_decays_without_agents() {
 /// Positions must converge and stabilise, not collapse.
 #[test]
 fn test_overlap_correction_stable_over_many_ticks() {
-    use crate::config::{CAR_LENGTH, IDM_S_MIN};
+    use crate::config::{CAR_BODY_LENGTH_M, IDM_S_MIN};
     let (mut network, mut graph, edge_idx, fwd_lane) = setup_straight_road();
     let mut agents = AgentSystem::new();
     let allocator = BuildingAllocator::new();
 
-    let min_sep = CAR_LENGTH + IDM_S_MIN;
+    let min_sep = CAR_BODY_LENGTH_M + IDM_S_MIN;
     let indices: Vec<usize> = (0..4)
         .map(|k| {
             place_on_lane(
@@ -302,6 +302,74 @@ fn test_overlap_correction_stable_over_many_ticks() {
         dists[0] >= 0.0,
         "rear agent must not be pushed behind start"
     );
+}
+
+/// `TRAFFIC-38`: a truck and the cars around it on one lane stand apart by both bodies' half
+/// lengths and the standstill gap: 6.35 m between a car's and a truck's centres, 4.6 m between two
+/// cars. Overlap correction pushes each rear body back from its leader by that pair's sum.
+#[test]
+fn traffic38_mixed_bodies_keep_both_half_lengths_apart() {
+    use crate::config::{CAR_BODY_LENGTH_M, IDM_S_MIN, TRUCK_BODY_LENGTH_M};
+    use crate::simulation::economy::agents::VEHICLE_FREIGHT_DELIVERY;
+    let (mut network, mut graph, edge_idx, fwd_lane) = setup_straight_road();
+    let mut agents = AgentSystem::new();
+    let allocator = BuildingAllocator::new();
+    // Rear to front: car, truck, car, car, each 1 m behind the next.
+    let cars: Vec<usize> = [40.0, 41.0, 42.0, 43.0]
+        .into_iter()
+        .map(|d| place_on_lane(&mut agents, edge_idx, fwd_lane, d, 0.0))
+        .collect();
+    agents.vehicle_type[cars[1]] = VEHICLE_FREIGHT_DELIVERY;
+    agents.tick(&allocator, &mut network, &mut graph, 0.1, &test_clock(0, 0));
+
+    let length = |i: usize| {
+        if i == cars[1] {
+            TRUCK_BODY_LENGTH_M
+        } else {
+            CAR_BODY_LENGTH_M
+        }
+    };
+    for pair in cars.windows(2) {
+        let (rear, front) = (pair[0], pair[1]);
+        assert_eq!(agents.current_lane_id[rear], fwd_lane);
+        let need = 0.5 * (length(rear) + length(front)) + IDM_S_MIN;
+        let gap = agents.lane_distance[front] - agents.lane_distance[rear];
+        assert!(
+            gap >= need - 0.01,
+            "{rear} behind {front}: {gap:.3} < {need:.3}"
+        );
+    }
+    // The bucket carries each body's half length.
+    let halves: Vec<f32> = agents.lane_buckets[fwd_lane].iter().map(|e| e.2).collect();
+    assert_eq!(halves, [2.25, 4.0, 2.25, 2.25]);
+}
+
+/// `TRAFFIC-38`: a queue standing at the old 2.7 m spacing (a city saved before real lengths)
+/// settles in the first tick to the 4.6 m car spacing, every car on its lane, in its order and
+/// at or past the lane start.
+#[test]
+fn traffic38_loaded_jam_at_old_spacing_settles_on_its_lane() {
+    use crate::config::{CAR_BODY_LENGTH_M, IDM_S_MIN};
+    let (mut network, mut graph, edge_idx, fwd_lane) = setup_straight_road();
+    let mut agents = AgentSystem::new();
+    let allocator = BuildingAllocator::new();
+    // Thirty cars 2.7 m apart, the front one 200 m along the lane, standing.
+    let queue: Vec<usize> = (0..30)
+        .map(|k| place_on_lane(&mut agents, edge_idx, fwd_lane, 200.0 - k as f32 * 2.7, 0.0))
+        .collect();
+    agents.tick(&allocator, &mut network, &mut graph, 0.1, &test_clock(0, 0));
+
+    let min_sep = CAR_BODY_LENGTH_M + IDM_S_MIN;
+    for pair in queue.windows(2) {
+        let (front, rear) = (pair[0], pair[1]);
+        assert_eq!(
+            agents.current_lane_id[rear], fwd_lane,
+            "car {rear} left its lane"
+        );
+        let gap = agents.lane_distance[front] - agents.lane_distance[rear];
+        assert!(gap >= min_sep - 0.01, "{rear} behind {front}: {gap:.3} m");
+    }
+    assert!(agents.lane_distance[queue[29]] >= 0.0);
 }
 
 /// Both arrival and final-agent removal clear retained occupancy.
@@ -417,14 +485,14 @@ fn test_lane_bucket_parallel_sort_matches_sequential_order() {
 
     // Build an independent sequential reference from authoritative agent state, then compare
     // the actual retained buckets. Sorting a copy and only checking that copy is tautological.
-    let mut expected: std::collections::HashMap<usize, Vec<(f32, usize)>> =
+    let mut expected: std::collections::HashMap<usize, Vec<LaneEntry>> =
         std::collections::HashMap::new();
     for i in 0..agents.agents.len() {
         assert_eq!(agents.transit[i], TRANSIT_NETWORK);
         expected
             .entry(agents.current_lane_id[i])
             .or_default()
-            .push((agents.lane_distance[i], i));
+            .push((agents.lane_distance[i], i, agents.lane_half_length_of(i)));
     }
     assert_eq!(expected.len(), edges.len());
     assert_eq!(agents.dirty_lanes.len(), expected.len());
