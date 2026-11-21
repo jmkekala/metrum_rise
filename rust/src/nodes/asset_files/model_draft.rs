@@ -7,7 +7,7 @@
 
 use super::publish_state;
 use crate::assets::AssetManifest;
-use crate::assets::authoring::model_draft::{self as draft, acceptance, sidecar};
+use crate::assets::authoring::model_draft::{self as draft, acceptance, sidecar, vehicle};
 use crate::nodes::sim::asset_export::{ExportParams, validated_tomls};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -73,6 +73,14 @@ pub(super) fn run(request: &str, engine: &Engine) -> (i64, Value) {
         // Named from the role as sent, so a refusal of the role itself still names it.
         let label = asset_label(&request.role);
         asset = Some(label.clone());
+        let sidecar: Value = std::fs::read_to_string(&request.sidecar)
+            .map_err(|e| format!("cannot read sidecar {}: {e}", request.sidecar.display()))
+            .and_then(|text| {
+                serde_json::from_str(&text).map_err(|e| format!("sidecar is not JSON: {e}"))
+            })?;
+        if vehicle::is_vehicle(&sidecar) {
+            return run_vehicle(request, sidecar, engine, label);
+        }
         let mut inputs = draft::read_inputs(&request.sidecar, request.role)?;
         inputs.source_commit = sidecar::source_commit(request.source_commit)?;
         let mut report = json!({"asset": label});
@@ -207,6 +215,93 @@ fn draft_into(
     })
 }
 
+// A vehicle draft (`TOOLS-41`): the same steps as a building's (the existence check, publication
+// through the editor's file plan, the ledger and the acceptance check, first in the copy and then
+// in the real pack when asked), with the vehicle rules.
+fn run_vehicle(
+    request: Request,
+    sidecar: Value,
+    engine: &Engine,
+    label: String,
+) -> Result<(i64, Value), String> {
+    let mut inputs = vehicle::read_inputs(&request.sidecar, sidecar, request.role)?;
+    inputs.source_commit = sidecar::source_commit(request.source_commit)?;
+    let mut report = json!({"asset": label});
+    let (pack_id, asset_id) = (inputs.role.pack_id.clone(), inputs.role.asset_id.clone());
+    if request.check {
+        let pack = crate::assets::authoring::files::pack_directory(&request.mods, &pack_id)?;
+        let lines = vehicle::existing(&pack, &inputs).ok_or_else(|| {
+            format!("assets/{asset_id} does not exist in pack {pack_id}: nothing to check")
+        })?;
+        let existing = draft::Existing { lines, doors: Vec::new() };
+        let exit = describe(&Step::Existing(existing), &mut report, "existing");
+        let outcome = vehicle::check(&request.mods, &pack_id, &asset_id);
+        report["status"] = json!("checked");
+        report["check"] = json!(true);
+        let exit = if outcome.passed() { exit } else { EXIT_FAILED };
+        report["acceptance"] = json!(outcome);
+        return Ok((exit, report));
+    }
+    let copy = draft_vehicle_into(&inputs, &request.mods, &request.work, engine)?;
+    let mut exit = describe(&copy, &mut report, "copy");
+    report["dry_run"] = json!(request.write_mods.is_none());
+    report["status"] = json!(match (&copy, exit) {
+        (Step::Existing(_), _) => "existing",
+        (Step::Drafted { .. }, EXIT_OK) => "drafted",
+        _ => "failed",
+    });
+    if let (Step::Drafted { .. }, EXIT_OK, Some(real)) = (&copy, exit, &request.write_mods) {
+        let written = draft_vehicle_into(&inputs, real, &request.work, engine)?;
+        exit = describe(&written, &mut report, "written");
+        report["status"] = json!(match written {
+            Step::Existing(_) => "existing",
+            Step::Drafted { .. } => "written",
+        });
+    } else if let (Step::Drafted { .. }, EXIT_OK, None, Some(target)) =
+        (&copy, exit, &request.write_mods, &request.target_mods)
+    {
+        let pack = target.join(&pack_id);
+        report["would_write"] = json!({
+            "asset": pack.join("assets").join(&asset_id),
+            "ledger": sidecar::ledger_path(&pack, &asset_id),
+        });
+    }
+    Ok((exit, report))
+}
+
+// Draft a vehicle into the role's pack in `mods`: nothing is written when the asset exists.
+fn draft_vehicle_into(
+    inputs: &vehicle::VehicleInputs,
+    mods: &Path,
+    work: &Path,
+    engine: &Engine,
+) -> Result<Step, String> {
+    let derived = vehicle::derive(inputs, mods, work)?;
+    if let Some(lines) = vehicle::existing(&derived.pack, inputs) {
+        return Ok(Step::Existing(draft::Existing { lines, doors: Vec::new() }));
+    }
+    let asset_id = &inputs.role.asset_id;
+    (engine.thumbnail)(&derived.preview, &derived.thumbnail)?;
+    let plan = crate::assets::authoring::files::plan(&derived.models, &derived.extras)?;
+    // The pack exists (`derive` found its manifest): `publish` keeps its `pack.toml`.
+    crate::assets::authoring::files::publish(&derived.pack, asset_id, &plan, &derived.asset_toml, "")?;
+    let ledger = sidecar::write_ledger(
+        &derived.pack,
+        asset_id,
+        &inputs.sidecar,
+        &vehicle::ledger_role(&inputs.role),
+        inputs.source_commit.as_deref(),
+    )
+    .map_err(|e| format!("assets/{asset_id} was published, but its {e}"))?;
+    let outcome = vehicle::check(mods, &inputs.role.pack_id, asset_id);
+    Ok(Step::Drafted {
+        summary: derived.summary,
+        outcome,
+        asset: derived.pack.join("assets").join(asset_id),
+        ledger,
+    })
+}
+
 // Record one step under `key`; returns its exit status.
 fn describe(step: &Step, report: &mut Value, key: &str) -> i64 {
     match step {
@@ -264,7 +359,18 @@ fn summary(report: &Value) -> String {
         lines.push(format!("  refused: {error}"));
     }
     let draft = &report["draft"];
-    if draft.is_object() {
+    if let Some(vehicle) = draft["vehicle"].as_object() {
+        lines.push(format!(
+            "  vehicle: {} {} m; tiers {} triangles from {} m; {} wheels, {} lenses; variants {}",
+            text(&vehicle["body_class"]),
+            vehicle["size_m"],
+            vehicle["tiers"],
+            vehicle["tier_starts_m"],
+            vehicle["wheels"],
+            vehicle["lenses"],
+            vehicle["variants"]
+        ));
+    } else if draft.is_object() {
         lines.push(format!(
             "  lot {} x {} cells; part at {}; entrance at {} facing {}",
             draft["lot_cells"][0],
@@ -813,5 +919,50 @@ mod tests {
         assert_eq!(run_fixture(&fixture, fixture.role(), false).0, 0);
         let (exit, report) = run_fixture(&fixture, role, false);
         assert_eq!(exit, 0, "{report:#}");
+    }
+
+    // A vehicle draft (`TOOLS-41`): published into the copy and the real pack, its ledger
+    // written, loaded by the scanner; a rerun reports the existing asset with no stale line, and
+    // a changed tier marks it stale.
+    #[test]
+    fn a_vehicle_draft_publishes_its_tiers_maps_and_ledger() {
+        use crate::assets::authoring::model_draft::vehicle::tests::{ASSET, PACK, VehicleFixture};
+        let fixture = VehicleFixture::new();
+        let engine = Engine {
+            thumbnail: &|preview, output| {
+                fs::create_dir_all(output.parent().unwrap()).map_err(|e| e.to_string())?;
+                fs::copy(preview, output).map(|_| ()).map_err(|e| e.to_string())
+            },
+            bounds: &|_, _| Ok(()),
+            decodes: &|path| path.is_file(),
+        };
+        let copy = fixture.root.join("copy");
+        fs::create_dir_all(copy.join(PACK)).unwrap();
+        fs::copy(fixture.mods().join(PACK).join("pack.toml"), copy.join(PACK).join("pack.toml"))
+            .unwrap();
+        let request = |write: bool| {
+            json!({"sidecar": fixture.sidecar_path(), "role": fixture.role(), "mods": copy,
+                   "work": fixture.root.join("work"),
+                   "write_mods": if write { json!(fixture.mods()) } else { Value::Null },
+                   "target_mods": fixture.mods(), "source_commit": "de0b8ec"})
+            .to_string()
+        };
+        let (exit, report) = run(&request(true), &engine);
+        assert_eq!((exit, report["status"].as_str()), (0, Some("written")), "{report:#}");
+        let asset = fixture.mods().join(PACK).join("assets").join(ASSET);
+        for file in ["asset.toml", "estate_compact_lod3.glb", "estate_compact_emission.png", "thumbnail.webp"] {
+            assert!(asset.join(file).is_file(), "{file}");
+        }
+        let ledger = sidecar::read_ledger_entry(&fixture.mods().join(PACK), ASSET).unwrap().unwrap();
+        assert_eq!(ledger.source_commit.as_deref(), Some("de0b8ec"));
+        assert!(report["summary"].as_str().unwrap().contains("vehicle: car"));
+        let (exit, report) = run(&request(true), &engine);
+        assert_eq!((exit, report["status"].as_str()), (0, Some("existing")), "{report:#}");
+        fs::write(asset.join("estate_compact_lod3.glb"), "changed").unwrap();
+        let check = json!({"sidecar": fixture.sidecar_path(), "role": fixture.role(),
+                           "mods": fixture.mods(), "work": fixture.root.join("work"), "check": true});
+        let (exit, report) = run(&check.to_string(), &engine);
+        assert_eq!(exit, 2, "{report:#}");
+        assert!(report["stale"].to_string().contains("estate_compact_lod3.glb"));
     }
 }

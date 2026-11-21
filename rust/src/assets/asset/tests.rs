@@ -706,68 +706,168 @@ fn prop_manifest_round_trip() {
 // ── Vehicle ─────────────────────────────────────────────────────────────
 
 const VEHICLE_TOML: &str = r#"
-asset_id = "vehicle.civil.sedan_compact"
-display_name = "Compact Sedan"
-tags = ["civil", "sedan"]
-
-[vehicle]
-vehicle_class = "civil"
-vehicle_family = "sedan"
-length_m = 4.5
-width_m = 1.8
-height_m = 1.5
-
-[[vehicle.color_variants]]
-name = "red"
-albedo_file = "textures/sedan_red.png"
-
-[[vehicle.color_variants]]
-name = "blue"
-albedo_file = "textures/sedan_blue.png"
-
-[[anchors]]
-type = "wheel"
-name = "front_left"
-position = [-0.85, 0.0, 1.5]
-forward = [0.0, 0.0, 1.0]
+asset_id = "vehicle.civil.estate_compact"
+display_name = "Estate Compact"
 
 [[lods]]
 file = "lod0.glb"
 distance_min_m = 0.0
-distance_max_m = 40.0
+distance_max_m = 30.0
+
+[[lods]]
+file = "lod1.glb"
+distance_min_m = 30.0
+distance_max_m = 100.0
+
+[[lods]]
+file = "lod2.glb"
+distance_min_m = 100.0
+distance_max_m = 400.0
+
+[[lods]]
+file = "lod3.glb"
+distance_min_m = 400.0
+
+[vehicle]
+vehicle_class = "civil"
+vehicle_family = "estate"
+body_class = "car"
+length_m = 4.48
+width_m = 1.79
+height_m = 1.468
+seats = 5
+orm = "orm.png"
+emission = "emission.png"
+
+[[vehicle.variants]]
+name = "plain"
+albedo = "albedo_plain.png"
+paint = true
+
+[[vehicle.paints]]
+colour = [0.8, 0.1, 0.1]
+weight = 2.0
+
+[[vehicle.wheels]]
+part = 1
+side = "left"
+centre = [0.77, 0.32, 1.38]
+radius_m = 0.32
+width_m = 0.207
+steer = true
+
+[[vehicle.wheels]]
+part = 2
+side = "right"
+centre = [-0.77, 0.32, 1.38]
+radius_m = 0.32
+width_m = 0.207
+steer = true
+
+[[vehicle.wheels]]
+part = 3
+side = "left"
+centre = [0.77, 0.32, -1.27]
+radius_m = 0.32
+width_m = 0.207
+steer = false
+
+[[vehicle.wheels]]
+part = 4
+side = "right"
+centre = [-0.77, 0.32, -1.27]
+radius_m = 0.32
+width_m = 0.207
+steer = false
 "#;
 
-#[test]
-fn vehicle_manifest_round_trip() {
-    let m = VEHICLE_TOML.parse::<AssetManifest>().expect("parse failed");
-    assert_eq!(m.class().unwrap(), AssetClass::Vehicle);
-    let v = m.vehicle.as_ref().unwrap();
-    assert_eq!(v.vehicle_class, VehicleClass::Civil);
-    assert_eq!(v.vehicle_family, VehicleFamily::Sedan);
-    assert_eq!(v.length_m, 4.5);
-    assert_eq!(v.color_variants.len(), 2);
-    assert_eq!(v.color_variants[0].name, "red");
-    assert_eq!(m.anchors[0].anchor_type, AnchorType::Wheel);
+// The lenses every vehicle needs, one each, appended as TOML.
+fn with_lamps(toml: &str, groups: &[(&str, u8)]) -> String {
+    let mut text = toml.to_owned();
+    for (group, id) in groups {
+        text += &format!(
+            "\n[[vehicle.lamps]]\ngroup = \"{group}\"\nlamp = {id}\nside = \"left\"\n\
+             position = \"front\"\ncolour = \"white\"\ncentre = [0.5, 0.7, 2.0]\n\
+             facing = [0.0, 0.6, 0.8]\nwidth_m = 0.2\nheight_m = 0.1\n"
+        );
+    }
+    text
+}
+
+const CAR_LAMPS: [(&str, u8); 8] = [
+    ("brake", 2),
+    ("tail_brake", 3),
+    ("indicator_left", 4),
+    ("indicator_right", 5),
+    ("reverse", 6),
+    ("low_beam", 7),
+    ("high_beam", 8),
+    ("daytime", 9),
+];
+
+fn vehicle_manifest() -> AssetManifest {
+    with_lamps(VEHICLE_TOML, &CAR_LAMPS).parse().expect("parse failed")
 }
 
 #[test]
-fn vehicle_rejects_invalid_dimensions() {
-    for invalid in [0.0, -1.0, f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
-        for axis in 0..3 {
-            let mut manifest = VEHICLE_TOML.parse::<AssetManifest>().unwrap();
-            let vehicle = manifest.vehicle.as_mut().unwrap();
-            let dimension = match axis {
-                0 => &mut vehicle.length_m,
-                1 => &mut vehicle.width_m,
-                _ => &mut vehicle.height_m,
-            };
-            *dimension = invalid;
-            assert!(
-                manifest.validate().is_err(),
-                "vehicle axis {axis} accepted {invalid}"
-            );
-        }
+fn vehicle_manifest_round_trip() {
+    let m = vehicle_manifest();
+    assert_eq!(m.class().unwrap(), AssetClass::Vehicle);
+    let v = m.vehicle.as_ref().unwrap();
+    assert_eq!(v.vehicle_class, VehicleClass::Civil);
+    assert_eq!(v.vehicle_family, VehicleFamily::Estate);
+    assert_eq!(v.body_class, BodyClass::Car);
+    assert_eq!(v.spawn_weight, 1.0);
+    assert_eq!((v.wheels.len(), v.lamps.len(), v.paints.len()), (4, 8, 1));
+    assert_eq!(v.lamps[1].group, LampGroup::TailBrake);
+    assert_eq!(
+        v.textures().collect::<Vec<_>>(),
+        ["orm.png", "emission.png", "albedo_plain.png"]
+    );
+}
+
+#[test]
+fn vehicle_rejects_invalid_dimensions_and_the_class_box() {
+    for invalid in [0.0, -1.0, f32::NAN, f32::INFINITY, 4.6] {
+        let mut manifest = vehicle_manifest();
+        manifest.vehicle.as_mut().unwrap().length_m = invalid;
+        assert!(manifest.validate().is_err(), "length {invalid} accepted");
     }
+    let mut manifest = vehicle_manifest();
+    manifest.vehicle.as_mut().unwrap().body_class = BodyClass::Van;
+    manifest.vehicle.as_mut().unwrap().length_m = 5.9;
+    manifest.validate().expect("a van box takes 5.9 m");
+}
+
+#[test]
+fn vehicle_rejects_missing_lamps_wheels_and_tiers() {
+    // No high-mounted brake lamp on a car, and no tail at all.
+    for skip in ["brake", "tail_brake", "low_beam"] {
+        let lamps: Vec<_> = CAR_LAMPS.iter().copied().filter(|(g, _)| *g != skip).collect();
+        let text = with_lamps(VEHICLE_TOML, &lamps);
+        assert!(text.parse::<AssetManifest>().is_err(), "{skip} missing accepted");
+    }
+    // A lamp id that disagrees with its group.
+    let text = with_lamps(VEHICLE_TOML, &CAR_LAMPS).replace("lamp = 7", "lamp = 8");
+    assert!(text.parse::<AssetManifest>().is_err());
+    // A buried wheel, wheels out of part order.
+    let mut manifest = vehicle_manifest();
+    manifest.vehicle.as_mut().unwrap().wheels[0].centre[1] = 0.2;
+    assert!(manifest.validate().is_err());
+    let mut manifest = vehicle_manifest();
+    manifest.vehicle.as_mut().unwrap().wheels.swap(0, 1);
+    assert!(manifest.validate().is_err());
+    // Three tiers; a gap between tiers.
+    let mut manifest = vehicle_manifest();
+    manifest.lods.pop();
+    assert!(manifest.validate().is_err());
+    let mut manifest = vehicle_manifest();
+    manifest.lods[1].distance_min_m = 35.0;
+    assert!(manifest.validate().is_err());
+    // A bad paint.
+    let mut manifest = vehicle_manifest();
+    manifest.vehicle.as_mut().unwrap().paints[0].weight = 0.0;
+    assert!(manifest.validate().is_err());
 }
 
 // ── Character ────────────────────────────────────────────────────────────

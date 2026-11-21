@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Drafts a zoned building asset from a `metrum_models` facts sidecar (`TOOLS-33`,
-docs/asset_editor.md "Draft command").
+"""Drafts a zoned building asset (`TOOLS-33`) or a vehicle (`TOOLS-41`) from a `metrum_models`
+facts sidecar (docs/asset_editor.md "Draft command"). A version 2 sidecar with `kind: "vehicle"`
+takes a vehicle role (`pack_id`, `asset_id`, `vehicle_class`, `vehicle_family`, `seats`, optional
+`display_name`, `spawn_weight` and `paints`) and drafts a `[vehicle]` asset (docs/vehicles.md).
 
     tools/model_draft.py --sidecar <model>/export/<name>.model.json --role <role.json> \\
         --mods <packs folder> [--write | --check] [--source-commit <hash>] [--report <report.json>]

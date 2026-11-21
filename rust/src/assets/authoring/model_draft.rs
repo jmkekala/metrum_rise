@@ -10,6 +10,7 @@ pub(crate) mod acceptance;
 pub(crate) mod report;
 pub(crate) mod rules;
 pub(crate) mod sidecar;
+pub(crate) mod vehicle;
 
 #[cfg(test)]
 pub(crate) mod tests;

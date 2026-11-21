@@ -535,8 +535,6 @@ fn anchor_type_key(anchor_type: AnchorType) -> &'static str {
         AnchorType::Driveway => "driveway",
         AnchorType::Parking => "parking",
         AnchorType::LoadingBay => "loading_bay",
-        AnchorType::Wheel => "wheel",
-        AnchorType::Light => "light",
     }
 }
 

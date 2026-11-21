@@ -26,7 +26,7 @@ impl AssetManifest {
     /// - Exactly one class section is populated.
     /// - `display_name` is non-empty.
     /// - Building lot dimensions are non-zero when present.
-    /// - Vehicle dimensions are positive when present.
+    /// - A vehicle fits its body class box and carries its wheels, lamps and four tiers.
     pub fn validate(&self) -> Result<(), ManifestError> {
         if !is_valid_asset_id(&self.asset_id) {
             return Err(ManifestError::Validation(format!(
@@ -263,18 +263,6 @@ impl AssetManifest {
                         )?;
                         validate_building_site_anchor_footprint(&self.asset_id, b, anchor)?;
                     }
-                    AnchorType::Wheel => {
-                        return Err(ManifestError::Validation(format!(
-                            "asset_id '{}': anchor '{}' uses type = \"wheel\", which is not valid for building assets",
-                            self.asset_id, anchor.name
-                        )));
-                    }
-                    AnchorType::Light => {
-                        return Err(ManifestError::Validation(format!(
-                            "asset_id '{}': anchor '{}' uses type = \"light\", which is not valid for building assets",
-                            self.asset_id, anchor.name
-                        )));
-                    }
                 }
             }
             if main_entrance_count != 1 {
@@ -310,15 +298,9 @@ impl AssetManifest {
         if self.building.is_none() && !self.lods.is_empty() {
             validate_lods(&self.asset_id, None, &self.lods)?;
         }
-        if let Some(v) = &self.vehicle
-            && [v.length_m, v.width_m, v.height_m]
-                .iter()
-                .any(|dimension| !dimension.is_finite() || *dimension <= 0.0)
-        {
-            return Err(ManifestError::Validation(format!(
-                "asset_id '{}': vehicle dimensions must be finite and positive",
-                self.asset_id
-            )));
+        if let Some(vehicle) = &self.vehicle {
+            vehicle.validate(&self.asset_id, self.lods.len())?;
+            validate_vehicle_tiers(&self.asset_id, &self.lods)?;
         }
         if let Some(prop) = &self.prop
             && prop
@@ -844,6 +826,22 @@ fn validate_passages(asset_id: &str, part: &MeshPart) -> Result<(), ManifestErro
         }
     }
     Ok(())
+}
+
+// A vehicle's four tiers switch at their `distance_min_m`, one band after the other: LOD0 from 0,
+// each band ending where the next begins, LOD3 to the draw distance (no `distance_max_m`).
+fn validate_vehicle_tiers(asset_id: &str, lods: &[LodEntry]) -> Result<(), ManifestError> {
+    let contiguous = lods.first().is_some_and(|lod| lod.distance_min_m == 0.0)
+        && lods.windows(2).all(|pair| pair[0].distance_max_m == Some(pair[1].distance_min_m))
+        && lods.last().is_some_and(|lod| lod.distance_max_m.is_none());
+    if contiguous {
+        Ok(())
+    } else {
+        Err(ManifestError::Validation(format!(
+            "asset_id '{asset_id}': a vehicle's tiers must start at 0 m, each ending where the next \
+             begins, the last without distance_max_m"
+        )))
+    }
 }
 
 pub(crate) fn validate_lods(

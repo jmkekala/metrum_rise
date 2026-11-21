@@ -489,11 +489,7 @@ fn append_anchor_support_points(anchor: &Anchor, lot: LocalLotSupport, points: &
             lot,
             points,
         ),
-        AnchorType::Driveway
-        | AnchorType::Parking
-        | AnchorType::LoadingBay
-        | AnchorType::Wheel
-        | AnchorType::Light => {}
+        AnchorType::Driveway | AnchorType::Parking | AnchorType::LoadingBay => {}
     }
 }
 

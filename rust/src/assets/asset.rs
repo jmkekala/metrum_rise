@@ -26,7 +26,11 @@ pub use model::{
     Anchor, AnchorType, AssetClass, AssetManifest, BayStand, LodEntry, MeshPart, PASSAGE_EAVES_MARGIN_M,
     Passage, PropData, SiteSurface, SiteSurfaceMaterial, SnapMode, TerrainBehavior,
 };
-pub use vehicle::{ColorVariant, VehicleClass, VehicleData, VehicleFamily};
+pub use vehicle::{
+    BodyClass, LampColour, LampGroup, LampPosition, MAX_PAINTS, MAX_WHEELS, Side, VEHICLE_TIERS,
+    VehicleClass, VehicleData, VehicleFamily, VehicleLamp, VehiclePaint, VehicleVariant,
+    VehicleWheel,
+};
 pub use yard_hedge::{
     FRONT_INSET_M, LotEdge, YardHedge, YardHedgeKind, YardHedgeRow, YardLot, plan_yard_hedge,
     structure_footprint,

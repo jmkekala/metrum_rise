@@ -49,12 +49,7 @@ pub(crate) fn asset_files(manifest: &AssetManifest, directory: &Path) -> Result<
         references.extend(overrides.flat_map(|entry| entry.textures()));
     }
     if let Some(vehicle) = &manifest.vehicle {
-        references.extend(
-            vehicle
-                .color_variants
-                .iter()
-                .map(|v| v.albedo_file.as_str()),
-        );
+        references.extend(vehicle.textures());
     }
     if let Some(character) = &manifest.character {
         references.extend(

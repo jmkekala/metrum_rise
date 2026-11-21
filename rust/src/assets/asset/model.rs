@@ -222,10 +222,6 @@ pub enum AnchorType {
     Parking,
     /// Freight or service vehicle stop position inside a building lot.
     LoadingBay,
-    /// Wheel position marker on a vehicle.
-    Wheel,
-    /// Light emitter position marker on a vehicle.
-    Light,
 }
 
 /// Material for an authored building yard surface.
