@@ -956,3 +956,86 @@ fn a_save_with_a_truck_in_a_yard_loads_after_an_edit_retired_its_dock() {
     tick_truck_until(&mut core, carrier, |core, i| phase_of(core, i) != PullOut);
     assert!(!core.agents.holds_freight_dock(core.agents.handles.handle(carrier), dock));
 }
+
+// The rendered evidence's city (`PARK-20`): two copies of a yard asset with a dock 120 m apart
+// on a straight street, and one loaded shipment between them whose dispatch the trip wheel runs
+// at the next slot, so a game that loads the save shows its truck back out of the source's dock,
+// drive to the other yard, pull into its dock, stand there until its check and back
+// out. The asset is read from `METRUM_FREIGHT_STILL_ASSET` (a directory holding `asset.toml`, for
+// example a copy of a pack's coal mine with its passage declared; nothing is copied anywhere)
+// and registered as `METRUM_FREIGHT_STILL_ID` (`pack:asset`, the id the game's packs give it).
+// Writes `yard.sqlite` and `yard.json` (each dock's route and heading, world x and z) into
+// `METRUM_FREIGHT_STILL_OUT`. A save loads without validating its docks, so the game draws the
+// rows proven here.
+#[test]
+#[ignore = "manual fixture for rendered freight yard stills; requires METRUM_FREIGHT_STILL_ASSET, _ID and _OUT"]
+fn write_the_freight_yard_still_save() {
+    let var = |name| std::env::var(name).unwrap_or_else(|_| panic!("{name} is required"));
+    let (dir, id, out) = (
+        var("METRUM_FREIGHT_STILL_ASSET"),
+        var("METRUM_FREIGHT_STILL_ID"),
+        var("METRUM_FREIGHT_STILL_OUT"),
+    );
+    let text = std::fs::read_to_string(std::path::Path::new(&dir).join("asset.toml")).unwrap();
+    let manifest = AssetManifest::from_str(&text).unwrap();
+    let (pack, _) = id.split_once(':').expect("pack:asset");
+    let mut core = SimCore::new(
+        WorldConfig::new(512.0, 512.0, 16.0, 10.0)
+            .with_chunking(128.0, 0.0)
+            .with_terrain_resolution(2.0),
+    );
+    core.treasury.balance = 1_000_000.0;
+    commit(&mut core, (-200.0, 0.0), (200.0, 0.0));
+    core.allocator.registry.register(pack, manifest, dir.clone());
+    let yard = core.place_industry_building_internal(&id, -60.0, -40.0).unwrap();
+    let source = core.place_industry_building_internal(&id, 60.0, -40.0).unwrap();
+    core.publish_pending_building_site_changes();
+    let handles: Vec<u64> = [yard, source]
+        .map(|b| core.allocator.building_handles.handle(b).to_bits())
+        .into();
+    for handle in &handles {
+        assert_eq!(
+            core.parking.building_docks(*handle).count(),
+            1,
+            "{:?}",
+            core.parking.dock_diagnostics
+        );
+    }
+    use crate::simulation::economy::logistics::{
+        CarrierClass, Shipment, ShipmentEndpoint, ShipmentStatus,
+    };
+    let catalog = load_runtime_economy_catalog().unwrap();
+    core.logistics.shipments.push(Shipment {
+        id: 0,
+        resource_runtime_id: catalog.resource_runtime_id_for_id("coal").unwrap(),
+        amount: 10.0,
+        source: ShipmentEndpoint::Building(source),
+        destination: ShipmentEndpoint::Building(yard),
+        carrier_class: CarrierClass::Truck,
+        status: ShipmentStatus::InTransit,
+        carrier: crate::simulation::economy::agents::AgentHandle::NONE,
+        total_cost: 100.0,
+        freight_cost: 10.0,
+        eta_hours: 1,
+        leg_started_hour: core.logistics.hour_ticks,
+        trip_event_slot: 0,
+        cargo_loaded: true,
+    });
+    core.logistics.next_shipment_id = 1;
+    core.resume_restored_freight(&[0]);
+    let out = std::path::Path::new(&out);
+    std::fs::create_dir_all(out).unwrap();
+    let save = out.join("yard.sqlite");
+    core.save_game_settled_at(save.to_str().unwrap(), None, 0)
+        .expect("the still city saves");
+    let docks: Vec<_> = handles
+        .iter()
+        .flat_map(|&handle| core.parking.building_docks(handle).collect::<Vec<_>>())
+        .map(|dock| {
+            let route = core.parking.dock_route(dock).unwrap();
+            serde_json::json!({ "route": route })
+        })
+        .collect();
+    let json = serde_json::json!({ "docks": docks, "yard": handles[0], "source": handles[1] });
+    std::fs::write(out.join("yard.json"), json.to_string()).unwrap();
+}
