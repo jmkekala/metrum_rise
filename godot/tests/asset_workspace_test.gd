@@ -35,10 +35,20 @@ func _run() -> void:
 			_expect(view.rows[field].visible == session.descriptor["fields"].has(field), "%s visibility for %s" % [field, kind])
 		if kind == "residential":
 			_expect(not view.catalog_refresh.visible and not view.derived_workers.visible, "housing has no economy controls")
+		if kind == "explicit":
+			_expect(view.rows["worker_capacity"].visible and view.derived_workers.text.begins_with("Shown in the game only"), "a building without a profile authors its shown workers")
+		if kind in ["commercial", "industrial"]:
+			_expect(session.params.get("worker_capacity") == null and not view.rows["worker_capacity"].visible, "a zoned workplace is not asked for workers")
 		if kind in ["commercial", "industrial", "extractor", "farm", "service"]:
 			var profile: String = {"commercial": "grocery_basic", "industrial": "machinery_factory_basic", "extractor": "coal_mine_basic", "farm": "grain_farm_basic", "service": "power_plant_basic"}[kind]
 			session.set_field("economy_profile", profile)
 			_expect(not view.rows["worker_capacity"].visible and view.derived_workers.visible, "profile employment is derived, not editable")
+			_expect(view.derived_workers.text.ends_with("(from the economy profile %s)" % profile), "the shown workers name their profile: " + view.derived_workers.text)
+		if kind == "industrial":
+			_expect(view.derived_workers.text == "Workers: 4 (from the economy profile machinery_factory_basic)", "the profile's workers are shown read-only")
+			# An older asset's own number stays hidden and is named as unused.
+			session.set_field("worker_capacity", 1)
+			_expect(not view.rows["worker_capacity"].visible and view.derived_workers.text.ends_with("worker_capacity 1 is unused and is not exported"), "a redundant worker_capacity is named, not editable")
 			if kind != "extractor":
 				for index in view._economy_profile_btn.item_count:
 					_expect(view._economy_profile_btn.get_item_metadata(index) != "coal_mine_basic", "mine profile must not appear for " + kind)

@@ -149,7 +149,6 @@ pub(crate) fn derive(inputs: &Inputs, mods: &Path, work: &Path) -> Result<Derive
         },
         "household_capacity": params["household_capacity"],
         "flat_size_m2": params["flat_size_m2"],
-        "worker_capacity": params["worker_capacity"],
         "economy_profile": params["economy_profile"],
         "schemes": facts.variants.len(),
         "free_space": rules::free_space(facts, lot, position),

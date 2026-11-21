@@ -1150,6 +1150,10 @@ fn a_draft_without_a_main_entrance_or_a_home_without_storeys_is_refused_up_front
     let inputs = read_inputs(&fixture.sidecar_path(), commercial).unwrap();
     let derived = derive(&inputs, &fixture.mods(), &fixture.root).unwrap();
     assert!(derived.document["params"]["flat_size_m2"].is_null());
+    // R5: nor its workers, which its profile supplies (`TOOLS-38`).
+    assert!(derived.document["params"]["worker_capacity"].is_null());
+    assert_eq!(derived.document["params"]["economy_profile"], "grocery_basic");
+    assert!(derived.summary.get("worker_capacity").is_none());
 }
 
 #[test]

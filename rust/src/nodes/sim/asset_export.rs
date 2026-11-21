@@ -340,7 +340,11 @@ fn build_asset_toml(p: &ExportParams) -> Result<String, String> {
             if let Some(h) = p.household_capacity {
                 out.push_str(&format!("household_capacity = {h}\n"));
             }
-            if let Some(w) = p.worker_capacity {
+            // Not dormant under a profile: the bound profile supplies the workers and no type the
+            // asset can hold with one reads its own number, so it is dropped (`TOOLS-38`).
+            if let Some(w) = p.worker_capacity
+                && non_empty_optional_string(&p.economy_profile).is_none()
+            {
                 out.push_str(&format!("worker_capacity = {w}\n"));
             }
             if let Some(f) = p.flat_size_m2 {
@@ -777,24 +781,24 @@ fn validate_building_export_contract(params: &ExportParams) -> Result<(), String
                     }
                 }
                 "commercial" | "industrial" => {
-                    if params.worker_capacity.unwrap_or(0) == 0 && economy_profile.is_none() {
+                    // Without one it never spawns (`asset_placement_params`), and the profile
+                    // supplies its workers.
+                    let Some(id) = economy_profile else {
                         return Err(
-                            "commercial and industrial zoned_private buildings require worker_capacity or economy_profile"
+                            "commercial and industrial zoned_private buildings require economy_profile"
                                 .to_owned(),
                         );
-                    }
-                    if let Some(id) = economy_profile {
-                        let catalog = load_runtime_economy_catalog()?;
-                        let data = serde_json::json!({
-                            "asset_class": "building", "placement_mode": "zoned_private", "zone_type": zone_type,
-                        });
-                        if !catalog.profile_for_id(id).is_some_and(|profile| {
-                            crate::assets::authoring::profile_matches(&data, profile, &catalog)
-                        }) {
-                            return Err(format!(
-                                "economy_profile '{id}' is not an executable {zone_type} profile"
-                            ));
-                        }
+                    };
+                    let catalog = load_runtime_economy_catalog()?;
+                    let data = serde_json::json!({
+                        "asset_class": "building", "placement_mode": "zoned_private", "zone_type": zone_type,
+                    });
+                    if !catalog.profile_for_id(id).is_some_and(|profile| {
+                        crate::assets::authoring::profile_matches(&data, profile, &catalog)
+                    }) {
+                        return Err(format!(
+                            "economy_profile '{id}' is not an executable {zone_type} profile"
+                        ));
                     }
                 }
                 other => {
@@ -1634,7 +1638,7 @@ mod tests {
             .unwrap()
             .0;
         assert!(asset_toml.contains("economy_profile = \"grocery_basic\""));
-        assert!(asset_toml.contains("worker_capacity = 8"));
+        assert!(!asset_toml.contains("worker_capacity"));
         assert!(asset_toml.contains("household_capacity = 3"));
         assert!(asset_toml.contains("flat_size_m2 = 60"));
     }
@@ -1704,6 +1708,63 @@ mod tests {
             .0;
         assert!(asset_toml.contains("economy_profile = \"food_processor_basic\""));
         assert!(!asset_toml.contains("worker_capacity"));
+    }
+
+    // `TOOLS-38`: a profile supplies the workers, so a profiled building exports without the
+    // asset's own number and a manifest that still carries it loads with the same workers; a
+    // zoned workplace needs its profile; a building without one keeps its authored number.
+    #[test]
+    fn worker_capacity_is_exported_only_for_a_building_without_a_profile() {
+        let catalog = crate::simulation::economy::definitions::load_runtime_economy_catalog()
+            .unwrap();
+        let mut allocator = crate::simulation::buildings::allocator::BuildingAllocator::new();
+        let mut workplace: serde_json::Value =
+            serde_json::from_str(&minimal_building_json("building.industrial.mill")).unwrap();
+        workplace["zone_type"] = serde_json::json!("industrial");
+        workplace["household_capacity"] = serde_json::Value::Null;
+        workplace["economy_profile"] = serde_json::json!("food_processor_basic");
+        for own in [None, Some(1)] {
+            workplace["worker_capacity"] = serde_json::json!(own);
+            let params: ExportParams = serde_json::from_value(workplace.clone()).unwrap();
+            let asset_toml = validated_tomls(&params).unwrap().0;
+            assert!(!asset_toml.contains("worker_capacity"), "{asset_toml}");
+            // The owner's grocery, pharmacy and factory still carry `worker_capacity = 1`.
+            let old_toml = asset_toml.replace("level = 1\n", "level = 1\nworker_capacity = 1\n");
+            for text in [&asset_toml, &old_toml] {
+                let manifest = AssetManifest::from_str(text).unwrap();
+                allocator.registry.register("test-pack", manifest, String::new());
+                assert_eq!(
+                    allocator.worker_capacity_for_asset_with_catalog(
+                        "test-pack:building.industrial.mill",
+                        &catalog
+                    ),
+                    Some(10)
+                );
+            }
+        }
+        workplace["economy_profile"] = serde_json::Value::Null;
+        workplace["worker_capacity"] = serde_json::json!(4);
+        let result = validate_asset_params_internal(&workplace.to_string());
+        assert!(
+            result.contains("zoned_private buildings require economy_profile"),
+            "{result}"
+        );
+        let mut station: serde_json::Value =
+            serde_json::from_str(&minimal_building_json("building.service.station")).unwrap();
+        station["placement_mode"] = serde_json::json!("explicit");
+        station["zone_type"] = serde_json::Value::Null;
+        station["density"] = serde_json::Value::Null;
+        station["household_capacity"] = serde_json::Value::Null;
+        station["service_class"] = serde_json::json!("police");
+        station["worker_capacity"] = serde_json::json!(3);
+        let params: ExportParams = serde_json::from_value(station).unwrap();
+        let manifest = AssetManifest::from_str(&validated_tomls(&params).unwrap().0).unwrap();
+        allocator.registry.register("test-pack", manifest, String::new());
+        assert_eq!(
+            allocator
+                .worker_capacity_for_asset_with_catalog("test-pack:building.service.station", &catalog),
+            Some(3)
+        );
     }
 
     #[test]

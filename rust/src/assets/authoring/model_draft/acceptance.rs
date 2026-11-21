@@ -97,11 +97,10 @@ pub(crate) fn check(mods: &Path, pack_id: &str, asset_id: &str, engine: &Engine)
     check_colours(&manifest, directory, engine, &mut outcome);
     check_stock(&manifest, pack_id, &registry, &mut outcome);
     check_ledger(&manifest, &pack, &mut outcome);
-    if manifest
-        .building
-        .as_ref()
-        .is_some_and(|building| building.worker_capacity.is_some_and(|w| w > 0))
-        && !manifest
+    // A workplace: its profile supplies the workers, and an older asset may still carry its own.
+    if manifest.building.as_ref().is_some_and(|building| {
+        building.economy_profile.is_some() || building.worker_capacity.is_some_and(|w| w > 0)
+    }) && !manifest
             .anchors
             .iter()
             .any(|anchor| anchor.anchor_type == AnchorType::Parking)

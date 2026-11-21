@@ -182,7 +182,7 @@ func _gameplay() -> void:
 	v.choice_field(box, "density", "Density")
 	v._residents_spin = v.number_field(box, "household_capacity", "Households", 1000000)
 	v.number_field(box, "flat_size_m2", "Apartment / farmhouse area (m²)", 100000, 0.5)
-	v.number_field(box, "worker_capacity", "Employment · authored", 1000000)
+	v.number_field(box, "worker_capacity", "Workers · authored", 1000000)
 	v.text_field(box, "extractor_resource", "Extracted resource")
 	v.text_field(box, "field_resource", "Grown resource")
 	v.field_row(box, "extractor_area_mode", "Extraction area · runtime contract", _label_detached("Player-drawn polygon"))

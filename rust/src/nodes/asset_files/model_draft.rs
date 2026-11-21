@@ -223,7 +223,8 @@ fn summary(report: &Value) -> String {
     lines.join("\n")
 }
 
-// The derived capacities: households and flat size for housing, workers and profile otherwise.
+// The derived capacities: households and flat size for housing, the profile (which supplies the
+// workers) otherwise.
 fn capacity(draft: &Value) -> String {
     let mut parts = Vec::new();
     if !draft["household_capacity"].is_null() {
@@ -231,9 +232,6 @@ fn capacity(draft: &Value) -> String {
     }
     if !draft["flat_size_m2"].is_null() {
         parts.push(format!("flat size {} m²", draft["flat_size_m2"]));
-    }
-    if !draft["worker_capacity"].is_null() {
-        parts.push(format!("workers {}", draft["worker_capacity"]));
     }
     if let Some(profile) = draft["economy_profile"].as_str() {
         parts.push(format!("economy_profile {profile}"));
@@ -532,6 +530,18 @@ mod tests {
                 .contains("parking")
         );
         assert!(report["draft"]["household_capacity"].is_null());
+        // R5: the profile supplies the workers; the draft writes no number of its own (`TOOLS-38`).
+        assert!(report["draft"].get("worker_capacity").is_none(), "{report:#}");
+        let published = fs::read_to_string(
+            fixture
+                .root
+                .join("copy")
+                .join(PACK)
+                .join("assets/building.commercial.grocery/asset.toml"),
+        )
+        .unwrap();
+        assert!(published.contains("economy_profile = \"grocery_basic\""));
+        assert!(!published.contains("worker_capacity"), "{published}");
     }
 
     #[test]

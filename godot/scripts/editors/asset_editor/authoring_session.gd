@@ -133,13 +133,8 @@ func _document_changed() -> void:
 	if str(params.get("asset_id", "")).is_empty():
 		view.type_label.text = "Create or open an asset to begin."
 	_editor._update_pack_summary()
-	view.derived_workers.text = ""
-	var selected = descriptor.get("selected_profile")
-	if selected is Dictionary and selected.get("compatible", false):
-		var profile: Dictionary = selected["profile"]
-		view.derived_workers.text = "Employment: %s · profile-derived, read-only" % str(profile["worker_capacity"])
-		if descriptor.get("kind") in ["farm", "extractor"]:
-			view.derived_workers.text += "\n%.2f workers / hectare; runtime scales to the committed area." % float(profile["workers_per_hectare"])
+	# Read-only: the workers the game uses and where they come from, worded in Rust (`TOOLS-38`).
+	view.derived_workers.text = str(descriptor.get("workers", ""))
 	view.derived_workers.visible = not view.derived_workers.text.is_empty()
 	view.rows["flat_size_m2"].get_child(0).text = "Farmhouse area (m²)" if descriptor.get("kind") == "farm" else "Apartment area (m²)"
 	view._economy_profile_status_lbl.text = _catalog_error if not _catalog_error.is_empty() and descriptor.get("fields", []).has("economy_profile") else str(descriptor.get("service_note", ""))

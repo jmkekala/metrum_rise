@@ -184,10 +184,14 @@ pub(crate) fn describe(data: &Value, catalog: Option<&RuntimeEconomyCatalog>) ->
         fields.push("economy_profile");
     }
     let profile_id = text(data, "economy_profile");
-    let direct_workers =
-        matches!(kind, "commercial" | "industrial" | "explicit") || (kind == "service" && !utility);
+    // A bound profile supplies the workers, and a zoned workplace without one never spawns, so
+    // only a building that takes no profile authors its own number (`TOOLS-38`).
+    let direct_workers = kind == "explicit" || (kind == "service" && !utility);
+    let mut workers = String::new();
     if direct_workers && profile_id.is_empty() {
         fields.push("worker_capacity");
+        workers = "Shown in the game only: a building without an economy profile hires no one."
+            .into();
     }
     let mut profiles = Vec::new();
     let mut selected = None;
@@ -205,6 +209,15 @@ pub(crate) fn describe(data: &Value, catalog: Option<&RuntimeEconomyCatalog>) ->
             }
             if profile.id == profile_id {
                 selected = Some(json!({"profile": summary, "compatible": compatible}));
+                if compatible {
+                    workers = profile_workers(kind, profile);
+                    // Godot's JSON numbers are floats; a whole one prints without a fraction.
+                    if let Some(own) = data["worker_capacity"].as_f64() {
+                        workers += &format!(
+                            "; the asset's own worker_capacity {own} is unused and is not exported"
+                        );
+                    }
+                }
             }
         }
     }
@@ -212,12 +225,34 @@ pub(crate) fn describe(data: &Value, catalog: Option<&RuntimeEconomyCatalog>) ->
     json!({
         "kind": kind, "fields": fields, "profiles": profiles,
         "selected_profile": selected, "catalog_available": catalog.is_some(),
-        "profile_required": matches!(kind, "extractor" | "farm") || utility,
+        "workers": workers,
+        "profile_required": has_profiles,
         "placement": if zoned { "Grows in painted zoning" } else { "Placed explicitly" },
         "service_note": if kind == "service" && !utility {
             "Authors service classification and placement; no additional service simulation settings are available."
         } else { "" },
     })
+}
+
+// The workers the game gives a building bound to `profile`, and where the number comes from: an
+// extractor or farm scales them with its drawn area (`physical_worker_capacity_for_profile`).
+fn profile_workers(kind: &str, profile: &EconomyProfileRuntime) -> String {
+    let source = format!("from the economy profile {}", profile.id);
+    if !matches!(kind, "extractor" | "farm") {
+        return format!("Workers: {} ({source})", profile.worker_capacity);
+    }
+    let mut bounds = String::new();
+    let minimum = crate::simulation::work_area::minimum_work_area_workers(profile.kind);
+    if minimum > 0 {
+        bounds += &format!(", at least {minimum}");
+    }
+    if let Some(maximum) = profile.area_worker_capacity_max {
+        bounds += &format!(", at most {maximum}");
+    }
+    format!(
+        "Workers: {:.2} per hectare of the drawn area, rounded up{bounds} ({source})",
+        profile.workers_per_hectare
+    )
 }
 
 // Lot cell size the editor's lot fields are authored in ("10 m cells"), as in its preview.
@@ -472,7 +507,6 @@ pub(crate) fn conversion(data: &Value, target: &str, subtype: &str) -> Result<Va
             candidate["household_capacity"] = json!(1);
             candidate["flat_size_m2"] = json!(60.0);
         }
-        "commercial" | "industrial" => candidate["worker_capacity"] = json!(1),
         "extractor" => {
             candidate["extractor_resource"] = json!("coal");
             candidate["extractor_area_mode"] = json!("player_polygon");
@@ -602,6 +636,50 @@ mod tests {
             );
             assert_eq!(description["selected_profile"]["compatible"], true);
         }
+    }
+
+    #[test]
+    fn only_a_building_without_a_profile_authors_its_workers() {
+        let catalog = load_runtime_economy_catalog().unwrap();
+        let fields = |document: &Value| describe(document, Some(&catalog))["fields"].clone();
+        let workers = |document: &Value| describe(document, Some(&catalog))["workers"].clone();
+        for (target, profile, expected) in [
+            (
+                "commercial",
+                "grocery_basic",
+                "Workers: 15 (from the economy profile grocery_basic)",
+            ),
+            (
+                "industrial",
+                "food_processor_basic",
+                "Workers: 10 (from the economy profile food_processor_basic)",
+            ),
+            (
+                "farm",
+                "grain_farm_basic",
+                "Workers: 0.10 per hectare of the drawn area, rounded up, at least 2, at most 6 \
+                 (from the economy profile grain_farm_basic)",
+            ),
+        ] {
+            let mut document = preset(target, "");
+            assert!(document["worker_capacity"].is_null(), "{target} preset");
+            assert!(!fields(&document).as_array().unwrap().contains(&json!("worker_capacity")));
+            assert_eq!(describe(&document, Some(&catalog))["profile_required"], true);
+            document["economy_profile"] = json!(profile);
+            assert_eq!(workers(&document), expected);
+            // An older asset's own number stays in the document, named as unused.
+            document["worker_capacity"] = json!(1);
+            assert_eq!(
+                workers(&document),
+                format!("{expected}; the asset's own worker_capacity 1 is unused and is not exported")
+            );
+        }
+        for (target, subtype) in [("explicit", ""), ("service", "police")] {
+            let document = preset(target, subtype);
+            assert!(fields(&document).as_array().unwrap().contains(&json!("worker_capacity")));
+            assert!(workers(&document).as_str().unwrap().starts_with("Shown in the game only"));
+        }
+        assert_eq!(workers(&preset("residential", "")), "");
     }
 
     #[test]
