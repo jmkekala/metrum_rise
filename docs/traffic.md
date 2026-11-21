@@ -9,6 +9,7 @@ It does not own:
 - road surface / roadbed geometry; see [`roads.md`](roads.md)
 - building entrance planning and exact attach / detach selection; see
   [`entrance_and_exit.md`](entrance_and_exit.md)
+- vehicle models, sizes, lamps and the vehicle asset contract; see [`vehicles.md`](vehicles.md)
 - stable constants tables and buffer formats; see [`reference.md`](reference.md)
 - future public transport mode design; see `TRANSIT-*` rows in [`roadmap.md`](roadmap.md)
 
@@ -3930,72 +3931,8 @@ and the headless and windowed vehicle grounding test were rerun on it.
   contact, windowed MultiMesh buffers equal to the drawn pose, and the height-owner snap within the
   snap distance.
 
-### Vehicle models and lamps (`RENDER-26`)
-
-Cars are the Kenney models (`godot/assets/models/vehicles/civilian/` sedan, sports sedan, SUV,
-luxury SUV; `freight/` delivery van) with their colormap atlas variants. Generic Finnish models
-were tried on this branch and withdrawn as not good enough to ship; they are kept off-tree. The
-Kenney meshes carry no lamp data, so `vehicle_lamps.gd` holds a measured table of front and rear
-lamp anchors per model (left lamps mirror X); procedural cars derive theirs from the AABB.
-`vehicle_resources.gd` builds a car's body as one surface (`RENDER-46`): the loader gives every
-glTF primitive of a model (the body panels and four wheels) the model's one atlas material, so it
-concatenates them in node order with their indices offset; their vertices, triangles and winding
-stay the model's own, and a MultiMesh of moving or parked cars draws the body once. The lamp
-surfaces keep their own materials. Any model the game loads goes through the same build, so
-replacement models need no merged assets; a loader that reads several materials from a model
-would merge per material.
-
-At night (sun below 4 to -2 degrees, as the street lights):
-
-- `vehicle_lamps.gd` adds a camera-facing glow quad per
-  lamp (`vehicle_lamp_glow.gdshader`) that keeps at least 1.6 pixels, so traffic shows across the
-  map; headlights show from ahead, tail lights from behind;
-- the 12 drawn cars nearest the camera within 100 m get a real `SpotLight3D` each
-  (`vehicle_headlights.gd`, 60 m range, inverse-square decay, 35 degrees with a soft rim, no
-  shadows; see below), chosen in Rust by
-  `nearest_car_poses` (O(drawn cars · log 12) with a bounded heap). They light the road, trees,
-  walls, walkers and the car ahead by their own colour;
-- every car carries a light box (`vehicle_headlight_beam.gdshader`) that rebuilds each covered
-  pixel from the depth buffer and adds a small red tail glow behind, and for cars from 70-100 m
-  out (where the spot lights fade) the same cone the real headlight casts: Godot's SpotLight3D
-  falloff with its 60 m range, inverse-square decay, 35° angle and rim attenuation 3, lit as level
-  ground. This light is added blind to surface colour, acceptable only at that distance. Near the camera the box shrinks in the vertex shader
-  to the tail region; by day and past 450 m it collapses and draws nothing.
-
-Measured 2026-10-09 on the M2 Pro, `no-headlights` save (7 cars), release build, 120 frames,
-old (Kenney models, no lamps) and new alternated three times: by day the new models cost under
-0.1 ms. At 23:00, with real lights already on for the street lights: saved view +1.15 ms,
-eye level +0.8 ms, 32 m overhead +0.4 ms with a 45 m spot range. Without the spot lights the
-lamps cost 0.1-0.35 ms; the spot lights' cost follows their reach, not their count (6 or 12 the
-same), and a 28 m range saved 0.45 ms in the saved view (about +0.85 ms over old in total), so
-the range is 30 m. The 30 m setting itself was checked visually, not re-timed.
-
-Near and far headlights did not match: up close the lighting shrank and dimmed. The real lights
-were about 100 times weaker than the far light box on ordinary surfaces (their light is scaled by
-albedo, the box's is added blind to it), fell off linearly instead of with the square of distance,
-and reached 30 m against the box's 45. `tools/bake_headlight_projector.py` calibrates the
-two against each other and bakes the box's own low-beam pattern into a spot-light projector
-(`godot/assets/textures/vehicles/headlight_projector.png`). Godot 4.7 applies a projector only to
-a shadowed light (`SpotLight3D` warns so; `storage_rd/light_storage.cpp` builds the projector
-matrix only for shadowed lights), and four shadowed lights cost 1.9-2.9 ms a frame on the M2 Pro,
-two 1.3-2.1 ms; hard shadows or an empty caster mask saved little, so the cost is per-pixel
-shading. They are off (`SHADOWED := 0`), and every light is a plain cone: 60 m range,
-inverse-square decay, 35 degrees with a steep rim falloff, energy 1200, matching the box's hot
-spot near 20 m and overlighting the first few metres. Against the old 30 m lights (same save,
-23:00, 120 frames, alternated twice): close view -0.1 ms, saved view +0.4 ms, overhead +0.15 ms.
-Shots: `screenshots/2026-10-09-roads/headlights-4-shadowed.png` and
-`headlights-shadowless-cone.png`.
-
-Far and near headlights still did not match (2026-10-14): from 70 m out a car lit a wide white
-block with straight edges, and close up a narrow soft cone. The box drew its own low-beam pattern,
-still strong at the box's front face (45 m) and side faces (16 m), and lit each pixel with a
-normal rebuilt from depth derivatives, which broke at every kerb and depth step into bright dashes
-and straight-edged patches. The box now draws the real light's cone (above), lights everything as
-level ground, and reaches 60 m ahead and 42 m (tan 35° × 60 m) to each side, where that cone is
-spent; it fades out below the box's 8 m top. Its energy (62) and a ground tint (1.07, 1.0, 0.85)
-were fitted to the mean light the real headlights add to the same views (`light-road` save at
-01:00, cars 60 and 110 m away, all-real against all-box: 86-110 % per channel before the tint).
-Frame cost was not measurable apart from the street-light change it shipped with (`ROAD-59`).
+Vehicle models, their night lamps and headlights (`RENDER-26`) are specified in
+[`vehicles.md`](vehicles.md#vehicle-models-and-lamps-render-26).
 
 ## Debugging
 

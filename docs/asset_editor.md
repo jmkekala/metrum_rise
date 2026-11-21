@@ -1166,10 +1166,8 @@ Building assets should use canonical `+Z` frontage when practical. The exported
 `[building].frontage_forward` vector is authoritative for runtime building alignment, so imported
 meshes whose frontage is not yet canonical can be represented without pack-specific runtime fixes.
 
-Vehicle compatibility rule:
-
-- Newly imported vehicle assets normalize to canonical `+Z` forward during import and export.
-- The hidden runtime compatibility rotation applies only to legacy bundled vehicle content that has not been reauthored yet.
+Vehicle compatibility rule: see
+[`vehicles.md`](vehicles.md#orientation-of-imported-vehicles).
 
 Per-asset pivot rules:
 
@@ -1473,27 +1471,9 @@ Default LOD tiers:
 
 ### Vehicles
 
-- Ordinary civilian car:
-  - `LOD0`: `400-1,200` triangles
-  - `LOD1`: `120-350` triangles
-  - `LOD2`: `24-80` triangles
-  - optional `LOD3`: `2-8` triangles as an unlit color block, light sprite, or traffic impostor
-- Large service vehicle, truck, or bus:
-  - `LOD0`: `800-1,800` triangles
-  - `LOD1`: `200-500` triangles
-  - `LOD2`: `40-120` triangles
-  - optional `LOD3`: `4-16` triangles as a coarse impostor or light-only marker
-- Default camera-distance switch bands for traffic vehicles:
-  - `LOD0`: `0-40 m`
-  - `LOD1`: `40-120 m`
-  - `LOD2`: `120-300 m`
-  - optional `LOD3`: `300-500 m`
-  - beyond `500 m`: cull unless a dedicated traffic-visibility pass justifies going farther
-- Authoring rules:
-  - do not model interior dashboards, seats, and undercarriage detail for ordinary traffic cars
-  - mirrors, wheel arches, grille detail, and trim collapse aggressively in lower tiers
-  - use `1` material for ordinary traffic vehicles
-  - keep a far-distance impostor instead of hard disappearance on long straight roads
+Vehicle tiers and triangle ceilings are in [`vehicles.md`](vehicles.md#tiers); the provisional
+numbers that stood here are kept there under
+[earlier provisional tier numbers](vehicles.md#earlier-provisional-tier-numbers).
 
 ### Props
 
@@ -1647,41 +1627,8 @@ V1 parks use the prop asset contract plus grouping metadata.
 
 ### Vehicle
 
-V1 vehicle assets are static meshes.
-
-Required metadata:
-
-- `vehicle_class`
-- `vehicle_family`
-- `length_m`
-- `width_m`
-- `height_m`
-- `asset_set`
-- `color_variants`
-- `lod` references
-
-Optional metadata:
-
-- wheel marker nodes for future wheel-spin or steering visuals; the current runtime uses one rigid vehicle transform and does not animate wheels independently
-- light marker nodes
-
-V1 excludes skeletal rigs for normal traffic cars.
-
-Vehicle LOD rules:
-
-- Vehicle exports require `LOD0`.
-- Additional lower-detail vehicle tiers are exported as ordered farther `[[lods]]` entries when they exist.
-- The editor warns when a vehicle exports only `LOD0`.
-- Dense traffic assets may add a very cheap far-distance representation.
-- Wheel, mirror, antenna, grille, and cabin details are good candidates to collapse or bake away in lower tiers.
-- The editor previews vehicles at lane width and normal gameplay camera heights.
-
-Taxonomy:
-
-- `vehicle_class` = broad gameplay bucket such as `civil`, `police`, `fire`, `ambulance`, `utility`, `bus`
-- `vehicle_family` = physical form factor such as `sedan`, `suv`, `van`, `truck`
-- V1 simulation logic keys off `vehicle_class`.
-- Different vehicles within the same class stay distinct through `asset_id`, `display_name`, dimensions, and visuals rather than a separate `service_role` field.
+The vehicle asset contract is in [`vehicles.md`](vehicles.md#v1-vehicle-asset-contract), with the
+model contract that replaces it ([`vehicles.md`](vehicles.md#model-contract-tools-41)).
 
 ### Character Source Asset
 
@@ -2684,25 +2631,7 @@ Prop rules:
 
 ### V1 Vehicle `asset.toml` Schema
 
-Required fields:
-
-- `asset_class = "vehicle"`
-- `mesh`: relative path to `LOD0` mesh
-- `vehicle_class`: enum, one of `civil`, `police`, `fire`, `ambulance`, `utility`, `bus`
-- `vehicle_family`: enum, one of `sedan`, `suv`, `van`, `truck`, `bus`
-- `length_m`: `f32`, `> 0`
-- `width_m`: `f32`, `> 0`
-- `height_m`: `f32`, `> 0`
-
-Optional fields:
-
-- `color_variants`: array of strings
-
-Vehicle rules:
-
-- Newly imported vehicles must be baked into the canonical `+Z` forward convention at export time.
-- The hidden legacy `180°` runtime yaw correction is for built-in compatibility content only, not new imported assets.
-- Wheel and light markers use optional `[[anchors]]` entries with `type = "wheel"` and `type = "light"`.
+The vehicle `asset.toml` schema is in [`vehicles.md`](vehicles.md#v1-vehicle-assettoml-schema).
 
 ### V1 Character `asset.toml` Schema
 
