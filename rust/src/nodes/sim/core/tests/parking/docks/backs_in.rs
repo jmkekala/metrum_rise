@@ -114,8 +114,11 @@ fn a_backed_into_dock_moves_its_truck_as_before_and_turns_only_its_pose() {
         tick_agents(&mut nosed);
         tick_agents(&mut tailed);
         let travel = at(&tailed, t) - before;
-        if travel.length() > 1e-4 && matches!(phase, PullIn | PullOut) && back.is_some() {
-            let along = travel.normalized().dot(back.unwrap());
+        if let Some(back) = back
+            && travel.length() > 1e-4
+            && matches!(phase, PullIn | PullOut)
+        {
+            let along = travel.normalized().dot(back);
             if phase == PullIn {
                 assert!(along < -0.7, "tick {tick}: it backs in ({along})");
             } else {
