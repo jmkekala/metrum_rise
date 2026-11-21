@@ -25,9 +25,10 @@ BOUNDS = ([-5.35, 0.0, -6.84], [5.35, 9.5625, 6.84])
 FAKE_GODOT = """#!/usr/bin/env python3
 import json, os, sys
 request, report = sys.argv[sys.argv.index("--") + 1:]
-seen = {"request": json.load(open(request)), "xdg": os.environ["XDG_DATA_HOME"],
-        "copied": sorted(os.listdir(json.load(open(request))["mods"]))}
-json.dump({"status": "drafted", "summary": "fake summary", "seen": seen}, open(report, "w"))
+sent = json.load(open(request))
+seen = {"request": sent, "xdg": os.environ["XDG_DATA_HOME"], "copied": sorted(os.listdir(sent["mods"]))}
+copy = {"asset": os.path.join(sent["mods"], "p", "assets", "a"), "ledger": os.path.join(sent["mods"], "p", "l.json"), "passed": True}
+json.dump({"status": "drafted", "summary": "fake summary", "seen": seen, "copy": copy}, open(report, "w"))
 sys.exit(int(os.environ.get("FAKE_GODOT_EXIT", "0")))
 """
 
@@ -170,6 +171,18 @@ class CommandTests(unittest.TestCase):
         self.assertEqual(tree(self.root / "mods"), before)
         # The profile is gone after the run.
         self.assertEqual(sorted(p.name for p in self.root.iterdir() if p.name.startswith("metrum-model-draft.")), [])
+
+    def test_a_dry_run_names_the_real_pack_as_target_and_drops_the_deleted_copys_paths(self):
+        status, report = self.draft()
+        self.assertEqual(status, 0)
+        self.assertEqual(report["seen"]["request"]["target_mods"], os.path.abspath(self.root / "mods"))
+        self.assertIsNone(report["seen"]["request"]["write_mods"])
+        # The copy is gone with the profile: its paths are not reported as the real pack's.
+        self.assertEqual(report["copy"], {"passed": True, "kept": False})
+        status, report = self.draft("--keep-profile")
+        self.assertTrue(report["copy"]["kept"])
+        self.assertTrue(Path(report["copy"]["asset"]).is_relative_to(self.root))
+        self.assertNotEqual(Path(report["copy"]["asset"]).parent.parent.parent, self.root / "mods")
 
     def test_write_names_the_real_packs_folder_and_the_status_passes_through(self):
         os.environ["FAKE_GODOT_EXIT"] = "2"

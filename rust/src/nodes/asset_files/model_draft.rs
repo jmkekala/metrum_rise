@@ -36,6 +36,10 @@ struct Request {
     /// The real packs folder, given only with `--write`.
     #[serde(default)]
     write_mods: Option<PathBuf>,
+    /// The real packs folder `--mods` names, given with or without `--write`: a dry run's report
+    /// names where `--write` would publish. Nothing is written there without `write_mods`.
+    #[serde(default)]
+    target_mods: Option<PathBuf>,
 }
 
 /// The exit status a draft leaves (`tools/model_draft.py` passes it on).
@@ -66,6 +70,9 @@ pub(super) fn run(request: &str, engine: &Engine) -> (i64, Value) {
         let mut report = json!({"asset": label});
         let copy = draft_into(&inputs, &request.mods, &request.work, engine)?;
         let mut exit = describe(&copy, &mut report, "copy");
+        // Unambiguous for a reader of the JSON: a dry run writes nothing outside the copy, and
+        // only a report with a `written` object published into the real pack.
+        report["dry_run"] = json!(request.write_mods.is_none());
         report["status"] = json!(match (&copy, exit) {
             (Step::Existing(_), _) => "existing",
             (Step::Drafted { .. }, EXIT_OK) => "drafted",
@@ -77,6 +84,15 @@ pub(super) fn run(request: &str, engine: &Engine) -> (i64, Value) {
             report["status"] = json!(match written {
                 Step::Existing(_) => "existing",
                 Step::Drafted { .. } => "written",
+            });
+        } else if let (Step::Drafted { .. }, EXIT_OK, None, Some(target)) =
+            (&copy, exit, &request.write_mods, &request.target_mods)
+        {
+            // Where `--write` would publish: the real pack, which this run left untouched.
+            let pack = target.join(&inputs.role.pack_id);
+            report["would_write"] = json!({
+                "asset": pack.join("assets").join(&inputs.role.asset_id),
+                "ledger": sidecar::ledger_path(&pack, &inputs.role.asset_id),
             });
         }
         Ok((exit, report))
@@ -165,6 +181,7 @@ fn describe(step: &Step, report: &mut Value, key: &str) -> i64 {
         } => {
             report["draft"] = summary.clone();
             report["acceptance"] = json!(outcome);
+            // `copy` names the throwaway copy the draft was checked in; `written` the real pack.
             report[key] = json!({"asset": asset, "ledger": ledger, "passed": outcome.passed()});
             if outcome.passed() {
                 EXIT_OK
@@ -177,10 +194,16 @@ fn describe(step: &Step, report: &mut Value, key: &str) -> i64 {
 
 // The report as text for a terminal.
 fn summary(report: &Value) -> String {
+    let status = report["status"].as_str().unwrap_or_default();
+    let dry_run = report["dry_run"] == json!(true);
     let mut lines = vec![format!(
-        "{}: {}",
+        "{}: {status}{}",
         report["asset"].as_str().unwrap_or("draft"),
-        report["status"].as_str().unwrap_or_default()
+        if dry_run && status != "refused" {
+            " (dry run: nothing written)"
+        } else {
+            ""
+        }
     )];
     if let Some(error) = report["error"].as_str() {
         lines.push(format!("  refused: {error}"));
@@ -220,7 +243,35 @@ fn summary(report: &Value) -> String {
     if report["stale"].as_array().is_some_and(Vec::is_empty) {
         lines.push("  the asset exists and no line marks it stale; nothing was published".into());
     }
+    if report["written"].is_object() {
+        lines.push(format!(
+            "  written: {}; ledger {}",
+            text(&report["written"]["asset"]),
+            text(&report["written"]["ledger"])
+        ));
+    } else if dry_run && status == "drafted" {
+        lines.push(match report["would_write"].as_object() {
+            Some(target) => format!(
+                "  dry run: nothing was written; --write would publish {} and its ledger {}",
+                text(&target["asset"]),
+                text(&target["ledger"])
+            ),
+            None => "  dry run: nothing was written".into(),
+        });
+    } else if dry_run && status == "failed" {
+        lines.push(
+            "  dry run: nothing was written; --write would publish nothing until the acceptance check passes"
+                .into(),
+        );
+    }
     lines.join("\n")
+}
+
+// A JSON string as text, anything else as JSON.
+fn text(value: &Value) -> String {
+    value
+        .as_str()
+        .map_or_else(|| value.to_string(), str::to_owned)
 }
 
 // The derived capacities: households and flat size for housing, the profile (which supplies the
@@ -281,6 +332,7 @@ mod tests {
             "sidecar": fixture.sidecar_path(), "role": role, "mods": copy,
             "work": fixture.root.join("work"),
             "write_mods": if write { json!(fixture.mods()) } else { Value::Null },
+            "target_mods": fixture.mods(),
         });
         run(&request.to_string(), &engine)
     }
@@ -351,6 +403,22 @@ mod tests {
             summary.contains("capacity: households 1, flat size 80.0 m²"),
             "{summary}"
         );
+        // A dry run says so, and names the real pack only as where `--write` would publish.
+        assert_eq!(report["dry_run"], json!(true));
+        assert!(report.get("written").is_none(), "{report:#}");
+        let target = real.join("assets").join(ASSET);
+        assert_eq!(report["would_write"]["asset"], json!(target));
+        assert!(
+            summary.starts_with(&format!("{PACK}:{ASSET}: drafted (dry run: nothing written)")),
+            "{summary}"
+        );
+        assert!(
+            summary.contains(&format!(
+                "dry run: nothing was written; --write would publish {}",
+                target.display()
+            )),
+            "{summary}"
+        );
 
         let (exit, report) = run_fixture(&fixture, fixture.role(), true);
         // The copy holds the asset from the first run, so nothing is written anywhere.
@@ -367,6 +435,14 @@ mod tests {
             (0, Some("written")),
             "{report:#}"
         );
+        assert_eq!(report["dry_run"], json!(false));
+        assert!(report.get("would_write").is_none(), "{report:#}");
+        let summary = report["summary"].as_str().unwrap();
+        assert!(
+            summary.contains(&format!("written: {}", real.join("assets").join(ASSET).display())),
+            "{summary}"
+        );
+        assert!(!summary.contains("dry run"), "{summary}");
         assert!(real.join("assets").join(ASSET).join("asset.toml").is_file());
         assert!(
             real.join("model_sources")

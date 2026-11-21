@@ -15,7 +15,9 @@ already exists is never replaced: the stale-geometry report comes back instead.
 
 A role without `pack_id` takes the only pack in `--mods`; with none or several it is refused.
 Paths inside the profile's pack copy are reported as their `--mods` paths, since the profile is
-deleted after the run (unless `--keep-profile`, which keeps the `copy` paths as they are).
+deleted after the run, except the report's `copy` paths: they named the deleted copy, so only
+`copy.passed` is kept (all of them with `--keep-profile`). A dry run's report says `dry_run: true`,
+and `would_write` names where `--write` would publish.
 
 Exit status: 0 drafted (and written), or an existing asset with no stale line (information lines
 may be reported); 1 refused, failed or not run; 2 an existing asset with stale lines reported.
@@ -96,6 +98,7 @@ def request(args, role, profile):
         "mods": str(profile / "draft-mods"),
         "work": str(profile / "draft-work"),
         "write_mods": os.path.abspath(args.mods) if args.write else None,
+        "target_mods": os.path.abspath(args.mods),
     }
 
 
@@ -147,8 +150,10 @@ def main(argv=None):
         report = json.loads(report_path.read_text(encoding="utf-8"))
         copy_paths = report.get("copy")
         report = unprofile(report, str(profile / "draft-mods"), os.path.abspath(args.mods))
-        if keep and copy_paths is not None:
-            report["copy"] = copy_paths
+        if isinstance(copy_paths, dict):
+            # Unprofiled, the copy's paths would name the real pack, which a dry run never wrote.
+            report["copy"] = (dict(copy_paths, kept=True) if keep
+                              else {"passed": copy_paths.get("passed"), "kept": False})
         print(report.get("summary", ""))
         if args.report:
             Path(args.report).write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
