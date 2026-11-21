@@ -39,10 +39,11 @@ func _exit_tree() -> void:
 func follow_vehicle_catalogue(wanted: int) -> void:
 	if not _resources.refresh(simulation_node, wanted):
 		return
-	_meshes.clear()
-	_versions.clear()
+	# The slots go before the meshes they draw.
 	if _stream != null:
 		_stream.clear_parked_meshes()
+	_meshes.clear()
+	_versions.clear()
 	_full = true
 
 func needs_full_publication() -> bool:

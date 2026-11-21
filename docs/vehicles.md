@@ -20,20 +20,20 @@ its roadmap row. The owner accepted the plan on 2026-11-21.
 
 | Topic | State | Row |
 | --- | --- | --- |
-| Model contract and pilot pair | planned; pilot pair built in the models repository | `TOOLS-41` |
-| `[vehicle]` assets in packs, vehicle drafts | planned | `TOOLS-41` |
-| Bundled `vehicles` pack, removal of the placeholder cars | planned | `TOOLS-42` |
-| Vehicle renderer: catalogue, shader, tiers | planned | `RENDER-65` |
+| Model contract and pilot pair | as built; the pilot pair is the game's traffic | `TOOLS-41` |
+| `[vehicle]` assets in packs, vehicle drafts | as built | `TOOLS-41` |
+| Bundled `vehicles` pack, removal of the placeholder cars | as built | `TOOLS-42` |
+| Vehicle renderer: catalogue, shader, tiers (stage 1a) | as built | `RENDER-65` |
 | Brake lights, indicators, steered wheels | planned | `RENDER-66` |
 | Low and high beam, later lamps, glass features | planned | `RENDER-67` |
 | Lane length by body class | planned | `TRAFFIC-38` |
 | Waiting position at junctions | planned | `TRAFFIC-39` |
-| Placeholder models, night lamps | as built | `RENDER-26` |
+| Night lamps (glows, beams, the headlight pool) | as built, from the sidecar lenses | `RENDER-26` |
 
 ## Model contract (`TOOLS-41`)
 
-**Planned; the pilot pair is built to it in the models repository ([Pilot pair](#pilot-pair)),
-nothing on the game side is.** This is the authoritative copy; the models repository's own
+**As built: the pilot pair is built to it in the models repository ([Pilot pair](#pilot-pair)) and
+drawn by the game ([renderer](#as-built-renderer-render-65)).** This is the authoritative copy; the models repository's own
 `CLAUDE.md`, section "Vehicles", states the same contract for its builders. The game
 turns the wheels, lights the lamps and paints the body itself, per vehicle, from ids stored in
 the mesh: **no rig, no animation, no separate wheel files; one mesh and one material per tier.**
@@ -146,7 +146,7 @@ How the bytes are produced (models side, tested 2026-11-21 with the Blender 5.3.
 these files dark. A custom attribute (`_METRUM_IDS`) was tried on the pilot and dropped from the
 contract: Godot's stock glTF importer discards it. What the game does with the bytes, and what
 was and was not tested there, is under
-[the renderer's id decode](#planned-renderer-render-65).
+[the renderer's id decode](#as-built-renderer-render-65).
 
 ### Lamps
 
@@ -402,13 +402,13 @@ figures are those of the two sidecars.
 | Variants | `plain` | `plain` (paint true), `haulier` (paint false) |
 | Validator | 0 FAIL, 1 WARN: the high brake lamp's id is missing on LOD2, accepted | 0 FAIL, 0 WARN |
 
-Still to do on the game side, as the planned sections below describe: the sidecar reader and the
-pack asset ([pack assets](#planned-pack-assets-drafts-and-the-bundled-pack-tools-41-tools-42)),
-tier switching, lamp shading and the paint multiply, skipped (white) for a `paint: false`
-variant ([renderer](#planned-renderer-render-65)), and wheel steer and spin on the twin wheel
-parts as on single ones ([steered wheels](#planned-brake-lights-indicators-and-steered-wheels-render-66),
-[wheel spin](#planned-beams-later-lamps-and-glass-render-67)), and the look at the `car` box
-with the estate beside a bay ([open points](#open-points-of-the-contract)).
+The game draws the pair as imported from models commit `52f503e` (the estate's export of
+`de0b8ec`, after its body was reshaped; the truck's of `65714311`), whose sidecars give the
+triangle counts 2,944 / 892 / 208 / 40 (estate) and 4,316 / 1,380 / 348 / 60 (truck). Still to
+do on the game side: wheel steer and spin, on the twin wheel parts as on single ones
+([steered wheels](#planned-brake-lights-indicators-and-steered-wheels-render-66),
+[wheel spin](#planned-beams-later-lamps-and-glass-render-67)), and the owner's look at the `car`
+box with the estate beside a bay ([open points](#open-points-of-the-contract)).
 
 ### Open points of the contract
 
@@ -506,70 +506,40 @@ junction, queue heads hold half a body length before the lane end, compared agai
 
 ## As built today
 
-### Models and loading
+### Models, loading and drawing
 
-**As built.**
+**As built (since `TOOLS-42` and `RENDER-65`, 2026-11-22).** The cars and trucks are the bundled
+`vehicles` pack's models, drawn by the vehicle renderer; see
+[the pack](#as-built-pack-assets-drafts-and-the-bundled-pack-tools-41-tools-42) and
+[the renderer](#as-built-renderer-render-65). What stays as it was:
 
-- Five third-party models are engine files, not pack assets:
-  `godot/assets/models/vehicles/civilian/` (sedan, sports sedan, SUV, luxury SUV) and
-  `godot/assets/models/vehicles/freight/` (delivery van). They are imported as `keep` and read
-  raw.
-- `godot/scripts/renderers/vehicle_resources.gd` holds the model table and a hand-written GLB
-  reader that reads position, normal and one UV set (`RENDER-59`).
-- Models are drawn at their native size: the loader applies no scale and moves the lowest point
-  to the ground.
-- Each model is turned 180 degrees at load, and the runtime points the car's `-Z` along travel
-  (`rust/src/nodes/sim/core/snapshot/agents.rs`).
-- Body and wheels are merged into one surface with one material, a shared colour atlas
-  (`RENDER-46`).
-- Colour is five copies of each mesh with shifted UVs into the atlas; the van has one colour.
-- The simulation knows five vehicle types: 0 to 3 are the four cars, 4 is freight
-  (`VEHICLE_*` in `rust/src/simulation/economy/agents/mod.rs`); type 4 is also read by freight
-  logic. A resident's car keeps a saved model and colour
-  (`rust/src/simulation/parking/data.rs`), chosen by a hash when the car is created.
-
-### Drawing
-
-**As built.**
-
-- Moving cars: one `MultiMeshInstance3D` per bucket in `godot/scripts/renderers/agents.gd`. The
-  bucket key is `vehicle_type * 10 + colour`, 25 buckets. A car is 12 floats, one transform; no
-  instance colour and no custom data. The buffer format is listed in
-  [`reference.md`](reference.md).
-- The simulation thread poses the cars in view into a snapshot
-  (`rust/src/nodes/sim/core/snapshot/agents.rs`); a background job smooths the poses and grounds
-  off-lane cars (`rust/src/nodes/sim/render/car_visual.rs`, `agent_frame.rs`); only buckets that
-  changed are uploaded, and a car at rest is not uploaded again. See
-  [Render Movement](traffic.md#render-movement).
+- Moving cars: one `MultiMeshInstance3D` per bucket in `godot/scripts/renderers/agents.gd`, made
+  when the bucket is first drawn and remade when packs load. The simulation thread poses the
+  cars in view into a snapshot (`rust/src/nodes/sim/core/snapshot/agents.rs`); a background job
+  smooths the poses and grounds off-lane cars (`rust/src/nodes/sim/render/car_visual.rs`,
+  `agent_frame.rs`); only buckets that changed are uploaded, and a car at rest is not uploaded
+  again. See [Render Movement](traffic.md#render-movement).
 - A car or truck pulling into or out of a lot place or a dock is posed on arcs round its route's
   bends (car 2.5 m, freight 6 m), not at its simulated point
   ([Drawn turns](traffic.md#drawn-turns-park-29-as-built), `PARK-29`); it still turns on the spot
   where it joins or leaves its lane (`PARK-31`).
-- There is no level of detail: one mesh at every distance out to 2,500 m, fading over 2,000 to
-  2,500 m (`CAR_FADE_START_M`, `CAR_DRAW_DISTANCE_M` in `rust/src/config.rs`).
-- Ground support: `agents.gd` finds each model's contact points by scanning its vertices at
-  `y = 0` and registers them with `set_vehicle_ground_support`; Rust keeps five profiles
-  (`rust/src/nodes/sim/render/vehicle_ground.rs`). The exact solve runs within 250 m of the
-  camera and a cheaper one beyond.
+- Cars draw out to 2,500 m, fading over 2,000 to 2,500 m (`CAR_FADE_START_M`,
+  `CAR_DRAW_DISTANCE_M` in `rust/src/config.rs`); the tiers switch within that.
+- The exact ground solve runs within 250 m of the camera and a cheaper one beyond
+  (`rust/src/nodes/sim/render/vehicle_ground.rs`), now on each model's support from its wheels.
 - Parked cars are drawn by `godot/scripts/renderers/parked_cars.gd` through the streaming core
-  with the same meshes and no lamps; see
+  with the same meshes and shader and no lamps; see
   [Parked-car rendering](traffic.md#parked-car-rendering-park-01-park-02).
 - Shadows: shadow-only twins near the camera take each bucket's mesh and material.
+- The runtime points a car's `-Z` along travel; the models are turned at load.
 
 ### Vehicle models and lamps (`RENDER-26`)
 
-Cars are the Kenney models (`godot/assets/models/vehicles/civilian/` sedan, sports sedan, SUV,
-luxury SUV; `freight/` delivery van) with their colormap atlas variants. Generic Finnish models
-were tried on this branch and withdrawn as not good enough to ship; they are kept off-tree. The
-Kenney meshes carry no lamp data, so `vehicle_lamps.gd` holds a measured table of front and rear
-lamp anchors per model (left lamps mirror X); procedural cars derive theirs from the AABB.
-`vehicle_resources.gd` builds a car's body as one surface (`RENDER-46`): the loader gives every
-glTF primitive of a model (the body panels and four wheels) the model's one atlas material, so it
-concatenates them in node order with their indices offset; their vertices, triangles and winding
-stay the model's own, and a MultiMesh of moving or parked cars draws the body once. The lamp
-surfaces keep their own materials. Any model the game loads goes through the same build, so
-replacement models need no merged assets; a loader that reads several materials from a model
-would merge per material.
+Until `TOOLS-42` the cars were third-party placeholder models whose meshes carried no lamp data, so
+`vehicle_lamps.gd` held a measured table of lamp anchors per model. The lamps now come from the
+sidecar lenses ([Lamps at night](#lamps-at-night)); the layers below are unchanged. A car body is
+one surface with one material (`RENDER-46`), now because every tier is one mesh with one material
+by contract.
 
 At night (sun below 4 to -2 degrees, as the street lights):
 
@@ -623,91 +593,6 @@ were fitted to the mean light the real headlights add to the same views (`light-
 01:00, cars 60 and 110 m away, all-real against all-box: 86-110 % per channel before the tint).
 Frame cost was not measurable apart from the street-light change it shipped with (`ROAD-59`).
 
-### The `[vehicle]` pack class
-
-**As built: parsed, with no runtime consumer.** `rust/src/assets/asset/vehicle.rs` reads a
-`[vehicle]` section with `vehicle_class` (`civil`, `police`, `fire`, `ambulance`, `utility`,
-`bus`), `vehicle_family` (`sedan`, `suv`, `van`, `truck`), `length_m`, `width_m`, `height_m` and
-`color_variants` (each a `name` and an `albedo_file`). The manifest also knows `wheel` and `light`
-anchor types (`rust/src/assets/asset/model.rs`). Nothing loads, spawns or draws a vehicle asset.
-The asset browser lists them under "Vehicles".
-
-The v1 specification text below was moved here from `asset_editor.md` unchanged. Where it and
-the parser differ (the family list, the shape of `color_variants`, `asset_class` and `mesh`
-fields), the parser is what exists. The [model contract](#model-contract-tools-41) and the
-[planned pack work](#planned-pack-assets-drafts-and-the-bundled-pack-tools-41-tools-42) replace
-it.
-
-#### V1 vehicle asset contract
-
-V1 vehicle assets are static meshes.
-
-Required metadata:
-
-- `vehicle_class`
-- `vehicle_family`
-- `length_m`
-- `width_m`
-- `height_m`
-- `asset_set`
-- `color_variants`
-- `lod` references
-
-Optional metadata:
-
-- wheel marker nodes for future wheel-spin or steering visuals; the current runtime uses one rigid vehicle transform and does not animate wheels independently
-- light marker nodes
-
-V1 excludes skeletal rigs for normal traffic cars.
-
-Vehicle LOD rules:
-
-- Vehicle exports require `LOD0`.
-- Additional lower-detail vehicle tiers are exported as ordered farther `[[lods]]` entries when they exist.
-- The editor warns when a vehicle exports only `LOD0`.
-- Dense traffic assets may add a very cheap far-distance representation.
-- Wheel, mirror, antenna, grille, and cabin details are good candidates to collapse or bake away in lower tiers.
-- The editor previews vehicles at lane width and normal gameplay camera heights.
-
-Taxonomy:
-
-- `vehicle_class` = broad gameplay bucket such as `civil`, `police`, `fire`, `ambulance`, `utility`, `bus`
-- `vehicle_family` = physical form factor such as `sedan`, `suv`, `van`, `truck`
-- V1 simulation logic keys off `vehicle_class`.
-- Different vehicles within the same class stay distinct through `asset_id`, `display_name`, dimensions, and visuals rather than a separate `service_role` field.
-
-#### V1 vehicle `asset.toml` schema
-
-Required fields:
-
-- `asset_class = "vehicle"`
-- `mesh`: relative path to `LOD0` mesh
-- `vehicle_class`: enum, one of `civil`, `police`, `fire`, `ambulance`, `utility`, `bus`
-- `vehicle_family`: enum, one of `sedan`, `suv`, `van`, `truck`, `bus`
-- `length_m`: `f32`, `> 0`
-- `width_m`: `f32`, `> 0`
-- `height_m`: `f32`, `> 0`
-
-Optional fields:
-
-- `color_variants`: array of strings
-
-Vehicle rules:
-
-- Newly imported vehicles must be baked into the canonical `+Z` forward convention at export time.
-- The hidden legacy `180°` runtime yaw correction is for built-in compatibility content only, not new imported assets.
-- Wheel and light markers use optional `[[anchors]]` entries with `type = "wheel"` and `type = "light"`.
-
-#### Orientation of imported vehicles
-
-Vehicle compatibility rule:
-
-- Newly imported vehicle assets normalize to canonical `+Z` forward during import and export.
-- The hidden runtime compatibility rotation applies only to legacy bundled vehicle content that has not been reauthored yet.
-
-The other orientation and pivot rules for all asset classes stay in
-[`asset_editor.md`](asset_editor.md).
-
 ### Earlier provisional tier numbers
 
 **Superseded by [Tiers](#tiers).** Moved from `asset_editor.md` unchanged, for the record.
@@ -734,158 +619,281 @@ The other orientation and pivot rules for all asset classes stay in
   - use `1` material for ordinary traffic vehicles
   - keep a far-distance impostor instead of hard disappearance on long straight roads
 
-## Planned: pack assets, drafts and the bundled pack (`TOOLS-41`, `TOOLS-42`)
+## As built: pack assets, drafts and the bundled pack (`TOOLS-41`, `TOOLS-42`)
 
-**Planned.**
+**As built (2026-11-22).**
 
-Vehicle assets reuse the pack and registry system. The `[vehicle]` section gains:
+### The `[vehicle]` pack class
 
-- `body_class = "car" | "van" | "truck" | "bus"`. `length_m`, `width_m` and `height_m` stay and
-  are checked against the class box.
-- `spawn_weight`, the model's share inside its class.
-- `paints`, a list of colour and weight; a default palette per class when absent. At most 64.
-- `seats`.
-- `[[vehicle.wheels]]` and `[[vehicle.lamps]]`: typed tables copied from the sidecar. The unused
-  `wheel` and `light` anchor types are then removed.
-- `[[lods]]`, already in the manifest, lists the four tiers.
-- `vehicle_family` gains `hatchback`, `estate` and `bus`. Nothing in the simulation reads it.
+A vehicle is a pack asset (`rust/src/assets/asset/vehicle.rs`). Its `asset.toml` holds the
+model contract's facts, copied from the facts sidecar by the vehicle draft, plus the values only
+the pack decides:
 
-Checked when a pack loads, O(vehicle assets): the class box, at least four wheels resting on
-the ground, the required lamp groups, the four tiers.
+```toml
+asset_id = "vehicle.civil.estate_compact"
+display_name = "Estate Compact"
+thumbnail = "thumbnail.webp"
 
-Draft command. `tools/model_draft.py` and `rust/src/assets/authoring/model_draft/` take the
-second sidecar kind:
+[[lods]]                       # exactly four, LOD0 first; each band ends where the next begins
+file = "estate_compact_lod0.glb"
+distance_min_m = 0.0
+distance_max_m = 30.0
+# ... LOD1 30-100, LOD2 100-398, LOD3 from 398 (no distance_max_m)
 
-- the sidecar reader accepts version 2 `kind: "vehicle"` strictly, as it reads version 1;
-- a vehicle role file gives `pack_id`, `asset_id` (for example `vehicle.civil.estate_compact`),
-  `vehicle_class`, and optionally `spawn_weight`, `paints` and `seats`;
-- the draft copies the tiers and textures, writes `asset.toml` and the ledger
-  `model_sources/<asset_id>.json`, and refuses a model that fails the load checks; a rerun on an
-  existing asset reports stale geometry, as for buildings;
-- no lot, door or parking rule applies, and the building rules are untouched.
+[vehicle]
+vehicle_class = "civil"        # civil, police, fire, ambulance, utility, bus
+vehicle_family = "estate"      # sedan, hatchback, estate, suv, van, truck, bus; descriptive only
+body_class = "car"             # car, van, truck, bus: the box it must fit
+length_m = 4.48
+width_m = 1.79
+height_m = 1.468
+seats = 5                      # a pack value, not a model fact
+spawn_weight = 1.0             # optional, default 1: the share among its class's models
+orm = "estate_compact_orm.png"
+emission = "estate_compact_emission.png"
+normal = "estate_compact_normal.png"   # optional
 
-Bundled pack (`TOOLS-42`):
+[[vehicle.variants]]           # the first is the default
+name = "plain"
+albedo = "estate_compact_albedo_plain.png"
+paint = true                   # false: a livery, painted faces stay white
 
-- The own models ship in a bundled, default-enabled pack, `godot/bootstrap/mods/vehicles/`, like
-  `parking`, so a fresh install with no user pack has traffic. Other packs may add vehicles; the
-  catalogue merges them by class and weight.
-- **The pilot pair alone replaces the placeholder cars** (the owner, 2026-11-21). Every car is
-  drawn as the compact estate, its variety coming from the per-car paint of the palette; every
-  freight vehicle, van or truck, is drawn as the rigid box truck in its `plain` and `haulier`
-  variants. There is no wait for more models: the seven fleet models are ordered only after the
-  pilot pair has been seen in the engine, and join the pack when they are built.
-- Game-side work on `TOOLS-41`, `TOOLS-42` and `RENDER-65` starts when the car-route work
-  (`PARK-24`) has landed.
-- With no vehicle model at all, the procedural box car of `vehicle_resources.gd` stays as the
-  last fallback, sized to the car class box.
-- Removed with the pilot pair: `godot/assets/models/vehicles/` (the third-party car models leave
-  the shipped game), the lamp table of `godot/scripts/renderers/vehicle_lamps.gd`, the vehicle
-  type names that mean models (the freight marker stays), and the car models from the
-  placeholder cars' line in `CREDITS.md`; that line keeps the same author's building models,
-  which only tests use and release packages leave out. The own models' credit is added.
-- Tests and benchmarks that load car meshes use the bundled pack's models.
+[[vehicle.paints]]             # optional, at most 64; none takes the class's default palette
+colour = [0.92, 0.92, 0.91]    # sRGB
+weight = 24.0
 
-## Planned: renderer (`RENDER-65`)
+[[vehicle.wheels]]             # part order: part 1, 2, ...
+part = 1
+side = "left"
+centre = [0.77, 0.32, 1.38]    # contract frame, nose at +Z
+radius_m = 0.32
+width_m = 0.207
+steer = true
+twin = false
 
-**Planned.**
+[[vehicle.lamps]]              # one entry per lens, the sidecar's keys
+group = "low_beam"
+lamp = 7
+side = "left"
+position = "front"
+colour = "white"
+centre = [0.7307, 0.7487, 1.9913]
+facing = [0.446, 0.6131, 0.6521]
+width_m = 0.2036
+height_m = 0.1707
+```
 
-**Catalogue.** A Rust table built from the registry when packs load, O(vehicle assets), sorted
-by qualified asset id. Per body class: the models and their weights. Per model: tier files and
-switch distances, wheel pivots, ground contact points taken from the wheel facts (replacing the
-vertex scan and the fixed five profiles), lamp entries and the paint palette. GDScript receives
-it once, loads each tier through Godot's `GLTFDocument` as buildings are loaded, builds the
-material and registers the meshes. This closes `RENDER-59`.
+Checked when a pack loads, O(wheels + lamps + paints) per asset: the size fits the body class
+box (5 mm of rounding allowed); four contiguous tiers; 4 to 8 wheels, parts 1, 2, ... in order,
+each resting on the ground (centre height equals its radius within 1 mm); every lamp id matches
+its group and every facing is a unit vector; the required lamp groups (indicators, reverse, low
+and high beam, daytime, and `tail_brake` or `tail` and `brake`; a car's `brake`, a truck's
+`marker`); at least one variant, names unique; paints with channels 0 to 1 and a positive weight.
+The unused `wheel` and `light` anchor types are removed. The asset browser lists vehicles under
+"Vehicles"; share archives package the tiers, maps and albedos.
 
-**Which model a car gets.** The simulation keeps what it has: vehicle type 0 to 3 means a car,
-4 means freight. The drawn model and paint are picked at render time by a stable hash of the
-vehicle's saved identity inside its body class. Moving and parked rendering call the same
-function, so a car keeps its look across the handoff. No save change; the saved model and colour
-bytes are no longer read. Enabling another vehicle pack reshuffles which car looks like what and
-changes nothing in the simulation. With the pilot pair alone the car class has one model, so
-every car is the estate in its own paint, and every freight vehicle is the truck, its variant
-picked by the same hash (the owner, 2026-11-21).
+The `[[lods]]` bands are the tier switch distances (the renderer reads them, below). The draft
+writes the contract's bands for a 4.5 m car, 0 / 30 / 100 / 400 m, scaled by the model's length
+over 4.5 m and rounded to whole metres, so a tier switches at the same size on screen: the estate
+switches at 30 / 100 / 398 m, the truck at 53 / 176 / 702 m.
 
-**Per-car data: 16 floats, 64 bytes** (today 12 floats). A transform and one custom-data
-vector, the row shape walkers already use:
+### Vehicle drafts
 
-| Float | Content | Range |
+`tools/model_draft.py` takes a version 2 `kind: "vehicle"` sidecar
+(`rust/src/assets/authoring/model_draft/vehicle.rs`, the draft's flow in
+`rust/src/nodes/asset_files/model_draft.rs`); see
+[the draft command](asset_editor.md#draft-command):
+
+- the reader is as strict as version 1's: unknown keys, another schema, version or kind, a
+  non-null `coupling`, other than four `.glb` tiers, an id attribute other than `COLOR_0` with
+  `part`, `surface`, `paint`, wheels out of part order or steering unlike their axle, a missing
+  `cargo` on a van, truck or bus, and a file outside the export folder are refusals; a dirty
+  source and a file whose SHA-256 differs from the sidecar's too;
+- the vehicle role gives `pack_id`, `asset_id`, `vehicle_class`, `vehicle_family`, `seats`, and
+  optionally `display_name`, `spawn_weight` and `paints`;
+- the draft publishes the tiers, maps, albedos and the thumbnail through the editor's file plan,
+  writes `asset.toml` (the default variant first) and the ledger
+  `model_sources/<asset_id>.json`, and checks that the pack scanner loads the asset as a vehicle;
+- a rerun on an existing asset publishes nothing and reports stale lines: a role or body class
+  the asset no longer carries, and every tier or map whose published file differs from the new
+  sidecar's; `--check` reports the same and the load check;
+- no lot, door or parking rule applies; the building rules are untouched.
+
+### The bundled pack
+
+The game's own vehicles ship in `godot/bootstrap/mods/vehicles/` (`pack.toml` licence CC BY 4.0),
+seeded into a player's mods on first run and enabled by default like `parking`. A profile that
+saved its pack selection before the pack shipped gets it enabled once
+(`godot/scripts/core/mod_pack_config.gd`, `bundled_offered`); disabled afterwards, it stays
+disabled. Every file is imported as `keep`, so an exported game reads them raw (`TOOLS-15`).
+
+| Asset | Model | Variants |
 | --- | --- | --- |
-| `custom.x` | front wheel steer angle, radians | -0.61 to 0.61 |
-| `custom.y` | wheel roll angle, radians | 0 to 2π |
-| `custom.z` | one packed whole number: 8 lamp bits, 6 paint bits, 4 blink-offset bits (18 bits, exact in a float) | |
+| `vehicles:vehicle.civil.estate_compact` | the pilot compact estate, seats 5 | `plain` |
+| `vehicles:vehicle.utility.rigid_box_18t` | the pilot rigid box truck, seats 2 | `plain`, `haulier` (`paint: false`) |
+
+The role files are `tools/vehicle_roles/<name>.json`. One command re-imports them from a commit
+of the models repository, extracting that commit's `vehicles/` tree so uncommitted files are
+never read, and records the commit in each ledger:
+
+```bash
+tools/vehicle_roles/import.sh <metrum_models checkout> <commit> --write
+```
+
+A draft never replaces an asset: remove `assets/<asset_id>/` and `model_sources/<asset_id>.json`
+first. The pack was imported from models commit `52f503e` (the estate's export from `de0b8ec`,
+the truck's from `65714311`); without `--write` the command is a dry run.
+
+Other packs may add vehicles: the catalogue merges them by body class and weight. With no
+vehicle model at all, a procedural box car the size of the car class box draws every vehicle.
+
+The third-party placeholder cars (`godot/assets/models/vehicles/`, four cars and a delivery
+van), their hand-written GLB reader and their lamp table left the game with this pack; their
+measurements stay under [The placeholder cars, measured](#the-placeholder-cars-measured).
+
+## As built: renderer (`RENDER-65`)
+
+**As built (2026-11-22).** Stage 1a: models, paint, tiers and the night lamps; the data layout
+and the shader are ready for brake lights, indicators and steered wheels (`RENDER-66`), which
+only fill values.
+
+### Catalogue
+
+`rust/src/nodes/sim/render/vehicle_catalogue.rs`, rebuilt whenever packs load
+(`SimCore::rebuild_vehicle_catalogue`, O(vehicle assets)): the models sorted by qualified asset
+id, and the **looks**, one per model and albedo variant. A car's bucket key is `look * 4 + tier`
+(a `u8` holds 64 looks). Per model: tier files and switch distances (the `[[lods]]` starts),
+wheels and lenses, the palette (linear colour) and its cumulative weights. Presentation only:
+the simulation never reads it, nothing of it is saved, and a revision number counts rebuilds.
+
+GDScript reads it once a revision (`SimulationNode.get_vehicle_catalogue`): per look the tier
+files, tier starts, maps, `paint`, palette, wheel centres, the right-hand low-beam and tail lenses
+and the size.
+
+### Which look a vehicle gets
+
+`VehicleCatalogue::pick(freight, identity)`: freight (vehicle type 4) draws from the truck class
+(then van, then car, whichever has models), any other vehicle from the car class; a splitmix64
+hash of the identity picks the model by spawn weight, the variant uniformly, the paint by palette
+weight (from a second mix) and a blink phase. The identity is the parking vehicle handle when the
+car has one (moving and parked alike, so a car keeps its look across the handoff), else the
+agent's render id. O(models of the class + paints), no allocation. With the pilot pair every car
+is the estate in its own paint and every freight vehicle the truck, about half of them
+`haulier`. The saved model and colour bytes are no longer read. The vehicle type names that meant
+models are gone; type 4, freight, stays.
+
+### Per-car data: 16 floats, 64 bytes
+
+A row is the MultiMesh transform (12 floats) and one custom-data vector:
+
+| Float | Content | 1a |
+| --- | --- | --- |
+| `custom.x` | front wheel steer angle, radians | 0 |
+| `custom.y` | wheel roll angle, radians | 0 |
+| `custom.z` | one whole number: bits 0-7 lamps, 8-13 paint index, 14-17 blink phase | lamps: bit 0 for a moving car |
 | `custom.w` | reserved | 0 |
 
-Lamp bits: lights on, brake, indicator left, indicator right, reverse, high beam, beacon, one
-spare. Hazard is both indicator bits. No per-instance shader uniforms are used.
+Lamp bits: 0 lights on (driving), 1 brake, 2 indicator left, 3 indicator right, 4 reverse,
+5 high beam, 6 beacon, 7 spare. The snapshot writes the vector per posed car
+(`RenderSnapshot::car_custom`, aligned with `car_transforms`); the smoothing carries it unchanged
+into the drawn rows and compares it in its untouched-bucket test, so a car at rest uploads
+nothing and a changed word uploads once. Parked rows carry the paint with every lamp bit zero.
+Vehicle MultiMeshes keep `use_colors = false` and set `use_custom_data`; the shadow twins and
+the parked slots take the same rows.
 
-**Ids, instance colours and paint.** The ids arrive as `COLOR_0` bytes
-([Vertex ids](#vertex-ids)). Rules for the game side:
+### Tiers
 
-- Vehicle MultiMeshes keep **`use_colors = false`**, moving and parked alike. With
-  `use_colors = true` the instance colour is multiplied into `COLOR`, alpha included, before the
-  shader's code runs, and the ids cannot be recovered.
-- Paint therefore goes through the instance **custom data**, as the palette index in `custom.z`.
-- The shader decodes in `vertex()` and passes the result on in a varying (smooth or flat both
-  work, since a triangle's corners are identical):
+The snapshot already measures a posed car's distance to the eye for the draw distance; the same
+squared distance picks the tier against the model's squared starts (`VehicleCatalogue::tier`,
+one comparison chain per posed car, no new pass, no state). There is no hysteresis: the tier is a
+pure function of the distance, and a car that changes bucket keeps its smoothed pose (the
+smoothing keys cars by render id across buckets). The ground solve takes the bucket's model.
 
-  ```glsl
-  vec4 ids = round(COLOR * 255.0); // x part, y surface, z paint (0 or 255)
-  ```
+Parked cars: the parked layer registers a look's four tier meshes as four buckets, each with its
+band of camera distance as the slot's visibility range (`ParkedLayer`, `stream_node.rs`
+`register_parked_mesh`), and writes a chunk's cars of that look into each; the engine draws the
+tier whose band holds the camera's distance from the batch's centre. The tier therefore switches
+per chunk and look, with no work a frame; a changed chunk uploads its rows four times.
 
-- Ids never travel in an 8-bit or half-float custom channel: `ARRAY_CUSTOM0` as RGBA8 unorm and
-  the half-float custom formats are broken in the Compatibility renderer (float custom formats
-  are exact).
-- Any reader that takes colours as floats rounds them before they become bytes: the engine
-  converts a float `ARRAY_COLOR` to bytes by truncation, so a float id that is slightly low
-  loses one.
-- If the hand-written GLB reader of `vehicle_resources.gd` is still in use when ids arrive, it
-  carries the `COLOR_0` bytes into `ARRAY_COLOR` through `Color8`, `_merged_body_arrays` carries
-  colours, and the pipeline prewarm template's vertex format (`RENDER-43`) adds the colour
-  format.
+### Mesh loading and the reader
 
-Tested 2026-11-21 on Godot 4.7.2 with Forward+, Mobile and Compatibility, on one AMD GPU on
-Linux:
+GDScript loads each tier through Godot's glTF importer, as building meshes are
+(`godot/scripts/renderers/vehicle_resources.gd`), after taking the images, textures and material
+texture slots out of the GLB's JSON chunk: the body shader binds the maps itself, so the importer
+decodes no texture and never tries to load a `keep` file as a resource. The tier is then turned
+half a turn about `Y` (`x` and `z` negated exactly), and each `COLOR_0` id is written back as its
+byte plus half a step, so the engine's float-to-byte truncation keeps it exact. The hand-written
+GDScript GLB reader is gone (`RENDER-59`), and with it the `Color8` path the contract allowed
+for it. `godot/tests/parking_test.gd` checks every tier of every bundled look: one body surface,
+ids exact bytes in the allowed sets, wheel parts on LOD0 and LOD1 only, the low beams at `-Z`.
 
-- the stock glTF import keeps the `COLOR_0` bytes exactly in `ARRAY_COLOR` (stored RGBA8 unorm),
-  with no sRGB conversion at import or in any of the three renderers;
-- the decode above recovers every id exactly over the full range 0 to 255, on a mesh and on a
-  MultiMesh with `use_colors = false`;
-- the stock importer drops `_METRUM_IDS`;
-- a MultiMesh instance colour destroys the ids (not recoverable in Forward+ or Mobile).
+**Forward axis: not changed in 1a.** The runtime still points a car's `-Z` along travel, and the
+models are turned at load, as the placeholder cars were. The planned `+Z` runtime touches the
+snapshot, the off-lane and parked poses, the ground solve, the beam shader and the headlight pool
+at once; 1a keeps all of them and converts once, in the catalogue (`turned`) and at load. The
+contract's frame is unchanged; switching later is a contained render change.
 
-Not tested: other GPUs and drivers, Windows, macOS, and the web export.
+### One body shader
 
-**One body shader**, with the cloud shadow (`standard_light.gdshaderinc`) and the draw fade
-(`agent_draw_fade.gdshaderinc`):
+`godot/scripts/shaders/vehicle_body.gdshader`, with the cloud shadow (`standard_light.gdshaderinc`),
+rain, the street lamps' light and the draw fade (`agent_draw_fade.gdshaderinc`); bodies receive no
+shadows, as before:
 
-- Vertex stage: a wheel vertex and its normal are rotated about that wheel's centre, spin about
-  `X`, then steer about `Y` when the wheel steers. Wheel centres are a small uniform array per
-  model. Body vertices take one branch and no maths. The lamp gain of the vertex's surface id is
-  computed from the lamp bits, the global night value and, for indicators, a blink of 90 flashes
-  a minute, and passed flat to the fragment stage.
-- Fragment stage: albedo × paint (the palette colour where the paint weight is 1; white for a
-  `"paint": false` variant), ORM, optional normal, and emission × lamp gain. Glass ids get a gain
-  of zero, so glass draws as painted.
-- The blink reads a global shader clock that stops when the game is paused, and a per-car
-  offset. It touches no simulation state and needs no upload: a car waiting to turn keeps
-  blinking while its row stays untouched.
+- vertex: `round(COLOR.rgb * 255.0)` gives part, surface and paint; a wheel vertex (part 1 to 8)
+  and its normal are rotated about the wheel's centre (a uniform array per model), roll about
+  the model's `X`, then steer about `Y` for a steering wheel (identity in 1a); the lamp gain of
+  the vertex's surface comes from the lamp bits, the night value (sun 4 to -2 degrees) and, for
+  indicators, a blink of 90 flashes a minute (it reads `TIME` until `RENDER-66` brings the
+  paused clock); the palette colour by the paint index, white for a `paint: false` variant;
+- fragment: albedo, times the paint where `B` is 255; ORM; the optional normal map; emission
+  times the lamp gain. Glass and every surface without a lit lamp have gain 0: glass draws
+  opaque as painted, and the cabin picture stays dark.
 
-**Tier buckets.** The snapshot already measures each posed car's distance to the eye. It picks
-the tier from fixed bands, and the bucket key becomes `model * 4 + tier`. One comparison chain
-per posed car, no new pass. A car that changes bucket at a tier switch keeps its smoothed pose.
-Shadow twins take each bucket's own tier mesh.
+In 1a, a moving car at night lights its tail, tail-and-brake (half), low-beam and marker lenses;
+a parked car none.
 
-**Parked cars** use the same meshes and shader with all lamp bits zero. Their rows grow to 16
-floats for the paint index. Buckets fall from model × colour to model × tier, with the tier per
-chunk by the visibility ranges the parked layer already sets: no work per frame.
+### Lamps at night
 
-**Forward axis.** Models load unrotated and the runtime points `+Z` along travel; the 180 degree
-turn at load and the `-Z` lamp maths end. The beam shader and the headlight pool read lamp
-entries from the catalogue.
+The night layers of [`RENDER-26`](#vehicle-models-and-lamps-render-26) stay, positioned from the
+sidecar lenses instead of the measured table: the glow quads and the beam box take the right-hand
+`low_beam` lens and the right-hand `tail_brake` lens (else `tail`), each the one of its group whose
+facing points most along the nose (or the tail), mirrored for the left; the headlight pool takes
+the same head lens. A lens's `facing` is a surface normal, not a beam: the glows face along the
+vehicle's axis and the beams are aimed along it, as before.
 
-**Cost.** The CPU cost per frame stays O(drawn cars), with rows one third larger to upload for
-buckets that moved. Wheels and lamps are GPU work per vertex and per pixel. Triangles in view
-fall by about ten times at city scale (estimate: about 1 M against 13 M for 6,000 cars in view).
+### Ground support
+
+Each model's ground support comes from its wheel facts (`VehicleCatalogue::ground_supports`): the
+nine plan-box samples and a 3 x 3 grid over each wheel's contact patch (both tread edges and the
+middle, under the centre and a quarter radius ahead and behind), 45 contacts for four wheels. The
+GDScript vertex scan and the fixed five profiles are gone. `vehicle_ground_support_test.gd`
+grounds both bundled models on a pitched and rolled grade with abrupt breaks: no tyre vertex is
+buried, the lowest 0.3 mm under the 2 cm the solve lifts its support points (19.7 mm clearance).
+
+### Cost
+
+- CPU per frame: unchanged in kind, O(drawn cars). The snapshot adds the look pick and the tier
+  comparison per posed car and fills one more bucket map; the smoothing copies four floats more
+  per changed car and builds the 16-float rows only for buckets that changed. Rows are 64 bytes
+  (48 before), a third more to upload for buckets that moved. Nothing allocates per frame once the
+  buffers have grown.
+- GPU per car: LOD0 2,944 triangles for the estate and 4,316 for the truck within its 53 m; 892 /
+  1,380 to 100 / 176 m; 208 / 348 to 398 / 702 m; 40 / 60 beyond. The placeholder cars were
+  2,032 to 2,476 triangles at every distance. The wheel and lamp work is a few ALU operations per
+  vertex.
+- Parked: four slots per chunk and look instead of one; only the tier whose band holds the camera
+  draws.
+- Not timed in this round (the owner batches timing); the prepared session is level F, see
+  `TOOLS-41` in the roadmap's notes.
+
+### Known limits of 1a
+
+- Lanes still queue cars 2.7 m apart (`CAR_LENGTH`) while the estate is 4.48 m and the truck
+  7.90 m long: queued cars overlap nose to tail until `TRAFFIC-38`.
+- One car shape in many paints until the fleet is built.
+- The tier pops at a band edge; the silhouettes match across tiers, and a cross-fade waits for
+  stills that show a pop.
+- Parked tiers switch per chunk, by the distance to the chunk's batch centre.
 
 ## Planned: brake lights, indicators and steered wheels (`RENDER-66`)
 

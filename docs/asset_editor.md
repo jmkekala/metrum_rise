@@ -3136,6 +3136,19 @@ information lines marked `info:`. Exit status: 0 drafted (and written), or an ex
 no stale line (information lines do not count); 1 refused, failed the acceptance check, or not
 run; 2 an existing asset with stale lines.
 
+**Vehicle mode (`TOOLS-41`, 2026-11-22).** A version 2 sidecar with `"kind": "vehicle"` is
+drafted as a `[vehicle]` asset instead, with the same flags, steps (the copy first, `--write`
+into the real pack, never over an existing asset), ledger, exit statuses and `--check`. Its role
+file gives `pack_id`, `asset_id`, `vehicle_class`, `vehicle_family` and `seats`, and optionally
+`display_name`, `spawn_weight` and `paints` (sRGB `colour` and `weight` each). The summary's
+draft line reads `vehicle: <body class> [length, width, height] m; tiers [triangles] from [tier
+starts] m; <n> wheels, <n> lenses; variants [...]`; a rerun on an existing vehicle reports the
+role values and the published tiers and maps that no longer match. The reader, the asset it
+writes and the load check are specified in
+[`vehicles.md`](vehicles.md#as-built-pack-assets-drafts-and-the-bundled-pack-tools-41-tools-42);
+the bundled pack's roles are `tools/vehicle_roles/`, imported with
+`tools/vehicle_roles/import.sh <models checkout> <commit> --write`.
+
 Added 2026-11-21 (`TOOLS-39`), after the first real draft:
 
 - **Dry run or written.** Without `--write` the first line reads `<pack_id>:<asset_id>: drafted

@@ -2557,9 +2557,12 @@ first construction start, and both publications would share a frame.
 
 ### Parked-car rendering (`PARK-01`, `PARK-02`)
 
-Dirty chunks publish immutable versioned model and colour buffers, stable car IDs and 12-float
-MultiMesh transforms. Unchanged chunks send nothing. Shared `vehicle_resources.gd` keeps moving
-meshes and materials identical; parked meshes omit lamps and beams.
+Dirty chunks publish immutable versioned buffers: per vehicle look (`RENDER-65`, the catalogue's
+pick from the car's handle, as when it drives) its cars' 12-float MultiMesh transforms, their
+custom data (the paint; every lamp bit zero) and stable car IDs; the stream node draws each look
+in its four tier buckets by visibility bands ([vehicles.md](vehicles.md#tiers)). Unchanged chunks
+send nothing. Shared `vehicle_resources.gd` keeps moving meshes and materials identical; parked
+meshes omit lamps and beams.
 
 Parked cars have the moving cars' draw distance (`RENDER-48`, 2026-11-13): their materials fade a
 car out by its own distance from the camera over the same band (`CAR_FADE_START_M` 2,000 m to
