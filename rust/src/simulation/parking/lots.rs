@@ -6,10 +6,11 @@ use super::{
     Bay, DockRoute, DockWay,
     geometry::{precise, rectangle, structure_collision},
     validation::{
-        AnchorBay, DockWayInput, ProofClass, dock_ways, driveway_points_inward, is_dock_class,
-        is_freight_class, opens_onto_street, validate_bay, validate_dock,
+        AnchorBay, DockWayInput, DriveLines, ProofClass, dock_ways, driveway_points_inward,
+        is_dock_class, is_freight_class, opens_onto_street, validate_bay, validate_dock,
     },
 };
+use crate::assets::asset::CarRoutes;
 use crate::assets::{Anchor, AnchorType};
 use crate::assets::asset::validation::ZONE_CELL_M;
 use crate::simulation::buildings::allocator::{BuildingAllocator, building_local_xz_basis};
@@ -210,6 +211,25 @@ pub(crate) fn lot_proof(
     };
     let mut proof = LotProof::default();
     let car_geometry = geometry(&bays);
+    // The usable Driveways' road connections and approaches, with each one's inward heading for
+    // its gate line (`PARK-24`).
+    let (paths, inward): (Vec<_>, Vec<_>) = anchors
+        .iter()
+        .filter(|a| a.anchor_type == AnchorType::Driveway)
+        .filter_map(|driveway| {
+            Some((driveway_path(driveway, ProofClass::Car)?, direction(driveway.forward)))
+        })
+        .unzip();
+    // A lot pinned to the straight path (the test pack, until `PARK-07`) has no drive lines.
+    let pinned = asset
+        .manifest
+        .building
+        .as_ref()
+        .is_some_and(|b| b.car_routes == Some(CarRoutes::Direct));
+    let lines = (!pinned).then_some(DriveLines {
+        inward: &inward,
+        axes: [bx.normalized(), bz.normalized()],
+    });
     for (slot, &(anchor, pos, forward, width, length)) in bays.iter().enumerate() {
         let fail = |reason: &str| {
             format!(
@@ -217,11 +237,6 @@ pub(crate) fn lot_proof(
                 building.asset_id, anchor, reason
             )
         };
-        let paths: Vec<_> = anchors
-            .iter()
-            .filter(|a| a.anchor_type == AnchorType::Driveway)
-            .filter_map(|driveway| driveway_path(driveway, ProofClass::Car))
-            .collect();
         // A bay whose entry edge is the lot's street edge is reached straight from the road.
         let local = &anchors[anchor as usize];
         let local_forward = Vector2::new(local.forward[0], local.forward[2]).normalized();
@@ -258,6 +273,7 @@ pub(crate) fn lot_proof(
                 .any(|a| a.anchor_type == AnchorType::Driveway),
             &paths,
             street,
+            lines,
             |foot| structure_collision(allocator, ProofClass::Car, foot),
         );
         match checked {

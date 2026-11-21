@@ -186,7 +186,11 @@ fn a_loading_bay_blocks_export_only_with_a_gate_and_its_dock_route_is_drawn() {
 #[test]
 fn an_asset_without_a_loading_bay_or_passage_gets_the_car_payload_alone() {
     let params = driveway_lot(15.0);
-    assert_eq!(editor_lot_payload(&params, &[]), editor_payload(&params, &[]));
+    let mut payload = editor_lot_payload(&params, &[]);
+    // Beside the car payload, the accepted spot's route (`PARK-24`).
+    let spots = payload.as_object_mut().unwrap().remove("spots").unwrap();
+    assert_eq!(spots[0]["kind"], "straight");
+    assert_eq!(payload, editor_payload(&params, &[]));
 }
 
 #[test]
@@ -295,4 +299,97 @@ fn an_arc_bends_under_fifteen_degrees_at_every_chord() {
         }
     }
     assert!(arc_waypoints(start, heading, 0.0, 90.0, true).is_err());
+}
+
+// A place in line behind a 3 m drive (`PARK-24`): the straight path's square just inside the
+// gate leaves the drive, the drive-line route needs none. Pinned to the straight path
+// (`car_routes = "direct"`), the editor rejects it with today's reason.
+#[test]
+fn the_editor_routes_along_the_drive_lines_unless_the_lot_is_pinned() {
+    let mut params = json!({"frontage_forward":[0,0,1], "lot_half_extents":[10,15],
+        "anchors":[
+        {"anchor_type":"parking", "position":[0,0,0], "forward":[0,0,-1],
+            "width_m":2.5, "length_m":5.0},
+        {"anchor_type":"driveway", "position":[0,0,15], "forward":[0,0,-1], "width_m":3.0}],
+        "site_surfaces":[{"material":"asphalt",
+        "vertices":[[-1.5,-15],[1.5,-15],[1.5,15],[-1.5,15]]}]});
+    let routed = editor_lot_payload(&params, &[]);
+    assert_eq!(routed["rejected"], json!([]));
+    assert_eq!(routed["spots"][0]["kind"], "auto");
+    assert_eq!(routed["spots"][0]["gate"], 0);
+    params["car_routes"] = json!("direct");
+    let pinned = editor_lot_payload(&params, &[]);
+    assert_eq!(pinned["spots"], json!([]));
+    assert_eq!(
+        pinned["rejected"][0]["reason"],
+        "no room to drive in: the turn off the Driveway leaves the paved yard (a car needs about 5 m by 5 m of clear paving just inside the Driveway to turn, so keep the Driveway about 2.5 m from the lot's side edges)"
+    );
+}
+
+// Every fixture-pack building (the test pack and the bundled packs), proven pinned to the
+// straight path and routed along its drive lines (`PARK-24`): every spot the straight path proves
+// keeps its route and gate bit for bit, and the spots only the drive lines reach are recorded.
+// They are what an unpinned test pack would gain; the bundled packs gain none, so the pin on the
+// test pack is what holds the fixtures still.
+#[test]
+fn every_straight_spot_keeps_its_route_and_the_drive_lines_only_add_spots() {
+    use std::collections::BTreeMap;
+    use std::path::{Path, PathBuf};
+    fn manifests(dir: &Path, out: &mut Vec<PathBuf>) {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                manifests(&path, out);
+            } else if path.file_name().is_some_and(|n| n == "asset.toml") {
+                out.push(path);
+            }
+        }
+    }
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../godot");
+    let mut files = Vec::new();
+    for pack in ["tests/mods", "bootstrap/mods"] {
+        manifests(&root.join(pack), &mut files);
+    }
+    files.sort();
+    let bits = |spot: &Value| -> Vec<u64> {
+        spot["route"].as_array().unwrap().iter().flat_map(|p| p.as_array().unwrap().iter())
+            .map(|x| x.as_f64().unwrap().to_bits())
+            .chain(spot["gate"].as_u64())
+            .collect()
+    };
+    let mut rescued = BTreeMap::new();
+    let mut straight = 0;
+    for file in &files {
+        let text = std::fs::read_to_string(file).unwrap();
+        let manifest = crate::assets::AssetManifest::from_str(&text).unwrap();
+        let Some(mut params) = editor_params(&manifest) else {
+            continue;
+        };
+        params["car_routes"] = json!("direct");
+        let pinned = editor_lot_payload(&params, &[]);
+        params["car_routes"] = Value::Null;
+        let routed = editor_lot_payload(&params, &[]);
+        let spots = |payload: &Value| -> BTreeMap<u64, Value> {
+            payload["spots"].as_array().unwrap().iter()
+                .map(|s| (s["anchor"].as_u64().unwrap(), s.clone()))
+                .collect()
+        };
+        let (before, after) = (spots(&pinned), spots(&routed));
+        for (anchor, spot) in &before {
+            assert_eq!(bits(spot), bits(&after[anchor]), "{} anchor {anchor}", manifest.asset_id);
+            straight += 1;
+        }
+        let gained: Vec<_> = after.keys().filter(|a| !before.contains_key(a)).copied().collect();
+        if !gained.is_empty() {
+            rescued.insert(manifest.asset_id.clone(), gained);
+        }
+    }
+    assert!(straight > 40, "{straight}");
+    // Paper check of the plan: the grocery's fourth place turns on the gate line. Proven without
+    // mesh walls, as the fixtures' editor digest proves them.
+    let expected = BTreeMap::from([
+        ("building.commercial.small_grocery_store".to_owned(), vec![4]),
+        ("building.power.coal_power_plant".to_owned(), vec![6]),
+    ]);
+    assert_eq!(rescued, expected);
 }

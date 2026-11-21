@@ -35,7 +35,7 @@ use godot::prelude::Vector2;
 
 // The shortest leg a route may have, and the closest two of its legs that share no point may
 // come: the tick's tolerance for finding a truck's leg from its position is 5 cm.
-const MIN_LEG_M: f32 = 0.1;
+pub(super) const MIN_LEG_M: f32 = 0.1;
 
 /// A loading bay's authored drive in the proof's frame (`PARK-21`).
 #[derive(Default)]
@@ -98,6 +98,7 @@ pub(in crate::simulation::parking) fn validate_dock(
             support,
             has_gate,
             tried,
+            None,
             None,
             collision,
         )?;
@@ -299,7 +300,7 @@ pub(crate) fn arc_waypoints(
 }
 
 #[derive(Clone, Copy)]
-enum Way {
+pub(super) enum Way {
     // A way in; `derived` when its one middle point is the aisle, not an authored waypoint.
     In { derived: bool },
     Out,
@@ -351,7 +352,7 @@ impl Way {
 }
 
 // Proves one way by the module's rules 1 to 6. O(points² + points × local overlay work).
-fn prove_way(
+pub(super) fn prove_way(
     row: &VehicleProof,
     way: Way,
     points: &[Vector2],

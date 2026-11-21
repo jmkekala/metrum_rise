@@ -1165,7 +1165,9 @@ func _parking_diagnostics() -> Dictionary:
 	var params := {"anchors": _site_anchors_data, "site_surfaces": _site_surfaces_data,
 		"mesh_parts": _session._adapter.geometry()["mesh_parts"],
 		"frontage_forward": [_frontage_fwd.x, _frontage_fwd.y, _frontage_fwd.z],
-		"lot_half_extents": [float(_view._width_spin.value) * 5.0, float(_view._depth_spin.value) * 5.0]}
+		"lot_half_extents": [float(_view._width_spin.value) * 5.0, float(_view._depth_spin.value) * 5.0],
+		# A lot pinned to the straight path (`PARK-24`; only the test pack, until `PARK-07`).
+		"car_routes": _session.params.get("car_routes")}
 	return JSON.parse_string(_session.policy.parking_diagnostics_json(
 		JSON.stringify(params), _session.part_bounds()))
 

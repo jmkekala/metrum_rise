@@ -187,36 +187,9 @@ fn the_fixtures_car_bays_and_rejections_keep_their_recorded_digest() {
     assets.sort_unstable();
     let editor = assets.iter().fold(0, |hash, id| {
         let manifest = &core.allocator.registry.get(id).expect("a listed asset").manifest;
-        let Some(building) = manifest.building.as_ref() else {
+        let Some(params) = crate::simulation::parking::validation::editor_params(manifest) else {
             return hash;
         };
-        let params = serde_json::json!({
-            "frontage_forward": manifest.building_frontage_forward(),
-            "lot_half_extents": [
-                f32::from(building.lot_width_cells) * 5.0,
-                f32::from(building.lot_depth_cells) * 5.0,
-            ],
-            "anchors": manifest.anchors.iter().map(|a| serde_json::json!({
-                "anchor_type": match a.anchor_type {
-                    crate::assets::AnchorType::Driveway => "driveway",
-                    crate::assets::AnchorType::Parking => "parking",
-                    crate::assets::AnchorType::LoadingBay => "loading_bay",
-                    _ => "other",
-                },
-                "position": a.position,
-                "forward": a.forward,
-                "width_m": a.width_m,
-                "length_m": a.length_m,
-                "vehicle_class": a.vehicle_class.as_deref(),
-            })).collect::<Vec<_>>(),
-            "site_surfaces": manifest.site_surfaces.iter().map(|s| serde_json::json!({
-                "material": match s.material {
-                    crate::assets::SiteSurfaceMaterial::Asphalt => "asphalt",
-                    crate::assets::SiteSurfaceMaterial::Concrete => "concrete",
-                },
-                "vertices": s.vertices,
-            })).collect::<Vec<_>>(),
-        });
         let payload = crate::simulation::parking::validation::editor_payload(&params, &[]);
         text_hash(text_hash(hash, id), &payload.to_string())
     });

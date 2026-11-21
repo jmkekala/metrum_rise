@@ -5,14 +5,16 @@
 use super::geometry::{covered, overlaps, rectangle};
 use godot::prelude::Vector2;
 
+mod drive_lines;
 mod editor;
 mod route;
+pub(super) use drive_lines::DriveLines;
 pub(crate) use editor::{editor_lot_payload, route_arc};
 pub(super) use route::{DockWayInput, dock_ways, validate_dock};
 #[cfg(test)]
 pub(crate) use route::arc_waypoints;
 #[cfg(test)]
-pub(crate) use editor::editor_payload;
+pub(crate) use editor::{editor_params, editor_payload};
 
 #[derive(Clone, Copy)]
 pub(super) struct AnchorBay {
@@ -193,6 +195,8 @@ pub(super) fn opens_onto_street(
 // freight) and `others` the footprints of any other bays its routes may not meet (for freight
 // the parking spots; none for cars). `street` is the road connection for a bay that opens onto
 // the street, if any; `paths` are the class's usable driveways' road connections and approaches.
+// A car bay whose straight path fails through every driveway is routed along `lines` when given
+// (`PARK-24`, `drive_lines`): absent for freight and for a lot pinned to the straight path.
 // Returns the route and the index in `paths` of the driveway it proves through (`None` for a
 // street bay).
 #[allow(clippy::too_many_arguments)]
@@ -206,6 +210,7 @@ pub(super) fn validate_bay(
     has_driveway: bool,
     paths: &[[Vector2; 2]],
     street: Option<Vector2>,
+    lines: Option<DriveLines>,
     collision: impl Fn(&[Vector2]) -> bool,
 ) -> Result<([Vector2; 4], Option<usize>), Rejection> {
     let row = class.proof();
@@ -289,6 +294,12 @@ pub(super) fn validate_bay(
     let Some((part, cause, shape)) = first else {
         return Err("the Driveway must sit at the street edge and point into the lot".into());
     };
+    // Only where the straight path fails, so every bay it proves keeps its path bit for bit.
+    if let Some(lines) = lines
+        && let Some((path, gate)) = drive_lines::shortest_route(row, bay, paths, lines, &blocked)
+    {
+        return Ok((path, Some(gate)));
+    }
     Err(drive_rejection(row, "in", part, cause, shape, false))
 }
 
@@ -458,6 +469,7 @@ mod tests {
             true,
             &[[gate - forward, gate + forward * lead]],
             None,
+            None,
             |foot| overlaps(foot, &wall),
         )
     }
@@ -503,6 +515,7 @@ mod tests {
                 &[],
                 has_gate,
                 &[],
+                None,
                 None,
                 |foot| overlaps(foot, wall),
             )
