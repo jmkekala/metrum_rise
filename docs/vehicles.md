@@ -106,7 +106,10 @@ Later, not ordered: a city bus, emergency and service vehicles, trailers.
 - The arch is a dark recess. Every wheel straight ahead, and every front wheel turned 35 degrees
   either way about the vertical axis through its centre, keeps 10 mm from every body triangle.
 - The game spins a wheel about the model `X` axis and steers it about `Y`, both through the
-  wheel centre stated in the sidecar.
+  wheel centre stated in the sidecar. Signs, the same in the models repository's tooling: a
+  positive steer angle turns the wheel's nose toward `+X` (the driver's left, a left turn), a
+  right-handed rotation about `+Y`; a positive spin rolls the wheel forward (the top of the tyre
+  moves toward `+Z`), a right-handed rotation about `+X`.
 - No brake discs, suspension or tread geometry. At most 8 wheel parts.
 
 ### Vertex ids
@@ -319,6 +322,10 @@ measured from its own files.
   `centre`, its unit outward `facing`, `width_m` (along up × facing) and `height_m` (across
   it). An indicator group with a front lamp, a rear lamp and a side repeater on each side has six
   entries. The game uses the entries for the far glow points and the origin of the light beams.
+  `facing` is the lens surface's normal and carries the body's lean (the estate's headlamp
+  lenses face upward by about 0.55 in `y`): it is not a beam direction, so beams are aimed from
+  the vehicle's forward axis, and lamps are found by `group` and `facing`, not by `position`
+  alone (a wrap-round headlamp reads `side`).
 - `glass`: one entry per group present, with its id and area.
 - `lods`: all four tiers.
 - `cargo`: the load box of a van or truck, `{"min": [x, y, z], "max": [x, y, z], "door":
@@ -360,7 +367,9 @@ The models repository runs these on the exported files:
    [Lamps](#lamps)) and matches the emission texels its LOD0 faces sample.
 8. Glass, against `glass_texels.png`: on LOD0 and LOD1 a triangle sampling glass texels without
    a glass id fails, and a glass-id triangle sampling non-glass texels fails (LOD2: the second
-   only); glass emission is not black.
+   only); glass emission is not black. Over the glass texels of each albedo variant the mean
+   sRGB value is 40-78 (8-bit, mean of the three channels), the mean roughness 0.05-0.12 and
+   metallic below 0.02 (pilot: estate 52 and 0.080, truck 57 and 0.082).
 9. Emission texels that faces sample and that are neither lamp nor glass are black. Painted
    faces are near neutral in the albedo. The paint level holds (see
    [Paint and textures](#paint-and-textures)): the panel field of LOD0 and LOD1 within 0.70 to
