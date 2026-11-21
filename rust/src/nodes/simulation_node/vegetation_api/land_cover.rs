@@ -3,6 +3,7 @@
 //! Fixed-resolution crown coverage from the renderer's accepted canopy decisions.
 
 use super::*;
+use crate::nodes::sim::render::vegetation_product::canopy_cover_scale;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 // Independent of the saved candidate spacing. One world-aligned 1 m sample per bit produces
@@ -10,11 +11,16 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// Edge of one coverage texel in metres.
 pub(super) const TEXEL_M: f32 = 8.0;
 const SAMPLES: usize = 8;
-// Species-level crown radii, scaled by the accepted stem's saved/generated size. These are
-// substrate footprints, independent of cosmetic mesh variant, wind and distance level.
-/// Unscaled conifer and broadleaf crown radii, also used by the bulldoze preview.
-pub(super) const CROWN_RADII_M: [f32; 2] = [3.0, 3.5];
+// Nominal crown discs smooth over mesh and width jitter but shrink with the draw height cap.
+const CROWN_RADII_M: [f32; 2] = [3.0, 3.5];
 const MAX_CROWN_M: f32 = 3.5 * 1.35;
+
+/// Visible crown radius for terrain coverage and the bulldoze preview marker.
+pub(super) fn crown_radius(plant: &Plant) -> f32 {
+    CROWN_RADII_M
+        .get(usize::from(plant.species))
+        .map_or(plant.scale, |radius| radius * canopy_cover_scale(plant))
+}
 
 /// A single patch allocation shared by the parallel candidate walk.
 pub(super) struct Coverage {
@@ -92,7 +98,7 @@ impl Coverage {
     }
 
     fn splat(&self, plant: &Plant) {
-        let radius = CROWN_RADII_M[plant.species as usize] * plant.scale;
+        let radius = crown_radius(plant);
         let center = Vector2::new(plant.x, plant.z);
         let low = ((center - Vector2::splat(radius) - self.origin) / TEXEL_M).floor();
         let high = ((center + Vector2::splat(radius) - self.origin) / TEXEL_M).floor();
@@ -327,9 +333,21 @@ mod tests {
                     .0
                     .iter()
                     .filter(|p| {
-                        p[5] < 2.0
+                        (p[5] as u16 & 3) < 2
                             && (p[0] - base.x - 4.0).abs() < 10.0
                             && (p[2] - base.y - 4.0).abs() < 10.0
+                    })
+                    .map(|p| {
+                        let packed = p[5] as u16;
+                        let plant = Plant {
+                            x: p[0],
+                            z: p[2],
+                            yaw: p[3],
+                            scale: p[4],
+                            species: (packed & 3) as u8,
+                            variant: (packed >> SPECIES_BITS) as u8,
+                        };
+                        (Vector2::new(plant.x, plant.z), crown_radius(&plant))
                     })
                     .collect();
                 let mut covered_min = 0;
@@ -341,10 +359,8 @@ mod tests {
                         // Only samples within that bound of the circle edge may differ; all
                         // others must agree exactly.
                         let inside = |epsilon: f32| {
-                            local.iter().any(|p| {
-                                let center = Vector2::new(p[0], p[2]);
-                                let radius = if p[5] == 0.0 { 3.0 } else { 3.5 } * p[4] + epsilon;
-                                sample.distance_squared_to(center) <= radius * radius
+                            local.iter().any(|&(center, radius)| {
+                                sample.distance_squared_to(center) <= (radius + epsilon).powi(2)
                             })
                         };
                         covered_min += u32::from(inside(-0.0001));

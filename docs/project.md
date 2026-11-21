@@ -563,7 +563,7 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
   owned by `RENDER-07`.
   See [the policy and verification scope](asset_editor.md#shared-lod-policy-and-automatic-inspection--tools-05).
 
-- **Vegetation appearance**. Pine point picks switch between young and mature meshes as the height changes. See [the tool contract](terrain.md#local-vegetation-experiment-v01).
+- **Vegetation appearance**. Unmarked canopy above 24 m for birch and aspen or 28 m for conifers now tapers toward a kind-specific height ceiling. Pine point picks switch between young and mature meshes as the height changes. See [the canopy calibration](terrain.md#canopy-height-calibration) and [the tool contract](terrain.md#local-vegetation-experiment-v01).
 
 - **Vegetation brush navigation**: the tool now owns the four brush options; Shift-wheel cycles them in sync with the dropdown, including while its popup is open. `E` and Remove share the erase toggle, and a fading world-space label names the option or erase mode above the ring. Ctrl-wheel sizes the brush. At point size, Up/Down selects a canopy height in metres. See [the tool contract](terrain.md#local-vegetation-experiment-v01).
 

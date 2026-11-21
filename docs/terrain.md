@@ -890,6 +890,55 @@ the test now clears the deck (`weather_clouds.z = 0`) as it fixes the rest of it
 two levels compare under a real cloud shadow (the weather system's shape map, not the unset
 default) is not measured; the handover poses at `175 m` held `0.93-0.99` under the default deck.
 
+### Canopy height calibration
+
+The Finnish mature-tree reference bands for this calibration are 15–25 m for birch and
+aspen, with occasional specimens around 28 m, 15–30 m for Scots pine, and 20–35 m for
+Norway spruce. These are typical ranges for the scene, with exceptional specimens above
+them. See the European Atlas accounts for [silver birch](https://forest.jrc.ec.europa.eu/en/european-atlas/qr-trees/silver-birch/)
+and [Eurasian aspen](https://forest.jrc.ec.europa.eu/media/atlas/Populus_tremula.pdf)
+and [Natural Resources Institute Finland's records](https://www.luke.fi/fi/luonnonvaratieto/tiedetta-ja-tietoa/puulajit-ja-niiden-menestyminen/kotimaiset-puulajit).
+
+For each unmarked canopy placement, the Rust product multiplies the selected variant's
+full-level AABB height by the placement scale and the existing height jitter. For that
+height `h`, knee `k` and span `s = maximum − k`, the new height is `h` through the
+knee and `k + s × (h − k) / (s + h − k)` above it. The slope is one at the join and
+positive thereafter. Both width axes receive the height's reduction ratio.
+
+| Tree kind | Knee (m) | Maximum (m) | Previous draw envelope (m) | Calibrated draw envelope (m) |
+| --- | ---: | ---: | ---: | ---: |
+| Birch | 24 | 28 | 11.38–40.07 | 11.38–27.20 |
+| Aspen | 24 | 28 | 12.30–39.34 | 12.30–27.17 |
+| Scots pine | 28 | 32 | 5.90–38.61 | 5.90–30.90 |
+| Norway spruce | 28 | 35 | 10.46–41.85 | 10.46–32.65 |
+
+These envelopes combine the full-level model-height extrema with the generator scale
+range 0.75–1.35 and the renderer height-jitter range 0.82–1.24, before lean and wind.
+The 5.90 m pine floor comes from the young model. The mature pine floor is 13.13 m.
+All lower bounds retain their original scales.
+
+The full, reduced and blended meshes, impostors, their bounds, and the shadow and
+water reflection draws share the calibrated transform. The impostors' far crown
+growth (`CROWN_GROWTH`) still applies on top of it past the shadow range, as a coverage
+fill, not a height. The terrain crown discs and
+stand closure use the same reduction ratio. The thumbnail baker and asset editor
+yard use the same product. Fixed-look point plants retain the scale stored in their
+placement record. The calibration is O(1) per tree with the existing appearance seed
+and jitter, one model lookup and no allocation. Placement, spacing, clearance and saves
+continue to use the original simulation data.
+
+In the matched release `dense_patch_product_cost` benchmark on an Apple M2 Pro, the
+median of three 4,096-placement runs moved from 197.5 to 211.4 µs in the near band and
+from 48.3 to 52.0 µs in the far band. The benchmark builds each patch on one thread.
+The level-F session ran
+`--bench 'nodes::sim::render::vegetation_product::tests::dense_patch_product_cost;cpus=one'`
+unpinned. The control and calibrated `$TEST_BINARY` SHA-256 prefixes were
+`5c9cdf794a92675a` and `f90caed3a6aa2950d`.
+The session used eight Rayon workers for the 30k city. At 1×, mean frame time was
+1.926 → 1.930 ms and the unpreempted maxima were 6.25 → 4.85 ms after repeating the
+control's initial 12.79 ms outlier. At 32×, the mean was 4.032 → 4.043 ms with the
+existing `PERF-17` exception on both builds.
+
 ### Pine rebuilt to the photo set — VEG-18 (2026-10-03)
 
 The authored pine read more like a broadleaf tree: crowns as short tufts on tall poles, an
@@ -2453,7 +2502,8 @@ and authored canopy additions pass the same `placement_clear` on every rebuild. 
 site queries are prepared before the parallel walk. Authored bushes and rocks use the canopy
 address grid but contribute no crown coverage. Each tree contributes a disc with a species
 substrate radius of 3 m (conifer) or 3.5 m (broadleaf), multiplied by its accepted instance
-scale. These footprints are independent of cosmetic mesh variants, LOD and wind. An 8×8
+scale and the [canopy height reduction ratio](#canopy-height-calibration). This keeps the
+nominal discs independent of width jitter, LOD and wind. An 8×8
 fixed sample grid per texel forms the crown-disc union at 1 m spacing, converted to an R8
 area fraction. Atomic bitwise OR preserves overlap and produces identical bytes regardless
 of Rayon scheduling; no candidate body allocates. The build allocates one temporary patch

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The vegetation product against the GDScript upload it replaced (`RENDER-32-C`): bitwise.
+//! Bitwise vegetation draw products for the `RENDER-32-C` patch fixtures.
 //!
 //! `product_golden.txt` was written once, by the control's `vegetation.gd` `_upload_patch` on a
 //! rendered Godot 4.7.2 (the near buffers and the engine's own near bounds read back only from a
@@ -12,6 +12,8 @@
 //! tree count, the canopy box, the SHA-256 of its placements, stand cover and hedge runs, and the
 //! SHA-256 of its instance records (per instance: species, level, variant, caster, count, colour
 //! and custom lanes, both bounds, the range, and the SHA-256 of the buffer).
+//! Canopy height calibration re-pinned the affected cover and draw digests. The placements,
+//! catalogue, hedge runs, counts and canopy origin bounds still match the GDScript capture.
 
 use super::land_cover::Coverage;
 use super::*;
@@ -138,7 +140,7 @@ const SETTINGS: ProductSettings = ProductSettings {
 };
 
 #[test]
-fn vegetation_product_matches_the_gdscript_upload_bitwise() {
+fn vegetation_product_matches_draw_golden_bitwise() {
     let golden = include_str!("product_golden.txt");
     let catalogue_line = golden.lines().next().unwrap();
     let catalogue =
@@ -207,9 +209,9 @@ fn vegetation_product_matches_the_gdscript_upload_bitwise() {
 }
 
 // `RENDER-32-D`: the background path (a snapshot of the patch's inputs, the three queries and
-// the product on the worker) against the same goldens: bitwise the GDScript upload too.
+// the product on the worker) against the same bitwise draw golden.
 #[test]
-fn background_patch_matches_the_gdscript_upload_bitwise() {
+fn background_patch_matches_draw_golden_bitwise() {
     use super::jobs::{PatchRequest, prepare_patch};
     use super::world::VegetationPatchInputs;
     let golden = include_str!("product_golden.txt");

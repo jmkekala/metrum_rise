@@ -2,7 +2,8 @@
 
 //! The vegetation patch product (`RENDER-32-C`, round V1a; `docs/terrain.md` "Streaming core"):
 //! every instance buffer a vegetation patch draws, built in Rust from the patch's placements, its
-//! stand cover and its hedge runs, bit for bit what `vegetation.gd`'s upload loops built before.
+//! stand cover and its hedge runs. Unmarked canopy height is calibrated before the draw levels
+//! share the resulting transform.
 //!
 //! A batch is one `MultiMesh` of the patch: the near level of one species variant (transform,
 //! tint and, for canopy trees, the stand closure), the distant impostors of one canopy species
@@ -24,7 +25,7 @@ pub(crate) mod godot_math;
 #[cfg(test)]
 mod tests;
 
-use crate::simulation::vegetation::edits::FIXED_LOOK;
+use crate::simulation::vegetation::edits::{AuthoredPlant, CanopyKind, FIXED_LOOK, canopy_model};
 use godot_math::{Aabb, Basis, add3, basis_axis_angle, basis_columns, basis_mul, hash_int};
 use godot_math::{column_length_squared, hash_vector2, length3, lerp_f64, max_f64, max3, min3};
 use godot_math::{smoothstep_f64, sub3};
@@ -404,7 +405,8 @@ fn place(inputs: &ProductInputs, placed: &mut Vec<Placed>) {
             } else {
                 let height = jittered_height_scale(scale, seed);
                 let width = scale * (0.80 + jitter_unit(seed, 53) * 0.48);
-                (width, height)
+                let ratio = canopy_height_ratio(species, variant, height);
+                (width * ratio, height * ratio)
             };
             (
                 instance_rows(record, seed, inputs.origin, width as f32, height as f32),
@@ -435,6 +437,39 @@ fn appearance_variant(species: usize, pinned_variant: usize, seed: i64) -> usize
 
 fn jittered_height_scale(scale: f64, seed: i64) -> f64 {
     scale * (0.82 + jitter_unit(seed, 17) * 0.42)
+}
+
+// Above the knee the reduction is uniform across the basis. The rational curve has unit
+// slope at the knee, stays increasing, and approaches the limit with one division.
+fn canopy_height_ratio(species: usize, variant: usize, height_scale: f64) -> f64 {
+    let Some((kind, model_height)) = canopy_model(species, variant) else {
+        return 1.0;
+    };
+    let (knee, span) = match kind {
+        CanopyKind::Birch | CanopyKind::Aspen => (24.0, 4.0),
+        CanopyKind::Pine => (28.0, 4.0),
+        CanopyKind::Spruce => (28.0, 7.0),
+    };
+    let height = f64::from(model_height) * height_scale;
+    let excess = height - knee;
+    if excess <= 0.0 {
+        return 1.0;
+    }
+    // The curve subtracts excess² / (span + excess) metres from the original height.
+    1.0 - (excess * excess) / ((span + excess) * height)
+}
+
+/// Scale of the canopy cover's nominal crown disc, including the same proportional
+/// reduction as the draw transform. The disc intentionally smooths out mesh and width jitter.
+pub(crate) fn canopy_cover_scale(plant: &AuthoredPlant) -> f32 {
+    if plant.variant & FIXED_LOOK != 0 {
+        return plant.scale;
+    }
+    let seed = i64::from(hash_vector2(plant.x, plant.z));
+    let species = usize::from(plant.species);
+    let variant = appearance_variant(species, usize::from(plant.variant).wrapping_sub(1), seed);
+    let scale = f64::from(plant.scale);
+    (scale * canopy_height_ratio(species, variant, jittered_height_scale(scale, seed))) as f32
 }
 
 // Counting sort by (species, variant), stable, so each bucket keeps placement order.

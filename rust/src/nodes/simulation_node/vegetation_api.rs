@@ -815,14 +815,7 @@ pub(crate) fn plant_at(core: &SimCore, pos: Vector2) -> Option<(PlantTarget, f32
         }
     }
     let (_, target) = best?;
-    let plant = target.plant;
-    // Bushes and rocks have no entry in the canopy coverage table.
-    let radius = land_cover::CROWN_RADII_M
-        .get(plant.species as usize)
-        .copied()
-        .unwrap_or(1.0)
-        * plant.scale;
-    Some((target, radius))
+    Some((target, land_cover::crown_radius(&target.plant)))
 }
 
 /// Clears O(K + A) local candidates/additions through the brush's edit and undo journal.

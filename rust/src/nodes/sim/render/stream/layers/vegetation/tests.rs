@@ -288,8 +288,9 @@ fn a_scripted_sequence_draws_one_version_and_its_command_digest_is_pinned() {
 // 0x3ca89537c16bddd5 is reproduced by refreshing every patch; the sorted commands and the final
 // recorder state of both are identical). `RENDER-37` re-pinned it: the near canopy's detail swap
 // writes its kept rows into fresh storage (reallocate, mesh, buffer, count) instead of changing
-// the mesh on the written buffer, which the engine read back.
-const GOLDEN_DIGEST: u64 = 0x8db4_4358_2644_9bda;
+// the mesh on the written buffer, which the engine read back. Canopy height calibration
+// changes the uploaded transforms and bounds of trees above their knees.
+const GOLDEN_DIGEST: u64 = 0xd873_1862_34cc_4ec9;
 
 #[test]
 fn installs_take_class_then_distance_then_key_order_within_the_budget() {

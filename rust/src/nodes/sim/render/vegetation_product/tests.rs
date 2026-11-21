@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Godot's `hash()` against vectors from the engine, the product's buffer layouts, and the cost
-//! of a dense patch. Bitwise parity with the GDScript upload is `vegetation_api`'s
-//! `product_parity` test, which needs a world.
+//! of a dense patch. The full-patch draw golden is in `vegetation_api`'s
+//! `product_parity` tests, which need a world.
 
 use super::godot_math::{hash_int, hash_vector2};
 use super::*;
@@ -233,6 +233,130 @@ fn unmarked_placements_keep_the_original_rows_and_tint() {
         placed[1].tint.map(f32::to_bits),
         [1065745057, 1066720133, 1067695209]
     );
+}
+
+fn height_band(kind: CanopyKind) -> (f64, f64) {
+    match kind {
+        CanopyKind::Birch | CanopyKind::Aspen => (24.0, 28.0),
+        CanopyKind::Pine => (28.0, 32.0),
+        CanopyKind::Spruce => (28.0, 35.0),
+    }
+}
+
+#[test]
+fn canopy_soft_cap_preserves_the_knee_and_rises_toward_the_limit() {
+    for (species, &variants) in VARIANT_COUNTS[..CANOPY_SPECIES].iter().enumerate() {
+        for variant in 0..variants {
+            let (kind, model_height) = canopy_model(species, variant).unwrap();
+            let (knee, max) = height_band(kind);
+            let cap = |height: f64| {
+                height * canopy_height_ratio(species, variant, height / f64::from(model_height))
+            };
+            for h in [0.0, knee - 0.1, knee] {
+                assert_eq!(cap(h).to_bits(), h.to_bits());
+            }
+            let epsilon = 0.000_01;
+            assert!(((cap(knee + epsilon) - knee) / epsilon - 1.0).abs() < 0.000_003);
+            let mut previous = knee;
+            for excess in 1..=1000 {
+                let h = knee + f64::from(excess) * 0.1;
+                let capped = cap(h);
+                assert!(previous < capped && capped < max && capped < h);
+                previous = capped;
+            }
+        }
+    }
+}
+
+#[test]
+fn canopy_products_share_calibrated_proportions_at_every_distance() {
+    let mut placements = Vec::new();
+    for (species, &variants) in VARIANT_COUNTS[..CANOPY_SPECIES].iter().enumerate() {
+        for variant in 0..variants {
+            for i in 0..128 {
+                let pin = ((variant + 1) << SPECIES_BITS) | species;
+                let scale = [0.75, 0.9, 1.05, 1.2, 1.35][i % 5];
+                let mut record = [
+                    0.25 + (i as f32 * 0.7),
+                    0.0,
+                    1.5 + (i / 5) as f32,
+                    0.8,
+                    scale,
+                    pin as f32,
+                ];
+                placements.extend_from_slice(&record);
+                if variant == 0 {
+                    record[5] = species as f32;
+                    placements.extend_from_slice(&record);
+                }
+            }
+        }
+    }
+    let mut placed = Vec::new();
+    place(&inputs(&placements, true), &mut placed);
+    let mut capped_count = 0;
+    let mut generated_variants = [0; CANOPY_SPECIES];
+    for (p, record) in placed
+        .iter()
+        .zip(placements.as_chunks::<PLACEMENT_STRIDE>().0)
+    {
+        let species = usize::from(p.species);
+        let variant = usize::from(p.variant);
+        if record[5] < CANOPY_SPECIES as f32 {
+            generated_variants[species] |= 1 << variant;
+        }
+        let (kind, model_height) = canopy_model(species, variant).unwrap();
+        let (knee, max) = height_band(kind);
+        let seed = i64::from(hash_vector2(record[0], record[2]));
+        let scale = f64::from(record[4]);
+        let height = scale * (0.82 + jitter_unit(seed, 17) * 0.42);
+        let width = scale * (0.80 + jitter_unit(seed, 53) * 0.48);
+        let basis = basis_of(&p.rows);
+        let drawn_height = f64::from(column_length_squared(&basis, 1).sqrt());
+        assert!(drawn_height * f64::from(model_height) < max);
+        if height * f64::from(model_height) <= knee {
+            assert_eq!(
+                p.rows.map(f32::to_bits),
+                instance_rows(record, seed, [0.0; 2], width as f32, height as f32)
+                    .map(f32::to_bits),
+            );
+        } else {
+            capped_count += 1;
+            let width_ratio = f64::from(column_length_squared(&basis, 0).sqrt()) / width;
+            assert!((drawn_height / height - width_ratio).abs() < 0.000_000_3);
+            let plant = AuthoredPlant {
+                x: record[0],
+                z: record[2],
+                yaw: record[3],
+                scale: record[4],
+                species: p.species,
+                variant: p.variant + 1,
+            };
+            assert!(
+                (f64::from(canopy_cover_scale(&plant)) / scale - width_ratio).abs() < 0.000_000_3
+            );
+        }
+    }
+    assert!(capped_count > 100);
+    for (species, seen) in generated_variants.into_iter().enumerate() {
+        assert_eq!(seen, (1 << VARIANT_COUNTS[species]) - 1);
+    }
+
+    // Seed-picked (unbiased pin), tall broadleaf. One placement makes batch order immaterial.
+    let record = [12.5, 0.25, -7.0, 0.8, 1.35, 1.0];
+    let mut catalogue = catalogue();
+    catalogue.impostor_reach[1] = 30.0;
+    let near = with_product(&inputs(&record, true), &catalogue, Clone::clone);
+    let far = with_product(&inputs(&record, false), &catalogue, Clone::clone);
+    let [mesh, impostor, caster] = near.batches.as_slice() else {
+        panic!("expected near mesh, impostor and caster");
+    };
+    assert_eq!(mesh.shared_bounds, impostor.shared_bounds);
+    assert_eq!(caster.shared_bounds, impostor.shared_bounds);
+    assert_eq!(caster.buffer, impostor.buffer);
+    assert_eq!(far.batches[0].mesh_bounds, impostor.mesh_bounds);
+    assert_eq!(far.buffer(0), near.buffer(impostor.buffer));
+    assert_eq!(&near.buffer(mesh.buffer)[..12], &far.buffer(0)[..12]);
 }
 
 #[test]
