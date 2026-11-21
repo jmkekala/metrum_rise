@@ -498,8 +498,14 @@ impl Role {
                 .as_deref()
                 .is_none_or(|p| p.trim().is_empty())
         {
+            // "an industrial role", "a commercial role".
+            let article = if role.zone_type.starts_with(['a', 'e', 'i', 'o', 'u']) {
+                "an"
+            } else {
+                "a"
+            };
             return Err(format!(
-                "a {} role needs an economy_profile: a workplace without one never spawns",
+                "{article} {} role needs an economy_profile: a workplace without one never spawns",
                 role.zone_type
             ));
         }

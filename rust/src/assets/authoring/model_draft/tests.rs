@@ -317,7 +317,8 @@ fn inputs_refuse_dirty_sources_changed_files_and_bad_roles() {
         ("colour", json!("red"), "unknown field"),
         ("lot_cells", json!([2, 0]), "at least 1"),
         // A workplace without a profile never spawns: refused up front.
-        ("zone_type", json!("commercial"), "needs an economy_profile"),
+        ("zone_type", json!("commercial"), "a commercial role needs an economy_profile"),
+        ("zone_type", json!("industrial"), "an industrial role needs an economy_profile"),
     ] {
         let mut role = role.clone();
         role[key] = value;
