@@ -2121,7 +2121,8 @@ deferred.
   - zoning in eight-row repeats of six residential, one commercial and one industrial row;
   - every lot built through the demand spawn executor;
   - households admitted through demand admission, with carriers placed at home;
-  - one `OWA` trunk per 10,000 residents and an effectively unlimited treasury;
+  - one `OWA` trunk (a 1 + 1 row street continued to the world edge) per 5,000 residents since
+    `TRAFFIC-38` (per 10,000 before), and an effectively unlimited treasury;
   - two warm-up days. It then runs frame by frame, so trips complete.
 - **Benchmark:** `rust/benches/economy_tick_benchmark.rs`. Each `operational_hour` sample is one
   of 23 demand hours, timed through the hour's fixed slots to its actions slot; each

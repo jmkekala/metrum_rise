@@ -474,8 +474,8 @@ position convention and the hot-path cost are in [car following](traffic.md#car-
 - Walkers queue single file 0.6 m apart (0.5 m, a standing person's body depth, plus the
   standstill gap), where they kept the cars' 2.7 m.
 - Standstill gap, headway and acceleration are not retuned.
-- The populated-city fixture revision is `perf-fixture-revision-v11`: every cached city is built
-  again by the engine under test.
+- The populated-city fixture revision is `perf-fixture-revision-v12` (v11 for the lengths, v12
+  for the border trunks below): every cached city is built again by the engine under test.
 
 **Measured against the model's own formula.** Control `dev` `daab78d4c`, branch `ead1c18a3`'s
 simulation (release test binaries, `measure_capacity` from
@@ -523,17 +523,76 @@ The fiscal-stress cities deliver more (+33 % to +51 %) and keep their other numb
 per cent. Determinism is unchanged: the gate's repeat, 1- and 3-worker and save-reload checks are
 identical, twice, and the 30k audit day ends in the same state at 1 and 8 workers.
 
-**Not landed: the envelope is the owner's decision.** No band was widened and no constant tuned.
-An attribution run with freight carriers at the car's 4.5 m in lanes (the plan's fallback, lot
-proofs unchanged; not committed) still leaves the bands (11 notes) but halves the loss: baseline
-deliveries -11 % (10k) and -8 % (30k), net income -20 % and -13 %, final-day employment 57.9 %
-and 59.8 %. So about half comes from the slower car traffic and half from the 8 m trucks. The
-test cities' freight was already the limit: every border is one single-lane trunk per 10,000
-residents and holds a queue of trucks in both builds (known limit in
-[`traffic.md`](traffic.md#known-limits)). Options: re-record the envelope on these numbers; widen
-the fixture's border trunks or add border nodes (a fixture change, regenerated cities); land
-with trucks at 4.5 m in lanes first; or retune the standstill gap and headway, which this work
-leaves alone.
+**Round 1's open question** (the owner chose the fixture). No band was widened and no constant
+tuned. An attribution run with freight carriers at the car's 4.5 m in lanes (not committed) still
+left the bands (11 notes) but halved the loss, so about half came from the slower car traffic and
+half from the 8 m trucks. The test cities' freight was the limit: every border was one
+single-lane trunk per 10,000 residents.
+
+**Flow check (round 2, 2026-11-22).** Is the slide traffic that flows slower, or vehicles stuck
+for good? The lane-entry audit's flow check (`stuck.rs`, test-only: every agent on a trip
+sampled each game minute, a vehicle stationary until it has moved 0.5 m; zero-throughput
+lane-hours; per-day `TRAFFIC38_FLOW_DAY`) ran 15 days of each fresh city, `METRUM_AUDIT_FRESH=1`,
+8 workers, 32x. A game minute is one simulated second. Days 7-18, mean (max) of day-end values:
+
+| | `dev` 30k | Branch 30k | `dev` 10k | Branch 10k |
+| --- | --- | --- | --- | --- |
+| Vehicles stationary a whole game day (1,440 min) | 0 | 0 | 0 | 0 |
+| Cars stationary 240 / 720 min | 12 / 0 | 36 / 0 | 0 / 0 | 3 / 0 |
+| Trucks stationary 240 / 720 min | 190 / 40 | 434 / 91 | 63 / 9 | 76 / 17 |
+| Of those over 240 min, also over 240 min a day earlier | 0 | 1 (3) | 0 | 0 (1) |
+| Lanes full at day end | 22 | 169 | 2 | 34 |
+| Zero-throughput lane-hours a day | 236 | 1,903 | 15 | 283 |
+| Freight held at the border nodes at day end | 285 (922) | 623 (1,119) | 110 (320) | 118 (288) |
+| Wait-for cycles (4-hourly), gridlock, trip failures | 0 | 0 | 0 | 0 |
+
+Verdict: congested but flowing. The set of long waits is new every day, no cycle of lanes waiting
+on each other forms, no agent leaves the trip accounting, and on the branch the counts stop
+growing after day 8 while deliveries hold at about 3,270 (30k) and 1,110 (10k) a day. The only
+vehicles that stand past 720 minutes are freight carriers held at the border nodes for their
+first lane, off the map, in both builds; the longest wait chains end at the moving border trunk
+lanes. Long-standing cars wait for a leader, for room on the next lane at a junction (spillback)
+or for a gap to pull out of a driveway. Against the new lengths no road lane is shorter than
+30 m and 3 of 7,577 connectors at 30k are shorter than a truck's 8.1 m spacing (none than a
+car's); a short connector still takes one body at a time.
+
+**Fixture change: one border trunk per 5,000 residents** (`RESIDENTS_PER_BORDER`, was 10,000;
+fixture revision v12). Each trunk is the existing 1 + 1 row street continued to the world edge,
+so 30k has 6 borders and 10k has 2, at the same lane count per border. Widening the trunks to
+the 4-Lane Road instead was tried first: the wider trunk rows cost their lots' depth and the 30k
+grid then housed 29,614 of 30,000 residents. With the extra borders the cities' business
+failures stop altogether, so the 30k prepare's check that the snapshot's next day rebuilds a
+building no longer holds; it is removed (the fiscal-stress fixture still checks churn every
+hour). Flow on the new cities, days 7-18: no vehicle stationary 720 minutes at 10k and 5 trucks
+(57) at 30k, all border-held; lanes full at day end 14 (30k) and 2 (10k); zero-throughput
+lane-hours 98 and 2; border hold at day end 94 (607) and 31 (347); no cycle, no trip failure.
+
+**Before and after** (one game day of each side's own day-12 snapshot at 32x, 8 workers; `dev`
+`daab78d4c`, branch before the fixture change, branch after):
+
+| 30k / 10k | `dev` | Branch, 1 trunk per 10k | Branch, 1 trunk per 5k |
+| --- | --- | --- | --- |
+| Freight deliveries in the day | 4,458 / 1,461 | 3,205 / 1,063 | 5,126 / 1,617 |
+| Car trip, mean (p95) s | 285 (677) / 208 (421) | 336 (870) / 240 (504) | 286 (675) / 211 (430) |
+| Commute by car, mean s | 158 / 127 | 181 / 150 | 158 / 128 |
+| Freight trip, mean s | 281 / 239 | 364 / 337 | 225 / 210 |
+| Lanes full at day end (peak of the 4-hourly checks) | 18 (25) / 0 (0) | 136 (160) / 15 (53) | 50 (68) / 4 (4) |
+| Freight held at the border nodes at day end | 687 / 126 | 452 / 17 | 713 / 143 |
+| Gridlock, wait cycles, trip failures | 0 | 0 | 0 |
+
+| Envelope, baseline, 14-day mean | `dev` 10k | Before | After | `dev` 30k | Before | After |
+| --- | --- | --- | --- | --- | --- | --- |
+| Deliveries / 1k buildings / day | 172.3 | 129.1 | 175.0 | 175.4 | 142.6 | 182.6 |
+| Households out of stock | 13.3 % | 19.6 % | 9.8 % | 9.8 % | 16.1 % | 7.8 % |
+| Employment (final day) | 68.1 % (67.8 %) | 58.5 % (45.7 %) | 68.3 % (68.3 %) | 67.3 % (65.2 %) | 61.2 % (50.9 %) | 68.2 % (68.2 %) |
+| Net income / resident / day | 11.20 | 5.19 | 11.51 | 11.00 | 7.11 | 11.59 |
+| Bankruptcies / 1k buildings / day | 0.02 | 1.36 | 0 | 0.15 | 0.99 | 0 |
+
+Against the old baseline the new cities leave 4 bands, all on the better side (30k deliveries,
+final employment, out-of-stock; fiscal-stress 10k final employment, a note in round 1 too).
+Employment, income and deliveries are flat over the last days, so the baseline is re-recorded on
+this fixture (`tools/sim02_envelope_baseline.json`). Fiscal stress stays within a few per cent
+of `dev`. Determinism: repeat, 1 and 3 workers and save-reload identical.
 
 ### Planned: waiting position at junctions (`TRAFFIC-39`)
 

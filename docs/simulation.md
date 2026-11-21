@@ -2152,7 +2152,9 @@ RAYON_NUM_THREADS=8 python3 tools/sim02_gate.py envelope determinism perf07 \
   empty-pantry rate -2.9% at 10k and -4.5% at 30k, net income per resident -0.3% to -1.4%), and
   one band missed: fiscal-stress 10k final employment 1.32% against [1.14%, 1.29%], more
   working adults in the taxed-out city. Against the new bands the gate reads 0 notes on the
-  same binary.
+  same binary. Re-recorded with `TRAFFIC-38` (2026-11-22, branch `traffic-38`): real body
+  lengths in lanes and the fixture's border trunk per 5,000 residents (v12); the new baseline
+  cities match or beat the old ones ([numbers](vehicles.md#lane-length-by-body-class-traffic-38)).
 - **Tolerance bands.** Variants at 0.97×, 1.00× and 1.03× of each tier's residents. Metrics are
   normalised per resident, household or building. A band is the variant range widened by half
   the range, by at least 2% of the base value, and by an absolute floor for rare counts. Trip

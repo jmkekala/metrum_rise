@@ -4650,8 +4650,10 @@ The measured ignored tests are
 - resident parking trips, curb queues and building entrance reservations are not yet modeled; physical supply and parked test cars are described above
 - connector lanes are generated from lane necks; if road geometry changes materially, lane rebuild
   must keep connector lanes and `next_lanes` in sync
-- a border queue of held cars is not shortened by the entry hold: the borders' throughput (one
-  single-lane trunk per 10,000 residents in the perf fixture) is a separate fixture question
+- a border queue of held cars is not shortened by the entry hold: a border admits its arrivals
+  only as fast as its trunk's lanes take them. The perf fixture has one 1 + 1 trunk per 5,000
+  residents since `TRAFFIC-38` (one per 10,000 before, which held 250-1,100 freight carriers at
+  the 30k borders at each day end once vehicles took their real lengths)
 - walkers walking a route queue single file 0.6 m apart (`TRAFFIC-38`) in lane buckets,
   connector entry claims and overlap correction; a walker standing with no route is in no bucket
   (`TRAFFIC-37`)
