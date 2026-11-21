@@ -591,8 +591,9 @@ fn anything_at_the_asset_path_blocks_the_draft() {
     assert!(existing(&fixture.pack(), &inputs).is_some());
     fs::remove_file(&target).unwrap();
     fs::create_dir(&target).unwrap();
-    let lines = existing(&fixture.pack(), &inputs).unwrap();
-    assert_eq!(lines[0].field, "asset_id");
+    let report = existing(&fixture.pack(), &inputs).unwrap();
+    assert_eq!(report.lines[0].field, "asset_id");
+    assert!(report.doors.is_empty());
     fs::remove_dir(&target).unwrap();
     #[cfg(unix)]
     {
@@ -1187,4 +1188,30 @@ fn the_stale_report_says_a_model_without_a_main_door_gives_no_entrance_to_compar
     // A ledger without a main door leaves the present door compared with the anchor only.
     let lines = stale_report(&facts, Some(&model), &manifest, &files);
     assert_eq!(entrance(lines), []);
+}
+
+#[test]
+fn doors_are_listed_in_the_lot_frame_through_the_part() {
+    let facts = Facts::from_value(Fixture::new().worked_example()).unwrap();
+    // The drafted part: R2 on its 2 x 2 lot, no rotation.
+    let mut part = crate::assets::MeshPart::single_lod0("p", "p");
+    part.position = [0.0, 0.0, -3.16];
+    let doors = super::report::doors_in_lot(&facts, &part);
+    assert_eq!(doors.len(), 2);
+    assert_eq!(
+        doors[0],
+        json!({"id": "front", "kind": "entrance", "main": true, "position": [-1.2, 0.7, 1.94],
+               "facing": [0.0, 0.0, 1.0], "width_m": 0.9, "height_m": 2.1})
+    );
+    assert_eq!(doors[1]["position"], json!([1.5, 0.7, -8.26]));
+    assert_eq!(doors[1]["kind"], "service");
+    // A part turned a quarter turn (+90° about Y: local +Z faces lot +X) and moved: positions and
+    // facings turn with it.
+    part.rotation_degrees = [0.0, 90.0, 0.0];
+    part.position = [2.0, 0.0, 1.0];
+    let doors = super::report::doors_in_lot(&facts, &part);
+    assert_eq!(doors[0]["position"], json!([7.1, 0.7, 2.2]));
+    assert_eq!(doors[0]["facing"], json!([1.0, 0.0, 0.0]));
+    assert_eq!(doors[1]["position"], json!([-3.1, 0.7, -0.5]));
+    assert_eq!(doors[1]["facing"], json!([-1.0, 0.0, 0.0]));
 }

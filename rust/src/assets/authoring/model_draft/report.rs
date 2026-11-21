@@ -115,6 +115,40 @@ pub(crate) fn stale_report(
     lines
 }
 
+/// Every sidecar door in the lot frame, placed through `part` (position, rotation, scale and
+/// pivot), as `{id, kind, main, position, facing, width_m, height_m}`: what the author lays the
+/// entrance, the loading bays and the walks to. `position` keeps the door's threshold height as
+/// `y`; lengths at the sidecar's 0.1 mm. O(doors).
+pub(crate) fn doors_in_lot(facts: &Facts, part: &MeshPart) -> Vec<serde_json::Value> {
+    let transform = part.local_transform();
+    let round = |v: f32| super::tenth_mm(f64::from(v));
+    facts
+        .doors
+        .iter()
+        .map(|door| {
+            let point = transform.transform_point3(glam::Vec3::from_array(door.position.map(|v| v as f32)));
+            let facing = transform
+                .transform_vector3(glam::Vec3::from_array(door.facing.map(|v| v as f32)))
+                .normalize_or_zero();
+            serde_json::json!({
+                "id": door.id,
+                "kind": door.kind,
+                "main": door.main,
+                "position": [round(point.x), round(point.y), round(point.z)],
+                "facing": [round(facing.x), 0.0, round(facing.z)],
+                "width_m": door.width_m,
+                "height_m": door.height_m,
+            })
+        })
+        .collect()
+}
+
+/// The doors of `facts` in the lot frame through the installed asset's part that shows the model
+/// (`doors_in_lot`); none when the asset has no mesh part.
+pub(crate) fn placed_doors(facts: &Facts, manifest: &AssetManifest) -> Vec<serde_json::Value> {
+    model_part(facts, manifest).map_or_else(Vec::new, |part| doors_in_lot(facts, part))
+}
+
 /// The part that shows the model: the one whose `LOD0` file is the sidecar's, else the first.
 fn model_part<'a>(facts: &Facts, manifest: &'a AssetManifest) -> Option<&'a MeshPart> {
     manifest

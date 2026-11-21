@@ -140,6 +140,9 @@ pub(crate) fn derive(inputs: &Inputs, mods: &Path, work: &Path) -> Result<Derive
         params["lot_width_cells"].as_u64().unwrap_or(0) as u16,
         params["lot_depth_cells"].as_u64().unwrap_or(0) as u16,
     ];
+    // The drafted part as R2 places it: the sidecar doors in the lot frame go through it.
+    let mut placed = crate::assets::MeshPart::single_lod0(&facts.lods[0].file, &facts.lods[0].file);
+    placed.position = position.map(|v| v as f32);
     let summary = json!({
         "lot_cells": lot,
         "part_position": position.map(tenth_mm),
@@ -152,6 +155,7 @@ pub(crate) fn derive(inputs: &Inputs, mods: &Path, work: &Path) -> Result<Derive
         "economy_profile": params["economy_profile"],
         "schemes": facts.variants.len(),
         "free_space": rules::free_space(facts, lot, position),
+        "doors": report::doors_in_lot(facts, &placed),
     });
     let document = json!({
         "params": params,
@@ -170,7 +174,7 @@ pub(crate) fn derive(inputs: &Inputs, mods: &Path, work: &Path) -> Result<Derive
 }
 
 // The report's lengths at the sidecar's own precision, 0.1 mm, without f64 noise.
-fn tenth_mm(value: f64) -> f64 {
+pub(crate) fn tenth_mm(value: f64) -> f64 {
     (value * 10_000.0).round() / 10_000.0 + 0.0
 }
 
@@ -193,16 +197,28 @@ fn tier_materials(facts: &Facts, export: &Path) -> Result<Vec<String>, String> {
         .collect()
 }
 
+/// What the report says of an asset that already exists.
+pub(crate) struct Existing {
+    /// Role mismatches, then the stale-geometry report.
+    pub(crate) lines: Vec<report::Line>,
+    /// The new sidecar's doors in the lot frame through the asset's present part
+    /// (`report::placed_doors`); empty when the asset cannot be read.
+    pub(crate) doors: Vec<Value>,
+}
+
 /// The no-overwrite rule: `None` when `assets/<asset_id>` is free, else the report against what
 /// is there: role mismatches, then the stale-geometry report. Anything at that path (file,
 /// folder or link) counts.
-pub(crate) fn existing(pack: &Path, inputs: &Inputs) -> Option<Vec<report::Line>> {
+pub(crate) fn existing(pack: &Path, inputs: &Inputs) -> Option<Existing> {
     let asset_id = &inputs.role.asset_id;
     let target = pack.join("assets").join(asset_id);
     if !target.exists() && !target.is_symlink() {
         return None;
     }
-    let unreadable = |message: String| vec![report::line("files", "asset_id", message)];
+    let unreadable = |message: String| Existing {
+        lines: vec![report::line("files", "asset_id", message)],
+        doors: Vec::new(),
+    };
     let mods = pack.parent().unwrap_or(Path::new("."));
     let pack_id = &inputs.role.pack_id;
     let directory = match files::asset_directory(mods, pack_id, asset_id) {
@@ -231,7 +247,10 @@ pub(crate) fn existing(pack: &Path, inputs: &Inputs) -> Option<Vec<report::Line>
         &manifest,
         &published,
     ));
-    Some(lines)
+    Some(Existing {
+        lines,
+        doors: report::placed_doors(&inputs.facts, &manifest),
+    })
 }
 
 // SHA-256 of every published tier and texture; the thumbnail and credits are no model file.

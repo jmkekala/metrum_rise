@@ -7,7 +7,7 @@
 
 use super::publish_state;
 use crate::assets::AssetManifest;
-use crate::assets::authoring::model_draft::{self as draft, acceptance, report, sidecar};
+use crate::assets::authoring::model_draft::{self as draft, acceptance, sidecar};
 use crate::nodes::sim::asset_export::{ExportParams, validated_tomls};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -48,7 +48,7 @@ const EXIT_FAILED: i64 = 1;
 const EXIT_STALE: i64 = 2;
 
 enum Step {
-    Existing(Vec<report::Line>),
+    Existing(draft::Existing),
     Drafted {
         summary: Value,
         outcome: acceptance::Outcome,
@@ -130,8 +130,8 @@ fn draft_into(
     let params: ExportParams = serde_json::from_value(derived.document["params"].clone())
         .map_err(|e| format!("draft parameters: {e}"))?;
     validated_tomls(&params)?;
-    if let Some(lines) = draft::existing(&derived.pack, inputs) {
-        return Ok(Step::Existing(lines));
+    if let Some(existing) = draft::existing(&derived.pack, inputs) {
+        return Ok(Step::Existing(existing));
     }
     let asset_id = &inputs.role.asset_id;
     (engine.thumbnail)(&derived.preview, &derived.thumbnail)?;
@@ -163,10 +163,12 @@ fn draft_into(
 // Record one step under `key`; returns its exit status.
 fn describe(step: &Step, report: &mut Value, key: &str) -> i64 {
     match step {
-        Step::Existing(lines) => {
-            let (stale, info): (Vec<_>, Vec<_>) = lines.iter().partition(|line| line.stale);
+        Step::Existing(existing) => {
+            let (stale, info): (Vec<_>, Vec<_>) =
+                existing.lines.iter().partition(|line| line.stale);
             report["stale"] = json!(stale);
             report["info"] = json!(info);
+            report["doors"] = json!(existing.doors);
             if stale.is_empty() {
                 EXIT_OK
             } else {
@@ -179,7 +181,13 @@ fn describe(step: &Step, report: &mut Value, key: &str) -> i64 {
             asset,
             ledger,
         } => {
-            report["draft"] = summary.clone();
+            let mut draft = summary.clone();
+            // The doors are the report's, for a draft and an existing asset alike.
+            report["doors"] = draft
+                .as_object_mut()
+                .and_then(|draft| draft.remove("doors"))
+                .unwrap_or_default();
+            report["draft"] = draft;
             report["acceptance"] = json!(outcome);
             // `copy` names the throwaway copy the draft was checked in; `written` the real pack.
             report[key] = json!({"asset": asset, "ledger": ledger, "passed": outcome.passed()});
@@ -240,6 +248,7 @@ fn summary(report: &Value) -> String {
             ));
         }
     }
+    lines.extend(door_lines(&report["doors"]));
     if report["stale"].as_array().is_some_and(Vec::is_empty) {
         lines.push("  the asset exists and no line marks it stale; nothing was published".into());
     }
@@ -265,6 +274,33 @@ fn summary(report: &Value) -> String {
         );
     }
     lines.join("\n")
+}
+
+// Every sidecar door in the lot frame, one line each, so the author lays bays and walks to them
+// without working the part's transform out by hand.
+fn door_lines(doors: &Value) -> Vec<String> {
+    let Some(doors) = doors.as_array().filter(|doors| !doors.is_empty()) else {
+        return Vec::new();
+    };
+    let mut lines =
+        vec!["  doors in the lot frame (position [x, y, z], y the threshold height):".to_owned()];
+    for door in doors {
+        lines.push(format!(
+            "    {} '{}'{} at {} facing {}, {} x {} m",
+            text(&door["kind"]),
+            text(&door["id"]),
+            if door["main"] == json!(true) {
+                " (main)"
+            } else {
+                ""
+            },
+            door["position"],
+            door["facing"],
+            door["width_m"],
+            door["height_m"]
+        ));
+    }
+    lines
 }
 
 // A JSON string as text, anything else as JSON.
@@ -399,6 +435,14 @@ mod tests {
         let summary = report["summary"].as_str().unwrap();
         assert!(summary.contains("free space: front 6.32 m"), "{summary}");
         assert!(summary.contains("facing [0.0,0.0,1.0]"), "{summary}");
+        // Every door in the lot frame: the worked example's part stands at z -3.16.
+        assert!(
+            summary.contains("entrance 'front' (main) at [-1.2,0.7,1.94] facing [0.0,0.0,1.0], 0.9 x 2.1 m"),
+            "{summary}"
+        );
+        assert!(summary.contains("service 'back' at [1.5,0.7,-8.26]"), "{summary}");
+        assert_eq!(report["doors"][1]["id"], "back", "{report:#}");
+        assert!(report["draft"].get("doors").is_none());
         assert!(
             summary.contains("capacity: households 1, flat size 80.0 m²"),
             "{summary}"
@@ -465,6 +509,8 @@ mod tests {
             "{report:#}"
         );
         assert_eq!(report["stale"], json!([]));
+        // An existing asset's report lists the doors through its present part too.
+        assert_eq!(report["doors"][0]["position"], json!([-1.2, 0.7, 1.94]));
         // The rebuilt model moved its main door and gained a dwelling.
         fixture.sidecar["doors"][0]["position"][0] = json!(-2.0);
         fixture.sidecar["dwellings"] = json!(2);
