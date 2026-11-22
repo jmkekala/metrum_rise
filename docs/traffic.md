@@ -4459,7 +4459,15 @@ households with an out-of-stock store, mean of the days: 568 to 563, 1,229 to 1,
 and 15,750), no unhoused household at the end, 0 trip failures on every day. One band note: fiscal
 stress 10k's final employment rate 0.0160 outside [0.0119, 0.0152] (base 0.0140), a 14-day-end
 value of a diverged city. Expired and refunded shipments are not part of the envelope records;
-the liveness runs above had none.
+the liveness runs above had none. The `TRAFFIC-38` flow check (30k, 15 fresh days, 8 workers,
+32×, days 7 to 18, mean (max) of day ends, branch against `dev`'s release binary): still flows, no
+vehicle stationary a whole day, no wait-for cycle; trucks stationary over 4 hours 54 (406)
+against 53 (404), over 12 hours 6 (49) against 5 (40); full lanes 18 (53) against 16 (57);
+zero-throughput lane-hours 104 (594) against 89 (340); cars over 4 hours 0 (1) against 0 (0). The
+check's freight trips read 4,321 a day against 5,893, 363 s mean against 267 s: it times a
+carrier from the frame it leaves a building to the frame it is gone, and a truck no longer goes
+inside at its destination, so an out-and-back delivery is one trip now where it was two. The 10k
+tier was not run.
 
 **Owner's choices.**
 
