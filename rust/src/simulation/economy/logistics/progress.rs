@@ -888,8 +888,11 @@ fn fail_shipment_before_dispatch(
     shipment.status = ShipmentStatus::Failed;
 }
 
-// A carrier has arrived at a building when it is inside it, as before docks, or standing in one
-// of its docks (`PARK-20`): this is the whole of the yard's reading of arrivals. O(1).
+// A carrier has arrived at a building when it stands in one of its docks (`PARK-20`) or at its
+// kerb stop (`PARK-36`): at a building without a dock, or, back at its source, waiting there
+// for a dock it no longer needs. One waiting for a dock to deliver in has not arrived. Inside
+// the building is a carrier of a save from before `PARK-36`. This is the whole of the yard's and
+// the kerb's reading of arrivals. O(1).
 fn shipment_carrier_progress_to_endpoint(
     shipment: &Shipment,
     agents: &AgentSystem,
@@ -906,12 +909,14 @@ fn shipment_carrier_progress_to_endpoint(
     let arrived = match endpoint {
         ShipmentEndpoint::Building(destination_idx) => {
             let trip = &agents.parking_trip[carrier_idx];
+            let here = destination_idx < allocator.buildings.len()
+                && trip.target == allocator.building_handles.handle(destination_idx).to_bits();
             (agents.transit[carrier_idx] == TRANSIT_IN_BUILDING
                 && agents.current_building[carrier_idx] == destination_idx)
-                || (trip.phase == ParkingTripPhase::AtDock
-                    && trip.freight_gate
-                    && destination_idx < allocator.buildings.len()
-                    && trip.target == allocator.building_handles.handle(destination_idx).to_bits())
+                || (here && trip.phase == ParkingTripPhase::AtDock && trip.freight_gate)
+                || (here
+                    && trip.phase == ParkingTripPhase::AtKerb
+                    && (!trip.freight_gate || shipment.status == ShipmentStatus::Returning))
         }
         ShipmentEndpoint::OwaBorder(border_node) => {
             agents.current_node[carrier_idx] == border_node

@@ -22,7 +22,7 @@ mod trips;
 pub(crate) mod turns;
 mod ways;
 pub use trips::ParkingTrip;
-pub(crate) use trips::ParkingTripPhase;
+pub(crate) use trips::{KERB_STAND_FLOOR_MINUTES, ParkingTripPhase};
 pub(crate) mod saved;
 #[cfg(test)]
 mod tests;

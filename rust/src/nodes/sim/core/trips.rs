@@ -336,6 +336,27 @@ impl SimCore {
         slot + (on_road_slots / 4).clamp(TRIP_CHECK_SLOTS, TRIP_CHECK_MAX_SLOTS)
     }
 
+    // The slot at which the truck of shipment `shipment`, standing at a kerb stop to deliver or
+    // be removed (`PARK-36`), has stood `KERB_STAND_FLOOR_MINUTES`, when that is after `slot`: its
+    // check then is put off to it, so every delivery at a building without a dock is seen. The
+    // stand began at the truck's saved `journey_start_time`; the put-off check is a saved event.
+    // `None` for any other carrier. O(log S).
+    pub(in crate::nodes::sim::core) fn kerb_stand_floor_slot(&self, shipment: u64, slot: u64) -> Option<u64> {
+        use crate::simulation::parking::{KERB_STAND_FLOOR_MINUTES, ParkingTripPhase};
+        let idx = self.logistics.shipment_index(shipment)?;
+        let i = self.agents.resolve_agent(self.logistics.shipments[idx].carrier)?;
+        let trip = &self.agents.parking_trip[i];
+        if trip.phase != ParkingTripPhase::AtKerb || trip.freight_gate {
+            return None;
+        }
+        let seconds_per_minute = self.time.seconds_per_minute();
+        let stood_s = f64::from((self.agents.sim_time - self.agents.journey_start_time[i]).max(0.0));
+        let left_s = KERB_STAND_FLOOR_MINUTES * seconds_per_minute - stood_s;
+        (left_s > 0.0).then(|| {
+            slot + ((left_s * SLOTS_PER_MINUTE as f64 / seconds_per_minute).ceil() as u64).max(1)
+        })
+    }
+
     /// Runs one trip event due at `slot`.
     pub(super) fn run_trip_event(
         &mut self,
@@ -375,6 +396,10 @@ impl SimCore {
             }
             TripEvent::FreightCheck { shipment } => {
                 if !self.logistics.trip_event_due(shipment, slot) {
+                    return;
+                }
+                if let Some(later) = self.kerb_stand_floor_slot(shipment, slot) {
+                    self.schedule_freight_trip(later, shipment, TripEvent::FreightCheck { shipment });
                     return;
                 }
                 let under_way = {

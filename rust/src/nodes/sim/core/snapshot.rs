@@ -48,9 +48,17 @@ pub(crate) fn access_phase_target(
         return Some(Vector3::new(2.0 * sx - ax, 0.0, 2.0 * sz - az));
     }
     let pulling = matches!(trip.phase, crate::simulation::parking::ParkingTripPhase::PullOut | crate::simulation::parking::ParkingTripPhase::PullIn);
-    if pulling && trip.drop_off && (if egress { trip.source } else { trip.destination }).is_none() {
-        // A drop-off car pulling over to its kerb stop or out of it (`PARK-34`) keeps facing
-        // along the lane it left or joins: one step ahead of it along that lane.
+    // A truck off its dock's route: pulling over to a kerb stop, standing there, pulling out
+    // of it, or at its gate's lane point (`PARK-36`).
+    let truck_at_kerb = !pulling
+        && core.agents.vehicle_type[agent_idx] == VEHICLE_FREIGHT_DELIVERY
+        && core.agents.transit_mode[agent_idx] == MODE_CAR;
+    if truck_at_kerb
+        || (pulling && trip.drop_off && (if egress { trip.source } else { trip.destination }).is_none())
+    {
+        // A drop-off car pulling over to its kerb stop or out of it (`PARK-34`), and a truck at
+        // a kerb stop (`PARK-36`), keep facing along the lane they left or join: one step ahead
+        // along that lane.
         let (lane, d) = if egress {
             (core.agents.planned_attach_lane_id[agent_idx], core.agents.planned_attach_lane_d[agent_idx])
         } else {

@@ -115,6 +115,7 @@ impl AgentSystem {
     /// earlier visit of the tick sent to another bay.
     pub(super) fn commit_parking_transitions(
         &mut self,
+        delta: f32,
         parking: &mut ParkingSystem,
         allocator: &BuildingAllocator,
         network: &TransitNetwork,
@@ -123,6 +124,9 @@ impl AgentSystem {
         let candidates = self.take_parking_candidates();
         #[cfg(all(test, debug_assertions))]
         self.audit_parking_candidates(&candidates, parking);
+        // Docks freed since the last tick go to the trucks waiting at kerb stops first, in
+        // arrival order, before any truck at a gate is visited (`PARK-36`).
+        self.grant_docks_at_kerbs(&candidates, delta, parking, allocator, network, graph);
         // A block's answers see what the blocks before it committed, so a burst of departures for
         // one door loses few to a bay an earlier visit took.
         let mut quotes = std::mem::take(&mut self.parking_work.quotes);

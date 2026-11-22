@@ -112,6 +112,15 @@ unsafe fn bootstrap_immigration_trip(
             .freight_gate
             .then(|| allocator.freight_gate_entrance(trip.target, graph, &transit_network.lane_system))
             .flatten();
+        // Back to the gate it goes with a plain yard trip: one bound for the kerb stop, or
+        // granted a dock there, asks the gate commit again (`PARK-36`).
+        if gate.is_some() {
+            *slices.parking_trip.get_mut(i) = crate::simulation::parking::ParkingTrip {
+                target: trip.target,
+                freight_gate: true,
+                ..Default::default()
+            };
+        }
         let plan = if *slices.pending_household_size.get(i) > 0
             || (slices.parking.is_some() && *slices.freight_shipment_id.get(i) == u64::MAX)
         {

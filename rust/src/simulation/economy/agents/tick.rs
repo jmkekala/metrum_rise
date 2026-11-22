@@ -31,7 +31,9 @@ pub(crate) use planning::{ResidentMobility, estimate_parking_trip_seconds_within
 pub(crate) use planning::estimate_parking_trip_seconds;
 pub(crate) use access::local_access_target_segment as parking_path_target_segment;
 pub(crate) use access::local_access_path;
-pub(crate) use access::kerb_stop_entrance;
+pub(crate) use access::{
+    DROP_OFF_KERB_INSET_M, FREIGHT_KERB_INSET_M, kerb_queue_entrance, kerb_stop_entrance,
+};
 mod route_preview;
 mod runtime;
 mod schedule;
@@ -136,7 +138,7 @@ impl AgentSystem {
         self.dispatch_movement_pass(allocator, transit_network, graph, delta, time, n, parking.as_deref());
         self.note_stranded_walkers();
         if let Some(parking) = parking {
-            self.commit_parking_transitions(parking, allocator, transit_network, graph);
+            self.commit_parking_transitions(delta, parking, allocator, transit_network, graph);
         }
         self.report_trip_failures(allocator);
         self.log_stationary_visible_pedestrians(delta, n);

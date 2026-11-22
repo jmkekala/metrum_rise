@@ -111,10 +111,10 @@ pub(super) unsafe fn delay_or_recover_after_network_replan_failure(
         if trip.freight_gate && trip.phase != crate::simulation::parking::ParkingTripPhase::None {
             // A truck in a yard never gets here (`PARK-20`): standing in a dock or backing out
             // of one it does not plan on the road, and a pull-in whose way in went stale ends in
-            // its bay. Only one sent on from its gate to the door, put back on the road by a
-            // stale lane, does: it holds no dock, its yard trip ends, and the road's rules below
-            // apply to it as to any carrier (`TRAFFIC-20`).
-            debug_assert_eq!(trip.phase, crate::simulation::parking::ParkingTripPhase::GateToDoor);
+            // its bay. Only one on its way from its gate to the kerb stop to wait (`PARK-36`)
+            // does: it holds no dock, its yard trip ends, and the road's rules below apply to it
+            // as to any carrier (`TRAFFIC-20`).
+            debug_assert_eq!(trip.phase, crate::simulation::parking::ParkingTripPhase::ToKerb);
             *slices.parking_trip.get_mut(i) = Default::default();
         } else if trip.phase != crate::simulation::parking::ParkingTripPhase::None {
             // A parking leg's failure goes to the leg's recovery in this tick's commit, which

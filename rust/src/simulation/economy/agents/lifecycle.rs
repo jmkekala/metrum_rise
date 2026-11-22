@@ -178,7 +178,8 @@ impl AgentSystem {
             Some((place, plan))
         });
         let stop = to_place.or_else(|| {
-            let kerb = super::tick::kerb_stop_entrance(allocator.entrances.get(home)?, graph)?;
+            let kerb = super::tick::kerb_stop_entrance(allocator.entrances.get(home)?, graph,
+                super::tick::DROP_OFF_KERB_INSET_M)?;
             let plan = super::tick::plan_border_arrival(border, home, MODE_CAR, &kerb, network, graph,
                 &self.pathfind_count)?;
             Some((Handle::NONE, plan))
@@ -475,7 +476,7 @@ impl AgentSystem {
             },
         )?;
         let agent_idx = self.spawn_freight_carrier_base(shipment_id, source_building);
-        self.apply_building_origin_freight_plan(agent_idx, source_building, plan, allocator);
+        self.apply_building_origin_freight_plan(agent_idx, source_building, plan, allocator, graph);
         self.start_freight_trip_at_dock(agent_idx, dock, gate, parking);
         Some(agent_idx)
     }
@@ -525,7 +526,7 @@ impl AgentSystem {
             return false;
         };
         let stop = [self.agents.pos_x[agent_idx], self.agents.pos_y[agent_idx]];
-        self.apply_building_origin_freight_plan(agent_idx, source_building, plan, allocator);
+        self.apply_building_origin_freight_plan(agent_idx, source_building, plan, allocator, graph);
         self.agents.freight_target_border_node[agent_idx] = u32::MAX;
         self.pull_out_of_dock(agent_idx, dock, stop, gate);
         true
@@ -631,7 +632,7 @@ impl AgentSystem {
             },
         )?;
         let agent_idx = self.spawn_freight_carrier_base(shipment_id, source_building);
-        self.apply_building_origin_freight_plan(agent_idx, source_building, plan, allocator);
+        self.apply_building_origin_freight_plan(agent_idx, source_building, plan, allocator, graph);
         self.agents.freight_target_border_node[agent_idx] = border_node;
         self.start_freight_trip_at_dock(agent_idx, dock, None, parking);
         Some(agent_idx)
@@ -682,7 +683,7 @@ impl AgentSystem {
             return false;
         };
         let stop = [self.agents.pos_x[agent_idx], self.agents.pos_y[agent_idx]];
-        self.apply_building_origin_freight_plan(agent_idx, source_building, plan, allocator);
+        self.apply_building_origin_freight_plan(agent_idx, source_building, plan, allocator, graph);
         self.agents.freight_target_border_node[agent_idx] = border_node;
         self.pull_out_of_dock(agent_idx, dock, stop, None);
         true
@@ -724,7 +725,7 @@ impl AgentSystem {
         let dock = self.agents.parking_trip[i].source;
         let a = &self.agents;
         let (x, z, started) = (a.pos_x[i], a.pos_y[i], a.journey_start_time[i]);
-        self.apply_building_origin_freight_plan(i, source, plan, allocator);
+        self.apply_building_origin_freight_plan(i, source, plan, allocator, graph);
         let a = &mut self.agents;
         a.pos_x[i] = x;
         a.pos_y[i] = z;
@@ -999,9 +1000,120 @@ impl AgentSystem {
                 freight_gate: true,
                 ..ParkingTrip::default()
             };
-        } else if trip.freight_gate {
+        } else if trip.freight_gate || trip.phase != ParkingTripPhase::None {
+            // A truck that stood at a kerb stop (`PARK-36`) leaves it with its new plan.
             *trip = ParkingTrip::default();
         }
+    }
+
+    /// Sends truck `i`, waiting in the line at the kerb stop of building `building` (`PARK-36`),
+    /// to the building's freight gate for `dock`, which the parking phase has just granted it: it
+    /// pulls out of its place as from a dispatch at the kerb stop, drives to the gate's lane point
+    /// (round the block when the gate lies behind it or on another road) and holds the dock on the
+    /// way (`ParkingTrip::held_dock`). False, with nothing changed, when the building has no gate or
+    /// no road leads from its kerb to the gate. O(one plan).
+    pub(crate) fn drive_from_kerb_to_gate(
+        &mut self,
+        i: usize,
+        building: usize,
+        dock: Handle<Place>,
+        allocator: &BuildingAllocator,
+        transit_network: &TransitNetwork,
+        graph: &RegionGraph,
+    ) -> bool {
+        let Some((handle, gate)) =
+            allocator.freight_gate_arrival(building, graph, &transit_network.lane_system)
+        else {
+            return false;
+        };
+        let Some(plan) = allocator.entrances.get(building).and_then(|door| {
+            plan_car_trip_between_entrances(
+                door,
+                building,
+                2,
+                &gate,
+                transit_network,
+                graph,
+                &self.pathfind_count,
+            )
+        }) else {
+            return false;
+        };
+        self.apply_freight_plan_where_it_stands(i, building, plan, allocator, graph);
+        self.agents.parking_trip[i] = ParkingTrip {
+            target: handle,
+            destination: dock,
+            freight_gate: true,
+            ..ParkingTrip::default()
+        };
+        true
+    }
+
+    /// Sends truck `i`, standing at the lane point of building `building`'s freight gate with
+    /// every dock held (`PARK-36`), on to place `slot` of the line at the building's kerb stop
+    /// ([`super::tick::kerb_queue_entrance`]): it joins the lane from where it stands and leaves it
+    /// again beside its place, round the block when the place lies behind the gate or on another
+    /// road. Its place in the queue, its `journey_start_time`, is kept. False, with nothing
+    /// changed, when no road leads there. O(one plan).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn drive_from_gate_to_kerb(
+        &mut self,
+        i: usize,
+        building: usize,
+        slot: usize,
+        allocator: &BuildingAllocator,
+        transit_network: &TransitNetwork,
+        graph: &RegionGraph,
+    ) -> bool {
+        let Some((handle, gate)) =
+            allocator.freight_gate_arrival(building, graph, &transit_network.lane_system)
+        else {
+            return false;
+        };
+        let Some(plan) = allocator
+            .entrances
+            .get(building)
+            .and_then(|door| super::tick::kerb_queue_entrance(door, graph, slot))
+            .and_then(|place| {
+                plan_car_trip_between_entrances(
+                    &gate,
+                    building,
+                    2,
+                    &place,
+                    transit_network,
+                    graph,
+                    &self.pathfind_count,
+                )
+            })
+        else {
+            return false;
+        };
+        self.apply_freight_plan_where_it_stands(i, building, plan, allocator, graph);
+        self.agents.parking_trip[i] = ParkingTrip {
+            target: handle,
+            phase: ParkingTripPhase::ToKerb,
+            freight_gate: true,
+            ..ParkingTrip::default()
+        };
+        true
+    }
+
+    // `plan` out of building `building` for truck `i`, which leaves from where it stands (a
+    // place in the line at the kerb stop, or the gate's lane point) rather than the kerb stop,
+    // its journey clock, the queue's stamp, kept (`PARK-36`). O(1) beyond the plan.
+    fn apply_freight_plan_where_it_stands(
+        &mut self,
+        i: usize,
+        building: usize,
+        plan: crate::simulation::economy::agents::tick::BuiltTripPlan,
+        allocator: &BuildingAllocator,
+        graph: &RegionGraph,
+    ) {
+        let a = &self.agents;
+        let (x, z, started) = (a.pos_x[i], a.pos_y[i], a.journey_start_time[i]);
+        self.apply_building_origin_freight_plan(i, building, plan, allocator, graph);
+        let a = &mut self.agents;
+        (a.pos_x[i], a.pos_y[i], a.journey_start_time[i]) = (x, z, started);
     }
 
     /// Checks that an agent slot still belongs to the expected physical shipment.
@@ -1167,16 +1279,26 @@ impl AgentSystem {
         self.insert_agent(agent)
     }
 
+    // A truck leaving building `source_building` starts at its kerb stop, standing out of the
+    // driving lane, and pulls out from there: never from the door (`PARK-36`). One leaving a
+    // dock is put in its bay by its caller.
     fn apply_building_origin_freight_plan(
         &mut self,
         agent_idx: usize,
         source_building: usize,
         plan: crate::simulation::economy::agents::tick::BuiltTripPlan,
         allocator: &BuildingAllocator,
+        graph: &RegionGraph,
     ) {
         if let Some(origin_entrance) = allocator.entrances.get(source_building) {
-            self.agents.pos_x[agent_idx] = origin_entrance.door_pos.x;
-            self.agents.pos_y[agent_idx] = origin_entrance.door_pos.y;
+            let stop = super::tick::kerb_stop_entrance(
+                origin_entrance,
+                graph,
+                super::tick::FREIGHT_KERB_INSET_M,
+            )
+            .map_or(origin_entrance.door_pos, |kerb| kerb.door_pos);
+            self.agents.pos_x[agent_idx] = stop.x;
+            self.agents.pos_y[agent_idx] = stop.y;
         }
         self.agents.current_building[agent_idx] = source_building;
         self.agents.target_building[agent_idx] = plan.target_building;

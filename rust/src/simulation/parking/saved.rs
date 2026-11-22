@@ -570,6 +570,12 @@ impl ParkingSystem {
             if trip.drop_off {
                 continue;
             }
+            // A truck standing at a kerb stop holds no car and no place (`PARK-36`): one that
+            // waits there for a dock names none, and one at a building without a dock has no
+            // yard trip.
+            if trip.phase == ParkingTripPhase::AtKerb {
+                continue;
+            }
             // A freight carrier's yard trip holds no car: a pull-in, a stand or a pull-out names
             // a dock row, which may since have gone inactive (`PARK-20`).
             if trip.freight_gate {

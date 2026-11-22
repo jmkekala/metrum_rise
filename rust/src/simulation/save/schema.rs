@@ -6,10 +6,17 @@ use super::SaveLoadError;
 use crate::simulation::network::types::{EdgeClass, NodeType, TransitType, VehicleFrontageAccess};
 
 /// Current save format version (`SIM-02` broke older saves).
-pub const SAVE_VERSION: i64 = 128;
+pub const SAVE_VERSION: i64 = 129;
+
+/// Format 128, saved before a freight truck could stand at a kerb stop (`PARK-36`): its trip
+/// rows hold no `AtKerb` phase, and a truck sent on from a full yard is `GateToDoor`, loaded as
+/// `ToKerb`. It loads as format 129 does: a truck it holds inside a building without a dock
+/// delivers there at its next check and leaves from the kerb stop, and one on its way from a
+/// gate to the door goes to the kerb stop and waits there for a dock.
+pub const PRE_KERB_FREIGHT_SAVE_VERSION: i64 = 128;
 
 /// Format 127, saved before a drop-off was saved state (`PARK-34`): its parking trip rows carry
-/// no `drop_off`. It loads as format 128 does: no arrival under its format rode a drop-off, and
+/// no `drop_off`. It loads as formats 128 and 129 do: no arrival under its format rode a drop-off, and
 /// a carrier walking in from the border keeps walking to its home's door.
 pub const PRE_DROP_OFF_SAVE_VERSION: i64 = 127;
 

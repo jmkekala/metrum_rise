@@ -10,7 +10,10 @@ mod timing;
 pub(super) use geometry::{
     local_access_point, local_access_side_label, projected_lane_distance_for_entrance,
 };
-pub(crate) use geometry::kerb_stop_entrance;
+pub(crate) use geometry::{
+    DROP_OFF_KERB_INSET_M, FREIGHT_KERB_INSET_M, kerb_queue_entrance, kerb_stop_beside,
+    kerb_stop_entrance,
+};
 pub(super) use legality::{
     ACCESS_LANE_D_TOLERANCE_M, planned_attach_is_legal, planned_detach_is_legal,
 };

@@ -4,7 +4,7 @@
 
 use super::super::super::super::{ACCESS_PLAN_VALID, MODE_CAR};
 use super::super::super::access::{
-    LocalAccessPath, ManeuverPath, local_access_path, local_access_should_log_step,
+    FREIGHT_KERB_INSET_M, LocalAccessPath, ManeuverPath, kerb_stop_entrance, local_access_path, local_access_should_log_step,
     local_access_side_label, local_access_target_segment, planned_attach_is_legal,
 };
 use super::super::super::claims::LaneClaimContext;
@@ -98,7 +98,16 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
             .parking
             .filter(|_| trip.phase != ParkingTripPhase::None)
             .and_then(|p| p.trip_entrance(trip, true, allocator, transit_network, graph));
-        let entrance = parking_entrance.as_ref().unwrap_or(&allocator.entrances[b_id]);
+        // A truck leaves a building by its kerb stop, never its door (`PARK-36`): it stands
+        // there at its dispatch or after its delivery, and pulls out.
+        let freight = *slices.freight_shipment_id.get(i) != u64::MAX;
+        let kerb_entrance = (freight && trip.phase == ParkingTripPhase::None)
+            .then(|| kerb_stop_entrance(&allocator.entrances[b_id], graph, FREIGHT_KERB_INSET_M))
+            .flatten();
+        let entrance = parking_entrance
+            .as_ref()
+            .or(kerb_entrance.as_ref())
+            .unwrap_or(&allocator.entrances[b_id]);
         let attach_lane_id = *s_plan_attach_lane.get(i) as usize;
         let attach_lane_d = *s_plan_attach_lane_d.get(i);
         let legal_attach = planned_attach_is_legal(
@@ -139,12 +148,16 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
             exact_path,
             lane_origin_node(attach_lane_id, transit_network, graph),
         ) {
-            // A walker from a car may start at its door, off the polyline (`PARK-35`).
+            // A walker from a car may start at its door, off the polyline (`PARK-35`); a truck
+            // leaving its place in the line at a kerb stop, or the gate for that line, beside it
+            // (`PARK-36`).
             let (current, next_pos, reached_handoff) = step_along_access_path(
                 i,
                 path,
                 delta,
-                trip.phase == ParkingTripPhase::WalkToDoor,
+                trip.phase == ParkingTripPhase::WalkToDoor
+                    || (freight
+                        && matches!(trip.phase, ParkingTripPhase::None | ParkingTripPhase::ToKerb)),
                 slices,
             );
             if crate::debug::Channel::Traffic.enabled()

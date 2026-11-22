@@ -40,6 +40,9 @@ pub(crate) struct ParkingWork {
     watch: Vec<AgentHandle>,
     // Agent rows changed without events; the next tick rebuilds what they imply.
     rebuild: bool,
+    // The trucks waiting at kerb stops for a dock, this tick, as (building handle bits, stamp
+    // bits, agent) (`yard.rs` `grant_docks_at_kerbs`, `PARK-36`).
+    pub(super) kerb_queue: Vec<(u64, u32, usize)>,
     // The route answers of a commit (`prepared.rs`).
     pub(super) answers: super::prepared::ParkingAnswers,
     // Network legs kept from tick to tick for those answers, emptied by a new network revision.
@@ -59,6 +62,7 @@ impl Default for ParkingWork {
             wakes: Vec::new(),
             watch: Vec::new(),
             rebuild: true,
+            kerb_queue: Vec::new(),
             answers: Default::default(),
             quotes: Default::default(),
             #[cfg(test)]

@@ -580,6 +580,7 @@ pub(crate) fn load_road_graph(path: &Path) -> SaveLoadResult<RegionGraph> {
         row.get(0)
     })?;
     let retired_holes = version == SAVE_VERSION
+        || version == PRE_KERB_FREIGHT_SAVE_VERSION
         || version == PRE_DROP_OFF_SAVE_VERSION
         || version == PRE_FIXED_LOOK_SAVE_VERSION
         || version == PRE_CAR_WAYS_SAVE_VERSION
@@ -612,6 +613,7 @@ pub(crate) fn load_from_sqlite(
     // fixed-look flag in an authored plant's variant byte (`VEG-29`), format 128 drop-offs
     // (`PARK-34`).
     let docks_saved = version == SAVE_VERSION
+        || version == PRE_KERB_FREIGHT_SAVE_VERSION
         || version == PRE_DROP_OFF_SAVE_VERSION
         || version == PRE_FIXED_LOOK_SAVE_VERSION
         || version == PRE_CAR_WAYS_SAVE_VERSION

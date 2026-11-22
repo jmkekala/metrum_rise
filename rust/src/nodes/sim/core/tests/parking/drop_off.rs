@@ -163,6 +163,7 @@ fn with_every_place_taken_the_car_stops_at_the_kerb_by_the_door() {
     let kerb = crate::simulation::economy::agents::tick::kerb_stop_entrance(
         &c.allocator.entrances[0],
         &c.region_graph,
+        crate::simulation::economy::agents::tick::DROP_OFF_KERB_INSET_M,
     )
     .unwrap();
     let (mut c, carrier) = arriving(c, border, 4, true);

@@ -28,10 +28,26 @@ pub(crate) enum ParkingTripPhase {
     /// A freight carrier standing in the dock `destination` of building `target` (`PARK-20`),
     /// until its shipment's next check delivers.
     AtDock,
-    /// A freight carrier the gate commit refused a dock: the plain access path from the gate's
-    /// lane point to the door of building `target` (`PARK-20`).
-    GateToDoor,
+    /// A freight carrier the gate commit found every dock of building `target` held
+    /// (`PARK-36`): back on the road from the gate's lane point and on to the building's kerb
+    /// stop, where it waits for a dock (`AtKerb`). It never takes the door. Saves of format 128
+    /// and older name it `GateToDoor`, which was the access path from the gate to the door.
+    #[serde(alias = "GateToDoor")]
+    ToKerb,
+    /// A freight carrier standing at the kerb stop of building `target` (`PARK-36`), out of the
+    /// driving lane, drawn. Without `freight_gate`: delivering or loading at a building without a
+    /// dock until its shipment's next check, at the earliest [`KERB_STAND_FLOOR_MINUTES`] after
+    /// it stopped (its `journey_start_time`). With `freight_gate`: waiting, `ready`, for one of
+    /// the building's docks, which the parking phase grants in arrival order (its
+    /// `journey_start_time`, stamped at the gate).
+    AtKerb,
 }
+
+/// The shortest time, in game minutes, a freight truck stands at a kerb stop before its
+/// shipment's check takes it as arrived (`PARK-36`), so that every delivery at a building without
+/// a dock is seen. The check that comes earlier is put off to the minute the floor ends; the
+/// stand's start is the truck's saved `journey_start_time`, so nothing new is saved.
+pub(crate) const KERB_STAND_FLOOR_MINUTES: f64 = 2.0;
 
 /// Persistent per-agent itinerary, stored as one column in the agent SoA.
 /// O(1) leg state, with no separate route vectors; ordinary movement remains O(1) per agent.
@@ -54,9 +70,11 @@ pub struct ParkingTrip {
     pub(crate) target: u64,
     pub(crate) phase: ParkingTripPhase,
     pub(crate) ready: bool,
-    /// A freight carrier's yard trip (`PARK-20`). With phase `None`, `PullIn`, `AtDock` or
-    /// `GateToDoor`: into the yard of building `target`, its plan ending at that building's
-    /// freight gate. With `PullOut`: out of dock `source`, its plan starting at the lane point of
+    /// A freight carrier's yard trip (`PARK-20`). With phase `None`, `PullIn`, `AtDock`,
+    /// `ToKerb` or `AtKerb`: into the yard of building `target`, its plan ending at that
+    /// building's freight gate, or at its kerb stop while it waits for a dock (`PARK-36`). With
+    /// phase `None` and a `destination`, the dock the parking phase granted it at the kerb, held
+    /// on its way from there to the gate. With `PullOut`: out of dock `source`, its plan starting at the lane point of
     /// the gate it leaves by (its exit, `PARK-21`) and ending at the freight gate of building `target`, or at a door or a border when
     /// `target` is `NO_FREIGHT_GATE`. Never set for a resident. Lives in the row's padding
     /// (the access flags byte has no free bit), and is not written when false, so a city without
@@ -96,11 +114,15 @@ impl ParkingTrip {
     }
 
     /// The dock a freight carrier's yard trip holds (`PARK-20`): the one it pulls into or stands
-    /// in (`destination`), or the one it pulls out of (`source`). None for every other row. O(1).
+    /// in (`destination`), or was granted at the kerb and drives to (`PARK-36`), or the one it
+    /// pulls out of (`source`). None for every other row. O(1).
     pub(crate) fn held_dock(&self) -> Handle<Place> {
         match self.phase {
             _ if !self.freight_gate => Handle::NONE,
-            ParkingTripPhase::PullIn | ParkingTripPhase::AtDock => self.destination,
+            // Granted at the kerb and on its way to the gate (`PARK-36`): none otherwise.
+            ParkingTripPhase::None
+            | ParkingTripPhase::PullIn
+            | ParkingTripPhase::AtDock => self.destination,
             ParkingTripPhase::PullOut => self.source,
             _ => Handle::NONE,
         }
@@ -434,8 +456,22 @@ impl ParkingSystem {
         use ParkingTripPhase::*;
         let place = match (origin, trip.phase) {
             // A carrier bound for a yard arrives at its gate, and from there walks no other
-            // entrance: the dock's for a pull-in, the gate's again on the way to the door.
-            (false, None | GateToDoor) if trip.freight_gate => {
+            // entrance: the dock's for a pull-in.
+            (false, None) if trip.freight_gate => {
+                return allocator.freight_gate_entrance(trip.target, graph, &network.lane_system);
+            }
+            // One every dock refused waits at the building's kerb stop (`PARK-36`).
+            (false, ToKerb | AtKerb) if trip.freight_gate => {
+                let building = allocator.building_handles.resolve(Handle::from_bits(trip.target))?;
+                return crate::simulation::economy::agents::tick::kerb_stop_entrance(
+                    allocator.entrances.get(building)?,
+                    graph,
+                    crate::simulation::economy::agents::tick::FREIGHT_KERB_INSET_M,
+                );
+            }
+            // A truck sent on from its gate to wait at the kerb stop leaves from the gate's lane
+            // point, where it stands (`PARK-36`).
+            (true, ToKerb) if trip.freight_gate => {
                 return allocator.freight_gate_entrance(trip.target, graph, &network.lane_system);
             }
             // A truck leaves its dock by the gate its way out ends at (`PARK-21`).
@@ -450,6 +486,7 @@ impl ParkingSystem {
                 return crate::simulation::economy::agents::tick::kerb_stop_entrance(
                     allocator.entrances.get(home)?,
                     graph,
+                    crate::simulation::economy::agents::tick::DROP_OFF_KERB_INSET_M,
                 );
             }
             (true, WalkToCar) if !trip.walk_origin.is_none() => trip.walk_origin,
@@ -715,10 +752,9 @@ impl ParkingSystem {
                     .unwrap_or_default(),
             ),
             // A carrier on its way to a freight gate keeps it; with the gate gone it plans to
-            // the door, and the gate commit drops the flag (`PARK-20`). One sent on to the door
-            // that a stale lane put back on the road plans to the gate again, where its access
-            // path to the door starts (`trip_entrance`).
-            ParkingTripPhase::None | ParkingTripPhase::GateToDoor if trip.freight_gate => {
+            // the door, and the gate commit drops the flag (`PARK-20`). One on its way to the
+            // kerb stop to wait for a dock plans to the stop (`PARK-36`).
+            ParkingTripPhase::None | ParkingTripPhase::ToKerb if trip.freight_gate => {
                 self.trip_entrance(trip, false, allocator, network, graph)
             }
             _ => None,

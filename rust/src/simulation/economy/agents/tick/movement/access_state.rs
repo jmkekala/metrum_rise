@@ -28,8 +28,9 @@ fn point(path: &[Vector2], k: usize) -> Vector2 {
 /// driveway speed, a carrier on its dock's route at the yard speed, a walker at its own walking
 /// speed. The one place an off-lane step's length is decided. Writes the position and returns
 /// where the agent stood, where it stands now and whether it reached the polyline's end.
-/// `beside_car`: a walker may stand off the polyline, beside the car it has just left, and first
-/// heads for the polyline's second point (`PARK-35`). O(points), no allocation.
+/// `beside_car`: the agent may stand off the polyline and first heads for the polyline's second
+/// point: a walker beside the car it has just left (`PARK-35`), a truck leaving its place in the
+/// line at a kerb stop or the gate it was sent on from (`PARK-36`). O(points), no allocation.
 ///
 /// Safety: `i` must be unique to the current worker for every raw slice in `slices`.
 #[inline]
@@ -42,15 +43,14 @@ pub(super) unsafe fn step_along_access_path(
 ) -> (Vector2, Vector2, bool) {
     unsafe {
         let current = Vector2::new(*slices.pos_x.get(i), *slices.pos_y.get(i));
-        let walker = *slices.tmode.get(i) != MODE_CAR;
-        let step = if walker {
+        let step = if *slices.tmode.get(i) != MODE_CAR {
             walker_speed(*slices.schedule_seed.get(i))
         } else if on_a_docks_route(i, slices) {
             FREIGHT_YARD_SPEED_MS
         } else {
             AGENT_DRIVEWAY_SPEED_MS
         } * delta;
-        let (next, reached) = if beside_car && walker {
+        let (next, reached) = if beside_car {
             step_out_along_local_access_path(current, points, step)
         } else {
             advance_along_local_access_path(current, points, step)

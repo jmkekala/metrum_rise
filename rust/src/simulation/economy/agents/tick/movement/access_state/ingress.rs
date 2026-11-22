@@ -4,7 +4,8 @@
 
 use super::super::super::super::{ACCESS_PLAN_VALID, MODE_WALK, TRANSIT_NETWORK};
 use super::super::super::access::{
-    LocalAccessPath, ManeuverPath, local_access_path, local_access_point,
+    FREIGHT_KERB_INSET_M, LocalAccessPath, ManeuverPath, kerb_stop_beside, kerb_stop_entrance,
+    local_access_path, local_access_point,
     local_access_should_log_step, local_access_side_label, local_access_target_segment,
     planned_detach_is_legal,
 };
@@ -18,7 +19,7 @@ use super::{arrive_in_building, point, reset_invalid_access_plan, step_along_acc
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
-use crate::simulation::parking::ParkingTripPhase;
+use crate::simulation::parking::{ParkingTrip, ParkingTripPhase};
 use crate::traffic_log;
 use godot::prelude::*;
 use std::sync::atomic::AtomicU32;
@@ -41,27 +42,22 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
         let s_pos_x = &slices.pos_x;
         let s_pos_y = &slices.pos_y;
         let s_activity = &slices.activity;
-        let s_transit = &slices.transit;
         let s_tgt_b = &slices.tgt_b;
-        let s_cur_n = &slices.cur_n;
         let s_plan_detach_n = &slices.planned_detach_n;
         let s_plan_detach_lane = &slices.planned_detach_lane;
         let s_plan_detach_lane_d = &slices.planned_detach_lane_d;
         let s_access_flags = &slices.access_flags;
-        let s_next_replan_time = &slices.next_replan_time;
-        let s_cur_e = &slices.cur_e;
-        let s_lane_id = &slices.lane_id;
-        let s_lane_d = &slices.lane_d;
         let s_tmode = &slices.tmode;
-        let s_path = &slices.path;
-        let s_path_idx = &slices.path_idx;
         let s_speed = &slices.speed;
 
         let trip = *slices.parking_trip.get(i);
-        // `freight_gate` is the one test a carrier without a yard trip, and every resident, pays
-        // here (`PARK-20`): a byte of the row this step reads anyway.
-        if trip.freight_gate && trip.phase == ParkingTripPhase::AtDock {
-            // Standing in the bay until its shipment's check delivers; nothing moves it.
+        // `freight_gate` and the phase are the tests a carrier without a yard trip, and every
+        // resident, pays here (`PARK-20`): bytes of the row this step reads anyway.
+        if trip.phase == ParkingTripPhase::AtKerb
+            || (trip.freight_gate && trip.phase == ParkingTripPhase::AtDock)
+        {
+            // Standing in the bay or at the kerb stop (`PARK-36`) until its shipment's check
+            // delivers or a dock is granted; nothing moves it.
             *s_speed.get_mut(i) = 0.0;
             return;
         }
@@ -85,6 +81,25 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
         }
         let plan_valid =
             (*s_access_flags.get(i) & ACCESS_PLAN_VALID) != 0 && b_id < allocator.entrances.len();
+        // A freight carrier never enters a building (`PARK-36`): one whose plan a road edit
+        // dropped, or one the gate commit sent on to the kerb stop (`ToKerb`, its plan dropped
+        // there), goes back onto the lane at its lane point and plans again.
+        let freight = *slices.freight_shipment_id.get(i) != u64::MAX;
+        if !plan_valid && freight && b_id < allocator.entrances.len() {
+            return_to_lane(
+                i,
+                b_id,
+                *s_plan_detach_lane.get(i) as usize,
+                *s_plan_detach_lane_d.get(i),
+                sim_time,
+                allocator,
+                transit_network,
+                graph,
+                pathfind_count,
+                slices,
+            );
+            return;
+        }
         if !plan_valid {
             // A road edit drops the access plan of an agent already on its access path
             // (`PARK-11`). A walk to the car or a pull-in ends where it was going, as one that
@@ -119,9 +134,26 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
             .parking
             .filter(|_| trip.phase != ParkingTripPhase::None)
             .and_then(|p| p.trip_entrance(trip, false, allocator, transit_network, graph));
-        let entrance = parking_entrance.as_ref().unwrap_or(&allocator.entrances[b_id]);
         let detach_lane_id = *s_plan_detach_lane.get(i) as usize;
         let detach_lane_d = *s_plan_detach_lane_d.get(i);
+        // A truck bound for a building's door stops at its kerb instead (`PARK-36`); one sent on
+        // to wait for a dock, at its place in the line there, beside where it leaves the lane.
+        let at_kerb = freight && !trip.freight_gate && trip.phase == ParkingTripPhase::None;
+        let door = &allocator.entrances[b_id];
+        let kerb_entrance = if at_kerb {
+            kerb_stop_entrance(door, graph, FREIGHT_KERB_INSET_M)
+        } else if trip.freight_gate && trip.phase == ParkingTripPhase::ToKerb {
+            transit_network.lane_system.lanes.get(detach_lane_id).and_then(|lane| {
+                let point = BuildingAllocator::sample_pos_on_lane(lane, detach_lane_d);
+                kerb_stop_beside(door, graph, point)
+            })
+        } else {
+            None
+        };
+        let entrance = kerb_entrance
+            .as_ref()
+            .or(parking_entrance.as_ref())
+            .unwrap_or(door);
         let legal_detach = planned_detach_is_legal(
             *s_tmode.get(i),
             entrance,
@@ -206,8 +238,9 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
                 if matches!(trip.phase, crate::simulation::parking::ParkingTripPhase::WalkToCar | crate::simulation::parking::ParkingTripPhase::PullIn) {
                     slices.parking_trip.get_mut(i).ready = true;
                     *s_speed.get_mut(i) = 0.0;
+                } else if at_kerb || trip.phase == ParkingTripPhase::ToKerb {
+                    stand_at_kerb(i, b_id, sim_time, allocator, slices);
                 } else {
-
                     arrive_in_building(i, b_id, ingress_target, sim_time, slices);
                 }
             }
@@ -216,7 +249,59 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
             // bay, as one whose plan was dropped does above, and is never put back on the road.
             slices.parking_trip.get_mut(i).ready = true;
             *s_speed.get_mut(i) = 0.0;
-        } else if let Some(ingress_origin) = local_access_point(
+        } else {
+            return_to_lane(
+                i,
+                b_id,
+                detach_lane_id,
+                detach_lane_d,
+                sim_time,
+                allocator,
+                transit_network,
+                graph,
+                pathfind_count,
+                slices,
+            );
+        }
+    }
+}
+
+/// Puts agent `i`, on its access path towards building `b_id`, back on its detach lane at its
+/// lane point (a car through an attach gap, `TRAFFIC-11`) and plans it again to its entrance:
+/// for an invalid ingress plan, and for a freight carrier that never enters a building
+/// (`PARK-36`). Without a lane point it waits at its detach node for a replan.
+///
+/// Safety: `i` must be unique to the current worker for every raw slice in `slices`.
+#[allow(clippy::too_many_arguments)]
+unsafe fn return_to_lane(
+    i: usize,
+    b_id: usize,
+    detach_lane_id: usize,
+    detach_lane_d: f32,
+    sim_time: f32,
+    allocator: &BuildingAllocator,
+    transit_network: &TransitNetwork,
+    graph: &RegionGraph,
+    pathfind_count: &AtomicU32,
+    slices: &MovementSlices,
+) {
+    unsafe {
+        let s_pos_x = &slices.pos_x;
+        let s_pos_y = &slices.pos_y;
+        let s_transit = &slices.transit;
+        let s_cur_n = &slices.cur_n;
+        let s_plan_detach_n = &slices.planned_detach_n;
+        let s_access_flags = &slices.access_flags;
+        let s_next_replan_time = &slices.next_replan_time;
+        let s_cur_e = &slices.cur_e;
+        let s_lane_id = &slices.lane_id;
+        let s_lane_d = &slices.lane_d;
+        let s_tmode = &slices.tmode;
+        let s_path = &slices.path;
+        let s_path_idx = &slices.path_idx;
+        let s_speed = &slices.speed;
+        let entrance = &allocator.entrances[b_id];
+        if let Some(ingress_origin) = local_access_point(
             *s_tmode.get(i),
             entrance,
             detach_lane_id,
@@ -249,14 +334,12 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
             s_path.get_mut(i).clear();
             if crate::debug::Channel::Traffic.enabled() {
                 traffic_log!(
-                    "[ACCESS_INGRESS_ABORT] agent={} bldg={} mode={} lane={} lane_d={:.2} legal_detach={} exact_path={} ingress_origin=({:.2},{:.2}) reason=invalid-ingress-plan flags=0x{:02x}",
+                    "[ACCESS_INGRESS_ABORT] agent={} bldg={} mode={} lane={} lane_d={:.2} ingress_origin=({:.2},{:.2}) reason=invalid-ingress-plan flags=0x{:02x}",
                     i,
                     b_id,
                     transit_mode_label(*s_tmode.get(i)),
                     detach_lane_id,
                     detach_lane_d,
-                    legal_detach,
-                    exact_path.is_some(),
                     ingress_origin.x,
                     ingress_origin.y,
                     *s_access_flags.get(i),
@@ -308,6 +391,35 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
             *s_path_idx.get_mut(i) = 0;
             *s_next_replan_time.get_mut(i) = sim_time + NETWORK_REPLAN_DELAY_S;
             *s_transit.get_mut(i) = TRANSIT_NETWORK;
+        }    }
+}
+
+/// Stands freight carrier `i` at the kerb stop of building `b_id`, which its access path has
+/// reached (`PARK-36`), out of the driving lane and drawn: one with a yard trip waits there,
+/// `ready`, for a dock in the order its gate stamped; any other delivers or loads there at its
+/// shipment's next check, its stand timed from now. O(1).
+///
+/// Safety: `i` must be unique to the current worker for every raw slice in `slices`.
+unsafe fn stand_at_kerb(
+    i: usize,
+    b_id: usize,
+    sim_time: f32,
+    allocator: &BuildingAllocator,
+    slices: &MovementSlices,
+) {
+    unsafe {
+        let trip = slices.parking_trip.get_mut(i);
+        if trip.freight_gate {
+            trip.phase = ParkingTripPhase::AtKerb;
+            trip.ready = true;
+        } else {
+            *trip = ParkingTrip {
+                phase: ParkingTripPhase::AtKerb,
+                target: allocator.building_handles.handle(b_id).to_bits(),
+                ..ParkingTrip::default()
+            };
+            *slices.jstart.get_mut(i) = sim_time;
         }
+        *slices.speed.get_mut(i) = 0.0;
     }
 }
