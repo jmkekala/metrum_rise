@@ -348,6 +348,7 @@ impl SimCore {
             );
             self.schedule_parking_retries();
             self.agents.remove_completed_parking_deliveries();
+            self.settle_parked_arrivals();
             self.schedule_stored_parking_arrivals();
         });
         self.last_agent_tick_us = t_agent.elapsed().as_micros() as u64;

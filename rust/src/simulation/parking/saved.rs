@@ -585,7 +585,17 @@ impl ParkingSystem {
                 .vehicle_handles
                 .resolve(trip.vehicle)
                 .ok_or("trip car is stale")?;
-            if self.vehicles.borrower[v] != agents.handles.handle(i) {
+            let borrower = self.vehicles.borrower[v];
+            // A member who stepped out of its household's car beside the driver walks to the
+            // door holding no custody (`PARK-35`): the car is the driver's, or nobody's once the
+            // driver got in.
+            let passenger = trip.phase == ParkingTripPhase::WalkToDoor
+                && agents.household_id[i] != usize::MAX
+                && (borrower.is_none()
+                    || agents
+                        .resolve_agent(borrower)
+                        .is_some_and(|b| agents.household_id[b] == agents.household_id[i]));
+            if borrower != agents.handles.handle(i) && !passenger {
                 return Err("trip has no exclusive custody".into());
             }
         }

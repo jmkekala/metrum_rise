@@ -162,11 +162,7 @@ impl AgentSystem {
         household_id: usize,
         age_group: u8,
     ) {
-        self.set_household_membership(agent_idx, household_id);
-        self.agents.age_group[agent_idx] = age_group;
-        self.agents.pending_household_size[agent_idx] = 0;
-        self.agents.pending_household_adults[agent_idx] = 0;
-        self.agents.pending_household_elders[agent_idx] = 0;
+        self.adopt_household_carrier(agent_idx, household_id, age_group);
         if self.release_departure(agent_idx) {
             // Held at the border it is in no lane bucket, and its trip was never planned.
             self.agents.target_building[agent_idx] = usize::MAX;
@@ -176,6 +172,23 @@ impl AgentSystem {
             self.agents.transit[agent_idx] = TRANSIT_IN_BUILDING;
             self.agents.current_building[agent_idx] = usize::MAX;
         }
+    }
+
+    /// Makes border household carrier `agent_idx` the first member of its new household
+    /// `household_id` where it is, its trip untouched: it carries no household any more. The
+    /// family arrival makes it so as its car parks, on its walk to the door (`PARK-35`). O(1)
+    /// plus the household's member list.
+    pub(crate) fn adopt_household_carrier(
+        &mut self,
+        agent_idx: usize,
+        household_id: usize,
+        age_group: u8,
+    ) {
+        self.set_household_membership(agent_idx, household_id);
+        self.agents.age_group[agent_idx] = age_group;
+        self.agents.pending_household_size[agent_idx] = 0;
+        self.agents.pending_household_adults[agent_idx] = 0;
+        self.agents.pending_household_elders[agent_idx] = 0;
         self.clear_schedule_building_cache(agent_idx);
     }
 

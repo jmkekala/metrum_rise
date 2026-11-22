@@ -217,6 +217,43 @@ impl AgentSystem {
         self.completed_parking_deliveries = completed;
     }
 
+    /// Spawns a resident of `home` standing at `pos` beside the car `walker` just left, on
+    /// `walker`'s walk to the door: the same leg plan and parking-trip endpoints, so the existing
+    /// access-egress walker moves it, with no custody of the car (`PARK-35`). Walkers never wait
+    /// for each other. `walker` must have just started its leg (it stands at the leg's origin).
+    /// O(route length) for the copied plan, at the arrival event only.
+    pub(crate) fn spawn_member_beside_car(
+        &mut self,
+        walker: usize,
+        home: usize,
+        pos: Vector2,
+        age_group: u8,
+    ) -> usize {
+        let i = self.spawn_housed_agent_with_age_group(home, pos.x, pos.y, age_group);
+        let trip = self.agents.parking_trip[walker];
+        let a = &mut self.agents;
+        // The leg as `apply_parking_leg` wrote it for the walker.
+        macro_rules! copy {
+            ($($field:ident),* $(,)?) => { $( a.$field[i] = a.$field[walker]; )* };
+        }
+        copy!(
+            transit, transit_mode, target_building, current_building, activity, planned_activity,
+            planned_target_building, planned_attach_node, planned_detach_node, planned_attach_lane_id,
+            planned_detach_lane_id, planned_attach_lane_d, planned_detach_lane_d, access_flags,
+            current_node, current_edge, current_lane_id, lane_distance, speed, current_path_index,
+            next_replan_time, journey_start_time,
+        );
+        a.current_path[i] = a.current_path[walker].clone();
+        a.parking_trip[i] = ParkingTrip {
+            vehicle: trip.vehicle,
+            destination: trip.destination,
+            target: trip.target,
+            phase: ParkingTripPhase::WalkToDoor,
+            ..Default::default()
+        };
+        i
+    }
+
     /// Puts an arrival carrier inside its home at once, as if it had driven there: it leaves the
     /// lane buckets while its lane state still names its entries, enters its home and has its
     /// held departure released, so it then materializes as on an ordinary arrival. Only the

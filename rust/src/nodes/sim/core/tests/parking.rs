@@ -9,6 +9,7 @@ use std::time::Instant;
 
 mod catchments;
 mod docks;
+mod family;
 mod drive_lines;
 mod gate_turn;
 mod kerb;

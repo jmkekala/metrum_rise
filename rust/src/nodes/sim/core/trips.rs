@@ -219,6 +219,36 @@ impl SimCore {
         self.agents.held_arrivals = arrivals;
     }
 
+    /// The family of each arrival carrier whose car the agent tick just parked steps out beside
+    /// it (`PARK-35`), in park order: right after the tick, in the same frame, so the list is
+    /// never saved. The points come from the parked place's pose and the simulated car's doors
+    /// with the drive-side setting ([`crate::config::LEFT_HAND_DRIVE`]). O(parked arrivals ×
+    /// household size × route length).
+    pub(super) fn settle_parked_arrivals(&mut self) {
+        let mut parked = std::mem::take(&mut self.agents.parked_arrivals);
+        for carrier in parked.drain(..) {
+            let Some(agent_idx) = self.agents.resolve_agent(carrier) else {
+                continue;
+            };
+            let trip = self.agents.agents.parking_trip[agent_idx];
+            if trip.phase != crate::simulation::parking::ParkingTripPhase::WalkToDoor {
+                continue;
+            }
+            let parking = &self.parking;
+            self.households.materialize_parked_carrier(
+                agent_idx,
+                &mut self.agents,
+                &self.allocator,
+                |member| {
+                    parking
+                        .car_exit_point(trip.destination, member, crate::config::LEFT_HAND_DRIVE)
+                        .map(|[x, z]| godot::prelude::Vector2::new(x, z))
+                },
+            );
+        }
+        self.agents.parked_arrivals = parked;
+    }
+
     /// Schedules `trip` at `slot`, or the wheel's next slot if that is later, moved out of a
     /// queue-free slot (`event_slot`, `SIM-02-K`). O(log S).
     pub(super) fn schedule_trip(&mut self, slot: u64, trip: TripEvent) {

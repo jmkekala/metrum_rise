@@ -6,6 +6,7 @@
 mod candidates;
 mod data;
 mod docks;
+pub(crate) mod doors;
 mod edits;
 mod geometry;
 pub(crate) mod kerb;

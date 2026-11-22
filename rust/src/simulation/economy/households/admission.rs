@@ -200,18 +200,7 @@ impl HouseholdSystem {
         {
             return false;
         }
-        let catalog = load_runtime_economy_catalog().unwrap_or_else(|err| {
-            panic!("could not load built-in economy catalog during carrier arrival: {err}")
-        });
-        let tuning = load_runtime_economy_tuning().unwrap_or_else(|err| {
-            panic!("could not load built-in economy tuning during carrier arrival: {err}")
-        });
-        let composition = agents.pending_household_composition(agent_idx);
-        let household_id =
-            self.admit_immigrant_household(&catalog, &tuning, home, pending_size, composition);
-        // The family is a resident now: leaving the pending count at once, not at the next
-        // hourly recount, keeps its adults and transfer claims from counting twice (`ECON-28`).
-        self.record_materialized_arrival(composition);
+        let (catalog, household_id, composition) = self.admit_carried_household(agent_idx, agents, home);
         let home_door = allocator
             .entrances
             .get(home)
@@ -241,6 +230,87 @@ impl HouseholdSystem {
         true
     }
 
+    // Creates the household arrival carrier `agent_idx` carries to `home` (`usize::MAX` for
+    // none) and takes it off the pending count. Returns the catalog its recount reads, the
+    // household and its composition. O(1).
+    fn admit_carried_household(
+        &mut self,
+        agent_idx: usize,
+        agents: &AgentSystem,
+        home: usize,
+    ) -> (std::sync::Arc<RuntimeEconomyCatalog>, usize, HouseholdAgeComposition) {
+        let catalog = load_runtime_economy_catalog().unwrap_or_else(|err| {
+            panic!("could not load built-in economy catalog during carrier arrival: {err}")
+        });
+        let tuning = load_runtime_economy_tuning().unwrap_or_else(|err| {
+            panic!("could not load built-in economy tuning during carrier arrival: {err}")
+        });
+        let composition = agents.pending_household_composition(agent_idx);
+        let size = agents.pending_household_size[agent_idx];
+        let household_id =
+            self.admit_immigrant_household(&catalog, &tuning, home, size, composition);
+        // The family is a resident now: leaving the pending count at once, not at the next
+        // hourly recount, keeps its adults and transfer claims from counting twice (`ECON-28`).
+        self.record_materialized_arrival(composition);
+        (catalog, household_id, composition)
+    }
+
+    /// The family steps out of its parked car (`PARK-35`): arrival carrier `agent_idx`, which
+    /// has just left the car on its walk to the door, becomes its household's first member where
+    /// `exit_point(0)` puts it, and each other member `m` appears at `exit_point(m)` on the same
+    /// walk ([`AgentSystem::spawn_member_beside_car`]); a member without a point (no door data)
+    /// is created in the home as on a walk-in arrival. The household forms here, once: its
+    /// carrier carries nothing after, so the arrival check finds nothing to do. The caller
+    /// gives the points from the stopped vehicle's pose and doors
+    /// (`ParkingSystem::car_exit_point`). False, with nothing changed, unless it carries a
+    /// household to a home that stands. O(household size × route length), at the park event.
+    pub(crate) fn materialize_parked_carrier(
+        &mut self,
+        agent_idx: usize,
+        agents: &mut AgentSystem,
+        allocator: &BuildingAllocator,
+        exit_point: impl Fn(usize) -> Option<godot::prelude::Vector2>,
+    ) -> bool {
+        let pending_size = agents.pending_household_size[agent_idx];
+        let home = agents.home_building[agent_idx];
+        if pending_size == 0 || home >= allocator.buildings.len() {
+            return false;
+        }
+        let (catalog, household_id, composition) = self.admit_carried_household(agent_idx, agents, home);
+        agents.adopt_household_carrier(agent_idx, household_id, composition.member_age_group(0));
+        if let Some(point) = exit_point(0) {
+            agents.pos_x[agent_idx] = point.x;
+            agents.pos_y[agent_idx] = point.y;
+        }
+        let home_door = allocator.entrances.get(home).map(|entrance| entrance.door_pos);
+        for member_index in 1..pending_size {
+            let age_group = composition.member_age_group(member_index);
+            let resident = match exit_point(usize::from(member_index)) {
+                Some(point) => agents.spawn_member_beside_car(agent_idx, home, point, age_group),
+                None => {
+                    let door = home_door.unwrap_or(godot::prelude::Vector2::new(
+                        agents.pos_x[agent_idx],
+                        agents.pos_y[agent_idx],
+                    ));
+                    agents.spawn_housed_agent_with_age_group(home, door.x, door.y, age_group)
+                }
+            };
+            agents.assign_household_id(resident, household_id);
+        }
+        self.recount_household(household_id, agents, allocator, &catalog);
+        for category in [crate::debug::Channel::Economy, crate::debug::Channel::Spawn] {
+            debug_log!(
+                category,
+                "household stepped out of its car household_id={} size={} home_building={} carrier_agent={}",
+                household_id,
+                pending_size,
+                home,
+                agent_idx,
+            );
+        }
+        true
+    }
+
     /// Makes arrival carrier `agent_idx`, whose home goes before it arrives (a road, the player
     /// or redevelopment demolishes it; `ECON-29`), the household it carries, unhoused: the
     /// household an arrival creates at its home ([`Self::admit_immigrant_household`], its
@@ -260,21 +330,8 @@ impl HouseholdSystem {
     ) -> usize {
         let pending_size = agents.pending_household_size[agent_idx];
         debug_assert!(pending_size > 0 && agents.household_id[agent_idx] == usize::MAX);
-        let catalog = load_runtime_economy_catalog().unwrap_or_else(|err| {
-            panic!("could not load built-in economy catalog for an unhoused arrival: {err}")
-        });
-        let tuning = load_runtime_economy_tuning().unwrap_or_else(|err| {
-            panic!("could not load built-in economy tuning for an unhoused arrival: {err}")
-        });
-        let composition = agents.pending_household_composition(agent_idx);
-        let household_id = self.admit_immigrant_household(
-            &catalog,
-            &tuning,
-            usize::MAX,
-            pending_size,
-            composition,
-        );
-        self.record_materialized_arrival(composition);
+        let (catalog, household_id, composition) =
+            self.admit_carried_household(agent_idx, agents, usize::MAX);
         agents.unhouse_household_carrier(agent_idx, household_id, composition.member_age_group(0));
         let (x, y) = (agents.pos_x[agent_idx], agents.pos_y[agent_idx]);
         for member_index in 1..pending_size {

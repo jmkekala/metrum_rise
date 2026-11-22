@@ -189,7 +189,14 @@ impl AgentSystem {
             && self.agents.transit[i] == TRANSIT_IN_BUILDING
         {
             self.finish_parking_custody_at_home(i, parking, allocator);
-            parking.clear_retired_places(trip.vehicle);
+            // A member who stepped out beside the driver (`PARK-35`) leaves the car's retired
+            // places to the driver, who may still be walking from one.
+            if parking
+                .borrowed_by(trip.vehicle)
+                .is_none_or(|borrower| borrower == self.handles.handle(i))
+            {
+                parking.clear_retired_places(trip.vehicle);
+            }
             self.agents.parking_trip[i] = ParkingTrip {
                 vehicle: trip.vehicle,
                 arrival_ownership: trip.arrival_ownership,
@@ -265,6 +272,10 @@ impl AgentSystem {
         self.agents.parking_trip[i].phase = next;
         self.agents.parking_trip[i].ready = false;
         self.apply_parking_leg(i, plan, &leg.origin);
+        // A moving-in household's car is parked: its family steps out after the tick (`PARK-35`).
+        if next == ParkingTripPhase::WalkToDoor && self.agents.pending_household_size[i] > 0 {
+            self.parked_arrivals.push(self.handles.handle(i));
+        }
     }
 
     // Whether agent `i`, with no itinerary, is due to leave its building. O(1).

@@ -36,6 +36,10 @@ pub const Z_FIGHT_BIAS: f32 = 0.001;
 pub const DEFAULT_ZONING_DEPTH: usize = 12;
 /// Whether traffic drives on the left side of the road (`true` = UK/Japan style, `false` = continental/US style).
 pub const DRIVE_ON_LEFT: bool = false;
+/// Whether cars are left-hand drive: the driver sits on the left and steps out of the left front
+/// door (`PARK-35`). The game setting for which door a moving-in household's driver uses; the
+/// other members take the remaining doors from it (`simulation::parking::doors`).
+pub const LEFT_HAND_DRIVE: bool = true;
 
 /// Maximum distance (metres) from the map edge within which a road endpoint is offered as
 /// a candidate for an external border connection.

@@ -224,3 +224,27 @@ pub(in crate::simulation::economy::agents::tick) fn advance_along_local_access_p
         }
     }
 }
+
+/// [`advance_along_local_access_path`] for a walker that may stand off its polyline, beside the
+/// car it has just left (`PARK-35`): off it, the walker heads straight for the polyline's second
+/// point (the first past the place it left) and follows the rest from there, where the plain
+/// advance would put it at the end at once. On the polyline it is the plain advance. O(points).
+pub(in crate::simulation::economy::agents::tick) fn step_out_along_local_access_path(
+    current: Vector2,
+    points: &[Vector2],
+    step: f32,
+) -> (Vector2, bool) {
+    let count = points.len();
+    if count < 2
+        || local_access_target_segment(current, points).is_some()
+        || segment_distance(current, points[count - 1]) <= 0.05
+    {
+        return advance_along_local_access_path(current, points, step);
+    }
+    let target = points[1];
+    let dist = segment_distance(current, target);
+    if step < dist && dist > 1e-6 {
+        return (current + (target - current).normalized() * step.max(0.0), false);
+    }
+    (target, count == 2)
+}

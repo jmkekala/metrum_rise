@@ -6,7 +6,7 @@ use super::super::super::super::{ACCESS_PLAN_VALID, MODE_CAR};
 use super::super::super::access::{
     LocalAccessPath, ManeuverPath, advance_along_local_access_path, local_access_path,
     local_access_should_log_step, local_access_side_label, local_access_target_segment,
-    planned_attach_is_legal,
+    planned_attach_is_legal, step_out_along_local_access_path,
 };
 use super::super::super::claims::LaneClaimContext;
 use super::super::super::lane_nav::lane_origin_node;
@@ -142,7 +142,14 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
             } else {
                 AGENT_WALK_SPEED_MS
             } * delta;
-            let (next_pos, reached_handoff) = advance_along_local_access_path(current, path, step);
+            // A walker from a car may start at its door, off the polyline (`PARK-35`).
+            let (next_pos, reached_handoff) = if trip.phase == ParkingTripPhase::WalkToDoor
+                && *s_tmode.get(i) != MODE_CAR
+            {
+                step_out_along_local_access_path(current, path, step)
+            } else {
+                advance_along_local_access_path(current, path, step)
+            };
             *s_pos_x.get_mut(i) = next_pos.x;
             *s_pos_y.get_mut(i) = next_pos.y;
             if crate::debug::Channel::Traffic.enabled()

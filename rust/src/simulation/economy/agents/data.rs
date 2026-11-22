@@ -284,6 +284,10 @@ pub struct AgentSystem {
     pub(crate) parking_retries: Vec<(AgentHandle, u16)>,
     /// Completed delivery-only carriers, consumed after movement through normal swap removal.
     pub(crate) completed_parking_deliveries: Vec<AgentHandle>,
+    /// Arrival carriers whose car the ordered parking phase parked this tick, in commit order;
+    /// SimCore drains it after movement in the same frame, so it is empty between frames and
+    /// never saved: the household steps out of the car there (`PARK-35`).
+    pub(crate) parked_arrivals: Vec<AgentHandle>,
     /// The ordered parking phase's candidate lists (`tick/parking/candidates.rs`).
     pub(crate) parking_work: super::tick::ParkingWork,
     /// The wait-for cycle check's state between checks (`TRAFFIC-14`): per-lane stamps sized
@@ -354,6 +358,7 @@ impl AgentSystem {
             movement_serial_query: TripQueryScratch::default(),
             parking_retries: Vec::new(),
             completed_parking_deliveries: Vec::new(),
+            parked_arrivals: Vec::new(),
             parking_work: Default::default(),
             gridlock: GridlockChecker::default(),
         }

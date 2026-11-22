@@ -18,7 +18,7 @@ pub(crate) use path::{
 };
 pub(super) use path::{
     advance_along_local_access_path, local_access_should_log_step,
-
+    step_out_along_local_access_path,
 };
 pub(super) use timing::{
     direct_frontage_segment_time_s, frontage_time_s, local_access_distance, local_access_time_s,
