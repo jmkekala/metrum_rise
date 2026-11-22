@@ -125,7 +125,10 @@ fn a_carless_household_of_six_steps_out_at_a_free_place_and_the_car_leaves_the_m
         .map(|&i| (c.agents.pos_x[i], c.agents.pos_y[i]))
         .collect();
     for (k, &(x, z)) in at.iter().enumerate() {
-        assert!((x - dx).hypot(z - dz) > 0.4, "member {k} at the driver's door");
+        assert!(
+            (x - dx).hypot(z - dz) > 0.4,
+            "member {k} at the driver's door"
+        );
         for &(ox, oz) in &at[k + 1..] {
             assert!((x - ox).hypot(z - oz) >= 0.5, "two members on one spot");
         }
@@ -330,7 +333,17 @@ fn a_save_on_the_way_in_and_one_on_the_way_back_continue_as_the_unsaved_run() {
 }
 
 #[test]
-fn a_format_126_save_with_a_carrier_walking_in_loads_and_the_household_forms_at_home() {
+fn older_saves_with_a_carrier_walking_in_load_and_the_household_forms_at_home() {
+    use crate::simulation::save::schema::{PRE_DROP_OFF_SAVE_VERSION, PRE_FIXED_LOOK_SAVE_VERSION};
+    // Format 127 (`VEG-29`, before the drop-off) and format 126 (before both).
+    for version in [PRE_DROP_OFF_SAVE_VERSION, PRE_FIXED_LOOK_SAVE_VERSION] {
+        border_walker_loads_from(version);
+    }
+}
+
+// A carrier walking in from the border, saved as format `version`, loads, walks on and forms its
+// household inside the home.
+fn border_walker_loads_from(version: i64) {
     let (mut c, border) = road_and_home();
     let pos = c.region_graph.node(border).pos;
     let i = c
@@ -355,16 +368,13 @@ fn a_format_126_save_with_a_carrier_walking_in_loads_and_the_household_forms_at_
     for _ in 0..30 {
         c.step_frame(FRAME_S);
     }
-    let path = temp_save_path("drop-off-format-126-walker");
+    let path = temp_save_path(&format!("drop-off-format-{version}-walker"));
     c.save_game_settled_at(path.to_str().unwrap(), None, 0)
         .unwrap();
     {
         let conn = rusqlite::Connection::open(&path).unwrap();
-        conn.execute(
-            "UPDATE save_meta SET version = ?1",
-            [crate::simulation::save::schema::PRE_DROP_OFF_SAVE_VERSION],
-        )
-        .unwrap();
+        conn.execute("UPDATE save_meta SET version = ?1", [version])
+            .unwrap();
     }
     c.load_game_internal(path.to_str().unwrap()).unwrap();
     std::fs::remove_file(path).unwrap();
@@ -373,10 +383,13 @@ fn a_format_126_save_with_a_carrier_walking_in_loads_and_the_household_forms_at_
     assert_eq!(
         c.agents.transit_mode[i],
         crate::simulation::economy::agents::MODE_WALK,
-        "still walking in"
+        "format {version}: still walking in"
     );
     step_until(&mut c, 200_000, |c| home_household(c).is_some());
     let members = family(&c, home_household(&c).unwrap());
     assert_eq!(members.len(), 3);
-    assert!(all_home(&c, &members), "formed inside the home");
+    assert!(
+        all_home(&c, &members),
+        "format {version}: formed inside the home"
+    );
 }

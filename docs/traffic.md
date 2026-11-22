@@ -3269,10 +3269,11 @@ the ordinary class and looks (its look is the agent's own render id, not the hou
   the kerb; cut off from its stop, it plans again every 30 s (it has no bay to park in and no home
   to turn to, so the `TRAFFIC-34` rules do not apply). On the way back the export carrier rules
   apply.
-- **Save.** Format 127 writes the flag (only when set); format 126 loads as 127 does. A save taken
-  with a carrier walking in from the border under the old rule keeps walking, and its household
-  forms inside the home at the arrival check, the code kept for it
-  (`a_format_126_save_with_a_carrier_walking_in_loads_and_the_household_forms_at_home`).
+- **Save.** Format 128 writes the flag (only when set); formats 127 (`VEG-29`) and 126 load as
+  128 does. A save taken with a carrier walking in from the border under the old rule keeps
+  walking, and its household forms inside the home at the arrival check, the code kept for it
+  (`older_saves_with_a_carrier_walking_in_load_and_the_household_forms_at_home`, formats 126 and
+  127).
 - **Cost.** At the departure O(k + 2Q) (drop-off) or O(local places + 8 × 2Q) (wider search); at
   the stop O(household size × route length + B × Q); per tick nothing new beyond one flag test in
   the access steps and the candidate checks, no allocation.
