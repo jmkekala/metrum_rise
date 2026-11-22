@@ -515,7 +515,8 @@ position convention and the hot-path cost are in [car following](traffic.md#car-
   freight carrier, so both are `truck`. Van 6.0 m and bus 12.0 m wait for a simulated vehicle.
 - The lot proof table reads the same two lengths; the proofs are unchanged.
 - Walkers queue single file 0.6 m apart (0.5 m, a standing person's body depth, plus the
-  standstill gap), where they kept the cars' 2.7 m.
+  standstill gap), where they kept the cars' 2.7 m. Since `TRAFFIC-40` only behind a walker
+  standing still; moving walkers pass ([walkers](traffic.md#walker-pace-passing-and-queueing-traffic-40)).
 - Standstill gap, headway and acceleration are not retuned.
 - The populated-city fixture revision is `perf-fixture-revision-v12` (v11 for the lengths, v12
   for the border trunks below): every cached city is built again by the engine under test.

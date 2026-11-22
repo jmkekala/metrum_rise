@@ -35,7 +35,7 @@ Detailed vehicle movement behavior, including junction turn caps and lane change
 
 | Mode | Speed | Status | Notes |
 |------|-------|--------|-------|
-| Walking | `4.0 m/s` (`14.4 km/h`) | Implemented | Used by pedestrian agents on the network. |
+| Walking | `4.0 m/s` (`14.4 km/h`) on the network, `1.4 m/s` (`5 km/h`) on access paths and for planning; each walker `±18 %` | Implemented | Mean of the pedestrian agents' own paces (`TRAFFIC-40`); the network speed is an owner decision (`TRAFFIC-41`). See [walkers](traffic.md#walker-pace-passing-and-queueing-traffic-40). |
 | Driving (car) | `13.89 m/s` (`50 km/h`) | Implemented | Default free-flow speed for the current urban road presets. |
 | Junction car turn | `6.0 m/s` (`21.6 km/h`) | Implemented | Cap while traversing junction connector lanes. |
 | Bicycle | `5.5 m/s` (`20 km/h`) | Planned | First post-car transport mode; see `MOB-01` in [`roadmap.md`](roadmap.md). |

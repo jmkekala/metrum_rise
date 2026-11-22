@@ -233,11 +233,11 @@ Every spacing is pairwise, the centre distance against both half lengths:
 | Attach and entry slot (`lane_attach_slot_clear`, `lane_entry_slot_clear`): lane and connector entry, driveway and kerb attach, a connector head's exit, the gridlock check's waits | both halves + `IDM_S_MIN` |
 | Lane-change gap (`lane_change_gap_clear`) | both halves + `IDM_S_MIN` + speed x `IDM_T_HEAD` |
 | Ring entry, arriving head (`ring_entry_blocker`) | the head's distance to its lane end is at most both halves + `IDM_S_MIN` + 20 km/h x `IDM_T_HEAD` |
-| Overlap correction at the end of the tick | both halves + `IDM_S_MIN` (the rear body moves back) |
+| Overlap correction at the end of the tick | both halves + `IDM_S_MIN` (the rear body moves back); two walkers only behind one standing or held in its queue ([walkers](#walker-pace-passing-and-queueing-traffic-40)) |
 | Overtaking pressure (`overtake_follow_gap`) | the bumper gap is under the car's own length + `IDM_S_MIN` + speed x `IDM_T_HEAD` + 8 m |
 
 So a jammed car queue packs one car per 4.6 m, a truck takes 8.1 m, a car behind a truck stands
-6.35 m from it, and walkers queue single file 0.6 m apart. The entering body is the one asking:
+6.35 m from it, and walkers queue single file 0.6 m apart behind one standing still. The entering body is the one asking:
 a truck needs 4.0 + 2.25 + 0.1 m of free lane ahead of the entry point to enter behind a car.
 Hot-path cost: none in memory (the entry size is unchanged, no new agent column) and one byte
 read per car in the speed pass (`vehicle_type`, at the pass's own index); the fill reads
@@ -270,6 +270,62 @@ agent in the existing pass, one branch.
 If a car is approaching a blocked connector or a required lane change whose target gap is blocked,
 the speed pass computes a braking speed for the remaining distance. This makes the car slow before
 the conflict instead of teleporting or stopping only at the exact handoff point.
+
+### Walker pace, passing and queueing (`TRAFFIC-40`)
+
+**As built (Veeti Reis's branch, ported onto `dev` 2026-11-22).** Code:
+`simulation/economy/agents/walker_gait.rs` (the pace), `walker_crowd.rs` (passing),
+`tick/movement/network.rs` (`walker_network_speed`), the overlap correction in
+`tick/lane_buckets/occupancy.rs`.
+
+- **Pace.** Each walker walks at its own pace, `1 ± 0.18` of the shared speed (`PACE_SPREAD`),
+  the sum of two uniform draws from its saved `schedule_seed`, so most keep near the mean: on a
+  foot lane or crossing `AGENT_SIDEWALK_SPEED_MS` (4 m/s, as before) times the pace, 3.3 to
+  4.7 m/s; on a building's access path, the walk to a sidewalk and the walk from a car to the
+  doors (`PARK-35`) `AGENT_WALK_SPEED_MS` (1.4 m/s) times the pace. Trips, the parking choice and
+  the walk-limit quotes are still planned at 1.4 m/s, the mean. No agent column and no save
+  change: the pace is a pure function of a saved seed.
+- **The network speed is an owner decision (`TRAFFIC-41`).** The branch also lowered the network
+  speed to the 1.4 m/s planning speed, so the walk cycle reads as walking. That lengthened every
+  network walk about 2.9 times and failed the gate: the growth scenarios' households ran out of
+  food (85 and 435 empty household days where the tests allow none), and both pass with the same
+  code at 4 m/s. The port keeps 4 m/s; the envelope of the 1.4 m/s build is recorded under
+  `TRAFFIC-41` in the roadmap.
+- **Passing.** A walker with a slower walker less than 3 m ahead on its foot lane overtakes it
+  when the walkway beside it is clear: no walker on the opposing foot lane of the same walkway
+  (`LaneSystem::opposing_foot_lane`, the other direction's lane of the same `lane_idx`) from 1 m
+  behind the overtaker to 4 m ahead of the one overtaken, and no second walker within 0.8 m of the
+  slower one (two abreast fill the walkway). Otherwise it follows at the slower walker's pace. The
+  rule reads only the tick's lane buckets and the seeds, never another walker's live state, so it
+  is the same under any worker count.
+- **Queueing.** Moving walkers pass through each other's lane distance. The overlap correction
+  spaces two walkers (both half lengths and `IDM_S_MIN`, 0.6 m) only when the one ahead stands
+  (speed under `WALKER_STANDING_MS`, 0.05 m/s) or was itself moved back by the same pass: a held
+  walker's speed is still the step it took before the hold, so without the second condition only
+  the first walker of a queue was held and the rest walked into the standing one's body
+  (`walkers_queue_behind_one_standing_and_walk_through_moving_ones`). A walker's `speed` column
+  holds the speed it walked this tick, 0 until it steps, so a walker held anywhere (a lane end, an
+  entry slot) is standing to the walkers behind it.
+- **Claims.** A walker's claim reach this tick is its pace speed, an upper bound of its step.
+- **Cost.** Per walker on a foot lane and tick: one binary search in its bucket; with a slower
+  walker within 3 m ahead, the opposing lane's lookup (a hash lookup and a scan of the edge's
+  lanes) and one more binary search. The fill reads one more column per bucket pair. No
+  allocation, no new spatial structure, the movement pass's existing Rayon split. Not timed at
+  the port: the agent tick's movement and fill rows are timed at the landing.
+- **Proof (2026-11-22, release test binary of the port).** `tools/sim02_gate.py envelope
+  determinism`: PASS, determinism identical (repeat, 1 and 3 threads, reload). Against `dev`'s
+  records the four envelope runs differ from day 4, as each walker's own pace moves arrival,
+  shopping and work times: no household or home lost (households plus vacant homes equal in every
+  run), no reference violation, nobody unhoused, no trip failure; 30k baseline out-of-stock rate
+  0.0782 to 0.0790, net income per resident and day 11.62 to 11.62 (rebased on `PARK-34`'s
+  records); 10k baseline one bankruptcy
+  in 14 days where `dev` has none, employment 0.684 to 0.682; one note, the fiscal-stress 10k
+  final employment (0.0191, band to 0.0188), a metric `dev`'s own run notes too. The
+  `TRAFFIC-38` flow check (15 fresh days, days 7-18, before the rebase): walked trips mean 329 to 335 s at 30k and
+  245 to 237 s at 10k, medians unchanged, no walker standing an hour, walkers en route 4,215 to
+  4,234 and 1,235 to 1,283. Unit tests: `walker_crowd` and `walker_gait` (passing, following,
+  sides, smoothness, pace range), `tests/walker_crowds.rs` (a sidewalk pass, a held pass while
+  someone comes the other way), `walkers_queue_behind_one_standing_and_walk_through_moving_ones`.
 
 ## Road Speeds
 
@@ -4562,6 +4618,43 @@ and the headless and windowed vehicle grounding test were rerun on it.
 
 Vehicle models, their night lamps and headlights (`RENDER-26`) are specified in
 [`vehicles.md`](vehicles.md#vehicle-models-and-lamps-render-26).
+
+### Walker drawing (`RENDER-71`)
+
+**As built (Veeti Reis's branch, ported onto `dev` 2026-11-22).** Presentation only: the
+snapshot (`nodes/sim/core/snapshot/agents.rs`, `walker_side_pose`) computes everything from the
+walkers' lane state, speeds and saved seeds, stores nothing, and the simulation never reads it.
+
+- **Side of the walkway.** A walker on a foot lane is drawn beside the lane's centre line: on an
+  empty walkway at its own side, `±0.5 m` from its seed (`walker_side_offset_m`). It keeps
+  `0.42 m` to the traffic side (the right where traffic drives on the right) for a walker coming
+  the other way on the opposing foot lane, from 10 m out (fully by 4 m), holds it until 1 m past
+  and drifts back over 6 m. Of two walkers on the same lane within 5 m (fully by 1.5 m), the
+  faster takes the other side and the slower keeps its side, equal paces split by agent index.
+  Up to three neighbours each way are read (`walker_crowd::walker_lateral_m`). Within 3 m of its
+  door's attach or detach point a walker eases to the centre line its access path meets.
+- **Turning.** A walker faster than 0.2 m/s faces where its side takes it half a second on, with
+  everyone at their last speed, turned at most 20 degrees from the lane, so it steps aside
+  instead of sliding.
+- **Size, stride, beat.** Each walker is drawn at `1 ± 0.05` of the model's size (most within
+  2.5 %, the sum of two uniform draws; `walker_gait::walker_size`), its walk cycle advanced per
+  metre over its size so a taller walker takes fewer steps, and offset by a per-walker beat so
+  walkers set off together do not step in time.
+- **Clothes and hair.** The instance custom data's `.y` carries a look in `[0, 1)` from the seed
+  (`.x` the walk phase, `.z` and `.w` spare; rows stay 16 floats). `pedestrian_walk.gdshader`
+  recolours the palette texels `agents.gd` names per model (`garment_slots`): top from 14
+  colours, trousers from 6 (the male model; the female model's top is a dress), hair from 6, each
+  picked by one digit of the look; skin and shoes keep the model's. The shader also blends the
+  two baked animation frames either side of the phase. The lit material keeps the cloud shadow
+  (`standard_light.gdshaderinc`).
+- **What it does not do.** Every walker, child or adult, is the same 1.8 m adult model; nothing
+  reads `age_group` when drawing. The palettes are shader constants, not pack data. On a crossing
+  (a junction's foot connector) walkers coming the other way do not make room: a connector has
+  no opposing lane, so only the walkers on the same connector are read.
+- **Cost.** Per drawn walker on a foot lane: two evaluations of its side (now and half a second
+  on) when it moves, one when it stands; each is the opposing lane's lookup (a hash lookup and a
+  scan of the edge's lanes), three binary searches and at most nine neighbours. A walker's cull
+  box widens by `0.5 m`. No allocation, no new storage, rows unchanged in size.
 
 ## Debugging
 
