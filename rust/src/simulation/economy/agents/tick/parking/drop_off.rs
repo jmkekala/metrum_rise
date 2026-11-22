@@ -123,7 +123,12 @@ impl AgentSystem {
                 .min_by(|&a, &b| order(distance(a), distance(b)))
         };
         let mut last = None;
-        let mut next = (came_from != u32::MAX).then_some(came_from);
+        // The border it came from while it is still a connected border (any node in a city
+        // with none listed, a test road's end).
+        let mut next = (came_from != u32::MAX
+            && (borders.is_empty() || borders.contains(&came_from)))
+        .then_some(came_from)
+        .or_else(|| after(None).map(|k| borders[k]));
         for _ in 0..=borders.len() {
             let Some(border) = next else {
                 return false;
