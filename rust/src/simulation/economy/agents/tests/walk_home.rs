@@ -1168,8 +1168,10 @@ fn a_moving_in_walker_whose_home_a_road_takes_becomes_an_unhoused_household_and_
     assert_eq!(agents.stranded_report().waiting_for_home, 1);
 
     // Its hourly phase queues its rehousing. The housing queue's own rule (`affordable_home`):
-    // an immigrant's starting budget alone affords no home, so it stays unhoused; once its
-    // reserves afford one (its wages, say) the queue gives it the vacancy.
+    // an immigrant's starting budget alone affords no home (its starting pantry would,
+    // `ECON-31`, so it is eaten here), so it stays unhoused; once its reserves afford one (its
+    // wages, say) the queue gives it the vacancy.
+    households.households[0].stock = 0.0;
     households.queue_every_household_for_test(0, &mut agents, &block.allocator);
     households.serve_housing_requests(8, &mut agents, &mut block.allocator);
     assert_eq!(households.households[0].home_building_id, usize::MAX);

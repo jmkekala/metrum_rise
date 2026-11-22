@@ -111,6 +111,9 @@ fn a_moving_in_driver_whose_home_is_demolished_becomes_an_unhoused_household_and
         c.households.pending_arrivals.households, 0,
         "no longer arriving"
     );
+    // An immigrant's starting pantry alone affords a home (`ECON-31`); with it eaten the
+    // family waits unhoused.
+    c.households.households[0].stock = 0.0;
     // Six game minutes on.
     for _ in 0..3_000 {
         c.step_frame(1.0 / 60.0);
@@ -207,6 +210,11 @@ fn an_unhoused_arrival_household_continues_exactly_across_a_save() {
     }
     assert!(c.bulldoze_building(0));
     assert_eq!(c.households.households.len(), 1);
+    // The family stays unhoused for the run: its starting pantry alone would afford the other
+    // home (`ECON-31`), and the fixture's homes are residential only in memory (a load restores
+    // them as placed), so the running and the loaded game would differ in that home, not in
+    // the family.
+    c.households.households[0].stock = 0.0;
     let path = temp_save_path("econ29_unhoused");
     c.save_game_settled_at(path.to_str().unwrap(), None, 0)
         .unwrap();

@@ -922,7 +922,9 @@ fn eviction_settles_active_shopping_reservations_once() {
         let household = make_household(0, 1, 30.0, 0.0);
         let (mut households, mut allocator, mut agents, network, graph) =
             setup_replenishment_world(household, "eviction_home", "eviction_store", 50.0, 20.0);
-        allocator.buildings[0].level = 2;
+        // The paid basket counts in the reserve (`ECON-31`): about four days, short of level 3's
+        // stay reserve of six.
+        allocator.buildings[0].level = 3;
         allocator.claim_vacancy(0);
         households.run_household_replenishment(&mut agents, &mut allocator, &network, &graph, 0);
         assert_eq!(
