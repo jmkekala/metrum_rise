@@ -3273,6 +3273,22 @@ the ordinary class and looks (its look is the agent's own render id, not the hou
   the stop O(household size × route length + B × Q); per tick nothing new beyond one flag test in
   the access steps and the candidate checks, no allocation.
 
+Records (2026-11-22, branch `arrival-doors`, `$TEST_BINARY` of the branch head, against the
+`PARK-35` head's records): `sim02_gate.py envelope determinism` passes and determinism is equal.
+The test cities have no drop-off at all: their homes are low density (every household owns a car)
+and their catchments have free places, so the per-day counts (`SIM02_WALKS`) read 0 drop-offs, 0
+wider-search arrivals and 0 border walks on every recorded day, also in the `arrivals` workload
+(1,510 arrivals at 30k and 583 at 10k over its days 4 to 8). So the drop-off adds no car trip there.
+Both 10k cities' records are equal to `PARK-35`'s. Both 30k cities' records move from the first
+recorded day: one arrival during the city's build days finds a different way in than its border walk
+(baseline: 31 to 32 arrivals on day 4 and 18 to 17 on day 5, households 15,562 to 15,563 on day 4;
+fiscal stress: one family fewer admitted, 15,555 to 15,554 households). Nothing is lost: households
+plus vacant homes are equal (15,750), no reference violations, no unhoused household at the end. The
+`TRAFFIC-38` flow check (15 fresh days, 8 workers, 32×, days 7 to 18) still flows at both tiers: no
+vehicle stationary a whole day, no wait-for cycle; at 10k equal to `PARK-35`, at 30k within the
+day-to-day spread of the diverged city (trucks stationary 240 min, mean 59 against 49, full lanes 16
+against 16, zero-throughput lane-hours 141 against 133).
+
 Stored cars never become occupied places at supply publication or load. Only new supply wakes
 them: an added or reactivated bay wakes its own chunk, and a catchment rebuild wakes the doors
 whose list of reachable places changed. New lots, vacated bays, cancelled reservations and towing
