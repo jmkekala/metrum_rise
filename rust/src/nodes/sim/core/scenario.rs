@@ -196,6 +196,12 @@ impl GrowthScenario {
         self.core.time.day_index
     }
 
+    /// The town's simulation, for read-only test censuses.
+    #[cfg(test)]
+    pub(crate) fn core(&self) -> &SimCore {
+        &self.core
+    }
+
     /// Runs `days` game days frame by frame and records the city after each calendar close.
     pub fn run_days(&mut self, days: u32) -> Vec<GrowthDayRecord> {
         let mut records = Vec::with_capacity(days as usize);

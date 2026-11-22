@@ -172,3 +172,50 @@ fn one_cell_lots_take_kiosks() {
         assert_ne!(building.edge_idx, usize::MAX, "a kiosk has its street access");
     }
 }
+
+// The starter town grows from an empty main street through the demand planner, where the store
+// size rule decides (`ECON-32`): its daily store census, with and without the kiosk asset.
+//
+// `METRUM_TEST_KIOSK=1 METRUM_KIOSK_TOWN_DAYS=120 $TEST_BINARY
+// nodes::sim::core::populated_city::kiosk_mix::starter_town_store_mix --exact --ignored --nocapture`
+#[test]
+#[ignore = "grows the starter town; run in a release test build"]
+fn starter_town_store_mix() {
+    use super::super::scenario::GrowthScenario;
+    let days = env_u32("METRUM_KIOSK_TOWN_DAYS", 120);
+    let kiosk = std::env::var_os("METRUM_TEST_KIOSK").is_some();
+    let mut town = GrowthScenario::starter_town();
+    println!("starter_town_store_mix days={days} kiosk_asset={kiosk}");
+    let mut previous = String::new();
+    for _ in 0..days {
+        let record = town.run_days(1)[0];
+        let rows = census(town.core());
+        let sales: f64 = rows.iter().map(|row| row.sales).sum();
+        let line = rows
+            .iter()
+            .map(|row| {
+                format!(
+                    "{} {}+{} ({:.0}% of sales, {} workers)",
+                    row.profile,
+                    row.standing,
+                    row.constructing,
+                    if sales > 0.0 { 100.0 * row.sales / sales } else { 0.0 },
+                    row.workers,
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("; ");
+        let stores: String = rows
+            .iter()
+            .map(|row| format!("{}{}", row.standing, row.constructing))
+            .collect();
+        if stores != previous || town.day() % 10 == 0 {
+            println!(
+                "day {} residents {}: {line}",
+                town.day(),
+                record.residents
+            );
+        }
+        previous = stores;
+    }
+}
