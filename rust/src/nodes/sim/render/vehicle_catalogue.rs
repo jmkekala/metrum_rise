@@ -56,8 +56,10 @@ pub(crate) struct CatalogueModel {
     /// The radius the wheels roll with, metres: the first wheel's (the pilot pair's wheels are
     /// all one size); 0 without wheels.
     pub(crate) wheel_radius_m: f32,
-    // Cumulative palette weights in parts of `WEIGHT_SCALE`.
-    paint_cumulative: Vec<u64>,
+    // Palette weights.
+    paint: Weights,
+    // The number of albedo variants.
+    variants: Divisor,
     first_look: u8,
 }
 
@@ -129,8 +131,70 @@ pub(crate) struct VehicleCatalogue {
     pub(crate) revision: u64,
     pub(crate) models: Vec<CatalogueModel>,
     pub(crate) looks: Vec<Look>,
-    // Per body class (index `BodyClass as usize`): cumulative spawn weights and model indices.
-    classes: [Vec<(u64, u8)>; 4],
+    // Per body class (index `BodyClass as usize`): spawn weights and model indices.
+    classes: [ClassModels; 4],
+}
+
+// A body class's models and their spawn weights.
+#[derive(Default)]
+struct ClassModels {
+    weights: Weights,
+    models: Vec<u8>,
+}
+
+// Weights as cumulative whole parts of `WEIGHT_SCALE`, with their total as a `Divisor`.
+#[derive(Default)]
+struct Weights {
+    cumulative: Vec<u64>,
+    total: Divisor,
+}
+
+impl Weights {
+    fn push(&mut self, weight: f32) {
+        let sum = self.cumulative.last().map_or(0, |&sum| sum) + weight_parts(weight);
+        self.cumulative.push(sum);
+        self.total = Divisor::new(sum);
+    }
+
+    // The index whose cumulative range holds `hash` modulo the total. O(entries), a handful.
+    fn pick(&self, hash: u64) -> usize {
+        let point = self.total.rem(hash);
+        self.cumulative.iter().take_while(|&&sum| sum <= point).count()
+    }
+}
+
+// `x % d` for a divisor fixed when packs load, exactly, without a hardware division: a pick runs
+// for every drawn and every rebuilt parked car each frame. With `m = (2^64 - 1) / d` the
+// quotient estimate `x m / 2^64` is never above `x / d` and less than three below it, so the
+// remainder needs at most two corrections.
+#[derive(Clone, Copy, Debug)]
+struct Divisor {
+    d: u64,
+    m: u64,
+}
+
+impl Divisor {
+    // The divisor `d`, 1 for 0.
+    fn new(d: u64) -> Self {
+        let d = d.max(1);
+        Self { d, m: u64::MAX / d }
+    }
+
+    // `x % d`. O(1).
+    fn rem(self, x: u64) -> u64 {
+        let q = ((u128::from(x) * u128::from(self.m)) >> 64) as u64;
+        let mut r = x - q * self.d;
+        while r >= self.d {
+            r -= self.d;
+        }
+        r
+    }
+}
+
+impl Default for Divisor {
+    fn default() -> Self {
+        Self::new(1)
+    }
 }
 
 impl VehicleCatalogue {
@@ -167,8 +231,10 @@ impl VehicleCatalogue {
                 data.paints.iter().map(|p| (p.colour, p.weight)).collect()
             };
             let class = &mut catalogue.classes[data.body_class as usize];
-            let total = class.last().map_or(0, |&(sum, _)| sum);
-            class.push((total + weight_parts(data.spawn_weight), model));
+            class.weights.push(data.spawn_weight);
+            class.models.push(model);
+            let mut paint = Weights::default();
+            palette.iter().for_each(|&(_, weight)| paint.push(weight));
             catalogue.models.push(CatalogueModel {
                 id: id.to_owned(),
                 directory: entry.asset_dir.clone(),
@@ -176,7 +242,8 @@ impl VehicleCatalogue {
                 tiers,
                 tier_starts_sq: std::array::from_fn(|t| tier_starts_m[t + 1] * tier_starts_m[t + 1]),
                 tier_starts_m,
-                paint_cumulative: cumulative(palette.iter().map(|&(_, w)| w)),
+                paint,
+                variants: Divisor::new(data.variants.len() as u64),
                 palette: palette.iter().map(|&(c, _)| c.map(srgb_to_linear)).collect(),
                 axles: Axles::of(&data.wheels),
                 wheel_radius_m: data.wheels.first().map_or(0.0, |wheel| wheel.radius_m),
@@ -190,6 +257,28 @@ impl VehicleCatalogue {
     /// The look and paint of a vehicle: `freight` draws from the truck class (then van, then
     /// car, whichever has models), any other from the car class. `None` with no model at all.
     pub(crate) fn pick(&self, freight: bool, identity: u64) -> Option<DrawnVehicle> {
+        let hash = mix(identity);
+        let model = self.pick_model(freight, hash)?;
+        let entry = &self.models[usize::from(model)];
+        let variant = entry.variants.rem(hash >> 24) as u8;
+        // The paint from a second mix, so it does not follow the model's or variant's pick.
+        let paint = entry.paint.pick(mix(hash)) as u8;
+        Some(DrawnVehicle {
+            look: entry.first_look + variant,
+            model,
+            paint,
+            blink: (hash >> 60) as u8,
+        })
+    }
+
+    /// The model [`Self::pick`] gives a vehicle, alone (a parked car's ground support). O(models
+    /// of the class).
+    pub(crate) fn model(&self, freight: bool, identity: u64) -> Option<u8> {
+        self.pick_model(freight, mix(identity))
+    }
+
+    // The model of the class `freight` draws from, by the identity's first mix.
+    fn pick_model(&self, freight: bool, hash: u64) -> Option<u8> {
         let order: &[BodyClass] = if freight {
             &[BodyClass::Truck, BodyClass::Van, BodyClass::Car]
         } else {
@@ -198,20 +287,8 @@ impl VehicleCatalogue {
         let class = order
             .iter()
             .map(|&class| &self.classes[class as usize])
-            .find(|class| !class.is_empty())?;
-        let hash = mix(identity);
-        let model = class[weighted(class.iter().map(|&(sum, _)| sum), hash)].1;
-        let entry = &self.models[usize::from(model)];
-        let variants = entry.data.variants.len() as u64;
-        let variant = ((hash >> 24) % variants) as u8;
-        // The paint from a second mix, so it does not follow the model's or variant's pick.
-        let paint = weighted(entry.paint_cumulative.iter().copied(), mix(hash)) as u8;
-        Some(DrawnVehicle {
-            look: entry.first_look + variant,
-            model,
-            paint,
-            blink: (hash >> 60) as u8,
-        })
+            .find(|class| !class.models.is_empty())?;
+        Some(class.models[class.weights.pick(hash)])
     }
 
     /// The tier of a car of `model` at squared distance `distance_sq` from the eye.
@@ -308,23 +385,6 @@ fn mix(mut x: u64) -> u64 {
 
 fn weight_parts(weight: f32) -> u64 {
     ((f64::from(weight) * WEIGHT_SCALE).round() as u64).max(1)
-}
-
-fn cumulative(weights: impl Iterator<Item = f32>) -> Vec<u64> {
-    let mut sum = 0;
-    weights
-        .map(|weight| {
-            sum += weight_parts(weight);
-            sum
-        })
-        .collect()
-}
-
-// The index whose cumulative range holds `hash` modulo the total. O(entries), a handful.
-fn weighted(cumulative: impl Iterator<Item = u64> + Clone, hash: u64) -> usize {
-    let total = cumulative.clone().last().unwrap_or(1);
-    let point = hash % total;
-    cumulative.take_while(|&sum| sum <= point).count()
 }
 
 fn srgb_to_linear(c: f32) -> f32 {
@@ -427,5 +487,10 @@ impl crate::simulation::parking::ParkedLooks for CatalogueLooks<'_> {
         self.0
             .pick(freight, identity)
             .map_or((0, 0, [0.0; 4]), |drawn| (drawn.look, drawn.model, drawn.custom(0.0, 0)))
+    }
+
+    fn ground_model(&self, model: u8, _colour: u8, identity: u64) -> u8 {
+        let freight = model == crate::simulation::economy::agents::VEHICLE_FREIGHT_DELIVERY;
+        self.0.model(freight, identity).unwrap_or(0)
     }
 }

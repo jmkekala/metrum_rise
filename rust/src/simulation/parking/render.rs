@@ -19,6 +19,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 pub(crate) trait ParkedLooks: Sync {
     /// `(bucket, ground model, custom data)` of a car saved as `model` and `colour`.
     fn look(&self, model: u8, colour: u8, identity: u64) -> (u8, u8, [f32; 4]);
+
+    /// The ground model of [`Self::look`] alone.
+    fn ground_model(&self, model: u8, colour: u8, identity: u64) -> u8 {
+        self.look(model, colour, identity).1
+    }
 }
 
 /// The looks the saved bytes alone give: bucket `model * 10 + colour`, posed as `model`. Tests
@@ -200,8 +205,8 @@ impl ChunkJob {
 // A load solves every car at once; a slot keeps no more than a busy frame's arrivals need.
 const SOLVED_KEPT: usize = 64;
 
-// Bucket, bay, place row and car row of each car of the chunk being rebuilt.
-type ParkedOrder = Vec<(u8, Handle<Place>, usize, usize)>;
+// Bucket, bay, place row, ground model and custom data of each car of the chunk being rebuilt.
+type ParkedOrder = Vec<(u8, Handle<Place>, usize, u8, [f32; 4])>;
 
 thread_local! {
     // One per worker: its size follows the largest chunk the worker met, however many there are.
@@ -326,7 +331,9 @@ impl ParkingSystem {
                 .vehicle_handles
                 .resolve(self.places.occupant[p])
                 .expect("parked car");
-            let model = self.parked_look(p, v, looks).1;
+            let identity = self.parked_identity(p);
+            let model =
+                looks.ground_model(self.vehicles.model[v], self.vehicles.colour[v], identity);
             if self.places.ground_model[p] != model {
                 job.solved.push((p, model, [0.0; 12]));
             }
@@ -336,8 +343,12 @@ impl ParkingSystem {
 
     // A parked car's look, named by its handle as when it drives (`SimCore::drawn_car`).
     fn parked_look(&self, p: usize, v: usize, looks: &impl ParkedLooks) -> (u8, u8, [f32; 4]) {
-        let identity = self.places.occupant[p].to_bits() | (1_u64 << 62);
-        looks.look(self.vehicles.model[v], self.vehicles.colour[v], identity)
+        looks.look(self.vehicles.model[v], self.vehicles.colour[v], self.parked_identity(p))
+    }
+
+    // The identity the car on place `p` is drawn by: its handle, as when it drives.
+    fn parked_identity(&self, p: usize) -> u64 {
+        self.places.occupant[p].to_bits() | (1_u64 << 62)
     }
 
     fn build_chunk(&self, job: &mut ChunkJob, looks: &impl ParkedLooks) {
@@ -350,23 +361,23 @@ impl ParkingSystem {
                 .vehicle_handles
                 .resolve(self.places.occupant[p])
                 .expect("parked car");
-            (self.parked_look(p, v, looks).0, handle, p, v)
+            let (bucket, model, custom) = self.parked_look(p, v, looks);
+            (bucket, handle, p, model, custom)
         }));
-        parked.sort_unstable();
+        // Bays are unique: the order is the bucket's, then the bay handle's.
+        parked.sort_unstable_by_key(|&(bucket, handle, ..)| (bucket, handle));
         let shared = job.chunk.as_mut().expect("a prepared job");
         let payload = Arc::get_mut(shared).expect("a job's buffers are its own");
         payload.clear();
         payload.version = chunk.version + 1;
-        for &(bucket, _, p, v) in &parked {
-            let (_, model, custom) = self.parked_look(p, v, looks);
+        for &(bucket, _, p, model, custom) in &parked {
             let grounded = if self.places.ground_model[p] == model {
                 self.places.ground[p]
             } else {
                 let i = job.solved.binary_search_by_key(&p, |&(p, ..)| p);
                 job.solved[i.expect("a solved pose")].2
             };
-            let identity = self.places.occupant[p].to_bits() | (1_u64 << 62);
-            payload.push(bucket, &grounded, custom, identity);
+            payload.push(bucket, &grounded, custom, self.parked_identity(p));
         }
         PARKED_ORDER.set(parked);
     }

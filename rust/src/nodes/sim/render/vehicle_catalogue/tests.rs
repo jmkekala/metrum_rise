@@ -83,3 +83,19 @@ fn tiers_switch_at_the_asset_starts_and_lamps_sit_in_the_turned_frame() {
     assert_eq!(supports[0].contacts().len(), 9 + 36);
     assert!(supports[1].contacts().iter().any(|c| (c.z - (1.95 + 0.13)).abs() < 1e-5));
 }
+
+#[test]
+fn the_divisor_remainder_equals_the_hardware_one() {
+    let divisors = [1, 2, 3, 7, 1_000_000, 4_000_001, 77_000_000, u64::MAX / 3, u64::MAX];
+    let mut x = 0x0123_4567_89ab_cdef_u64;
+    for d in divisors {
+        let divisor = Divisor::new(d);
+        for value in [0, 1, d - 1, d, d.wrapping_add(1), u64::MAX, u64::MAX - 1] {
+            assert_eq!(divisor.rem(value), value % d, "{value} % {d}");
+        }
+        for _ in 0..10_000 {
+            x = mix(x);
+            assert_eq!(divisor.rem(x), x % d, "{x} % {d}");
+        }
+    }
+}
