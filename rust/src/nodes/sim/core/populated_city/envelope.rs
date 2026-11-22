@@ -599,6 +599,17 @@ fn sim02_envelope() {
     let mut bursts = BurstTracker::new(&city.core);
     let mut money = MoneyCheck::new(&city.core);
     let mut day_work = work_snapshot();
+    // The arrivals the city's build ran before the first recorded day (`PARK-34`).
+    eprintln!(
+        "SIM02_BUILD_WALKS {}",
+        serde_json::json!({
+            "residents":residents, "workload":workload, "day":city.core.time.day_index,
+            "arrivals":day_work[Work::ArrivalLaunches as usize],
+            "drop_off_arrivals":day_work[Work::ArrivalDropOffs as usize],
+            "wider_place_arrivals":day_work[Work::ArrivalWiderPlaces as usize],
+            "border_walk_arrivals":day_work[Work::ArrivalBorderWalks as usize],
+        })
+    );
     let mut day_treasury = city.core.treasury.balance;
     let mut day_flows = [0.0; MONEY_FLOW_COUNT];
     let mut day_money_residual = 0.0_f64;
