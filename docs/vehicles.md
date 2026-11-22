@@ -1002,6 +1002,112 @@ when a car is drawn anew; the steer eases and settles); `docks/backs_in.rs` (a t
 a `tail_in` dock shows the reverse lamp and no indicator, stands with every lamp dark, and leaves
 forward without it).
 
+## Snapshot cost of the vehicle stage (performance round, 2026-11-22)
+
+The F-level sessions of stages 1a, 1b and `PARK-31` read the 30k city's mean snapshot time per
+frame 0.17 to 0.18 ms over `dev` (1x 0.805 to 0.971 ms, 32x 1.252 to 1.431 ms). A round on branch
+`vehicles-perf` (on `park-31`) split that cost and removed what could go without changing a drawn
+value.
+
+**Split.** Per-phase timers in diagnostic builds only (not committed), on the `PERF-07` workload
+(the prepared 30k city, the 2 km camera box with no eye, the bundled pack's catalogue), 8 workers
+on the P-cores, alternated with a `dev` build carrying the same timers; means of two or three runs
+of 900 frames at 32x and 1,777 at 1x, on a machine another session also used, so read the columns
+against each other, not against the timing rows. The camera has no eye, so every car is posed at
+the nearest tier: the worst case of the signals' work. 1,475 cars and 2,593 agents are posed a
+frame at 32x, 57 of the cars off their lanes.
+
+| Phase, ms a frame | `dev` 32x | `park-31` 32x | `vehicles-perf` 32x | `dev` 1x | `vehicles-perf` 1x |
+| --- | --- | --- | --- | --- | --- |
+| Posing | 0.63 | 0.69 | 0.69 | 0.48 | 0.45 |
+| Bucket fill | 0.15 | 0.07 | 0.04 | 0.12 | 0.03 |
+| Ground solve of off-lane cars | 0.27 | 0.41 | 0.41 | 0.20 | 0.32 |
+| Parked chunks | 0.27 | 0.38 | 0.34 | 0.04 | 0.05 |
+
+- Posing: the look pick, the tier, the signals (0.045 ms at 32x, measured by switching them off),
+  the custom data and 88-byte instances (72 before).
+- Bucket fill: two car buckets where `dev` had ten, each of which scanned every posed agent.
+- Ground solve: 45 support points a model (the nine plan-box points and a 3 x 3 patch a wheel),
+  where the headless `dev` grounded every car on the nine-point fallback profile. In the game,
+  `dev` grounded cars on their meshes' bottom vertices (up to 64), so the benchmark's `dev` row
+  understated what the game paid.
+- Parked chunks: three look picks for each car of a rebuilt chunk (about 12,900 picks a frame at
+  32x), and the parked ground solves on the same 45 points.
+
+The gate turn's test and the wider off-lane cull box measured nothing (switched off, the posing
+time did not move); no off-lane car keeps its pose bit for bit from one frame to the next at
+either speed, so a ground-solve cache would never hit.
+
+**Changes** (drawn products bitwise equal, below):
+
+- The look pick's three 64-bit divisions became a widening multiply by a reciprocal fixed when
+  packs load, with at most two corrections (`Divisor`, exact for every divisor); a rebuilt parked
+  chunk picks each car's look once, and its ground model alone (`ParkedLooks::ground_model`).
+- Each posing task sorts its agents' bucket codes with their slots, and a bucket copies its run
+  from each task in agent order: O(posed agents) plus a binary search a task and bucket, where every
+  bucket scanned every posed agent. Memory: 4 bytes a posed agent, kept with the task's buffer.
+- The steer samples only the lane tangent (`sample_lane_tangent_at`, bitwise the tangent of
+  `sample_lane_pose`), one position sample less a tangent.
+
+**Proof.** `vehicle_products_on_a_prepared_city` (release, ignored) hashes every snapshot's drawn
+products (each car bucket's rows, custom data, render ids and ground flags, the walkers' rows, the
+draw cuts and the newly published parked chunks' rows) for 300 frames at 32x from four views (the
+`PERF-07` camera with no eye, a street eye, a district eye, play height), first with the city's
+catalogue, then with none:
+
+```bash
+METRUM_PERF_RESIDENTS=30000 METRUM_PERF_CACHE=<snapshot cache> RAYON_NUM_THREADS=8 \
+  "$TEST_BINARY" nodes::sim::core::populated_city::frame_budget::vehicle_rows::vehicle_products_on_a_prepared_city \
+  --exact --ignored --nocapture --test-threads=1 2> "$ARTIFACTS/hash-30000.log"
+```
+
+Every hash of the 10k and 30k cities (2,400 a city) equals the one the `park-31` code gives with
+this test added; two runs of one build agree. `SIM-02` envelope and determinism records equal the
+`park-31` binary's.
+
+**Timing** (level F, 2026-11-22 05:22, the same boot as the stage sessions, 8 workers on the
+P-cores; control the `dev` build of daab78d4c, branch the `vehicles-perf` code):
+
+```bash
+./run.sh --timing --level F --control <dev $TEST_BINARY> --branch "$TEST_BINARY" --base dev \
+  --k22 --artifacts "$ARTIFACTS/timing-F1"
+./run.sh --timing ... --artifacts "$ARTIFACTS/timing-F1" --rerun p07-5-ctl   # the 1x control
+```
+
+The cached 1x control row was the noisy one of the stage 1a session (13 frames over 8 ms), so it
+was timed afresh.
+
+| 30k, mean a frame | `dev` | `park-31` (its session) | `vehicles-perf` |
+| --- | --- | --- | --- |
+| Snapshot, 32x | 1.260 ms | 1.431 ms | 1.402 ms (+11.3 %, WORSE) |
+| Snapshot, 1x | 0.849 ms | 0.971 ms | 0.977 ms (+15.0 %, WORSE) |
+| Frame, 32x | 4.306 ms | | 4.438 ms (+3.1 %) |
+| Frame, 1x | 2.087 ms | | 2.224 ms (+6.6 %) |
+
+Acceptance passes (1x: 5.05 / 5.31 ms worst unpreempted frame, p99.9 3.85 / 3.88 ms; 32x within
+the `PERF-17` exception as `dev`); K22 commit 6.94 ms against 6.61. The changes take 0.03 ms off
+the 32x snapshot in these rows (0.07 ms at 32x and 0.025 ms at 1x in the alternated diagnostic
+runs). What is left is mostly the support points (0.13 ms at 32x and 0.07 ms at 1x in the
+diagnostic runs, below), then the posing's own work for the signals at the nearest tier (about
+0.05 ms at 32x).
+
+**What remains, and why.** The support points. Each off-lane car's ground solve and each parked
+ground solve reads its surface at every point, an exact road or graded-surface query, and the 45
+points of 1a are five times the fallback's nine. Measured with the points per wheel switched in a
+diagnostic build (the same workload, two runs each, means of the snapshot a frame):
+
+| Points a model | 32x | 1x |
+| --- | --- | --- |
+| 45: nine plan-box points, 3 x 3 a wheel (as built) | 1.477 ms | 0.861 ms |
+| 21: nine, three a wheel along its centre line | 1.387 ms | 0.819 ms |
+| 13: nine, one a wheel under its centre | 1.344 ms | 0.790 ms |
+| `dev`, the nine-point fallback (other runs) | 1.333 ms | 0.774 ms |
+
+Fewer points per wheel lower the solve in proportion and change drawn heights where a tyre's patch
+spans a kerb or a grade break, which is why the patch exists; the choice is the owner's. With no
+eye the signals run for every car on the nearest tier; with the game's eye the brake rule runs only
+within the LOD2 range and the indicators and steer within 100 m.
+
 ## Planned: beams, later lamps and glass (`RENDER-67`)
 
 **Planned, after `RENDER-66`.** The lamp regions are in the models from the pilot on.
