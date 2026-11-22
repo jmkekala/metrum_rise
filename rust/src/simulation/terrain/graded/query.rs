@@ -26,7 +26,7 @@ use super::query_index::TerrainQueryIndex;
 use super::sample::{BaseGrid, BaseWindow, Listed, Value, evaluate};
 use super::seams::{Seam, road_seam};
 use super::sites::{NO_SITE, SiteBuffer, SiteSource};
-use super::tile::{Level, TILE_M, grown, meets};
+use super::tile::{Level, TILE_M, TileKey, grown, meets};
 use crate::assets::SiteSurfaceMaterial;
 use crate::simulation::network::roadbed::{
     CoverageTriangle, GroundedPieceScratch, LocalSurfaceQuery, PieceId, RoadVec3, RoadbedSystem,
@@ -89,6 +89,11 @@ pub struct QueryScratch {
     sites: SiteBuffer,
     // The portal rows within the cap of `rect`, past which cones are hidden (`ROAD-61`).
     portals: PortalWindow,
+    // The lattice deltas evaluated since the inputs above were last replaced.
+    deltas: DeltaMemo,
+    // The last tile the query index was asked about, with the index's identity and generation
+    // then and its answer ([`GradedSurface::tile_is_quiet`]).
+    quiet_tile: Option<((u64, u64, TileKey), Option<bool>)>,
     // Deterministically sampled gather-path comparison in debug and test builds.
     #[cfg(debug_assertions)]
     reference: Option<Box<QueryScratch>>,
@@ -114,9 +119,10 @@ impl QueryScratch {
 /// cap of its window (`O(P + V / 8)` for the pieces met and their runs of chain segments, plus
 /// the sites of the 64 m site cells and the corners of the runs and sites that may bind), keeps
 /// the `K` seams the pruning lists, `O(K log K)`, then costs `O(K)` per lattice point read (three
-/// for a height, twelve for a normal), plus `O(V)` once per window when a point a cut holds below
-/// its base needs the other seams. The `_near` variants share one gather between the points
-/// within a reach of a centre.
+/// for a height, twelve for a normal), once a preparation however often the point is read, plus
+/// `O(V)` once per window when a point a cut holds below its base needs the other seams. The
+/// `_near` variants share one gather, and the lattice points they read, between the points within
+/// a reach of a centre.
 #[derive(Clone, Copy)]
 pub struct GradedSurface<'a> {
     /// The base heightmap (its source samples).
@@ -137,6 +143,7 @@ impl GradedSurface<'_> {
         // This fill is not a graded preparation. Do not let a later query reuse its rectangle's
         // seam state with these unrelated base samples.
         scratch.rect = None;
+        scratch.deltas.forget();
         scratch.base.fill(self.terrain, [x, z, x, z]);
         scratch.base.at(x, z)
     }
@@ -641,6 +648,7 @@ impl GradedSurface<'_> {
         mark_covered_cells(self.roadbed, xs, zs, &mut scratch.pieces, out);
         // The gather replaces the window's sites, so no window stays prepared.
         scratch.rect = None;
+        scratch.deltas.forget();
         scratch
             .sites
             .gather_unordered(self.sites, [min_x, min_z, max_x, max_z]);
@@ -719,6 +727,7 @@ impl GradedSurface<'_> {
             {
                 return;
             }
+            scratch.deltas.forget();
             let cell_m = BaseGrid::of(self.terrain).cell_m;
             scratch.base.fill(self.terrain, grown(rect, cell_m));
             scratch.window.clear();
@@ -829,6 +838,7 @@ impl GradedSurface<'_> {
             return;
         }
         let window = grown(rect, CAP_M + WINDOW_PAD_M);
+        scratch.deltas.forget();
         let cell_m = BaseGrid::of(self.terrain).cell_m;
         scratch.base.fill(self.terrain, grown(rect, cell_m));
         gather_coverage(
@@ -961,7 +971,7 @@ impl GradedSurface<'_> {
     // rectangle quiet. This preserves the bilinear-base shortcut of [`Self::ground_height_at`]
     // without another piece/site gather for the common all-quiet case.
     fn quiet_for(&self, rect: [f64; 4], x: f64, z: f64, scratch: &mut QueryScratch) -> bool {
-        if let Some(quiet) = self.query_index.and_then(|index| index.tile_is_quiet(x, z)) {
+        if let Some(quiet) = self.tile_is_quiet(x, z, scratch) {
             return quiet;
         }
         self.gather_rest(scratch);
@@ -973,6 +983,21 @@ impl GradedSurface<'_> {
             .iter()
             .chain(scratch.rest.iter().map(|(seam, _)| seam))
             .all(|seam| box_distance(seam.box_xz(), rect) > CAP_M + WINDOW_PAD_M)
+    }
+
+    // [`TerrainQueryIndex::tile_is_quiet`], kept for the next point in the same tile of the same
+    // index version (a vehicle's contacts): the answer is a function of the tile and the version.
+    fn tile_is_quiet(&self, x: f64, z: f64, scratch: &mut QueryScratch) -> Option<bool> {
+        let index = self.query_index?;
+        let key = (index.identity(), index.generation(), TileKey::at(x, z));
+        if let Some((kept, quiet)) = scratch.quiet_tile
+            && kept == key
+        {
+            return quiet;
+        }
+        let quiet = index.tile_is_quiet(x, z);
+        scratch.quiet_tile = Some((key, quiet));
+        quiet
     }
 
     // The graded value at a point of the prepared window, with its pad from the gathered sites:
@@ -1062,12 +1087,18 @@ impl GradedSurface<'_> {
         scratch.base.at(x, z) + self.delta([i, j], scratch)
     }
 
-    // The `f32` delta the bake packs at one `GL0` lattice point.
+    // The `f32` delta the bake packs at one `GL0` lattice point, evaluated once per preparation
+    // (`DeltaMemo`): a pure function of the point and the prepared inputs.
     fn delta(&self, [i, j]: [i64; 2], scratch: &mut QueryScratch) -> f64 {
+        if let Some(delta) = scratch.deltas.get([i, j]) {
+            return delta;
+        }
         let (x, z) = (i as f64 * GL0_M, j as f64 * GL0_M);
         let road = covered_height_in(&scratch.coverage, x, z);
         let base = scratch.base.at(x, z);
-        f64::from((self.evaluate(x, z, base, road, scratch) - base) as f32)
+        let delta = f64::from((self.evaluate(x, z, base, road, scratch) - base) as f32);
+        scratch.deltas.set([i, j], delta);
+        delta
     }
 
     // First `t` at which the ray meets the ground before `limit`: per 64 m tile, the base
@@ -1136,6 +1167,7 @@ impl GradedSurface<'_> {
                 // The base marcher borrows the query scratch but does not prepare graded inputs.
                 // Invalidate their cached rectangle before replacing its base window.
                 scratch.rect = None;
+                scratch.deltas.forget();
                 scratch.base.fill(self.terrain, [x0, z0, x1, z1]);
                 let corners =
                     [(x0, z0), (x1, z0), (x0, z1), (x1, z1)].map(|(x, z)| scratch.base.at(x, z));
@@ -1309,6 +1341,61 @@ impl LatticeBlock {
     /// Forgets what the block read: its next read prepares it again (another view's ground).
     pub(crate) fn forget(&mut self) {
         self.origin = None;
+    }
+}
+
+// Slots of a [`DeltaMemo`]: 16 x 16, one per lattice point of any 8 m block.
+const DELTA_SLOTS: usize = 256;
+
+// The lattice deltas ([`GradedSurface::delta`]) evaluated over the scratch's current inputs, so
+// that the clustered reads of one preparation (a vehicle's contacts on the same few cells, a
+// normal's stencil) evaluate each lattice point once. Direct-mapped by the low four bits of
+// each index, so the points of any 16 x 16 block never evict each other; a slot is valid only
+// with the current stamp, so forgetting is `O(1)` (and `O(slots)` once in 2^32). Fixed-size:
+// no allocation.
+struct DeltaMemo {
+    // The current stamp, never 0; a slot stamped 0 holds nothing.
+    stamp: u32,
+    stamps: [u32; DELTA_SLOTS],
+    points: [[i64; 2]; DELTA_SLOTS],
+    deltas: [f64; DELTA_SLOTS],
+}
+
+impl Default for DeltaMemo {
+    fn default() -> Self {
+        Self {
+            stamp: 1,
+            stamps: [0; DELTA_SLOTS],
+            points: [[0; 2]; DELTA_SLOTS],
+            deltas: [0.0; DELTA_SLOTS],
+        }
+    }
+}
+
+impl DeltaMemo {
+    fn slot([i, j]: [i64; 2]) -> usize {
+        ((i & 15) | (j & 15) << 4) as usize
+    }
+
+    fn get(&self, point: [i64; 2]) -> Option<f64> {
+        let slot = Self::slot(point);
+        (self.stamps[slot] == self.stamp && self.points[slot] == point).then(|| self.deltas[slot])
+    }
+
+    fn set(&mut self, point: [i64; 2], delta: f64) {
+        let slot = Self::slot(point);
+        self.stamps[slot] = self.stamp;
+        self.points[slot] = point;
+        self.deltas[slot] = delta;
+    }
+
+    // Every held delta is stale: the inputs it was evaluated over are being replaced.
+    fn forget(&mut self) {
+        self.stamp = self.stamp.wrapping_add(1);
+        if self.stamp == 0 {
+            self.stamps = [0; DELTA_SLOTS];
+            self.stamp = 1;
+        }
     }
 }
 

@@ -199,12 +199,14 @@ impl SimCore {
         camera_position: Option<Vector2>,
     ) {
         // The agents' frame job grounds cars on a background worker (inline there), the
-        // simulation thread's snapshot in the shared pool (CODE-17, `RENDER-47`).
+        // simulation thread's snapshot in the shared pool (CODE-17, `RENDER-47`). No minimum
+        // split: a flagged car's solve costs microseconds (`docs/vehicles.md`, the snapshot cost
+        // split) and a snapshot bucket flags a few dozen of its cars, scattered in agent order,
+        // so stolen halves keep splitting down to them.
         crate::thread_pools::install(|| {
             transforms
                 .par_chunks_exact_mut(12)
                 .zip(flags.par_iter())
-                .with_min_len(32)
                 .for_each(|(transform, &flag)| {
                     if flag == 0 {
                         return;

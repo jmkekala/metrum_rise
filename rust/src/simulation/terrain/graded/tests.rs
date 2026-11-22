@@ -615,6 +615,45 @@ fn query_scratch_distinguishes_indices_with_equal_generations() {
     assert_eq!(query(&second, &mut scratch).to_bits(), 400.0f64.to_bits());
 }
 
+// The lattice deltas a scratch keeps for its preparation (a vehicle's contacts share them) go
+// with it: two worlds read in turn through one scratch, at the same lattice points, each
+// answer as a fresh scratch's.
+#[test]
+fn kept_lattice_deltas_go_with_their_preparation() {
+    let graph = t_junction(true);
+    let roadbed = compiled(&graph);
+    let (sloped, tilted) = (terrain(|x, _| SLOPE * x), terrain(|_, z| 0.1 * z));
+    let surfaces = [&sloped, &tilted].map(|terrain| GradedSurface {
+        terrain,
+        roadbed: &roadbed,
+        sites: &NoSites,
+        query_index: None,
+    });
+    let mut kept = QueryScratch::default();
+    let mut differ = 0;
+    for k in 0..40 {
+        let (x, z) = (-30.0 + k as f64 * 1.37, 8.0 - k as f64 * 0.53);
+        let mut answers = [0.0; 2];
+        for (answer, surface) in answers.iter_mut().zip(&surfaces) {
+            surface.gather_near(x, z, 2.5, &mut kept);
+            for (dx, dz) in [(0.0, 0.0), (0.3, -0.2), (-2.2, 1.9), (2.4, 2.4)] {
+                let (cx, cz) = (x + dx, z + dz);
+                let near = surface.ground_height_near(cx, cz, &mut kept);
+                assert_eq!(
+                    near.to_bits(),
+                    surface
+                        .ground_height_at(cx, cz, &mut QueryScratch::default())
+                        .to_bits(),
+                    "({cx}, {cz})"
+                );
+                *answer += near;
+            }
+        }
+        differ += usize::from(answers[0] != answers[1]);
+    }
+    assert!(differ > 30, "the worlds differ at the points read: {differ}");
+}
+
 #[test]
 fn a_missing_node_piece_uncovers_its_gap_and_flips_no_other_region() {
     let graph = t_junction(true);
