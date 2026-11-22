@@ -4,9 +4,11 @@
 //! each car place's sides and head, and L-shaped corner marks at a loading bay's four corners,
 //! drawn on every lot the same way, so no asset models its own paint.
 //!
-//! Geometry is pure: a place's rectangle gives raw segments, and collinear segments that overlap
-//! or touch are merged, so the side two neighbouring places share is drawn once and a row's head
-//! lines become one line. Each merged line is one instance of a unit quad (one `MultiMesh` per
+//! Geometry is pure: a place's rectangle gives pieces of its edges, and pieces on one edge line
+//! that overlap or touch are merged, so the side two neighbouring places share is drawn once and a
+//! row's head lines become one line. Every line lies inside the places: centred on an edge two
+//! places share, inside the place otherwise, so no paint reaches a kerb or the ground beside the
+//! lot. Each merged line is one instance of a unit quad (one `MultiMesh` per
 //! 512 m parking chunk, one draw call), lying on the visible surface: a line on a level pad is one
 //! instance, one crossing a graded tie-in is split where the surface bends.
 //!
@@ -24,7 +26,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 /// Width of every bay line and corner mark, metres: the Finnish lane line's 0.10 m.
 pub(crate) const LINE_WIDTH_M: f32 = 0.10;
-/// Length of each leg of a loading bay's corner mark, metres, from the corner's outer edge.
+/// Length of each leg of a loading bay's corner mark, metres, from the corner.
 pub(crate) const CORNER_LEG_M: f32 = 0.8;
 // How far a line floats above the surface: the road markings' decal lift.
 const LIFT_M: f32 = crate::config::ROAD_DECAL_RENDER_Z_BIAS_M;
@@ -161,36 +163,55 @@ fn dot(a: [f32; 2], b: [f32; 2]) -> f32 {
     a[0] * b[0] + a[1] * b[1]
 }
 
-/// Pushes the raw segments of `place`: a car place's two sides (entry to head) and its head line,
-/// stretched half a line past each side so the corners close square; the entry stays open to
-/// the aisle. A loading bay's four corners get two legs each, along its two edges, starting half
-/// a line outside the corner. O(1).
-pub(crate) fn place_segments(place: &PaintPlace, out: &mut Vec<Segment>) {
+/// A piece of a place's edge to be painted, before merging: the piece on the edge and the
+/// direction into the place across it.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct EdgeMark {
+    pub edge: Segment,
+    pub inward: [f32; 2],
+}
+
+/// Pushes the edge marks of `place`: a car place's two sides (entry to head) and its head; the
+/// entry stays open to the aisle. A loading bay's four corners get two legs each, along its two
+/// edges from the corner, `CORNER_LEG_M` long or half the edge when that is shorter. O(1).
+pub(crate) fn place_marks(place: &PaintPlace, out: &mut Vec<EdgeMark>) {
     let (s, c) = place.heading.sin_cos();
     let forward = [-s, -c];
     let across = [-forward[1], forward[0]];
-    let (hl, hw, half_line) = (place.length * 0.5, place.width * 0.5, LINE_WIDTH_M * 0.5);
+    let (hl, hw) = (place.length * 0.5, place.width * 0.5);
     let corner = |f: f32, a: f32| add(add(place.centre, scale(forward, f)), scale(across, a));
     if !place.dock {
         for side in [-hw, hw] {
-            out.push([corner(-hl, side), corner(hl, side)]);
+            out.push(EdgeMark {
+                edge: [corner(-hl, side), corner(hl, side)],
+                inward: scale(across, -side.signum()),
+            });
         }
-        out.push([corner(hl, -hw - half_line), corner(hl, hw + half_line)]);
+        out.push(EdgeMark {
+            edge: [corner(hl, -hw), corner(hl, hw)],
+            inward: scale(forward, -1.0),
+        });
         return;
     }
-    // Each corner with the inward directions of its two edges and their lengths.
     let legs = [
-        (forward, place.length.min(CORNER_LEG_M * 2.0) * 0.5),
-        (across, place.width.min(CORNER_LEG_M * 2.0) * 0.5),
+        place.length.min(CORNER_LEG_M * 2.0) * 0.5,
+        place.width.min(CORNER_LEG_M * 2.0) * 0.5,
     ];
     for (f, a) in [(-hl, -hw), (-hl, hw), (hl, -hw), (hl, hw)] {
         let p = corner(f, a);
-        let inward = [-f.signum(), -a.signum()];
-        for (axis, (direction, edge)) in legs.iter().enumerate() {
-            let d = scale(*direction, inward[axis]);
-            let leg = edge.min(CORNER_LEG_M);
-            out.push([add(p, scale(d, -half_line)), add(p, scale(d, leg))]);
-        }
+        // Into the bay along its forward and across axes from this corner.
+        let (in_f, in_a) = (scale(forward, -f.signum()), scale(across, -a.signum()));
+        let leg_f = legs[0].min(CORNER_LEG_M);
+        let leg_a = legs[1].min(CORNER_LEG_M);
+        // The leg along the side edge, then the one along the end edge.
+        out.push(EdgeMark {
+            edge: [p, add(p, scale(in_f, leg_f))],
+            inward: in_a,
+        });
+        out.push(EdgeMark {
+            edge: [p, add(p, scale(in_a, leg_a))],
+            inward: in_f,
+        });
     }
 }
 
@@ -222,7 +243,7 @@ impl OnLine {
         let angle_key = (angle / ANGLE_STEP_RAD).round() as i64;
         let snapped = angle_key as f32 * ANGLE_STEP_RAD;
         let direction = [snapped.cos(), snapped.sin()];
-        let offset = dot([-direction[1], direction[0]], a);
+        let offset = dot(Self::normal(direction), a);
         let (ta, tb) = (dot(direction, a), dot(direction, b));
         Some(Self {
             key: (angle_key, (offset / OFFSET_STEP_M).round() as i64),
@@ -233,8 +254,13 @@ impl OnLine {
         })
     }
 
+    // The line's left normal; its offset is measured along it.
+    fn normal(direction: [f32; 2]) -> [f32; 2] {
+        [-direction[1], direction[0]]
+    }
+
     fn segment(&self) -> Segment {
-        let base = scale([-self.direction[1], self.direction[0]], self.offset);
+        let base = scale(Self::normal(self.direction), self.offset);
         [
             add(base, scale(self.direction, self.start)),
             add(base, scale(self.direction, self.end)),
@@ -242,47 +268,120 @@ impl OnLine {
     }
 }
 
-/// Merges collinear segments that overlap or touch (within `MERGE_GAP_M`) into one, in place,
-/// and sorts the result into a canonical order, so the paint of a set of places does not depend
-/// on their order. Lines are collinear when their directions agree to `ANGLE_STEP_RAD` and their
-/// offsets to `OFFSET_STEP_M` (both rounded to those steps); a merged line keeps the offset of
-/// its first segment in that order. O(S log S) for S segments.
-pub(crate) fn merge_segments(segments: &mut Vec<Segment>) {
-    let mut keyed: Vec<OnLine> = segments.iter().copied().filter_map(OnLine::of).collect();
-    keyed.sort_unstable_by(|x, y| {
+/// Merges the edge marks into marking lines that lie inside the places (`PARK-30`): marks on one
+/// edge line (directions within `ANGLE_STEP_RAD`, offsets within `OFFSET_STEP_M`, both rounded to
+/// those steps) that overlap or touch (within `MERGE_GAP_M`) become one line. Where places lie on
+/// both sides of the edge (two neighbours' shared side, two rows' shared heads, two docks' shared
+/// edge) the line is centred on it and drawn once, half in each place; where a place lies on one
+/// side only, the line lies inside that place, its outer edge on the place's edge, so no paint
+/// reaches a kerb, a walkway or the ground beside the lot. The result is sorted into a canonical
+/// order, so the paint of a set of places does not depend on their order; a line keeps the
+/// offset of its edge's first mark in that order. O(M log M) for M marks.
+pub(crate) fn merge_marks(marks: &[EdgeMark]) -> Vec<Segment> {
+    let mut keyed: Vec<(OnLine, bool)> = marks
+        .iter()
+        .filter_map(|mark| {
+            let line = OnLine::of(mark.edge)?;
+            Some((line, dot(mark.inward, OnLine::normal(line.direction)) > 0.0))
+        })
+        .collect();
+    keyed.sort_unstable_by(|(x, x_left), (y, y_left)| {
         x.key
             .cmp(&y.key)
+            .then(x_left.cmp(y_left))
             .then(x.start.total_cmp(&y.start))
             .then(x.end.total_cmp(&y.end))
             .then(x.offset.total_cmp(&y.offset))
     });
-    segments.clear();
-    let mut run: Option<OnLine> = None;
-    for item in keyed {
-        match run.as_mut() {
-            Some(current) if current.key == item.key && item.start <= current.end + MERGE_GAP_M => {
-                current.end = current.end.max(item.end);
-            }
-            _ => {
-                if let Some(done) = run.replace(item) {
-                    segments.push(done.segment());
-                }
+    let mut lines = Vec::new();
+    // Per edge line, the covered intervals with the place to the right and to the left of it.
+    let mut spans: [Vec<[f32; 2]>; 2] = Default::default();
+    let mut points = Vec::new();
+    let mut first = 0;
+    while first < keyed.len() {
+        let edge = keyed[first].0;
+        let last = keyed[first..]
+            .iter()
+            .position(|(line, _)| line.key != edge.key)
+            .map_or(keyed.len(), |n| first + n);
+        spans.iter_mut().for_each(Vec::clear);
+        // Sorted by side, then start: each side's intervals merge in one pass.
+        for &(line, left) in &keyed[first..last] {
+            let list = &mut spans[usize::from(left)];
+            match list.last_mut() {
+                Some(run) if line.start <= run[1] + MERGE_GAP_M => run[1] = run[1].max(line.end),
+                _ => list.push([line.start, line.end]),
             }
         }
+        edge_lines(&edge, &spans, &mut points, &mut lines);
+        first = last;
     }
-    if let Some(done) = run {
-        segments.push(done.segment());
+    lines
+}
+
+// The lines of one edge line from its covered intervals right and left of it: cut where any
+// interval starts or ends (ends within `MERGE_GAP_M` of each other are one cut), each piece
+// centred on the edge where both sides are covered, inset half a line into the covered side
+// otherwise, and neighbouring pieces of one kind joined. O(intervals log intervals).
+fn edge_lines(
+    edge: &OnLine,
+    spans: &[Vec<[f32; 2]>; 2],
+    points: &mut Vec<f32>,
+    lines: &mut Vec<Segment>,
+) {
+    points.clear();
+    points.extend(spans.iter().flatten().flatten().copied());
+    points.sort_unstable_by(f32::total_cmp);
+    points.dedup_by(|later, kept| *later - *kept <= MERGE_GAP_M);
+    let mut next = [0_usize; 2];
+    // The open piece: the sides it covers, right and left of the edge, and its interval.
+    let mut open: Option<([bool; 2], f32, f32)> = None;
+    let flush = |piece: Option<([bool; 2], f32, f32)>, lines: &mut Vec<Segment>| {
+        let Some((covered, start, end)) = piece else {
+            return;
+        };
+        let half_line = LINE_WIDTH_M * 0.5;
+        let shift = match covered {
+            [true, true] => 0.0,
+            [false, true] => half_line,
+            _ => -half_line,
+        };
+        let line = OnLine {
+            start,
+            end,
+            offset: edge.offset + shift,
+            ..*edge
+        };
+        lines.push(line.segment());
+    };
+    for pair in points.windows(2) {
+        let mid = (pair[0] + pair[1]) * 0.5;
+        let covered = [0, 1].map(|side| {
+            let list = &spans[side];
+            while next[side] < list.len() && list[next[side]][1] < mid {
+                next[side] += 1;
+            }
+            list.get(next[side]).is_some_and(|run| run[0] <= mid)
+        });
+        if let Some(piece) = open.as_mut()
+            && piece.0 == covered
+        {
+            piece.2 = pair[1];
+            continue;
+        }
+        let piece = (covered != [false, false]).then_some((covered, pair[0], pair[1]));
+        flush(std::mem::replace(&mut open, piece), lines);
     }
+    flush(open, lines);
 }
 
 /// The merged marking lines of `places`. O(P log P) for P places.
 pub(crate) fn paint_segments(places: impl IntoIterator<Item = PaintPlace>) -> Vec<Segment> {
-    let mut segments = Vec::new();
+    let mut marks = Vec::new();
     for place in places {
-        place_segments(&place, &mut segments);
+        place_marks(&place, &mut marks);
     }
-    merge_segments(&mut segments);
-    segments
+    merge_marks(&marks)
 }
 
 /// The square a graded gather covers for every height `paint_rows` reads on `segments`: its

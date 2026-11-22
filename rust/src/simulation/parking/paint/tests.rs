@@ -35,16 +35,18 @@ fn neighbouring_places_share_one_side_line_and_one_head_line() {
         .map(|i| place([i as f32 * 2.5, 0.0], [0.0, -1.0], false))
         .collect();
     let lines = paint_segments(row.iter().copied());
-    // Four side lines, the two inner ones shared, and the three heads as one line.
+    // Four side lines, the two inner ones shared and centred on the shared edge, the outer ones
+    // inside their places; and the three heads as one line inside the places, its outer edge on
+    // their head edge.
     assert_eq!(lines.len(), 5, "{lines:?}");
-    for x in [-1.25, 1.25, 3.75, 6.25] {
+    for x in [-1.25 + HALF_LINE, 1.25, 3.75, 6.25 - HALF_LINE] {
         assert!(
             holds(&lines, [x, 2.5], [x, -2.5]),
             "side at x = {x}: {lines:?}"
         );
     }
     assert!(
-        holds(&lines, [-1.25 - HALF_LINE, -2.5], [6.25 + HALF_LINE, -2.5]),
+        holds(&lines, [-1.25, -2.5 + HALF_LINE], [6.25, -2.5 + HALF_LINE]),
         "{lines:?}"
     );
     // The entry edge (z = 2.5) stays open.
@@ -99,18 +101,20 @@ fn angled_places_follow_their_own_axes() {
     let places = [0.0, 2.5].map(|s| place([across[0] * s, across[1] * s], forward, false));
     let lines = paint_segments(places);
     assert_eq!(lines.len(), 4, "{lines:?}");
-    let sides = lines
-        .iter()
-        .filter(|s| (length(s) - 5.0).abs() < 1e-3)
-        .count();
-    assert_eq!(sides, 3, "{lines:?}");
+    // Along the forward axis: the three sides; square to it: one head across both places.
+    let along = |s: &Segment| {
+        let direction = [s[1][0] - s[0][0], s[1][1] - s[0][1]];
+        (direction[0] * forward[0] + direction[1] * forward[1]).abs() / length(s)
+    };
+    let mut sides = lines.iter().filter(|s| (along(s) - 1.0).abs() < 1e-3);
+    assert_eq!(sides.clone().count(), 3, "{lines:?}");
+    assert!(sides.all(|s| (length(s) - 5.0).abs() < 1e-3));
     let head = lines
         .iter()
-        .find(|s| (length(s) - (5.0 + LINE_WIDTH_M)).abs() < 1e-3)
+        .find(|s| along(s) < 1e-3)
         .expect("one head line across both places");
-    // The head runs across the places, square to their forward axis.
-    let direction = [head[1][0] - head[0][0], head[1][1] - head[0][1]];
-    assert!((direction[0] * forward[0] + direction[1] * forward[1]).abs() < 1e-3);
+    assert!((length(head) - 5.0).abs() < 1e-3, "{head:?}");
+    assert_paint_inside(&places, &lines);
 }
 
 #[test]
@@ -119,7 +123,7 @@ fn a_loading_bay_gets_corner_marks_and_no_outline() {
     assert_eq!(lines.len(), 8, "{lines:?}");
     for line in &lines {
         assert!(
-            (length(line) - (CORNER_LEG_M + HALF_LINE)).abs() < 1e-3,
+            (length(line) - CORNER_LEG_M).abs() < 1e-3,
             "{line:?}"
         );
     }
@@ -148,10 +152,101 @@ fn a_narrow_loading_bay_edge_is_marked_whole_rather_than_overshot() {
     // The 1.2 m ends' legs meet in the middle and merge into one end line each.
     let ends = lines
         .iter()
-        .filter(|s| (length(s) - (1.2 + LINE_WIDTH_M)).abs() < 1e-3)
+        .filter(|s| (length(s) - 1.2).abs() < 1e-3)
         .count();
     assert_eq!(ends, 2, "{lines:?}");
     assert_eq!(lines.len(), 6, "{lines:?}");
+    assert_paint_inside(&[dock], &lines);
+}
+
+// The four corners of the 0.10 m quad `paint_rows` draws for `line`.
+fn quad_corners([a, b]: &Segment) -> [[f32; 2]; 4] {
+    let d = [b[0] - a[0], b[1] - a[1]];
+    let n = (d[0] * d[0] + d[1] * d[1]).sqrt();
+    let side = [-d[1] / n * HALF_LINE, d[0] / n * HALF_LINE];
+    [
+        [a[0] + side[0], a[1] + side[1]],
+        [a[0] - side[0], a[1] - side[1]],
+        [b[0] + side[0], b[1] + side[1]],
+        [b[0] - side[0], b[1] - side[1]],
+    ]
+}
+
+// Whether `p` lies in `place`'s rectangle, to a tenth of a millimetre.
+fn inside(place: &PaintPlace, p: [f32; 2]) -> bool {
+    let (s, c) = place.heading.sin_cos();
+    let forward = [-s, -c];
+    let across = [-forward[1], forward[0]];
+    let r = [p[0] - place.centre[0], p[1] - place.centre[1]];
+    let (f, a) = (
+        r[0] * forward[0] + r[1] * forward[1],
+        r[0] * across[0] + r[1] * across[1],
+    );
+    f.abs() <= place.length * 0.5 + 1e-4 && a.abs() <= place.width * 0.5 + 1e-4
+}
+
+// Every painted quad lies inside the places: each of its corners in one of them, and its middle
+// too (a line centred on a shared edge has its corners in either place).
+fn assert_paint_inside(places: &[PaintPlace], lines: &[Segment]) {
+    for line in lines {
+        for p in quad_corners(line) {
+            assert!(
+                places.iter().any(|place| inside(place, p)),
+                "{line:?} reaches {p:?} outside the places"
+            );
+        }
+    }
+}
+
+// `PARK-30` (owner, 2026-11-22): a line lies fully inside the place, its outer edge on the
+// place's edge, so it never paints a kerb, a walkway or the ground beside the lot. Where two
+// places share an edge, one line centred on it lies half in each.
+#[test]
+fn no_paint_lies_outside_the_places() {
+    let angle = 30f32.to_radians();
+    let tilted = [angle.sin(), angle.cos()];
+    for single in [
+        place([0.0, 0.0], [0.0, -1.0], false),
+        place([3.0, -7.0], tilted, false),
+        place([0.0, 0.0], [0.0, 1.0], true),
+        place([5.0, 2.0], tilted, true),
+        PaintPlace::from_forward([0.0, 0.0], [1.0, 0.0], 1.2, 15.0, true),
+    ] {
+        let lines = paint_segments([single]);
+        assert!(!lines.is_empty());
+        assert_paint_inside(&[single], &lines);
+        // A lone place's head line lies on its head edge, inward: the outer edge of the quad
+        // touches the edge.
+        if !single.dock {
+            let reach = lines
+                .iter()
+                .flat_map(quad_corners)
+                .map(|p| {
+                    let (s, c) = single.heading.sin_cos();
+                    (p[0] - single.centre[0]) * -s + (p[1] - single.centre[1]) * -c
+                })
+                .fold(f32::MIN, f32::max);
+            assert!((reach - single.length * 0.5).abs() < 1e-4, "head reach {reach}");
+        }
+    }
+    // A row, two rows head to head, and two docks side by side.
+    let row: Vec<_> = (0..3)
+        .map(|i| place([i as f32 * 2.5, 0.0], [0.0, -1.0], false))
+        .collect();
+    let mut back_to_back = row.clone();
+    back_to_back.extend((0..3).map(|i| place([i as f32 * 2.5, -5.0], [0.0, 1.0], false)));
+    let docks = [0.0, 3.5].map(|x| place([x, 0.0], [0.0, 1.0], true));
+    for places in [row, back_to_back, docks.to_vec()] {
+        let lines = paint_segments(places.iter().copied());
+        assert_paint_inside(&places, &lines);
+    }
+    // The shared head of two rows is one line, centred on the shared edge (z = -2.5).
+    let lines = paint_segments(
+        (0..3)
+            .map(|i| place([i as f32 * 2.5, 0.0], [0.0, -1.0], false))
+            .chain((0..3).map(|i| place([i as f32 * 2.5, -5.0], [0.0, 1.0], false))),
+    );
+    assert!(holds(&lines, [-1.25, -2.5], [6.25, -2.5]), "{lines:?}");
 }
 
 #[test]
