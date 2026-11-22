@@ -4466,8 +4466,10 @@ against 53 (404), over 12 hours 6 (49) against 5 (40); full lanes 18 (53) agains
 zero-throughput lane-hours 104 (594) against 89 (340); cars over 4 hours 0 (1) against 0 (0). The
 check's freight trips read 4,321 a day against 5,893, 363 s mean against 267 s: it times a
 carrier from the frame it leaves a building to the frame it is gone, and a truck no longer goes
-inside at its destination, so an out-and-back delivery is one trip now where it was two. The 10k
-tier was not run.
+inside at its destination, so an out-and-back delivery is one trip now where it was two. At 10k
+the branch alone (no `dev` run beside it this round): no vehicle stationary a day, no cycle,
+trucks over 4 hours 22 (255), over 12 hours 0, full lanes 2 (9), zero-throughput lane-hours 1 (9);
+`PARK-34`'s 10k record read trucks over 4 hours 17 (193), full lanes 4 (20).
 
 **Owner's choices.**
 
