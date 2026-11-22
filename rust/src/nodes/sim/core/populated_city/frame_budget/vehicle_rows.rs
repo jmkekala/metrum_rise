@@ -2,7 +2,8 @@
 
 //! `RENDER-66`: the drawn car rows uploaded a frame on a prepared city, with the brake lamps,
 //! indicators, reverse lamp, steer and roll, against the same frames drawn as stage 1a drew
-//! them (steer and roll zero, the lamp word "lights on" only), through the agents' frame job.
+//! them (steer and roll zero, the lamp word "lights on" only), through the agents' frame job;
+//! and the city's lane cars on their gate turn (`PARK-31`) with the gate test's time.
 
 use std::collections::HashMap;
 
@@ -28,6 +29,39 @@ struct Counts {
     indicator: usize,
     reverse: usize,
     steer: usize,
+    // `PARK-31`: the city's lane cars, those on their gate turn, and the gate test's time over
+    // them, nanoseconds.
+    lane_cars: usize,
+    gate_cars: usize,
+    gate_test_ns: u128,
+}
+
+// `PARK-31`: every visible car on a road lane in the city, its lane pose sampled as the snapshot
+// does; then the gate turn's test over them, timed alone. Returns (lane cars, on the turn, ns).
+fn gate_turns(core: &SimCore, poses: &mut Vec<(usize, Vector3, Vector3)>) -> (usize, usize, u128) {
+    use crate::nodes::sim::render::lane_pose::sample_lane_pose;
+    use crate::simulation::economy::agents::{MODE_CAR, TRANSIT_NETWORK};
+    poses.clear();
+    let lanes = &core.transit_network.lane_system.lanes;
+    for i in 0..core.agents.len() {
+        if core.agents.transit_mode[i] != MODE_CAR || core.agents.transit[i] != TRANSIT_NETWORK {
+            continue;
+        }
+        if let Some((pos, tangent)) = lanes
+            .get(core.agents.current_lane_id[i])
+            .and_then(|lane| sample_lane_pose(lane, core.agents.lane_distance[i]))
+        {
+            poses.push((i, pos, tangent));
+        }
+    }
+    let start = std::time::Instant::now();
+    let on_turn = poses
+        .iter()
+        .filter(|&&(i, pos, tangent)| {
+            super::super::super::snapshot::lane_car_gate_pose(core, i, false, pos, tangent).is_some()
+        })
+        .count();
+    (poses.len(), on_turn, start.elapsed().as_nanos())
 }
 
 // The snapshot's cars as stage 1a gave them: no steer, no wheel radius, every moving car's word
@@ -111,6 +145,7 @@ fn vehicle_rows_uploaded_on_a_prepared_city() {
         let (mut frame, mut stage_1a) = (AgentFrame::default(), AgentFrame::default());
         let (mut snapshot, mut old) = (RenderSnapshot::default(), RenderSnapshot::default());
         let mut counts = Counts::default();
+        let mut lane_poses = Vec::new();
         for index in 0..frames {
             core.step_frame(FRAME_DT_S);
             snapshot = core.build_snapshot_reusing(snapshot);
@@ -126,6 +161,10 @@ fn vehicle_rows_uploaded_on_a_prepared_city() {
             counts.rows[0] += rows;
             counts.buckets[1] += old_buckets;
             counts.rows[1] += old_rows;
+            let (lane_cars, gate_cars, gate_ns) = gate_turns(core, &mut lane_poses);
+            counts.lane_cars += lane_cars;
+            counts.gate_cars += gate_cars;
+            counts.gate_test_ns += gate_ns;
             for custom in snapshot.car_custom.values() {
                 for car in custom.as_chunks::<4>().0 {
                     let lamps = car[2] as u32;
@@ -160,6 +199,9 @@ fn vehicle_rows_uploaded_on_a_prepared_city() {
                 "indicator_per_frame": per_frame(counts.indicator),
                 "reverse_per_frame": per_frame(counts.reverse),
                 "steering_per_frame": per_frame(counts.steer),
+                "city_lane_cars_per_frame": per_frame(counts.lane_cars),
+                "city_gate_turn_cars_per_frame": per_frame(counts.gate_cars),
+                "gate_test_ns_per_lane_car": counts.gate_test_ns as f64 / counts.lane_cars.max(1) as f64,
             }),
         );
     }
