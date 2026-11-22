@@ -631,6 +631,11 @@ envelope runs, `RAYON_NUM_THREADS=6`, the fix built on `dev` 180f28bcc):
 | 30,000 baseline | 150 → 0 | 10 → 0 | 5 → 0 | from day 4: admissions a home apart until day 6, final households, residents, employed and vacant homes equal |
 | 30,000 fiscal stress | 583 → 0 | 2 → 0 | 1 → 0 | from day 4: employed 417 → 425 and out-of-stock households 14,376 → 14,346 at the end |
 
+Most stay failures were new families on days 2 to 5: an immigrant's starting cash (15 a member)
+is under half a day of essentials (about 32 a member), its starting pantry (3 days) is not, so
+a new family now passes its first reviews, and a family whose home goes on its way in
+(`ECON-29`, [`demand.md`](demand.md#household-admission)) is rehoused at its next hourly phase
+instead of waiting for a wage.
 No reference violations, departures or trip failures in either build. Upgrade moves and the
 residential upgrade's occupant check read the same reserve, so a family with a full pantry now
 reaches a higher level's move-in reserve with fewer days of cash. In these cities that changed
