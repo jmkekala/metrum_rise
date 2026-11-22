@@ -630,6 +630,14 @@ fn check_same_edge_opposite_side_arrivals(count: usize, max_ticks: usize) {
 
     for _ in 0..max_ticks {
         agents.tick(&allocator, &mut network, &mut g, 0.1, &test_clock(0, 0));
+        // The trip is a drive: 250 m along the road, where the only walk leads 750 m round both
+        // of its ends. On foot an agent reaches the door at about the single agent's tick limit.
+        for &i in &ids {
+            assert!(
+                agents.transit[i] == TRANSIT_IN_BUILDING || agents.transit_mode[i] == MODE_CAR,
+                "agent {i} walks"
+            );
+        }
         if ids
             .iter()
             .all(|&i| agents.transit[i] == TRANSIT_IN_BUILDING && agents.current_building[i] == 1)
