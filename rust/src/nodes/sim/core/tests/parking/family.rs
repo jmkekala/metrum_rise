@@ -125,7 +125,7 @@ fn the_family_steps_out_at_the_car_doors_and_walks_in_once() {
     for (m, &i) in family.iter().enumerate() {
         let [x, z] = c
             .parking
-            .car_exit_point(place, m, crate::config::LEFT_HAND_DRIVE)
+            .car_exit_point(place, m, crate::config::LEFT_HAND_DRIVE, false)
             .unwrap();
         assert_eq!(
             (c.agents.pos_x[i], c.agents.pos_y[i]),

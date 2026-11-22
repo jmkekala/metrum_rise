@@ -218,7 +218,8 @@ starts as `IMMIGRATING` at a border node: with a car and a free place in the hom
 else the nearest free place it reaches beyond it, it drives `Drive → PullIn → WalkToDoor` (see
 [Parking rounds](#parking-rounds)); otherwise a drop-off car drives it to the home, to a free
 catchment place or a kerb stop at the door, and drives back to a border (`PARK-34`). Nobody walks
-in from the border. The whole household steps out of the stopped car (`PARK-35`); see
+in from the border. The whole household steps out of the stopped car (`PARK-35`), a drop-off's
+by every door but the driver's, whose driver stays in the car; see
 [Family arrival](traffic.md#family-arrival-park-35) and
 [Drop-off arrival](traffic.md#drop-off-arrival-park-34).
 

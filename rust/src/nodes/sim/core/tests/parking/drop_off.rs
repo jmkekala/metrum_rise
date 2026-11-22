@@ -102,7 +102,7 @@ fn a_carless_household_of_six_steps_out_at_a_free_place_and_the_car_leaves_the_m
     for (m, &i) in members.iter().enumerate() {
         let [x, z] = c
             .parking
-            .car_exit_point(place, m, crate::config::LEFT_HAND_DRIVE)
+            .car_exit_point(place, m, crate::config::LEFT_HAND_DRIVE, true)
             .unwrap();
         assert_eq!(
             (c.agents.pos_x[i], c.agents.pos_y[i]),
@@ -114,6 +114,21 @@ fn a_carless_household_of_six_steps_out_at_a_free_place_and_the_car_leaves_the_m
             COMPOSITION.member_age_group(m as u16)
         );
         assert_eq!(c.agents.parking_trip[i].phase, ParkingTripPhase::WalkToDoor);
+    }
+    // The driver stays in the car: nobody at the driver's door, no two members on one spot.
+    let [dx, dz] = c
+        .parking
+        .car_exit_point(place, 0, crate::config::LEFT_HAND_DRIVE, false)
+        .unwrap();
+    let at: Vec<_> = members
+        .iter()
+        .map(|&i| (c.agents.pos_x[i], c.agents.pos_y[i]))
+        .collect();
+    for (k, &(x, z)) in at.iter().enumerate() {
+        assert!((x - dx).hypot(z - dz) > 0.4, "member {k} at the driver's door");
+        for &(ox, oz) in &at[k + 1..] {
+            assert!((x - ox).hypot(z - oz) >= 0.5, "two members on one spot");
+        }
     }
     let a = &c.agents;
     assert_eq!(a.household_id[driver], usize::MAX);

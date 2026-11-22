@@ -3235,10 +3235,14 @@ the ordinary class and looks (its look is the agent's own render id, not the hou
   carrier with no route did before.
 - **The step-out.** In the ordered parking commit the stopped car lists itself; right after the
   tick (`SimCore::settle_parked_arrivals`) the household forms once as on a family arrival
-  (`HouseholdSystem::materialize_dropped_off_carrier`): every member is a new resident, member
-  `m` at the stopped car's door `m` by the `PARK-35` table and order (the driver's door
-  included: the drop-off driver is not drawn getting out), under the place's pose or at the kerb
-  under the car's own position and its lane's heading. Member 0 walks from the stop to the door
+  (`HouseholdSystem::materialize_dropped_off_carrier`): every member is a new resident at a
+  door of the stopped car by the `PARK-35` table and order without the driver's door, since the
+  drop-off driver is no member and stays in the car (`doors::exit_point`'s `driver_stays`, the
+  owner's decision of 2026-11-22): member 0 at the front passenger door, then the rear
+  passenger-side and rear driver-side doors, every further member a rear side door round-robin
+  from the passenger side, a door's later user a step behind the earlier (a vehicle with only
+  front doors: every member at the front passenger door, each a step further back). Under the
+  place's pose or at the kerb under the car's own position and its lane's heading. Member 0 walks from the stop to the door
   on a planned walk leg; the others on copies. Member 0 carries the household's car decision to
   the household's publication.
 - **The way back.** The carrier, a carrier no more, becomes the drop-off driver: no household,

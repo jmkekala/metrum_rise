@@ -12,7 +12,9 @@
 //! members 2 and 3 the rear passenger-side and rear driver-side doors. Every further member leaves
 //! by a rear side door, round-robin from the passenger side; a vehicle with only front doors lets
 //! them out by the front passenger door. A door's later user stands a fixed step toward the rear
-//! of its earlier one, so no two members share a spot. Seats are not read: until a household can
+//! of its earlier one, so no two members share a spot. A drop-off's driver stays in the car
+//! (`PARK-34`): its household leaves by the same doors in the same order without the driver's.
+//! Seats are not read: until a household can
 //! own a second car (`PARK-33`) every member of a car arrival steps out of the one car. The cargo
 //! door is never used. O(doors) per member, no allocation.
 
@@ -42,12 +44,15 @@ const fn door(side: DoorSide, row: DoorRow, x: f32, z: f32, width_m: f32) -> Veh
     }
 }
 
-/// Where household member `member` (0 the driver) stands when it steps out, `[x, z]` in the
-/// contract frame; `None` when `doors` has no driver's door (no door data). O(doors).
+/// Where household member `member` stands when it steps out, `[x, z]` in the contract frame;
+/// `None` when `doors` has no driver's door (no door data). Member 0 is the driver, unless
+/// `driver_stays`: a drop-off's driver is no member and stays in the car (`PARK-34`), so nobody
+/// leaves by the driver's door and member 0 takes the front passenger door. O(doors).
 pub(crate) fn exit_point(
     doors: &[VehicleDoor],
     member: usize,
     left_hand_drive: bool,
+    driver_stays: bool,
 ) -> Option<[f32; 2]> {
     let (driver, passenger) = if left_hand_drive {
         (DoorSide::Left, DoorSide::Right)
@@ -59,7 +64,7 @@ pub(crate) fn exit_point(
     let driver_door = find(DoorRow::Front, driver)?;
     // The first use of each door, in member order, then the doors further members share.
     let first = [
-        Some(driver_door),
+        Some(driver_door).filter(|_| !driver_stays),
         find(DoorRow::Front, passenger),
         find(DoorRow::Rear, passenger),
         find(DoorRow::Rear, driver),
@@ -101,16 +106,18 @@ pub(crate) fn world_point(position: [f32; 3], heading: f32, [x, z]: [f32; 2]) ->
 }
 
 impl super::ParkingSystem {
-    /// Where member `member` (0 the driver) of a household whose car stands at `place` steps
-    /// out, world `[x, z]`, under the place's saved pose; `None` for a place that is gone. O(1).
+    /// Where member `member` of a household whose car stands at `place` steps out, world
+    /// `[x, z]`, under the place's saved pose ([`exit_point`]: member 0 the driver unless
+    /// `driver_stays`); `None` for a place that is gone. O(1).
     pub(crate) fn car_exit_point(
         &self,
         place: super::Handle<super::Place>,
         member: usize,
         left_hand_drive: bool,
+        driver_stays: bool,
     ) -> Option<[f32; 2]> {
         let p = self.place_handles.resolve(place)?;
-        let local = exit_point(&CAR_DOORS, member, left_hand_drive)?;
+        let local = exit_point(&CAR_DOORS, member, left_hand_drive, driver_stays)?;
         Some(world_point(
             self.places.position[p],
             self.places.heading[p],
@@ -147,8 +154,9 @@ mod tests {
         doors: &[VehicleDoor],
         member: usize,
         left_hand_drive: bool,
+        driver_stays: bool,
     ) -> (DoorSide, DoorRow, usize) {
-        let [x, z] = exit_point(doors, member, left_hand_drive).unwrap();
+        let [x, z] = exit_point(doors, member, left_hand_drive, driver_stays).unwrap();
         for d in doors.iter().filter(|d| d.row != DoorRow::Cargo) {
             let out = if d.side == DoorSide::Left {
                 STANDING_OFFSET_M
@@ -174,7 +182,7 @@ mod tests {
         use DoorSide::{Left, Right};
         // Six members: the largest household admission draws (`MAX_STARTER_IMMIGRANT_HOUSEHOLD_SIZE`).
         let estate = bundled_doors("vehicle.civil.estate_compact");
-        let left: Vec<_> = (0..6).map(|m| seat(&estate, m, true)).collect();
+        let left: Vec<_> = (0..6).map(|m| seat(&estate, m, true, false)).collect();
         assert_eq!(
             left,
             [
@@ -186,7 +194,7 @@ mod tests {
                 (Left, Rear, 1)
             ]
         );
-        let right: Vec<_> = (0..6).map(|m| seat(&estate, m, false)).collect();
+        let right: Vec<_> = (0..6).map(|m| seat(&estate, m, false, false)).collect();
         assert_eq!(
             right,
             [
@@ -201,7 +209,7 @@ mod tests {
         // The truck has only front doors: every passenger leaves by the passenger door, one step
         // further back each.
         let truck = bundled_doors("vehicle.utility.rigid_box_18t");
-        let left: Vec<_> = (0..6).map(|m| seat(&truck, m, true)).collect();
+        let left: Vec<_> = (0..6).map(|m| seat(&truck, m, true, false)).collect();
         assert_eq!(
             left,
             [
@@ -213,21 +221,39 @@ mod tests {
                 (Right, Front, 4)
             ]
         );
+        // A drop-off's driver stays in the car (`PARK-34`): nobody at the driver's door, the
+        // other doors in the same order.
+        let left: Vec<_> = (0..6).map(|m| seat(&estate, m, true, true)).collect();
+        assert_eq!(
+            left,
+            [
+                (Right, Front, 0),
+                (Right, Rear, 0),
+                (Left, Rear, 0),
+                (Right, Rear, 1),
+                (Left, Rear, 1),
+                (Right, Rear, 2)
+            ]
+        );
+        let right: Vec<_> = (0..6).map(|m| seat(&estate, m, false, true)).collect();
+        assert_eq!(right[0], (Left, Front, 0));
+        assert!(right.iter().all(|&(side, row, _)| (side, row) != (Right, Front)));
+        let left: Vec<_> = (0..6).map(|m| seat(&truck, m, true, true)).collect();
+        assert_eq!(left, (0..6).map(|k| (Right, Front, k)).collect::<Vec<_>>());
         // No two members of one car stand on one spot; no door data, no point.
-        for doors in [&estate, &truck] {
-            for lhd in [true, false] {
-                let points: Vec<_> = (0..6).map(|m| exit_point(doors, m, lhd).unwrap()).collect();
-                for (a, p) in points.iter().enumerate() {
-                    for q in &points[a + 1..] {
-                        assert!(
-                            (p[0] - q[0]).hypot(p[1] - q[1]) >= 0.5,
-                            "{p:?} and {q:?} overlap"
-                        );
-                    }
+        for (doors, lhd, stays) in [&estate, &truck]
+            .into_iter()
+            .flat_map(|d| [(d, true, false), (d, false, false), (d, true, true), (d, false, true)])
+        {
+            let points: Vec<_> = (0..6).map(|m| exit_point(doors, m, lhd, stays).unwrap()).collect();
+            for (a, p) in points.iter().enumerate() {
+                for q in &points[a + 1..] {
+                    assert!((p[0] - q[0]).hypot(p[1] - q[1]) >= 0.5, "{p:?} and {q:?} overlap");
                 }
             }
         }
-        assert_eq!(exit_point(&[], 0, true), None);
+        assert_eq!(exit_point(&[], 0, true, false), None);
+        assert_eq!(exit_point(&[], 0, true, true), None);
     }
 
     #[test]

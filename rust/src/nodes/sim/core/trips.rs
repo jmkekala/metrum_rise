@@ -245,7 +245,7 @@ impl SimCore {
                 &self.allocator,
                 |member| {
                     parking
-                        .car_exit_point(trip.destination, member, crate::config::LEFT_HAND_DRIVE)
+                        .car_exit_point(trip.destination, member, crate::config::LEFT_HAND_DRIVE, false)
                         .map(|[x, z]| godot::prelude::Vector2::new(x, z))
                 },
             );
@@ -292,10 +292,10 @@ impl SimCore {
             walk,
             |member| {
                 let [x, z] = if trip.destination.is_none() {
-                    let local = doors::exit_point(&doors::CAR_DOORS, member, drive_side)?;
+                    let local = doors::exit_point(&doors::CAR_DOORS, member, drive_side, true)?;
                     doors::world_point(position, heading?, local)
                 } else {
-                    parking.car_exit_point(trip.destination, member, drive_side)?
+                    parking.car_exit_point(trip.destination, member, drive_side, true)?
                 };
                 Some(godot::prelude::Vector2::new(x, z))
             },
