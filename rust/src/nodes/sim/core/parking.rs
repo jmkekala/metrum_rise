@@ -1168,9 +1168,10 @@ impl SimCore {
 }
 
 impl SimCore {
-    /// Isolated capture command: one approved household enters through the ordinary paced
-    /// departure event at the next slot. O(shared topology refresh + one household carrier).
-    pub(crate) fn debug_add_parking_move_in(&mut self, home: usize) -> Option<usize> {
+    /// Isolated capture command: one approved household of `members` (two adults, then
+    /// children) enters through the ordinary paced departure event at the next slot. O(shared
+    /// topology refresh + one household carrier).
+    pub(crate) fn debug_add_parking_move_in(&mut self, home: usize, members: u16) -> Option<usize> {
         use crate::simulation::economy::agents::HouseholdAgeComposition;
         if home >= self.allocator.buildings.len()
             || self.allocator.buildings[home].occupancy >= self.allocator.household_capacity(home) {
@@ -1180,8 +1181,14 @@ impl SimCore {
         let border = *self.logistics.parking_borders().first()?;
         let pos = self.region_graph.node(border).pos;
         self.allocator.claim_vacancy(home);
-        let i = self.agents.spawn_household_arrival_carrier(home, 1,
-            HouseholdAgeComposition { adult_count: 1, ..Default::default() }, border, pos.x, pos.z);
+        let members = members.max(1);
+        let adults = members.min(2);
+        let composition = HouseholdAgeComposition {
+            adult_count: adults,
+            elder_count: 0,
+            child_count: members - adults,
+        };
+        let i = self.agents.spawn_household_arrival_carrier(home, members, composition, border, pos.x, pos.z);
         let carrier = self.agents.agent_handle(i);
         self.schedule_trip(self.time.absolute_slot() + 1,
             super::trips::TripEvent::ArrivalDeparture { carrier });
