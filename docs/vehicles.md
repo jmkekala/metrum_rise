@@ -996,16 +996,20 @@ GDScript loads each tier through Godot's glTF importer, as building meshes are
 texture slots out of the GLB's JSON chunk: the body shader binds the maps itself, so the importer
 decodes no texture and never tries to load a `keep` file as a resource. The tier is then turned
 half a turn about `Y` (`x` and `z` negated exactly), and the `COLOR_0` ids move to the mesh's
-`CUSTOM0` as their exact bytes (RGBA8 unorm); the mesh keeps no `COLOR` (`RENDER-70`). The
-Compatibility renderer multiplies a shader's `COLOR` by the instance colour of a `MultiMesh`
-even when it has no colours: its GLES3 storage reserves the colour beside the custom data and
-never writes it, so the ids came out as zero (the custom data's raw bits for a moving car) and
-every body drew unpainted. Forward+ multiplies only with instance colours on, which is why the
-bug showed in Compatibility alone. The lamp glow quads carry their colour and radius in `CUSTOM0`
-(RGBA float) for the same reason. The hand-written
+`CUSTOM0` as one float, the three bytes as a whole number (`r | g << 8 | b << 16`, exact below
+2^24, read in the vertex stage, so no interpolation touches it); the mesh keeps no `COLOR`
+(`RENDER-70`). The Compatibility renderer multiplies a shader's `COLOR` by the instance colour of
+a `MultiMesh` even when it has no colours: its GLES3 storage reserves the colour beside the custom
+data and never writes it, so the ids came out as zero (the custom data's raw bits for a moving
+car) and every body drew unpainted. Forward+ multiplies only with instance colours on, which is
+why the bug showed in Compatibility alone. One float and not four bytes because the same GLES3
+storage reads only the first component of a byte or half `CUSTOM` format (its size is the
+format's bytes over four), so RGBA8 lost surface and paint there; the float formats are read
+whole. The lamp glow quads carry their colour and radius in `CUSTOM0` (RGBA float) for the same
+reason. Same vertex size as the colour bytes, same row size: no cost. The hand-written
 GDScript GLB reader is gone (`RENDER-59`), and with it the `Color8` path the contract allowed
 for it. `godot/tests/parking_test.gd` checks every tier of every bundled look: one body surface,
-ids exact bytes in `CUSTOM0` in the allowed sets and no `COLOR`, wheel parts on LOD0 and LOD1 only, the low beams at `-Z`.
+ids exact whole numbers in `CUSTOM0` with bytes in the allowed sets and no `COLOR`, wheel parts on LOD0 and LOD1 only, the low beams at `-Z`.
 
 **Forward axis: not changed in 1a.** The runtime still points a car's `-Z` along travel, and the
 models are turned at load, as the placeholder cars were. The planned `+Z` runtime touches the
@@ -1019,7 +1023,7 @@ contract's frame is unchanged; switching later is a contained render change.
 rain, the street lamps' light and the draw fade (`agent_draw_fade.gdshaderinc`); bodies receive no
 shadows, as before:
 
-- vertex: `round(CUSTOM0.rgb * 255.0)` gives part, surface and paint; a wheel vertex (part 1 to 8)
+- vertex: the three bytes of `CUSTOM0.x` give part, surface and paint; a wheel vertex (part 1 to 8)
   and its normal are rotated about the wheel's centre (a uniform array per model), roll about
   the model's `X`, then steer about `Y` for a steering wheel; the lamp gain of the vertex's
   surface comes from the lamp bits, the night value (sun 4 to -2 degrees) and, for indicators,

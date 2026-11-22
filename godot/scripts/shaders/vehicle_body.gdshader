@@ -2,8 +2,8 @@ shader_type spatial;
 render_mode blend_mix, depth_draw_opaque, cull_back, diffuse_burley, specular_schlick_ggx, shadows_disabled;
 
 // One vehicle body: every tier of every model, moving and parked (`RENDER-65`, docs/vehicles.md
-// "Renderer"). The mesh carries its ids in CUSTOM0 as exact bytes (R part, G surface, B paint),
-// not in COLOR: the Compatibility renderer multiplies COLOR by the instance colour even for a
+// "Renderer"). The mesh carries its ids in CUSTOM0.x, one whole number holding three bytes
+// (bits 0-7 part, 8-15 surface, 16-23 paint), not in COLOR: the Compatibility renderer multiplies COLOR by the instance colour even for a
 // MultiMesh without colours, and that colour is then unwritten memory (`RENDER-70`). Each car's
 // data comes in INSTANCE_CUSTOM: x the front wheels' steer angle, y the wheels' roll angle (both
 // radians), z the 8 lamp bits, w the look word (6 paint bits, then 4 blink bits). Compatibility
@@ -74,8 +74,9 @@ float lamp_share(int surface, int lamps, float night, float blink) {
 }
 
 void vertex() {
-	// Exact bytes: CUSTOM0 is stored as unsigned normalized bytes and read back as byte / 255.
-	vec3 ids = round(CUSTOM0.rgb * 255.0);
+	// One float, exact below 2^24, read per vertex: no interpolation touches it here.
+	int packed = int(CUSTOM0.x + 0.5);
+	vec3 ids = vec3(float(packed & 255), float((packed >> 8) & 255), float((packed >> 16) & 255));
 	int part = int(ids.r);
 	if (part >= 1 && part <= 8) {
 		vec4 wheel = wheels[part - 1];

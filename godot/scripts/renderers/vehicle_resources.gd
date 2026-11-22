@@ -16,8 +16,10 @@ const PipelineTemplate := preload("res://scripts/renderers/pipeline_template.gd"
 const BODY_SHADER := preload("res://scripts/shaders/vehicle_body.gdshader")
 const TIERS := 4
 const PALETTE_SIZE := 64
-# The ids' vertex format: CUSTOM0 as four unsigned normalized bytes.
-const IDS_CUSTOM := Mesh.ARRAY_CUSTOM_RGBA8_UNORM
+# The ids' vertex format: CUSTOM0 as one float holding the three id bytes as a whole number
+# (`r | g << 8 | b << 16`, exact below 2^24). A float format because Godot 4.7.2's
+# Compatibility renderer reads only the first component of a byte or half CUSTOM format.
+const IDS_CUSTOM := Mesh.ARRAY_CUSTOM_R_FLOAT
 const WHEEL_SLOTS := 8
 
 var lamps_enabled := true
@@ -104,9 +106,10 @@ func _import_tier(path: String) -> Array:
 
 
 # The tier in the frame cars are drawn in: the node transform, then half a turn about Y (x and z
-# negated exactly). The ids move from COLOR to CUSTOM0 as their exact bytes (`RENDER-65`,
-# `RENDER-70`, docs/vehicles.md "Ids, instance colours and paint"): the Compatibility renderer
-# multiplies COLOR by an instance colour a MultiMesh without colours never wrote.
+# negated exactly). The ids move from COLOR to CUSTOM0, their three bytes packed in one exact
+# whole number (`RENDER-65`, `RENDER-70`, docs/vehicles.md "Mesh loading and the reader"): the
+# Compatibility renderer multiplies COLOR by an instance colour a MultiMesh without colours never
+# wrote.
 static func _drawn_arrays(arrays: Array, node: Transform3D) -> Array:
 	var vertices: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
 	for i in vertices.size():
@@ -130,14 +133,12 @@ static func _drawn_arrays(arrays: Array, node: Transform3D) -> Array:
 		arrays[Mesh.ARRAY_TANGENT] = tangents
 	if arrays[Mesh.ARRAY_COLOR] is PackedColorArray:
 		var colors: PackedColorArray = arrays[Mesh.ARRAY_COLOR]
-		var ids := PackedByteArray()
-		ids.resize(colors.size() * 4)
+		var ids := PackedFloat32Array()
+		ids.resize(colors.size())
 		for i in colors.size():
 			var c := colors[i]
-			ids[i * 4] = int(roundf(c.r * 255.0))
-			ids[i * 4 + 1] = int(roundf(c.g * 255.0))
-			ids[i * 4 + 2] = int(roundf(c.b * 255.0))
-			ids[i * 4 + 3] = 255
+			ids[i] = float(int(roundf(c.r * 255.0)) | int(roundf(c.g * 255.0)) << 8
+				| int(roundf(c.b * 255.0)) << 16)
 		arrays[Mesh.ARRAY_CUSTOM0] = ids
 		arrays[Mesh.ARRAY_COLOR] = null
 	return arrays
@@ -305,7 +306,7 @@ func _add_quad(verts: Array, norms: Array,
 
 ## The menu's pipeline prewarm template of the cars (`RENDER-43`): the body shader with the fade
 ## (any band selects it) on the tiers' vertex format (positions, normals, tangents, the ids in
-## CUSTOM0 as bytes, UVs).
+## CUSTOM0 as one float, UVs).
 static func pipeline_prewarm_surfaces() -> Array:
 	var format := (Mesh.ARRAY_FORMAT_NORMAL | Mesh.ARRAY_FORMAT_TANGENT | Mesh.ARRAY_FORMAT_CUSTOM0
 		| Mesh.ARRAY_FORMAT_TEX_UV)
