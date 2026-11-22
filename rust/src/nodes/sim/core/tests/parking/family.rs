@@ -314,10 +314,19 @@ pub(super) fn continues_after_load(c: &mut SimCore, name: &str, frames: usize) {
 
 #[test]
 fn a_save_before_the_family_steps_out_and_one_mid_walk_continue_as_the_unsaved_run() {
-    let frames = {
+    // The frame the family steps out in, and how many more until its last member is inside.
+    let (frames, walk) = {
         let (mut c, carrier) = arriving();
-        step_until(&mut c, 4000, |c| household_of(c, carrier).is_some())
+        let frames = step_until(&mut c, 4000, |c| household_of(c, carrier).is_some());
+        let family = members(&c, carrier);
+        let walk = step_until(&mut c, 4000, |c| {
+            family
+                .iter()
+                .all(|&i| c.agents.transit[i] == TRANSIT_IN_BUILDING)
+        });
+        (frames, walk)
     };
+    assert!(walk >= 4, "the walk in is long enough to save in: {walk} frames");
     // Saved while the car pulls in, before anyone has stepped out.
     let (mut c, carrier) = arriving();
     for _ in 0..frames - 20 {
@@ -327,7 +336,8 @@ fn a_save_before_the_family_steps_out_and_one_mid_walk_continue_as_the_unsaved_r
         household_of(&c, carrier).is_none(),
         "nobody has stepped out yet"
     );
-    continues_after_load(&mut c, "family-arrival-before-step-out", 60);
+    // On to the middle of the family's walk in, whatever the walking speed.
+    continues_after_load(&mut c, "family-arrival-before-step-out", 20 + walk / 2);
     assert!(
         household_of(&c, carrier).is_some(),
         "the family stepped out after the load"

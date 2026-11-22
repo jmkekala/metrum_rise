@@ -87,10 +87,13 @@ fn free_flow_profiles_keep_their_bits() {
         .into_iter()
         .map(|side| profile_fingerprint(&CchGraph::build(&varied_grid(side, true))))
         .collect();
-    // Recorded on `dev` 46aea5b1, before the shared customization (`TRAFFIC-17` round T1).
+    // Recorded on `dev` 46aea5b1, before the shared customization (`TRAFFIC-17` round T1), as
+    // [0xc8cf762c8a2180e8, 0x679ba1e8f2582fec, 0x5aa319f9c843addd]. Recorded again when the
+    // walking speed became 4 m/s (`TRAFFIC-41`): hashed profile by profile at both speeds, only
+    // the `FOOT` profile's bits differ on each grid, whose costs are lengths over that speed.
     assert_eq!(
         fingerprints,
-        [0xc8cf762c8a2180e8, 0x679ba1e8f2582fec, 0x5aa319f9c843addd]
+        [0x112e690d75d0d533, 0xcd9b80ec01ae38ad, 0xacd2eeb0ffec29ba]
     );
 }
 
