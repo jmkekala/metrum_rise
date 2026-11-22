@@ -4382,7 +4382,9 @@ step puts it back on the lane and plans it to the kerb stop itself (`return_to_l
   as a walker stepping out of a car). Capacity: the places fit between the kerb stop and half a
   truck short of the road edge's end behind it, `floor((s - 4) / 9) + 1` for a door `s` metres
   from that end; every further truck stands at the last place, drawn over the one there. A line
-  longer than the frontage stands before the neighbours' frontages. Known imperfections: a truck on
+  longer than the frontage stands before the neighbours' frontages, and one whose kerb lies on the
+  gate's side of the door can stand across the gate's mouth, drawn over the trucks turning in and
+  out (they do not collide off the lane). Known imperfections: a truck on
   its way from the gate is not yet in the line, so two refused within its drive may be planned to
   the same place, and one that arrives after a later-stamped truck took its place moves back to
   its own (backing along the kerb for 9 m); both are rare and settle by rank.

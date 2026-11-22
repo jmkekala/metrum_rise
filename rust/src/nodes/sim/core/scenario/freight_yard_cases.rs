@@ -337,6 +337,9 @@ fn run_with(class: &str, through: bool) -> YardRun {
     // Per shipment whose truck waits at a kerb stop for a dock: when it reached the gate.
     let mut queued_since: BTreeMap<u64, f32> = BTreeMap::new();
     let mut queue_wait_sum_s = 0.0_f64;
+    // Per shipment: the distinct (phase, yard flag, transit, ready) states its carrier was seen
+    // in while in transit, printed for a delivery to a dock building that did not stand in a dock.
+    let mut history: BTreeMap<u64, Vec<String>> = BTreeMap::new();
     let mut days = 0;
     while days < DAYS {
         if core.step_frame(FRAME_DT_S).daily_ticks > 0 {
@@ -352,6 +355,14 @@ fn run_with(class: &str, through: bool) -> YardRun {
                 && shipment.status == ShipmentStatus::InTransit
             {
                 let trip = core.agents.parking_trip[i];
+                let seen = history.entry(shipment.id).or_default();
+                let state = format!(
+                    "{:?}/{}/{}/{}",
+                    trip.phase, trip.freight_gate, core.agents.transit[i], trip.ready
+                );
+                if seen.last() != Some(&state) {
+                    seen.push(state);
+                }
                 if let ShipmentEndpoint::Building(b) = shipment.destination
                     && trip.freight_gate
                     && trip.phase != ParkingTripPhase::PullOut
@@ -407,6 +418,11 @@ fn run_with(class: &str, through: bool) -> YardRun {
                                     result.delivered_in_drive_through += u32::from(forward);
                                 } else if docked && (entry.2 || entry.4) {
                                     result.delivered_at_door_from_gate += 1;
+                                    eprintln!(
+                                        "delivered at a dock building outside its docks: shipment {} seen {:?}",
+                                        shipment.id,
+                                        history.get(&shipment.id)
+                                    );
                                 } else if docked {
                                     result.delivered_at_door_planned += 1;
                                 } else {
