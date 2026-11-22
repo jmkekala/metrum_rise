@@ -17,7 +17,7 @@ use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::core::time::TimeSystem;
 use crate::simulation::economy::agents::LaneEntry;
 use crate::simulation::economy::agents::data::AgentSystem;
-use crate::simulation::economy::agents::walker_gait::walker_size;
+use crate::simulation::economy::agents::walker_gait::{walker_is_child, walker_size};
 use crate::simulation::economy::definitions::{
     OperationalClockRuntimeTuning, RuntimeEconomyCatalog,
 };
@@ -33,9 +33,10 @@ const BUILDING_REPLAN_DELAY_S: f32 = 30.0;
 const NETWORK_REPLAN_DELAY_S: f32 = 5.0;
 const WALK_PHASE_CYCLES_PER_METER: f32 = 0.8;
 // The cap keeps fast-forwarded legs from flailing: cycles a tick of a walker of the model's size,
-// over its drawn size for others. At 1x a 60 Hz tick moves the fastest walker
-// (AGENT_WALK_SPEED_MS at the top pace, 4.72 m/s) 0.079 m, 0.063 of a cycle before its
-// size: under the cap, so a walker's feet keep pace with its body at any pace and size.
+// over its drawn size for others, so a child's quicker steps keep their rate. At 1x a 60 Hz tick
+// moves the fastest walker (AGENT_WALK_SPEED_MS at the top pace, 4.72 m/s) 0.079 m, 0.063
+// of a cycle before its size: under the cap, so a walker's feet keep pace with its body at any
+// pace and size.
 const WALK_PHASE_MAX_ADVANCE_PER_TICK: f32 = 0.07;
 
 // Cycles a walker of drawn size `stride` (`walker_gait::walker_size`) steps over `distance_m`.
@@ -172,7 +173,8 @@ impl AgentSystem {
                 let dz = *s_pos_y.get(i) - previous_z;
                 let distance_m = dx.hypot(dz);
                 // Each walker's stride scales with its drawn size (`walker_gait`).
-                let stride = walker_size(*slices.schedule_seed.get(i));
+                let child = walker_is_child(*slices.age_group.get(i), *slices.household_id.get(i));
+                let stride = walker_size(*slices.schedule_seed.get(i), child);
                 let phase_delta = walk_phase_advance(distance_m, stride);
                 if phase_delta > 0.0 {
                     let phase = *s_walk_phase.get(i);
@@ -198,15 +200,22 @@ mod tests {
         let fast_forward = walk_phase_advance(AGENT_WALK_SPEED_MS * realtime_delta * 60.0, 1.0);
         assert_eq!(fast_forward, WALK_PHASE_MAX_ADVANCE_PER_TICK);
 
-        // The fastest walker at 1x is not capped, at any drawn size: its feet match its
-        // body, its cycles a metre are the model's over its size (`RENDER-72`).
-        use crate::simulation::economy::agents::walker_gait::{PACE_SPREAD, SIZE_SPREAD};
+        // The fastest walker at 1x is not capped, at any drawn size from the smallest
+        // child to the tallest adult: its feet match its body, its cycles a metre are the
+        // model's over its size (`RENDER-72`: shorter legs, quicker steps).
+        use crate::simulation::economy::agents::walker_gait::{
+            CHILD_SIZE, PACE_SPREAD, SIZE_SPREAD,
+        };
         let top_pace = 1.0 + PACE_SPREAD;
         let sidewalk = AGENT_WALK_SPEED_MS * top_pace * realtime_delta;
-        for stride in [1.0 - SIZE_SPREAD, 1.0 + SIZE_SPREAD] {
+        for stride in [CHILD_SIZE[0], CHILD_SIZE[1], 1.0 - SIZE_SPREAD, 1.0 + SIZE_SPREAD] {
             let cycles = walk_phase_advance(sidewalk, stride);
             let unclamped = sidewalk * super::WALK_PHASE_CYCLES_PER_METER / stride;
             assert!((cycles - unclamped).abs() < 1e-7, "{stride}: {cycles} {unclamped}");
         }
+        // Fast-forwarded, a child's legs keep their quicker rate against an adult's.
+        let child = walk_phase_advance(1.0, CHILD_SIZE[0]);
+        let adult = walk_phase_advance(1.0, 1.0 + SIZE_SPREAD);
+        assert!((child / adult - (1.0 + SIZE_SPREAD) / CHILD_SIZE[0]).abs() < 1e-5);
     }
 }

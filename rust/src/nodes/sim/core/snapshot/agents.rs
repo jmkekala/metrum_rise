@@ -56,8 +56,8 @@ use crate::nodes::sim::render::lane_pose::{sample_lane_change_pose, sample_lane_
 use crate::simulation::economy::agents::data::AgentSystem;
 use crate::simulation::economy::agents::walker_crowd::{Opposing, walker_lateral_m};
 use crate::simulation::economy::agents::walker_gait::{
-    SIDE_OFFSET_MAX_M, walker_look, walker_pace, walker_side_offset_m, walker_size,
-    walker_step_beat,
+    SIDE_OFFSET_MAX_M, walker_is_child, walker_look, walker_pace, walker_side_offset_m,
+    walker_size, walker_step_beat,
 };
 use crate::simulation::economy::agents::{MODE_CAR, TRANSIT_NETWORK, transit_is_visible};
 use crate::simulation::network::lanes::LanePlanarBox;
@@ -561,7 +561,8 @@ impl SimCore {
             // model faces +Z in Godot. basis_z = fwd aligns +Z with travel dir.
             let basis = forward.map(model_basis).unwrap_or_else(default_model_basis);
             let seed = self.agents.schedule_seed[i];
-            let basis = basis.map(|axis| axis * walker_size(seed));
+            let child = walker_is_child(self.agents.age_group[i], self.agents.household_id[i]);
+            let basis = basis.map(|axis| axis * walker_size(seed, child));
             Ok(PosedAgent {
                 key: self.agents.pedestrian_type[i],
                 car: false,
@@ -887,7 +888,8 @@ impl SimCore {
                     .map(|(_, tangent)| tangent)
                     .or_else(|| access_phase_direction(self, i, world_x, world_z));
                 let basis = forward.map(model_basis).unwrap_or_else(default_model_basis);
-                let basis = basis.map(|axis| axis * walker_size(seed));
+                let child = walker_is_child(self.agents.age_group[i], self.agents.household_id[i]);
+                let basis = basis.map(|axis| axis * walker_size(seed, child));
                 let buffer = snapshot.pedestrian_transforms.entry(p_type).or_default();
                 push_transform(buffer, basis, Vector3::new(world_x, world_y, world_z));
                 buffer.push(walk_cycle);

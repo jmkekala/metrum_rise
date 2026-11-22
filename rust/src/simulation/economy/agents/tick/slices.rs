@@ -96,6 +96,8 @@ pub(crate) struct MovementSlices<'a> {
     pub(super) home: RawSlice<usize>,
     pub(super) work: RawSlice<usize>,
     pub(super) age_group: RawSlice<u8>,
+    // Read only, for a walker's drawn stride (`walker_gait::walker_is_child`).
+    pub(super) household_id: RawSlice<usize>,
     pub(super) pos_x: RawSlice<f32>,
     pub(super) pos_y: RawSlice<f32>,
     pub(super) activity: RawSlice<u8>,
@@ -162,6 +164,7 @@ impl<'a> MovementSlices<'a> {
             home: RawSlice::new(&mut agents.home_building),
             work: RawSlice::new(&mut agents.work_building),
             age_group: RawSlice::new(&mut agents.age_group),
+            household_id: RawSlice::new(&mut agents.household_id),
             pos_x: RawSlice::new(&mut agents.pos_x),
             pos_y: RawSlice::new(&mut agents.pos_y),
             activity: RawSlice::new(&mut agents.activity),

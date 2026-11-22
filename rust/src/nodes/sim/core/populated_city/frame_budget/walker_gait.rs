@@ -12,7 +12,7 @@
 
 use super::super::super::frame::FRAME_DT_S;
 use super::super::contract::{cache_dir, residents, timing_mode};
-use crate::simulation::economy::agents::walker_gait::walker_size;
+use crate::simulation::economy::agents::walker_gait::{walker_is_child, walker_size};
 use crate::simulation::economy::agents::{
     MODE_CAR, TRANSIT_ACCESS_EGRESS, TRANSIT_ACCESS_INGRESS, TRANSIT_IN_BUILDING,
 };
@@ -86,7 +86,8 @@ fn walker_gait_on_a_prepared_city() {
                 }
             };
             let cycles = (now.3 - phase).rem_euclid(1.0);
-            let per_metre = cycles * walker_size(agents.schedule_seed[i]) / moved;
+            let child = walker_is_child(agents.age_group[i], agents.household_id[i]);
+            let per_metre = cycles * walker_size(agents.schedule_seed[i], child) / moved;
             let gait = &mut gaits[place];
             gait.samples += 1;
             gait.metres += f64::from(moved);

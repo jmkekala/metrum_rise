@@ -8,8 +8,8 @@
 //! The pace is simulation state: a walker on a foot lane or an access path moves at the mean
 //! walking speed times its pace ([`walker_speed`]). Trip planning keeps the mean. The side
 //! offset, size, stride and step beat are presentation only: the render snapshot draws a walker
-//! beside its lane's centre line at its size, its legs keep its stride, and the simulation never
-//! reads them.
+//! beside its lane's centre line at its size (a child's at a child's scale, from its age group),
+//! its legs keep its stride, and the simulation never reads them.
 
 use super::determinism::stable_unit_f32;
 use crate::config::AGENT_WALK_SPEED_MS;
@@ -27,6 +27,9 @@ const BEAT_SALT: u64 = 0x5741_4C4B_4245_4154;
 /// `1 ± SIZE_SPREAD`, 1.60 to 2.00 m of the 1.8 m model. The agents' shadow casters keep a
 /// margin for a 2 m agent (`agent_frame::TWIN_MARGIN_M`), so this stays at most `1 / 9`.
 pub(crate) const SIZE_SPREAD: f32 = 0.11;
+
+/// A child's drawn size range as a fraction of the model's: 1.08 to 1.35 m of the 1.8 m model.
+pub(crate) const CHILD_SIZE: [f32; 2] = [0.6, 0.75];
 
 /// The widest pace difference from the mean, as a fraction: paces span `1 ± PACE_SPREAD`.
 pub(crate) const PACE_SPREAD: f32 = 0.18;
@@ -69,19 +72,34 @@ pub(crate) fn walker_look(schedule_seed: u32) -> f32 {
     stable_unit_f32(u64::from(schedule_seed) ^ LOOK_SALT)
 }
 
-/// The walker's drawn size as a fraction of the model's, in `[1 - SIZE_SPREAD, 1 + SIZE_SPREAD]`.
+/// Whether a walker is drawn at a child's scale: a child of a household. The agents that carry
+/// `AGE_CHILD` only to stay out of employment (a stored car's delivery carrier, a drop-off's
+/// driver, a freight carrier) belong to no household and are drawn as adults should one ever
+/// walk. Presentation only.
+#[inline(always)]
+pub(crate) fn walker_is_child(age_group: u8, household_id: usize) -> bool {
+    age_group == super::AGE_CHILD && household_id != usize::MAX
+}
+
+/// The walker's drawn size as a fraction of the model's: an adult's (or an elder's) in
+/// `[1 - SIZE_SPREAD, 1 + SIZE_SPREAD]`, a child's in `CHILD_SIZE`, both from the same seed draw.
 /// The draw is a wide and a narrow uniform draw summed (three parts to one), so sizes spread
 /// evenly over the middle half of the range (two thirds of walkers) and thin out linearly
 /// towards its ends. Its stride scales with it, so a taller walker takes fewer steps
-/// per metre. Presentation only.
+/// per metre and a child more. Presentation only.
 #[inline(always)]
-pub(crate) fn walker_size(schedule_seed: u32) -> f32 {
+pub(crate) fn walker_size(schedule_seed: u32, child: bool) -> f32 {
     let seed = u64::from(schedule_seed);
     let a = stable_unit_f32(seed ^ SIZE_SALT);
     let b = stable_unit_f32(seed ^ SIZE_SALT_2);
     // In [-1, 1], mean 0: flat over [-0.5, 0.5].
     let spread = 1.5 * a + 0.5 * b - 1.0;
-    1.0 + SIZE_SPREAD * spread
+    if child {
+        let [low, high] = CHILD_SIZE;
+        (low + high) * 0.5 + (high - low) * 0.5 * spread
+    } else {
+        1.0 + SIZE_SPREAD * spread
+    }
 }
 
 /// Where in its walk cycle the walker's steps fall, `[0, 1)`: added to its walk phase when drawn,
@@ -106,7 +124,7 @@ mod tests {
             sum += f64::from(pace);
             lo = lo.min(pace);
             hi = hi.max(pace);
-            let size = walker_size(seed);
+            let size = walker_size(seed, false);
             assert!((1.0 - SIZE_SPREAD..=1.0 + SIZE_SPREAD).contains(&size));
             assert!((0.0..1.0).contains(&walker_step_beat(seed)));
             let side = walker_side_offset_m(seed);
@@ -132,22 +150,30 @@ mod tests {
         );
     }
 
-    // `RENDER-72`: adults use the whole 1.6-2.0 m range, not a narrow band about the mean, a
-    // pure function of the saved seed.
+    // `RENDER-72`: adults use the whole 1.6-2.0 m range, not a narrow band about the mean; a
+    // child is drawn at 0.6-0.75 of the model; both are pure functions of the saved seed.
     #[test]
     fn sizes_spread_over_their_ranges_from_the_seed_alone() {
         let n = 20_000_u32;
+        let [child_low, child_high] = CHILD_SIZE;
         let (mut lo, mut hi) = (f32::MAX, f32::MIN);
+        let (mut child_lo, mut child_hi) = (f32::MAX, f32::MIN);
         // Adults by fifths of the range, from the shortest.
         let mut fifths = [0_u32; 5];
         let mut sum = 0.0_f64;
         for seed in 0..n {
             let seed = seed.wrapping_mul(2_654_435_761);
-            let size = walker_size(seed);
-            assert_eq!(size.to_bits(), walker_size(seed).to_bits(), "pure in the seed");
+            let size = walker_size(seed, false);
+            let child = walker_size(seed, true);
+            assert_eq!(size.to_bits(), walker_size(seed, false).to_bits(), "pure in the seed");
+            assert_eq!(child.to_bits(), walker_size(seed, true).to_bits(), "pure in the seed");
             assert!((1.0 - SIZE_SPREAD..=1.0 + SIZE_SPREAD).contains(&size), "{size}");
+            assert!((child_low..=child_high).contains(&child), "{child}");
+            // The child's place in its range is the adult's in theirs.
             let t = (size - (1.0 - SIZE_SPREAD)) / (2.0 * SIZE_SPREAD);
+            assert!((child - (child_low + (child_high - child_low) * t)).abs() < 1e-5);
             (lo, hi) = (lo.min(size), hi.max(size));
+            (child_lo, child_hi) = (child_lo.min(child), child_hi.max(child));
             fifths[((t * 5.0) as usize).min(4)] += 1;
             sum += f64::from(size);
         }
@@ -156,6 +182,7 @@ mod tests {
         // The ends of the range are reached: 1.60 m and 2.00 m to within a centimetre.
         let (low, high) = (1.0 - SIZE_SPREAD, 1.0 + SIZE_SPREAD);
         assert!(lo < low + 0.006 && hi > high - 0.006, "{lo}..{hi}");
+        assert!(child_lo < child_low + 0.005 && child_hi > child_high - 0.005);
         // Flat over the middle, thinning to the ends: the middle three fifths hold about 26 %
         // each, the outer fifths about 11 % each (the old sum of two equal draws: 8 % and 36 %
         // in the middle fifth).
@@ -168,5 +195,16 @@ mod tests {
         }
         // The tallest fifth (1.92-2.00 m) is about as full as the shortest.
         assert!((share(0) - share(4)).abs() < 0.02, "{fifths:?}");
+    }
+
+    #[test]
+    fn only_a_household_child_is_drawn_as_a_child() {
+        use super::super::{AGE_ADULT, AGE_CHILD, AGE_ELDER};
+        assert!(walker_is_child(AGE_CHILD, 7));
+        // The delivery carrier, the drop-off driver and freight carry `AGE_CHILD` with no
+        // household (`PARK-34`).
+        assert!(!walker_is_child(AGE_CHILD, usize::MAX));
+        assert!(!walker_is_child(AGE_ADULT, 7));
+        assert!(!walker_is_child(AGE_ELDER, 7));
     }
 }
