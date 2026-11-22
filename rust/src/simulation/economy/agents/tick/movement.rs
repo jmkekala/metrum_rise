@@ -33,8 +33,9 @@ const BUILDING_REPLAN_DELAY_S: f32 = 30.0;
 const NETWORK_REPLAN_DELAY_S: f32 = 5.0;
 const WALK_PHASE_CYCLES_PER_METER: f32 = 0.8;
 // The cap keeps fast-forwarded legs from flailing. At 1x a 60 Hz tick moves the fastest walker
-// (AGENT_SIDEWALK_SPEED_MS at the top pace, 4.72 m/s) 0.079 m, 0.066 of a cycle at the smallest
-// size: under the cap, so a walker's feet keep pace with its body at any pace.
+// (AGENT_WALK_SPEED_MS at the top pace, 4.72 m/s) 0.079 m, 0.066 of a cycle at the smallest
+// size: under the cap, so a walker's feet keep pace with its body at any pace, on a lane and on
+// an access path alike.
 const WALK_PHASE_MAX_ADVANCE_PER_TICK: f32 = 0.07;
 
 #[inline(always)]
@@ -195,9 +196,9 @@ mod tests {
         let fast_forward = walk_phase_advance(AGENT_WALK_SPEED_MS * realtime_delta * 60.0);
         assert_eq!(fast_forward, WALK_PHASE_MAX_ADVANCE_PER_TICK);
 
-        // The fastest sidewalk walker at 1x is not capped: its feet match its body.
-        let top_pace = 1.0 + crate::simulation::economy::agents::walker_gait::PACE_SPREAD;
-        let sidewalk = crate::config::AGENT_SIDEWALK_SPEED_MS * top_pace * realtime_delta;
-        assert!(walk_phase_advance(sidewalk) < WALK_PHASE_MAX_ADVANCE_PER_TICK);
+        // The fastest, smallest walker at 1x is not capped: its feet match its body.
+        use crate::simulation::economy::agents::walker_gait::{PACE_SPREAD, SIZE_SPREAD};
+        let step = AGENT_WALK_SPEED_MS * (1.0 + PACE_SPREAD) * realtime_delta;
+        assert!(walk_phase_advance(step / (1.0 - SIZE_SPREAD)) < WALK_PHASE_MAX_ADVANCE_PER_TICK);
     }
 }

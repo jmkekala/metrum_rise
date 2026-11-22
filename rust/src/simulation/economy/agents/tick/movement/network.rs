@@ -19,7 +19,7 @@ use crate::config::CAR_JUNCTION_SPEED_MS;
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::economy::agents::LaneEntry;
 use crate::simulation::economy::agents::walker_crowd::{Opposing, walker_lane_speed};
-use crate::simulation::economy::agents::walker_gait::walker_speed_on_lane;
+use crate::simulation::economy::agents::walker_gait::walker_speed;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::lanes::LaneType;
@@ -247,7 +247,7 @@ unsafe fn walker_network_speed(
     slices: &MovementSlices,
 ) -> f32 {
     unsafe {
-        let pace_speed = |agent: usize| walker_speed_on_lane(*slices.schedule_seed.get(agent));
+        let pace_speed = |agent: usize| walker_speed(*slices.schedule_seed.get(agent));
         let own = pace_speed(i);
         let lane_id = *slices.lane_id.get(i);
         let lanes = &transit_network.lane_system;

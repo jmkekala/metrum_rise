@@ -23,7 +23,7 @@
 
 use super::LaneEntry;
 use super::walker_gait::SIDE_OFFSET_MAX_M;
-use crate::config::DRIVE_ON_LEFT;
+use crate::config::{AGENT_WALK_SPEED_MS, DRIVE_ON_LEFT};
 
 /// A walker standing still moves slower than this, m/s.
 pub(crate) const WALKER_STANDING_MS: f32 = 0.05;
@@ -173,8 +173,8 @@ pub(crate) fn walker_lateral_m(
         }
     }
     if let Some(opposing) = opposing {
-        // Window widened by how far the two close in `ahead_s` at a brisk walk.
-        let reach = 4.0 * ahead_s;
+        // Window widened by how far a walker at the mean speed goes in `ahead_s`.
+        let reach = AGENT_WALK_SPEED_MS * ahead_s;
         let near = opposing
             .within(
                 length,

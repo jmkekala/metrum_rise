@@ -5,14 +5,14 @@
 //! All are pure functions of the seed, so they cost no agent storage, survive a save and load
 //! unchanged, and keep the simulation deterministic.
 //!
-//! The pace is simulation state: a walker on a foot lane or an access path moves at its shared
-//! speed times its pace. Trip planning keeps the shared speeds, the population's mean. The side
+//! The pace is simulation state: a walker on a foot lane or an access path moves at the mean
+//! walking speed times its pace ([`walker_speed`]). Trip planning keeps the mean. The side
 //! offset, size, stride and step beat are presentation only: the render snapshot draws a walker
 //! beside its lane's centre line at its size, its legs keep its stride, and the simulation never
 //! reads them.
 
 use super::determinism::stable_unit_f32;
-use crate::config::{AGENT_SIDEWALK_SPEED_MS, AGENT_WALK_SPEED_MS};
+use crate::config::AGENT_WALK_SPEED_MS;
 
 // Salts keep the gait independent of the other values drawn from the same seed.
 const PACE_SALT: u64 = 0x5741_4C4B_5041_4345;
@@ -44,21 +44,14 @@ pub(crate) fn walker_pace(schedule_seed: u32) -> f32 {
     1.0 + PACE_SPREAD * (a + b - 1.0)
 }
 
-/// The walker's own speed off the lanes, m/s: the mean walking speed times its pace. What it
-/// walks on a building's access path, from a car to a door and across the ground to a sidewalk.
+/// The walker's own speed, m/s: the mean walking speed times its pace. What it walks on a foot
+/// lane or crossing, before a slower walker ahead holds it (`walker_crowd`), and off the lanes:
+/// on a building's access path, from a car to a door, across the ground to a sidewalk. The
+/// movement step and the lane claims both take it from here, so a walker never steps further
+/// than its claim allowed.
 #[inline(always)]
 pub(crate) fn walker_speed(schedule_seed: u32) -> f32 {
     AGENT_WALK_SPEED_MS * walker_pace(schedule_seed)
-}
-
-/// The walker's own speed on a foot lane or crossing, m/s: the lanes' mean times its pace, before
-/// a slower walker ahead holds it (`walker_crowd`). The movement step and the lane claims both
-/// take it from here, so a walker never steps further than its claim allowed. The lanes keep a
-/// mean of their own until the owner decides `TRAFFIC-41`; with one mean this is
-/// [`walker_speed`].
-#[inline(always)]
-pub(crate) fn walker_speed_on_lane(schedule_seed: u32) -> f32 {
-    AGENT_SIDEWALK_SPEED_MS * walker_pace(schedule_seed)
 }
 
 /// The walker's drawn distance from its foot lane's centre line, metres, in

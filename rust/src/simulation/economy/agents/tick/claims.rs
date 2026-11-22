@@ -406,7 +406,7 @@ fn agent_network_claim_distance(
 ) -> f32 {
     if agents.transit_mode[i] != MODE_CAR {
         // The walker's own step this tick, as the movement pass takes it.
-        return crate::simulation::economy::agents::walker_gait::walker_speed_on_lane(
+        return crate::simulation::economy::agents::walker_gait::walker_speed(
             agents.schedule_seed[i],
         );
     }

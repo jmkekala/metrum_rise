@@ -134,19 +134,13 @@ pub const CAR_JUNCTION_LATERAL_ACCEL_MS2: f32 = 2.2;
 /// Small denominator floor for route-cost calculations on malformed or very slow edges.
 pub const MIN_ROUTE_SPEED_MS: f32 = 1.0;
 
-/// Mean walking speed (m/s), about 5 km/h: a realistic pedestrian pace to the eye. Every walking
-/// plan, quote and limit is priced at it (the routing metric, access and frontage times, the
-/// parking walk, the mode choice), and off the lanes each walker walks it times its own pace
-/// (`walker_gait::walker_speed`). In real seconds at 1x: the calendar runs 60 times faster, so
-/// it is 84 m a game hour.
-pub const AGENT_WALK_SPEED_MS: f32 = 1.4;
-
-/// Mean walking speed on foot lanes and crossings (m/s), each walker scaled by its own pace
-/// (`walker_gait::walker_speed_on_lane`): 2.86 times the speed trips are planned at. Walking
-/// the lanes at [`AGENT_WALK_SPEED_MS`] lengthened every network walk by that factor and the
-/// growth scenarios' households ran out of food, so the lanes keep 4 m/s until the owner
-/// decides (`TRAFFIC-41`).
-pub const AGENT_SIDEWALK_SPEED_MS: f32 = 4.0;
+/// Mean walking speed (m/s): a gameplay speed, not a pedestrian's pace to the eye (`TRAFFIC-41`,
+/// the owner's decision). Speeds are metres per real second at 1x and one game minute is one
+/// real second, so 4 m/s is 240 m a game hour, where a 5 km/h walk would be 84 m. Each walker
+/// walks it times its own pace (`walker_gait::walker_speed`) on foot lanes, on crossings and off
+/// the lanes alike, and every walking plan, quote and limit is priced at it: the routing metric,
+/// access and frontage times, the parking walk, the mode choice.
+pub const AGENT_WALK_SPEED_MS: f32 = 4.0;
 
 /// Speed for agents traversing a driveway in a car (m/s).
 /// 3.0 m/s ≈ 11 km/h — appropriate for a private driveway or car park.
