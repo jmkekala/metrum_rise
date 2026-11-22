@@ -931,7 +931,7 @@ fn parking_move_in_parks_before_walking_to_door() {
 }
 
 #[test]
-fn parking_move_in_without_space_walks_and_keeps_car_off_map() {
+fn parking_move_in_without_space_is_dropped_off_and_keeps_car_off_map() {
     run_parking_move_in(true);
 }
 
@@ -960,10 +960,9 @@ fn run_parking_move_in(full: bool) {
     agents.prepare_lane_buckets_for_test(&network);
     let car = agents.parking_trip[i].vehicle;
     assert!(!car.is_none());
-    assert_eq!(
-        agents.transit_mode[i],
-        if full { MODE_WALK } else { MODE_CAR }
-    );
+    // Without a place it rides a drop-off car (`PARK-34`), its own car stored.
+    assert_eq!(agents.transit_mode[i], MODE_CAR);
+    assert_eq!(agents.parking_trip[i].drop_off, full);
     assert!(
         parking.vehicle_place(car).is_none(),
         "departure cannot create occupancy"
@@ -994,6 +993,10 @@ fn run_parking_move_in(full: bool) {
             agents.agents.parking_trip[i] = serde_json::from_str(&saved).unwrap();
             restored = true;
         }
+        if full && agents.parked_arrivals.contains(&agents.agent_handle(i)) {
+            // At its kerb stop: the household steps out after the tick (`SimCore`).
+            break;
+        }
         if agents.transit[i] == TRANSIT_IN_BUILDING {
             assert_eq!(
                 agents.transit_mode[i], MODE_WALK,
@@ -1002,13 +1005,15 @@ fn run_parking_move_in(full: bool) {
             break;
         }
     }
-    assert_eq!(agents.transit[i], TRANSIT_IN_BUILDING);
-    assert_eq!(agents.current_building[i], 1);
     if full {
+        assert!(agents.parked_arrivals.contains(&agents.agent_handle(i)), "stopped");
+        assert!(agents.parking_trip[i].destination.is_none(), "at the kerb");
         assert!(parking.vehicle_place(car).is_none());
-        assert_eq!(phases, [false; 3]);
+        assert_eq!(phases, [true, true, false]);
         assert_eq!(parking.counts().2, 1);
     } else {
+        assert_eq!(agents.transit[i], TRANSIT_IN_BUILDING);
+        assert_eq!(agents.current_building[i], 1);
         assert_eq!(phases, [true; 3]);
         assert!(parking.vehicle_place(car).is_some());
         assert!(restored);
