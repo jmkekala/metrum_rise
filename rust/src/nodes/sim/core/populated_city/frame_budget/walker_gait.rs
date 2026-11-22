@@ -4,7 +4,11 @@
 //! where they walk: a road's sidewalk, a crossing, an access path (a door's, a bay's, a family
 //! stepping out of its car) or the ground off every lane. A walker's legs match its body when its
 //! walk phase advances the same number of cycles for every metre of its size wherever it walks,
-//! and no step is cut by the per-tick cap. Read-only: nothing here touches the simulation.
+//! and no step is cut by the per-tick cap. A frame in which the stored position jumped (a walker
+//! stepping from an access path or a crossing onto the next lane) reads as a longer step than
+//! the walker took, so the census counts its samples by cycles a metre: the share at the full
+//! rate is the share of frames in which the legs matched. Read-only: nothing here touches the
+//! simulation.
 
 use super::super::super::frame::FRAME_DT_S;
 use super::super::contract::{cache_dir, residents, timing_mode};
@@ -17,15 +21,16 @@ use crate::simulation::economy::agents::{
 const PLACES: [&str; 4] = ["sidewalk", "crossing", "access_path", "off_lane"];
 // A walker that moved less than this in a frame, metres, stands: it has no gait to read.
 const MOVED_M: f32 = 1.0e-4;
+// Samples are counted by tenths of a cycle a metre of the walker's size; the last class is open.
+const RATE_CLASSES: usize = 9;
 
 #[derive(Clone, Copy, Default)]
 struct Gait {
     samples: u64,
     metres: f64,
     cycles: f64,
-    // Cycles a metre of the walker's size: the least and the most seen.
-    least: f32,
-    most: f32,
+    // Samples by cycles a metre of the walker's size, in tenths.
+    by_rate: [u64; RATE_CLASSES],
 }
 
 /// Steps the prepared `METRUM_PERF_RESIDENTS` city to 07:30 at 32x, then `METRUM_GAIT_FRAMES`
@@ -48,10 +53,7 @@ fn walker_gait_on_a_prepared_city() {
     }
     core.time.speed_multiplier = speed;
     let dt = FRAME_DT_S as f32 * speed;
-    let mut gaits = [Gait {
-        least: f32::MAX,
-        ..Default::default()
-    }; PLACES.len()];
+    let mut gaits = [Gait::default(); PLACES.len()];
     // Per agent index: render id, position, walk phase and whether it walked, last frame.
     let mut before: Vec<(u64, f32, f32, f32, bool)> = Vec::new();
     for _ in 0..frames {
@@ -89,8 +91,8 @@ fn walker_gait_on_a_prepared_city() {
             gait.samples += 1;
             gait.metres += f64::from(moved);
             gait.cycles += f64::from(cycles);
-            gait.least = gait.least.min(per_metre);
-            gait.most = gait.most.max(per_metre);
+            // The rate is exact only to rounding: 0.8 a metre may read a hair under it.
+            gait.by_rate[((per_metre * 10.0 + 1.0e-3) as usize).min(RATE_CLASSES - 1)] += 1;
         }
     }
     let places: serde_json::Map<String, serde_json::Value> = PLACES
@@ -106,8 +108,7 @@ fn walker_gait_on_a_prepared_city() {
                     "speed_ms": gait.metres / seconds,
                     "cycles_per_s": gait.cycles / seconds,
                     "cycles_per_m": gait.cycles / gait.metres,
-                    "least_cycles_per_size_m": gait.least,
-                    "most_cycles_per_size_m": gait.most,
+                    "samples_by_tenth_of_a_cycle_per_size_m": gait.by_rate,
                 })
             };
             (place.to_string(), value)
