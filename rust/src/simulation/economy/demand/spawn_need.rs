@@ -506,7 +506,7 @@ impl StoreSizes {
 
     /// Whether a store of `profile` should leave the demand to a store of another size: a larger
     /// size of store for its good that the unmet demand fills opens instead (the demand waits for
-    /// its lot), and when a smaller size exists, this one opens only when the demand fills it.
+    /// its lot), and with another size beside it, this one opens only when the demand fills it.
     /// "Fills" is [`STORE_FILL_SHARE`] of the size's daily volume, judged on the demand left
     /// after every store of that size or larger: smaller stores' capacity does not count.
     /// A store alone for its good, and any other profile, never defers. O(sizes).
@@ -526,7 +526,7 @@ impl StoreSizes {
             unmet >= STORE_FILL_SHARE * store.units
         };
         same_good().any(|size| size.units > this.units && fills(size))
-            || (same_good().any(|size| size.units < this.units) && !fills(this))
+            || (same_good().nth(1).is_some() && !fills(this))
     }
 }
 

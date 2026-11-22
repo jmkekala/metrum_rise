@@ -454,8 +454,8 @@ nothing. With several sizes, one comparison runs before a store's proof:
   grocery, so kiosks cannot keep a grocery from ever opening.
 - A store is refused, as a store without customers is, when a larger size of its good is filled:
   the demand waits for a grocery's lot, and a free small lot alone never builds a kiosk then.
-- A size with a smaller size beside it opens only when it is filled itself; the smallest size
-  keeps the ordinary proof.
+- Any size opens only when it is filled itself: below half a kiosk's volume (12.5 kg) neither
+  opens.
 - On a lot both fit, the larger store is preferred: one rank in the asset key, after the good's
   priority and before the seeded hash. Every asset that is not a smaller store has rank 0, so a
   pack without a second store size selects exactly as before.

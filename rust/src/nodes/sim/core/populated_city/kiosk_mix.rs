@@ -127,3 +127,48 @@ fn kiosk_mix() {
         previous = now;
     }
 }
+
+// The smallest zoned lot: one row of commercial cells along a street holds one-cell lots, which
+// only the one-cell kiosk fits; each is built with its entrance on the street.
+#[test]
+#[ignore = "builds a street grid; run in a release test build"]
+fn one_cell_lots_take_kiosks() {
+    use crate::simulation::zoning::ZoneType;
+    use crate::simulation::zoning::cells::CellSelectionShape;
+    use glam::DVec2;
+    let (mut core, row_z, half_x) = super::street_grid(400.0);
+    super::super::scenario::install_fixture_assets(&mut core, true);
+    // Lanes 3.5 m and sidewalks 1.5 m: the first cell row's centres stand 10 m off the centre
+    // line; a 4 m brush there selects that row alone.
+    let (x0, x1, z) = (
+        f64::from(-half_x) + 60.0,
+        f64::from(-half_x) + 160.0,
+        f64::from(row_z[1]) + 10.0,
+    );
+    super::super::scenario::paint(
+        &mut core,
+        ZoneType::Commercial,
+        CellSelectionShape::Brush { radius_m: 4.0 },
+        &[DVec2::new(x0, z), DVec2::new(x1, z)],
+    );
+    super::fill_lots(&mut core);
+    let kiosk = core
+        .demand
+        .runtime_catalog()
+        .profile_for_id("grocery_kiosk")
+        .unwrap()
+        .runtime_id;
+    let kiosks: Vec<_> = core
+        .allocator
+        .buildings
+        .iter()
+        .filter(|building| building.economy_profile_runtime_id == kiosk)
+        .collect();
+    println!("{} kiosks on one-cell lots", kiosks.len());
+    assert!(kiosks.len() >= 5, "{} kiosks", kiosks.len());
+    for building in kiosks {
+        assert_eq!((building.width_cells, building.depth_cells), (1, 1));
+        assert!(!building.broken && !building.economy_broken);
+        assert_ne!(building.edge_idx, usize::MAX, "a kiosk has its street access");
+    }
+}

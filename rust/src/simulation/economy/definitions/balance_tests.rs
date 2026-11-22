@@ -81,21 +81,32 @@ fn resource_name(catalog: &RuntimeEconomyCatalog, resource: ResourceRuntimeId) -
         .unwrap_or("<unknown>")
 }
 
-/// The single business profile producing `resource`, or `None` when it is import-only.
+/// The single business profile producing `resource`, or `None` when it is import-only. Stores
+/// of several sizes for one good (`ECON-32`) sell it at one price: the chain counts the largest.
 fn local_producer(
     catalog: &RuntimeEconomyCatalog,
     resource: ResourceRuntimeId,
 ) -> Option<&EconomyProfileRuntime> {
-    let mut producers = catalog
-        .all_profiles()
-        .iter()
-        .filter(|profile| is_business(profile.kind) && profile.output_port(resource).is_some());
-    let producer = producers.next()?;
-    assert!(
-        producers.next().is_none(),
-        "resource '{}' has several producing profiles; the chain model needs one",
-        resource_name(catalog, resource)
-    );
+    let producers = || {
+        catalog
+            .all_profiles()
+            .iter()
+            .filter(|profile| is_business(profile.kind) && profile.output_port(resource).is_some())
+    };
+    let stores = producers().all(|profile| profile.kind == EconomyProfileRuntimeKind::Store);
+    let mut producers = producers();
+    let mut producer = producers.next()?;
+    for other in producers {
+        assert!(
+            stores,
+            "resource '{}' has several producing profiles; the chain model needs one",
+            resource_name(catalog, resource)
+        );
+        let units = |profile: &EconomyProfileRuntime| profile.outputs[0].units_per_day;
+        if units(other) > units(producer) {
+            producer = other;
+        }
+    }
     assert_eq!(
         producer.outputs.len(),
         1,

@@ -307,6 +307,18 @@ pub(crate) const FIXTURE_PACK_ROOTS: [&str; 2] = ["godot/tests/mods", "godot/boo
 /// Replaces the registry with every pack under [`FIXTURE_PACK_ROOTS`]. The building stock is
 /// the test-only pack; a release ships none of it.
 pub(crate) fn install_bootstrap_assets(core: &mut SimCore) {
+    #[cfg(test)]
+    let kiosk = std::env::var_os("METRUM_TEST_KIOSK").is_some();
+    #[cfg(not(test))]
+    let kiosk = false;
+    install_fixture_assets(core, kiosk);
+}
+
+/// [`install_bootstrap_assets`], with the synthetic kiosk of `test_kiosk_manifest` in the
+/// building pack when `kiosk` (test builds only; other builds ignore it).
+pub(crate) fn install_fixture_assets(core: &mut SimCore, kiosk: bool) {
+    #[cfg(not(test))]
+    let _ = kiosk;
     let repository = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
     let mut packs = Vec::new();
     for root in FIXTURE_PACK_ROOTS {
@@ -324,7 +336,7 @@ pub(crate) fn install_bootstrap_assets(core: &mut SimCore) {
     // `METRUM_TEST_KIOSK` adds a synthetic one-cell kiosk to the building pack, the measured
     // store mix of `ECON-32` (`populated_city::kiosk_mix`); unset, the packs are as shipped.
     #[cfg(test)]
-    if std::env::var_os("METRUM_TEST_KIOSK").is_some()
+    if kiosk
         && let Some(pack) = packs.iter_mut().find(|pack| pack.pack.pack_id == "kenney")
     {
         let grocery = "building.commercial.small_grocery_store";
