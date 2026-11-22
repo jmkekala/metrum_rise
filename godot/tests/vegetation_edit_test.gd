@@ -266,6 +266,20 @@ func _run() -> void:
 	var next_pick := tool._point_pick
 	_expect(tool.apply_at(point) == 0 and tool._point_pick == next_pick,
 		"a refused point plant must keep the pick")
+	# Hiding the preview (the pointer over a panel) clears the reason; the same pick shown again
+	# on clear ground must drop the blocked tint with it. The headless renderer keeps no instance
+	# colours, so the tool's record of the tint it applied is read.
+	_expect(tool._point_tinted_blocked, "a refused ghost must carry the blocked tint")
+	tool._hide_point_preview()
+	var clear_spot := point + Vector2(0.0, 40.0)
+	for _i in range(100):
+		tool._update_point_preview(clear_spot)
+		if tool._point_pos == clear_spot:
+			break
+		await create_timer(0.01).timeout
+	_expect(tool._point_pos == clear_spot and tool._point_reason.is_empty()
+		and not tool._point_tinted_blocked,
+		"a ghost shown again on clear ground after a refusal must drop the blocked tint")
 	_expect(simulation.undo_action(), "point undo must queue")
 	for _i in range(100):
 		await create_timer(0.01).timeout

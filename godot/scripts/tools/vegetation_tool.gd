@@ -163,6 +163,9 @@ var _point_preview_step := -1
 var _point_model_pick := -1
 var _point_model_step := -1
 var _point_model_tint := Color.WHITE
+# Whether the ghost's instance colour carries the blocked tint. Hiding the preview clears the
+# reason but not the colour, so a refused ghost shown again on clear ground must still repaint.
+var _point_tinted_blocked := false
 var _point_name := ""
 var _point_height_text := ""
 var _point_root := Vector3.ZERO
@@ -586,7 +589,7 @@ func _show_point_result(result: Variant) -> void:
 	elif result.size() == 7:
 		refusal = int(result[6])
 	var reason: String = POINT_REFUSALS.get(refusal, "")
-	var repaint := reason != _point_reason
+	var repaint := reason != _point_reason or (refusal != 0) != _point_tinted_blocked
 	_point_reason = reason
 	if not has_plant:
 		if repaint:
@@ -626,6 +629,7 @@ func _show_point_result(result: Variant) -> void:
 		# Instance colour preserves cutouts and tints both bark and foliage.
 		mm.set_instance_color(0, _point_model_tint * VegetationPlacements.BLOCKED_TINT
 			if refusal != 0 else _point_model_tint)
+		_point_tinted_blocked = refusal != 0
 		_set_option_label_text()
 	_point_root = Vector3(result[0], result[1], result[2])
 	_point_ghost.show()
