@@ -368,6 +368,168 @@ impl OutputAbsorptionContext {
     }
 }
 
+/// Share of a store's full daily volume the unmet demand must fill before a store of that size
+/// opens, when the registry can build another size of store for the same resource (`ECON-32`).
+pub(super) const STORE_FILL_SHARE: f32 = 0.5;
+
+// One buildable store size: a `store` profile with a legal level-one asset, the resource it
+// sells and its full daily output of it, with the city's stores of that profile counted in
+// full-output units (placed, under construction, queued and committed this pass).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct StoreSize {
+    profile: u16,
+    resource: ResourceRuntimeId,
+    units: f32,
+    stores: f32,
+}
+
+/// The sizes of store the registry can build for each resource it sells (`ECON-32`), with the
+/// city's stores of each size. With one size per resource (every pack without a second store
+/// for a good) it changes nothing; with several, the largest size the unmet demand fills is the
+/// one that opens, and the smaller sizes' capacity does not count against a larger one, so small
+/// stores cannot keep a large one from ever opening.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct StoreSizes {
+    // Sorted by resource, then by size, largest first, then by profile.
+    sizes: Vec<StoreSize>,
+}
+
+impl StoreSizes {
+    /// Adds `profile`'s size when it is a store selling goods. O(sizes).
+    pub(crate) fn add(&mut self, profile: &EconomyProfileRuntime) {
+        if profile.kind != EconomyProfileRuntimeKind::Store
+            || self.sizes.iter().any(|size| size.profile == profile.runtime_id)
+        {
+            return;
+        }
+        // A store converts one input into the one good it sells.
+        let Some(port) = profile
+            .outputs
+            .iter()
+            .find(|port| profile.net_output_units_per_day(port) > EPSILON)
+        else {
+            return;
+        };
+        self.sizes.push(StoreSize {
+            profile: profile.runtime_id,
+            resource: port.resource_runtime_id,
+            units: profile.net_output_units_per_day(port),
+            stores: 0.0,
+        });
+        self.sizes.sort_by(|left, right| {
+            left.resource
+                .cmp(&right.resource)
+                .then(right.units.total_cmp(&left.units))
+                .then(left.profile.cmp(&right.profile))
+        });
+    }
+
+    /// How many buildable stores of the same good are larger than `profile`'s: 0 for the
+    /// largest, for a store alone for its good and for any other profile. O(sizes).
+    pub(crate) fn rank(&self, profile: u16) -> u32 {
+        self.size(profile).map_or(0, |this| {
+            self.sizes
+                .iter()
+                .filter(|size| size.resource == this.resource && size.units > this.units)
+                .count() as u32
+        })
+    }
+
+    /// Whether some good has stores of more than one size, so the choice applies at all.
+    pub(super) fn has_choice(&self) -> bool {
+        self.sizes
+            .windows(2)
+            .any(|pair| pair[0].resource == pair[1].resource)
+    }
+
+    fn size(&self, profile: u16) -> Option<&StoreSize> {
+        self.sizes.iter().find(|size| size.profile == profile)
+    }
+
+    /// Counts the city's stores of each size: its buildings (under construction included) and
+    /// its active queued projects. One parallel pass over the buildings, run once per planning
+    /// slot and only when [`Self::has_choice`]; O(B/p + queued).
+    pub(super) fn count_stores(
+        &mut self,
+        allocator: &BuildingAllocator,
+        queued: impl Iterator<Item = u16>,
+    ) {
+        for size in &mut self.sizes {
+            size.stores = 0.0;
+        }
+        if !self.has_choice() {
+            return;
+        }
+        let sizes = &self.sizes;
+        let counts = crate::thread_pools::install(|| {
+            use rayon::prelude::*;
+            allocator
+                .buildings
+                .par_iter()
+                .fold(
+                    || vec![0_u32; sizes.len()],
+                    |mut counts, building| {
+                        if !building.broken && !building.economy_broken && !building.is_deserted
+                            && let Some(index) = sizes
+                                .iter()
+                                .position(|size| size.profile == building.economy_profile_runtime_id)
+                        {
+                            counts[index] += 1;
+                        }
+                        counts
+                    },
+                )
+                .reduce(
+                    || vec![0_u32; sizes.len()],
+                    |mut left, right| {
+                        for (left, right) in left.iter_mut().zip(right) {
+                            *left += right;
+                        }
+                        left
+                    },
+                )
+        });
+        for (size, count) in self.sizes.iter_mut().zip(counts) {
+            size.stores = count as f32;
+        }
+        for profile in queued {
+            self.commit(profile, 1.0);
+        }
+    }
+
+    /// Counts a store of `profile` committed by this pass, at `scale` of its full output.
+    pub(super) fn commit(&mut self, profile: u16, scale: f32) {
+        if let Some(size) = self.sizes.iter_mut().find(|size| size.profile == profile) {
+            size.stores += scale;
+        }
+    }
+
+    /// Whether a store of `profile` should leave the demand to a store of another size: a larger
+    /// size of store for its good that the unmet demand fills opens instead (the demand waits for
+    /// its lot), and when a smaller size exists, this one opens only when the demand fills it.
+    /// "Fills" is [`STORE_FILL_SHARE`] of the size's daily volume, judged on the demand left
+    /// after every store of that size or larger: smaller stores' capacity does not count.
+    /// A store alone for its good, and any other profile, never defers. O(sizes).
+    pub(super) fn defers(&self, profile: u16, market: &OutputAbsorptionContext) -> bool {
+        let Some(this) = self.size(profile) else {
+            return false;
+        };
+        let same_good = || self.sizes.iter().filter(|size| size.resource == this.resource);
+        let fills = |store: &StoreSize| {
+            let smaller: f32 = same_good()
+                .filter(|size| size.units < store.units)
+                .map(|size| size.stores * size.units)
+                .sum();
+            let unmet = (market.consumer_demand(store.resource)
+                - (market.placed_capacity(store.resource) - smaller).max(0.0))
+            .max(0.0);
+            unmet >= STORE_FILL_SHARE * store.units
+        };
+        same_good().any(|size| size.units > this.units && fills(size))
+            || (same_good().any(|size| size.units < this.units) && !fills(this))
+    }
+}
+
 /// Applies recurring profitability and quoted working-capital valuation to a replacement.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn replacement_market_covers_operation(
@@ -853,5 +1015,83 @@ mod replacement_tests {
             units * 0.75,
             "the next replacement cannot reuse the first one's new capacity"
         );
+    }
+}
+
+#[cfg(test)]
+mod store_size_tests {
+    use super::*;
+    use crate::simulation::economy::definitions::load_runtime_economy_catalog;
+
+    // The shipped grocery and kiosk, `demand` units a day of household supplies, and `kiosks`
+    // kiosks (`stores` placed beside them, counted at full output).
+    fn city(demand: f32, kiosks: f32, groceries: f32) -> (StoreSizes, OutputAbsorptionContext, [u16; 2]) {
+        let catalog = load_runtime_economy_catalog().unwrap();
+        let grocery = catalog.profile_for_id("grocery_basic").unwrap();
+        let kiosk = catalog.profile_for_id("grocery_kiosk").unwrap();
+        let supplies = grocery.outputs[0].resource_runtime_id;
+        let mut sizes = StoreSizes::default();
+        sizes.add(kiosk);
+        sizes.add(grocery);
+        sizes.commit(kiosk.runtime_id, kiosks);
+        sizes.commit(grocery.runtime_id, groceries);
+        let placed = kiosks * 25.0 + groceries * 200.0;
+        let context = OutputAbsorptionContext::from_resource_amounts(
+            catalog.resource_count(),
+            &[(supplies, placed)],
+            &[(supplies, demand)],
+            1,
+            &[],
+        );
+        (sizes, context, [grocery.runtime_id, kiosk.runtime_id])
+    }
+
+    #[test]
+    fn a_demand_that_fills_a_grocery_gets_a_grocery_and_no_kiosk() {
+        let (sizes, market, [grocery, kiosk]) = city(150.0, 0.0, 0.0);
+        assert!(sizes.has_choice());
+        assert_eq!((sizes.rank(grocery), sizes.rank(kiosk)), (0, 1));
+        assert!(!sizes.defers(grocery, &market));
+        // A free kiosk lot is no reason: the demand waits for a grocery's lot.
+        assert!(sizes.defers(kiosk, &market));
+    }
+
+    #[test]
+    fn a_small_demand_gets_a_kiosk_and_no_grocery() {
+        let (sizes, market, [grocery, kiosk]) = city(20.0, 0.0, 0.0);
+        assert!(sizes.defers(grocery, &market));
+        assert!(!sizes.defers(kiosk, &market));
+        // Less than half a kiosk's volume opens neither.
+        let (sizes, market, [grocery, kiosk]) = city(10.0, 0.0, 0.0);
+        assert!(sizes.defers(grocery, &market) && sizes.defers(kiosk, &market));
+    }
+
+    #[test]
+    fn kiosks_do_not_keep_a_grocery_from_opening() {
+        // Four kiosks serve 100 of 110 units: 10 unmet, but the grocery's case ignores them.
+        let (sizes, market, [grocery, kiosk]) = city(110.0, 4.0, 0.0);
+        assert!(!sizes.defers(grocery, &market));
+        assert!(sizes.defers(kiosk, &market));
+        // A grocery already serving the town counts against a second grocery's case.
+        let (sizes, market, [grocery, _]) = city(290.0, 0.0, 1.0);
+        assert!(sizes.defers(grocery, &market));
+    }
+
+    #[test]
+    fn a_store_alone_for_its_good_never_defers() {
+        let catalog = load_runtime_economy_catalog().unwrap();
+        let grocery = catalog.profile_for_id("grocery_basic").unwrap();
+        let mut sizes = StoreSizes::default();
+        sizes.add(grocery);
+        let market = OutputAbsorptionContext::from_resource_amounts(
+            catalog.resource_count(),
+            &[],
+            &[(grocery.outputs[0].resource_runtime_id, 1.0)],
+            1,
+            &[],
+        );
+        assert!(!sizes.has_choice());
+        assert!(!sizes.defers(grocery.runtime_id, &market));
+        assert_eq!(sizes.rank(grocery.runtime_id), 0);
     }
 }

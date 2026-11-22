@@ -441,6 +441,38 @@ If the preferred asset fails, other legal assets on the same lot are tried, for 
 factory or another service category. Cheat mode bypasses these economic checks but keeps site and
 asset legality.
 
+### Store sizes (`ECON-32`)
+
+A pack may have stores of more than one size for one good: the grocery and the kiosk both sell
+household supplies. The store sizes are the `store` profiles with a legal level-one asset in the
+pass, grouped by the good they sell; a good with one size (every pack without a kiosk) changes
+nothing. With several sizes, one comparison runs before a store's proof:
+
+- A size is **filled** when the unmet demand for its good is at least `STORE_FILL_SHARE` (0.5) of
+  its daily volume: 100 kg for the grocery, 12.5 kg for the kiosk. The unmet demand for this test
+  leaves out the capacity of smaller stores: kiosks do not count as supply when the city judges a
+  grocery, so kiosks cannot keep a grocery from ever opening.
+- A store is refused, as a store without customers is, when a larger size of its good is filled:
+  the demand waits for a grocery's lot, and a free small lot alone never builds a kiosk then.
+- A size with a smaller size beside it opens only when it is filled itself; the smallest size
+  keeps the ordinary proof.
+- On a lot both fit, the larger store is preferred: one rank in the asset key, after the good's
+  priority and before the seeded hash. Every asset that is not a smaller store has rank 0, so a
+  pack without a second store size selects exactly as before.
+
+So a small town gets kiosks first, while its unmet supplies stay under 100 kg; once the demand
+without the kiosks reaches 100 kg a grocery opens, and kiosks open again only while the grocery
+case is below 100 kg and some demand is left beyond the kiosks: at most four kiosks (4 × 25 kg)
+before a grocery is filled, however large the city grows. Kiosks beside a grocery keep the
+customers they claim first in the census (stores claim in building order); one that loses them
+closes through the ordinary failure and removal rules. No other rule, state or saved data was
+added.
+
+Cost: the city's stores by profile are counted in one parallel pass over the buildings per
+commercial, industrial and actions planning slot, and only when a good has more than one store
+size (`StoreSizes::count_stores`, O(B/p) plus the active queue); each store proof adds O(sizes).
+There is no scan per need. The actions slot has no spawn assets and repeats no size choice.
+
 ### Workforce calendar
 
 `WorkforceReservations` is rebuilt each pass, without per-project allocation. It offers

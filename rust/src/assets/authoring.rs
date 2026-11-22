@@ -653,6 +653,11 @@ mod tests {
                 "Workers: 15 (from the economy profile grocery_basic)",
             ),
             (
+                "commercial",
+                "grocery_kiosk",
+                "Workers: 2 (from the economy profile grocery_kiosk)",
+            ),
+            (
                 "industrial",
                 "food_processor_basic",
                 "Workers: 10 (from the economy profile food_processor_basic)",

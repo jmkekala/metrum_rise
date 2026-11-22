@@ -236,7 +236,7 @@ vehicles are not modeled.
 | Kind | Meaning |
 | --- | --- |
 | `processor` | Converts inputs to stored goods (food processor, machinery factory) |
-| `store` | Retail goods sold to household shoppers (grocery) |
+| `store` | Retail goods sold to household shoppers (grocery, kiosk) |
 | `service_store` | Aggregate service capacity with no inventory or freight (barber, pharmacy) |
 | `field_producer` | Player-drawn field; output and staffing scale with area (grain farm) |
 | `extractor` | Player-drawn extraction area over a finite deposit (coal mine) |
@@ -254,6 +254,7 @@ At full operation, before staffing, input, stock, deposit and customer limits:
 | `coal_mine_basic` | 5 per ha | 4 kg machinery per ha | 9,600 kg coal per ha | 0.1 |
 | `food_processor_basic` | 10 | 200 kg grain + 2 kg machinery | 200 kg packaged food | 12 |
 | `grocery_basic` | 15 | 200 kg packaged food | 200 kg household supplies | 25 |
+| `grocery_kiosk` | 2 | 25 kg packaged food | 25 kg household supplies | 25 |
 | `machinery_factory_basic` | 4 | 30 kg steel + 10 kg metals + 2 kg machinery | 42 kg machinery (40 net) | 20 |
 | `personal_service_small` | 4 | — | 80 service | 20 |
 | `health_essentials_small` | 6 | — | 120 service | 14 |
@@ -264,6 +265,21 @@ At full operation, before staffing, input, stock, deposit and customer limits:
 Wages are authored ranges (80–100 for most industry and retail, 50–70 barber, 70–95 pharmacy,
 100–130 power plant, 90–110 water). Household demand sinks: 1 kg supplies, 0.10 personal-service
 and 0.16 health equivalents per resident/day.
+
+**Kiosk (`ECON-32`).** `grocery_kiosk` is the grocery's goods at a small scale: two workers (the
+owner asked for one to three), 25 kg a day (12.5 kg a worker against the grocery's 13.3), the
+grocery's price 25 and wages 80-100, the `daytime_work` and `daytime_receive` profiles, and
+electricity idle 2 and operating 3 kWh a day (a fridge, a till and lights; about a quarter of the
+grocery's 8/12, as its one lot cell is a quarter of the grocery's four). Its stock target is 4
+days and its reorder line 2 days: the 2 days between them are 50 kg, one packaged-food batch, so a
+kiosk orders 50 kg about every two days (with the grocery's 3 and 2 days it would order only once
+down to one day). Freight has one vehicle type: the delivery is a box truck carrying 50 kg, at the
+kiosk's door from the kerb lane, since a kiosk has no loading bay ([freight
+yards](traffic.md#freight-yards-park-19-to-park-22)). The price stays the grocery's because a
+good's price is read per resource in places (`price_by_resource` keeps the first seller's); a
+dearer kiosk would need those readers moved to the seller's price first. The profile is appended
+after every other profile, so no profile's runtime id moves. Which size of store opens is a demand
+rule ([store sizes](demand.md#store-sizes-econ-32)).
 
 The reference chain is grain farm → food processor → grocery → households. Farms, mines,
 processors and utilities consume machinery; the machinery factory imports steel and metals and

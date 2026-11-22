@@ -18,7 +18,7 @@ use crate::simulation::economy::definitions::{
 };
 use crate::simulation::economy::demand::{
     DemandSpawnAction, DemandSpawnCandidate, DemandSpawnCandidatesByUse, SpawnSiteAvailability,
-    private_zone_index,
+    StoreSizes, private_zone_index,
 };
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::roadbed::{
@@ -305,10 +305,17 @@ impl BuildingAllocator {
                     .asset_set
                     .clone()
                     .unwrap_or_else(|| qualified_id.clone());
+                let economy_profile = self
+                    .registry
+                    .economy_profile(qualified_id)
+                    .and_then(|id| catalog.profile_for_id(id))
+                    .map_or(0, |profile| profile.runtime_id);
                 candidates.push(SpawnAssetCandidate {
                     family_key,
                     qualified_id: qualified_id.clone(),
                     params,
+                    economy_profile,
+                    store_rank: 0,
                 });
             }
             candidates.sort_by(|left, right| {
@@ -321,7 +328,25 @@ impl BuildingAllocator {
                 SpawnProfileAssetCandidates { candidates },
             );
         }
+        let sizes = Self::spawn_store_sizes(&by_profile, catalog);
+        for candidate in by_profile.values_mut().flat_map(|assets| &mut assets.candidates) {
+            candidate.store_rank = sizes.rank(candidate.economy_profile);
+        }
         by_profile
+    }
+
+    /// The store sizes the prepared spawn assets can build (`ECON-32`). O(assets × sizes).
+    pub(crate) fn spawn_store_sizes(
+        assets: &BTreeMap<u16, SpawnProfileAssetCandidates>,
+        catalog: &RuntimeEconomyCatalog,
+    ) -> StoreSizes {
+        let mut sizes = StoreSizes::default();
+        for candidate in assets.values().flat_map(|assets| &assets.candidates) {
+            if let Some(profile) = catalog.profile_by_runtime_id(candidate.economy_profile) {
+                sizes.add(profile);
+            }
+        }
+        sizes
     }
 
     /// Finds a legal alternative on the same lot after the preferred project is rejected.
@@ -403,6 +428,7 @@ impl BuildingAllocator {
                 }
                 let selection_key = (
                     priority,
+                    candidate.store_rank,
                     stable_parcel_selection_hash(
                         profile_runtime_id,
                         parcel.id().raw(),
@@ -2349,6 +2375,11 @@ struct SpawnAssetCandidate {
     family_key: String,
     qualified_id: String,
     params: AssetPlacementParams,
+    // Economy profile runtime id; 0 without one.
+    economy_profile: u16,
+    // Larger buildable stores of the same good ([`StoreSizes::rank`]); a lot prefers the
+    // largest store that fits it (`ECON-32`). 0 for every asset that is not a smaller store.
+    store_rank: u32,
 }
 
 /// Prepared placement parameters shared by all candidate lots of one zoning profile.

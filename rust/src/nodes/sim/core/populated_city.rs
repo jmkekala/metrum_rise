@@ -27,6 +27,8 @@ mod envelope;
 #[cfg(test)]
 mod frame_budget;
 #[cfg(test)]
+mod kiosk_mix;
+#[cfg(test)]
 mod load_check;
 #[cfg(test)]
 mod parking_supply;

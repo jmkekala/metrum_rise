@@ -10,7 +10,7 @@ use super::credits::advance_building_action_credit;
 use super::diagnostics::BuildingActionDiagnostics;
 use super::snapshot::{DailyDemandSnapshot, ResidentialOccupantSnapshot};
 use super::spawn_need::{
-    OutputAbsorptionContext, candidate_economy_profile, incoming_household_need,
+    OutputAbsorptionContext, StoreSizes, candidate_economy_profile, incoming_household_need,
     project_covers_operation, replacement_market_covers_operation,
     residential_missing_household_slots, residential_vacancy_reserve, select_residential_spawns,
 };
@@ -263,8 +263,17 @@ fn business_spawn_rejection(
     completion_hour: u16,
     prices: OperationPrices,
     exports: f32,
+    store_sizes: &StoreSizes,
     supply: &mut impl ProjectSupply,
 ) -> Option<SpawnRejection> {
+    // The market leaves this store's customers to a store of another size (`ECON-32`): no
+    // probe, as for a store without customers.
+    if let Some(profile) = candidate_economy_profile(allocator, catalog, asset)
+        && store_sizes.defers(profile.runtime_id, absorption)
+    {
+        supply.reject();
+        return Some(SpawnRejection::Customers);
+    }
     let mut probe = |crew_cap: Option<u32>| {
         let carrier_quote = supply.begin(parcel, asset);
         if let Some(workers) = crew_cap {
@@ -308,6 +317,7 @@ fn commit_business_spawn(
     supply: &mut impl ProjectSupply,
     absorption: &mut OutputAbsorptionContext,
     workforce: &mut WorkforceReservations,
+    store_sizes: &mut StoreSizes,
 ) -> bool {
     if let Some(profile) = candidate_economy_profile(allocator, catalog, asset) {
         if !cheat
@@ -328,6 +338,7 @@ fn commit_business_spawn(
         } else {
             absorption.reserve_candidate(profile);
         }
+        store_sizes.commit(profile.runtime_id, 1.0);
     }
     supply.accept();
     true
@@ -544,6 +555,19 @@ impl DemandSystem {
         } else {
             Default::default()
         };
+        // The store sizes the assets can build and the city's stores of each (`ECON-32`). The
+        // actions slot has no spawn assets and repeats no size choice: its zone slot made it;
+        // the residential slot proves no business.
+        let mut store_sizes = BuildingAllocator::spawn_store_sizes(&spawn_assets, catalog);
+        if slot != PlanningSlot::Residential {
+            store_sizes.count_stores(
+            allocator,
+            self.queued_construction
+                .iter()
+                .filter(|project| project.active)
+                .map(|project| project.profile_runtime_id),
+            );
+        }
         lap(0);
         // The setup slot's scans, or this slot's own (`SIM-02-K`).
         let scan_begin = timing.then(std::time::Instant::now);
@@ -643,6 +667,7 @@ impl DemandSystem {
                             completion_hour,
                             prices,
                             economy_tuning.owa_export_price_multiplier,
+                            &store_sizes,
                             supply,
                         )
                         .is_none())
@@ -655,6 +680,7 @@ impl DemandSystem {
                             supply,
                             &mut absorption_context,
                             &mut self.workforce_reservations,
+                            &mut store_sizes,
                         )
                 });
                 self.count_reproof_drops(planned - spawns.len());
@@ -777,6 +803,7 @@ impl DemandSystem {
                                 completion_hour,
                                 prices,
                                 economy_tuning.owa_export_price_multiplier,
+                                &store_sizes,
                                 supply,
                             )
                         };
@@ -820,6 +847,7 @@ impl DemandSystem {
                         supply,
                         &mut absorption_context,
                         &mut self.workforce_reservations,
+                        &mut store_sizes,
                     ) {
                         spawn_rejected_workforce += 1;
                         continue;

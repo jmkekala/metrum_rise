@@ -412,6 +412,38 @@ kind = "unsupported"
 description = "Electricity fallback for occupied workplaces and public services without an economic recipe."
 electricity = { idle_kwh_per_day = 2.0, operating_kwh_per_day = 8.0 }
 
+# Appended after every existing profile: runtime profile ids follow this file's order.
+[[profiles]]
+id = "grocery_kiosk"
+# A fridge, a till and lights: about a quarter of the grocery's floor (one lot cell of its four).
+electricity = { idle_kwh_per_day = 2.0, operating_kwh_per_day = 3.0, per_resident_kwh_per_day = 0.0 }
+display_name = "Kiosk"
+kind = "store"
+description = "Small kiosk selling household supplies from packaged food, with one or two workers: the grocery's goods at its price, for a demand too small to fill a grocery."
+worker_capacity = 2
+# 12.5 kg a worker, against the grocery's 13.3: a kiosk sells less per hour staffed.
+base_rate_units_per_day = 25.0
+wage_min_currency_per_day = 80.0
+wage_max_currency_per_day = 100.0
+unit_price_currency = 25.0
+# Two days between the reorder line and the target are 50 kg: one packaged-food batch, so a
+# delivery of 50 kg arrives about every two days.
+stock_target_days = 4.0
+reorder_threshold_days = 2.0
+critical_threshold_days = 0.5
+consumption_rate_per_resident = 0.0
+starting_inventory_days = 0.0
+work_schedule_profile = "daytime_work"
+freight_timing_profile = "daytime_receive"
+
+[[profiles.inputs]]
+resource = "packaged_food"
+units_per_day = 25.0
+
+[[profiles.outputs]]
+resource = "household_supplies"
+units_per_day = 25.0
+
 [runtime_tuning]
 owa_import_price_multiplier = 1.25
 owa_export_price_multiplier = 1.0

@@ -321,12 +321,68 @@ pub(crate) fn install_bootstrap_assets(core: &mut SimCore) {
         packs.extend(scan.packs);
     }
     packs.sort_by(|a, b| a.pack.pack_id.cmp(&b.pack.pack_id));
+    // `METRUM_TEST_KIOSK` adds a synthetic one-cell kiosk to the building pack, the measured
+    // store mix of `ECON-32` (`populated_city::kiosk_mix`); unset, the packs are as shipped.
+    #[cfg(test)]
+    if std::env::var_os("METRUM_TEST_KIOSK").is_some()
+        && let Some(pack) = packs.iter_mut().find(|pack| pack.pack.pack_id == "kenney")
+    {
+        let grocery = "building.commercial.small_grocery_store";
+        if let Some(dir) = pack
+            .assets
+            .iter()
+            .find(|(manifest, _)| manifest.asset_id == grocery)
+            .map(|(_, dir)| dir.clone())
+        {
+            pack.assets.push((test_kiosk_manifest(), dir));
+        }
+    }
     core.replace_asset_registry(packs.into_iter().flat_map(|pack| {
         let pack_id = pack.pack.pack_id;
         pack.assets
             .into_iter()
             .map(move |(manifest, dir)| (pack_id.clone(), manifest, dir))
     }));
+}
+
+/// A synthetic one-cell (10 x 10 m) kiosk bound to `grocery_kiosk`: its entrance on the
+/// frontage, no parking and no loading bay, so trucks deliver at its door (`ECON-32`). It reuses
+/// the grocery's mesh file; tests read no mesh.
+#[cfg(test)]
+pub(crate) fn test_kiosk_manifest() -> crate::assets::AssetManifest {
+    crate::assets::AssetManifest::from_str(
+        r#"
+asset_id = "building.commercial.test_kiosk"
+display_name = "Test Kiosk"
+
+[building]
+placement_mode = "zoned_private"
+zone_type = "commercial"
+density = "low"
+lot_width_cells = 1
+lot_depth_cells = 1
+frontage_forward = [0, 0, -1]
+level = 1
+economy_profile = "grocery_kiosk"
+
+[[mesh_parts]]
+name = "main"
+position = [0, 0, 0]
+rotation_degrees = [0, 0, 0]
+scale = 2
+
+[[mesh_parts.lods]]
+file = "building-c.glb"
+distance_min_m = 0
+
+[[anchors]]
+type = "entrance"
+name = "main"
+position = [0, 0, -2.6]
+forward = [0, 0, -1]
+"#,
+    )
+    .expect("the test kiosk parses")
 }
 
 pub(super) fn commit_road(core: &mut SimCore, (x0, z0): (f32, f32), (x1, z1): (f32, f32)) {
