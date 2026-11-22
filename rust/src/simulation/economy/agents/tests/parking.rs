@@ -968,6 +968,7 @@ fn run_parking_move_in(full: bool) {
         "departure cannot create occupancy"
     );
     let clock = test_clock(0, 0);
+    let carrier = agents.agent_handle(i);
     let mut phases = [false; 3];
     let mut restored = false;
     for _ in 0..15000 {
@@ -993,7 +994,7 @@ fn run_parking_move_in(full: bool) {
             agents.agents.parking_trip[i] = serde_json::from_str(&saved).unwrap();
             restored = true;
         }
-        if full && agents.parked_arrivals.contains(&agents.agent_handle(i)) {
+        if full && agents.parked_arrivals.contains(&carrier) {
             // At its kerb stop: the household steps out after the tick (`SimCore`).
             break;
         }
@@ -1006,7 +1007,7 @@ fn run_parking_move_in(full: bool) {
         }
     }
     if full {
-        assert!(agents.parked_arrivals.contains(&agents.agent_handle(i)), "stopped");
+        assert!(agents.parked_arrivals.contains(&carrier), "stopped");
         assert!(agents.parking_trip[i].destination.is_none(), "at the kerb");
         assert!(parking.vehicle_place(car).is_none());
         assert_eq!(phases, [true, true, false]);
