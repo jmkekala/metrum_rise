@@ -348,12 +348,12 @@ impl ParkingSystem {
                 for &handle in places.chain(docks) {
                     let p = self.place_handles.resolve(handle).expect("indexed place");
                     let [px, _, pz] = self.places.position[p];
-                    if (rect[0]..=rect[2]).contains(&px) && (rect[1]..=rect[3]).contains(&pz) {
-                        if let PlaceSource::Building { building, .. }
+                    if (rect[0]..=rect[2]).contains(&px)
+                        && (rect[1]..=rect[3]).contains(&pz)
+                        && let PlaceSource::Building { building, .. }
                         | PlaceSource::Dock { building, .. } = self.places.source[p]
-                        {
-                            self.paint.dirty.insert(building);
-                        }
+                    {
+                        self.paint.dirty.insert(building);
                     }
                 }
             }
@@ -412,8 +412,12 @@ impl ParkingSystem {
     /// The merged marking lines of `building`'s active places and docks, and the chunk of its
     /// first painted place (none without one). O(P log P) for its P places and docks.
     pub(crate) fn paint_lines(&self, building: u64) -> (Vec<Segment>, Option<(i32, i32)>) {
-        let car = self.source_rows(self.building_sources.get(&building)).map(|&h| (h, false));
-        let docks = self.source_rows(self.building_docks.get(&building)).map(|&h| (h, true));
+        let car = self
+            .source_rows(self.building_sources.get(&building))
+            .map(|&h| (h, false));
+        let docks = self
+            .source_rows(self.building_docks.get(&building))
+            .map(|&h| (h, true));
         let mut chunk = None;
         let lines = paint_segments(car.chain(docks).filter_map(|(handle, dock)| {
             let p = self.place_handles.resolve(handle)?;
