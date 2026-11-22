@@ -64,7 +64,7 @@ pub(crate) fn exit_point(
     let driver_door = find(DoorRow::Front, driver)?;
     // The first use of each door, in member order, then the doors further members share.
     let first = [
-        Some(driver_door).filter(|_| !driver_stays),
+        (!driver_stays).then_some(driver_door),
         find(DoorRow::Front, passenger),
         find(DoorRow::Rear, passenger),
         find(DoorRow::Rear, driver),
