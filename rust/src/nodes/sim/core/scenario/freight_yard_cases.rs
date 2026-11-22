@@ -270,9 +270,9 @@ fn install_docks(core: &mut SimCore, class: &str, through: bool) -> Vec<String> 
 /// What one 14-day run delivered, and how.
 #[derive(Debug, Default, PartialEq)]
 struct YardRun {
-    // Deliveries to a building with a dock: stood in a dock; at the door after the plan to the
-    // gate (the fallback: every dock held at the gate commit); at the door, planned there (the
-    // building had no dock when the carrier was planned).
+    // Deliveries to a building with a dock: stood in a dock; at the kerb stop after the plan to
+    // the gate (since `PARK-36` only when the building lost its docks while the truck waited);
+    // at the kerb stop, planned there (the building had no dock when the carrier was planned).
     delivered_in_yard: u32,
     // Of those, at a drive-through dock (`PARK-21`): the truck left forward by the exit.
     delivered_in_drive_through: u32,
@@ -295,6 +295,12 @@ struct YardRun {
     held_dock_frames: u64,
     dock_frames: u64,
     most_held: usize,
+    // Trucks that found every dock held and waited at the kerb stop (`PARK-36`), the ones of
+    // them later granted a dock, and their waits from the gate to the grant, in seconds.
+    queued: u32,
+    queued_granted: u32,
+    queue_wait_max_s: f32,
+    queue_wait_mean_s: f32,
     // Trip failure lines that name a yard.
     yard_failure_lines: Vec<String>,
     // Delivered shipments by destination dock building, by yard or door.
@@ -328,6 +334,9 @@ fn run_with(class: &str, through: bool) -> YardRun {
     // Per shipment: its last status; whether its carrier was seen standing in a dock, sent from a
     // gate to the door, pulling out of its source's dock, and bound for its destination's gate.
     let mut seen: BTreeMap<u64, (ShipmentStatus, bool, bool, bool, bool)> = BTreeMap::new();
+    // Per shipment whose truck waits at a kerb stop for a dock: when it reached the gate.
+    let mut queued_since: BTreeMap<u64, f32> = BTreeMap::new();
+    let mut queue_wait_sum_s = 0.0_f64;
     let mut days = 0;
     while days < DAYS {
         if core.step_frame(FRAME_DT_S).daily_ticks > 0 {
@@ -351,9 +360,22 @@ fn run_with(class: &str, through: bool) -> YardRun {
                     entry.4 = true;
                 }
                 if trip.freight_gate {
+                    if matches!(trip.phase, ParkingTripPhase::ToKerb | ParkingTripPhase::AtKerb) {
+                        queued_since.entry(shipment.id).or_insert_with(|| {
+                            result.queued += 1;
+                            core.agents.journey_start_time[i]
+                        });
+                    } else if trip.phase == ParkingTripPhase::PullIn
+                        && let Some(since) = queued_since.remove(&shipment.id)
+                    {
+                        let wait = core.agents.sim_time - since;
+                        result.queued_granted += 1;
+                        result.queue_wait_max_s = result.queue_wait_max_s.max(wait);
+                        queue_wait_sum_s += f64::from(wait);
+                    }
                     match trip.phase {
                         ParkingTripPhase::AtDock => entry.1 = true,
-                        ParkingTripPhase::GateToDoor => entry.2 = true,
+                        ParkingTripPhase::ToKerb | ParkingTripPhase::AtKerb => entry.2 = true,
                         ParkingTripPhase::PullOut
                             if Some(core.agents.current_building[i])
                                 == match shipment.source {
@@ -448,6 +470,7 @@ fn run_with(class: &str, through: bool) -> YardRun {
         result.dock_frames += docks as u64;
         result.most_held = result.most_held.max(held);
     }
+    result.queue_wait_mean_s = (queue_wait_sum_s / f64::from(result.queued_granted.max(1))) as f32;
     result.yard_failure_lines = core
         .agents
         .trip_failures
@@ -480,6 +503,8 @@ fn freight_yards_keep_deliveries_alive_for_14_days() {
         yards.yard_failure_lines
     );
     assert_eq!(yards.vanished, 0);
+    // No truck takes the door of a building with a dock (`PARK-36`).
+    assert_eq!(yards.delivered_at_door_from_gate, 0, "{yards:#?}");
     let total = |r: &YardRun| {
         r.delivered_in_yard
             + r.delivered_at_door_from_gate

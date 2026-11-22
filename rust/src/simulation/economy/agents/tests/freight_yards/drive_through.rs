@@ -206,7 +206,7 @@ fn a_truck_drives_through_its_dock_and_leaves_forward_by_the_exit() {
             .holds_freight_dock(yard.agents.handles.handle(carrier), dock)
     );
     assert!(idle(yard.agents.agents.parking_trip[carrier]));
-    yard.tick_until(|y| y.inside(carrier, 0));
+    yard.tick_until(|y| y.at_kerb(carrier, 0));
     assert!(!yard.check(0));
     assert_eq!(yard.status(0), ShipmentStatus::Fulfilled);
 }
@@ -266,8 +266,9 @@ fn a_dispatch_in_a_drive_through_dock_leaves_by_the_exit_and_returns_by_the_way_
 }
 
 // Two trucks through one drive-through dock: the first drives through and stands, the second
-// finds the dock held at the gate and delivers at the door; both go home. Every product is the
-// same at 1 and 8 workers.
+// finds the dock held at the gate and waits at the kerb stop (`PARK-36`) until the first has
+// driven out, then docks and delivers; both go home. Every product is the same at 1 and 8
+// workers.
 #[test]
 fn drive_through_products_are_equal_on_any_worker_count() {
     let run = |workers: usize| {
@@ -298,20 +299,27 @@ fn drive_through_products_are_equal_on_any_worker_count() {
             yard.tick_until(|y| {
                 matches!(
                     y.phase(second),
-                    ParkingTripPhase::PullIn | ParkingTripPhase::GateToDoor
+                    ParkingTripPhase::PullIn | ParkingTripPhase::ToKerb
                 )
             });
             let refused = yard.phase(second);
-            yard.tick_until(|y| y.inside_grocery(second));
-            assert!(yard.check(0) && yard.check(1));
-            // Both home: standing in the source's dock, or inside it when the dock was held.
+            yard.tick_until(|y| y.phase(second) == ParkingTripPhase::AtKerb);
+            assert!(yard.check(0));
+            yard.tick_until(|y| {
+                trace.push(state(y, first));
+                trace.push(state(y, second));
+                assert!(!y.inside_grocery(second));
+                y.phase(second) == ParkingTripPhase::AtDock
+            });
+            assert!(yard.check(1));
+            // Both home: standing in the source's dock, or at its kerb stop when it was held.
             yard.tick_until(|y| {
                 trace.push(state(y, first));
                 trace.push(state(y, second));
                 [first, second].iter().all(|&i| {
                     let trip = y.agents.agents.parking_trip[i];
                     (trip.phase == ParkingTripPhase::AtDock && trip.destination == home)
-                        || y.inside(i, 0)
+                        || trip.phase == ParkingTripPhase::AtKerb
                 })
             });
             (trace, refused, yard.status(0), yard.status(1))
@@ -320,8 +328,8 @@ fn drive_through_products_are_equal_on_any_worker_count() {
     let serial = run(1);
     assert_eq!(
         serial.1,
-        ParkingTripPhase::GateToDoor,
-        "the held dock sends it to the door"
+        ParkingTripPhase::ToKerb,
+        "the held dock sends it to the kerb stop"
     );
     assert_eq!(run(8), serial);
 }
@@ -448,7 +456,7 @@ fn a_drive_through_truck_with_no_way_out_waits_where_it_stopped() {
     );
     let line = way_out(&yard, carrier, &way);
     drive_along(&mut yard, carrier, ParkingTripPhase::PullOut, dock, &line);
-    yard.tick_until(|y| y.inside(carrier, 0));
+    yard.tick_until(|y| y.at_kerb(carrier, 0));
 }
 
 // A removed truck holds its drive-through dock no more, in every phase that holds one: on the

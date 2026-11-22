@@ -114,7 +114,10 @@ fn resident_itinerary_never_drives_to_a_door_and_one_borrower() {
             ParkingTripPhase::Drive => phases[2] = true,
             ParkingTripPhase::PullIn => phases[3] = true,
             ParkingTripPhase::WalkToDoor => phases[4] = true,
-            ParkingTripPhase::None | ParkingTripPhase::AtDock | ParkingTripPhase::GateToDoor => {}
+            ParkingTripPhase::None
+            | ParkingTripPhase::AtDock
+            | ParkingTripPhase::ToKerb
+            | ParkingTripPhase::AtKerb => {}
         }
         assert_ne!(
             agents.agents.transit_mode[1], MODE_CAR,

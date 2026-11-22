@@ -867,7 +867,8 @@ fn truck_on_the_road() -> (SimCore, u64, usize) {
 
 // Save and reload at every phase of a yard trip (`PARK-20`): the live city and the loaded one
 // continue tick for tick alike. On the road to the gate, pulling in, standing (`AtDock`, here
-// through 100 ticks), sent from the gate to the door with the dock held by another, and backing
+// through 100 ticks), sent on from the gate to the kerb stop with the dock held by another and
+// queued there (`PARK-36`), and backing
 // out (`a_truck_backing_out_of_a_dock_round_trips_a_save`, `a_truck_spawned_in_a_dock_round_trips_a_save`).
 #[test]
 fn a_truck_round_trips_a_save_at_every_phase_of_its_yard_trip() {
@@ -895,10 +896,15 @@ fn a_truck_round_trips_a_save_at_every_phase_of_its_yard_trip() {
         panic!("a yard sent it");
     };
     let second = dispatch_shipment(&mut core, 1, source);
-    tick_truck_until(&mut core, second, |core, i| phase_of(core, i) == ParkingTripPhase::GateToDoor);
-    let live = save_and_continue(&mut core, "truck_gate_to_door", 200, 1, |_| {});
-    assert!(live[0].3.contains("GateToDoor"), "{:?}", live[0]);
-    assert!(live[199].2 == crate::simulation::economy::agents::TRANSIT_IN_BUILDING, "{:?}", live[199]);
+    tick_truck_until(&mut core, second, |core, i| phase_of(core, i) == ParkingTripPhase::ToKerb);
+    let live = save_and_continue(&mut core, "truck_to_kerb", 200, 1, |_| {});
+    assert!(live[0].3.contains("ToKerb"), "{:?}", live[0]);
+    assert!(live.iter().all(|t| t.2 != crate::simulation::economy::agents::TRANSIT_IN_BUILDING));
+
+    // Queued for the dock at the kerb stop (`PARK-36`): it waits there, saved and loaded alike.
+    tick_truck_until(&mut core, second, |core, i| phase_of(core, i) == ParkingTripPhase::AtKerb);
+    let live = save_and_continue(&mut core, "truck_queued_at_kerb", 100, 1, |_| {});
+    assert!(live.iter().all(|t| t == &live[0] && t.3.contains("AtKerb")), "it waits");
 }
 
 // The yard asset with its lane declared or not (without it the dock stops proving) and its
@@ -1136,7 +1142,7 @@ fn a_stage_a_dock_whose_route_changes_under_a_truck_keeps_its_old_route_for_it()
 
 // A truck on the road bound for a yard whose gate goes (its last dock retired by an asset edit)
 // loses its plan in the gate pass over the shipments and plans again to the door's lane point,
-// where it arrives as a truck without a yard.
+// where it stops at the kerb as a truck without a yard (`PARK-36`).
 #[test]
 fn a_truck_bound_for_a_gate_that_goes_plans_again_to_the_door() {
     use crate::simulation::economy::agents::{ACCESS_PLAN_VALID, TRANSIT_ACCESS_INGRESS};
@@ -1157,10 +1163,11 @@ fn a_truck_bound_for_a_gate_that_goes_plans_again_to_the_door() {
     let door = core.allocator.entrances[0].curb_pos;
     assert!(detach.distance_to(door) < detach.distance_to(gate), "{detach:?}: door {door:?}, gate {gate:?}");
     tick_truck_until(&mut core, carrier, |core, i| {
-        core.agents.transit[i] == crate::simulation::economy::agents::TRANSIT_IN_BUILDING
+        core.agents.parking_trip[i].phase == crate::simulation::parking::ParkingTripPhase::AtKerb
     });
-    assert_eq!(core.agents.current_building[carrier], 0);
-    assert!(!core.agents.parking_trip[carrier].freight_gate);
+    let trip = core.agents.parking_trip[carrier];
+    assert_eq!(trip.target, core.allocator.building_handles.handle(0).to_bits());
+    assert!(!trip.freight_gate);
 }
 
 // A save taken with a truck in a yard loads as saved after an edit to the asset retired its dock
@@ -1199,6 +1206,9 @@ fn a_save_with_a_truck_in_a_yard_loads_after_an_edit_retired_its_dock() {
 // `METRUM_FREIGHT_STILL_OUT`. A save loads without validating its docks, so the game draws the
 // rows proven here. The shipment carries `METRUM_FREIGHT_STILL_RESOURCE`, an input the asset
 // takes (default `machinery`, the coal mine's; `grain` for a food processor, `PARK-23`).
+// `METRUM_FREIGHT_STILL_TRUCKS` (default 1) loaded shipments leave at once (`PARK-36`: with one
+// dock, the second waits at the kerb), and an asset without a dock is taken as one when
+// `METRUM_FREIGHT_STILL_DOCKS` is `0` (`PARK-36`: kerb deliveries).
 #[test]
 #[ignore = "manual fixture for rendered freight yard stills; requires METRUM_FREIGHT_STILL_ASSET, _ID and _OUT"]
 fn write_the_freight_yard_still_save() {
@@ -1225,10 +1235,12 @@ fn write_the_freight_yard_still_save() {
     let handles: Vec<u64> = [yard, source]
         .map(|b| core.allocator.building_handles.handle(b).to_bits())
         .into();
+    let docks: usize = std::env::var("METRUM_FREIGHT_STILL_DOCKS").map_or(1, |n| n.parse().unwrap());
+    let trucks: u64 = std::env::var("METRUM_FREIGHT_STILL_TRUCKS").map_or(1, |n| n.parse().unwrap());
     for handle in &handles {
         assert_eq!(
             core.parking.building_docks(*handle).count(),
-            1,
+            docks,
             "{:?}",
             core.parking.dock_diagnostics
         );
@@ -1237,29 +1249,31 @@ fn write_the_freight_yard_still_save() {
         CarrierClass, Shipment, ShipmentEndpoint, ShipmentStatus,
     };
     let catalog = load_runtime_economy_catalog().unwrap();
-    core.logistics.shipments.push(Shipment {
-        id: 0,
-        // An input the yard's asset takes (the coal mine's machinery), so the check delivers.
-        resource_runtime_id: catalog
-            .resource_runtime_id_for_id(
-                &std::env::var("METRUM_FREIGHT_STILL_RESOURCE").unwrap_or_else(|_| "machinery".into()),
-            )
-            .unwrap(),
-        amount: 4.0,
-        source: ShipmentEndpoint::Building(source),
-        destination: ShipmentEndpoint::Building(yard),
-        carrier_class: CarrierClass::Truck,
-        status: ShipmentStatus::InTransit,
-        carrier: crate::simulation::economy::agents::AgentHandle::NONE,
-        total_cost: 100.0,
-        freight_cost: 10.0,
-        eta_hours: 1,
-        leg_started_hour: core.logistics.hour_ticks,
-        trip_event_slot: 0,
-        cargo_loaded: true,
-    });
-    core.logistics.next_shipment_id = 1;
-    core.resume_restored_freight(&[0]);
+    for id in 0..trucks {
+        core.logistics.shipments.push(Shipment {
+            id,
+            // An input the yard's asset takes (the coal mine's machinery), so the check delivers.
+            resource_runtime_id: catalog
+                .resource_runtime_id_for_id(
+                    &std::env::var("METRUM_FREIGHT_STILL_RESOURCE").unwrap_or_else(|_| "machinery".into()),
+                )
+                .unwrap(),
+            amount: 4.0,
+            source: ShipmentEndpoint::Building(source),
+            destination: ShipmentEndpoint::Building(yard),
+            carrier_class: CarrierClass::Truck,
+            status: ShipmentStatus::InTransit,
+            carrier: crate::simulation::economy::agents::AgentHandle::NONE,
+            total_cost: 100.0,
+            freight_cost: 10.0,
+            eta_hours: 1,
+            leg_started_hour: core.logistics.hour_ticks,
+            trip_event_slot: 0,
+            cargo_loaded: true,
+        });
+    }
+    core.logistics.next_shipment_id = trucks;
+    core.resume_restored_freight(&(0..trucks).collect::<Vec<_>>());
     let out = std::path::Path::new(&out);
     std::fs::create_dir_all(out).unwrap();
     let save = out.join("yard.sqlite");
@@ -1273,9 +1287,25 @@ fn write_the_freight_yard_still_save() {
             serde_json::json!({ "route": route })
         })
         .collect();
-    let json = serde_json::json!({ "docks": docks, "yard": handles[0], "source": handles[1] });
+    let kerbs: Vec<_> = [yard, source]
+        .iter()
+        .map(|&b| {
+            let kerb = crate::simulation::economy::agents::tick::kerb_stop_entrance(
+                &core.allocator.entrances[b],
+                &core.region_graph,
+                crate::simulation::economy::agents::tick::FREIGHT_KERB_INSET_M,
+            )
+            .unwrap()
+            .door_pos;
+            [kerb.x, kerb.y]
+        })
+        .collect();
+    let json = serde_json::json!({
+        "docks": docks, "yard": handles[0], "source": handles[1], "kerbs": kerbs,
+    });
     std::fs::write(out.join("yard.json"), json.to_string()).unwrap();
 }
 
 mod backs_in;
+mod kerb_freight;
 mod drive_through;
