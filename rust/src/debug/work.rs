@@ -120,8 +120,9 @@ pub(crate) enum Work {
     DriversHomeAfterCancel,
     /// Household arrival carriers launched on a drop-off (`PARK-34`).
     ArrivalDropOffs,
-    /// Household arrival carriers launched in their own car to a place beyond the home
-    /// catchment (`PARK-34`).
+    /// Household arrival carriers launched in their own car to a place other than the home
+    /// catchment's first free one, found by the wider search (`PARK-34`): before, they walked
+    /// in from the border.
     ArrivalWiderPlaces,
     /// Household arrival carriers launched on foot from the border: none since `PARK-34`.
     ArrivalBorderWalks,

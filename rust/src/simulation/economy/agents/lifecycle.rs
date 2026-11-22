@@ -142,6 +142,7 @@ impl AgentSystem {
                 if Some(place) != first
                     && self.drive_own_car_to(i, car, place, border, home, parking, allocator, network, graph)
                 {
+                    crate::debug::work::add(crate::debug::work::Work::ArrivalWiderPlaces, 1);
                     return true;
                 }
             }
@@ -261,8 +262,7 @@ impl AgentSystem {
         let Some(entrance) = parking.place_entrance(place, allocator, network, graph) else {
             return false;
         };
-        let in_catchment = parking.walk_to_car_seconds(home_handle, place).is_some();
-        let walks = in_catchment
+        let walks = parking.walk_to_car_seconds(home_handle, place).is_some()
             || allocator.entrances.get(home).is_some_and(|door| {
                 super::tick::quote_parking_leg(MODE_WALK, &entrance, door, [0.0; 2], network,
                     graph, &self.pathfind_count, None).is_some()
@@ -273,9 +273,6 @@ impl AgentSystem {
         };
         if !parking.reserve_arrival(car, self.agent_handle(i), place) {
             return false;
-        }
-        if !in_catchment {
-            crate::debug::work::add(crate::debug::work::Work::ArrivalWiderPlaces, 1);
         }
         self.agents.parking_trip[i] = ParkingTrip { vehicle: car, arrival_ownership: true,
             destination: place, target: home_handle, phase: ParkingTripPhase::Drive,
