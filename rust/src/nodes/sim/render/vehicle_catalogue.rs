@@ -159,7 +159,10 @@ impl Weights {
     // The index whose cumulative range holds `hash` modulo the total. O(entries), a handful.
     fn pick(&self, hash: u64) -> usize {
         let point = self.total.rem(hash);
-        self.cumulative.iter().take_while(|&&sum| sum <= point).count()
+        self.cumulative
+            .iter()
+            .take_while(|&&sum| sum <= point)
+            .count()
     }
 }
 

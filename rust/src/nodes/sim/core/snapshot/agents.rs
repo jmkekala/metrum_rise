@@ -87,12 +87,18 @@ enum Cut {
 /// Per-chunk instance buffers kept across snapshots, so steady-state posing allocates nothing.
 #[derive(Default)]
 pub(crate) struct AgentPoseScratch {
-    chunks: Vec<Vec<PosedAgent>>,
-    // Per chunk, its posed agents by bucket: `bucket_code(car, key) << 8 | slot` sorted, so each
-    // bucket's agents form one run in chunk order (a chunk poses at most 256 agents).
-    order: Vec<Vec<u32>>,
+    chunks: Vec<PoseChunk>,
     // Per chunk, the walkers and cars its draw distances cut.
     far: Vec<[u32; 2]>,
+}
+
+// One posing task's instances.
+#[derive(Default)]
+struct PoseChunk {
+    posed: Vec<PosedAgent>,
+    // The posed agents by bucket: `bucket_code(car, key) << 8 | slot`, sorted, so each bucket's
+    // agents form one run in agent order (a chunk poses at most 256 agents).
+    order: Vec<u32>,
 }
 
 // A bucket's sort code in a chunk's order: walkers' buckets first, each kind by key.
@@ -241,16 +247,14 @@ impl SimCore {
         let core = &*self;
         let agent_count = core.agents.len();
         let chunks = agent_count.div_ceil(POSE_CHUNK_AGENTS);
-        scratch.chunks.resize_with(chunks, Vec::new);
-        scratch.order.resize_with(chunks, Vec::new);
+        scratch.chunks.resize_with(chunks, PoseChunk::default);
         scratch.far.resize(chunks, [0; 2]);
         scratch
             .chunks
             .par_iter_mut()
-            .zip(scratch.order.par_iter_mut())
             .zip(scratch.far.par_iter_mut())
             .enumerate()
-            .for_each(|(chunk, ((posed, order), far))| {
+            .for_each(|(chunk, (PoseChunk { posed, order }, far))| {
                 posed.clear();
                 *far = [0; 2];
                 let start = chunk * POSE_CHUNK_AGENTS;
@@ -265,16 +269,19 @@ impl SimCore {
                 }
                 // Slots below 256 keep each bucket's run in agent order.
                 order.clear();
-                order.extend(posed.iter().enumerate().map(|(slot, agent)| {
-                    bucket_code(agent.car, agent.key) << 8 | slot as u32
-                }));
+                order.extend(
+                    posed
+                        .iter()
+                        .enumerate()
+                        .map(|(slot, agent)| bucket_code(agent.car, agent.key) << 8 | slot as u32),
+                );
                 order.sort_unstable();
             });
         snapshot.agent_draw_cut = scratch
             .far
             .iter()
             .fold([0; 2], |sum, far| [sum[0] + far[0], sum[1] + far[1]]);
-        bucket_posed_agents(&scratch.chunks, &scratch.order, snapshot);
+        bucket_posed_agents(&scratch.chunks, snapshot);
         self.snapshot_agent_scratch = scratch;
         self.ground_off_lane_cars(snapshot);
     }
@@ -475,16 +482,12 @@ impl SimCore {
 }
 
 // Appends every posed instance to its bucket, each bucket on its own task in chunk order, from
-// each chunk's run of it in `order`. Buckets are created for the keys present, as the serial
-// fill created them. O(P) to list the keys and copy, plus O(buckets x chunks x log 256) for the
-// runs, P posed agents: a bucket no longer scans every posed agent.
-fn bucket_posed_agents(
-    chunks: &[Vec<PosedAgent>],
-    order: &[Vec<u32>],
-    snapshot: &mut RenderSnapshot,
-) {
+// each chunk's run of it. Buckets are created for the keys present, as the serial fill created
+// them. O(P) to list the keys and copy, plus O(buckets x chunks x log 256) for the runs, P posed
+// agents: a bucket no longer scans every posed agent.
+fn bucket_posed_agents(chunks: &[PoseChunk], snapshot: &mut RenderSnapshot) {
     let mut present = [[false; 256]; 2];
-    for agent in chunks.iter().flatten() {
+    for agent in chunks.iter().flat_map(|chunk| &chunk.posed) {
         present[usize::from(agent.car)][usize::from(agent.key)] = true;
     }
     for key in 0..=u8::MAX {
@@ -508,7 +511,7 @@ fn bucket_posed_agents(
     } = snapshot;
     rayon::join(
         || {
-            fill_buckets(pedestrian_transforms, chunks, order, false, |buffer, agent| {
+            fill_buckets(pedestrian_transforms, chunks, false, |buffer, agent| {
                 buffer.extend_from_slice(&agent.transform);
                 // Walk phase in CUSTOM_DATA0.x (the MultiMesh uses custom data).
                 buffer.extend_from_slice(&[agent.walk_phase, 0.0, 0.0, 0.0]);
@@ -519,22 +522,22 @@ fn bucket_posed_agents(
                 || {
                     // The custom data after the poses on the same task: each fill is parallel
                     // over its buckets already.
-                    fill_buckets(car_transforms, chunks, order, true, |buffer, agent| {
+                    fill_buckets(car_transforms, chunks, true, |buffer, agent| {
                         buffer.extend_from_slice(&agent.transform)
                     });
-                    fill_buckets(car_custom, chunks, order, true, |buffer, agent| {
+                    fill_buckets(car_custom, chunks, true, |buffer, agent| {
                         buffer.extend_from_slice(&agent.custom)
                     });
                 },
                 || {
                     rayon::join(
                         || {
-                            fill_buckets(car_render_ids, chunks, order, true, |ids, agent| {
+                            fill_buckets(car_render_ids, chunks, true, |ids, agent| {
                                 ids.push(agent.render_id)
                             })
                         },
                         || {
-                            fill_buckets(car_ground_flags, chunks, order, true, |flags, agent| {
+                            fill_buckets(car_ground_flags, chunks, true, |flags, agent| {
                                 flags.push(agent.ground_flag)
                             })
                         },
@@ -547,16 +550,17 @@ fn bucket_posed_agents(
 
 fn fill_buckets<T: Send>(
     buckets: &mut HashMap<u8, Vec<T>>,
-    chunks: &[Vec<PosedAgent>],
-    order: &[Vec<u32>],
+    chunks: &[PoseChunk],
     cars: bool,
     push: impl Fn(&mut Vec<T>, &PosedAgent) + Sync,
 ) {
     par_for_each_bucket(buckets, |key, bucket| {
         let code = bucket_code(cars, key);
-        for (posed, order) in chunks.iter().zip(order) {
+        for PoseChunk { posed, order } in chunks {
             let start = order.partition_point(|&entry| entry >> 8 < code);
-            let run = order[start..].iter().take_while(|&&entry| entry >> 8 == code);
+            let run = order[start..]
+                .iter()
+                .take_while(|&&entry| entry >> 8 == code);
             for &entry in run {
                 push(bucket, &posed[(entry & 0xff) as usize]);
             }
