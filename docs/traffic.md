@@ -2231,8 +2231,9 @@ commit (`NoCarAccess`), with the same words; another building with a few bays ma
 walkway, its bays unused. The check reads the frontage edge's car flag, O(1).
 
 The bundled `parking` pack follows Finnish practice: 2.5 × 5 m bays at right angles to a central
-7 m two-way aisle, painted separators, kerb stones at the bay heads, one two-socket engine-heater
-post per pair of bays on the strip behind the kerb, and a P sign at the entrance. The small lot
+7 m two-way aisle, kerb stones at the bay heads, one two-socket engine-heater post per pair of bays
+on the strip behind the kerb, and a P sign at the entrance. Its bay lines are the generated ones
+([bay markings](#bay-markings-park-30-as-built)): the lots model no paint. The small lot
 (20 × 20 m) holds 12 bays and the larger one (20 × 30 m) 20. Both are explicitly placed sites
 with zero workers and households and no economy profile, and their site surfaces render the
 asphalt. The pack is enabled by default (`mod_pack_config.gd`).
@@ -2583,6 +2584,63 @@ test binary of `vehicles-1b` (`865772e1e`) as control, run fresh, the `SIM-02` e
 determinism records (determinism and the day records of the four workloads, six workers) are
 equal, `envelope.json` apart from wall clock. Timing level F with K22 (per-frame work) is
 prepared, not run.
+
+#### Bay markings (`PARK-30`), as built
+
+Every lot shows where its cars and trucks stand, drawn from the places the lot proof published,
+so no asset models its own paint and a rejected place draws nothing (`simulation/parking/paint.rs`).
+A car place gets a white line along each side, from its entry edge to its head, and one across its
+head, half a line longer at each end so the corners close square; the entry stays open to the
+aisle or street. A `loading_bay` gets an L at each of its four corners: two legs along its edges
+from half a line outside the corner, `CORNER_LEG_M` (0.8 m) each, or half the edge when that is
+shorter. Lines are `LINE_WIDTH_M` (0.10 m, the Finnish lane line), clean white. Collinear segments
+that overlap or touch (within 1 cm; directions within 1e-4 rad, offsets within 1 cm) are merged
+into one, so the side two neighbouring places share is drawn once, a row's heads are one line, and
+two docks side by side share their corner marks; the result is sorted, independent of place order.
+Kerbside bays draw nothing here: their bay paint is `PARK-04`, and the kerb's line stays the road
+marking's.
+
+Each merged line is one instance of a 1 × 1 m quad (`WorldMaterials.lot_paint_mesh()`, the road
+marking material, so it takes the cloud shadow and the street lamps, receives shadows and casts
+none). It lies on the visible surface (`GradedSurface::surface_height_at`) plus the road markings'
+4 cm decal lift, tilted along the line; where the surface bends under it by more than 2 cm, half
+the lift (a place reaching a graded tie-in), the line is halved, down to 0.5 m pieces (the finest
+graded lattice), so it never sinks into the ground, and on a level pad a line is one instance and
+five height queries.
+
+The store keeps each building's rows, and a 512 m parking chunk publishes its buildings' rows one
+after another. A building is marked when one of its places or docks is added, removed or changed
+(`replace_building`, `replace_docks`) and when the ground under one changes (`invalidate_ground`
+finds them through the chunk lists; docks, in no car chunk list, have a list of their own per
+chunk for this alone, `Place::chunk_slot` being a dock's slot there; a dense change and a load mark
+every building); custody never marks one. The snapshot lays the marked buildings' lines in
+parallel, O(P log P + lines) for a building's P places and docks, and republishes, under a revision,
+only the chunks whose buildings' rows changed bit for bit, O(that chunk's rows) to copy; nothing
+runs on a frame without a change. `parked_cars.gd`
+asks for the chunks changed since the revision it holds (one call a frame, empty when none) and
+the stream node draws each chunk as one `MultiMesh` slot of a second parked layer
+(`ParkedLayer::paint`): one draw call per chunk in range, none in the shadow pass, to
+`PAINT_DRAW_DISTANCE_M` (400 m, where a 0.10 m line is a quarter pixel) plus the chunk's reach.
+Render data only: nothing in the simulation reads it and nothing is saved.
+
+The asset editor's lot check returns the same rows for the accepted spots and docks
+(`paint_rows`, on the flat lot), drawn on the preview's paving
+([asset editor](asset_editor.md)).
+
+Measured 2026-11-22 (diagnostic, not acceptance timing; release `$TEST_BINARY` of the branch, 8
+workers, prepared cities: `METRUM_PERF_RESIDENTS=<n> METRUM_PERF_CACHE=<cache> $TEST_BINARY
+nodes::sim::core::populated_city::parking_supply::lot_paint_cost_on_a_prepared_city --exact
+--ignored --nocapture`):
+
+| City | Places | Merged lines | Instances (triangles) | Chunks | Largest chunk | Load build | One 12-place lot |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 10k | 11,860 | 33,120 | 79,075 (158,150) | 24 | 4,987 | 197 ms | 0.47 ms |
+| 30k | 31,477 | 88,033 | 212,556 (425,112) | 64 | 4,937 | 544 ms | 0.70 ms |
+
+The fixture's lots are mostly house driveways on graded ground, so a line averages 2.4 pieces; on
+a level pad it is one. The load build runs once, at the first snapshot after a load. A first cut
+that repainted a whole chunk per edit and split at 5 mm cost 74 ms for one edit in a dense 10k
+chunk and 3.4 pieces a line.
 
 ### Edits and towing (`PARK-01`, `PARK-05`)
 

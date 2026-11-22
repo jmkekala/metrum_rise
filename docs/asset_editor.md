@@ -637,6 +637,11 @@ draw and list the results.
   last tried along with the shape that blocked it. An asset pinned to the straight path
   (`car_routes = "direct"`, only the test pack until `PARK-07`) keeps the straight path's reasons
   word for word; the key is carried through the document and written back on export.
+- **Bay markings** (`PARK-30`): the payload's `paint_rows` are the game's own bay paint for the
+  accepted spots and docks (side and head lines, a loading bay's corner marks,
+  [as built](traffic.md#bay-markings-park-30-as-built)), drawn on the preview's paving with the
+  game's line quad and material, so an author sees the lines while placing spots; a rejected spot
+  draws none. Assets model no bay paint of their own.
 - **Car route** (`PARK-26`) is the route panel's section for a selected parking spot
   (`asset_editor/route_panel.gd`; the loading bay's Drive-through section, titled Car route, with
   no stand, exit or way out). An automatic spot offers **Edit this route**: Rust (`route` command,
