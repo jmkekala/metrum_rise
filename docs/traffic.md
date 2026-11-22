@@ -3141,7 +3141,49 @@ the job search and the visits fall back to them. See
 A move-in decides its car once from the saved seed and its stable carrier identity, before a
 household record exists; adoption keeps that decision and the original car. At its paced departure
 it reserves one free place of the home catchment and goes `Drive → PullIn → WalkToDoor`. With no
-free place, or no car, it walks from the border and any car stays off-map.
+free place, or no car, it walks from the border and any car stays off-map; its household forms
+when it is inside the home, the other members created there (the arrival check). A car arrival's
+household steps out of the car instead ([Family arrival](#family-arrival-park-35)).
+
+#### Family arrival (`PARK-35`)
+
+A moving-in household arrives as one carrier: one car, one driving agent, the other members only
+counts on it during the drive (no passengers in the simulation, no carpool). When the ordered
+parking phase parks the car (`PullIn → WalkToDoor`, ascending agent order) it lists the carrier;
+right after the agent tick, in the same frame, the household forms
+(`HouseholdSystem::materialize_parked_carrier`), so the list is never saved:
+
+- The household record is made once, as the arrival check made it before: the approved
+  composition, an immigrant's budget and stock, off the pending count at once (`ECON-28`). The
+  carrier is member 0 (`member_age_group(0)`), the others are spawned in member order with their
+  approved age groups. The arrival check then finds nothing pending.
+- Every member is an ordinary resident of its home from that frame: walking home from the car, it
+  is counted once by demand, census and occupancy as any resident out of its home is.
+- The carrier stands at the driver's door and each other member appears at its door, on a copy of
+  the carrier's walk leg (same plan, same place, no custody of the car), and the access-egress
+  walker moves all of them; walkers never wait for each other. A walker that starts off the
+  place's access polyline (at a car door) heads straight for the polyline's second point.
+- Doors: the simulation's own table for its car class, the bundled estate's doors
+  ([Doors](vehicles.md#doors-sidecar-version-3-tools-43)), placed under the place's saved pose
+  (position and heading). The renderer's look for the car never decides where anyone stands.
+  The drive side is `config::LEFT_HAND_DRIVE` (default left-hand drive: the driver's door is
+  `left`/`front`). Member 1 takes the front passenger door, members 2 and 3 the rear
+  passenger-side and rear driver-side doors, every further member a rear side door round-robin
+  from the passenger side (a vehicle with only front doors: the front passenger door). A door's
+  later user stands 0.6 m toward the rear of its earlier one; everyone stands 0.5 m out from the
+  door's centre. The cargo door is never used.
+- Seats are not read: a household larger than the car's seats (the largest admission draws six,
+  the estate seats five) still steps out of the one car, until households own more than one car
+  (`PARK-33`). Without door data every member but the driver would be created in the home.
+- Cost: O(household size × route length) at the park event (spawns and one route copy each);
+  per tick one O(5) polyline test for `WalkToDoor` walkers, no allocation.
+- A home removed during the walk evicts the household as any housed household: each member
+  waits where its walk stopped (in no building, or a walker at its lane end, `TRAFFIC-24`). A home
+  removed before the car parks follows `ECON-29`. A member walking from the car holds no custody:
+  the driver's `WalkToDoor` end clears the car's retired places, and the save check accepts a
+  household member walking to the door while the car is the driver's or nobody's.
+- Walk-in arrivals (no car, or no free place), the stored-car delivery carrier and the
+  prepopulated test cities (carrier placed in its home) are unchanged.
 
 Stored cars never become occupied places at supply publication or load. Only new supply wakes
 them: an added or reactivated bay wakes its own chunk, and a catchment rebuild wakes the doors

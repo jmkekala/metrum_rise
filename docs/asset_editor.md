@@ -3141,7 +3141,8 @@ information lines marked `info:`. Exit status: 0 drafted (and written), or an ex
 no stale line (information lines do not count); 1 refused, failed the acceptance check, or not
 run; 2 an existing asset with stale lines.
 
-**Vehicle mode (`TOOLS-41`, 2026-11-22).** A version 2 sidecar with `"kind": "vehicle"` is
+**Vehicle mode (`TOOLS-41`, 2026-11-22).** A version 2 or 3 (with doors, `TOOLS-43`) sidecar
+with `"kind": "vehicle"` is
 drafted as a `[vehicle]` asset instead, with the same flags, steps (the copy first, `--write`
 into the real pack, never over an existing asset), ledger, exit statuses and `--check`. Its role
 file gives `pack_id`, `asset_id`, `vehicle_class`, `vehicle_family` and `seats`, and optionally

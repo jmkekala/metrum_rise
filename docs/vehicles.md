@@ -264,9 +264,9 @@ These replace the [earlier provisional tier numbers](#earlier-provisional-tier-n
 
 ### Facts sidecar
 
-`export/<name>.model.json`, schema `metrum-model-facts`, **version 2**, with `"kind":
-"vehicle"`. Version 3 adds door positions and is not read by the game yet
-([Doors](#doors-sidecar-version-3-tools-43)). Building sidecars stay version 1 (see
+`export/<name>.model.json`, schema `metrum-model-facts`, **version 2** or **3**, with `"kind":
+"vehicle"`. Version 3 adds door positions ([Doors](#doors-sidecar-version-3-tools-43)); the game
+reads both. Building sidecars stay version 1 (see
 [Model Draft Pipeline](asset_editor.md#model-draft-pipeline--tools-33)). Metres, in the exported
 frame. Geometry and files only.
 
@@ -336,16 +336,19 @@ measured from its own files.
   optional interior mesh; `null` in the pilot.
 - `textures.normal`: `null` when the model has no normal map.
 - `preview.file` is relative to the asset folder, not to `export/`.
-- Seats are not in the sidecar. Seating is a value of the pack asset on the game side.
+- Seats are not in the sidecar. Seating is a value of the pack asset on the game side. The
+  family arrival does not read it yet: every member of a moving-in household steps out of the one
+  car, more people than seats included, until a household can own a second car (`PARK-33`).
 - The lists and LOD0 agree both ways: no listed group is missing from the mesh, and no id in
   the mesh is missing from the lists.
 
 ### Doors (sidecar version 3, `TOOLS-43`)
 
 Agreed with the models repository on 2026-11-22 and built there for the two pilot models
-(models commits 5eff594 and 0f4757e, on a branch awaiting the owner's review). The game does not
-read it yet: the importer and the bundled pack stay on version 2 until a feature needs doors
-(`TOOLS-43`).
+(models commits 5eff594 and 0f4757e, on a branch awaiting the owner's review). The draft reads it
+and writes the doors into the asset ([The `[vehicle]` pack class](#the-vehicle-pack-class),
+`TOOLS-43`); the bundled pack was re-imported from 0f4757e with every tier, map and albedo
+byte-identical.
 
 Version 3 is version 2 plus one key, `doors`, directly after `cargo`; nothing else changes, and
 no mesh, texture, vertex id or tier changes. Doors are painted seams of the body, not parts.
@@ -820,6 +823,12 @@ centre = [0.7307, 0.7487, 1.9913]
 facing = [0.446, 0.6131, 0.6521]
 width_m = 0.2036
 height_m = 0.1707
+
+[[vehicle.doors]]              # optional; version 3 sidecars: list order, the sidecar's keys
+side = "left"                  # left, right (the driver's) or rear
+row = "front"                  # front, rear or cargo
+centre = [0.895, 0.0, 0.3675]  # on the door skin at ground level, contract frame
+width_m = 1.135
 ```
 
 Checked when a pack loads, O(wheels + lamps + paints) per asset: the size fits the body class
@@ -827,7 +836,19 @@ box (5 mm of rounding allowed); four contiguous tiers; 4 to 8 wheels, parts 1, 2
 each resting on the ground (centre height equals its radius within 1 mm); every lamp id matches
 its group and every facing is a unit vector; the required lamp groups (indicators, reverse, low
 and high beam, daytime, and `tail_brake` or `tail` and `brake`; a car's `brake`, a truck's
-`marker`); at least one variant, names unique; paints with channels 0 to 1 and a positive weight.
+`marker`); at least one variant, names unique; paints with channels 0 to 1 and a positive weight;
+doors, when listed: each on the ground (`y` 0 within 1 mm) with a positive width, in list order
+(front, rear, cargo; left before right; once each), a `rear` side only for a cargo door, a left
+door at `+X` and a right one at `-X`, both front doors on a car, van or truck (any one on a bus),
+and each row present on both sides mirrored within 1 mm. A vehicle without doors is legal.
+
+**Doors in the game.** The asset's doors are for drawing and tooling. The simulation keeps its
+own door points per body class (`rust/src/simulation/parking/doors.rs`): a simulated car has no
+asset, and the look the catalogue picks for it changes with the loaded packs, so it never decides
+where a person stands. The car class's points are the bundled estate's (a test holds them equal).
+The drive side is the game setting `config::LEFT_HAND_DRIVE` (default left-hand drive: the
+driver's door is `left`/`front`); the family arrival places its members by it
+([Family arrival](traffic.md#family-arrival-park-35), `PARK-35`).
 The unused `wheel` and `light` anchor types are removed. The asset browser lists vehicles under
 "Vehicles"; share archives package the tiers, maps and albedos.
 
@@ -838,7 +859,7 @@ switches at 30 / 100 / 398 m, the truck at 53 / 176 / 702 m.
 
 ### Vehicle drafts
 
-`tools/model_draft.py` takes a version 2 `kind: "vehicle"` sidecar
+`tools/model_draft.py` takes a version 2 or 3 `kind: "vehicle"` sidecar
 (`rust/src/assets/authoring/model_draft/vehicle.rs`, the draft's flow in
 `rust/src/nodes/asset_files/model_draft.rs`); see
 [the draft command](asset_editor.md#draft-command):
@@ -847,7 +868,8 @@ switches at 30 / 100 / 398 m, the truck at 53 / 176 / 702 m.
   non-null `coupling`, other than four `.glb` tiers, an id attribute other than `COLOR_0` with
   `part`, `surface`, `paint`, wheels out of part order or steering unlike their axle, a missing
   `cargo` on a van, truck or bus, and a file outside the export folder are refusals; a dirty
-  source and a file whose SHA-256 differs from the sidecar's too;
+  source and a file whose SHA-256 differs from the sidecar's too; version 3 requires `doors` and
+  version 2 may not have the key;
 - the vehicle role gives `pack_id`, `asset_id`, `vehicle_class`, `vehicle_family`, `seats`, and
   optionally `display_name`, `spawn_weight` and `paints`;
 - the draft publishes the tiers, maps, albedos and the thumbnail through the editor's file plan,
@@ -856,7 +878,7 @@ switches at 30 / 100 / 398 m, the truck at 53 / 176 / 702 m.
 - a rerun on an existing asset publishes nothing and reports stale lines: a role or body class
   the asset no longer carries, and every tier or map whose published file differs from the new
   sidecar's; `--check` reports the same and the load check;
-- no lot, door or parking rule applies; the building rules are untouched.
+- no lot, building-door or parking rule applies; the building rules are untouched.
 
 ### The bundled pack
 
@@ -880,7 +902,8 @@ tools/vehicle_roles/import.sh <metrum_models checkout> <commit> --write
 ```
 
 A draft never replaces an asset: remove `assets/<asset_id>/` and `model_sources/<asset_id>.json`
-first. The pack was imported from models commit `428a413` (both sidecars from clean trees);
+first. The pack was imported from models commit `0f4757e` (version 3 sidecars from clean trees,
+with doors; the files are byte-identical to the earlier `428a413` import);
 without `--write` the command is a dry run.
 
 Other packs may add vehicles: the catalogue merges them by body class and weight. With no

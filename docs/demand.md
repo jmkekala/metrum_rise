@@ -313,9 +313,13 @@ dropped; one whose border has lost its car road releases its home. The border ar
 while the routing hierarchy, its metric and the graph's node roles are unchanged (`SIM-02-K`
 part 5). Families still in the queue count
 as pending arrivals. Its approved adult, elder and child composition travels with the carrier,
-survives arrival reordering and save/load, and materializes when the carrier reaches its home.
+survives arrival reordering and save/load, and materializes when its car parks in the home's
+catchment, every member stepping out at the car's doors and walking in
+([Family arrival](traffic.md#family-arrival-park-35), `PARK-35`), or, for a family arriving on
+foot, when the carrier reaches its home, the other members created inside. Either way the household
+forms once, outside the hourly pass, touching no journaled book.
 Pending adults count as labor supply in the next forecast; each hour recounts them from the carriers
-still on their way. A carrier that reaches its home takes its family off the count at once, so its
+still on their way. A materialized family leaves the count at once, so its
 adults and transfer claims never count twice, as pending and as housed (`ECON-28`; before, a pass
 between the arrival and the recount funded a four-worker entrant on five counted adults for three).
 
@@ -339,7 +343,8 @@ a walker on the road walks to its lane end and waits there off the lane buckets
 ([`traffic.md`](traffic.md#walkers-follow-their-routes-sidewalks-road-74), `TRAFFIC-37`), a driver
 settles where its drive's recovery leaves it with its car off the map (`TRAFFIC-29`), a carrier
 still at its border settles there, and a carrier already inside the removed home leaves it as an
-unhoused occupant does; once rehoused the walker walks to the new home and the others enter it.
+unhoused occupant does; a family whose car has parked is already housed, so a removal during its
+walk to the door evicts it as any household and its members wait where their walks stop; once rehoused the walker walks to the new home and the others enter it.
 O(household size) per family, no scan; families of one demolition batch are made in ascending
 agent order, so the household ids are deterministic. A save from before the fix holding such a
 family (a carrier with a pending household and no home) loads it into the same state
