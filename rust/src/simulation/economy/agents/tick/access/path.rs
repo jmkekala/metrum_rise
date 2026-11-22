@@ -61,7 +61,7 @@ impl ManeuverPath {
 }
 
 /// Builds a short local access path between a building door and a lane/curb handoff point.
-pub(in crate::simulation::economy::agents::tick) fn local_access_path(
+pub(crate) fn local_access_path(
     mode: u8,
     entrance: &BuildingEntrance,
     lane_id: usize,

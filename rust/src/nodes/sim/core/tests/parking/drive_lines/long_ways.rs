@@ -357,6 +357,11 @@ fn a_car_is_drawn_round_its_ways_bends_and_moves_as_before() {
         let drawn = Vector2::new(x, z);
         let facing = facing.map(|f| Vector2::new(f.x, f.z));
         let path = maneuver(&c, agent);
+        // Next to the lane point the gate turn draws it (`PARK-31`, tested on its own).
+        let lane_point = if slot == 0 { path[path.len() - 1] } else { path[0] };
+        if stored.distance_to(lane_point) < crate::simulation::parking::turns::CAR_GATE_RADIUS_M + 0.05 {
+            continue;
+        }
         let line = rounded_line(&path, CAR_TURN_RADIUS_M);
         let off_line = line
             .windows(2)

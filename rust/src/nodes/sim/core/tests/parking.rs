@@ -10,6 +10,7 @@ use std::time::Instant;
 mod catchments;
 mod docks;
 mod drive_lines;
+mod gate_turn;
 mod kerb;
 mod poses;
 mod published;

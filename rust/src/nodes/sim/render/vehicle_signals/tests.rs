@@ -106,7 +106,7 @@ fn fill_buckets(core: &mut SimCore) {
 }
 
 fn signals(core: &SimCore, i: usize, changing: bool) -> (u32, f32) {
-    core.car_signals(i, Some(ESTATE), 0, None, CarPath::Lane { changing })
+    core.car_signals(i, Some(ESTATE), 0, None, CarPath::Lane { changing, gate: None })
 }
 
 fn lamps(core: &SimCore, i: usize) -> u32 {
@@ -188,7 +188,7 @@ fn a_car_signals_the_side_its_connector_or_lane_change_turns_to() {
     assert_eq!(indicators(into_right, true), LAMP_RIGHT);
     // Beyond the signalling range, and on the far tier, no indicator is worked out.
     let far = SIGNAL_RANGE_M * SIGNAL_RANGE_M * 1.01;
-    let path = CarPath::Lane { changing: false };
+    let path = CarPath::Lane { changing: false, gate: None };
     assert_eq!(
         core.car_signals(left, Some(ESTATE), 1, Some(far), path).0 & LAMP_LEFT,
         0
@@ -230,7 +230,7 @@ fn the_front_wheels_steer_toward_the_curve_by_the_wheelbase_over_the_radius() {
         (locked - STEER_LOCK_RAD).abs() <= STEER_QUANTUM_RAD,
         "{locked}"
     );
-    let path = CarPath::Lane { changing: false };
+    let path = CarPath::Lane { changing: false, gate: None };
     assert_eq!(core.car_signals(left, Some(ESTATE), 2, None, path).1, 0.0);
     // Off a lane, the drawn arc's curvature: forward toward it, backing against it.
     let off_lane = CarPath::OffLane {
@@ -240,6 +240,24 @@ fn the_front_wheels_steer_toward_the_curve_by_the_wheelbase_over_the_radius() {
     let steer = core.car_steer(straight, ESTATE, off_lane, false);
     assert!((steer - (ESTATE.wheelbase_m() / 6.0).atan()).abs() < 1e-6);
     assert_eq!(core.car_steer(straight, ESTATE, off_lane, true), -steer);
+}
+
+// `PARK-31`: a lane car on its gate turn steers by the drawn arc, as off a lane, not by its lane's
+// tangents: a right turn of 2.5 m on a straight lane, at the lock for the estate.
+#[test]
+fn a_lane_car_on_its_gate_turn_steers_by_the_arc() {
+    let mut core = core();
+    let i = car(&mut core, ROAD, 50.0, 3.0);
+    fill_buckets(&mut core);
+    let gate = CarPath::Lane {
+        changing: false,
+        gate: Some(-1.0 / 2.5),
+    };
+    let (_, steer) = core.car_signals(i, Some(ESTATE), 0, None, gate);
+    // atan(2.65 / 2.5) is 46.7°: the lock.
+    let wanted = -(ESTATE.wheelbase_m() / 2.5).atan().min(STEER_LOCK_RAD);
+    assert!((steer - wanted).abs() <= STEER_QUANTUM_RAD, "{steer} for {wanted}");
+    assert_eq!(signals(&core, i, false).1, 0.0, "straight without it");
 }
 
 #[test]

@@ -30,6 +30,7 @@ pub(crate) use planning::{ResidentMobility, estimate_parking_trip_seconds_within
 #[cfg(test)]
 pub(crate) use planning::estimate_parking_trip_seconds;
 pub(crate) use access::local_access_target_segment as parking_path_target_segment;
+pub(crate) use access::local_access_path;
 mod route_preview;
 mod runtime;
 mod schedule;

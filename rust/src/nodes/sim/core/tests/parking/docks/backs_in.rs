@@ -308,7 +308,19 @@ fn a_truck_backing_into_a_tail_in_dock_shows_its_reverse_lamp() {
                     curvature: drawn.curvature,
                 };
                 let (_, steer) = core.car_signals(t, Some(truck), 0, None, path);
-                assert_eq!((drawn.curvature, steer), (0.0, 0.0), "tick {tick}");
+                // Past the gate turn (`PARK-31`), which steers it next to the lane point.
+                let lane_point = crate::nodes::sim::render::lane_pose::sample_lane_pose(
+                    &core.transit_network.lane_system.lanes
+                        [core.agents.planned_detach_lane_id[t] as usize],
+                    core.agents.planned_detach_lane_d[t],
+                )
+                .map(|(p, _)| Vector2::new(p.x, p.z))
+                .unwrap();
+                if at(&core, t).distance_to(lane_point)
+                    > crate::simulation::parking::turns::FREIGHT_GATE_RADIUS_M + 0.05
+                {
+                    assert_eq!((drawn.curvature, steer), (0.0, 0.0), "tick {tick}");
+                }
                 seen[0] += 1;
             }
             AtDock => {
@@ -332,4 +344,86 @@ fn a_truck_backing_into_a_tail_in_dock_shows_its_reverse_lamp() {
         tick_agents(&mut core);
     }
     assert!(seen.iter().all(|&ticks| ticks > 0), "{seen:?}");
+}
+
+// `PARK-31`: the truck's round trip near both gates as the snapshot poses it: out of the source's
+// tail-in dock forward and onto its lane on the gate turn, along the road, and off it on the turn
+// into the first yard, backing from the lane point on. Consecutive poses never jump in position
+// and the drawn line never turns faster than a 1 m arc (the nose reverses only at the lane point
+// going in, where the truck changes from driving to backing); on its lane it is drawn off the
+// centre line (the lane half), within the lane offset bound, and off it within 3 m of where it is.
+#[test]
+fn a_truck_joins_and_leaves_its_lane_on_the_gate_turn() {
+    use crate::nodes::sim::render::lane_pose::sample_lane_pose;
+    use crate::simulation::parking::turns::{FREIGHT_GATE_RADIUS_M, GATE_LANE_OFFSET_M};
+    let (mut core, _, t) = dispatched(true);
+    let lane_point = |core: &SimCore, lane: u32, d: f32| {
+        core.transit_network
+            .lane_system
+            .lanes
+            .get(lane as usize)
+            .and_then(|lane| sample_lane_pose(lane, d))
+            .map(|(p, _)| Vector2::new(p.x, p.z))
+    };
+    let mut gates: [Option<Vector2>; 2] = [None, None];
+    let mut previous: Option<(Vector2, Vector2, Vector2)> = None;
+    let (mut on_arc, mut switches, mut last_lane, mut pulled_in) = ([0; 2], 0, None, false);
+    for _ in 0..6_000 {
+        tick_agents(&mut core);
+        let a = &core.agents;
+        let trip = a.parking_trip[t];
+        match trip.phase {
+            PullOut => gates[0] = lane_point(&core, a.planned_attach_lane_id[t], a.planned_attach_lane_d[t]),
+            PullIn => pulled_in = true,
+            AtDock if pulled_in => break,
+            ParkingTripPhase::None if trip.freight_gate => {
+                gates[1] = lane_point(&core, a.planned_detach_lane_id[t], a.planned_detach_lane_d[t])
+            }
+            _ => {}
+        }
+        let Some((drawn, nose, on_lane, _)) = core.posed_car_pose(t) else {
+            previous = None;
+            continue;
+        };
+        let lane = a.current_lane_id[t];
+        let stored = core
+            .transit_network
+            .lane_system
+            .lanes
+            .get(lane)
+            .and_then(|l| sample_lane_pose(l, a.lane_distance[t]))
+            .map_or(at(&core, t), |(p, _)| Vector2::new(p.x, p.z));
+        let near = gates
+            .iter()
+            .position(|g| g.is_some_and(|g| g.distance_to(stored) < FREIGHT_GATE_RADIUS_M + 4.0));
+        let Some(gate) = near else {
+            previous = None;
+            continue;
+        };
+        let off = drawn.distance_to(stored);
+        if on_lane {
+            assert!(off <= GATE_LANE_OFFSET_M, "{off} m off its lane pose");
+            on_arc[gate] += usize::from(off > 0.5);
+        } else {
+            assert!(off <= 3.0, "{off} m off where it is");
+        }
+        if last_lane.is_some_and(|last| last != on_lane) {
+            switches += 1;
+        }
+        last_lane = Some(on_lane);
+        if let Some((s0, d0, n0)) = previous {
+            let moved = s0.distance_to(stored);
+            assert!(drawn.distance_to(d0) <= 1.6 * moved + 0.05, "{d0:?} -> {drawn:?} for {moved} m");
+            let turn = n0.dot(nose).abs().clamp(-1.0, 1.0).acos();
+            assert!(
+                turn <= 1.3 * moved + 5f32.to_radians() + 0.01,
+                "turns {}° for {moved} m at {drawn:?}",
+                turn.to_degrees()
+            );
+        }
+        previous = Some((stored, drawn, nose));
+    }
+    assert!(pulled_in, "it pulled in");
+    assert!(switches >= 2, "{switches}");
+    assert!(on_arc[0] > 0 && on_arc[1] > 0, "{on_arc:?}");
 }

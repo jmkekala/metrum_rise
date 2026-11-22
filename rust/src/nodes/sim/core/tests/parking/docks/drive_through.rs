@@ -424,6 +424,11 @@ fn a_drive_through_way_is_drawn_on_its_chords_as_before() {
         };
         let facing = facing.expect("a facing");
         let offset = drawn.distance_to(stored);
+        // Next to the lane point the gate turn draws it (`PARK-31`, tested on its own).
+        let lane_point = if phase_of(&core, carrier) == PullOut { path[path.len() - 1] } else { path[0] };
+        if stored.distance_to(lane_point) < crate::simulation::parking::turns::FREIGHT_GATE_RADIUS_M + 0.05 {
+            continue;
+        }
         if bend(&path, target - 1) <= 15.5 && bend(&path, target) <= 15.5 {
             let leg = (path[target] - path[target - 1]).normalized();
             assert!(offset < 0.06, "{offset} m off its chord at {stored:?}");

@@ -42,6 +42,38 @@ pub(super) fn held_attach_origin(
         .then_some(origin)
 }
 
+// Whether the route still has a node to reach after this lane's terminal node: `path_idx` names
+// the next node, which is the current lane's terminal while the car drives toward it (the same
+// reading as `planned_next_connector`). A route that leaves the detach lane and comes back to a
+// detach point behind the car is not finished on its first visit (`TRAFFIC-13`).
+pub(super) fn route_continues_past_lane(path: &[u32], path_idx: usize, terminal: Option<u32>) -> bool {
+    let next_idx = if terminal.is_some() && path.get(path_idx).copied() == terminal {
+        path_idx + 1
+    } else {
+        path_idx
+    };
+    next_idx < path.len()
+}
+
+impl crate::simulation::economy::agents::AgentSystem {
+    /// Whether car `i`'s route ends on lane `lane_id`: no node is left to reach past the lane's
+    /// terminal, the detach rule's last-visit check (`TRAFFIC-13`). For the renderer's gate turn
+    /// (`PARK-31`), which draws a car about to detach on its arc. O(1).
+    pub(crate) fn route_ends_on_lane(
+        &self,
+        i: usize,
+        lane_id: usize,
+        transit_network: &TransitNetwork,
+        graph: &RegionGraph,
+    ) -> bool {
+        !route_continues_past_lane(
+            &self.agents.current_path[i],
+            self.agents.current_path_index[i],
+            lane_terminal_node(lane_id, transit_network, graph),
+        )
+    }
+}
+
 /// Returns the road node where a road lane ends for its travel direction.
 pub(super) fn lane_terminal_node(
     lane_id: usize,

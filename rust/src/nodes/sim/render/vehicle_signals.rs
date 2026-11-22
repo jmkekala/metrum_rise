@@ -89,8 +89,10 @@ const LAMP_TIERS: u8 = 3;
 /// How the snapshot posed a car.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum CarPath {
-    /// On its lane; `changing` while blended from its source lane in a lane change.
-    Lane { changing: bool },
+    /// On its lane; `changing` while blended from its source lane in a lane change; `gate` the
+    /// curvature of its drawn gate turn (`PARK-31`) near the lane point it leaves or joined its
+    /// lane at (1/m, positive to the left of travel).
+    Lane { changing: bool, gate: Option<f32> },
     /// Off every lane: its unit nose direction, and the curvature of its drawn travel (1/m,
     /// positive to the left of travel, 0 on a straight part).
     OffLane {
@@ -175,7 +177,7 @@ impl SimCore {
         let agents = &self.agents;
         let lanes = &self.transit_network.lane_system.lanes;
         match path {
-            CarPath::Lane { changing: true } => {
+            CarPath::Lane { changing: true, .. } => {
                 let d = agents.lane_distance[i];
                 let (Some(from), Some(to)) = (
                     lanes.get(agents.lane_change_from_lane_id[i] as usize),
@@ -190,7 +192,7 @@ impl SimCore {
                     _ => 0,
                 }
             }
-            CarPath::Lane { changing: false } => self.lane_indicator(i),
+            CarPath::Lane { changing: false, .. } => self.lane_indicator(i),
             CarPath::OffLane { facing, .. } => {
                 let Some(facing) = facing else {
                     return 0;
@@ -341,7 +343,15 @@ impl SimCore {
                 let steer = (wheelbase * curvature).atan();
                 if reversing { -steer } else { steer }
             }
-            CarPath::Lane { changing } => {
+            // Its drawn gate turn steers as an arc off the lane does.
+            CarPath::Lane {
+                gate: Some(curvature),
+                ..
+            } => (wheelbase * curvature).atan(),
+            CarPath::Lane {
+                changing,
+                gate: None,
+            } => {
                 let agents = &self.agents;
                 let lanes = &self.transit_network.lane_system.lanes;
                 let Some(lane) = lanes.get(agents.current_lane_id[i]) else {

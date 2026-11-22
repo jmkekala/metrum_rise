@@ -42,7 +42,8 @@ use rayon::prelude::*;
 
 use super::{
     AGENT_SURFACE_CLEARANCE_M, RenderSnapshot, access_phase_direction, default_model_basis,
-    model_basis, off_lane_car_drawn, pedestrian_lane_surface_height, transform_floats,
+    lane_car_gate_pose, model_basis, off_lane_car_drawn, pedestrian_lane_surface_height,
+    transform_floats,
 };
 use crate::nodes::sim::render::vehicle_signals::CarPath;
 use crate::config::{AGENT_CULL_PADDING_M, CAR_DRAW_DISTANCE_M, WALKER_DRAW_DISTANCE_M};
@@ -50,8 +51,7 @@ use crate::nodes::sim::core::state::SimCore;
 use crate::nodes::sim::render::lane_pose::{sample_lane_change_pose, sample_lane_pose};
 use crate::simulation::economy::agents::{MODE_CAR, TRANSIT_NETWORK, transit_is_visible};
 use crate::simulation::network::lanes::LanePlanarBox;
-use crate::simulation::parking::ParkingTripPhase;
-use crate::simulation::parking::turns::MAX_DRAWN_OFFSET_M;
+use crate::simulation::parking::turns::{GATE_LANE_OFFSET_M, MAX_DRAWN_OFFSET_M};
 use godot::prelude::{Vector2, Vector3};
 
 // Agents per posing task. Agents inside the camera sit together in the index, so a task's cost
@@ -279,13 +279,9 @@ impl SimCore {
         let boxes = self.transit_network.lane_system.planar_bounds();
         let Some(&lane_box) = boxes.get(self.agents.current_lane_id[i]) else {
             let (x, z) = (self.agents.pos_x[i], self.agents.pos_y[i]);
-            if car
-                && matches!(
-                    self.agents.parking_trip[i].phase,
-                    ParkingTripPhase::PullIn | ParkingTripPhase::PullOut
-                )
-            {
-                // Drawn on its manoeuvre's arcs, near the stored position (`PARK-29`).
+            if car {
+                // Drawn on its manoeuvre's arcs or its gate turn, near the stored position
+                // (`PARK-29`, `PARK-31`).
                 let m = MAX_DRAWN_OFFSET_M;
                 return view.cut_box([x - m, z - m, x + m, z + m], car);
             }
@@ -296,6 +292,11 @@ impl SimCore {
             return None;
         }
         let mut bounds = lane_box;
+        if car {
+            // A car may be drawn on its gate turn, off its lane pose (`PARK-31`).
+            let m = GATE_LANE_OFFSET_M;
+            bounds = [bounds[0] - m, bounds[1] - m, bounds[2] + m, bounds[3] + m];
+        }
         // A superset of the lane-change blend's condition in `pose_agent`.
         if car
             && self.agents.transit[i] == TRANSIT_NETWORK
@@ -304,6 +305,8 @@ impl SimCore {
             if !self.agents.lane_change_start_d[i].is_finite() {
                 return None;
             }
+            let m = GATE_LANE_OFFSET_M;
+            let source_box = [source_box[0] - m, source_box[1] - m, source_box[2] + m, source_box[3] + m];
             bounds = union(bounds, source_box);
         }
         view.cut_box(bounds, car)
@@ -315,6 +318,7 @@ impl SimCore {
         let mut world_z = self.agents.pos_y[i];
         let mut lane_pose = None;
         let mut changing = false;
+        let mut gate = None;
         let mut pedestrian_lane_surface_y = None;
         let lane_id = self.agents.current_lane_id[i];
         if lane_id != usize::MAX && lane_id < self.transit_network.lane_system.lanes.len() {
@@ -342,6 +346,17 @@ impl SimCore {
             } else {
                 sample_lane_pose(lane, self.agents.lane_distance[i])
             };
+            // Near the lane point it leaves or joined its lane at, a car is drawn on its gate
+            // turn (`PARK-31`).
+            if let Some((pos, tangent)) = lane_pose
+                && self.agents.transit_mode[i] == MODE_CAR
+                && self.agents.transit[i] == TRANSIT_NETWORK
+                && let Some((pos, tangent, curvature)) =
+                    lane_car_gate_pose(self, i, changing, pos, tangent)
+            {
+                lane_pose = Some((pos, tangent));
+                gate = Some(curvature);
+            }
             if let Some((pos, _)) = lane_pose {
                 world_x = pos.x;
                 world_z = pos.z;
@@ -350,7 +365,7 @@ impl SimCore {
         }
         // Off every lane a car is drawn round the bends of its manoeuvre (`PARK-29`).
         let mut off_lane_facing = None;
-        let mut path = CarPath::Lane { changing };
+        let mut path = CarPath::Lane { changing, gate };
         if lane_pose.is_none() && self.agents.transit_mode[i] == MODE_CAR {
             let drawn = off_lane_car_drawn(self, i, world_x, world_z);
             (world_x, world_z, off_lane_facing) = (drawn.x, drawn.z, drawn.facing);
@@ -556,6 +571,29 @@ impl SimCore {
             .map(|agent| (agent.key, agent.custom))
     }
 
+    /// Car `i` as the snapshot poses it with nothing cut (`PARK-31` tests): its drawn ground
+    /// point, its nose direction on the ground plane, whether it is posed on a lane, and its
+    /// instance custom data. `None` for a walker or a hidden agent.
+    pub(crate) fn posed_car_pose(&self, i: usize) -> Option<(Vector2, Vector2, bool, [f32; 4])> {
+        let view = AgentView {
+            rect: None,
+            eye: None,
+        };
+        let agent = (transit_is_visible(self.agents.transit[i])
+            && self.agents.transit_mode[i] == MODE_CAR)
+            .then(|| self.pose_agent(i, view).ok())
+            .flatten()?;
+        let t = agent.transform;
+        // The basis' z column points against the nose (`model_basis(-heading)`).
+        let nose = Vector2::new(-t[2], -t[10]);
+        Some((
+            Vector2::new(t[3], t[11]),
+            nose.normalized(),
+            agent.ground_flag == 0,
+            agent.custom,
+        ))
+    }
+
     /// The serial loop that posed every visible agent before culling (before `SIM-02-K`),
     /// kept as the reference the culled, parallel path must reproduce bit for bit.
     pub(in crate::nodes::sim::core) fn build_agent_instances_full_pose(
@@ -593,6 +631,7 @@ impl SimCore {
             let mut world_z = self.agents.pos_y[i];
             let mut lane_pose = None;
             let mut changing = false;
+            let mut gate = None;
             let mut pedestrian_lane_surface_y = None;
             let lane_id = self.agents.current_lane_id[i];
             if lane_id != usize::MAX && lane_id < self.transit_network.lane_system.lanes.len() {
@@ -620,6 +659,15 @@ impl SimCore {
                 } else {
                     sample_lane_pose(lane, self.agents.lane_distance[i])
                 };
+                if let Some((pos, tangent)) = lane_pose
+                    && self.agents.transit_mode[i] == MODE_CAR
+                    && self.agents.transit[i] == TRANSIT_NETWORK
+                    && let Some((pos, tangent, curvature)) =
+                        lane_car_gate_pose(self, i, changing, pos, tangent)
+                {
+                    lane_pose = Some((pos, tangent));
+                    gate = Some(curvature);
+                }
                 if let Some((pos, _)) = lane_pose {
                     world_x = pos.x;
                     world_z = pos.z;
@@ -627,7 +675,7 @@ impl SimCore {
                 }
             }
             let mut off_lane_facing = None;
-            let mut path = CarPath::Lane { changing };
+            let mut path = CarPath::Lane { changing, gate };
             if lane_pose.is_none() && self.agents.transit_mode[i] == MODE_CAR {
                 let drawn = off_lane_car_drawn(self, i, world_x, world_z);
                 (world_x, world_z, off_lane_facing) = (drawn.x, drawn.z, drawn.facing);

@@ -19,7 +19,7 @@ use crate::simulation::agriculture::FieldSite;
 use crate::simulation::buildings::allocator::{Building, BuildingAllocator, BuildingSiteClient};
 use crate::simulation::core::weather::{WeatherSample, WeatherState};
 use crate::simulation::economy::agents::tick::GridlockReport;
-use crate::simulation::economy::agents::{Agent, MODE_CAR};
+use crate::simulation::economy::agents::{Agent, MODE_CAR, VEHICLE_FREIGHT_DELIVERY};
 use crate::simulation::economy::households::HouseholdBuildingUndo;
 use crate::simulation::economy::logistics::ShipmentBuildingUndo;
 use crate::simulation::extraction::ExtractorSite;
@@ -29,7 +29,7 @@ use crate::simulation::network::render::NetworkMeshData;
 use crate::simulation::network::roadbed::{CURB_STEP_HEIGHT_M, SurfaceChunkKey};
 use crate::simulation::vegetation::edits::{CellEdit, VegetationCell};
 use crate::simulation::zoning::ZoningParcelRemovalUndo;
-use godot::prelude::Vector3;
+use godot::prelude::{Vector2, Vector3};
 
 const AGENT_SURFACE_CLEARANCE_M: f32 = 0.02;
 
@@ -160,7 +160,9 @@ pub(crate) struct OffLaneDrawn {
 /// The drawn ground position, facing and turn of car `agent_idx` off every lane, from its
 /// simulated position (`world_x`, `world_z`). A car or truck pulling into or out of a lot place
 /// or a dock is drawn round each bend of its manoeuvre on an arc (`PARK-29`,
-/// [`turns`](crate::simulation::parking::turns)), facing along it; anywhere else it is drawn at
+/// [`turns`](crate::simulation::parking::turns)), facing along it, and between the lane point and
+/// the lot on its gate turn (`PARK-31`), as is a freight carrier leaving a door, a truck waiting
+/// at its yard's gate for a dock and a car held at its attach point; anywhere else it is drawn at
 /// its position facing [`access_phase_direction`], as before. The drawn position lies within
 /// [`MAX_DRAWN_OFFSET_M`](crate::simulation::parking::turns::MAX_DRAWN_OFFSET_M) of the
 /// simulated one. O(manoeuvre points) for the leg scan the facing always made, then O(1); no
@@ -171,7 +173,9 @@ pub(crate) fn off_lane_car_drawn(
     world_x: f32,
     world_z: f32,
 ) -> OffLaneDrawn {
+    use crate::simulation::economy::agents::tick::parking_path_target_segment;
     use crate::simulation::parking::ParkingTripPhase::{PullIn, PullOut};
+    use crate::simulation::parking::turns::drawn_arc;
     let trip = &core.agents.parking_trip[agent_idx];
     let at = |x, z, facing, curvature| OffLaneDrawn {
         x,
@@ -179,20 +183,32 @@ pub(crate) fn off_lane_car_drawn(
         facing,
         curvature,
     };
-    if let Some(egress) = access_egress(core, agent_idx)
+    let posed = |(point, travel, curvature): DrawnPose| {
+        let nose = facing(core, agent_idx, Vector3::new(travel.x, 0.0, travel.y));
+        at(point.x, point.y, nose, curvature)
+    };
+    let current = Vector2::new(world_x, world_z);
+    let egress = access_egress(core, agent_idx);
+    if let Some(egress) = egress
         && matches!(trip.phase, PullOut | PullIn)
         && let Some((place, path)) = pulling_maneuver(core, agent_idx, egress)
     {
         let path = path.as_slice();
-        let current = godot::prelude::Vector2::new(world_x, world_z);
-        let target = crate::simulation::economy::agents::tick::parking_path_target_segment(current, path);
-        if let (Some(target), Some(radius)) =
-            (target, core.parking.maneuver_turn_radius(place, trip.freight_gate))
-            && let Some((drawn, travel, curvature)) =
-                crate::simulation::parking::turns::drawn_arc(path, target, current, radius)
+        let target = parking_path_target_segment(current, path);
+        let radius = core.parking.maneuver_turn_radius(place, trip.freight_gate);
+        // The gate turn next to the lane point, then the bends inside the lot. At the end of
+        // its path (no leg left within the walker's 5 cm) a car pulling out is at its lane point.
+        if let Some(target) = target.or((egress && path.len() > 1).then(|| path.len() - 1))
+            && turns_at_gate(core, agent_idx, egress, false)
+            && let Some(gate) = gate_lane(core, agent_idx, egress)
+            && let Some(pose) = gate.on_hop(path, radius, current, target)
         {
-            let nose = facing(core, agent_idx, Vector3::new(travel.x, 0.0, travel.y));
-            return at(drawn.x, drawn.y, nose, curvature);
+            return posed(pose);
+        }
+        if let (Some(target), Some(radius)) = (target, radius)
+            && let Some(pose) = drawn_arc(path, target, current, radius)
+        {
+            return posed(pose);
         }
         // On a straight part: facing the leg's end, as `access_phase_direction` does.
         let nose = target.and_then(|target| {
@@ -200,7 +216,193 @@ pub(crate) fn off_lane_car_drawn(
         });
         return at(world_x, world_z, nose, 0.0);
     }
+    if let Some(drawn) = gate_stand(core, agent_idx, world_x, world_z) {
+        return drawn;
+    }
+    // A freight carrier leaving a door turns onto its lane on the gate turn too: on its lane it
+    // cannot be told from one that left a yard (`after_freight_pull_out` keeps no dock).
+    if egress == Some(true)
+        && turns_at_gate(core, agent_idx, true, false)
+        && let Some(entrance) = core.allocator.entrances.get(core.agents.current_building[agent_idx])
+        && let Some(path) = crate::simulation::economy::agents::tick::local_access_path(
+            MODE_CAR,
+            entrance,
+            core.agents.planned_attach_lane_id[agent_idx] as usize,
+            core.agents.planned_attach_lane_d[agent_idx],
+            &core.transit_network,
+            &core.region_graph,
+            false,
+        )
+        && let Some(target) = parking_path_target_segment(current, path.as_slice())
+        && let Some(gate) = gate_lane(core, agent_idx, true)
+        && let Some(pose) = gate.on_hop(path.as_slice(), None, current, target)
+    {
+        return posed(pose);
+    }
     at(world_x, world_z, access_phase_direction(core, agent_idx, world_x, world_z), 0.0)
+}
+
+type DrawnPose = (Vector2, Vector2, f32);
+
+// A car standing off its lane at its lane point: held for a clear attach slot, or a truck at
+// its yard's gate before the parking phase gives it a dock. On the gate turn, at the arc's middle
+// facing along it (`PARK-31`); any other held car at its position facing its lane, where it
+// faced a fixed world direction before. `None` for any other car. O(1).
+fn gate_stand(core: &SimCore, agent_idx: usize, world_x: f32, world_z: f32) -> Option<OffLaneDrawn> {
+    use crate::simulation::economy::agents::TRANSIT_ACCESS_INGRESS;
+    let agents = &core.agents;
+    let trip = &agents.parking_trip[agent_idx];
+    let held = agents.pending_lane_attach(agent_idx).is_some();
+    let at_gate = agents.transit[agent_idx] == TRANSIT_ACCESS_INGRESS
+        && trip.phase == crate::simulation::parking::ParkingTripPhase::None
+        && trip.freight_gate
+        && agents.vehicle_type[agent_idx] == VEHICLE_FREIGHT_DELIVERY;
+    if !held && !at_gate {
+        return None;
+    }
+    // Either stands in the state it has on its lane: held past its pull-out, the truck before
+    // its pull-in.
+    let gate = gate_lane(core, agent_idx, held)?;
+    if !turns_at_gate(core, agent_idx, held, true) {
+        let nose = Vector3::new(gate.along.x, 0.0, gate.along.y);
+        return Some(OffLaneDrawn {
+            x: world_x,
+            z: world_z,
+            facing: Some(nose),
+            curvature: 0.0,
+        });
+    }
+    let (point, travel, curvature) = gate.at_lane_point();
+    Some(OffLaneDrawn {
+        x: point.x,
+        z: point.y,
+        facing: Some(Vector3::new(travel.x, 0.0, travel.y)),
+        curvature,
+    })
+}
+
+// The gate turn's radius for car `agent_idx` by its body class, as both sides of the lane point
+// read it (`PARK-31`).
+fn gate_radius(core: &SimCore, agent_idx: usize) -> f32 {
+    use crate::simulation::parking::turns::{CAR_GATE_RADIUS_M, FREIGHT_GATE_RADIUS_M};
+    if core.agents.vehicle_type[agent_idx] == VEHICLE_FREIGHT_DELIVERY {
+        FREIGHT_GATE_RADIUS_M
+    } else {
+        CAR_GATE_RADIUS_M
+    }
+}
+
+// Whether car `agent_idx` turns between its lane and its lot or yard on the gate turn (`PARK-31`),
+// leaving the lane (`egress` false) or joining it, read on the lane (`on_lane`: before the detach,
+// after the attach) or off it. Both readings agree for the same car on either side of the switch:
+// a car into or out of any lot place but a kerbside one (`PARK-05`, drawn as walked), a freight
+// carrier into a yard, and a freight carrier out of anywhere, whose trip keeps no record of the
+// dock it left once it is on its lane (`after_freight_pull_out`), so its door egress turns too.
+// O(1).
+fn turns_at_gate(core: &SimCore, agent_idx: usize, egress: bool, on_lane: bool) -> bool {
+    use crate::simulation::parking::ParkingTripPhase::{Drive, None, PullIn, PullOut};
+    let trip = &core.agents.parking_trip[agent_idx];
+    if core.agents.vehicle_type[agent_idx] == VEHICLE_FREIGHT_DELIVERY {
+        return match (egress, on_lane) {
+            (false, true) => trip.phase == None && trip.freight_gate,
+            (false, false) => trip.phase == PullIn && trip.freight_gate,
+            (true, true) => trip.phase == None,
+            (true, false) => trip.phase == None || (trip.phase == PullOut && trip.freight_gate),
+        };
+    }
+    let (phase, place) = match (egress, on_lane) {
+        (false, true) => (Drive, trip.destination),
+        (false, false) => (PullIn, trip.destination),
+        (true, true) => (Drive, trip.source),
+        (true, false) => (PullOut, trip.source),
+    };
+    trip.phase == phase && core.parking.maneuver_turn_radius(place, false).is_some()
+}
+
+// Where car `agent_idx`'s gate turn meets its lane: its planned attach point (`egress`) or detach
+// point, as the lane pose draws it. O(log lane points).
+fn gate_lane(
+    core: &SimCore,
+    agent_idx: usize,
+    egress: bool,
+) -> Option<crate::simulation::parking::turns::GateLane> {
+    let agents = &core.agents;
+    let (lane, distance) = if egress {
+        (agents.planned_attach_lane_id[agent_idx], agents.planned_attach_lane_d[agent_idx])
+    } else {
+        (agents.planned_detach_lane_id[agent_idx], agents.planned_detach_lane_d[agent_idx])
+    };
+    let lane = core.transit_network.lane_system.lanes.get(lane as usize)?;
+    let (point, tangent) = crate::nodes::sim::render::lane_pose::sample_lane_pose(lane, distance)?;
+    Some(crate::simulation::parking::turns::GateLane {
+        point: Vector2::new(point.x, point.z),
+        along: Vector2::new(tangent.x, tangent.z).try_normalized()?,
+        hand: crate::simulation::parking::turns::LOT_HAND,
+        radius: gate_radius(core, agent_idx),
+        egress,
+    })
+}
+
+/// Lane car `agent_idx`'s drawn pose from its lane pose (`point`, unit `tangent`) on its gate turn
+/// (`PARK-31`): within the arc's reach before the point it leaves its lane at (its planned detach
+/// on the route's last visit) or past the one it joined it at (its planned attach on the route's
+/// first lane), the lane pose offset onto the arc in its own frame, with the arc's curvature;
+/// `None` elsewhere, where it is drawn at its lane pose. `changing` while blended from its source
+/// lane, which may be the lane it joined. The test every lane car takes is two column reads and
+/// compares against its lane; only within reach of its own lane point does it read its trip and
+/// route. O(1), no allocation.
+pub(super) fn lane_car_gate_pose(
+    core: &SimCore,
+    agent_idx: usize,
+    changing: bool,
+    point: Vector3,
+    tangent: Vector3,
+) -> Option<(Vector3, Vector3, f32)> {
+    use crate::simulation::economy::agents::ACCESS_PLAN_VALID;
+    let agents = &core.agents;
+    let lane = agents.current_lane_id[agent_idx];
+    let leaves = agents.planned_detach_lane_id[agent_idx] as usize == lane;
+    let attach = agents.planned_attach_lane_id[agent_idx];
+    let joined = attach as usize == lane
+        || (changing && agents.lane_change_from_lane_id[agent_idx] == attach);
+    if !leaves && !joined {
+        return None;
+    }
+    let d = agents.lane_distance[agent_idx];
+    let radius = gate_radius(core, agent_idx);
+    let reach = 0.0..=radius;
+    let (egress, x) = if leaves
+        && reach.contains(&(agents.planned_detach_lane_d[agent_idx] - d))
+        && agents.access_flags[agent_idx] & ACCESS_PLAN_VALID != 0
+        && turns_at_gate(core, agent_idx, false, true)
+        && agents.route_ends_on_lane(agent_idx, lane, &core.transit_network, &core.region_graph)
+    {
+        (false, agents.planned_detach_lane_d[agent_idx] - d)
+    } else if joined
+        && reach.contains(&(d - agents.planned_attach_lane_d[agent_idx]))
+        && agents.current_path_index[agent_idx] <= 1
+        && turns_at_gate(core, agent_idx, true, true)
+    {
+        (true, d - agents.planned_attach_lane_d[agent_idx])
+    } else {
+        return None;
+    };
+    let level = Vector2::new(tangent.x, tangent.z);
+    let (drawn, travel, curvature) = crate::simulation::parking::turns::gate_on_lane(
+        radius,
+        crate::simulation::parking::turns::LOT_HAND,
+        egress,
+        x,
+        Vector2::new(point.x, point.z),
+        level.try_normalized()?,
+    )?;
+    // The lane's grade stays: the turn is in the ground plane.
+    let travel = travel * level.length();
+    Some((
+        Vector3::new(drawn.x, point.y, drawn.y),
+        Vector3::new(travel.x, tangent.y, travel.y).normalized(),
+        curvature,
+    ))
 }
 
 fn model_basis(basis_z: Vector3) -> [Vector3; 3] {

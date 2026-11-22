@@ -5,7 +5,7 @@
 use super::super::super::super::{ACCESS_PLAN_VALID, MODE_CAR, TRANSIT_ACCESS_INGRESS};
 use super::super::super::access::{local_access_point, local_access_side_label};
 use super::super::super::claims::LaneClaimContext;
-use super::super::super::lane_nav::lane_terminal_node;
+use super::super::super::lane_nav::{lane_terminal_node, route_continues_past_lane};
 use super::super::super::slices::MovementSlices;
 use super::super::super::traffic::claim_lane_entry;
 use crate::simulation::buildings::allocator::BuildingAllocator;
@@ -147,17 +147,4 @@ pub(super) unsafe fn try_network_detach(
         *s_speed.get_mut(i) = 0.0;
         true
     }
-}
-
-// Whether the route still has a node to reach after this lane's terminal node: `path_idx` names
-// the next node, which is the current lane's terminal while the car drives toward it (the same
-// reading as `planned_next_connector`). A route that leaves the detach lane and comes back to a
-// detach point behind the car is not finished on its first visit (`TRAFFIC-13`).
-fn route_continues_past_lane(path: &[u32], path_idx: usize, terminal: Option<u32>) -> bool {
-    let next_idx = if terminal.is_some() && path.get(path_idx).copied() == terminal {
-        path_idx + 1
-    } else {
-        path_idx
-    };
-    next_idx < path.len()
 }

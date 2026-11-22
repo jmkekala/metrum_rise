@@ -26,10 +26,24 @@ pub(crate) const FREIGHT_TURN_RADIUS_M: f32 = 6.0;
 /// The longest tangent length of a drawn turn, metres: a truck's at 90°. A sharper bend gets a
 /// smaller radius, so the drawn pose keeps within [`MAX_DRAWN_OFFSET_M`] of the simulated one.
 const MAX_TANGENT_M: f32 = 6.0;
-/// The farthest the drawn position of a manoeuvring vehicle lies from its simulated one: both
-/// lie within the tangent length of the corner, the simulated one up to the walker's 5 cm
-/// corner cut off its leg (`local_access_target_segment`).
-pub(crate) const MAX_DRAWN_OFFSET_M: f32 = 2.0 * MAX_TANGENT_M + 0.05;
+// The farthest the drawn position of a vehicle on a bend inside the lot lies from its simulated
+// one: both lie within the tangent length of the corner, the simulated one up to the walker's
+// 5 cm corner cut off its leg (`local_access_target_segment`).
+const MAX_BEND_OFFSET_M: f32 = 2.0 * MAX_TANGENT_M + 0.05;
+/// The farthest the drawn position of a car off every lane lies from its simulated one: on a
+/// bend inside the lot (12.05 m), or on the hop half of its gate turn
+/// ([`GATE_HOP_OFFSET_M`], `PARK-31`), whichever bounds more.
+pub(crate) const MAX_DRAWN_OFFSET_M: f32 = if GATE_HOP_OFFSET_M > MAX_BEND_OFFSET_M {
+    GATE_HOP_OFFSET_M
+} else {
+    MAX_BEND_OFFSET_M
+};
+
+mod gate;
+pub(crate) use gate::{
+    CAR_GATE_RADIUS_M, FREIGHT_GATE_RADIUS_M, GATE_HOP_OFFSET_M, GATE_LANE_OFFSET_M, GateLane,
+    LOT_HAND, on_lane as gate_on_lane,
+};
 // Bends below 5° keep their corner.
 const MIN_BEND_RAD: f32 = 5.0 * std::f32::consts::PI / 180.0;
 // Legs shorter than this are not rounded at either end.
