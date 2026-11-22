@@ -69,3 +69,12 @@ fn the_check_of_a_truck_at_the_kerb_waits_for_the_floor() {
     core.agents.sim_time += 2.0 * spm;
     assert_eq!(core.kerb_stand_floor_slot(0, slot), None);
 }
+
+// A format 128 trip row of a truck sent on from a full yard to the door (`GateToDoor`) loads as
+// one on its way to the kerb stop (`ToKerb`, `PARK-36`).
+#[test]
+fn a_format_128_gate_to_door_row_loads_as_bound_for_the_kerb() {
+    let phase: ParkingTripPhase = serde_json::from_str("\"GateToDoor\"").unwrap();
+    assert_eq!(phase, ParkingTripPhase::ToKerb);
+    assert_eq!(serde_json::to_string(&ParkingTripPhase::AtKerb).unwrap(), "\"AtKerb\"");
+}
