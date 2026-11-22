@@ -78,3 +78,33 @@ fn a_format_128_gate_to_door_row_loads_as_bound_for_the_kerb() {
     assert_eq!(phase, ParkingTripPhase::ToKerb);
     assert_eq!(serde_json::to_string(&ParkingTripPhase::AtKerb).unwrap(), "\"AtKerb\"");
 }
+
+// A format 128 save holding a truck inside a building without a dock, as the game before
+// `PARK-36` parked one there for its wait, loads with the truck inside; its return then leaves
+// from the kerb stop, never the door.
+#[test]
+fn a_format_128_save_with_a_truck_inside_loads_and_the_truck_leaves_from_the_kerb() {
+    use crate::simulation::economy::agents::{TRANSIT_ACCESS_EGRESS, TRANSIT_IN_BUILDING};
+    use crate::simulation::save::schema::PRE_KERB_FREIGHT_SAVE_VERSION;
+    let (mut core, carrier) = dockless_truck();
+    let a = &mut core.agents;
+    a.transit[carrier] = TRANSIT_IN_BUILDING;
+    a.current_building[carrier] = 0;
+    a.current_lane_id[carrier] = usize::MAX;
+    a.current_path[carrier].clear();
+    a.parking_trip[carrier] = Default::default();
+    let path = std::env::temp_dir().join(format!("metrum_kerb_freight_128_{}.sqlite", std::process::id()));
+    let text = path.to_str().unwrap();
+    core.save_game_settled_at(text, None, 0).unwrap();
+    rusqlite::Connection::open(&path)
+        .unwrap()
+        .execute("UPDATE save_meta SET version = ?1", [PRE_KERB_FREIGHT_SAVE_VERSION])
+        .unwrap();
+    core.load_game_internal(text).unwrap();
+    let _ = std::fs::remove_file(&path);
+    let i = core.agents.resolve_agent(core.logistics.shipments[0].carrier).unwrap();
+    assert_eq!(core.agents.transit[i], TRANSIT_IN_BUILDING);
+    assert!(check_truck(&mut core));
+    assert_eq!(core.agents.transit[i], TRANSIT_ACCESS_EGRESS);
+    assert!(pos(&core, i).distance_to(kerb_stop(&core, 0)) < 0.05);
+}
