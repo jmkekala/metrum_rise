@@ -225,3 +225,59 @@ fn the_drafted_asset_carries_the_facts_and_passes_the_pack_load_checks() {
         ]
     );
 }
+
+// The pilot estate's doors as models commit 0f4757e states them (docs/vehicles.md "Doors").
+fn estate_doors() -> Value {
+    json!([
+        {"side": "left", "row": "front", "centre": [0.895, 0.0, 0.3675], "width_m": 1.135},
+        {"side": "right", "row": "front", "centre": [-0.895, 0.0, 0.3675], "width_m": 1.135},
+        {"side": "left", "row": "rear", "centre": [0.895, 0.0, -0.58], "width_m": 0.76},
+        {"side": "right", "row": "rear", "centre": [-0.895, 0.0, -0.58], "width_m": 0.76},
+        {"side": "rear", "row": "cargo", "centre": [0.0, 0.0, -2.24], "width_m": 1.15}
+    ])
+}
+
+#[test]
+fn version_3_carries_doors_into_the_asset_and_version_2_still_reads() {
+    let fixture = VehicleFixture::new();
+    // Version 2 has no doors, and its asset none.
+    let derived = derive(&fixture.inputs(), &fixture.mods(), &fixture.root.join("work")).unwrap();
+    let manifest = AssetManifest::from_str(&derived.asset_toml).unwrap();
+    assert!(manifest.vehicle.unwrap().doors.is_empty());
+    assert!(facts_with(|s| s["doors"] = estate_doors()).is_err(), "doors in version 2 accepted");
+    assert!(facts_with(|s| s["version"] = json!(3)).is_err(), "version 3 without doors accepted");
+    let v3 = |s: &mut Value| {
+        s["version"] = json!(3);
+        s["doors"] = estate_doors();
+    };
+    let facts = facts_with(v3).unwrap();
+    let inputs = VehicleInputs { facts, ..fixture.inputs() };
+    let derived = derive(&inputs, &fixture.mods(), &fixture.root.join("work")).unwrap();
+    let manifest = AssetManifest::from_str(&derived.asset_toml).unwrap();
+    let doors = manifest.vehicle.unwrap().doors;
+    assert_eq!(doors.len(), 5);
+    assert_eq!((doors[1].side, doors[1].row), (crate::assets::DoorSide::Right, crate::assets::DoorRow::Front));
+    assert_eq!(doors[1].centre, [-0.895, 0.0, 0.3675]);
+    assert_eq!((doors[4].side, doors[4].row, doors[4].width_m), (crate::assets::DoorSide::Rear, crate::assets::DoorRow::Cargo, 1.15));
+    // The pack-load checks: unmirrored front doors, a missing front door, list order, a door
+    // off its side, one above the ground.
+    type Edit = fn(&mut Value);
+    let refusals: [(&str, Edit); 5] = [
+        ("unmirrored", |s| s["doors"][1]["centre"][2] = json!(0.4)),
+        ("one front door", |s| {
+            s["doors"].as_array_mut().unwrap().remove(1);
+        }),
+        ("out of order", |s| s["doors"].as_array_mut().unwrap().swap(0, 2)),
+        ("off its side", |s| s["doors"][0]["centre"][0] = json!(-0.895)),
+        ("above the ground", |s| s["doors"][2]["centre"][1] = json!(0.3)),
+    ];
+    for (what, edit) in refusals {
+        let facts = facts_with(|s| {
+            v3(s);
+            edit(s);
+        })
+        .unwrap();
+        let inputs = VehicleInputs { facts, ..fixture.inputs() };
+        assert!(derive(&inputs, &fixture.mods(), &fixture.root.join("work")).is_err(), "{what} accepted");
+    }
+}

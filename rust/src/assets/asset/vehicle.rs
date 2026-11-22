@@ -84,6 +84,45 @@ pub enum Side {
     Centre,
 }
 
+/// The side a door opens on (docs/vehicles.md "Doors"): the driver's left or right, or the rear.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DoorSide {
+    /// The driver's left, `+X` in the model frame.
+    Left,
+    /// The driver's right, `-X`.
+    Right,
+    /// The rear plane (a tailgate or rear load door).
+    Rear,
+}
+
+/// The row a door serves: listed front row first, then rear row, then cargo.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DoorRow {
+    /// The driver's and front passenger's doors.
+    Front,
+    /// Rear passenger doors.
+    Rear,
+    /// A load door or tailgate, on the rear or a side; no person uses it.
+    Cargo,
+}
+
+/// One door (`[[vehicle.doors]]`, sidecar version 3, `TOOLS-43`): a painted seam of the body.
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VehicleDoor {
+    /// The side it opens on.
+    pub side: DoorSide,
+    /// The row it serves.
+    pub row: DoorRow,
+    /// The opening's centre on the door skin at ground level (`y = 0`), model frame, metres. The
+    /// game adds its own outward offset for where a person stands.
+    pub centre: [f32; 3],
+    /// The opening's width along the body, metres.
+    pub width_m: f32,
+}
+
 /// Lamp groups and their vertex surface ids (docs/vehicles.md "Lamps").
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -278,6 +317,11 @@ pub struct VehicleData {
     pub wheels: Vec<VehicleWheel>,
     /// Lenses, one entry each.
     pub lamps: Vec<VehicleLamp>,
+    /// Doors in list order (front row, rear row, cargo; left before right); empty for a model
+    /// drafted from a version 2 sidecar. The renderer and tools read them; the simulation keeps
+    /// its own per-class door points (`simulation::parking::doors`).
+    #[serde(default)]
+    pub doors: Vec<VehicleDoor>,
 }
 
 fn unit_weight() -> f32 {
@@ -323,6 +367,7 @@ impl VehicleData {
         }
         self.validate_wheels().or_else(fail)?;
         self.validate_lamps().or_else(fail)?;
+        self.validate_doors().or_else(fail)?;
         if self.variants.is_empty() {
             return fail("needs at least one [[vehicle.variants]] entry".into());
         }
@@ -364,6 +409,57 @@ impl VehicleData {
                     "wheel part {} must rest on the ground: centre height equal to its radius",
                     wheel.part
                 ));
+            }
+        }
+        Ok(())
+    }
+
+    // Doors, when listed (docs/vehicles.md "Doors"): on the ground, in list order, a rear side only
+    // for a cargo door, side doors on their own side, the front row on both sides (any one door
+    // for a bus) and every row present on both sides mirrored within 1 mm.
+    fn validate_doors(&self) -> Result<(), String> {
+        if self.doors.is_empty() {
+            return Ok(());
+        }
+        for door in &self.doors {
+            let [x, y, _] = door.centre;
+            if door.centre.iter().any(|v| !v.is_finite())
+                || y.abs() > GROUND_TOLERANCE_M
+                || !(door.width_m.is_finite() && door.width_m > 0.0)
+            {
+                return Err(format!(
+                    "door {:?} {:?} needs a finite centre on the ground and a positive width",
+                    door.side, door.row
+                ));
+            }
+            let own_side = match door.side {
+                DoorSide::Left => x > 0.0,
+                DoorSide::Right => x < 0.0,
+                DoorSide::Rear => door.row == DoorRow::Cargo,
+            };
+            if !own_side {
+                return Err(format!(
+                    "door {:?} {:?} is not on its side (left +X, right -X, rear only for cargo)",
+                    door.side, door.row
+                ));
+            }
+        }
+        if self.doors.windows(2).any(|pair| (pair[0].row, pair[0].side) >= (pair[1].row, pair[1].side)) {
+            return Err("doors must be listed front, rear, cargo, left before right, once each".into());
+        }
+        let find = |row: DoorRow, side: DoorSide| {
+            self.doors.iter().find(|door| door.row == row && door.side == side)
+        };
+        let front = (find(DoorRow::Front, DoorSide::Left), find(DoorRow::Front, DoorSide::Right));
+        if self.body_class != BodyClass::Bus && (front.0.is_none() || front.1.is_none()) {
+            return Err("needs both front doors".into());
+        }
+        for row in [DoorRow::Front, DoorRow::Rear, DoorRow::Cargo] {
+            if let (Some(left), Some(right)) = (find(row, DoorSide::Left), find(row, DoorSide::Right)) {
+                let mirrored = [-right.centre[0], right.centre[1], right.centre[2]];
+                if left.centre.iter().zip(mirrored).any(|(a, b)| (a - b).abs() > GROUND_TOLERANCE_M) {
+                    return Err(format!("{row:?} doors must mirror in X within 1 mm"));
+                }
             }
         }
         Ok(())

@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Vehicle drafts (`TOOLS-41`, docs/vehicles.md "Facts sidecar" and docs/asset_editor.md "Draft
-//! command"): the version 2 `kind: "vehicle"` facts sidecar, read as strictly as version 1, the
-//! vehicle role, and the `[vehicle]` asset a draft publishes. No lot, door or parking rule
+//! command"): the version 2 or 3 `kind: "vehicle"` facts sidecar (3 adds `doors`, `TOOLS-43`),
+//! read as strictly as version 1, the vehicle role, and the `[vehicle]` asset a draft publishes. No lot, door or parking rule
 //! applies. Runs once per draft command: O(file size) to read, O(listed file bytes) to hash.
 
 use super::report::{self, Line};
@@ -14,15 +14,16 @@ use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-/// The sidecar version a vehicle export carries.
-pub(crate) const VERSION: u64 = 2;
+/// The sidecar versions a vehicle export may carry: 2, and 3 with its `doors` (`TOOLS-43`).
+pub(crate) const VERSIONS: [u64; 2] = [2, 3];
 /// The tier bands of a 4.5 m car (docs/vehicles.md "Tiers"); a model's are these scaled by its
 /// length over [`REFERENCE_LENGTH_M`], so a tier switches at the same size on screen.
 const TIER_STARTS_M: [f32; 4] = [0.0, 30.0, 100.0, 400.0];
 const REFERENCE_LENGTH_M: f32 = 4.5;
 
-/// A version 2 vehicle sidecar. `lamps` reuse the pack schema's lens table, whose keys are the
-/// sidecar's. Every key is read so that the reader stays strict; the draft copies only some.
+/// A version 2 or 3 vehicle sidecar. `lamps` and `doors` reuse the pack schema's lens and door
+/// tables, whose keys are the sidecar's. Every key is read so that the reader stays strict; the
+/// draft copies only some.
 #[allow(dead_code)]
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -42,6 +43,9 @@ pub(crate) struct VehicleFacts {
     pub(crate) lamps: Vec<VehicleLamp>,
     pub(crate) glass: Vec<Glass>,
     pub(crate) cargo: Option<Cargo>,
+    /// Version 3 only, and there required; version 2 has no such key.
+    #[serde(default)]
+    pub(crate) doors: Option<Vec<crate::assets::VehicleDoor>>,
     /// Reserved for trailers; must be `null`.
     pub(crate) coupling: Option<Value>,
     pub(crate) interior: Option<Interior>,
@@ -201,12 +205,17 @@ impl VehicleFacts {
         if value["schema"] != SCHEMA {
             return Err(format!("sidecar schema must be \"{SCHEMA}\""));
         }
-        if value["version"].as_u64() != Some(VERSION) || value["kind"] != "vehicle" {
+        let version = value["version"].as_u64().filter(|v| VERSIONS.contains(v));
+        if version.is_none() || value["kind"] != "vehicle" {
             return Err(format!(
-                "sidecar version {} kind {} is not supported; this reader reads version {VERSION} \
+                "sidecar version {} kind {} is not supported; this reader reads versions {VERSIONS:?} \
                  kind \"vehicle\"",
                 value["version"], value["kind"]
             ));
+        }
+        // Version 3 is version 2 plus `doors`, so the key decides between them.
+        if (version == Some(3)) != value.get("doors").is_some() {
+            return Err("sidecar doors are required in version 3 and not allowed in version 2".into());
         }
         let facts: Self = serde_json::from_value(value).map_err(|e| format!("sidecar: {e}"))?;
         facts.check()?;
@@ -520,6 +529,15 @@ fn asset_toml(facts: &VehicleFacts, role: &VehicleRole) -> String {
             vec(lamp.facing),
             lamp.width_m,
             lamp.height_m
+        );
+    }
+    for door in facts.doors.iter().flatten() {
+        out += &format!(
+            "\n[[vehicle.doors]]\nside = {}\nrow = {}\ncentre = {}\nwidth_m = {}\n",
+            text(&snake(&door.side)),
+            text(&snake(&door.row)),
+            vec(door.centre),
+            door.width_m
         );
     }
     out

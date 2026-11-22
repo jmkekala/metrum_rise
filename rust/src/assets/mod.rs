@@ -27,8 +27,8 @@ pub use asset::{
     SnapMode, TerrainBehavior, VehicleClass, VehicleData, VehicleFamily, ZoneClass,
 };
 pub use asset::{
-    BodyClass, LampGroup, Side, VEHICLE_TIERS, VehicleLamp, VehiclePaint, VehicleVariant,
-    VehicleWheel,
+    BodyClass, DoorRow, DoorSide, LampGroup, Side, VEHICLE_TIERS, VehicleDoor, VehicleLamp,
+    VehiclePaint, VehicleVariant, VehicleWheel,
 };
 pub use pack::PackManifest;
 pub use registry::{AssetEntry, AssetRegistry};
