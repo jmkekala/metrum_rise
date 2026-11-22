@@ -104,11 +104,11 @@ const SIZE_BAR_PITCH_PX := 6
 const SIZE_BAR_HEIGHT_PX := 17
 # An odd stride cycles the 32-bit pick space. Rust hashes the pick into each appearance lane.
 const POINT_PICK_STRIDE := 0x9E3779B9
-const POINT_SWAY_LIMIT := deg_to_rad(12.0)
-const POINT_SWAY_GAIN := 0.012 # Radians per metre/second of horizontal cursor motion.
-# Natural frequency 2.5 Hz and damping ratio 0.65.
-const POINT_SWAY_DECAY := 2.5 * TAU * 0.65
-const POINT_SWAY_FREQUENCY := 2.5 * TAU * sqrt(1.0 - 0.65 * 0.65)
+const POINT_SWAY_LIMIT := deg_to_rad(6.0)
+const POINT_SWAY_GAIN := 0.005 # Radians per metre/second of horizontal cursor motion.
+# Natural frequency 2.5 Hz and damping ratio 0.85: one small overshoot, no wobble.
+const POINT_SWAY_DECAY := 2.5 * TAU * 0.85
+const POINT_SWAY_FREQUENCY := 2.5 * TAU * sqrt(1.0 - 0.85 * 0.85)
 
 @onready var simulation_node = $"../SimulationNode"
 var active := false:
