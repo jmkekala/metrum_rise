@@ -1206,9 +1206,11 @@ fn a_save_with_a_truck_in_a_yard_loads_after_an_edit_retired_its_dock() {
 // `METRUM_FREIGHT_STILL_OUT`. A save loads without validating its docks, so the game draws the
 // rows proven here. The shipment carries `METRUM_FREIGHT_STILL_RESOURCE`, an input the asset
 // takes (default `machinery`, the coal mine's; `grain` for a food processor, `PARK-23`).
-// `METRUM_FREIGHT_STILL_TRUCKS` (default 1) loaded shipments leave at once (`PARK-36`: with one
-// dock, the second waits at the kerb), and an asset without a dock is taken as one when
-// `METRUM_FREIGHT_STILL_DOCKS` is `0` (`PARK-36`: kerb deliveries).
+// `METRUM_FREIGHT_STILL_TRUCKS` (default 1) loaded shipments leave at once, or
+// `METRUM_FREIGHT_STILL_STAGGER` slots apart (`PARK-36`: with one dock, the next ones wait on a
+// drive-through way in or at the kerb), and an asset without a dock is taken as one when
+// `METRUM_FREIGHT_STILL_DOCKS` is `0` (`PARK-36`: kerb deliveries). `METRUM_FREIGHT_STILL_TRACE`
+// seconds prints the loaded save's run at 1x.
 #[test]
 #[ignore = "manual fixture for rendered freight yard stills; requires METRUM_FREIGHT_STILL_ASSET, _ID and _OUT"]
 fn write_the_freight_yard_still_save() {
@@ -1254,6 +1256,9 @@ fn write_the_freight_yard_still_save() {
     use crate::simulation::economy::logistics::{
         CarrierClass, Shipment, ShipmentEndpoint, ShipmentStatus,
     };
+    // `METRUM_FREIGHT_STILL_STAGGER` slots between the dispatches (default 0: all at once).
+    let stagger: u64 = std::env::var("METRUM_FREIGHT_STILL_STAGGER").map_or(0, |n| n.parse().unwrap());
+    let first_slot = core.time.absolute_slot() + 1;
     let catalog = load_runtime_economy_catalog().unwrap();
     for id in 0..trucks {
         core.logistics.shipments.push(Shipment {
@@ -1274,7 +1279,7 @@ fn write_the_freight_yard_still_save() {
             freight_cost: 10.0,
             eta_hours: 1,
             leg_started_hour: core.logistics.hour_ticks,
-            trip_event_slot: 0,
+            trip_event_slot: if stagger == 0 { 0 } else { first_slot + id * stagger },
             cargo_loaded: true,
         });
     }

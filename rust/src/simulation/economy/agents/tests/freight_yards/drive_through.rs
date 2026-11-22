@@ -659,3 +659,30 @@ fn trucks_dispatched_together_start_one_place_apart_at_the_kerb() {
     let third = yard.dispatch(2);
     assert!(at(&yard, third).distance_to(kerb_stop(&yard, 0)) < 0.05);
 }
+
+// Two trucks dispatched together arrive at a drive-through yard one behind the other: the first
+// takes the free bay and pulls in at the yard speed, the second waits on the way in and follows
+// it up, never nearer than a body and 1 m behind it, until it stands at the first place (`PARK-36`).
+#[test]
+fn a_truck_on_the_way_in_holds_short_of_the_truck_ahead() {
+    let mut yard = yard_with(0, 0);
+    let way = publish_drive_through_deep(&mut yard, 1, 36.0);
+    let trucks = [yard.dispatch(0), yard.dispatch(1)];
+    yard.tick_until(|y| trucks.iter().any(|&i| y.phase(i) == ParkingTripPhase::AtKerb));
+    let [lead, follow] = if yard.phase(trucks[1]) == ParkingTripPhase::AtKerb { trucks } else { [trucks[1], trucks[0]] };
+    assert_eq!(yard.phase(lead), ParkingTripPhase::PullIn, "the first pulls in");
+    let line = way_in(&yard, follow, &way);
+    let start = along(&line, at(&yard, follow)).0;
+    let mut closest = f32::INFINITY;
+    yard.tick_until(|y| {
+        let (a, off_a) = along(&line, at(y, lead));
+        let (b, off_b) = along(&line, at(y, follow));
+        if off_a < 0.05 && off_b < 0.05 && b > start + 1e-3 {
+            closest = closest.min(a - b);
+        }
+        y.phase(lead) == ParkingTripPhase::AtDock
+            && at(y, follow).distance_to(way_in_place(&way, 1)) < 1e-3
+    });
+    assert!(closest.is_finite(), "it moved up behind the first");
+    assert!(closest >= 9.0 - 1e-3, "{closest} m behind the truck ahead");
+}
