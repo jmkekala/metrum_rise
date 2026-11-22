@@ -131,7 +131,7 @@ fn drive_along(
         // The walk takes the next leg within 5 cm of a corner (`local_access_target_segment`).
         assert!(off < 0.05, "off its way at {now:?}");
         assert!(progress >= done - 1e-4, "it went back: {last:?} -> {now:?}");
-        assert!(now.distance_to(last) <= 0.1 * crate::config::AGENT_DRIVEWAY_SPEED_MS + 1e-4);
+        assert!(now.distance_to(last) <= 0.1 * crate::config::FREIGHT_YARD_SPEED_MS + 1e-4);
         if now.distance_to(last) > 1e-4 {
             // The way's next point, which the drawn pose faces, lies ahead of its travel.
             let next =

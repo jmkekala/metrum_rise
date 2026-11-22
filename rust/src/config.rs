@@ -142,9 +142,18 @@ pub const MIN_ROUTE_SPEED_MS: f32 = 1.0;
 /// access and frontage times, the parking walk, the mode choice.
 pub const AGENT_WALK_SPEED_MS: f32 = 4.0;
 
-/// Speed for agents traversing a driveway in a car (m/s).
-/// 3.0 m/s ≈ 11 km/h — appropriate for a private driveway or car park.
-pub const AGENT_DRIVEWAY_SPEED_MS: f32 = 3.0;
+/// Speed of a vehicle off the lanes (m/s): a car on a door's access path, a bay's manoeuvre, a
+/// drop-off's kerb stop and way out, a carrier driving to a door, and the speed any vehicle joins
+/// its lane with. 5 m/s so that a car is never slower than a walker beside it (the fastest walks
+/// `AGENT_WALK_SPEED_MS` times 1.18, 4.72 m/s) and stays under a junction connector's
+/// `CAR_JUNCTION_SPEED_MS`. A gameplay speed like the walkers' (`TRAFFIC-41`, `TRAFFIC-43`).
+/// Every plan and quote of an off-lane drive is priced at it.
+pub const AGENT_DRIVEWAY_SPEED_MS: f32 = 5.0;
+
+/// Speed of a freight carrier on its dock's route in a yard (m/s), driving in and backing or
+/// driving out (`PARK-20`, `PARK-21`): a truck reverses the whole route out of a dock, which at
+/// [`AGENT_DRIVEWAY_SPEED_MS`] would read as 18 km/h in reverse. No plan prices a dock's route.
+pub const FREIGHT_YARD_SPEED_MS: f32 = 3.0;
 
 /// Minimum distance (metres) between a building's frontage node and a junction.
 /// If a building is closer, its frontage will snap to the nearest junction node.

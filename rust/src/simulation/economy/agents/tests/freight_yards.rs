@@ -507,7 +507,7 @@ fn attach_point(yard: &Yard, i: usize) -> Vector2 {
 }
 
 // Ticks carrier `i` through its pull-out of `dock`, asserting each tick that it holds the dock
-// and backs along the route towards the gate at driveway speed; returns the ticks it took.
+// and backs along the route towards the gate at the yard speed; returns the ticks it took.
 fn pull_out(yard: &mut Yard, i: usize, dock: crate::simulation::core::handles::Handle<crate::simulation::parking::Place>) -> usize {
     let route = yard.parking.dock_route(dock).unwrap();
     let gate = attach_point(yard, i);
@@ -527,8 +527,8 @@ fn pull_out(yard: &mut Yard, i: usize, dock: crate::simulation::core::handles::H
         assert_eq!(a.transit[i], crate::simulation::economy::agents::TRANSIT_ACCESS_EGRESS);
         assert!(yard.holds(i, dock), "the dock is its own until the lane");
         // Straight back up the route (every route here is straight at the gate's x) and on to
-        // the lane point, never faster than the driveway speed.
-        assert!(at.distance_to(last) <= 0.1 * crate::config::AGENT_DRIVEWAY_SPEED_MS + 1e-4);
+        // the lane point, never faster than the yard speed.
+        assert!(at.distance_to(last) <= 0.1 * crate::config::FREIGHT_YARD_SPEED_MS + 1e-4);
         assert!(at.y >= last.y - 1e-4, "it moves towards the street: {last:?} -> {at:?}");
         assert!((at.x - route[0][0]).abs() < 0.5, "off the route at {at:?}");
         last = at;
