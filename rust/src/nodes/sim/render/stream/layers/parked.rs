@@ -29,13 +29,14 @@
 //! chunk. Nothing runs a frame for it; the cost is the rows uploaded four times when a chunk
 //! changes, the near tiers' through a counting sort by cell.
 //!
-//! A chunk installs whole or not at all: its buckets that left are hidden and its new ones drawn
+//! A chunk installs whole or not at all: its batches that left are hidden and its new ones drawn
 //! in the same call, and a chunk the pool cannot take (every slot of the limit live) sends
 //! nothing and is refused, so its publication is not acknowledged and the snapshot offers it
 //! again, as the vegetation keeps a refused product pending (`RENDER-42`'s rule). A chunk's
-//! buckets give up their slots before new ones are taken, so a bucket moving to a larger size
-//! class fits the room its old slot leaves. Costs: an install `O(buckets of the chunk + their
-//! poses)`, a reset `O(slots)`; nothing allocates once the maps and the pool have grown.
+//! batches give up their slots before new ones are taken, so a batch moving to a larger size
+//! class fits the room its old slot leaves. Costs: an install `O(B log B + poses)` for the
+//! chunk's `B` batches, a reset `O(slots)`; nothing allocates once the maps, the install's
+//! scratch and the pool have grown.
 //!
 //! The lots' bay paint (`PARK-30`) draws through a second layer of this kind, one bucket a chunk
 //! (the paint quad, [`PAINT_BUCKET`]), its own draw distance ([`PAINT_DRAW_DISTANCE_M`]), no

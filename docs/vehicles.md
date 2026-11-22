@@ -971,11 +971,15 @@ one comparison chain per posed car, no new pass, no state). There is no hysteres
 pure function of the distance, and a car that changes bucket keeps its smoothed pose (the
 smoothing keys cars by render id across buckets). The ground solve takes the bucket's model.
 
-Parked cars: the parked layer registers a look's four tier meshes as four buckets, each with its
-band of camera distance as the slot's visibility range (`ParkedLayer`, `stream_node.rs`
-`register_parked_mesh`), and writes a chunk's cars of that look into each; the engine draws the
-tier whose band holds the camera's distance from the batch's centre. The tier therefore switches
-per chunk and look, with no work a frame; a changed chunk uploads its rows four times.
+Parked cars (`RENDER-69`, [as built](#parked-cars-at-their-own-tier-render-69)): the parked
+layer registers a look's four tier meshes as four buckets (`ParkedLayer`, `stream_node.rs`
+`register_parked_mesh`) and writes a chunk's cars of that look into each. Each tier's material
+keeps only the cars whose own distance from the main camera is in the tier's half-open band
+(`tier_band_m` in the body shader; the moving cars' rule, so a parked and a moving car at the same
+distance draw the same tier) and collapses the others in the vertex stage; each batch's visibility
+range is the band widened by the batch's reach, so the engine skips only batches none of whose
+cars can be in the band. The two near tiers split a chunk by 128 m cells. No work a frame; a
+changed chunk uploads its rows four times.
 
 ### Mesh loading and the reader
 
@@ -1045,8 +1049,9 @@ buried, the lowest 0.3 mm under the 2 cm the solve lifts its support points (19.
   1,398 to 100 / 176 m; 216 / 348 to 398 / 702 m; 40 / 60 beyond. The placeholder cars were
   2,032 to 2,476 triangles at every distance. The wheel and lamp work is a few ALU operations per
   vertex.
-- Parked: four slots per chunk and look instead of one; only the tier whose band holds the camera
-  draws.
+- Parked: four slots per chunk and look instead of one at first; since `RENDER-69` a far tier keeps
+  one slot a chunk and look and a near tier one a 128 m cell with cars (1,758 slots on the 30k city
+  instead of 256), and each car draws at its own distance's tier.
 - Not timed in this round (the owner batches timing); the prepared session is level F, see
   `TOOLS-41` in the roadmap's notes.
 
@@ -1060,7 +1065,8 @@ buried, the lowest 0.3 mm under the 2 cm the solve lifts its support points (19.
   go (LOD0 to LOD1), at 100 m its grey rims take the body colour (LOD1 to LOD2), the truck's
   steps at 53 and 176 m are as slight; at 398 m (estate) and 702 m (truck) LOD2 and LOD3 read
   alike at 1080p. LOD3 has no wheels and a dark lower strip, visible only near.
-- Parked tiers switch per chunk, by the distance to the chunk's batch centre.
+- Parked tiers switched per chunk, by the distance to the chunk's batch centre, so a parked car
+  beside the camera could stay on a far tier; fixed by `RENDER-69`.
 
 ## As built: brake lights, indicators, reverse lamp and wheels (`RENDER-66`)
 
@@ -1385,6 +1391,99 @@ p99.9). The control's contract row is cache-only at L and was timed with the rer
 | Economy contract, work-count limits | baseline `buyer_sites_built`, `staffing_trials`, `supplier_searches`, `supplier_routes`, `job_search_keys` (the known five) | fiscal stress `job_search_keys` 7,707 -> 41,262 (limit 3.28×) | | the fixture's: the control's 30k count is the same (41,295) but its 10k city searched 15,353 keys, so its ratio stays inside; the v12 cities no longer fail businesses, which clears the baseline five. The branch's counts equal `TRAFFIC-38`'s own L session's except `cch_point_searches` (worker schedule) |
 
 No verdict row reads worse.
+
+## Parked cars at their own tier (`RENDER-69`)
+
+**As built (2026-11-22, branch `park-tiers`, for review).** The owner saw parked cars drawn at a
+coarse tier (wheels as flat boxes) with the camera right beside them, and zooming in never
+helped; moving cars were fine. Cause: the parked layer drew a chunk's cars of a look in four
+batches, one a tier, and gave each the tier's band as its engine visibility range. The engine
+tests that range against the camera's distance to the centre of the batch's bounds, which for a
+512 m parking chunk can be hundreds of metres from the car in front of the camera: the nearest
+tier drew only within 30 m of that centre. In the 30k city a lot car 357 m from its batch's
+centre drew LOD2 at 5, 20, 60, 200 and 600 m.
+
+### The rule
+
+- **Each car's own tier, in the vertex stage.** The body shader takes `tier_band_m`, `[begin,
+  end)` metres of the car's own distance from the main camera (the fade's distance,
+  `MAIN_CAM_INV_VIEW_MATRIX`, so the depth and shadow passes keep the tier the main view
+  draws). A car outside the band collapses to its origin and rasterizes nothing in any pass. The
+  parked cars' resources give each tier its own copy of the look's material with the tier's band
+  (`vehicle_resources.gd` `tier_bands`), from the catalogue's tier starts, the last tier
+  unbounded; the moving cars keep the default band, every distance. The bands tile the distances
+  half-open in one expression evaluated alike for every tier, so exactly one tier draws a car:
+  the one the moving cars' rule (`VehicleCatalogue::tier`, `d >= start`) gives it.
+- **Batch ranges that never cut a car in its band.** Every car of a batch stands within the
+  batch's reach (the farthest car origin from the bounds' centre) of that centre, so a car in the
+  band has the centre within the band widened by the reach. The range is `[max(0, begin -
+  reach), min(end, draw distance) + reach]`. The bay paint (one band, `[0, inf)`) keeps its range.
+- **Near tiers by 128 m cells.** Shading every car of a chunk with the two detailed meshes
+  whenever the camera is within the widened range would draw collapsed triangles for every car of
+  the chunk (below), so the layer splits a near tier's cars by a fixed 128 m cell of the world
+  grid the parking chunks share (four a side), a counting sort, stable, so a cell's cars keep the
+  chunk's order; the far tiers keep one batch a chunk. A chunk still installs whole or not at all,
+  through the same slot pool, size classes and refusal; `get_parked_drawn` names each batch's
+  cell. Install `O(B log B + rows)` for a chunk's `B` batches (no allocation once the scratch has
+  grown); no work a frame and no slot shown or hidden for the tiers.
+
+### Choosing the split
+
+`parked_tier_batches_on_a_prepared_city` (ignored, release) installs every parked chunk of the
+prepared 30k city (64 chunks, 12,013 parked cars, three looks) into the layer against the recorder
+once a split, and counts, over 124 cameras standing by parked cars at 2, 20, 60 and 200 m height,
+the triangles the engine's ranges send to the vertex stage (every car of an admitted batch,
+every direction):
+
+| Cells a side, tiers 0 / 1 / 2 | Slots | Shaded triangles a camera | Batches admitted |
+| --- | --- | --- | --- |
+| 1 / 1 / 1 (no split) | 256 | 2.24 M | 60.5 |
+| 4 / 4 / 1 (128 m) | 1,758 | 0.82 M | 62.1 |
+| 8 / 4 / 1 | 3,808 | 0.77 M | 61.8 |
+| 8 / 8 / 1 (64 m) | 5,858 | 0.74 M | 65.1 |
+| 8 / 8 / 4 | 6,609 | 0.58 M | 95.6 |
+| 16 / 16 / 1 | 13,708 | 0.72 M | 70.6 |
+
+The cars' own tiers draw 0.44 M a camera; the old rule drew 0.48 M (cheap only because it drew
+far tiers near). Then rendered: the 30k city paused, three poses round the car above (20 and 60 m
+from it, a 200 m overview), gamescope headless at 1,000 Hz, eight performance cores, one row each
+in the order control, none, 128 m, 64 m, 64 m, 128 m, none, control (2026-11-22 11:22-11:26;
+the desktop was in use, 1-min load 7-10). GPU and render CPU are Godot's measured viewport times,
+medians of 360 frames; install is the Godot side of installing all 64 chunks again with the same
+rows (slots kept), from GDScript:
+
+| Library | Slots | GPU ms (20 m / 60 m / 200 m) | Render CPU ms | Primitives (20 m) | Install all, ms |
+| --- | --- | --- | --- | --- | --- |
+| `dev` (control) | 256 | 2.43 / 2.65 / 2.71 | 0.44 / 0.54 / 0.62 | 20.7 M | 0.6 |
+| no split | 256 | 3.43 / 3.54 / 3.32 | 0.49 / 0.78 / 0.76 | 39.2 M | 0.6-1.2 |
+| 128 m cells | 1,758 | 2.56 / 2.75 / 2.77 | 0.47 / 0.62 / 0.71 | 22.9 M | 1.3-1.5 |
+| 64 m cells | 5,860 | 2.50 / 2.67 / 2.73 | 0.51 / 0.73 / 0.76 | 21.8 M | 2.9-3.5 |
+
+Each pair of rows of one library agreed within 0.03 ms GPU. The collapsed vertices are not free:
+without the split the frame costs 0.6-1.0 ms more GPU. 128 m cells bring it to 0.05-0.13 ms over
+`dev`, which drew far tiers near; 64 m cells save another 0.04-0.06 ms GPU but take 3.3 times the
+slots (72 % of the pool's 8,192 at 30k, so a larger city could fill it and have chunks refused),
+more render CPU (Godot culls per instance: `RENDER-60`'s caster cells cost render CPU for the same
+reason) and twice the install time. 128 m cells are built. Installing one chunk again costs about
+22 µs on the Godot side with them (9 µs on `dev`).
+
+### Proof
+
+- `parked/tests.rs`: 600 cars over a chunk, three past its edges, the estate's bands; for
+  cameras on rings at 0 to 2,600 m about five points, every car in a tier's band within the draw
+  distance has its batch admitted by the engine's range test (failing on the old range); the near
+  tiers' batches each hold one cell, the far ones one batch, a second install sends the same rows;
+  a split chunk one slot short of the pool is refused with nothing sent, then fits, and its batches
+  that leave free their slots. The draw-distance test now builds 16-float car rows.
+- Stills, 30k city, gamescope headless, isolated profile, Forward+ and Compatibility: the lot car
+  357 m from its batch's centre at 5, 20, 60, 200 and 600 m by day, at 5 and 20 m at 17:30 and at
+  22:00. `dev` drew LOD2 at every distance (the engine's read-back: only the LOD2 batch's range
+  held the camera); the branch draws LOD0, LOD0, LOD1, LOD2, LOD3. With only the drawn tier's
+  batches shown, the car's crop (240 px square) is unchanged (0 % of pixels, 0.8-1 % at 20 m in low
+  sun, a neighbour's shadow); with them hidden the car and its shadow are gone (3-94 %): no other
+  tier draws it. Shadows follow each tier by day and in low sun; night unchanged.
+- `parking_test.gd`: each tier's batches sum to the look's cars, and the tier materials' bands
+  tile every distance.
 
 ## Planned: beams, later lamps and glass (`RENDER-67`)
 
