@@ -2653,6 +2653,16 @@ fractional canopy height.
 Five rising bars beside the label highlight the displayed size step and fade with the text.
 The step carries over to the next pick.
 
+A planted tree draws with the vegetation stream's next publication of its patch, a few frames
+after the click, in the ghost's look (fixed-look bit set, its yaw and scale), and keeps that look
+through a save and a load (`VEG-31`, checked 2026-11-22 in the real game flow: the launch handoff,
+the tool switched on through `InputManager`, sizes stepped with Up and Down, injected mouse
+clicks; 4, 16 and 28 m pines). The vegetation residency measures from `CameraNode`'s published
+view (`RENDER-32-F`), which only the camera node's own moves publish (`focus_on`, its motion): a
+script that sets the `Camera3D` transform directly leaves the residency at the old view, so no
+near vegetation streams in where that camera looks, generated or planted. That was the whole of
+`VEG-31`'s scripted capture.
+
 A refused candidate turns red and the option label shows the first failed check for as long as
 the cursor stays there. The size bars hide while the reason is showing. Point placement leaves an 8 m margin at the map edge, rejects footprint
 samples in water or on uneven ground, and keeps clear of roads, paving, buildings and worked
@@ -16377,6 +16387,16 @@ already freed theirs: vegetation and parked cars in `StreamNode::exit_tree`, the
 their renderer's predelete; the road hydration and the zoning ring own no `RenderingServer` object.
 A world reload frees the previous world's slots through the new catalogue (none accumulate: 664
 live after each of three 30k loads, 1,328 of 1,992 created freed).
+
+**The cars' shadow twins** (`RENDER-74`, 2026-11-22). The same signature came back with the
+vehicle catalogue (`RENDER-65`): every world load reloads the packs, which rebuilds the catalogue,
+and `agents.gd` frees the old car meshes after asking `StreamNode.unregister_agent_casters` to
+forget the cars' twins. Their slots went back to the pool as spares, and a resize's earlier spare
+stayed too, each a `MultiMesh` naming an old mesh: one `mesh_get_surface_count` and one
+`mesh_get_surface_count_and_materials` line a slot once the mesh was freed (20 to 54 a
+replacement). `AgentCasterLayer::unregister` now frees the kind's slots and every spare before
+the meshes go; the parked layer's `forget_meshes` already freed its whole pool. A rule for any
+pooled layer: a slot whose mesh its owner frees is freed, not kept spare.
 
 **Teardown probe** (the gameplay harness's `teardown` matrix,
 `scripts/benchmarks/teardown_probe.gd`, rendered in gamescope's headless backend, isolated profile
