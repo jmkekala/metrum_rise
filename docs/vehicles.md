@@ -265,7 +265,8 @@ These replace the [earlier provisional tier numbers](#earlier-provisional-tier-n
 ### Facts sidecar
 
 `export/<name>.model.json`, schema `metrum-model-facts`, **version 2**, with `"kind":
-"vehicle"`. Building sidecars stay version 1 (see
+"vehicle"`. Version 3 adds door positions and is not read by the game yet
+([Doors](#doors-sidecar-version-3-tools-43)). Building sidecars stay version 1 (see
 [Model Draft Pipeline](asset_editor.md#model-draft-pipeline--tools-33)). Metres, in the exported
 frame. Geometry and files only.
 
@@ -338,6 +339,45 @@ measured from its own files.
 - Seats are not in the sidecar. Seating is a value of the pack asset on the game side.
 - The lists and LOD0 agree both ways: no listed group is missing from the mesh, and no id in
   the mesh is missing from the lists.
+
+### Doors (sidecar version 3, `TOOLS-43`)
+
+Agreed with the models repository on 2026-11-22 and built there for the two pilot models
+(models commits 5eff594 and 0f4757e, on a branch awaiting the owner's review). The game does not
+read it yet: the importer and the bundled pack stay on version 2 until a feature needs doors
+(`TOOLS-43`).
+
+Version 3 is version 2 plus one key, `doors`, directly after `cargo`; nothing else changes, and
+no mesh, texture, vertex id or tier changes. Doors are painted seams of the body, not parts.
+
+- `doors`: a flat list with one entry per door, keys in this order: `side` (`left`, `right` or
+  `rear`; left and right are the driver's), `row` (`front`, `rear` or `cargo`), `centre` and
+  `width_m`. List order: front row, rear row, cargo; left before right.
+- `centre`: the door opening's centre on the door skin at ground level (`y = 0`), in the exported
+  frame. A side door's centre lies on the plan box's side or up to 0.15 m inside it, never
+  outside (the truck's cab is 0.103 m narrower a side than its load box). A rear door's centre is
+  on the plan box's rear plane at `x = 0`, not on a raked tailgate. It is geometry only: the game
+  adds its own offset outward for the point where a person stands.
+- `width_m`: the opening's width along the body. The estate's rear door is measured at the belt
+  (the wheel arch cuts its lower corner), its tailgate between the cut lines at the bumper.
+- `row: "cargo"` is a load door or tailgate, on the rear or on a side.
+- The values come from the shut-line constants each model's build states, which also draw the
+  seams in the textures. A model's build without doors writes no sidecar.
+- The drive side (left- or right-hand drive) is not model data: the body is symmetric and has no
+  interior. It is a setting on the game side.
+
+Validator checks, in the models repository: the front row exists on both sides and mirrors
+within 1 mm; rear and cargo rows mirror where both sides have one (a van with one sliding door is
+legal); a car, van or truck has both front doors, a bus at least one door; a van or truck has a
+cargo door on the side `cargo.door` names, no wider than the load box.
+
+| Model | `side` | `row` | `centre` | `width_m` |
+| --- | --- | --- | --- | --- |
+| `estate_compact` | `left` / `right` | `front` | [±0.895, 0, 0.3675] | 1.135 |
+| `estate_compact` | `left` / `right` | `rear` | [±0.895, 0, −0.58] | 0.76 |
+| `estate_compact` | `rear` | `cargo` | [0, 0, −2.24] | 1.15 |
+| `rigid_box_18t` | `left` / `right` | `front` | [±1.162, 0, 3.0275] | 0.955 |
+| `rigid_box_18t` | `rear` | `cargo` | [0, 0, −3.95] | 2.24 |
 
 ### Validator checks
 
