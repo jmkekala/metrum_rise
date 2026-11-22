@@ -33,8 +33,8 @@ const BUILDING_REPLAN_DELAY_S: f32 = 30.0;
 const NETWORK_REPLAN_DELAY_S: f32 = 5.0;
 const WALK_PHASE_CYCLES_PER_METER: f32 = 0.8;
 // The cap keeps fast-forwarded legs from flailing. At 1x a 60 Hz tick moves the fastest walker
-// (AGENT_SIDEWALK_SPEED_MS at the top pace, 1.65 m/s) 0.028 m, 0.022 of a cycle: under the cap,
-// so a walker's feet keep pace with its body at any pace.
+// (AGENT_SIDEWALK_SPEED_MS at the top pace, 4.72 m/s) 0.079 m, 0.066 of a cycle at the smallest
+// size: under the cap, so a walker's feet keep pace with its body at any pace.
 const WALK_PHASE_MAX_ADVANCE_PER_TICK: f32 = 0.07;
 
 #[inline(always)]

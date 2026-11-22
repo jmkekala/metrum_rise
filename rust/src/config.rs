@@ -138,10 +138,12 @@ pub const MIN_ROUTE_SPEED_MS: f32 = 1.0;
 /// 1.4 m/s is a realistic pedestrian pace (~5 km/h).
 pub const AGENT_WALK_SPEED_MS: f32 = 1.4;
 
-/// Mean walking speed on foot lanes (m/s), each walker scaled by its own pace
-/// (`walker_gait::walker_pace`). The planning speed, so walks take the time trips are planned
-/// with, and the walk cycle's cadence reads as walking rather than a 4 m/s jog.
-pub const AGENT_SIDEWALK_SPEED_MS: f32 = AGENT_WALK_SPEED_MS;
+/// Mean walking speed on foot lanes and crossings (m/s), each walker scaled by its own pace
+/// (`walker_gait::walker_pace`). Trips are planned at [`AGENT_WALK_SPEED_MS`]; walking them at
+/// that speed lengthened every walk on the network about 2.9 times and the growth scenarios'
+/// households ran out of food, so the network speed stays 4 m/s until the owner decides
+/// (`TRAFFIC-41`).
+pub const AGENT_SIDEWALK_SPEED_MS: f32 = 4.0;
 
 /// Speed for agents traversing a driveway in a car (m/s).
 /// 3.0 m/s ≈ 11 km/h — appropriate for a private driveway or car park.

@@ -145,8 +145,10 @@ fn the_family_steps_out_at_the_car_doors_and_walks_in_once() {
         assert_eq!(c.agents.parking_trip[i].phase, ParkingTripPhase::WalkToDoor);
         assert_eq!(c.agents.home_building[i], 0);
     }
-    // They walk the whole way at walking pace, none jumping ahead, and all get in.
-    let step_m = crate::config::AGENT_WALK_SPEED_MS * (FRAME_S as f32 * SPEED) + 1e-3;
+    // They walk the whole way at walking pace, each at its own (`TRAFFIC-40`), none jumping
+    // ahead, and all get in.
+    let top_pace = 1.0 + crate::simulation::economy::agents::walker_gait::PACE_SPREAD;
+    let step_m = crate::config::AGENT_WALK_SPEED_MS * top_pace * (FRAME_S as f32 * SPEED) + 1e-3;
     for _ in 0..4000 {
         if family
             .iter()

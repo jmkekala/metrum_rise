@@ -110,7 +110,8 @@ fn a_faster_walker_follows_while_someone_comes_the_other_way_then_overtakes() {
     for _ in 0..300 {
         tick(&mut case, &mut agents);
         let toward = length - agents.lane_distance[oncoming];
-        if toward + 1.0 >= agents.lane_distance[fast] {
+        // Once past, the oncoming walker walks on to its door and leaves its lane.
+        if !met && toward + 1.0 >= agents.lane_distance[fast] {
             // Until the oncoming walker is past the fast one, the fast one keeps behind.
             assert!(
                 agents.lane_distance[fast] < agents.lane_distance[slow],
