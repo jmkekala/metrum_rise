@@ -468,6 +468,29 @@ customers they claim first in the census (stores claim in building order); one t
 closes through the ordinary failure and removal rules. No other rule, state or saved data was
 added.
 
+**Measured (2026-11-22, release test binary of branch `kiosk`).** The packs ship no kiosk, so
+the measurements add a synthetic one-cell kiosk to the test building pack (`METRUM_TEST_KIOSK=1`,
+`nodes/sim/core/populated_city/kiosk_mix.rs`); without it the `SIM-02` envelope and determinism
+records equal `dev`'s.
+
+- The starter town grown by demand over 150 days (`starter_town_store_mix`): without the kiosk
+  one grocery opens on day 3 and serves the town (159 residents); with it three kiosks open
+  first on day 3 (about 110 residents), the grocery is proposed the same day, once the demand
+  counted without the kiosks fills half of it, and opens on day 4; the kiosks' share of supply sales falls from 92 % on
+  day 4 to 17 % on day 10 and 0 by day 60: they close one by one through the ordinary failure
+  rules (the last on day 76), and none opens again. The town ends as without kiosks (one
+  grocery, 168 residents).
+- The 10,000 populated city (`kiosk_mix`, four days after its build): the fixture fills every
+  lot with its preferred asset without economic proofs, so the one-cell lots that the kiosk's
+  footprint adds to the painted rows (leftover single cells) all get kiosks: 363 kiosks beside
+  301 groceries (290 without the kiosk), selling 14-17 % of household supplies; no store of
+  either kind is built in those days. This measures the fixture's fill, not the rule.
+- The 30,000 populated city, the same way: 945 kiosks beside 877 groceries (877 without),
+  selling 13.5-16 % of household supplies. Their 2,072 extra jobs leave the fixed housing no
+  spare homes (793 jobs unfilled), so the groceries run short-staffed (2,065 workers against
+  2,329) and household supply sales fall from 777,000 to 638,000 a day: a fixture effect of
+  building every leftover cell without proofs, which the planner would not do.
+
 Cost: the city's stores by profile are counted in one parallel pass over the buildings per
 commercial, industrial and actions planning slot, and only when a good has more than one store
 size (`StoreSizes::count_stores`, O(B/p) plus the active queue); each store proof adds O(sizes).
