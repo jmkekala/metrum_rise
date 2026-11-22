@@ -17,10 +17,10 @@
 ## (`RENDER-15`); without a StreamNode the bucket nodes cast as before.
 ## Agent rows arrive as a flat PackedFloat32Array of 16 floats per agent: the MultiMesh
 ## row-major 3×4 transform [xx, yx, zx, ox, xy, yy, zy, oy, xz, yz, zz, oz], then the instance
-## custom data (a walker's walk phase; a car's steer, wheel roll, packed lamp/paint/blink word and
-## a spare, `RENDER-65`). A car bucket is `look * 4 + tier` of Rust's vehicle catalogue: its node is
-## made when the bucket is first drawn, and every car node is remade when the frame's catalogue
-## revision changes (packs loaded).
+## custom data (a walker's walk phase and look, `RENDER-71`; a car's steer, wheel roll, packed
+## lamp/paint/blink word and a spare, `RENDER-65`). A car bucket is `look * 4 + tier` of Rust's
+## vehicle catalogue: its node is made when the bucket is first drawn, and every car node is
+## remade when the frame's catalogue revision changes (packs loaded).
 ## Path debug lines (toggled with P key) arrive as a PackedVector3Array of point pairs.
 extends Node3D
 
@@ -45,7 +45,7 @@ const WALKER_VAT_FRAMES := 30.0
 const WALKER_VAT_REVERSE_PHASE := true
 # A car's transform, then its custom data.
 const CAR_STRIDE := 16
-# A walker's transform, then its custom data (the walk phase).
+# A walker's transform, then its custom data (the walk phase and look, then two spare).
 const WALKER_STRIDE := 16
 const DEBUG_LABEL_LIMIT := 96
 const SWARM_PARTS: Array[String] = ["agent_frame", "walker_assign", "car_assign", "headlights"]
