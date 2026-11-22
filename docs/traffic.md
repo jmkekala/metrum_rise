@@ -4426,6 +4426,21 @@ path (as the drop-off). The parking phase: one emptiness test in a city without 
 O(C + W log W + W × docks of one building + G × Q) per tick for C candidates, W waiting trucks and
 G grants, the list reused. The check: one row read for the floor. No per-tick allocation.
 
+**Liveness runs** (the ignored 14-day producer-town runs of `PARK-20` and `PARK-21`,
+`scenario/freight_yard_cases.rs`, release `$TEST_BINARY` of the branch, 2026-11-23; the same
+counts from the branch's test-profile binary). With docks on all six loading-bay assets: 163
+deliveries in a dock, 0 at a dock building outside its docks, 156 to a border, 0 failed, expired
+or vanished; 2 trucks queued at a kerb stop, both later granted a dock, waiting 98 and 58 game
+minutes from the gate to the grant (mean 78; the wait includes the drives from the gate to the kerb
+and back). With drive-through docks: 153 in a dock (13 driven through), 0 outside, 150 to a
+border, 0 failed, expired or vanished; 5 queued, all granted, longest wait 100, mean 61 game
+minutes. The car-gate controls deliver at kerb stops (152 each), 0 failed. Before this round the
+run counted a truck as delivered in its dock only when a frame caught it standing there; a frame
+of the fastest speed can hold the end of the pull-in, the stand and the delivering check, so 16
+and 17 dock deliveries were counted as door deliveries (each was seen pulling in, then returning);
+it now counts a truck seen pulling into a dock. A2's and B's "10 at the door after a refusal" may
+have held such deliveries too.
+
 **Owner's choices.**
 
 1. The floor: 2 game minutes (`KERB_STAND_FLOOR_MINUTES`).
