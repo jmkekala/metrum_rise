@@ -1108,6 +1108,85 @@ spans a kerb or a grade break, which is why the patch exists; the choice is the 
 eye the signals run for every car on the nearest tier; with the game's eye the brake rule runs only
 within the LOD2 range and the indicators and steer within 100 m.
 
+**Second round: the ground solve, exact** (2026-11-22, same branch). The 45 points stay and every
+solved pose stays bit for bit; only the work per point changed. The solves a `PERF-07` run makes
+at 32x (900 frames) were recorded in a diagnostic build and replayed on one thread against the
+round's starting code:
+
+| A solve, replayed serially | Off-lane car (57 a frame) | Parked car (8.3 a frame) |
+| --- | --- | --- |
+| Before | 25.2 µs | 29.9 µs |
+| Graded-surface gather (`gather_near`, the 64 m cap's seams and sites) | about 10 µs, 0.92 a solve | 10.2 µs, 1.0 a solve |
+| Points: on a road / on the ground | 11.6 / 33.5 | 2.9 / 46.1 |
+| Lattice deltas evaluated, before -> after | 110.8 -> 36.2 | 138.4 -> 39.8 |
+| After | 16.7 µs | 19.2 µs |
+
+- The points of one solve fall on about a dozen `GL0` cells (a tyre's 3 x 3 patch on one or two),
+  and each ground point evaluated its triangle's three lattice deltas afresh, about 0.1 µs each over
+  the window's listed seams. The graded query scratch now keeps the deltas of its current
+  preparation (`DeltaMemo` in `terrain/graded/query.rs`): 256 slots direct-mapped by the low four
+  bits of each lattice index, so no two points of an 8 m block evict each other, stamped so that
+  forgetting is O(1); forgotten wherever the prepared inputs are replaced. A delta is a pure function
+  of the lattice point and those inputs, so a kept one is the value a fresh evaluation gives. 7 KB a
+  query scratch (one a thread), no allocation; every graded consumer reads through it.
+- The scratch also keeps the query index's last quiet-tile answer, by index identity, generation
+  and tile: one ordered-map lookup a solve where it was one a ground point.
+- The off-lane solve's parallel loop kept a minimum split of 32 cars from the nine-point profile;
+  a bucket flags a few dozen of its cars, scattered in agent order, at microseconds each, so the
+  minimum is gone (stolen halves split down to single cars). Products are unchanged: each car is
+  solved alone.
+- Not done: a parked-pose cache per (place, model). The recorded run made 7,474 parked solves on
+  7,402 distinct places, so it would almost never hit. Snapping the gather to an 8 m grid so that
+  neighbouring cars share it read the same values but cost more (a wider window, no sharing in
+  practice): 0.06 ms worse at 32x.
+
+The diagnostic phase timers (alternated runs, same build, means of two; snapshot a frame):
+
+| `PERF-07` 30k | Off-lane ground | Parked chunks | Snapshot |
+| --- | --- | --- | --- |
+| 32x, before | 0.439 ms | 0.350 ms | 1.497 ms |
+| 32x, kept deltas and tile | 0.343 ms | 0.294 ms | 1.374 ms |
+| 32x, and no minimum split | 0.291 ms | 0.303 ms | 1.336 ms |
+| 1x, before | 0.331 ms | 0.054 ms | 0.866 ms |
+| 1x, all three | 0.217 ms | 0.037 ms | 0.752 ms |
+
+The gather is now the largest part of a solve: about 0.6 ms of work a frame at 32x across the
+workers, nearly all of it copying the sites and walking the road pieces' seams within the 64 m cap
+of the car, which the graded surface needs for an exact value anywhere in the window. The signals'
+0.05 ms at 32x is the brake, indicator and steer rules themselves (the speed pass's outlook, lane
+samples, the planned connector), run for every car because `PERF-07` has no eye; nothing in it is
+repeated work.
+
+**Proof.** `vehicle_products_on_a_prepared_city` (above): all 2,400 hashes of the 10k and 30k
+cities equal those of the first round's build. The replay compared every recorded solve with the
+memo on and off: equal. `SIM-02` envelope and determinism records equal the `park-31` binary's.
+The graded tests read two worlds in turn through one scratch at the same lattice points
+(`kept_lattice_deltas_go_with_their_preparation`), and in debug builds every indexed query is
+still compared with an index-free reference on its sampled points.
+
+**Timing** (level F, 2026-11-22 06:36, the same boot, 8 workers on the P-cores; control the `dev`
+build of daab78d4c as before, branch this round's code):
+
+```bash
+./run.sh --timing --level F --control <dev $TEST_BINARY> --branch "$TEST_BINARY" --base dev \
+  --k22 --artifacts "$ARTIFACTS/timing-F2"
+```
+
+The 1x control row came from the cache: the fresh 05:43 rerun of the same `dev` binary in another
+session of this boot (mean 2.098 ms, acceptance passing), not the noisy row the first round
+replaced. The session's first 32x control row calibrated against the cache (+0.0 % mean).
+
+| 30k, mean a frame | `dev` | `vehicles-perf`, first round | `vehicles-perf`, second round |
+| --- | --- | --- | --- |
+| Snapshot, 32x | 1.251 ms | 1.402 ms | 1.252 ms (+0.1 %, level) |
+| Snapshot, 1x | 0.853 ms | 0.977 ms | 0.827 ms (-3.0 %, level) |
+| Frame, 32x | 4.277 ms | 4.438 ms | 4.298 ms (+0.5 %, level) |
+| Frame, 1x | 2.098 ms | 2.224 ms | 2.079 ms (-0.9 %, level) |
+
+Acceptance passes (1x: 5.11 ms worst unpreempted frame, p99.9 3.66 ms; 32x within the `PERF-17`
+exception as `dev`); K22 commit 6.58 ms against 6.80. The stack's snapshot is level with `dev` at
+both speeds with the 45 support points, so the points table above is no longer a cost choice.
+
 ## Planned: beams, later lamps and glass (`RENDER-67`)
 
 **Planned, after `RENDER-66`.** The lamp regions are in the models from the pilot on.
