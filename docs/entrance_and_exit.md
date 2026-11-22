@@ -71,7 +71,7 @@ snapshots, the render smoother showing it at once: a change of height owner, lan
 never blended) and the held car facing a fixed world direction (`Vector3::BACK`). The gate turn
 below replaces both in the drawn pose; the simulation is as above.
 
-**The gate turn (`PARK-31`), as built 2026-11-22** (branch `park-31`, not landed;
+**The gate turn (`PARK-31`), as built 2026-11-22** (landed on `dev` 2026-11-22;
 `simulation/parking/turns/gate.rs`). Drawn pose only: positions, ticks, saves and the
 determinism records are unchanged.
 

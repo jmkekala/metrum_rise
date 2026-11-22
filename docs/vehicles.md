@@ -26,7 +26,7 @@ its roadmap row. The owner accepted the plan on 2026-11-21.
 | Vehicle renderer: catalogue, shader, tiers (stage 1a) | as built | `RENDER-65` |
 | Brake lights, indicators, reverse lamp, steered and rolling wheels (stage 1b) | as built | `RENDER-66` |
 | Low and high beam, hazard lights, later lamps, glass features | planned | `RENDER-67` |
-| Lane length by body class | planned | `TRAFFIC-38` |
+| Lane length by body class | as built | `TRAFFIC-38` |
 | Waiting position at junctions | planned | `TRAFFIC-39` |
 | Night lamps (glows, beams, the headlight pool) | as built, from the sidecar lenses | `RENDER-26` |
 
@@ -422,7 +422,7 @@ Closed 2026-11-21: the id attribute (`COLOR_0` as normalised unsigned bytes, see
 
 ### Sizes the simulation uses today
 
-**As built.** Since `TRAFFIC-38` (branch `traffic-38`, for review) lanes and parking use the same
+**As built.** Since `TRAFFIC-38` (landed on `dev` 2026-11-22) lanes and parking use the same
 real body lengths; before it a vehicle of any kind, and a walker, took the 2.6 m of the
 placeholder cars (`CAR_LENGTH`) in a lane.
 
@@ -461,7 +461,7 @@ about 1,330 of them wheels.
 
 ### Lane length by body class (`TRAFFIC-38`)
 
-**Built 2026-11-21 on branch `traffic-38`, for the owner's review; not landed.** The rules, the
+**As built (2026-11-21, landed on `dev` 2026-11-22).** The rules, the
 position convention and the hot-path cost are in [car following](traffic.md#car-following).
 
 - A lane distance is the body's centre. Two bodies are clear when their centres differ by both
@@ -989,8 +989,8 @@ buried, the lowest 0.3 mm under the 2 cm the solve lifts its support points (19.
 
 ### Known limits of 1a
 
-- Lanes still queue cars 2.7 m apart (`CAR_LENGTH`) while the estate is 4.48 m and the truck
-  7.90 m long: queued cars overlap nose to tail until `TRAFFIC-38`.
+- Lanes queued cars 2.7 m apart (`CAR_LENGTH`) while the estate is 4.48 m and the truck 7.90 m
+  long, so queued cars overlapped nose to tail; fixed by `TRAFFIC-38`, which landed with 1a.
 - One car shape in many paints until the fleet is built.
 - The tier pops at a band edge, without a cross-fade. Seen in stills at the switch distances
   (2026-11-22, the 428a413 pair, Forward+ and Compatibility, 13:00): at 30 m the estate's mirrors
@@ -1001,7 +1001,7 @@ buried, the lowest 0.3 mm under the 2 cm the solve lifts its support points (19.
 
 ## As built: brake lights, indicators, reverse lamp and wheels (`RENDER-66`)
 
-**As built (2026-11-22, stage 1b, branch `vehicles-1b`).** The values 1a left at zero are filled
+**As built (2026-11-22, stage 1b, landed on `dev` 2026-11-22).** The values 1a left at zero are filled
 from the simulation's state, drawn only: nothing is saved, nothing is written back, and no speed,
 route or position reads them. The lamp bits and the steer target are a pure function of the state
 the snapshot reads, so two runs draw the same bits and angles for the same tick
@@ -1285,6 +1285,43 @@ replaced. The session's first 32x control row calibrated against the cache (+0.0
 Acceptance passes (1x: 5.11 ms worst unpreempted frame, p99.9 3.66 ms; 32x within the `PERF-17`
 exception as `dev`); K22 commit 6.58 ms against 6.80. The stack's snapshot is level with `dev` at
 both speeds with the 45 support points, so the points table above is no longer a cost choice.
+
+## Landing timing (level L, 2026-11-22)
+
+`TOOLS-41`, `TOOLS-42`, `RENDER-65`, `RENDER-66` with the performance rounds, `PARK-31`,
+`TRAFFIC-38` and `PARK-30` landed on `dev` together. One merge fix came with them: the parked
+layer's bay paint keeps its 12-float rows beside the cars' 16-float rows with custom data.
+Before the session, on the landing's head: `./run.sh --test` passes; the `SIM-02` envelope and
+determinism records equal `TRAFFIC-38`'s own records (the vehicle stack and `PARK-30` are
+simulation-neutral); `vehicle_products_on_a_prepared_city` gives the same hashes in two runs.
+
+Session 2026-11-22 10:18-10:29, eight performance cores and eight workers, nothing else running,
+no build during it. The control is the `dev` build of `daab78d4c` that `TRAFFIC-38` was timed
+against, on its own city (one border trunk per 10,000 residents); the branch prepares and times
+its own v12 city. Read the rows as the cost of the landing on its own city.
+
+```bash
+./run.sh --timing --level L --control "$CONTROL_TEST_BINARY" --branch "$TEST_BINARY" --base dev \
+    --k22 --artifacts "$ARTIFACTS/timing-L"
+./run.sh --timing --artifacts "$ARTIFACTS/timing-L" --rerun contract-1-ctl
+```
+
+Reused by the runner's rules from this boot's level F session of the same control: its 30k 1×
+day and K22 row (calibration on the first control 32× run: +0.1 % mean, +0.6 % p99, +0.3 %
+p99.9). The control's contract row is cache-only at L and was timed with the rerun above.
+
+| Row | Control | Branch | Acceptance | Reading |
+| --- | --- | --- | --- | --- |
+| 30k 32×, C B B C: mean / p99 / p99.9 / worst unpreempted, ms | 4.283 / 6.364 / 7.365 / 8.225 | 4.235 / 6.193 / 6.817 / 7.361 | `PERF-07`, `PERF-17` the known exception | level on every metric; worst unpreempted frame and slot component better; both branch runs pass, the control one pass and one exception |
+| 30k 32× snapshot / agent component, ms | 1.245 / 1.965 | 1.258 / 1.949 | | level |
+| 30k 1×, control one day (reused), branch two: mean / p99 / p99.9 / worst unpreempted, ms | 2.088 / 3.290 / 3.625 / 5.286 | 2.073 / 3.278 / 3.673 / 4.428 | `PERF-07` | passes on every day; level, worst unpreempted better |
+| 30k 1× snapshot / agent component, ms | 0.849 / 1.152 | 0.834 / 1.156 | | level |
+| `load_s` (30k 32× and 1×) | 2.284, 2.260 | 2.282, 2.290 | | level |
+| K22 30k: click-to-ack / commit, ms | 6.86 / 6.82 (reused, level F 03:43) | 7.50 / 7.47 | | one run a side, reported; `TRAFFIC-38`'s branch alone read 8.00 / 7.97 on its own city in its L session |
+| Economy contract, hour means: baseline 10k / 30k, fiscal 10k / 30k, ms | 0.91 / 3.23 / 6.26 / 13.79 | 0.93 / 2.99 / 6.03 / 12.06 | the contract's limits | level or better; no time limit fails |
+| Economy contract, work-count limits | baseline `buyer_sites_built`, `staffing_trials`, `supplier_searches`, `supplier_routes`, `job_search_keys` (the known five) | fiscal stress `job_search_keys` 7,707 -> 41,262 (limit 3.28×) | | the fixture's: the control's 30k count is the same (41,295) but its 10k city searched 15,353 keys, so its ratio stays inside; the v12 cities no longer fail businesses, which clears the baseline five. The branch's counts equal `TRAFFIC-38`'s own L session's except `cch_point_searches` (worker schedule) |
+
+No verdict row reads worse.
 
 ## Planned: beams, later lamps and glass (`RENDER-67`)
 

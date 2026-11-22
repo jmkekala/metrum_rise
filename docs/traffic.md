@@ -2534,7 +2534,7 @@ snapshot is per-frame work) is prepared, not run.
 
 A car or truck joining or leaving its lane at a lot or yard gate is drawn on a quarter circle
 between the lane and the hop, where it turned on the spot at the lane point (built 2026-11-22,
-branch `park-31`, not landed). Drawn pose only, as `PARK-29`: no saved state, nothing written back.
+landed on `dev` 2026-11-22). Drawn pose only, as `PARK-29`: no saved state, nothing written back.
 The rule, the predicates and the limits are in
 [`entrance_and_exit.md`](entrance_and_exit.md#the-lane-hop-of-a-lot-or-yard-manoeuvre-park-29);
 in short:
