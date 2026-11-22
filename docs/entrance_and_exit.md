@@ -214,10 +214,13 @@ junction phase of `NETWORK`), `ACCESS_INGRESS` and `IMMIGRATING`, specified unde
 A resident with a car travels in parking legs
 ([`PARK-02`](traffic.md#the-itinerary-park-02)): `WalkToCar → PullOut → Drive → PullIn →
 WalkToDoor`. Only `WalkToDoor` enters a building; a car leg never ends at a door. A move-in
-starts as `IMMIGRATING` at a border node: with a car and a free place in the home catchment it
-drives `Drive → PullIn → WalkToDoor` (see [Parking rounds](#parking-rounds)), otherwise it walks
-from the border to the home door. The family arrival (`PARK-35`) lets the whole household step
-out of the parked car; see [Family arrival](traffic.md#family-arrival-park-35).
+starts as `IMMIGRATING` at a border node: with a car and a free place in the home catchment, or
+else the nearest free place it reaches beyond it, it drives `Drive → PullIn → WalkToDoor` (see
+[Parking rounds](#parking-rounds)); otherwise a drop-off car drives it to the home, to a free
+catchment place or a kerb stop at the door, and drives back to a border (`PARK-34`). Nobody walks
+in from the border. The whole household steps out of the stopped car (`PARK-35`); see
+[Family arrival](traffic.md#family-arrival-park-35) and
+[Drop-off arrival](traffic.md#drop-off-arrival-park-34).
 
 ### Sidewalk and lane rules
 
@@ -225,7 +228,9 @@ Pedestrians attach to the sidewalk lane on the building's frontage side; cars at
 frontage car lane the entrance's `vehicle_frontage_access` allows
 ([`BothSides` car crossover rule](#bothsides-car-crossover-rule)). Cars park in modelled places
 (lot and driveway bays, kerb lanes) and pull in and out along their swept paths
-([`PARK-01`](traffic.md#parking-supply-park-01)); they never stop at a door. An entrance
+([`PARK-01`](traffic.md#parking-supply-park-01)); they never stop at a door. A drop-off car's
+kerb stop (`PARK-34`) is the one car stop off a place: the door's access path with its door point
+moved to 1.0 m inside the home-side kerb, out of the driving lane. An entrance
 without a legal lane has no plan: the trip records a failure and retries
 ([`TRAFFIC-32`](traffic.md)), it does not fall back to a node-based path.
 
@@ -235,7 +240,9 @@ without a legal lane has no plan: the trip records a failure and retries
   (`ACCESS_ZERO_HOP_NODE_PATH`).
 - A move-in carrier whose home is removed before it arrives becomes its unhoused household
   where it stands (`ECON-29`); one whose home is removed after its car parked is already an
-  ordinary household and is evicted as any resident is (`PARK-35`).
+  ordinary household and is evicted as any resident is (`PARK-35`). A household riding a drop-off
+  forms unhoused at the car, every member in no building, and the car turns back to its border
+  (`PARK-34`).
 - An invalid access plan returns the agent to its origin door (or where it stands, with no
   origin) and records the failure instead of hiding it.
 

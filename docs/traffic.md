@@ -3140,10 +3140,12 @@ the job search and the visits fall back to them. See
 
 A move-in decides its car once from the saved seed and its stable carrier identity, before a
 household record exists; adoption keeps that decision and the original car. At its paced departure
-it reserves one free place of the home catchment and goes `Drive → PullIn → WalkToDoor`. With no
-free place, or no car, it walks from the border and any car stays off-map; its household forms
-when it is inside the home, the other members created there (the arrival check). A car arrival's
-household steps out of the car instead ([Family arrival](#family-arrival-park-35)).
+it reserves one free place of the home catchment and goes `Drive → PullIn → WalkToDoor`; with
+none free, the nearest free place it can reach beyond the catchment
+([Drop-off arrival](#drop-off-arrival-park-34)). With no car, or with no place found at all, it
+is driven in by a drop-off car and its own car, if any, stays off-map. Nobody walks in from the
+border. Either way the household steps out of the stopped car
+([Family arrival](#family-arrival-park-35)).
 
 #### Family arrival (`PARK-35`)
 
@@ -3182,8 +3184,8 @@ right after the agent tick, in the same frame, the household forms
   removed before the car parks follows `ECON-29`. A member walking from the car holds no custody:
   the driver's `WalkToDoor` end clears the car's retired places, and the save check accepts a
   household member walking to the door while the car is the driver's or nobody's.
-- Walk-in arrivals (no car, or no free place), the stored-car delivery carrier and the
-  prepopulated test cities (carrier placed in its home) are unchanged.
+- The stored-car delivery carrier and the prepopulated test cities (carrier placed in its home)
+  are unchanged. The arrivals that walked in from the border are driven in since `PARK-34`.
 
 Records (2026-11-22, branch `arrival-doors`, `$TEST_BINARY` of the branch head): `sim02_gate.py
 envelope determinism` passes; determinism equals `dev`'s record. Every envelope record moves from
@@ -3194,6 +3196,82 @@ diverge (10k baseline: 5,708 to 5,707 households at day 17, freight departures o
 278). Nothing is lost: households plus vacant homes are equal to `dev`'s in all four runs at the
 end (6,066 at 10k, 15,750 at 30k), no reference violations, no unhoused household at the end. The
 envelope baseline was re-recorded on the branch for the owner's review.
+
+#### Drop-off arrival (`PARK-34`)
+
+No household walks in from the border (2026-11-22, branch `arrival-doors`). At the paced
+departure (`ArrivalDeparture`, ordered), a carrier with its own car takes the first free place
+of its home catchment; with none free, the nearest free place it can reach beyond it: the eight
+free places nearest the home in a straight line within 1,000 m (`WIDER_ARRIVAL_SEARCH_M`,
+`WIDER_ARRIVAL_CANDIDATES`), over the nine place chunks around the home that
+`nearest_with` reads, ties by handle, tried in that order until one is reachable by road from
+the border and on foot to the door, and reserved as a catchment place is
+(`ParkingSystem::nearest_free_places`). Straight line, because a road distance per candidate
+would be a route query per candidate; the two proofs then make the choice real. O(local places
++ 8 × 2Q) at the departure. The walk from it is the ordinary `WalkToDoor` leg: the 400 m bound
+is the catchment's, not the walk's.
+
+Otherwise the household is **dropped off**: a carrier with no car, or one whose car found no
+place, rides a drop-off car (`ParkingTrip::drop_off`), a car that is no car of the store. The
+carrier drives it, the household riding as the carrier's pending counts as on any car arrival;
+its own car, if any, stays stored off the map and comes later as a stored car does. The drop-off
+car is one concept a taxi service takes over (`TRANSIT-07`); until then it is an ordinary car of
+the ordinary class and looks (its look is the agent's own render id, not the household car's).
+
+- **Where it stops.** The first free place of the home catchment, in the catchment's order, when
+  one is free: it pulls in with the place's manoeuvre and straight out again, holding no
+  reservation and no occupancy (a reservation is a store car's; owner choice: a resident who
+  takes the same place meanwhile shares the bay for the drop-off's in-and-out manoeuvre). Else
+  the **kerb stop** at the home's door (`kerb_stop_entrance`): it leaves the driving lane at the
+  door's road connection and pulls over to 1.0 m inside the home-side kerb
+  (`DROP_OFF_KERB_INSET_M`) on the door's normal, the door's own access path with its door point
+  at the kerb, at driveway speed. Out of the lane it is out of the lane buckets, so it never
+  stands in the driving lane and following cars never wait for it; a car in the far lane of a
+  two-sided frontage crosses to the home side as a car to a door does. Over a road side with a
+  parking lane the stop lies in that lane and may overlap a parked car for the stop (owner
+  choice). Every home has a sidewalk on its side (`ROAD-109`). A door no car reaches (a
+  footpath frontage) takes the nearest free place a car reaches and a walk leads from, as the
+  wider search finds one; with none of the three the departure waits for its next check, as a
+  carrier with no route did before.
+- **The step-out.** In the ordered parking commit the stopped car lists itself; right after the
+  tick (`SimCore::settle_parked_arrivals`) the household forms once as on a family arrival
+  (`HouseholdSystem::materialize_dropped_off_carrier`): every member is a new resident, member
+  `m` at the stopped car's door `m` by the `PARK-35` table and order (the driver's door
+  included: the drop-off driver is not drawn getting out), under the place's pose or at the kerb
+  under the car's own position and its lane's heading. Member 0 walks from the stop to the door
+  on a planned walk leg; the others on copies. Member 0 carries the household's car decision to
+  the household's publication.
+- **The way back.** The carrier, a carrier no more, becomes the drop-off driver: no household,
+  no home, `AGE_CHILD` (never a worker), no car of the store. In the same frame it plans from the
+  stop to the border it came from, else to the connected border nearest in a straight line, the
+  first the router reaches (`plan_entrance_to_border_trip`, O(B² + B × Q), typically one Q), and
+  leaves by `PullOut` through the attach hold; once on the road only its flag is left, and it is a
+  car bound for a border as an export carrier is: a road edit replans it to its border, and the
+  stuck-car watchdog's border recovery applies to it. Its `ArrivalCheck` event chain goes on and
+  removes it when it stands at its border, or in no building (an edit under its pull-out left it
+  there). With no border reachable at the stop it is removed at once, as a freight carrier of an
+  unreachable border is. It holds no place; nothing of it is saved after.
+- **Books.** No `Vehicle` row: no ownership, custody, `has_car`, parking demand, occupancy or
+  economy book sees the drop-off car. Traffic sees it as any car (`MODE_CAR`): lane buckets, car
+  following, the gridlock check and the lane-entry audit count it as a car; the trip failure log
+  records its failures as a car's. The envelope's `SIM02_WALKS` line counts drop-off arrivals,
+  arrivals at a place beyond the catchment and border walks (always 0) per day.
+- **Home removed** (`ECON-29`): on the way in, the household forms unhoused at the car, every
+  member a resident in no building, and the car turns back to its border from where it is (held
+  at its border, or pulling over, it is removed). While stopped: not possible, the step-out is
+  in the stop's frame. After the step-out the members are residents, evicted as any; the car
+  drives on, and a pull-out whose home went ends in no building, where its check removes it.
+- **Road and lot edits.** On the way in a drop-off replans to its stop; its place gone, it stops at
+  the kerb; cut off from its stop, it plans again every 30 s (it has no bay to park in and no home
+  to turn to, so the `TRAFFIC-34` rules do not apply). On the way back the export carrier rules
+  apply.
+- **Save.** Format 127 writes the flag (only when set); format 126 loads as 127 does. A save taken
+  with a carrier walking in from the border under the old rule keeps walking, and its household
+  forms inside the home at the arrival check, the code kept for it
+  (`a_format_126_save_with_a_carrier_walking_in_loads_and_the_household_forms_at_home`).
+- **Cost.** At the departure O(k + 2Q) (drop-off) or O(local places + 8 × 2Q) (wider search); at
+  the stop O(household size × route length + B × Q); per tick nothing new beyond one flag test in
+  the access steps and the candidate checks, no allocation.
 
 Stored cars never become occupied places at supply publication or load. Only new supply wakes
 them: an added or reactivated bay wakes its own chunk, and a catchment rebuild wakes the doors

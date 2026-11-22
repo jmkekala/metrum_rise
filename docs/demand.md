@@ -313,11 +313,14 @@ dropped; one whose border has lost its car road releases its home. The border ar
 while the routing hierarchy, its metric and the graph's node roles are unchanged (`SIM-02-K`
 part 5). Families still in the queue count
 as pending arrivals. Its approved adult, elder and child composition travels with the carrier,
-survives arrival reordering and save/load, and materializes when its car parks in the home's
-catchment, every member stepping out at the car's doors and walking in
-([Family arrival](traffic.md#family-arrival-park-35), `PARK-35`), or, for a family arriving on
-foot, when the carrier reaches its home, the other members created inside. Either way the household
-forms once, outside the hourly pass, touching no journaled book.
+survives arrival reordering and save/load, and materializes when its car stops: its own car parked
+in the home's catchment or the nearest free place beyond it, or the drop-off car that drives a
+family without a car or without a place to the home ([Drop-off arrival](traffic.md#drop-off-arrival-park-34),
+`PARK-34`), every member stepping out at the car's doors and walking in
+([Family arrival](traffic.md#family-arrival-park-35), `PARK-35`). No family arrives on foot from
+the border any more; a save holding one still walking forms its household when the carrier
+reaches its home, the other members created inside. Either way the household forms once,
+outside the hourly pass, touching no journaled book.
 Pending adults count as labor supply in the next forecast; each hour recounts them from the carriers
 still on their way. A materialized family leaves the count at once, so its
 adults and transfer claims never count twice, as pending and as housed (`ECON-28`; before, a pass

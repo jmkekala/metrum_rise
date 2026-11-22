@@ -518,6 +518,12 @@ point pool in row order. A format 125 save (`PRE_CAR_WAYS_SAVE_VERSION`) loads a
 (`a_format_125_save_loads`; `a_car_parks_and_leaves_along_long_ways` continues a save taken while
 a car pulls in along a long way, tick for tick as the live city).
 
+Save format 127 (`PARK-34`, [drop-off arrival](traffic.md#drop-off-arrival-park-34), 2026-11-22)
+adds a parking trip row's `drop_off` flag, written only when set, so a city with no drop-off under
+way writes the rows of format 126 and only `save_meta.version` differs. A format 126 save
+(`PRE_DROP_OFF_SAVE_VERSION`) loads as format 127 does; a carrier it holds walking in from the
+border keeps walking and its household forms inside the home.
+
 ## Scheduler
 
 Every system registers a declaration. The dispatcher runs declarations in one fixed order per
