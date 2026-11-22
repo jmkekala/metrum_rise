@@ -39,7 +39,10 @@ pub(crate) enum ParkingTripPhase {
     /// dock until its shipment's next check, at the earliest [`KERB_STAND_FLOOR_MINUTES`] after
     /// it stopped (its `journey_start_time`). With `freight_gate`: waiting, `ready`, for one of
     /// the building's docks, which the parking phase grants in arrival order (its
-    /// `journey_start_time`, stamped at the gate).
+    /// `journey_start_time`, stamped at the gate). With `freight_gate` and a `destination`: not
+    /// at the kerb but waiting in the same way on the way in of that drive-through dock
+    /// (`PARK-21`), behind the bay, for that dock only; granted, it pulls on (`PullIn`) from
+    /// where it stands.
     AtKerb,
 }
 
@@ -74,7 +77,8 @@ pub struct ParkingTrip {
     /// `ToKerb` or `AtKerb`: into the yard of building `target`, its plan ending at that
     /// building's freight gate, or at its kerb stop while it waits for a dock (`PARK-36`). With
     /// phase `None` and a `destination`, the dock the parking phase granted it at the kerb, held
-    /// on its way from there to the gate. With `PullOut`: out of dock `source`, its plan starting at the lane point of
+    /// on its way from there to the gate; with `AtKerb` and a `destination`, the drive-through
+    /// dock on whose way in it waits, not held. With `PullOut`: out of dock `source`, its plan starting at the lane point of
     /// the gate it leaves by (its exit, `PARK-21`) and ending at the freight gate of building `target`, or at a door or a border when
     /// `target` is `NO_FREIGHT_GATE`. Never set for a resident. Lives in the row's padding
     /// (the access flags byte has no free bit), and is not written when false, so a city without

@@ -43,6 +43,11 @@ pub(crate) struct ParkingWork {
     // The trucks waiting at kerb stops for a dock, this tick, as (building handle bits, stamp
     // bits, agent) (`yard.rs` `grant_docks_at_kerbs`, `PARK-36`).
     pub(super) kerb_queue: Vec<(u64, u32, usize)>,
+    // The trucks started at a kerb stop by the dispatches at one moment, as (building, sim time
+    // bits), so the next one from the same building starts a place behind them
+    // (`lifecycle.rs` `start_in_line_at_kerb`, `PARK-36`). Only that moment's starts count, so a
+    // load, which empties it, decides as the live city does.
+    pub(in crate::simulation::economy::agents) kerb_starts: Vec<(usize, u32)>,
     // The route answers of a commit (`prepared.rs`).
     pub(super) answers: super::prepared::ParkingAnswers,
     // Network legs kept from tick to tick for those answers, emptied by a new network revision.
@@ -63,6 +68,7 @@ impl Default for ParkingWork {
             watch: Vec::new(),
             rebuild: true,
             kerb_queue: Vec::new(),
+            kerb_starts: Vec::new(),
             answers: Default::default(),
             quotes: Default::default(),
             #[cfg(test)]

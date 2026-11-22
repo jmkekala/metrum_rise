@@ -14,7 +14,7 @@ use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::buildings::allocator::BuildingEntrance;
 use crate::simulation::core::handles::Handle;
 use crate::simulation::economy::agents::tick::{
-    BuiltTripPlan, plan_border_arrival, plan_building_origin_trip, plan_building_to_border_trip,
+    BuiltTripPlan, plan_border_arrival, plan_building_to_border_trip,
     plan_car_trip_between_entrances, plan_entrance_to_border_trip, plan_immigration_trip,
 };
 use crate::simulation::parking::{ParkingSystem, ParkingTrip, ParkingTripPhase, Place};
@@ -478,6 +478,9 @@ impl AgentSystem {
         let agent_idx = self.spawn_freight_carrier_base(shipment_id, source_building);
         self.apply_building_origin_freight_plan(agent_idx, source_building, plan, allocator, graph);
         self.start_freight_trip_at_dock(agent_idx, dock, gate, parking);
+        if dock.is_none() {
+            self.start_in_line_at_kerb(agent_idx, source_building, allocator, graph);
+        }
         Some(agent_idx)
     }
 
@@ -635,6 +638,9 @@ impl AgentSystem {
         self.apply_building_origin_freight_plan(agent_idx, source_building, plan, allocator, graph);
         self.agents.freight_target_border_node[agent_idx] = border_node;
         self.start_freight_trip_at_dock(agent_idx, dock, None, parking);
+        if dock.is_none() {
+            self.start_in_line_at_kerb(agent_idx, source_building, allocator, graph);
+        }
         Some(agent_idx)
     }
 
@@ -736,9 +742,9 @@ impl AgentSystem {
 
     // A carrier's plan from building `source` to building `destination`: to the destination's
     // freight gate, with its building handle, when it has a published dock and a car route
-    // reaches the gate; else today's plan to the door (`PARK-20`). It starts at `exit`, the
-    // source's freight gate, for a truck leaving a dock, else at the source's door. A city without
-    // docks pays one emptiness test. O(the plan).
+    // reaches the gate; else a car plan to the door (`PARK-20`, `PARK-36`). It starts at `exit`,
+    // the source's freight gate, for a truck leaving a dock, else at the source's door. A city
+    // without docks pays one emptiness test. O(the plan).
     fn plan_freight_from_building(
         &self,
         source: usize,
@@ -763,25 +769,14 @@ impl AgentSystem {
         {
             return Some((plan, Some(handle)));
         }
-        if let Some(exit) = exit {
-            // A truck out of a dock drives to the door: no walking alternative.
-            return plan_car_trip_between_entrances(
-                exit,
-                destination,
-                2,
-                allocator.entrances.get(destination)?,
-                transit_network,
-                graph,
-                &self.pathfind_count,
-            )
-            .map(|plan| (plan, None));
-        }
-        plan_building_origin_trip(
-            source,
+        // A truck drives to the door's kerb stop, from its dock or its source's door alike: never
+        // the walk a resident's door-to-door plan chooses for a short trip, which drew a short
+        // delivery as a pedestrian on the sidewalk (`PARK-36`).
+        plan_car_trip_between_entrances(
+            exit.or_else(|| allocator.entrances.get(source))?,
             destination,
             2,
-            true,
-            allocator,
+            allocator.entrances.get(destination)?,
             transit_network,
             graph,
             &self.pathfind_count,
@@ -1277,6 +1272,37 @@ impl AgentSystem {
         agent.transit_mode = MODE_CAR;
         agent.vehicle_type = VEHICLE_FREIGHT_DELIVERY;
         self.insert_agent(agent)
+    }
+
+    // Truck `i`, just dispatched from building `building` with no dock to stand in, starts at
+    // the kerb stop; one dispatched from the same building at the same moment as others starts
+    // one place behind the last of them in the line along the kerb (`kerb_queue_entrance`), so
+    // none is drawn over another (`PARK-36`). Each pulls out from where it stands, as a truck
+    // granted a dock leaves the line. Its timing is the dispatch's: nothing waits. Nothing is
+    // saved: only this moment's starts count. O(starts at this moment + edge points).
+    fn start_in_line_at_kerb(
+        &mut self,
+        i: usize,
+        building: usize,
+        allocator: &BuildingAllocator,
+        graph: &RegionGraph,
+    ) {
+        let now = self.sim_time.to_bits();
+        let starts = &mut self.parking_work.kerb_starts;
+        starts.retain(|&(_, at)| at == now);
+        let place = starts.iter().filter(|&&(b, _)| b == building).count();
+        starts.push((building, now));
+        if place == 0 {
+            return;
+        }
+        if let Some(stop) = allocator
+            .entrances
+            .get(building)
+            .and_then(|door| super::tick::kerb_queue_entrance(door, graph, place))
+        {
+            self.agents.pos_x[i] = stop.door_pos.x;
+            self.agents.pos_y[i] = stop.door_pos.y;
+        }
     }
 
     // A truck leaving building `source_building` starts at its kerb stop, standing out of the

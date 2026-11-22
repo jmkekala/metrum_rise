@@ -47,7 +47,11 @@ pub(crate) fn access_phase_target(
         let [_, _, [ax, az], [sx, sz]] = core.parking.dock_route(trip.destination)?;
         return Some(Vector3::new(2.0 * sx - ax, 0.0, 2.0 * sz - az));
     }
-    let pulling = matches!(trip.phase, crate::simulation::parking::ParkingTripPhase::PullOut | crate::simulation::parking::ParkingTripPhase::PullIn);
+    // A truck waiting on a drive-through dock's way in (`PARK-36`) faces along it, as pulling in.
+    let pulling = matches!(trip.phase, crate::simulation::parking::ParkingTripPhase::PullOut | crate::simulation::parking::ParkingTripPhase::PullIn)
+        || (trip.phase == crate::simulation::parking::ParkingTripPhase::AtKerb
+            && trip.freight_gate
+            && !trip.destination.is_none());
     // A truck off its dock's route: pulling over to a kerb stop, standing there, pulling out
     // of it, or at its gate's lane point (`PARK-36`).
     let truck_at_kerb = !pulling
