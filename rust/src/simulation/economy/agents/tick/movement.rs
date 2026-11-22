@@ -32,15 +32,17 @@ use std::sync::atomic::AtomicU32;
 const BUILDING_REPLAN_DELAY_S: f32 = 30.0;
 const NETWORK_REPLAN_DELAY_S: f32 = 5.0;
 const WALK_PHASE_CYCLES_PER_METER: f32 = 0.8;
-// The cap keeps fast-forwarded legs from flailing. At 1x a 60 Hz tick moves the fastest walker
-// (AGENT_WALK_SPEED_MS at the top pace, 4.72 m/s) 0.079 m, 0.066 of a cycle at the smallest
-// size: under the cap, so a walker's feet keep pace with its body at any pace, on a lane and on
-// an access path alike.
+// The cap keeps fast-forwarded legs from flailing: cycles a tick of a walker of the model's size,
+// over its drawn size for others. At 1x a 60 Hz tick moves the fastest walker
+// (AGENT_WALK_SPEED_MS at the top pace, 4.72 m/s) 0.079 m, 0.063 of a cycle before its
+// size: under the cap, so a walker's feet keep pace with its body at any pace and size.
 const WALK_PHASE_MAX_ADVANCE_PER_TICK: f32 = 0.07;
 
+// Cycles a walker of drawn size `stride` (`walker_gait::walker_size`) steps over `distance_m`.
 #[inline(always)]
-fn walk_phase_advance(distance_m: f32) -> f32 {
+fn walk_phase_advance(distance_m: f32, stride: f32) -> f32 {
     (distance_m.max(0.0) * WALK_PHASE_CYCLES_PER_METER).min(WALK_PHASE_MAX_ADVANCE_PER_TICK)
+        / stride
 }
 
 fn transit_mode_label(mode: u8) -> &'static str {
@@ -171,7 +173,7 @@ impl AgentSystem {
                 let distance_m = dx.hypot(dz);
                 // Each walker's stride scales with its drawn size (`walker_gait`).
                 let stride = walker_size(*slices.schedule_seed.get(i));
-                let phase_delta = walk_phase_advance(distance_m / stride);
+                let phase_delta = walk_phase_advance(distance_m, stride);
                 if phase_delta > 0.0 {
                     let phase = *s_walk_phase.get(i);
                     *s_walk_phase.get_mut(i) = (phase + phase_delta) % 1.0;
@@ -189,16 +191,22 @@ mod tests {
     #[test]
     fn walk_phase_advance_caps_fast_forwarded_ticks() {
         let realtime_delta = 1.0 / 60.0;
-        let normal = walk_phase_advance(AGENT_WALK_SPEED_MS * realtime_delta);
+        let normal = walk_phase_advance(AGENT_WALK_SPEED_MS * realtime_delta, 1.0);
         assert!(normal > 0.0);
         assert!(normal < WALK_PHASE_MAX_ADVANCE_PER_TICK);
 
-        let fast_forward = walk_phase_advance(AGENT_WALK_SPEED_MS * realtime_delta * 60.0);
+        let fast_forward = walk_phase_advance(AGENT_WALK_SPEED_MS * realtime_delta * 60.0, 1.0);
         assert_eq!(fast_forward, WALK_PHASE_MAX_ADVANCE_PER_TICK);
 
-        // The fastest, smallest walker at 1x is not capped: its feet match its body.
+        // The fastest walker at 1x is not capped, at any drawn size: its feet match its
+        // body, its cycles a metre are the model's over its size (`RENDER-72`).
         use crate::simulation::economy::agents::walker_gait::{PACE_SPREAD, SIZE_SPREAD};
-        let step = AGENT_WALK_SPEED_MS * (1.0 + PACE_SPREAD) * realtime_delta;
-        assert!(walk_phase_advance(step / (1.0 - SIZE_SPREAD)) < WALK_PHASE_MAX_ADVANCE_PER_TICK);
+        let top_pace = 1.0 + PACE_SPREAD;
+        let sidewalk = AGENT_WALK_SPEED_MS * top_pace * realtime_delta;
+        for stride in [1.0 - SIZE_SPREAD, 1.0 + SIZE_SPREAD] {
+            let cycles = walk_phase_advance(sidewalk, stride);
+            let unclamped = sidewalk * super::WALK_PHASE_CYCLES_PER_METER / stride;
+            assert!((cycles - unclamped).abs() < 1e-7, "{stride}: {cycles} {unclamped}");
+        }
     }
 }

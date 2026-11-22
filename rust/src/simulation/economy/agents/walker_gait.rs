@@ -23,9 +23,10 @@ const SIZE_SALT: u64 = 0x5741_4C4B_5349_5A45;
 const SIZE_SALT_2: u64 = 0x5741_4C4B_5349_5A46;
 const BEAT_SALT: u64 = 0x5741_4C4B_4245_4154;
 
-/// The widest body size difference from the model's, as a fraction: sizes span
-/// `1 ± SIZE_SPREAD`.
-pub(crate) const SIZE_SPREAD: f32 = 0.05;
+/// The widest adult body size difference from the model's, as a fraction: adults span
+/// `1 ± SIZE_SPREAD`, 1.60 to 2.00 m of the 1.8 m model. The agents' shadow casters keep a
+/// margin for a 2 m agent (`agent_frame::TWIN_MARGIN_M`), so this stays at most `1 / 9`.
+pub(crate) const SIZE_SPREAD: f32 = 0.11;
 
 /// The widest pace difference from the mean, as a fraction: paces span `1 ± PACE_SPREAD`.
 pub(crate) const PACE_SPREAD: f32 = 0.18;
@@ -68,14 +69,19 @@ pub(crate) fn walker_look(schedule_seed: u32) -> f32 {
     stable_unit_f32(u64::from(schedule_seed) ^ LOOK_SALT)
 }
 
-/// The walker's drawn size in `[1 - SIZE_SPREAD, 1 + SIZE_SPREAD]`, mean 1, most near the mean.
-/// Its stride scales with it, so a taller walker takes fewer steps per metre. Presentation only.
+/// The walker's drawn size as a fraction of the model's, in `[1 - SIZE_SPREAD, 1 + SIZE_SPREAD]`.
+/// The draw is a wide and a narrow uniform draw summed (three parts to one), so sizes spread
+/// evenly over the middle half of the range (two thirds of walkers) and thin out linearly
+/// towards its ends. Its stride scales with it, so a taller walker takes fewer steps
+/// per metre. Presentation only.
 #[inline(always)]
 pub(crate) fn walker_size(schedule_seed: u32) -> f32 {
     let seed = u64::from(schedule_seed);
     let a = stable_unit_f32(seed ^ SIZE_SALT);
     let b = stable_unit_f32(seed ^ SIZE_SALT_2);
-    1.0 + SIZE_SPREAD * (a + b - 1.0)
+    // In [-1, 1], mean 0: flat over [-0.5, 0.5].
+    let spread = 1.5 * a + 0.5 * b - 1.0;
+    1.0 + SIZE_SPREAD * spread
 }
 
 /// Where in its walk cycle the walker's steps fall, `[0, 1)`: added to its walk phase when drawn,
@@ -124,5 +130,43 @@ mod tests {
             (9_000..11_000).contains(&left),
             "both sides used: {left} of {n} left"
         );
+    }
+
+    // `RENDER-72`: adults use the whole 1.6-2.0 m range, not a narrow band about the mean, a
+    // pure function of the saved seed.
+    #[test]
+    fn sizes_spread_over_their_ranges_from_the_seed_alone() {
+        let n = 20_000_u32;
+        let (mut lo, mut hi) = (f32::MAX, f32::MIN);
+        // Adults by fifths of the range, from the shortest.
+        let mut fifths = [0_u32; 5];
+        let mut sum = 0.0_f64;
+        for seed in 0..n {
+            let seed = seed.wrapping_mul(2_654_435_761);
+            let size = walker_size(seed);
+            assert_eq!(size.to_bits(), walker_size(seed).to_bits(), "pure in the seed");
+            assert!((1.0 - SIZE_SPREAD..=1.0 + SIZE_SPREAD).contains(&size), "{size}");
+            let t = (size - (1.0 - SIZE_SPREAD)) / (2.0 * SIZE_SPREAD);
+            (lo, hi) = (lo.min(size), hi.max(size));
+            fifths[((t * 5.0) as usize).min(4)] += 1;
+            sum += f64::from(size);
+        }
+        let mean = sum / f64::from(n);
+        assert!((mean - 1.0).abs() < 0.002, "mean size {mean}");
+        // The ends of the range are reached: 1.60 m and 2.00 m to within a centimetre.
+        let (low, high) = (1.0 - SIZE_SPREAD, 1.0 + SIZE_SPREAD);
+        assert!(lo < low + 0.006 && hi > high - 0.006, "{lo}..{hi}");
+        // Flat over the middle, thinning to the ends: the middle three fifths hold about 26 %
+        // each, the outer fifths about 11 % each (the old sum of two equal draws: 8 % and 36 %
+        // in the middle fifth).
+        let share = |k: usize| f64::from(fifths[k]) / f64::from(n);
+        for k in 1..4 {
+            assert!((0.22..0.30).contains(&share(k)), "fifth {k}: {fifths:?}");
+        }
+        for k in [0, 4] {
+            assert!((0.08..0.16).contains(&share(k)), "fifth {k}: {fifths:?}");
+        }
+        // The tallest fifth (1.92-2.00 m) is about as full as the shortest.
+        assert!((share(0) - share(4)).abs() < 0.02, "{fifths:?}");
     }
 }
