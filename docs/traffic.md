@@ -3280,7 +3280,10 @@ and their catchments have free places, so the per-day counts (`SIM02_WALKS`) rea
 wider-search arrivals and 0 border walks on every recorded day, also in the `arrivals` workload
 (1,510 arrivals at 30k and 583 at 10k over its days 4 to 8). So the drop-off adds no car trip there.
 Both 10k cities' records are equal to `PARK-35`'s. Both 30k cities' records move from the first
-recorded day: one arrival during the city's build days finds a different way in than its border walk
+recorded day: in the city's build days (days 1 to 3, before the first record; `SIM02_BUILD_WALKS`)
+533 families arrive and 24 of them find the catchment's first free place unreachable by road from
+their border; under `PARK-35` they walked in from the border, now the wider search parks them at the
+next free place (0 drop-offs, 0 border walks), so they settle earlier and the city diverges
 (baseline: 31 to 32 arrivals on day 4 and 18 to 17 on day 5, households 15,562 to 15,563 on day 4;
 fiscal stress: one family fewer admitted, 15,555 to 15,554 households). Nothing is lost: households
 plus vacant homes are equal (15,750), no reference violations, no unhoused household at the end. The
