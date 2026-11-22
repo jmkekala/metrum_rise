@@ -36,7 +36,9 @@
 use super::super::super::{AgentHandle, AgentSystem};
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::core::handles::Handle;
-use super::super::access::{KERB_QUEUE_SPACING_M, advance_along_local_access_path};
+use super::super::access::{
+    KERB_QUEUE_SPACING_M, advance_along_local_access_path, local_access_target_segment,
+};
 use crate::simulation::economy::agents::tick::{MANEUVER_POINTS, kerb_queue_entrance};
 use crate::simulation::economy::agents::tick::movement::retry_after_s;
 use crate::simulation::economy::agents::tick::trip_failures::{FailureCause, FailureOutcome};
@@ -223,9 +225,10 @@ impl AgentSystem {
                 .iter()
                 .filter(|&&(b, _, j)| b == building && self.waits_on_way_in(j, dock))
                 .count();
+            let back = (ahead + 1) as f32 * KERB_QUEUE_SPACING_M;
             parking
                 .maneuver_path(dock, lane, d, network, true, true)
-                .is_some_and(|path| way_in_place(path.as_slice(), ahead + 1).is_some())
+                .is_some_and(|path| way_in_place(path.as_slice(), back).is_some())
         })
     }
 
@@ -339,13 +342,24 @@ impl AgentSystem {
                 let to = place.door_pos;
                 if at.distance_to(to) <= step { to } else { at + (to - at).normalized() * step }
             } else {
-                // Its place: behind the bay and each truck of its line ahead of it.
-                let ahead = waiting[..k]
+                // Its place: behind the bay and each truck of its line ahead of it, and never
+                // nearer than a body and 1 m behind the truck just ahead of it, which may still
+                // be on its way up (the one before it in the line, moved already this tick, or
+                // for the first the truck pulling into the bay).
+                let mut ahead = waiting[..k]
                     .iter()
                     .rev()
                     .take_while(|&&(b, _, _)| b == building)
-                    .filter(|&&(_, _, j)| self.waits_on_way_in(j, line))
-                    .count();
+                    .filter(|&&(_, _, j)| self.waits_on_way_in(j, line));
+                let places = ahead.clone().count() + 1;
+                let next = ahead.next().map(|&(_, _, j)| j).or_else(|| {
+                    self.handles
+                        .resolve(parking.dock_holder(line))
+                        .filter(|&j| {
+                            let trip = &self.agents.parking_trip[j];
+                            trip.phase == ParkingTripPhase::PullIn && trip.destination == line
+                        })
+                });
                 let a = &self.agents;
                 let lane = a.planned_detach_lane_id[i] as usize;
                 let Some(path) =
@@ -353,7 +367,14 @@ impl AgentSystem {
                 else {
                     continue;
                 };
-                let Some((points, count)) = way_in_place(path.as_slice(), ahead + 1) else {
+                let path = path.as_slice();
+                let mut back = places as f32 * KERB_QUEUE_SPACING_M;
+                if let Some(j) = next {
+                    let at_j = Vector2::new(a.pos_x[j], a.pos_y[j]);
+                    back = back.max(left_along(path, at_j) + KERB_QUEUE_SPACING_M);
+                }
+                // A truck ahead still near the gate: it stands where it is until there is room.
+                let Some((points, count)) = way_in_place(path, back) else {
                     continue;
                 };
                 let step = crate::config::FREIGHT_YARD_SPEED_MS * delta;
@@ -438,16 +459,15 @@ impl AgentSystem {
     }
 }
 
-// Place `k` (from 1) of the line of trucks waiting on a drive-through dock's way in (`PARK-36`):
-// `path` is the pull-in's polyline (the gate's lane point, then the way in from the gate's road
-// connection to the stop), and the place lies `k` spacings (`KERB_QUEUE_SPACING_M`, a body and
-// 1 m) back from the stop along it, so the truck there stands 1 m behind the one in the bay or
-// at the place ahead. Returns the polyline cut at the place, on the stack, along which a waiting
-// truck moves up and on which its pull-in goes on; `None` when the place's truck would not stand
-// wholly on the way in (half a body behind the place past the gate's road connection): the way
-// in is full. O(way points), no allocation.
-fn way_in_place(path: &[Vector2], k: usize) -> Option<([Vector2; MANEUVER_POINTS], usize)> {
-    let back = k as f32 * KERB_QUEUE_SPACING_M;
+// The place `back` metres back from the stop along a drive-through dock's way in (`PARK-36`),
+// where a waiting truck stands: `path` is the pull-in's polyline (the gate's lane point, then the
+// way in from the gate's road connection to the stop). Place `k` of the line is `k` spacings
+// (`KERB_QUEUE_SPACING_M`, a body and 1 m) back, so its truck stands 1 m behind the one in the
+// bay or at the place ahead. Returns the polyline cut at the place, on the stack, along which a
+// waiting truck moves up and on which its pull-in goes on; `None` when the place's truck would
+// not stand wholly on the way in (half a body behind the place past the gate's road
+// connection): the way in is full. O(way points), no allocation.
+fn way_in_place(path: &[Vector2], back: f32) -> Option<([Vector2; MANEUVER_POINTS], usize)> {
     let way: f32 = path.get(1..)?.windows(2).map(|w| w[0].distance_to(w[1])).sum();
     if back + crate::config::TRUCK_BODY_LENGTH_M * 0.5 > way {
         return None;
@@ -464,6 +484,19 @@ fn way_in_place(path: &[Vector2], k: usize) -> Option<([Vector2; MANEUVER_POINTS
     points[..j].copy_from_slice(&path[..j]);
     points[j] = path[j] + (path[j - 1] - path[j]) * t;
     Some((points, j + 1))
+}
+
+// How far `pos` is from the end of `path` along it: 0 at the end, infinite off it (a truck not on
+// this way in). O(points).
+fn left_along(path: &[Vector2], pos: Vector2) -> f32 {
+    match local_access_target_segment(pos, path) {
+        Some(k) => {
+            pos.distance_to(path[k])
+                + path[k..].windows(2).map(|w| w[0].distance_to(w[1])).sum::<f32>()
+        }
+        None if path.last().is_some_and(|end| end.distance_to(pos) <= 0.05) => 0.0,
+        None => f32::INFINITY,
+    }
 }
 
 // Whether `trip` holds `dock`.
