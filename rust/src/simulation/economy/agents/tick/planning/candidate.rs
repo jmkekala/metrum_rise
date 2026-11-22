@@ -33,7 +33,12 @@ mod u_turn_tests;
 
 pub(super) const NODE_RANKS: [u8; 2] = [0, 1];
 pub(super) const NODE_RANK_PAIRS: [(u8, u8); 4] = [(0, 0), (0, 1), (1, 0), (1, 1)];
-const CAR_MODE_CHOICE_OVERHEAD_S: f32 = 180.0;
+// What a car trip is charged on top of its travel time when a trip chooses between walking and
+// driving, real seconds (`TRAFFIC-43`). A trip drives once its walk exceeds the car trip's own
+// walking legs by `AGENT_WALK_SPEED_MS * (drive and manoeuvre seconds + this)` metres: 320 to
+// 420 m for the usual 45 to 70 s of driving and manoeuvring, where 180 s at the 1.4 m/s planning
+// speed before `TRAFFIC-41` put it at 315 to 350 m. Sized for that boundary, not for a time.
+const CAR_MODE_CHOICE_OVERHEAD_S: f32 = 35.0;
 
 #[derive(Clone)]
 pub(super) struct PlannedTripCandidate {
