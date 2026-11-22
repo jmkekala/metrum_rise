@@ -185,54 +185,59 @@ This means the path planner discards the true mid-edge location and compresses t
 
 Agents store three building references:
 
-- `current_building`: the building the agent is currently inside
-- `target_building`: the building the agent is currently travelling toward
-- `planned_target_building`: the next destination chosen while the agent is idle
+- `current_building`: the building the agent is inside, or the origin it is still leaving
+  during `ACCESS_EGRESS`; `usize::MAX` on the road and for a resident in no building
+- `target_building`: the building the agent is travelling toward
+- `planned_target_building`: the next destination chosen while the agent is inside
 
-An agent is considered "inside a building" when:
-
-- `transit == TRANSIT_IDLE`
-- `current_building != usize::MAX`
-- `is_visible == false` in the common settled case
-
-The household planner only schedules departures for agents already in `TRANSIT_IDLE`.
+An agent is inside a building when `transit == TRANSIT_IN_BUILDING` and `current_building !=
+usize::MAX`. A resident with `TRANSIT_IN_BUILDING` and `current_building == usize::MAX` waits
+in no building where it stands (an evicted or unhoused resident). Departures are planned only for
+agents inside a building.
 
 ### Current trip lifecycle
 
-The implemented FSM is:
+The implemented states are `IN_BUILDING`, `ACCESS_EGRESS`, `NETWORK`, `INTERSECTION` (the
+junction phase of `NETWORK`), `ACCESS_INGRESS` and `IMMIGRATING`, specified under
+[Proposed execution model](#proposed-execution-model):
 
-- `IDLE -> DEPARTING -> ON_ROAD -> ARRIVING -> IDLE`
-- `IMMIGRATING` is a special entry path that eventually joins the same arrival logic
-- `INTERSECTION` is the junction-lane phase for road traffic
+1. Inside, the economy sets `planned_target_building` and `planned_activity`.
+2. The planner quotes the trip from the origin's and destination's `BuildingEntrance` caches
+   (CCH or flow fields), with exact attach and detach lanes and distances.
+3. `ACCESS_EGRESS` walks or drives the local access polyline from the origin door (or a parking
+   place) to the attach lane point and enters the lane through the shared lane contract.
+4. `NETWORK`/`INTERSECTION` move along the lanes and junctions to the detach lane point.
+5. `ACCESS_INGRESS` follows the local polyline to the destination door (or parking place).
+6. On arrival `current_building` becomes the destination and `transit` returns to
+   `IN_BUILDING`.
 
-The actual building access flow is:
-
-1. While idle, the economy sets `planned_target_building` and `planned_activity`.
-2. The agent tick resolves `origin_node` and `target_node` from `building_depart_node(...)`.
-3. A road-network path is built between those nodes using flow fields or CCH.
-4. The agent enters `TRANSIT_DEPARTING`.
-5. During `TRANSIT_DEPARTING`, the agent walks in a straight line from its current world position, usually the building center, to a computed curb point on the frontage edge.
-6. When the curb point is reached, the agent is inserted directly into a frontage lane partway along the edge.
-7. The agent travels normally through the lane/junction/pathing FSM.
-8. On the destination frontage edge, the system watches for the agent to come within about 4 meters of the building's `frontage_t`.
-9. The agent snaps to the curb point and enters `TRANSIT_ARRIVING`.
-10. During `TRANSIT_ARRIVING`, the agent walks in a straight line from the curb point to the building center.
-11. On arrival, `current_building` becomes `target_building`, the agent becomes invisible, and the transit state returns to `IDLE`.
+A resident with a car travels in parking legs
+([`PARK-02`](traffic.md#the-itinerary-park-02)): `WalkToCar → PullOut → Drive → PullIn →
+WalkToDoor`. Only `WalkToDoor` enters a building; a car leg never ends at a door. A move-in
+starts as `IMMIGRATING` at a border node: with a car and a free place in the home catchment it
+drives `Drive → PullIn → WalkToDoor` (see [Parking rounds](#parking-rounds)), otherwise it walks
+from the border to the home door. The family arrival (`PARK-35`) lets the whole household step
+out of the parked car; see [Family arrival](traffic.md#family-arrival-park-35).
 
 ### Sidewalk and lane rules
 
-Pedestrian entry and exit are restricted to the building's frontage side when a matching sidewalk exists. The implementation currently does this by selecting a sidewalk lane whose sign matches `building.side`.
-
-Cars do not use a modeled driveway or parking system. They also use the same curb-point handoff, then insert directly into a vehicle lane on the frontage edge.
-
-If the expected frontage-side lane does not exist, the code falls back to a much coarser node-based entry or arrival path.
+Pedestrians attach to the sidewalk lane on the building's frontage side; cars attach to the
+frontage car lane the entrance's `vehicle_frontage_access` allows
+([`BothSides` car crossover rule](#bothsides-car-crossover-rule)). Cars park in modelled places
+(lot and driveway bays, kerb lanes) and pull in and out along their swept paths
+([`PARK-01`](traffic.md#parking-supply-park-01)); they never stop at a door. An entrance
+without a legal lane has no plan: the trip records a failure and retries
+([`TRAFFIC-32`](traffic.md)), it does not fall back to a node-based path.
 
 ### Special cases in the current code
 
-- If the origin and destination resolve to the same depart node, the trip skips the network phase and goes straight to `ARRIVING`.
-- If an agent finishes its network path at the correct frontage node but the building sits mid-edge, the code re-inserts the agent onto the frontage edge so the midpoint arrival check can fire.
-- Immigrants spawn at a border node, target their future home's depart node, and then use the same arrival logic as ordinary trips.
-- Failed local access or failed pathfinding usually ends by forcing the agent to `IDLE` and often `is_visible = false`.
+- A trip whose attach and detach points are on the same edge needs no node path
+  (`ACCESS_ZERO_HOP_NODE_PATH`).
+- A move-in carrier whose home is removed before it arrives becomes its unhoused household
+  where it stands (`ECON-29`); one whose home is removed after its car parked is already an
+  ordinary household and is evicted as any resident is (`PARK-35`).
+- An invalid access plan returns the agent to its origin door (or where it stands, with no
+  origin) and records the failure instead of hiding it.
 
 ## Why The Current System Is Brittle
 
@@ -1050,7 +1055,9 @@ Failed planning or replanning must:
   - `planned_attach_node = border_node`
   - `planned_attach_lane_id = u32::MAX`
   - `planned_attach_lane_d = 0.0`
-- Immigration uses `MODE_CAR` in the current design because border connections are highway-style external road links.
+- A move-in with a car and a reserved place in its home catchment plans with `MODE_CAR` to that
+  place; one without plans with `MODE_WALK` to the home door. The carrier is spawned with
+  `MODE_CAR`, and the walk plan's mode replaces it before it sets out.
 - Immigration planning uses CCH only. Flow fields are never used for the initial immigrant trip because the destination is a specific home building and the origin is not `IN_BUILDING`.
 - The origin local-access cost is exactly `0.0`.
 - If the initial immigration plan succeeds, transition immediately from `IMMIGRATING` to `NETWORK` with these exact writes:
