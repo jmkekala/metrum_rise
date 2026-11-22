@@ -559,9 +559,17 @@ visible city life (`households/service_visits.rs`); these never change accountin
 building.
 
 ```text
-household_daily_essential_cost = supply cost per day + daily utility charges
-household_reserve_days = household_budget / max(household_daily_essential_cost, ε)
+household_daily_essential_cost = supply cost per day + service cost per day + daily utility charges
+paid_supplies = (pantry stock + the basket a shopper has paid for) × supply catalog price
+household_reserve_days = (household_budget − power arrears + paid_supplies)
+                         / max(household_daily_essential_cost, ε)
 ```
+
+Supplies the household has paid for are part of its reserve (`ECON-31`): a purchase turns cash
+into pantry at the catalog price and leaves the reserve unchanged (less the VAT), and the reserve
+falls as the family eats the pantry. Every reader of the reserve (staying, moving in, rehousing,
+the residential upgrade's occupant check, displaced workforce matching and the destitute exit)
+reads this one measure. O(1).
 
 - **Staying:** `reserve_days ≥ stay threshold[level]` (0.5 / 3 / 6 days for levels 1–3).
 - **Moving in:** `reserve_days ≥ move-in threshold[level]` (0.5 / 6 / 12 days).
@@ -579,6 +587,66 @@ household_reserve_days = household_budget / max(household_daily_essential_cost, 
   building ID, which the next hour's admission may already have taken (`SIM-02-J`).
 - `unhoused_days_elapsed` counts consecutive settled days without a home. Demand's exit policy
   interprets it ([`demand.md`](demand.md#household-removal)).
+- While unhoused, members keep their jobs and wages; residents at home wait in no building,
+  and a resident away finishes its trip and waits where it ends
+  ([`traffic.md`](traffic.md#one-walking-code-path-and-the-walking-speed-traffic-41-traffic-42)).
+  An unhoused household buys no services. The record of a day counts a household unhoused only
+  if it is unhoused at that midnight, so a household evicted and rehoused within the same day
+  does not show in it.
+
+#### The eviction cycle of solvent families (`ECON-31`)
+
+Before 2026-11-22 the reserve counted cash only. Shopping spends up to the whole budget on the
+largest affordable basket ([household replenishment](#household-replenishment)), and the
+housing review runs at the household's daily phase, right after its settlement. A family whose
+shop came between its payday and its review met the review with only the settlement's credit in
+cash, while its pantry held two to three days of supplies. The `SIM-02` envelope's evicted
+families on `dev` 180f28bcc (traced at every review, eviction and rehousing) were all of this
+kind:
+
+- A family of four with one worker earns 79.20 net a day and nets about +61 from its daily
+  settlement (transfers less bills); its essentials cost 129.16 a day, so its income covers
+  them. Its review found 61 in cash, 0.47 days against the level-1 stay reserve of 0.5, two days
+  running, and evicted it with no level-1 home it could move into on 0.47 days. Its next wage
+  lifted it to 1.07 days and the hourly rehousing put it into the lowest-ID level-1 vacancy (in
+  three of ten rehousings the very home it had left). Its next shop emptied the purse again:
+  evicted every other day, unhoused one to seven hours each time.
+- In the 30,000 baseline city ten evictions of seven such families (one family three times, one
+  twice) between days 3 and 7; in the 30,000 fiscal-stress city two; none in the 10,000 cities
+  on that build. Every evicted family's last 24 hours of wages and settlement covered its
+  essential cost per day, every one had a pantry of 1.6 to 3.3 days, and most had a paid basket
+  on its way home. Only an eviction in the day's last hours shows at a midnight record: the 3, 1
+  and 1 unhoused households of days 4, 6 and 8 and the one of day 4 under fiscal stress.
+
+Supplies counted as reserve end the cycle at its cause: the family's reserve no longer drops
+when it shops, so a review after a shop reads what the family really holds. Rehousing was never
+at fault: it applies the same move-in test (0.5 days at level 1) as the review that evicted, but
+at the family's hourly phase, after its payday. Measured on the same four cities (release
+envelope runs, `RAYON_NUM_THREADS=6`, the fix built on `dev` 180f28bcc):
+
+| City | Stay failures | Evictions | Unhoused at midnights, 14 days | Records against `dev` |
+|---|---:|---:|---:|---|
+| 10,000 baseline | 104 → 0 | 0 → 0 | 0 → 0 | identical, all 14 days |
+| 10,000 fiscal stress | 158 → 0 | 0 → 0 | 0 → 0 | identical, all 14 days |
+| 30,000 baseline | 150 → 0 | 10 → 0 | 5 → 0 | from day 4: admissions a home apart until day 6, final households, residents, employed and vacant homes equal |
+| 30,000 fiscal stress | 583 → 0 | 2 → 0 | 1 → 0 | from day 4: employed 417 → 425 and out-of-stock households 14,376 → 14,346 at the end |
+
+No reference violations, departures or trip failures in either build. Upgrade moves and the
+residential upgrade's occupant check read the same reserve, so a family with a full pantry now
+reaches a higher level's move-in reserve with fewer days of cash. In these cities that changed
+nothing (the 10,000 cities' records are identical); a longer or richer city will upgrade some
+families earlier.
+
+Other rules that would answer the cycle, not chosen (for the owner's review of `ECON-31`):
+
+- Count the pantry only in the stay comparison, and keep moving in, upgrades and the upgrade
+  check on cash. Narrower, but the reserve then means two things, and an evicted family's
+  rehousing still waits for a payday.
+- Keep the cash reserve and let shopping keep the stay reserve in cash (buy only what leaves
+  it). Smaller baskets and more shopping trips for the poorest families, so more trips and
+  store traffic; the reserve still swings with every payday.
+- Keep both rules and accept the cycle at the edge of affordability. Measured above: a few
+  families unhoused for hours every other day in the 30,000 cities, never at the end.
 
 ### Farm households (`ECON-08`)
 
