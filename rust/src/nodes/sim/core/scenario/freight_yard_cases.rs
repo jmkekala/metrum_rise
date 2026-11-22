@@ -385,7 +385,9 @@ fn run_with(class: &str, through: bool) -> YardRun {
                         queue_wait_sum_s += f64::from(wait);
                     }
                     match trip.phase {
-                        ParkingTripPhase::AtDock => entry.1 = true,
+                        // Pulling in counts: a frame of the fastest speed can hold the rest of
+                        // the pull-in, the stand and the delivering check (`PARK-36`'s run).
+                        ParkingTripPhase::PullIn | ParkingTripPhase::AtDock => entry.1 = true,
                         ParkingTripPhase::ToKerb | ParkingTripPhase::AtKerb => entry.2 = true,
                         ParkingTripPhase::PullOut
                             if Some(core.agents.current_building[i])
