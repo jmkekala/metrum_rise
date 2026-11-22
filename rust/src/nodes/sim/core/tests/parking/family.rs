@@ -11,14 +11,14 @@ use crate::simulation::parking::ParkingTripPhase;
 
 // The largest household admission draws (`MAX_STARTER_IMMIGRANT_HOUSEHOLD_SIZE`): two adults,
 // one elder, three children; one more than the car's five seats.
-const SIZE: u16 = 6;
-const COMPOSITION: HouseholdAgeComposition = HouseholdAgeComposition {
+pub(super) const SIZE: u16 = 6;
+pub(super) const COMPOSITION: HouseholdAgeComposition = HouseholdAgeComposition {
     adult_count: 2,
     elder_count: 1,
     child_count: 3,
 };
-const FRAME_S: f64 = 1.0 / 60.0;
-const SPEED: f32 = 8.0;
+pub(super) const FRAME_S: f64 = 1.0 / 60.0;
+pub(super) const SPEED: f32 = 8.0;
 
 // A 1.2 km road with the bundled small lot as the home at its middle, and a household of six
 // leaving the border on the lot's side by car, as `parking_move_in_save_round_trip_mid_arrival`
@@ -49,7 +49,7 @@ fn arriving() -> (SimCore, AgentHandle) {
 }
 
 // The road, the home and the border on the home's side.
-fn road_and_home() -> (SimCore, u32) {
+pub(super) fn road_and_home() -> (SimCore, u32) {
     let mut c = SimCore::new(
         WorldConfig::new(2048.0, 1024.0, 16.0, 10.0)
             .with_chunking(128.0, 0.0)
@@ -69,7 +69,7 @@ fn road_and_home() -> (SimCore, u32) {
 }
 
 // Frames until `done`, at most `limit`; the frames taken.
-fn step_until(c: &mut SimCore, limit: usize, done: impl Fn(&SimCore) -> bool) -> usize {
+pub(super) fn step_until(c: &mut SimCore, limit: usize, done: impl Fn(&SimCore) -> bool) -> usize {
     for frame in 0..limit {
         if done(c) {
             return frame;
@@ -277,7 +277,7 @@ fn a_road_edit_mid_walk_splits_the_frontage_and_every_member_still_gets_home() {
 }
 
 // Every agent's position, state and household, bit for bit, and the household count.
-fn digest(c: &SimCore) -> Vec<u64> {
+pub(super) fn digest(c: &SimCore) -> Vec<u64> {
     let mut out = vec![c.households.households.len() as u64, c.agents.len() as u64];
     for i in 0..c.agents.len() {
         out.extend([
@@ -293,7 +293,7 @@ fn digest(c: &SimCore) -> Vec<u64> {
 
 // Saves now, runs `frames` on, loads the save and runs the same frames again: both runs must
 // end in the same state.
-fn continues_after_load(c: &mut SimCore, name: &str, frames: usize) {
+pub(super) fn continues_after_load(c: &mut SimCore, name: &str, frames: usize) {
     let path = temp_save_path(name);
     c.save_game_settled_at(path.to_str().unwrap(), None, 0)
         .unwrap();
@@ -342,17 +342,14 @@ fn a_save_before_the_family_steps_out_and_one_mid_walk_continue_as_the_unsaved_r
 }
 
 #[test]
-fn a_carrier_without_a_car_walks_in_as_a_walker() {
+fn a_carrier_without_a_car_is_driven_in_not_walking() {
     let (mut c, border) = road_and_home();
     let pos = c.region_graph.node(border).pos;
     let i = c
         .agents
         .spawn_household_arrival_carrier(0, 3, COMPOSITION, border, pos.x, pos.z);
-    assert_eq!(
-        c.agents.transit_mode[i],
-        crate::simulation::economy::agents::MODE_CAR
-    );
-    // No car (`arrival_car` decided none): the walk from the border.
+    // No car (`arrival_car` decided none): a drop-off (`PARK-34`), never the walk from the
+    // border.
     c.agents.parking_trip[i].arrival_ownership = true;
     assert!(c.agents.parking_trip[i].vehicle.is_none());
     assert!(c.agents.start_parking_move_in(
@@ -362,9 +359,12 @@ fn a_carrier_without_a_car_walks_in_as_a_walker() {
         &c.transit_network,
         &c.region_graph
     ));
-    assert_eq!(c.agents.parking_trip[i].phase, ParkingTripPhase::None);
+    let trip = c.agents.parking_trip[i];
+    assert!(trip.drop_off);
+    assert_eq!(trip.phase, ParkingTripPhase::Drive);
     assert_eq!(
-        c.agents.transit_mode[i], MODE_WALK,
-        "the walk plan resets the border car mode"
+        c.agents.transit_mode[i],
+        crate::simulation::economy::agents::MODE_CAR,
+        "it rides a car"
     );
 }

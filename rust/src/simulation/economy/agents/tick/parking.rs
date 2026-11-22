@@ -16,6 +16,7 @@ use crate::simulation::parking::stats::DepartureOutcome;
 use crate::simulation::parking::{ParkingSystem, ParkingTrip, ParkingTripPhase};
 use std::sync::atomic::AtomicU32;
 mod candidates;
+mod drop_off;
 mod prepared;
 mod recovery;
 mod yard;
@@ -182,7 +183,9 @@ impl AgentSystem {
             }
             return;
         }
-        if trip.phase == ParkingTripPhase::Drive {
+        // A drop-off's `vehicle` is the household's own car, stored, not the car it drives
+        // (`PARK-34`).
+        if trip.phase == ParkingTripPhase::Drive && !trip.drop_off {
             parking.release(trip.vehicle);
         }
         if trip.phase == ParkingTripPhase::WalkToDoor
@@ -205,6 +208,14 @@ impl AgentSystem {
             return;
         }
         if !trip.ready {
+            return;
+        }
+        if trip.drop_off && trip.phase == ParkingTripPhase::PullIn {
+            // At its stop: the household steps out and the car leaves after the tick
+            // (`SimCore::settle_parked_arrivals`, `PARK-34`). It stands meanwhile.
+            self.agents.parking_trip[i].ready = false;
+            self.agents.speed[i] = 0.0;
+            self.parked_arrivals.push(self.handles.handle(i));
             return;
         }
         if trip.delivery_only && trip.phase == ParkingTripPhase::PullIn {
@@ -418,6 +429,7 @@ impl AgentSystem {
                     replan_needed: false,
                     walk_origin: crate::simulation::core::handles::Handle::NONE,
                     freight_gate: false,
+                    drop_off: false,
                 };
                 self.set_off_on_parking_leg(i, plan, origin);
                 return;

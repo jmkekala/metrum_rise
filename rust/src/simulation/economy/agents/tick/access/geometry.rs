@@ -49,6 +49,28 @@ pub(super) fn entrance_edge_normal(
     Some(Vector2::new(tangent.y, -tangent.x) * entrance.side as f32)
 }
 
+/// How far inside the kerb a drop-off car's kerb stop puts the car's centre (`PARK-34`): half a
+/// car's width and a little room.
+pub(crate) const DROP_OFF_KERB_INSET_M: f32 = 1.0;
+
+/// The kerb stop of a drop-off car at `entrance`'s door (`PARK-34`): the door's own entrance with
+/// its door point moved to [`DROP_OFF_KERB_INSET_M`] inside the door side's kerb, on the door's
+/// road connection. A car's access path to it is then the door's: from the lane point (across
+/// the road from the far lane of a two-sided frontage) to the stop, and back. `None` when the
+/// door's road is gone. O(edge points).
+pub(crate) fn kerb_stop_entrance(
+    entrance: &BuildingEntrance,
+    graph: &RegionGraph,
+) -> Option<BuildingEntrance> {
+    let edge_pos = entrance_edge_pos(entrance, graph)?;
+    let normal = entrance_edge_normal(entrance, graph)?;
+    let kerb = graph.edge(entrance.edge_idx).frontage_half_width_m(entrance.side);
+    Some(BuildingEntrance {
+        door_pos: edge_pos + normal * (kerb - DROP_OFF_KERB_INSET_M).max(0.0),
+        ..entrance.clone()
+    })
+}
+
 /// Projects an entrance onto a lane and returns the lane distance in meters.
 pub(in crate::simulation::economy::agents::tick) fn projected_lane_distance_for_entrance(
     entrance: &BuildingEntrance,

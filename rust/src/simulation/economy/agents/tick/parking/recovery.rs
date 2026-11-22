@@ -78,6 +78,32 @@ impl AgentSystem {
         Some(target)
     }
 
+    // A drop-off's recovery (`PARK-34`), before the shared one: its stop's place gone, it stops
+    // at the kerb instead; a pull-out with its plan lost or a home gone ends the trip, and the
+    // car goes back to its border ([`AgentSystem::turn_drop_off_back`]). True when the shared
+    // recovery plans on from here. O(1) plus one entrance lookup.
+    fn prepare_drop_off_recovery(
+        &mut self,
+        i: usize,
+        parking: &ParkingSystem,
+        allocator: &BuildingAllocator,
+        network: &TransitNetwork,
+        graph: &RegionGraph,
+    ) -> bool {
+        let trip = self.agents.parking_trip[i];
+        let home = allocator.building_handles.resolve(Handle::from_bits(trip.target));
+        if trip.phase == ParkingTripPhase::PullOut || home.is_none() {
+            self.turn_drop_off_back(i);
+            return false;
+        }
+        if !trip.destination.is_none()
+            && parking.place_entrance(trip.destination, allocator, network, graph).is_none()
+        {
+            self.agents.parking_trip[i].destination = Handle::NONE;
+        }
+        true
+    }
+
     // No destination, no home and the building gone: the itinerary ends here. The car stays in
     // its bay, or from the road goes off the map until a bay takes it, and the driver settles
     // where it stands for its household's next home, as an evicted resident does. A delivery's
@@ -128,6 +154,11 @@ impl AgentSystem {
         network: &TransitNetwork,
         graph: &RegionGraph,
     ) {
+        if self.agents.parking_trip[i].drop_off
+            && !self.prepare_drop_off_recovery(i, parking, allocator, network, graph)
+        {
+            return;
+        }
         let Some(target) = self.parking_trip_target(i, parking, allocator) else {
             return;
         };
@@ -235,7 +266,8 @@ impl AgentSystem {
         if matches!(
             trip.phase,
             ParkingTripPhase::PullOut | ParkingTripPhase::Drive | ParkingTripPhase::PullIn
-        ) && !parking.trip_reserved(trip.vehicle, trip.destination)
+        ) && !trip.drop_off
+            && !parking.trip_reserved(trip.vehicle, trip.destination)
         {
             let Some(candidate) = parking.first_free_candidate(trip.target) else {
                 self.queue_parking_retry(i, 30);
@@ -301,8 +333,15 @@ impl AgentSystem {
             self.agents.pos_y[i] = position.1;
         } else if self.stands_at_a_node_on_its_drive(i, trip) {
             let start = (self.agents.current_node[i], self.agents.current_edge[i]);
-            if let Err(failure) =
-                self.plan_drive_from(i, start, target, destination, allocator, network, graph)
+            let planned =
+                self.plan_drive_from(i, start, target, destination, allocator, network, graph);
+            if planned.is_err() && trip.drop_off {
+                // A drop-off cut off from its stop waits and plans again (`PARK-34`): it has no
+                // bay to park in nearby and no home to turn to.
+                self.queue_parking_retry(i, 30);
+                return;
+            }
+            if let Err(failure) = planned
                 && !self.drive_cut_off(
                     i, target, start, failure, parking, allocator, network, graph,
                 )
@@ -346,7 +385,7 @@ impl AgentSystem {
                 graph,
                 &self.pathfind_count,
             ) else {
-                if trip.phase != ParkingTripPhase::Drive || mode != MODE_CAR {
+                if trip.phase != ParkingTripPhase::Drive || mode != MODE_CAR || trip.drop_off {
                     self.queue_parking_retry(i, 30);
                     return;
                 }

@@ -72,7 +72,9 @@ impl Default for ParkingWork {
 // A resident's car leg, which holds a reservation. A freight carrier's pull-in holds a dock
 // instead, which no reservation watch reads (`PARK-20`).
 fn on_a_car_leg(trip: &ParkingTrip) -> bool {
+    // A drop-off reserves nothing (`PARK-34`).
     !trip.freight_gate
+        && !trip.drop_off
         && matches!(
             trip.phase,
             ParkingTripPhase::PullOut | ParkingTripPhase::Drive | ParkingTripPhase::PullIn
@@ -239,7 +241,7 @@ impl AgentSystem {
             }
             let agent = self.handles.handle(i);
             self.parking_work.watch.push(agent);
-            if trip.phase == ParkingTripPhase::Drive && parking.vehicle_place(trip.vehicle).is_some() {
+            if trip.phase == ParkingTripPhase::Drive && !trip.drop_off && parking.vehicle_place(trip.vehicle).is_some() {
                 self.parking_work.wakes.push(agent);
             }
         }
@@ -284,6 +286,7 @@ impl AgentSystem {
             let trip = self.agents.parking_trip[i];
             if trip.phase == ParkingTripPhase::Drive
                 && !trip.retry_pending
+                && !trip.drop_off
                 && parking.vehicle_place(trip.vehicle).is_some()
             {
                 self.parking_work.wakes.push(self.handles.handle(i));
@@ -310,7 +313,9 @@ impl AgentSystem {
                                 && self.agents.planned_target_building[i] != usize::MAX
                                 && self.sim_time >= self.agents.next_replan_time[i]
                         }
-                        ParkingTripPhase::Drive => parking.vehicle_place(trip.vehicle).is_some(),
+                        ParkingTripPhase::Drive => {
+                            !trip.drop_off && parking.vehicle_place(trip.vehicle).is_some()
+                        }
                         ParkingTripPhase::WalkToDoor => {
                             self.agents.transit[i] == TRANSIT_IN_BUILDING
                         }

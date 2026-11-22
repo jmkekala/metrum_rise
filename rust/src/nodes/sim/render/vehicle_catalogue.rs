@@ -456,9 +456,12 @@ impl crate::nodes::sim::core::SimCore {
         path: CarPath,
     ) -> (u8, [f32; 4]) {
         use crate::simulation::economy::agents::VEHICLE_FREIGHT_DELIVERY;
+        // A drop-off car is not the household car its row names (`PARK-34`).
+        let trip = &self.agents.parking_trip[i];
         let identity = self
             .parking
-            .vehicle_visual(self.agents.parking_trip[i].vehicle)
+            .vehicle_visual(trip.vehicle)
+            .filter(|_| !trip.drop_off)
             .map_or(self.agents.render_id[i], |(_, _, identity)| identity);
         let freight = self.agents.vehicle_type[i] == VEHICLE_FREIGHT_DELIVERY;
         let Some(drawn) = self.vehicle_catalogue.pick(freight, identity) else {

@@ -6,15 +6,21 @@ use super::SaveLoadError;
 use crate::simulation::network::types::{EdgeClass, NodeType, TransitType, VehicleFrontageAccess};
 
 /// Current save format version (`SIM-02` broke older saves).
-pub const SAVE_VERSION: i64 = 127;
+pub const SAVE_VERSION: i64 = 128;
+
+/// Format 127, saved before a drop-off was saved state (`PARK-34`): its parking trip rows carry
+/// no `drop_off`. It loads as format 128 does: no arrival under its format rode a drop-off, and
+/// a carrier walking in from the border keeps walking to its home's door.
+pub const PRE_DROP_OFF_SAVE_VERSION: i64 = 127;
 
 /// Format 126, saved before an authored plant's variant byte could carry the fixed-look flag
 /// (`VEG-29`, bit 7 of the saved `variant`): every plant it holds has the bit clear. It loads
-/// as format 127 does, validating nothing: an older reader rejected the bit as an invalid pin.
+/// as formats 127 and 128 do, validating nothing: an older reader rejected the bit as an invalid
+/// pin. No arrival under it rode a drop-off either.
 pub const PRE_FIXED_LOOK_SAVE_VERSION: i64 = 126;
 
 /// Format 125, saved before a car place's long way was saved state (`PARK-25`): its car rows
-/// carry no way beyond the row's four points. It loads as formats 126 and 127 do, validating nothing:
+/// carry no way beyond the row's four points. It loads as formats 126 to 128 do, validating nothing:
 /// nothing could give a car place a longer way under its format.
 pub const PRE_CAR_WAYS_SAVE_VERSION: i64 = 125;
 

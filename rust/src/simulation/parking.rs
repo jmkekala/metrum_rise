@@ -35,6 +35,14 @@ pub(crate) use render::{ParkedLooks, ParkedPublication};
 use std::collections::HashMap;
 use std::sync::Arc;
 
+/// How far, in a straight line, a moving-in household's car looks for a free place when its
+/// home catchment has none (`PARK-34`).
+pub(crate) const WIDER_ARRIVAL_SEARCH_M: f32 = 1_000.0;
+
+/// How many of the nearest free places such a car tries, each with a route to it and a walk
+/// from it (`PARK-34`).
+pub(crate) const WIDER_ARRIVAL_CANDIDATES: usize = 8;
+
 /// Whether a building has parking: bays on its lot that count as supply, and a list at its door.
 /// A site under construction has neither: its lot is no supply before the building is finished
 /// (the user's decision of 2026-11-16, `PERF-25`), and nobody's trip ends at it, so completion
@@ -187,6 +195,59 @@ impl ParkingSystem {
         }
         self.mark_dirty(key);
         handle
+    }
+
+    /// The free places nearest `point` in a straight line, nearest first (ties by handle), at
+    /// most [`WIDER_ARRIVAL_CANDIDATES`] of them within [`WIDER_ARRIVAL_SEARCH_M`], for a moving-in
+    /// household whose car finds no free place in its home catchment (`PARK-34`): the caller
+    /// proves each by road and on foot. Searches the nine place chunks around `point`, as
+    /// [`Self::nearest_with`] does. O(local places), on the stack, no allocation.
+    pub(crate) fn nearest_free_places(
+        &self,
+        point: [f32; 2],
+    ) -> ([Handle<Place>; WIDER_ARRIVAL_CANDIDATES], usize) {
+        let mut best = [(f32::INFINITY, Handle::NONE); WIDER_ARRIVAL_CANDIDATES];
+        let mut count = 0;
+        let (cx, cz) = chunk_at(point);
+        for z in cz - 1..=cz + 1 {
+            for x in cx - 1..=cx + 1 {
+                let Some(chunk) = self.chunks.get(&(x, z)) else {
+                    continue;
+                };
+                for &handle in &chunk.places {
+                    let Some(p) = self.place_handles.resolve(handle) else {
+                        continue;
+                    };
+                    if !self.places.active[p]
+                        || !self.places.occupant[p].is_none()
+                        || !self.places.reservation[p].is_none()
+                        || self.places.width[p] < 1.8
+                        || self.places.length[p] < 4.5
+                    {
+                        continue;
+                    }
+                    let pos = self.places.position[p];
+                    let d2 = (pos[0] - point[0]).powi(2) + (pos[2] - point[1]).powi(2);
+                    if d2 > WIDER_ARRIVAL_SEARCH_M * WIDER_ARRIVAL_SEARCH_M {
+                        continue;
+                    }
+                    let entry = (d2, handle);
+                    let worse = |a: &(f32, Handle<Place>)| {
+                        a.0.total_cmp(&entry.0).then(a.1.cmp(&entry.1)).is_gt()
+                    };
+                    // Insertion into the sorted fixed list; the last entry falls off.
+                    let Some(at) = best[..count].iter().position(worse).or(
+                        (count < WIDER_ARRIVAL_CANDIDATES).then_some(count),
+                    ) else {
+                        continue;
+                    };
+                    count = (count + 1).min(WIDER_ARRIVAL_CANDIDATES);
+                    best[at..count].rotate_right(1);
+                    best[at] = entry;
+                }
+            }
+        }
+        (best.map(|(_, handle)| handle), count)
     }
 
     /// O(9 + local candidates × Q), no allocation or candidate cap. Caller quotes connectivity,

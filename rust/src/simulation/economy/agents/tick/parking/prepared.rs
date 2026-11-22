@@ -341,7 +341,9 @@ impl AgentSystem {
                 })
                 .flatten();
         }
-        if !trip.ready || (trip.delivery_only && trip.phase == ParkingTripPhase::PullIn) {
+        if !trip.ready
+            || ((trip.delivery_only || trip.drop_off) && trip.phase == ParkingTripPhase::PullIn)
+        {
             return None;
         }
         let next = trip.phase.next_transition()?;

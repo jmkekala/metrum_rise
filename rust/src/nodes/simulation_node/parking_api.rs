@@ -18,11 +18,12 @@ impl SimulationNode {
     }
 
     /// Isolated capture command: schedules an ordinary move-in of a household of `members`
-    /// (two adults, then children) from a border.
+    /// (two adults, then children) from a border; with `carless` it owns no car, so it is
+    /// dropped off (`PARK-34`).
     #[func]
-    pub fn debug_add_parking_move_in(&mut self, home: i32, members: i32) -> i32 {
+    pub fn debug_add_parking_move_in(&mut self, home: i32, members: i32, carless: bool) -> i32 {
         self.lock_core()
-            .debug_add_parking_move_in(home as usize, members.clamp(1, 16) as u16)
+            .debug_add_parking_move_in(home as usize, members.clamp(1, 16) as u16, carless)
             .map_or(-1, |i| i as i32)
     }
 

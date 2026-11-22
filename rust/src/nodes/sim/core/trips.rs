@@ -231,6 +231,10 @@ impl SimCore {
                 continue;
             };
             let trip = self.agents.agents.parking_trip[agent_idx];
+            if trip.drop_off {
+                self.settle_drop_off(agent_idx);
+                continue;
+            }
             if trip.phase != crate::simulation::parking::ParkingTripPhase::WalkToDoor {
                 continue;
             }
@@ -247,6 +251,69 @@ impl SimCore {
             );
         }
         self.agents.parked_arrivals = parked;
+    }
+
+    // A drop-off at its stop (`PARK-34`): its household steps out at the stopped car's doors
+    // and walks to the door, and the car, its driver no carrier any more, leaves for a border,
+    // or is removed where it stands when none is reachable. O(household size × route length +
+    // B × Q), at the stop.
+    fn settle_drop_off(&mut self, agent_idx: usize) {
+        use crate::simulation::parking::{ParkingTrip, ParkingTripPhase, doors};
+        let trip = self.agents.agents.parking_trip[agent_idx];
+        if trip.phase != ParkingTripPhase::PullIn {
+            return;
+        }
+        let (allocator, network, graph) = (&self.allocator, &self.transit_network, &self.region_graph);
+        let walking = ParkingTrip { phase: ParkingTripPhase::WalkToDoor, ..trip };
+        let stop = self.parking.trip_entrance(walking, true, allocator, network, graph);
+        let walk = self.agents.drop_off_walk(agent_idx, &self.parking, allocator, network, graph);
+        // The stopped car's pose: its place's, or at the kerb where it stands, nose along the
+        // lane it left.
+        let a = &self.agents.agents;
+        let position = [a.pos_x[agent_idx], 0.0, a.pos_y[agent_idx]];
+        let heading = network
+            .lane_system
+            .lanes
+            .get(a.planned_detach_lane_id[agent_idx] as usize)
+            .map(|lane| {
+                let t = crate::simulation::buildings::allocator::BuildingAllocator::sample_tangent_on_polyline(
+                    &lane.geometry,
+                    lane.length,
+                    a.planned_detach_lane_d[agent_idx],
+                );
+                (-t.x).atan2(-t.y)
+            });
+        let parking = &self.parking;
+        let drive_side = crate::config::LEFT_HAND_DRIVE;
+        self.households.materialize_dropped_off_carrier(
+            agent_idx,
+            &mut self.agents,
+            allocator,
+            walk,
+            |member| {
+                let [x, z] = if trip.destination.is_none() {
+                    let local = doors::exit_point(&doors::CAR_DOORS, member, drive_side)?;
+                    doors::world_point(position, heading?, local)
+                } else {
+                    parking.car_exit_point(trip.destination, member, drive_side)?
+                };
+                Some(godot::prelude::Vector2::new(x, z))
+            },
+        );
+        self.logistics.prepare_parking_borders(network, graph);
+        let away = stop.is_some_and(|stop| {
+            self.agents.drive_drop_off_away(
+                agent_idx,
+                &stop,
+                self.logistics.parking_borders(),
+                network,
+                graph,
+            )
+        });
+        if !away {
+            self.agents.turn_drop_off_back(agent_idx);
+            self.agents.retire_drop_off(agent_idx);
+        }
     }
 
     /// Schedules `trip` at `slot`, or the wheel's next slot if that is later, moved out of a
@@ -404,7 +471,17 @@ impl SimCore {
                         return;
                     }
                     self.agents.release_departure(agent_idx);
-                    crate::debug::work::add(crate::debug::work::Work::ArrivalLaunches, 1);
+                    {
+                        use crate::debug::work::{Work, add};
+                        add(Work::ArrivalLaunches, 1);
+                        if self.agents.agents.parking_trip[agent_idx].drop_off {
+                            add(Work::ArrivalDropOffs, 1);
+                        } else if self.agents.agents.transit_mode[agent_idx]
+                            == crate::simulation::economy::agents::MODE_WALK
+                        {
+                            add(Work::ArrivalBorderWalks, 1);
+                        }
+                    }
                     self.schedule_trip(next_check, TripEvent::ArrivalCheck { carrier });
                 }
             }
@@ -413,6 +490,14 @@ impl SimCore {
                     return;
                 };
                 if self.agents.pending_household_size[agent_idx] == 0 {
+                    // A drop-off car on its way back is checked until it stands at its border
+                    // (`PARK-34`).
+                    if self.agents.drop_off_finished(agent_idx) {
+                        self.agents.retire_drop_off(agent_idx);
+                    } else if self.agents.drives_drop_off_back(agent_idx) {
+                        let next = self.next_trip_check(slot, Some(agent_idx));
+                        self.schedule_trip(next, TripEvent::ArrivalCheck { carrier });
+                    }
                     return;
                 }
                 if !self.households.materialize_arrival_carrier(

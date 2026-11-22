@@ -136,7 +136,10 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
         // manoeuvre (`PARK-21`: a dock's way, on the stack) or the door's access path.
         let maneuver;
         let access;
-        let exact_path = if trip.phase == crate::simulation::parking::ParkingTripPhase::PullIn {
+        // A drop-off's kerb stop (`PARK-34`) is reached by the door's access path, its door point
+        // at the kerb: no place, no manoeuvre.
+        let kerb_stop = trip.drop_off && trip.destination.is_none();
+        let exact_path = if trip.phase == crate::simulation::parking::ParkingTripPhase::PullIn && !kerb_stop {
             maneuver = slices.parking.and_then(|p| p.maneuver_path(trip.destination, detach_lane_id, detach_lane_d, transit_network, true, trip.freight_gate));
             maneuver.as_ref().map(ManeuverPath::as_slice)
         } else if legal_detach {

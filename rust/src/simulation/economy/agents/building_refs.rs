@@ -437,9 +437,23 @@ impl AgentSystem {
         self.evict_referencing(building_id, referencing);
     }
 
+    // A drop-off car pulling out of its stop names the home it left only for its way out
+    // (`PARK-34`): with the home gone it ends there, in no building, where its check removes it.
+    // O(entries on its lanes).
+    fn leaving_drop_off(&mut self, i: usize) -> bool {
+        let leaving = self.drives_drop_off_back(i);
+        if leaving {
+            self.turn_drop_off_back(i);
+        }
+        leaving
+    }
+
     // Evicts the ascending `referencing` agents, every agent that names `building_id`.
     fn evict_referencing(&mut self, building_id: usize, referencing: Vec<usize>) {
         for i in referencing {
+            if self.leaving_drop_off(i) {
+                continue;
+            }
             let cache_touches_building = self.agents.next_departure_origin_building[i]
                 == building_id
                 || self.agents.next_departure_target_building[i] == building_id
@@ -619,6 +633,9 @@ impl AgentSystem {
         // and only if a physically displaced occupant has no surviving home.
         let mut border_plan = None;
         for &agent_idx in &referencing {
+            if self.leaving_drop_off(agent_idx) {
+                continue;
+            }
             let household_id = self.agents.household_id[agent_idx];
             let mut home_after_removal = self.agents.home_building[agent_idx];
             if home_after_removal == building_id {

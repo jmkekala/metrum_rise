@@ -1169,9 +1169,14 @@ impl SimCore {
 
 impl SimCore {
     /// Isolated capture command: one approved household of `members` (two adults, then
-    /// children) enters through the ordinary paced departure event at the next slot. O(shared
-    /// topology refresh + one household carrier).
-    pub(crate) fn debug_add_parking_move_in(&mut self, home: usize, members: u16) -> Option<usize> {
+    /// children), with no car when `carless`, enters through the ordinary paced departure event
+    /// at the next slot. O(shared topology refresh + one household carrier).
+    pub(crate) fn debug_add_parking_move_in(
+        &mut self,
+        home: usize,
+        members: u16,
+        carless: bool,
+    ) -> Option<usize> {
         use crate::simulation::economy::agents::HouseholdAgeComposition;
         if home >= self.allocator.buildings.len()
             || self.allocator.buildings[home].occupancy >= self.allocator.household_capacity(home) {
@@ -1189,6 +1194,8 @@ impl SimCore {
             child_count: members - adults,
         };
         let i = self.agents.spawn_household_arrival_carrier(home, members, composition, border, pos.x, pos.z);
+        // Decided now, as no car: the departure keeps a decision once made.
+        self.agents.agents.parking_trip[i].arrival_ownership |= carless;
         let carrier = self.agents.agent_handle(i);
         self.schedule_trip(self.time.absolute_slot() + 1,
             super::trips::TripEvent::ArrivalDeparture { carrier });

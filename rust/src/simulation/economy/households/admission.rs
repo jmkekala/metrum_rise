@@ -311,6 +311,84 @@ impl HouseholdSystem {
         true
     }
 
+    /// The household a drop-off brought steps out at its stop (`PARK-34`), as a family steps out
+    /// of its own car (`PARK-35`): it forms here, once, every member a new resident of its home
+    /// (the carrier drives on and is no member). Member `m` appears at `exit_point(m)` on the
+    /// walk `walk` from the stop to the door (member 0 on it, the others on copies); a member
+    /// without a point or with no walk is created in the home. Member 0 carries the household's
+    /// car decision (its own car stored off the map, or none) for the household's publication.
+    /// False, with nothing changed, unless the carrier carries a household to a home that
+    /// stands. O(household size × route length), at the stop.
+    pub(crate) fn materialize_dropped_off_carrier(
+        &mut self,
+        agent_idx: usize,
+        agents: &mut AgentSystem,
+        allocator: &BuildingAllocator,
+        mut walk: Option<(
+            crate::simulation::economy::agents::tick::BuiltTripPlan,
+            crate::simulation::buildings::allocator::BuildingEntrance,
+        )>,
+        exit_point: impl Fn(usize) -> Option<godot::prelude::Vector2>,
+    ) -> bool {
+        let pending_size = agents.pending_household_size[agent_idx];
+        let home = agents.home_building[agent_idx];
+        if pending_size == 0 || home >= allocator.buildings.len() {
+            return false;
+        }
+        let (catalog, household_id, composition) = self.admit_carried_household(agent_idx, agents, home);
+        let carried = agents.parking_trip[agent_idx];
+        let trip = crate::simulation::parking::ParkingTrip {
+            vehicle: carried.vehicle,
+            destination: carried.destination,
+            target: carried.target,
+            phase: crate::simulation::parking::ParkingTripPhase::WalkToDoor,
+            drop_off: true,
+            ..Default::default()
+        };
+        let door = allocator.entrances.get(home).map_or(
+            godot::prelude::Vector2::new(agents.pos_x[agent_idx], agents.pos_y[agent_idx]),
+            |entrance| entrance.door_pos,
+        );
+        let mut walker = None;
+        for member_index in 0..pending_size {
+            let age_group = composition.member_age_group(member_index);
+            let point = exit_point(usize::from(member_index));
+            let resident = match (point, walker) {
+                (Some(point), Some(walker)) => {
+                    agents.spawn_member_beside_car(walker, home, point, age_group)
+                }
+                (Some(point), None) if member_index == 0 => match walk.take() {
+                    Some((plan, origin)) => {
+                        let first = agents
+                            .spawn_member_on_walk(home, point, age_group, trip, plan, &origin);
+                        walker = Some(first);
+                        first
+                    }
+                    None => agents.spawn_housed_agent_with_age_group(home, door.x, door.y, age_group),
+                },
+                _ => agents.spawn_housed_agent_with_age_group(home, door.x, door.y, age_group),
+            };
+            if member_index == 0 {
+                // The household's car decision, adopted at its publication.
+                agents.parking_trip[resident].vehicle = carried.vehicle;
+                agents.parking_trip[resident].arrival_ownership = carried.arrival_ownership;
+            }
+            agents.assign_household_id(resident, household_id);
+        }
+        self.recount_household(household_id, agents, allocator, &catalog);
+        for category in [crate::debug::Channel::Economy, crate::debug::Channel::Spawn] {
+            debug_log!(
+                category,
+                "household dropped off household_id={} size={} home_building={} carrier_agent={}",
+                household_id,
+                pending_size,
+                home,
+                agent_idx,
+            );
+        }
+        true
+    }
+
     /// Makes arrival carrier `agent_idx`, whose home goes before it arrives (a road, the player
     /// or redevelopment demolishes it; `ECON-29`), the household it carries, unhoused: the
     /// household an arrival creates at its home ([`Self::admit_immigrant_household`], its
@@ -332,9 +410,16 @@ impl HouseholdSystem {
         debug_assert!(pending_size > 0 && agents.household_id[agent_idx] == usize::MAX);
         let (catalog, household_id, composition) =
             self.admit_carried_household(agent_idx, agents, usize::MAX);
-        agents.unhouse_household_carrier(agent_idx, household_id, composition.member_age_group(0));
+        // A household riding a drop-off (`PARK-34`) is all riders: the car turns back.
+        let carried = agents.parking_trip[agent_idx];
+        let first = if carried.drop_off {
+            0
+        } else {
+            agents.unhouse_household_carrier(agent_idx, household_id, composition.member_age_group(0));
+            1
+        };
         let (x, y) = (agents.pos_x[agent_idx], agents.pos_y[agent_idx]);
-        for member_index in 1..pending_size {
+        for member_index in first..pending_size {
             // Home `usize::MAX`: a resident in no building, not on the map.
             let resident = agents.spawn_housed_agent_with_age_group(
                 usize::MAX,
@@ -342,7 +427,15 @@ impl HouseholdSystem {
                 y,
                 composition.member_age_group(member_index),
             );
+            if member_index == 0 {
+                // The household's car decision, adopted at its publication.
+                agents.parking_trip[resident].vehicle = carried.vehicle;
+                agents.parking_trip[resident].arrival_ownership = carried.arrival_ownership;
+            }
             agents.assign_household_id(resident, household_id);
+        }
+        if carried.drop_off {
+            agents.turn_drop_off_back(agent_idx);
         }
         self.recount_household(household_id, agents, allocator, &catalog);
         for category in [crate::debug::Channel::Economy, crate::debug::Channel::Spawn] {

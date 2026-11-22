@@ -565,6 +565,11 @@ impl ParkingSystem {
             if trip.phase == ParkingTripPhase::None {
                 continue;
             }
+            // A drop-off holds no custody and no place (`PARK-34`): its car is no car of the
+            // store, its `vehicle` the household's own car, stored, or none.
+            if trip.drop_off {
+                continue;
+            }
             // A freight carrier's yard trip holds no car: a pull-in, a stand or a pull-out names
             // a dock row, which may since have gone inactive (`PARK-20`).
             if trip.freight_gate {

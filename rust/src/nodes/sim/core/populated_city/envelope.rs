@@ -676,6 +676,10 @@ fn sim02_envelope() {
                 "residents":residents, "workload":workload, "day":record.day,
                 "walkers_home_after_cancel":delta(Work::WalkersHomeAfterCancel),
                 "drivers_home_after_cancel":delta(Work::DriversHomeAfterCancel),
+                "arrivals":delta(Work::ArrivalLaunches),
+                "drop_off_arrivals":delta(Work::ArrivalDropOffs),
+                "wider_place_arrivals":delta(Work::ArrivalWiderPlaces),
+                "border_walk_arrivals":delta(Work::ArrivalBorderWalks),
             })
         );
         day_work = work;

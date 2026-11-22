@@ -113,7 +113,9 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
         // manoeuvre (`PARK-21`: a dock's way, on the stack) or the door's access path.
         let maneuver;
         let access;
-        let exact_path = if trip.phase == crate::simulation::parking::ParkingTripPhase::PullOut {
+        // A drop-off leaving its kerb stop (`PARK-34`) takes the door's access path back out.
+        let kerb_stop = trip.drop_off && trip.source.is_none();
+        let exact_path = if trip.phase == crate::simulation::parking::ParkingTripPhase::PullOut && !kerb_stop {
             maneuver = slices.parking.and_then(|p| p.maneuver_path(trip.source, attach_lane_id, attach_lane_d, transit_network, false, trip.freight_gate));
             maneuver.as_ref().map(ManeuverPath::as_slice)
         } else if legal_attach {
@@ -203,6 +205,13 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
                         // here, which frees the dock (`PARK-20`), and the plan's own end, a gate
                         // or a door or a border, is all it keeps.
                         *slices.parking_trip.get_mut(i) = trip.after_freight_pull_out();
+                    } else if trip.drop_off {
+                        // A drop-off car out of its stop is a car bound for its border, as an
+                        // export carrier is (`PARK-34`): only its flag is left.
+                        *slices.parking_trip.get_mut(i) = crate::simulation::parking::ParkingTrip {
+                            drop_off: true,
+                            ..Default::default()
+                        };
                     } else {
                         slices.parking_trip.get_mut(i).phase = crate::simulation::parking::ParkingTripPhase::Drive;
                     }

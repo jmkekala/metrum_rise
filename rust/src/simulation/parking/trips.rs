@@ -63,6 +63,16 @@ pub struct ParkingTrip {
     /// docks saves the rows it saved before.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub(crate) freight_gate: bool,
+    /// A drop-off (`PARK-34`): the agent drives a car that is no car of the store, bringing a
+    /// moving-in household that has no car to park at home. On `Drive` and `PullIn` the carrier
+    /// drives it to its stop: place `destination`, or with none the kerb stop at the door of
+    /// building `target` ([`super::ParkingSystem::trip_entrance`]); `vehicle` is the household's
+    /// own car, stored off the map, or none. On `PullOut` the driver leaves the stop for a
+    /// border; once on the road it keeps only this flag. On `WalkToDoor` the household's members
+    /// walk from the stop. Holds no custody and no place. Lives in the row's padding and is not
+    /// written when false.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) drop_off: bool,
 }
 
 // Every agent's row is in the movement pass's working set: growth here costs each tick.
@@ -431,6 +441,16 @@ impl ParkingSystem {
             // A truck leaves its dock by the gate its way out ends at (`PARK-21`).
             (true, PullOut) if trip.freight_gate => {
                 return self.dock_departure(trip.source, network, graph);
+            }
+            // A drop-off without a place stops at the kerb before its target's door (`PARK-34`).
+            (true, WalkToDoor | PullOut) | (false, Drive | PullIn)
+                if trip.drop_off && trip.destination.is_none() && trip.source.is_none() =>
+            {
+                let home = allocator.building_handles.resolve(Handle::from_bits(trip.target))?;
+                return crate::simulation::economy::agents::tick::kerb_stop_entrance(
+                    allocator.entrances.get(home)?,
+                    graph,
+                );
             }
             (true, WalkToCar) if !trip.walk_origin.is_none() => trip.walk_origin,
             (true, PullOut) | (false, WalkToCar) => trip.source,

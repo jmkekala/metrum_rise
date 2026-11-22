@@ -111,7 +111,6 @@ impl AgentSystem {
         network: &TransitNetwork,
         graph: &RegionGraph,
     ) -> bool {
-        use crate::simulation::parking::{ParkingTrip, ParkingTripPhase};
         use crate::simulation::zoning::profiles::{load_builtin_profile_registry, ZoneDensity};
         let home = self.agents.home_building[i];
         let Some(building) = allocator.buildings.get(home) else {
@@ -129,27 +128,144 @@ impl AgentSystem {
         let car = self.agents.parking_trip[i].vehicle;
         parking.store_arrival_car(car, home_handle);
         self.agents.journey_start_time[i] = self.sim_time;
-        if !car.is_none()
-            && let Some(candidate) = parking.first_free_candidate(home_handle)
-            && let Some(entrance) = parking.place_entrance(candidate.place, allocator, network, graph)
-            && let Some(plan) = super::tick::plan_border_arrival(border, home, MODE_CAR,
-                &entrance, network, graph, &self.pathfind_count)
-            && parking.reserve_arrival(car, self.agent_handle(i), candidate.place) {
-            self.agents.parking_trip[i] = ParkingTrip { vehicle: car, arrival_ownership: true,
-                destination: candidate.place, target: home_handle, phase: ParkingTripPhase::Drive,
-                route_capacity: plan.current_path.len(), ..Default::default() };
-            self.leave_lane_buckets(i);
-            self.apply_border_origin_freight_plan(i, border, home, plan, graph);
-            self.join_lane_buckets(i);
-            return true;
+        if !car.is_none() {
+            // The home catchment's first free place, else the nearest free place it reaches
+            // beyond it (`PARK-34`).
+            let first = parking.first_free_candidate(home_handle).map(|c| c.place);
+            if let Some(place) = first
+                && self.drive_own_car_to(i, car, place, border, home, parking, allocator, network, graph)
+            {
+                return true;
+            }
+            let (nearest, count) = parking.nearest_free_places([building.center_x, building.center_y]);
+            for &place in &nearest[..count] {
+                if Some(place) != first
+                    && self.drive_own_car_to(i, car, place, border, home, parking, allocator, network, graph)
+                {
+                    return true;
+                }
+            }
         }
-        let Some(entrance) = allocator.entrances.get(home) else {
+        // No household walks in from the border: it is driven in (`PARK-34`).
+        self.start_drop_off(i, border, home, parking, allocator, network, graph)
+    }
+
+    /// Starts carrier `i`'s drop-off from `border` to its stop at `home`: the home catchment's
+    /// first free place, without reserving it (the car only stops there), else the kerb stop at
+    /// the door ([`super::tick::kerb_stop_entrance`]). The carrier keeps its household's car
+    /// decision; its own car, if any, stays stored. False, with nothing changed, when no road
+    /// reaches either stop. O(k + 2Q), at the paced departure.
+    #[allow(clippy::too_many_arguments)]
+    fn start_drop_off(
+        &mut self,
+        i: usize,
+        border: u32,
+        home: usize,
+        parking: &ParkingSystem,
+        allocator: &BuildingAllocator,
+        network: &TransitNetwork,
+        graph: &RegionGraph,
+    ) -> bool {
+        let home_handle = allocator.building_handles.handle(home).to_bits();
+        let place = parking.first_free_candidate(home_handle).map(|c| c.place);
+        let to_place = place.and_then(|place| {
+            let entrance = parking.place_entrance(place, allocator, network, graph)?;
+            let plan = super::tick::plan_border_arrival(border, home, MODE_CAR, &entrance, network, graph,
+                &self.pathfind_count)?;
+            Some((place, plan))
+        });
+        let stop = to_place.or_else(|| {
+            let kerb = super::tick::kerb_stop_entrance(allocator.entrances.get(home)?, graph)?;
+            let plan = super::tick::plan_border_arrival(border, home, MODE_CAR, &kerb, network, graph,
+                &self.pathfind_count)?;
+            Some((Handle::NONE, plan))
+        });
+        let Some((place, plan)) = stop else {
             return false;
         };
-        let Some(plan) = super::tick::plan_border_arrival(border, home, MODE_WALK,
-            entrance, network, graph, &self.pathfind_count) else {
+        let trip = self.agents.parking_trip[i];
+        self.agents.parking_trip[i] = ParkingTrip {
+            vehicle: trip.vehicle,
+            arrival_ownership: true,
+            destination: place,
+            target: home_handle,
+            phase: ParkingTripPhase::Drive,
+            drop_off: true,
+            route_capacity: plan.current_path.len(),
+            ..Default::default()
+        };
+        self.leave_lane_buckets(i);
+        self.apply_border_origin_freight_plan(i, border, home, plan, graph);
+        // The border it came from, the first it tries on its way back. Read only for a car bound
+        // for a border (`ACCESS_FREIGHT_BORDER_DESTINATION`).
+        self.agents.freight_target_border_node[i] = border;
+        self.join_lane_buckets(i);
+        true
+    }
+
+    /// The walk from the border a carrier without a car or a free place set out on before
+    /// `PARK-34`, for a test of an older save holding one. O(Q).
+    #[cfg(test)]
+    pub(crate) fn start_border_walk_for_test(
+        &mut self,
+        i: usize,
+        allocator: &BuildingAllocator,
+        network: &TransitNetwork,
+        graph: &RegionGraph,
+    ) -> bool {
+        let (home, border) = (self.agents.home_building[i], self.agents.current_node[i]);
+        let Some(plan) = allocator.entrances.get(home).and_then(|entrance| {
+            super::tick::plan_border_arrival(border, home, MODE_WALK, entrance, network, graph,
+                &self.pathfind_count)
+        }) else {
             return false;
         };
+        self.leave_lane_buckets(i);
+        self.apply_border_origin_freight_plan(i, border, home, plan, graph);
+        self.join_lane_buckets(i);
+        true
+    }
+
+    // Sends carrier `i` in its own `car` from `border` to `place` when a road reaches the place,
+    // a walk leads from it to the door of `home` and the place takes the reservation; else false
+    // with nothing changed. The catchment's own places need no walk proof: the catchment is the
+    // walk. O(2Q).
+    #[allow(clippy::too_many_arguments)]
+    fn drive_own_car_to(
+        &mut self,
+        i: usize,
+        car: crate::simulation::core::handles::Handle<crate::simulation::parking::Vehicle>,
+        place: crate::simulation::core::handles::Handle<Place>,
+        border: u32,
+        home: usize,
+        parking: &mut ParkingSystem,
+        allocator: &BuildingAllocator,
+        network: &TransitNetwork,
+        graph: &RegionGraph,
+    ) -> bool {
+        let home_handle = allocator.building_handles.handle(home).to_bits();
+        let Some(entrance) = parking.place_entrance(place, allocator, network, graph) else {
+            return false;
+        };
+        let in_catchment = parking.walk_to_car_seconds(home_handle, place).is_some();
+        let walks = in_catchment
+            || allocator.entrances.get(home).is_some_and(|door| {
+                super::tick::quote_parking_leg(MODE_WALK, &entrance, door, [0.0; 2], network,
+                    graph, &self.pathfind_count, None).is_some()
+            });
+        let Some(plan) = walks.then(|| super::tick::plan_border_arrival(border, home, MODE_CAR,
+            &entrance, network, graph, &self.pathfind_count)).flatten() else {
+            return false;
+        };
+        if !parking.reserve_arrival(car, self.agent_handle(i), place) {
+            return false;
+        }
+        if !in_catchment {
+            crate::debug::work::add(crate::debug::work::Work::ArrivalWiderPlaces, 1);
+        }
+        self.agents.parking_trip[i] = ParkingTrip { vehicle: car, arrival_ownership: true,
+            destination: place, target: home_handle, phase: ParkingTripPhase::Drive,
+            route_capacity: plan.current_path.len(), ..Default::default() };
         self.leave_lane_buckets(i);
         self.apply_border_origin_freight_plan(i, border, home, plan, graph);
         self.join_lane_buckets(i);
@@ -249,6 +365,8 @@ impl AgentSystem {
             destination: trip.destination,
             target: trip.target,
             phase: ParkingTripPhase::WalkToDoor,
+            // From a drop-off's stop (`PARK-34`), whose kerb stop the flag names.
+            drop_off: trip.drop_off,
             ..Default::default()
         };
         i
