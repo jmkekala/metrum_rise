@@ -88,14 +88,19 @@ func _parked_renderer(sim: SimulationNode, full: Dictionary, filled: int) -> voi
 	# The headless renderer keeps no buffer to read back: the counts here, the rows bit for bit in
 	# the layer's recorder tests and the stream benchmark's digests. Each look draws in its four
 	# tier buckets (`RENDER-65`).
+	# The near tiers draw a chunk's cars by cell (`RENDER-69`): a tier's batches sum to the look's.
 	var drawn := 0
-	var rows: Array[Dictionary] = parked.drawn_rows()
-	for item: Dictionary in rows:
-		var key := "%s|%d" % [item.chunk, int(item.bucket) / VehicleResources.TIERS]
-		_expect((expected.get(key, PackedFloat32Array()) as PackedFloat32Array).size() == int(item.count) * 16,
-			"parked bucket %s draws its every car" % key)
+	var per_tier := {}
+	for item: Dictionary in parked.drawn_rows():
+		var key := "%s|%d|%d" % [item.chunk, int(item.bucket) / VehicleResources.TIERS,
+			int(item.bucket) % VehicleResources.TIERS]
+		per_tier[key] = int(per_tier.get(key, 0)) + int(item.count)
 		drawn += int(item.count)
-	_expect(rows.size() == expected.size() * VehicleResources.TIERS, "every parked look drawn once a tier")
+	for key: String in expected:
+		for tier in VehicleResources.TIERS:
+			_expect((expected[key] as PackedFloat32Array).size() == int(per_tier.get("%s|%d" % [key, tier], 0)) * 16,
+				"parked look %s draws its every car in tier %d" % [key, tier])
+	_expect(per_tier.size() == expected.size() * VehicleResources.TIERS, "every parked look drawn in each tier")
 	_expect(drawn == filled * VehicleResources.TIERS, "every parked car drawn once a tier: %d of %d" % [drawn, filled])
 	_expect(parked.get_child_count() == 0, "no node per parked chunk")
 	_parked_draw_distance(parked, stream)
@@ -125,6 +130,15 @@ func _parked_draw_distance(parked: Node3D, stream: Node) -> void:
 		_expect(body.shader == reference.shader, "parked bucket %d shares the moving cars' shader" % bucket)
 		_expect(body.get_shader_parameter("draw_fade_m") == band,
 			"parked bucket %d fades over the cars' band %s" % [bucket, band])
+		# Each tier keeps the cars of its own band (`RENDER-69`); the bands tile every distance.
+		var reach := 0.0
+		for tier in (parked._meshes[look] as Array).size():
+			var material := (parked._meshes[look][tier] as Mesh).surface_get_material(0) as ShaderMaterial
+			var tier_band: Vector2 = material.get_shader_parameter("tier_band_m")
+			_expect(tier_band.x == reach and tier_band.y > tier_band.x,
+				"parked look %d tier %d keeps the cars from %f m: %s" % [look, tier, reach, tier_band])
+			reach = tier_band.y
+		_expect(reach >= 1.0e30, "the last tier keeps every farther car")
 	var census: Dictionary = stream.get_draw_census("parked")
 	var ranges: PackedVector2Array = census.get("range", PackedVector2Array())
 	_expect(ranges.size() == (census.get("count", PackedInt32Array()) as PackedInt32Array).size(), "a range per slot")

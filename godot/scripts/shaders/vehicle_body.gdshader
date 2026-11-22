@@ -27,6 +27,11 @@ uniform float lamp_energy = 4.0;
 uniform vec2 lamps_on_elevation_deg = vec2(4.0, -2.0);
 // The cars' draw distance fade band from the camera, metres (`RENDER-28`, `RENDER-48`).
 uniform vec2 draw_fade_m = vec2(1.0e9, 2.0e9);
+// A parked tier's band of each car's own distance from the main camera, metres, `[x, y)`
+// (`RENDER-69`): the parked layer draws a chunk's cars in all four tiers' batches, and each tier
+// keeps only the cars in its band, so exactly one tier draws a car. The moving cars, already
+// bucketed by tier, keep the default, every distance.
+uniform vec2 tier_band_m = vec2(0.0, 1.0e30);
 uniform float specular = 0.5;
 
 // The ids, decoded once a vertex: a triangle's corners are identical, so flat is exact.
@@ -97,8 +102,11 @@ void vertex() {
 	int surface = int(ids.g);
 	lamp_gain = surface >= 1 && surface <= 15 ? lamp_share(surface, lamps, night, blink) : 0.0;
 	draw_fade = agent_draw_fade(MODEL_MATRIX, MAIN_CAM_INV_VIEW_MATRIX, draw_fade_m);
-	// Faded out: every triangle collapses to the origin and rasterizes nothing.
-	if (draw_fade <= 0.0) {
+	// The fade's distance, so the shadow passes keep the tier the main view draws.
+	float eye = distance(MODEL_MATRIX[3].xyz, MAIN_CAM_INV_VIEW_MATRIX[3].xyz);
+	// Faded out, or another tier's car: every triangle collapses to the origin and rasterizes
+	// nothing.
+	if (draw_fade <= 0.0 || eye < tier_band_m.x || eye >= tier_band_m.y) {
 		VERTEX = vec3(0.0);
 	}
 }

@@ -110,7 +110,7 @@ fn draw(frame: &mut AgentFrame, snapshot: &RenderSnapshot, core: &SimCore) -> (u
 }
 
 // Installs the bundled vehicles pack's catalogue on `core`, as the game's pack load does.
-fn install_bundled_catalogue(core: &mut SimCore) {
+pub(super) fn install_bundled_catalogue(core: &mut SimCore) {
     let mods = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../godot/bootstrap/mods");
     let mut registry = AssetRegistry::new();
     for pack in scan_pack_dir(&mods).packs {

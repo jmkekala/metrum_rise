@@ -822,15 +822,16 @@ func _record_road_digest() -> void:
 		"sample": (_report.samples.back() as Dictionary).get("label", "") if not _report.samples.is_empty() else "",
 		"chunks": lines.size(), "digest": _sha("\n".join(lines).to_utf8_buffer())})
 
-# The parked cars drawn at a settle point (`RENDER-32-P`): per chunk and vehicle bucket its rows,
-# from the stream backend's slots (`drawn_rows`) or the control's chunk nodes.
+# The parked cars drawn at a settle point (`RENDER-32-P`): per chunk, vehicle bucket and cell
+# (`RENDER-69`) its rows, from the stream backend's slots (`drawn_rows`) or the control's chunk
+# nodes.
 func _record_parked_digest() -> void:
 	if _parked == null:
 		return
 	var lines := PackedStringArray()
 	if _parked.has_method("drawn_rows"):
 		for batch: Dictionary in _parked.drawn_rows():
-			lines.append("%d,%d|%d|%s" % [batch.chunk.x, batch.chunk.y, batch.bucket,
+			lines.append("%d,%d|%d|%d|%s" % [batch.chunk.x, batch.chunk.y, batch.bucket, batch.cell,
 				_sha((batch.rows as PackedFloat32Array).to_byte_array())])
 	else:
 		var chunks: Dictionary = _parked.get("_chunks")

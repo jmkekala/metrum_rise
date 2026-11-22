@@ -19,6 +19,10 @@ const PALETTE_SIZE := 64
 const WHEEL_SLOTS := 8
 
 var lamps_enabled := true
+## Whether each tier draws through a material of its own that keeps only the cars whose camera
+## distance is in the tier's band (`RENDER-69`): the parked cars, whose batches hold a chunk's cars
+## in every tier.
+var tier_bands := false
 # The cars' draw distance fade band from the camera, metres (agents.gd and parked_cars.gd set it
 # from Rust, `RENDER-28`, `RENDER-48`); zero draws at every distance.
 var draw_fade_m := Vector2.ZERO
@@ -29,6 +33,7 @@ var looks: Array = []
 var _tier_arrays: Dictionary = {}
 var _textures: Dictionary = {}
 var _materials: Dictionary = {}
+var _tier_materials: Dictionary = {}
 var _lamp_materials: Dictionary = {}
 
 
@@ -42,6 +47,7 @@ func refresh(simulation_node: Object, wanted := -1) -> bool:
 	looks = catalogue["looks"]
 	_tier_arrays.clear()
 	_materials.clear()
+	_tier_materials.clear()
 	_lamp_materials.clear()
 	return true
 
@@ -57,7 +63,7 @@ func mesh_for_bucket(bucket: int) -> ArrayMesh:
 		return _build_car_mesh()
 	var mesh := ArrayMesh.new()
 	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
-	mesh.surface_set_material(0, _material(look_index))
+	mesh.surface_set_material(0, _tier_material(bucket) if tier_bands else _material(look_index))
 	if lamps_enabled:
 		VehicleLamps.add_surfaces(mesh, "model%d" % look["model"], look["head_lamp"], look["tail_lamp"],
 			_lamp_materials, draw_fade_m)
@@ -212,6 +218,20 @@ func _material(look_index: int) -> ShaderMaterial:
 	if draw_fade_m != Vector2.ZERO:
 		material.set_shader_parameter("draw_fade_m", draw_fade_m)
 	_materials[look_index] = material
+	return material
+
+
+# Bucket `bucket`'s tier material: the look's, keeping the cars in the tier's band of the
+# catalogue's tier starts, `[start, next start)`, the last one unbounded.
+func _tier_material(bucket: int) -> ShaderMaterial:
+	if _tier_materials.has(bucket):
+		return _tier_materials[bucket]
+	var starts: PackedFloat32Array = looks[bucket / TIERS]["tier_starts_m"]
+	var tier := bucket % TIERS
+	var material := _material(bucket / TIERS).duplicate() as ShaderMaterial
+	material.set_shader_parameter("tier_band_m",
+		Vector2(starts[tier], starts[tier + 1] if tier + 1 < starts.size() else 1.0e30))
+	_tier_materials[bucket] = material
 	return material
 
 

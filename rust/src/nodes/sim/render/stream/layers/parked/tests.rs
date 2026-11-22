@@ -2,8 +2,9 @@
 
 //! The parked layer against the recorder: a chunk drawn as its bucket nodes drew it, a chunk
 //! updated whole, a full pool refusing a chunk without sending anything, the teardown that
-//! frees every object the layer made, and the cars' draw distance (`RENDER-48`) as the engine
-//! applies a bucket's visibility range.
+//! frees every object the layer made, the cars' draw distance (`RENDER-48`) as the engine
+//! applies a bucket's visibility range, and each car's tier (`RENDER-69`): the batch ranges
+//! never cut a car in its tier's band, and the near tiers' cells.
 
 use super::super::super::backend::Scenario;
 use super::super::super::backend::recorder::{RecordedInstance, Recorder};
@@ -25,8 +26,8 @@ const CAR: Aabb = Aabb {
 
 fn layer() -> ParkedLayer {
     let mut layer = ParkedLayer::new(64, 16, CAR_DRAW_DISTANCE_M);
-    layer.register(10, 1, CAR, [0.0, f32::INFINITY]);
-    layer.register(21, 2, CAR, [0.0, f32::INFINITY]);
+    layer.register(10, 1, CAR, [0.0, f32::INFINITY], 1);
+    layer.register(21, 2, CAR, [0.0, f32::INFINITY], 1);
     layer
 }
 
@@ -36,7 +37,7 @@ fn drawn(backend: &Recorder) -> Vec<(u32, Vec<f32>)> {
         .visible(Scenario::Main)
         .map(|(_, instance)| {
             let multimesh = &backend.multimeshes[&instance.base];
-            let count = multimesh.visible_count.unwrap() as usize;
+            let count = multimesh.visible_count.unwrap_or(multimesh.capacity) as usize;
             (multimesh.mesh.unwrap(), multimesh.rows[..count * STRIDE].to_vec())
         })
         .collect();
@@ -89,8 +90,8 @@ fn a_chunk_update_hides_the_buckets_that_left_and_reuses_its_objects() {
 fn a_chunk_the_full_pool_cannot_take_is_refused_whole_until_room_frees() {
     let mut backend = Recorder::new();
     let mut layer = ParkedLayer::new(2, 2, CAR_DRAW_DISTANCE_M);
-    layer.register(10, 1, CAR, [0.0, f32::INFINITY]);
-    layer.register(21, 2, CAR, [0.0, f32::INFINITY]);
+    layer.register(10, 1, CAR, [0.0, f32::INFINITY], 1);
+    layer.register(21, 2, CAR, [0.0, f32::INFINITY], 1);
     let (a, b, c) = (poses(3, 0.0), poses(5, 100.0), poses(2, 7.0));
     layer.install(&mut backend, (0, 0), [(10, &a[..]), (21, &b[..])].into_iter());
     let before = (backend.commands.len(), drawn(&backend));
@@ -154,7 +155,7 @@ fn a_bucket_draws_while_any_of_its_cars_is_within_the_draw_distance() {
     let rows: Vec<f32> = (0..40)
         .flat_map(|i| {
             let (x, z) = ((i % 10) as f32 * 33.3, (i / 10) as f32 * 10.0);
-            [0.0, 0.0, 1.0, x, 0.0, 1.0, 0.0, 0.0, -1.0, 0.0, 0.0, z]
+            [0.0, 0.0, 1.0, x, 0.0, 1.0, 0.0, 0.0, -1.0, 0.0, 0.0, z, 0.0, 0.0, 0.0, 0.0]
         })
         .collect();
     let mut backend = Recorder::new();
@@ -214,7 +215,7 @@ fn the_paint_layer_draws_pose_rows_without_custom_data() {
         .collect();
     let mut backend = Recorder::new();
     let mut layer = ParkedLayer::paint();
-    layer.register(PAINT_BUCKET, 7, line, [0.0, f32::INFINITY]);
+    layer.register(PAINT_BUCKET, 7, line, [0.0, f32::INFINITY], 1);
     assert!(layer.install(&mut backend, (0, 0), std::iter::once((PAINT_BUCKET, &rows[..]))));
     let (_, paint) = backend.visible(Scenario::Main).next().expect("drawn");
     assert_eq!(paint.shadow, Shadow::Off);
@@ -230,4 +231,164 @@ fn the_paint_layer_draws_pose_rows_without_custom_data() {
         .fold(0.0f32, f32::max);
     assert!(paint.range[1] >= PAINT_DRAW_DISTANCE_M + reach - 1e-3);
     assert!(paint.range[1] <= PAINT_DRAW_DISTANCE_M + reach + 1.0, "{:?}", paint.range);
+}
+
+// The estate's tier bands (`tier_starts` of a 4.48 m body), each a mesh of its own: tier `t` is
+// bucket `t` and mesh `t + 1`.
+const BANDS: [[f32; 2]; 4] = [[0.0, 30.0], [30.0, 100.0], [100.0, 398.0], [398.0, f32::INFINITY]];
+
+fn tier_layer(limit: usize) -> ParkedLayer {
+    let mut layer = ParkedLayer::new(limit, 16, CAR_DRAW_DISTANCE_M);
+    for (tier, band) in BANDS.into_iter().enumerate() {
+        layer.register(tier as u32, tier as u32 + 1, CAR, band, tier_cells(tier as u32));
+    }
+    layer
+}
+
+// `count` cars spread over chunk (1, -1) (x 512 to 1,024, z -512 to 0) on a 7.3 m pitch, three
+// of them a few metres past the chunk's edges, as a car whose bay is in the chunk can stand.
+fn chunk_cars(count: usize) -> Vec<f32> {
+    (0..count)
+        .flat_map(|i| {
+            let (x, z) = match i {
+                0 => (510.0, -40.0),
+                1 => (700.0, 3.0),
+                2 => (1_026.0, -511.0),
+                _ => (512.0 + (i * 73 % 700) as f32 * 0.731, -512.0 + (i * 31 % 70) as f32 * 7.31),
+            };
+            [1.0, 0.0, 0.0, x, 0.0, 1.0, 0.0, 0.5, 0.0, 0.0, 1.0, z, 0.0, 0.0, i as f32, 0.0]
+        })
+        .collect()
+}
+
+// Every drawn batch: its mesh (tier + 1), its instance and its cars' origins.
+fn batches(backend: &Recorder) -> Vec<(u32, RecordedInstance, Vec<[f32; 3]>)> {
+    backend
+        .visible(Scenario::Main)
+        .map(|(_, instance)| {
+            let multimesh = &backend.multimeshes[&instance.base];
+            let count = multimesh.visible_count.unwrap_or(multimesh.capacity) as usize;
+            let origins = multimesh.rows[..count * STRIDE]
+                .as_chunks::<STRIDE>()
+                .0
+                .iter()
+                .map(|row| [row[3], row[7], row[11]])
+                .collect();
+            (multimesh.mesh.unwrap(), instance.clone(), origins)
+        })
+        .collect()
+}
+
+#[test]
+fn every_car_draws_at_the_tier_of_its_own_distance_through_its_batch() {
+    // `RENDER-69`: the material keeps a car only within its tier's band of the car's own camera
+    // distance, so exactly one tier holds each car; the engine must draw the batch holding it in
+    // that tier for every camera, in the main and the shadow passes alike.
+    let rows = chunk_cars(600);
+    let mut backend = Recorder::new();
+    let mut layer = tier_layer(4_096);
+    let named: Vec<(u32, &[f32])> = (0..4).map(|tier| (tier, &rows[..])).collect();
+    assert!(layer.install(&mut backend, (1, -1), named.iter().copied()));
+    let drawn = batches(&backend);
+    // Every car once in each tier.
+    for tier in 0..4u32 {
+        let cars: usize = drawn.iter().filter(|b| b.0 == tier + 1).map(|b| b.2.len()).sum();
+        assert_eq!(cars, 600, "tier {tier} holds every car once");
+    }
+    let mut cameras = Vec::new();
+    for (cx, cz) in [(512.0, -512.0), (768.0, -256.0), (1_030.0, 10.0), (600.0, -100.0), (300.0, 200.0)] {
+        for radius in [0.0, 3.0, 12.0, 29.0, 31.0, 55.0, 99.0, 101.0, 180.0, 397.0, 399.0, 700.0, 1_400.0, 2_600.0] {
+            for step in 0..12 {
+                let angle = step as f32 * std::f32::consts::TAU / 12.0;
+                let height = [1.6, 25.0, 150.0][step % 3];
+                cameras.push([cx + radius * angle.cos(), height, cz + radius * angle.sin()]);
+            }
+        }
+    }
+    let (mut checked, mut skipped) = (0, 0);
+    for camera in cameras {
+        for (mesh, instance, origins) in &drawn {
+            let band = BANDS[*mesh as usize - 1];
+            let admitted = engine_draws(&backend, instance, camera);
+            skipped += usize::from(!admitted);
+            for &origin in origins {
+                let distance = length3(sub3(camera, origin));
+                if distance >= band[0] && distance < band[1] && distance < CAR_DRAW_DISTANCE_M {
+                    assert!(admitted, "a car {distance} m away is cut from tier {} at {camera:?}", mesh - 1);
+                    checked += 1;
+                }
+            }
+        }
+        // Exactly one tier's band holds any distance.
+        let distance = length3(sub3(camera, [700.0, 0.5, -300.0]));
+        assert_eq!(BANDS.iter().filter(|b| distance >= b[0] && distance < b[1]).count(), 1);
+    }
+    assert!(checked > 10_000, "{checked} cars checked in their band");
+    assert!(skipped > 0, "the ranges still skip batches none of whose cars can be in the band");
+}
+
+#[test]
+fn the_near_tiers_split_a_chunk_by_cell_and_the_far_tiers_keep_one_batch() {
+    let rows = chunk_cars(600);
+    let mut backend = Recorder::new();
+    let mut layer = tier_layer(4_096);
+    let named: Vec<(u32, &[f32])> = (0..4).map(|tier| (tier, &rows[..])).collect();
+    assert!(layer.install(&mut backend, (1, -1), named.iter().copied()));
+    let drawn = batches(&backend);
+    let size = 512.0 / f32::from(NEAR_CELLS);
+    let cell = |o: [f32; 3]| ((o[0] / size).floor() as i64, (o[2] / size).floor() as i64);
+    for tier in 0..4u32 {
+        let tier_batches: Vec<_> = drawn.iter().filter(|b| b.0 == tier + 1).collect();
+        if tier >= NEAR_TIERS {
+            assert_eq!(tier_batches.len(), 1, "far tier {tier}: one batch a chunk");
+            continue;
+        }
+        let cells = usize::from(NEAR_CELLS * NEAR_CELLS);
+        assert!(tier_batches.len() > cells / 2, "near tier {tier}: {} cells", tier_batches.len());
+        for (_, instance, origins) in tier_batches {
+            // One cell of the world's grid a batch (modulo the chunk: the cars past its edges
+            // join the cell on the far side), and its range no wider than the band plus a reach
+            // of that.
+            let (cx, cz) = cell(origins[0]);
+            let side = i64::from(NEAR_CELLS);
+            assert!(origins.iter().all(|&o| {
+                let (x, z) = cell(o);
+                (x - cx).rem_euclid(side) == 0 && (z - cz).rem_euclid(side) == 0
+            }));
+            let local = origins.iter().all(|&o| cell(o) == (cx, cz));
+            if local {
+                assert!(instance.range[1] <= BANDS[tier as usize][1] + size * 1.5 + 2.0, "{:?}", instance.range);
+            }
+        }
+    }
+    // The cars keep the chunk's order within a cell: a second install of the same rows sends
+    // the same rows to the same slots.
+    let before: Vec<_> = batches(&backend).into_iter().map(|b| (b.0, b.2)).collect();
+    assert!(layer.install(&mut backend, (1, -1), named.iter().copied()));
+    let after: Vec<_> = batches(&backend).into_iter().map(|b| (b.0, b.2)).collect();
+    assert_eq!(before, after);
+}
+
+#[test]
+fn a_split_chunk_installs_whole_or_not_at_all() {
+    let rows = chunk_cars(600);
+    let mut backend = Recorder::new();
+    let mut probe = tier_layer(4_096);
+    let named: Vec<(u32, &[f32])> = (0..4).map(|tier| (tier, &rows[..])).collect();
+    assert!(probe.install(&mut backend, (1, -1), named.iter().copied()));
+    let needed = probe.pool().live();
+    // One slot short: nothing sent, the chunk refused; with the room it installs.
+    let mut backend = Recorder::new();
+    let mut layer = tier_layer(needed - 1);
+    assert!(!layer.install(&mut backend, (1, -1), named.iter().copied()));
+    assert!(backend.commands.is_empty() && layer.drawn().count() == 0, "nothing of it sent");
+    let mut layer = tier_layer(needed);
+    assert!(layer.install(&mut backend, (1, -1), named.iter().copied()));
+    assert_eq!(layer.drawn().count(), needed);
+    // The cars move into fewer cells: the chunk's batches that left free their slots.
+    let few = chunk_cars(3);
+    let named: Vec<(u32, &[f32])> = (0..4).map(|tier| (tier, &few[..])).collect();
+    assert!(layer.install(&mut backend, (1, -1), named.iter().copied()));
+    assert_eq!(layer.drawn().count(), 2 * 3 + 2, "three cells for each near tier, a batch for each far one");
+    assert_eq!(backend.visible(Scenario::Main).count(), 8);
 }

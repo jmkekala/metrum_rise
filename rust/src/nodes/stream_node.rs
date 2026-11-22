@@ -39,7 +39,7 @@ use crate::nodes::sim::render::stream::layers::agent_casters::{
 };
 use crate::nodes::sim::render::stream::layers::graded::book::GradedTileBook;
 use crate::nodes::sim::render::stream::layers::parked::{
-    PAINT_BUCKET, ParkedLayer,
+    PAINT_BUCKET, ParkedLayer, tier_cells,
 };
 use crate::nodes::sim::render::stream::layers::roads::{
     ROAD_HYDRATION_BUDGET_US, RoadExecutor, RoadHydration, RoadInstall, RoadKey, RoadPart,
@@ -1041,9 +1041,10 @@ impl StreamNode {
 
     /// Registers parked bucket `bucket`'s mesh (a look's tier, `look * 4 + tier`, `RENDER-65`),
     /// its bounds (`Mesh.get_aabb`; built by `parked_cars.gd` as the look is first met) and the
-    /// band of camera distance its tier draws in, `range_end` 0 for no end. The bounds give each
-    /// drawn bucket the bounds its draw distance is measured from (`RENDER-48`). A bucket
-    /// registered again keeps its first mesh.
+    /// band of each car's camera distance its tier draws in (its material's `tier_band_m`),
+    /// `range_end` 0 for no end. The bounds give each drawn batch the bounds its range is
+    /// measured from (`RENDER-48`, `RENDER-69`); the near tiers split a chunk by cell
+    /// (`tier_cells`). A bucket registered again keeps its first mesh.
     #[func]
     pub fn register_parked_mesh(
         &mut self,
@@ -1059,7 +1060,8 @@ impl StreamNode {
             let index = draw.backend.push_mesh(mesh);
             let bounds = Aabb::new(bounds.position.to_array(), bounds.size.to_array());
             let end = if range_end > 0.0 { range_end } else { f32::INFINITY };
-            draw.layer.register(bucket as u32, index, bounds, [range_begin, end]);
+            let tier = bucket as u32 % crate::nodes::sim::render::vehicle_catalogue::TIERS as u32;
+            draw.layer.register(bucket as u32, index, bounds, [range_begin, end], tier_cells(tier));
         }
     }
 
@@ -1166,7 +1168,7 @@ impl StreamNode {
         {
             let index = draw.backend.push_mesh(mesh);
             let bounds = Aabb::new(bounds.position.to_array(), bounds.size.to_array());
-            draw.layer.register(PAINT_BUCKET, index, bounds, [0.0, f32::INFINITY]);
+            draw.layer.register(PAINT_BUCKET, index, bounds, [0.0, f32::INFINITY], 1);
         }
     }
 
@@ -1210,19 +1212,21 @@ impl StreamNode {
         complete
     }
 
-    /// The drawn parked buckets (tests and the stream benchmark's digests): `chunk`, `bucket`,
-    /// `count` (the poses drawn) and `multimesh` (its RID; its first `count` instances are the
-    /// bucket's poses). `O(buckets)`.
+    /// The drawn parked batches (tests and the stream benchmark's digests): `chunk`, `bucket`,
+    /// `cell` (a near tier's cell of the chunk, row-major; -1 for a bucket drawn whole,
+    /// `RENDER-69`), `count` (the poses drawn) and `multimesh` (its RID; its first `count`
+    /// instances are the batch's poses). `O(batches)`.
     #[func]
     pub fn get_parked_drawn(&self) -> VarArray {
         let mut out = VarArray::new();
         let Some(draw) = self.parked.as_ref() else {
             return out;
         };
-        for (chunk, bucket, slot) in draw.layer.drawn() {
+        for (chunk, bucket, cell, slot) in draw.layer.drawn() {
             let mut item = VarDictionary::new();
             item.set("chunk", Vector2i::new(chunk.0, chunk.1));
             item.set("bucket", i64::from(bucket));
+            item.set("cell", if cell == u16::MAX { -1 } else { i64::from(cell) });
             let slot = draw.layer.pool().slot(slot);
             item.set("multimesh", Rid::new(slot.multimesh));
             item.set("count", i64::from(slot.visible_count().unwrap_or(0)));

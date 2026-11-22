@@ -3,8 +3,9 @@
 ## Versioned parked chunks. Rust owns supply, custody, pose and persisted palette, and draws the
 ## chunks through the streaming core's pooled slots (`StreamNode`, `RENDER-32-P`): this script
 ## builds each vehicle look's four tier meshes once, each registered with its tier's band of
-## camera distance (`RENDER-65`), and hands every changed chunk's rows (pose, then custom data
-## carrying the paint) over; it creates no node per chunk. Payloads arrive with the moving cars of the same snapshot (agents.gd); one
+## camera distance (`RENDER-65`) and drawn through a material that keeps only the cars whose own
+## distance is in that band (`RENDER-69`), and hands every changed chunk's rows (pose, then custom
+## data carrying the paint) over; it creates no node per chunk. Payloads arrive with the moving cars of the same snapshot (agents.gd); one
 ## acknowledgement answers each, once every chunk of it is drawn (a chunk the pool refused is
 ## offered again). Unchanged chunks perform no upload. Parked resources omit all lamps and lights.
 ## The cars draw to the moving cars' distance and fade out over the same band (`RENDER-48`):
@@ -31,6 +32,7 @@ var _paint_revision := 0
 
 func _ready() -> void:
 	_resources.lamps_enabled = false
+	_resources.tier_bands = true
 	var draw: PackedFloat32Array = SimulationNode.get_agent_draw_distances()
 	_resources.draw_fade_m = Vector2(draw[2], draw[3])
 	if _stream != null:
@@ -103,8 +105,9 @@ func apply_publication(payload: Dictionary) -> void:
 	if complete:
 		simulation_node.acknowledge_parked_cars(epoch, payload["serial"])
 
-# A look's tiers, each drawn while the camera is within its band of the batch's centre; with no
-# catalogue look (the procedural fallback) one mesh at every distance.
+# A look's tiers, each car drawn in the tier whose band holds its own camera distance (Rust widens
+# each batch's range to cover its cars); with no catalogue look (the procedural fallback) one mesh
+# at every distance.
 func _register_look(look: int) -> void:
 	var meshes: Array[Mesh] = []
 	var starts := PackedFloat32Array([0.0])
@@ -118,8 +121,9 @@ func _register_look(look: int) -> void:
 		_stream.register_parked_mesh(key, mesh.get_rid(), mesh.get_aabb(), starts[tier], end)
 	_meshes[look] = meshes
 
-## The drawn buckets (the stream benchmark's digests): `chunk`, `bucket`, `count` and `rows`, the
-## poses read back from the engine (a headless renderer keeps no buffer: then empty).
+## The drawn batches (the stream benchmark's digests): `chunk`, `bucket`, `cell` (a near tier's
+## cell of the chunk, -1 for a whole chunk), `count` and `rows`, the poses read back from the
+## engine (a headless renderer keeps no buffer: then empty).
 func drawn_rows() -> Array[Dictionary]:
 	var out: Array[Dictionary] = []
 	if _stream == null:
@@ -127,5 +131,5 @@ func drawn_rows() -> Array[Dictionary]:
 	for item: Dictionary in _stream.get_parked_drawn():
 		var count: int = item.count
 		var rows := RenderingServer.multimesh_get_buffer(item.multimesh).slice(0, count * 16)
-		out.append({"chunk": item.chunk, "bucket": item.bucket, "count": count, "rows": rows})
+		out.append({"chunk": item.chunk, "bucket": item.bucket, "cell": item.cell, "count": count, "rows": rows})
 	return out

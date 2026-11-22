@@ -16,11 +16,18 @@
 //! centre is known exactly. Nothing runs a frame for it: the engine checks the range of a batch
 //! only as it culls, `O(buckets in view)`, and no slot is shown or hidden for it.
 //!
-//! Tiers (`RENDER-65`): a vehicle look's four tier meshes are registered as four buckets, each
-//! with its band of camera distance, and a chunk's cars of that look are written to each of them.
-//! The engine draws the tier whose band holds the camera's distance from the batch's centre, so
-//! the tier switches per chunk and bucket, by the same range test as the draw distance, with no
-//! work a frame; the cost is the rows uploaded four times when a chunk changes.
+//! Tiers (`RENDER-65`, `RENDER-69`): a vehicle look's four tier meshes are registered as four
+//! buckets, each with its band of camera distance, and a chunk's cars of that look are written to
+//! each of them. Each tier's material draws a car only while that car's own distance from the main
+//! camera is in the tier's band, half-open (`vehicle_body.gdshader`, the fade's distance): a car
+//! outside it collapses in the vertex stage and rasterizes nothing in any pass, so exactly one tier
+//! draws each car, at the tier the moving cars' rule gives it. The batch's range only skips
+//! batches none of whose cars can be in the band: it is the band widened by the batch's reach, the
+//! farthest a car origin stands from the batch's centre, on both sides. The two near tiers split a
+//! chunk's cars by a fixed cell of the chunk ([`NEAR_CELLS`] a side), so their detailed meshes are
+//! shaded only for the cars of the few cells round the camera; the far tiers keep one batch a
+//! chunk. Nothing runs a frame for it; the cost is the rows uploaded four times when a chunk
+//! changes, the near tiers' through a counting sort by cell.
 //!
 //! A chunk installs whole or not at all: its buckets that left are hidden and its new ones drawn
 //! in the same call, and a chunk the pool cannot take (every slot of the limit live) sends
@@ -39,6 +46,7 @@ use super::super::backend::{
 };
 use crate::config::CAR_DRAW_DISTANCE_M;
 use crate::nodes::sim::render::vegetation_product::godot_math::{Aabb, length3, max3, min3, sub3};
+use crate::simulation::network::graph::RegionGraph;
 use std::collections::HashMap;
 
 type Map<K, V> = HashMap<K, V, foldhash::fast::FixedState>;
@@ -59,6 +67,12 @@ pub(crate) const PAINT_BUCKET: u32 = 0;
 /// How far the bay paint draws, metres: a 0.10 m line is about a quarter pixel there at a
 /// 1080-line, 60 degree view, so its batch is dropped unseen.
 pub(crate) const PAINT_DRAW_DISTANCE_M: f32 = 400.0;
+/// Cells a side the near tiers split a parking chunk into (`RENDER-69`): 4, 128 m cells. Measured
+/// on the 30k city (`docs/vehicles.md`): 64 m cells shade 0.05 ms less on the GPU but take 3.3
+/// times the slots (5,860 of the pool's 8,192) and more render CPU.
+pub(crate) const NEAR_CELLS: u16 = 4;
+/// The tiers split by [`NEAR_CELLS`]: the two detailed ones.
+pub(crate) const NEAR_TIERS: u32 = 2;
 // `SceneLightingConfig.DYNAMIC_CASTER_EXTRA_CULL_MARGIN_M`, the cars' shadow policy.
 const EXTRA_MARGIN_M: f32 = 12.0;
 // A 3D transform's floats: a row longer than this carries instance custom data.
@@ -68,15 +82,45 @@ const STRIDE: usize = crate::nodes::sim::render::car_visual::ROW;
 // A paint line's row: its pose alone (`PARK-30`).
 const PAINT_STRIDE: usize = crate::simulation::parking::paint::STRIDE;
 const _: () = assert!(PAINT_STRIDE == POSE && STRIDE > POSE);
+// A batch of a chunk: its bucket and its cell, row-major across the chunk (`WHOLE` for a
+// bucket drawn as one batch a chunk).
+type Batch = (u32, u16);
+const WHOLE: u16 = u16::MAX;
+
+/// The cells a side a parked car tier's bucket splits a chunk into (`RENDER-69`): the near
+/// tiers [`NEAR_CELLS`], the far ones 1 (one batch a chunk).
+pub(crate) fn tier_cells(tier: u32) -> u16 {
+    if tier < NEAR_TIERS { NEAR_CELLS } else { 1 }
+}
+
+// A registered bucket.
+#[derive(Clone, Copy)]
+struct Bucket {
+    // The catalogue mesh and its bounds.
+    mesh: u32,
+    bounds: Aabb,
+    // The tier's band of each car's camera distance, `[begin, end)`.
+    band: [f32; 2],
+    // Cells a side it splits a chunk into; 1 draws the chunk as one batch.
+    cells: u16,
+}
+
+// One batch of the chunk being installed: its key, its cars, and its rows: the named bucket's
+// own (`None`) or a float range of the split rows.
+#[derive(Clone, Copy)]
+struct Part {
+    batch: Batch,
+    count: u32,
+    split: Option<(usize, usize)>,
+}
 
 /// The parked chunks' slots.
 pub(crate) struct ParkedLayer {
     pool: SlotPool,
-    // Each bucket's catalogue mesh, the mesh's bounds and its tier's band of camera distance.
-    meshes: Map<u32, (u32, Aabb, [f32; 2])>,
-    drawn: Map<(ChunkKey, u32), SlotId>,
-    // Each drawn chunk's buckets, so a chunk's update finds the buckets that left.
-    buckets: Map<ChunkKey, Vec<u32>>,
+    buckets: Map<u32, Bucket>,
+    drawn: Map<(ChunkKey, Batch), SlotId>,
+    // Each drawn chunk's batches, so a chunk's update finds the batches that left.
+    batches: Map<ChunkKey, Vec<Batch>>,
     // Whether the cars cast the sun's shadow (the shadow benchmark's caster classes,
     // `RENDER-15`); the game never clears it. The paint layer never casts.
     cast_shadows: bool,
@@ -85,6 +129,11 @@ pub(crate) struct ParkedLayer {
     // Floats a row: a car's pose and custom data (`STRIDE`), a paint line's pose
     // (`PAINT_STRIDE`). The slots carry custom data when the rows do.
     stride: usize,
+    // The install's scratch, kept for its capacity: its batches sorted by key, the split
+    // buckets' rows grouped by cell, and the counting sort's cell starts.
+    parts: Vec<Part>,
+    split_rows: Vec<f32>,
+    cell_starts: Vec<usize>,
 }
 
 impl ParkedLayer {
@@ -93,12 +142,15 @@ impl ParkedLayer {
     pub(crate) fn new(limit: usize, spare_limit: usize, draw_distance: f32) -> Self {
         Self {
             pool: SlotPool::new(limit, spare_limit),
-            meshes: Map::default(),
-            drawn: Map::default(),
             buckets: Map::default(),
+            drawn: Map::default(),
+            batches: Map::default(),
             cast_shadows: true,
             draw_distance,
             stride: STRIDE,
+            parts: Vec::new(),
+            split_rows: Vec::new(),
+            cell_starts: Vec::new(),
         }
     }
 
@@ -136,109 +188,153 @@ impl ParkedLayer {
     }
 
     /// Registers a vehicle bucket's mesh (a catalogue index), the mesh's bounds (`Mesh.get_aabb`,
-    /// what the engine bounds a `MultiMesh` of it with) and the band of camera distance from the
-    /// batch's centre its tier draws in (`[0, inf]` for every distance).
-    pub(crate) fn register(&mut self, bucket: u32, mesh: u32, bounds: Aabb, band: [f32; 2]) {
-        self.meshes.insert(bucket, (mesh, bounds, band));
+    /// what the engine bounds a `MultiMesh` of it with), the band `[begin, end)` of each car's
+    /// camera distance its tier draws in (`[0, inf]` for every distance; the material draws
+    /// only the cars in it) and the cells a side it splits a chunk into ([`tier_cells`]; 1 for
+    /// one batch a chunk).
+    pub(crate) fn register(&mut self, bucket: u32, mesh: u32, bounds: Aabb, band: [f32; 2], cells: u16) {
+        let cells = cells.max(1);
+        self.buckets.insert(bucket, Bucket { mesh, bounds, band, cells });
     }
 
     /// Frees every slot and forgets every mesh: the buckets now name other meshes (a rebuilt
     /// vehicle catalogue, `RENDER-65`). `O(slots)`.
     pub(crate) fn forget_meshes(&mut self, backend: &mut impl RenderBackend) {
         self.reset(backend);
-        self.meshes.clear();
+        self.buckets.clear();
     }
 
     /// Whether a bucket has its mesh.
     pub(crate) fn has_mesh(&self, bucket: u32) -> bool {
-        self.meshes.contains_key(&bucket)
+        self.buckets.contains_key(&bucket)
     }
 
     /// Frees every slot (a world replaced, the renderer's end); the meshes stay registered.
     pub(crate) fn reset(&mut self, backend: &mut impl RenderBackend) {
         self.pool.clear(backend);
         self.drawn.clear();
-        self.buckets.clear();
+        self.batches.clear();
     }
 
     /// Installs chunk `chunk` as `buckets` (bucket and its rows, the layer's stride each; every
     /// bucket with poses registered), whole: returns false and sends nothing when the pool cannot
-    /// give the slots it needs. The chunk's buckets not named, or named without poses, are hidden.
+    /// give the slots it needs. A bucket split by cell draws a batch for each cell with cars. The
+    /// chunk's batches not named, or named without poses, are hidden. `O(B log B + poses)` for
+    /// the chunk's `B` batches.
     pub(crate) fn install<'a>(
         &mut self,
         backend: &mut impl RenderBackend,
         chunk: ChunkKey,
         buckets: impl Iterator<Item = (u32, &'a [f32])> + Clone,
     ) -> bool {
-        if !self.fits(chunk, buckets.clone()) {
+        self.split(buckets.clone());
+        if !self.fits(chunk) {
             return false;
         }
         // The chunk's slots that leave or no longer fit go first.
-        let mut kept = self.buckets.remove(&chunk).unwrap_or_default();
-        kept.retain(|&bucket| {
-            let rows = buckets
-                .clone()
-                .find(|&(named, _)| named == bucket)
-                .map_or(&[][..], |(_, rows)| rows);
-            let slot = self.drawn[&(chunk, bucket)];
-            if !rows.is_empty() && self.keeps(slot, bucket, rows.len()) {
+        let mut kept = self.batches.remove(&chunk).unwrap_or_default();
+        kept.retain(|&batch| {
+            let slot = self.drawn[&(chunk, batch)];
+            if self.part(batch).is_some_and(|part| self.keeps(slot, batch.0, part.count)) {
                 return true;
             }
-            self.drawn.remove(&(chunk, bucket));
+            self.drawn.remove(&(chunk, batch));
             self.pool.release(backend, slot);
             false
         });
+        // Taken out for the loop, which draws through `self`; put back for their capacity.
+        let (parts, split_rows) = (std::mem::take(&mut self.parts), std::mem::take(&mut self.split_rows));
         for (bucket, rows) in buckets {
-            if rows.is_empty() {
-                continue;
+            let from = parts.partition_point(|part| part.batch.0 < bucket);
+            for part in parts[from..].iter().take_while(|part| part.batch.0 == bucket) {
+                let rows = part.split.map_or(rows, |(start, end)| &split_rows[start..end]);
+                self.draw_batch(backend, chunk, part, rows, &mut kept);
             }
-            let count = (rows.len() / self.stride) as u32;
-            let (mesh, mesh_bounds, band) = self.meshes[&bucket];
-            let slot = match self.drawn.get(&(chunk, bucket)) {
-                Some(&slot) => slot,
-                None => {
-                    let kind = SlotKind {
-                        mesh,
-                        class: capacity_class(count).0,
-                        colors: false,
-                        custom: self.stride > POSE,
-                        parameter: None,
-                    };
-                    let slot = self
-                        .pool
-                        .acquire(backend, kind)
-                        .expect("the chunk was checked to fit the pool");
-                    self.drawn.insert((chunk, bucket), slot);
-                    kept.push(bucket);
-                    slot
-                }
-            };
-            let (bounds, range_end) =
-                drawn_bounds(&mesh_bounds, rows, self.stride, self.draw_distance);
-            self.pool.fill(backend, slot, rows, count, bounds);
-            self.draw(backend, slot, [band[0], band[1].min(range_end)]);
         }
+        (self.parts, self.split_rows) = (parts, split_rows);
         if !kept.is_empty() {
-            self.buckets.insert(chunk, kept);
+            self.batches.insert(chunk, kept);
         }
         true
     }
 
-    // Whether the pool can give the slots the chunk's install needs once its own releases are
-    // counted. `O(buckets of the chunk²)`, a few dozen at most.
-    fn fits<'a>(
-        &self,
-        chunk: ChunkKey,
-        buckets: impl Iterator<Item = (u32, &'a [f32])> + Clone,
-    ) -> bool {
-        let mut room = self.pool.available();
-        let mut needed = 0usize;
-        for (bucket, rows) in buckets.clone() {
+    // Lists the install's batches in `parts`, sorted by key: a bucket drawn whole as itself, a
+    // split one as its cells with cars, their rows copied to `split_rows` by cell.
+    // `O(poses + cells + B log B)`.
+    fn split<'a>(&mut self, buckets: impl Iterator<Item = (u32, &'a [f32])>) {
+        self.parts.clear();
+        self.split_rows.clear();
+        for (bucket, rows) in buckets {
             if rows.is_empty() {
                 continue;
             }
-            match self.drawn.get(&(chunk, bucket)) {
-                Some(&slot) if self.keeps(slot, bucket, rows.len()) => {}
+            let cells = self.buckets[&bucket].cells;
+            if cells == 1 {
+                let count = (rows.len() / self.stride) as u32;
+                self.parts.push(Part { batch: (bucket, WHOLE), count, split: None });
+            } else {
+                self.split_bucket(bucket, rows, cells);
+            }
+        }
+        self.parts.sort_unstable_by_key(|part| part.batch);
+    }
+
+    // A counting sort of `rows` by the cell of each car's origin, stable, so a cell's cars keep
+    // the chunk's order. The cell is taken on the world's grid of `CHUNK_SIZE / cells`, which
+    // the chunks share: a car whose origin stands just past its chunk's edge falls in a cell on
+    // the far side, which costs only that batch's reach (its range covers every car it holds).
+    fn split_bucket(&mut self, bucket: u32, rows: &[f32], cells: u16) {
+        let stride = self.stride;
+        let side = usize::from(cells);
+        let size = RegionGraph::CHUNK_SIZE / f32::from(cells);
+        let cell = |row: &[f32]| {
+            let at = |metres: f32| ((metres / size).floor() as i64).rem_euclid(side as i64) as usize;
+            at(row[11]) * side + at(row[3])
+        };
+        let starts = &mut self.cell_starts;
+        starts.clear();
+        starts.resize(side * side + 1, 0);
+        for row in rows.chunks_exact(stride) {
+            starts[cell(row) + 1] += 1;
+        }
+        for at in 0..side * side {
+            starts[at + 1] += starts[at];
+        }
+        let base = self.split_rows.len();
+        for (at, ends) in starts.windows(2).enumerate() {
+            if ends[1] > ends[0] {
+                self.parts.push(Part {
+                    batch: (bucket, at as u16),
+                    count: (ends[1] - ends[0]) as u32,
+                    split: Some((base + ends[0] * stride, base + ends[1] * stride)),
+                });
+            }
+        }
+        self.split_rows.resize(base + rows.len(), 0.0);
+        for row in rows.chunks_exact(stride) {
+            let at = cell(row);
+            let to = base + starts[at] * stride;
+            self.split_rows[to..to + stride].copy_from_slice(row);
+            starts[at] += 1;
+        }
+    }
+
+    // The install's batch `batch`, if it has cars. `O(log B)`.
+    fn part(&self, batch: Batch) -> Option<&Part> {
+        self.parts
+            .binary_search_by_key(&batch, |part| part.batch)
+            .ok()
+            .map(|at| &self.parts[at])
+    }
+
+    // Whether the pool can give the slots the chunk's install needs once its own releases are
+    // counted. `O(B log B)`.
+    fn fits(&self, chunk: ChunkKey) -> bool {
+        let mut room = self.pool.available();
+        let mut needed = 0usize;
+        for part in &self.parts {
+            match self.drawn.get(&(chunk, part.batch)) {
+                Some(&slot) if self.keeps(slot, part.batch.0, part.count) => {}
                 Some(_) => {
                     needed += 1;
                     room += 1;
@@ -246,20 +342,53 @@ impl ParkedLayer {
                 None => needed += 1,
             }
         }
-        for &bucket in self.buckets.get(&chunk).into_iter().flatten() {
-            let named = buckets
-                .clone()
-                .any(|(named, rows)| named == bucket && !rows.is_empty());
-            room += usize::from(!named);
+        for &batch in self.batches.get(&chunk).into_iter().flatten() {
+            room += usize::from(self.part(batch).is_none());
         }
         needed <= room
     }
 
-    // Whether a drawn bucket keeps its slot: its mesh and a size class that holds the poses.
-    fn keeps(&self, slot: SlotId, bucket: u32, floats: usize) -> bool {
+    // Whether a drawn batch keeps its slot: its mesh and a size class that holds its cars.
+    fn keeps(&self, slot: SlotId, bucket: u32, count: u32) -> bool {
         let kind = self.pool.slot(slot).kind();
-        kind.mesh == self.meshes[&bucket].0
-            && kind.class >= capacity_class((floats / self.stride) as u32).0
+        kind.mesh == self.buckets[&bucket].mesh && kind.class >= capacity_class(count).0
+    }
+
+    // Writes one batch of the install into its slot (taken now when it has none) and draws it
+    // with its range: the tier's band widened by the batch's reach on both sides, the end no
+    // farther than the draw distance plus the reach. The material draws each car only within
+    // its band, so a car the engine draws in another tier's batch never draws here.
+    fn draw_batch(
+        &mut self,
+        backend: &mut impl RenderBackend,
+        chunk: ChunkKey,
+        part: &Part,
+        rows: &[f32],
+        kept: &mut Vec<Batch>,
+    ) {
+        let bucket = self.buckets[&part.batch.0];
+        let slot = match self.drawn.get(&(chunk, part.batch)) {
+            Some(&slot) => slot,
+            None => {
+                let kind = SlotKind {
+                    mesh: bucket.mesh,
+                    class: capacity_class(part.count).0,
+                    colors: false,
+                    custom: self.stride > POSE,
+                    parameter: None,
+                };
+                let slot = self
+                    .pool
+                    .acquire(backend, kind)
+                    .expect("the chunk was checked to fit the pool");
+                self.drawn.insert((chunk, part.batch), slot);
+                kept.push(part.batch);
+                slot
+            }
+        };
+        let (bounds, reach) = drawn_bounds(&bucket.bounds, rows, self.stride);
+        self.pool.fill(backend, slot, rows, part.count, bounds);
+        self.draw(backend, slot, batch_range(bucket.band, reach, self.draw_distance));
     }
 
     fn draw(&mut self, backend: &mut impl RenderBackend, slot: SlotId, range: [f32; 2]) {
@@ -282,19 +411,28 @@ impl ParkedLayer {
         }
     }
 
-    /// The drawn buckets: chunk, bucket, slot. `O(drawn buckets)`.
-    pub(crate) fn drawn(&self) -> impl Iterator<Item = (ChunkKey, u32, SlotId)> + '_ {
-        self.drawn.iter().map(|(&(chunk, bucket), &slot)| (chunk, bucket, slot))
+    /// The drawn batches: chunk, bucket, cell (row-major across the chunk; `u16::MAX` for a
+    /// bucket drawn whole), slot. `O(drawn batches)`.
+    pub(crate) fn drawn(&self) -> impl Iterator<Item = (ChunkKey, u32, u16, SlotId)> + '_ {
+        self.drawn
+            .iter()
+            .map(|(&(chunk, (bucket, cell)), &slot)| (chunk, bucket, cell, slot))
     }
 }
 
-// A bucket's bounds as the engine computes a `MultiMesh`'s (the mesh's bounds through each pose,
-// merged in pose order) and its visibility range's end: the draw distance plus the farthest a car
-// origin stands from the bounds' centre (the farthest corner of the origins' box). The engine
-// skips the batch when the camera is farther than that from the centre (the range has no
-// margins, so no state), and then every origin is beyond the draw distance, where the material
-// has faded its car out whole. `O(poses)`.
-fn drawn_bounds(mesh: &Aabb, rows: &[f32], stride: usize, draw_distance: f32) -> (Aabb, f32) {
+// A batch's visibility range, as the engine tests it against the camera's distance from the
+// centre of the batch's bounds: every car stands within `reach` of that centre, so a car whose
+// own distance is in `band` has the centre within the band widened by `reach` on both sides,
+// and past the draw distance plus `reach` every car has faded out whole. The engine's range has
+// no margins, so no state; a begin of 0 is none.
+fn batch_range(band: [f32; 2], reach: f32, draw_distance: f32) -> [f32; 2] {
+    [(band[0] - reach).max(0.0), band[1].min(draw_distance) + reach]
+}
+
+// A batch's bounds as the engine computes a `MultiMesh`'s (the mesh's bounds through each pose,
+// merged in pose order) and its reach: the farthest a car origin stands from the bounds' centre
+// (the farthest corner of the origins' box). `O(poses)`.
+fn drawn_bounds(mesh: &Aabb, rows: &[f32], stride: usize) -> (Aabb, f32) {
     let bounds = mesh.through_instances(rows, rows.len() / stride);
     let (mut low, mut high) = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]);
     for pose in rows.chunks_exact(stride) {
@@ -307,7 +445,7 @@ fn drawn_bounds(mesh: &Aabb, rows: &[f32], stride: usize, draw_distance: f32) ->
         .corners()
         .into_iter()
         .fold(0.0f32, |reach, corner| reach.max(length3(sub3(centre, corner))));
-    (bounds, draw_distance + reach)
+    (bounds, reach)
 }
 
 #[cfg(test)]
