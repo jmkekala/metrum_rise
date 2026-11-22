@@ -3185,6 +3185,16 @@ right after the agent tick, in the same frame, the household forms
 - Walk-in arrivals (no car, or no free place), the stored-car delivery carrier and the
   prepopulated test cities (carrier placed in its home) are unchanged.
 
+Records (2026-11-22, branch `arrival-doors`, `$TEST_BINARY` of the branch head): `sim02_gate.py
+envelope determinism` passes; determinism equals `dev`'s record. Every envelope record moves from
+the first recorded day (day 4, when the test cities still admit households): a household now
+forms when its car parks instead of minutes later at the arrival check, so its consumption,
+shopping and labour count start earlier, and the hourly admission and freight decisions after it
+diverge (10k baseline: 5,708 to 5,707 households at day 17, freight departures on day 4 236 to
+278). Nothing is lost: households plus vacant homes are equal to `dev`'s in all four runs at the
+end (6,066 at 10k, 15,750 at 30k), no reference violations, no unhoused household at the end. The
+envelope baseline was re-recorded on the branch for the owner's review.
+
 Stored cars never become occupied places at supply publication or load. Only new supply wakes
 them: an added or reactivated bay wakes its own chunk, and a catchment rebuild wakes the doors
 whose list of reachable places changed. New lots, vacated bays, cancelled reservations and towing
