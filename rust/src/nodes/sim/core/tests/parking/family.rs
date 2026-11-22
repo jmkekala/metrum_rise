@@ -171,6 +171,23 @@ fn a_home_removed_during_the_walk_leaves_the_family_unhoused_where_it_stands() {
     }
 }
 
+#[test]
+fn a_road_edit_mid_walk_splits_the_frontage_and_every_member_still_gets_home() {
+    let (mut c, carrier) = arriving();
+    step_until(&mut c, 4000, |c| household_of(c, carrier).is_some());
+    for _ in 0..3 {
+        c.step_frame(FRAME_S);
+    }
+    let family = members(&c, carrier);
+    assert!(family.iter().any(|&i| c.agents.transit[i] != TRANSIT_IN_BUILDING), "still walking");
+    // A side road joins the frontage edge beside the lot: the edge splits and its lanes are
+    // renumbered under the walkers.
+    commit(&mut c, (30.0, 0.0), (30.0, 120.0));
+    step_until(&mut c, 4000, |c| {
+        family.iter().all(|&i| c.agents.transit[i] == TRANSIT_IN_BUILDING && c.agents.current_building[i] == 0)
+    });
+}
+
 // Every agent's position, state and household, bit for bit, and the household count.
 fn digest(c: &SimCore) -> Vec<u64> {
     let mut out = vec![c.households.households.len() as u64, c.agents.len() as u64];
