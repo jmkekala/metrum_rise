@@ -12,6 +12,7 @@
 //! reads them.
 
 use super::determinism::stable_unit_f32;
+use crate::config::{AGENT_SIDEWALK_SPEED_MS, AGENT_WALK_SPEED_MS};
 
 // Salts keep the gait independent of the other values drawn from the same seed.
 const PACE_SALT: u64 = 0x5741_4C4B_5041_4345;
@@ -41,6 +42,23 @@ pub(crate) fn walker_pace(schedule_seed: u32) -> f32 {
     let a = stable_unit_f32(seed ^ PACE_SALT);
     let b = stable_unit_f32(seed ^ PACE_SALT_2);
     1.0 + PACE_SPREAD * (a + b - 1.0)
+}
+
+/// The walker's own speed off the lanes, m/s: the mean walking speed times its pace. What it
+/// walks on a building's access path, from a car to a door and across the ground to a sidewalk.
+#[inline(always)]
+pub(crate) fn walker_speed(schedule_seed: u32) -> f32 {
+    AGENT_WALK_SPEED_MS * walker_pace(schedule_seed)
+}
+
+/// The walker's own speed on a foot lane or crossing, m/s: the lanes' mean times its pace, before
+/// a slower walker ahead holds it (`walker_crowd`). The movement step and the lane claims both
+/// take it from here, so a walker never steps further than its claim allowed. The lanes keep a
+/// mean of their own until the owner decides `TRAFFIC-41`; with one mean this is
+/// [`walker_speed`].
+#[inline(always)]
+pub(crate) fn walker_speed_on_lane(schedule_seed: u32) -> f32 {
+    AGENT_SIDEWALK_SPEED_MS * walker_pace(schedule_seed)
 }
 
 /// The walker's drawn distance from its foot lane's centre line, metres, in

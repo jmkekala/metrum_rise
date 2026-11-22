@@ -15,11 +15,11 @@ use super::super::access::ACCESS_LANE_D_TOLERANCE_M;
 use super::super::claims::LaneClaimContext;
 use super::super::slices::MovementSlices;
 use super::super::traffic::{connector_turn_speed, junction_car_speed};
-use crate::config::{AGENT_SIDEWALK_SPEED_MS, CAR_JUNCTION_SPEED_MS};
+use crate::config::CAR_JUNCTION_SPEED_MS;
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::economy::agents::LaneEntry;
 use crate::simulation::economy::agents::walker_crowd::{Opposing, walker_lane_speed};
-use crate::simulation::economy::agents::walker_gait::walker_pace;
+use crate::simulation::economy::agents::walker_gait::walker_speed_on_lane;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::lanes::LaneType;
@@ -247,8 +247,7 @@ unsafe fn walker_network_speed(
     slices: &MovementSlices,
 ) -> f32 {
     unsafe {
-        let pace_speed =
-            |agent: usize| AGENT_SIDEWALK_SPEED_MS * walker_pace(*slices.schedule_seed.get(agent));
+        let pace_speed = |agent: usize| walker_speed_on_lane(*slices.schedule_seed.get(agent));
         let own = pace_speed(i);
         let lane_id = *slices.lane_id.get(i);
         let lanes = &transit_network.lane_system;

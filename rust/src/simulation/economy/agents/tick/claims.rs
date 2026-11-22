@@ -406,10 +406,9 @@ fn agent_network_claim_distance(
 ) -> f32 {
     if agents.transit_mode[i] != MODE_CAR {
         // The walker's own step this tick, as the movement pass takes it.
-        return crate::config::AGENT_SIDEWALK_SPEED_MS
-            * crate::simulation::economy::agents::walker_gait::walker_pace(
-                agents.schedule_seed[i],
-            );
+        return crate::simulation::economy::agents::walker_gait::walker_speed_on_lane(
+            agents.schedule_seed[i],
+        );
     }
     if agents.transit[i] == TRANSIT_INTERSECTION {
         let lane_id = agents.current_lane_id[i];
