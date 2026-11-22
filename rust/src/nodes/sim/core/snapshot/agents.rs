@@ -7,13 +7,15 @@
 //! pose the snapshot computes:
 //!
 //! - An agent without a valid lane is posed at its stored position, which the cull tests
-//!   exactly; a car pulling into or out of a place is drawn round the bends of its manoeuvre
-//!   (`PARK-29`), within `MAX_DRAWN_OFFSET_M` of it, so the cull tests that square about it.
+//!   exactly; a car off every lane may be drawn round the bends of its manoeuvre (`PARK-29`) or
+//!   on its gate turn (`PARK-31`), within `MAX_DRAWN_OFFSET_M` of it, so the cull tests that
+//!   square about it.
 //! - An agent on a lane is posed on that lane's geometry, or, while a car changes lanes, on a
 //!   blend of the source and target lane at the same distance. Either pose lies in the planar
 //!   box of those lanes' points ([`LaneSystem::planar_bounds`]), widened by
-//!   [`CULL_ROUNDING_MARGIN_M`] for interpolation rounding. Lanes the box cannot bound, and
-//!   non-finite lane distances, are posed.
+//!   [`CULL_ROUNDING_MARGIN_M`] for interpolation rounding, and for a car by
+//!   `GATE_LANE_OFFSET_M`: near its lane point a car is drawn on its gate turn, off its lane pose
+//!   (`PARK-31`). Lanes the box cannot bound, and non-finite lane distances, are posed.
 //!
 //! The stored position cannot bound a lane agent's pose by any fixed margin: overlap
 //! correction moves a car back along its lane without rewriting it, by up to one car spacing
