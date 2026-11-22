@@ -4347,6 +4347,10 @@ removes it.
   bucket) and drives through it, as through a standing drop-off car. On a road side with a
   parking lane the stop lies in that lane and may overlap a parked car (accepted for now, as for
   the drop-off; not solved).
+- **Several at one stop.** Trucks dispatched from one building in the same slot all start at
+  its kerb stop and pull out one after another through the attach hold, drawn over each other
+  until they leave; trucks delivering to one building without a dock at the same time stand at
+  the same stop. No line is kept for them (the dock queue's line is for waiting trucks only).
 - **Older saves.** A truck a save holds inside a building without a dock (format 128 and older)
   is still taken as arrived there; its check delivers and it leaves from the kerb stop.
 
