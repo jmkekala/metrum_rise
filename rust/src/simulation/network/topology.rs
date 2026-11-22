@@ -2299,6 +2299,16 @@ mod tests {
                 rezone_grace_days_remaining: 0,
             });
 
+        // Two buildings placed on parcels, 85 m and 20 m along the road: a parcel building has
+        // no frontage cell, its `cell_x` is 0 wherever it stands.
+        for (parcel_id, frontage_t) in [(7, 0.85), (8, 0.2)] {
+            let mut on_parcel = allocator.buildings[0].clone();
+            on_parcel.parcel_id = parcel_id;
+            on_parcel.cell_x = 0;
+            on_parcel.frontage_t = frontage_t;
+            allocator.buildings.push(on_parcel);
+        }
+
         // Split the road exactly at 50m (cell 5).
         let junction_id = graph.add_node(Vector3::new(50.0, 0.0, 0.0), NodeType::Junction);
         split_edge(
@@ -2311,6 +2321,15 @@ mod tests {
             &mut zoning,
             &mut allocator,
         );
+
+        // The parcel buildings follow where they stand: 85 m is 35 m along the second half,
+        // 20 m stays on the first. By their cell both stayed on the first half.
+        let (far, near) = (&allocator.buildings[1], &allocator.buildings[2]);
+        assert_eq!(far.edge_idx, allocator.buildings[0].edge_idx);
+        assert!((far.frontage_t - 0.70).abs() < 1e-3, "{}", far.frontage_t);
+        assert_eq!(near.edge_idx, edge_id);
+        assert!((near.frontage_t - 0.40).abs() < 1e-3, "{}", near.frontage_t);
+        assert_eq!((far.cell_x, near.cell_x), (0, 0));
 
         let b = &allocator.buildings[0];
         // The edge should have split. The building was at cell 8.

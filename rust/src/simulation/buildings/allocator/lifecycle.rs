@@ -1060,7 +1060,8 @@ impl BuildingAllocator {
 
     /// Moves the buildings fronting `edge_id` onto the halves of its split at cell `split_x`:
     /// those at or past it front `new_edge_id` from its start, and each one's frontage
-    /// parameter is measured along its half, `lengths_m` long. The moved rows are recorded, so
+    /// parameter is measured along its half, `lengths_m` long. A building on a parcel has no
+    /// frontage cell and is placed by its frontage parameter. The moved rows are recorded, so
     /// row-indexed tables and the census input copy (`SIM-02-I`) take them again; `undo`
     /// receives each row's previous edge, cell and frontage. Returns the buildings on each
     /// half. The rows are found in building order among the buildings of the 512 m chunks
@@ -1105,13 +1106,33 @@ impl BuildingAllocator {
                 undo.push((building_idx, b.edge_idx, b.cell_x, b.frontage_t));
             }
             let (old_cell_x, old_frontage_t) = (b.cell_x, b.frontage_t);
-            let half = usize::from(b.cell_x >= split_x);
-            if half == 1 {
-                b.edge_idx = new_edge_id;
-                b.cell_x -= split_x;
-            }
-            let half_cells = b.width_cells as f32 * 0.5;
-            b.frontage_t = (b.cell_x as f32 + half_cells) * cell_m / lengths_m[half].max(0.001);
+            let half = if b.parcel_id != 0 {
+                // A building placed on a parcel has no frontage cell (`cell_x` is 0 wherever it
+                // stands), so its half and its parameter follow where it stands along the road.
+                // By the cell it stayed on the first half with a parameter at that half's
+                // start until the next frame's lot adoption bound it again, and an edit of
+                // the first half in the same frame took it for one of its own.
+                let along_m = old_frontage_t * (lengths_m[0] + lengths_m[1]);
+                let half = usize::from(along_m >= lengths_m[0]);
+                let before_m = if half == 1 {
+                    b.edge_idx = new_edge_id;
+                    lengths_m[0]
+                } else {
+                    0.0
+                };
+                b.frontage_t = ((along_m - before_m) / lengths_m[half].max(0.001)).clamp(0.0, 1.0);
+                half
+            } else {
+                let half = usize::from(b.cell_x >= split_x);
+                if half == 1 {
+                    b.edge_idx = new_edge_id;
+                    b.cell_x -= split_x;
+                }
+                let half_cells = b.width_cells as f32 * 0.5;
+                b.frontage_t =
+                    (b.cell_x as f32 + half_cells) * cell_m / lengths_m[half].max(0.001);
+                half
+            };
             halves[half] += 1;
             moved.push(building_idx);
             if traffic_debug {
