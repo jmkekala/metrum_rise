@@ -274,23 +274,19 @@ the conflict instead of teleporting or stopping only at the exact handoff point.
 ### Walker pace, passing and queueing (`TRAFFIC-40`)
 
 **As built (Veeti Reis's branch, ported onto `dev` 2026-11-22).** Code:
-`simulation/economy/agents/walker_gait.rs` (the pace), `walker_crowd.rs` (passing),
-`tick/movement/network.rs` (`walker_network_speed`), the overlap correction in
+`simulation/economy/agents/walker_gait.rs` (the pace and the walker's own speed),
+`walker_crowd.rs` (passing), `tick/movement/network.rs` (`walker_network_speed`),
+`tick/movement/access_state.rs` (`step_along_access_path`), the overlap correction in
 `tick/lane_buckets/occupancy.rs`.
 
 - **Pace.** Each walker walks at its own pace, `1 ± 0.18` of the shared speed (`PACE_SPREAD`),
   the sum of two uniform draws from its saved `schedule_seed`, so most keep near the mean: on a
-  foot lane or crossing `AGENT_SIDEWALK_SPEED_MS` (4 m/s, as before) times the pace, 3.3 to
-  4.7 m/s; on a building's access path, the walk to a sidewalk and the walk from a car to the
-  doors (`PARK-35`) `AGENT_WALK_SPEED_MS` (1.4 m/s) times the pace. Trips, the parking choice and
-  the walk-limit quotes are still planned at 1.4 m/s, the mean. No agent column and no save
-  change: the pace is a pure function of a saved seed.
-- **The network speed is an owner decision (`TRAFFIC-41`).** The branch also lowered the network
-  speed to the 1.4 m/s planning speed, so the walk cycle reads as walking. That lengthened every
-  network walk about 2.9 times and failed the gate: the growth scenarios' households ran out of
-  food (85 and 435 empty household days where the tests allow none), and both pass with the same
-  code at 4 m/s. The port keeps 4 m/s; the envelope of the 1.4 m/s build is recorded under
-  `TRAFFIC-41` in the roadmap.
+  foot lane or crossing `AGENT_SIDEWALK_SPEED_MS` (4 m/s) times the pace, 3.3 to 4.7 m/s
+  (`walker_speed_on_lane`); on a building's access path, the walk to a sidewalk and the walk
+  from a car to the doors (`PARK-35`) `AGENT_WALK_SPEED_MS` (1.4 m/s) times the pace
+  (`walker_speed`). Trips, the parking choice and the walk-limit quotes are planned at
+  `AGENT_WALK_SPEED_MS`, the mean. No agent column and no save change: the pace is a pure
+  function of a saved seed.
 - **Passing.** A walker with a slower walker less than 3 m ahead on its foot lane overtakes it
   when the walkway beside it is clear: no walker on the opposing foot lane of the same walkway
   (`LaneSystem::opposing_foot_lane`, the other direction's lane of the same `lane_idx`) from 1 m
@@ -326,6 +322,86 @@ the conflict instead of teleporting or stopping only at the exact handoff point.
   4,234 and 1,235 to 1,283. Unit tests: `walker_crowd` and `walker_gait` (passing, following,
   sides, smoothness, pace range), `tests/walker_crowds.rs` (a sidewalk pass, a held pass while
   someone comes the other way), `walkers_queue_behind_one_standing_and_walk_through_moving_ones`.
+
+### One walking code path and the walking speed (`TRAFFIC-41`, `TRAFFIC-42`)
+
+**The clock.** Speeds are metres per real second at 1x, and one game minute is one real second
+(`operational_clock.seconds_per_day = 1440`; the frame's `dt` moves the agents and advances the
+clock alike). The calendar therefore runs 60 times faster than what the eye sees:
+
+| Speed | Per game hour | Per game day |
+| --- | --- | --- |
+| A walker at 4 m/s | 240 m | 5.8 km |
+| A walker at 1.4 m/s (5 km/h) | 84 m | 2.0 km |
+| A car at 50 km/h | 833 m | 20 km |
+
+Route costs, quotes, the car's mode overhead (`CAR_MODE_CHOICE_OVERHEAD_S`, 180 s) and the
+parking walk limit are real seconds; work windows, consumption, wages, restock checks and trip
+checks are game time. Schedules convert an estimate with the day's length.
+
+**The owner's decision (2026-11-22).** Walking is not slowed down: one mean walking speed,
+4 m/s, on lanes, off them and in every plan, as a gameplay speed. Walking the lanes at the
+1.4 m/s that trips were planned at had failed the gate (the growth scenarios' households ran out
+of food, 85 and 435 empty household days where none is allowed; 30k out-of-stock rate 0.079 to
+0.129).
+
+**The unified code (2026-11-22, branch `traffic-41`, behaviour-preserving).**
+- A walker's own speed is decided in `walker_gait.rs`: `walker_speed` off the lanes and
+  `walker_speed_on_lane` on them, each its mean times the walker's pace. Six places computed the
+  product themselves (the lane step, the lane claim, access egress and ingress, the walk to a
+  sidewalk twice).
+- An off-lane step is decided in `step_along_access_path` (`tick/movement/access_state.rs`): a
+  car at the driveway speed, a walker at its own speed, along the polyline. Access egress,
+  access ingress and the walk to a sidewalk call it; the family stepping out of its car and
+  the drop-off arrival walk through access egress.
+- Walking is planned at one constant: `WALK_CONNECTOR_COST_SPEED_MS`, a second copy of
+  `AGENT_WALK_SPEED_MS` for crossings, is gone.
+- Two steppers remain on purpose. A lane step moves along a lane with buckets, passing, claims
+  and detach points; an off-lane step follows a private polyline with no neighbours. They share
+  the speed function and nothing else.
+- Proof against the release test binary of `dev` `41ba56490`: `tools/sim02_gate.py envelope
+  determinism` passes with every day record of the four cities and the determinism record
+  equal; `vehicle_products_on_a_prepared_city` at 10k and 30k gives the same 2,400 hashes a
+  city (each covers the walker rows: transform, walk phase and look).
+
+**The speed step (branch `traffic-41-speed`, not landed).** `AGENT_WALK_SPEED_MS` is 4 m/s and
+the only walking constant; `walker_speed_on_lane` is gone. Measured against the unified code:
+
+| | Unified code | Speed step |
+| --- | --- | --- |
+| Walks off the lanes | 1.4 m/s | 4 m/s |
+| Planned walking time | length / 1.4 | length / 4 |
+| `sim02_gate.py envelope determinism` | passes | passes, no note |
+| Out-of-stock rate, 10k / 30k baseline | 0.099 / 0.079 | 0.102 / 0.080 |
+| Growth scenarios | pass | pass |
+| 30k, days 7-18: trips a day on foot / by car | 26,065 / 23,508 | 40,486 / 9,001 |
+| Departures that drove | 40.9 % | 16.1 % |
+| Departures that walked because walking was quicker | 33.1 % | 69.3 % |
+| Walkers / cars / trucks on the road, day mean | 4,275 / 3,380 / 967 | 5,309 / 2,333 / 911 |
+| Walking trips under way older than a day | 34 | 68 |
+| Leg cycles a second at 1x, sidewalk / access path | 3.2 / 1.1 | 3.2 / 3.2 |
+| Leg cycles a metre at 4x (the per-tick cap binds), sidewalk / access path | 0.26 / 0.72 | 0.26 / 0.26 |
+
+The gait rows are `walker_gait_on_a_prepared_city` (30k from 07:30, 1,800 frames): the walk phase
+follows the distance walked at 0.8 cycles a metre of the walker's size, so one speed gives one
+leg rate; after the step 99.6 % of access-path frames and 99.98 % of sidewalk frames advance at
+that rate at 1x (the rest are frames in which the stored position stepped onto the next lane).
+
+The mode choice walks when the walk takes no longer than the car plus `CAR_MODE_CHOICE_OVERHEAD_S`
+(180 s). At 1.4 m/s that was about 280 m of walking; at 4 m/s it is about 1 km, so four trips in
+five are made on foot. 56 of 3,203 tests fail on the speed step, 52 of them parking fixtures
+whose residents no longer drive. The overhead is the owner's choice (`TRAFFIC-43`): at 35 s the
+boundary stays near today's 300 m and the quick suite fails 3 of 3,194 tests (a pinned routing
+metric and two fixtures sized for the old speed).
+
+**`TRAFFIC-42`.** A resident evicted at home is settled with no building and, when its household
+is rehoused, enters the new home through the access step
+(`relocate_household_member_home`). That resume kept the journey start of the resident's last
+real trip, so its arrival was charged days on the road (the happiness charge, the trip check
+cadence, the audit's trip time: 8,981 s for an arrival at 30k). The resume now starts the
+journey, and the lane-entry audit no longer counts the settling as a trip. The audit also files
+trips by how they were made (on foot or by car) and where they ended: its older `walked` and
+`drove` kinds read `has_car`, which says whether a resident may use the household's car.
 
 ## Road Speeds
 
@@ -4624,6 +4700,11 @@ Vehicle models, their night lamps and headlights (`RENDER-26`) are specified in
 **As built (Veeti Reis's branch, ported onto `dev` 2026-11-22).** Presentation only: the
 snapshot (`nodes/sim/core/snapshot/agents.rs`, `walker_side_pose`) computes everything from the
 walkers' lane state, speeds and saved seeds, stores nothing, and the simulation never reads it.
+
+The side reads the retained lane buckets, which name agents by index, so only while they are
+current (`lane_bucket_snapshot_valid`): after agents are removed outside the tick they are stale
+until the next tick, and a walker keeps its own side meanwhile (`RENDER-73`: reading them then
+indexed the agents past their end, a panic in the snapshot).
 
 - **Side of the walkway.** A walker on a foot lane is drawn beside the lane's centre line: on an
   empty walkway at its own side, `±0.5 m` from its seed (`walker_side_offset_m`). It keeps
