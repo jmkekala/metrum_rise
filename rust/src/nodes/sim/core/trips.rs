@@ -467,6 +467,16 @@ impl SimCore {
                 {
                     if !self.agents.start_parking_move_in(agent_idx, &mut self.parking,
                         &self.allocator, &self.transit_network, &self.region_graph) {
+                        let home = self.agents.home_building[agent_idx];
+                        crate::debug_log!(
+                            crate::debug::Channel::Spawn,
+                            "arrival departure waits: no road to a stop carrier={} home={} border={} car={} edge={:?}",
+                            agent_idx,
+                            home,
+                            self.agents.current_node[agent_idx],
+                            !self.agents.agents.parking_trip[agent_idx].vehicle.is_none(),
+                            self.allocator.entrances.get(home).map(|e| (e.edge_idx, e.car_lane_fwd, e.car_lane_bkw)),
+                        );
                         self.schedule_trip(next_check, TripEvent::ArrivalDeparture { carrier });
                         return;
                     }
