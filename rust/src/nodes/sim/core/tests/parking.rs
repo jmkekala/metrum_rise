@@ -612,7 +612,7 @@ fn has_car_follows_custody_at_the_next_tick() {
     assert!(!c.agents.has_car[agent]);
 }
 
-// A member joining with the household finds the car its carrier brought: no custody changed, so
+// A member arriving with the household finds the car its carrier brought: no custody changed, so
 // the publication that names it the household's car is what reports it.
 #[test]
 fn a_household_moving_in_with_its_car_gets_it_at_publication() {
@@ -675,8 +675,11 @@ fn a_household_moving_in_with_its_car_gets_it_at_publication() {
     // Past the frames of the arrival's own custody changes.
     c.step_frame(1.0 / 60.0);
     c.step_frame(1.0 / 60.0);
+    // The household formed as the car parked, the second adult stepping out beside the driver
+    // (`PARK-35`): the arrival check has nothing left to make.
     let i = c.agents.resolve_agent(handle).unwrap();
-    assert!(c.households.materialize_arrival_carrier(i, &mut c.agents, &c.allocator));
+    assert_ne!(c.agents.household_id[i], usize::MAX);
+    assert!(!c.households.materialize_arrival_carrier(i, &mut c.agents, &c.allocator));
     c.step_frame(1.0 / 60.0);
     let adults: Vec<_> = (0..c.agents.len())
         .filter(|&i| c.agents.parking_trip[i].vehicle == car)
