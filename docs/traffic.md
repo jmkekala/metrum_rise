@@ -2424,8 +2424,8 @@ before, and positions, arrival ticks, saves and the determinism records are unch
 - **Which bends.** Every interior point of the polyline the manoeuvre walks
   (`maneuver_path`: the lane point, then the place's route or way, reversed for a pull-out):
   four-point paths, long ways and own routes, automatic or hand-drawn, building lots and parking
-  lots, and docks' paths and authored ways. The ends are not rounded: the stop, and the lane
-  point, where the car joins or leaves its lane as before ([below](#the-gate-turn-park-31-not-built)).
+  lots, and docks' paths and authored ways. The ends are not rounded here: the stop, and the
+  lane point, which the gate turn rounds ([below](#the-gate-turn-park-31-as-built)).
   The road connection is an interior point (the hop from the lane meets the route there), so its
   bend is rounded too; at a gate square to the road it is under 5°. A bend under 5° keeps its
   corner; so does a reversal (180°). Kerbside places (`PARK-05`) are drawn as walked.
@@ -2435,7 +2435,8 @@ before, and positions, arrival ticks, saves and the determinism records are unch
   two arcs never overlap, each leg's midpoint stays on the stored route and a short leg shrinks the
   arc smoothly towards the old pivot (a 2 m leg between two right angles: radius 1 m). The 6 m cap
   binds only past 90° for a truck (past 135° for a car), and bounds how far the drawn pose lies
-  from the simulated one: within `MAX_DRAWN_OFFSET_M` (12.05 m).
+  from the simulated one: within 12.05 m (`MAX_DRAWN_OFFSET_M`, since `PARK-31` the larger
+  bound of the gate turn's hop half, 34.3 m).
 - **The mapping** (`simulation/parking/turns.rs`, `drawn_turn`). The snapshot's existing leg scan
   (`local_access_target_segment`) names the leg the vehicle is on; its progress is its position
   projected on that leg. The `2t` of route around a corner maps linearly onto the arc, so the
@@ -2466,8 +2467,8 @@ Known limits:
 - The drawn body may overlap a neighbouring place, or leave the paving the lot proof proved, by up
   to about 0.6 m at a 90° bend (0.34 to 0.36 m at 30 to 45°): the proof proves a pivot square,
   which only fits a 0.2 to 0.35 m arc (the `PARK-29` analysis; accepted by the owner).
-- Cars still join and leave the lane with a turn on the spot at the lane point
-  ([the gate turn](#the-gate-turn-park-31-not-built), `PARK-31`, is not built).
+- Cars joined and left the lane with a turn on the spot at the lane point until
+  [the gate turn](#the-gate-turn-park-31-as-built) (`PARK-31`).
 - On an arc a vehicle is drawn slower than it moves (to 0.79 at 90°) and catches up on the next
   straight part; its simulated timing is unchanged.
 
@@ -2492,13 +2493,60 @@ passes unchanged. The populated-city snapshot equivalence (`culled_snapshot_matc
 release, 6,002 compared frames) passes with the widened cull. Timing level F with K22 (the
 snapshot is per-frame work) is prepared, not run.
 
-#### The gate turn (`PARK-31`, not built)
+#### The gate turn (`PARK-31`), as built
 
-Where the car joins or leaves its lane it still turns on the spot: the owner's gate turn (the
-lane's direction as a virtual leg at the lane point, arcs started late across crossed lanes,
-larger and earlier for trucks) needs more than the drawn manoeuvre can give, and is not built.
-How the hop is drawn today, and what the gate turn needs, is in
-[`entrance_and_exit.md`](entrance_and_exit.md#the-lane-hop-of-a-lot-or-yard-manoeuvre-park-29).
+A car or truck joining or leaving its lane at a lot or yard gate is drawn on a quarter circle
+between the lane and the hop, where it turned on the spot at the lane point (built 2026-11-22,
+branch `park-31`, not landed). Drawn pose only, as `PARK-29`: no saved state, nothing written back.
+The rule, the predicates and the limits are in
+[`entrance_and_exit.md`](entrance_and_exit.md#the-lane-hop-of-a-lot-or-yard-manoeuvre-park-29);
+in short:
+
+- **Radius** by body class: car 2.5 m, freight carrier 6 m, from `R` before the lane point
+  (entering) or to `R` past it (leaving), the vehicle at the arc's middle at the lane point on
+  either side of the switch (car 0.73 m, truck 1.76 m toward the kerb, 1.04 m and 2.49 m from the
+  lane point, turned 45°). On the lane the arc is an offset from the car's lane pose in its own
+  frame, so it bends with a curved lane and meets the lane pose where the reach begins; off it a
+  cubic leads from the arc's middle onto the lot's rounded line `R` along the route.
+- **Held and waiting.** A car held at its attach point, one waiting for a busy detach slot and a
+  truck waiting at its gate for a dock stand at the arc's middle facing along it (the held car
+  faced a fixed world direction before). Any other held car faces its lane.
+- **Signals.** Steer from the arc's curvature on the lane as off it (`CarPath::Lane { gate }`),
+  the estate and the pilot truck at the 35° lock on their arcs; indicators and brake as before;
+  the roll follows the drawn travel, which no longer jumps at the switch.
+- **Cost.** The test every lane car's pose takes is two column reads (the planned detach and
+  attach lanes) compared with its lane; only within reach of its own lane point does it read its
+  trip, route and class. O(1), no allocation, no new pass or structure. The cull widens car lane
+  boxes by 2.5 m (`GATE_LANE_OFFSET_M`) and every off-lane car's stored position by
+  `MAX_DRAWN_OFFSET_M` (34.3 m).
+
+Measured (fresh, release lib test binary, `vehicle_rows_uploaded_on_a_prepared_city` on the
+prepared 10k city, six workers, 1,190 measured frames per view, the method of `RENDER-66`): of
+the city's 745 cars on a road lane a frame (738 in the district run), 4.4 (4.2) are on their gate
+turn, 0.6 %; the gate test over every lane car costs 6.1 ns a car (7.4), about 5 µs a frame for
+the whole city on one thread, where the snapshot tests only the cars it poses. The drawn cars and
+rows a frame are those of stage 1b to the last decimal (street view 28.66 cars, 5.23 buckets and
+28.66 rows uploaded; district 826.6, 6.0, 826.6); cars steering in the street view 1.17 a frame
+(1b 1.11), the gate turn's.
+
+Tests: `simulation/parking/turns/gate/tests.rs` (the lane half on its circle and meeting the lane
+pose; a long square hop finishing the circle; every hop, a truck's 3.2 m one turning at once, a
+car's, a skewed one and a straight-on one, continuous in position and heading both ways within
+the offset bound; the hand-over to the lot's line; a 10 m crossing straight then arcing),
+`nodes/sim/core/tests/parking/gate_turn.rs` (a resident's whole trip near both gates through the
+snapshot's pose: no jump in position or heading at either switch, drawn on the arc on its lane;
+held at its attach point it stands where it joined, 45° to its lane; on a 40 m curve the lane
+half meets the lane pose and the arc's middle exactly, smooth between), `docks/backs_in.rs` (the
+truck's round trip through two tail-in yards: no jump, on the arc on its lane at both gates,
+within 3 m off it), `vehicle_signals/tests.rs` (a lane car on its gate turn steers by the arc).
+The `PARK-29` tests that pin the lot's line skip the gate turn's reach.
+
+Verification (fresh, 2026-11-22): `./run.sh --test` PASS (rust 3,146 passed, 245 skipped;
+godot-main, godot-vehicle); clippy `--all-targets` adds no warning. Against the release library
+test binary of `vehicles-1b` (`865772e1e`) as control, run fresh, the `SIM-02` envelope and
+determinism records (determinism and the day records of the four workloads, six workers) are
+equal, `envelope.json` apart from wall clock. Timing level F with K22 (per-frame work) is
+prepared, not run.
 
 ### Edits and towing (`PARK-01`, `PARK-05`)
 

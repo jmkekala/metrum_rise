@@ -56,48 +56,89 @@ projected on the lane), to the road connection, 5 cm inside the outer edge of th
 two-lane street (3.5 m lanes, 1.5 m sidewalks) it runs square to the road for 3.2 m: half the lane
 and the sidewalk.
 
-- **Pull-in.** The car is drawn at its lane pose until the tick its movement reaches the planned
-  detach distance; `try_network_detach` puts it at the lane point (an overshoot of up to one step
-  is set back) and off the lane. The next snapshot draws it there, grounded, facing along the hop:
-  the position is continuous, the heading turns by the angle between lane and hop (about 90°)
-  between two snapshots, and the render smoother shows the turn at once (a change of height owner,
-  lane to ground, is never blended). A truck bound for a yard detaches at the gate's lane point
-  with no dock yet and stands there while the same tick's parking phase gives it one.
-- **Pull-out.** The mirror: drawn along the hop facing the lane point, then, on the tick it reaches
-  it with the slot clear (`lane_attach_slot_clear`, `claim_lane_entry`), on the lane at the attach
-  distance, which is the lane point in plan: continuous in position, a turn on the spot in heading.
+- **Pull-in.** The car leaves its lane when its movement reaches the planned detach distance;
+  `try_network_detach` puts it at the lane point (an overshoot of up to one step is set back) and
+  off the lane. A truck bound for a yard detaches at the gate's lane point with no dock yet and
+  stands there while the same tick's parking phase gives it one.
+- **Pull-out.** The mirror: along the hop to the lane point, then, on the tick it reaches it with
+  the slot clear (`lane_attach_slot_clear`, `claim_lane_entry`), on the lane at the attach
+  distance, which is the lane point in plan.
 - **Held at the lane point** (the slot busy): the car stands lane-less in the network state with
-  its attach pending; the snapshot finds no access phase and draws it facing a fixed world
-  direction (`Vector3::BACK`), not along the hop or the lane. Found 2026-11-21, older than
-  `PARK-29`, not changed by it.
+  its attach pending.
 
-**The gate turn (`PARK-31`, not built).** The owner asked for the lane corner rounded too: the
-lane's direction as a virtual leg at the lane point, on a pull-out an arc started late, near the
-far side of the last lane crossed, and the mirror on a pull-in; per class a wanted radius (car
-2.5 m, truck 6 m), never below what the run permits. It needs:
+Until `PARK-31` the snapshot drew the switch as a turn on the spot (about 90° between two
+snapshots, the render smoother showing it at once: a change of height owner, lane to ground, is
+never blended) and the held car facing a fixed world direction (`Vector3::BACK`). The gate turn
+below replaces both in the drawn pose; the simulation is as above.
 
-1. **Drawing on the lane.** An arc tangent to the lane runs onto the lane past the lane point
-   (pull-out) or leaves it before (pull-in); an arc that ends at the lane point itself can be
-   tangent to the hop only by swinging the other way first. So the on-network pose changes for a
-   car about to detach (on its planned detach lane, its route's last visit, within the tangent
-   length before the detach distance) or just attached (on its attach lane, the route's first
-   lane, within it past the attach distance): a test in every lane car's pose (the parking phase
-   and two plan fields), the last-visit check, and a cull margin for lane cars, whose lane box test
-   assumes the pose lies on the lane. The lane point is then drawn at the arc's middle, not on the
-   route; the held car and the truck waiting at the gate need their pose there too.
-2. **Lanes to cross** (the left exit and entry, and the trucks' sweep over crossed lanes) need
-   simulation changes first: with same-side access nothing crosses a lane today. A left turn out of
-   or into a lot needs `BothSides` lot access (planner, legality, a parking crossover path, a claim
-   or gap check on the crossed lane), and changes positions and arrival ticks.
-3. **Radii the design gives** on a two-lane street with sidewalks, 90° turns, entry and exit
-   alike (mirror images), the gate's own bend under 5° so the whole run is the arc's (in brackets:
-   half the run, as the lot's legs are held to):
+**The gate turn (`PARK-31`), as built 2026-11-22** (branch `park-31`, not landed;
+`simulation/parking/turns/gate.rs`). Drawn pose only: positions, ticks, saves and the
+determinism records are unchanged.
 
-   | Turn | Run (connection to lane centre) | Car (wanted 2.5 m) | Truck (wanted 6 m) |
-   | --- | --- | --- | --- |
-   | Near side | 3.2 m | 2.5 m, from 0.7 m inside the lot edge (1.6 m) | 3.2 m, from the lot edge (1.6 m); 6 m if the arc may run on into the gate's first leg |
-   | Across the near lane | 6.7 m | 2.5 m, from 4.2 m: 0.75 m before the centre line (2.5 m) | 6 m, from 0.7 m: over the sidewalk, sweeping across the near lane (3.35 m) |
-   | In the lot (built) | each leg | 2.5 m on legs of 5 m or more at 90° | 6 m on legs of 12 m or more at 90° |
+1. **The arc.** The lane's direction at the lane point is the turn's virtual leg and the hop is
+   taken square to it on the lot's side (`LOT_HAND`: same-side access puts every lot right of its
+   lane's travel), so the turn is a quarter circle of radius `R` by body class: car 2.5 m,
+   anything of `VEHICLE_FREIGHT_DELIVERY` 6 m (the lot's own bend radii; the wider freight
+   radius is the owner's "not too tight for trucks": it starts 6 m before the gate). Its `2R` of
+   route maps linearly onto it, split at the lane point: there the vehicle is at the arc's middle,
+   `(√2 - 1) R` from the lane point (car 1.04 m, truck 2.49 m), `0.29 R` toward the kerb (0.73 m,
+   1.76 m), turned 45°, whichever side of the switch it is on. The estate's front wheels reach
+   the 35° lock on the car's arc, the pilot truck's on its own (`atan(L / R)` above it).
+2. **On the lane.** A car on its planned detach lane within `R` before the detach distance, on
+   the route's last visit (the detach rule's own check), heading for a lot place (`Drive`, not a
+   kerbside place) or a yard (`None` with `freight_gate`), or within `R` past its planned attach
+   distance on the route's first lane, out of a lot place (`Drive`) or as a freight carrier
+   (`None`), is drawn on the arc's lane half as an offset from its own lane pose in that pose's
+   frame: on a curved lane the arc bends with the lane, starts at the lane pose exactly and ends
+   at the arc's middle in the lane point's frame, where the off-lane half starts. A lane change
+   from the attach lane keeps the offset on its blended pose. Steer from the arc (`atan(L / R)`,
+   to the lock), indicators by the lane rules as before; the drawn travel the roll reads is
+   continuous across the switch. A car waiting for a busy detach slot stands at the arc's middle
+   facing along it.
+3. **Off the lane.** The hop half runs from the arc's middle to the pose the lot's rounded line
+   (`PARK-29`) gives `R` along the route from the lane point, on a cubic tangent to both with a
+   circle's handles: on a square hop at least `R` long the same quarter circle, and where the
+   route bends sooner (a yard's first leg along the road, 1.6 m in) straight onto the lot's line
+   past that bend, which it no longer draws, rather than doubling back to the hop. A car held at
+   its attach point and a truck waiting at its gate for a dock stand at the arc's middle facing
+   along it. A freight carrier's trip keeps no record of the dock it left once it is on its lane
+   (`after_freight_pull_out`), so the lane test cannot tell a yard from a door: a freight carrier
+   leaving a door turns on the same arc (its access path's last leg as the hop).
+4. **Cost and bounds.** Every lane car's pose pays two column reads and compares against its lane
+   (the planned detach and attach lanes); only within reach of its own lane point does it read
+   its trip, route and class, then O(1). No new pass, structure or allocation. The camera cull
+   widens car lane boxes by `GATE_LANE_OFFSET_M` (2.5 m) and tests every off-lane car's stored
+   position widened by `MAX_DRAWN_OFFSET_M` (34.3 m, a loose bound of the hop half: the
+   off-lane offsets the tests and stills show stay under 2.6 m). Measured on the prepared 10k
+   city: [`traffic.md`](traffic.md#drawn-turns-park-29-as-built).
+5. **Limits.** A freight carrier refused a dock at its gate (`GateToDoor`, rare) leaves the arc's
+   middle for the lane point in one snapshot. A truck backing out of a dock it neither leaves
+   forward nor backed into, or backing into a tail-in dock, still turns its nose about at the
+   switch (a cusp: it changes between backing and driving; the line stays smooth). The truck's
+   8 m body swings its tail about 0.5 m over the centre line of a two-lane street at the lane
+   point, and its nose crosses the lot edge within 1.95 m of the gate's centre line (inside every
+   4 m gate); the car stays in its own lane. The lane half is drawn at the lane's height, so a
+   truck's wheels over the kerb are grounded only from the lane point on.
+
+**Lanes to cross** (`PARK-32`, not built: a simulation change). The owner's rule for a left exit
+or entry: go straight across almost all of the lanes crossed and arc only at the end into the
+vehicle's own lane. The gate function takes it as it stands: the lane point is then on the far
+lane, the hop crosses the near ones, `hand` names the side the lot lies on, and the hop half
+covers only the last `R` of the crossing, so the vehicle runs straight over the lanes it crosses
+and arcs into its own (a gate test runs a 10 m crossing). The lane test would then need the
+side per car, which the trip does not hold today.
+
+Radii the design gave on a two-lane street with sidewalks before building it (90° turns, entry
+and exit alike, the gate's own bend under 5° so the whole run is the arc's; in brackets half the
+run, as the lot's legs are held to):
+
+| Turn | Run (connection to lane centre) | Car (wanted 2.5 m) | Truck (wanted 6 m) |
+| --- | --- | --- | --- |
+| Near side | 3.2 m | 2.5 m, from 0.7 m inside the lot edge (1.6 m) | 3.2 m, from the lot edge (1.6 m); 6 m if the arc may run on into the gate's first leg |
+| Across the near lane | 6.7 m | 2.5 m, from 4.2 m: 0.75 m before the centre line (2.5 m) | 6 m, from 0.7 m: over the sidewalk, sweeping across the near lane (3.35 m) |
+| In the lot (built) | each leg | 2.5 m on legs of 5 m or more at 90° | 6 m on legs of 12 m or more at 90° |
+
+As built the arc keeps its class radius on the lane whatever the run, and the hop half adapts.
 
 ## Current System
 
