@@ -5,6 +5,7 @@
 use super::*;
 use crate::nodes::sim::core::RoadCommitRequest;
 use crate::simulation::buildings::allocator::yard::YardEvent;
+use super::placement::plan_add;
 use crate::simulation::vegetation::edits::{CanopyKind, canopy_model};
 use crate::simulation::vegetation::{VegetationConfig, VegetationGenerator};
 use std::collections::HashSet;

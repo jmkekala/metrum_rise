@@ -36,8 +36,8 @@ pub(crate) use hedge_runs::hedge_runs;
 mod product_parity;
 pub(crate) use placement::publish_yards;
 use placement::{
-    AddRefusal, PointAdd, add_at, add_pick_at, hedge_end_at, line_at, paint_at, plan_add,
-    plan_add_pick, stamp_limit,
+    AddRefusal, PointAdd, add_at, add_pick_at, hedge_end_at, line_at, paint_at, plan_add_pick,
+    stamp_limit,
 };
 
 // Lane five of a packed placement carries both the species ordinal and the renderer mesh
@@ -275,20 +275,13 @@ impl SimulationNode {
         add_at(&mut self.lock_core(), pos, option)
     }
 
-    /// Plans a point edit without waiting for the core or rebuilding a stale site index.
-    /// `false` means busy. A packed placement has the same six lanes as a vegetation patch,
-    /// with the visible ground height and the renderer's root offset. A seventh lane gives
-    /// the refusal code for a blocked candidate. An integer refusal means no candidate.
+    /// Plans the held pick a click would plant, without waiting for the core or rebuilding a
+    /// stale site index: `false` means busy. A plant comes back as the six lanes of a vegetation
+    /// patch record (with the visible ground height and the renderer's root offset) and the
+    /// fixed-look flag set; a seventh lane gives the refusal code of a blocked candidate, and
+    /// an integer refusal means no candidate. The size step is zero-based and clamped to 0–4.
     /// Visits a fixed neighborhood: O(A + S) for authored entries and local clearance
     /// candidates (terrain, roads, sites and lights), independent of total city population.
-    #[func]
-    pub fn preview_vegetation_at(&self, pos: Vector2, option: i64) -> Variant {
-        self.preview_point_add(pos, option, PointAdd::new, plan_add)
-    }
-
-    /// Draws a held pick with the same fixed-look record used by placement. The size
-    /// step is zero-based and clamped to 0–4. Uses the same records and busy/refusal values as
-    /// `preview_vegetation_at`. O(A + S) in local authored entries and clearance candidates.
     #[func]
     pub fn preview_vegetation_pick_at(
         &self,
@@ -297,9 +290,36 @@ impl SimulationNode {
         pick: i64,
         size_step: i64,
     ) -> Variant {
-        self.preview_point_add(pos, option, PointAdd::for_pick, |core, request| {
-            plan_add_pick(core, request, pick as u32, size_step)
-        })
+        let Some(core) = Self::try_lock_shared_core(&self.core) else {
+            return false.to_variant();
+        };
+        let request = match PointAdd::for_pick(&core, pos, option) {
+            Ok(request) => request,
+            Err(reason) => return (reason as i64).to_variant(),
+        };
+        if !core.allocator.building_site_query_index_ready() {
+            return false.to_variant();
+        }
+        let (plant, refusal) = match plan_add_pick(&core, request, pick as u32, size_step) {
+            Ok((_, plant)) => (plant, None),
+            Err((reason, plant)) => (plant, Some(reason)),
+        };
+        let mut record = [
+            plant.x,
+            core.surface_height(pos) - plant_sink(plant.species, plant.variant),
+            plant.z,
+            plant.yaw,
+            plant.scale,
+            pack_species_variant(plant.species, plant.variant),
+            0.0,
+        ];
+        let len = if let Some(reason) = refusal {
+            record[6] = f32::from(reason as u8);
+            7
+        } else {
+            6
+        };
+        PackedFloat32Array::from(&record[..len]).to_variant()
     }
 
     /// Returns the point planner's full canopy mesh height for a zero-based renderer variant.
@@ -321,45 +341,6 @@ impl SimulationNode {
         size_step: i64,
     ) -> bool {
         add_pick_at(&mut self.lock_core(), pos, option, pick as u32, size_step)
-    }
-
-    fn preview_point_add(
-        &self,
-        pos: Vector2,
-        option: i64,
-        request: fn(&SimCore, Vector2, i64) -> Result<PointAdd, AddRefusal>,
-        plan: impl FnOnce(&SimCore, PointAdd) -> Result<(VegetationCell, Plant), (AddRefusal, Plant)>,
-    ) -> Variant {
-        let Some(core) = Self::try_lock_shared_core(&self.core) else {
-            return false.to_variant();
-        };
-        let request = match request(&core, pos, option) {
-            Ok(request) => request,
-            Err(reason) => return (reason as i64).to_variant(),
-        };
-        if !core.allocator.building_site_query_index_ready() {
-            return false.to_variant();
-        }
-        let (plant, refusal) = match plan(&core, request) {
-            Ok((_, plant)) => (plant, None),
-            Err((reason, plant)) => (plant, Some(reason)),
-        };
-        let mut record = [
-            plant.x,
-            core.surface_height(pos) - plant_sink(plant.species, plant.variant),
-            plant.z,
-            plant.yaw,
-            plant.scale,
-            pack_species_variant(plant.species, plant.variant),
-            0.0,
-        ];
-        let len = if let Some(reason) = refusal {
-            record[6] = f32::from(reason as u8);
-            7
-        } else {
-            6
-        };
-        PackedFloat32Array::from(&record[..len]).to_variant()
     }
 
     /// Scatters class-spaced plants immediately and returns the number added or restored.
