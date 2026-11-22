@@ -1307,8 +1307,8 @@ Rules:
 
 1. `local_access_point(MODE_WALK, ..., curb_pos) = curb_pos`
 2. `local_access_point(MODE_CAR, lane_id, lane_d, ...) = sample_pos_on_lane(lane_id, lane_d)`
-3. `local_access_speed(MODE_WALK) = AGENT_WALK_SPEED_MS = 1.4`
-4. `local_access_speed(MODE_CAR) = AGENT_DRIVEWAY_SPEED_MS = 3.0`
+3. `local_access_speed(MODE_WALK) = AGENT_WALK_SPEED_MS = 4.0` for plans; a walker steps at that times its own pace
+4. `local_access_speed(MODE_CAR) = AGENT_DRIVEWAY_SPEED_MS = 5.0` (a freight carrier on its dock's route steps at `FREIGHT_YARD_SPEED_MS = 3.0`; no plan prices that route)
 5. Segment distance is planar Euclidean distance in XZ:
    - `segment_distance(a, b) = sqrt((a.x - b.x)^2 + (a.y - b.y)^2)`
 6. `local_access_distance` must use the exact local path shape for the chosen mode and lane:
@@ -2651,13 +2651,20 @@ Recommended deterministic policy for ordinary building-origin trips:
 6. If the two totals are exactly equal, choose walking.
 
 Walking network cost is priced at walking pace (`TRAFFIC-05`): each walkable arc costs
-`base_cost * max(speed_limit, MIN_ROUTE_SPEED_MS) / AGENT_WALK_SPEED_MS`, its length over 1.4 m/s.
+`base_cost * max(speed_limit, MIN_ROUTE_SPEED_MS) / AGENT_WALK_SPEED_MS`, its length over the
+walking speed (4 m/s since `TRAFFIC-41`, a gameplay speed; 1.4 m/s before).
 The CCH keeps a second, walking metric beside the driving one, customized once per build without
 congestion, and `FOOT`-only queries, sweeps, flow fields and the sidewalk-connector fallback
 searches read it. The exact `FOOT` mask always gets its own CCH profile, and walkers leaving a
 restricted junction are seeded from the per-edge walking cost. Before, walkers were priced at the road's speed limit, as fast as a car, so with
-`CAR_MODE_CHOICE_OVERHEAD_S` (180 s) on top of driving, walking won nearly every trip. Now driving
-wins once the trip is longer than about 280 m.
+`CAR_MODE_CHOICE_OVERHEAD_S` (then 180 s) on top of driving, walking won nearly every trip. With
+walking priced at 1.4 m/s driving won once the trip was longer than about 280 m.
+
+Since `TRAFFIC-41` and `TRAFFIC-43` walking is priced at 4 m/s and the overhead is 35 s. A trip
+drives once its walk exceeds the car trip's own walking legs by `AGENT_WALK_SPEED_MS * (drive and
+manoeuvre seconds + 35)` metres: 320 m for a 45 s drive and 620 m for a 120 s one, where the old
+pair gave 315 m and 420 m. The overhead is sized for the boundary of a short drive; the measured
+shares are in [`traffic.md`](traffic.md#one-walking-code-path-and-the-walking-speed-traffic-41-traffic-42).
 
 The required tie-break order is:
 

@@ -35,9 +35,10 @@ Detailed vehicle movement behavior, including junction turn caps and lane change
 
 | Mode | Speed | Status | Notes |
 |------|-------|--------|-------|
-| Walking | `4.0 m/s` (`14.4 km/h`) on the network, `1.4 m/s` (`5 km/h`) on access paths and for planning; each walker `±18 %` | Implemented | Mean of the pedestrian agents' own paces (`TRAFFIC-40`); the network speed is an owner decision (`TRAFFIC-41`). See [walkers](traffic.md#walker-pace-passing-and-queueing-traffic-40). |
+| Walking | `4.0 m/s` (`14.4 km/h`) everywhere and in every plan; each walker `±18 %` | Implemented | A gameplay speed (`TRAFFIC-41`): speeds are metres per real second and one game minute is one real second, so 4 m/s is 240 m a game hour. Mean of the walkers' own paces (`TRAFFIC-40`). See [walking](traffic.md#one-walking-code-path-and-the-walking-speed-traffic-41-traffic-42). |
 | Driving (car) | `13.89 m/s` (`50 km/h`) | Implemented | Default free-flow speed for the current urban road presets. |
 | Junction car turn | `6.0 m/s` (`21.6 km/h`) | Implemented | Cap while traversing junction connector lanes. |
+| Vehicle off the lanes | `5.0 m/s` (`18 km/h`); a truck on its dock's route `3.0 m/s` | Implemented | Door access paths, bay manoeuvres, kerb stops and the speed a vehicle joins its lane with (`AGENT_DRIVEWAY_SPEED_MS`); never slower than the fastest walker's 4.72 m/s (`TRAFFIC-43`). `FREIGHT_YARD_SPEED_MS` for a carrier driving into or backing out of a dock. |
 | Bicycle | `5.5 m/s` (`20 km/h`) | Planned | First post-car transport mode; see `MOB-01` in [`roadmap.md`](roadmap.md). |
 | Bus | `10–15 m/s` (`36–54 km/h`) | Planned | Lower effective speed due to stops and dwell time; see `TRANSIT-01` in [`roadmap.md`](roadmap.md). |
 | Train / Metro | `20–40 m/s` (`72–144 km/h`) | Planned | Metro at lower end, intercity rail at higher end; see `TRANSIT-02` in [`roadmap.md`](roadmap.md). |
