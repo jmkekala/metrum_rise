@@ -134,15 +134,18 @@ pub const CAR_JUNCTION_LATERAL_ACCEL_MS2: f32 = 2.2;
 /// Small denominator floor for route-cost calculations on malformed or very slow edges.
 pub const MIN_ROUTE_SPEED_MS: f32 = 1.0;
 
-/// Walking speed for agents on foot (m/s). Used for driveway/building-entry phases.
-/// 1.4 m/s is a realistic pedestrian pace (~5 km/h).
+/// Mean walking speed (m/s), about 5 km/h: a realistic pedestrian pace to the eye. Every walking
+/// plan, quote and limit is priced at it (the routing metric, access and frontage times, the
+/// parking walk, the mode choice), and off the lanes each walker walks it times its own pace
+/// (`walker_gait::walker_speed`). In real seconds at 1x: the calendar runs 60 times faster, so
+/// it is 84 m a game hour.
 pub const AGENT_WALK_SPEED_MS: f32 = 1.4;
 
 /// Mean walking speed on foot lanes and crossings (m/s), each walker scaled by its own pace
-/// (`walker_gait::walker_pace`). Trips are planned at [`AGENT_WALK_SPEED_MS`]; walking them at
-/// that speed lengthened every walk on the network about 2.9 times and the growth scenarios'
-/// households ran out of food, so the network speed stays 4 m/s until the owner decides
-/// (`TRAFFIC-41`).
+/// (`walker_gait::walker_speed_on_lane`): 2.86 times the speed trips are planned at. Walking
+/// the lanes at [`AGENT_WALK_SPEED_MS`] lengthened every network walk by that factor and the
+/// growth scenarios' households ran out of food, so the lanes keep 4 m/s until the owner
+/// decides (`TRAFFIC-41`).
 pub const AGENT_SIDEWALK_SPEED_MS: f32 = 4.0;
 
 /// Speed for agents traversing a driveway in a car (m/s).

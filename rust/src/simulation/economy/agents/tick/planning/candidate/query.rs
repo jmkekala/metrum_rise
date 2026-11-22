@@ -984,7 +984,7 @@ impl TripQueryScratch {
                         .edges()
                         .get(value.edge_id)
                         .map_or(
-                            value.length / WALK_CONNECTOR_COST_SPEED_MS,
+                            value.length / AGENT_WALK_SPEED_MS,
                             CostCalculator::walk_cost_s,
                         )
                         .max(0.001);

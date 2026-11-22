@@ -10,6 +10,7 @@ use super::super::access::{
     projected_lane_distance_for_entrance,
 };
 use super::super::lane_nav::{lane_origin_node, lane_terminal_node};
+use crate::config::AGENT_WALK_SPEED_MS;
 use crate::simulation::buildings::allocator::{BuildingAllocator, BuildingEntrance};
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
@@ -33,7 +34,6 @@ mod u_turn_tests;
 pub(super) const NODE_RANKS: [u8; 2] = [0, 1];
 pub(super) const NODE_RANK_PAIRS: [(u8, u8); 4] = [(0, 0), (0, 1), (1, 0), (1, 1)];
 const CAR_MODE_CHOICE_OVERHEAD_S: f32 = 180.0;
-const WALK_CONNECTOR_COST_SPEED_MS: f32 = 1.4;
 
 #[derive(Clone)]
 pub(super) struct PlannedTripCandidate {
@@ -762,8 +762,8 @@ fn visit_pedestrian_successors(
             .edges()
             .get(target_lane.edge_id)
             .map(CostCalculator::walk_cost_s)
-            .unwrap_or(target_lane.length / WALK_CONNECTOR_COST_SPEED_MS)
-            + conn_lane.length / WALK_CONNECTOR_COST_SPEED_MS;
+            .unwrap_or(target_lane.length / AGENT_WALK_SPEED_MS)
+            + conn_lane.length / AGENT_WALK_SPEED_MS;
         visit(PedestrianSearchState {
             cost: state.cost + travel_cost.max(0.001),
             node: next_node,
@@ -908,7 +908,7 @@ pub(super) fn parking_candidate(
             a.lane_d = distance;
             a.local_time_s = 0.0;
             let lane = &network.lane_system.lanes[lane_id];
-            let speed = if mode == MODE_CAR { graph.edge(lane.edge_id).speed_limit } else { crate::config::AGENT_WALK_SPEED_MS };
+            let speed = if mode == MODE_CAR { graph.edge(lane.edge_id).speed_limit } else { AGENT_WALK_SPEED_MS };
             a.frontage_time_s = Some((lane.length-distance).max(0.0) / speed);
         }
         let candidate = if mode == MODE_CAR && shares_direct_frontage(&a, &b) {

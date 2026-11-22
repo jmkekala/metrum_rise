@@ -360,7 +360,7 @@ pub(super) fn pedestrian_lane_connector_path_from_node(
             .edges()
             .get(lane.edge_id)
             .map(CostCalculator::walk_cost_s)
-            .unwrap_or(lane.length / WALK_CONNECTOR_COST_SPEED_MS);
+            .unwrap_or(lane.length / AGENT_WALK_SPEED_MS);
         let key = (next_node, start_lane_id);
         let cost = travel_cost.max(0.001);
         if cost < *best.get(&key).unwrap_or(&f32::INFINITY) {
@@ -497,8 +497,8 @@ fn visit_pedestrian_successors(
             .edges()
             .get(target_lane.edge_id)
             .map(CostCalculator::walk_cost_s)
-            .unwrap_or(target_lane.length / WALK_CONNECTOR_COST_SPEED_MS)
-            + conn_lane.length / WALK_CONNECTOR_COST_SPEED_MS;
+            .unwrap_or(target_lane.length / AGENT_WALK_SPEED_MS)
+            + conn_lane.length / AGENT_WALK_SPEED_MS;
         visit(PedestrianSearchState {
             cost: state.cost + travel_cost.max(0.001),
             node: next_node,
