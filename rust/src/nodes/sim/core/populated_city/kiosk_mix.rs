@@ -209,7 +209,7 @@ fn starter_town_store_mix() {
             .iter()
             .map(|row| format!("{}{}", row.standing, row.constructing))
             .collect();
-        if stores != previous || town.day() % 10 == 0 {
+        if stores != previous || town.day().is_multiple_of(10) {
             println!(
                 "day {} residents {}: {line}",
                 town.day(),
