@@ -655,10 +655,10 @@ impl SimCore {
         *parked = self.parking.publication();
     }
 
-    /// Rebuilds the bay paint (`PARK-30`) of the chunks whose building places or docks changed,
-    /// on the visible surface, in parallel over the chunks. Reads the live ground, so it runs
-    /// where the site index is ready. O(the changed chunks' places log them + their lines' height
-    /// queries); nothing when no chunk changed.
+    /// Rebuilds the bay paint (`PARK-30`) of the buildings whose places or docks changed, on the
+    /// visible surface, in parallel over the buildings, then republishes their chunks. Reads the
+    /// live ground, so it runs where the site index is ready. O(the changed buildings' places log
+    /// them + their lines' height queries + their chunks' rows); nothing when none changed.
     pub(crate) fn build_lot_paint(&mut self) {
         if !self.parking.has_paint_dirty() {
             return;
@@ -667,8 +667,8 @@ impl SimCore {
         let built = crate::thread_pools::install(|| {
             dirty
                 .into_par_iter()
-                .map(|key| {
-                    let lines = self.parking.paint_lines(key);
+                .map(|building| {
+                    let (lines, chunk) = self.parking.paint_lines(building);
                     let mut rows = Vec::with_capacity(lines.len() * paint::STRIDE);
                     self.with_graded_surface(|surface, scratch| {
                         let height = |x: f32, z: f32| {
@@ -676,7 +676,7 @@ impl SimCore {
                         };
                         paint::paint_rows(&lines, height, &mut rows);
                     });
-                    (key, rows)
+                    (building, chunk, rows)
                 })
                 .collect()
         });

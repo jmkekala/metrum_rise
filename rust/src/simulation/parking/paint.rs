@@ -10,10 +10,12 @@
 //! 512 m parking chunk, one draw call), lying on the visible surface: a line on a level pad is one
 //! instance, one crossing a graded tie-in is split where the surface bends.
 //!
-//! The store keeps one row buffer per chunk, rebuilt only when the building places or docks of
-//! that chunk change (site publication, load, a ground change under them), never by custody, so
-//! nothing runs per frame. Kerb places draw nothing here (their bay paint is `PARK-04`). Render
-//! data only: nothing in the simulation reads it, and it is never saved.
+//! The store keeps each building's rows, rebuilt only when that building's places or docks change
+//! (site publication, load, a ground change under them), never by custody, so nothing runs per
+//! frame; a chunk's published rows are its buildings' rows one after another, so an edit costs
+//! its own lot's lines plus one copy of its chunk's rows. Kerb places draw nothing here (their bay
+//! paint is `PARK-04`). Render data only: nothing in the simulation reads it, and it is never
+//! saved.
 
 use super::*;
 use std::collections::{BTreeMap, BTreeSet};
@@ -28,9 +30,10 @@ const LIFT_M: f32 = crate::config::ROAD_DECAL_RENDER_Z_BIAS_M;
 const ANGLE_STEP_RAD: f32 = 1.0e-4;
 const OFFSET_STEP_M: f32 = 0.01;
 const MERGE_GAP_M: f32 = 0.01;
-// A line follows the surface to this tolerance; it is split no shorter than `MIN_PIECE_M`.
-const HEIGHT_TOLERANCE_M: f32 = 0.005;
-const MIN_PIECE_M: f32 = 0.25;
+// A line follows the surface to this tolerance, half the lift, so it never sinks into it; it is
+// split no shorter than `MIN_PIECE_M`, the finest graded lattice.
+const HEIGHT_TOLERANCE_M: f32 = LIFT_M * 0.5;
+const MIN_PIECE_M: f32 = 0.5;
 /// Floats per instance: a row-major 3 x 4 transform, as `MultiMesh` takes it.
 pub(crate) const STRIDE: usize = 12;
 
@@ -83,15 +86,23 @@ pub(crate) struct PaintPublication {
     pub chunks: Arc<BTreeMap<(i32, i32), PaintChunk>>,
 }
 
-/// The paint store: the docks' chunk lists, the chunks to rebuild and the published rows.
+/// The paint store: the docks' chunk lists, the buildings to repaint, each building's rows and
+/// chunk, each chunk's buildings, and the published rows.
 #[derive(Debug, Default)]
 pub(super) struct LotPaint {
-    // The dock rows of each chunk (docks are in no car chunk list); `Place::chunk_slot` of a
-    // dock is its slot here, so removal is O(1).
+    // The dock rows of each chunk (docks are in no car chunk list), for a ground change's
+    // rectangle; `Place::chunk_slot` of a dock is its slot here, so removal is O(1).
     pub(super) docks: HashMap<(i32, i32), Vec<Handle<Place>>>,
-    dirty: BTreeSet<(i32, i32)>,
+    dirty: BTreeSet<u64>,
+    // Each painted building's chunk (that of its first painted place) and rows.
+    buildings: HashMap<u64, ((i32, i32), Vec<f32>)>,
+    // Each chunk's painted buildings, in publication order.
+    chunk_buildings: HashMap<(i32, i32), BTreeSet<u64>>,
     published: PaintPublication,
 }
+
+/// One building's rebuilt paint: its id, its chunk (none without a painted place) and rows.
+pub(crate) type BuiltPaint = (u64, Option<(i32, i32)>, Vec<f32>);
 
 fn add(a: [f32; 2], b: [f32; 2]) -> [f32; 2] {
     [a[0] + b[0], a[1] + b[1]]
@@ -306,39 +317,44 @@ fn push_instance(a: [f32; 2], b: [f32; 2], ha: f32, hb: f32, rows: &mut Vec<f32>
 }
 
 impl ParkingSystem {
-    // Notes that the paint of the chunk holding `position` must be rebuilt: a building place or
-    // a dock there was added, removed or changed. Kerb places draw no paint. O(log dirty).
-    pub(super) fn mark_paint(&mut self, source: PlaceSource, position: [f32; 3]) {
-        if !matches!(source, PlaceSource::Kerb { .. }) {
-            self.paint
-                .dirty
-                .insert(chunk_at([position[0], position[2]]));
+    // Notes that the paint of the building hosting `source` must be rebuilt: one of its places or
+    // docks was added, removed or changed. Kerb places draw no paint. O(log dirty).
+    pub(super) fn mark_paint(&mut self, source: PlaceSource) {
+        if let PlaceSource::Building { building, .. } | PlaceSource::Dock { building, .. } = source
+        {
+            self.paint.dirty.insert(building);
         }
     }
 
-    // Every chunk with places, docks or paint: a load, a reloaded world, a dense ground change.
-    // O(chunks log chunks).
+    // Every building with places, docks or paint: a load, a reloaded world, a dense ground
+    // change. O(buildings log buildings).
     pub(super) fn mark_all_paint(&mut self) {
-        let keys = self
-            .chunks
+        let buildings = self
+            .building_sources
             .keys()
-            .chain(self.paint.docks.keys())
-            .chain(self.paint.published.chunks.keys());
-        self.paint.dirty.extend(keys);
+            .chain(self.building_docks.keys())
+            .chain(self.paint.buildings.keys());
+        self.paint.dirty.extend(buildings);
     }
 
-    // The chunks within `rect` (world `[min_x, min_z, max_x, max_z]`), whose ground changed.
-    // O(chunks the rectangle touches).
+    // The buildings with a place or dock centred within `rect` (world `[min_x, min_z, max_x,
+    // max_z]`), whose ground changed. O(chunks the rectangle touches + their places and docks).
     pub(super) fn mark_paint_in(&mut self, rect: [f32; 4]) {
         let (first, last) = (chunk_at([rect[0], rect[1]]), chunk_at([rect[2], rect[3]]));
         for z in first.1..=last.1 {
             for x in first.0..=last.0 {
-                let key = (x, z);
-                if self.chunks.contains_key(&key)
-                    || self.paint.docks.contains_key(&key)
-                    || self.paint.published.chunks.contains_key(&key)
-                {
-                    self.paint.dirty.insert(key);
+                let places = self.chunks.get(&(x, z)).into_iter().flat_map(|c| &c.places);
+                let docks = self.paint.docks.get(&(x, z)).into_iter().flatten();
+                for &handle in places.chain(docks) {
+                    let p = self.place_handles.resolve(handle).expect("indexed place");
+                    let [px, _, pz] = self.places.position[p];
+                    if (rect[0]..=rect[2]).contains(&px) && (rect[1]..=rect[3]).contains(&pz) {
+                        if let PlaceSource::Building { building, .. }
+                        | PlaceSource::Dock { building, .. } = self.places.source[p]
+                        {
+                            self.paint.dirty.insert(building);
+                        }
+                    }
                 }
             }
         }
@@ -370,33 +386,40 @@ impl ParkingSystem {
         }
     }
 
-    /// The chunks whose paint must be rebuilt, in key order; the store forgets them. O(dirty).
-    pub(crate) fn take_paint_dirty(&mut self) -> Vec<(i32, i32)> {
+    /// The buildings whose paint must be rebuilt, in id order; the store forgets them.
+    /// O(dirty).
+    pub(crate) fn take_paint_dirty(&mut self) -> Vec<u64> {
         std::mem::take(&mut self.paint.dirty).into_iter().collect()
     }
 
-    /// The merged marking lines of chunk `key`: its active building places and active docks.
-    /// O(P log P) for the chunk's P places and docks; reads nothing else.
-    pub(crate) fn paint_lines(&self, key: (i32, i32)) -> Vec<Segment> {
-        let car = self
-            .chunks
-            .get(&key)
-            .into_iter()
-            .flat_map(|chunk| &chunk.places)
-            .map(|&handle| (handle, false));
-        let docks = self
-            .paint
-            .docks
-            .get(&key)
-            .into_iter()
+    /// Marks one building's paint for a rebuild, as an edit of its lot does (tests, diagnostics).
+    #[cfg(test)]
+    pub(crate) fn repaint_building(&mut self, building: u64) {
+        self.paint.dirty.insert(building);
+    }
+
+    // The place rows of every source in `list`. O(rows).
+    fn source_rows<'a>(
+        &'a self,
+        list: Option<&'a Vec<PlaceSource>>,
+    ) -> impl Iterator<Item = &'a Handle<Place>> + 'a {
+        list.into_iter()
             .flatten()
-            .map(|&handle| (handle, true));
-        paint_segments(car.chain(docks).filter_map(|(handle, dock)| {
+            .filter_map(|source| self.sources.get(source))
+            .flatten()
+    }
+
+    /// The merged marking lines of `building`'s active places and docks, and the chunk of its
+    /// first painted place (none without one). O(P log P) for its P places and docks.
+    pub(crate) fn paint_lines(&self, building: u64) -> (Vec<Segment>, Option<(i32, i32)>) {
+        let car = self.source_rows(self.building_sources.get(&building)).map(|&h| (h, false));
+        let docks = self.source_rows(self.building_docks.get(&building)).map(|&h| (h, true));
+        let mut chunk = None;
+        let lines = paint_segments(car.chain(docks).filter_map(|(handle, dock)| {
             let p = self.place_handles.resolve(handle)?;
-            let painted =
-                self.places.active[p] && !matches!(self.places.source[p], PlaceSource::Kerb { .. });
-            painted.then(|| {
+            self.places.active[p].then(|| {
                 let [x, _, z] = self.places.position[p];
+                chunk.get_or_insert(chunk_at([x, z]));
                 PaintPlace {
                     centre: [x, z],
                     heading: self.places.heading[p],
@@ -405,36 +428,76 @@ impl ParkingSystem {
                     dock,
                 }
             })
-        }))
+        }));
+        (lines, chunk)
     }
 
-    /// Publishes rebuilt chunks (key and rows) under one new revision; a chunk whose rows are
-    /// bit for bit the published ones is left as it was, and none changing moves nothing.
-    /// O(rebuilt chunks × their rows), plus one copy of the chunk map while a snapshot holds it.
-    pub(crate) fn install_paint(&mut self, built: Vec<((i32, i32), Vec<f32>)>) {
-        let revision = self.paint.published.revision + 1;
-        let mut changed = false;
-        for (key, rows) in built {
-            let bits = |rows: &[f32]| rows.iter().map(|v| v.to_bits()).collect::<Vec<_>>();
-            let old = self.paint.published.chunks.get(&key);
-            let same = match old {
-                Some(old) => bits(&old.rows) == bits(&rows),
-                None => rows.is_empty(),
+    /// Takes rebuilt buildings and republishes the chunks whose rows changed, each as its
+    /// buildings' rows in id order, under one new revision; nothing changing moves nothing.
+    /// O(rebuilt rows + the changed chunks' rows), plus one copy of the chunk map while a
+    /// snapshot holds it.
+    pub(crate) fn install_paint(&mut self, built: Vec<BuiltPaint>) {
+        let paint = &mut self.paint;
+        let mut changed = BTreeSet::new();
+        for (building, chunk, rows) in built {
+            let same = |(old, old_rows): &((i32, i32), Vec<f32>)| {
+                Some(*old) == chunk
+                    && old_rows.len() == rows.len()
+                    && old_rows
+                        .iter()
+                        .zip(&rows)
+                        .all(|(a, b)| a.to_bits() == b.to_bits())
             };
-            if same {
+            if paint.buildings.get(&building).is_some_and(same)
+                || (rows.is_empty() && !paint.buildings.contains_key(&building))
+            {
                 continue;
             }
-            changed = true;
-            Arc::make_mut(&mut self.paint.published.chunks).insert(
+            if let Some((old, _)) = paint.buildings.remove(&building) {
+                changed.insert(old);
+                if let Some(set) = paint.chunk_buildings.get_mut(&old) {
+                    set.remove(&building);
+                }
+            }
+            if let (Some(chunk), false) = (chunk, rows.is_empty()) {
+                changed.insert(chunk);
+                paint
+                    .chunk_buildings
+                    .entry(chunk)
+                    .or_default()
+                    .insert(building);
+                paint.buildings.insert(building, (chunk, rows));
+            }
+        }
+        if changed.is_empty() {
+            return;
+        }
+        let revision = paint.published.revision + 1;
+        paint.published.revision = revision;
+        let chunks = Arc::make_mut(&mut paint.published.chunks);
+        for key in changed {
+            let rows: Vec<f32> = paint
+                .chunk_buildings
+                .get(&key)
+                .into_iter()
+                .flatten()
+                .flat_map(|building| paint.buildings[building].1.iter().copied())
+                .collect();
+            if paint
+                .chunk_buildings
+                .get(&key)
+                .is_some_and(BTreeSet::is_empty)
+            {
+                paint.chunk_buildings.remove(&key);
+            }
+            let version = revision;
+            chunks.insert(
                 key,
                 PaintChunk {
-                    version: revision,
+                    version,
                     rows: rows.into(),
                 },
             );
-        }
-        if changed {
-            self.paint.published.revision = revision;
         }
     }
 
@@ -443,7 +506,7 @@ impl ParkingSystem {
         self.paint.published.clone()
     }
 
-    /// Whether any chunk's paint waits to be rebuilt. O(1).
+    /// Whether any building's paint waits to be rebuilt. O(1).
     pub(crate) fn has_paint_dirty(&self) -> bool {
         !self.paint.dirty.is_empty()
     }

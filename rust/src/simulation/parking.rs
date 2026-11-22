@@ -144,7 +144,7 @@ impl ParkingSystem {
                 sources.push(source);
             }
         }
-        self.mark_paint(source, bay.position);
+        self.mark_paint(source);
         let key = chunk_at([bay.position[0], bay.position[2]]);
         let chunk = self.chunks.entry(key).or_default();
         let source_list = self.sources.entry(source).or_default();

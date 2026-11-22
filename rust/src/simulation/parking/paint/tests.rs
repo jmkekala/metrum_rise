@@ -199,15 +199,16 @@ fn bay(x: f32, z: f32) -> Bay {
     }
 }
 
-// Builds every dirty chunk's paint on flat ground; returns the chunks rebuilt.
-fn build(s: &mut ParkingSystem) -> Vec<(i32, i32)> {
+// Builds every dirty building's paint on flat ground; returns the buildings rebuilt.
+fn build(s: &mut ParkingSystem) -> Vec<u64> {
     let dirty = s.take_paint_dirty();
     let built = dirty
         .iter()
-        .map(|&key| {
+        .map(|&building| {
+            let (lines, chunk) = s.paint_lines(building);
             let mut rows = Vec::new();
-            paint_rows(&s.paint_lines(key), |_, _| 0.0, &mut rows);
-            (key, rows)
+            paint_rows(&lines, |_, _| 0.0, &mut rows);
+            (building, chunk, rows)
         })
         .collect();
     s.install_paint(built);
@@ -215,13 +216,13 @@ fn build(s: &mut ParkingSystem) -> Vec<(i32, i32)> {
 }
 
 #[test]
-fn a_changed_site_rebuilds_only_its_own_chunk_and_custody_rebuilds_nothing() {
+fn a_changed_site_rebuilds_only_its_own_paint_and_custody_rebuilds_nothing() {
     let mut s = ParkingSystem::default();
     // Two buildings 600 m apart, in two chunks; a kerb bay beside the first.
     s.replace_building(1, &[(0, bay(10.0, 10.0)), (1, bay(12.5, 10.0))], &[]);
     s.replace_building(2, &[(0, bay(610.0, 10.0))], &[]);
     s.replace_kerb(7, &[vec![bay(20.0, 10.0)], Vec::new()]);
-    assert_eq!(build(&mut s), vec![(0, 0), (1, 0)]);
+    assert_eq!(build(&mut s), vec![1, 2]);
     let first = s.paint_publication();
     assert_eq!(
         first.chunks[&(0, 0)].rows.len(),
@@ -246,7 +247,7 @@ fn a_changed_site_rebuilds_only_its_own_chunk_and_custody_rebuilds_nothing() {
         )],
         &[],
     );
-    assert_eq!(build(&mut s), vec![(1, 0)]);
+    assert_eq!(build(&mut s), vec![2]);
     let second = s.paint_publication();
     assert!(second.revision > first.revision);
     assert_eq!(
@@ -282,10 +283,31 @@ fn docks_paint_from_their_own_chunk_list_through_removal() {
     );
     // The first dock goes: the second keeps its row and its slot is fixed up.
     s.replace_docks(5, &[(1, dock(20.0))], &[], &[]);
-    assert_eq!(build(&mut s), vec![(0, 0)]);
+    assert_eq!(build(&mut s), vec![5]);
     assert_eq!(s.paint_publication().chunks[&(0, 0)].rows.len(), 8 * STRIDE);
     s.replace_docks(5, &[], &[], &[]);
     build(&mut s);
     assert!(s.paint_publication().chunks[&(0, 0)].rows.is_empty());
     assert!(s.paint.docks.is_empty());
+}
+
+#[test]
+fn a_chunk_shows_its_buildings_paint_one_after_another_and_a_ground_change_repaints_its_lots() {
+    let mut s = ParkingSystem::default();
+    s.replace_building(1, &[(0, bay(10.0, 10.0))], &[]);
+    s.replace_building(2, &[(0, bay(40.0, 10.0))], &[]);
+    build(&mut s);
+    let both = s.paint_publication();
+    assert_eq!(both.chunks[&(0, 0)].rows.len(), 6 * STRIDE);
+    // A ground change under the second lot repaints it alone.
+    s.invalidate_ground([39.0, 9.0, 41.0, 11.0]);
+    assert_eq!(s.take_paint_dirty(), vec![2]);
+    // Its lot gone, the chunk keeps the first lot's rows, as they were.
+    s.replace_building(2, &[], &[]);
+    build(&mut s);
+    let one = s.paint_publication();
+    assert_eq!(
+        &one.chunks[&(0, 0)].rows[..],
+        &both.chunks[&(0, 0)].rows[..3 * STRIDE]
+    );
 }

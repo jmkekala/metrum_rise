@@ -77,7 +77,7 @@ impl ParkingSystem {
             match bay {
                 Some(bay) if same_pose && !kept => {
                     kept = true;
-                    self.mark_paint(source, bay.position);
+                    self.mark_paint(source);
                     self.places.active[p] = true;
                     self.places.path[p] = bay.path;
                     self.places.width[p] = bay.width;
@@ -117,7 +117,7 @@ impl ParkingSystem {
     // A new dock row: the handle table, its source list and its chunk's dock list (the paint's
     // alone, `PARK-30`). O(1) amortised.
     fn add_dock(&mut self, source: PlaceSource, bay: Bay) -> Handle<Place> {
-        self.mark_paint(source, bay.position);
+        self.mark_paint(source);
         let source_list = self.sources.entry(source).or_default();
         self.places.push(Place {
             source,
@@ -155,7 +155,7 @@ impl ParkingSystem {
         let Some(p) = self.place_handles.resolve(handle) else {
             return;
         };
-        self.mark_paint(self.places.source[p], self.places.position[p]);
+        self.mark_paint(self.places.source[p]);
         if !self.places.freight_holder[p].is_none() {
             self.places.active[p] = false;
             return;
