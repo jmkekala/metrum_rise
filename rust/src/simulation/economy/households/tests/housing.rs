@@ -1020,7 +1020,8 @@ fn housing_distance_ties_use_building_order_across_chunk_boundaries() {
 #[test]
 fn failed_stay_rule_does_not_relocate_zero_reserve_household_to_level_one() {
     let mut households = HouseholdSystem::new();
-    let mut household = make_household(0, 2, 0.0, 1.0);
+    // No cash and an empty pantry: paid supplies count in the reserve (`ECON-31`).
+    let mut household = make_household(0, 2, 0.0, 0.0);
     household.stay_failure_days = 1;
     households.households.push(household);
 
@@ -1061,6 +1062,53 @@ fn failed_stay_rule_does_not_relocate_zero_reserve_household_to_level_one() {
     assert_eq!(allocator.buildings[1].occupancy, 0);
     assert_eq!(agents.home_building[a0], usize::MAX);
     assert_eq!(agents.home_building[a1], usize::MAX);
+}
+
+// `ECON-31`: a family that spent its cash on supplies before its review failed the stay rule
+// on the cash left, was evicted on its second failure and rehoused at its next payday, every
+// other day. Supplies it has paid for, home or carried, are part of its reserve.
+#[test]
+fn paid_supplies_count_in_the_stay_reserve() {
+    let mut households = HouseholdSystem::new();
+    // A quarter day of cash, below the level-1 stay reserve of half a day, a pantry of two days
+    // and a carried basket of one day.
+    let mut household = make_household(0, 4, 0.25, 2.0);
+    household.reserved_amount = 4.0 * household.consumption_rate;
+    household.stay_failure_days = 1;
+    households.households.push(household);
+
+    let mut allocator = BuildingAllocator::new();
+    let residential_asset =
+        register_test_asset(&mut allocator, "test", "pantry_res", ZoneClass::Residential);
+    let mut home = make_building(0.0, ZoneType::Residential, &residential_asset, 0.0);
+    home.level = 1;
+    home.occupancy = 1;
+    allocator.buildings.push(home);
+    allocator.rebuild_zone_index();
+
+    let mut agents = AgentSystem::new();
+    let members: Vec<_> = (0..4).map(|_| agents.spawn_housed_agent(0, 0.0, 0.0)).collect();
+    for &a in &members {
+        agents.assign_household_id(a, 0);
+        agents.home_building[a] = 0;
+        agents.current_building[a] = 0;
+    }
+
+    let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
+    let tuning = load_runtime_economy_tuning().expect("runtime economy tuning");
+    let reserve = crate::simulation::economy::households::metrics::household_reserve_days(
+        &catalog,
+        &tuning,
+        &households.households[0],
+    );
+    assert!(reserve > 0.5, "cash and paid supplies cover {reserve} days");
+
+    households.resolve_household_housing(&mut agents, &mut allocator);
+
+    assert_eq!(households.households[0].home_building_id, 0);
+    assert_eq!(households.households[0].stay_failure_days, 0);
+    assert_eq!(allocator.buildings[0].occupancy, 1);
+    assert!(members.iter().all(|&a| agents.home_building[a] == 0));
 }
 
 #[test]

@@ -1105,6 +1105,10 @@ pub(crate) fn saleable_output_stock(
     (building.inventory_units(resource) - own_reserve).max(0.0)
 }
 
+/// Days of essentials household `household` can cover: its cash net of power arrears plus the
+/// supplies it has paid for (its pantry and a shopper's paid basket, at the catalog price),
+/// over its daily essential cost. Buying supplies turns cash into pantry at that price, so a
+/// purchase leaves the reserve unchanged (`ECON-31`). O(1) over the small catalog.
 pub(crate) fn household_reserve_days(
     catalog: &RuntimeEconomyCatalog,
     tuning: &RuntimeEconomyTuning,
@@ -1112,8 +1116,8 @@ pub(crate) fn household_reserve_days(
 ) -> f32 {
     let members = household.member_count.max(1) as f32;
     let household_supply_resource = household_supply_resource_runtime_id(catalog);
-    let daily_supply_cost =
-        members * household.consumption_rate.max(0.0) * household_supply_unit_price(catalog);
+    let supply_unit_price = household_supply_unit_price(catalog);
+    let daily_supply_cost = members * household.consumption_rate.max(0.0) * supply_unit_price;
     let daily_cash_demand_sink_cost = members
         * demand_sink_cash_cost_per_resident_excluding_resource(catalog, household_supply_resource);
     let daily_utility_cost = household_daily_utility_allowance(catalog, tuning, members);
@@ -1121,8 +1125,10 @@ pub(crate) fn household_reserve_days(
     if daily_essential_cost <= 0.0 {
         0.0
     } else {
-        ((household.budget - household.power_arrears.total()).max(0.0) / daily_essential_cost)
-            .max(0.0)
+        let cash = (household.budget - household.power_arrears.total()).max(0.0);
+        let paid_supplies =
+            (household.stock + household.reserved_amount).max(0.0) * supply_unit_price;
+        ((cash + paid_supplies) / daily_essential_cost).max(0.0)
     }
 }
 
