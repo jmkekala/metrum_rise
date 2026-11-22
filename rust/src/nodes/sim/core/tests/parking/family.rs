@@ -26,9 +26,21 @@ const SPEED: f32 = 8.0;
 fn arriving() -> (SimCore, AgentHandle) {
     let (mut c, border) = road_and_home();
     let pos = c.region_graph.node(border).pos;
-    let i = c.agents.spawn_household_arrival_carrier(0, SIZE, COMPOSITION, border, pos.x, pos.z);
-    assert!(c.agents.start_parking_move_in(i, &mut c.parking, &c.allocator, &c.transit_network, &c.region_graph));
-    assert_eq!(c.agents.parking_trip[i].phase, ParkingTripPhase::Drive, "the carrier drives");
+    let i = c
+        .agents
+        .spawn_household_arrival_carrier(0, SIZE, COMPOSITION, border, pos.x, pos.z);
+    assert!(c.agents.start_parking_move_in(
+        i,
+        &mut c.parking,
+        &c.allocator,
+        &c.transit_network,
+        &c.region_graph
+    ));
+    assert_eq!(
+        c.agents.parking_trip[i].phase,
+        ParkingTripPhase::Drive,
+        "the carrier drives"
+    );
     c.agents.release_departure(i);
     c.households.recount_pending_arrivals(&mut c.agents);
     c.time.speed_multiplier = SPEED;
@@ -93,17 +105,42 @@ fn the_family_steps_out_at_the_car_doors_and_walks_in_once() {
     let households = c.households.households.len();
     step_until(&mut c, 4000, |c| household_of(c, carrier).is_some());
     let h = household_of(&c, carrier).unwrap();
-    assert_eq!(c.households.households.len(), households + 1, "one household formed");
+    assert_eq!(
+        c.households.households.len(),
+        households + 1,
+        "one household formed"
+    );
     assert_eq!(c.households.households[h].member_count, SIZE);
-    assert_eq!(c.households.pending_arrivals.households, 0, "no longer pending");
+    assert_eq!(
+        c.households.pending_arrivals.households, 0,
+        "no longer pending"
+    );
     let place = c.agents.parking_trip[c.agents.resolve_agent(carrier).unwrap()].destination;
     let family = members(&c, carrier);
-    assert_eq!(family.len(), usize::from(SIZE), "every member steps out of the one car");
+    assert_eq!(
+        family.len(),
+        usize::from(SIZE),
+        "every member steps out of the one car"
+    );
     for (m, &i) in family.iter().enumerate() {
-        let [x, z] = c.parking.car_exit_point(place, m, crate::config::LEFT_HAND_DRIVE).unwrap();
-        assert_eq!((c.agents.pos_x[i], c.agents.pos_y[i]), (x, z), "member {m} at its door");
-        assert_eq!(c.agents.age_group[i], COMPOSITION.member_age_group(m as u16), "member {m}");
-        assert_eq!(c.agents.transit[i], TRANSIT_ACCESS_EGRESS, "member {m} walking");
+        let [x, z] = c
+            .parking
+            .car_exit_point(place, m, crate::config::LEFT_HAND_DRIVE)
+            .unwrap();
+        assert_eq!(
+            (c.agents.pos_x[i], c.agents.pos_y[i]),
+            (x, z),
+            "member {m} at its door"
+        );
+        assert_eq!(
+            c.agents.age_group[i],
+            COMPOSITION.member_age_group(m as u16),
+            "member {m}"
+        );
+        assert_eq!(
+            c.agents.transit[i], TRANSIT_ACCESS_EGRESS,
+            "member {m} walking"
+        );
         assert_eq!(c.agents.transit_mode[i], MODE_WALK);
         assert_eq!(c.agents.parking_trip[i].phase, ParkingTripPhase::WalkToDoor);
         assert_eq!(c.agents.home_building[i], 0);
@@ -111,10 +148,16 @@ fn the_family_steps_out_at_the_car_doors_and_walks_in_once() {
     // They walk the whole way at walking pace, none jumping ahead, and all get in.
     let step_m = crate::config::AGENT_WALK_SPEED_MS * (FRAME_S as f32 * SPEED) + 1e-3;
     for _ in 0..4000 {
-        if family.iter().all(|&i| c.agents.transit[i] == TRANSIT_IN_BUILDING) {
+        if family
+            .iter()
+            .all(|&i| c.agents.transit[i] == TRANSIT_IN_BUILDING)
+        {
             break;
         }
-        let before: Vec<_> = family.iter().map(|&i| (c.agents.pos_x[i], c.agents.pos_y[i], c.agents.transit[i])).collect();
+        let before: Vec<_> = family
+            .iter()
+            .map(|&i| (c.agents.pos_x[i], c.agents.pos_y[i], c.agents.transit[i]))
+            .collect();
         c.step_frame(FRAME_S);
         for (&i, &(x, z, transit)) in family.iter().zip(&before) {
             if transit == TRANSIT_ACCESS_EGRESS && c.agents.transit[i] == TRANSIT_ACCESS_EGRESS {
@@ -129,8 +172,20 @@ fn the_family_steps_out_at_the_car_doors_and_walks_in_once() {
     }
     // Nobody counted twice or lost: one household of six at the home, six residents.
     assert_eq!(c.households.households.len(), households + 1);
-    assert_eq!(c.households.households.iter().filter(|hh| hh.home_building_id == 0).count(), 1);
-    assert_eq!((0..c.agents.len()).filter(|&i| c.agents.home_building[i] == 0).count(), usize::from(SIZE));
+    assert_eq!(
+        c.households
+            .households
+            .iter()
+            .filter(|hh| hh.home_building_id == 0)
+            .count(),
+        1
+    );
+    assert_eq!(
+        (0..c.agents.len())
+            .filter(|&i| c.agents.home_building[i] == 0)
+            .count(),
+        usize::from(SIZE)
+    );
     assert_eq!(c.agents.household_members(h).count(), usize::from(SIZE));
     assert_eq!(c.households.pending_arrivals.households, 0);
 }
@@ -142,30 +197,56 @@ fn a_home_removed_during_the_walk_leaves_the_family_unhoused_where_it_stands() {
     for _ in 0..3 {
         c.step_frame(FRAME_S);
     }
-    let household = c.households.handles.handle(household_of(&c, carrier).unwrap());
+    let household = c
+        .households
+        .handles
+        .handle(household_of(&c, carrier).unwrap());
     let family = members(&c, carrier);
-    assert!(family.iter().any(|&i| c.agents.transit[i] == TRANSIT_ACCESS_EGRESS), "still walking");
+    assert!(
+        family
+            .iter()
+            .any(|&i| c.agents.transit[i] == TRANSIT_ACCESS_EGRESS),
+        "still walking"
+    );
     assert!(c.bulldoze_building(0));
     for _ in 0..200 {
         c.step_frame(FRAME_S);
     }
     let h = c.households.handles.resolve(household).unwrap();
-    assert_eq!(c.households.households[h].home_building_id, usize::MAX, "the household is unhoused");
+    assert_eq!(
+        c.households.households[h].home_building_id,
+        usize::MAX,
+        "the household is unhoused"
+    );
     let family: Vec<_> = c.agents.household_members(h).collect();
     assert_eq!(family.len(), usize::from(SIZE), "nobody lost");
     // Each waits where its walk stopped, as any evicted resident out of its home does: in no
     // building, or a walker at its lane's end (`TRAFFIC-24`).
-    let at = |c: &SimCore| family.iter().map(|&i| (c.agents.pos_x[i], c.agents.pos_y[i])).collect::<Vec<_>>();
+    let at = |c: &SimCore| {
+        family
+            .iter()
+            .map(|&i| (c.agents.pos_x[i], c.agents.pos_y[i]))
+            .collect::<Vec<_>>()
+    };
     let waiting = at(&c);
     for _ in 0..60 {
         c.step_frame(FRAME_S);
     }
     assert_eq!(at(&c), waiting, "the family stands still");
     for &i in &family {
-        assert_eq!(c.agents.home_building[i], usize::MAX, "agent {i} has no home");
-        assert_eq!(c.agents.target_building[i], usize::MAX, "agent {i} goes nowhere");
+        assert_eq!(
+            c.agents.home_building[i],
+            usize::MAX,
+            "agent {i} has no home"
+        );
+        assert_eq!(
+            c.agents.target_building[i],
+            usize::MAX,
+            "agent {i} goes nowhere"
+        );
         assert!(
-            c.agents.transit[i] != TRANSIT_IN_BUILDING || c.agents.current_building[i] == usize::MAX,
+            c.agents.transit[i] != TRANSIT_IN_BUILDING
+                || c.agents.current_building[i] == usize::MAX,
             "agent {i} is in no building"
         );
     }
@@ -179,12 +260,19 @@ fn a_road_edit_mid_walk_splits_the_frontage_and_every_member_still_gets_home() {
         c.step_frame(FRAME_S);
     }
     let family = members(&c, carrier);
-    assert!(family.iter().any(|&i| c.agents.transit[i] != TRANSIT_IN_BUILDING), "still walking");
+    assert!(
+        family
+            .iter()
+            .any(|&i| c.agents.transit[i] != TRANSIT_IN_BUILDING),
+        "still walking"
+    );
     // A side road joins the frontage edge beside the lot: the edge splits and its lanes are
     // renumbered under the walkers.
     commit(&mut c, (30.0, 0.0), (30.0, 120.0));
     step_until(&mut c, 4000, |c| {
-        family.iter().all(|&i| c.agents.transit[i] == TRANSIT_IN_BUILDING && c.agents.current_building[i] == 0)
+        family.iter().all(|&i| {
+            c.agents.transit[i] == TRANSIT_IN_BUILDING && c.agents.current_building[i] == 0
+        })
     });
 }
 
@@ -207,7 +295,8 @@ fn digest(c: &SimCore) -> Vec<u64> {
 // end in the same state.
 fn continues_after_load(c: &mut SimCore, name: &str, frames: usize) {
     let path = temp_save_path(name);
-    c.save_game_settled_at(path.to_str().unwrap(), None, 0).unwrap();
+    c.save_game_settled_at(path.to_str().unwrap(), None, 0)
+        .unwrap();
     for _ in 0..frames {
         c.step_frame(FRAME_S);
     }
@@ -232,12 +321,23 @@ fn a_save_before_the_family_steps_out_and_one_mid_walk_continue_as_the_unsaved_r
     for _ in 0..frames - 20 {
         c.step_frame(FRAME_S);
     }
-    assert!(household_of(&c, carrier).is_none(), "nobody has stepped out yet");
+    assert!(
+        household_of(&c, carrier).is_none(),
+        "nobody has stepped out yet"
+    );
     continues_after_load(&mut c, "family-arrival-before-step-out", 60);
-    assert!(household_of(&c, carrier).is_some(), "the family stepped out after the load");
+    assert!(
+        household_of(&c, carrier).is_some(),
+        "the family stepped out after the load"
+    );
     // Mid-walk: some members still on their way.
     let family = members(&c, carrier);
-    assert!(family.iter().any(|&i| c.agents.transit[i] != TRANSIT_IN_BUILDING), "still walking");
+    assert!(
+        family
+            .iter()
+            .any(|&i| c.agents.transit[i] != TRANSIT_IN_BUILDING),
+        "still walking"
+    );
     continues_after_load(&mut c, "family-arrival-mid-walk", 120);
 }
 
@@ -245,12 +345,26 @@ fn a_save_before_the_family_steps_out_and_one_mid_walk_continue_as_the_unsaved_r
 fn a_carrier_without_a_car_walks_in_as_a_walker() {
     let (mut c, border) = road_and_home();
     let pos = c.region_graph.node(border).pos;
-    let i = c.agents.spawn_household_arrival_carrier(0, 3, COMPOSITION, border, pos.x, pos.z);
-    assert_eq!(c.agents.transit_mode[i], crate::simulation::economy::agents::MODE_CAR);
+    let i = c
+        .agents
+        .spawn_household_arrival_carrier(0, 3, COMPOSITION, border, pos.x, pos.z);
+    assert_eq!(
+        c.agents.transit_mode[i],
+        crate::simulation::economy::agents::MODE_CAR
+    );
     // No car (`arrival_car` decided none): the walk from the border.
     c.agents.parking_trip[i].arrival_ownership = true;
     assert!(c.agents.parking_trip[i].vehicle.is_none());
-    assert!(c.agents.start_parking_move_in(i, &mut c.parking, &c.allocator, &c.transit_network, &c.region_graph));
+    assert!(c.agents.start_parking_move_in(
+        i,
+        &mut c.parking,
+        &c.allocator,
+        &c.transit_network,
+        &c.region_graph
+    ));
     assert_eq!(c.agents.parking_trip[i].phase, ParkingTripPhase::None);
-    assert_eq!(c.agents.transit_mode[i], MODE_WALK, "the walk plan resets the border car mode");
+    assert_eq!(
+        c.agents.transit_mode[i], MODE_WALK,
+        "the walk plan resets the border car mode"
+    );
 }

@@ -34,18 +34,28 @@ pub(crate) const STANDING_OFFSET_M: f32 = 0.5;
 pub(crate) const SHARED_DOOR_STEP_M: f32 = 0.6;
 
 const fn door(side: DoorSide, row: DoorRow, x: f32, z: f32, width_m: f32) -> VehicleDoor {
-    VehicleDoor { side, row, centre: [x, 0.0, z], width_m }
+    VehicleDoor {
+        side,
+        row,
+        centre: [x, 0.0, z],
+        width_m,
+    }
 }
 
 /// Where household member `member` (0 the driver) stands when it steps out, `[x, z]` in the
 /// contract frame; `None` when `doors` has no driver's door (no door data). O(doors).
-pub(crate) fn exit_point(doors: &[VehicleDoor], member: usize, left_hand_drive: bool) -> Option<[f32; 2]> {
+pub(crate) fn exit_point(
+    doors: &[VehicleDoor],
+    member: usize,
+    left_hand_drive: bool,
+) -> Option<[f32; 2]> {
     let (driver, passenger) = if left_hand_drive {
         (DoorSide::Left, DoorSide::Right)
     } else {
         (DoorSide::Right, DoorSide::Left)
     };
-    let find = |row: DoorRow, side: DoorSide| doors.iter().position(|d| d.row == row && d.side == side);
+    let find =
+        |row: DoorRow, side: DoorSide| doors.iter().position(|d| d.row == row && d.side == side);
     let driver_door = find(DoorRow::Front, driver)?;
     // The first use of each door, in member order, then the doors further members share.
     let first = [
@@ -67,7 +77,10 @@ pub(crate) fn exit_point(doors: &[VehicleDoor], member: usize, left_hand_drive: 
         let extra = member - firsts;
         let count = shared.iter().flatten().count();
         let index = *shared.iter().flatten().nth(extra % count)?;
-        (index, usize::from(first.contains(&Some(index))) + extra / count)
+        (
+            index,
+            usize::from(first.contains(&Some(index))) + extra / count,
+        )
     };
     let d = &doors[index];
     let outward = match d.side {
@@ -98,7 +111,11 @@ impl super::ParkingSystem {
     ) -> Option<[f32; 2]> {
         let p = self.place_handles.resolve(place)?;
         let local = exit_point(&CAR_DOORS, member, left_hand_drive)?;
-        Some(world_point(self.places.position[p], self.places.heading[p], local))
+        Some(world_point(
+            self.places.position[p],
+            self.places.heading[p],
+            local,
+        ))
     }
 }
 
@@ -112,7 +129,11 @@ mod tests {
             .join(asset)
             .join("asset.toml");
         let text = std::fs::read_to_string(path).unwrap();
-        crate::assets::AssetManifest::from_str(&text).unwrap().vehicle.unwrap().doors
+        crate::assets::AssetManifest::from_str(&text)
+            .unwrap()
+            .vehicle
+            .unwrap()
+            .doors
     }
 
     #[test]
@@ -122,12 +143,23 @@ mod tests {
 
     // Each member's door (`side`, `row`) and how many stood at it before, matched against the
     // point the rule gives for each door and use.
-    fn seat(doors: &[VehicleDoor], member: usize, left_hand_drive: bool) -> (DoorSide, DoorRow, usize) {
+    fn seat(
+        doors: &[VehicleDoor],
+        member: usize,
+        left_hand_drive: bool,
+    ) -> (DoorSide, DoorRow, usize) {
         let [x, z] = exit_point(doors, member, left_hand_drive).unwrap();
         for d in doors.iter().filter(|d| d.row != DoorRow::Cargo) {
-            let out = if d.side == DoorSide::Left { STANDING_OFFSET_M } else { -STANDING_OFFSET_M };
+            let out = if d.side == DoorSide::Left {
+                STANDING_OFFSET_M
+            } else {
+                -STANDING_OFFSET_M
+            };
             for uses in 0..8 {
-                let p = [d.centre[0] + out, d.centre[2] - SHARED_DOOR_STEP_M * uses as f32];
+                let p = [
+                    d.centre[0] + out,
+                    d.centre[2] - SHARED_DOOR_STEP_M * uses as f32,
+                ];
                 if (p[0] - x).abs() < 1e-5 && (p[1] - z).abs() < 1e-5 {
                     return (d.side, d.row, uses);
                 }
@@ -145,12 +177,26 @@ mod tests {
         let left: Vec<_> = (0..6).map(|m| seat(&estate, m, true)).collect();
         assert_eq!(
             left,
-            [(Left, Front, 0), (Right, Front, 0), (Right, Rear, 0), (Left, Rear, 0), (Right, Rear, 1), (Left, Rear, 1)]
+            [
+                (Left, Front, 0),
+                (Right, Front, 0),
+                (Right, Rear, 0),
+                (Left, Rear, 0),
+                (Right, Rear, 1),
+                (Left, Rear, 1)
+            ]
         );
         let right: Vec<_> = (0..6).map(|m| seat(&estate, m, false)).collect();
         assert_eq!(
             right,
-            [(Right, Front, 0), (Left, Front, 0), (Left, Rear, 0), (Right, Rear, 0), (Left, Rear, 1), (Right, Rear, 1)]
+            [
+                (Right, Front, 0),
+                (Left, Front, 0),
+                (Left, Rear, 0),
+                (Right, Rear, 0),
+                (Left, Rear, 1),
+                (Right, Rear, 1)
+            ]
         );
         // The truck has only front doors: every passenger leaves by the passenger door, one step
         // further back each.
@@ -158,7 +204,14 @@ mod tests {
         let left: Vec<_> = (0..6).map(|m| seat(&truck, m, true)).collect();
         assert_eq!(
             left,
-            [(Left, Front, 0), (Right, Front, 0), (Right, Front, 1), (Right, Front, 2), (Right, Front, 3), (Right, Front, 4)]
+            [
+                (Left, Front, 0),
+                (Right, Front, 0),
+                (Right, Front, 1),
+                (Right, Front, 2),
+                (Right, Front, 3),
+                (Right, Front, 4)
+            ]
         );
         // No two members of one car stand on one spot; no door data, no point.
         for doors in [&estate, &truck] {
@@ -166,7 +219,10 @@ mod tests {
                 let points: Vec<_> = (0..6).map(|m| exit_point(doors, m, lhd).unwrap()).collect();
                 for (a, p) in points.iter().enumerate() {
                     for q in &points[a + 1..] {
-                        assert!((p[0] - q[0]).hypot(p[1] - q[1]) >= 0.5, "{p:?} and {q:?} overlap");
+                        assert!(
+                            (p[0] - q[0]).hypot(p[1] - q[1]) >= 0.5,
+                            "{p:?} and {q:?} overlap"
+                        );
                     }
                 }
             }
@@ -180,6 +236,9 @@ mod tests {
         let heading = (-1.0f32).atan2(-0.0);
         let [x, z] = world_point([100.0, 0.0, 50.0], heading, [0.895, 0.3675]);
         // Facing +X, the driver's left is world -Z; the front door is slightly ahead.
-        assert!((x - 100.3675).abs() < 1e-4 && (z - 49.105).abs() < 1e-4, "{x} {z}");
+        assert!(
+            (x - 100.3675).abs() < 1e-4 && (z - 49.105).abs() < 1e-4,
+            "{x} {z}"
+        );
     }
 }
