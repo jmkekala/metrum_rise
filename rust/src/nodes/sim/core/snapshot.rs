@@ -47,7 +47,21 @@ pub(crate) fn access_phase_target(
         let [_, _, [ax, az], [sx, sz]] = core.parking.dock_route(trip.destination)?;
         return Some(Vector3::new(2.0 * sx - ax, 0.0, 2.0 * sz - az));
     }
-    if matches!(trip.phase, crate::simulation::parking::ParkingTripPhase::PullOut | crate::simulation::parking::ParkingTripPhase::PullIn) {
+    let pulling = matches!(trip.phase, crate::simulation::parking::ParkingTripPhase::PullOut | crate::simulation::parking::ParkingTripPhase::PullIn);
+    if pulling && trip.drop_off && (if egress { trip.source } else { trip.destination }).is_none() {
+        // A drop-off car pulling over to its kerb stop or out of it (`PARK-34`) keeps facing
+        // along the lane it left or joins: one step ahead of it along that lane.
+        let (lane, d) = if egress {
+            (core.agents.planned_attach_lane_id[agent_idx], core.agents.planned_attach_lane_d[agent_idx])
+        } else {
+            (core.agents.planned_detach_lane_id[agent_idx], core.agents.planned_detach_lane_d[agent_idx])
+        };
+        let lane = core.transit_network.lane_system.lanes.get(lane as usize)?;
+        let t = BuildingAllocator::sample_tangent_on_polyline(&lane.geometry, lane.length, d);
+        let (x, z) = (core.agents.pos_x[agent_idx], core.agents.pos_y[agent_idx]);
+        return Some(Vector3::new(x + t.x, 0.0, z + t.y));
+    }
+    if pulling {
         let (_, path) = pulling_maneuver(core, agent_idx, egress)?;
         let path=path.as_slice();
         let current=godot::prelude::Vector2::new(core.agents.pos_x[agent_idx],core.agents.pos_y[agent_idx]);

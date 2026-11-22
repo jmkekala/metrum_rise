@@ -152,9 +152,11 @@ impl AgentSystem {
 
     /// Starts carrier `i`'s drop-off from `border` to its stop at `home`: the home catchment's
     /// first free place, without reserving it (the car only stops there), else the kerb stop at
-    /// the door ([`super::tick::kerb_stop_entrance`]). The carrier keeps its household's car
-    /// decision; its own car, if any, stays stored. False, with nothing changed, when no road
-    /// reaches either stop. O(k + 2Q), at the paced departure.
+    /// the door ([`super::tick::kerb_stop_entrance`]), else, for a door no car reaches, the
+    /// nearest free place a car reaches and a walk leads from to the door, as an own car's wider
+    /// search finds one. The carrier keeps its household's car decision; its own car, if any,
+    /// stays stored. False, with nothing changed, when no road reaches any of them. O(k + 2Q),
+    /// or O(local places + 8 × 2Q) for the door no car reaches, at the paced departure.
     #[allow(clippy::too_many_arguments)]
     fn start_drop_off(
         &mut self,
@@ -179,6 +181,18 @@ impl AgentSystem {
             let plan = super::tick::plan_border_arrival(border, home, MODE_CAR, &kerb, network, graph,
                 &self.pathfind_count)?;
             Some((Handle::NONE, plan))
+        }).or_else(|| {
+            let building = allocator.buildings.get(home)?;
+            let door = allocator.entrances.get(home)?;
+            let (nearest, count) = parking.nearest_free_places([building.center_x, building.center_y]);
+            nearest[..count].iter().find_map(|&place| {
+                let entrance = parking.place_entrance(place, allocator, network, graph)?;
+                super::tick::quote_parking_leg(MODE_WALK, &entrance, door, [0.0; 2], network,
+                    graph, &self.pathfind_count, None)?;
+                let plan = super::tick::plan_border_arrival(border, home, MODE_CAR, &entrance,
+                    network, graph, &self.pathfind_count)?;
+                Some((place, plan))
+            })
         });
         let Some((place, plan)) = stop else {
             return false;
