@@ -244,9 +244,9 @@ impl AgentSystem {
     /// to the gate lets the next have the dock and tries again on the retry wheel in 30 s. The
     /// trucks left waiting move up at driveway speed to their places in the line at the kerb
     /// (`kerb_queue_entrance`), and at the yard speed along the way in to theirs (`way_in_place`),
-    /// as the trucks ahead leave. O(C + W log W + W × (docks of one building × W + way points)
-    /// + G × Q) for C candidates, W waiting trucks and G grants; a city without docks pays one
-    /// emptiness test. The list is reused.
+    /// as the trucks ahead leave. For C candidates, W waiting trucks and G grants:
+    /// O(C + W log W + W × (docks of one building × W + way points) + G × Q); a city without
+    /// docks pays one emptiness test. The list is reused.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn grant_docks_at_kerbs(
         &mut self,
