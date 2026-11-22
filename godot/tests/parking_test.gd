@@ -40,20 +40,19 @@ func _vehicle_meshes(sim: SimulationNode) -> void:
 			_expect((parked.surface_get_material(0) as ShaderMaterial).shader == VehicleResources.BODY_SHADER,
 				"look %d tier %d draws through the body shader" % [look, tier])
 			var arrays := parked.surface_get_arrays(0)
-			var colours: PackedColorArray = arrays[Mesh.ARRAY_COLOR]
+			# The ids in CUSTOM0 as bytes, no COLOR (`RENDER-70`).
+			var ids: PackedByteArray = arrays[Mesh.ARRAY_CUSTOM0] if arrays[Mesh.ARRAY_CUSTOM0] is PackedByteArray else PackedByteArray()
 			var vertices: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
 			var parts := {}
-			var exact := true
+			var exact := arrays[Mesh.ARRAY_COLOR] == null and ids.size() == vertices.size() * 4
 			var nose := 0.0
-			for i in colours.size():
-				var c := colours[i] * 255.0
-				exact = exact and absf(c.r - roundf(c.r)) < 0.01 and absf(c.g - roundf(c.g)) < 0.01 and absf(c.b - roundf(c.b)) < 0.01
-				parts[int(roundf(c.r))] = true
-				var surface := int(roundf(c.g))
-				exact = exact and (surface <= 15 or (surface >= 32 and surface <= 47)) and int(roundf(c.b)) in [0, 255]
+			for i in ids.size() / 4:
+				parts[ids[i * 4]] = true
+				var surface := ids[i * 4 + 1]
+				exact = exact and (surface <= 15 or (surface >= 32 and surface <= 47)) and ids[i * 4 + 2] in [0, 255]
 				if surface == 7:
 					nose += vertices[i].z
-			_expect(exact, "look %d tier %d: ids arrive as exact bytes" % [look, tier])
+			_expect(exact, "look %d tier %d: ids arrive as exact bytes in CUSTOM0" % [look, tier])
 			var expected_parts := [0, 1, 2, 3, 4] if tier < 2 else [0]
 			_expect(parts.keys().all(func(part): return part in expected_parts) and parts.size() == expected_parts.size(),
 				"look %d tier %d: wheel parts %s" % [look, tier, parts.keys()])

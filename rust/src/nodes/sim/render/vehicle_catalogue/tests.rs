@@ -53,11 +53,15 @@ fn picks_are_stable_and_spread_over_variants_and_paints() {
 }
 
 #[test]
-fn the_word_packs_lamps_paint_and_blink_exactly() {
+fn the_custom_data_packs_lamps_paint_and_blink_exactly_in_half_floats() {
     let drawn = DrawnVehicle { look: 0, model: 0, paint: 63, blink: 15 };
-    let word = drawn.word(0xff) as u32;
-    assert_eq!((word & 0xff, (word >> 8) & 63, word >> 14), (0xff, 63, 15));
-    assert_eq!(drawn.custom(0.0, LAMP_LIGHTS_ON)[2] as u32 & 0xff, 1);
+    let custom = drawn.custom(0.0, 0x1ff);
+    let (lamps, word) = (custom[2] as u32, custom[3] as u32);
+    assert_eq!((lamps, word & 63, word >> 6), (0xff, 63, 15));
+    assert_eq!(drawn.custom(0.0, LAMP_LIGHTS_ON)[2] as u32, 1);
+    // Every value whole and below 2048: exact in the half floats the Compatibility renderer
+    // stores custom data as (`RENDER-70`).
+    assert!(custom[2..].iter().all(|&value| value.fract() == 0.0 && value < 2048.0));
 }
 
 #[test]

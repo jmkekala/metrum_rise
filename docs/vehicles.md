@@ -953,8 +953,8 @@ A row is the MultiMesh transform (12 floats) and one custom-data vector:
 | --- | --- | --- |
 | `custom.x` | front wheel steer angle, radians, positive to the left | the snapshot's target, eased by the frame job ([`RENDER-66`](#as-built-brake-lights-indicators-reverse-lamp-and-wheels-render-66)) |
 | `custom.y` | wheel roll angle, radians, positive rolling forward | the frame job, from the drawn travel |
-| `custom.z` | one whole number: bits 0-7 lamps, 8-13 paint index, 14-17 blink phase | the snapshot |
-| `custom.w` | reserved | 0 |
+| `custom.z` | the lamp bits, a whole number 0-255 | the snapshot |
+| `custom.w` | the look word, a whole number: bits 0-5 paint index, 6-9 blink phase | the snapshot |
 
 Lamp bits: 0 lights on (driving), 1 brake, 2 indicator left, 3 indicator right, 4 reverse,
 5 high beam, 6 beacon, 7 spare. The snapshot writes the vector per posed car
@@ -963,6 +963,13 @@ into the drawn rows and compares it in its untouched-bucket test, so a car at re
 nothing and a changed word uploads once. Parked rows carry the paint with every lamp bit zero.
 Vehicle MultiMeshes keep `use_colors = false` and set `use_custom_data`; the shadow twins and
 the parked slots take the same rows.
+
+Why two whole numbers and not one (`RENDER-70`): the Compatibility renderer keeps instance custom
+data as half floats (Godot 4.7.2's GLES3 `MultiMesh`), which hold whole numbers exactly only up to
+2048 and turn anything past 65504 into infinity. One 18-bit word lost its lamp bits above 2048 and
+became infinity for every blink phase from 4 up; split, each value stays below 1024 and is exact
+in both renderers. The steer and roll angles lose only precision there (a roll in `[0, 2π)` keeps
+about a quarter degree).
 
 ### Tiers
 
@@ -988,11 +995,17 @@ GDScript loads each tier through Godot's glTF importer, as building meshes are
 (`godot/scripts/renderers/vehicle_resources.gd`), after taking the images, textures and material
 texture slots out of the GLB's JSON chunk: the body shader binds the maps itself, so the importer
 decodes no texture and never tries to load a `keep` file as a resource. The tier is then turned
-half a turn about `Y` (`x` and `z` negated exactly), and each `COLOR_0` id is written back as its
-byte plus half a step, so the engine's float-to-byte truncation keeps it exact. The hand-written
+half a turn about `Y` (`x` and `z` negated exactly), and the `COLOR_0` ids move to the mesh's
+`CUSTOM0` as their exact bytes (RGBA8 unorm); the mesh keeps no `COLOR` (`RENDER-70`). The
+Compatibility renderer multiplies a shader's `COLOR` by the instance colour of a `MultiMesh`
+even when it has no colours: its GLES3 storage reserves the colour beside the custom data and
+never writes it, so the ids came out as zero (the custom data's raw bits for a moving car) and
+every body drew unpainted. Forward+ multiplies only with instance colours on, which is why the
+bug showed in Compatibility alone. The lamp glow quads carry their colour and radius in `CUSTOM0`
+(RGBA float) for the same reason. The hand-written
 GDScript GLB reader is gone (`RENDER-59`), and with it the `Color8` path the contract allowed
 for it. `godot/tests/parking_test.gd` checks every tier of every bundled look: one body surface,
-ids exact bytes in the allowed sets, wheel parts on LOD0 and LOD1 only, the low beams at `-Z`.
+ids exact bytes in `CUSTOM0` in the allowed sets and no `COLOR`, wheel parts on LOD0 and LOD1 only, the low beams at `-Z`.
 
 **Forward axis: not changed in 1a.** The runtime still points a car's `-Z` along travel, and the
 models are turned at load, as the placeholder cars were. The planned `+Z` runtime touches the
@@ -1006,7 +1019,7 @@ contract's frame is unchanged; switching later is a contained render change.
 rain, the street lamps' light and the draw fade (`agent_draw_fade.gdshaderinc`); bodies receive no
 shadows, as before:
 
-- vertex: `round(COLOR.rgb * 255.0)` gives part, surface and paint; a wheel vertex (part 1 to 8)
+- vertex: `round(CUSTOM0.rgb * 255.0)` gives part, surface and paint; a wheel vertex (part 1 to 8)
   and its normal are rotated about the wheel's centre (a uniform array per model), roll about
   the model's `X`, then steer about `Y` for a steering wheel; the lamp gain of the vertex's
   surface comes from the lamp bits, the night value (sun 4 to -2 degrees) and, for indicators,

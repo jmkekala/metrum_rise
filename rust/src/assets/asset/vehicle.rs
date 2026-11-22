@@ -260,7 +260,7 @@ pub struct VehiclePaint {
     pub weight: f32,
 }
 
-/// Most paints a model may list: the paint index is six bits of the instance word.
+/// Most paints a model may list: the paint index is six bits of the instance's look word.
 pub const MAX_PAINTS: usize = 64;
 /// Most wheel parts a model may have.
 pub const MAX_WHEELS: usize = 8;

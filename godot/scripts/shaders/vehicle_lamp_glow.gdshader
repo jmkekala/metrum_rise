@@ -3,7 +3,9 @@ render_mode unshaded, blend_add, depth_draw_never, cull_disabled, shadows_disabl
 
 // Halo of a car lamp at night, one camera-facing quad per lamp (vehicle_lamps.gd). All four
 // vertices sit at the lamp centre with the corner in UV; NORMAL is the way the lamp faces, so a
-// headlight shows from ahead and a tail light from behind. Near, a halo of COLOR.a metres; far, at
+// headlight shows from ahead and a tail light from behind. CUSTOM0 holds the lamp's colour (rgb)
+// and radius (a), not COLOR: the Compatibility renderer multiplies COLOR by an instance colour the
+// cars' MultiMesh never writes (`RENDER-70`). Near, a halo of that radius in metres; far, at
 // least `min_pixel_radius` pixels, so traffic stays visible out to the cars' draw distance, over
 // whose fade band the halo fades with its car. By day the quad collapses in the vertex shader and
 // draws nothing.
@@ -20,6 +22,7 @@ uniform vec2 draw_fade_m = vec2(1.0e9, 2.0e9);
 #include "res://scripts/shaders/agent_draw_fade.gdshaderinc"
 
 varying float intensity;
+varying vec3 lamp_colour;
 
 void vertex() {
 	float night = smoothstep(lamps_on_elevation_deg.x, lamps_on_elevation_deg.y, scene_window_clock.y);
@@ -29,11 +32,13 @@ void vertex() {
 	float distance_m = max(-center.z, 0.01);
 	// World size of one pixel at this depth.
 	float pixel_m = distance_m * 2.0 / (PROJECTION_MATRIX[1][1] * VIEWPORT_SIZE.y);
-	float radius = max(COLOR.a, min_pixel_radius * pixel_m);
+	vec4 lamp = CUSTOM0;
+	lamp_colour = lamp.rgb;
+	float radius = max(lamp.a, min_pixel_radius * pixel_m);
 	// Near, a faint halo round a lens that already glows; far, the point carries the lamp alone.
 	intensity = night * agent_draw_fade(MODEL_MATRIX, MAIN_CAM_INV_VIEW_MATRIX, draw_fade_m)
 		* smoothstep(-0.15, 0.5, facing)
-		* mix(0.4, 1.0, smoothstep(COLOR.a, COLOR.a * 6.0, radius));
+		* mix(0.4, 1.0, smoothstep(lamp.a, lamp.a * 6.0, radius));
 	// Drawn just in front of the lens so the car body does not cut the halo.
 	center += to_camera * 0.2;
 	POSITION = intensity > 0.0
@@ -43,5 +48,5 @@ void vertex() {
 
 void fragment() {
 	float halo = exp(-dot(UV, UV) * 4.0);
-	ALBEDO = COLOR.rgb * halo * intensity * glow_energy;
+	ALBEDO = lamp_colour * halo * intensity * glow_energy;
 }

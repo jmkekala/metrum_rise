@@ -2,11 +2,14 @@ shader_type spatial;
 render_mode blend_mix, depth_draw_opaque, cull_back, diffuse_burley, specular_schlick_ggx, shadows_disabled;
 
 // One vehicle body: every tier of every model, moving and parked (`RENDER-65`, docs/vehicles.md
-// "Renderer"). The mesh carries its ids in COLOR_0 as exact bytes (R part, G surface, B paint);
-// the MultiMesh keeps `use_colors` off, so COLOR is the mesh's own, and each car's data comes in
-// INSTANCE_CUSTOM: x the front wheels' steer angle, y the wheels' roll angle (both radians), z
-// one whole number (8 lamp bits, 6 paint bits, 4 blink bits), w spare. The model was turned half
-// a turn about Y at load (cars drive along their -Z), so the wheel centres are in that frame.
+// "Renderer"). The mesh carries its ids in CUSTOM0 as exact bytes (R part, G surface, B paint),
+// not in COLOR: the Compatibility renderer multiplies COLOR by the instance colour even for a
+// MultiMesh without colours, and that colour is then unwritten memory (`RENDER-70`). Each car's
+// data comes in INSTANCE_CUSTOM: x the front wheels' steer angle, y the wheels' roll angle (both
+// radians), z the 8 lamp bits, w the look word (6 paint bits, then 4 blink bits). Compatibility
+// keeps custom data as half floats, so each whole number stays below 2048 and exact. The model
+// was turned half a turn about Y at load (cars drive along their -Z), so the wheel centres are in
+// that frame.
 // The steer, roll, brake, indicator and reverse values come from Rust (`RENDER-66`,
 // nodes/sim/render/vehicle_signals.rs and car_visual.rs).
 
@@ -46,7 +49,7 @@ varying flat float draw_fade;
 #include "res://scripts/shaders/weather_wind.gdshaderinc"
 #include "res://scripts/shaders/agent_draw_fade.gdshaderinc"
 
-// Lamp bits of the instance word (docs/vehicles.md "Per-car data").
+// Lamp bits of INSTANCE_CUSTOM.z (docs/vehicles.md "Per-car data").
 const int LIGHTS_ON = 1;
 const int BRAKE = 2;
 const int INDICATOR_LEFT = 4;
@@ -71,8 +74,8 @@ float lamp_share(int surface, int lamps, float night, float blink) {
 }
 
 void vertex() {
-	// Exact bytes: the engine stores COLOR as unsigned bytes and hands back byte / 255.
-	vec3 ids = round(COLOR.rgb * 255.0);
+	// Exact bytes: CUSTOM0 is stored as unsigned normalized bytes and read back as byte / 255.
+	vec3 ids = round(CUSTOM0.rgb * 255.0);
 	int part = int(ids.r);
 	if (part >= 1 && part <= 8) {
 		vec4 wheel = wheels[part - 1];
@@ -88,10 +91,10 @@ void vertex() {
 		TANGENT = rotation * TANGENT;
 		BINORMAL = rotation * BINORMAL;
 	}
-	int word = int(INSTANCE_CUSTOM.z + 0.5);
-	int lamps = word & 255;
-	int paint = (word >> 8) & 63;
-	float blink_offset = float((word >> 14) & 15) / 16.0;
+	int lamps = int(INSTANCE_CUSTOM.z + 0.5) & 255;
+	int look = int(INSTANCE_CUSTOM.w + 0.5);
+	int paint = look & 63;
+	float blink_offset = float((look >> 6) & 15) / 16.0;
 	paint_face = ids.b;
 	paint_colour = paint_enabled ? palette[paint] : vec3(1.0);
 	float night = smoothstep(lamps_on_elevation_deg.x, lamps_on_elevation_deg.y, scene_window_clock.y);

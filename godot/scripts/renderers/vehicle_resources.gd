@@ -5,7 +5,7 @@
 ## names the looks, a model in one albedo variant, and each car bucket is `look * 4 + tier`. A
 ## tier is read through Godot's glTF importer as building meshes are, turned half a turn about Y
 ## (cars drive along their -Z) and drawn with one body shader (`vehicle_body.gdshader`) that reads
-## the ids the mesh carries in COLOR_0. Lamps are optional, so parked meshes have no headlight or
+## the ids the model carries in COLOR_0, moved to CUSTOM0 at load (`RENDER-70`). Lamps are optional, so parked meshes have no headlight or
 ## glow surface. With no vehicle model at all a procedural box car, sized to the car class box,
 ## draws every bucket. Loading runs when a renderer first meets a bucket, never per frame.
 extends RefCounted
@@ -16,6 +16,8 @@ const PipelineTemplate := preload("res://scripts/renderers/pipeline_template.gd"
 const BODY_SHADER := preload("res://scripts/shaders/vehicle_body.gdshader")
 const TIERS := 4
 const PALETTE_SIZE := 64
+# The ids' vertex format: CUSTOM0 as four unsigned normalized bytes.
+const IDS_CUSTOM := Mesh.ARRAY_CUSTOM_RGBA8_UNORM
 const WHEEL_SLOTS := 8
 
 var lamps_enabled := true
@@ -62,7 +64,8 @@ func mesh_for_bucket(bucket: int) -> ArrayMesh:
 	if arrays.is_empty():
 		return _build_car_mesh()
 	var mesh := ArrayMesh.new()
-	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays, [], {},
+		IDS_CUSTOM << Mesh.ARRAY_FORMAT_CUSTOM0_SHIFT)
 	mesh.surface_set_material(0, _tier_material(bucket) if tier_bands else _material(look_index))
 	if lamps_enabled:
 		VehicleLamps.add_surfaces(mesh, "model%d" % look["model"], look["head_lamp"], look["tail_lamp"],
@@ -101,9 +104,9 @@ func _import_tier(path: String) -> Array:
 
 
 # The tier in the frame cars are drawn in: the node transform, then half a turn about Y (x and z
-# negated exactly). Ids are snapped to their bytes plus half a step, so the engine's float-to-byte
-# truncation keeps every id exactly (`RENDER-65`, docs/vehicles.md "Ids, instance colours and
-# paint").
+# negated exactly). The ids move from COLOR to CUSTOM0 as their exact bytes (`RENDER-65`,
+# `RENDER-70`, docs/vehicles.md "Ids, instance colours and paint"): the Compatibility renderer
+# multiplies COLOR by an instance colour a MultiMesh without colours never wrote.
 static func _drawn_arrays(arrays: Array, node: Transform3D) -> Array:
 	var vertices: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
 	for i in vertices.size():
@@ -127,11 +130,16 @@ static func _drawn_arrays(arrays: Array, node: Transform3D) -> Array:
 		arrays[Mesh.ARRAY_TANGENT] = tangents
 	if arrays[Mesh.ARRAY_COLOR] is PackedColorArray:
 		var colors: PackedColorArray = arrays[Mesh.ARRAY_COLOR]
+		var ids := PackedByteArray()
+		ids.resize(colors.size() * 4)
 		for i in colors.size():
 			var c := colors[i]
-			colors[i] = Color((roundf(c.r * 255.0) + 0.5) / 255.0, (roundf(c.g * 255.0) + 0.5) / 255.0,
-				(roundf(c.b * 255.0) + 0.5) / 255.0, 1.0)
-		arrays[Mesh.ARRAY_COLOR] = colors
+			ids[i * 4] = int(roundf(c.r * 255.0))
+			ids[i * 4 + 1] = int(roundf(c.g * 255.0))
+			ids[i * 4 + 2] = int(roundf(c.b * 255.0))
+			ids[i * 4 + 3] = 255
+		arrays[Mesh.ARRAY_CUSTOM0] = ids
+		arrays[Mesh.ARRAY_COLOR] = null
 	return arrays
 
 
@@ -296,10 +304,11 @@ func _add_quad(verts: Array, norms: Array,
 
 
 ## The menu's pipeline prewarm template of the cars (`RENDER-43`): the body shader with the fade
-## (any band selects it) on the tiers' vertex format (positions, normals, tangents, colours, UVs).
+## (any band selects it) on the tiers' vertex format (positions, normals, tangents, the ids in
+## CUSTOM0 as bytes, UVs).
 static func pipeline_prewarm_surfaces() -> Array:
-	var format := (Mesh.ARRAY_FORMAT_NORMAL | Mesh.ARRAY_FORMAT_TANGENT | Mesh.ARRAY_FORMAT_COLOR
+	var format := (Mesh.ARRAY_FORMAT_NORMAL | Mesh.ARRAY_FORMAT_TANGENT | Mesh.ARRAY_FORMAT_CUSTOM0
 		| Mesh.ARRAY_FORMAT_TEX_UV)
 	var body := PipelineTemplate.bare(BODY_SHADER)
 	body.set_shader_parameter("draw_fade_m", Vector2.ONE)
-	return [[PipelineTemplate.format_mesh(format), body]]
+	return [[PipelineTemplate.format_mesh(format, false, IDS_CUSTOM), body]]

@@ -28,8 +28,8 @@ use std::path::Path;
 pub(crate) const MAX_LOOKS: usize = 64;
 /// Tiers a model has.
 pub(crate) const TIERS: usize = crate::assets::VEHICLE_TIERS;
-/// The instance word's lamp bit for "lights on" (driving): the shader lights tail, low beam and
-/// marker lenses by it at night. The brake, indicator and reverse bits are
+/// The instance's lamp bit (`custom.z`) for "lights on" (driving): the shader lights tail, low
+/// beam and marker lenses by it at night. The brake, indicator and reverse bits are
 /// [`super::vehicle_signals`]'s (`RENDER-66`); high beam and beacon stay zero (`RENDER-67`).
 pub(crate) const LAMP_LIGHTS_ON: u32 = 1;
 
@@ -108,16 +108,18 @@ pub(crate) struct DrawnVehicle {
 }
 
 impl DrawnVehicle {
-    /// The instance custom data's packed word (`custom.z`): 8 lamp bits, 6 paint bits, 4 blink
-    /// bits, 18 bits in all, exact in an `f32`.
-    pub(crate) fn word(self, lamps: u32) -> f32 {
-        (lamps & 0xff | u32::from(self.paint) << 8 | u32::from(self.blink) << 14) as f32
+    /// The instance custom data's look word (`custom.w`): 6 paint bits, then 4 blink bits, 10 bits
+    /// in all. The Compatibility renderer keeps custom data as half floats (`RENDER-70`), exact
+    /// only for whole numbers to 2048, so the lamp bits travel apart in `custom.z`.
+    pub(crate) fn word(self) -> f32 {
+        (u32::from(self.paint) & 63 | u32::from(self.blink & 15) << 6) as f32
     }
 
     /// The instance's custom data as the snapshot gives it: the front wheels' steer target
-    /// (`RENDER-66`), a zero the frame job replaces with the wheels' roll, the word, a spare.
+    /// (`RENDER-66`), a zero the frame job replaces with the wheels' roll, the 8 lamp bits, the
+    /// look word.
     pub(crate) fn custom(self, steer: f32, lamps: u32) -> [f32; 4] {
-        [steer, 0.0, self.word(lamps), 0.0]
+        [steer, 0.0, (lamps & 0xff) as f32, self.word()]
     }
 }
 

@@ -6,8 +6,9 @@
 ## (the vehicle catalogue, `RENDER-65`), in the turned frame the car is drawn in (nose at -Z); each
 ## left-hand lamp mirrors X. Adds two surfaces to every car instance of the MultiMesh:
 ##   - glow: one camera-facing quad per lamp (vehicle_lamp_glow.gdshader). All four vertices sit
-##     at the lamp centre; UV holds the corner (-1..1), NORMAL the way the lamp faces, COLOR.rgb
-##     its colour and COLOR.a its world radius.
+##     at the lamp centre; UV holds the corner (-1..1), NORMAL the way the lamp faces, CUSTOM0.rgb
+##     its colour and CUSTOM0.a its world radius (RGBA float; not COLOR, which the Compatibility
+##     renderer multiplies by an unwritten instance colour, `RENDER-70`).
 ##   - beam: a box round the car (vehicle_headlight_beam.gdshader) that lights whatever surface
 ##     the depth buffer holds inside it: a red tail glow behind, and low beams ahead for cars
 ##     beyond the real headlights of vehicle_headlights.gd.
@@ -44,9 +45,9 @@ const GLOW_MATERIAL_KEY := "glow"
 # `head` and `tail` are the right-hand headlight and tail light centres.
 # `draw_fade_m`, when set, is the cars' draw distance fade band: the glows fade out with the car.
 ## The menu's pipeline prewarm templates (`RENDER-43`): the glow quads' shader on their format
-## (positions, normals, colours, UVs) and the beam boxes' on positions.
+## (positions, normals, CUSTOM0 as RGBA float, UVs) and the beam boxes' on positions.
 static func pipeline_prewarm_surfaces() -> Array:
-	var glow := Mesh.ARRAY_FORMAT_NORMAL | Mesh.ARRAY_FORMAT_COLOR | Mesh.ARRAY_FORMAT_TEX_UV
+	var glow := Mesh.ARRAY_FORMAT_NORMAL | Mesh.ARRAY_FORMAT_CUSTOM0 | Mesh.ARRAY_FORMAT_TEX_UV
 	return [[PipelineTemplate.format_mesh(glow), PipelineTemplate.bare(GLOW_SHADER)],
 		[PipelineTemplate.format_mesh(Mesh.ARRAY_FORMAT_VERTEX), PipelineTemplate.bare(BEAM_SHADER)]]
 
@@ -83,7 +84,7 @@ static func add_surfaces(mesh: ArrayMesh, material_key: String, head_lamp: Vecto
 static func _add_glow_surface(mesh: ArrayMesh, head: Array, tail: Array, material: Material) -> void:
 	var vertices := PackedVector3Array()
 	var normals := PackedVector3Array()
-	var colors := PackedColorArray()
+	var lamp_data := PackedFloat32Array()
 	var uvs := PackedVector2Array()
 	var indices := PackedInt32Array()
 	var lamps := []
@@ -96,17 +97,19 @@ static func _add_glow_surface(mesh: ArrayMesh, head: Array, tail: Array, materia
 		for corner in [Vector2(-1, -1), Vector2(1, -1), Vector2(1, 1), Vector2(-1, 1)]:
 			vertices.append(lamp[0])
 			normals.append(lamp[1])
-			colors.append(lamp[2])
+			var lamp_colour: Color = lamp[2]
+			lamp_data.append_array([lamp_colour.r, lamp_colour.g, lamp_colour.b, lamp_colour.a])
 			uvs.append(corner)
 		indices.append_array([base, base + 1, base + 2, base, base + 2, base + 3])
 	var arrays := []
 	arrays.resize(Mesh.ARRAY_MAX)
 	arrays[Mesh.ARRAY_VERTEX] = vertices
 	arrays[Mesh.ARRAY_NORMAL] = normals
-	arrays[Mesh.ARRAY_COLOR] = colors
+	arrays[Mesh.ARRAY_CUSTOM0] = lamp_data
 	arrays[Mesh.ARRAY_TEX_UV] = uvs
 	arrays[Mesh.ARRAY_INDEX] = indices
-	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays, [], {},
+		Mesh.ARRAY_CUSTOM_RGBA_FLOAT << Mesh.ARRAY_FORMAT_CUSTOM0_SHIFT)
 	mesh.surface_set_material(mesh.get_surface_count() - 1, material)
 
 

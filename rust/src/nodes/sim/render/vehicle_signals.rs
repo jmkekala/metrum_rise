@@ -50,13 +50,13 @@ use crate::simulation::network::lanes::Lane;
 use crate::simulation::parking::ParkingTripPhase;
 use godot::prelude::{Vector2, Vector3};
 
-/// The instance word's brake lamp bit.
+/// The brake lamp bit of the instance's lamp bits (`custom.z`).
 pub(crate) const LAMP_BRAKE: u32 = 1 << 1;
-/// The instance word's left indicator bit.
+/// The left indicator bit of the instance's lamp bits.
 pub(crate) const LAMP_LEFT: u32 = 1 << 2;
-/// The instance word's right indicator bit.
+/// The right indicator bit of the instance's lamp bits.
 pub(crate) const LAMP_RIGHT: u32 = 1 << 3;
-/// The instance word's reverse lamp bit.
+/// The reverse lamp bit of the instance's lamp bits.
 pub(crate) const LAMP_REVERSE: u32 = 1 << 4;
 
 /// Indicators are worked out within this distance of the eye, metres; beyond it the bits are

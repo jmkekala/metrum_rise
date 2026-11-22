@@ -37,7 +37,8 @@ const ROTATION_INTERPOLATION_RATE: f32 = 18.0;
 const SNAP_DISTANCE_M: f32 = 80.0;
 /// Floats per car pose in the MultiMesh `TRANSFORM_3D` row-major 3×4 layout.
 const STRIDE: usize = 12;
-/// Floats per car of instance custom data (`RENDER-65`): steer, roll, the packed word, spare.
+/// Floats per car of instance custom data (`RENDER-65`): steer, roll, the lamp bits, the look
+/// word (paint and blink, `RENDER-70`).
 const CUSTOM: usize = 4;
 /// Floats per drawn row: the pose, then the custom data.
 pub(crate) const ROW: usize = STRIDE + CUSTOM;

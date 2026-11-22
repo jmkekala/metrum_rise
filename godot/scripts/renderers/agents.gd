@@ -375,7 +375,8 @@ func _add_car_bucket(key: int) -> void:
 	var mmi := MultiMeshInstance3D.new()
 	var mm := MultiMesh.new()
 	mm.transform_format = MultiMesh.TRANSFORM_3D
-	# Instance colours would multiply into COLOR and destroy the mesh's ids.
+	# No instance colours: the body shader reads the mesh's ids from CUSTOM0 and the car's data
+	# from INSTANCE_CUSTOM (`RENDER-70`).
 	mm.use_colors = false
 	mm.use_custom_data = true
 	mm.instance_count = 0
