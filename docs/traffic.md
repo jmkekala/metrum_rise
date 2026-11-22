@@ -3520,9 +3520,10 @@ as signed bit patterns, so negative chunk coordinates round-trip. The JSON colum
 
 ### Freight and round 2b
 
-Round 2b of `PARK-02` is not built: freight custody, outside-door deliveries and wider watchdog
-and lifecycle handling. Freight keeps today's door-to-door car path and the stuck-agent watchdog's
-teleport (`TRAFFIC-20`). `PARK-03` (authored yard supply and a parking-backed admission gate) and
+Round 2b of `PARK-02` is not built: freight custody and wider watchdog and lifecycle handling.
+Freight keeps the stuck-agent watchdog's teleport (`TRAFFIC-20`). Since `PARK-36` a truck never
+enters a building: it delivers at a dock or at the building's kerb stop
+([kerb deliveries](#kerb-deliveries-and-the-dock-queue-park-36-as-built)). `PARK-03` (authored yard supply and a parking-backed admission gate) and
 `PARK-04` (paint and signs) are planned; see [`roadmap.md`](roadmap.md).
 
 The freight half of round 2b is now planned as [freight yards](#freight-yards-park-19-to-park-22)
@@ -3592,9 +3593,9 @@ The baseline the plan was written against. A1 changed the last three points: `lo
 | Stage | ID | Lands | Game after it |
 | --- | --- | --- | --- |
 | A1 | `PARK-19` | Vehicle classes in the lot proofs, passages, docks published and shown, the editor's checks, `PARK-18` closed | Trucks drive as today. Docks exist, are saved and are inspected |
-| A2 | `PARK-20` | Trucks use docks at both ends of a trip, with the door fallback | A building with a published dock is served in its yard; every other building as today |
+| A2 | `PARK-20` | Trucks use docks at both ends of a trip, with the door fallback (replaced by the kerb queue, `PARK-36`) | A building with a published dock is served in its yard; every other building as today |
 | B | `PARK-21` | Authored yard routes and a separate exit gate | Drive-through lanes: in at one gate, out at another, no reversing |
-| C | `PARK-22` | Authored waiting positions and a bounded wait | A second truck waits in the yard instead of delivering at the door |
+| C | `PARK-22` | Authored waiting positions and a bounded wait | A second truck waits in the yard instead of delivering at the door. Since `PARK-36` it waits at the kerb stop with no bound but the leg timeout |
 
 The split of the proposed Stage A in two is the one change to the proposed staging: A1 is edit
 and load work with no change to any trip, so it can land and be reviewed in the editor and the
@@ -3794,8 +3795,11 @@ on the road are as before.
   anchor order. It drives the dock's proven route (lane point, gate, approach, aisle, stop) at
   3 m/s (`FREIGHT_YARD_SPEED_MS`, kept apart from the cars' 5 m/s driveway speed since
   `TRAFFIC-43`) and stands in the bay, drawn as an off-lane car facing along the route's last leg.
-- *Refused.* With every dock held it drives the plain access path from the gate's lane point to
-  the door and enters the building, as a door delivery does. It never waits.
+- *Refused.* As built in A2, with every dock held it drove the plain access path from the gate's
+  lane point to the door and entered the building, never waiting. **Replaced by `PARK-36`:** it
+  goes on to the building's kerb stop and waits there for a dock, granted in arrival order
+  ([the dock queue](#kerb-deliveries-and-the-dock-queue-park-36-as-built)); no truck takes the
+  door of a building with a dock.
 - *Standing.* The shipment's next `FreightCheck` delivers, exactly as for a truck inside the
   building (`shipment_carrier_progress_to_endpoint` counts `AtDock` at the destination as
   arrived), and turns it back. The stand is the wait it had before: none to one check interval
@@ -3819,14 +3823,16 @@ before). `held_dock()` names the dock a yard trip holds.
 | `None` | On the road to the gate's lane point, or standing there (`ready`) | the building's handle | none | the plan sites (`set_freight_trip`, `lifecycle.rs`); the lane point after a pull-out bound for another yard | serial event; movement |
 | `PullIn` | Lane point to stop along the dock's route | the building's handle | `destination` | the gate commit that grants the dock | parking ordered phase |
 | `AtDock` | Standing in the bay; the access step returns at once | the building's handle | `destination` | the commit after the route's end | parking ordered phase |
-| `GateToDoor` | The refused carrier's access path from the gate's lane point to the door | the building's handle | none | the gate commit that refuses | parking ordered phase |
+| `GateToDoor` | As built in A2: the refused carrier's access path from the gate's lane point to the door. Replaced by `ToKerb` and `AtKerb` (`PARK-36`) | the building's handle | none | the gate commit that refuses | parking ordered phase |
 | `PullOut` | Stop to the gate's lane point, the route reversed, drawn reversing | the handle of the building whose gate its plan ends at, or `NO_FREIGHT_GATE` (`Handle::NONE`'s bits) for a door or a border | `source` | dispatch (`start_freight_trip_at_dock`), the return (`pull_out_of_dock`), recovery | egress, own row |
 
 The yard trip ends, and with it any hold, at the door (`arrive_in_building`), at a new plan
 (`set_freight_trip`), when the pull-out reaches the lane point (`after_freight_pull_out`, which
 keeps only a next gate), when the building goes, and at removal.
 
-**The fallback rule, in full.** A delivery uses the yard if and only if both hold:
+**The fallback rule, in full** (as built in A2; the second condition's door fallback is replaced
+by the kerb queue of `PARK-36`, and a door is a kerb stop). A delivery used the yard if and only if
+both held:
 
 - at the plan, the destination building has a freight gate (an active dock row; the gate record
   `allocator.freight_gates` is rebuilt from the rows by every reconcile and by the load) and a car
@@ -3857,20 +3863,20 @@ held by nobody is removed. Explicit release happens only in the commit's own exi
 | Event | Phase | What happens |
 | --- | --- | --- |
 | A road edit drops the plan (`clear_route_plan_after_road_edit`) | `None` on the road | Plans again as any carrier; `replan_entrance` gives the gate, or the door when the gate went |
-| | `None` at the gate, `GateToDoor` | Enters at the door as a door carrier whose plan dropped does; the yard trip ends there |
+| | `None` at the gate, `GateToDoor` | Entered at the door as a door carrier whose plan dropped did. Since `PARK-36`: back on the lane at its lane point, planning again (`return_to_lane`) |
 | | `PullIn` | Ends in its bay at the route's stop (`AtDock`), as a resident's pull-in does (`PARK-11`) |
 | | `AtDock` | Stands; only the return reads a plan, and it plans afresh |
 | | `PullOut` | Stops where it is on its route and keeps the dock (`stand_in_yard`, `access_state.rs`); the same tick's ordered commit plans its way out again from the dock's own access (`plan_way_out_of_dock`, `yard.rs`; `replan_freight_pull_out`, `lifecycle.rs`), keeping its place on the route and its journey clock |
 | A stale lane (no legal exit or entry, no route geometry) | `PullIn` | Ends in its bay; never put back on the road |
 | | `PullOut` | As a dropped plan, recorded once as `StaleEntry` whose outcome the commit writes |
-| | `GateToDoor` | Back on the lane at its lane point, planning to the gate again (`replan_entrance` keeps the gate for `GateToDoor`) |
+| | `GateToDoor` | Back on the lane at its lane point, planning to the gate again (`replan_entrance` keeps the gate for `GateToDoor`). Since `PARK-36` `ToKerb` plans to the kerb stop |
 | The frontage road goes | `PullOut` | Stops in the yard; the commit plans nothing while the building's road is deleted and retries |
-| No road leaves the gate for a pull-out | `PullOut` | Stays, holding the dock, and retries on the parking retry wheel (`TripEvent::ParkingRetry`) with the stranded walkers' backoff: 5 s, 30 s, then every 2 min (the step in `network_replan_failures`). Recorded once on `events`: "no road from its loading bay's gate to building n" (or "border node n"); "stops in the yard, keeps its loading bay and plans the way out again in 5 s, until its delivery times out". The other trucks of the building deliver at the door meanwhile |
+| No road leaves the gate for a pull-out | `PullOut` | Stays, holding the dock, and retries on the parking retry wheel (`TripEvent::ParkingRetry`) with the stranded walkers' backoff: 5 s, 30 s, then every 2 min (the step in `network_replan_failures`). Recorded once on `events`: "no road from its loading bay's gate to building n" (or "border node n"); "stops in the yard, keeps its loading bay and plans the way out again in 5 s, until its delivery times out". The other trucks of the building deliver at the door meanwhile (since `PARK-36`: use its other docks or wait at the kerb stop) |
 | The shipment's leg runs out while it waits | any | The check that finds the leg overdue expires a dispatch (with its refund) or finishes a return, and removes the truck where it stands, which frees the dock. This is the bound on the wait: at most the leg's timeout divided by 2 min retries, one plan each, nothing per tick |
 | A dock stops proving, or its asset drops it, with a holder | `PullIn`, `AtDock`, `PullOut` | The row goes inactive and stays with its route, refreshed access included; the truck finishes its yard trip on it. No new grant is made on it. The next reconcile of the building after the truck has left removes it |
 | The building's last dock goes, so its gate record goes | `AtDock` at the return | The truck backs out of its dock all the same: it waits in the bay (`back_out_without_a_gate`) for the commit to plan its way out from the dock's own access, by the rows above |
 | | `None` on the road, `PullOut` bound for it | Loses its plan in one pass over the shipments (`replan_carriers_bound_for_gate`, `nodes/sim/core/parking.rs`) and plans again to the door; also when the gate moves, to the new gate. O(shipments), only on a reconcile that moves or removes a dock building's gate |
-| | `None` at the gate, `GateToDoor` | Goes on: the gate commit reads the current gate (no gate: the door, from where it stands) |
+| | `None` at the gate, `GateToDoor` | Goes on: the gate commit reads the current gate (no gate: the door, from where it stands). Since `PARK-36`, waiting at the kerb stop (`AtKerb`): its yard trip ends and it delivers there |
 | A dock moves | `AtDock` | The new row is added and active; the old one stays inactive for the truck standing in it, which leaves along the old route. The next truck is granted the new dock |
 | A revalidation that leaves a dock's pose | any | The row, its handle and its holder are kept |
 | The building is bulldozed | any | Its shipments are cancelled and their trucks removed, as for door carriers; the dock rows go with the building |
@@ -4298,7 +4304,143 @@ Driveway, so no existing city has a dock and none changes.
 (`nodes/sim/core/snapshot`, `simulation/parking`, per-frame paths), and K22 is added because the
 lot proof's reconcile runs on every edit.
 
+#### Kerb deliveries and the dock queue (`PARK-36`), as built
+
+**Built** on branch `kerb-freight` (2026-11-22) from two of the owner's reports: "the truck goes
+through the front door" (a delivery to a building without a dock drove off the lane to the
+pedestrian door, vanished inside, `TRANSIT_IN_BUILDING`, for the wait until its shipment's next
+check, and reappeared at the door), and "the fallback was to deliver through the front door when
+the bay is busy. We need to change this so that the truck will queue for the access, and remove
+the fallback through the front door." No freight carrier enters a building any more.
+
+**A building without a dock: the kerb stop.** The `PARK-34` drop-off manoeuvre, generalised for
+the truck body: `kerb_stop_entrance(door, graph, inset)` is the door's own entrance with its
+door point moved to `inset` inside the door side's kerb, on the door's road connection;
+`DROP_OFF_KERB_INSET_M` 1.0 m for the drop-off car (half its 1.8 m body and 0.1 m),
+`FREIGHT_KERB_INSET_M` 1.4 m for a truck (half the lot proof's 2.6 m truck body and the same
+0.1 m). The truck's plan is the door's, bit for bit (same detach lane and distance); only its
+access path ends at the kerb stop instead of the door, so it detaches, pulls over to the kerb at
+driveway speed and stands there, `AtKerb` (`stand_at_kerb`, `ingress.rs`), drawn, out of the
+lane buckets, facing along its lane (`access_phase_target`). Its stand starts its
+`journey_start_time`. The shipment's `FreightCheck` takes a truck standing at its destination's
+kerb stop as arrived (`shipment_carrier_progress_to_endpoint`), so delivery, settlement,
+timeouts, refunds and the return leg are the ones a truck inside the building had. A carrier
+leaving a building, at its dispatch or after its delivery, starts standing at that building's
+kerb stop and pulls out (`apply_building_origin_freight_plan`, the egress step's kerb entrance);
+a returning truck stands at its home's kerb stop, where its check finishes the shipment and
+removes it.
+
+- **The floor.** A truck stands at least `KERB_STAND_FLOOR_MINUTES` (2 game minutes) at a kerb
+  stop before its check takes it as arrived, so every delivery is seen. No new timer: a
+  `FreightCheck` that finds the truck standing for less is put off to the minute the floor ends
+  (`SimCore::kerb_stand_floor_slot`, `trips.rs`), and the next check after a delivery is
+  scheduled as before. The stand's start is the saved `journey_start_time` and the put-off
+  check is a saved event, so nothing new is saved for it. A truck that arrives just after a
+  check has been scheduled for later still waits for that check, up to the 8-minute check
+  spacing, as before; only its wait is now visible.
+- **Where it stands.** On the building's side of the road always: the stop is on the door's
+  normal at the door side's kerb. A truck whose plan leaves the road from the far lane of a
+  two-sided frontage (the four-point path) crosses the road to the stop, off the lane, as a
+  drop-off car and every car to a door do; routing is unchanged and does not prefer the near
+  lane. On a road without a parking lane the stop's 2.6 m body reaches 2.7 m in from the kerb,
+  over most of a 3.5 m kerbside lane: following traffic does not see it (it is in no lane
+  bucket) and drives through it, as through a standing drop-off car. On a road side with a
+  parking lane the stop lies in that lane and may overlap a parked car (accepted for now, as for
+  the drop-off; not solved).
+- **Older saves.** A truck a save holds inside a building without a dock (format 128 and older)
+  is still taken as arrived there; its check delivers and it leaves from the kerb stop.
+
+**A building with docks: the queue at the kerb.** With every dock held at the gate commit, the
+truck no longer drives to the door (`GateToDoor` is gone). The commit stamps its place in the
+queue (`journey_start_time`, the moment it reached the gate), sets `ToKerb` and plans it from
+the gate's lane point to the end of the line at the building's kerb stop
+(`drive_from_gate_to_kerb`): it joins the lane through the attach hold where it stands, leaves it
+again beside its place, pulls over to the kerb (`kerb_stop_beside`, its access path ends beside
+where it left the lane) and stands, `AtKerb` with `freight_gate`, `ready`. From the gate the way
+to the kerb is a drive on the lanes: straight on when the place lies ahead, round the block when
+it lies behind or on another road. Should no road lead there, its plan is dropped and the ingress
+step puts it back on the lane and plans it to the kerb stop itself (`return_to_lane`).
+
+- **The grant, in arrival order.** The waiting trucks stand `ready`, so each is among the parking
+  phase's candidates every tick. Before any gate commit of the tick, `grant_docks_at_kerbs`
+  (`yard.rs`) sorts this tick's waiting trucks by (building, stamp, agent) and gives each
+  building's free docks to its trucks in that order. A truck granted a dock keeps it in its trip
+  row (`destination` with phase `None`, `held_dock`) while it pulls out of the kerb stop and
+  drives to the gate's lane point (`drive_from_kerb_to_gate`: the door's plan to the gate, round
+  the block when the gate lies behind the stop), where the gate commit sends it into its own
+  dock. A truck that reaches the gate while others wait finds the freed docks already granted
+  and queues behind them. One that no road takes from the kerb stop to the gate lets the next
+  truck have the dock and asks again in 30 s on the parking retry wheel.
+- **Several waiting: a line along the kerb.** The waiting trucks of one building stand in a line
+  behind the kerb stop, place `k` the stop moved `k` × 9 m (`KERB_QUEUE_SPACING_M`, the 8 m body
+  and 1 m) back along the door side's kerb, against the near lane's travel
+  (`kerb_queue_entrance`). A truck sent on from the gate is planned to the place behind the trucks
+  standing there; each tick the queue pass puts the waiting trucks in arrival order and moves each
+  at driveway speed towards its place, so the line moves up forward as its first truck leaves. No
+  slot is stored: the place is the truck's rank, and its position is saved. A granted truck pulls
+  out from where it stands, heading straight for its lane point (the egress step's off-path start,
+  as a walker stepping out of a car). Capacity: the places fit between the kerb stop and half a
+  truck short of the road edge's end behind it, `floor((s - 4) / 9) + 1` for a door `s` metres
+  from that end; every further truck stands at the last place, drawn over the one there. A line
+  longer than the frontage stands before the neighbours' frontages. Known imperfections: a truck on
+  its way from the gate is not yet in the line, so two refused within its drive may be planned to
+  the same place, and one that arrives after a later-stamped truck took its place moves back to
+  its own (backing along the kerb for 9 m); both are rare and settle by rank.
+- **Drive-through yards.** Not distinguished: a truck for a drive-through dock (`PARK-21`) waits
+  at the kerb stop as one for a dock it backs out of. The owner's rule that drive-through trucks
+  queue on the yard's way in, moving up behind the truck in the bay, is not built (below).
+- **Starvation and deadlock.** A dock is released by the truck that holds it when its pull-out
+  reaches its gate's lane point, or by its removal (`PARK-20`'s holder rule); nothing a waiting
+  truck does can stop that. The waiting truck stands at the kerb stop out of every lane bucket and
+  off the yard's route: the leaving truck's way out (its route reversed to the gate's lane point
+  for a stage A dock, or the exit for a drive-through) and its attach hold read only the lane
+  buckets, so the waiting truck cannot block it, whether the kerb stop lies beside the gate's
+  mouth or not (drawn, they may then overlap for the seconds of the pull-out). A granted truck
+  drives to the gate only once the dock is free, so it never meets the truck it waited for in the
+  yard. The wait is bounded by the shipment's leg timeout (`max(6, 4 × eta + 2)` hours): the
+  check that finds it overdue expires the shipment, refunds the buyer and removes the truck at
+  the kerb, as for any truck; a returning truck waiting at its own home's kerb stop counts as
+  home and is removed by its check.
+- **The window.** Arrival order is kept among trucks standing at the kerb. A truck on its way
+  from the gate to the kerb stop is not yet standing: a dock freed in that minute goes to the next
+  truck to reach the gate.
+
+**State and saves.** `ParkingTripPhase` gains `ToKerb` (format 128's `GateToDoor`, loaded by a
+serde alias) and `AtKerb`; the row stays 56 bytes. Save format 129 (`PRE_KERB_FREIGHT_SAVE_VERSION`
+128 loads as 129 does): a 128 reader cannot read `AtKerb`. A format 128 truck in `GateToDoor`
+loads as `ToKerb`: on its access path from the gate it is taken to the kerb stop and waits there.
+Load validation accepts an `AtKerb` row, which holds no car and no place.
+
+**Recovery.** A freight carrier never enters a building on a failure either: one whose ingress
+plan a road edit dropped goes back onto its lane at the lane point and plans again (`return_to_lane`,
+the invalid-ingress path), instead of arriving inside. A carrier the watchdog sends to a border
+with a yard trip goes back to its gate with a plain yard trip (a granted dock is given up). The
+egress step's dropped-plan path (a road edit under a truck pulling out of a kerb stop) still puts
+it inside the building it was leaving, as before; not changed.
+
+**Cost.** Ingress and egress: one test of the carrier's shipment id and the row's phase per
+access step, and the kerb stop's O(edge points) construction per step of a truck on its access
+path (as the drop-off). The parking phase: one emptiness test in a city without docks; with docks
+O(C + W log W + W × docks of one building + G × Q) per tick for C candidates, W waiting trucks and
+G grants, the list reused. The check: one row read for the floor. No per-tick allocation.
+
+**Owner's choices.**
+
+1. The floor: 2 game minutes (`KERB_STAND_FLOOR_MINUTES`).
+2. Where a queued truck waits: the building's kerb stop (owner's decision 2026-11-22), the second
+   and third in a line behind it along the kerb, 9 m apart, moving up as the first leaves; past
+   the edge's end they stand at the last place.
+3. Drive-through yards: queue on the yard's way in (owner's rule 2026-11-22), not built; they wait
+   at the kerb.
+4. The truck's inset: 1.4 m, the body half-width plus 0.1 m; the stop lies over most of the
+   kerbside lane where there is no parking lane.
+
 #### Stage C: waiting (`PARK-22`)
+
+Since `PARK-36` a truck refused a dock waits at the building's kerb stop, in arrival order, and
+never goes to the door ([the dock queue](#kerb-deliveries-and-the-dock-queue-park-36-as-built)).
+The plan below is kept for its authored waiting positions; its bounded wait and its door are
+superseded.
 
 **Behaviour.** A `loading_bay` anchor with `role = "waiting"` is a waiting position, proven like
 a dock. A carrier refused a dock takes the first free waiting position and stands there. A

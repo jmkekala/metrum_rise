@@ -22,7 +22,9 @@ housing density and stable carrier identity (the household record does not yet e
 decision and the same vehicle are adopted by the household at materialization, without rerolling.
 A free home-catchment bay is reserved before entry: `Drive → PullIn → WalkToDoor`. If none
 is free, the household walks from the external connection and its car stays unavailable off-map.
-Carless households use that same pedestrian arrival. Freight retains its previous itinerary.
+Carless households use that same pedestrian arrival. A freight truck never enters a building: it
+stands in a dock or at the building's kerb stop, a door point moved 1.4 m inside the door side's
+kerb on the door's road connection ([kerb deliveries](traffic.md#kerb-deliveries-and-the-dock-queue-park-36-as-built), `PARK-36`).
 Stored cars use a separate carrier with the same `Drive → PullIn` legs from an external
 connection. It reserves before entry, commits occupancy only at the bay and retires there;
 there is no walking driver or building arrival. Supply events consider at most eight cars,
@@ -39,7 +41,7 @@ return starts at the proposed parked bay. Destination parking is within 400 m wa
 the walk to the actual car has no additional distance cap. Returning home releases custody
 while retaining the car's last bay.
 
-The [parking spec](traffic.md#parking) records bounds, cache memory and acceptance. Freight keeps its previous access behavior for round 2b. `TRAFFIC-13` and `TRAFFIC-15` remain dependencies of the shared detach
+The [parking spec](traffic.md#parking) records bounds, cache memory and acceptance. Freight plans to the door's lane point as before, and its access path ends at the kerb stop instead of the door (`PARK-36`). `TRAFFIC-13` and `TRAFFIC-15` remain dependencies of the shared detach
 function; parking does not add an alternate detach path.
 
 ### The lane hop of a lot or yard manoeuvre (`PARK-29`)
@@ -111,8 +113,8 @@ determinism records are unchanged.
    position widened by `MAX_DRAWN_OFFSET_M` (34.3 m, a loose bound of the hop half: the
    off-lane offsets the tests and stills show stay under 2.6 m). Measured on the prepared 10k
    city: [`traffic.md`](traffic.md#drawn-turns-park-29-as-built).
-5. **Limits.** A freight carrier refused a dock at its gate (`GateToDoor`, rare) leaves the arc's
-   middle for the lane point in one snapshot. A truck backing out of a dock it neither leaves
+5. **Limits.** A freight carrier refused a dock at its gate (`ToKerb` since `PARK-36`, rare) leaves
+   the arc's middle for the lane point in one snapshot. A truck backing out of a dock it neither leaves
    forward nor backed into, or backing into a tail-in dock, still turns its nose about at the
    switch (a cusp: it changes between backing and driving; the line stays smooth). The truck's
    8 m body swings its tail about 0.5 m over the centre line of a two-lane street at the lane
