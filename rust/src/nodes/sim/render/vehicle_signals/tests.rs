@@ -5,9 +5,10 @@
 //! connector, and cars set onto them.
 
 use super::*;
-use crate::config::CAR_LENGTH;
+use crate::config::CAR_BODY_LENGTH_M as CAR_LENGTH;
 use crate::nodes::sim::render::vehicle_catalogue::Axles;
 use crate::simulation::core::config::WorldConfig;
+use crate::simulation::economy::agents::tick::lane_half_length;
 use crate::simulation::economy::agents::{MODE_CAR, TRANSIT_INTERSECTION, TRANSIT_NETWORK};
 use crate::simulation::network::lanes::{Lane, LaneType};
 
@@ -97,7 +98,11 @@ fn fill_buckets(core: &mut SimCore) {
     let lanes = core.transit_network.lane_system.lanes.len();
     let mut buckets = vec![Vec::new(); lanes];
     for i in 0..core.agents.len() {
-        buckets[core.agents.current_lane_id[i]].push((core.agents.lane_distance[i], i));
+        buckets[core.agents.current_lane_id[i]].push((
+            core.agents.lane_distance[i],
+            i,
+            lane_half_length(core.agents.transit_mode[i], core.agents.vehicle_type[i]),
+        ));
     }
     for bucket in &mut buckets {
         bucket.sort_by(|a, b| a.0.total_cmp(&b.0));
