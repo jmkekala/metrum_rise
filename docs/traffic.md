@@ -2602,8 +2602,10 @@ marking's.
 
 Each merged line is one instance of a 1 × 1 m quad (`WorldMaterials.lot_paint_mesh()`, the road
 marking material, so it takes the cloud shadow and the street lamps, receives shadows and casts
-none). It lies on the visible surface (`GradedSurface::surface_height_at`) plus the road markings'
-4 cm decal lift, tilted along the line; where the surface bends under it by more than 2 cm, half
+none). It lies on the visible surface (`GradedSurface::surface_height_at`, read through one graded
+gather over the lot's lines, `gather_near` and `surface_height_near`, bit for bit the point
+query's heights at a seventh of their cost) plus the road markings' 4 cm decal lift, tilted along
+the line; where the surface bends under it by more than 2 cm, half
 the lift (a place reaching a graded tie-in), the line is halved, down to 0.5 m pieces (the finest
 graded lattice), so it never sinks into the ground, and on a level pad a line is one instance and
 five height queries.
@@ -2613,10 +2615,14 @@ after another. A building is marked when one of its places or docks is added, re
 (`replace_building`, `replace_docks`) and when the ground under one changes (`invalidate_ground`
 finds them through the chunk lists; docks, in no car chunk list, have a list of their own per
 chunk for this alone, `Place::chunk_slot` being a dock's slot there; a dense change and a load mark
-every building); custody never marks one. The snapshot lays the marked buildings' lines in
-parallel, O(P log P + lines) for a building's P places and docks, and republishes, under a revision,
-only the chunks whose buildings' rows changed bit for bit, O(that chunk's rows) to copy; nothing
-runs on a frame without a change. `parked_cars.gd`
+every building; a new car profile marks none, its ground being unchanged); custody never marks one.
+A snapshot lays the lines of the next marked buildings in parallel, O(P log P + lines) for a
+building's P places and docks, up to `PLACES_PER_SNAPSHOT` (32) places and docks, in building id
+order and one building at least; the others wait for the next snapshots, still drawn as they were.
+A load or a ground reset rebuilds every building at once. The snapshot republishes, under a
+revision, only the chunks whose buildings' rows changed bit for bit; a chunk publishes its
+buildings' row lists, shared with the store, and only the bridge joins them (one copy on the
+Godot side, as before); nothing runs on a frame without a change. `parked_cars.gd`
 asks for the chunks changed since the revision it holds (one call a frame, empty when none) and
 the stream node draws each chunk as one `MultiMesh` slot of a second parked layer
 (`ParkedLayer::paint`): one draw call per chunk in range, none in the shadow pass, to
@@ -2634,13 +2640,43 @@ nodes::sim::core::populated_city::parking_supply::lot_paint_cost_on_a_prepared_c
 
 | City | Places | Merged lines | Instances (triangles) | Chunks | Largest chunk | Load build | One 12-place lot |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| 10k | 11,860 | 33,120 | 79,075 (158,150) | 24 | 4,987 | 197 ms | 0.47 ms |
-| 30k | 31,477 | 88,033 | 212,556 (425,112) | 64 | 4,937 | 544 ms | 0.70 ms |
+| 10k | 11,860 | 33,120 | 79,075 (158,150) | 24 | 4,987 | 197 ms (point queries) | 0.47 ms (point queries) |
+| 30k | 31,477 | 88,033 | 212,556 (425,112) | 64 | 4,937 | 70 ms (544 ms with point queries) | 0.14 ms (0.70 ms) |
 
 The fixture's lots are mostly house driveways on graded ground, so a line averages 2.4 pieces; on
 a level pad it is one. The load build runs once, at the first snapshot after a load. A first cut
 that repainted a whole chunk per edit and split at 5 mm cost 74 ms for one edit in a dense 10k
-chunk and 3.4 pieces a line.
+chunk and 3.4 pieces a line. The 10k row predates the gathered heights (its prepared city was not
+kept); its lines and instances are unchanged by them.
+
+Frame tail (2026-11-22, round 2). The first build's level F session read the 30k 32x tail worse
+than `dev` (p99.9 7.40 -> 8.81 ms, max unpreempted 8.71 -> 9.42 ms; the same city, its records
+equal), all in the frames at minute 4 of an hour: the hour's construction publishes site changes,
+and every lot within the graded change reach of them (`GRADED_CHANGE_REACH_M`, 67.5 m) is marked,
+up to 46 lots and 107 places on that city, nearly all house driveways on graded ground. The next
+snapshot repainted them all with a graded point query per height (2.4 ms of one worker, 1.4-2.0 ms
+on eight) and copied the republished chunk's rows (0.2-0.3 ms): the snapshot of those frames went
+from about 2.1 to 4.1 ms. Half of those hourly repaints changed nothing (the same lots, the ground
+graded again to the same heights), which only a rebuild can tell. The fix: heights through one
+gather a lot (a seventh of the work, bit for bit the same rows on every lot of the city), at most
+`PLACES_PER_SNAPSHOT` places a snapshot (that burst paints over four snapshots, about 70 ms at
+60 fps; a large road edit's lots, a few hundred places, within a second; the old lines stay drawn
+meanwhile), and no row copy on the simulation thread. A new car profile no longer repaints every
+lot (it moves no ground). Level F session after the fix (boot-matched, release library test
+binaries, 8 workers on the P-cores, the control `dev`'s code; `./run.sh --timing --level F
+--control <dev> --branch $TEST_BINARY --base dev --k22`, the noisy rows rerun with `--rerun`):
+
+| 30k | `dev` | branch | Verdict |
+| --- | --- | --- | --- |
+| 32x p99.9 | 7.50 ms | 7.91 ms (+5.4 %) | level (was 8.81 ms, worse) |
+| 32x max unpreempted | 8.48 ms | 8.39 ms (-1.1 %) | level (was 9.42 ms, worse) |
+| 32x mean / mean snapshot | 4.29 / 1.25 ms | 4.23 / 1.22 ms | level / better |
+| 1x max unpreempted | 5.69 ms | 5.01 ms (-12.0 %) | better |
+| 1x mean snapshot | 0.853 ms | 0.845 ms | level |
+
+The branch's worst unpreempted 32x frames are still the minute-4 frames, now with the control's
+snapshot time (2.0-2.4 ms); the higher of its two p99.9 rows (8.16 ms against 7.65 ms) comes
+from frames another task preempted (4.5 ms of run-queue wait).
 
 ### Edits and towing (`PARK-01`, `PARK-05`)
 
