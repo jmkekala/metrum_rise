@@ -279,6 +279,7 @@ impl SimCore {
             .rebuild_all(&self.transit_network.roadbed, &self.allocator);
         self.terrain_query_index_update_us = started.elapsed().as_micros() as u64;
         self.parking.invalidate_all_ground();
+        self.parking.mark_all_paint();
         self.vehicle_ground_generation += 1;
         if self.graded_edits.enabled {
             self.graded_edits.roadbed = Some(self.transit_network.roadbed.clone());

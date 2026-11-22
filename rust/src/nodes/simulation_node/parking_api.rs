@@ -182,12 +182,16 @@ pub(super) fn pack_lot_paint(
     result.set("full", full);
     let mut chunks = VarArray::new();
     for (&(x, z), chunk) in paint.chunks.iter() {
-        if (full && chunk.rows.is_empty()) || (!full && chunk.version <= revision) {
+        if (full && chunk.is_empty()) || (!full && chunk.version <= revision) {
             continue;
         }
         let mut update = VarDictionary::new();
         update.set("chunk", Vector2i::new(x, z));
-        update.set("rows", PackedFloat32Array::from(&chunk.rows[..]));
+        // The chunk's buildings' rows, joined here, off the simulation's frame.
+        let mut rows = PackedFloat32Array::new();
+        rows.resize(chunk.len());
+        chunk.copy_rows(rows.as_mut_slice());
+        update.set("rows", rows);
         chunks.push(&update.to_variant());
     }
     result.set("chunks", chunks);

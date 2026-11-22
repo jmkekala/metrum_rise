@@ -12,10 +12,12 @@
 //!
 //! The store keeps each building's rows, rebuilt only when that building's places or docks change
 //! (site publication, load, a ground change under them), never by custody, so nothing runs per
-//! frame; a chunk's published rows are its buildings' rows one after another, so an edit costs
-//! its own lot's lines plus one copy of its chunk's rows. Kerb places draw nothing here (their bay
-//! paint is `PARK-04`). Render data only: nothing in the simulation reads it, and it is never
-//! saved.
+//! frame; a chunk publishes its buildings' rows, shared with the store, one after another, so an
+//! edit costs its own lot's lines and only the bridge joins a chunk's rows. A snapshot rebuilds
+//! at most `PLACES_PER_SNAPSHOT` places' worth of marked buildings and leaves the rest to the next
+//! ones, except after a load or a ground reset, which rebuild every building at once. Kerb places
+//! draw nothing here (their bay paint is `PARK-04`). Render data only: nothing in the simulation
+//! reads it, and it is never saved.
 
 use super::*;
 use std::collections::{BTreeMap, BTreeSet};
@@ -34,6 +36,14 @@ const MERGE_GAP_M: f32 = 0.01;
 // split no shorter than `MIN_PIECE_M`, the finest graded lattice.
 const HEIGHT_TOLERANCE_M: f32 = LIFT_M * 0.5;
 const MIN_PIECE_M: f32 = 0.5;
+// The places and docks of the marked buildings one snapshot rebuilds at most (a building at
+// least, so a larger lot still paints whole); the others wait, in id order, for the next
+// snapshots. An hour's construction marks the lots within the graded change reach of its sites:
+// on the 30k city up to 46 lots, 107 places, about 22 us of one worker a place on graded house
+// driveways (2.4 ms in all), which landed on one frame. This share is under a tenth of a
+// millisecond spread over the workers, bounded below by its dearest lot (0.2 ms), and that
+// burst paints over four snapshots.
+const PLACES_PER_SNAPSHOT: usize = 32;
 /// Floats per instance: a row-major 3 x 4 transform, as `MultiMesh` takes it.
 pub(crate) const STRIDE: usize = 12;
 
@@ -71,11 +81,41 @@ impl PaintPlace {
 /// One marking line in world `[x, z]`, `LINE_WIDTH_M` wide, centred on the segment.
 pub(crate) type Segment = [[f32; 2]; 2];
 
-/// One chunk's published paint: the instance rows and the store revision that last changed them.
+/// One chunk's published paint: its buildings' instance rows, one after another in building id
+/// order, each list shared with the store, and the store revision that last changed them.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct PaintChunk {
     pub version: u64,
-    pub rows: Arc<[f32]>,
+    pub buildings: Arc<[Arc<[f32]>]>,
+}
+
+impl PaintChunk {
+    /// The floats of the chunk's rows. O(its buildings).
+    pub(crate) fn len(&self) -> usize {
+        self.buildings.iter().map(|rows| rows.len()).sum()
+    }
+
+    /// Whether the chunk holds no paint (it lost its last lot). O(1).
+    pub(crate) fn is_empty(&self) -> bool {
+        self.buildings.is_empty()
+    }
+
+    /// Copies the chunk's rows into `out`, which is [`Self::len`] floats long. O(rows).
+    pub(crate) fn copy_rows(&self, out: &mut [f32]) {
+        let mut start = 0;
+        for rows in self.buildings.iter() {
+            out[start..start + rows.len()].copy_from_slice(rows);
+            start += rows.len();
+        }
+    }
+
+    /// The chunk's rows, joined (tests).
+    #[cfg(test)]
+    pub(crate) fn rows(&self) -> Vec<f32> {
+        let mut out = vec![0.0; self.len()];
+        self.copy_rows(&mut out);
+        out
+    }
 }
 
 /// The paint half of a render snapshot: every chunk that ever held paint (an empty one was
@@ -94,12 +134,17 @@ pub(super) struct LotPaint {
     // rectangle; `Place::chunk_slot` of a dock is its slot here, so removal is O(1).
     pub(super) docks: HashMap<(i32, i32), Vec<Handle<Place>>>,
     dirty: BTreeSet<u64>,
+    // Every building was marked at once (a load, a ground reset): the next snapshot rebuilds all.
+    full: bool,
     // Each painted building's chunk (that of its first painted place) and rows.
-    buildings: HashMap<u64, ((i32, i32), Vec<f32>)>,
+    buildings: HashMap<u64, BuildingPaint>,
     // Each chunk's painted buildings, in publication order.
     chunk_buildings: HashMap<(i32, i32), BTreeSet<u64>>,
     published: PaintPublication,
 }
+
+// A painted building's chunk and rows, shared with the chunks published since.
+type BuildingPaint = ((i32, i32), Arc<[f32]>);
 
 /// One building's rebuilt paint: its id, its chunk (none without a painted place) and rows.
 pub(crate) type BuiltPaint = (u64, Option<(i32, i32)>, Vec<f32>);
@@ -240,6 +285,21 @@ pub(crate) fn paint_segments(places: impl IntoIterator<Item = PaintPlace>) -> Ve
     segments
 }
 
+/// The square a graded gather covers for every height `paint_rows` reads on `segments`: its
+/// centre and half side, the segments' bounds plus a centimetre; none without a segment. Every
+/// point read lies on a segment, inside it. O(segments).
+pub(crate) fn gather_square(segments: &[Segment]) -> Option<([f64; 2], f64)> {
+    let mut points = segments.iter().flatten();
+    let first = *points.next()?;
+    let [min_x, min_z, max_x, max_z] = points.fold(
+        [first[0], first[1], first[0], first[1]],
+        |[a, b, c, d], p| [a.min(p[0]), b.min(p[1]), c.max(p[0]), d.max(p[1])],
+    );
+    let centre = [(min_x + max_x) * 0.5, (min_z + max_z) * 0.5].map(f64::from);
+    let half = ((max_x - min_x) * 0.5).max((max_z - min_z) * 0.5);
+    Some((centre, f64::from(half) + 0.01))
+}
+
 /// Appends the instance rows of `segments` to `rows`, each line lying on the surface `height`
 /// gives (world `x`, `z` to `y`) plus the decal lift. A line is one instance where the surface is
 /// straight along it to `HEIGHT_TOLERANCE_M` (three inner samples), else it is halved, down to
@@ -326,9 +386,11 @@ impl ParkingSystem {
         }
     }
 
-    // Every building with places, docks or paint: a load, a reloaded world, a dense ground
-    // change. O(buildings log buildings).
-    pub(super) fn mark_all_paint(&mut self) {
+    /// Marks every building with places, docks or paint, rebuilt at the next snapshot at once:
+    /// a load, a ground reset (a reloaded world, a dense terrain undo). O(buildings log
+    /// buildings).
+    pub(crate) fn mark_all_paint(&mut self) {
+        self.paint.full = true;
         let buildings = self
             .building_sources
             .keys()
@@ -386,10 +448,28 @@ impl ParkingSystem {
         }
     }
 
-    /// The buildings whose paint must be rebuilt, in id order; the store forgets them.
-    /// O(dirty).
+    /// The next marked buildings whose paint this snapshot rebuilds, in id order, up to
+    /// `PLACES_PER_SNAPSHOT` places and docks (one building at least; one without any counts as
+    /// one), or every one after [`Self::mark_all_paint`]; the store forgets them.
+    /// O(taken x (log marked + their places)).
     pub(crate) fn take_paint_dirty(&mut self) -> Vec<u64> {
-        std::mem::take(&mut self.paint.dirty).into_iter().collect()
+        if std::mem::take(&mut self.paint.full) {
+            return std::mem::take(&mut self.paint.dirty).into_iter().collect();
+        }
+        let mut taken = Vec::new();
+        let mut places = 0;
+        while places < PLACES_PER_SNAPSHOT
+            && let Some(building) = self.paint.dirty.pop_first()
+        {
+            // A building without places (a demolished lot clears its paint) counts as one.
+            places += (self
+                .source_rows(self.building_sources.get(&building))
+                .count()
+                + self.source_rows(self.building_docks.get(&building)).count())
+            .max(1);
+            taken.push(building);
+        }
+        taken
     }
 
     /// Marks one building's paint for a rebuild, as an edit of its lot does (tests, diagnostics).
@@ -438,13 +518,13 @@ impl ParkingSystem {
 
     /// Takes rebuilt buildings and republishes the chunks whose rows changed, each as its
     /// buildings' rows in id order, under one new revision; nothing changing moves nothing.
-    /// O(rebuilt rows + the changed chunks' rows), plus one copy of the chunk map while a
-    /// snapshot holds it.
+    /// O(rebuilt rows + the changed chunks' buildings), plus one copy of the chunk map while a
+    /// snapshot holds it: a chunk's rows are shared, never copied.
     pub(crate) fn install_paint(&mut self, built: Vec<BuiltPaint>) {
         let paint = &mut self.paint;
         let mut changed = BTreeSet::new();
         for (building, chunk, rows) in built {
-            let same = |(old, old_rows): &((i32, i32), Vec<f32>)| {
+            let same = |(old, old_rows): &BuildingPaint| {
                 Some(*old) == chunk
                     && old_rows.len() == rows.len()
                     && old_rows
@@ -470,7 +550,7 @@ impl ParkingSystem {
                     .entry(chunk)
                     .or_default()
                     .insert(building);
-                paint.buildings.insert(building, (chunk, rows));
+                paint.buildings.insert(building, (chunk, rows.into()));
             }
         }
         if changed.is_empty() {
@@ -480,12 +560,12 @@ impl ParkingSystem {
         paint.published.revision = revision;
         let chunks = Arc::make_mut(&mut paint.published.chunks);
         for key in changed {
-            let rows: Vec<f32> = paint
+            let buildings: Arc<[Arc<[f32]>]> = paint
                 .chunk_buildings
                 .get(&key)
                 .into_iter()
                 .flatten()
-                .flat_map(|building| paint.buildings[building].1.iter().copied())
+                .map(|building| Arc::clone(&paint.buildings[building].1))
                 .collect();
             if paint
                 .chunk_buildings
@@ -494,12 +574,11 @@ impl ParkingSystem {
             {
                 paint.chunk_buildings.remove(&key);
             }
-            let version = revision;
             chunks.insert(
                 key,
                 PaintChunk {
-                    version,
-                    rows: rows.into(),
+                    version: revision,
+                    buildings,
                 },
             );
         }

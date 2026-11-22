@@ -225,11 +225,11 @@ fn a_changed_site_rebuilds_only_its_own_paint_and_custody_rebuilds_nothing() {
     assert_eq!(build(&mut s), vec![1, 2]);
     let first = s.paint_publication();
     assert_eq!(
-        first.chunks[&(0, 0)].rows.len(),
+        first.chunks[&(0, 0)].rows().len(),
         4 * STRIDE,
         "the kerb bay draws nothing"
     );
-    assert_eq!(first.chunks[&(1, 0)].rows.len(), 3 * STRIDE);
+    assert_eq!(first.chunks[&(1, 0)].rows().len(), 3 * STRIDE);
     // Cars arriving and leaving change no paint.
     s.fill_test_fleet();
     let car = s.first_parked_car_for_test();
@@ -263,7 +263,7 @@ fn a_changed_site_rebuilds_only_its_own_paint_and_custody_rebuilds_nothing() {
     s.replace_building(2, &[], &[]);
     build(&mut s);
     let third = s.paint_publication();
-    assert!(third.chunks[&(1, 0)].rows.is_empty());
+    assert!(third.chunks[&(1, 0)].is_empty());
     assert_eq!(third.chunks[&(1, 0)].version, third.revision);
 }
 
@@ -278,16 +278,19 @@ fn docks_paint_from_their_own_chunk_list_through_removal() {
     s.replace_docks(5, &[(0, dock(10.0)), (1, dock(20.0))], &[], &[]);
     build(&mut s);
     assert_eq!(
-        s.paint_publication().chunks[&(0, 0)].rows.len(),
+        s.paint_publication().chunks[&(0, 0)].rows().len(),
         16 * STRIDE
     );
     // The first dock goes: the second keeps its row and its slot is fixed up.
     s.replace_docks(5, &[(1, dock(20.0))], &[], &[]);
     assert_eq!(build(&mut s), vec![5]);
-    assert_eq!(s.paint_publication().chunks[&(0, 0)].rows.len(), 8 * STRIDE);
+    assert_eq!(
+        s.paint_publication().chunks[&(0, 0)].rows().len(),
+        8 * STRIDE
+    );
     s.replace_docks(5, &[], &[], &[]);
     build(&mut s);
-    assert!(s.paint_publication().chunks[&(0, 0)].rows.is_empty());
+    assert!(s.paint_publication().chunks[&(0, 0)].is_empty());
     assert!(s.paint.docks.is_empty());
 }
 
@@ -298,7 +301,7 @@ fn a_chunk_shows_its_buildings_paint_one_after_another_and_a_ground_change_repai
     s.replace_building(2, &[(0, bay(40.0, 10.0))], &[]);
     build(&mut s);
     let both = s.paint_publication();
-    assert_eq!(both.chunks[&(0, 0)].rows.len(), 6 * STRIDE);
+    assert_eq!(both.chunks[&(0, 0)].rows().len(), 6 * STRIDE);
     // A ground change under the second lot repaints it alone.
     s.invalidate_ground([39.0, 9.0, 41.0, 11.0]);
     assert_eq!(s.take_paint_dirty(), vec![2]);
@@ -307,7 +310,50 @@ fn a_chunk_shows_its_buildings_paint_one_after_another_and_a_ground_change_repai
     build(&mut s);
     let one = s.paint_publication();
     assert_eq!(
-        &one.chunks[&(0, 0)].rows[..],
-        &both.chunks[&(0, 0)].rows[..3 * STRIDE]
+        &one.chunks[&(0, 0)].rows()[..],
+        &both.chunks[&(0, 0)].rows()[..3 * STRIDE]
     );
+}
+
+#[test]
+fn a_burst_of_marked_lots_paints_over_snapshots_to_the_rows_of_one_build() {
+    // Forty lots of three places (120): more than one snapshot's share.
+    let lots = |s: &mut ParkingSystem| {
+        for lot in 0..40u64 {
+            let x = lot as f32 * 10.0;
+            let bays = [
+                (0, bay(x, 10.0)),
+                (1, bay(x + 2.5, 10.0)),
+                (2, bay(x + 5.0, 10.0)),
+            ];
+            s.replace_building(lot + 1, &bays, &[]);
+        }
+    };
+    let mut s = ParkingSystem::default();
+    lots(&mut s);
+    let mut batches = Vec::new();
+    while s.has_paint_dirty() {
+        batches.push(build(&mut s).len());
+    }
+    // 32 places a snapshot: the 11th lot of three crosses it, the rest wait for the next ones.
+    assert_eq!(batches, vec![11, 11, 11, 7]);
+    // Marked all at once (a load), the same lots paint in one snapshot, to the same rows.
+    let mut whole = ParkingSystem::default();
+    lots(&mut whole);
+    whole.mark_all_paint();
+    assert_eq!(build(&mut whole).len(), 40);
+    assert!(!whole.has_paint_dirty());
+    let bits = |s: &ParkingSystem| {
+        let publication = s.paint_publication();
+        let chunks = publication.chunks.iter();
+        chunks
+            .map(|(key, chunk)| (*key, chunk.rows().iter().map(|f| f.to_bits()).collect()))
+            .collect::<Vec<(_, Vec<u32>)>>()
+    };
+    assert_eq!(bits(&s), bits(&whole));
+    // A snapshot with nothing marked takes nothing and publishes nothing.
+    let revision = s.paint_publication().revision;
+    assert!(s.take_paint_dirty().is_empty());
+    s.install_paint(Vec::new());
+    assert_eq!(s.paint_publication().revision, revision);
 }

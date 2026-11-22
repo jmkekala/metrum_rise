@@ -505,7 +505,8 @@ impl ParkingSystem {
     }
 
     /// Forgets every pose: a new or reloaded world, a dense terrain undo, a new car profile.
-    /// O(places), at those events only.
+    /// The bay paint stays: a new car profile moves no ground, and a ground reset repaints
+    /// through [`Self::mark_all_paint`]. O(places), at those events only.
     pub(crate) fn invalidate_all_ground(&mut self) {
         self.places.ground_model.fill(GROUND_UNSOLVED);
         for p in 0..self.places.len() {
@@ -514,7 +515,6 @@ impl ParkingSystem {
                 self.mark_dirty(chunk_at([x, z]));
             }
         }
-        self.mark_all_paint();
     }
 }
 

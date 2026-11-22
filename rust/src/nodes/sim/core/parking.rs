@@ -655,32 +655,50 @@ impl SimCore {
         *parked = self.parking.publication();
     }
 
-    /// Rebuilds the bay paint (`PARK-30`) of the buildings whose places or docks changed, on the
+    /// Rebuilds the bay paint (`PARK-30`) of the next marked buildings (a snapshot's share, see
+    /// [`ParkingSystem::take_paint_dirty`]; every one after a load or a ground reset), on the
     /// visible surface, in parallel over the buildings, then republishes their chunks. Reads the
-    /// live ground, so it runs where the site index is ready. O(the changed buildings' places log
-    /// them + their lines' height queries + their chunks' rows); nothing when none changed.
+    /// live ground, so it runs where the site index is ready. O(the taken buildings' places log
+    /// them + their gathers and height reads + their chunks' buildings); nothing when none is
+    /// marked.
+    ///
+    /// [`ParkingSystem::take_paint_dirty`]: crate::simulation::parking::ParkingSystem::take_paint_dirty
     pub(crate) fn build_lot_paint(&mut self) {
         if !self.parking.has_paint_dirty() {
             return;
         }
         let dirty = self.parking.take_paint_dirty();
-        let built = crate::thread_pools::install(|| {
-            dirty
+        let built = self.paint_buildings(dirty);
+        self.parking.install_paint(built);
+    }
+
+    /// The rebuilt paint rows of `buildings`, in parallel over them, on the visible surface: one
+    /// graded gather over each building's lines, whose height reads are then bitwise those of
+    /// [`GradedSurface::surface_height_at`] at a fraction of a point query's preparation each.
+    /// O(their places log them + one gather each + their lines' height reads).
+    ///
+    /// [`GradedSurface::surface_height_at`]: crate::simulation::terrain::graded::GradedSurface::surface_height_at
+    pub(crate) fn paint_buildings(&self, buildings: Vec<u64>) -> Vec<paint::BuiltPaint> {
+        crate::thread_pools::install(|| {
+            buildings
                 .into_par_iter()
                 .map(|building| {
                     let (lines, chunk) = self.parking.paint_lines(building);
                     let mut rows = Vec::with_capacity(lines.len() * paint::STRIDE);
-                    self.with_graded_surface(|surface, scratch| {
-                        let height = |x: f32, z: f32| {
-                            surface.surface_height_at(f64::from(x), f64::from(z), scratch) as f32
-                        };
-                        paint::paint_rows(&lines, height, &mut rows);
-                    });
+                    if let Some(([x, z], reach)) = paint::gather_square(&lines) {
+                        self.with_graded_surface(|surface, scratch| {
+                            surface.gather_near(x, z, reach, scratch);
+                            let height = |x: f32, z: f32| {
+                                surface.surface_height_near(f64::from(x), f64::from(z), scratch)
+                                    as f32
+                            };
+                            paint::paint_rows(&lines, height, &mut rows);
+                        });
+                    }
                     (building, chunk, rows)
                 })
                 .collect()
-        });
-        self.parking.install_paint(built);
+        })
     }
 
     /// Rebuilds dirty parked chunks from the cached poses; a place without a pose for its car's

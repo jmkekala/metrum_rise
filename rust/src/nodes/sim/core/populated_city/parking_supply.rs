@@ -224,10 +224,10 @@ fn lot_paint_cost_on_a_prepared_city() {
     core.build_lot_paint();
     let load_ms = started.elapsed().as_secs_f64() * 1000.0;
     let paint = core.parking.paint_publication();
-    let chunks = paint.chunks.values().filter(|c| !c.rows.is_empty()).count();
-    let lines: usize = paint.chunks.values().map(|c| c.rows.len()).sum::<usize>()
+    let chunks = paint.chunks.values().filter(|c| !c.is_empty()).count();
+    let lines: usize = paint.chunks.values().map(|c| c.len()).sum::<usize>()
         / crate::simulation::parking::paint::STRIDE;
-    let biggest = paint.chunks.values().map(|c| c.rows.len()).max().unwrap_or(0)
+    let biggest = paint.chunks.values().map(|c| c.len()).max().unwrap_or(0)
         / crate::simulation::parking::paint::STRIDE;
     let (places, docks) = (0..core.allocator.buildings.len())
         .map(|b| core.allocator.building_handles.handle(b).to_bits())

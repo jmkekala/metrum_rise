@@ -974,7 +974,7 @@ fn a_placed_lot_paints_its_bays_as_the_editor_draws_them() {
     let rows: Vec<f32> = paint
         .chunks
         .values()
-        .flat_map(|chunk| chunk.rows.iter().copied())
+        .flat_map(|chunk| chunk.rows())
         .collect();
     // Two rows of six: seven side lines and one head line each.
     assert_eq!(rows.len(), 16 * STRIDE);
@@ -1002,7 +1002,7 @@ fn a_placed_lot_paints_its_bays_as_the_editor_draws_them() {
     let loaded = c.parking.paint_publication();
     let bits = |paint: &crate::simulation::parking::PaintPublication| {
         let rows = |chunk: &crate::simulation::parking::paint::PaintChunk| {
-            chunk.rows.iter().map(|f| f.to_bits()).collect::<Vec<_>>()
+            chunk.rows().iter().map(|f| f.to_bits()).collect::<Vec<_>>()
         };
         paint.chunks.iter().map(|(k, v)| (*k, rows(v))).collect::<Vec<_>>()
     };
@@ -1012,7 +1012,57 @@ fn a_placed_lot_paints_its_bays_as_the_editor_draws_them() {
     c.publish_pending_building_site_changes();
     c.prepare_site_queries();
     c.build_lot_paint();
-    assert!(c.parking.paint_publication().chunks.values().all(|chunk| chunk.rows.is_empty()));
+    assert!(c.parking.paint_publication().chunks.values().all(|chunk| chunk.is_empty()));
+}
+
+// `PARK-30`: a lot's lines read the graded surface through one gather per lot, bit for bit the
+// heights point queries give, on a lot cut into a slope and on a level one.
+#[test]
+fn a_lots_paint_reads_the_gathered_surface_as_point_queries_do() {
+    use crate::simulation::parking::paint;
+    use godot::prelude::Vector2;
+    let mut c = SimCore::new(
+        WorldConfig::new(512.0, 512.0, 16.0, 10.0)
+            .with_chunking(128.0, 0.0)
+            .with_terrain_resolution(2.0),
+    );
+    c.treasury.balance = 1_000_000.0;
+    // A 1:8 rise north of the street, under one lot.
+    for _ in 0..12 {
+        c.slope_terrain_internal(
+            Vector2::new(-60.0, 30.0),
+            70.0,
+            Vector2::new(-60.0, -5.0),
+            0.0,
+            Vector2::new(-60.0, 65.0),
+            9.0,
+            1.0,
+        );
+    }
+    commit(&mut c, (-120.0, 0.0), (120.0, 0.0));
+    let id = register_lot(&mut c);
+    for (x, z) in [(-60.0, 30.0), (60.0, -30.0)] {
+        c.place_service_building_internal(&id, x, z).unwrap();
+    }
+    c.publish_pending_building_site_changes();
+    c.prepare_site_queries();
+    let supports: Vec<f32> = c.allocator.building_sites.iter().map(|site| site.support_height_m).collect();
+    assert!(supports.iter().any(|&height| height > 0.5), "a lot on the rise: {supports:?}");
+    let buildings = (0..c.allocator.buildings.len())
+        .map(|b| c.allocator.building_handles.handle(b).to_bits())
+        .collect();
+    let bits = |rows: &[f32]| rows.iter().map(|f| f.to_bits()).collect::<Vec<_>>();
+    for (building, _, rows) in c.paint_buildings(buildings) {
+        assert!(rows.len() >= 16 * paint::STRIDE, "two rows of six bays");
+        let (lines, _) = c.parking.paint_lines(building);
+        let mut point = Vec::new();
+        c.with_graded_surface(|surface, scratch| {
+            let height =
+                |x: f32, z: f32| surface.surface_height_at(f64::from(x), f64::from(z), scratch) as f32;
+            paint::paint_rows(&lines, height, &mut point);
+        });
+        assert_eq!(bits(&rows), bits(&point), "building {building}");
+    }
 }
 
 // The rendered evidence's city (`PARK-30`): on a straight street, the bundled small and medium
