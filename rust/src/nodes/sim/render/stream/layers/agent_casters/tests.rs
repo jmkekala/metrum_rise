@@ -135,3 +135,32 @@ fn kind_toggles_and_the_twins_switch_hide_and_show() {
     layer.reset(&mut backend);
     assert_eq!(layer.pool().live(), 0);
 }
+
+// `RENDER-74`: a rebuilt vehicle catalogue forgets the cars' twins, and the old meshes are freed
+// next, so no `MultiMesh` naming one may stay, a spare left by an earlier resize included; the
+// walkers keep drawing.
+#[test]
+fn forgetting_the_cars_frees_every_slot_naming_their_meshes() {
+    let mut backend = Recorder::new();
+    let mut layer = layer();
+    layer.update(&mut backend, &feed(), VIEW);
+    // Forty cars within reach: the twin moves to a larger slot and its first one is kept spare.
+    let mut many = feed();
+    many.candidates.cars[10].clear();
+    for i in 0..40 {
+        many.candidates.cars[10].extend(car(50.0 + i as f32, 5.0));
+        many.candidates.cars[10].extend([0.0; 4]);
+    }
+    many.serial = 2;
+    assert!(layer.update(&mut backend, &many, VIEW));
+    assert!(layer.pool().spares() > 0, "the resize keeps the old slot spare");
+    let naming = |backend: &Recorder, mesh: u32| {
+        backend.multimeshes.values().filter(|multimesh| multimesh.mesh == Some(mesh)).count()
+    };
+    assert_eq!(naming(&backend, 3), 2);
+    layer.unregister(&mut backend, AgentKind::Cars);
+    assert_eq!(naming(&backend, 3), 0);
+    assert_eq!(layer.pool().spares(), 0);
+    assert_eq!(layer.pool().live(), 1);
+    assert_eq!(drawn(&backend).len(), 1);
+}

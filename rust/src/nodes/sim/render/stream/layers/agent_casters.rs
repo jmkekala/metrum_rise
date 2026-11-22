@@ -129,13 +129,18 @@ impl AgentCasterLayer {
     }
 
     /// Forgets every bucket of `kind` and frees its slots: the buckets' keys now name other meshes
-    /// (a rebuilt vehicle catalogue, `RENDER-65`). `O(twins)`.
+    /// (a rebuilt vehicle catalogue, `RENDER-65`). Every spare goes too, the earlier resizes'
+    /// included: the caller frees the old meshes next, and the engine updates each instance of
+    /// a `MultiMesh` naming a freed mesh, logging `Parameter "mesh" is null` for it
+    /// (`RENDER-74`, as `RENDER-39` for the building slots). The other kind's spares are only
+    /// made again as needed. `O(twins + spares)`, on a catalogue rebuild only.
     pub(crate) fn unregister(&mut self, backend: &mut impl RenderBackend, kind: AgentKind) {
         for twin in self.twins.iter().filter(|twin| twin.kind == kind) {
             if let Some(slot) = twin.slot {
                 self.pool.release(backend, slot);
             }
         }
+        self.pool.free_spares(backend);
         self.twins.retain(|twin| twin.kind != kind);
     }
 
