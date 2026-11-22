@@ -22,6 +22,19 @@ pub(crate) fn sample_lane_pose(lane: &Lane, lane_d: f32) -> Option<(Vector3, Vec
     Some((pos, tangent))
 }
 
+/// The tangent [`sample_lane_pose`] gives at `lane_d` metres along the lane, bitwise, without
+/// sampling the position: for readers of the tangent alone, such as the steered wheels.
+pub(crate) fn sample_lane_tangent_at(lane: &Lane, lane_d: f32) -> Option<Vector3> {
+    if lane.geometry.is_empty() {
+        return None;
+    }
+    if lane.geometry.len() == 1 {
+        return Some(Vector3::FORWARD);
+    }
+    let dist = lane_d.clamp(0.0, lane.length.max(0.0));
+    Some(sample_lane_tangent(lane, dist).unwrap_or(Vector3::FORWARD))
+}
+
 /// Samples a speed-scaled lane-change S-curve from `from_lane` into `to_lane`.
 pub(crate) fn sample_lane_change_pose(
     from_lane: &Lane,

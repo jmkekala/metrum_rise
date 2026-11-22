@@ -37,7 +37,9 @@
 //! - A truck standing in its dock is parked: no lamp lit, wheels straight.
 
 use crate::nodes::sim::core::SimCore;
-use crate::nodes::sim::render::lane_pose::{sample_lane_change_pose, sample_lane_pose};
+use crate::nodes::sim::render::lane_pose::{
+    sample_lane_change_pose, sample_lane_pose, sample_lane_tangent_at,
+};
 use crate::nodes::sim::render::vehicle_catalogue::{Axles, LAMP_LIGHTS_ON};
 use crate::simulation::economy::agents::tick::idm_acceleration;
 use crate::simulation::economy::agents::{
@@ -372,7 +374,7 @@ impl SimCore {
                     };
                     at(axles.rear_m).zip(at(axles.front_m))
                 } else {
-                    let rear = sample_lane_pose(lane, d + axles.rear_m).map(|(_, t)| t);
+                    let rear = sample_lane_tangent_at(lane, d + axles.rear_m);
                     rear.zip(self.tangent_ahead(i, lane, d + axles.front_m))
                 };
                 tangents.map_or(0.0, |(rear, front)| signed_angle(rear, front))
@@ -392,10 +394,10 @@ impl SimCore {
                     .planned_connector(i, &self.transit_network, &self.region_graph)
             };
             if let Some(next) = next.and_then(|next| lanes.get(next)) {
-                return sample_lane_pose(next, d - lane.length).map(|(_, tangent)| tangent);
+                return sample_lane_tangent_at(next, d - lane.length);
             }
         }
-        sample_lane_pose(lane, d).map(|(_, tangent)| tangent)
+        sample_lane_tangent_at(lane, d)
     }
 
     // The point and tangent `d` metres along lane `lane_id`. O(log lane points).
