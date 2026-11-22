@@ -3,7 +3,8 @@
 //! `RENDER-66`: the drawn car rows uploaded a frame on a prepared city, with the brake lamps,
 //! indicators, reverse lamp, steer and roll, against the same frames drawn as stage 1a drew
 //! them (steer and roll zero, the lamp word "lights on" only), through the agents' frame job;
-//! and the city's lane cars on their gate turn (`PARK-31`) with the gate test's time.
+//! and the city's lane cars on their gate turn (`PARK-31`) with the gate test's time. Also the
+//! hashes of every snapshot's drawn products, the proof that a performance change draws the same.
 
 use std::collections::HashMap;
 
@@ -108,23 +109,8 @@ fn draw(frame: &mut AgentFrame, snapshot: &RenderSnapshot, core: &SimCore) -> (u
     (frame.smoother.changed().len(), rows)
 }
 
-/// The rows a populated city's car frames upload with `RENDER-66`'s values and as stage 1a drew
-/// them, over `METRUM_ROWS_FRAMES` frames (default 1,200, 20 s at normal speed) from a street
-/// view (eye 25 m up, a 300 m box) and a district view (300 m up, 2 km): the prepared
-/// `METRUM_PERF_RESIDENTS` city with the bundled vehicles pack's catalogue.
-#[test]
-#[ignore = "RENDER-66 rows uploaded a frame on a prepared city; release"]
-fn vehicle_rows_uploaded_on_a_prepared_city() {
-    timing_mode();
-    let frames: usize = std::env::var("METRUM_ROWS_FRAMES")
-        .map(|value| {
-            value
-                .parse()
-                .expect("METRUM_ROWS_FRAMES must be an integer")
-        })
-        .unwrap_or(1_200);
-    let mut city = super::super::snapshot::load_snapshot(residents(), &cache_dir());
-    let core = &mut city.core;
+// Installs the bundled vehicles pack's catalogue on `core`, as the game's pack load does.
+fn install_bundled_catalogue(core: &mut SimCore) {
     let mods = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../godot/bootstrap/mods");
     let mut registry = AssetRegistry::new();
     for pack in scan_pack_dir(&mods).packs {
@@ -136,6 +122,142 @@ fn vehicle_rows_uploaded_on_a_prepared_city() {
     core.vehicle_catalogue.revision = 1;
     core.vehicle_ground_support = core.vehicle_catalogue.ground_supports();
     core.vehicle_ground_generation += 1;
+}
+
+fn frames_from_env(default: usize) -> usize {
+    std::env::var("METRUM_ROWS_FRAMES")
+        .map(|value| {
+            value
+                .parse()
+                .expect("METRUM_ROWS_FRAMES must be an integer")
+        })
+        .unwrap_or(default)
+}
+
+// A hash of every drawn product of `snapshot`'s agents: each non-empty car bucket's key, row
+// bits, custom data bits, render ids and ground flags, each walker bucket's rows, the draw cut
+// counts, and the parked chunks published since serial `parked_seen` (their rows and custom
+// data). Returns (hash, car instances).
+fn drawn_products_hash(snapshot: &RenderSnapshot, parked_seen: &mut u64) -> (u64, usize) {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::hash::DefaultHasher::new();
+    let mut cars = 0;
+    let mut keys: Vec<u8> = snapshot.car_transforms.keys().copied().collect();
+    keys.sort_unstable();
+    for key in keys {
+        let rows = &snapshot.car_transforms[&key];
+        if rows.is_empty() {
+            continue;
+        }
+        cars += rows.len() / 12;
+        key.hash(&mut hasher);
+        rows.iter().for_each(|v| v.to_bits().hash(&mut hasher));
+        snapshot.car_custom[&key]
+            .iter()
+            .for_each(|v| v.to_bits().hash(&mut hasher));
+        snapshot.car_render_ids[&key].hash(&mut hasher);
+        snapshot.car_ground_flags[&key].hash(&mut hasher);
+    }
+    let mut keys: Vec<u8> = snapshot.pedestrian_transforms.keys().copied().collect();
+    keys.sort_unstable();
+    for key in keys {
+        let rows = &snapshot.pedestrian_transforms[&key];
+        if !rows.is_empty() {
+            key.hash(&mut hasher);
+            rows.iter().for_each(|v| v.to_bits().hash(&mut hasher));
+        }
+    }
+    snapshot.agent_draw_cut.hash(&mut hasher);
+    for update in snapshot.parked.updates.iter() {
+        if update.serial <= *parked_seen {
+            continue;
+        }
+        update.key.hash(&mut hasher);
+        for (bucket, poses, custom, identities) in update.chunk.rows() {
+            bucket.hash(&mut hasher);
+            poses.iter().for_each(|v| v.to_bits().hash(&mut hasher));
+            custom.iter().for_each(|v| v.to_bits().hash(&mut hasher));
+            identities.hash(&mut hasher);
+        }
+    }
+    *parked_seen = snapshot.parked.serial;
+    (hasher.finish(), cars)
+}
+
+/// Behaviour-preserving proof of the snapshot's drawn products (`RENDER-65`/`66` performance
+/// round): `METRUM_ROWS_FRAMES` frames (default 300) at 32x of the prepared
+/// `METRUM_PERF_RESIDENTS` city, each frame's snapshot built from four views (the `PERF-07`
+/// camera with no eye, a street eye, a district eye, play height over the centre), first with the
+/// catalogue the city loads (the bundled pack's, as `PERF-07` runs), then with none (the
+/// procedural fallback, every car in one bucket). Prints every snapshot's
+/// hash of its drawn products; two builds draw the same when the `VEHICLE_PRODUCTS` lines match.
+#[test]
+#[ignore = "drawn product hashes on a prepared city; release"]
+fn vehicle_products_on_a_prepared_city() {
+    timing_mode();
+    let frames = frames_from_env(300);
+    let mut city = super::super::snapshot::load_snapshot(residents(), &cache_dir());
+    let core = &mut city.core;
+    core.time.speed_multiplier = 32.0;
+    let views: [(&str, f32, Option<Vector3>); 4] = [
+        ("perf07", 1_000.0, None),
+        ("street", 150.0, Some(Vector3::new(0.0, 25.0, 45.0))),
+        ("district", 1_000.0, Some(Vector3::new(0.0, 300.0, 300.0))),
+        ("play", 1_000.0, Some(Vector3::new(0.0, 300.0, 0.0))),
+    ];
+    let mut snapshots: Vec<RenderSnapshot> =
+        views.iter().map(|_| RenderSnapshot::default()).collect();
+    let mut parked_seen = vec![0_u64; views.len()];
+    let mut results = serde_json::Map::new();
+    for catalogue in ["city", "empty"] {
+        if catalogue == "empty" {
+            let revision = core.vehicle_catalogue.revision + 1;
+            core.vehicle_catalogue = VehicleCatalogue::default();
+            core.vehicle_catalogue.revision = revision;
+            core.vehicle_ground_support = core.vehicle_catalogue.ground_supports();
+            core.vehicle_ground_generation += 1;
+            core.parking.invalidate_all_ground();
+        }
+        let mut hashes = vec![Vec::with_capacity(frames); views.len()];
+        let mut cars = vec![0_usize; views.len()];
+        for _ in 0..frames {
+            core.step_frame(FRAME_DT_S);
+            for (v, &(_, half, eye)) in views.iter().enumerate() {
+                core.camera_aabb = (-half, half, -half, half);
+                core.render_camera_position = Some(Vector2::ZERO);
+                core.agent_draw_eye = eye;
+                snapshots[v] = core.build_snapshot_reusing(std::mem::take(&mut snapshots[v]));
+                super::acknowledge_uploads(core, &snapshots[v]);
+                let (hash, drawn) = drawn_products_hash(&snapshots[v], &mut parked_seen[v]);
+                hashes[v].push(format!("{hash:016x}"));
+                cars[v] += drawn;
+            }
+        }
+        for (v, &(view, ..)) in views.iter().enumerate() {
+            results.insert(
+                format!("{catalogue}/{view}"),
+                serde_json::json!({ "cars": cars[v], "hashes": hashes[v] }),
+            );
+        }
+    }
+    eprintln!(
+        "VEHICLE_PRODUCTS {}",
+        serde_json::json!({ "residents": residents(), "frames": frames, "views": results })
+    );
+}
+
+/// The rows a populated city's car frames upload with `RENDER-66`'s values and as stage 1a drew
+/// them, over `METRUM_ROWS_FRAMES` frames (default 1,200, 20 s at normal speed) from a street
+/// view (eye 25 m up, a 300 m box) and a district view (300 m up, 2 km): the prepared
+/// `METRUM_PERF_RESIDENTS` city with the bundled vehicles pack's catalogue.
+#[test]
+#[ignore = "RENDER-66 rows uploaded a frame on a prepared city; release"]
+fn vehicle_rows_uploaded_on_a_prepared_city() {
+    timing_mode();
+    let frames = frames_from_env(1_200);
+    let mut city = super::super::snapshot::load_snapshot(residents(), &cache_dir());
+    let core = &mut city.core;
+    install_bundled_catalogue(core);
     core.time.speed_multiplier = 1.0;
     let mut results = serde_json::Map::new();
     for (view, height, half) in [("street", 25.0, 150.0), ("district", 300.0, 1_000.0)] {
