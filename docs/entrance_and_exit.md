@@ -41,7 +41,7 @@ return starts at the proposed parked bay. Destination parking is within 400 m wa
 the walk to the actual car has no additional distance cap. Returning home releases custody
 while retaining the car's last bay.
 
-The [parking spec](traffic.md#parking) records bounds, cache memory and acceptance. Freight plans to the door's lane point as before, and its access path ends at the kerb stop instead of the door (`PARK-36`). `TRAFFIC-13` and `TRAFFIC-15` remain dependencies of the shared detach
+The [parking spec](traffic.md#parking) records bounds, cache memory and acceptance. Freight plans to the door's lane point, always as a car (since `PARK-36` round 2; the door-to-door planner walked a short trip), and its access path ends at the kerb stop instead of the door (`PARK-36`). `TRAFFIC-13` and `TRAFFIC-15` remain dependencies of the shared detach
 function; parking does not add an alternate detach path.
 
 ### The lane hop of a lot or yard manoeuvre (`PARK-29`)
