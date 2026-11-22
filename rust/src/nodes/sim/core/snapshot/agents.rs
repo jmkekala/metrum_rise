@@ -297,7 +297,13 @@ fn walker_side_m(
     let ease = ease * ease * (3.0 - 2.0 * ease);
     let pace_of = |agent: usize| walker_pace(agents.schedule_seed[agent]);
     let preferred = walker_side_offset_m(agents.schedule_seed[i]);
-    let side = match (lanes.lanes.get(lane_id), agents.lane_buckets.get(lane_id)) {
+    // The retained buckets name agents by index. After agents were removed outside the tick (a
+    // demolition, a road edit) they are stale until the next tick rebuilds them, and an entry
+    // may name an index past the end; the walker keeps its own side meanwhile.
+    let buckets = agents
+        .lane_bucket_snapshot_valid
+        .then_some(&agents.lane_buckets);
+    let side = match (lanes.lanes.get(lane_id), buckets.and_then(|b| b.get(lane_id))) {
         (Some(lane), Some(bucket)) => {
             let opposing = lanes.opposing_foot_lane(lane_id).and_then(|id| {
                 Some(Opposing {
@@ -924,5 +930,37 @@ impl SimCore {
             }
         }
         self.ground_off_lane_cars(snapshot);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::simulation::economy::agents::MODE_WALK;
+    use crate::simulation::network::lanes::{Lane, LaneType};
+
+    // The retained lane buckets name agents by index. A demolition that removes agents between
+    // two ticks leaves them stale, and a snapshot drawn before the next tick read an entry past
+    // the end of the agents (a panic in the render snapshot). A walker keeps its own side then.
+    #[test]
+    fn a_walker_keeps_its_own_side_while_the_lane_buckets_are_stale() {
+        let mut lanes = LaneSystem::new();
+        lanes.lanes.push(Lane {
+            lane_type: LaneType::Foot,
+            length: 100.0,
+            ..Default::default()
+        });
+        let mut agents = AgentSystem::new();
+        let i = agents.spawn_border_arrival_agent(usize::MAX, 0, 0.0, 0.0);
+        agents.transit[i] = TRANSIT_NETWORK;
+        agents.transit_mode[i] = MODE_WALK;
+        agents.current_lane_id[i] = 0;
+        agents.lane_distance[i] = 50.0;
+        // The walker and one 2 m ahead that has since been removed with every agent after it.
+        agents.lane_buckets = vec![vec![(50.0, i, 0.25), (52.0, 138, 0.25)]];
+        agents.lane_bucket_snapshot_valid = false;
+        let own = walker_side_offset_m(agents.schedule_seed[i]);
+        assert_eq!(walker_side_m(&agents, &lanes, i, 0, 0.0), own);
+        assert_eq!(walker_side_m(&agents, &lanes, i, 0, 0.5), own);
     }
 }
