@@ -2624,6 +2624,19 @@ updates are O(1), independent of world population and brush radius; the label is
 A stroke continues on held-button motion whenever it is a brush or a clear, and restamps
 after half a radius of travel, so it overlaps without issuing a native call per pixel.
 
+The disc is painted by the ground shaders themselves, as the zoning grid is, so it follows the
+ground on a slope instead of floating at the cursor's height (`VEG-29`).
+`vegetation_brush.gdshaderinc` reads three global shader parameters (`vegetation_brush_enabled`,
+`vegetation_brush_footprint` as world XZ centre and radius in metres, `vegetation_brush_color`),
+which the tool writes only when they change and clears whenever it hides the preview, is
+deactivated or leaves the tree. The terrain (flat and graded), the grass blades, site ground and
+site paving paint it: a translucent fill with an inset stroke of about 2.5 px from `fwidth` of
+the edge distance, so the outer edge is the edit radius at any radius and camera distance. Plant
+is green, remove red. Road surfaces, footpaths, road markings, water and retaining walls do not
+paint it, so the disc shows a gap where it crosses them (`VEG-30`, the owner's choice). With the brush off, each of those
+fragments pays one uniform branch; with it on, one distance, one derivative and two
+smoothsteps, with no texture read.
+
 At the minimum planting radius, a translucent, shadowless ghost holds one plant as the cursor
 moves. Rust hashes the tool's 32-bit pick into the preset's species mix, pinned mesh and yaw.
 Changing the option or placing the plant advances the pick by a fixed odd stride. Up and Down
@@ -2653,7 +2666,10 @@ O(A + S) for local authored plants and site candidates.
 
 The held pick sets bit 7 of the saved `AuthoredPlant::variant` byte. Pin readers mask the bit
 off and lane five of the six-float placement record carries it above the species and pin.
-The existing SQLite column stores that byte, so the save format version stays at 122.
+The existing SQLite column stores that byte, so the layout is unchanged, but the byte's meaning
+widened: a reader of format 126 or older rejects a plant with the bit set as an invalid pin and
+fails the load. The save format is therefore 127 (`PRE_FIXED_LOOK_SAVE_VERSION` 126 loads as
+before; none of its plants has the bit), so an older build refuses such a save by its version.
 Legacy records have the bit clear and use position-seeded stretch, lean and tint. Hedges
 continue to use their slope-following module transforms.
 
@@ -2661,8 +2677,9 @@ The ghost builds the shared vegetation render product at the origin on pick and 
 Fixed-look records hash their stored yaw bits for lean and tint and apply the stored scale
 uniformly. Moving the root leaves the basis and tint unchanged, so the settled ghost and
 its planted instance share the full-detail mesh variant, proportions, lean and tint. Horizontal cursor velocity
-drives the ghost's additional spring tilt up to 12 degrees. It uses a 2.5 Hz natural frequency
-and a 0.65 damping ratio, settles to the held lean at rest, and resets when the ghost hides
+drives the ghost's additional spring tilt up to 6 degrees, at 0.005 rad per m/s of cursor
+speed. It uses a 2.5 Hz natural frequency
+and a 0.85 damping ratio (one small overshoot), settles to the held lean at rest, and resets when the ghost hides
 or the pick changes. The foliage uses the existing wind. The render flag adds one O(1) branch
 per eligible placement with no allocation or extra hash on the unmarked path.
 
