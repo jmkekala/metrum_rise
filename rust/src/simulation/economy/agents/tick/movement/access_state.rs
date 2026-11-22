@@ -5,8 +5,13 @@
 mod egress;
 mod ingress;
 
+use super::super::access::{advance_along_local_access_path, step_out_along_local_access_path};
 use super::super::slices::MovementSlices;
-use crate::simulation::economy::agents::{ACTIVITY_HOME, ACTIVITY_SHOPPING, TRANSIT_IN_BUILDING};
+use crate::config::AGENT_DRIVEWAY_SPEED_MS;
+use crate::simulation::economy::agents::walker_gait::walker_speed;
+use crate::simulation::economy::agents::{
+    ACTIVITY_HOME, ACTIVITY_SHOPPING, MODE_CAR, TRANSIT_IN_BUILDING,
+};
 use godot::prelude::Vector2;
 
 pub(super) use egress::handle_access_egress;
@@ -16,6 +21,42 @@ pub(super) use ingress::handle_access_ingress;
 // arrays' unused entries read.
 fn point(path: &[Vector2], k: usize) -> Vector2 {
     path.get(k).copied().unwrap_or(Vector2::ZERO)
+}
+
+/// Agent `i`'s step this tick along the polyline `points` it walks or drives off the lanes (a
+/// door's access path, a bay's or a dock's manoeuvre, the way to a sidewalk): a car at the
+/// driveway speed, a walker at its own walking speed. The one place an off-lane step's length is
+/// decided. Writes the position and returns where the agent stood, where it stands now and
+/// whether it reached the polyline's end. `beside_car`: a walker may stand off the polyline,
+/// beside the car it has just left, and first heads for the polyline's second point
+/// (`PARK-35`). O(points), no allocation.
+///
+/// Safety: `i` must be unique to the current worker for every raw slice in `slices`.
+#[inline]
+pub(super) unsafe fn step_along_access_path(
+    i: usize,
+    points: &[Vector2],
+    delta: f32,
+    beside_car: bool,
+    slices: &MovementSlices,
+) -> (Vector2, Vector2, bool) {
+    unsafe {
+        let current = Vector2::new(*slices.pos_x.get(i), *slices.pos_y.get(i));
+        let walker = *slices.tmode.get(i) != MODE_CAR;
+        let step = if walker {
+            walker_speed(*slices.schedule_seed.get(i))
+        } else {
+            AGENT_DRIVEWAY_SPEED_MS
+        } * delta;
+        let (next, reached) = if beside_car && walker {
+            step_out_along_local_access_path(current, points, step)
+        } else {
+            advance_along_local_access_path(current, points, step)
+        };
+        *slices.pos_x.get_mut(i) = next.x;
+        *slices.pos_y.get_mut(i) = next.y;
+        (current, next, reached)
+    }
 }
 
 /// Clears the authoritative access plan scalars for one agent.

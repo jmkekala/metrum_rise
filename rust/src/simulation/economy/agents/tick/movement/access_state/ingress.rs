@@ -2,11 +2,11 @@
 
 //! Local access-ingress movement from the planned network lane to a building door.
 
-use super::super::super::super::{ACCESS_PLAN_VALID, MODE_CAR, MODE_WALK, TRANSIT_NETWORK};
+use super::super::super::super::{ACCESS_PLAN_VALID, MODE_WALK, TRANSIT_NETWORK};
 use super::super::super::access::{
-    LocalAccessPath, ManeuverPath, advance_along_local_access_path, local_access_path,
-    local_access_point, local_access_should_log_step, local_access_side_label,
-    local_access_target_segment, planned_detach_is_legal,
+    LocalAccessPath, ManeuverPath, local_access_path, local_access_point,
+    local_access_should_log_step, local_access_side_label, local_access_target_segment,
+    planned_detach_is_legal,
 };
 use super::super::super::planning::plan_network_replan;
 use super::super::super::slices::{MovementSlices, enter_lane, hold_for_lane_attach};
@@ -14,10 +14,8 @@ use super::super::super::trip_failures::FailureCause;
 use super::super::network::apply_network_replan;
 use super::super::replan_watchdog::delay_or_recover_after_network_replan_failure;
 use super::super::{NETWORK_REPLAN_DELAY_S, transit_mode_label};
-use super::{arrive_in_building, point, reset_invalid_access_plan};
-use crate::config::AGENT_DRIVEWAY_SPEED_MS;
+use super::{arrive_in_building, point, reset_invalid_access_plan, step_along_access_path};
 use crate::simulation::buildings::allocator::BuildingAllocator;
-use crate::simulation::economy::agents::walker_gait::walker_speed;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::parking::ParkingTripPhase;
@@ -159,15 +157,8 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
         };
 
         if let (true, Some(path)) = (legal_detach, exact_path) {
-            let current = Vector2::new(*s_pos_x.get(i), *s_pos_y.get(i));
-            let step = if *s_tmode.get(i) == MODE_CAR {
-                AGENT_DRIVEWAY_SPEED_MS
-            } else {
-                walker_speed(*slices.schedule_seed.get(i))
-            } * delta;
-            let (next_pos, reached_door) = advance_along_local_access_path(current, path, step);
-            *s_pos_x.get_mut(i) = next_pos.x;
-            *s_pos_y.get_mut(i) = next_pos.y;
+            let (current, next_pos, reached_door) =
+                step_along_access_path(i, path, delta, false, slices);
             if crate::debug::Channel::Traffic.enabled()
                 && local_access_should_log_step(current, next_pos, path, reached_door)
             {

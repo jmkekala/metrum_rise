@@ -32,11 +32,11 @@ use super::super::super::super::{
     ACCESS_PLAN_VALID, ACCESS_WALK_STRANDED, ACCESS_WALK_TO_SIDEWALK, ACTIVITY_HOME, MODE_WALK,
     TRANSIT_NETWORK,
 };
-use super::super::super::access::{LocalAccessPath, advance_along_local_access_path};
 use super::super::super::lane_nav::{held_attach_origin, lane_terminal_node};
 use super::super::super::planning::{BuiltNetworkReplan, ReplanFailure, plan_network_replan};
 use super::super::super::slices::{MovementSlices, enter_lane};
 use super::super::super::trip_failures::{FailureCause, FailureOutcome, record_failure};
+use super::super::access_state::step_along_access_path;
 use super::super::replan_watchdog::has_recoverable_network_trip;
 use super::apply_network_replan;
 use crate::simulation::buildings::allocator::BuildingAllocator;
@@ -642,17 +642,9 @@ pub(super) unsafe fn walk_to_sidewalk(
             return false;
         };
         let pos = Vector2::new(*slices.pos_x.get(i), *slices.pos_y.get(i));
-        let mut path = LocalAccessPath {
-            points: [Vector2::ZERO; 5],
-            count: 2,
-        };
-        path.points[0] = pos;
-        path.points[1] = Vector2::new(target.x, target.z);
-        let speed = walker_speed(*slices.schedule_seed.get(i));
-        let (next, reached) = advance_along_local_access_path(pos, path.as_slice(), speed * delta);
-        *slices.pos_x.get_mut(i) = next.x;
-        *slices.pos_y.get_mut(i) = next.y;
-        *slices.speed.get_mut(i) = speed;
+        let way = [pos, Vector2::new(target.x, target.z)];
+        let (_, _, reached) = step_along_access_path(i, &way, delta, false, slices);
+        *slices.speed.get_mut(i) = walker_speed(*slices.schedule_seed.get(i));
         if !reached {
             return true;
         }

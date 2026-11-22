@@ -4,9 +4,8 @@
 
 use super::super::super::super::{ACCESS_PLAN_VALID, MODE_CAR};
 use super::super::super::access::{
-    LocalAccessPath, ManeuverPath, advance_along_local_access_path, local_access_path,
-    local_access_should_log_step, local_access_side_label, local_access_target_segment,
-    planned_attach_is_legal, step_out_along_local_access_path,
+    LocalAccessPath, ManeuverPath, local_access_path, local_access_should_log_step,
+    local_access_side_label, local_access_target_segment, planned_attach_is_legal,
 };
 use super::super::super::claims::LaneClaimContext;
 use super::super::super::lane_nav::lane_origin_node;
@@ -14,11 +13,12 @@ use super::super::super::slices::{MovementSlices, enter_lane, hold_for_lane_atta
 use super::super::super::traffic::{claim_lane_entry, lane_attach_slot_clear, lane_half_length};
 use super::super::super::trip_failures::{FailureCause, FailureOutcome, record_failure};
 use super::super::{BUILDING_REPLAN_DELAY_S, transit_mode_label};
-use super::{point, pulls_out_of_a_dock, reset_invalid_access_plan, stand_in_yard};
+use super::{
+    point, pulls_out_of_a_dock, reset_invalid_access_plan, stand_in_yard, step_along_access_path,
+};
 use crate::config::AGENT_DRIVEWAY_SPEED_MS;
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::economy::agents::LaneEntry;
-use crate::simulation::economy::agents::walker_gait::walker_speed;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::parking::ParkingTripPhase;
@@ -139,22 +139,14 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
             exact_path,
             lane_origin_node(attach_lane_id, transit_network, graph),
         ) {
-            let current = Vector2::new(*s_pos_x.get(i), *s_pos_y.get(i));
-            let step = if *s_tmode.get(i) == MODE_CAR {
-                AGENT_DRIVEWAY_SPEED_MS
-            } else {
-                walker_speed(*slices.schedule_seed.get(i))
-            } * delta;
             // A walker from a car may start at its door, off the polyline (`PARK-35`).
-            let (next_pos, reached_handoff) = if trip.phase == ParkingTripPhase::WalkToDoor
-                && *s_tmode.get(i) != MODE_CAR
-            {
-                step_out_along_local_access_path(current, path, step)
-            } else {
-                advance_along_local_access_path(current, path, step)
-            };
-            *s_pos_x.get_mut(i) = next_pos.x;
-            *s_pos_y.get_mut(i) = next_pos.y;
+            let (current, next_pos, reached_handoff) = step_along_access_path(
+                i,
+                path,
+                delta,
+                trip.phase == ParkingTripPhase::WalkToDoor,
+                slices,
+            );
             if crate::debug::Channel::Traffic.enabled()
                 && local_access_should_log_step(current, next_pos, path, reached_handoff)
             {
