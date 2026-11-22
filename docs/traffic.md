@@ -2758,13 +2758,22 @@ prepared, not run.
 Every lot shows where its cars and trucks stand, drawn from the places the lot proof published,
 so no asset models its own paint and a rejected place draws nothing (`simulation/parking/paint.rs`).
 A car place gets a white line along each side, from its entry edge to its head, and one across its
-head, half a line longer at each end so the corners close square; the entry stays open to the
-aisle or street. A `loading_bay` gets an L at each of its four corners: two legs along its edges
-from half a line outside the corner, `CORNER_LEG_M` (0.8 m) each, or half the edge when that is
-shorter. Lines are `LINE_WIDTH_M` (0.10 m, the Finnish lane line), clean white. Collinear segments
-that overlap or touch (within 1 cm; directions within 1e-4 rad, offsets within 1 cm) are merged
-into one, so the side two neighbouring places share is drawn once, a row's heads are one line, and
-two docks side by side share their corner marks; the result is sorted, independent of place order.
+head; the entry stays open to the aisle or street. A `loading_bay` gets an L at each of its four
+corners: two legs along its edges from the corner, `CORNER_LEG_M` (0.8 m) each, or half the edge
+when that is shorter. Lines are `LINE_WIDTH_M` (0.10 m, the Finnish lane line), clean white.
+
+Every line lies inside the places (the owner, 2026-11-22), so no paint reaches a kerb, a walkway
+or the ground beside the lot. Each mark is a piece of a place's edge with the direction into the
+place; pieces on one edge line (directions within 1e-4 rad, offsets within 1 cm) that overlap or
+touch (within 1 cm) merge. Where places lie on both sides of the edge (the side two neighbours
+share, the heads of two rows parked head to head, the edge two docks share) the line is centred
+on it, drawn once, half in each place. Where a place lies on one side only (a head line, the
+outer side of a row, a lone place's sides, a dock's corner marks) the line lies inside it, its
+outer edge on the place's edge and its 0.10 m inward. A row's heads are one line, the head line
+spans the place's width (it no longer runs half a line past the sides), and the corners close
+square where the side and head lines overlap. The result is sorted, independent of place order
+(`paint::merge_marks`). Before (`PARK-30` as first built), lines were centred on the edges: half
+the head line lay beyond the head, and outer sides and corner marks 0.05 m outside.
 Kerbside bays draw nothing here: their bay paint is `PARK-04`, and the kerb's line stays the road
 marking's.
 
@@ -4754,10 +4763,27 @@ indexed the agents past their end, a panic in the snapshot).
 - **Turning.** A walker faster than 0.2 m/s faces where its side takes it half a second on, with
   everyone at their last speed, turned at most 20 degrees from the lane, so it steps aside
   instead of sliding.
-- **Size, stride, beat.** Each walker is drawn at `1 ± 0.05` of the model's size (most within
-  2.5 %, the sum of two uniform draws; `walker_gait::walker_size`), its walk cycle advanced per
-  metre over its size so a taller walker takes fewer steps, and offset by a per-walker beat so
-  walkers set off together do not step in time.
+- **Size, stride, beat (`RENDER-72`).** An adult or an elder is drawn at `1 ± 0.11` of the 1.8 m
+  model's size, 1.60 to 2.00 m (`walker_gait::walker_size`, `SIZE_SPREAD`). The draw sums a wide
+  and a narrow uniform draw from the seed, three parts to one: sizes are spread evenly over the
+  middle of the range (1.70 to 1.90 m holds two thirds of the walkers) and thin out linearly to
+  its ends (each outer fifth of the range about 11 %, the middle fifths about 26 % each). Before,
+  walkers spanned `1 ± 0.05` (1.71 to 1.89 m) as the sum of two equal uniform draws, a triangle
+  peaked at the mean: three in four within 2.5 % and half within 1.5 %, too narrow to see at game
+  distance. A child of a household (`age_group` `AGE_CHILD` and a household,
+  `walker_gait::walker_is_child`) is drawn at 0.60 to 0.75 of the model, 1.08 to 1.35 m, from
+  the same draw, so a child's place in its range is the one it would have as an adult. The
+  agents that carry `AGE_CHILD` only to stay out of employment (a stored car's delivery carrier,
+  a drop-off's driver after it leaves the household at the door, `PARK-34`, and freight carriers)
+  have no household and drive: they are never drawn on foot (a delivery carrier that loses its
+  building is set walking and removed after the same tick, before any snapshot), and would be
+  drawn at an adult's size if one ever were. The model is scaled uniformly: a child keeps adult
+  proportions (no child model yet). A walker's walk cycle advances per metre over its size, so a
+  taller walker takes fewer steps and a child more, quicker ones at the same speed; the per-tick
+  cap on fast-forwarded legs is in cycles of a model-sized walker over the size, so no walker at
+  any size or pace is capped at 1x. Each is offset by a per-walker beat so walkers set off
+  together do not step in time. Sizes change nothing in the simulation: lane spacing, speeds
+  and queueing never read them (envelope and determinism records equal to the build before).
 - **Clothes and hair.** The instance custom data's `.y` carries a look in `[0, 1)` from the seed
   (`.x` the walk phase, `.z` and `.w` spare; rows stay 16 floats). `pedestrian_walk.gdshader`
   recolours the palette texels `agents.gd` names per model (`garment_slots`): top from 14
@@ -4765,14 +4791,17 @@ indexed the agents past their end, a panic in the snapshot).
   picked by one digit of the look; skin and shoes keep the model's. The shader also blends the
   two baked animation frames either side of the phase. The lit material keeps the cloud shadow
   (`standard_light.gdshaderinc`).
-- **What it does not do.** Every walker, child or adult, is the same 1.8 m adult model; nothing
-  reads `age_group` when drawing. The palettes are shader constants, not pack data. On a crossing
+- **What it does not do.** Children are the adult model scaled down; elders are drawn as adults.
+  The palettes are shader constants, not pack data. On a crossing
   (a junction's foot connector) walkers coming the other way do not make room: a connector has
   no opposing lane, so only the walkers on the same connector are read.
 - **Cost.** Per drawn walker on a foot lane: two evaluations of its side (now and half a second
   on) when it moves, one when it stands; each is the opposing lane's lookup (a hash lookup and a
-  scan of the edge's lanes), three binary searches and at most nine neighbours. A walker's cull
-  box widens by `0.5 m`. No allocation, no new storage, rows unchanged in size.
+  scan of the edge's lanes), three binary searches and at most nine neighbours; its size, one
+  hash of its seed, two byte and word reads for a child and a multiply. A walker's cull box
+  widens by `0.5 m`; the bucket nodes' bounds follow the scaled rows, and the shadow casters'
+  30 m margin is the shadow of a 2 m agent, the tallest drawn. No allocation, no new storage,
+  rows unchanged in size.
 
 ## Debugging
 
