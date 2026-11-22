@@ -17,18 +17,25 @@ const EXIT_X: f32 = GATE_X + EXIT_OFFSET;
 // east of the door, 20 m south to the stop, on 8 m, round a U of 45° chords and north to the
 // exit 16 m east of the gate. Returns the way.
 fn publish_drive_through(yard: &mut Yard, building: usize) -> DockWay {
+    publish_drive_through_deep(yard, building, 20.0)
+}
+
+// [`publish_drive_through`] with the stop `depth` metres south of the gate (more than 14): its way
+// in holds `floor((depth - 4) / 9)` trucks waiting behind the bay (`PARK-36`), one for 20 m.
+fn publish_drive_through_deep(yard: &mut Yard, building: usize, depth: f32) -> DockWay {
     let handle = yard.allocator.building_handles.handle(building).to_bits();
     let entrance = yard.allocator.entrances[building].clone();
     let k = entrance.curb_pos.y;
     let g = yard.allocator.buildings[building].center_x + GATE_OFFSET;
     let e = g + EXIT_OFFSET;
-    let route_in = [[g, k], [g, k - 4.25], [g, k - 14.0], [g, k - 20.0]];
+    let d = depth;
+    let route_in = [[g, k], [g, k - 4.25], [g, k - 14.0], [g, k - d]];
     let route_out = [
-        [g, k - 20.0],
-        [g, k - 28.0],
-        [g + 4.0, k - 32.0],
-        [g + 12.0, k - 32.0],
-        [e, k - 28.0],
+        [g, k - d],
+        [g, k - d - 8.0],
+        [g + 4.0, k - d - 12.0],
+        [g + 12.0, k - d - 12.0],
+        [e, k - d - 8.0],
         [e, k - 4.25],
         [e, k],
     ];
@@ -38,7 +45,7 @@ fn publish_drive_through(yard: &mut Yard, building: usize) -> DockWay {
     };
     let bay = Bay {
         identity: [handle, 0],
-        position: [g, 0.0, k - 20.0],
+        position: [g, 0.0, k - d],
         path: route_in,
         heading: 0.0,
         width: 3.5,
@@ -299,10 +306,10 @@ fn drive_through_products_are_equal_on_any_worker_count() {
             yard.tick_until(|y| {
                 matches!(
                     y.phase(second),
-                    ParkingTripPhase::PullIn | ParkingTripPhase::ToKerb
+                    ParkingTripPhase::PullIn | ParkingTripPhase::ToKerb | ParkingTripPhase::AtKerb
                 )
             });
-            let refused = yard.phase(second);
+            let refused = (yard.phase(second), yard.agents.agents.parking_trip[second].destination);
             yard.tick_until(|y| y.phase(second) == ParkingTripPhase::AtKerb);
             assert!(yard.check(0));
             yard.tick_until(|y| {
@@ -326,10 +333,11 @@ fn drive_through_products_are_equal_on_any_worker_count() {
         })
     };
     let serial = run(1);
+    let yard = yard_through(true, false).0;
     assert_eq!(
         serial.1,
-        ParkingTripPhase::ToKerb,
-        "the held dock sends it to the kerb stop"
+        (ParkingTripPhase::AtKerb, yard.dock(0)),
+        "the held dock stands it on the way in (`PARK-36`)"
     );
     assert_eq!(run(8), serial);
 }
@@ -513,4 +521,141 @@ fn a_stage_a_dock_beside_a_drive_through_backs_out_as_before() {
     let dock = yard.dock(0);
     drive_along(&mut yard, carrier, ParkingTripPhase::PullIn, dock, &line);
     assert_eq!(yard.phase(carrier), ParkingTripPhase::AtDock);
+}
+
+// Place `k` of the line on the way in of `way`'s straight way in (`PARK-36`): `k` spacings back
+// from the stop towards the gate.
+fn way_in_place(way: &DockWay, k: usize) -> Vector2 {
+    let line = points(&way.route_in);
+    let stop = line[line.len() - 1];
+    stop + (line[0] - stop).normalized() * (k as f32 * crate::config::TRUCK_BODY_LENGTH_M + k as f32)
+}
+
+// The truck now carrying shipment `id` (removals swap agents).
+fn carrier(yard: &Yard, id: u64) -> usize {
+    let idx = yard.shipments.shipment_index(id).unwrap();
+    yard.agents.resolve_agent(yard.shipments.shipments[idx].carrier).unwrap()
+}
+
+// A yard whose drive-through way in holds three trucks behind the bay (36 m from the gate to the
+// stop), shipment 0's truck standing in the bay and shipments 1 to 3 dispatched one after
+// another, each once the last reached its place: all three wait on the way in, never at the kerb.
+fn way_in_full() -> (Yard, DockWay) {
+    let mut yard = yard_with(0, 0);
+    let way = publish_drive_through_deep(&mut yard, 1, 36.0);
+    let dock = yard.dock(0);
+    let first = yard.dispatch(0);
+    yard.tick_until(|y| y.phase(first) == ParkingTripPhase::AtDock);
+    for id in 1..=3 {
+        let i = yard.dispatch(id);
+        yard.tick_until(|y| {
+            assert_ne!(y.phase(i), ParkingTripPhase::ToKerb, "truck {id} is sent to the kerb");
+            y.phase(i) == ParkingTripPhase::AtKerb
+        });
+        let trip = yard.agents.agents.parking_trip[i];
+        assert_eq!(trip.destination, dock, "truck {id} waits on the way in");
+        assert!(trip.ready && trip.freight_gate && !yard.holds(i, dock));
+        let place = way_in_place(&way, id as usize);
+        yard.tick_until(|y| at(y, i).distance_to(place) < 1e-3);
+    }
+    (yard, way)
+}
+
+// Trucks for a drive-through yard whose bay is held wait on its way in, off the road, one behind
+// another in the order they reached the gate, 9 m apart, and move up as each before them pulls
+// on into the bay; a truck arriving with the way in full waits at the kerb stop instead. The
+// dock goes to each in arrival order, the kerb's truck last.
+#[test]
+fn trucks_wait_on_the_way_in_in_arrival_order_and_the_kerb_takes_the_rest() {
+    let (mut yard, way) = way_in_full();
+    let dock = yard.dock(0);
+    let waiting = [1, 2, 3].map(|id| carrier(&yard, id));
+    for (k, &i) in waiting.iter().enumerate() {
+        let a = &yard.agents.agents;
+        assert_eq!(a.current_lane_id[i], usize::MAX, "out of the driving lane");
+        assert!(crate::simulation::economy::agents::transit_is_visible(a.transit[i]));
+        assert!(at(&yard, i).distance_to(way_in_place(&way, k + 1)) < 1e-3);
+    }
+    // The way in is full: the fifth goes on to the kerb stop and waits there.
+    let fifth = yard.dispatch(4);
+    yard.tick_until(|y| y.phase(fifth) == ParkingTripPhase::ToKerb);
+    yard.tick_until(|y| y.phase(fifth) == ParkingTripPhase::AtKerb);
+    assert!(yard.agents.agents.parking_trip[fifth].destination.is_none());
+    assert!(at(&yard, fifth).distance_to(kerb_stop(&yard, 1)) < 0.05);
+    // The first delivers and leaves by the exit; the dock goes to each in turn.
+    let first = carrier(&yard, 0);
+    let mut order = Vec::new();
+    for (id, i) in [(0, first), (1, waiting[0]), (2, waiting[1]), (3, waiting[2]), (4, fifth)] {
+        yard.tick_until(|y| {
+            for &j in &[waiting[0], waiting[1], waiting[2], fifth] {
+                assert!(!y.inside_grocery(j), "no truck takes the door");
+                if y.phase(j) == ParkingTripPhase::PullIn && !order.contains(&j) {
+                    order.push(j);
+                }
+            }
+            y.phase(i) == ParkingTripPhase::AtDock
+        });
+        assert!(yard.holds(i, dock));
+        assert!(yard.check(id));
+    }
+    assert_eq!(order, [waiting[0], waiting[1], waiting[2], fifth]);
+}
+
+// A truck in the middle of the line on the way in whose shipment's leg runs out leaves the line as
+// a truck waiting at the kerb does: the check expires the shipment, refunds the buyer and removes
+// the truck where it stands. Nobody waits on it: the one behind moves up into its place, and the
+// dock goes on in arrival order.
+#[test]
+fn a_truck_timed_out_on_the_way_in_leaves_the_line_and_the_rest_move_up() {
+    let (mut yard, way) = way_in_full();
+    let budget = yard.allocator.buildings[1].operating_budget;
+    yard.shipments.hour_ticks = 1_000;
+    assert!(!yard.check(2));
+    yard.shipments.hour_ticks = 0;
+    assert_eq!(yard.status(2), ShipmentStatus::Expired);
+    assert_eq!(yard.allocator.buildings[1].operating_budget, budget + 600.0, "the buyer is refunded");
+    let idx = yard.shipments.shipment_index(2).unwrap();
+    assert!(yard.agents.resolve_agent(yard.shipments.shipments[idx].carrier).is_none());
+    let third = carrier(&yard, 3);
+    yard.tick_until(|y| at(y, third).distance_to(way_in_place(&way, 2)) < 1e-3);
+    let mut order = Vec::new();
+    for id in [0, 1, 3] {
+        yard.tick_until(|y| {
+            for other in [1, 3] {
+                let j = carrier(y, other);
+                if y.phase(j) == ParkingTripPhase::PullIn && !order.contains(&other) {
+                    order.push(other);
+                }
+            }
+            y.phase(carrier(y, id)) == ParkingTripPhase::AtDock
+        });
+        assert!(yard.check(id));
+    }
+    assert_eq!(order, [1, 3]);
+}
+
+// Two trucks dispatched from one building without a dock at the same moment start one place apart
+// along its kerb, never one over the other, and both pull out and leave (`PARK-36`).
+#[test]
+fn trucks_dispatched_together_start_one_place_apart_at_the_kerb() {
+    let mut yard = yard(0);
+    let first = yard.dispatch(0);
+    let second = yard.dispatch(1);
+    assert!(at(&yard, first).distance_to(kerb_stop(&yard, 0)) < 0.05);
+    let place = crate::simulation::economy::agents::tick::kerb_queue_entrance(
+        &yard.allocator.entrances[0],
+        &yard.graph,
+        1,
+    )
+    .unwrap()
+    .door_pos;
+    assert!(at(&yard, second).distance_to(place) < 0.05, "{:?} {place:?}", at(&yard, second));
+    yard.tick_until(|y| {
+        [first, second]
+            .iter()
+            .all(|&i| y.agents.agents.transit[i] == crate::simulation::economy::agents::TRANSIT_NETWORK)
+    });
+    // A dispatch at a later moment starts at the kerb stop again.
+    let third = yard.dispatch(2);
+    assert!(at(&yard, third).distance_to(kerb_stop(&yard, 0)) < 0.05);
 }

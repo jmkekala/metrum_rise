@@ -514,7 +514,7 @@ fn a_dock_its_carrier_left_is_free_for_the_next() {
     assert_eq!(yard.parking.dock_holder(dock), yard.handle(second));
 }
 
-// A building without a dock (`PARK-36`): the carrier's plan is the door's, but it starts standing
+// A building without a dock (`PARK-36`): the carrier's plan is a car's to the door, but it starts standing
 // at its source's kerb stop and pulls out, never from the door; at the grocery it pulls over to the
 // kerb stop and stands there, drawn, out of the driving lane, never inside; its check delivers
 // there and turns it back from the kerb, and back at its source it stands at the kerb stop again,
@@ -523,12 +523,11 @@ fn a_dock_its_carrier_left_is_free_for_the_next() {
 fn a_carrier_for_a_building_without_a_dock_stands_at_the_kerb_and_never_enters() {
     let mut yard = yard(0);
     let carrier = yard.dispatch(0);
-    let door_plan = crate::simulation::economy::agents::tick::plan_building_origin_trip(
-        0,
+    let door_plan = crate::simulation::economy::agents::tick::plan_car_trip_between_entrances(
+        &yard.allocator.entrances[0],
         1,
         2,
-        true,
-        &yard.allocator,
+        &yard.allocator.entrances[1],
         &yard.network,
         &yard.graph,
         &std::sync::atomic::AtomicU32::new(0),

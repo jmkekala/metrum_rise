@@ -54,6 +54,36 @@ fn a_truck_at_a_kerb_stop_round_trips_a_save() {
     assert!(live.iter().all(|t| t == &live[0] && t.3.contains("AtKerb")), "it stands");
 }
 
+// A short delivery between two buildings without a dock, 60 m apart (`PARK-36`, the owner's "no
+// truck at a small shop"): the carrier drives as a truck the whole way, on the driving lanes, to
+// the kerb stop and back, and is drawn as one; before, a door-to-door plan chose to walk such a
+// trip, and the carrier walked the sidewalk drawn as a pedestrian.
+#[test]
+fn a_short_delivery_between_buildings_without_a_dock_drives_as_a_truck() {
+    use crate::simulation::economy::agents::{MODE_CAR, TRANSIT_NETWORK};
+    use crate::simulation::network::lanes::LaneType;
+    let (mut core, carrier) = dockless_truck();
+    let on_a_car_lane = std::cell::Cell::new(false);
+    tick_truck_until(&mut core, carrier, |core, i| {
+        assert_eq!(core.agents.transit_mode[i], MODE_CAR, "it drives");
+        if core.agents.transit[i] == TRANSIT_NETWORK
+            && let Some(lane) = core.transit_network.lane_system.lanes.get(core.agents.current_lane_id[i])
+        {
+            on_a_car_lane.set(on_a_car_lane.get() || lane.lane_type == LaneType::Vehicle);
+        }
+        phase_of(core, i) == ParkingTripPhase::AtKerb
+    });
+    assert!(on_a_car_lane.get(), "it drove on a driving lane");
+    assert!(pos(&core, carrier).distance_to(kerb_stop(&core, 0)) < 0.05);
+    assert!(check_truck(&mut core));
+    let source = core.agents.target_building[carrier];
+    tick_truck_until(&mut core, carrier, |core, i| {
+        assert_eq!(core.agents.transit_mode[i], MODE_CAR, "it drives back");
+        phase_of(core, i) == ParkingTripPhase::AtKerb
+    });
+    assert!(pos(&core, carrier).distance_to(kerb_stop(&core, source)) < 0.05);
+}
+
 // The shipment's check that comes before the truck has stood `KERB_STAND_FLOOR_MINUTES` at the
 // kerb stop is put off to the minute the floor ends, and none after it.
 #[test]

@@ -194,6 +194,35 @@ fn a_drive_through_truck_round_trips_a_save_at_every_phase() {
     assert!(!live[299].3.contains("PullOut"), "it left the yard");
 }
 
+// A second truck for the drive-through yard while the first stands in its bay waits on the way in
+// (`PARK-36`). Saved while it moves up to its place behind the bay, while it waits there, and
+// while it pulls on into the bay once the first has left by the exit, the loaded city continues
+// tick for tick as the live one.
+#[test]
+fn a_truck_waiting_on_a_drive_through_way_in_round_trips_a_save() {
+    use crate::simulation::economy::logistics::ShipmentEndpoint;
+    let (mut core, building, carrier) = dispatched_through_truck();
+    tick_truck_until(&mut core, carrier, |core, i| phase_of(core, i) == AtDock);
+    let ShipmentEndpoint::Building(source) = core.logistics.shipments[0].source else {
+        panic!("a yard sent it");
+    };
+    let second = dispatch_shipment(&mut core, 1, source);
+    tick_truck_until(&mut core, second, |core, i| {
+        assert_ne!(phase_of(core, i), ParkingTripPhase::ToKerb, "not to the kerb");
+        phase_of(core, i) == ParkingTripPhase::AtKerb
+    });
+    let dock = first_dock(&core, building);
+    assert_eq!(core.agents.parking_trip[second].destination, dock, "on the way in");
+    let live = save_and_continue(&mut core, "through_moving_up", 100, 1, |_| {});
+    assert_ne!((live[0].0, live[0].1), (live[99].0, live[99].1), "it moves up");
+    let live = save_and_continue(&mut core, "through_waiting", 100, 1, |_| {});
+    assert!(live.iter().all(|t| t == &live[0] && t.3.contains("AtKerb")), "it waits");
+    assert!(check_truck(&mut core));
+    tick_truck_until(&mut core, second, |core, i| phase_of(core, i) == PullIn);
+    let live = save_and_continue(&mut core, "through_pulling_on", 300, 1, |_| {});
+    assert!(live.iter().any(|t| t.3.contains("AtDock")), "{:?}", live[299]);
+}
+
 // An edit to the yard's asset under a truck that holds its drive-through dock: the exit and way
 // out removed (the dock now backed out of through `truck_in`, so the building's departure gate
 // moves to it), or the dock dropped (the lane passage removed, so the gate record goes). The held

@@ -1229,8 +1229,14 @@ fn write_the_freight_yard_still_save() {
     core.treasury.balance = 1_000_000.0;
     commit(&mut core, (-200.0, 0.0), (200.0, 0.0));
     core.allocator.registry.register(pack, manifest, dir.clone());
-    let yard = core.place_industry_building_internal(&id, -60.0, -40.0).unwrap();
-    let source = core.place_industry_building_internal(&id, 60.0, -40.0).unwrap();
+    // An explicit asset (the coal mine) as industry, any other (a shop given `placement_mode =
+    // "explicit"`, `PARK-36`) as a service building.
+    let mut place = |x| {
+        core.place_industry_building_internal(&id, x, -40.0)
+            .or_else(|_| core.place_service_building_internal(&id, x, -40.0))
+            .unwrap()
+    };
+    let (yard, source) = (place(-60.0), place(60.0));
     core.publish_pending_building_site_changes();
     let handles: Vec<u64> = [yard, source]
         .map(|b| core.allocator.building_handles.handle(b).to_bits())
@@ -1304,6 +1310,36 @@ fn write_the_freight_yard_still_save() {
         "docks": docks, "yard": handles[0], "source": handles[1], "kerbs": kerbs,
     });
     std::fs::write(out.join("yard.json"), json.to_string()).unwrap();
+    // `METRUM_FREIGHT_STILL_TRACE` seconds: the save loaded and run at 1x as the game runs it,
+    // 30 frames a second, printing each second every shipment and truck (`PARK-36`).
+    let Ok(seconds) = std::env::var("METRUM_FREIGHT_STILL_TRACE") else {
+        return;
+    };
+    core.load_game_internal(save.to_str().unwrap()).expect("the still city loads");
+    core.time.speed_multiplier = 1.0;
+    for frame in 0..seconds.parse::<usize>().unwrap() * 30 {
+        core.step_frame(1.0 / 30.0);
+        if frame % 30 != 29 {
+            continue;
+        }
+        let shipments: Vec<_> = core
+            .logistics
+            .shipments
+            .iter()
+            .map(|s| format!("{}:{:?}", s.id, s.status))
+            .collect();
+        let a = &core.agents;
+        let trucks: Vec<_> = (0..a.pos_x.len())
+            .filter(|&i| a.freight_shipment_id[i] != u64::MAX)
+            .map(|i| {
+                format!(
+                    "({:.1},{:.1}) transit {} {:?}",
+                    a.pos_x[i], a.pos_y[i], a.transit[i], a.parking_trip[i].phase
+                )
+            })
+            .collect();
+        println!("t={}s shipments {shipments:?} trucks {trucks:?}", frame / 30 + 1);
+    }
 }
 
 mod backs_in;

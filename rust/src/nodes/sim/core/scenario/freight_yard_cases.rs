@@ -298,6 +298,8 @@ struct YardRun {
     // Trucks that found every dock held and waited at the kerb stop (`PARK-36`), the ones of
     // them later granted a dock, and their waits from the gate to the grant, in seconds.
     queued: u32,
+    // Of those, waiting on a drive-through dock's way in, not at the kerb (`PARK-36`).
+    queued_on_way_in: u32,
     queued_granted: u32,
     queue_wait_max_s: f32,
     queue_wait_mean_s: f32,
@@ -374,6 +376,8 @@ fn run_with(class: &str, through: bool) -> YardRun {
                     if matches!(trip.phase, ParkingTripPhase::ToKerb | ParkingTripPhase::AtKerb) {
                         queued_since.entry(shipment.id).or_insert_with(|| {
                             result.queued += 1;
+                            result.queued_on_way_in +=
+                                u32::from(trip.phase == ParkingTripPhase::AtKerb && !trip.destination.is_none());
                             core.agents.journey_start_time[i]
                         });
                     } else if trip.phase == ParkingTripPhase::PullIn
