@@ -26,6 +26,7 @@ mod preemption;
 // Kept out of `populated_city.rs`, whose bytes are part of the snapshot fixture revision.
 mod snapshot_cull;
 mod vehicle_rows;
+mod walker_gait;
 
 const BUDGET_MS: f64 = 8.0;
 const FRAME_MS: f64 = 1000.0 / 60.0;
