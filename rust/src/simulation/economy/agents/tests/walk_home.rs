@@ -1002,6 +1002,40 @@ fn a_walker_with_no_home_whose_job_ends_on_the_way_waits_at_its_lane_end() {
     assert_eq!(agents.stranded_report().waiting_for_home, 1);
 }
 
+// `TRAFFIC-42`: a resident evicted at home is settled with no building and, when its household
+// is rehoused, enters the new home through the access step. That is a new journey: the start of
+// its last trip, days old, is not this one's, so the arrival is not charged days on the road.
+#[test]
+fn a_member_rehoused_from_no_building_starts_a_new_journey() {
+    let mut block = Block::new(false, true);
+    let mut agents = AgentSystem::new();
+    let idx = agents.spawn_housed_agent(0, 0.0, 0.0);
+    agents.happiness[idx] = 80.0;
+    agents.journey_start_time[idx] = 0.0;
+    // Three game days after its last trip began.
+    agents.sim_time = 3.0 * 1_440.0;
+    agents.evict_household_member_home(idx, 0);
+    block.tick(&mut agents);
+    assert_eq!(
+        (agents.transit[idx], agents.current_building[idx]),
+        (TRANSIT_IN_BUILDING, usize::MAX),
+        "it is settled with no building"
+    );
+    agents.relocate_household_member_home(idx, usize::MAX, 1, false);
+    assert_eq!(agents.journey_start_time[idx], agents.sim_time);
+    block.tick(&mut agents);
+    assert_eq!(
+        (agents.transit[idx], agents.current_building[idx]),
+        (TRANSIT_IN_BUILDING, 1),
+        "it is in its new home"
+    );
+    assert!(
+        agents.happiness[idx] > 79.0,
+        "no days on the road are charged: {}",
+        agents.happiness[idx]
+    );
+}
+
 // `ECON-29` (round STRAND's dump, agents 350/352/353/355): a household moving in walks from the
 // border to the home admission claimed for it, and a road takes that home on the way (`ZONE-09`:
 // `demolish_for_road` evacuates the batch, then removes each building). The family becomes an

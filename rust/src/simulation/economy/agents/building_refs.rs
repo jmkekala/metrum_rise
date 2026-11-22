@@ -254,6 +254,10 @@ impl AgentSystem {
                 self.agents.target_building[agent_idx] = new_home;
                 self.agents.planned_target_building[agent_idx] = new_home;
                 self.agents.activity[agent_idx] = 0;
+                // Its way to the new home is a new journey (`TRAFFIC-42`): the trip it was on
+                // when it lost its home ended there, possibly days ago, and an arrival is
+                // charged its time on the road.
+                self.agents.journey_start_time[agent_idx] = self.sim_time;
                 // Invalid ingress settles an unhoused resident without a current building.
                 // Rehousing must resume ingress, since building-origin planning needs one.
                 if self.agents.transit[agent_idx] == TRANSIT_IN_BUILDING {
