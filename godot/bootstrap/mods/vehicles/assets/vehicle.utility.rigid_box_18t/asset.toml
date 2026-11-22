@@ -398,3 +398,21 @@ centre = [-1.265, 1.235, -2.95]
 facing = [-1, 0, 0]
 width_m = 0.1
 height_m = 0.06
+
+[[vehicle.doors]]
+side = "left"
+row = "front"
+centre = [1.162, 0, 3.0275]
+width_m = 0.955
+
+[[vehicle.doors]]
+side = "right"
+row = "front"
+centre = [-1.162, 0, 3.0275]
+width_m = 0.955
+
+[[vehicle.doors]]
+side = "rear"
+row = "cargo"
+centre = [0, 0, -3.95]
+width_m = 2.24

@@ -47,6 +47,58 @@
     "cargo": null,
     "coupling": null,
     "default_variant": "plain",
+    "doors": [
+      {
+        "centre": [
+          0.895,
+          0.0,
+          0.3675
+        ],
+        "row": "front",
+        "side": "left",
+        "width_m": 1.135
+      },
+      {
+        "centre": [
+          -0.895,
+          0.0,
+          0.3675
+        ],
+        "row": "front",
+        "side": "right",
+        "width_m": 1.135
+      },
+      {
+        "centre": [
+          0.895,
+          0.0,
+          -0.58
+        ],
+        "row": "rear",
+        "side": "left",
+        "width_m": 0.76
+      },
+      {
+        "centre": [
+          -0.895,
+          0.0,
+          -0.58
+        ],
+        "row": "rear",
+        "side": "right",
+        "width_m": 0.76
+      },
+      {
+        "centre": [
+          0.0,
+          0.0,
+          -2.24
+        ],
+        "row": "cargo",
+        "side": "rear",
+        "width_m": 1.15
+      }
+    ],
     "glass": [
       {
         "area_m2": 1.196,
@@ -497,7 +549,7 @@
     "schema": "metrum-model-facts",
     "source": {
       "blender": "5.3.0",
-      "commit": "15ef73d958bdffc3913cbd4efaecfdd9f31646b0",
+      "commit": "5eff59450db6f1c28f3c7e43252c70e9202d24a5",
       "dirty": false
     },
     "textures": {
@@ -524,7 +576,7 @@
         "paint": true
       }
     ],
-    "version": 2,
+    "version": 3,
     "wheels": [
       {
         "axle": 0,
@@ -592,5 +644,5 @@
     "vehicle_class": "civil",
     "vehicle_family": "estate"
   },
-  "source_commit": "428a4131e86b7932be4c01648a2bb24d6a0da49c"
+  "source_commit": "0f4757e7903aa8f65af60f57161e69bea8a4950f"
 }

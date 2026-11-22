@@ -59,6 +59,38 @@
     },
     "coupling": null,
     "default_variant": "plain",
+    "doors": [
+      {
+        "centre": [
+          1.162,
+          0.0,
+          3.0275
+        ],
+        "row": "front",
+        "side": "left",
+        "width_m": 0.955
+      },
+      {
+        "centre": [
+          -1.162,
+          0.0,
+          3.0275
+        ],
+        "row": "front",
+        "side": "right",
+        "width_m": 0.955
+      },
+      {
+        "centre": [
+          0.0,
+          0.0,
+          -3.95
+        ],
+        "row": "cargo",
+        "side": "rear",
+        "width_m": 2.24
+      }
+    ],
     "glass": [
       {
         "area_m2": 1.646,
@@ -670,7 +702,7 @@
     "schema": "metrum-model-facts",
     "source": {
       "blender": "5.3.0",
-      "commit": "6905dc0b0e5581190d8feafa5b53de2fe7f36b8c",
+      "commit": "5eff59450db6f1c28f3c7e43252c70e9202d24a5",
       "dirty": false
     },
     "textures": {
@@ -705,7 +737,7 @@
         "paint": false
       }
     ],
-    "version": 2,
+    "version": 3,
     "wheels": [
       {
         "axle": 0,
@@ -773,5 +805,5 @@
     "vehicle_class": "utility",
     "vehicle_family": "truck"
   },
-  "source_commit": "428a4131e86b7932be4c01648a2bb24d6a0da49c"
+  "source_commit": "0f4757e7903aa8f65af60f57161e69bea8a4950f"
 }
