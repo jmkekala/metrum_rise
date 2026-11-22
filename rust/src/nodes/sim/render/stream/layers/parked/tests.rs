@@ -200,3 +200,34 @@ fn a_bucket_draws_while_any_of_its_cars_is_within_the_draw_distance() {
     assert!(!engine_draws(&backend, &car, above));
     assert!(nearest(above) > CAR_DRAW_DISTANCE_M);
 }
+
+#[test]
+fn the_paint_layer_draws_pose_rows_without_custom_data() {
+    // `PARK-30` beside `RENDER-65`: a paint line's row is its pose alone, so the paint batch
+    // counts 12 floats an instance and carries no custom data, while the cars' rows keep theirs.
+    let line = Aabb {
+        position: [-0.05, 0.0, -2.5],
+        size: [0.1, 0.01, 5.0],
+    };
+    let rows: Vec<f32> = (0..6)
+        .flat_map(|i| [1.0, 0.0, 0.0, i as f32 * 2.5, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 3.0])
+        .collect();
+    let mut backend = Recorder::new();
+    let mut layer = ParkedLayer::paint();
+    layer.register(PAINT_BUCKET, 7, line, [0.0, f32::INFINITY]);
+    assert!(layer.install(&mut backend, (0, 0), std::iter::once((PAINT_BUCKET, &rows[..]))));
+    let (_, paint) = backend.visible(Scenario::Main).next().expect("drawn");
+    assert_eq!(paint.shadow, Shadow::Off);
+    let multimesh = &backend.multimeshes[&paint.base];
+    assert!(!multimesh.colors && !multimesh.custom);
+    assert_eq!(multimesh.visible_count, Some(6));
+    assert_eq!(multimesh.rows[..rows.len()], rows[..]);
+    assert_eq!(multimesh.aabb, line.through_instances(&rows, 6));
+    // The range: the paint's draw distance plus the farthest line origin from the centre.
+    let centre = multimesh.aabb.center();
+    let reach = (0..6)
+        .map(|i| length3(sub3(centre, [i as f32 * 2.5, 0.0, 3.0])))
+        .fold(0.0f32, f32::max);
+    assert!(paint.range[1] >= PAINT_DRAW_DISTANCE_M + reach - 1e-3);
+    assert!(paint.range[1] <= PAINT_DRAW_DISTANCE_M + reach + 1.0, "{:?}", paint.range);
+}

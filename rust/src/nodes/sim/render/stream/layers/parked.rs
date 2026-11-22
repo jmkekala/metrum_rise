@@ -31,8 +31,8 @@
 //! poses)`, a reset `O(slots)`; nothing allocates once the maps and the pool have grown.
 //!
 //! The lots' bay paint (`PARK-30`) draws through a second layer of this kind, one bucket a chunk
-//! (the paint quad, [`PAINT_BUCKET`]), its own draw distance ([`PAINT_DRAW_DISTANCE_M`]) and no
-//! shadow casting.
+//! (the paint quad, [`PAINT_BUCKET`]), its own draw distance ([`PAINT_DRAW_DISTANCE_M`]), no
+//! shadow casting and rows of the pose alone: a line has no custom data.
 
 use super::super::backend::{
     Drawn, RenderBackend, Role, Shadow, SlotId, SlotKind, SlotPool, capacity_class,
@@ -61,8 +61,13 @@ pub(crate) const PAINT_BUCKET: u32 = 0;
 pub(crate) const PAINT_DRAW_DISTANCE_M: f32 = 400.0;
 // `SceneLightingConfig.DYNAMIC_CASTER_EXTRA_CULL_MARGIN_M`, the cars' shadow policy.
 const EXTRA_MARGIN_M: f32 = 12.0;
-// A row: a 3D transform's 12 floats, then the car's custom data (`RENDER-65`).
+// A 3D transform's floats: a row longer than this carries instance custom data.
+const POSE: usize = 12;
+// A car's row: its pose, then the car's custom data (`RENDER-65`).
 const STRIDE: usize = crate::nodes::sim::render::car_visual::ROW;
+// A paint line's row: its pose alone (`PARK-30`).
+const PAINT_STRIDE: usize = crate::simulation::parking::paint::STRIDE;
+const _: () = assert!(PAINT_STRIDE == POSE && STRIDE > POSE);
 
 /// The parked chunks' slots.
 pub(crate) struct ParkedLayer {
@@ -77,11 +82,14 @@ pub(crate) struct ParkedLayer {
     cast_shadows: bool,
     // How far an instance draws: the cars' `CAR_DRAW_DISTANCE_M`, the paint's own.
     draw_distance: f32,
+    // Floats a row: a car's pose and custom data (`STRIDE`), a paint line's pose
+    // (`PAINT_STRIDE`). The slots carry custom data when the rows do.
+    stride: usize,
 }
 
 impl ParkedLayer {
-    /// A layer of at most `limit` slots, `spare_limit` of them spare, drawing each instance to
-    /// `draw_distance` metres.
+    /// A layer of cars' rows (pose and custom data) of at most `limit` slots, `spare_limit` of
+    /// them spare, drawing each instance to `draw_distance` metres.
     pub(crate) fn new(limit: usize, spare_limit: usize, draw_distance: f32) -> Self {
         Self {
             pool: SlotPool::new(limit, spare_limit),
@@ -90,6 +98,7 @@ impl ParkedLayer {
             buckets: Map::default(),
             cast_shadows: true,
             draw_distance,
+            stride: STRIDE,
         }
     }
 
@@ -98,10 +107,11 @@ impl ParkedLayer {
         Self::new(SLOT_LIMIT, SPARE_LIMIT, CAR_DRAW_DISTANCE_M)
     }
 
-    /// The bay paint's layer: no shadow casting.
+    /// The bay paint's layer: rows of the pose alone, no shadow casting.
     pub(crate) fn paint() -> Self {
         let mut layer = Self::new(PAINT_SLOT_LIMIT, PAINT_SPARE_LIMIT, PAINT_DRAW_DISTANCE_M);
         layer.cast_shadows = false;
+        layer.stride = PAINT_STRIDE;
         layer
     }
 
@@ -151,9 +161,9 @@ impl ParkedLayer {
         self.buckets.clear();
     }
 
-    /// Installs chunk `chunk` as `buckets` (bucket and its poses, 12 floats each; every bucket
-    /// with poses registered), whole: returns false and sends nothing when the pool cannot give
-    /// the slots it needs. The chunk's buckets not named, or named without poses, are hidden.
+    /// Installs chunk `chunk` as `buckets` (bucket and its rows, the layer's stride each; every
+    /// bucket with poses registered), whole: returns false and sends nothing when the pool cannot
+    /// give the slots it needs. The chunk's buckets not named, or named without poses, are hidden.
     pub(crate) fn install<'a>(
         &mut self,
         backend: &mut impl RenderBackend,
@@ -182,7 +192,7 @@ impl ParkedLayer {
             if rows.is_empty() {
                 continue;
             }
-            let count = (rows.len() / STRIDE) as u32;
+            let count = (rows.len() / self.stride) as u32;
             let (mesh, mesh_bounds, band) = self.meshes[&bucket];
             let slot = match self.drawn.get(&(chunk, bucket)) {
                 Some(&slot) => slot,
@@ -191,7 +201,7 @@ impl ParkedLayer {
                         mesh,
                         class: capacity_class(count).0,
                         colors: false,
-                        custom: true,
+                        custom: self.stride > POSE,
                         parameter: None,
                     };
                     let slot = self
@@ -203,7 +213,8 @@ impl ParkedLayer {
                     slot
                 }
             };
-            let (bounds, range_end) = drawn_bounds(&mesh_bounds, rows, self.draw_distance);
+            let (bounds, range_end) =
+                drawn_bounds(&mesh_bounds, rows, self.stride, self.draw_distance);
             self.pool.fill(backend, slot, rows, count, bounds);
             self.draw(backend, slot, [band[0], band[1].min(range_end)]);
         }
@@ -248,7 +259,7 @@ impl ParkedLayer {
     fn keeps(&self, slot: SlotId, bucket: u32, floats: usize) -> bool {
         let kind = self.pool.slot(slot).kind();
         kind.mesh == self.meshes[&bucket].0
-            && kind.class >= capacity_class((floats / STRIDE) as u32).0
+            && kind.class >= capacity_class((floats / self.stride) as u32).0
     }
 
     fn draw(&mut self, backend: &mut impl RenderBackend, slot: SlotId, range: [f32; 2]) {
@@ -283,10 +294,10 @@ impl ParkedLayer {
 // skips the batch when the camera is farther than that from the centre (the range has no
 // margins, so no state), and then every origin is beyond the draw distance, where the material
 // has faded its car out whole. `O(poses)`.
-fn drawn_bounds(mesh: &Aabb, rows: &[f32], draw_distance: f32) -> (Aabb, f32) {
-    let bounds = mesh.through_instances(rows, rows.len() / STRIDE);
+fn drawn_bounds(mesh: &Aabb, rows: &[f32], stride: usize, draw_distance: f32) -> (Aabb, f32) {
+    let bounds = mesh.through_instances(rows, rows.len() / stride);
     let (mut low, mut high) = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]);
-    for pose in rows.as_chunks::<STRIDE>().0 {
+    for pose in rows.chunks_exact(stride) {
         let origin = [pose[3], pose[7], pose[11]];
         low = min3(low, origin);
         high = max3(high, origin);
