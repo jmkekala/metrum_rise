@@ -417,19 +417,24 @@ fn fill_lane_range(
             continue;
         }
         let corrected = range.corrections.len();
+        // Whether the body ahead was moved back by this pass: it stands in a queue.
+        let mut lead_held = false;
         for j in (0..bucket.len().saturating_sub(1)).rev() {
             let (rear, lead) = (bucket[j].1, bucket[j + 1].1);
             // Walkers walk through each other's lane distance to pass (`walker_crowd`); they
-            // queue, bodies the minimum gap apart, only behind one standing still.
+            // queue, bodies the minimum gap apart, only behind one standing still or held in
+            // the queue ahead of it, whose speed is still the step it took before the hold.
             if input.modes[rear] != MODE_CAR
                 && input.modes[lead] != MODE_CAR
+                && !lead_held
                 && input.speeds[lead] >= WALKER_STANDING_MS
             {
                 continue;
             }
             let min_sep = bucket[j + 1].2 + bucket[j].2 + IDM_S_MIN;
             let max_rear = (bucket[j + 1].0 - min_sep).max(0.0);
-            if bucket[j].0 > max_rear {
+            lead_held = bucket[j].0 > max_rear;
+            if lead_held {
                 bucket[j].0 = max_rear;
                 range.corrections.push((bucket[j].1, max_rear));
             }
@@ -465,5 +470,45 @@ mod tests {
             lane_bucket_order(&(4.0, 7, 2.25), &(4.0, 7, 2.25)),
             Ordering::Equal
         );
+    }
+
+    #[test]
+    fn walkers_queue_behind_one_standing_and_walk_through_moving_ones() {
+        use crate::config::{IDM_S_MIN, WALKER_BODY_LENGTH_M};
+        use crate::simulation::economy::agents::data::AgentSystem;
+        use crate::simulation::economy::agents::{ACCESS_PLAN_VALID, MODE_WALK, TRANSIT_NETWORK};
+
+        // Walker 0 at 50 m, the others closing in on it from inside its body.
+        let walkers = |lead_speed: f32| {
+            let mut agents = AgentSystem::new();
+            for (d, speed) in [(50.0, lead_speed), (49.9, 1.4), (49.8, 1.4), (49.7, 1.4)] {
+                let i = agents.spawn_border_arrival_agent(usize::MAX, 0, 0.0, 0.0);
+                agents.transit[i] = TRANSIT_NETWORK;
+                agents.transit_mode[i] = MODE_WALK;
+                agents.access_flags[i] = ACCESS_PLAN_VALID;
+                agents.current_lane_id[i] = 0;
+                agents.lane_distance[i] = d;
+                agents.speed[i] = speed;
+            }
+            agents.rebuild_lanes(1, 4);
+            agents
+        };
+
+        // Behind one standing, each walker queues behind the one ahead, bodies the gap apart.
+        let queued = walkers(0.0);
+        let spacing = WALKER_BODY_LENGTH_M + IDM_S_MIN;
+        for (k, i) in [1, 2, 3].into_iter().enumerate() {
+            let want = 50.0 - (k + 1) as f32 * spacing;
+            let d = queued.lane_distance[i];
+            assert!((d - want).abs() < 1e-4, "walker {i} at {d}, want {want}");
+        }
+        let order: Vec<usize> = queued.lane_buckets[0].iter().map(|e| e.1).collect();
+        assert_eq!(order, [3, 2, 1, 0]);
+
+        // Behind one walking, they keep their distances: they walk through to pass.
+        let passing = walkers(1.2);
+        for (i, d) in [(1, 49.9), (2, 49.8), (3, 49.7)] {
+            assert_eq!(passing.lane_distance[i], d);
+        }
     }
 }
