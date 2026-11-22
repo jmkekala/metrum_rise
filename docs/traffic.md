@@ -4445,6 +4445,22 @@ and 17 dock deliveries were counted as door deliveries (each was seen pulling in
 it now counts a truck seen pulling into a dock. A2's and B's "10 at the door after a refusal" may
 have held such deliveries too.
 
+**Records** (2026-11-23, `sim02_gate.py envelope determinism`, release `$TEST_BINARY` of the
+branch at `RAYON_NUM_THREADS=6`, against `dev` `180f28bcc`'s records): PASS; the determinism
+record is equal to `dev`'s. Every envelope record moves from the first recorded day (day 4), in
+all four cities: the test cities have no dock, so every delivery is now a kerb delivery, and a
+truck now stands at least 2 game minutes before its check delivers (before, the first check after
+it went inside delivered), and its access path is the kerb stop's, so deliveries land minutes later and the hourly freight
+and stock decisions after them diverge. Day 4 deliveries: 420 to 360 (10k), 798 to 745 (30k), 355
+to 303 and 672 to 628 (fiscal stress). Over the 14 recorded days, freight deliveries a day: 10k
+1,422.9 to 1,432.2, 30k 3,917.6 to 3,914.0, fiscal stress 10k 73.5 to 69.4 and 30k 242.6 to 247.1;
+households with an out-of-stock store, mean of the days: 568 to 563, 1,229 to 1,244, 4,400 to
+4,398, 11,632 to 11,631. Nothing is lost: households plus vacant homes are equal in all four (6,066
+and 15,750), no unhoused household at the end, 0 trip failures on every day. One band note: fiscal
+stress 10k's final employment rate 0.0160 outside [0.0119, 0.0152] (base 0.0140), a 14-day-end
+value of a diverged city. Expired and refunded shipments are not part of the envelope records;
+the liveness runs above had none.
+
 **Owner's choices.**
 
 1. The floor: 2 game minutes (`KERB_STAND_FLOOR_MINUTES`).
