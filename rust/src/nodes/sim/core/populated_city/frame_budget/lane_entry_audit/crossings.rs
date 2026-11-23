@@ -60,6 +60,8 @@ pub(super) struct CrossingBook {
     // `METRUM_AUDIT_LEAVE_TRACE=1`: one `PARK32_LONG_LEAVE` line per car whose wait to cross
     // when leaving passes each of `LONG_LEAVE_S`.
     trace_long: bool,
+    // Per agent index: render id, where it stood still since when, and whether it was traced.
+    still: Vec<(u64, f32, f32, f32, bool)>,
 }
 
 // The leaving waits a trace line is printed at.
@@ -129,6 +131,9 @@ impl CrossingBook {
         self.last_time = Some(now);
         self.rows.resize(agents.len(), Row::default());
         let on_road = |transit: u8| transit == TRANSIT_NETWORK || transit == TRANSIT_INTERSECTION;
+        if self.trace_long {
+            self.trace_still_egress(core, now);
+        }
         for i in 0..agents.len() {
             let (wait, crossing) = crossing_state(agents, i);
             let transit = agents.transit[i];
@@ -193,6 +198,41 @@ impl CrossingBook {
             }
             row.transit = transit;
             row.wait = wait;
+        }
+    }
+
+    // `PARK32_STILL_EGRESS`: one line per agent that has stood an hour in the access-egress
+    // state, whatever its mode: what it is doing.
+    fn trace_still_egress(&mut self, core: &SimCore, now: f32) {
+        let agents = &core.agents.agents;
+        self.still.resize(agents.len(), (u64::MAX, 0.0, 0.0, 0.0, false));
+        for i in 0..agents.len() {
+            let (id, x, y) = (agents.render_id[i], agents.pos_x[i], agents.pos_y[i]);
+            let row = &mut self.still[i];
+            if agents.transit[i] != TRANSIT_ACCESS_EGRESS {
+                row.0 = u64::MAX;
+                continue;
+            }
+            if row.0 != id || (row.1 - x).hypot(row.2 - y) > 0.5 {
+                *row = (id, x, y, now, false);
+                continue;
+            }
+            if !row.4 && now - row.3 >= 3600.0 {
+                row.4 = true;
+                let trip = agents.parking_trip[i];
+                eprintln!(
+                    "PARK32_STILL_EGRESS {}",
+                    serde_json::json!({
+                        "day": core.time.day_index, "agent": id, "mode": agents.transit_mode[i],
+                        "vehicle_type": agents.vehicle_type[i], "freight": agents.freight_shipment_id[i] != u64::MAX,
+                        "trip": format!("{trip:?}"), "crossing_wait": agents.crossing_wait_s[i],
+                        "crossing_lane": agents.crossing_lane[i], "attach": [agents.planned_attach_lane_id[i], agents.planned_attach_lane_d[i]],
+                        "flags": agents.access_flags[i], "path_index": agents.current_path_index[i],
+                        "path_len": agents.current_path[i].len(), "building": agents.current_building[i],
+                        "pos": [x, y], "next_replan": agents.next_replan_time[i], "now": now,
+                    })
+                );
+            }
         }
     }
 
