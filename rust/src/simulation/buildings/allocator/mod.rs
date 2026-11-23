@@ -25,7 +25,7 @@ pub(crate) use tests::support::indexed_test_building;
 pub(crate) use admission_order::ChunkBounds;
 pub(crate) use entrance::{
     BuildingEntranceKey, CROSSING_PENALTY_S, DemandSiteEntranceKey, FreightEntranceAccess,
-    building_local_xz_basis, lanes_crossed, main_entrance_anchor,
+    LaneCrossing, building_local_xz_basis, lane_crossing, main_entrance_anchor,
 };
 pub(crate) use index::SavedVacancyOrder;
 #[cfg(test)]

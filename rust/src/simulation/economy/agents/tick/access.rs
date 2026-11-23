@@ -8,7 +8,7 @@ mod legality;
 mod path;
 mod timing;
 
-pub(crate) use crossing::CROSSING_GIVE_UP_S;
+pub(crate) use crossing::{CROSSING_GAVE_UP, CROSSING_GIVE_UP_S};
 pub(super) use crossing::{crossing_at, crossing_clear};
 pub(super) use geometry::{
     local_access_point, local_access_side_label, projected_lane_distance_for_entrance,

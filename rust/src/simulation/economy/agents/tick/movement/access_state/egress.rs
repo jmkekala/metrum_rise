@@ -151,11 +151,9 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
         ) {
             // A far-side exit not yet under way (`PARK-32`): it crosses the road from the access
             // mouth, the polyline's last point but one, only into a gap.
-            let crossing = (*s_tmode.get(i) == MODE_CAR
+            let may_cross = *s_tmode.get(i) == MODE_CAR
                 && *slices.crossing_lane.get(i) == u32::MAX
-                && path.len() >= 2)
-                .then(|| crossing_at(attach_lane_id, attach_lane_d, entrance.side, transit_network))
-                .flatten();
+                && path.len() >= 2;
             // A walker from a car may start at its door, off the polyline (`PARK-35`); a truck
             // leaving its place in the line at a kerb stop, or the gate for that line, beside it
             // (`PARK-36`).
@@ -168,31 +166,36 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
                         && matches!(trip.phase, ParkingTripPhase::None | ParkingTripPhase::ToKerb)),
                 slices,
             );
-            if let Some((crossed, crossed_d)) = crossing {
-                let mouth = path[path.len() - 2];
-                let on_road = reached_handoff
+            // Past the mouth this step: onto the road's last leg, or at its lane point.
+            let on_road = may_cross
+                && (reached_handoff
                     || (local_access_target_segment(next_pos, path) == Some(path.len() - 1)
-                        && next_pos.distance_to(mouth) > 0.05);
-                if on_road {
-                    let half = lane_half_length(MODE_CAR, *slices.vehicle_type.get(i));
-                    let clear = |lane, d| {
-                        crossing_clear(lane, d, half, transit_network, graph, lane_buckets)
-                    };
-                    if clear(crossed, crossed_d)
-                        && clear(attach_lane_id, attach_lane_d)
-                        && claim_lane_entry(i, crossed, lane_claims)
-                        && claim_lane_entry(i, attach_lane_id, lane_claims)
-                    {
-                        // Crossing: it holds the crossed lane at the crossing's distance.
-                        *slices.crossing_lane.get_mut(i) = crossed as u32;
-                        *slices.lane_d.get_mut(i) = crossed_d;
-                    } else {
-                        // Waiting at the mouth, off the road, for a gap.
-                        *s_pos_x.get_mut(i) = mouth.x;
-                        *s_pos_y.get_mut(i) = mouth.y;
-                        *s_speed.get_mut(i) = 0.0;
-                        return;
-                    }
+                        && next_pos.distance_to(path[path.len() - 2]) > 0.05));
+            if on_road
+                && let Some((crossed, crossed_d)) =
+                    crossing_at(attach_lane_id, attach_lane_d, entrance.side, transit_network)
+            {
+                let half = lane_half_length(MODE_CAR, *slices.vehicle_type.get(i));
+                let clear = |lane, d| {
+                    crossing_clear(lane, d, half, transit_network, graph, lane_buckets)
+                };
+                if clear(crossed, crossed_d)
+                    && clear(attach_lane_id, attach_lane_d)
+                    && claim_lane_entry(i, crossed, lane_claims)
+                    && claim_lane_entry(i, attach_lane_id, lane_claims)
+                {
+                    // Crossing: it holds the crossed lane at the crossing's distance.
+                    *slices.crossing_lane.get_mut(i) = crossed as u32;
+                    *slices.crossing_wait.get_mut(i) = 0.0;
+                    *slices.lane_d.get_mut(i) = crossed_d;
+                } else {
+                    // Waiting at the mouth, off the road, for a gap; counted, never given up.
+                    *slices.crossing_wait.get_mut(i) += delta;
+                    let mouth = path[path.len() - 2];
+                    *s_pos_x.get_mut(i) = mouth.x;
+                    *s_pos_y.get_mut(i) = mouth.y;
+                    *s_speed.get_mut(i) = 0.0;
+                    return;
                 }
             }
             if crate::debug::Channel::Traffic.enabled()

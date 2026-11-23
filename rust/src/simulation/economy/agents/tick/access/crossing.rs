@@ -12,7 +12,7 @@
 
 use super::super::traffic::crossing_gap_clear;
 use crate::config::{AGENT_DRIVEWAY_SPEED_MS, LANE_WIDTH};
-use crate::simulation::buildings::allocator::{BuildingAllocator, lanes_crossed};
+use crate::simulation::buildings::allocator::{BuildingAllocator, LaneCrossing, lane_crossing};
 use crate::simulation::economy::agents::LaneEntry;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
@@ -21,10 +21,17 @@ use crate::simulation::network::graph::RegionGraph;
 /// drives on and comes back on the near side (`PARK-32`): the most it holds its lane.
 pub(crate) const CROSSING_GIVE_UP_S: f32 = 30.0;
 
+/// The crossing wait (`Agent::crossing_wait_s`) of a car that gave up a crossing on its present
+/// leg (`PARK-32`): it comes back on the near side and does not wait to cross again until it
+/// leaves the road. Below every real wait.
+pub(crate) const CROSSING_GAVE_UP: f32 = -1.0;
+
 /// The lane a vehicle at distance `lane_d` of lane `lane_id` crosses to or from kerb `side` of
-/// that lane's road, and the crossing's distance on it: the lane point projected on the crossed
-/// lane. `None` when the lane is the kerb's own (nothing crossed). O(lanes on the edge + the
-/// crossed lane's points), allocation-free.
+/// that lane's road under the crossing rule ([`lane_crossing`]), and the crossing's distance on
+/// it: the lane point projected on the crossed lane. `None` when the lane is the kerb's own
+/// (nothing crossed), and for a door's crossing outside the rule (more lanes, or near a lane
+/// end), which is driven as before `PARK-32`, untested. O(lanes on the edge × their points),
+/// allocation-free.
 pub(in crate::simulation::economy::agents::tick) fn crossing_at(
     lane_id: usize,
     lane_d: f32,
@@ -32,8 +39,10 @@ pub(in crate::simulation::economy::agents::tick) fn crossing_at(
     network: &TransitNetwork,
 ) -> Option<(usize, f32)> {
     let lanes = &network.lane_system;
-    let crossed = lanes_crossed(lanes, lane_id, side).1?;
-    let point = BuildingAllocator::sample_pos_on_lane(&lanes.lanes[lane_id], lane_d);
+    let point = BuildingAllocator::sample_pos_on_lane(lanes.lanes.get(lane_id)?, lane_d);
+    let LaneCrossing::Tested(crossed) = lane_crossing(lanes, lane_id, side, point) else {
+        return None;
+    };
     let d = BuildingAllocator::project_point_to_polyline_s(&lanes.lanes[crossed].geometry, point);
     Some((crossed, d))
 }

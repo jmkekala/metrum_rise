@@ -4,8 +4,8 @@
 
 use super::super::super::super::{ACCESS_PLAN_VALID, MODE_CAR, TRANSIT_ACCESS_INGRESS};
 use super::super::super::access::{
-    CROSSING_GIVE_UP_S, crossing_at, crossing_clear, gate_line_d, local_access_point,
-    local_access_side_label,
+    CROSSING_GAVE_UP, CROSSING_GIVE_UP_S, crossing_at, crossing_clear, gate_line_d,
+    local_access_point, local_access_side_label,
 };
 use super::super::super::claims::LaneClaimContext;
 use super::super::super::lane_nav::{
@@ -132,12 +132,17 @@ pub(super) unsafe fn try_network_detach(
         };
         if let Some((crossed, crossed_d)) = crossing {
             let half = lane_half_length(MODE_CAR, *slices.vehicle_type.get(i));
-            if !crossing_clear(crossed, crossed_d, half, transit_network, graph, lane_buckets)
+            // A car that gave up a crossing on this leg never waits for one again: should a later
+            // replan bring it back to the far side, it gives up at once (no loop of waits).
+            let gave_up = *slices.crossing_wait.get(i) == CROSSING_GAVE_UP;
+            if gave_up
+                || !crossing_clear(crossed, crossed_d, half, transit_network, graph, lane_buckets)
                 || !claim_lane_entry(i, crossed, lane_claims)
             {
-                *slices.crossing_wait.get_mut(i) += delta;
-                if *slices.crossing_wait.get(i) >= CROSSING_GIVE_UP_S {
-                    *slices.crossing_wait.get_mut(i) = 0.0;
+                if !gave_up {
+                    *slices.crossing_wait.get_mut(i) += delta;
+                }
+                if gave_up || *slices.crossing_wait.get(i) >= CROSSING_GIVE_UP_S {
                     if give_up_crossing(
                         i,
                         lane_id,
@@ -147,9 +152,13 @@ pub(super) unsafe fn try_network_detach(
                         pathfind_count,
                         slices,
                     ) {
-                        // On its way on: it keeps moving along its lane from here.
+                        // On its way on at once: its lane is free behind it, and the mark keeps
+                        // it on the near side until this leg ends.
+                        *slices.crossing_wait.get_mut(i) = CROSSING_GAVE_UP;
                         return false;
                     }
+                    // No way round: it waits on for a gap, counting afresh.
+                    *slices.crossing_wait.get_mut(i) = 0.0;
                 }
                 *s_lane_d.get_mut(i) = detach_d.min(transit_network.lane_system.lanes[lane_id].length);
                 *s_speed.get_mut(i) = 0.0;
