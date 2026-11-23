@@ -49,10 +49,10 @@ function; parking does not add an alternate detach path.
 Recorded 2026-11-21 with the drawn turns of the lot route
 ([`traffic.md`](traffic.md#drawn-turns-park-29-as-built)), which leave this hop as it was.
 
-**As built.** Every lot and yard access is same-side only (`derive_place_entrance` and
-`parking_access_at` set `SameSideOnly`): a car or truck joins and leaves the outermost lane of
-its own side's direction. The `BothSides` crossover below serves door access only; no lot or yard
-manoeuvre crosses a lane. The hop is the manoeuvre's first leg (pull-in) or last (pull-out): from
+**As built.** A lot or yard access is two-sided where a vehicle may cross to it
+([lanes to cross](#lanes-to-cross-park-32-as-built), `PARK-32`), and same-side only elsewhere: a
+car or truck then joins and leaves the outermost lane of its own side's direction. The hop is the
+manoeuvre's first leg (pull-in) or last (pull-out): from
 the lane point, on that lane's centre line abreast the road connection (the connection's station
 projected on the lane), to the road connection, 5 cm inside the outer edge of the side band. On a
 two-lane street (3.5 m lanes, 1.5 m sidewalks) it runs square to the road for 3.2 m: half the lane
@@ -122,13 +122,76 @@ determinism records are unchanged.
    4 m gate); the car stays in its own lane. The lane half is drawn at the lane's height, so a
    truck's wheels over the kerb are grounded only from the lane point on.
 
-**Lanes to cross** (`PARK-32`, not built: a simulation change). The owner's rule for a left exit
-or entry: go straight across almost all of the lanes crossed and arc only at the end into the
-vehicle's own lane. The gate function takes it as it stands: the lane point is then on the far
-lane, the hop crosses the near ones, `hand` names the side the lot lies on, and the hop half
-covers only the last `R` of the crossing, so the vehicle runs straight over the lanes it crosses
-and arcs into its own (a gate test runs a 10 m crossing). The lane test would then need the
-side per car, which the trip does not hold today.
+#### Lanes to cross (`PARK-32`), as built
+
+Built 2026-11-23 on branch `park-32` (not landed). A simulation change: routes, positions and
+arrival ticks move.
+
+1. **Where.** One rule for every vehicle access, doors (with the `PARK-34` and `PARK-36` kerb
+   stops), lots, driveways, docks and freight gates (`BuildingAllocator::vehicle_access_at`):
+   the far lane is valid (`BothSides`) on a road without a raised median (the edge's own policy,
+   `ROAD-80`: a raised median is how a player forbids crossing) whose far lane crosses at most
+   `MAX_CROSSED_LANES` (1) vehicle lane to reach the access's kerb, at a station
+   `CROSSING_JUNCTION_CLEARANCE_M` (15 m) from both ends of every vehicle lane of the road.
+   Lanes are counted across the road by `lane_idx` (`lanes_crossed`). So: both sides of a 1+1
+   road away from its junctions; the far kerb of a two-lane one-way road; a one-way road's only
+   lane serves both kerbs anywhere (nothing crossed, nothing waits); a 4-lane road stays
+   same-side. A kerbside place on a two-way road stays same-side; one on a one-way road whose
+   lanes do not serve its kerb takes the same rule. Before, every lot, driveway and yard was
+   same-side (a left-side lot on a one-way road had no car access at all), and doors crossed any
+   number of lanes with no test.
+2. **Routing.** Unchanged machinery: with both lanes valid, the planner prices each end's
+   candidates and picks by trip cost, entering and leaving. The far lane's local access is the
+   straight crossover (below) plus `CROSSING_PENALTY_S` (5 s) for the expected wait, in both
+   planners (`access/timing.rs`, the allocator's freight quotes).
+3. **The crossover.** `door -> near kerb -> far lane point`, square to the road (a door point
+   inside the kerb, a kerb stop, is reached straight from the lane point). It replaces the old
+   `door -> near kerb -> far kerb -> lane point`, which turned out to the far kerb first. A lot's
+   manoeuvre needs no change: its hop already runs square from the lane point to the road
+   connection, so from the far lane it runs straight over the near one.
+4. **Entering.** At the far lane's detach point the car or truck needs a gap in the crossed lane
+   (`crossing_clear`) and that lane's tick claim. Without them it waits in its lane, in the lane
+   bucket, so followers queue behind it by IDM, counting `crossing_wait_s`; after
+   `CROSSING_GIVE_UP_S` (30 s) it gives up: it plans again from its lane's end node with a
+   same-side-only copy of the access and comes back on the near lane. The worst case is one lane
+   held 30 s per far-side arrival.
+5. **Leaving.** It drives its manoeuvre (or the crossover) to the access mouth, the polyline's
+   last point but one, off the road, and stays there until the crossed lane and its target lane
+   both pass `crossing_clear` and it claims both; then it crosses and attaches as before. It has
+   no give-up: it holds no lane, and a same-side exit would wait for the same lane.
+6. **The gap test** (`crossing_gap_clear`): the slot (`lane_attach_slot_clear`, both half
+   lengths and `IDM_S_MIN`) at the crossing's distance, and no body upstream, in the lane's own
+   direction, within a further `speed limit x crossing time`, the crossing time being two lane
+   widths and the body's length at driveway speed (car 2.3 s, truck 3.0 s: 32 m and 42 m at
+   50 km/h). A body ahead needs only the slot. Speeds are not read (the speed pass writes them),
+   so a body standing within the margin upstream blocks too. Only the tick's lane buckets.
+7. **The claim.** While it crosses (entering: from the detach until the hop's second point, the
+   near kerb; leaving: from the mouth until it attaches) the vehicle holds an entry in the
+   crossed lane's bucket at the crossing's distance: `Agent::crossing_lane`, with the distance in
+   its `lane_distance` (unused on an access leg). Lane traffic stops behind it, an attach there
+   sees it, and every other crossing's gap test sees it, so two vehicles crossing from opposite
+   sides cannot pass through each other. The bucket membership is the one test
+   `crossing_bucket_lane` (fill, patches, rebuild check); the overlap correction never moves a
+   crossing vehicle. Entering the lane (`enter_lane!`, `hold_for_lane_attach!`), leaving the
+   network state and a road edit over the crossed lane end the hold.
+8. **Trucks** take the same rule with their 8 m body (slot and crossing time). A truck that came
+   across the road to a freight gate and finds every dock held does not take the gate-to-kerb
+   plan, which starts on the gate's side: its plan is dropped and it goes back onto its lane and
+   plans to the kerb stop from there (`commit_freight_gate`). That is the seam for the dock queue
+   moved before the gate: there a refused far-side truck should wait on its own side, upstream of
+   the point opposite the gate, and cross when granted.
+9. **Drawn.** The gate turn (`PARK-31`) arcs toward the access's side per car (`gate_hand`: a
+   car's place kerb, a truck's door, against the lane's travel) instead of the constant
+   `LOT_HAND`; a truck already on its lane keeps no record of where it came from and arcs as from
+   the right.
+10. **Save.** `crossing_lane` and `crossing_wait_s` are saved in `agent_crossings`, one row per
+    vehicle crossing or waiting to; format 130. Format 129 loads with none (nobody crossed).
+11. **Cost.** The crossing test runs only for a vehicle at a far-side detach point or a mouth:
+    O(lanes on the edge) to find the crossed lane plus O(log bucket) per tested lane; the bucket
+    fill reads one more column for access agents only; no allocation, no per-tick scan.
+12. **Limits.** A car leaving a junction connector into the margin is not seen until it is on
+    the crossed lane (the clearance keeps the crossing off the junction mouth). A crossing over
+    more than one lane would need an entry per lane.
 
 Radii the design gave on a two-lane street with sidewalks before building it (90° turns, entry
 and exit alike, the gate's own bend under 5° so the whole run is the arc's; in brackets half the
@@ -422,7 +485,7 @@ Use this exact rule:
    - `VehicleFrontageAccess::SameSideOnly = 0`
    - `VehicleFrontageAccess::BothSides = 1`
 2. Store `vehicle_frontage_access: VehicleFrontageAccess` directly on `network::graph::Edge`.
-3. `BuildingEntrance.vehicle_frontage_access` is a derived cache copy of `edge.vehicle_frontage_access` only. It must never be saved independently.
+3. `BuildingEntrance.vehicle_frontage_access` is derived from `edge.vehicle_frontage_access`: `SameSideOnly` when the edge says so or a raised median divides it, and otherwise `BothSides` only where a vehicle may cross to the far side at the entrance's station ([lanes to cross](#lanes-to-cross-park-32-as-built), `PARK-32`). It must never be saved independently.
 4. New edge creation initializes the field from the road tool that created the edge.
    - current road creation defaults are:
      - `TransitType::Road` => `BothSides`
@@ -616,8 +679,10 @@ Exact local path shapes:
 
 - same-side car local access:
   - `door_pos -> chosen lane point`
-- opposite-side crossover car local access:
-  - `door_pos -> same_side_cross_point -> opposite_side_cross_point -> chosen lane point`
+- opposite-side crossover car local access (`PARK-32`):
+  - `door_pos -> same_side_cross_point -> chosen lane point`, square to the road; with
+    `door_pos` inside the kerb (a kerb stop), `same_side_cross_point` is `door_pos` itself.
+    Before `PARK-32` the shape ran on to `opposite_side_cross_point` first.
 
 No diagonal fallback is allowed for opposite-side `BothSides` access, even if one of the directional frontage lane groups is missing. The crossover anchor points are derived from edge geometry, not from the existence of an intermediate same-side drive lane.
 

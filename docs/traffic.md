@@ -2362,8 +2362,9 @@ revalidates the buildings along it first. Before, a load left none, and the firs
 beside a parking lane laid that kerb from the edited building's blockers alone, so bays filled
 the other driveways. Cars park facing the traffic beside them: a two-way road's left kerb faces backward,
 and a one-way road's lanes serve both kerbs. Access is the bay's own side (`SameSideOnly`) when
-its direction has lanes, both sides otherwise, entered from the lane beside the bay's rear along
-the bay's swept path. Pull-out and pull-in are those of a lot bay, [below](#the-itinerary-park-02).
+its direction has lanes; otherwise from across the road where a vehicle may cross there
+([lanes to cross](entrance_and_exit.md#lanes-to-cross-park-32-as-built), `PARK-32`), entered from
+the lane beside the bay's rear along the bay's swept path. Pull-out and pull-in are those of a lot bay, [below](#the-itinerary-park-02).
 Bay paint and signs are `PARK-04`.
 
 ### Anchor lots (`PARK-01`)
@@ -2697,6 +2698,18 @@ workers) are byte-equal and the `PERF-06` work counts identical; the recorded fi
 passes unchanged. The populated-city snapshot equivalence (`culled_snapshot_matches_full_pose_on_a_populated_city`,
 release, 6,002 compared frames) passes with the widened cull. Timing level F with K22 (the
 snapshot is per-frame work) is prepared, not run.
+
+#### Crossing the road (`PARK-32`), as built
+
+A car or truck enters and leaves a lot, driveway, dock, freight gate or door from the far side of
+its road where it may cross there: a road without a raised median, one lane crossed, 15 m from the
+lanes' ends (built 2026-11-23 on branch `park-32`, not landed). Entering, it waits in its lane at
+the detach point for a gap in the crossed lane (followers queue behind it) and gives up after 30 s
+to come back on the near side; leaving, it waits at the access mouth off the road for a gap in the
+crossed lane and its target lane. While it crosses it holds an entry in the crossed lane's bucket,
+so lane traffic and every other crossing see it. Routing prices the far side by the straight
+crossover plus 5 s. Rule, gap test, claim, bounds and save:
+[`entrance_and_exit.md`](entrance_and_exit.md#lanes-to-cross-park-32-as-built).
 
 #### The gate turn (`PARK-31`), as built
 
