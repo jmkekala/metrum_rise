@@ -6,7 +6,7 @@
 //! items × (footprint + item) log(footprint + item)), once per draft.
 
 use super::rules::LOT_FIT_TOLERANCE_M;
-use super::sidecar::{Facts, Role};
+use super::sidecar::{Door, Facts, Role};
 use crate::assets::asset::geometry::{fits_lot, intersection_area, signed_area};
 use crate::assets::asset::validation::{ZONE_CELL_M, site_anchor_footprint};
 use crate::assets::{AnchorType, AssetManifest, MeshPart};
@@ -118,7 +118,8 @@ pub(crate) fn stale_report(
 /// Every sidecar door in the lot frame, placed through `part` (position, rotation, scale and
 /// pivot), as `{id, kind, main, position, facing, width_m, height_m}`: what the author lays the
 /// entrance, the loading bays and the walks to. `position` keeps the door's threshold height as
-/// `y`; lengths at the sidecar's 0.1 mm. O(doors).
+/// `y`; lengths at the sidecar's 0.1 mm. A version 4 door adds `floor_y_m`, its floor placed
+/// through the part like the threshold, and `storey`. O(doors).
 pub(crate) fn doors_in_lot(facts: &Facts, part: &MeshPart) -> Vec<serde_json::Value> {
     let transform = part.local_transform();
     let round = |v: f32| super::tenth_mm(f64::from(v));
@@ -126,11 +127,14 @@ pub(crate) fn doors_in_lot(facts: &Facts, part: &MeshPart) -> Vec<serde_json::Va
         .doors
         .iter()
         .map(|door| {
-            let point = transform.transform_point3(glam::Vec3::from_array(door.position.map(|v| v as f32)));
+            let place = |[x, y, z]: [f64; 3]| {
+                transform.transform_point3(glam::Vec3::new(x as f32, y as f32, z as f32))
+            };
+            let point = place(door.position);
             let facing = transform
                 .transform_vector3(glam::Vec3::from_array(door.facing.map(|v| v as f32)))
                 .normalize_or_zero();
-            serde_json::json!({
+            let mut placed = serde_json::json!({
                 "id": door.id,
                 "kind": door.kind,
                 "main": door.main,
@@ -138,7 +142,13 @@ pub(crate) fn doors_in_lot(facts: &Facts, part: &MeshPart) -> Vec<serde_json::Va
                 "facing": [round(facing.x), 0.0, round(facing.z)],
                 "width_m": door.width_m,
                 "height_m": door.height_m,
-            })
+            });
+            if let (Some(floor), Some(storey)) = (door.floor_y_m, door.storey) {
+                let [x, _, z] = door.position;
+                placed["floor_y_m"] = serde_json::json!(round(place([x, floor, z]).y));
+                placed["storey"] = serde_json::json!(storey);
+            }
+            placed
         })
         .collect()
 }
@@ -260,11 +270,39 @@ fn changed_facts(facts: &Facts, ledger: &Facts) -> Vec<Line> {
     let old: BTreeMap<_, _> = ledger.doors.iter().map(|d| (d.id.as_str(), d)).collect();
     let new: BTreeMap<_, _> = facts.doors.iter().map(|d| (d.id.as_str(), d)).collect();
     for id in old.keys().chain(new.keys()).collect::<BTreeSet<_>>() {
-        if old.get(id) != new.get(id) {
-            compare(true, &format!("door '{id}'"), "anchors");
-        }
+        let same = match (old.get(id), new.get(id)) {
+            (Some(old), Some(new)) => same_door(old, new),
+            _ => false,
+        };
+        compare(!same, &format!("door '{id}'"), "anchors");
+    }
+    // A model rebuilt to version 4 states door floors and storeys the version 1 ledger copy has
+    // not: new facts, not a change to the asset, so information only.
+    if facts.version != ledger.version {
+        lines.push(info(
+            "facts",
+            "ledger",
+            format!(
+                "the model's sidecar is version {}, the ledger's copy version {}: door floors and \
+                 storeys are compared only when both state them",
+                facts.version, ledger.version
+            ),
+        ));
     }
     lines
+}
+
+// A door is the same when its version 1 facts are; its floor and storey count only when both
+// sidecars state them (version 4), so a version 1 ledger against a version 4 model compares the
+// doors as before.
+fn same_door(old: &Door, new: &Door) -> bool {
+    let floors = match (old.floor_y_m, new.floor_y_m) {
+        (Some(_), Some(_)) => (old.floor_y_m, old.storey) == (new.floor_y_m, new.storey),
+        _ => true,
+    };
+    floors
+        && (&old.id, old.kind, old.position, old.facing, old.width_m, old.height_m, old.main)
+            == (&new.id, new.kind, new.position, new.facing, new.width_m, new.height_m, new.main)
 }
 
 // The model's passages against the part that shows it (`PARK-21`), by name: one the part lacks,

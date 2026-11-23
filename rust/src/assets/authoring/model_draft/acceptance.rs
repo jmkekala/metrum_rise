@@ -15,9 +15,9 @@ use crate::assets::{AnchorType, AssetManifest, AssetRegistry, scan_pack_dir};
 use serde::Serialize;
 use std::path::Path;
 
-/// A zoned building drafts four tiers (docs/asset_editor.md "Buildings").
+/// A zoned building drafts four tiers (docs/buildings.md "Tiers").
 const ZONED_TIERS: usize = 4;
-/// Triangle ceilings per tier, ordinary and hero/landmark (docs/asset_editor.md "Buildings").
+/// Triangle ceilings per tier, ordinary and hero/landmark (docs/buildings.md "Tiers").
 const TRIANGLE_CEILINGS: [u64; 4] = [12_000, 4_000, 1_500, 500];
 const HERO_TRIANGLE_CEILINGS: [u64; 4] = [20_000, 6_000, 2_500, 700];
 /// Pedestrian door sanity bounds, metres: clear height, clear width, threshold height.

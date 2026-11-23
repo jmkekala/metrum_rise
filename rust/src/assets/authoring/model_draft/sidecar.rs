@@ -1,17 +1,22 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The facts sidecar (`<name>.model.json`) a `metrum_models` build writes beside its export,
-//! and the role inputs of one wanted asset (docs/asset_editor.md "Facts sidecar", `TOOLS-33`).
+//! and the role inputs of one wanted asset (docs/buildings.md "Facts sidecar", `TOOLS-33`).
 //! Both readers are strict: unknown keys, another schema or version, and malformed values are
 //! refusals. Reading is O(file size); hashing is O(listed file bytes), once per draft.
 
 use crate::assets::authoring::files::safe_relative;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
+use serde_json::Value;
 use std::collections::BTreeSet;
 use std::path::{Component, Path, PathBuf};
 
 pub(crate) const SCHEMA: &str = "metrum-model-facts";
-pub(crate) const VERSION: u64 = 1;
+/// The building sidecar versions, in the schema's one sequence (2 and 3 are vehicles'): 1, and 4,
+/// which adds `floor_y_m` and `storey` to every door.
+pub(crate) const VERSIONS: [u64; 2] = [1, 4];
+/// The version whose doors state their floor and storey.
+const DOOR_FLOOR_VERSION: u64 = 4;
 
 /// A door's facing is a unit vector; the reader accepts this much rounding in the file.
 const UNIT_TOLERANCE: f64 = 0.01;
@@ -97,7 +102,25 @@ pub(crate) struct Door {
     pub(crate) facing: [f64; 3],
     pub(crate) width_m: f64,
     pub(crate) height_m: f64,
+    /// Version 4: metres above grade of the walking surface at the threshold (0.02 on a floor
+    /// slab, a raised door's landing or sill), 0 or more; `None` in version 1. Stored, not used.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) floor_y_m: Option<f64>,
+    /// Version 4: the index into `storeys` of the storey the door opens to, `Some(None)` for
+    /// none (`null`); `None` in version 1, which has no such key. Stored, not used.
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub(crate) storey: Option<Option<usize>>,
     pub(crate) main: bool,
+}
+
+// A key that is present, `null` included: `storey: null` is `Some(None)`, an absent key the
+// field's default `None`.
+fn present<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<Option<usize>>, D::Error> {
+    Option::<usize>::deserialize(deserializer).map(Some)
 }
 
 /// What a door leads to; the main door is an entrance.
@@ -180,17 +203,19 @@ pub(crate) struct Role {
 
 impl Facts {
     /// Check a parsed sidecar. Schema and version are read before the fields, so a newer
-    /// file is refused for its version, not for the keys it adds.
-    pub(crate) fn from_value(value: serde_json::Value) -> Result<Self, String> {
+    /// file is refused for its version, not for the keys it adds; the version decides which
+    /// door keys a door must and may have.
+    pub(crate) fn from_value(value: Value) -> Result<Self, String> {
         if value["schema"] != SCHEMA {
             return Err(format!("sidecar schema must be \"{SCHEMA}\""));
         }
-        if value["version"].as_u64() != Some(VERSION) {
+        let Some(version) = value["version"].as_u64().filter(|v| VERSIONS.contains(v)) else {
             return Err(format!(
-                "sidecar version {} is not supported; this reader reads version {VERSION}",
+                "sidecar version {} is not supported; building sidecars are versions 1 and 4",
                 value["version"]
             ));
-        }
+        };
+        check_door_floors(&value, version)?;
         let facts: Self = serde_json::from_value(value).map_err(|e| format!("sidecar: {e}"))?;
         facts.check()?;
         Ok(facts)
@@ -393,6 +418,57 @@ impl Facts {
             _ => Ok(()),
         }
     }
+}
+
+// The door keys each version has, read on the raw document so that every refusal names its door
+// and a wrong type is refused as such: version 4 requires `floor_y_m` (a finite number, 0 or
+// more) and `storey` (`null` or an index into `storeys`) on every door; version 1 has neither.
+// O(doors).
+fn check_door_floors(value: &Value, version: u64) -> Result<(), String> {
+    let storeys = value["storeys"].as_array().map_or(0, Vec::len);
+    for door in value["doors"].as_array().into_iter().flatten() {
+        let id = door["id"].as_str().unwrap_or_default();
+        let (floor, storey) = (door.get("floor_y_m"), door.get("storey"));
+        if version != DOOR_FLOOR_VERSION {
+            if floor.is_some() || storey.is_some() {
+                return Err(format!(
+                    "sidecar door '{id}': floor_y_m and storey are version {DOOR_FLOOR_VERSION} \
+                     keys, not version {version}'s"
+                ));
+            }
+            continue;
+        }
+        match floor {
+            None => {
+                return Err(format!(
+                    "sidecar door '{id}' needs floor_y_m in version {DOOR_FLOOR_VERSION}"
+                ));
+            }
+            Some(y) if !y.as_f64().is_some_and(|y| y.is_finite() && y >= 0.0) => {
+                return Err(format!(
+                    "sidecar door '{id}': floor_y_m {y} is not a number of 0 or more"
+                ));
+            }
+            Some(_) => {}
+        }
+        match storey {
+            None => {
+                return Err(format!(
+                    "sidecar door '{id}' needs storey in version {DOOR_FLOOR_VERSION} (an index \
+                     into storeys, or null)"
+                ));
+            }
+            Some(Value::Null) => {}
+            Some(index) if index.as_u64().is_some_and(|i| i < storeys as u64) => {}
+            Some(index) => {
+                return Err(format!(
+                    "sidecar door '{id}': storey {index} is not null or an index into the \
+                     {storeys} storeys"
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 impl Facts {

@@ -446,8 +446,15 @@ fn door_lines(doors: &Value) -> Vec<String> {
     let mut lines =
         vec!["  doors in the lot frame (position [x, y, z], y the threshold height):".to_owned()];
     for door in doors {
+        // A version 4 door's floor and storey (docs/buildings.md "Doors").
+        let floor = if door["floor_y_m"].is_null() {
+            String::new()
+        } else {
+            let storey = door["storey"].as_u64().map_or("none".to_owned(), |s| s.to_string());
+            format!(", floor {} m, storey {storey}", door["floor_y_m"])
+        };
         lines.push(format!(
-            "    {} '{}'{} at {} facing {}, {} x {} m",
+            "    {} '{}'{} at {} facing {}, {} x {} m{floor}",
             text(&door["kind"]),
             text(&door["id"]),
             if door["main"] == json!(true) {

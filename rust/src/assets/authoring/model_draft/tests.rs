@@ -1244,3 +1244,172 @@ fn a_source_commit_is_a_hex_id_kept_as_given_and_recorded_in_the_ledger() {
     assert!(super::report::source_commit("034dc4c", Some("034dc4c"), "6e39").is_none());
     assert!(super::report::source_commit("034dc4c", Some("b5660bb"), "6e39").is_some());
 }
+
+// Version 4 (docs/buildings.md "Doors"): the worked example with each door's floor and storey.
+fn version_4(sidecar: &mut Value) {
+    sidecar["version"] = json!(4);
+    for door in sidecar["doors"].as_array_mut().unwrap() {
+        door["floor_y_m"] = json!(0.70);
+        door["storey"] = json!(0);
+    }
+}
+
+#[test]
+fn the_reader_takes_door_floors_and_storeys_in_version_4_only() {
+    // Version 1 as before: neither key.
+    let v1 = facts_with(|_| {}).unwrap();
+    assert_eq!(v1.version, 1);
+    assert!(v1.doors.iter().all(|d| d.floor_y_m.is_none() && d.storey.is_none()));
+    let v4 = facts_with(version_4).unwrap();
+    assert_eq!(v4.version, 4);
+    assert_eq!((v4.doors[0].floor_y_m, v4.doors[0].storey), (Some(0.7), Some(Some(0))));
+    // A balcony on its deck above the threshold, a loft hatch to no listed storey, a whole-number
+    // floor at bare grade.
+    let v4 = facts_with(|s| {
+        version_4(s);
+        let doors = s["doors"].as_array_mut().unwrap();
+        doors.push(json!({"id": "balcony", "kind": "balcony", "position": [0.0, 3.8, -5.1],
+                          "facing": [0, 0, -1], "width_m": 0.8, "height_m": 2.0,
+                          "floor_y_m": 3.8625, "storey": 1, "main": false}));
+        doors.push(json!({"id": "hatch", "kind": "store", "position": [-5.0, 6.2, 0.0],
+                          "facing": [-1, 0, 0], "width_m": 0.6, "height_m": 0.8,
+                          "floor_y_m": 6.2, "storey": null, "main": false}));
+        doors[1]["floor_y_m"] = json!(0);
+    })
+    .unwrap();
+    assert_eq!(v4.doors[1].floor_y_m, Some(0.0));
+    assert_eq!(v4.doors[2].storey, Some(Some(1)));
+    assert_eq!(v4.doors[3].storey, Some(None));
+}
+
+#[test]
+fn bad_door_floors_and_unknown_versions_are_refused_by_name() {
+    let refused = |edit: &dyn Fn(&mut Value), expected: &[&str]| {
+        let error = facts_with(edit).unwrap_err();
+        for part in expected {
+            assert!(error.contains(part), "{part}: {error}");
+        }
+    };
+    // Version 4 with one door key edited, or removed with `None`.
+    let door = |index: usize, key: &'static str, value: Option<Value>, expected: &[&str]| {
+        refused(
+            &|s| {
+                version_4(s);
+                let door = s["doors"][index].as_object_mut().unwrap();
+                match &value {
+                    Some(value) => door.insert(key.into(), value.clone()),
+                    None => door.remove(key),
+                };
+            },
+            expected,
+        );
+    };
+    door(0, "floor_y_m", None, &["door 'front'", "needs floor_y_m"]);
+    door(1, "storey", None, &["door 'back'", "needs storey"]);
+    door(0, "floor_y_m", Some(json!(-0.02)), &["door 'front'", "floor_y_m -0.02"]);
+    door(0, "floor_y_m", Some(json!("0.7")), &["door 'front'", "not a number"]);
+    door(0, "floor_y_m", Some(json!(null)), &["door 'front'", "not a number"]);
+    door(1, "storey", Some(json!(2)), &["door 'back'", "storey 2", "2 storeys"]);
+    door(1, "storey", Some(json!(-1)), &["door 'back'", "storey -1"]);
+    door(1, "storey", Some(json!(1.0)), &["door 'back'", "storey 1.0"]);
+    door(1, "storey", Some(json!("0")), &["door 'back'", "storey \"0\""]);
+    door(1, "storey", Some(json!(true)), &["door 'back'", "storey true"]);
+    refused(
+        &|s| {
+            version_4(s);
+            s["storeys"] = json!([]);
+        },
+        &["door 'front'", "0 storeys"],
+    );
+    // Version 1 has neither key.
+    refused(&|s| s["doors"][0]["floor_y_m"] = json!(0.7), &["door 'front'", "version 4 keys"]);
+    refused(&|s| s["doors"][1]["storey"] = json!(null), &["door 'back'", "version 4 keys"]);
+    // Other versions, vehicle versions without a kind included, are refused by number.
+    for version in [json!(0), json!(2), json!(3), json!(5), json!("4"), json!(4.5)] {
+        refused(
+            &|s| {
+                version_4(s);
+                s["version"] = version.clone();
+            },
+            &["is not supported", "versions 1 and 4"],
+        );
+    }
+}
+
+#[test]
+fn a_version_4_sidecar_drafts_as_version_1_did_and_its_ledger_keeps_the_floors() {
+    let mut fixture = Fixture::new();
+    let v1 = derive(&fixture.inputs(), &fixture.mods(), &fixture.root).unwrap();
+    version_4(&mut fixture.sidecar);
+    fixture.write_sidecar();
+    let inputs = fixture.inputs();
+    let v4 = derive(&inputs, &fixture.mods(), &fixture.root).unwrap();
+    // The asset document does not change: no asset field holds a door.
+    assert_eq!(v4.document, v1.document);
+    assert_eq!(v4.summary["doors"][0]["floor_y_m"], 0.7);
+    assert_eq!(v4.summary["doors"][0]["storey"], 0);
+    assert!(v1.summary["doors"][0].get("floor_y_m").is_none());
+    // The ledger copies the sidecar as read, the floors with it, and reads back strictly.
+    let path = write_ledger(&fixture.pack(), ASSET, &inputs.sidecar, &fixture.role(), None).unwrap();
+    assert_eq!(read_ledger(&fixture.pack(), ASSET).unwrap(), Some(inputs.facts.clone()));
+    let text = fs::read_to_string(path).unwrap();
+    assert!(text.contains("\"floor_y_m\": 0.7") && text.contains("\"storey\": 0"), "{text}");
+}
+
+#[test]
+fn version_4_door_floors_against_a_version_1_ledger_are_information_not_stale() {
+    let fixture = Fixture::new();
+    let v1 = fixture.inputs().facts;
+    let v4 = facts_with(version_4).unwrap();
+    let manifest = hand_manifest([-1.14, 0.0, 1.58], "[[-3.57, 3], [1.43, 3], [1.43, 10], [-3.57, 10]]");
+    let files = published(&fixture, &v1);
+    let stale = |lines: Vec<Line>| lines.into_iter().filter(|l| l.stale).collect::<Vec<_>>();
+    let before = stale_report(&v1, Some(&v1), &manifest, &files);
+    // The swap: the same model rebuilt to version 4, its ledger still version 1. The stale lines
+    // are the same; one information line says why the floors are not compared.
+    let swapped = stale_report(&v4, Some(&v1), &manifest, &files);
+    assert_eq!(stale(swapped.clone()), stale(before.clone()));
+    let notes: Vec<_> = swapped.iter().filter(|l| l.field == "ledger").collect();
+    assert_eq!(notes.len(), 1, "{swapped:?}");
+    assert!(!notes[0].stale && notes[0].message.contains("version 4, the ledger's copy version 1"));
+    // The ledger rewritten from the version 4 sidecar: exactly the version 1 report.
+    assert_eq!(stale_report(&v4, Some(&v4), &manifest, &files), before);
+    // Between two version 4 sidecars a door's floor or storey is a fact like its position.
+    let edits: [fn(&mut super::sidecar::Door); 2] =
+        [|d| d.floor_y_m = Some(0.86), |d| d.storey = Some(None)];
+    for edit in edits {
+        let mut changed = v4.clone();
+        edit(&mut changed.doors[0]);
+        let lines = stale_report(&changed, Some(&v4), &manifest, &files);
+        assert!(
+            lines.iter().any(|l| l.stale && l.check == "facts" && l.message.contains("door 'front'")),
+            "{lines:?}"
+        );
+    }
+    // A door that moved is still found across the versions.
+    let mut moved = v4.clone();
+    moved.doors[1].position[0] += 0.1;
+    let lines = stale_report(&moved, Some(&v1), &manifest, &files);
+    assert!(lines.iter().any(|l| l.stale && l.message.contains("door 'back'")), "{lines:?}");
+}
+
+#[test]
+fn version_4_doors_list_their_floor_through_the_part() {
+    let facts = facts_with(|s| {
+        version_4(s);
+        s["doors"][1]["floor_y_m"] = json!(0.02);
+        s["doors"][1]["storey"] = json!(null);
+    })
+    .unwrap();
+    let mut part = crate::assets::MeshPart::single_lod0("p", "p");
+    part.position = [0.0, 0.5, -3.16];
+    let doors = super::report::doors_in_lot(&facts, &part);
+    assert_eq!(
+        doors[0],
+        json!({"id": "front", "kind": "entrance", "main": true, "position": [-1.2, 1.2, 1.94],
+               "facing": [0.0, 0.0, 1.0], "width_m": 0.9, "height_m": 2.1,
+               "floor_y_m": 1.2, "storey": 0})
+    );
+    assert_eq!(doors[1]["floor_y_m"], 0.52);
+    assert_eq!(doors[1]["storey"], Value::Null);
+}
