@@ -1284,7 +1284,15 @@ fn write_the_freight_yard_still_save() {
             .or_else(|_| core.place_service_building_internal(&id, x, -40.0))
             .unwrap()
     };
-    let (yard, source) = (place(-60.0), place(60.0));
+    // `METRUM_FREIGHT_STILL_MIRROR`: the yard east of the source, so its trucks arrive driving
+    // east and meet its gate before its door (the coal mine's gate lies west of its door).
+    let mirror = std::env::var("METRUM_FREIGHT_STILL_MIRROR").is_ok();
+    let (yard, source) = if mirror {
+        let source = place(-60.0);
+        (place(60.0), source)
+    } else {
+        (place(-60.0), place(60.0))
+    };
     core.publish_pending_building_site_changes();
     let handles: Vec<u64> = [yard, source]
         .map(|b| core.allocator.building_handles.handle(b).to_bits())
