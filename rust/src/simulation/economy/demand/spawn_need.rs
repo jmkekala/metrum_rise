@@ -528,6 +528,87 @@ impl StoreSizes {
         same_good().any(|size| size.units > this.units && fills(size))
             || (same_good().nth(1).is_some() && !fills(this))
     }
+
+    /// The size rule for a city filled without economic proofs (the populated test cities'
+    /// setup, `ECON-32`): of one round of `spawns`, each lot's preferred asset, the stores of the
+    /// largest size of their good are kept and counted first, then each smaller size in turn,
+    /// a store kept only where [`Self::defers`] lets it open against the demand of `residents`
+    /// (the population the setup admits) and the stores counted so far. Every other spawn is
+    /// kept. With one size per good it returns at once, so such a fill is unchanged.
+    /// `profile_of` resolves a spawn's asset. O(spawns × sizes); setup only.
+    pub(crate) fn retain_filled_spawns<'a>(
+        &mut self,
+        catalog: &RuntimeEconomyCatalog,
+        residents: u32,
+        spawns: &mut Vec<DemandSpawnAction>,
+        profile_of: impl Fn(&str) -> Option<&'a EconomyProfileRuntime>,
+    ) {
+        if !self.has_choice() {
+            return;
+        }
+        let placed: Vec<_> = self
+            .sizes
+            .iter()
+            .map(|size| (size.resource, size.stores * size.units))
+            .collect();
+        let mut market = OutputAbsorptionContext::from_resource_amounts(
+            catalog.resource_count(),
+            &placed,
+            &super::snapshot::demand_sink_rates_by_resource(catalog),
+            residents,
+            &[],
+        );
+        // The store size of each spawn: its profile and rank, `None` for any other building.
+        let stores: Vec<_> = spawns
+            .iter()
+            .map(|spawn| {
+                profile_of(&spawn.asset_id)
+                    .filter(|profile| self.size(profile.runtime_id).is_some())
+                    .map(|profile| (profile, self.rank(profile.runtime_id)))
+            })
+            .collect();
+        let smallest = stores.iter().flatten().map(|&(_, rank)| rank).max().unwrap_or(0);
+        let mut keep = vec![true; spawns.len()];
+        for rank in 0..=smallest {
+            for (k, (profile, _)) in stores
+                .iter()
+                .enumerate()
+                .filter_map(|(k, store)| store.filter(|&(_, r)| r == rank).map(|store| (k, store)))
+            {
+                if rank > 0 && self.defers(profile.runtime_id, &market) {
+                    keep[k] = false;
+                    continue;
+                }
+                market.reserve_candidate(profile);
+                self.commit(profile.runtime_id, 1.0);
+            }
+        }
+        let mut keep = keep.into_iter();
+        spawns.retain(|_| keep.next().unwrap_or(true));
+    }
+}
+
+/// The populated test cities' setup fill applies the store size rule (`ECON-32`) to one round of
+/// commercial `spawns`, each lot's preferred asset, as [`StoreSizes::retain_filled_spawns`]
+/// describes, with the sizes the zoned assets can build and the city's stores of each counted
+/// first. A registry with one store size per good leaves the spawns untouched. Setup only:
+/// O(assets × sizes + B/p + spawns × sizes) when a good has several sizes.
+pub(crate) fn retain_setup_store_spawns(
+    allocator: &BuildingAllocator,
+    zoning: &crate::simulation::zoning::ZoningSystem,
+    catalog: &RuntimeEconomyCatalog,
+    residents: u32,
+    spawns: &mut Vec<DemandSpawnAction>,
+) {
+    let assets = allocator.collect_spawn_asset_candidates_by_profile(zoning, catalog);
+    let mut sizes = BuildingAllocator::spawn_store_sizes(&assets, catalog);
+    if !sizes.has_choice() {
+        return;
+    }
+    sizes.count_stores(allocator, std::iter::empty());
+    sizes.retain_filled_spawns(catalog, residents, spawns, |asset| {
+        candidate_economy_profile(allocator, catalog, asset)
+    });
 }
 
 /// Applies recurring profitability and quoted working-capital valuation to a replacement.
@@ -1075,6 +1156,59 @@ mod store_size_tests {
         // A grocery already serving the town counts against a second grocery's case.
         let (sizes, market, [grocery, _]) = city(290.0, 0.0, 1.0);
         assert!(sizes.defers(grocery, &market));
+    }
+
+    // The populated cities' setup fill (`ECON-32`): one round of lots, each with its preferred
+    // asset, counts the groceries first and keeps a kiosk only for the demand they leave.
+    #[test]
+    fn the_setup_fill_places_kiosks_only_for_demand_the_groceries_leave() {
+        let catalog = load_runtime_economy_catalog().unwrap();
+        let grocery = catalog.profile_for_id("grocery_basic").unwrap();
+        let kiosk = catalog.profile_for_id("grocery_kiosk").unwrap();
+        let supplies = grocery.outputs[0].resource_runtime_id;
+        let rate = super::super::snapshot::demand_sink_rates_by_resource(&catalog)
+            .into_iter()
+            .find(|&(resource, _)| resource == supplies)
+            .unwrap()
+            .1;
+        let profile_of = |asset: &str| match asset {
+            "grocery" => Some(grocery),
+            "kiosk" => Some(kiosk),
+            _ => None,
+        };
+        let lots = ["kiosk", "grocery", "kiosk", "home", "kiosk"];
+        let fill = |demand: f32, sizes: &mut StoreSizes| {
+            let mut spawns: Vec<_> = lots
+                .iter()
+                .enumerate()
+                .map(|(parcel_id, asset)| DemandSpawnAction {
+                    parcel_id: parcel_id as u64,
+                    asset_id: (*asset).to_owned(),
+                })
+                .collect();
+            sizes.retain_filled_spawns(&catalog, (demand / rate) as u32, &mut spawns, profile_of);
+            spawns.iter().map(|spawn| spawn.parcel_id).collect::<Vec<_>>()
+        };
+        let both = || {
+            let mut sizes = StoreSizes::default();
+            sizes.add(kiosk);
+            sizes.add(grocery);
+            sizes
+        };
+        // 250 kg: the grocery serves 200 and its case is not filled again (50 < 100); kiosks
+        // open while 12.5 kg is left: two of the three, in lot order. The home is kept.
+        assert_eq!(fill(250.0, &mut both()), [0, 1, 2, 3]);
+        // 500 kg: the grocery leaves 300, a second grocery's case: no kiosk; the demand waits
+        // for a grocery's lot.
+        assert_eq!(fill(500.0, &mut both()), [1, 3]);
+        // Kiosks the city has already count: two of them leave 0 of 250 kg.
+        let mut sizes = both();
+        sizes.commit(kiosk.runtime_id, 2.0);
+        assert_eq!(fill(250.0, &mut sizes), [1, 3]);
+        // One store size: the fill is untouched.
+        let mut sizes = StoreSizes::default();
+        sizes.add(grocery);
+        assert_eq!(fill(0.0, &mut sizes), [0, 1, 2, 3, 4]);
     }
 
     #[test]

@@ -40,7 +40,7 @@ pub(crate) use execution::{
 pub(crate) use execution::{door_digest, level_change_permit};
 pub(crate) use display::{GrowthDisplay, GrowthDisplayKey};
 pub(crate) use snapshot::SavedDemandSnapshot;
-pub(crate) use spawn_need::StoreSizes;
+pub(crate) use spawn_need::{StoreSizes, retain_setup_store_spawns};
 #[cfg(test)]
 pub(crate) use supply::ProjectProof;
 pub use system::DemandSystem;

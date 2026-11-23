@@ -287,7 +287,7 @@ fn traffic14_ring_formation() {
     for crosses in [floored, floored + 1] {
         let (mut core, row_z, half_x) = street_grid_with_crosses(side_m, crosses);
         paint_districts(&mut core, &row_z, half_x);
-        fill_lots(&mut core);
+        fill_lots(&mut core, residents);
         core.time.speed_multiplier = SIMULATION_SPEED_STEPS[SIMULATION_SPEED_STEPS.len() - 1];
         let mut city = PopulatedCity {
             core,

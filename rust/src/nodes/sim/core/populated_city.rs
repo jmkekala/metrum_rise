@@ -55,7 +55,7 @@ use super::state::SimCore;
 use crate::simulation::buildings::allocator::BuildingSiteEnvironment;
 use crate::simulation::core::config::WorldConfig;
 use crate::simulation::core::time::SIMULATION_SPEED_STEPS;
-use crate::simulation::economy::demand::DemandBuildingActionPlan;
+use crate::simulation::economy::demand::{DemandBuildingActionPlan, retain_setup_store_spawns};
 use crate::simulation::network::graph::RoadParking;
 use crate::simulation::network::road_types::RoadAttributes;
 
@@ -174,7 +174,7 @@ impl PopulatedCity {
             paint_districts(&mut core, &row_z, half_x);
             times.zoning += started.elapsed();
             let started = Instant::now();
-            fill_lots(&mut core);
+            fill_lots(&mut core, residents);
             times.lots += started.elapsed();
             core.time.speed_multiplier = SIMULATION_SPEED_STEPS[SIMULATION_SPEED_STEPS.len() - 1];
             let mut city = Self {
@@ -347,7 +347,8 @@ pub(super) fn zoned_city(side_m: f32) -> SimCore {
     let (mut core, row_z, half_x) = street_grid(side_m);
     add_parking_lots(&mut core, &row_z, half_x);
     paint_districts(&mut core, &row_z, half_x);
-    fill_lots(&mut core);
+    // No household is admitted, so no smaller store is filled (`ECON-32`).
+    fill_lots(&mut core, 0);
     core
 }
 
@@ -359,7 +360,8 @@ fn zoned_city_in_world(side_m: f32, world_m: f32) -> SimCore {
         street_grid_in_world(side_m, crosses_for(side_m), Some(world_m));
     add_parking_lots(&mut core, &row_z, half_x);
     paint_districts(&mut core, &row_z, half_x);
-    fill_lots(&mut core);
+    // No household is admitted, so no smaller store is filled (`ECON-32`).
+    fill_lots(&mut core, 0);
     core
 }
 
@@ -738,7 +740,11 @@ fn add_road(core: &mut SimCore, (x0, z0): (f32, f32), (x1, z1): (f32, f32), lane
 }
 
 // Spawns a building on every legal lot through the demand executor, then completes construction.
-fn fill_lots(core: &mut SimCore) {
+// No economic proof runs, but the store size rule does (`ECON-32`): where a good has stores of
+// more than one size, each round keeps its largest stores and places a smaller one only for the
+// demand of `residents`, the population the city will admit, that the stores before it leave
+// (`retain_setup_store_spawns`). A lot whose smaller store is refused stays empty.
+fn fill_lots(core: &mut SimCore, residents: u32) {
     loop {
         core.prepare_cell_lots_internal();
         core.allocator
@@ -764,6 +770,13 @@ fn fill_lots(core: &mut SimCore) {
         ] {
             spawns.extend(candidates.into_iter().map(|candidate| candidate.action));
         }
+        retain_setup_store_spawns(
+            &core.allocator,
+            &core.zoning,
+            core.demand.runtime_catalog(),
+            residents,
+            &mut plan.commercial.spawns,
+        );
         let execution = core.allocator.execute_demand_building_actions(
             &plan,
             &mut core.zoning,

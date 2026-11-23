@@ -865,7 +865,7 @@ pub(super) fn connected_road_border_count(graph: &RegionGraph, borders: &[u32]) 
 }
 
 // Household demand-sink rates of the resources stores sell.
-fn demand_sink_rates_by_resource(catalog: &RuntimeEconomyCatalog) -> Vec<(ResourceRuntimeId, f32)> {
+pub(super) fn demand_sink_rates_by_resource(catalog: &RuntimeEconomyCatalog) -> Vec<(ResourceRuntimeId, f32)> {
     let mut rates = Vec::new();
     demand_sink_rates_into(catalog, &mut Vec::new(), &mut rates);
     rates

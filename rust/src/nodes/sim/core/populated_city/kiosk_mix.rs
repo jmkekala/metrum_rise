@@ -129,7 +129,10 @@ fn kiosk_mix() {
 }
 
 // The smallest zoned lot: one row of commercial cells along a street holds one-cell lots, which
-// only the one-cell kiosk fits; each is built with its entrance on the street.
+// only the one-cell kiosk fits; each is built with its entrance on the street. The fill applies
+// the store size rule (`ECON-32`) for 90 residents, 90 kg of household supplies a day: no
+// grocery is filled (100 kg), so kiosks open while half a kiosk's volume (12.5 kg) is left,
+// four of them.
 #[test]
 #[ignore = "builds a street grid; run in a release test build"]
 fn one_cell_lots_take_kiosks() {
@@ -151,7 +154,7 @@ fn one_cell_lots_take_kiosks() {
         CellSelectionShape::Brush { radius_m: 4.0 },
         &[DVec2::new(x0, z), DVec2::new(x1, z)],
     );
-    super::fill_lots(&mut core);
+    super::fill_lots(&mut core, 90);
     let kiosk = core
         .demand
         .runtime_catalog()
@@ -165,7 +168,7 @@ fn one_cell_lots_take_kiosks() {
         .filter(|building| building.economy_profile_runtime_id == kiosk)
         .collect();
     println!("{} kiosks on one-cell lots", kiosks.len());
-    assert!(kiosks.len() >= 5, "{} kiosks", kiosks.len());
+    assert_eq!(kiosks.len(), 4);
     for building in kiosks {
         assert_eq!((building.width_cells, building.depth_cells), (1, 1));
         assert!(!building.broken && !building.economy_broken);
