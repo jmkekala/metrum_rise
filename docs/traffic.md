@@ -4456,7 +4456,17 @@ the decision is taken where the truck reaches the line, never at the gate.
   and moves each at driveway speed towards its place, forward only: one that stopped past its
   place (two arrivals in one tick, or a truck that joined the road within the line) waits there,
   drawn over the truck behind it, until the line moves up to it. No slot is stored: the place is
-  the truck's rank among the trucks of the line, and its position is saved.
+  the truck's rank among the trucks of the line, and its position is saved. A truck moves up only
+  as far as a body and 1 m (9 m, `KERB_QUEUE_SPACING_M`) behind the truck ahead of it: along the
+  lane behind the one before it in the line, which has moved already that tick, and in a straight
+  line from any truck pulling into one of the building's docks, the one that has just left the
+  line for the gate (or one turning in from the lane); short of that it stands where it is
+  (`clear_of_pull_ins`, `yard.rs`; the hold the ways in and the leaving lines of `PARK-32` use).
+  Before this (follow-up of 2026-11-24) the next truck started at once and was drawn over the
+  leaving one for about a second. A pull-in always ends in its bay, so the hold always ends. The
+  hold does not resolve a truck that stopped past its place: it cannot move back, so it stays
+  drawn over the truck behind it as before; resolving it would need the second arrival of a tick
+  to know the first's stop (new state), so it is left as it is.
 - **Older saves.** A truck a format 129 save left at the door's kerb stop past the gate, or
   across the road, is not in the line (it left the gate's near lane past the gate's lane point,
   or another lane): it stays where it stands, keeps its rank in the grant order, and granted a
@@ -4559,7 +4569,8 @@ for the floor. No per-tick allocation. Round 3: the movement pass reads the trip
 its planned detach lane (before, only at its detach), and for a truck bound for a gate counts its
 building's waiting trucks in the kept list, O(log W); the queue pass finds each building's gate
 line once per tick (its gate entrance, O(lanes on the gate's edge + lane points)) and each kerb
-truck's place beside its lane point (O(edge points)); the kept list costs O(W log W) at the
+truck's place beside its lane point (O(edge points)) and its hold behind the trucks pulling
+into the building's docks (O(docks of the building)); the kept list costs O(W log W) at the
 commit's end and O(W) before the movement pass, its storage reused; a load rebuilds it in the
 existing O(agents) pass. A city without docks keeps an empty list.
 
@@ -4636,6 +4647,19 @@ figure rounds 1 and 2 report) falls from 98 to 3.2, the loops having been most o
 deliveries, 0 failed. The runs diverge after the first queued truck, so their other counts
 differ by a few deliveries.
 
+**Hold while moving up: checks** (follow-up, 2026-11-24, release `$TEST_BINARY` of the branch
+against `dev` `59c8b0494`'s). `sim02_gate.py envelope determinism` (`RAYON_NUM_THREADS=6`):
+PASS, every record equal to `dev`'s (the test cities have no dock). The 14-day yard runs equal
+`dev`'s count for count: with docks 153 in a dock, 0 outside, 0 failed, expired or vanished, 8
+queued and granted, printed queue wait longest 11.7 and mean 5.5, drive from grant to dock longest 32 m;
+drive-through 154 in a dock (13 driven through), 0 failed, expired or vanished, 9 queued (1 on a
+way in), wait longest 19.2 and mean 8.4; controls 155 kerb deliveries. In these runs no line held
+two trucks when a dock was granted, so the hold never acted. Tests: three trucks in a line keep
+9 m between every two while the line moves up and take the dock in arrival order (without the
+hold two of them came within 8.5 m); a save while the line moves up continues equally. Stills
+of the gate queue round's owner example (rendered with the branch's library) show the next
+truck holding its place while the granted one turns in, then moving up behind it.
+
 **Owner's choices.**
 
 1. The floor: 2 game minutes (`KERB_STAND_FLOOR_MINUTES`).
@@ -4644,7 +4668,8 @@ differ by a few deliveries.
    5 m short), the next ones 9 m apart against the traffic, moving up forward as the first leaves;
    past the near lane's start they stand at the last place. Rounds 1 and 2 put it at the door's
    kerb stop (owner's decision 2026-11-22). Open: the 9 m kept for the mouth; another lot's
-   access within the line is not avoided.
+   access within the line is not avoided. Moving up holds 9 m behind the truck ahead (follow-up
+   2026-11-24); a truck that stopped past its place still stands over the one behind it.
 3. Drive-through yards: queue on the yard's way in (owner's rule 2026-11-22), built in round 2:
    9 m per place (the kerb line's spacing), holding short of the truck ahead; a timed-out truck is
    removed where it stands; the kerb line takes the rest. Convoys stand at the first place before
