@@ -332,6 +332,9 @@ fn a_car_waiting_too_long_to_cross_leaves_on_the_near_lane() {
     let a = &s.c.agents.agents;
     assert!(gave_up, "it left on another lane");
     assert_eq!(a.crossing_wait_s[car], 0.0, "no mark carried onto the road");
+    // Its new attach is legal: no stale entry sent it back into its building.
+    let failures = &s.c.agents.trip_failures.lines;
+    assert!(failures.is_empty(), "{failures:?}");
     assert_eq!(
         a.transit[car], TRANSIT_IN_BUILDING,
         "it got to its destination"

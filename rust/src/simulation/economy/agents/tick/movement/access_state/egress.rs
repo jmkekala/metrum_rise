@@ -224,9 +224,12 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
                 } else {
                     // Waiting at the mouth, off the road, for a gap, counted. A resident's car
                     // gives up after `CROSSING_GIVE_UP_S`: it leaves on the near lane, the one it
-                    // would cross, and plans on from that lane's end.
+                    // would cross, and plans on from that lane's end; tried once, as the wait
+                    // reaches it (no plan: it waits on).
+                    let waited = *slices.crossing_wait.get(i);
                     *slices.crossing_wait.get_mut(i) += delta;
-                    if *slices.crossing_wait.get(i) >= CROSSING_GIVE_UP_S
+                    if waited < CROSSING_GIVE_UP_S
+                        && *slices.crossing_wait.get(i) >= CROSSING_GIVE_UP_S
                         && leave_on_the_near_lane(
                             i, crossed, entrance, allocator, transit_network, graph,
                             pathfind_count, slices,
@@ -413,7 +416,7 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
 /// its access's lane point there, with a plan from that lane's end to its trip's destination. Its leg then
 /// has no crossing: it attaches by the slot test as a same-side exit does. A truck or a drop-off
 /// keeps waiting (its plan ends at a gate, a door or a border). Whether the plan was made;
-/// without one it waits on. O(one plan).
+/// without one it waits on: the caller tries once a leg. O(one plan).
 ///
 /// Safety: `i` must be unique to the current worker for every raw slice in `slices`.
 #[allow(clippy::too_many_arguments)]
@@ -432,9 +435,8 @@ unsafe fn leave_on_the_near_lane(
         if trip.phase != ParkingTripPhase::PullOut || trip.freight_gate || trip.drop_off {
             return false;
         }
-        let (Some(node), Some(origin), Some(near_d)) = (
+        let (Some(node), Some(near_d)) = (
             lane_terminal_node(near, transit_network, graph),
-            lane_origin_node(near, transit_network, graph),
             projected_lane_distance_for_entrance(exit, near, transit_network, graph),
         ) else {
             return false;
@@ -467,7 +469,8 @@ unsafe fn leave_on_the_near_lane(
         apply_network_replan(i, plan, slices);
         *slices.planned_attach_lane.get_mut(i) = near as u32;
         *slices.planned_attach_lane_d.get_mut(i) = near_d;
-        *slices.planned_attach_n.get_mut(i) = origin;
+        // An attach plan names the lane's end node (`planned_attach_is_legal`).
+        *slices.planned_attach_n.get_mut(i) = node;
         true
     }
 }
