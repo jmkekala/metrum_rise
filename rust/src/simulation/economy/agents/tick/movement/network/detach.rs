@@ -136,7 +136,9 @@ pub(super) unsafe fn try_network_detach(
             // replan bring it back to the far side, it gives up at once (no loop of waits).
             let gave_up = *slices.crossing_wait.get(i) == CROSSING_GAVE_UP;
             if gave_up
-                || !crossing_clear(crossed, crossed_d, half, transit_network, graph, lane_buckets)
+                // Entering runs in the parallel pass, where other cars' speeds are being
+                // written: the margin takes the lane's speed limit.
+                || !crossing_clear(crossed, crossed_d, half, transit_network, graph, lane_buckets, |_| None)
                 || !claim_lane_entry(i, crossed, lane_claims)
             {
                 if !gave_up {

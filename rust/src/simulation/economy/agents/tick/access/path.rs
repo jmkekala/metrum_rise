@@ -131,6 +131,36 @@ fn point_on_segment(p: Vector2, a: Vector2, b: Vector2) -> bool {
     segment_distance(p, proj) <= 0.05
 }
 
+/// How far `pos` is from the end of `path` along it: 0 at the end, infinite off it (a vehicle
+/// not on this way). O(points).
+pub(in crate::simulation::economy::agents::tick) fn left_along(path: &[Vector2], pos: Vector2) -> f32 {
+    match local_access_target_segment(pos, path) {
+        Some(k) => {
+            pos.distance_to(path[k])
+                + path[k..].windows(2).map(|w| w[0].distance_to(w[1])).sum::<f32>()
+        }
+        None if path.last().is_some_and(|end| end.distance_to(pos) <= 0.05) => 0.0,
+        None => f32::INFINITY,
+    }
+}
+
+/// The point `back` metres short of the end of `path` along it, its first point when the path is
+/// shorter (`PARK-32`, the leaving line). O(points), no allocation.
+pub(in crate::simulation::economy::agents::tick) fn point_back_along(
+    path: &[Vector2],
+    back: f32,
+) -> Vector2 {
+    let mut left = back.max(0.0);
+    for w in path.windows(2).rev() {
+        let seg = w[0].distance_to(w[1]);
+        if left <= seg {
+            return if seg > 1e-6 { w[1] + (w[0] - w[1]) * (left / seg) } else { w[1] };
+        }
+        left -= seg;
+    }
+    path.first().copied().unwrap_or(Vector2::ZERO)
+}
+
 /// Returns the next segment endpoint index the agent should move toward on the polyline
 /// `points`. O(points).
 pub(crate) fn local_access_target_segment(current: Vector2, points: &[Vector2]) -> Option<usize> {

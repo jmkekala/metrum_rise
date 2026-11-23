@@ -981,6 +981,9 @@ impl AgentSystem {
         self.agents.pos_x[i] = stop[0];
         self.agents.pos_y[i] = stop[1];
         self.agents.parking_trip[i] = ParkingTrip::freight_pull_out(dock, gate);
+        // It waits its turn in its dock while trucks ahead of it leave by the same gate
+        // (`PARK-32`, the leaving line).
+        self.parking_work.exit_members.push(self.handles.handle(i));
     }
 
     // Starts carrier `i`'s yard trip to the building whose handle bits `gate` names, or ends the

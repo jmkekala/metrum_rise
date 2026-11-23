@@ -17,10 +17,12 @@ use crate::simulation::parking::{ParkingSystem, ParkingTrip, ParkingTripPhase};
 use std::sync::atomic::AtomicU32;
 mod candidates;
 mod drop_off;
+mod exit_line;
 mod prepared;
 mod recovery;
 mod yard;
 pub(crate) use candidates::ParkingWork;
+pub(super) use exit_line::exit_hold;
 #[cfg(test)]
 pub(in crate::simulation::economy::agents) use prepared::{AnswerCounts, take_answer_counts};
 use prepared::{KnownVisit, LegEnd, LegKey};
@@ -144,6 +146,11 @@ impl AgentSystem {
             });
             self.movement_serial_query = scratch;
             self.parking_work.answers = answers;
+        }
+        // A visit may have started a pull-out: its vehicle joins its mouth's leaving line
+        // (`PARK-32`).
+        for &i in &candidates {
+            self.note_exit_line_member(i);
         }
         self.parking_work.quotes = quotes;
         // The lines before the gates as the next tick's arrivals find them (`PARK-36`).

@@ -41,7 +41,7 @@ use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::core::handles::Handle;
 use super::super::access::{
     KERB_QUEUE_SPACING_M, advance_along_local_access_path, gate_line_d, kerb_stop_beside,
-    local_access_target_segment, projected_lane_distance_for_entrance, same_side_car_lane,
+    left_along, projected_lane_distance_for_entrance, same_side_car_lane,
 };
 use crate::simulation::buildings::allocator::BuildingEntrance;
 use crate::simulation::economy::agents::tick::MANEUVER_POINTS;
@@ -213,6 +213,18 @@ impl AgentSystem {
         ) else {
             return false;
         };
+        #[cfg(test)]
+        {
+            use crate::debug::work::{Work, add};
+            let path = &plan.current_path;
+            let edges: f32 = path
+                .windows(2)
+                .filter_map(|w| graph.get_edge_between_nodes(w[0], w[1]))
+                .map(|edge| graph.edge(edge).physical_length)
+                .sum();
+            add(Work::FarSideGateTurns, 1);
+            add(Work::FarSideGateTurnMetres, edges as u64);
+        }
         self.install_drive(i, plan);
         self.agents.parking_trip[i].ready = false;
         true
@@ -608,19 +620,6 @@ fn way_in_place(path: &[Vector2], back: f32) -> Option<([Vector2; MANEUVER_POINT
     points[..j].copy_from_slice(&path[..j]);
     points[j] = path[j] + (path[j - 1] - path[j]) * t;
     Some((points, j + 1))
-}
-
-// How far `pos` is from the end of `path` along it: 0 at the end, infinite off it (a truck not on
-// this way in). O(points).
-fn left_along(path: &[Vector2], pos: Vector2) -> f32 {
-    match local_access_target_segment(pos, path) {
-        Some(k) => {
-            pos.distance_to(path[k])
-                + path[k..].windows(2).map(|w| w[0].distance_to(w[1])).sum::<f32>()
-        }
-        None if path.last().is_some_and(|end| end.distance_to(pos) <= 0.05) => 0.0,
-        None => f32::INFINITY,
-    }
 }
 
 // The line before the freight gate of the building whose handle bits are `building` (`PARK-36`):

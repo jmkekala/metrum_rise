@@ -98,6 +98,9 @@ pub(crate) struct MovementSlices<'a> {
     // The trucks standing in the lines before freight gates, by building, sorted (`PARK-36`,
     // `ParkingWork::kerb_lines`): read only, for where an arriving truck leaves the lane.
     pub(super) kerb_lines: &'a [(u64, crate::simulation::economy::agents::AgentHandle)],
+    // The holds of the vehicles waiting in leaving lines, by agent index, sorted (`PARK-32`,
+    // `ParkingWork::exit_holds`): read only, by the egress step.
+    pub(super) exit_holds: &'a [(usize, f32)],
     pub(super) parking_trip: RawSlice<crate::simulation::parking::ParkingTrip>,
     pub(super) home: RawSlice<usize>,
     pub(super) work: RawSlice<usize>,
@@ -170,6 +173,7 @@ impl<'a> MovementSlices<'a> {
             parking: None,
             parking_quotes: None,
             kerb_lines: &[],
+            exit_holds: &[],
             parking_trip: RawSlice::new(&mut agents.parking_trip),
             home: RawSlice::new(&mut agents.home_building),
             work: RawSlice::new(&mut agents.work_building),

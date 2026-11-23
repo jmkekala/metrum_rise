@@ -48,9 +48,10 @@ pub(in crate::simulation::economy::agents::tick) fn crossing_at(
 }
 
 /// Whether a vehicle of half length `half` may start a crossing that passes lane `lane` at
-/// distance `d` ([`crossing_gap_clear`]): the margin upstream is what a car at the lane's speed
-/// limit covers in the crossing's time, two lane widths and the body's length at driveway speed
-/// (a car 2.3 s, a truck 3.0 s). A lane the buckets do not hold is busy. O(log bucket).
+/// distance `d` ([`crossing_gap_clear`]): the margin upstream is what the nearest body behind
+/// covers in the crossing's time, two lane widths and the body's length at driveway speed (a car
+/// 2.3 s, a truck 3.0 s), at its own speed `body_speed(agent)` where the caller may read it, else
+/// at the lane's speed limit. A lane the buckets do not hold is busy. O(log bucket).
 pub(in crate::simulation::economy::agents::tick) fn crossing_clear(
     lane: usize,
     d: f32,
@@ -58,6 +59,7 @@ pub(in crate::simulation::economy::agents::tick) fn crossing_clear(
     network: &TransitNetwork,
     graph: &RegionGraph,
     lane_buckets: &[Vec<LaneEntry>],
+    body_speed: impl Fn(usize) -> Option<f32>,
 ) -> bool {
     let Some(edge) = network
         .lane_system
@@ -70,7 +72,11 @@ pub(in crate::simulation::economy::agents::tick) fn crossing_clear(
     let crossing_s = (2.0 * LANE_WIDTH + 2.0 * half) / AGENT_DRIVEWAY_SPEED_MS;
     lane_buckets
         .get(lane)
-        .is_some_and(|bucket| crossing_gap_clear(bucket, d, half, edge.speed_limit * crossing_s))
+        .is_some_and(|bucket| {
+            crossing_gap_clear(bucket, d, half, |agent| {
+                body_speed(agent).unwrap_or(edge.speed_limit).max(0.0) * crossing_s
+            })
+        })
 }
 
 #[cfg(test)]
@@ -87,12 +93,12 @@ mod tests {
         let approach = 30.0;
         // Exactly the margin behind: clear; any nearer: not.
         let edge = crossing - (HALF + HALF + IDM_S_MIN + approach) - 0.001;
-        assert!(crossing_gap_clear(&[(edge, 1, HALF)], crossing, HALF, approach));
-        assert!(!crossing_gap_clear(&[(edge + 0.1, 1, HALF)], crossing, HALF, approach));
+        assert!(crossing_gap_clear(&[(edge, 1, HALF)], crossing, HALF, |_| approach));
+        assert!(!crossing_gap_clear(&[(edge + 0.1, 1, HALF)], crossing, HALF, |_| approach));
         // A body ahead clears with the slot alone, however near beyond it.
         let ahead = crossing + HALF + HALF + IDM_S_MIN + 0.001;
-        assert!(crossing_gap_clear(&[(ahead, 1, HALF)], crossing, HALF, approach));
-        assert!(!crossing_gap_clear(&[(ahead - 0.1, 1, HALF)], crossing, HALF, approach));
-        assert!(crossing_gap_clear(&[], crossing, HALF, approach));
+        assert!(crossing_gap_clear(&[(ahead, 1, HALF)], crossing, HALF, |_| approach));
+        assert!(!crossing_gap_clear(&[(ahead - 0.1, 1, HALF)], crossing, HALF, |_| approach));
+        assert!(crossing_gap_clear(&[], crossing, HALF, |_| approach));
     }
 }

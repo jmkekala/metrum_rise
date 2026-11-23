@@ -126,11 +126,16 @@ pub(crate) enum Work {
     ArrivalWiderPlaces,
     /// Household arrival carriers launched on foot from the border: none since `PARK-34`.
     ArrivalBorderWalks,
+    /// Trucks refused a dock at the end of their line on a freight gate's far lane that drove
+    /// round to the line on the gate's side (`PARK-32`, `turn_for_near_line`).
+    FarSideGateTurns,
+    /// The metres of those drives round, from the far lane's end to the gate.
+    FarSideGateTurnMetres,
 }
 
 /// Number of [`Work`] counters.
 #[cfg_attr(not(test), allow(dead_code))]
-pub(crate) const WORK_COUNT: usize = Work::ArrivalBorderWalks as usize + 1;
+pub(crate) const WORK_COUNT: usize = Work::FarSideGateTurnMetres as usize + 1;
 
 #[cfg(test)]
 static COUNTS: [std::sync::atomic::AtomicU64; WORK_COUNT] =
@@ -285,6 +290,8 @@ pub(crate) const WORK_NAMES: [&str; WORK_COUNT] = [
     "arrival_drop_offs",
     "arrival_wider_places",
     "arrival_border_walks",
+    "far_side_gate_turns",
+    "far_side_gate_turn_metres",
 ];
 
 /// Hashes a value's `Debug` rendering without building the string. Test-only exact state

@@ -92,16 +92,15 @@ pub(in crate::simulation::economy::agents) fn lane_attach_slot_clear(
 }
 
 /// Whether a vehicle of half length `my_half` may start across a lane at `crossing_d`
-/// (`PARK-32`): the slot is free ([`lane_attach_slot_clear`]), and no body behind it, upstream in
-/// the lane's own direction, lies within `approach_m` more, the distance a car at the lane's
-/// speed covers while the vehicle crosses. A body ahead needs only the slot: a queue standing
-/// past the crossing does not block it. The bodies' speeds are not read (the speed pass writes
-/// them meanwhile), so a body standing upstream within the margin blocks too. O(log bucket).
+/// (`PARK-32`): the slot is free ([`lane_attach_slot_clear`]), and the nearest body behind it,
+/// upstream in the lane's own direction, lies at least `approach_m(its agent)` more away, the
+/// distance it covers while the vehicle crosses. A body ahead needs only the slot: a queue
+/// standing past the crossing does not block it. O(log bucket).
 pub(in crate::simulation::economy::agents::tick) fn crossing_gap_clear(
     bucket: &[LaneEntry],
     crossing_d: f32,
     my_half: f32,
-    approach_m: f32,
+    approach_m: impl Fn(usize) -> f32,
 ) -> bool {
     if !lane_attach_slot_clear(bucket, crossing_d, my_half) {
         return false;
@@ -109,7 +108,7 @@ pub(in crate::simulation::economy::agents::tick) fn crossing_gap_clear(
     let insert = bucket.partition_point(|entry| entry.0 < crossing_d);
     insert == 0 || {
         let behind = bucket[insert - 1];
-        crossing_d - behind.0 >= behind.2 + my_half + IDM_S_MIN + approach_m
+        crossing_d - behind.0 >= behind.2 + my_half + IDM_S_MIN + approach_m(behind.1)
     }
 }
 

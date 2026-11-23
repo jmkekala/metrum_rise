@@ -54,6 +54,15 @@ pub(crate) struct ParkingWork {
     // (`lifecycle.rs` `start_in_line_at_kerb`, `PARK-36`). Only that moment's starts count, so a
     // load, which empties it, decides as the live city does.
     pub(in crate::simulation::economy::agents) kerb_starts: Vec<(usize, u32)>,
+    // The vehicles in the leaving lines at access mouths, by handle, unsorted, maybe twice
+    // (`exit_line.rs`, `PARK-32`): kept from the commits and dock starts that start pull-outs,
+    // checked against the rows before each movement pass, and found by the rows' scan on a load.
+    pub(in crate::simulation::economy::agents) exit_members: Vec<AgentHandle>,
+    // Scratch of `keep_exit_lines`.
+    pub(super) exit_entries: Vec<super::exit_line::ExitEntry>,
+    // Each waiting vehicle's hold for the movement pass, by agent index, sorted: the least
+    // distance to the end of its pull-out it may reach (`exit_line.rs`).
+    pub(in super::super) exit_holds: Vec<(usize, f32)>,
     // The route answers of a commit (`prepared.rs`).
     pub(super) answers: super::prepared::ParkingAnswers,
     // Network legs kept from tick to tick for those answers, emptied by a new network revision.
@@ -76,6 +85,9 @@ impl Default for ParkingWork {
             kerb_queue: Vec::new(),
             kerb_lines: Vec::new(),
             kerb_starts: Vec::new(),
+            exit_members: Vec::new(),
+            exit_entries: Vec::new(),
+            exit_holds: Vec::new(),
             answers: Default::default(),
             quotes: Default::default(),
             #[cfg(test)]
@@ -209,6 +221,7 @@ impl AgentSystem {
                 super::yard::waits_in_kerb_line(trip) && trip.target == building
             })
         });
+        self.keep_exit_lines(parking, network);
         self.parking_work.watch.append(&mut parking.lost_reservations);
         #[cfg(test)]
         super::super::contract::add(
@@ -259,10 +272,15 @@ impl AgentSystem {
                 })
         });
         self.parking_work.kerb_lines.clear();
+        self.parking_work.exit_members.clear();
         for i in 0..self.agents.len() {
             let trip = self.agents.parking_trip[i];
             if super::yard::waits_in_kerb_line(&trip) {
                 self.parking_work.kerb_lines.push((trip.target, self.handles.handle(i)));
+            }
+            let a = &self.agents;
+            if super::exit_line::in_exit_line(&trip, a.transit[i], a.current_lane_id[i], a.access_flags[i]) {
+                self.parking_work.exit_members.push(self.handles.handle(i));
             }
             if !on_a_car_leg(&trip) {
                 continue;

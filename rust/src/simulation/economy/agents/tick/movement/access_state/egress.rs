@@ -5,9 +5,11 @@
 use super::super::super::super::{ACCESS_PLAN_VALID, MODE_CAR};
 use super::super::super::access::{
     FREIGHT_KERB_INSET_M, LocalAccessPath, ManeuverPath, crossing_at, crossing_clear,
-    kerb_stop_entrance, local_access_path, local_access_should_log_step,
+    kerb_stop_entrance, left_along, local_access_path, local_access_should_log_step,
     local_access_side_label, local_access_target_segment, planned_attach_is_legal,
+    point_back_along,
 };
+use super::super::super::parking::exit_hold;
 use super::super::super::claims::LaneClaimContext;
 use super::super::super::lane_nav::lane_origin_node;
 use super::super::super::slices::{MovementSlices, enter_lane, hold_for_lane_attach};
@@ -157,7 +159,7 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
             // A walker from a car may start at its door, off the polyline (`PARK-35`); a truck
             // leaving its place in the line at a kerb stop, or the gate for that line, beside it
             // (`PARK-36`).
-            let (current, next_pos, reached_handoff) = step_along_access_path(
+            let (current, mut next_pos, mut reached_handoff) = step_along_access_path(
                 i,
                 path,
                 delta,
@@ -166,6 +168,25 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
                         && matches!(trip.phase, ParkingTripPhase::None | ParkingTripPhase::ToKerb)),
                 slices,
             );
+            // The leaving line (`PARK-32`, `parking/exit_line.rs`): it gets no nearer its
+            // polyline's end than its hold, a body and 1 m behind the vehicle ahead through the
+            // same mouth, or its whole way while it waits for its turn to leave its place.
+            if trip.phase == ParkingTripPhase::PullOut
+                && !kerb_stop
+                && let Some(hold) = exit_hold(slices.exit_holds, i)
+                && hold > 0.0
+                && left_along(path, next_pos) < hold
+            {
+                next_pos = if left_along(path, current) <= hold {
+                    current
+                } else {
+                    point_back_along(path, hold)
+                };
+                reached_handoff = false;
+                *s_pos_x.get_mut(i) = next_pos.x;
+                *s_pos_y.get_mut(i) = next_pos.y;
+                *s_speed.get_mut(i) = 0.0;
+            }
             // Past the mouth this step: onto the road's last leg, or at its lane point.
             let on_road = may_cross
                 && (reached_handoff
@@ -176,8 +197,13 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
                     crossing_at(attach_lane_id, attach_lane_d, entrance.side, transit_network)
             {
                 let half = lane_half_length(MODE_CAR, *slices.vehicle_type.get(i));
+                // A car egress runs in the serial pass (`MovementClaimMode::Dynamic`), after the
+                // parallel pass wrote every lane car's speed: the margin takes the speed of the
+                // body behind the crossing, so a standing or crawling queue that leaves the slot
+                // free lets it in, where a body at the lane's speed limit would not.
+                let speed = |agent: usize| Some(*s_speed.get(agent));
                 let clear = |lane, d| {
-                    crossing_clear(lane, d, half, transit_network, graph, lane_buckets)
+                    crossing_clear(lane, d, half, transit_network, graph, lane_buckets, speed)
                 };
                 if clear(crossed, crossed_d)
                     && clear(attach_lane_id, attach_lane_d)
