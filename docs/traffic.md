@@ -2701,9 +2701,11 @@ snapshot is per-frame work) is prepared, not run.
 
 #### Crossing the road (`PARK-32`), as built
 
-A car or truck enters and leaves a lot, driveway, dock, freight gate or door from the far side of
-its road where it may cross there: a road without a raised median, one lane crossed, 15 m from the
-lanes' ends (built 2026-11-23 on branch `park-32`, not landed). Entering, it waits in its lane at
+A car or truck enters and leaves a lot, driveway, dock or freight gate from the far side of its
+road where it may cross there: a road without a raised median, one lane crossed, 15 m from the
+lanes' ends (built 2026-11-23 on branch `park-32`, not landed). A building door keeps its reach
+from before (both sides of any road without a raised median) and is crossed to by the same rule
+where it holds, untested as before elsewhere. Entering, it waits in its lane at
 the detach point for a gap in the crossed lane (followers queue behind it) and gives up after 30 s
 to come back on the near side; leaving, it waits at the access mouth off the road for a gap in the
 crossed lane and its target lane. While it crosses it holds an entry in the crossed lane's bucket,
