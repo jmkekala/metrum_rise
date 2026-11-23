@@ -114,3 +114,59 @@ fn a_truck_waiting_at_the_door_past_the_gate_is_still_served() {
     assert_eq!(yard.status(1), ShipmentStatus::Returning);
 }
 
+
+// Three trucks in the line before the gate: when the first of them is granted the dock and pulls
+// forward into the gate, the two behind move up only as the truck ahead of each clears a body and
+// 1 m ahead of it (the leaving truck, then the one before it in the line), so at no tick do two
+// of them stand within a body and 1 m of each other, and they take the dock in the order they
+// reached the line.
+#[test]
+fn the_line_moves_up_a_body_and_a_metre_behind_the_truck_ahead() {
+    let mut yard = yard(1);
+    let first = yard.dispatch(0);
+    yard.tick_until(|y| y.phase(first) == ParkingTripPhase::AtDock);
+    let mut line = [yard.dispatch(1), 0, 0];
+    for (k, id) in [(0, 1), (1, 2), (2, 3)] {
+        if k > 0 {
+            line[k] = yard.dispatch(id);
+        }
+        let i = line[k];
+        yard.tick_until(|y| {
+            y.phase(i) == ParkingTripPhase::AtKerb && at(y, i).distance_to(line_place(y, 1, k)) < 0.05
+        });
+    }
+    // A body and 1 m, the line's spacing.
+    let gap = crate::config::TRUCK_BODY_LENGTH_M + 1.0 - 0.01;
+    // Every two of them waiting or pulling in (one leaving its dock for home passes on the road).
+    let apart = |y: &Yard| {
+        let near = |j: usize| matches!(y.phase(j), ParkingTripPhase::AtKerb | ParkingTripPhase::PullIn);
+        for a in 0..3 {
+            for b in (a + 1..3).filter(|&b| near(line[a]) && near(line[b])) {
+                let d = at(y, line[a]).distance_to(at(y, line[b]));
+                assert!(d >= gap, "trucks {a} and {b} {d} m apart");
+            }
+        }
+    };
+    assert!(yard.check(0));
+    let mut order = Vec::new();
+    for (k, id) in [(0, 1), (1, 2), (2, 3)] {
+        yard.tick_until(|y| {
+            apart(y);
+            for &j in &line {
+                if y.phase(j) == ParkingTripPhase::PullIn && !order.contains(&j) {
+                    order.push(j);
+                }
+            }
+            y.phase(line[k]) == ParkingTripPhase::AtDock
+        });
+        // The ones behind have moved up to their places.
+        for (slot, &j) in line[k + 1..].iter().enumerate() {
+            yard.tick_until(|y| {
+                apart(y);
+                at(y, j).distance_to(line_place(y, 1, slot)) < 0.05
+            });
+        }
+        assert!(yard.check(id));
+    }
+    assert_eq!(order, line);
+}

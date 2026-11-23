@@ -405,8 +405,11 @@ impl AgentSystem {
     // at the kerb before the gate at driveway speed and on each drive-through way in at the yard
     // speed. A truck at the kerb tracks its place along the gate's near lane in its
     // `planned_detach_lane_d` (where it left the lane, then where it stands beside), from which
-    // its pull-in starts; it only ever moves forward. O(W × (W of one building + lanes on the
-    // gate's edge + edge points + way points)).
+    // its pull-in starts; it only ever moves forward, and holds a body and 1 m short of the truck
+    // ahead of it, the one before it in the line or one pulling into a dock of the building
+    // (the one that has just left the line), as the ways in and the leaving lines (`PARK-32`)
+    // hold. O(W × (W of one building + docks of one building + lanes on the gate's edge + edge
+    // points + way points)).
     fn move_lines_up(
         &mut self,
         waiting: &[(u64, u32, usize)],
@@ -418,10 +421,13 @@ impl AgentSystem {
     ) {
         let mut slot = 0;
         let mut gate = None;
+        // Where the truck ahead in the kerb line stands along the lane, once one has moved.
+        let mut ahead_d = None;
         for (k, &(building, _, i)) in waiting.iter().enumerate() {
             if k == 0 || waiting[k - 1].0 != building {
                 slot = 0;
                 gate = gate_line(building, allocator, network, graph);
+                ahead_d = None;
             }
             if self.agents.parking_trip[i].phase != ParkingTripPhase::AtKerb {
                 continue;
@@ -436,7 +442,12 @@ impl AgentSystem {
                 if !self.stands_in_gate_line(i, *lane, *gate_d) {
                     continue;
                 }
-                let place = gate_line_d(*gate_d, slot);
+                // Its place, held a body and 1 m short of the truck ahead of it in the line, which
+                // has moved already this tick.
+                let mut place = gate_line_d(*gate_d, slot);
+                if let Some(ahead) = ahead_d {
+                    place = place.min(ahead - KERB_QUEUE_SPACING_M);
+                }
                 slot += 1;
                 let step = crate::config::AGENT_DRIVEWAY_SPEED_MS * delta;
                 let d = self.agents.planned_detach_lane_d[i];
@@ -450,9 +461,19 @@ impl AgentSystem {
                 }) else {
                     continue;
                 };
-                self.agents.planned_detach_lane_d[i] = d;
                 let to = to.door_pos;
-                if at.distance_to(to) <= step { to } else { at + (to - at).normalized() * step }
+                let next =
+                    if at.distance_to(to) <= step { to } else { at + (to - at).normalized() * step };
+                // Nor nearer than a body and 1 m to a truck pulling into one of the building's
+                // docks, the one that has just left the line for the gate: it stands until that
+                // one is clear.
+                if !self.clear_of_pull_ins(building, parking, next) {
+                    ahead_d = Some(self.agents.planned_detach_lane_d[i]);
+                    continue;
+                }
+                self.agents.planned_detach_lane_d[i] = d;
+                ahead_d = Some(d);
+                next
             } else {
                 // Its place: behind the bay and each truck of its line ahead of it, and never
                 // nearer than a body and 1 m behind the truck just ahead of it, which may still
@@ -568,6 +589,22 @@ impl AgentSystem {
     fn stands_in_gate_line(&self, i: usize, lane: usize, gate_d: f32) -> bool {
         let a = &self.agents;
         a.planned_detach_lane_id[i] as usize == lane && a.planned_detach_lane_d[i] <= gate_d + 0.01
+    }
+
+    // Whether a truck moving up the line before building `building`'s gate to `to` stays a body
+    // and 1 m (`KERB_QUEUE_SPACING_M`) clear of every truck pulling into one of the building's
+    // docks: the one that has just left the line for the gate, or one turning in from the lane.
+    // A pull-in always ends in its bay, so the hold always ends. O(docks of the building).
+    fn clear_of_pull_ins(&self, building: u64, parking: &ParkingSystem, to: Vector2) -> bool {
+        parking.building_docks(building).all(|dock| {
+            self.handles.resolve(parking.dock_holder(dock)).is_none_or(|j| {
+                let trip = &self.agents.parking_trip[j];
+                trip.phase != ParkingTripPhase::PullIn
+                    || trip.destination != dock
+                    || Vector2::new(self.agents.pos_x[j], self.agents.pos_y[j]).distance_to(to)
+                        >= KERB_QUEUE_SPACING_M
+            })
+        })
     }
 
     /// What the next tick's movement reads of the lines before the gates (`PARK-36`), kept at the

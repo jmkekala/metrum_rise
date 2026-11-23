@@ -953,6 +953,33 @@ fn an_older_save_with_a_truck_waiting_past_the_gate_is_served() {
     assert!(live.iter().any(|t| t.3.contains("AtDock")), "it is served: {:?}", live.last());
 }
 
+// A save made while the line before the gate moves up (`PARK-36`): the first of two waiting
+// trucks has been granted the dock and pulls forward, and the second, holding a body and 1 m
+// behind it, moves up to the first place. The loaded city continues as the live one.
+#[test]
+fn a_save_while_the_line_moves_up_continues_equally() {
+    use crate::simulation::parking::ParkingTripPhase;
+    let (mut core, _, _) = truck_at_dock();
+    let crate::simulation::economy::logistics::ShipmentEndpoint::Building(source) =
+        core.logistics.shipments[0].source
+    else {
+        panic!("a yard sent it");
+    };
+    let second = dispatch_shipment(&mut core, 1, source);
+    tick_truck_until(&mut core, second, |core, i| phase_of(core, i) == ParkingTripPhase::AtKerb);
+    let third = dispatch_shipment(&mut core, 2, source);
+    tick_truck_until(&mut core, third, |core, i| phase_of(core, i) == ParkingTripPhase::AtKerb);
+    for _ in 0..300 {
+        tick_agents(&mut core);
+    }
+    let waiting = (core.agents.pos_x[third].to_bits(), core.agents.pos_y[third].to_bits());
+    assert!(check_truck(&mut core), "the first turns back");
+    tick_truck_until(&mut core, second, |core, i| phase_of(core, i) == ParkingTripPhase::PullIn);
+    let live = save_and_continue(&mut core, "line_moving_up", 200, 2, |_| {});
+    assert!(live.iter().all(|t| t.3.contains("AtKerb")), "it waits its turn");
+    assert_ne!((live[199].0, live[199].1), waiting, "it moves up");
+}
+
 // The yard asset with its lane declared or not (without it the dock stops proving) and its
 // loading bay at local z `bay_z`, with the parts' imported bounds.
 fn yard_manifest(lane: bool, bay_z: &str) -> AssetManifest {
