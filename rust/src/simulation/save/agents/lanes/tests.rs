@@ -185,7 +185,7 @@ fn snapshot_keeps_every_lane_id_after_incremental_rebuild_and_edge_deletion() {
     crate::simulation::save::network::save_network(&tx, &graph, &maps, network.lane_system.lanes.len()).unwrap();
     save_agents(&tx, &agents, &graph, &network, &maps).unwrap();
     tx.commit().unwrap();
-    let mut restored = load_agents(&conn, 0.0).unwrap();
+    let mut restored = load_agents(&conn, 0.0, true).unwrap();
     let mut new_graph = crate::simulation::save::network::load_graph(&conn, true, true).unwrap();
     // Ids are saved state (`SAVE-11`): the deleted edge and the lanes the local rebuild retired
     // load as holes at their ids, and every lane the whole rebuild makes goes to its saved id.
@@ -308,7 +308,7 @@ fn snapshot_rejects_walker_on_vehicle_lane_on_write_and_restore() {
     tx.commit().unwrap();
     conn.execute("UPDATE agents SET transit_mode = 0", [])
         .unwrap();
-    let mut loaded = load_agents(&conn, 0.0).unwrap();
+    let mut loaded = load_agents(&conn, 0.0, true).unwrap();
     // Snapshot edges are compacted; restore against the corresponding compacted graph.
     let tx = conn.transaction().unwrap();
     crate::simulation::save::network::save_network(&tx, &graph, &maps, network.lane_system.lanes.len()).unwrap();
@@ -424,7 +424,7 @@ fn stale_junction_lane_from_an_older_save_is_sent_to_replan_instead_of_failing_t
     )
     .unwrap();
     tx.commit().unwrap();
-    let mut restored = load_agents(&conn, 0.0).unwrap();
+    let mut restored = load_agents(&conn, 0.0, true).unwrap();
     graph = crate::simulation::save::network::load_graph(&conn, true, true).unwrap();
     let mut new_network = TransitNetwork::new();
     new_network.lane_system.rebuild(&mut graph);
@@ -454,7 +454,7 @@ fn connector_the_rebuild_now_links_straight_through_is_dropped_and_its_agent_rep
     crate::simulation::save::network::save_network(&tx, &graph, &maps, network.lane_system.lanes.len()).unwrap();
     save_agents(&tx, &agents, &graph, &network, &maps).unwrap();
     tx.commit().unwrap();
-    let mut restored = load_agents(&conn, 0.0).unwrap();
+    let mut restored = load_agents(&conn, 0.0, true).unwrap();
     graph = crate::simulation::save::network::load_graph(&conn, true, true).unwrap();
     let mut new_network = TransitNetwork::new();
     new_network.lane_system.rebuild(&mut graph);
@@ -503,7 +503,7 @@ fn pedestrian_route_the_layout_no_longer_has_is_dropped_and_its_walker_replans()
     crate::simulation::save::network::save_network(&tx, &graph, &maps, network.lane_system.lanes.len()).unwrap();
     save_agents(&tx, &agents, &graph, &network, &maps).unwrap();
     tx.commit().unwrap();
-    let mut restored = load_agents(&conn, 0.0).unwrap();
+    let mut restored = load_agents(&conn, 0.0, true).unwrap();
     graph = crate::simulation::save::network::load_graph(&conn, true, true).unwrap();
     // Loading compacts ids; no node of the loaded graph crosses.
     for node in 0..graph.node_count() as u32 {

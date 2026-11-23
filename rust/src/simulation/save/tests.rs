@@ -385,11 +385,43 @@ fn pending_household_composition_survives_save() {
     let tx = conn.transaction().unwrap();
     agents::save_agents(&tx, &agents, &graph, &TransitNetwork::new(), &maps).unwrap();
     tx.commit().unwrap();
-    let restored = agents::load_agents(&conn, 0.0).unwrap();
+    let restored = agents::load_agents(&conn, 0.0, true).unwrap();
     assert_eq!(restored.pending_household_composition(carrier), approved);
     conn.execute("UPDATE agents SET pending_household_adults = 7", [])
         .unwrap();
-    assert!(agents::load_agents(&conn, 0.0).is_err());
+    assert!(agents::load_agents(&conn, 0.0, true).is_err());
+}
+
+// A vehicle crossing its road, or waiting to, keeps that state through a save (`PARK-32`); a
+// format 129 save has none.
+#[test]
+fn crossing_state_survives_save() {
+    let (graph, _) = snapshot_test_graph();
+    let allocator = BuildingAllocator::new();
+    let mut agents = AgentSystem::new();
+    let crossing = agents.spawn_border_arrival_agent(usize::MAX, 0, 0.0, 0.0);
+    let waiting = agents.spawn_border_arrival_agent(usize::MAX, 0, 0.0, 0.0);
+    let neither = agents.spawn_border_arrival_agent(usize::MAX, 0, 0.0, 0.0);
+    agents.crossing_lane[crossing] = 7;
+    agents.crossing_wait_s[waiting] = 12.5;
+    let maps = build_snapshot_maps(&graph, &allocator).unwrap();
+    let mut conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch(schema::SCHEMA).unwrap();
+    let tx = conn.transaction().unwrap();
+    agents::save_agents(&tx, &agents, &graph, &TransitNetwork::new(), &maps).unwrap();
+    tx.commit().unwrap();
+    let rows: i64 = conn
+        .query_row("SELECT COUNT(*) FROM agent_crossings", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(rows, 2, "only the two with state have a row");
+    let restored = agents::load_agents(&conn, 0.0, true).unwrap();
+    assert_eq!(restored.crossing_lane[crossing], 7);
+    assert_eq!(restored.crossing_wait_s[waiting], 12.5);
+    assert_eq!(restored.crossing_lane[neither], u32::MAX);
+    assert_eq!(restored.crossing_wait_s[neither], 0.0);
+    let older = agents::load_agents(&conn, 0.0, false).unwrap();
+    assert_eq!(older.crossing_lane[crossing], u32::MAX);
+    assert_eq!(older.crossing_wait_s[waiting], 0.0);
 }
 
 #[test]
@@ -1239,7 +1271,7 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         [],
     )
     .unwrap();
-    if agents::load_agents(&conn, 0.0).is_ok() {
+    if agents::load_agents(&conn, 0.0, true).is_ok() {
         accepted_corruptions.push("agent path sequence gap".to_owned());
     }
     conn.execute(

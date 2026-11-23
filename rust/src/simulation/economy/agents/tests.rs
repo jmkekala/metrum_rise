@@ -15,6 +15,7 @@ use crate::simulation::pathing::cch::CchGraph;
 use crate::simulation::zoning::{ZoneType, ZoningSystem};
 use godot::prelude::{Vector2, Vector3};
 
+mod crossing;
 mod departure;
 mod freight_yards;
 pub(super) mod parking;
