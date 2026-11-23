@@ -77,7 +77,10 @@ pub(crate) fn access_phase_target(
         let (_, path) = pulling_maneuver(core, agent_idx, egress)?;
         let path=path.as_slice();
         let current=godot::prelude::Vector2::new(core.agents.pos_x[agent_idx],core.agents.pos_y[agent_idx]);
-        let target=crate::simulation::economy::agents::tick::parking_path_target_segment(current,path).map(|i| path[i])?;
+        // A truck granted a dock at the kerb before its gate pulls in from beside its polyline,
+        // heading for the second point first (`PARK-36`, `step_out_along_local_access_path`).
+        let target=crate::simulation::economy::agents::tick::parking_path_target_segment(current,path).map(|i| path[i])
+            .or_else(|| (path.len()>1 && current.distance_to(path[path.len()-1])>0.05).then(|| path[1]))?;
         return Some(Vector3::new(target.x,0.0,target.y));
     }
     if matches!(trip.phase, crate::simulation::parking::ParkingTripPhase::WalkToCar | crate::simulation::parking::ParkingTripPhase::WalkToDoor) {

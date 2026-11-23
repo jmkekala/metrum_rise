@@ -43,6 +43,12 @@ pub(crate) struct ParkingWork {
     // The trucks waiting at kerb stops for a dock, this tick, as (building handle bits, stamp
     // bits, agent) (`yard.rs` `grant_docks_at_kerbs`, `PARK-36`).
     pub(super) kerb_queue: Vec<(u64, u32, usize)>,
+    // The trucks standing in the line before a freight gate at the end of the last commit, as
+    // (building handle bits, agent), sorted: the next tick's movement reads how many wait at a
+    // building, so an arriving truck leaves the lane at the line's end (`yard.rs`
+    // `keep_kerb_lines`, `PARK-36`). Checked against the rows before each movement pass, so a
+    // truck removed between ticks no longer counts, and rebuilt from them on a load.
+    pub(in super::super) kerb_lines: Vec<(u64, AgentHandle)>,
     // The trucks started at a kerb stop by the dispatches at one moment, as (building, sim time
     // bits), so the next one from the same building starts a place behind them
     // (`lifecycle.rs` `start_in_line_at_kerb`, `PARK-36`). Only that moment's starts count, so a
@@ -68,6 +74,7 @@ impl Default for ParkingWork {
             watch: Vec::new(),
             rebuild: true,
             kerb_queue: Vec::new(),
+            kerb_lines: Vec::new(),
             kerb_starts: Vec::new(),
             answers: Default::default(),
             quotes: Default::default(),
@@ -195,6 +202,13 @@ impl AgentSystem {
         if self.parking_work.rebuild {
             self.rebuild_parking_lists(parking);
         }
+        let (handles, agents) = (&self.handles, &self.agents);
+        self.parking_work.kerb_lines.retain(|&(building, agent)| {
+            handles.resolve(agent).is_some_and(|j| {
+                let trip = &agents.parking_trip[j];
+                super::yard::waits_in_kerb_line(trip) && trip.target == building
+            })
+        });
         self.parking_work.watch.append(&mut parking.lost_reservations);
         #[cfg(test)]
         super::super::contract::add(
@@ -244,8 +258,12 @@ impl AgentSystem {
                         && parking.available_to(trip.vehicle, handles.handle(i));
                 })
         });
+        self.parking_work.kerb_lines.clear();
         for i in 0..self.agents.len() {
             let trip = self.agents.parking_trip[i];
+            if super::yard::waits_in_kerb_line(&trip) {
+                self.parking_work.kerb_lines.push((trip.target, self.handles.handle(i)));
+            }
             if !on_a_car_leg(&trip) {
                 continue;
             }
@@ -255,6 +273,7 @@ impl AgentSystem {
                 self.parking_work.wakes.push(agent);
             }
         }
+        self.parking_work.kerb_lines.sort_unstable_by_key(|&(building, agent)| (building, agent.to_bits()));
     }
 
     /// This tick's candidates in ascending agent order, whatever the worker count: the shards'

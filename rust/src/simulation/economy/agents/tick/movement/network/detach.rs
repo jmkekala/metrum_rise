@@ -3,7 +3,7 @@
 //! Network-lane detach into local access ingress movement.
 
 use super::super::super::super::{ACCESS_PLAN_VALID, MODE_CAR, TRANSIT_ACCESS_INGRESS};
-use super::super::super::access::{local_access_point, local_access_side_label};
+use super::super::super::access::{gate_line_d, local_access_point, local_access_side_label};
 use super::super::super::claims::LaneClaimContext;
 use super::super::super::lane_nav::{lane_terminal_node, route_continues_past_lane};
 use super::super::super::slices::MovementSlices;
@@ -20,7 +20,13 @@ use crate::traffic_log;
 /// only on the route's last visit to that lane, when no route node is left beyond the lane's
 /// terminal node. A step that ends inside the lane reaches its `lane_d`; a step that reaches the
 /// lane's end reaches `length + ACCESS_LANE_D_TOLERANCE_M`, the planner's legality bound, so every
-/// legal detach point is reachable. O(1), no allocation.
+/// legal detach point is reachable. A truck bound for a freight gate with no dock granted yet
+/// (`PARK-36`) first stops on the lane at the end of the line of trucks waiting before the gate
+/// (`gate_line_d` of the number waiting at its building at the last commit; never past the gate's
+/// lane point, nor back from `start_d`, where its step began) and stands `ready` for the gate
+/// commit: a dock free, it drives on holding it and detaches at the gate's lane point as any
+/// truck; none, the commit takes it off the lane there, into the line. O(1), plus O(log W) for a
+/// truck on its gate's lane with W trucks waiting in all lines; no allocation.
 ///
 /// Returns `true` when movement should stop for this tick.
 ///
@@ -31,6 +37,7 @@ use crate::traffic_log;
 pub(super) unsafe fn try_network_detach(
     i: usize,
     lane_id: usize,
+    start_d: f32,
     reached_d: f32,
     allocator: &BuildingAllocator,
     transit_network: &TransitNetwork,
@@ -61,7 +68,22 @@ pub(super) unsafe fn try_network_detach(
         if !access_plan_valid
             || planned_detach_lane_id == usize::MAX
             || lane_id != planned_detach_lane_id
-            || reached_d < *s_plan_detach_lane_d.get(i)
+        {
+            return false;
+        }
+        let planned_d = *s_plan_detach_lane_d.get(i);
+        let trip = *slices.parking_trip.get(i);
+        let line_end = (trip.freight_gate
+            && trip.phase == crate::simulation::parking::ParkingTripPhase::None
+            && trip.destination.is_none()
+            && slices.parking.is_some())
+        .then(|| {
+            let lines = slices.kerb_lines;
+            let waiting = lines.partition_point(|&(b, _)| b <= trip.target)
+                - lines.partition_point(|&(b, _)| b < trip.target);
+            gate_line_d(planned_d, waiting)
+        });
+        if reached_d < line_end.unwrap_or(planned_d)
             || route_continues_past_lane(
                 s_path.get(i),
                 *s_path_idx.get(i),
@@ -70,8 +92,20 @@ pub(super) unsafe fn try_network_detach(
         {
             return false;
         }
+        if let Some(end) = line_end {
+            // At the end of the line before its gate: it stands on the lane there, keeping its
+            // speed, for the commit's decision; where it began the step if that was past the end
+            // already (it joined the road within the line, or the line grew under it), never
+            // back.
+            *s_lane_d.get_mut(i) = end
+                .max(start_d)
+                .min(planned_d)
+                .min(transit_network.lane_system.lanes[lane_id].length);
+            slices.parking_trip.get_mut(i).ready = true;
+            return true;
+        }
 
-        let detach_d = *s_plan_detach_lane_d.get(i);
+        let detach_d = planned_d;
         let detach_allowed = if *s_tmode.get(i) == MODE_CAR {
             claim_lane_entry(i, planned_detach_lane_id, lane_claims)
         } else {
@@ -88,7 +122,6 @@ pub(super) unsafe fn try_network_detach(
                     transit_network,
                 )
             {
-                let trip = *slices.parking_trip.get(i);
                 let ingress_origin = if trip.phase == crate::simulation::parking::ParkingTripPhase::WalkToCar {
                     slices.parking.and_then(|p| p.place_curb(trip.source)).unwrap_or(ingress_origin)
                 } else { ingress_origin };

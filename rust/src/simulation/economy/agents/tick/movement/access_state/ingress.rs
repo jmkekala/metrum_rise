@@ -123,8 +123,9 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
             return;
         }
         if trip.freight_gate && trip.phase == ParkingTripPhase::None && slices.parking.is_some() {
-            // At the gate's lane point: the parking phase's ordered commit gives it a dock or
-            // sends it to the door this tick (`PARK-20`). It stands meanwhile.
+            // At the gate's lane point, holding the dock granted to it at the end of the line
+            // before the gate (`PARK-36`): the parking phase's ordered commit sends it in this
+            // tick (`PARK-20`). It stands meanwhile.
             slices.parking_trip.get_mut(i).ready = true;
             *s_speed.get_mut(i) = 0.0;
             return;
@@ -136,8 +137,9 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
             .and_then(|p| p.trip_entrance(trip, false, allocator, transit_network, graph));
         let detach_lane_id = *s_plan_detach_lane.get(i) as usize;
         let detach_lane_d = *s_plan_detach_lane_d.get(i);
-        // A truck bound for a building's door stops at its kerb instead (`PARK-36`); one sent on
-        // to wait for a dock, at its place in the line there, beside where it leaves the lane.
+        // A truck bound for a building's door stops at its kerb instead (`PARK-36`); one a save
+        // from before the line moved to the gate sent on to wait for a dock at the door's kerb
+        // stop, at its place in the line there, beside where it leaves the lane.
         let at_kerb = freight && !trip.freight_gate && trip.phase == ParkingTripPhase::None;
         let door = &allocator.entrances[b_id];
         let kerb_entrance = if at_kerb {
@@ -189,8 +191,16 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
         };
 
         if let (true, Some(path)) = (legal_detach, exact_path) {
-            let (current, next_pos, reached_door) =
-                step_along_access_path(i, path, delta, false, slices);
+            // A truck granted a dock while it waits at the kerb before the gate (`PARK-36`)
+            // stands beside its pull-in's first point: it heads for the gate and follows the
+            // way in from there. Every other pull-in starts on its polyline.
+            let (current, next_pos, reached_door) = step_along_access_path(
+                i,
+                path,
+                delta,
+                trip.freight_gate && trip.phase == ParkingTripPhase::PullIn,
+                slices,
+            );
             if crate::debug::Channel::Traffic.enabled()
                 && local_access_should_log_step(current, next_pos, path, reached_door)
             {

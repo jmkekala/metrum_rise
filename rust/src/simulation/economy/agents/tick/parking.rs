@@ -146,6 +146,8 @@ impl AgentSystem {
             self.parking_work.answers = answers;
         }
         self.parking_work.quotes = quotes;
+        // The lines before the gates as the next tick's arrivals find them (`PARK-36`).
+        self.keep_kerb_lines();
         self.finish_parking_candidates(candidates, parking);
     }
 

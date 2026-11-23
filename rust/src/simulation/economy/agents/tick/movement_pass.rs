@@ -63,6 +63,7 @@ impl AgentSystem {
         let mut slices = MovementSlices::new(&mut self.agents);
         slices.parking = parking;
         slices.parking_quotes = Some(&self.parking_work.quotes);
+        slices.kerb_lines = &self.parking_work.kerb_lines;
         slices.failures = FailureSink::new(std::mem::take(&mut self.trip_failures.buffer));
 
         let lane_buckets = &self.lane_buckets;

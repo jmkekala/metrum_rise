@@ -92,6 +92,9 @@ impl<T> RawSlice<T> {
 pub(crate) struct MovementSlices<'a> {
     pub(super) parking: Option<&'a crate::simulation::parking::ParkingSystem>,
     pub(super) parking_quotes: Option<&'a super::SharedNetworkQuotes>,
+    // The trucks standing in the lines before freight gates, by building, sorted (`PARK-36`,
+    // `ParkingWork::kerb_lines`): read only, for where an arriving truck leaves the lane.
+    pub(super) kerb_lines: &'a [(u64, crate::simulation::economy::agents::AgentHandle)],
     pub(super) parking_trip: RawSlice<crate::simulation::parking::ParkingTrip>,
     pub(super) home: RawSlice<usize>,
     pub(super) work: RawSlice<usize>,
@@ -160,6 +163,7 @@ impl<'a> MovementSlices<'a> {
         Self {
             parking: None,
             parking_quotes: None,
+            kerb_lines: &[],
             parking_trip: RawSlice::new(&mut agents.parking_trip),
             home: RawSlice::new(&mut agents.home_building),
             work: RawSlice::new(&mut agents.work_building),

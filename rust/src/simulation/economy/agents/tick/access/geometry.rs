@@ -81,11 +81,11 @@ pub(crate) fn kerb_stop_entrance(
 /// 8 m body and 1 m between bodies.
 pub(crate) const KERB_QUEUE_SPACING_M: f32 = crate::config::TRUCK_BODY_LENGTH_M + 1.0;
 
-/// Place `slot` of the line of trucks waiting at `entrance`'s kerb stop for a dock (`PARK-36`):
-/// the kerb stop moved `slot` spacings ([`KERB_QUEUE_SPACING_M`]) back along the door side's kerb,
-/// against the near lane's travel, so the line grows behind its first truck and moves up
-/// forward. A place would leave the road's edge: it stops half a body short of the edge's end,
-/// where every further truck stands too. Slot 0 is the kerb stop. O(edge points).
+/// Place `slot` of the line of trucks started together at `entrance`'s kerb stop, dispatched at
+/// one moment from a building without a dock (`PARK-36`): the kerb stop moved `slot` spacings
+/// ([`KERB_QUEUE_SPACING_M`]) back along the door side's kerb, against the near lane's travel. A
+/// place would leave the road's edge: it stops half a body short of the edge's end, where every
+/// further truck stands too. Slot 0 is the kerb stop. O(edge points).
 pub(crate) fn kerb_queue_entrance(
     entrance: &BuildingEntrance,
     graph: &RegionGraph,
@@ -108,9 +108,24 @@ pub(crate) fn kerb_queue_entrance(
     )
 }
 
+/// The lane distance, on a freight gate's near lane, of place `slot` of the line of trucks waiting
+/// for a dock before the gate (`PARK-36`), for a gate whose lane point lies `gate_d` along that
+/// lane: `slot + 1` spacings ([`KERB_QUEUE_SPACING_M`], a body and 1 m) back from the lane point,
+/// against the lane's travel. The gate's mouth keeps the first spacing: the first waiting truck's
+/// centre stands 9 m short of the lane point, its front 5 m short (9 m less half its 8 m body), so
+/// a gate up to 10 m wide stays clear and a truck turning in has room. Places stop half a body
+/// past the lane's start, where the road leaves its junction: every further truck stands there
+/// too. O(1).
+pub(crate) fn gate_line_d(gate_d: f32, slot: usize) -> f32 {
+    let half = crate::config::TRUCK_BODY_LENGTH_M * 0.5;
+    (gate_d - (slot + 1) as f32 * KERB_QUEUE_SPACING_M).max(half.min(gate_d))
+}
+
 /// The kerb stop beside `point`, a lane point of `entrance`'s road (`PARK-36`): the kerb stop of
-/// `entrance` moved along its road to where `point` projects. A truck sent to a place in the line
-/// at a kerb stop leaves its lane beside that place, so its access path ends at it. O(edge points).
+/// `entrance` moved along its road to where `point` projects. A truck waiting for a dock stands
+/// at the kerb beside its lane point in the line before the gate, and one sent to the line at a
+/// kerb stop by a save from before the line moved there leaves its lane beside its place, so its
+/// access path ends at it. O(edge points).
 pub(crate) fn kerb_stop_beside(
     entrance: &BuildingEntrance,
     graph: &RegionGraph,
@@ -159,7 +174,7 @@ pub(in crate::simulation::economy::agents::tick) fn local_access_point(
     }
 }
 
-pub(super) fn same_side_car_lane(entrance: &BuildingEntrance) -> usize {
+pub(in crate::simulation::economy::agents::tick) fn same_side_car_lane(entrance: &BuildingEntrance) -> usize {
     if entrance.side == -1 {
         entrance.car_lane_fwd
     } else {

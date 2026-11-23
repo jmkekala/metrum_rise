@@ -143,12 +143,14 @@ pub(super) unsafe fn handle_network_movement(
             let lane = &transit_network.lane_system.lanes[lane_id];
             let dist_to_end = lane.length - *s_lane_d.get(i);
             if remaining_dist < dist_to_end {
+                let start_d = *s_lane_d.get(i);
                 *s_lane_d.get_mut(i) += remaining_dist;
                 remaining_dist = 0.0;
 
                 if try_network_detach(
                     i,
                     lane_id,
+                    start_d,
                     *s_lane_d.get(i),
                     allocator,
                     transit_network,
@@ -166,6 +168,7 @@ pub(super) unsafe fn handle_network_movement(
                 if try_network_detach(
                     i,
                     lane_id,
+                    *s_lane_d.get(i),
                     lane.length + ACCESS_LANE_D_TOLERANCE_M,
                     allocator,
                     transit_network,

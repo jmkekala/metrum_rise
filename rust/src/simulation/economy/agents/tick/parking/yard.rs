@@ -3,14 +3,17 @@
 //! Freight carriers in yards (`PARK-20`): the parking phase's ordered commits for a carrier
 //! whose plan ends at a freight gate.
 //!
-//! A carrier bound for a building with a published dock detaches at the gate's lane point and
-//! sets `ready` there (`access_state/ingress.rs`). Its visit here, in ascending agent order,
-//! either grants it the building's first free dock in anchor order (`PullIn`, the dock's proven
-//! route at driveway speed) or, with every dock held, stands it on the way in of a drive-through
-//! dock with room, behind the trucks waiting there (`AtKerb` naming the dock, `PARK-36`), or sends
-//! it on to the building's kerb stop (`ToKerb`), where it waits (`AtKerb`) until a dock is granted
-//! to it in arrival order (`grant_docks_at_kerbs`) and it drives back to the gate. One on a way in
-//! is granted that dock when it is free and it is first in its line, and pulls on into the bay.
+//! A carrier bound for a building with a published dock stops on its lane at the end of the
+//! line of trucks waiting before the gate (`PARK-36`: a place back from the gate's lane point, or
+//! behind the last truck waiting there; `network/detach.rs`) and sets `ready` there. Its visit
+//! here, in ascending agent order, either grants it the building's first free dock in anchor
+//! order, which it holds while it drives on to the gate's lane point, detaches there and is sent
+//! in (`PullIn`, the dock's proven route at driveway speed); or, with every dock held, takes it
+//! off the lane where it stands, onto the way in of a drive-through dock with room, behind the
+//! trucks waiting there (`AtKerb` naming the dock), or into the line at the kerb (`AtKerb`), until
+//! a dock is granted to it in arrival order (`grant_docks_at_kerbs`) and it pulls forward into
+//! the gate. One on a way in is granted that dock when it is free and it is first in its line,
+//! and pulls on into the bay.
 //! The end of the route sets `ready` again, and the next visit stands it in the bay (`AtDock`),
 //! where its shipment's next check delivers (`logistics/progress.rs`).
 //!
@@ -33,13 +36,15 @@
 //! while no road leaves the gate, until its shipment's leg times out
 //! (`access_state.rs` `stand_in_yard`, `plan_way_out_of_dock` below).
 
-use super::super::super::{AgentHandle, AgentSystem};
+use super::super::super::{AgentHandle, AgentSystem, TRANSIT_ACCESS_INGRESS, TRANSIT_NETWORK};
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::core::handles::Handle;
 use super::super::access::{
-    KERB_QUEUE_SPACING_M, advance_along_local_access_path, local_access_target_segment,
+    KERB_QUEUE_SPACING_M, advance_along_local_access_path, gate_line_d, kerb_stop_beside,
+    local_access_target_segment, projected_lane_distance_for_entrance, same_side_car_lane,
 };
-use crate::simulation::economy::agents::tick::{MANEUVER_POINTS, kerb_queue_entrance};
+use crate::simulation::buildings::allocator::BuildingEntrance;
+use crate::simulation::economy::agents::tick::MANEUVER_POINTS;
 use crate::simulation::economy::agents::tick::movement::retry_after_s;
 use crate::simulation::economy::agents::tick::trip_failures::{FailureCause, FailureOutcome};
 use crate::simulation::network::{TransitNetwork, graph::RegionGraph};
@@ -67,7 +72,7 @@ impl AgentSystem {
             ParkingTripPhase::None
                 if !trip.replan_needed && allocator.freight_gates.contains_key(&trip.target) =>
             {
-                self.commit_freight_gate(i, trip.target, parking, allocator, network, graph);
+                self.commit_freight_gate(i, trip.target, parking, network);
             }
             // Waiting at the kerb stop or on a drive-through way in: this commit's queue pass has
             // visited it already (`grant_docks_at_kerbs`, `PARK-36`).
@@ -96,22 +101,24 @@ impl AgentSystem {
         }
     }
 
-    // The gate commit: the dock granted to it at the kerb stop, else the building's first dock
-    // in anchor order with no holder and no truck waiting on its way in; with every dock held, a
-    // place on the way in of a drive-through dock with room while nobody of the building waits
-    // at the kerb, else the end of the line at the kerb stop, where it waits its turn
-    // (`PARK-36`). Never the door. O(docks of the building × (W + way points)) for W trucks
-    // waiting this tick, plus one plan for a truck sent on to the kerb.
+    // The gate commit (`PARK-36`), for a truck standing on its lane at the end of the line before
+    // the gate, or detached at the gate's lane point: the dock granted to it in the line, else
+    // the building's first dock in anchor order with no holder and no truck waiting on its way
+    // in. On the lane, a dock it takes is held while it drives on to the gate's lane point, where
+    // this commit sends it into the dock. With every dock held, a place on the way in of a
+    // drive-through dock with room while nobody of the building waits at the kerb, else the line
+    // at the kerb: it leaves the lane where it stands and waits its turn beside the lane point it
+    // left. Never the door. O(docks of the building × (W + way points)) for W trucks waiting this
+    // tick.
     fn commit_freight_gate(
         &mut self,
         i: usize,
         building: u64,
         parking: &mut ParkingSystem,
-        allocator: &BuildingAllocator,
         network: &TransitNetwork,
-        graph: &RegionGraph,
     ) {
         let me = self.handles.handle(i);
+        let on_lane = self.agents.transit[i] == TRANSIT_NETWORK;
         let granted = self.agents.parking_trip[i].destination;
         let granted = (!granted.is_none()
             && parking.dock_holder(granted) == me
@@ -125,50 +132,53 @@ impl AgentSystem {
             .flatten();
         self.parking_work.kerb_queue = waiting;
         let sim_time = self.sim_time;
-        let a = &mut self.agents;
-        let trip = &mut a.parking_trip[i];
-        trip.ready = false;
         if let Some(dock) = dock {
             parking.set_dock_holder(dock, me);
+            let trip = &mut self.agents.parking_trip[i];
+            trip.ready = false;
             trip.destination = dock;
-            trip.phase = ParkingTripPhase::PullIn;
+            if !on_lane {
+                trip.phase = ParkingTripPhase::PullIn;
+            }
             return;
         }
-        // Its place in the queue is the time it reached the gate.
-        a.journey_start_time[i] = sim_time;
-        let stamp = sim_time.to_bits();
-        if let Some(dock) = way_in {
-            // On the way in, behind the trucks waiting there: it stands, `ready`, where it is,
-            // and the queue pass moves it up to its place from the next tick.
-            trip.destination = dock;
-            trip.phase = ParkingTripPhase::AtKerb;
-            trip.ready = true;
-            self.parking_work.kerb_queue.push((building, stamp, i));
-            return;
+        if on_lane {
+            self.leave_lane_into_line(i, network);
         }
-        trip.destination = Handle::NONE;
-        trip.phase = ParkingTripPhase::ToKerb;
-        // The end of the line: behind the trucks standing there now and those sent there
-        // earlier this tick.
-        let slot = self
-            .parking_work
-            .kerb_queue
-            .iter()
-            .filter(|&&(b, _, j)| b == building && self.waits_at_kerb(j))
-            .count();
-        self.parking_work.kerb_queue.push((building, stamp, i));
-        let sent = allocator
-            .building_handles
-            .resolve(Handle::from_bits(building))
-            .is_some_and(|index| self.drive_from_gate_to_kerb(i, index, slot, allocator, network, graph));
-        if !sent {
-            // Its plan dropped, the ingress step takes it back onto the lane and on to the kerb
-            // stop itself (`ParkingSystem::replan_entrance`).
-            self.agents.access_flags[i] &= !crate::simulation::economy::agents::ACCESS_PLAN_VALID;
-        }
+        // On the way in, behind the trucks waiting there, or in the line at the kerb: it stands,
+        // `ready`, where it is, and the queue pass moves it to its place from the next tick. Its
+        // place in the queue is the time it reached the line.
+        self.agents.journey_start_time[i] = sim_time;
+        let trip = &mut self.agents.parking_trip[i];
+        trip.destination = way_in.unwrap_or(Handle::NONE);
+        trip.phase = ParkingTripPhase::AtKerb;
+        trip.ready = true;
+        self.parking_work.kerb_queue.push((building, sim_time.to_bits(), i));
     }
 
-    // Whether truck `j` waits for a dock at its building's kerb stop or is on its way there
+    // Takes truck `i`, standing on its lane at the end of the line before its gate, off the lane
+    // where it stands, as a detach in the movement pass does (`network/detach.rs`): its lane
+    // point is now where it stands, where a way in or its place in the line starts; out of every
+    // lane bucket from the next rebuild, on its access path. O(1).
+    fn leave_lane_into_line(&mut self, i: usize, network: &TransitNetwork) {
+        let a = &mut self.agents;
+        a.planned_detach_lane_d[i] = a.lane_distance[i];
+        if let Some(lane) = network.lane_system.lanes.get(a.planned_detach_lane_id[i] as usize) {
+            let point = BuildingAllocator::sample_pos_on_lane(lane, a.planned_detach_lane_d[i]);
+            (a.pos_x[i], a.pos_y[i]) = (point.x, point.y);
+        }
+        a.current_path[i].clear();
+        a.current_path_index[i] = 0;
+        a.current_node[i] = u32::MAX;
+        a.current_edge[i] = usize::MAX;
+        a.current_lane_id[i] = usize::MAX;
+        a.lane_distance[i] = 0.0;
+        a.speed[i] = 0.0;
+        a.transit[i] = TRANSIT_ACCESS_INGRESS;
+    }
+
+    // Whether truck `j` waits for a dock in the line at its building's kerb, or is on its way to
+    // the line at the door's kerb stop by a save from before the line moved to the gate
     // (`PARK-36`): a waiting yard trip that names no dock. O(1).
     fn waits_at_kerb(&self, j: usize) -> bool {
         let trip = &self.agents.parking_trip[j];
@@ -239,14 +249,18 @@ impl AgentSystem {
     /// order). One on the way in of a drive-through dock waits for that dock only: once it is
     /// free the first truck of its line is granted it and pulls on into the bay from where it
     /// stands. One at the kerb takes the building's first free dock with no line on its way in
-    /// and drives from the kerb to the gate holding it. A truck that reaches the gate meanwhile
-    /// finds the docks granted, so it queues behind them. One that no road takes from the kerb
-    /// to the gate lets the next have the dock and tries again on the retry wheel in 30 s. The
-    /// trucks left waiting move up at driveway speed to their places in the line at the kerb
-    /// (`kerb_queue_entrance`), and at the yard speed along the way in to theirs (`way_in_place`),
-    /// as the trucks ahead leave. For C candidates, W waiting trucks and G grants:
-    /// O(C + W log W + W × (docks of one building × W + way points) + G × Q); a city without
-    /// docks pays one emptiness test. The list is reused.
+    /// and pulls forward from where it stands into the gate and on into the dock, holding it,
+    /// with no plan: the line lies before the gate, so it never passes the gate and never drives
+    /// round the block. A truck that reaches the line meanwhile finds the docks granted, so it
+    /// queues behind them. The trucks left waiting move up at driveway speed to their places in
+    /// the line at the kerb (`gate_line_d`), never backwards, and at the yard speed along the way
+    /// in to theirs (`way_in_place`), as the trucks ahead leave. A truck a save from before the
+    /// line moved to the gate left at the door's kerb stop beyond the gate (or across the road)
+    /// stays where it stands and, granted, drives to the gate as it did then, round the block once
+    /// at most (`drive_from_kerb_to_gate`); with no road there it pulls in from where it stands.
+    /// For C candidates, W waiting trucks and G such old grants: O(C + W log W + W × (docks of
+    /// one building × W + lanes on the gate's edge + edge and way points) + G × Q); a city
+    /// without docks pays one emptiness test. The list is reused.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn grant_docks_at_kerbs(
         &mut self,
@@ -297,9 +311,13 @@ impl AgentSystem {
                 continue;
             };
             parking.set_dock_holder(dock, self.handles.handle(i));
-            if !self.drive_from_kerb_to_gate(i, index, dock, allocator, network, graph) {
-                parking.set_dock_holder(dock, AgentHandle::NONE);
-                self.queue_parking_retry(i, 30);
+            let in_line = gate_line(building, allocator, network, graph)
+                .is_some_and(|(_, lane, gate_d)| self.stands_in_gate_line(i, lane, gate_d));
+            if in_line || !self.drive_from_kerb_to_gate(i, index, dock, allocator, network, graph) {
+                let trip = &mut self.agents.parking_trip[i];
+                trip.destination = dock;
+                trip.phase = ParkingTripPhase::PullIn;
+                trip.ready = false;
             }
         }
         self.move_lines_up(&waiting, delta, parking, allocator, network, graph);
@@ -307,8 +325,11 @@ impl AgentSystem {
     }
 
     // The lines move up: each building's trucks still waiting, in their order, to their places,
-    // at the kerb at driveway speed and on each drive-through way in at the yard speed. O(W ×
-    // (W of one building + edge points + way points)).
+    // at the kerb before the gate at driveway speed and on each drive-through way in at the yard
+    // speed. A truck at the kerb tracks its place along the gate's near lane in its
+    // `planned_detach_lane_d` (where it left the lane, then where it stands beside), from which
+    // its pull-in starts; it only ever moves forward. O(W × (W of one building + lanes on the
+    // gate's edge + edge points + way points)).
     fn move_lines_up(
         &mut self,
         waiting: &[(u64, u32, usize)],
@@ -319,9 +340,11 @@ impl AgentSystem {
         graph: &RegionGraph,
     ) {
         let mut slot = 0;
+        let mut gate = None;
         for (k, &(building, _, i)) in waiting.iter().enumerate() {
-            if k > 0 && waiting[k - 1].0 != building {
+            if k == 0 || waiting[k - 1].0 != building {
                 slot = 0;
+                gate = gate_line(building, allocator, network, graph);
             }
             if self.agents.parking_trip[i].phase != ParkingTripPhase::AtKerb {
                 continue;
@@ -329,17 +352,29 @@ impl AgentSystem {
             let at = Vector2::new(self.agents.pos_x[i], self.agents.pos_y[i]);
             let line = self.agents.parking_trip[i].destination;
             let next = if line.is_none() {
-                let place = allocator
-                    .building_handles
-                    .resolve(Handle::from_bits(building))
-                    .and_then(|index| allocator.entrances.get(index))
-                    .and_then(|door| kerb_queue_entrance(door, graph, slot));
-                slot += 1;
-                let Some(place) = place else {
+                let Some((entrance, lane, gate_d)) = gate.as_ref() else {
                     continue;
                 };
+                // One left at the door's kerb stop by an older save stays there.
+                if !self.stands_in_gate_line(i, *lane, *gate_d) {
+                    continue;
+                }
+                let place = gate_line_d(*gate_d, slot);
+                slot += 1;
                 let step = crate::config::AGENT_DRIVEWAY_SPEED_MS * delta;
-                let to = place.door_pos;
+                let d = self.agents.planned_detach_lane_d[i];
+                // Never backwards: one that left the lane past its place (two arrivals in a tick,
+                // or a truck that joined the road within the line) waits there for the line to
+                // move up to it.
+                let d = if place > d { (d + step).min(place) } else { d };
+                let Some(to) = network.lane_system.lanes.get(*lane).and_then(|lane| {
+                    let point = BuildingAllocator::sample_pos_on_lane(lane, d);
+                    kerb_stop_beside(entrance, graph, point)
+                }) else {
+                    continue;
+                };
+                self.agents.planned_detach_lane_d[i] = d;
+                let to = to.door_pos;
                 if at.distance_to(to) <= step { to } else { at + (to - at).normalized() * step }
             } else {
                 // Its place: behind the bay and each truck of its line ahead of it, and never
@@ -449,6 +484,30 @@ impl AgentSystem {
         self.queue_parking_retry(i, after_s as u16);
     }
 
+    // Whether truck `i`, waiting at the kerb, stands in the line before its building's gate,
+    // whose near lane is `lane` and lane point `gate_d` along it: it left that lane at or before
+    // the lane point (`PARK-36`). One a save from before the line moved to the gate left at the
+    // door's kerb stop past the gate, or across the road, does not. O(1).
+    fn stands_in_gate_line(&self, i: usize, lane: usize, gate_d: f32) -> bool {
+        let a = &self.agents;
+        a.planned_detach_lane_id[i] as usize == lane && a.planned_detach_lane_d[i] <= gate_d + 0.01
+    }
+
+    /// What the next tick's movement reads of the lines before the gates (`PARK-36`), kept at the
+    /// end of the commit: the trucks standing in them, by building, from this tick's queue list,
+    /// sorted. An arriving truck leaves the lane behind the last of them (`network/detach.rs`).
+    /// O(W log W), the list reused.
+    pub(super) fn keep_kerb_lines(&mut self) {
+        let mut lines = std::mem::take(&mut self.parking_work.kerb_lines);
+        lines.clear();
+        lines.extend(self.parking_work.kerb_queue.iter().filter_map(|&(building, _, j)| {
+            waits_in_kerb_line(&self.agents.parking_trip[j])
+                .then(|| (building, self.handles.handle(j)))
+        }));
+        lines.sort_unstable_by_key(|&(building, agent)| (building, agent.to_bits()));
+        self.parking_work.kerb_lines = lines;
+    }
+
     // Ends carrier `i`'s yard trip where it stands, freeing a dock it holds. O(1).
     fn leave_freight_yard(&mut self, i: usize, parking: &mut ParkingSystem) {
         let dock = self.agents.parking_trip[i].held_dock();
@@ -497,6 +556,33 @@ fn left_along(path: &[Vector2], pos: Vector2) -> f32 {
         None if path.last().is_some_and(|end| end.distance_to(pos) <= 0.05) => 0.0,
         None => f32::INFINITY,
     }
+}
+
+// The line before the freight gate of the building whose handle bits are `building` (`PARK-36`):
+// the gate's arrival entrance, its near lane (gates are reached from their own side only) and the
+// lane distance of its lane point, where a truck's plan to the gate ends. O(lanes on the gate's
+// edge + lane points).
+fn gate_line(
+    building: u64,
+    allocator: &BuildingAllocator,
+    network: &TransitNetwork,
+    graph: &RegionGraph,
+) -> Option<(BuildingEntrance, usize, f32)> {
+    let gate = allocator.freight_gate_entrance(building, graph, &network.lane_system)?;
+    let lane = same_side_car_lane(&gate);
+    let gate_d = projected_lane_distance_for_entrance(&gate, lane, network, graph)?;
+    Some((gate, lane, gate_d))
+}
+
+/// Whether `trip` is a truck standing in the line at the kerb before its building's gate, waiting
+/// for a dock (`PARK-36`): a yard trip `AtKerb` naming no dock, due in the parking phase. Every
+/// such truck is a candidate of every commit. O(1).
+pub(super) fn waits_in_kerb_line(trip: &ParkingTrip) -> bool {
+    trip.freight_gate
+        && trip.phase == ParkingTripPhase::AtKerb
+        && trip.destination.is_none()
+        && trip.ready
+        && !trip.retry_pending
 }
 
 // Whether `trip` holds `dock`.

@@ -34,6 +34,8 @@ pub(crate) use access::local_access_path;
 pub(crate) use access::{
     DROP_OFF_KERB_INSET_M, FREIGHT_KERB_INSET_M, kerb_queue_entrance, kerb_stop_entrance,
 };
+#[cfg(test)]
+pub(crate) use access::{gate_line_d, kerb_stop_beside};
 mod route_preview;
 mod runtime;
 mod schedule;

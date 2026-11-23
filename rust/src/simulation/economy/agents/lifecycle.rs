@@ -1001,12 +1001,14 @@ impl AgentSystem {
         }
     }
 
-    /// Sends truck `i`, waiting in the line at the kerb stop of building `building` (`PARK-36`),
-    /// to the building's freight gate for `dock`, which the parking phase has just granted it: it
-    /// pulls out of its place as from a dispatch at the kerb stop, drives to the gate's lane point
-    /// (round the block when the gate lies behind it or on another road) and holds the dock on the
-    /// way (`ParkingTrip::held_dock`). False, with nothing changed, when the building has no gate or
-    /// no road leads from its kerb to the gate. O(one plan).
+    /// Sends truck `i`, waiting at the kerb stop of building `building` where a save from before
+    /// the line moved to the gate left it (`PARK-36`: past the gate, or across the road), to the
+    /// building's freight gate for `dock`, which the parking phase has just granted it: it pulls
+    /// out of its place as from a dispatch at the kerb stop, drives to the gate (round the block
+    /// once at most, the gate lying behind it) and holds the dock on the way
+    /// (`ParkingTrip::held_dock`). A truck in the line before the gate needs no plan: it pulls
+    /// forward into the gate. False, with nothing changed, when the building has no gate or no
+    /// road leads from its kerb to the gate. O(one plan).
     pub(crate) fn drive_from_kerb_to_gate(
         &mut self,
         i: usize,
@@ -1044,58 +1046,9 @@ impl AgentSystem {
         true
     }
 
-    /// Sends truck `i`, standing at the lane point of building `building`'s freight gate with
-    /// every dock held (`PARK-36`), on to place `slot` of the line at the building's kerb stop
-    /// ([`super::tick::kerb_queue_entrance`]): it joins the lane from where it stands and leaves it
-    /// again beside its place, round the block when the place lies behind the gate or on another
-    /// road. Its place in the queue, its `journey_start_time`, is kept. False, with nothing
-    /// changed, when no road leads there. O(one plan).
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn drive_from_gate_to_kerb(
-        &mut self,
-        i: usize,
-        building: usize,
-        slot: usize,
-        allocator: &BuildingAllocator,
-        transit_network: &TransitNetwork,
-        graph: &RegionGraph,
-    ) -> bool {
-        let Some((handle, gate)) =
-            allocator.freight_gate_arrival(building, graph, &transit_network.lane_system)
-        else {
-            return false;
-        };
-        let Some(plan) = allocator
-            .entrances
-            .get(building)
-            .and_then(|door| super::tick::kerb_queue_entrance(door, graph, slot))
-            .and_then(|place| {
-                plan_car_trip_between_entrances(
-                    &gate,
-                    building,
-                    2,
-                    &place,
-                    transit_network,
-                    graph,
-                    &self.pathfind_count,
-                )
-            })
-        else {
-            return false;
-        };
-        self.apply_freight_plan_where_it_stands(i, building, plan, allocator, graph);
-        self.agents.parking_trip[i] = ParkingTrip {
-            target: handle,
-            phase: ParkingTripPhase::ToKerb,
-            freight_gate: true,
-            ..ParkingTrip::default()
-        };
-        true
-    }
-
-    // `plan` out of building `building` for truck `i`, which leaves from where it stands (a
-    // place in the line at the kerb stop, or the gate's lane point) rather than the kerb stop,
-    // its journey clock, the queue's stamp, kept (`PARK-36`). O(1) beyond the plan.
+    // `plan` out of building `building` for truck `i`, which leaves from where it stands, a place
+    // in the line at the kerb stop, rather than the kerb stop, its journey clock, the queue's
+    // stamp, kept (`PARK-36`). O(1) beyond the plan.
     fn apply_freight_plan_where_it_stands(
         &mut self,
         i: usize,
