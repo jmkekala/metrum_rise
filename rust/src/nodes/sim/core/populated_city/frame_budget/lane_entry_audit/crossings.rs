@@ -54,6 +54,8 @@ pub(super) struct CrossingBook {
     rows: Vec<Row>,
     classes: [Class; 2],
     give_ups: u64,
+    // Cars that gave up waiting at their mouth and left on the near lane.
+    leave_give_ups: u64,
     enter_waits: Vec<f32>,
     leave_waits: Vec<f32>,
     last_time: Option<f32>,
@@ -185,6 +187,11 @@ impl CrossingBook {
                 {
                     trace_long_leave(core, i, wait);
                 }
+                // Only a give-up empties the wait without a crossing.
+                if !crossing && row.wait > 0.0 && wait == 0.0 && row.transit == TRANSIT_ACCESS_EGRESS {
+                    self.leave_give_ups += 1;
+                    self.leave_waits.push(row.wait);
+                }
                 if crossing && !row.left_across {
                     row.left_across = true;
                     if row.wait > 0.0 {
@@ -264,6 +271,7 @@ impl CrossingBook {
             serde_json::json!({
                 "day": core.time.day_index, "classes": classes,
                 "give_ups": std::mem::take(&mut self.give_ups),
+                "leave_give_ups": std::mem::take(&mut self.leave_give_ups),
                 "enter_waits": waits(&mut self.enter_waits),
                 "leave_waits": waits(&mut self.leave_waits),
             })
