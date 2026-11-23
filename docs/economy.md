@@ -2266,7 +2266,9 @@ deferred.
     since `PARK-02`), or houses with under 2% of its homes to spare, so that the city cannot grow
     (`PARK-02`: 10,000 residents), is built one block wider;
   - zoning in eight-row repeats of six residential, one commercial and one industrial row;
-  - every lot built through the demand spawn executor;
+  - every lot built through the demand spawn executor, without economic proofs except the store
+    size rule: a smaller store only for the demand of the requested residents that the larger
+    stores leave ([store sizes](demand.md#store-sizes-econ-32), `ECON-32`);
   - households admitted through demand admission, with carriers placed at home;
   - one `OWA` trunk (a 1 + 1 row street continued to the world edge) per 5,000 residents since
     `TRAFFIC-38` (per 10,000 before), and an effectively unlimited treasury;

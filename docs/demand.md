@@ -491,6 +491,38 @@ records equal `dev`'s.
   2,329) and household supply sales fall from 777,000 to 638,000 a day: a fixture effect of
   building every leftover cell without proofs, which the planner would not do.
 
+**The prepared test cities apply the rule** (follow-up, 2026-11-24). The populated cities
+(10,000, 30,000 and fiscal stress, `PopulatedCity::build`) fill every lot with its preferred
+asset before any household lives there, so at placement the setup has no census and no unmet
+demand; what it has is the population it will admit, `residents`. Its stand-in for the demand is
+that population times the households' consumption rates (the planner's own
+`demand_sink_rates_by_resource`; household supplies 1 kg a resident a day), with no business
+input need. Each fill round keeps the stores of the largest size of their good and counts them
+first, as the fixture always placed them (no proof, so a pack with one store per good fills as
+before); then each smaller size in turn, a store kept only where `StoreSizes::defers`, the
+live rule, lets it open against that demand less the stores counted so far
+(`StoreSizes::retain_filled_spawns`, `retain_setup_store_spawns`). A refused lot stays empty,
+as the planner would leave a lot only a refused kiosk fits. The street-grid cities without
+admission (`zoned_city`) pass 0 residents and place no smaller store. With one store size per
+good the rule returns before touching the round, so without a kiosk asset the cities are the
+ones `dev` built: the `SIM-02` envelope and determinism records equal `dev` `59c8b0494`'s.
+Measured with the synthetic kiosk (release `$TEST_BINARY`, `kiosk_mix`, four days after the
+build; against the same binary without the kiosk asset):
+
+- 10,000: 301 groceries (290 without the kiosk; the kiosk's footprint cuts the rows into other
+  lots) and no kiosk (363 before the rule), the one-cell lots only a kiosk fits left empty
+  (8,169 buildings with or without the kiosk asset); grocery workers
+  855 (858), every funded job filled (`net_open_jobs` 0 both), household supply sales on the
+  fourth day 284,000 (292,000) and 283,000 (281,000) on the third.
+- 30,000: 877 groceries (877) and no kiosk (945 before), grocery workers 2,349 (2,330), every
+  funded job filled (before the rule: 792 open, groceries short-staffed at 2,056), sales on the
+  fourth day 788,000 (773,000; 636,000 before the rule).
+- The one-cell row filled for 90 residents (`one_cell_lots_take_kiosks`): 4 kiosks, as the rule
+  allows below a grocery's fill.
+
+The fill costs one asset scan and one count of the city's stores per round when a good has
+several sizes (setup only); a pack with one size per good pays the asset scan.
+
 Cost: the city's stores by profile are counted in one parallel pass over the buildings per
 commercial, industrial and actions planning slot, and only when a good has more than one store
 size (`StoreSizes::count_stores`, O(B/p) plus the active queue); each store proof adds O(sizes).
