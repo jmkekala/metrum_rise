@@ -58,7 +58,7 @@ fn write_the_crossing_still_saves() {
     .map(|&(x, z)| c.place_service_building_internal(&id, x, z).unwrap())
     .collect();
     c.publish_pending_building_site_changes();
-    let mut commuters = |c: &mut SimCore, home: usize, work: usize, count: usize| {
+    let commuters = |c: &mut SimCore, home: usize, work: usize, count: usize| {
         (0..count)
             .filter_map(|_| {
                 let agent = c.debug_add_parking_commuter(home, work)?;
