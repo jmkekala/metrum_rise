@@ -686,13 +686,15 @@ impl SimCore {
         }
         let (flags, ids) = (&snapshot.car_ground_flags, &snapshot.car_render_ids);
         let camera = self.render_camera_position;
-        entries[..count]
-            .par_iter_mut()
-            .with_max_len(1)
-            .flatten()
-            .for_each(|(key, buffer, bucket)| {
-                self.ground_bucket(*key, buffer, &flags[key], &ids[key], bucket, camera)
-            });
+        crate::thread_pools::install(|| {
+            entries[..count]
+                .par_iter_mut()
+                .with_max_len(1)
+                .flatten()
+                .for_each(|(key, buffer, bucket)| {
+                    self.ground_bucket(*key, buffer, &flags[key], &ids[key], bucket, camera)
+                })
+        });
     }
 
     /// The off-lane cars the last snapshot drew, and how many of them it solved afresh rather
