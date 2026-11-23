@@ -100,8 +100,9 @@ fn a_drive_through_truck_faces_its_travel_and_leaves_by_the_exit() {
     let out = way_out(&core, home);
     let taken = drive_facing_travel(&mut core, carrier, PullOut, home);
     let joined = taken[taken.len() - 2];
+    // Along the road (along x): a far-side exit crosses the near lane to its lane (`PARK-32`).
     assert!(
-        joined.distance_to(out[out.len() - 1]) < 6.0,
+        (joined.x - out[out.len() - 1].x).abs() < 6.0,
         "it left by its exit: {joined:?}, {out:?}"
     );
     assert!(
@@ -124,7 +125,7 @@ fn a_drive_through_truck_faces_its_travel_and_leaves_by_the_exit() {
     let taken = drive_facing_travel(&mut core, carrier, PullOut, dock);
     let joined = taken[taken.len() - 2];
     assert!(
-        joined.distance_to(out[out.len() - 1]) < 6.0,
+        (joined.x - out[out.len() - 1].x).abs() < 6.0,
         "it left by its exit: {joined:?}"
     );
     // Every point it took lies on its way out or the last leg to the lane.
@@ -292,8 +293,9 @@ fn an_edit_under_a_drive_through_truck_keeps_its_way_for_it() {
             }
             let taken = drive_facing_travel(&mut core, carrier, PullOut, dock);
             let joined = taken[taken.len() - 2];
+            // Along the road: a far-side exit crosses the near lane first (`PARK-32`).
             assert!(
-                joined.distance_to(out[out.len() - 1]) < 6.0,
+                (joined.x - out[out.len() - 1].x).abs() < 6.0,
                 "{label}: left by its old exit at {joined:?}"
             );
             assert!(

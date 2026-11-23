@@ -18,7 +18,8 @@ use crate::simulation::economy::logistics::{
 };
 use crate::simulation::parking::{Bay, ParkingSystem, ParkingTrip, ParkingTripPhase};
 
-// The source's and the yard's centres on the road's south side.
+// The source's and the yard's centres on the road's side -1, beyond that side's kerb (+z), facing
+// the road: their yards lie behind the kerb, away from the lanes.
 const SOURCE_X: f32 = 45.0;
 const YARD_X: f32 = 300.0;
 // A gate's road connection: 20 m east of its building's door, so the gate's lane point and the
@@ -61,7 +62,7 @@ fn yard_with_gate(source_docks: u32, docks: u32, gate_offset: f32) -> Yard {
     ] {
         let mut b = create_test_building(0, -1);
         b.center_x = x;
-        b.center_y = -12.0;
+        b.center_y = 12.0;
         b.facing_dir = Vector2::new(0.0, -1.0);
         b.asset_id = asset;
         b.zone_type = zone;
@@ -108,14 +109,14 @@ fn publish_docks(
     let rows: Vec<_> = (0..docks)
         .map(|anchor| {
             let x = gate_x + 4.0 * anchor as f32;
-            let stop = kerb - 20.0;
+            let stop = kerb + 20.0;
             let bay = Bay {
                 identity: [handle, u64::from(anchor)],
                 position: [x, 0.0, stop],
                 path: [
                     [gate_x, kerb],
-                    [gate_x, kerb - 4.25],
-                    [x, stop + 6.0],
+                    [gate_x, kerb + 4.25],
+                    [x, stop - 6.0],
                     [x, stop],
                 ],
                 heading: 0.0,
@@ -712,7 +713,7 @@ fn pull_out(yard: &mut Yard, i: usize, dock: crate::simulation::core::handles::H
         // Straight back up the route (every route here is straight at the gate's x) and on to
         // the lane point, never faster than the yard speed.
         assert!(at.distance_to(last) <= 0.1 * crate::config::FREIGHT_YARD_SPEED_MS + 1e-4);
-        assert!(at.y >= last.y - 1e-4, "it moves towards the street: {last:?} -> {at:?}");
+        assert!(at.y <= last.y + 1e-4, "it moves towards the street: {last:?} -> {at:?}");
         assert!((at.x - route[0][0]).abs() < 0.5, "off the route at {at:?}");
         last = at;
     }

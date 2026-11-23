@@ -7,7 +7,7 @@
 
 use super::support::*;
 use super::*;
-use crate::simulation::economy::agents::tick::CROSSING_GIVE_UP_S;
+use crate::simulation::economy::agents::tick::{CROSSING_GAVE_UP, CROSSING_GIVE_UP_S};
 
 struct Street {
     agents: AgentSystem,
@@ -184,15 +184,17 @@ fn far_side_crossing_gives_up_and_comes_back_on_the_near_side() {
     let a = &s.agents;
     assert_eq!(a.transit[car], TRANSIT_NETWORK);
     assert_eq!(a.current_lane_id[car], s.eastbound);
-    assert_eq!(a.crossing_wait_s[car], 0.0);
+    assert_eq!(a.crossing_wait_s[car], CROSSING_GAVE_UP, "marked as given up for this leg");
     assert_eq!(
         a.planned_detach_lane_id[car] as usize, s.westbound,
         "the new plan reaches the door from its own side"
     );
     let mut came_back = false;
-    for _ in 0..2_400 {
+    for tick in 0..2_400 {
         s.tick();
         let a = &s.agents;
+        // Its lane is free at once: it drives on from the next tick.
+        assert!(tick > 0 || a.speed[car] > 0.0, "it still stands in its lane");
         came_back |= a.current_lane_id[car] == s.westbound;
         assert!(a.crossing_lane[car] == u32::MAX, "it crossed after giving up");
         if a.transit[car] == TRANSIT_IN_BUILDING {
@@ -201,4 +203,19 @@ fn far_side_crossing_gives_up_and_comes_back_on_the_near_side() {
         }
     }
     panic!("the car never arrived after giving up");
+}
+
+// A car that gave up a crossing on its leg and is brought back to the far side by a later plan
+// gives up at once, with no gap to wait for and an empty road: it never waits to cross twice.
+#[test]
+fn a_car_that_gave_up_never_waits_to_cross_again_on_its_leg() {
+    let mut s = street();
+    let car = s.shopper(s.east_d - 2.0);
+    s.agents.crossing_wait_s[car] = CROSSING_GAVE_UP;
+    s.tick();
+    let a = &s.agents;
+    assert_eq!(a.transit[car], TRANSIT_NETWORK, "it crossed though it had given up");
+    assert_eq!(a.current_lane_id[car], s.eastbound);
+    assert_eq!(a.planned_detach_lane_id[car] as usize, s.westbound);
+    assert_eq!(a.crossing_wait_s[car], CROSSING_GAVE_UP);
 }

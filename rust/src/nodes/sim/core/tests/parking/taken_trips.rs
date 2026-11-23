@@ -242,15 +242,24 @@ fn a_driver_whose_job_ends_on_the_way_drives_home_and_parks() {
     assert!(t.c.parking.available_to(t.car(), t.c.agents.agent_handle(agent)));
 }
 
-// Saved in the frames where the car stands at its lane end asking for its recovery, and again on
-// its way home.
+// Saved in the frame where the car, at its lane end, has just turned for home, and again on its
+// way home. Its home lot is reached across the road (`PARK-32`), so the recovery the car asks for
+// at its lane end plans in that same tick; before, the same-side lot was out of reach from there
+// and the car stood at the lane end waiting for a retry (a wait on a retry across a save is
+// `a_car_with_no_bay_left_waits_on_its_lane_and_loads_as_it_stands`).
 #[test]
 fn a_driver_turning_for_home_continues_exactly_across_a_save() {
     let mut t = Commute::new();
     t.on_the_road();
     t.end_job();
-    t.tick_until("reached its lane end", |c, i| c.agents.parking_trip[i].ready);
-    assert_ne!(t.c.agents.current_lane_id[t.agent], usize::MAX);
+    t.tick_until("turned at its lane end", |c, i| {
+        c.agents.target_building[i] == c.agents.home_building[i]
+    });
+    let (a, i) = (&t.c.agents, t.agent);
+    let lane = a.current_lane_id[i];
+    assert_ne!(lane, usize::MAX);
+    let length = t.c.transit_network.lane_system.lanes[lane].length;
+    assert!((a.lane_distance[i] - length).abs() < 1e-3, "it turned at its lane end");
     t.continues_exactly_across_a_save("taken-trip-at-lane-end", 300);
     let home = t.home;
     t.turned_for(home);

@@ -14,14 +14,15 @@ const EXIT_X: f32 = GATE_X + EXIT_OFFSET;
 
 // Building `building`'s one drive-through dock, its access and its gate record, as the site
 // reconcile makes them (`SimCore::publish_docks`, `rebuild_freight_gate`): in at the gate 20 m
-// east of the door, 20 m south to the stop, on 8 m, round a U of 45° chords and north to the
+// east of the door, 20 m into the yard to the stop, on 8 m, round a U of 45° chords and back to the
 // exit 16 m east of the gate. Returns the way.
 fn publish_drive_through(yard: &mut Yard, building: usize) -> DockWay {
     publish_drive_through_deep(yard, building, 20.0)
 }
 
-// [`publish_drive_through`] with the stop `depth` metres south of the gate (more than 14): its way
-// in holds `floor((depth - 4) / 9)` trucks waiting behind the bay (`PARK-36`), one for 20 m.
+// [`publish_drive_through`] with the stop `depth` metres into the yard from the gate (more than
+// 14): its way in holds `floor((depth - 4) / 9)` trucks waiting behind the bay (`PARK-36`), one
+// for 20 m.
 fn publish_drive_through_deep(yard: &mut Yard, building: usize, depth: f32) -> DockWay {
     let handle = yard.allocator.building_handles.handle(building).to_bits();
     let entrance = yard.allocator.entrances[building].clone();
@@ -29,14 +30,14 @@ fn publish_drive_through_deep(yard: &mut Yard, building: usize, depth: f32) -> D
     let g = yard.allocator.buildings[building].center_x + GATE_OFFSET;
     let e = g + EXIT_OFFSET;
     let d = depth;
-    let route_in = [[g, k], [g, k - 4.25], [g, k - 14.0], [g, k - d]];
+    let route_in = [[g, k], [g, k + 4.25], [g, k + 14.0], [g, k + d]];
     let route_out = [
-        [g, k - d],
-        [g, k - d - 8.0],
-        [g + 4.0, k - d - 12.0],
-        [g + 12.0, k - d - 12.0],
-        [e, k - d - 8.0],
-        [e, k - 4.25],
+        [g, k + d],
+        [g, k + d + 8.0],
+        [g + 4.0, k + d + 12.0],
+        [g + 12.0, k + d + 12.0],
+        [e, k + d + 8.0],
+        [e, k + 4.25],
         [e, k],
     ];
     let way = DockWay {
@@ -45,7 +46,7 @@ fn publish_drive_through_deep(yard: &mut Yard, building: usize, depth: f32) -> D
     };
     let bay = Bay {
         identity: [handle, 0],
-        position: [g, 0.0, k - d],
+        position: [g, 0.0, k + d],
         path: route_in,
         heading: 0.0,
         width: 3.5,

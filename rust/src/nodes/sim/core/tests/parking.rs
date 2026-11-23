@@ -925,6 +925,70 @@ fn parking_place_access_follows_a_full_lane_renumbering() {
     }
 }
 
+// A lot on either side of a one-way road is reached by its one lane (`PARK-32`): the lane serves
+// both kerbs, so nothing is crossed. Before, every lot was same-side only and the lot left of the
+// lane had no car access at all.
+#[test]
+fn a_lot_on_either_side_of_a_one_way_road_has_car_access() {
+    use crate::simulation::core::handles::Handle;
+    use crate::simulation::parking::PlaceSource;
+    let mut c = SimCore::new(
+        WorldConfig::new(512.0, 512.0, 16.0, 10.0)
+            .with_chunking(128.0, 0.0)
+            .with_terrain_resolution(2.0),
+    );
+    c.treasury.balance = 1_000_000.0;
+    c.precompute_road_mesh_data();
+    c.allocator
+        .prepare_building_site_query_index(c.config.zone_cell_m);
+    let outcome = c.commit_road(
+        RoadCommitRequest {
+            points: vec![Vector3::new(-120.0, 0.0, 0.0), Vector3::new(120.0, 0.0, 0.0)],
+            fwd_lanes: 1,
+            bkw_lanes: 0,
+            snap_to_existing_roads: true,
+            preview: None,
+            profile: crate::simulation::network::road_edit::RoadProfile::FollowGround,
+            median: None,
+            parking: crate::simulation::network::graph::RoadParking::NONE,
+            attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
+        },
+        Instant::now(),
+        RoadEditMetrics::default(),
+    );
+    assert!(outcome.committed, "{}", outcome.rejection);
+    c.adopt_pending_cell_lots();
+    c.transit_network.settle_cch();
+    c.publish_deferred_parking_frontages();
+    let id = register_lot(&mut c);
+    let north = c.place_service_building_internal(&id, 0.0, -30.0).unwrap();
+    let south = c.place_service_building_internal(&id, 0.0, 30.0).unwrap();
+    c.publish_pending_building_site_changes();
+    assert_ne!(
+        c.allocator.entrances[north].side, c.allocator.entrances[south].side,
+        "one lot each side"
+    );
+    for building in [north, south] {
+        let owner = c.allocator.building_handles.handle(building).to_bits();
+        let places: Vec<_> = (2..8)
+            .flat_map(|anchor| c.parking.source_bays(PlaceSource::Building { building: owner, anchor }))
+            .map(|(bits, _)| Handle::from_bits(bits))
+            .collect();
+        assert!(!places.is_empty(), "building {building} publishes its bays");
+        for place in places {
+            let entrance = c
+                .parking
+                .place_entrance(place, &c.allocator, &c.transit_network, &c.region_graph)
+                .expect("an access");
+            assert!(
+                entrance.car_lane_fwd != usize::MAX,
+                "side {}: the one lane reaches the lot",
+                entrance.side
+            );
+        }
+    }
+}
+
 #[test]
 fn parking_lot_on_a_diagonal_road_accepts_every_bay() {
     // Off-axis seams between the yard and the road surface leave float slivers, and the
