@@ -90,9 +90,26 @@ def check_limits(rows, require_churn=False, workload=None):
                 return row["counts"]["cch_point_searches"] + row["counts"]["cch_bucket_sources"]
             return row["counts"][name]
         low, high = count(small), count(large)
+        if name == "job_search_keys":
+            # Per search batch (`PERF-32`): how many of the day's job-queue slots meet an open
+            # job is the economy's outcome (one or two hours of them in the fiscal cities),
+            # not the search's scaling. A city with keys and no batch reads as new work.
+            low, high = (keys_per_search_batch(row) for row in (small, large))
+            if high > ratio * low:
+                failures.append(f"{name} per search batch: {low:.2f} -> {high:.2f}, "
+                                f"limit {ratio:.4f}x")
+            continue
         if high > ratio * low:
             failures.append(f"{name}: {low} -> {high}, limit {ratio:.4f}x")
     return labeled(failures)
+
+
+def keys_per_search_batch(row):
+    """Household job-search keys per search batch: a job-queue slot whose searches ran against
+    an open job board, counted as the calls of the `workplace_queries` phase."""
+    batches = row.get("phases", {}).get("workplace_queries", {}).get("calls", 0)
+    keys = row["counts"]["job_search_keys"]
+    return keys / batches if batches else float(keys)
 
 
 def check_fiscal_coverage(rows):

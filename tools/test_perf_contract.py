@@ -71,6 +71,19 @@ class ContractTests(unittest.TestCase):
         rows[1]["counts"]["reservation_rows_copied"] = 0
         self.assertEqual(check_limits(rows), [])
 
+    def test_job_search_keys_are_bounded_per_search_batch(self):
+        # PERF-32: the fiscal 10k city met an open job in one hour of the day, the 30k city in two.
+        rows = self.fiscal_rows()
+        for row, keys, batches in ((rows[0], 7718, 948), (rows[1], 41314, 1892)):
+            row["counts"]["job_search_keys"] = keys
+            row["phases"] = {"workplace_queries": {"calls": batches}}
+        self.assertEqual(check_limits(rows), [])
+        rows[1]["phases"]["workplace_queries"]["calls"] = 948
+        self.assertIn("job_search_keys per search batch", " ".join(check_limits(rows)))
+        rows[0]["counts"]["job_search_keys"] = 0
+        rows[0]["phases"] = {}
+        self.assertTrue(check_limits(rows))
+
     def test_missing_tier_is_failure(self):
         self.assertTrue(check_limits(self.rows()[:1]))
 
