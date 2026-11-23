@@ -867,8 +867,9 @@ fn truck_on_the_road() -> (SimCore, u64, usize) {
 
 // Save and reload at every phase of a yard trip (`PARK-20`): the live city and the loaded one
 // continue tick for tick alike. On the road to the gate, pulling in, standing (`AtDock`, here
-// through 100 ticks), sent on from the gate to the kerb stop with the dock held by another and
-// queued there (`PARK-36`), and backing
+// through 100 ticks), refused at the end of the line before the gate with the dock held by
+// another and pulling over to its place at the kerb there, and queued there (`PARK-36`), and
+// backing
 // out (`a_truck_backing_out_of_a_dock_round_trips_a_save`, `a_truck_spawned_in_a_dock_round_trips_a_save`).
 #[test]
 fn a_truck_round_trips_a_save_at_every_phase_of_its_yard_trip() {
@@ -896,15 +897,60 @@ fn a_truck_round_trips_a_save_at_every_phase_of_its_yard_trip() {
         panic!("a yard sent it");
     };
     let second = dispatch_shipment(&mut core, 1, source);
-    tick_truck_until(&mut core, second, |core, i| phase_of(core, i) == ParkingTripPhase::ToKerb);
-    let live = save_and_continue(&mut core, "truck_to_kerb", 200, 1, |_| {});
-    assert!(live[0].3.contains("ToKerb"), "{:?}", live[0]);
-    assert!(live.iter().all(|t| t.2 != crate::simulation::economy::agents::TRANSIT_IN_BUILDING));
-
-    // Queued for the dock at the kerb stop (`PARK-36`): it waits there, saved and loaded alike.
     tick_truck_until(&mut core, second, |core, i| phase_of(core, i) == ParkingTripPhase::AtKerb);
+    let left_lane_at = (core.agents.pos_x[second].to_bits(), core.agents.pos_y[second].to_bits());
+    let live = save_and_continue(&mut core, "truck_into_line", 200, 1, |_| {});
+    assert_ne!((live[199].0, live[199].1), left_lane_at, "it pulls over");
+    assert!(live.iter().all(|t| {
+        t.2 != crate::simulation::economy::agents::TRANSIT_IN_BUILDING && t.3.contains("AtKerb")
+    }));
+
+    // Queued for the dock at the kerb before the gate (`PARK-36`): it waits there, saved and
+    // loaded alike.
     let live = save_and_continue(&mut core, "truck_queued_at_kerb", 100, 1, |_| {});
     assert!(live.iter().all(|t| t == &live[0] && t.3.contains("AtKerb")), "it waits");
+}
+
+// A truck a save from before the line moved to the gate (`PARK-36`) left waiting at the kerb past
+// the gate (the door's kerb stop lay there) is served after the load: it stays where it stands
+// while it waits and, granted the dock, drives to the gate as it was planned then (round the
+// block once at most); the loaded city continues as the live one.
+#[test]
+fn an_older_save_with_a_truck_waiting_past_the_gate_is_served() {
+    use crate::simulation::buildings::allocator::BuildingAllocator;
+    use crate::simulation::parking::ParkingTripPhase;
+    let (mut core, building, _) = truck_at_dock();
+    let crate::simulation::economy::logistics::ShipmentEndpoint::Building(source) =
+        core.logistics.shipments[0].source
+    else {
+        panic!("a yard sent it");
+    };
+    let second = dispatch_shipment(&mut core, 1, source);
+    tick_truck_until(&mut core, second, |core, i| phase_of(core, i) == ParkingTripPhase::AtKerb);
+    // The older layout: at the kerb 15 m past the gate's lane point, its lane point beside it.
+    let gate = core
+        .allocator
+        .freight_gate_entrance(building, &core.region_graph, &core.transit_network.lane_system)
+        .unwrap();
+    let lane = &core.transit_network.lane_system.lanes[core.agents.planned_detach_lane_id[second] as usize];
+    let length = core.region_graph.edge(gate.edge_idx).physical_length;
+    let gate_point =
+        BuildingAllocator::sample_pos_on_edge(&core.region_graph, gate.edge_idx, gate.entrance_s_m / length);
+    let gate_d = BuildingAllocator::project_point_to_polyline_s(&lane.geometry, gate_point);
+    let old_d = gate_d + 15.0;
+    assert!(old_d < lane.length - 4.0, "{gate_d} of {}", lane.length);
+    let point = BuildingAllocator::sample_pos_on_lane(lane, old_d);
+    let stop = crate::simulation::economy::agents::tick::kerb_stop_beside(&gate, &core.region_graph, point)
+        .unwrap()
+        .door_pos;
+    let a = &mut core.agents;
+    (a.pos_x[second], a.pos_y[second]) = (stop.x, stop.y);
+    a.planned_detach_lane_d[second] = old_d;
+    assert!(check_truck(&mut core), "the first turns back");
+    let live = save_and_continue(&mut core, "truck_waiting_past_gate", 3_000, 1, |_| {});
+    let waited = live.iter().take_while(|t| t.3.contains("AtKerb")).count();
+    assert!(waited > 0 && live[..waited].iter().all(|t| (t.0, t.1) == (live[0].0, live[0].1)), "it stays");
+    assert!(live.iter().any(|t| t.3.contains("AtDock")), "it is served: {:?}", live.last());
 }
 
 // The yard asset with its lane declared or not (without it the dock stops proving) and its

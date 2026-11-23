@@ -576,12 +576,13 @@ fn trucks_wait_on_the_way_in_in_arrival_order_and_the_kerb_takes_the_rest() {
         assert!(crate::simulation::economy::agents::transit_is_visible(a.transit[i]));
         assert!(at(&yard, i).distance_to(way_in_place(&way, k + 1)) < 1e-3);
     }
-    // The way in is full: the fifth goes on to the kerb stop and waits there.
+    // The way in is full: the fifth waits in the line at the kerb before the gate (`PARK-36`).
     let fifth = yard.dispatch(4);
-    yard.tick_until(|y| y.phase(fifth) == ParkingTripPhase::ToKerb);
-    yard.tick_until(|y| y.phase(fifth) == ParkingTripPhase::AtKerb);
+    yard.tick_until(|y| {
+        y.phase(fifth) == ParkingTripPhase::AtKerb
+            && at(y, fifth).distance_to(line_place(y, 1, 0)) < 0.05
+    });
     assert!(yard.agents.agents.parking_trip[fifth].destination.is_none());
-    assert!(at(&yard, fifth).distance_to(kerb_stop(&yard, 1)) < 0.05);
     // The first delivers and leaves by the exit; the dock goes to each in turn.
     let first = carrier(&yard, 0);
     let mut order = Vec::new();
