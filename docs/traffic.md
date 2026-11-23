@@ -2708,8 +2708,12 @@ from before (both sides of any road without a raised median) and is crossed to b
 where it holds, untested as before elsewhere. Entering, it waits in its lane at
 the detach point for a gap in the crossed lane (followers queue behind it) and gives up after 30 s
 to come back on the near side; leaving, it waits at the access mouth off the road for a gap in the
-crossed lane and its target lane. While it crosses it holds an entry in the crossed lane's bucket,
-so lane traffic and every other crossing see it. Routing prices the far side by the straight
+crossed lane and its target lane, a gap measured at the speed of the body behind it, so a car can
+join a standing or crawling queue where someone leaves room. While it crosses it holds an entry in
+the crossed lane's bucket, so lane traffic and every other crossing see it. Vehicles leaving
+through one mouth wait one behind another on their way out, a body and 1 m apart, one at a time at
+the mouth, and a parked one leaves its place only with room behind the line (the leaving line,
+which also ends `dev`'s stack of same-side exits held on one lane point). Routing prices the far side by the straight
 crossover plus 5 s. Rule, gap test, claim, bounds and save:
 [`entrance_and_exit.md`](entrance_and_exit.md#lanes-to-cross-park-32-as-built).
 

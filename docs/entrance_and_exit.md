@@ -164,13 +164,18 @@ arrival ticks move.
    last point but one, off the road, and stays there until the crossed lane and its target lane
    both pass `crossing_clear` and it claims both; then it crosses and attaches as before. Its
    wait counts in `crossing_wait_s` too. It has no give-up: it holds no lane, and a same-side exit
-   would wait for the same lane.
+   would wait for the same lane. The vehicles behind it wait in the leaving line (below).
 6. **The gap test** (`crossing_gap_clear`): the slot (`lane_attach_slot_clear`, both half
-   lengths and `IDM_S_MIN`) at the crossing's distance, and no body upstream, in the lane's own
-   direction, within a further `speed limit x crossing time`, the crossing time being two lane
-   widths and the body's length at driveway speed (car 2.3 s, truck 3.0 s: 32 m and 42 m at
-   50 km/h). A body ahead needs only the slot. Speeds are not read (the speed pass writes them),
-   so a body standing within the margin upstream blocks too. Only the tick's lane buckets.
+   lengths and `IDM_S_MIN`) at the crossing's distance, and the nearest body upstream, in the
+   lane's own direction, at least a further `speed x crossing time` away, the crossing time being
+   two lane widths and the body's length at driveway speed (car 2.3 s, truck 3.0 s: 32 m and 42 m
+   at 50 km/h). A body ahead needs only the slot. Leaving, the speed is that body's own: a car
+   egress runs in the movement pass's serial part (`MovementClaimMode::Dynamic`), after every
+   lane car's speed is written, so a standing or crawling queue that leaves the slot free lets
+   a car in, as a driver joins a queue where someone leaves room, and a body standing at the
+   slot never does. Entering, the test runs in the parallel part, where those speeds are being
+   written, so it takes the lane's speed limit and a body standing within that margin blocks.
+   Only the tick's lane buckets.
 7. **The claim.** While it crosses (entering: from the detach until the hop's second point, the
    near kerb; leaving: from the mouth until it attaches) the vehicle holds an entry in the
    crossed lane's bucket at the crossing's distance: `Agent::crossing_lane`, with the distance in
@@ -190,21 +195,48 @@ arrival ticks move.
    side (`turn_for_near_line`, `parking/yard.rs`), drives round and joins the line there in the
    order it reaches it. Owner's choice left open: a line on the far side, at the kerb upstream of
    the point opposite the gate, in one arrival order with the near line, crossing when granted.
-9. **Drawn.** The gate turn (`PARK-31`) arcs toward the access's side per car (`gate_hand`: a
+9. **The leaving line** (`parking/exit_line.rs`, round 3, from the owner's stills: "when the
+   cars leave from the parking lot they overlap each other while they wait for their turn"). One
+   vehicle at a time stands at an access mouth. Every vehicle pulling out through one mouth (a
+   lot's or driveway's places, a kerbside place, the docks behind a yard gate: the mouth is the
+   gate's road connection, one point for all of them), and a resident's car held at its lane
+   point after its pull-out (`hold_for_lane_attach!`, a same-side exit whose slot was busy), is
+   in that mouth's line, measured by its distance along its own way to the mouth (negative past
+   it). In the order they stand, each holds short of the one ahead by half of each body and 1 m
+   (a car 5.5 m, a truck 9 m), along its own way: the egress step clamps its move to that hold
+   and never moves it back. A vehicle still at its place leaves it only when the last one under
+   way is that far ahead of it, along the way and in a straight line (beside the places two ways
+   run side by side), and only the first of the mouth's parked ones in the order they asked to
+   leave (`journey_start_time`, then agent handle); meanwhile it stays in its place, drawn there
+   as parked, and its trip clock still runs from when it asked. So a place whose way out is
+   shorter than a body and 1 m (a short driveway) keeps its car while another waits at the
+   mouth. This also ends `dev`'s same-side overlap: there a lot car whose attach slot was busy
+   waited held at the lane point, in no bucket, and every further car of the lot was held on
+   the same point. Entering vehicles are never in a line and never read one: a car or truck
+   pulling in passes a waiting line, drawn through it where its way in shares the line's aisle,
+   and nothing waits on anything, so no deadlock. The line is scratch, nothing saved: its members are kept from the parking commits
+   and the dock starts that begin pull-outs, checked against their rows before each movement
+   pass, and found by the rows' scan on a load or undo; the holds are a function of the rows, so
+   a save mid-line continues exactly. Not in a line: a drop-off leaving its kerb stop (no
+   place), and a truck held at a lane point after its pull-out (its trip forgets the dock), so a
+   following truck can reach that lane point (a truck's slot is rarely busy there). Cost: O(L
+   log L + L x way points) a tick for the L vehicles in lines, before the movement pass, and
+   O(log L) for each pulling-out vehicle's lookup; no allocation past the largest tick.
+10. **Drawn.** The gate turn (`PARK-31`) arcs toward the access's side per car (`gate_hand`: a
    car's place kerb, a truck's door, against the lane's travel) instead of the constant
    `LOT_HAND`; a truck already on its lane keeps no record of where it came from and arcs as from
    the right.
-10. **Save.** `crossing_lane` and `crossing_wait_s` are saved in `agent_crossings`, one row per
+11. **Save.** `crossing_lane` and `crossing_wait_s` are saved in `agent_crossings`, one row per
     vehicle crossing or waiting to; format 130. Format 129 loads with none (nobody crossed).
-11. **Cost.** The crossing test runs only for a car at a detach point or one stepping past a
+12. **Cost.** The crossing test runs only for a car at a detach point or one stepping past a
     mouth: O(lanes on the edge) to count the lanes crossed, and where one is crossed O(lanes on
     the edge × their points) for the clearance plus O(log bucket) per tested lane; the bucket
     fill reads one more column for access agents only; no allocation, no per-tick scan.
-12. **Limits.** A car leaving a junction connector into the margin is not seen until it is on
+13. **Limits.** A car leaving a junction connector into the margin is not seen until it is on
     the crossed lane (the clearance keeps the crossing off the junction mouth). A tested
     crossing over more than one lane would need an entry per lane; a door's crossing outside
     the rule is untested, as it was before.
-13. **Measured** (2026-11-23, round 2, release test binaries, fresh 30k and 10k cities over 15
+14. **Measured** (2026-11-23, round 2, release test binaries, fresh 30k and 10k cities over 15
     days, days 4 to 18, the lane-entry audit `traffic07_lane_entry_audit` with
     `METRUM_AUDIT_FRESH=1 METRUM_AUDIT_DAYS=15`, its `PARK32_CROSSINGS` day line; `dev` b1758fb4e
     with the same audit as the control). A trip here runs from a vehicle's lane entry to its
