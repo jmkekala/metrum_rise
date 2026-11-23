@@ -1211,7 +1211,7 @@ Vehicle compatibility rule: see
 
 Per-asset pivot rules:
 
-- Buildings: origin at ground level, centered on the footprint.
+- Buildings: see [`buildings.md`](buildings.md#frame-and-pivot).
 - Characters: origin at ground level between the feet.
 - Vehicles: origin at ground level on the vehicle centerline.
 - Props: origin at the exact attachment point or ground-contact point used for placement.
@@ -1491,23 +1491,11 @@ Default LOD tiers:
 
 ### Buildings
 
-- New building authoring targets four tiers. Provisional ordinary bands:
-  `LOD0` 8,000–12,000; `LOD1` 2,500–4,000; `LOD2` 800–1,500;
-  `LOD3` 200–500 triangles. Landmark ceilings: 20,000 / 6,000 / 2,500 / 700.
-  Ceilings are limits, not targets; simple buildings should not add geometry to meet a floor.
-- The editor preserves variable-length authored chains, including valid single-tier parts.
-  Automatic inspection uses the shared engine screen-size policy (`TOOLS-05`, below).
-  Existing manifest metre bands remain serialized unchanged; appended tiers still receive the
-  schema's provisional 35 / 70 / 120 m bands. Those fields are not editable preview controls
-  and do not influence automatic selection. Schema migration follows threshold calibration.
-- Review thresholds with actual asset bounds, camera projection/FOV, resolution and viewing angles.
-  Runtime culling, farther skyline representations and shadow budgets require separate measurements.
-  Gameplay building switching uses this shared policy through spatial batches (`RENDER-07`, below).
-- Authoring rules:
-  - model the silhouette, roofline, and major recesses
-  - bake windows, facade repetition, and small trim into textures instead of geometry
-  - use `1` material, maximum `2`, for normal zoned content
-  - towers and landmarks remain readable across large city views; low-rise filler buildings transition earlier
+Building tiers, triangle ceilings and how the game switches tiers by screen size are in
+[`buildings.md`](buildings.md#tiers). The editor preserves variable-length authored chains,
+including valid single-tier parts; its automatic inspection uses the shared screen-size policy
+(`TOOLS-05`, below), and gameplay switching uses the same policy through spatial batches
+(`RENDER-07`, below).
 
 ### Vehicles
 
@@ -2859,7 +2847,7 @@ Steps and owners:
 1. Wanted list (game, later step, not designed here): the missing building stock, one entry per
    wanted asset, carrying the role inputs of [Draft command](#draft-command).
 2. Build (`metrum_models`): the session builds the model and writes the
-   [facts sidecar](#facts-sidecar) beside its export.
+   [facts sidecar](buildings.md#facts-sidecar) beside its export.
 3. Draft (game): a headless command derives a draft asset from sidecar and `.glb` tiers by the
    [derivation rules](#derivation-rules) and publishes it through `files::publish`, the function
    the editor's `AssetAuthoringFiles.publish_document` ends in.
@@ -2872,107 +2860,13 @@ Out of scope: pack zip export and releases (manual), props, vehicles, characters
 
 ### Facts sidecar
 
-One JSON file per asset, written by the model build: `export/<asset_name>.model.json`, beside the
-`.glb` tiers. UTF-8, no comments, keys as below, unknown keys rejected by the reader
-(`deny_unknown_fields`, as the game's manifests are).
+The facts sidecar (`export/<name>.model.json`) is owned by
+[`buildings.md`](buildings.md#facts-sidecar): its frame, fields and versions (1 and 4 for
+buildings, 4 adding each door's `floor_y_m` and `storey`), the doors and their kinds, storeys,
+passages, the rule the reader enforces and the worked example. What follows is the design record of
+where its facts came from in the models build when the pipeline was designed (2026-11-20).
 
-Units and frame: metres; the frame of the exported `.glb` files themselves (glTF: right-handed,
-`+Y` up, `+Z` front, origin at the model's pivot). No second frame exists in the file: a consumer
-may add any sidecar point to a `.glb` vertex. For the builder, a Blender point `(bx, by, bz)` with
-the build's pivot offset `(px, py, pz)` (`asset_build.pivot_offset`) is
-`[bx - px, bz - pz, -(by - py)]`. Plan points are `[x, z]` pairs of that frame.
-
-| Field | Type | Meaning |
-| --- | --- | --- |
-| `schema` | string | `"metrum-model-facts"` |
-| `version` | integer | `1`; a reader refuses any other value |
-| `name` | string | the asset folder name, e.g. `rintamamiestalo_porch` |
-| `path` | string | repository path of the asset folder, e.g. `buildings/residential/rintamamiestalo_porch` |
-| `source.commit` | string | 40-hex commit of the models repository whose build scripts reproduce the files |
-| `source.dirty` | boolean | whether the asset folder or `scripts/` differed from that commit |
-| `source.blender` | string | version of the Blender that wrote the sidecar (the `.glb` files may come from an earlier export) |
-| `license` | string | SPDX id of the content, `CC-BY-4.0` |
-| `bounds.min`, `bounds.max` | `[x, y, z]` | `LOD0` vertex bounds; `min.y` is `0` |
-| `footprint` | array of `[x, z]` | outer wall outline at ground level, one simple polygon, no repeated end point, positive shoelace area in `[x, z]` from any start point; excludes eaves, steps, fences, ladders |
-| `storeys` | array of `{floor_y_m, area_m2}` | one entry per occupied storey, lowest first; `area_m2` is the area inside the outer wall faces, and for a storey under a roof only the part with at least 1.6 m to the roof underside; empty for a model with no occupied storey (see below) |
-| `dwellings` | integer | separate dwelling units with their own front door; `0` for a building that is not housing |
-| `doors` | array | every door leaf or door pair in an outer wall, see below; empty for a model without one |
-| `lods` | array of `{file, triangles, sha256}` | nearest first; `file` is relative to the sidecar's folder |
-| `textures.orm`, `.normal`, `.emission` | `{file, sha256}` | shared maps; `emission` absent for an unlit building |
-| `variants` | array of `{id, albedo, sha256}` | every colour variant; `id` is the `<variant>` of `<name>_albedo_<variant>.png` |
-| `default_variant` | string | the `id` the `.glb` files reference |
-| `preview` | `{file, sha256}` | `../preview.png`, the catalog render |
-| `hero` | boolean | whether the hero/landmark triangle ceilings apply |
-| `passages` | array, optional | every lane a vehicle drives into or through the model, see below (`PARK-21`) |
-
-A `doors` entry:
-
-| Field | Type | Meaning |
-| --- | --- | --- |
-| `id` | string | unique in the asset, e.g. `front`, `back`, `unit_3` |
-| `kind` | string | `entrance` (a pedestrian door from the ground into the occupied space), `service` (a staff or back pedestrian door at ground level), `vehicle` (loading and goods doors), `balcony` (any door not reachable from the ground, upper-floor doors included), `store` (sheds and unheated stores) |
-| `position` | `[x, y, z]` | centre of the threshold on the outer wall plane; `y` is the threshold height above ground (a balcony door carries its upper floor's) |
-| `facing` | `[x, 0, z]` | unit outward normal of that wall |
-| `width_m`, `height_m` | number | clear opening of the leaf or pair, without fanlight |
-| `main` | boolean | at most one door is `true`, and that door is an `entrance`: the entrance a visitor uses |
-
-The builder tags the main door (amended 2026-11-20): the reader never picks one. The rule for the
-file (amended 2026-11-21; the models validator checks the same rule):
-
-- `doors` may be empty.
-- At most one door has `main: true`, and a door with `main: true` has `kind` `"entrance"`.
-- `storeys` may be empty; the entries it has are listed lowest first, with a finite `floor_y_m`
-  and a finite `area_m2` of 0 or more.
-
-A sidecar that breaks the rule is refused when it is read. A sidecar with no main door, or with
-no storey, is a valid file: it describes a piece that honestly has none, such as a chimney with
-only a cleanout hatch, one part of a multi-building placed asset (a power plant) that the owner
-assembles by hand from several sidecars and that is never drafted alone. What a draft needs of
-the model is a draft precondition, checked when it is drafted (see the preconditions in
-[Draft command](#draft-command)): a zoned building needs exactly one main entrance door, and a
-residential one a non-empty `storeys` for R5. A door set back in a lobby or reveal keeps its
-`position` on the outer wall plane; a door in the side wall of a pocket lies on a `footprint` edge.
-Lengths are rounded to 0.1 mm and areas to 0.01 m². The schema version stays 1 with `kind`:
-nothing consumed version 1 before it.
-
-A `passages` entry (`PARK-21`, added 2026-11-21; the field stays optional in schema version 1, so
-every sidecar written before it still reads, and the version does not change):
-
-| Field | Type | Meaning |
-| --- | --- | --- |
-| `id` | string | unique in the asset, e.g. `tunnel`; the passage's `name` in the manifest |
-| `position` | `[x, 0, z]` | centre of the mouth on the outer wall plane, at ground level (`y` within 1 mm of 0) |
-| `forward` | `[x, 0, z]` | unit direction into the model from the mouth: the opposite of the mouth's outward normal |
-| `width_m` | number | clear width |
-| `length_m` | number | depth from the mouth to the far end |
-| `clear_height_m` | number | clear height; at least 4 m lets a truck through, at least 2 m a car |
-| `through` | boolean | whether the far end is open too |
-
-The fields are a mesh part passage's (`[[mesh_parts.passages]]`) in the sidecar's own frame, the
-`.glb`'s, which is the drafted part's local frame: the draft copies each entry onto the part that
-shows the model, and the part's R2 position places it with the model. For a model whose lanes
-run along its own axes, `forward` is one of `[0, 0, ±1]`, `[±1, 0, 0]`. The reader refuses an
-unknown key in an entry, a repeated or empty `id`, a non-finite or off-ground mouth, a forward
-that is not a horizontal unit vector (within 0.01), and a non-positive size; whether a passage
-lies inside the model and runs along a lot axis is the drafted asset's validation. Absent, the
-model says nothing about lanes: a draft has no passage and the stale report leaves an existing
-part's passages as authored (an information line); present (an empty array included), it is the
-whole list, and the report marks the asset stale for a passage the part lacks, one the model
-lacks, or one whose fields differ by 1 mm or more, and, against the ledger copy, "passages
-changed since the asset was drafted". Example, the coal bunker's tunnel as the asset authors it
-on its part (a model build writes its own numbers):
-
-```json
-"passages": [
-  {"id": "tunnel", "position": [-1.9, 0.0, 8.125], "forward": [0, 0, -1], "width_m": 5.0, "length_m": 16.25, "clear_height_m": 4.6, "through": true}
-]
-```
-
-A loading point needs no field beyond a `vehicle` door. The draft derives no loading bay, exit,
-driveway or way from a sidecar: docks are the site layout's, authored by the owner (freight
-yards owner decision 8).
-
-What the build data holds today (read in `scripts/asset_build.py` and the ten `build.py` files):
+What the build data held on 2026-11-20 (read in `scripts/asset_build.py` and the ten `build.py` files):
 
 | Fact | Today | Work in `metrum_models` |
 | --- | --- | --- |
@@ -2990,55 +2884,10 @@ Proposed home: `Asset.write_facts(stats, facts)` in `scripts/asset_build.py`, ca
 `Asset.main()` after `export_all()`, with `facts` a dict each `build.py` declares in build-frame
 coordinates; `write_facts` applies the pivot. `scripts/validate_asset.py` gains one check: the
 sidecar parses, its hashes match the files, at most one door is `main` and that door is an
-`entrance` (the rule above), every door lies within 0.05 m of a
+`entrance` (the file rule, now in [`buildings.md`](buildings.md#top-level-fields)), every door lies within 0.05 m of a
 `footprint` edge or inside the polygon. The models repository's `CLAUDE.md` forbids "asset/pack
 manifests until a consuming importer exists" and lists the handoff as copying files by hand; both
 lines need the owner's edit there, since the sidecar is a facts file for this importer.
-
-Worked example, `rintamamiestalo_porch` (bounds, triangles, `LOD0` hash and commit read from the
-files; door and footprint points computed from `build.py`: main block ±5 × ±4 m, porch
-`x` −2.7…0.3 to `y` −6.2, pivot 1.10 m in front of the main block's centre; storey areas are
-illustrative; `<sha256>` stands for a 64-hex digest):
-
-```json
-{
-  "schema": "metrum-model-facts",
-  "version": 1,
-  "name": "rintamamiestalo_porch",
-  "path": "buildings/residential/rintamamiestalo_porch",
-  "source": {"commit": "9c93f65ae0f3e78d40c9c86f3b65cc290965c35a", "dirty": false, "blender": "5.2.0"},
-  "license": "CC-BY-4.0",
-  "bounds": {"min": [-5.35, 0.0, -6.84], "max": [5.35, 9.562, 6.84]},
-  "footprint": [[-5.0, -5.1], [5.0, -5.1], [5.0, 2.9], [0.3, 2.9], [0.3, 5.1], [-2.7, 5.1], [-2.7, 2.9], [-5.0, 2.9]],
-  "storeys": [{"floor_y_m": 0.70, "area_m2": 86.6}, {"floor_y_m": 3.80, "area_m2": 58.0}],
-  "dwellings": 1,
-  "doors": [
-    {"id": "front", "kind": "entrance", "position": [-1.2, 0.70, 5.1], "facing": [0, 0, 1], "width_m": 0.90, "height_m": 2.10, "main": true},
-    {"id": "back", "kind": "service", "position": [1.5, 0.70, -5.1], "facing": [0, 0, -1], "width_m": 0.90, "height_m": 2.10, "main": false}
-  ],
-  "lods": [
-    {"file": "rintamamiestalo_porch_lod0.glb", "triangles": 2642, "sha256": "9729cbe0649a29cace4df2d3f04418d3e8033130c25acabca2cf53e9340b75fb"},
-    {"file": "rintamamiestalo_porch_lod1.glb", "triangles": 2054, "sha256": "<sha256>"},
-    {"file": "rintamamiestalo_porch_lod2.glb", "triangles": 682, "sha256": "<sha256>"},
-    {"file": "rintamamiestalo_porch_lod3.glb", "triangles": 342, "sha256": "<sha256>"}
-  ],
-  "textures": {
-    "orm": {"file": "rintamamiestalo_porch_orm.png", "sha256": "<sha256>"},
-    "normal": {"file": "rintamamiestalo_porch_normal.png", "sha256": "<sha256>"},
-    "emission": {"file": "rintamamiestalo_porch_emission.png", "sha256": "<sha256>"}
-  },
-  "variants": [
-    {"id": "red", "albedo": "rintamamiestalo_porch_albedo_red.png", "sha256": "<sha256>"},
-    {"id": "yellow", "albedo": "rintamamiestalo_porch_albedo_yellow.png", "sha256": "<sha256>"},
-    {"id": "white", "albedo": "rintamamiestalo_porch_albedo_white.png", "sha256": "<sha256>"},
-    {"id": "blue", "albedo": "rintamamiestalo_porch_albedo_blue.png", "sha256": "<sha256>"},
-    {"id": "green", "albedo": "rintamamiestalo_porch_albedo_green.png", "sha256": "<sha256>"}
-  ],
-  "default_variant": "red",
-  "preview": {"file": "../preview.png", "sha256": "<sha256>"},
-  "hero": false
-}
-```
 
 ### Contract comparison
 
@@ -3171,7 +3020,8 @@ Added 2026-11-21 (`TOOLS-39`), after the first real draft:
   position (`y` the threshold height), facing and width × height, placed through the drafted
   part (a draft) or through the asset's present part (an existing asset or `--check`), so the
   author lays the entrance, the bays and the walks without working the transform out by hand. The
-  JSON report's `doors` carries the same list.
+  JSON report's `doors` carries the same list. A [version 4](buildings.md#doors) door adds its
+  floor, placed through the same part (`floor_y_m`), and its `storey` (`none` for `null`).
 - **`--check`** runs, on the existing asset as it is in the pack (a copy of it, as every run),
   the stale report and the acceptance check, and writes nothing: after finishing an asset in the
   editor it confirms, for example, that the workplace parking warning has cleared. Its status is
@@ -3265,8 +3115,11 @@ stale lines (the JSON `stale` list; any one gives exit status 2) or information 
 1. Files: each published tier and texture whose SHA-256 differs from the sidecar's file of the
    same name, and names present on one side only.
 2. Facts, when a ledger entry exists: every sidecar field that differs from the ledger copy
-   (bounds, footprint, storeys, dwellings, each door by `id`, variants). The footprint is compared
-   as an outline, as in item 7.
+   (bounds, footprint, storeys, dwellings, each door by `id`, variants, passages). The footprint
+   is compared as an outline, as in item 7. A door's `floor_y_m` and `storey`
+   ([version 4](buildings.md#doors)) are compared only when both sidecars state them: a model
+   rebuilt to version 4 against a version 1 ledger copy compares its doors as before and gets one
+   information line naming the two versions (field `ledger`), never a stale line for the new keys.
 3. Lot fit: whether the new `LOD0` bounds, through the asset's present part transform, stay
    inside its lot (the editor's rule, tolerance 0.01 m).
 4. Entrance: the distance in plan between `entrance/main` and the new `main` door through the
@@ -3292,6 +3145,11 @@ stale lines (the JSON `stale` list; any one gives exit status 2) or information 
    role gives it), `asset_set` and `economy_profile` that differs between the role inputs (with
    their defaults) and the asset's manifest, so a mistyped asset id that hits a real asset is
    noticed.
+9. Passages (`PARK-21`): a sidecar without `passages` says nothing about lanes, and the report
+   leaves the part's passages as authored (an information line). With `passages` (an empty array
+   included) the asset is stale for a passage the part lacks, one the model lacks, or one whose
+   fields differ by 1 mm or more; against the ledger copy, "passages changed since the asset was
+   drafted" (item 2).
 
 The report names the editor field each line concerns and changes nothing. The owner updates the
 asset in the editor (relinking the model files, then the affected fields). As built, files are
@@ -3314,7 +3172,7 @@ Existing validation is reused wherever it exists; "new" marks what must be writt
 | Every scheme texture decodes and every scheme names a material each tier has | `colour_dependencies`, `BuildingAppearance::validate`, `colour_material_error` |
 | A level-1 asset is a spawn candidate of its zoning profile; a higher level has a level below it with the same zone, density and lot cells | `stocked_zone_profiles` (the allocator's filter); the level rule is new, from the registry's upgrade rule |
 | Door sanity, from the ledger sidecar: every `entrance` and `service` door's `height_m` in 2.0–2.6, `width_m` in 0.7–6.0, threshold `y` in 0–1.5 (`vehicle`, `balcony` and `store` doors are not sized: amended 2026-11-20); `entrance/main` within 0.5 m of the `main` door in plan, and a ledger sidecar without a main door fails, since the draft refuses one | new |
-| Triangles per tier within the ceilings of [Buildings](#buildings), from each `.glb` index count | new; a warning, since the models validator owns this gate |
+| Triangles per tier within the ceilings of [Tiers](buildings.md#tiers), from each `.glb` index count | new; a warning, since the models validator owns this gate |
 | A workplace (an `economy_profile`, or an older asset's `worker_capacity`) has a parking anchor | new; a warning: a draft has none until the owner adds them (Q3) |
 
 As built (`model_draft/acceptance.rs`): the fit rule is Rust's (`geometry::fits_lot` over
@@ -3446,6 +3304,14 @@ Details the design left open, as built:
   polygon with positive area, storeys not listed lowest first, tier files that are not `.glb`,
   a `source.commit` that is not 40 lowercase hex digits, any listed file outside the export folder
   but the preview (`../` steps then names). Schema and version are read before the fields.
+- Sidecar version 4 (branch `buildings-doc`, 2026-11-23): the reader takes building versions 1
+  and 4 (`sidecar::VERSIONS`) and checks each door's `floor_y_m` and `storey` on the raw document
+  before the typed read (`check_door_floors`), so every refusal names its door; `Door` carries
+  them as `floor_y_m: Option<f64>` and `storey: Option<Option<usize>>` (`None` in version 1,
+  `Some(None)` for `null`). The draft document is unchanged (no asset field holds a door); the
+  ledger keeps the sidecar as read, the report's door list shows the two values, and the stale
+  report compares them only between two version 4 sidecars (`report::same_door`). Rules in
+  [`buildings.md`](buildings.md#versions).
 - The role is strict too: unknown keys, a zone type other than residential, commercial or
   industrial (Q12), level 0, an `economy_profile` on a residential role, a workplace role without
   one, and a `lot_cells` entry of 0 are refusals. A workplace's `dwellings` set no household

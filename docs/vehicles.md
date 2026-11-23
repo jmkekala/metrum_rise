@@ -266,8 +266,8 @@ These replace the [earlier provisional tier numbers](#earlier-provisional-tier-n
 
 `export/<name>.model.json`, schema `metrum-model-facts`, **version 2** or **3**, with `"kind":
 "vehicle"`. Version 3 adds door positions ([Doors](#doors-sidecar-version-3-tools-43)); the game
-reads both. Building sidecars stay version 1 (see
-[Model Draft Pipeline](asset_editor.md#model-draft-pipeline--tools-33)). Metres, in the exported
+reads both. Building sidecars are versions 1 and 4, in the same version sequence (see
+[`buildings.md`](buildings.md#versions)). Metres, in the exported
 frame. Geometry and files only.
 
 The example is the pilot estate's sidecar cut down to one entry per list, with the keys in the

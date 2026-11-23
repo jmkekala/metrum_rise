@@ -4108,7 +4108,7 @@ dock lines name a drive-through's exit ("coal_loading: drive-through, leaves for
 schema version 1: each entry is a mesh part passage's fields in the `.glb`'s frame (`id`,
 `position`, `forward`, `width_m`, `length_m`, `clear_height_m`, `through`), the draft puts them on
 the drafted part, and the stale report compares them with an existing asset's
-([spec](asset_editor.md#facts-sidecar)). The draft derives no loading bay, exit or way (decision
+([spec](buildings.md#passages-and-vehicle-lanes)). The draft derives no loading bay, exit or way (decision
 8); the models repository is not touched.
 
 **Complexity.**

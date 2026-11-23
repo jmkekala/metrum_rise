@@ -18,7 +18,7 @@ This directory stays intentionally flat for now. Each file should have one clear
 | [`demand.md`](demand.md) | Current growth specification: household admission and removal, private construction, level changes, failed-site clearance, and growth diagnostics. |
 | [`zoning.md`](zoning.md) | Zoning system spec. |
 | [`building_allocator.md`](building_allocator.md) | Building placement, removal, frontage attachment, and allocator ownership boundaries. |
-| [`buildings.md`](buildings.md) | Reserved for a future building type catalog. See `economy.md` and `demand.md` for current building specs. |
+| [`buildings.md`](buildings.md) | Buildings as things: the model contract the models repository builds to, the facts sidecar (versions 1 and 4), the ground rules between model and game, lot and site layout conventions, and the catalogue of the reference set. The editor and draft workflow stay in `asset_editor.md`; business types and levels in `economy.md` and `demand.md`. |
 | [`asset_editor.md`](asset_editor.md) | Asset-editor workflow and content contract. |
 | [`roads.md`](roads.md) | Live roadbed contract: profiles, junction layout, road meshes and queries, the road side of terrain, preview/commit/undo, and the `ROAD-68` plan. |
 | [`earthworks.md`](earthworks.md) | Shared engineered-ground / cut-fill / local terrain-override contract for roads and terrain pads; building construction lifecycle is owned by `economy.md` / `demand.md`. |
