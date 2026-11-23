@@ -19,8 +19,9 @@
 //!
 //! Scratch only, nothing saved: the members are kept from the commits that start pull-outs and
 //! from a dock's start, checked against the rows before each movement pass, and found by a scan
-//! of the rows on a load or undo; the holds are a function of the rows. O(L log L + L × way
-//! points) a tick for L vehicles in lines, no allocation past the largest tick.
+//! of the rows on a load or undo; the holds are a function of the rows. O(L log L + S × way
+//! points) a tick for L vehicles in lines, S of them sharing a mouth with another, no allocation
+//! past the largest tick.
 
 use super::super::super::{
     ACCESS_LANE_ATTACH_PENDING, AgentHandle, AgentSystem, TRANSIT_ACCESS_EGRESS, TRANSIT_NETWORK,
@@ -90,17 +91,21 @@ impl AgentSystem {
         }
     }
 
-    /// The leaving lines before a movement pass: members checked against their rows, measured,
-    /// ordered, and each one's hold for the pass (`ParkingWork::exit_holds`). O(L log L + L ×
-    /// way points).
+    /// The leaving lines before a movement pass: members checked against their rows, then
+    /// measured and ordered only where two or more share a mouth, and each one's hold for the
+    /// pass (`ParkingWork::exit_holds`). A vehicle alone at its mouth holds nowhere (`hold_line`),
+    /// so its mouth, read from its place's way alone, is all it needs. O(L log L + S × way points)
+    /// for L members and the S of them sharing a mouth, no allocation past the largest tick.
     pub(in super::super) fn keep_exit_lines(
         &mut self,
         parking: &ParkingSystem,
         network: &TransitNetwork,
     ) {
         let mut members = std::mem::take(&mut self.parking_work.exit_members);
+        let mut mouths = std::mem::take(&mut self.parking_work.exit_mouths);
         let mut entries = std::mem::take(&mut self.parking_work.exit_entries);
         let mut holds = std::mem::take(&mut self.parking_work.exit_holds);
+        mouths.clear();
         entries.clear();
         holds.clear();
         members.sort_unstable_by_key(|agent| agent.to_bits());
@@ -114,45 +119,35 @@ impl AgentSystem {
             if !in_exit_line(&trip, a.transit[i], a.current_lane_id[i], a.access_flags[i]) {
                 return false;
             }
-            let lane = a.planned_attach_lane_id[i] as usize;
-            let Some(path) = parking.maneuver_path(
-                trip.source,
-                lane,
-                a.planned_attach_lane_d[i],
-                network,
-                false,
-                trip.freight_gate,
-            ) else {
-                return true;
-            };
-            let path = path.as_slice();
-            let n = path.len();
-            if n < 2 {
-                return true;
+            // The mouth, the polyline's last point but one, is the place's own: the lane point,
+            // its last, is not read here.
+            if network
+                .lane_system
+                .lanes
+                .get(a.planned_attach_lane_id[i] as usize)
+                .is_some()
+                && let Some(path) =
+                    parking.maneuver_path_to(trip.source, Vector2::ZERO, false, trip.freight_gate)
+                && let [.., mouth, _] = path.as_slice()
+            {
+                mouths.push((mouth_key(*mouth), agent));
             }
-            let pos = Vector2::new(a.pos_x[i], a.pos_y[i]);
-            let left = left_along(path, pos);
-            // Off its own pull-out (a held car that left it long ago): in no line.
-            if !left.is_finite() {
-                return true;
-            }
-            let hop = path[n - 2].distance_to(path[n - 1]);
-            let length: f32 = path.windows(2).map(|w| w[0].distance_to(w[1])).sum();
-            let mouth = path[n - 2];
-            entries.push(ExitEntry {
-                mouth: (u64::from(mouth.x.to_bits()) << 32) | u64::from(mouth.y.to_bits()),
-                m: left - hop,
-                parked: trip.phase == ParkingTripPhase::PullOut && left >= length - 0.01,
-                asked: a.journey_start_time[i],
-                agent,
-                index: i,
-                pos,
-                half: lane_half_length(a.transit_mode[i], a.vehicle_type[i]),
-                hop,
-                length,
-            });
             true
         });
+        mouths.sort_unstable_by_key(|&(mouth, agent)| (mouth, agent.to_bits()));
+        let mut k = 0;
+        while k < mouths.len() {
+            let end = k + mouths[k..]
+                .iter()
+                .take_while(|&&(mouth, _)| mouth == mouths[k].0)
+                .count();
+            if end - k > 1 {
+                for &(_, agent) in &mouths[k..end] {
+                    self.measure_exit_entry(agent, parking, network, &mut entries);
+                }
+            }
+            k = end;
+        }
         // By mouth; under way before parked; under way by where they stand, parked by when they
         // asked to leave; then by handle.
         entries.sort_unstable_by(|x, y| {
@@ -179,9 +174,62 @@ impl AgentSystem {
         }
         holds.sort_unstable_by_key(|&(i, _)| i);
         self.parking_work.exit_members = members;
+        self.parking_work.exit_mouths = mouths;
         self.parking_work.exit_entries = entries;
         self.parking_work.exit_holds = holds;
     }
+
+    // Member `agent` of a mouth's line measured along its pull-out, pushed to `entries`: none
+    // when it stands off its own pull-out (a held car that left it long ago). O(way points).
+    fn measure_exit_entry(
+        &self,
+        agent: AgentHandle,
+        parking: &ParkingSystem,
+        network: &TransitNetwork,
+        entries: &mut Vec<ExitEntry>,
+    ) {
+        let Some(i) = self.handles.resolve(agent) else {
+            return;
+        };
+        let a = &self.agents;
+        let trip = a.parking_trip[i];
+        let Some(path) = parking.maneuver_path(
+            trip.source,
+            a.planned_attach_lane_id[i] as usize,
+            a.planned_attach_lane_d[i],
+            network,
+            false,
+            trip.freight_gate,
+        ) else {
+            return;
+        };
+        let path = path.as_slice();
+        let n = path.len();
+        let pos = Vector2::new(a.pos_x[i], a.pos_y[i]);
+        let left = left_along(path, pos);
+        if n < 2 || !left.is_finite() {
+            return;
+        }
+        let hop = path[n - 2].distance_to(path[n - 1]);
+        let length: f32 = path.windows(2).map(|w| w[0].distance_to(w[1])).sum();
+        entries.push(ExitEntry {
+            mouth: mouth_key(path[n - 2]),
+            m: left - hop,
+            parked: trip.phase == ParkingTripPhase::PullOut && left >= length - 0.01,
+            asked: a.journey_start_time[i],
+            agent,
+            index: i,
+            pos,
+            half: lane_half_length(a.transit_mode[i], a.vehicle_type[i]),
+            hop,
+            length,
+        });
+    }
+}
+
+// A mouth's position bits: the key its line is found by.
+fn mouth_key(mouth: Vector2) -> u64 {
+    (u64::from(mouth.x.to_bits()) << 32) | u64::from(mouth.y.to_bits())
 }
 
 // One mouth's line, under way first in the order they stand, then the parked in the order they

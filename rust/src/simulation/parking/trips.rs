@@ -518,13 +518,26 @@ impl ParkingSystem {
         ingress: bool,
         freight: bool,
     ) -> Option<crate::simulation::economy::agents::tick::ManeuverPath> {
-        use crate::simulation::economy::agents::tick::{MANEUVER_POINTS, ManeuverPath};
-        use godot::prelude::Vector2;
-        let p = self.place_handles.resolve(place)?;
         let lane = network.lane_system.lanes.get(lane)?;
         let point = crate::simulation::buildings::allocator::BuildingAllocator::sample_pos_on_lane(
             lane, distance,
         );
+        self.maneuver_path_to(place, point, ingress, freight)
+    }
+
+    /// [`Self::maneuver_path`] with its lane point `point` given: every other point is the
+    /// place's own, so a caller that reads only those (the leaving line's mouth, `PARK-32`) may
+    /// pass any point and skip sampling the lane. O(its points), on the stack.
+    pub(crate) fn maneuver_path_to(
+        &self,
+        place: Handle<Place>,
+        point: godot::prelude::Vector2,
+        ingress: bool,
+        freight: bool,
+    ) -> Option<crate::simulation::economy::agents::tick::ManeuverPath> {
+        use crate::simulation::economy::agents::tick::{MANEUVER_POINTS, ManeuverPath};
+        use godot::prelude::Vector2;
+        let p = self.place_handles.resolve(place)?;
         if freight && let Some(way) = self.dock_ways.get(&place) {
             let mut points = [Vector2::ZERO; MANEUVER_POINTS];
             let mut count = 0;

@@ -53,27 +53,61 @@ pub(crate) fn lane_crossing(
     side: i8,
     point: Vector2,
 ) -> LaneCrossing {
+    crossing_rule(lanes, lane_id, side, || point).0
+}
+
+/// The lane a vehicle on lane `lane_id` crosses under the rule ([`lane_crossing`]) at the point
+/// `point()` to or from kerb `side`, and that point projected on it: `None` unless the rule
+/// tests a crossing. The point is computed only where a lane is crossed, and the projection is
+/// the one the clearance test made. O(lanes on the edge × their points) where a lane is crossed,
+/// O(lanes on the edge) otherwise; allocation-free.
+pub(crate) fn tested_crossing(
+    lanes: &LaneSystem,
+    lane_id: usize,
+    side: i8,
+    point: impl FnOnce() -> Vector2,
+) -> Option<(usize, f32)> {
+    match crossing_rule(lanes, lane_id, side, point) {
+        (LaneCrossing::Tested(crossed), crossed_d) => Some((crossed, crossed_d)),
+        _ => None,
+    }
+}
+
+// The crossing rule at the point `point()`, read only when one lane is crossed, with the point's
+// distance along the crossed lane where the rule tests the crossing (else 0).
+fn crossing_rule(
+    lanes: &LaneSystem,
+    lane_id: usize,
+    side: i8,
+    point: impl FnOnce() -> Vector2,
+) -> (LaneCrossing, f32) {
     let (count, Some(nearest)) = lanes_crossed(lanes, lane_id, side) else {
-        return LaneCrossing::Nothing;
+        return (LaneCrossing::Nothing, 0.0);
     };
     if count > MAX_CROSSED_LANES {
-        return LaneCrossing::Untested;
+        return (LaneCrossing::Untested, 0.0);
     }
+    let point = point();
     // A truck and a car can wait between the crossing and the junction mouth at either end.
+    // The crossed lane is one of them: its projection is the crossing's distance on it.
+    let mut crossed_d = 0.0;
     let clear = lanes.edge_lanes.get(&lanes.lanes[lane_id].edge_id).is_some_and(|ids| {
         ids.iter()
-            .map(|&id| &lanes.lanes[id])
-            .filter(|lane| lane.lane_type == LaneType::Vehicle)
-            .all(|lane| {
+            .filter(|&&id| lanes.lanes[id].lane_type == LaneType::Vehicle)
+            .all(|&id| {
+                let lane = &lanes.lanes[id];
                 let d = BuildingAllocator::project_point_to_polyline_s(&lane.geometry, point);
+                if id == nearest {
+                    crossed_d = d;
+                }
                 d >= CROSSING_JUNCTION_CLEARANCE_M
                     && lane.length - d >= CROSSING_JUNCTION_CLEARANCE_M
             })
     });
     if clear {
-        LaneCrossing::Tested(nearest)
+        (LaneCrossing::Tested(nearest), crossed_d)
     } else {
-        LaneCrossing::Untested
+        (LaneCrossing::Untested, 0.0)
     }
 }
 

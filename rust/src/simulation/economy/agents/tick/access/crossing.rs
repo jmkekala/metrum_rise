@@ -12,7 +12,7 @@
 
 use super::super::traffic::crossing_gap_clear;
 use crate::config::{AGENT_DRIVEWAY_SPEED_MS, LANE_WIDTH};
-use crate::simulation::buildings::allocator::{BuildingAllocator, LaneCrossing, lane_crossing};
+use crate::simulation::buildings::allocator::{BuildingAllocator, tested_crossing};
 use crate::simulation::economy::agents::LaneEntry;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
@@ -30,8 +30,8 @@ pub(crate) const CROSSING_GAVE_UP: f32 = -1.0;
 /// that lane's road under the crossing rule ([`lane_crossing`]), and the crossing's distance on
 /// it: the lane point projected on the crossed lane. `None` when the lane is the kerb's own
 /// (nothing crossed), and for a door's crossing outside the rule (more lanes, or near a lane
-/// end), which is driven as before `PARK-32`, untested. O(lanes on the edge × their points),
-/// allocation-free.
+/// end), which is driven as before `PARK-32`, untested. O(lanes on the edge × their points)
+/// where a lane is crossed, O(lanes on the edge) otherwise; allocation-free.
 pub(in crate::simulation::economy::agents::tick) fn crossing_at(
     lane_id: usize,
     lane_d: f32,
@@ -39,12 +39,10 @@ pub(in crate::simulation::economy::agents::tick) fn crossing_at(
     network: &TransitNetwork,
 ) -> Option<(usize, f32)> {
     let lanes = &network.lane_system;
-    let point = BuildingAllocator::sample_pos_on_lane(lanes.lanes.get(lane_id)?, lane_d);
-    let LaneCrossing::Tested(crossed) = lane_crossing(lanes, lane_id, side, point) else {
-        return None;
-    };
-    let d = BuildingAllocator::project_point_to_polyline_s(&lanes.lanes[crossed].geometry, point);
-    Some((crossed, d))
+    let lane = lanes.lanes.get(lane_id)?;
+    tested_crossing(lanes, lane_id, side, || {
+        BuildingAllocator::sample_pos_on_lane(lane, lane_d)
+    })
 }
 
 /// Whether a vehicle of half length `half` may start a crossing that passes lane `lane` at

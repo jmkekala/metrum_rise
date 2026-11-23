@@ -58,7 +58,9 @@ pub(crate) struct ParkingWork {
     // (`exit_line.rs`, `PARK-32`): kept from the commits and dock starts that start pull-outs,
     // checked against the rows before each movement pass, and found by the rows' scan on a load.
     pub(in crate::simulation::economy::agents) exit_members: Vec<AgentHandle>,
-    // Scratch of `keep_exit_lines`.
+    // Scratch of `keep_exit_lines`: each member's mouth key, then the measured members of the
+    // mouths shared by two or more.
+    pub(super) exit_mouths: Vec<(u64, AgentHandle)>,
     pub(super) exit_entries: Vec<super::exit_line::ExitEntry>,
     // Each waiting vehicle's hold for the movement pass, by agent index, sorted: the least
     // distance to the end of its pull-out it may reach (`exit_line.rs`).
@@ -86,6 +88,7 @@ impl Default for ParkingWork {
             kerb_lines: Vec::new(),
             kerb_starts: Vec::new(),
             exit_members: Vec::new(),
+            exit_mouths: Vec::new(),
             exit_entries: Vec::new(),
             exit_holds: Vec::new(),
             answers: Default::default(),
