@@ -1279,19 +1279,28 @@ fn write_the_freight_yard_still_save() {
     core.allocator.registry.register(pack, manifest, dir.clone());
     // An explicit asset (the coal mine) as industry, any other (a shop given `placement_mode =
     // "explicit"`, `PARK-36`) as a service building.
-    let mut place = |x| {
-        core.place_industry_building_internal(&id, x, -40.0)
-            .or_else(|_| core.place_service_building_internal(&id, x, -40.0))
+    let mut place = |x, z| {
+        core.place_industry_building_internal(&id, x, z)
+            .or_else(|_| core.place_service_building_internal(&id, x, z))
             .unwrap()
     };
     // `METRUM_FREIGHT_STILL_MIRROR`: the yard east of the source, so its trucks arrive driving
     // east and meet its gate before its door (the coal mine's gate lies west of its door).
+    // `METRUM_FREIGHT_STILL_SOURCE` "x,z" moves the source (`PARK-32`: across the road, so its
+    // trucks cross into the yard's gate).
     let mirror = std::env::var("METRUM_FREIGHT_STILL_MIRROR").is_ok();
+    let (source_x, source_z) = std::env::var("METRUM_FREIGHT_STILL_SOURCE").map_or(
+        (if mirror { -60.0 } else { 60.0 }, -40.0),
+        |v| {
+            let (x, z) = v.split_once(',').expect("x,z");
+            (x.parse().unwrap(), z.parse().unwrap())
+        },
+    );
     let (yard, source) = if mirror {
-        let source = place(-60.0);
-        (place(60.0), source)
+        let source = place(source_x, source_z);
+        (place(60.0, -40.0), source)
     } else {
-        (place(-60.0), place(60.0))
+        (place(-60.0, -40.0), place(source_x, source_z))
     };
     core.publish_pending_building_site_changes();
     let handles: Vec<u64> = [yard, source]
