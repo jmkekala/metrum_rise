@@ -17,7 +17,9 @@ fn yard_with_east_source() -> Yard {
     let mut east = yard.allocator.buildings[0].clone();
     east.center_x = EAST_X;
     yard.allocator.buildings.push(east);
-    yard.allocator.building_handles.register_appended(yard.allocator.buildings.len());
+    yard.allocator
+        .building_handles
+        .register_appended(yard.allocator.buildings.len());
     yard.allocator
         .rebuild_entrance_cache(&yard.graph, &yard.network.lane_system);
     yard
@@ -55,11 +57,18 @@ fn a_far_side_truck_refused_a_dock_joins_the_line_on_the_gates_side() {
     yard.tick_until(|y| y.phase(near_truck) == ParkingTripPhase::AtKerb);
     let far_truck = yard.dispatch_from(2, 2);
     let (_, near, _) = gate_lane(&yard, 1);
-    assert_ne!(yard.agents.agents.planned_detach_lane_id[far_truck] as usize, near);
+    assert_ne!(
+        yard.agents.agents.planned_detach_lane_id[far_truck] as usize,
+        near
+    );
     yard.tick_until(|y| {
         let a = &y.agents.agents;
         if y.phase(far_truck) == ParkingTripPhase::AtKerb {
-            assert!(at(y, far_truck).y > 0.0, "it waits across the road at {:?}", at(y, far_truck));
+            assert!(
+                at(y, far_truck).y > 0.0,
+                "it waits across the road at {:?}",
+                at(y, far_truck)
+            );
         }
         y.phase(far_truck) == ParkingTripPhase::AtKerb
             && a.planned_detach_lane_id[far_truck] as usize == near
