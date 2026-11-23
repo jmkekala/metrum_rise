@@ -127,6 +127,7 @@ impl AgentSystem {
                         graph,
                         lane_buckets,
                         lane_claims,
+                        pathfind_count,
                         slices,
                     );
                 }

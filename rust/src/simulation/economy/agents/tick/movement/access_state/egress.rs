@@ -7,11 +7,16 @@ use super::super::super::access::{
     FREIGHT_KERB_INSET_M, LocalAccessPath, ManeuverPath, crossing_at, crossing_clear,
     kerb_stop_entrance, left_along, local_access_path, local_access_should_log_step,
     local_access_side_label, local_access_target_segment, planned_attach_is_legal,
-    point_back_along,
+    point_back_along, projected_lane_distance_for_entrance,
 };
 use super::super::super::parking::exit_hold;
+use super::super::super::access::CROSSING_GIVE_UP_S;
 use super::super::super::claims::LaneClaimContext;
-use super::super::super::lane_nav::lane_origin_node;
+use super::super::super::lane_nav::{
+    lane_hosts_turn_preparation, lane_origin_node, lane_terminal_node,
+};
+use super::super::super::planning::plan_network_replan;
+use super::super::network::apply_network_replan;
 use super::super::super::slices::{MovementSlices, enter_lane, hold_for_lane_attach};
 use super::super::super::traffic::{claim_lane_entry, lane_attach_slot_clear, lane_half_length};
 use super::super::super::trip_failures::{FailureCause, FailureOutcome, record_failure};
@@ -20,13 +25,14 @@ use super::{
     point, pulls_out_of_a_dock, reset_invalid_access_plan, stand_in_yard, step_along_access_path,
 };
 use crate::config::AGENT_DRIVEWAY_SPEED_MS;
-use crate::simulation::buildings::allocator::BuildingAllocator;
+use crate::simulation::buildings::allocator::{BuildingAllocator, BuildingEntrance};
 use crate::simulation::economy::agents::LaneEntry;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::parking::ParkingTripPhase;
 use crate::traffic_log;
 use godot::prelude::*;
+use std::sync::atomic::AtomicU32;
 
 /// Handles local access movement from a building door to the planned network attachment lane.
 ///
@@ -41,6 +47,7 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
     graph: &RegionGraph,
     lane_buckets: &[Vec<LaneEntry>],
     lane_claims: &LaneClaimContext<'_>,
+    pathfind_count: &AtomicU32,
     slices: &MovementSlices,
 ) {
     unsafe {
@@ -215,8 +222,18 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
                     *slices.crossing_wait.get_mut(i) = 0.0;
                     *slices.lane_d.get_mut(i) = crossed_d;
                 } else {
-                    // Waiting at the mouth, off the road, for a gap; counted, never given up.
+                    // Waiting at the mouth, off the road, for a gap, counted. A resident's car
+                    // gives up after `CROSSING_GIVE_UP_S`: it leaves on the near lane, the one it
+                    // would cross, and plans on from that lane's end.
                     *slices.crossing_wait.get_mut(i) += delta;
+                    if *slices.crossing_wait.get(i) >= CROSSING_GIVE_UP_S
+                        && leave_on_the_near_lane(
+                            i, crossed, entrance, allocator, transit_network, graph,
+                            pathfind_count, slices,
+                        )
+                    {
+                        *slices.crossing_wait.get_mut(i) = 0.0;
+                    }
                     let mouth = path[path.len() - 2];
                     *s_pos_x.get_mut(i) = mouth.x;
                     *s_pos_y.get_mut(i) = mouth.y;
@@ -388,5 +405,69 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
                 slices,
             );
         }
+    }
+}
+
+/// A resident's car that waited [`CROSSING_GIVE_UP_S`] at its access mouth to cross the road
+/// (`PARK-32`) leaves on the near lane instead, lane `near`, the one it would have crossed, at
+/// its access's lane point there, with a plan from that lane's end to its trip's destination. Its leg then
+/// has no crossing: it attaches by the slot test as a same-side exit does. A truck or a drop-off
+/// keeps waiting (its plan ends at a gate, a door or a border). Whether the plan was made;
+/// without one it waits on. O(one plan).
+///
+/// Safety: `i` must be unique to the current worker for every raw slice in `slices`.
+#[allow(clippy::too_many_arguments)]
+unsafe fn leave_on_the_near_lane(
+    i: usize,
+    near: usize,
+    exit: &BuildingEntrance,
+    allocator: &BuildingAllocator,
+    transit_network: &TransitNetwork,
+    graph: &RegionGraph,
+    pathfind_count: &AtomicU32,
+    slices: &MovementSlices,
+) -> bool {
+    unsafe {
+        let trip = *slices.parking_trip.get(i);
+        if trip.phase != ParkingTripPhase::PullOut || trip.freight_gate || trip.drop_off {
+            return false;
+        }
+        let (Some(node), Some(origin), Some(near_d)) = (
+            lane_terminal_node(near, transit_network, graph),
+            lane_origin_node(near, transit_network, graph),
+            projected_lane_distance_for_entrance(exit, near, transit_network, graph),
+        ) else {
+            return false;
+        };
+        let Some(mut access) = slices
+            .parking
+            .and_then(|p| p.replan_entrance(trip, allocator, transit_network, graph))
+        else {
+            return false;
+        };
+        BuildingAllocator::refresh_entrance_lanes(&mut access, graph, &transit_network.lane_system);
+        let first_lane = (!lane_hosts_turn_preparation(near, transit_network)).then_some(near);
+        let Ok(plan) = plan_network_replan(
+            node,
+            transit_network.lane_system.lanes[near].edge_id,
+            None,
+            *slices.tgt_b.get(i),
+            MODE_CAR,
+            *slices.access_flags.get(i),
+            allocator,
+            transit_network,
+            graph,
+            pathfind_count,
+            Some((i, "leaving-give-up")),
+            first_lane,
+            Some(access),
+        ) else {
+            return false;
+        };
+        apply_network_replan(i, plan, slices);
+        *slices.planned_attach_lane.get_mut(i) = near as u32;
+        *slices.planned_attach_lane_d.get_mut(i) = near_d;
+        *slices.planned_attach_n.get_mut(i) = origin;
+        true
     }
 }
