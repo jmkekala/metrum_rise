@@ -500,10 +500,13 @@ impl AgentSystem {
     pub(super) fn keep_kerb_lines(&mut self) {
         let mut lines = std::mem::take(&mut self.parking_work.kerb_lines);
         lines.clear();
-        lines.extend(self.parking_work.kerb_queue.iter().filter_map(|&(building, _, j)| {
-            waits_in_kerb_line(&self.agents.parking_trip[j])
-                .then(|| (building, self.handles.handle(j)))
-        }));
+        lines.extend(
+            self.parking_work
+                .kerb_queue
+                .iter()
+                .filter(|&&(_, _, j)| waits_in_kerb_line(&self.agents.parking_trip[j]))
+                .map(|&(building, _, j)| (building, self.handles.handle(j))),
+        );
         lines.sort_unstable_by_key(|&(building, agent)| (building, agent.to_bits()));
         self.parking_work.kerb_lines = lines;
     }
