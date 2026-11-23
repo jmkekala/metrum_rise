@@ -17,6 +17,8 @@ thread_local! {
 pub(crate) struct TripQueryScratch {
     // Agents this movement shard found due in the parking phase; never route state.
     parking_candidates: Vec<usize>,
+    // Car egress steps this movement shard left for the serial part (`PERF-33`).
+    deferred_egress: Vec<usize>,
     cch: CchPathScratch,
     possible: Vec<usize>,
     next: Vec<usize>,
@@ -472,6 +474,17 @@ impl TripQueryScratch {
     /// Moves this shard's notes to `merged`, in no useful order; the caller sorts. O(notes).
     pub(in super::super::super) fn drain_parking_candidates(&mut self, merged: &mut Vec<usize>) {
         merged.append(&mut self.parking_candidates);
+    }
+
+    /// Notes car `i`, whose egress step the parallel part left untouched for the serial part
+    /// (`PERF-33`), in the running shard's list. O(1); the list keeps its storage.
+    pub(in super::super::super) fn note_deferred_egress(i: usize) {
+        QUERY.with_borrow_mut(|scratch| scratch.deferred_egress.push(i));
+    }
+
+    /// Moves this shard's deferred egress steps to `merged`; the caller sorts. O(notes).
+    pub(in super::super::super) fn drain_deferred_egress(&mut self, merged: &mut Vec<usize>) {
+        merged.append(&mut self.deferred_egress);
     }
 
     /// Runs a planning callback with `owned` installed as the current thread-local scratch.

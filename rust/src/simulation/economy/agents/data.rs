@@ -194,6 +194,10 @@ pub(crate) enum MovementClaimMode {
     Lateral = 2,
     /// Valid node-origin route whose first lane has no physical entry gap.
     HeldEntry = 3,
+    /// A car on its way out of a lot, not crossing a lane (`PERF-33`): the parallel part runs its
+    /// step when the step stays off every lane, and leaves it untouched for the serial part, in
+    /// agent order with the dynamic handoffs, when it may test or claim a lane.
+    Egress = 4,
 }
 
 /// Simulation-wide agent system.
@@ -253,6 +257,12 @@ pub struct AgentSystem {
     pub lane_claim_owner: Vec<AtomicUsize>,
     /// Prepared movement categories used to dispatch claims and skip redundant lateral decisions.
     pub(crate) movement_claim_modes: Vec<MovementClaimMode>,
+    /// The `Egress` steps the parallel part left for the serial part this tick, in ascending
+    /// agent order; scratch kept for its storage (`PERF-33`).
+    pub(crate) movement_deferred: Vec<usize>,
+    /// Test switch: every car egress runs in the serial part, as before `PERF-33`.
+    #[cfg(test)]
+    pub(crate) serial_egress: bool,
     /// Scratch buffer: per-lane speed sum for the low-frequency frontage delay cache.
     pub lane_speed_sum: Vec<f32>,
     /// Scratch buffer: per-lane vehicle count for the low-frequency frontage delay cache.
@@ -350,6 +360,9 @@ impl AgentSystem {
             lane_bucket_patched: false,
             lane_claim_owner: Vec::new(),
             movement_claim_modes: Vec::new(),
+            movement_deferred: Vec::new(),
+            #[cfg(test)]
+            serial_egress: false,
             lane_speed_sum: Vec::new(),
             lane_vehicle_cnt: Vec::new(),
             frontage_lanes: Vec::new(),

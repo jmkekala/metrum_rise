@@ -36,6 +36,14 @@ use std::sync::atomic::AtomicU32;
 
 /// Handles local access movement from a building door to the planned network attachment lane.
 ///
+/// In the movement pass's parallel part (`LaneClaimContext::defers_egress`) a car's step runs
+/// only when it stays off every lane: it neither reaches its lane point, nor starts a crossing,
+/// nor gives one up, and its crossing test fails on the buckets alone (`PERF-33`). Any other step
+/// returns `true` with the agent's row as it found it, and the serial part runs it whole, in
+/// agent order. Such a car is in no bucket (a crossing car is `Dynamic`), so no other step reads
+/// what it writes, and it reads no other agent's row: its outcome does not depend on the part
+/// that runs it.
+///
 /// Safety: `i` must be unique to the current worker for every raw slice in `slices`.
 #[allow(clippy::too_many_arguments)]
 pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_access_egress(
@@ -49,8 +57,9 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
     lane_claims: &LaneClaimContext<'_>,
     pathfind_count: &AtomicU32,
     slices: &MovementSlices,
-) {
+) -> bool {
     unsafe {
+        let defer = lane_claims.defers_egress(i);
         let s_cur_b = &slices.cur_b;
         let s_plan_attach_n = &slices.planned_attach_n;
         let s_plan_attach_lane = &slices.planned_attach_lane;
@@ -62,31 +71,40 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
         let s_pos_y = &slices.pos_y;
 
         let b_id = *s_cur_b.get(i);
+        let lost_building = b_id == usize::MAX
+            || b_id >= allocator.buildings.len()
+            || allocator.buildings[b_id].edge_idx >= graph.edge_count()
+            || graph.edge(allocator.buildings[b_id].edge_idx).deleted;
+        let plan_valid = !lost_building
+            && (*s_access_flags.get(i) & ACCESS_PLAN_VALID) != 0
+            && b_id < allocator.entrances.len();
+        // A lost building or plan is rare: the serial part handles it.
+        if defer && !plan_valid {
+            return true;
+        }
         if b_id == usize::MAX || b_id >= allocator.buildings.len() {
             let pos = Vector2::new(*s_pos_x.get(i), *s_pos_y.get(i));
             reset_invalid_access_plan(i, usize::MAX, pos, 0.0, slices);
-            return;
+            return false;
         }
         let b = &allocator.buildings[b_id];
         if b.edge_idx >= graph.edge_count() || graph.edge(b.edge_idx).deleted {
             // A truck backing out of a dock stays in the yard, whose road went (`PARK-20`).
             if pulls_out_of_a_dock(i, slices) {
                 stand_in_yard(i, slices);
-                return;
+                return false;
             }
             let pos = Vector2::new(*s_pos_x.get(i), *s_pos_y.get(i));
             reset_invalid_access_plan(i, b_id, pos, sim_time + BUILDING_REPLAN_DELAY_S, slices);
-            return;
+            return false;
         }
-        let plan_valid =
-            (*s_access_flags.get(i) & ACCESS_PLAN_VALID) != 0 && b_id < allocator.entrances.len();
         if !plan_valid {
             // A road edit dropped a pull-out's plan (`clear_route_plan_after_road_edit`): the
             // truck stops on its route out of the dock and plans again (`PARK-20`), where a
             // car would go back inside its building.
             if pulls_out_of_a_dock(i, slices) {
                 stand_in_yard(i, slices);
-                return;
+                return false;
             }
             let origin_door = allocator
                 .entrances
@@ -100,7 +118,7 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
                 sim_time + BUILDING_REPLAN_DELAY_S,
                 slices,
             );
-            return;
+            return false;
         }
         let trip = *slices.parking_trip.get(i);
         // Off a parking leg there is no endpoint to look up: most agents here, every tick.
@@ -163,6 +181,8 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
             let may_cross = *s_tmode.get(i) == MODE_CAR
                 && *slices.crossing_lane.get(i) == u32::MAX
                 && path.len() >= 2;
+            // What the step may overwrite, restored when it is left to the serial part.
+            let speed_before = *s_speed.get(i);
             // A walker from a car may start at its door, off the polyline (`PARK-35`); a truck
             // leaving its place in the line at a kerb stop, or the gate for that line, beside it
             // (`PARK-36`).
@@ -199,20 +219,41 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
                 && (reached_handoff
                     || (local_access_target_segment(next_pos, path) == Some(path.len() - 1)
                         && next_pos.distance_to(path[path.len() - 2]) > 0.05));
-            if on_road
-                && let Some((crossed, crossed_d)) =
-                    crossing_at(attach_lane_id, attach_lane_d, entrance.side, transit_network)
+            let crossing = on_road
+                .then(|| crossing_at(attach_lane_id, attach_lane_d, entrance.side, transit_network))
+                .flatten();
+            if defer
+                && lane_step(
+                    crossing,
+                    attach_lane_id,
+                    attach_lane_d,
+                    reached_handoff,
+                    lane_half_length(MODE_CAR, *slices.vehicle_type.get(i)),
+                    *slices.crossing_wait.get(i),
+                    delta,
+                    transit_network,
+                    graph,
+                    lane_buckets,
+                )
             {
+                *s_pos_x.get_mut(i) = current.x;
+                *s_pos_y.get_mut(i) = current.y;
+                *s_speed.get_mut(i) = speed_before;
+                return true;
+            }
+            if let Some((crossed, crossed_d)) = crossing {
                 let half = lane_half_length(MODE_CAR, *slices.vehicle_type.get(i));
-                // A car egress runs in the serial pass (`MovementClaimMode::Dynamic`), after the
-                // parallel pass wrote every lane car's speed: the margin takes the speed of the
-                // body behind the crossing, so a standing or crawling queue that leaves the slot
-                // free lets it in, where a body at the lane's speed limit would not.
+                // A crossing test runs in the serial part, after the parallel part wrote every
+                // lane car's speed: the margin takes the speed of the body behind the crossing,
+                // so a standing or crawling queue that leaves the slot free lets it in, where a
+                // body at the lane's speed limit would not. In the parallel part the step is here
+                // only when the test fails on the buckets alone (`lane_step`), and reads no speed.
                 let speed = |agent: usize| Some(*s_speed.get(agent));
                 let clear = |lane, d| {
                     crossing_clear(lane, d, half, transit_network, graph, lane_buckets, speed)
                 };
-                if clear(crossed, crossed_d)
+                if !defer
+                    && clear(crossed, crossed_d)
                     && clear(attach_lane_id, attach_lane_d)
                     && claim_lane_entry(i, crossed, lane_claims)
                     && claim_lane_entry(i, attach_lane_id, lane_claims)
@@ -241,7 +282,7 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
                     *s_pos_x.get_mut(i) = mouth.x;
                     *s_pos_y.get_mut(i) = mouth.y;
                     *s_speed.get_mut(i) = 0.0;
-                    return;
+                    return false;
                 }
             }
             if crate::debug::Channel::Traffic.enabled()
@@ -310,7 +351,7 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
                         *s_pos_y.get_mut(i) = path[path.len() - 1].y;
                         *s_cur_b.get_mut(i) = usize::MAX;
                         hold_for_lane_attach!(slices, i, transit_network, attach_lane_id, attach_lane_d, origin_node);
-                        return;
+                        return false;
                     }
                 }
                 if !attach_allowed {
@@ -329,7 +370,7 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
                     *s_pos_x.get_mut(i) = path[path.len() - 1].x;
                     *s_pos_y.get_mut(i) = path[path.len() - 1].y;
                     *s_speed.get_mut(i) = 0.0;
-                    return;
+                    return false;
                 }
                 let parent_edge = transit_network.lane_system.lanes[attach_lane_id].edge_id;
                 *s_pos_x.get_mut(i) = path[path.len() - 1].x;
@@ -367,6 +408,9 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
                 }
             }
         } else {
+            if defer {
+                return true;
+            }
             if crate::debug::Channel::Traffic.enabled() {
                 traffic_log!(
                     "[ACCESS_EGRESS_ABORT] agent={} bldg={} mode={} lane={} lane_d={:.2} legal_attach={} exact_path={} reason=invalid-egress-plan flags=0x{:02x}",
@@ -389,7 +433,7 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
                 // plan from the dock completes this record (`PARK-20`, `TRAFFIC-32`).
                 record_failure(i, cause, FailureOutcome::ParkingRecovery, slices);
                 stand_in_yard(i, slices);
-                return;
+                return false;
             }
             record_failure(
                 i,
@@ -408,7 +452,36 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
                 slices,
             );
         }
+        false
     }
+}
+
+/// Whether a car's egress step, ending at the mouth or past it (`crossing`, the lane it would
+/// cross there) or at its lane point (`reached_handoff`), may test or claim a lane, or give up a
+/// crossing, this tick: the steps the serial part runs (`PERF-33`). `half` is the car's half
+/// length, `waited` its crossing wait before the step. A crossing whose test fails on the buckets
+/// alone fails whatever the speeds the serial test reads: the margin behind is a body's speed,
+/// never below zero, times a positive time, so the margin at zero speed is the least it can be
+/// ([`crossing_clear`]). O(log bucket) for a car at a crossing, O(1) otherwise.
+#[allow(clippy::too_many_arguments)]
+fn lane_step(
+    crossing: Option<(usize, f32)>,
+    attach_lane: usize,
+    attach_d: f32,
+    reached_handoff: bool,
+    half: f32,
+    waited: f32,
+    delta: f32,
+    network: &TransitNetwork,
+    graph: &RegionGraph,
+    lane_buckets: &[Vec<LaneEntry>],
+) -> bool {
+    let Some((crossed, crossed_d)) = crossing else {
+        return reached_handoff;
+    };
+    let open = |lane, d| crossing_clear(lane, d, half, network, graph, lane_buckets, |_| Some(0.0));
+    (open(crossed, crossed_d) && open(attach_lane, attach_d))
+        || (waited < CROSSING_GIVE_UP_S && waited + delta >= CROSSING_GIVE_UP_S)
 }
 
 /// A resident's car that waited [`CROSSING_GIVE_UP_S`] at its access mouth to cross the road

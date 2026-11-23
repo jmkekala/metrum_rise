@@ -340,3 +340,90 @@ fn a_car_waiting_too_long_to_cross_leaves_on_the_near_lane() {
         "it got to its destination"
     );
 }
+
+// `PERF-33`: a car egress runs in the movement pass's parallel part while its step stays off
+// every lane, and in the serial part, in agent order, when it may test or claim one. Six cars
+// leave `home` together across the eastbound stream (a line at one mouth, waiting to cross),
+// four leave `south` to their near lane, three come from `east` on the westbound lane and cross
+// into `home`, among idle residents enough to pass the parallel threshold. Every agent's row at
+// every tick equals the run in which every car egress runs in the serial part, as before, for
+// 1, 3 and 8 workers.
+#[test]
+fn egress_steps_in_the_parallel_part_leave_every_tick_as_the_serial_part_did() {
+    use crate::simulation::economy::agents::data::MovementClaimMode;
+    use std::hash::{Hash, Hasher};
+    let run = |workers: usize, serial_egress: bool| {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(workers)
+            .build()
+            .unwrap()
+            .install(|| {
+                let mut s = street();
+                s.c.agents.serial_egress = serial_egress;
+                let leaving = s.commuters(s.home, s.west, 6);
+                let near = s.commuters(s.south, s.west, 4);
+                let coming = s.commuters(s.east, s.home, 3);
+                let stream = s.commuters(s.source, s.east, STREAM);
+                assert_eq!((leaving.len(), near.len(), coming.len()), (6, 4, 3));
+                while s.c.agents.len() < 600 {
+                    s.c.agents.spawn_housed_agent(usize::MAX, 0.0, 0.0);
+                }
+                let (mut ticks, mut seen) = (Vec::new(), [0usize; 3]);
+                for step in 0..3_000 {
+                    if step % 25 == 0
+                        && let Some(&agent) = stream.get(step / 25)
+                    {
+                        s.release(&[agent]);
+                    }
+                    if step == 150 {
+                        s.release(&leaving);
+                        s.release(&near);
+                        s.release(&coming);
+                    }
+                    tick(&mut s.c);
+                    let agents = &s.c.agents;
+                    let a = &agents.agents;
+                    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                    for i in 0..agents.len() {
+                        (a.transit[i], a.current_lane_id[i], a.crossing_lane[i]).hash(&mut hasher);
+                        (a.parking_trip[i].phase as u8, a.planned_attach_lane_id[i]).hash(&mut hasher);
+                        for value in [a.pos_x[i], a.pos_y[i], a.lane_distance[i], a.speed[i]] {
+                            value.to_bits().hash(&mut hasher);
+                        }
+                        a.crossing_wait_s[i].to_bits().hash(&mut hasher);
+                    }
+                    agents.trip_failures.lines.len().hash(&mut hasher);
+                    ticks.push(hasher.finish());
+                    // Steps run in the parallel part, steps left to the serial part, cars
+                    // waiting at the mouth to cross.
+                    let modes = &agents.movement_claim_modes;
+                    seen[0] += modes.iter().filter(|&&m| m == MovementClaimMode::Egress).count()
+                        - agents.movement_deferred.len();
+                    seen[1] += agents.movement_deferred.len();
+                    seen[2] += leaving
+                        .iter()
+                        .filter(|&&i| a.transit[i] == TRANSIT_ACCESS_EGRESS && a.crossing_wait_s[i] > 0.0)
+                        .count();
+                }
+                let parked = coming
+                    .iter()
+                    .filter(|&&i| a_parked(&s.c, i))
+                    .count();
+                (ticks, seen, parked)
+            })
+    };
+    let (reference, before, parked) = run(1, true);
+    assert_eq!(before[..2], [0, 0], "every car egress ran in the serial part");
+    assert!(before[2] > 0, "cars waited at the mouth to cross");
+    assert_eq!(parked, 3, "the crossers coming in parked");
+    for workers in [1, 3, 8] {
+        let (ticks, seen, _) = run(workers, false);
+        assert!(seen[0] > 0 && seen[1] > 0, "both parts ran egress steps: {seen:?}");
+        let first = ticks.iter().zip(&reference).position(|(a, b)| a != b);
+        assert_eq!(first, None, "{workers} workers: the first tick that differs");
+    }
+}
+
+fn a_parked(c: &SimCore, i: usize) -> bool {
+    c.agents.agents.transit[i] == TRANSIT_IN_BUILDING
+}

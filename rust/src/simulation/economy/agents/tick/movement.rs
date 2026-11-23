@@ -118,7 +118,7 @@ impl AgentSystem {
                 }
 
                 TRANSIT_ACCESS_EGRESS => {
-                    handle_access_egress(
+                    if handle_access_egress(
                         i,
                         delta,
                         sim_time,
@@ -129,7 +129,12 @@ impl AgentSystem {
                         lane_claims,
                         pathfind_count,
                         slices,
-                    );
+                    ) {
+                        // Left untouched for the serial part, which runs the whole step: the
+                        // writes above are idempotent (`PERF-33`).
+                        super::TripQueryScratch::note_deferred_egress(i);
+                        return;
+                    }
                 }
 
                 TRANSIT_NETWORK | TRANSIT_IMMIGRATING | TRANSIT_INTERSECTION => {

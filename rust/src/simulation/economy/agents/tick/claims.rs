@@ -34,6 +34,8 @@ const CLAIM_CLASSIFICATION_CHUNK: usize = 4_096;
 pub(in crate::simulation::economy::agents::tick) struct LaneClaimContext<'a> {
     owners: &'a [AtomicUsize],
     modes: &'a [MovementClaimMode],
+    // The serial part: an `Egress` step left to it may claim (`PERF-33`).
+    serial_pass: bool,
 }
 
 impl<'a> LaneClaimContext<'a> {
@@ -42,15 +44,40 @@ impl<'a> LaneClaimContext<'a> {
         owners: &'a [AtomicUsize],
         modes: &'a [MovementClaimMode],
     ) -> Self {
-        Self { owners, modes }
+        Self {
+            owners,
+            modes,
+            serial_pass: false,
+        }
+    }
+
+    /// The same reservations for the serial part, where an `Egress` step runs whole.
+    pub(in crate::simulation::economy::agents::tick) fn for_serial_pass(&self) -> Self {
+        Self {
+            owners: self.owners,
+            modes: self.modes,
+            serial_pass: true,
+        }
     }
 
     /// Returns whether an agent may acquire an unreserved lane during movement.
     #[inline(always)]
     fn agent_is_serial(&self, agent_idx: usize) -> bool {
-        self.modes
-            .get(agent_idx)
-            .is_some_and(|&mode| mode == MovementClaimMode::Dynamic)
+        self.modes.get(agent_idx).is_some_and(|&mode| {
+            mode == MovementClaimMode::Dynamic
+                || (self.serial_pass && mode == MovementClaimMode::Egress)
+        })
+    }
+
+    /// Whether agent `i`'s egress step runs in the parallel part, where a step that may test or
+    /// claim a lane is left untouched for the serial part (`PERF-33`). O(1).
+    #[inline(always)]
+    pub(in crate::simulation::economy::agents::tick) fn defers_egress(&self, agent_idx: usize) -> bool {
+        !self.serial_pass
+            && self
+                .modes
+                .get(agent_idx)
+                .is_some_and(|&mode| mode == MovementClaimMode::Egress)
     }
 
     /// Returns whether this step can include a fixed or dynamically discovered lateral move.
@@ -142,6 +169,14 @@ impl AgentSystem {
             }
         });
         #[cfg(test)]
+        if self.serial_egress {
+            for mode in &mut self.movement_claim_modes {
+                if *mode == MovementClaimMode::Egress {
+                    *mode = MovementClaimMode::Dynamic;
+                }
+            }
+        }
+        #[cfg(test)]
         super::contract::add(super::contract::Phase::ClaimAgents, n);
     }
 }
@@ -154,10 +189,14 @@ fn classify_agent_claims(
 ) -> MovementClaimMode {
     match agents.transit[i] {
         TRANSIT_ACCESS_EGRESS => {
-            if agents.transit_mode[i] == MODE_CAR {
+            if agents.transit_mode[i] != MODE_CAR {
+                MovementClaimMode::Parallel
+            } else if agents.crossing_lane[i] != u32::MAX {
+                // Crossing, it holds an entry in the crossed lane's bucket, and the serial
+                // crossing tests read the speed of every car there (`PARK-32`).
                 MovementClaimMode::Dynamic
             } else {
-                MovementClaimMode::Parallel
+                MovementClaimMode::Egress
             }
         }
         TRANSIT_NETWORK | TRANSIT_IMMIGRATING | TRANSIT_INTERSECTION => {
@@ -473,10 +512,10 @@ mod tests {
             agents.lane_claim_owner.push(AtomicUsize::new(usize::MAX));
             agents.prepare_lane_claims(&allocator, &network, &graph, 1.0, count);
             for (idx, &mode) in agents.movement_claim_modes.iter().enumerate() {
-                let expected = if matches!(idx % 8, 1 | 4 | 6) {
-                    MovementClaimMode::Dynamic
-                } else {
-                    MovementClaimMode::Parallel
+                let expected = match idx % 8 {
+                    1 => MovementClaimMode::Egress,
+                    4 | 6 => MovementClaimMode::Dynamic,
+                    _ => MovementClaimMode::Parallel,
                 };
                 assert_eq!(mode, expected, "agent {idx}");
             }

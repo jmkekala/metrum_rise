@@ -109,11 +109,30 @@ impl AgentSystem {
             },
         );
 
+        // The egress steps the parallel part left untouched, in ascending agent order whatever
+        // the worker count (`PERF-33`). O(D log D) for D of them; the list keeps its storage.
+        let deferred = &mut self.movement_deferred;
+        deferred.clear();
+        for shard in &mut self.movement_query_shards {
+            shard.drain_deferred_egress(deferred);
+        }
+        self.movement_serial_query.drain_deferred_egress(deferred);
+        deferred.sort_unstable();
+        let deferred = &self.movement_deferred;
+        let lane_claims = lane_claims.for_serial_pass();
+
         // A borrowed slice keeps the bound in a register for this serial scan of every agent.
+        // The serial part runs the dynamic handoffs and the deferred egress steps together in
+        // ascending agent order: the order of every claim and every read of a live speed is the
+        // order it had when every car egress ran here.
         TripQueryScratch::with_owned(&mut self.movement_serial_query, || {
+            let mut next_deferred = 0;
             for (i, &mode) in movement_claim_modes[..n].iter().enumerate() {
                 if mode != MovementClaimMode::Dynamic {
-                    continue;
+                    if deferred.get(next_deferred) != Some(&i) {
+                        continue;
+                    }
+                    next_deferred += 1;
                 }
                 unsafe {
                     Self::process_agent_movement(
