@@ -135,10 +135,42 @@ CALIBRATION_PCT = {"mean_ms": 3.0, "p99_ms": 6.0, "p999_ms": 15.0}
 CALIBRATION_PREEMPTED_RATIO = 2.0
 # A second branch run when the first is within this fraction of a limit or differs from the control.
 SECOND_RUN_LIMIT_BAND = 0.05
-# Acceptance misses the user accepted on dev (docs/roadmap.md): (tier, speed) -> roadmap id. A
-# branch row missing only these is reported as the known exception, not repeated and not failed;
-# its comparison against the control still runs. Remove an entry when its row closes.
-KNOWN_EXCEPTIONS = {(CONTROL_TIER, 32): "PERF-17"}
+# Acceptance misses the user accepted on dev (docs/roadmap.md): (tier, speed) -> (roadmap id, the
+# frames it accepts). A day whose every frame over the limit is such a frame, as its worst-frame
+# lists show, is reported as the known exception, not repeated and not failed; its comparison
+# against the control still runs. Any other frame over the limit is a miss (`PERF-33`: the
+# departure waves at 30k 32x are not `PERF-17`). Remove an entry when its row closes.
+# `PERF-17`: the building-change frames, in minute 4 of an hour (`REMOVAL_WINDOW_START`).
+KNOWN_EXCEPTIONS = {(CONTROL_TIER, 32): ("PERF-17", lambda frame: frame["minute"] % 60 == 4)}
+# Per acceptance key, the day's list of its 12 worst frames that holds the frames it measures,
+# and a frame's value for it.
+KEY_FRAMES = {
+    "max_unpreempted_ms": ("worst_unpreempted", lambda frame: frame["ms"]),
+    "p999_ms": ("worst", lambda frame: frame["ms"]),
+    "max_preempted_less_wait_ms": ("worst", lambda frame: frame["ms"] - frame.get("wait_ms", 0.0)),
+}
+
+
+def exception_covers(day, key, threshold, covered):
+    """Whether every frame of `day` above `threshold` ms for acceptance `key` is one the known
+    exception accepts (`covered`). The day lists only its worst frames: a list with no frame at
+    or below the threshold may hide more above it, and covers nothing. A frame's value for a key
+    never exceeds its time, so the frames outside the list are below the threshold."""
+    name, value = KEY_FRAMES[key]
+    frames = day.get(name)
+    if day.get(key) is None or not frames or min(frame["ms"] for frame in frames) > threshold:
+        return False
+    return all(covered(frame) for frame in frames if value(frame) > threshold)
+
+
+def known_exception(day, keys, threshold):
+    """The known exception's id when it accepts every frame of `day` above `threshold` for each
+    of `keys`, else None."""
+    known = KNOWN_EXCEPTIONS.get((int(day["residents"]), int(day["speed"])))
+    if not known or not keys:
+        return None
+    name, covered = known
+    return name if all(exception_covers(day, key, threshold, covered) for key in keys) else None
 
 
 def acceptance_misses(day):
@@ -148,8 +180,8 @@ def acceptance_misses(day):
         return [], None
     missed = [key for key in gate.PERF07_ACCEPTANCE_KEYS
               if values[0][key] is None or values[0][key] > gate.PERF07_ACCEPTANCE_MS]
-    known = KNOWN_EXCEPTIONS.get((int(day["residents"]), int(day["speed"])))
-    return ([], known) if known and missed else (missed, None)
+    known = known_exception(day, missed, gate.PERF07_ACCEPTANCE_MS)
+    return ([], known) if known else (missed, None)
 
 
 def tolerance_pct(metric, n_ctl, n_br, noisy=False):
@@ -198,9 +230,12 @@ def wants_second_run(tier, speed, br_day, ctl_days):
     """A second branch full day when the first is within 5% of an acceptance limit on either side, where one more sample can change the verdict, or differs from the control
     beyond the single-run tolerance on the mean or p99. A clear miss needs no second day."""
     band = SECOND_RUN_LIMIT_BAND * gate.PERF07_ACCEPTANCE_MS
-    near = [] if (tier, speed) in KNOWN_EXCEPTIONS else \
-        [key for key in gate.PERF07_ACCEPTANCE_KEYS if br_day.get(key) is not None
-         and abs(br_day[key] - gate.PERF07_ACCEPTANCE_MS) <= band]
+    near = [key for key in gate.PERF07_ACCEPTANCE_KEYS if br_day.get(key) is not None
+            and abs(br_day[key] - gate.PERF07_ACCEPTANCE_MS) <= band]
+    # Near only through frames a known exception accepts: no second day.
+    if known_exception(br_day | {"residents": tier, "speed": speed}, near,
+                       gate.PERF07_ACCEPTANCE_MS - band):
+        near = []
     if near:
         return f"within {band / gate.PERF07_ACCEPTANCE_MS:.0%} of the limit on {', '.join(near)}"
     if not ctl_days:
@@ -1183,13 +1218,14 @@ def comparison_lines(tier, speed, sides):
     lines = [f"PERF-07 {tier // 1000}k {speed}x: ctl n={len(sides['ctl'])}, br n={len(sides['br'])}"
              + (f"; NOISY rows {', '.join(noisy)} (>{NOISY_RATIO:g}x the quietest row's preempted "
                 f"frames; tolerances doubled; rerun with --rerun)" if noisy else "")]
-    accepted = [(result["label"], gate.perf07_acceptance([result["day"]])) for result in rows]
+    accepted = [(result["label"], result["day"], gate.perf07_acceptance([result["day"]]))
+                for result in rows]
     covered = (tier, speed) in gate.PERF07_ACCEPTED_TIERS
-    for label, (values, failures) in accepted:
+    for label, day, (values, failures) in accepted:
         if values:
             shown = ", ".join(f"{values[0][key]:.2f}" if values[0][key] is not None else "–"
                               for key in gate.PERF07_ACCEPTANCE_KEYS)
-            known = KNOWN_EXCEPTIONS.get((tier, speed))
+            known = acceptance_misses(day)[1]
             verdict_text = "PASS" if values[0]["pass"] else \
                 f"known exception ({known})" if known else "FAIL"
             lines.append(f"  acceptance {label} (unpreempted, p99.9, preempted less wait): {shown}: "

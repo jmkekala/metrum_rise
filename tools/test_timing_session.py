@@ -13,7 +13,13 @@ import timing_session as ts
 
 def day(mean=2.2, p99=3.9, p999=4.5, preempted=5000, **extra):
     return dict(mean_ms=mean, p99_ms=p99, p999_ms=p999, max_unpreempted_ms=6.2,
-                max_preempted_less_wait_ms=5.0, preempted_frames=preempted, **extra)
+                max_preempted_less_wait_ms=5.0, preempted_frames=preempted) | extra
+
+
+def frames(*worst):
+    """A day's worst-frame lists, unpreempted, from (minute of the day, ms) pairs."""
+    listed = [{"minute": minute, "ms": ms, "wait_ms": 0.0} for minute, ms in worst]
+    return {"worst": listed, "worst_unpreempted": listed}
 
 
 class PathRuleTests(unittest.TestCase):
@@ -265,16 +271,41 @@ class ToleranceTests(unittest.TestCase):
         with patch.dict(ts.KNOWN_EXCEPTIONS, clear=True):
             self.assertIn("limit", ts.wants_second_run(30000, 32, day(p999=8.1), []))
         self.assertIn("limit", ts.wants_second_run(30000, 1, day(p999=8.3), [day()]))
-        # A clear miss needs no second day, and a known exception (PERF-17) none near its limit.
+        # A clear miss needs no second day, and a known exception (PERF-17) none near its limit
+        # when its own frames are the ones near it.
         self.assertIsNone(ts.wants_second_run(30000, 1, day(p999=10.4) | {"max_unpreempted_ms": 12.1}, []))
-        self.assertIsNone(ts.wants_second_run(30000, 32, day(p999=8.1), []))
+        self.assertIsNone(ts.wants_second_run(30000, 32, day(p999=8.1) | frames((844, 8.3), (64, 8.1), (333, 7.1)), []))
+        # Near through a departure-wave frame (PERF-33): a second day.
+        self.assertIn("limit", ts.wants_second_run(30000, 32, day(p999=8.1) | frames((844, 8.3), (333, 7.9)), []))
 
     def test_known_exceptions(self):
+        # Every frame over 8 ms in minute 4 of an hour: the PERF-17 exception.
         over = day(p999=8.4) | {"max_unpreempted_ms": 8.6, "residents": 30000, "speed": 32.0}
-        self.assertEqual(ts.acceptance_misses(over), ([], "PERF-17"))
-        self.assertEqual(ts.acceptance_misses(over | {"speed": 1.0})[0],
+        minute4 = over | frames((844, 8.6), (1324, 8.4), (64, 8.2), (333, 7.1))
+        self.assertEqual(ts.acceptance_misses(minute4), ([], "PERF-17"))
+        self.assertEqual(ts.acceptance_misses(minute4 | {"speed": 1.0})[0],
                          ["max_unpreempted_ms", "p999_ms"])
         self.assertEqual(ts.acceptance_misses(day() | {"residents": 30000, "speed": 1.0}), ([], None))
+        # A departure-wave frame over 8 ms (hour 13, PERF-33) is a miss, beside minute-4 frames too.
+        wave = over | {"p999_ms": 7.9} | frames((824, 8.6), (333, 7.1))
+        self.assertEqual(ts.acceptance_misses(wave), (["max_unpreempted_ms"], None))
+        both = over | frames((844, 8.6), (824, 8.4), (333, 7.1))
+        self.assertEqual(ts.acceptance_misses(both), (["max_unpreempted_ms", "p999_ms"], None))
+        # Lists whose every frame is over the limit may hide others: no exception. No lists, none.
+        self.assertEqual(ts.acceptance_misses(over | frames((844, 8.6), (64, 8.4)))[1], None)
+        self.assertEqual(ts.acceptance_misses(over)[1], None)
+        # The preempted key reads a frame less its wait.
+        waited = day(max_preempted_less_wait_ms=8.3) | {"residents": 30000, "speed": 32.0}
+        late = {"minute": 333, "ms": 9.5, "wait_ms": 2.0}
+        listed = {"worst": [{"minute": 844, "ms": 8.4, "wait_ms": 0.1}, late, {"minute": 7, "ms": 6.0}],
+                  "worst_unpreempted": [{"minute": 7, "ms": 6.0}]}
+        self.assertEqual(ts.acceptance_misses(waited | listed), ([], "PERF-17"))
+        self.assertEqual(ts.acceptance_misses(waited | listed | {"worst": [late | {"wait_ms": 1.0}, {"minute": 7, "ms": 6.0}]}),
+                         (["max_preempted_less_wait_ms"], None))
+        rows = [{"label": "a", "day": minute4}, {"label": "b", "day": wave}]
+        lines = ts.comparison_lines(30000, 32, {"ctl": rows[:1], "br": rows[1:]})
+        self.assertTrue(lines[1].endswith("known exception (PERF-17)"), lines[1])
+        self.assertTrue(lines[2].endswith("FAIL"), lines[2])
         self.assertIn("mean_ms", ts.wants_second_run(30000, 1, day(mean=2.3), [day(mean=2.2)]))
 
 
