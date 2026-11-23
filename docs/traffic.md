@@ -3595,7 +3595,7 @@ The baseline the plan was written against. A1 changed the last three points: `lo
 | A1 | `PARK-19` | Vehicle classes in the lot proofs, passages, docks published and shown, the editor's checks, `PARK-18` closed | Trucks drive as today. Docks exist, are saved and are inspected |
 | A2 | `PARK-20` | Trucks use docks at both ends of a trip, with the door fallback (replaced by the kerb queue, `PARK-36`) | A building with a published dock is served in its yard; every other building as today |
 | B | `PARK-21` | Authored yard routes and a separate exit gate | Drive-through lanes: in at one gate, out at another, no reversing |
-| C | `PARK-22` | Authored waiting positions and a bounded wait | A second truck waits in the yard instead of delivering at the door. Since `PARK-36` it waits at the kerb stop with no bound but the leg timeout |
+| C | `PARK-22` | Authored waiting positions and a bounded wait | A second truck waits in the yard instead of delivering at the door. Since `PARK-36` it waits at the kerb before the gate with no bound but the leg timeout |
 
 The split of the proposed Stage A in two is the one change to the proposed staging: A1 is edit
 and load work with no change to any trip, so it can land and be reviewed in the editor and the
@@ -4369,62 +4369,100 @@ removes it.
 - **Older saves.** A truck a save holds inside a building without a dock (format 128 and older)
   is still taken as arrived there; its check delivers and it leaves from the kerb stop.
 
-**A building with docks: the queue at the kerb.** With every dock held at the gate commit, the
-truck no longer drives to the door (`GateToDoor` is gone). The commit stamps its place in the
-queue (`journey_start_time`, the moment it reached the gate), sets `ToKerb` and plans it from
-the gate's lane point to the end of the line at the building's kerb stop
-(`drive_from_gate_to_kerb`): it joins the lane through the attach hold where it stands, leaves it
-again beside its place, pulls over to the kerb (`kerb_stop_beside`, its access path ends beside
-where it left the lane) and stands, `AtKerb` with `freight_gate`, `ready`. From the gate the way
-to the kerb is a drive on the lanes: straight on when the place lies ahead, round the block when
-it lies behind or on another road. Should no road lead there, its plan is dropped and the ingress
-step puts it back on the lane and plans it to the kerb stop itself (`return_to_lane`).
+**A building with docks: the line before the gate** (round 3, 2026-11-23, the owner's
+"solution A"). Rounds 1 and 2 put the line at the building's kerb stop by its door. The owner's
+report: "the building is on the right side of the road and the driveway for the truck is at the
+right end of the frontage. The truck drives to the beginning, the left end of the frontage, thus
+passing the driveway to the building. So the truck has to go round the block for re-entry when
+the way to the loading bay clears up." A door downstream of the gate put the line past the gate,
+so a granted truck looped round the block to come back to it; a door upstream of it sent every
+refused truck from the gate round the block to the kerb. In the 14-day yard runs every queued
+truck drove about 600 m between its grant and its dock. The line now lies before the gate, and
+the decision is taken where the truck reaches the line, never at the gate.
 
+- **Where the line stands.** On the gate's own side of its road (gates are reached from that
+  side only: `parking_access_at` makes every lot access `SameSideOnly`, so a truck's plan always
+  leaves the road from the gate's near lane), against the near lane's travel from the gate's
+  lane point: place `k` is the kerb beside the near lane `(k + 1)` × 9 m (`KERB_QUEUE_SPACING_M`,
+  the 8 m body and 1 m) short of the lane point (`gate_line_d`, the place `kerb_stop_beside` its
+  lane point, 1.4 m inside the kerb). The mouth keeps the first 9 m: the first truck's front
+  stands 5 m short of the gate's lane point (9 m less half its body), so a gate up to 10 m wide
+  stays clear and a truck turning in has room. A building has one arrival gate (its docks
+  share it, `rebuild_freight_gate`), so it has one line; the grant keeps arrival order across its
+  docks as before.
+- **What bounds it.** The near lane's start, where the road leaves its junction: places stop half
+  a body past it, and every further truck stands at the last place, drawn over the one there. The
+  line may stand before the neighbouring lots' frontages, which is public kerb. Not checked, as
+  the parking-lane overlap is not: another building's gate mouth or lot access in that stretch (no
+  per-edge index of accesses exists; a scan of every gate per place is not worth it), a parked
+  car in a parking lane there, and a gate within a place of its lane's start, whose line then
+  stands across its own mouth. A waiting truck is in no lane bucket and off every yard route, so
+  none of these blocks anything; they are drawn over each other.
+- **The decision at the line's end.** A truck bound for a gate with no dock granted stops on its
+  lane at the end of the line (`try_network_detach`, `network/detach.rs`): the place behind the
+  trucks waiting there at the last commit, the first place when none waits, never past the
+  gate's lane point, and never back from where its step began. It keeps its speed and stands
+  `ready` for that tick's gate commit (`commit_freight_gate`, `yard.rs`), in agent order after
+  the grants of the tick. A dock free (no holder, no line on its way in): it takes the dock,
+  holds it (`held_dock`, phase `None` with the dock) and drives on along its lane, leaving the
+  lane at the gate's lane point and turning in as any truck (the `PARK-31` gate turn unchanged);
+  the commit there sends it into its dock. None free: the commit takes it off the lane where it
+  stopped (`leave_lane_into_line`, the detach's writes), onto a drive-through way in with room
+  (below) or into the line at the kerb, `AtKerb`, `ready`, stamped with the moment it reached the
+  line (`journey_start_time`). The queue pass pulls it over to the kerb beside where it left the
+  lane from the next tick. Its lane point, where it left the lane, is its `planned_detach_lane_d`,
+  which the queue pass moves with it as the line moves up.
+- **How many wait, for the movement pass.** The number waiting at a building is what the
+  movement pass needs, and the movement pass runs before the commit. The commit keeps, at its
+  end, the trucks standing in the lines by building (`keep_kerb_lines`, `ParkingWork::kerb_lines`,
+  sorted (building, agent handle) pairs from the tick's queue list; scratch, never saved), and
+  the movement pass counts a building's entries by binary search. Before each movement pass the
+  list is checked against the rows (a truck removed or changed between ticks, by its check's
+  timeout or a returning truck's finish, no longer counts), and a load or undo rebuilds it from
+  the rows (`rebuild_parking_lists`), so a loaded city continues as the live one. A stop on the
+  lane never outlives its tick: the same tick's commit resolves it, so no save holds one.
 - **The grant, in arrival order.** The waiting trucks stand `ready`, so each is among the parking
   phase's candidates every tick. Before any gate commit of the tick, `grant_docks_at_kerbs`
-  (`yard.rs`) sorts this tick's waiting trucks by (building, stamp, agent) and gives each
-  building's free docks to its trucks in that order. A truck granted a dock keeps it in its trip
-  row (`destination` with phase `None`, `held_dock`) while it pulls out of the kerb stop and
-  drives to the gate's lane point (`drive_from_kerb_to_gate`: the door's plan to the gate, round
-  the block when the gate lies behind the stop), where the gate commit sends it into its own
-  dock. A truck that reaches the gate while others wait finds the freed docks already granted
-  and queues behind them. One that no road takes from the kerb stop to the gate lets the next
-  truck have the dock and asks again in 30 s on the parking retry wheel.
-- **Several waiting: a line along the kerb.** The waiting trucks of one building stand in a line
-  behind the kerb stop, place `k` the stop moved `k` × 9 m (`KERB_QUEUE_SPACING_M`, the 8 m body
-  and 1 m) back along the door side's kerb, against the near lane's travel
-  (`kerb_queue_entrance`). A truck sent on from the gate is planned to the place behind the trucks
-  standing there; each tick the queue pass puts the waiting trucks in arrival order and moves each
-  at driveway speed towards its place, so the line moves up forward as its first truck leaves. No
-  slot is stored: the place is the truck's rank, and its position is saved. A granted truck pulls
-  out from where it stands, heading straight for its lane point (the egress step's off-path start,
-  as a walker stepping out of a car). Capacity: the places fit between the kerb stop and half a
-  truck short of the road edge's end behind it, `floor((s - 4) / 9) + 1` for a door `s` metres
-  from that end; every further truck stands at the last place, drawn over the one there. A line
-  longer than the frontage stands before the neighbours' frontages, and one whose kerb lies on the
-  gate's side of the door can stand across the gate's mouth, drawn over the trucks turning in and
-  out (they do not collide off the lane). Known imperfections: a truck on its way from the gate is
-  in the line only for the rest of the tick that sent it (round 2: the gate commit counts the trucks
-  it sent on earlier in the same tick), so two refused in different ticks of its drive may be
-  planned to the same place, and one that arrives after a later-stamped truck took its place moves
-  back to its own (backing along the kerb for 9 m); both are rare and settle by rank.
+  sorts this tick's waiting trucks by (building, stamp, agent) and gives each building's free
+  docks to its trucks in that order. A truck in the line granted a dock turns `PullIn` holding it
+  and pulls forward from where it stands, with no plan: it heads for the gate's road connection
+  (the pull-in's second point, as a walker leaving a car heads for its way,
+  `step_out_along_local_access_path`) and follows the dock's route from there. It never passes
+  its gate and never drives round the block: the drive from the first place is the 9 m to the
+  gate and the dock's route. A truck that reaches the line's end while others wait finds the
+  freed docks granted already and joins the line behind them.
+- **Moving up.** Each tick the queue pass puts each building's waiting trucks in arrival order
+  and moves each at driveway speed towards its place, forward only: one that stopped past its
+  place (two arrivals in one tick, or a truck that joined the road within the line) waits there,
+  drawn over the truck behind it, until the line moves up to it. No slot is stored: the place is
+  the truck's rank among the trucks of the line, and its position is saved.
+- **Older saves.** A truck a format 129 save left at the door's kerb stop past the gate, or
+  across the road, is not in the line (it left the gate's near lane past the gate's lane point,
+  or another lane): it stays where it stands, keeps its rank in the grant order, and granted a
+  dock drives to the gate as round 1 planned it (`drive_from_kerb_to_gate`, round the block once
+  at most; with no road there it pulls in from where it stands). One a save left at the door's
+  kerb stop before the gate is in the line and moves up to its place, forward. One a save holds
+  on its way from the gate to the door's kerb stop (`ToKerb`) arrives there as before and is
+  then one of these. No format change.
 - **Drive-through yards: the line on the way in** (round 2, the owner's rule "trucks could queue
   at the drive-through; if the truck reverses in or out, then at the kerb side"). A dock with a
   way out to its own exit gate, entered nose first (`PARK-21`; not one a truck backs into,
-  `PARK-23`), has a line on its way in. A truck the gate commit finds every dock held for, while no
-  truck of the building waits at the kerb or was sent there this tick, takes the first such dock in
-  anchor order whose way in holds one more truck: it stays where it stands, at the gate's lane
-  point, as `AtKerb` naming that dock in `destination` (the row's existing field; not held, so the
-  holder rule is untouched), `ready`, stamped with the time it reached the gate like a truck sent
-  to the kerb. From the next tick the queue pass moves it at the yard speed along the dock's own
-  pull-in polyline (`maneuver_path`, the proven way in) to its place: place `k` of the line is `k`
+  `PARK-23`), has a line on its way in. A truck the commit at the line's end finds every dock held
+  for, while no truck of the building waits at the kerb or was sent there this tick, takes the
+  first such dock in anchor order whose way in holds one more truck: it leaves the lane where it
+  stopped (round 3: the first place before the gate, since nobody waits at the kerb) and stands
+  there as `AtKerb` naming that dock in `destination` (the row's existing field; not held, so the
+  holder rule is untouched), `ready`, stamped with the time it reached the line like a truck in
+  the kerb line. From the next tick the queue pass moves it at the yard speed along the dock's own
+  pull-in polyline from that lane point (`maneuver_path`: on along the kerb to the gate, then the
+  proven way in) to its place: place `k` of the line is `k`
   × 9 m back from the stop, so the first stands 1 m behind the truck in the bay; it never comes
   nearer than a body and 1 m behind the truck just ahead of it, the one before it in the line or
   the one pulling into the bay (it holds short while that one is still on its way up). Capacity is
   what the way in holds: a place fits while half a body behind it is still on the way in, short of
   the gate's road connection (`floor((L - 4) / 9)` places for a way in `L` metres long; 1 for a
   20 m way in, 4 for the kuopio coal mine's). With the way in full, or a dock that is backed out
-  of, the truck goes on to the kerb line as before. A truck on the way in waits for its own dock
+  of, the truck joins the kerb line where it stopped. A truck on the way in waits for its own dock
   only: when the dock is free (its holder's pull-out has reached the exit's lane point), the grant
   gives it to the first truck of its line, which turns `PullIn` holding it and drives on into the
   bay from where it stands, on the same polyline. A truck at the kerb never takes a dock with a
@@ -4435,7 +4473,7 @@ step puts it back on the lane and plans it to the kerb stop itself (`return_to_l
   across both waiting places with one restriction the geometry forces: a truck on a way in waits
   for that dock (it cannot back out to another), and the kerb line takes any free dock without a
   line. A truck joins a way in only while nobody of the building waits at the kerb, so every truck
-  on a way in reached the gate before every truck at the kerb (but for the window below); a truck
+  on a way in reached the line before every truck at the kerb; a truck
   at the kerb can be granted a reversing dock while earlier trucks wait on a way in for theirs.
 - **Leaving the middle of the line.** A truck on a way in whose shipment's leg times out is removed
   where it stands by its check (expired, the buyer refunded), as a truck waiting at the kerb or
@@ -4451,32 +4489,36 @@ step puts it back on the lane and plans it to the kerb stop itself (`return_to_l
   to the first of the line needs no plan and cannot fail; a truck behind waits only on the truck
   ahead of it, which waits only on the dock, which waits only on the truck leaving by the exit: a
   chain, never a cycle. A timeout removes a truck from the middle without anyone moving for it.
-  A truck waiting at the kerb stop stands out of every lane bucket and off the yard's route: the leaving truck's way out (its route reversed to the gate's lane point
-  for a stage A dock, or the exit for a drive-through) and its attach hold read only the lane
-  buckets, so the waiting truck cannot block it, whether the kerb stop lies beside the gate's
-  mouth or not (drawn, they may then overlap for the seconds of the pull-out). A granted truck
-  drives to the gate only once the dock is free, so it never meets the truck it waited for in the
-  yard. The wait is bounded by the shipment's leg timeout (`max(6, 4 × eta + 2)` hours): the
+  A truck waiting at the kerb stands out of every lane bucket and off the yard's route: the
+  leaving truck's way out (its route reversed to the gate's lane point for a stage A dock, or the
+  exit for a drive-through) and its attach hold read only the lane buckets, so the waiting truck
+  cannot block it (round 3: the line keeps the mouth's 9 m clear; a truck that stopped past its
+  place may stand nearer, drawn over the trucks turning in and out for the seconds they pass). A
+  truck stopped on the lane at the line's end stands for one tick only, its commit taking it off
+  the lane or on to the gate the same tick. A granted truck pulls in only once the dock is free,
+  so it never meets the truck it waited for in the yard. The wait is bounded by the shipment's leg timeout (`max(6, 4 × eta + 2)` hours): the
   check that finds it overdue expires the shipment, refunds the buyer and removes the truck at
   the kerb, as for any truck; a returning truck waiting at its own home's kerb stop counts as
   home and is removed by its check.
-- **The window.** Arrival order is kept among trucks standing at the kerb and on the ways in. A
-  truck on its way from the gate to the kerb stop is not yet standing: a dock freed in that minute
-  goes to the next truck to reach the gate, and a truck reaching the gate then may join a way in
-  ahead of it. Not fixed in round 2: counting the trucks on their way would need them visited every
-  tick (they drive on the road, out of the parking phase) or a per-building count kept in sync and
-  rebuilt on load, more machinery than the minute is worth.
-- **Convoys at a drive-through gate.** Trucks reaching the gate faster than the line moves up (the
-  yard speed is 3 m/s) stand at the gate's lane point, off the lane buckets, until the truck ahead
-  is a body and 1 m in; several arriving within a few seconds are drawn over each other there for
-  those seconds, as trucks at a gate always were for the tick of their commit.
+- **The window, closed** (round 3). Rounds 1 and 2 decided at the gate and sent a refused truck
+  on to the kerb stop, a drive of up to a minute during which it was in no order: a dock freed
+  then went to the next truck to reach the gate, which could also join a way in ahead of it. The
+  decision is now taken where the truck reaches the line and the refused truck stands in the line
+  from that tick (`AtKerb`, in the queue list), so the next grant already sees it: no truck is
+  ever on its way into the line. Trucks reaching the line's end in the same tick are decided in
+  agent order, as two trucks at a gate always were.
+- **Convoys at a drive-through gate.** Trucks reaching the line faster than the way in's line
+  moves up (the yard speed is 3 m/s) stand where they left the lane, the first place before the
+  gate, off the lane buckets, until the truck ahead is a body and 1 m in; several arriving within
+  a few seconds are drawn over each other there for those seconds.
 
 **State and saves.** `ParkingTripPhase` gains `ToKerb` (format 128's `GateToDoor`, loaded by a
 serde alias) and `AtKerb`; the row stays 56 bytes. A truck waiting on a drive-through way in is
 `AtKerb` with the dock in `destination` (round 2: the row's existing field, saved as before).
 Save format 129 (`PRE_KERB_FREIGHT_SAVE_VERSION` 128 loads as 129 does): a 128 reader cannot read `AtKerb`. A format 128 truck in `GateToDoor`
 loads as `ToKerb`: on its access path from the gate it is taken to the kerb stop and waits there.
-Load validation accepts an `AtKerb` row, which holds no car and no place.
+Load validation accepts an `AtKerb` row, which holds no car and no place. Round 3 adds no saved
+field: a truck in the line before the gate is an `AtKerb` row whose lane point is where it waits.
 
 **Recovery.** A freight carrier never enters a building on a failure either: one whose ingress
 plan a road edit dropped goes back onto its lane at the lane point and plans again (`return_to_lane`,
@@ -4492,7 +4534,13 @@ O(C + W log W + W × (docks of one building × W + way points) + G × Q) per tic
 W waiting trucks and G grants, the list reused; a truck on a way in costs one pull-in polyline
 (O(way points), on the stack) per tick, and the gate commit one per drive-through dock. A dispatch
 from a building without a dock: one pass over that moment's kerb starts. The check: one row read
-for the floor. No per-tick allocation.
+for the floor. No per-tick allocation. Round 3: the movement pass reads the trip row of a car on
+its planned detach lane (before, only at its detach), and for a truck bound for a gate counts its
+building's waiting trucks in the kept list, O(log W); the queue pass finds each building's gate
+line once per tick (its gate entrance, O(lanes on the gate's edge + lane points)) and each kerb
+truck's place beside its lane point (O(edge points)); the kept list costs O(W log W) at the
+commit's end and O(W) before the movement pass, its storage reused; a load rebuilds it in the
+existing O(agents) pass. A city without docks keeps an empty list.
 
 **Liveness runs** (the ignored 14-day producer-town runs of `PARK-20` and `PARK-21`,
 `scenario/freight_yard_cases.rs`, release `$TEST_BINARY` of the branch, 2026-11-23; the same
@@ -4553,23 +4601,40 @@ was a 14-day-end value of a diverged city (the metric is the one earlier rounds'
 often; `dev`'s own run at its own baseline has no note), and round 1's re-recorded baseline is the
 band this round is inside. The baseline is re-recorded again from this round's binary.
 
+**Round 3 checks** (2026-11-23, the line before the gate; release `$TEST_BINARY` of the branch,
+`RAYON_NUM_THREADS=6`). `sim02_gate.py envelope determinism`: PASS, and every record, the
+determinism record included, equal to `dev`'s own run: the four test cities have no dock, so no
+truck stops at a line. The 14-day yard runs, before (`dev` with the runs' new measure, the sum of
+a queued truck's moves between frames from its grant to its dock) and after: with docks, 163 in a
+dock before and 171 after, 0 outside docks, 0 failed, expired or vanished both; queued 2 before,
+1 after; the drive from grant to dock 599 m before (both trucks: round the block), 18 m after.
+With drive-through docks: 163 (13 driven through) before, 162 (13) after, 0 failed, expired or
+vanished; queued 3 (1 on a way in) before, 2 (1) after; drive from grant to dock longest 599 m
+and mean 404 m before, 18 m and 17 m after. The longest queue wait the runs print (stamp to pull-in, the
+figure rounds 1 and 2 report) falls from 98 to 3.2, the loops having been most of it. Controls (car gates) 149 kerb
+deliveries, 0 failed. The runs diverge after the first queued truck, so their other counts
+differ by a few deliveries.
+
 **Owner's choices.**
 
 1. The floor: 2 game minutes (`KERB_STAND_FLOOR_MINUTES`).
-2. Where a queued truck waits: the building's kerb stop (owner's decision 2026-11-22), the second
-   and third in a line behind it along the kerb, 9 m apart, moving up as the first leaves; past
-   the edge's end they stand at the last place.
+2. Where a queued truck waits: since round 3 (the owner's "solution A", 2026-11-23) in a line at
+   the kerb before the freight gate, the first place 9 m short of the gate's lane point (its front
+   5 m short), the next ones 9 m apart against the traffic, moving up forward as the first leaves;
+   past the near lane's start they stand at the last place. Rounds 1 and 2 put it at the door's
+   kerb stop (owner's decision 2026-11-22). Open: the 9 m kept for the mouth; another lot's
+   access within the line is not avoided.
 3. Drive-through yards: queue on the yard's way in (owner's rule 2026-11-22), built in round 2:
    9 m per place (the kerb line's spacing), holding short of the truck ahead; a timed-out truck is
-   removed where it stands; the kerb line takes the rest. Convoys stand at the gate's lane point
-   for the seconds the line needs to move up.
+   removed where it stands; the kerb line takes the rest. Convoys stand at the first place before
+   the gate for the seconds the line needs to move up.
 4. The truck's inset: 1.4 m, the body half-width plus 0.1 m; the stop lies over most of the
    kerbside lane where there is no parking lane.
 
 #### Stage C: waiting (`PARK-22`)
 
-Since `PARK-36` a truck refused a dock waits at the building's kerb stop, in arrival order, and
-never goes to the door ([the dock queue](#kerb-deliveries-and-the-dock-queue-park-36-as-built)).
+Since `PARK-36` a truck refused a dock waits at the kerb before the building's freight gate, in
+arrival order, and never goes to the door ([the dock queue](#kerb-deliveries-and-the-dock-queue-park-36-as-built)).
 The plan below is kept for its authored waiting positions; its bounded wait and its door are
 superseded.
 
