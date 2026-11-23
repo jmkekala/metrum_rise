@@ -201,6 +201,13 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
                 trip.freight_gate && trip.phase == ParkingTripPhase::PullIn,
                 slices,
             );
+            // Past the near kerb, the hop's second point, it has crossed (`PARK-32`).
+            if *slices.crossing_lane.get(i) != u32::MAX
+                && (reached_door
+                    || local_access_target_segment(next_pos, path).is_none_or(|next| next > 1))
+            {
+                *slices.crossing_lane.get_mut(i) = u32::MAX;
+            }
             if crate::debug::Channel::Traffic.enabled()
                 && local_access_should_log_step(current, next_pos, path, reached_door)
             {

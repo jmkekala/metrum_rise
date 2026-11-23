@@ -212,6 +212,8 @@ pub(super) unsafe fn clear_network_state(i: usize, slices: &MovementSlices) {
         *slices.lane_change_length.get_mut(i) = 0.0;
         *slices.overtake_blocked_time.get_mut(i) = 0.0;
         *slices.overtake_cooldown.get_mut(i) = 0.0;
+        *slices.crossing_lane.get_mut(i) = u32::MAX;
+        *slices.crossing_wait.get_mut(i) = 0.0;
         *slices.speed.get_mut(i) = 0.0;
         slices.path.get_mut(i).clear();
         *slices.path_idx.get_mut(i) = 0;

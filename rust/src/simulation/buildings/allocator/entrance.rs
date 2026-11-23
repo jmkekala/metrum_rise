@@ -15,6 +15,55 @@ use rayon::prelude::*;
 
 const INVALID_LANE_ID: usize = usize::MAX;
 
+/// The most vehicle lanes a car or truck crosses between its own lane and the kerb of the access
+/// it enters or leaves on the far side of its road (`PARK-32`): one, the oncoming lane of a 1+1
+/// road or the near lane of a two-lane one-way road. A crossing vehicle holds one entry in the
+/// crossed lane's bucket; a wider road would need one per lane.
+pub(crate) const MAX_CROSSED_LANES: usize = 1;
+
+/// How far a far-side access must lie from both ends of every vehicle lane of its road
+/// (`PARK-32`): a truck and a car can wait between the crossing and the junction mouth.
+pub(crate) const CROSSING_JUNCTION_CLEARANCE_M: f32 = 15.0;
+
+/// What a far-side access costs in the plan beyond its driven path (`PARK-32`): the expected wait
+/// for a gap, a fixed price since the wait is not known when the trip is planned.
+pub(crate) const CROSSING_PENALTY_S: f32 = 5.0;
+
+/// The vehicle lanes between lane `lane_id` and kerb `side` of its edge (`PARK-32`): how many,
+/// and the one nearest the lane. Lanes are ordered across the road by `lane_idx` (forward lanes
+/// `0, 1, ..` outward, backward `-1, -2, ..`), the kerb of side `-1` lying beyond the highest, as
+/// the frontage lanes take it (`derive_car_lanes`). O(lanes on the edge), allocation-free.
+pub(crate) fn lanes_crossed(lanes: &LaneSystem, lane_id: usize, side: i8) -> (usize, Option<usize>) {
+    let Some(lane) = lanes.lanes.get(lane_id) else {
+        return (0, None);
+    };
+    let Some(edge_lanes) = lanes.edge_lanes.get(&lane.edge_id) else {
+        return (0, None);
+    };
+    let mut count = 0;
+    let mut nearest: Option<(i8, usize)> = None;
+    for &other in edge_lanes {
+        let candidate = &lanes.lanes[other];
+        if candidate.lane_type != LaneType::Vehicle || other == lane_id {
+            continue;
+        }
+        // Distance across the road from `lane`, in lanes, toward the kerb of `side`.
+        let toward = if side == -1 {
+            candidate.lane_idx - lane.lane_idx
+        } else {
+            lane.lane_idx - candidate.lane_idx
+        };
+        if toward <= 0 {
+            continue;
+        }
+        count += 1;
+        if nearest.is_none_or(|(best, id)| (toward, other) < (best, id)) {
+            nearest = Some((toward, other));
+        }
+    }
+    (count, nearest.map(|(_, id)| id))
+}
+
 const ENTRANCE_FOOT_VALID: u8 = 0x01;
 const ENTRANCE_CAR_VALID: u8 = 0x02;
 const ENTRANCE_FOOT_FWD_VALID: u8 = 0x04;
@@ -517,11 +566,57 @@ impl BuildingAllocator {
         if let Some(edge) = graph.get_edge(edge_idx) {
             entrance.entrance_s_m = Self::project_point_to_polyline_s(&edge.physical_geometry,curb);
             entrance.curb_pos = curb;
-            entrance.vehicle_frontage_access = VehicleFrontageAccess::SameSideOnly;
+            entrance.vehicle_frontage_access =
+                Self::vehicle_access_at(graph, edge_idx, side, entrance.entrance_s_m, lanes);
             derive_car_lanes(&mut entrance,edge,side,lanes);
             derive_flags(&mut entrance);
         }
         entrance
+    }
+
+    /// The vehicle access of a door, lot, dock or gate at station `station_s` of edge `edge_idx`
+    /// on side `side` (`PARK-32`): `BothSides` when a car or truck may cross to or from the far
+    /// side there, `SameSideOnly` otherwise. Crossing needs a road without a raised median (the
+    /// edge's own policy, `ROAD-80`), at most [`MAX_CROSSED_LANES`] lanes between the far lane
+    /// and this kerb, and, when it crosses one, the station [`CROSSING_JUNCTION_CLEARANCE_M`]
+    /// from both ends of every vehicle lane. A far lane that crosses none (a one-way road's only
+    /// lane) is always allowed. O(lanes on the edge × their points), edit and load only.
+    pub(crate) fn vehicle_access_at(
+        graph: &RegionGraph,
+        edge_idx: usize,
+        side: i8,
+        station_s: f32,
+        lanes: &LaneSystem,
+    ) -> VehicleFrontageAccess {
+        let Some(edge) = graph.get_edge(edge_idx).filter(|edge| edge.physical_length > 1e-6)
+        else {
+            return VehicleFrontageAccess::SameSideOnly;
+        };
+        if edge.effective_vehicle_frontage_access() == VehicleFrontageAccess::SameSideOnly {
+            return VehicleFrontageAccess::SameSideOnly;
+        }
+        let far = best_vehicle_lane(lanes, edge_idx, side == 1);
+        if far == INVALID_LANE_ID {
+            return VehicleFrontageAccess::SameSideOnly;
+        }
+        match lanes_crossed(lanes, far, side).0 {
+            // A one-way road's only lane serves both kerbs: nothing is crossed, nothing waits.
+            0 => return VehicleFrontageAccess::BothSides,
+            crossed if crossed > MAX_CROSSED_LANES => return VehicleFrontageAccess::SameSideOnly,
+            _ => {}
+        }
+        let point = Self::sample_pos_on_edge(graph, edge_idx, station_s / edge.physical_length);
+        let clear = lanes.edge_lanes.get(&edge_idx).is_some_and(|ids| {
+            ids.iter().map(|&id| &lanes.lanes[id]).filter(|lane| lane.lane_type == LaneType::Vehicle).all(|lane| {
+                let d = Self::project_point_to_polyline_s(&lane.geometry, point);
+                d >= CROSSING_JUNCTION_CLEARANCE_M && lane.length - d >= CROSSING_JUNCTION_CLEARANCE_M
+            })
+        });
+        if clear {
+            VehicleFrontageAccess::BothSides
+        } else {
+            VehicleFrontageAccess::SameSideOnly
+        }
     }
 
     /// Re-derives a cached entrance's lane ids from its retained edge and side, so a copy kept
@@ -566,6 +661,9 @@ impl BuildingAllocator {
         }
         entrance.entrance_s_m =
             Self::project_point_to_polyline_s(&edge.physical_geometry, entrance.door_pos);
+        // The far side only where a vehicle may cross to it (`PARK-32`).
+        entrance.vehicle_frontage_access =
+            Self::vehicle_access_at(graph, edge_idx, side, entrance.entrance_s_m, lanes);
         let entrance_t = entrance.entrance_s_m / edge.physical_length;
         let edge_pos = Self::sample_pos_on_edge(graph, edge_idx, entrance_t);
         derive_foot_lanes(&mut entrance, edge, side, lanes);
@@ -1081,13 +1179,19 @@ fn local_access_distance_car(
     let edge_pos = entrance_edge_pos(entrance, graph)?;
     let normal = entrance_edge_normal(entrance, graph)?;
     let edge = graph.edge(entrance.edge_idx);
-    // Each side's kerb: a pocket edge's lie off its centreline (`ROAD-95`, D17).
-    let same_side_cross_point = edge_pos + normal * edge.frontage_half_width_m(entrance.side);
-    let opposite_side_cross_point = edge_pos - normal * edge.frontage_half_width_m(-entrance.side);
+    // The near kerb: a pocket edge's lies off its centreline (`ROAD-95`, D17). From it the
+    // crossing runs straight to the far lane (`PARK-32`), and its wait is priced as driven metres.
+    // A door point on the road (a kerb stop) is reached straight from the lane point.
+    let kerb = edge.frontage_half_width_m(entrance.side);
+    let same_side_cross_point = if (entrance.door_pos - edge_pos).dot(normal) < kerb {
+        entrance.door_pos
+    } else {
+        edge_pos + normal * kerb
+    };
     Some(
         (entrance.door_pos - same_side_cross_point).length()
-            + (same_side_cross_point - opposite_side_cross_point).length()
-            + (opposite_side_cross_point - chosen_lane_point).length(),
+            + (same_side_cross_point - chosen_lane_point).length()
+            + CROSSING_PENALTY_S * AGENT_DRIVEWAY_SPEED_MS,
     )
 }
 
@@ -1564,5 +1668,62 @@ mod tests {
             graph.edge(id).vehicle_frontage_access,
             VehicleFrontageAccess::BothSides
         );
+    }
+
+    // `PARK-32`: the far side where a vehicle crosses at most one lane, 15 m from the lanes'
+    // ends; a one-way road's only lane serves both kerbs anywhere; the edge's stored policy
+    // still forbids it.
+    #[test]
+    fn far_side_access_follows_lanes_crossed_and_junction_clearance() {
+        use VehicleFrontageAccess::{BothSides, SameSideOnly};
+        let mut graph = RegionGraph::new();
+        let start = graph.add_node(Vector3::ZERO, NodeType::Junction);
+        let end = graph.add_node(Vector3::new(100.0, 0.0, 0.0), NodeType::Junction);
+        let points = vec![Vector3::ZERO, graph.node(end).pos];
+        let id = graph.add_edge(Edge {
+            start_node: start,
+            end_node: end,
+            primary_type: TransitType::Road,
+            allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
+            sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
+            width: 7.0,
+            fwd_lanes: 1,
+            bkw_lanes: 1,
+            physical_length: 100.0,
+            physical_geometry: points.clone(),
+            geometry: points,
+            vehicle_frontage_access: BothSides,
+            ..Default::default()
+        });
+        // (forward lanes, backward lanes, side, station, access)
+        let cases = [
+            (1, 1, -1, 50.0, BothSides),
+            (1, 1, 1, 50.0, BothSides),
+            (1, 1, 1, 10.0, SameSideOnly),
+            (1, 1, -1, 90.0, SameSideOnly),
+            (2, 2, 1, 50.0, SameSideOnly),
+            (2, 2, -1, 50.0, SameSideOnly),
+            (1, 0, 1, 5.0, BothSides),
+            (1, 0, -1, 50.0, SameSideOnly),
+            (2, 0, 1, 50.0, BothSides),
+            (2, 0, 1, 10.0, SameSideOnly),
+            (3, 0, 1, 50.0, SameSideOnly),
+        ];
+        for (fwd, bkw, side, station, want) in cases {
+            let attributes =
+                crate::simulation::network::road_types::RoadAttributes::of_edge(graph.edge(id));
+            graph.set_edge_cross_section(id, fwd, bkw, None, Default::default(), attributes);
+            let mut lanes = LaneSystem::new();
+            lanes.rebuild(&mut graph);
+            assert_eq!(
+                BuildingAllocator::vehicle_access_at(&graph, id, side, station, &lanes),
+                want,
+                "{fwd}+{bkw} side {side} at {station} m"
+            );
+        }
+        graph.edge_mut(id).vehicle_frontage_access = SameSideOnly;
+        let mut lanes = LaneSystem::new();
+        lanes.rebuild(&mut graph);
+        assert_eq!(BuildingAllocator::vehicle_access_at(&graph, id, 1, 50.0, &lanes), SameSideOnly);
     }
 }

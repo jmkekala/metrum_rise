@@ -20,6 +20,8 @@ macro_rules! enter_lane {
             transit: s.transit.get_mut(i),
         }
         .enter(&$network.lane_system, mode, id, distance, node);
+        // On a lane, a crossing is over (`PARK-32`).
+        *s.crossing_lane.get_mut(i) = u32::MAX;
     }};
 }
 pub(super) use enter_lane;
@@ -43,6 +45,7 @@ macro_rules! hold_for_lane_attach {
             speed: s.speed.get_mut(i),
         }
         .hold(&$network.lane_system, mode, id, distance, node);
+        *s.crossing_lane.get_mut(i) = u32::MAX;
     }};
 }
 pub(super) use hold_for_lane_attach;
@@ -140,6 +143,9 @@ pub(crate) struct MovementSlices<'a> {
     pub(super) lane_change_start_d: RawSlice<f32>,
     pub(super) lane_change_length: RawSlice<f32>,
     pub(super) overtake_blocked_time: RawSlice<f32>,
+    // The lane crossed on a far-side access leg and the wait for a gap there (`PARK-32`).
+    pub(super) crossing_lane: RawSlice<u32>,
+    pub(super) crossing_wait: RawSlice<f32>,
     pub(super) overtake_cooldown: RawSlice<f32>,
     pub(super) tmode: RawSlice<u8>,
     // Read only: with `tmode`, the body's half length in a lane (`lane_half_length`).
@@ -208,6 +214,8 @@ impl<'a> MovementSlices<'a> {
             lane_change_start_d: RawSlice::new(&mut agents.lane_change_start_d),
             lane_change_length: RawSlice::new(&mut agents.lane_change_length_m),
             overtake_blocked_time: RawSlice::new(&mut agents.overtake_blocked_time_s),
+            crossing_lane: RawSlice::new(&mut agents.crossing_lane),
+            crossing_wait: RawSlice::new(&mut agents.crossing_wait_s),
             overtake_cooldown: RawSlice::new(&mut agents.overtake_cooldown_s),
             tmode: RawSlice::new(&mut agents.transit_mode),
             vehicle_type: RawSlice::new(&mut agents.vehicle_type),

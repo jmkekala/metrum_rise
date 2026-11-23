@@ -8,7 +8,7 @@ use super::geometry::{
     same_side_car_lane, segment_distance,
 };
 use crate::config::{AGENT_DRIVEWAY_SPEED_MS, AGENT_WALK_SPEED_MS};
-use crate::simulation::buildings::allocator::BuildingEntrance;
+use crate::simulation::buildings::allocator::{BuildingEntrance, CROSSING_PENALTY_S};
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::types::VehicleFrontageAccess;
@@ -43,13 +43,20 @@ pub(in crate::simulation::economy::agents::tick) fn local_access_distance(
     let edge_pos = entrance_edge_pos(entrance, graph)?;
     let normal = entrance_edge_normal(entrance, graph)?;
     let edge = graph.edge(entrance.edge_idx);
-    // Each side's kerb: a pocket edge's lie off its centreline (`ROAD-95`, D17).
-    let same_side_cross_point = edge_pos + normal * edge.frontage_half_width_m(entrance.side);
-    let opposite_side_cross_point = edge_pos - normal * edge.frontage_half_width_m(-entrance.side);
+    // The near kerb: a pocket edge's lies off its centreline (`ROAD-95`, D17). From it the
+    // crossing runs straight to the far lane (`PARK-32`), and its wait is priced as the metres
+    // driven at driveway speed in `CROSSING_PENALTY_S`.
+    // A door point on the road (a kerb stop) is reached straight from the lane point.
+    let kerb = edge.frontage_half_width_m(entrance.side);
+    let same_side_cross_point = if (entrance.door_pos - edge_pos).dot(normal) < kerb {
+        entrance.door_pos
+    } else {
+        edge_pos + normal * kerb
+    };
     Some(
         segment_distance(entrance.door_pos, same_side_cross_point)
-            + segment_distance(same_side_cross_point, opposite_side_cross_point)
-            + segment_distance(opposite_side_cross_point, chosen_lane_point),
+            + segment_distance(same_side_cross_point, chosen_lane_point)
+            + CROSSING_PENALTY_S * AGENT_DRIVEWAY_SPEED_MS,
     )
 }
 

@@ -1184,6 +1184,8 @@ impl AgentSystem {
             lane_change_from_lane_id: u32::MAX,
             lane_change_start_d: 0.0,
             lane_change_length_m: 0.0,
+            crossing_lane: u32::MAX,
+            crossing_wait_s: 0.0,
             overtake_blocked_time_s: 0.0,
             overtake_cooldown_s: 0.0,
             speed: 0.0,

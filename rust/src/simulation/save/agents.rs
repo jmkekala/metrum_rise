@@ -86,6 +86,9 @@ pub(super) fn save_agents(
 ) -> SaveLoadResult<()> {
     lanes::save_lane_references(tx, graph, network, maps)?;
     let mut stmt = tx.prepare("INSERT INTO agents(agent_id, home_building, household_id, age_group, pending_household_size, freight_shipment_id, work_building, current_building, target_building, freight_target_border_node, current_node, planned_attach_node, planned_detach_node, planned_attach_lane_id, planned_detach_lane_id, planned_attach_lane_d, planned_detach_lane_d, access_flags, next_replan_time, current_edge, current_lane_id, lane_distance, pos_x, pos_y, activity, transit, transit_mode, happiness, journey_start_time, schedule_seed, cached_commute_minutes, next_commute_refresh_time, next_departure_day, next_departure_minute, next_departure_origin_building, next_departure_target_building, next_departure_activity, cached_schedule_work_building, cached_work_profile_index, has_car, vehicle_type, current_path_index, pending_household_adults, pending_household_elders, speed, planned_target_building, planned_activity, network_replan_failures, lane_change_from_lane_id, lane_change_start_d, lane_change_length_m, overtake_blocked_time_s, overtake_cooldown_s, job_lock_until_day, consecutive_unpaid_days, parking_trip) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41, ?42, ?43, ?44, ?45, ?46, ?47, ?48, ?49, ?50, ?51, ?52, ?53, ?54, ?55, ?56)")?;
+    let mut crossing_stmt = tx.prepare(
+        "INSERT INTO agent_crossings(agent_id, lane_id, wait_s) VALUES (?1, ?2, ?3)",
+    )?;
     let mut path_stmt = tx.prepare(
         "INSERT INTO agent_path_nodes(agent_id, step_index, node_id) VALUES (?1, ?2, ?3)",
     )?;
@@ -177,6 +180,14 @@ pub(super) fn save_agents(
             serde_json::to_string(&agents.parking_trip[i]).map_err(|e| SaveLoadError::custom(e.to_string()))?
         ])?;
 
+        // Only a vehicle crossing its road, or waiting to, has a row (`PARK-32`).
+        if agents.crossing_lane[i] != u32::MAX || agents.crossing_wait_s[i] != 0.0 {
+            crossing_stmt.execute(params![
+                usize_to_i64(i)?,
+                i64::from(agents.crossing_lane[i]),
+                agents.crossing_wait_s[i]
+            ])?;
+        }
         for (idx, &nid) in agents.current_path[i].iter().enumerate() {
             path_stmt.execute(params![
                 usize_to_i64(i)?,
@@ -188,7 +199,11 @@ pub(super) fn save_agents(
     Ok(())
 }
 
-pub(super) fn load_agents(conn: &Connection, sim_time: f32) -> SaveLoadResult<AgentSystem> {
+pub(super) fn load_agents(
+    conn: &Connection,
+    sim_time: f32,
+    crossings_saved: bool,
+) -> SaveLoadResult<AgentSystem> {
     let mut car_paths = HashMap::new();
     {
         let mut stmt = conn.prepare("SELECT agent_id, step_index, node_id FROM agent_path_nodes ORDER BY agent_id, step_index")?;
@@ -307,6 +322,19 @@ pub(super) fn load_agents(conn: &Connection, sim_time: f32) -> SaveLoadResult<Ag
     if !car_paths.is_empty() {
         return Err(SaveLoadError::custom("orphan agent path nodes"));
     }
+    if crossings_saved {
+        let mut stmt = conn.prepare("SELECT agent_id, lane_id, wait_s FROM agent_crossings ORDER BY agent_id")?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            let aid = i64_to_usize(row.get(0)?)?;
+            let wait_s: f32 = row.get(2)?;
+            if aid >= agents.len() || !wait_s.is_finite() || wait_s < 0.0 {
+                return Err(SaveLoadError::custom("invalid agent crossing"));
+            }
+            agents.crossing_lane[aid] = i64_to_u32(row.get(1)?)?;
+            agents.crossing_wait_s[aid] = wait_s;
+        }
+    }
     Ok(agents)
 }
 
@@ -358,6 +386,8 @@ pub(super) fn push_loaded_agent(agents: &mut AgentSystem, rec: LoadedAgentRecord
         lane_change_from_lane_id: u32::MAX,
         lane_change_start_d: 0.0,
         lane_change_length_m: 0.0,
+        crossing_lane: u32::MAX,
+        crossing_wait_s: 0.0,
         overtake_blocked_time_s: 0.0,
         overtake_cooldown_s: 0.0,
         speed: if rec.transit_mode == MODE_CAR {

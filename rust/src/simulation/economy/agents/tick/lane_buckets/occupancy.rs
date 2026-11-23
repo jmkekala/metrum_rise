@@ -5,13 +5,16 @@
 //! The snapshot is a function of the agents' lane state: each live lane agent's
 //! `(lane_distance, index, half_length)` in its current lane's bucket (`LaneEntry`), except a walker standing with no route
 //! (`lane_bucket_member`, `TRAFFIC-37`), plus a source-lane ghost while a lane
-//! change is under way, every bucket sorted by distance with an index tiebreak. A fill rebuilds
+//! change is under way, plus each access agent crossing a lane in that lane's bucket at its
+//! `lane_distance` (`crossing_bucket_lane`, `PARK-32`), every bucket sorted by distance with an
+//! index tiebreak. A fill rebuilds
 //! it from every agent on the shared pool; between fills it follows appends and swap-removes
 //! entry by entry (`SIM-02-K` part 4).
 
 use super::super::runtime::PAR_THRESHOLD;
 use super::super::traffic::{
-    LANE_CHANGE_FINISH_EPS_M, lane_bucket_member, lane_half_length, live_lane_bucket_transit,
+    LANE_CHANGE_FINISH_EPS_M, crossing_bucket_lane, lane_bucket_member, lane_half_length,
+    live_lane_bucket_transit,
 };
 use crate::config::IDM_S_MIN;
 use crate::simulation::economy::agents::data::AgentSystem;
@@ -54,6 +57,7 @@ struct FillInput<'a> {
     lanes: &'a [usize],
     distances: &'a [f32],
     transit: &'a [u8],
+    crossing: &'a [u32],
     modes: &'a [u8],
     vehicle_types: &'a [u8],
     change_from: &'a [u32],
@@ -133,6 +137,12 @@ impl AgentSystem {
         agent_idx: usize,
         lane_count: usize,
     ) -> [Option<usize>; 2] {
+        if let Some(lane) = crossing_bucket_lane(
+            self.agents.transit[agent_idx],
+            self.agents.crossing_lane[agent_idx],
+        ) {
+            return [(lane < lane_count).then_some(lane), None];
+        }
         if !live_lane_bucket_transit(self.agents.transit[agent_idx])
             || !lane_bucket_member(
                 self.agents.transit_mode[agent_idx],
@@ -221,6 +231,7 @@ impl AgentSystem {
         }
         let groups = &mut scratch.groups[..chunk_count * range_count];
         let transit = &self.agents.transit[..n];
+        let crossing = &self.agents.crossing_lane[..n];
         let lanes = &self.agents.current_lane_id[..n];
         let modes = &self.agents.transit_mode[..n];
         let flags = &self.agents.access_flags[..n];
@@ -236,6 +247,7 @@ impl AgentSystem {
                     .map(|(chunk, ((((out, transit), lanes), modes), flags))| {
                         let columns = AgentColumns {
                             transit,
+                            crossing: &crossing[chunk * KEY_CHUNK..],
                             lanes,
                             modes,
                             flags,
@@ -255,6 +267,7 @@ impl AgentSystem {
                 .map(|(chunk, ((((out, transit), lanes), modes), flags))| {
                     let columns = AgentColumns {
                         transit,
+                        crossing: &crossing[chunk * KEY_CHUNK..],
                         lanes,
                         modes,
                         flags,
@@ -271,6 +284,7 @@ impl AgentSystem {
             lanes,
             distances: &self.agents.lane_distance[..n],
             transit,
+            crossing,
             modes,
             vehicle_types: &self.agents.vehicle_type[..n],
             change_from: &self.agents.lane_change_from_lane_id[..n],
@@ -343,6 +357,8 @@ impl AgentSystem {
 // One agent chunk's columns the grouping reads.
 struct AgentColumns<'a> {
     transit: &'a [u8],
+    // From the chunk's first agent on (the chunk's own length is `transit`'s).
+    crossing: &'a [u32],
     lanes: &'a [usize],
     modes: &'a [u8],
     flags: &'a [u8],
@@ -368,6 +384,10 @@ fn group_lane_agents(
             {
                 out[lid / range_len].push((chunk * KEY_CHUNK + offset) as u32);
             }
+        } else if let Some(lid) = crossing_bucket_lane(transit, columns.crossing[offset])
+            && lid < lane_count
+        {
+            out[lid / range_len].push((chunk * KEY_CHUNK + offset) as u32);
         }
     }
     live
@@ -395,7 +415,8 @@ fn fill_lane_range(
     for chunk in 0..input.chunk_count {
         for &agent in &input.groups[chunk * input.range_count + r] {
             let agent = agent as usize;
-            let lid = input.lanes[agent];
+            let lid = crossing_bucket_lane(input.transit[agent], input.crossing[agent])
+                .unwrap_or(input.lanes[agent]);
             let local = lid - start;
             if !flags[local] {
                 flags[local] = true;
@@ -421,6 +442,11 @@ fn fill_lane_range(
         let mut lead_held = false;
         for j in (0..bucket.len().saturating_sub(1)).rev() {
             let (rear, lead) = (bucket[j].1, bucket[j + 1].1);
+            // A crossing vehicle is not on the lane it holds: nothing moves it back.
+            if crossing_bucket_lane(input.transit[rear], input.crossing[rear]).is_some() {
+                lead_held = false;
+                continue;
+            }
             // Walkers walk through each other's lane distance to pass (`walker_crowd`); they
             // queue, bodies the minimum gap apart, only behind one standing still or held in
             // the queue ahead of it, whose speed is still the step it took before the hold.

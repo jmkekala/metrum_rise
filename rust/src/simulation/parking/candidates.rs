@@ -510,8 +510,8 @@ impl ParkingSystem {
     }
 
     /// A kerbside bay's access on its own road side: entered from the traffic lanes beside it,
-    /// or from either direction when a one-way road's lanes serve both kerbs. O(lanes on the
-    /// edge), allocation-free.
+    /// or across a one-way road whose lanes do not serve its kerb where a vehicle may cross
+    /// there (`PARK-32`). O(lanes on the edge × their points), allocation-free.
     fn kerb_place_entrance(
         &self,
         p: usize,
@@ -534,11 +534,7 @@ impl ParkingSystem {
         let mut entrance = BuildingEntrance {
             edge_idx,
             side: if right { -1 } else { 1 },
-            vehicle_frontage_access: if serving > 0 {
-                VehicleFrontageAccess::SameSideOnly
-            } else {
-                VehicleFrontageAccess::BothSides
-            },
+            vehicle_frontage_access: VehicleFrontageAccess::SameSideOnly,
             entrance_s_m: BuildingAllocator::project_point_to_polyline_s(
                 &edge.physical_geometry,
                 curb,
@@ -547,6 +543,17 @@ impl ParkingSystem {
             curb_pos: curb,
             ..BuildingEntrance::default()
         };
+        // A kerb its road's lanes do not serve is reached across them where a vehicle may cross
+        // there (`PARK-32`); a two-way road's kerbside places stay on their own side.
+        if serving == 0 {
+            entrance.vehicle_frontage_access = BuildingAllocator::vehicle_access_at(
+                graph,
+                edge_idx,
+                entrance.side,
+                entrance.entrance_s_m,
+                &network.lane_system,
+            );
+        }
         BuildingAllocator::refresh_entrance_lanes(&mut entrance, graph, &network.lane_system);
         Some(entrance)
     }
@@ -635,14 +642,16 @@ impl ParkingSystem {
         entrance.curb_pos = curb;
         let pos = self.places.position[p];
         entrance.door_pos = Vector2::new(pos[0], pos[2]);
-        entrance.vehicle_frontage_access =
-            crate::simulation::network::types::VehicleFrontageAccess::SameSideOnly;
-        if entrance.side == -1 {
-            entrance.car_lane_bkw = usize::MAX;
-        } else {
-            entrance.car_lane_fwd = usize::MAX;
-        }
+        // Entered and left across the road where a vehicle may cross there (`PARK-32`).
+        entrance.vehicle_frontage_access = BuildingAllocator::vehicle_access_at(
+            graph,
+            entrance.edge_idx,
+            entrance.side,
+            entrance.entrance_s_m,
+            &network.lane_system,
+        );
         network.lane_system.edge_lanes.get(&entrance.edge_idx)?;
+        BuildingAllocator::refresh_entrance_lanes(&mut entrance, graph, &network.lane_system);
         Some(entrance)
     }
 

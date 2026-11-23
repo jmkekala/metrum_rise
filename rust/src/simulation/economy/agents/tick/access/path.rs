@@ -87,15 +87,19 @@ pub(crate) fn local_access_path(
         let edge_pos = entrance_edge_pos(entrance, graph)?;
         let normal = entrance_edge_normal(entrance, graph)?;
         let edge = graph.edge(entrance.edge_idx);
-        // Each side's kerb: a pocket edge's lie off its centreline (`ROAD-95`, D17).
-        let same_side_cross_point = edge_pos + normal * edge.frontage_half_width_m(entrance.side);
-        let opposite_side_cross_point =
-            edge_pos - normal * edge.frontage_half_width_m(-entrance.side);
+        // The near kerb: a pocket edge's lies off its centreline (`ROAD-95`, D17). From there
+        // the crossing runs straight over the near lane to the far lane point (`PARK-32`).
+        // A door point on the road (a kerb stop) is reached straight from the lane point.
+        let kerb = edge.frontage_half_width_m(entrance.side);
+        let same_side_cross_point = if (entrance.door_pos - edge_pos).dot(normal) < kerb {
+            entrance.door_pos
+        } else {
+            edge_pos + normal * kerb
+        };
         path.points[0] = entrance.door_pos;
         path.points[1] = same_side_cross_point;
-        path.points[2] = opposite_side_cross_point;
-        path.points[3] = lane_point;
-        path.count = 4;
+        path.points[2] = lane_point;
+        path.count = 3;
     } else {
         if lane_id != same_side_car_lane(entrance)
             && entrance.vehicle_frontage_access == VehicleFrontageAccess::BothSides

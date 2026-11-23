@@ -6,7 +6,12 @@ use super::SaveLoadError;
 use crate::simulation::network::types::{EdgeClass, NodeType, TransitType, VehicleFrontageAccess};
 
 /// Current save format version (`SIM-02` broke older saves).
-pub const SAVE_VERSION: i64 = 129;
+pub const SAVE_VERSION: i64 = 130;
+
+/// Format 129, saved before a car or truck could cross its road to a far-side access
+/// (`PARK-32`): it has no `agent_crossings` table. It loads as format 130 does with no vehicle
+/// crossing or waiting to cross: none could under its format.
+pub const PRE_CROSSING_SAVE_VERSION: i64 = 129;
 
 /// Format 128, saved before a freight truck could stand at a kerb stop (`PARK-36`): its trip
 /// rows hold no `AtKerb` phase, and a truck sent on from a full yard is `GateToDoor`, loaded as
@@ -875,6 +880,11 @@ CREATE TABLE agents(
     job_lock_until_day INTEGER NOT NULL,
     consecutive_unpaid_days INTEGER NOT NULL,
     parking_trip TEXT NOT NULL
+);
+CREATE TABLE agent_crossings(
+    agent_id INTEGER PRIMARY KEY,
+    lane_id INTEGER NOT NULL,
+    wait_s REAL NOT NULL
 );
 CREATE TABLE agent_path_nodes(
     agent_id INTEGER NOT NULL,

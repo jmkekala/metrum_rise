@@ -580,6 +580,7 @@ pub(crate) fn load_road_graph(path: &Path) -> SaveLoadResult<RegionGraph> {
         row.get(0)
     })?;
     let retired_holes = version == SAVE_VERSION
+        || version == PRE_CROSSING_SAVE_VERSION
         || version == PRE_KERB_FREIGHT_SAVE_VERSION
         || version == PRE_DROP_OFF_SAVE_VERSION
         || version == PRE_FIXED_LOOK_SAVE_VERSION
@@ -611,8 +612,10 @@ pub(crate) fn load_from_sqlite(
     // format 123 dock rows (`PARK-19`), format 124 their drives (`PARK-21`), format 125 their
     // stands (`PARK-23`), format 126 car places' long ways (`PARK-25`), format 127 the
     // fixed-look flag in an authored plant's variant byte (`VEG-29`), format 128 drop-offs
-    // (`PARK-34`).
-    let docks_saved = version == SAVE_VERSION
+    // (`PARK-34`), format 130 vehicles crossing their road (`PARK-32`).
+    let crossings_saved = version == SAVE_VERSION;
+    let docks_saved = crossings_saved
+        || version == PRE_CROSSING_SAVE_VERSION
         || version == PRE_KERB_FREIGHT_SAVE_VERSION
         || version == PRE_DROP_OFF_SAVE_VERSION
         || version == PRE_FIXED_LOOK_SAVE_VERSION
@@ -733,7 +736,7 @@ pub(crate) fn load_from_sqlite(
     let mut resource_extraction =
         world::load_resource_extraction(&conn, allocator.buildings.len())?;
     let mut agriculture = world::load_agriculture(&conn, allocator.buildings.len())?;
-    let mut agents = agents::load_agents(&conn, time_r.5)?;
+    let mut agents = agents::load_agents(&conn, time_r.5, crossings_saved)?;
     allocator.building_handles = handles::load(
         &conn,
         handles::HandleKind::Buildings,

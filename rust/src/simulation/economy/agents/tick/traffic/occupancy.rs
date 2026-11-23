@@ -3,8 +3,8 @@
 //! Lane occupancy, gap, and entry-claim helpers.
 
 use super::super::super::{
-    ACCESS_PLAN_VALID, ACCESS_WALK_STRANDED, MODE_WALK, TRANSIT_INTERSECTION, TRANSIT_NETWORK,
-    VEHICLE_FREIGHT_DELIVERY,
+    ACCESS_PLAN_VALID, ACCESS_WALK_STRANDED, MODE_WALK, TRANSIT_ACCESS_EGRESS,
+    TRANSIT_ACCESS_INGRESS, TRANSIT_INTERSECTION, TRANSIT_NETWORK, VEHICLE_FREIGHT_DELIVERY,
 };
 use super::super::claims::LaneClaimContext;
 use crate::config::{
@@ -89,6 +89,42 @@ pub(in crate::simulation::economy::agents) fn lane_attach_slot_clear(
         }
     }
     true
+}
+
+/// Whether a vehicle of half length `my_half` may start across a lane at `crossing_d`
+/// (`PARK-32`): the slot is free ([`lane_attach_slot_clear`]), and no body behind it, upstream in
+/// the lane's own direction, lies within `approach_m` more, the distance a car at the lane's
+/// speed covers while the vehicle crosses. A body ahead needs only the slot: a queue standing
+/// past the crossing does not block it. The bodies' speeds are not read (the speed pass writes
+/// them meanwhile), so a body standing upstream within the margin blocks too. O(log bucket).
+pub(in crate::simulation::economy::agents::tick) fn crossing_gap_clear(
+    bucket: &[LaneEntry],
+    crossing_d: f32,
+    my_half: f32,
+    approach_m: f32,
+) -> bool {
+    if !lane_attach_slot_clear(bucket, crossing_d, my_half) {
+        return false;
+    }
+    let insert = bucket.partition_point(|entry| entry.0 < crossing_d);
+    insert == 0 || {
+        let behind = bucket[insert - 1];
+        crossing_d - behind.0 >= behind.2 + my_half + IDM_S_MIN + approach_m
+    }
+}
+
+/// The lane whose bucket holds an access agent crossing it (`PARK-32`): its `crossing_lane`
+/// while it is on an access leg, none otherwise (a stale value on a lane agent or indoors is
+/// never read). The one membership test of a crossing, for the fill, its patches and its
+/// rebuild check. O(1).
+#[inline(always)]
+pub(in crate::simulation::economy::agents) fn crossing_bucket_lane(
+    transit: u8,
+    crossing_lane: u32,
+) -> Option<usize> {
+    (crossing_lane != u32::MAX
+        && (transit == TRANSIT_ACCESS_INGRESS || transit == TRANSIT_ACCESS_EGRESS))
+        .then_some(crossing_lane as usize)
 }
 
 /// Returns whether a transit state should appear in live lane occupancy buckets.

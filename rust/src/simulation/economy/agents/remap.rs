@@ -226,6 +226,18 @@ impl AgentSystem {
                 // before the next tick can re-attach them.
             }
         }
+        // A crossing over a rebuilt lane loses its entry there; its next access step finds the
+        // lane it crosses now (`PARK-32`).
+        let agents = &self.agents;
+        let crossers: Vec<usize> = crate::thread_pools::install(|| {
+            scan_agents(agents.len(), |i| {
+                let lane = agents.crossing_lane[i];
+                (lane != u32::MAX && affected_lane_ids.contains(&(lane as usize))).then_some(i)
+            })
+        });
+        for i in crossers {
+            self.agents.crossing_lane[i] = u32::MAX;
+        }
         self.invalidate_lane_bucket_snapshot();
     }
 

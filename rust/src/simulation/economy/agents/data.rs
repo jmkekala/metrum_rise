@@ -129,6 +129,14 @@ pub struct Agent {
     pub lane_change_start_d: f32,
     /// Longitudinal distance over which the active lane-change S-curve completes.
     pub lane_change_length_m: f32,
+    /// The lane a car or truck crosses on its access leg to or from the far side of its road
+    /// (`PARK-32`): while set on an `ACCESS_INGRESS` or `ACCESS_EGRESS` agent, the agent holds an
+    /// entry in that lane's bucket at its `lane_distance`, the crossing's distance on that lane.
+    /// `u32::MAX` when it crosses nothing.
+    pub crossing_lane: u32,
+    /// Seconds a car or truck has waited in its lane at a far-side detach point for a gap to
+    /// cross (`PARK-32`); it gives up at `CROSSING_GIVE_UP_S`. Zero otherwise.
+    pub crossing_wait_s: f32,
     /// Time spent held below free-flow speed by traffic in the current lane.
     pub overtake_blocked_time_s: f32,
     /// Remaining cooldown before another discretionary overtaking/return lane change may start.

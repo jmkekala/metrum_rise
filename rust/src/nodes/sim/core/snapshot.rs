@@ -363,13 +363,40 @@ fn gate_lane(
     };
     let lane = core.transit_network.lane_system.lanes.get(lane as usize)?;
     let (point, tangent) = crate::nodes::sim::render::lane_pose::sample_lane_pose(lane, distance)?;
+    let point = Vector2::new(point.x, point.z);
+    let along = Vector2::new(tangent.x, tangent.z).try_normalized()?;
     Some(crate::simulation::parking::turns::GateLane {
-        point: Vector2::new(point.x, point.z),
-        along: Vector2::new(tangent.x, tangent.z).try_normalized()?,
-        hand: crate::simulation::parking::turns::LOT_HAND,
+        point,
+        along,
+        hand: gate_hand(core, agent_idx, egress, point, along),
         radius: gate_radius(core, agent_idx),
         egress,
     })
+}
+
+// The side of its lane's travel car `agent_idx`'s access lies on (`PARK-32`): +1 for the lot on
+// its right ([`LOT_HAND`](crate::simulation::parking::turns::LOT_HAND)), -1 for one across the road
+// on its left. Read from where the access meets the road: a car's place's kerb, a truck's door,
+// whose kerb stop and gate lie on its side. A truck already on its lane keeps no record of where
+// it came from and turns as from the right. O(1).
+fn gate_hand(core: &SimCore, agent_idx: usize, egress: bool, point: Vector2, along: Vector2) -> f32 {
+    use crate::simulation::parking::turns::LOT_HAND;
+    let agents = &core.agents;
+    let access = if agents.vehicle_type[agent_idx] == VEHICLE_FREIGHT_DELIVERY {
+        let building = if egress {
+            agents.current_building[agent_idx]
+        } else {
+            agents.target_building[agent_idx]
+        };
+        core.allocator.entrances.get(building).map(|door| door.door_pos)
+    } else {
+        let trip = &agents.parking_trip[agent_idx];
+        core.parking.place_curb(if egress { trip.source } else { trip.destination })
+    };
+    match access {
+        Some(access) if (access - point).dot(Vector2::new(-along.y, along.x)) < 0.0 => -LOT_HAND,
+        _ => LOT_HAND,
+    }
 }
 
 /// Lane car `agent_idx`'s drawn pose from its lane pose (`point`, unit `tangent`) on its gate turn
@@ -417,13 +444,14 @@ pub(super) fn lane_car_gate_pose(
         return None;
     };
     let level = Vector2::new(tangent.x, tangent.z);
+    let along = level.try_normalized()?;
     let (drawn, travel, curvature) = crate::simulation::parking::turns::gate_on_lane(
         radius,
-        crate::simulation::parking::turns::LOT_HAND,
+        gate_hand(core, agent_idx, egress, Vector2::new(point.x, point.z), along),
         egress,
         x,
         Vector2::new(point.x, point.z),
-        level.try_normalized()?,
+        along,
     )?;
     // The lane's grade stays: the turn is in the ground plane.
     let travel = travel * level.length();

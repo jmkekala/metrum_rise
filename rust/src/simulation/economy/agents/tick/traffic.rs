@@ -21,8 +21,10 @@ pub(super) use lane_change::{
 pub(super) use lane_change::{cruise_lane_return_target, overtaking_lane_target};
 pub(in crate::simulation::economy::agents) use occupancy::lane_attach_slot_clear;
 pub(crate) use occupancy::lane_half_length;
+pub(in crate::simulation::economy::agents) use occupancy::crossing_bucket_lane;
 pub(super) use occupancy::{
-    ConnectorEntry, claim_connector_entry, claim_lane_entry, idm_gap_bucket, lane_bucket_member,
+    ConnectorEntry, claim_connector_entry, claim_lane_entry, crossing_gap_clear, idm_gap_bucket,
+    lane_bucket_member,
     lane_change_gap_clear, lane_entry_slot_clear, live_lane_bucket_transit, ring_entry_blocker,
 };
 
