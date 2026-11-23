@@ -47,6 +47,12 @@ use crate::simulation::buildings::allocator::BuildingEntrance;
 use crate::simulation::economy::agents::tick::MANEUVER_POINTS;
 use crate::simulation::economy::agents::tick::movement::retry_after_s;
 use crate::simulation::economy::agents::tick::trip_failures::{FailureCause, FailureOutcome};
+use crate::simulation::economy::agents::MODE_CAR;
+use crate::simulation::economy::agents::tick::lane_nav::{
+    lane_hosts_turn_preparation, lane_terminal_node,
+};
+use crate::simulation::economy::agents::tick::planning::plan_network_replan;
+use crate::simulation::network::types::VehicleFrontageAccess;
 use crate::simulation::network::{TransitNetwork, graph::RegionGraph};
 use crate::simulation::parking::{ParkingSystem, ParkingTrip, ParkingTripPhase, Place};
 use godot::prelude::Vector2;
@@ -72,7 +78,7 @@ impl AgentSystem {
             ParkingTripPhase::None
                 if !trip.replan_needed && allocator.freight_gates.contains_key(&trip.target) =>
             {
-                self.commit_freight_gate(i, trip.target, parking, network);
+                self.commit_freight_gate(i, trip.target, parking, allocator, network, graph);
             }
             // Waiting at the kerb stop or on a drive-through way in: this commit's queue pass has
             // visited it already (`grant_docks_at_kerbs`, `PARK-36`).
@@ -115,7 +121,9 @@ impl AgentSystem {
         i: usize,
         building: u64,
         parking: &mut ParkingSystem,
+        allocator: &BuildingAllocator,
         network: &TransitNetwork,
+        graph: &RegionGraph,
     ) {
         let me = self.handles.handle(i);
         let on_lane = self.agents.transit[i] == TRANSIT_NETWORK;
@@ -142,6 +150,10 @@ impl AgentSystem {
             }
             return;
         }
+        // PARK-32: no line across the road from the gate.
+        if on_lane && self.turn_for_near_line(i, building, allocator, network, graph) {
+            return;
+        }
         if on_lane {
             self.leave_lane_into_line(i, network);
         }
@@ -154,6 +166,56 @@ impl AgentSystem {
         trip.phase = ParkingTripPhase::AtKerb;
         trip.ready = true;
         self.parking_work.kerb_queue.push((building, sim_time.to_bits(), i));
+    }
+
+    // Truck `i`, at the end of the line on its gate's far lane with no dock free (`PARK-32`):
+    // the line stands at the kerb beside the gate's near lane only, so it plans on from its lane's
+    // end to the gate reached from the gate's own side, drives round and joins the line there in
+    // the order it reaches it. A truck granted a dock at the far lane's line end crosses at once
+    // by the gap rule instead (`network/detach.rs`). False, with nothing changed, on the near lane
+    // or with no such route; it then waits in the line as any truck. O(lanes on the gate's edge)
+    // and one plan.
+    fn turn_for_near_line(
+        &mut self,
+        i: usize,
+        building: u64,
+        allocator: &BuildingAllocator,
+        network: &TransitNetwork,
+        graph: &RegionGraph,
+    ) -> bool {
+        let lane = self.agents.current_lane_id[i];
+        let Some((mut gate, near, _)) = gate_line(building, allocator, network, graph) else {
+            return false;
+        };
+        if lane == near || lane >= network.lane_system.lanes.len() {
+            return false;
+        }
+        let Some(node) = lane_terminal_node(lane, network, graph) else {
+            return false;
+        };
+        gate.vehicle_frontage_access = VehicleFrontageAccess::SameSideOnly;
+        BuildingAllocator::refresh_entrance_lanes(&mut gate, graph, &network.lane_system);
+        let first_lane = (!lane_hosts_turn_preparation(lane, network)).then_some(lane);
+        let Ok(plan) = plan_network_replan(
+            node,
+            network.lane_system.lanes[lane].edge_id,
+            None,
+            self.agents.target_building[i],
+            MODE_CAR,
+            self.agents.access_flags[i],
+            allocator,
+            network,
+            graph,
+            &self.pathfind_count,
+            Some((i, "far-side-gate-line")),
+            first_lane,
+            Some(gate),
+        ) else {
+            return false;
+        };
+        self.install_drive(i, plan);
+        self.agents.parking_trip[i].ready = false;
+        true
     }
 
     // Takes truck `i`, standing on its lane at the end of the line before its gate, off the lane
@@ -562,8 +624,9 @@ fn left_along(path: &[Vector2], pos: Vector2) -> f32 {
 }
 
 // The line before the freight gate of the building whose handle bits are `building` (`PARK-36`):
-// the gate's arrival entrance, its near lane (gates are reached from their own side only) and the
-// lane distance of its lane point, where a truck's plan to the gate ends. O(lanes on the gate's
+// the gate's arrival entrance, its near lane (the line stands beside it; a truck on the far lane
+// crosses only holding a dock, `PARK-32`) and the lane distance of its lane point, where a truck's
+// plan to the gate ends on that lane. O(lanes on the gate's
 // edge + lane points).
 fn gate_line(
     building: u64,

@@ -486,7 +486,7 @@ impl AgentSystem {
 
     // The replan gate's install (`apply_network_replan`) for a car in the parking commit; a car
     // held for its attach slot keeps waiting there under the new route. O(1).
-    fn install_drive(&mut self, i: usize, replan: BuiltNetworkReplan) {
+    pub(super) fn install_drive(&mut self, i: usize, replan: BuiltNetworkReplan) {
         let a = &mut self.agents;
         a.parking_trip[i].route_replaced(replan.current_path.len());
         a.current_path[i] = replan.current_path;

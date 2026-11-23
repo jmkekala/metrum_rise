@@ -150,12 +150,17 @@ fn publish_docks(
 impl Yard {
     // Loads and dispatches shipment `id` of packaged food from the processor to the grocery.
     fn dispatch(&mut self, id: u64) -> usize {
+        self.dispatch_from(id, 0)
+    }
+
+    // [`Yard::dispatch`] from building `source`.
+    fn dispatch_from(&mut self, id: u64, source: usize) -> usize {
         let catalog = load_runtime_economy_catalog().unwrap();
         self.shipments.shipments.push(Shipment {
             id,
             resource_runtime_id: catalog.resource_runtime_id_for_id(PACKAGED_FOOD).unwrap(),
             amount: 40.0,
-            source: ShipmentEndpoint::Building(0),
+            source: ShipmentEndpoint::Building(source),
             destination: ShipmentEndpoint::Building(1),
             carrier_class: CarrierClass::Truck,
             status: ShipmentStatus::InTransit,
@@ -1102,4 +1107,5 @@ fn the_leg_timeout_ends_a_wait_in_the_yard_and_frees_the_dock() {
 }
 
 mod drive_through;
+mod far_side;
 mod gate_line;
