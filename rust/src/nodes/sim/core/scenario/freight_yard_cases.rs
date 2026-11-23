@@ -303,6 +303,12 @@ struct YardRun {
     queued_granted: u32,
     queue_wait_max_s: f32,
     queue_wait_mean_s: f32,
+    // Of the queued trucks that reached their dock, the distance each drove from the moment it
+    // was granted a dock (it left the kerb or the way in) to the dock: the sum of its moves
+    // between frames, longest and mean, in metres.
+    granted_to_dock: u32,
+    granted_to_dock_max_m: f32,
+    granted_to_dock_mean_m: f32,
     // Trip failure lines that name a yard.
     yard_failure_lines: Vec<String>,
     // Delivered shipments by destination dock building, by yard or door.
@@ -339,6 +345,10 @@ fn run_with(class: &str, through: bool) -> YardRun {
     // Per shipment whose truck waits at a kerb stop for a dock: when it reached the gate.
     let mut queued_since: BTreeMap<u64, f32> = BTreeMap::new();
     let mut queue_wait_sum_s = 0.0_f64;
+    // Per queued shipment: its truck's position at the last frame, and the distance driven since
+    // its grant (`None` while it still waits).
+    let mut after_grant: BTreeMap<u64, (f32, f32, Option<f32>)> = BTreeMap::new();
+    let mut granted_to_dock_sum_m = 0.0_f64;
     // Per shipment: the distinct (phase, yard flag, transit, ready) states its carrier was seen
     // in while in transit, printed for a delivery to a dock building that did not stand in a dock.
     let mut history: BTreeMap<u64, Vec<String>> = BTreeMap::new();
@@ -372,8 +382,24 @@ fn run_with(class: &str, through: bool) -> YardRun {
                 {
                     entry.4 = true;
                 }
+                let (x, z) = (core.agents.pos_x[i], core.agents.pos_y[i]);
+                let waits = trip.freight_gate
+                    && matches!(trip.phase, ParkingTripPhase::ToKerb | ParkingTripPhase::AtKerb);
+                if waits {
+                    after_grant.insert(shipment.id, (x, z, None));
+                } else if let Some((px, pz, driven)) = after_grant.get_mut(&shipment.id) {
+                    let d = driven.get_or_insert(0.0);
+                    *d += ((x - *px).powi(2) + (z - *pz).powi(2)).sqrt();
+                    (*px, *pz) = (x, z);
+                    if matches!(trip.phase, ParkingTripPhase::AtDock | ParkingTripPhase::PullOut) {
+                        result.granted_to_dock += 1;
+                        result.granted_to_dock_max_m = result.granted_to_dock_max_m.max(*d);
+                        granted_to_dock_sum_m += f64::from(*d);
+                        after_grant.remove(&shipment.id);
+                    }
+                }
                 if trip.freight_gate {
-                    if matches!(trip.phase, ParkingTripPhase::ToKerb | ParkingTripPhase::AtKerb) {
+                    if waits {
                         queued_since.entry(shipment.id).or_insert_with(|| {
                             result.queued += 1;
                             result.queued_on_way_in +=
@@ -408,8 +434,15 @@ fn run_with(class: &str, through: bool) -> YardRun {
             }
             if entry.0 == ShipmentStatus::InTransit && shipment.status != ShipmentStatus::InTransit
             {
+                let granted = after_grant.remove(&shipment.id);
                 match shipment.status {
                     ShipmentStatus::Returning | ShipmentStatus::Fulfilled => {
+                        // Granted, docked and delivered between two frames: the moves seen.
+                        if let Some((_, _, Some(d))) = granted {
+                            result.granted_to_dock += 1;
+                            result.granted_to_dock_max_m = result.granted_to_dock_max_m.max(d);
+                            granted_to_dock_sum_m += f64::from(d);
+                        }
                         match shipment.destination {
                             ShipmentEndpoint::Building(b) => {
                                 let handle = handles.handle(b).to_bits();
@@ -493,6 +526,8 @@ fn run_with(class: &str, through: bool) -> YardRun {
         result.most_held = result.most_held.max(held);
     }
     result.queue_wait_mean_s = (queue_wait_sum_s / f64::from(result.queued_granted.max(1))) as f32;
+    result.granted_to_dock_mean_m =
+        (granted_to_dock_sum_m / f64::from(result.granted_to_dock.max(1))) as f32;
     result.yard_failure_lines = core
         .agents
         .trip_failures
