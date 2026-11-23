@@ -163,8 +163,15 @@ arrival ticks move.
 5. **Leaving.** It drives its manoeuvre (or the crossover) to the access mouth, the polyline's
    last point but one, off the road, and stays there until the crossed lane and its target lane
    both pass `crossing_clear` and it claims both; then it crosses and attaches as before. Its
-   wait counts in `crossing_wait_s` too. It has no give-up: it holds no lane, and a same-side exit
-   would wait for the same lane. The vehicles behind it wait in the leaving line (below).
+   wait counts in `crossing_wait_s` too. A resident's car gives up after `CROSSING_GIVE_UP_S`
+   (30 s, round 3), as entering does: it leaves on the near lane, the lane it would have crossed,
+   at its access's station there, with a plan from that lane's end to its trip's destination
+   (`leave_on_the_near_lane`, `egress.rs`), and attaches by the slot test as a same-side exit does;
+   routing turns it round. Its wait is emptied, so its next leg may cross again. The round-2
+   trace showed why: of the leaving waits over 300 s, nearly all stood behind a queue standing
+   across the slot of the far lane, the target lane, while the near lane was free. A truck or a
+   drop-off keeps waiting (its plan ends at a gate, a door or a border). The vehicles behind it
+   wait in the leaving line (below).
 6. **The gap test** (`crossing_gap_clear`): the slot (`lane_attach_slot_clear`, both half
    lengths and `IDM_S_MIN`) at the crossing's distance, and the nearest body upstream, in the
    lane's own direction, at least a further `speed x crossing time` away, the crossing time being
@@ -195,6 +202,10 @@ arrival ticks move.
    side (`turn_for_near_line`, `parking/yard.rs`), drives round and joins the line there in the
    order it reaches it. Owner's choice left open: a line on the far side, at the kerb upstream of
    the point opposite the gate, in one arrival order with the near line, crossing when granted.
+   How often the drive round happens (round 3, the 14-day yard runs of `freight_yard_cases`, test
+   builds counting `turn_for_near_line`): 2 trucks (172 m driven round in all) of 153 yard
+   deliveries with docks, 1 (130 m) of 154 with drive-through docks; the test cities have no
+   docks.
 9. **The leaving line** (`parking/exit_line.rs`, round 3, from the owner's stills: "when the
    cars leave from the parking lot they overlap each other while they wait for their turn"). One
    vehicle at a time stands at an access mouth. Every vehicle pulling out through one mouth (a
@@ -227,7 +238,9 @@ arrival ticks move.
    `LOT_HAND`; a truck already on its lane keeps no record of where it came from and arcs as from
    the right.
 11. **Save.** `crossing_lane` and `crossing_wait_s` are saved in `agent_crossings`, one row per
-    vehicle crossing or waiting to; format 130. Format 129 loads with none (nobody crossed).
+    vehicle crossing or waiting to, or carrying the give-up mark (`CROSSING_GAVE_UP`, -1, the one
+    negative wait a load accepts; round 3 found a save with the mark refused on load); format 130.
+    Format 129 loads with none (nobody crossed). The leaving line saves nothing.
 12. **Cost.** The crossing test runs only for a car at a detach point or one stepping past a
     mouth: O(lanes on the edge) to count the lanes crossed, and where one is crossed O(lanes on
     the edge × their points) for the clearance plus O(log bucket) per tested lane; the bucket
@@ -236,38 +249,44 @@ arrival ticks move.
     the crossed lane (the clearance keeps the crossing off the junction mouth). A tested
     crossing over more than one lane would need an entry per lane; a door's crossing outside
     the rule is untested, as it was before.
-14. **Measured** (2026-11-23, round 2, release test binaries, fresh 30k and 10k cities over 15
-    days, days 4 to 18, the lane-entry audit `traffic07_lane_entry_audit` with
+14. **Measured** (2026-11-23, rounds 2 and 3, release test binaries, fresh 30k and 10k cities
+    over 15 days, days 4 to 18, the lane-entry audit `traffic07_lane_entry_audit` with
     `METRUM_AUDIT_FRESH=1 METRUM_AUDIT_DAYS=15`, its `PARK32_CROSSINGS` day line; `dev` b1758fb4e
     with the same audit as the control). A trip here runs from a vehicle's lane entry to its
-    detach at an access; a door crossed outside the rule is not counted as crossing.
+    detach at an access; a door crossed outside the rule is not counted as crossing. The game
+    clock runs a minute for each simulated second (1,440 s a day), so the flow check's "over an
+    hour" is 60 s of a vehicle's own time and a wait in seconds below is in game minutes.
 
-    | 30k (10k) | `dev` | `park-32` |
-    | --- | --- | --- |
-    | car trips a day | 18,505 (7,129) | 26,107 (10,981) |
-    | car trip, mean | 1,975 m, 233 s (1,473 m, 157 s) | 1,358 m, 175 s (951 m, 110 s) |
-    | car vehicle-km a day | 36,914 (10,577) | 35,805 (10,522) |
-    | truck trips a day | 4,451 (1,637) | 4,409 (1,637) |
-    | truck trip, mean | 2,149 m, 227 s (2,018 m, 212 s) | 2,174 m, 238 s (2,037 m, 214 s) |
-    | truck vehicle-km a day | 12,216 (4,269) | 12,262 (4,284) |
-    | car trips crossing entering / leaving | 0 | 46 % / 47 % (47 % / 46 %) |
-    | truck trips crossing entering / leaving | 0 | 47 % / 44 % (47 % / 44 %) |
-    | waits to cross entering a day, mean, longest | none | 3,072, 4.0 s, 29.9 s (1,430, 4.0 s, 29.9 s) |
-    | waits to cross leaving a day, mean, longest | none | 4,829, 6.5 s, 764 s (2,088, 6.2 s, 332 s) |
-    | give-ups a day | none | 144 (67) |
+    | 30k (10k) | `dev` | round 2 | round 3 (as built) |
+    | --- | --- | --- | --- |
+    | car trips a day | 18,505 (7,129) | 26,107 (10,981) | 26,030 (10,988) |
+    | car trip, mean | 1,975 m, 233 s (1,473 m, 157 s) | 1,358 m, 175 s (951 m, 110 s) | 1,365 m, 177 s (951 m, 111 s) |
+    | car vehicle-km a day | 36,914 (10,577) | 35,805 (10,522) | 35,870 (10,525) |
+    | truck trips a day | 4,451 (1,637) | 4,409 (1,637) | 4,380 (1,631) |
+    | truck trip, mean | 2,149 m, 227 s (2,018 m, 212 s) | 2,174 m, 238 s (2,037 m, 214 s) | 2,186 m, 242 s (2,035 m, 216 s) |
+    | truck vehicle-km a day | 12,216 (4,269) | 12,262 (4,284) | 12,239 (4,285) |
+    | car trips crossing entering / leaving | 0 | 46 % / 47 % (47 % / 46 %) | 46 % / 46 % (47 % / 46 %) |
+    | truck trips crossing entering / leaving | 0 | 47 % / 44 % (47 % / 44 %) | 47 % / 44 % (47 % / 44 %) |
+    | waits to cross entering a day, mean, longest | none | 3,072, 4.0 s, 29.9 s (1,430, 4.0 s, 29.9 s) | 3,044, 4.1 s, 29.9 s (1,419, 4.2 s, 29.9 s) |
+    | waits to cross leaving a day, mean, longest | none | 4,829, 6.5 s, 764 s (2,088, 6.2 s, 332 s) | 4,614, 4.5 s, 397 s (2,000, 4.5 s, 313 s) |
+    | give-ups a day, entering / leaving | none | 144 / none (67 / none) | 142 / 64 (68 / 24) |
+    | cars over an hour on an exit, days 4 to 18 (worst day) | 0 (0) | 29 (10) (2 (1)) | 6 (4) (0) |
+    | trip failures | 0 | 0 | 0 |
 
     More car trips: walks that a drive round the block used to beat now go by car (in the 30k
     city car trips home 9.0k to 13.0k a day, on foot 15.8k to 12.1k), so the vehicle-km stay
-    level while each trip is about 30 % shorter. The flow check (`TRAFFIC-38`, days 4 to 18,
-    mean and the worst day): wait cycles 0 in both; cars stationary 240 min 0 (0) against 0.4
-    (5); trucks stationary 240 min 42 (430) against 63 (565), 720 min 3.8 (43) against 7.0 (76),
-    nearly all at the border entry nodes waiting for a first lane, in the day-13 freight surge
-    `dev` has too; full lanes 19 (63) against 17 (50); lanes with no throughput 42 (165) against
-    51 (175). The 10k city: trucks stationary 240 min 15 (219) against 15 (227), the rest equal
-    or lower. Cars standing over an hour on a driveway egress: none on `dev`, up to 10 a day in
-    the 30k surge, most likely a car leaving across a lane whose standing queue lies within the
-    gap margin, which it waits out (no give-up when leaving; not traced).
-
+    level while each trip is about 30 % shorter. Round 3's longest leaving waits are a car whose
+    target lane stands queued across its slot, which a car leaving on the same side waits for as
+    long (`dev`'s own same-side exits in a jam: 10 cars over an hour on an attach slot in the 30k
+    days, the as-built 19). The flow check (`TRAFFIC-38`, days 4 to 18, mean and the worst day,
+    `dev` against round 3): wait cycles 0 in both; full lanes 19 (63) against 16 (65); trucks
+    stationary 240 min 42 (430) against 63 (471), 720 min 3.8 (43) against 9.0 (67), nearly all
+    at the border entry nodes waiting for a first lane in the day-13 freight surge, which `dev`
+    has too; cars stationary 240 min 0 (0) against 3.8 (53), all 53 in that day's jam on the
+    roads (cars over 60 min at that day's end, queued behind a leader on a lane or connector:
+    `dev` 102, round 2 16, round 3 before its give-up 39, as built 233; one day-end sample of
+    the surge, which swings widely from run to run; on every other day 3 or fewer). The 10k
+    city: trucks stationary 240 min 15 (219) against 14 (204), no car over 60 min on an exit.
 
 Radii the design gave on a two-lane street with sidewalks before building it (90° turns, entry
 and exit alike, the gate's own bend under 5° so the whole run is the arc's; in brackets half the

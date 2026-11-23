@@ -2709,7 +2709,8 @@ where it holds, untested as before elsewhere. Entering, it waits in its lane at
 the detach point for a gap in the crossed lane (followers queue behind it) and gives up after 30 s
 to come back on the near side; leaving, it waits at the access mouth off the road for a gap in the
 crossed lane and its target lane, a gap measured at the speed of the body behind it, so a car can
-join a standing or crawling queue where someone leaves room. While it crosses it holds an entry in
+join a standing or crawling queue where someone leaves room; a resident's car that has waited 30 s
+there leaves on the near lane instead and lets routing turn it round. While it crosses it holds an entry in
 the crossed lane's bucket, so lane traffic and every other crossing see it. Vehicles leaving
 through one mouth wait one behind another on their way out, a body and 1 m apart, one at a time at
 the mouth, and a parked one leaves its place only with room behind the line (the leaving line,
