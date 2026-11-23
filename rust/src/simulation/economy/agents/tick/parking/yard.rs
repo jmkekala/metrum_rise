@@ -184,7 +184,8 @@ impl AgentSystem {
         graph: &RegionGraph,
     ) -> bool {
         let lane = self.agents.current_lane_id[i];
-        let Some((mut gate, near, _)) = gate_line(building, allocator, network, graph) else {
+        // `_gate_d` is read only by the test builds' count below.
+        let Some((mut gate, near, _gate_d)) = gate_line(building, allocator, network, graph) else {
             return false;
         };
         if lane == near || lane >= network.lane_system.lanes.len() {
@@ -216,14 +217,16 @@ impl AgentSystem {
         #[cfg(test)]
         {
             use crate::debug::work::{Work, add};
+            // The drive round: the rest of its lane, the route's roads, the near lane to the gate.
             let path = &plan.current_path;
             let edges: f32 = path
                 .windows(2)
                 .filter_map(|w| graph.get_edge_between_nodes(w[0], w[1]))
                 .map(|edge| graph.edge(edge).physical_length)
                 .sum();
+            let rest = network.lane_system.lanes[lane].length - self.agents.lane_distance[i];
             add(Work::FarSideGateTurns, 1);
-            add(Work::FarSideGateTurnMetres, edges as u64);
+            add(Work::FarSideGateTurnMetres, (rest + edges + _gate_d).max(0.0) as u64);
         }
         self.install_drive(i, plan);
         self.agents.parking_trip[i].ready = false;
