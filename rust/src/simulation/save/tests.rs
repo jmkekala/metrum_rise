@@ -402,8 +402,11 @@ fn crossing_state_survives_save() {
     let crossing = agents.spawn_border_arrival_agent(usize::MAX, 0, 0.0, 0.0);
     let waiting = agents.spawn_border_arrival_agent(usize::MAX, 0, 0.0, 0.0);
     let neither = agents.spawn_border_arrival_agent(usize::MAX, 0, 0.0, 0.0);
+    let gave_up = agents.spawn_border_arrival_agent(usize::MAX, 0, 0.0, 0.0);
     agents.crossing_lane[crossing] = 7;
     agents.crossing_wait_s[waiting] = 12.5;
+    // A car that gave up a crossing on its leg keeps the mark across a save.
+    agents.crossing_wait_s[gave_up] = crate::simulation::economy::agents::tick::CROSSING_GAVE_UP;
     let maps = build_snapshot_maps(&graph, &allocator).unwrap();
     let mut conn = Connection::open_in_memory().unwrap();
     conn.execute_batch(schema::SCHEMA).unwrap();
@@ -413,10 +416,14 @@ fn crossing_state_survives_save() {
     let rows: i64 = conn
         .query_row("SELECT COUNT(*) FROM agent_crossings", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(rows, 2, "only the two with state have a row");
+    assert_eq!(rows, 3, "only the three with state have a row");
     let restored = agents::load_agents(&conn, 0.0, true).unwrap();
     assert_eq!(restored.crossing_lane[crossing], 7);
     assert_eq!(restored.crossing_wait_s[waiting], 12.5);
+    assert_eq!(
+        restored.crossing_wait_s[gave_up],
+        crate::simulation::economy::agents::tick::CROSSING_GAVE_UP
+    );
     assert_eq!(restored.crossing_lane[neither], u32::MAX);
     assert_eq!(restored.crossing_wait_s[neither], 0.0);
     let older = agents::load_agents(&conn, 0.0, false).unwrap();

@@ -5,6 +5,7 @@
 mod lanes;
 pub(super) use lanes::{place_lanes_at_saved_ids, restore_lane_references};
 
+use crate::simulation::economy::agents::tick::CROSSING_GAVE_UP;
 use crate::config::DEFAULT_URBAN_ROAD_SPEED_MS;
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::economy::agents::{
@@ -328,7 +329,9 @@ pub(super) fn load_agents(
         while let Some(row) = rows.next()? {
             let aid = i64_to_usize(row.get(0)?)?;
             let wait_s: f32 = row.get(2)?;
-            if aid >= agents.len() || !wait_s.is_finite() || wait_s < 0.0 {
+            // A wait, or the mark of a car that gave up a crossing on its leg (`PARK-32`).
+            let wait_valid = wait_s.is_finite() && (wait_s >= 0.0 || wait_s == CROSSING_GAVE_UP);
+            if aid >= agents.len() || !wait_valid {
                 return Err(SaveLoadError::custom("invalid agent crossing"));
             }
             agents.crossing_lane[aid] = i64_to_u32(row.get(1)?)?;

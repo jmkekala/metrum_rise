@@ -31,8 +31,9 @@ pub(crate) use planning::{ResidentMobility, estimate_parking_trip_seconds_within
 pub(crate) use planning::estimate_parking_trip_seconds;
 pub(crate) use access::local_access_target_segment as parking_path_target_segment;
 pub(crate) use access::local_access_path;
+pub(crate) use access::CROSSING_GAVE_UP;
 #[cfg(test)]
-pub(crate) use access::{CROSSING_GAVE_UP, CROSSING_GIVE_UP_S};
+pub(crate) use access::CROSSING_GIVE_UP_S;
 pub(crate) use access::{
     DROP_OFF_KERB_INSET_M, FREIGHT_KERB_INSET_M, kerb_queue_entrance, kerb_stop_entrance,
 };
