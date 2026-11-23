@@ -1050,8 +1050,8 @@ fn a_removed_carrier_frees_its_dock_in_every_phase() {
     }
 }
 
-// A carrier on its way from the gate to the kerb stop that a stale lane puts back on the road
-// plans to the kerb stop again (`PARK-36`), with the gate or without it.
+// A carrier an older save sent on from the gate to the door's kerb stop that a stale lane puts
+// back on the road plans to the kerb stop again (`PARK-36`), with the gate or without it.
 #[test]
 fn a_carrier_on_its_way_to_the_kerb_stop_replans_to_the_kerb_stop() {
     let mut yard = yard(1);
