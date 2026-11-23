@@ -430,7 +430,7 @@ fn traffic07_lane_entry_audit() {
     let work_start = crate::debug::work::snapshot();
     let mut ring_day = ring_day::RingDay::new(core);
     let mut trips = trips::TripBook::new();
-    let mut crossings = crossings::CrossingBook::default();
+    let mut crossings = crossings::CrossingBook::new();
     // `TRAFFIC-38` flow check: stationary vehicles, lane throughput, trip ages, per day.
     let mut flow = stuck::FlowBook::default();
     flow.start(core);

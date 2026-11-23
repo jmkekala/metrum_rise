@@ -57,9 +57,70 @@ pub(super) struct CrossingBook {
     enter_waits: Vec<f32>,
     leave_waits: Vec<f32>,
     last_time: Option<f32>,
+    // `METRUM_AUDIT_LEAVE_TRACE=1`: one `PARK32_LONG_LEAVE` line per car whose wait to cross
+    // when leaving passes each of `LONG_LEAVE_S`.
+    trace_long: bool,
+}
+
+// The leaving waits a trace line is printed at.
+const LONG_LEAVE_S: [f32; 2] = [300.0, 3600.0];
+
+// What a car waiting `wait` s at its access mouth to cross faces: every body within 80 m of the
+// crossing on each vehicle lane of its road, with its offset along that lane from the crossing
+// (negative: upstream), speed, transit and own crossing wait.
+fn trace_long_leave(core: &SimCore, i: usize, wait: f32) {
+    use crate::simulation::buildings::allocator::BuildingAllocator;
+    let agents = &core.agents.agents;
+    let lanes = &core.transit_network.lane_system;
+    let lane_id = agents.planned_attach_lane_id[i] as usize;
+    let Some(lane) = lanes.lanes.get(lane_id) else {
+        return;
+    };
+    let point = BuildingAllocator::sample_pos_on_lane(lane, agents.planned_attach_lane_d[i]);
+    let mut rows = Vec::new();
+    for &id in lanes.edge_lanes.get(&lane.edge_id).into_iter().flatten() {
+        let other = &lanes.lanes[id];
+        if other.lane_type != crate::simulation::network::lanes::LaneType::Vehicle {
+            continue;
+        }
+        let d0 = BuildingAllocator::project_point_to_polyline_s(&other.geometry, point);
+        let bodies: Vec<_> = core
+            .agents
+            .lane_buckets
+            .get(id)
+            .into_iter()
+            .flatten()
+            .filter(|entry| (entry.0 - d0).abs() <= 80.0)
+            .map(|&(d, j, _)| {
+                serde_json::json!([
+                    (d - d0).round(), agents.speed[j], agents.transit[j],
+                    agents.crossing_wait_s[j], agents.vehicle_type[j]
+                ])
+            })
+            .collect();
+        rows.push(serde_json::json!({
+            "lane": id, "attach": id == lane_id, "idx": other.lane_idx, "d": d0.round(),
+            "length": other.length.round(), "bodies": bodies,
+        }));
+    }
+    eprintln!(
+        "PARK32_LONG_LEAVE {}",
+        serde_json::json!({
+            "day": core.time.day_index, "agent": agents.render_id[i], "wait_s": wait,
+            "truck": agents.vehicle_type[i] == VEHICLE_FREIGHT_DELIVERY, "edge": lane.edge_id,
+            "lanes": rows,
+        })
+    );
 }
 
 impl CrossingBook {
+    pub(super) fn new() -> Self {
+        Self {
+            trace_long: std::env::var("METRUM_AUDIT_LEAVE_TRACE").is_ok_and(|v| v == "1"),
+            ..Self::default()
+        }
+    }
+
     // O(agents) per frame.
     pub(super) fn after_frame(&mut self, core: &SimCore) {
         let agents = &core.agents.agents;
@@ -113,6 +174,12 @@ impl CrossingBook {
                 row.metres = 0.0;
                 row.seconds = 0.0;
             } else if transit == TRANSIT_ACCESS_EGRESS {
+                if self.trace_long
+                    && !crossing
+                    && LONG_LEAVE_S.iter().any(|&s| wait >= s && row.wait < s)
+                {
+                    trace_long_leave(core, i, wait);
+                }
                 if crossing && !row.left_across {
                     row.left_across = true;
                     if row.wait > 0.0 {

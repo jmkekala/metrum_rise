@@ -309,6 +309,10 @@ struct YardRun {
     granted_to_dock: u32,
     granted_to_dock_max_m: f32,
     granted_to_dock_mean_m: f32,
+    // Trucks refused a dock on their gate's far lane that drove round to the gate's line, and
+    // the metres of those drives (`PARK-32`). Work counters: run one test at a time.
+    far_side_turns: u64,
+    far_side_turn_m: u64,
     // Trip failure lines that name a yard.
     yard_failure_lines: Vec<String>,
     // Delivered shipments by destination dock building, by yard or door.
@@ -338,6 +342,7 @@ fn run_with(class: &str, through: bool) -> YardRun {
     assert_eq!(changed.len(), 6, "{changed:?}");
     let core = &mut scenario.core;
     let mut result = YardRun::default();
+    let work_start = crate::debug::work::snapshot();
     // Per shipment: its last status, and what its carrier was seen doing.
     // Per shipment: its last status; whether its carrier was seen standing in a dock, sent from a
     // gate to the door, pulling out of its source's dock, and bound for its destination's gate.
@@ -536,6 +541,10 @@ fn run_with(class: &str, through: bool) -> YardRun {
         .filter(|line| line.contains("yard") || line.contains("loading bay"))
         .cloned()
         .collect();
+    let work = crate::debug::work::snapshot();
+    let delta = |w: crate::debug::work::Work| work[w as usize] - work_start[w as usize];
+    result.far_side_turns = delta(crate::debug::work::Work::FarSideGateTurns);
+    result.far_side_turn_m = delta(crate::debug::work::Work::FarSideGateTurnMetres);
     result
 }
 
