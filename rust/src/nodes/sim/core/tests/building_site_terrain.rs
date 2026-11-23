@@ -1172,6 +1172,71 @@ fn a_resting_car_keeps_a_fresh_solve_until_the_ground_under_it_changes() {
     assert_eq!(bits(&smoother.drawn_bucket(0)[..12]), fresh(&core));
 }
 
+// The render snapshot keeps an off-lane car's ground solve while its pose and the ground stay
+// as they were, bit for bit what a fresh solve gives, and solves it again once the ground under
+// it changes (`PERF-33`): one car stands on its yard, one moves.
+#[test]
+fn a_standing_car_keeps_its_snapshot_ground_solve_until_the_ground_under_it_changes() {
+    use crate::nodes::sim::core::snapshot::RenderSnapshot;
+    use crate::simulation::economy::agents::MODE_CAR;
+    use std::collections::BTreeMap;
+
+    let mut core = kuopio_yard_fixture();
+    core.agents = AgentSystem::new();
+    let p = core.allocator.building_sites[0].surfaces[0].vertices_world.clone();
+    let standing = p[0].lerp(p[1], 0.43).lerp(p[3].lerp(p[2], 0.43), 0.2);
+    let moving = p[0].lerp(p[1], 0.61).lerp(p[3].lerp(p[2], 0.61), 0.53);
+    for point in [standing, moving] {
+        spawn_yard_access_agent(&mut core, 0, point, MODE_CAR, TRANSIT_ACCESS_EGRESS);
+    }
+    let cars = |snapshot: &RenderSnapshot| {
+        snapshot
+            .car_transforms
+            .iter()
+            .map(|(&key, rows)| (key, rows.iter().map(|v| v.to_bits()).collect::<Vec<_>>()))
+            .collect::<BTreeMap<_, _>>()
+    };
+    let (mut culled, mut full) = (RenderSnapshot::default(), RenderSnapshot::default());
+    // One snapshot, against the reference that solves every car: (cars drawn, solved afresh),
+    // and the standing car's row.
+    let mut frame = |core: &mut SimCore| {
+        core.agent_instances_both_ways(&mut culled, &mut full);
+        assert_eq!(cars(&culled), cars(&full));
+        let row = culled
+            .car_transforms
+            .values()
+            .flat_map(|rows| rows.as_chunks::<12>().0)
+            .find(|t| Vector2::new(t[3], t[11]) == standing)
+            .map(|t| t.map(f32::to_bits))
+            .expect("the standing car is drawn");
+        (core.snapshot_ground_solves(), row)
+    };
+    let (solves, first) = frame(&mut core);
+    assert_eq!(solves, (2, 2), "both cars solved on the first snapshot");
+    for step in 1..4 {
+        core.agents.pos_x[1] = moving.x + 0.25 * step as f32;
+        let (solves, row) = frame(&mut core);
+        assert_eq!(solves, (2, 1), "only the moving car solved again");
+        assert_eq!(row, first, "the standing car keeps its pose");
+    }
+    // A terrain edit under the standing car: both solved again, against the new ground.
+    let generation = core.vehicle_ground_generation;
+    let at = Vector2::new(standing.x, standing.y);
+    core.slope_terrain_internal(
+        at,
+        30.0,
+        at - Vector2::new(15.0, 0.0),
+        0.0,
+        at + Vector2::new(15.0, 0.0),
+        2.0,
+        1.0,
+    );
+    assert!(core.vehicle_ground_generation > generation);
+    let (solves, row) = frame(&mut core);
+    assert_eq!(solves, (2, 2), "the ground changed: every car solved again");
+    assert_ne!(row, first, "the ground under the standing car moved");
+}
+
 #[test]
 #[ignore = "unprofiled support-batch measurement; run alone with --release --ignored --nocapture"]
 fn graded_yard_vehicle_support_batch_benchmark() {

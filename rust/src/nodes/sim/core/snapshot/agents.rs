@@ -101,7 +101,48 @@ pub(crate) struct AgentPoseScratch {
     chunks: Vec<PoseChunk>,
     // Per chunk, the walkers and cars its draw distances cut.
     far: Vec<[u32; 2]>,
+    // The last snapshot's off-lane ground solves (`PERF-33`).
+    ground: GroundPoseCache,
 }
+
+// The off-lane cars' ground solves of the last snapshot, by car bucket (`PERF-33`). A solve
+// (`SimCore::vehicle_ground_pose`) is a pure function of the bucket's model, the drawn position
+// and heading, which branch the camera's distance picks, and the ground: the world, the ground
+// generation that counts every change of it, the full-detail radius and the catalogue a bucket
+// key maps through (the stamp). A car whose inputs are bitwise those of its last solve, under
+// the same stamp, takes that solve: a car standing in its bay, in the leaving line or at its
+// mouth is solved once. 72 bytes a cached car in each of two lists (the last snapshot's and the
+// one being built), whose storage is kept; nothing per frame once they have grown.
+#[derive(Default)]
+struct GroundPoseCache {
+    stamp: [u64; 4],
+    buckets: Vec<GroundBucket>,
+}
+
+#[derive(Default)]
+struct GroundBucket {
+    // The last snapshot's solves, by render id.
+    last: Vec<GroundSolve>,
+    // This snapshot's, in row order until sorted.
+    next: Vec<GroundSolve>,
+    // How many of the last snapshot's were solved afresh.
+    solved: usize,
+}
+
+#[derive(Clone, Copy)]
+struct GroundSolve {
+    render_id: i64,
+    row: u32,
+    // The drawn position x and z and the heading's x and z (the basis' z column before the
+    // solve), bitwise, and whether the exact solve applies.
+    input: [u32; 4],
+    exact: bool,
+    // The solved floats of the instance's row, in `GROUND_FLOATS` order.
+    output: [f32; 10],
+}
+
+// The floats of a 12-float transform row the ground solve writes: the basis and the height.
+const GROUND_FLOATS: [usize; 10] = [0, 1, 2, 4, 5, 6, 8, 9, 10, 7];
 
 // One posing task's instances.
 #[derive(Default)]
@@ -407,8 +448,8 @@ impl SimCore {
             .iter()
             .fold([0; 2], |sum, far| [sum[0] + far[0], sum[1] + far[1]]);
         bucket_posed_agents(&scratch.chunks, snapshot);
+        self.ground_off_lane_cars_cached(snapshot, &mut scratch.ground);
         self.snapshot_agent_scratch = scratch;
-        self.ground_off_lane_cars(snapshot);
     }
 
     fn cull_and_pose_agent(&self, i: usize, view: AgentView) -> Result<PosedAgent, Cut> {
@@ -608,7 +649,140 @@ impl SimCore {
         }
     }
 
-    // Grounds each car bucket's off-lane instances; buckets are independent.
+    // Grounds each car bucket's off-lane instances as `ground_off_lane_cars` does, taking the
+    // last snapshot's solve wherever a car's inputs are unchanged (`GroundPoseCache`). Buckets
+    // are independent. O(off-lane cars) to list them, O(log bucket) a lookup, a solve for each
+    // car whose inputs changed, and O(m log m) to order a bucket's m solves by render id.
+    fn ground_off_lane_cars_cached(&self, snapshot: &mut RenderSnapshot, cache: &mut GroundPoseCache) {
+        let stamp = [
+            self.world_epoch,
+            self.vehicle_ground_generation,
+            u64::from(self.vehicle_ground_full_detail_m.to_bits()),
+            self.vehicle_catalogue.revision,
+        ];
+        cache.buckets.resize_with(256, GroundBucket::default);
+        if cache.stamp != stamp {
+            cache.stamp = stamp;
+            for bucket in &mut cache.buckets {
+                bucket.last.clear();
+            }
+        }
+        let mut rows: [Option<&mut Vec<f32>>; 256] = std::array::from_fn(|_| None);
+        for (&key, buffer) in snapshot.car_transforms.iter_mut() {
+            rows[usize::from(key)] = Some(buffer);
+        }
+        // The buckets drawn, each with its cache; a bucket no car is drawn in forgets its solves.
+        let mut entries: [Option<(u8, &mut Vec<f32>, &mut GroundBucket)>; 256] =
+            std::array::from_fn(|_| None);
+        let mut count = 0;
+        for (key, (buffer, bucket)) in rows.iter_mut().zip(&mut cache.buckets).enumerate() {
+            if let Some(buffer) = buffer.take() {
+                entries[count] = Some((key as u8, buffer, bucket));
+                count += 1;
+            } else {
+                bucket.last.clear();
+                bucket.solved = 0;
+            }
+        }
+        let (flags, ids) = (&snapshot.car_ground_flags, &snapshot.car_render_ids);
+        let camera = self.render_camera_position;
+        entries[..count]
+            .par_iter_mut()
+            .with_max_len(1)
+            .flatten()
+            .for_each(|(key, buffer, bucket)| {
+                self.ground_bucket(*key, buffer, &flags[key], &ids[key], bucket, camera)
+            });
+    }
+
+    /// The off-lane cars the last snapshot drew, and how many of them it solved afresh rather
+    /// than took from the snapshot before (`PERF-33`).
+    #[cfg(test)]
+    pub(crate) fn snapshot_ground_solves(&self) -> (usize, usize) {
+        let buckets = &self.snapshot_agent_scratch.ground.buckets;
+        (
+            buckets.iter().map(|bucket| bucket.last.len()).sum(),
+            buckets.iter().map(|bucket| bucket.solved).sum(),
+        )
+    }
+
+    // One bucket of `ground_off_lane_cars_cached`.
+    fn ground_bucket(
+        &self,
+        key: u8,
+        transforms: &mut [f32],
+        flags: &[u8],
+        ids: &[i64],
+        bucket: &mut GroundBucket,
+        camera: Option<Vector2>,
+    ) {
+        let full_detail_sq = self.vehicle_ground_full_detail_m * self.vehicle_ground_full_detail_m;
+        bucket.next.clear();
+        for (row, (&flag, &render_id)) in flags.iter().zip(ids).enumerate() {
+            if flag == 0 {
+                continue;
+            }
+            let t = &transforms[row * 12..row * 12 + 12];
+            let position = Vector2::new(t[3], t[11]);
+            bucket.next.push(GroundSolve {
+                render_id,
+                row: row as u32,
+                input: [t[3], t[11], t[2], t[10]].map(f32::to_bits),
+                // `vehicle_ground_pose`'s own test.
+                exact: camera.is_none_or(|camera| {
+                    camera.distance_squared_to(position) <= full_detail_sq
+                }),
+                output: [0.0; 10],
+            });
+        }
+        if bucket.next.is_empty() {
+            bucket.last.clear();
+            bucket.solved = 0;
+            return;
+        }
+        let vehicle = self.vehicle_bucket_model(key);
+        let last = &bucket.last;
+        // No minimum split: a solve costs microseconds (`solve_vehicle_transforms`).
+        bucket.solved = crate::thread_pools::install(|| {
+            bucket.next.par_iter_mut().map(|solve| {
+                let kept = last
+                    .binary_search_by_key(&solve.render_id, |kept| kept.render_id)
+                    .ok()
+                    .map(|k| &last[k])
+                    .filter(|kept| kept.input == solve.input && kept.exact == solve.exact);
+                if let Some(kept) = kept {
+                    solve.output = kept.output;
+                    return 0;
+                }
+                let [x, z, heading_x, heading_z] = solve.input.map(f32::from_bits);
+                let (height, [x_axis, y_axis, z_axis]) = self.vehicle_ground_pose(
+                    vehicle,
+                    Vector2::new(x, z),
+                    Vector3::new(heading_x, 0.0, heading_z),
+                    camera,
+                );
+                solve.output = [
+                    x_axis.x, y_axis.x, z_axis.x, x_axis.y, y_axis.y, z_axis.y, x_axis.z,
+                    y_axis.z, z_axis.z, height,
+                ];
+                1
+            })
+            .sum::<usize>()
+        });
+        for solve in &bucket.next {
+            let row = solve.row as usize * 12;
+            for (&float, &value) in GROUND_FLOATS.iter().zip(&solve.output) {
+                transforms[row + float] = value;
+            }
+        }
+        // Render ids are unique to an agent.
+        bucket.next.sort_unstable_by_key(|solve| solve.render_id);
+        std::mem::swap(&mut bucket.last, &mut bucket.next);
+    }
+
+    // Grounds each car bucket's off-lane instances, solving every one: the reference the
+    // cached grounding must reproduce. Buckets are independent.
+    #[cfg(test)]
     fn ground_off_lane_cars(&self, snapshot: &mut RenderSnapshot) {
         let flags = &snapshot.car_ground_flags;
         par_for_each_bucket(&mut snapshot.car_transforms, |key, buffer| {
