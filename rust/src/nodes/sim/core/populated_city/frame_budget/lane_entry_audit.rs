@@ -3,8 +3,10 @@
 //! `TRAFFIC-07` audit: runs a prepared snapshot's day and counts, every few game hours, the
 //! lanes holding more cars than fit and the cars stacked at one point of a lane, plus the cars
 //! waiting at a node for their first lane and at an attach point for a gap (`TRAFFIC-11`), and at
-//! its end the day's trip times (`TRAFFIC-38`). A diagnostic of lane entry, not acceptance timing.
+//! its end the day's trip times (`TRAFFIC-38`) and crossings of the road (`PARK-32`). A
+//! diagnostic of lane entry, not acceptance timing.
 
+mod crossings;
 mod ring_day;
 mod rings;
 mod stuck;
@@ -428,6 +430,7 @@ fn traffic07_lane_entry_audit() {
     let work_start = crate::debug::work::snapshot();
     let mut ring_day = ring_day::RingDay::new(core);
     let mut trips = trips::TripBook::new();
+    let mut crossings = crossings::CrossingBook::default();
     // `TRAFFIC-38` flow check: stationary vehicles, lane throughput, trip ages, per day.
     let mut flow = stuck::FlowBook::default();
     flow.start(core);
@@ -478,6 +481,7 @@ fn traffic07_lane_entry_audit() {
             waits.report(core, now, now - start);
             flow.report_day(core, now);
             trips.report(core);
+            crossings.report(core);
             next_report += MINUTES_PER_DAY;
         }
         if now >= end {
@@ -488,6 +492,7 @@ fn traffic07_lane_entry_audit() {
         core.step_frame(FRAME_DT_S);
         ring_day.after_frame(core);
         trips.after_frame(core);
+        crossings.after_frame(core);
     }
     ring_day.report(core);
 }
