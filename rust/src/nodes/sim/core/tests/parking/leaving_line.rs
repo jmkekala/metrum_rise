@@ -301,3 +301,39 @@ fn an_entering_car_is_not_held_by_the_leaving_line() {
     );
     assert!(met, "an entering car pulled in while a line stood");
 }
+
+// A car that has waited its give-up time at the mouth to cross leaves on the near lane, the one
+// it would have crossed, with a plan from that lane's end, and gets to its lot all the same
+// (`PARK-32`). The first car to wait has its wait brought to just short of the give-up.
+#[test]
+fn a_car_waiting_too_long_to_cross_leaves_on_the_near_lane() {
+    use crate::simulation::economy::agents::tick::CROSSING_GIVE_UP_S;
+    let mut s = street();
+    let leaving = s.commuters(s.home, s.west, 3);
+    let stream = s.commuters(s.source, s.east, STREAM);
+    let (mut waiting, mut gave_up) = (None, false);
+    run(&mut s, &leaving, &stream, 150, 12_000, |c, _| {
+        let a = &mut c.agents.agents;
+        if waiting.is_none()
+            && let Some(&car) = leaving
+                .iter()
+                .find(|&&i| a.transit[i] == TRANSIT_ACCESS_EGRESS && a.crossing_wait_s[i] > 0.0)
+        {
+            waiting = Some((car, a.planned_attach_lane_id[car]));
+            a.crossing_wait_s[car] = CROSSING_GIVE_UP_S - 0.05;
+        }
+        let Some((car, far)) = waiting else {
+            return false;
+        };
+        gave_up |= a.planned_attach_lane_id[car] != far;
+        a.transit[car] == TRANSIT_IN_BUILDING
+    });
+    let (car, _) = waiting.expect("a car waited at the mouth");
+    let a = &s.c.agents.agents;
+    assert!(gave_up, "it left on another lane");
+    assert_eq!(a.crossing_wait_s[car], 0.0, "no mark carried onto the road");
+    assert_eq!(
+        a.transit[car], TRANSIT_IN_BUILDING,
+        "it got to its destination"
+    );
+}
