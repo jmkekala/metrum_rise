@@ -204,6 +204,38 @@ arrival ticks move.
     the crossed lane (the clearance keeps the crossing off the junction mouth). A tested
     crossing over more than one lane would need an entry per lane; a door's crossing outside
     the rule is untested, as it was before.
+13. **Measured** (2026-11-23, round 2, release test binaries, fresh 30k and 10k cities over 15
+    days, days 4 to 18, the lane-entry audit `traffic07_lane_entry_audit` with
+    `METRUM_AUDIT_FRESH=1 METRUM_AUDIT_DAYS=15`, its `PARK32_CROSSINGS` day line; `dev` b1758fb4e
+    with the same audit as the control). A trip here runs from a vehicle's lane entry to its
+    detach at an access; a door crossed outside the rule is not counted as crossing.
+
+    | 30k (10k) | `dev` | `park-32` |
+    | --- | --- | --- |
+    | car trips a day | 18,505 (7,129) | 26,107 (10,981) |
+    | car trip, mean | 1,975 m, 233 s (1,473 m, 157 s) | 1,358 m, 175 s (951 m, 110 s) |
+    | car vehicle-km a day | 36,914 (10,577) | 35,805 (10,522) |
+    | truck trips a day | 4,451 (1,637) | 4,409 (1,637) |
+    | truck trip, mean | 2,149 m, 227 s (2,018 m, 212 s) | 2,174 m, 238 s (2,037 m, 214 s) |
+    | truck vehicle-km a day | 12,216 (4,269) | 12,262 (4,284) |
+    | car trips crossing entering / leaving | 0 | 46 % / 47 % (47 % / 46 %) |
+    | truck trips crossing entering / leaving | 0 | 47 % / 44 % (47 % / 44 %) |
+    | waits to cross entering a day, mean, longest | none | 3,072, 4.0 s, 29.9 s (1,430, 4.0 s, 29.9 s) |
+    | waits to cross leaving a day, mean, longest | none | 4,829, 6.5 s, 764 s (2,088, 6.2 s, 332 s) |
+    | give-ups a day | none | 144 (67) |
+
+    More car trips: walks that a drive round the block used to beat now go by car (in the 30k
+    city car trips home 9.0k to 13.0k a day, on foot 15.8k to 12.1k), so the vehicle-km stay
+    level while each trip is about 30 % shorter. The flow check (`TRAFFIC-38`, days 4 to 18,
+    mean and the worst day): wait cycles 0 in both; cars stationary 240 min 0 (0) against 0.4
+    (5); trucks stationary 240 min 42 (430) against 63 (565), 720 min 3.8 (43) against 7.0 (76),
+    nearly all at the border entry nodes waiting for a first lane, in the day-13 freight surge
+    `dev` has too; full lanes 19 (63) against 17 (50); lanes with no throughput 42 (165) against
+    51 (175). The 10k city: trucks stationary 240 min 15 (219) against 15 (227), the rest equal
+    or lower. Cars standing over an hour on a driveway egress: none on `dev`, up to 10 a day in
+    the 30k surge, most likely a car leaving across a lane whose standing queue lies within the
+    gap margin, which it waits out (no give-up when leaving; not traced).
+
 
 Radii the design gave on a two-lane street with sidewalks before building it (90° turns, entry
 and exit alike, the gate's own bend under 5° so the whole run is the arc's; in brackets half the
