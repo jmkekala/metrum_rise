@@ -99,10 +99,13 @@ A small building therefore changes tier much nearer than a large one. Measured i
 
 | Building | Largest bounds side | `LOD1` from | `LOD2` from | `LOD3` from |
 | --- | --- | --- | --- | --- |
-| kiosk (`lippakioski_corner_glazed`) | 6.75 m | about 11 m | 22 m | 52 m |
+| kiosk (`lippakioski_corner_glazed`) | 6.75 m | about 11 to 15 m | 22 to 25 m | 52 m |
 | salon and barber (`kampaamo_tile_corner`, `parturi_brick_pyramid`) | 10.1 to 10.9 m | about 20 m | 42 m | 90 m |
 | pharmacy (`liikekeskus_pharmacy`) | 26.0 m | 50 m | 100 m | 200 m |
 | grocery (`lahikauppa_corner`) | 35.0 m | 65 m | 120 m | 240 m |
+
+The distance depends on the view: the kiosk read 11 and 22 m from the front and 15 and 25 m
+from the rear-left in two measurements of the same day.
 
 As a rule of thumb the switches fall at about 1.8, 4 and 8 times the largest bounds side. What a
 tier drops must not pop at those distances: counters, bins, benches and signs seen against the
@@ -227,7 +230,7 @@ One entry per door leaf or door pair in an outer wall. Keys in this order: versi
 | `position` | `[x, y, z]` | centre of the threshold on the outer wall plane; `y` is the threshold height above ground (a balcony door carries its upper floor's) |
 | `facing` | `[x, 0, z]` | unit outward normal of that wall |
 | `width_m`, `height_m` | number | clear opening of the leaf or pair, without fanlight |
-| `floor_y_m` | number, version 4 | metres above grade of the walking surface at the threshold, `>= 0`, measured on `LOD0` just behind the wall plane where the leaf stands: 0.02 on a floor slab, 0.0 at bare grade, the top of the step, landing, deck, sill or dock a raised door stands on, a sill's own height where nothing is under it |
+| `floor_y_m` | number, version 4 | metres above grade of the walking surface at the threshold, `>= 0`, measured on `LOD0` just behind the wall plane where the leaf stands: 0.02 on a floor slab, 0.0 at bare grade (no door of the reference models reads 0.0 since every door at grade stands on a slab), the top of the step, landing, deck, sill or dock a raised door stands on, a sill's own height where nothing is under it |
 | `storey` | integer or `null`, version 4 | the 0-based index into `storeys` of the storey the door opens to: the listed storey whose floor is nearest the door's `floor_y_m`, within 0.5 m (the lower on a tie); `null` when none is, or none is listed. The builder may state either value where the measurement cannot decide |
 | `main` | boolean | at most one door is `true`, and that door is an `entrance`: the entrance a visitor uses |
 
@@ -254,7 +257,7 @@ The values above illustrate the rule; the regenerated sidecars state each model'
 in full, one door (the schema's example):
 
 ```json
-{"id": "front", "kind": "entrance", "position": [0.0, 0.1562, 13.015], "facing": [0.0, 0.0, 1.0], "width_m": 2.0, "height_m": 2.34, "floor_y_m": 0.1562, "storey": 0, "main": true}
+{"id": "front", "kind": "entrance", "position": [0.0, 0.1562, 13.015], "facing": [0.0, 0.0, 1.0], "width_m": 2.0, "height_m": 2.3438, "floor_y_m": 0.1562, "storey": 0, "main": true}
 ```
 
 The reader refuses, naming the door: a missing `floor_y_m` or `storey` in version 4, a
@@ -311,7 +314,7 @@ door gains `floor_y_m` and `storey` before `main` (here `0.70` and `0` for both 
   "path": "buildings/residential/rintamamiestalo_porch",
   "source": {"commit": "9c93f65ae0f3e78d40c9c86f3b65cc290965c35a", "dirty": false, "blender": "5.2.0"},
   "license": "CC-BY-4.0",
-  "bounds": {"min": [-5.35, 0.0, -6.84], "max": [5.35, 9.562, 6.84]},
+  "bounds": {"min": [-5.35, 0.0, -6.84], "max": [5.35, 9.5625, 6.84]},
   "footprint": [[-5.0, -5.1], [5.0, -5.1], [5.0, 2.9], [0.3, 2.9], [0.3, 5.1], [-2.7, 5.1], [-2.7, 2.9], [-5.0, 2.9]],
   "storeys": [{"floor_y_m": 0.70, "area_m2": 86.6}, {"floor_y_m": 3.80, "area_m2": 58.0}],
   "dwellings": 1,
@@ -450,13 +453,13 @@ sidecar). All ledger sidecars are version 1 on that date.
 
 | Asset id (`building.…`) | Source model(s) | Use (economy profile) | Lot | Colour schemes (default first) | Notable facts |
 | --- | --- | --- | --- | --- | --- |
-| `commercial.kiosk_1` | `lippakioski_corner_glazed` | grocery kiosk (`grocery_kiosk`) | 1 × 1 | ochre, cream, green, red boards | no parking or dock: kerb deliveries; lot-wide paving; ledger `5a12c0b` |
-| `commercial.barber_1` | `parturi_brick_pyramid` | barber (`personal_service_small`) | 2 × 2 | yellow, brown, red, white brick | drafted by the tool; lobby slab in the entrance recess; sign PARTURI; ledger `00e6c65` |
-| `commercial.hair_salon_1` | `kampaamo_tile_corner` | hair salon (`personal_service_small`) | 2 × 2 | teal, blue, brown, rose tile | a corner shop on a mid-block lot (`ZONE-15`); shop-door slab; ledger `4d9d840` |
-| `commercial.pharmacy_1` | `liikekeskus_pharmacy` | pharmacy (`health_essentials_small`) | 3 × 3 | grey, beige, brown, red stone | part moved −0.09 m in `x` for the 9 cm pivot move; 6 places, dock; ledger `5a12c0b` |
-| `commercial.grocery_store_1` | `lahikauppa_corner` | grocery (`grocery_basic`) | 4 × 4 | red, brown, grey, yellow brick | 45° corner door; part moved −0.09 m in `z`; lobby slab; 17 places, backed-into dock; ledger `d651d06` |
+| `commercial.kiosk_1` | `lippakioski_corner_glazed` | grocery kiosk (`grocery_kiosk`) | 1 × 1 | ochre, cream, green, red boards | no parking or dock: kerb deliveries; lot-wide paving; ledger `dc0fd03` |
+| `commercial.barber_1` | `parturi_brick_pyramid` | barber (`personal_service_small`) | 2 × 2 | yellow, brown, red, white brick | drafted by the tool; lobby slab in the entrance recess; sign PARTURI; ledger `dc0fd03` |
+| `commercial.hair_salon_1` | `kampaamo_tile_corner` | hair salon (`personal_service_small`) | 2 × 2 | teal, blue, brown, rose tile | a corner shop on a mid-block lot (`ZONE-15`); shop-door slab; ledger `dc0fd03` |
+| `commercial.pharmacy_1` | `liikekeskus_pharmacy` | pharmacy (`health_essentials_small`) | 3 × 3 | grey, beige, brown, red stone | part moved −0.09 m in `x` for the 9 cm pivot move; 6 places, dock; ledger `dc0fd03` |
+| `commercial.grocery_store_1` | `lahikauppa_corner` | grocery (`grocery_basic`) | 4 × 4 | red, brown, grey, yellow brick | 45° corner door; part moved −0.09 m in `z`; lobby slab; 17 places, backed-into dock; ledger `dc0fd03` |
 | `industrial.food_processing_factory_1` | `tehdas_brick_gable` | food processing (`food_processor_basic`) | 6 × 3 | red, brown, grey, yellow brick | eight doors; `forecourt` passage; backed-into dock at the loading door; the only `--check` failure: `entrance/main` 1.30 m from the `front` door |
-| `industrial.machinery_factory_1` | `konepaja_element_monitors` | machinery (`machinery_factory_basic`) | 5 × 3 | grey, beige, red aggregate | raised main entrance, threshold 0.1562 m on its landing; `forecourt` passage; backed-into dock; ledger `5a12c0b` |
+| `industrial.machinery_factory_1` | `konepaja_element_monitors` | machinery (`machinery_factory_basic`) | 5 × 3 | grey, beige, red aggregate | raised main entrance, threshold 0.1562 m on its landing; `forecourt` passage; backed-into dock; ledger `dc0fd03` |
 | `residential.house_1`, `_level_2` | `rintamamiestalo_balcony` | detached house, 1 household, 80 m² | 2 × 3 | red, blue, green, white, yellow | front and back doors at 0.70 m (raised floor), a balcony door; level 2 is the same model placed further forward |
 | `residential.house_2`, `_level_2` | `rintamamiestalo_gable_entry` | detached house, 1 household, 80 m² | 2 × 3 | red, blue, green, white, yellow | gable entrance; balcony door at 3.9 m |
 | `residential.house_3`, `_level_2` | `rintamamiestalo_porch` | detached house, 1 household, 80 m² | 2 × 3 | red, blue, green, white, yellow | the sidecar's worked example |
@@ -481,10 +484,10 @@ sidecar). All ledger sidecars are version 1 on that date.
   drives on to turn round. It decides how parking and gates sit on a lot only once built.
 - **The food factory's entrance anchor** stands 1.30 m from its `front` door, the one acceptance
   failure of the reference set; the anchor is the owner's to move (no roadmap row).
-- **Door recesses at grade without a slab:** the 2026-11-23 audit found five doors in the
-  reference models where the ground shows in the reveal (pharmacy, food factory `front` and
-  `stair`, transformer yard `switchgear`, coal bunker `control`); the models side adds slabs, the
-  pack takes them by a file swap.
-- **Thumbnails** of updated assets are the owner's captures, left as they were; tool-made
-  candidates exist.
+- **Door recesses at grade** all stand on slabs since the models of 2026-11-23 (every pack asset
+  takes them; the five doors where ground showed in the reveal are closed). One line of ground
+  remains along the food factory's main facade: the pack's yard edge falls short of the wall
+  there, the owner's to move.
+- **Thumbnails**: the barber's, salon's and kiosk's are the tool's own; the other updated assets
+  keep the owner's captures, with tool-made candidates saved.
 - **Walkable surfaces** (stairs, ramps) are not in any data; later, after `BUILD-02`.
