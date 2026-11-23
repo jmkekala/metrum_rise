@@ -231,8 +231,10 @@ arrival ticks move.
    a save mid-line continues exactly. Not in a line: a drop-off leaving its kerb stop (no
    place), and a truck held at a lane point after its pull-out (its trip forgets the dock), so a
    following truck can reach that lane point (a truck's slot is rarely busy there). Cost: O(L
-   log L + L x way points) a tick for the L vehicles in lines, before the movement pass, and
-   O(log L) for each pulling-out vehicle's lookup; no allocation past the largest tick.
+   log L + S x way points) a tick for the L vehicles in lines, before the movement pass, S of
+   them sharing a mouth with another (`PERF-33`: a vehicle alone at its mouth holds nowhere, so
+   only its mouth is read, from its place's way without the lane point), and O(log L) for each
+   pulling-out vehicle's lookup; no allocation past the largest tick.
 10. **Drawn.** The gate turn (`PARK-31`) arcs toward the access's side per car (`gate_hand`: a
    car's place kerb, a truck's door, against the lane's travel) instead of the constant
    `LOT_HAND`; a truck already on its lane keeps no record of where it came from and arcs as from
@@ -287,6 +289,92 @@ arrival ticks move.
     `dev` 102, round 2 16, round 3 before its give-up 39, as built 233; one day-end sample of
     the surge, which swings widely from run to run; on every other day 3 or fewer). The 10k
     city: trucks stationary 240 min 15 (219) against 14 (204), no car over 60 min on an exit.
+15. **Frame cost** (`PERF-33`, 2026-11-24). The landing timing of the follow-ups (`dev`
+    9bb3d1f14 against the pushed b1758fb4e, level L, 30k, eight workers on the performance
+    cores) passed every acceptance row with a smaller margin: 32× mean 3.763 to 4.096 ms
+    (+8.8 %), p99 5.634 to 7.061 (+25.3 %), worst unpreempted frame 6.25 to 7.8 ms (limit 8);
+    1× mean 1.709 to 1.788 (+4.6 %), p99 +25.5 %. Two controls split it.
+
+    *The code alone.* A diagnostic build of 9bb3d1f14 (never landed) with far-side crossing off
+    (`vehicle_access_at` always same-side, `crossing_at` never tested: the city as before
+    `PARK-32`, every new path compiled and running its idle checks) prepared its own 30k city
+    and was timed against b1758fb4e (level F, one session):
+
+    | 30k | b1758fb4e | crossings off | delta (tolerance) |
+    | --- | --- | --- | --- |
+    | 32× mean | 3.792 ms | 3.867 | +2.0 % (1.4) |
+    | 32× p99 / p99.9 | 5.729 / 6.55 | 5.889 / 7.912 | +2.8 % (3.4) / +20.8 % (8.0), one run's 9.46 |
+    | 32× worst unpreempted | 6.29, 6.33 | 6.85, 6.58 | |
+    | 32× agent / snapshot / slot | 1.899 / 0.912 / 0.925 | 1.921 / 0.922 / 0.967 | level / level / +4.5 % |
+    | 1× mean / p99 / p99.9 | 1.709 / 2.807 / 3.342 | 1.693 / 2.858 / 3.304 | all level |
+
+    So about a fifth of the 32× mean rise and none of the p99 rise is the code at rest (the slot
+    row is planning on a city that also lost the kiosk asset, `ECON-32`); the rest is the city
+    the rule makes.
+
+    *The city.* One instrumented build (never landed: phase timers, counters) ran the same 30k
+    day at 32× on both cities (crossings on, and off as above), C B B C on a quiet machine.
+    Per frame, day means (peak: the three departure waves, hours 05, 13 and 21):
+
+    | 30k 32×, per frame | crossings off | on | peak off | peak on |
+    | --- | --- | --- | --- | --- |
+    | frame (probe) | 4.23 ms | 4.49 | 5.47 | 6.69 |
+    | agent tick | 2.26 | 2.38 | 3.01 | 3.76 |
+    | of it: parking commits | 0.27 | 0.32 | 0.56 | 0.82 |
+    | of it: serial movement (egress cars) | 0.79 (0.03) | 0.83 (0.07) | 0.97 (0.05) | 1.20 (0.21) |
+    | of it: leaving lines | 0.020 | 0.035 | 0.041 | 0.105 |
+    | slots (trip planning) | 0.96 | 1.02 | 0.97 | 1.02 |
+    | snapshot | 0.96 | 1.04 | 1.43 | 1.86 |
+    | of it: agent instances / parked chunks | 0.66 / 0.20 | 0.71 / 0.23 | 1.06 / 0.27 | 1.38 / 0.38 |
+    | cars pulling out / pulling in | 39 / 39 | 75 / 62 | 88 / 62 | 244 / 110 |
+    | cars on an access leg (egress / ingress) | 44 / 58 | 86 / 80 | 93 / 80 | 263 / 126 |
+    | in a leaving line / held by it | 50 / 0.4 | 91 / 3.1 | 110 / 1.3 | 290 / 12.9 |
+    | crossing / waiting to cross | none | 27 / 27 | none | 57 / 87 |
+    | walkers on lanes | 3,485 | 2,809 | 5,834 | 4,768 |
+    | route searches (CCH point) a day | 181,120 | 258,340 | | |
+    | crossing rule reads / gap tests a frame | 27 / 0 | 58 / 52 | 47 / 0 | 157 / 152 |
+
+    Walks became drives (car trips 18.5k to 26k a day), so more cars start and end trips: more
+    plans and route searches (+43 %), parking commits, pull-outs and pull-ins, and more cars
+    drawn on access legs, which the snapshot grounds off the road every frame. In the
+    departure waves the cars on a pull-out are 2.8 times as many, not 1.4: each also waits at
+    its mouth to cross (or in its lane to enter), about 87 vehicles at once, and every one of
+    them runs in the movement pass's serial part each tick (a car egress, or a car at its detach
+    point, is `MovementClaimMode::Dynamic`) and is drawn. The slow frames are these waves: the
+    12 worst unpreempted 32× frames of the landing timing all fall in hours 05-06, 13 and 21,
+    with agent 3.2-4.0 ms and snapshot 1.7-2.4 ms, against 2.5-3.2 and 1.2-2.0 on b1758fb4e. No
+    frame rebuilds anything large: the leaving line is the one new per-tick rebuild, serial over
+    its members (tens, about 300 in a wave), 0.1 ms at the peak before the cut and 0.04 after;
+    split over the pool's workers it would cost more in the join than it saves.
+
+    *Cut* (outcome-neutral: the envelope and determinism records equal `dev` 9bb3d1f14's, and
+    the probe's agent state counts are equal frame for frame): the leaving line measures only
+    vehicles sharing a mouth with another (above: 217k measured a day to 16k), and the crossing
+    rule samples the lane point only where a lane is crossed and reads the crossed lane's
+    distance from its own clearance test instead of projecting again (`tested_crossing`).
+    Probe, C B B C: leaving lines 0.035 to 0.014 ms a frame (peak 0.105 to 0.041), serial
+    movement -0.011 (peak -0.03), frame -0.037 ms (-0.8 %).
+
+    Like for like (level F, one session, the same prepared city on both sides, `dev` 9bb3d1f14
+    against the cut), every verdict level:
+
+    | 30k | 9bb3d1f14 | the cut | delta (tolerance) |
+    | --- | --- | --- | --- |
+    | 32× mean | 4.154 ms | 4.145 | -0.2 % (1.4) |
+    | 32× p99 / p99.9 | 7.053 / 7.963 | 6.927 / 7.614 | -1.8 % (3.4) / -4.4 % (8.0) |
+    | 32× worst unpreempted | 8.18, 8.19 | 7.95, 7.91 | -3.2 % (6.0) |
+    | 32× agent / snapshot / slot | 2.052 / 1.012 / 1.034 | 2.038 / 1.010 / 1.039 | level |
+    | 1× mean / p99 / p99.9 | 1.794 / 3.537 / 3.900 | 1.804 / 3.444 / 3.836 | level |
+    | 1× worst unpreempted | 5.30 | 5.55 | +4.9 % (8.5) |
+
+    The cut is within the one-run tolerance at whole-frame level, as its 0.04 ms predicts. The
+    frame stands at the limit: in this session `dev`'s two 32× days had their worst unpreempted
+    frame at 8.18 and 8.19 ms (over 8, the `PERF-17` known exception), the cut's at 7.95 and
+    7.91, all in the departure waves.
+
+    What remains is the busier city, not idle code: see `PERF-33` for the serial pass of
+    waiting and pulling-out cars and the per-frame ground solve of cars standing still off the
+    road.
 
 Radii the design gave on a two-lane street with sidewalks before building it (90° turns, entry
 and exit alike, the gate's own bend under 5° so the whole run is the arc's; in brackets half the
