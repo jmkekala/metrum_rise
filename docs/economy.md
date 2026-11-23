@@ -1778,8 +1778,10 @@ snapshots. The full contract is required before merging an economy change.
    household ratio**. Bounded: census building rows, reservation rows copied, owner slots
    prepared, proposed site rows generated, spawn parcels scanned, staffing trials, supplier
    searches, supplier route quotes, household job-search keys, and CCH searches (point searches
-   plus bucket sources, which replace them). Pass, census and rebuild event counts are reported
-   but not bounded.
+   plus bucket sources, which replace them). Job-search keys are compared per search batch, a
+   job-queue slot whose searches ran against an open job (the calls of the `workplace_queries`
+   phase), since `PERF-32` ([below](#job-search-keys-per-search-batch-perf-32)). Pass, census
+   and rebuild event counts are reported but not bounded.
 4. **Locality checks:** a profitability-failing supply cycle resolves in at most **3** funding
    censuses at lengths 4/16/64 (`benchmark_combined_financing_cascades`), and a warm queued
    check after a frontage-price change costs at most **1.2×** as much at 131,072 background
@@ -2117,6 +2119,62 @@ workers: identical work counts, the same seven work-count failures, and hour mea
 run-to-run spread (the control's baseline 30k moved 4.09–4.57 ms across two sessions that day).
 The cities hold no footpath and their walking proof holds. Commands and results are in
 [`roads.md`](roads.md#footpath-junctions-and-the-bend-crossing-fallback-pre-d).
+
+#### Job-search keys per search batch (`PERF-32`)
+
+`job_search_keys` counts the distinct home keys (home, and the car a searcher may use) that a
+job-queue slot's searches build options for. An agent free to look for work queues its search at
+its hourly phase; each slot takes up to `JOB_REQUEST_QUOTA` searches. A slot whose hour has no
+open job on the board ends before the search, so it counts nothing; a slot that meets an open
+job enters the `workplace_queries` phase once and counts one key per distinct home. Per key the
+search scans the home's reachable job buckets, bounded by `JOB_ROUTE_SCAN_CANDIDATES`.
+
+The old rule compared the day's absolute keys with 1.2× the final household ratio. In the
+fiscal-stress cities almost every working adult is unemployed and searches every hour (about
+7,600 searches an hour at 10k, 20,500 at 30k), but a funded job is open in only one or two hours
+of the day: 948 search batches (one hour of slots) or 1,890 (two hours). Since the border trunks
+of `TRAFFIC-38` (fixture v12) the 10k city meets an open job in one hour instead of two, while
+the 30k city kept two hours until the `ECON-31` and `PARK-36` landing of 2026-11-23 moved it
+to one too. The day's keys follow that
+count of hours, an outcome of the fiscal economy, not of the search:
+
+| Fiscal stress | Households | Batches | Keys | Keys per household | Keys per batch |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| v11 cities, 10k / 30k (2026-11-22 control) | 5,705 / 15,587 | 1,890 / 1,894 | 15,353 / 41,295 | 2.69 / 2.65 | 8.12 / 21.80 |
+| v12 cities before that landing, 10k / 30k (2026-11-23 control) | 5,708 / 15,582 | 948 / 1,892 | 7,718 / 41,314 | 1.35 / 2.65 | 8.14 / 21.84 |
+| `dev` after it, 10k / 30k (`d8eb8178`) | 5,707 / 15,590 | 948 / 948 | 7,719 / 20,642 | 1.35 / 1.32 | 8.14 / 21.77 |
+
+The 2026-11-23 control failed the old rule (5.35× against 3.2758×) and `dev` passes it (2.67×
+against 3.2781×) with no change to the search. Per unit of what drives it the work is flat or
+falls: in the hour with an open job every search built one key (7,719 keys for 7,722 searches at
+10k, 20,642 for 20,650 at 30k on `dev`), keys per batch grow 2.67-2.69× for 2.73× the
+households, and the search costs less per key in the larger city (`workplace_queries` 1.36 µs a
+key at 10k and 0.99 µs at 30k in the 2026-11-23 level L session). No scaling fault.
+
+The rule since `PERF-32`: keys **per search batch** grow at most 1.2× the final household
+ratio. The number of batches is bounded by the day's slots whatever the city's size, so dividing
+by it removes only the hours an open job happened to exist. Keys per batch that grow faster than
+the households (more searches per slot, or fewer of them sharing a home, in the larger city)
+still fail at the old margin. A
+city with keys and no batch reads as new work, as any count that is zero in the 10k city does.
+On the rows above the new rule reads 2.68× (v11), 2.68× (v12 control) and 2.67× (`dev`) against
+3.28×, 3.28× and 3.28×: all pass; the old rule read pass, fail and pass. The runner reads the
+batches from the `workplace_queries` phase calls the report already holds, so control binaries
+built before the change are checked by the same rule.
+
+**Other ratios of absolute event counts.** `buyer_sites_built`, `staffing_trials`,
+`supplier_searches` and `supplier_routes` in the baseline city, and the baseline
+`job_search_keys` when the 10k city happens to have no searcher, count events whose number per
+day is an outcome of the city's history (business proposals, hires, restocks, lock expiries), not
+of the city's size alone; the structural counts (census rows, owner slots, spawn parcels) grow
+2.62× for 2.73× the households in every run. The baseline control's five failures before v12
+were these: `buyer_sites_built` 10 → 48, `staffing_trials` 4.31×, `supplier_searches` 5.08×,
+`supplier_routes` 5.39× and `job_search_keys` 0 → 988 (2026-11-22, limit 3.2786×). The v12
+cities clear all five on the 2026-11-23 control and on `dev`, but the branch of the same
+2026-11-23 session failed `supplier_searches` 4.91× and `supplier_routes` 4.17× again: moved
+below the limit by the cities' history, not resolved. They keep their absolute rule; a
+per-unit form for them needs its own count of what drives each (proposal passes, hiring
+operations, restock requests) and is not part of `PERF-32`.
 
 #### Parking contract acceptance (`PARK-02`)
 
