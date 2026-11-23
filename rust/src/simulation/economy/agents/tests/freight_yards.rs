@@ -753,6 +753,36 @@ fn a_delivered_truck_backs_out_through_the_gate_and_frees_the_dock_at_the_lane()
     assert_eq!(yard.status(0), ShipmentStatus::Fulfilled);
 }
 
+// The leaving line at a yard's gate (`PARK-32`): two trucks delivered in the two docks behind one
+// gate at the same moment back out one at a time. The second stays in its dock until the first
+// is a body and 1 m on, and the two are never within a body length of each other.
+#[test]
+fn two_trucks_leaving_by_one_gate_back_out_one_behind_the_other() {
+    let mut yard = yard(2);
+    let trucks = [yard.dispatch(0), yard.dispatch(1)];
+    yard.tick_until(|y| trucks.iter().all(|&i| y.phase(i) == ParkingTripPhase::AtDock));
+    assert!(yard.check(0) && yard.check(1));
+    let starts = trucks.map(|i| at(&yard, i));
+    let (mut waited_in_dock, mut order) = (false, Vec::new());
+    yard.tick_until(|y| {
+        let a = &y.agents.agents;
+        let pulling = trucks.map(|i| y.phase(i) == ParkingTripPhase::PullOut);
+        let moved = [0, 1].map(|k| pulling[k] && at(y, trucks[k]).distance_to(starts[k]) > 0.01);
+        waited_in_dock |= (moved[0] && pulling[1] && !moved[1]) || (moved[1] && pulling[0] && !moved[0]);
+        if moved[0] && moved[1] {
+            let d = at(y, trucks[0]).distance_to(at(y, trucks[1]));
+            assert!(d >= crate::config::TRUCK_BODY_LENGTH_M, "{d:.2} m apart");
+        }
+        for k in 0..2 {
+            if !pulling[k] && !order.contains(&k) && a.transit[trucks[k]] != crate::simulation::economy::agents::TRANSIT_ACCESS_EGRESS {
+                order.push(k);
+            }
+        }
+        order.len() == 2
+    });
+    assert!(waited_in_dock, "one waited in its dock while the other backed out");
+}
+
 // Owner decision 10: a dispatch from a building with a free dock spawns its truck standing in
 // the dock, which it takes, and it leaves at once through the gate. Bound for the grocery's
 // yard, it keeps its yard trip past the lane, stands in the grocery's dock, backs out of it and

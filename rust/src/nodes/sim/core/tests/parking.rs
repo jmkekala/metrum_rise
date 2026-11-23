@@ -15,6 +15,7 @@ mod family;
 mod drive_lines;
 mod gate_turn;
 mod kerb;
+mod leaving_line;
 mod poses;
 mod published;
 mod strand;
