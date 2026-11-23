@@ -181,14 +181,15 @@ arrival ticks move.
    crossing vehicle. Entering the lane (`enter_lane!`, `hold_for_lane_attach!`), leaving the
    network state and a road edit over the crossed lane end the hold.
 8. **Trucks** take the same rule with their 8 m body (slot and crossing time). A truck bound for
-   a freight gate across the road crosses at the gate's far lane point like any vehicle (gap test
-   and hold), and the gate commit then decides at that point, the truck holding the crossed
-   lane. Granted a dock, it drives the dock's way in from there. Refused, it does not take the
-   gate-to-kerb plan, which starts on the gate's side: its plan is dropped, it goes back onto its
-   own lane (which ends its hold) and plans to the kerb stop from there (`commit_freight_gate`,
-   marked `PARK-32`). This is an interim: with the dock queue moved before the gate, a far-side
-   truck is to wait at the kerb on its own side, upstream of the point opposite the gate, and
-   cross only when its dock is granted.
+   a freight gate it reaches on the far lane stops at the end of its line on its own lane, as on
+   the near lane (`PARK-36`, `gate_line_d` from the gate's far lane point), for the gate commit.
+   Granted a dock there, it drives on and crosses at the gate's far lane point by the gap rule
+   (waiting in its lane, holding the near lane while it crosses, the 30 s give-up), then drives
+   the dock's way in. Refused, it does not wait across the road: the line stands beside the
+   gate's near lane only, so it plans on from its lane's end to the gate reached from the gate's
+   side (`turn_for_near_line`, `parking/yard.rs`), drives round and joins the line there in the
+   order it reaches it. Owner's choice left open: a line on the far side, at the kerb upstream of
+   the point opposite the gate, in one arrival order with the near line, crossing when granted.
 9. **Drawn.** The gate turn (`PARK-31`) arcs toward the access's side per car (`gate_hand`: a
    car's place kerb, a truck's door, against the lane's travel) instead of the constant
    `LOT_HAND`; a truck already on its lane keeps no record of where it came from and arcs as from

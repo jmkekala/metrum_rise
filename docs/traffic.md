@@ -4395,9 +4395,10 @@ refused truck from the gate round the block to the kerb. In the 14-day yard runs
 truck drove about 600 m between its grant and its dock. The line now lies before the gate, and
 the decision is taken where the truck reaches the line, never at the gate.
 
-- **Where the line stands.** On the gate's own side of its road (gates are reached from that
-  side only: `parking_access_at` makes every lot access `SameSideOnly`, so a truck's plan always
-  leaves the road from the gate's near lane), against the near lane's travel from the gate's
+- **Where the line stands.** On the gate's own side of its road only (a truck reaching the gate on
+  the far lane, where crossing is allowed, `PARK-32`, crosses only holding a dock: refused at the
+  end of its own line on the far lane, it plans on to the gate from the gate's side, drives round
+  and joins this line in the order it reaches it), against the near lane's travel from the gate's
   lane point: place `k` is the kerb beside the near lane `(k + 1)` × 9 m (`KERB_QUEUE_SPACING_M`,
   the 8 m body and 1 m) short of the lane point (`gate_line_d`, the place `kerb_stop_beside` its
   lane point, 1.4 m inside the kerb). The mouth keeps the first 9 m: the first truck's front
