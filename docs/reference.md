@@ -80,7 +80,7 @@ The type vocabulary for current and planned transport modes lives in `simulation
 | Headless gameplay roads | `./run.sh --profile-gameplay-roads-headless` | The same deterministic workload with Godot's headless renderer, isolating CPU work from the display/GPU path. |
 
 The gameplay-road commands always build the release library, load
-`maps/processed/Kuopio/kuopio_324km2_10m.sqlite`, run one warmup and three measured repetitions of
+`godot/bootstrap/worlds/kuopio_18432m_8m.sqlite`, run one warmup and three measured repetitions of
 each selected case, verify every expected node degree, and exit. The default `controlled` matrix has
 orthogonal two-lane bend, T, and four-way baselines plus oblique T, mixed eight-/two-lane four-way,
 curved bend, close double-T, and chunk-corner four-way cases. Each non-baseline case names exactly one

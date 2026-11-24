@@ -3620,7 +3620,7 @@ the tile for central-difference normals:
 Precondition (proposed, validated by `WorldConfig` and the DEM importer for the worlds the game
 loads, [T17](#terrain-07-open-questions)): the base lattice lies on the 2 m lattice, that is,
 `terrain_cell_m` is a multiple of 2 m and the half extents are multiples of 2 m. The 20 km default
-(half extent 10,000 m) and the 18 km Kuopio world (9,000 m) satisfy it; `TERRAIN-07-A` checks the
+(half extent 10,000 m) and the 18,432 m Kuopio world (9,216 m, 8 m cells) satisfy it; `TERRAIN-07-A` checks the
 fixture worlds. The lattices then nest, base step lattice ⊂ `GL2` ⊂ `GL1` ⊂ `GL0`, and every patch
 side, being a base lattice line, is a lattice line of every level.
 
@@ -21990,6 +21990,10 @@ Gameplay now has a first-pass authored-world handoff.
 Current deterministic rules:
 
 - startup seeds missing bundled world entries from `res://bootstrap/worlds/` into `user://worlds/`
+- before that it removes a profile copy of a bundled world a release replaced, when the copy is
+  byte-identical to a copy a release shipped (`SUPERSEDED_WORLDS` in `user_data_bootstrap.gd`,
+  file name and SHA-256): the old `kuopio_324km2_10m.sqlite` goes and `kuopio_18432m_8m.sqlite`
+  is seeded; a copy the player changed stays
 - gameplay `File -> New Game` opens a world picker rooted at `user://worlds/`
 - selecting one `WorldDefinition` loads it into the live gameplay scene
 - gameplay world load reuses the same scene refresh path as save-load:
@@ -22151,11 +22155,11 @@ Current implemented slice:
 - real-map terrain import now exists as an offline editor-time tool:
   - `tools/import_dem_world_definition.py`
 - the importer writes a normal `WorldDefinition` SQLite asset directly
-- the first validated source case is the National Land Survey of Finland Kuopio `324 km²`
-  `Korkeusmalli 2 m` tile batch under:
-  - `maps/raw/Kuopio/324km2/`
-- the default generated authored world is:
-  - `maps/processed/Kuopio/kuopio_324km2_10m.sqlite`
+- the first validated source case was the National Land Survey of Finland Kuopio `324 km²`
+  `Korkeusmalli 2 m` tile batch under `maps/raw/Kuopio/324km2/`
+- the shipped Kuopio, `godot/bootstrap/worlds/kuopio_18432m_8m.sqlite`, is built from the
+  900 km² batch and the hydrography (command below); its sources are not in the repository, so
+  `--input-dir`, `--output` and `--world-name` have no defaults
 
 Current source format rules:
 
@@ -22240,8 +22244,40 @@ World size and centre (grid alignment `A4`, 2026-11-24):
 - sample `(i, j)` lies at source `E - S/2 + i * cell`, `N + S/2 - j * cell`: world X is easting
   minus the centre's, world Z the centre's northing minus the sample's (north is -Z)
 - the new Kuopio is `--size-m 18432 --terrain-cell-m 8 --centre-e 533000 --centre-n 6975000`
-  from the 900 km² `Korkeusmalli 2 m` batch (25 sheets), with the hydrography below. It is a
-  build product, not yet the shipped Kuopio
+  from the 900 km² `Korkeusmalli 2 m` batch (25 sheets), with the hydrography below. It is the
+  shipped Kuopio since grid alignment round `A4b` (2026-11-24), replacing the 18,000 m, 10 m world
+  with hand-made lakes (its map, lakes and deposits not converted). Rebuilt with
+  `python3 tools/import_dem_world_definition.py --input-dir <the 25 sheets> --output
+  godot/bootstrap/worlds/kuopio_18432m_8m.sqlite --world-name Kuopio --terrain-cell-m 8
+  --size-m 18432 --centre-e 533000 --centre-n 6975000 --hydrography <hydrografia.gpkg>`, it is
+  byte-identical (sha256 `f13cd135…9e3160`); `kuopio_source_world_floods_exactly_its_water`
+  checks its lakes in the runtime
+
+The Kuopio fixture on the shipped world (`benchmarks/fixtures/kuopio-terrain`, grid alignment
+`A4b`, 2026-11-24):
+
+- the 37 recorded strokes keep their XZ positions (same centre). Replayed per case and in one
+  world, 35 keep their verdict, warning and edge counts unchanged; two were moved, each recorded
+  in `placements.json` (`relocated_a4b`: the recorded position and the reason): attempt 20's start
+  lay in a lake at 86.4 m that the old world left dry (moved 144 m along the stroke onto the
+  shore), attempt 35 was refused `road_too_steep` on the 8 m ground (its end moved 12 m further
+  along). Both still cross the road they crossed at the 1:3 limit; quality limits are unchanged
+- the reference save is re-recorded with `record_kuopio_reference_save` (two runs, same bytes,
+  70 live edges as before) and pinned with `tools/road_terrain_replay.py --pin-reference`;
+  `source_world_sha256`, `source_terrain_sha256` and `world_config` name the shipped world
+- `residential-buildability.json` takes its ground from the shipped world at 8 m over the same
+  area (72 x 138 samples from sample (24, 1396), now covering node 1, which lay 9.5 m beyond the
+  old world's edge); its roads, nodes and parcels are stored authority, as a save holds them, and
+  stay as recorded. All 16 parcels stay feasible and the five hillside houses build the same assets
+- one measured value moved with the ground: the conflict wall at node 50 (`kuopio_conflict_wall_closes_the_step`)
+  still closes the step at all 175 walled samples, its highest 0.24 m (0.37 m on the old ground)
+- what depends on the terrain layout rather than heights and queries: `world_config` (cell and
+  the 512 m storage chunk span) and `source_world_sha256` (the world's chunk table) in
+  `placements.json`; the reference save's hash (its `world_config` row); the buildability dump's
+  `width`, `height`, `cell_m`, `x0`, `z0` (sample indices); `kuopio_pruned_bake_equals_every_seam`'s
+  graded tile keys (64 m tiles from the origin). Strokes, edge positions, yard roads and the
+  conflict wall site are world positions. Nothing in the fixture pins a render patch: the graded
+  edit, drag and census digests are compared within one run, not stored
 
 Lakes and rivers from hydrography vectors (`--hydrography`, `tools/dem_water.py`):
 
