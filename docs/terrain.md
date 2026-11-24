@@ -22427,8 +22427,9 @@ Lakes and rivers from hydrography vectors (`--hydrography`, `tools/dem_water.py`
   then seeds at its group's deepest sample. River vertex heights are not used (water round
   `W2`): they span the banks (2.7 m on the shipped strait 923959600, against 0.3 m of lake
   system), so they give no level a flat river surface could take
-- a laser-scanned DEM is flat at the water surface, so beds are synthetic: a terrain sample
-  whose centre lies inside a water polygon gets
+- a laser-scanned DEM is flat at the water surface, so beds are synthetic unless a depth chart
+  covers the polygon (`--depths`, below): a terrain sample whose centre lies inside a water
+  polygon gets
   `bed = level - min(depth_cap, slope * d)`, `d` the distance to the shore (the boundary of all
   water polygons together, so a line two polygons share is not a shore, and a polygon cut by the
   world edge keeps its real shore beyond it). Defaults: `slope` 0.15, `depth_cap` 12 m, 1 m
@@ -22500,6 +22501,57 @@ Lakes and rivers from hydrography vectors (`--hydrography`, `tools/dem_water.py`
   system: 85 lakes at 82.1-82.9 m, two lowered 0.7 and 0.8 m), and three shore samples raised
   2-3.6 m where a lake at its mapped level meets lower scanned ground. Only straits carry
   water: an inlet, outlet or lone river is dry ground in its valley
+- surveyed lake beds (`--depths`, water round `W3`, 2026-11-24): optional, and without it the
+  importer is unchanged (the shipped Kuopio rebuilds to `594e11ce…045e23`). Source: the
+  topographic database's height theme as a GeoPackage, layers `syvyyskayra` (depth contours,
+  lines; 1.5, 3, 6, 10 m, then 5 m steps) and `syvyyspiste` (soundings, points), depth below the
+  water in `syvyysarvo` (mm); vertex heights are not used. The rule:
+  - a kept water polygon is **charted** when a sounding lies inside it or it holds more than half
+    of some contour's length; any other polygon keeps the synthetic bed. Contours are drawn per
+    lake: 3,422 of Kuopio's 3,463 and 1,568 of Vieremä's 1,601 lie within one polygon, and the
+    majority stops a contour that grazes a neighbour (by 0.24 mm into one 5 km² Kuopio polygon)
+    from charting it. Charting is per lake in this data: of the open contours' ends, all but 14 of
+    2,592 (Kuopio) and 23 of 1,296 (Vieremä) lie within 50 m of the shore or of another end
+    of the same level, so a chart rarely stops in open water
+  - a charted polygon's depth is linear inside the Delaunay triangles (one triangulation per water
+    group, over its charted polygons together, not clipped to the world) of: the shore at depth 0;
+    the seam with uncharted water of the group at the synthetic depth, so the beds meet without a
+    step; contours clipped to the charted polygons (parts on land or in uncharted water unused);
+    soundings inside them. Lines are split to one terrain cell; a point given twice takes the
+    first of shore, seam, contours, soundings. Where no contour is drawn a chart says the water is
+    shallower than its shallowest contour level (1.5 m), so a shore point stands for the shore
+    ramp `min(synthetic depth, 1.5 m)` evaluated at the sample: depth = triangle value + (share of
+    the weight on shore points) x ramp. Every contour and sounding is exact at its own point, the
+    bed is continuous, and a triangle of three shore points (a bay without a contour) gets the
+    ramp instead of depth 0. Depth is measured from the group's water level; the 12 m cap and
+    the shoal cap are the synthetic bed's only, so a chart may be deeper and overrides a shoal
+  - shores, the shore raise, the strait rule, groups and fills are unchanged: on both maps the
+    depth chart changes no land sample, no group and no fill, every water sample stays below its
+    level, and every fill floods exactly its group (offline check)
+  - partly charted water is not told apart from shallow water: no fact in the data separates them
+    (the open-end distances run continuously from 0 to 600 m, and the share of a lake's charted
+    samples whose triangle has only shore points runs continuously from 0 to 0.53 on Kuopio
+    except one lake). Such a lake's unsurveyed part is no deeper than 1.5 m: 142856991 on Kuopio
+    (82.5 m, part of the main system, 5.9 km² of 6.9 charted only in its north-east corner) and
+    137225455 on Vieremä (8.6 km² of 9.1; its 2.0-2.5 m soundings lie outside any contour)
+- the 60 km worlds with `--depths` are build products; each built twice with equal bytes and equal
+  reports:
+  - Kuopio (`kuopio_korkeus_60km.gpkg`): 649 of 1,189 lakes with water charted, 199 of 861 km²
+    of water (23 %; the ten largest lake polygons, all of the 82.1-82.4 m main system and
+    85.2 m, carry no depth feature). Deepest bed 47.3 m (2027690007), was 12 m; mean depth over
+    charted water 8.0 -> 4.2 m. One contour, 332504198, says 36 m in a pond whose sounding is
+    8.4 m (the only 36 m contour in the data, a source error kept as given: a 33 m step between
+    neighbouring samples). 411 soundings appear twice with one id (same point, read once)
+  - Vieremä (`--size-m 59904 --terrain-cell-m 8 --centre-e 500000 --centre-n 7062000`, first
+    import, 100 sheets): 345 of 643 lakes and two straits charted, 171 of 242 km² (71 %; its
+    second-largest lake, 13 km² at 124.7 m, has 33 soundings of 0.1-1.3 m and no contour and is
+    now at most 1.5 m deep, was 12 m). Deepest bed 35.0 m. Its water under the unchanged rules:
+    690 lake and 19 open-water fills, 3,780,013 water samples, 29 straits imported, 85 rivers
+    too narrow, 83 not imported by the join rule (35 joining fewer than two lakes, 48 joining
+    lakes further apart than 0.5 m); 34 lakes lowered by shared levels more than 0.05 m, 5 more
+    than 0.5 m (worst 0.9 m, 106970628, 97.2 -> 96.3 m; part of the 9.7 km² 106869750 at 87.0 m
+    joins the 86.2 m system), none more than 2 m; shore samples raised more than 0.5 m 29, more
+    than 2 m none (max 1.45 m); worst imported strait 2.0 m under the scanned ground at a sample
 - the fill seed is the sample nearest the interior point of the group's largest polygon, else the
   group's deepest sample; a group with a sample on the world edge is an open-water fill, any
   other a lake fill
@@ -22507,16 +22559,20 @@ Lakes and rivers from hydrography vectors (`--hydrography`, `tools/dem_water.py`
   (`FillFlood::flood`), so every land sample beside water (shores, islands, polygon holes)
   is raised to at least the highest adjacent water level plus `--shore-margin-m` (0.05 m). A fill
   therefore floods exactly its group's samples and no land
-- `--report-dir` writes `water_report.json` (per polygon: area, samples, level, water level) and
-  `water_labels.npz` (per-sample polygon and group, DEM and final heights) for checks
+- `--report-dir` writes `water_report.json` (per polygon: area, samples, level, water level;
+  with `--depths` a `depth_chart` entry: charted polygons, samples, shore-only samples, deepest
+  bed) and `water_labels.npz` (per-sample polygon and group, DEM and final heights) for checks
 - determinism: inputs are sorted (shoals by id, lakes before rivers, lakes by level, then id; a
   sample two polygons share goes to the first), ties break by sample index, and SQLite rows are written in
   one fixed order; two runs give equal bytes
 - tool dependencies beyond GDAL: `shapely` (2.x) and `scipy`; `tools/test_import_dem_world_definition.py`
   covers the frame, the bed and shore rules, the river width rule, the strait rule (a strait
   between equal lakes, a river between lakes at different levels, an inlet joining one lake, a
-  river joining none, a mouth that touches by polygon only, a chain in two orders) and a lake
-  without an interior point
+  river joining none, a mouth that touches by polygon only, a chain in two orders), a lake
+  without an interior point and the depth chart (a charted lake takes the contour and sounding
+  depths; an uncharted lake keeps the synthetic bed, and a chart whose features lie on land
+  changes nothing; a partly charted lake is no deeper than the shallowest contour where none is
+  drawn; the seam with uncharted water of the same group has no step; every water sample is wet)
 
 Explicit non-goals of v1 DEM import:
 
