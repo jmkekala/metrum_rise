@@ -609,6 +609,28 @@ impl TerrainSystem {
         Ok(())
     }
 
+    /// The source terrain as a shared clone, for an undo record: `O(chunks)` pointer copies.
+    /// The live grid's later writes copy only the chunks they touch (`Arc::make_mut` in
+    /// `SparseChunkGrid::set`), so the record costs `O(edited chunks)` memory beyond the pointers.
+    pub(crate) fn source_snapshot(&self) -> SparseChunkGrid<f32> {
+        self.source_data.clone()
+    }
+
+    /// Puts back an undo record's [`Self::source_snapshot`], with the same generation bump and
+    /// whole-grid height reset as a dense replacement. O(1) beyond dropping the replaced chunks.
+    pub(crate) fn replace_source_from_snapshot(
+        &mut self,
+        snapshot: SparseChunkGrid<f32>,
+    ) -> Result<(), String> {
+        if !self.source_data.layout_matches(&snapshot) {
+            return Err("terrain snapshot layout differs from the live terrain".to_owned());
+        }
+        self.source_data = snapshot;
+        self.source_generation = self.source_generation.wrapping_add(1);
+        self.record_height_reset();
+        Ok(())
+    }
+
     /// Returns the full terrain extent in metres.
     pub(crate) fn world_size(&self) -> (f32, f32) {
         (
