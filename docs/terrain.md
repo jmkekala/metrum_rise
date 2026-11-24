@@ -22421,6 +22421,12 @@ Lakes and rivers from hydrography vectors (`--hydrography`, `tools/dem_water.py`
   (lakes; level `keskikorkeus` in mm, interior point `sijainti_piste`), `virtavesialue` (river
   areas; no level attribute, so the level is the polygon's lowest vertex height, its outlet),
   `matalikko` (shoals). Streams under 5 m wide (`virtavesikapea`) are not used
+- two source kinds are read. The themed hydrography download (the shipped Kuopio's) stores river
+  polygons with vertex heights and lakes with their interior point. The whole-country
+  topographic database stores both flat and without the point: a river then takes the lowest
+  elevation sample inside it (the same outlet rule; a river with no sample inside is left out,
+  `rivers_without_level`), and a lake fill seeds at its group's deepest sample. A river's own
+  level matters only for a river that touches no lake (the join rule below)
 - a laser-scanned DEM is flat at the water surface, so beds are synthetic: a terrain sample
   whose centre lies inside a water polygon gets
   `bed = level - min(depth_cap, slope * d)`, `d` the distance to the shore (the boundary of all
@@ -22450,6 +22456,38 @@ Lakes and rivers from hydrography vectors (`--hydrography`, `tools/dem_water.py`
   Kuopio 82.1, 82.3 and 82.4 m; the DEM shows the whole system at about 82.35 m). Sills at the
   real levels were tried and rejected: they drew dry lines up to a kilometre long across open
   water
+- a river is imported only where it joins water of one level, and then takes that level (water
+  round `W1`, 2026-11-24). Among the polygons holding samples after the four-sample drop, two
+  touch when they intersect (a shared edge or vertex counts) or a sample of one is a 4-neighbour
+  of a sample of the other: the samples make the rule match the groups, the polygons catch a
+  river mouth whose samples miss the lake's by a cell (three rivers on the 60 km Kuopio below).
+  A river system is the rivers linked by river-to-river touches, so a chain of polygons is
+  decided once. The water it joins is every lake component (4-connected lake samples, at the
+  lowest level among their lakes) of every lake it touches. If those levels span at most
+  `river_join_tolerance_mm` (500 mm), every river of the system takes the lowest of them; if
+  they span more, no river of it is imported (no bed, no fill, the DEM's heights, as a narrow
+  river), and the report lists each in `rivers_dropped_level` with the levels and lakes it
+  joined. A system that touches no lake keeps its own level. Touches and systems are symmetric
+  relations and their connected components, so the result does not depend on the polygons'
+  order. The tolerance: lake levels are given to 0.1 m; the shipped Kuopio's system spans 0.3 m;
+  on the 60 km Kuopio river systems join water 0-0.4 m apart (12 systems with a spread), or 0.6 m and more
+  (straits against real steps), and lake-to-lake joins inside one system span up to 0.8 m
+- a 59,904 m Kuopio (`--size-m 59904 --terrain-cell-m 8 --centre-e 530000 --centre-n 6984000`,
+  100 `Korkeusmalli 2 m` sheets and a whole-country topographic database slice) is a build
+  product, not shipped; two runs give equal bytes. Before the join rule every river joined its
+  group at its own level (the lowest elevation sample inside it), so rivers dragged upper lakes
+  down to lower ones. Before and after (`W1`): lakes lowered by more than 0.05 / 0.5 / 2 m
+  129 / 88 / 27 and 80 / 2 / 0 of 1,189; the worst 11.49 m (a 103.5 m lake at 92.0 m) and
+  0.8 m; polygons in more than one water level 72 and 26; rivers kept, not imported by width,
+  not imported by level 77 / 64 / 0 and 52 / 64 / 25 (22 systems, joins 0.6-11.2 m apart);
+  1,805 and 1,560 lake fills, 41 and 42 open-water fills, 13,472,001 and 13,460,355 water
+  samples; the main lake system at 81.777 m and 82.1 m. Every fill floods exactly its group (the
+  runtime fill rule recomputed offline).
+  Still wrong after the rule: lakes that touch lakes at other levels with no river between
+  (one group, the main system: 85 lakes at 82.1-82.9 m, two lowered 0.7 and 0.8 m); rivers that
+  join one lake level but slope (inlets carved flat up their valley, the worst 20.5 m under the
+  DEM; outlets standing above it, the worst 3.55 m, their shores raised); and 14 rivers that
+  touch no lake, two carved more than 2 m under the DEM (the worst 5.9 m)
 - the fill seed is the sample nearest the interior point of the group's largest polygon, else the
   group's deepest sample; a group with a sample on the world edge is an open-water fill, any
   other a lake fill
@@ -22463,7 +22501,10 @@ Lakes and rivers from hydrography vectors (`--hydrography`, `tools/dem_water.py`
   polygons share goes to the first), ties break by sample index, and SQLite rows are written in
   one fixed order; two runs give equal bytes
 - tool dependencies beyond GDAL: `shapely` (2.x) and `scipy`; `tools/test_import_dem_world_definition.py`
-  covers the frame, the bed and shore rules and the river width rule
+  covers the frame, the bed and shore rules, the river width rule, the river join rule (a strait
+  between equal lakes, a river between lakes at different levels, a mouth that touches by
+  polygon only, a chain in two orders) and the whole-country source's river without vertex
+  heights and lake without an interior point
 
 Explicit non-goals of v1 DEM import:
 
