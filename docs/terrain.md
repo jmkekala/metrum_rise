@@ -3624,7 +3624,10 @@ world rules (cell 2, 4 or 8 m, sides in 128 m steps; [section 1](#1-worldconfig-
 and the DEM importer applies the same ones. The 20,480 m default (half extent 10,240 m) and the
 18,432 m Kuopio world (9,216 m, 8 m cells) satisfy them. The lattices then nest, base step lattice
 ⊂ `GL2` ⊂ `GL1` ⊂ `GL0`, every patch side, being a base lattice line, is a lattice line of every
-level, and every 64 m tile lies inside one patch.
+level, every 64 m tile lies inside one patch, and every level's lattice, `GL3`'s included, is in
+phase with the tile: its lines lie at the tile's own multiples of its spacing (grid alignment
+round A3 removed the irregular `GL3` lattice the bake and the shader kept for other worlds; a
+debug build asserts the phase at every `GL3` bake).
 
 **Seams.** `Seam { a: [f64; 3], b: [f64; 3], kind }`, height linear along the segment:
 
@@ -3752,12 +3755,14 @@ of the uploaded layers, for growth (below, `TERRAIN-22`).
   slots and its tiles' mean runs fit one page's `L` layers twice over: `B = 2` (289 tiles a block)
   at `L = 2,048` on 510 m patches, 1 (81) at 256. A block uses one page per level, and every cell
   set of its patches binds that page in that level's materials.
-- **Tiles held twice.** A tile meeting patches of two blocks (four at a block corner) is held in
-  each block's page: one bake, installed into every page that wants it in the same frame. A dense
-  city's blocks hold about 14% more copies than tiles at `B = 2` (`17^2` against `15.9^2` tiles a
-  block), each copy its slot layer and run. A page that starts wanting a tile another page holds
-  (a patch of its block became resident, its block took a new page) asks for the tile again: a
-  rebake at the held level and token, since nothing is kept.
+- **One copy a tile.** On the aligned grid (world rules, [section
+  1](#1-worldconfig-is-the-authoritative-world-metadata)) every tile lies inside one patch, so it
+  has one copy, in its patch's block page (and, while that block moves, in its target too, as
+  below). Before the grid alignment a tile meeting patches of two blocks (four at a block corner)
+  was held in each block's page, about 14% more copies than tiles in a dense city at `B = 2`;
+  grid alignment round A3 removed the walk over the patches a tile meets. A page that starts
+  wanting a tile it does not hold (its block took a new page, the tile's patch became resident
+  again) asks for the tile again: a rebake at the held level and token, since nothing is kept.
 - **Page size.** A block's page is created when the block first needs a slot at the level and
   every resident patch of the block has its list (a tile waits for that, as its patches draw
   nothing before their lists anyway), and, while a world load settles, once the patch residency
@@ -4288,15 +4293,18 @@ km.
   road-owned patches included: the graded cells draw the roads' terrain over it (`TERRAIN-07-D`
   round 4; Rust had kept the exact cut's refusal of plain payloads for road-owned patches, so no
   patch under a road installed).
-- **Cells.** A patch with graded tiles renders its cells, each tile clipped to the patch, as
+- **Cells.** A patch with graded tiles renders its cells, each tile wholly inside the patch, as
   instances: one `MultiMesh` per patch and mesh, at most five (the base cell mesh and the four
   levels). Instance data carries the tile's place in the patch, the slot, the level and each side's
   neighbour level, every channel an integer below 2,048: the Compatibility renderer keeps instance
-  custom data as half floats (`TERRAIN-07-D` round 2). Vertices clamp to the patch rectangle, which
-  is a lattice line of every level.
-- **Base cell mesh.** One generic grid whose vertex `k` per axis lies at `clamp(o + s(k - 1), 0,
-  64 m)` for the patch step `s` and the cell's phase `o` (the first base lattice line inside the
-  tile), so one mesh serves every phase and its vertices are the patch's own vertices.
+  custom data as half floats (`TERRAIN-07-D` round 2). (Before the grid alignment a tile could
+  straddle a patch side: the list builder clipped it to the patch and the shader clamped its
+  vertices to the patch rectangle; round A3 removed both.)
+- **Base cell mesh.** One generic grid whose vertex `k` per axis lies at `clamp(s(k - 1), 0,
+  64 m)` for the patch step `s`: on the aligned grid every base lattice is in phase with the
+  tiles (a line on each tile side, every step dividing 64 m), so its vertices are the patch's own
+  vertices. (Before, a phase `o`, the first base lattice line inside the tile, shifted the grid,
+  and the shader and the `GL3` bake carried an irregular lattice for it; round A3 removed it.)
 - **Stitching.** On a side shared with a coarser neighbour (another cell, or a neighbouring patch's
   `PlaneMesh` at its step), the finer side, base cells included, moves each of its border
   vertices onto the coarser side's border vertex at or before it along the side, so both sides use
@@ -6349,9 +6357,9 @@ matrix are round 2's; the gate commit follows them. Fresh runs on this branch.
   (`GL0`-`GL2`, then the base lattice at `2^(code-3)` cells) order coarseness, and each side
   takes the coarser of its own and its neighbour's code, so the finer side snaps and the coarser
   one keeps its vertices; the base is `f32` bilinear over the patch heightmap's texels by
-  `texelFetch` (exact on base lattice points), delta is the texel itself on lattice points (a
-  `GL3` vertex clamped to a patch side off the step lattice interpolates between its two
-  samples, the same on both patches); `GL3`'s step follows the tile's distance (2 to 5 km, 4 to
+  `texelFetch` (exact on base lattice points), delta is the texel itself on lattice points (every
+  vertex is one since the grid alignment; before, a `GL3` vertex clamped to a patch side off the
+  step lattice interpolated between its two samples); `GL3`'s step follows the tile's distance (2 to 5 km, 4 to
   12 km, 8 beyond), its cells draw with the step-2 mesh; a tile's token is the sum of the payload
   generations of the resident patches it meets. Shader integer division and remainder go through
   an exact floor division (GLSL leaves `%` undefined for negative operands).
