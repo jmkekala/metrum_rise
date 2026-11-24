@@ -78,8 +78,12 @@ var _vote_transform := Transform3D.IDENTITY
 var _vote_projection := Projection()
 var _vote_rect := Rect2()
 var _vote_offsets := Vector2.ZERO
-# Microseconds the last frame's vote took, for the perf channel.
+# Microseconds the last frame's vote, water rectangles, terrain proxy sync and scaffold proxy sync
+# took, for the perf channel.
 var _vote_us := 0
+var _rect_us := 0
+var _proxy_us := 0
+var _scaffold_us := 0
 # Per vote ray, the water level it last came down onto, or NAN.
 var _ray_levels := PackedFloat32Array()
 var _ray_weights := PackedFloat32Array()
@@ -196,20 +200,27 @@ func _exit_tree() -> void:
 	RenderingServer.global_shader_parameter_set("water_reflection_plane", Vector4.ZERO)
 
 # After every node has moved the camera and the key light for this frame. The perf channel
-# records the hook as "water_reflection", with the vote's own share.
+# records the hook as "water_reflection", with its parts' shares and the patches the sync visited.
 func _update_before_draw() -> void:
 	var start_us := Time.get_ticks_usec()
 	_vote_us = 0
+	_rect_us = 0
+	_proxy_us = 0
 	_proxy_visits = 0
 	_update_mirrors()
 	if PerfDebug.is_enabled():
 		PerfDebug.record("water_reflection", float(Time.get_ticks_usec() - start_us) / 1000.0, {
 			"vote_ms": float(_vote_us) / 1000.0,
+			"rect_ms": float(_rect_us) / 1000.0,
+			"proxy_ms": float(_proxy_us) / 1000.0,
+			"scaffold_ms": float(_scaffold_us) / 1000.0,
 			"mirrors": int(_mirrors[0][3]) + int(_mirrors[1][3]),
 			"proxy_visits": _proxy_visits})
 
 func _update_mirrors() -> void:
+	var scaffold_start := Time.get_ticks_usec()
 	_building_proxies.sync()
+	_scaffold_us = Time.get_ticks_usec() - scaffold_start
 	var main_viewport := get_viewport()
 	var main_camera := main_viewport.get_camera_3d() if main_viewport != null else null
 	if main_camera == null or _sun == null:
@@ -221,6 +232,14 @@ func _update_mirrors() -> void:
 	var vote_start := Time.get_ticks_usec()
 	var levels := _vote_planes(main_camera)
 	_vote_us = Time.get_ticks_usec() - vote_start
+	# While the world has water the proxies follow every frame's events, a mirror drawing or not,
+	# so a mirror that turns on finds them in step: synced only then, a 1 s turn's marks came due
+	# at once (1,015 patches, 131 ms in one frame, `RENDER-75`). A dry world keeps its marks, one
+	# a patch, and pays nothing.
+	if _vote_sources.size() > 2 and _vote_sources[2] != 0:
+		var proxy_start := Time.get_ticks_usec()
+		_sync_proxies()
+		_proxy_us = Time.get_ticks_usec() - proxy_start
 	var synced := false
 	for index in MIRROR_COUNT:
 		var mirror: Array = _mirrors[index]
@@ -229,7 +248,9 @@ func _update_mirrors() -> void:
 			_set_active(mirror, false)
 			continue
 		mirror[2] = level + WATER_SURFACE_LIFT_M
+		var rect_start := Time.get_ticks_usec()
 		var crop := _water_screen_rect(main_camera, mirror[2])
+		_rect_us += Time.get_ticks_usec() - rect_start
 		if not crop.has_area():
 			_set_active(mirror, false)
 			continue
@@ -237,7 +258,6 @@ func _update_mirrors() -> void:
 			synced = true
 			_sync_environment()
 			_sync_key_light()
-			_sync_proxies()
 		# Mirrored left to right: see _place_camera.
 		_place_camera(mirror, index, main_camera, main_viewport,
 			Rect2(1.0 - crop.end.x, crop.position.y, crop.size.x, crop.size.y))
@@ -524,9 +544,10 @@ func _on_terrain_reset() -> void:
 
 # Brings the marked patches' proxies in step with their nodes: a drawn patch gets its proxy, made
 # or updated; a hidden, removed or meshless one loses it. O(patches marked since the last sync)
-# a sync, independent of the built and the drawn patches; marks wait while no mirror draws, at
-# most one a patch. The proxy book after a sync is one proxy per drawn patch, holding its mesh,
-# transform, material copy, culling box and margin.
+# a sync, independent of the built and the drawn patches; a frame's sync is that frame's events
+# (marks wait only on a dry world or before the first vote, at most one a patch). The proxy book
+# after a sync is one proxy per drawn patch, holding its mesh, transform, material copy, culling
+# box and margin.
 func _sync_proxies() -> void:
 	var scenario := _world.scenario
 	_proxy_visits = _dirty_terrain_patches.size()
