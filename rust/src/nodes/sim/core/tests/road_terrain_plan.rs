@@ -106,10 +106,7 @@ fn kuopio_third_road_preserves_existing_junction_boundary_owners() {
     ] {
         let mut core = test_core();
         core.load_world_definition_internal(
-            concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/../godot/bootstrap/worlds/kuopio_324km2_10m.sqlite"
-            ),
+            KUOPIO_SOURCE_WORLD,
             crate::simulation::vegetation::VegetationConfig::default(),
         )
         .unwrap();
@@ -598,17 +595,19 @@ const KUOPIO_REFERENCE_SAVE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../benchmarks/fixtures/kuopio-terrain/kuopio-terrain-map.sqlite"
 );
+// The shipped Kuopio, the recorded strokes' source world.
+const KUOPIO_SOURCE_WORLD: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../godot/bootstrap/worlds/kuopio_18432m_8m.sqlite"
+);
 
-// The Kuopio source world is format 3, its heights and base elevation in units of 20 m: every
-// sample loads as the product the code before metres reported (`raw * 20` in `f32`), bitwise.
-// The reference save (format 131, re-recorded in metres) holds that terrain unedited.
+// The shipped Kuopio (`kuopio_18432m_8m`, the DEM importer's world in metres at format 6, 2305 x
+// 2305 samples at 8 m) loads its stored samples bitwise, and the reference save holds that terrain
+// unedited.
 #[test]
-fn kuopio_source_world_in_legacy_height_units_loads_in_metres() {
+fn kuopio_source_world_loads_its_stored_metres() {
     let world = rusqlite::Connection::open_with_flags(
-        concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../godot/bootstrap/worlds/kuopio_324km2_10m.sqlite"
-        ),
+        KUOPIO_SOURCE_WORLD,
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
     )
     .unwrap();
@@ -619,10 +618,11 @@ fn kuopio_source_world_in_legacy_height_units_loads_in_metres() {
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         )
         .unwrap();
-    assert_eq!(format, 3, "the shipped world is the legacy format");
+    assert_eq!((format, cell_m), (6, 8.0), "the shipped world is format 6 at 8 m");
     let core = kuopio_source_core();
     let (width, chunk) = (core.heightmap.width, (chunk_m / cell_m).ceil() as usize);
-    let mut metres = vec![base * 20.0; width * core.heightmap.height];
+    assert_eq!((width, core.heightmap.height), (2305, 2305));
+    let mut metres = vec![base; width * core.heightmap.height];
     let mut chunks = world
         .prepare("SELECT chunk_x, chunk_z, width_samples, height_samples, source_height_blob_f32_le FROM world_terrain_chunks")
         .unwrap();
@@ -633,13 +633,45 @@ fn kuopio_source_world_in_legacy_height_units_loads_in_metres() {
         for (i, bytes) in blob.as_chunks::<4>().0.iter().enumerate() {
             let (x, z) = (cx * chunk + i % w, cz * chunk + i / w);
             assert!(i / w < h);
-            metres[z * width + x] = f32::from_le_bytes(*bytes) * 20.0;
+            metres[z * width + x] = f32::from_le_bytes(*bytes);
         }
     }
     assert!(core.heightmap.clone_source_dense() == metres, "the world's heights");
     let mut saved = test_core();
     saved.load_game_internal(KUOPIO_REFERENCE_SAVE).unwrap();
     assert!(saved.heightmap.clone_source_dense() == metres, "the save's heights");
+}
+
+// The shipped Kuopio's lakes in the runtime (grid alignment A4): its fills flood exactly the
+// importer's water samples (2,541,524, `water_report.json`), each wet sample's surface at the level
+// of one of the world's fills: a fill leaking onto land would add wet samples.
+#[test]
+fn kuopio_source_world_floods_exactly_its_water() {
+    let core = kuopio_source_core();
+    let levels: Vec<f32> = core
+        .world_lake_fills
+        .iter()
+        .map(|fill| fill.surface_elevation_m)
+        .chain(core.world_open_water_fills.iter().map(|fill| fill.surface_elevation_m))
+        .collect();
+    assert_eq!(
+        (core.world_lake_fills.len(), core.world_open_water_fills.len()),
+        (98, 12)
+    );
+    let heights = core.heightmap.clone_source_dense();
+    let depth = core.watermap.clone_baseline_depth_dense();
+    let mut wet = 0;
+    for (height, depth) in heights.iter().zip(&depth) {
+        if *depth > 0.0 {
+            wet += 1;
+            let surface = height + depth;
+            assert!(
+                levels.iter().any(|level| (surface - level).abs() < 1e-3),
+                "a wet sample's surface {surface} is no fill's level"
+            );
+        }
+    }
+    assert_eq!(wet, 2_541_524, "wet samples");
 }
 
 // Open questions 8 and 37: the reference save is re-recorded with today's code (question 38) and
@@ -1394,7 +1426,8 @@ fn kuopio_wall_sites() {
 }
 
 // `TERRAIN-07-C` (`T2` (c)): the conflict wall of the reference save (round 4's one site, where
-// two roads leave node 50 at the 1:3 limit and the lower one is walled up to 0.37 m) closes the
+// two roads leave node 50 at the 1:3 limit and the lower one is walled up to 0.37 m on the
+// 18,000 m, 10 m world; 0.24 m on the shipped 8 m ground since grid alignment A4b) closes the
 // step at every walled seam point, sampled every 5 cm.
 #[test]
 fn kuopio_conflict_wall_closes_the_step() {
@@ -1428,7 +1461,7 @@ fn kuopio_conflict_wall_closes_the_step() {
         &payloads,
     );
     assert!(
-        walled > 100 && (highest - 0.37).abs() < 0.01,
+        walled > 100 && (highest - 0.24).abs() < 0.01,
         "{walled} walled samples, highest {highest}"
     );
 }
@@ -1445,10 +1478,7 @@ fn kuopio_manifest() -> serde_json::Value {
 fn kuopio_source_core() -> SimCore {
     let mut core = test_core();
     core.load_world_definition_internal(
-        concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../godot/bootstrap/worlds/kuopio_324km2_10m.sqlite"
-        ),
+        KUOPIO_SOURCE_WORLD,
         crate::simulation::vegetation::VegetationConfig::default(),
     )
     .unwrap();

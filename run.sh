@@ -602,7 +602,7 @@ godot_main_chain() {
         network_tool_chunk_renderer_test road_benchmark_metrics_test road_preview_metrics_test \
         stream_benchmark_report_test \
         vegetation_edit_test vegetation_appearance_test vegetation_land_cover_test \
-        new_game_dialog_test menu_back_button_test asset_menu_icon_test day_cycle_test weather_menu_test camera_save_load_test camera_motion_test wayland_input_test \
+        new_game_dialog_test user_data_bootstrap_test menu_back_button_test asset_menu_icon_test day_cycle_test weather_menu_test camera_save_load_test camera_motion_test wayland_input_test \
         zoning_road_tool_test zoning_cells_tool_test zoning_stock_test debug_console_test \
         junction_debug_overlay_test road_rejection_report_test \
         street_lights_test graded_tile_renderer_test graded_page_publication_test road_render_publication_test parking_test; do
@@ -1683,7 +1683,7 @@ if [ -n "$GAMEPLAY_ROAD_PROFILE_MODE" ]; then
     GAMEPLAY_SYMBOLS_PATH="${GAMEPLAY_PROFILE_PATH%.gz}.syms.json"
     GAMEPLAY_METRICS_PATH="${METRUM_GAMEPLAY_BENCHMARK_METRICS_PATH:-$GAMEPLAY_BASE.metrics.json}"
     GAMEPLAY_LOG_PATH="${METRUM_GAMEPLAY_BENCHMARK_LOG_PATH:-$GAMEPLAY_BASE.godot.log}"
-    GAMEPLAY_WORLD_PATH="${METRUM_GAMEPLAY_BENCHMARK_WORLD_PATH:-$PROJECT_ROOT/maps/processed/Kuopio/kuopio_324km2_10m.sqlite}"
+    GAMEPLAY_WORLD_PATH="${METRUM_GAMEPLAY_BENCHMARK_WORLD_PATH:-$PROJECT_ROOT/godot/bootstrap/worlds/kuopio_18432m_8m.sqlite}"
     GAMEPLAY_SAMPLE_RATE="${METRUM_GAMEPLAY_BENCHMARK_SAMPLE_RATE:-1000}"
 
     if [ "${METRUM_GAMEPLAY_BENCHMARK_MATRIX:-paired}" != "paired" ] && \

@@ -20,7 +20,7 @@ import struct
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_FIXTURE = ROOT / "benchmarks/fixtures/kuopio-terrain"
-DEFAULT_WORLD = ROOT / "godot/bootstrap/worlds/kuopio_324km2_10m.sqlite"
+DEFAULT_WORLD = ROOT / "godot/bootstrap/worlds/kuopio_18432m_8m.sqlite"
 
 
 def sha256(path):

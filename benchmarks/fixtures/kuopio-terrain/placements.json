@@ -2,15 +2,15 @@
   "schema_version": 1,
   "input_contract": "recovered post-snap XZ endpoints of logged two-point strokes; source/visible Y resampled; not exact mouse replay",
   "log_sha256": "3975f21e178588338837ed3628734b225fe34a73b25138d04b076b3ff406983b",
-  "reference_save_sha256": "82101f46d5ef5efc88021f5e8269a72b2f3d79959acbae01fd4ad10117795d6a",
-  "source_world_sha256": "07ae5ff39f9c905eccfec41b15ac4aa69de70fba50e96b34a19aeee991cabdbd",
-  "source_terrain_sha256": "07d0a263591ff9e509c3bc2f3f4b041e5fb07a6f61649d3830af044a06e88838",
+  "reference_save_sha256": "5f97a0668d9953c87ff04ac89c8004f6507cf22533cc65229924317e706bcbb1",
+  "source_world_sha256": "f13cd1350fee43009550ecf0a6f4a81c8715597996e5145d1f6314d91c9e3160",
+  "source_terrain_sha256": "d7e45fbf0ccebaa7569ebb957ef0c402480a8ad8820190e5f18971d9c3300396",
   "reference_save": "benchmarks/fixtures/kuopio-terrain/kuopio-terrain-map.sqlite",
-  "source_world": "godot/bootstrap/worlds/kuopio_324km2_10m.sqlite",
+  "source_world": "godot/bootstrap/worlds/kuopio_18432m_8m.sqlite",
   "world_config": [
-    18000.0,
-    18000.0,
-    10.0,
+    18432.0,
+    18432.0,
+    8.0,
     512.0,
     0.0,
     40.0,
@@ -801,8 +801,8 @@
         },
         {
           "start_xz": [
-            -976.75592,
-            -1218.245605
+            -1084.481581,
+            -1313.802823
           ],
           "end_xz": [
             -1175.573242,
@@ -836,7 +836,14 @@
             "cancel_ms": "0.100",
             "total_ms": "0.977"
           },
-          "expected_live_edges": 4
+          "expected_live_edges": 4,
+          "relocated_a4b": {
+            "recorded_start_xz": [
+              -976.75592,
+              -1218.245605
+            ],
+            "reason": "its first 128 m lay in a lake at 86.4 m that the 18,000 m world did not flood, and the road over it was refused; the start moved 144 m along the stroke onto the shore (tried in 8 m steps: 128 m refused, 136 m and 144 m commit), so it still crosses attempt 19 at the 1:3 limit"
+          }
         }
       ]
     },
@@ -1415,8 +1422,8 @@
             2374.375
           ],
           "end_xz": [
-            -1473.073853,
-            2387.132812
+            -1485.05368,
+            2387.828333
           ],
           "fwd_lanes": 2,
           "bkw_lanes": 2,
@@ -1446,7 +1453,14 @@
             "cancel_ms": "0.138",
             "total_ms": "1.163"
           },
-          "expected_live_edges": 4
+          "expected_live_edges": 4,
+          "relocated_a4b": {
+            "recorded_end_xz": [
+              -1473.073853,
+              2387.132812
+            ],
+            "reason": "refused road_too_steep on the 8 m ground (the 1:3 maximum is not kept within 5 m of the ground); the end moved 12 m further along the stroke (tried in 4 m steps: +4 m refused, +8, +12 and +16 m commit), so it still climbs to 0.33 and crosses attempt 34"
+          }
         },
         {
           "start_xz": [
@@ -1538,8 +1552,8 @@
             2374.375
           ],
           "end_xz": [
-            -1473.073853,
-            2387.132812
+            -1485.05368,
+            2387.828333
           ],
           "fwd_lanes": 2,
           "bkw_lanes": 2,
@@ -1569,7 +1583,14 @@
             "cancel_ms": "0.138",
             "total_ms": "1.163"
           },
-          "expected_live_edges": 4
+          "expected_live_edges": 4,
+          "relocated_a4b": {
+            "recorded_end_xz": [
+              -1473.073853,
+              2387.132812
+            ],
+            "reason": "refused road_too_steep on the 8 m ground (the 1:3 maximum is not kept within 5 m of the ground); the end moved 12 m further along the stroke (tried in 4 m steps: +4 m refused, +8, +12 and +16 m commit), so it still climbs to 0.33 and crosses attempt 34"
+          }
         },
         {
           "start_xz": [

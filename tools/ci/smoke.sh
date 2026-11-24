@@ -18,7 +18,7 @@ platform=$1
 game=$(cd "$2" && pwd)
 manifest=$(realpath "$3")
 here=$(cd "$(dirname "$0")" && pwd)
-worlds=${SMOKE_WORLDS:-"test kuopio_324km2_10m"}
+worlds=${SMOKE_WORLDS:-"test kuopio_18432m_8m"}
 frames=${SMOKE_FRAMES:-900}
 # A driver that never quits (it failed to load) leaves the game idling in the menu until this.
 limit=${SMOKE_TIMEOUT:-300}

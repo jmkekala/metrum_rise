@@ -12,7 +12,7 @@ extends Node
 const RoadToolScript = preload("res://scripts/tools/road_tool.gd")
 const Metrics = preload("res://scripts/benchmarks/road_benchmark_metrics.gd")
 const BENCHMARK_NAME := "gameplay_roads"
-const DEFAULT_WORLD_PATH := "res://../maps/processed/Kuopio/kuopio_324km2_10m.sqlite"
+const DEFAULT_WORLD_PATH := "res://bootstrap/worlds/kuopio_18432m_8m.sqlite"
 const DEFAULT_RESULTS_PATH := "res://../benchmark-results/gameplay-roads-direct.json"
 const ROAD_HALF_SPAN_M := 90.0
 const DEFAULT_FIXTURE_SPACING_M := 640

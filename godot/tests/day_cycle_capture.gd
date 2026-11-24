@@ -54,7 +54,7 @@ func run() -> void:
 	root.set_disable_input(true)
 	var world := OS.get_environment("METRUM_DAYCYCLE_WORLD")
 	if world.is_empty():
-		world = ProjectSettings.globalize_path("res://bootstrap/worlds/kuopio_324km2_10m.sqlite")
+		world = ProjectSettings.globalize_path("res://bootstrap/worlds/kuopio_18432m_8m.sqlite")
 	if not input_manager.menu_load_world_definition(world):
 		push_error("Could not load world: " + world)
 		quit(1)

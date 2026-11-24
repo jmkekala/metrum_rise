@@ -18,7 +18,7 @@ func run() -> void:
 	await process_frame
 	var input_manager: Node = main.get_node("InputManager")
 	if not input_manager.menu_load_world_definition(ProjectSettings.globalize_path(
-		"res://bootstrap/worlds/kuopio_324km2_10m.sqlite")):
+		"res://bootstrap/worlds/kuopio_18432m_8m.sqlite")):
 		push_error("Could not load Kuopio")
 		quit(1)
 		return

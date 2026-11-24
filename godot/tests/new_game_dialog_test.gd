@@ -7,7 +7,7 @@ extends SceneTree
 
 const NewGameDialog := preload("res://scripts/ui/new_game_dialog.gd")
 # Never opened: the dialog only carries the selection through to whoever starts the game.
-const WORLD_PATH := "/tmp/kuopio_324km2_10m.sqlite"
+const WORLD_PATH := "/tmp/kuopio_18432m_8m.sqlite"
 
 var _failures := 0
 var _emitted: Array = []

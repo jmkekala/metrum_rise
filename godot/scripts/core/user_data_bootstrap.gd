@@ -2,7 +2,8 @@
 
 ## First-run user data bootstrap for release builds.
 ## Creates the canonical writable player-data folders and seeds bundled starter
-## content from res://bootstrap/ without overwriting user-owned files.
+## content from res://bootstrap/ without overwriting user-owned files. Untouched copies of bundled
+## worlds a release replaced are removed first (`SUPERSEDED_WORLDS`).
 extends RefCounted
 
 const GameSettings = preload("res://scripts/core/game_settings.gd")
@@ -16,11 +17,20 @@ const BOOTSTRAP_MODS_DIR := "res://bootstrap/mods"
 # The repository's test building pack, for development runs. Exports exclude res://tests.
 const DEV_MODS_DIR := "res://tests/mods"
 const COPY_CHUNK_BYTES := 1024 * 1024
+# Bundled worlds a release replaced, by file name, with the SHA-256 of every copy a release seeded
+# under that name. A profile copy with one of these hashes is the player's untouched copy of a
+# stale world and is removed before seeding, so the current world takes its place; a copy the
+# player changed has another hash and stays theirs.
+const SUPERSEDED_WORLDS := {
+	# The 18,000 m, 10 m Kuopio with hand-made lakes, replaced by kuopio_18432m_8m.sqlite.
+	"kuopio_324km2_10m.sqlite": ["07ae5ff39f9c905eccfec41b15ac4aa69de70fba50e96b34a19aeee991cabdbd"],
+}
 
 static func run() -> void:
 	_ensure_user_dir(USER_WORLDS_DIR)
 	_ensure_user_dir(USER_MODS_DIR)
 	_ensure_user_dir(USER_SAVES_DIR)
+	_remove_superseded_copies(USER_WORLDS_DIR, SUPERSEDED_WORLDS)
 	_seed_top_level_entries(BOOTSTRAP_WORLDS_DIR, USER_WORLDS_DIR)
 	_seed_top_level_entries(BOOTSTRAP_MODS_DIR, USER_MODS_DIR)
 	if not OS.has_feature("template"):
@@ -38,6 +48,18 @@ static func _ensure_user_dir(path: String) -> bool:
 		push_warning("Could not create user data directory '%s' (error %d)." % [path, err])
 		return false
 	return true
+
+# Removes each file of `superseded` (name -> shipped hashes) from `target_dir` whose content is one
+# of its shipped copies. Hashes a file only while it exists: once per stale copy, or at each start
+# for a copy the player changed.
+static func _remove_superseded_copies(target_dir: String, superseded: Dictionary) -> void:
+	for entry: String in superseded:
+		var path := target_dir.path_join(entry)
+		if not FileAccess.file_exists(path) or not superseded[entry].has(FileAccess.get_sha256(path)):
+			continue
+		var err := DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
+		if err != OK:
+			push_warning("Could not remove superseded world '%s' (error %d)." % [path, err])
 
 static func _seed_top_level_entries(source_dir: String, target_dir: String) -> void:
 	var dir := DirAccess.open(source_dir)

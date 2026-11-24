@@ -461,19 +461,21 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Import DEM GeoTIFF tiles into a WorldDefinition SQLite asset"
     )
+    # No defaults name a world: the shipped Kuopio's sources (the 900 km2 elevation sheets and the
+    # hydrography) are not in the repository; docs/terrain.md section 6 has its command.
     parser.add_argument(
         "--input-dir",
-        default="maps/raw/Kuopio/324km2",
-        help="Directory containing source GeoTIFF tiles (repo-relative by default)",
+        required=True,
+        help="Directory containing source GeoTIFF tiles (repo-relative unless absolute)",
     )
     parser.add_argument(
         "--output",
-        default="maps/processed/Kuopio/kuopio_324km2_10m.sqlite",
-        help="Output WorldDefinition path (repo-relative by default)",
+        required=True,
+        help="Output WorldDefinition path (repo-relative unless absolute)",
     )
     parser.add_argument(
         "--world-name",
-        default="Kuopio 324km2",
+        required=True,
         help="User-facing world name to store in the WorldDefinition",
     )
     parser.add_argument(
