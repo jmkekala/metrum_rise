@@ -24,6 +24,8 @@ const COPY_CHUNK_BYTES := 1024 * 1024
 const SUPERSEDED_WORLDS := {
 	# The 18,000 m, 10 m Kuopio with hand-made lakes, replaced by kuopio_18432m_8m.sqlite.
 	"kuopio_324km2_10m.sqlite": ["07ae5ff39f9c905eccfec41b15ac4aa69de70fba50e96b34a19aeee991cabdbd"],
+	# The 500 m, 10 m blank world, off the aligned grid's rules; the same name now ships 512 m, 8 m.
+	"test.sqlite": ["feb256447173c9aab87b6295c10492f92c008b4ec4d3c250b3fe3f09af070e81"],
 }
 
 static func run() -> void:
