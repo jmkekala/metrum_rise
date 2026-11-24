@@ -1270,7 +1270,8 @@ func _row(index: int) -> Dictionary:
 			row["backlog"] = {"terrain": Array(_probe.backlog("terrain")), "water": Array(_probe.backlog("water"))}
 	if _proxy_checking:
 		row["proxies"] = _proxy_check
-	if _reflection != null and bool(_reflection.get("_rect_checking")):
+	# A reflection from before `RENDER-76` has no such property (null).
+	if _reflection != null and _reflection.get("_rect_checking") == true:
 		row["rect_check"] = [_reflection.get("_rect_checked"), _reflection.get("_rect_differences"),
 			_reflection.get("_rect_walks_total")]
 	_previous_streams = streams

@@ -34,6 +34,8 @@ pub(crate) struct ScreenHullBook {
     // point on a hull edge ties with the edge's ends for some views, and the rectangle must take
     // the same float the patch walk takes.
     hull: Vec<[f32; 2]>,
+    // The chain's upper half while rebuilding, kept so a rebuild allocates nothing once grown.
+    upper: Vec<[f32; 2]>,
     stale: bool,
     revision: i64,
 }
@@ -73,7 +75,10 @@ impl ScreenHullBook {
         self.remove(key);
         self.rects.insert(key, rect);
         for corner in rect_corners(rect) {
-            let entry = self.corners.entry(corner_key(corner)).or_insert((corner, 0));
+            let entry = self
+                .corners
+                .entry(corner_key(corner))
+                .or_insert((corner, 0));
             entry.1 += 1;
             if entry.1 == 1 {
                 self.touch(corner);
@@ -143,37 +148,38 @@ impl ScreenHullBook {
                 .all(|index| cross(self.hull[index], self.hull[(index + 1) % count], point) > 0.0)
     }
 
-    // Andrew's monotone chain over the corners in (x, z) order, popping only on a right turn so
-    // that collinear boundary corners stay.
+    // Andrew's monotone chain over the corners in (x, z) order, into the kept buffers.
     fn rebuild(&mut self) {
         self.stale = false;
-        self.hull.clear();
-        let points = || self.corners.values().map(|(point, _)| *point);
-        let mut lower: Vec<[f32; 2]> = Vec::with_capacity(self.hull.capacity());
-        for point in points() {
-            while lower.len() >= 2 && cross(lower[lower.len() - 2], lower[lower.len() - 1], point) < 0.0 {
-                lower.pop();
-            }
-            lower.push(point);
-        }
+        let mut hull = std::mem::take(&mut self.hull);
+        let mut upper = std::mem::take(&mut self.upper);
+        hull.clear();
+        upper.clear();
+        chain(&mut hull, self.corners.values().map(|(point, _)| *point));
         // All on one line (or fewer than three corners): the chain holds every corner, in order.
-        if lower.len() == self.corners.len()
-            && lower.windows(3).all(|w| cross(w[0], w[1], w[2]) == 0.0)
-        {
-            self.hull = lower;
-            return;
+        let collinear = hull.len() == self.corners.len()
+            && hull.windows(3).all(|w| cross(w[0], w[1], w[2]) == 0.0);
+        if !collinear {
+            chain(
+                &mut upper,
+                self.corners.values().rev().map(|(point, _)| *point),
+            );
+            hull.pop();
+            upper.pop();
+            hull.extend_from_slice(&upper);
         }
-        let mut upper: Vec<[f32; 2]> = Vec::new();
-        for point in points().rev() {
-            while upper.len() >= 2 && cross(upper[upper.len() - 2], upper[upper.len() - 1], point) < 0.0 {
-                upper.pop();
-            }
-            upper.push(point);
+        self.hull = hull;
+        self.upper = upper;
+    }
+}
+
+// One half of the monotone chain: pops only on a right turn, so collinear boundary corners stay.
+fn chain(out: &mut Vec<[f32; 2]>, points: impl Iterator<Item = [f32; 2]>) {
+    for point in points {
+        while out.len() >= 2 && cross(out[out.len() - 2], out[out.len() - 1], point) < 0.0 {
+            out.pop();
         }
-        lower.pop();
-        upper.pop();
-        lower.extend(upper);
-        self.hull = lower;
+        out.push(point);
     }
 }
 
@@ -191,7 +197,8 @@ impl WaterScreenHull {
     /// `O(log corners)`, plus `O(hull)` when a new corner is not already a corner.
     #[func]
     pub fn set_patch(&mut self, key: Vector2i, low: Vector2, high: Vector2) {
-        self.book.set((key.x, key.y), [low.x, low.y, high.x, high.y]);
+        self.book
+            .set((key.x, key.y), [low.x, low.y, high.x, high.y]);
     }
 
     /// Removes patch `key` (no longer resident, hidden or freed); nothing when not held.
@@ -221,7 +228,11 @@ impl WaterScreenHull {
     /// The hull's boundary corners (x, z), counter-clockwise, collinear ones included.
     #[func]
     pub fn boundary(&mut self) -> PackedVector2Array {
-        self.book.hull().iter().map(|point| Vector2::new(point[0], point[1])).collect()
+        self.book
+            .hull()
+            .iter()
+            .map(|point| Vector2::new(point[0], point[1]))
+            .collect()
     }
 }
 
@@ -285,7 +296,11 @@ mod tests {
         let revision = book.revision();
         book.set((0, 0), [100.0, 100.0, 120.0, 120.0]);
         book.remove((1, 1));
-        assert_eq!(book.revision(), revision, "interior events must not stale the hull");
+        assert_eq!(
+            book.revision(),
+            revision,
+            "interior events must not stale the hull"
+        );
         // An edge patch leaving changes it.
         book.remove((7, 0));
         book.remove((6, 1));
@@ -310,7 +325,10 @@ mod tests {
         book.set((0, 0), [0.0, 0.0, 1.0, 1.0]);
         book.set((1, 0), [1.0, 0.0, 2.0, 1.0]);
         book.remove((0, 0));
-        assert_eq!(sorted(book.hull()), sorted(&[[1.0, 0.0], [2.0, 0.0], [2.0, 1.0], [1.0, 1.0]]));
+        assert_eq!(
+            sorted(book.hull()),
+            sorted(&[[1.0, 0.0], [2.0, 0.0], [2.0, 1.0], [1.0, 1.0]])
+        );
         assert_eq!(book.len(), 1);
     }
 }
