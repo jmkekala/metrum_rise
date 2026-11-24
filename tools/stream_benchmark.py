@@ -760,6 +760,7 @@ def flight_lines(report, every_s):
                 f"{owner} {statistics.mean(_flight_detail(row, 'vegetation', f'ledger_{owner}_ms') for row in rows):.2f}"
                 for owner in owners) + f"; measured {statistics.mean(_flight_detail(row, 'vegetation', 'ledger_ms') for row in rows):.2f}"
                 f", predicted {statistics.mean(_flight_detail(row, 'vegetation', 'ledger_predicted_ms') for row in rows):.2f}")
+        lines.extend(_flight_unit_lines(sample))
         lines.append("   t s | wanted | missing | in flight | ready | resident | built | oldest wait s | in-view holes")
         elapsed, due = 0.0, 0.0
         for row in rows:
@@ -776,6 +777,49 @@ def flight_lines(report, every_s):
             lines.append(f"   {elapsed:5.1f} | {wanted} | {terrain.get('terrain_missing', 0)} | "
                          f"{terrain.get('payload_requested', 0)} | {terrain.get('payload_ready', 0)} | "
                          f"{terrain.get('terrain_resident', 0)} | {terrain.get('built', '-')} | {oldest} | {holes}")
+    return lines
+
+
+UNIT_KINDS = ("show", "build", "hide", "step", "prewarm")
+
+
+def _flight_unit_lines(sample):
+    """The patch units by layer and kind (`TERRAIN-41` L1): the sample's measured times
+    (`patch_units`: count, mean, p95, max us) and, from the `terrain_stream` record, a line a
+    second: units run by layer and kind, the ledger's measured and predicted ms a frame, and the
+    terrain's missing patches and queued level checks at the second's end."""
+    lines = []
+    units = sample.get("patch_units") or {}
+    for layer in ("terrain", "water"):
+        parts = [f"{kind} {e['count']} / {e['mean_us']:.0f} / {e['p95_us']:.0f} / {e['max_us']:.0f}"
+                 for kind in UNIT_KINDS if (e := units.get(f"{layer}_{kind}")) and e["count"]]
+        if parts:
+            lines.append(f"   {layer} units, count / mean / p95 / max us: " + ", ".join(parts))
+    rows = sample["rows"]
+    if not any((row.get("scripts") or {}).get("terrain_stream") for row in rows):
+        return lines
+    lines.append("   s | fps | terrain show / build / step / hide | water show / build / step / hide | "
+                 "ledger ms measured / predicted | missing | lod queue terrain / water")
+    second, elapsed, bucket = 1, 0.0, []
+
+    def close(bucket, second):
+        total = lambda layer, kind: sum(_flight_detail(r, "terrain_stream", f"{layer}_{kind}_units") for r in bucket)
+        mean = lambda key: statistics.mean(_flight_detail(r, "vegetation", key) for r in bucket)
+        last = bucket[-1]["streams"]["terrain"]
+        layers = " | ".join(" / ".join(f"{total(layer, kind):.0f}" for kind in ("show", "build", "step", "hide"))
+                            for layer in ("terrain", "water"))
+        lines.append(f"   {second} | {len(bucket)} | {layers} | {mean('ledger_ms'):.2f} / "
+                     f"{mean('ledger_predicted_ms'):.2f} | {last.get('terrain_missing', 0)} | "
+                     f"{last.get('terrain_lod_queue', 0)} / {last.get('water_lod_queue', 0)}")
+
+    for row in rows:
+        elapsed += row["frame_ms"] / 1000.0
+        bucket.append(row)
+        if elapsed >= second:
+            close(bucket, second)
+            second, bucket = second + 1, []
+    if bucket:
+        close(bucket, second)
     return lines
 
 

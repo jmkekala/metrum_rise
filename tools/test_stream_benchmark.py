@@ -609,3 +609,21 @@ class FlightTests(unittest.TestCase):
         # One line a second: the first frame's and the last's; the oldest wait at the median frame.
         self.assertEqual(lines[-2], "     0.5 | 10 | 4 | 0 | 4 | 6 | 10 | 0.00 | 2")
         self.assertEqual(lines[-1], "     1.0 | 10 | 1 | 0 | 1 | 9 | 13 | 0.50 | 0")
+
+    def test_units_by_kind_and_second(self):
+        def row(frame_ms, show, step, missing, queue):
+            out = self.row(frame_ms, 0, missing, 0)
+            out["streams"]["terrain"]["terrain_lod_queue"] = queue
+            out["scripts"] = {
+                "terrain_stream": {"details": {"terrain_show_units": show, "terrain_step_units": step,
+                                               "water_show_units": 1}},
+                "vegetation": {"details": {"ledger_ms": 1.5, "ledger_predicted_ms": 1.75}}}
+            return out
+        rows = [row(400.0, 2, 1, 5, 9), row(600.0, 3, 0, 4, 8), row(500.0, 1, 2, 2, 3)]
+        units = {"terrain_show": {"count": 6, "mean_us": 12.4, "p95_us": 30, "max_us": 41.0},
+                 "terrain_build": {"count": 0, "mean_us": 0, "p95_us": 0, "max_us": 0}}
+        lines = sb.flight_lines({"samples": [{"label": "flight_high", "rows": rows, "patch_units": units}]}, 1.0)
+        self.assertIn("   terrain units, count / mean / p95 / max us: show 6 / 12 / 30 / 41", lines)
+        # A line a second, summed over that second's frames: 400 + 600 ms, then the last 500 ms.
+        self.assertIn("   1 | 2 | 5 / 0 / 1 / 0 | 2 / 0 / 0 / 0 | 1.50 / 1.75 | 4 | 8 / 0", lines)
+        self.assertIn("   2 | 1 | 1 / 0 / 2 / 0 | 1 / 0 / 0 / 0 | 1.50 / 1.75 | 2 | 3 / 0", lines)

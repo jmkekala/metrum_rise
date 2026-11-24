@@ -35,6 +35,10 @@
 use super::super::rings::{Cell, Lattice, RingBand, RingSet};
 use super::super::schedule::{Class, Clock, FrameBudget};
 
+mod units;
+
+pub(crate) use units::{UNIT_KIND_NAMES, UNIT_KINDS, UnitKind, UnitTimes};
+
 /// The scripts' patch grid: `terrain.gd`'s layout (`get_terrain_patch_layout`) and world size.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct PatchGrid {
@@ -373,7 +377,8 @@ pub(crate) enum Follow {
 /// The counts of one frame's work and the layer's state, for the perf channel and tests.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(crate) struct PatchWork {
-    /// Patches whose wanted state changed this frame.
+    /// Patches whose wanted state changed since the last frame (this frame's square and the
+    /// followed layer's news since then; not a running total).
     pub(crate) wanted_changes: usize,
     /// Ring cells the level of detail checks visited.
     pub(crate) ring_cells: usize,
@@ -391,6 +396,12 @@ pub(crate) struct PatchWork {
     pub(crate) requests: usize,
     /// Units the budget held back.
     pub(crate) deferred: usize,
+    /// Units run by [`UnitKind`] (`TERRAIN-41` L1).
+    pub(crate) unit_count: [usize; UNIT_KINDS],
+    /// Their measured microseconds by kind.
+    pub(crate) unit_us: [f64; UNIT_KINDS],
+    /// The longest unit by kind, microseconds.
+    pub(crate) unit_max_us: [f64; UNIT_KINDS],
 }
 
 /// One layer's patches: terrain's (wanted: the square) or water's (wanted: terrain's resident).
@@ -435,7 +446,10 @@ pub(crate) struct PatchStream {
     // Scratch.
     order: Vec<(Class, f64, u32)>,
     requests: Vec<i32>,
+    // Wanted changes since the last frame; the frame's work; units' times since the last take.
+    wanted_changes: usize,
     work: PatchWork,
+    times: UnitTimes,
     force_lod1: bool,
     prewarm_held: bool,
 }
@@ -475,7 +489,9 @@ impl PatchStream {
             news: Vec::new(),
             order: Vec::new(),
             requests: Vec::new(),
+            wanted_changes: 0,
             work: PatchWork::default(),
+            times: UnitTimes::default(),
             force_lod1: false,
             prewarm_held: false,
         }
@@ -705,7 +721,7 @@ impl PatchStream {
         if (flags & WANTED != 0) == wanted {
             return;
         }
-        self.work.wanted_changes += 1;
+        self.wanted_changes += 1;
         let resident = flags & RESIDENT != 0;
         if wanted {
             self.flags[index] |= WANTED;
@@ -829,9 +845,8 @@ impl PatchStream {
         in_view: &impl Fn(PatchKey) -> bool,
         exec: &mut impl PatchExecutor,
     ) -> PatchWork {
-        let wanted_changes = std::mem::take(&mut self.work.wanted_changes);
         self.work = PatchWork {
-            wanted_changes,
+            wanted_changes: std::mem::take(&mut self.wanted_changes),
             ..PatchWork::default()
         };
         let Some(grid) = self.grid else {
@@ -915,7 +930,7 @@ impl PatchStream {
                 }
                 let start = clock.now_us();
                 exec.set_lod(key, target);
-                budget.record(self.costs.lod_us, clock.now_us() - start);
+                self.account(budget, UnitKind::Step, self.costs.lod_us, clock.now_us() - start);
                 self.step[index] = target;
                 if let Some(follow) = self.follow.as_mut() {
                     follow.push((key, Follow::Step(target)));
@@ -927,10 +942,10 @@ impl PatchStream {
             if blocked {
                 continue;
             }
-            let cost = if self.flags[index] & BUILT != 0 {
-                self.costs.activate_us
+            let (kind, cost) = if self.flags[index] & BUILT != 0 {
+                (UnitKind::Show, self.costs.activate_us)
             } else {
-                self.costs.build_us
+                (UnitKind::Build, self.costs.build_us)
             };
             if !admit(budget, cost) {
                 self.work.deferred += 1;
@@ -940,7 +955,7 @@ impl PatchStream {
             let step = self.rule(grid, eye, index);
             let start = clock.now_us();
             let (done, generation) = exec.activate(key, step);
-            budget.record(cost, clock.now_us() - start);
+            self.account(budget, kind, cost, clock.now_us() - start);
             if done == Activation::Done && self.flags[index] & BUILT == 0 {
                 self.generations.push((key, generation));
             }
@@ -979,7 +994,7 @@ impl PatchStream {
             }
             let start = clock.now_us();
             exec.deactivate(grid.key(index as usize));
-            budget.record(self.costs.free_us, clock.now_us() - start);
+            self.account(budget, UnitKind::Hide, self.costs.free_us, clock.now_us() - start);
             self.set_resident(index as usize, false);
             freed += 1;
         }
@@ -1002,6 +1017,23 @@ impl PatchStream {
         }
         self.request_payloads(grid, &distance_sq, exec);
         self.work
+    }
+
+    // Charges a unit that ran to the frame's budget and counts it by kind.
+    fn account(&mut self, budget: &mut FrameBudget, kind: UnitKind, predicted_us: f64, us: f64) {
+        budget.record(predicted_us, us);
+        let at = kind as usize;
+        self.work.unit_count[at] += 1;
+        self.work.unit_us[at] += us;
+        self.work.unit_max_us[at] = self.work.unit_max_us[at].max(us);
+        self.times.add(kind, us);
+    }
+
+    /// The units' measured times by kind since the last call, then starts over (the stream
+    /// benchmark's samples, `TERRAIN-41` L1).
+    pub(crate) fn take_unit_times(&mut self, out: &mut impl FnMut(&UnitTimes)) {
+        out(&self.times);
+        self.times.clear();
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1054,7 +1086,7 @@ impl PatchStream {
             let step = self.rule(grid, eye, index);
             let start = clock.now_us();
             let built = exec.build(key, step);
-            budget.record(self.costs.build_us, clock.now_us() - start);
+            self.account(budget, UnitKind::Prewarm, self.costs.build_us, clock.now_us() - start);
             self.flags[index] &= !READY;
             if let Some(generation) = built {
                 self.flags[index] |= BUILT;

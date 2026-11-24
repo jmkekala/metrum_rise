@@ -47,7 +47,8 @@ use crate::nodes::sim::render::stream::layers::roads::{
 };
 use crate::nodes::sim::render::stream::layers::terrain::{
     Activation, PatchExecutor, PatchGrid, PatchKey as TerrainKey, PatchStream, PatchWork, Payload,
-    POST_LOAD_PATCH_BUDGET_US, TERRAIN_COSTS, TERRAIN_LIMITS, WATER_COSTS, WATER_LIMITS,
+    POST_LOAD_PATCH_BUDGET_US, TERRAIN_COSTS, TERRAIN_LIMITS, UNIT_KIND_NAMES, UNIT_KINDS,
+    WATER_COSTS, WATER_LIMITS,
 };
 use crate::nodes::sim::render::stream::layers::zoning::ZoningRing;
 use crate::nodes::sim::render::stream::layers::vegetation::residency::{
@@ -869,6 +870,31 @@ impl StreamNode {
             out.set(format!("{name}_leaving"), leaving as i64);
             out.set(format!("{name}_lod_queue"), queue as i64);
             out.set(format!("{name}_resident"), layer.resident_count() as i64);
+        }
+        out
+    }
+
+    /// The terrain's and the water's patch units by kind since the last call, then starts over
+    /// (`TERRAIN-41` L1, the stream benchmark's samples): `<layer>_<kind>` (kinds `show`,
+    /// `build`, `hide`, `step`, `prewarm`) -> `{count, mean_us, p50_us, p95_us, p99_us, max_us}`,
+    /// the percentiles as one-microsecond bucket edges. `O(kinds x buckets)`.
+    #[func]
+    pub fn take_patch_unit_times(&mut self) -> VarDictionary {
+        let mut out = VarDictionary::new();
+        for (name, layer) in [("terrain", &mut self.terrain), ("water", &mut self.water)] {
+            layer.take_unit_times(&mut |times| {
+                for (kind, kind_name) in UNIT_KIND_NAMES.iter().enumerate() {
+                    let [mean, max] = times.mean_max(kind);
+                    let mut entry = VarDictionary::new();
+                    entry.set("count", times.count(kind) as i64);
+                    entry.set("mean_us", mean);
+                    entry.set("p50_us", times.quantile(kind, 0.5));
+                    entry.set("p95_us", times.quantile(kind, 0.95));
+                    entry.set("p99_us", times.quantile(kind, 0.99));
+                    entry.set("max_us", max);
+                    out.set(format!("{name}_{kind_name}"), entry);
+                }
+            });
         }
         out
     }
@@ -1809,6 +1835,13 @@ impl StreamNode {
                 patches.set(format!("{name}_builds"), work.builds as i64);
                 patches.set(format!("{name}_requests"), work.requests as i64);
                 patches.set(format!("{name}_deferred"), work.deferred as i64);
+                // Units by kind (`TERRAIN-41` L1): count, measured and longest microseconds.
+                for kind in 0..UNIT_KINDS {
+                    let kind_name = UNIT_KIND_NAMES[kind];
+                    patches.set(format!("{name}_{kind_name}_units"), work.unit_count[kind] as i64);
+                    patches.set(format!("{name}_{kind_name}_us"), work.unit_us[kind]);
+                    patches.set(format!("{name}_{kind_name}_max_us"), work.unit_max_us[kind]);
+                }
             }
             // The patches' whole frame here, their units' script time included.
             script.call(
