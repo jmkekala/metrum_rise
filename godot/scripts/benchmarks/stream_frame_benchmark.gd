@@ -959,7 +959,7 @@ func _record_patch_digest() -> void:
 # Every wet resident water patch draws a mesh of its own step (`TERRAIN-41` L2): `wet` counted,
 # `mismatches` those that do not, with their first keys. The node's held mesh where the renderer
 # records it (its step, cover generation and depth signature), else (a control) its mesh stats'
-# step with triangles emitted.
+# step with a mesh other than the renderer's shared empty one (a baked mesh may emit no triangle).
 func _water_mesh_check() -> Dictionary:
 	var wet := 0
 	var keys := PackedStringArray()
@@ -977,7 +977,9 @@ func _water_mesh_check() -> Dictionary:
 				and held[2] == int(patch.get("depth_signature", 0)))
 		else:
 			var stats: Dictionary = patch.get("mesh_stats", {})
-			drawn = int(stats.get("lod_step", 0)) == step and int(stats.get("emitted_triangles", 0)) > 0
+			var node: MeshInstance3D = patch.get("node", null)
+			drawn = (int(stats.get("lod_step", 0)) == step and node != null
+				and node.mesh != _water.get("empty_water_mesh"))
 		if not drawn:
 			keys.append("%d,%d" % [key.x, key.y])
 	keys.sort()
