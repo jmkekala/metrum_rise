@@ -391,9 +391,20 @@ impl SimulationNode {
             let request_count = build_requests.len();
             let core = Arc::clone(&self.core);
             let jobs = Arc::clone(&self.terrain_patch_payload_jobs);
+            // The worker times (`TERRAIN-41`): only while the perf channel is on.
+            let spawned = crate::debug::Channel::Perf.enabled().then(|| {
+                self.lock_terrain_patch_payload_jobs().worker_perf.spawned += 1;
+                Instant::now()
+            });
             self.async_jobs.spawn(move || {
                 let worker_start = Instant::now();
                 let perf_enabled = crate::debug::Channel::Perf.enabled();
+                if spawned.is_some() {
+                    jobs.lock()
+                        .expect("terrain payload job lock poisoned at a job's start")
+                        .worker_perf
+                        .started += 1;
+                }
                 let snapshot_start = Instant::now();
                 let (mut built, mut failed_requests, refused_requests) =
                     SimulationNode::try_prepare_terrain_patch_payload_sources(
@@ -401,6 +412,7 @@ impl SimulationNode {
                         build_requests,
                     );
                 let snapshot_ms = snapshot_start.elapsed().as_secs_f64() * 1000.0;
+                let bake_start = Instant::now();
                 if perf_enabled && snapshot_ms >= 4.0 {
                     println!(
                         "[DEBUG:perf] terrain_payload_worker_input requests={} ready={} failed={} snapshot_lock_ms={:.3}",
@@ -413,9 +425,22 @@ impl SimulationNode {
                 built
                     .par_iter_mut()
                     .for_each(TerrainPatchPayload::bake_shading_masks);
+                let bake_us = bake_start.elapsed().as_secs_f64() * 1e6;
                 let mut job_state = jobs
                     .lock()
                     .expect("terrain payload job lock poisoned during result publication");
+                if let Some(spawned) = spawned {
+                    let run_us = worker_start.elapsed().as_secs_f64() * 1e6;
+                    let perf = &mut job_state.worker_perf;
+                    perf.finished += 1;
+                    perf.built += built.len() as u64;
+                    perf.retried += failed_requests.len() as u64;
+                    perf.queue_us += worker_start.duration_since(spawned).as_secs_f64() * 1e6;
+                    perf.source_us += snapshot_ms * 1000.0;
+                    perf.bake_us += bake_us;
+                    perf.run_us += run_us;
+                    perf.run_max_us = perf.run_max_us.max(run_us);
+                }
                 job_state.completed.extend(built);
                 job_state.failed.append(&mut failed_requests);
                 job_state.refused.extend(refused_requests);
@@ -507,6 +532,30 @@ impl SimulationNode {
             )
         };
         let mut jobs = self.lock_terrain_patch_payload_jobs();
+        if crate::debug::Channel::Perf.enabled() {
+            // The worker times since the last poll (`TERRAIN-41`); the job counts are running
+            // totals, so spawned less started is the jobs queued and started less finished the
+            // jobs running.
+            let worker = jobs.worker_perf;
+            jobs.worker_perf = TerrainPayloadWorkerPerf {
+                spawned: worker.spawned,
+                started: worker.started,
+                finished: worker.finished,
+                ..TerrainPayloadWorkerPerf::default()
+            };
+            let mut perf = VarDictionary::new();
+            perf.set("jobs_queued", worker.spawned.saturating_sub(worker.started) as i64);
+            perf.set("jobs_running", worker.started.saturating_sub(worker.finished) as i64);
+            perf.set("jobs_finished_total", worker.finished as i64);
+            perf.set("built", worker.built as i64);
+            perf.set("retried", worker.retried as i64);
+            perf.set("queue_ms", worker.queue_us / 1000.0);
+            perf.set("source_ms", worker.source_us / 1000.0);
+            perf.set("bake_ms", worker.bake_us / 1000.0);
+            perf.set("run_ms", worker.run_us / 1000.0);
+            perf.set("run_max_ms", worker.run_max_us / 1000.0);
+            stats.set("worker_perf", perf.to_variant());
+        }
         if !completed_payloads.is_empty() {
             jobs.ingest_completed(completed_payloads);
         }

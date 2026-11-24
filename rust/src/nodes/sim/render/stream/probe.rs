@@ -91,6 +91,9 @@ pub(crate) struct LayerTracker {
     // The first frame seen: its chunks are the baseline, not entries.
     started: bool,
     stats: Vec<EpochStats>,
+    // The last frame's backlog (`TERRAIN-41`): chunks waiting to draw, the oldest wait (frames),
+    // the waiting chunks whose product is ready, and the in-view holes.
+    backlog: [u32; 4],
 }
 
 impl LayerTracker {
@@ -112,6 +115,7 @@ impl LayerTracker {
         let baseline = !self.started;
         self.started = true;
         let mut in_view_holes = 0;
+        let mut backlog = [0; 4];
         for record in data.as_chunks::<LANES>().0 {
             let key = [record[0] as i32, record[1] as i32, record[2] as i32];
             let flags = record[3] as u32;
@@ -177,6 +181,11 @@ impl LayerTracker {
                 chunk.waiting_visible = false;
                 self.stats(chunk.epoch).waits_visible.push(waited);
             }
+            if chunk.waiting {
+                backlog[0] += 1;
+                backlog[1] = backlog[1].max(waited);
+                backlog[2] += u32::from(flags & READY != 0);
+            }
             let (hole, bare) = (in_view && !drawn, in_view && !visible);
             Self::run(
                 &mut chunk.hole,
@@ -198,6 +207,8 @@ impl LayerTracker {
             }
             self.chunks.insert(key, chunk);
         }
+        backlog[3] = in_view_holes;
+        self.backlog = backlog;
         let stats = self.stats(epoch);
         stats.holes_max = stats.holes_max.max(in_view_holes);
         // Chunks that left the set: an unfinished wait is dropped and counted, an open run ends.
@@ -350,6 +361,18 @@ impl StreamDrawnProbe {
             &self.planes,
             [y_min as f32, y_max as f32],
         );
+    }
+
+    /// Layer `name`'s backlog at its last observed frame (`TERRAIN-41`): `[waiting, oldest wait
+    /// in frames, waiting with the product ready, in-view holes]`; zeros for an unknown layer.
+    #[func]
+    pub fn backlog(&self, name: GString) -> PackedInt32Array {
+        let backlog = self
+            .layers
+            .iter()
+            .find(|(known, _)| *known == name)
+            .map_or([0; 4], |(_, layer)| layer.backlog);
+        PackedInt32Array::from_iter(backlog.iter().map(|&value| value as i32))
     }
 
     /// The counts: per epoch label, per layer `entered`, `waits`, `waits_visible`,

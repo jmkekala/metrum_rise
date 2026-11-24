@@ -60,7 +60,7 @@ use crate::nodes::sim::render::stream::layers::vegetation::{
 use crate::nodes::sim::render::stream::probe;
 use crate::nodes::sim::render::stream::view::CameraSample;
 use crate::nodes::sim::render::stream::schedule::{
-    FrameBudget, MonotonicClock, Owner, STREAM_BUDGET_US, with_ledger,
+    FrameBudget, MonotonicClock, OWNERS, Owner, STREAM_BUDGET_US, with_ledger,
 };
 use crate::nodes::sim::render::vegetation_product::godot_math::Aabb;
 use crate::nodes::sim::render::vegetation_product::{Batch, VegetationProduct};
@@ -91,6 +91,9 @@ pub struct StreamNode {
     budget: FrameBudget,
     ledger_frame: u64,
     frame_spent: [f64; 2],
+    // The perf channel's ledger at the node's last pass (`TERRAIN-41`): microseconds charged by
+    // each owner, in `Owner` order, then the predicted total the admissions compared.
+    frame_charged: [f64; OWNERS + 1],
     clock: MonotonicClock,
     // The perf channel: this frame's main-thread time and counters, recorded before the draw.
     perf: bool,
@@ -178,6 +181,7 @@ impl INode for StreamNode {
             budget: FrameBudget::new(STREAM_BUDGET_US),
             ledger_frame: 0,
             frame_spent: [0.0; 2],
+            frame_charged: [0.0; OWNERS + 1],
             clock: MonotonicClock::default(),
             perf: false,
             perf_script: None,
@@ -241,6 +245,7 @@ impl INode for StreamNode {
         self.delta = delta;
         self.budget.begin_frame();
         self.frame_spent = [0.0; 2];
+        self.frame_charged = [0.0; OWNERS + 1];
         self.frame_us = 0.0;
         self.frame_installs = 0;
         self.frame_refreshed = 0;
@@ -1491,6 +1496,8 @@ impl StreamNode {
         let holes = self.vegetation.holes_waiting()
             || self.terrain.pending()[0] > 0
             || self.water.pending()[0] > 0;
+        let perf = self.perf;
+        let mut charged = self.frame_charged;
         let spent = with_ledger(self.ledger_frame, |ledger| {
             let measured = budget.measured_us - ledger.budget.measured_us - free_us;
             let predicted = budget.predicted_us - ledger.budget.predicted_us;
@@ -1502,9 +1509,14 @@ impl StreamNode {
                 ledger.charged[Owner::Free as usize] += free_us;
             }
             ledger.holes_waiting = holes;
+            if perf {
+                charged[..OWNERS].copy_from_slice(&ledger.charged);
+                charged[OWNERS] = ledger.budget.predicted_us;
+            }
             [ledger.charged[Owner::Stream as usize], ledger.budget.measured_us]
         });
         self.frame_spent = spent;
+        self.frame_charged = charged;
     }
 
     // One pass's work (`run_pass`).
@@ -1722,6 +1734,22 @@ impl StreamNode {
         // The node's own units (the ledger's `Stream` charge) and the frame's whole ledger.
         details.set("install_ms", self.frame_spent[0] / 1000.0);
         details.set("ledger_ms", self.frame_spent[1] / 1000.0);
+        // The ledger by owner and its predicted total (`TERRAIN-41`): the admissions compare the
+        // larger of the measured and the predicted spend with the budget.
+        const OWNER_NAMES: [&str; OWNERS] = [
+            "terrain_commit",
+            "graded",
+            "water",
+            "building_publication",
+            "building_sites",
+            "stream",
+            "free",
+            "agent_casters",
+        ];
+        for (name, us) in OWNER_NAMES.iter().zip(self.frame_charged) {
+            details.set(format!("ledger_{name}_ms"), us / 1000.0);
+        }
+        details.set("ledger_predicted_ms", self.frame_charged[OWNERS] / 1000.0);
         details.set("predicted_ms", self.budget.predicted_us / 1000.0);
         details.set("upload_max_ms", self.budget.max_unit_us / 1000.0);
         details.set(

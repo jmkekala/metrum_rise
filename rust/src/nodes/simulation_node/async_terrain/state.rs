@@ -187,6 +187,31 @@ pub(in crate::nodes::simulation_node) struct TerrainPatchPayloadAsyncState {
     pub(in crate::nodes::simulation_node) failed: Vec<TerrainPatchPayloadRequest>,
     // Requests refused by contract with the reason, for the next poll.
     pub(in crate::nodes::simulation_node) refused: Vec<(TerrainPatchPayloadRequest, &'static str)>,
+    // The payload jobs' worker times while the perf channel is on (`TERRAIN-41`), since the last
+    // poll took them.
+    pub(in crate::nodes::simulation_node) worker_perf: TerrainPayloadWorkerPerf,
+}
+
+/// The terrain payload jobs' worker times since the last poll (`TERRAIN-41`), kept only while the
+/// perf channel is on: a job is one frame's batch of requests, run on the background pool.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(in crate::nodes::simulation_node) struct TerrainPayloadWorkerPerf {
+    // Jobs spawned, started on a worker, and finished.
+    pub(in crate::nodes::simulation_node) spawned: u64,
+    pub(in crate::nodes::simulation_node) started: u64,
+    pub(in crate::nodes::simulation_node) finished: u64,
+    // Payloads built, and requests handed back for a retry (the core lock was busy, or a
+    // generation moved).
+    pub(in crate::nodes::simulation_node) built: u64,
+    pub(in crate::nodes::simulation_node) retried: u64,
+    // Microseconds summed over the finished jobs: from the spawn to the worker's start, the
+    // payload sources under the core lock (heights and land cover), the shading masks' bake
+    // (parallel), and the job's whole run; and the longest run.
+    pub(in crate::nodes::simulation_node) queue_us: f64,
+    pub(in crate::nodes::simulation_node) source_us: f64,
+    pub(in crate::nodes::simulation_node) bake_us: f64,
+    pub(in crate::nodes::simulation_node) run_us: f64,
+    pub(in crate::nodes::simulation_node) run_max_us: f64,
 }
 
 impl TerrainPatchPayloadAsyncState {
@@ -201,6 +226,7 @@ impl TerrainPatchPayloadAsyncState {
             completed: Vec::new(),
             failed: Vec::new(),
             refused: Vec::new(),
+            worker_perf: TerrainPayloadWorkerPerf::default(),
         }
     }
 
@@ -338,6 +364,7 @@ impl TerrainPatchPayloadAsyncState {
         self.completed.clear();
         self.failed.clear();
         self.refused.clear();
+        self.worker_perf = TerrainPayloadWorkerPerf::default();
     }
 }
 

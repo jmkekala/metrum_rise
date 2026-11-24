@@ -125,3 +125,43 @@ fn the_frustum_test_takes_the_inward_corner() {
     assert!(!in_frustum(&PLANES, [51.0, 0.0, 0.0], [52.0, 1.0, 1.0]));
     assert!(in_frustum(&[], [51.0, 0.0, 0.0], [52.0, 1.0, 1.0]));
 }
+
+#[test]
+fn the_backlog_counts_the_waiting_their_oldest_wait_the_ready_and_the_holes() {
+    let mut layer = LayerTracker::default();
+    layer.observe(1, 0, &set(&[([0, 0, 1], DRAWN, UNIT)]), &PLANES, [0.0, 1.0]);
+    layer.observe(
+        2,
+        0,
+        &set(&[([0, 0, 1], DRAWN, UNIT), ([1, 0, 1], 0, UNIT), ([2, 0, 1], 0, FAR)]),
+        &PLANES,
+        [0.0, 1.0],
+    );
+    layer.observe(
+        3,
+        0,
+        &set(&[
+            ([0, 0, 1], DRAWN, UNIT),
+            ([1, 0, 1], READY, UNIT),
+            ([2, 0, 1], 0, FAR),
+            ([3, 0, 1], 0, UNIT),
+        ]),
+        &PLANES,
+        [0.0, 1.0],
+    );
+    // Three waiting, the oldest one frame, one of them ready, two in view.
+    assert_eq!(layer.backlog, [3, 1, 1, 2]);
+    layer.observe(
+        4,
+        0,
+        &set(&[
+            ([0, 0, 1], DRAWN, UNIT),
+            ([1, 0, 1], DRAWN, UNIT),
+            ([2, 0, 1], DRAWN, FAR),
+            ([3, 0, 1], DRAWN, UNIT),
+        ]),
+        &PLANES,
+        [0.0, 1.0],
+    );
+    assert_eq!(layer.backlog, [0; 4]);
+}

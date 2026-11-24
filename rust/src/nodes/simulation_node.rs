@@ -167,9 +167,9 @@ mod zoning_api;
 
 use async_terrain::{
     TerrainPatchPayload, TerrainPatchPayloadAsyncState, TerrainPatchPayloadData,
-    TerrainPatchPayloadRequest, TerrainPatchPayloadRequestState, WaterPatchMeshAsyncState,
-    WaterPatchPayload, WaterPatchPayloadAsyncState, WaterPatchPayloadRequest,
-    WaterPatchPayloadRequestState,
+    TerrainPatchPayloadRequest, TerrainPatchPayloadRequestState, TerrainPayloadWorkerPerf,
+    WaterPatchMeshAsyncState, WaterPatchPayload, WaterPatchPayloadAsyncState,
+    WaterPatchPayloadRequest, WaterPatchPayloadRequestState,
 };
 use variant_export::{
     budget_ledger_entry_dict, prepare_zoning_site_queries, zoning_buildable_geometries, zoning_geometry_feasibility,

@@ -7,9 +7,9 @@ mod state;
 
 pub(in crate::nodes::simulation_node) use state::{
     TerrainPatchPayload, TerrainPatchPayloadAsyncState, TerrainPatchPayloadData,
-    TerrainPatchPayloadRequest, TerrainPatchPayloadRequestState, WaterPatchMeshAsyncState,
-    WaterPatchPayload, WaterPatchPayloadAsyncState, WaterPatchPayloadRequest,
-    WaterPatchPayloadRequestState,
+    TerrainPatchPayloadRequest, TerrainPatchPayloadRequestState, TerrainPayloadWorkerPerf,
+    WaterPatchMeshAsyncState, WaterPatchPayload, WaterPatchPayloadAsyncState,
+    WaterPatchPayloadRequest, WaterPatchPayloadRequestState,
 };
 
 #[cfg(test)]

@@ -188,6 +188,10 @@ var _empty_land_cover := {}
 # The perf channel's land cover counts since the last record: asked, handed over, frames a dirty
 # commit waited for one, built patches drawing the empty one.
 var _land_cover_perf := PackedInt64Array([0, 0, 0, 0])
+# The perf channel's payload poll counts since the last record (`TERRAIN-41`): Rust's poll answers
+# summed (completed jobs' payloads, retries, payloads emitted, stale), its ready queue and requests
+# in flight before the last poll, and the payload workers' times (`worker_perf`, summed).
+var _poll_perf := {}
 var water_texture_sync_queue: Array[Vector2i] = []
 var water_texture_sync_lookup: Dictionary = {}
 var cached_overlay_mode: int = -1
@@ -380,8 +384,10 @@ func _process(delta: float) -> void:
 		_terrain_debug_dirty_patch_total += int(dirty_pairs.size() / 2)
 		_try_commit_standalone_terrain_visual_update()
 		upload_elapsed_ms = float(Time.get_ticks_usec() - dirty_start_us) / 1000.0
+	var prune_start_us := Time.get_ticks_usec()
 	if not simulation_node.is_terrain_dirty():
 		_prune_patch_payload_cache()
+	var prune_ms := float(Time.get_ticks_usec() - prune_start_us) / 1000.0
 
 	if not network_refresh_pending and not simulation_node.is_terrain_dirty():
 		_sync_land_cover()
@@ -455,7 +461,13 @@ func _process(delta: float) -> void:
 			"land_cover_out": _land_cover_asked.size(),
 			"border": border_elapsed_ms,
 			"water_sync": water_sync_elapsed_ms,
+			# `TERRAIN-41`: the held and requested payloads' prune, and the built patches (resident
+			# or hidden: a patch that left keeps its node and textures).
+			"payload_prune": prune_ms,
+			"patches_built": patches.size(),
 		}
+		perf_details.merge(_poll_perf)
+		_poll_perf.clear()
 		# The patch builds the streaming core ran since the last record (its units run after
 		# this script's frame).
 		var build_names := ["build_count", "build_ms", "build_resources_ms", "build_height_ms",
@@ -1792,7 +1804,13 @@ func _request_terrain_patch_payloads(
 func _poll_ready_terrain_patch_payloads(budget: int) -> int:
 	if budget <= 0 or not simulation_node.has_method("poll_ready_terrain_patch_payloads"):
 		return 0
+	var call_start_us := Time.get_ticks_usec() if _build_perf else 0
 	var result: Dictionary = simulation_node.poll_ready_terrain_patch_payloads(budget) as Dictionary
+	if _build_perf:
+		# The Rust call alone (its payloads' dictionaries included), the rest is this loop's.
+		_poll_perf["poll_call_ms"] = (float(_poll_perf.get("poll_call_ms", 0.0))
+			+ float(Time.get_ticks_usec() - call_start_us) / 1000.0)
+		_note_poll_perf(result)
 	var payloads: Array = result.get("patches", []) as Array
 	var accepted_count := 0
 	_sync_patch_payload_road_generation()
@@ -1867,6 +1885,22 @@ func _poll_ready_terrain_patch_payloads(budget: int) -> int:
 		_stream.terrain_payload(key, 1)
 		accepted_count += 1
 	return accepted_count
+
+# Sums one poll's answer into the perf channel's counts (`TERRAIN-41`).
+func _note_poll_perf(result: Dictionary) -> void:
+	for key: String in ["completed_count", "failed_count", "emitted_count", "stale_ready_count"]:
+		_poll_perf["poll_" + key] = int(_poll_perf.get("poll_" + key, 0)) + int(result.get(key, 0))
+	_poll_perf["poll_ready_before"] = int(result.get("ready_before_count", 0))
+	_poll_perf["poll_requested_before"] = int(result.get("requested_before_count", 0))
+	var worker: Dictionary = result.get("worker_perf", {})
+	for key: String in worker:
+		# The job counts are the latest poll's; the times are summed, the longest run kept.
+		var value: float = float(worker[key])
+		if key == "run_max_ms":
+			value = maxf(value, float(_poll_perf.get("worker_" + key, 0.0)))
+		elif not key.begins_with("jobs_"):
+			value += float(_poll_perf.get("worker_" + key, 0.0))
+		_poll_perf["worker_" + key] = value
 
 # Drops held and requested payloads the streaming core no longer wants: outside its prewarm
 # square (the wanted square), and held payloads of built patches. O(held +
