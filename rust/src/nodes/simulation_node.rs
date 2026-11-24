@@ -283,6 +283,9 @@ pub struct SimulationNode {
     pub(crate) last_logged_day: u32,
     /// Accumulated Godot render time (unused by sim, kept for potential UI use).
     pub(crate) time_passed: f64,
+    /// Why the last world replacement (load, new game, blank world) was refused, as the
+    /// player reads it; empty after one that succeeded.
+    world_load_error: String,
     base: Base<Node3D>,
 }
 
@@ -603,6 +606,7 @@ impl INode3D for SimulationNode {
             benchmark_tick_count: 0,
             last_logged_day: 0,
             time_passed: 0.0,
+            world_load_error: String::new(),
             base,
         }
     }

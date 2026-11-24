@@ -47,8 +47,6 @@ impl SimCore {
         terrain_cell_m: f32,
         base_elevation_m: f32,
     ) -> Result<(), String> {
-        // A commit's deferred lots belong to the world the reset replaces.
-        self.pending_cell_lots = None;
         // The reset's rebuilds are parallel: shared pool (CODE-17).
         crate::thread_pools::install(|| {
             self.create_blank_world_in_pool(width_m, height_m, terrain_cell_m, base_elevation_m)
@@ -492,8 +490,6 @@ impl SimCore {
         vegetation: VegetationConfig,
     ) -> Result<(), String> {
         debug_log!("world-editor", "load_world_definition path={}", path);
-        // A commit's deferred lots belong to the world the load replaces.
-        self.pending_cell_lots = None;
         // Decoding and the reset's rebuilds are parallel: shared pool (CODE-17).
         crate::thread_pools::install(|| {
             let loaded = load_world_definition_from_sqlite(&PathBuf::from(path))
@@ -541,6 +537,9 @@ impl SimCore {
             config.terrain_base_elevation_m
         );
 
+        // A commit's deferred lots belong to the world the reset replaces. Dropped here, past
+        // every refusal: a refused load or create leaves the running world with its plan.
+        self.pending_cell_lots = None;
         self.time = TimeSystem::new();
         self.weather = WeatherState::default();
         self.world_epoch = self.world_epoch.wrapping_add(1);

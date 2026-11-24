@@ -650,8 +650,7 @@ pub(crate) fn load_from_sqlite(
     }
     // A save from before the aligned grid (10 m cells, 520 m chunks, other sides) is refused
     // with the rule it breaks.
-    WorldConfig::check_stored_terrain_chunk_m(terrain_chunk_m)?;
-    config.validate()?;
+    config.validate_stored(terrain_chunk_m)?;
     let vegetation = {
         let row: (i64, i64, f32, f32) = conn.query_row(
             "SELECT enabled, seed, coverage, canopy_stems_per_ha FROM vegetation_config LIMIT 1",

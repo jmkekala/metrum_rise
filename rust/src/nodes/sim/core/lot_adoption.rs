@@ -13,7 +13,8 @@
 //! The first frame after the commit adopts the plan, waiting for it outside the pools if it is
 //! late; that frame is the routing hold's, which advances nothing (D7). Every editor path that
 //! reads or writes the lots, parcels or building attachments before that frame adopts the plan
-//! first ([`SimCore::adopt_pending_cell_lots`]); a load drops it. So the adopted zoning,
+//! first ([`SimCore::adopt_pending_cell_lots`]); a load or new world drops it once it replaces
+//! the world (a refused one keeps it). So the adopted zoning,
 //! attachments and entrances equal what planning at the commit would have left, bitwise, and
 //! nothing simulated ever reads the state between. Readers that only show the lots (the render
 //! snapshot, the cell overlay) show them one frame later.

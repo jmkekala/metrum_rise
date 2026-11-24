@@ -108,6 +108,26 @@ func _check_world_load_controls(host: Node3D, simulation: SimulationNode, save_p
 	input_manager.free()
 	inspector.free()
 
+# A refused load, new game or blank world returns false, leaves the running world and names
+# the refusal (`get_world_load_error`, composed in Rust); the next success clears it.
+func _check_world_load_refusals(simulation: SimulationNode, save_path: String) -> void:
+	var height := simulation.get_height_at(Vector2.ZERO)
+	_expect(not simulation.create_blank_world(500.0, 512.0, 8.0, 0.0), "a side off the 128 m step is refused")
+	var error := simulation.get_world_load_error()
+	_expect(error.begins_with("Create blank world failed: ") and "width_m must be a whole multiple of 128 m" in error, "the blank world refusal names the rule: %s" % error)
+	var junk := OS.get_temp_dir().path_join("metrum_refused_load_test_%d.sqlite" % OS.get_process_id())
+	var file := FileAccess.open(junk, FileAccess.WRITE)
+	file.store_string("not a save")
+	file.close()
+	_expect(not simulation.load_game(junk), "a file that is not a save is refused")
+	_expect(simulation.get_world_load_error().begins_with("Load failed: "), "the load refusal reaches the UI: %s" % simulation.get_world_load_error())
+	_expect(not simulation.load_world_definition(junk), "a file that is not a world is refused")
+	_expect(simulation.get_world_load_error().begins_with("Load world definition failed: "), "the world refusal reaches the UI: %s" % simulation.get_world_load_error())
+	DirAccess.remove_absolute(junk)
+	_expect(simulation.get_height_at(Vector2.ZERO) == height, "the refusals leave the running world")
+	_expect(simulation.load_game(save_path), "a save loads after the refusals")
+	_expect(simulation.get_world_load_error().is_empty(), "a load that succeeds clears the refusal")
+
 func _run() -> void:
 	var host := Node3D.new()
 	root.add_child(host)
@@ -191,6 +211,7 @@ func _run() -> void:
 	_check_camera_modes(host, simulation, path)
 	_check_orthographic_bounds(host)
 	_check_world_load_controls(host, simulation, path, world_path)
+	_check_world_load_refusals(simulation, path)
 	DirAccess.remove_absolute(world_path)
 	host.free()
 	DirAccess.remove_absolute(path)

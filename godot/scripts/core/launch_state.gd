@@ -18,6 +18,10 @@ var benchmark_menu_ms := [-1, -1]
 # and its prewarm's report (`menu_pipeline_prewarm.gd`).
 var benchmark_menu := {}
 
+# A gameplay request the world scene could not start, for the main menu to show where the
+# player chose it: "kind" ("save" or "world") and "message" (Rust's refusal); empty without one.
+var refusal := {}
+
 func queue_new_game(world_definition_path: String, vegetation: Dictionary) -> void:
 	pending_world_definition_path = world_definition_path
 	pending_vegetation = vegetation.duplicate()
@@ -34,6 +38,15 @@ func clear_pending_gameplay_request() -> void:
 
 func has_pending_gameplay_request() -> bool:
 	return not pending_world_definition_path.is_empty() or not pending_save_path.is_empty()
+
+func note_refusal(kind: String, message: String) -> void:
+	refusal = {"kind": kind, "message": message}
+
+## The refusal noted since the menu last showed one, cleared; empty without one.
+func take_refusal() -> Dictionary:
+	var taken := refusal
+	refusal = {}
+	return taken
 
 func consume_pending_gameplay_request() -> Dictionary:
 	var payload := {

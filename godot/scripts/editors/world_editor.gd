@@ -1759,7 +1759,7 @@ func _on_new_world_confirmed() -> void:
 		_set_status("Created blank world.")
 		_debug_log("new world created name=%s" % _current_world_name)
 	else:
-		_set_status("Create blank world failed.", true)
+		_set_status(sim.get_world_load_error(), true)
 		_debug_log("new world creation failed name=%s" % world_name)
 
 func _on_open_world_selected(path: String, dialog: FileDialog) -> void:
@@ -1782,7 +1782,7 @@ func _finish_open_world_selection(path: String) -> void:
 		_set_status("Loaded world: %s" % _current_world_name)
 		_debug_log("world loaded name=%s path=%s" % [_current_world_name, _current_world_path])
 	else:
-		_set_status("Load failed.", true)
+		_set_status(sim.get_world_load_error(), true)
 		_debug_log("world load failed path=%s" % path)
 
 func _finish_save_world_selection(path: String) -> void:

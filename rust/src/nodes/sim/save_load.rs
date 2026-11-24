@@ -145,8 +145,6 @@ impl SimCore {
         &mut self,
         path: &str,
     ) -> Result<Option<SavedCameraState>, String> {
-        // A commit's deferred lots belong to the city the load replaces.
-        self.pending_cell_lots = None;
         // The load's index, routing and economy rebuilds are parallel; Godot's main thread and
         // tests run them in the shared pool (CODE-17).
         crate::thread_pools::install(|| self.load_game_in_pool(path))
@@ -175,6 +173,9 @@ impl SimCore {
     }
 
     fn apply_loaded_simulation(&mut self, loaded: LoadedSimulation, events: TimingWheel<SimEvent>) {
+        // A commit's deferred lots belong to the city the load replaces. Dropped here, past
+        // every refusal: a refused load leaves the running city with its plan.
+        self.pending_cell_lots = None;
         let docks_saved = loaded.docks_saved;
         self.config = loaded.config;
         self.vegetation = VegetationGenerator::resolve(loaded.vegetation, &self.config);

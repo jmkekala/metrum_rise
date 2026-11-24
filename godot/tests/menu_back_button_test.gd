@@ -3,7 +3,8 @@
 ## The mouse's back (thumb) button acts as Esc in the menus: it closes the main menu's Load
 ## Game and New Game browsers, the New Game dialog and Options, and in the pause menu it first
 ## dismisses the leave confirmation, then resumes. Events go through `Input.parse_input_event`,
-## the route a real button takes.
+## the route a real button takes. Also: a load the world scene refused reopens Load Game on the
+## main menu with the refusal in its status line.
 extends SceneTree
 
 const PauseMenu = preload("res://scripts/ui/pause_menu.gd")
@@ -60,6 +61,17 @@ func _run() -> void:
 	_expect(menu._options_menu.is_open(), "Options opens")
 	await _back()
 	_expect(not menu._options_menu.is_open(), "the back button closes Options")
+	menu.queue_free()
+	await process_frame
+
+	# A load the world scene refused opens the main menu on Load Game, saying why.
+	root.get_node("LaunchState").note_refusal("save", "Load failed: the rule")
+	menu = load("res://scripts/core/main_menu.gd").new()
+	root.add_child(menu)
+	await process_frame
+	browser = menu.get_node(SaveBrowser.NODE_NAME)
+	_expect(browser.is_open() and browser._status.text == "Load failed: the rule", "the menu shows the refusal in Load Game")
+	_expect(root.get_node("LaunchState").take_refusal().is_empty(), "the menu takes the refusal once")
 	menu.queue_free()
 
 	var pause := PauseMenu.new()

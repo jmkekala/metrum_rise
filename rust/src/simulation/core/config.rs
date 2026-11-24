@@ -125,19 +125,24 @@ impl WorldConfig {
         Ok(())
     }
 
-    /// Refuses a stored world or save whose terrain chunk span is not the fixed 512 m.
+    /// Refuses a stored world or save off the world rules: a terrain chunk span other than the
+    /// fixed 512 m, then [`Self::validate`]. The message names the broken rule and why the file
+    /// is refused, for the player who opened it.
     ///
     /// Stored files still carry the span they were written with; the storage chunk rows of a
-    /// world definition are laid out on it.
-    pub fn check_stored_terrain_chunk_m(stored_chunk_m: f32) -> Result<(), String> {
-        if stored_chunk_m == Self::TERRAIN_CHUNK_M {
-            Ok(())
+    /// world definition are laid out on it. The writers validate, so a file off the rules is
+    /// one from before the aligned grid (or edited by hand).
+    pub fn validate_stored(&self, stored_chunk_m: f32) -> Result<(), String> {
+        let rule = if stored_chunk_m == Self::TERRAIN_CHUNK_M {
+            self.validate()
         } else {
             Err(format!(
-                "terrain chunk span must be 512 m (found {stored_chunk_m} m); worlds and saves \
-                 from before the aligned grid do not load"
+                "terrain chunk span must be 512 m (found {stored_chunk_m} m)"
             ))
-        }
+        };
+        rule.map_err(|rule| {
+            format!("{rule}; worlds and saves from before the aligned grid do not load")
+        })
     }
 
     /// Returns the fallback gameplay world used before authored-world selection exists.
@@ -290,9 +295,15 @@ mod tests {
             let error = config.validate().unwrap_err();
             assert!(error.contains(rule), "{error}");
         }
-        assert!(WorldConfig::check_stored_terrain_chunk_m(512.0).is_ok());
-        let error = WorldConfig::check_stored_terrain_chunk_m(520.0).unwrap_err();
+        assert!(legal.validate_stored(512.0).is_ok());
+        let error = legal.validate_stored(520.0).unwrap_err();
         assert!(error.contains("terrain chunk span must be 512 m"), "{error}");
+        let error = legal.with_terrain_resolution(10.0).validate_stored(512.0).unwrap_err();
+        assert!(
+            error.contains("terrain_cell_m must be 2, 4 or 8 m")
+                && error.ends_with("worlds and saves from before the aligned grid do not load"),
+            "{error}"
+        );
     }
 
     #[test]

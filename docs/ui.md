@@ -72,6 +72,10 @@ Current deterministic rules:
   gameplay continues
 - if gameplay is opened without a pending request and without benchmark-style command-line flags,
   it returns to `MainMenu.tscn`
+- if Rust refuses the selected save or world (an older file off the world rules, a file that is
+  not a save), gameplay returns to `MainMenu.tscn`, which reopens the Load Game or New Game
+  browser with Rust's message in its status line; the in-game Load and New Game do the same over
+  the running city, which stays as it was ([terrain contract](terrain.md#1-worldconfig-is-the-authoritative-world-metadata))
 
 MainMenu v1 actions:
 

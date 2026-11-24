@@ -31,6 +31,9 @@ func _exit_tree() -> void:
 
 func _ready() -> void:
 	_build_ui()
+	var refusal: Dictionary = LaunchState.take_refusal()
+	if not refusal.is_empty():
+		_show_refusal(refusal)
 	if LaunchState.benchmark_menu_dwell_s >= 0.0:
 		# The menu's frames, its prewarm's build frames included, for the benchmark's report.
 		LaunchState.benchmark_menu = {"longest_frame_ms": 0.0, "frames": 0}
@@ -134,6 +137,14 @@ func _on_new_game_pressed() -> void:
 
 func _on_load_game_pressed() -> void:
 	SaveBrowser.open(self, SaveBrowser.MODE_LOAD, SAVES_DIR, _finish_load_game_selection)
+
+# A load or new game the world scene refused: its browser again, saying why.
+func _show_refusal(refusal: Dictionary) -> void:
+	if refusal["kind"] == "save":
+		_on_load_game_pressed()
+	else:
+		_on_new_game_pressed()
+	get_node(SaveBrowser.NODE_NAME).show_refusal(str(refusal["message"]))
 
 func _on_world_editor_pressed() -> void:
 	var pid := OS.create_instance(["--", "--world-editor"])

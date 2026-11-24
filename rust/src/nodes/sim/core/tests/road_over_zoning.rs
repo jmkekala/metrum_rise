@@ -327,6 +327,60 @@ fn a_road_over_a_growable_lot_demolishes_it_and_removes_only_covered_cells() {
     assert_references_consistent(&core);
 }
 
+// A load, new game or blank world that is refused (here: a save and a world off the world
+// rules, a blank world with a 10 m cell) leaves the running city as it was, the deferred lot
+// plan of its last commit with it: the plan is dropped only once a world replaces the city.
+#[test]
+fn a_refused_load_keeps_the_running_city_and_its_deferred_lots() {
+    let save = temp_save_path("refused_save");
+    let world = temp_save_path("refused_world");
+    let mut other = test_core();
+    other.save_game_settled_at(save.to_str().unwrap(), None, 0).unwrap();
+    other
+        .save_world_definition_internal(world.to_str().unwrap(), "Refused")
+        .unwrap();
+    for (path, table) in [(&save, "world_config"), (&world, "world_definition_meta")] {
+        rusqlite::Connection::open(path)
+            .unwrap()
+            .execute(&format!("UPDATE {table} SET terrain_cell_m = 10.0"), [])
+            .unwrap();
+    }
+
+    let (mut core, _) = street_with_houses();
+    let painted_before = painted(&core);
+    assert_eq!(commit(&mut core, &SIDE), "");
+    assert!(core.cell_lots_pending());
+    let city = |core: &SimCore| {
+        (
+            core.config,
+            core.region_graph.edge_count(),
+            core.allocator.buildings.len(),
+            core.agents.agents.len(),
+            painted(core),
+        )
+    };
+    let running = city(&core);
+    let refusals = [
+        core.load_game_internal(save.to_str().unwrap()).err(),
+        core.load_world_definition_internal(
+            world.to_str().unwrap(),
+            crate::simulation::vegetation::VegetationConfig::default(),
+        )
+        .err(),
+        core.create_blank_world_internal(512.0, 512.0, 10.0, 0.0).err(),
+    ];
+    let _ = std::fs::remove_file(&save);
+    let _ = std::fs::remove_file(&world);
+    for refusal in refusals {
+        let refusal = refusal.expect("refused");
+        assert!(refusal.contains("terrain_cell_m must be 2, 4 or 8 m"), "{refusal}");
+    }
+    assert!(core.cell_lots_pending(), "the refusals keep the commit's lot plan");
+    assert!(city(&core) == running, "the refusals leave the city as it was");
+    assert!(core.adopt_pending_cell_lots().adopted);
+    assert_relaid(&core, &painted_before, "side street");
+}
+
 // `ZONE-14` (PLAN-RL test 1 (c)): after an edit's lot plan no unpainted, unclaimed cell stands
 // over land painted in `before`: the plan re-laid the land the edit released with its paint,
 // each cell over it taking the paint it overlaps most; released land where no cell stands keeps

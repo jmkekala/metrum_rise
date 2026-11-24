@@ -110,6 +110,11 @@ func popup_browse(mode: int, dir: String, on_chosen: Callable, default_name: Str
 		_search.grab_focus()
 	_sync_state()
 
+## Says in the status line why the last choice did not go ahead (Rust's refusal of a load, as
+## it stands); the next pick replaces it.
+func show_refusal(message: String) -> void:
+	_status.text = message
+
 ## Whether the browser is up.
 func is_open() -> bool:
 	return visible

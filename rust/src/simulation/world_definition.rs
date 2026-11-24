@@ -344,8 +344,8 @@ pub(crate) fn load_world_definition_from_sqlite(
         .with_terrain_resolution(terrain_cell_m)
         .with_base_elevation(terrain_base_elevation_m * height_unit_m);
     // The stored chunk rows are laid out on the stored span; only the fixed 512 m loads.
-    WorldConfig::check_stored_terrain_chunk_m(terrain_chunk_m)
-        .and_then(|()| config.validate())
+    config
+        .validate_stored(terrain_chunk_m)
         .map_err(WorldDefinitionError::custom)?;
 
     let mut terrain = TerrainSystem::from_world_config(&config);

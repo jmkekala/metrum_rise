@@ -610,7 +610,10 @@ func _finish_save_game_selection(path: String) -> void:
 		push_error("Save failed: " + path)
 
 func _finish_load_game_selection(path: String) -> void:
-	menu_load_game_from_path(path)
+	if not menu_load_game_from_path(path):
+		# The running city stays; the browser opens again saying why the save was refused.
+		SaveBrowser.open(_browser_parent(), SaveBrowser.MODE_LOAD, SAVES_DIR,
+			_finish_load_game_selection).show_refusal(world_load_error())
 
 func _toggle_pause():
 	var speed: float = 0.0 if _simulation_speed > 0.0 else 1.0
@@ -796,6 +799,11 @@ func menu_load_game_from_path(path: String) -> bool:
 		return true
 	push_error("Load failed: " + path)
 	return false
+
+## Why the last load, new game or blank world was refused (Rust's message); empty after one
+## that succeeded.
+func world_load_error() -> String:
+	return simulation_node.get_world_load_error()
 
 func menu_load_world_definition(path: String) -> bool:
 	if path.is_empty():

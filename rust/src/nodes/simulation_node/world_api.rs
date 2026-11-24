@@ -10,8 +10,8 @@ impl SimulationNode {
     /// Resets the runtime to a new blank authored world with the given terrain settings.
     ///
     /// The cell must be 2, 4 or 8 m and both sides whole multiples of 128 m; the render
-    /// patch and storage chunk are always 512 m. A world off these rules is refused (logged
-    /// error naming the rule, returns false).
+    /// patch and storage chunk are always 512 m. A world off these rules is refused (returns
+    /// false; [`Self::get_world_load_error`] names the rule).
     #[func]
     pub fn create_blank_world(
         &mut self,
@@ -26,15 +26,29 @@ impl SimulationNode {
         };
         match result {
             Ok(()) => {
+                self.world_load_error.clear();
                 self.clear_runtime_render_async_jobs();
                 self.refresh_snapshot_from_core();
                 true
             }
-            Err(err) => {
-                godot_error!("Create blank world failed: {}", err);
-                false
-            }
+            Err(err) => self.refuse_world_load(format!("Create blank world failed: {err}")),
         }
+    }
+
+    /// Why the last [`Self::load_game`], [`Self::load_world_definition`],
+    /// [`Self::start_new_game`] or [`Self::create_blank_world`] was refused, for the UI to show
+    /// as it stands (an older save or world names the rule it breaks); empty after one that
+    /// succeeded. A refused call leaves the running world as it was.
+    #[func]
+    pub fn get_world_load_error(&self) -> GString {
+        GString::from(self.world_load_error.as_str())
+    }
+
+    // Logs a refused world replacement and keeps its message for `get_world_load_error`.
+    fn refuse_world_load(&mut self, message: String) -> bool {
+        godot_error!("{}", message);
+        self.world_load_error = message;
+        false
     }
 
     /// Saves the current simulation and active orbit camera into a single SQLite snapshot file.
@@ -79,6 +93,7 @@ impl SimulationNode {
         };
         match result {
             Ok(camera_state) => {
+                self.world_load_error.clear();
                 self.clear_runtime_render_async_jobs();
                 self.refresh_snapshot_from_core();
                 if let (Some(state), Some(mut camera)) = (camera_state, self.active_game_camera()) {
@@ -86,10 +101,7 @@ impl SimulationNode {
                 }
                 true
             }
-            Err(err) => {
-                godot_error!("Load failed: {}", err);
-                false
-            }
+            Err(err) => self.refuse_world_load(format!("Load failed: {err}")),
         }
     }
 
@@ -142,6 +154,7 @@ impl SimulationNode {
         };
         match result {
             Ok(()) => {
+                self.world_load_error.clear();
                 self.clear_runtime_render_async_jobs();
                 self.refresh_snapshot_from_core();
                 if let Some(mut camera) = self.active_game_camera() {
@@ -150,10 +163,7 @@ impl SimulationNode {
                 }
                 true
             }
-            Err(err) => {
-                godot_error!("Load world definition failed: {}", err);
-                false
-            }
+            Err(err) => self.refuse_world_load(format!("Load world definition failed: {err}")),
         }
     }
 

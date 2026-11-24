@@ -20373,6 +20373,13 @@ Current deterministic rules:
 - A world or save from before the aligned grid (10 m cells, 520 m storage chunks, sides such as
   500, 4,620 or 18,000 m) is refused at load with the rule it breaks; there is no migration. Older
   formats that keep the rules still load, heights converted to metres (A1).
+- The player reads the refusal (A8): Rust composes it (`Load failed: terrain_cell_m must be 2, 4
+  or 8 m (found 10 m); worlds and saves from before the aligned grid do not load`) and the bridge
+  keeps it for `get_world_load_error`. A refused save or new game reopens its Load Game or New
+  Game browser (in game, or on the main menu after the world scene gave up) with the message in
+  the status line; the world editor's status line shows a refused world or blank world. A refused
+  load, new game or blank world leaves the running world untouched, the last commit's deferred
+  lot plan included (dropped only once a world replaces it).
 - `TerrainSystem::from_world_config` debug-asserts the rules, so a test or loader that builds a
   world off them fails in debug builds. Unit fixtures that build a `TerrainSystem`, `WaterSystem`
   or deposit grid directly (`with_chunking`, 1 m or 10 m cells, small chunks) test the general
