@@ -3598,8 +3598,9 @@ and top triangles (coverage)                         pad heights, surface polygo
 ### Data
 
 **Base heightmap.** The source terrain chunks are the base: `terrain_cell_m` cells (10 m by
-default), raw `f32` samples scaled by `HEIGHT_SCALE` at the query boundary
-([T16](#terrain-07-open-questions)), 512 m sparse chunks, saved as today. Only terrain brushes, DEM
+default), `f32` samples in metres (since save format 131 and world format 6; before, raw samples
+scaled by 20 at the query boundary, [T16](#terrain-07-open-questions)), 512 m sparse chunks, saved
+as today. Only terrain brushes, DEM
 import and world definitions write it. The base function `b(p)` is the bilinear interpolation of
 the samples, evaluated in `f64`. There is no second visual height buffer: edits invalidate the
 affected graded tiles, whose surface is derived from this source and the local road/site inputs.
@@ -9889,6 +9890,8 @@ measures it and the recommendation's condition decides; T2 was decided by the us
       a known compatibility gap; changing it changes saves, world definitions and the DEM importer.
     - **Options.** (a) Not in `TERRAIN-07`; the new queries return metres. (b) Convert now.
     - **Recommendation.** (a).
+    - **Resolved 2026-11-24 (grid alignment round A1).** Base heights are metres everywhere;
+      older saves and world definitions convert at load.
 17. **T17. The tile grid and lattice nesting.**
     - **Evidence.** Render patches are 51 cells (510 m at 10 m), so 64 m tiles straddle patches;
       stitching needs the base lattice to nest in the level lattices. A future 5 m base would not
@@ -20513,24 +20516,22 @@ sites, the CDT ground and visual terrain) is archived in
 It stays live until [`TERRAIN-07`](#queries-for-consumers) moves its consumers to the new queries,
 which keep the split between authored ground and the visible surface.
 
-### 5. Terrain Height Storage Is Scaled At Query / Render Boundaries
+### 5. Terrain Heights Are Metres
 
-The live runtime stores raw terrain sample values and multiplies them by `HEIGHT_SCALE` when
-converting to world-space `y`.
+Every stored, passed and persisted terrain height is in world metres (grid alignment round A1,
+2026-11-24): the heightmap samples, `terrain_base_elevation_m`, the brush strengths and targets
+of the sculpt, level, smooth and slope tools, the render patches' height textures (the terrain,
+water and grass shaders read them directly, with no scale uniform), and the save and
+world-definition blobs.
 
-Current deterministic rule:
+Deterministic rules:
 
-- `world_y = terrain_sample * HEIGHT_SCALE`
-- `HEIGHT_SCALE = 20.0`
-
-This means the live terrain buffer is not currently a direct world-space metre heightfield.
-
-Important note:
-
-- `terrain_base_elevation_m` is currently forwarded into the raw terrain sample storage before
-  `HEIGHT_SCALE` is applied
-- the `_m` suffix is therefore ahead of the current implementation and should not be treated as a
-  proof that the live terrain buffer already stores fully world-space metres
+- `world_y = terrain_sample`; there is no height scale
+- save format 131 and world-definition format 6 store metres
+- older files (saves 118-130, world definitions 1-5) stored heights and the base elevation in
+  units of 20 m (`LEGACY_HEIGHT_UNIT_M`); their loaders multiply them by 20 once, at load
+  (`f32(raw) * 20`, the product the old query boundary computed), `O(samples)` and off the frame
+- nothing outside those two loaders converts units
 
 ### 6. Terrain Coordinates Are Centered At World Origin
 
@@ -21783,12 +21784,14 @@ Required direction:
   invalidates
 - world-authoring workflows must not depend on visual-only terrain snapshots
 
-### 5. Terrain Height Storage Is Still Scaled At Query / Render Boundaries
+### 5. Terrain Height Storage Was Scaled At Query / Render Boundaries (closed 2026-11-24)
 
-Current gap:
+Closed by grid alignment round A1: heights are metres in storage, at every query and in every
+file format; older files convert at load ([runtime contract 5](#5-terrain-heights-are-metres)).
+Former gap:
 
-- terrain samples are still multiplied by `HEIGHT_SCALE` when converted to world-space `y`
-- `terrain_base_elevation_m` still enters raw sample storage before that scale is applied
+- terrain samples were multiplied by `HEIGHT_SCALE` (20) when converted to world-space `y`
+- `terrain_base_elevation_m` entered raw sample storage before that scale was applied
 
 Required direction:
 
@@ -22176,9 +22179,7 @@ Current ownership rules:
 - runtime coordinates remain centred world-local metres after import; source georeferencing is not
   preserved as gameplay-space coordinates
 - import provenance may be stored as non-authoritative metadata, but gameplay must not depend on it
-- because the live runtime still multiplies terrain samples by `HEIGHT_SCALE` at render/query
-  boundaries, the importer currently converts DEM elevation metres into that pre-scaled runtime
-  sample space before writing source terrain
+- the importer writes DEM elevation metres unchanged, as world-definition format 6
 
 Deterministic validation rules:
 
@@ -22239,7 +22240,6 @@ Explicit non-goals of v1 DEM import:
 Remaining direction:
 
 - integrate DEM import into the WorldEditor UI instead of keeping it as an offline tool only
-- remove the importer's current dependency on the pre-`HEIGHT_SCALE` runtime compatibility layer
 
 ## Remaining Planned Deterministic Implementation
 
@@ -22478,7 +22478,6 @@ The following are explicitly not implemented yet and should not be assumed by ot
 - chunk-window water simulation
 - explicit atmospheric / horizon brightening independent from terrain material detail fade
 - authoritative terrain undo across source plus derived state
-- direct-metre terrain height storage without `HEIGHT_SCALE`
 
 ## Implementation Guardrails
 

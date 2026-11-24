@@ -214,7 +214,7 @@ lookups. Command: `simulation::save::tests::benchmark_sqlite_graph_loading --exa
 
 | Buffer / return value | Type | Layout / meaning |
 |-----------------------|------|------------------|
-| Heightmap | `PackedFloat32Array` | Flat row-major `width × height` `f32` raw terrain sample values in current runtime storage units; multiply by `HEIGHT_SCALE` to convert to rendered world metres. |
+| Heightmap | `PackedFloat32Array` | Flat row-major `width × height` `f32` terrain sample heights in world metres. |
 | Water depth | `PackedFloat32Array` | Same row-major layout as the heightmap; visible baseline still-water depth in world metres. |
 | Pedestrian transforms | `VarDictionary` | Keys = `pedestrian_type`; values = `PackedFloat32Array` with `12` floats per instance: `[basis.x(3), basis.y(3), basis.z(3), origin(3)]`. |
 | Car transforms | `VarDictionary` | Keys = car bucket `look * 4 + tier` of the vehicle catalogue (`RENDER-65`); snapshot values = `PackedFloat32Array` with the same `12`-float `Transform3D` layout; the drawn rows `advance_agent_frame` returns are `16` floats a car, the transform then the custom data (steer, wheel roll, the lamp/paint/blink word, spare; [`vehicles.md`](vehicles.md#per-car-data-16-floats-64-bytes)). |
