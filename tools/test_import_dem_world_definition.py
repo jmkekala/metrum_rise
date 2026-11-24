@@ -1,17 +1,29 @@
 """DEM importer regressions: the world frame and the synthetic lake rule; no GDAL or Godot."""
 
 from collections import deque
+import sys
 import unittest
 
-import numpy as np
-import shapely
+# The importer's third-party modules are optional on a gate machine: without them the whole
+# module skips, and says so, instead of failing the gate before any Rust or Godot stage.
+try:
+    import numpy as np
+    import scipy  # noqa: F401 (dem_water imports scipy.ndimage)
+    import shapely
+except ImportError as missing:
+    print(
+        f"test_import_dem_world_definition: SKIPPED, Python module {missing.name or missing} "
+        "is missing (the DEM importer tests need numpy, scipy and shapely)",
+        file=sys.stderr,
+    )
+    raise unittest.SkipTest(f"missing Python module {missing.name or missing}") from None
 
 from dem_water import SampleGrid, WaterBody, WaterRule, apply_hydrography, synthetic_bed
 from import_dem_world_definition import world_frame
 
 
 def flood(heights, seed, level):
-    # The runtime's fill (`apply_lake_fill_to_depth`): 4-connected over samples at or below the
+    # The runtime's fill (`FillFlood::flood`): 4-connected over samples at or below the
     # level, from the seed sample.
     i, j = seed
     seen = np.zeros(heights.shape, dtype=bool)
