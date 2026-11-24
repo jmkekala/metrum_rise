@@ -19,14 +19,6 @@ const SIDE_HM: i32 = 128;
 
 // --- The shader's lattice arithmetic, ported. ---
 
-fn floor_div(a: i32, b: i32) -> i32 {
-    a.div_euclid(b)
-}
-
-fn imod(a: i32, b: i32) -> i32 {
-    a - b * floor_div(a, b)
-}
-
 fn code_spacing_hm(code: i32, cell_hm: i32) -> i32 {
     if code < 3 {
         1 << code
@@ -35,128 +27,52 @@ fn code_spacing_hm(code: i32, cell_hm: i32) -> i32 {
     }
 }
 
-fn code_phase_hm(code: i32, spacing: i32, anchor_hm: i32, origin_hm: i32) -> i32 {
-    if code < 3 {
-        0
-    } else {
-        imod(anchor_hm - origin_hm, spacing)
-    }
-}
-
-fn vertex_hm(code: i32, k: i32, spacing: i32, phase: i32) -> i32 {
+// The world rules put every code's lattice in phase with the tile (a line at every multiple of
+// its spacing from the tile's origin), so one index rule serves every code (grid alignment A3).
+fn vertex_hm(code: i32, k: i32, spacing: i32) -> i32 {
     if code < 3 {
         k * spacing
     } else {
-        (phase + spacing * (k - 1)).clamp(0, SIDE_HM)
+        (spacing * (k - 1)).clamp(0, SIDE_HM)
     }
 }
 
-fn snap_hm(p: i32, spacing: i32, phase: i32) -> i32 {
-    if p >= SIDE_HM {
-        return SIDE_HM;
-    }
-    (phase + spacing * floor_div(p - phase, spacing)).max(0)
+fn snap_hm(p: i32, spacing: i32) -> i32 {
+    p / spacing * spacing
 }
 
-fn first_line_hm(spacing: i32, phase: i32) -> i32 {
-    if phase == 0 { spacing } else { phase }
+fn index_at(p: i32, spacing: i32) -> i32 {
+    1 + p / spacing
 }
 
-fn inner_lines(spacing: i32, phase: i32) -> i32 {
-    let first = first_line_hm(spacing, phase);
-    if first < SIDE_HM {
-        (SIDE_HM - 1 - first) / spacing + 1
-    } else {
-        0
-    }
-}
-
-fn index_at(code: i32, p: i32, spacing: i32, phase: i32) -> i32 {
-    if code < 3 {
-        return 1 + p / spacing;
-    }
-    let first = first_line_hm(spacing, phase);
-    if p >= SIDE_HM {
-        2 + inner_lines(spacing, phase)
-    } else if p < first {
-        1
-    } else {
-        2 + (p - first) / spacing
-    }
-}
-
-fn index_hm(code: i32, idx: i32, spacing: i32, phase: i32) -> i32 {
-    if code < 3 {
-        return (idx - 1) * spacing;
-    }
-    let first = first_line_hm(spacing, phase);
-    let end_index = 2 + inner_lines(spacing, phase);
-    if idx <= 0 {
-        if phase == 0 {
-            -spacing
-        } else {
-            phase - spacing
-        }
-    } else if idx == 1 {
-        0
-    } else if idx < end_index {
-        first + (idx - 2) * spacing
-    } else if idx == end_index {
-        SIDE_HM
-    } else if imod(SIDE_HM - phase, spacing) == 0 {
-        SIDE_HM + spacing
-    } else {
-        first + inner_lines(spacing, phase) * spacing
-    }
+fn index_hm(idx: i32, spacing: i32) -> i32 {
+    (idx - 1) * spacing
 }
 
 // One cell's lattice frame, as the shader's `CellFrame`.
 #[derive(Clone, Copy, Debug)]
 struct Frame {
     code: i32,
-    origin_hm: [i32; 2],
     spacing: i32,
-    phase: [i32; 2],
 }
 
-fn frame(code: i32, tile: TileKey, anchor_hm: [i32; 2], cell_hm: i32) -> Frame {
-    let origin_hm = [tile.x * SIDE_HM, tile.z * SIDE_HM];
-    let spacing = code_spacing_hm(code, cell_hm);
+fn frame(code: i32, cell_hm: i32) -> Frame {
     Frame {
         code,
-        origin_hm,
-        spacing,
-        phase: [0, 1].map(|axis| code_phase_hm(code, spacing, anchor_hm[axis], origin_hm[axis])),
+        spacing: code_spacing_hm(code, cell_hm),
     }
 }
 
-// Side codes west, east, south, north; the shader's `cell_vertex_position_hm` (unclamped: the
-// fixtures' tiles lie inside one patch).
-fn vertex_position_hm(
-    frame: Frame,
-    k: [i32; 2],
-    sides: [i32; 4],
-    anchor_hm: [i32; 2],
-    cell_hm: i32,
-) -> [i32; 2] {
-    let mut p = [0, 1].map(|axis| vertex_hm(frame.code, k[axis], frame.spacing, frame.phase[axis]));
+// Side codes west, east, south, north; the shader's `cell_vertex_position_hm`.
+fn vertex_position_hm(frame: Frame, k: [i32; 2], sides: [i32; 4], cell_hm: i32) -> [i32; 2] {
+    let mut p = [0, 1].map(|axis| vertex_hm(frame.code, k[axis], frame.spacing));
     if p[0] == 0 || p[0] == SIDE_HM {
         let side = if p[0] == 0 { sides[0] } else { sides[1] };
-        let s = code_spacing_hm(side, cell_hm);
-        p[1] = snap_hm(
-            p[1],
-            s,
-            code_phase_hm(side, s, anchor_hm[1], frame.origin_hm[1]),
-        );
+        p[1] = snap_hm(p[1], code_spacing_hm(side, cell_hm));
     }
     if p[1] == 0 || p[1] == SIDE_HM {
         let side = if p[1] == 0 { sides[2] } else { sides[3] };
-        let s = code_spacing_hm(side, cell_hm);
-        p[0] = snap_hm(
-            p[0],
-            s,
-            code_phase_hm(side, s, anchor_hm[0], frame.origin_hm[0]),
-        );
+        p[0] = snap_hm(p[0], code_spacing_hm(side, cell_hm));
     }
     p
 }
@@ -178,11 +94,6 @@ fn level_code(level: Level) -> i32 {
         Level::Gl2 => 2,
         Level::Gl3 { step } => 3 + i32::from(step).trailing_zeros() as i32,
     }
-}
-
-fn anchor_hm(terrain: &TerrainSystem) -> [i32; 2] {
-    let cell = f64::from(terrain.cell_size_m());
-    [terrain.width, terrain.height].map(|n| (-(n as f64 - 1.0) * cell) as i32)
 }
 
 fn cell_hm(terrain: &TerrainSystem) -> i32 {
@@ -253,11 +164,11 @@ fn mix(a: f32, b: f32, t: f32) -> f32 {
 }
 
 // The fragment's axis stop: the index at or before `x` and the fraction to the next sample.
-fn axis_stop(frame: Frame, x: f32, axis: usize) -> (i32, f32) {
+fn axis_stop(frame: Frame, x: f32) -> (i32, f32) {
     let p = ((x * 2.0).floor() as i32).clamp(0, SIDE_HM - 1);
-    let index = index_at(frame.code, p, frame.spacing, frame.phase[axis]);
-    let p0 = index_hm(frame.code, index, frame.spacing, frame.phase[axis]) as f32 * 0.5;
-    let p1 = index_hm(frame.code, index + 1, frame.spacing, frame.phase[axis]) as f32 * 0.5;
+    let index = index_at(p, frame.spacing);
+    let p0 = index_hm(index, frame.spacing) as f32 * 0.5;
+    let p1 = index_hm(index + 1, frame.spacing) as f32 * 0.5;
     (index, ((x - p0) / (p1 - p0).max(1e-6)).clamp(0.0, 1.0))
 }
 
@@ -329,8 +240,8 @@ fn seam_row(channel: f32) -> i32 {
 
 // The signed distance the shader's `cell_mask` tests against zero, from the packed slot.
 fn mask_sdf(frame: Frame, slot: &Slot, p: [f32; 2]) -> f32 {
-    let (ix, fx) = axis_stop(frame, p[0], 0);
-    let (iz, fz) = axis_stop(frame, p[1], 1);
+    let (ix, fx) = axis_stop(frame, p[0]);
+    let (iz, fz) = axis_stop(frame, p[1]);
     let t: [[f32; 4]; 4] =
         std::array::from_fn(|c| slot.texel(ix + (c & 1) as i32, iz + (c >> 1) as i32));
     let mut sdf = mix(mix(t[0][1], t[1][1], fx), mix(t[2][1], t[3][1], fx), fz);
@@ -397,7 +308,7 @@ fn texel_renders(texel: [f32; 4]) -> bool {
 fn cell_lattices_are_the_bake_lattices() {
     let mut cases = 0;
     for (name, _, terrain) in fixtures() {
-        let (anchor, cell) = (anchor_hm(&terrain), cell_hm(&terrain));
+        let cell = cell_hm(&terrain);
         let (mut xs, mut zs) = (Vec::new(), Vec::new());
         for level in LEVELS
             .into_iter()
@@ -406,7 +317,7 @@ fn cell_lattices_are_the_bake_lattices() {
             let code = level_code(level);
             for tile in window_tiles() {
                 lattice(&terrain, tile, level, &mut xs, &mut zs);
-                let frame = frame(code, tile, anchor, cell);
+                let frame = frame(code, cell);
                 let [ox, oz] = tile.origin();
                 assert!(
                     xs.len() <= slot_side(level, f64::from(cell) * 0.5),
@@ -416,13 +327,13 @@ fn cell_lattices_are_the_bake_lattices() {
                     for (idx, &world) in coords.iter().enumerate() {
                         let hm = (world - origin) * 2.0;
                         assert_eq!(
-                            f64::from(index_hm(code, idx as i32, frame.spacing, frame.phase[axis])),
+                            f64::from(index_hm(idx as i32, frame.spacing)),
                             hm,
                             "{name} {level:?} {tile:?} axis {axis} index {idx}"
                         );
                         if (0.0..=128.0).contains(&hm) {
                             assert_eq!(
-                                index_at(code, hm as i32, frame.spacing, frame.phase[axis]),
+                                index_at(hm as i32, frame.spacing),
                                 idx as i32,
                                 "{name} {level:?} {tile:?} axis {axis} at {hm}"
                             );
@@ -430,9 +341,9 @@ fn cell_lattices_are_the_bake_lattices() {
                     }
                     // Every mesh vertex lies on a lattice point.
                     for k in 0..mesh_vertices(code, cell) {
-                        let p = vertex_hm(code, k, frame.spacing, frame.phase[axis]);
-                        let idx = index_at(code, p, frame.spacing, frame.phase[axis]);
-                        assert_eq!(index_hm(code, idx, frame.spacing, frame.phase[axis]), p);
+                        let p = vertex_hm(code, k, frame.spacing);
+                        let idx = index_at(p, frame.spacing);
+                        assert_eq!(index_hm(idx, frame.spacing), p);
                     }
                 }
                 cases += 1;
@@ -447,7 +358,7 @@ fn stitched_borders_share_vertices_and_texels_bitwise() {
     // `t_slope`: graded on both sides of the shared side x = 0 between tiles (-1, z) and (0, z).
     let (_, graph, terrain) = fixtures().swap_remove(0);
     let roadbed = compiled(&graph);
-    let (anchor, cell) = (anchor_hm(&terrain), cell_hm(&terrain));
+    let cell = cell_hm(&terrain);
     let levels = [Level::Gl0, Level::Gl1, Level::Gl2, Level::Gl3 { step: 2 }];
     let mut shared = 0;
     for z in -2..2 {
@@ -460,8 +371,8 @@ fn stitched_borders_share_vertices_and_texels_bitwise() {
                 }
                 let fine_payload = &bake_level(&terrain, &roadbed, &[west], fine)[0];
                 let coarse_payload = &bake_level(&terrain, &roadbed, &[east], coarse)[0];
-                let fine_frame = frame(fine_code, west, anchor, cell);
-                let coarse_frame = frame(coarse_code, east, anchor, cell);
+                let fine_frame = frame(fine_code, cell);
+                let coarse_frame = frame(coarse_code, cell);
                 // The finer west cell snaps its east side to the coarser east cell's lattice.
                 let fine_sides = [fine_code, coarse_code, fine_code, fine_code];
                 let coarse_sides = [coarse_code; 4];
@@ -469,7 +380,7 @@ fn stitched_borders_share_vertices_and_texels_bitwise() {
                     let mut points = Vec::new();
                     for kz in 0..mesh_vertices(frame.code, cell) {
                         for kx in 0..mesh_vertices(frame.code, cell) {
-                            let p = vertex_position_hm(frame, [kx, kz], sides, anchor, cell);
+                            let p = vertex_position_hm(frame, [kx, kz], sides, cell);
                             if p[0] == x_side {
                                 points.push(p[1]);
                             }
@@ -484,8 +395,8 @@ fn stitched_borders_share_vertices_and_texels_bitwise() {
                 assert_eq!(fine_border, coarse_border, "z {z}: {fine:?} | {coarse:?}");
                 for &p in &fine_border {
                     let texel = |frame: Frame, payload: &TilePayload, x: i32| {
-                        let ix = index_at(frame.code, x, frame.spacing, frame.phase[0]) as usize;
-                        let iz = index_at(frame.code, p, frame.spacing, frame.phase[1]) as usize;
+                        let ix = index_at(x, frame.spacing) as usize;
+                        let iz = index_at(p, frame.spacing) as usize;
                         payload.texels[iz * payload.samples[0] + ix][0].to_bits()
                     };
                     assert_eq!(
@@ -506,7 +417,7 @@ fn the_exact_mask_equals_coverage() {
     let mut pieces: Vec<PieceId> = Vec::new();
     for (name, graph, terrain) in fixtures() {
         let roadbed = compiled(&graph);
-        let (anchor, cell) = (anchor_hm(&terrain), cell_hm(&terrain));
+        let cell = cell_hm(&terrain);
         let cell_m = f64::from(terrain.cell_size_m());
         for level in [Level::Gl0, Level::Gl1] {
             let payloads = bake_level(&terrain, &roadbed, &window_tiles(), level);
@@ -514,7 +425,7 @@ fn the_exact_mask_equals_coverage() {
             let mut first = String::new();
             for payload in &payloads {
                 let slot = Slot::packed(payload, cell_m);
-                let frame = frame(level_code(level), payload.tile, anchor, cell);
+                let frame = frame(level_code(level), cell);
                 let [ox, oz] = payload.tile.origin();
                 // A 0.37 m grid: off the lattice, through every kind of cell.
                 for j in 0..173 {
@@ -532,8 +443,8 @@ fn the_exact_mask_equals_coverage() {
                                 .enumerate()
                                 .map(|(i, &s)| (segment_at(s, p, i as i32).signed_distance, i))
                                 .min_by(|a, b| a.0.abs().total_cmp(&b.0.abs()));
-                            let (ix, _) = axis_stop(frame, p[0], 0);
-                            let (iz, _) = axis_stop(frame, p[1], 1);
+                            let (ix, _) = axis_stop(frame, p[0]);
+                            let (iz, _) = axis_stop(frame, p[1]);
                             let named: Vec<f32> = (0..4)
                                 .map(|c| {
                                     let (i, j) = (ix as usize + (c & 1), iz as usize + (c >> 1));
@@ -565,7 +476,7 @@ fn the_exact_mask_equals_coverage() {
 fn dense_mask_equals_coverage(graph: &RegionGraph, level: Level, area: [f64; 4], step: f64) {
     let terrain = super::tests::terrain(|_, _| 0.0);
     let roadbed = compiled(graph);
-    let (anchor, cell) = (anchor_hm(&terrain), cell_hm(&terrain));
+    let cell = cell_hm(&terrain);
     let mut tiles: Vec<TileKey> = Vec::new();
     let [nx, nz] = [0, 1].map(|axis| ((area[axis + 2] - area[axis]) / step).round() as usize);
     let point = |ix: usize, iz: usize| [area[0] + ix as f64 * step, area[1] + iz as f64 * step];
@@ -589,7 +500,7 @@ fn dense_mask_equals_coverage(graph: &RegionGraph, level: Level, area: [f64; 4],
             let slot = &slots[tiles.binary_search(&tile).expect("baked tile")];
             let [ox, oz] = tile.origin();
             let local = [(x - ox) as f32, (z - oz) as f32];
-            let frame = frame(level_code(level), tile, anchor, cell);
+            let frame = frame(level_code(level), cell);
             let covered = covered_height_at(&roadbed, x, z, &mut pieces).is_some();
             let sdf = mask_sdf(frame, slot, local);
             tested += 1;
@@ -682,7 +593,7 @@ fn the_exact_mask_equals_coverage_across_a_bridge_mouth() {
     let mut pieces: Vec<PieceId> = Vec::new();
     let (graph, terrain) = super::site_tests::structure_mouth(EdgeClass::Bridge, -0.5);
     let roadbed = compiled(&graph);
-    let (anchor, cell) = (anchor_hm(&terrain), cell_hm(&terrain));
+    let cell = cell_hm(&terrain);
     let tiles = [-1, 0].map(|x| [-1, 0].map(|z| TileKey { x, z })).concat();
     for level in [Level::Gl0, Level::Gl1] {
         let payloads = bake_level(&terrain, &roadbed, &tiles, level);
@@ -690,7 +601,7 @@ fn the_exact_mask_equals_coverage_across_a_bridge_mouth() {
         let mut first = String::new();
         for payload in &payloads {
             let slot = Slot::packed(payload, f64::from(terrain.cell_size_m()));
-            let frame = frame(level_code(level), payload.tile, anchor, cell);
+            let frame = frame(level_code(level), cell);
             let [ox, oz] = payload.tile.origin();
             for j in 0..1600 {
                 for i in 0..400 {

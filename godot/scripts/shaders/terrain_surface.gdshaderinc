@@ -530,7 +530,7 @@ void vertex() {
 	int cell_hm = int(round(terrain_cell_m * 2.0));
 	CellFrame cell;
 	ivec2 cell_p = ivec2(0);
-	var_cell = ivec4(-1, -1, 0, 0);
+	var_cell = ivec2(-1, -1);
 	var_cell_delta = 0.0;
 #ifdef TERRAIN_GRADED_BEHIND
 	var_cell_backstop = 0;
@@ -543,7 +543,7 @@ void vertex() {
 		ivec2 patch_centre_hm = (cell_patch_rect_hm.xy + cell_patch_rect_hm.zw) / 2;
 		VERTEX = vec3(vec2(cell.origin_hm + cell_p - patch_centre_hm) * 0.5, 0.0).xzy;
 		var_cell_local_m = vec2(cell_p) * 0.5;
-		var_cell = ivec4(cell.slot, cell.code, cell.phase);
+		var_cell = ivec2(cell.slot, cell.code);
 #ifdef TERRAIN_GRADED_BEHIND
 		var_cell_backstop = (cell_codes(INSTANCE_CUSTOM) >> 15) & 1;
 #endif

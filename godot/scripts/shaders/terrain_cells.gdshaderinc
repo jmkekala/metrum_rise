@@ -1,6 +1,6 @@
 // Graded terrain cells (TERRAIN-07-D, docs/terrain.md "Godot tile renderer"): the instanced
-// 64 m cells of a patch with graded tiles, their lattices, stitching and clamping to the patch,
-// the exact base and the graded texel reads, the exact seam mask and the material class.
+// 64 m cells of a patch with graded tiles, their lattices and stitching, the exact base and the
+// graded texel reads, the exact seam mask and the material class.
 //
 // Positions are integer half-metres (hm) in the tile's frame, 0..128, so every vertex is exact
 // and a border vertex two cells share gets the same bits on both. rust/src/simulation/terrain/
@@ -10,6 +10,11 @@
 // (x = 128), south (z = 0) and north (z = 128) sides' coarser neighbour. A code below 3 is
 // GL0-GL2 (1, 2, 4 hm); from 3 the base lattice at 2^(code - 3) cells (base cells, GL3, a
 // neighbouring PlaneMesh patch).
+// The world rules (docs/terrain.md section 1: cell 2, 4 or 8 m, sides in 128 m steps, 512 m
+// patches from the world edge) put every tile wholly inside one patch and every code's lattice
+// in phase with the tile: each spacing divides 128 hm and the base lattice has a line on every
+// tile side. So a lattice line k of any code lies at k spacings from the tile's origin, every
+// mesh vertex lies on its own lattice, and no vertex leaves its patch (grid alignment A3).
 // INSTANCE_CUSTOM, every channel an integer below 2048, which the Compatibility renderer's
 // half-float instance data holds exactly: x the tile's column plus 32 times its row among the
 // patch's tiles (from the tile holding the patch rectangle's lower corner); y the slot layer
@@ -17,7 +22,8 @@
 
 // Per node (instance uniforms, so the base cells share the patch's material): 0 a PlaneMesh
 // patch, 1 a PlaneMesh whose cells draw it (collapsed), 2 a node of cells. The patch rectangle
-// and the base lattice's world origin (the negative half extents), world hm.
+// and the base lattice's world origin (the negative half extents), world hm; the renderer still
+// sets the origin, which the in-phase lattice no longer reads.
 instance uniform float cell_mode = 0.0;
 instance uniform ivec4 cell_patch_rect_hm = ivec4(0);
 instance uniform ivec2 cell_lattice_anchor_hm = ivec2(0);
@@ -35,9 +41,9 @@ uniform sampler2DArray graded_atlas : filter_nearest, repeat_disable;
 const int CELL_SIDE_HM = 128;
 
 // Tile frame, slot and lattice of the fragment's cell, from vertex() to fragment(): var_cell is
-// (slot, code, phase x, phase z), slot -1 off graded cells.
+// (slot, code), slot -1 off graded cells.
 varying vec2 var_cell_local_m;
-varying flat ivec4 var_cell;
+varying flat ivec2 var_cell;
 varying float var_cell_delta;
 varying vec3 var_cell_normal;
 #ifdef TERRAIN_GRADED_BEHIND
@@ -58,86 +64,34 @@ int cell_floor_div(int a, int b) {
 	return q;
 }
 
-int cell_mod(int a, int b) {
-	return a - b * cell_floor_div(a, b);
-}
-
 int cell_code_spacing_hm(int code, int cell_hm) {
 	return code < 3 ? (1 << code) : (cell_hm << (code - 3));
 }
 
-// Where a code's lattice lines fall in a tile starting at origin_hm: GL0-GL2 at the tile's own
-// multiples, the base lattice at its world anchor.
-int cell_code_phase_hm(int code, int spacing, int anchor_hm, int origin_hm) {
-	return code < 3 ? 0 : cell_mod(anchor_hm - origin_hm, spacing);
-}
-
-// Mesh vertex k on one axis: GL0-GL2 at k spacings; base cells and GL3 at
-// clamp(phase + s (k - 1), 0, 128), the tile's sides and the step lines between them.
-int cell_vertex_hm(int code, int k, int spacing, int phase) {
+// Mesh vertex k on one axis: GL0-GL2 at k spacings; base cells and GL3 at clamp(s (k - 1), 0,
+// 128): their generic mesh starts one step before the tile's side, which the clamp folds onto it.
+int cell_vertex_hm(int code, int k, int spacing) {
 	if (code < 3) {
 		return k * spacing;
 	}
-	return clamp(phase + spacing * (k - 1), 0, CELL_SIDE_HM);
+	return clamp(spacing * (k - 1), 0, CELL_SIDE_HM);
 }
 
-// A border vertex moved onto the coarser side's vertex at or before it: the side's ends and the
-// coarse lattice's lines.
-int cell_snap_hm(int p, int spacing, int phase) {
-	if (p >= CELL_SIDE_HM) {
-		return CELL_SIDE_HM;
-	}
-	return max(phase + spacing * cell_floor_div(p - phase, spacing), 0);
-}
-
-// The first lattice line strictly inside the tile, and how many lie strictly inside.
-int cell_first_line_hm(int spacing, int phase) {
-	return phase == 0 ? spacing : phase;
-}
-
-int cell_inner_lines(int spacing, int phase) {
-	int first = cell_first_line_hm(spacing, phase);
-	return first < CELL_SIDE_HM ? (CELL_SIDE_HM - 1 - first) / spacing + 1 : 0;
+// A border vertex (p in [0, 128]) moved onto the coarser side's vertex at or before it: the
+// side's ends and the coarse lattice's lines.
+int cell_snap_hm(int p, int spacing) {
+	return p / spacing * spacing;
 }
 
 // The texel index (apron at 0) of the lattice sample at or before p in [0, 128]: the tile's
 // lattice as the bake samples it (tile.rs `lattice_axis`).
-int cell_index_at(int code, int p, int spacing, int phase) {
-	if (code < 3) {
-		return 1 + p / spacing;
-	}
-	int first = cell_first_line_hm(spacing, phase);
-	if (p >= CELL_SIDE_HM) {
-		return 2 + cell_inner_lines(spacing, phase);
-	}
-	if (p < first) {
-		return 1;
-	}
-	return 2 + (p - first) / spacing;
+int cell_index_at(int p, int spacing) {
+	return 1 + p / spacing;
 }
 
-// The position of texel index idx, hm: the inverse of cell_index_at, aprons included.
-int cell_index_hm(int code, int idx, int spacing, int phase) {
-	if (code < 3) {
-		return (idx - 1) * spacing;
-	}
-	int first = cell_first_line_hm(spacing, phase);
-	int end_index = 2 + cell_inner_lines(spacing, phase);
-	if (idx <= 0) {
-		return phase == 0 ? -spacing : phase - spacing;
-	}
-	if (idx == 1) {
-		return 0;
-	}
-	if (idx < end_index) {
-		return first + (idx - 2) * spacing;
-	}
-	if (idx == end_index) {
-		return CELL_SIDE_HM;
-	}
-	return cell_mod(CELL_SIDE_HM - phase, spacing) == 0
-		? CELL_SIDE_HM + spacing
-		: first + cell_inner_lines(spacing, phase) * spacing;
+// The position of texel index idx >= 0, hm: the inverse of cell_index_at, aprons included.
+int cell_index_hm(int idx, int spacing) {
+	return (idx - 1) * spacing;
 }
 
 // The graded variant's slot reads, from the material's level.
@@ -191,7 +145,6 @@ struct CellFrame {
 	int slot;
 	ivec2 origin_hm;
 	ivec2 spacing;
-	ivec2 phase;
 };
 
 // The lattice codes from their two INSTANCE_CUSTOM channels.
@@ -209,32 +162,26 @@ CellFrame cell_frame(vec4 custom, int cell_hm) {
 		cell_floor_div(cell_patch_rect_hm.y, CELL_SIDE_HM)
 	);
 	frame.origin_hm = (first + ivec2(place % 32, place / 32)) * CELL_SIDE_HM;
-	int spacing = cell_code_spacing_hm(frame.code, cell_hm);
-	frame.spacing = ivec2(spacing);
-	frame.phase = ivec2(
-		cell_code_phase_hm(frame.code, spacing, cell_lattice_anchor_hm.x, frame.origin_hm.x),
-		cell_code_phase_hm(frame.code, spacing, cell_lattice_anchor_hm.y, frame.origin_hm.y)
-	);
+	frame.spacing = ivec2(cell_code_spacing_hm(frame.code, cell_hm));
 	return frame;
 }
 
-// The frame of a fragment's cell from the flat varying var_cell (slot, code, phase x, phase z).
-CellFrame cell_frame_from(ivec4 packed, int cell_hm) {
+// The frame of a fragment's cell from the flat varying var_cell (slot, code).
+CellFrame cell_frame_from(ivec2 packed, int cell_hm) {
 	CellFrame frame;
 	frame.slot = packed.x;
 	frame.code = packed.y;
 	frame.origin_hm = ivec2(0);
 	frame.spacing = ivec2(cell_code_spacing_hm(frame.code, cell_hm));
-	frame.phase = packed.zw;
 	return frame;
 }
 
 // The tile-frame position of mesh vertex k (hm): the lattice vertex, stitched on each side to a
-// coarser neighbour, clamped to the patch.
+// coarser neighbour. It stays in the tile, and so in the patch.
 ivec2 cell_vertex_position_hm(CellFrame frame, ivec2 k, int codes, int cell_hm) {
 	ivec2 p = ivec2(
-		cell_vertex_hm(frame.code, k.x, frame.spacing.x, frame.phase.x),
-		cell_vertex_hm(frame.code, k.y, frame.spacing.y, frame.phase.y)
+		cell_vertex_hm(frame.code, k.x, frame.spacing.x),
+		cell_vertex_hm(frame.code, k.y, frame.spacing.y)
 	);
 	int west = (codes >> 3) & 7;
 	int east = (codes >> 6) & 7;
@@ -242,58 +189,31 @@ ivec2 cell_vertex_position_hm(CellFrame frame, ivec2 k, int codes, int cell_hm) 
 	int north = (codes >> 12) & 7;
 	if (p.x == 0 || p.x == CELL_SIDE_HM) {
 		int side = p.x == 0 ? west : east;
-		int s = cell_code_spacing_hm(side, cell_hm);
-		p.y = cell_snap_hm(p.y, s, cell_code_phase_hm(side, s, cell_lattice_anchor_hm.y, frame.origin_hm.y));
+		p.y = cell_snap_hm(p.y, cell_code_spacing_hm(side, cell_hm));
 	}
 	if (p.y == 0 || p.y == CELL_SIDE_HM) {
 		int side = p.y == 0 ? south : north;
-		int s = cell_code_spacing_hm(side, cell_hm);
-		p.x = cell_snap_hm(p.x, s, cell_code_phase_hm(side, s, cell_lattice_anchor_hm.x, frame.origin_hm.x));
+		p.x = cell_snap_hm(p.x, cell_code_spacing_hm(side, cell_hm));
 	}
-	return clamp(p, cell_patch_rect_hm.xy - frame.origin_hm, cell_patch_rect_hm.zw - frame.origin_hm);
+	return p;
 }
 
 #ifdef TERRAIN_GRADED
-// The graded delta at a tile-frame position (hm): the texel itself on a lattice point (every
-// vertex but a GL3 one clamped to a patch side), else bilinear between the samples around it.
+// The graded delta at a mesh vertex (hm): the texel itself, as every vertex is a lattice point
+// of its cell's code (a side's coarser lattice is a sub-lattice of it).
 float cell_delta_m(CellFrame frame, ivec2 p) {
-	ivec2 i0 = ivec2(
-		cell_index_at(frame.code, p.x, frame.spacing.x, frame.phase.x),
-		cell_index_at(frame.code, p.y, frame.spacing.y, frame.phase.y)
-	);
-	ivec2 p0 = ivec2(
-		cell_index_hm(frame.code, i0.x, frame.spacing.x, frame.phase.x),
-		cell_index_hm(frame.code, i0.y, frame.spacing.y, frame.phase.y)
-	);
-	ivec2 p1 = ivec2(
-		cell_index_hm(frame.code, i0.x + 1, frame.spacing.x, frame.phase.x),
-		cell_index_hm(frame.code, i0.y + 1, frame.spacing.y, frame.phase.y)
-	);
-	vec2 f = vec2(p - p0) / vec2(max(p1 - p0, ivec2(1)));
-	float d00 = cell_texel(i0, frame.slot).r;
-	if (f == vec2(0.0)) {
-		return d00;
-	}
-	float d10 = cell_texel(i0 + ivec2(1, 0), frame.slot).r;
-	float d01 = cell_texel(i0 + ivec2(0, 1), frame.slot).r;
-	float d11 = cell_texel(i0 + ivec2(1, 1), frame.slot).r;
-	return mix(mix(d00, d10, f.x), mix(d01, d11, f.x), f.y);
+	return cell_texel(ivec2(cell_index_at(p.x, frame.spacing.x), cell_index_at(p.y, frame.spacing.y)), frame.slot).r;
 }
 
 // Central difference of delta at a lattice vertex over its neighbours, per metre.
 vec2 cell_delta_gradient(CellFrame frame, ivec2 p) {
-	ivec2 i = ivec2(
-		cell_index_at(frame.code, p.x, frame.spacing.x, frame.phase.x),
-		cell_index_at(frame.code, p.y, frame.spacing.y, frame.phase.y)
-	);
+	ivec2 i = ivec2(cell_index_at(p.x, frame.spacing.x), cell_index_at(p.y, frame.spacing.y));
 	float dx = cell_texel(i + ivec2(1, 0), frame.slot).r
 		- cell_texel(i - ivec2(1, 0), frame.slot).r;
 	float dz = cell_texel(i + ivec2(0, 1), frame.slot).r
 		- cell_texel(i - ivec2(0, 1), frame.slot).r;
-	int wx = cell_index_hm(frame.code, i.x + 1, frame.spacing.x, frame.phase.x)
-		- cell_index_hm(frame.code, i.x - 1, frame.spacing.x, frame.phase.x);
-	int wz = cell_index_hm(frame.code, i.y + 1, frame.spacing.y, frame.phase.y)
-		- cell_index_hm(frame.code, i.y - 1, frame.spacing.y, frame.phase.y);
+	int wx = cell_index_hm(i.x + 1, frame.spacing.x) - cell_index_hm(i.x - 1, frame.spacing.x);
+	int wz = cell_index_hm(i.y + 1, frame.spacing.y) - cell_index_hm(i.y - 1, frame.spacing.y);
 	return vec2(dx, dz) * 2.0 / vec2(max(ivec2(wx, wz), ivec2(1)));
 }
 
@@ -301,11 +221,10 @@ vec2 cell_delta_gradient(CellFrame frame, ivec2 p) {
 // fraction towards the next sample.
 vec2 cell_axis_stop(CellFrame frame, float x_m, int axis) {
 	int spacing = axis == 0 ? frame.spacing.x : frame.spacing.y;
-	int phase = axis == 0 ? frame.phase.x : frame.phase.y;
 	int p = clamp(int(floor(x_m * 2.0)), 0, CELL_SIDE_HM - 1);
-	int index = cell_index_at(frame.code, p, spacing, phase);
-	float p0 = float(cell_index_hm(frame.code, index, spacing, phase)) * 0.5;
-	float p1 = float(cell_index_hm(frame.code, index + 1, spacing, phase)) * 0.5;
+	int index = cell_index_at(p, spacing);
+	float p0 = float(cell_index_hm(index, spacing)) * 0.5;
+	float p1 = float(cell_index_hm(index + 1, spacing)) * 0.5;
 	return vec2(float(index), clamp((x_m - p0) / max(p1 - p0, 1e-6), 0.0, 1.0));
 }
 
@@ -439,8 +358,8 @@ CellMask cell_mask(CellFrame frame, vec2 p) {
 		float best_d = 1e30;
 		for (int c = 0; c < 4; c++) {
 			vec2 corner = vec2(
-				float(cell_index_hm(frame.code, i0.x + (c & 1), frame.spacing.x, frame.phase.x)),
-				float(cell_index_hm(frame.code, i0.y + (c >> 1), frame.spacing.y, frame.phase.y))
+				float(cell_index_hm(i0.x + (c & 1), frame.spacing.x)),
+				float(cell_index_hm(i0.y + (c >> 1), frame.spacing.y))
 			) * 0.5;
 			bool corner_inside = cell_segment_at(seg, corner, edge.index).signed_distance <= 0.0;
 			float d = distance(corner, p);

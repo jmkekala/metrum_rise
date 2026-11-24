@@ -15,7 +15,7 @@ uniform vec2 inner_sample_offset_texels;
 #include "res://scripts/shaders/terrain_cells.gdshaderinc"
 
 varying vec2 mask_cell_local_m;
-varying flat ivec4 mask_cell;
+varying flat ivec2 mask_cell;
 
 void vertex() {
 	int cell_hm = int(round(terrain_cell_m * 2.0));
@@ -25,7 +25,7 @@ void vertex() {
 	ivec2 patch_centre_hm = (cell_patch_rect_hm.xy + cell_patch_rect_hm.zw) / 2;
 	VERTEX = vec3(vec2(cell.origin_hm + p - patch_centre_hm) * 0.5, 0.0).xzy;
 	mask_cell_local_m = vec2(p) * 0.5;
-	mask_cell = ivec4(cell.slot, cell.code, cell.phase);
+	mask_cell = ivec2(cell.slot, cell.code);
 }
 
 void fragment() {
