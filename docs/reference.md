@@ -92,8 +92,9 @@ empty for five frames before a measurement ends; speculative prewarming and read
 are reported but are not commit fences. Gameplay input and polled camera controls are disabled for
 the run. Each scripted commit must produce exactly one newer network generation; any concurrent
 mutation fails the run and is recorded with its expected and actual generations. Fixture centers
-default to a `640 m` cadence, avoiding repeated near-alignment with the `510 m` terrain-patch grid
-while retaining varied Kuopio terrain. A rejected refined-terrain generation fails immediately and
+default to a `640 m` cadence, chosen against the old `510 m` terrain-patch grid to avoid repeated
+near-alignment with it; on the `512 m` grid every fourth center (`2,560 m`) falls at the same patch
+phase. It retains varied Kuopio terrain. A rejected refined-terrain generation fails immediately and
 records the patch, surface generation, CDT status, and error. The launch wrapper also requires the
 metrics document to contain `"success": true`, because Samply can return zero after a recorded Godot
 child exits nonzero.

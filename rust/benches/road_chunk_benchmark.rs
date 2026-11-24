@@ -19,7 +19,7 @@ use metrum_rise::simulation::terrain::graded::NoSites;
 use std::collections::{BTreeSet, HashSet};
 use std::time::Duration;
 
-const EXPECTED_RENDER_CHUNK_SPAN_M: f32 = 510.0;
+const EXPECTED_RENDER_CHUNK_SPAN_M: f32 = 512.0;
 const ROAD_LENGTH_M: f32 = 32.0;
 const ROAD_INSET_M: f32 = 128.0;
 const DISTANT_CHUNK_COUNTS: [usize; 4] = [0, 63, 255, 1023];

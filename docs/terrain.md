@@ -3753,7 +3753,7 @@ of the uploaded layers, for growth (below, `TERRAIN-22`).
   16 and 45 tiles at any camera. `GL2` and `GL3` group patches in blocks of `B x B`, `B` the
   largest with `T(B) = (ceil(B x span / 64 m) + 1)^2 <= L / 4` and at least 1, so a full block's
   slots and its tiles' mean runs fit one page's `L` layers twice over: `B = 2` (289 tiles a block)
-  at `L = 2,048` on 510 m patches, 1 (81) at 256. A block uses one page per level, and every cell
+  at `L = 2,048` on 512 m patches, 1 (81) at 256. A block uses one page per level, and every cell
   set of its patches binds that page in that level's materials.
 - **One copy a tile.** On the aligned grid (world rules, [section
   1](#1-worldconfig-is-the-authoritative-world-metadata)) every tile lies inside one patch, so it
@@ -4405,7 +4405,7 @@ km.
   resident patch may hold a graded tile at once), so neither streaming nor an edit creates a
   `MultiMesh`, material or node (round 5's populated edit created 16 materials and 24
   `MultiMesh`es for patches newly drawing cells). Each cell `MultiMesh` holds the most tiles a
-  patch meets (`(ceil(span / 64 m) + 1)^2`, 81 on 510 m patches) and the wall `MultiMesh` 256
+  patch meets (`(ceil(span / 64 m) + 1)^2`, 81 on 512 m patches) and the wall `MultiMesh` 256
   faces (the census's most per patch: 42 on Kuopio). The memory this costs on a large, mostly
   empty world is [T25](#terrain-07-open-questions). A prewarmed set holds the five plain cell
   `MultiMesh`es (`GL0`-`GL3` and the base cells), four graded materials and the walls'; the
@@ -4461,7 +4461,7 @@ km.
   AABB on a mesh change by reading such a buffer back from the GPU, custom AABB or not. So the
   fixed cell meshes take their Mesh at creation, the base cells theirs at a set's first build,
   and a later step change re-allocates the base MultiMesh (no buffer to read) before its build
-  publishes. Publication is `O(dirty meshes × patch capacity)` (81 cells per mesh on 510 m
+  publishes. Publication is `O(dirty meshes × patch capacity)` (81 cells per mesh on 512 m
   patches, 5,184 bytes), independent of city size; Godot's partial writes already uploaded that
   whole dirty region. Idle frames publish nothing. Why (Godot 4.7.2, `mesh_storage.cpp`): with
   motion vectors on, a frame's first partial write flips the MultiMesh's buffer halves and

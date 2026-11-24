@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Terrain and water patches on the streaming core (`RENDER-32-M`, `docs/terrain.md` "Streaming
-//! core" 5.6): residency, mesh level of detail and prewarm of the 510 m render patches, decided
+//! core" 5.6): residency, mesh level of detail and prewarm of the 512 m render patches, decided
 //! here and executed by `terrain.gd` and `water.gd` on their pooled nodes, one unit at a time
 //! under the stream node's frame budget ([`FrameBudget`]).
 //!

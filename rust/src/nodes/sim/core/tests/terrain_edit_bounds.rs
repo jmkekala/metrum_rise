@@ -135,7 +135,8 @@ fn around_the_world(out: f32) -> [Vector2; 8] {
 
 #[test]
 fn edits_wholly_outside_the_world_are_refused() {
-    // `RENDER-32-Q`'s point among them: 510 m beyond a corner, radius 24 m.
+    // `RENDER-32-Q`'s point among them: half the world beyond a corner (512 m here, 510 m on the
+    // old 1,020 m world), radius 24 m.
     let points = around_the_world(WORLD_M * 0.5);
     let invalid = [
         (Vector2::new(f32::NAN, 0.0), 24.0),

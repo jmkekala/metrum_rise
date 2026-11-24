@@ -29,7 +29,7 @@ const LARGE_LAYER_VERTEX_COUNTS := {
 }
 const RESIDENT_CHUNK_COUNTS: Array[int] = [4, 64, 256, 1024, 4096]
 const AFFECTED_CHUNK_COUNTS: Array[int] = [0, 1, 4, 16]
-const CHUNK_SPAN_M := 510.0
+const CHUNK_SPAN_M := 512.0
 const CHUNK_ORIGIN_X_M := -10240.0
 const CHUNK_ORIGIN_Z_M := 5120.0
 const WARMUP_SAMPLES := 20

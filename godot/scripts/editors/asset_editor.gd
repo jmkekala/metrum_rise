@@ -2,7 +2,7 @@
 
 ## Asset editor shell — launched via `--asset-editor` command-line argument.
 ## Shares the same SimulationNode and compiled .so as the game, but runs a
-## 500 m sandbox with no agents, no demand simulation, and no background tick thread.
+## 512 m sandbox with no agents, no demand simulation, and no background tick thread.
 ## Calls: sim.is_asset_editor_mode(), sim.load_all_asset_packs(dir),
 ## Rust owns documents/history, draft/package I/O, capabilities and validation.
 ## This shell coordinates preview manipulation, the pack browser and editor widgets.

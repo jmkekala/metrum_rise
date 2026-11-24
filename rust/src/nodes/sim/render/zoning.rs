@@ -193,7 +193,7 @@ mod tests {
     fn benchmark_environmental_overlay_raster() {
         use std::hint::black_box;
         use std::time::Instant;
-        for world_m in [1_280.0, 10_240.0, 20_000.0] {
+        for world_m in [1_280.0, 10_240.0, 20_480.0] {
             let config = WorldConfig::new(world_m, world_m, 40.0, 10.0);
             let mut grid = DataGrid::new(config.env_grid_width(), config.env_grid_height(), 0.0);
             for (index, value) in grid.data.iter_mut().enumerate() {

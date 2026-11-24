@@ -67,7 +67,7 @@ const TARGET_FEATURE_M: f32 = 500.0;
 
 /// Stand feature size as a fraction of the world's shorter side on worlds smaller than that.
 ///
-/// Only a world too small for a real stand compresses one, so a 500 m sandbox gets 62.5 m
+/// Only a world too small for a real stand compresses one, so a 512 m sandbox gets 64 m
 /// features and still has structure instead of falling wholly inside or outside one stand.
 const SMALL_WORLD_FEATURE_FRACTION: f32 = 0.125;
 

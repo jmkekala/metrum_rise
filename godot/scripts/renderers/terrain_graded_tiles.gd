@@ -40,7 +40,7 @@ const TILE_M := 64.0
 # GL0 and GL1 have one page each for the world, sized by their bands' bound (the memory table);
 # GL2 and GL3 one per block of patches and level, sized for the block's listed tiles.
 const WORLD_PAGE_SLOTS := [64, 192]
-# Patch cells: a patch meets at most (ceil(span / 64 m) + 1)^2 tiles (9 x 9 on a 510 m patch),
+# Patch cells: a patch meets at most (ceil(span / 64 m) + 1)^2 tiles (9 x 9 on a 512 m patch),
 # the instances of each cell MultiMesh. A tile's place in its patch is column + 32 * row in one
 # instance channel (terrain_cells.gdshaderinc; the book writes it).
 const POLL_BATCH := 4
@@ -64,9 +64,9 @@ var simulation_node: Node
 ## record into (one file per renderer: `<path>.<n>`), or a replay sets it before setup().
 var trace: RefCounted = null
 static var _traces := 0
-var terrain_cell_m := 10.0
+var terrain_cell_m := 8.0
 # The patch grid: patches of patch_span_m from the world's lower corner.
-var patch_span_m := 510.0
+var patch_span_m := 512.0
 var world_min := Vector2.ZERO
 var lattice_anchor_hm := Vector2i.ZERO
 var levels: Array[Dictionary] = []

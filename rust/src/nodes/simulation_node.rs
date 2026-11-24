@@ -271,7 +271,7 @@ pub struct SimulationNode {
     /// True when running in headless benchmark mode.
     pub(crate) benchmark_mode: bool,
     /// True when launched with `--asset-editor`. Sim thread is not started;
-    /// the node runs a 500 m sandbox for preview only.
+    /// the node runs a 512 m sandbox for preview only.
     pub(crate) asset_editor_mode: bool,
     /// True when launched with `--world-editor`. The node boots the blank-world
     /// authoring shell and keeps the simulation thread available for terrain /

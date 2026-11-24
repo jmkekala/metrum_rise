@@ -13,6 +13,9 @@ const UIStyle = preload("res://scripts/ui/ui_style.gd")
 const DEFAULT_WIDTH_M := 20480.0
 const DEFAULT_HEIGHT_M := 20480.0
 const WORLD_SIDE_STEP_M := 128.0
+# The dialog's largest side: a whole number of 128 m steps (and of 1,024 m), near the 500 km the
+# spin boxes allowed before the rules.
+const MAX_WORLD_SIDE_M := 512000.0
 const TERRAIN_CELLS_M: Array[float] = [2.0, 4.0, 8.0]
 const DEFAULT_TERRAIN_CELL_M := 8.0
 const DEFAULT_BASE_ELEVATION_M := 0.0
@@ -1633,12 +1636,12 @@ func _ensure_new_world_window() -> void:
 	_add_labeled_field(fields, "Name", _new_world_name_edit)
 
 	_new_world_width_spin = _make_spin_box(
-		WORLD_SIDE_STEP_M, 500000.0, WORLD_SIDE_STEP_M, DEFAULT_WIDTH_M
+		WORLD_SIDE_STEP_M, MAX_WORLD_SIDE_M, WORLD_SIDE_STEP_M, DEFAULT_WIDTH_M
 	)
 	_add_labeled_field(fields, "Width (m)", _new_world_width_spin)
 
 	_new_world_height_spin = _make_spin_box(
-		WORLD_SIDE_STEP_M, 500000.0, WORLD_SIDE_STEP_M, DEFAULT_HEIGHT_M
+		WORLD_SIDE_STEP_M, MAX_WORLD_SIDE_M, WORLD_SIDE_STEP_M, DEFAULT_HEIGHT_M
 	)
 	_add_labeled_field(fields, "Height (m)", _new_world_height_spin)
 
