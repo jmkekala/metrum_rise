@@ -1410,8 +1410,8 @@ func _finish(label: String, duration_s: float, rows: Array) -> Dictionary:
 		sample["proxy_stale"] = _proxy_stale()
 	# The patch units' measured times by layer and kind since the last sample (`TERRAIN-41` L1;
 	# absent on an older library).
-	var stream: Node = _vegetation.stream
-	if stream.has_method("take_patch_unit_times"):
+	var stream: Node = _vegetation.stream if _vegetation != null else null
+	if stream != null and stream.has_method("take_patch_unit_times"):
 		sample["patch_units"] = stream.take_patch_unit_times()
 	sample.merge(over)
 	if _gpu_profile:
