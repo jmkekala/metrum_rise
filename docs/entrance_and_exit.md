@@ -473,6 +473,72 @@ arrival ticks move.
     a rebuild copies every parked car of its 512 m chunk, so a chunk with hundreds of cars pays
     for one leaving; a finer publication is a renderer change, not done here.
 
+    *Third round* (2026-11-24, branch `perf-33-r3`). One cut, outcome-neutral (the `SIM-02`
+    envelope and determinism records equal those of `dev` 9bb3d1f14's simulation, and every
+    `vehicle_products_on_a_prepared_city` hash, 2,400 a city at 10k and 30k, equals the control's).
+
+    - *An entrance's lanes in one pass.* Every car and walker on a parking leg re-derives its
+      place's entrance each tick (`ParkingSystem::trip_entrance`): every network agent's stale-plan
+      check (`repair_stale_detach_plan`, about 4,400 cars driving to a place at the waves'
+      peak), the access steps and the detach. The entrance is a pure function of the place's
+      stored access, the edge and the lane numbering, so keeping it would need invalidation on
+      every lane rebuild (a road edit renumbers lanes city-wide), every republish of a place's
+      access, every edge change and every change of the agent's trip phase or ends: one more
+      column per agent and a write at each of those events. It is computed cheaper instead:
+      `refresh_entrance_lanes` looked the edge's lanes up four times and passed over them four
+      times (each direction's sidewalk lane and each direction's outermost vehicle lane); one
+      lookup and one pass (`frontage_lanes`) now pick the same lanes by the same per-lane rules,
+      for every caller (door entrances and parking access too). O(lanes on the edge), no
+      allocation. Tested against the per-lane passes on roads, a one-way road, a car-only road
+      and a footpath, on every side, and with a foot lane listed twice.
+
+    The probe (C B B C, 30k day at 32×): frame 4.214 to 4.107 ms a day (peak 5.933 to 5.802),
+    the movement pass's serial part 0.776 to 0.711 (peak 1.060 to 0.976), parallel part 0.407 to
+    0.395; a second session (its branch build also carrying the walker cut dropped below) read
+    peak 5.981 to 5.942 (serial part 1.065 to 1.010). State counts
+    equal hour by hour. Like for like (level F, two sessions, the same prepared city both sides,
+    control `dev` e74c50bc0's code):
+
+    | 30k | `dev` | `perf-33-r3` | delta (verdict) |
+    | --- | --- | --- | --- |
+    | 32× mean, session 1 / 2 | 4.072 / 4.057 ms | 3.949 / 3.951 | -3.0 % / -2.6 % (better) |
+    | 32× p99, session 1 / 2 | 6.829 / 6.702 | 6.570 / 6.549 | -3.8 % (better) / -2.3 % (level) |
+    | 32× p99.9, session 1 / 2 | 8.362 / 7.433 | 7.378 / 7.164 | better / level |
+    | 32× worst unpreempted, four days a side | 7.77, 7.49, 8.10, 7.61 | 7.53, 7.42, 7.32, 7.53 | level |
+    | 32× agent / snapshot / slot, session 1 | 2.012 / 0.965 / 1.039 | 1.912 / 0.952 / 1.030 | -5.0 % (better) / level / level |
+    | 32× agent / snapshot / slot, session 2 | 2.001 / 0.964 / 1.037 | 1.912 / 0.955 / 1.030 | -4.4 % (better) / level / level |
+    | 1× mean / p99 / p99.9 (control cached, same boot) | 1.686 / 3.164 / 3.506 | 1.591 / 3.047 / 3.411 and 1.600 / 3.03 / 3.39 | -5.6 % (better) / level / level |
+    | 1× worst unpreempted | 4.23 | 3.91, 4.58 | level |
+
+    Session 1's calibration failed on one noisy control day (p99.9 9.36 ms, 160 preempted
+    frames); session 2 passed it. Every worst frame is still a departure-wave frame (05:32-05:45,
+    13:32-13:44, 21:34). The branch's four days read 7.32-7.53 ms, at least 0.47 ms under
+    the limit, while `dev` read 8.10 on one day of the same sessions; four days a side are too few
+    to call that margin settled.
+
+    Measured and not cut:
+
+    - *Cars waiting in their lane to cross in* (`PERF-33` candidate): 26.6 such cars a peak frame
+      take 0.024 ms of the serial part (0.010 a day), so moving them to the parallel part could
+      gain at most that; not done.
+    - *Walkers off every lane.* The snapshot's agent instances (1.24 ms a peak frame) hold one
+      surface query per drawn off-lane walker (`get_world_surface_height_internal`, about 12.5 µs
+      each, a graded-surface preparation for each point): 239 a peak frame, 3.0 ms of worker time.
+      Keeping last snapshot's height by drawn position (exact under the world and the ground
+      generation) found 0.4 of the 239 a frame unchanged: walkers on access legs move every
+      frame, so it measured nothing and was dropped. The cost is the graded query's per-point
+      preparation, a terrain query change, not this row's.
+    - *The minute's slot work on the worst frames.* Averaged over the wave hours it is the day's
+      (1.02 ms a frame both). Slots over 1.6 ms are mostly the hour's census window
+      (`SimSystem::Census`, a rolling computation over the second half of each hour, 0.8-1.25 ms
+      a frame on the worst wave frames), with the departures' timed events (0.3-0.6) and restock
+      requests (0.1-0.4). The departure waves start at :30, so they fall in the census window by
+      schedule. It is the census's own work, not waste; spreading it differently would move work,
+      not remove it, and is left to the owner.
+    - *Parking commits* (0.75 ms a peak frame): answers already run in parallel blocks of 96 and
+      only the ordered commits are serial; batching further would change the order of outcomes.
+    - *Parked chunks*: as above, a finer publication is a renderer change.
+
 Radii the design gave on a two-lane street with sidewalks before building it (90° turns, entry
 and exit alike, the gate's own bend under 5° so the whole run is the arc's; in brackets half the
 run, as the lot's legs are held to):
